@@ -319,10 +319,11 @@ fn refreshcreds<G: ProcGlue>(p: &Thread<G>) {
 /// `uvm_map_inentry(p, &p->p_spinentry, PROC_STACK(p), ..., uvm_map_inentry_sp, ...)`: the
 /// thread's stack pointer `sp` lies in a `MAP_STACK` mapping of `vm`, its address space; when
 /// it does not, `uvm_map_inentry` has signalled the thread (`SIGSEGV`).
-fn sp_in_map_stack<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, sp: usize) -> bool {
+fn sp_in_map_stack<G: ProcGlue>(p: Pin<&Thread<G>>, vm: &Vmspace, sp: usize) -> bool {
     let map = &vm.vm_map;
     let mut ie = p.p_spinentry.get();
     let ok = uvm_map_inentry(
+        p,
         map,
         &mut ie,
         sp,
@@ -337,8 +338,8 @@ fn sp_in_map_stack<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, sp: usize) -> bool 
 
 /// The system call prologue's `MAP_STACK` check of `p`, whose `PROC_STACK(p)` is `sp`: a
 /// thread without an address space fails it (the glue cannot skip the check by naming none).
-fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>, sp: usize) -> bool {
-    match G::user_vmspace(p) {
+fn stack_in_map_stack<G: ProcGlue>(p: Pin<&Thread<G>>, sp: usize) -> bool {
+    match G::user_vmspace(&p) {
         Some(vm) => sp_in_map_stack(p, vm, sp),
         None => false,
     }
@@ -350,11 +351,11 @@ fn stack_in_map_stack<G: ProcGlue>(p: &Thread<G>, sp: usize) -> bool {
 /// `panic(9)`, as the C's `p->p_vmspace` dereference would, rather than a fault answered
 /// `Ok` that the thread takes again for ever.
 fn user_page_fault<G: ProcGlue>(
-    p: &Thread<G>,
+    p: Pin<&Thread<G>>,
     sp: usize,
     fault: impl FnOnce(&Vmspace) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
-    let Some(vm) = G::user_vmspace(p) else {
+    let Some(vm) = G::user_vmspace(&p) else {
         kpanic(format_args!("trap: a user fault with no address space"));
     };
     // SP must be within MAP_STACK space
@@ -387,7 +388,7 @@ pub fn mi_syscall<G: ProcGlue>(
     let (pc, sp) = hal::trap::proc_regs();
 
     // SP must be within MAP_STACK space
-    if !stack_in_map_stack(&p, sp) {
+    if !stack_in_map_stack(p, sp) {
         return Err(Errno::EPERM);
     }
 
@@ -460,7 +461,9 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
         va: usize,
         access: hal::pmap::VmProt,
     ) -> Result<(), Errno> {
-        let kernel_fault = |va| {
+        // The fault counts on curproc->p_ru: the thread on this CPU's, when there is one
+        // (a kernel fault taken with no thread counts nowhere; the C has always one).
+        let kernel_fault = |va, ru: Option<&crate::resource::Rusage>| {
             let map = crate::vm::km::kernel_map();
             #[cfg(target_arch = "aarch64")]
             if map
@@ -469,9 +472,9 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
             {
                 return Ok(());
             }
-            crate::vm::fault::uvm_fault(map, va, 0, access)
+            crate::vm::fault::uvm_fault(map, va, 0, access, ru)
         };
-        let user_fault = |vm: &crate::vm::map::Vmspace| {
+        let user_fault = |p: &Thread<G>, vm: &crate::vm::map::Vmspace| {
             let map = &vm.vm_map;
             // Handle referenced/modified emulation
             #[cfg(target_arch = "aarch64")]
@@ -481,20 +484,23 @@ impl<G: ProcGlue> TrapHandler for KernelTrap<G> {
             {
                 return Ok(());
             }
-            crate::vm::fault::uvm_fault(map, va, 0, access)?;
-            crate::vm::unix::uvm_grow(vm, va);
+            crate::vm::fault::uvm_fault(map, va, 0, access, Some(&p.p_ru))?;
+            crate::vm::unix::uvm_grow(p, vm, va);
             Ok(())
         };
         match source {
-            FaultSource::Kernel => kernel_fault(va),
+            FaultSource::Kernel => G::with_curproc(|p| kernel_fault(va, p.map(|p| &p.p_ru))),
             // map = &p->p_vmspace->vm_map; with no thread (or no address space) the kernel
             // map, where the C dereferences p (trap.rs's deviations).
-            FaultSource::KernelUser => G::with_curproc(|p| match p.and_then(G::user_vmspace) {
-                Some(vm) => user_fault(vm),
-                None => kernel_fault(va),
+            FaultSource::KernelUser => G::with_curproc(|p| match p {
+                Some(p) => match G::user_vmspace(p) {
+                    Some(vm) => user_fault(p, vm),
+                    None => kernel_fault(va, Some(&p.p_ru)),
+                },
+                None => kernel_fault(va, None),
             }),
             FaultSource::User { sp } => {
-                with_trapped::<G, _>(|p| user_page_fault(&p, sp, user_fault))
+                with_trapped::<G, _>(|p| user_page_fault(p, sp, |vm| user_fault(&p, vm)))
             }
         }
     }
@@ -765,6 +771,7 @@ mod tests {
         procinit::<Vg>(64, 64);
         let pr = process_alloc::<Vg>(4343, ());
         drop(pr.set_ucred(CredRef::new(Ucred::new())));
+        crate::sig::test_sigacts(&pr);
         let t = thread_alloc::<Vg>(&pr, ());
         drop(t.set_cred(pr.ucred()));
         hal::klock::kernel_unlock();
@@ -775,10 +782,19 @@ mod tests {
         let pc = 0x1000_0040;
         let t: &'static PoolBox<Thread<Vg>> = std::boxed::Box::leak(std::boxed::Box::new(t));
         let p = pin_static::<Thread<Vg>>(t);
-        testutil::vmproc_with(|s| {
-            s.segv.clear();
-            s.uprintfs.clear();
-        });
+        {
+            let mut g = pr.ps_mtx.lock();
+            pr.ps_threads.insert_tail(&mut g, p);
+        }
+        pr.ps_threadcnt.set(1);
+        Vg::set_curproc(Some(t));
+        // SIGSEGV caught: trapsignal delivers it through the machine's frame (recorded).
+        let mut sa = hal::sys::signal::Sigaction {
+            sa_handler: 0x4000,
+            ..Default::default()
+        };
+        crate::sig::setsigvec(&p, hal::sys::signal::SIGSEGV, &mut sa);
+        let _ = hal::sig::take_sent();
         let getpid = SYS_getpid as Register;
 
         hal::trap::set_user_regs(pc, stk + 2 * PAGE_SIZE);
@@ -789,7 +805,7 @@ mod tests {
         });
         assert_eq!(r, Ok(()));
         assert!(ran, "a MAP_STACK stack reaches the body");
-        assert!(testutil::vmproc_with(|s| s.segv.is_empty()));
+        assert!(hal::sig::take_sent().is_empty());
 
         hal::trap::set_user_regs(pc, plain + PAGE_SIZE);
         let mut ran = false;
@@ -799,10 +815,13 @@ mod tests {
         });
         assert_eq!(r, Err(Errno::EPERM));
         assert!(!ran, "the body ran past a failed MAP_STACK check");
-        assert_eq!(testutil::vmproc_with(|s| s.segv.len()), 1, "SIGSEGV");
+        let sent = hal::sig::take_sent();
+        assert_eq!(sent.len(), 1, "SIGSEGV");
+        assert_eq!(sent[0].sig, hal::sys::signal::SIGSEGV);
 
         hal::trap::set_user_regs(0, 0);
         VG_VM.with(|c| c.set(None));
+        Vg::set_curproc(None);
         core::mem::forget(pr);
     }
 
@@ -818,7 +837,8 @@ mod tests {
         let t = thread_alloc::<Yg>(&pr, ());
         hal::klock::kernel_unlock();
         core::mem::forget(pr);
-        let _ = user_page_fault(&t, 0x7f00_0000, |_| Ok(()));
+        let t: &'static PoolBox<Thread<Yg>> = std::boxed::Box::leak(std::boxed::Box::new(t));
+        let _ = user_page_fault(pin_static::<Thread<Yg>>(t), 0x7f00_0000, |_| Ok(()));
     }
 }
 /* </TESTS> */

@@ -747,6 +747,7 @@ fn execve_common(
         .set(vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX - size_of::<PsStrings>());
     pack.ep_execpath = vm.vm_minsaddr.load(Ordering::Relaxed) - sgap - PATH_MAX;
     if uvm_map_protect(
+        p,
         &vm.vm_map,
         round_page(pack.ep_execpath + PATH_MAX),
         vm.vm_minsaddr.load(Ordering::Relaxed),
@@ -986,7 +987,7 @@ fn execve_common(
     let free_pack_abort = || -> ! { exit1(p, 0, SIGABRT, EXIT_NORMAL) };
 
     // map the process's timekeep page, needs to be before exec_elf_fixup
-    if exec_timekeep_map(pr).is_err() {
+    if exec_timekeep_map(p, pr).is_err() {
         free_pack_abort();
     }
 
@@ -997,7 +998,7 @@ fn execve_common(
     Machine::setregs(p, &pack, Vaddr::new(stack), &arginfo);
 
     // map the process's signal trampoline code
-    if exec_sigcode_map(pr).is_err() {
+    if exec_sigcode_map(p, pr).is_err() {
         free_pack_abort();
     }
 
@@ -1113,8 +1114,9 @@ pub fn copyargs(
 }
 
 /// `exec_sigcode_map`: map the signal trampoline into `pr`'s new address space, creating
-/// the shared `sigobject` the first time.
-pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
+/// the shared `sigobject` the first time; `p` is the exec'ing thread (the C's `curproc`,
+/// which `uvm_map_protect` reads).
+pub fn exec_sigcode_map(p: &Proc, pr: &Process) -> Result<(), Errno> {
     let sigcode = <Machine as MachineSignal>::sigcode();
     let sz = sigcode.len();
 
@@ -1171,6 +1173,7 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
             unsafe { ptr::copy_nonoverlapping(sigcode.as_ptr(), va as *mut u8, sz) };
 
             if uvm_map_protect(
+                p,
                 kernel_map(),
                 va,
                 round_page(va + sz),
@@ -1230,8 +1233,9 @@ pub fn exec_sigcode_map(pr: &Process) -> Result<(), Errno> {
 }
 
 /// `exec_timekeep_map`: map the shared timekeep page into `pr`'s new address space,
-/// creating (and wiring) the kernel's `timekeep` the first time.
-pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
+/// creating (and wiring) the kernel's `timekeep` the first time; the wiring's faults count
+/// on `p`, the exec'ing thread (the C's `curproc`).
+pub fn exec_timekeep_map(p: &Proc, pr: &Process) -> Result<(), Errno> {
     let timekeep_sz = round_page(size_of::<Timekeep>());
 
     // Similar to the sigcode object: made, mapped, wired and published once, by the kernel's
@@ -1239,7 +1243,7 @@ pub fn exec_timekeep_map(pr: &Process) -> Result<(), Errno> {
     let object: ObjRef = match TIMEKEEP_OBJECT.get() {
         Some(obj) => obj.clone(),
         None => {
-            let obj = kernel::tc::timekeep_object()?;
+            let obj = kernel::tc::timekeep_object(Some(&p.p_ru))?;
             // Exec runs under the kernel lock: no other thread made one meanwhile.
             let _ = TIMEKEEP_OBJECT.set(obj.clone());
             obj

@@ -223,6 +223,7 @@ pub fn vmcmd_map_pagedvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno>
             copyout(bytes, cmd.ev_addr)?;
             if cmd.ev_prot & PROT_WRITE == 0 {
                 uvm_map_protect(
+                    p,
                     map,
                     cmd.ev_addr,
                     cmd.ev_addr + cmd.ev_len,
@@ -303,6 +304,7 @@ pub fn vmcmd_map_readvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
         // however, the caller seems to want it mapped read-only, so now we are going to
         // have to call uvm_map_protect() to fix up the protection. ICK.
         error = uvm_map_protect(
+            p,
             map,
             cmd.ev_addr,
             round_page(cmd.ev_addr + cmd.ev_len),

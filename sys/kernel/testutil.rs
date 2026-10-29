@@ -60,8 +60,10 @@
 //!   `kthread_run_deferred_queue`: those tests drive a queue's workers by hand, and a worker
 //!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
 
-//! - `vm::proc`'s `VmProc`: each test thread a process, whose answers and records are a
-//!   per-thread [`VmProcState`] ([`vmproc_with`]); `sigexit` panics with its signal.
+//! - The `ProcGlue` members of `vm` (N5.0: the `VmProc` double is gone; the vm calls take a
+//!   real thread): `pledge_protexec` and `textvp_wxallowed` answer per test thread
+//!   ([`set_pledge_protexec`], [`set_textvp_wxallowed`]); a vnode file's vnode is
+//!   [`TestFileData`]'s `vnode`.
 //! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
 //!   memory ([`mem_vnode`] leaks one), which records what it saw during its last read.
 //! - `vm::km`'s maps, not a double: [`kernel_maps_install`] sets up the kernel's own
@@ -750,8 +752,6 @@ pub fn install() {
         let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
 
-        let _ = crate::vm::proc::install(&TEST_VM_PROC);
-
         // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
         // read at its nominal 1 MHz, warmed up as initclocks does.
         crate::tc::inittimecounter();
@@ -1037,205 +1037,6 @@ pub fn pages_install(bytes: usize) -> MutexGuard<'static, ()> {
     let (start, end) = (base / TEST_PAGE, (base + bytes) / TEST_PAGE);
     pages_setup(&[(start, end)], &[])
 }
-
-/// `RLIM_INFINITY`: what the `VmProc` double answers for a limit a test did not set.
-pub const RLIM_INFINITY: u64 = (1 << 63) - 1;
-
-/// What the `VmProc` double answers and records for the calling test thread (each test
-/// thread a process): set it up with [`vmproc_with`].
-#[derive(Default)]
-pub struct VmProcState {
-    /// `pledge_protexec` fails with `EPERM` for a `PROT_EXEC` request.
-    pub pledge_denies_exec: bool,
-    /// `uvm_wxcheck`'s exemption.
-    pub wx_allowed: bool,
-    /// `ps_wxcounter`.
-    pub wxcounter: u32,
-    /// `ps_pid`.
-    pub pid: i32,
-    /// `p_tid`.
-    pub tid: i32,
-    /// `ps_comm`.
-    pub comm: Vec<u8>,
-    /// `PROC_PC(p)`.
-    pub pc: usize,
-    /// `ps_acflag & AMAP`.
-    pub acflag_amap: bool,
-    /// `lim_cur(which)` by `which`; a missing one is [`RLIM_INFINITY`].
-    pub limits: BTreeMap<i32, u64>,
-    /// `P_HASSIBLING(p)`.
-    pub sibling: bool,
-    /// `ps_strings`.
-    pub ps_strings: usize,
-    /// `ps_sigcode`.
-    pub ps_sigcode: usize,
-    /// `ps_timekeep`.
-    pub ps_timekeep: usize,
-    /// The descriptors: number, vnode (`None`: not `DTYPE_VNODE`), `f_flag`.
-    pub files: Vec<(i32, Option<&'static dyn VnodeOps>, u32)>,
-    /// `ps_kbind_addr`/`ps_kbind_cookie`.
-    pub kbind: crate::vm::proc::KbindSlot,
-    /// `ps_libcpin` as `pin_table_set` left it: start, end, the table.
-    pub libcpin: Option<(usize, usize, Vec<u32>)>,
-    /// `ru_minflt`.
-    pub minflt: u64,
-    /// `ru_majflt`.
-    pub majflt: u64,
-    /// `ru_maxrss`.
-    pub maxrss: usize,
-    /// The pcs `trapsignal_segv` was given.
-    pub segv: Vec<usize>,
-    /// The `log` lines, with their level.
-    pub logs: Vec<(i32, String)>,
-    /// The `uprintf` lines.
-    pub uprintfs: Vec<String>,
-}
-
-std::thread_local! {
-    static VM_PROC_STATE: RefCell<VmProcState> = RefCell::new(VmProcState::default());
-}
-
-/// `f` on the calling thread's [`VmProcState`] (registers the double first).
-pub fn vmproc_with<R>(f: impl FnOnce(&mut VmProcState) -> R) -> R {
-    install();
-    VM_PROC_STATE.with(|s| f(&mut s.borrow_mut()))
-}
-
-/// The `VmProc` double: answers from the calling thread's [`VmProcState`]; `sigexit` panics
-/// with the signal's number (`sigexit(N)`), as nothing returns from it.
-struct TestVmProc;
-
-impl crate::vm::proc::VmProc for TestVmProc {
-    fn pledge_protexec(&self, prot: crate::vm::types::VmProt) -> Result<(), Errno> {
-        let denied = VM_PROC_STATE.with(|s| s.borrow().pledge_denies_exec);
-        if denied && prot & hal::sys::mman::PROT_EXEC != 0 {
-            return Err(Errno::EPERM);
-        }
-        Ok(())
-    }
-
-    fn wx_allowed(&self) -> bool {
-        VM_PROC_STATE.with(|s| s.borrow().wx_allowed)
-    }
-
-    fn wxcounter_inc(&self) -> u32 {
-        VM_PROC_STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            let n = s.wxcounter;
-            s.wxcounter = n + 1;
-            n
-        })
-    }
-
-    fn sigexit(&self, sig: i32) -> ! {
-        crate::assert::kpanic(format_args!("sigexit({sig})"))
-    }
-
-    fn trapsignal_segv(&self, pc: usize) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().segv.push(pc));
-    }
-
-    fn pid(&self) -> i32 {
-        VM_PROC_STATE.with(|s| s.borrow().pid)
-    }
-
-    fn tid(&self) -> i32 {
-        VM_PROC_STATE.with(|s| s.borrow().tid)
-    }
-
-    fn comm(&self, out: &mut [u8]) -> usize {
-        VM_PROC_STATE.with(|s| {
-            let s = s.borrow();
-            let n = s.comm.len().min(out.len());
-            out[..n].copy_from_slice(&s.comm[..n]);
-            n
-        })
-    }
-
-    fn pc(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().pc)
-    }
-
-    fn set_acflag_amap(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().acflag_amap = true);
-    }
-
-    fn lim_cur(&self, which: i32) -> u64 {
-        VM_PROC_STATE
-            .with(|s| s.borrow().limits.get(&which).copied())
-            .unwrap_or(RLIM_INFINITY)
-    }
-
-    fn has_sibling(&self) -> bool {
-        VM_PROC_STATE.with(|s| s.borrow().sibling)
-    }
-
-    fn ps_strings(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_strings)
-    }
-
-    fn ps_sigcode(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_sigcode)
-    }
-
-    fn ps_timekeep(&self) -> usize {
-        VM_PROC_STATE.with(|s| s.borrow().ps_timekeep)
-    }
-
-    fn with_fd_vnode(
-        &self,
-        fd: i32,
-        f: &mut dyn FnMut(Option<&'static dyn VnodeOps>, u32) -> Result<(), Errno>,
-    ) -> Result<(), Errno> {
-        let file = VM_PROC_STATE.with(|s| {
-            s.borrow()
-                .files
-                .iter()
-                .find(|(n, _, _)| *n == fd)
-                .map(|&(_, vp, flag)| (vp, flag))
-        });
-        let (vp, flag) = file.ok_or(Errno::EBADF)?;
-        f(vp, flag)
-    }
-
-    fn with_kbind(&self, f: &mut dyn FnMut(&mut crate::vm::proc::KbindSlot)) {
-        let mut slot = VM_PROC_STATE.with(|s| s.borrow().kbind);
-        f(&mut slot);
-        VM_PROC_STATE.with(|s| s.borrow_mut().kbind = slot);
-    }
-
-    fn pin_table_set(&self, base: usize, end: usize, pins: hal::malloc::MArray<u32>) {
-        let table = pins.to_vec();
-        VM_PROC_STATE.with(|s| s.borrow_mut().libcpin = Some((base, end, table)));
-    }
-
-    fn ru_minflt_inc(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().minflt += 1);
-    }
-
-    fn ru_majflt_inc(&self) {
-        VM_PROC_STATE.with(|s| s.borrow_mut().majflt += 1);
-    }
-
-    fn ru_maxrss(&self, kb: usize) {
-        VM_PROC_STATE.with(|s| {
-            let mut s = s.borrow_mut();
-            s.maxrss = s.maxrss.max(kb);
-        });
-    }
-
-    fn log(&self, level: i32, args: core::fmt::Arguments<'_>) {
-        let line = std::format!("{args}");
-        VM_PROC_STATE.with(|s| s.borrow_mut().logs.push((level, line)));
-    }
-
-    fn uprintf(&self, args: core::fmt::Arguments<'_>) {
-        let line = std::format!("{args}");
-        VM_PROC_STATE.with(|s| s.borrow_mut().uprintfs.push(line));
-    }
-}
-
-static TEST_VM_PROC: TestVmProc = TestVmProc;
 
 /// The machine's constants of `vm::init` for the host tests: amd64's numbers, no DMA
 /// constraint.

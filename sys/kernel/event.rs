@@ -4117,6 +4117,19 @@ pub(crate) mod tests {
         fd
     }
 
+    /// A test file of type `ty` (`DTYPE_*`) on the object `data` at the lowest free
+    /// descriptor, open for reading and writing (`kernel::vm::mmap`'s `getvnode` tests).
+    pub(crate) fn open_data(p: T, ty: i32, data: TestFileData<Kg>) -> i32 {
+        let mut g = fdplock(p.fd());
+        let (fp, fd) = crate::descrip::falloc(p, &mut g).unwrap();
+        fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::SeqCst);
+        fp.install(ty, &TOPS, data);
+        fdinsert(&mut g, fd, 0, &fp);
+        drop(g);
+        fp.frele(Some(p)).unwrap();
+        fd
+    }
+
     /// `close(2)` of `fd`.
     pub(crate) fn close_fd(p: T, fd: i32) {
         assert_eq!(fdrelease(p, fdplock(p.fd()), fd), Ok(()));

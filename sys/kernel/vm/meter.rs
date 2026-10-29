@@ -99,8 +99,7 @@ use hal::vm::uvmexp::{
 };
 
 use super::init::machine;
-use super::proc::vmproc;
-use crate::proc::ProcGlue;
+use crate::proc::{ProcGlue, Thread};
 pub use crate::sysctl::SysctlReq;
 use crate::sysctl::{int, rdint, rdstruct, string};
 
@@ -141,7 +140,11 @@ pub static malloc_conf: Mutexed<[u8; 16]> = Mutexed::new(IPL_NONE, [0; 16]);
 
 /// `uvm_sysctl`: the sysctl hook into UVM (`CTL_VM`), for the current process (the
 /// threads of `G`'s tables for `vm.vmmeter`).
-pub fn uvm_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+pub fn uvm_sysctl<G: ProcGlue>(
+    p: &Thread<G>,
+    name: &[i32],
+    req: &mut SysctlReq<'_>,
+) -> Result<(), Errno> {
     let Some(&top) = name.first() else {
         return Err(Errno::ENOTDIR);
     };
@@ -168,7 +171,7 @@ pub fn uvm_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<
 
         VM_NKMEMPAGES => rdint(req, hal::malloc::nkmempages()),
 
-        VM_PSSTRINGS => rdstruct(req, &(vmproc().ps_strings() as u64).to_ne_bytes()),
+        VM_PSSTRINGS => rdstruct(req, &(p.process().ps_strings.get() as u64).to_ne_bytes()),
 
         VM_ANONMIN => uvm_minpct(
             req,
@@ -504,14 +507,12 @@ mod tests {
         assert_eq!(min.load(Ordering::Relaxed), 15 * 256 / 100);
     }
 
-    crate::test_file_glue!(Files, Procs);
-    crate::test_proc_glue!(Procs, Files);
-
     /// `vm.*` through `uvm_sysctl` itself (LZ's bsd test of the `VmSysctl` bridge, which is
-    /// gone): a size query of a leaf, a name below a terminal node, an unknown id.
+    /// gone): a size query of a leaf, a name below a terminal node, an unknown id; the
+    /// calling thread's `vm.psstrings`.
     #[test]
     fn the_vm_sysctls_answer_as_the_c() {
-        crate::testutil::install();
+        let p = crate::event::tests::setup(96);
         let mut len = 0usize;
         let mut req = SysctlReq {
             oldp: 0,
@@ -519,7 +520,7 @@ mod tests {
             newp: 0,
             newlen: 0,
         };
-        assert_eq!(uvm_sysctl::<Procs>(&[VM_MAXSLP], &mut req), Ok(()));
+        assert_eq!(uvm_sysctl(p, &[VM_MAXSLP], &mut req), Ok(()));
         assert_eq!(len, core::mem::size_of::<i32>());
         let mut req = SysctlReq {
             oldp: 0,
@@ -528,21 +529,36 @@ mod tests {
             newlen: 0,
         };
         assert_eq!(
-            uvm_sysctl::<Procs>(&[VM_MAXSLP, 1], &mut req),
+            uvm_sysctl(p, &[VM_MAXSLP, 1], &mut req),
             Err(Errno::ENOTDIR)
         );
         assert_eq!(
-            uvm_sysctl::<Procs>(&[hal::vm::uvmexp::VM_MAXID], &mut req),
+            uvm_sysctl(p, &[hal::vm::uvmexp::VM_MAXID], &mut req),
             Err(Errno::EOPNOTSUPP)
         );
-        assert_eq!(uvm_sysctl::<Procs>(&[], &mut req), Err(Errno::ENOTDIR));
+        assert_eq!(uvm_sysctl(p, &[], &mut req), Err(Errno::ENOTDIR));
         assert_eq!(
-            uvm_sysctl::<Procs>(&[VM_SWAPENCRYPT], &mut req),
+            uvm_sysctl(p, &[VM_SWAPENCRYPT], &mut req),
             Err(Errno::EOPNOTSUPP)
         );
         // vm.uvmexp's size is struct uvmexp's.
-        assert_eq!(uvm_sysctl::<Procs>(&[VM_UVMEXP], &mut req), Ok(()));
+        assert_eq!(uvm_sysctl(p, &[VM_UVMEXP], &mut req), Ok(()));
         assert_eq!(len, core::mem::size_of::<UvmexpCopy>());
+        // vm.psstrings is the calling process's ps_strings, a u_long.
+        p.process().ps_strings.set(0x7f7f_ff00);
+        let ubuf = crate::testutil::USER_BASE + 0x4100;
+        let mut len = 8usize;
+        let mut req = SysctlReq {
+            oldp: ubuf,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(uvm_sysctl(p, &[VM_PSSTRINGS], &mut req), Ok(()));
+        assert_eq!(
+            crate::testutil::user_bytes(ubuf, 8),
+            Some(0x7f7f_ff00u64.to_ne_bytes().to_vec())
+        );
     }
 }
 /* </TESTS> */

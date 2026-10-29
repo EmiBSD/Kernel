@@ -79,25 +79,34 @@
 //! - The system calls are functions of the address space (`&Vmspace`) and of their typed
 //!   arguments, returning `Result` (the value of `*retval` in the `Ok` of `mmap` and
 //!   `mquery`); `bsd`'s `sysent[]` adapters (`sys/kern/vm_bsd.rs`) unpack the `sysargs` and
-//!   pass `p->p_vmspace`. The facts of the current process (pledge, the W^X exemption and
-//!   counter, `sigexit`, the limits, the descriptors, the kbind slot, the pin table, the
-//!   program counter) are the `VmProc` bridge's (`vm::proc`); every check is here.
-//! - `uvm_wxcheck`'s notice goes through `VmProc::log`, `log(LOG_NOTICE, ...)`.
-//! - The file half of `sys_mmap` runs inside `VmProc::with_fd_vnode` (`fd_getfile` ..
-//!   `FRELE`), under the kernel lock taken here, as the C's; the vnode is the pager's
-//!   `VnodeOps` (`v_type`, `iszerodev(v_rdev)` and `VOP_GETATTR`'s `va_flags` are its
-//!   methods).
+//!   pass the thread and `p->p_vmspace`. N5.0: the thread is the C's `struct proc *p`
+//!   (`&Thread<G>`), whose fields the calls read themselves (the limits, `ps_wxcounter`, the
+//!   kbind words under `ps_mtx`, `ps_libcpin`, `P_HASSIBLING`); `sigexit` is
+//!   `kernel::sig`'s and `PROC_PC` `hal::trap::proc_pc`. What is not the kernel's yet is the
+//!   glue's: `pledge_protexec` (`ProcGlue`, `kern_pledge` until N8), the text vnode's
+//!   `MNT_WXALLOWED` (`ProcGlue::textvp_wxallowed`, N5) and a vnode file's vnode
+//!   (`FileGlue::vnode_ops`). N3.5 to N4 asked all of it of the `VmProc` bridge about
+//!   `curproc`; every check stayed here, in the C's order.
+//! - `uvm_wxcheck`'s notice is `log(LOG_NOTICE, ...)`, `hal::prf::log`.
+//! - The file half of `sys_mmap` runs between `fd_getfile` and `FRELE` on the thread's
+//!   table (`kernel::descrip`), under the kernel lock taken here, as the C's; the vnode is
+//!   the pager's `VnodeOps` (`v_type`, `iszerodev(v_rdev)` and `VOP_GETATTR`'s `va_flags`
+//!   are its methods).
+//! - The faults a wiring takes (`mlock(2)`, `mlockall(2)`, `uvm_mmaplock`'s
+//!   `VM_MAP_WIREFUTURE`) count on the caller's `p_ru`, passed down as `Some(&p.p_ru)`
+//!   (the C's `curproc->p_ru`).
 //! - `sys_munmap` locks the map with its write guard; `uvm_unmap_remove` fills a
 //!   `DeadQueue` value detached after the unlock, as the C's stack `TAILQ`.
 //! - `uvm_mmaplock` hands its write guard to `uvm_map_pageable_locked` (the C's
 //!   `UVM_LK_ENTER`), which consumes it: no flag says who unlocks.
 //! - `sys_pinsyscalls` builds the table in an `MArray<u32>` (`mallocarray(M_PINSYSCALL)`,
 //!   freed by its drop on every error path) filled by one `copyin` of the whole array, and
-//!   hands it to the process (`VmProc::pin_table_set`); LZ's `unsafe` slice over the raw
+//!   hands it to the process (`ps_libcpin`'s replace); LZ's `unsafe` slice over the raw
 //!   block is gone. Its "only once" flag is set under the map's flags lock and the old
 //!   value tested after (`VmMap::modflags` returns it), as the C's.
 //! - `sys_kbind`'s check-and-set of `ps_kbind_addr`/`ps_kbind_cookie` is one critical
-//!   section through `VmProc::with_kbind` (`ps_mtx`). The parameter block is parsed by
+//!   section of `ps_mtx` ([`kbind_check`] on a [`KbindSlot`] copy of the two words, written
+//!   back before the unlock). The parameter block is parsed by
 //!   [`kbind_blocks`] (the sizes table-tested), and each binding is written through the
 //!   extracted page's [`KernelWindow`](super::km::KernelWindow) (`kcopy` with its fault
 //!   recovery, never a reference to the other mapping); the window's drop is the C's
@@ -133,14 +142,18 @@ use super::map::{
     uvm_unmap_remove,
 };
 use super::pager::{PGO_CLEANIT, PGO_DEACTIVATE, PGO_FREE, PGO_SYNCIO};
-use super::proc::{BOGO_PC, LOG_NOTICE, RLIMIT_DATA, RLIMIT_MEMLOCK, vmproc};
+use super::proc::{BOGO_PC, KbindSlot, LOG_NOTICE, RLIMIT_DATA, RLIMIT_MEMLOCK};
 use super::types::{
     PROT_MASK, UVM_FLAG_CONCEAL, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_NOFAULT,
     UVM_FLAG_OVERLAY, UVM_FLAG_STACK, UVM_FLAG_UNMAP, UVM_UNKNOWN_OFFSET, VmProt, Voff,
     uvm_mapflag,
 };
 use super::vnode::{VType, VnodeOps, uvm_vnp_uncache, uvn_attach};
+use crate::descrip::fd_getfile;
+use crate::file::{DTYPE_VNODE, FileGlue, FileRef};
 use crate::prf::unported;
+use crate::proc::{PSI_WXNEEDED, ProcGlue, Thread};
+use crate::resource::Rusage;
 
 /// `M_PINSYSCALL`: pinsyscall (`<sys/malloc.h>`).
 pub const M_PINSYSCALL: i32 = 100;
@@ -241,11 +254,11 @@ fn align_range(addr: usize, size: usize) -> Result<(usize, usize), Errno> {
     Ok((addr, addr + size))
 }
 
-/// The data limit's check of a mapping of `size` bytes: `ENOMEM` when `RLIMIT_DATA` cannot
-/// hold it beside what the process uses already (`vm_dused`, read without the map lock, as
-/// the C's).
-fn data_limit_check(vm: &Vmspace, size: usize) -> Result<(), Errno> {
-    let limit = vmproc().lim_cur(RLIMIT_DATA) as usize;
+/// The data limit's check of a mapping of `size` bytes: `ENOMEM` when `p`'s `RLIMIT_DATA`
+/// cannot hold it beside what the process uses already (`vm_dused`, read without the map
+/// lock, as the C's).
+fn data_limit_check<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, size: usize) -> Result<(), Errno> {
+    let limit = p.lim_cur(RLIMIT_DATA as usize) as usize;
     let dused = vm.vm_dused.load(Ordering::Relaxed);
     if limit < size || limit - size < ptoa(dused as usize) {
         return Err(Errno::ENOMEM);
@@ -261,7 +274,7 @@ fn data_limit_check(vm: &Vmspace, size: usize) -> Result<(), Errno> {
 /// - size: size of the mapping
 /// - fd: fd of the file we want to map
 /// - off: offset within the file
-pub fn sys_mquery(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
+pub fn sys_mquery<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     let prot = a.prot;
     let mut flags = 0;
 
@@ -287,51 +300,65 @@ pub fn sys_mquery(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     }
 
     // getvnode(p, fd, &fp), then FRELE(fp, p) after the query.
-    let mut result = Err(Errno::EINVAL);
-    vmproc().with_fd_vnode(a.fd, &mut |vp, _| {
-        getvnode(vp)?;
-        result = query(a.pos);
-        Ok(())
-    })?;
+    let fp = getvnode(p, a.fd)?;
+    let result = query(a.pos);
+    let _ = fp.frele(Some(p));
     result
 }
 
-/// `getvnode(p, fd, &fp)`'s checks of the file `fd_getfile` found (`EBADF` without one is the
-/// bridge's): `EINVAL` when it is not a vnode (`DTYPE_VNODE`), `EBADF` when the vnode was
-/// cleaned out (`VBAD`, `vfs_syscalls.c`).
-fn getvnode(vp: Option<&'static dyn VnodeOps>) -> Result<(), Errno> {
-    match vp {
-        None => Err(Errno::EINVAL),
-        Some(vp) if vp.vtype() == VType::VBAD => Err(Errno::EBADF),
-        Some(_) => Ok(()),
+/// `getvnode(p, fd, &fp)` (`vfs_syscalls.c`): the file at descriptor `fd` of `p`, which must
+/// be a vnode's: `EBADF` without one, `EINVAL` when it is not a vnode (`DTYPE_VNODE`),
+/// `EBADF` when the vnode was cleaned out (`VBAD`); the reference given back (`FRELE`) on
+/// each error.
+fn getvnode<G: ProcGlue>(p: &Thread<G>, fd: i32) -> Result<FileRef<G::FileGlue>, Errno> {
+    let Some(fp) = fd_getfile(p.fd(), fd) else {
+        return Err(Errno::EBADF);
+    };
+    let error = match file_vnode::<G>(&fp) {
+        None => Errno::EINVAL,
+        Some(vp) if vp.vtype() == VType::VBAD => Errno::EBADF,
+        Some(_) => return Ok(fp),
+    };
+    let _ = fp.frele(Some(p));
+    Err(error)
+}
+
+/// `(struct vnode *)fp->f_data` of a `DTYPE_VNODE` file, `None` for any other file.
+fn file_vnode<G: ProcGlue>(fp: &FileRef<G::FileGlue>) -> Option<&'static dyn VnodeOps> {
+    if fp.f_type() != DTYPE_VNODE {
+        return None;
     }
+    fp.data().and_then(<G::FileGlue as FileGlue>::vnode_ops)
 }
 
 /// `uvm_wxcheck`: W^X violations are only allowed on permitted filesystems.
-fn uvm_wxcheck(call: &str) -> Result<(), Errno> {
-    let p = vmproc();
-    if p.wx_allowed() {
+fn uvm_wxcheck<G: ProcGlue>(p: &Thread<G>, call: &str) -> Result<(), Errno> {
+    let pr = p.process();
+    let wxallowed = G::textvp_wxallowed(pr);
+
+    if wxallowed && pr.ps_iflags.get() & PSI_WXNEEDED != 0 {
         return Ok(());
     }
 
     if UVM_WXABORT.load(Ordering::Relaxed) != 0 {
         kernel_lock(); // KERNEL_LOCK()
         // Report W^X failures
-        if p.wxcounter_inc() == 0 {
-            let mut comm = [0u8; 24];
-            let n = p.comm(&mut comm);
-            p.log(
+        let n = pr.ps_wxcounter.get();
+        pr.ps_wxcounter.set(n.wrapping_add(1));
+        if n == 0 {
+            let comm = pr.comm();
+            hal::prf::log(
                 LOG_NOTICE,
                 format_args!(
                     "{}({}): {} W^X violation\n",
-                    core::str::from_utf8(&comm[..n]).unwrap_or("?"),
-                    p.pid(),
+                    core::str::from_utf8(&comm).unwrap_or("?"),
+                    pr.ps_pid,
                     call
                 ),
             );
         }
         // Send uncatchable SIGABRT for coredump
-        p.sigexit(SIGABRT);
+        crate::sig::sigexit(p, SIGABRT);
     }
 
     Err(Errno::ENOTSUP)
@@ -343,7 +370,7 @@ fn uvm_wxcheck(call: &str) -> Result<(), Errno> {
 /// - if `MAP_FIXED`, offset and address must have remainder mod `PAGE_SIZE`
 /// - if address isn't page aligned the mapping starts at `trunc_page(addr)` and the return
 ///   value is adjusted up by the page offset.
-pub fn sys_mmap(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
+pub fn sys_mmap<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     let mut addr = a.addr;
     let prot = a.prot;
     let mut flags = a.flags;
@@ -351,11 +378,11 @@ pub fn sys_mmap(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     // Validate the flags.
     mmap_check(a)?;
     if prot & (PROT_WRITE | PROT_EXEC) == (PROT_WRITE | PROT_EXEC) {
-        uvm_wxcheck("mmap")?;
+        uvm_wxcheck(p, "mmap")?;
     }
     mmap_check_flags(a)?;
 
-    vmproc().pledge_protexec(prot)?;
+    G::pledge_protexec(p, prot)?;
 
     // align file position and save offset. adjust size.
     let (pos, size, pageoff) = align_addr(a.pos as usize, a.len)?;
@@ -371,16 +398,21 @@ pub fn sys_mmap(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     // check for file mappings (i.e. not anonymous) and verify file.
     if flags & MAP_ANON == 0 {
         kernel_lock(); // KERNEL_LOCK()
-        let mut mapping = Err(Errno::ENODEV);
-        let got = vmproc().with_fd_vnode(a.fd, &mut |vp, fflag| {
-            mapping = match vp {
-                None => Err(Errno::ENODEV), // only mmap vnodes!
-                Some(vp) => mmap_vnode(vm, vp, fflag, &mut addr, size, prot, &mut flags, pos),
-            };
-            Ok(())
-        });
+        let Some(fp) = fd_getfile(p.fd(), a.fd) else {
+            kernel_unlock(); // out: KERNEL_UNLOCK()
+            return Err(Errno::EBADF);
+        };
+        let mapping = match file_vnode::<G>(&fp) {
+            None => Err(Errno::ENODEV), // only mmap vnodes!
+            Some(vp) => {
+                let fflag = fp.flag() as u32;
+                mmap_vnode(p, vm, vp, fflag, &mut addr, size, prot, &mut flags, pos)
+            }
+        };
+        // FRELE(fp, p) (the /dev/zero case drops it before is_anon, the others at out:),
+        // then KERNEL_UNLOCK().
+        let _ = fp.frele(Some(p));
         kernel_unlock(); // KERNEL_UNLOCK()
-        got?;
         match mapping? {
             // remember to add offset
             VnodeMapping::Mapped => return Ok(addr + pageoff),
@@ -400,7 +432,7 @@ pub fn sys_mmap(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     }
 
     if prot != PROT_NONE || flags & MAP_SHARED != 0 {
-        data_limit_check(vm, size)?;
+        data_limit_check(p, vm, size)?;
     }
 
     // We've been treating (MAP_SHARED|MAP_PRIVATE) == 0 as MAP_PRIVATE, so make that clear.
@@ -409,8 +441,17 @@ pub fn sys_mmap(vm: &Vmspace, a: MmapArgs) -> Result<usize, Errno> {
     }
 
     let maxprot = PROT_MASK;
-    let locklimit = vmproc().lim_cur(RLIMIT_MEMLOCK) as usize;
-    uvm_mmapanon(&vm.vm_map, &mut addr, size, prot, maxprot, flags, locklimit)?;
+    let locklimit = p.lim_cur(RLIMIT_MEMLOCK as usize) as usize;
+    uvm_mmapanon(
+        &vm.vm_map,
+        &mut addr,
+        size,
+        prot,
+        maxprot,
+        flags,
+        locklimit,
+        Some(&p.p_ru),
+    )?;
 
     // remember to add offset
     Ok(addr + pageoff)
@@ -478,7 +519,8 @@ fn mmap_check_fixed(addr: usize, size: usize) -> Result<(), Errno> {
 /// lock): checks the vnode, settles the sharing type and `maxprot`, and maps through
 /// `uvm_mmapfile`. `pos` and `size` are page aligned; `fflag` is the file's `f_flag`.
 #[allow(clippy::too_many_arguments)] // the C's locals the two halves share
-fn mmap_vnode(
+fn mmap_vnode<G: ProcGlue>(
+    p: &Thread<G>,
     vm: &Vmspace,
     vp: &'static dyn VnodeOps,
     fflag: u32,
@@ -523,11 +565,20 @@ fn mmap_vnode(
     // now check protection
     let maxprot = mmap_maxprot(fflag, prot, *flags, || vp.attr_flags())?;
     if *flags & __MAP_NOFAULT != 0 || (*flags & MAP_PRIVATE != 0 && prot & PROT_WRITE != 0) {
-        data_limit_check(vm, size)?;
+        data_limit_check(p, vm, size)?;
     }
-    let locklimit = vmproc().lim_cur(RLIMIT_MEMLOCK) as usize;
+    let locklimit = p.lim_cur(RLIMIT_MEMLOCK as usize) as usize;
     uvm_mmapfile(
-        &vm.vm_map, addr, size, prot, maxprot, *flags, vp, pos, locklimit,
+        &vm.vm_map,
+        addr,
+        size,
+        prot,
+        maxprot,
+        *flags,
+        vp,
+        pos,
+        locklimit,
+        Some(&p.p_ru),
     )?;
     Ok(VnodeMapping::Mapped)
 }
@@ -645,32 +696,38 @@ pub fn sys_munmap(vm: &Vmspace, addr: usize, size: usize) -> Result<(), Errno> {
 }
 
 /// `sys_mprotect`: the mprotect system call.
-pub fn sys_mprotect(vm: &Vmspace, addr: usize, size: usize, prot: VmProt) -> Result<(), Errno> {
+pub fn sys_mprotect<G: ProcGlue>(
+    p: &Thread<G>,
+    vm: &Vmspace,
+    addr: usize,
+    size: usize,
+    prot: VmProt,
+) -> Result<(), Errno> {
     if prot & PROT_MASK != prot {
         return Err(Errno::EINVAL);
     }
     if prot & (PROT_WRITE | PROT_EXEC) == (PROT_WRITE | PROT_EXEC) {
-        uvm_wxcheck("mprotect")?;
+        uvm_wxcheck(p, "mprotect")?;
     }
 
-    vmproc().pledge_protexec(prot)?;
+    G::pledge_protexec(p, prot)?;
 
     // align the address to a page boundary, and adjust the size accordingly
     let (start, end) = align_range(addr, size)?;
 
-    uvm_map_protect(&vm.vm_map, start, end, prot, 0, false, true)
+    uvm_map_protect(p, &vm.vm_map, start, end, prot, 0, false, true)
 }
 
 /// `sys_pinsyscalls`. The caller is required to normalize base,len to the minimum .text
 /// region, and adjust pintable offsets relative to that base.
-pub fn sys_pinsyscalls(
+pub fn sys_pinsyscalls<G: ProcGlue>(
+    p: &Thread<G>,
     vm: &Vmspace,
     base: usize,
     len: usize,
     pins: UserPtr<u32>,
     npins: i32,
 ) -> Result<(), Errno> {
-    let p = vmproc();
     let map = &vm.vm_map;
 
     // Must be called before any threads are created
@@ -701,7 +758,12 @@ pub fn sys_pinsyscalls(
     // Range-check pintable offsets
     pins_check(&table, len)?;
 
-    p.pin_table_set(base, base + len, table);
+    // pr->ps_libcpin = { base, base + len, pins, npins }
+    drop(p.process().ps_libcpin.replace(crate::proc::PinTable {
+        start: base,
+        end: base + len,
+        pins: Some(table),
+    }));
 
     // PMAP_CHECK_COPYIN: not configured.
     Ok(())
@@ -789,7 +851,12 @@ fn wire_limits_ok(size: usize, wired: i64, locklimit: u64) -> bool {
 }
 
 /// `sys_mlock`: memory lock.
-pub fn sys_mlock(vm: &Vmspace, addr: usize, size: usize) -> Result<(), Errno> {
+pub fn sys_mlock<G: ProcGlue>(
+    p: &Thread<G>,
+    vm: &Vmspace,
+    addr: usize,
+    size: usize,
+) -> Result<(), Errno> {
     // align address to a page boundary and adjust size accordingly
     let (start, end) = align_range(addr, size)?;
     let size = end - start;
@@ -797,14 +864,14 @@ pub fn sys_mlock(vm: &Vmspace, addr: usize, size: usize) -> Result<(), Errno> {
     let map = &vm.vm_map;
     // pmap_wired_count exists on both machines: the limit is lim_cur(RLIMIT_MEMLOCK) itself
     // (an infinite one is a limit no wiring passes).
-    let limit = vmproc().lim_cur(RLIMIT_MEMLOCK);
+    let limit = p.lim_cur(RLIMIT_MEMLOCK as usize);
     if !wire_limits_ok(size, 0, 0)
         || (size + ptoa(map.pmap().wired_count().max(0) as usize)) as u64 > limit
     {
         return Err(Errno::EAGAIN);
     }
 
-    uvm_map_pageable(map, start, end, false).map_err(|_| Errno::ENOMEM)
+    uvm_map_pageable(map, start, end, false, Some(&p.p_ru)).map_err(|_| Errno::ENOMEM)
 }
 
 /// `sys_munlock`: unlock wired pages.
@@ -812,19 +879,19 @@ pub fn sys_munlock(vm: &Vmspace, addr: usize, size: usize) -> Result<(), Errno> 
     // align address to a page boundary, and adjust size accordingly
     let (start, end) = align_range(addr, size)?;
 
-    // pmap_wired_count exists: no suser check.
-    uvm_map_pageable(&vm.vm_map, start, end, true).map_err(|_| Errno::ENOMEM)
+    // pmap_wired_count exists: no suser check. An unwiring takes no fault: no counters.
+    uvm_map_pageable(&vm.vm_map, start, end, true, None).map_err(|_| Errno::ENOMEM)
 }
 
 /// `sys_mlockall`: lock all pages mapped into an address space.
-pub fn sys_mlockall(vm: &Vmspace, flags: i32) -> Result<(), Errno> {
+pub fn sys_mlockall<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, flags: i32) -> Result<(), Errno> {
     if flags == 0 || flags & !(MCL_CURRENT | MCL_FUTURE) != 0 {
         return Err(Errno::EINVAL);
     }
 
     // pmap_wired_count exists: no suser check.
-    let limit = vmproc().lim_cur(RLIMIT_MEMLOCK) as usize;
-    match uvm_map_pageable_all(&vm.vm_map, flags, limit) {
+    let limit = p.lim_cur(RLIMIT_MEMLOCK as usize) as usize;
+    match uvm_map_pageable_all(&vm.vm_map, flags, limit, Some(&p.p_ru)) {
         Err(e) if e != Errno::ENOMEM => Err(Errno::EAGAIN),
         r => r,
     }
@@ -832,17 +899,20 @@ pub fn sys_mlockall(vm: &Vmspace, flags: i32) -> Result<(), Errno> {
 
 /// `sys_munlockall`: unlock all pages mapped into an address space.
 pub fn sys_munlockall(vm: &Vmspace) -> Result<(), Errno> {
-    let _ = uvm_map_pageable_all(&vm.vm_map, 0, 0);
+    // An unwiring takes no fault: no counters.
+    let _ = uvm_map_pageable_all(&vm.vm_map, 0, 0, None);
     Ok(())
 }
 
-/// `uvm_mmaplock`: common code for mmapanon and mmapfile to lock a mmaping.
+/// `uvm_mmaplock`: common code for mmapanon and mmapfile to lock a mmaping; the wiring's
+/// faults count on `ru` (the caller's `p_ru`).
 pub fn uvm_mmaplock(
     map: &VmMap,
     addr: &mut usize,
     size: usize,
     prot: VmProt,
     locklimit: usize,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     // POSIX 1003.1b -- if our address space was configured to lock all future mappings,
     // wire the one we just made.
@@ -865,7 +935,7 @@ pub fn uvm_mmaplock(
         return Err(Errno::ENOMEM);
     }
     // uvm_map_pageable_locked consumes the guard: the map is unlocked on return.
-    if let Err(e) = uvm_map_pageable_locked(guard, *addr, *addr + size, false) {
+    if let Err(e) = uvm_map_pageable_locked(guard, *addr, *addr + size, false, ru) {
         // unmap the region!
         uvm_unmap(map, *addr, *addr + size);
         kernel_unlock(); // KERNEL_UNLOCK()
@@ -903,7 +973,9 @@ fn mmap_inherit(flags: i32) -> i32 {
     }
 }
 
-/// `uvm_mmapanon`: internal version of mmap for anons, used by `sys_mmap`.
+/// `uvm_mmapanon`: internal version of mmap for anons, used by `sys_mmap`; a wiring's
+/// faults count on `ru` (`p->p_ru`).
+#[allow(clippy::too_many_arguments)] // the C's signature
 pub fn uvm_mmapanon(
     map: &VmMap,
     addr: &mut usize,
@@ -912,6 +984,7 @@ pub fn uvm_mmapanon(
     maxprot: VmProt,
     flags: i32,
     locklimit: usize,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     let advice = MADV_NORMAL;
     let mut align = 0; // userland page size
@@ -940,7 +1013,7 @@ pub fn uvm_mmapanon(
     let uvmflag = uvm_mapflag(prot, maxprot, mmap_inherit(flags), advice, uvmflag);
 
     uvm_mapanon(map, addr, size, align, uvmflag)?;
-    uvm_mmaplock(map, addr, size, prot, locklimit)
+    uvm_mmaplock(map, addr, size, prot, locklimit, ru)
 }
 
 /// `uvm_mmapfile`: internal version of mmap for non-anons, used by `sys_mmap`. The caller
@@ -956,6 +1029,7 @@ pub fn uvm_mmapfile(
     vp: &'static dyn VnodeOps,
     foff: Voff,
     locklimit: usize,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     let advice = MADV_NORMAL;
     let align = 0; // userland page size
@@ -1014,7 +1088,7 @@ pub fn uvm_mmapfile(
     let uvmflag = uvm_mapflag(prot, maxprot, mmap_inherit(flags), advice, uvmflag);
 
     match uvm_map(map, addr, size, Some(uobj.clone()), foff, align, uvmflag) {
-        Ok(()) => uvm_mmaplock(map, addr, size, prot, locklimit),
+        Ok(()) => uvm_mmaplock(map, addr, size, prot, locklimit, ru),
         Err(error) => {
             // errors: first detach from the uobj, if any.
             uobj.detach();
@@ -1089,7 +1163,7 @@ pub fn kbind_blocks(
 /// `sys_kbind`'s security check under `ps_mtx`: `paramp` (0 for `NULL`) and the cookie
 /// against the process's slot, at the caller's `pc`. Initialises or disables the slot as the
 /// C does; `true` when `SIGILL` is due.
-fn kbind_check(slot: &mut super::proc::KbindSlot, paramp: usize, pc: usize, cookie: u64) -> bool {
+fn kbind_check(slot: &mut KbindSlot, paramp: usize, pc: usize, cookie: u64) -> bool {
     if paramp == 0 {
         // ld.so disables kbind() when lazy binding is disabled
         if slot.addr == 0 {
@@ -1110,13 +1184,14 @@ fn kbind_check(slot: &mut super::proc::KbindSlot, paramp: usize, pc: usize, cook
 
 /// `sys_kbind`: the lazy-binding update of `ld.so`: writes the new PLT/GOT data into the
 /// caller's (possibly read-only) text through a temporary kernel mapping.
-pub fn sys_kbind(
+pub fn sys_kbind<G: ProcGlue>(
+    p: &Thread<G>,
     vm: &Vmspace,
     paramp: UserPtr<u8>,
     psize: usize,
     cookie: u64,
 ) -> Result<(), Errno> {
-    let p = vmproc();
+    let pr = p.process();
     let param_addr = paramp.addr();
 
     // If paramp is NULL and we're uninitialized, disable the syscall for the process. Raise
@@ -1124,14 +1199,24 @@ pub fn sys_kbind(
     //
     // If paramp is non-NULL and we're uninitialized, do initialization. Otherwise, do
     // security checks and raise SIGILL on failure.
-    let pc = p.pc();
-    let mut sigill = false;
-    p.with_kbind(&mut |slot| sigill = kbind_check(slot, param_addr, pc, cookie));
+    let pc = hal::trap::proc_pc(); // PROC_PC(p): p is the running thread
+    let sigill = {
+        let g_pr = pr.ps_mtx.lock(); // mtx_enter(&pr->ps_mtx)
+        let mut slot = KbindSlot {
+            addr: pr.ps_kbind_addr.get(),
+            cookie: pr.ps_kbind_cookie.get() as u64,
+        };
+        let sigill = kbind_check(&mut slot, param_addr, pc, cookie);
+        pr.ps_kbind_addr.set(slot.addr);
+        pr.ps_kbind_cookie.set(slot.cookie as i64);
+        drop(g_pr); // mtx_leave(&pr->ps_mtx)
+        sigill
+    };
 
     // Raise SIGILL if something is off.
     if sigill {
         kernel_lock(); // KERNEL_LOCK()
-        p.sigexit(SIGILL);
+        crate::sig::sigexit(p, SIGILL);
     }
 
     // We're done if we were disabling the syscall.
@@ -1293,24 +1378,135 @@ mod tests {
         assert_eq!(mmap_check_fixed(0x10_0000, PAGE_SIZE), Ok(()));
     }
 
-    /// mquery's `getvnode`: no file `EBADF` (the bridge's), not a vnode `EINVAL`, a vnode
-    /// `vgone` cleaned out `EBADF`, through the process double's descriptors.
+    /// mquery's `getvnode` on a thread's own descriptors: no file `EBADF`, not a vnode
+    /// `EINVAL`, a vnode `vgone` cleaned out `EBADF`, a vnode the file; every refusal gives
+    /// its reference back (`FRELE`), so each file is held by its slot alone afterwards.
     #[test]
     fn mquery_takes_a_vnode_as_getvnode_does() {
-        use crate::testutil;
-        let good = testutil::mem_vnode(std::vec![0; 16]);
+        use crate::event::tests::open_data;
+        use crate::testutil::{self, TestFileData};
+        let p = crate::vm::map::tests::thread(91);
+        let good: &'static dyn VnodeOps = testutil::mem_vnode(std::vec![0; 16]);
         let bad = testutil::mem_vnode(std::vec![0; 16]);
         bad.set_vtype(VType::VBAD);
-        testutil::vmproc_with(|s| {
-            s.files.push((3, None, FREAD));
-            s.files.push((4, Some(good), FREAD));
-            s.files.push((5, Some(bad), FREAD));
-        });
-        let check = |fd| vmproc().with_fd_vnode(fd, &mut |vp, _| getvnode(vp));
-        assert_eq!(check(2), Err(Errno::EBADF), "no such descriptor");
-        assert_eq!(check(3), Err(Errno::EINVAL), "not a vnode");
-        assert_eq!(check(4), Ok(()));
-        assert_eq!(check(5), Err(Errno::EBADF), "VBAD");
+        let vnode = |vp: &'static dyn VnodeOps| TestFileData {
+            vnode: Some(vp),
+            ..TestFileData::default()
+        };
+        let plain = open_data(p, crate::file::DTYPE_PIPE, TestFileData::default());
+        let gfd = open_data(p, DTYPE_VNODE, vnode(good));
+        let bfd = open_data(p, DTYPE_VNODE, vnode(bad));
+        let check = |fd| getvnode(p, fd).map(|fp| fp.frele(Some(p)).unwrap());
+        assert_eq!(check(gfd + 10), Err(Errno::EBADF), "no such descriptor");
+        assert_eq!(check(plain), Err(Errno::EINVAL), "not a vnode");
+        assert_eq!(check(gfd), Ok(()));
+        assert_eq!(check(bfd), Err(Errno::EBADF), "VBAD");
+        for fd in [plain, gfd, bfd] {
+            let fp = fd_getfile(p.fd(), fd).unwrap();
+            assert_eq!(fp.f_count(), 2, "descriptor {fd}: the slot's and this one");
+            fp.frele(Some(p)).unwrap();
+        }
+    }
+
+    /// `sys_mmap` and `sys_mprotect` ask in the C's order: the protection's bits, then
+    /// `uvm_wxcheck` for a writable and executable request (the text's mount `wxallowed`
+    /// and `PSI_WXNEEDED`, both, or `ENOTSUP`), then the flags, then `pledge_protexec` for
+    /// any `PROT_EXEC` (the glue's answer, `kern_pledge` in `bsd`); the limits are the
+    /// thread's own.
+    #[test]
+    fn the_w_x_check_and_pledge_are_asked_in_the_cs_order() {
+        use crate::testutil;
+        let _g = crate::vm::map::tests::setup();
+        let vm = crate::vm::map::tests::user_vmspace();
+        let p = crate::vm::map::tests::thread(92);
+        let pr = p.process();
+        let rw = PROT_READ | PROT_WRITE;
+        let rx = PROT_READ | PROT_EXEC;
+        let rwx = rw | PROT_EXEC;
+        let anon = MAP_ANON | MAP_PRIVATE;
+        let mmap = |prot, flags| sys_mmap(p, &vm, args(0, PAGE_SIZE, prot, flags, -1, 0));
+
+        testutil::set_pledge_protexec(true);
+        testutil::set_textvp_wxallowed(false);
+        assert_eq!(mmap(rwx, anon), Err(Errno::ENOTSUP), "W^X before pledge");
+        assert_eq!(
+            mmap(rwx, 0x4000_0000),
+            Err(Errno::ENOTSUP),
+            "W^X before the flags"
+        );
+        testutil::set_textvp_wxallowed(true);
+        assert_eq!(
+            mmap(rwx, anon),
+            Err(Errno::ENOTSUP),
+            "a wxallowed mount alone"
+        );
+        pr.ps_iflags.set(pr.ps_iflags.get() | PSI_WXNEEDED);
+        assert_eq!(mmap(rwx, 0x4000_0000), Err(Errno::EINVAL), "then the flags");
+        assert_eq!(mmap(rwx, anon), Err(Errno::EPERM), "then pledge");
+        assert_eq!(mmap(rx, anon), Err(Errno::EPERM), "any PROT_EXEC");
+        pr.ps_iflags.set(pr.ps_iflags.get() & !PSI_WXNEEDED);
+        testutil::set_textvp_wxallowed(false);
+        let a = mmap(rw, anon).expect("no PROT_EXEC: pledge allows it");
+
+        assert_eq!(
+            sys_mprotect(p, &vm, a, PAGE_SIZE, rwx),
+            Err(Errno::ENOTSUP),
+            "mprotect's W^X"
+        );
+        assert_eq!(
+            sys_mprotect(p, &vm, a, PAGE_SIZE, rx),
+            Err(Errno::EPERM),
+            "mprotect's pledge"
+        );
+        testutil::set_pledge_protexec(false);
+        assert_eq!(sys_mprotect(p, &vm, a, PAGE_SIZE, rx), Ok(()));
+        assert_eq!(
+            pr.ps_wxcounter.get(),
+            0,
+            "kern.wxabort is 0: nothing counted"
+        );
+
+        // RLIMIT_DATA is the thread's: one page fits, then none does.
+        let mut l = crate::resource::Plimit::new();
+        l.pl_rlimit[RLIMIT_DATA as usize].rlim_cur = PAGE_SIZE as u64;
+        drop(pr.set_limit(crate::resource::PlimitRef::new(l)));
+        assert_eq!(mmap(rw, anon), Err(Errno::ENOMEM), "past the data limit");
+        let _ = super::super::map::uvmspace_free(vm);
+    }
+
+    /// `kbind(2)`'s check-and-set runs on the thread's process under `ps_mtx`: the first
+    /// call records the call site and the cookie, a call with another cookie is `SIGILL`
+    /// (not exercised: `sigexit` ends the thread), a `NULL` block on a fresh process
+    /// disables it.
+    #[test]
+    fn kbind_records_its_caller_in_the_process() {
+        let _g = crate::vm::map::tests::setup();
+        let vm = crate::vm::map::tests::user_vmspace();
+        let p = crate::vm::map::tests::thread(94);
+        let pr = p.process();
+        hal::trap::set_user_regs(0x4_1000, 0);
+        // A NULL block on a fresh process disables kbind.
+        assert_eq!(sys_kbind(p, &vm, UserPtr::new(0), 0, 0), Ok(()));
+        assert_eq!(pr.ps_kbind_addr.get(), BOGO_PC);
+        // A second process: its first non-NULL call records the pc and the cookie, and a
+        // bad size is EINVAL after the check.
+        let q = crate::event::tests::thread_of(95);
+        let qr = q.process();
+        assert_eq!(
+            sys_kbind(q, &vm, UserPtr::new(testutil_user(0x40)), 1, 77),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            (qr.ps_kbind_addr.get(), qr.ps_kbind_cookie.get()),
+            (0x4_1000, 77)
+        );
+        hal::trap::set_user_regs(0, 0);
+        let _ = super::super::map::uvmspace_free(vm);
+    }
+
+    /// An address in the user-copy double's memory.
+    fn testutil_user(off: usize) -> usize {
+        crate::testutil::USER_BASE + 0x4000 + off
     }
 
     #[test]
@@ -1413,7 +1609,6 @@ mod tests {
     /// kbind's check-and-set of the slot, the C's four cases.
     #[test]
     fn kbind_checks_its_caller() {
-        use super::super::proc::KbindSlot;
         let mut s = KbindSlot::default();
         assert!(
             !kbind_check(&mut s, 0, 0x500, 0),

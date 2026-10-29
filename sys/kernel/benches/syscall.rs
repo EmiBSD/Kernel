@@ -330,6 +330,7 @@ fn main() {
         f: Box::new(prim(|| {
             let mut ie = t.p_spinentry.get();
             let ok = kernel::vm::map::uvm_map_inentry(
+                p,
                 &vm_ref.vm_map,
                 &mut ie,
                 black_box(SP),

@@ -5862,7 +5862,7 @@ kind = "split"
 rust = "sys/kern/vm_bsd.rs"
 lz = ["sys/uvm/uvm_mmap.rs", "sys/uvm/uvm_unix.rs", "sys/uvm/uvm_glue.rs", "sys/uvm/uvm_meter.rs", "sys/uvm/uvm_init.rs", "sys/uvm/uvm_page.rs", "sys/uvm/uvm_vnode.rs", "sys/uvm/uvm_km.rs"]
 status = "redesigned"
-notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd's only file of the subsystem (forbid, 0 unsafe): BsdVmProc (VmProc over curproc) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp as UvmexpCopy::to_ne_bytes, nkmempages, averunnable, allproc), registered by uvm_init; the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (VM_ENTRIES = KernelApi::vm, mi_syscall on the same row); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits, uvmspace_exec's install of a new vmspace, fork1's share-or-copy, the u-area with the legacy pointer, uvm_sysctl with sysctl(2)'s arguments, VmUio (a uio as UioMove for uvm_io); from sys/uvm/uvm_page.rs: the segment policy and uvm_page_physload's lines, uvm_page_init with BsdBufCacheStats, uvm_pagealloc with (obj, anon), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump, uvm_pmr_print; from sys/uvm/uvm_vnode.rs: impl VnodeOps for Vnode, BsdSysInfo (gone at N5.0: the pager reads kernel::tc and kernel::reboot), uvn_attach and the uvm_vnp_* wrappers; from sys/uvm/uvm_km.rs: kp_dma*, km_alloc/km_free with the legacy pointer, vm_min_kernel_address; host tests: the km wrappers, a pinsyscalls table honoured by pin_check, CTL_VM through the kernel"
+notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd's only file of the subsystem (forbid, 0 unsafe): BsdVmProc (VmProc over curproc) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp as UvmexpCopy::to_ne_bytes, nkmempages, averunnable, allproc), registered by uvm_init; the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (VM_ENTRIES = KernelApi::vm, mi_syscall on the same row); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits, uvmspace_exec's install of a new vmspace, fork1's share-or-copy, the u-area with the legacy pointer, uvm_sysctl with sysctl(2)'s arguments, VmUio (a uio as UioMove for uvm_io); from sys/uvm/uvm_page.rs: the segment policy and uvm_page_physload's lines, uvm_page_init with BsdBufCacheStats, uvm_pagealloc with (obj, anon), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump, uvm_pmr_print; from sys/uvm/uvm_vnode.rs: impl VnodeOps for Vnode, BsdSysInfo (gone at N5.0: the pager reads kernel::tc and kernel::reboot), uvn_attach and the uvm_vnp_* wrappers; from sys/uvm/uvm_km.rs: kp_dma*, km_alloc/km_free with the legacy pointer, vm_min_kernel_address; host tests: the km wrappers, a pinsyscalls table honoured by pin_check, CTL_VM through the kernel; N5.0: BsdVmProc gone (the adapters pass the thread to kernel::vm), the three bsd calls on BsdProcGlue (pledge_protexec, textvp_wxallowed) and BsdFileGlue (vnode_ops)"
 
 [[module]]
 rust = "sys/kern/sys_socket.rs"
@@ -11331,7 +11331,7 @@ rust = "sys/kernel/vm/map.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_map.rs", "sys/uvm/uvm_extern.rs", "sys/uvm/uvm.rs", "sys/uvm/uvm_amap.rs", "sys/uvm/uvm_anon.rs", "sys/uvm/uvm_fault.rs"]
 status = "redesigned"
-notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries are PoolBoxes owned by an augmented hal::owned::OwnedTree (or a dead OwnedList), the static entries a StaticArena behind their own BoxPool, vmmpepl/vmmpekpl kept; scalars relaxed atomics written through the split write guard's EntryWrite, the two handles (object, aref) one Guarded<Handles> keyed to the map lock (part 1), the state (tree, selectors, brk/stack) a Guarded<MapState> (part 0) keyed at uvm_map_setup; vm_map_lock & co. as MapGuard/MapWriteGuard/MapBusy values over the rwlock or the INTRSAFE mutex with busy/nbusy under flags_lock and the timestamp; entries named by their start across tree changes; busy walkers under short read locks; VmspaceVars in the map, Vmspace derefs to them, VmspaceRef a PoolArc of vmsppl (vmspace0 too); uvm_map_pageable_locked (UVM_LK_ENTER, consumes) and _keep (ENTER|EXIT); RLIMIT_DATA in uvm_map_protect over VmProc (LZ's unported! closed); impl FaultMap/FaultMapGuard/FaultEntry. Dead until the flip (S2): bsd's sys/uvm keeps every LZ item, so no fn rows yet (S2 lists them)"
+notes = "N3.5 S1-R1: struct vm_map/vm_map_entry/vmspace in the kernel: entries are PoolBoxes owned by an augmented hal::owned::OwnedTree (or a dead OwnedList), the static entries a StaticArena behind their own BoxPool, vmmpepl/vmmpekpl kept; scalars relaxed atomics written through the split write guard's EntryWrite, the two handles (object, aref) one Guarded<Handles> keyed to the map lock (part 1), the state (tree, selectors, brk/stack) a Guarded<MapState> (part 0) keyed at uvm_map_setup; vm_map_lock & co. as MapGuard/MapWriteGuard/MapBusy values over the rwlock or the INTRSAFE mutex with busy/nbusy under flags_lock and the timestamp; entries named by their start across tree changes; busy walkers under short read locks; VmspaceVars in the map, Vmspace derefs to them, VmspaceRef a PoolArc of vmsppl (vmspace0 too); uvm_map_pageable_locked (UVM_LK_ENTER, consumes) and _keep (ENTER|EXIT); RLIMIT_DATA in uvm_map_protect over VmProc (LZ's unported! closed; N5.0: over the thread uvm_map_protect takes, uvm_map_inentry takes the pinned thread it signals, the uvm_map_pageable family the wiring's ru); impl FaultMap/FaultMapGuard/FaultEntry. Dead until the flip (S2): bsd's sys/uvm keeps every LZ item, so no fn rows yet (S2 lists them)"
 [[module.fn]]
 lz = "sys/uvm/uvm_extern.rs::Vmspace::copy_startcopy_from"
 native = ["VmspaceVars::copy_startcopy_from"]
@@ -11550,21 +11550,21 @@ kind = "merged"
 [[extra]]
 rust = "sys/kernel/vm/proc.rs"
 crate = "kernel"
-reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly)"
+reason = "N3.5 S1: the VmProc bridge (bridges.toml), curproc as uvm asks about it until Proc moves (N4): the trait, its registered slot and the RLIMIT_*/LOG_NOTICE/BOGO_PC numbers; no LZ source (LZ's uvm files read struct proc directly). N5.0: the bridge, its slot and vmproc() are gone (the vm entry points take the thread, the fault the counters' record): the numbers and KbindSlot (sys_kbind's view of ps_kbind_addr/cookie under ps_mtx) remain"
 
 [[module]]
 rust = "sys/kernel/vm/mmap.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_mmap.rs"]
 status = "redesigned"
-notes = "N3.5 S1 (live since the flip, S2): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's, curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
+notes = "N3.5 S1 (live since the flip, S2): the 14 mmap system calls and kbind as functions of &Vmspace and typed arguments (MmapArgs), every check the C's (N5.0: the thread passed, sys_*<G: ProcGlue>(p, vm, ..), its fields read in place, pledge_protexec/textvp_wxallowed on ProcGlue, the vnode on FileGlue::vnode_ops; before:), curproc's facts through VmProc (pledge_protexec, the W^X exemption, ps_wxcounter and log, sigexit, lim_cur, P_HASSIBLING, with_fd_vnode for the file half under the kernel lock, with_kbind under ps_mtx, pin_table_set with an MArray<u32>), the vnode's v_type/iszerodev/va_flags through VnodeOps; kbind writes through km's KernelWindow (minted from uvm_map_extract's result); uvm_mmaplock hands its write guard to uvm_map_pageable_locked; the checks split into table-tested helpers (mmap_check_flags, mmap_check_fixed, mmap_maxprot, pins_count/pins_check, kbind_blocks, kbind_check, wire_limits_ok); UVM_WXABORT the kern.wxabort atomic; udv_attach kept unported"
 
 [[module]]
 rust = "sys/kernel/vm/unix.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_unix.rs"]
 status = "redesigned"
-notes = "N3.5 S1 (live since the flip, S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked)"
+notes = "N3.5 S1 (live since the flip, S2): sys_obreak(vm, nsize) and uvm_grow(vm, sp) over the vmspace's atomics and VmProc's limits; the core dump walk with &mut dyn FnMut callbacks over CoredumpSeg, each entry copied out (Seg) under a short read lock before any callback runs (the C walks unlocked); N5.0: sys_obreak, uvm_grow and uvm_coredump_walkmap take the thread (its limits, ps_sigcode, ps_timekeep, uprintf to its terminal), the VmProc bridge gone"
 [[module.fn]]
 lz = "sys/uvm/uvm_unix.rs::noop"
 native = []
@@ -11848,11 +11848,11 @@ kind = "dropped"
 reason = "the page array is PageSlot (Empty, DontCare, Page): a match"
 [[module.fn]]
 lz = "sys/uvm/uvm_fault.rs::ru_minflt_inc"
-native = ["sys/kernel/vm/map.rs::VmMap::note_minflt"]
+native = ["FaultInfo::minflt"]
 kind = "renamed"
 [[module.fn]]
 lz = "sys/uvm/uvm_fault.rs::ru_majflt_inc"
-native = ["sys/kernel/vm/map.rs::VmMap::note_majflt"]
+native = ["FaultInfo::majflt"]
 kind = "renamed"
 
 [[module]]

@@ -64,9 +64,10 @@
 //! LZ: sys/uvm/uvm_unix.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - The functions take the address space (`&Vmspace`) instead of a `struct proc *`: `bsd`'s
-//!   system call adapter passes `p->p_vmspace`; the current process's limits, `ps_sigcode`
-//!   and `ps_timekeep` come through the `VmProc` bridge (`vm::proc`).
+//! - The functions take the thread (`&Thread<G>`, the C's `struct proc *p`) and its address
+//!   space (`&Vmspace`, `p->p_vmspace`, which `bsd`'s system call adapter and the trap pass
+//!   beside it until the vmspace word is typed): the limits, `ps_sigcode` and `ps_timekeep`
+//!   are read off the thread (N5.0; the `VmProc` bridge answered for `curproc` before).
 //! - The core dump callbacks are `&mut dyn FnMut` closures (the C's `void *cookie` is what
 //!   they capture), the walk's over a `CoredumpSeg` (`vm::types`).
 //! - The C walks the map unlocked (the dumping process is single-threaded by then, and
@@ -77,7 +78,8 @@
 //!   callback runs. The next step looks up the entry after the last one's start. The same
 //!   entries in the same order, the same segments.
 //! - `sys_obreak`'s failure goes to the process's controlling terminal with `uprintf`
-//!   (`VmProc::uprintf`, N4.8b), as in the C (LZ printed it on the console: no `uprintf`).
+//!   (`kernel::tty::uprintf` of the thread's process, under the kernel lock `break` runs
+//!   with), as in the C (LZ printed it on the console: no `uprintf`).
 
 use core::sync::atomic::Ordering;
 
@@ -90,11 +92,12 @@ use hal::vm::param::{atop, ptoa, round_page};
 use super::amap::{Amap, AmapRef, amap_lookups};
 use super::fault::{FaultEntry, FaultMapGuard};
 use super::map::{UVM_ET_CONCEAL, VmMap, Vmspace, uvm_map, uvm_unmap};
-use super::proc::{RLIMIT_DATA, RLIMIT_STACK, vmproc};
+use super::proc::{RLIMIT_DATA, RLIMIT_STACK};
 use super::types::{
     CoredumpSeg, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_UNKNOWN_OFFSET, VmProt, uvm_mapflag,
 };
 use crate::assert::kpanic;
+use crate::proc::{ProcGlue, Thread};
 
 /// `WALK_CHUNK`.
 const WALK_CHUNK: usize = 32;
@@ -126,11 +129,11 @@ impl Seg {
     }
 }
 
-/// `sys_obreak`: set break, to `nsize`.
-pub fn sys_obreak(vm: &Vmspace, nsize: usize) -> Result<(), Errno> {
+/// `sys_obreak`: set break, to `nsize`, for `p` (its data limit, its terminal).
+pub fn sys_obreak<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, nsize: usize) -> Result<(), Errno> {
     let base = vm.vm_daddr.load(Ordering::Relaxed);
     let new = round_page(nsize);
-    if new < base || (new - base) as u64 > vmproc().lim_cur(RLIMIT_DATA) {
+    if new < base || (new - base) as u64 > p.lim_cur(RLIMIT_DATA as usize) {
         return Err(Errno::ENOMEM);
     }
 
@@ -158,11 +161,10 @@ pub fn sys_obreak(vm: &Vmspace, nsize: usize) -> Result<(), Errno> {
                 UVM_FLAG_FIXED | UVM_FLAG_COPYONW,
             ),
         ) {
-            vmproc().uprintf(format_args!(
-                "sbrk: grow {} failed, error = {}\n",
-                grow,
-                error.as_i32()
-            ));
+            crate::tty::uprintf(
+                p.process(),
+                format_args!("sbrk: grow {} failed, error = {}\n", grow, error.as_i32()),
+            );
             return Err(Errno::ENOMEM);
         }
         vm.vm_dsize.fetch_add(atop(grow) as i32, Ordering::Relaxed);
@@ -175,8 +177,8 @@ pub fn sys_obreak(vm: &Vmspace, nsize: usize) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `uvm_grow`: enlarge the "stack segment" to include sp.
-pub fn uvm_grow(vm: &Vmspace, sp: usize) {
+/// `uvm_grow`: enlarge the "stack segment" of `p` to include sp.
+pub fn uvm_grow<G: ProcGlue>(p: &Thread<G>, vm: &Vmspace, sp: usize) {
     // For user defined stacks (from sendsig).
     if sp < vm.vm_maxsaddr.load(Ordering::Relaxed) {
         return;
@@ -191,7 +193,7 @@ pub fn uvm_grow(vm: &Vmspace, sp: usize) {
     if sp < minsaddr - ptoa(ssize as usize) {
         // Really need to check vs limit and increment stack size if ok.
         let si = atop(minsaddr - sp) as i64 - i64::from(ssize);
-        if i64::from(ssize) + si <= atop(vmproc().lim_cur(RLIMIT_STACK) as usize) as i64 {
+        if i64::from(ssize) + si <= atop(p.lim_cur(RLIMIT_STACK as usize) as usize) as i64 {
             vm.vm_ssize
                 .store((i64::from(ssize) + si) as i32, Ordering::Relaxed);
         }
@@ -368,14 +370,15 @@ fn seg_after(map: &VmMap, after: Option<usize>) -> Option<Seg> {
 /// invoked to prepare for actually recording the ranges, then the VA is walked again,
 /// invoking the 'walk' callback for each range. The number of ranges walked is guaranteed to
 /// match the count seen by the 'setup' callback.
-pub fn uvm_coredump_walkmap(
+pub fn uvm_coredump_walkmap<G: ProcGlue>(
+    p: &Thread<G>,
     vm: &Vmspace,
     setup: &mut dyn FnMut(i32) -> Result<(), Errno>,
     walk: &mut dyn FnMut(CoredumpSeg) -> Result<(), Errno>,
 ) -> Result<(), Errno> {
     let map = &vm.vm_map;
-    let p = vmproc();
-    let (sigcode, timekeep) = (p.ps_sigcode(), p.ps_timekeep());
+    let pr = p.process();
+    let (sigcode, timekeep) = (pr.ps_sigcode.get(), pr.ps_timekeep.get());
     let should = |s: &Seg| uvm_should_coredump(s, sigcode, timekeep);
     let mut refed_amaps = 0;
 

@@ -347,9 +347,9 @@
 //!   &kd_nowait)`, the direct map's single page as the C's, zeroed where the C takes
 //!   `kp_dirty` (the page provider's contract hands out zeroed memory; the slots are written
 //!   before use either way).
-//! - `FaultMap::note_maxrss` keeps the C's `KASSERT` that the faulting map is a vmspace's;
-//!   whether it is `curproc`'s own is `bsd`'s to know (the `VmProc` bridge answers for the
-//!   current thread).
+//! - The fault's `maxrss` keeps the C's `KASSERT` that the faulting map is a vmspace's only
+//!   as the test it guards (`kernel::vm::fault`); that it is the faulting thread's own is the
+//!   caller's to know, which names the thread's counters.
 //!
 //! ## Redesign
 //! - **Ownership.** LZ's entries are pool items handed out as `&'static VmMapEntry` (the
@@ -421,11 +421,15 @@
 //!   its [`Slot`], not by a pointer. A map operation takes the snapshot once and lends it to
 //!   the functions it calls, again only after the free lists followed the vmspace's new
 //!   brk/stack areas (decision 43; the host tests check every loan against the state).
-//! - `curproc`'s facts (`p_ru`, the inentry report, `lim_cur`) come through the `VmProc`
-//!   bridge (`super::proc`); the kernel maps are `super::km`'s slots; randomness is
-//!   `hal::random`, the teardown's yield `hal::sleep::sched_pause`.
-//! - [`uvm_map_protect`]'s `RLIMIT_DATA` check (LZ's `unported!`) is the C's again, over
-//!   `VmProc::lim_cur`.
+//! - The thread is passed where the C names `struct proc *p` or `curproc` (N5.0; the
+//!   `VmProc` bridge answered for `curproc` from N3.5 to N4): [`uvm_map_inentry`] takes the
+//!   pinned thread it reports and signals, [`uvm_map_protect`] the thread whose `RLIMIT_DATA`
+//!   it checks and whose `p_ru` a `VM_MAP_WIREFUTURE` wiring counts, the `uvm_map_pageable`
+//!   family the counters' record of the wiring's faults (`ru`, `None` for an unwiring or a
+//!   kernel map's). The kernel maps are `super::km`'s slots; randomness is `hal::random`, the
+//!   teardown's yield `hal::sleep::sched_pause`.
+//! - [`uvm_map_protect`]'s `RLIMIT_DATA` check (LZ's `unported!`) is the C's again, over the
+//!   thread's `lim_cur`.
 //! - `amap_copy(map, entry, ..)` (the map half; the kernel's `amap_copy_from` copies the
 //!   anons) clips and installs the new reference under the write lock's [`EntryWrite`]; the
 //!   fault reaches it through `FaultMapGuard::copy_amap`.
@@ -433,12 +437,13 @@
 //!   handles cloned for `uvm_map_lock_entry`) are a clone of the entry's [`Handles`].
 //! - [`uvm_map_inentry`]'s format argument is two words, `what` (the register: `sp`) and
 //!   `reason`, of the C's one format (`[%s]%d/%d sp=%lx inside %lx-%lx: not MAP_STACK`); its
-//!   report goes to the process's terminal with `VmProc::uprintf` (N4.8b), as the C's
+//!   report goes to the process's terminal with `kernel::tty::uprintf` (N4.8b), as the C's
 //!   `uprintf`, with the addresses in plain hexadecimal as `%lx` prints them (LZ printed it
 //!   on the console, with `0x` prefixes: no `uprintf`).
 
 use core::cmp::Ordering;
 use core::ops::Deref;
+use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{
     AtomicI32, AtomicI64, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering as Mem,
@@ -492,7 +497,7 @@ use super::km::{
 use super::object::ObjRef;
 use super::page::{Owner, PQ_ANON, uvm_pagedeactivate};
 use super::pager::{PGO_CLEANIT, PGO_DEACTIVATE, PGO_FREE};
-use super::proc::{RLIMIT_DATA, vmproc};
+use super::proc::RLIMIT_DATA;
 use super::types::{
     PROT_MASK, UVM_FLAG_CONCEAL, UVM_FLAG_COPYONW, UVM_FLAG_FIXED, UVM_FLAG_HOLE, UVM_FLAG_NOFAULT,
     UVM_FLAG_NOMERGE, UVM_FLAG_OVERLAY, UVM_FLAG_QUERY, UVM_FLAG_SIGALTSTACK, UVM_FLAG_STACK,
@@ -501,6 +506,8 @@ use super::types::{
 };
 use super::vnode::ratecheck;
 use crate::assert::{kassert, kdassert, kpanic};
+use crate::proc::{ProcGlue, Thread};
+use crate::resource::Rusage;
 
 /// `VM_MAP_PAGEABLE`: ro: entries are pageable.
 pub const VM_MAP_PAGEABLE: i32 = 0x01;
@@ -2002,21 +2009,6 @@ impl FaultMap for VmMap {
 
     fn is_pageable(&self) -> bool {
         VmMap::is_pageable(self)
-    }
-
-    fn note_minflt(&self) {
-        vmproc().ru_minflt_inc();
-    }
-
-    fn note_majflt(&self) {
-        vmproc().ru_majflt_inc();
-    }
-
-    fn note_maxrss(&self, kb: usize) {
-        // KASSERT(p != NULL && &p->p_vmspace->vm_map == map): the map is a vmspace's (the
-        // module's deviations).
-        kassert!(VmMap::is_vmspace(self));
-        vmproc().ru_maxrss(kb);
     }
 }
 
@@ -3538,7 +3530,10 @@ pub fn uvm_map_inentry_sp(entry: &VmMapEntry) -> i32 {
     1
 }
 
-/// `uvm_map_inentry_recheck`.
+/// `uvm_map_inentry_recheck`. Inline: the system call prologue's hit path (the generic
+/// [`uvm_map_inentry`] is instantiated in its caller's crate, where a non-inline call to it
+/// would cost one call per system call).
+#[inline]
 pub fn uvm_map_inentry_recheck(serial: u64, addr: usize, ie: &InentryCache) -> bool {
     serial != ie.serial || ie.start == 0 || addr < ie.start || addr >= ie.end
 }
@@ -3578,10 +3573,51 @@ pub fn uvm_map_inentry_fix(
     true
 }
 
+/// `uvm_map_inentry`'s `uprintf` line: `[%s]%d/%d sp=%lx inside %lx-%lx: not MAP_STACK` of
+/// the C, the format's two words `what` and `reason` (see the module's redesign).
+struct InentryReport<'a> {
+    /// `ps_comm`.
+    comm: &'a [u8],
+    /// `ps_pid`.
+    pid: i32,
+    /// `p_tid`.
+    tid: i32,
+    /// The register named (`sp`).
+    what: &'a str,
+    /// Its value.
+    addr: usize,
+    /// `ie->ie_start`.
+    start: usize,
+    /// `ie->ie_end` (printed less one, as the C's).
+    end: usize,
+    /// Why (`not MAP_STACK`).
+    reason: &'a str,
+}
+
+impl core::fmt::Display for InentryReport<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(
+            f,
+            "[{}]{}/{} {}={:x} inside {:x}-{:x}: {}",
+            core::str::from_utf8(self.comm).unwrap_or("?"),
+            self.pid,
+            self.tid,
+            self.what,
+            self.addr,
+            self.start,
+            self.end.wrapping_sub(1),
+            self.reason
+        )
+    }
+}
+
 /// `uvm_map_inentry`: checks that `addr` (the `what` register: "sp", "pc") lies in an entry
-/// of `map`, `curproc`'s, that `f` accepts, caching the result in `ie`; on failure prints the
-/// C's message with `reason` and signals the thread (see the module's deviations).
-pub fn uvm_map_inentry(
+/// of `map`, the thread `p`'s, that `f` accepts, caching the result in `ie`; on failure prints
+/// the C's message with `reason` on `p`'s terminal and signals `p` (see the module's
+/// deviations). `p` is the running thread (its `PROC_PC` is the trap frame's).
+#[allow(clippy::too_many_arguments)] // the C's signature
+pub fn uvm_map_inentry<G: ProcGlue>(
+    p: Pin<&Thread<G>>,
     map: &VmMap,
     ie: &mut InentryCache,
     addr: usize,
@@ -3596,22 +3632,29 @@ pub fn uvm_map_inentry(
         ok = uvm_map_inentry_fix(map, ie, addr, f, serial);
         if !ok {
             hal::klock::kernel_lock();
-            let p = vmproc();
-            let mut comm = [0u8; 24];
-            let n = p.comm(&mut comm).min(comm.len());
-            p.uprintf(format_args!(
-                "[{}]{}/{} {}={:x} inside {:x}-{:x}: {}\n",
-                core::str::from_utf8(&comm[..n]).unwrap_or("?"),
-                p.pid(),
-                p.tid(),
+            let pr = p.process();
+            let comm = pr.comm();
+            let report = InentryReport {
+                comm: &comm,
+                pid: pr.ps_pid,
+                tid: p.p_tid.get(),
                 what,
                 addr,
-                ie.start,
-                ie.end.wrapping_sub(1),
-                reason
-            ));
-            p.set_acflag_amap();
-            p.trapsignal_segv(p.pc());
+                start: ie.start,
+                end: ie.end,
+                reason,
+            };
+            crate::tty::uprintf(pr, format_args!("{report}"));
+            pr.ps_acflag.set(pr.ps_acflag.get() | crate::acct::AMAP);
+            // sv.sival_ptr = (void *)PROC_PC(p)
+            let sv = hal::sys::siginfo::Sigval::from_ptr(hal::trap::proc_pc());
+            crate::sig::trapsignal(
+                p,
+                hal::sys::signal::SIGSEGV,
+                0,
+                hal::sys::siginfo::SEGV_ACCERR,
+                sv,
+            );
             hal::klock::kernel_unlock();
         }
     }
@@ -4054,6 +4097,7 @@ fn uvm_map_pageable_wire<'a>(
     start_addr: usize,
     end_addr: usize,
     keep: bool,
+    ru: Option<&Rusage>,
 ) -> (Option<MapWriteGuard<'a>>, Result<(), Errno>) {
     // Wire pages in two passes:
     //
@@ -4125,7 +4169,7 @@ fn uvm_map_pageable_wire<'a>(
             break;
         };
         if wire {
-            error = uvm_fault_wire(map, s, x, prot);
+            error = uvm_fault_wire(map, s, x, prot, ru);
             if error.is_err() {
                 failed_at = Some(key);
                 break;
@@ -4185,19 +4229,20 @@ fn uvm_map_pageable_wire<'a>(
 /// and released here).
 ///
 /// The full range must be in use (entries may not have fspace != 0). `UVM_ET_HOLE` counts
-/// as unmapped.
+/// as unmapped. A wiring's faults count on `ru` (`curproc->p_ru`: the caller's).
 pub fn uvm_map_pageable(
     map: &VmMap,
     start: usize,
     end: usize,
     new_pageable: bool,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     let (start, end) = (trunc_page(start), round_page(end));
     pageable_checks(map, start, end)?;
     if start == end {
         return Ok(()); // nothing to do
     }
-    uvm_map_pageable_core(map.lock(), start, end, new_pageable, false).1
+    uvm_map_pageable_core(map.lock(), start, end, new_pageable, false, ru).1
 }
 
 /// `uvm_map_pageable(map, start, end, new_pageable, UVM_LK_ENTER)`: the caller's write lock
@@ -4207,23 +4252,25 @@ pub fn uvm_map_pageable_locked(
     start: usize,
     end: usize,
     new_pageable: bool,
+    ru: Option<&Rusage>,
 ) -> Result<(), Errno> {
     let (start, end) = (trunc_page(start), round_page(end));
     pageable_checks(g.map(), start, end)?;
     if start == end {
         return Ok(()); // nothing to do
     }
-    uvm_map_pageable_core(g, start, end, new_pageable, false).1
+    uvm_map_pageable_core(g, start, end, new_pageable, false, ru).1
 }
 
 /// `uvm_map_pageable(map, start, end, new_pageable, UVM_LK_ENTER | UVM_LK_EXIT)`: the
 /// caller's write lock `g`, given back (`uvm_map_protect`'s `VM_MAP_WIREFUTURE` path).
-pub fn uvm_map_pageable_keep(
-    g: MapWriteGuard<'_>,
+pub fn uvm_map_pageable_keep<'a>(
+    g: MapWriteGuard<'a>,
     start: usize,
     end: usize,
     new_pageable: bool,
-) -> (MapWriteGuard<'_>, Result<(), Errno>) {
+    ru: Option<&Rusage>,
+) -> (MapWriteGuard<'a>, Result<(), Errno>) {
     let (start, end) = (trunc_page(start), round_page(end));
     if let Err(e) = pageable_checks(g.map(), start, end) {
         return (g, Err(e));
@@ -4232,7 +4279,7 @@ pub fn uvm_map_pageable_keep(
         return (g, Ok(())); // nothing to do
     }
     let map = g.map();
-    match uvm_map_pageable_core(g, start, end, new_pageable, true) {
+    match uvm_map_pageable_core(g, start, end, new_pageable, true, ru) {
         (Some(g), r) => (g, r),
         (None, _) => kpanic(format_args!(
             "uvm_map_pageable: map {:#x}: UVM_LK_EXIT lost the lock",
@@ -4266,6 +4313,7 @@ fn uvm_map_pageable_core<'a>(
     end: usize,
     new_pageable: bool,
     keep: bool,
+    ru: Option<&Rusage>,
 ) -> (Option<MapWriteGuard<'a>>, Result<(), Errno>) {
     let map = g.map();
 
@@ -4352,14 +4400,20 @@ fn uvm_map_pageable_core<'a>(
     if new_pageable {
         return (keep.then_some(g), Ok(()));
     }
-    uvm_map_pageable_wire(map, g, first, tmp, start, end, keep)
+    uvm_map_pageable_wire(map, g, first, tmp, start, end, keep, ru)
 }
 
 /// `uvm_map_pageable_all`: special case of `uvm_map_pageable` - affects all mapped
 /// regions.
 ///
-/// Map must not be locked. If no flags are specified, all regions are unwired.
-pub fn uvm_map_pageable_all(map: &VmMap, flags: i32, limit: usize) -> Result<(), Errno> {
+/// Map must not be locked. If no flags are specified, all regions are unwired. A wiring's
+/// faults count on `ru` (the caller's `p_ru`).
+pub fn uvm_map_pageable_all(
+    map: &VmMap,
+    flags: i32,
+    limit: usize,
+    ru: Option<&Rusage>,
+) -> Result<(), Errno> {
     kassert!(map.is_pageable());
     let mut g = map.lock();
 
@@ -4417,6 +4471,7 @@ pub fn uvm_map_pageable_all(map: &VmMap, flags: i32, limit: usize) -> Result<(),
         map.min_offset(),
         map.max_offset(),
         false,
+        ru,
     )
     .1
 }
@@ -4850,8 +4905,12 @@ pub fn uvm_map_init() {
 ///
 /// - set_max means set max_protection.
 /// - map must be unlocked.
+/// - `p` is the calling thread (the C's `curproc`): its `RLIMIT_DATA` bounds what a
+///   `PROT_NONE` range made accessible may add to the data size, and its `p_ru` counts a
+///   `VM_MAP_WIREFUTURE` wiring's faults.
 #[allow(clippy::too_many_arguments)] // the C's signature
-pub fn uvm_map_protect(
+pub fn uvm_map_protect<G: ProcGlue>(
+    p: &Thread<G>,
     map: &VmMap,
     start: usize,
     end: usize,
@@ -4874,8 +4933,17 @@ pub fn uvm_map_protect(
     let g = map.lock();
     // The etype as the body left it at its `out` label (narrowed to 0 unless the mapping
     // becomes RW), which is the one the C's `map->sserial++` tests.
-    let (g, error, etype) =
-        uvm_map_protect_locked(map, g, start, end, new_prot, etype, set_max, checkimmutable);
+    let (g, error, etype) = uvm_map_protect_locked(
+        p,
+        map,
+        g,
+        start,
+        end,
+        new_prot,
+        etype,
+        set_max,
+        checkimmutable,
+    );
     if etype & UVM_ET_STACK != 0 {
         map.sserial.fetch_add(1, Mem::Relaxed);
     }
@@ -4886,7 +4954,8 @@ pub fn uvm_map_protect(
 /// [`uvm_map_protect`] with the map locked (the C's body up to the `out` label); the guard
 /// comes back, with the etype as it stood at the `out` label.
 #[allow(clippy::too_many_arguments)] // the C's locals
-fn uvm_map_protect_locked<'a>(
+fn uvm_map_protect_locked<'a, G: ProcGlue>(
+    p: &Thread<G>,
     map: &'a VmMap,
     mut g: MapWriteGuard<'a>,
     start: usize,
@@ -4951,7 +5020,7 @@ fn uvm_map_protect_locked<'a>(
 
     // Check limits.
     if dused > 0 && map.is_vmspace() {
-        let limit = usize::try_from(vmproc().lim_cur(RLIMIT_DATA)).unwrap_or(usize::MAX);
+        let limit = usize::try_from(p.lim_cur(RLIMIT_DATA as usize)).unwrap_or(usize::MAX);
         let dused = ptoa(dused);
         let vm_dused = usize::try_from(map.vm().vm_dused.load(Mem::Relaxed)).unwrap_or(0);
         if limit < dused || limit - dused < ptoa(vm_dused) {
@@ -5055,7 +5124,7 @@ fn uvm_map_protect_locked<'a>(
 
         let (key, wire) = step;
         if let Some((ws, we)) = wire {
-            let (back, r) = uvm_map_pageable_keep(g, ws, we, false);
+            let (back, r) = uvm_map_pageable_keep(g, ws, we, false, Some(&p.p_ru));
             g = back;
             if r.is_err() {
                 // If locking the entry fails, remember the error if it's the first one.
@@ -7121,7 +7190,7 @@ pub(super) fn test_entry(start: usize, fspace: usize) -> VmMapEntry {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests for the map operations over the kernel's page system (`testutil`): the map,
     // the entry tree, the selectors, the lock and its busy protocol, the vmspace life cycle,
     // and the fault handler over the real map; the tree checks of `VMMAP_DEBUG` run in them.
@@ -7154,7 +7223,7 @@ mod tests {
 
     /// Real page memory, the lock objects, the anon, amap and aobj pools, the pmaps and the
     /// map pools.
-    fn setup() -> MutexGuard<'static, ()> {
+    pub(crate) fn setup() -> MutexGuard<'static, ()> {
         let guard = testutil::pages_install(1024 * 4096);
         testutil::init_shared_once();
         let _ = uvm_anon_init(0);
@@ -7166,8 +7235,17 @@ mod tests {
         guard
     }
 
+    pub(crate) fn thread(pid: i32) -> crate::event::tests::T {
+        // A thread of a new process as exec leaves one: lim_startup's limits (the data and
+        // stack sizes unlimited), on the kernel's process lists.
+        let p = crate::event::tests::setup(pid);
+        let lim = crate::resource::lim_startup(4096, 1 << 30, PAGE_SIZE);
+        drop(p.process().set_limit(crate::resource::PlimitRef::new(lim)));
+        p
+    }
+
     /// A vmspace laid out as `exec` leaves one: data at 256 MiB, the stack below `USRSTACK`.
-    fn user_vmspace() -> VmspaceRef {
+    pub(crate) fn user_vmspace() -> VmspaceRef {
         let vm = uvmspace_alloc(VM_MIN_ADDRESS, VM_MAXUSER_ADDRESS, true, false);
         vm.vm_daddr.store(256 << 20, Mem::Relaxed);
         vm.vm_minsaddr.store(USRSTACK, Mem::Relaxed);
@@ -7376,6 +7454,7 @@ mod tests {
     #[test]
     fn protect_clips_and_checks_limits() {
         let _g = setup();
+        let p = thread(201);
         let vm = user_vmspace();
         let map = &vm.vm_map;
         let mut addr = 0x4000_0000;
@@ -7384,12 +7463,13 @@ mod tests {
 
         // Beyond max_protection.
         assert_eq!(
-            uvm_map_protect(map, addr, addr + len, RWX | 0x8, 0, false, true),
+            uvm_map_protect(p, map, addr, addr + len, RWX | 0x8, 0, false, true),
             Err(Errno::EACCES)
         );
 
         // The middle two pages become read-only: three entries.
         uvm_map_protect(
+            p,
             map,
             addr + PAGE_SIZE,
             addr + 3 * PAGE_SIZE,
@@ -7412,9 +7492,9 @@ mod tests {
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 4);
 
         // PROT_NONE drops the pages from vm_dused; back to RW restores them.
-        uvm_map_protect(map, addr, addr + len, PROT_NONE, 0, false, true).expect("none");
+        uvm_map_protect(p, map, addr, addr + len, PROT_NONE, 0, false, true).expect("none");
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 0);
-        uvm_map_protect(map, addr, addr + len, RW, 0, false, true).expect("rw");
+        uvm_map_protect(p, map, addr, addr + len, RW, 0, false, true).expect("rw");
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 4);
         sane(map);
 
@@ -7426,42 +7506,65 @@ mod tests {
         // The C's RLIMIT_DATA check (LZ's unported!): PROT_NONE pages made accessible count
         // against lim_cur(RLIMIT_DATA) with what vm_dused already holds.
         let _g = setup();
+        let p = thread(202);
         let vm = user_vmspace();
         let map = &vm.vm_map;
         let mut addr = 0x4400_0000;
         let len = 4 * PAGE_SIZE;
         uvm_mapanon(map, &mut addr, len, 0, anon_flags(UVM_FLAG_FIXED)).expect("mapanon");
-        uvm_map_protect(map, addr, addr + len, PROT_NONE, 0, false, true).expect("none");
+        uvm_map_protect(p, map, addr, addr + len, PROT_NONE, 0, false, true).expect("none");
 
-        testutil::vmproc_with(|p| {
-            p.limits
-                .insert(crate::vm::proc::RLIMIT_DATA, 3 * PAGE_SIZE as u64);
-        });
+        data_limit(p, 3 * PAGE_SIZE as u64);
         assert_eq!(
-            uvm_map_protect(map, addr, addr + len, RW, 0, false, true),
+            uvm_map_protect(p, map, addr, addr + len, RW, 0, false, true),
             Err(Errno::ENOMEM)
         );
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 0, "nothing changed");
-        testutil::vmproc_with(|p| {
-            p.limits
-                .insert(crate::vm::proc::RLIMIT_DATA, 4 * PAGE_SIZE as u64);
-        });
-        uvm_map_protect(map, addr, addr + len, RW, 0, false, true).expect("within the limit");
+        data_limit(p, 4 * PAGE_SIZE as u64);
+        uvm_map_protect(p, map, addr, addr + len, RW, 0, false, true).expect("within the limit");
         assert_eq!(vm.vm_dused.load(Mem::Relaxed), 4);
-        testutil::vmproc_with(|p| {
-            p.limits.remove(&crate::vm::proc::RLIMIT_DATA);
-        });
         uvmspace_free(vm);
     }
 
+    /// `p`'s `RLIMIT_DATA` soft limit set to `cur`, as `setrlimit(2)` leaves it.
+    fn data_limit(p: &Thread<crate::event::tests::Kg>, cur: u64) {
+        let mut l = crate::resource::Plimit::new();
+        l.pl_rlimit[RLIMIT_DATA as usize].rlim_cur = cur;
+        drop(p.process().set_limit(crate::resource::PlimitRef::new(l)));
+    }
+
     /// `uvm_map_inentry` with `uvm_map_inentry_sp`: a stack pointer in a `MAP_STACK` entry
-    /// passes and is cached; one in a plain anonymous mapping fails, reported on the
-    /// process's terminal (`VmProc::uprintf`) in the C's format, `%lx` as plain hexadecimal
-    /// and the range the cache still holds (the C prints `ie` as the failed lookup left it),
-    /// with `AMAP` set and `SIGSEGV` at the trap's pc.
+    /// passes and is cached; one in a plain anonymous mapping fails with `AMAP` set on the
+    /// process and `SIGSEGV` at the trap's pc on the thread (`SEGV_ACCERR`, `si_addr` the pc;
+    /// caught here, so the machine's frame double records it). The report's line is the C's
+    /// format, `%lx` as plain hexadecimal and the range the cache still holds (the C prints
+    /// `ie` as the failed lookup left it); the process has no terminal, so `uprintf` prints
+    /// nothing.
     #[test]
     fn inentry_reports_a_stack_outside_map_stack_on_the_terminal() {
+        use crate::event::tests::Kg;
+        use hal::sys::signal::{SA_SIGINFO, SIGSEGV, Sigaction};
         let _g = setup();
+        let p = thread(205);
+        let pr = p.process();
+        crate::sig::test_sigacts(pr);
+        let pp = hal::pin::pin_static::<Thread<Kg>>(p);
+        {
+            let mut g = pr.ps_mtx.lock();
+            pr.ps_threads.insert_tail(&mut g, pp);
+        }
+        pr.ps_threadcnt.set(1);
+        Kg::set_curproc(Some(p));
+        let mut sa = Sigaction {
+            sa_handler: 0x4000,
+            sa_flags: SA_SIGINFO,
+            ..Default::default()
+        };
+        crate::sig::setsigvec(p, SIGSEGV, &mut sa);
+        pr.set_comm(b"pivot");
+        hal::trap::set_user_regs(0x1234, 0);
+        let _ = hal::sig::take_sent();
+
         let vm = user_vmspace();
         let map = &vm.vm_map;
         let len = 4 * PAGE_SIZE;
@@ -7476,20 +7579,12 @@ mod tests {
         .expect("stack");
         let mut plain = 0x4900_0000;
         uvm_mapanon(map, &mut plain, len, 0, anon_flags(UVM_FLAG_FIXED)).expect("plain");
-        testutil::vmproc_with(|p| {
-            p.comm = b"pivot".to_vec();
-            p.pid = 77;
-            p.tid = 100_077;
-            p.pc = 0x1234;
-            p.acflag_amap = false;
-            p.segv.clear();
-            p.uprintfs.clear();
-        });
 
         let mut ie = InentryCache::default();
         let sp = stk + 2 * PAGE_SIZE + 0x10;
         let what = ("sp", "not MAP_STACK");
         assert!(uvm_map_inentry(
+            pp,
             map,
             &mut ie,
             sp,
@@ -7499,12 +7594,12 @@ mod tests {
             map.sserial()
         ));
         assert_eq!((ie.start, ie.end), (stk, stk + len));
-        assert!(testutil::vmproc_with(
-            |p| p.uprintfs.is_empty() && p.segv.is_empty()
-        ));
+        assert!(hal::sig::take_sent().is_empty());
+        assert_eq!(pr.ps_acflag.get() & crate::acct::AMAP, 0);
 
         let bad = plain + PAGE_SIZE + 0x20;
         assert!(!uvm_map_inentry(
+            pp,
             map,
             &mut ie,
             bad,
@@ -7518,26 +7613,42 @@ mod tests {
             (stk, stk + len),
             "a failure leaves the cache"
         );
-        let line = std::format!(
-            "[pivot]77/100077 sp={:x} inside {:x}-{:x}: not MAP_STACK\n",
-            bad,
-            stk,
-            stk + len - 1
+        assert_ne!(pr.ps_acflag.get() & crate::acct::AMAP, 0, "AMAP");
+        let sent = hal::sig::take_sent();
+        assert_eq!(sent.len(), 1, "SIGSEGV");
+        assert_eq!(sent[0].sig, SIGSEGV);
+        let si = sent[0].info.expect("SA_SIGINFO");
+        assert_eq!(si.si_code, hal::sys::siginfo::SEGV_ACCERR);
+        assert_eq!(si.si_addr(), 0x1234, "the trap's pc");
+
+        let report = InentryReport {
+            comm: b"pivot",
+            pid: 77,
+            tid: 100_077,
+            what: what.0,
+            addr: bad,
+            start: ie.start,
+            end: ie.end,
+            reason: what.1,
+        };
+        assert_eq!(
+            std::format!("{report}"),
+            std::format!(
+                "[pivot]77/100077 sp={:x} inside {:x}-{:x}: not MAP_STACK\n",
+                bad,
+                stk,
+                stk + len - 1
+            )
         );
-        testutil::vmproc_with(|p| {
-            assert_eq!(p.uprintfs, [line]);
-            assert!(p.acflag_amap);
-            assert_eq!(p.segv, [0x1234]);
-            p.uprintfs.clear();
-            p.segv.clear();
-            p.acflag_amap = false;
-        });
+        hal::trap::set_user_regs(0, 0);
+        Kg::set_curproc(None);
         uvmspace_free(vm);
     }
 
     #[test]
     fn immutable_entries_refuse_changes() {
         let _g = setup();
+        let p = thread(203);
         let vm = user_vmspace();
         let map = &vm.vm_map;
         let mut addr = 0x5000_0000;
@@ -7546,7 +7657,7 @@ mod tests {
         uvm_map_immutable(map, addr, addr + len, true).expect("immutable");
 
         assert_eq!(
-            uvm_map_protect(map, addr, addr + len, PROT_READ, 0, false, true),
+            uvm_map_protect(p, map, addr, addr + len, PROT_READ, 0, false, true),
             Err(Errno::EPERM)
         );
         assert_eq!(
@@ -7999,18 +8110,18 @@ mod tests {
         let wiredmax = UVMEXP.wiredmax.load(Mem::Relaxed);
         UVMEXP.wiredmax.store(1 << 20, Mem::Relaxed);
         assert_eq!(
-            uvm_map_pageable_all(map, MCL_CURRENT, PAGE_SIZE),
+            uvm_map_pageable_all(map, MCL_CURRENT, PAGE_SIZE, None),
             Err(Errno::ENOMEM),
             "two pages over a one-page limit"
         );
-        uvm_map_pageable_all(map, MCL_CURRENT | MCL_FUTURE, 0).expect("wire all");
+        uvm_map_pageable_all(map, MCL_CURRENT | MCL_FUTURE, 0, None).expect("wire all");
         assert_ne!(map.flags() & VM_MAP_WIREFUTURE, 0);
         assert_eq!(entry_holding(map, a).map(|e| e.0), Some(a));
         {
             let g = map.lock_read();
             assert!(g.lookup(a).is_some_and(vm_mapent_iswired));
         }
-        uvm_map_pageable_all(map, 0, 0).expect("unwire all");
+        uvm_map_pageable_all(map, 0, 0, None).expect("unwire all");
         UVMEXP.wiredmax.store(wiredmax, Mem::Relaxed);
         assert_eq!(map.flags() & VM_MAP_WIREFUTURE, 0);
         {
@@ -8063,7 +8174,7 @@ mod tests {
 
         // A read fault: the lazy amap is made, an anon with a zeroed page is promoted and
         // mapped (case 2B), the neighbours are not (no anons yet).
-        uvm_fault(&vm.vm_map, va + 8, VM_FAULT_INVALID, PROT_READ).expect("read fault");
+        uvm_fault(&vm.vm_map, va + 8, VM_FAULT_INVALID, PROT_READ, None).expect("read fault");
         let pa = extract(&vm.vm_map, va).expect("mapped");
         let anon = anon_of(&vm, va).expect("an anon");
         let pg = anon.page().expect("its page");
@@ -8074,12 +8185,19 @@ mod tests {
         assert_eq!(counters_read(UvmExpCounters::Faults), faults + 1);
 
         // A write fault on the same page is case 1A: the same anon and page stay.
-        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("write fault");
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, None).expect("write fault");
         assert!(anon_of(&vm, va).is_some_and(|a| same(&a, &anon)));
         assert_eq!(extract(&vm.vm_map, va), Some(pa));
 
         // The next page faults in with its own anon; the first stays.
-        uvm_fault(&vm.vm_map, va + PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE).expect("second page");
+        uvm_fault(
+            &vm.vm_map,
+            va + PAGE_SIZE,
+            VM_FAULT_INVALID,
+            PROT_WRITE,
+            None,
+        )
+        .expect("second page");
         let anon2 = anon_of(&vm, va + PAGE_SIZE).expect("second anon");
         assert!(!same(&anon, &anon2));
         drop((anon, anon2));
@@ -8094,17 +8212,23 @@ mod tests {
 
         // Free space: a case 0 fault.
         assert_eq!(
-            uvm_fault(&vm.vm_map, va + 0x10_0000, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(
+                &vm.vm_map,
+                va + 0x10_0000,
+                VM_FAULT_INVALID,
+                PROT_READ,
+                None
+            ),
             Err(Errno::EFAULT)
         );
         // Outside the map.
         assert_eq!(
-            uvm_fault(&vm.vm_map, 0, VM_FAULT_INVALID, PROT_READ),
+            uvm_fault(&vm.vm_map, 0, VM_FAULT_INVALID, PROT_READ, None),
             Err(Errno::EFAULT)
         );
         // More access than the entry allows.
         assert_eq!(
-            uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_EXEC),
+            uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_EXEC, None),
             Err(Errno::EACCES)
         );
         uvmspace_free(vm);
@@ -8115,7 +8239,7 @@ mod tests {
         let _g = setup();
         let va = 0x4000_0000;
         let vm = vmspace_with_anon(va, PAGE_SIZE);
-        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("parent fault");
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, None).expect("parent fault");
         let parent_anon = anon_of(&vm, va).expect("parent anon");
         let parent_pa = extract(&vm.vm_map, va).expect("parent pa");
 
@@ -8131,12 +8255,12 @@ mod tests {
         assert_eq!(parent_amap.refs(), 2);
 
         // The child's read fault sees the parent's page, read-only (case 1A, an_ref > 1).
-        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_READ).expect("child read");
+        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_READ, None).expect("child read");
         assert_eq!(extract(&child.vm_map, va), Some(parent_pa));
 
         // The child's write fault copies the amap (needs_copy), then promotes a new anon with
         // a copy of the page (case 1B): the two maps now differ.
-        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("child write");
+        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, None).expect("child write");
         let child_anon = anon_of(&child, va).expect("child anon");
         assert!(!same(&child_anon, &parent_anon));
         assert_eq!(parent_anon.refs(), 1);
@@ -8159,7 +8283,7 @@ mod tests {
         let len = 3 * PAGE_SIZE;
         let vm = vmspace_with_anon(va, len);
 
-        uvm_fault_wire(&vm.vm_map, va, va + len, RW).expect("wire");
+        uvm_fault_wire(&vm.vm_map, va, va + len, RW, None).expect("wire");
         for i in 0..3 {
             let pa = extract(&vm.vm_map, va + i * PAGE_SIZE).expect("mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
@@ -8188,7 +8312,7 @@ mod tests {
         let map = &vm.vm_map;
         let v = map.timestamp();
 
-        uvm_map_pageable(map, va, va + len, false).expect("wire");
+        uvm_map_pageable(map, va, va + len, false, None).expect("wire");
         assert_eq!(
             map.timestamp(),
             v + 1,
@@ -8201,7 +8325,7 @@ mod tests {
         }
         assert_eq!(entry_holding(map, va).map(|e| e.0), Some(va));
 
-        uvm_map_pageable(map, va, va + len, true).expect("unwire");
+        uvm_map_pageable(map, va, va + len, true, None).expect("unwire");
         for i in 0..2 {
             let pa = extract(map, va + i * PAGE_SIZE).expect("still mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
@@ -8209,7 +8333,7 @@ mod tests {
         }
         // A range with free space in it is refused.
         assert_eq!(
-            uvm_map_pageable(map, va, va + len + PAGE_SIZE, false),
+            uvm_map_pageable(map, va, va + len + PAGE_SIZE, false, None),
             Err(Errno::EINVAL)
         );
         sane(map);
@@ -8238,7 +8362,7 @@ mod tests {
             );
         }
 
-        uvm_fault_wire(map, va, va + len, PROT_READ).expect("wire");
+        uvm_fault_wire(map, va, va + len, PROT_READ, None).expect("wire");
         for i in 0..2 {
             let pa = extract(map, va + i * PAGE_SIZE).expect("mapped");
             let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
@@ -8265,13 +8389,13 @@ mod tests {
 
         // Fault the pages in one by one, then drop their mappings: the anons stay.
         for i in 0..8 {
-            uvm_fault(map, va + i * PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE).expect("fault");
+            uvm_fault(map, va + i * PAGE_SIZE, VM_FAULT_INVALID, PROT_WRITE, None).expect("fault");
         }
         map_pmap_remove(map, va, va + 8 * PAGE_SIZE);
         assert!(extract(map, va + 4 * PAGE_SIZE).is_none());
 
         // One read fault in the middle maps the MADV_NORMAL window (3 back, 4 ahead) too.
-        uvm_fault(map, va + 4 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ).expect("refault");
+        uvm_fault(map, va + 4 * PAGE_SIZE, VM_FAULT_INVALID, PROT_READ, None).expect("refault");
         for i in 1..8 {
             assert!(
                 extract(map, va + i * PAGE_SIZE).is_some(),
@@ -8288,9 +8412,16 @@ mod tests {
         let _g = setup();
         let va = 0x6400_0000;
         let vm = vmspace_with_anon(va, PAGE_SIZE);
-        let before = testutil::vmproc_with(|p| p.minflt);
-        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("fault");
-        assert_eq!(testutil::vmproc_with(|p| p.minflt), before + 1, "ru_minflt");
+        // The counters the caller names (the faulting thread's p_ru): a zero fill is a minor
+        // fault, and maxrss follows the pmap's resident pages, in kilobytes.
+        let ru = crate::resource::Rusage::new();
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, Some(&ru)).expect("fault");
+        assert_eq!(ru.ru_minflt.get(), 1, "ru_minflt");
+        assert_eq!(ru.ru_majflt.get(), 0, "ru_majflt");
+        assert!(ru.ru_maxrss.get() >= (PAGE_SIZE / 1024) as i64, "ru_maxrss");
+        // None: nothing counts (a fault no thread takes).
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_READ, None).expect("refault");
+        assert_eq!(ru.ru_minflt.get(), 1);
         uvmspace_free(vm);
     }
 
@@ -8305,7 +8436,7 @@ mod tests {
         assert!(kmap.max_offset() <= uvm_maxkaddr());
         let va = 0x2000_0000;
         let vm = vmspace_with_anon(va, 2 * PAGE_SIZE);
-        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE).expect("fault");
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, PROT_WRITE, None).expect("fault");
         let src_pa = extract(&vm.vm_map, va).expect("source page");
 
         let kva =
@@ -8320,7 +8451,7 @@ mod tests {
         assert_eq!(etype & UVM_ET_NEEDSCOPY, 0, "the source's copy was made");
 
         // The kernel's fault on the window reaches the source's anon page.
-        uvm_fault(kmap, kva, VM_FAULT_INVALID, PROT_READ).expect("kernel fault");
+        uvm_fault(kmap, kva, VM_FAULT_INVALID, PROT_READ, None).expect("kernel fault");
         assert_eq!(kmap.pmap().extract(Vaddr::new(kva)), Some(src_pa));
 
         uvm_unmap(kmap, kva, kva + 2 * PAGE_SIZE);
@@ -8406,6 +8537,7 @@ mod tests {
         // uvm_map_protect narrows UVM_ET_STACK to 0 unless the mapping becomes RW, and the C
         // bumps sserial from that narrowed etype (uvm_map.c's `out` label).
         let _g = setup();
+        let p = thread(204);
         let vm = user_vmspace();
         let map = &vm.vm_map;
         let mut a = 0x4800_0000;
@@ -8413,12 +8545,12 @@ mod tests {
         uvm_mapanon(map, &mut a, len, 0, anon_flags(UVM_FLAG_FIXED)).expect("mapanon");
         let s0 = map.sserial();
 
-        uvm_map_protect(map, a, a + len, PROT_NONE, UVM_ET_STACK, false, true).expect("none");
+        uvm_map_protect(p, map, a, a + len, PROT_NONE, UVM_ET_STACK, false, true).expect("none");
         assert_eq!(map.sserial(), s0, "a PROT_NONE change is no stack change");
         let (_, _, _, etype) = entry_holding(map, a).expect("still mapped");
         assert_eq!(etype & UVM_ET_STACK, 0);
 
-        uvm_map_protect(map, a, a + len, RW, UVM_ET_STACK, false, true).expect("rw");
+        uvm_map_protect(p, map, a, a + len, RW, UVM_ET_STACK, false, true).expect("rw");
         assert_eq!(map.sserial(), s0 + 1, "a stack made RW");
         let (_, _, _, etype) = entry_holding(map, a).expect("still mapped");
         assert_ne!(etype & UVM_ET_STACK, 0);
@@ -8498,7 +8630,7 @@ mod tests {
     fn the_timekeep_page_maps_wires_and_forks_under_its_view() {
         let _g = setup();
         let _ = the_kernel_map();
-        let obj = crate::tc::timekeep_object().expect("the timekeep object");
+        let obj = crate::tc::timekeep_object(None).expect("the timekeep object");
         obj.reference();
         let vm = user_vmspace();
         let map = &vm.vm_map;
@@ -8515,7 +8647,7 @@ mod tests {
         .expect("exec_timekeep_map's mapping");
 
         // A process reads the clock: a read fault on the resident, wired page.
-        uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ).expect("read fault");
+        uvm_fault(map, va, VM_FAULT_INVALID, PROT_READ, None).expect("read fault");
         let pa = extract(map, va).expect("mapped");
         let pg = PHYS_TO_VM_PAGE(pa).expect("a managed page");
         assert!(pg.mdpage.in_view(), "hal's timekeep view holds the frame");
@@ -8529,17 +8661,17 @@ mod tests {
         assert!(wired >= 1, "the kernel's mapping wired it");
 
         // mlock(2) and munlock(2) of the mapping: a wired fault and the unwire.
-        uvm_map_pageable(map, va, va + PAGE_SIZE, false).expect("mlock");
+        uvm_map_pageable(map, va, va + PAGE_SIZE, false, None).expect("mlock");
         assert_eq!(pg.wire_count(), wired + 1);
-        uvm_map_pageable(map, va, va + PAGE_SIZE, true).expect("munlock");
+        uvm_map_pageable(map, va, va + PAGE_SIZE, true, None).expect("munlock");
         assert_eq!(pg.wire_count(), wired);
 
         // A write is refused (the mapping is read-only), and the page stays the view's.
-        assert!(uvm_fault(map, va, VM_FAULT_INVALID, PROT_WRITE).is_err());
+        assert!(uvm_fault(map, va, VM_FAULT_INVALID, PROT_WRITE, None).is_err());
 
         // fork(2): the child inherits the mapping and faults the same page in.
         let child = uvmspace_fork(&vm);
-        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_READ).expect("the child's fault");
+        uvm_fault(&child.vm_map, va, VM_FAULT_INVALID, PROT_READ, None).expect("the child's fault");
         assert_eq!(extract(&child.vm_map, va), Some(pa));
         assert!(pg.mdpage.in_view() && pg.flags() & PG_BUSY == 0);
 

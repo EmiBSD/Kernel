@@ -1249,6 +1249,7 @@ pub fn dosetrlimit<G: ProcGlue>(p: &Thread<G>, which: u32, lim: Rlimit) -> Resul
             let addr = trunc_page(addr);
             let size = round_page(size);
             let _ = crate::vm::map::uvm_map_protect(
+                p,
                 &vm.vm_map,
                 addr,
                 addr + size,

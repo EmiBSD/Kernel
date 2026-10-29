@@ -74,10 +74,12 @@ use hal::arch::current::vmparam::{MAXSSIZ, USRSTACK, VM_MAXUSER_ADDRESS, VM_MIN_
 use hal::malloc::Malloc;
 use hal::pool::{PoolBackend, RawPool};
 use hal::rwlock::SharedRwlock;
+use hal::sys::errno::Errno;
 use hal::sys::mman::{
     MADV_NORMAL, MAP_ANON, MAP_INHERIT_COPY, MAP_PRIVATE, PROT_EXEC, PROT_NONE, PROT_READ,
     PROT_WRITE,
 };
+use kernel::proc::{ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::testutil;
 use kernel::vm::amap::{amap_init, amap_lookup};
 use kernel::vm::anon::{uvm_analloc, uvm_anon_init};
@@ -281,6 +283,103 @@ static BENCH_MALLOC: BenchMalloc = BenchMalloc {
 };
 
 // ---------------------------------------------------------------------------------------
+// The bench's process (N5.0): the vm entry points take the calling thread (its limits, its
+// `p_ru`), as the C passes `struct proc *p`.
+
+/// The bench's glue: no member of bsd's.
+pub struct BenchGlue;
+
+kernel::proc_glue_links!(BenchGlue);
+kernel::test_file_glue!(BenchFiles, BenchGlue);
+
+static TABLES: ProcTables<BenchGlue> = ProcTables::new();
+static SCHED: kernel::sched::SchedTables<BenchGlue> = kernel::sched::SchedTables::new();
+
+impl ProcGlue for BenchGlue {
+    type ProcessG = ();
+    type ThreadG = ();
+    type PgrpG = ();
+    type SessionG = ();
+    type FileGlue = BenchFiles;
+    kernel::proc_glue_link_types!();
+
+    fn tables() -> &'static ProcTables<Self> {
+        &TABLES
+    }
+
+    fn sched() -> &'static kernel::sched::SchedTables<Self> {
+        &SCHED
+    }
+
+    fn session_hangup(_sess: &Session<Self>) {}
+    fn session_placed(_sess: &Session<Self>) {}
+    fn session_destroy(_sess: &Session<Self>) {}
+    fn with_curproc<R>(f: impl FnOnce(Option<&Thread<Self>>) -> R) -> R {
+        f(None)
+    }
+    fn exit1(_p: &Thread<Self>, _xexit: i32, xsig: i32, _flags: i32) -> ! {
+        kernel_panic(&format!("exit1 (signal {xsig})"))
+    }
+    fn pledge_fail(_p: &Thread<Self>, error: Errno, _code: u64) -> Errno {
+        error
+    }
+    fn pledge_syscall(_p: &Thread<Self>, _code: i32) -> Result<(), (Errno, u64)> {
+        Ok(())
+    }
+    fn pledge_sysctl(_p: &Thread<Self>, _mib: &[i32], _new: usize) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn pledge_protexec(_p: &Thread<Self>, _prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn textvp_wxallowed(_pr: &Process<Self>) -> bool {
+        false
+    }
+    /// No interval timers: nothing is set, the old value stays zero.
+    fn setitimer(
+        _which: i32,
+        _itv: Option<&kernel::time::Itimerval>,
+        _olditv: Option<&mut kernel::time::Itimerval>,
+    ) {
+    }
+    /// No per-CPU slice start: the uptime itself (no running part).
+    fn spc_runtime() -> kernel::clock::Timespec {
+        kernel::tc::nanouptime()
+    }
+    fn process_ref(pr: &Process<Self>) -> kernel::proc::ProcessRef<Self> {
+        match hal::pool::PoolArc::from_ref(pr) {
+            Some(a) => kernel::proc::StaticOrPooled::Pooled(a),
+            None => kernel_panic("process_ref of the static process"),
+        }
+    }
+}
+
+/// The bench's process, static.
+static PR: Process<BenchGlue> = Process::new(42, ());
+
+/// The bench's thread (made once by [`thread`]): the faults count on its `p_ru`, `mmap(2)`
+/// reads its limits.
+static THREAD: std::sync::OnceLock<&'static Thread<BenchGlue>> = std::sync::OnceLock::new();
+
+/// The bench's thread, made the first time with `lim_startup`'s limits (infinite data and
+/// stack, as the doubles' answer before N5.0).
+fn thread() -> &'static Thread<BenchGlue> {
+    THREAD.get_or_init(|| {
+        let lim = kernel::resource::lim_startup(7030, 1 << 30, PAGE);
+        drop(PR.set_limit(kernel::resource::PlimitRef::new(lim)));
+        Box::leak(Box::new(Thread::new_static(&PR, ())))
+    })
+}
+
+/// The faulting thread's counters (`curproc->p_ru`).
+fn ru() -> Option<&'static kernel::resource::Rusage> {
+    Some(&thread().p_ru)
+}
+
+// ---------------------------------------------------------------------------------------
 // Set-up.
 
 /// The kernel's pieces as the map tests set them up, over the recycling doubles; the page
@@ -315,7 +414,7 @@ const RW: i32 = PROT_READ | PROT_WRITE;
 /// A fault, which must succeed.
 fn fault(vm: &Vmspace, va: usize, access: i32) {
     ok(
-        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, access),
+        uvm_fault(&vm.vm_map, va, VM_FAULT_INVALID, access, ru()),
         "uvm_fault",
     );
 }
@@ -391,7 +490,10 @@ impl Program {
         let f = fixed(RW, UVM_FLAG_STACK);
         let stack = uvm_map(m, &mut a, SSIZ, None, UVM_UNKNOWN_OFFSET, 0, f);
         ok(stack, "map stack");
-        let heap = ok(sys_mmap(vm, anon_args(HEAP_PAGES * PAGE)), "mmap the heap");
+        let heap = ok(
+            sys_mmap(thread(), vm, anon_args(HEAP_PAGES * PAGE)),
+            "mmap the heap",
+        );
         (heap, USRSTACK)
     }
 
@@ -505,7 +607,7 @@ fn main() {
     let mut small = Vec::new();
     for _ in 0..64 {
         small.push(ok(
-            sys_mmap(&parent, anon_args(PAGE)),
+            sys_mmap(thread(), &parent, anon_args(PAGE)),
             "mmap a small mapping",
         ));
     }
@@ -545,7 +647,7 @@ fn main() {
     // The parent of `fault.upper-cow`: 1024 written pages.
     let cow_parent = user_vmspace();
     let cow_va = ok(
-        sys_mmap(&cow_parent, anon_args(FAULT_PAGES * PAGE)),
+        sys_mmap(thread(), &cow_parent, anon_args(FAULT_PAGES * PAGE)),
         "mmap cow",
     );
     for i in 0..FAULT_PAGES {
@@ -581,7 +683,7 @@ fn main() {
         name: "pagefault",
         ops: FAULT_PAGES,
         f: Box::new(whole(|| {
-            let p = ok(sys_mmap(&pf, anon_args(len)), "mmap");
+            let p = ok(sys_mmap(thread(), &pf, anon_args(len)), "mmap");
             for i in 0..FAULT_PAGES {
                 fault(&pf, p + i * PAGE, PROT_WRITE);
             }
@@ -599,7 +701,7 @@ fn main() {
             ops: FAULT_PAGES,
             f: Box::new(move || {
                 let t0 = Instant::now();
-                let p = ok(sys_mmap(pf, anon_args(len)), "mmap");
+                let p = ok(sys_mmap(thread(), pf, anon_args(len)), "mmap");
                 let t1 = Instant::now();
                 for i in 0..FAULT_PAGES {
                     fault(pf, p + i * PAGE, PROT_WRITE);
@@ -615,7 +717,7 @@ fn main() {
         name: "fault.anon-read",
         ops: FAULT_PAGES,
         f: Box::new(|| {
-            let p = ok(sys_mmap(&pf, anon_args(len)), "mmap");
+            let p = ok(sys_mmap(thread(), &pf, anon_args(len)), "mmap");
             let t = Instant::now();
             for i in 0..FAULT_PAGES {
                 fault(&pf, p + i * PAGE, PROT_READ);
@@ -799,7 +901,7 @@ fn main() {
         name: "map.syscall",
         ops: 1,
         f: Box::new(whole(move || {
-            let p = ok(sys_mmap(parent_ref, anon_args(PAGE)), "mmap");
+            let p = ok(sys_mmap(thread(), parent_ref, anon_args(PAGE)), "mmap");
             ok(sys_munmap(parent_ref, p, PAGE), "munmap");
         })),
     });
