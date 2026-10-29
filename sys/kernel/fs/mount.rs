@@ -150,7 +150,7 @@ use hal::sys::mount::{
 
 use super::vnode::Vnode;
 use super::vops::Vfs;
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::proc::ProcGlue;
 
 /// `M_MOUNT`: the malloc type of `struct mount` (`<sys/malloc.h>`).
@@ -633,8 +633,11 @@ pub(crate) fn vfs_mount_rele<G: ProcGlue>(mp: &'static Mount<G>) {
     }
 }
 
-/// Release a mount point.
+/// Release a mount point. Its callers unbusy it first (`dounmount`, the mount calls' and the
+/// mountroots' error paths, as the C's): a mount goes back to the free list unbusied, for
+/// `vfs_mount_alloc` to hand out again (D-N5.2-2).
 pub fn vfs_mount_free<G: ProcGlue>(mp: &'static Mount<G>) {
+    kassert!(!vfs_isbusy(mp));
     mp.flag_set(MNT_UNMOUNT);
     mp.vfc().vfc_refcount.fetch_sub(1, Ordering::SeqCst);
     vfs_mount_rele(mp);
