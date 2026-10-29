@@ -871,6 +871,35 @@ pub fn pool_get(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
     Some(pool_get_good(pp, v, flags))
 }
 
+/// `pool_get(pp, flags)` of an item the pool already holds (its per-CPU cache, or a page with
+/// a free item): never grows the pool, never sleeps and counts no failure (`pr_nfail`): `None`
+/// when it would have to grow, at the hard limit, or for a pool behind an rwlock (whose lock
+/// may sleep). `hal::pool::RawPool::get_idle`: the buffer cache's try under its lock, the
+/// C's `pool_get` at `splbio`, whose `PR_WAITOK` call counts nothing either.
+pub fn pool_get_idle(pp: &Pool, flags: i32) -> Option<NonNull<u8>> {
+    if pp.pr_flags.get() & PR_RWLOCK != 0 {
+        return None;
+    }
+
+    #[cfg(feature = "multiprocessor")]
+    if !pp.pr_cache.load(Ordering::Acquire).is_null()
+        && let Some(v) = pool_cache_get(pp)
+    {
+        return Some(pool_get_good(pp, v, flags));
+    }
+
+    pl_enter(pp, &pp.pr_lock);
+    if pp.pr_nout.get() >= pp.pr_hardlimit.get() || pp.pr_curpage.get().is_null() {
+        pl_leave(pp, &pp.pr_lock);
+        return None;
+    }
+    // A page with a free item: pool_do_get takes it without leaving the lock.
+    let mut slowdown = 0;
+    let v = pool_do_get(pp, flags, &mut slowdown);
+    pl_leave(pp, &pp.pr_lock);
+    v.map(|v| pool_get_good(pp, v, flags))
+}
+
 /// `pool_get`'s `good:` label: `PR_ZERO`.
 fn pool_get_good(pp: &Pool, v: NonNull<u8>, flags: i32) -> NonNull<u8> {
     if flags & PR_ZERO != 0 {

@@ -345,6 +345,12 @@ impl RawPool for TestPool {
         Some((p, self.size))
     }
 
+    /// The double keeps no pages of its own to run out of: an idle item is a fresh block
+    /// while the test memory lasts, as [`RawPool::get`] (a forced failure included).
+    fn get_idle(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
+        self.get(flags)
+    }
+
     fn put(&self, _item: NonNull<u8>) {
         self.nout.fetch_sub(1, Ordering::Relaxed);
     }
