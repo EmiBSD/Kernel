@@ -131,6 +131,64 @@
  *
  *	@(#)vm_extern.h	8.5 (Berkeley) 5/3/95
  */
+
+/*
+ * Copyright (c) 2007 Artur Grabowski <art@openbsd.org>
+ * Copyright (c) 2012-2016,2019 Bob Beck <beck@openbsd.org>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*-
+ * Copyright (c) 1995 Charles M. Hannum.  All rights reserved.
+ * Copyright (c) 1982, 1986 The Regents of the University of California.
+ * Copyright (c) 1989, 1990 William Jolitz
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department, and William Jolitz.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)vm_machdep.c	7.3 (Berkeley) 5/13/91
+ */
+
+/*
+ *	Utah $Hdr: vm_machdep.c 1.16.1.1 89/06/23$
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -140,7 +198,11 @@
 //! Upstream: sys/uvm/uvm_km.c @ 3ce1f3f79392
 //! Upstream: sys/uvm/uvm_extern.h @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_km.rs@3c62ede68802
+//! Upstream: sys/kern/vfs_biomem.c @ 3ce1f3f79392
+//! Upstream: sys/arch/arm64/arm64/vm_machdep.c @ 3ce1f3f79392
 //! LZ: sys/uvm/uvm_extern.rs@3c62ede68802
+//! LZ: sys/kern/vfs_biomem.rs@3c62ede68802
+//! LZ: sys/arch/arm64/arm64/vm_machdep.rs@3c62ede68802
 //!
 //! A request names three modes: where the virtual space comes from ([`KmemVaMode`]: which
 //! kernel map, its alignment, whether to wait for room, the single-page allocator), what backs
@@ -228,7 +290,24 @@
 //!   `map_frames`), which cannot mint a window, so no caller can name another range.
 //!   [`dma_memory`] is `KmBuf`'s provider of DMA-reachable wired pages (`uvm_vslock_device`'s
 //!   bounce), the virtual space taken first without waiting, then the pages, as the C.
+//! - N5.1: two more windows minted here, so no caller names a range of its own. The buffer
+//!   cache's kva arena (`vfs_biomem.c`'s `buf_mem_init` and its `buf_kva_start`/
+//!   `buf_kva_end`, LZ's atomics in `bsd`) is a [`BufArena`], `kernel_map` space reserved
+//!   once and handed out as [`BufSlot`]s of `MAXPHYS` bytes, the only kind of address
+//!   [`BufSlot::map`] enters a buffer's pages at (`KernelMapper::kenter_frames`, unmanaged,
+//!   as `buf_map`'s `pmap_kenter_pa`); [`BufArena::unmap`] takes a buffer's view back to its
+//!   slot (`buf_unmap`). On a machine without an MMU the arena reserves no map space (LZ's
+//!   deviation), its slots fake addresses no other arena of the process reuses. physio's
+//!   window (`vm_machdep.c`'s `vmapbuf`/`vunmapbuf`, arm64's and amd64's the same algorithm;
+//!   LZ: `bsd`'s machine code, `pmap_kenter_pa` through the legacy `unsafe fn`) is a
+//!   [`PhysWindow`]: `kv_physwait` space ([`KV_PHYSWAIT`], moved from arm64's
+//!   `vm_machdep.rs`), each wired user page found by the user pmap's `extract` and entered
+//!   with the token's `kenter`, removed and given back by the drop. It gives the address
+//!   only, never a slice (the bytes are shared with user space: the C's semantics), and only
+//!   `vm::glue`'s `DeviceLock` makes one, over the range it wired and borrowing it, so the
+//!   window is gone before the pages are unwired.
 
+use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -238,11 +317,13 @@ use hal::kmbuf::{PageKind, PageMemory};
 use hal::mapped::MappedBytes;
 use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
-use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, PmapRef};
+use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef};
 use hal::rwlock::{Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
-use hal::sys::mman::{MADV_RANDOM, MAP_INHERIT_NONE, PROT_READ, PROT_WRITE};
+use hal::sys::mman::{
+    MADV_NORMAL, MADV_RANDOM, MAP_INHERIT_NONE, PROT_NONE, PROT_READ, PROT_WRITE,
+};
 use hal::sys::types::{Paddr, Vaddr, Vsize};
 use hal::user::ForeignWindow;
 use hal::vm::param::round_page;
@@ -265,6 +346,7 @@ use super::types::{
     uvm_mapflag,
 };
 use crate::assert::{kassert, kpanic};
+use crate::fs::buf::MAXPHYS;
 use crate::prf::unported;
 
 /// `VM_KERNEL_SPACE_SIZE` (`<uvm/uvm_param.h>`): the size of the kernel's virtual address
@@ -438,6 +520,15 @@ pub static KD_TRYLOCK: KmemDynMode = KmemDynMode {
     ..KMEM_DYN_INITIALIZER
 };
 
+/// `kv_physwait` (the machine's `vm_machdep.c`): physio's kernel windows come from
+/// `phys_map`, waiting for space there when it is full.
+pub static KV_PHYSWAIT: KmemVaMode = KmemVaMode {
+    kv_map: KvMap::Phys,
+    kv_align: 0,
+    kv_wait: true,
+    kv_singlepage: false,
+};
+
 /// The kernel map's token, adopted once from `pmap_bootstrap` ([`adopt_mapper`]).
 static MAPPER: OnceStatic<KernelMapper> = OnceStatic::new();
 
@@ -606,6 +697,225 @@ impl KernelWindow {
 pub struct LegacyLend {
     _private: (),
 }
+
+/// The buffer cache's kernel virtual arena (`vfs_biomem.c`'s `buf_kva_start`, `buf_kva_end`):
+/// `kernel_map` space reserved once ([`BufArena::reserve`], `buf_mem_init`) and handed out in
+/// order as [`BufSlot`]s of `MAXPHYS` bytes until it is used up. The only maker of a slot, so
+/// [`BufSlot::map`] enters pages only at space this arena owns. The cache keeps it under its
+/// lock.
+pub struct BufArena {
+    /// The arena's first address.
+    start: usize,
+    /// `buf_kva_start`: the first slot never handed out.
+    next: usize,
+    /// `buf_kva_end`: the arena's end.
+    end: usize,
+}
+
+impl BufArena {
+    /// `buf_mem_init(size)`'s reservation: `size` bytes (rounded down to whole slots) of
+    /// `kernel_map`, `PROT_NONE`, at the first free address (`uvm_map` with
+    /// `UVM_MAPFLAG(PROT_NONE, PROT_NONE, MAP_INHERIT_NONE, MADV_NORMAL, 0)`); `panic(9)` when
+    /// the map has no room, as the C. On a machine without an MMU (the host double) no map is
+    /// touched: the slots are a range of fake addresses no other arena of the process reuses
+    /// (a buffer's bytes are read through the direct map there, `hal::mapped`).
+    pub fn reserve(size: usize) -> BufArena {
+        Self::reserve_in(PMAP_NOMMU, size)
+    }
+
+    /// [`BufArena::reserve`] on a machine with (`nommu` false) or without an MMU.
+    fn reserve_in(nommu: bool, size: usize) -> BufArena {
+        let size = size - size % MAXPHYS;
+        let start = if nommu {
+            NOMMU_ARENAS.fetch_add(size.max(MAXPHYS), Ordering::Relaxed)
+        } else {
+            let mut start = kernel_map().min_offset();
+            let flags = uvm_mapflag(PROT_NONE, PROT_NONE, MAP_INHERIT_NONE, MADV_NORMAL, 0);
+            if uvm_map(
+                kernel_map(),
+                &mut start,
+                size,
+                None,
+                UVM_UNKNOWN_OFFSET,
+                PAGE_SIZE,
+                flags,
+            )
+            .is_err()
+            {
+                kpanic(format_args!("buf_mem_init: can't reserve VM for buffers"));
+            }
+            start
+        };
+        BufArena {
+            start,
+            next: start,
+            end: start + size,
+        }
+    }
+
+    /// `kvaslots`: the slots the arena holds.
+    pub fn slots(&self) -> usize {
+        (self.end - self.start) / MAXPHYS
+    }
+
+    /// The next fresh slot (`buf_kva_start < buf_kva_end`: `va = buf_kva_start; buf_kva_start
+    /// += MAXPHYS`), `None` once every slot was handed out.
+    pub fn take(&mut self) -> Option<BufSlot> {
+        if self.next >= self.end {
+            return None;
+        }
+        let va = self.next;
+        self.next += MAXPHYS;
+        Some(BufSlot { va: Vaddr::new(va) })
+    }
+
+    /// `buf_unmap`'s `pmap_kremove`: the view a [`BufSlot::map`] of this arena made is dropped
+    /// (its frames' claims given up, its entries removed) and its slot given back for the next
+    /// buffer. Panics on a view that is not at one of this arena's slots.
+    pub fn unmap(&self, v: MappedBytes<'static>) -> BufSlot {
+        let va = v.va().as_usize();
+        if va < self.start || va >= self.end || !(va - self.start).is_multiple_of(MAXPHYS) {
+            kpanic(format_args!(
+                "buf_unmap: the window at {va:#x} is not a buffer slot"
+            ));
+        }
+        drop(v);
+        BufSlot { va: Vaddr::new(va) }
+    }
+}
+
+/// One `MAXPHYS` slot of a [`BufArena`]: owned, not `Clone`, so one buffer maps it at a time.
+pub struct BufSlot {
+    va: Vaddr,
+}
+
+impl BufSlot {
+    /// The slot's first address.
+    pub fn va(&self) -> Vaddr {
+        self.va
+    }
+
+    /// `buf_map`'s loop: the buffer's busy pages `frames` (at most `MAXPHYS` bytes) entered at
+    /// the slot, unmanaged and read-write (`pmap_kenter_pa`: `hal::pmap::KernelMapper::
+    /// kenter_frames`, which claims each frame for the view); the view's drop, or
+    /// [`BufArena::unmap`], removes them. Panics on more pages than a slot holds.
+    pub fn map(self, frames: &[Paddr]) -> MappedBytes<'static> {
+        if frames.len() * PAGE_SIZE > MAXPHYS {
+            kpanic(format_args!(
+                "buf_map: {} pages in a slot of {MAXPHYS:#x} bytes",
+                frames.len()
+            ));
+        }
+        token().kenter_frames(self.va, frames)
+    }
+}
+
+/// physio's window over a user buffer (`vm_machdep.c`'s `vmapbuf`, `vunmapbuf`): the wired
+/// user pages of a range entered in `phys_map`'s space, unmanaged and read-write, so a
+/// driver's transfer reaches them by kernel address (`b_data`). It gives the address, never
+/// a slice: the bytes are shared with user space, which may write them meanwhile (the C's
+/// semantics). The drop removes the entries and gives the space back. Only `vm::glue`'s
+/// `DeviceLock` makes one, over the range it wired, borrowing it (`'l`), so the window is gone
+/// before the pages are unwired.
+pub struct PhysWindow<'l> {
+    /// The window's first address (page-aligned).
+    va: Vaddr,
+    /// Its length (whole pages).
+    len: usize,
+    /// Whether the window is `phys_map` space this value entered (false without an MMU: the
+    /// user address itself, the host's `vmapbuf`).
+    mapped: bool,
+    /// The mode its space came from (`kv_physwait`), for the drop's `km_free`.
+    kv: &'static KmemVaMode,
+    _lock: PhantomData<&'l ()>,
+}
+
+impl<'l> PhysWindow<'l> {
+    /// `vmapbuf`'s work over `[start, end)` (page-aligned) of the user pmap `pmap`, whose
+    /// pages the caller wired: `km_alloc(len, &kv_physwait, &kp_none, &kd_waitok)` for the
+    /// window (it waits for `phys_map` space; only a broken map fails, `panic(9)`), then each
+    /// page found by `pmap_extract` and entered with `pmap_kenter_pa(PROT_READ | PROT_WRITE)`
+    /// (a page not mapped is `panic(9)`: it was wired). Without an MMU, the user address
+    /// itself (the host's `vmapbuf`).
+    pub(super) fn map(pmap: &Pmap, start: usize, end: usize) -> PhysWindow<'l> {
+        Self::map_in(PMAP_NOMMU, &KV_PHYSWAIT, pmap, start, end)
+    }
+
+    /// [`PhysWindow::map`] on a machine with (`nommu` false) or without an MMU, the window's
+    /// space from `kv` (`kv_physwait`; the tests' maps).
+    fn map_in(
+        nommu: bool,
+        kv: &'static KmemVaMode,
+        pmap: &Pmap,
+        start: usize,
+        end: usize,
+    ) -> PhysWindow<'l> {
+        kassert!(start.is_multiple_of(PAGE_SIZE) && end.is_multiple_of(PAGE_SIZE) && end > start);
+        let len = end - start;
+        if nommu {
+            return PhysWindow {
+                va: Vaddr::new(start),
+                len,
+                mapped: false,
+                kv,
+                _lock: PhantomData,
+            };
+        }
+        // kv_physwait waits for space and kp_none allocates no pages: only a broken map fails.
+        let Ok(va) = map_va(len, kv, &KP_NONE, &KD_WAITOK) else {
+            kpanic(format_args!("vmapbuf: no space in phys_map"));
+        };
+        // The region is wired, so pmap_extract finds every page; nothing is mapped where the
+        // window was just allocated (the TLB is flushed when the mapping is removed).
+        for off in (0..len).step_by(PAGE_SIZE) {
+            let Some(pa) = pmap.extract(Vaddr::new(start + off)) else {
+                kpanic(format_args!(
+                    "vmapbuf: user page {:#x} not wired",
+                    start + off
+                ));
+            };
+            token().kenter(Vaddr::new(va.as_usize() + off), pa, PROT_READ | PROT_WRITE);
+        }
+        PhysWindow {
+            va,
+            len,
+            mapped: true,
+            kv,
+            _lock: PhantomData,
+        }
+    }
+
+    /// The window's first address: the kernel address of the range's first page.
+    pub fn va(&self) -> Vaddr {
+        self.va
+    }
+
+    /// The window's length.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the window is empty (never: a range holds a page at least).
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Drop for PhysWindow<'_> {
+    /// `vunmapbuf`: `pmap_kremove` of the window, then `km_free(kv_physwait, kp_none)`, which
+    /// wakes a waiter for `phys_map` space.
+    fn drop(&mut self) {
+        if self.mapped {
+            token().kremove(self.va, Vsize::new(self.len));
+            free_in(false, self.va, self.len, self.kv, &KP_NONE);
+        }
+    }
+}
+
+/// The next fake address of a [`BufArena`] on a machine without an MMU (the host double): a
+/// range below the host's kernel maps that no arena of the process reuses (a test leaks its
+/// cache's views when it resets the memory, and their host pmap entries stay).
+static NOMMU_ARENAS: AtomicUsize = AtomicUsize::new(0xffff_6000_0000_0000);
 
 /// `uvm_pglistfree` of the pages behind `frames`, panicking with `who`'s message (the C's) at
 /// the first frame no page describes, before any page goes back.
@@ -1711,6 +2021,161 @@ mod tests {
         assert_eq!(entry_at(KvMap::Kernel, va), None);
         // kp_none: the pages stay, the module window's mappings hold them.
         assert_eq!(avail(), before - 2);
+    }
+
+    /// `n` pages of the buffer cache's for the dummy object `obj` (`buf_alloc_pages`), and
+    /// their frames.
+    fn buffer_pages(obj: &crate::vm::object::Object, n: usize) -> std::vec::Vec<Paddr> {
+        hal::klock::kernel_lock();
+        obj.reinit_dummy(1);
+        crate::vm::page::uvm_pagealloc_multi(obj, 0, n * PAGE_SIZE, UVM_PLA_NOWAIT)
+            .expect("the pages");
+        (0..n)
+            .map(|i| {
+                let pg = uvm_pagelookup(obj, (i * PAGE_SIZE) as Voff).expect("a page");
+                assert_eq!(pg.wire_count(), 1);
+                assert!(pg.flags() & PG_BUSY != 0);
+                pg.phys_addr()
+            })
+            .collect()
+    }
+
+    fn bufcache_object() -> crate::vm::object::Object {
+        crate::vm::object::Object::dummy(crate::vm::object::ObjKind::Bufcache, 0)
+    }
+
+    #[test]
+    fn the_buffer_arena_hands_out_its_slots_in_order() {
+        let mut a = BufArena::reserve(4 * MAXPHYS + PAGE_SIZE);
+        let b = BufArena::reserve(MAXPHYS);
+        assert_eq!((a.slots(), b.slots()), (4, 1));
+        let slots: std::vec::Vec<usize> = (0..4)
+            .map(|_| a.take().expect("a slot").va().as_usize())
+            .collect();
+        assert!(slots.windows(2).all(|w| w[1] == w[0] + MAXPHYS));
+        assert!(a.take().is_none());
+        // Two arenas never share an address (a fake range each without an MMU).
+        assert!(b.start >= slots[3] + MAXPHYS || b.end <= slots[0]);
+    }
+
+    #[test]
+    fn the_buffer_arena_reserves_kernel_map_space() {
+        let _g = setup();
+        let mut a = BufArena::reserve_in(false, 2 * MAXPHYS);
+        let s = a.take().expect("a slot");
+        assert!(s.va().as_usize() >= testutil::KM_VA_BASE);
+        assert!(s.va().as_usize() < testutil::KM_KMEM_BASE);
+        assert_eq!(entry_at(KvMap::Kernel, s.va()), Some(false));
+        assert_eq!(
+            extract(s.va().as_usize()),
+            None,
+            "reserved, nothing entered"
+        );
+    }
+
+    #[test]
+    fn a_slot_maps_a_buffers_pages_and_gives_them_back() {
+        let _g = setup();
+        let obj = bufcache_object();
+        let frames = buffer_pages(&obj, 3);
+        let mut a = BufArena::reserve(2 * MAXPHYS);
+        let s = a.take().expect("a slot");
+        let va = s.va();
+        let mut v = s.map(&frames);
+        assert_eq!((v.va(), v.len()), (va, 3 * PAGE_SIZE));
+        assert_eq!(extract(va.as_usize() + PAGE_SIZE), Some(frames[1]));
+        v.as_slice_mut()[PAGE_SIZE] = 0x5a;
+        // buf_fix_mapping: the tail goes, the head stays.
+        v.truncate(PAGE_SIZE);
+        assert_eq!(extract(va.as_usize() + PAGE_SIZE), None);
+        let s = a.unmap(v);
+        assert_eq!(s.va(), va);
+        assert_eq!(extract(va.as_usize()), None);
+        // The slot maps again (buf_map with a stolen slot), the bytes are the frames'.
+        let v = s.map(&frames[1..2]);
+        assert_eq!(v.as_slice()[0], 0x5a);
+        drop(v);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a buffer slot")]
+    fn an_arena_refuses_another_arenas_view() {
+        let _g = setup();
+        let obj = bufcache_object();
+        let frames = buffer_pages(&obj, 1);
+        let mut a = BufArena::reserve(MAXPHYS);
+        let b = BufArena::reserve(MAXPHYS);
+        let v = a.take().expect("a slot").map(&frames);
+        let _ = b.unmap(v);
+    }
+
+    #[test]
+    #[should_panic(expected = "pages in a slot")]
+    fn a_slot_holds_maxphys_at_most() {
+        let _g = setup();
+        let obj = bufcache_object();
+        let frames = buffer_pages(&obj, MAXPHYS / PAGE_SIZE + 1);
+        let mut a = BufArena::reserve(MAXPHYS);
+        let _ = a.take().expect("a slot").map(&frames);
+    }
+
+    #[test]
+    #[should_panic(expected = "uvm_pagerealloc: a page in a byte view")]
+    fn a_page_in_a_buffers_window_does_not_change_owner() {
+        let _g = setup();
+        let obj = bufcache_object();
+        let other = bufcache_object();
+        other.reinit_dummy(1);
+        let frames = buffer_pages(&obj, 2);
+        let mut a = BufArena::reserve(MAXPHYS);
+        let v = a.take().expect("a slot").map(&frames);
+        let pg = uvm_pagelookup(&obj, PAGE_SIZE as Voff).expect("a page");
+        crate::vm::page::uvm_pagerealloc(
+            pg,
+            Owner::Object(&obj),
+            Owner::Object(&other),
+            PAGE_SIZE as Voff,
+        );
+        drop(v);
+    }
+
+    #[test]
+    fn a_physio_window_enters_the_wired_pages_and_gives_its_space_back() {
+        let _g = setup();
+        // The "user" page: a frame the kernel pmap maps at an address of the test's own.
+        let frame = testutil_frame();
+        let user = testutil::KM_VA_END - 16 * PAGE_SIZE;
+        token().kenter(Vaddr::new(user), frame, PROT_READ);
+        let w = PhysWindow::map_in(false, &KV_EXEC, hal::pmap::kernel(), user, user + PAGE_SIZE);
+        assert_eq!(w.va().as_usize(), testutil::KM_EXEC_BASE);
+        assert_eq!(w.len(), PAGE_SIZE);
+        assert_eq!(extract(w.va().as_usize()), Some(frame));
+        drop(w);
+        assert_eq!(extract(testutil::KM_EXEC_BASE), None);
+        // The space went back: the one-page exec map is free again.
+        let va = fill_exec_map(&KV_EXEC);
+        free_in(false, va, PAGE_SIZE, &KV_EXEC, &KP_NONE);
+        token().kremove(Vaddr::new(user), Vsize::new(PAGE_SIZE));
+    }
+
+    #[test]
+    fn without_an_mmu_a_physio_window_is_the_user_address() {
+        let _g = setup();
+        let w = PhysWindow::map_in(
+            true,
+            &KV_PHYSWAIT,
+            hal::pmap::kernel(),
+            0x40_0000,
+            0x40_2000,
+        );
+        assert_eq!((w.va().as_usize(), w.len()), (0x40_0000, 2 * PAGE_SIZE));
+        drop(w);
+    }
+
+    /// A frame of the page system's, for a test that maps it (given back by the next set-up).
+    fn testutil_frame() -> Paddr {
+        let va = alloc_in(true, PAGE_SIZE, &KV_ANY, &KP_ZERO, &KD_NOWAIT).expect("a page");
+        hal::pmap::direct_unmap(va).expect("its frame")
     }
 }
 /* </TESTS> */

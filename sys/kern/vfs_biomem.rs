@@ -59,7 +59,7 @@ use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_bio::{BCSTATS, BUFPOOL, bufbackoff, cleanerproc, dma_constraint};
 use crate::kern::vfs_sync::syncerproc;
-use crate::kern::vm_bsd::uvm_pagealloc_multi;
+
 use crate::machine::Machine;
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{IPL_BIO, splassert};
@@ -76,7 +76,7 @@ use hal::vm::param::{atop, ptoa, round_page};
 use kernel::vm::km::kernel_map;
 use kernel::vm::map::uvm_map;
 use kernel::vm::object::uvm_obj_free;
-use kernel::vm::page::{uvm_pagelookup, vm_page_to_phys};
+use kernel::vm::page::{uvm_pagealloc_multi, uvm_pagelookup, vm_page_to_phys};
 use kernel::vm::types::{
     UVM_PLA_NOWAIT, UVM_PLA_NOWAKE, UVM_PLA_WAITOK, UVM_UNKNOWN_OFFSET, uvm_mapflag,
 };
