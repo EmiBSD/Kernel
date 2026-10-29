@@ -7963,6 +7963,31 @@ status = "redesigned"
 notes = "N5.1: struct buf as a bufpl item of hal::pool::BoxPool (BUFPL, vmstat -m's bufpl) with hal::owned links (ByBufhead owning, ByLblkno, ByVnbufs, ByFreelist, ByValist, ByBufq), atomic scalars with the C's names as getters/setters, the busy state, b_pobj (Pages: none, own, a cluster master's counted link) and b_iodone (Iodone: a kernel callback given the token, or a bsd driver's given the address) under the buffer's leaf lock; BufRef, B_BUSY's owner as a value holding a counted link (or a driver's &'static) and the view of the bytes (data() safe), parked in the buffer while a driver or a queue holds it by address (Buf::park, Buf::take_parked); buf.h's flags and limits; the cache (vfs_bio, vfs_biomem), the disk queues (kern_bufq) and physio follow in fs::bio, fs::biomem, fs::bufq, fs::physio"
 
 [[module]]
+rust = "sys/kernel/fs/bio.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_bio.rs", "sys/kern/vfs_subr.rs"]
+status = "redesigned"
+notes = "N5.1: the buffer cache (vfs_bio.c) over one Mutexed CACHE at IPL_BIO (the C's splbio domain): bufhead an OwnedList that owns every buffer, the 2Q queues, the dirty queue and buf_valist SecondaryLists of counted members, the kva arena; bcstats atomics (Bcstats, snapshot into hal's Bcachestats), the tunables atomics (bufpages and bufcachepercent from conf/param.c); B_BUSY the token: getblk, bread, breadn, bread_cluster, geteblk, buf_get give it, brelse, bwrite, bdwrite, bawrite, biodone consume it, a synchronous I/O's caller keeping a counted link for biowait, which takes back the token biodone parks; VnodeBufs, the vnode's [B] half (tree, clean and dirty lists under the cache's lock, v_numoutput, v_bioflag) embedded in bsd's vnode, and the bridge BufVnode for what the cache asks of the vnode; bgetvp, brelvp, buf_replacevnode, reassignbuf, vwaitforio, vwakeup from vfs_subr.c; bread_cluster without the xbpp array (the read-ahead buffers found by block, their tokens parked); bwrite's bufq_wait on the queue the strategy last queued on; the cleaner (buf_daemon) and the syncer identified by thread words"
+[[module.fn]]
+lz = "sys/kern/vfs_subr.rs::VFS_STALLING"
+native = ["sys/kernel/file.rs::VFS_STALLING"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/fs/biomem.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_biomem.rs"]
+status = "redesigned"
+notes = "N5.1: vfs_biomem.c over the cache's lock: the arena kernel::vm::km::BufArena (buf_mem_init), buf_map's slot (fresh, or stolen from the least recently used idle buffer by buf_unmap) mapped by BufSlot::map into a view the token holds (the idle buffer keeps it, Kva::Mapped), buf_dealloc_mem keeping the bare slot of a B_RELEASED buffer (Kva::Bare) until buf_unmap frees the buffer from bufhead, buf_fix_mapping as MappedBytes::truncate, buf_alloc_pages/buf_free_pages over kernel::vm::page::uvm_pagealloc_multi and the buffer's own object"
+
+[[module]]
+rust = "sys/kernel/fs/bufq.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_bufq.rs"]
+status = "redesigned"
+notes = "N5.1: disk queues: struct bufq_impl as the trait BufqDiscipline with Fifo and Nscan, both heads embedded in the queue's state (no M_DEVBUF head, so no bufq init fail), the queue all zero until bufq_init (a zeroed softc embeds it; its Mutexed raises to IPL_MPFLOOR, above IPL_BIO); a queued buffer's token parked in it, the lists SecondaryLists of members (counted for a cache buffer, 'static for a driver's); bufqs a hal::list::List of the softcs' queues; bufq_queue tells bwrite the queue (note_queued)"
+
+[[module]]
 rust = "sys/hal/sys/syslimits.rs"
 crate = "hal"
 lz = ["sys/sys/syslimits.rs"]

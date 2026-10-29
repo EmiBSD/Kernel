@@ -252,6 +252,17 @@ trait = "VnodeOps"
 for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/mmap.rs"]
 paid_by = "N5"
 
+# bsd: struct vnode as the buffer cache asks things of it (vhold, vdrop, VOP_STRATEGY,
+# VOP_BWRITE, VOP_BMAP, v_type, v_rdev, the mount's MNT_ASYNC and f_*reads/f_*writes, the
+# thread's ru_inblock/ru_oublock, the syncer's worklist: sys/kern/vfs_subr.rs, vfs_sync.rs,
+# vfs_vops.rs), implemented by bsd's Vnode and kept by the vnode's VnodeBufs (set once at
+# getnewvnode; vnodes are never freed). N5.1 made it; N5.2 pays it, with the vnode layer.
+# kernel::fs::bio::BufVnode
+[[bridge]]
+trait = "BufVnode"
+for = ["sys/kernel/fs/bio.rs"]
+paid_by = "N5"
+
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
 # kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from
 # hal_bridges_register, N4.6b): the net (N6), vfs (N5), machdep (with arm64's machdep; amd64's

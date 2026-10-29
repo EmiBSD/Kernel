@@ -119,6 +119,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicUsize, Ordering as Mem};
 
 use hal::intr::IPL_BIO;
+use hal::link::Link;
 use hal::mapped::MappedBytes;
 use hal::mutex::Mutexed;
 use hal::owned::{OwnedEntry, SecondaryEntry, SecondaryRef};
@@ -127,7 +128,10 @@ use hal::sys::errno::Errno;
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::{Daddr, Dev, Off};
 
+use super::bio::VnodeBufs;
+use super::bufq::Bufq;
 use crate::assert::kpanic;
+use crate::vm::km::BufSlot;
 use crate::vm::object::{ObjKind, Object};
 
 /// `MAXPHYS` (`<sys/param.h>`): the largest raw I/O transfer, and a kva slot of the buffer
@@ -273,11 +277,21 @@ pub enum Pages {
     Master(SecondaryRef<ByBufhead>),
 }
 
+/// The kernel virtual space an idle buffer keeps (`b_data` of a buffer that is not busy).
+pub enum Kva {
+    /// None (`b_data == NULL`).
+    None,
+    /// The view of its pages, mapped at its slot (on `buf_valist`, for its next owner).
+    Mapped(MappedBytes<'static>),
+    /// The slot alone: its pages are gone (`B_RELEASED`, `buf_dealloc_mem`), the slot kept
+    /// at the head of `buf_valist` until `buf_unmap` takes it and frees the buffer.
+    Bare(BufSlot),
+}
+
 /// The buffer's busy state: who owns it now.
 enum Slot {
-    /// Not busy (`B_BUSY` clear): the view of an idle mapped buffer (on `buf_valist`), kept
-    /// for its next owner, or none.
-    Idle(Option<MappedBytes<'static>>),
+    /// Not busy (`B_BUSY` clear), with the kernel virtual space it keeps.
+    Idle(Kva),
     /// Busy, its token outside the buffer.
     Busy,
     /// Busy, its token parked here while a driver or a queue holds the buffer by address.
@@ -340,6 +354,11 @@ pub struct Buf {
     b_saveaddr: AtomicUsize,
     /// `b_proc`: the thread the I/O is for (its address), 0 for the kernel.
     b_proc: AtomicUsize,
+    /// `b_vp`: the vnode the buffer belongs to (its buffer half, embedded in the vnode, which
+    /// lives for ever).
+    b_vp: Link<VnodeBufs>,
+    /// `b_bq`: the disk queue the buffer is on (a softc's, which lives for ever).
+    b_bq: Link<Bufq>,
     /// `b_uobj`: object containing the pages (the buffer cache's dummy object).
     b_uobj: Object,
     /// `b_poffs`: offset within object.
@@ -373,12 +392,14 @@ impl Buf {
             b_data: AtomicUsize::new(0),
             b_saveaddr: AtomicUsize::new(0),
             b_proc: AtomicUsize::new(0),
+            b_vp: Link::new(),
+            b_bq: Link::new(),
             b_uobj: Object::dummy(ObjKind::Bufcache, 0),
             b_poffs: AtomicI64::new(0),
             owned: Mutexed::new(
                 IPL_BIO,
                 Owned {
-                    slot: Slot::Idle(None),
+                    slot: Slot::Idle(Kva::None),
                     pages: Pages::None,
                     iodone: None,
                 },
@@ -587,6 +608,44 @@ impl Buf {
         &self.b_uobj
     }
 
+    /// `bp->b_vp`: the buffer half of the vnode the buffer belongs to, `None` for none.
+    #[inline]
+    pub fn vnode_bufs(&self) -> Option<&'static VnodeBufs> {
+        self.b_vp.get()
+    }
+
+    /// `bp->b_vp = vp` (`bgetvp`, `brelvp`).
+    pub(crate) fn set_vnode_bufs(&self, vb: Option<&'static VnodeBufs>) {
+        self.b_vp.set(vb);
+    }
+
+    /// `bp->b_bq`: the disk queue the buffer is on, `None` for none.
+    #[inline]
+    pub fn bq(&self) -> Option<&'static Bufq> {
+        self.b_bq.get()
+    }
+
+    /// `bp->b_bq = bq` (`bufq_queue`, `bufq_done`).
+    pub(crate) fn set_bq(&self, bq: Option<&'static Bufq>) {
+        self.b_bq.set(bq);
+    }
+
+    /// Whether the buffer is on one of the cache's queues (`b_freelist.tqe_next != NOLIST`).
+    pub fn b_freelist_linked(&self) -> bool {
+        self.b_freelist.is_linked()
+    }
+
+    /// Whether the buffer is on its vnode's clean or dirty list (`b_vnbufs.le_next != NOLIST`).
+    pub fn b_vnbufs_linked(&self) -> bool {
+        self.b_vnbufs.is_linked()
+    }
+
+    /// Whether the buffer's pages are `master`'s (a read-ahead buffer of the cluster `master`
+    /// reads, `bread_cluster`).
+    pub(crate) fn is_cluster_of(&self, master: &Buf) -> bool {
+        matches!(&self.owned.lock().pages, Pages::Master(r) if r.points_to(master))
+    }
+
     /// `bp->b_pobj != NULL`: whether the buffer has pages.
     pub fn has_pages(&self) -> bool {
         !matches!(self.owned.lock().pages, Pages::None)
@@ -635,23 +694,24 @@ impl Buf {
         !matches!(self.owned.lock().slot, Slot::Idle(_))
     }
 
-    /// Whether the buffer is idle with a view kept for its next owner (`b_data != NULL` of an
-    /// idle buffer: on `buf_valist`).
+    /// Whether the buffer is idle with kernel virtual space kept (`b_data != NULL` of an idle
+    /// buffer: on `buf_valist`).
     pub fn idle_mapped(&self) -> bool {
-        matches!(self.owned.lock().slot, Slot::Idle(Some(_)))
+        matches!(
+            self.owned.lock().slot,
+            Slot::Idle(Kva::Mapped(_) | Kva::Bare(_))
+        )
     }
 
-    /// Takes away an idle buffer's view (`buf_unmap`: its slot is stolen), which the caller
-    /// drops (unmapping it) or reuses; `None` when it has none. Panics on a busy buffer.
-    pub fn take_idle_view(&self) -> Option<MappedBytes<'static>> {
+    /// Takes away the kernel virtual space an idle buffer keeps (`buf_unmap`: its slot is
+    /// stolen; `b_data = NULL`), for the caller to unmap and reuse. Panics on a busy buffer.
+    pub(crate) fn take_idle_kva(&self) -> Kva {
         let mut g = self.owned.lock();
         match &mut g.slot {
-            Slot::Idle(v) => {
-                let v = v.take();
-                if v.is_some() {
-                    self.b_data.store(0, Mem::Relaxed);
-                }
-                v
+            Slot::Idle(k) => {
+                let k = mem::replace(k, Kva::None);
+                self.b_data.store(0, Mem::Relaxed);
+                k
             }
             _ => {
                 drop(g);
@@ -778,19 +838,14 @@ impl BufRef {
             ));
         }
         let mut g = bp.owned.lock();
-        match &mut g.slot {
-            Slot::Idle(v) => {
-                let view = v.take();
-                g.slot = Slot::Busy;
-                BufRef {
-                    hold: Hold::Foreign(bp),
-                    view,
-                }
-            }
-            _ => {
-                drop(g);
-                kpanic(format_args!("BufRef::foreign: buffer {:p} is busy", bp))
-            }
+        if !matches!(g.slot, Slot::Idle(Kva::None)) {
+            drop(g);
+            kpanic(format_args!("BufRef::foreign: buffer {:p} is busy", bp));
+        }
+        g.slot = Slot::Busy;
+        BufRef {
+            hold: Hold::Foreign(bp),
+            view: None,
         }
     }
 
@@ -802,14 +857,18 @@ impl BufRef {
             kpanic(format_args!("BufRef::acquire: no buffer"));
         };
         let mut g = bp.owned.lock();
-        let view = match &mut g.slot {
-            Slot::Idle(v) => v.take(),
-            _ => {
+        let view = match mem::replace(&mut g.slot, Slot::Busy) {
+            Slot::Idle(Kva::None) => None,
+            Slot::Idle(Kva::Mapped(v)) => Some(v),
+            other => {
+                g.slot = other;
                 drop(g);
-                kpanic(format_args!("buf_acquire: buffer {:p} is busy", bp))
+                kpanic(format_args!(
+                    "buf_acquire: buffer {:p} is busy or released",
+                    bp
+                ))
             }
         };
-        g.slot = Slot::Busy;
         drop(g);
         BufRef {
             hold: Hold::Cached(r),
@@ -829,7 +888,31 @@ impl BufRef {
             drop(g);
             kpanic(format_args!("buf_release: buffer {:p} is not busy", b));
         }
-        g.slot = Slot::Idle(view);
+        g.slot = Slot::Idle(view.map_or(Kva::None, Kva::Mapped));
+        drop(g);
+        self.consumed();
+    }
+
+    /// `buf_dealloc_mem`'s end of a busy period: the buffer goes idle keeping only the kva
+    /// `slot` (its pages are gone: `B_RELEASED`, `b_data` the slot's address); the token is
+    /// consumed. Panics on a mapped token (the view must be gone first) or a buffer that is
+    /// not busy with it.
+    pub(crate) fn release_bare(mut self, slot: BufSlot) {
+        if self.view.is_some() {
+            kpanic(format_args!(
+                "buf_dealloc_mem: buffer {:p} is still mapped",
+                self.buf()
+            ));
+        }
+        let bp = self.anchor();
+        let b = bp.buf();
+        let mut g = b.owned.lock();
+        if !matches!(g.slot, Slot::Busy) {
+            drop(g);
+            kpanic(format_args!("buf_dealloc_mem: buffer {:p} is not busy", b));
+        }
+        b.b_data.store(slot.va().as_usize(), Mem::Relaxed);
+        g.slot = Slot::Idle(Kva::Bare(slot));
         drop(g);
         self.consumed();
     }
@@ -854,12 +937,17 @@ impl BufRef {
                     b
                 ));
             }
-            g.slot = Slot::Idle(None);
+            g.slot = Slot::Idle(Kva::None);
         }
         match mem::replace(&mut self.hold, Hold::Cached(SecondaryRef::new())) {
             Hold::Cached(r) => Some(r),
             Hold::Foreign(_) => None,
         }
+    }
+
+    /// Whether the token was consumed (taken apart): its drop ends nothing.
+    fn is_consumed(&self) -> bool {
+        matches!(&self.hold, Hold::Cached(r) if !r.is_some())
     }
 
     /// Marks the token consumed: its hold an empty link, which ends nothing when dropped.
@@ -931,6 +1019,25 @@ impl BufRef {
     }
 }
 
+impl Drop for BufRef {
+    /// A token dropped unconsumed ends its busy period as `brelse` does (a cache buffer's;
+    /// the C's rule "every getblk is paired with a brelse", now the type's), or gives a
+    /// driver's buffer back idle.
+    fn drop(&mut self) {
+        if self.is_consumed() {
+            return;
+        }
+        let hold = mem::replace(&mut self.hold, Hold::Cached(SecondaryRef::new()));
+        let view = self.view.take();
+        let t = BufRef { hold, view };
+        if t.foreign_buf().is_some() {
+            t.release();
+        } else {
+            super::bio::brelse(t);
+        }
+    }
+}
+
 /// The address order of two buffers: what the lists' adapters compare (a list does not sort).
 fn by_address(a: &Buf, b: &Buf) -> Ordering {
     ptr::from_ref(a).addr().cmp(&ptr::from_ref(b).addr())
@@ -989,7 +1096,8 @@ mod tests {
         static MADE: Once = Once::new();
         MADE.call_once(|| {
             crate::testutil::install();
-            BUFPL.init(IPL_BIO, 0, "bufpl").expect("bufpl");
+            // bufinit's tests may have made it already.
+            let _ = BUFPL.init(IPL_BIO, 0, "bufpl");
         });
         &BUFPL
     }
@@ -1154,9 +1262,10 @@ mod tests {
         // and both machines, 64-bit alike); the native one carries the owned links (an
         // `OwnedEntry` and five `SecondaryEntry`s: 248 bytes where LZ's six links took about
         // 100) and the buffer's leaf lock with the token's slot (the view of an idle mapped
-        // buffer, or the parked token), `b_pobj` and `b_iodone`.
+        // buffer, its bare kva slot, or the parked token), `b_pobj` and `b_iodone`: 504
+        // bytes at N5.1's commit 2, 520 with `b_vp` and `b_bq` (a word each).
         assert_eq!(pool().item_size(), Some(size_of::<Buf>()));
-        assert_eq!(size_of::<Buf>(), 504);
+        assert_eq!(size_of::<Buf>(), 520);
     }
 }
 /* </TESTS> */

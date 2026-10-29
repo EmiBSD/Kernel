@@ -81,7 +81,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
@@ -1591,5 +1591,134 @@ macro_rules! test_proc_glue {
             $($($extra)*)?
         }
     };
+}
+/// A vnode double for the buffer cache's tests ([`crate::fs::bio::BufVnode`], LZ's `blkfs`):
+/// an in-memory disk of `DEV_BSIZE` sectors whose strategy transfers at once (between the
+/// buffer's bytes and the disk at `b_blkno`) and calls `biodone`; `VOP_BWRITE` is the cache's
+/// `bwrite`; `VOP_BMAP` the identity, with `run` blocks contiguous after each.
+pub struct BufTestVnode {
+    /// The vnode's buffer half.
+    pub bufs: crate::fs::bio::VnodeBufs,
+    /// The disk's bytes.
+    pub disk: Mutex<Vec<u8>>,
+    /// The strategy's reads.
+    pub reads: AtomicUsize,
+    /// The strategy's writes.
+    pub writes: AtomicUsize,
+    /// A block whose transfer fails with `EIO` (-1: none).
+    pub bad: core::sync::atomic::AtomicI64,
+    /// `v_holdcnt`.
+    pub holdcnt: AtomicUsize,
+    /// `VOP_BMAP`'s `runp`.
+    pub run: core::sync::atomic::AtomicI32,
+    /// `syncer_add_dirty` calls.
+    pub synced: AtomicUsize,
+}
+
+impl BufTestVnode {
+    /// A vnode over a disk of `blocks` sectors, sector `i` holding the byte `i`, leaked.
+    pub fn new(blocks: usize) -> &'static BufTestVnode {
+        let bsize = 1usize << crate::fs::bio::DEV_BSHIFT;
+        let mut disk = vec![0u8; blocks * bsize];
+        for (i, s) in disk.chunks_mut(bsize).enumerate() {
+            s.fill(i as u8);
+        }
+        let tv: &'static BufTestVnode = Box::leak(Box::new(BufTestVnode {
+            bufs: crate::fs::bio::VnodeBufs::new(),
+            disk: Mutex::new(disk),
+            reads: AtomicUsize::new(0),
+            writes: AtomicUsize::new(0),
+            bad: core::sync::atomic::AtomicI64::new(-1),
+            holdcnt: AtomicUsize::new(0),
+            run: core::sync::atomic::AtomicI32::new(0),
+            synced: AtomicUsize::new(0),
+        }));
+        tv.bufs.set_owner(tv);
+        tv
+    }
+}
+
+impl crate::fs::bio::BufVnode for BufTestVnode {
+    fn vhold(&self) {
+        self.holdcnt.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn vdrop(&self) {
+        self.holdcnt.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn strategy(&'static self, mut bp: crate::fs::buf::BufRef) -> Result<(), Errno> {
+        use crate::fs::buf::{B_ERROR, B_READ};
+        let bsize = 1usize << crate::fs::bio::DEV_BSHIFT;
+        let blk = bp.buf().blkno();
+        let off = blk as usize * bsize;
+        let len = bp.buf().bcount() as usize;
+        {
+            let mut d = lock_any(&self.disk);
+            if blk == self.bad.load(Ordering::Relaxed) || off + len > d.len() {
+                bp.buf().set_error(Some(Errno::EIO));
+                bp.buf().set(B_ERROR);
+            } else if bp.buf().isset(B_READ) {
+                bp.data().copy_from_slice(&d[off..off + len]);
+                self.reads.fetch_add(1, Ordering::Relaxed);
+            } else {
+                d[off..off + len].copy_from_slice(bp.data());
+                self.writes.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        bp.buf().set_resid(0);
+        crate::fs::bio::biodone(bp);
+        Ok(())
+    }
+
+    fn bwrite(&'static self, bp: crate::fs::buf::BufRef) -> Result<(), Errno> {
+        crate::fs::bio::bwrite(bp)
+    }
+
+    fn bmap(
+        &'static self,
+        bn: hal::sys::types::Daddr,
+    ) -> Result<(hal::sys::types::Daddr, i32), Errno> {
+        Ok((bn, self.run.load(Ordering::Relaxed)))
+    }
+
+    fn vtype(&self) -> crate::vm::vnode::VType {
+        crate::vm::vnode::VType::VREG
+    }
+
+    fn rdev(&self) -> hal::sys::types::Dev {
+        crate::fs::bio::NODEV
+    }
+
+    fn mnt_async(&self) -> bool {
+        false
+    }
+
+    fn count_io(&self, _write: bool, _async_: bool) {}
+
+    fn charge_io(&self, _output: bool) {}
+
+    fn syncer_add_dirty(&self) {
+        self.bufs.set_bioflag(crate::fs::bio::VBIOONSYNCLIST);
+        self.synced.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn syncer_remove(&self) {}
+
+    fn as_any(&'static self) -> &'static dyn core::any::Any {
+        self
+    }
+}
+
+/// A fresh buffer cache over [`pages_install`]'s memory of `bytes` (the guard held):
+/// `bufpages` pages, its kva slots, the kernel lock taken as a system call would.
+pub fn bufcache_install(bytes: usize, bufpages: i64) -> MutexGuard<'static, ()> {
+    let g = pages_install(bytes);
+    hal::klock::kernel_lock();
+    crate::fs::bio::bio_test_reset();
+    crate::fs::bufq::bufq_test_reset();
+    crate::fs::bio::BUFPAGES.store(bufpages, Ordering::Relaxed);
+    crate::fs::bio::bufinit(bytes / TEST_PAGE);
+    g
 }
 /* </CODE> */
