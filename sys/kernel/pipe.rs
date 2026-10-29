@@ -505,6 +505,15 @@ pub struct PipeKinfo {
     pub state: u32,
 }
 
+/// `pipe_rfiltops`'s filter: `EVFILT_READ` on a pipe.
+pub struct PipeRead;
+
+/// `pipe_wfiltops`'s filter: `EVFILT_WRITE` on a pipe.
+pub struct PipeWrite;
+
+/// `pipe_efiltops`'s filter: `EVFILT_EXCEPT` on a pipe, poll's hang-up only.
+pub struct PipeExcept;
+
 /// The pipes' globals: the pool of pairs, `nbigpipe` and `amountpipekva`, and the kernel map's
 /// pages the buffers come from. `bsd` keeps one `static` of it over its glue.
 pub struct Pipes<G: ProcGlue> {
@@ -1336,15 +1345,6 @@ impl<G: ProcGlue> PipePair<G> {
         }
     }
 }
-
-/// `pipe_rfiltops`'s filter: `EVFILT_READ` on a pipe.
-pub struct PipeRead;
-
-/// `pipe_wfiltops`'s filter: `EVFILT_WRITE` on a pipe.
-pub struct PipeWrite;
-
-/// `pipe_efiltops`'s filter: `EVFILT_EXCEPT` on a pipe, poll's hang-up only.
-pub struct PipeExcept;
 
 /// The pair and the pipe of a knote's pipe file (`kn->kn_fp->f_data`): the pair counted
 /// again (the knote's file is a temporary handle); `panic(9)` for a file that is not a pipe's,
@@ -2291,14 +2291,27 @@ mod tests {
         fp.frele(Some(p)).unwrap();
         assert_eq!(pipes.nout(), 2);
 
+        // O_CLOFORK: UF_FORKCLOSE (and not UF_EXCLOSE) on both descriptors.
+        assert_eq!(pipes.sys_pipe2(p, fdp, O_CLOFORK), Ok(()));
+        fdp.copyin_slice(&mut fds).unwrap();
+        assert_eq!(fds, [4, 5]);
+        for fd in fds {
+            let (fp, fl) = crate::descrip::fd_getfile_flags(p.fd(), fd).unwrap();
+            let both = crate::descrip::UF_EXCLOSE | crate::descrip::UF_FORKCLOSE;
+            assert_eq!(fl & both, crate::descrip::UF_FORKCLOSE, "descriptor {fd}");
+            assert_eq!(fp.flag(), FREAD | FWRITE);
+            fp.frele(Some(p)).unwrap();
+        }
+        assert_eq!(pipes.nout(), 3);
+
         // A fault on the copy: both descriptors released, the pair back with its files.
         let bad = UserPtr::new(testutil::USER_BASE + testutil::USER_LEN - 4);
         assert_eq!(pipes.sys_pipe2(p, bad, O_CLOFORK), Err(Errno::EFAULT));
-        assert!(crate::descrip::fd_getfile(p.fd(), 4).is_none());
-        assert!(crate::descrip::fd_getfile(p.fd(), 5).is_none());
-        assert_eq!(pipes.nout(), 2);
+        assert!(crate::descrip::fd_getfile(p.fd(), 6).is_none());
+        assert!(crate::descrip::fd_getfile(p.fd(), 7).is_none());
+        assert_eq!(pipes.nout(), 3);
 
-        for fd in 0..4 {
+        for fd in 0..6 {
             crate::event::tests::close_fd(p, fd);
         }
         assert_eq!(pipes.nout(), 0, "the last close frees each pair");

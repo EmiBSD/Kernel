@@ -121,7 +121,6 @@ trait = "BufCacheStats"
 for = ["sys/kernel/vm/pmemrange.rs"]
 paid_by = "N5"
 
-
 # bsd: uiomove over a Uio (sys/kern/kern_subr.rs; the Uio itself is kernel::uio's since
 # N4.3, bsd's alias in sys/sys/uio.rs), passed down by the glue's fo_read/fo_write as
 # &mut dyn UioMove; N3.5 S1: uio_rw (is_write) for uvm_io (kern.proc_args). N4.3: paid by
@@ -153,7 +152,6 @@ paid_by = "N7"
 trait = "FileGlue"
 for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
 paid_by = "N8"
-
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
 # LAPIC_IPI_INVLPG/INVLRANGE/INVLTLB and wbinvd_on_all_cpus (sys/arch/amd64/amd64/{cpu,ipi}.rs),
@@ -187,7 +185,6 @@ paid_by = "N7"
 trait = "AcctFile"
 for = ["sys/kernel/acct.rs"]
 paid_by = "N5"
-
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
@@ -243,7 +240,6 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-
 # bsd: struct vnode (v_uvm, v_type == VBLK, VTEXT, v_mount, vref, vrele, vget(LK_NOWAIT),
 # vn_lock, VOP_UNLOCK, VOP_GETATTR, VOP_READ and VOP_WRITE over a UIO_SYSSPACE uio with
 # curproc's credentials: sys/sys/vnode.rs, sys/kern/vfs_subr.rs, vfs_vnops.rs, vfs_vops.rs),
@@ -255,7 +251,6 @@ paid_by = "N6"
 trait = "VnodeOps"
 for = ["sys/kernel/vm/vnode.rs", "sys/kernel/vm/mmap.rs"]
 paid_by = "N5"
-
 
 # bsd: the sysctl(2) nodes of the subsystems still in bsd, registered by id with
 # kernel::sysctl's dispatcher by sys/kern/kern_sysctl.rs's sysctl_register_legacy (from

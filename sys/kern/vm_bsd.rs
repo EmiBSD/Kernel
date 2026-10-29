@@ -533,7 +533,6 @@ use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_subr::uiomove;
-
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_subr::{vget, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
@@ -1301,8 +1300,8 @@ const _: () = {
 };
 
 /*
- * The vnode as the kernel's vnode pager reaches it (uvm_vnode.c, bridges.toml `VnodeOps`
- * and `SysInfo`), and the file systems' calls into the pager with bsd's signatures.
+ * The vnode as the kernel's vnode pager reaches it (uvm_vnode.c, bridges.toml `VnodeOps`),
+ * and the file systems' calls into the pager with bsd's signatures.
  */
 
 /// `VOP_READ`/`VOP_WRITE` of `buf` at `off` (`UIO_SYSSPACE`, `curproc`'s credentials): the

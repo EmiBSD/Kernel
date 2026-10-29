@@ -3577,7 +3577,7 @@ pub fn uvm_map_inentry_fix(
 /// the C, the format's two words `what` and `reason` (see the module's redesign).
 struct InentryReport<'a> {
     /// `ps_comm`.
-    comm: &'a [u8],
+    comm: crate::proc::Name,
     /// `ps_pid`.
     pid: i32,
     /// `p_tid`.
@@ -3594,12 +3594,36 @@ struct InentryReport<'a> {
     reason: &'a str,
 }
 
+impl<'a> InentryReport<'a> {
+    /// The line for the thread `p` (its process's `ps_comm` and `ps_pid`, its `p_tid`), the
+    /// register `what` at `addr` and the range `ie` holds.
+    fn of<G: ProcGlue>(
+        p: &Thread<G>,
+        what: &'a str,
+        addr: usize,
+        ie: &InentryCache,
+        reason: &'a str,
+    ) -> Self {
+        let pr = p.process();
+        Self {
+            comm: pr.comm(),
+            pid: pr.ps_pid,
+            tid: p.p_tid.get(),
+            what,
+            addr,
+            start: ie.start,
+            end: ie.end,
+            reason,
+        }
+    }
+}
+
 impl core::fmt::Display for InentryReport<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(
             f,
             "[{}]{}/{} {}={:x} inside {:x}-{:x}: {}",
-            core::str::from_utf8(self.comm).unwrap_or("?"),
+            core::str::from_utf8(&self.comm).unwrap_or("?"),
             self.pid,
             self.tid,
             self.what,
@@ -3633,17 +3657,7 @@ pub fn uvm_map_inentry<G: ProcGlue>(
         if !ok {
             hal::klock::kernel_lock();
             let pr = p.process();
-            let comm = pr.comm();
-            let report = InentryReport {
-                comm: &comm,
-                pid: pr.ps_pid,
-                tid: p.p_tid.get(),
-                what,
-                addr,
-                start: ie.start,
-                end: ie.end,
-                reason,
-            };
+            let report = InentryReport::of(&p, what, addr, ie, reason);
             crate::tty::uprintf(pr, format_args!("{report}"));
             pr.ps_acflag.set(pr.ps_acflag.get() | crate::acct::AMAP);
             // sv.sival_ptr = (void *)PROC_PC(p)
@@ -7621,20 +7635,15 @@ pub(crate) mod tests {
         assert_eq!(si.si_code, hal::sys::siginfo::SEGV_ACCERR);
         assert_eq!(si.si_addr(), 0x1234, "the trap's pc");
 
-        let report = InentryReport {
-            comm: b"pivot",
-            pid: 77,
-            tid: 100_077,
-            what: what.0,
-            addr: bad,
-            start: ie.start,
-            end: ie.end,
-            reason: what.1,
-        };
+        // The line uvm_map_inentry printed (the process has no terminal, so uprintf drops it):
+        // the thread's own ps_comm, ps_pid and p_tid, in that order.
+        let (pid, tid) = (pr.ps_pid, p.p_tid.get());
+        assert_ne!(pid, tid, "a test that tells the two apart");
+        let report = InentryReport::of(p, what.0, bad, &ie, what.1);
         assert_eq!(
             std::format!("{report}"),
             std::format!(
-                "[pivot]77/100077 sp={:x} inside {:x}-{:x}: not MAP_STACK\n",
+                "[pivot]{pid}/{tid} sp={:x} inside {:x}-{:x}: not MAP_STACK\n",
                 bad,
                 stk,
                 stk + len - 1

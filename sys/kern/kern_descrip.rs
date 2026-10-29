@@ -123,7 +123,6 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
-
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
