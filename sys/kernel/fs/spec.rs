@@ -126,8 +126,16 @@
 //! - `spec_open_clone`'s `struct cloneinfo` in the parent's `v_data` (`M_TEMP`, read back
 //!   and freed by `vn_open`) -> the clone recorded in the parent's specinfo
 //!   ([`clone_restore`] takes it back): the parent's node word is never overwritten, so
-//!   nothing between the two can read a cloneinfo as a node. `M_TEMP` no longer counts the
-//!   cloneinfo's 16 bytes, allocated and freed within one `open(2)`.
+//!   nothing between the two can read a cloneinfo as a node. The allocation that no longer
+//!   goes through `malloc(9)` is `spec_open_clone`'s `malloc(sizeof(struct cloneinfo),
+//!   M_TEMP, M_WAITOK)` with `vn_open`'s `free(cip, M_TEMP, sizeof(*cip))`: one 16-byte
+//!   `M_TEMP` malloc and free per open of a `D_CLONE` device; what replaces it is the
+//!   specinfo's `clone` link, one word of the parent's specinfo (`M_VNODE`, allocated once
+//!   per device vnode by `checkalias`, not per open). So `vmstat -m`'s `temp` row counts one
+//!   request fewer per clone open (`ks_calls`; its in-use and memory figures are the same
+//!   after the open, the C's block being freed within it): the user accepted it on
+//!   2026-10-29, beside D-N5.2-2's recycled mounts and D-N5.2-3's "clonemap" row; nothing
+//!   else userland sees changes.
 //! - The device switch (`cdevsw[]`, `bdevsw[]`, `machine::conf` in `bsd`) is the bridge
 //!   [`Devsw`] (decision 45, paid by N7's device switch); a buffer passes to the driver's
 //!   strategy as it came ([`IoBuf`]).
