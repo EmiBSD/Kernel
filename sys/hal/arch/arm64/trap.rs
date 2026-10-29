@@ -194,7 +194,7 @@ fn esr_far() -> (u64, u64) {
             out(reg) esr,
             out(reg) far,
             options(nomem, nostack, preserves_flags)
-        )
+        );
     };
     (esr, far)
 }
@@ -499,7 +499,7 @@ fn midr() -> u64 {
     // SAFETY: `mrs` of `MIDR_EL1`, a read-only identification register: no memory, no
     // stack, no flags.
     unsafe {
-        core::arch::asm!("mrs {}, midr_el1", out(reg) v, options(nomem, nostack, preserves_flags))
+        core::arch::asm!("mrs {}, midr_el1", out(reg) v, options(nomem, nostack, preserves_flags));
     };
     v
 }

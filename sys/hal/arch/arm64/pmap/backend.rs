@@ -823,7 +823,7 @@ pub fn switch_mmu_kernel_table() {
             in("x0") ttbr1,
             out("x30") _,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -1553,7 +1553,7 @@ fn switch_space(pm: &Pmap, bits: u32) {
             tcr = out(reg) _,
             tmp = out(reg) _,
             options(nostack, preserves_flags),
-        )
+        );
     };
 }
 
@@ -1590,7 +1590,7 @@ pub fn init_lower_half() {
             set = in(reg) set,
             tcr = out(reg) _,
             options(nostack, preserves_flags),
-        )
+        );
     };
     cpu_tlb_flush();
     asid::set_curpm(&KERNEL_PMAP);
@@ -1671,7 +1671,7 @@ impl PmapBackend for Backend {
                 ttbr1 = out(reg) ttbr1,
                 mmfr0 = out(reg) mmfr0,
                 options(nomem, nostack, preserves_flags),
-            )
+            );
         };
         if tcr_t1sz(tcr) != T1SZ_4LEVEL {
             hal_panic(format_args!(
@@ -1785,7 +1785,7 @@ impl PmapBackend for Backend {
                 keep = in(reg) MAIR_KEEP,
                 set = in(reg) MAIR_SET,
                 options(nostack, preserves_flags),
-            )
+            );
         };
 
         // Every kernel mapping non-global, as the C's (see the redesign).

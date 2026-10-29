@@ -103,7 +103,7 @@ pub(crate) fn set_current(c: &'static CpuCore) {
     // which is what every reader assumes the register holds. Without `nomem`, so the store
     // of `INSTALLED` below stays after it.
     unsafe {
-        asm!("msr tpidr_el1, {}", in(reg) core::ptr::from_ref(c), options(nostack, preserves_flags))
+        asm!("msr tpidr_el1, {}", in(reg) core::ptr::from_ref(c), options(nostack, preserves_flags));
     };
     INSTALLED.store(true, Ordering::Release);
 }
@@ -124,7 +124,7 @@ pub(crate) fn intr_disable() -> u64 {
             "msr daifset, #3",
             out(reg) daif,
             options(nostack, preserves_flags)
-        )
+        );
     };
     daif
 }
