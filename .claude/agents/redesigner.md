@@ -60,7 +60,10 @@ the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
    Count each operation's lock and spl transitions against the C's (N5.1: under TCG every spl
    pair is an `ICC_PMR` write the host benches cannot see, and it cost fileread 35 %); one
    above the C's count is a defect to fix, not to report. Any walk or operation whose cost is
-   not the C's is named in `## Redesign` with the reason and the slice that fixes it.
+   not the C's is named in `## Redesign` with the reason and the slice that fixes it. The
+   order of every `hal` collection method is `docs/COLLECTIONS.md` (one row each, with the
+   note on when an RBT's `next` is O(1) amortized and when it is not); a method you add to a
+   `hal` collection, or whose order you change, gets its row in the same commit.
 7. File layout (`rust-kernel.md`, `lineage.md`): `/* <LICENSES> */` with the author's ISC block
    first and the original notice(s) of every LZ source whole after one blank line;
    `/* <CODE> */` with the `//! Upstream:` lines of every source, one `//! LZ: <path>@<12-hex>`
