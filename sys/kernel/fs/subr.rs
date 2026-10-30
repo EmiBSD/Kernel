@@ -81,6 +81,13 @@
 //!   `dounmount` and `sys_sync` move (N5.4); so does the NFS export list
 //!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`, and
 //!   `vntblinit`'s `rn_init`), until the NFS server moves (N6).
+//! - `vfs_stall` reads each successor before the body ([`mountlist_safe_restart`]), and a
+//!   successor unmounted while the body slept (`vfs_busy`'s wait, `VFS_SYNC`) restarts the
+//!   walk from the head past the mounts already handled (`MNT_STALLED` set when stalling,
+//!   clear when resuming): every mount still listed is synced and stalled. The C follows
+//!   the unmounted mount's stale `TAILQ_NEXT` (vfs_subr.c:1720-1726), a read of freed memory;
+//!   LZ's and N5.2's walk ended there, leaving the later mounts unsynced (D-N5.3-7). A mount
+//!   whose sync failed is tried again after such a restart.
 //!
 //! ## Redesign
 //! - LZ's global lists of `Cell` links under `unsafe impl Sync` (`VNODE_FREE_LIST`,
@@ -139,7 +146,8 @@ use super::bio::{self, BufVnode, DirtyPick, DirtyScan, NODEV};
 use super::buf::{B_BUSY, B_DELWRI, Buf, BufRef};
 use super::init::vfs_byname;
 use super::mount::{
-    Mount, MountLists, mountlist, mountlist_is_empty, vfs_busy, vfs_mount_alloc, vfs_unbusy,
+    Mount, MountLists, mountlist_is_empty, mountlist_safe_restart, vfs_busy, vfs_mount_alloc,
+    vfs_unbusy,
 };
 use super::spec::{
     BySpecnext, CLONE_SHIFT, CloneBits, D_CLONE, D_TTY, SPECHSZ, Specinfo, devsw, spechash,
@@ -1329,7 +1337,7 @@ pub fn printlockedvnodes<G: ProcGlue>() {
     use hal::sys::mount::{VB_NOWAIT, VB_READ};
     crate::prf::printf(format_args!("Locked vnodes\n"));
 
-    for mp in mountlist::<G>(false) {
+    for mp in super::mount::mountlist::<G>(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }
@@ -1514,7 +1522,11 @@ pub fn vfs_stall<G: ProcGlue>(p: &Thread<G>, stall: bool) -> Result<(), Errno> {
 
     // The loop variable mp is protected by vfs_busy() so that it cannot be unmounted while
     // VFS_SYNC() sleeps. Traverse forward to keep the lock order consistent with dounmount().
-    for mp in mountlist::<G>(false) {
+    // The successor is read before the body, and one unmounted while the body slept restarts
+    // the walk past the mounts this pass already handled (marked MNT_STALLED when stalling,
+    // cleared when resuming).
+    let done = if stall { MNT_STALLED } else { 0 };
+    for mp in mountlist_safe_restart::<G>(false, MNT_STALLED, done) {
         let (name, len) = mp.mntonname();
         let name = core::str::from_utf8(&name[..len]).unwrap_or("?");
         if stall {

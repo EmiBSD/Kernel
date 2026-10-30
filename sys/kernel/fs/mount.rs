@@ -776,20 +776,40 @@ pub fn mountlist<G: ProcGlue>(rev: bool) -> MountIter<G> {
 
 /// A walk of `mountlist` (`TAILQ_FOREACH_SAFE`, `TAILQ_FOREACH_REVERSE_SAFE` with `rev`): the
 /// successor is read before a mount is handed out, so the walker may remove the mount it holds
-/// (`vfs_unmountall`'s `dounmount`); a successor that left the list ends the walk.
+/// (`vfs_unmountall`'s `dounmount`). A successor that left the list by the time it is reached
+/// ends the walk ([`mountlist_safe`]), or restarts it from the head past the mounts the walker
+/// already handled ([`mountlist_safe_restart`]). O(1) a step, as the C's; a restart walks the
+/// handled mounts again once, O(n), and happens only when an unmount races the walker.
 pub struct MountIterSafe<G: ProcGlue> {
     next: Option<&'static Mount<G>>,
     rev: bool,
+    /// `(mask, done)`: on a restart, a mount whose `flag() & mask == done` was handled.
+    restart: Option<(i32, i32)>,
 }
 
 impl<G: ProcGlue> Iterator for MountIterSafe<G> {
     type Item = &'static Mount<G>;
 
     fn next(&mut self) -> Option<&'static Mount<G>> {
-        let mp = self.next?;
+        let mut mp = self.next?;
         if !mp.is_listed() {
-            self.next = None;
-            return None;
+            let Some((mask, done)) = self.restart else {
+                self.next = None;
+                return None;
+            };
+            // The successor left the list while the last body slept (an unmount): start again
+            // from the head, past the mounts already handled.
+            let mut at = mountlist_first::<G>(self.rev);
+            while let Some(m) = at
+                && m.flag() & mask == done
+            {
+                at = mountlist_next(m, self.rev);
+            }
+            let Some(m) = at else {
+                self.next = None;
+                return None;
+            };
+            mp = m;
         }
         self.next = mountlist_next(mp, self.rev);
         Some(mp)
@@ -802,6 +822,20 @@ pub fn mountlist_safe<G: ProcGlue>(rev: bool) -> MountIterSafe<G> {
     MountIterSafe {
         next: mountlist_first(rev),
         rev,
+        restart: None,
+    }
+}
+
+/// [`mountlist_safe`] for a walker whose body may sleep while another thread unmounts the
+/// successor (`vfs_stall`'s `vfs_busy` and `VFS_SYNC`): an unlisted successor restarts the walk
+/// from the head, skipping the mounts whose `flag() & mask == done` (the ones the body already
+/// handled and marked), so every mount still listed is handed out once. The C follows the
+/// unmounted mount's stale `TAILQ_NEXT` there (vfs_subr.c:1720).
+pub fn mountlist_safe_restart<G: ProcGlue>(rev: bool, mask: i32, done: i32) -> MountIterSafe<G> {
+    MountIterSafe {
+        next: mountlist_first(rev),
+        rev,
+        restart: Some((mask, done)),
     }
 }
 /* </CODE> */
@@ -809,8 +843,65 @@ pub fn mountlist_safe<G: ProcGlue>(rev: bool) -> MountIterSafe<G> {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
+    use std::vec::Vec;
+
+    use hal::sys::mount::MNT_STALLED;
+
     use super::*;
     use crate::fs::testfs::TestGlue;
+
+    /// `vfs_stall`'s walk (D-N5.3-7): a successor that leaves the list while the body runs
+    /// (an unmount while `vfs_busy` slept) restarts the walk past the mounts the body marked,
+    /// so every mount still listed is visited once, the current one leaving the list too; the
+    /// plain safe walk ends at the unlisted successor.
+    #[test]
+    fn a_restarting_safe_walk_survives_an_unlisted_successor() {
+        let _g = crate::fs::testfs::setup();
+        let mk = || -> &'static Mount<TestGlue> {
+            let mp: &'static Mount<TestGlue> = Box::leak(Box::new(Mount::new_unpooled(None)));
+            mountlist_insert_tail(mp);
+            mp
+        };
+        let (a, b, c, d) = (mk(), mk(), mk(), mk());
+        let mut seen = Vec::new();
+        for mp in mountlist_safe_restart::<TestGlue>(false, MNT_STALLED, MNT_STALLED) {
+            seen.push(mp.addr());
+            mp.flag_set(MNT_STALLED);
+            if core::ptr::eq(mp, a) {
+                // b, the successor already read, is unmounted meanwhile
+                mountlist_remove(b);
+            }
+            if core::ptr::eq(mp, c) {
+                // the current mount leaves the list
+                mountlist_remove(c);
+            }
+        }
+        assert_eq!(seen, [a.addr(), c.addr(), d.addr()]);
+        // The resume pass (done = 0): the mounts it cleared are skipped on a restart.
+        let e = mk();
+        e.flag_set(MNT_STALLED);
+        let mut seen = Vec::new();
+        for mp in mountlist_safe_restart::<TestGlue>(false, MNT_STALLED, 0) {
+            seen.push(mp.addr());
+            mp.flag_clr(MNT_STALLED);
+            if core::ptr::eq(mp, a) {
+                mountlist_remove(d);
+            }
+        }
+        assert_eq!(seen, [a.addr(), e.addr()], "d left, a was resumed already");
+        // The plain safe walk ends there.
+        let f = mk();
+        let mut seen = Vec::new();
+        for mp in mountlist_safe::<TestGlue>(false) {
+            seen.push(mp.addr());
+            if core::ptr::eq(mp, a) {
+                mountlist_remove(e);
+            }
+        }
+        assert_eq!(seen, [a.addr()], "f not reached");
+        assert!(f.is_listed());
+    }
 
     #[test]
     fn the_four_io_counters_land_in_every_copy_of_the_statistics() {
