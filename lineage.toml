@@ -7488,7 +7488,8 @@ lz = ["sys/sys/device.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/dirent.rs"
+rust = "sys/hal/sys/dirent.rs"
+crate = "hal"
 lz = ["sys/sys/dirent.rs"]
 status = "inherited"
 

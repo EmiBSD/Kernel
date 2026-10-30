@@ -35,8 +35,7 @@ pub mod clockintr;
 #[forbid(unsafe_code)]
 pub mod conf;
 pub mod device;
-#[forbid(unsafe_code)]
-pub mod dirent;
+pub use hal::sys::dirent;
 pub mod disk;
 pub mod disklabel;
 #[forbid(unsafe_code)]
