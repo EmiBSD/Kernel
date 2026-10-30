@@ -3859,19 +3859,18 @@ mod tests {
         // mountd(8): export it read-write to 10.0.2.0/24, root mapped to root.
         let net = sin(2, [10, 0, 2, 0]);
         let mask = sin(2, [255, 255, 255, 0]);
-        let mut ua = UfsArgs {
+        let ua = UfsArgs {
             fspec: 0,
             export_info: args(MNT_EXPORTED, 0, Some(net), Some(mask)),
         };
+        // The type and the arguments in the double's user memory, where the kernel's
+        // `sys_mount` copies them in.
+        let ub =
+            crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(core::slice::from_ref(&ua)));
         sys(
             sys_mount,
             p,
-            &[
-                b"ffs\0".as_ptr() as usize,
-                path(b"/\0"),
-                MNT_UPDATE as usize,
-                ptr::from_mut(&mut ua) as usize,
-            ],
+            &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
         )
         .unwrap();
         let client = Some(nam([10, 0, 2, 9], 700));

@@ -863,6 +863,7 @@ mod tests {
         assert_eq!(open(p, b"/s", FREAD).err(), Some(Errno::EOPNOTSUPP));
         assert_eq!(open(p, b"/nope", FREAD).err(), Some(Errno::ENOENT));
         // A creation the file system cannot make, and one its directory refuses.
+        crate::fs::testfs::set_create_error(Errno::EOPNOTSUPP);
         assert_eq!(
             open(p, b"/a/new", FWRITE | O_CREAT).err(),
             Some(Errno::EOPNOTSUPP)

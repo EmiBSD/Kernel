@@ -97,10 +97,12 @@ impl NfsDlmount {
         Self {
             ndm_args: NfsArgs {
                 version: 0,
+                _pad0: 0,
                 addr: 0,
                 addrlen: 0,
                 sotype: 0,
                 proto: 0,
+                _pad1: 0,
                 fh: 0,
                 fhsize: 0,
                 flags: 0,
@@ -113,6 +115,7 @@ impl NfsDlmount {
                 readahead: 0,
                 leaseterm: 0,
                 deadthresh: 0,
+                _pad2: 0,
                 hostname: 0,
                 acregmin: 0,
                 acregmax: 0,

@@ -1197,6 +1197,94 @@ pub fn namei_pledge(path: &[u8]) -> Result<(), hal::sys::errno::Errno> {
     NAMEI_PLEDGE.with(Cell::get).map_or(Ok(()), Err)
 }
 
+std::thread_local! {
+    static PLEDGE_FLOCK: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static PLEDGE_CHOWN: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_ADD: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_DONE: Cell<bool> = const { Cell::new(false) };
+    static UNVEIL_PATHS_PID: Cell<Option<hal::sys::types::Pid>> = const { Cell::new(None) };
+}
+
+/// The process whose unveil table the test proc glues' `unveil_state` says has paths
+/// (`ps_uvpaths != NULL`), on this thread from now on.
+pub fn set_unveil_paths_pid(pid: Option<hal::sys::types::Pid>) {
+    UNVEIL_PATHS_PID.with(|c| c.set(pid));
+}
+
+/// The process [`set_unveil_paths_pid`] named.
+pub fn unveil_paths_pid() -> Option<hal::sys::types::Pid> {
+    UNVEIL_PATHS_PID.with(Cell::get)
+}
+
+/// What the test file glues' `pledge_flock` answers on this thread from now on (`None`:
+/// allowed).
+pub fn set_pledge_flock(e: Option<hal::sys::errno::Errno>) {
+    PLEDGE_FLOCK.with(|c| c.set(e));
+}
+
+/// The test file glues' `pledge_flock`: the answer [`set_pledge_flock`] set.
+pub fn pledge_flock_answer() -> Result<(), hal::sys::errno::Errno> {
+    PLEDGE_FLOCK.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// What the test proc glues' `pledge_chown` answers on this thread from now on.
+pub fn set_pledge_chown(e: Option<hal::sys::errno::Errno>) {
+    PLEDGE_CHOWN.with(|c| c.set(e));
+}
+
+/// The test proc glues' `pledge_chown`: the answer [`set_pledge_chown`] set, the call logged
+/// with its ids (while [`file_log_on`]).
+pub fn pledge_chown_answer(
+    uid: hal::sys::types::Uid,
+    gid: hal::sys::types::Gid,
+) -> Result<(), hal::sys::errno::Errno> {
+    if file_log_on() {
+        file_log_push(std::format!("pledge_chown {uid} {gid}"));
+    }
+    PLEDGE_CHOWN.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// What the test proc glues' `unveil_add` answers on this thread from now on.
+pub fn set_unveil_add(e: Option<hal::sys::errno::Errno>) {
+    UNVEIL_ADD.with(|c| c.set(e));
+}
+
+/// The test proc glues' `unveil_add`: the answer [`set_unveil_add`] set, the call logged with
+/// what the lookup left (`ni_vp`, `ni_dvp`) and the permissions (while [`file_log_on`]).
+pub fn unveil_add_answer(
+    vp: bool,
+    dvp: bool,
+    permissions: &[u8],
+) -> Result<(), hal::sys::errno::Errno> {
+    if file_log_on() {
+        file_log_push(std::format!(
+            "unveil_add vp={vp} dvp={dvp} {}",
+            std::string::String::from_utf8_lossy(permissions)
+        ));
+    }
+    UNVEIL_ADD.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// The test proc glues' `unveil_set_done`: this thread's process is done unveiling.
+pub fn unveil_done_set() {
+    hook_log("unveil_set_done");
+    UNVEIL_DONE.with(|c| c.set(true));
+}
+
+/// Whether this thread's process is done unveiling (`ps_uvdone`); [`unveil_done_reset`]
+/// starts again.
+pub fn unveil_done() -> bool {
+    UNVEIL_DONE.with(Cell::get)
+}
+
+/// This thread's process may unveil again, and the pledge and unveil answers allow.
+pub fn unveil_done_reset() {
+    UNVEIL_DONE.with(|c| c.set(false));
+    PLEDGE_FLOCK.with(|c| c.set(None));
+    PLEDGE_CHOWN.with(|c| c.set(None));
+    UNVEIL_ADD.with(|c| c.set(None));
+}
+
 /// What the test proc glues' `unveil_check_final` answers on this thread from now on.
 pub fn set_unveil_final(e: Option<hal::sys::errno::Errno>) {
     UNVEIL_FINAL.with(|c| c.set(e));
@@ -1535,6 +1623,10 @@ macro_rules! test_file_glue {
 
         static TEST_PIPE_OPS: TestPipeOps = TestPipeOps;
 
+        /// A test glue's vnode files' operations: the kernel's `vnops`.
+        static TEST_VNODE_FILE_OPS: $crate::fs::vnops::VnodeFileOps =
+            $crate::fs::vnops::VnodeFileOps;
+
         impl $crate::file::FileGlue for $name {
             type Proc = $proc;
             type Ops = dyn $crate::file::FileOps<$name>;
@@ -1582,6 +1674,18 @@ macro_rules! test_file_glue {
             fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
                 d.pipe.as_ref()
             }
+            fn vnode_file(
+                vp: &'static $crate::fs::vnode::Vnode<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
+                (
+                    &TEST_VNODE_FILE_OPS,
+                    $crate::testutil::TestFileData {
+                        id: vp.addr(),
+                        kvnode: Some(vp),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
+            }
             fn pipe_file(end: $crate::pipe::PipeEnd<$proc>) -> (&'static Self::Ops, Self::Data) {
                 (
                     &TEST_PIPE_OPS,
@@ -1604,7 +1708,7 @@ macro_rules! test_file_glue {
             fn pledge_flock(
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
-                Ok(())
+                $crate::testutil::pledge_flock_answer()
             }
             fn pledge_ioctl(
                 _p: &$crate::proc::Thread<$proc>,
@@ -1623,13 +1727,6 @@ macro_rules! test_file_glue {
                 VFS_TABLES.with(|t| *t)
             }
             fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
-            fn dounmount(
-                _mp: &'static $crate::fs::mount::Mount<$proc>,
-                _flags: i32,
-                _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Ok(())
-            }
         }
     };
 }
@@ -1751,6 +1848,36 @@ macro_rules! test_proc_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::unveil_final_at(ni.ni_unveil_match);
                 $crate::testutil::unveil_final()
+            }
+            fn pledge_chown(
+                _p: &$crate::proc::Thread<Self>,
+                uid: hal::sys::types::Uid,
+                gid: hal::sys::types::Gid,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_chown_answer(uid, gid)
+            }
+            fn unveil_add(
+                _p: &$crate::proc::Thread<Self>,
+                ni: &$crate::fs::vops::Nd<'_, Self>,
+                permissions: &[u8],
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::unveil_add_answer(
+                    ni.ni_vp.is_some(),
+                    ni.ni_dvp.is_some(),
+                    permissions,
+                )
+            }
+            fn unveil_removevnode(_vp: &'static $crate::fs::vnode::Vnode<Self>) {
+                $crate::testutil::hook_log("unveil_removevnode");
+            }
+            fn unveil_set_done(_pr: &$crate::proc::Process<Self>) {
+                $crate::testutil::unveil_done_set();
+            }
+            fn unveil_state(pr: &$crate::proc::Process<Self>) -> $crate::proc::UnveilState {
+                $crate::proc::UnveilState {
+                    paths: $crate::testutil::unveil_paths_pid() == Some(pr.ps_pid),
+                    done: $crate::testutil::unveil_done(),
+                }
             }
             /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
             fn setitimer(

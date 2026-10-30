@@ -42,6 +42,7 @@ pub mod physio;
 pub mod spec;
 pub mod subr;
 pub mod sync;
+pub mod syscalls;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testfs;
 pub mod vnode;

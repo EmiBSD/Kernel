@@ -632,6 +632,12 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);
     /// `None` for another object.
     fn pipe_of(d: &Self::Data) -> Option<&crate::pipe::PipeEnd<Self::Proc>>;
+    /// `vnops` and the object of a new vnode file (`doopenat`'s and `sys_fhopen`'s `f_ops`
+    /// and `f_data`): the object is the vnode `vp`, whose use count the open took (`vn_open`)
+    /// and the file's last close gives back (`vn_closefile`).
+    fn vnode_file(
+        vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
+    ) -> (&'static Self::Ops, Self::Data);
     /// `pipeops` and the object of a new pipe file (`dopipe`'s `f_ops` and `f_data`): the
     /// object holds `end`, the file's pipe, which goes with the file's last reference
     /// (`pipe_close`'s `pipe_destroy`).
@@ -652,13 +658,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
     fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `dounmount(mp, flags, p)` (`vop_generic_revoke`'s forced unmount of a revoked block
-    /// device's file system; `bsd`'s until N5.4).
-    fn dounmount(
-        mp: &'static crate::fs::mount::Mount<Self::Proc>,
-        flags: i32,
-        p: &Thread<Self::Proc>,
-    ) -> Result<(), Errno>;
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

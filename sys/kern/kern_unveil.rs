@@ -962,13 +962,12 @@ mod tests {
         assert!(uv.uv_names.is_empty());
     }
 
-    /// `unveil(path, permissions)` through the system call, `None` for a NULL argument.
+    /// `unveil(path, permissions)` through the system call, `None` for a NULL argument; the
+    /// strings in the double's user memory, where the kernel's `copyinstr` reads them.
     fn unveil(p: &Proc, path: Option<&[u8]>, perms: Option<&[u8]>) -> Result<(), Errno> {
         let cstr = |s: Option<&[u8]>| -> Register {
             s.map_or(0, |s| {
-                let mut v = s.to_vec();
-                v.push(0);
-                Box::leak(v.into_boxed_slice()).as_ptr() as Register
+                crate::kern::vfs_subr::tests::user_str(s).addr() as Register
             })
         };
         let mut v: SysArgs = [0; 6];

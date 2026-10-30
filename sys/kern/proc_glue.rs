@@ -714,6 +714,30 @@ impl ProcGlue for BsdProcGlue {
         }
     }
 
+    fn pledge_chown(
+        p: &Proc,
+        uid: crate::sys::types::Uid,
+        gid: crate::sys::types::Gid,
+    ) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_chown(p, uid, gid)
+    }
+
+    fn unveil_add(
+        p: &Proc,
+        ni: &crate::sys::namei::Nameidata<'_>,
+        permissions: &[u8],
+    ) -> Result<(), Errno> {
+        crate::kern::kern_unveil::unveil_add(p, ni, permissions)
+    }
+
+    fn unveil_removevnode(vp: &'static crate::sys::vnode::Vnode) {
+        crate::kern::kern_unveil::unveil_removevnode(vp);
+    }
+
+    fn unveil_set_done(pr: &Process) {
+        pr.ps_uvdone.set(1);
+    }
+
     fn cpu_unit(n: usize) -> Option<u64> {
         crate::kern::kern_sched::cpu_info_by_number(n).map(|ci| {
             u64::from(<crate::machine::Machine as crate::machine::Cpu>::cpu_info_unit(ci))

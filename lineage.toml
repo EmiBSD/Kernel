@@ -5032,7 +5032,7 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
@@ -5631,7 +5631,7 @@ notes = "N4.8a: settime, ratecheck, ppsratecheck (ppsratecheck_shared under kern
 rust = "sys/kern/kern_unveil.rs"
 lz = ["sys/kern/kern_unveil.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/kern/kern_watchdog.rs"
@@ -5933,14 +5933,15 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/syscalls.rs"]
 notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's"
 
 [[module]]
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/syscalls.rs"]
+notes = "N5.4: an adapter of no logic over kernel::fs::syscalls: bsd's sysent[] rows of the 64 calls of vfs_syscalls.c and __getcwd (struct sys_*_args unpacked, retval[0] set), the positioned I/O rows over kernel::descrip, VFS_ENTRIES (the Native entries over kern_descrip::native), and LZ's names for the other bsd modules and their tests (dounmount and getvnode re-exported; domknodat, dolinkat, dosymlinkat, dounlinkat, doreadlinkat, dorenameat and domkdirat over a pathname's address)"
 
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
@@ -7101,7 +7102,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/nam
 rust = "sys/nfs/nfs_serv.rs"
 lz = ["sys/nfs/nfs_serv.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_socket.rs"
@@ -7118,7 +7119,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_srvsubs.rs"
 lz = ["sys/nfs/nfs_srvsubs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_subs.rs"
@@ -7141,7 +7142,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_vfsops.rs"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_vnops.rs"
@@ -7152,7 +7153,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 [[module]]
 rust = "sys/nfs/nfsdiskless.rs"
 lz = ["sys/nfs/nfsdiskless.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/mount.rs"]
 
 [[module]]
 rust = "sys/nfs/nfsm_subs.rs"
@@ -7646,7 +7648,7 @@ rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs"]
-notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps the *_args with their 3 read_unaligned (LZ's, N5.4) and struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6)"
+notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -7907,7 +7909,7 @@ rust = "sys/hal/sys/mount.rs"
 crate = "hal"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
-notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); the *_args stay bsd's (N5.4)"
+notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); N5.4 (D-N5.4-3): the mount arguments moved here, ExportArgs, UfsArgs, MfsArgs, IsoArgs, NfsArgs, MsdosfsArgs, NtfsArgs, UdfArgs, TmpfsArgs and FusefsArgs with their constants, and <sys/ucred.h>'s struct xucred (Xucred, which export_args embeds; ucred.h's licence block and Upstream/LZ lines with it), each AbiPod through abi_pod! with its holes named and from_bytes over hal::user::pod_from_bytes; bsd's sys/sys/mount.rs and sys/sys/ucred.rs re-export them"
 
 [[module]]
 rust = "sys/kernel/fs/buf.rs"
@@ -8634,6 +8636,100 @@ native = ["VnodeFileOps"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/syscalls.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_syscalls.rs"]
+status = "redesigned"
+notes = "N5.4: vfs_syscalls.c: its 64 system calls (mount, unmount, sync, the statfs family, chdir, fchdir, chroot, unveil, __realpath, open, openat, __pledge_open, getfh, fhopen, fhstat, fhstatfs, the mknod, mkfifo, link, symlink, unlink, rename, mkdir and rmdir families, lseek, access, the stat family, pathconf, readlink, the chflags, chmod, chown and utimes families, truncate, ftruncate, fsync, revoke, getdents, umask, quotactl) over Result<T, Errno> and typed user pointers; the mount arguments copied into an MArray of vfc_datasize; dounmount's nested mounts on a hal::list (ByDounmount); bsd's sys/kern/vfs_syscalls.rs is its adapter"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::queued"
+native = []
+kind = "dropped"
+reason = "dounmount's work queue is a hal::list::List of the mounts (ByDounmount), whose walk lends the &'static Mount each link holds: no reference is made again from a pointer"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::get"
+native = ["sys/kernel/fs/namei.rs::pathbuf_get"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::get_zero"
+native = []
+kind = "dropped"
+reason = "no caller at the pin: sys___realpath, sys_unveil and dosymlinkat take the plain buffer and use only the bytes they wrote into it (copyinstr's length, the NUL they put)"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_ptr"
+native = []
+kind = "dropped"
+reason = "cn_rpbuf is the kernel Componentname's owned PathBuf (Option<PathBuf>, N5.3), given to it by sys___realpath: no address is handed over"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_str"
+native = []
+kind = "dropped"
+reason = "the callers slice the PathBuf to the length copyinstr returned or to its first NUL (cstrlen); the bytes are the same"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_mut"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::drop"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::upath"
+native = []
+kind = "dropped"
+reason = "the calls take their paths as UserPtr<u8> and give namei NiDirp::User(path.addr()) themselves; no raw pointer is converted"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs"
+native = ["mount_args"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::copyin"
+native = ["mount_args"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::as_mut"
+native = []
+kind = "dropped"
+reason = "mount_args returns an MArray<u8> (hal::malloc), whose DerefMut is the arguments' bytes VFS_MOUNT reads; no slice is made from an address"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::free"
+native = []
+kind = "dropped"
+reason = "the MArray's drop is the C's free(args, M_TEMP, vfc_datasize), on every path of sys_mount"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::statfs_bytes"
+native = ["sys/hal/user.rs::bytes_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::copyin_timevals"
+native = ["utimes_times"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::copyin_timespecs"
+native = ["utimens_times"]
+kind = "merged"
+
+[[module]]
 rust = "sys/hal/sys/syslimits.rs"
 crate = "hal"
 lz = ["sys/sys/syslimits.rs"]
@@ -8724,6 +8820,11 @@ notes = "N4.8a: suseconds_t is i64 (a long), the type of kernel::clock::Timeval'
 rust = "sys/sys/ucred.rs"
 lz = ["sys/sys/ucred.rs"]
 status = "redesigned"
+
+[[module.fn]]
+lz = "sys/sys/ucred.rs::Xucred"
+native = ["sys/hal/sys/mount.rs::Xucred"]
+kind = "moved"
 
 [[module]]
 rust = "sys/sys/uio.rs"
@@ -8817,7 +8918,7 @@ adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.r
 rust = "sys/tmpfs/tmpfs_vnops.rs"
 lz = ["sys/tmpfs/tmpfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs.rs"
@@ -8943,7 +9044,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
@@ -9016,7 +9117,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -9699,7 +9800,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -9719,12 +9820,12 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10)"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10); N5.4: table() takes the VFS entries (version 12)"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94)"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170)"
 
 [[extra]]
 rust = "sys/hal/module/rt.rs"
@@ -9743,12 +9844,12 @@ reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocati
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native)"
 
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl; N5.4: version 12 adds VfsEntries (KernelApi::vfs, last), the sixty-five VFS system calls' typed entries"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -10229,7 +10330,7 @@ reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setru
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
 crate = "kernel"
-reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend; N5.4: the system calls' rows (open.close, fstat, lseek, stat.3), the op names of sys/benches/fs.rs, over kernel::fs::syscalls with their paths in the double's user memory and a descriptor limit of 512"
 
 [[extra]]
 rust = "sys/kernel/benches/bio.rs"
@@ -10249,7 +10350,7 @@ reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timec
 [[extra]]
 rust = "sys/kernel/benches/pipe.rs"
 crate = "kernel"
-reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.4: its glue's vnode_file (a vnode file's ops, never called by the rows)"
 
 [[extra]]
 rust = "sys/kernel/benches/futex.rs"
@@ -11720,12 +11821,12 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"
 crate = "kernel"
-reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread)"
+reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread); N5.4: the namespace grows for the system calls (a tree of names that VOP_CREATE, VOP_MKNOD, VOP_MKDIR, VOP_RMDIR, VOP_REMOVE, VOP_LINK, VOP_SYMLINK and VOP_RENAME change, VOP_READDIR of its records, VOP_PATHCONF, VOP_REVOKE, VFS_VPTOFH, a terminal and a disk node, ufs_lookup's SAVENAME on a creation and a rename's target), the last attributes and mount arguments it saw, one-shot errors (set_create_error, set_open_error, set_mount_error); its setup forgets the buffer cache too (bio_test_reset: getnewvnode reads bcstats.numbufs)"
 
 [[extra]]
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
-reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock"
 
 [[extra]]
 rust = "sys/kernel/benches/vm.rs"

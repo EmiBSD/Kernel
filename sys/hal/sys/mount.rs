@@ -45,6 +45,73 @@
  *
  *	@(#)mount.h	8.15 (Berkeley) 7/14/94
  */
+
+/*
+ * Copyright (c) 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * (c) UNIX System Laboratories, Inc.
+ * All or some portions of this file are derived from material licensed
+ * to the University of California by American Telephone and Telegraph
+ * Co. or Unix System Laboratories, Inc. and are reproduced herein with
+ * the permission of UNIX System Laboratories, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)vfs_subr.c	8.13 (Berkeley) 4/18/94
+ */
+
+/*
+ * Copyright (c) 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)ucred.h	8.2 (Berkeley) 1/4/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -57,8 +124,10 @@
 //!
 //! Upstream: sys/sys/mount.h @ 3ce1f3f79392
 //! Upstream: sys/kern/vfs_subr.c @ 3ce1f3f79392
+//! Upstream: sys/sys/ucred.h @ 3ce1f3f79392
 //! LZ: sys/sys/mount.rs@3c62ede68802
 //! LZ: sys/kern/vfs_subr.rs@3c62ede68802
+//! LZ: sys/sys/ucred.rs@3c62ede68802
 //!
 //! ## Redesign
 //! - N5.1: `struct bcachestats` is `hal`'s, so that `kernel::fs::bio` (the counters' owner,
@@ -73,6 +142,17 @@
 //!   one copy; `bsd`'s `sys/sys/mount.rs` re-exports them. `struct statfs` and `fhandle_t` are
 //!   `AbiPod` through [`crate::abi_pod!`] (LZ's two `unsafe impl AbiPod` go); the layout
 //!   asserts came with them. The file systems' `*_args` stay `bsd`'s until N5.4.
+//! - N5.4 (D-N5.4-3): the file systems' mount arguments (`struct export_args`, `ufs_args`,
+//!   `mfs_args`, `iso_args`, `nfs_args`, `msdosfs_args`, `ntfs_args`, `udf_args`,
+//!   `tmpfs_args`, `fusefs_args`, their constants, and `<sys/ucred.h>`'s `struct xucred`, which
+//!   `export_args` embeds) are `hal`'s, so that the kernel's `mount(2)` (which copies the
+//!   bytes in, `kernel::fs::syscalls`) and the file systems that read them name one copy;
+//!   `bsd`'s `sys/sys/mount.rs` and `sys/sys/ucred.rs` re-export them. Each is `AbiPod`
+//!   through [`crate::abi_pod!`], the holes the C compiler leaves named (`_pad0`, ...), and
+//!   its `from_bytes` is `crate::user::pod_from_bytes` (LZ's three `read_unaligned` go); the
+//!   layout asserts came with them. `ntfs_args` and `fusefs_args` lose their `cfg`s here
+//!   (`option_ntfs`, `fuse`): a type costs nothing, and `bsd` builds their readers under
+//!   them.
 
 /// `struct bcachestats`: buffer cache statistics.
 #[repr(C)]
@@ -457,6 +537,556 @@ crate::abi_pod!(VfsconfAbi {
     vfc_datasize: u64,
 });
 
+/// `struct xucred` (`<sys/ucred.h>`): userspace version of the credentials, for use in
+/// syscalls arguments: `export_args`'s anonymous mapping (N5.4: here with the mount
+/// arguments that embed it; `bsd`'s `sys/sys/ucred.rs` re-exports it). The hole after
+/// `cr_ngroups` is named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Xucred {
+    /// `cr_uid`: user id.
+    pub cr_uid: crate::sys::types::Uid,
+    /// `cr_gid`: group id.
+    pub cr_gid: crate::sys::types::Gid,
+    /// `cr_ngroups`: number of groups.
+    pub cr_ngroups: i16,
+    /// The hole after `cr_ngroups`.
+    pub _pad0: u16,
+    /// `cr_groups`: groups.
+    pub cr_groups: [crate::sys::types::Gid; crate::sys::syslimits::NGROUPS_MAX],
+}
+
+// `#[repr(C)]` integers with the one hole named: no padding.
+crate::abi_pod!(Xucred {
+    cr_uid: crate::sys::types::Uid,
+    cr_gid: crate::sys::types::Gid,
+    cr_ngroups: i16,
+    _pad0: u16,
+    cr_groups: [crate::sys::types::Gid; crate::sys::syslimits::NGROUPS_MAX],
+});
+
+/// `struct export_args`: export arguments for local filesystem mount calls. The two
+/// `struct sockaddr *` are user addresses (`usize`), which the kernel copies in when it
+/// exports (`NFSSERVER`). The holes after `ex_anon`, `ex_addrlen` and `ex_masklen` are
+/// named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ExportArgs {
+    /// `ex_flags`: export related flags.
+    pub ex_flags: i32,
+    /// `ex_root`: mapping for root uid.
+    pub ex_root: crate::sys::types::Uid,
+    /// `ex_anon`: mapping for anonymous user.
+    pub ex_anon: Xucred,
+    /// The hole after `ex_anon`.
+    pub _pad0: u32,
+    /// `ex_addr`: net address to which exported.
+    pub ex_addr: usize,
+    /// `ex_addrlen`: and the net address length.
+    pub ex_addrlen: i32,
+    /// The hole after `ex_addrlen`.
+    pub _pad1: u32,
+    /// `ex_mask`: mask of valid bits in saddr.
+    pub ex_mask: usize,
+    /// `ex_masklen`: and the smask length.
+    pub ex_masklen: i32,
+    /// The hole after `ex_masklen`.
+    pub _pad2: u32,
+}
+
+crate::abi_pod!(ExportArgs {
+    ex_flags: i32,
+    ex_root: crate::sys::types::Uid,
+    ex_anon: Xucred,
+    _pad0: u32,
+    ex_addr: usize,
+    ex_addrlen: i32,
+    _pad1: u32,
+    ex_mask: usize,
+    ex_masklen: i32,
+    _pad2: u32,
+});
+
+/// `struct ufs_args`: arguments to mount UFS-based filesystems. `fspec` is the user address
+/// of the block special device's name.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct UfsArgs {
+    /// `fspec`: block special device to mount.
+    pub fspec: usize,
+    /// `export_info`: network export information.
+    pub export_info: ExportArgs,
+}
+
+impl UfsArgs {
+    /// `sizeof(struct ufs_args)`: the `vfc_datasize` of the UFS file systems.
+    pub const SIZE: usize = size_of::<UfsArgs>();
+
+    /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE` bytes),
+    /// `None` when there are none (the C's NULL `data`).
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        crate::user::pod_from_bytes(data)
+    }
+}
+
+crate::abi_pod!(UfsArgs {
+    fspec: usize,
+    export_info: ExportArgs,
+});
+
+/// `struct mfs_args`: arguments to mount MFS. `fspec` is the user address of the name to
+/// export for `statfs`, `base` the user address of the file system in the memory of the
+/// process that mounts it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MfsArgs {
+    /// `fspec`: name to export for statfs.
+    pub fspec: usize,
+    /// `export_info`: if exported MFSes are supported.
+    pub export_info: ExportArgs,
+    /// `base`: base of file system in memory.
+    pub base: usize,
+    /// `size`: size of file system.
+    pub size: u64,
+}
+
+impl MfsArgs {
+    /// `sizeof(struct mfs_args)`: the `vfc_datasize` of MFS.
+    pub const SIZE: usize = size_of::<MfsArgs>();
+
+    /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE` bytes),
+    /// `None` when there are none (the C's NULL `data`).
+    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+        crate::user::pod_from_bytes(data)
+    }
+}
+
+crate::abi_pod!(MfsArgs {
+    fspec: usize,
+    export_info: ExportArgs,
+    base: usize,
+    size: u64,
+});
+
+/// The `SIZE` and `from_bytes` of a file system's mount arguments, as [`UfsArgs`] has them:
+/// `sys_mount` copies `vfc_datasize` bytes in, and the file system reads its structure out
+/// (`pod_from_bytes`: the first `SIZE` bytes, `None` for fewer).
+macro_rules! mount_args_from_bytes {
+    ($t:ident, $c:literal) => {
+        impl $t {
+            #[doc = concat!("`sizeof(struct ", $c, ")`: the `vfc_datasize` of its file system.")]
+            pub const SIZE: usize = size_of::<$t>();
+
+            /// The arguments in the kernel copy `sys_mount` made of them (at least `SIZE`
+            /// bytes), `None` when there are none (the C's NULL `data`).
+            pub fn from_bytes(data: &[u8]) -> Option<Self> {
+                crate::user::pod_from_bytes(data)
+            }
+        }
+    };
+}
+
+/// `struct iso_args`: arguments to mount ISO 9660 filesystems. `fspec` is a user address.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct IsoArgs {
+    /// `fspec`: block special device to mount.
+    pub fspec: usize,
+    /// `export_info`: network export info.
+    pub export_info: ExportArgs,
+    /// `flags`: mounting flags, the `ISOFSMNT_*` below.
+    pub flags: i32,
+    /// `sess`: start sector of session.
+    pub sess: i32,
+}
+
+mount_args_from_bytes!(IsoArgs, "iso_args");
+
+crate::abi_pod!(IsoArgs {
+    fspec: usize,
+    export_info: ExportArgs,
+    flags: i32,
+    sess: i32,
+});
+
+/// `ISOFSMNT_NORRIP`: disable Rock Ridge Ext.
+pub const ISOFSMNT_NORRIP: i32 = 0x0000_0001;
+/// `ISOFSMNT_GENS`: enable generation numbers.
+pub const ISOFSMNT_GENS: i32 = 0x0000_0002;
+/// `ISOFSMNT_EXTATT`: enable extended attr.
+pub const ISOFSMNT_EXTATT: i32 = 0x0000_0004;
+/// `ISOFSMNT_NOJOLIET`: disable Joliet Ext.
+pub const ISOFSMNT_NOJOLIET: i32 = 0x0000_0008;
+/// `ISOFSMNT_SESS`: use `iso_args.sess`.
+pub const ISOFSMNT_SESS: i32 = 0x0000_0010;
+
+/// `NFS_ARGSVERSION`: change when `nfs_args` changes.
+pub const NFS_ARGSVERSION: i32 = 4;
+
+/// `struct nfs_args`: arguments to mount NFS. `addr`, `fh` and `hostname` are user addresses
+/// (the C's `struct sockaddr *`, `u_char *` and `char *`), which the NFS mount copies in.
+/// The holes after `version`, `proto` and `deadthresh` are named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NfsArgs {
+    /// `version`: args structure version number (`NFS_ARGSVERSION`).
+    pub version: i32,
+    /// The hole after `version`.
+    pub _pad0: u32,
+    /// `addr`: file server address.
+    pub addr: usize,
+    /// `addrlen`: length of address.
+    pub addrlen: i32,
+    /// `sotype`: socket type.
+    pub sotype: i32,
+    /// `proto`: and protocol.
+    pub proto: i32,
+    /// The hole after `proto`.
+    pub _pad1: u32,
+    /// `fh`: file handle to be mounted.
+    pub fh: usize,
+    /// `fhsize`: size, in bytes, of `fh`.
+    pub fhsize: i32,
+    /// `flags`: the `NFSMNT_*` below.
+    pub flags: i32,
+    /// `wsize`: write size in bytes.
+    pub wsize: i32,
+    /// `rsize`: read size in bytes.
+    pub rsize: i32,
+    /// `readdirsize`: readdir size in bytes.
+    pub readdirsize: i32,
+    /// `timeo`: initial timeout in .1 secs.
+    pub timeo: i32,
+    /// `retrans`: times to retry send.
+    pub retrans: i32,
+    /// `maxgrouplist`: max. size of group list.
+    pub maxgrouplist: i32,
+    /// `readahead`: number of blocks to readahead.
+    pub readahead: i32,
+    /// `leaseterm`: term (sec) of lease.
+    pub leaseterm: i32,
+    /// `deadthresh`: retrans threshold.
+    pub deadthresh: i32,
+    /// The hole after `deadthresh`.
+    pub _pad2: u32,
+    /// `hostname`: server's name.
+    pub hostname: usize,
+    /// `acregmin`: attr cache file recently modified.
+    pub acregmin: i32,
+    /// `acregmax`: ac file not recently modified.
+    pub acregmax: i32,
+    /// `acdirmin`: ac for dir recently modified.
+    pub acdirmin: i32,
+    /// `acdirmax`: ac for dir not recently modified.
+    pub acdirmax: i32,
+}
+
+mount_args_from_bytes!(NfsArgs, "nfs_args");
+
+crate::abi_pod!(NfsArgs {
+    version: i32,
+    _pad0: u32,
+    addr: usize,
+    addrlen: i32,
+    sotype: i32,
+    proto: i32,
+    _pad1: u32,
+    fh: usize,
+    fhsize: i32,
+    flags: i32,
+    wsize: i32,
+    rsize: i32,
+    readdirsize: i32,
+    timeo: i32,
+    retrans: i32,
+    maxgrouplist: i32,
+    readahead: i32,
+    leaseterm: i32,
+    deadthresh: i32,
+    _pad2: u32,
+    hostname: usize,
+    acregmin: i32,
+    acregmax: i32,
+    acdirmin: i32,
+    acdirmax: i32,
+});
+
+/// `NFSMNT_RESVPORT`: always use reserved ports.
+pub const NFSMNT_RESVPORT: i32 = 0x0000_0000;
+/// `NFSMNT_SOFT`: soft mount (hard is default).
+pub const NFSMNT_SOFT: i32 = 0x0000_0001;
+/// `NFSMNT_WSIZE`: set write size.
+pub const NFSMNT_WSIZE: i32 = 0x0000_0002;
+/// `NFSMNT_RSIZE`: set read size.
+pub const NFSMNT_RSIZE: i32 = 0x0000_0004;
+/// `NFSMNT_TIMEO`: set initial timeout.
+pub const NFSMNT_TIMEO: i32 = 0x0000_0008;
+/// `NFSMNT_RETRANS`: set number of request retries.
+pub const NFSMNT_RETRANS: i32 = 0x0000_0010;
+/// `NFSMNT_MAXGRPS`: set maximum grouplist size.
+pub const NFSMNT_MAXGRPS: i32 = 0x0000_0020;
+/// `NFSMNT_INT`: allow interrupts on hard mount.
+pub const NFSMNT_INT: i32 = 0x0000_0040;
+/// `NFSMNT_NOCONN`: don't connect the socket.
+pub const NFSMNT_NOCONN: i32 = 0x0000_0080;
+/// `NFSMNT_NQNFS`: use Nqnfs protocol.
+pub const NFSMNT_NQNFS: i32 = 0x0000_0100;
+/// `NFSMNT_NFSV3`: use NFS version 3 protocol.
+pub const NFSMNT_NFSV3: i32 = 0x0000_0200;
+/// `NFSMNT_KERB`: use Kerberos authentication.
+pub const NFSMNT_KERB: i32 = 0x0000_0400;
+/// `NFSMNT_DUMBTIMR`: don't estimate rtt dynamically.
+pub const NFSMNT_DUMBTIMR: i32 = 0x0000_0800;
+/// `NFSMNT_LEASETERM`: set lease term (nqnfs).
+pub const NFSMNT_LEASETERM: i32 = 0x0000_1000;
+/// `NFSMNT_READAHEAD`: set read ahead.
+pub const NFSMNT_READAHEAD: i32 = 0x0000_2000;
+/// `NFSMNT_DEADTHRESH`: set dead server retry thresh.
+pub const NFSMNT_DEADTHRESH: i32 = 0x0000_4000;
+/// `NFSMNT_NOAC`: disable attribute cache.
+pub const NFSMNT_NOAC: i32 = 0x0000_8000;
+/// `NFSMNT_RDIRPLUS`: use Readdirplus for V3.
+pub const NFSMNT_RDIRPLUS: i32 = 0x0001_0000;
+/// `NFSMNT_READDIRSIZE`: set readdir size.
+pub const NFSMNT_READDIRSIZE: i32 = 0x0002_0000;
+/// `NFSMNT_ACREGMIN`: `acregmin` field valid.
+pub const NFSMNT_ACREGMIN: i32 = 0x0004_0000;
+/// `NFSMNT_ACREGMAX`: `acregmax` field valid.
+pub const NFSMNT_ACREGMAX: i32 = 0x0008_0000;
+/// `NFSMNT_ACDIRMIN`: `acdirmin` field valid.
+pub const NFSMNT_ACDIRMIN: i32 = 0x0010_0000;
+/// `NFSMNT_ACDIRMAX`: `acdirmax` field valid.
+pub const NFSMNT_ACDIRMAX: i32 = 0x0020_0000;
+
+// The bits the kernel sets in `nm_flag` for itself; `mount_nfs(8)` never passes them.
+
+/// `NFSMNT_INTERNAL`: bits set internally.
+pub const NFSMNT_INTERNAL: i32 = 0xfffc_0000_u32 as i32;
+/// `NFSMNT_HASWRITEVERF`: has write verifier for V3.
+pub const NFSMNT_HASWRITEVERF: i32 = 0x0004_0000;
+/// `NFSMNT_GOTPATHCONF`: got the V3 pathconf info.
+pub const NFSMNT_GOTPATHCONF: i32 = 0x0008_0000;
+/// `NFSMNT_GOTFSINFO`: got the V3 fsinfo.
+pub const NFSMNT_GOTFSINFO: i32 = 0x0010_0000;
+/// `NFSMNT_MNTD`: mnt server for mnt point.
+pub const NFSMNT_MNTD: i32 = 0x0020_0000;
+/// `NFSMNT_DISMINPROG`: dismount in progress.
+pub const NFSMNT_DISMINPROG: i32 = 0x0040_0000;
+/// `NFSMNT_DISMNT`: dismounted.
+pub const NFSMNT_DISMNT: i32 = 0x0080_0000;
+/// `NFSMNT_SNDLOCK`: send socket lock.
+pub const NFSMNT_SNDLOCK: i32 = 0x0100_0000;
+/// `NFSMNT_WANTSND`: want above.
+pub const NFSMNT_WANTSND: i32 = 0x0200_0000;
+/// `NFSMNT_RCVLOCK`: rcv socket lock.
+pub const NFSMNT_RCVLOCK: i32 = 0x0400_0000;
+/// `NFSMNT_WANTRCV`: want above.
+pub const NFSMNT_WANTRCV: i32 = 0x0800_0000;
+/// `NFSMNT_WAITAUTH`: wait for authentication.
+pub const NFSMNT_WAITAUTH: i32 = 0x1000_0000;
+/// `NFSMNT_HASAUTH`: has authenticator.
+pub const NFSMNT_HASAUTH: i32 = 0x2000_0000;
+/// `NFSMNT_WANTAUTH`: wants an authenticator.
+pub const NFSMNT_WANTAUTH: i32 = 0x4000_0000;
+/// `NFSMNT_AUTHERR`: authentication error.
+pub const NFSMNT_AUTHERR: i32 = 0x8000_0000_u32 as i32;
+
+/// `struct msdosfs_args`: arguments to mount MSDOS filesystems. `fspec` is a user address.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MsdosfsArgs {
+    /// `fspec`: blocks special holding the fs to mount.
+    pub fspec: usize,
+    /// `export_info`: network export information.
+    pub export_info: ExportArgs,
+    /// `uid`: uid that owns msdosfs files.
+    pub uid: crate::sys::types::Uid,
+    /// `gid`: gid that owns msdosfs files.
+    pub gid: crate::sys::types::Gid,
+    /// `mask`: mask to be applied for msdosfs perms.
+    pub mask: crate::sys::types::Mode,
+    /// `flags`: the `MSDOSFSMNT_*` below.
+    pub flags: i32,
+}
+
+mount_args_from_bytes!(MsdosfsArgs, "msdosfs_args");
+
+crate::abi_pod!(MsdosfsArgs {
+    fspec: usize,
+    export_info: ExportArgs,
+    uid: crate::sys::types::Uid,
+    gid: crate::sys::types::Gid,
+    mask: crate::sys::types::Mode,
+    flags: i32,
+});
+
+/// `MSDOSFSMNT_SHORTNAME`: force old DOS short names only.
+pub const MSDOSFSMNT_SHORTNAME: i32 = 0x01;
+/// `MSDOSFSMNT_LONGNAME`: force Win'95 long names.
+pub const MSDOSFSMNT_LONGNAME: i32 = 0x02;
+/// `MSDOSFSMNT_NOWIN95`: completely ignore Win95 entries.
+pub const MSDOSFSMNT_NOWIN95: i32 = 0x04;
+
+/// `struct ntfs_args`: arguments to mount ntfs filesystems. `fspec` is a user address. The
+/// hole after `mode` is named. Defined on every machine (a type costs nothing): `bsd`'s NTFS
+/// is built under `option_ntfs`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct NtfsArgs {
+    /// `fspec`: block special device to mount.
+    pub fspec: usize,
+    /// `export_info`: network export information.
+    pub export_info: ExportArgs,
+    /// `uid`: uid that owns ntfs files.
+    pub uid: crate::sys::types::Uid,
+    /// `gid`: gid that owns ntfs files.
+    pub gid: crate::sys::types::Gid,
+    /// `mode`: mask to be applied for ntfs perms.
+    pub mode: crate::sys::types::Mode,
+    /// The hole after `mode`.
+    pub _pad0: u32,
+    /// `flag`: additional flags, the `NTFS_MFLAG_*` below.
+    pub flag: u64,
+}
+
+mount_args_from_bytes!(NtfsArgs, "ntfs_args");
+
+crate::abi_pod!(NtfsArgs {
+    fspec: usize,
+    export_info: ExportArgs,
+    uid: crate::sys::types::Uid,
+    gid: crate::sys::types::Gid,
+    mode: crate::sys::types::Mode,
+    _pad0: u32,
+    flag: u64,
+});
+
+/// `NTFS_MFLAG_CASEINS`: ntfs mount option, case-insensitive lookups.
+pub const NTFS_MFLAG_CASEINS: u64 = 0x0000_0001;
+/// `NTFS_MFLAG_ALLNAMES`: ntfs mount option, list the DOS names too.
+pub const NTFS_MFLAG_ALLNAMES: u64 = 0x0000_0002;
+
+/// `struct udf_args`: arguments to mount UDF file systems. `fspec` is a user address. The
+/// hole after `lastblock` is named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct UdfArgs {
+    /// `fspec`: block special device to mount.
+    pub fspec: usize,
+    /// `lastblock`: special device last block.
+    pub lastblock: u32,
+    /// The hole after `lastblock`.
+    pub _pad0: u32,
+}
+
+mount_args_from_bytes!(UdfArgs, "udf_args");
+
+crate::abi_pod!(UdfArgs {
+    fspec: usize,
+    lastblock: u32,
+    _pad0: u32,
+});
+
+/// `TMPFS_ARGS_VERSION`.
+pub const TMPFS_ARGS_VERSION: i32 = 1;
+
+/// `struct tmpfs_args`: arguments to mount tmpfs file systems. The holes after `ta_version`
+/// and `ta_root_mode` are named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmpfsArgs {
+    /// `ta_version`: `TMPFS_ARGS_VERSION`.
+    pub ta_version: i32,
+    /// The hole after `ta_version`.
+    pub _pad0: u32,
+    /// `ta_nodes_max`: size counter, the most nodes.
+    pub ta_nodes_max: crate::sys::types::Ino,
+    /// `ta_size_max`: size counter, the most bytes.
+    pub ta_size_max: crate::sys::types::Off,
+    /// `ta_root_uid`: root node attribute.
+    pub ta_root_uid: crate::sys::types::Uid,
+    /// `ta_root_gid`: root node attribute.
+    pub ta_root_gid: crate::sys::types::Gid,
+    /// `ta_root_mode`: root node attribute.
+    pub ta_root_mode: crate::sys::types::Mode,
+    /// The hole after `ta_root_mode`.
+    pub _pad1: u32,
+}
+
+mount_args_from_bytes!(TmpfsArgs, "tmpfs_args");
+
+crate::abi_pod!(TmpfsArgs {
+    ta_version: i32,
+    _pad0: u32,
+    ta_nodes_max: crate::sys::types::Ino,
+    ta_size_max: crate::sys::types::Off,
+    ta_root_uid: crate::sys::types::Uid,
+    ta_root_gid: crate::sys::types::Gid,
+    ta_root_mode: crate::sys::types::Mode,
+    _pad1: u32,
+});
+
+/// `struct fusefs_args`: arguments to mount fusefs filesystems. `name` is a user address.
+/// The hole after `allow_other` is named. Defined whatever `bsd`'s `fuse` feature says.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct FusefsArgs {
+    /// `name`.
+    pub name: usize,
+    /// `fd`: the daemon's open fuse(4) device.
+    pub fd: i32,
+    /// `max_read`.
+    pub max_read: i32,
+    /// `allow_other`: FUSE does not allow the file system to be accessed by other users
+    /// unless this option is specified. This is to prevent unintentional denial of service
+    /// to other users if the file system is not responding. e.g. user executes df(1) or
+    /// cron job that scans mounted file systems.
+    pub allow_other: i32,
+    /// The hole after `allow_other`.
+    pub _pad0: u32,
+}
+
+mount_args_from_bytes!(FusefsArgs, "fusefs_args");
+
+crate::abi_pod!(FusefsArgs {
+    name: usize,
+    fd: i32,
+    max_read: i32,
+    allow_other: i32,
+    _pad0: u32,
+});
+
+// The amd64/arm64 layout of the `*_args` (both LP64), as `sys/sys/mount.rs` pinned it.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(size_of::<Xucred>() == 76);
+    assert!(offset_of!(Xucred, cr_groups) == 12);
+    assert!(size_of::<ExportArgs>() == 120);
+    assert!(offset_of!(ExportArgs, ex_addr) == 88);
+    assert!(offset_of!(ExportArgs, ex_mask) == 104);
+    assert!(UfsArgs::SIZE == 128);
+    assert!(MfsArgs::SIZE == 144);
+    assert!(offset_of!(MfsArgs, base) == 128);
+    assert!(offset_of!(MfsArgs, size) == 136);
+    assert!(MfsArgs::SIZE <= size_of::<MountInfo>());
+    assert!(IsoArgs::SIZE == 136);
+    assert!(NfsArgs::SIZE == 112);
+    assert!(offset_of!(NfsArgs, fh) == 32);
+    assert!(offset_of!(NfsArgs, hostname) == 88);
+    assert!(NfsArgs::SIZE <= size_of::<MountInfo>());
+    assert!(MsdosfsArgs::SIZE == 144);
+    assert!(NtfsArgs::SIZE == 152);
+    assert!(offset_of!(NtfsArgs, uid) == 128);
+    assert!(offset_of!(NtfsArgs, flag) == 144);
+    assert!(NtfsArgs::SIZE <= size_of::<MountInfo>());
+    assert!(UdfArgs::SIZE == 16);
+    assert!(TmpfsArgs::SIZE == 40);
+    assert!(offset_of!(TmpfsArgs, ta_root_uid) == 24);
+    assert!(FusefsArgs::SIZE == 24);
+    assert!(offset_of!(FusefsArgs, fd) == 8);
+    assert!(offset_of!(FusefsArgs, allow_other) == 16);
+};
+
 const _: () = assert!(size_of::<Bcachestats>() == 13 * 8);
 
 // The amd64/arm64 layout of `struct statfs` and its neighbours (both LP64).
@@ -473,3 +1103,87 @@ const _: () = {
     assert!(size_of::<VfsconfAbi>() == 48);
 };
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user::bytes_of;
+
+    /// The bytes of a `T` whose every byte is its own offset (mod 256), then the `T` read
+    /// out of them.
+    fn offsets<T: crate::user::AbiPod>(len: usize) -> Option<T> {
+        let b: [u8; 256] = core::array::from_fn(|i| i as u8);
+        let v: [u8; 512] = core::array::from_fn(|i| b[i % 256]);
+        crate::user::pod_from_bytes(&v[..len])
+    }
+
+    #[test]
+    fn short_arguments_are_none_like_the_cs_null_data() {
+        assert!(UfsArgs::from_bytes(&[0; UfsArgs::SIZE - 1]).is_none());
+        assert!(MfsArgs::from_bytes(&[]).is_none());
+        assert!(NfsArgs::from_bytes(&[0; 111]).is_none());
+        assert!(TmpfsArgs::from_bytes(&[0; 39]).is_none());
+        assert!(FusefsArgs::from_bytes(&[0; 23]).is_none());
+        assert!(UdfArgs::from_bytes(&[0; 16]).is_some());
+    }
+
+    #[test]
+    fn the_fields_are_read_at_the_cs_offsets() {
+        let m: MfsArgs = offsets(MfsArgs::SIZE).unwrap();
+        assert_eq!(
+            m.base.to_ne_bytes(),
+            core::array::from_fn(|i| (128 + i) as u8)
+        );
+        assert_eq!(
+            m.size.to_ne_bytes(),
+            core::array::from_fn(|i| (136 + i) as u8)
+        );
+        assert_eq!(
+            m.export_info.ex_addr.to_ne_bytes(),
+            core::array::from_fn(|i| (8 + 88 + i) as u8)
+        );
+        let n: NfsArgs = offsets(NfsArgs::SIZE).unwrap();
+        assert_eq!(
+            n.hostname.to_ne_bytes(),
+            core::array::from_fn(|i| (88 + i) as u8)
+        );
+        assert_eq!(
+            n.acdirmax.to_ne_bytes(),
+            core::array::from_fn(|i| (108 + i) as u8)
+        );
+        let t: TmpfsArgs = offsets(TmpfsArgs::SIZE).unwrap();
+        assert_eq!(
+            t.ta_root_mode.to_ne_bytes(),
+            core::array::from_fn(|i| (32 + i) as u8)
+        );
+        let x: NtfsArgs = offsets(NtfsArgs::SIZE).unwrap();
+        assert_eq!(
+            x.flag.to_ne_bytes(),
+            core::array::from_fn(|i| (144 + i) as u8)
+        );
+        assert_eq!(
+            x.export_info.ex_anon.cr_groups[0].to_ne_bytes(),
+            core::array::from_fn(|i| (8 + 8 + 12 + i) as u8)
+        );
+    }
+
+    #[test]
+    fn a_structure_reads_back_from_its_own_bytes() {
+        let mut u = UfsArgs::from_bytes(&[0; UfsArgs::SIZE]).unwrap();
+        u.fspec = 0x1234;
+        u.export_info.ex_flags = 7;
+        u.export_info.ex_anon.cr_ngroups = 3;
+        u.export_info.ex_masklen = 16;
+        let back = UfsArgs::from_bytes(bytes_of(core::slice::from_ref(&u))).unwrap();
+        assert_eq!(back.fspec, 0x1234);
+        assert_eq!(back.export_info.ex_flags, 7);
+        assert_eq!(back.export_info.ex_anon.cr_ngroups, 3);
+        assert_eq!(back.export_info.ex_masklen, 16);
+        // A longer copy (the kernel's vfc_datasize bytes) reads its first SIZE.
+        let mut long = [0u8; UfsArgs::SIZE + 8];
+        long[..UfsArgs::SIZE].copy_from_slice(bytes_of(core::slice::from_ref(&u)));
+        assert_eq!(UfsArgs::from_bytes(&long).unwrap().fspec, 0x1234);
+    }
+}
+/* </TESTS> */

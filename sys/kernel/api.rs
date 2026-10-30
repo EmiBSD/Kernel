@@ -28,7 +28,8 @@
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
 //! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b), the time system calls with reboot(2)
-//! (`TimeEntries`, N4.8) and sigreturn(2) (`SigreturnEntry`, N4.8b), which run the system
+//! (`TimeEntries`, N4.8), sigreturn(2) (`SigreturnEntry`, N4.8b) and the VFS system calls'
+//! sixty-five (`VfsEntries`, N5.4), which run the system
 //! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`,
 //! `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`,
 //! `kernel::futex`, the process modules, `kernel::sysctl`, `kernel::time`,
@@ -41,7 +42,8 @@
 
 pub use hal::api::{
     AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, ProcEntries, SigreturnEntry, SyscallHandler, SysctlEntry, TimeEntries, VmEntries,
+    KernelApi, ProcEntries, SigreturnEntry, SyscallHandler, SysctlEntry, TimeEntries, VfsEntries,
+    VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -75,6 +77,7 @@ pub const fn table(
     sysctl: SysctlEntry,
     time: TimeEntries,
     sigreturn: SigreturnEntry,
+    vfs: VfsEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -91,6 +94,7 @@ pub const fn table(
         sysctl,
         time,
         sigreturn,
+        vfs,
     )
 }
 
@@ -535,9 +539,230 @@ mod tests {
         Err(nr as i32)
     }
 
+    // The VFS entries of the test table (version 12): the number in rval[0], the
+    // arguments as decimal digits in the error.
+    fn vfs_digits(a: &[i64]) -> i32 {
+        a.iter().fold(0, |d, &v| d * 10 + v as i32)
+    }
+    fn vfs0(nr: Register, a0: usize, a1: i32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs1(nr: Register, a0: usize, a1: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs2(nr: Register, a0: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs3(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs4(nr: Register, a0: usize, a1: u32, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs5(nr: Register, a0: usize, a1: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs6(nr: Register, a0: usize, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs7(nr: Register, a0: usize, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs8(nr: Register, a0: usize, a1: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs9(nr: Register, a0: i32, a1: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs10(nr: Register, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[]))
+    }
+    fn vfs11(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs12(nr: Register, a0: usize, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs13(nr: Register, a0: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs14(nr: Register, a0: usize, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs15(nr: Register, a0: i32, a1: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs16(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs17(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs18(nr: Register, a0: i32, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs19(nr: Register, a0: usize, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs20(nr: Register, a0: i32, a1: i64, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs21(nr: Register, a0: usize, a1: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs22(nr: Register, a0: i32, a1: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs23(nr: Register, a0: i32, a1: usize, a2: i32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs24(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: u32,
+        a3: u32,
+        a4: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn vfs25(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: i32,
+        a3: usize,
+        a4: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn vfs26(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs27(nr: Register, a0: i32, a1: usize, a2: i32, a3: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs28(nr: Register, a0: i32, a1: usize, a2: usize, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs29(nr: Register, a0: i32, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs30(nr: Register, a0: usize, a1: i32, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs31(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    const VFS: VfsEntries = VfsEntries {
+        open: vfs0,
+        link: vfs1,
+        unlink: vfs2,
+        chdir: vfs2,
+        fchdir: vfs3,
+        mknod: vfs4,
+        chmod: vfs5,
+        chown: vfs6,
+        mount: vfs7,
+        unmount: vfs8,
+        access: vfs8,
+        chflags: vfs5,
+        fchflags: vfs9,
+        sync: vfs10,
+        stat: vfs1,
+        lstat: vfs1,
+        fstatat: vfs11,
+        revoke: vfs2,
+        symlink: vfs1,
+        readlink: vfs12,
+        umask: vfs13,
+        chroot: vfs2,
+        getfsstat: vfs14,
+        statfs: vfs1,
+        fstatfs: vfs15,
+        fhstatfs: vfs1,
+        utimes: vfs1,
+        futimes: vfs15,
+        utimensat: vfs11,
+        futimens: vfs15,
+        fsync: vfs3,
+        getdents: vfs16,
+        chflagsat: vfs17,
+        unveil: vfs1,
+        realpath: vfs1,
+        fchown: vfs18,
+        fchmod: vfs9,
+        pledge_open: vfs0,
+        rename: vfs1,
+        mkfifo: vfs5,
+        mkdir: vfs5,
+        rmdir: vfs2,
+        quotactl: vfs19,
+        getfh: vfs1,
+        lseek: vfs20,
+        truncate: vfs21,
+        ftruncate: vfs22,
+        pathconfat: vfs23,
+        pathconf: vfs8,
+        lchown: vfs6,
+        fhopen: vfs8,
+        fhstat: vfs1,
+        getcwd: vfs1,
+        faccessat: vfs23,
+        fchmodat: vfs17,
+        fchownat: vfs24,
+        linkat: vfs25,
+        mkdirat: vfs26,
+        mkfifoat: vfs26,
+        mknodat: vfs17,
+        openat: vfs27,
+        readlinkat: vfs28,
+        renameat: vfs29,
+        symlinkat: vfs30,
+        unlinkat: vfs31,
+    };
+
     static API: KernelApi = table(
         legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME,
-        sigreturn,
+        sigreturn, VFS,
     );
 
     #[test]
@@ -571,6 +796,8 @@ mod tests {
         assert_eq!((API.time.setitimer)(69, 0, 0, 0, &mut rval), Err(69));
         assert_eq!((API.time.reboot)(55, 0, &mut rval), Err(55));
         assert_eq!((API.sigreturn)(103, 0, &mut rval), Err(103));
+        assert_eq!((API.vfs.open)(5, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.vfs.unlinkat)(325, 1, 2, 3, &mut rval), Err(123));
     }
 }
 /* </TESTS> */

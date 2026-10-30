@@ -357,7 +357,12 @@ pub enum BenchData {
     Pipe(PipeEnd<BenchGlue>),
     /// A kqueue file's kqueue.
     Kqueue(KqRef<BenchGlue>),
+    /// A vnode file's vnode (`FileGlue::vnode_file`; no row opens one).
+    Vnode(&'static kernel::fs::vnode::Vnode<BenchGlue>),
 }
+
+/// A vnode file's operations: the kernel's `vnops`.
+static BENCH_VNODE_OPS: kernel::fs::vnops::VnodeFileOps = kernel::fs::vnops::VnodeFileOps;
 
 /// The bench's file glue.
 pub struct BenchFiles;
@@ -442,14 +447,19 @@ impl FileGlue for BenchFiles {
     fn kqueue_of(d: &Self::Data) -> Option<&KqRef<BenchGlue>> {
         match d {
             BenchData::Kqueue(kq) => Some(kq),
-            BenchData::Pipe(_) => None,
+            BenchData::Pipe(_) | BenchData::Vnode(_) => None,
         }
     }
     fn pipe_of(d: &Self::Data) -> Option<&PipeEnd<BenchGlue>> {
         match d {
             BenchData::Pipe(end) => Some(end),
-            BenchData::Kqueue(_) => None,
+            BenchData::Kqueue(_) | BenchData::Vnode(_) => None,
         }
+    }
+    fn vnode_file(
+        vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
+    ) -> (&'static Self::Ops, Self::Data) {
+        (&BENCH_VNODE_OPS, BenchData::Vnode(vp))
     }
     fn pipe_file(end: PipeEnd<BenchGlue>) -> (&'static Self::Ops, Self::Data) {
         (&BENCH_PIPEOPS, BenchData::Pipe(end))
@@ -470,17 +480,13 @@ impl FileGlue for BenchFiles {
     fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
         &VFS_TABLES
     }
-    fn vnode_of(_d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
-        None
+    fn vnode_of(d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
+        match d {
+            BenchData::Vnode(vp) => Some(vp),
+            BenchData::Pipe(_) | BenchData::Kqueue(_) => None,
+        }
     }
     fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
-    fn dounmount(
-        _mp: &'static kernel::fs::mount::Mount<BenchGlue>,
-        _flags: i32,
-        _p: &kernel::proc::Thread<BenchGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
 }
 
 /// The VFS tables of the bench's processes (unused: no file system here).

@@ -1101,10 +1101,12 @@ mod tests {
     fn args(flags: i32, sotype: i32) -> NfsArgs {
         NfsArgs {
             version: NFS_ARGSVERSION,
+            _pad0: 0,
             addr: 0,
             addrlen: 0,
             sotype,
             proto: 0,
+            _pad1: 0,
             fh: 0,
             fhsize: 0,
             flags,
@@ -1117,6 +1119,7 @@ mod tests {
             readahead: 0,
             leaseterm: 0,
             deadthresh: 0,
+            _pad2: 0,
             hostname: 0,
             acregmin: 0,
             acregmax: 0,

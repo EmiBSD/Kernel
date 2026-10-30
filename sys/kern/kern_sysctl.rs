@@ -168,7 +168,6 @@ use crate::netinet::raw_ip::RAWCBTABLE;
 use crate::netinet::tcp_usrreq::TCBTABLE;
 use crate::netinet::tcp_var::intotcpcb;
 use crate::netinet::udp_usrreq::UDBTABLE;
-use crate::sys::buf::{BUFHIGHPAGES, bufadjust};
 use crate::sys::disk::{DS_DISKNAMELEN, Disk, Diskstats};
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
@@ -193,7 +192,6 @@ use crate::sys::systm::{
 use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
 use crate::sys::unpcb::{UnpRefs, sotounpcb};
-use crate::sys::vnode::NUMVNODES;
 use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
@@ -204,8 +202,6 @@ use crate::{
 use hal::klock;
 use hal::user::UserPtr;
 use kernel::sysctl::{RdString, SysctlNode, SysctlReq};
-use kernel::vm::km::NO_CONSTRAINT;
-use kernel::vm::page::uvm_pagecount;
 
 /// `MAXPARTITIONS` (`<machine/disklabel.h>`, 16 on amd64 and arm64): number of partitions.
 /// The disklabel headers are not ported.
@@ -1328,16 +1324,6 @@ fn kern_clockrate(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_clockrate(req.oldp, req.oldlenp, req.newp)
 }
 
-/// `kern.numvnodes` (XXX numvnodes is a long).
-fn kern_numvnodes(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    sysctl_rdint(
-        req.oldp,
-        req.oldlenp,
-        req.newp,
-        NUMVNODES.load(Ordering::Relaxed) as i32,
-    )
-}
-
 /// `kern.boottime`.
 fn kern_boottime(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     let bt = microboottime();
@@ -1442,33 +1428,6 @@ fn kern_stackgaprandom(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Err
     Ok(())
 }
 
-/// `kern.bufcachepercent`: between 5 and 90; a change adjusts the buffer cache.
-fn kern_cachepct(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    use crate::conf::param::{bufcachepercent, bufpages};
-
-    let opct = bufcachepercent.load(Ordering::Relaxed);
-    sysctl_int(
-        req.oldp,
-        req.oldlenp,
-        req.newp,
-        req.newlen,
-        &bufcachepercent,
-    )?;
-    let pct = bufcachepercent.load(Ordering::Relaxed);
-    if !(5..=90).contains(&pct) {
-        bufcachepercent.store(opct, Ordering::Relaxed);
-        return Err(Errno::EINVAL);
-    }
-    let pages = uvm_pagecount(&NO_CONSTRAINT) as u64;
-    if pct != opct {
-        let pgs = (pct as u64 * pages / 100) as i32;
-        bufadjust(i64::from(pgs)); // adjust bufpages
-        // set high water mark
-        BUFHIGHPAGES.store(bufpages.load(Ordering::Relaxed), Ordering::Relaxed);
-    }
-    Ok(())
-}
-
 /// `kern.pfstatus` (`NPF`).
 fn kern_pfstatus(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     crate::net::pf_ioctl::pf_sysctl(req.oldp, req.oldlenp, req.newp, req.newlen)
@@ -1559,7 +1518,12 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
     (KERN_OSVERSION, &OSVERSION_NODE),
     (KERN_VERSION, &VERSION_NODE),
     (KERN_CLOCKRATE, &Node(kern_clockrate)),
-    (KERN_NUMVNODES, &Node(kern_numvnodes)),
+    // `kern.numvnodes` and `kern.bufcachepercent`: the kernel's nodes (N5.4), over this
+    // glue's vnode table and the buffer cache.
+    (
+        KERN_NUMVNODES,
+        &kernel::fs::subr::NumvnodesNode::<BsdProcGlue>::NODE,
+    ),
     (KERN_BOOTTIME, &Node(kern_boottime)),
     (KERN_MAXCLUSTERS, &Node(kern_maxclusters)),
     (KERN_MBSTAT, &Node(kern_mbstat)),
@@ -1571,7 +1535,7 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
         &kernel::fs::cache::NchstatsNode::<BsdProcGlue>::NODE,
     ),
     (KERN_STACKGAPRANDOM, &Node(kern_stackgaprandom)),
-    (KERN_CACHEPCT, &Node(kern_cachepct)),
+    (KERN_CACHEPCT, &kernel::fs::bio::BufcachepercentNode),
     (KERN_PFSTATUS, &Node(kern_pfstatus)),
     (KERN_CONSDEV, &Node(kern_consdev)),
     (KERN_UTC_OFFSET, &Node(kern_utc_offset)),
@@ -1819,13 +1783,10 @@ static HW_NODES: [(i32, &dyn SysctlNode); 5] = [
     (HW_BLOCKCPU, &Node(hw_blockcpu)),
 ];
 
-/// The top-level trees of `bsd`'s subsystems, by id (`ddb_sysctl` with `DDB`).
-static TOP_NODES: [(i32, &dyn SysctlNode); 4] = [
+/// The top-level trees of `bsd`'s subsystems, by id (`ddb_sysctl` with `DDB`); `CTL_VFS` is
+/// the kernel's (`kernel::fs::subr::VfsSysctl`, N5.4).
+static TOP_NODES: [(i32, &dyn SysctlNode); 3] = [
     (CTL_NET, &ProcNode(crate::kern::uipc_domain::net_sysctl)),
-    (
-        CTL_VFS,
-        &kernel::fs::subr::VfsSysctl::<crate::kern::proc_glue::BsdProcGlue>::NODE,
-    ),
     (CTL_MACHDEP, &ProcNode(crate::machine::cpu::cpu_sysctl)),
     (CTL_DDB, &ProcNode(crate::ddb::db_usrreq::ddb_sysctl)),
 ];

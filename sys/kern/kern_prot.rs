@@ -474,6 +474,7 @@ mod tests {
             cr_uid: 5,
             cr_gid: 6,
             cr_ngroups: 1,
+            _pad0: 0,
             cr_groups: [7; NGROUPS_MAX],
         };
         let mut k = Ucred::new();

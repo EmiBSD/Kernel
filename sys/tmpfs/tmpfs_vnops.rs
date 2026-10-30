@@ -2832,9 +2832,8 @@ mod tests {
 
         // a long target
         let target = [b'x'; 200];
-        let mut t = target.to_vec();
-        t.push(0);
-        dosymlinkat(p, t.as_ptr(), AT_FDCWD, c("/long").as_ptr()).expect("symlink");
+        let long = c(core::str::from_utf8(&target).unwrap());
+        dosymlinkat(p, long.as_ptr(), AT_FDCWD, c("/long").as_ptr()).expect("symlink");
         let mut buf = [0u8; 300];
         doreadlinkat(
             p,

@@ -1072,6 +1072,44 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
             "unveil_check_final: the glue has no namei hooks"
         ))
     }
+    /// `pledge_chown(p, uid, gid)` (`kern_pledge.c`, N8): whether the pledged thread `p` may
+    /// give a file the owner `uid` and the group `gid` (`chown(2)`, `fchown(2)`,
+    /// `fchownat(2)`, `lchown(2)`; `EPERM` through `pledge_fail` without `chown`). The default
+    /// is `panic(9)`, as `pledge_namei`'s: a glue cannot drop pledge by forgetting it.
+    fn pledge_chown(
+        _p: &Thread<Self>,
+        _uid: hal::sys::types::Uid,
+        _gid: hal::sys::types::Gid,
+    ) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_chown: the glue has no pledge hooks"))
+    }
+    /// `unveil_add(p, ndp, permissions)` (`kern_unveil.c`, N8): adds the path `ni` looked up
+    /// (`ni_vp`, or `ni_dvp` and the last component) to the thread's process's unveil table
+    /// with `permissions` (`unveil(2)`'s string, at most four letters). The default is
+    /// `panic(9)`, as `pledge_namei`'s.
+    fn unveil_add(
+        _p: &Thread<Self>,
+        _ni: &crate::fs::vops::Nd<'_, Self>,
+        _permissions: &[u8],
+    ) -> Result<(), Errno> {
+        kpanic(format_args!("unveil_add: the glue has no unveil hooks"))
+    }
+    /// `unveil_removevnode(vp)` (`kern_unveil.c`, N8): drops every unveil of every process on
+    /// `vp` (`dounmount_leaf`, before the file system's unmount). The default is `panic(9)`,
+    /// as `pledge_namei`'s.
+    fn unveil_removevnode(_vp: &'static crate::fs::vnode::Vnode<Self>) {
+        kpanic(format_args!(
+            "unveil_removevnode: the glue has no unveil hooks"
+        ))
+    }
+    /// `pr->ps_uvdone = 1` (`unveil(NULL, NULL)`: no more `unveil(2)`; `kern_unveil.c`'s
+    /// member, N8), which [`ProcGlue::unveil_state`] reads back. The default is `panic(9)`, as
+    /// `pledge_namei`'s.
+    fn unveil_set_done(_pr: &Process<Self>) {
+        kpanic(format_args!(
+            "unveil_set_done: the glue has no unveil hooks"
+        ))
+    }
     /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
     fn rtable_exists(id: u32) -> bool {
         id == 0

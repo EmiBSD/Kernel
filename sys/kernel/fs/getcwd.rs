@@ -73,8 +73,12 @@
 //! - The `..` lookup of `vfs_getcwd_scandir` is [`Componentname::dotdot`] (the C's stack
 //!   componentname with `cn_nameptr = ".."`, no pathname buffer).
 //! - `sys___getcwd` is the kernel's ([`sys___getcwd`]) over a user address and a length;
-//!   the system call's entry stays `bsd`'s (`Legacy`, a wrapper in `vfs_syscalls.rs`) until
-//!   the VFS entries flip together (D-N5.3-6, N5.4).
+//!   the system call's entry was `bsd`'s (`Legacy`, a wrapper in `vfs_syscalls.rs`) until the
+//!   VFS entries flipped together (D-N5.3-6): `Native` since N5.4, through
+//!   `KernelApi::vfs`'s `getcwd` and that wrapper.
+//! - N5.4 (D-N5.4-5, the user's): the length is the C's `int` (the register's low 32 bits),
+//!   so `__getcwd(buf, 1 << 31)` is `ERANGE` and `(1 << 32) + 4096` is 4096, as OpenBSD
+//!   answers; LZ (and N5.3) clamped the whole `size_t` and succeeded where OpenBSD refuses.
 
 use core::ptr;
 
@@ -97,7 +101,7 @@ use crate::proc::{ProcGlue, Thread};
 use crate::uio::{Iovec, Uio};
 
 /// `M_TEMP` (`<sys/malloc.h>`): misc temporary data buffers.
-const M_TEMP: i32 = 127;
+pub(super) const M_TEMP: i32 = 127;
 
 /// `DIRBLKSIZ` (`ufs/ufs/dir.h`, `DEV_BSIZE`): only for the smallest directory buffer.
 const DIRBLKSIZ: usize = 512;
@@ -457,14 +461,18 @@ pub fn vfs_getcwd_common<G: ProcGlue>(
 
 /// Find pathname of a process's current directory: `__getcwd(buf, len)`, the path copied
 /// out to the user address `buf` (at most `len` bytes there, `MAXPATHLEN * 4` at most).
+/// `len` is read as the C's `int len = SCARG(uap, len)`: the low 32 bits of the `size_t`, so
+/// a length of 2^31 or more is negative (`ERANGE`) or, past 2^32, small.
 #[allow(non_snake_case)] // the C name: sys___getcwd
 pub fn sys___getcwd<G: ProcGlue>(p: &Thread<G>, buf: usize, len: usize) -> Result<(), Errno> {
-    let mut len = len;
-    if len > MAXPATHLEN * 4 {
-        len = MAXPATHLEN * 4;
+    let len = len as u32 as i32;
+    let len = if len > (MAXPATHLEN * 4) as i32 {
+        MAXPATHLEN * 4
     } else if len < 2 {
         return Err(Errno::ERANGE);
-    }
+    } else {
+        len as usize
+    };
 
     let Some(mut path) = MArray::new(M_TEMP, M_WAITOK, len, |_| 0u8) else {
         return Err(Errno::ENOMEM);
@@ -578,10 +586,17 @@ mod tests {
             .and_then(Vnode::mount)
             .unwrap();
         // C looked up only through VFS_VGET: its name is in no cache; the scan looks `..` up
-        // and reads the parent, which the test file system cannot (`EOPNOTSUPP`).
+        // and reads the parent's records (the test file system's readdir, N5.4). Without the
+        // kernel copy the test glue's uiomove leaves the scan's kernel buffer zeroed: a record
+        // shorter than one entry, the C's EINVAL for a corrupt directory; with it, the scan
+        // finds `c` by its file number.
         let cvp = vget_node(mp, C).unwrap();
         let _ = vop_unlock(cvp);
-        assert_eq!(path_of(cvp, 64, p), Err(Errno::EOPNOTSUPP));
+        assert_eq!(path_of(cvp, 64, p), Err(Errno::EINVAL));
+        assert!(!any_locked());
+        crate::testutil::set_copy_kernel(true);
+        assert_eq!(path_of(cvp, 64, p).as_deref(), Ok(&b"/a/c"[..]));
+        crate::testutil::set_copy_kernel(false);
         assert!(!any_locked());
         vrele(cvp);
     }
@@ -602,6 +617,40 @@ mod tests {
         // The C's limit (len / 2 vnodes) can stop the walk first: 5 bytes give 2 vnodes, the
         // tail of the path ("/c/d"), as the C answers.
         sys___getcwd(p, ubuf, 5).unwrap();
+        let mut out = [0u8; 5];
+        UserPtr::<u8>::new(ubuf).copyin_slice(&mut out).unwrap();
+        assert_eq!(&out, b"/c/d\0");
+        let cur = p.fd().replace_cdir(old);
+        assert!(cur.is_some_and(|c| ptr::eq(c, dvp)));
+        vrele(dvp);
+    }
+
+    /// `int len = SCARG(uap, len)` (vfs_getcwd.c:397): the length is the `size_t`'s low 32
+    /// bits as an `int`, so 2^31 is negative and 2^32 + 1 is 1: both `ERANGE` (:402-403).
+    #[test]
+    fn getcwd_s_length_of_2_pow_31_is_a_negative_int() {
+        let (_g, p) = test_thread();
+        let ubuf = USER_BASE + 0x6000;
+        assert_eq!(sys___getcwd(p, ubuf, 1 << 31), Err(Errno::ERANGE));
+        assert_eq!(sys___getcwd(p, ubuf, u32::MAX as usize), Err(Errno::ERANGE));
+        assert_eq!(sys___getcwd(p, ubuf, (1 << 32) + 1), Err(Errno::ERANGE));
+    }
+
+    /// The same `int` (vfs_getcwd.c:397): 2^32 + 4096 is 4096 and 2^32 + 5 is 5 (the C's
+    /// limit of two vnodes, "/c/d").
+    #[test]
+    fn getcwd_s_length_past_2_pow_32_is_its_low_bits() {
+        let (_g, p) = test_thread();
+        let dvp = walk(p, b"/a/c/d");
+        let old = p.fd().replace_cdir(Some(dvp));
+        let ubuf = USER_BASE + 0x6000;
+        UserPtr::<u8>::new(ubuf).copyout_slice(&[0xff; 8]).unwrap();
+        sys___getcwd(p, ubuf, (1 << 32) + 4096).unwrap();
+        let mut out = [0u8; 8];
+        UserPtr::<u8>::new(ubuf).copyin_slice(&mut out).unwrap();
+        assert_eq!(&out, b"/a/c/d\0\xff");
+        // 2^32 + 5: 5 bytes, the C's two vnodes ("/c/d").
+        sys___getcwd(p, ubuf, (1 << 32) + 5).unwrap();
         let mut out = [0u8; 5];
         UserPtr::<u8>::new(ubuf).copyin_slice(&mut out).unwrap();
         assert_eq!(&out, b"/c/d\0");
