@@ -63,10 +63,11 @@
 //! - `vn_open.close`: `vn_open("/f", FREAD)`, the unlock, `vn_close`.
 //! - `prim.namecache-mtx`: the name cache's lock (D-N5.3-2's leaf) taken and left.
 //!
-//! N5.4's rows (`kernel::fs::syscalls`), the op names of `sys/benches/fs.rs` (N5.4's: the
-//! same system calls on LZ's shape and, at the switch, through `bsd`'s adapter), each called
-//! as its `KernelApi` entry calls it, the paths and the `struct stat` in the user memory of
-//! the host's double, over the names bench's file system and thread:
+//! N5.4's rows (`kernel::fs::syscalls`), the op names of N5.4's `sys/benches/fs.rs` (the same
+//! system calls on LZ's shape and, after the switch, through `bsd`'s adapter; removed at
+//! N5.4's end, its pairs in the switch's commit 04659ca5), each called as its `KernelApi`
+//! entry calls it, the paths and the `struct stat` in the user memory of the host's double,
+//! over the names bench's file system and thread:
 //! - `open.close`: `open("/f", O_RDONLY)` and `close` of the descriptor.
 //! - `fstat`: `fstat` of a descriptor of `/f` (`kernel::descrip`'s, the vnode file's stat).
 //! - `lseek`: `lseek(fd, 0, SEEK_SET)`.
