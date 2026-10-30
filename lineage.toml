@@ -10076,6 +10076,10 @@ reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setru
 
 
 [[extra]]
+rust = "sys/benches/fs.rs"
+reason = "decision 43, N5.3: host microbenchmarks of names, files and record locks on LZ's shape (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, removed with the switch to kernel::fs; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/fs.rs"
 crate = "kernel"
 reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
