@@ -1450,6 +1450,18 @@ mod tests {
         std::panic!("no {n} request(s) asleep on the lock within 10 s");
     }
 
+    /// The waiter's result, waited for at most 10 s: a lost wakeup fails the test instead of
+    /// hanging the run (the waiter is left asleep).
+    fn join_bounded(waiter: std::thread::JoinHandle<Result<(), Errno>>) -> Result<(), Errno> {
+        for _ in 0..10_000 {
+            if waiter.is_finished() {
+                return waiter.join().unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::panic!("the sleeping request did not return within 10 s (a lost wakeup?)");
+    }
+
     /// The range of the lock the first sleeping request waits on (`lf_blk`).
     fn first_waiter_blocker(slot: &LockfSlot) -> Option<(Off, Off)> {
         let mut w = LOCKF_LOCK.write();
@@ -1482,7 +1494,7 @@ mod tests {
         until_pending(slot, 1);
         assert_eq!(first_waiter_blocker(slot), Some((0, 9)));
         unlk(slot, A, 0, 0).unwrap();
-        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(join_bounded(waiter), Ok(()));
         assert_eq!(pending(slot), 0);
         assert_eq!(locks(slot), [(B, F_RDLCK, 5, 5)]);
         lf_purgelocks::<G>(slot);
@@ -1506,7 +1518,7 @@ mod tests {
         });
         until_pending(slot, 1);
         lf_purgelocks::<G>(slot);
-        assert_eq!(waiter.join().unwrap(), Err(Errno::EINTR));
+        assert_eq!(join_bounded(waiter), Err(Errno::EINTR));
         assert!(slot.is_empty());
     }
 
@@ -1531,7 +1543,7 @@ mod tests {
         assert_eq!(setlkw(slot, A, F_WRLCK, 20, 10), Err(Errno::EDEADLK));
         assert_eq!(pending(slot), 1, "the first side still sleeps");
         unlk(slot, A, 0, 10).unwrap();
-        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(join_bounded(waiter), Ok(()));
         assert_eq!(locks(slot), [(B, F_WRLCK, 0, 9), (B, F_WRLCK, 20, 29)]);
         lf_purgelocks::<G>(slot);
         assert!(slot.is_empty());
@@ -1559,7 +1571,7 @@ mod tests {
         assert_eq!(pending(slot), 1, "moved, not woken");
         assert_eq!(first_waiter_blocker(slot), Some((0, 99)));
         unlk(slot, A, 0, 0).unwrap();
-        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(join_bounded(waiter), Ok(()));
         assert_eq!(locks(slot), [(B, F_WRLCK, 5, 5)]);
         lf_purgelocks::<G>(slot);
         assert!(slot.is_empty());
