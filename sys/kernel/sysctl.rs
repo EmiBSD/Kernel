@@ -1948,7 +1948,7 @@ pub fn fill_kproc<G: ProcGlue>(
     if let Some(s) = s {
         libkern::strlcpy(&mut ki.p_login, s.s_login.get(r));
 
-        if G::session_has_tty_vnode(s) {
+        if !s.ttyvp.is_none() {
             ki.p_eflag |= EPROC_CTTY;
         }
     }

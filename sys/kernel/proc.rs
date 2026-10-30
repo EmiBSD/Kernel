@@ -966,10 +966,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// `process_new`'s `bsd` members: the text vnode's reference (`vref`, N5) and the
     /// unveils (`unveil_copy`, N8).
     fn process_forked(_parent: &Process<Self>, _child: &Process<Self>) {}
-    /// `sess->s_ttyvp != NULL` (the session's controlling terminal vnode, N4.7b).
-    fn session_has_tty_vnode(_sess: &Session<Self>) -> bool {
-        false
-    }
     /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`), `None` without a terminal: the
     /// session's own `s_ttyp` since N4.7b (`kernel::tty::session_tty`); a test glue may
     /// stand in for a terminal it does not make.

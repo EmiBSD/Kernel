@@ -331,11 +331,9 @@ impl Default for BsdPgrpG {
     }
 }
 
-/// The members of `struct session` of `bsd`'s subsystems.
+/// The members of `struct session` of `bsd`'s subsystems (`s_ttyvp` is the kernel's
+/// `Session::ttyvp` since N5.3).
 pub struct BsdSessionG {
-    /// `s_ttyvp`: vnode of controlling terminal, holding a use count (`vref` in `vn_ioctl`'s
-    /// `TIOCSCTTY`).
-    pub s_ttyvp: Link<Vnode>,
     /// `s_verauthto`.
     pub s_verauthto: Timeout,
 }
@@ -344,7 +342,6 @@ impl BsdSessionG {
     /// No terminal.
     pub const fn new() -> Self {
         Self {
-            s_ttyvp: Link::new(),
             s_verauthto: Timeout::zeroed(),
         }
     }
@@ -554,17 +551,16 @@ impl ProcGlue for BsdProcGlue {
     /// count dropped. `s_ttyp` is not zeroed: it says the session once had a controlling
     /// terminal (for logging and informational purposes).
     fn session_hangup(sp: &Session) {
-        if sp.s_ttyvp.get().is_none() {
+        if sp.ttyvp.get().is_none() {
             return;
         }
         if kernel::tty::session_hangup_tty(sp) {
             // The tty could have been revoked if we blocked.
-            if let Some(vp) = sp.s_ttyvp.get() {
+            if let Some(vp) = sp.ttyvp.get() {
                 let _ = VOP_REVOKE(vp, REVOKEALL);
             }
         }
-        let ovp = sp.s_ttyvp.get();
-        sp.s_ttyvp.set(None);
+        let ovp = sp.ttyvp.replace(None);
         if let Some(ovp) = ovp {
             vrele(ovp);
         }
@@ -670,10 +666,6 @@ impl ProcGlue for BsdProcGlue {
             crate::sys::vnode::vref(vp);
         }
         crate::kern::kern_unveil::unveil_copy(parent, child);
-    }
-
-    fn session_has_tty_vnode(sess: &Session) -> bool {
-        sess.s_ttyvp.get().is_some()
     }
 
     fn pledge_sysctl(p: &Proc, mib: &[i32], new: usize) -> Result<(), Errno> {
@@ -1875,9 +1867,7 @@ mod tests {
             [
                 ("processpl", 1536),
                 ("pgrppl", 136),
-                // N5.3: the kernel's `Session::ttyvp` beside bsd's `s_ttyvp` until the
-                // switch, which takes the latter out (160 again).
-                ("sessionpl", 168),
+                ("sessionpl", 160),
                 ("filepl", 176),
                 ("fdescpl", 560),
                 ("ucredpl", 120),

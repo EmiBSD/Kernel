@@ -1192,7 +1192,7 @@ mod tests {
     use super::*;
     use crate::event::tests::{Kg, T, new_kqueue, setup};
     use crate::event::{test_knote, test_knote_drop};
-    use crate::proc::Session;
+
     use crate::termios::{TIOCGETA, TIOCSTART, TIOCSTOP};
     use crate::tty::{TtyDevsw, register_ttydevsw};
 
@@ -1212,9 +1212,6 @@ mod tests {
         }
         fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
             Ok(())
-        }
-        fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
-            false
         }
         fn console_dev(&self) -> Option<Dev> {
             None

@@ -960,7 +960,7 @@ pub fn spec_close<G: ProcGlue>(
             // session), release the reference from the session.
             if vcount(vp) == 2
                 && let Some(p) = p
-                && <G::FileGlue as FileGlue>::session_ttyvp_take(p, vp)
+                && session_ttyvp_take(p, vp)
             {
                 let _ = vrele(vp);
             }
@@ -1121,6 +1121,20 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
     };
 
     Ok(())
+}
+
+/// `spec_close`'s release of the session's controlling terminal: when the closing thread's
+/// session's `s_ttyvp` is `vp`, it is cleared and `true` returned (the caller `vrele`s the
+/// vnode); `false` otherwise. Under the kernel lock, as `spec_close` runs.
+fn session_ttyvp_take<G: ProcGlue>(p: &Thread<G>, vp: &'static Vnode<G>) -> bool {
+    let r = hal::klock::reader();
+    match p.process().session(&r) {
+        Some(s) if s.ttyvp.points_to(vp) => {
+            s.ttyvp.set(None);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// Special device advisory byte-level locks (`lf_advlock(&vp->v_speclockf, 0, ...)`: the

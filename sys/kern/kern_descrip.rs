@@ -391,18 +391,6 @@ impl FileGlue for BsdFileGlue {
     fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
         crate::kern::vfs_syscalls::dounmount(mp, flags, p)
     }
-    fn session_ttyvp_take(p: &Proc, vp: &'static Vnode) -> bool {
-        // spec_close's hack: the session's reference to its controlling terminal's vnode.
-        let Some(s) = crate::kern::proc_glue::session_of(p.process()) else {
-            return false;
-        };
-        if s.s_ttyvp.points_to(vp) {
-            s.s_ttyvp.set(None);
-            true
-        } else {
-            false
-        }
-    }
 }
 
 /// The kernel VFS core's tables of `bsd`'s processes: the vnode table, the mounts, the

@@ -1854,9 +1854,6 @@ mod tests {
         fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
             Ok(())
         }
-        fn session_has_ttyvp(&self, _sess: &crate::proc::Session<Kg>) -> bool {
-            false
-        }
         fn console_dev(&self) -> Option<hal::sys::types::Dev> {
             None
         }

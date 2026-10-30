@@ -1421,9 +1421,6 @@ pub trait TtyDevsw<G: ProcGlue>: Sync {
     /// with `PLEDGE_RPATH|PLEDGE_WPATH` and `UNVEIL_READ|UNVEIL_WRITE`, then
     /// `VOP_ACCESS(vp, VREAD)`.
     fn console_access(&self, p: &Thread<G>) -> Result<(), Errno>;
-    /// `sess->s_ttyvp != NULL`: the session's controlling terminal has a vnode (`TIOCSCTTY`
-    /// through the vnode layer).
-    fn session_has_ttyvp(&self, sess: &crate::proc::Session<G>) -> bool;
     /// `cn_tab->cn_dev`, `None` without a console (`ttwrite`'s console buffer copy).
     fn console_dev(&self) -> Option<Dev>;
 }
@@ -2377,7 +2374,7 @@ pub fn ttioctl<G: ProcGlue>(
                     _ => return Err(Errno::EPERM),
                 }
             };
-            let ttyvp = devsw::<G>().is_some_and(|d| d.session_has_ttyvp(&sess));
+            let ttyvp = !sess.ttyvp.is_none();
             let pgrp = {
                 let r = klock::reader();
                 pr.pgrp(&r).cloned()
@@ -4017,7 +4014,7 @@ pub fn uprintf<G: ProcGlue>(pr: &Process<G>, args: fmt::Arguments<'_>) {
     let tp = {
         let r = klock::reader();
         pr.session(&r)
-            .filter(|sess| G::session_has_tty_vnode(sess))
+            .filter(|sess| !sess.ttyvp.is_none())
             .and_then(|sess| session_tty(sess))
     };
     if let Some(tp) = tp {
@@ -4462,7 +4459,7 @@ mod tests {
     use super::*;
     use crate::event::tests::{Kg, T, new_kqueue, setup, thread_of};
     use crate::event::{test_knote, test_knote_drop};
-    use crate::proc::{Pgrp, Session, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
+    use crate::proc::{Pgrp, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
     use crate::termios::{TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
     use crate::testutil;
 
@@ -4490,9 +4487,6 @@ mod tests {
             } else {
                 Ok(())
             }
-        }
-        fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
-            false
         }
         fn console_dev(&self) -> Option<Dev> {
             None
@@ -5016,12 +5010,23 @@ mod tests {
     fn uprintf_reaches_only_a_controlling_terminal() {
         let (p, _d) = world(9030);
         let pr = p.process();
-        // No session terminal yet: nothing, even with the vnode answer on.
-        crate::testutil::set_tty_vnode(true);
+        // The session's terminal vnode (`s_ttyvp`), set and cleared by hand (TIOCSCTTY
+        // through the vnode layer sets it on the machine).
+        let tty_vnode =
+            |on: bool| {
+                let r = klock::reader();
+                if let Some(s) = pr.session(&r) {
+                    s.ttyvp.set(on.then(|| {
+                        &*Box::leak(Box::new(crate::fs::vnode::Vnode::<Kg>::new_unpooled()))
+                    }));
+                }
+            };
+        // No session terminal yet: nothing.
         uprintf(pr, format_args!("lost\n"));
         setsid(p);
         let tp = test_tty();
         assert_eq!(ioctl_int(&tp, TIOCSCTTY, 0, p).0, Ok(true));
+        tty_vnode(true);
         assert_ne!(pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT, 0);
         assert_eq!(tp.t_outq.c_cc.get(), 0);
 
@@ -5031,16 +5036,16 @@ mod tests {
         assert_eq!(drain(&tp.t_outq), b"[sh]9030: pin\r\r\n");
 
         // A session whose terminal has no vnode (revoked): nothing.
-        crate::testutil::set_tty_vnode(false);
+        tty_vnode(false);
         uprintf(pr, format_args!("lost\n"));
         assert_eq!(tp.t_outq.c_cc.get(), 0);
 
         // PS_CONTROLT clear (setsid's child, a daemon): nothing.
-        crate::testutil::set_tty_vnode(true);
+        tty_vnode(true);
         pr.ps_flags.fetch_and(!PS_CONTROLT, Ordering::SeqCst);
         uprintf(pr, format_args!("lost\n"));
         assert_eq!(tp.t_outq.c_cc.get(), 0);
-        crate::testutil::set_tty_vnode(false);
+        tty_vnode(false);
     }
 
     #[test]

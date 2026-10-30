@@ -488,7 +488,7 @@ fn process_new<G: ProcGlue>(
     );
     let ctty = {
         let r = klock::reader();
-        parent.session(&r).is_some_and(G::session_has_tty_vnode)
+        parent.session(&r).is_some_and(|s| !s.ttyvp.is_none())
     };
     if ctty {
         pr.ps_flags.fetch_or(

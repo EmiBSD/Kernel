@@ -87,7 +87,7 @@ fn cttyvp(p: &Proc) -> Option<&'static Vnode> {
         return None;
     }
     // `s_ttyvp` holds a use count on its vnode, and vnodes are never freed.
-    session_of(pr)?.s_ttyvp.get()
+    session_of(pr)?.ttyvp.get()
 }
 
 /// The session of `p`'s process group (`p->p_p->ps_pgrp->pg_session`), counted.

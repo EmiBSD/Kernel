@@ -139,7 +139,6 @@ std::thread_local! {
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
-    static TTY_VNODE: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
     static TEXTVP_WXALLOWED: Cell<bool> = const { Cell::new(false) };
 
@@ -1238,17 +1237,6 @@ pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
     PLEDGE_REFUSE.with(|c| c.set(r));
 }
 
-/// What this thread's test glues' `session_has_tty_vnode` answers (`s_ttyvp != NULL`):
-/// `false` until [`set_tty_vnode`] says otherwise.
-pub fn tty_vnode() -> bool {
-    TTY_VNODE.with(Cell::get)
-}
-
-/// Makes this thread's test glues answer `on` for every session's terminal vnode.
-pub fn set_tty_vnode(on: bool) {
-    TTY_VNODE.with(|c| c.set(on));
-}
-
 /// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
 /// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
 /// its first `kbind(2)`), `Ok` otherwise.
@@ -1584,12 +1572,6 @@ macro_rules! test_file_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
             }
-            fn session_ttyvp_take(
-                _p: &$crate::proc::Thread<$proc>,
-                _vp: &'static $crate::fs::vnode::Vnode<$proc>,
-            ) -> bool {
-                false
-            }
         }
     };
 }
@@ -1667,9 +1649,6 @@ macro_rules! test_proc_glue {
                 _new: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
-            }
-            fn session_has_tty_vnode(_sess: &$crate::proc::Session<Self>) -> bool {
-                $crate::testutil::tty_vnode()
             }
             fn pledge_adjtime(
                 _p: &$crate::proc::Thread<Self>,

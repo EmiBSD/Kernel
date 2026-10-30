@@ -96,7 +96,7 @@ use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp, UNVEIL_READ, UNVEIL_WRITE};
 use crate::sys::namei::{namei, ndinit};
 use crate::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
-use crate::sys::proc::{Proc, Session};
+use crate::sys::proc::Proc;
 use crate::sys::tty::{Speedtab, Tty};
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::{Uio, UioRw};
@@ -166,10 +166,6 @@ impl TtyDevsw<BsdProcGlue> for BsdTtyDevsw {
         let _ = VOP_UNLOCK(vp);
         vrele(vp);
         error
-    }
-
-    fn session_has_ttyvp(&self, sess: &Session) -> bool {
-        sess.s_ttyvp.get().is_some()
     }
 
     fn console_dev(&self) -> Option<Dev> {

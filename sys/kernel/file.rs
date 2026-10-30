@@ -690,13 +690,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
         flags: i32,
         p: &Thread<Self::Proc>,
     ) -> Result<(), Errno>;
-    /// `spec_close`'s release of the session's controlling terminal: when the closing
-    /// thread's session's `s_ttyvp` is `vp`, it is cleared and `true` returned (the caller
-    /// `vrele`s the vnode); `false` otherwise.
-    fn session_ttyvp_take(
-        p: &Thread<Self::Proc>,
-        vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
-    ) -> bool;
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

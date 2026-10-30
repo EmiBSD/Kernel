@@ -510,12 +510,6 @@ impl FileGlue for BenchFiles {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    fn session_ttyvp_take(
-        _p: &kernel::proc::Thread<BenchGlue>,
-        _vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
-    ) -> bool {
-        false
-    }
 }
 
 /// The VFS tables of the bench's processes (unused: no file system here).

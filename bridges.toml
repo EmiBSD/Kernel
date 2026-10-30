@@ -145,7 +145,8 @@ paid_by = "N7"
 # it (hal's Stat, kernel::fs's vnodes), and with the switch to kernel::fs the names' types
 # (the kernel's Componentname and Nameidata), vnode_g_init (the vnode's name cache heads are
 # its own), cache_purge, lf_purgelocks, spec_advlock (the kernel's cache and record locks)
-# and abortop (vop_generic_abortop gives the pathname buffer back itself).
+# and abortop (vop_generic_abortop gives the pathname buffer back itself); then
+# session_ttyvp_take (spec_close reads the kernel's Session::ttyvp).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
@@ -312,6 +313,7 @@ paid_by = "N7"
 # /dev/console access check (namei + VOP_ACCESS, VFS) and s_ttyvp (TIOCSCTTY's vnode test, N5);
 # d_tty and the pty master test stay in bsd's cdevsw adapters (they call the kernel with the tty
 # and the side). Paid when the console and the device switch move (N7, decision 45's CharDevice).
+# N5.3: session_has_ttyvp left it (the kernel's Session::ttyvp, D-N5.2-9).
 # kernel::tty::TtyDevsw
 [[bridge]]
 trait = "TtyDevsw"
@@ -358,7 +360,8 @@ paid_by = "N7"
 # the other pledge hooks) and textvp_wxallowed (ps_textvp's MNT_WXALLOWED, N5 with
 # textvp_release). N5.3: namei's hooks joined it (kernel::fs::lookup): pledge_namei,
 # unveil_start_relative, unveil_check_component and unveil_check_final (kern_pledge and
-# kern_unveil, N8, at the C's points) and checkzoneinfopath.
+# kern_unveil, N8, at the C's points) and checkzoneinfopath; session_has_tty_vnode left it
+# (the kernel's Session::ttyvp, which TIOCSCTTY sets, D-N5.2-9).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
