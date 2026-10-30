@@ -782,7 +782,11 @@ mod tests {
             Some((64, IO_APPEND | IO_UNIT | IO_NOLIMIT))
         );
         sink.close(true);
-        assert_eq!(testfs::last_close(), Some((false, true)), "acct(2): its caller's");
+        assert_eq!(
+            testfs::last_close(),
+            Some((false, true)),
+            "acct(2): its caller's"
+        );
         assert_eq!(vp.writecount(), 0);
         assert_eq!(testfs::usecounts()[F], uses[F]);
         // The watcher's and acct_shutdown's close: NOCRED, the running thread (the C's
