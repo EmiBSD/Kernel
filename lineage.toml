@@ -2748,7 +2748,7 @@ native = ["Sha384Ctx::finalize", "Sha512Core::digest"]
 kind = "split"
 
 [[module]]
-rust = "sys/crypto/siphash.rs"
+rust = "sys/lib/libkern/siphash.rs"
 lz = ["sys/crypto/siphash.rs"]
 status = "redesigned"
 
@@ -5015,7 +5015,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/isofs/cd9660/cd9660_node.rs"
 lz = ["sys/isofs/cd9660/cd9660_node.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_rrip.rs"
@@ -5060,7 +5060,7 @@ status = "inherited"
 rust = "sys/isofs/udf/udf.rs"
 lz = ["sys/isofs/udf/udf.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_extern.rs"
@@ -5078,13 +5078,13 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/isofs/udf/udf_vfsops.rs"
 lz = ["sys/isofs/udf/udf_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
 
 [[module]]
 rust = "sys/isofs/udf/udf_vnops.rs"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
 
 [[module]]
 rust = "sys/kern/clock_subr.rs"
@@ -5968,7 +5968,8 @@ status = "inherited"
 [[module]]
 rust = "sys/lib/libkern/lib.rs"
 lz = ["sys/lib/libkern/lib.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/lib/libkern/random.rs"
@@ -6365,7 +6366,7 @@ status = "inherited"
 rust = "sys/miscfs/fuse/fuse_ihash.rs"
 lz = ["sys/miscfs/fuse/fuse_ihash.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/vnode.rs"]
 
 [[module]]
 rust = "sys/miscfs/fuse/fuse_lookup.rs"
@@ -6437,7 +6438,7 @@ status = "inherited"
 rust = "sys/msdosfs/msdosfs_denode.rs"
 lz = ["sys/msdosfs/msdosfs_denode.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs"]
 
 [[module]]
 rust = "sys/msdosfs/msdosfs_fat.rs"
@@ -6571,7 +6572,7 @@ status = "inherited"
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
@@ -6603,7 +6604,8 @@ adapted_by = ["sys/kernel/crypto/md5.rs", "sys/hal/vm/param.rs", "sys/kernel/pro
 [[module]]
 rust = "sys/net/pf_lb.rs"
 lz = ["sys/net/pf_lb.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/net/pf_norm.rs"
@@ -6690,7 +6692,7 @@ status = "inherited"
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/blake2s.rs", "sys/crypto/siphash.rs"]
+adapted_by = ["sys/crypto/blake2s.rs", "sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/net/wg_noise.rs"
@@ -6743,7 +6745,7 @@ status = "inherited"
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6826,7 +6828,7 @@ status = "inherited"
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_output.rs"
@@ -6962,7 +6964,7 @@ status = "inherited"
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -7113,7 +7115,8 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
 lz = ["sys/nfs/nfs_srvcache.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvsubs.rs"
@@ -7213,7 +7216,7 @@ status = "inherited"
 rust = "sys/ntfs/ntfs_ihash.rs"
 lz = ["sys/ntfs/ntfs_ihash.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs"]
 
 [[module]]
 rust = "sys/ntfs/ntfs_inode.rs"
@@ -9128,7 +9131,7 @@ status = "inherited"
 rust = "sys/ufs/ufs/ufs_ihash.rs"
 lz = ["sys/ufs/ufs/ufs_ihash.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_inode.rs"
@@ -9146,7 +9149,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode
 rust = "sys/ufs/ufs/ufs_quota.rs"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_vfsops.rs"

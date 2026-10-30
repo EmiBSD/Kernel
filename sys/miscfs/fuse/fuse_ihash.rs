@@ -71,7 +71,6 @@ use core::sync::atomic::Ordering;
 use libkern::StaticCell;
 
 use crate::conf::param::INITIALVNODES;
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::subr_prf::panic;
@@ -85,6 +84,7 @@ use crate::sys::queue::ListHead;
 use crate::sys::types::Ino;
 use crate::sys::vnode::Vnode;
 use crate::sys::vnode::{vget, vput};
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// The hash chains, with the claim that makes them shareable.
 #[derive(Clone, Copy)]

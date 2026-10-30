@@ -82,6 +82,8 @@ pub mod random;
 #[forbid(unsafe_code)]
 pub mod scanc;
 #[forbid(unsafe_code)]
+pub mod siphash;
+#[forbid(unsafe_code)]
 pub mod skpc;
 pub mod staticcell;
 #[forbid(unsafe_code)]

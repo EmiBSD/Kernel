@@ -72,7 +72,6 @@
 //! - `pfr_pool_get` returns the entry's address and mask (`net/pf_table.rs`) instead of
 //!   pointing `raddr`/`rmask` at them (see above).
 
-use crate::crypto::siphash::{SipHash24, SiphashKey};
 use crate::dev::rnd::arc4random_uniform;
 use crate::kern::subr_prf::{addlog, log};
 use crate::net::if_::unhandled_af;
@@ -103,6 +102,7 @@ use crate::sys::socket::AF_INET;
 use crate::sys::socket::AF_INET6;
 use crate::sys::syslog::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_NOTICE};
 use crate::sys::types::SaFamily;
+use libkern::siphash::{SipHash24, SiphashKey};
 
 /// `pf_hash`: the keyed hash of `inaddr` under `key`, stored in `hash` and returned.
 pub fn pf_hash(inaddr: &PfAddr, hash: &mut PfAddr, key: &PfPoolhashkey, af: SaFamily) -> u64 {

@@ -85,6 +85,7 @@ libz.workspace = true
 # the same dependency with its `doubles` feature, for tests only.
 [dev-dependencies]
 kernel = { path = "kernel", features = ["doubles"] }
+libkern = { workspace = true, features = ["doubles"] }
 
 [lints]
 workspace = true

@@ -103,7 +103,6 @@ use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI64, Ordering};
 use kernel::fs::vops::Cred;
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_malloc::malloc;
 use crate::kern::kern_prot::suser;
@@ -143,6 +142,7 @@ use crate::ufs::ufs::quota::{
 };
 use crate::ufs::ufs::ufsmount::{QTF_CLOSING, QTF_OPENING, Ufsmount, vfstoufs};
 use libkern::StaticCell;
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// `DQ_LOCK`: this quota locked (no MODS).
 pub const DQ_LOCK: u16 = 0x01;

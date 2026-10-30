@@ -66,7 +66,6 @@
 //! - The `EXT2FS` branch of `ufs_ihashget` (`IS_EXT2_VNODE`: an ext2fs inode's link count is
 //!   `i_e2fs_nlink`, an unsigned 16 bits, so `<= 0` is `== 0`) is under feature `ext2fs`.
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::sched_bsd::r#yield;
@@ -83,6 +82,7 @@ use crate::sys::vnode::{vget, vput};
 use crate::ufs::ufs::dinode::Ufsino;
 use crate::ufs::ufs::inode::{IHash, IN_HASHED, Inode};
 use libkern::StaticCell;
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// The hash chains, with the claim that makes them shareable.
 #[derive(Clone, Copy)]

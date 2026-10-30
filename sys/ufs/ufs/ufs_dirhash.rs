@@ -89,7 +89,6 @@
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use crate::crypto::siphash::{SipHash24, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
@@ -112,6 +111,7 @@ use crate::ufs::ufs::dirhash::{
     Dirhash, DirhashList, DirhashListHead,
 };
 use crate::ufs::ufs::inode::{Inode, UFS_BUFATOFF};
+use libkern::siphash::{SipHash24, SiphashKey};
 
 /// `DIRBLKSIZ` as an `int`.
 const DIRBLK: i32 = DIRBLKSIZ as i32;
