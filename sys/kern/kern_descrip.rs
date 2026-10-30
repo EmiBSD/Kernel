@@ -110,7 +110,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::link::{Link, PtrWord};
 use kernel::api::{FdEntries, SysResult};
-use kernel::file::{FileGlue, FileTables, LockOwner};
+use kernel::file::{FileGlue, FileTables};
 
 pub use kernel::descrip::{
     dupfdopen, fd_checkclosed, fd_getfile, fd_getfile_flags, fd_iterfile, fdalloc, fdcopy,
@@ -123,16 +123,13 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
 #[cfg(not(test))]
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
 use crate::sys::eventvar::KqRef;
-use crate::sys::fcntl::Flock;
 use crate::sys::file::{File, FileRef, Fileops};
 use crate::sys::filedesc::FdGuard;
-use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
@@ -148,9 +145,8 @@ use crate::sys::syscallargs::{
     SysFlockArgs, SysFpathconfArgs, SysFstatArgs,
 };
 use crate::sys::systm::{SysArgs, sysargs};
-use crate::sys::types::{Dev, Off, Register, minor};
-use crate::sys::vnode::vn_lock;
-use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
+use crate::sys::types::{Dev, Register, minor};
+use crate::sys::vnode::Vnode;
 
 /// `f_data`: what a `bsd` file is open on.
 pub enum BsdFileData {
@@ -214,17 +210,6 @@ pub fn file_tables() -> &'static FileTables<BsdFileGlue> {
     }
 }
 
-/// The vnode of a vnode file's object.
-fn vnode_of(d: &BsdFileData) -> &'static Vnode {
-    match d {
-        BsdFileData::Vnode(v) => match v.get() {
-            Some(vp) => vp,
-            None => crate::kern::subr_prf::panic(format_args!("vnode file: no vnode")),
-        },
-        _ => crate::kern::subr_prf::panic(format_args!("not a vnode file")),
-    }
-}
-
 impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
@@ -244,45 +229,6 @@ impl FileGlue for BsdFileGlue {
 
     fn tablefull(tab: &str) {
         tablefull(tab);
-    }
-
-    fn stall_wait() {
-        let _ = VFS_TABLES.stall_lock.enter(hal::rwlock::RW_READ);
-        VFS_TABLES.stall_lock.exit();
-    }
-
-    fn advlock(
-        d: &BsdFileData,
-        owner: LockOwner,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        VOP_ADVLOCK(vnode_of(d), owner, op, fl, flags)
-    }
-
-    fn pathconf(d: &BsdFileData, name: i32) -> Result<Register, Errno> {
-        let vp = vnode_of(d);
-        let mut retval: Register = 0;
-        let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_PATHCONF(vp, name, &mut retval);
-        let _ = VOP_UNLOCK(vp);
-        error.map(|()| retval)
-    }
-
-    fn isatty(d: &BsdFileData) -> bool {
-        vnode_of(d).flag() & VISTTY != 0
-    }
-
-    fn position_check(d: &BsdFileData, offset: Off) -> Result<(), Errno> {
-        let vp = vnode_of(d);
-        if vp.vtype() == VFIFO || vp.flag() & VISTTY != 0 {
-            return Err(Errno::ESPIPE);
-        }
-        if offset < 0 && vp.vtype() != VCHR {
-            return Err(Errno::EINVAL);
-        }
-        Ok(())
     }
 
     fn dns_socket(d: &BsdFileData) -> bool {
@@ -311,15 +257,6 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
-    fn vnode_revoked(d: &BsdFileData) -> bool {
-        match d {
-            BsdFileData::Vnode(v) => v
-                .get()
-                .is_some_and(|vp| vp.kind() == kernel::fs::vnode::VnodeKind::Dead),
-            _ => false,
-        }
-    }
-
     fn pipe_of(
         d: &BsdFileData,
     ) -> Option<&kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
@@ -332,15 +269,6 @@ impl FileGlue for BsdFileGlue {
     fn vnode_of(d: &BsdFileData) -> Option<&'static Vnode> {
         match d {
             BsdFileData::Vnode(v) => v.get(),
-            _ => None,
-        }
-    }
-
-    fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
-        match d {
-            BsdFileData::Vnode(v) => v
-                .get()
-                .map(|vp| vp as &'static dyn kernel::vm::vnode::VnodeOps),
             _ => None,
         }
     }
@@ -361,24 +289,6 @@ impl FileGlue for BsdFileGlue {
         pledge_ioctl(p, com, fp)
     }
 
-    fn getcwd(
-        vp: &'static Vnode,
-        path: &mut [u8],
-        bp: usize,
-        limit: i32,
-        p: &Proc,
-    ) -> Result<usize, Errno> {
-        let mut bp = bp;
-        crate::sys::vnode::vfs_getcwd_common(
-            vp,
-            None,
-            Some((path, &mut bp)),
-            limit,
-            crate::sys::vnode::GETCWD_CHECK_ACCESS,
-            p,
-        )?;
-        Ok(bp)
-    }
     fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
         crate::kern::kern_subr::uiomove(buf, uio)
     }

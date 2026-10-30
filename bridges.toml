@@ -146,7 +146,12 @@ paid_by = "N7"
 # (the kernel's Componentname and Nameidata), vnode_g_init (the vnode's name cache heads are
 # its own), cache_purge, lf_purgelocks, spec_advlock (the kernel's cache and record locks)
 # and abortop (vop_generic_abortop gives the pathname buffer back itself); then
-# session_ttyvp_take (spec_close reads the kernel's Session::ttyvp).
+# session_ttyvp_take (spec_close reads the kernel's Session::ttyvp); then the vnode file
+# legs: stall_wait (kernel::fs::subr's vfs_stall_barrier), advlock, pathconf, isatty and
+# position_check (kernel::descrip's VOP_ADVLOCK, VOP_PATHCONF, VISTTY and v_type on the
+# vnode vnode_of gives), vnode_revoked (kqueue_scan's dead_vops test), getcwd (kern.proc_cwd's
+# vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
+# (a test glue answers with a pager double).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"

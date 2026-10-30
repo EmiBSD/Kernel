@@ -142,8 +142,10 @@
 //! unlocked, as the C's return unlocked. A slot holds a counted [`FileRef`]; a close takes
 //! the slot's reference out ([`fdremove`]) and drops it after the unlock ([`closef`]).
 //!
-//! What a table needs of the subsystems still in `bsd` (the vnode layer's record locks and
-//! `pathconf`, kqueue's `knote_fdclose`, pledge, `SIGPIPE`) is [`FileGlue`]'s.
+//! What a table needs of the subsystems still in `bsd` (a file's object, pledge,
+//! `SIGPIPE`) is [`FileGlue`]'s; a vnode file's record locks, `pathconf`, `VISTTY` and
+//! positioned-I/O checks are its kernel vnode's (`kernel::fs`, N5.3: `VOP_ADVLOCK`,
+//! `VOP_PATHCONF`, `v_flag`, `v_type`), reached through [`FileGlue::vnode_of`].
 //!
 //! ## Deviations
 //! - Out-parameters are return values: `fdalloc` returns the descriptor, `falloc` the file
@@ -224,7 +226,8 @@ use crate::file::{
     foffset, vfs_stall_barrier,
 };
 use crate::fs::subr::{vref, vrele};
-use crate::fs::vnode::Vnode;
+use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VCHR, VFIFO, VISTTY, Vnode, vn_lock};
+use crate::fs::vops::{vop_advlock, vop_pathconf, vop_unlock};
 use crate::proc::{PS_PLEDGE, PS_SUGID, PS_SUGIDEXEC, ProcGlue, Process, Thread, suser};
 use crate::resource::RLIMIT_NOFILE;
 use crate::uio::{IovBuf, Iovec, Uio, UioRw, UioSeg, iovec_copyin};
@@ -954,6 +957,18 @@ fn data_of<G: FileGlue>(fp: &File<G>) -> &G::Data {
     }
 }
 
+/// `(struct vnode *)fp->f_data` of a `DTYPE_VNODE` file (the caller checked the type): the
+/// kernel vnode the glue's object holds.
+fn vnode_of<G: FileGlue>(fp: &File<G>) -> &'static Vnode<G::Proc> {
+    match G::vnode_of(data_of(fp)) {
+        Some(vp) => vp,
+        None => kpanic(format_args!(
+            "file {:#x}: a vnode file without a vnode",
+            fp.addr()
+        )),
+    }
+}
+
 /// `struct flock` from userland.
 fn flock_copyin(arg: usize) -> Result<Flock, Errno> {
     let bytes = UserPtr::<[u8; Flock::SIZE]>::new(arg).copyin()?;
@@ -1052,7 +1067,7 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                 }
 
                 F_ISATTY => {
-                    if fp.f_type() == DTYPE_VNODE && G::isatty(data_of(&fp)) {
+                    if fp.f_type() == DTYPE_VNODE && vnode_of(&fp).flag() & VISTTY != 0 {
                         retval = 1;
                         Ok(())
                     } else {
@@ -1098,7 +1113,7 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                     if fp.f_type() != DTYPE_VNODE {
                         break 'out Err(Errno::EINVAL);
                     }
-                    let vd = data_of(&fp);
+                    let vp = vnode_of(&fp);
                     // Copy in the lock structure
                     let mut fl = match flock_copyin(arg) {
                         Ok(fl) => fl,
@@ -1112,17 +1127,17 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                                 break 'out Err(Errno::EBADF);
                             }
                             fdp.fd_flags.fetch_or(FD_ADVLOCK, Ordering::SeqCst);
-                            G::advlock(vd, id, F_SETLK, &mut fl, flg)
+                            vop_advlock(vp, id, F_SETLK, &mut fl, flg)
                         }
                         F_WRLCK => {
                             if fp.flag() & FWRITE == 0 {
                                 break 'out Err(Errno::EBADF);
                             }
                             fdp.fd_flags.fetch_or(FD_ADVLOCK, Ordering::SeqCst);
-                            G::advlock(vd, id, F_SETLK, &mut fl, flg)
+                            vop_advlock(vp, id, F_SETLK, &mut fl, flg)
                         }
                         F_UNLCK => {
-                            break 'out G::advlock(vd, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
+                            break 'out vop_advlock(vp, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
                         }
                         _ => break 'out Err(Errno::EINVAL),
                     };
@@ -1133,7 +1148,7 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                         fl.l_whence = SEEK_SET as i16;
                         fl.l_start = 0;
                         fl.l_len = 0;
-                        let _ = G::advlock(vd, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
+                        let _ = vop_advlock(vp, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
                         // fl.l_type = F_UNLCK: F_SETLK copies nothing out, so the C's
                         // assignment is never read.
                     }
@@ -1147,7 +1162,7 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                     if fp.f_type() != DTYPE_VNODE {
                         break 'out Err(Errno::EINVAL);
                     }
-                    let vd = data_of(&fp);
+                    let vp = vnode_of(&fp);
                     // Copy in the lock structure
                     let mut fl = match flock_copyin(arg) {
                         Ok(fl) => fl,
@@ -1162,7 +1177,7 @@ pub fn sys_fcntl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                         break 'out Err(Errno::EINVAL);
                     }
                     let id = LockOwner::Table(fdp.addr());
-                    if let Err(e) = G::advlock(vd, id, F_GETLK, &mut fl, F_POSIX) {
+                    if let Err(e) = vop_advlock(vp, id, F_GETLK, &mut fl, F_POSIX) {
                         break 'out Err(e);
                     }
                     UserPtr::<[u8; Flock::SIZE]>::new(arg).copyout(&fl.to_bytes())
@@ -1345,7 +1360,14 @@ pub fn sys_fpathconf<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                 Err(Errno::EINVAL)
             }
         }
-        DTYPE_VNODE => G::pathconf(data_of(&fp), name),
+        DTYPE_VNODE => {
+            let vp = vnode_of(&fp);
+            let mut retval: Register = 0;
+            let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+            let error = vop_pathconf(vp, name, &mut retval);
+            let _ = vop_unlock(vp);
+            error.map(|()| retval)
+        }
         _ => Err(Errno::EOPNOTSUPP),
     };
     let _ = fp.frele(Some(p));
@@ -1702,7 +1724,7 @@ pub fn closef<G: FileGlue>(fp: FileRef<G>, p: Option<&Thread<G::Proc>>) -> Resul
             ..Flock::default()
         };
         let id = LockOwner::Table(fdp.addr());
-        let _ = G::advlock(data_of(&fp), id, i32::from(F_UNLCK), &mut lf, F_POSIX);
+        let _ = vop_advlock(vnode_of(&fp), id, i32::from(F_UNLCK), &mut lf, F_POSIX);
     }
     fp.frele(p)
 }
@@ -1719,7 +1741,7 @@ pub fn sys_flock<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         if fp.f_type() != DTYPE_VNODE {
             break 'out Err(Errno::EOPNOTSUPP);
         }
-        let vd = data_of(&fp);
+        let vp = vnode_of(&fp);
         let id = LockOwner::File(fp.addr());
         let mut lf = Flock {
             l_whence: SEEK_SET as i16,
@@ -1730,7 +1752,7 @@ pub fn sys_flock<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         if how & LOCK_UN != 0 {
             lf.l_type = F_UNLCK;
             fp.f_iflags.fetch_and(!FIF_HASLOCK, Ordering::SeqCst);
-            break 'out G::advlock(vd, id, i32::from(F_UNLCK), &mut lf, F_FLOCK);
+            break 'out vop_advlock(vp, id, i32::from(F_UNLCK), &mut lf, F_FLOCK);
         }
         if how & LOCK_EX != 0 {
             lf.l_type = F_WRLCK;
@@ -1741,9 +1763,9 @@ pub fn sys_flock<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
         }
         fp.f_iflags.fetch_or(FIF_HASLOCK, Ordering::SeqCst);
         if how & LOCK_NB != 0 {
-            G::advlock(vd, id, F_SETLK, &mut lf, F_FLOCK)
+            vop_advlock(vp, id, F_SETLK, &mut lf, F_FLOCK)
         } else {
-            G::advlock(vd, id, F_SETLK, &mut lf, F_FLOCK | F_WAIT)
+            vop_advlock(vp, id, F_SETLK, &mut lf, F_FLOCK | F_WAIT)
         }
     };
     let _ = fp.frele(Some(p));
@@ -1867,12 +1889,21 @@ pub fn sys_getdtablecount<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &
     p.fd().fd_openfd.load(Ordering::Relaxed)
 }
 
-/// The positioned-I/O checks of `dofilereadv`/`dofilewritev` (`FO_POSITION`).
+/// The positioned-I/O checks of `dofilereadv`/`dofilewritev` (`FO_POSITION`): a vnode's
+/// alone, not a fifo's or a tty's (`ESPIPE`), and a negative offset only on a character
+/// device (`EINVAL`).
 fn position_check<G: FileGlue>(fp: &File<G>, offset: Off) -> Result<(), Errno> {
     if fp.f_type() != DTYPE_VNODE {
         return Err(Errno::ESPIPE);
     }
-    G::position_check(data_of(fp), offset)
+    let vp = vnode_of(fp);
+    if vp.vtype() == VFIFO || vp.flag() & VISTTY != 0 {
+        return Err(Errno::ESPIPE);
+    }
+    if offset < 0 && vp.vtype() != VCHR {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
 }
 
 /// The errors that come after some data was moved are dropped: `ERESTART`, `EINTR` and
@@ -2229,6 +2260,7 @@ mod tests {
     use super::*;
     use crate::cred::{CredRef, Ucred};
     use crate::file::FileTables;
+    use crate::fs::vnode::VREG;
     use crate::fs::vnode::{VDIR, Vnode};
     use crate::proc::{ProcessRef, process_alloc, procinit, thread_alloc};
     use crate::resource::{Plimit, PlimitRef};
@@ -2343,13 +2375,31 @@ mod tests {
 
     /// `falloc` + install + `fdinsert`: a new file of type `ty` (open `flag`) at the lowest
     /// free descriptor, object `oid`; the caller's reference dropped.
+    /// A test file of type `ty` on the object `oid`; a vnode file holds a regular file's
+    /// vnode of the test operations (`testutil::test_vnode`).
     fn open_as(p: &Thread<Procs>, oid: usize, ty: i32, flag: i32) -> i32 {
+        let kvnode = (ty == DTYPE_VNODE).then(|| testutil::test_vnode::<Procs>(VREG, 0));
         open_with(
             p,
             ty,
             flag,
             TestFileData {
                 id: oid,
+                kvnode,
+                ..TestFileData::default()
+            },
+        )
+    }
+
+    /// A vnode file open for reading on a vnode of type `vtype` with the flags `flag`.
+    fn open_vnode(p: &Thread<Procs>, oid: usize, vtype: crate::fs::vnode::Vtype, flag: u32) -> i32 {
+        open_with(
+            p,
+            DTYPE_VNODE,
+            FREAD,
+            TestFileData {
+                id: oid,
+                kvnode: Some(testutil::test_vnode::<Procs>(vtype, flag)),
                 ..TestFileData::default()
             },
         )
@@ -2583,16 +2633,7 @@ mod tests {
         assert_eq!(sys_fcntl(&p, fd, F_GETLK, 0), Err(Errno::EINVAL));
         let vn = open_as(&p, 41, DTYPE_VNODE, FREAD);
         assert_eq!(sys_fcntl(&p, vn, F_ISATTY, 0), Err(Errno::ENOTTY));
-        let tty = open_with(
-            &p,
-            DTYPE_VNODE,
-            FREAD,
-            TestFileData {
-                id: 42,
-                tty: true,
-                ..TestFileData::default()
-            },
-        );
+        let tty = open_vnode(&p, 42, VCHR, VISTTY);
         assert_eq!(sys_fcntl(&p, tty, F_ISATTY, 0), Ok(1));
         // A DNS socket refuses every ioctl.
         let dns = open_with(
@@ -2632,7 +2673,7 @@ mod tests {
         assert_eq!(
             file_log(),
             vec![format!(
-                "advlock 50 Table({fdp_addr}) {F_SETLK} {F_RDLCK} 0 {F_POSIX:#x}"
+                "advlock Table({fdp_addr}) {F_SETLK} {F_RDLCK} 0 {F_POSIX:#x}"
             )]
         );
         assert_ne!(p.fd().fd_flags.load(Ordering::Relaxed) & FD_ADVLOCK, 0);
@@ -2642,7 +2683,7 @@ mod tests {
         assert_eq!(
             file_log(),
             vec![format!(
-                "advlock 50 File({fp_addr}) {F_SETLK} {F_RDLCK} 0 {:#x}",
+                "advlock File({fp_addr}) {F_SETLK} {F_RDLCK} 0 {:#x}",
                 F_FLOCK | F_WAIT
             )]
         );
@@ -2657,7 +2698,7 @@ mod tests {
         assert_eq!(
             log[1],
             format!(
-                "advlock 50 Table({fdp_addr}) {} {F_UNLCK} 0 {F_POSIX:#x}",
+                "advlock Table({fdp_addr}) {} {F_UNLCK} 0 {F_POSIX:#x}",
                 i32::from(F_UNLCK)
             )
         );
@@ -2799,6 +2840,14 @@ mod tests {
         let vn = open_as(&p, 5, DTYPE_VNODE, FREAD);
         assert_eq!(sys_pread(&p, vn, BUF, 8, 4), Ok(5));
         assert_eq!(sys_pread(&p, vn, BUF, 8, -1), Err(Errno::EINVAL));
+        // The vnode's own checks (dofilereadv's): a fifo and a tty have no position, and a
+        // negative offset is a character device's alone.
+        let fifo = open_vnode(&p, 6, VFIFO, 0);
+        assert_eq!(sys_pread(&p, fifo, BUF, 8, 0), Err(Errno::ESPIPE));
+        let tty = open_vnode(&p, 7, VCHR, VISTTY);
+        assert_eq!(sys_pread(&p, tty, BUF, 8, 0), Err(Errno::ESPIPE));
+        let chr = open_vnode(&p, 8, VCHR, 0);
+        assert_eq!(sys_pread(&p, chr, BUF, 8, -1), Ok(5));
         // Open for reading only: no write.
         assert_eq!(sys_write(&p, vn, BUF, 3), Err(Errno::EBADF));
         // A descriptor opened with __pledge_open() is not written.

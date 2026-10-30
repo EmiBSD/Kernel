@@ -119,8 +119,9 @@
 //!   any user (N4.7 decision 8, the user's).
 //! - `sysctl_proc_args` reads the victim through `uvm_io` into an `M_TEMP` `MArray` (LZ: a
 //!   raw `malloc` and a slice over it in `unsafe`), the uio a [`UioMove`](crate::uio::UioMove)
-//!   over that buffer; `sysctl_proc_cwd` builds the path through the descriptor glue
-//!   (`FileGlue::getcwd`, `vfs_getcwd_common`, N5).
+//!   over that buffer; `sysctl_proc_cwd` builds the path with the kernel's
+//!   `vfs_getcwd_common` (`kernel::fs::getcwd`, N5.3; the descriptor glue's `getcwd` until
+//!   then).
 //!
 //! ## Deviations
 //! - Every node whose subsystem is not ported reports itself with `unported!` and fails with
@@ -2402,24 +2403,28 @@ pub fn sysctl_proc_cwd<G: ProcGlue>(
         return Err(Errno::ENOMEM);
     };
 
-    let bp = len - 1;
+    let mut bp = len - 1;
     path[bp] = 0;
 
     // Same as sys__getcwd
-    let mut error =
-        <G::FileGlue as crate::file::FileGlue>::getcwd(vp, &mut path, bp, (len / 2) as i32, cp);
-    if let Ok(bp) = error {
+    let mut error = crate::fs::getcwd::vfs_getcwd_common(
+        vp,
+        None,
+        Some((&mut path[..], &mut bp)),
+        (len / 2) as i32,
+        crate::fs::vnode::GETCWD_CHECK_ACCESS,
+        cp,
+    );
+    if error.is_ok() {
         let lenused = len - bp;
         *req.oldlenp = lenused;
-        error = UserPtr::<u8>::new(req.oldp)
-            .copyout_slice(&path[bp..])
-            .map(|()| bp);
+        error = UserPtr::<u8>::new(req.oldp).copyout_slice(&path[bp..]);
     }
 
     crate::fs::subr::vrele(vp);
     drop(path);
 
-    error.map(|_| ())
+    error
 }
 
 /// `sysctl_proc_nobroadcastkill`: `kern.proc_nobroadcastkill.<pid>`, the process's

@@ -5147,7 +5147,7 @@ notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockint
 rust = "sys/kern/kern_descrip.rs"
 lz = ["sys/kern/kern_descrip.rs", "sys/sys/file.rs"]
 status = "redesigned"
-notes = "N4.3: the glue of bsd's descriptors over kernel::file and kernel::descrip (BsdFileGlue, BsdFileData, BsdFdKq, the open files' tables and NUMFILES, the sysent[] rows of dup..getdtablecount, filedescopen, the bsd-signature wrappers falloc/fnew/closef/fd_getfile_mode/file_count); LZ's path kept (the frozen amd64 conf.rs imports filedescopen from it), so no [[dropped]]; N5.3: BsdFileGlue's namei members (LZ's Componentname and Nameidata, UnveilMatch, vnode_of) until the switch; its Stat and Vnode types and vref, vrele and stat legs gone"
+notes = "N4.3: the glue of bsd's descriptors over kernel::file and kernel::descrip (BsdFileGlue, BsdFileData, BsdFdKq, the open files' tables and NUMFILES, the sysent[] rows of dup..getdtablecount, filedescopen, the bsd-signature wrappers falloc/fnew/closef/fd_getfile_mode/file_count); LZ's path kept (the frozen amd64 conf.rs imports filedescopen from it), so no [[dropped]]; N5.3: BsdFileGlue's namei members (LZ's Componentname and Nameidata, UnveilMatch, vnode_of) until the switch; its Stat and Vnode types and vref, vrele and stat legs gone; then the namei, cache, lockf, abortop and session_ttyvp_take legs with the switch, and the vnode file legs (stall_wait, advlock, pathconf, isatty, position_check, vnode_revoked, vnode_ops, getcwd: the kernel's descriptors, kqueue and sysctl read the kernel vnode through vnode_of)"
 
 [[module]]
 rust = "sys/kern/kern_event.rs"

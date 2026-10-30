@@ -1132,17 +1132,14 @@ static TEST_VM_MACHINE: crate::vm::init::VmMachine = crate::vm::init::VmMachine 
 pub struct TestFileData<P: crate::proc::ProcGlue> {
     /// The object's number, its "address".
     pub id: usize,
-    /// `VISTTY` of the vnode.
-    pub tty: bool,
     /// `SS_DNS` of the socket.
     pub dns: bool,
-    /// The vnode was revoked (`vnode_revoked`).
-    pub revoked: core::sync::atomic::AtomicBool,
     /// A kqueue file's kqueue.
     pub kq: Option<crate::event::KqRef<P>>,
     /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
     pub vnode: Option<&'static dyn VnodeOps>,
-    /// A vnode file's vnode as the vnode layer sees it (`vnode_of`).
+    /// A vnode file's vnode as the vnode layer sees it (`vnode_of`; [`test_vnode`] makes
+    /// one).
     pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
     pub pipe: Option<crate::pipe::PipeEnd<P>>,
@@ -1152,9 +1149,7 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
     fn default() -> Self {
         Self {
             id: 0,
-            tty: false,
             dns: false,
-            revoked: core::sync::atomic::AtomicBool::new(false),
             kq: None,
             vnode: None,
             kvnode: None,
@@ -1249,6 +1244,70 @@ pub fn pledge_protexec_answer(prot: crate::vm::types::VmProt) -> Result<(), Errn
 /// Makes this thread's test glues refuse `PROT_EXEC` (`denied`) or allow it.
 pub fn set_pledge_protexec(denied: bool) {
     PLEDGE_PROTEXEC_DENIED.with(|c| c.set(denied));
+}
+
+/// The vnode operations of the tests' vnode files ([`test_vnode`]): the lock is a no-op that
+/// succeeds, `VOP_PATHCONF` answers `1000 + name`, and `VOP_ADVLOCK` records its arguments
+/// (`file_log`: `advlock <owner> <op> <type> <start> <flags>`), as the file systems' record
+/// locks are not the descriptors' to test.
+pub struct FileVops {
+    _id: u8,
+}
+
+/// The one [`FileVops`] table (a byte wide, so that its address is its own: `vops_id` keys
+/// the tables by address).
+pub static FILE_VOPS: FileVops = FileVops { _id: 2 };
+
+impl<G: crate::proc::ProcGlue> crate::fs::vops::Vnops<G> for FileVops {
+    fn lock(&self, _vp: &'static crate::fs::vnode::Vnode<G>, _flags: i32) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn unlock(&self, _vp: &'static crate::fs::vnode::Vnode<G>) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn pathconf(
+        &self,
+        _vp: &'static crate::fs::vnode::Vnode<G>,
+        name: i32,
+        retval: &mut hal::sys::types::Register,
+    ) -> Result<(), Errno> {
+        *retval = 1000 + name as hal::sys::types::Register;
+        Ok(())
+    }
+    fn advlock(
+        &self,
+        _vp: &'static crate::fs::vnode::Vnode<G>,
+        id: crate::file::LockOwner,
+        op: i32,
+        fl: &mut hal::sys::fcntl::Flock,
+        flags: i32,
+    ) -> Result<(), Errno> {
+        file_log_push(std::format!(
+            "advlock {:?} {} {} {} {:#x}",
+            id,
+            op,
+            fl.l_type,
+            fl.l_start,
+            flags
+        ));
+        Ok(())
+    }
+}
+
+/// A vnode for a test's vnode file ([`TestFileData`]'s `kvnode`): of type `vtype`, with the
+/// flags `flag` (`VISTTY`, ...), the operations [`FileVops`] and one use (the file's);
+/// leaked, as a vnode lives for ever. `vgonel`'s revocation is `set_ops_id(VopsId::DEAD)`.
+pub fn test_vnode<G: crate::proc::ProcGlue>(
+    vtype: crate::fs::vnode::Vtype,
+    flag: u32,
+) -> &'static crate::fs::vnode::Vnode<G> {
+    let vp: &'static crate::fs::vnode::Vnode<G> =
+        Box::leak(Box::new(crate::fs::vnode::Vnode::new_unpooled()));
+    vp.set_vtype(vtype);
+    vp.set_flag(flag);
+    vp.set_ops_id(crate::fs::subr::vops_id::<G>(&FILE_VOPS));
+    vp.set_usecount(1);
+    vp
 }
 
 /// Records a test glue's hook call.
@@ -1444,46 +1503,6 @@ macro_rules! test_file_glue {
             fn tablefull(tab: &str) {
                 $crate::testutil::file_log_push(std::format!("tablefull {tab}"));
             }
-            fn stall_wait() {
-                $crate::testutil::file_log_push(std::string::String::from("stall"));
-            }
-            fn advlock(
-                d: &Self::Data,
-                owner: $crate::file::LockOwner,
-                op: i32,
-                fl: &mut hal::sys::fcntl::Flock,
-                flags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                $crate::testutil::file_log_push(std::format!(
-                    "advlock {} {:?} {} {} {} {:#x}",
-                    d.id,
-                    owner,
-                    op,
-                    fl.l_type,
-                    fl.l_start,
-                    flags
-                ));
-                Ok(())
-            }
-            fn pathconf(
-                _d: &Self::Data,
-                name: i32,
-            ) -> Result<hal::sys::types::Register, hal::sys::errno::Errno> {
-                Ok(1000 + name as hal::sys::types::Register)
-            }
-            fn isatty(d: &Self::Data) -> bool {
-                d.tty
-            }
-            fn position_check(
-                _d: &Self::Data,
-                off: hal::sys::types::Off,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                if off < 0 {
-                    Err(hal::sys::errno::Errno::EINVAL)
-                } else {
-                    Ok(())
-                }
-            }
             fn dns_socket(d: &Self::Data) -> bool {
                 d.dns
             }
@@ -1500,14 +1519,16 @@ macro_rules! test_file_glue {
             fn kqueue_of(d: &Self::Data) -> Option<&$crate::event::KqRef<$proc>> {
                 d.kq.as_ref()
             }
-            fn vnode_revoked(d: &Self::Data) -> bool {
-                d.revoked.load(core::sync::atomic::Ordering::Relaxed)
-            }
             fn vnode_of(d: &Self::Data) -> Option<&'static $crate::fs::vnode::Vnode<$proc>> {
                 d.kvnode
             }
+            /// The pager double ([`MemVnode`](crate::testutil::MemVnode)) when the test
+            /// gave one, the kernel's vnode otherwise.
             fn vnode_ops(d: &Self::Data) -> Option<&'static dyn $crate::vm::vnode::VnodeOps> {
-                d.vnode
+                d.vnode.or_else(|| {
+                    d.kvnode
+                        .map(|vp| vp as &'static dyn $crate::vm::vnode::VnodeOps)
+                })
             }
             fn pipe_of(d: &Self::Data) -> Option<&$crate::pipe::PipeEnd<$proc>> {
                 d.pipe.as_ref()

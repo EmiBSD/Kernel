@@ -3200,11 +3200,14 @@ pub fn kqueue_scan<G: ProcGlue>(
             // KN_PROCESSING; the slot keeps its leaf mutex (one uncontended lock, only for a
             // descriptor filter) because a lock-free set-once slot would have to be emptied by
             // knote_drop through `&mut` of a pinned pool item, which hal does not lend.
-            let revoked =
-                kn.fop().f_flags & FILTEROP_ISFD != 0
-                    && kn.fp.lock().get().is_some_and(|fp| {
-                        fp.data().is_some_and(<Files<G> as FileGlue>::vnode_revoked)
-                    });
+            let revoked = kn.fop().f_flags & FILTEROP_ISFD != 0
+                && kn.fp.lock().get().is_some_and(|fp| {
+                    fp.f_type() == crate::file::DTYPE_VNODE
+                        && fp
+                            .data()
+                            .and_then(<Files<G> as FileGlue>::vnode_of)
+                            .is_some_and(|vp| vp.kind() == crate::fs::vnode::VnodeKind::Dead)
+                });
             if revoked && !kn.fop_is(FILTEROP_DEAD) {
                 filter_detach(kn);
                 kn.kn_fop.set(Some(&Kqueue::<G>::DEAD_FILTOPS));
@@ -4980,16 +4983,29 @@ pub(crate) mod tests {
         let p = setup(41);
         let (_kfd, kq) = new_kqueue(p);
         let (oid, o) = obj(KlistKind::Kernel);
-        let fd = open_obj(p, oid);
+        // A vnode file on the object, its vnode of the test operations until revoked.
+        let vp = testutil::test_vnode::<Kg>(crate::fs::vnode::VREG, 0);
+        let fd = open_data(
+            p,
+            crate::file::DTYPE_VNODE,
+            TestFileData {
+                id: oid,
+                kvnode: Some(vp),
+                ..TestFileData::default()
+            },
+        );
         o.ready.store(true, Ordering::Relaxed);
         let mut out = [Kevent::default(); 2];
         assert_eq!(
             reg(p, &kq, ev_set(fd as usize, EVFILT_READ, EV_ADD, 0, 0, 0)),
             Ok(())
         );
-        let fp = fd_getfile(p.fd(), fd).unwrap();
-        fp.data().unwrap().revoked.store(true, Ordering::Relaxed);
-        fp.frele(Some(p)).unwrap();
+        // A scan before the revocation leaves the knote alive.
+        assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
+        assert_eq!(out[0].flags & EV_EOF, 0);
+        assert_eq!(kq.nknotes(), 1);
+        // vgonel's revocation: the vnode's operations are deadfs's.
+        vp.set_ops_id(crate::fs::vnode::VopsId::DEAD);
         assert_eq!(scan(p, &kq, &mut out), (1, Ok(())));
         assert_eq!(out[0].flags & EV_EOF, EV_EOF);
         assert!(o.sel.si_note.is_empty(), "detached from its object");

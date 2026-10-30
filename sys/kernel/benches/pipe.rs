@@ -55,14 +55,13 @@ use std::vec::Vec;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::pool::{PoolBackend, RawPool};
 use hal::sys::errno::Errno;
-use hal::sys::types::{Off, Register};
 use hal::user::UserPtr;
 use kernel::descrip::{falloc, fd_getfile, fdinit, fdinsert, fdplock, fdrelease, filedesc_init};
 use kernel::event::{
     __EV_POLL, __EV_SELECT, EV_ADD, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE, Knote, KqRef, ev_set,
     kqueue_alloc, kqueue_init, kqueue_register,
 };
-use kernel::file::{File, FileGlue, FileOps, FileTables, LockOwner};
+use kernel::file::{File, FileGlue, FileOps, FileTables};
 use kernel::pipe::{Dir, PipeEnd, PipeFilter, Pipes, UioMove};
 use kernel::proc::{self, ProcGlue, ProcTables, Process, Session, Thread};
 use kernel::resource::{self, PlimitRef};
@@ -434,25 +433,6 @@ impl FileGlue for BenchFiles {
         4096
     }
     fn tablefull(_tab: &str) {}
-    fn stall_wait() {}
-    fn advlock(
-        _d: &Self::Data,
-        _owner: LockOwner,
-        _op: i32,
-        _fl: &mut hal::sys::fcntl::Flock,
-        _flags: i32,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn pathconf(_d: &Self::Data, _name: i32) -> Result<Register, Errno> {
-        Err(Errno::EINVAL)
-    }
-    fn isatty(_d: &Self::Data) -> bool {
-        false
-    }
-    fn position_check(_d: &Self::Data, _off: Off) -> Result<(), Errno> {
-        Err(Errno::ESPIPE)
-    }
     fn dns_socket(_d: &Self::Data) -> bool {
         false
     }
@@ -464,12 +444,6 @@ impl FileGlue for BenchFiles {
             BenchData::Kqueue(kq) => Some(kq),
             BenchData::Pipe(_) => None,
         }
-    }
-    fn vnode_revoked(_d: &Self::Data) -> bool {
-        false
-    }
-    fn vnode_ops(_d: &Self::Data) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
-        None
     }
     fn pipe_of(d: &Self::Data) -> Option<&PipeEnd<BenchGlue>> {
         match d {
