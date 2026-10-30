@@ -23,8 +23,9 @@
 //! while `struct proc` was `bsd`'s; since N5.0 the system calls, the fault and the map take
 //! the thread (`&Thread<G>`, the C's `struct proc *p`) and the counters' record
 //! (`Option<&Rusage>`, `curproc->p_ru`) and read its fields themselves, and the three calls
-//! that are not the kernel's yet are `ProcGlue::pledge_protexec`,
-//! `ProcGlue::textvp_wxallowed` and `FileGlue::vnode_ops`. Nothing is registered here.
+//! that are not the kernel's yet are `ProcGlue::pledge_protexec` and
+//! `FileGlue::vnode_ops` (the text vnode is the process's `textvp` since N5.3). Nothing is
+//! registered here.
 
 /// `RLIMIT_DATA`: data size (`<sys/resource.h>`).
 pub const RLIMIT_DATA: i32 = 2;

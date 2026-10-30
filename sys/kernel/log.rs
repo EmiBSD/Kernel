@@ -1399,8 +1399,9 @@ mod tests {
     use crate::event::tests::{Kf, Kg, T, new_kqueue, setup};
     use crate::event::{EVFILT_WRITE, test_knote, test_knote_drop};
     use crate::file::{File, FileOps};
-    use crate::testutil::{self, TestFileData, TestStat, USER_BASE};
+    use crate::testutil::{self, TestFileData, USER_BASE};
     use crate::tty::{TtyDevsw, register_ttydevsw};
+    use hal::sys::stat::Stat;
 
     /// The tests that use the global buffers (`LOG_MTX`) run one at a time.
     static BUFS: Mutex<()> = Mutex::new(());
@@ -1763,7 +1764,7 @@ mod tests {
         fn kqfilter(&self, _: &File<Kf>, _: &Knote<Kg>) -> Result<(), Errno> {
             Err(Errno::EINVAL)
         }
-        fn stat(&self, _: &File<Kf>, _: &mut TestStat, _: &Thread<Kg>) -> Result<(), Errno> {
+        fn stat(&self, _: &File<Kf>, _: &mut Stat, _: &Thread<Kg>) -> Result<(), Errno> {
             Ok(())
         }
         fn close(&self, _: &File<Kf>, _: Option<&Thread<Kg>>) -> Result<(), Errno> {
@@ -1850,12 +1851,6 @@ mod tests {
             self.tty
         }
         fn stop(&self, _tp: &crate::tty::Tty<Kg>, _rw: i32) {}
-        fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn session_has_ttyvp(&self, _sess: &crate::proc::Session<Kg>) -> bool {
-            false
-        }
         fn console_dev(&self) -> Option<hal::sys::types::Dev> {
             None
         }

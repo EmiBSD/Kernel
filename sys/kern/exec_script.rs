@@ -80,11 +80,10 @@
 use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_descrip::{BsdFileData, falloc, fdinsert, fdrelease};
 use crate::kern::kern_exec::{check_exec, namei_pnbuf_put};
-use crate::kern::vfs_lookup::ndinitat;
-use crate::kern::vfs_vnops::{VNOPS, vn_close, vn_lock};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::errno::Errno;
 use crate::sys::exec::{
@@ -95,9 +94,11 @@ use crate::sys::fcntl::{AT_FDCWD, FREAD};
 use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::filedesc::{fdplock, fdpunlock};
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
+use crate::sys::namei::ndinitat;
 use crate::sys::namei::{LOOKUP, Nameidata, NiDirp};
 use crate::sys::param::{MAXINTERP, MAXPATHLEN};
 use crate::sys::proc::Proc;
+use crate::sys::vnode::{VNOPS, vn_close, vn_lock};
 use crate::sys::vnode::{VREAD, VSGID, VSUID};
 
 /// The first line of a script as `exec_script_makecmds` reads it: the interpreter and the
@@ -231,7 +232,8 @@ pub fn exec_script_makecmds(
     let mut shnd = ndinitat(LOOKUP, 0, AT_FDCWD, NiDirp::Sys(&shellname), p);
     shnd.ni_pledge = ndp.ni_pledge;
     shnd.ni_unveil = ndp.ni_unveil;
-    shnd.ni_cnd.cn_rpbuf = ndp.ni_cnd.cn_rpbuf;
+    // The realpath buffer is the shell's lookup's while it runs (the C's one nameidata).
+    shnd.ni_cnd.cn_rpbuf = ndp.ni_cnd.cn_rpbuf.take();
     epp.ep_flags |= EXEC_INDIR;
 
     let error = match check_exec(p, epp, Some(&mut shnd)) {
@@ -241,7 +243,7 @@ pub fn exec_script_makecmds(
 
             // It succeeded. Close the script if we aren't using it any more.
             if epp.ep_flags & EXEC_HASFD == 0 {
-                let _ = vn_close(scriptvp, FREAD, cred, Some(p));
+                let _ = vn_close(scriptvp, FREAD, Cred::from_raw(cred), Some(p));
             }
 
             // The caller's nameidata now describes the shell's lookup; free the old
@@ -253,7 +255,7 @@ pub fn exec_script_makecmds(
             ndp.ni_next = shnd.ni_next;
             ndp.ni_loopcnt = shnd.ni_loopcnt;
             ndp.ni_unveil_match = shnd.ni_unveil_match;
-            core::mem::swap(&mut ndp.ni_cnd, &mut shnd.ni_cnd);
+            ndp.ni_cnd.swap_lookup(&mut shnd.ni_cnd);
             namei_pnbuf_put(&mut shnd);
 
             // set things up so that the fake args list will be used.
@@ -279,7 +281,8 @@ pub fn exec_script_makecmds(
     };
 
     // A failed check_exec has given back the shell's pathname buffer; this is a no-op
-    // unless it kept one.
+    // unless it kept one. The realpath buffer goes back to the script's lookup.
+    ndp.ni_cnd.cn_rpbuf = shnd.ni_cnd.cn_rpbuf.take();
     namei_pnbuf_put(&mut shnd);
     exec_script_fail(p, epp, ndp, scriptvp, error)
 }
@@ -304,7 +307,7 @@ fn exec_script_fail(
         // fdrelease() unlocks p->p_fd.
         let _ = fdrelease(p, g, epp.ep_fd);
     } else {
-        let _ = vn_close(scriptvp, FREAD, p.ucred_ptr(), Some(p));
+        let _ = vn_close(scriptvp, FREAD, Cred::from_raw(p.ucred_ptr()), Some(p));
     }
 
     namei_pnbuf_put(ndp);

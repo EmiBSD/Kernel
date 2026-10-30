@@ -69,6 +69,9 @@
 
 use core::sync::atomic::Ordering;
 
+use hal::intr::IPL_NONE;
+use hal::pool::PR_WAITOK;
+
 use super::mount::Vfsconf;
 use super::subr::{vfs, vntblinit};
 use super::vnode::Vnode;
@@ -85,9 +88,9 @@ pub fn set_rootvnode<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
 }
 
 /// Initialize the vnode structures and initialize each file system type of `table`
-/// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s. `between` runs after the vnode
-/// table and before the types, where the C has `vntblinit`'s `rn_init` (`NFSSERVER`) and
-/// `nchinit`, the name cache's (`bsd`'s until N5.3 and N6).
+/// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s: `namei_pool`, the vnode table,
+/// the name cache, the types. `between` runs after the vnode table, where the C has
+/// `vntblinit`'s tail, `rn_init` of the export lists (`NFSSERVER`, `bsd`'s until N6).
 pub fn vfsinit<G: ProcGlue>(
     table: &'static [Vfsconf<G>],
     initialvnodes: i32,
@@ -97,11 +100,16 @@ pub fn vfsinit<G: ProcGlue>(
     // A second call (a test's) keeps the first table.
     let _ = t.vfsconf.set(table);
 
-    // Initialize the vnode table.
-    vntblinit::<G>(initialvnodes);
+    // pool_init(&namei_pool, MAXPATHLEN, 0, IPL_NONE, PR_WAITOK, "namei", NULL); a second
+    // call (a test's) keeps the first pool.
+    let _ = t.namei.init(IPL_NONE, PR_WAITOK, "namei");
 
-    // Initialize the vnode name cache (and the export lists' radix keys).
+    // Initialize the vnode table (and the export lists' radix keys, its tail).
+    vntblinit::<G>(initialvnodes);
     between();
+
+    // Initialize the vnode name cache.
+    super::cache::nchinit::<G>(initialvnodes);
 
     let mut maxvfsconf = 0;
     for vfsp in vfsconf::<G>() {

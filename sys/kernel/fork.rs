@@ -479,7 +479,13 @@ fn process_new<G: ProcGlue>(
     }
     // WITNESS_SETCHILD: not configured.
 
-    // bump references to the text vnode (for sysctl); copy unveil if unveil is active
+    // bump references to the text vnode (for sysctl)
+    let tvp = parent.textvp.get();
+    pr.textvp.set(tvp);
+    if let Some(vp) = tvp {
+        crate::fs::subr::vref(vp);
+    }
+    // copy unveil if unveil is active
     G::process_forked(parent, pr);
 
     pr.ps_flags.store(
@@ -488,7 +494,7 @@ fn process_new<G: ProcGlue>(
     );
     let ctty = {
         let r = klock::reader();
-        parent.session(&r).is_some_and(G::session_has_tty_vnode)
+        parent.session(&r).is_some_and(|s| !s.ttyvp.is_none())
     };
     if ctty {
         pr.ps_flags.fetch_or(

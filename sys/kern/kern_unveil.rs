@@ -71,6 +71,7 @@ use core::cmp::Ordering as CmpOrdering;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::slice;
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
@@ -86,10 +87,9 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::{M_PROC, M_WAITOK, M_ZERO};
 use crate::sys::namei::{
-    BYPASSUNVEIL, Componentname, HASBUF, ISDOTDOT, ISLASTCN, LOOKUP, Nameidata, PDIRUNLOCK, RDONLY,
-    UNVEIL_CREATE, UNVEIL_EXEC, UNVEIL_MASK, UNVEIL_READ, UNVEIL_USERSET, UNVEIL_WRITE,
+    BYPASSUNVEIL, Componentname, HASBUF, ISDOTDOT, Nameidata, PDIRUNLOCK, UNVEIL_CREATE,
+    UNVEIL_EXEC, UNVEIL_MASK, UNVEIL_READ, UNVEIL_USERSET, UNVEIL_WRITE,
 };
-use crate::sys::param::MAXPATHLEN;
 use crate::sys::pledge::PLEDGE_UNVEIL;
 use crate::sys::proc::{Proc, Process};
 use crate::sys::rwlock::Rwlock;
@@ -199,12 +199,31 @@ fn unveil_alloc() -> *mut Unveil {
     paths
 }
 
+/// `ni_unveil_match` (`struct unveil *`) as the kernel's nameidata carries it for this module
+/// (`FileGlue::UnveilMatch`): NULL (`Default`) or a slot of the looking-up process's
+/// `ps_uvpaths`, set by this module's hooks only.
+#[derive(Clone, Copy)]
+pub struct UnveilMatch(*const Unveil);
+
+impl UnveilMatch {
+    /// The match `uv` (a slot of `ps_uvpaths`).
+    fn of(uv: &Unveil) -> Self {
+        Self(ptr::from_ref(uv))
+    }
+}
+
+impl Default for UnveilMatch {
+    fn default() -> Self {
+        Self(ptr::null())
+    }
+}
+
 /// The `ni_unveil_match` of a lookup by process `pr`.
 fn unveil_match<'a>(ni: &Nameidata<'_>, _pr: &'a Process) -> Option<&'a Unveil> {
     // SAFETY: the hooks of this module set `ni_unveil_match` only to NULL or to a slot of
     // `pr->ps_uvpaths` (the lookup's own process), which stays allocated for the lookup (see
     // `uvpaths`).
-    unsafe { ni.ni_unveil_match.as_ref() }
+    unsafe { ni.ni_unveil_match.0.as_ref() }
 }
 
 /// `a == b` for two optional vnodes.
@@ -223,23 +242,8 @@ fn proc_root(p: &Proc) -> Option<&'static Vnode> {
 
 /// The NUL-terminated name at `cn_nameptr`, without its NUL: what `strlen(cn_nameptr)`
 /// measures in the C.
-fn nameptr_str(cnp: &Componentname) -> &[u8] {
-    let base = cnp.cn_pnbuf;
-    let name = cnp.cn_nameptr;
-    if base.is_null() || name.is_null() {
-        return cnp.name();
-    }
-    // SAFETY: both point into or at the pathname buffer; the offset is checked below.
-    let off = unsafe { name.offset_from(base) };
-    if off < 0 || off as usize >= MAXPATHLEN {
-        return cnp.name();
-    }
-    // SAFETY: `cn_pnbuf` is the lookup's `MAXPATHLEN`-byte `namei_pool` item (kept by
-    // `SAVENAME`, or still held while `namei` checks the result), and `cn_nameptr` points
-    // into it at `off`; nobody writes it meanwhile.
-    let rest = unsafe { slice::from_raw_parts(name, MAXPATHLEN - off as usize) };
-    let len = rest.iter().position(|&c| c == 0).unwrap_or(rest.len());
-    &rest[..len]
+fn nameptr_str<'c>(cnp: &'c Componentname<'_>) -> &'c [u8] {
+    cnp.name_rest()
 }
 
 /// `unvname_compare(n1, n2)`: by size, then by the bytes of the name.
@@ -428,15 +432,7 @@ pub fn unveil_find_cover(dp: &'static Vnode, p: &Proc) -> isize {
     let mut vp = dp;
 
     while !vp_eq(Some(vp), root) {
-        let mut cn = Componentname::new();
-        cn.cn_nameiop = LOOKUP;
-        cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
-        cn.cn_proc = p;
-        cn.cn_cred = p.ucred_ptr();
-        cn.cn_pnbuf = ptr::null_mut();
-        cn.cn_nameptr = b"..".as_ptr();
-        cn.cn_namelen = 2;
-        cn.cn_consume = 0;
+        let mut cn = Componentname::dotdot(p, Cred::from_raw(p.ucred_ptr()));
 
         // If we are at the root of a filesystem, and we are still mounted somewhere, take
         // the .. in the above filesystem.
@@ -700,7 +696,7 @@ pub fn unveil_start_relative(p: &Proc, ni: &mut Nameidata<'_>, dp: &'static Vnod
 
     // Store this match for later use. Flags are checked at the end.
     if let Some(uv) = uv {
-        ni.ni_unveil_match = uv;
+        ni.ni_unveil_match = UnveilMatch::of(uv);
     }
 }
 
@@ -722,7 +718,7 @@ pub fn unveil_check_component(p: &Proc, ni: &mut Nameidata<'_>, dp: &'static Vno
 
         // clear the match when we DOTDOT above it
         if cur.is_some_and(|m| vp_eq(m.uv_vp.get(), Some(dp))) {
-            ni.ni_unveil_match = ptr::null();
+            ni.ni_unveil_match = UnveilMatch::default();
         }
         uv
     } else {
@@ -731,7 +727,7 @@ pub fn unveil_check_component(p: &Proc, ni: &mut Nameidata<'_>, dp: &'static Vno
 
     if let Some(uv) = uv {
         // update match
-        ni.ni_unveil_match = uv;
+        ni.ni_unveil_match = UnveilMatch::of(uv);
     }
 }
 
@@ -767,7 +763,7 @@ pub fn unveil_check_final(p: &Proc, ni: &mut Nameidata<'_>) -> Result<(), Errno>
             let uv = unveil_lookup(vp, pr, None);
             let Some(uv) = uv.filter(|uv| uv.uv_flags.get() & UNVEIL_USERSET != 0) else {
                 if let Some(uv) = uv {
-                    ni.ni_unveil_match = uv;
+                    ni.ni_unveil_match = UnveilMatch::of(uv);
                 }
                 break 'done;
             };
@@ -791,7 +787,7 @@ pub fn unveil_check_final(p: &Proc, ni: &mut Nameidata<'_>) -> Result<(), Errno>
                     return Err(unveil_refuse(pr, uv.uv_flags.get()));
                 }
                 // start backtrack from this node
-                ni.ni_unveil_match = uv;
+                ni.ni_unveil_match = UnveilMatch::of(uv);
                 break 'done;
             }
             // directory flags match, success
@@ -880,12 +876,13 @@ mod tests {
 
     use super::*;
     use crate::kern::proc_glue::{proc_tables, test_pooled_process, test_process, test_thread};
-    use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_subr::tests::testfs::{self, A, C, LONG, N, ROOT, any_locked, usecounts};
     use crate::kern::vfs_syscalls::sys_unveil;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
+    use crate::sys::namei::LOOKUP;
     use crate::sys::namei::{FOLLOW, NiDirp};
+    use crate::sys::namei::{namei, ndinit};
     use crate::sys::systm::SysArgs;
     use crate::sys::types::Register;
 

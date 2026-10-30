@@ -282,6 +282,7 @@ mod tests {
     use crate::sys::param::PAGE_SIZE;
     use crate::tmpfs::tmpfs_vfsops::tests::tmpfs_conf;
     use crate::tmpfs::tmpfs_vfsops::tmpfs_init;
+    use kernel::fs::vops::Cred;
 
     /// Real memory, the tmpfs pools, and the global limit set to `limit` bytes with nothing used.
     /// No `vfsinit` runs here, so `tmpfs_init` is called directly, with tmpfs's
@@ -395,16 +396,14 @@ mod tests {
 
     #[test]
     fn rename_needs_a_new_name_only_when_the_names_differ() {
-        let mut f = Componentname::new();
-        let mut t = Componentname::new();
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
+        let mut f = Componentname::new(0, 0, p, Cred::NULL);
+        let mut t = Componentname::new(0, 0, p, Cred::NULL);
         let (a, b, c) = (b"name", b"name", b"other");
-        f.cn_nameptr = a.as_ptr();
-        f.cn_namelen = 4;
-        t.cn_nameptr = b.as_ptr();
-        t.cn_namelen = 4;
+        f.set_name_lit(a);
+        t.set_name_lit(b);
         assert!(!tmpfs_strname_neqlen(&f, &t));
-        t.cn_nameptr = c.as_ptr();
-        t.cn_namelen = 5;
+        t.set_name_lit(c);
         assert!(tmpfs_strname_neqlen(&f, &t));
         assert_eq!(roundup2(33, TMPFS_NAME_QUANTUM), 64);
     }

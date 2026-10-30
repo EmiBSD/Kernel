@@ -377,7 +377,6 @@ pub fn hal_bridges_register() {
     // The start of every new thread and the kernel's own threads: `kernel::fork` (N4.6a).
     let _ = kernel::fork::init::<crate::kern::proc_glue::BsdProcGlue>();
     // The kernel crate's own bridges (N4.1): slots only, used from `main()` on.
-    let _ = kernel::acct::install_acct_file(&crate::kern::proc_glue::BSD_ACCT_FILE);
     // N4.8a: the machine's clock hardware and boot(9), for kernel::clock and kernel::reboot.
     let _ = kernel::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
     let _ = kernel::reboot::install_machine_boot(&BSD_MACHINE_BOOT);

@@ -174,8 +174,8 @@
 //!   `malloc(M_TEMP)` one (its argument is the channel it wakes, never followed); it is
 //!   deleted on every way out, as the C frees it (LZ's).
 //! - `TIOCCONS` checks that `/dev/console` can be opened (`namei` and `VOP_ACCESS`), as the C
-//!   does, through the device switch's bridge ([`TtyDevsw::console_access`]): without a root
-//!   file system that lookup fails with `ENOENT` (LZ's).
+//!   does (the kernel's `namei` since N5.3, the device switch's bridge until then): without a
+//!   root file system that lookup fails with `ENOENT` (LZ's).
 //! - `ttymalloc` panics if the tty pool is empty (`M_WAITOK` cannot fail in C) (LZ's).
 //! - The line disciplines `ppp`, `nmea`, `msts` and `endrun` are not configured (their code
 //!   is not ported), so slots 5, 7, 8 and 9 hold the defunct entries the C uses when `NPPP`,
@@ -249,6 +249,7 @@ use hal::sleep::{INFSLP, PCATCH};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use hal::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
+use hal::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
 use hal::sys::signal::{
     SIGHUP, SIGINFO, SIGINT, SIGIO, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGWINCH,
 };
@@ -262,6 +263,11 @@ use crate::event::{
     __EV_HUP, __EV_POLL, __EV_SELECT, EV_EOF, EVFILT_EXCEPT, EVFILT_READ, EVFILT_WRITE,
     FILTEROP_ISFD, Filter, Filterops, Knote,
 };
+use crate::fs::lookup::{namei, ndinit};
+use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp, UNVEIL_READ, UNVEIL_WRITE};
+use crate::fs::subr::vrele;
+use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VREAD, vn_lock};
+use crate::fs::vops::{Cred, vop_access, vop_unlock};
 use crate::proc::{
     I16Word, I32Word, I64Word, NO_PID, P_WEXIT, PS_CONTROLT, PS_EMBRYO, PS_EXITING, PS_PPWAIT,
     PgrpRef, ProcGlue, Process, SONPROC, SRUN, SessionRef, Thread, U8Word, pgfind, prfind,
@@ -1407,8 +1413,8 @@ pub trait TtyDriver<G: ProcGlue>: Sync + 'static {
 }
 
 /// What the terminal needs of the device switch and the console, which stay `bsd`'s until N7
-/// (`cdevsw`, `dev/cons.c`) and of the controlling terminal's vnode (N5): a bridge of
-/// `bridges.toml`, implemented by `bsd` and registered once ([`register_ttydevsw`]).
+/// (`cdevsw`, `dev/cons.c`): a bridge of `bridges.toml`, implemented by `bsd` and registered
+/// once ([`register_ttydevsw`]).
 pub trait TtyDevsw<G: ProcGlue>: Sync {
     /// `constty || cn_devvp`: the console is a terminal `cnwrite` reaches (a `TIOCCONS`
     /// redirection, or `/dev/console` opened).
@@ -1417,13 +1423,6 @@ pub trait TtyDevsw<G: ProcGlue>: Sync {
     fn console_write(&self, uio: &mut crate::uio::Uio<'_, G>) -> Result<(), Errno>;
     /// `(*cdevsw[major(tp->t_dev)].d_stop)(tp, rw)`.
     fn stop(&self, tp: &Tty<G>, rw: i32);
-    /// `TIOCCONS`'s check that `p` could open the real console: `namei("/dev/console")`
-    /// with `PLEDGE_RPATH|PLEDGE_WPATH` and `UNVEIL_READ|UNVEIL_WRITE`, then
-    /// `VOP_ACCESS(vp, VREAD)`.
-    fn console_access(&self, p: &Thread<G>) -> Result<(), Errno>;
-    /// `sess->s_ttyvp != NULL`: the session's controlling terminal has a vnode (`TIOCSCTTY`
-    /// through the vnode layer).
-    fn session_has_ttyvp(&self, sess: &crate::proc::Session<G>) -> bool;
     /// `cn_tab->cn_dev`, `None` without a console (`ttwrite`'s console buffer copy).
     fn console_dev(&self) -> Option<Dev>;
 }
@@ -2163,6 +2162,25 @@ fn pgsignal_own<G: ProcGlue>(pr: &Process<G>, sig: i32) {
     pgsignal(pg.as_deref(), sig, true);
 }
 
+/// `TIOCCONS`'s check that `p` could open the real console: `/dev/console` looked up with
+/// the pledge `rpath wpath` and the unveil `rw` the C asks, then `VOP_ACCESS(vp, VREAD)`
+/// under the vnode's lock; the vnode released.
+fn console_access<G: ProcGlue>(p: &Thread<G>) -> Result<(), Errno> {
+    let mut nid = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/dev/console"), p);
+    nid.ni_pledge = PLEDGE_RPATH | PLEDGE_WPATH;
+    nid.ni_unveil = UNVEIL_READ | UNVEIL_WRITE;
+    namei(&mut nid)?;
+    let Some(vp) = nid.ni_vp else {
+        // A LOOKUP that succeeded names a vnode; the C reads it without a test.
+        kpanic(format_args!("TIOCCONS: namei gave no vnode"));
+    };
+    let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+    let error = vop_access(vp, VREAD, Cred::real(p.ucred()), p);
+    let _ = vop_unlock(vp);
+    vrele(vp);
+    error
+}
+
 /// `ttioctl`: ioctls for all tty devices. Called after line-discipline specific ioctl has
 /// been called to do discipline-specific functions and/or reject any of these ioctl
 /// commands. `Ok(false)` where the C returns `-1`: not a tty ioctl.
@@ -2253,10 +2271,7 @@ pub fn ttioctl<G: ProcGlue>(
                 }
 
                 // ensure user can open the real console
-                match devsw::<G>() {
-                    Some(d) => d.console_access(p)?,
-                    None => return Err(Errno::ENXIO),
-                }
+                console_access(p)?;
 
                 set_constty(Some(tty_ref(tp)));
             } else {
@@ -2377,7 +2392,7 @@ pub fn ttioctl<G: ProcGlue>(
                     _ => return Err(Errno::EPERM),
                 }
             };
-            let ttyvp = devsw::<G>().is_some_and(|d| d.session_has_ttyvp(&sess));
+            let ttyvp = !sess.ttyvp.is_none();
             let pgrp = {
                 let r = klock::reader();
                 pr.pgrp(&r).cloned()
@@ -4017,7 +4032,7 @@ pub fn uprintf<G: ProcGlue>(pr: &Process<G>, args: fmt::Arguments<'_>) {
     let tp = {
         let r = klock::reader();
         pr.session(&r)
-            .filter(|sess| G::session_has_tty_vnode(sess))
+            .filter(|sess| !sess.ttyvp.is_none())
             .and_then(|sess| session_tty(sess))
     };
     if let Some(tp) = tp {
@@ -4462,15 +4477,13 @@ mod tests {
     use super::*;
     use crate::event::tests::{Kg, T, new_kqueue, setup, thread_of};
     use crate::event::{test_knote, test_knote_drop};
-    use crate::proc::{Pgrp, Session, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
+    use crate::proc::{Pgrp, enternewpgrp, enterthispgrp, pgrp_alloc, session_alloc};
     use crate::termios::{TTYDEF_CFLAG, TTYDEF_IFLAG, TTYDEF_LFLAG, TTYDEF_OFLAG};
     use crate::testutil;
 
-    /// What the device switch saw: the `d_stop` calls; whether `/dev/console`'s access
-    /// check (`TIOCCONS`'s) fails.
+    /// What the device switch saw: the `d_stop` calls.
     struct Devsw {
         stops: Mutex<Vec<i32>>,
-        deny: core::sync::atomic::AtomicBool,
     }
 
     impl TtyDevsw<Kg> for Devsw {
@@ -4483,16 +4496,6 @@ mod tests {
         }
         fn stop(&self, _tp: &Tty<Kg>, rw: i32) {
             self.stops.lock().unwrap().push(rw);
-        }
-        fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
-            if self.deny.load(Ordering::Relaxed) {
-                Err(Errno::EACCES)
-            } else {
-                Ok(())
-            }
-        }
-        fn session_has_ttyvp(&self, _sess: &Session<Kg>) -> bool {
-            false
         }
         fn console_dev(&self) -> Option<Dev> {
             None
@@ -4515,7 +4518,6 @@ mod tests {
         Kg::set_curproc(Some(p));
         let d: &'static Devsw = Box::leak(Box::new(Devsw {
             stops: Mutex::new(Vec::new()),
-            deny: core::sync::atomic::AtomicBool::new(false),
         }));
         register_ttydevsw::<Kg>(d);
         (p, d)
@@ -5016,12 +5018,23 @@ mod tests {
     fn uprintf_reaches_only_a_controlling_terminal() {
         let (p, _d) = world(9030);
         let pr = p.process();
-        // No session terminal yet: nothing, even with the vnode answer on.
-        crate::testutil::set_tty_vnode(true);
+        // The session's terminal vnode (`s_ttyvp`), set and cleared by hand (TIOCSCTTY
+        // through the vnode layer sets it on the machine).
+        let tty_vnode =
+            |on: bool| {
+                let r = klock::reader();
+                if let Some(s) = pr.session(&r) {
+                    s.ttyvp.set(on.then(|| {
+                        &*Box::leak(Box::new(crate::fs::vnode::Vnode::<Kg>::new_unpooled()))
+                    }));
+                }
+            };
+        // No session terminal yet: nothing.
         uprintf(pr, format_args!("lost\n"));
         setsid(p);
         let tp = test_tty();
         assert_eq!(ioctl_int(&tp, TIOCSCTTY, 0, p).0, Ok(true));
+        tty_vnode(true);
         assert_ne!(pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT, 0);
         assert_eq!(tp.t_outq.c_cc.get(), 0);
 
@@ -5031,16 +5044,16 @@ mod tests {
         assert_eq!(drain(&tp.t_outq), b"[sh]9030: pin\r\r\n");
 
         // A session whose terminal has no vnode (revoked): nothing.
-        crate::testutil::set_tty_vnode(false);
+        tty_vnode(false);
         uprintf(pr, format_args!("lost\n"));
         assert_eq!(tp.t_outq.c_cc.get(), 0);
 
         // PS_CONTROLT clear (setsid's child, a daemon): nothing.
-        crate::testutil::set_tty_vnode(true);
+        tty_vnode(true);
         pr.ps_flags.fetch_and(!PS_CONTROLT, Ordering::SeqCst);
         uprintf(pr, format_args!("lost\n"));
         assert_eq!(tp.t_outq.c_cc.get(), 0);
-        crate::testutil::set_tty_vnode(false);
+        tty_vnode(false);
     }
 
     #[test]
@@ -5382,30 +5395,92 @@ mod tests {
         constty::<Kg>().is_some_and(|c| ptr::eq::<Tty<Kg>>(&*c, tp))
     }
 
+    /// `TIOCCONS` without a root file system (this glue's): the `EBUSY` test comes before the
+    /// console's lookup, which fails (`ENOENT`, the module's deviation) and changes nothing.
+    /// The lookup over a file system is the next test's.
     #[test]
     fn tioccons_is_refused_while_another_live_tty_has_it_and_checks_the_console() {
-        let (p, d) = world(4710);
+        let (p, _d) = world(4710);
+        // The names' pool and tables (vfsinit), and no root file system.
+        crate::fs::init::vfsinit::<Kg>(&[], 64, || {});
         let a = test_tty();
         let b = test_tty();
-        assert_eq!(ioctl_int(&a, TIOCCONS, 1, p).0, Ok(true));
+        // a holds the console, as a TIOCCONS that passed leaves it
+        set_constty(Some(tty_ref(&a)));
         assert!(constty_is(&a));
         // another tty, open with carrier: EBUSY; its "TIOCCONS 0" leaves a's
         assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Err(Errno::EBUSY));
         assert_eq!(ioctl_int(&b, TIOCCONS, 0, p).0, Ok(true));
         assert!(constty_is(&a));
-        // a failed access check of /dev/console changes nothing, even for the holder
-        d.deny.store(true, Ordering::Relaxed);
-        assert_eq!(ioctl_int(&a, TIOCCONS, 1, p).0, Err(Errno::EACCES));
+        // a failed lookup of /dev/console changes nothing, even for the holder
+        assert_eq!(ioctl_int(&a, TIOCCONS, 1, p).0, Err(Errno::ENOENT));
         assert!(constty_is(&a));
         // without carrier a's hold no longer blocks b, but the check still does
         a.t_state_clr(TS_CARR_ON);
-        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Err(Errno::EACCES));
+        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Err(Errno::ENOENT));
         assert!(constty_is(&a));
-        d.deny.store(false, Ordering::Relaxed);
-        assert_eq!(ioctl_int(&b, TIOCCONS, 1, p).0, Ok(true));
-        assert!(constty_is(&b));
-        assert_eq!(ioctl_int(&b, TIOCCONS, 0, p).0, Ok(true));
+        assert_eq!(ioctl_int(&a, TIOCCONS, 0, p).0, Ok(true));
         assert!(constty::<Kg>().is_none());
+    }
+
+    /// `TIOCCONS` over the test file system: the console is taken when `/dev/console` can be
+    /// read, after the lookup's pledge and unveil checks and `VOP_ACCESS(VREAD)`; any refusal
+    /// is the call's error and leaves the console as it was; the vnode is released.
+    #[test]
+    fn tioccons_takes_the_console_when_dev_console_can_be_read() {
+        use crate::fs::testfs::{self, CONSOLE, TestGlue};
+        let (_g, p) = testfs::test_thread();
+        let tty = |state: i32| {
+            let tp = ttymalloc::<TestGlue>(9600);
+            tp.t_state_set(state);
+            tp
+        };
+        let cons = |tp: &Tty<TestGlue>, v: i32| {
+            let mut d = v.to_ne_bytes();
+            ttioctl(tp, TIOCCONS, &mut d, 0, p)
+        };
+        let holds = |tp: &Tty<TestGlue>| {
+            constty::<TestGlue>().is_some_and(|c| ptr::eq::<Tty<TestGlue>>(&*c, tp))
+        };
+        let a = tty(TS_ISOPEN | TS_CARR_ON);
+        let b = tty(TS_ISOPEN | TS_CARR_ON);
+        let uses = testfs::usecounts();
+        testutil::set_file_log(true);
+        let _ = testutil::file_log();
+        assert_eq!(cons(&a, 1), Ok(true));
+        assert!(holds(&a));
+        // namei asked pledge for the path first and unveil for the result last
+        let log = testutil::file_log();
+        assert_eq!(
+            log.first().map(std::string::String::as_str),
+            Some("pledge_namei /dev/console")
+        );
+        assert_eq!(
+            log.last().map(std::string::String::as_str),
+            Some("unveil_check_final")
+        );
+        testutil::set_file_log(false);
+        // the vnode the lookup gave is released: every node's use count as it was
+        assert_eq!(testfs::usecounts()[CONSOLE], uses[CONSOLE]);
+        // b while a holds it with carrier: EBUSY before any lookup
+        assert_eq!(cons(&b, 1), Err(Errno::EBUSY));
+        a.t_state_clr(TS_CARR_ON);
+        // VOP_ACCESS(VREAD) refused, then pledge, then unveil: each the call's error
+        testfs::set_deny_access(true);
+        assert_eq!(cons(&b, 1), Err(Errno::EACCES));
+        testfs::set_deny_access(false);
+        testutil::set_namei_pledge(Some(Errno::EPERM));
+        assert_eq!(cons(&b, 1), Err(Errno::EPERM));
+        testutil::set_namei_pledge(None);
+        testutil::set_unveil_final(Some(Errno::ENOENT));
+        assert_eq!(cons(&b, 1), Err(Errno::ENOENT));
+        testutil::set_unveil_final(None);
+        assert!(holds(&a), "every refusal left a's");
+        assert_eq!(testfs::usecounts()[CONSOLE], uses[CONSOLE]);
+        assert_eq!(cons(&b, 1), Ok(true));
+        assert!(holds(&b));
+        assert_eq!(cons(&b, 0), Ok(true));
+        assert!(constty::<TestGlue>().is_none());
     }
 
     #[test]

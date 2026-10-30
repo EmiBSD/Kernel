@@ -444,7 +444,8 @@
 //! - N5.0: no bridge left here. `BsdVmProc` (`kernel::vm::proc::VmProc`, curproc's facts, one
 //!   call of `bsd`'s each, N3.5 S1) is gone: the vm system calls and the fault take the thread
 //!   the adapters below pass, and the three calls that are still `bsd`'s are the glues'
-//!   (`ProcGlue::pledge_protexec`, `ProcGlue::textvp_wxallowed`, `FileGlue::vnode_ops`).
+//!   (`ProcGlue::pledge_protexec`, `FileGlue::vnode_ops`; the text vnode's mount is the
+//!   kernel process's `textvp`'s since N5.3).
 //!   N4.6b: `BsdVmSysctl`
 //!   (`kernel::vm::meter::VmSysctl`) is gone: the sysctl helpers, `averunnable` and `allproc`
 //!   are the kernel's, `nkmempages` the `Malloc` bridge's, and `CTL_VM` is dispatched by

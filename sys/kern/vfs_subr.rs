@@ -513,7 +513,6 @@ pub(crate) mod tests {
     use crate::kern::proc_glue::BsdProcGlue;
     use crate::kern::proc_glue::{procinit, test_proc};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::kern::vfs_cache::{NUMCACHE, NUMNEG};
     use crate::kern::vfs_init::{set_rootvnode, vfsinit};
     use crate::kern::vfs_vops::{VOP_ISLOCKED, VOP_UNLOCK};
     use crate::sys::mount::{MNT_UNMOUNT, VB_READ, mountlist_insert_tail};
@@ -531,15 +530,12 @@ pub(crate) mod tests {
         use core::ffi::c_void;
         use core::ptr;
         use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
-        use std::boxed::Box;
         use std::sync::MutexGuard;
 
         use super::setup;
         use crate::kern::kern_subr::uiomove;
         use crate::kern::subr_xxx::eopnotsupp;
-        use crate::kern::vfs_cache::{cache_enter, cache_lookup};
         use crate::kern::vfs_init::set_rootvnode;
-        use crate::kern::vfs_vnops::vn_lock;
         use crate::kern::vfs_vops::{VOP_UNLOCK, vop_generic_abortop};
         use crate::sys::dirent::{DT_DIR, DT_LNK, DT_REG, Dirent, dirent_recsize};
         use crate::sys::errno::Errno;
@@ -549,7 +545,9 @@ pub(crate) mod tests {
         use crate::sys::namei::{
             CREATE, ISDOTDOT, ISLASTCN, LOCKPARENT, MAKEENTRY, PDIRUNLOCK, RENAME,
         };
+        use crate::sys::namei::{cache_enter, cache_lookup};
         use crate::sys::proc::Proc;
+        use crate::sys::vnode::vn_lock;
         use crate::sys::vnode::{
             VDIR, VLNK, VREG, VROOT, VT_TMPFS, Vnode, VopAccessArgs, VopGetattrArgs,
             VopInactiveArgs, VopIslockedArgs, VopLockArgs, VopLookupArgs, VopReaddirArgs,
@@ -590,8 +588,24 @@ pub(crate) mod tests {
         pub(crate) const LOOP: usize = 6;
         /// `/a/xxx...x` (40 bytes, longer than `NAMECACHE_MAXLEN`).
         pub(crate) const LONG: usize = 7;
+        /// `/usr/share/zoneinfo`.
+        pub(crate) const ZONEINFO: usize = 10;
+        /// `/usr/share/zoneinfo/UTC`, a file.
+        pub(crate) const UTC: usize = 11;
+        /// `/usr/share/zoneinfo/link -> UTC`.
+        pub(crate) const ZLINK: usize = 12;
+        /// `/usr/share/zoneinfo/Etc`, a directory.
+        pub(crate) const ETCZ: usize = 13;
+        /// `/etc/localtime -> /usr/share/zoneinfo/UTC`.
+        pub(crate) const LOCALTIME: usize = 15;
+        /// `/etc/lt-link -> /usr/share/zoneinfo/link`.
+        pub(crate) const LT_LINK: usize = 16;
+        /// `/etc/lt-dir -> /usr/share/zoneinfo/Etc`.
+        pub(crate) const LT_DIR: usize = 17;
+        /// `/etc/lt-up -> /usr/share/zoneinfo/../zoneinfo/UTC`.
+        pub(crate) const LT_UP: usize = 18;
         /// The number of nodes.
-        pub(crate) const N: usize = 8;
+        pub(crate) const N: usize = 19;
 
         /// The tree.
         pub(crate) static NODES: [Node; N] = [
@@ -634,6 +648,63 @@ pub(crate) mod tests {
                 name: b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
                 parent: A,
                 kind: Kind::Reg,
+            },
+            // 8: /usr, 9: /usr/share, then zoneinfo's tree and /etc's links.
+            Node {
+                name: b"usr",
+                parent: ROOT,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"share",
+                parent: 8,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"zoneinfo",
+                parent: 9,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"UTC",
+                parent: ZONEINFO,
+                kind: Kind::Reg,
+            },
+            Node {
+                name: b"link",
+                parent: ZONEINFO,
+                kind: Kind::Lnk(b"UTC"),
+            },
+            Node {
+                name: b"Etc",
+                parent: ZONEINFO,
+                kind: Kind::Dir,
+            },
+            // 14: /etc.
+            Node {
+                name: b"etc",
+                parent: ROOT,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"localtime",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/UTC"),
+            },
+            Node {
+                name: b"lt-link",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/link"),
+            },
+            Node {
+                name: b"lt-dir",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/Etc"),
+            },
+            Node {
+                name: b"lt-up",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/../zoneinfo/UTC"),
             },
         ];
 
@@ -790,7 +861,7 @@ pub(crate) mod tests {
 
         /// The lookup of `ufs_lookup`, over the fixed tree: the name cache first, then the
         /// directory; the parent stays locked only for `LOCKPARENT` on the last component.
-        fn testfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+        fn testfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             let dvp = ap.a_dvp;
             let cnp = &mut *ap.a_cnp;
             *ap.a_vpp = None;
@@ -827,7 +898,7 @@ pub(crate) mod tests {
                     return Err(Errno::EJUSTRETURN);
                 }
                 if cnp.cn_flags & MAKEENTRY != 0 && cnp.cn_nameiop != CREATE {
-                    cache_enter(dvp, None, cnp);
+                    cache_enter(dvp, None, cnp.name());
                 }
                 return Err(Errno::ENOENT);
             };
@@ -854,7 +925,7 @@ pub(crate) mod tests {
                 vp
             };
             if cnp.cn_flags & MAKEENTRY != 0 {
-                cache_enter(dvp, Some(vp), cnp);
+                cache_enter(dvp, Some(vp), cnp.name());
             }
             *ap.a_vpp = Some(vp);
             Ok(())
@@ -966,11 +1037,42 @@ pub(crate) mod tests {
             let mp = mount_root(p);
             (guard, p, mp)
         }
+    }
 
-        /// A leaked fresh `Box`, for tests that want a `'static` buffer.
-        pub(crate) fn leak<T>(t: T) -> &'static mut T {
-            Box::leak(Box::new(t))
+    /// A path in the user memory of the host double (`hal::arch::host::copy`), where the
+    /// kernel's `copyinstr` reads a system call's path (`namei`'s `NiDirp::User`).
+    pub(crate) struct UserStr(usize);
+
+    impl UserStr {
+        /// The user address, as a system call's argument.
+        pub(crate) fn as_ptr(&self) -> *const u8 {
+            core::ptr::without_provenance(self.0)
         }
+
+        /// The user address.
+        pub(crate) fn addr(&self) -> usize {
+            self.0
+        }
+    }
+
+    /// `s`, NUL-terminated (a NUL is added when it has none), copied into the user memory of
+    /// the host double: eight rotating slots of 2 KiB at `USER_BASE + 0xc000` (the other
+    /// tests use lower offsets; a test holds a few paths at once). A longer string is cut
+    /// at 2047 bytes, without its NUL: the kernel's `copyinstr` stops at `MAXPATHLEN`.
+    pub(crate) fn user_str(s: &[u8]) -> UserStr {
+        static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        const SLOT: usize = 2048;
+        let i = NEXT.fetch_add(1, Ordering::Relaxed) % 8;
+        let addr = kernel::testutil::USER_BASE + 0xc000 + i * SLOT;
+        let mut bytes = s.to_vec();
+        if bytes.last() != Some(&0) {
+            bytes.push(0);
+        }
+        bytes.truncate(SLOT - 1);
+        hal::user::UserPtr::<u8>::new(addr)
+            .copyout_slice(&bytes)
+            .expect("the double's user memory");
+        UserStr(addr)
     }
 
     /// Real memory, the process, file and vfs pools, empty vnode lists; returns the guard and a
@@ -987,8 +1089,6 @@ pub(crate) mod tests {
         // lived in the memory just reset: forgotten, not freed (testing.md).
         kernel::fs::subr::vfs_test_reset::<BsdProcGlue>();
         let _ = kernel::fs::spec::register_devsw::<BsdProcGlue>(&crate::sys::specdev::BSD_DEVSW);
-        NUMCACHE.store(0, Ordering::SeqCst);
-        NUMNEG.store(0, Ordering::SeqCst);
         // The file systems' pools and tables live in that memory too: let vfsinit's vfs_init
         // calls set them up again.
         #[cfg(feature = "ffs")]

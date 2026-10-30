@@ -73,11 +73,7 @@ use core::ptr::{self, NonNull};
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_GETATTR, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -113,6 +109,7 @@ use crate::sys::fusebuf::{
     FuseReadIn, FuseRenameIn, FuseSetattrIn, FuseWriteIn, FuseWriteOut, fuse_dirent_size,
 };
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY, LK_RWFLAGS};
+use crate::sys::lockf::lf_advlock;
 use crate::sys::mount::{MNT_RDONLY, Mount, VFS_VGET};
 use crate::sys::namei::{Componentname, ISDOTDOT};
 use crate::sys::param::BLKDEV_IOSIZE;
@@ -121,6 +118,7 @@ use crate::sys::specdev::spec_pathconf;
 use crate::sys::stat::{ALLPERMS, S_BLKSIZE, S_IFMT, S_IRUSR, S_IRWXU, S_ISTXT, S_IXUSR};
 use crate::sys::types::{Gid, Mode, Nlink, Uid};
 use crate::sys::ucred::Ucred;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     IO_APPEND, VDIR, VLNK, VN_KNOTE, VNON, VNOVAL, VREG, VWRITE, Vattr, Vnode, VopAccessArgs,
     VopAdvlockArgs, VopCloseArgs, VopCreateArgs, VopFsyncArgs, VopGetattrArgs, VopInactiveArgs,
@@ -225,13 +223,8 @@ pub(crate) fn proc_or_cur(p: Option<&Proc>) -> &Proc {
 }
 
 /// `cnp->cn_proc`, detached from `cnp` so that `cnp` can be changed while it is used.
-pub(crate) fn cn_proc<'p>(cnp: &Componentname) -> &'p Proc {
-    if cnp.cn_proc.is_null() {
-        panic(format_args!("fusefs: componentname without a thread"));
-    }
-    // SAFETY: `cn_proc` is the thread doing the lookup (`ndinitat`, or the caller that
-    // builds the component), which outlives the vnode operation that uses it.
-    unsafe { &*cnp.cn_proc }
+pub(crate) fn cn_proc<'p>(cnp: &Componentname<'p>) -> &'p Proc {
+    cnp.proc()
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
@@ -248,10 +241,8 @@ fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-pub(crate) fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+pub(crate) fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// Copies `name` and a NUL into the start of a fresh fusebuf's data (the C's
@@ -707,7 +698,7 @@ pub fn fusefs_ioctl(_ap: &mut VopIoctlArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `fusefs_link` (`vop_link`): `FUSE_LINK`.
-pub fn fusefs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
     let p = cn_proc(ap.a_cnp);
@@ -768,7 +759,7 @@ pub fn fusefs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `fusefs_symlink` (`vop_symlink`): `FUSE_SYMLINK` with the name and the target.
-pub fn fusefs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let p = cn_proc(ap.a_cnp);
     let target = ap.a_target;
@@ -1125,7 +1116,7 @@ pub fn fusefs_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
 }
 
 /// `fusefs_create` (`vop_create`): `FUSE_MKNOD` of a regular file.
-pub fn fusefs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let p = cn_proc(ap.a_cnp);
 
@@ -1188,7 +1179,7 @@ pub fn fusefs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 
 /// `fusefs_mknod` (`vop_mknod`): `FUSE_MKNOD`; the new node is dropped from the cache so
 /// that it is reloaded (and checked for an alias) by `VFS_VGET`.
-pub fn fusefs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let p = cn_proc(ap.a_cnp);
 
@@ -1404,7 +1395,7 @@ pub fn fusefs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
 }
 
 /// The C's `abortit:` sequence of `fusefs_rename`: release everything the rename was given.
-fn fusefs_rename_abort(ap: &mut VopRenameArgs<'_>) {
+fn fusefs_rename_abort(ap: &mut VopRenameArgs<'_, '_, '_>) {
     let tdvp = ap.a_tdvp;
     let tvp = ap.a_tvp;
     let _ = VOP_ABORTOP(tdvp, ap.a_tcnp); // XXX, why not in NFS?
@@ -1422,7 +1413,7 @@ fn fusefs_rename_abort(ap: &mut VopRenameArgs<'_>) {
 }
 
 /// `fusefs_rename` (`vop_rename`): `FUSE_RENAME` with both names and the target directory.
-pub fn fusefs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let tvp = ap.a_tvp;
     let tdvp = ap.a_tdvp;
     let fvp = ap.a_fvp;
@@ -1529,7 +1520,7 @@ pub fn fusefs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `fusefs_mkdir` (`vop_mkdir`): `FUSE_MKDIR`.
-pub fn fusefs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let p = cn_proc(ap.a_cnp);
 
@@ -1593,7 +1584,7 @@ pub fn fusefs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `fusefs_rmdir` (`vop_rmdir`): `FUSE_RMDIR`.
-pub fn fusefs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let mut dvp = Some(ap.a_dvp);
     let p = cn_proc(ap.a_cnp);
@@ -1652,7 +1643,7 @@ pub fn fusefs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `fusefs_remove` (`vop_remove`): `FUSE_UNLINK`.
-pub fn fusefs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let dvp = ap.a_dvp;
     let p = cn_proc(ap.a_cnp);

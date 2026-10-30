@@ -345,7 +345,7 @@ impl<G: ProcGlue> Vnops<G> for SyncVops<G> {
         &self,
         _dvp: &'static Vnode<G>,
         _vp: &'static Vnode<G>,
-        _cnp: &mut super::vops::Cn<G>,
+        _cnp: &mut super::vops::Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP) // eopnotsupp
     }

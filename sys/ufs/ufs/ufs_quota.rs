@@ -101,6 +101,7 @@ use core::cell::Cell;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI64, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
@@ -110,8 +111,6 @@ use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::{Str, panic, tablefull, uprintf};
-use crate::kern::vfs_lookup::ndinit;
-use crate::kern::vfs_vnops::{vn_close, vn_lock, vn_open};
 #[cfg(feature = "diagnostic")]
 use crate::kern::vfs_vops::VOP_ISLOCKED;
 use crate::kern::vfs_vops::{VOP_READ, VOP_UNLOCK, VOP_WRITE};
@@ -123,6 +122,7 @@ use crate::sys::lock::{LK_EXCLUSIVE, LK_NOWAIT, LK_RETRY};
 use crate::sys::malloc::{M_DQUOT, M_WAITOK, M_ZERO};
 use crate::sys::mount::{MNT_QUOTA, Mount, VB_NOWAIT, VB_READ};
 use crate::sys::namei::NiDirp;
+use crate::sys::namei::ndinit;
 use crate::sys::param::PINOD;
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
@@ -134,6 +134,7 @@ use crate::sys::vnode::{VNON, VREG, VSYSTEM, Vnode, cred_ref};
 use crate::sys::vnode::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vput};
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::{vfs_isbusy, vprint};
+use crate::sys::vnode::{vn_close, vn_lock, vn_open};
 use crate::ufs::ufs::inode::{Inode, vtoi};
 use crate::ufs::ufs::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,
@@ -703,7 +704,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     };
     let _ = VOP_UNLOCK(vp);
     if vp.vtype() != VREG {
-        let _ = vn_close(vp, FREAD | FWRITE, p.ucred_ptr(), Some(p));
+        let _ = vn_close(vp, FREAD | FWRITE, Cred::from_raw(p.ucred_ptr()), Some(p));
         return Err(Errno::EACCES);
     }
 
@@ -718,7 +719,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
         let _ = vn_close(
             vp,
             FREAD | FWRITE,
-            ocred.as_ref().map_or(NOCRED, CredRef::as_ptr),
+            Cred::from_raw(ocred.as_ref().map_or(NOCRED, CredRef::as_ptr)),
             Some(p),
         );
         let mine = p.cred_ref();
@@ -789,7 +790,7 @@ pub fn quotaoff(p: &Proc, mp: &'static Mount, type_: usize) -> Result<(), Errno>
     // being closed.
     let _ = vfs_mount_foreach_vnode(mp, &mut |vp| quotaoff_vnode(vp, type_));
 
-    let error = vn_close(qvp, FREAD | FWRITE, p.ucred_ptr(), Some(p));
+    let error = vn_close(qvp, FREAD | FWRITE, Cred::from_raw(p.ucred_ptr()), Some(p));
     ump.um_quotas[type_].set(None);
     // um_cred[type] = NOCRED; crfree(cred): the mount's reference goes.
     drop(ump.um_cred[type_].take());

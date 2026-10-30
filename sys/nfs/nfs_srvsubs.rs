@@ -90,12 +90,10 @@
 //!   `nul > m_len`; its callers never ask for that).
 //! - `netaddr_match` returns a `bool`.
 
-use core::ptr::{self, NonNull};
+use crate::sys::namei::pathbuf_get;
+use core::ptr::{self};
 
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::subr_pool::{pool_get, pool_put};
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lookup::vfs_lookup;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::netinet::in_::{IPPORT_RESERVED, SockaddrIn};
 use crate::nfs::nfs::{ND_NFSV3, Nethostaddr, NfsrvDescript, NfssvcSock};
@@ -114,11 +112,11 @@ use crate::nfs::xdr_subs::{
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY, VFS_CHECKEXP, VFS_FHTOVP};
+use crate::sys::namei::vfs_lookup;
 use crate::sys::namei::{
     HASBUF, ISSYMLINK, LOCKPARENT, NOCROSSMOUNT, Nameidata, RDONLY, SAVENAME, SAVESTART,
 };
 use crate::sys::param::MAXPATHLEN;
-use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, SOCK_STREAM};
 use crate::sys::syslimits::NGROUPS_MAX;
@@ -143,8 +141,8 @@ use crate::sys::vnode::{vfs_getvfs, vput, vref, vrele};
 /// `ndp.ni_cnd.cn_cred` is the credentials `nfsrv_fhtovp` maps for the export (the caller's
 /// `nd_cr`). The error is the C's `int`: an errno or an NFS status.
 #[allow(clippy::too_many_arguments)] // the C signature
-pub fn nfs_namei(
-    ndp: &mut Nameidata<'_>,
+pub fn nfs_namei<'a>(
+    ndp: &mut Nameidata<'a>,
     fhp: &Fhandle,
     len: usize,
     slp: &NfssvcSock,
@@ -152,17 +150,16 @@ pub fn nfs_namei(
     mdp: &mut Option<&'static Mbuf>,
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
-    p: &Proc,
+    p: &'a Proc,
     cred: &UcredCell,
 ) -> Result<(), i32> {
     *retdirp = None;
-    let Some(buf) = pool_get(&NAMEI_POOL, PR_WAITOK) else {
-        // PR_WAITOK cannot sleep yet (subr_pool.rs): the C cannot fail here.
+    let Some(buf) = pathbuf_get() else {
         return Err(Errno::ENOMEM.as_i32());
     };
-    ndp.ni_cnd.cn_pnbuf = buf.as_ptr();
+    ndp.ni_cnd.set_pnbuf(buf);
 
-    let r = namei_lookup(ndp, buf, fhp, len, slp, nam, mdp, dposp, retdirp, p, cred);
+    let r = namei_lookup(ndp, fhp, len, slp, nam, mdp, dposp, retdirp, p, cred);
 
     // Check for saved name request
     if r.is_ok() && ndp.ni_cnd.cn_flags & (SAVENAME | SAVESTART) != 0 {
@@ -170,17 +167,15 @@ pub fn nfs_namei(
         return Ok(());
     }
     // out:
-    pool_put(&NAMEI_POOL, buf);
-    ndp.ni_cnd.cn_pnbuf = ptr::null_mut();
+    drop(ndp.ni_cnd.take_pnbuf());
     r
 }
 
 /// The part of `nfs_namei` before its `out:` label: everything that can fail, with the buffer
-/// `buf` (`cn_pnbuf`) still the caller's to give back.
+/// (`cn_pnbuf`) still the caller's to give back.
 #[allow(clippy::too_many_arguments)] // nfs_namei's, split
-fn namei_lookup(
-    ndp: &mut Nameidata<'_>,
-    buf: NonNull<u8>,
+fn namei_lookup<'a>(
+    ndp: &mut Nameidata<'a>,
     fhp: &Fhandle,
     len: usize,
     slp: &NfssvcSock,
@@ -188,7 +183,7 @@ fn namei_lookup(
     mdp: &mut Option<&'static Mbuf>,
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
-    p: &Proc,
+    p: &'a Proc,
     cred: &UcredCell,
 ) -> Result<(), i32> {
     if len >= MAXPATHLEN {
@@ -196,10 +191,9 @@ fn namei_lookup(
     }
     // Copy the name from the mbuf list to ndp->ni_pnbuf and set the various ndp fields
     // appropriately.
-    //
-    // SAFETY: `buf` is a fresh `MAXPATHLEN`-byte `namei_pool` item that only this function
-    // uses until `nfs_namei` gives it back.
-    let pn = unsafe { core::slice::from_raw_parts_mut(buf.as_ptr(), MAXPATHLEN) };
+    let Some(pn) = ndp.ni_cnd.pnbuf_mut() else {
+        return Err(Errno::ENOMEM.as_i32());
+    };
     let mut n = 0;
     while n < len {
         let chunk = nfsm_nextbytes(mdp, dposp, len - n).map_err(Errno::as_i32)?;
@@ -216,7 +210,7 @@ fn namei_lookup(
         nfs_adv(mdp, dposp, pad).map_err(Errno::as_i32)?;
     }
     ndp.ni_pathlen = len;
-    ndp.ni_cnd.cn_nameptr = buf.as_ptr();
+    ndp.ni_cnd.set_name_at(0, 0);
 
     // Extract and set starting directory.
     let (dp, rdonly) = nfsrv_fhtovp(fhp, false, cred, slp, nam)?;
@@ -573,6 +567,7 @@ mod tests {
     use crate::sys::mbuf::{M_DONTWAIT, MT_SONAME};
     use crate::sys::types::makedev;
     use crate::sys::vnode::{VCHR, VDIR, VLNK, VREG, Vtype};
+    use kernel::fs::vops::Cred;
 
     /// The words of `b` (a reply), as raw XDR words in network order.
     fn words(b: &[u8]) -> Vec<u32> {
@@ -875,12 +870,12 @@ mod tests {
     fn namei_and_fhtovp_over_an_exported_ffs() {
         use crate::kern::kern_descrip::sys_close;
         use crate::kern::uipc_mbuf::tests::mbinit_again;
-        use crate::kern::vfs_lookup::{namei, ndinit};
         use crate::kern::vfs_subr::tests::exports::{args, sin};
         use crate::kern::vfs_syscalls::{sys_mkdir, sys_mount, sys_open, sys_symlink};
         use crate::sys::fcntl::{O_CREAT, O_RDWR};
         use crate::sys::mount::{MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE, UfsArgs, VFS_VPTOFH};
         use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
+        use crate::sys::namei::{namei, ndinit};
         use crate::ufs::ffs::ffs_vfsops::tests::{
             mount_root, newfs, path, setup, sys, teardown, unmount_root,
         };
@@ -958,7 +953,7 @@ mod tests {
             let mut md = Some(head);
             let mut dpos = mtod::<u8>(head);
             let mut nd = ndinit(LOOKUP, flags, NiDirp::Sys(b""), p);
-            nd.ni_cnd.cn_cred = &**cred;
+            nd.ni_cnd.cn_cred = Cred::real(&**cred);
             let mut retdir = None;
             let r = nfs_namei(
                 &mut nd,
@@ -994,7 +989,7 @@ mod tests {
         assert_eq!(vp.vtype(), VREG);
         assert!(nd.ni_cnd.cn_flags & (NOCROSSMOUNT | RDONLY) == (NOCROSSMOUNT | RDONLY));
         assert!(
-            nd.ni_cnd.cn_pnbuf.is_null(),
+            nd.ni_cnd.cn_pnbuf.is_none(),
             "the buffer went back to the pool"
         );
         let dir = retdir.expect("the directory");
@@ -1023,7 +1018,7 @@ mod tests {
             let (r, nd, retdir) = run(&dirfh, 3, &[bad], client, LOCKLEAF);
             assert_eq!(r, Err(Errno::EACCES.as_i32()));
             assert!(retdir.is_none());
-            assert!(nd.ni_cnd.cn_pnbuf.is_null());
+            assert!(nd.ni_cnd.cn_pnbuf.is_none());
         }
 
         // A chain that ends inside the name: EBADRPC.
@@ -1064,16 +1059,13 @@ mod tests {
         vrele(retdir.expect("the directory"));
 
         // SAVENAME keeps the pathname buffer for the caller.
-        let (r, nd, retdir) = run(&dirfh, 1, &[b"f\0\0\0"], client, LOCKLEAF | SAVENAME);
+        let (r, mut nd, retdir) = run(&dirfh, 1, &[b"f\0\0\0"], client, LOCKLEAF | SAVENAME);
         assert_eq!(r, Ok(()));
         assert!(nd.ni_cnd.cn_flags & HASBUF != 0);
-        assert!(!nd.ni_cnd.cn_pnbuf.is_null());
+        assert!(nd.ni_cnd.cn_pnbuf.is_some());
         // The name's length (no NUL, unlike namei's), less what the lookup consumed.
         assert_eq!(nd.ni_pathlen, 0);
-        pool_put(
-            &NAMEI_POOL,
-            NonNull::new(nd.ni_cnd.cn_pnbuf).expect("a buffer"),
-        );
+        drop(nd.ni_cnd.take_pnbuf());
         vput(nd.ni_vp.expect("the file"));
         vrele(retdir.expect("the directory"));
 

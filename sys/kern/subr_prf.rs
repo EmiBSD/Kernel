@@ -500,7 +500,7 @@ pub fn uprintf(args: fmt::Arguments<'_>) {
     let Some(sess) = session_of(pr) else {
         return;
     };
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.s_ttyvp.get().is_some() {
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.ttyvp.get().is_some() {
         let tp = kernel::tty::session_tty(&sess);
         kprintf_tp(args, TOTTY, tp.as_deref(), None);
     }
@@ -522,7 +522,7 @@ pub fn tprintf_open(p: &Proc) -> Tpr {
 
     // The session, counted (SESSHOLD) until `tprintf_close`.
     let sess = session_of(pr)?;
-    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.s_ttyvp.get().is_some() {
+    if pr.ps_flags.load(Ordering::Relaxed) & PS_CONTROLT != 0 && sess.ttyvp.get().is_some() {
         return Some(sess);
     }
     None
@@ -544,7 +544,7 @@ pub fn tprintf(tpr: &Tpr, args: fmt::Arguments<'_>) {
 
     logpri(LOG_INFO);
     if let Some(sess) = tpr
-        && sess.s_ttyvp.get().is_some()
+        && sess.ttyvp.get().is_some()
     {
         let t = kernel::tty::session_tty(sess);
         if let Some(t) = t
@@ -908,7 +908,7 @@ mod tests {
         assert_eq!(count(&sess), base);
 
         let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
-        sess.s_ttyvp.set(Some(vp));
+        sess.ttyvp.set(Some(vp));
         let handle = tprintf_open(p);
         assert!(
             handle

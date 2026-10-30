@@ -52,66 +52,77 @@
 //! `sys___getcwd`, `vn_isunder` and `sys___realpath`.
 //!
 //! Upstream: sys/kern/vfs_getcwd.c @ 3ce1f3f79392
+//! LZ: sys/kern/vfs_getcwd.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - The output buffer and the position in it are `Option<(&mut [u8], &mut usize)>`: the
 //!   path is built backwards from the index, where the C moves a `char *` (`*bpp`) inside
 //!   `bufp`. `vfs_getcwd_getcache` returns `Ok(false)` for the C's `-1` ("try the hard
-//!   way").
-//! - `DIRBLKSIZ` is `ufs/ufs/dir.h`'s (`DEV_BSIZE`); that header waits for ufs.
+//!   way") (LZ's).
+//! - `DIRBLKSIZ` is `ufs/ufs/dir.h`'s (`DEV_BSIZE`) (LZ's).
 //! - With no root file system (no `rootvnode`) or no current directory, the walk fails with
-//!   `ENOENT`, as `namei` does (`vfs_lookup.rs`).
+//!   `ENOENT`, as `namei` does (LZ's).
 //! - `KTRACE` is not configured.
+//!
+//! ## Redesign
+//! - The directory buffer and the path buffer are `MArray<u8>`s of `M_TEMP` (the C's
+//!   `malloc(M_TEMP)`, freed by their drop); `MArray` initialises them (a Rust value has no
+//!   uninitialised bytes): at most `MAXPATHLEN * 4` bytes per `__getcwd` and one directory
+//!   block per `vfs_getcwd_scandir` pass, written once where the C writes nothing. LZ's two
+//!   `unsafe` slices over `malloc`'s memory go.
+//! - The `..` lookup of `vfs_getcwd_scandir` is [`Componentname::dotdot`] (the C's stack
+//!   componentname with `cn_nameptr = ".."`, no pathname buffer).
+//! - `sys___getcwd` is the kernel's ([`sys___getcwd`]) over a user address and a length;
+//!   the system call's entry stays `bsd`'s (`Legacy`, a wrapper in `vfs_syscalls.rs`) until
+//!   the VFS entries flip together (D-N5.3-6, N5.4).
 
-use core::ffi::c_void;
-use core::ptr::{self, NonNull};
-use core::slice;
+use core::ptr;
 
-use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::vfs_cache::cache_revlookup;
-use crate::kern::vfs_init::rootvnode;
-use crate::kern::vfs_vnops::vn_lock;
-use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_LOOKUP, VOP_READDIR, VOP_UNLOCK};
-use crate::machine::copy::copyoutstr;
-use crate::sys::dirent::{Dirent, dirent_recsize};
-use crate::sys::errno::Errno;
-use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::malloc::{M_TEMP, M_WAITOK};
-use crate::sys::namei::{Componentname, ISDOTDOT, ISLASTCN, LOOKUP, RDONLY};
-use crate::sys::param::{DEV_BSIZE, MAXPATHLEN};
-use crate::sys::proc::Proc;
-use crate::sys::syscallargs::SysGetcwdArgs;
-use crate::sys::systm::{SysArgs, sysargs};
-use crate::sys::types::Register;
-use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
-use crate::sys::vnode::{GETCWD_CHECK_ACCESS, VDIR, VEXEC, VREAD, VROOT, Vattr, Vnode};
-use crate::sys::vnode::{vget, vput, vref, vrele};
+use hal::malloc::{M_WAITOK, MArray};
+use hal::sys::dirent::{Dirent, dirent_recsize};
+use hal::sys::errno::Errno;
+use hal::user::UserPtr;
 
-/// `DIRBLKSIZ` (`ufs/ufs/dir.h`): only for the smallest directory buffer.
-const DIRBLKSIZ: usize = DEV_BSIZE;
+use super::cache::cache_revlookup;
+use super::init::rootvnode;
+use super::mount::Mount;
+use super::namei::{Componentname, MAXPATHLEN};
+use super::subr::{vget, vput, vref, vrele};
+use super::vnode::{
+    GETCWD_CHECK_ACCESS, LK_EXCLUSIVE, LK_RETRY, VDIR, VEXEC, VREAD, VROOT, Vattr, Vnode, vn_lock,
+};
+use super::vops::{Cred, vop_access, vop_getattr, vop_lookup, vop_readdir, vop_unlock};
+use crate::assert::kpanic;
+use crate::proc::{ProcGlue, Thread};
+use crate::uio::{Iovec, Uio};
 
-/// The `".."` that `vfs_getcwd_scandir` looks up.
-static DOTDOT: [u8; 3] = *b"..\0";
+/// `M_TEMP` (`<sys/malloc.h>`): misc temporary data buffers.
+const M_TEMP: i32 = 127;
+
+/// `DIRBLKSIZ` (`ufs/ufs/dir.h`, `DEV_BSIZE`): only for the smallest directory buffer.
+const DIRBLKSIZ: usize = 512;
 
 /// Find parent vnode of `*lvpp`, return in `*uvpp`.
 ///
-/// On return `*lvpp` is NULL (its reference is gone); `*uvpp` holds the parent, if found. With
-/// `buf`, the child's name is copied just before the index, which moves back to its start.
-pub fn vfs_getcwd_scandir(
-    lvpp: &mut Option<&'static Vnode>,
-    uvpp: &mut Option<&'static Vnode>,
+/// On return `*lvpp` is `None` (its reference is gone); `*uvpp` holds the parent, if found.
+/// With `buf`, the child's name is copied just before the index, which moves back to its
+/// start.
+pub fn vfs_getcwd_scandir<G: ProcGlue>(
+    lvpp: &mut Option<&'static Vnode<G>>,
+    uvpp: &mut Option<&'static Vnode<G>>,
     buf: Option<(&mut [u8], &mut usize)>,
-    p: &Proc,
+    p: &Thread<G>,
 ) -> Result<(), Errno> {
     let Some(lvp) = *lvpp else {
-        crate::kern::subr_prf::panic(format_args!("vfs_getcwd_scandir: no vnode"));
+        kpanic(format_args!("vfs_getcwd_scandir: no vnode"));
     };
+    let cred = Cred::real(p.ucred());
     let mut va = Vattr::new();
 
     // If we want the filename, get some info we need while the current directory is still
     // locked.
     if buf.is_some()
-        && let Err(error) = VOP_GETATTR(lvp, &mut va, p.ucred_ptr(), p)
+        && let Err(error) = vop_getattr(lvp, &mut va, cred, p)
     {
         vput(lvp);
         *lvpp = None;
@@ -119,18 +130,10 @@ pub fn vfs_getcwd_scandir(
         return Err(error);
     }
 
-    let mut cn = Componentname::new();
-    cn.cn_nameiop = LOOKUP;
-    cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
-    cn.cn_proc = p;
-    cn.cn_cred = p.ucred_ptr();
-    cn.cn_pnbuf = ptr::null_mut();
-    cn.cn_nameptr = DOTDOT.as_ptr();
-    cn.cn_namelen = 2;
-    cn.cn_consume = 0;
+    let mut cn = Componentname::dotdot(p, cred);
 
     // Get parent vnode using lookup of '..'
-    if let Err(error) = VOP_LOOKUP(lvp, uvpp, &mut cn) {
+    if let Err(error) = vop_lookup(lvp, uvpp, &mut cn) {
         vput(lvp);
         *lvpp = None;
         *uvpp = None;
@@ -138,10 +141,9 @@ pub fn vfs_getcwd_scandir(
     }
 
     let Some(uvp) = *uvpp else {
-        crate::kern::subr_prf::panic(format_args!("vfs_getcwd_scandir: no parent"));
+        kpanic(format_args!("vfs_getcwd_scandir: no parent"));
     };
 
-    let mut dirbuf: Option<(NonNull<u8>, usize)> = None;
     let error = 'out: {
         // If we don't care about the pathname, we're done
         let Some((bufp, bpp)) = buf else {
@@ -158,34 +160,25 @@ pub fn vfs_getcwd_scandir(
         if dirbuflen > 0xfffff {
             break 'out Err(Errno::EINVAL);
         }
-        let Some(mem) = malloc(dirbuflen, M_TEMP, M_WAITOK) else {
+        let Some(mut dirbuf) = MArray::new(M_TEMP, M_WAITOK, dirbuflen, |_| 0u8) else {
             break 'out Err(Errno::ENOMEM);
         };
-        dirbuf = Some((mem, dirbuflen));
 
         let mut off = 0;
         let mut tries = 0;
 
         loop {
-            let mut iov = [Iovec {
-                iov_base: mem.as_ptr().cast::<c_void>(),
-                iov_len: dirbuflen,
-            }];
-            let mut uio = Uio {
-                uio_iov: &mut iov,
-                uio_offset: off,
-                uio_resid: dirbuflen,
-                uio_segflg: UioSeg::UIO_SYSSPACE,
-                uio_rw: UioRw::UIO_READ,
-                uio_procp: Some(p),
-            };
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_read(&mut iov, &mut dirbuf[..], Some(p));
+            uio.uio_offset = off;
 
             let mut eofflag = 0;
 
             // Call VOP_READDIR of parent
-            let error = VOP_READDIR(uvp, &mut uio, p.ucred_ptr(), &mut eofflag);
+            let error = vop_readdir(uvp, &mut uio, cred, &mut eofflag);
 
             off = uio.uio_offset;
+            let resid = uio.uio_resid;
 
             // Try again if NFS tosses its cookies
             if error == Err(Errno::EINVAL) && tries < 3 {
@@ -196,19 +189,16 @@ pub fn vfs_getcwd_scandir(
                 break 'out Err(e); // Old userland getcwd() behaviour
             }
 
-            // SAFETY: `mem` is the `dirbuflen`-byte buffer `VOP_READDIR` just filled, owned
-            // here until the `free` below.
-            let dirbytes = unsafe { slice::from_raw_parts(mem.as_ptr(), dirbuflen) };
             let mut cpos = 0;
             tries = 0;
 
             // Scan directory page looking for matching vnode
-            let mut len = (dirbuflen - uio.uio_resid) as isize;
+            let mut len = (dirbuflen - resid) as isize;
             while len > 0 {
-                let Some(dp) = Dirent::from_bytes(&dirbytes[cpos..]) else {
+                let Some(dp) = Dirent::from_bytes(&dirbuf[cpos..]) else {
                     break 'out Err(Errno::EINVAL);
                 };
-                let reclen = dp.d_reclen as usize;
+                let reclen = usize::from(dp.d_reclen);
 
                 // Check for malformed directory
                 if reclen < dirent_recsize(1) || reclen as isize > len {
@@ -216,7 +206,7 @@ pub fn vfs_getcwd_scandir(
                 }
 
                 if dp.d_fileno == fileno {
-                    let namlen = dp.d_namlen as usize;
+                    let namlen = usize::from(dp.d_namlen);
                     if Dirent::NAME_OFFSET + namlen > reclen {
                         break 'out Err(Errno::EINVAL);
                     }
@@ -225,7 +215,7 @@ pub fn vfs_getcwd_scandir(
                     }
                     let bp = *bpp - namlen;
 
-                    let name = &dirbytes[cpos + Dirent::NAME_OFFSET..][..namlen];
+                    let name = &dirbuf[cpos + Dirent::NAME_OFFSET..][..namlen];
                     bufp[bp..bp + namlen].copy_from_slice(name);
                     *bpp = bp;
 
@@ -244,26 +234,22 @@ pub fn vfs_getcwd_scandir(
         Err(Errno::ENOENT)
     };
 
-    // out:
+    // out: (the directory buffer goes with its drop)
     vrele(lvp);
     *lvpp = None;
-
-    if let Some((mem, len)) = dirbuf {
-        free(mem, M_TEMP, len);
-    }
 
     error
 }
 
 /// Do a lookup in the vnode-to-name reverse map. `Ok(false)` is the C's `-1`: not found
 /// there, the caller tries the hard way (with `*lvpp` still held and locked).
-pub fn vfs_getcwd_getcache(
-    lvpp: &mut Option<&'static Vnode>,
-    uvpp: &mut Option<&'static Vnode>,
+pub fn vfs_getcwd_getcache<G: ProcGlue>(
+    lvpp: &mut Option<&'static Vnode<G>>,
+    uvpp: &mut Option<&'static Vnode<G>>,
     buf: Option<(&mut [u8], &mut usize)>,
 ) -> Result<bool, Errno> {
     let Some(lvp) = *lvpp else {
-        crate::kern::subr_prf::panic(format_args!("vfs_getcwd_getcache: no vnode"));
+        kpanic(format_args!("vfs_getcwd_getcache: no vnode"));
     };
     // Save original position to restore to on error
     let (bufp, bpp) = match buf {
@@ -273,8 +259,7 @@ pub fn vfs_getcwd_getcache(
     let obp = bpp.as_deref().copied();
 
     let mut bp = obp.unwrap_or(0);
-    let found = cache_revlookup(lvp, &mut bp, bufp);
-    let uvp = match found {
+    let uvp = match cache_revlookup(lvp, &mut bp, bufp) {
         Err(error) => {
             vput(lvp);
             *lvpp = None;
@@ -284,28 +269,15 @@ pub fn vfs_getcwd_getcache(
         Ok(None) => return Ok(false),
         Ok(Some(uvp)) => uvp,
     };
-    if let Some(bpp) = bpp {
-        *bpp = bp;
-        *uvpp = Some(uvp);
-        return getcache_finish(lvpp, uvpp, lvp, uvp, Some((bpp, obp.unwrap_or(0))));
-    }
     *uvpp = Some(uvp);
-    getcache_finish(lvpp, uvpp, lvp, uvp, None)
-}
-
-/// The rest of `vfs_getcwd_getcache` once the cache named the parent: trade the child's lock
-/// for the parent's.
-fn getcache_finish(
-    lvpp: &mut Option<&'static Vnode>,
-    uvpp: &mut Option<&'static Vnode>,
-    lvp: &'static Vnode,
-    uvp: &'static Vnode,
-    restore: Option<(&mut usize, usize)>,
-) -> Result<bool, Errno> {
+    let restore = bpp.map(|bpp| {
+        *bpp = bp;
+        (bpp, obp.unwrap_or(0))
+    });
     let vpid = uvp.id();
 
     // Release current lock before acquiring the parent lock
-    let _ = VOP_UNLOCK(lvp);
+    let _ = vop_unlock(lvp);
 
     let mut error = vget(uvp, LK_EXCLUSIVE | LK_RETRY);
     if error.is_err() {
@@ -338,19 +310,23 @@ fn getcache_finish(
     error.map(|()| true)
 }
 
-/// Common routine shared by `sys___getcwd()` and `vn_isunder()` and `sys___realpath()`.
-pub fn vfs_getcwd_common(
-    lvp: &'static Vnode,
-    rvp: Option<&'static Vnode>,
+/// Common routine shared by `sys___getcwd()` and `vn_isunder()` and `sys___realpath()`: the
+/// path from `lvp` up to `rvp` (the thread's root when `None`), written backwards into `buf`
+/// before its index, at most `limit` vnodes up; `GETCWD_CHECK_ACCESS` checks search (then
+/// read) access on the way.
+pub fn vfs_getcwd_common<G: ProcGlue>(
+    lvp: &'static Vnode<G>,
+    rvp: Option<&'static Vnode<G>>,
     mut buf: Option<(&mut [u8], &mut usize)>,
     mut limit: i32,
     flags: i32,
-    p: &Proc,
+    p: &Thread<G>,
 ) -> Result<(), Errno> {
     let fdp = p.fd();
+    let cred = Cred::real(p.ucred());
     let mut perms = VEXEC;
 
-    let Some(rvp) = rvp.or(fdp.rdir()).or_else(rootvnode) else {
+    let Some(rvp) = rvp.or_else(|| fdp.rdir()).or_else(rootvnode::<G>) else {
         // No root file system (see the module's deviations).
         return Err(Errno::ENOENT);
     };
@@ -359,8 +335,8 @@ pub fn vfs_getcwd_common(
     vref(rvp);
     vref(first);
 
-    let mut lvp: Option<&'static Vnode> = Some(first);
-    let mut uvp: Option<&'static Vnode> = None;
+    let mut lvp: Option<&'static Vnode<G>> = Some(first);
+    let mut uvp: Option<&'static Vnode<G>> = None;
 
     let error = 'out: {
         if let Err(error) = vn_lock(first, LK_EXCLUSIVE | LK_RETRY) {
@@ -389,7 +365,7 @@ pub fn vfs_getcwd_common(
 
             // Check for access if caller cares
             if flags & GETCWD_CHECK_ACCESS != 0 {
-                if let Err(error) = VOP_ACCESS(cur, perms, p.ucred_ptr(), p) {
+                if let Err(error) = vop_access(cur, perms, cred, p) {
                     break 'out Err(error);
                 }
                 perms = VEXEC | VREAD;
@@ -402,7 +378,7 @@ pub fn vfs_getcwd_common(
                 }
 
                 let tvp = cur;
-                let covered = cur.mount().and_then(|mp| mp.vnodecovered());
+                let covered = cur.mount().and_then(Mount::vnodecovered);
 
                 vput(tvp);
 
@@ -441,12 +417,12 @@ pub fn vfs_getcwd_common(
             #[cfg(feature = "diagnostic")]
             {
                 if lvp.is_some() {
-                    crate::kern::subr_prf::panic(format_args!("getcwd: oops, forgot to null lvp"));
+                    kpanic(format_args!("getcwd: oops, forgot to null lvp"));
                 }
                 if let Some((_, bpp)) = buf.as_ref()
                     && **bpp == 0
                 {
-                    crate::kern::subr_prf::panic(format_args!("getcwd: oops, went back too far"));
+                    kpanic(format_args!("getcwd: oops, went back too far"));
                 }
             }
 
@@ -479,107 +455,172 @@ pub fn vfs_getcwd_common(
     error
 }
 
-/// Find pathname of a process's current directory.
+/// Find pathname of a process's current directory: `__getcwd(buf, len)`, the path copied
+/// out to the user address `buf` (at most `len` bytes there, `MAXPATHLEN * 4` at most).
 #[allow(non_snake_case)] // the C name: sys___getcwd
-pub fn sys___getcwd(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    let uap: &SysGetcwdArgs = sysargs(v);
-    let mut len = uap.len.get();
-
+pub fn sys___getcwd<G: ProcGlue>(p: &Thread<G>, buf: usize, len: usize) -> Result<(), Errno> {
+    let mut len = len;
     if len > MAXPATHLEN * 4 {
         len = MAXPATHLEN * 4;
     } else if len < 2 {
         return Err(Errno::ERANGE);
     }
 
-    let Some(mem) = malloc(len, M_TEMP, M_WAITOK) else {
+    let Some(mut path) = MArray::new(M_TEMP, M_WAITOK, len, |_| 0u8) else {
         return Err(Errno::ENOMEM);
     };
-    // SAFETY: a fresh `len`-byte allocation, owned here until the `free` below; every byte
-    // is written before it is read (the path is built backwards from the NUL).
-    let path = unsafe { slice::from_raw_parts_mut(mem.as_ptr(), len) };
 
     let mut bp = len - 1;
     path[bp] = 0;
 
     // 5th argument here is "max number of vnodes to traverse". Since each entry takes up at
     // least 2 bytes in the output buffer, limit it to N/2 vnodes for an N byte buffer.
-    let error = match p.fd().cdir() {
-        None => Err(Errno::ENOENT), // no root file system yet
-        Some(cdir) => vfs_getcwd_common(
-            cdir,
-            None,
-            Some((&mut *path, &mut bp)),
-            (len / 2) as i32,
-            GETCWD_CHECK_ACCESS,
-            p,
-        ),
-    }
+    let Some(cdir) = p.fd().cdir() else {
+        return Err(Errno::ENOENT); // no root file system yet
+    };
+    vfs_getcwd_common(
+        cdir,
+        None,
+        Some((&mut path[..], &mut bp)),
+        (len / 2) as i32,
+        GETCWD_CHECK_ACCESS,
+        p,
+    )?;
+
     // Put the result into user buffer
-    .and_then(|()| copyoutstr(&path[bp..], uap.buf.get() as usize).map(|_| ()));
+    let end = len.min(bp + MAXPATHLEN);
+    UserPtr::<u8>::new(buf).copyoutstr(&path[bp..end])?;
 
     // KTRACE: not configured.
-
-    free(mem, M_TEMP, len);
-
-    error
+    Ok(())
 }
 /* </CODE> */
-
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use core::sync::atomic::Ordering;
+    // Host tests for `getcwd` over the kernel's test file system: the path through the name
+    // cache's reverse map (`vfs_getcwd_getcache` at every step), the root, `ERANGE` for a
+    // buffer too small, `__getcwd`'s copy to user space and its bounds, `vn_isunder`. The
+    // directory scan (`vfs_getcwd_scandir`) is `bsd`'s tests over its glue (the test glue's
+    // `uiomove` cannot fill a kernel buffer with a directory's entries, `fs::testfs`'s
+    // notes): here it gets as far as `VOP_READDIR`, which the test file system lacks.
+
+    use std::vec;
+    use std::vec::Vec;
 
     use super::*;
-    use crate::kern::vfs_cache::NCHSTATS;
-    use crate::kern::vfs_lookup::{namei, ndinit};
-    use crate::kern::vfs_subr::tests::testfs::{self, A, C, any_locked, vget_node};
-    use crate::kern::vfs_vnops::vn_isunder;
-    use crate::sys::namei::{FOLLOW, NiDirp};
+    use crate::fs::lookup::{namei, ndinit};
+    use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
+    use crate::fs::subr::vfs;
+    use crate::fs::testfs::{C, TestGlue, any_locked, test_thread, vget_node};
+    use crate::fs::vnops::vn_isunder;
+    use crate::testutil::USER_BASE;
 
-    fn cwd(p: &Proc, vp: &'static Vnode) -> std::vec::Vec<u8> {
-        let mut buf = [0u8; 64];
-        let mut bp = buf.len() - 1;
-        let lim = 32;
+    type G = TestGlue;
+
+    /// The vnode of `path`, referenced, every name on the way now in the cache.
+    fn walk(p: &'static Thread<G>, path: &'static [u8]) -> &'static Vnode<G> {
+        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(path), p);
+        namei(&mut nd).unwrap();
+        nd.ni_vp.unwrap()
+    }
+
+    /// `vfs_getcwd_common` of `vp` into a buffer of `len` bytes, as `__getcwd` calls it.
+    fn path_of(vp: &'static Vnode<G>, len: usize, p: &Thread<G>) -> Result<Vec<u8>, Errno> {
+        let mut buf = vec![0u8; len];
+        let mut bp = len - 1;
+        buf[bp] = 0;
         vfs_getcwd_common(
             vp,
             None,
-            Some((&mut buf, &mut bp)),
-            lim,
+            Some((&mut buf[..], &mut bp)),
+            (len / 2) as i32,
             GETCWD_CHECK_ACCESS,
             p,
-        )
-        .unwrap();
-        buf[bp..buf.len() - 1].to_vec()
+        )?;
+        Ok(buf[bp..len - 1].to_vec())
     }
 
     #[test]
-    fn getcwd_by_directory_scan_then_by_cache() {
-        let (_g, p, mp) = testfs::setup_root();
-        let c = vget_node(mp, C).unwrap();
-        let _ = VOP_UNLOCK(c);
-        // Nothing cached: each step looks ".." up and scans it.
-        assert_eq!(cwd(p, c), b"/a/c");
+    fn getcwd_through_the_reverse_cache() {
+        let (_g, p) = test_thread();
+        let dvp = walk(p, b"/a/c/d");
+        let hits = vfs::<G>()
+            .nchstats
+            .ncs_revhits
+            .load(core::sync::atomic::Ordering::SeqCst);
+        assert_eq!(path_of(dvp, 64, p).unwrap(), b"/a/c/d");
+        assert_eq!(
+            vfs::<G>()
+                .nchstats
+                .ncs_revhits
+                .load(core::sync::atomic::Ordering::SeqCst),
+            hits + 3
+        );
+        // The root is "/".
+        let root = crate::fs::init::rootvnode::<G>().unwrap();
+        assert_eq!(path_of(root, 8, p).unwrap(), b"/");
+        // A buffer too small for the path: ERANGE.
+        assert_eq!(path_of(dvp, 6, p), Err(Errno::ERANGE));
+        // The walk stops at the limit (N/2 vnodes for N bytes).
+        let mut buf = [0u8; 64];
+        let mut bp = 63;
+        vfs_getcwd_common(dvp, None, Some((&mut buf[..], &mut bp)), 1, 0, p).unwrap();
+        assert_eq!(&buf[bp..63], b"/d");
         assert!(!any_locked());
+        vrele(dvp);
+    }
 
-        // After a lookup the reverse map answers.
-        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/a/c"), p);
-        namei(&mut nd).unwrap();
-        vrele(nd.ni_vp.unwrap());
-        let revhits = NCHSTATS.ncs_revhits.load(Ordering::SeqCst);
-        assert_eq!(cwd(p, c), b"/a/c");
-        assert_eq!(NCHSTATS.ncs_revhits.load(Ordering::SeqCst), revhits + 2);
-
-        let root = rootvnode().unwrap();
-        assert_eq!(cwd(p, root), b"/");
-        assert!(vn_isunder(c, root, p));
-        let a = vget_node(mp, A).unwrap();
-        let _ = VOP_UNLOCK(a);
-        assert!(vn_isunder(c, a, p));
-        assert!(!vn_isunder(a, c, p));
-        vrele(a);
-        vrele(c);
+    #[test]
+    fn a_directory_the_cache_does_not_name_is_scanned() {
+        let (_g, p) = test_thread();
+        let mp = crate::fs::init::rootvnode::<G>()
+            .and_then(Vnode::mount)
+            .unwrap();
+        // C looked up only through VFS_VGET: its name is in no cache; the scan looks `..` up
+        // and reads the parent, which the test file system cannot (`EOPNOTSUPP`).
+        let cvp = vget_node(mp, C).unwrap();
+        let _ = vop_unlock(cvp);
+        assert_eq!(path_of(cvp, 64, p), Err(Errno::EOPNOTSUPP));
         assert!(!any_locked());
+        vrele(cvp);
+    }
+
+    #[test]
+    fn getcwd_copies_out_the_current_directory() {
+        let (_g, p) = test_thread();
+        let dvp = walk(p, b"/a/c/d");
+        let old = p.fd().replace_cdir(Some(dvp));
+        let ubuf = USER_BASE + 0x6000;
+        sys___getcwd(p, ubuf, 64).unwrap();
+        let mut out = [0u8; 7];
+        UserPtr::<u8>::new(ubuf).copyin_slice(&mut out).unwrap();
+        assert_eq!(&out, b"/a/c/d\0");
+        // Bounds: below 2 bytes ERANGE, a path longer than the buffer ERANGE.
+        assert_eq!(sys___getcwd(p, ubuf, 1), Err(Errno::ERANGE));
+        assert_eq!(sys___getcwd(p, ubuf, 4), Err(Errno::ERANGE));
+        // The C's limit (len / 2 vnodes) can stop the walk first: 5 bytes give 2 vnodes, the
+        // tail of the path ("/c/d"), as the C answers.
+        sys___getcwd(p, ubuf, 5).unwrap();
+        let mut out = [0u8; 5];
+        UserPtr::<u8>::new(ubuf).copyin_slice(&mut out).unwrap();
+        assert_eq!(&out, b"/c/d\0");
+        let cur = p.fd().replace_cdir(old);
+        assert!(cur.is_some_and(|c| ptr::eq(c, dvp)));
+        vrele(dvp);
+    }
+
+    #[test]
+    fn isunder_answers_ancestry() {
+        let (_g, p) = test_thread();
+        let dvp = walk(p, b"/a/c/d");
+        let avp = walk(p, b"/a");
+        assert!(vn_isunder(dvp, avp, p));
+        assert!(vn_isunder(dvp, dvp, p));
+        assert!(!vn_isunder(avp, dvp, p));
+        assert!(!any_locked());
+        vrele(avp);
+        vrele(dvp);
     }
 }
 /* </TESTS> */

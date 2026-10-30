@@ -81,6 +81,13 @@
 //!   `dounmount` and `sys_sync` move (N5.4); so does the NFS export list
 //!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`, and
 //!   `vntblinit`'s `rn_init`), until the NFS server moves (N6).
+//! - `vfs_stall` reads each successor before the body ([`mountlist_safe_restart`]), and a
+//!   successor unmounted while the body slept (`vfs_busy`'s wait, `VFS_SYNC`) restarts the
+//!   walk from the head past the mounts already handled (`MNT_STALLED` set when stalling,
+//!   clear when resuming): every mount still listed is synced and stalled. The C follows
+//!   the unmounted mount's stale `TAILQ_NEXT` (vfs_subr.c:1720-1726), a read of freed memory;
+//!   LZ's and N5.2's walk ended there, leaving the later mounts unsynced (D-N5.3-7). A mount
+//!   whose sync failed is tried again after such a restart.
 //!
 //! ## Redesign
 //! - LZ's global lists of `Cell` links under `unsafe impl Sync` (`VNODE_FREE_LIST`,
@@ -126,7 +133,7 @@ use hal::malloc::MBox;
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pool::{BoxPool, PR_WAITOK, PoolBox, TypedPool};
-use hal::rwlock::{RW_READ, RW_WRITE, SplitRwlock};
+use hal::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
@@ -139,7 +146,8 @@ use super::bio::{self, BufVnode, DirtyPick, DirtyScan, NODEV};
 use super::buf::{B_BUSY, B_DELWRI, Buf, BufRef};
 use super::init::vfs_byname;
 use super::mount::{
-    Mount, MountLists, mountlist, mountlist_is_empty, vfs_busy, vfs_mount_alloc, vfs_unbusy,
+    Mount, MountLists, mountlist_is_empty, mountlist_safe_restart, vfs_busy, vfs_mount_alloc,
+    vfs_unbusy,
 };
 use super::spec::{
     BySpecnext, CLONE_SHIFT, CloneBits, D_CLONE, D_TTY, SPECHSZ, Specinfo, devsw, spechash,
@@ -193,8 +201,17 @@ pub type ListsGuard<'a, G> = MutexedGuard<'a, FreeLists<G>>;
 
 /// The vnode and mount tables of one glue's processes: `bsd`'s `static`, or a test thread's.
 pub struct VfsTables<G: ProcGlue> {
+    /// `namei_pool` (`"namei"`): the pathname buffers.
+    pub namei: BoxPool<[u8; super::namei::MAXPATHLEN]>,
     /// `vnode_pool`.
     pub vnodes: BoxPool<Vnode<G>>,
+    /// `nch_pool` (`"nchpl"`): the name cache's entries.
+    pub nch_pool: BoxPool<super::cache::Namecache<G>>,
+    /// The name cache (`nclruhead`, `nclruneghead`, the counts), part 0 of
+    /// `fs::cache::NCLOCK`.
+    pub namecache: Guarded<super::cache::NameCache<G>>,
+    /// `nchstats`: cache effectiveness statistics (racy, as the C's).
+    pub nchstats: super::cache::Nchstats,
     /// The file systems' operations tables (ids `VopsId::FIRST_FS..`).
     vops: [OnceStatic<&'static dyn Vnops<G>>; (VopsId::MAX - VopsId::FIRST_FS) as usize],
     /// The free and hold lists, at `IPL_BIO`.
@@ -235,7 +252,14 @@ impl<G: ProcGlue> VfsTables<G> {
     /// Empty tables: no vnode, no mount, nothing registered.
     pub const fn new() -> Self {
         Self {
+            namei: BoxPool::new(),
             vnodes: BoxPool::new(),
+            nch_pool: BoxPool::new(),
+            namecache: Guarded::new_static_mutexed(
+                &super::cache::NCLOCK,
+                super::cache::NameCache::new(),
+            ),
+            nchstats: super::cache::Nchstats::new(),
             vops: [const { OnceStatic::new() }; (VopsId::MAX - VopsId::FIRST_FS) as usize],
             lists: Mutexed::new(
                 IPL_BIO,
@@ -380,6 +404,7 @@ pub fn vfs_test_reset<G: ProcGlue>() {
         }
     }
     sync::syncer_test_reset::<G>();
+    super::cache::namecache_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
@@ -521,9 +546,8 @@ pub fn getnewvnode_id<G: ProcGlue>(
         };
         let vp: &'static Vnode<G> = PoolBox::leak(b);
         // The vnode's buffer half is the cache's from here (`RBT_INIT` of `v_bufs_tree`: the
-        // fresh vnode's tree is empty), its `bsd` members ready at their place.
+        // fresh vnode's tree is empty; the name cache's heads were made with the vnode).
         vp.bufs.set_owner(vp);
-        <G::FileGlue as FileGlue>::vnode_g_init(vp);
         t.numvnodes.fetch_add(1, Ordering::Relaxed);
         vp
     } else {
@@ -568,7 +592,7 @@ pub fn getnewvnode_id<G: ProcGlue>(
         <G::FileGlue as FileGlue>::vnode_recycle(vp);
         vp
     };
-    <G::FileGlue as FileGlue>::cache_purge(vp);
+    super::cache::cache_purge(vp);
     vp.set_vtype(VNON);
     vp.set_tag(tag);
     vp.set_ops_id(id);
@@ -1095,7 +1119,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
         }
         vputonfreelist_locked(&l, vp);
     }
-    <G::FileGlue as FileGlue>::cache_purge(vp);
+    super::cache::cache_purge(vp);
 
     // Done with purge, notify sleepers of the grim news.
     vp.set_ops_id(VopsId::DEAD);
@@ -1185,7 +1209,7 @@ pub fn vgonel<G: ProcGlue>(vp: &'static Vnode<G>, p: Option<&Thread<G>>) {
                 vp.flag_clr(VALIASED);
             }
         }
-        <G::FileGlue as FileGlue>::lf_purgelocks(vp);
+        super::lockf::lf_purgelocks::<G>(&vp.speclockf);
         drop(vp.take_un());
     }
     // If it is on the freelist and not already at the head, move it to the head of the list.
@@ -1313,7 +1337,7 @@ pub fn printlockedvnodes<G: ProcGlue>() {
     use hal::sys::mount::{VB_NOWAIT, VB_READ};
     crate::prf::printf(format_args!("Locked vnodes\n"));
 
-    for mp in mountlist::<G>(false) {
+    for mp in super::mount::mountlist::<G>(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }
@@ -1498,7 +1522,11 @@ pub fn vfs_stall<G: ProcGlue>(p: &Thread<G>, stall: bool) -> Result<(), Errno> {
 
     // The loop variable mp is protected by vfs_busy() so that it cannot be unmounted while
     // VFS_SYNC() sleeps. Traverse forward to keep the lock order consistent with dounmount().
-    for mp in mountlist::<G>(false) {
+    // The successor is read before the body, and one unmounted while the body slept restarts
+    // the walk past the mounts this pass already handled (marked MNT_STALLED when stalling,
+    // cleared when resuming).
+    let done = if stall { MNT_STALLED } else { 0 };
+    for mp in mountlist_safe_restart::<G>(false, MNT_STALLED, done) {
         let (name, len) = mp.mntonname();
         let name = core::str::from_utf8(&name[..len]).unwrap_or("?");
         if stall {

@@ -81,8 +81,7 @@
 //!   DIAGNOSTIC`).
 //! - `VOP_BWRITE` panics for a buffer without a vnode, where the C would dereference NULL.
 
-use core::ffi::c_void;
-use core::ptr;
+use kernel::file::LockOwner;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::buf::{Buf, bwrite, lend};
@@ -90,7 +89,7 @@ use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
 use crate::sys::mount::{Fid, Mount, Statfs, Vfsconf, Vfsops};
-use crate::sys::namei::{Componentname, HASBUF, Nameidata, SAVESTART};
+use crate::sys::namei::{Componentname, Nameidata};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Ino, Register, Uid};
 use crate::sys::ucred::Ucred;
@@ -569,7 +568,7 @@ impl Vnops<BsdProcGlue> for Vops {
     fn advlock(
         &self,
         vp: &'static Vnode,
-        id: *const c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
@@ -1023,7 +1022,7 @@ pub fn VOP_PATHCONF(vp: &'static Vnode, name: i32, retval: &mut Register) -> Res
 #[inline]
 pub fn VOP_ADVLOCK(
     vp: &'static Vnode,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,
@@ -1075,23 +1074,12 @@ pub fn vop_generic_bwrite(ap: &mut VopBwriteArgs) -> Result<(), Errno> {
 
 /// `vop_generic_abortop`: frees the pathname buffer a lookup left behind, unless the caller
 /// asked to keep it (`SAVESTART`).
-pub fn vop_generic_abortop(ap: &mut VopAbortopArgs<'_>) -> Result<(), Errno> {
+pub fn vop_generic_abortop(ap: &mut VopAbortopArgs<'_, '_>) -> Result<(), Errno> {
     default::vop_generic_abortop::<BsdProcGlue>(ap.a_cnp)
 }
 
-/// The abort of a lookup's pathname buffer (`vop_generic_abortop`'s body, the kernel's
-/// `FileGlue::abortop` leg): `pool_put(&namei_pool, cnp->cn_pnbuf)` when the lookup left one
-/// (`HASBUF`) and was not asked to keep it (`SAVESTART`).
-pub fn abortop_putname(cnp: &mut Componentname) {
-    if cnp.cn_flags & (HASBUF | SAVESTART) == HASBUF
-        && let Some(buf) = ptr::NonNull::new(cnp.cn_pnbuf)
-    {
-        crate::kern::subr_pool::pool_put(&crate::kern::vfs_init::NAMEI_POOL, buf);
-    }
-}
-
 /// Trivial lookup routine that always fails.
-pub fn vop_generic_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn vop_generic_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     default::vop_generic_lookup(ap.a_vpp)
 }
 /* </CODE> */
@@ -1121,6 +1109,7 @@ mod tests {
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::unistd::{_PC_LINK_MAX, _PC_PATH_MAX};
     use crate::sys::vnode::{VDIR, VT_NON, getnewvnode, insmntque, vfs_mount_alloc, vref, vrele};
+    use core::ptr;
 
     /// The slots each test table's operations hit, one bit each.
     static HITS: AtomicU64 = AtomicU64::new(0);
@@ -1152,20 +1141,20 @@ mod tests {
         hit(2);
         0
     }
-    slot!(c_abortop, VopAbortopArgs<'_>, 3);
+    slot!(c_abortop, VopAbortopArgs<'_, '_>, 3);
     slot!(c_access, VopAccessArgs<'_>, 4, cred);
     slot!(c_advlock, VopAdvlockArgs<'_>, 5);
     slot!(c_bmap, VopBmapArgs<'_>, 6);
     slot!(c_bwrite, VopBwriteArgs, 7);
     slot!(c_close, VopCloseArgs<'_>, 8, cred);
-    slot!(c_create, VopCreateArgs<'_>, 9);
+    slot!(c_create, VopCreateArgs<'_, '_>, 9);
     slot!(c_fsync, VopFsyncArgs<'_>, 10, cred);
     slot!(c_getattr, VopGetattrArgs<'_>, 11, cred);
     slot!(c_inactive, VopInactiveArgs<'_>, 12);
     slot!(c_ioctl, VopIoctlArgs<'_>, 13, cred);
-    slot!(c_link, VopLinkArgs<'_>, 14);
-    slot!(c_lookup, VopLookupArgs<'_>, 15);
-    slot!(c_mknod, VopMknodArgs<'_>, 16);
+    slot!(c_link, VopLinkArgs<'_, '_>, 14);
+    slot!(c_lookup, VopLookupArgs<'_, '_>, 15);
+    slot!(c_mknod, VopMknodArgs<'_, '_>, 16);
     slot!(c_open, VopOpenArgs<'_>, 17, cred);
     slot!(c_pathconf, VopPathconfArgs<'_>, 18);
     slot!(c_print, VopPrintArgs, 19);
@@ -1173,14 +1162,14 @@ mod tests {
     slot!(c_readdir, VopReaddirArgs<'_, '_>, 21, cred);
     slot!(c_readlink, VopReadlinkArgs<'_, '_>, 22, cred);
     slot!(c_reclaim, VopReclaimArgs<'_>, 23);
-    slot!(c_remove, VopRemoveArgs<'_>, 24);
-    slot!(c_rename, VopRenameArgs<'_>, 25);
+    slot!(c_remove, VopRemoveArgs<'_, '_>, 24);
+    slot!(c_rename, VopRenameArgs<'_, '_, '_>, 25);
     slot!(c_revoke, VopRevokeArgs, 26);
-    slot!(c_mkdir, VopMkdirArgs<'_>, 27);
-    slot!(c_rmdir, VopRmdirArgs<'_>, 28);
+    slot!(c_mkdir, VopMkdirArgs<'_, '_>, 27);
+    slot!(c_rmdir, VopRmdirArgs<'_, '_>, 28);
     slot!(c_setattr, VopSetattrArgs<'_>, 29, cred);
     slot!(c_strategy, VopStrategyArgs, 30);
-    slot!(c_symlink, VopSymlinkArgs<'_>, 31);
+    slot!(c_symlink, VopSymlinkArgs<'_, '_>, 31);
     slot!(c_write, VopWriteArgs<'_, '_>, 32, cred);
     slot!(c_kqfilter, VopKqfilterArgs<'_>, 33);
 
@@ -1244,8 +1233,8 @@ mod tests {
         let vp = getnewvnode(VT_NON, None, &COUNTING).unwrap();
         vp.set_vtype(VDIR);
         let mut va = Vattr::new();
-        let mut cn = Componentname::new();
-        let mut cn2 = Componentname::new();
+        let mut cn = Componentname::new(0, 0, p, Cred::NULL);
+        let mut cn2 = Componentname::new(0, 0, p, Cred::NULL);
         let mut vpp = None;
         let mut iov = [Iovec::new()];
 
@@ -1255,7 +1244,7 @@ mod tests {
         assert_eq!(VOP_ABORTOP(vp, &mut cn), Ok(()));
         assert_eq!(VOP_ACCESS(vp, 0, NOCRED, p), Ok(()));
         let mut fl = Flock::default();
-        assert_eq!(VOP_ADVLOCK(vp, ptr::null(), 0, &mut fl, 0), Ok(()));
+        assert_eq!(VOP_ADVLOCK(vp, LockOwner::Table(0), 0, &mut fl, 0), Ok(()));
         assert_eq!(VOP_BMAP(vp, 0, None, None, None), Ok(()));
         assert_eq!(VOP_CLOSE(vp, 0, NOCRED, Some(p)), Ok(()));
         assert_eq!(VOP_CREATE(vp, &mut vpp, &mut cn, &mut va), Ok(()));
@@ -1337,7 +1326,7 @@ mod tests {
         let vp = getnewvnode(VT_NON, None, &EMPTY).unwrap();
         vp.set_vtype(VDIR);
         let mut va = Vattr::new();
-        let mut cn = Componentname::new();
+        let mut cn = Componentname::new(0, 0, p, Cred::NULL);
         let mut vpp = None;
         let mut iov = [Iovec::new()];
         let e = Err(Errno::EOPNOTSUPP);
@@ -1374,7 +1363,7 @@ mod tests {
 
     #[test]
     fn the_generic_operations_answer_as_vfs_default() {
-        let (_g, _p) = setup();
+        let (_g, p) = setup();
         let vp = getnewvnode(VT_NON, None, &EMPTY).unwrap();
         let mut vpp = None;
         let mut bn: Daddr = 0;
@@ -1392,7 +1381,7 @@ mod tests {
         assert!(vpp.is_some_and(|v| ptr::eq(v, vp)));
         assert_eq!((bn, run), (42, 0));
 
-        let mut cn = Componentname::new();
+        let mut cn = Componentname::new(0, 0, p, Cred::NULL);
         let mut vpp = Some(vp);
         assert_eq!(
             vop_generic_lookup(&mut VopLookupArgs {
@@ -1484,7 +1473,7 @@ mod tests {
         crate::sys::vnode::vfs_unbusy(mp);
         let ops = mp.op();
 
-        let mut nd = crate::kern::vfs_lookup::ndinit(0, 0, crate::sys::namei::NiDirp::Sys(b"/"), p);
+        let mut nd = crate::sys::namei::ndinit(0, 0, crate::sys::namei::NiDirp::Sys(b"/"), p);
         assert_eq!(
             crate::sys::mount::VFS_MOUNT(mp, b"/", &mut [], &mut nd, p),
             Ok(())

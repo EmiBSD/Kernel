@@ -81,8 +81,6 @@ use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_init_flags, rw_init};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
 use crate::nfs::nfs::NFS_NODE_POOL;
@@ -94,11 +92,13 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::M_NFSREQ;
 use crate::sys::mount::Mount;
+use crate::sys::namei::cache_purge;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::ucred::{CredRef, CredSlot, FSCRED, NOCRED, Ucred};
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::PRTACTIVE;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{VDIR, VLARVAL, VT_NFS, Vnode, VopInactiveArgs, VopReclaimArgs};
 use crate::sys::vnode::{getnewvnode, vget, vgone, vput};
 

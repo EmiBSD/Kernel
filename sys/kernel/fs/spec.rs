@@ -144,7 +144,7 @@
 //!   revoke of an alias) finds under it, leaves it and restarts from the head after the
 //!   sleep, as the C's `goto loop`.
 
-use core::ffi::c_void;
+use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 
@@ -412,7 +412,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        _cnp: &mut Cn<G>,
+        _cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_lookup(vpp)
     }
@@ -420,7 +420,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -429,7 +429,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -527,21 +527,26 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
-    fn link(&self, _: &'static Vnode<G>, _: &'static Vnode<G>, _: &mut Cn<G>) -> Result<(), Errno> {
+    fn link(
+        &self,
+        _: &'static Vnode<G>,
+        _: &'static Vnode<G>,
+        _: &mut Cn<'_, G>,
+    ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
     fn rename(
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &'static Vnode<G>,
         _: Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
@@ -549,7 +554,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -558,7 +563,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
@@ -566,7 +571,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
         _: &[u8],
     ) -> Result<(), Errno> {
@@ -584,7 +589,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
     fn readlink(&self, _: &'static Vnode<G>, _: &mut Uio<'_, G>, _: Cred<'_>) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
-    fn abortop(&self, _: &'static Vnode<G>, _: &mut Cn<G>) -> Result<(), Errno> {
+    fn abortop(&self, _: &'static Vnode<G>, _: &mut Cn<'_, G>) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
     fn inactive(&self, vp: &'static Vnode<G>, _p: Option<&Thread<G>>) -> Result<(), Errno> {
@@ -629,7 +634,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
     fn advlock(
         &self,
         vp: &'static Vnode<G>,
-        id: *const c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
@@ -955,7 +960,7 @@ pub fn spec_close<G: ProcGlue>(
             // session), release the reference from the session.
             if vcount(vp) == 2
                 && let Some(p) = p
-                && <G::FileGlue as FileGlue>::session_ttyvp_take(p, vp)
+                && session_ttyvp_take(p, vp)
             {
                 let _ = vrele(vp);
             }
@@ -1118,11 +1123,25 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Special device advisory byte-level locks (`lf_advlock(&vp->v_speclockf, 0, ...)`, the
-/// lock list `bsd`'s until N5.3).
+/// `spec_close`'s release of the session's controlling terminal: when the closing thread's
+/// session's `s_ttyvp` is `vp`, it is cleared and `true` returned (the caller `vrele`s the
+/// vnode); `false` otherwise. Under the kernel lock, as `spec_close` runs.
+fn session_ttyvp_take<G: ProcGlue>(p: &Thread<G>, vp: &'static Vnode<G>) -> bool {
+    let r = hal::klock::reader();
+    match p.process().session(&r) {
+        Some(s) if s.ttyvp.points_to(vp) => {
+            s.ttyvp.set(None);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Special device advisory byte-level locks (`lf_advlock(&vp->v_speclockf, 0, ...)`: the
+/// device's lock list on the vnode, `Vnode::speclockf`).
 pub fn spec_advlock<G: ProcGlue>(
     vp: &'static Vnode<G>,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,
@@ -1130,7 +1149,7 @@ pub fn spec_advlock<G: ProcGlue>(
     if !vp.has_specinfo() {
         kpanic(format_args!("spec_advlock: no specinfo"));
     }
-    <G::FileGlue as FileGlue>::spec_advlock(vp, id, op, fl, flags)
+    super::lockf::lf_advlock::<G>(&vp.speclockf, 0, id, op, fl, flags)
 }
 
 /// `spec_open_clone(ap)`: opens a new instance of a `D_CLONE` character device: a new vnode

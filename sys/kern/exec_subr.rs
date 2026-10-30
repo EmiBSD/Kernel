@@ -68,7 +68,9 @@
 //! - The 4-clause licence (advertising clause) was accepted by the user at M2 for this
 //!   project.
 
+use crate::sys::vnode::RdwrBuf;
 use core::ptr::NonNull;
+use kernel::fs::vops::Cred;
 
 use crate::dev::rnd::{
     arc4random, arc4random_buf, arc4random_ctx_buf, arc4random_ctx_free, arc4random_ctx_new,
@@ -77,7 +79,6 @@ use crate::dev::rnd::{
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::sched_bsd::r#yield;
-use crate::kern::vfs_vnops::vn_rdwr;
 use crate::kern::vm_bsd::uvn_attach;
 use crate::machine::copy::copyout;
 use crate::machine::{Machine, VmParam};
@@ -96,8 +97,9 @@ use crate::sys::proc::ProcExt;
 use crate::sys::resource::RLIMIT_STACK;
 use crate::sys::resourcevar::lim_cur;
 use crate::sys::sched::sched_pause;
-use crate::sys::uio::{UioRw, UioSeg};
+use crate::sys::uio::UioRw;
 use crate::sys::vnode::IO_UNIT;
+use crate::sys::vnode::vn_rdwr;
 use hal::vm::param::{round_page, trunc_page};
 use kernel::vm::map::{uvm_map, uvm_map_immutable, uvm_map_protect};
 use kernel::vm::types::{
@@ -279,12 +281,13 @@ pub fn vmcmd_map_readvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
         Some(ExecFile::Vnode(vp)) => vn_rdwr(
             UioRw::UIO_READ,
             vp,
-            cmd.ev_addr as *mut core::ffi::c_void,
-            cmd.ev_len,
+            RdwrBuf::User {
+                addr: cmd.ev_addr,
+                len: cmd.ev_len,
+            },
             cmd.ev_offset as i64,
-            UioSeg::UIO_USERSPACE,
             IO_UNIT,
-            p.ucred_ptr(),
+            Cred::from_raw(p.ucred_ptr()),
             None,
             Some(p),
         )?,

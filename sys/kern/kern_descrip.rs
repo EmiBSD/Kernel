@@ -110,7 +110,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::link::{Link, PtrWord};
 use kernel::api::{FdEntries, SysResult};
-use kernel::file::{FileGlue, FileTables, LockOwner};
+use kernel::file::{FileGlue, FileTables};
 
 pub use kernel::descrip::{
     dupfdopen, fd_checkclosed, fd_getfile, fd_getfile_flags, fd_iterfile, fdalloc, fdcopy,
@@ -123,23 +123,17 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_vnops::vn_lock;
-use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
-use crate::machine::copy::copyout;
 use crate::machine::cpu::curproc;
 #[cfg(not(test))]
 use crate::machine::intr::IPL_MPFLOOR;
 use crate::sys::errno::Errno;
 use crate::sys::eventvar::KqRef;
-use crate::sys::fcntl::Flock;
 use crate::sys::file::{File, FileRef, Fileops};
 use crate::sys::filedesc::FdGuard;
-use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
 use crate::sys::socketvar::{SS_DNS, Socket};
-use crate::sys::stat::Stat;
 use crate::sys::syscall::{
     SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl, SYS_flock, SYS_fpathconf,
     SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev,
@@ -151,9 +145,8 @@ use crate::sys::syscallargs::{
     SysFlockArgs, SysFpathconfArgs, SysFstatArgs,
 };
 use crate::sys::systm::{SysArgs, sysargs};
-use crate::sys::types::{Dev, Off, Register, minor};
-use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
-use crate::sys::vnode::{vref, vrele};
+use crate::sys::types::{Dev, Register, minor};
+use crate::sys::vnode::Vnode;
 
 /// `f_data`: what a `bsd` file is open on.
 pub enum BsdFileData {
@@ -217,34 +210,14 @@ pub fn file_tables() -> &'static FileTables<BsdFileGlue> {
     }
 }
 
-/// The vnode of a vnode file's object.
-fn vnode_of(d: &BsdFileData) -> &'static Vnode {
-    match d {
-        BsdFileData::Vnode(v) => match v.get() {
-            Some(vp) => vp,
-            None => crate::kern::subr_prf::panic(format_args!("vnode file: no vnode")),
-        },
-        _ => crate::kern::subr_prf::panic(format_args!("not a vnode file")),
-    }
-}
-
-/// A record lock owner as `VOP_ADVLOCK`'s `id` (compared, never followed).
-fn owner_id(owner: LockOwner) -> *const core::ffi::c_void {
-    match owner {
-        LockOwner::Table(a) | LockOwner::File(a) => core::ptr::without_provenance(a),
-    }
-}
-
 impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
     type Data = BsdFileData;
-    type Stat = Stat;
-    type Vnode = Vnode;
     type FileList = FileListLink;
     type VnodeG = crate::sys::vnode::VnodeG;
-    type Componentname = crate::sys::namei::Componentname;
-    type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
+    /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
+    type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -256,53 +229,6 @@ impl FileGlue for BsdFileGlue {
 
     fn tablefull(tab: &str) {
         tablefull(tab);
-    }
-
-    fn stall_wait() {
-        let _ = VFS_TABLES.stall_lock.enter(hal::rwlock::RW_READ);
-        VFS_TABLES.stall_lock.exit();
-    }
-
-    fn vref(v: &'static Vnode) {
-        vref(v);
-    }
-
-    fn vrele(v: &'static Vnode) {
-        vrele(v);
-    }
-
-    fn advlock(
-        d: &BsdFileData,
-        owner: LockOwner,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        VOP_ADVLOCK(vnode_of(d), owner_id(owner), op, fl, flags)
-    }
-
-    fn pathconf(d: &BsdFileData, name: i32) -> Result<Register, Errno> {
-        let vp = vnode_of(d);
-        let mut retval: Register = 0;
-        let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_PATHCONF(vp, name, &mut retval);
-        let _ = VOP_UNLOCK(vp);
-        error.map(|()| retval)
-    }
-
-    fn isatty(d: &BsdFileData) -> bool {
-        vnode_of(d).flag() & VISTTY != 0
-    }
-
-    fn position_check(d: &BsdFileData, offset: Off) -> Result<(), Errno> {
-        let vp = vnode_of(d);
-        if vp.vtype() == VFIFO || vp.flag() & VISTTY != 0 {
-            return Err(Errno::ESPIPE);
-        }
-        if offset < 0 && vp.vtype() != VCHR {
-            return Err(Errno::EINVAL);
-        }
-        Ok(())
     }
 
     fn dns_socket(d: &BsdFileData) -> bool {
@@ -331,15 +257,6 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
-    fn vnode_revoked(d: &BsdFileData) -> bool {
-        match d {
-            BsdFileData::Vnode(v) => v
-                .get()
-                .is_some_and(|vp| vp.kind() == kernel::fs::vnode::VnodeKind::Dead),
-            _ => false,
-        }
-    }
-
     fn pipe_of(
         d: &BsdFileData,
     ) -> Option<&kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>> {
@@ -349,11 +266,9 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
-    fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
+    fn vnode_of(d: &BsdFileData) -> Option<&'static Vnode> {
         match d {
-            BsdFileData::Vnode(v) => v
-                .get()
-                .map(|vp| vp as &'static dyn kernel::vm::vnode::VnodeOps),
+            BsdFileData::Vnode(v) => v.get(),
             _ => None,
         }
     }
@@ -374,77 +289,17 @@ impl FileGlue for BsdFileGlue {
         pledge_ioctl(p, com, fp)
     }
 
-    fn stat_hide_gen(st: &mut Stat) {
-        st.st_gen = 0;
-    }
-
-    fn stat_copyout(st: &Stat, sb: usize) -> Result<(), Errno> {
-        copyout(&st.to_bytes(), sb)
-    }
-
-    fn getcwd(
-        vp: &'static Vnode,
-        path: &mut [u8],
-        bp: usize,
-        limit: i32,
-        p: &Proc,
-    ) -> Result<usize, Errno> {
-        let mut bp = bp;
-        crate::kern::vfs_getcwd::vfs_getcwd_common(
-            vp,
-            None,
-            Some((path, &mut bp)),
-            limit,
-            crate::sys::vnode::GETCWD_CHECK_ACCESS,
-            p,
-        )?;
-        Ok(bp)
-    }
     fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
         crate::kern::kern_subr::uiomove(buf, uio)
     }
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES
     }
-    fn vnode_g_init(vp: &'static Vnode) {
-        crate::kern::vfs_cache::cache_tree_init(&vp.g.v_nc_tree);
-        vp.g.v_cache_dst.init();
-    }
     fn vnode_recycle(vp: &'static Vnode) {
         vp.g.v_socket.set(None);
     }
-    fn cache_purge(vp: &'static Vnode) {
-        crate::kern::vfs_cache::cache_purge(vp);
-    }
-    fn lf_purgelocks(vp: &'static Vnode) {
-        crate::kern::vfs_lockf::lf_purgelocks(&vp.g.v_speclockf);
-    }
-    fn spec_advlock(
-        vp: &'static Vnode,
-        id: *const core::ffi::c_void,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        crate::kern::vfs_lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
-    }
-    fn abortop(cnp: &mut Self::Componentname) {
-        crate::kern::vfs_vops::abortop_putname(cnp);
-    }
     fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
         crate::kern::vfs_syscalls::dounmount(mp, flags, p)
-    }
-    fn session_ttyvp_take(p: &Proc, vp: &'static Vnode) -> bool {
-        // spec_close's hack: the session's reference to its controlling terminal's vnode.
-        let Some(s) = crate::kern::proc_glue::session_of(p.process()) else {
-            return false;
-        };
-        if s.s_ttyvp.points_to(vp) {
-            s.s_ttyvp.set(None);
-            true
-        } else {
-            false
-        }
     }
 }
 
@@ -897,7 +752,7 @@ mod tests {
     fn no_kq(_: &File, _: &Knote) -> Result<(), Errno> {
         Err(Errno::EINVAL)
     }
-    fn ok_stat(_: &File, _: &mut Stat, _: &Proc) -> Result<(), Errno> {
+    fn ok_stat(_: &File, _: &mut crate::sys::stat::Stat, _: &Proc) -> Result<(), Errno> {
         Ok(())
     }
     fn ok_close(_: &File, _: Option<&Proc>) -> Result<(), Errno> {

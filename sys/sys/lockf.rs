@@ -51,16 +51,39 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/lockf.h>`: the interface of the advisory record locks, `lf_init`, `lf_advlock` and
-//! `lf_purgelocks`, over an opaque `struct lockf_state`.
+//! `<sys/lockf.h>` for `bsd`: the interface of the advisory record locks, `lf_init`,
+//! `lf_advlock` and `lf_purgelocks`, over the slot a vnode or an inode keeps, all the
+//! kernel's (`kernel::fs::lockf`, N5.3), re-exported at the path of their users.
 //!
 //! Upstream: sys/sys/lockf.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - The header only forward-declares `struct lockf_state`; `vfs_lockf.c` defines it, so the
-//!   type and the functions live in `kern/vfs_lockf.rs` and are re-exported here.
 //! - `struct lockf_state **` (the slot a vnode or an inode keeps, `v_speclockf`, `i_lockf`)
-//!   is [`LockfStateSlot`], a `Cell` holding `Option<&'static LockfState>`.
+//!   is [`LockfSlot`], which owns the state (`kernel::fs::lockf`'s notes).
+//! - The lock's owner is a `LockOwner` (a descriptor table or a file, D-N5.3-11).
 
-pub use crate::kern::vfs_lockf::{LockfState, LockfStateSlot, lf_advlock, lf_init, lf_purgelocks};
+use crate::kern::proc_glue::BsdProcGlue;
+use crate::sys::errno::Errno;
+use crate::sys::fcntl::Flock;
+use crate::sys::types::Off;
+use kernel::file::LockOwner;
+
+pub use kernel::fs::lockf::{LockfSlot, LockfState, MAXLOCKSPERUID, lf_init};
+
+/// `lf_advlock(state, size, id, op, fl, flags)` of `bsd`'s threads.
+pub fn lf_advlock(
+    slot: &LockfSlot,
+    size: Off,
+    id: LockOwner,
+    op: i32,
+    fl: &mut Flock,
+    flags: i32,
+) -> Result<(), Errno> {
+    kernel::fs::lockf::lf_advlock::<BsdProcGlue>(slot, size, id, op, fl, flags)
+}
+
+/// `lf_purgelocks(state)` of `bsd`'s threads.
+pub fn lf_purgelocks(slot: &LockfSlot) {
+    kernel::fs::lockf::lf_purgelocks::<BsdProcGlue>(slot);
+}
 /* </CODE> */

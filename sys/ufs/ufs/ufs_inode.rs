@@ -64,10 +64,10 @@
 //! - The quota calls are `quota.rs`'s: `ufs_quota.rs`'s with feature `quota` (`option QUOTA`),
 //!   the no-quota answers of `ufs_quota_stub.c` without it.
 
-use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::sys::errno::Errno;
 use crate::sys::mount::MNT_RDONLY;
+use crate::sys::namei::cache_purge;
 use crate::sys::ucred::NOCRED;
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::PRTACTIVE;

@@ -108,8 +108,6 @@ use crate::kern::kern_time::inittodr;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
@@ -136,6 +134,7 @@ use crate::sys::mount::{
     VFS_VGET, Vfsops,
 };
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{DEV_BSHIFT, DEV_BSIZE, MAXBSIZE, btodb};
 use crate::sys::proc::Proc;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
@@ -143,6 +142,7 @@ use crate::sys::syslimits::NAME_MAX;
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Dev, Ino, Uid, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, V_SAVE, VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, VT_ISOFS,
     Vnode, iftovt,
@@ -1224,7 +1224,7 @@ mod tests {
     /// A NUL-terminated path as a "user" address (the host's copyin reads it directly).
     fn path(s: &'static [u8]) -> usize {
         assert_eq!(s.last(), Some(&0));
-        s.as_ptr() as usize
+        crate::kern::vfs_subr::tests::user_str(s).addr()
     }
 
     /// The whole contents of the file at `name`, read in small pieces.

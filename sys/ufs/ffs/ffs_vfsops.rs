@@ -85,8 +85,6 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_OPEN, VOP_UNLOCK};
 use crate::kprintf;
 use crate::machine::conf::{nblkdev, swapdev};
@@ -106,6 +104,7 @@ use crate::sys::mount::{
     MNT_WAIT, MNT_WANTRDWR, Mount, Statfs, UfsArgs, VFS_STATFS, VFS_SYNC, Vfsconf, Vfsops,
 };
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{DEV_BSIZE, MAXBSIZE, PAGE_SIZE, howmany};
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::Proc;
@@ -113,6 +112,7 @@ use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Ino, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, IGNORECLEAN, SKIPSYSTEM, V_SAVE, VBLK, VNON, VT_UFS, Vnode, WRITECLOSE,
 };
@@ -387,7 +387,7 @@ pub fn ffs_mount(
                 }
 
                 if error.is_ok() && mp.flag() & MNT_RELOAD != 0 {
-                    error = ffs_reload(mp, ndp.ni_cnd.cn_cred, p);
+                    error = ffs_reload(mp, ndp.ni_cnd.cn_cred.as_raw(), p);
                 }
                 if let Err(e) = error {
                     break 'error_1 Err(e);
@@ -2537,7 +2537,7 @@ pub(crate) mod tests {
     /// A NUL-terminated path as a "user" address (the host's copyin reads it directly).
     pub(crate) fn path(s: &'static [u8]) -> usize {
         assert_eq!(s.last(), Some(&0));
-        s.as_ptr() as usize
+        crate::kern::vfs_subr::tests::user_str(s).addr()
     }
 
     /// The whole contents of the file at `name`.

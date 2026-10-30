@@ -2565,9 +2565,6 @@ pub(crate) mod tests {
         ) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
         }
-        fn textvp_wxallowed(_pr: &crate::proc::Process<Self>) -> bool {
-            false
-        }
         /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
         fn setitimer(
             _which: i32,

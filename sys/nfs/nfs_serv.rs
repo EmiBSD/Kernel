@@ -120,17 +120,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::Ordering::Relaxed;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_prot::suser_ucred;
 use crate::kern::kern_tc::microboottime;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_freem, m_get, m_trailingspace};
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lookup::{ndinit, vfs_lookup};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
     VOP_PATHCONF, VOP_READ, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_RMDIR,
@@ -179,6 +176,7 @@ use crate::sys::namei::{
     CREATE, Componentname, DELETE, FOLLOW, HASBUF, ISSYMLINK, LOCKLEAF, LOCKPARENT, LOOKUP,
     NOCACHE, NOFOLLOW, Nameidata, NiDirp, RDONLY, RENAME, SAVESTART, WANTPARENT,
 };
+use crate::sys::namei::{ndinit, vfs_lookup};
 use crate::sys::proc::Proc;
 use crate::sys::socket::SOCK_DGRAM;
 use crate::sys::time::Timespec;
@@ -186,6 +184,7 @@ use crate::sys::types::{Dev, Mode, Off, Register, makedev};
 use crate::sys::ucred::Ucred;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     IO_NODELOCKED, IO_SYNC, VA_UTIMES_NULL, VBLK, VCHR, VDIR, VEXEC, VFIFO, VLNK, VNON, VREAD,
     VREG, VROOT, VSOCK, VTEXT, VWRITE, Vattr, Vnode, iftovt,
@@ -282,10 +281,7 @@ fn startdir_rele(nd: &mut Nameidata<'_>) {
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: gives a saved name buffer back.
 fn pnbuf_put(cnp: &mut Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
-    cnp.cn_pnbuf = ptr::null_mut();
+    drop(cnp.take_pnbuf());
 }
 
 /// `if (cn_flags & HASBUF) { pool_put(&namei_pool, cn_pnbuf); cn_flags &= ~HASBUF; }`.
@@ -300,7 +296,7 @@ fn pnbuf_put_hasbuf(cnp: &mut Componentname) {
 /// `cn_nameptr` (after `VOP_MKNOD`/`VOP_SYMLINK`): the length of that name, which the lookup
 /// consumes again (the C lets the unsigned count wrap below zero there).
 fn nfsrv_relookup_pathlen(nd: &mut Nameidata<'_>) {
-    nd.ni_pathlen = nd.ni_cnd.cn_namelen as usize;
+    nd.ni_pathlen = nd.ni_cnd.namelen() as usize;
 }
 
 /// The status of a request whose client cannot pass the reserved port check.
@@ -320,14 +316,14 @@ fn fhtovp(
 }
 
 /// `nfs_namei(ndp, fhp, len, slp, nfsd->nd_nam, &nfsd->nd_md, &nfsd->nd_dpos, retdirp, p)`.
-fn namei(
+fn namei<'a>(
     nfsd: &mut NfsrvDescript,
-    ndp: &mut Nameidata<'_>,
+    ndp: &mut Nameidata<'a>,
     fh: &Fhandle,
     len: usize,
     slp: &NfssvcSock,
     retdirp: &mut Option<&'static Vnode>,
-    p: &Proc,
+    p: &'a Proc,
 ) -> Result<(), i32> {
     *retdirp = None;
     let Some(nam) = nfsd.nd_nam else {
@@ -710,7 +706,7 @@ pub fn nfsrv_lookup(
     }
 
     let mut nd = ndinit(LOOKUP, LOCKLEAF | SAVESTART, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirattr = Vattr::new();
@@ -1371,7 +1367,7 @@ pub fn nfsrv_create(
         NiDirp::Sys(&[]),
         procp,
     );
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -1460,7 +1456,7 @@ pub fn nfsrv_create(
             nd.ni_cnd.cn_nameiop = LOOKUP;
             nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             nd.ni_cnd.cn_proc = procp;
-            nd.ni_cnd.cn_cred = cred;
+            nd.ni_cnd.cn_cred = Cred::from_raw(cred);
             if let Err(e) = vfs_lookup(&mut nd) {
                 pnbuf_put_hasbuf(&mut nd.ni_cnd);
                 nfsm_reply(nfsd, slp, mrq, e.as_i32(), 0)?;
@@ -1594,7 +1590,7 @@ pub fn nfsrv_mknod(
         NiDirp::Sys(&[]),
         procp,
     );
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -1680,7 +1676,7 @@ pub fn nfsrv_mknod(
             nd.ni_cnd.cn_nameiop = LOOKUP;
             nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             nd.ni_cnd.cn_proc = procp;
-            nd.ni_cnd.cn_cred = procp.ucred_ptr();
+            nd.ni_cnd.cn_cred = Cred::from_raw(procp.ucred_ptr());
             let r = vfs_lookup(&mut nd);
             pnbuf_put(&mut nd.ni_cnd);
             if let Err(e) = r {
@@ -1764,7 +1760,7 @@ pub fn nfsrv_remove(
     }
 
     let mut nd = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -1883,7 +1879,7 @@ pub fn nfsrv_rename(
     let saved_uid = nfsd.nd_cr.cr_uid.get();
 
     let mut fromnd = ndinit(DELETE, WANTPARENT | SAVESTART, NiDirp::Sys(&[]), procp);
-    fromnd.ni_cnd.cn_cred = cred;
+    fromnd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut fdirp = None;
     let r = namei(nfsd, &mut fromnd, &ffh, len, slp, &mut fdirp, procp);
     let mut fdirfor = Vattr::new();
@@ -1927,7 +1923,7 @@ pub fn nfsrv_rename(
         NiDirp::Sys(&[]),
         procp,
     );
-    tond.ni_cnd.cn_cred = cred;
+    tond.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut tdirp = None;
     let r = namei(nfsd, &mut tond, &tfh, len2, slp, &mut tdirp, procp);
     let mut tdirfor = Vattr::new();
@@ -2104,7 +2100,7 @@ pub fn nfsrv_link(
     let mut error = 0;
     if vp.vtype() != VDIR {
         let mut nd = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), procp);
-        nd.ni_cnd.cn_cred = cred;
+        nd.ni_cnd.cn_cred = Cred::from_raw(cred);
         let r = namei(nfsd, &mut nd, &dfh, len, slp, &mut dirp, procp);
         if let Some(d) = dirp {
             if v3 {
@@ -2217,7 +2213,7 @@ pub fn nfsrv_symlink(
     }
 
     let mut nd = ndinit(CREATE, LOCKPARENT | SAVESTART, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -2290,7 +2286,7 @@ pub fn nfsrv_symlink(
                 nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART | FOLLOW);
                 nd.ni_cnd.cn_flags |= NOFOLLOW | LOCKLEAF;
                 nd.ni_cnd.cn_proc = procp;
-                nd.ni_cnd.cn_cred = cred;
+                nd.ni_cnd.cn_cred = Cred::from_raw(cred);
                 error = status_of(&vfs_lookup(&mut nd));
                 if error == 0 {
                     let vp = ni_vp(&nd);
@@ -2384,7 +2380,7 @@ pub fn nfsrv_mkdir(
     }
 
     let mut nd = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -2504,7 +2500,7 @@ pub fn nfsrv_rmdir(
     }
 
     let mut nd = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = cred;
+    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
     let mut dirp = None;
     let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
@@ -3814,12 +3810,12 @@ mod tests {
         use crate::kern::kern_descrip::sys_close;
         use crate::kern::sys_generic::sys_write;
         use crate::kern::uipc_mbuf::tests::mbinit_again;
-        use crate::kern::vfs_lookup::namei;
         use crate::kern::vfs_subr::tests::exports::{args, sin};
         use crate::kern::vfs_syscalls::{sys_mkdir, sys_mount, sys_open};
         use crate::nfs::nfsproto::NFSV3CREATE_EXCLUSIVE;
         use crate::sys::fcntl::{O_CREAT, O_RDWR};
         use crate::sys::mount::{MNT_EXPORTED, MNT_UPDATE, UfsArgs};
+        use crate::sys::namei::namei;
         use crate::ufs::ffs::ffs_vfsops::tests::{
             mount_root, newfs, path, read_file, setup, sys, teardown, unmount_root,
         };

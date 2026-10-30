@@ -20,6 +20,8 @@
 //! The constant headers of OpenBSD `sys/sys/` that name nothing of `bsd` (the kernel's `errno.h`, `types.h`, `syscall.h`, ...).
 
 #[forbid(unsafe_code)]
+pub mod dirent;
+#[forbid(unsafe_code)]
 pub mod endian;
 #[forbid(unsafe_code)]
 pub mod errno;
@@ -64,6 +66,8 @@ pub mod siginfo;
 pub mod signal;
 #[forbid(unsafe_code)]
 pub mod softintr;
+#[forbid(unsafe_code)]
+pub mod stat;
 #[forbid(unsafe_code)]
 pub mod syscall;
 #[forbid(unsafe_code)]

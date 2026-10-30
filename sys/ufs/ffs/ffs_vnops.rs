@@ -70,7 +70,6 @@ use core::ptr::{self, NonNull};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
@@ -91,6 +90,7 @@ use crate::sys::systm::INFSLP;
 #[cfg(feature = "diagnostic")]
 use crate::sys::uio::UioRw;
 use crate::sys::vnode::VN_KNOTE;
+use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VREG, VopFsyncArgs, VopReadArgs,
     VopReclaimArgs, VopWriteArgs, Vops, cred_ref,
@@ -427,7 +427,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         error = UFS_UPDATE(ip, 1);
     }
     // correct the result for writes clamped by vn_fsizechk()
-    uio.uio_resid = (uio.uio_resid as isize + overrun) as usize;
+    uio.uio_resid += overrun;
     error
 }
 

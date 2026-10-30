@@ -106,19 +106,14 @@
 //!   feature here. The `DIAGNOSTIC` `HASBUF` checks are behind feature `diagnostic`.
 
 use core::mem::offset_of;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_prot::{groupmember, suser_ucred};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lookup::vfs_relookup;
-use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_STRATEGY, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bwrite, vop_generic_revoke};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -162,6 +157,8 @@ use crate::sys::mount::{
     MNT_NOATIME, MNT_RDONLY, MNT_WAIT, MSDOSFSMNT_LONGNAME, MSDOSFSMNT_NOWIN95,
     MSDOSFSMNT_SHORTNAME, Mount,
 };
+use crate::sys::namei::cache_purge;
+use crate::sys::namei::vfs_relookup;
 use crate::sys::namei::{Componentname, ISDOTDOT, LOCKLEAF, LOCKPARENT, MODMASK, SAVESTART};
 use crate::sys::param::MAXBSIZE;
 use crate::sys::proc::Proc;
@@ -186,6 +183,7 @@ use crate::sys::vnode::{
     Vops, cred_ref,
 };
 use crate::sys::vnode::{vaccess, vflushbuf, vput, vrele};
+use crate::sys::vnode::{vn_fsizechk, vn_lock};
 
 /// `sizeof(struct direntry)`.
 const DIRENTRY_SIZE: u32 = Direntry::SIZE as u32;
@@ -327,16 +325,14 @@ fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
     }
 }
 
-/// `cnp->cn_proc`, `None` when the component name has no thread.
-fn cn_proc(cnp: &Componentname) -> Option<&Proc> {
-    (!cnp.cn_proc.is_null()).then(|| cnp.proc())
+/// `cnp->cn_proc` (a componentname always has its thread).
+fn cn_proc<'a>(cnp: &Componentname<'a>) -> Option<&'a Proc> {
+    Some(cnp.proc())
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
@@ -365,7 +361,7 @@ unsafe fn bdata(bp: &Buf) -> &mut [u8] {
 /// On entry the directory to contain the file being created is locked; it stays locked. The
 /// pathname buffer is freed always on error, or only if the `SAVESTART` bit in `cn_flags` is
 /// clear on success.
-pub fn msdosfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let pdep = vtode(ap.a_dvp);
 
@@ -428,7 +424,7 @@ pub fn msdosfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `msdosfs_mknod` (`vop_mknod`): DOS file systems have no special files.
-pub fn msdosfs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
     pnbuf_free(ap.a_cnp);
     VN_KNOTE(ap.a_dvp, NOTE_WRITE);
     Err(Errno::EINVAL)
@@ -1002,7 +998,7 @@ pub fn msdosfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     };
 
     // out: correct the result for writes clamped by vn_fsizechk()
-    uio.uio_resid = (uio.uio_resid as isize + overrun) as usize;
+    uio.uio_resid += overrun;
     error
 }
 
@@ -1023,7 +1019,7 @@ pub fn msdosfs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `msdosfs_remove` (`vop_remove`): remove the entry of a file that is not a directory.
-pub fn msdosfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     let dep = vtode(ap.a_vp);
     let ddep = vtode(ap.a_dvp);
 
@@ -1042,7 +1038,7 @@ pub fn msdosfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
 /// `msdosfs_link` (`vop_link`): DOS filesystems don't know what links are. But since we
 /// already called `msdosfs_lookup()` with create and lockparent, the parent is locked so we
 /// have to free it before we return the error.
-pub fn msdosfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EOPNOTSUPP)
@@ -1119,7 +1115,7 @@ fn rename_abortit(
 /// On entry: source's parent directory is unlocked; source file or directory is unlocked;
 /// destination's parent directory is locked; destination file or directory is locked if it
 /// exists. On exit: all denodes should be released.
-pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let mut tvp = ap.a_tvp;
     let tdvp = ap.a_tdvp;
     let a_fvp = ap.a_fvp;
@@ -1162,7 +1158,7 @@ pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     // missing, and "cd .." doesn't work if the ".." entry is missing.
     if ip.de_Attributes.get() & ATTR_DIRECTORY != 0 {
         // Avoid ".", "..", and aliases of "." for obvious reasons.
-        if (fcnp.cn_namelen == 1 && fcnp.name().first() == Some(&b'.'))
+        if (fcnp.namelen() == 1 && fcnp.name().first() == Some(&b'.'))
             || ptr::eq(dp, ip)
             || fcnp.cn_flags & ISDOTDOT != 0
             || tcnp.cn_flags & ISDOTDOT != 0
@@ -1188,7 +1184,7 @@ pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     // everything below the source directory. Also the user must have write permission in the
     // source so as to be able to change "..". We must repeat the call to namei, as the parent
     // directory is unlocked by the call to doscheckpath().
-    let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
+    let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
     let _ = VOP_UNLOCK(fvp);
     if vtode(fdvp).de_StartCluster.get() != vtode(tdvp).de_StartCluster.get() {
         newparent = true;
@@ -1438,7 +1434,7 @@ pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
 
 /// `msdosfs_mkdir` (`vop_mkdir`): make a directory: a cluster with its "." and ".." entries,
 /// and its entry in the parent, which is released (`vput`) in all cases.
-pub fn msdosfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let pdep = vtode(ap.a_dvp);
     let pmp = pdep.pmp();
@@ -1557,7 +1553,7 @@ pub fn msdosfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `msdosfs_rmdir` (`vop_rmdir`): remove an empty directory; both vnodes are released.
-pub fn msdosfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let dvp = ap.a_dvp;
     let cnp = &*ap.a_cnp;
@@ -1589,7 +1585,7 @@ pub fn msdosfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
         vput(dvp);
         dvp_held = false;
         // Truncate the directory that is being deleted.
-        let error = detrunc(ip, 0, IO_SYNC, cnp.cn_cred, cn_proc(cnp));
+        let error = detrunc(ip, 0, IO_SYNC, cnp.cn_cred.as_raw(), cn_proc(cnp));
         cache_purge(vp);
         error
     };
@@ -1603,7 +1599,7 @@ pub fn msdosfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `msdosfs_symlink` (`vop_symlink`): DOS filesystems don't know what symlinks are.
-pub fn msdosfs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EOPNOTSUPP)
@@ -2164,11 +2160,11 @@ mod tests {
     use std::{assert, assert_eq, assert_ne};
 
     use super::*;
+    use crate::sys::vnode::RdwrBuf;
+    use kernel::fs::vops::Cred;
 
     use crate::kern::vfs_init::set_rootvnode;
-    use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_syscalls::{domkdirat, dorenameat, dounlinkat};
-    use crate::kern::vfs_vnops::{vn_close, vn_open, vn_rdwr};
     use crate::kern::vfs_vops::{
         VOP_GETATTR, VOP_KQFILTER, VOP_PATHCONF, VOP_READDIR, VOP_SETATTR,
     };
@@ -2178,10 +2174,12 @@ mod tests {
     use crate::sys::fcntl::{AT_FDCWD, AT_REMOVEDIR, FREAD, FWRITE, O_CREAT};
     use crate::sys::lock::LK_RECURSEFAIL;
     use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
+    use crate::sys::namei::{namei, ndinit};
     use crate::sys::time::Timespec;
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::vnode::Vattr;
     use crate::sys::vnode::{vattr_null, vref};
+    use crate::sys::vnode::{vn_close, vn_open, vn_rdwr};
 
     /// The long-named file of the smoke image, and its DOS name.
     const FATNAME: &[u8] = b"m10c-fat.txt";
@@ -2231,10 +2229,8 @@ mod tests {
     }
 
     /// A user-space path for the `do*at` functions: the bytes and a NUL.
-    fn c(path: &str) -> Vec<u8> {
-        let mut v = path.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn c(path: &str) -> crate::kern::vfs_subr::tests::UserStr {
+        crate::kern::vfs_subr::tests::user_str(path.as_bytes())
     }
 
     /// `open(path, O_RDWR | O_CREAT, mode)`: the vnode, unlocked and referenced.
@@ -2248,7 +2244,7 @@ mod tests {
 
     /// `close` of a vnode `create` gave.
     fn close(p: &'static Proc, vp: &'static Vnode) {
-        vn_close(vp, FREAD | FWRITE, p.ucred(), Some(p)).expect("close");
+        vn_close(vp, FREAD | FWRITE, Cred::real(p.ucred()), Some(p)).expect("close");
     }
 
     /// The vnode `path` names, unlocked and referenced.
@@ -2282,12 +2278,10 @@ mod tests {
         vn_rdwr(
             rw,
             vp,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
+            RdwrBuf::Kernel(&mut buf[..]),
             off,
-            UioSeg::UIO_SYSSPACE,
             0,
-            p.ucred(),
+            Cred::real(p.ucred()),
             Some(&mut resid),
             procp,
         )
@@ -2571,19 +2565,17 @@ mod tests {
 
         // directories cannot be written
         let root = lookup(p, b"/").expect("root");
-        let mut b = [0u8; 4];
+        let b = [0u8; 4];
         assert_eq!(
             vn_rdwr(
                 UioRw::UIO_WRITE,
                 root,
-                b.as_mut_ptr().cast(),
-                4,
+                RdwrBuf::KernelRead(&b[..4]),
                 0,
-                UioSeg::UIO_SYSSPACE,
                 0,
-                p.ucred(),
+                Cred::real(p.ucred()),
                 None,
-                Some(p),
+                Some(p)
             ),
             Err(Errno::EISDIR)
         );

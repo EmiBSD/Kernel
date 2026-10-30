@@ -106,9 +106,10 @@
 //! - `nfs_lookup` leaks the vnode of a name cache hit when it cannot relock the directory,
 //!   as the C does; the C's `#if 0` `vprint` in `nfs_flush` stays a comment.
 
+use crate::sys::namei::cn_ucred;
 use core::ffi::c_void;
 use core::mem::offset_of;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
@@ -118,12 +119,7 @@ use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::{getnanotime, gettime};
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BWRITE, VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR,
     VOP_STRATEGY, VOP_UNLOCK,
@@ -179,6 +175,7 @@ use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_ATTRIB, NOTE_DELETE, NOTE_LINK, NOTE_TRUNCATE, NOTE_WRITE};
 use crate::sys::fcntl::{FREAD, FWRITE, O_EXCL};
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY, LK_RWFLAGS};
+use crate::sys::lockf::lf_advlock;
 use crate::sys::malloc::{M_NFSREQ, M_TEMP, M_WAITOK, M_ZERO};
 use crate::sys::mount::{
     MNT_RDONLY, MNT_WAIT, NFSMNT_GOTFSINFO, NFSMNT_HASWRITEVERF, NFSMNT_INT, NFSMNT_NFSV3,
@@ -190,6 +187,7 @@ use crate::sys::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY,
     NAMECACHE_MAXLEN, PDIRUNLOCK, RENAME, SAVENAME, WANTPARENT,
 };
+use crate::sys::namei::{cache_enter, cache_lookup, cache_purge};
 use crate::sys::param::{DEV_BSIZE, MAXPATHLEN, PAGE_SIZE, PCATCH, btodb};
 use crate::sys::proc::Proc;
 use crate::sys::specdev::{
@@ -207,6 +205,7 @@ use crate::sys::unistd::{
     _PC_NAME_MAX, _PC_NO_TRUNC, _PC_REC_INCR_XFER_SIZE, _PC_REC_MAX_XFER_SIZE,
     _PC_REC_MIN_XFER_SIZE, _PC_REC_XFER_ALIGN, _PC_SYMLINK_MAX, _PC_TIMESTAMP_RESOLUTION,
 };
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     V_SAVE, VA_EXCLUSIVE, VBAD, VBLK, VCHR, VDIR, VEXEC, VFIFO, VLNK, VN_KNOTE, VNOVAL, VREAD,
     VREG, VSOCK, VWRITE, Vattr, Vnode, VopAccessArgs, VopAdvlockArgs, VopBmapArgs, VopBwriteArgs,
@@ -364,6 +363,11 @@ impl<'b> NfsDirPack<'b> {
     /// The slot of the name of the record begun (`len` bytes at the cursor).
     fn name_slot(&mut self, len: usize) -> &mut [u8] {
         &mut self.buf[self.pos..self.pos + len]
+    }
+
+    /// The `len` bytes of a name packed at `off` (a record's `d_name`).
+    fn name_at(&self, off: usize, len: usize) -> &[u8] {
+        &self.buf[off..off + len]
     }
 
     /// The name of `len` bytes is in place: NUL-terminate it and skip to the end of the
@@ -550,19 +554,15 @@ fn nfs_proc(p: Option<&Proc>) -> &Proc {
     }
 }
 
-/// `cnp->cn_proc`, `None` when the component name has no thread. Not tied to the borrow of
+/// `cnp->cn_proc` (a componentname always has its thread). Not tied to the borrow of
 /// `cnp`, whose flags the operations keep changing while the thread is in use.
-fn cn_proc<'a>(cnp: &Componentname) -> Option<&'a Proc> {
-    // SAFETY: `cn_proc` is NULL or the thread doing the lookup (`ndinitat`), which outlives
-    // the vnode operation it is handed to.
-    unsafe { cnp.cn_proc.as_ref() }
+fn cn_proc<'a>(cnp: &Componentname<'a>) -> Option<&'a Proc> {
+    Some(cnp.proc())
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `vp->v_mount->mnt_flag`.
@@ -596,7 +596,7 @@ fn vput_or_vrele(vp: &'static Vnode, dvp: &'static Vnode) {
 /// `nfs_cache_enter(dvp, vp, cnp)`: enter a name in the cache, remembering in the node the
 /// change time (positive entry) or the directory's modification time (negative entry) it
 /// was entered at.
-pub fn nfs_cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Componentname) {
+pub fn nfs_cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, name: &[u8]) {
     match vp {
         Some(vp) => {
             let np = VTONFS(vp);
@@ -610,7 +610,7 @@ pub fn nfs_cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Co
         }
     }
 
-    cache_enter(dvp, vp, cnp);
+    cache_enter(dvp, vp, name);
 }
 
 /// Whether the access cache of `np` holds an entry for `uid` younger than `timeo` seconds at
@@ -1146,7 +1146,7 @@ fn vmount(vp: &Vnode) -> &'static crate::sys::mount::Mount {
 
 /// `nfs_lookup` (`vop_lookup`): nfs lookup call, one step at a time... First look in cache.
 /// If not found, unlock the directory nfsnode and do the rpc.
-pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let mut dvp = ap.a_dvp;
     let vpp = &mut *ap.a_vpp;
@@ -1198,7 +1198,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                 cnp.cn_flags &= !PDIRUNLOCK;
             }
 
-            if let Err(err2) = VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc()) {
+            if let Err(err2) = VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc()) {
                 if let Some(hvp) = hitvp {
                     vput_or_vrele(hvp, dvp);
                 }
@@ -1208,7 +1208,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
             match hitvp {
                 None => {
-                    if VOP_GETATTR(dvp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
+                    if VOP_GETATTR(dvp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
                         && vattr.va_mtime.tv_sec == VTONFS(dvp).n_ctime.get()
                     {
                         return Err(Errno::ENOENT);
@@ -1218,7 +1218,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                     // goto dorpc
                 }
                 Some(newvp) => {
-                    if VOP_GETATTR(newvp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
+                    if VOP_GETATTR(newvp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
                         && vattr.va_ctime.tv_sec == VTONFS(newvp).n_ctime.get()
                     {
                         NFSSTATS.lookupcache_hits.fetch_add(1, Ordering::Relaxed);
@@ -1253,7 +1253,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         if let Err(e) = nfs_request(dvp, NFSPROC_LOOKUP, &mut info) {
             if v3 {
                 nfsm_try!('nfsmout, nfsm_postop_attr(&mut info, &mut dvp, &mut attrflag));
@@ -1374,7 +1374,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             cnp.cn_flags |= SAVENAME;
         }
         if cnp.cn_flags & MAKEENTRY != 0 && (cnp.cn_nameiop != DELETE || flags & ISLASTCN == 0) {
-            nfs_cache_enter(dvp, Some(nvp), cnp);
+            nfs_cache_enter(dvp, Some(nvp), cnp.name());
         }
 
         *vpp = Some(nvp);
@@ -1387,7 +1387,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         // We get here only because of errors returned by the RPC. Otherwise we'd already
         // have returned.
         if e == Errno::ENOENT && cnp.cn_flags & MAKEENTRY != 0 && cnp.cn_nameiop != CREATE {
-            nfs_cache_enter(dvp, None, cnp);
+            nfs_cache_enter(dvp, None, cnp.name());
         }
         if let Some(nvp) = newvp {
             vput_or_vrele(nvp, dvp);
@@ -1803,13 +1803,19 @@ pub fn nfs_mknodrpc(
 
         assert_cn_curproc(cnp);
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         let mut error = nfs_request(dvp, NFSPROC_MKNOD, &mut info);
         if error.is_ok() {
             nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
             if gotvp == 0 {
                 let mut np = None;
-                error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
+                error = nfs_lookitup(
+                    dvp,
+                    cnp.name(),
+                    cnp.cn_cred.as_raw(),
+                    cn_proc(cnp),
+                    Some(&mut np),
+                );
                 if error.is_ok() {
                     newvp = np.map(NFSTOV);
                 }
@@ -1829,7 +1835,7 @@ pub fn nfs_mknodrpc(
         }
     } else {
         if cnp.cn_flags & MAKEENTRY != 0 {
-            nfs_cache_enter(dvp, newvp, cnp);
+            nfs_cache_enter(dvp, newvp, cnp.name());
         }
         *vpp = newvp;
     }
@@ -1842,7 +1848,7 @@ pub fn nfs_mknodrpc(
 }
 
 /// `nfs_mknod` (`vop_mknod`): nfs mknod vop. Just call `nfs_mknodrpc()` to do the work.
-pub fn nfs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
     let mut newvp = None;
 
     let error = nfs_mknodrpc(ap.a_dvp, &mut newvp, ap.a_cnp, ap.a_vap);
@@ -1858,7 +1864,7 @@ pub fn nfs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `nfs_create` (`vop_create`): nfs file create call.
-pub fn nfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vap = &mut *ap.a_vap;
     let cnp = &mut *ap.a_cnp;
@@ -1917,13 +1923,19 @@ pub fn nfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 
             assert_cn_curproc(cnp);
             info.nmi_procp = cn_proc(cnp);
-            info.nmi_cred = cnp.cn_cred;
+            info.nmi_cred = cnp.cn_cred.as_raw();
             let mut error = nfs_request(dvp, NFSPROC_CREATE, &mut info);
             if error.is_ok() {
                 nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
                 if gotvp == 0 {
                     let mut np = None;
-                    error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
+                    error = nfs_lookitup(
+                        dvp,
+                        cnp.name(),
+                        cnp.cn_cred.as_raw(),
+                        cn_proc(cnp),
+                        Some(&mut np),
+                    );
                     if error.is_ok() {
                         newvp = np.map(NFSTOV);
                     }
@@ -1954,14 +1966,14 @@ pub fn nfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
                 vap.va_mtime = ts;
             }
             if let Some(nvp) = newvp {
-                error = nfs_setattrrpc(nvp, vap, cnp.cn_cred, cn_proc(cnp));
+                error = nfs_setattrrpc(nvp, vap, cnp.cn_cred.as_raw(), cn_proc(cnp));
             }
         }
         break;
     }
     if error.is_ok() {
         if cnp.cn_flags & MAKEENTRY != 0 {
-            nfs_cache_enter(dvp, newvp, cnp);
+            nfs_cache_enter(dvp, newvp, cnp.name());
         }
         *ap.a_vpp = newvp;
     }
@@ -1980,7 +1992,7 @@ pub fn nfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 /// - If `v_usecount > 1`: if a rename is not already in the works, call `nfs_sillyrename()`
 ///   to set it up;
 /// - else do the remove rpc.
-pub fn nfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let dvp = ap.a_dvp;
     let cnp = &mut *ap.a_cnp;
@@ -2000,7 +2012,7 @@ pub fn nfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
         Err(Errno::EPERM)
     } else if vp.usecount() == 1
         || (np.n_sillyrename.get().is_some()
-            && VOP_GETATTR(vp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
+            && VOP_GETATTR(vp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
             && vattr.va_nlink > 1)
     {
         // Purge the name cache so that the chance of a lookup for the name succeeding while
@@ -2009,10 +2021,10 @@ pub fn nfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
         // the file..
         cache_purge(vp);
         // throw away biocache buffers, mainly to avoid unnecessary delayed writes later.
-        let mut error = nfs_vinvalbuf(vp, 0, cnp.cn_cred, cn_proc(cnp));
+        let mut error = nfs_vinvalbuf(vp, 0, cnp.cn_cred.as_raw(), cn_proc(cnp));
         // Do the rpc
         if error != Err(Errno::EINTR) {
-            error = nfs_removerpc(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp));
+            error = nfs_removerpc(dvp, cnp.name(), cnp.cn_cred.as_raw(), cn_proc(cnp));
         }
         // Kludge City: If the first reply to the remove rpc is lost.. the reply to the
         // retransmitted request will be ENOENT since the file was in fact removed. Therefore,
@@ -2101,7 +2113,7 @@ fn same_mount(a: &Vnode, b: &Vnode) -> bool {
 }
 
 /// `nfs_rename` (`vop_rename`): nfs file rename call.
-pub fn nfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let fvp = ap.a_fvp;
     let mut tvp = ap.a_tvp;
     let fdvp = ap.a_fdvp;
@@ -2137,7 +2149,7 @@ pub fn nfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
             fcnp.name(),
             tdvp,
             tcnp.name(),
-            tcnp.cn_cred,
+            tcnp.cn_cred.as_raw(),
             cn_proc(tcnp),
         );
 
@@ -2183,7 +2195,7 @@ pub fn nfs_renameit(
         scnp.name(),
         sdvp,
         &sp.s_name[..sp.s_namlen as usize],
-        scnp.cn_cred,
+        scnp.cn_cred.as_raw(),
         curproc(),
     )
 }
@@ -2242,7 +2254,7 @@ pub fn nfs_renamerpc(
 }
 
 /// `nfs_link` (`vop_link`): nfs hard link create call.
-pub fn nfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let mut vp = ap.a_vp;
     let mut dvp = ap.a_dvp;
     let cnp = &mut *ap.a_cnp;
@@ -2261,7 +2273,7 @@ pub fn nfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
 
     // Push all writes to the server, so that the attribute cache doesn't get "out of sync"
     // with the server. XXX There should be a better way!
-    let _ = VOP_FSYNC(vp, cnp.cn_cred, MNT_WAIT, cnp.proc());
+    let _ = VOP_FSYNC(vp, cnp.cn_cred.as_raw(), MNT_WAIT, cnp.proc());
 
     NFSSTATS.rpccnt[NFSPROC_LINK].fetch_add(1, Ordering::Relaxed);
     let req = nfsm_reqhead(2 * nfsx_fh(v3) + NFSX_UNSIGNED + nfsm_rndup(cnp.name().len()));
@@ -2273,7 +2285,7 @@ pub fn nfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         let error = nfs_request(vp, NFSPROC_LINK, &mut info);
         if v3 {
             nfsm_try!('nfsmout, nfsm_postop_attr(&mut info, &mut vp, &mut attrflag));
@@ -2301,7 +2313,7 @@ pub fn nfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `nfs_symlink` (`vop_symlink`): nfs symbolic link create call.
-pub fn nfs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let mut dvp = ap.a_dvp;
     let vap = &*ap.a_vap;
     let cnp = &mut *ap.a_cnp;
@@ -2344,7 +2356,7 @@ pub fn nfs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
         }
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         let error = nfs_request(dvp, NFSPROC_SYMLINK, &mut info);
         if v3 {
             if error.is_ok() {
@@ -2371,7 +2383,7 @@ pub fn nfs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `nfs_mkdir` (`vop_mkdir`): nfs make dir call.
-pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
     let mut dvp = ap.a_dvp;
     let vap = &*ap.a_vap;
     let cnp = &mut *ap.a_cnp;
@@ -2406,7 +2418,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
         }
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         let error = nfs_request(dvp, NFSPROC_MKDIR, &mut info);
         if error.is_ok() {
             nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
@@ -2426,7 +2438,13 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 
     if error.is_ok() && newvp.is_none() {
         let mut np = None;
-        error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
+        error = nfs_lookitup(
+            dvp,
+            cnp.name(),
+            cnp.cn_cred.as_raw(),
+            cn_proc(cnp),
+            Some(&mut np),
+        );
         if error.is_ok()
             && let Some(np) = np
         {
@@ -2444,7 +2462,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
     } else {
         VN_KNOTE(dvp, NOTE_WRITE | NOTE_LINK);
         if cnp.cn_flags & MAKEENTRY != 0 {
-            nfs_cache_enter(dvp, newvp, cnp);
+            nfs_cache_enter(dvp, newvp, cnp.name());
         }
         *ap.a_vpp = newvp;
     }
@@ -2454,7 +2472,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `nfs_rmdir` (`vop_rmdir`): nfs remove directory call.
-pub fn nfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
+pub fn nfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let mut dvp = ap.a_dvp;
     let cnp = &mut *ap.a_cnp;
@@ -2472,7 +2490,7 @@ pub fn nfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred;
+        info.nmi_cred = cnp.cn_cred.as_raw();
         let error = nfs_request(dvp, NFSPROC_RMDIR, &mut info);
         if info.nmi_v3 {
             nfsm_try!('nfsmout, nfsm_wcc_data(&mut info, &mut dvp, &mut wccflag));
@@ -2871,7 +2889,7 @@ pub fn nfs_readdirplusrpc(
     uiop: &mut Uio<'_>,
     cred: *const Ucred,
     end_of_directory: &mut bool,
-    p: Option<&Proc>,
+    _p: Option<&Proc>,
 ) -> Result<(), Errno> {
     let mut wvp = vp;
     let nmp = vfstonfs_vp(vp);
@@ -2885,10 +2903,10 @@ pub fn nfs_readdirplusrpc(
     if uiop.uio_iovcnt() != 1 || uiop.uio_resid & (NFS_DIRBLKSIZ as usize - 1) != 0 {
         panic(format_args!("nfs readdirplusrpc bad uio"));
     }
-    // NDINIT(ndp, 0, 0, UIO_SYSSPACE, NULL, p); ndp->ni_dvp = vp: the component name the
-    // entries are entered in the name cache with.
-    let mut cn = Componentname::new();
-    cn.cn_proc = p.map_or(ptr::null(), ptr::from_ref);
+    // NDINIT(ndp, 0, 0, UIO_SYSSPACE, NULL, p); ndp->ni_dvp = vp: the entries are entered in
+    // the name cache under the name just packed (`cnp->cn_nameptr`, `cn_namelen`: its offset
+    // in the buffer and its length).
+    let mut cn_name = (0usize, 0usize);
     let ni_dvp = vp;
 
     let mut cookie = txdr_hyper(uiop.uio_offset as u64);
@@ -2952,9 +2970,8 @@ pub fn nfs_readdirplusrpc(
                 let len = len as usize;
                 bigenough = pack.begin(fileno, len);
                 if bigenough {
+                    cn_name = (pack.pos, len);
                     let slot = pack.name_slot(len);
-                    cn.cn_nameptr = slot.as_ptr();
-                    cn.cn_namelen = len as i64;
                     nfsm_try!('nfsmout, nfsm_mtobuf(&mut info, slot));
                     pack.end_name(len);
                 } else {
@@ -3008,10 +3025,10 @@ pub fn nfs_readdirplusrpc(
                         info.nmi_dpos = dpossav2;
                         info.nmi_md = mdsav2;
                         pack.set_type(iftodt(vttoif(np.n_vattr.get().va_type)));
-                        if cn.cn_namelen as usize <= NAMECACHE_MAXLEN {
+                        if cn_name.1 <= NAMECACHE_MAXLEN {
                             // ndp->ni_vp = newvp
                             cache_purge(ni_dvp);
-                            nfs_cache_enter(ni_dvp, newvp, &cn);
+                            nfs_cache_enter(ni_dvp, newvp, pack.name_at(cn_name.0, cn_name.1));
                         }
                     }
                 } else {
@@ -3095,7 +3112,7 @@ pub fn nfs_sillyrename(
         s_namlen: 0,
         s_name: [0; 24],
     };
-    sp.s_cred.set(crdup(cnp.cred()));
+    sp.s_cred.set(crdup(cn_ucred(cnp)));
     vref(dvp);
 
     let error = 'bad: {

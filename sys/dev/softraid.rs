@@ -147,7 +147,6 @@ use crate::kern::subr_disk::{
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
 use crate::kern::subr_xxx::blktochr;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_IOCTL, VOP_OPEN, VOP_STRATEGY};
 use crate::machine::copy::copyin;
 use crate::machine::cpu::curproc;
@@ -201,6 +200,7 @@ use crate::sys::task::SYSTQ;
 use crate::sys::time::{msec_to_nsec, sec_to_nsec};
 use crate::sys::types::{Daddr, Dev, major};
 use crate::sys::ucred::NOCRED;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{bdevvp, cdevvp, vput};
 
 /// `SR_META_NOTCLAIMED`.

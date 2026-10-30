@@ -91,6 +91,11 @@
 //!   until the next `VNDIOCSET` overwrites it; no path reads it in between).
 //! - `vndbdevsize` has no `d_ioctl == NULL` test: a Rust `fn` is never NULL; an empty
 //!   `bdevsw` slot answers `ENODEV`, which gives the same 0.
+//! - `vndstrategy`'s transfer is [`vnd_rdwr`]: `vn_rdwr` of `b_data`, built here over the
+//!   buffer's address as LZ's `vn_rdwr` built its uio (N5.3: the kernel's `vn_rdwr` takes a
+//!   slice, and a driver names a lent buffer, physio's window included, by its address
+//!   until N7 gives it the token's view); the transfer is `vn_rdwr`'s own. N7 removes
+//!   `vnd_rdwr` with vnd's redesign (lineage.toml's note).
 //! - `VNDDEBUG`'s `DNPRINTF` tracing is not configured (it is off in GENERIC); the
 //!   `DIAGNOSTIC` "sloppy" message is behind the `diagnostic` feature.
 
@@ -112,9 +117,7 @@ use crate::kern::subr_disk::{
     disk_lock_nointr, disk_openpart, disk_unlock, dkcksum, initdisklabel, setdisklabel,
 };
 use crate::kern::subr_prf::{panic, printf, snprintf};
-use crate::kern::vfs_lookup::ndinit;
-use crate::kern::vfs_vnops::{vn_close, vn_open, vn_rdwr};
-use crate::kern::vfs_vops::{VOP_GETATTR, VOP_UNLOCK};
+use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::conf::bdevsw;
 use crate::machine::copy::{copyin, copyinstr};
 use crate::machine::cpu::curproc;
@@ -135,14 +138,19 @@ use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::ioctl::{ioctl_arg, ioctl_ret};
 use crate::sys::limits::UINT_MAX;
+use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_TEMP, M_WAITOK, M_ZERO};
+use crate::sys::namei::ndinit;
 use crate::sys::namei::{NiDirp, UNVEIL_READ, UNVEIL_WRITE};
 use crate::sys::param::{DEV_BSIZE, dbtob};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Dev, Off, major};
-use crate::sys::ucred::{CredRef, CredSlot};
-use crate::sys::uio::{Uio, UioRw, UioSeg};
-use crate::sys::vnode::{IO_NOCACHE, IO_NOLIMIT, IO_SYNC, VBLK, Vattr, Vnode};
+use crate::sys::ucred::{CredRef, CredSlot, Ucred};
+use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::sys::vnode::{IO_NOCACHE, IO_NODELOCKED, IO_NOLIMIT, IO_SYNC, VBLK, Vattr, Vnode};
+use crate::sys::vnode::{RdwrBuf, vn_close, vn_lock, vn_open, vn_rdwr};
+use hal::malloc::MArray;
+use kernel::fs::vops::Cred;
 
 /// `NVND`: vnd(4) units (`pseudo-device vnd 4` in GENERIC).
 pub const NVND: i32 = 4;
@@ -476,16 +484,15 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
     };
     let mut resid = bp.resid();
     let error = match sc.sc_vp.get() {
-        Some(vp) => vn_rdwr(
+        Some(vp) => vnd_rdwr(
             rw,
             vp,
             bp.data_ptr().cast::<c_void>(),
             usize::try_from(bp.bcount()).unwrap_or(0),
             off,
-            UioSeg::UIO_SYSSPACE,
             IO_NOCACHE | IO_SYNC | IO_NOLIMIT,
             sc.sc_cred.get(),
-            Some(&mut resid),
+            &mut resid,
             curproc(),
         ),
         // VNF_HAVELABEL is only set on a configured unit, which has its vnode.
@@ -501,6 +508,49 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
     if sc.sc_keyctx.get().is_some() {
         vndencryptbuf(sc, bp, false);
     }
+}
+
+/// `vn_rdwr(rw, vp, bp->b_data, bp->b_bcount, off, UIO_SYSSPACE, ioflg, cred, &resid, p)`
+/// of the strategy routine, over the buffer's address (the module's deviations): `rw` of the
+/// `len` bytes at `base` at `off`, the vnode locked around the operation unless
+/// `IO_NODELOCKED`, the bytes not moved in `aresid`.
+#[allow(clippy::too_many_arguments, reason = "vn_rdwr's signature")]
+fn vnd_rdwr(
+    rw: UioRw,
+    vp: &'static Vnode,
+    base: *mut c_void,
+    len: usize,
+    off: Off,
+    ioflg: i32,
+    cred: *const Ucred,
+    aresid: &mut usize,
+    p: Option<&Proc>,
+) -> Result<(), Errno> {
+    let mut aiov = [Iovec {
+        iov_base: base,
+        iov_len: len,
+    }];
+    let mut auio = Uio {
+        uio_iov: &mut aiov,
+        uio_offset: off,
+        uio_resid: len,
+        uio_segflg: UioSeg::UIO_SYSSPACE,
+        uio_rw: rw,
+        uio_procp: p,
+    };
+    if ioflg & IO_NODELOCKED == 0 {
+        let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
+    }
+    let error = if rw == UioRw::UIO_READ {
+        VOP_READ(vp, &mut auio, ioflg, cred)
+    } else {
+        VOP_WRITE(vp, &mut auio, ioflg, cred)
+    };
+    if ioflg & IO_NODELOCKED == 0 {
+        let _ = VOP_UNLOCK(vp);
+    }
+    *aresid = auio.uio_resid;
+    error
 }
 
 /// `vndread`: the raw device's read, straight into the user's buffer (physio(9)).
@@ -840,7 +890,7 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
     if vplocked {
         let _ = VOP_UNLOCK(vp);
     }
-    let _ = vn_close(vp, rw, p.ucred_ptr(), Some(p));
+    let _ = vn_close(vp, rw, Cred::from_raw(p.ucred_ptr()), Some(p));
     // crfree(cred): the unit's reference, never placed, goes.
     drop(cred);
     Err(error)
@@ -858,7 +908,7 @@ fn copyout_label(lp: &Disklabel, addr: &mut [u8]) {
 /// directly to the mapped file (NFS).
 pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<CredRef, Errno> {
     let new = crdup(p.ucred());
-    let Some(buf) = malloc(DEV_BSIZE, M_TEMP, M_WAITOK) else {
+    let Some(mut buf) = MArray::new(M_TEMP, M_WAITOK, DEV_BSIZE, |_| 0u8) else {
         panic(format_args!("vndsetcred: out of memory"));
     };
 
@@ -866,17 +916,15 @@ pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<CredR
     let error = vn_rdwr(
         UioRw::UIO_READ,
         vp,
-        buf.as_ptr().cast::<c_void>(),
-        DEV_BSIZE,
+        RdwrBuf::Kernel(&mut buf[..]),
         0,
-        UioSeg::UIO_SYSSPACE,
         0,
-        CredRef::as_ptr(&new),
+        Cred::from_raw(CredRef::as_ptr(&new)),
         None,
         curproc(),
     );
 
-    free(buf, M_TEMP, DEV_BSIZE);
+    drop(buf);
     match error {
         Ok(()) => Ok(new),
         Err(e) => {
@@ -897,7 +945,7 @@ pub fn vndclear(sc: &VndSoftc) {
     let _ = vn_close(
         vp,
         vndrw(sc),
-        cred.as_ref().map_or(ptr::null(), CredRef::as_ptr),
+        Cred::from_raw(cred.as_ref().map_or(ptr::null(), CredRef::as_ptr)),
         p,
     );
     // crfree(cred): the unit's reference goes.

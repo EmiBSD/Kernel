@@ -500,7 +500,6 @@ mod tests {
     use super::*;
     use crate::kern::kern_descrip::fnew;
     use crate::kern::kern_event::tests::install;
-    use crate::kern::vfs_lookup::ndinit;
     use crate::kern::vfs_vops::{
         VOP_GETATTR, VOP_LOOKUP, VOP_OPEN, VOP_READ, VOP_READDIR, VOP_SETATTR, VOP_UNLOCK,
         VOP_WRITE,
@@ -519,11 +518,13 @@ mod tests {
         abi_bytes, fuse_dirent_size,
     };
     use crate::sys::mount::VFS_ROOT;
+    use crate::sys::namei::ndinit;
     use crate::sys::namei::{Componentname, ISLASTCN, LOCKPARENT, LOOKUP, NiDirp};
     use crate::sys::types::{Dev, Off};
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::VREG;
     use crate::sys::vnode::{cdevvp, vattr_null, vfs_mount_alloc, vfs_unbusy, vput};
+    use kernel::fs::vops::Cred;
 
     /// The file's initial contents.
     const HELLO: &[u8] = b"hello, world\n";
@@ -730,21 +731,16 @@ mod tests {
         let fp = fnew(p).expect("a file");
         fp.install(
             DTYPE_VNODE,
-            &crate::kern::vfs_vnops::VNOPS,
+            &crate::sys::vnode::VNOPS,
             crate::kern::kern_descrip::BsdFileData::Vnode(hal::link::Link::to(vp)),
         );
         install(p, fd, &fp);
     }
 
     /// A component name for `name`, with the thread's credentials and no pathname buffer.
-    fn cn(p: &'static Proc, name: &'static [u8], flags: u64) -> Componentname {
-        let mut cnp = Componentname::new();
-        cnp.cn_nameiop = LOOKUP;
-        cnp.cn_flags = flags;
-        cnp.cn_proc = p;
-        cnp.cn_cred = p.ucred();
-        cnp.cn_nameptr = name.as_ptr();
-        cnp.cn_namelen = name.len() as i64;
+    fn cn(p: &'static Proc, name: &'static [u8], flags: u64) -> Componentname<'static> {
+        let mut cnp = Componentname::new(LOOKUP, flags, p, Cred::real(p.ucred()));
+        cnp.set_name_lit(name);
         cnp
     }
 

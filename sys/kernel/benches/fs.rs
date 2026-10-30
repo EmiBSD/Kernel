@@ -47,13 +47,55 @@
 //! - `vfinddev.hit`: `vfinddev` of a device vnode on its chain.
 //! - `prim.vnode-mtx`: `vnode_mtx` taken and left.
 //! - `prim.vnode-lists`: the free lists' lock taken and left.
+//!
+//! N5.3's rows (`kernel::fs::{lookup, cache, lockf, getcwd, vnops}`), the op names and the
+//! file system of `sys/benches/fs.rs` (`/a/b/c` and `/f`, `ufs_lookup`'s protocol over the
+//! name cache, a lock word per node), mounted as root after the rows above, over the test
+//! glue and a thread of its own:
+//! - `namei.hit.1`, `namei.hit.3`: `namei("/a")`, `namei("/a/b/c")` with the names cached,
+//!   and the `vrele`.
+//! - `namei.miss.1`: `namei("/a", NOCACHE | FOLLOW)`.
+//! - `cache.lookup.hit`: `cache_lookup` of `a` in the locked root (`LOCKPARENT | ISLASTCN`)
+//!   and the `vput`.
+//! - `cache.enter.zap`: `cache_enter` of a name not cached in a full cache.
+//! - `lf.setlk.unlck`: `lf_advlock` `F_SETLK` and `F_UNLCK` of one owner's write lock.
+//! - `getcwd.cached`: `vfs_getcwd_common` of `/a/b/c` through the reverse cache.
+//! - `vn_open.close`: `vn_open("/f", FREAD)`, the unlock, `vn_close`.
+//! - `prim.namecache-mtx`: the name cache's lock (D-N5.3-2's leaf) taken and left.
+//!
+//! Since N5.3 the bench registers `proc.rs`'s recycling pool backend before the doubles (as
+//! `vm.rs` and `proc.rs` do): the doubles' pool hands out a fresh zeroed page per item and
+//! never takes one back, which timed the host's `malloc` and `memset` (a `namei`'s path
+//! buffer, a name cache entry, a lock), not the kernel; LZ's bench (`sys/benches/fs.rs`)
+//! gets its items from `pool(9)`'s free lists. `getnewvnode.recycle`'s figure moves with it.
 
 #![forbid(unsafe_code)]
 
+use core::ptr::NonNull;
+use std::boxed::Box;
 use std::hint::black_box;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use hal::sys::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock};
+use hal::sys::unistd::SEEK_SET;
+use kernel::file::LockOwner;
+use kernel::fs::cache::{NCLOCK, cache_counts, cache_enter, cache_lookup, nchinit};
+use kernel::fs::getcwd::vfs_getcwd_common;
+use kernel::fs::lockf::{LockfSlot, lf_advlock};
+use kernel::fs::lookup::{namei, ndinit};
+use kernel::fs::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_unbusy};
+use kernel::fs::namei::{
+    CREATE, Componentname, FOLLOW, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, MAXPATHLEN,
+    NOCACHE, NiDirp, PDIRUNLOCK, RENAME,
+};
+use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
+use kernel::fs::vnops::{vn_close, vn_open};
+use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
+
+use hal::pool::{PoolBackend, RawPool};
 use hal::rwlock::RecursiveRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::types::makedev;
@@ -71,6 +113,132 @@ const REPS: usize = 7;
 const ROUNDS: usize = 200;
 /// Ops per timed batch.
 const BATCH: usize = 100;
+
+// ---------------------------------------------------------------------------------------
+// A pool backend that recycles its items (proc.rs's, itself vm.rs's), registered before the
+// doubles: the doubles' pool hands out a fresh zeroed page per item and never takes one back.
+
+/// A page of the host.
+const PAGE: usize = 4096;
+
+/// A free list of items of one size, as addresses (the provenance exposed when they were
+/// carved or given back).
+struct FreeList {
+    stride: usize,
+    free: Mutex<Vec<usize>>,
+}
+
+impl FreeList {
+    const fn new(stride: usize) -> Self {
+        Self {
+            stride,
+            free: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Vec<usize>> {
+        self.free
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// An item: one given back, or a fresh slab carved into items.
+    fn get(&self) -> Option<NonNull<u8>> {
+        let mut free = self.lock();
+        if free.is_empty() {
+            let per = (64 * 1024 / self.stride).max(1);
+            let mut rest: &'static mut [u8] = fresh(per * self.stride);
+            while rest.len() >= self.stride {
+                let (item, tail) = rest.split_at_mut(self.stride);
+                free.push(
+                    NonNull::from(item)
+                        .cast::<u8>()
+                        .as_ptr()
+                        .expose_provenance(),
+                );
+                rest = tail;
+            }
+        }
+        let addr = free.pop()?;
+        NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        self.lock().push(item.as_ptr().expose_provenance());
+    }
+}
+
+/// `len` bytes of fresh, zeroed, page-aligned memory, leaked.
+fn fresh(len: usize) -> &'static mut [u8] {
+    // A byte block one page longer, cut at its first page boundary.
+    let block: &'static mut [u8] = vec![0u8; len + PAGE].leak();
+    let skip = block.as_ptr().addr().next_multiple_of(PAGE) - block.as_ptr().addr();
+    let (_, tail) = block.split_at_mut(skip);
+    let (run, _) = tail.split_at_mut(len);
+    run
+}
+
+/// One pool of the recycling double.
+struct BenchPool {
+    items: FreeList,
+    size: usize,
+    nout: AtomicU64,
+}
+
+impl RawPool for BenchPool {
+    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let p = self.items.get()?;
+        self.nout.fetch_add(1, Ordering::Relaxed);
+        Some((p, self.size))
+    }
+
+    fn put(&self, item: NonNull<u8>) {
+        self.nout.fetch_sub(1, Ordering::Relaxed);
+        self.items.put(item);
+    }
+
+    fn nout(&self) -> u64 {
+        self.nout.load(Ordering::Relaxed)
+    }
+
+    fn size(&self) -> usize {
+        self.size
+    }
+
+    fn set_hiwat(&self, _n: u32) {}
+
+    fn cache_init(&self) {}
+}
+
+/// The recycling pool backend.
+struct BenchPools;
+
+impl PoolBackend for BenchPools {
+    fn create(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        _wchan: &'static str,
+    ) -> Option<&'static dyn RawPool> {
+        if align > PAGE {
+            return None;
+        }
+        let size = size.max(1);
+        let stride = size.next_multiple_of(align.max(16));
+        Some(Box::leak(Box::new(BenchPool {
+            items: FreeList::new(stride),
+            size,
+            nout: AtomicU64::new(0),
+        })))
+    }
+}
+
+static BENCH_POOLS: BenchPools = BenchPools;
+
+// ---------------------------------------------------------------------------------------
+// The file systems of the bench.
 
 /// The bench file system's node lock (every bench vnode's: one is locked at a time).
 static NODE_LOCK: RecursiveRwlock = RecursiveRwlock::new("benchnode");
@@ -129,6 +297,333 @@ impl Vnops<TestGlue> for BenchVops {
     }
 }
 
+/// `/`, `/a`, `/a/b`, `/a/b/c` (directories) and `/f` (a file) of the names bench's file
+/// system.
+const NROOT: usize = 0;
+/// `/a/b/c`.
+const NC: usize = 3;
+/// `/f`.
+const NF: usize = 4;
+/// The names bench's nodes.
+const NN: usize = 5;
+/// Each node's name and parent.
+const NNODES: [(&[u8], usize); NN] = [(b"/", 0), (b"a", 0), (b"b", 1), (b"c", 2), (b"f", 0)];
+
+/// Each node's vnode, once made (the "inode hash").
+static NVREFS: Mutex<[Option<&'static Vnode<TestGlue>>; NN]> = Mutex::new([None; NN]);
+/// Each node's lock: 1 while held.
+static NLOCKED: [AtomicU32; NN] = [const { AtomicU32::new(0) }; NN];
+/// The names bench's mount.
+static NMP: Mutex<Option<&'static Mount<TestGlue>>> = Mutex::new(None);
+
+/// The node a names bench vnode stands for (`v_data` is its index plus one).
+fn nnode(vp: &Vnode<TestGlue>) -> usize {
+    (vp.data().addr()).wrapping_sub(1)
+}
+
+/// The vnode of node `idx`, referenced and locked (`VFS_VGET`).
+fn nvget(mp: &'static Mount<TestGlue>, idx: usize) -> Result<&'static Vnode<TestGlue>, Errno> {
+    if let Some(vp) = NVREFS.lock().ok().and_then(|t| t[idx]) {
+        vget(vp, LK_EXCLUSIVE)?;
+        return Ok(vp);
+    }
+    let vp = getnewvnode(VT_TMPFS, Some(mp), &NAMES_VOPS)?;
+    vp.set_vtype(if idx == NF { VREG } else { VDIR });
+    vp.set_data(core::ptr::without_provenance_mut(idx + 1));
+    if idx == NROOT {
+        vp.set_flag(VROOT);
+    }
+    vn_lock(vp, LK_EXCLUSIVE)?;
+    if let Ok(mut t) = NVREFS.lock() {
+        t[idx] = Some(vp);
+    }
+    Ok(vp)
+}
+
+/// The names bench's vnode operations: a lock word per node, `ufs_lookup`'s protocol over
+/// the name cache, the attributes `getcwd` and `vn_open` ask (a field, so the table has an
+/// address of its own).
+struct NamesVops {
+    _id: u8,
+}
+
+static NAMES_VOPS: NamesVops = NamesVops { _id: 3 };
+
+impl Vnops<TestGlue> for NamesVops {
+    fn lock(&self, vp: &'static Vnode<TestGlue>, flags: i32) -> Result<(), Errno> {
+        let l = &NLOCKED[nnode(vp)];
+        if l.load(Ordering::Relaxed) != 0 {
+            if flags & LK_NOWAIT != 0 {
+                return Err(Errno::EBUSY);
+            }
+            panic!("namesfs: node {} locked twice", nnode(vp));
+        }
+        l.store(1, Ordering::Relaxed);
+        Ok(())
+    }
+    fn unlock(&self, vp: &'static Vnode<TestGlue>) -> Result<(), Errno> {
+        NLOCKED[nnode(vp)].store(0, Ordering::Relaxed);
+        Ok(())
+    }
+    fn islocked(&self, vp: &'static Vnode<TestGlue>) -> i32 {
+        NLOCKED[nnode(vp)].load(Ordering::Relaxed) as i32
+    }
+    fn inactive(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        _p: Option<&Thread<TestGlue>>,
+    ) -> Result<(), Errno> {
+        let _ = vop_unlock(vp);
+        Ok(())
+    }
+    fn reclaim(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _p: Option<&Thread<TestGlue>>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn lookup(
+        &self,
+        dvp: &'static Vnode<TestGlue>,
+        vpp: &mut Option<&'static Vnode<TestGlue>>,
+        cnp: &mut Componentname<'_, TestGlue>,
+    ) -> Result<(), Errno> {
+        *vpp = None;
+        if dvp.vtype() != VDIR {
+            return Err(Errno::ENOTDIR);
+        }
+        let lockparent = cnp.cn_flags & LOCKPARENT != 0;
+        let islast = cnp.cn_flags & ISLASTCN != 0;
+        if let Some(vp) = cache_lookup(dvp, cnp)? {
+            *vpp = Some(vp);
+            return Ok(());
+        }
+        let dir = nnode(dvp);
+        let name = cnp.name();
+        let found = if name == b"." {
+            Some(dir)
+        } else if cnp.cn_flags & ISDOTDOT != 0 {
+            Some(NNODES[dir].1)
+        } else {
+            (1..NN).find(|&i| NNODES[i].1 == dir && NNODES[i].0 == name)
+        };
+        let Some(idx) = found else {
+            if (cnp.cn_nameiop == CREATE || cnp.cn_nameiop == RENAME) && islast {
+                return Err(Errno::EJUSTRETURN);
+            }
+            return Err(Errno::ENOENT);
+        };
+        let Some(mp) = NMP.lock().ok().and_then(|m| *m) else {
+            return Err(Errno::ENOENT);
+        };
+        let vp = if idx == dir {
+            vref(dvp);
+            dvp
+        } else if cnp.cn_flags & ISDOTDOT != 0 {
+            let _ = vop_unlock(dvp);
+            cnp.cn_flags |= PDIRUNLOCK;
+            let vp = nvget(mp, idx)?;
+            if lockparent && islast {
+                vn_lock(dvp, LK_EXCLUSIVE)?;
+                cnp.cn_flags &= !PDIRUNLOCK;
+            }
+            vp
+        } else {
+            let vp = nvget(mp, idx)?;
+            if !lockparent || !islast {
+                let _ = vop_unlock(dvp);
+                cnp.cn_flags |= PDIRUNLOCK;
+            }
+            vp
+        };
+        if cnp.cn_flags & MAKEENTRY != 0 {
+            cache_enter(dvp, Some(vp), cnp.name());
+        }
+        *vpp = Some(vp);
+        Ok(())
+    }
+    fn getattr(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        vap: &mut Vattr,
+        _cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        *vap = Vattr::new();
+        vap.va_type = vp.vtype();
+        vap.va_mode = 0o755;
+        vap.va_nlink = 1;
+        vap.va_fsid = 98;
+        vap.va_fileid = 100 + nnode(vp) as u64;
+        vap.va_size = 512;
+        vap.va_blocksize = 512;
+        Ok(())
+    }
+    fn access(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _mode: i32,
+        _cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn open(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _mode: i32,
+        _cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn close(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _fflag: i32,
+        _cred: Cred<'_>,
+        _p: Option<&Thread<TestGlue>>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn print(&self, _vp: &'static Vnode<TestGlue>) -> Result<(), Errno> {
+        Ok(())
+    }
+}
+
+/// The names bench's file system operations: the root and the inode lookup.
+struct NamesFs;
+
+static NAMES_FS: NamesFs = NamesFs;
+
+impl Vfs<TestGlue> for NamesFs {
+    fn mount(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _path: &[u8],
+        _data: &mut [u8],
+        _ndp: &mut Nd<'_, TestGlue>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn start(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _f: i32,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn unmount(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _f: i32,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn root(&self, mp: &'static Mount<TestGlue>) -> Result<&'static Vnode<TestGlue>, Errno> {
+        nvget(mp, NROOT)
+    }
+    fn quotactl(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _cmds: i32,
+        _uid: hal::sys::types::Uid,
+        _arg: usize,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn statfs(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _sbp: &mut hal::sys::mount::Statfs,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn sync(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _waitfor: i32,
+        _stall: i32,
+        _cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn vget(
+        &self,
+        mp: &'static Mount<TestGlue>,
+        ino: hal::sys::types::Ino,
+    ) -> Result<&'static Vnode<TestGlue>, Errno> {
+        nvget(mp, ino as usize)
+    }
+    fn fhtovp(
+        &self,
+        _mp: &'static Mount<TestGlue>,
+        _fid: &hal::sys::mount::Fid,
+    ) -> Result<&'static Vnode<TestGlue>, Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    fn vptofh(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _fid: &mut hal::sys::mount::Fid,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+}
+
+/// The names bench's configured type.
+static NAMES_CONF: Vfsconf<TestGlue> =
+    Vfsconf::new(&NAMES_FS, b"namesfs", 98, hal::sys::mount::MNT_LOCAL, 0);
+
+/// The names bench's file system as root, and a thread of a process of its own with
+/// credentials and a descriptor table whose current directory is that root (what
+/// `testfs::test_thread` makes for its own file system).
+fn names_root() -> &'static Thread<TestGlue> {
+    let mp = vfs_mount_alloc(None, &NAMES_CONF);
+    vfs_unbusy(mp);
+    if let Ok(mut m) = NMP.lock() {
+        *m = Some(mp);
+    }
+    mountlist_insert_tail(mp);
+    mp.flag_set(hal::sys::mount::MNT_ROOTFS);
+    let root = need(VFS_ROOT(mp), "VFS_ROOT");
+    kernel::fs::init::set_rootvnode(Some(root));
+    vref(root);
+    let _ = vop_unlock(root);
+    kernel::proc::procinit::<TestGlue>(64, 64);
+    let _ = kernel::descrip::filedesc_init::<kernel::fs::testfs::TestFiles>();
+    kernel::testutil::set_test_maxfiles(4096);
+    let pr = kernel::proc::process_alloc::<TestGlue>(1, ());
+    drop(pr.set_ucred(kernel::cred::CredRef::new(kernel::cred::Ucred::new())));
+    pr.set_fd(kernel::descrip::fdinit());
+    let t = kernel::proc::thread_alloc::<TestGlue>(&pr, ());
+    drop(t.set_cred(pr.ucred()));
+    let p: &'static Thread<TestGlue> = hal::pool::PoolBox::leak(t);
+    core::mem::forget(pr);
+    vref(root);
+    p.fd().set_cdir(Some(root));
+    TestGlue::set_curproc(Some(p));
+    // The glue's record of namei's hooks is the tests', not the names'.
+    kernel::testutil::set_file_log(false);
+    p
+}
+
+/// `namei(path, op, flags)`, its vnode released (`vrele`).
+fn lookup_rele(p: &'static Thread<TestGlue>, path: &'static [u8], flags: u64) {
+    let mut nd = ndinit(LOOKUP, flags, NiDirp::Sys(path), p);
+    need(namei(&mut nd), "namei");
+    if let Some(vp) = nd.ni_vp {
+        let _ = vrele(vp);
+    }
+}
+
 /// ns per op of `REPS` samples of `f` (which runs `ROUNDS * BATCH` ops and returns the time
 /// they took): min, median, max.
 fn measure(mut f: impl FnMut() -> Duration) -> (f64, f64, f64) {
@@ -180,6 +675,15 @@ fn main() {
         "vfinddev.hit",
         "prim.vnode-mtx",
         "prim.vnode-lists",
+        "namei.hit.1",
+        "namei.hit.3",
+        "namei.miss.1",
+        "cache.lookup.hit",
+        "cache.enter.zap",
+        "lf.setlk.unlck",
+        "getcwd.cached",
+        "vn_open.close",
+        "prim.namecache-mtx",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -189,7 +693,8 @@ fn main() {
     }
     let wanted = |n: &str| args.is_empty() || args.iter().any(|a| a == n);
 
-    // The doubles, the kernel lock, the test file system mounted as root.
+    // The recycling pools, the doubles, the kernel lock, the test file system mounted as root.
+    let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
     kernel::testutil::install();
     let (_memory, mp) = setup_root();
     // A file system's vnode in use (one reference kept), unlocked.
@@ -332,6 +837,155 @@ fn main() {
             measure(|| {
                 rounds(|| {
                     let g = t.lists.lock();
+                    black_box(&g);
+                })
+            }),
+        );
+    }
+    if !names[10..].iter().any(|n| wanted(n)) {
+        return;
+    }
+
+    // N5.3's rows: the names bench's file system as root, every name cached once.
+    let p = names_root();
+    let root = need(
+        kernel::fs::init::rootvnode::<TestGlue>().ok_or(Errno::ENOENT),
+        "root",
+    );
+    lookup_rele(p, b"/a/b/c", FOLLOW);
+    lookup_rele(p, b"/f", FOLLOW);
+    let refs = NVREFS.lock().map(|t| *t).unwrap_or([None; NN]);
+    let cvp = need(refs[NC].ok_or(Errno::ENOENT), "c");
+    let fvp = need(refs[NF].ok_or(Errno::ENOENT), "f");
+    vref(cvp);
+    vref(fvp);
+    let cred = Cred::real(p.ucred());
+
+    if wanted(names[10]) {
+        report(
+            names[10],
+            measure(|| rounds(|| lookup_rele(p, black_box(b"/a"), FOLLOW))),
+        );
+    }
+    if wanted(names[11]) {
+        report(
+            names[11],
+            measure(|| rounds(|| lookup_rele(p, black_box(b"/a/b/c"), FOLLOW))),
+        );
+    }
+    if wanted(names[12]) {
+        report(
+            names[12],
+            measure(|| rounds(|| lookup_rele(p, black_box(b"/a"), NOCACHE | FOLLOW))),
+        );
+        // Cache `a` again for the rows below.
+        lookup_rele(p, b"/a", FOLLOW);
+    }
+    if wanted(names[13]) {
+        let _ = vn_lock(root, LK_EXCLUSIVE);
+        report(
+            names[13],
+            measure(|| {
+                rounds(|| {
+                    let mut cn =
+                        Componentname::new(LOOKUP, MAKEENTRY | ISLASTCN | LOCKPARENT, p, cred);
+                    cn.set_name_lit(b"a");
+                    if let Ok(Some(vp)) = cache_lookup(black_box(root), &mut cn) {
+                        vput(vp);
+                    }
+                })
+            }),
+        );
+        let _ = vop_unlock(root);
+    }
+    if wanted(names[14]) {
+        // Eight entries kept (`initialvnodes`), sixteen names entered in turn: each entry is
+        // of a name that is not cached and recycles the LRU's head.
+        let names16: Vec<Vec<u8>> = (0..16).map(|i| format!("z{i:02}").into_bytes()).collect();
+        let (cached, _) = cache_counts::<TestGlue>();
+        nchinit::<TestGlue>(cached as i32 + 8);
+        let mut i = 0;
+        report(
+            names[14],
+            measure(|| {
+                rounds(|| {
+                    let name = &names16[i % 16];
+                    i += 1;
+                    cache_enter(black_box(root), Some(fvp), name);
+                })
+            }),
+        );
+        nchinit::<TestGlue>(64);
+    }
+    if wanted(names[15]) {
+        let slot: &'static LockfSlot = Box::leak(Box::new(LockfSlot::new()));
+        let id = LockOwner::File(core::ptr::from_ref(p).addr());
+        report(
+            names[15],
+            measure(|| {
+                rounds(|| {
+                    let mut fl = Flock {
+                        l_start: 0,
+                        l_len: 100,
+                        l_pid: 0,
+                        l_type: F_WRLCK,
+                        l_whence: SEEK_SET as i16,
+                    };
+                    let _ =
+                        lf_advlock::<TestGlue>(black_box(slot), 0, id, F_SETLK, &mut fl, F_POSIX);
+                    fl.l_type = F_UNLCK;
+                    let _ =
+                        lf_advlock::<TestGlue>(slot, 0, id, i32::from(F_UNLCK), &mut fl, F_POSIX);
+                })
+            }),
+        );
+    }
+    if wanted(names[16]) {
+        // cache.enter.zap's row recycled the LRU's oldest entries (a, b and c among
+        // them) and getcwd enters no name: the path cached again.
+        lookup_rele(p, b"/a/b/c", FOLLOW);
+        let mut path = [0u8; MAXPATHLEN];
+        report(
+            names[16],
+            measure(|| {
+                rounds(|| {
+                    let mut bp = path.len() - 1;
+                    path[bp] = 0;
+                    let _ = vfs_getcwd_common(
+                        black_box(cvp),
+                        None,
+                        Some((&mut path, &mut bp)),
+                        (MAXPATHLEN / 2) as i32,
+                        GETCWD_CHECK_ACCESS,
+                        p,
+                    );
+                    black_box(bp);
+                })
+            }),
+        );
+    }
+    if wanted(names[17]) {
+        report(
+            names[17],
+            measure(|| {
+                rounds(|| {
+                    let mut nd = ndinit(0, 0, NiDirp::Sys(black_box(b"/f")), p);
+                    if vn_open(&mut nd, FREAD, 0).is_ok()
+                        && let Some(vp) = nd.ni_vp
+                    {
+                        let _ = vop_unlock(vp);
+                        let _ = vn_close(vp, FREAD, cred, Some(p));
+                    }
+                })
+            }),
+        );
+    }
+    if wanted(names[18]) {
+        report(
+            names[18],
+            measure(|| {
+                rounds(|| {
+                    let g = NCLOCK.lock();
                     black_box(&g);
                 })
             }),

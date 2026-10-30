@@ -225,6 +225,17 @@
 //!   moved in and out with its count, or uncounted for a `'static` element
 //!   ([`Member::of_static`]: the brief's `push_tail_static`), so a `LIST`/`TAILQ` holding
 //!   both pool items and a driver's embedded buffers needs no second family.
+//! - N5.3 (the name cache, the record locks): `TAILQ_INSERT_BEFORE`/`_AFTER` of a new
+//!   element at one the list owns ([`OwnedList::insert_before`], [`OwnedList::insert_after`]:
+//!   `lf_setlock`'s and `lf_split`'s locks) and `TAILQ_REMOVE` followed by an insertion of the
+//!   same element ([`OwnedList::move_to_tail`], the LRU move of a name cache hit;
+//!   [`OwnedList::move_before`], [`OwnedList::move_after`]): the element stays the list's, its
+//!   count untouched, so a secondary may index it throughout. The position (`at`) and a moved
+//!   element are given by reference, which a caller holds through a counted link
+//!   ([`SecondaryRef`]) or a secondary of another lock part, never a borrow of the list; the
+//!   list links again, and [`OwnedList::take`] now rebuilds a box from, the pointer it stored
+//!   when it linked the element (`PoolBox::into_raw`'s), never the one taken from the caller's
+//!   shared reference.
 
 use core::cmp::Ordering;
 use core::marker::PhantomData;
@@ -997,28 +1008,82 @@ impl<A: OwnedAdapter> OwnedList<A> {
     /// `TAILQ_INSERT_TAIL(e)` (`DEAD_ENTRY_PUSH`).
     pub fn push(&mut self, e: PoolBox<A::Elem>) {
         self.check("TAILQ_INSERT_TAIL");
-        let ent = entry_of::<A>(&e);
-        if ent.is_linked() || ent.indexed() != 0 {
-            hal_panic(format_args!(
-                "TAILQ_INSERT_TAIL: the element is in a container already"
-            ));
-        }
-        if self.id == 0 {
-            self.id = fresh_id();
-        }
-        let id = self.id;
-        let (p, pool) = PoolBox::into_raw(e);
+        let p = self.adopt(e, "TAILQ_INSERT_TAIL");
         let changing = Mutating(&self.poisoned);
-        // The element is this list's from here (I1): the box is consumed.
-        let ent = entry_of::<A>(self.node(p));
-        if ent.is_linked() {
-            hal_panic(format_args!(
-                "TAILQ_INSERT_TAIL: the element is in a container already"
-            ));
-        }
-        ent.owner.store(id, Mem::Relaxed);
-        ent.pool.set(Some(pool));
         self.link_tail(p);
+        core::mem::forget(changing);
+    }
+
+    /// `TAILQ_INSERT_BEFORE(at, e)`: `e`'s box linked just before `at`, an element of this
+    /// list (`lf_setlock`'s insertion of a lock before the one it overlaps).
+    pub fn insert_before(&mut self, at: &A::Elem, e: PoolBox<A::Elem>) {
+        const W: &str = "TAILQ_INSERT_BEFORE";
+        self.check(W);
+        let atp = self.stored(at, W);
+        let p = self.adopt(e, W);
+        let changing = Mutating(&self.poisoned);
+        self.link_before(p, atp, W);
+        core::mem::forget(changing);
+    }
+
+    /// `TAILQ_INSERT_AFTER(head, at, e)`: `e`'s box linked just after `at`, an element of this
+    /// list (`lf_split`'s new lock after the one it splits).
+    pub fn insert_after(&mut self, at: &A::Elem, e: PoolBox<A::Elem>) {
+        const W: &str = "TAILQ_INSERT_AFTER";
+        self.check(W);
+        let atp = self.stored(at, W);
+        let p = self.adopt(e, W);
+        let changing = Mutating(&self.poisoned);
+        self.link_after(p, atp, W);
+        core::mem::forget(changing);
+    }
+
+    /// `TAILQ_REMOVE(e)` then `TAILQ_INSERT_TAIL(e)` of an element of this list, which stays
+    /// the list's throughout: the LRU move of a name cache hit (`cache_lookup`). The element's
+    /// count is untouched, so a secondary may still link it (a directory's tree, a vnode's
+    /// reverse list). Nothing moves when `e` is the tail.
+    pub fn move_to_tail(&mut self, e: &A::Elem) {
+        const W: &str = "TAILQ_REMOVE";
+        self.check(W);
+        let x = self.stored(e, W);
+        if get(&self.tail) == Some(x) {
+            return;
+        }
+        let changing = Mutating(&self.poisoned);
+        self.unlink(x, W);
+        self.link_tail(x);
+        core::mem::forget(changing);
+    }
+
+    /// `TAILQ_REMOVE(e)` then `TAILQ_INSERT_BEFORE(at, e)` of two elements of this list (`e`
+    /// stays the list's, its count untouched): `lf_setlock` moving a lock it linked earlier.
+    /// `at` and `e` being one element is `panic`.
+    pub fn move_before(&mut self, at: &A::Elem, e: &A::Elem) {
+        const W: &str = "TAILQ_INSERT_BEFORE";
+        self.check(W);
+        let x = self.stored(e, W);
+        let atp = self.stored(at, W);
+        if x == atp {
+            hal_panic(format_args!("{W}: an element moved next to itself"));
+        }
+        let changing = Mutating(&self.poisoned);
+        self.unlink(x, W);
+        self.link_before(x, atp, W);
+        core::mem::forget(changing);
+    }
+
+    /// `TAILQ_REMOVE(e)` then `TAILQ_INSERT_AFTER(head, at, e)`, as [`OwnedList::move_before`].
+    pub fn move_after(&mut self, at: &A::Elem, e: &A::Elem) {
+        const W: &str = "TAILQ_INSERT_AFTER";
+        self.check(W);
+        let x = self.stored(e, W);
+        let atp = self.stored(at, W);
+        if x == atp {
+            hal_panic(format_args!("{W}: an element moved next to itself"));
+        }
+        let changing = Mutating(&self.poisoned);
+        self.unlink(x, W);
+        self.link_after(x, atp, W);
         core::mem::forget(changing);
     }
 
@@ -1083,26 +1148,15 @@ impl<A: OwnedAdapter> OwnedList<A> {
                 "TAILQ_REMOVE: the element is still linked from a secondary tree"
             ));
         }
+        // The pointer the list stored when it linked the element (`PoolBox::into_raw`'s): the
+        // box is rebuilt from it, never from `r`'s (taken from a shared reference).
+        let xs = self.stored(e, "TAILQ_REMOVE");
         let changing = Mutating(&self.poisoned);
         // From here the element is reached as this list's (its identity checked above, and
         // `&mut self` keeps any other change out): `r` gives its count back first.
         put(&r.to, None);
         ent.count_down();
-        let prev = get(&ent.left);
-        let next = get(&ent.right);
-        if (prev.is_none() && get(&self.head) != Some(x))
-            || (next.is_none() && get(&self.tail) != Some(x))
-        {
-            hal_panic(format_args!("TAILQ_REMOVE: the list's ends are broken"));
-        }
-        match prev {
-            Some(p) => put(&self.ent(self.node(p), "TAILQ_REMOVE").right, next),
-            None => put(&self.head, next),
-        }
-        match next {
-            Some(n) => put(&self.ent(self.node(n), "TAILQ_REMOVE").left, prev),
-            None => put(&self.tail, prev),
-        }
+        self.unlink(xs, "TAILQ_REMOVE");
         // The adapter's `entry` ran on the neighbours: looked at again with nothing run in
         // between from here to the box (as `pop`).
         if ent.indexed() != 0 {
@@ -1118,7 +1172,109 @@ impl<A: OwnedAdapter> OwnedList<A> {
                 "TAILQ_REMOVE: an owned element without its pool"
             ));
         };
-        reclaim(x, pool)
+        reclaim(xs, pool)
+    }
+
+    /// The pointer to `e` this list stored when it linked it (its predecessor's `right` link,
+    /// or the head): the one `PoolBox::into_raw` gave, with the item's whole provenance. A
+    /// move links that pointer again and a removal rebuilds the box from it, so no pointer
+    /// taken from a caller's shared reference is ever stored or turned into a box. `e` must be
+    /// this list's (I2); a stored pointer that is not `e`'s address is a broken list, `panic`.
+    fn stored(&self, e: &A::Elem, what: &str) -> NonNull<A::Elem> {
+        let ent = self.ent(e, what);
+        let p = match get(&ent.left) {
+            Some(prev) => get(&self.ent(self.node(prev), what).right),
+            None => get(&self.head),
+        };
+        match p {
+            Some(p) if p == NonNull::from(e) => p,
+            _ => hal_panic(format_args!("{what}: the list's links are broken")),
+        }
+    }
+
+    /// The element of `e`'s box made this list's (I1: the box is consumed): its entry given
+    /// the list's identity and the pool it goes back to, the pointer `PoolBox::into_raw`
+    /// gave returned, not linked yet. An element in a container already, or counted, is
+    /// refused before anything changes; one found linked once the box is consumed poisons the
+    /// list (I5), as `push` always did.
+    fn adopt(&mut self, e: PoolBox<A::Elem>, what: &str) -> NonNull<A::Elem> {
+        let ent = entry_of::<A>(&e);
+        if ent.is_linked() || ent.indexed() != 0 {
+            hal_panic(format_args!(
+                "{what}: the element is in a container already"
+            ));
+        }
+        if self.id == 0 {
+            self.id = fresh_id();
+        }
+        let id = self.id;
+        let (p, pool) = PoolBox::into_raw(e);
+        let changing = Mutating(&self.poisoned);
+        // The element is this list's from here (I1): the box is consumed.
+        let ent = entry_of::<A>(self.node(p));
+        if ent.is_linked() {
+            hal_panic(format_args!(
+                "{what}: the element is in a container already"
+            ));
+        }
+        ent.owner.store(id, Mem::Relaxed);
+        ent.pool.set(Some(pool));
+        core::mem::forget(changing);
+        p
+    }
+
+    /// Unlinks `x`, a pointer this list stored, from its neighbours (or the ends); its entry
+    /// keeps the list's identity, its pool and its count, with no links: the element is still
+    /// the list's (a move links it again, a removal clears it).
+    fn unlink(&self, x: NonNull<A::Elem>, what: &str) {
+        let ent = self.ent(self.node(x), what);
+        let prev = get(&ent.left);
+        let next = get(&ent.right);
+        if (prev.is_none() && get(&self.head) != Some(x))
+            || (next.is_none() && get(&self.tail) != Some(x))
+        {
+            hal_panic(format_args!("{what}: the list's ends are broken"));
+        }
+        match prev {
+            Some(p) => put(&self.ent(self.node(p), what).right, next),
+            None => put(&self.head, next),
+        }
+        match next {
+            Some(n) => put(&self.ent(self.node(n), what).left, prev),
+            None => put(&self.tail, prev),
+        }
+        put(&ent.left, None);
+        put(&ent.right, None);
+    }
+
+    /// Links `x`, whose entry carries this list's identity and no links, just before `at` (a
+    /// pointer this list stored).
+    fn link_before(&self, x: NonNull<A::Elem>, at: NonNull<A::Elem>, what: &str) {
+        let ent = self.ent(self.node(x), what);
+        let aent = self.ent(self.node(at), what);
+        let prev = get(&aent.left);
+        put(&ent.left, prev);
+        put(&ent.right, Some(at));
+        match prev {
+            Some(p) => put(&self.ent(self.node(p), what).right, Some(x)),
+            None => put(&self.head, Some(x)),
+        }
+        put(&aent.left, Some(x));
+    }
+
+    /// Links `x`, whose entry carries this list's identity and no links, just after `at` (a
+    /// pointer this list stored).
+    fn link_after(&self, x: NonNull<A::Elem>, at: NonNull<A::Elem>, what: &str) {
+        let ent = self.ent(self.node(x), what);
+        let aent = self.ent(self.node(at), what);
+        let next = get(&aent.right);
+        put(&ent.left, Some(at));
+        put(&ent.right, next);
+        match next {
+            Some(n) => put(&self.ent(self.node(n), what).left, Some(x)),
+            None => put(&self.tail, Some(x)),
+        }
+        put(&aent.right, Some(x));
     }
 
     /// Links `x`, whose entry carries this list's identity already, at the tail.
@@ -3459,6 +3615,134 @@ mod tests {
     fn the_list_and_its_members_are_small() {
         assert_eq!(size_of::<SecondaryList<ByFreeList>>(), 32);
         assert_eq!(size_of::<Member<ByKey>>(), 16);
+    }
+
+    /// The keys of an owned list from the head, and again from the tail backwards, which
+    /// must agree (the links both ways and the two ends).
+    fn list_keys(l: &OwnedList<ByKey>) -> Vec<u64> {
+        let fwd: Vec<u64> = l.iter().map(|n| n.key).collect();
+        let mut back = Vec::new();
+        let mut e = l.last();
+        while let Some(n) = e {
+            back.push(n.key);
+            e = l.prev(n);
+        }
+        back.reverse();
+        assert_eq!(fwd, back, "the links disagree");
+        assert_eq!(l.first().map(|n| n.key), fwd.first().copied());
+        fwd
+    }
+
+    /// A counted link to the element of `l` whose key is `k`.
+    fn hold(l: &OwnedList<ByKey>, k: u64) -> SecondaryRef<ByKey> {
+        let mut r = SecondaryRef::<ByKey>::new();
+        r.set(l.iter().find(|n| n.key == k));
+        r
+    }
+
+    #[test]
+    fn inserts_and_moves_keep_the_order_the_ends_and_the_counts() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        for k in 0..5u64 {
+            l.push(node(k, 0, &drops));
+        }
+        // Inserts at a held element (`at` borrows the hold, not the list).
+        let two = hold(&l, 2);
+        l.insert_before(two.get().unwrap(), node(10, 0, &drops));
+        assert_eq!(list_keys(&l), [0, 1, 10, 2, 3, 4]);
+        let four = hold(&l, 4);
+        l.insert_after(four.get().unwrap(), node(11, 0, &drops));
+        assert_eq!(list_keys(&l), [0, 1, 10, 2, 3, 4, 11]);
+        let zero = hold(&l, 0);
+        l.insert_before(zero.get().unwrap(), node(12, 0, &drops));
+        assert_eq!(list_keys(&l), [12, 0, 1, 10, 2, 3, 4, 11]);
+        // Moves keep the element owned and its count as it was.
+        let ten = hold(&l, 10);
+        l.move_to_tail(ten.get().unwrap());
+        assert_eq!(list_keys(&l), [12, 0, 1, 2, 3, 4, 11, 10]);
+        assert_eq!(ten.get().unwrap().link.indexed(), 1);
+        l.move_to_tail(ten.get().unwrap());
+        assert_eq!(list_keys(&l), [12, 0, 1, 2, 3, 4, 11, 10]);
+        let twelve = hold(&l, 12);
+        l.move_to_tail(twelve.get().unwrap());
+        assert_eq!(list_keys(&l), [0, 1, 2, 3, 4, 11, 10, 12]);
+        let eleven = hold(&l, 11);
+        l.move_before(zero.get().unwrap(), eleven.get().unwrap());
+        assert_eq!(list_keys(&l), [11, 0, 1, 2, 3, 4, 10, 12]);
+        l.move_after(twelve.get().unwrap(), zero.get().unwrap());
+        assert_eq!(list_keys(&l), [11, 1, 2, 3, 4, 10, 12, 0]);
+        l.move_after(two.get().unwrap(), four.get().unwrap());
+        assert_eq!(list_keys(&l), [11, 1, 2, 4, 3, 10, 12, 0]);
+        l.move_before(eleven.get().unwrap(), twelve.get().unwrap());
+        assert_eq!(list_keys(&l), [12, 11, 1, 2, 4, 3, 10, 0]);
+        // A moved element is given back from the pointer the list stored.
+        drop((two, four, zero, eleven, twelve));
+        let b = l.take(ten);
+        assert_eq!(b.key, 10);
+        assert!(!b.link.is_linked() && b.link.indexed() == 0);
+        drop(b);
+        assert_eq!(list_keys(&l), [12, 11, 1, 2, 4, 3, 0]);
+        drop(l);
+        assert_eq!(drops.load(Mem::Relaxed), 8);
+    }
+
+    #[test]
+    fn a_move_keeps_a_secondary_trees_link() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        let mut free = SecondaryTree::<ByFree>::new();
+        for k in 0..3u64 {
+            l.push(node(k, k, &drops));
+        }
+        let first = l.first().unwrap();
+        assert!(free.insert(first).is_none());
+        let r = hold(&l, 0);
+        l.move_to_tail(r.get().unwrap());
+        assert_eq!(list_keys(&l), [1, 2, 0]);
+        assert_eq!(r.get().unwrap().link.indexed(), 2);
+        assert_eq!(free.min().unwrap().key, 0);
+        free.remove(r.get().unwrap());
+        assert_eq!(r.get().unwrap().link.indexed(), 1);
+        drop(l.take(r));
+        assert_eq!(list_keys(&l), [1, 2]);
+    }
+
+    #[test]
+    #[should_panic(expected = "moved next to itself")]
+    fn a_move_next_to_itself_is_refused() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        let r = hold(&l, 1);
+        l.move_before(r.get().unwrap(), r.get().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "not on this list")]
+    fn an_insert_at_an_element_of_another_list_is_refused() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        let mut m = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        m.push(node(2, 0, &drops));
+        let r = hold(&m, 2);
+        l.insert_after(r.get().unwrap(), node(3, 0, &drops));
+    }
+
+    #[test]
+    #[should_panic(expected = "in a container already")]
+    fn an_insert_of_an_owned_box_is_refused_before_anything_changes() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut l = OwnedList::<ByKey>::new();
+        let mut m = OwnedList::<ByKey>::new();
+        l.push(node(1, 0, &drops));
+        m.push(node(2, 0, &drops));
+        let b = m.pop().unwrap();
+        // A box whose entry says linked (another list's identity forged in): refused.
+        b.link.owner.store(99, Mem::Relaxed);
+        let r = hold(&l, 1);
+        l.insert_before(r.get().unwrap(), b);
     }
 }
 /* </TESTS> */

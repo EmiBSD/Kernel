@@ -82,8 +82,9 @@
 //! - `cd9660_print` prints under `DIAGNOSTIC` or `DEBUG` (features); `VFSLCKDEBUG` is not
 //!   configured.
 
+use crate::sys::namei::pathbuf_get;
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 
 use crate::isofs::cd9660::cd9660_bmap::cd9660_bmap;
 use crate::isofs::cd9660::cd9660_extern::{
@@ -102,10 +103,8 @@ use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_BMAP, VOP_STRATEGY};
 use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
@@ -125,7 +124,6 @@ use crate::sys::file::foffset;
 use crate::sys::lock::LK_RWFLAGS;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::param::{DEV_BSHIFT, MAXPATHLEN};
-use crate::sys::pool::PR_WAITOK;
 use crate::sys::specdev::{
     spec_advlock, spec_close, spec_fsync, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf,
     spec_read, spec_strategy, spec_write,
@@ -819,29 +817,29 @@ pub fn cd9660_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
             .uio_iov
             .first()
             .is_some_and(|iov| iov.iov_len >= MAXPATHLEN);
-    let pooled: Option<NonNull<u8>> = if direct {
+    let mut pooled = if direct {
         None
     } else {
-        let Some(m) = pool_get(&NAMEI_POOL, PR_WAITOK) else {
+        let Some(m) = pathbuf_get() else {
             panic(format_args!("cd9660_readlink: no namei buffer"));
         };
         Some(m)
     };
-    let base = match pooled {
-        Some(m) => m.as_ptr(),
-        None => uio.uio_iov[0].iov_base.cast::<u8>(),
+    let symname: &mut [u8] = match pooled.as_deref_mut() {
+        Some(m) => &mut m[..],
+        None => {
+            let base = uio.uio_iov[0].iov_base.cast::<u8>();
+            // SAFETY: the first iovec of a kernel (`UIO_SYSSPACE`) uio, which points at
+            // `iov_len >= MAXPATHLEN` writable bytes for the uio's lifetime (`direct`);
+            // nothing else views them meanwhile.
+            unsafe { core::slice::from_raw_parts_mut(base, MAXPATHLEN) }
+        }
     };
-    // SAFETY: either a `namei_pool` item (`MAXPATHLEN` bytes, ours until `pool_put`), or the
-    // first iovec of a kernel (`UIO_SYSSPACE`) uio, which points at `iov_len >= MAXPATHLEN`
-    // writable bytes for the uio's lifetime; nothing else views them meanwhile.
-    let symname = unsafe { core::slice::from_raw_parts_mut(base, MAXPATHLEN) };
 
     // Ok, we just gathering a symbolic name in SL record.
     let mut symlen = 0u16;
     if cd9660_rrip_getsymname(&dirp, symname, &mut symlen, imp) == 0 {
-        if let Some(m) = pooled {
-            pool_put(&NAMEI_POOL, m);
-        }
+        drop(pooled);
         brelse(bp);
         return Err(Errno::EINVAL);
     }
@@ -850,9 +848,9 @@ pub fn cd9660_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 
     // return with the symbolic name to caller's.
     let symlen = usize::from(symlen).min(MAXPATHLEN);
-    if let Some(m) = pooled {
+    if !direct {
         let error = uiomove(&mut symname[..symlen], uio);
-        pool_put(&NAMEI_POOL, m);
+        drop(pooled);
         return error;
     }
     uio.uio_resid -= symlen;
@@ -863,14 +861,14 @@ pub fn cd9660_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 }
 
 /// `cd9660_link` (`vop_link`): read-only.
-pub fn cd9660_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn cd9660_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EROFS)
 }
 
 /// `cd9660_symlink` (`vop_symlink`): read-only.
-pub fn cd9660_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn cd9660_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EROFS)

@@ -83,9 +83,9 @@
 //!   (`&Thread<G>`), whose fields the calls read themselves (the limits, `ps_wxcounter`, the
 //!   kbind words under `ps_mtx`, `ps_libcpin`, `P_HASSIBLING`); `sigexit` is
 //!   `kernel::sig`'s and `PROC_PC` `hal::trap::proc_pc`. What is not the kernel's yet is the
-//!   glue's: `pledge_protexec` (`ProcGlue`, `kern_pledge` until N8), the text vnode's
-//!   `MNT_WXALLOWED` (`ProcGlue::textvp_wxallowed`, N5) and a vnode file's vnode
-//!   (`FileGlue::vnode_ops`). N3.5 to N4 asked all of it of the `VmProc` bridge about
+//!   glue's: `pledge_protexec` (`ProcGlue`, `kern_pledge` until N8) and a vnode file's vnode
+//!   (`FileGlue::vnode_ops`); the text vnode's `MNT_WXALLOWED` is the process's own
+//!   `textvp` since N5.3 (the C's `v_mount` test: no text vnode or no mount, not allowed). N3.5 to N4 asked all of it of the `VmProc` bridge about
 //!   `curproc`; every check stayed here, in the C's order.
 //! - `uvm_wxcheck`'s notice is `log(LOG_NOTICE, ...)`, `hal::prf::log`.
 //! - The file half of `sys_mmap` runs between `fd_getfile` and `FRELE` on the thread's
@@ -126,6 +126,7 @@ use hal::sys::mman::{
     MCL_CURRENT, MCL_FUTURE, MS_ASYNC, MS_INVALIDATE, MS_SYNC, PROT_EXEC, PROT_NONE, PROT_READ,
     PROT_WRITE,
 };
+use hal::sys::mount::MNT_WXALLOWED;
 use hal::sys::syscall::SYS_MAXSYSCALL;
 use hal::sys::types::Off;
 use hal::user::UserPtr;
@@ -334,7 +335,11 @@ fn file_vnode<G: ProcGlue>(fp: &FileRef<G::FileGlue>) -> Option<&'static dyn Vno
 /// `uvm_wxcheck`: W^X violations are only allowed on permitted filesystems.
 fn uvm_wxcheck<G: ProcGlue>(p: &Thread<G>, call: &str) -> Result<(), Errno> {
     let pr = p.process();
-    let wxallowed = G::textvp_wxallowed(pr);
+    let wxallowed = pr
+        .textvp
+        .get()
+        .and_then(crate::fs::vnode::Vnode::mount)
+        .is_some_and(|mp| mp.flag() & MNT_WXALLOWED != 0);
 
     if wxallowed && pr.ps_iflags.get() & PSI_WXNEEDED != 0 {
         return Ok(());
@@ -1430,15 +1435,31 @@ mod tests {
         let anon = MAP_ANON | MAP_PRIVATE;
         let mmap = |prot, flags| sys_mmap(p, &vm, args(0, PAGE_SIZE, prot, flags, -1, 0));
 
+        // The program's text: a vnode, on no mount first (the C's `v_mount` test), then on
+        // a mount whose `MNT_WXALLOWED` the test sets and clears.
+        let mp: &'static crate::fs::mount::Mount<_> = std::boxed::Box::leak(std::boxed::Box::new(
+            crate::fs::mount::Mount::new_unpooled(None),
+        ));
+        let tvp: &'static crate::fs::vnode::Vnode<_> =
+            std::boxed::Box::leak(std::boxed::Box::new(crate::fs::vnode::Vnode::new_unpooled()));
+        pr.ps_iflags.set(pr.ps_iflags.get() | PSI_WXNEEDED);
         testutil::set_pledge_protexec(true);
-        testutil::set_textvp_wxallowed(false);
+        assert_eq!(mmap(rwx, anon), Err(Errno::ENOTSUP), "no text vnode");
+        pr.textvp.set(Some(tvp));
+        assert_eq!(
+            mmap(rwx, anon),
+            Err(Errno::ENOTSUP),
+            "a text vnode on no mount"
+        );
+        crate::fs::subr::insmntque(tvp, Some(mp));
+        pr.ps_iflags.set(pr.ps_iflags.get() & !PSI_WXNEEDED);
         assert_eq!(mmap(rwx, anon), Err(Errno::ENOTSUP), "W^X before pledge");
         assert_eq!(
             mmap(rwx, 0x4000_0000),
             Err(Errno::ENOTSUP),
             "W^X before the flags"
         );
-        testutil::set_textvp_wxallowed(true);
+        mp.flag_set(MNT_WXALLOWED);
         assert_eq!(
             mmap(rwx, anon),
             Err(Errno::ENOTSUP),
@@ -1449,7 +1470,7 @@ mod tests {
         assert_eq!(mmap(rwx, anon), Err(Errno::EPERM), "then pledge");
         assert_eq!(mmap(rx, anon), Err(Errno::EPERM), "any PROT_EXEC");
         pr.ps_iflags.set(pr.ps_iflags.get() & !PSI_WXNEEDED);
-        testutil::set_textvp_wxallowed(false);
+        mp.flag_clr(MNT_WXALLOWED);
         let a = mmap(rw, anon).expect("no PROT_EXEC: pledge allows it");
 
         assert_eq!(

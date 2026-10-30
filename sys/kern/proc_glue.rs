@@ -138,11 +138,11 @@
 //!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
 //!   dereferenced by the legacy code as before); `ps_textvp` and `s_ttyvp` (and `s_ttyp`
 //!   until N4.7b, when it became the kernel `Session`'s counted handle and `pgrp_destroy`
-//!   went with it), whose targets the legacy code treats as `'static`, are
-//!   `hal::link::Link`s, read without
-//!   `unsafe`; the plain members are atomic words with LZ's `get()`/`set()` ([`ItimerWord`],
-//!   [`IsizeWord`]), so every value is `Send` and `Sync` without a premise, as a pooled
-//!   kernel object requires.
+//!   went with it), whose targets the legacy code treats as `'static`, were
+//!   `hal::link::Link`s, read without `unsafe`, until N5.3 made them the kernel's
+//!   (`Process::textvp`, `Session::ttyvp`); the plain members are atomic words with LZ's
+//!   `get()`/`set()` ([`ItimerWord`], [`IsizeWord`]), so every value is `Send` and `Sync`
+//!   without a premise, as a pooled kernel object requires.
 //! - N4.5b: `ps_sigacts`, `p_sigstk` and `p_sigval` are `kernel::proc`'s own members
 //!   (`kernel::sig`); the glue gives the signals `exit1`, the core dump and the machine's
 //!   `sendsig`, `signotify`, `PROC_STACK` and `TCB_GET`.
@@ -189,8 +189,8 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
 use crate::sys::types::{Pid, Register};
+use crate::sys::vnode::REVOKEALL;
 use crate::sys::vnode::vrele;
-use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
 pub use kernel::sig::{SigaltstackWord, SigvalWord};
@@ -250,10 +250,9 @@ impl IsizeWord {
     }
 }
 
-/// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them.
+/// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them
+/// (`ps_textvp` is the kernel's `Process::textvp` since N5.3).
 pub struct BsdProcessG {
-    /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
-    pub ps_textvp: Link<Vnode>,
     /// \[m\] `ps_realit_to`: `ITIMER_REAL` timeout.
     pub ps_realit_to: Timeout,
     /// \[m\] `ps_timer[ITIMER_REAL]`, \[T\] `ps_timer[ITIMER_VIRTUAL, ITIMER_PROF]`.
@@ -273,7 +272,6 @@ impl BsdProcessG {
     /// The members of a new process.
     pub const fn new() -> Self {
         Self {
-            ps_textvp: Link::new(),
             ps_realit_to: Timeout::zeroed(),
             ps_timer: [const { ItimerWord::new() }; 3],
             ps_uvpaths: PtrWord::new(),
@@ -329,11 +327,9 @@ impl Default for BsdPgrpG {
     }
 }
 
-/// The members of `struct session` of `bsd`'s subsystems.
+/// The members of `struct session` of `bsd`'s subsystems (`s_ttyvp` is the kernel's
+/// `Session::ttyvp` since N5.3).
 pub struct BsdSessionG {
-    /// `s_ttyvp`: vnode of controlling terminal, holding a use count (`vref` in `vn_ioctl`'s
-    /// `TIOCSCTTY`).
-    pub s_ttyvp: Link<Vnode>,
     /// `s_verauthto`.
     pub s_verauthto: Timeout,
 }
@@ -342,7 +338,6 @@ impl BsdSessionG {
     /// No terminal.
     pub const fn new() -> Self {
         Self {
-            s_ttyvp: Link::new(),
             s_verauthto: Timeout::zeroed(),
         }
     }
@@ -552,17 +547,16 @@ impl ProcGlue for BsdProcGlue {
     /// count dropped. `s_ttyp` is not zeroed: it says the session once had a controlling
     /// terminal (for logging and informational purposes).
     fn session_hangup(sp: &Session) {
-        if sp.s_ttyvp.get().is_none() {
+        if sp.ttyvp.get().is_none() {
             return;
         }
         if kernel::tty::session_hangup_tty(sp) {
             // The tty could have been revoked if we blocked.
-            if let Some(vp) = sp.s_ttyvp.get() {
+            if let Some(vp) = sp.ttyvp.get() {
                 let _ = VOP_REVOKE(vp, REVOKEALL);
             }
         }
-        let ovp = sp.s_ttyvp.get();
-        sp.s_ttyvp.set(None);
+        let ovp = sp.ttyvp.replace(None);
         if let Some(ovp) = ovp {
             vrele(ovp);
         }
@@ -661,17 +655,9 @@ impl ProcGlue for BsdProcGlue {
         );
     }
 
-    /// The text vnode's reference (for sysctl) and the unveils copied.
+    /// The unveils copied.
     fn process_forked(parent: &Process, child: &Process) {
-        child.ps_textvp.set(parent.ps_textvp.get());
-        if let Some(vp) = child.ps_textvp.get() {
-            crate::sys::vnode::vref(vp);
-        }
         crate::kern::kern_unveil::unveil_copy(parent, child);
-    }
-
-    fn session_has_tty_vnode(sess: &Session) -> bool {
-        sess.s_ttyvp.get().is_some()
     }
 
     fn pledge_sysctl(p: &Proc, mib: &[i32], new: usize) -> Result<(), Errno> {
@@ -686,12 +672,39 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_protexec(p, prot)
     }
 
-    /// `ps_textvp`'s mount carries `MNT_WXALLOWED` (no text vnode or no mount: no).
-    fn textvp_wxallowed(pr: &Process) -> bool {
-        pr.ps_textvp
-            .get()
-            .and_then(|vp| vp.mount())
-            .is_some_and(|mp| mp.flag() & crate::sys::mount::MNT_WXALLOWED != 0)
+    fn pledge_namei(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        path: &[u8],
+    ) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_namei(p, ni, path)
+    }
+
+    fn checkzoneinfopath(path: &[u8]) -> bool {
+        crate::kern::kern_pledge::checkzoneinfopath(path)
+    }
+
+    fn unveil_start_relative(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        dp: &'static crate::sys::vnode::Vnode,
+    ) {
+        crate::kern::kern_unveil::unveil_start_relative(p, ni, dp);
+    }
+
+    fn unveil_check_component(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        dp: &'static crate::sys::vnode::Vnode,
+    ) {
+        crate::kern::kern_unveil::unveil_check_component(p, ni, dp);
+    }
+
+    fn unveil_check_final(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+    ) -> Result<(), Errno> {
+        crate::kern::kern_unveil::unveil_check_final(p, ni)
     }
 
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
@@ -771,15 +784,6 @@ impl ProcGlue for BsdProcGlue {
 
     fn unveil_destroy(pr: &Process) {
         crate::kern::kern_unveil::unveil_destroy(pr);
-    }
-
-    /// `vrele(pr->ps_textvp)`, the reference dropped.
-    fn textvp_release(pr: &Process) {
-        let otvp = pr.ps_textvp.get();
-        pr.ps_textvp.set(None);
-        if let Some(otvp) = otvp {
-            vrele(otvp);
-        }
     }
 }
 
@@ -984,90 +988,6 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysAcctArgs = sysargs(v);
     kernel::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
-}
-
-/// The accounting file of `kernel::acct` (bridges.toml `AcctFile`, N5): `vn_open` of a
-/// regular file for `FWRITE | O_APPEND` with `UNVEIL_WRITE`, unlocked.
-pub struct BsdAcctFile;
-
-/// The registered [`BsdAcctFile`].
-pub static BSD_ACCT_FILE: BsdAcctFile = BsdAcctFile;
-
-/// An open accounting file: its vnode (held open by `vn_open` until `close`).
-struct BsdAcctSink(&'static Vnode);
-
-impl kernel::acct::AcctFile for BsdAcctFile {
-    fn open(
-        &self,
-        path: hal::user::UserPtr<u8>,
-    ) -> Result<alloc::boxed::Box<dyn kernel::acct::AcctSink>, Errno> {
-        let Some(p) = crate::machine::cpu::curproc() else {
-            crate::kern::subr_prf::panic(format_args!("acct: no curproc"));
-        };
-        let mut nd =
-            crate::kern::vfs_lookup::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
-        nd.ni_unveil = crate::sys::namei::UNVEIL_WRITE;
-        crate::kern::vfs_vnops::vn_open(
-            &mut nd,
-            crate::sys::fcntl::FWRITE | crate::sys::fcntl::O_APPEND,
-            0,
-        )?;
-        let Some(vp) = nd.ni_vp else {
-            return Err(Errno::ENOENT);
-        };
-        let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
-        if vp.vtype() != crate::sys::vnode::VREG {
-            let _ = crate::kern::vfs_vnops::vn_close(
-                vp,
-                crate::sys::fcntl::FWRITE,
-                p.ucred_ptr(),
-                Some(p),
-            );
-            return Err(Errno::EACCES);
-        }
-        Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
-    }
-}
-
-impl kernel::acct::AcctSink for BsdAcctSink {
-    fn write(&self, rec: &[u8]) -> Result<(), Errno> {
-        let p = crate::machine::cpu::curproc();
-        crate::kern::vfs_vnops::vn_rdwr(
-            crate::sys::uio::UioRw::UIO_WRITE,
-            self.0,
-            rec.as_ptr().cast_mut().cast::<c_void>(),
-            rec.len(),
-            0,
-            crate::sys::uio::UioSeg::UIO_SYSSPACE,
-            crate::sys::vnode::IO_APPEND
-                | crate::sys::vnode::IO_UNIT
-                | crate::sys::vnode::IO_NOLIMIT,
-            p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr()),
-            None,
-            p,
-        )
-    }
-
-    fn free_space(&self) -> Option<(i64, i64)> {
-        let mp = self.0.mount()?;
-        let p = crate::machine::cpu::curproc()?;
-        let mut sb = crate::sys::mount::Statfs::default();
-        let _ = crate::sys::mount::VFS_STATFS(mp, &mut sb, p);
-        Some((sb.f_bavail, sb.f_blocks as i64))
-    }
-
-    fn is_bad(&self) -> bool {
-        self.0.vtype() == crate::sys::vnode::VBAD
-    }
-
-    fn close(self: alloc::boxed::Box<Self>, by_curproc: bool) {
-        let p = crate::machine::cpu::curproc();
-        let cred = match p {
-            Some(p) if by_curproc => p.ucred_ptr(),
-            _ => crate::sys::ucred::NOCRED,
-        };
-        let _ = crate::kern::vfs_vnops::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
-    }
 }
 
 /// `KernelApi::proc`: the `Native` entries of the process system calls (N4.6a), each running

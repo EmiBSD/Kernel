@@ -66,7 +66,6 @@
 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_CLRBUF, B_NOCACHE, B_SYNC};
@@ -78,6 +77,7 @@ use crate::sys::types::{Daddr, Off};
 use crate::sys::uio::Uio;
 #[cfg(feature = "diagnostic")]
 use crate::sys::uio::UioRw;
+use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VN_KNOTE, VREG, Vnode, VopReadArgs,
     VopWriteArgs, cred_ref,
@@ -439,7 +439,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         error = ext2fs_update(ip, 1);
     }
     // correct the result for writes clamped by vn_fsizechk()
-    uio.uio_resid = (uio.uio_resid as isize + overrun) as usize;
+    uio.uio_resid += overrun;
     error
 }
 /* </CODE> */

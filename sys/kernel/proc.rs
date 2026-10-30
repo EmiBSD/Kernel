@@ -760,8 +760,8 @@ pub type SessionRef<G> = StaticOrPooled<Session<G>>;
 /// `kern_proc.c` makes into them. One instantiation, `bsd`'s (`sys/kern/proc_glue.rs`); a
 /// bridge of `bridges.toml` while `bsd` implements it.
 pub trait ProcGlue: Sized + Send + Sync + 'static {
-    /// The members of `struct process` of `bsd`'s subsystems (`ps_textvp`, the unveil table,
-    /// the timeouts, the interval timers); `Default` is a new process's (`fork1`).
+    /// The members of `struct process` of `bsd`'s subsystems (the unveil table, the
+    /// timeouts, the interval timers); `Default` is a new process's (`fork1`).
     type ProcessG: Send + Sync + Default;
     /// The members of `struct proc` of `bsd`'s subsystems; `Default` is a new thread's.
     type ThreadG: Send + Sync + Default;
@@ -963,13 +963,8 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn thread_placed(_p: Placed<'_, Self>) {}
     /// `process_initialize`'s timeouts of `bsd`'s (`ps_realit_to`, `kern_time.c`, N4.8a).
     fn process_initialized(_pr: &Process<Self>) {}
-    /// `process_new`'s `bsd` members: the text vnode's reference (`vref`, N5) and the
-    /// unveils (`unveil_copy`, N8).
+    /// `process_new`'s `bsd` members: the unveils (`unveil_copy`, N8).
     fn process_forked(_parent: &Process<Self>, _child: &Process<Self>) {}
-    /// `sess->s_ttyvp != NULL` (the session's controlling terminal vnode, N4.7b).
-    fn session_has_tty_vnode(_sess: &Session<Self>) -> bool {
-        false
-    }
     /// `sess->s_ttyp->t_dev` (accounting's `ac_tty`), `None` without a terminal: the
     /// session's own `s_ttyp` since N4.7b (`kernel::tty::session_tty`); a test glue may
     /// stand in for a terminal it does not make.
@@ -1020,13 +1015,63 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn pledge_protexec(p: &Thread<Self>, prot: crate::vm::types::VmProt) -> Result<(), Errno>;
     /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
     fn unveil_destroy(_pr: &Process<Self>) {}
-    /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
-    fn textvp_release(_pr: &Process<Self>) {}
-    /// `pr->ps_textvp->v_mount && (pr->ps_textvp->v_mount->mnt_flag & MNT_WXALLOWED)`
-    /// (`uvm_wxcheck`): the program's text is on a file system mounted `wxallowed` (the text
-    /// vnode and its mount are `bsd`'s until N5). The caller ANDs it with `PSI_WXNEEDED`.
-    /// Required: a glue cannot widen W^X by forgetting it.
-    fn textvp_wxallowed(pr: &Process<Self>) -> bool;
+    /// `pledge_namei(p, ni, path)` (`kern_pledge.c`, N8): whether the pledged thread `p` may
+    /// look up `path` (the pathname, without its NUL) for what `ni.ni_pledge` says; a
+    /// `__pledge_open` of a listed path may set `BYPASSUNVEIL` (and `BPU_LOCALTIME`,
+    /// `BPU_ZONEINFO`) in `ni`'s flags. `namei` calls it for every path but a `KERNELPATH`
+    /// one. The pathname is lent out of the componentname for the call: `path` is the
+    /// pathname, and `ni.ni_cnd`'s own buffer is empty meanwhile (its `name()` is empty), so
+    /// a glue reads the path from `path` alone. The default is `panic(9)`: a glue whose
+    /// processes look names up cannot drop pledge by forgetting it.
+    fn pledge_namei(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _path: &[u8],
+    ) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_namei: the glue has no namei hooks"))
+    }
+    /// `checkzoneinfopath(path)` (`kern_pledge.c`): whether `path` is a file under
+    /// `/usr/share/zoneinfo/` without `..` (`namei`'s check of `/etc/localtime`'s link).
+    /// The default is `panic(9)`, as `pledge_namei`'s.
+    fn checkzoneinfopath(_path: &[u8]) -> bool {
+        kpanic(format_args!(
+            "checkzoneinfopath: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_start_relative(p, ni, dp)` (`kern_unveil.c`, N8): the unveil match of a
+    /// lookup that starts at `dp` (a relative path). The default is `panic(9)`, as
+    /// `pledge_namei`'s.
+    fn unveil_start_relative(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _dp: &'static crate::fs::vnode::Vnode<Self>,
+    ) {
+        kpanic(format_args!(
+            "unveil_start_relative: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_check_component(p, ni, dp)` (`kern_unveil.c`, N8): the unveil match of a
+    /// component in `dp`. The default is `panic(9)`, as `pledge_namei`'s.
+    fn unveil_check_component(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _dp: &'static crate::fs::vnode::Vnode<Self>,
+    ) {
+        kpanic(format_args!(
+            "unveil_check_component: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_check_final(p, ni)` (`kern_unveil.c`, N8): whether the lookup's result is
+    /// unveiled for what `ni.ni_unveil` asks (`ENOENT`, `EACCES`). The default is `panic(9)`,
+    /// as `pledge_namei`'s.
+    fn unveil_check_final(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+    ) -> Result<(), Errno> {
+        kpanic(format_args!(
+            "unveil_check_final: the glue has no namei hooks"
+        ))
+    }
     /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
     fn rtable_exists(id: u32) -> bool {
         id == 0
@@ -1442,6 +1487,9 @@ pub struct Session<G: ProcGlue> {
     /// \[K\] `s_ttyp`: controlling terminal, counted; not cleared when the session loses
     /// it, to remember that it once had one (`TIOCSCTTY`, `kernel::tty`).
     pub s_ttyp: Guarded<Option<crate::tty::TtyRef<G>>>,
+    /// \[K\] `s_ttyvp`: vnode of controlling terminal, referenced (`vn_ioctl`'s
+    /// `TIOCSCTTY`); written under the kernel lock, an atomic word read without it.
+    pub ttyvp: hal::link::SyncLink<crate::fs::vnode::Vnode<G>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::SessionG,
 }
@@ -1459,6 +1507,7 @@ impl<G: ProcGlue> Session<G> {
             s_verauthppid: I32Word::new(0),
             s_verauthuid: U32Word::new(0),
             s_ttyp: Guarded::new_kernel(None),
+            ttyvp: hal::link::SyncLink::new(),
             g,
         }
     }
@@ -1750,6 +1799,11 @@ pub struct Process<G: ProcGlue> {
     /// `ps_rucheck_to`: the resource limit check timer (`kernel::resource::rucheck`, named by
     /// the process's pid).
     pub ps_rucheck_to: crate::timeout::Timeout,
+    /// `ps_textvp`: vnode of executable, holding a use count (`exec`'s `vref`, `process_new`'s
+    /// copy; `process_zap` drops it), none for process 0 and the kernel threads. Written by
+    /// `exec` (single-threaded), `process_new` (before the process runs) and `process_zap`
+    /// (after its last thread), read by `kern.file` and `uvm_wxcheck`: an atomic word.
+    pub textvp: hal::link::SyncLink<crate::fs::vnode::Vnode<G>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::ProcessG,
 }
@@ -1818,6 +1872,7 @@ impl<G: ProcGlue> Process<G> {
             ps_pin: ReadMostly::new(PinTable::NONE),
             ps_libcpin: ReadMostly::new(PinTable::NONE),
             ps_rucheck_to: crate::timeout::Timeout::unset(),
+            textvp: hal::link::SyncLink::new(),
             g,
         }
     }
@@ -3037,9 +3092,6 @@ mod tests {
             _prot: crate::vm::types::VmProt,
         ) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
-        }
-        fn textvp_wxallowed(_pr: &Process<Self>) -> bool {
-            false
         }
         /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
         fn setitimer(

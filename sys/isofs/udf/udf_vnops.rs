@@ -114,8 +114,6 @@ use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BMAP, VOP_STRATEGY, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
@@ -130,6 +128,7 @@ use crate::sys::mount::Mount;
 use crate::sys::namei::{
     CREATE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, PDIRUNLOCK, RENAME,
 };
+use crate::sys::namei::{NCHSTATS, cache_enter, cache_lookup};
 use crate::sys::param::{DEV_BSHIFT, MAXBSIZE};
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::proc::Proc;
@@ -141,6 +140,7 @@ use crate::sys::uio::Uio;
 use crate::sys::unistd::{
     _PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC, _PC_TIMESTAMP_RESOLUTION,
 };
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     VDIR, VEXEC, VLNK, VREG, VT_UDF, VWRITE, Vnode, VopAccessArgs, VopBmapArgs, VopCloseArgs,
     VopGetattrArgs, VopInactiveArgs, VopIoctlArgs, VopIslockedArgs, VopLockArgs, VopLookupArgs,
@@ -1237,14 +1237,14 @@ pub fn udf_bmap(ap: &mut VopBmapArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `udf_lookup` (`vop_lookup`): the all powerful VOP_LOOKUP().
-pub fn udf_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn udf_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let up = VTOU(dvp);
     let ump = up.ump();
     let cnp = &mut *ap.a_cnp;
     let nameiop = cnp.cn_nameiop;
     let flags = cnp.cn_flags;
-    let namelen = usize::try_from(cnp.cn_namelen).unwrap_or(0);
+    let namelen = usize::try_from(cnp.namelen()).unwrap_or(0);
     let mut namebuf = [0u8; NAME_MAX + 1];
     {
         let name = cnp.name();
@@ -1256,7 +1256,7 @@ pub fn udf_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     *ap.a_vpp = None;
 
     // Make sure the process can scan the requested directory.
-    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc())?;
+    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
 
     // Check if the (directory, name) tuple has been already cached.
     if let Some(vp) = cache_lookup(dvp, cnp)? {
@@ -1371,7 +1371,7 @@ pub fn udf_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
     // Cache the result of this lookup.
     if flags & MAKEENTRY != 0 {
-        cache_enter(dvp, *ap.a_vpp, cnp);
+        cache_enter(dvp, *ap.a_vpp, cnp.name());
     }
 
     udf_closedir(ds);
@@ -1708,6 +1708,7 @@ mod tests {
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::vnode::{VROOT, Vattr, VopFsyncArgs, VopInactiveArgs};
     use crate::sys::vnode::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free};
+    use kernel::fs::vops::Cred;
 
     const B: usize = 2048;
     /// The partition's first sector and length.
@@ -2059,19 +2060,21 @@ mod tests {
     }
 
     /// A component name for `name`, the last one, the parent kept locked.
-    fn cn(p: &'static Proc, name: &[u8], flags: u64) -> Componentname {
-        let mut cnp = Componentname::new();
-        cnp.cn_nameiop = LOOKUP;
-        cnp.cn_flags = ISLASTCN | LOCKPARENT | flags;
-        cnp.cn_proc = p;
-        cnp.cn_cred = p.ucred();
-        cnp.cn_nameptr = name.as_ptr();
-        cnp.cn_namelen = name.len() as i64;
+    fn cn(p: &'static Proc, name: &'static [u8], flags: u64) -> Componentname<'static> {
+        let mut cnp = Componentname::new(
+            LOOKUP,
+            ISLASTCN | LOCKPARENT | flags,
+            p,
+            Cred::real(p.ucred()),
+        );
+        cnp.set_name_lit(name);
         cnp
     }
 
     /// `VOP_LOOKUP` of `name` in `dvp`: the vnode, referenced and locked.
     fn lookup(p: &'static Proc, dvp: &'static Vnode, name: &[u8]) -> Result<&'static Vnode, Errno> {
+        // The test's names live for the run (a componentname names a kernel string).
+        let name: &'static [u8] = std::boxed::Box::leak(name.to_vec().into_boxed_slice());
         let flags = if name == b".." { ISDOTDOT } else { 0 };
         let mut cnp = cn(p, name, flags);
         let mut vpp = None;

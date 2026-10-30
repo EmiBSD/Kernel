@@ -159,7 +159,7 @@
 //!   on as it came so that no lock section parks or takes a token on the way (each is an spl
 //!   pair, N5.1's lesson).
 
-use core::ffi::c_void;
+use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::ptr;
 
@@ -176,14 +176,14 @@ use super::vnode::{VBIOERROR, VDIR, VNODE_MTX, Vattr, Vnode};
 use crate::assert::{kassert, kpanic};
 use crate::cred::Ucred;
 use crate::event::Knote;
-use crate::file::FileGlue;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::Uio;
 
-/// `struct componentname` of the glue `G` (`bsd`'s until N5.3).
-pub type Cn<G> = <<G as ProcGlue>::FileGlue as FileGlue>::Componentname;
+/// `struct componentname` of the glue `G` (`bsd`'s until N5.3's switch, the kernel's
+/// `fs::namei::Componentname` for the test glues).
+pub type Cn<'a, G> = super::namei::Componentname<'a, G>;
 /// `struct nameidata` of the glue `G` (`bsd`'s until N5.3).
-pub type Nd<'a, G> = <<G as ProcGlue>::FileGlue as FileGlue>::Nameidata<'a>;
+pub type Nd<'a, G> = super::namei::Nameidata<'a, G>;
 
 /// `struct ucred *` as a vnode operation receives it: a real credential, NULL or one of the
 /// sentinels `NOCRED` and `FSCRED`. An opaque copy of the C's pointer (see the module's
@@ -297,7 +297,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -306,7 +306,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
         vap: &mut Vattr,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
@@ -316,7 +316,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
         vap: &mut Vattr,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
@@ -430,7 +430,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vp: &'static Vnode<G>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -439,7 +439,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vp: &'static Vnode<G>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -452,10 +452,10 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         fdvp: &'static Vnode<G>,
         fvp: &'static Vnode<G>,
-        fcnp: &mut Cn<G>,
+        fcnp: &mut Cn<'_, G>,
         tdvp: &'static Vnode<G>,
         tvp: Option<&'static Vnode<G>>,
-        tcnp: &mut Cn<G>,
+        tcnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -464,7 +464,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
         vap: &mut Vattr,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
@@ -474,7 +474,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vp: &'static Vnode<G>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
@@ -483,7 +483,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         &self,
         dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        cnp: &mut Cn<G>,
+        cnp: &mut Cn<'_, G>,
         vap: &mut Vattr,
         target: &[u8],
     ) -> Result<(), Errno> {
@@ -509,7 +509,7 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
         Err(Errno::EOPNOTSUPP)
     }
     /// `vop_abortop`.
-    fn abortop(&self, dvp: &'static Vnode<G>, cnp: &mut Cn<G>) -> Result<(), Errno> {
+    fn abortop(&self, dvp: &'static Vnode<G>, cnp: &mut Cn<'_, G>) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     /// `vop_inactive`: unlocks the vnode, as the C's.
@@ -544,11 +544,12 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    /// `vop_advlock`: `id` is the lock's owner, an address compared and never followed.
+    /// `vop_advlock`: `id` is the lock's owner (a descriptor table or a file, compared and
+    /// never followed, D-N5.3-11).
     fn advlock(
         &self,
         vp: &'static Vnode<G>,
-        id: *const c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
@@ -673,7 +674,7 @@ pub fn vop_islocked<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
 pub fn vop_lookup<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     dvp.ops().lookup(dvp, vpp, cnp)
 }
@@ -682,7 +683,7 @@ pub fn vop_lookup<G: ProcGlue>(
 pub fn vop_create<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
     vap: &mut Vattr,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp): VFSLCKDEBUG.
@@ -693,7 +694,7 @@ pub fn vop_create<G: ProcGlue>(
 pub fn vop_mknod<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
     vap: &mut Vattr,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp): VFSLCKDEBUG.
@@ -832,7 +833,7 @@ pub fn vop_fsync<G: ProcGlue>(
 pub fn vop_remove<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vp: &'static Vnode<G>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp), ASSERT_VP_ISLOCKED(vp): VFSLCKDEBUG.
     let error = dvp.ops().remove(dvp, vp, cnp);
@@ -851,7 +852,7 @@ pub fn vop_remove<G: ProcGlue>(
 pub fn vop_link<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vp: &'static Vnode<G>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp): VFSLCKDEBUG.
     dvp.ops().link(dvp, vp, cnp)
@@ -861,10 +862,10 @@ pub fn vop_link<G: ProcGlue>(
 pub fn vop_rename<G: ProcGlue>(
     fdvp: &'static Vnode<G>,
     fvp: &'static Vnode<G>,
-    fcnp: &mut Cn<G>,
+    fcnp: &mut Cn<'_, G>,
     tdvp: &'static Vnode<G>,
     tvp: Option<&'static Vnode<G>>,
-    tcnp: &mut Cn<G>,
+    tcnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(tdvp): VFSLCKDEBUG.
     fdvp.ops().rename(fdvp, fvp, fcnp, tdvp, tvp, tcnp)
@@ -874,7 +875,7 @@ pub fn vop_rename<G: ProcGlue>(
 pub fn vop_mkdir<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
     vap: &mut Vattr,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp): VFSLCKDEBUG.
@@ -885,7 +886,7 @@ pub fn vop_mkdir<G: ProcGlue>(
 pub fn vop_rmdir<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vp: &'static Vnode<G>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     // ASSERT_VP_ISLOCKED(dvp), ASSERT_VP_ISLOCKED(vp): VFSLCKDEBUG.
     kassert!(!ptr::eq(dvp, vp));
@@ -896,7 +897,7 @@ pub fn vop_rmdir<G: ProcGlue>(
 pub fn vop_symlink<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
-    cnp: &mut Cn<G>,
+    cnp: &mut Cn<'_, G>,
     vap: &mut Vattr,
     target: &[u8],
 ) -> Result<(), Errno> {
@@ -929,7 +930,7 @@ pub fn vop_readlink<G: ProcGlue>(
 }
 
 /// `VOP_ABORTOP(dvp, cnp)`.
-pub fn vop_abortop<G: ProcGlue>(dvp: &'static Vnode<G>, cnp: &mut Cn<G>) -> Result<(), Errno> {
+pub fn vop_abortop<G: ProcGlue>(dvp: &'static Vnode<G>, cnp: &mut Cn<'_, G>) -> Result<(), Errno> {
     dvp.ops().abortop(dvp, cnp)
 }
 
@@ -1012,7 +1013,7 @@ pub fn vop_pathconf<G: ProcGlue>(
 /// `VOP_ADVLOCK(vp, id, op, fl, flags)`.
 pub fn vop_advlock<G: ProcGlue>(
     vp: &'static Vnode<G>,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,

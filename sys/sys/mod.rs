@@ -35,8 +35,7 @@ pub mod clockintr;
 #[forbid(unsafe_code)]
 pub mod conf;
 pub mod device;
-#[forbid(unsafe_code)]
-pub mod dirent;
+pub use hal::sys::dirent;
 pub mod disk;
 pub mod disklabel;
 #[forbid(unsafe_code)]
@@ -124,8 +123,7 @@ pub mod sockio;
 pub use hal::sys::softintr;
 #[forbid(unsafe_code)]
 pub mod specdev;
-#[forbid(unsafe_code)]
-pub mod stat;
+pub use hal::sys::stat;
 #[forbid(unsafe_code)]
 pub mod swap;
 pub use hal::sys::syscall;

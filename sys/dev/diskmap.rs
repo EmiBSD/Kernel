@@ -48,25 +48,26 @@
 
 use alloc::vec;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_descrip::{BsdFileData, closef, fdinsert, fnew};
 use crate::kern::subr_disk::disk_map;
-use crate::kern::vfs_lookup::ndinit;
 use crate::kern::vfs_syscalls::getvnode;
-use crate::kern::vfs_vnops::{VNOPS, vn_close, vn_open};
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::copy::{copyinstr, copyoutstr};
 use crate::sys::dkio::{DIOCMAP, DkDiskmap};
 use crate::sys::errno::Errno;
 use crate::sys::file::{DTYPE_VNODE, FileRef, frele};
 use crate::sys::filedesc::{FdGuard, fdplock, fdpunlock};
+use crate::sys::namei::ndinit;
 use crate::sys::namei::{NiDirp, UNVEIL_READ};
 use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::proc::Proc;
 use crate::sys::syslimits::PATH_MAX;
 use crate::sys::types::Dev;
 use crate::sys::uio::Uio;
+use crate::sys::vnode::{VNOPS, vn_close, vn_open};
 
 /// `*(struct dk_diskmap *)addr`, read from the ioctl's argument buffer.
 fn dk_diskmap_load(addr: &[u8]) -> DkDiskmap {
@@ -144,7 +145,7 @@ pub fn diskmapioctl(
     let mut g = fdplock(fdp);
     let bad = |g: FdGuard<'_>, fp0: FileRef, error: Errno| -> Result<(), Errno> {
         fdpunlock(g);
-        let _ = vn_close(vp, fflag as i32, p.ucred_ptr(), Some(p));
+        let _ = vn_close(vp, fflag as i32, Cred::from_raw(p.ucred_ptr()), Some(p));
         let _ = frele(fp0, p);
         Err(error)
     };

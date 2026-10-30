@@ -100,14 +100,16 @@
 //! LZ: sys/kern/kern_acct.rs@3c62ede68802
 //! LZ: sys/sys/acct.rs@3c62ede68802
 //!
-//! The accounting file is a vnode of the file systems, which are `bsd`'s until N5: the
-//! kernel holds it as an opaque [`AcctSink`] that `bsd`'s [`AcctFile`] opened (bridges.toml
-//! `AcctFile`, paid by N5): `vn_open` with `UNVEIL_WRITE` and the `VREG` check, `vn_rdwr`
-//! of a record, `VFS_STATFS`, `vn_close`, all inside the bridge.
+//! The accounting file is a vnode of the kernel's file systems (`kernel::fs`): `acct(2)`
+//! opens it with `vn_open` (`UNVEIL_WRITE`, the `VREG` check), a record is a `vn_rdwr`, the
+//! watcher asks `VFS_STATFS`, and `vn_close` ends it. The state holds it as an
+//! [`AcctVnode`] behind the [`AcctSink`] trait, since the lock that owns it is one static and
+//! the vnode's type is the processes' glue's.
 //!
 //! ## Deviations
-//! - The sink is a `Box`, so `acct(2)` with a path allocates one small `temp` block
-//!   (`vmstat -m`'s `temp` row) where the C keeps the vnode pointer.
+//! - The file is a boxed [`AcctSink`] (the state is not generic over the glue), so `acct(2)`
+//!   with a path allocates one small `temp` block (`vmstat -m`'s `temp` row) where the C
+//!   keeps the vnode pointer.
 //! - `ac_btime` is `nanotime() - nanouptime()` plus the start (the boot time as the uptime
 //!   bridge gives it; the C's `nanoboottime` is the same less any suspended time, which QEMU
 //!   never has).
@@ -126,20 +128,30 @@
 //!   `ProcGlue::session_ttydev`, whose default reads kernel::tty's `s_ttyp` since N4.7b),
 //!   where LZ wrote -1 (the user's decision 15 of N4.6:
 //!   `lastcomm` names the terminal again).
+//! - N5.3: the file is the kernel's vnode ([`AcctVnode`]): the `AcctFile` bridge, through
+//!   which `bsd` opened, wrote, measured and closed it (N4.6a), is gone; `acct_thread` and
+//!   `acct_shutdown` close it with `NOCRED` and the running thread (the watcher, or the
+//!   thread shutting down), as the C's `vn_close(vp, FWRITE, NOCRED, p)` with
+//!   `p = curproc`.
 
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
-use hal::bridges::AlreadyRegistered;
 use hal::klock;
-use hal::once::OnceStatic;
 use hal::rwlock::Rwlocked;
 use hal::sys::errno::Errno;
+use hal::sys::fcntl::{FWRITE, O_APPEND};
+use hal::sys::mount::Statfs;
 use hal::sys::types::{Dev, Gid, Pid, Uid};
 use hal::user::UserPtr;
 
 use crate::assert::kpanic;
 use crate::clock;
+use crate::fs::lookup::ndinit;
+use crate::fs::namei::{NiDirp, UNVEIL_WRITE};
+use crate::fs::vnode::{IO_APPEND, IO_NOLIMIT, IO_UNIT, VBAD, VREG, Vnode};
+use crate::fs::vnops::{RdwrBuf, vn_close, vn_open, vn_rdwr};
+use crate::fs::vops::{Cred, VFS_STATFS, vop_unlock};
 use crate::proc::{_MAXCOMLEN, PS_CONTROLT, ProcGlue, Process, Thread};
 use crate::resource::{Tusage, calctsru, tuagg_get_process};
 
@@ -226,34 +238,83 @@ const PPAUSE: i32 = 40;
 /// `LOG_NOTICE`.
 const LOG_NOTICE: i32 = 5;
 
-/// An open accounting file (`acctp`/`savacctp`, a `VREG` vnode opened `FWRITE | O_APPEND`),
-/// as `bsd`'s file systems keep it.
-pub trait AcctSink: Send + Sync {
+/// An open accounting file (`acctp`/`savacctp`, a `VREG` vnode opened `FWRITE | O_APPEND`):
+/// [`AcctVnode`], or a test's double.
+trait AcctSink: Send + Sync {
     /// `vn_rdwr(UIO_WRITE, vp, rec, IO_APPEND|IO_UNIT|IO_NOLIMIT, ...)` with the running
     /// thread's credentials.
     fn write(&self, rec: &[u8]) -> Result<(), Errno>;
     /// `VFS_STATFS` of its file system: `(f_bavail, f_blocks)`, `None` when it has no mount.
-    fn free_space(&self) -> Option<(i64, i64)>;
+    fn free_space(&self) -> Option<(i64, u64)>;
     /// `vp->v_type == VBAD`: the vnode was revoked (its file system forcibly unmounted).
     fn is_bad(&self) -> bool;
-    /// `vn_close(vp, FWRITE, cred, p)`: with the running thread's credentials when
-    /// `by_curproc` (`acct(2)`), `NOCRED` otherwise (the watcher, `acct_shutdown`).
+    /// `vn_close(vp, FWRITE, cred, p)` by the running thread: with its credentials when
+    /// `by_curproc` (`acct(2)`), with `NOCRED` otherwise (the watcher, `acct_shutdown`).
     fn close(self: Box<Self>, by_curproc: bool);
 }
 
-/// The file systems' half of `acct(2)` (bridges.toml `AcctFile`, N5): opening the file.
-pub trait AcctFile: Sync {
-    /// `vn_open` of the user path `path` for `FWRITE | O_APPEND` with `UNVEIL_WRITE` by the
-    /// running thread, unlocked; `EACCES` (closed again) when it is not a regular file.
-    fn open(&self, path: UserPtr<u8>) -> Result<Box<dyn AcctSink>, Errno>;
+/// The accounting file of the glue `G`'s processes: its vnode, held open by `vn_open` until
+/// [`AcctSink::close`]. Its operations run as the C's, on behalf of `curproc`.
+struct AcctVnode<G: ProcGlue>(&'static Vnode<G>);
+
+impl<G: ProcGlue> AcctSink for AcctVnode<G> {
+    fn write(&self, rec: &[u8]) -> Result<(), Errno> {
+        G::with_curproc(|p| {
+            let cred = p.map_or(Cred::NOCRED, |p| Cred::real(p.ucred()));
+            vn_rdwr(
+                crate::uio::UioRw::UIO_WRITE,
+                self.0,
+                RdwrBuf::KernelRead(rec),
+                0,
+                IO_APPEND | IO_UNIT | IO_NOLIMIT,
+                cred,
+                None,
+                p,
+            )
+        })
+    }
+
+    fn free_space(&self) -> Option<(i64, u64)> {
+        let mp = self.0.mount()?;
+        G::with_curproc(|p| {
+            let p = p?;
+            let mut sb = Statfs::new();
+            let _ = VFS_STATFS(mp, &mut sb, p);
+            Some((sb.f_bavail, sb.f_blocks))
+        })
+    }
+
+    fn is_bad(&self) -> bool {
+        self.0.vtype() == VBAD
+    }
+
+    fn close(self: Box<Self>, by_curproc: bool) {
+        G::with_curproc(|p| {
+            let cred = match p {
+                Some(p) if by_curproc => Cred::real(p.ucred()),
+                _ => Cred::NOCRED,
+            };
+            let _ = vn_close(self.0, FWRITE, cred, p);
+        });
+    }
 }
 
-/// The registered [`AcctFile`].
-static ACCT_FILE: OnceStatic<&'static dyn AcctFile> = OnceStatic::new();
-
-/// Registers the [`AcctFile`] bridge, once.
-pub fn install_acct_file(f: &'static dyn AcctFile) -> Result<(), AlreadyRegistered> {
-    ACCT_FILE.set(f).map_err(|_| AlreadyRegistered("AcctFile"))
+/// `acct(2)`'s open: `vn_open` of the user path `path` for `FWRITE | O_APPEND` with
+/// `UNVEIL_WRITE`, unlocked; `EACCES` (closed again) when it is not a regular file.
+fn acct_open<G: ProcGlue>(p: &Thread<G>, path: UserPtr<u8>) -> Result<Box<dyn AcctSink>, Errno> {
+    let mut nd = ndinit(0, 0, NiDirp::User(path.addr()), p);
+    nd.ni_unveil = UNVEIL_WRITE;
+    vn_open(&mut nd, FWRITE | O_APPEND, 0)?;
+    let Some(vp) = nd.ni_vp else {
+        // vn_open succeeds with the vnode; the C reads it without a test.
+        kpanic(format_args!("acct: vn_open gave no vnode"));
+    };
+    let _ = vop_unlock(vp);
+    if vp.vtype() != VREG {
+        let _ = vn_close(vp, FWRITE, Cred::real(p.ucred()), Some(p));
+        return Err(Errno::EACCES);
+    }
+    Ok(Box::new(AcctVnode(vp)))
 }
 
 /// `acctp` and `savacctp`: the accounting file, and the one saved while its file system is
@@ -311,10 +372,7 @@ pub fn sys_acct<G: ProcGlue>(p: &Thread<G>, path: UserPtr<u8>) -> Result<(), Err
     let newvp = if path.is_null() {
         None
     } else {
-        let Some(f) = ACCT_FILE.get() else {
-            kpanic(format_args!("acct: no AcctFile bridge registered"));
-        };
-        Some(f.open(path)?)
+        Some(acct_open(p, path)?)
     };
 
     let mut st = ACCT.write();
@@ -485,6 +543,15 @@ enum Watch {
     Stop,
 }
 
+/// `f_bavail > pct * f_blocks / 100` as the C computes it (kern_acct.c:324, :336): the
+/// product is `u_int64_t` (the `int` percentage converted, the arithmetic modular), and the
+/// signed `f_bavail` is converted to it, so a negative count (the reserve in use) compares
+/// as a huge one.
+fn bavail_above(bavail: i64, pct: i32, blocks: u64) -> bool {
+    let limit = i64::from(pct).cast_unsigned().wrapping_mul(blocks) / 100;
+    bavail.cast_unsigned() > limit
+}
+
 /// One pass of the watcher over the state: thresholds of [`ACCTSUSPEND`]/[`ACCTRESUME`]
 /// percent of the file system's blocks.
 fn watch(st: &mut AcctState) -> Watch {
@@ -496,7 +563,7 @@ fn watch(st: &mut AcctState) -> Watch {
             return Watch::Stop;
         }
         let (bavail, blocks) = sav.free_space().unwrap_or((0, 0));
-        if bavail > i64::from(ACCTRESUME.load(Ordering::Relaxed)) * blocks / 100 {
+        if bavail_above(bavail, ACCTRESUME.load(Ordering::Relaxed), blocks) {
             st.acctp = st.savacctp.take();
             return Watch::Resumed;
         }
@@ -509,7 +576,7 @@ fn watch(st: &mut AcctState) -> Watch {
             return Watch::Stop;
         }
         let (bavail, blocks) = cur.free_space().unwrap_or((0, 0));
-        if bavail <= i64::from(ACCTSUSPEND.load(Ordering::Relaxed)) * blocks / 100 {
+        if !bavail_above(bavail, ACCTSUSPEND.load(Ordering::Relaxed), blocks) {
             st.savacctp = st.acctp.take();
             return Watch::Suspended;
         }
@@ -616,7 +683,7 @@ mod tests {
         fn write(&self, _rec: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn free_space(&self) -> Option<(i64, i64)> {
+        fn free_space(&self) -> Option<(i64, u64)> {
             Some((self.bavail.load(Ordering::Relaxed), 100))
         }
         fn is_bad(&self) -> bool {
@@ -657,6 +724,88 @@ mod tests {
         assert!(st.acctp.is_none() && st.savacctp.is_none());
         assert!(closed.load(Ordering::Relaxed));
         assert_eq!(watch(&mut st), Watch::Stop);
+    }
+
+    /// The thresholds compare as the C's (kern_acct.c:324, :336): a negative `f_bavail` (the
+    /// reserve in use) is converted to the product's unsigned type, a huge count: it does
+    /// not suspend accounting, and it resumes a suspended one.
+    #[test]
+    fn a_negative_bavail_compares_as_the_c_s_unsigned_count() {
+        assert!(bavail_above(-1, 2, 100));
+        assert!(!bavail_above(2, 2, 100));
+        assert!(bavail_above(3, 2, 100));
+        assert!(!bavail_above(0, 0, 0));
+        // A negative percentage converts as the C's int to u_int64_t.
+        assert!(!bavail_above(5, -1, 100));
+        let bavail = Arc::new(AtomicI64::new(-5));
+        let bad = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut st = AcctState {
+            acctp: Some(Box::new(Sink {
+                bavail: Arc::clone(&bavail),
+                bad: Arc::clone(&bad),
+                closed: Arc::clone(&closed),
+            })),
+            savacctp: None,
+        };
+        assert_eq!(watch(&mut st), Watch::Again, "not suspended");
+        bavail.store(1, Ordering::Relaxed);
+        assert_eq!(watch(&mut st), Watch::Suspended);
+        bavail.store(-5, Ordering::Relaxed);
+        assert_eq!(watch(&mut st), Watch::Resumed);
+    }
+
+    /// `acct(2)`'s open over the test file system (kern_acct.c:94-104): a regular file opens
+    /// for writing, unlocked, and its sink writes a record (`IO_APPEND | IO_UNIT |
+    /// IO_NOLIMIT`), measures its file system and closes it; a character device is refused
+    /// (`EACCES`) and closed again; a directory and a missing name are `vn_open`'s errors.
+    /// The write and use counts come back where they were.
+    #[test]
+    fn acct_opens_a_regular_file_and_refuses_another_type() {
+        use crate::fs::testfs::{self, CONSOLE, F};
+        let (_g, p) = testfs::test_thread();
+        let path = |s: &[u8]| {
+            let at = crate::testutil::USER_BASE + 0xB800;
+            UserPtr::<u8>::new(at).copyout_slice(s).unwrap();
+            UserPtr::<u8>::new(at)
+        };
+        let uses = testfs::usecounts();
+        let sink = acct_open(p, path(b"/f\0")).unwrap();
+        let vp = testfs::vnode_of(F).unwrap();
+        assert_eq!(vp.writecount(), 1, "opened for writing");
+        assert!(!testfs::any_locked(), "unlocked");
+        assert!(!sink.is_bad());
+        assert_eq!(sink.free_space(), Some((50, 100)));
+        assert_eq!(sink.write(&[0u8; 64]), Ok(()));
+        assert_eq!(
+            testfs::last_write(),
+            Some((64, IO_APPEND | IO_UNIT | IO_NOLIMIT))
+        );
+        sink.close(true);
+        assert_eq!(
+            testfs::last_close(),
+            Some((false, true)),
+            "acct(2): its caller's"
+        );
+        assert_eq!(vp.writecount(), 0);
+        assert_eq!(testfs::usecounts()[F], uses[F]);
+        // The watcher's and acct_shutdown's close: NOCRED, the running thread (the C's
+        // `vn_close(vp, FWRITE, NOCRED, p)`, p = curproc).
+        let sink = acct_open(p, path(b"/f\0")).unwrap();
+        sink.close(false);
+        assert_eq!(testfs::last_close(), Some((true, true)));
+        assert_eq!(vp.writecount(), 0);
+        // A character device: refused, and closed again.
+        assert_eq!(
+            acct_open(p, path(b"/dev/console\0")).err(),
+            Some(Errno::EACCES)
+        );
+        let cons = testfs::vnode_of(CONSOLE).unwrap();
+        assert_eq!(cons.writecount(), 0);
+        assert_eq!(testfs::usecounts()[CONSOLE], uses[CONSOLE]);
+        assert_eq!(acct_open(p, path(b"/a\0")).err(), Some(Errno::EISDIR));
+        assert_eq!(acct_open(p, path(b"/nope\0")).err(), Some(Errno::ENOENT));
+        assert!(!testfs::any_locked());
     }
 
     crate::test_file_glue!(Files, Procs);

@@ -91,7 +91,7 @@
 //!   defines `struct dquot`; `NODQUOT` is `None`.
 //! - `i_dirhash` is `inode_ext` alone, a `Cell<Option<NonNull<Dirhash>>>`, NULL without
 //!   feature `ufs_dirhash` (`option UFS_DIRHASH`).
-//! - `i_lockf` is a `LockfStateSlot` (`sys/lockf.rs`).
+//! - `i_lockf` is a `LockfSlot` (`sys/lockf.rs`).
 //! - The `struct inode_vtbl` calls (`UFS_TRUNCATE`, `UFS_UPDATE`, ...) are functions with the
 //!   macros' names; `iv_inode_alloc` and `iv_buf_alloc` return the vnode or buffer the C
 //!   passes back through `vpp`/`bpp`, `iv_bufatoff` the buffer and the offset of `res` in it.
@@ -110,7 +110,7 @@ use crate::kern::subr_prf::panic;
 use crate::queue_adapter;
 use crate::sys::buf::{Buf, ClusterInfo};
 use crate::sys::errno::Errno;
-use crate::sys::lockf::LockfStateSlot;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::mount::{Fid, MNT_ASYNC};
 use crate::sys::queue::ListEntry;
 use crate::sys::rwlock::Rrwlock;
@@ -212,7 +212,7 @@ pub struct Inode {
     /// `i_modrev`: revision level for NFS lease.
     pub i_modrev: Cell<u64>,
     /// `i_lockf`: byte-level lock state.
-    pub i_lockf: LockfStateSlot,
+    pub i_lockf: LockfSlot,
     /// `i_lock`: inode lock.
     pub i_lock: Rrwlock,
     // Side effects; used during directory lookup.
@@ -310,7 +310,7 @@ impl Inode {
             #[cfg(feature = "quota")]
             i_dquot: [const { Cell::new(None) }; MAXQUOTAS],
             i_modrev: Cell::new(0),
-            i_lockf: Cell::new(None),
+            i_lockf: LockfSlot::new(),
             i_lock: Rrwlock::new("inode"),
             i_count: Cell::new(0),
             i_endoff: Cell::new(0),

@@ -667,8 +667,14 @@ pub struct Vnode<G: ProcGlue> {
     data: AtomicPtr<c_void>,
     /// `v_klist`: identity of poller(s).
     pub klist: Klist<G>,
-    /// The members of `bsd`'s types (`v_nc_tree`, `v_cache_dst`, `v_socket`, the device's
-    /// `si_lockf`).
+    /// \[N\] `v_nc_tree`, `v_cache_dst`: the name cache's heads (`fs::cache::NCLOCK`'s part
+    /// 1).
+    pub nc: Guarded<super::cache::NcHeads<G>>,
+    /// `v_specinfo->si_lockf`: a device's advisory locks (`spec_advlock`), kept on the vnode
+    /// rather than in its `ReadMostly` specinfo, whose readers may not sleep as `lf_setlock`
+    /// does.
+    pub speclockf: super::lockf::LockfSlot,
+    /// The members of `bsd`'s types (`v_socket`, until the sockets move, N6).
     pub g: <G::FileGlue as FileGlue>::VnodeG,
 }
 
@@ -705,6 +711,8 @@ impl<G: ProcGlue> Vnode<G> {
             specnext: ListEntry::new(),
             data: AtomicPtr::new(ptr::null_mut()),
             klist: Klist::new(),
+            nc: super::cache::NcHeads::cell(),
+            speclockf: super::lockf::LockfSlot::new(),
             g: Default::default(),
         }
     }

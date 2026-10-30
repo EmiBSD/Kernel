@@ -138,11 +138,24 @@ paid_by = "N7"
 # mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
 # (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
 # PipeGlue bridge's end) and a new pipe file's pipeops and object (pipe_file, N8 with Ops and
-# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end).
+# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end). N5.3:
+# UnveilMatch (the unveil node a lookup matched, kern_unveil's until N8) and vnode_of (a vnode
+# file's kernel vnode, for namei's fd-relative start and the vnode files' operations) joined
+# it; the Stat and Vnode types and the vref, vrele, stat_hide_gen and stat_copyout legs left
+# it (hal's Stat, kernel::fs's vnodes), and with the switch to kernel::fs the names' types
+# (the kernel's Componentname and Nameidata), vnode_g_init (the vnode's name cache heads are
+# its own), cache_purge, lf_purgelocks, spec_advlock (the kernel's cache and record locks)
+# and abortop (vop_generic_abortop gives the pathname buffer back itself); then
+# session_ttyvp_take (spec_close reads the kernel's Session::ttyvp); then the vnode file
+# legs: stall_wait (kernel::fs::subr's vfs_stall_barrier), advlock, pathconf, isatty and
+# position_check (kernel::descrip's VOP_ADVLOCK, VOP_PATHCONF, VISTTY and v_type on the
+# vnode vnode_of gives), vnode_revoked (kqueue_scan's dead_vops test), getcwd (kern.proc_cwd's
+# vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
+# (a test glue answers with a pager double).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
-for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs"]
+for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
 paid_by = "N8"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
@@ -168,15 +181,6 @@ paid_by = "N10"
 trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
 paid_by = "N7"
-
-# bsd: the accounting file (sys/kern/proc_glue.rs's BsdAcctFile: vn_open of a regular file with
-# UNVEIL_WRITE, and its BsdAcctSink: vn_rdwr of a record, VFS_STATFS, the VBAD check,
-# vn_close), for kernel::acct (N4.6a); registered by hal_bridges_register. N5, with the vnodes.
-# kernel::acct::AcctFile
-[[bridge]]
-trait = "AcctFile"
-for = ["sys/kernel/acct.rs"]
-paid_by = "N5"
 
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
@@ -305,6 +309,8 @@ paid_by = "N7"
 # /dev/console access check (namei + VOP_ACCESS, VFS) and s_ttyvp (TIOCSCTTY's vnode test, N5);
 # d_tty and the pty master test stay in bsd's cdevsw adapters (they call the kernel with the tty
 # and the side). Paid when the console and the device switch move (N7, decision 45's CharDevice).
+# N5.3: session_has_ttyvp left it (the kernel's Session::ttyvp, D-N5.2-9), and console_access
+# (TIOCCONS's namei, vn_lock and VOP_ACCESS(VREAD) are kernel::tty's own over kernel::fs).
 # kernel::tty::TtyDevsw
 [[bridge]]
 trait = "TtyDevsw"
@@ -349,9 +355,14 @@ paid_by = "N7"
 # (ps_uvpaths, ps_uvdone, N8) and cpu_unit (CPU_INFO_UNIT, the machine). N5.0: vm's calls
 # out joined it with the VmProc bridge's end: pledge_protexec (kern_pledge, N8, required as
 # the other pledge hooks) and textvp_wxallowed (ps_textvp's MNT_WXALLOWED, N5 with
-# textvp_release).
+# textvp_release). N5.3: namei's hooks joined it (kernel::fs::lookup): pledge_namei,
+# unveil_start_relative, unveil_check_component and unveil_check_final (kern_pledge and
+# kern_unveil, N8, at the C's points) and checkzoneinfopath; session_has_tty_vnode left it
+# (the kernel's Session::ttyvp, which TIOCSCTTY sets, D-N5.2-9), and textvp_release and
+# textvp_wxallowed with it (the kernel's Process::textvp: process_new's vref, process_zap's
+# vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs"]
 paid_by = "N8"

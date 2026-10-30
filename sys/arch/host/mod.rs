@@ -1622,10 +1622,22 @@ impl MachineSignal for Machine {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostSigcontext;
 
+/// Whether `uaddr` lies in the user memory of `hal`'s host double (`hal::arch::host::copy`),
+/// where the kernel's copies (`hal::user`) find a test's user data (N5.3: `namei` is the
+/// kernel's); such an address is copied through that double.
+fn in_hal_user(uaddr: usize) -> bool {
+    use hal::arch::host::copy::{USER_BASE, USER_LEN};
+    (USER_BASE..USER_BASE + USER_LEN).contains(&uaddr)
+}
+
 /// The host has one address space: a "user" address is a pointer into the test's memory,
-/// so the copies are plain byte copies and a null address is the one `EFAULT`.
+/// so the copies are plain byte copies and a null address is the one `EFAULT`; an address in
+/// `hal`'s host user memory is copied through `hal`'s double, as the kernel copies it.
 impl UserCopy for Machine {
     fn copyin(uaddr: usize, kbuf: &mut [u8]) -> Result<(), Errno> {
+        if in_hal_user(uaddr) {
+            return hal::user::UserPtr::<u8>::new(uaddr).copyin_slice(kbuf);
+        }
         if uaddr == 0 {
             return Err(Errno::EFAULT);
         }
@@ -1637,6 +1649,9 @@ impl UserCopy for Machine {
     }
 
     fn copyout(kbuf: &[u8], uaddr: usize) -> Result<(), Errno> {
+        if in_hal_user(uaddr) {
+            return hal::user::UserPtr::<u8>::new(uaddr).copyout_slice(kbuf);
+        }
         if uaddr == 0 {
             return Err(Errno::EFAULT);
         }
@@ -1646,6 +1661,9 @@ impl UserCopy for Machine {
     }
 
     fn copyinstr(uaddr: usize, kbuf: &mut [u8]) -> Result<usize, Errno> {
+        if in_hal_user(uaddr) {
+            return hal::user::UserPtr::<u8>::new(uaddr).copyinstr(kbuf);
+        }
         if uaddr == 0 {
             return Err(Errno::EFAULT);
         }
@@ -1661,6 +1679,9 @@ impl UserCopy for Machine {
     }
 
     fn copyin32(uaddr: usize) -> Result<u32, Errno> {
+        if in_hal_user(uaddr) {
+            return hal::user::UserPtr::<u32>::new(uaddr).copyin32();
+        }
         if uaddr == 0 || uaddr & 0x3 != 0 {
             return Err(Errno::EFAULT);
         }
@@ -1669,6 +1690,9 @@ impl UserCopy for Machine {
     }
 
     fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
+        if in_hal_user(uaddr) {
+            return hal::user::UserPtr::<u8>::new(uaddr).copyoutstr(kbuf);
+        }
         if uaddr == 0 {
             return Err(Errno::EFAULT);
         }

@@ -109,8 +109,6 @@ use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
 use crate::machine::copy::copyinstr;
@@ -140,10 +138,12 @@ use crate::sys::mount::{
     Vfsconf, Vfsops,
 };
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::proc::Proc;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Ino, Uid, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, SKIPSYSTEM, V_SAVE, VBAD, VBLK, VDIR, VNON, VREG, VROOT, VSYSTEM, VT_NTFS, Vnode,
     Vtype,

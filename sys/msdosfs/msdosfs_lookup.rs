@@ -101,8 +101,6 @@
 //!   feature here.
 
 use crate::kern::subr_prf::printf;
-use crate::kern::vfs_cache::{cache_enter, cache_lookup};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::msdosfs::bpb::getushort;
 use crate::msdosfs::denode::{Denode, MSDOSFSROOT_OFS, de_externalize, vtode};
@@ -126,9 +124,11 @@ use crate::sys::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, MAKEENTRY, PDIRUNLOCK, RENAME,
     SAVENAME, WANTPARENT,
 };
+use crate::sys::namei::{cache_enter, cache_lookup};
 use crate::sys::proc::Proc;
 use crate::sys::types::Daddr;
 use crate::sys::ucred::NOCRED;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{VEXEC, VROOT, VWRITE, VopLookupArgs};
 use crate::sys::vnode::{vput, vref};
 
@@ -177,9 +177,9 @@ unsafe fn bdata(bp: &Buf) -> &mut [u8] {
     unsafe { bp.data() }
 }
 
-/// `cnp->cn_proc`, `None` when the component name has no thread.
-fn cn_proc(cnp: &Componentname) -> Option<&Proc> {
-    (!cnp.cn_proc.is_null()).then(|| cnp.proc())
+/// `cnp->cn_proc` (a componentname always has its thread).
+fn cn_proc<'a>(cnp: &Componentname<'a>) -> Option<&'a Proc> {
+    Some(cnp.proc())
 }
 
 /// `msdosfs_lookup` (`vop_lookup`): look the last component of `a_cnp` up in the directory
@@ -189,7 +189,7 @@ fn cn_proc(cnp: &Componentname) -> Option<&Proc> {
 /// of the last component answers `EJUSTRETURN` and leaves in the directory's denode where the
 /// new entry should go (`de_fndoffset`, `de_fndcnt`); anything else answers `ENOENT`. The
 /// directory stays locked unless `PDIRUNLOCK` is set on return.
-pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let vdp = ap.a_dvp;
     let cnp = &mut *ap.a_cnp;
     let nameiop = cnp.cn_nameiop;
@@ -207,7 +207,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     if dp.de_Attributes.get() & ATTR_DIRECTORY == 0 {
         return Err(Errno::ENOTDIR);
     }
-    VOP_ACCESS(vdp, VEXEC, cnp.cn_cred, cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
 
     // We now have a segment name to search for, and a directory to search.
     //
@@ -239,7 +239,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                 {
                     // Access for write is interpreted as allowing creation of files in the
                     // directory.
-                    VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
+                    VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
                     // Return an indication of where the new directory entry should be put.
                     dp.de_fndoffset.set(slotoffset);
                     dp.de_fndcnt.set(wincnt - 1);
@@ -262,7 +262,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                 }
                 // Insert name into cache (as non-existent) if appropriate.
                 if cnp.cn_flags & MAKEENTRY != 0 && nameiop != CREATE {
-                    cache_enter(vdp, *ap.a_vpp, cnp);
+                    cache_enter(vdp, *ap.a_vpp, cnp.name());
                 }
                 return Err(Errno::ENOENT);
             }
@@ -283,7 +283,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         }
 
         // Write access to directory required to delete files.
-        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
 
         // Return pointer to current entry in dp->i_offset. Save directory inode pointer in
         // ndp->ni_dvp for dirremove().
@@ -310,7 +310,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             return Err(Errno::EROFS); // really? XXX
         }
 
-        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
 
         // Careful about locking second inode. This can only occur if the target is ".".
         if dp.de_StartCluster.get() == scn && isadir {
@@ -374,7 +374,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
     // Insert name into cache if appropriate.
     if cnp.cn_flags & MAKEENTRY != 0 {
-        cache_enter(vdp, *ap.a_vpp, cnp);
+        cache_enter(vdp, *ap.a_vpp, cnp.name());
     }
     Ok(())
 }
@@ -1059,6 +1059,7 @@ mod tests {
     use crate::sys::namei::LOOKUP;
     use crate::sys::vnode::{VDIR, VT_MSDOSFS, Vnode, VopInactiveArgs, VopReclaimArgs, Vops};
     use crate::sys::vnode::{getnewvnode, vrele};
+    use kernel::fs::vops::Cred;
 
     /// The name of a 2-part long name entry file in the sample image.
     const LONG2: &[u8] = b"a rather long name.txt";
@@ -1136,14 +1137,9 @@ mod tests {
     }
 
     /// A component name for `name`.
-    fn cn(p: &Proc, name: &'static [u8], nameiop: u64, flags: u64) -> Componentname {
-        let mut cnp = Componentname::new();
-        cnp.cn_nameiop = nameiop;
-        cnp.cn_flags = flags;
-        cnp.cn_proc = p;
-        cnp.cn_cred = p.ucred_ptr();
-        cnp.cn_nameptr = name.as_ptr();
-        cnp.cn_namelen = name.len() as i64;
+    fn cn<'p>(p: &'p Proc, name: &'static [u8], nameiop: u64, flags: u64) -> Componentname<'p> {
+        let mut cnp = Componentname::new(nameiop, flags, p, Cred::from_raw(p.ucred_ptr()));
+        cnp.set_name_lit(name);
         cnp
     }
 

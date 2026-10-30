@@ -84,9 +84,9 @@ use core::ptr;
 
 use crate::kassert;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_lockf::LockfStateSlot;
 use crate::kern::vfs_vops::VOP_ISLOCKED;
 use crate::queue_adapter;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::mount::{Fid, Mount};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
 use crate::sys::rwlock::{Rrwlock, Rwlock};
@@ -257,7 +257,7 @@ pub struct TmpfsNode {
     /// `tn_birthtime`.
     pub tn_birthtime: Cell<Timespec>,
     /// `tn_lockf`: head of byte-level lock list (used by `tmpfs_advlock`).
-    pub tn_lockf: LockfStateSlot,
+    pub tn_lockf: LockfSlot,
     /// `tn_spec`.
     pub tn_spec: TnSpec,
 }
@@ -288,7 +288,7 @@ impl TmpfsNode {
             tn_mtime: Cell::new(Timespec::new(0, 0)),
             tn_ctime: Cell::new(Timespec::new(0, 0)),
             tn_birthtime: Cell::new(Timespec::new(0, 0)),
-            tn_lockf: Cell::new(None),
+            tn_lockf: LockfSlot::new(),
             tn_spec: TnSpec {
                 tn_dev: TnDev {
                     tn_rdev: Cell::new(0),

@@ -21,16 +21,23 @@
 //! buffer header and its owner's token, `<sys/buf.h>`, the buffer cache and its memory, and
 //! the disk queues and physio (N5.1); the vnode, the mount, their operations and the VFS core
 //! (`vfs_subr.c`, `vfs_sync.c`, `vfs_init.c`, `vfs_default.c`, the special files and deadfs,
-//! N5.2).
+//! N5.2); the names, the name cache, `getcwd`, the vnode file operations and the record
+//! locks (`vfs_lookup.c`, `vfs_cache.c`, `vfs_getcwd.c`, `vfs_vnops.c`, `vfs_lockf.c`,
+//! N5.3).
 
 pub mod bio;
 pub mod biomem;
 pub mod buf;
 pub mod bufq;
+pub mod cache;
 pub mod default;
+pub mod getcwd;
 pub mod init;
+pub mod lockf;
+pub mod lookup;
 pub mod miscfs;
 pub mod mount;
+pub mod namei;
 pub mod physio;
 pub mod spec;
 pub mod subr;
@@ -38,5 +45,6 @@ pub mod sync;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testfs;
 pub mod vnode;
+pub mod vnops;
 pub mod vops;
 /* </CODE> */

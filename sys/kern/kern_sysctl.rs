@@ -153,8 +153,6 @@ use crate::kern::sys_socket::fp_socket;
 use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
-use crate::kern::vfs_cache::NCHSTATS;
-use crate::kern::vfs_lockf::MAXLOCKSPERUID;
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
@@ -178,6 +176,7 @@ use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, FileRef, frele};
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
+use crate::sys::lockf::MAXLOCKSPERUID;
 use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
@@ -626,10 +625,12 @@ pub fn sysctl_rdstruct(
 /// `PTRTOINT64(vp->v_un.vu_socket)`: whatever pointer the vnode's union holds.
 fn vnode_un_ptr(vp: &Vnode) -> u64 {
     // `v_socket` is bsd's member of the vnode (`VnodeG`), the other members the kernel's
-    // `v_un`: one of them is set, as the C's union.
-    match vp.g.v_socket.get() {
-        Some(so) => ptrtoint64(so),
-        None => vp.un_addr() as u64,
+    // `v_un`: one of them is set, as the C's union. The socket's address is read, never
+    // followed (`Link::addr`): `unp_detach` clears the link under the vnode's lock alone,
+    // and this reader holds none, as the C's.
+    match vp.g.v_socket.addr() {
+        0 => vp.un_addr() as u64,
+        so => so as u64,
     }
 }
 
@@ -1042,7 +1043,7 @@ impl FileWalk<'_> {
     /// `text`), current and root directories, then every open descriptor.
     fn fill_process(&mut self, pr: &Process, text: bool) -> Result<(), Errno> {
         let fdp = pr.fd();
-        if text && let Some(vp) = pr.ps_textvp.get() {
+        if text && let Some(vp) = pr.textvp.get() {
             self.fillit(None, None, KERN_FILE_TEXT, Some(vp), Some(pr))?;
         }
         if let Some(vp) = fdp.cdir() {
@@ -1421,15 +1422,6 @@ fn kern_pool_debug(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> 
     error
 }
 
-/// `kern.nchstats`.
-fn kern_nchstats(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    let mut bytes = [0u8; 12 * size_of::<u64>()];
-    for (chunk, v) in bytes.chunks_mut(size_of::<u64>()).zip(NCHSTATS.snapshot()) {
-        chunk.copy_from_slice(&v.to_ne_bytes());
-    }
-    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, &bytes)
-}
-
 /// `kern.stackgap_random`: a power of two, at least `ALIGNBYTES` (or 0), under `MAXSSIZ`.
 fn kern_stackgaprandom(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     use crate::kern::kern_exec::stackgap_random;
@@ -1573,7 +1565,11 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
     (KERN_MBSTAT, &Node(kern_mbstat)),
     (KERN_CPTIME, &Node(kern_cptime)),
     (KERN_POOL_DEBUG, &Node(kern_pool_debug)),
-    (KERN_NCHSTATS, &Node(kern_nchstats)),
+    // `kern.nchstats`: the kernel's node (N5.3), over this glue's name cache.
+    (
+        KERN_NCHSTATS,
+        &kernel::fs::cache::NchstatsNode::<BsdProcGlue>::NODE,
+    ),
     (KERN_STACKGAPRANDOM, &Node(kern_stackgaprandom)),
     (KERN_CACHEPCT, &Node(kern_cachepct)),
     (KERN_PFSTATUS, &Node(kern_pfstatus)),
@@ -2176,7 +2172,7 @@ mod tests {
         // test.
         fp.install(
             crate::sys::file::DTYPE_DMABUF,
-            &crate::kern::vfs_vnops::VNOPS,
+            &crate::sys::vnode::VNOPS,
             BsdFileData::None,
         );
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);
@@ -2544,6 +2540,21 @@ mod tests {
         assert!(e.is_some_and(|e| e.start() == at && e.end() == at + PAGE_SIZE));
         drop(g);
         drop(pr.set_vmspace(None));
+    }
+
+    /// `kern.file`'s `v_un` of a vnode (`PTRTOINT64(vp->v_un.vu_socket)`): the bound socket's
+    /// address while the vnode has one (read, never followed), else the kernel's member of
+    /// the union, 0 for none.
+    #[test]
+    fn a_vnode_s_v_un_is_its_socket_s_address_or_the_union_s() {
+        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
+        assert_eq!(vnode_un_ptr(vp), 0);
+        let so: &'static Socket =
+            Box::leak(Box::new(Socket::new(&crate::kern::uipc_proto::UNIXSW[0])));
+        vp.g.v_socket.set(Some(so));
+        assert_eq!(vnode_un_ptr(vp), core::ptr::from_ref(so).addr() as u64);
+        vp.g.v_socket.set(None);
+        assert_eq!(vnode_un_ptr(vp), 0);
     }
 }
 /* </TESTS> */

@@ -74,16 +74,8 @@
 use core::sync::atomic::Ordering;
 
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::subr_pool::pool_init;
-use crate::kern::vfs_cache::nchinit;
-use crate::machine::intr::IPL_NONE;
 use crate::sys::mount::Vfsconf;
-use crate::sys::param::MAXPATHLEN;
-use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::vnode::Vnode;
-
-/// `namei_pool`: the `MAXPATHLEN` pathname buffers of `namei`.
-pub static NAMEI_POOL: Pool = Pool::new();
 
 /// `vfsconflist[]`: the filesystem types this kernel is configured with (see the module's
 /// deviations).
@@ -192,20 +184,10 @@ pub fn set_rootvnode(vp: Option<&'static Vnode>) {
     kernel::fs::init::set_rootvnode::<BsdProcGlue>(vp);
 }
 
-/// Initialize the vnode structures and initialize each file system type: the `namei` pool,
-/// then the kernel's `vfsinit` over `vfsconflist[]` (the vnode table; the export lists' radix
-/// keys and the name cache in the C's place; each type's `vfs_init`).
+/// Initialize the vnode structures and initialize each file system type: the kernel's
+/// `vfsinit` over `vfsconflist[]` (the `namei` pool, the vnode table, the export lists' radix
+/// keys at its tail, the name cache, each type's `vfs_init`).
 pub fn vfsinit() {
-    pool_init(
-        &NAMEI_POOL,
-        MAXPATHLEN,
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "namei",
-        None,
-    );
-
     kernel::fs::init::vfsinit::<BsdProcGlue>(
         &VFSCONFLIST,
         crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
@@ -213,9 +195,6 @@ pub fn vfsinit() {
             // vntblinit's tail
             #[cfg(feature = "nfsserver")]
             crate::net::radix::rn_init(size_of::<crate::netinet::in_::SockaddrIn>() as u32);
-
-            // Initialize the vnode name cache.
-            nchinit();
         },
     );
 }

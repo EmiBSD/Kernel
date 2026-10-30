@@ -83,23 +83,22 @@
 //! - `v_socket` is the member [`VnodeG::v_socket`] (the socket is `bsd`'s), not a variant of
 //!   the kernel's `v_un`; `kinfo_file`'s `v_un` reads it first.
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64};
+use kernel::file::LockOwner;
 
+use crate::kern::kern_descrip::BsdFileGlue;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::buf::Buf;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
-use crate::sys::lockf::LockfStateSlot;
+use crate::sys::file::Fileops;
 use crate::sys::mount::Mount;
-use crate::sys::namei::{Componentname, NamecacheRbCache, NcMe};
-use crate::sys::proc::Proc;
-use crate::sys::queue::TailqHead;
+use crate::sys::namei::Componentname;
+use crate::sys::proc::{Proc, ProcExt};
 use crate::sys::socketvar::Socket;
-use crate::sys::tree::RbtHead;
 use crate::sys::types::{Daddr, Dev, Register};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
@@ -122,45 +121,25 @@ pub use kernel::fs::vnode::{
 /// `struct vnode`: the kernel's, with `bsd`'s members ([`VnodeG`]).
 pub type Vnode = kernel::fs::vnode::Vnode<BsdProcGlue>;
 
-/// The members of `struct vnode` of `bsd`'s types (the kernel's `FileGlue::VnodeG`): the name
-/// cache's heads (`vfs_cache.rs`, N5.3), the socket bound to a `VSOCK` vnode's name
-/// (`uipc_usrreq.rs`) and a device vnode's advisory locks (`si_lockf`, `vfs_lockf.rs`, N5.3).
+/// The members of `struct vnode` of `bsd`'s types (the kernel's `FileGlue::VnodeG`): the socket
+/// bound to a `VSOCK` vnode's name (`uipc_usrreq.rs`, N6). The name cache's heads and a
+/// device's record locks are the kernel vnode's own since N5.3 (`Vnode::nc`,
+/// `Vnode::speclockf`).
+#[derive(Default)]
 pub struct VnodeG {
-    /// `v_nc_tree`: VFS namecache, the entries naming children of this directory.
-    pub v_nc_tree: RbtHead<NamecacheRbCache>,
-    /// `v_cache_dst`: cache entries to us.
-    pub v_cache_dst: TailqHead<NcMe>,
     /// `v_socket` (`v_un.vu_socket`): unix ipc, the socket bound to the name. An atomic
     /// word: `unp_detach` clears it under the vnode's lock alone and `sysctl_file` reads it
     /// with no lock, as the C does (`uipc_usrreq.c:787`).
     pub v_socket: Link<Socket>,
-    /// `v_speclockf` (`v_specinfo->si_lockf`): a device vnode's advisory lock list.
-    pub v_speclockf: LockfStateSlot,
-}
-
-impl Default for VnodeG {
-    fn default() -> Self {
-        Self {
-            v_nc_tree: RbtHead::new(),
-            v_cache_dst: TailqHead::new(),
-            v_socket: Link::new(),
-            v_speclockf: Cell::new(None),
-        }
-    }
 }
 
 // SAFETY: LZ's argument for `struct vnode` (sys/sys/vnode.rs:280 at the pin), moved with the
-// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed to the
-// members that are `Cell`s. The name cache's heads (`v_nc_tree`, `v_cache_dst`) are written
-// and read only by `vfs_cache.rs` under the kernel lock (the C's `KERNEL_LOCK()` around
-// `namei` and `cache_purge`), and the device's lock list (`v_speclockf`) only by
-// `vfs_lockf.rs` under `lockf_lock`; `vnode_g_init` initialises the heads on a vnode no other
-// thread reaches yet. So no two CPUs touch one `Cell` at once. `v_socket` needs no lock: it is
-// an atomic word (`Link`), whose loads and stores never race; it is not `Sync` by itself only
-// because `Socket` is not (its fields are `Cell`s under the socket's lock), and the reference
-// it hands another CPU is opened as every socket reference of `bsd` is: `unp_connect` reads
-// `so_type` (`[I]`, set once by `socreate`) and takes `solock` before the rest, `sysctl_file`
-// takes only the address. Paid at N5.3 (the name cache and lockf get typed owners) and N6 (the
+// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed at N5.3 to
+// the one member left: `v_socket` is an atomic word (`Link`), whose loads and stores never
+// race; it is not `Sync` by itself only because `Socket` is not (its fields are `Cell`s under
+// the socket's lock), and the reference it hands another CPU is opened as every socket
+// reference of `bsd` is: `unp_connect` reads `so_type` (`[I]`, set once by `socreate`) and
+// takes `solock` before the rest, `sysctl_file` takes only the address. Paid at N6 (the
 // sockets).
 unsafe impl Sync for VnodeG {}
 
@@ -174,6 +153,9 @@ pub static MAXVNODES: &AtomicI32 = &crate::kern::kern_descrip::VFS_TABLES.maxvno
 /// What `kern/vfs_subr.rs` keeps (the NFS export list, the shutdown trio), named here as LZ's
 /// whole module was.
 pub use crate::kern::vfs_subr::*;
+/// `vnode.h`'s `vn_*` functions (`vfs_vnops.c`) and `vfs_getcwd_common` (`vfs_getcwd.c`),
+/// where the C declares them: the kernel's (N5.3).
+pub use kernel::fs::getcwd::{vfs_getcwd_common, vfs_getcwd_getcache, vfs_getcwd_scandir};
 pub use kernel::fs::mount::{
     vfs_busy, vfs_isbusy, vfs_mount_alloc, vfs_mount_free, vfs_mount_take, vfs_unbusy,
 };
@@ -183,6 +165,29 @@ pub use kernel::fs::subr::{
     checkalias, copy_statfs_info, insmntque, vaccess, vattr_null, vcount, vdrop, vflush, vflushbuf,
     vfs_getnewfsid, vfs_mount_foreach_vnode, vfs_mountedon, vget, vgone, vgonel, vhold, vnoperm,
     vput, vputonfreelist, vrecycle, vref, vrele, vwaitforio,
+};
+pub use kernel::fs::vnode::vn_lock;
+pub use kernel::fs::vnops::{
+    RdwrBuf, vn_close, vn_isunder, vn_marktext, vn_open, vn_rdwr, vn_stat, vn_writechk,
+};
+
+/// `vn_fsizechk(vp, uio, ioflag, &overrun)`: the kernel's, its thread the uio's
+/// (`uio_procp`), pinned for `SIGXFSZ` as `bsd` pins its threads (`ProcExt::as_static`).
+pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result<usize, Errno> {
+    let p = uio.uio_procp.map(|p| hal::pin::pin_static(p.as_static()));
+    kernel::fs::vnops::vn_fsizechk(vp, uio, ioflag, p)
+}
+
+/// `vnops`: the vnode files' operations, the kernel's (`kernel::fs::vnops::VnodeFileOps`,
+/// N5.3) as `bsd`'s table holds them.
+pub static VNOPS: Fileops = Fileops {
+    fo_read: kernel::fs::vnops::vn_read::<BsdFileGlue>,
+    fo_write: kernel::fs::vnops::vn_write::<BsdFileGlue>,
+    fo_ioctl: kernel::fs::vnops::vn_ioctl::<BsdFileGlue>,
+    fo_kqfilter: kernel::fs::vnops::vn_kqfilter::<BsdFileGlue>,
+    fo_stat: kernel::fs::vnops::vn_statfile::<BsdFileGlue>,
+    fo_close: kernel::fs::vnops::vn_closefile::<BsdFileGlue>,
+    fo_seek: Some(kernel::fs::vnops::vn_seek::<BsdFileGlue>),
 };
 
 /// `vp->v_op = ops`: a file system's table (registered with the kernel on its first use).
@@ -272,35 +277,35 @@ pub struct VopIslockedArgs {
 }
 
 /// `struct vop_lookup_args`.
-pub struct VopLookupArgs<'a> {
+pub struct VopLookupArgs<'a, 'b> {
     /// `a_dvp`: the directory searched.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`: the vnode found, NULL when there is none.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`: the component looked up.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_create_args`.
-pub struct VopCreateArgs<'a> {
+pub struct VopCreateArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
 
 /// `struct vop_mknod_args`.
-pub struct VopMknodArgs<'a> {
+pub struct VopMknodArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
@@ -436,71 +441,71 @@ pub struct VopFsyncArgs<'a> {
 }
 
 /// `struct vop_remove_args`.
-pub struct VopRemoveArgs<'a> {
+pub struct VopRemoveArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_link_args`.
-pub struct VopLinkArgs<'a> {
+pub struct VopLinkArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_rename_args`.
-pub struct VopRenameArgs<'a> {
+pub struct VopRenameArgs<'a, 'b, 'c> {
     /// `a_fdvp`.
     pub a_fdvp: &'static Vnode,
     /// `a_fvp`.
     pub a_fvp: &'static Vnode,
     /// `a_fcnp`.
-    pub a_fcnp: &'a mut Componentname,
+    pub a_fcnp: &'a mut Componentname<'b>,
     /// `a_tdvp`.
     pub a_tdvp: &'static Vnode,
     /// `a_tvp`: NULL when the target does not exist.
     pub a_tvp: Option<&'static Vnode>,
     /// `a_tcnp`.
-    pub a_tcnp: &'a mut Componentname,
+    pub a_tcnp: &'a mut Componentname<'c>,
 }
 
 /// `struct vop_mkdir_args`.
-pub struct VopMkdirArgs<'a> {
+pub struct VopMkdirArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
 
 /// `struct vop_rmdir_args`.
-pub struct VopRmdirArgs<'a> {
+pub struct VopRmdirArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_symlink_args`.
-pub struct VopSymlinkArgs<'a> {
+pub struct VopSymlinkArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
     /// `a_target`: the link's contents, without the NUL.
@@ -530,11 +535,11 @@ pub struct VopReadlinkArgs<'a, 'b> {
 }
 
 /// `struct vop_abortop_args`.
-pub struct VopAbortopArgs<'a> {
+pub struct VopAbortopArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_inactive_args`.
@@ -601,8 +606,8 @@ pub struct VopPathconfArgs<'a> {
 pub struct VopAdvlockArgs<'a> {
     /// `a_vp`.
     pub a_vp: &'static Vnode,
-    /// `a_id`: the lock's owner (a `struct file *` or a `struct process *`).
-    pub a_id: *const c_void,
+    /// `a_id`: the lock's owner (a descriptor table or a file, D-N5.3-11).
+    pub a_id: LockOwner,
     /// `a_op`.
     pub a_op: i32,
     /// `a_fl`.
@@ -632,7 +637,7 @@ pub type VopUnlockFn = fn(&mut VopUnlockArgs) -> Result<(), Errno>;
 /// The type of `vop_islocked`: the lock status, as the C returns it.
 pub type VopIslockedFn = fn(&mut VopIslockedArgs) -> i32;
 /// The type of `vop_abortop`.
-pub type VopAbortopFn = fn(&mut VopAbortopArgs<'_>) -> Result<(), Errno>;
+pub type VopAbortopFn = fn(&mut VopAbortopArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_access`.
 pub type VopAccessFn = fn(&mut VopAccessArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_advlock`.
@@ -644,7 +649,7 @@ pub type VopBwriteFn = fn(&mut VopBwriteArgs) -> Result<(), Errno>;
 /// The type of `vop_close`.
 pub type VopCloseFn = fn(&mut VopCloseArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_create`.
-pub type VopCreateFn = fn(&mut VopCreateArgs<'_>) -> Result<(), Errno>;
+pub type VopCreateFn = fn(&mut VopCreateArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_fsync`.
 pub type VopFsyncFn = fn(&mut VopFsyncArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_getattr`.
@@ -654,11 +659,11 @@ pub type VopInactiveFn = fn(&mut VopInactiveArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_ioctl`.
 pub type VopIoctlFn = fn(&mut VopIoctlArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_link`.
-pub type VopLinkFn = fn(&mut VopLinkArgs<'_>) -> Result<(), Errno>;
+pub type VopLinkFn = fn(&mut VopLinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_lookup`.
-pub type VopLookupFn = fn(&mut VopLookupArgs<'_>) -> Result<(), Errno>;
+pub type VopLookupFn = fn(&mut VopLookupArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_mknod`.
-pub type VopMknodFn = fn(&mut VopMknodArgs<'_>) -> Result<(), Errno>;
+pub type VopMknodFn = fn(&mut VopMknodArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_open`.
 pub type VopOpenFn = fn(&mut VopOpenArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_pathconf`.
@@ -674,21 +679,21 @@ pub type VopReadlinkFn = fn(&mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_reclaim`.
 pub type VopReclaimFn = fn(&mut VopReclaimArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_remove`.
-pub type VopRemoveFn = fn(&mut VopRemoveArgs<'_>) -> Result<(), Errno>;
+pub type VopRemoveFn = fn(&mut VopRemoveArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_rename`.
-pub type VopRenameFn = fn(&mut VopRenameArgs<'_>) -> Result<(), Errno>;
+pub type VopRenameFn = fn(&mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno>;
 /// The type of `vop_revoke`.
 pub type VopRevokeFn = fn(&mut VopRevokeArgs) -> Result<(), Errno>;
 /// The type of `vop_mkdir`.
-pub type VopMkdirFn = fn(&mut VopMkdirArgs<'_>) -> Result<(), Errno>;
+pub type VopMkdirFn = fn(&mut VopMkdirArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_rmdir`.
-pub type VopRmdirFn = fn(&mut VopRmdirArgs<'_>) -> Result<(), Errno>;
+pub type VopRmdirFn = fn(&mut VopRmdirArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_setattr`.
 pub type VopSetattrFn = fn(&mut VopSetattrArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_strategy`.
 pub type VopStrategyFn = fn(&mut VopStrategyArgs) -> Result<(), Errno>;
 /// The type of `vop_symlink`.
-pub type VopSymlinkFn = fn(&mut VopSymlinkArgs<'_>) -> Result<(), Errno>;
+pub type VopSymlinkFn = fn(&mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_write`.
 pub type VopWriteFn = fn(&mut VopWriteArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_kqfilter`.
@@ -835,6 +840,104 @@ mod tests {
         ] {
             assert_eq!(crate::reftest::int(&defs, name), Some(value), "{name}");
         }
+    }
+
+    /// Every slot of `VNOPS` (bsd's table over the kernel's vnode file operations) and the
+    /// adapters of this header called once on a tmpfs file, as a file opened by `open(2)`
+    /// holds it (N5.1's lesson: an adapter no host test calls is one a boot finds broken):
+    /// `fo_read` and `fo_write` of an empty file, `fo_ioctl`'s `FIONREAD`, `fo_stat`,
+    /// `fo_seek`, `fo_kqfilter` (an unknown filter), `vn_fsizechk`, a record lock through
+    /// `VOP_ADVLOCK` (`sys::lockf::lf_advlock`), and `fo_close` from the last reference.
+    #[test]
+    fn every_vnops_slot_reaches_the_kernel_s_vnode_file_operations() {
+        use crate::kern::kern_descrip::{BsdFileData, closef, fnew};
+        use crate::kern::vfs_init::set_rootvnode;
+        use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_UNLOCK};
+        use crate::sys::fcntl::{F_FLOCK, F_SETLK, F_UNLCK, F_WRLCK, FREAD, FWRITE, O_CREAT};
+        use crate::sys::file::DTYPE_VNODE;
+        use crate::sys::filio::FIONREAD;
+        use crate::sys::namei::{LOOKUP, NiDirp, ndinit};
+        use crate::sys::stat::Stat;
+        use crate::sys::uio::Iovec;
+        use crate::tmpfs::tmpfs_vfsops::tests::{args, setup, tmpfs_conf};
+        use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
+
+        // A tmpfs as "/", the thread's current directory (tmpfs_vnops' tests' set-up).
+        let (_g, p) = setup();
+        // Unlimited resources (vn_fsizechk reads RLIMIT_FSIZE).
+        let mut limits = kernel::resource::Plimit::new();
+        for l in &mut limits.pl_rlimit {
+            l.rlim_cur = kernel::resource::RLIM_INFINITY;
+            l.rlim_max = kernel::resource::RLIM_INFINITY;
+        }
+        drop(
+            p.process()
+                .set_limit(kernel::resource::PlimitRef::new(limits)),
+        );
+        // The record locks' pools (init_main's lf_init).
+        crate::sys::lockf::lf_init();
+        let mp = vfs_mount_alloc(None, tmpfs_conf());
+        let mut data = args(1 << 20, 0, 0, 0o755);
+        let mut nd = ndinit(LOOKUP, 0, NiDirp::Sys(b"/"), p);
+        tmpfs_mount(mp, b"/", &mut data, &mut nd, p).expect("mount");
+        vfs_unbusy(mp);
+        let root = tmpfs_root(mp).expect("root");
+        set_rootvnode(Some(root));
+        p.fd().set_cdir(Some(root));
+        vref(root);
+        let _ = VOP_UNLOCK(root);
+
+        // open("/f", O_RDWR | O_CREAT, 0644): the vnode on a file of VNOPS.
+        let mut nd = ndinit(0, 0, NiDirp::Sys(b"/f"), p);
+        vn_open(&mut nd, FREAD | FWRITE | O_CREAT, 0o644).expect("open");
+        let vp = nd.ni_vp.expect("a vnode");
+        let _ = VOP_UNLOCK(vp);
+        let fp = fnew(p).expect("a file");
+        fp.f_flag.store(
+            (FREAD | FWRITE) as u32,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(vp));
+        assert_eq!(vp.writecount(), 1);
+
+        let mut byte = [0u8; 1];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut byte, Some(p));
+        assert_eq!((VNOPS.fo_read)(&fp, &mut uio, 0), Ok(()));
+        assert_eq!(uio.uio_resid, 1, "an empty file reads nothing");
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_write(&mut iov, &byte[..0], Some(p));
+        assert_eq!((VNOPS.fo_write)(&fp, &mut uio, 0), Ok(()));
+        let mut n = [0xffu8; 4];
+        assert_eq!((VNOPS.fo_ioctl)(&fp, FIONREAD, &mut n, p), Ok(()));
+        assert_eq!(i32::from_ne_bytes(n), 0);
+        let mut st = Stat::default();
+        assert_eq!((VNOPS.fo_stat)(&fp, &mut st, p), Ok(()));
+        assert_eq!(st.st_mode & 0o7777, 0o644);
+        let mut off = 5;
+        let seek = VNOPS.fo_seek.expect("a vnode seeks");
+        assert_eq!(seek(&fp, &mut off, 0, p), Ok(()));
+        assert_eq!(off, 5);
+        let kn: &'static Knote = std::boxed::Box::leak(std::boxed::Box::new(Knote::detached()));
+        kn.kn_filter().set(-100);
+        assert_eq!((VNOPS.fo_kqfilter)(&fp, kn), Err(Errno::EINVAL));
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_write(&mut iov, &byte, Some(p));
+        assert_eq!(vn_fsizechk(vp, &mut uio, 0), Ok(0));
+        let mut fl = Flock {
+            l_type: F_WRLCK,
+            ..Flock::default()
+        };
+        let id = LockOwner::File(fp.addr());
+        assert_eq!(VOP_ADVLOCK(vp, id, F_SETLK, &mut fl, F_FLOCK), Ok(()));
+        fl.l_type = F_UNLCK;
+        assert_eq!(
+            VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut fl, F_FLOCK),
+            Ok(())
+        );
+        // The last reference: fdrop's fo_close (vn_closefile, vn_close's FWRITE count).
+        assert_eq!(closef(fp, p), Ok(()));
+        assert_eq!(vp.writecount(), 0);
     }
 }
 /* </TESTS> */

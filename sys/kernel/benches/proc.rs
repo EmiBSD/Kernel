@@ -344,9 +344,6 @@ impl ProcGlue for BenchGlue {
     ) -> Result<(), Errno> {
         Ok(())
     }
-    fn textvp_wxallowed(_pr: &proc::Process<Self>) -> bool {
-        false
-    }
     /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
     fn setitimer(
         _which: i32,
@@ -405,7 +402,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn stat(
         &self,
         _: &File<BenchFiles>,
-        _: &mut testutil::TestStat,
+        _: &mut hal::sys::stat::Stat,
         _: &proc::Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

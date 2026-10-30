@@ -109,17 +109,16 @@
 //! - The 4-clause licence of the Wasabi Systems block (advertising clause) was accepted by
 //!   the user at M2 for this project.
 
+use crate::sys::vnode::RdwrBuf;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
+use kernel::fs::vops::Cred;
+use libkern::strnlen;
 
 use crate::kern::exec_subr::{exec_process_vmcmds, exec_setup_stack};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_syscalls::NameiBuf;
-use crate::kern::vfs_vnops::{vn_marktext, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_CLOSE, VOP_GETATTR};
 use crate::machine::copy::copyout;
 use crate::machine::exec::MachineExec;
@@ -142,15 +141,18 @@ use crate::sys::fcntl::FREAD;
 use crate::sys::malloc::{M_PINSYSCALL, M_TEMP, M_WAITOK};
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::mount::MNT_NOEXEC;
+use crate::sys::namei::pathbuf_get;
 use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, Nameidata, NiDirp, UNVEIL_READ};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{MAXPATHLEN, PAGE_SIZE};
 use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::proc::ProcExt;
 use crate::sys::proc::{BOGO_PC, Proc};
 use crate::sys::syscall::{SYS_MAXSYSCALL, SYS_kbind};
-use crate::sys::uio::{UioRw, UioSeg};
+use crate::sys::uio::UioRw;
 use crate::sys::vnode::vput;
 use crate::sys::vnode::{IO_UNIT, VREAD, VREG, Vnode};
+use crate::sys::vnode::{vn_marktext, vn_rdwr};
 use hal::malloc::MArray;
 use hal::vm::param::{round_page, trunc_page};
 use kernel::proc::PinTable;
@@ -344,12 +346,10 @@ pub fn elf_read_from(p: &Proc, vp: ExecFile<'_>, off: u64, buf: &mut [u8]) -> Re
             vn_rdwr(
                 UioRw::UIO_READ,
                 vp,
-                buf.as_mut_ptr().cast::<c_void>(),
-                buf.len(),
+                RdwrBuf::Kernel(&mut buf[..]),
                 off as i64,
-                UioSeg::UIO_SYSSPACE,
                 0,
-                p.ucred_ptr(),
+                Cred::from_raw(p.ucred_ptr()),
                 Some(&mut resid),
                 Some(p),
             )?;
@@ -809,8 +809,8 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
             if pp.p_filesz < 2 || pp.p_filesz > MAXPATHLEN as u64 {
                 return Err(Errno::ENOEXEC);
             }
-            let interp = NameiBuf::get()?;
-            let buf = &mut interp.as_mut()[..pp.p_filesz as usize];
+            let mut interp = pathbuf_get().ok_or(Errno::ENOMEM)?;
+            let buf = &mut interp[..pp.p_filesz as usize];
             let read = elf_read_from(p, file, pp.p_offset, buf);
             let terminated = buf[buf.len() - 1] == 0;
             epp.ep_interp = Some(interp);
@@ -861,12 +861,10 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
                 ExecFile::Vnode(vp) => vn_rdwr(
                     UioRw::UIO_READ,
                     vp,
-                    bytes.as_mut_ptr().cast::<c_void>(),
-                    bytes.len(),
+                    RdwrBuf::Kernel(&mut bytes[..]),
                     pp.p_offset as i64,
-                    UioSeg::UIO_SYSSPACE,
                     IO_UNIT,
-                    p.ucred_ptr(),
+                    Cred::from_raw(p.ucred_ptr()),
                     None,
                     Some(p),
                 ),
@@ -1066,7 +1064,7 @@ pub fn exec_elf_fixup(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Errno> 
     }
 
     if let Some(interp) = &interp
-        && let Err(error) = elf_load_file(p, interp.as_str(), epp)
+        && let Err(error) = elf_load_file(p, &interp[..strnlen(&interp[..], MAXPATHLEN)], epp)
     {
         epp.ep_vmcmds.kill();
         return Err(error);
