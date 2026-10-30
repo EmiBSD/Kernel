@@ -71,6 +71,9 @@ pub enum Kind {
     Sock,
     /// A character device (`VCHR`: `/dev/console`).
     Chr,
+    /// A symbolic link to the path (`VLNK`; its bytes reach namei while the test glue copies
+    /// kernel bytes, `testutil::set_copy_kernel`).
+    Lnk(&'static [u8]),
 }
 
 /// `/`.
@@ -93,8 +96,12 @@ pub const S: usize = 7;
 pub const DEV: usize = 8;
 /// `/dev/console`, a character device (`TIOCCONS`'s lookup; what `acct(2)` refuses).
 pub const CONSOLE: usize = 9;
+/// `/a/abs -> /f`, an absolute symbolic link.
+pub const ABS: usize = 10;
+/// `/lnk -> a/c`, a relative symbolic link.
+pub const LNK: usize = 11;
 /// The number of nodes.
-pub const N: usize = 10;
+pub const N: usize = 12;
 
 /// The tree's kinds.
 pub const KINDS: [Kind; N] = [
@@ -108,6 +115,8 @@ pub const KINDS: [Kind; N] = [
     Kind::Sock,
     Kind::Dir,
     Kind::Chr,
+    Kind::Lnk(b"/f"),
+    Kind::Lnk(b"a/c"),
 ];
 
 /// The tree's names and parents (the root is its own parent, as `..` of `/` is `/`).
@@ -122,6 +131,8 @@ pub const NAMES: [(&[u8], usize); N] = [
     (b"s", ROOT),
     (b"dev", ROOT),
     (b"console", DEV),
+    (b"abs", A),
+    (b"lnk", ROOT),
 ];
 
 /// A node's in-core state: its lock, its index and its record locks.
@@ -228,6 +239,7 @@ pub fn vget_node(
         Kind::Reg => VREG,
         Kind::Sock => super::vnode::VSOCK,
         Kind::Chr => super::vnode::VCHR,
+        Kind::Lnk(_) => super::vnode::VLNK,
     });
     if idx == ROOT {
         vp.set_flag(VROOT);
@@ -470,6 +482,18 @@ impl Vnops<TestGlue> for TestVops {
         let mut buf = [b'x'; 64];
         let n = uio.uio_resid.min(buf.len());
         <TestFiles as crate::file::FileGlue>::uiomove(&mut buf[..n], uio)
+    }
+    fn readlink(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        uio: &mut Uio<'_, TestGlue>,
+        _cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        let Some(Kind::Lnk(target)) = node_of(vp).map(|n| KINDS[n.idx]) else {
+            return Err(Errno::EINVAL);
+        };
+        let mut buf = target.to_vec();
+        <TestFiles as crate::file::FileGlue>::uiomove(&mut buf, uio)
     }
     fn write(
         &self,

@@ -790,6 +790,17 @@ pub fn test_uiomove<G: crate::proc::ProcGlue>(
             } else {
                 hal::user::UserPtr::<u8>::new(addr).copyin_slice(&mut buf[done..done + cnt])?;
             }
+        } else if COPY_KERNEL.with(Cell::get)
+            && let Some(t) = kcopy_token()
+        {
+            // A kernel iovec the uio's maker lent (Uio::kernel_read/kernel_write over a
+            // slice it borrows for the uio's life): the token's contract, as bsd's uiomove.
+            let addr = iov.iov_base.addr();
+            if uio.uio_rw == UioRw::UIO_READ {
+                t.kcopy_out(&buf[done..done + cnt], addr)?;
+            } else {
+                t.kcopy_in(addr, &mut buf[done..done + cnt])?;
+            }
         }
         iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
         iov.iov_len -= cnt;
@@ -1164,6 +1175,8 @@ std::thread_local! {
     static MAXFILES: Cell<i32> = const { Cell::new(1000) };
     static NAMEI_PLEDGE: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
     static UNVEIL_FINAL: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_FINAL_MATCH: Cell<Option<u32>> = const { Cell::new(None) };
+    static COPY_KERNEL: Cell<bool> = const { Cell::new(false) };
 }
 
 /// What the test proc glues' `pledge_namei` answers on this thread from now on (`None`:
@@ -1194,6 +1207,42 @@ pub fn set_unveil_final(e: Option<hal::sys::errno::Errno>) {
 pub fn unveil_final() -> Result<(), hal::sys::errno::Errno> {
     hook_log("unveil_check_final");
     UNVEIL_FINAL.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// The test file glues' `ni_unveil_match`: a count of the `unveil_check_component` calls
+/// since the lookup started or the match was last cleared (the C's NULL), which the test
+/// proc glues' `unveil_check_final` records ([`unveil_final_match`]).
+pub type UnveilCount = u32;
+
+/// Records the match `unveil_check_final` saw.
+pub fn unveil_final_at(m: UnveilCount) {
+    UNVEIL_FINAL_MATCH.with(|c| c.set(Some(m)));
+}
+
+/// The match this thread's last `unveil_check_final` saw (taken).
+pub fn unveil_final_match() -> Option<UnveilCount> {
+    UNVEIL_FINAL_MATCH.with(Cell::take)
+}
+
+/// hal's kcopy token, taken by the first [`set_copy_kernel`] of a test process that has no
+/// other taker (a kernel test process: `bsd`, whose `uiomove` holds the token, is not linked
+/// into it); `None` when another took it.
+static KCOPY: OnceLock<Option<&'static hal::user::KcopyToken>> = OnceLock::new();
+
+/// Makes this thread's test glues' `uiomove` copy the bytes of a kernel (`UIO_SYSSPACE`)
+/// iovec too, through hal's kcopy (on), or account them only (off, the default): a test file
+/// system's `VOP_READLINK` then gives namei the link's bytes. Panics where the token is
+/// another's.
+pub fn set_copy_kernel(on: bool) {
+    if on && kcopy_token().is_none() {
+        std::panic!("set_copy_kernel: hal's kcopy token is another's in this process");
+    }
+    COPY_KERNEL.with(|c| c.set(on));
+}
+
+/// The token [`set_copy_kernel`] took.
+fn kcopy_token() -> Option<&'static hal::user::KcopyToken> {
+    *KCOPY.get_or_init(hal::user::KcopyToken::take)
 }
 
 /// Records the call of a hot hook of this thread's test glues (`namei`'s unveil hooks)
@@ -1492,7 +1541,7 @@ macro_rules! test_file_glue {
             type Data = $crate::testutil::TestFileData<$proc>;
             type FileList = FileListLink;
             type VnodeG = ();
-            type UnveilMatch = ();
+            type UnveilMatch = $crate::testutil::UnveilCount;
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)
@@ -1690,15 +1739,17 @@ macro_rules! test_proc_glue {
             }
             fn unveil_check_component(
                 _p: &$crate::proc::Thread<Self>,
-                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+                ni: &mut $crate::fs::vops::Nd<'_, Self>,
                 _dp: &'static $crate::fs::vnode::Vnode<Self>,
             ) {
+                ni.ni_unveil_match = ni.ni_unveil_match.wrapping_add(1);
                 $crate::testutil::hook_log("unveil_check_component");
             }
             fn unveil_check_final(
                 _p: &$crate::proc::Thread<Self>,
-                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+                ni: &mut $crate::fs::vops::Nd<'_, Self>,
             ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::unveil_final_at(ni.ni_unveil_match);
                 $crate::testutil::unveil_final()
             }
             /// The test glue keeps no interval timers: nothing is set, the old value stays zero.

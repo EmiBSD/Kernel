@@ -1387,6 +1387,67 @@ mod tests {
         vrele(nd.ni_vp.unwrap());
     }
 
+    /// A symbolic link (vfs_lookup.c:279-345): an absolute target restarts the walk at the
+    /// root with the unveil match cleared and `unveil_check_component` at the root before the
+    /// target's first component; a relative one goes on in the link's directory with the
+    /// match it had; REALPATH's buffer starts over at the root for an absolute target. The
+    /// test glue counts the match (`unveil_check_component` adds one, the C's NULL is 0) and
+    /// copies the link's bytes (`set_copy_kernel`).
+    #[test]
+    fn a_symbolic_link_restarts_at_the_root_with_its_unveil_check() {
+        let (_g, p) = test_thread();
+        crate::testutil::set_copy_kernel(true);
+        let _ = file_log();
+        // /a/abs -> /f: `a`, `abs`, then the root (the match cleared first), then `f`.
+        finds(p, b"/a/abs", FOLLOW, testfs::F);
+        assert_eq!(
+            hooks(),
+            [
+                "pledge_namei /a/abs",
+                "unveil_check_component",
+                "unveil_check_component",
+                "unveil_check_component",
+                "unveil_check_component",
+                "unveil_check_final"
+            ]
+        );
+        assert_eq!(
+            crate::testutil::unveil_final_match(),
+            Some(2),
+            "cleared at the root"
+        );
+        // /lnk -> a/c: `lnk`, then `a` and `c` from the link's directory, no clearing.
+        finds(p, b"/lnk", FOLLOW, C);
+        assert_eq!(
+            hooks(),
+            [
+                "pledge_namei /lnk",
+                "unveil_check_component",
+                "unveil_check_component",
+                "unveil_check_component",
+                "unveil_check_final"
+            ]
+        );
+        assert_eq!(crate::testutil::unveil_final_match(), Some(3), "kept");
+        // Without FOLLOW the last component is the link itself.
+        finds(p, b"/a/abs", 0, testfs::ABS);
+        let _ = file_log();
+        // REALPATH: an absolute target's name starts over at the root.
+        let path: &'static [u8] = b"/a/abs";
+        let mut nd = ndinit(LOOKUP, FOLLOW | SAVENAME | REALPATH, NiDirp::Sys(path), p);
+        nd.ni_cnd.cn_rpbuf = Some(pathbuf_get::<G>().unwrap());
+        nd.ni_cnd.cn_rpi = 0;
+        namei(&mut nd).unwrap();
+        let vp = nd.ni_vp.unwrap();
+        assert_eq!(idx(vp), testfs::F);
+        let rp = nd.ni_cnd.rpbuf().unwrap();
+        let len = rp.iter().position(|&c| c == 0).unwrap();
+        assert_eq!(&rp[..len], b"/f");
+        vrele(vp);
+        crate::testutil::set_copy_kernel(false);
+        assert!(!any_locked());
+    }
+
     #[test]
     fn a_refusing_hook_fails_the_lookup_and_releases_everything() {
         let (_g, p) = test_thread();
