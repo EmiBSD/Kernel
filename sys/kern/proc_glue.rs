@@ -1054,8 +1054,12 @@ impl kernel::acct::AcctFile for BsdAcctFile {
         };
         let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
         if vp.vtype() != crate::sys::vnode::VREG {
-            let _ =
-                crate::sys::vnode::vn_close(vp, crate::sys::fcntl::FWRITE, p.ucred_ptr(), Some(p));
+            let _ = crate::sys::vnode::vn_close(
+                vp,
+                crate::sys::fcntl::FWRITE,
+                Cred::from_raw(p.ucred_ptr()),
+                Some(p),
+            );
             return Err(Errno::EACCES);
         }
         Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
@@ -1097,7 +1101,8 @@ impl kernel::acct::AcctSink for BsdAcctSink {
             Some(p) if by_curproc => p.ucred_ptr(),
             _ => crate::sys::ucred::NOCRED,
         };
-        let _ = crate::sys::vnode::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
+        let _ =
+            crate::sys::vnode::vn_close(self.0, crate::sys::fcntl::FWRITE, Cred::from_raw(cred), p);
     }
 }
 

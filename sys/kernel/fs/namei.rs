@@ -226,6 +226,30 @@ impl<'a, G: ProcGlue> Componentname<'a, G> {
         }
     }
 
+    /// The lookup state of `self` and `other` exchanged (the operation, the flags, the
+    /// credential, the buffers, the name, `cn_rpi`, `cn_consume`): every member but the
+    /// thread, which the two share. For `exec`'s interpreter lookup, made in a nameidata of
+    /// its own (the interpreter's name is not the script's), whose result becomes the
+    /// script's (the C reuses one nameidata).
+    pub fn swap_lookup(&mut self, other: &mut Componentname<'_, G>) {
+        core::mem::swap(&mut self.cn_nameiop, &mut other.cn_nameiop);
+        core::mem::swap(&mut self.cn_flags, &mut other.cn_flags);
+        let (a, b) = (self.cn_cred.as_raw(), other.cn_cred.as_raw());
+        self.cn_cred = Cred::from_raw(b);
+        other.cn_cred = Cred::from_raw(a);
+        core::mem::swap(&mut self.cn_pnbuf, &mut other.cn_pnbuf);
+        core::mem::swap(&mut self.cn_rpbuf, &mut other.cn_rpbuf);
+        core::mem::swap(&mut self.cn_rpi, &mut other.cn_rpi);
+        core::mem::swap(&mut self.name, &mut other.name);
+        core::mem::swap(&mut self.cn_consume, &mut other.cn_consume);
+    }
+
+    /// `cn_nameptr != NULL`: the componentname names a component.
+    #[inline]
+    pub fn has_name(&self) -> bool {
+        !matches!(self.name, CnName::None)
+    }
+
     /// The offset of `cn_nameptr` in the pathname buffer, `None` for a name outside it.
     #[inline]
     pub fn name_off(&self) -> Option<usize> {
@@ -327,7 +351,7 @@ pub struct Nameidata<'a, G: ProcGlue> {
     /// `ni_pathlen`: remaining chars in path.
     pub ni_pathlen: usize,
     /// `ni_next`: next location in pathname, an offset in `cn_pnbuf`.
-    pub(super) ni_next: usize,
+    pub ni_next: usize,
     /// `ni_loopcnt`: count of symlinks encountered.
     pub ni_loopcnt: u64,
     /// `ni_unveil_match`: last matching unveil component (the glue's; `Default` is NULL).

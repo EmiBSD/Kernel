@@ -115,10 +115,10 @@ use alloc::vec::Vec;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel::fs::vops::Cred;
+use libkern::strnlen;
 
 use crate::kern::exec_subr::{exec_process_vmcmds, exec_setup_stack};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_CLOSE, VOP_GETATTR};
 use crate::machine::copy::copyout;
 use crate::machine::exec::MachineExec;
@@ -141,6 +141,7 @@ use crate::sys::fcntl::FREAD;
 use crate::sys::malloc::{M_PINSYSCALL, M_TEMP, M_WAITOK};
 use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 use crate::sys::mount::MNT_NOEXEC;
+use crate::sys::namei::pathbuf_get;
 use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, Nameidata, NiDirp, UNVEIL_READ};
 use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{MAXPATHLEN, PAGE_SIZE};
@@ -808,8 +809,8 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
             if pp.p_filesz < 2 || pp.p_filesz > MAXPATHLEN as u64 {
                 return Err(Errno::ENOEXEC);
             }
-            let interp = NameiBuf::get()?;
-            let buf = &mut interp.as_mut()[..pp.p_filesz as usize];
+            let mut interp = pathbuf_get().ok_or(Errno::ENOMEM)?;
+            let buf = &mut interp[..pp.p_filesz as usize];
             let read = elf_read_from(p, file, pp.p_offset, buf);
             let terminated = buf[buf.len() - 1] == 0;
             epp.ep_interp = Some(interp);
@@ -1063,7 +1064,7 @@ pub fn exec_elf_fixup(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Errno> 
     }
 
     if let Some(interp) = &interp
-        && let Err(error) = elf_load_file(p, interp.as_str(), epp)
+        && let Err(error) = elf_load_file(p, &interp[..strnlen(&interp[..], MAXPATHLEN)], epp)
     {
         epp.ep_vmcmds.kill();
         return Err(error);

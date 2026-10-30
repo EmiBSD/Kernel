@@ -1509,10 +1509,8 @@ mod tests {
     }
 
     /// `s` as a NUL-terminated path.
-    fn cpath(s: &str) -> Vec<u8> {
-        let mut v = s.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn cpath(s: &str) -> crate::kern::vfs_subr::tests::UserStr {
+        crate::kern::vfs_subr::tests::user_str(s.as_bytes())
     }
 
     /// `stat(2)`: the inode number of `path`.

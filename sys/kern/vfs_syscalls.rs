@@ -81,11 +81,13 @@
 //!   `EOPNOTSUPP` as the C does without it.
 //! - `KTRACE` is not configured.
 
+use crate::sys::namei::pathbuf_get;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
 use kernel::file::LockOwner;
+use libkern::strnlen;
 
 use hal::list::List;
 use hal::user::UserPtr;
@@ -102,9 +104,8 @@ use crate::kern::kern_sig::{psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_tc::{getnanotime, gettime};
 use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables};
-use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::{NAMEI_POOL, rootvnode, set_rootvnode, vfs_byname};
+use crate::kern::vfs_init::{rootvnode, set_rootvnode, vfs_byname};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
     VOP_OPEN, VOP_PATHCONF, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_REVOKE,
@@ -146,7 +147,6 @@ use crate::sys::pledge::{
     PLEDGE_CHOWN, PLEDGE_CPATH, PLEDGE_DPATH, PLEDGE_FATTR, PLEDGE_RPATH, PLEDGE_TTY,
     PLEDGE_UNVEIL, PLEDGE_WPATH,
 };
-use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::{PS_CHROOT, PS_PLEDGE, Proc, SINGLE_UNWIND};
 use crate::sys::resource::RLIMIT_FSIZE;
 use crate::sys::signal::SIGXFSZ;
@@ -884,47 +884,12 @@ fn change_dir(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
     error
 }
 
-/// A `MAXPATHLEN`-byte `namei_pool` buffer, given back when dropped.
-pub struct NameiBuf(NonNull<u8>);
-
-impl NameiBuf {
-    /// `pool_get(&namei_pool, PR_WAITOK)`.
-    pub fn get() -> Result<NameiBuf, Errno> {
-        pool_get(&NAMEI_POOL, PR_WAITOK)
-            .map(NameiBuf)
-            .ok_or(Errno::ENOMEM)
-    }
-
-    /// `pool_get(&namei_pool, PR_WAITOK | PR_ZERO)`.
-    pub fn get_zero() -> Result<NameiBuf, Errno> {
-        let buf = Self::get()?;
-        buf.as_mut().fill(0);
-        Ok(buf)
-    }
-
-    /// The buffer's address (`cn_rpbuf`).
-    pub fn as_ptr(&self) -> *mut u8 {
-        self.0.as_ptr()
-    }
-
-    /// The bytes up to the first NUL.
-    pub fn as_str<'b>(&self) -> &'b [u8] {
-        let all = self.as_mut();
-        let len = all.iter().position(|&c| c == 0).unwrap_or(all.len());
-        &all[..len]
-    }
-
-    /// The buffer's bytes.
-    pub fn as_mut<'b>(&self) -> &'b mut [u8] {
-        // SAFETY: a `MAXPATHLEN`-byte pool item owned by this `NameiBuf` until it drops.
-        unsafe { slice::from_raw_parts_mut(self.0.as_ptr(), MAXPATHLEN) }
-    }
-}
-
-impl Drop for NameiBuf {
-    fn drop(&mut self) {
-        pool_put(&NAMEI_POOL, self.0);
-    }
+/// `__getcwd(buf, len)`: the pathname of the current directory (the kernel's,
+/// `kernel::fs::getcwd`), as the system call table calls it.
+#[allow(non_snake_case)] // the C name: sys___getcwd
+pub fn sys___getcwd(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
+    let uap: &SysGetcwdArgs = sysargs(v);
+    kernel::fs::getcwd::sys___getcwd(p, uap.buf.get().addr(), uap.len.get())
 }
 
 /// `__realpath(pathname, resolved)`: the canonical absolute name of a path.
@@ -936,10 +901,10 @@ pub fn sys___realpath(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
         return Err(Errno::EINVAL);
     }
 
-    let pathname = NameiBuf::get()?;
-    let rpbuf = NameiBuf::get()?;
+    let mut pathname = pathbuf_get().ok_or(Errno::ENOMEM)?;
+    let mut rpbuf = pathbuf_get().ok_or(Errno::ENOMEM)?;
 
-    let pathlen = copyinstr(uap.pathname.get() as usize, pathname.as_mut())?;
+    let pathlen = copyinstr(uap.pathname.get() as usize, &mut pathname[..])?;
 
     if pathlen == 1 {
         // empty string ""
@@ -950,9 +915,9 @@ pub fn sys___realpath(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     }
 
     // Get cwd for relative path if needed, prepend to rpbuf
-    let rp = rpbuf.as_mut();
+    let rp = &mut rpbuf[..];
     rp[0] = 0;
-    if pathname.as_mut()[0] != b'/' {
+    if pathname[0] != b'/' {
         let cwdlen = MAXPATHLEN * 4; // for vfs_getcwd_common
         let Some(mem) = malloc(cwdlen, M_TEMP, M_WAITOK) else {
             return Err(Errno::ENOMEM);
@@ -996,12 +961,12 @@ pub fn sys___realpath(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let mut nd = ndinit(
         LOOKUP,
         FOLLOW | SAVENAME | REALPATH,
-        NiDirp::Sys(pathname.as_mut()),
+        NiDirp::Sys(&pathname[..]),
         p,
     );
 
-    nd.ni_cnd.cn_rpbuf = rpbuf.0.as_ptr();
-    nd.ni_cnd.cn_rpi = rp.iter().position(|&c| c == 0).unwrap_or(MAXPATHLEN);
+    nd.ni_cnd.cn_rpi = strnlen(&rpbuf[..], MAXPATHLEN);
+    nd.ni_cnd.cn_rpbuf = Some(rpbuf);
 
     nd.ni_pledge = PLEDGE_RPATH;
     nd.ni_unveil = UNVEIL_READ;
@@ -1017,12 +982,11 @@ pub fn sys___realpath(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     }
     kernel_unlock();
 
+    let rp = nd.ni_cnd.rpbuf().map_or(&[][..], |rp| &rp[..]);
     let error = copyoutstr(rp, uap.resolved.get() as usize).map(|_| ());
 
     // KTRACE: not configured.
-    if let Some(buf) = NonNull::new(nd.ni_cnd.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+    drop(nd.ni_cnd.take_pnbuf());
     error
 }
 
@@ -1057,8 +1021,9 @@ pub fn sys_unveil(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
 /// The body of `sys_unveil` between `single_thread_set` and `single_thread_clear` (the C's
 /// jumps to `end` are the returns).
 fn unveil_path(p: &Proc, path: usize, permissions: &[u8]) -> Result<(), Errno> {
-    let pathname = NameiBuf::get()?;
-    let pathlen = copyinstr(path, pathname.as_mut())?;
+    let mut pathname = pathbuf_get().ok_or(Errno::ENOMEM)?;
+    let pathlen = copyinstr(path, &mut pathname[..])?;
+    let pathname = &pathname[..];
 
     // KTRACE: not configured.
     if pathlen < 2 {
@@ -1066,19 +1031,22 @@ fn unveil_path(p: &Proc, path: usize, permissions: &[u8]) -> Result<(), Errno> {
     }
 
     // find root "/" or "//"
-    let mut nd = if pathname.as_str().iter().all(|&c| c == b'/') {
+    let mut nd = if pathname[..strnlen(pathname, MAXPATHLEN)]
+        .iter()
+        .all(|&c| c == b'/')
+    {
         // root directory
         ndinit(
             LOOKUP,
             FOLLOW | LOCKLEAF | SAVENAME,
-            NiDirp::Sys(pathname.as_mut()),
+            NiDirp::Sys(pathname),
             p,
         )
     } else {
         ndinit(
             CREATE,
             FOLLOW | LOCKLEAF | LOCKPARENT | SAVENAME,
-            NiDirp::Sys(pathname.as_mut()),
+            NiDirp::Sys(pathname),
             p,
         )
     };
@@ -1119,9 +1087,7 @@ fn unveil_path(p: &Proc, path: usize, permissions: &[u8]) -> Result<(), Errno> {
         vrele(dvp);
     }
 
-    if let Some(buf) = NonNull::new(nd.ni_cnd.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+    drop(nd.ni_cnd.take_pnbuf());
     error
 }
 
@@ -1775,8 +1741,8 @@ pub fn sys_symlinkat(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resu
 pub fn dosymlinkat(p: &Proc, upath_: *const u8, fd: i32, link: *const u8) -> Result<(), Errno> {
     let mut vattr = Vattr::new();
 
-    let path = NameiBuf::get()?;
-    let len = copyinstr(upath_ as usize, path.as_mut())?;
+    let mut path = pathbuf_get().ok_or(Errno::ENOMEM)?;
+    let len = copyinstr(upath_ as usize, &mut path[..])?;
     let mut nd = ndinitat(CREATE, LOCKPARENT, fd, upath(link), p);
     nd.ni_pledge = PLEDGE_CPATH;
     nd.ni_unveil = UNVEIL_CREATE;
@@ -1799,7 +1765,7 @@ pub fn dosymlinkat(p: &Proc, upath_: *const u8, fd: i32, link: *const u8) -> Res
         &mut nd.ni_vp,
         &mut nd.ni_cnd,
         &mut vattr,
-        &path.as_mut()[..len - 1],
+        &path[..len - 1],
     )
 }
 
@@ -2800,18 +2766,14 @@ pub fn dorenameat(
         if let Some(sd) = tond.ni_startdir {
             vrele(sd);
         }
-        if let Some(buf) = NonNull::new(tond.ni_cnd.cn_pnbuf) {
-            pool_put(&NAMEI_POOL, buf);
-        }
+        drop(tond.ni_cnd.take_pnbuf());
         error
     };
     // out1:
     if let Some(sd) = fromnd.ni_startdir {
         vrele(sd);
     }
-    if let Some(buf) = NonNull::new(fromnd.ni_cnd.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+    drop(fromnd.ni_cnd.take_pnbuf());
     error
 }
 

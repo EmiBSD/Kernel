@@ -48,6 +48,7 @@
 
 use alloc::vec;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_descrip::{BsdFileData, closef, fdinsert, fnew};
@@ -144,7 +145,7 @@ pub fn diskmapioctl(
     let mut g = fdplock(fdp);
     let bad = |g: FdGuard<'_>, fp0: FileRef, error: Errno| -> Result<(), Errno> {
         fdpunlock(g);
-        let _ = vn_close(vp, fflag as i32, p.ucred_ptr(), Some(p));
+        let _ = vn_close(vp, fflag as i32, Cred::from_raw(p.ucred_ptr()), Some(p));
         let _ = frele(fp0, p);
         Err(error)
     };

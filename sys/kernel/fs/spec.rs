@@ -1123,8 +1123,8 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
     Ok(())
 }
 
-/// Special device advisory byte-level locks (`lf_advlock(&vp->v_speclockf, 0, ...)`, the
-/// lock list `bsd`'s until N5.3).
+/// Special device advisory byte-level locks (`lf_advlock(&vp->v_speclockf, 0, ...)`: the
+/// device's lock list on the vnode, `Vnode::speclockf`).
 pub fn spec_advlock<G: ProcGlue>(
     vp: &'static Vnode<G>,
     id: LockOwner,
@@ -1135,7 +1135,7 @@ pub fn spec_advlock<G: ProcGlue>(
     if !vp.has_specinfo() {
         kpanic(format_args!("spec_advlock: no specinfo"));
     }
-    <G::FileGlue as FileGlue>::spec_advlock(vp, id, op, fl, flags)
+    super::lockf::lf_advlock::<G>(&vp.speclockf, 0, id, op, fl, flags)
 }
 
 /// `spec_open_clone(ap)`: opens a new instance of a `D_CLONE` character device: a new vnode

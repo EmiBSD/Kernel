@@ -1457,8 +1457,6 @@ macro_rules! test_file_glue {
             type Data = $crate::testutil::TestFileData<$proc>;
             type FileList = FileListLink;
             type VnodeG = ();
-            type Componentname<'a> = $crate::fs::namei::Componentname<'a, $proc>;
-            type Nameidata<'a> = $crate::fs::namei::Nameidata<'a, $proc>;
             type UnveilMatch = ();
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
@@ -1578,29 +1576,7 @@ macro_rules! test_file_glue {
             fn vfs() -> &'static $crate::fs::subr::VfsTables<$proc> {
                 VFS_TABLES.with(|t| *t)
             }
-            fn vnode_g_init(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
             fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
-            fn cache_purge(vp: &'static $crate::fs::vnode::Vnode<$proc>) {
-                $crate::fs::cache::cache_purge(vp);
-            }
-            fn lf_purgelocks(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
-            fn spec_advlock(
-                _vp: &'static $crate::fs::vnode::Vnode<$proc>,
-                _id: $crate::file::LockOwner,
-                _op: i32,
-                _fl: &mut hal::sys::fcntl::Flock,
-                _flags: i32,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Ok(())
-            }
-            /// `vop_generic_abortop`'s `pool_put(&namei_pool, cnp->cn_pnbuf)` of a buffer the
-            /// lookup left (`HASBUF`) and was not asked to keep (`SAVESTART`).
-            fn abortop(cnp: &mut $crate::fs::namei::Componentname<'_, $proc>) {
-                use $crate::fs::namei::{HASBUF, SAVESTART};
-                if cnp.cn_flags & (HASBUF | SAVESTART) == HASBUF {
-                    drop(cnp.take_pnbuf());
-                }
-            }
             fn dounmount(
                 _mp: &'static $crate::fs::mount::Mount<$proc>,
                 _flags: i32,

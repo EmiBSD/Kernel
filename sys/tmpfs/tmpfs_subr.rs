@@ -117,9 +117,7 @@ use crate::kern::kern_rwlock::{rrw_init_flags, rw_enter_write, rw_exit_write, rw
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::{getnanotime, nanotime};
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_ISLOCKED};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::dirent::{
@@ -230,7 +228,6 @@ pub fn tmpfs_alloc_node(
     nnode.tn_type.set(type_);
     nnode.tn_size.set(0);
     nnode.tn_flags.set(0);
-    nnode.tn_lockf.set(None);
     nnode
         .tn_gen
         .set(TMPFS_NODE_GEN_MASK & u64::from(arc4random()));
@@ -526,11 +523,8 @@ pub fn tmpfs_alloc_file(
     };
 
     // out:
-    if error.is_ok()
-        && cnp.cn_flags & SAVESTART == 0
-        && let Some(buf) = NonNull::new(cnp.cn_pnbuf)
-    {
-        pool_put(&NAMEI_POOL, buf);
+    if error.is_ok() && cnp.cn_flags & SAVESTART == 0 {
+        drop(cnp.take_pnbuf());
     }
     error
 }

@@ -157,7 +157,7 @@ use crate::sys::ttycom::{
     TIOCSWINSZ, TIOCUCNTL,
 };
 use crate::sys::types::{Gid, Pid, Register, Uid, major};
-use crate::sys::vnode::vn_ioctl;
+use crate::sys::vnode::VNOPS;
 use crate::sys::vnode::{VBAD, VBLK, VCHR, VDIR, VISTTY, Vnode};
 use hal::vm::uvmexp::{VM_LOADAVG, VM_MALLOC_CONF, VM_MAXSLP, VM_PSSTRINGS, VM_UVMEXP};
 
@@ -1136,7 +1136,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
         // bpf: tcpdump privsep on ^C
         && ptr::fn_addr_eq(
             fp.ops().fo_ioctl,
-            vn_ioctl as fn(&File, u64, &mut [u8], &Proc) -> Result<(), Errno>,
+            VNOPS.fo_ioctl,
         )
         && vchr.is_some_and(|vp| cdev_is(vp, bpfopen as DevTypeOpen))
     {

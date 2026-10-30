@@ -538,9 +538,8 @@ pub fn getnewvnode_id<G: ProcGlue>(
         };
         let vp: &'static Vnode<G> = PoolBox::leak(b);
         // The vnode's buffer half is the cache's from here (`RBT_INIT` of `v_bufs_tree`: the
-        // fresh vnode's tree is empty), its `bsd` members ready at their place.
+        // fresh vnode's tree is empty; the name cache's heads were made with the vnode).
         vp.bufs.set_owner(vp);
-        <G::FileGlue as FileGlue>::vnode_g_init(vp);
         t.numvnodes.fetch_add(1, Ordering::Relaxed);
         vp
     } else {
@@ -585,7 +584,7 @@ pub fn getnewvnode_id<G: ProcGlue>(
         <G::FileGlue as FileGlue>::vnode_recycle(vp);
         vp
     };
-    <G::FileGlue as FileGlue>::cache_purge(vp);
+    super::cache::cache_purge(vp);
     vp.set_vtype(VNON);
     vp.set_tag(tag);
     vp.set_ops_id(id);
@@ -1112,7 +1111,7 @@ pub fn vclean<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32, p: Option<&Thread<
         }
         vputonfreelist_locked(&l, vp);
     }
-    <G::FileGlue as FileGlue>::cache_purge(vp);
+    super::cache::cache_purge(vp);
 
     // Done with purge, notify sleepers of the grim news.
     vp.set_ops_id(VopsId::DEAD);
@@ -1202,7 +1201,7 @@ pub fn vgonel<G: ProcGlue>(vp: &'static Vnode<G>, p: Option<&Thread<G>>) {
                 vp.flag_clr(VALIASED);
             }
         }
-        <G::FileGlue as FileGlue>::lf_purgelocks(vp);
+        super::lockf::lf_purgelocks::<G>(&vp.speclockf);
         drop(vp.take_un());
     }
     // If it is on the freelist and not already at the head, move it to the head of the list.

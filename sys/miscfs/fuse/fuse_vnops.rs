@@ -73,9 +73,7 @@ use core::ptr::{self, NonNull};
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_GETATTR, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -243,10 +241,8 @@ fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-pub(crate) fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+pub(crate) fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// Copies `name` and a NUL into the start of a fresh fusebuf's data (the C's

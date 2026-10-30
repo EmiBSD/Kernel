@@ -598,17 +598,9 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Data: Send + Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
     type FileList: PinAdapter<Elem = File<Self>>;
-    /// The members of `struct vnode` of `bsd`'s types: the name cache's heads (`v_nc_tree`,
-    /// `v_cache_dst`, N5.3), `v_socket` and a device's advisory locks (`si_lockf`, N5.3);
-    /// `Default` is a new vnode's (`kernel::fs::vnode`).
+    /// The members of `struct vnode` of `bsd`'s types: `v_socket` (N6); `Default` is a new
+    /// vnode's (`kernel::fs::vnode`).
     type VnodeG: Default + Sync + 'static;
-    /// `struct componentname` (`namei`'s, `bsd`'s until N5.3's switch; the kernel's
-    /// `fs::namei::Componentname` for the test glues): what `VOP_LOOKUP` and the directory
-    /// operations receive.
-    type Componentname<'a>;
-    /// `struct nameidata` (`bsd`'s until N5.3's switch; the kernel's for the test glues):
-    /// what `VFS_MOUNT` and the pledge and unveil hooks receive.
-    type Nameidata<'a>;
     /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
@@ -689,27 +681,8 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn uiomove(buf: &mut [u8], uio: &mut Uio<'_, Self::Proc>) -> Result<(), Errno>;
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
-    /// A new vnode's `bsd` members made ready at their place (`getnewvnode`'s
-    /// `cache_tree_init` and `TAILQ_INIT(&vp->v_cache_dst)`).
-    fn vnode_g_init(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
     fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `cache_purge(vp)`: the name cache forgets the vnode, which gets a new capability
-    /// (`v_id`). Required: a glue that forgot it would leave stale names.
-    fn cache_purge(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `lf_purgelocks(&vp->v_specinfo->si_lockf)` (`vgonel` of a device vnode).
-    fn lf_purgelocks(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `lf_advlock(&vp->v_speclockf, 0, id, op, fl, flags)` (`spec_advlock`).
-    fn spec_advlock(
-        vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
-        id: LockOwner,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno>;
-    /// `vop_generic_abortop`'s `pool_put(&namei_pool, cnp->cn_pnbuf)` when the lookup left a
-    /// buffer (`HASBUF`) and was not asked to keep it (`SAVESTART`).
-    fn abortop(cnp: &mut Self::Componentname<'_>);
     /// `dounmount(mp, flags, p)` (`vop_generic_revoke`'s forced unmount of a revoked block
     /// device's file system; `bsd`'s until N5.4).
     fn dounmount(

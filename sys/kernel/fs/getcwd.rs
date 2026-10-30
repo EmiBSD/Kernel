@@ -86,14 +86,13 @@ use hal::user::UserPtr;
 use super::cache::cache_revlookup;
 use super::init::rootvnode;
 use super::mount::Mount;
-use super::namei::{Componentname, MAXPATHLEN, Nameidata};
+use super::namei::{Componentname, MAXPATHLEN};
 use super::subr::{vget, vput, vref, vrele};
 use super::vnode::{
     GETCWD_CHECK_ACCESS, LK_EXCLUSIVE, LK_RETRY, VDIR, VEXEC, VREAD, VROOT, Vattr, Vnode, vn_lock,
 };
 use super::vops::{Cred, vop_access, vop_getattr, vop_lookup, vop_readdir, vop_unlock};
 use crate::assert::kpanic;
-use crate::file::FileGlue;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::{Iovec, Uio};
 
@@ -113,10 +112,7 @@ pub fn vfs_getcwd_scandir<G: ProcGlue>(
     uvpp: &mut Option<&'static Vnode<G>>,
     buf: Option<(&mut [u8], &mut usize)>,
     p: &Thread<G>,
-) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+) -> Result<(), Errno> {
     let Some(lvp) = *lvpp else {
         kpanic(format_args!("vfs_getcwd_scandir: no vnode"));
     };
@@ -325,10 +321,7 @@ pub fn vfs_getcwd_common<G: ProcGlue>(
     mut limit: i32,
     flags: i32,
     p: &Thread<G>,
-) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+) -> Result<(), Errno> {
     let fdp = p.fd();
     let cred = Cred::real(p.ucred());
     let mut perms = VEXEC;
@@ -465,10 +458,7 @@ where
 /// Find pathname of a process's current directory: `__getcwd(buf, len)`, the path copied
 /// out to the user address `buf` (at most `len` bytes there, `MAXPATHLEN * 4` at most).
 #[allow(non_snake_case)] // the C name: sys___getcwd
-pub fn sys___getcwd<G: ProcGlue>(p: &Thread<G>, buf: usize, len: usize) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+pub fn sys___getcwd<G: ProcGlue>(p: &Thread<G>, buf: usize, len: usize) -> Result<(), Errno> {
     let mut len = len;
     if len > MAXPATHLEN * 4 {
         len = MAXPATHLEN * 4;

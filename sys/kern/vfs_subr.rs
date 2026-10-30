@@ -516,7 +516,6 @@ pub(crate) mod tests {
     use crate::kern::vfs_init::{set_rootvnode, vfsinit};
     use crate::kern::vfs_vops::{VOP_ISLOCKED, VOP_UNLOCK};
     use crate::sys::mount::{MNT_UNMOUNT, VB_READ, mountlist_insert_tail};
-    use crate::sys::namei::{NUMCACHE, NUMNEG};
     use crate::sys::types::{Mode, Uid};
     use crate::sys::ucred::Ucred;
     use crate::sys::vnode::{
@@ -531,7 +530,6 @@ pub(crate) mod tests {
         use core::ffi::c_void;
         use core::ptr;
         use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
-        use std::boxed::Box;
         use std::sync::MutexGuard;
 
         use super::setup;
@@ -966,11 +964,42 @@ pub(crate) mod tests {
             let mp = mount_root(p);
             (guard, p, mp)
         }
+    }
 
-        /// A leaked fresh `Box`, for tests that want a `'static` buffer.
-        pub(crate) fn leak<T>(t: T) -> &'static mut T {
-            Box::leak(Box::new(t))
+    /// A path in the user memory of the host double (`hal::arch::host::copy`), where the
+    /// kernel's `copyinstr` reads a system call's path (`namei`'s `NiDirp::User`).
+    pub(crate) struct UserStr(usize);
+
+    impl UserStr {
+        /// The user address, as a system call's argument.
+        pub(crate) fn as_ptr(&self) -> *const u8 {
+            core::ptr::without_provenance(self.0)
         }
+
+        /// The user address.
+        pub(crate) fn addr(&self) -> usize {
+            self.0
+        }
+    }
+
+    /// `s`, NUL-terminated (a NUL is added when it has none), copied into the user memory of
+    /// the host double: eight rotating slots of 2 KiB at `USER_BASE + 0xc000` (the other
+    /// tests use lower offsets; a test holds a few paths at once). A longer string is cut
+    /// at 2047 bytes, without its NUL: the kernel's `copyinstr` stops at `MAXPATHLEN`.
+    pub(crate) fn user_str(s: &[u8]) -> UserStr {
+        static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        const SLOT: usize = 2048;
+        let i = NEXT.fetch_add(1, Ordering::Relaxed) % 8;
+        let addr = kernel::testutil::USER_BASE + 0xc000 + i * SLOT;
+        let mut bytes = s.to_vec();
+        if bytes.last() != Some(&0) {
+            bytes.push(0);
+        }
+        bytes.truncate(SLOT - 1);
+        hal::user::UserPtr::<u8>::new(addr)
+            .copyout_slice(&bytes)
+            .expect("the double's user memory");
+        UserStr(addr)
     }
 
     /// Real memory, the process, file and vfs pools, empty vnode lists; returns the guard and a
@@ -987,8 +1016,6 @@ pub(crate) mod tests {
         // lived in the memory just reset: forgotten, not freed (testing.md).
         kernel::fs::subr::vfs_test_reset::<BsdProcGlue>();
         let _ = kernel::fs::spec::register_devsw::<BsdProcGlue>(&crate::sys::specdev::BSD_DEVSW);
-        NUMCACHE.store(0, Ordering::SeqCst);
-        NUMNEG.store(0, Ordering::SeqCst);
         // The file systems' pools and tables live in that memory too: let vfsinit's vfs_init
         // calls set them up again.
         #[cfg(feature = "ffs")]

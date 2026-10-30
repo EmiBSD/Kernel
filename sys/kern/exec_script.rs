@@ -95,7 +95,7 @@ use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::filedesc::{fdplock, fdpunlock};
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::namei::ndinitat;
-use crate::sys::namei::{Componentname, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{LOOKUP, Nameidata, NiDirp};
 use crate::sys::param::{MAXINTERP, MAXPATHLEN};
 use crate::sys::proc::Proc;
 use crate::sys::vnode::{VNOPS, vn_close, vn_lock};
@@ -232,7 +232,8 @@ pub fn exec_script_makecmds(
     let mut shnd = ndinitat(LOOKUP, 0, AT_FDCWD, NiDirp::Sys(&shellname), p);
     shnd.ni_pledge = ndp.ni_pledge;
     shnd.ni_unveil = ndp.ni_unveil;
-    shnd.ni_cnd.cn_rpbuf = ndp.ni_cnd.cn_rpbuf;
+    // The realpath buffer is the shell's lookup's while it runs (the C's one nameidata).
+    shnd.ni_cnd.cn_rpbuf = ndp.ni_cnd.cn_rpbuf.take();
     epp.ep_flags |= EXEC_INDIR;
 
     let error = match check_exec(p, epp, Some(&mut shnd)) {
@@ -242,7 +243,7 @@ pub fn exec_script_makecmds(
 
             // It succeeded. Close the script if we aren't using it any more.
             if epp.ep_flags & EXEC_HASFD == 0 {
-                let _ = vn_close(scriptvp, FREAD, cred, Some(p));
+                let _ = vn_close(scriptvp, FREAD, Cred::from_raw(cred), Some(p));
             }
 
             // The caller's nameidata now describes the shell's lookup; free the old
@@ -254,7 +255,7 @@ pub fn exec_script_makecmds(
             ndp.ni_next = shnd.ni_next;
             ndp.ni_loopcnt = shnd.ni_loopcnt;
             ndp.ni_unveil_match = shnd.ni_unveil_match;
-            swap_componentname(&mut ndp.ni_cnd, &mut shnd.ni_cnd);
+            ndp.ni_cnd.swap_lookup(&mut shnd.ni_cnd);
             namei_pnbuf_put(&mut shnd);
 
             // set things up so that the fake args list will be used.
@@ -280,7 +281,8 @@ pub fn exec_script_makecmds(
     };
 
     // A failed check_exec has given back the shell's pathname buffer; this is a no-op
-    // unless it kept one.
+    // unless it kept one. The realpath buffer goes back to the script's lookup.
+    ndp.ni_cnd.cn_rpbuf = shnd.ni_cnd.cn_rpbuf.take();
     namei_pnbuf_put(&mut shnd);
     exec_script_fail(p, epp, ndp, scriptvp, error)
 }
@@ -305,7 +307,7 @@ fn exec_script_fail(
         // fdrelease() unlocks p->p_fd.
         let _ = fdrelease(p, g, epp.ep_fd);
     } else {
-        let _ = vn_close(scriptvp, FREAD, p.ucred_ptr(), Some(p));
+        let _ = vn_close(scriptvp, FREAD, Cred::from_raw(p.ucred_ptr()), Some(p));
     }
 
     namei_pnbuf_put(ndp);
@@ -314,23 +316,6 @@ fn exec_script_fail(
     epp.ep_vmcmds.kill();
 
     Err(error)
-}
-
-/// The swap of two `struct componentname`s of different lifetimes (the caller's and the
-/// shell's lookup, which borrow different path strings): every member but the thread, the
-/// same in both (`p`).
-fn swap_componentname(a: &mut Componentname<'_>, b: &mut Componentname<'_>) {
-    core::mem::swap(&mut a.cn_nameiop, &mut b.cn_nameiop);
-    core::mem::swap(&mut a.cn_flags, &mut b.cn_flags);
-    let (ca, cb) = (a.cn_cred.as_raw(), b.cn_cred.as_raw());
-    a.cn_cred = Cred::from_raw(cb);
-    b.cn_cred = Cred::from_raw(ca);
-    core::mem::swap(&mut a.cn_pnbuf, &mut b.cn_pnbuf);
-    core::mem::swap(&mut a.cn_rpbuf, &mut b.cn_rpbuf);
-    core::mem::swap(&mut a.cn_rpi, &mut b.cn_rpi);
-    core::mem::swap(&mut a.cn_nameptr, &mut b.cn_nameptr);
-    core::mem::swap(&mut a.cn_namelen, &mut b.cn_namelen);
-    core::mem::swap(&mut a.cn_consume, &mut b.cn_consume);
 }
 /* </CODE> */
 

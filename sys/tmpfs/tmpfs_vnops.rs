@@ -126,9 +126,7 @@ use crate::kassert;
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap, vop_generic_revoke};
 use crate::kern::vm_bsd::uvm_vnp_uncache;
@@ -309,10 +307,8 @@ fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `de->td_node` where the C dereferences it: an entry in a directory has its node.
@@ -797,7 +793,7 @@ pub fn tmpfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         kassert!(uio.uio_resid == 0);
 
         // correct the result for writes clamped by vn_fsizechk()
-        uio.uio_resid += overrun as usize;
+        uio.uio_resid += overrun;
     }
     error
 }
@@ -816,7 +812,7 @@ pub fn tmpfs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
-    let cnp = &*ap.a_cnp;
+    let cnp = &mut *ap.a_cnp;
 
     kassert!(cnp.cn_flags & HASBUF != 0);
 
@@ -866,7 +862,7 @@ pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
 pub fn tmpfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
-    let cnp = &*ap.a_cnp;
+    let cnp = &mut *ap.a_cnp;
 
     kassert!(VOP_ISLOCKED(dvp) != 0);
     kassert!(!ptr::eq(dvp, vp));
@@ -929,7 +925,7 @@ pub fn tmpfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
 pub fn tmpfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
-    let cnp = &*ap.a_cnp;
+    let cnp = &mut *ap.a_cnp;
     let tmp = VFS_TO_TMPFS(vmount(dvp));
     let dnode = VP_TO_TMPFS_DIR(dvp);
     let node = VP_TO_TMPFS_DIR(vp);
@@ -1210,7 +1206,7 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let tdvp = ap.a_tdvp;
     let tvp = ap.a_tvp;
 
-    kassert!(!ap.a_fcnp.cn_nameptr.is_null());
+    kassert!(ap.a_fcnp.has_name());
     // KASSERT(VOP_ISLOCKED(fdvp) != LK_EXCLUSIVE);
     // KASSERT(VOP_ISLOCKED(fvp) != LK_EXCLUSIVE);
     kassert!(fdvp.vtype() == VDIR);
@@ -2439,10 +2435,8 @@ mod tests {
     }
 
     /// A user-space path for the `do*at` functions: the bytes and a NUL.
-    fn c(path: &str) -> Vec<u8> {
-        let mut v = path.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn c(path: &str) -> crate::kern::vfs_subr::tests::UserStr {
+        crate::kern::vfs_subr::tests::user_str(path.as_bytes())
     }
 
     /// `open(path, O_RDWR | O_CREAT, mode)`: the vnode, unlocked and referenced.
@@ -2456,7 +2450,7 @@ mod tests {
 
     /// `close` of a vnode `create` gave.
     fn close(p: &'static Proc, vp: &'static Vnode) {
-        vn_close(vp, FREAD | FWRITE, p.ucred(), Some(p)).expect("close");
+        vn_close(vp, FREAD | FWRITE, Cred::real(p.ucred()), Some(p)).expect("close");
     }
 
     /// `lstat(path)`: the attributes of the node `path` names.

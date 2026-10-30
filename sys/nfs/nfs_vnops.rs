@@ -109,7 +109,7 @@
 use crate::sys::namei::cn_ucred;
 use core::ffi::c_void;
 use core::mem::offset_of;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
@@ -119,9 +119,7 @@ use crate::kern::kern_prot::crdup;
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::{getnanotime, gettime};
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BWRITE, VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_SETATTR,
     VOP_STRATEGY, VOP_UNLOCK,
@@ -563,10 +561,8 @@ fn cn_proc<'a>(cnp: &Componentname<'a>) -> Option<&'a Proc> {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `vp->v_mount->mnt_flag`.

@@ -244,10 +244,7 @@ fn pn_str(buf: &[u8]) -> &[u8] {
 
 /// `pledge_namei(p, ndp, cnp->cn_pnbuf)`: the glue's check, lent the pathname out of the
 /// componentname for the call.
-fn pledge_namei_of<G: ProcGlue>(p: &Thread<G>, ndp: &mut Nameidata<'_, G>) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Nameidata<'c> = Nameidata<'c, G>>,
-{
+fn pledge_namei_of<G: ProcGlue>(p: &Thread<G>, ndp: &mut Nameidata<'_, G>) -> Result<(), Errno> {
     let buf = ndp.ni_cnd.take_pnbuf();
     let path = buf.as_deref().map_or(&[][..], |b| pn_str(b));
     let error = G::pledge_namei(p, ndp, path);
@@ -275,10 +272,7 @@ where
 ///             if symbolic link, massage name in buffer and continue
 ///     }
 /// ```
-pub fn namei<G: ProcGlue>(ndp: &mut Nameidata<'_, G>) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+pub fn namei<G: ProcGlue>(ndp: &mut Nameidata<'_, G>) -> Result<(), Errno> {
     let p = ndp.ni_cnd.cn_proc;
     ndp.ni_cnd.cn_cred = Cred::real(p.ucred());
     #[cfg(feature = "diagnostic")]
@@ -580,10 +574,7 @@ enum LookupError {
 ///         if LOCKPARENT set, return locked parent in ni_dvp
 ///         if WANTPARENT set, return unlocked parent in ni_dvp
 /// ```
-pub fn vfs_lookup<G: ProcGlue>(ndp: &mut Nameidata<'_, G>) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+pub fn vfs_lookup<G: ProcGlue>(ndp: &mut Nameidata<'_, G>) -> Result<(), Errno> {
     // Setup: break out flag bits into variables.
     let wantparent = ndp.ni_cnd.cn_flags & (LOCKPARENT | WANTPARENT) != 0;
     let mut docache = (ndp.ni_cnd.cn_flags & NOCACHE) ^ NOCACHE != 0;
@@ -643,10 +634,7 @@ fn lookup_walk<G: ProcGlue>(
     wantparent: bool,
     docache: bool,
     rdonly: bool,
-) -> Result<(), LookupError>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+) -> Result<(), LookupError> {
     use LookupError::{Bad, Bad2};
 
     let p = ndp.ni_cnd.cn_proc;
@@ -963,10 +951,7 @@ pub fn vfs_relookup<G: ProcGlue>(
     dvp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
     cnp: &mut Componentname<'_, G>,
-) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>>,
-{
+) -> Result<(), Errno> {
     // Setup: break out flag bits into variables.
     let wantparent = cnp.cn_flags & (LOCKPARENT | WANTPARENT) != 0;
     let rdonly = cnp.cn_flags & RDONLY != 0;

@@ -107,8 +107,8 @@ use hal::sys::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
 use super::getcwd::vfs_getcwd_common;
 use super::lookup::namei;
 use super::namei::{
-    BYPASSUNVEIL, CREATE, Componentname, FOLLOW, KERNELPATH, LOCKLEAF, LOCKPARENT, LOOKUP,
-    MAXPATHLEN, NOFOLLOW, Nameidata,
+    BYPASSUNVEIL, CREATE, FOLLOW, KERNELPATH, LOCKLEAF, LOCKPARENT, LOOKUP, MAXPATHLEN, NOFOLLOW,
+    Nameidata,
 };
 use super::subr::{vattr_null, vput, vref, vrele};
 use super::vnode::{
@@ -151,10 +151,7 @@ pub fn vn_open<G: ProcGlue>(
     ndp: &mut Nameidata<'_, G>,
     mut fmode: i32,
     cmode: u32,
-) -> Result<(), Errno>
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+) -> Result<(), Errno> {
     let p = ndp.ni_cnd.cn_proc;
     let cred = Cred::real(p.ucred());
     let mut va = Vattr::new();
@@ -770,10 +767,7 @@ pub fn vn_isunder<G: ProcGlue>(
     lvp: &'static Vnode<G>,
     rvp: &'static Vnode<G>,
     p: &Thread<G>,
-) -> bool
-where
-    G::FileGlue: for<'c> FileGlue<Componentname<'c> = Componentname<'c, G>, Nameidata<'c> = Nameidata<'c, G>>,
-{
+) -> bool {
     vfs_getcwd_common(lvp, Some(rvp), None, (MAXPATHLEN / 2) as i32, 0, p).is_ok()
 }
 /* </CODE> */

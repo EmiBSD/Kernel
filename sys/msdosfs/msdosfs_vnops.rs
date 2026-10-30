@@ -106,16 +106,14 @@
 //!   feature here. The `DIAGNOSTIC` `HASBUF` checks are behind feature `diagnostic`.
 
 use core::mem::offset_of;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_prot::{groupmember, suser_ucred};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_STRATEGY, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bwrite, vop_generic_revoke};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -333,10 +331,8 @@ fn cn_proc<'a>(cnp: &Componentname<'a>) -> Option<&'a Proc> {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
@@ -1002,7 +998,7 @@ pub fn msdosfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     };
 
     // out: correct the result for writes clamped by vn_fsizechk()
-    uio.uio_resid = (uio.uio_resid as isize + overrun) as usize;
+    uio.uio_resid += overrun;
     error
 }
 
@@ -2233,10 +2229,8 @@ mod tests {
     }
 
     /// A user-space path for the `do*at` functions: the bytes and a NUL.
-    fn c(path: &str) -> Vec<u8> {
-        let mut v = path.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn c(path: &str) -> crate::kern::vfs_subr::tests::UserStr {
+        crate::kern::vfs_subr::tests::user_str(path.as_bytes())
     }
 
     /// `open(path, O_RDWR | O_CREAT, mode)`: the vnode, unlocked and referenced.
@@ -2250,7 +2244,7 @@ mod tests {
 
     /// `close` of a vnode `create` gave.
     fn close(p: &'static Proc, vp: &'static Vnode) {
-        vn_close(vp, FREAD | FWRITE, p.ucred(), Some(p)).expect("close");
+        vn_close(vp, FREAD | FWRITE, Cred::real(p.ucred()), Some(p)).expect("close");
     }
 
     /// The vnode `path` names, unlocked and referenced.

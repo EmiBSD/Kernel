@@ -120,16 +120,14 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::Ordering::Relaxed;
 use kernel::fs::vops::Cred;
 
 use crate::kern::kern_prot::suser_ucred;
 use crate::kern::kern_tc::microboottime;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_freem, m_get, m_trailingspace};
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
     VOP_PATHCONF, VOP_READ, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_RMDIR,
@@ -283,10 +281,7 @@ fn startdir_rele(nd: &mut Nameidata<'_>) {
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: gives a saved name buffer back.
 fn pnbuf_put(cnp: &mut Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
-    cnp.cn_pnbuf = ptr::null_mut();
+    drop(cnp.take_pnbuf());
 }
 
 /// `if (cn_flags & HASBUF) { pool_put(&namei_pool, cn_pnbuf); cn_flags &= ~HASBUF; }`.

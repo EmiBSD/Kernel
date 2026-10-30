@@ -1224,7 +1224,7 @@ mod tests {
     /// A NUL-terminated path as a "user" address (the host's copyin reads it directly).
     fn path(s: &'static [u8]) -> usize {
         assert_eq!(s.last(), Some(&0));
-        s.as_ptr() as usize
+        crate::kern::vfs_subr::tests::user_str(s).addr()
     }
 
     /// The whole contents of the file at `name`, read in small pieces.

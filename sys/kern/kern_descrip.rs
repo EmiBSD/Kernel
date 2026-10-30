@@ -231,10 +231,8 @@ impl FileGlue for BsdFileGlue {
     type Data = BsdFileData;
     type FileList = FileListLink;
     type VnodeG = crate::sys::vnode::VnodeG;
-    type Componentname<'a> = crate::sys::namei::Componentname<'a>;
-    type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
-    /// The kernel's `namei` is not `bsd`'s yet (N5.3's switch): no unveil match to keep.
-    type UnveilMatch = ();
+    /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
+    type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -387,30 +385,8 @@ impl FileGlue for BsdFileGlue {
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES
     }
-    fn vnode_g_init(vp: &'static Vnode) {
-        crate::sys::namei::cache_tree_init(&vp.g.v_nc_tree);
-        vp.g.v_cache_dst.init();
-    }
     fn vnode_recycle(vp: &'static Vnode) {
         vp.g.v_socket.set(None);
-    }
-    fn cache_purge(vp: &'static Vnode) {
-        crate::sys::namei::cache_purge(vp);
-    }
-    fn lf_purgelocks(vp: &'static Vnode) {
-        crate::sys::lockf::lf_purgelocks(&vp.g.v_speclockf);
-    }
-    fn spec_advlock(
-        vp: &'static Vnode,
-        id: LockOwner,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        crate::sys::lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
-    }
-    fn abortop(cnp: &mut Self::Componentname<'_>) {
-        crate::kern::vfs_vops::abortop_putname(cnp);
     }
     fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
         crate::kern::vfs_syscalls::dounmount(mp, flags, p)

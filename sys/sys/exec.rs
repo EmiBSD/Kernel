@@ -85,11 +85,11 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::kern::vfs_syscalls::NameiBuf;
 use crate::sys::errno::Errno;
 use crate::sys::exec_elf::ElfEhdr;
 use crate::sys::exec_script::EXEC_SCRIPT_HDRSZ;
 use crate::sys::namei::Nameidata;
+use crate::sys::namei::PathBuf;
 use crate::sys::proc::Proc;
 use crate::sys::vnode::{Vattr, Vnode};
 use crate::sys::vnode::{vref, vrele};
@@ -283,7 +283,7 @@ pub struct ExecPackage<'a> {
     /// `ep_auxinfo`: userspace auxinfo address.
     pub ep_auxinfo: usize,
     /// `ep_interp`: name of interpreter if any (a NUL-terminated `namei_pool` buffer).
-    pub ep_interp: Option<NameiBuf>,
+    pub ep_interp: Option<PathBuf>,
     /// `ep_pinstart`: executable region start.
     pub ep_pinstart: usize,
     /// `ep_pinend`: executable region end.

@@ -403,6 +403,13 @@ pub fn hal_bridges_register_vm() {
     let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
 }
 
+/// `bsd`'s `pool(9)` as `hal`'s pool backend, alone: for the host benches that time the
+/// kernel's pools on the allocator the kernel boots with (the doubles' pool hands out a fresh
+/// page per item); a second registration changes nothing.
+pub fn hal_bridges_register_pools() {
+    let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
+}
+
 /// Whether the TLB shootdown's CPUs are registered (always, once [`hal_bridges_register`]
 /// ran, on a machine that has them), for the check before the application processors start.
 pub fn tlb_cpus_registered() -> bool {

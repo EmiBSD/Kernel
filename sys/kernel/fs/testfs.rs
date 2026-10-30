@@ -676,15 +676,7 @@ pub fn setup() -> MutexGuard<'static, ()> {
     hal::klock::kernel_lock();
     vfs_test_reset::<TestGlue>();
     NODES.with(|n| n.borrow_mut().clear());
-    // namei_pool first, as vfsinit makes it (a second test thread's tables are new: tolerant).
-    let _ = super::subr::vfs::<TestGlue>().namei.init(
-        hal::intr::IPL_NONE,
-        hal::pool::PR_WAITOK,
-        "namei",
-    );
-    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {
-        super::cache::nchinit::<TestGlue>(64);
-    });
+    super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
     super::lockf::lf_init();
     let _ = register_devsw::<TestGlue>(&TEST_DEVSW);
     g

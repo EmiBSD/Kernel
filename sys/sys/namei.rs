@@ -48,151 +48,62 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<sys/namei.h>`: the encapsulation of `namei` parameters (`struct nameidata` and the
-//! `struct componentname` it hands to `VOP_LOOKUP`), the namei operations and flags, and the
-//! name cache's `struct namecache` and statistics.
+//! `<sys/namei.h>` for `bsd`: the encapsulation of `namei` parameters (`struct nameidata` and
+//! the `struct componentname` it hands to `VOP_LOOKUP`), the namei operations and flags, the
+//! name cache's statistics and the unveil flags, all the kernel's (`kernel::fs::namei`,
+//! `lookup` and `cache`, N5.3), re-exported at the path of their 54 users.
 //!
 //! Upstream: sys/sys/namei.h @ 3ce1f3f79392
 //!
 //! ## Deviations
 //! - `ni_dirp` is a [`NiDirp`]: a user address or a kernel byte string; `ni_segflg` is kept
 //!   and always agrees with it (`ndinitat` sets both). `NDINITAT`/`NDINIT` are `ndinitat`/
-//!   `ndinit` (`kern/vfs_lookup.rs`), which return the structure instead of filling one.
-//! - `cn_pnbuf`, `cn_rpbuf`, `cn_nameptr` and `ni_next` stay raw pointers, as in C: the
-//!   lookup walks them with pointer arithmetic, and `cn_nameptr` may point at a string that
-//!   is not in `cn_pnbuf` (`".."` in `vfs_getcwd_scandir`). Whoever sets `cn_nameptr` makes
-//!   it point at `cn_namelen` readable bytes for the lookup's duration; [`Componentname::name`]
-//!   relies on that, as the C code does.
-//! - `ni_unveil_match` is a raw pointer into the process's unveil table (`kern_unveil.rs`),
-//!   NULL for no match.
-//! - N5.3 (the kernel's shape, ahead of the switch to `kernel::fs::namei`): `cn_proc` is a
-//!   reference to the thread, which outlives the lookup (`&'a Proc`: the C's NULL test is a
-//!   type), `cn_cred` the opaque `Cred<'a>` the vnode operations take, and
-//!   [`Componentname::new`] builds one from both.
-//! - `struct namecache`'s members are `Cell`s; `nc_nlen` is a `u8` (a `char` holding a
-//!   length of at most `NAMECACHE_MAXLEN`).
-//! - `struct nchstats` is a structure of `AtomicU64`s (the C bumps them racily, as `uvmexp`);
-//!   [`Nchstats::snapshot`] is what `kern.nchstats` copies out.
-//! - The prototypes are their functions in `vfs_lookup.rs`, `vfs_cache.rs` and (the
-//!   `unveil_*` ones) `kern_unveil.rs`; `namei_pool` is in `vfs_init.rs`.
-
-use core::cell::Cell;
-use core::ptr;
-
-use core::sync::atomic::{AtomicU64, Ordering};
-use kernel::fs::vops::Cred;
+//!   `ndinit`, which return the structure instead of filling one.
+//! - The pathname buffer is the componentname's own ([`PathBuf`], `kernel::fs::namei`'s
+//!   notes): the callers that free it (`pool_put(&namei_pool, cnp->cn_pnbuf)`) drop what
+//!   `take_pnbuf` gives, those that lend one (`nfsd`, `__realpath`, `exec`) `set_pnbuf` one
+//!   [`pathbuf_get`] made.
+//! - `cnp->cn_cred->cr_uid` is [`cn_ucred`]`(cnp).cr_uid`: the kernel keeps the credential
+//!   as the opaque `Cred` the vnode operations take.
+//! - `nchinit` is called by the kernel's `vfsinit`, as the C's; `kern.nchstats` reads the
+//!   kernel's counters ([`NCHSTATS`]).
 
 use crate::kassert;
-use crate::kern::kern_unveil::Unveil;
-use crate::kern::vfs_cache::namecache_compare;
-use crate::queue_adapter;
-use crate::sys::proc::Proc;
-use crate::sys::queue::TailqEntry;
-use crate::sys::tree::RbtEntry;
+use crate::kern::kern_descrip::VFS_TABLES;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::ucred::Ucred;
-use crate::sys::uio::UioSeg;
-use crate::sys::vnode::Vnode;
-use crate::tree_adapter;
 
-/// `namei.h`'s functions (`vfs_lookup.c`, `vfs_cache.c`), where the C declares them.
-pub use crate::kern::vfs_cache::{
-    DOINGCACHE, NCHSTATS, NUMCACHE, NUMNEG, cache_enter, cache_lookup, cache_purge, cache_purgevfs,
-    cache_revlookup, cache_tree_init, cache_zap, nchinit,
+pub use crate::sys::fcntl::AT_FDCWD;
+pub use kernel::fs::cache::{
+    Nchstats, cache_enter, cache_lookup, cache_purge, cache_purgevfs, cache_revlookup,
 };
-pub use crate::kern::vfs_lookup::{
+pub use kernel::fs::lookup::{
     component_pop, component_push, namei, ndinit, ndinitat, vfs_lookup, vfs_relookup,
 };
-pub use crate::sys::fcntl::AT_FDCWD;
+pub use kernel::fs::namei::{
+    BPU_LOCALTIME, BPU_ZONEINFO, BYPASSUNVEIL, CREATE, DELETE, EXECPATH, FOLLOW, HASBUF, ISDOTDOT,
+    ISLASTCN, ISSYMLINK, KERN_NCHSTATS_2PASSES, KERN_NCHSTATS_BADHITS, KERN_NCHSTATS_DOTDOTHITS,
+    KERN_NCHSTATS_DOTHITS, KERN_NCHSTATS_FALSEHITS, KERN_NCHSTATS_GOODHITS, KERN_NCHSTATS_LONG,
+    KERN_NCHSTATS_MAXID, KERN_NCHSTATS_MISS, KERN_NCHSTATS_NEGHITS, KERN_NCHSTATS_PASS2,
+    KERN_NCHSTATS_REVHITS, KERN_NCHSTATS_REVMISS, KERNELPATH, LOCKLEAF, LOCKPARENT, LOOKUP,
+    MAKEENTRY, MODMASK, NAMECACHE_MAXLEN, NOCACHE, NOCROSSMOUNT, NOFOLLOW, NiDirp, OPMASK,
+    PDIRUNLOCK, PathBuf, RDONLY, REALPATH, RENAME, REQUIREDIR, SAVENAME, SAVESTART, STRIPSLASHES,
+    UNVEIL_CREATE, UNVEIL_EXEC, UNVEIL_MASK, UNVEIL_PLEDGEOPEN, UNVEIL_READ, UNVEIL_USERSET,
+    UNVEIL_WRITE, WANTPARENT,
+};
 
-/// `ni_dirp`: where the pathname is.
-#[derive(Clone, Copy)]
-pub enum NiDirp<'a> {
-    /// A user address (`UIO_USERSPACE`).
-    User(usize),
-    /// A kernel string (`UIO_SYSSPACE`); it ends at its first NUL or at the slice's end.
-    Sys(&'a [u8]),
-}
+/// `struct componentname` of `bsd`'s threads.
+pub type Componentname<'a> = kernel::fs::namei::Componentname<'a, BsdProcGlue>;
 
-/// `struct componentname`: the subset of the `nameidata` structure that is passed through the
-/// VOP interface.
-pub struct Componentname<'a> {
-    // Arguments to lookup.
-    /// `cn_nameiop`: namei operation.
-    pub cn_nameiop: u64,
-    /// `cn_flags`: flags to namei.
-    pub cn_flags: u64,
-    /// `cn_proc`: process requesting lookup.
-    pub cn_proc: &'a Proc,
-    /// `cn_cred`: credentials.
-    pub cn_cred: Cred<'a>,
-    // Shared between lookup and commit routines.
-    /// `cn_pnbuf`: pathname buffer (`MAXPATHLEN` bytes from `namei_pool`), or null.
-    pub cn_pnbuf: *mut u8,
-    /// `cn_rpbuf`: realpath buffer (`MAXPATHLEN` bytes), or null.
-    pub cn_rpbuf: *mut u8,
-    /// `cn_rpi`: realpath index.
-    pub cn_rpi: usize,
-    /// `cn_nameptr`: pointer to looked up name.
-    pub cn_nameptr: *const u8,
-    /// `cn_namelen`: length of looked up component.
-    pub cn_namelen: i64,
-    /// `cn_consume`: chars to consume in lookup().
-    pub cn_consume: i64,
-}
+/// `struct nameidata` of `bsd`'s threads.
+pub type Nameidata<'a> = kernel::fs::namei::Nameidata<'a, BsdProcGlue>;
 
-impl<'a> Componentname<'a> {
-    /// A `struct componentname` of the operation `op` with `flags`, for the thread `p` with
-    /// the credential `cred`, no name and no buffer yet.
-    pub fn new(op: u64, flags: u64, p: &'a Proc, cred: Cred<'a>) -> Self {
-        Self {
-            cn_nameiop: op,
-            cn_flags: flags,
-            cn_proc: p,
-            cn_cred: cred,
-            cn_pnbuf: ptr::null_mut(),
-            cn_rpbuf: ptr::null_mut(),
-            cn_rpi: 0,
-            cn_nameptr: ptr::null(),
-            cn_namelen: 0,
-            cn_consume: 0,
-        }
-    }
+/// `nchstats`: the name cache's statistics (the kernel's counters, `kern.nchstats`).
+pub static NCHSTATS: &Nchstats = &VFS_TABLES.nchstats;
 
-    /// The `".."` lookup `vfs_getcwd_scandir` (and unveil's cover search) makes: `LOOKUP`,
-    /// `ISLASTCN | ISDOTDOT | RDONLY`, no pathname buffer, the name the literal `".."`.
-    pub fn dotdot(p: &'a Proc, cred: Cred<'a>) -> Self {
-        let mut cn = Self::new(LOOKUP, ISLASTCN | ISDOTDOT | RDONLY, p, cred);
-        cn.set_name_lit(b"..");
-        cn
-    }
-
-    /// `cnp->cn_proc`, for as long as the componentname's thread lives (not tied to the
-    /// borrow of `cnp`, whose flags the operations change while they use the thread).
-    pub fn proc(&self) -> &'a Proc {
-        self.cn_proc
-    }
-
-    /// `cn_namelen`: the length of the component being looked up.
-    pub fn namelen(&self) -> i64 {
-        self.cn_namelen
-    }
-
-    /// The component's name is a string of the kernel's (`".."`, a test's name), outside the
-    /// pathname buffer.
-    pub fn set_name_lit(&mut self, s: &'static [u8]) {
-        self.cn_nameptr = s.as_ptr();
-        self.cn_namelen = s.len() as i64;
-    }
-
-    /// The component being looked up: the `cn_namelen` bytes at `cn_nameptr`.
-    pub fn name(&self) -> &[u8] {
-        if self.cn_nameptr.is_null() || self.cn_namelen <= 0 {
-            return &[];
-        }
-        // SAFETY: the module's deviations: whoever sets `cn_nameptr` makes it point at
-        // `cn_namelen` readable bytes for the lookup's duration.
-        unsafe { core::slice::from_raw_parts(self.cn_nameptr, self.cn_namelen as usize) }
-    }
+/// `pool_get(&namei_pool, PR_WAITOK)`: a pathname buffer, `None` when the pool fails.
+pub fn pathbuf_get() -> Option<PathBuf> {
+    kernel::fs::namei::pathbuf_get::<BsdProcGlue>()
 }
 
 /// `cnp->cn_cred` as the C dereferences it (`cnp->cn_cred->cr_uid`): the credential a
@@ -206,304 +117,35 @@ pub fn cn_ucred<'c>(cnp: &'c Componentname<'_>) -> &'c Ucred {
     // of `cnp`; NULL is refused above.
     unsafe { &*cred }
 }
-
-/// `struct nameidata`: encapsulation of namei parameters.
-pub struct Nameidata<'a> {
-    // Arguments to namei/lookup.
-    /// `ni_dirp`: pathname pointer.
-    pub ni_dirp: NiDirp<'a>,
-    /// `ni_dirfd`: dirfd from *at() functions.
-    pub ni_dirfd: i32,
-    /// `ni_segflg`: location of pathname.
-    pub ni_segflg: UioSeg,
-    // Arguments to lookup.
-    /// `ni_startdir`: starting directory.
-    pub ni_startdir: Option<&'static Vnode>,
-    /// `ni_rootdir`: logical root directory.
-    pub ni_rootdir: Option<&'static Vnode>,
-    /// `ni_pledge`: expected pledge for namei.
-    pub ni_pledge: u64,
-    /// `ni_unveil`: required unveil flags for namei.
-    pub ni_unveil: u8,
-    // Results: returned from/manipulated by lookup.
-    /// `ni_vp`: vnode of result.
-    pub ni_vp: Option<&'static Vnode>,
-    /// `ni_dvp`: vnode of intermediate directory.
-    pub ni_dvp: Option<&'static Vnode>,
-    // Shared between namei and lookup/commit routines.
-    /// `ni_pathlen`: remaining chars in path.
-    pub ni_pathlen: usize,
-    /// `ni_next`: next location in pathname.
-    pub ni_next: *const u8,
-    /// `ni_loopcnt`: count of symlinks encountered.
-    pub ni_loopcnt: u64,
-    /// `ni_unveil_match`: last matching unveil component (a slot of the looking-up
-    /// process's `ps_uvpaths`, or NULL).
-    pub ni_unveil_match: *const Unveil,
-    /// `ni_cnd`: lookup parameters.
-    pub ni_cnd: Componentname<'a>,
-}
-
-/// `LOOKUP`: perform name lookup only.
-pub const LOOKUP: u64 = 0;
-/// `CREATE`: setup for file creation.
-pub const CREATE: u64 = 1;
-/// `DELETE`: setup for file deletion.
-pub const DELETE: u64 = 2;
-/// `RENAME`: setup for file renaming.
-pub const RENAME: u64 = 3;
-/// `OPMASK`: mask for operation.
-pub const OPMASK: u64 = 3;
-
-/// `LOCKLEAF`: lock inode on return.
-pub const LOCKLEAF: u64 = 0x0004;
-/// `LOCKPARENT`: want parent vnode returned locked.
-pub const LOCKPARENT: u64 = 0x0008;
-/// `WANTPARENT`: want parent vnode returned unlocked.
-pub const WANTPARENT: u64 = 0x0010;
-/// `NOCACHE`: name must not be left in cache.
-pub const NOCACHE: u64 = 0x0020;
-/// `FOLLOW`: follow symbolic links.
-pub const FOLLOW: u64 = 0x0040;
-/// `NOFOLLOW`: do not follow symbolic links (pseudo).
-pub const NOFOLLOW: u64 = 0x0000;
-/// `MODMASK`: mask of operational modifiers.
-pub const MODMASK: u64 = 0x00fc;
-
-/// `NOCROSSMOUNT`: do not cross mount points.
-pub const NOCROSSMOUNT: u64 = 0x000100;
-/// `RDONLY`: lookup with read-only semantics.
-pub const RDONLY: u64 = 0x000200;
-/// `HASBUF`: has allocated pathname buffer.
-pub const HASBUF: u64 = 0x000400;
-/// `SAVENAME`: save pathname buffer.
-pub const SAVENAME: u64 = 0x000800;
-/// `SAVESTART`: save starting directory.
-pub const SAVESTART: u64 = 0x001000;
-/// `ISDOTDOT`: current component name is `..`.
-pub const ISDOTDOT: u64 = 0x002000;
-/// `MAKEENTRY`: entry is to be added to name cache.
-pub const MAKEENTRY: u64 = 0x004000;
-/// `ISLASTCN`: this is last component of pathname.
-pub const ISLASTCN: u64 = 0x008000;
-/// `ISSYMLINK`: symlink needs interpretation.
-pub const ISSYMLINK: u64 = 0x010000;
-/// `REALPATH`: save pathname buffer for realpath.
-pub const REALPATH: u64 = 0x020000;
-/// `BPU_LOCALTIME`: /etc/localtime may cross 1 symlink.
-pub const BPU_LOCALTIME: u64 = 0x040000;
-/// `REQUIREDIR`: must be a directory.
-pub const REQUIREDIR: u64 = 0x080000;
-/// `STRIPSLASHES`: strip trailing slashes.
-pub const STRIPSLASHES: u64 = 0x100000;
-/// `PDIRUNLOCK`: vfs_lookup() unlocked parent dir.
-pub const PDIRUNLOCK: u64 = 0x200000;
-/// `BYPASSUNVEIL`: bypass pledgepath check.
-pub const BYPASSUNVEIL: u64 = 0x400000;
-/// `KERNELPATH`: access file as kernel, not process.
-pub const KERNELPATH: u64 = 0x800000;
-/// `BPU_ZONEINFO`: /usr/share/zoneinfo prohibits symlinks.
-pub const BPU_ZONEINFO: u64 = 0x1000000;
-/// `EXECPATH`: like `REALPATH`, but can give up.
-pub const EXECPATH: u64 = 0x2000000;
-
-/// `NAMECACHE_MAXLEN`: maximum name segment length we bother with.
-pub const NAMECACHE_MAXLEN: usize = 31;
-
-/// `struct namecache`: an element in the cache of recent names looked up by namei.
-pub struct Namecache {
-    /// `nc_lru`: Regular Entry LRU chain.
-    pub nc_lru: TailqEntry<Namecache>,
-    /// `nc_neg`: Negative Entry LRU chain.
-    pub nc_neg: TailqEntry<Namecache>,
-    /// `n_rbcache`: Namecache rb tree from vnode.
-    pub n_rbcache: RbtEntry,
-    /// `nc_me`: ncp's referring to me.
-    pub nc_me: TailqEntry<Namecache>,
-    /// `nc_dvp`: vnode of parent of name.
-    pub nc_dvp: Cell<Option<&'static Vnode>>,
-    /// `nc_dvpid`: capability number of `nc_dvp`.
-    pub nc_dvpid: Cell<u64>,
-    /// `nc_vp`: vnode the name refers to (NULL for a negative entry).
-    pub nc_vp: Cell<Option<&'static Vnode>>,
-    /// `nc_vpid`: capability number of `nc_vp`.
-    pub nc_vpid: Cell<u64>,
-    /// `nc_nlen`: length of name.
-    pub nc_nlen: Cell<u8>,
-    /// `nc_name`: segment name.
-    pub nc_name: Cell<[u8; NAMECACHE_MAXLEN]>,
-}
-
-impl Namecache {
-    /// A zeroed entry, as `pool_get(&nch_pool, PR_ZERO)` returns it.
-    pub const fn new() -> Self {
-        Self {
-            nc_lru: TailqEntry::new(),
-            nc_neg: TailqEntry::new(),
-            n_rbcache: RbtEntry::new(),
-            nc_me: TailqEntry::new(),
-            nc_dvp: Cell::new(None),
-            nc_dvpid: Cell::new(0),
-            nc_vp: Cell::new(None),
-            nc_vpid: Cell::new(0),
-            nc_nlen: Cell::new(0),
-            nc_name: Cell::new([0; NAMECACHE_MAXLEN]),
-        }
-    }
-
-    /// The `nc_nlen` bytes of `nc_name`.
-    pub fn name(&self) -> ([u8; NAMECACHE_MAXLEN], usize) {
-        (self.nc_name.get(), self.nc_nlen.get() as usize)
-    }
-}
-
-impl Default for Namecache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-tree_adapter!(
-    /// `RBT_HEAD(namecache_rb_cache, namecache)`: a directory's cached names, through
-    /// `n_rbcache`, ordered by `namecache_compare`.
-    pub NamecacheRbCache: Namecache, n_rbcache => RbtEntry, namecache_compare
-);
-
-queue_adapter!(
-    /// The regular entries' LRU chain (`nclruhead`), through `nc_lru`.
-    pub NcLru: Namecache, nc_lru => TailqEntry<Namecache>
-);
-
-queue_adapter!(
-    /// The negative entries' LRU chain (`nclruneghead`), through `nc_neg`.
-    pub NcNeg: Namecache, nc_neg => TailqEntry<Namecache>
-);
-
-queue_adapter!(
-    /// `TAILQ_HEAD(, namecache) v_cache_dst`: the entries naming a vnode, through `nc_me`.
-    pub NcMe: Namecache, nc_me => TailqEntry<Namecache>
-);
-
-/// `struct nchstats`: stats on usefulness of namei caches.
-pub struct Nchstats {
-    /// `ncs_goodhits`: hits that we can really use.
-    pub ncs_goodhits: AtomicU64,
-    /// `ncs_neghits`: negative hits that we can use.
-    pub ncs_neghits: AtomicU64,
-    /// `ncs_badhits`: hits we must drop.
-    pub ncs_badhits: AtomicU64,
-    /// `ncs_falsehits`: hits with id mismatch.
-    pub ncs_falsehits: AtomicU64,
-    /// `ncs_miss`: misses.
-    pub ncs_miss: AtomicU64,
-    /// `ncs_long`: long names that ignore cache.
-    pub ncs_long: AtomicU64,
-    /// `ncs_pass2`: names found with passes == 2.
-    pub ncs_pass2: AtomicU64,
-    /// `ncs_2passes`: number of times we attempt it.
-    pub ncs_2passes: AtomicU64,
-    /// `ncs_revhits`: reverse-cache hits.
-    pub ncs_revhits: AtomicU64,
-    /// `ncs_revmiss`: reverse-cache misses.
-    pub ncs_revmiss: AtomicU64,
-    /// `ncs_dothits`: hits on '.' lookups.
-    pub ncs_dothits: AtomicU64,
-    /// `ncs_dotdothits`: hits on '..' lookups.
-    pub ncs_dotdothits: AtomicU64,
-}
-
-impl Nchstats {
-    /// All counters zero.
-    pub const fn new() -> Self {
-        Self {
-            ncs_goodhits: AtomicU64::new(0),
-            ncs_neghits: AtomicU64::new(0),
-            ncs_badhits: AtomicU64::new(0),
-            ncs_falsehits: AtomicU64::new(0),
-            ncs_miss: AtomicU64::new(0),
-            ncs_long: AtomicU64::new(0),
-            ncs_pass2: AtomicU64::new(0),
-            ncs_2passes: AtomicU64::new(0),
-            ncs_revhits: AtomicU64::new(0),
-            ncs_revmiss: AtomicU64::new(0),
-            ncs_dothits: AtomicU64::new(0),
-            ncs_dotdothits: AtomicU64::new(0),
-        }
-    }
-
-    /// The counters in the C's member order, as the `u_int64_t`s user space reads.
-    pub fn snapshot(&self) -> [u64; 12] {
-        [
-            &self.ncs_goodhits,
-            &self.ncs_neghits,
-            &self.ncs_badhits,
-            &self.ncs_falsehits,
-            &self.ncs_miss,
-            &self.ncs_long,
-            &self.ncs_pass2,
-            &self.ncs_2passes,
-            &self.ncs_revhits,
-            &self.ncs_revmiss,
-            &self.ncs_dothits,
-            &self.ncs_dotdothits,
-        ]
-        .map(|c| c.load(Ordering::Relaxed))
-    }
-}
-
-impl Default for Nchstats {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `KERN_NCHSTATS_GOODHITS`.
-pub const KERN_NCHSTATS_GOODHITS: i32 = 1;
-/// `KERN_NCHSTATS_NEGHITS`.
-pub const KERN_NCHSTATS_NEGHITS: i32 = 2;
-/// `KERN_NCHSTATS_BADHITS`.
-pub const KERN_NCHSTATS_BADHITS: i32 = 3;
-/// `KERN_NCHSTATS_FALSEHITS`.
-pub const KERN_NCHSTATS_FALSEHITS: i32 = 4;
-/// `KERN_NCHSTATS_MISS`.
-pub const KERN_NCHSTATS_MISS: i32 = 5;
-/// `KERN_NCHSTATS_LONG`.
-pub const KERN_NCHSTATS_LONG: i32 = 6;
-/// `KERN_NCHSTATS_PASS2`.
-pub const KERN_NCHSTATS_PASS2: i32 = 7;
-/// `KERN_NCHSTATS_2PASSES`.
-pub const KERN_NCHSTATS_2PASSES: i32 = 8;
-/// `KERN_NCHSTATS_REVHITS`.
-pub const KERN_NCHSTATS_REVHITS: i32 = 9;
-/// `KERN_NCHSTATS_REVMISS`.
-pub const KERN_NCHSTATS_REVMISS: i32 = 10;
-/// `KERN_NCHSTATS_DOTHITS`.
-pub const KERN_NCHSTATS_DOTHITS: i32 = 11;
-/// `KERN_NCHSTATS_DOTDOTHITS`.
-pub const KERN_NCHSTATS_DOTDOTHITS: i32 = 12;
-/// `KERN_NCHSTATS_MAXID`.
-pub const KERN_NCHSTATS_MAXID: i32 = 13;
-
-/// `UNVEIL_READ`.
-pub const UNVEIL_READ: u8 = 0x01;
-/// `UNVEIL_WRITE`.
-pub const UNVEIL_WRITE: u8 = 0x02;
-/// `UNVEIL_CREATE`.
-pub const UNVEIL_CREATE: u8 = 0x04;
-/// `UNVEIL_EXEC`.
-pub const UNVEIL_EXEC: u8 = 0x08;
-/// `UNVEIL_USERSET`.
-pub const UNVEIL_USERSET: u8 = 0x10;
-/// `UNVEIL_PLEDGEOPEN`.
-pub const UNVEIL_PLEDGEOPEN: u8 = 0x20;
-/// `UNVEIL_MASK`.
-pub const UNVEIL_MASK: u8 = 0x0f;
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    // The constants against the C header; and the kernel's `namei` and `getcwd` over bsd's
+    // glue and test file system (`vfs_subr.rs`), whose uiomove moves bytes: symbolic links
+    // (relative, absolute, loops), the components and the root as a barrier, the locking and
+    // reference protocol, `CREATE` of a missing name, `REALPATH`, the errors, and the
+    // directory scan of `getcwd` (LZ's vfs_lookup.rs and vfs_getcwd.rs tests, kept here when
+    // N5.3 moved their modules into the kernel, whose own tests run over a glue that copies
+    // no kernel byte).
+
+    use core::sync::atomic::Ordering;
+    use std::{assert, assert_eq};
+
     use super::*;
+    use crate::kern::vfs_init::rootvnode;
+    use crate::kern::vfs_subr::tests::setup;
+    use crate::kern::vfs_subr::tests::testfs::{
+        self, A, ABS, B, C, L, LOOP, N, ROOT, any_locked, node_of, usecounts, vget_node, vnode_of,
+    };
+    use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ISLOCKED, VOP_UNLOCK};
+    use crate::sys::errno::Errno;
+    use crate::sys::param::MAXPATHLEN;
+    use crate::sys::proc::Proc;
+    use crate::sys::vnode::{
+        GETCWD_CHECK_ACCESS, VREG, Vnode, vfs_getcwd_common, vn_isunder, vput, vrele,
+    };
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
@@ -537,6 +179,270 @@ mod tests {
             crate::reftest::int(&defs, "UNVEIL_PLEDGEOPEN"),
             Some(i64::from(UNVEIL_PLEDGEOPEN))
         );
+    }
+
+    /// `namei` of a kernel path, the result reduced to the node it found.
+    fn lookup(
+        p: &'static Proc,
+        path: &[u8],
+        op: u64,
+        flags: u64,
+    ) -> Result<Nameidata<'static>, Errno> {
+        let path: &'static [u8] = std::boxed::Box::leak(path.to_vec().into_boxed_slice());
+        let mut nd = ndinit(op, flags, NiDirp::Sys(path), p);
+        namei(&mut nd).map(|()| nd)
+    }
+
+    /// Looks `path` up with `LOOKUP` and `flags`, checks it found node `want`, releases it and
+    /// checks nothing leaked.
+    fn finds(p: &'static Proc, path: &[u8], flags: u64, want: usize) {
+        let before = usecounts();
+        let nd = lookup(p, path, LOOKUP, flags).unwrap_or_else(|e| {
+            std::panic!("{:?}: error {e:?}", core::str::from_utf8(path));
+        });
+        let vp = nd.ni_vp.unwrap();
+        assert_eq!(node_of(vp), want, "{:?}", core::str::from_utf8(path));
+        if flags & LOCKLEAF != 0 {
+            assert_eq!(VOP_ISLOCKED(vp), 1);
+            vput(vp);
+        } else {
+            assert!(
+                !any_locked(),
+                "{:?} left a lock",
+                core::str::from_utf8(path)
+            );
+            vrele(vp);
+        }
+        assert!(!any_locked());
+        // Nodes looked up for the first time now have a vnode on the free list (count 0).
+        let after = usecounts();
+        for i in 0..N {
+            assert_eq!(after[i], before[i], "use count of node {i} after {path:?}");
+        }
+    }
+
+    #[test]
+    fn absolute_and_relative_paths() {
+        let (_g, p, _mp) = testfs::setup_root();
+        finds(p, b"/", FOLLOW, ROOT);
+        finds(p, b"/a", FOLLOW, A);
+        finds(p, b"/a/b", FOLLOW, B);
+        finds(p, b"/a/b", FOLLOW | LOCKLEAF, B);
+        finds(p, b"a/c", FOLLOW, C);
+        finds(p, b"./a/./c/.", FOLLOW, C);
+    }
+
+    #[test]
+    fn slashes_split_components() {
+        let (_g, p, _mp) = testfs::setup_root();
+        finds(p, b"//a///c", FOLLOW, C);
+        finds(p, b"/a/c/", FOLLOW, C);
+        finds(p, b"/a/c//", FOLLOW | LOCKLEAF, C);
+        // A trailing slash requires a directory.
+        assert_eq!(
+            lookup(p, b"/a/b/", LOOKUP, FOLLOW).err(),
+            Some(Errno::ENOTDIR)
+        );
+        // A component under a file.
+        assert_eq!(
+            lookup(p, b"/a/b/x", LOOKUP, FOLLOW).err(),
+            Some(Errno::ENOTDIR)
+        );
+        assert!(!any_locked());
+    }
+
+    #[test]
+    fn dot_dot_climbs_and_stops_at_the_root() {
+        let (_g, p, _mp) = testfs::setup_root();
+        finds(p, b"/a/c/..", FOLLOW, A);
+        finds(p, b"/a/../a/b", FOLLOW, B);
+        finds(p, b"/..", FOLLOW, ROOT);
+        finds(p, b"../../a", FOLLOW, A);
+        finds(p, b"/a/c/../../a/c", FOLLOW | LOCKLEAF, C);
+    }
+
+    #[test]
+    fn errors() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let before = usecounts();
+        assert_eq!(lookup(p, b"", LOOKUP, FOLLOW).err(), Some(Errno::ENOENT));
+        assert_eq!(
+            lookup(p, b"/nope", LOOKUP, FOLLOW).err(),
+            Some(Errno::ENOENT)
+        );
+        assert_eq!(
+            lookup(p, b"/a/nope/b", LOOKUP, FOLLOW).err(),
+            Some(Errno::ENOENT)
+        );
+        let long = [b'y'; 300];
+        assert_eq!(
+            lookup(p, &long, LOOKUP, FOLLOW).err(),
+            Some(Errno::ENAMETOOLONG)
+        );
+        let toolong = [b'z'; MAXPATHLEN + 10];
+        assert_eq!(
+            lookup(p, &toolong, LOOKUP, FOLLOW).err(),
+            Some(Errno::ENAMETOOLONG)
+        );
+        assert!(!any_locked());
+        assert_eq!(usecounts()[ROOT], before[ROOT]);
+    }
+
+    #[test]
+    fn symbolic_links() {
+        let (_g, p, _mp) = testfs::setup_root();
+        // Relative to the link's directory, absolute from the root.
+        finds(p, b"/l", FOLLOW, C);
+        finds(p, b"/l/..", FOLLOW, A);
+        finds(p, b"/a/abs", FOLLOW | LOCKLEAF, B);
+        // The last component is not followed without FOLLOW; the others always are.
+        finds(p, b"/l", NOFOLLOW, L);
+        finds(p, b"/a/abs", NOFOLLOW, ABS);
+        finds(p, b"/l/", NOFOLLOW, C);
+        finds(p, b"l/..", NOFOLLOW, A);
+        assert_eq!(
+            lookup(p, b"/loop", LOOKUP, FOLLOW).err(),
+            Some(Errno::ELOOP)
+        );
+        finds(p, b"/loop", NOFOLLOW, LOOP);
+        assert!(!any_locked());
+    }
+
+    #[test]
+    fn lockparent_returns_both_vnodes_locked() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let before = usecounts();
+        let nd = lookup(p, b"/a/b", LOOKUP, LOCKPARENT | LOCKLEAF).unwrap();
+        let (vp, dvp) = (nd.ni_vp.unwrap(), nd.ni_dvp.unwrap());
+        assert_eq!((node_of(dvp), node_of(vp)), (A, B));
+        assert_eq!((VOP_ISLOCKED(dvp), VOP_ISLOCKED(vp)), (1, 1));
+        vput(vp);
+        vput(dvp);
+        assert!(!any_locked());
+        assert_eq!(usecounts()[ROOT], before[ROOT]);
+
+        // WANTPARENT: the parent comes back referenced but unlocked.
+        let nd = lookup(p, b"/a/c", LOOKUP, WANTPARENT).unwrap();
+        let (vp, dvp) = (nd.ni_vp.unwrap(), nd.ni_dvp.unwrap());
+        assert_eq!((node_of(dvp), node_of(vp)), (A, C));
+        assert!(!any_locked());
+        vrele(vp);
+        vrele(dvp);
+    }
+
+    #[test]
+    fn create_of_a_missing_name_returns_the_locked_parent() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let before = usecounts();
+        let mut nd = lookup(p, b"/a/new", CREATE, LOCKPARENT | SAVENAME).unwrap();
+        assert!(nd.ni_vp.is_none());
+        let dvp = nd.ni_dvp.unwrap();
+        assert_eq!(node_of(dvp), A);
+        assert_eq!(VOP_ISLOCKED(dvp), 1);
+        // SAVENAME keeps the pathname buffer and the last component for the caller.
+        assert!(nd.ni_cnd.cn_flags & HASBUF != 0);
+        assert_eq!(nd.ni_cnd.name(), b"new");
+        let _ = VOP_ABORTOP(dvp, &mut nd.ni_cnd);
+        vput(dvp);
+        assert!(!any_locked());
+        assert_eq!(usecounts()[A], before[A]);
+
+        // A missing intermediate directory is an error, not a creation.
+        assert_eq!(
+            lookup(p, b"/nope/new", CREATE, LOCKPARENT).err(),
+            Some(Errno::ENOENT)
+        );
+        // Neither is a trailing slash on a missing name.
+        assert_eq!(
+            lookup(p, b"/a/new/", CREATE, LOCKPARENT).err(),
+            Some(Errno::ENOENT)
+        );
+        // The root has no parent to create in.
+        assert_eq!(
+            lookup(p, b"/", CREATE, LOCKPARENT).err(),
+            Some(Errno::EISDIR)
+        );
+        assert!(!any_locked());
+    }
+
+    #[test]
+    fn realpath_builds_the_canonical_name() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let path: &'static [u8] = b"/a/./c/../abs";
+        let mut nd = ndinit(LOOKUP, FOLLOW | SAVENAME | REALPATH, NiDirp::Sys(path), p);
+        nd.ni_cnd.cn_rpbuf = pathbuf_get();
+        nd.ni_cnd.cn_rpi = 0;
+        namei(&mut nd).unwrap();
+        let vp = nd.ni_vp.unwrap();
+        assert_eq!(node_of(vp), B);
+        let rpbuf = nd.ni_cnd.rpbuf().unwrap();
+        let len = rpbuf.iter().position(|&c| c == 0).unwrap();
+        assert_eq!(&rpbuf[..len], b"/a/b");
+        vrele(vp);
+        drop(nd.ni_cnd.take_pnbuf());
+    }
+
+    #[test]
+    fn stripslashes_drops_the_trailing_slashes_first() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let nd = lookup(p, b"/a/b///", LOOKUP, FOLLOW | STRIPSLASHES).unwrap();
+        let vp = nd.ni_vp.unwrap();
+        assert_eq!(node_of(vp), B);
+        assert_eq!(vp.vtype(), VREG);
+        vrele(vp);
+    }
+
+    #[test]
+    fn no_root_file_system_is_enoent() {
+        let (_g, p) = setup();
+        assert_eq!(lookup(p, b"/a", LOOKUP, FOLLOW).err(), Some(Errno::ENOENT));
+        assert_eq!(lookup(p, b"a", LOOKUP, FOLLOW).err(), Some(Errno::ENOENT));
+        assert!(vnode_of(ROOT).is_none());
+    }
+
+    fn cwd(p: &Proc, vp: &'static Vnode) -> std::vec::Vec<u8> {
+        let mut buf = [0u8; 64];
+        let mut bp = buf.len() - 1;
+        let lim = 32;
+        vfs_getcwd_common(
+            vp,
+            None,
+            Some((&mut buf, &mut bp)),
+            lim,
+            GETCWD_CHECK_ACCESS,
+            p,
+        )
+        .unwrap();
+        buf[bp..buf.len() - 1].to_vec()
+    }
+
+    #[test]
+    fn getcwd_by_directory_scan_then_by_cache() {
+        let (_g, p, mp) = testfs::setup_root();
+        let c = vget_node(mp, C).unwrap();
+        let _ = VOP_UNLOCK(c);
+        // Nothing cached: each step looks ".." up and scans it.
+        assert_eq!(cwd(p, c), b"/a/c");
+        assert!(!any_locked());
+
+        // After a lookup the reverse map answers.
+        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/a/c"), p);
+        namei(&mut nd).unwrap();
+        vrele(nd.ni_vp.unwrap());
+        let revhits = NCHSTATS.ncs_revhits.load(Ordering::SeqCst);
+        assert_eq!(cwd(p, c), b"/a/c");
+        assert_eq!(NCHSTATS.ncs_revhits.load(Ordering::SeqCst), revhits + 2);
+
+        let root = rootvnode().unwrap();
+        assert_eq!(cwd(p, root), b"/");
+        assert!(vn_isunder(c, root, p));
+        let a = vget_node(mp, A).unwrap();
+        let _ = VOP_UNLOCK(a);
+        assert!(vn_isunder(c, a, p));
+        assert!(!vn_isunder(a, c, p));
+        vrele(a);
+        vrele(c);
+        assert!(!any_locked());
     }
 }
 /* </TESTS> */

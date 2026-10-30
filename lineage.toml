@@ -5037,7 +5037,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/namei.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/iso.rs"
@@ -5127,7 +5127,7 @@ notes = "M2: main() skeleton in the C's order (consinit, copyright, then every s
 rust = "sys/kern/init_sysent.rs"
 lz = ["sys/kern/init_sysent.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/getcwd.rs"]
 license = "none"
 
 [[module]]
@@ -5923,34 +5923,10 @@ status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/hal/sys/stat.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
 
 [[module]]
-rust = "sys/kern/vfs_cache.rs"
-lz = ["sys/kern/vfs_cache.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_getcwd.rs"
-lz = ["sys/kern/vfs_getcwd.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs"]
-
-[[module]]
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_lockf.rs"
-lz = ["sys/kern/vfs_lockf.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/thread.rs", "sys/kernel/fs/lockf.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_lookup.rs"
-lz = ["sys/kern/vfs_lookup.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -5964,12 +5940,6 @@ rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
 adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs"]
-
-[[module]]
-rust = "sys/kern/vfs_vnops.rs"
-lz = ["sys/kern/vfs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/spec.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
@@ -7101,7 +7071,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/nfs/nfs_bio.rs"
 lz = ["sys/nfs/nfs_bio.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_boot.rs"
@@ -7546,7 +7516,7 @@ notes = "N4.4: eventvar.h's struct kqueue is sys/kernel/event.rs's Kqueue<G>; th
 rust = "sys/sys/exec.rs"
 lz = ["sys/sys/exec.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/types.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/vm/types.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs"]
 notes = "M8: ps_strings (to_bytes), exec_vmcmd (ev_proc an enum of the five vmcmds, ev_vp an ExecFile: a vnode or the boot module image), exec_vmcmd_set as a Vec (NEW_VMCMD2 = push with vref, kill_vmcmds = kill with vrele), exec_package with every member (ep_hdr an owned exec_maxhdrsz buffer, ep_interp a namei_pool NameiBuf, ep_pins, ep_execpath; ep_ndp is check_exec's argument, ep_image the module stand-in), execsw, exec_maxhdrsz as a const fn, EXEC_*, VMCMD_*, ELF_RANDOMIZE_LIMIT; the a.out struct exec and MID_* are not used; M14: exec_makecmds_fcn takes the nameidata (ep_ndp) as its third argument, exec_maxhdrsz is max(EXEC_SCRIPT_HDRSZ, sizeof(Elf_Ehdr)), ep_fa holds exec_script.c's fake args"
 
 [[module]]
@@ -7650,6 +7620,7 @@ rust = "sys/sys/lockf.rs"
 lz = ["sys/sys/lockf.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/fs/lockf.rs"]
+notes = "N5.3: the adapter of kernel::fs::lockf (LockfSlot, LockfState, MAXLOCKSPERUID, lf_init re-exported; lf_advlock and lf_purgelocks for BsdProcGlue)"
 
 [[module]]
 rust = "sys/sys/malloc.rs"
@@ -7697,7 +7668,8 @@ notes = "M4: struct mutex (the MI one), MUTEX_INITIALIZER (Mutex::new), __MUTEX_
 rust = "sys/sys/namei.rs"
 lz = ["sys/sys/namei.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/getcwd.rs"]
+adapted_by = ["sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/vnops.rs"]
+notes = "N5.3: the adapter of kernel::fs::namei, lookup and cache at the path of its 54 users (Componentname and Nameidata the kernel's for BsdProcGlue, the functions and constants re-exported, NCHSTATS the kernel's counters, pathbuf_get, cn_ucred with LZ's one unsafe); its tests keep LZ's namei and getcwd tests over bsd's test file system (symbolic links and the directory scan)"
 
 [[module]]
 rust = "sys/sys/param.rs"
@@ -8135,6 +8107,11 @@ lz = "sys/kern/vfs_init.rs::MAXVFSCONF"
 native = ["sys/kernel/fs/subr.rs::VfsTables"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/kern/vfs_init.rs::NAMEI_POOL"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/fs/mount.rs"
 crate = "kernel"
@@ -8495,12 +8472,80 @@ lz = ["sys/kern/vfs_cache.rs", "sys/sys/namei.rs"]
 status = "redesigned"
 notes = "N5.3: vfs_cache.c over the name cache's own Mutexed leaf NCLOCK at IPL_NONE (D-N5.3-2, N12 removes it): the LRU lists and counts a Guarded part 0 (NameCache<G> in VfsTables), each vnode's heads (v_nc_tree, v_cache_dst) a Guarded part 1 keyed to it (NcHeads<G>); the entries PoolBoxes of nch_pool owned by the positive or the negative LRU (OwnedList), indexed by the directory's tree and the destination's list (SecondaryTree, SecondaryList); cache_zap by a hold; nchstats as atomics (Nchstats); cache_counts and namecache_test_reset for the tests and benches; unwired until N5.3's switch"
 
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NUMCACHE"
+native = ["NameCache"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NUMNEG"
+native = ["NameCache"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NCLRUHEAD"
+native = ["NameCache"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NCLRUNEGHEAD"
+native = ["NameCache"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NEXTVNODEID"
+native = ["NameCache"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NCHSTATS"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NCH_POOL"
+native = ["sys/kernel/fs/subr.rs::VfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::NcList"
+native = []
+kind = "dropped"
+reason = "N5.3: LZ's Sync wrapper of the two LRU heads' statics; the heads are OwnedLists of NameCache, a Guarded part of the cache's own lock (NCLOCK)"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::cache_tree_init"
+native = []
+kind = "dropped"
+reason = "N5.3: a vnode's name cache heads are made empty with the vnode (NcHeads::new in Vnode::new); nothing initialises them after"
+
+[[module.fn]]
+lz = "sys/kern/vfs_cache.rs::in_reverse_map"
+native = ["reverse_mapped"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/namei.rs::Namecache::default"
+native = []
+kind = "dropped"
+reason = "N5.3: an entry is made with its directory, its vnode and its name (Namecache::new, cache_enter's pool item), never zeroed"
+
 [[module]]
 rust = "sys/kernel/fs/getcwd.rs"
 crate = "kernel"
 lz = ["sys/kern/vfs_getcwd.rs"]
 status = "redesigned"
 notes = "N5.3: vfs_getcwd.c: vfs_getcwd_scandir (the directory buffer an MArray, the entries walked by offset), vfs_getcwd_getcache, vfs_getcwd_common over a slice and an index (the C's bufp and bpp), sys___getcwd; unwired until N5.3's switch"
+
+[[module.fn]]
+lz = "sys/kern/vfs_getcwd.rs::DOTDOT"
+native = ["sys/kernel/fs/namei.rs::Componentname::dotdot"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_getcwd.rs::getcache_finish"
+native = ["vfs_getcwd_getcache"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/lockf.rs"
@@ -8514,12 +8559,48 @@ lz = "sys/kern/vfs_lockf.rs::LockfStateSlot"
 native = ["LockfSlot"]
 kind = "renamed"
 
+[[module.fn]]
+lz = "sys/kern/vfs_lockf.rs::Lockf::new"
+native = ["lf_alloc"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lockf.rs::Lockf::state"
+native = []
+kind = "dropped"
+reason = "N5.3: lf_state goes: the state is the slot's (LockfSlot owns it), which every lockf function is handed; a lock reaches it through the slot, never through a pointer of its own"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lockf.rs::ls_ref"
+native = ["lf_advlock"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lockf.rs::ls_rele"
+native = ["ls_settle"]
+kind = "renamed"
+
 [[module]]
 rust = "sys/kernel/fs/lookup.rs"
 crate = "kernel"
 lz = ["sys/kern/vfs_lookup.rs"]
 status = "redesigned"
 notes = "N5.3: vfs_lookup.c: ndinitat and ndinit, component_push and component_pop, namei, vfs_lookup and vfs_relookup over the owned path buffer (the component an offset and a length into it, never a pointer); the pledge and unveil hooks ProcGlue legs at the C's points; every check of the C kept at its point (Security-Review); unwired until N5.3's switch"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lookup.rs::rpbuf"
+native = ["rpbuf_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lookup.rs::pnbuf_ref"
+native = ["pnbuf_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/vfs_lookup.rs::pnbuf"
+native = ["pnbuf_of_mut"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/fs/namei.rs"
@@ -8545,6 +8626,11 @@ crate = "kernel"
 lz = ["sys/kern/vfs_vnops.rs"]
 status = "redesigned"
 notes = "N5.3: vfs_vnops.c: vn_open, vn_writechk, vn_fsizechk, vn_marktext, vn_close, vn_rdwr over RdwrBuf (a kernel slice or a user range), the vnode files' operations as VnodeFileOps (FileOps<G>, decision 46), vn_read, vn_write, vn_statfile, vn_stat into hal's Stat, vn_ioctl, vn_closefile, vn_kqfilter, vn_seek, vn_isunder; vn_lock stays in vnode.rs (N5.2); unwired until N5.3's switch"
+
+[[module.fn]]
+lz = "sys/kern/vfs_vnops.rs::VNOPS"
+native = ["VnodeFileOps"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/hal/sys/syslimits.rs"
@@ -8681,8 +8767,8 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs"]
-notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's, until N5.3's credentials), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted"
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/cache.rs"]
+notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's, until N5.3's credentials), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted; N5.3: VnodeG narrowed to v_socket (the name cache's heads and the device's record locks are the kernel vnode's); the vn_* functions and vfs_getcwd_common the kernel's, VNOPS bsd's table of the kernel's vnode file operations, vn_fsizechk's adapter (the uio's thread pinned)"
 
 [[module]]
 rust = "sys/hal/sys/wait.rs"
@@ -8798,7 +8884,7 @@ adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/m
 rust = "sys/ufs/ext2fs/ext2fs_readwrite.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_readwrite.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_subr.rs"
@@ -8862,7 +8948,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/ufs/ffs/ffs_vnops.rs"
 lz = ["sys/ufs/ffs/ffs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
@@ -8929,7 +9015,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -9612,7 +9698,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"

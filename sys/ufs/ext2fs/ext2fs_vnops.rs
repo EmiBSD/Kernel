@@ -1881,16 +1881,14 @@ mod tests {
     }
 
     /// A user-space path for the `do*at` functions: the bytes and a NUL.
-    fn c(path: &str) -> Vec<u8> {
-        let mut v = path.as_bytes().to_vec();
-        v.push(0);
-        v
+    fn c(path: &str) -> crate::kern::vfs_subr::tests::UserStr {
+        crate::kern::vfs_subr::tests::user_str(path.as_bytes())
     }
 
     /// `open(path, O_RDWR | O_CREAT, mode)`: the vnode, unlocked and referenced.
     fn create(p: &'static Proc, path: &str, mode: Mode) -> &'static Vnode {
         let path = c(path);
-        let mut nd = ndinit(0, 0, NiDirp::Sys(&path), p);
+        let mut nd = ndinit(0, 0, NiDirp::User(path.addr()), p);
         vn_open(&mut nd, FREAD | FWRITE | O_CREAT, mode).expect("create");
         let vp = nd.ni_vp.expect("a vnode");
         let _ = VOP_UNLOCK(vp);
@@ -1899,13 +1897,13 @@ mod tests {
 
     /// `close` of a vnode `create` gave.
     fn close(p: &'static Proc, vp: &'static Vnode) {
-        vn_close(vp, FREAD | FWRITE, p.ucred(), Some(p)).expect("close");
+        vn_close(vp, FREAD | FWRITE, Cred::real(p.ucred()), Some(p)).expect("close");
     }
 
     /// The vnode `path` names, unlocked and referenced.
     fn lookup(p: &'static Proc, path: &str) -> Result<&'static Vnode, Errno> {
         let path = c(path);
-        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(&path), p);
+        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::User(path.addr()), p);
         namei(&mut nd)?;
         Ok(nd.ni_vp.expect("a vnode"))
     }
@@ -1913,7 +1911,7 @@ mod tests {
     /// `stat(path)` (`lstat` with `nofollow`).
     fn stat_flags(p: &'static Proc, path: &str, follow: u64) -> Result<Vattr, Errno> {
         let path = c(path);
-        let mut nd = ndinit(LOOKUP, LOCKLEAF | follow, NiDirp::Sys(&path), p);
+        let mut nd = ndinit(LOOKUP, LOCKLEAF | follow, NiDirp::User(path.addr()), p);
         namei(&mut nd)?;
         let vp = nd.ni_vp.expect("a vnode");
         let mut va = Vattr::new();
@@ -1996,7 +1994,7 @@ mod tests {
         size: usize,
     ) -> Result<(Vec<Ent>, i64, i32), Errno> {
         let cpath = c(path);
-        let mut nd = ndinit(LOOKUP, LOCKLEAF | FOLLOW, NiDirp::Sys(&cpath), p);
+        let mut nd = ndinit(LOOKUP, LOCKLEAF | FOLLOW, NiDirp::User(cpath.addr()), p);
         namei(&mut nd)?;
         let vp = nd.ni_vp.expect("a vnode");
         let mut buf = vec![0u8; size];
@@ -2342,7 +2340,7 @@ mod tests {
         // readlink of both, lstat, and a lookup through the short one.
         let readlink = |path: &str| {
             let cpath = c(path);
-            let mut nd = ndinit(LOOKUP, LOCKLEAF | NOFOLLOW, NiDirp::Sys(&cpath), p);
+            let mut nd = ndinit(LOOKUP, LOCKLEAF | NOFOLLOW, NiDirp::User(cpath.addr()), p);
             namei(&mut nd).unwrap();
             let vp = nd.ni_vp.unwrap();
             let mut buf = vec![0u8; 300];

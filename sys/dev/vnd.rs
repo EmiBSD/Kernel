@@ -889,7 +889,7 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
     if vplocked {
         let _ = VOP_UNLOCK(vp);
     }
-    let _ = vn_close(vp, rw, p.ucred_ptr(), Some(p));
+    let _ = vn_close(vp, rw, Cred::from_raw(p.ucred_ptr()), Some(p));
     // crfree(cred): the unit's reference, never placed, goes.
     drop(cred);
     Err(error)
@@ -944,7 +944,7 @@ pub fn vndclear(sc: &VndSoftc) {
     let _ = vn_close(
         vp,
         vndrw(sc),
-        cred.as_ref().map_or(ptr::null(), CredRef::as_ptr),
+        Cred::from_raw(cred.as_ref().map_or(ptr::null(), CredRef::as_ptr)),
         p,
     );
     // crfree(cred): the unit's reference goes.

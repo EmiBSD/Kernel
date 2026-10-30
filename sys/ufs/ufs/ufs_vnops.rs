@@ -75,7 +75,7 @@
 //! - `UFS_DIRHASH`'s `ufsdirhash_free` in `ufs_rmdir` is under feature `ufs_dirhash`.
 
 use crate::sys::vnode::RdwrBuf;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::sync::atomic::Ordering;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
@@ -84,9 +84,7 @@ use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_BMAP, VOP_BWRITE, VOP_READ, VOP_REMOVE, VOP_STRATEGY, VOP_UNLOCK,
 };
@@ -232,10 +230,8 @@ pub(crate) fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
 }
 
 /// `pool_put(&namei_pool, cnp->cn_pnbuf)`: give back the pathname buffer.
-pub fn pnbuf_free(cnp: &Componentname) {
-    if let Some(buf) = NonNull::new(cnp.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
+pub fn pnbuf_free(cnp: &mut Componentname<'_>) {
+    drop(cnp.take_pnbuf());
 }
 
 /// `ufs_itimes`: update the times in the inode.

@@ -81,7 +81,6 @@
 //!   DIAGNOSTIC`).
 //! - `VOP_BWRITE` panics for a buffer without a vnode, where the C would dereference NULL.
 
-use core::ptr;
 use kernel::file::LockOwner;
 
 use crate::kern::proc_glue::BsdProcGlue;
@@ -90,7 +89,7 @@ use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
 use crate::sys::mount::{Fid, Mount, Statfs, Vfsconf, Vfsops};
-use crate::sys::namei::{Componentname, HASBUF, Nameidata, SAVESTART};
+use crate::sys::namei::{Componentname, Nameidata};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Ino, Register, Uid};
 use crate::sys::ucred::Ucred;
@@ -1079,17 +1078,6 @@ pub fn vop_generic_abortop(ap: &mut VopAbortopArgs<'_, '_>) -> Result<(), Errno>
     default::vop_generic_abortop::<BsdProcGlue>(ap.a_cnp)
 }
 
-/// The abort of a lookup's pathname buffer (`vop_generic_abortop`'s body, the kernel's
-/// `FileGlue::abortop` leg): `pool_put(&namei_pool, cnp->cn_pnbuf)` when the lookup left one
-/// (`HASBUF`) and was not asked to keep it (`SAVESTART`).
-pub fn abortop_putname(cnp: &mut Componentname) {
-    if cnp.cn_flags & (HASBUF | SAVESTART) == HASBUF
-        && let Some(buf) = ptr::NonNull::new(cnp.cn_pnbuf)
-    {
-        crate::kern::subr_pool::pool_put(&crate::kern::vfs_init::NAMEI_POOL, buf);
-    }
-}
-
 /// Trivial lookup routine that always fails.
 pub fn vop_generic_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     default::vop_generic_lookup(ap.a_vpp)
@@ -1121,6 +1109,7 @@ mod tests {
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::unistd::{_PC_LINK_MAX, _PC_PATH_MAX};
     use crate::sys::vnode::{VDIR, VT_NON, getnewvnode, insmntque, vfs_mount_alloc, vref, vrele};
+    use core::ptr;
 
     /// The slots each test table's operations hit, one bit each.
     static HITS: AtomicU64 = AtomicU64::new(0);

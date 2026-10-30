@@ -79,6 +79,7 @@ use hal::sys::types::Daddr;
 
 use super::bio;
 use super::mount::vfs_busy;
+use super::namei::{HASBUF, SAVESTART};
 use super::spec::spechash;
 use super::subr::{vfs, vgonel};
 use super::vnode::{PINOD, REVOKEALL, VALIASED, VBLK, VNODE_MTX, VXLOCK, VXWANT, Vnode};
@@ -190,7 +191,9 @@ pub fn vop_generic_bwrite(bp: IoBuf) -> Result<(), Errno> {
 /// `vop_generic_abortop`: frees the pathname buffer a lookup left behind, unless the caller
 /// asked to keep it (`SAVESTART`).
 pub fn vop_generic_abortop<G: ProcGlue>(cnp: &mut Cn<'_, G>) -> Result<(), Errno> {
-    <G::FileGlue as FileGlue>::abortop(cnp);
+    if cnp.cn_flags & (HASBUF | SAVESTART) == HASBUF {
+        drop(cnp.take_pnbuf());
+    }
     Ok(())
 }
 

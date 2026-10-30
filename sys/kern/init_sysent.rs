@@ -81,7 +81,7 @@ use crate::kern::uipc_syscalls::{
     sys_sendmmsg, sys_sendmsg, sys_sendto, sys_setrtable, sys_setsockopt, sys_shutdown, sys_socket,
     sys_socketpair, sys_ypconnect,
 };
-use crate::kern::vfs_getcwd::sys___getcwd;
+use crate::kern::vfs_syscalls::sys___getcwd;
 use crate::kern::vfs_syscalls::{
     sys___pledge_open, sys___realpath, sys_access, sys_chdir, sys_chflags, sys_chflagsat,
     sys_chmod, sys_chown, sys_chroot, sys_faccessat, sys_fchdir, sys_fchflags, sys_fchmod,

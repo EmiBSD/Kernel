@@ -335,6 +335,9 @@ fn rounds(mut op: impl FnMut()) -> Duration {
 /// host pmap's bootstrap and the kernel's doubles of `hal`'s bridges, `kmeminit`.
 fn setup_memory() {
     bsd::kern::hal_bridges::hal_bridges_register_vm();
+    // The kernel's pools on bsd's pool(9), as the kernel boots (before the doubles'
+    // registration, which then changes nothing).
+    bsd::kern::hal_bridges::hal_bridges_register_pools();
     kernel::testutil::install();
     kernel::vm::page::uvm_page_test_reset();
     UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
@@ -498,8 +501,8 @@ fn main() {
         // of a name that is not cached and recycles the LRU's head.
         let names16: Vec<Vec<u8>> = (0..16).map(|i| format!("z{i:02}").into_bytes()).collect();
         let saved = bsd::conf::param::INITIALVNODES.load(Ordering::Relaxed);
-        let cached = bsd::sys::namei::NUMCACHE.load(Ordering::Relaxed) as i32;
-        bsd::conf::param::INITIALVNODES.store(cached + 8, Ordering::Relaxed);
+        let (cached, _) = kernel::fs::cache::cache_counts::<bsd::kern::proc_glue::BsdProcGlue>();
+        kernel::fs::cache::nchinit::<bsd::kern::proc_glue::BsdProcGlue>(cached as i32 + 8);
         let mut i = 0;
         report(
             names[4],
@@ -511,7 +514,7 @@ fn main() {
                 })
             }),
         );
-        bsd::conf::param::INITIALVNODES.store(saved, Ordering::Relaxed);
+        kernel::fs::cache::nchinit::<bsd::kern::proc_glue::BsdProcGlue>(saved);
     }
     if wanted(names[5]) {
         let slot: &'static LockfSlot = Box::leak(Box::new(LockfSlot::new()));
@@ -568,7 +571,7 @@ fn main() {
                         && let Some(vp) = nd.ni_vp
                     {
                         let _ = VOP_UNLOCK(vp);
-                        let _ = vn_close(vp, FREAD, p.ucred_ptr(), Some(p));
+                        let _ = vn_close(vp, FREAD, Cred::from_raw(p.ucred_ptr()), Some(p));
                     }
                 })
             }),

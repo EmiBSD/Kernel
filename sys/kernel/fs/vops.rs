@@ -176,15 +176,14 @@ use super::vnode::{VBIOERROR, VDIR, VNODE_MTX, Vattr, Vnode};
 use crate::assert::{kassert, kpanic};
 use crate::cred::Ucred;
 use crate::event::Knote;
-use crate::file::FileGlue;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::Uio;
 
 /// `struct componentname` of the glue `G` (`bsd`'s until N5.3's switch, the kernel's
 /// `fs::namei::Componentname` for the test glues).
-pub type Cn<'a, G> = <<G as ProcGlue>::FileGlue as FileGlue>::Componentname<'a>;
+pub type Cn<'a, G> = super::namei::Componentname<'a, G>;
 /// `struct nameidata` of the glue `G` (`bsd`'s until N5.3).
-pub type Nd<'a, G> = <<G as ProcGlue>::FileGlue as FileGlue>::Nameidata<'a>;
+pub type Nd<'a, G> = super::namei::Nameidata<'a, G>;
 
 /// `struct ucred *` as a vnode operation receives it: a real credential, NULL or one of the
 /// sentinels `NOCRED` and `FSCRED`. An opaque copy of the C's pointer (see the module's

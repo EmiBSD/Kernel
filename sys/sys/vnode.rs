@@ -88,18 +88,17 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64};
 use kernel::file::LockOwner;
 
+use crate::kern::kern_descrip::BsdFileGlue;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::buf::Buf;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
-use crate::sys::lockf::LockfSlot;
+use crate::sys::file::Fileops;
 use crate::sys::mount::Mount;
-use crate::sys::namei::{Componentname, NamecacheRbCache, NcMe};
-use crate::sys::proc::Proc;
-use crate::sys::queue::TailqHead;
+use crate::sys::namei::Componentname;
+use crate::sys::proc::{Proc, ProcExt};
 use crate::sys::socketvar::Socket;
-use crate::sys::tree::RbtHead;
 use crate::sys::types::{Daddr, Dev, Register};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
@@ -122,45 +121,25 @@ pub use kernel::fs::vnode::{
 /// `struct vnode`: the kernel's, with `bsd`'s members ([`VnodeG`]).
 pub type Vnode = kernel::fs::vnode::Vnode<BsdProcGlue>;
 
-/// The members of `struct vnode` of `bsd`'s types (the kernel's `FileGlue::VnodeG`): the name
-/// cache's heads (`vfs_cache.rs`, N5.3), the socket bound to a `VSOCK` vnode's name
-/// (`uipc_usrreq.rs`) and a device vnode's advisory locks (`si_lockf`, `vfs_lockf.rs`, N5.3).
+/// The members of `struct vnode` of `bsd`'s types (the kernel's `FileGlue::VnodeG`): the socket
+/// bound to a `VSOCK` vnode's name (`uipc_usrreq.rs`, N6). The name cache's heads and a
+/// device's record locks are the kernel vnode's own since N5.3 (`Vnode::nc`,
+/// `Vnode::speclockf`).
+#[derive(Default)]
 pub struct VnodeG {
-    /// `v_nc_tree`: VFS namecache, the entries naming children of this directory.
-    pub v_nc_tree: RbtHead<NamecacheRbCache>,
-    /// `v_cache_dst`: cache entries to us.
-    pub v_cache_dst: TailqHead<NcMe>,
     /// `v_socket` (`v_un.vu_socket`): unix ipc, the socket bound to the name. An atomic
     /// word: `unp_detach` clears it under the vnode's lock alone and `sysctl_file` reads it
     /// with no lock, as the C does (`uipc_usrreq.c:787`).
     pub v_socket: Link<Socket>,
-    /// `v_speclockf` (`v_specinfo->si_lockf`): a device vnode's advisory lock list.
-    pub v_speclockf: LockfSlot,
-}
-
-impl Default for VnodeG {
-    fn default() -> Self {
-        Self {
-            v_nc_tree: RbtHead::new(),
-            v_cache_dst: TailqHead::new(),
-            v_socket: Link::new(),
-            v_speclockf: LockfSlot::new(),
-        }
-    }
 }
 
 // SAFETY: LZ's argument for `struct vnode` (sys/sys/vnode.rs:280 at the pin), moved with the
-// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed to the
-// members that are `Cell`s. The name cache's heads (`v_nc_tree`, `v_cache_dst`) are written
-// and read only by `vfs_cache.rs` under the kernel lock (the C's `KERNEL_LOCK()` around
-// `namei` and `cache_purge`), and the device's lock list (`v_speclockf`) only by
-// `vfs_lockf.rs` under `lockf_lock`; `vnode_g_init` initialises the heads on a vnode no other
-// thread reaches yet. So no two CPUs touch one `Cell` at once. `v_socket` needs no lock: it is
-// an atomic word (`Link`), whose loads and stores never race; it is not `Sync` by itself only
-// because `Socket` is not (its fields are `Cell`s under the socket's lock), and the reference
-// it hands another CPU is opened as every socket reference of `bsd` is: `unp_connect` reads
-// `so_type` (`[I]`, set once by `socreate`) and takes `solock` before the rest, `sysctl_file`
-// takes only the address. Paid at N5.3 (the name cache and lockf get typed owners) and N6 (the
+// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed at N5.3 to
+// the one member left: `v_socket` is an atomic word (`Link`), whose loads and stores never
+// race; it is not `Sync` by itself only because `Socket` is not (its fields are `Cell`s under
+// the socket's lock), and the reference it hands another CPU is opened as every socket
+// reference of `bsd` is: `unp_connect` reads `so_type` (`[I]`, set once by `socreate`) and
+// takes `solock` before the rest, `sysctl_file` takes only the address. Paid at N6 (the
 // sockets).
 unsafe impl Sync for VnodeG {}
 
@@ -171,16 +150,12 @@ pub static NUMVNODES: &AtomicI64 = &crate::kern::kern_descrip::VFS_TABLES.numvno
 /// `maxvnodes` (the kernel's word, `kern.maxvnodes`).
 pub static MAXVNODES: &AtomicI32 = &crate::kern::kern_descrip::VFS_TABLES.maxvnodes;
 
-/// `vnode.h`'s `vn_*` functions and the vnode files' operations (`vfs_vnops.c`), and
-/// `vfs_getcwd_common` (`vfs_getcwd.c`), where the C declares them.
-pub use crate::kern::vfs_getcwd::{vfs_getcwd_common, vfs_getcwd_getcache, vfs_getcwd_scandir};
 /// What `kern/vfs_subr.rs` keeps (the NFS export list, the shutdown trio), named here as LZ's
 /// whole module was.
 pub use crate::kern::vfs_subr::*;
-pub use crate::kern::vfs_vnops::{
-    VNOPS, vn_close, vn_closefile, vn_fsizechk, vn_ioctl, vn_isunder, vn_kqfilter, vn_lock,
-    vn_marktext, vn_open, vn_read, vn_seek, vn_stat, vn_statfile, vn_write, vn_writechk,
-};
+/// `vnode.h`'s `vn_*` functions (`vfs_vnops.c`) and `vfs_getcwd_common` (`vfs_getcwd.c`),
+/// where the C declares them: the kernel's (N5.3).
+pub use kernel::fs::getcwd::{vfs_getcwd_common, vfs_getcwd_getcache, vfs_getcwd_scandir};
 pub use kernel::fs::mount::{
     vfs_busy, vfs_isbusy, vfs_mount_alloc, vfs_mount_free, vfs_mount_take, vfs_unbusy,
 };
@@ -191,8 +166,29 @@ pub use kernel::fs::subr::{
     vfs_getnewfsid, vfs_mount_foreach_vnode, vfs_mountedon, vget, vgone, vgonel, vhold, vnoperm,
     vput, vputonfreelist, vrecycle, vref, vrele, vwaitforio,
 };
-/// `vn_rdwr` is the kernel's (N5.3): its buffer a slice or a user range ([`RdwrBuf`]).
-pub use kernel::fs::vnops::{RdwrBuf, vn_rdwr};
+pub use kernel::fs::vnode::vn_lock;
+pub use kernel::fs::vnops::{
+    RdwrBuf, vn_close, vn_isunder, vn_marktext, vn_open, vn_rdwr, vn_stat, vn_writechk,
+};
+
+/// `vn_fsizechk(vp, uio, ioflag, &overrun)`: the kernel's, its thread the uio's
+/// (`uio_procp`), pinned for `SIGXFSZ` as `bsd` pins its threads (`ProcExt::as_static`).
+pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result<usize, Errno> {
+    let p = uio.uio_procp.map(|p| hal::pin::pin_static(p.as_static()));
+    kernel::fs::vnops::vn_fsizechk(vp, uio, ioflag, p)
+}
+
+/// `vnops`: the vnode files' operations, the kernel's (`kernel::fs::vnops::VnodeFileOps`,
+/// N5.3) as `bsd`'s table holds them.
+pub static VNOPS: Fileops = Fileops {
+    fo_read: kernel::fs::vnops::vn_read::<BsdFileGlue>,
+    fo_write: kernel::fs::vnops::vn_write::<BsdFileGlue>,
+    fo_ioctl: kernel::fs::vnops::vn_ioctl::<BsdFileGlue>,
+    fo_kqfilter: kernel::fs::vnops::vn_kqfilter::<BsdFileGlue>,
+    fo_stat: kernel::fs::vnops::vn_statfile::<BsdFileGlue>,
+    fo_close: kernel::fs::vnops::vn_closefile::<BsdFileGlue>,
+    fo_seek: Some(kernel::fs::vnops::vn_seek::<BsdFileGlue>),
+};
 
 /// `vp->v_op = ops`: a file system's table (registered with the kernel on its first use).
 pub fn set_vops(vp: &Vnode, ops: &'static Vops) {

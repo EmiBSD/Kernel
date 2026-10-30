@@ -340,7 +340,6 @@ pub fn deget(
         ldep.de_vnode.set(Some(nvp));
         ldep.de_flag.set(0);
         ldep.de_devvp.set(None);
-        ldep.de_lockf.set(None);
         ldep.de_dev.set(pmp.pm_dev.get());
         ldep.de_dirclust.set(dirclust);
         ldep.de_diroffset.set(diroffset);

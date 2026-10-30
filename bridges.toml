@@ -138,12 +138,14 @@ paid_by = "N7"
 # mmap(2)'s and mquery(2)'s getvnode, with the VmProc bridge's end), and a pipe file's pipe
 # (pipe_of, N8 with Data: the pipe's kernel filters find the pair through it, with the
 # PipeGlue bridge's end) and a new pipe file's pipeops and object (pipe_file, N8 with Ops and
-# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end). N5.3: the
-# names' types joined it until the slice's switch (Componentname and Nameidata, generic
-# associated types: bsd's are LZ's, the test glue's kernel::fs::namei's; UnveilMatch, the
-# unveil node a lookup matched) and vnode_of (a vnode file's kernel vnode, for namei's
-# fd-relative start and the vnode files' operations); the Stat and Vnode types and the vref,
-# vrele, stat_hide_gen and stat_copyout legs left it (hal's Stat, kernel::fs's vnodes).
+# Data: kernel::pipe's dopipe installs them, with the PipeFiles bridge's end). N5.3:
+# UnveilMatch (the unveil node a lookup matched, kern_unveil's until N8) and vnode_of (a vnode
+# file's kernel vnode, for namei's fd-relative start and the vnode files' operations) joined
+# it; the Stat and Vnode types and the vref, vrele, stat_hide_gen and stat_copyout legs left
+# it (hal's Stat, kernel::fs's vnodes), and with the switch to kernel::fs the names' types
+# (the kernel's Componentname and Nameidata), vnode_g_init (the vnode's name cache heads are
+# its own), cache_purge, lf_purgelocks, spec_advlock (the kernel's cache and record locks)
+# and abortop (vop_generic_abortop gives the pathname buffer back itself).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"

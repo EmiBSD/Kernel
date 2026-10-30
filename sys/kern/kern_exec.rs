@@ -87,11 +87,13 @@
 //! - The 4-clause licence (advertising clause) was accepted by the user at M2 for this
 //!   project.
 
+use crate::sys::namei::pathbuf_get;
 use crate::sys::vnode::RdwrBuf;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 use kernel::fs::vops::Cred;
+use libkern::strnlen;
 
 use crate::dev::rnd::{arc4random, arc4random_buf};
 use crate::kern::exec_elf::{exec_elf_fixup, exec_elf_makecmds};
@@ -104,10 +106,7 @@ use crate::kern::kern_prot::proc_cansugid;
 use crate::kern::kern_sig::{execsigs, psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_synch::wakeup;
 use crate::kern::kern_time::cancel_all_itimers;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_OPEN, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvmspace_exec;
 use crate::kern::vm_bsd::{km_alloc, km_free};
@@ -225,10 +224,7 @@ pub fn exec_free_package(pack: &mut ExecPackage<'_>) {
 /// `pool_put(&namei_pool, ndp->ni_cnd.cn_pnbuf)`: gives back the pathname buffer a
 /// `SAVENAME` lookup kept.
 pub(crate) fn namei_pnbuf_put(ndp: &mut Nameidata<'_>) {
-    if let Some(buf) = NonNull::new(ndp.ni_cnd.cn_pnbuf) {
-        pool_put(&NAMEI_POOL, buf);
-    }
-    ndp.ni_cnd.cn_pnbuf = ptr::null_mut();
+    drop(ndp.ni_cnd.take_pnbuf());
 }
 
 /// check exec: given an "executable" described in the exec package's namei info, see what
@@ -301,12 +297,10 @@ pub fn check_exec(
 
             let cwd = &cwdbuf[bp..];
             let len = cwd.iter().position(|&c| c == 0).unwrap_or(cwd.len());
-            if error.is_err() || len >= MAXPATHLEN || ndp.ni_cnd.cn_rpbuf.is_null() {
+            if error.is_err() || len >= MAXPATHLEN || ndp.ni_cnd.cn_rpbuf.is_none() {
                 ndp.ni_cnd.cn_flags &= !EXECPATH;
-            } else {
+            } else if let Some(rp) = ndp.ni_cnd.cn_rpbuf.as_deref_mut() {
                 // strlcpy(ndp->ni_cnd.cn_rpbuf, bp, MAXPATHLEN)
-                // SAFETY: `cn_rpbuf` is the caller's `MAXPATHLEN`-byte realpath buffer.
-                let rp = unsafe { slice::from_raw_parts_mut(ndp.ni_cnd.cn_rpbuf, MAXPATHLEN) };
                 rp[..len].copy_from_slice(&cwd[..len]);
                 rp[len] = 0;
                 ndp.ni_cnd.cn_rpi = len;
@@ -408,7 +402,7 @@ pub fn check_exec(
     };
 
     // bad2: close the vnode, free the pathname buf, and punt.
-    let _ = vn_close(vp, FREAD, cred, Some(p));
+    let _ = vn_close(vp, FREAD, Cred::from_raw(cred), Some(p));
     namei_pnbuf_put(ndp);
     Err(error)
 }
@@ -523,10 +517,12 @@ fn execve_common(
     let pr = p.process();
 
     // Copy into kernel for realpath-like calculations
-    let pathname = NameiBuf::get()?;
-    copyinstr(path, pathname.as_mut())?;
+    let mut pathname = pathbuf_get().ok_or(Errno::ENOMEM)?;
+    copyinstr(path, &mut pathname[..])?;
+    let pathname: &[u8] = &pathname[..strnlen(&pathname[..], MAXPATHLEN)];
 
-    let rpbuf = NameiBuf::get_zero()?;
+    // pool_get(&namei_pool, PR_WAITOK | PR_ZERO): the pool's buffers start zeroed.
+    let rpbuf = pathbuf_get().ok_or(Errno::ENOMEM)?;
 
     // Get other threads to stop, if contested return ERESTART, so the syscall is restarted
     // after halting in userret.
@@ -538,14 +534,14 @@ fn execve_common(
     // execing".
     pr.ps_flags.fetch_or(PS_INEXEC, Ordering::Relaxed);
 
-    let mut nid = ndinit(LOOKUP, NOFOLLOW, NiDirp::Sys(pathname.as_mut()), p);
+    let mut nid = ndinit(LOOKUP, NOFOLLOW, NiDirp::Sys(pathname), p);
     nid.ni_pledge = PLEDGE_EXEC;
     nid.ni_unveil = UNVEIL_EXEC;
-    nid.ni_cnd.cn_rpbuf = rpbuf.as_ptr();
+    nid.ni_cnd.cn_rpbuf = Some(rpbuf);
     nid.ni_cnd.cn_rpi = 0;
 
     // initialize the fields of the exec package.
-    let mut pack = ExecPackage::new(pathname.as_str());
+    let mut pack = ExecPackage::new(pathname);
     pack.ep_image = image;
 
     // freehdr: the header, the pathname and the realpath buffers are dropped by the
@@ -593,7 +589,7 @@ fn execve_common(
         exec_free_package(pack);
         // close and put the exec'd file
         if let Some(vp) = pack.ep_vp {
-            let _ = vn_close(vp, FREAD, ptr::from_ref(cred), Some(p));
+            let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
         }
         namei_pnbuf_put(nid);
         km_free(argp, NCARGS, &KV_EXEC, &KP_PAGEABLE);
@@ -724,7 +720,7 @@ fn execve_common(
         exec_free_package(pack);
         namei_pnbuf_put(nid);
         if let Some(vp) = pack.ep_vp {
-            let _ = vn_close(vp, FREAD, ptr::from_ref(cred), Some(p));
+            let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
         }
         km_free(argp, NCARGS, &KV_EXEC, &KP_PAGEABLE);
         // free_pack_abort:
@@ -781,7 +777,8 @@ fn execve_common(
         exec_abort(&mut pack, &mut nid);
     }
     if nid.ni_cnd.cn_rpi != 0 {
-        if copyoutstr(&rpbuf.as_mut()[..PATH_MAX], pack.ep_execpath).is_err() {
+        let rp = nid.ni_cnd.rpbuf().map_or(&[][..], |rp| &rp[..PATH_MAX]);
+        if copyoutstr(rp, pack.ep_execpath).is_err() {
             exec_abort(&mut pack, &mut nid);
         }
     } else {
@@ -817,7 +814,7 @@ fn execve_common(
     pr.ps_sigcookie.set(u64::from_ne_bytes(cookie));
 
     // set command name & other accounting info
-    pr.set_comm(exec_comm(&nid, pathname.as_str()));
+    pr.set_comm(exec_comm(&nid, pathname));
     pr.ps_acflag.set(pr.ps_acflag.get() & !AFORK);
 
     // record proc's vnode, for use by sysctl
@@ -976,7 +973,7 @@ fn execve_common(
 
     namei_pnbuf_put(&mut nid);
     if let Some(vp) = pack.ep_vp {
-        let _ = vn_close(vp, FREAD, ptr::from_ref(cred), Some(p));
+        let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
     }
 
     // notify others that we exec'd
@@ -1024,19 +1021,9 @@ fn execve_common(
 
 /// The command name `strlcpy(pr->ps_comm, nid.ni_cnd.cn_nameptr, ...)` copies: the last
 /// component `namei` left in `cn_nameptr`, or the path's last component for a memory image.
-fn exec_comm<'b>(nid: &Nameidata<'_>, path: &'b [u8]) -> &'b [u8] {
-    let ptr = nid.ni_cnd.cn_nameptr;
-    let pnbuf = nid.ni_cnd.cn_pnbuf;
-    if !ptr.is_null() && !pnbuf.is_null() {
-        let start = ptr as usize - pnbuf as usize;
-        if start < MAXPATHLEN {
-            // SAFETY: `cn_nameptr` points into `cn_pnbuf`, the `MAXPATHLEN`-byte buffer
-            // namei kept (`SAVENAME`), which lives until `namei_pnbuf_put`.
-            let rest = unsafe { slice::from_raw_parts(ptr, MAXPATHLEN - start) };
-            let n = rest.iter().position(|&c| c == 0).unwrap_or(rest.len());
-            // SAFETY: as above; the slice is copied by `set_comm` before the buffer goes.
-            return unsafe { slice::from_raw_parts(ptr, n) };
-        }
+fn exec_comm<'b>(nid: &'b Nameidata<'_>, path: &'b [u8]) -> &'b [u8] {
+    if nid.ni_cnd.name_off().is_some() {
+        return nid.ni_cnd.name_rest();
     }
     path.rsplit(|&c| c == b'/').next().unwrap_or(path)
 }

@@ -439,7 +439,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         error = ext2fs_update(ip, 1);
     }
     // correct the result for writes clamped by vn_fsizechk()
-    uio.uio_resid = (uio.uio_resid as isize + overrun) as usize;
+    uio.uio_resid += overrun;
     error
 }
 /* </CODE> */

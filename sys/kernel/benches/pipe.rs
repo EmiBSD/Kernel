@@ -428,8 +428,6 @@ impl FileGlue for BenchFiles {
     type Data = BenchData;
     type FileList = FileListLink;
     type VnodeG = ();
-    type Componentname<'a> = ();
-    type Nameidata<'a> = ();
     type UnveilMatch = ();
 
     fn tables() -> &'static FileTables<Self> {
@@ -504,22 +502,7 @@ impl FileGlue for BenchFiles {
     fn vnode_of(_d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
         None
     }
-    fn vnode_g_init(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
     fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
-    fn cache_purge(vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {
-        vp.set_id(vp.id().wrapping_add(1));
-    }
-    fn lf_purgelocks(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
-    fn spec_advlock(
-        _vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
-        _id: kernel::file::LockOwner,
-        _op: i32,
-        _fl: &mut hal::sys::fcntl::Flock,
-        _flags: i32,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn abortop(_cnp: &mut Self::Componentname<'_>) {}
     fn dounmount(
         _mp: &'static kernel::fs::mount::Mount<BenchGlue>,
         _flags: i32,
