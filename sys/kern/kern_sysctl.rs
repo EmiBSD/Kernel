@@ -178,7 +178,6 @@ use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
 use crate::sys::lockf::MAXLOCKSPERUID;
 use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
-use crate::sys::namei::NCHSTATS;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
 use crate::sys::queue::SlistHead;
@@ -1423,15 +1422,6 @@ fn kern_pool_debug(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> 
     error
 }
 
-/// `kern.nchstats`.
-fn kern_nchstats(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    let mut bytes = [0u8; 12 * size_of::<u64>()];
-    for (chunk, v) in bytes.chunks_mut(size_of::<u64>()).zip(NCHSTATS.snapshot()) {
-        chunk.copy_from_slice(&v.to_ne_bytes());
-    }
-    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, &bytes)
-}
-
 /// `kern.stackgap_random`: a power of two, at least `ALIGNBYTES` (or 0), under `MAXSSIZ`.
 fn kern_stackgaprandom(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     use crate::kern::kern_exec::stackgap_random;
@@ -1575,7 +1565,11 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
     (KERN_MBSTAT, &Node(kern_mbstat)),
     (KERN_CPTIME, &Node(kern_cptime)),
     (KERN_POOL_DEBUG, &Node(kern_pool_debug)),
-    (KERN_NCHSTATS, &Node(kern_nchstats)),
+    // `kern.nchstats`: the kernel's node (N5.3), over this glue's name cache.
+    (
+        KERN_NCHSTATS,
+        &kernel::fs::cache::NchstatsNode::<BsdProcGlue>::NODE,
+    ),
     (KERN_STACKGAPRANDOM, &Node(kern_stackgaprandom)),
     (KERN_CACHEPCT, &Node(kern_cachepct)),
     (KERN_PFSTATUS, &Node(kern_pfstatus)),

@@ -399,6 +399,16 @@ impl Nchstats {
     }
 }
 
+/// `kern.nchstats`: the glue `G`'s name cache statistics, read-only (kern_sysctl.c's
+/// `sysctl_rdstruct` of `struct nchstats`: twelve `u_int64_t` in the C's member order). The
+/// glue registers [`NchstatsNode::NODE`] in its `kern` table, as `kern.tty`'s node.
+pub struct NchstatsNode<G>(PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> NchstatsNode<G> {
+    /// The node.
+    pub const NODE: NchstatsNode<G> = NchstatsNode(PhantomData);
+}
+
 impl Default for Nchstats {
     fn default() -> Self {
         Self::new()
@@ -839,6 +849,18 @@ pub fn cache_counts<G: ProcGlue>() -> (i64, i64) {
     (nc.numcache, nc.numneg)
 }
 
+impl<G: ProcGlue> crate::sysctl::SysctlNode for NchstatsNode<G> {
+    /// `case KERN_NCHSTATS: return sysctl_rdstruct(oldp, oldlenp, newp, &nchstats, ...)`.
+    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        let mut bytes = [0u8; 12 * size_of::<u64>()];
+        let (words, _) = bytes.as_chunks_mut::<{ size_of::<u64>() }>();
+        for (w, v) in words.iter_mut().zip(vfs::<G>().nchstats.snapshot()) {
+            *w = v.to_ne_bytes();
+        }
+        crate::sysctl::rdstruct(req, &bytes)
+    }
+}
+
 /// `namecache_test_reset`: the glue's cache forgotten (its entries live in the memory of an
 /// earlier test, testing.md: never freed), its size kept.
 #[cfg(any(test, feature = "doubles"))]
@@ -874,6 +896,58 @@ mod tests {
     use crate::proc::Thread;
 
     type G = TestGlue;
+
+    /// `kern.nchstats`: the twelve counters in the C's member order, read-only (`EPERM` for a
+    /// new value), `ENOMEM` for a short room, the length always given back.
+    #[test]
+    fn kern_nchstats_reads_the_counters_in_the_c_s_order() {
+        use crate::sysctl::{SysctlNode, SysctlReq};
+        let (_g, _p) = test_thread();
+        let st = &vfs::<G>().nchstats;
+        st.ncs_goodhits.store(7, Mem::Relaxed);
+        st.ncs_revmiss.store(9, Mem::Relaxed);
+        st.ncs_dotdothits.store(11, Mem::Relaxed);
+        let ubuf = crate::testutil::USER_BASE + 0xB000;
+        let node = NchstatsNode::<G>::NODE;
+        let mut len = 96;
+        let mut req = SysctlReq {
+            oldp: ubuf,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(node.sysctl(&[], &mut req), Ok(()));
+        assert_eq!(len, 96);
+        let b = crate::testutil::user_bytes(ubuf, 96).unwrap();
+        let word = |i: usize| u64::from_ne_bytes(b[i * 8..i * 8 + 8].try_into().unwrap());
+        assert_eq!((word(0), word(9), word(11)), (7, 9, 11));
+        assert_eq!(word(0), st.snapshot()[0]);
+        let mut len = 95;
+        let mut req = SysctlReq {
+            oldp: ubuf,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(node.sysctl(&[], &mut req), Err(Errno::ENOMEM));
+        let mut len = 96;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: ubuf,
+            newlen: 96,
+        };
+        assert_eq!(node.sysctl(&[], &mut req), Err(Errno::EPERM));
+        let mut len = 0;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(node.sysctl(&[], &mut req), Ok(()));
+        assert_eq!(len, 96, "a size query");
+    }
 
     /// A componentname of `p` for `name` in a lookup with `flags`.
     fn cn<'p>(p: &'p Thread<G>, name: &'static [u8], op: u64, flags: u64) -> Componentname<'p, G> {
