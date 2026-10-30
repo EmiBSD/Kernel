@@ -70,7 +70,6 @@ use core::slice;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::vfs_cache::cache_revlookup;
 use crate::kern::vfs_init::rootvnode;
-use crate::kern::vfs_subr::{vget, vput, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_LOOKUP, VOP_READDIR, VOP_UNLOCK};
 use crate::machine::copy::copyoutstr;
@@ -86,6 +85,7 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::Register;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{GETCWD_CHECK_ACCESS, VDIR, VEXEC, VREAD, VROOT, Vattr, Vnode};
+use crate::sys::vnode::{vget, vput, vref, vrele};
 
 /// `DIRBLKSIZ` (`ufs/ufs/dir.h`): only for the smallest directory buffer.
 const DIRBLKSIZ: usize = DEV_BSIZE;
@@ -302,7 +302,7 @@ fn getcache_finish(
     uvp: &'static Vnode,
     restore: Option<(&mut usize, usize)>,
 ) -> Result<bool, Errno> {
-    let vpid = uvp.v_id.get();
+    let vpid = uvp.id();
 
     // Release current lock before acquiring the parent lock
     let _ = VOP_UNLOCK(lvp);
@@ -314,7 +314,7 @@ fn getcache_finish(
 
     // Verify that vget() succeeded, and check that vnode capability didn't change while we
     // were waiting for the lock.
-    if error.is_err() || vpid != uvp.v_id.get() {
+    if error.is_err() || vpid != uvp.id() {
         // Try to get our lock back. If that works, tell the caller to try things the hard
         // way, otherwise give up.
         if error.is_ok() {
@@ -383,7 +383,7 @@ pub fn vfs_getcwd_common(
             let Some(mut cur) = lvp else {
                 break 'out Err(Errno::ENOENT);
             };
-            if cur.v_type.get() != VDIR {
+            if cur.vtype() != VDIR {
                 break 'out Err(Errno::ENOTDIR);
             }
 
@@ -396,13 +396,13 @@ pub fn vfs_getcwd_common(
             }
 
             // Step up if we're a covered vnode
-            while cur.v_flag.get() & VROOT != 0 {
+            while cur.flag() & VROOT != 0 {
                 if ptr::eq(cur, rvp) {
                     break 'out Ok(());
                 }
 
                 let tvp = cur;
-                let covered = cur.v_mount.get().and_then(|mp| mp.mnt_vnodecovered.get());
+                let covered = cur.mount().and_then(|mp| mp.vnodecovered());
 
                 vput(tvp);
 

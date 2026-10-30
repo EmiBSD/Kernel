@@ -863,8 +863,8 @@ pub struct Indir {
 
 /// `VTOI(vp)`: the inode of a UFS vnode.
 pub fn vtoi(vp: &Vnode) -> &'static Inode {
-    let data = vp.v_data.get();
-    if data.is_null() || !matches!(vp.v_tag.get(), VT_UFS | VT_MFS | VT_EXT2FS) {
+    let data = vp.data();
+    if data.is_null() || !matches!(vp.tag(), VT_UFS | VT_MFS | VT_EXT2FS) {
         panic(format_args!("VTOI: vnode {:p} has no inode", vp));
     }
     // SAFETY: a UFS vnode's `v_data` (checked above) is the inode `ffs_vget` hung there,
@@ -875,9 +875,7 @@ pub fn vtoi(vp: &Vnode) -> &'static Inode {
 
 /// `DOINGASYNC(vp)`: the file system is mounted `MNT_ASYNC`.
 pub fn doingasync(vp: &Vnode) -> bool {
-    vp.v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_ASYNC != 0)
+    vp.mount().is_some_and(|mp| mp.flag() & MNT_ASYNC != 0)
 }
 
 /// `struct ufid`: this overlays the fid structure (see mount.h).

@@ -118,7 +118,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::kern::exec_subr::{exec_process_vmcmds, exec_setup_stack};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::vput;
 use crate::kern::vfs_syscalls::NameiBuf;
 use crate::kern::vfs_vnops::{vn_marktext, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_CLOSE, VOP_GETATTR};
@@ -150,6 +149,7 @@ use crate::sys::proc::ProcExt;
 use crate::sys::proc::{BOGO_PC, Proc};
 use crate::sys::syscall::{SYS_MAXSYSCALL, SYS_kbind};
 use crate::sys::uio::{UioRw, UioSeg};
+use crate::sys::vnode::vput;
 use crate::sys::vnode::{IO_UNIT, VREAD, VREG, Vnode};
 use hal::malloc::MArray;
 use hal::vm::param::{round_page, trunc_page};
@@ -516,15 +516,11 @@ fn elf_load_file_vnode(
     let mut base_ph: Option<usize> = None;
     let mut syscall_ph: Option<usize> = None;
 
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return Err((Errno::EACCES, false));
     }
     VOP_GETATTR(vp, &mut epp.ep_vap, p.ucred_ptr(), p).map_err(|e| (e, false))?;
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_NOEXEC != 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_NOEXEC != 0) {
         return Err((Errno::EACCES, false));
     }
     VOP_ACCESS(vp, VREAD, p.ucred_ptr(), p).map_err(|e| (e, true))?;
@@ -788,10 +784,10 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
     // check if vnode is in open for writing, because we want to demand-page out of it. if
     // it is, don't do it, for various reasons.
     if let ExecFile::Vnode(vp) = file
-        && vp.v_writecount.get() != 0
+        && vp.writecount() != 0
     {
         #[cfg(feature = "diagnostic")]
-        if vp.v_flag.get() & crate::sys::vnode::VTEXT != 0 {
+        if vp.flag() & crate::sys::vnode::VTEXT != 0 {
             crate::kern::subr_prf::panic(format_args!("exec: a VTEXT vnode has writecount != 0"));
         }
         return Err(Errno::ETXTBSY);

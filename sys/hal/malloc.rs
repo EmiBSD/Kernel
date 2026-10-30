@@ -106,7 +106,7 @@ pub trait Malloc: Sync {
 
 /// `nkmempages` of the registered allocator (`vm.nkmempages`); 0 before registration.
 pub fn nkmempages() -> i32 {
-    bridges::malloc().map_or(0, |m| m.nkmempages())
+    bridges::malloc().map_or(0, Malloc::nkmempages)
 }
 
 /// A `T` in a block of `malloc(9)` of type `ty`, owned: `Deref`/`DerefMut`, the drop drops the

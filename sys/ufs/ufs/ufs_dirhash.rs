@@ -363,7 +363,7 @@ pub fn ufsdirhash_build(ip: &Inode) -> bool {
         dh.dh_score.set(DH_SCOREINIT);
         ip.i_dirhash.set(Some(dhp));
 
-        let bmask = ip.ump().mountp().mnt_stat.get().f_iosize as i32 - 1;
+        let bmask = ip.ump().mountp().iosize() as i32 - 1;
         let mut bp: Option<&'static Buf> = None;
         let mut pos: Doff = 0;
         while i64::from(pos) < ip.dip_size() as i64 {
@@ -518,7 +518,7 @@ pub fn ufsdirhash_lookup(
         dh.dh_score.set(dh.dh_score.get() + 1);
     }
 
-    let bmask = ip.ump().mountp().mnt_stat.get().f_iosize as i32 - 1;
+    let bmask = ip.ump().mountp().iosize() as i32 - 1;
     let mut blkoff: Doff = -1;
     let mut bp: Option<&'static Buf> = None;
     let mut prevoffp = prevoffp;
@@ -1213,16 +1213,13 @@ mod tests {
     use super::*;
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{rootvnode, set_rootvnode, vfs_byname};
-    use crate::kern::vfs_subr::{
-        MOUNTLIST, bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy, vput, vref, vrele,
-    };
     use crate::kern::vfs_syscalls::{
         dounmount, sys_getdents, sys_link, sys_mkdir, sys_open, sys_rename, sys_stat, sys_sync,
         sys_unlink,
     };
     use crate::kern::vfs_vops::VOP_UNLOCK;
+    use crate::kern::vfs_vops::vop_generic_bwrite;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::machine::intr::{splbio, splx};
@@ -1236,6 +1233,9 @@ mod tests {
     use crate::sys::systm::{SyCall, SysArgs};
     use crate::sys::types::{Register, makedev};
     use crate::sys::vnode::{Vnode, VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};
+    use crate::sys::vnode::{
+        bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy, vput, vref, vrele,
+    };
     use crate::ufs::ffs::ffs_extern::FFS_DIRHASH_MEM;
     use crate::ufs::ffs::ffs_vfsops::tests::newfs;
     use crate::ufs::ffs::ffs_vfsops::{ffs_mountfs, ffs_statfs, ffs_sysctl};
@@ -1467,16 +1467,15 @@ mod tests {
     /// Mounts the disk at `/`, as the ffs tests do.
     fn mount_root(p: &'static Proc) -> &'static Mount {
         let devvp = bdevvp(makedev(17, 1)).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"ffs").unwrap());
-        mp.update_stat(|sp| sp.f_mntonname[0] = b'/');
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
         ffs_mountfs(devvp, mp, p).unwrap();
-        let mut st = mp.mnt_stat.get();
+        let mut st = mp.stat();
         ffs_statfs(mp, &mut st, p).unwrap();
-        mp.mnt_stat.set(st);
+        mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));

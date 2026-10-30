@@ -102,20 +102,15 @@ use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::spec_vnops::{
-    spec_advlock, spec_close, spec_fsync, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf,
-    spec_read, spec_strategy, spec_write,
-};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_default::{
+use crate::kern::vfs_init::NAMEI_POOL;
+use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_BMAP, VOP_STRATEGY};
+use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
     vop_generic_lookup, vop_generic_revoke,
 };
-use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_subr::{vaccess, vput};
-use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_BMAP, VOP_STRATEGY};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_ERROR, Buf, clrbuf};
@@ -131,6 +126,10 @@ use crate::sys::lock::LK_RWFLAGS;
 use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::param::{DEV_BSHIFT, MAXPATHLEN};
 use crate::sys::pool::PR_WAITOK;
+use crate::sys::specdev::{
+    spec_advlock, spec_close, spec_fsync, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf,
+    spec_read, spec_strategy, spec_write,
+};
 use crate::sys::stat::ALLPERMS;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::types::{Gid, Mode, Nlink, Off, Register, Uid};
@@ -146,6 +145,7 @@ use crate::sys::vnode::{
     VopReadlinkArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, Vops,
     cred_ref,
 };
+use crate::sys::vnode::{vaccess, vput};
 
 /// Which of the three entries of a `struct isoreaddir`.
 #[derive(Clone, Copy)]
@@ -323,7 +323,7 @@ pub fn cd9660_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         return Err(Errno::EROFS);
     }
     if vap.va_size != VNOVAL as u64 {
-        return match vp.v_type.get() {
+        return match vp.vtype() {
             VDIR => Err(Errno::EISDIR),
             VLNK | VREG => Err(Errno::EROFS),
             VCHR | VBLK | VSOCK | VFIFO => Ok(()),
@@ -353,7 +353,7 @@ pub fn cd9660_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     let ino = ip.inode.get();
 
     vaccess(
-        ap.a_vp.v_type.get(),
+        ap.a_vp.vtype(),
         Mode::from(ino.iso_mode) & ALLPERMS,
         ino.iso_uid,
         ino.iso_gid,
@@ -382,7 +382,7 @@ pub fn cd9660_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_rdev = ino.iso_rdev;
 
     vap.va_size = ip.i_size.get();
-    if ip.i_size.get() == 0 && vp.v_type.get() == VLNK {
+    if ip.i_size.get() == 0 && vp.vtype() == VLNK {
         let Some(cp) = malloc(MAXPATHLEN, M_TEMP, M_WAITOK) else {
             panic(format_args!("cd9660_getattr: no memory"));
         };
@@ -412,7 +412,7 @@ pub fn cd9660_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_gen = 1;
     vap.va_blocksize = i64::from(ip.mnt().logical_block_size);
     vap.va_bytes = ip.i_size.get();
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     Ok(())
 }
 
@@ -896,7 +896,7 @@ pub fn cd9660_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     };
 
     let ip = vtoi(vp);
-    if vp.v_type.get() == VBLK || vp.v_type.get() == VCHR {
+    if vp.vtype() == VBLK || vp.vtype() == VCHR {
         panic(format_args!("cd9660_strategy: spec"));
     }
     if bp.blkno() == bp.lblkno() {
@@ -924,7 +924,7 @@ pub fn cd9660_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let Some(devvp) = ip.i_devvp.get() else {
         panic(format_args!("cd9660_strategy: no device vnode"));
     };
-    bp.set_dev(devvp.v_rdev());
+    bp.set_dev(devvp.rdev());
     let _ = VOP_STRATEGY(devvp, bp);
     Ok(())
 }
@@ -976,7 +976,7 @@ pub fn cd9660_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 
     kn.kn_hook.set(ptr::from_ref(vp).cast_mut().cast());
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }
@@ -995,7 +995,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_cd9660detach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 }
 
 /// `filt_cd9660read`: the bytes past the file offset; always ready for poll and select.
@@ -1067,13 +1067,13 @@ mod tests {
 
     use super::*;
     use crate::isofs::cd9660::iso::tests::{test_mnt, test_node};
-    use crate::kern::vfs_subr::vattr_null;
     use crate::sys::vnode::Vattr;
+    use crate::sys::vnode::vattr_null;
 
     /// `cd9660_setattr` of `vap` on a vnode of type `t`.
     fn setattr(t: crate::sys::vnode::Vtype, vap: &mut Vattr) -> Result<(), Errno> {
-        let vp: &'static Vnode = std::boxed::Box::leak(std::boxed::Box::new(Vnode::new()));
-        vp.v_type.set(t);
+        let vp: &'static Vnode = std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
+        vp.set_vtype(t);
         let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
         let mut a = VopSetattrArgs {
             a_vp: vp,

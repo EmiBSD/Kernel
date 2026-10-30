@@ -115,7 +115,6 @@ use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::eopnotsupp;
 use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
-use crate::kern::vfs_subr::{getnewvnode, vaccess, vget, vput, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BMAP, VOP_STRATEGY, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
@@ -148,6 +147,7 @@ use crate::sys::vnode::{
     VopOpenArgs, VopPathconfArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs,
     VopReclaimArgs, VopStrategyArgs, VopUnlockArgs, Vops, cred_ref,
 };
+use crate::sys::vnode::{getnewvnode, vaccess, vget, vput, vref, vrele};
 
 /// `udf_vops`.
 pub static UDF_VOPS: Vops = Vops {
@@ -237,14 +237,14 @@ pub fn udf_hashlookup(
                 let Some(vp) = up.u_vnode.get() else {
                     panic(format_args!("udf_hashlookup: unode without a vnode"));
                 };
-                let vpid = vp.v_id.get();
+                let vpid = vp.id();
                 mtx_leave(&ump.um_hashmtx);
                 match vget(vp, flags) {
                     Err(Errno::ENOENT) => continue 'loop_,
                     Err(e) => return Err(e),
                     Ok(()) => {}
                 }
-                if vpid != vp.v_id.get() {
+                if vpid != vp.id() {
                     vput(vp);
                     continue 'loop_;
                 }
@@ -344,7 +344,7 @@ pub fn udf_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     let a_mode = ap.a_mode;
 
     if a_mode & VWRITE != 0 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR | VLNK | VREG => return Err(Errno::EROFS),
             _ => {}
         }
@@ -354,7 +354,7 @@ pub fn udf_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
 
     let fe = up.fentry();
     vaccess(
-        vp.v_type.get(),
+        vp.vtype(),
         mode,
         { fe.uid } as Uid,
         { fe.gid } as Gid,
@@ -445,7 +445,7 @@ pub fn udf_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
 
     // The C tests `vp->v_type & VDIR`, a bitwise and of the enumeration (the module's
     // deviations).
-    let dirlike = vp.v_type.get() as i32 & VDIR as i32 != 0;
+    let dirlike = vp.vtype() as i32 & VDIR as i32 != 0;
 
     vap.va_fsid = i64::from(up.u_dev.get());
     vap.va_fileid = u64::from(up.u_ino.get());
@@ -485,7 +485,7 @@ pub fn udf_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_gen = 1;
     vap.va_blocksize = ump.um_bsize.get() as i64;
     vap.va_bytes = letoh64(fentry.inf_len);
-    vap.va_type = vp.v_type.get();
+    vap.va_type = vp.vtype();
     vap.va_filerev = 0;
 
     Ok(())
@@ -1167,7 +1167,7 @@ pub fn udf_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
         splx(s);
     } else {
         let devvp = up.devvp();
-        bp.set_dev(devvp.v_rdev());
+        bp.set_dev(devvp.rdev());
         let _ = VOP_STRATEGY(devvp, bp);
     }
 
@@ -1391,7 +1391,7 @@ pub fn udf_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 /// `udf_reclaim` (`vop_reclaim`).
 pub fn udf_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
-    let data = vp.v_data.get();
+    let data = vp.data();
 
     if !data.is_null() {
         let up = VTOU(vp);
@@ -1409,7 +1409,7 @@ pub fn udf_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
         pool_put(&UNODE_POOL, unsafe {
             NonNull::new_unchecked(data.cast::<u8>())
         });
-        vp.v_data.set(ptr::null_mut());
+        vp.set_data(ptr::null_mut());
     }
 
     Ok(())
@@ -1695,7 +1695,6 @@ mod tests {
     use crate::isofs::udf::udf_vfsops::{udf_mountfs, udf_root, udf_unmount};
     use crate::kern::subr_xxx::nullop;
     use crate::kern::vfs_init::vfs_byname;
-    use crate::kern::vfs_subr::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free};
     use crate::kern::vfs_vops::{VOP_GETATTR, VOP_LOOKUP, VOP_READ, VOP_READDIR};
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
@@ -1708,6 +1707,7 @@ mod tests {
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::vnode::{VROOT, Vattr, VopFsyncArgs, VopInactiveArgs};
+    use crate::sys::vnode::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free};
 
     const B: usize = 2048;
     /// The partition's first sector and length.
@@ -2042,10 +2042,13 @@ mod tests {
     /// `udf_mountfs` of the disk on a fresh read-only mount.
     fn mount(p: &'static Proc) -> Result<&'static Mount, Errno> {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"udf").unwrap());
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
-        match udf_mountfs(devvp, mp, 0, p) {
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        // Unbusied on both paths, as sys_mount leaves a mount (a mount is freed unbusied).
+        let r = udf_mountfs(devvp, mp, 0, p);
+        crate::sys::vnode::vfs_unbusy(mp);
+        match r {
             Ok(()) => Ok(mp),
             Err(e) => {
                 vrele(devvp);
@@ -2152,11 +2155,11 @@ mod tests {
         assert_eq!(ump.um_bsize.get(), 2048);
         assert_eq!(ump.um_bshift.get(), 11);
         assert_eq!(ump.um_start.get(), PSTART as u32);
-        assert_eq!(mp.mnt_flag.get() & MNT_LOCAL, MNT_LOCAL);
+        assert_eq!(mp.flag() & MNT_LOCAL, MNT_LOCAL);
 
         let root = udf_root(mp).unwrap();
-        assert_eq!(root.v_type.get(), VDIR);
-        assert_ne!(root.v_flag.get() & VROOT, 0);
+        assert_eq!(root.vtype(), VDIR);
+        assert_ne!(root.flag() & VROOT, 0);
         assert_eq!(VTOU(root).u_ino.get(), 2);
         let va = getattr(p, root);
         assert_eq!(va.va_mode, 0o755);
@@ -2165,7 +2168,7 @@ mod tests {
 
         // The file: lookup, attributes, data in pieces of every size, the block map.
         let vp = lookup(p, root, b"m10c-udf.txt").unwrap();
-        assert_eq!(vp.v_type.get(), VREG);
+        assert_eq!(vp.vtype(), VREG);
         let va = getattr(p, vp);
         assert_eq!((va.va_mode, va.va_uid, va.va_gid), (0o644, 501, 20));
         assert_eq!((va.va_size, va.va_bytes, va.va_fileid), (12, 12, 4));
@@ -2241,7 +2244,7 @@ mod tests {
         // The directory whose descriptors straddle its extents (at 2040 and 4040), read whole and
         // in small pieces; lookups of the straddling names; ".." back to the root.
         let sub = lookup(p, root, b"sub").unwrap();
-        assert_eq!(sub.v_type.get(), VDIR);
+        assert_eq!(sub.vtype(), VDIR);
         for len in [8192, 100] {
             let ents = read_dir(sub, len);
             assert_eq!(ents.len(), 2 + NSUB, "buffer {len}");

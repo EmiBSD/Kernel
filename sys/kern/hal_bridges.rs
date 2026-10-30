@@ -381,6 +381,11 @@ pub fn hal_bridges_register() {
     // N4.8a: the machine's clock hardware and boot(9), for kernel::clock and kernel::reboot.
     let _ = kernel::clock::install_clock_hardware(&BSD_CLOCK_HARDWARE);
     let _ = kernel::reboot::install_machine_boot(&BSD_MACHINE_BOOT);
+    // N5.2: the device switch (machine::conf's cdevsw[] and bdevsw[]) for the kernel's
+    // special files, before the first device vnode (cdevvp of the console, the root's bdevvp).
+    let _ = kernel::fs::spec::register_devsw::<crate::kern::proc_glue::BsdProcGlue>(
+        &crate::sys::specdev::BSD_DEVSW,
+    );
     // sysctl(2)'s nodes still in bsd, its bounded variables, the disk list's export and
     // physmem, for kernel::sysctl's dispatcher (N4.6b).
     crate::kern::kern_sysctl::sysctl_register_legacy();

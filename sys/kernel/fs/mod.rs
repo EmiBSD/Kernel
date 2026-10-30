@@ -19,11 +19,24 @@
 /* <CODE> */
 //! The file systems' core, moving out of `bsd` piece by piece (N5, docs/ROADMAP.md): the
 //! buffer header and its owner's token, `<sys/buf.h>`, the buffer cache and its memory, and
-//! the disk queues and physio (N5.1).
+//! the disk queues and physio (N5.1); the vnode, the mount, their operations and the VFS core
+//! (`vfs_subr.c`, `vfs_sync.c`, `vfs_init.c`, `vfs_default.c`, the special files and deadfs,
+//! N5.2).
 
 pub mod bio;
 pub mod biomem;
 pub mod buf;
 pub mod bufq;
+pub mod default;
+pub mod init;
+pub mod miscfs;
+pub mod mount;
 pub mod physio;
+pub mod spec;
+pub mod subr;
+pub mod sync;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testfs;
+pub mod vnode;
+pub mod vops;
 /* </CODE> */

@@ -208,7 +208,6 @@ use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::kern_tc::nanotime;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{DB_CONSOLE, Str, log, panic, printf};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::{copyin, copyout};
 use crate::machine::db_machdep::db_enter;
@@ -234,6 +233,7 @@ use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::{Dev, minor};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 use crate::unported;
 
 /// `NWSKBD`: `wskbd* at ...` is configured (`needs-flag`).

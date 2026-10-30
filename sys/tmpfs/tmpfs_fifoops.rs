@@ -63,7 +63,7 @@
 //! - The helpers the C installs in many slots (`vop_generic_badop`) are closures, as in
 //!   `spec_vops` (`docs/C_TO_RUST.md`).
 
-use crate::kern::vfs_default::{
+use crate::kern::vfs_vops::{
     vop_generic_badop, vop_generic_bmap, vop_generic_lookup, vop_generic_revoke,
 };
 use crate::sys::errno::Errno;

@@ -495,7 +495,7 @@ pub fn ffs_inode_alloc(
         if ino == 0 {
             break 'noinodes;
         }
-        let Some(mp) = pvp.v_mount.get() else {
+        let Some(mp) = pvp.mount() else {
             panic(format_args!("ffs_inode_alloc: vnode without a mount"));
         };
         let vp = match VFS_VGET(mp, u64::from(ino)) {
@@ -570,7 +570,7 @@ pub fn ffs_dirpref(pip: &Inode) -> Ufsino {
 
     let cg: u32 = 'end: {
         // Force allocation in another cg if creating a first level dir.
-        let prefcg = if pip.itov().v_flag.get() & crate::sys::vnode::VROOT != 0 {
+        let prefcg = if pip.itov().flag() & crate::sys::vnode::VROOT != 0 {
             let prefcg = arc4random_uniform(ncg);
             let mut mincg = prefcg;
             let mut minndir = fs.fs_ipg.get();

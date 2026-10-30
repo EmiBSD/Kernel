@@ -73,15 +73,13 @@ use core::ptr::{self, NonNull};
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
-use crate::kern::spec_vnops::spec_pathconf;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_default::{vop_generic_abortop, vop_generic_bmap};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_subr::{vaccess, vgone, vput, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_GETATTR, VOP_UNLOCK};
+use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::miscfs::fuse::fuse_device::fuse_device_queue_fbuf;
@@ -119,6 +117,7 @@ use crate::sys::mount::{MNT_RDONLY, Mount, VFS_VGET};
 use crate::sys::namei::{Componentname, ISDOTDOT};
 use crate::sys::param::BLKDEV_IOSIZE;
 use crate::sys::proc::Proc;
+use crate::sys::specdev::spec_pathconf;
 use crate::sys::stat::{ALLPERMS, S_BLKSIZE, S_IFMT, S_IRUSR, S_IRWXU, S_ISTXT, S_IXUSR};
 use crate::sys::types::{Gid, Mode, Nlink, Uid};
 use crate::sys::ucred::Ucred;
@@ -130,6 +129,7 @@ use crate::sys::vnode::{
     VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs,
     VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref, iftovt, makeimode,
 };
+use crate::sys::vnode::{vaccess, vgone, vput, vrele};
 
 /// `fusefs_vops`.
 pub static FUSEFS_VOPS: Vops = Vops {
@@ -201,7 +201,7 @@ pub static FUSEFSVNODE_FILTOPS: Filterops = Filterops {
 
 /// The vnode's mount, which a FUSE vnode always has.
 pub(crate) fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("fusefs: vnode {:p} without a mount", vp)),
     }
@@ -277,7 +277,7 @@ pub fn fusefs_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 
     kn.kn_hook.set(ptr::from_ref(vp).cast_mut().cast());
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }
@@ -296,7 +296,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_fusefsdetach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 }
 
 /// `filt_fusefsread`: the bytes past the file offset; always ready for poll and select.
@@ -359,7 +359,7 @@ pub fn fusefs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
         return Err(Errno::ENXIO);
     }
 
-    let isdir = if vp.v_type.get() == VDIR {
+    let isdir = if vp.vtype() == VDIR {
         true
     } else {
         if ap.a_mode & FREAD != 0 && ap.a_mode & FWRITE != 0 {
@@ -402,7 +402,7 @@ pub fn fusefs_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     // files, ask the daemon to flush any buffers to disk now. All open file descriptors
     // will be released on VOP_INACTIVE(9).
 
-    if ap.a_vp.v_type.get() == VDIR {
+    if ap.a_vp.vtype() == VDIR {
         return Ok(());
     }
 
@@ -451,7 +451,7 @@ pub fn fusefs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
 
     // Only user that mounted the file system can access it unless allow_other mount option
     // was specified.
-    if fmp.allow_other == 0 && cred.cr_uid.get() != fmp.mp.mnt_stat.get().f_owner {
+    if fmp.allow_other == 0 && cred.cr_uid.get() != fmp.mp.owner() {
         return Err(Errno::EACCES);
     }
 
@@ -461,8 +461,8 @@ pub fn fusefs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
 
     // Disallow write attempts on filesystems mounted read-only; unless the file is a
     // socket, fifo, or a block or character device resident on the filesystem.
-    if ap.a_mode & VWRITE != 0 && fmp.mp.mnt_flag.get() & MNT_RDONLY != 0 {
-        let t = ap.a_vp.v_type.get();
+    if ap.a_mode & VWRITE != 0 && fmp.mp.flag() & MNT_RDONLY != 0 {
+        let t = ap.a_vp.vtype();
         if t == VREG || t == VDIR || t == VLNK {
             return Err(Errno::EROFS);
         }
@@ -472,7 +472,7 @@ pub fn fusefs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     VOP_GETATTR(ap.a_vp, &mut vattr, ptr::from_ref(cred), p)?;
 
     vaccess(
-        ap.a_vp.v_type.get(),
+        ap.a_vp.vtype(),
         vattr.va_mode & ALLPERMS,
         vattr.va_uid,
         vattr.va_gid,
@@ -493,22 +493,24 @@ pub fn fusefs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
 
     // Only user that mounted the file system can access it unless allow_other mount option
     // was specified. Return dummy values for the root inode in this situation.
-    let stat = fmp.mp.mnt_stat.get();
-    if fmp.allow_other == 0 && cred.cr_uid.get() != stat.f_owner {
+    let owner = fmp.mp.owner();
+    if fmp.allow_other == 0 && cred.cr_uid.get() != owner {
         *vap = Vattr::new();
         vap.va_type = VNON;
-        if vmount(vp).mnt_flag.get() & MNT_RDONLY != 0 {
+        if vmount(vp).flag() & MNT_RDONLY != 0 {
             vap.va_mode = S_IRUSR | S_IXUSR;
         } else {
             vap.va_mode = S_IRWXU;
         }
         vap.va_nlink = 2;
-        vap.va_uid = stat.f_owner;
-        vap.va_gid = stat.f_owner;
-        vap.va_fsid = i64::from(stat.f_fsid.val[0]);
+        vap.va_uid = owner;
+        vap.va_gid = owner;
+        vap.va_fsid = i64::from(fmp.mp.fsid().val[0]);
         vap.va_fileid = ip.i_number;
         vap.va_size = S_BLKSIZE as u64;
         vap.va_blocksize = S_BLKSIZE as i64;
+        // `f_ctime` has no unlocked word: the statistics are copied on this refusal only.
+        let stat = fmp.mp.stat();
         vap.va_atime.tv_sec = stat.f_ctime as i64;
         vap.va_mtime.tv_sec = stat.f_ctime as i64;
         vap.va_ctime.tv_sec = stat.f_ctime as i64;
@@ -548,7 +550,7 @@ pub fn fusefs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_nlink = st.nlink as Nlink;
     vap.va_uid = st.uid as Uid;
     vap.va_gid = st.gid as Gid;
-    vap.va_fsid = i64::from(stat.f_fsid.val[0]);
+    vap.va_fsid = i64::from(fmp.mp.fsid().val[0]);
     vap.va_fileid = st.ino;
     vap.va_size = st.size;
     vap.va_blocksize = i64::from(st.blksize);
@@ -604,7 +606,7 @@ pub fn fusefs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         valid: 0,
         ..FuseSetattrIn::default()
     };
-    let rdonly = vmount(vp).mnt_flag.get() & MNT_RDONLY != 0;
+    let rdonly = vmount(vp).flag() & MNT_RDONLY != 0;
 
     let error = 'out: {
         if vap.va_uid != VNOVAL as Uid {
@@ -626,7 +628,7 @@ pub fn fusefs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         if vap.va_size != VNOVAL as u64 {
             // Disallow write attempts on read-only file systems; unless the file is a
             // socket, fifo, or a block or character device resident on the file system.
-            match vp.v_type.get() {
+            match vp.vtype() {
                 VDIR => break 'out Err(Errno::EISDIR),
                 VLNK | VREG if rdonly => break 'out Err(Errno::EROFS),
                 _ => {}
@@ -663,7 +665,7 @@ pub fn fusefs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             // chmod returns EFTYPE if the effective user ID is not the super-user, the mode
             // includes the sticky bit (S_ISVTX), and path does not refer to a directory
             if ucred(ap.a_cred).cr_uid.get() != 0
-                && vp.v_type.get() != VDIR
+                && vp.vtype() != VDIR
                 && vap.va_mode & S_ISTXT != 0
             {
                 break 'out Err(Errno::EFTYPE);
@@ -816,7 +818,7 @@ pub fn fusefs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
             }
         };
 
-        tdp.v_type.set(VLNK);
+        tdp.set_vtype(VLNK);
         VN_KNOTE(ap.a_dvp, NOTE_WRITE);
 
         *ap.a_vpp = Some(tdp);
@@ -1007,7 +1009,7 @@ pub fn fusefs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
                 _ => O_RDWR,
             };
 
-            let _ = fusefs_file_close(fmp, ip, fufh.fh_type, flags, vp.v_type.get() == VDIR, p);
+            let _ = fusefs_file_close(fmp, ip, fufh.fh_type, flags, vp.vtype() == VDIR, p);
         }
     }
 
@@ -1078,7 +1080,7 @@ pub fn fusefs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
         let fufh = ip.fufh(FufhType::from_idx(i));
         if fufh.fh_type != FUFH_INVALID {
             // DPRINTF("vnode being reclaimed is valid\n");
-            let _ = fusefs_file_close(fmp, ip, fufh.fh_type, i as i32, vp.v_type.get() == VDIR, p);
+            let _ = fusefs_file_close(fmp, ip, fufh.fh_type, i as i32, vp.vtype() == VDIR, p);
         }
     }
 
@@ -1100,7 +1102,7 @@ pub fn fusefs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
         crate::sys::malloc::M_FUSEFS,
         size_of::<crate::miscfs::fuse::fusefs_node::FusefsNode>(),
     );
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
 
     // Must return success otherwise kernel panic in vclean(9).
     Ok(())
@@ -1171,7 +1173,7 @@ pub fn fusefs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
             Err(e) => break 'out Err(e),
         };
 
-        tdp.v_type.set(VREG);
+        tdp.set_vtype(VREG);
 
         *ap.a_vpp = Some(tdp);
         VN_KNOTE(ap.a_dvp, NOTE_WRITE);
@@ -1239,7 +1241,7 @@ pub fn fusefs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
 
         // Don't trust the type returned by the file system and assume it created what it
         // was asked.
-        tdp.v_type.set(ap.a_vap.va_type);
+        tdp.set_vtype(ap.a_vap.va_type);
 
         *ap.a_vpp = Some(tdp);
         VN_KNOTE(ap.a_dvp, NOTE_WRITE);
@@ -1247,7 +1249,7 @@ pub fn fusefs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
         // Remove inode so that it will be reloaded by VFS_VGET and checked to see if it is
         // an alias of an existing entry in the inode cache.
         vput(tdp);
-        tdp.v_type.set(VNON);
+        tdp.set_vtype(VNON);
         vgone(tdp);
         *ap.a_vpp = None;
         Ok(())
@@ -1436,7 +1438,7 @@ pub fn fusefs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     }
 
     // Check for cross-device rename.
-    let mnt_of = |vp: &Vnode| vp.v_mount.get().map_or(ptr::null(), ptr::from_ref);
+    let mnt_of = |vp: &Vnode| vp.mount().map_or(ptr::null(), ptr::from_ref);
     if !ptr::eq(mnt_of(fvp), mnt_of(tdvp))
         || tvp.is_some_and(|tvp| !ptr::eq(mnt_of(fvp), mnt_of(tvp)))
     {
@@ -1461,7 +1463,7 @@ pub fn fusefs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     // Be sure we are not renaming ".", "..", or an alias of ".". This leads to a crippled
     // directory tree. It's pretty tough to do a "ls" or "pwd" with the "." directory entry
     // missing, and "cd .." doesn't work if the ".." entry is missing.
-    if fvp.v_type.get() == VDIR {
+    if fvp.vtype() == VDIR {
         // Avoid ".", "..", and aliases of "." for obvious reasons.
         if ap.a_fcnp.name() == b"."
             || ptr::eq(dp, ip)
@@ -1576,7 +1578,7 @@ pub fn fusefs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
             }
         };
 
-        tdp.v_type.set(VDIR);
+        tdp.set_vtype(VDIR);
 
         *ap.a_vpp = Some(tdp);
         VN_KNOTE(ap.a_dvp, NOTE_WRITE | NOTE_LINK);
@@ -1739,7 +1741,7 @@ pub fn fusefs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 
     // Can't write to directory file handles so no need to fsync. FUSE has fsyncdir but it
     // doesn't make sense on OpenBSD.
-    if vp.v_type.get() == VDIR {
+    if vp.vtype() == VDIR {
         return Ok(());
     }
 

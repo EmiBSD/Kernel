@@ -101,10 +101,6 @@ use crate::kern::kern_timeout::{timeout_add, timeout_del, timeout_set_proc};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::uipc_mbuf::{m_freem, m_get};
 use crate::kern::uipc_syscalls::sockargs;
-use crate::kern::vfs_subr::{
-    MOUNTLIST, bdevvp, copy_statfs_info, vflush, vfs_getnewfsid, vfs_rootmountalloc, vfs_unbusy,
-    vget, vgone, vput, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_UNLOCK};
 use crate::machine::conf::swapdev;
@@ -150,6 +146,10 @@ use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Ino, Uid};
 use crate::sys::ucred::{CredRef, Ucred};
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNON, VREG, VROOT, Vattr, Vnode};
+use crate::sys::vnode::{
+    bdevvp, copy_statfs_info, vflush, vfs_getnewfsid, vfs_rootmountalloc, vfs_unbusy, vget, vgone,
+    vput, vref, vrele,
+};
 
 /// `nfs_vfsops`: nfs vfs operations.
 pub static NFS_VFSOPS: Vfsops = Vfsops {
@@ -215,12 +215,12 @@ fn nfsargs_bytes(a: &NfsArgs) -> [u8; NfsArgs::SIZE] {
 /// Stores `args` as `mp->mnt_stat.mount_info.nfs_args`.
 fn store_mount_args(mp: &Mount, args: &NfsArgs) {
     let b = nfsargs_bytes(args);
-    mp.update_stat(|sp| sp.mount_info.__align[..NfsArgs::SIZE].copy_from_slice(&b));
+    mp.with_stat(|sp| sp.mount_info.__align[..NfsArgs::SIZE].copy_from_slice(&b));
 }
 
 /// `mp->mnt_stat.mount_info.nfs_args`.
 fn mount_args(mp: &Mount) -> NfsArgs {
-    let sp = mp.mnt_stat.get();
+    let sp = mp.stat();
     match NfsArgs::from_bytes(&sp.mount_info.__align) {
         Some(a) => a,
         None => panic(format_args!("nfs: mount_info is shorter than nfs_args")),
@@ -401,8 +401,7 @@ pub fn nfs_mountroot() -> Result<(), Errno> {
     let _ = printf(format_args!("root on {}\n", Str(&nd.nd_root.ndm_host)));
 
     // Link it into the mount list.
-    // SAFETY: a new mount on no list, under the kernel lock; mounts never move.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     set_rootvp(Some(vp));
     vfs_unbusy(mp);
 
@@ -439,8 +438,8 @@ pub fn nfs_mountroot() -> Result<(), Errno> {
 
         // Since the swap file is not the root dir of a file system, hack it to a regular
         // file.
-        vp.v_type.set(VREG);
-        vp.v_flag.set(0);
+        vp.set_vtype(VREG);
+        vp.set_flag(0);
 
         // Next line is a hack to make swapmount() work on NFS swap files.
         crate::sys::conf::SWDEVT[0].store(NETDEV, Relaxed);
@@ -476,7 +475,7 @@ pub fn nfs_mount_diskless(
             "nfs_mount_diskless: vfs_rootmountalloc failed"
         )),
     };
-    mp.mnt_flag.set(mp.mnt_flag.get() | mntflag);
+    mp.set_flag(mp.flag() | mntflag);
 
     // Get mbuf for server sockaddr.
     let Some(m) = m_get(M_WAIT, MT_SONAME) else {
@@ -695,8 +694,8 @@ pub fn nfs_mount(
         nfs_getset_niothreads(true);
     }
 
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
-        if mp.mnt_data.get().is_null() {
+    if mp.flag() & MNT_UPDATE != 0 {
+        if mp.data().is_null() {
             return Err(Errno::EIO);
         }
         let nmp = VFSTONFS(mp);
@@ -738,7 +737,7 @@ pub fn mountnfs(
     fh: &[u8],
     p: &Proc,
 ) -> Result<Option<&'static Vnode>, Errno> {
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         // update paths, file handles, etc, here	XXX
         m_freem(Some(nam));
         return Ok(None);
@@ -754,8 +753,7 @@ pub fn mountnfs(
         mem.cast::<NfsMount>().as_ptr().write(NfsMount::new());
         &*mem.cast::<NfsMount>().as_ptr()
     };
-    mp.mnt_data
-        .set(ptr::from_ref(nmp).cast_mut().cast::<c_void>());
+    mp.set_data(ptr::from_ref(nmp).cast_mut().cast::<c_void>());
 
     vfs_getnewfsid(mp);
     nmp.nm_mountp.set(Some(mp));
@@ -770,7 +768,7 @@ pub fn mountnfs(
     nmp.nm_acregmax.set(NFS_MAXATTRTIMO as u16);
     nmp.nm_acdirmin.set(NFS_MINATTRTIMO as u16);
     nmp.nm_acdirmax.set(NFS_MAXATTRTIMO as u16);
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         sp.f_namemax = MAXNAMLEN as u32;
         sp.f_mntonname = [0; MNAMELEN];
         strlcpy(&mut sp.f_mntonname[..MNAMELEN - 1], pth);
@@ -801,7 +799,7 @@ pub fn mountnfs(
 
     let bad = |error: Errno| -> Result<Option<&'static Vnode>, Errno> {
         nfs_disconnect(nmp);
-        mp.mnt_data.set(ptr::null_mut());
+        mp.set_data(ptr::null_mut());
         free(
             ptr::NonNull::from(nmp).cast::<u8>(),
             M_NFSMNT,
@@ -822,7 +820,7 @@ pub fn mountnfs(
     // This is silly, but it has to be set so that vinifod() works. We do not want to do an
     // nfs_statfs() here since we can get stuck on a dead server and we are holding a lock on
     // the mount point.
-    mp.update_stat(|sp| sp.f_iosize = NFS_MAXDGRAMDATA as u32);
+    mp.with_stat(|sp| sp.f_iosize = NFS_MAXDGRAMDATA as u32);
     let np = match nfs_nget(mp, fh) {
         Ok(np) => np,
         Err(e) => return bad(e),
@@ -840,10 +838,10 @@ pub fn mountnfs(
     // because one can identify root inodes by their number == ROOTINO (2). So, just unlock,
     // but no rele.
     nmp.nm_vnode.set(Some(vp));
-    if vp.v_type.get() == VNON {
-        vp.v_type.set(VDIR);
+    if vp.vtype() == VNON {
+        vp.set_vtype(VDIR);
     }
-    vp.v_flag.set(VROOT);
+    vp.set_flag(VROOT);
     let _ = VOP_UNLOCK(vp);
 
     Ok(Some(vp))
@@ -856,7 +854,7 @@ pub fn nfs_unmount(mp: &'static Mount, mntflags: i32, _p: &Proc) -> Result<(), E
 
     let vp = nfs_root(mp)?;
 
-    if mntflags & MNT_FORCE == 0 && vp.v_usecount.get() > 2 {
+    if mntflags & MNT_FORCE == 0 && vp.usecount() > 2 {
         vput(vp);
         return Err(Errno::EBUSY);
     }
@@ -884,7 +882,7 @@ pub fn nfs_unmount(mp: &'static Mount, mntflags: i32, _p: &Proc) -> Result<(), E
         ptr::from_ref(nmp).cast_mut().cast::<c_void>(),
     );
     timeout_add(&nmp.nm_rtimeout, 0);
-    mp.mnt_data.set(ptr::null_mut());
+    mp.set_data(ptr::null_mut());
     Ok(())
 }
 
@@ -928,17 +926,17 @@ pub fn nfs_sync(
 
     // Force stale buffer cache information to be flushed.
     'restart: loop {
-        for vp in mp.mnt_vnodelist.iter() {
+        for vp in mp.vnodes() {
             // If the vnode that we are about to sync is no longer associated with this mount
             // point, start over.
-            if !vp.v_mount.get().is_some_and(|m| ptr::eq(m, mp)) {
+            if !vp.mount().is_some_and(|m| ptr::eq(m, mp)) {
                 continue 'restart;
             }
             if VOP_ISLOCKED(vp) != 0 {
                 continue;
             }
             let s = splbio();
-            let empty = vp.v_bufs.dirty_is_empty();
+            let empty = vp.bufs.dirty_is_empty();
             splx(s);
             if empty {
                 continue;
@@ -1328,7 +1326,7 @@ mod tests {
         assert_eq!(back.acdirmax, 60);
 
         // Through a mount's statfs.
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
         store_mount_args(mp, &a);
         assert_eq!(nfsargs_bytes(&mount_args(mp)), b);
     }
@@ -1368,7 +1366,7 @@ mod tests {
 
     #[test]
     fn operations_that_only_fail_or_do_nothing() {
-        let mp: &'static Mount = Box::leak(Box::new(Mount::new()));
+        let mp: &'static Mount = Box::leak(Box::new(Mount::new_unpooled(None)));
         assert_eq!(nfs_start(mp, 0, &PROC0), Ok(()));
         assert!(matches!(
             nfs_quotactl(mp, 0, 0, 0, &PROC0),

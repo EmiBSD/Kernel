@@ -19,10 +19,9 @@
 /* <CODE> */
 //! Miscellaneous file systems: OpenBSD `sys/miscfs/`.
 //!
-//! `deadfs` holds the operations of revoked vnodes; `fuse` is FUSE (feature `fuse`,
-//! `option FUSE`); `fifofs` is not ported.
+//! `fuse` is FUSE (feature `fuse`, `option FUSE`); `fifofs` is not ported; `deadfs`, the
+//! operations of revoked vnodes, is the kernel crate's since N5.2 (`kernel::fs::miscfs`).
 
-pub mod deadfs;
 #[cfg(feature = "fuse")]
 pub mod fuse;
 /* </CODE> */

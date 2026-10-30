@@ -652,8 +652,7 @@ impl Buf {
     pub fn set_vp_unheld(&self, vb: Option<&'static VnodeBufs>) {
         if self.b_vnbufs_linked() {
             kpanic(format_args!(
-                "Buf::set_vp_unheld: buffer {:p} is on a vnode's list",
-                self
+                "Buf::set_vp_unheld: buffer {self:p} is on a vnode's list"
             ));
         }
         self.b_vp.set(vb);
@@ -706,7 +705,7 @@ impl Buf {
             Pages::Own => f(Some(&self.b_uobj)),
             Pages::Master(r) => match r.get() {
                 Some(m) => f(Some(&m.b_uobj)),
-                None => kpanic(format_args!("buf {:p}: a cluster's master is gone", self)),
+                None => kpanic(format_args!("buf {self:p}: a cluster's master is gone")),
             },
         }
     }
@@ -756,7 +755,7 @@ impl Buf {
                 self.b_data.store(0, Mem::Relaxed);
                 k
             }
-            _ => kpanic(format_args!("buf_unmap: buffer {:p} is busy", self)),
+            _ => kpanic(format_args!("buf_unmap: buffer {self:p} is busy")),
         }
     }
 
@@ -774,7 +773,7 @@ impl Buf {
         let bp = anchor.buf();
         let o = bp.owned.get_mut(g);
         if !matches!(o.slot, Slot::Busy) {
-            kpanic(format_args!("Buf::park: buffer {:p} is not busy", bp));
+            kpanic(format_args!("Buf::park: buffer {bp:p} is not busy"));
         }
         let _ = bp.set_slot(o, Slot::Parked(t));
     }
@@ -891,15 +890,14 @@ impl BufRef {
     pub fn foreign(bp: &'static Buf) -> BufRef {
         if bp.b_list.is_linked() {
             kpanic(format_args!(
-                "BufRef::foreign: buffer {:p} is the cache's",
-                bp
+                "BufRef::foreign: buffer {bp:p} is the cache's"
             ));
         }
         let mut g = CACHE.lock();
         let o = bp.owned.get_mut(&mut g);
         if !matches!(o.slot, Slot::Idle(Kva::None)) {
             drop(g);
-            kpanic(format_args!("BufRef::foreign: buffer {:p} is busy", bp));
+            kpanic(format_args!("BufRef::foreign: buffer {bp:p} is busy"));
         }
         let _ = bp.set_slot(o, Slot::Busy);
         drop(g);
@@ -923,8 +921,7 @@ impl BufRef {
                 _ => None,
             },
             _ => kpanic(format_args!(
-                "buf_acquire: buffer {:p} is busy or released",
-                bp
+                "buf_acquire: buffer {bp:p} is busy or released"
             )),
         };
         let _ = bp.set_slot(o, Slot::Busy);
@@ -944,7 +941,7 @@ impl BufRef {
             let b = self.hold.buf();
             let o = b.owned.get_mut(g);
             if !matches!(o.slot, Slot::Busy) {
-                kpanic(format_args!("buf_release: buffer {:p} is not busy", b));
+                kpanic(format_args!("buf_release: buffer {b:p} is not busy"));
             }
             let _ = b.set_slot(o, Slot::Idle(view.map_or(Kva::None, Kva::Mapped)));
         }
@@ -972,7 +969,7 @@ impl BufRef {
             let b = self.hold.buf();
             let o = b.owned.get_mut(g);
             if !matches!(o.slot, Slot::Busy) {
-                kpanic(format_args!("buf_dealloc_mem: buffer {:p} is not busy", b));
+                kpanic(format_args!("buf_dealloc_mem: buffer {b:p} is not busy"));
             }
             b.b_data.store(slot.va().as_usize(), Mem::Relaxed);
             let _ = b.set_slot(o, Slot::Idle(Kva::Bare(slot)));
@@ -995,8 +992,7 @@ impl BufRef {
             let o = b.owned.get_mut(g);
             if !matches!(o.slot, Slot::Busy) {
                 kpanic(format_args!(
-                    "BufRef::into_counted: buffer {:p} is not busy",
-                    b
+                    "BufRef::into_counted: buffer {b:p} is not busy"
                 ));
             }
             let _ = b.set_slot(o, Slot::Idle(Kva::None));

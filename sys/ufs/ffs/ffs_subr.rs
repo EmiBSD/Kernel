@@ -68,9 +68,7 @@ use core::cell::Cell;
 use core::ptr;
 
 use crate::kern::kern_tc::getmicrouptime;
-use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{checkalias, vgone, vrele};
 use crate::sys::buf::Buf;
 use crate::sys::buf::{bread, brelse, buf_adjcnt};
 use crate::sys::errno::Errno;
@@ -79,6 +77,7 @@ use crate::sys::types::{Daddr, Dev, Off};
 use crate::sys::vnode::{
     VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, iftovt,
 };
+use crate::sys::vnode::{checkalias, vgone, vrele};
 use crate::ufs::ffs::ffs_vnops::FFS_SPECVOPS;
 use crate::ufs::ffs::fs::{AROUND, FRAGTBL, Fs, INSIDE, blkoff, blksize, lblkno};
 use crate::ufs::ufs::dinode::ROOTINO;
@@ -189,16 +188,16 @@ pub fn ffs_isfreeblock(fs: &Fs, cp: &[u8], h: Daddr) -> bool {
 pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vnode, Errno> {
     let mut vp = vp;
     let ip = vtoi(vp);
-    vp.v_type.set(iftovt(ip.dip_mode()));
-    match vp.v_type.get() {
+    vp.set_vtype(iftovt(ip.dip_mode()));
+    match vp.vtype() {
         VCHR | VBLK => {
-            vp.v_op.set(Some(&FFS_SPECVOPS));
+            crate::sys::vnode::set_vops(vp, &FFS_SPECVOPS);
             if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.
-                nvp.v_data.set(vp.v_data.get());
-                vp.v_data.set(ptr::null_mut());
-                vp.v_op.set(Some(&SPEC_VOPS));
+                nvp.set_data(vp.data());
+                vp.set_data(ptr::null_mut());
+                vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
                 // Reinitialize aliased inode.
@@ -211,7 +210,7 @@ pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vn
         VNON | VBAD | VSOCK | VLNK | VDIR | VREG => {}
     }
     if ip.i_number.get() == ROOTINO {
-        vp.v_flag.set(vp.v_flag.get() | VROOT);
+        vp.set_flag(vp.flag() | VROOT);
     }
     // Initialize modrev times.
     let mtv = getmicrouptime();

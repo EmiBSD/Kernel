@@ -98,10 +98,6 @@ use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    copy_statfs_info, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mount_foreach_vnode,
-    vfs_mountedon, vget, vinvalbuf, vput, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_IOCTL, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
@@ -146,6 +142,10 @@ use crate::sys::systm::INFSLP;
 use crate::sys::types::major;
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{FORCECLOSE, V_SAVE, VBLK, VNON, Vnode, WRITECLOSE};
+use crate::sys::vnode::{
+    copy_statfs_info, vcount, vflush, vfs_export, vfs_export_lookup, vfs_mount_foreach_vnode,
+    vfs_mountedon, vget, vinvalbuf, vput, vrele,
+};
 
 /// `struct msdosfs_sync_arg`: what `msdosfs_sync` hands `msdosfs_sync_vnode` for each vnode.
 pub struct MsdosfsSyncArgs<'a> {
@@ -201,17 +201,17 @@ pub fn msdosfs_mount(
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         let pmp = vfstomsdosfs(mp);
         updpmp = Some(pmp);
         let mut error = Ok(());
-        if pmp.pm_flags.get() & MSDOSFSMNT_RONLY == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
-            mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_RDONLY);
+        if pmp.pm_flags.get() & MSDOSFSMNT_RONLY == 0 && mp.flag() & MNT_RDONLY != 0 {
+            mp.set_flag(mp.flag() & !MNT_RDONLY);
             let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+            mp.set_flag(mp.flag() | MNT_RDONLY);
 
             let mut flags = WRITECLOSE;
-            if mp.mnt_flag.get() & MNT_FORCE != 0 {
+            if mp.flag() & MNT_FORCE != 0 {
                 flags |= FORCECLOSE;
             }
             error = vflush(mp, None, flags);
@@ -223,12 +223,12 @@ pub fn msdosfs_mount(
                 let _ = VOP_IOCTL(pmp.devvp(), DIOCCACHESYNC, &mut force, FWRITE, FSCRED, p);
             }
         }
-        if error.is_ok() && mp.mnt_flag.get() & MNT_RELOAD != 0 {
+        if error.is_ok() && mp.flag() & MNT_RELOAD != 0 {
             // not yet implemented
             error = Err(Errno::EOPNOTSUPP);
         }
         error?;
-        if pmp.pm_flags.get() & MSDOSFSMNT_RONLY != 0 && mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
+        if pmp.pm_flags.get() & MSDOSFSMNT_RONLY != 0 && mp.flag() & MNT_WANTRDWR != 0 {
             pmp.pm_flags.set(pmp.pm_flags.get() & !MSDOSFSMNT_RONLY);
         }
 
@@ -261,10 +261,10 @@ pub fn msdosfs_mount(
     };
 
     let error: Result<(), Errno> = 'error_devvp: {
-        if devvp.v_type.get() != VBLK {
+        if devvp.vtype() != VBLK {
             break 'error_devvp Err(Errno::ENOTBLK);
         }
-        if major(devvp.v_rdev()) >= nblkdev() {
+        if major(devvp.rdev()) >= nblkdev() {
             break 'error_devvp Err(Errno::ENXIO);
         }
 
@@ -302,7 +302,7 @@ pub fn msdosfs_mount(
     }
 
     let longname = pmp.pm_flags.get() & MSDOSFSMNT_LONGNAME as u32 != 0;
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         sp.f_namemax = if longname { WIN_MAXLEN as u32 } else { 12 };
         mname_copy(&mut sp.f_mntonname, path);
         mname_copy(&mut sp.f_mntfromname, &fname);
@@ -324,7 +324,7 @@ pub fn msdosfs_mountfs(
     p: &Proc,
     _argp: &MsdosfsArgs,
 ) -> Result<(), Errno> {
-    let dev = devvp.v_rdev();
+    let dev = devvp.rdev();
 
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot). Flush
@@ -338,7 +338,7 @@ pub fn msdosfs_mountfs(
     let _ = VOP_UNLOCK(devvp);
     error?;
 
-    let ronly = mp.mnt_flag.get() & MNT_RDONLY != 0;
+    let ronly = mp.flag() & MNT_RDONLY != 0;
     let omode = if ronly { FREAD } else { FREAD | FWRITE };
     VOP_OPEN(devvp, omode, FSCRED, p)?;
 
@@ -588,7 +588,7 @@ pub fn msdosfs_mountfs(
         // degradation in exchange for the on disk copy of the fat being correct just about
         // all the time. I suppose this would be a good thing to turn on if the kernel is
         // still flakey.
-        if mp.mnt_flag.get() & MNT_SYNCHRONOUS != 0 {
+        if mp.flag() & MNT_SYNCHRONOUS != 0 {
             pm.pm_flags.set(pm.pm_flags.get() | MSDOSFSMNT_WAITONFAT);
         }
 
@@ -598,8 +598,8 @@ pub fn msdosfs_mountfs(
         } else {
             pm.pm_fmod.set(1);
         }
-        mp.mnt_data.set(m.as_ptr().cast());
-        mp.update_stat(|sp| {
+        mp.set_data(m.as_ptr().cast());
+        mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             sp.f_fsid.val[1] = mp.vfc().vfc_typenum;
         });
@@ -607,17 +607,13 @@ pub fn msdosfs_mountfs(
         // the info in the msdosfsmount structure. You dolt, quotas on dos filesystems make no
         // sense because files have no owners on dos filesystems. of course there is some
         // empty space in the directory entry where we could put uid's and gid's.
-        if let Some(si) = devvp.v_specinfo() {
-            si.si_mountpoint.set(Some(mp));
-        }
+        devvp.set_specmountpoint(Some(mp));
 
         return Ok(());
     };
 
     // error_exit:
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     if let Some(b) = bp {
         brelse(b);
     }
@@ -631,7 +627,7 @@ pub fn msdosfs_mountfs(
             free(map.cast(), M_MSDOSFSFAT, 0);
         }
         free(NonNull::from(pm).cast(), M_MSDOSFSMNT, 0);
-        mp.mnt_data.set(ptr::null_mut());
+        mp.set_data(ptr::null_mut());
     }
     Err(error)
 }
@@ -650,9 +646,7 @@ pub fn msdosfs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<()
     vflush(mp, None, flags)?;
     let pmp = vfstomsdosfs(mp);
     let vp = pmp.devvp();
-    if let Some(si) = vp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    vp.set_specmountpoint(None);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
     let omode = if pmp.pm_flags.get() & MSDOSFSMNT_RONLY != 0 {
         FREAD
@@ -665,8 +659,8 @@ pub fn msdosfs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<()
         free(map.cast(), M_MSDOSFSFAT, 0);
     }
     free(NonNull::from(pmp).cast(), M_MSDOSFSMNT, 0);
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
 
@@ -696,9 +690,9 @@ pub fn msdosfs_statfs(mp: &'static Mount, sbp: &mut Statfs, _p: &Proc) -> Result
 /// `msdosfs_sync_vnode(vp, arg)`: write back one (modified) denode for `msdosfs_sync`.
 pub fn msdosfs_sync_vnode(vp: &'static Vnode, msa: &mut MsdosfsSyncArgs<'_>) -> Result<(), Errno> {
     let s = splbio();
-    let skip = vp.v_type.get() == VNON
+    let skip = vp.vtype() == VNON
         || (vtode(vp).de_flag.get() & (DE_ACCESS | DE_CREATE | DE_UPDATE | DE_MODIFIED) == 0
-            && vp.v_bufs.dirty_is_empty())
+            && vp.bufs.dirty_is_empty())
         || msa.waitfor == MNT_LAZY;
     splx(s);
 
@@ -821,12 +815,9 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::vfs_byname;
-    use crate::kern::vfs_subr::{
-        MOUNTLIST, bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy,
-    };
     use crate::kern::vfs_syscalls::dounmount;
+    use crate::kern::vfs_vops::vop_generic_bwrite;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::msdosfs::fat::fat16;
@@ -835,6 +826,7 @@ pub(crate) mod tests {
     use crate::sys::mount::{MOUNT_MSDOS, VB_WAIT, VB_WRITE};
     use crate::sys::types::makedev;
     use crate::sys::vnode::{VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};
+    use crate::sys::vnode::{bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy};
 
     /// `mkfat`: a FAT image built in memory the way `newfs_msdos(8)` and `makefs -t msdos` build
     /// one, for the tests and as a record of the on-disk layout.
@@ -1309,7 +1301,7 @@ pub(crate) mod tests {
     /// The fake disk's block device vnode, referenced.
     pub(crate) fn diskvp() -> &'static Vnode {
         let vp = bdevvp(DISKDEV).unwrap().unwrap();
-        vp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(vp, &DISK_VOPS);
         vp
     }
 
@@ -1322,7 +1314,7 @@ pub(crate) mod tests {
     fn newmount(ronly: bool) -> &'static Mount {
         let mp = vfs_mount_alloc(None, vfs_byname(MOUNT_MSDOS).unwrap());
         if ronly {
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+            mp.set_flag(mp.flag() | MNT_RDONLY);
         }
         mp
     }
@@ -1333,8 +1325,7 @@ pub(crate) mod tests {
         let mp = newmount(ronly);
         msdosfs_mountfs(diskvp(), mp, p, &noargs()).unwrap();
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         mp
     }
 
@@ -1416,17 +1407,12 @@ pub(crate) mod tests {
         assert_eq!(pmp.inusemap().len(), 2033usize.div_ceil(32));
         assert!(ptr::eq(pmp.mountp(), mp));
         assert_eq!(pmp.pm_dev.get(), DISKDEV);
-        let st = mp.mnt_stat.get();
+        let st = mp.stat();
         assert_eq!(st.f_fsid.val, [DISKDEV, 4]);
         let devvp = pmp.devvp();
-        assert!(
-            devvp
-                .v_specinfo()
-                .and_then(|si| si.si_mountpoint.get())
-                .is_some_and(|m| ptr::eq(m, mp))
-        );
+        assert!(devvp.specmountpoint().is_some_and(|m| ptr::eq(m, mp)));
 
-        let mut sb = mp.mnt_stat.get();
+        let mut sb = mp.stat();
         msdosfs_statfs(mp, &mut sb, p).unwrap();
         assert_eq!(sb.f_bsize, 512);
         assert_eq!(sb.f_iosize, 512);
@@ -1440,7 +1426,7 @@ pub(crate) mod tests {
         // are not here yet; sync and unmount do not.
         msdosfs_sync(mp, MNT_WAIT, 0, p.ucred_ptr(), p).unwrap();
         unmount(p, mp);
-        assert!(devvp.v_specinfo().unwrap().si_mountpoint.get().is_none());
+        assert!(devvp.specmountpoint().is_none());
         teardown();
     }
 
@@ -1542,8 +1528,8 @@ pub(crate) mod tests {
                 Err(Errno::EINVAL),
                 "{what}"
             );
-            assert!(mp.mnt_data.get().is_null(), "{what}");
-            assert!(devvp.v_specinfo().unwrap().si_mountpoint.get().is_none());
+            assert!(mp.data().is_null(), "{what}");
+            assert!(devvp.specmountpoint().is_none());
             vfs_unbusy(mp);
         }
 
@@ -1553,8 +1539,7 @@ pub(crate) mod tests {
         msdosfs_mountfs(devvp, mp, p, &noargs()).unwrap();
         assert_eq!(vfstomsdosfs(mp).pm_nmbrofclusters.get(), 2031);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         unmount(p, mp);
         teardown();
         drop(g);

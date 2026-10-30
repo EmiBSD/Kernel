@@ -85,7 +85,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::kern::vfs_subr::{vref, vrele};
 use crate::kern::vfs_syscalls::NameiBuf;
 use crate::sys::errno::Errno;
 use crate::sys::exec_elf::ElfEhdr;
@@ -93,6 +92,7 @@ use crate::sys::exec_script::EXEC_SCRIPT_HDRSZ;
 use crate::sys::namei::Nameidata;
 use crate::sys::proc::Proc;
 use crate::sys::vnode::{Vattr, Vnode};
+use crate::sys::vnode::{vref, vrele};
 use kernel::vm::types::VmProt;
 
 /// `struct ps_strings`: the array of argument and environment strings a process starts with,

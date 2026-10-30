@@ -819,7 +819,7 @@ pub fn pledge_namei(p: &Proc, ni: &mut Nameidata<'_>, path: &[u8]) -> Result<(),
 fn pledge_safefd(fp: &File) -> bool {
     match fp.f_type() {
         DTYPE_SOCKET | DTYPE_PIPE | DTYPE_DMABUF | DTYPE_SYNC => true,
-        DTYPE_VNODE => fp.vnode().v_type.get() != VDIR,
+        DTYPE_VNODE => fp.vnode().vtype() != VDIR,
         _ => false,
     }
 }
@@ -1094,7 +1094,7 @@ pub fn pledge_sendit(p: &Proc, to: *const c_void) -> Result<(), Errno> {
 /// Whether the character device of vnode `vp` is the driver whose open routine is `open`
 /// (`cdevsw[major(vp->v_rdev)].d_open == open`).
 fn cdev_is(vp: &Vnode, open: DevTypeOpen) -> bool {
-    vp.v_type.get() == VCHR && ptr::fn_addr_eq(cdevsw(major(vp.v_rdev())).d_open, open)
+    vp.vtype() == VCHR && ptr::fn_addr_eq(cdevsw(major(vp.rdev())).d_open, open)
 }
 
 /// `pledge_ioctl`: the ioctls a pledged thread may issue on `fp`: `FIONREAD`, `FIONBIO`,
@@ -1116,15 +1116,15 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
     let is_socket = fp.f_type() == DTYPE_SOCKET;
     let vp = if fp.f_type() == DTYPE_VNODE {
         let vp = fp.vnode();
-        if vp.v_type.get() == VBAD {
+        if vp.vtype() == VBAD {
             return Err(Errno::ENOTTY);
         }
         Some(vp)
     } else {
         None
     };
-    let vchr = vp.filter(|vp| vp.v_type.get() == VCHR);
-    let istty = vp.is_some_and(|vp| vp.v_flag.get() & VISTTY != 0);
+    let vchr = vp.filter(|vp| vp.vtype() == VCHR);
+    let istty = vp.is_some_and(|vp| vp.flag() & VISTTY != 0);
 
     if pledge & PLEDGE_INET != 0 && matches!(com, SIOCATMARK | SIOCGIFGROUP) && is_socket {
         return Ok(());
@@ -1146,7 +1146,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
     if pledge & PLEDGE_TAPE != 0 && matches!(com, MTIOCGET | MTIOCTOP) {
         // for pax(1) and such, checking tapes...
         if let Some(vp) = vchr {
-            if vp.v_flag.get() & VISTTY != 0 {
+            if vp.flag() & VISTTY != 0 {
                 return Err(Errno::ENOTTY);
             }
             return Ok(());
@@ -1180,9 +1180,9 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
             DIOCGDINFO | DIOCGPDINFO | DIOCRLDINFO | DIOCWDINFO | BIOCDISK | BIOCINQ
             | BIOCINSTALLBOOT | BIOCVOL => {
                 if let Some(vp) = vp {
-                    let maj = major(vp.v_rdev());
-                    if (vp.v_type.get() == VCHR && cdevsw(maj).d_type == D_DISK)
-                        || (vp.v_type.get() == VBLK && bdevsw(maj).d_type == D_DISK)
+                    let maj = major(vp.rdev());
+                    if (vp.vtype() == VCHR && cdevsw(maj).d_type == D_DISK)
+                        || (vp.vtype() == VBLK && bdevsw(maj).d_type == D_DISK)
                     {
                         return Ok(());
                     }
@@ -1192,7 +1192,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
                 if fp.f_type() == DTYPE_VNODE
                     && vchr.is_some_and(|vp| {
                         ptr::fn_addr_eq(
-                            cdevsw(major(vp.v_rdev())).d_ioctl,
+                            cdevsw(major(vp.rdev())).d_ioctl,
                             diskmapioctl as DevTypeIoctl,
                         )
                     }) =>

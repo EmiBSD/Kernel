@@ -505,7 +505,6 @@
 //! - `uvmexp` goes out to `vm.uvmexp` as the bytes `UvmexpCopy::to_ne_bytes` lays out (hal),
 //!   so `bsd`'s `unsafe impl SysctlPlain for UvmexpCopy` is gone.
 
-use core::ffi::c_void;
 use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -528,15 +527,10 @@ use kernel::vm::page::{
 };
 
 use kernel::vm::types::{VmProt, Voff};
-use kernel::vm::vnode::{Uvn, VType, VnodeOps};
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{vget, vref, vrele};
-use crate::kern::vfs_vnops::vn_lock;
-use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ, VOP_UNLOCK, VOP_WRITE};
-use crate::machine::conf::iszerodev;
 use crate::machine::cpu::curproc;
 use crate::machine::exec::MachineExec;
 use crate::machine::param::MachineParam;
@@ -563,8 +557,8 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, kernel_assert_unlocked, sysargs};
 use crate::sys::types::{Paddr, Vaddr};
 use crate::sys::types::{Register, Rlim};
-use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
-use crate::sys::vnode::{VBLK, VTEXT, Vattr, Vnode, Vtype};
+use crate::sys::uio::{Uio, UioRw};
+use crate::sys::vnode::Vnode;
 use crate::{kassert, kprintf};
 
 /// The machine's constants `kernel::vm` reads (`kernel::vm::init::VmMachine`), handed down
@@ -1247,148 +1241,9 @@ const _: () = {
 };
 
 /*
- * The vnode as the kernel's vnode pager reaches it (uvm_vnode.c, bridges.toml `VnodeOps`),
- * and the file systems' calls into the pager with bsd's signatures.
+ * The file systems' calls into the vnode pager with bsd's signatures (the vnode as the pager
+ * reaches it, `VnodeOps`, is the kernel's own since N5.2: `kernel::fs::subr`).
  */
-
-/// `VOP_READ`/`VOP_WRITE` of `buf` at `off` (`UIO_SYSSPACE`, `curproc`'s credentials): the
-/// bytes moved (`len - uio_resid`).
-fn vop_rw(
-    vp: &'static Vnode,
-    rw: UioRw,
-    off: Voff,
-    base: *mut c_void,
-    len: usize,
-    ioflag: i32,
-) -> Result<usize, Errno> {
-    let mut iov = [Iovec {
-        iov_base: base,
-        iov_len: len,
-    }];
-    let p = curproc();
-    let mut uio = Uio {
-        uio_iov: &mut iov,
-        uio_offset: off,
-        uio_segflg: UioSeg::UIO_SYSSPACE,
-        uio_rw: rw,
-        uio_resid: len,
-        uio_procp: p,
-    };
-    let cred = p.map_or(core::ptr::null(), |p| p.ucred_ptr());
-    if rw == UioRw::UIO_READ {
-        VOP_READ(vp, &mut uio, ioflag, cred)?;
-    } else {
-        VOP_WRITE(vp, &mut uio, ioflag, cred)?;
-    }
-    Ok(len - uio.uio_resid)
-}
-
-// The vnode as the vnode pager reaches it (bridges.toml `VnodeOps`): one call each into the
-// vnode layer. Vnodes are never freed, so the pager keeps them as `&'static`.
-impl VnodeOps for Vnode {
-    fn uvn(&self) -> Option<&'static Uvn> {
-        self.v_uvm.get()
-    }
-
-    fn set_uvn(&self, uvn: &'static Uvn) {
-        self.v_uvm.set(Some(uvn));
-    }
-
-    fn attr_size(&'static self) -> Result<u64, Errno> {
-        let Some(p) = curproc() else {
-            panic(format_args!("uvn_attach: no curproc"));
-        };
-        let mut vattr = Vattr::new();
-        VOP_GETATTR(self, &mut vattr, p.ucred_ptr(), p)?;
-        Ok(vattr.va_size)
-    }
-
-    fn is_blk(&self) -> bool {
-        self.v_type.get() == VBLK
-    }
-
-    fn vtext(&self) -> bool {
-        self.v_flag.get() & VTEXT != 0
-    }
-
-    fn clear_vtext(&self) {
-        self.v_flag.set(self.v_flag.get() & !VTEXT);
-    }
-
-    fn mount_id(&self) -> usize {
-        mount_id(self.v_mount.get())
-    }
-
-    fn vref(&'static self) {
-        vref(self);
-    }
-
-    fn vrele(&'static self) {
-        let _ = vrele(self);
-    }
-
-    fn vget_nowait(&'static self) -> Result<(), Errno> {
-        vget(self, crate::sys::lock::LK_NOWAIT)
-    }
-
-    fn lock(&'static self, flags: i32) -> Result<(), Errno> {
-        vn_lock(self, flags)
-    }
-
-    fn unlock(&'static self) {
-        let _ = VOP_UNLOCK(self);
-    }
-
-    fn read(&'static self, off: Voff, buf: &mut [u8], ioflag: i32) -> Result<usize, Errno> {
-        vop_rw(
-            self,
-            UioRw::UIO_READ,
-            off,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            ioflag,
-        )
-    }
-
-    fn write(&'static self, off: Voff, buf: &[u8], ioflag: i32) -> Result<usize, Errno> {
-        // UIO_WRITE only reads through the iovec (uiomove copies out of it).
-        vop_rw(
-            self,
-            UioRw::UIO_WRITE,
-            off,
-            buf.as_ptr().cast_mut().cast(),
-            buf.len(),
-            ioflag,
-        )
-    }
-
-    fn vtype(&self) -> VType {
-        match self.v_type.get() {
-            Vtype::VNON => VType::VNON,
-            Vtype::VREG => VType::VREG,
-            Vtype::VDIR => VType::VDIR,
-            Vtype::VBLK => VType::VBLK,
-            Vtype::VCHR => VType::VCHR,
-            Vtype::VLNK => VType::VLNK,
-            Vtype::VSOCK => VType::VSOCK,
-            Vtype::VFIFO => VType::VFIFO,
-            Vtype::VBAD => VType::VBAD,
-        }
-    }
-
-    fn is_zero_device(&self) -> bool {
-        iszerodev(self.v_rdev())
-    }
-
-    fn attr_flags(&'static self) -> Result<u64, Errno> {
-        let Some(p) = curproc() else {
-            panic(format_args!("mmap: no curproc"));
-        };
-        let mut vattr = Vattr::new();
-        VOP_GETATTR(self, &mut vattr, p.ucred_ptr(), p)?;
-        Ok(vattr.va_flags)
-    }
-}
 
 /// A mount's identity for the pager (its address as a number, 0 for none).
 fn mount_id(mp: Option<&'static Mount>) -> usize {

@@ -82,7 +82,6 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::kern::tty::TtyUio;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{vattr_null, vput, vrele};
 use crate::kern::vfs_vnops::VNOPS;
 use crate::kern::vfs_vops::{VOP_OPEN, VOP_REVOKE, VOP_SETATTR, VOP_UNLOCK};
 use crate::machine::conf::{cdevsw, nchrdev};
@@ -102,6 +101,7 @@ use crate::sys::types::{Dev, major, minor};
 use crate::sys::ucred::CredRef;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{REVOKEALL, VA_UTIMES_NULL, VALIASED, VCHR, Vattr};
+use crate::sys::vnode::{vattr_null, vput, vrele};
 
 pub use kernel::pty::{
     NPTY, NPTY_MAX, NPTY_MIN, PF_NOSTOP, PF_PKT, PF_REMOTE, PF_STOPPED, PF_UCNTL,
@@ -205,7 +205,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
     let Some(vp) = ndp.ni_vp else {
         return Err(Errno::ENOENT);
     };
-    if vp.v_type.get() != VCHR {
+    if vp.vtype() != VCHR {
         vput(vp);
         return Err(Errno::EINVAL);
     }
@@ -229,7 +229,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
         return Err(e);
     }
 
-    vp.v_writecount.set(vp.v_writecount.get() + 1);
+    vp.set_writecount(vp.writecount() + 1);
 
     Ok(())
 }
@@ -342,11 +342,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
         let Some(svp) = snd.ni_vp else {
             break 'bad Err(Errno::ENOENT);
         };
-        if svp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY == 0)
-        {
+        if svp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY == 0) {
             let gid = TTY_GID_;
             // get real uid
             let uid = p.ucred().cr_ruid.get();
@@ -366,7 +362,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
             }
         }
         let _ = VOP_UNLOCK(svp);
-        if svp.v_usecount.get() > 1 || svp.v_flag.get() & VALIASED != 0 {
+        if svp.usecount() > 1 || svp.flag() & VALIASED != 0 {
             let _ = VOP_REVOKE(svp, REVOKEALL);
         }
 

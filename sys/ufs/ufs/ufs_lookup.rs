@@ -78,7 +78,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
-use crate::kern::vfs_subr::{vnoperm, vput, vref, vrele};
 use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_setsize;
@@ -98,6 +97,7 @@ use crate::sys::param::roundup;
 use crate::sys::ucred::Ucred;
 use crate::sys::uio::{UioRw, UioSeg};
 use crate::sys::vnode::{IO_NODELOCKED, IO_SYNC, VDIR, VEXEC, VWRITE, Vnode, VopLookupArgs};
+use crate::sys::vnode::{vnoperm, vput, vref, vrele};
 use crate::ufs::ufs::dinode::{IFDIR, IFMT, ISVTX, ROOTINO, Ufsino};
 use crate::ufs::ufs::dir::{
     DIR_ROUNDUP, DIRBLKSIZ, Direct, Dirtemplate, Doff, MAXNAMLEN, d_ino, d_name, d_namlen,
@@ -131,7 +131,7 @@ enum Slotstatus {
 
 /// The vnode's mount, which a UFS vnode always has.
 fn vmount(vp: &Vnode) -> &'static crate::sys::mount::Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("ufs: vnode {:p} without a mount", vp)),
     }
@@ -191,7 +191,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
-        && vmount(vdp).mnt_flag.get() & MNT_RDONLY != 0
+        && vmount(vdp).flag() & MNT_RDONLY != 0
         && (nameiop == DELETE || nameiop == RENAME)
     {
         return Err(Errno::EROFS);
@@ -223,7 +223,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // directory to determine that the entry does not exist. Caching the location of the last
     // DELETE or RENAME has not reduced profiling time and hence has been removed in the
     // interest of simplicity.
-    let bmask = vfstoufs(vmount(vdp)).mountp().mnt_stat.get().f_iosize as i32 - 1;
+    let bmask = vfstoufs(vmount(vdp)).mountp().iosize() as i32 - 1;
 
     // The entry found: its DIRSIZ.
     let mut found: Option<usize> = None;
@@ -605,7 +605,7 @@ pub fn ufs_dirbad(ip: &Inode, offset: Doff, how: &str) {
         offset,
         how
     );
-    if mp.mnt_stat.get().f_flags & MNT_RDONLY as u32 == 0 {
+    if mp.stat_flags() & MNT_RDONLY as u32 == 0 {
         panic(format_args!("bad dir"));
     }
 }
@@ -689,8 +689,8 @@ pub fn ufs_direnter(
         dp.set_flag(IN_CHANGE | IN_UPDATE);
         uvm_vnp_setsize(dvp, dp.dip_size() as i64);
         dirp.d_reclen = DIRBLKSIZ as u16;
-        let blkoff = dp.i_offset.get() as usize
-            & (vfstoufs(vmount(dvp)).mountp().mnt_stat.get().f_iosize as usize - 1);
+        let blkoff =
+            dp.i_offset.get() as usize & (vfstoufs(vmount(dvp)).mountp().iosize() as usize - 1);
         // SAFETY: the buffer is ours (busy from UFS_BUF_ALLOC) and mapped; the slice dies
         // before it is written.
         let data = unsafe { bp.data() };
@@ -1026,7 +1026,7 @@ pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Resu
             let Some(cur) = vp else {
                 break 'out Ok(());
             };
-            if cur.v_type.get() != VDIR {
+            if cur.vtype() != VDIR {
                 break 'out Err(Errno::ENOTDIR);
             }
             let mut dirbuf = [0u8; Dirtemplate::SIZE];

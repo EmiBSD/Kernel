@@ -122,6 +122,12 @@ impl Refcnt {
         }
     }
 
+    /// `refcnt_init`: the creator's one reference again, for an object recycled in place
+    /// (a mount off the free list, `kernel::fs::mount`): the caller is its only holder.
+    pub fn init(&self) {
+        self.refs.store(1, Ordering::Relaxed);
+    }
+
     /// `refcnt_take`: one more reference to an object already referenced.
     pub fn take(&self) {
         let refs = self.refs.fetch_add(1, Ordering::Relaxed).wrapping_add(1);

@@ -70,20 +70,16 @@
 //!   opaque pointer until the tty layer (M10).
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::{self};
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_malloc::free;
 use crate::kern::kern_resource::lim_cur_proc;
 use crate::kern::kern_sig::psignal;
-use crate::kern::kern_synch::{msleep_nsec, wakeup_one};
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_lookup::namei;
-use crate::kern::vfs_subr::{VNODE_MTX, vattr_null, vput, vref, vrele};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_CLOSE, VOP_CREATE, VOP_GETATTR, VOP_IOCTL,
-    VOP_KQFILTER, VOP_LOCK, VOP_OPEN, VOP_READ, VOP_SETATTR, VOP_UNLOCK, VOP_WRITE,
+    VOP_KQFILTER, VOP_OPEN, VOP_READ, VOP_SETATTR, VOP_UNLOCK, VOP_WRITE,
 };
 use crate::kern::vm_bsd::uvm_vnp_uncache;
 use crate::sys::errno::Errno;
@@ -97,20 +93,18 @@ use crate::sys::file::{FIF_HASLOCK, FO_POSITION, File, Fileops, foffset};
 use crate::sys::filio::{FIOASYNC, FIONREAD};
 use crate::sys::limits::LLONG_MAX;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::malloc::M_TEMP;
 use crate::sys::mount::{MNT_RDONLY, MNT_SYNCHRONOUS};
 use crate::sys::namei::{
     BYPASSUNVEIL, CREATE, FOLLOW, KERNELPATH, LOCKLEAF, LOCKPARENT, LOOKUP, NOFOLLOW, Nameidata,
 };
-use crate::sys::param::{MAXPATHLEN, PINOD};
+use crate::sys::param::MAXPATHLEN;
 use crate::sys::proc::Proc;
 use crate::sys::resource::RLIMIT_FSIZE;
 use crate::sys::signal::SIGXFSZ;
-use crate::sys::specdev::Cloneinfo;
 use crate::sys::stat::{
     S_BLKSIZE, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK, Stat,
 };
-use crate::sys::systm::{INFSLP, kernel_lock, kernel_unlock};
+use crate::sys::systm::{kernel_lock, kernel_unlock};
 use crate::sys::ttycom::TIOCSCTTY;
 use crate::sys::types::Off;
 use crate::sys::ucred::Ucred;
@@ -118,9 +112,9 @@ use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{SEEK_CUR, SEEK_END, SEEK_SET};
 use crate::sys::vnode::{
     IO_APPEND, IO_NDELAY, IO_NODELOCKED, IO_NOLIMIT, IO_SYNC, IO_UNIT, VA_EXCLUSIVE, VBAD, VBLK,
-    VCHR, VCLONED, VDIR, VFIFO, VLNK, VNON, VREAD, VREG, VSOCK, VTEXT, VWRITE, VXLOCK, VXWANT,
-    Vattr, Vnode,
+    VCHR, VDIR, VFIFO, VLNK, VNON, VREAD, VREG, VSOCK, VTEXT, VWRITE, Vattr, Vnode,
 };
+use crate::sys::vnode::{vattr_null, vput, vref, vrele};
 
 /// `vnops`: the file operations of a `DTYPE_VNODE` file.
 pub static VNOPS: Fileops = Fileops {
@@ -194,7 +188,7 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
                     vput(vp);
                     return Err(Errno::EEXIST);
                 }
-                if vp.v_type.get() == VDIR {
+                if vp.vtype() == VDIR {
                     vput(vp);
                     return Err(Errno::EISDIR);
                 }
@@ -213,13 +207,13 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
     }
 
     let error = 'bad: {
-        if vp.v_type.get() == VSOCK {
+        if vp.vtype() == VSOCK {
             break 'bad Errno::EOPNOTSUPP;
         }
-        if vp.v_type.get() == VLNK {
+        if vp.vtype() == VLNK {
             break 'bad Errno::ELOOP;
         }
-        if fmode & O_DIRECTORY != 0 && vp.v_type.get() != VDIR {
+        if fmode & O_DIRECTORY != 0 && vp.vtype() != VDIR {
             break 'bad Errno::ENOTDIR;
         }
         if fmode & O_CREAT == 0 {
@@ -229,7 +223,7 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
                 break 'bad e;
             }
             if fmode & FWRITE != 0 {
-                if vp.v_type.get() == VDIR {
+                if vp.vtype() == VDIR {
                     break 'bad Errno::EISDIR;
                 }
                 if let Err(e) = vn_writechk(vp).and_then(|()| VOP_ACCESS(vp, VWRITE, cred, p)) {
@@ -237,7 +231,7 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
                 }
             }
         }
-        if fmode & O_TRUNC != 0 && vp.v_type.get() == VREG {
+        if fmode & O_TRUNC != 0 && vp.vtype() == VREG {
             vattr_null(&mut va);
             va.va_size = 0;
             if let Err(e) = VOP_SETATTR(vp, &mut va, cred, p) {
@@ -249,26 +243,16 @@ pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<()
         }
 
         let mut vp = vp;
-        if vp.v_flag.get() & VCLONED != 0 {
-            let cip = vp.v_data.get().cast::<Cloneinfo>();
-            // SAFETY: a `VCLONED` vnode's `v_data` is the `struct cloneinfo`
-            // `spec_open_clone` allocated, until this restores the original.
-            let (ci_vp, ci_data) = unsafe { ((*cip).ci_vp, (*cip).ci_data) };
-
-            vp.v_flag.set(vp.v_flag.get() & !VCLONED);
-
+        // A cloning device's open made a clone (`VCLONED`): the parent's specinfo records it
+        // (the C's `struct cloneinfo` in `v_data`), which the kernel takes back here.
+        if let Some(ci_vp) = kernel::fs::spec::clone_restore(vp) {
             ndp.ni_vp = Some(ci_vp); // return cloned vnode
-            vp.v_data.set(ci_data); // restore v_data
             let _ = VOP_UNLOCK(vp); // keep a reference
             vp = ci_vp; // for the increment below
-
-            if let Some(cip) = NonNull::new(cip) {
-                free(cip.cast(), M_TEMP, size_of::<Cloneinfo>());
-            }
         }
 
         if fmode & FWRITE != 0 {
-            vp.v_writecount.set(vp.v_writecount.get() + 1);
+            vp.set_writecount(vp.writecount() + 1);
         }
         return Ok(());
     };
@@ -289,17 +273,17 @@ fn expect_vnode(vp: Option<&'static Vnode>) -> &'static Vnode {
 pub fn vn_writechk(vp: &'static Vnode) -> Result<(), Errno> {
     // Disallow write attempts on read-only file systems; unless the file is a socket or a
     // block or character device resident on the file system.
-    if let Some(mp) = vp.v_mount.get()
-        && mp.mnt_flag.get() & MNT_RDONLY != 0
+    if let Some(mp) = vp.mount()
+        && mp.flag() & MNT_RDONLY != 0
     {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VREG | VDIR | VLNK => return Err(Errno::EROFS),
             VNON | VCHR | VSOCK | VFIFO | VBAD | VBLK => {}
         }
     }
     // If there's shared text associated with the vnode, try to free it up once. If we fail,
     // we can't allow writing.
-    if vp.v_flag.get() & VTEXT != 0 && !uvm_vnp_uncache(vp) {
+    if vp.flag() & VTEXT != 0 && !uvm_vnp_uncache(vp) {
         return Err(Errno::ETXTBSY);
     }
 
@@ -312,7 +296,7 @@ pub fn vn_writechk(vp: &'static Vnode) -> Result<(), Errno> {
 /// returned.
 pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result<isize, Errno> {
     let mut overrun = 0;
-    if vp.v_type.get() == VREG
+    if vp.vtype() == VREG
         && let Some(p) = uio.uio_procp
         && ioflag & IO_NOLIMIT == 0
     {
@@ -337,7 +321,7 @@ pub fn vn_fsizechk(vp: &'static Vnode, uio: &mut Uio<'_>, ioflag: i32) -> Result
 
 /// Mark a vnode as being the text image of a running process.
 pub fn vn_marktext(vp: &'static Vnode) {
-    vp.v_flag.set(vp.v_flag.get() | VTEXT);
+    vp.set_flag(vp.flag() | VTEXT);
 }
 
 /// Vnode close call.
@@ -348,7 +332,7 @@ pub fn vn_close(
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
     if flags & FWRITE != 0 {
-        vp.v_writecount.set(vp.v_writecount.get() - 1);
+        vp.set_writecount(vp.writecount() - 1);
     }
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
     let error = VOP_CLOSE(vp, flags, cred, p);
@@ -425,11 +409,11 @@ pub fn vn_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
 
     let error = 'done: {
         // no wrap around of offsets except on character devices
-        if vp.v_type.get() != VCHR && count as i64 > LLONG_MAX.wrapping_sub(offset) {
+        if vp.vtype() != VCHR && count as i64 > LLONG_MAX.wrapping_sub(offset) {
             break 'done Err(Errno::EINVAL);
         }
 
-        if vp.v_type.get() == VDIR {
+        if vp.vtype() == VDIR {
             break 'done Err(Errno::EISDIR);
         }
 
@@ -458,7 +442,7 @@ pub fn vn_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> 
     kernel_lock();
 
     // note: pwrite/pwritev are unaffected by O_APPEND
-    if vp.v_type.get() == VREG && fp.flag() & O_APPEND != 0 && fflags & FO_POSITION == 0 {
+    if vp.vtype() == VREG && fp.flag() & O_APPEND != 0 && fflags & FO_POSITION == 0 {
         ioflag |= IO_APPEND;
     }
     if fp.flag() & FNONBLOCK != 0 {
@@ -466,9 +450,8 @@ pub fn vn_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> 
     }
     if fp.flag() & FFSYNC != 0
         || vp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_SYNCHRONOUS != 0)
+            .mount()
+            .is_some_and(|mp| mp.flag() & MNT_SYNCHRONOUS != 0)
     {
         ioflag |= IO_SYNC;
     }
@@ -512,7 +495,7 @@ pub fn vn_stat(vp: &'static Vnode, sb: &mut Stat, p: &Proc) -> Result<(), Errno>
     sb.st_dev = va.va_fsid as i32;
     sb.st_ino = va.va_fileid;
     let mut mode = va.va_mode;
-    mode |= match vp.v_type.get() {
+    mode |= match vp.vtype() {
         VREG => S_IFREG,
         VDIR => S_IFDIR,
         VBLK => S_IFBLK,
@@ -548,7 +531,7 @@ pub fn vn_ioctl(fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Er
     let mut error = Err(Errno::ENOTTY);
 
     kernel_lock();
-    match vp.v_type.get() {
+    match vp.vtype() {
         VREG | VDIR => {
             if com == FIONREAD {
                 error = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p);
@@ -587,50 +570,7 @@ pub fn vn_ioctl(fp: &File, com: u64, data: &mut [u8], p: &Proc) -> Result<(), Er
     error
 }
 
-/// Check that the vnode is still valid, and if so acquire requested lock.
-pub fn vn_lock(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
-    loop {
-        let error;
-        mtx_enter(&VNODE_MTX);
-        if vp.v_lflag.get() & VXLOCK != 0 {
-            vp.v_lflag.set(vp.v_lflag.get() | VXWANT);
-            let _ = msleep_nsec(ptr::from_ref(vp), &VNODE_MTX, PINOD, "vn_lock", INFSLP);
-            mtx_leave(&VNODE_MTX);
-            error = Errno::ENOENT;
-        } else {
-            vp.v_lockcount.set(vp.v_lockcount.get() + 1);
-            mtx_leave(&VNODE_MTX);
-
-            let lock = VOP_LOCK(vp, flags);
-
-            mtx_enter(&VNODE_MTX);
-            vp.v_lockcount.set(vp.v_lockcount.get() - 1);
-            let do_wakeup = vp.v_lockcount.get() == 0;
-            let xlocked = vp.v_lflag.get() & VXLOCK != 0;
-            mtx_leave(&VNODE_MTX);
-
-            match lock {
-                Ok(()) => {
-                    if !xlocked {
-                        return Ok(());
-                    }
-
-                    // The vnode was exclusively locked while acquiring the requested lock.
-                    // Release it and try again.
-                    error = Errno::ENOENT;
-                    let _ = VOP_UNLOCK(vp);
-                }
-                Err(e) => error = e,
-            }
-            if do_wakeup && xlocked {
-                wakeup_one(ptr::from_ref(&vp.v_lockcount));
-            }
-        }
-        if flags & LK_RETRY == 0 {
-            return Err(error);
-        }
-    }
-}
+pub use kernel::fs::vnode::vn_lock;
 
 /// File table vnode close routine.
 pub fn vn_closefile(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
@@ -672,13 +612,13 @@ pub fn vn_seek(fp: &File, offset: &mut Off, whence: i32, p: &Proc) -> Result<(),
     let vp = fp.vnode();
     let mut vattr = Vattr::new();
 
-    if vp.v_type.get() == VFIFO {
+    if vp.vtype() == VFIFO {
         return Err(Errno::ESPIPE);
     }
 
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 
-    let special = vp.v_type.get() == VCHR;
+    let special = vp.vtype() == VCHR;
 
     let error = 'out: {
         let newoff = match whence {

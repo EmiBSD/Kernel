@@ -117,13 +117,9 @@ use crate::kern::kern_lock::mtx_init;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_subr::{hashfree, hashinit};
-use crate::kern::spec_vnops::SPEC_VOPS;
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    checkalias, copy_statfs_info, vcount, vflush, vfs_mountedon, vgone, vinvalbuf, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
@@ -155,6 +151,9 @@ use crate::sys::types::{Daddr, Ino, Uid, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{
     FORCECLOSE, V_SAVE, VBLK, VCHR, VDIR, VFIFO, VLNK, VREG, VROOT, VSOCK, Vnode,
+};
+use crate::sys::vnode::{
+    checkalias, copy_statfs_info, vcount, vflush, vfs_mountedon, vgone, vinvalbuf, vref, vrele,
 };
 
 /// `udf_trans_pool`: the buffers of `udf_transname` and `udf_cmpname`.
@@ -238,19 +237,19 @@ pub fn udf_mount(
 ) -> Result<(), Errno> {
     let mut fspec = [0u8; MNAMELEN];
 
-    if mp.mnt_flag.get() & MNT_RDONLY == 0 {
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+    if mp.flag() & MNT_RDONLY == 0 {
+        mp.set_flag(mp.flag() | MNT_RDONLY);
     }
 
     // No root filesystem support. Probably not a big deal, since the bootloader doesn't
     // understand UDF.
-    if mp.mnt_flag.get() & MNT_ROOTFS != 0 {
+    if mp.flag() & MNT_ROOTFS != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         return Ok(());
     }
 
@@ -267,12 +266,12 @@ pub fn udf_mount(
         return Err(Errno::ENOENT);
     };
 
-    if devvp.v_type.get() != VBLK {
+    if devvp.vtype() != VBLK {
         vrele(devvp);
         return Err(Errno::ENOTBLK);
     }
 
-    if major(devvp.v_rdev()) >= nblkdev() {
+    if major(devvp.rdev()) >= nblkdev() {
         vrele(devvp);
         return Err(Errno::ENXIO);
     }
@@ -283,7 +282,7 @@ pub fn udf_mount(
     }
 
     // Keep a copy of the mount information.
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         mname_copy(&mut sp.f_mntonname, path);
         mname_copy(&mut sp.f_mntfromname, &fspec);
         mname_copy(&mut sp.f_mntfromspec, &fspec);
@@ -374,18 +373,17 @@ pub fn udf_mountfs(
         ump.as_ref()
     };
 
-    mp.mnt_data
-        .set(ptr::from_ref(ump).cast_mut().cast::<c_void>());
+    mp.set_data(ptr::from_ref(ump).cast_mut().cast::<c_void>());
     let typenum = mp.vfc().vfc_typenum;
-    mp.update_stat(|sp| {
-        sp.f_fsid.val[0] = devvp.v_rdev();
+    mp.with_stat(|sp| {
+        sp.f_fsid.val[0] = devvp.rdev();
         sp.f_fsid.val[1] = typenum;
         sp.f_namemax = NAME_MAX as u32;
     });
-    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
+    mp.set_flag(mp.flag() | MNT_LOCAL);
 
     ump.um_mountp.set(Some(mp));
-    ump.um_dev.set(devvp.v_rdev());
+    ump.um_dev.set(devvp.rdev());
     ump.um_devvp.set(Some(devvp));
 
     let bsize: usize = 2048; // Should probe the media for its size.
@@ -622,9 +620,7 @@ pub fn udf_mountfs(
 
         brelse(b);
 
-        if let Some(si) = devvp.v_specinfo() {
-            si.si_mountpoint.set(Some(mp));
-        }
+        devvp.set_specmountpoint(Some(mp));
 
         return Ok(());
     };
@@ -644,11 +640,9 @@ pub fn udf_mountfs(
         M_UDFMOUNT,
         size_of::<Umount>(),
     );
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
+    devvp.set_specmountpoint(None);
     if let Some(b) = bp {
         brelse(b);
     }
@@ -677,9 +671,7 @@ pub fn udf_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
     let _ = VOP_CLOSE(devvp, FREAD, NOCRED, Some(p));
     let _ = VOP_UNLOCK(devvp);
 
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     vrele(devvp);
 
     if ump.um_flags.get() & UDF_MNT_USES_VAT != 0 {
@@ -701,8 +693,8 @@ pub fn udf_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
         size_of::<Umount>(),
     );
 
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
 
     Ok(())
 }
@@ -715,7 +707,7 @@ pub fn udf_root(mp: &'static Mount) -> Result<&'static Vnode, Errno> {
 
     let vp = udf_vget(mp, Ino::from(id))?;
 
-    vp.v_flag.set(vp.v_flag.get() | VROOT);
+    vp.set_flag(vp.flag() | VROOT);
 
     Ok(vp)
 }
@@ -870,7 +862,7 @@ pub fn udf_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
     up.u_devvp.set(Some(devvp));
     up.u_dev.set(ump.um_dev.get());
     up.u_ump.set(Some(ump));
-    vp.v_data.set(upp.as_ptr().cast());
+    vp.set_data(upp.as_ptr().cast());
     vref(devvp);
 
     rrw_init_flags(&up.u_lock, "unode", RWL_DUPOK | RWL_IS_VNODE);
@@ -891,12 +883,12 @@ pub fn udf_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         _ => {
             printf(format_args!(
                 "Unrecognized file type ({})\n",
-                vp.v_type.get() as i32
+                vp.vtype() as i32
             ));
             VREG
         }
     };
-    vp.v_type.set(vtype);
+    vp.set_vtype(vtype);
 
     // check if this is a vnode alias
     let mut vp = vp;
@@ -904,9 +896,9 @@ pub fn udf_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         printf(format_args!("found a vnode alias\n"));
         // Discard unneeded vnode, but save its udf_node. Note that the lock is carried over
         // in the udf_node
-        nvp.v_data.set(vp.v_data.get());
-        vp.v_data.set(ptr::null_mut());
-        vp.v_op.set(Some(&SPEC_VOPS));
+        nvp.set_data(vp.data());
+        vp.set_data(ptr::null_mut());
+        vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
         vrele(vp);
         vgone(vp);
         // Reinitialize aliased inode.

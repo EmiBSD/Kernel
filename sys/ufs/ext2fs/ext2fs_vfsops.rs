@@ -96,11 +96,6 @@ use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
-    vfs_mount_foreach_vnode, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget,
-    vgonel, vinvalbuf, vput, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_OPEN, VOP_UNLOCK};
 use crate::kprintf;
@@ -129,6 +124,11 @@ use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Daddr, Ino, Off, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{FORCECLOSE, V_SAVE, VBAD, VBLK, VNON, VT_EXT2FS, Vnode, WRITECLOSE};
+use crate::sys::vnode::{
+    bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
+    vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput,
+    vref, vrele,
+};
 use crate::ufs::ext2fs::ext2fs::{
     E2FS_ERRORS, E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV0, E2FS_REV1, EXT2_GD_SIZE,
     EXT2F_INCOMPAT_EXTENTS, EXT2F_INCOMPAT_RECOVER, EXT2F_INCOMPAT_SUPP, EXT2F_ROCOMPAT_HUGE_FILE,
@@ -265,8 +265,7 @@ pub fn ext2fs_mountroot() -> Result<(), Errno> {
         return Err(e);
     }
 
-    // SAFETY: a new mount on no list, under the kernel lock.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     let ump = vfstoufs(mp);
     let fs = ump.e2fs();
     let (name, len) = mp.mntonname();
@@ -274,9 +273,9 @@ pub fn ext2fs_mountroot() -> Result<(), Errno> {
     if fs.e2fs_rev() > E2FS_REV0 {
         e2fs_set_sb_fsmnt(fs, &name[..len]);
     }
-    let mut st = mp.mnt_stat.get();
+    let mut st = mp.stat();
     let _ = ext2fs_statfs(mp, &mut st, p);
-    mp.mnt_stat.set(st);
+    mp.with_stat(|sp| *sp = st);
     vfs_unbusy(mp);
     crate::kern::kern_time::inittodr(i64::from(fs.e2fs_wtime()));
     Ok(())
@@ -298,13 +297,13 @@ pub fn ext2fs_mount(
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         let u = vfstoufs(mp);
         ump = Some(u);
         let fs = u.e2fs();
-        if fs.e2fs_ronly.get() == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
+        if fs.e2fs_ronly.get() == 0 && mp.flag() & MNT_RDONLY != 0 {
             let mut flags = WRITECLOSE;
-            if mp.mnt_flag.get() & MNT_FORCE != 0 {
+            if mp.flag() & MNT_FORCE != 0 {
                 flags |= FORCECLOSE;
             }
             let error = ext2fs_flushfiles(mp, flags, p);
@@ -318,10 +317,10 @@ pub fn ext2fs_mount(
             error?;
             fs.e2fs_ronly.set(1);
         }
-        if mp.mnt_flag.get() & MNT_RELOAD != 0 {
+        if mp.flag() & MNT_RELOAD != 0 {
             ext2fs_reload(mp, ndp.ni_cnd.cn_cred, p)?;
         }
-        if fs.e2fs_ronly.get() != 0 && mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
+        if fs.e2fs_ronly.get() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
             fs.e2fs_ronly.set(0);
             if fs.e2fs_state() == E2FS_ISCLEAN {
                 fs.set_e2fs_state(0);
@@ -358,13 +357,13 @@ pub fn ext2fs_mount(
     };
 
     let error: Errno = 'error_devvp: {
-        if devvp.v_type.get() != VBLK {
+        if devvp.vtype() != VBLK {
             break 'error_devvp Errno::ENOTBLK;
         }
-        if major(devvp.v_rdev()) >= nblkdev() {
+        if major(devvp.rdev()) >= nblkdev() {
             break 'error_devvp Errno::ENXIO;
         }
-        if mp.mnt_flag.get() & MNT_UPDATE == 0 {
+        if mp.flag() & MNT_UPDATE == 0 {
             if let Err(e) = ext2fs_mountfs(devvp, mp, p) {
                 break 'error_devvp e;
             }
@@ -386,7 +385,7 @@ pub fn ext2fs_mount(
             e2fs_set_sb_fsmnt(fs, &name[..len]);
         }
         let fsmnt = fs.fsmnt();
-        mp.update_stat(|sp| {
+        mp.with_stat(|sp| {
             sp.f_mntonname.copy_from_slice(&fsmnt[..MNAMELEN]);
             strlcpy_zero(&mut sp.f_mntfromname, &fname);
             strlcpy_zero(&mut sp.f_mntfromspec, &fspec);
@@ -401,7 +400,7 @@ pub fn ext2fs_mount(
             } else {
                 kprintf!(
                     "{}: file system not clean; please fsck(8)\n",
-                    Str(&mp.mnt_stat.get().f_mntfromname)
+                    Str(&mp.stat().f_mntfromname)
                 );
             }
             let _ = ext2fs_cgupdate(u, MNT_WAIT);
@@ -424,7 +423,7 @@ fn ext2fs_reload_vnode(
     devvp: &'static Vnode,
 ) -> Result<(), Errno> {
     // Step 4: invalidate all inactive vnodes.
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vgonel(vp, Some(p));
         return Ok(());
     }
@@ -589,7 +588,7 @@ fn sb_scalars(fs: &MExt2fs) -> SbScalars {
 ///  5) invalidate all cached file data.
 ///  6) re-read inode data for all active vnodes.
 pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Result<(), Errno> {
-    if mountp.mnt_flag.get() & MNT_RDONLY == 0 {
+    if mountp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EINVAL);
     }
     // Step 1: invalidate all cached meta-data.
@@ -611,7 +610,7 @@ pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Re
     {
         // SAFETY: the buffer is ours (busy from bread) and mapped, SBSIZE bytes.
         let newfs = unsafe { bp.data() };
-        if let Err(e) = e2fs_sbcheck(newfs, mountp.mnt_flag.get() & MNT_RDONLY != 0) {
+        if let Err(e) = e2fs_sbcheck(newfs, mountp.flag() & MNT_RDONLY != 0) {
             brelse(bp);
             return Err(e);
         }
@@ -637,7 +636,7 @@ pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Re
 
 /// `ext2fs_mountfs`: common code for mount and mountroot.
 pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
-    let dev = devvp.v_rdev();
+    let dev = devvp.rdev();
     let cred = p.ucred_ptr();
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot).
@@ -651,7 +650,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
     let _ = VOP_UNLOCK(devvp);
     error?;
 
-    let ronly = mp.mnt_flag.get() & MNT_RDONLY != 0;
+    let ronly = mp.flag() & MNT_RDONLY != 0;
     let omode = if ronly { FREAD } else { FREAD | FWRITE };
     VOP_OPEN(devvp, omode, FSCRED, p)?;
 
@@ -709,13 +708,13 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
             fs.e2fs_fmod.set(1);
         }
 
-        mp.mnt_data.set(um.as_ptr().cast());
-        mp.update_stat(|sp| {
+        mp.set_data(um.as_ptr().cast());
+        mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             sp.f_fsid.val[1] = mp.vfc().vfc_typenum;
             sp.f_namemax = MAXNAMLEN as u32;
         });
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
+        mp.set_flag(mp.flag() | MNT_LOCAL);
         u.um_mountp.set(Some(mp));
         u.um_dev.set(dev);
         u.um_devvp.set(Some(devvp));
@@ -723,16 +722,12 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
         u.um_bptrtodb.set(fs.e2fs_fsbtodb.get() as u64);
         u.um_seqinc.set(1); // no frags
         u.um_maxsymlinklen.set(EXT2_MAXSYMLINKLEN as u32);
-        if let Some(si) = devvp.v_specinfo() {
-            si.si_mountpoint.set(Some(mp));
-        }
+        devvp.set_specmountpoint(Some(mp));
         return Ok(());
     };
 
     // out:
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     if let Some(b) = bp {
         brelse(b);
     }
@@ -744,7 +739,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
             free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
         }
         free(NonNull::from(u).cast(), M_UFSMNT, size_of::<Ufsmount>());
-        mp.mnt_data.set(ptr::null_mut());
+        mp.set_data(ptr::null_mut());
     }
     Err(error)
 }
@@ -769,10 +764,8 @@ pub fn ext2fs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
     }
 
     let devvp = ump.devvp();
-    if devvp.v_type.get() != VBAD
-        && let Some(si) = devvp.v_specinfo()
-    {
-        si.si_mountpoint.set(None);
+    if devvp.vtype() != VBAD {
+        devvp.set_specmountpoint(None);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
     let omode = if fs.e2fs_ronly.get() != 0 {
@@ -787,8 +780,8 @@ pub fn ext2fs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
     }
     free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
     free(NonNull::from(ump).cast(), M_UFSMNT, size_of::<Ufsmount>());
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
 
@@ -860,7 +853,7 @@ struct Ext2fsSyncArgs<'a> {
 
 /// `ext2fs_sync_vnode`: write back one (modified) inode for `ext2fs_sync`.
 fn ext2fs_sync_vnode(vp: &'static Vnode, esa: &mut Ext2fsSyncArgs<'_>) -> Result<(), Errno> {
-    if vp.v_type.get() == VNON {
+    if vp.vtype() == VNON {
         return Ok(());
     }
 
@@ -873,7 +866,7 @@ fn ext2fs_sync_vnode(vp: &'static Vnode, esa: &mut Ext2fsSyncArgs<'_>) -> Result
 
     let s = splbio();
     let skip = ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) == 0
-        && vp.v_bufs.dirty_is_empty();
+        && vp.bufs.dirty_is_empty();
     splx(s);
 
     'end: {
@@ -997,7 +990,7 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
         // SAFETY: just initialised; freed only by `ext2fs_reclaim`.
         let ip: &'static Inode = unsafe { &*ipp.as_ptr() };
         rrw_init_flags(&ip.i_lock, "inode", RWL_DUPOK | RWL_IS_VNODE);
-        vp.v_data.set(ipp.as_ptr().cast());
+        vp.set_data(ipp.as_ptr().cast());
         ip.i_vnode.set(Some(vp));
         ip.i_ump.set(Some(ump));
         // The C takes this reference after ext2fs_vinit (see the module's deviations).
@@ -1086,11 +1079,7 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
         // should only happen on old filesystems.
         if ip.i_e2fs_gen() == 0 {
             ip.set_i_e2fs_gen(next_gennumber() as u32);
-            if vp
-                .v_mount
-                .get()
-                .is_some_and(|m| m.mnt_flag.get() & MNT_RDONLY == 0)
-            {
+            if vp.mount().is_some_and(|m| m.flag() & MNT_RDONLY == 0) {
                 ip.set_flag(IN_MODIFIED);
             }
         }
@@ -1302,9 +1291,8 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::vfs_byname;
-    use crate::kern::vfs_subr::{vflushbuf, vfs_mount_alloc};
+    use crate::kern::vfs_vops::vop_generic_bwrite;
     use crate::kern::vfs_vops::{VOP_BMAP, VOP_READ, VOP_WRITE};
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
@@ -1316,6 +1304,7 @@ pub(crate) mod tests {
     use crate::sys::vnode::{
         VDIR, VREG, VROOT, VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops,
     };
+    use crate::sys::vnode::{vflushbuf, vfs_mount_alloc};
     use crate::ufs::ext2fs::ext2fs::{
         E2FS_REV1, EXT2F_INCOMPAT_FTYPE, EXT2F_INCOMPAT_RECOVER, EXT2F_ROCOMPAT_BTREE_DIR, Ext2fs,
     };
@@ -1627,20 +1616,22 @@ pub(crate) mod tests {
     /// with.
     pub(crate) fn mount(p: &'static Proc, ronly: bool) -> Result<&'static Mount, Errno> {
         let devvp = bdevvp(DISKDEV).unwrap().unwrap();
-        devvp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(devvp, &DISK_VOPS);
         let mp = vfs_mount_alloc(None, vfs_byname(b"ext2fs").unwrap());
         if ronly {
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+            mp.set_flag(mp.flag() | MNT_RDONLY);
         }
         match ext2fs_mountfs(devvp, mp, p) {
             Ok(()) => {
-                let mut st = mp.mnt_stat.get();
+                let mut st = mp.stat();
                 ext2fs_statfs(mp, &mut st, p).unwrap();
-                mp.mnt_stat.set(st);
+                mp.with_stat(|sp| *sp = st);
                 Ok(mp)
             }
             Err(e) => {
                 vrele(devvp);
+                // A mount is freed unbusied, as ext2fs_mountroot's failure does.
+                crate::sys::vnode::vfs_unbusy(mp);
                 vfs_mount_free(mp);
                 Err(e)
             }
@@ -1735,11 +1726,11 @@ pub(crate) mod tests {
         assert_eq!(fs.gd(0).ext2bgd_i_tables, ITABLE as u32);
         assert_eq!(fs.e2fs_ronly.get(), 1);
         assert_eq!(fs.e2fs_maxfilesize.get(), Off::from(i32::MAX) * 4);
-        assert_eq!(mp.mnt_flag.get() & MNT_LOCAL, MNT_LOCAL);
+        assert_eq!(mp.flag() & MNT_LOCAL, MNT_LOCAL);
 
         // statfs: the overhead is the boot block, two bitmaps and four inode table blocks, and
         // one super block and one descriptor block.
-        let st = mp.mnt_stat.get();
+        let st = mp.stat();
         assert_eq!(st.f_bsize, 1024);
         assert_eq!(st.f_iosize, 1024);
         assert_eq!(st.f_blocks, u64::from(NBLK) - 9);
@@ -1752,8 +1743,8 @@ pub(crate) mod tests {
 
         // The root directory.
         let root = VFS_ROOT(mp).unwrap();
-        assert_eq!(root.v_type.get(), VDIR);
-        assert_eq!(root.v_flag.get() & VROOT, VROOT);
+        assert_eq!(root.vtype(), VDIR);
+        assert_eq!(root.flag() & VROOT, VROOT);
         let rip = vtoi(root);
         assert_eq!(rip.i_number.get(), ROOTINO);
         assert_eq!(rip.i_e2fs_uid().get(), 1000 | 1 << 16);
@@ -1766,7 +1757,7 @@ pub(crate) mod tests {
 
         // hello.txt
         let hello = VFS_VGET(mp, 12).unwrap();
-        assert_eq!(hello.v_type.get(), VREG);
+        assert_eq!(hello.vtype(), VREG);
         assert_eq!(read_all(hello, 5), HELLO_DATA);
         assert_eq!(bmap(hello, 0), (2 * HELLO as Daddr, 0));
         assert_eq!(bmap(hello, 1).0, -1);
@@ -1810,6 +1801,7 @@ pub(crate) mod tests {
         vput(hello);
         vput(root);
         ext2fs_unmount(mp, 0, p).unwrap();
+        crate::sys::vnode::vfs_unbusy(mp);
         vfs_mount_free(mp);
         // A read-only unmount writes nothing.
         assert_eq!(*DISK.lock().unwrap(), image(true));
@@ -1883,6 +1875,7 @@ pub(crate) mod tests {
         vput(hello);
         vput(root);
         ext2fs_unmount(mp, 0, p).unwrap();
+        crate::sys::vnode::vfs_unbusy(mp);
         vfs_mount_free(mp);
 
         // On the disk: clean, the counts and bitmaps back, hello.txt empty, inode 15 free.

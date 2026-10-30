@@ -69,13 +69,13 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::kern::vfs_subr::{vfs_export_lookup, vput};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
 use crate::sys::mount::{Mount, VFS_VGET, Vfsconf};
 use crate::sys::proc::Proc;
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::{vfs_export_lookup, vput};
 use crate::ufs::ufs::dinode::ROOTINO;
 use crate::ufs::ufs::inode::{Ufid, vtoi};
 use crate::ufs::ufs::quota::ufs_quota_init;

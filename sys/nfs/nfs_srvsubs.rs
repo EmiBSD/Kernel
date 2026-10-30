@@ -96,7 +96,6 @@ use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::vfs_lookup;
-use crate::kern::vfs_subr::{vfs_getvfs, vput, vref, vrele};
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::netinet::in_::{IPPORT_RESERVED, SockaddrIn};
 use crate::nfs::nfs::{ND_NFSV3, Nethostaddr, NfsrvDescript, NfssvcSock};
@@ -127,6 +126,7 @@ use crate::sys::time::Timespec;
 use crate::sys::types::{SaFamily, major, minor};
 use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::vnode::{VA_UTIMES_CHANGE, VA_UTIMES_NULL, VFIFO, Vattr, Vnode};
+use crate::sys::vnode::{vfs_getvfs, vput, vref, vrele};
 
 /// `nfs_namei(ndp, fhp, len, slp, nam, mdp, dposp, retdirp, p)`: sets up the `nameidata` for
 /// a `vfs_lookup` of the `len`-byte name at the dissection cursor (`*mdp`, `*dposp`) of the
@@ -220,7 +220,7 @@ fn namei_lookup(
 
     // Extract and set starting directory.
     let (dp, rdonly) = nfsrv_fhtovp(fhp, false, cred, slp, nam)?;
-    if dp.v_type.get() != crate::sys::vnode::VDIR {
+    if dp.vtype() != crate::sys::vnode::VDIR {
         vrele(dp);
         return Err(Errno::ENOTDIR.as_i32());
     }
@@ -916,7 +916,7 @@ mod tests {
             VFS_VPTOFH(vp, &mut fid).unwrap();
             vrele(vp);
             Fhandle {
-                fh_fsid: mp.mnt_stat.get().f_fsid,
+                fh_fsid: mp.fsid(),
                 fh_fid: fid,
             }
         };
@@ -991,14 +991,14 @@ mod tests {
         assert_eq!(cred.cr_gid.get(), 32767);
         assert_eq!(cred.cr_ngroups.get(), 0);
         let vp = nd.ni_vp.expect("the file");
-        assert_eq!(vp.v_type.get(), VREG);
+        assert_eq!(vp.vtype(), VREG);
         assert!(nd.ni_cnd.cn_flags & (NOCROSSMOUNT | RDONLY) == (NOCROSSMOUNT | RDONLY));
         assert!(
             nd.ni_cnd.cn_pnbuf.is_null(),
             "the buffer went back to the pool"
         );
         let dir = retdir.expect("the directory");
-        assert_eq!(dir.v_type.get(), VDIR);
+        assert_eq!(dir.vtype(), VDIR);
         vput(vp);
         vrele(dir);
 
@@ -1008,7 +1008,7 @@ mod tests {
         let (r, nd, retdir) = run(&dirfh, 2, &[b"l", b"n\0\0"], client, LOCKLEAF);
         assert_eq!(r, Ok(()));
         let vp = nd.ni_vp.expect("the link");
-        assert_eq!(vp.v_type.get(), VLNK);
+        assert_eq!(vp.vtype(), VLNK);
         vput(vp);
         vrele(retdir.expect("the directory"));
         // ... and a request that would follow it is EINVAL, nothing left locked or referenced.

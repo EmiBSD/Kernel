@@ -116,12 +116,11 @@ use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_default::{vop_generic_abortop, vop_generic_bwrite, vop_generic_revoke};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::vfs_relookup;
-use crate::kern::vfs_subr::{vaccess, vflushbuf, vput, vrele};
 use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_STRATEGY, VOP_UNLOCK};
+use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bwrite, vop_generic_revoke};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::{splbio, splx};
@@ -186,6 +185,7 @@ use crate::sys::vnode::{
     VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
     Vops, cred_ref,
 };
+use crate::sys::vnode::{vaccess, vflushbuf, vput, vrele};
 
 /// `sizeof(struct direntry)`.
 const DIRENTRY_SIZE: u32 = Direntry::SIZE as u32;
@@ -297,7 +297,7 @@ static DOSDIRTEMPLATE: [Direntry; 2] = [
 
 /// The vnode's mount, which a msdosfs vnode always has.
 fn vmount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("msdosfs: vnode {:p} without a mount", vp)),
     }
@@ -305,7 +305,7 @@ fn vmount(vp: &Vnode) -> &'static Mount {
 
 /// `vp->v_mount->mnt_flag & MNT_RDONLY`.
 fn rdonly(vp: &Vnode) -> bool {
-    vmount(vp).mnt_flag.get() & MNT_RDONLY != 0
+    vmount(vp).flag() & MNT_RDONLY != 0
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
@@ -444,7 +444,7 @@ pub fn msdosfs_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let dep = vtode(vp);
 
-    if vp.v_usecount.get() > 1 && VOP_ISLOCKED(vp) == 0 {
+    if vp.usecount() > 1 && VOP_ISLOCKED(vp) == 0 {
         let ts = getnanotime();
         detimes(dep, &ts, &ts, &ts);
     }
@@ -466,7 +466,7 @@ pub fn msdosfs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     dosmode &= pmp.pm_mask.get();
 
     vaccess(
-        ap.a_vp.v_type.get(),
+        ap.a_vp.vtype(),
         dosmode,
         pmp.pm_uid.get(),
         pmp.pm_gid.get(),
@@ -584,7 +584,7 @@ pub fn msdosfs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     vap.va_bytes = u64::from(
         dep.de_FileSize.get().wrapping_add(pmp.pm_crbomask.get()) & !pmp.pm_crbomask.get(),
     );
-    vap.va_type = ap.a_vp.v_type.get();
+    vap.va_type = ap.a_vp.vtype();
     Ok(())
 }
 
@@ -666,7 +666,7 @@ pub fn msdosfs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
     }
 
     if vap.va_size != VNOVAL as u64 {
-        match vp.v_type.get() {
+        match vp.vtype() {
             VDIR => return Err(Errno::EISDIR),
             // Truncation is only supported for regular files, Disallow it if the
             // filesystem is read-only.
@@ -698,7 +698,7 @@ pub fn msdosfs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             }
             VOP_ACCESS(vp, VWRITE, cred, ap.a_p)?;
         }
-        if vp.v_type.get() != VDIR {
+        if vp.vtype() != VDIR {
             if pmp.pm_flags.get() & MSDOSFSMNT_NOWIN95 as u32 == 0
                 && vap.va_atime.tv_nsec != i64::from(VNOVAL)
             {
@@ -727,7 +727,7 @@ pub fn msdosfs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         if c.cr_uid.get() != pmp.pm_uid.get() {
             suser_ucred(c)?;
         }
-        if vp.v_type.get() != VDIR {
+        if vp.vtype() != VDIR {
             // We ignore the read and execute bits.
             if vap.va_mode & VWRITE as Mode != 0 {
                 dep.de_Attributes
@@ -809,7 +809,7 @@ pub fn msdosfs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
             break;
         }
     }
-    if !isadir && vmount(vp).mnt_flag.get() & MNT_NOATIME == 0 {
+    if !isadir && vmount(vp).flag() & MNT_NOATIME == 0 {
         dep.set_flag(DE_ACCESS);
     }
     error
@@ -826,7 +826,7 @@ pub fn msdosfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     let cred = ap.a_cred;
     let bpcluster = pmp.pm_bpcluster.get();
 
-    let thisvp = match vp.v_type.get() {
+    let thisvp = match vp.vtype() {
         VREG => {
             if ioflag & IO_APPEND != 0 {
                 uio.uio_offset = i64::from(dep.de_FileSize.get());
@@ -1027,7 +1027,7 @@ pub fn msdosfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
     let dep = vtode(ap.a_vp);
     let ddep = vtode(ap.a_dvp);
 
-    let error = if ap.a_vp.v_type.get() == VDIR {
+    let error = if ap.a_vp.vtype() == VDIR {
         Err(Errno::EPERM)
     } else {
         removede(ddep, dep)
@@ -1139,9 +1139,9 @@ pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
         panic(format_args!("msdosfs_rename: no name"));
     }
     // Check for cross-device rename.
-    let fmp = fvp.v_mount.get().map(ptr::from_ref);
-    if fmp != tdvp.v_mount.get().map(ptr::from_ref)
-        || tvp.is_some_and(|t| fmp != t.v_mount.get().map(ptr::from_ref))
+    let fmp = fvp.mount().map(ptr::from_ref);
+    if fmp != tdvp.mount().map(ptr::from_ref)
+        || tvp.is_some_and(|t| fmp != t.mount().map(ptr::from_ref))
     {
         return rename_abortit(Err(Errno::EXDEV), tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
@@ -1907,7 +1907,7 @@ pub fn msdosfs_bmaparray(
         // to be 1 block less so that we don't create a block larger than the device can
         // handle.
         *r = 0;
-        maxrun = ((MAXBSIZE as u32 / mp.mnt_stat.get().f_iosize).wrapping_sub(1))
+        maxrun = ((MAXBSIZE as u32 / mp.iosize()).wrapping_sub(1))
             .min(pmp.pm_maxcluster.get().wrapping_sub(cn)) as i32;
     }
 
@@ -1948,7 +1948,7 @@ pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let dep = vtode(bvp);
     let mut error = Ok(());
 
-    if bvp.v_type.get() == VBLK || bvp.v_type.get() == VCHR {
+    if bvp.vtype() == VBLK || bvp.vtype() == VCHR {
         panic(format_args!("msdosfs_strategy: spec"));
     }
     // If we don't already know the filesystem relative block number then get it using
@@ -1973,7 +1973,7 @@ pub fn msdosfs_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
     let Some(vp) = dep.de_devvp.get() else {
         panic(format_args!("msdosfs_strategy: denode without a device"));
     };
-    bp.set_dev(vp.v_rdev());
+    bp.set_dev(vp.rdev());
     let _ = VOP_STRATEGY(vp, bp);
     Ok(())
 }
@@ -2077,7 +2077,7 @@ pub fn msdosfs_kqfilter(ap: &mut VopKqfilterArgs<'_>) -> Result<(), Errno> {
 
     kn.kn_hook.set(ptr::from_ref(vp).cast_mut().cast());
 
-    klist_insert_locked(&vp.v_klist, kn);
+    klist_insert_locked(&vp.klist, kn);
 
     Ok(())
 }
@@ -2096,7 +2096,7 @@ fn kn_vnode(kn: &Knote) -> &'static Vnode {
 pub fn filt_msdosfsdetach(kn: &Knote) {
     let vp = kn_vnode(kn);
 
-    klist_remove_locked(&vp.v_klist, kn);
+    klist_remove_locked(&vp.klist, kn);
 }
 
 /// `filt_msdosfsread`: the bytes past the file offset; always ready for poll and select.
@@ -2167,7 +2167,6 @@ mod tests {
 
     use crate::kern::vfs_init::set_rootvnode;
     use crate::kern::vfs_lookup::{namei, ndinit};
-    use crate::kern::vfs_subr::{vattr_null, vref};
     use crate::kern::vfs_syscalls::{domkdirat, dorenameat, dounlinkat};
     use crate::kern::vfs_vnops::{vn_close, vn_open, vn_rdwr};
     use crate::kern::vfs_vops::{
@@ -2182,6 +2181,7 @@ mod tests {
     use crate::sys::time::Timespec;
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
     use crate::sys::vnode::Vattr;
+    use crate::sys::vnode::{vattr_null, vref};
 
     /// The long-named file of the smoke image, and its DOS name.
     const FATNAME: &[u8] = b"m10c-fat.txt";
@@ -2219,9 +2219,9 @@ mod tests {
         pmp.pm_flags
             .set(pmp.pm_flags.get() | MSDOSFSMNT_LONGNAME as u32);
         pmp.pm_mask.set(0o777);
-        let mut sb = mp.mnt_stat.get();
+        let mut sb = mp.stat();
         msdosfs_statfs(mp, &mut sb, p).expect("statfs");
-        mp.mnt_stat.set(sb);
+        mp.with_stat(|sp| *sp = sb);
         let root = msdosfs_root(mp).expect("root");
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));
@@ -2924,11 +2924,11 @@ mod tests {
         TMPFS_BYTES_USED.store(0, Ordering::Relaxed);
 
         // a tmpfs root with /mnt
-        let tmp = crate::kern::vfs_subr::vfs_mount_alloc(None, tmpfs_conf());
+        let tmp = crate::sys::vnode::vfs_mount_alloc(None, tmpfs_conf());
         let mut data = args(1 << 20, 0, 0, 0o755);
         let mut nd = ndinit(LOOKUP, 0, NiDirp::Sys(b"/"), p);
         tmpfs_mount(tmp, b"/", &mut data, &mut nd, p).expect("mount tmpfs");
-        crate::kern::vfs_subr::vfs_unbusy(tmp);
+        crate::sys::vnode::vfs_unbusy(tmp);
         let root = tmpfs_root(tmp).expect("root");
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));
@@ -2938,12 +2938,12 @@ mod tests {
 
         // mount_msdos /dev/vnd0c /mnt, as sys_mount ends
         let mp = mount(p, true);
-        let mut sb = mp.mnt_stat.get();
+        let mut sb = mp.stat();
         msdosfs_statfs(mp, &mut sb, p).expect("statfs");
-        mp.mnt_stat.set(sb);
+        mp.with_stat(|sp| *sp = sb);
         let covered = lookup(p, b"/mnt").expect("/mnt");
-        mp.mnt_vnodecovered.set(Some(covered));
-        covered.set_v_mountedhere(Some(mp));
+        mp.set_vnodecovered(Some(covered));
+        covered.set_mountedhere(Some(mp));
 
         // cat /mnt/m10c-fat.txt
         assert_eq!(read_file(p, b"/mnt/m10c-fat.txt"), FATDATA);
@@ -2954,7 +2954,7 @@ mod tests {
         );
         // the root of the msdosfs, and back up through ".."
         let mroot = lookup(p, b"/mnt").expect("/mnt");
-        assert_eq!(mroot.v_tag.get(), crate::sys::vnode::VT_MSDOSFS);
+        assert_eq!(mroot.tag(), crate::sys::vnode::VT_MSDOSFS);
         vrele(mroot);
         assert_eq!(
             stat(p, b"/mnt/..").expect("..").va_fileid,

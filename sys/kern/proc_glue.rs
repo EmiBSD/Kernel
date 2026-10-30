@@ -167,7 +167,6 @@ use kernel::proc::{
 use crate::conf::param::{MAXPROCESS, MAXTHREAD};
 use crate::kern::kern_descrip::native;
 use crate::kern::kern_timeout::{timeout_del, timeout_set};
-use crate::kern::vfs_subr::vrele;
 use crate::kern::vfs_vops::VOP_REVOKE;
 use crate::machine::Machine;
 use crate::machine::cpu::{Cpu, curcpu};
@@ -190,6 +189,7 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
 use crate::sys::types::{Pid, Register};
+use crate::sys::vnode::vrele;
 use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
@@ -665,7 +665,7 @@ impl ProcGlue for BsdProcGlue {
     fn process_forked(parent: &Process, child: &Process) {
         child.ps_textvp.set(parent.ps_textvp.get());
         if let Some(vp) = child.ps_textvp.get() {
-            crate::kern::vfs_subr::vref(vp);
+            crate::sys::vnode::vref(vp);
         }
         crate::kern::kern_unveil::unveil_copy(parent, child);
     }
@@ -690,8 +690,8 @@ impl ProcGlue for BsdProcGlue {
     fn textvp_wxallowed(pr: &Process) -> bool {
         pr.ps_textvp
             .get()
-            .and_then(|vp| vp.v_mount.get())
-            .is_some_and(|mp| mp.mnt_flag.get() & crate::sys::mount::MNT_WXALLOWED != 0)
+            .and_then(|vp| vp.mount())
+            .is_some_and(|mp| mp.flag() & crate::sys::mount::MNT_WXALLOWED != 0)
     }
 
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
@@ -1016,7 +1016,7 @@ impl kernel::acct::AcctFile for BsdAcctFile {
             return Err(Errno::ENOENT);
         };
         let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
-        if vp.v_type.get() != crate::sys::vnode::VREG {
+        if vp.vtype() != crate::sys::vnode::VREG {
             let _ = crate::kern::vfs_vnops::vn_close(
                 vp,
                 crate::sys::fcntl::FWRITE,
@@ -1049,7 +1049,7 @@ impl kernel::acct::AcctSink for BsdAcctSink {
     }
 
     fn free_space(&self) -> Option<(i64, i64)> {
-        let mp = self.0.v_mount.get()?;
+        let mp = self.0.mount()?;
         let p = crate::machine::cpu::curproc()?;
         let mut sb = crate::sys::mount::Statfs::default();
         let _ = crate::sys::mount::VFS_STATFS(mp, &mut sb, p);
@@ -1057,7 +1057,7 @@ impl kernel::acct::AcctSink for BsdAcctSink {
     }
 
     fn is_bad(&self) -> bool {
-        self.0.v_type.get() == crate::sys::vnode::VBAD
+        self.0.vtype() == crate::sys::vnode::VBAD
     }
 
     fn close(self: alloc::boxed::Box<Self>, by_curproc: bool) {

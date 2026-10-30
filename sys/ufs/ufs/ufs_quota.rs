@@ -111,9 +111,6 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::{Str, panic, tablefull, uprintf};
 use crate::kern::vfs_lookup::ndinit;
-use crate::kern::vfs_subr::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vput};
-#[cfg(feature = "diagnostic")]
-use crate::kern::vfs_subr::{vfs_isbusy, vprint};
 use crate::kern::vfs_vnops::{vn_close, vn_lock, vn_open};
 #[cfg(feature = "diagnostic")]
 use crate::kern::vfs_vops::VOP_ISLOCKED;
@@ -134,6 +131,9 @@ use crate::sys::types::{Daddr, Off, Time, Uid};
 use crate::sys::ucred::{CredRef, CredSlot, NOCRED, Ucred};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VNON, VREG, VSYSTEM, Vnode, cred_ref};
+use crate::sys::vnode::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vput};
+#[cfg(feature = "diagnostic")]
+use crate::sys::vnode::{vfs_isbusy, vprint};
 use crate::ufs::ufs::inode::{Inode, vtoi};
 use crate::ufs::ufs::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,
@@ -450,7 +450,7 @@ pub fn chklimit(cur: u32, change: i64, hard: u32, soft: u32, deadline: u32, now:
 
 /// `ITOV(ip)->v_mount->mnt_stat.f_mntonname`, for the messages.
 fn mntonname(ip: &Inode) -> ([u8; crate::sys::mount::MNAMELEN], usize) {
-    match ip.itov().v_mount.get() {
+    match ip.itov().mount() {
         Some(mp) => mp.mntonname(),
         None => ([0; crate::sys::mount::MNAMELEN], 0),
     }
@@ -667,7 +667,7 @@ fn chkdquot(ip: &Inode) {
 
 /// `quotaon_vnode`: give a vnode open for writing its dquots.
 fn quotaon_vnode(vp: &'static Vnode) -> Result<(), Errno> {
-    if vp.v_type.get() == VNON || vp.v_writecount.get() == 0 {
+    if vp.vtype() == VNON || vp.writecount() == 0 {
         return Ok(());
     }
 
@@ -702,7 +702,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
         panic(format_args!("quotaon: vn_open returned no vnode"));
     };
     let _ = VOP_UNLOCK(vp);
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         let _ = vn_close(vp, FREAD | FWRITE, p.ucred_ptr(), Some(p));
         return Err(Errno::EACCES);
     }
@@ -729,8 +729,8 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     }
 
     ump.um_qflags[type_].set(ump.um_qflags[type_].get() | QTF_OPENING);
-    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_QUOTA);
-    vp.v_flag.set(vp.v_flag.get() | VSYSTEM);
+    mp.set_flag(mp.flag() | MNT_QUOTA);
+    vp.set_flag(vp.flag() | VSYSTEM);
 
     // Set up the time limits for this quota.
     ump.um_btime[type_].set(MAX_DQ_TIME);
@@ -759,7 +759,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
 
 /// `quotaoff_vnode`: drop a vnode's dquot of the type being turned off.
 fn quotaoff_vnode(vp: &'static Vnode, type_: usize) -> Result<(), Errno> {
-    if vp.v_type.get() == VNON {
+    if vp.vtype() == VNON {
         return Ok(());
     }
 
@@ -795,7 +795,7 @@ pub fn quotaoff(p: &Proc, mp: &'static Mount, type_: usize) -> Result<(), Errno>
     drop(ump.um_cred[type_].take());
     ump.um_qflags[type_].set(ump.um_qflags[type_].get() & !QTF_CLOSING);
     if ump.um_quotas.iter().all(|q| q.get().is_none()) {
-        mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_QUOTA);
+        mp.set_flag(mp.flag() & !MNT_QUOTA);
     }
     error
 }
@@ -951,7 +951,7 @@ fn setuse(mp: &'static Mount, id: u32, type_: usize, addr: usize) -> Result<(), 
 
 /// `qsync_vnode`: write a vnode's modified dquots.
 fn qsync_vnode(vp: &'static Vnode) -> Result<(), Errno> {
-    if vp.v_type.get() == VNON {
+    if vp.vtype() == VNON {
         return Ok(());
     }
 
@@ -1558,7 +1558,7 @@ mod tests {
         // Not on yet: no quota to get.
         assert_eq!(getq(p, USER), Err(Errno::EINVAL));
         quotactl(p, Q_QUOTAON, 0, path(b"/quota.user\0")).unwrap();
-        assert_ne!(mp.mnt_flag.get() & MNT_QUOTA, 0);
+        assert_ne!(mp.flag() & MNT_QUOTA, 0);
         let b = getq(p, USER).unwrap();
         assert_eq!(
             (b.dqb_bhardlimit, b.dqb_curblocks, b.dqb_curinodes),
@@ -1620,7 +1620,7 @@ mod tests {
         unmount_root(p, mp);
         newfs::check(&DISKIMG.lock().unwrap(), true);
         let mp = mount_root(p, false);
-        assert_eq!(mp.mnt_flag.get() & MNT_QUOTA, 0);
+        assert_eq!(mp.flag() & MNT_QUOTA, 0);
         quotactl(p, Q_QUOTAON, 0, path(b"/quota.user\0")).unwrap();
         let b = getq(p, USER).unwrap();
         assert_eq!(
@@ -1648,7 +1648,7 @@ mod tests {
         // Q_QUOTAOFF writes the dquots back and closes the file; a remount and Q_QUOTAON find
         // the new limit on disk.
         quotactl(p, Q_QUOTAOFF, 0, 0).unwrap();
-        assert_eq!(mp.mnt_flag.get() & MNT_QUOTA, 0);
+        assert_eq!(mp.flag() & MNT_QUOTA, 0);
         assert_eq!(getq(p, USER), Err(Errno::EINVAL));
         unmount_root(p, mp);
         let mp = mount_root(p, false);

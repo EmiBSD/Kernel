@@ -124,12 +124,12 @@ fn ext2_ind_read(
             panic(format_args!("ext2fs_read: mode"));
         }
 
-        if vp.v_type.get() == VLNK {
+        if vp.vtype() == VLNK {
             if ext2fs_size(ip) < EXT2_MAXSYMLINKLEN as u64 {
                 panic(format_args!("ext2fs_read: short symlink"));
             }
-        } else if vp.v_type.get() != VREG && vp.v_type.get() != VDIR {
-            panic(format_args!("ext2fs_read: type {}", vp.v_type.get() as i32));
+        } else if vp.vtype() != VREG && vp.vtype() != VDIR {
+            panic(format_args!("ext2fs_read: type {}", vp.vtype() as i32));
         }
     }
     if uio.uio_offset < 0 {
@@ -201,11 +201,7 @@ fn ext2_ind_read(
         }
     }
 
-    if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_NOATIME == 0)
-    {
+    if vp.mount().is_some_and(|mp| mp.flag() & MNT_NOATIME == 0) {
         ip.set_flag(IN_ACCESS);
     }
     error
@@ -310,7 +306,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         return Ok(());
     }
 
-    match vp.v_type.get() {
+    match vp.vtype() {
         VREG => {
             if ioflag & IO_APPEND != 0 {
                 uio.uio_offset = ext2fs_size(ip) as Off;

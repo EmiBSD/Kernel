@@ -105,6 +105,6 @@ pub use crate::ufs::ext2fs::ext2fs_vnops::{
 
 /// `IS_EXT2_VNODE(vp)`: whether the vnode belongs to ext2fs.
 pub fn is_ext2_vnode(vp: &Vnode) -> bool {
-    vp.v_tag.get() == VT_EXT2FS
+    vp.tag() == VT_EXT2FS
 }
 /* </CODE> */

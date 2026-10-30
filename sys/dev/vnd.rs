@@ -516,7 +516,7 @@ pub fn vndwrite(dev: Dev, uio: &mut Uio<'_>, _flags: i32) -> Result<(), Errno> {
 /// `vndbdevsize`: the size in sectors of the partition a block device vnode is, from its
 /// driver's `DIOCGPART`; 0 when the driver cannot tell.
 pub fn vndbdevsize(vp: &'static Vnode, p: &Proc) -> usize {
-    let dev = vp.v_rdev();
+    let dev = vp.rdev();
     let bsw = bdevsw(major(dev));
     let mut data = [0u8; size_of::<Partinfo>()];
     if (bsw.d_ioctl)(dev, DIOCGPART, &mut data, FREAD, p).is_err() {
@@ -767,7 +767,7 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
         let _ = VOP_UNLOCK(vp);
         vplocked = false;
 
-        let size = if vp.v_type.get() == VBLK {
+        let size = if vp.vtype() == VBLK {
             // XXX is size 0 ok?
             vndbdevsize(vp, p)
         } else {
@@ -935,13 +935,13 @@ mod tests {
     use super::*;
     use crate::kern::kern_subr::uiomove;
     use crate::kern::subr_xxx::nullop;
-    use crate::kern::vfs_subr::getnewvnode;
     use crate::kern::vfs_subr::tests::testfs::setup_root;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_BUSY, B_DONE};
     use crate::sys::disklabel::{DTYPE_VND, RAW_PART, makediskdev};
     use crate::sys::stat::{S_IFBLK, S_IFCHR};
+    use crate::sys::vnode::getnewvnode;
     use crate::sys::vnode::{
         VREG, VT_NON, VopGetattrArgs, VopInactiveArgs, VopReadArgs, VopWriteArgs, Vops,
     };
@@ -1045,9 +1045,9 @@ mod tests {
     fn configure(p: &Proc, key: Option<&[u8]>) -> &'static VndSoftc {
         file(|f| *f = (0..SECTORS * DEV_BSIZE).map(|i| (i % 251) as u8).collect());
         let vp = getnewvnode(VT_NON, None, &MEMFS_VOPS).expect("a vnode");
-        vp.v_type.set(VREG);
+        vp.set_vtype(VREG);
         // What vn_open(FREAD | FWRITE) counts, and vndclear's vn_close takes back.
-        vp.v_writecount.set(1);
+        vp.set_writecount(1);
         let cred = vndsetcred(p, vp, &VndIoctl::default()).expect("credentials");
 
         let sc = vnd_softc(0).expect("vnd0");

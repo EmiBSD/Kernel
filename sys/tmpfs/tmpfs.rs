@@ -525,7 +525,7 @@ pub fn tmpfs_validate_dir(node: &TmpfsNode) {
 /// `VFS_TO_TMPFS(mp)`: the tmpfs mount of a mount.
 #[allow(non_snake_case)] // the C name
 pub fn VFS_TO_TMPFS(mp: &Mount) -> &'static TmpfsMount {
-    let tmp = mp.mnt_data.get();
+    let tmp = mp.data();
     if tmp.is_null() {
         panic(format_args!(
             "VFS_TO_TMPFS: mount {:p} has no tmpfs_mount",
@@ -549,8 +549,8 @@ pub fn VP_TO_TMPFS_DIR(vp: &Vnode) -> &'static TmpfsNode {
 /// `VP_TO_TMPFS_NODE(vp)`: the node of a tmpfs vnode.
 #[allow(non_snake_case)] // the C name
 pub fn VP_TO_TMPFS_NODE(vp: &Vnode) -> &'static TmpfsNode {
-    let node = vp.v_data.get();
-    if node.is_null() || vp.v_tag.get() != VT_TMPFS {
+    let node = vp.data();
+    if node.is_null() || vp.tag() != VT_TMPFS {
         panic(format_args!(
             "VP_TO_TMPFS_NODE: vnode {:p} has no tmpfs node",
             vp

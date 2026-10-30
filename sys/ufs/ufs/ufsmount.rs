@@ -213,11 +213,8 @@ pub const QTF_CLOSING: u8 = 0x02;
 
 /// `VFSTOUFS(mp)`: convert mount ptr to ufsmount ptr.
 pub fn vfstoufs(mp: &Mount) -> &'static Ufsmount {
-    let data = mp.mnt_data.get();
-    let ufs = matches!(
-        mp.mnt_vfc.get().map(|vfc| vfc.name()),
-        Some(b"ffs") | Some(b"mfs") | Some(b"ext2fs")
-    );
+    let data = mp.data();
+    let ufs = matches!(mp.vfc().name(), b"ffs" | b"mfs" | b"ext2fs");
     if data.is_null() || !ufs {
         panic(format_args!(
             "VFSTOUFS: mount {:p} is not a mounted UFS",

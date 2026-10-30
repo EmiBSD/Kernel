@@ -131,7 +131,6 @@ use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::subr_prf::printf;
 use crate::kern::sys_generic::selwakeup;
 use crate::kern::tty_subr::{b_to_q, clalloc, clfree, ndflush, q_to_b};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::intr::splx;
 use crate::sys::conf::DevTypeOpen;
@@ -148,6 +147,7 @@ use crate::sys::time::msec_to_nsec;
 use crate::sys::tty::Clist;
 use crate::sys::types::{Dev, minor};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::sys::vnode::vdevgone;
 use crate::sys::vnode::{IO_NDELAY, VCHR};
 
 /// `UGEN_CHUNK`: chunk size for read.

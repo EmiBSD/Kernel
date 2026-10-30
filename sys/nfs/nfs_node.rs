@@ -82,9 +82,6 @@ use crate::kern::kern_rwlock::{rrw_init_flags, rw_init};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "diagnostic")]
-use crate::kern::vfs_subr::PRTACTIVE;
-use crate::kern::vfs_subr::{getnewvnode, vget, vgone, vput};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
@@ -100,11 +97,14 @@ use crate::sys::mount::Mount;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::ucred::{CredRef, CredSlot, FSCRED, NOCRED, Ucred};
+#[cfg(feature = "diagnostic")]
+use crate::sys::vnode::PRTACTIVE;
 use crate::sys::vnode::{VDIR, VLARVAL, VT_NFS, Vnode, VopInactiveArgs, VopReclaimArgs};
+use crate::sys::vnode::{getnewvnode, vget, vgone, vput};
 
 /// The nfsmount of an NFS vnode (`VFSTONFS(vp->v_mount)`).
 pub(crate) fn vfstonfs_vp(vp: &Vnode) -> &'static NfsMount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => VFSTONFS(mp),
         None => panic(format_args!("nfs: vnode {:p} has no mount", vp)),
     }
@@ -154,11 +154,11 @@ pub fn nfs_nget(mnt: &'static Mount, fh: &[u8]) -> Result<&'static NfsNode, Errn
         // loop:
         if let Some(np) = nmp.nm_ntree.find(&find) {
             let vp = NFSTOV(np);
-            let vpid = vp.v_id.get();
+            let vpid = vp.id();
             if vget(vp, LK_EXCLUSIVE).is_err() {
                 continue;
             }
-            if vpid != vp.v_id.get() {
+            if vpid != vp.id() {
                 vput(vp);
                 continue;
             }
@@ -171,7 +171,7 @@ pub fn nfs_nget(mnt: &'static Mount, fh: &[u8]) -> Result<&'static NfsNode, Errn
         // nfsnode has been added while we did not hold the lock.
         let nvp = getnewvnode(VT_NFS, Some(mnt), &NFS_VOPS)?;
         // note that we don't have this vnode set up completely yet
-        nvp.v_flag.set(nvp.v_flag.get() | VLARVAL);
+        nvp.set_flag(nvp.flag() | VLARVAL);
         let Some(mem) = pool_get(&NFS_NODE_POOL, PR_WAITOK | PR_ZERO) else {
             panic(format_args!("nfs_nget: pool_get"));
         };
@@ -191,9 +191,9 @@ pub fn nfs_nget(mnt: &'static Mount, fh: &[u8]) -> Result<&'static NfsNode, Errn
         let np: &'static NfsNode = unsafe { p.as_ref() };
         let vp = nvp;
         rrw_init_flags(&np.n_lock, "nfsnode", RWL_DUPOK | RWL_IS_VNODE);
-        vp.v_data.set(p.as_ptr().cast::<c_void>());
+        vp.set_data(p.as_ptr().cast::<c_void>());
         // we now have an nfsnode on this vnode
-        vp.v_flag.set(vp.v_flag.get() & !VLARVAL);
+        vp.set_flag(vp.flag() & !VLARVAL);
         np.n_vnode.set(Some(vp));
         rw_init(&np.n_commitlock, "nfs_commitlk");
         np.set_fh(fh);
@@ -214,22 +214,22 @@ pub fn nfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("nfs_inactive: pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("nfs_inactive: pushing active"), vp);
     }
-    if vp.v_flag.get() & VLARVAL != 0 {
+    if vp.flag() & VLARVAL != 0 {
         // vnode was incompletely set up, just return as we are throwing it away.
         return Ok(());
     }
     #[cfg(feature = "diagnostic")]
-    if vp.v_data.get().is_null() {
+    if vp.data().is_null() {
         panic(format_args!(
             "NULL v_data (no nfsnode set up?) in vnode {:p}",
             vp
         ));
     }
     let np = VTONFS(vp);
-    let sp = if vp.v_type.get() != VDIR {
+    let sp = if vp.vtype() != VDIR {
         np.n_sillyrename.take()
     } else {
         None
@@ -270,15 +270,15 @@ pub fn nfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
     #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.v_usecount.get() != 0 {
-        crate::kern::vfs_subr::vprint(Some("nfs_reclaim: pushing active"), vp);
+    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
+        crate::sys::vnode::vprint(Some("nfs_reclaim: pushing active"), vp);
     }
-    if vp.v_flag.get() & VLARVAL != 0 {
+    if vp.flag() & VLARVAL != 0 {
         // vnode was incompletely set up, just return as we are throwing it away.
         return Ok(());
     }
     #[cfg(feature = "diagnostic")]
-    if vp.v_data.get().is_null() {
+    if vp.data().is_null() {
         panic(format_args!(
             "NULL v_data (no nfsnode set up?) in vnode {:p}",
             vp
@@ -297,11 +297,11 @@ pub fn nfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     crate::kassert!(np.n_rcred.get().is_null() && np.n_wcred.get().is_null());
 
     cache_purge(vp);
-    match NonNull::new(vp.v_data.get()) {
+    match NonNull::new(vp.data()) {
         Some(data) => pool_put(&NFS_NODE_POOL, data.cast::<u8>()),
         None => panic(format_args!("nfs_reclaim: vnode {:p} without nfsnode", vp)),
     }
-    vp.v_data.set(ptr::null_mut());
+    vp.set_data(ptr::null_mut());
 
     Ok(())
 }

@@ -65,7 +65,6 @@ use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_sysctl::sysctl_bounded_arr;
 use crate::kern::subr_pool::pool_init;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::{copy_statfs_info, getnewvnode, vflush, vfs_getnewfsid, vrele};
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::intr::IPL_NONE;
 use crate::miscfs::fuse::fuse_device::{
@@ -101,6 +100,7 @@ use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::types::Ino;
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::{FORCECLOSE, VCHR, VDIR, VROOT, VT_FUSEFS, Vattr, Vnode};
+use crate::sys::vnode::{copy_statfs_info, getnewvnode, vflush, vfs_getnewfsid, vrele};
 
 /// `PENDING`: `FUSE_INIT` reply not yet received.
 pub const PENDING: i32 = 2;
@@ -145,7 +145,7 @@ pub fn fusefs_mount(
     _ndp: &mut Nameidata<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         return Err(Errno::EOPNOTSUPP);
     }
 
@@ -163,7 +163,7 @@ pub fn fusefs_mount(
         }
 
         let vp = fp.vnode();
-        if vp.v_type.get() != VCHR {
+        if vp.vtype() != VCHR {
             break 'bad Err(Errno::EBADF);
         }
 
@@ -195,16 +195,15 @@ pub fn fusefs_mount(
                 max_write: core::cell::Cell::new(BLKDEV_IOSIZE as i32),
                 sess_init: core::cell::Cell::new(PENDING),
                 allow_other: args.allow_other,
-                dev: vp.v_rdev(),
+                dev: vp.rdev(),
             });
             fmp_ptr.as_ref()
         };
 
-        mp.mnt_data
-            .set(ptr::from_ref(fmp).cast_mut().cast::<c_void>());
+        mp.set_data(ptr::from_ref(fmp).cast_mut().cast::<c_void>());
         vfs_getnewfsid(mp);
 
-        mp.update_stat(|sp| {
+        mp.with_stat(|sp| {
             sp.f_mntonname = [0; MNAMELEN];
             strlcpy(&mut sp.f_mntonname[..MNAMELEN - 1], path);
             sp.f_mntfromname = [0; MNAMELEN];
@@ -266,7 +265,7 @@ pub fn fusefs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
         M_FUSEFS,
         size_of::<FusefsMnt>(),
     );
-    mp.mnt_data.set(ptr::null_mut());
+    mp.set_data(ptr::null_mut());
 
     Ok(())
 }
@@ -275,7 +274,7 @@ pub fn fusefs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
 pub fn fusefs_root(mp: &'static Mount) -> Result<&'static Vnode, Errno> {
     let nvp = VFS_VGET(mp, FUSE_ROOT_ID)?;
 
-    nvp.v_type.set(VDIR);
+    nvp.set_vtype(VDIR);
 
     Ok(nvp)
 }
@@ -297,7 +296,7 @@ pub fn fusefs_statfs(mp: &'static Mount, sbp: &mut Statfs, p: &Proc) -> Result<(
     let fmp = VFSTOFUSEFS(mp);
 
     // Deny other users unless allow_other mount option was specified.
-    if fmp.allow_other == 0 && p.ucred().cr_uid.get() != mp.mnt_stat.get().f_owner {
+    if fmp.allow_other == 0 && p.ucred().cr_uid.get() != mp.stat().f_owner {
         return Err(Errno::EPERM);
     }
 
@@ -389,8 +388,7 @@ pub fn fusefs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
             ip_ptr.as_ref()
         };
         rrw_init_flags(&ip.i_lock, "fuseinode", RWL_DUPOK | RWL_IS_VNODE);
-        nvp.v_data
-            .set(ptr::from_ref(ip).cast_mut().cast::<c_void>());
+        nvp.set_data(ptr::from_ref(ip).cast_mut().cast::<c_void>());
         ip.nlookup.set(1);
 
         for i in 0..FUFH_MAXTYPE.idx() {
@@ -414,7 +412,7 @@ pub fn fusefs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
         }
 
         if ino == FUSE_ROOT_ID {
-            nvp.v_flag.set(nvp.v_flag.get() | VROOT);
+            nvp.set_flag(nvp.flag() | VROOT);
         } else {
             // Initialise the file size so that file size changes can be detected during
             // file operations.
@@ -503,7 +501,6 @@ mod tests {
     use crate::kern::kern_descrip::fnew;
     use crate::kern::kern_event::tests::install;
     use crate::kern::vfs_lookup::ndinit;
-    use crate::kern::vfs_subr::{cdevvp, vattr_null, vfs_mount_alloc, vfs_unbusy, vput};
     use crate::kern::vfs_vops::{
         VOP_GETATTR, VOP_LOOKUP, VOP_OPEN, VOP_READ, VOP_READDIR, VOP_SETATTR, VOP_UNLOCK,
         VOP_WRITE,
@@ -526,6 +523,7 @@ mod tests {
     use crate::sys::types::{Dev, Off};
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::VREG;
+    use crate::sys::vnode::{cdevvp, vattr_null, vfs_mount_alloc, vfs_unbusy, vput};
 
     /// The file's initial contents.
     const HELLO: &[u8] = b"hello, world\n";
@@ -845,8 +843,8 @@ mod tests {
         assert_eq!(fmp.dev, dev);
         assert_eq!(fmp.max_read, FUSEBUFMAXSIZE as i32);
         assert_eq!(fmp.sess_init.get(), PENDING);
-        assert_eq!(&mp.mnt_stat.get().f_mntfromname[..7], b"fusefs\0");
-        assert_eq!(&mp.mnt_stat.get().f_mntonname[..5], b"/mnt\0");
+        assert_eq!(&mp.stat().f_mntfromname[..7], b"fusefs\0");
+        assert_eq!(&mp.stat().f_mntonname[..5], b"/mnt\0");
 
         // Before FUSE_INIT is answered statfs returns zeros (the daemon is in mount(2)).
         let mut sb = Statfs::new();
@@ -856,8 +854,8 @@ mod tests {
 
         // The root needs no request.
         let root = VFS_ROOT(mp).expect("root");
-        assert_eq!(root.v_type.get(), VDIR);
-        assert!(root.v_flag.get() & VROOT != 0);
+        assert_eq!(root.vtype(), VDIR);
+        assert!(root.flag() & VROOT != 0);
 
         // lookup "hello": access (GETATTR of the root, after INIT), LOOKUP, then the new node's
         // GETATTR.
@@ -867,7 +865,7 @@ mod tests {
         let vp = vpp.expect("a vnode");
         assert_eq!(fmp.sess_init.get(), 1, "INIT answered");
         assert_eq!(fmp.max_write.get(), 65536);
-        assert_eq!(vp.v_type.get(), VREG);
+        assert_eq!(vp.vtype(), VREG);
         let ip = VTOI(vp);
         assert_eq!(ip.i_number, 2);
         assert_eq!(ip.filesize.get(), HELLO.len() as Off);
@@ -1000,7 +998,7 @@ mod tests {
             [FUSE_RELEASE, FUSE_RELEASE, FUSE_FORGET, FUSE_DESTROY]
         );
         assert_eq!(FORGOTTEN.with(|f| f.borrow().clone()), [(2, 2)]);
-        assert!(mp.mnt_data.get().is_null());
+        assert!(mp.data().is_null());
 
         TEST_DAEMON.with(|d| d.set(None));
         fuseclose(dev, 0, 0, Some(p)).expect("close");

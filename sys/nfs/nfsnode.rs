@@ -341,8 +341,8 @@ pub fn nfs_invalidate_attrcache(np: &NfsNode) {
 /// `VTONFS(vp)`: the nfsnode of an NFS vnode.
 #[allow(non_snake_case)] // the C name
 pub fn VTONFS(vp: &Vnode) -> &'static NfsNode {
-    let data = vp.v_data.get();
-    if data.is_null() || vp.v_tag.get() != VT_NFS {
+    let data = vp.data();
+    if data.is_null() || vp.tag() != VT_NFS {
         panic(format_args!("VTONFS: vnode {:p} has no nfsnode", vp));
     }
     // SAFETY: an NFS vnode's `v_data` (checked above) is the node `nfs_nget` hung there,

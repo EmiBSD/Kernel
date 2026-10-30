@@ -94,7 +94,6 @@ pub mod rust_alloc;
 pub mod sched_bsd;
 #[cfg(feature = "qemu")]
 pub mod selftest;
-pub mod spec_vnops;
 pub mod subr_autoconf;
 pub mod subr_disk;
 pub mod subr_evcount;
@@ -140,14 +139,11 @@ pub mod uipc_usrreq;
 #[forbid(unsafe_code)]
 pub mod unported;
 pub mod vfs_cache;
-#[forbid(unsafe_code)]
-pub mod vfs_default;
 pub mod vfs_getcwd;
 pub mod vfs_init;
 pub mod vfs_lockf;
 pub mod vfs_lookup;
 pub mod vfs_subr;
-pub mod vfs_sync;
 pub mod vfs_syscalls;
 pub mod vfs_vnops;
 #[forbid(unsafe_code)]

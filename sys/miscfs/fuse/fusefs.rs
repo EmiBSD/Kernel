@@ -131,7 +131,7 @@ unsafe impl Sync for FusefsMnt {}
 /// `VFSTOFUSEFS(mp)`: the FUSE mount of a mount.
 #[allow(non_snake_case)] // the C name
 pub fn VFSTOFUSEFS(mp: &Mount) -> &'static FusefsMnt {
-    let fmp = mp.mnt_data.get();
+    let fmp = mp.data();
     if fmp.is_null() {
         panic(format_args!(
             "VFSTOFUSEFS: mount {:p} has no fusefs_mnt",

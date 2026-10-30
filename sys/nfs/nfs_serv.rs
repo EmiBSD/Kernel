@@ -130,7 +130,6 @@ use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_freem, m_get, m_trailingspace};
 use crate::kern::vfs_init::NAMEI_POOL;
 use crate::kern::vfs_lookup::{ndinit, vfs_lookup};
-use crate::kern::vfs_subr::{vattr_null, vput, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
@@ -191,6 +190,7 @@ use crate::sys::vnode::{
     IO_NODELOCKED, IO_SYNC, VA_UTIMES_NULL, VBLK, VCHR, VDIR, VEXEC, VFIFO, VLNK, VNON, VREAD,
     VREG, VROOT, VSOCK, VTEXT, VWRITE, Vattr, Vnode, iftovt,
 };
+use crate::sys::vnode::{vattr_null, vput, vrele};
 use crate::ufs::ufs::dir::DIRBLKSIZ;
 
 /// A server procedure (`int (*)(struct nfsrv_descript *, struct nfssvc_sock *, struct proc *,
@@ -218,7 +218,7 @@ fn same_vnode(a: Option<&Vnode>, b: Option<&Vnode>) -> bool {
 
 /// `vp->v_mount`, which a vnode an export or a lookup returned always has.
 fn v_mount(vp: &Vnode) -> &'static Mount {
-    match vp.v_mount.get() {
+    match vp.mount() {
         Some(mp) => mp,
         None => panic(format_args!("nfs_serv: vnode {:p} without a mount", vp)),
     }
@@ -226,7 +226,7 @@ fn v_mount(vp: &Vnode) -> &'static Mount {
 
 /// Whether `vp` and `wp` are on the same mount (`vp->v_mount == wp->v_mount`).
 fn same_mount(vp: &Vnode, wp: &Vnode) -> bool {
-    match (vp.v_mount.get(), wp.v_mount.get()) {
+    match (vp.mount(), wp.mount()) {
         (Some(a), Some(b)) => ptr::eq(a, b),
         (None, None) => true,
         _ => false,
@@ -235,7 +235,7 @@ fn same_mount(vp: &Vnode, wp: &Vnode) -> bool {
 
 /// `vp->v_mount->mnt_flag & MNT_RDONLY`.
 fn mnt_rdonly(vp: &Vnode) -> bool {
-    v_mount(vp).mnt_flag.get() & MNT_RDONLY != 0
+    v_mount(vp).flag() & MNT_RDONLY != 0
 }
 
 /// `nd.ni_vp` after a lookup that returned it.
@@ -351,7 +351,7 @@ fn namei(
 /// sizeof(nfh)); fhp->fh_fsid = vp->v_mount->mnt_stat.f_fsid; VFS_VPTOFH(vp, &fhp->fh_fid)`.
 fn nfsrv_vptofh(vp: &'static Vnode) -> Result<Nfsfh, Errno> {
     let mut fh = Fhandle {
-        fh_fsid: v_mount(vp).mnt_stat.get().f_fsid,
+        fh_fsid: v_mount(vp).fsid(),
         ..Fhandle::default()
     };
     VFS_VPTOFH(vp, &mut fh.fh_fid)?;
@@ -485,7 +485,7 @@ pub fn nfsrv3_access(
             return Ok(());
         }
     };
-    let isdir = vp.v_type.get() == VDIR;
+    let isdir = vp.vtype() == VDIR;
     if nfsmode & NFSV3ACCESS_READ != 0
         && nfsrv_access(vp, VREAD, &nfsd.nd_cr, rdonly, procp, false).is_err()
     {
@@ -650,7 +650,7 @@ pub fn nfsrv_setattr(
             if rdonly || mnt_rdonly(vp) {
                 break 'out Errno::EROFS.as_i32();
             }
-        } else if vp.v_type.get() == VDIR {
+        } else if vp.vtype() == VDIR {
             break 'out Errno::EISDIR.as_i32();
         } else if let Err(e) = nfsrv_access(vp, VWRITE, &nfsd.nd_cr, rdonly, procp, true) {
             break 'out e.as_i32();
@@ -785,7 +785,7 @@ pub fn nfsrv_readlink(
     let mut len = 0usize;
     let mut resid = 0usize;
     let r: Result<(), Errno> = 'out: {
-        if vp.v_type.get() != VLNK {
+        if vp.vtype() != VLNK {
             break 'out Err(if v3 { Errno::EINVAL } else { Errno::ENXIO });
         }
         // MLEN < NFS_MAXPATHLEN < MCLBYTES
@@ -900,10 +900,10 @@ pub fn nfsrv_read(
     };
 
     let mut error = 0;
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         error = if v3 {
             Errno::EINVAL
-        } else if vp.v_type.get() == VDIR {
+        } else if vp.vtype() == VDIR {
             Errno::EISDIR
         } else {
             Errno::EACCES
@@ -1167,10 +1167,10 @@ pub fn nfsrv_write(
     };
     let mut forat = Vattr::new();
     let forat_ok = v3 && VOP_GETATTR(vp, &mut forat, cred, procp).is_ok();
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         let error = if v3 {
             Errno::EINVAL
-        } else if vp.v_type.get() == VDIR {
+        } else if vp.vtype() == VDIR {
             Errno::EISDIR
         } else {
             Errno::EACCES
@@ -1783,16 +1783,16 @@ pub fn nfsrv_remove(
         Ok(()) => {
             let vp = ni_vp(&nd);
             let error = 'out: {
-                if vp.v_type.get() == VDIR
+                if vp.vtype() == VDIR
                     && let Err(e) = suser_ucred(&nfsd.nd_cr)
                 {
                     break 'out e.as_i32();
                 }
                 // The root of a mounted filesystem cannot be deleted.
-                if vp.v_flag.get() & VROOT != 0 {
+                if vp.flag() & VROOT != 0 {
                     break 'out Errno::EBUSY.as_i32();
                 }
-                if vp.v_flag.get() & VTEXT != 0 {
+                if vp.flag() & VTEXT != 0 {
                     let _ = uvm_vnp_uncache(vp);
                 }
                 0
@@ -1954,18 +1954,18 @@ pub fn nfsrv_rename(
             let pick = |e3: Errno, e2: Errno| (if v3 { e3 } else { e2 }).as_i32();
             let mut error = 'out: {
                 if let Some(tvp) = tvp {
-                    let fdir = fvp.v_type.get() == VDIR;
-                    let tdir = tvp.v_type.get() == VDIR;
+                    let fdir = fvp.vtype() == VDIR;
+                    let tdir = tvp.vtype() == VDIR;
                     if fdir && !tdir {
                         break 'out pick(Errno::EEXIST, Errno::EISDIR);
                     } else if !fdir && tdir {
                         break 'out pick(Errno::EEXIST, Errno::ENOTDIR);
                     }
-                    if tdir && tvp.v_mountedhere().is_some() {
+                    if tdir && tvp.mountedhere().is_some() {
                         break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
                     }
                 }
-                if fvp.v_type.get() == VDIR && fvp.v_mountedhere().is_some() {
+                if fvp.vtype() == VDIR && fvp.mountedhere().is_some() {
                     break 'out pick(Errno::EXDEV, Errno::ENOTEMPTY);
                 }
                 if !same_mount(fvp, tdvp) {
@@ -2102,7 +2102,7 @@ pub fn nfsrv_link(
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     let mut error = 0;
-    if vp.v_type.get() != VDIR {
+    if vp.vtype() != VDIR {
         let mut nd = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), procp);
         nd.ni_cnd.cn_cred = cred;
         let r = namei(nfsd, &mut nd, &dfh, len, slp, &mut dirp, procp);
@@ -2530,7 +2530,7 @@ pub fn nfsrv_rmdir(
     let vp = ni_vp(&nd);
     let dvp = ni_dvp(&nd);
     let error = 'out: {
-        if vp.v_type.get() != VDIR {
+        if vp.vtype() != VDIR {
             break 'out Errno::ENOTDIR.as_i32();
         }
         // No rmdir "." please.
@@ -2538,11 +2538,11 @@ pub fn nfsrv_rmdir(
             break 'out Errno::EINVAL.as_i32();
         }
         // A mounted on directory cannot be deleted.
-        if vp.v_mountedhere().is_some() {
+        if vp.mountedhere().is_some() {
             break 'out Errno::EBUSY.as_i32();
         }
         // The root of a mounted filesystem cannot be deleted.
-        if vp.v_flag.get() & VROOT != 0 {
+        if vp.flag() & VROOT != 0 {
             break 'out Errno::EBUSY.as_i32();
         }
         0
@@ -2726,7 +2726,7 @@ pub fn nfsrv_readdir(
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(cnt, xfer);
         fhtovp(nfsd, &fh, true, slp).and_then(|(vp, rdonly)| {
-            if vp.v_type.get() != VDIR {
+            if vp.vtype() != VDIR {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
             } else {
@@ -2924,7 +2924,7 @@ pub fn nfsrv_readdirplus(
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(siz, xfer);
         fhtovp(nfsd, &fh, true, slp).and_then(|(vp, rdonly)| {
-            if vp.v_type.get() != VDIR {
+            if vp.vtype() != VDIR {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
             } else {
@@ -3411,12 +3411,12 @@ pub fn nfsrv_access(
         //
         // Disallow write attempts on read-only file systems; unless the file is a socket or
         // a block or character device resident on the file system.
-        if (rdonly || mnt_rdonly(vp)) && matches!(vp.v_type.get(), VREG | VDIR | VLNK) {
+        if (rdonly || mnt_rdonly(vp)) && matches!(vp.vtype(), VREG | VDIR | VLNK) {
             return Err(Errno::EROFS);
         }
         // If there's shared text associated with the inode, try to free it up once. If we
         // fail, we can't allow writing.
-        if vp.v_flag.get() & VTEXT != 0 && !uvm_vnp_uncache(vp) {
+        if vp.flag() & VTEXT != 0 && !uvm_vnp_uncache(vp) {
             return Err(Errno::ETXTBSY);
         }
     }
@@ -3853,7 +3853,7 @@ mod tests {
             VFS_VPTOFH(vp, &mut fid).unwrap();
             vrele(vp);
             Fhandle {
-                fh_fsid: mp.mnt_stat.get().f_fsid,
+                fh_fsid: mp.fsid(),
                 fh_fid: fid,
             }
         };

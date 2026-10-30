@@ -73,7 +73,6 @@ use crate::kern::subr_autoconf::{
     config_attach, config_detach, config_found_sm, config_search, device_lookup, device_unref,
 };
 use crate::kern::subr_prf::{Str, printf};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::sys::conf::DevTypeOpen;
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_DULL, Device, Softc, UNCONF};
@@ -89,6 +88,7 @@ use crate::sys::proc::Proc;
 use crate::sys::queue::ListHead;
 use crate::sys::types::{Dev, minor};
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 
 /// `NGPIO`: the count `config(8)` writes into `gpio.h` for `gpio*` (nonzero in both
 /// GENERICs; only whether it is zero matters, to `cdev_gpio_init`).

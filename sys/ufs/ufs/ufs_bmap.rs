@@ -128,7 +128,7 @@ pub fn ufs_bmaparray(
     mut runp: Option<&mut i32>,
 ) -> Result<(), Errno> {
     let ip = vtoi(vp);
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!("ufs_bmaparray: vnode without a mount"));
     };
     let ump = vfstoufs(mp);
@@ -145,7 +145,7 @@ pub fn ufs_bmaparray(
         // to be 1 block less so that we don't create a block larger than the device can
         // handle.
         *runp = 0;
-        maxrun = MAXBSIZE as i32 / mp.mnt_stat.get().f_iosize as i32 - 1;
+        maxrun = MAXBSIZE as i32 / mp.iosize() as i32 - 1;
     }
 
     let mut a = [Indir::default(); NIADDR + 1];
@@ -202,7 +202,7 @@ pub fn ufs_bmaparray(
         }
 
         xap[x].in_exists = 1;
-        let b = getblk_wait(vp, metalbn, mp.mnt_stat.get().f_iosize as i32);
+        let b = getblk_wait(vp, metalbn, mp.iosize() as i32);
         bp = Some(b);
         if b.isset(B_DONE | B_DELWRI) {
             // Already there.
@@ -291,7 +291,7 @@ pub fn ufs_getlbns(
     ap: &mut [Indir],
     mut nump: Option<&mut i32>,
 ) -> Result<(), Errno> {
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         panic(format_args!("ufs_getlbns: vnode without a mount"));
     };
     let ump = vfstoufs(mp);

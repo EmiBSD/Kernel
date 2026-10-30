@@ -80,7 +80,6 @@ use crate::kern::kern_rwlock::{
 use crate::kern::proc_glue::allprocess_rescan;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_init::rootvnode;
-use crate::kern::vfs_subr::{vget, vput, vref, vrele};
 use crate::kern::vfs_vops::VOP_LOOKUP;
 use crate::sys::acct::AUNVEIL;
 use crate::sys::errno::Errno;
@@ -96,6 +95,7 @@ use crate::sys::proc::{Proc, Process};
 use crate::sys::rwlock::Rwlock;
 use crate::sys::tree::{RbtEntry, RbtHead};
 use crate::sys::vnode::{VDIR, VROOT, Vnode};
+use crate::sys::vnode::{vget, vput, vref, vrele};
 use crate::tree_adapter;
 
 /// `UNVEIL_MAX_VNODES`: the slots of a process's unveil table.
@@ -359,7 +359,7 @@ pub fn unveil_destroy(ps: &Process) {
         for uv in &paths[..count] {
             // skip any vnodes zapped by unveil_removevnode
             if let Some(vp) = uv.uv_vp.get() {
-                vp.v_uvcount.set(vp.v_uvcount.get() - 1);
+                vp.set_uvcount(vp.uvcount() - 1);
                 vrele(vp);
             }
             ps.ps_uvncount
@@ -400,7 +400,7 @@ pub fn unveil_copy(parent: &Process, child: &Process) {
             to.uv_vp.set(from.uv_vp.get());
             if let Some(vp) = to.uv_vp.get() {
                 vref(vp);
-                vp.v_uvcount.set(vp.v_uvcount.get() + 1);
+                vp.set_uvcount(vp.uvcount() + 1);
             }
             rw_init(&to.uv_lock, "unveil");
             to.uv_names.init();
@@ -440,11 +440,11 @@ pub fn unveil_find_cover(dp: &'static Vnode, p: &Proc) -> isize {
 
         // If we are at the root of a filesystem, and we are still mounted somewhere, take
         // the .. in the above filesystem.
-        while !vp_eq(Some(vp), root) && vp.v_flag.get() & VROOT != 0 {
-            let Some(mp) = vp.v_mount.get() else {
+        while !vp_eq(Some(vp), root) && vp.flag() & VROOT != 0 {
+            let Some(mp) = vp.mount() else {
                 return -1;
             };
-            match mp.mnt_vnodecovered.get() {
+            match mp.vnodecovered() {
                 Some(covered) => vp = covered,
                 // The C would spin here (see the module's deviations).
                 None => break,
@@ -499,7 +499,7 @@ pub fn unveil_lookup<'a>(
         *pos = -1;
     }
 
-    if vp.v_uvcount.get() == 0 {
+    if vp.uvcount() == 0 {
         return None;
     }
 
@@ -507,8 +507,8 @@ pub fn unveil_lookup<'a>(
     let count = pr.ps_uvvcount.get().max(0) as usize;
     for (i, u) in uv[..count].iter().enumerate() {
         if vp_eq(Some(vp), u.uv_vp.get()) {
-            kassert!(vp.v_uvcount.get() > 0);
-            kassert!(vp.v_usecount.get() > 0);
+            kassert!(vp.uvcount() > 0);
+            kassert!(vp.usecount() > 0);
             if let Some(pos) = position {
                 *pos = i as isize;
             }
@@ -592,7 +592,7 @@ pub fn unveil_add(p: &Proc, ndp: &Nameidata<'_>, permissions: &[u8]) -> Result<(
     }
 
     // Are we a directory? or something else
-    let directory_add = ndp.ni_vp.is_some_and(|vp| vp.v_type.get() == VDIR);
+    let directory_add = ndp.ni_vp.is_some_and(|vp| vp.vtype() == VDIR);
 
     let vp = if directory_add { ndp.ni_vp } else { ndp.ni_dvp };
     let Some(vp) = vp else {
@@ -600,13 +600,13 @@ pub fn unveil_add(p: &Proc, ndp: &Nameidata<'_>, permissions: &[u8]) -> Result<(
     };
     let name = nameptr_str(&ndp.ni_cnd);
 
-    kassert!(vp.v_type.get() == VDIR);
+    kassert!(vp.vtype() == VDIR);
     vref(vp);
-    vp.v_uvcount.set(vp.v_uvcount.get() + 1);
+    vp.set_uvcount(vp.uvcount() + 1);
     let uv = match unveil_lookup(vp, pr, None) {
         Some(uv) => {
             // We already have unveiled this directory vnode
-            vp.v_uvcount.set(vp.v_uvcount.get() - 1);
+            vp.set_uvcount(vp.uvcount() - 1);
             vrele(vp);
 
             // If we are adding a directory which was already unveiled containing only
@@ -761,7 +761,7 @@ pub fn unveil_check_final(p: &Proc, ni: &mut Nameidata<'_>) -> Result<(), Errno>
 
     'done: {
         if let Some(vp) = ni.ni_vp
-            && vp.v_type.get() == VDIR
+            && vp.vtype() == VDIR
         {
             // We are matching a directory terminal component
             let uv = unveil_lookup(vp, pr, None);
@@ -832,7 +832,7 @@ pub fn unveil_check_final(p: &Proc, ni: &mut Nameidata<'_>) -> Result<(), Errno>
 /// the vnode in their unveil list, vrele, drop the reference, and mark their unveil list as
 /// needing to have the hole shrunk the next time the process uses it for lookup.
 pub fn unveil_removevnode(vp: &'static Vnode) {
-    if vp.v_uvcount.get() == 0 {
+    if vp.uvcount() == 0 {
         return;
     }
 
@@ -847,20 +847,20 @@ pub fn unveil_removevnode(vp: &'static Vnode) {
                 uv.uv_vp.set(None);
                 uv.uv_flags.set(0);
 
-                if vp.v_uvcount.get() > 0 {
+                if vp.uvcount() > 0 {
                     vrele(vp);
-                    vp.v_uvcount.set(vp.v_uvcount.get() - 1);
+                    vp.set_uvcount(vp.uvcount() - 1);
                 } else {
                     panic(format_args!(
                         "vp {:p}, v_uvcount of {} should be 0",
                         vp,
-                        vp.v_uvcount.get()
+                        vp.uvcount()
                     ));
                 }
             }
         },
     );
-    kassert!(vp.v_uvcount.get() == 0);
+    kassert!(vp.uvcount() == 0);
 
     vrele(vp); // release our ref
 }
@@ -1016,7 +1016,7 @@ mod tests {
 
     /// Every node's `v_uvcount`.
     fn uvcounts() -> [u32; N] {
-        core::array::from_fn(|i| testfs::vnode_of(i).map_or(0, |vp| vp.v_uvcount.get()))
+        core::array::from_fn(|i| testfs::vnode_of(i).map_or(0, |vp| vp.uvcount()))
     }
 
     #[test]
@@ -1207,7 +1207,7 @@ mod tests {
         }
         let cvp = testfs::vnode_of(C).unwrap();
         unveil_removevnode(cvp);
-        assert_eq!(cvp.v_uvcount.get(), 0);
+        assert_eq!(cvp.uvcount(), 0);
         let mut pos = 0;
         assert!(unveil_lookup(cvp, pr, Some(&mut pos)).is_none());
         assert_eq!(pos, -1);

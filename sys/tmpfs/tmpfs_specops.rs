@@ -57,14 +57,14 @@
 //! - The helpers the C installs in many slots (`vop_generic_badop`) are closures, as in
 //!   `spec_vops` (`docs/C_TO_RUST.md`).
 
-use crate::kern::spec_vnops::{
-    spec_advlock, spec_close, spec_fsync, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf,
-    spec_read, spec_strategy, spec_write,
-};
-use crate::kern::vfs_default::{
+use crate::kern::vfs_vops::{
     vop_generic_badop, vop_generic_bmap, vop_generic_bwrite, vop_generic_lookup, vop_generic_revoke,
 };
 use crate::sys::errno::Errno;
+use crate::sys::specdev::{
+    spec_advlock, spec_close, spec_fsync, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf,
+    spec_read, spec_strategy, spec_write,
+};
 use crate::sys::vnode::{VopReadArgs, VopWriteArgs, Vops};
 use crate::tmpfs::tmpfs::{TMPFS_NODE_ACCESSED, TMPFS_NODE_MODIFIED, VP_TO_TMPFS_NODE};
 use crate::tmpfs::tmpfs_subr::tmpfs_update;

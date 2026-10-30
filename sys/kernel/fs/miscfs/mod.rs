@@ -17,9 +17,8 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The dead file system: OpenBSD `sys/miscfs/deadfs/`, the vnode operations `vclean` leaves
-//! on a revoked vnode.
+//! The kernel's miscellaneous file systems: deadfs, the operations `vclean` leaves on a
+//! revoked vnode (N5.2).
 
-#[forbid(unsafe_code)]
-pub mod dead_vnops;
+pub mod deadfs;
 /* </CODE> */

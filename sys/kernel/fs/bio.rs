@@ -177,8 +177,8 @@
 //!   `v_bioflag`, LZ's `bsd` fields) -> [`VnodeBufs`], embedded in `bsd`'s vnode, its tree and
 //!   lists a cell of the cache's lock; what the cache asks of the vnode itself (`vhold`,
 //!   `vdrop`, `VOP_STRATEGY`, `VOP_BWRITE`, `VOP_BMAP`, its type and device, its mount's
-//!   flags and counters, the syncer's worklist) is the bridge [`BufVnode`] (bridges.toml,
-//!   paid by N5.2). `bgetvp`, `brelvp`, `buf_replacevnode`, `reassignbuf`, `vwaitforio` and
+//!   flags and counters, the syncer's worklist) is the trait [`BufVnode`] (a bridge while
+//!   `bsd` implemented it; since N5.2 the kernel's vnode does, `kernel::fs::subr`). `bgetvp`, `brelvp`, `buf_replacevnode`, `reassignbuf`, `vwaitforio` and
 //!   `vwakeup` move here from `vfs_subr.c`'s port.
 //! - `B_BUSY` is the token (`kernel::fs::buf::BufRef`): `getblk`, `bread`, `geteblk` give
 //!   it, `brelse`, `bwrite`, `bdwrite`, `bawrite` and `biodone` consume it. A synchronous
@@ -398,7 +398,7 @@ impl VnodeBufs {
     pub fn owner(&self) -> &'static dyn BufVnode {
         match self.owner.get() {
             Some(v) => *v,
-            None => kpanic(format_args!("VnodeBufs {:p}: no vnode", self)),
+            None => kpanic(format_args!("VnodeBufs {self:p}: no vnode")),
         }
     }
 
@@ -454,8 +454,8 @@ impl Default for VnodeBufs {
     }
 }
 
-/// What the buffer cache asks of a vnode (`bsd`'s `struct vnode` until N5.2): one call each,
-/// implemented by `bsd`'s vnode (bridges.toml `BufVnode`, paid by N5.2).
+/// What the buffer cache asks of a vnode: one call each, implemented by the kernel's vnode
+/// (`kernel::fs::vnode::Vnode<G>`, since N5.2; `bsd`'s before, a bridge).
 pub trait BufVnode: Sync {
     /// `vhold(vp)`: the vnode gets a buffer reference (off the free list onto the hold list
     /// when it had none and is unused).
@@ -668,7 +668,7 @@ fn bc_add(c: &AtomicI64, d: i64) {
 fn b_vp(bp: &Buf) -> &'static VnodeBufs {
     match bp.vnode_bufs() {
         Some(vb) => vb,
-        None => kpanic(format_args!("buf {:p}: no b_vp", bp)),
+        None => kpanic(format_args!("buf {bp:p}: no b_vp")),
     }
 }
 
@@ -1259,16 +1259,15 @@ fn cluster_readahead(vb: &'static VnodeBufs, blkno: Daddr, size: i32, rbp: &Dore
     while i > 0 {
         i -= 1;
         let sz = if i == 0 { howmany * size as usize } else { 0 };
-        match buf_get(Some(vb), blkno + i as Daddr + 1, sz) {
-            Some(t) => xbpp[i] = Some(t),
-            None => {
-                // Undo: the buffers already made are invalidated and released.
-                for xt in xbpp[i + 1..howmany].iter_mut().filter_map(Option::take) {
-                    xt.buf().set(B_INVAL);
-                    brelse(xt);
-                }
-                return;
+        if let Some(t) = buf_get(Some(vb), blkno + i as Daddr + 1, sz) {
+            xbpp[i] = Some(t);
+        } else {
+            // Undo: the buffers already made are invalidated and released.
+            for xt in xbpp[i + 1..howmany].iter_mut().filter_map(Option::take) {
+                xt.buf().set(B_INVAL);
+                brelse(xt);
             }
+            return;
         }
     }
 
@@ -1276,7 +1275,7 @@ fn cluster_readahead(vb: &'static VnodeBufs, blkno: Daddr, size: i32, rbp: &Dore
         return;
     };
 
-    let inc = (size as i64) >> DEV_BSHIFT;
+    let inc = i64::from(size) >> DEV_BSHIFT;
     let bp = t.buf();
     {
         let mut g = CACHE.lock();
@@ -1328,8 +1327,7 @@ pub fn bwrite(t: BufRef) -> Result<(), Errno> {
         // A synchronous write waits for the buffer (`biowait`) and then releases it to the
         // cache: neither applies to a buffer a driver embeds, and no caller writes one so.
         kpanic(format_args!(
-            "bwrite: a driver's own buffer {:p} written synchronously",
-            bp
+            "bwrite: a driver's own buffer {bp:p} written synchronously"
         ));
     }
     if !async_ && owner.mnt_async() {
@@ -1807,14 +1805,13 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
     // failure); only when the pool must grow is the lock left for the get, which may sleep
     // (the C's splbio is left by a sleep) and taken again. The yield pool_get makes after
     // the get (kern.pool_debug 2) is made once the lock is left, at either return below.
-    let (b, pool_yield) = match BUFPL.get_idle(poolwait, Buf::new) {
-        Some((b, y)) => (b, Some(y)),
-        None => {
-            drop(g);
-            let b = BUFPL.get(poolwait, Buf::new)?;
-            g = CACHE.lock();
-            (b, None)
-        }
+    let (b, pool_yield) = if let Some((b, y)) = BUFPL.get_idle(poolwait, Buf::new) {
+        (b, Some(y))
+    } else {
+        drop(g);
+        let b = BUFPL.get(poolwait, Buf::new)?;
+        g = CACHE.lock();
+        (b, None)
     };
 
     // bp->b_freelist.tqe_next = NOLIST: on no queue.
@@ -1848,7 +1845,7 @@ pub fn buf_get(vb: Option<&'static VnodeBufs>, blkno: Daddr, size: usize) -> Opt
         bp.set_lblkno(blkno);
         bgetvp(&mut g, vb, bp);
         if vb.st.get_mut(&mut g).tree.insert(bp).is_some() {
-            kpanic(format_args!("buf_get: dup lblk vp {:p} bp {:p}", vb, bp));
+            kpanic(format_args!("buf_get: dup lblk vp {vb:p} bp {bp:p}"));
         }
     } else {
         // bp->b_vnbufs.le_next = NOLIST: on no vnode list.
@@ -1951,8 +1948,7 @@ pub fn biowait(r: SecondaryRef<ByBufhead>) -> (BufRef, Result<(), Errno>) {
     drop(g);
     let Some(t) = t else {
         kpanic(format_args!(
-            "biowait: buffer {:p} done without its token",
-            bp
+            "biowait: buffer {bp:p} done without its token"
         ));
     };
     drop(r);
@@ -2049,10 +2045,10 @@ fn biodone_mark(_g: &Cache, bp: &Buf) {
         vwakeup_locked(bp.vnode_bufs());
     }
     if BCSTATS.numbufs.load(Mem::Relaxed) != 0 && !bp.isset(B_RAW | B_PHYS) {
-        if !bp.isset(B_READ) {
-            bc_add(&BCSTATS.pendingwrites, -1);
-        } else {
+        if bp.isset(B_READ) {
             bc_add(&BCSTATS.pendingreads, -1);
+        } else {
+            bc_add(&BCSTATS.pendingwrites, -1);
         }
     }
 }
@@ -2199,7 +2195,11 @@ pub fn bufcache_take(g: &mut Cache, bp: &Buf) {
 
     // TRACEPOINT(vfs, bufcache_take, ...): dt(4), not configured.
 
-    let m = if !bp.isset(B_DELWRI) {
+    let m = if bp.isset(B_DELWRI) {
+        bc_add(&BCSTATS.numdirtypages, -pages);
+        bc_add(&BCSTATS.delwribufs, -1);
+        g.dirty.remove(bp)
+    } else {
         let m = if bp.isset(B_COLD) {
             g.cold.remove(bp)
         } else if bp.isset(B_WARM) {
@@ -2212,10 +2212,6 @@ pub fn bufcache_take(g: &mut Cache, bp: &Buf) {
         bc_add(&BCSTATS.numcleanpages, -pages);
         g.cachepages -= pages;
         m
-    } else {
-        bc_add(&BCSTATS.numdirtypages, -pages);
-        bc_add(&BCSTATS.delwribufs, -1);
-        g.dirty.remove(bp)
     };
     drop(m);
 }
@@ -2262,7 +2258,11 @@ pub fn bufcache_release(g: &mut Cache, bp: &Buf) {
     // TRACEPOINT(vfs, bufcache_rel, ...): dt(4), not configured.
 
     let m = Member::counted(bp);
-    if !bp.isset(B_DELWRI) {
+    if bp.isset(B_DELWRI) {
+        bc_add(&BCSTATS.numdirtypages, pages);
+        bc_add(&BCSTATS.delwribufs, 1);
+        g.dirty.push_tail(m);
+    } else {
         let which = if bp.isset(B_WARM | B_COLD) {
             bp.set(B_WARM);
             bp.clr(B_COLD);
@@ -2277,10 +2277,6 @@ pub fn bufcache_release(g: &mut Cache, bp: &Buf) {
         bc_add(&BCSTATS.numcleanpages, pages);
         g.cachepages += pages;
         let _ = chillbufs(g, which);
-    } else {
-        bc_add(&BCSTATS.numdirtypages, pages);
-        bc_add(&BCSTATS.delwribufs, 1);
-        g.dirty.push_tail(m);
     }
 }
 
@@ -2375,17 +2371,17 @@ fn reassignbuf(g: &mut Cache, bp: &Buf) {
     bufremvn(g, vb, bp);
 
     // If dirty, put on list of dirty buffers; otherwise insert onto list of clean buffers.
-    if !bp.isset(B_DELWRI) {
+    if bp.isset(B_DELWRI) {
+        if vb.bioflag() & VBIOONSYNCLIST == 0 {
+            vb.owner().syncer_add_dirty();
+        }
+        vb.st.get_mut(g).dirty.push_head(Member::counted(bp));
+    } else {
         if vb.bioflag() & VBIOONSYNCLIST != 0 && vb.st.get(g).dirty.is_empty() {
             vb.clr_bioflag(VBIOONSYNCLIST);
             vb.owner().syncer_remove();
         }
         vb.st.get_mut(g).clean.push_head(Member::counted(bp));
-    } else {
-        if vb.bioflag() & VBIOONSYNCLIST == 0 {
-            vb.owner().syncer_add_dirty();
-        }
-        vb.st.get_mut(g).dirty.push_head(Member::counted(bp));
     }
 }
 
@@ -2472,9 +2468,9 @@ pub fn vnode_dirty_scan(
     let found = {
         let st = vb.st.get(&g);
         let mut found = None;
-        for bp in st.dirty.iter() {
+        for bp in &st.dirty {
             match pick(bp) {
-                DirtyPick::Skip => continue,
+                DirtyPick::Skip => {}
                 p => {
                     found = Some((counted(bp), p));
                     break;
@@ -2496,7 +2492,7 @@ pub fn vnode_dirty_scan(
         return DirtyScan::Waited(g.sleep_nsec(chan, slpflag | (PRIBIO + 1), wmesg, slptimeo));
     }
     if bp.isset(B_BUSY) {
-        kpanic(format_args!("vnode_dirty_scan: buffer {:p} taken busy", bp));
+        kpanic(format_args!("vnode_dirty_scan: buffer {bp:p} taken busy"));
     }
     bufcache_take(&mut g, bp);
     DirtyScan::Taken(buf_acquire(&mut g, r))
@@ -2506,7 +2502,7 @@ pub fn vnode_dirty_scan(
 /// `B_SCANNED`, `nfs_clearcommit`'s of `B_NEEDCOMMIT`): flags only.
 pub fn vnode_dirty_for_each(vb: &VnodeBufs, mut f: impl FnMut(&Buf)) {
     let g = CACHE.lock();
-    for bp in vb.st.get(&g).dirty.iter() {
+    for bp in &vb.st.get(&g).dirty {
         f(bp);
     }
 }
@@ -2552,7 +2548,7 @@ pub fn vinvalbuf_bufs(
         let Some(r) = first else {
             let st = vb.st.get(&g);
             if !savemeta && (!st.dirty.is_empty() || !st.clean.is_empty()) {
-                kpanic(format_args!("vinvalbuf: flush failed, vnode {:p}", vb));
+                kpanic(format_args!("vinvalbuf: flush failed, vnode {vb:p}"));
             }
             return Ok(());
         };

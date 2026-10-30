@@ -86,11 +86,6 @@ use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{
-    MOUNTLIST, bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export,
-    vfs_mount_foreach_vnode, vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget,
-    vgonel, vinvalbuf, vput, vref, vrele,
-};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_OPEN, VOP_UNLOCK};
 use crate::kprintf;
@@ -120,6 +115,11 @@ use crate::sys::types::{Ino, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::{
     FORCECLOSE, IGNORECLEAN, SKIPSYSTEM, V_SAVE, VBLK, VNON, VT_UFS, Vnode, WRITECLOSE,
+};
+use crate::sys::vnode::{
+    bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
+    vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput,
+    vref, vrele,
 };
 use crate::ufs::ffs::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use crate::ufs::ffs::ffs_balloc::ffs_balloc;
@@ -311,15 +311,14 @@ pub fn ffs_mountroot() -> Result<(), Errno> {
         return Err(e);
     }
 
-    // SAFETY: a new mount on no list, under the kernel lock.
-    unsafe { MOUNTLIST.0.insert_tail(mp) };
+    crate::sys::mount::mountlist_insert_tail(mp);
     let ump = vfstoufs(mp);
     let fs = ump.fs();
     let (name, len) = mp.mntonname();
     fs_strlcpy_fsmnt(fs, &name[..len]);
-    let mut st = mp.mnt_stat.get();
+    let mut st = mp.stat();
     let _ = ffs_statfs(mp, &mut st, p);
-    mp.mnt_stat.set(st);
+    mp.with_stat(|sp| *sp = st);
     vfs_unbusy(mp);
     crate::kern::kern_time::inittodr(fs.fs_time.get());
 
@@ -363,14 +362,14 @@ pub fn ffs_mount(
     let error: Result<(), Errno> = 'error_1: {
         let devvp: &'static Vnode;
         'success: {
-            if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+            if mp.flag() & MNT_UPDATE != 0 {
                 let u = vfstoufs(mp);
                 ump = Some(u);
                 let fs = u.fs();
                 ronly = fs.fs_ronly.get();
                 let mut error = Ok(());
 
-                if ronly == 0 && mp.mnt_flag.get() & MNT_RDONLY != 0 {
+                if ronly == 0 && mp.flag() & MNT_RDONLY != 0 {
                     // Flush any dirty data
                     let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
 
@@ -379,24 +378,24 @@ pub fn ffs_mount(
                     if args.is_none() {
                         flags |= IGNORECLEAN;
                     }
-                    if mp.mnt_flag.get() & MNT_FORCE != 0 {
+                    if mp.flag() & MNT_FORCE != 0 {
                         flags |= FORCECLOSE;
                     }
                     error = ffs_flushfiles(mp, flags, p);
-                    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+                    mp.set_flag(mp.flag() | MNT_RDONLY);
                     ronly = 1;
                 }
 
-                if error.is_ok() && mp.mnt_flag.get() & MNT_RELOAD != 0 {
+                if error.is_ok() && mp.flag() & MNT_RELOAD != 0 {
                     error = ffs_reload(mp, ndp.ni_cnd.cn_cred, p);
                 }
                 if let Err(e) = error {
                     break 'error_1 Err(e);
                 }
 
-                if ronly != 0 && mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
+                if ronly != 0 && mp.flag() & MNT_WANTRDWR != 0 {
                     if fs.fs_clean.get() == 0 {
-                        if mp.mnt_flag.get() & MNT_FORCE != 0 {
+                        if mp.flag() & MNT_FORCE != 0 {
                             kprintf!("WARNING: {} was not properly unmounted\n", fs.fsmnt());
                         } else {
                             kprintf!(
@@ -451,16 +450,16 @@ pub fn ffs_mount(
             devvp = vp;
 
             let error: Result<(), Errno> = 'error_2: {
-                if devvp.v_type.get() != VBLK {
+                if devvp.vtype() != VBLK {
                     break 'error_2 Err(Errno::ENOTBLK);
                 }
 
-                if major(devvp.v_rdev()) >= nblkdev() {
+                if major(devvp.rdev()) >= nblkdev() {
                     break 'error_2 Err(Errno::ENXIO);
                 }
 
                 let mut error = Ok(());
-                if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+                if mp.flag() & MNT_UPDATE != 0 {
                     // UPDATE
                     // If it's not the same vnode, or at least the same device then it's not
                     // correct.
@@ -468,7 +467,7 @@ pub fn ffs_mount(
                         panic(format_args!("ffs_mount: update without ufsmount"));
                     };
                     if !ptr::eq(devvp, u.devvp()) {
-                        if devvp.v_rdev() == u.devvp().v_rdev() {
+                        if devvp.rdev() == u.devvp().rdev() {
                             vrele(devvp);
                         } else {
                             error = Err(Errno::EINVAL); // needs translation
@@ -479,7 +478,7 @@ pub fn ffs_mount(
                     // Update device name only on success
                     if error.is_ok() {
                         // Save "mounted from" info for mount point (NULL pad)
-                        mp.update_stat(|sp| {
+                        mp.with_stat(|sp| {
                             mname_copy(&mut sp.f_mntfromname, &fname);
                             mname_copy(&mut sp.f_mntfromspec, &fspec);
                         });
@@ -488,7 +487,7 @@ pub fn ffs_mount(
                     // Since this is a new mount, we want the names for the device and the
                     // mount point copied in. If an error occurs, the mountpoint is discarded
                     // by the upper level code.
-                    mp.update_stat(|sp| {
+                    mp.with_stat(|sp| {
                         mname_copy(&mut sp.f_mntonname, path);
                         mname_copy(&mut sp.f_mntfromname, &fname);
                         mname_copy(&mut sp.f_mntfromspec, &fspec);
@@ -505,12 +504,12 @@ pub fn ffs_mount(
                 // mp->mnt_stat.f_mntonname and mp->mnt_stat.f_mntfromname
                 //
                 // This code is common to root and non-root mounts
-                mp.update_stat(|sp| {
+                mp.with_stat(|sp| {
                     sp.mount_info.__align[..UfsArgs::SIZE].copy_from_slice(&data[..UfsArgs::SIZE]);
                 });
-                let mut st = mp.mnt_stat.get();
+                let mut st = mp.stat();
                 let _ = VFS_STATFS(mp, &mut st, p);
-                mp.mnt_stat.set(st);
+                mp.with_stat(|sp| *sp = st);
                 Ok(())
             };
             if let Err(e) = error {
@@ -521,7 +520,7 @@ pub fn ffs_mount(
         }
 
         // success:
-        if !path.is_empty() && mp.mnt_flag.get() & MNT_UPDATE != 0 {
+        if !path.is_empty() && mp.flag() & MNT_UPDATE != 0 {
             // Update clean flag after changing read-onlyness.
             let Some(u) = ump else {
                 panic(format_args!("ffs_mount: update without ufsmount"));
@@ -555,7 +554,7 @@ fn ffs_reload_vnode(
     devvp: &'static Vnode,
 ) -> Result<(), Errno> {
     // Step 4: invalidate all inactive vnodes.
-    if vp.v_usecount.get() == 0 {
+    if vp.usecount() == 0 {
         vgonel(vp, Some(p));
         return Ok(());
     }
@@ -616,7 +615,7 @@ fn ffs_reload_vnode(
 ///  5) invalidate all cached file data.
 ///  6) re-read inode data for all active vnodes.
 pub fn ffs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Result<(), Errno> {
-    if mountp.mnt_flag.get() & MNT_RDONLY == 0 {
+    if mountp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EINVAL);
     }
     // Step 1: invalidate all cached meta-data.
@@ -674,9 +673,9 @@ pub fn ffs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Resul
     ump.um_maxsymlinklen.set(fs.fs_maxsymlinklen.get() as u32);
     ffs1_compat_read(fs, ump, fs.fs_sblockloc.get());
     ffs_oldfscompat(fs);
-    let mut st = mountp.mnt_stat.get();
+    let mut st = mountp.stat();
     let _ = ffs_statfs(mountp, &mut st, p);
-    mountp.mnt_stat.set(st);
+    mountp.with_stat(|sp| *sp = st);
     // Step 3: re-read summary information from disk.
     read_summary(fs, devvp)?;
     // We no longer know anything about clusters per cylinder group.
@@ -762,7 +761,7 @@ pub const SBTRY: [i32; 4] = SBLOCKSEARCH;
 /// `devvp`, set up the in-core super-block and summaries and the `ufsmount`, and mark the
 /// file system dirty when mounting read-write.
 pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
-    let dev = devvp.v_rdev();
+    let dev = devvp.rdev();
     let cred = p.ucred_ptr();
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot). Flush
@@ -776,7 +775,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     let _ = VOP_UNLOCK(devvp);
     error?;
 
-    let ronly = mp.mnt_flag.get() & MNT_RDONLY != 0;
+    let ronly = mp.flag() & MNT_RDONLY != 0;
     let omode = if ronly { FREAD } else { FREAD | FWRITE };
     VOP_OPEN(devvp, omode, FSCRED, p)?;
 
@@ -823,7 +822,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
         bfs.fs_fmod.set(0);
         bfs.fs_flags.set(bfs.fs_flags.get() & !FS_UNCLEAN);
         if bfs.fs_clean.get() == 0 {
-            if ronly || mp.mnt_flag.get() & MNT_FORCE != 0 {
+            if ronly || mp.flag() & MNT_FORCE != 0 {
                 kprintf!("WARNING: {} was not properly unmounted\n", bfs.fsmnt());
             } else {
                 kprintf!(
@@ -905,8 +904,8 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
                 fs.set_maxcluster(i, fs.fs_contigsumsize.get());
             }
         }
-        mp.mnt_data.set(um.as_ptr().cast());
-        mp.update_stat(|sp| {
+        mp.set_data(um.as_ptr().cast());
+        mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             // Use on-disk fsid if it exists, else fake it
             if fs.fs_id[0].get() != 0 && fs.fs_id[1].get() != 0 {
@@ -916,7 +915,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
             }
             sp.f_namemax = MAXNAMLEN as u32;
         });
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
+        mp.set_flag(mp.flag() | MNT_LOCAL);
         u.um_mountp.set(Some(mp));
         u.um_dev.set(dev);
         u.um_devvp.set(Some(devvp));
@@ -928,9 +927,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
             u.um_quotas[q].set(None);
         }
 
-        if let Some(si) = devvp.v_specinfo() {
-            si.si_mountpoint.set(Some(mp));
-        }
+        devvp.set_specmountpoint(Some(mp));
         ffs_oldfscompat(fs);
 
         if ronly {
@@ -966,9 +963,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     };
 
     // out:
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
     if let Some(b) = bp {
         brelse(b);
     }
@@ -983,7 +978,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
             free(NonNull::from(fs).cast(), M_UFSMNT, size);
         }
         free(NonNull::from(u).cast(), M_UFSMNT, size_of::<Ufsmount>());
-        mp.mnt_data.set(ptr::null_mut());
+        mp.set_data(ptr::null_mut());
     }
     Err(error)
 }
@@ -1105,9 +1100,7 @@ pub fn ffs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
         }
     }
     let devvp = ump.devvp();
-    if let Some(si) = devvp.v_specinfo() {
-        si.si_mountpoint.set(None);
-    }
+    devvp.set_specmountpoint(None);
 
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
     let _ = vinvalbuf(devvp, V_SAVE, NOCRED, Some(p), 0, INFSLP);
@@ -1124,15 +1117,15 @@ pub fn ffs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
     let fssize = fs_allocsize(fs.fs_sbsize.get());
     free(NonNull::from(fs).cast(), M_UFSMNT, fssize);
     free(NonNull::from(ump).cast(), M_UFSMNT, size_of::<Ufsmount>());
-    mp.mnt_data.set(ptr::null_mut());
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_LOCAL);
+    mp.set_data(ptr::null_mut());
+    mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
 
 /// `ffs_flushfiles`: flush out all the files in a filesystem.
 pub fn ffs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
     let ump = vfstoufs(mp);
-    if mp.mnt_flag.get() & MNT_QUOTA != 0 {
+    if mp.flag() & MNT_QUOTA != 0 {
         vflush(mp, None, SKIPSYSTEM | flags)?;
         for i in 0..MAXQUOTAS {
             if ump.um_quotas[i].get().is_none() {
@@ -1200,7 +1193,7 @@ struct FfsSyncArgs<'a> {
 
 /// `ffs_sync_vnode`: write back one (modified) inode for `ffs_sync`.
 fn ffs_sync_vnode(vp: &'static Vnode, fsa: &mut FfsSyncArgs<'_>) -> Result<(), Errno> {
-    if vp.v_type.get() == VNON {
+    if vp.vtype() == VNON {
         return Ok(());
     }
 
@@ -1219,7 +1212,7 @@ fn ffs_sync_vnode(vp: &'static Vnode, fsa: &mut FfsSyncArgs<'_>) -> Result<(), E
 
     let s = splbio();
     let skip = ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) == 0
-        && vp.v_bufs.dirty_is_empty();
+        && vp.bufs.dirty_is_empty();
     splx(s);
 
     'end: {
@@ -1346,7 +1339,7 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         rrw_init_flags(&ip.i_lock, "inode", RWL_DUPOK | RWL_IS_VNODE);
         ip.i_ump.set(Some(ump));
         vref(ump.devvp());
-        vp.v_data.set(ipp.as_ptr().cast());
+        vp.set_data(ipp.as_ptr().cast());
         ip.i_vnode.set(Some(vp));
         let fs = ump.fs();
         ip.i_fs.set(Some(fs));
@@ -1434,11 +1427,7 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
             while ip.dip_gen() == 0 {
                 ip.dip_set_gen(arc4random());
             }
-            if vp
-                .v_mount
-                .get()
-                .is_some_and(|m| m.mnt_flag.get() & MNT_RDONLY == 0)
-            {
+            if vp.mount().is_some_and(|m| m.flag() & MNT_RDONLY == 0) {
                 ip.set_flag(IN_MODIFIED);
             }
         }
@@ -1647,14 +1636,13 @@ pub(crate) mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::subr_xxx::nullop;
     use crate::kern::sys_generic::{sys_read, sys_write};
-    use crate::kern::vfs_default::vop_generic_bwrite;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
-    use crate::kern::vfs_subr::{vflushbuf, vfs_busy, vfs_mount_alloc};
     use crate::kern::vfs_syscalls::{
         dounmount, sys_fsync, sys_getdents, sys_mkdir, sys_open, sys_readlink, sys_rename,
         sys_rmdir, sys_symlink, sys_sync, sys_unlink,
     };
     use crate::kern::vfs_vops::VOP_UNLOCK;
+    use crate::kern::vfs_vops::vop_generic_bwrite;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::buf::{B_ERROR, B_READ};
@@ -1664,6 +1652,7 @@ pub(crate) mod tests {
     use crate::sys::systm::{SyCall, SysArgs};
     use crate::sys::types::{Register, makedev};
     use crate::sys::vnode::{VopFsyncArgs, VopInactiveArgs, VopStrategyArgs, Vops};
+    use crate::sys::vnode::{vflushbuf, vfs_busy, vfs_mount_alloc};
 
     /// `newfs`: an FFS image built in memory the way `newfs(8)` (`sbin/newfs/mkfs.c`) builds
     /// one, for the tests and as a record of the on-disk layout.
@@ -2494,7 +2483,7 @@ pub(crate) mod tests {
     /// The fake disk's block device vnode, referenced.
     fn diskvp() -> &'static Vnode {
         let vp = bdevvp(DISKDEV).unwrap().unwrap();
-        vp.v_op.set(Some(&DISK_VOPS));
+        crate::sys::vnode::set_vops(vp, &DISK_VOPS);
         vp
     }
 
@@ -2504,16 +2493,15 @@ pub(crate) mod tests {
         let devvp = diskvp();
         let mp = vfs_mount_alloc(None, vfs_byname(b"ffs").unwrap());
         if ronly {
-            mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
+            mp.set_flag(mp.flag() | MNT_RDONLY);
         }
-        mp.update_stat(|sp| sp.f_mntonname[0] = b'/');
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
         ffs_mountfs(devvp, mp, p).unwrap();
-        let mut st = mp.mnt_stat.get();
+        let mut st = mp.stat();
         ffs_statfs(mp, &mut st, p).unwrap();
-        mp.mnt_stat.set(st);
+        mp.with_stat(|sp| *sp = st);
         vfs_unbusy(mp);
-        // SAFETY: a new mount on no list.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         let root = VFS_ROOT(mp).unwrap();
         set_rootvnode(Some(root));
         p.fd().set_cdir(Some(root));
@@ -2845,8 +2833,8 @@ pub(crate) mod tests {
             )
         };
         update(&mut args).unwrap();
-        assert!(mp.mnt_flag.get() & MNT_EXPORTED != 0);
-        assert_eq!(mp.mnt_flag.get() & MNT_UPDATE, 0, "the update flag is gone");
+        assert!(mp.flag() & MNT_EXPORTED != 0);
+        assert_eq!(mp.flag() & MNT_UPDATE, 0, "the update flag is gone");
         assert_eq!(
             check([10, 0, 2, 9]),
             Ok((MNT_EXPORTED | MNT_EXRDONLY, 32767))
@@ -2855,12 +2843,12 @@ pub(crate) mod tests {
 
         // The same network again is refused, and the mount keeps its flags.
         assert_eq!(update(&mut args), Err(Errno::EPERM));
-        assert!(mp.mnt_flag.get() & MNT_EXPORTED != 0);
+        assert!(mp.flag() & MNT_EXPORTED != 0);
 
         // mountd deletes the list before it loads another.
         args.export_info.ex_flags = MNT_DELEXPORT;
         update(&mut args).unwrap();
-        assert_eq!(mp.mnt_flag.get() & MNT_EXPORTED, 0);
+        assert_eq!(mp.flag() & MNT_EXPORTED, 0);
         assert_eq!(check([10, 0, 2, 9]), Err(Errno::EACCES));
 
         unmount_root(p, mp);

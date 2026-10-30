@@ -117,11 +117,11 @@
 //!
 //! ## Redesign
 //! - The vnode (`struct vnode *u_vnode`, `vp->v_uvm`, and the `VOP_*`, `vget`, `vref`,
-//!   `vrele`, `vn_lock` calls on it) -> `&'static dyn VnodeOps`: a trait `bsd`'s `Vnode`
-//!   implements (bridges.toml `VnodeOps`, until the vnode layer moves, N5), each method one
-//!   call; `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset
-//!   (`bsd` builds the `UIO_SYSSPACE` uio over them with `curproc`'s credentials, as pipe's
-//!   `UioMove` does). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
+//!   `vrele`, `vn_lock` calls on it) -> `&'static dyn VnodeOps`: a trait the vnode implements
+//!   (`bsd`'s until N5.2, a bridge; since then `kernel::fs::vnode::Vnode<G>`'s, in
+//!   `kernel::fs::subr`: decision 39, the trait stays as API), each method one call;
+//!   `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset (a
+//!   `UIO_SYSSPACE` uio over them with `curproc`'s credentials). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
 //!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
 //!   (`hal::klock`, `hal`'s own since N4.5c) and the `NetLock` bridge (`hal::netlock`).
 //!   `ratecheck`'s clock is `kernel::tc`'s `getmicrouptime`, and `rebooting` and its wait
@@ -349,29 +349,9 @@ enum UioRw {
     Write,
 }
 
-/// `enum vtype` (`<sys/vnode.h>`), as `mmap(2)` asks it of a vnode ([`VnodeOps::vtype`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::upper_case_acronyms)] // OpenBSD's names
-pub enum VType {
-    /// No type.
-    VNON,
-    /// Regular file.
-    VREG,
-    /// Directory.
-    VDIR,
-    /// Block device.
-    VBLK,
-    /// Character device.
-    VCHR,
-    /// Symbolic link.
-    VLNK,
-    /// Socket.
-    VSOCK,
-    /// Fifo.
-    VFIFO,
-    /// A vnode that has been cleaned out (`vgone`).
-    VBAD,
-}
+/// `enum vtype` (`<sys/vnode.h>`), as `mmap(2)` asks it of a vnode ([`VnodeOps::vtype`]):
+/// the vnode's own type (`kernel::fs::vnode`, N5.2).
+pub use crate::fs::vnode::Vtype as VType;
 
 /// `uvm_vnode_pool`.
 static UVN_POOL: TypedPool<Uvn> = TypedPool::new();
@@ -382,10 +362,10 @@ static UVN_SYNC: Rwlocked<List<UvnSyncq>> = Rwlocked::new("uvnsync", List::new()
 /// `lasttime` of `uvn_flush`'s pageout error message (see the module's deviations).
 static FLUSH_LASTTIME: Mutexed<(i64, i64)> = Mutexed::new(IPL_HIGH, (0, 0));
 
-/// A vnode as the pager needs it (`struct vnode`, `bsd`'s until the vnode layer moves, N5):
-/// implemented by `bsd`'s `Vnode`, passed as `&'static dyn VnodeOps` (vnodes are never freed)
-/// and kept by the [`Uvn`]; each method is one call into the vnode layer (bridges.toml
-/// `VnodeOps`). The methods that reach the vnode layer take `&'static self`: its functions
+/// A vnode as the pager needs it (`struct vnode`): implemented by the kernel's vnode
+/// (`kernel::fs::vnode::Vnode<G>`, since N5.2; `bsd`'s before), passed as `&'static dyn
+/// VnodeOps` (vnodes are never freed) and kept by the [`Uvn`]; each method is one call into
+/// the vnode layer. The methods that reach the vnode layer take `&'static self`: its functions
 /// take `&'static Vnode`, and the pager only ever holds a vnode so.
 pub trait VnodeOps: Sync {
     /// `vp->v_uvm`: the vnode's object, once attached.
@@ -844,14 +824,13 @@ pub fn uvn_flush(
                     pagewait_relock(pp, uobj, w, "uvn_flsh");
                     q = uvm_lock_pageq();
                     continue; // the same offset again
-                } else {
-                    hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
-                    // dequeue to prevent lock recursion
-                    if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
-                        uvm_pagedequeue(&mut q, pp, owner);
-                    }
-                    uvm_pagefree(pp, owner);
                 }
+                hal::pmap::page_protect(&pp.mdpage, PROT_NONE);
+                // dequeue to prevent lock recursion
+                if pp.flags() & (PQ_ACTIVE | PQ_INACTIVE) != 0 {
+                    uvm_pagedequeue(&mut q, pp, owner);
+                }
+                uvm_pagefree(pp, owner);
             }
             curoff += ps;
             continue;
@@ -1506,7 +1485,7 @@ pub fn uvm_vnp_sync(mp: Option<usize>) {
 
     // step 2: build up a simpleq of uvns of interest based on the write list. we gain a
     // reference to uvns of interest.
-    for uvn in UVN_WLIST.iter() {
+    for uvn in &UVN_WLIST {
         let vp = uvn.vnode;
         if let Some(mp) = mp
             && vp.mount_id() != mp

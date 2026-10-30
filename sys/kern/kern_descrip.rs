@@ -121,10 +121,8 @@ pub use kernel::file::fdrop;
 use crate::conf::param::MAXFILES;
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
-use crate::kern::kern_rwlock::{rw_enter_read, rw_exit_read};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_subr::{VFS_STALL_LOCK, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
 use crate::machine::copy::copyout;
@@ -155,6 +153,7 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Off, Register, minor};
 use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
+use crate::sys::vnode::{vref, vrele};
 
 /// `f_data`: what a `bsd` file is open on.
 pub enum BsdFileData {
@@ -243,6 +242,9 @@ impl FileGlue for BsdFileGlue {
     type Stat = Stat;
     type Vnode = Vnode;
     type FileList = FileListLink;
+    type VnodeG = crate::sys::vnode::VnodeG;
+    type Componentname = crate::sys::namei::Componentname;
+    type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -257,8 +259,8 @@ impl FileGlue for BsdFileGlue {
     }
 
     fn stall_wait() {
-        rw_enter_read(&VFS_STALL_LOCK);
-        rw_exit_read(&VFS_STALL_LOCK);
+        let _ = VFS_TABLES.stall_lock.enter(hal::rwlock::RW_READ);
+        VFS_TABLES.stall_lock.exit();
     }
 
     fn vref(v: &'static Vnode) {
@@ -289,15 +291,15 @@ impl FileGlue for BsdFileGlue {
     }
 
     fn isatty(d: &BsdFileData) -> bool {
-        vnode_of(d).v_flag.get() & VISTTY != 0
+        vnode_of(d).flag() & VISTTY != 0
     }
 
     fn position_check(d: &BsdFileData, offset: Off) -> Result<(), Errno> {
         let vp = vnode_of(d);
-        if vp.v_type.get() == VFIFO || vp.v_flag.get() & VISTTY != 0 {
+        if vp.vtype() == VFIFO || vp.flag() & VISTTY != 0 {
             return Err(Errno::ESPIPE);
         }
-        if offset < 0 && vp.v_type.get() != VCHR {
+        if offset < 0 && vp.vtype() != VCHR {
             return Err(Errno::EINVAL);
         }
         Ok(())
@@ -331,11 +333,9 @@ impl FileGlue for BsdFileGlue {
 
     fn vnode_revoked(d: &BsdFileData) -> bool {
         match d {
-            BsdFileData::Vnode(v) => v.get().is_some_and(|vp| {
-                vp.v_op.get().is_some_and(|ops| {
-                    core::ptr::eq(ops, &crate::miscfs::deadfs::dead_vnops::DEAD_VOPS)
-                })
-            }),
+            BsdFileData::Vnode(v) => v
+                .get()
+                .is_some_and(|vp| vp.kind() == kernel::fs::vnode::VnodeKind::Dead),
             _ => false,
         }
     }
@@ -400,7 +400,58 @@ impl FileGlue for BsdFileGlue {
         )?;
         Ok(bp)
     }
+    fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
+        crate::kern::kern_subr::uiomove(buf, uio)
+    }
+    fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
+        &VFS_TABLES
+    }
+    fn vnode_g_init(vp: &'static Vnode) {
+        crate::kern::vfs_cache::cache_tree_init(&vp.g.v_nc_tree);
+        vp.g.v_cache_dst.init();
+    }
+    fn vnode_recycle(vp: &'static Vnode) {
+        vp.g.v_socket.set(None);
+    }
+    fn cache_purge(vp: &'static Vnode) {
+        crate::kern::vfs_cache::cache_purge(vp);
+    }
+    fn lf_purgelocks(vp: &'static Vnode) {
+        crate::kern::vfs_lockf::lf_purgelocks(&vp.g.v_speclockf);
+    }
+    fn spec_advlock(
+        vp: &'static Vnode,
+        id: *const core::ffi::c_void,
+        op: i32,
+        fl: &mut Flock,
+        flags: i32,
+    ) -> Result<(), Errno> {
+        crate::kern::vfs_lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
+    }
+    fn abortop(cnp: &mut Self::Componentname) {
+        crate::kern::vfs_vops::abortop_putname(cnp);
+    }
+    fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
+        crate::kern::vfs_syscalls::dounmount(mp, flags, p)
+    }
+    fn session_ttyvp_take(p: &Proc, vp: &'static Vnode) -> bool {
+        // spec_close's hack: the session's reference to its controlling terminal's vnode.
+        let Some(s) = crate::kern::proc_glue::session_of(p.process()) else {
+            return false;
+        };
+        if s.s_ttyvp.points_to(vp) {
+            s.s_ttyvp.set(None);
+            true
+        } else {
+            false
+        }
+    }
 }
+
+/// The kernel VFS core's tables of `bsd`'s processes: the vnode table, the mounts, the
+/// special-device aliases, the syncer's wheel, the operations registry and the device switch.
+pub static VFS_TABLES: kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::fs::subr::VfsTables::new();
 
 /// `filedesc_init`: the pools of open files and descriptor tables. A host test calls it once
 /// per test: its thread gets fresh tables first.

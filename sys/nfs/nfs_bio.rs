@@ -99,7 +99,6 @@ use crate::kern::kern_sig::psignal;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_prf::{panic, uprintf};
-use crate::kern::vfs_subr::vinvalbuf;
 use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vfs_vops::{VOP_BWRITE, VOP_GETATTR};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
@@ -141,6 +140,7 @@ use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Daddr, Off};
 use crate::sys::ucred::{NOCRED, Ucred};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
+use crate::sys::vnode::vinvalbuf;
 use crate::sys::vnode::{
     IO_APPEND, IO_SYNC, V_SAVE, VLNK, VN_KNOTE, VREG, VROOT, VTEXT, Vattr, Vnode, VopWriteArgs,
 };
@@ -261,10 +261,10 @@ pub fn nfs_bioread(
     nfs_crset(&np.n_rcred, cred);
 
     loop {
-        if vp.v_flag.get() & VROOT != 0 && vp.v_type.get() == VLNK {
+        if vp.flag() & VROOT != 0 && vp.vtype() == VLNK {
             return nfs_readlinkrpc(vp, uio, cred);
         }
-        let (bp, on, mut n) = match vp.v_type.get() {
+        let (bp, on, mut n) = match vp.vtype() {
             VREG => {
                 NFSSTATS.biocache_reads.fetch_add(1, Ordering::Relaxed);
                 let (lbn, on, bn) = nfs_bioblk(uio.uio_offset, biosize);
@@ -368,7 +368,7 @@ pub fn nfs_bioread(
             error = uiomove(&mut data[on as usize..(on + n) as usize], uio);
         }
 
-        if vp.v_type.get() == VLNK {
+        if vp.vtype() == VLNK {
             n = 0;
         }
 
@@ -402,7 +402,7 @@ pub fn nfs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
             panic(format_args!("nfs_write proc"));
         }
     }
-    if vp.v_type.get() != VREG {
+    if vp.vtype() != VREG {
         return Err(Errno::EIO);
     }
     if np.isset(NWRITEERR) {
@@ -728,7 +728,7 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
     } else if bp.isset(B_READ) {
         let len = bp.bcount() as usize;
         let mut uio = nfs_sysuio(&mut io, bp.data_ptr(), len, 0, UioRw::UIO_READ, p);
-        match vp.v_type.get() {
+        match vp.vtype() {
             VREG => {
                 uio.uio_offset = blkoff;
                 NFSSTATS.read_bios.fetch_add(1, Ordering::Relaxed);
@@ -756,7 +756,7 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
                     }
                 }
                 if let Some(p) = p
-                    && vp.v_flag.get() & VTEXT != 0
+                    && vp.flag() & VTEXT != 0
                     && np.n_mtime.get() != np.n_vattr.get().va_mtime
                 {
                     uprintf(format_args!(
@@ -838,7 +838,7 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
         uio.uio_resid
     };
     bp.set_resid(resid);
-    if must_commit && let Some(mp) = vp.v_mount.get() {
+    if must_commit && let Some(mp) = vp.mount() {
         nfs_clearcommit(mp);
     }
     let s = splbio();

@@ -765,6 +765,43 @@ pub fn memory_is_the_doubles() -> Option<bool> {
     MEMORY_DOUBLES.get().copied()
 }
 
+/// The test glues' `uiomove`: moves `buf` through the uio's iovecs, user addresses through
+/// the user-copy double (`hal::user`), kernel ones accounted only (a test cannot reach a
+/// `UIO_SYSSPACE` iovec's bytes without `bsd`'s `kcopy`); the offset, the residual count and
+/// the iovecs advance as `uiomove(9)`'s.
+pub fn test_uiomove<G: crate::proc::ProcGlue>(
+    buf: &mut [u8],
+    uio: &mut crate::uio::Uio<'_, G>,
+) -> Result<(), hal::sys::errno::Errno> {
+    use crate::uio::{UioRw, UioSeg};
+    let mut done = 0;
+    while done < buf.len() && uio.uio_resid > 0 {
+        let Some(iov) = uio.uio_iov.first_mut() else {
+            break;
+        };
+        if iov.iov_len == 0 {
+            let iovs = core::mem::take(&mut uio.uio_iov);
+            uio.uio_iov = &mut iovs[1..];
+            continue;
+        }
+        let cnt = iov.iov_len.min(buf.len() - done);
+        if uio.uio_segflg == UioSeg::UIO_USERSPACE {
+            let addr = iov.iov_base.addr();
+            if uio.uio_rw == UioRw::UIO_READ {
+                hal::user::UserPtr::<u8>::new(addr).copyout_slice(&buf[done..done + cnt])?;
+            } else {
+                hal::user::UserPtr::<u8>::new(addr).copyin_slice(&mut buf[done..done + cnt])?;
+            }
+        }
+        iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
+        iov.iov_len -= cnt;
+        uio.uio_resid -= cnt;
+        uio.uio_offset += cnt as hal::sys::types::Off;
+        done += cnt;
+    }
+    Ok(())
+}
+
 /// Registers every double, once per process.
 pub fn install() {
     static ONCE: Once = Once::new();
@@ -1253,6 +1290,8 @@ macro_rules! test_file_glue {
         $crate::file_glue_links!($name);
 
         std::thread_local! {
+            static VFS_TABLES: &'static $crate::fs::subr::VfsTables<$proc> =
+                std::boxed::Box::leak(std::boxed::Box::new($crate::fs::subr::VfsTables::new()));
             static FILE_TABLES: &'static $crate::file::FileTables<$name> =
                 std::boxed::Box::leak(std::boxed::Box::new($crate::file::FileTables::new(
                     0,
@@ -1400,6 +1439,9 @@ macro_rules! test_file_glue {
             type Stat = $crate::testutil::TestStat;
             type Vnode = $crate::testutil::TestVnode;
             type FileList = FileListLink;
+            type VnodeG = ();
+            type Componentname = ();
+            type Nameidata<'a> = ();
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)
@@ -1517,6 +1559,44 @@ macro_rules! test_file_glue {
             }
             fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), hal::sys::errno::Errno> {
                 hal::user::UserPtr::<$crate::testutil::TestStat>::new(sb).copyout(st)
+            }
+            fn uiomove(
+                buf: &mut [u8],
+                uio: &mut $crate::uio::Uio<'_, $proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::test_uiomove(buf, uio)
+            }
+            fn vfs() -> &'static $crate::fs::subr::VfsTables<$proc> {
+                VFS_TABLES.with(|t| *t)
+            }
+            fn vnode_g_init(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
+            fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
+            fn cache_purge(vp: &'static $crate::fs::vnode::Vnode<$proc>) {
+                vp.set_id(vp.id().wrapping_add(1));
+            }
+            fn lf_purgelocks(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
+            fn spec_advlock(
+                _vp: &'static $crate::fs::vnode::Vnode<$proc>,
+                _id: *const core::ffi::c_void,
+                _op: i32,
+                _fl: &mut hal::sys::fcntl::Flock,
+                _flags: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            fn abortop(_cnp: &mut ()) {}
+            fn dounmount(
+                _mp: &'static $crate::fs::mount::Mount<$proc>,
+                _flags: i32,
+                _p: &$crate::proc::Thread<$proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                Ok(())
+            }
+            fn session_ttyvp_take(
+                _p: &$crate::proc::Thread<$proc>,
+                _vp: &'static $crate::fs::vnode::Vnode<$proc>,
+            ) -> bool {
+                false
             }
         }
     };

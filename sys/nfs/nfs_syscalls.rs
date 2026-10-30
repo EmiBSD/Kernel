@@ -942,7 +942,7 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
                         b.set_flags(b.flags() | B_ASYNC);
                         DirtyPick::Take
                     };
-                    let nbp = match vnode_dirty_scan(&vp.v_bufs, "nfsidl", 0, INFSLP, pick) {
+                    let nbp = match vnode_dirty_scan(&vp.bufs, "nfsidl", 0, INFSLP, pick) {
                         DirtyScan::Taken(t) => Some(lend(t)),
                         _ => None,
                     };
@@ -952,7 +952,7 @@ pub fn nfssvc_iod(_arg: *mut c_void) {
                         nbp.set_flags(nbp.flags() & !(B_READ | B_DONE | B_ERROR));
                         buf_undirty(nbp);
                         if let Some(nvp) = nbp.vp() {
-                            nvp.v_bufs.numoutput_inc();
+                            nvp.bufs.numoutput_inc();
                         }
                     }
                     splx(s);

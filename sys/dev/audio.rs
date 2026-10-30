@@ -117,7 +117,6 @@ use crate::kern::kern_synch::{msleep_nsec, tsleep_nsec, wakeup};
 use crate::kern::kern_task::{SYSTQ, task_add, task_set};
 use crate::kern::subr_autoconf::{config_found_sm, device_lookup, device_unref};
 use crate::kern::subr_prf::{Str, panic, printf};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::conf::{cdevsw, nchrdev};
 use crate::machine::copy::AbiPod;
 use crate::machine::intr::{IPL_AUDIO, spltty, splx};
@@ -151,6 +150,7 @@ use crate::sys::task::Task;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Dev, minor};
 use crate::sys::uio::Uio;
+use crate::sys::vnode::vdevgone;
 use crate::sys::vnode::{IO_NDELAY, VCHR};
 
 /// `NAUDIO`: `audio* at ...` is configured (`needs-flag`).

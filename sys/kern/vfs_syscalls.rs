@@ -86,7 +86,10 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
 
+use hal::list::List;
 use hal::user::UserPtr;
+use kernel::fs::mount::ByDounmount;
+use kernel::fs::sync::vfs_allocate_syncvnode;
 
 use crate::kern::kern_descrip::BsdFileData;
 use crate::kern::kern_descrip::{closef, dupfdopen, falloc, fd_getfile, fdinsert, fdremove};
@@ -97,18 +100,13 @@ use crate::kern::kern_resource::lim_cur_proc;
 use crate::kern::kern_sig::{psignal, single_thread_clear, single_thread_set};
 use crate::kern::kern_tc::{getnanotime, gettime};
 use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
-use crate::kern::proc_glue::proc_tables;
+use crate::kern::proc_glue::{BsdProcGlue, proc_tables};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_cache::{cache_purge, cache_purgevfs};
 use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::{NAMEI_POOL, rootvnode, set_rootvnode, vfs_byname};
 use crate::kern::vfs_lookup::{namei, ndinit, ndinitat};
-use crate::kern::vfs_subr::{
-    MOUNTLIST, vattr_null, vfs_busy, vfs_getvfs, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
-    vgone, vinvalbuf, vnoperm, vput, vref, vrele,
-};
-use crate::kern::vfs_sync::vfs_allocate_syncvnode;
 use crate::kern::vfs_vnops::{VNOPS, vn_lock, vn_open, vn_stat, vn_writechk};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
@@ -135,9 +133,9 @@ use crate::sys::mount::{
     Fhandle, Fsid, MFSNAMELEN, MNAMELEN, MNT_ASYNC, MNT_DOOMED, MNT_FORCE, MNT_LAZY, MNT_NOATIME,
     MNT_NODEV, MNT_NOEXEC, MNT_NOPERM, MNT_NOSUID, MNT_NOWAIT, MNT_OP_FLAGS, MNT_RDONLY,
     MNT_RELOAD, MNT_ROOTFS, MNT_SYNCHRONOUS, MNT_UPDATE, MNT_VISFLAGMASK, MNT_WAIT, MNT_WANTRDWR,
-    MNT_WXALLOWED, MntDounmount, MntList, Mount, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT,
-    VB_WRITE, VFS_FHTOVP, VFS_MOUNT, VFS_QUOTACTL, VFS_ROOT, VFS_START, VFS_STATFS, VFS_SYNC,
-    VFS_UNMOUNT, VFS_VPTOFH,
+    MNT_WXALLOWED, Mount, Statfs, VB_DUPOK, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE, VFS_FHTOVP,
+    VFS_MOUNT, VFS_QUOTACTL, VFS_ROOT, VFS_START, VFS_STATFS, VFS_SYNC, VFS_UNMOUNT, VFS_VPTOFH,
+    mountlist_next,
 };
 use crate::sys::namei::{
     BYPASSUNVEIL, CREATE, DELETE, FOLLOW, LOCKLEAF, LOCKPARENT, LOOKUP, NOCACHE, NOFOLLOW,
@@ -151,7 +149,6 @@ use crate::sys::pledge::{
 };
 use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::{PS_CHROOT, PS_PLEDGE, Proc, SINGLE_UNWIND};
-use crate::sys::queue::{SlistHead, TailqHead};
 use crate::sys::resource::RLIMIT_FSIZE;
 use crate::sys::signal::SIGXFSZ;
 use crate::sys::stat::{
@@ -168,6 +165,10 @@ use crate::sys::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
 use crate::sys::vnode::{
     GETCWD_CHECK_ACCESS, REVOKEALL, V_SAVE, VA_UTIMES_CHANGE, VA_UTIMES_NULL, VALIASED, VBAD, VBLK,
     VCHR, VDIR, VEXEC, VNOVAL, VREAD, VROOT, VSGID, VSUID, VWRITE, Vattr, Vnode,
+};
+use crate::sys::vnode::{
+    vattr_null, vfs_busy, vfs_getvfs, vfs_mount_alloc, vfs_mount_free, vfs_unbusy, vgone,
+    vinvalbuf, vnoperm, vput, vref, vrele,
 };
 
 /// The user address of a pathname argument.
@@ -186,9 +187,9 @@ fn ndvp(vp: Option<&'static Vnode>) -> &'static Vnode {
 /// `VFS_STATFS(mp, &mp->mnt_stat, p)`: refreshes the mount's statistics (see the module's
 /// deviations).
 fn statfs_mnt(mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
-    let mut sp = mp.mnt_stat.get();
+    let mut sp = mp.stat();
     let error = VFS_STATFS(mp, &mut sp, p);
-    mp.mnt_stat.set(sp);
+    mp.with_stat(|cur| *cur = sp);
     error
 }
 
@@ -253,11 +254,11 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     let mp: &'static Mount;
     let args: MountArgs;
     if flags & MNT_UPDATE != 0 {
-        if vp.v_flag.get() & VROOT == 0 {
+        if vp.flag() & VROOT == 0 {
             vput(vp);
             return Err(Errno::EINVAL);
         }
-        let Some(vmp) = vp.v_mount.get() else {
+        let Some(vmp) = vp.mount() else {
             vput(vp);
             return Err(Errno::EINVAL);
         };
@@ -272,9 +273,9 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             }
         };
 
-        mntflag = mp.mnt_flag.get();
+        mntflag = mp.flag();
         // We only allow the filesystem to be reloaded if it is currently mounted read-only.
-        if flags & MNT_RELOAD != 0 && mp.mnt_flag.get() & MNT_RDONLY == 0 {
+        if flags & MNT_RELOAD != 0 && mp.flag() & MNT_RDONLY == 0 {
             vput(vp);
             args.free();
             return Err(Errno::EOPNOTSUPP); // Needs translation
@@ -285,8 +286,7 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             args.free();
             return Err(e);
         }
-        mp.mnt_flag
-            .set(mp.mnt_flag.get() | (flags & (MNT_RELOAD | MNT_UPDATE)));
+        mp.set_flag(mp.flag() | (flags & (MNT_RELOAD | MNT_UPDATE)));
     } else {
         // Do not allow disabling of permission checks unless exec and access to device files
         // is disabled too.
@@ -298,7 +298,7 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             vput(vp);
             return Err(e);
         }
-        if vp.v_type.get() != VDIR {
+        if vp.vtype() != VDIR {
             vput(vp);
             return Err(Errno::ENOTDIR);
         }
@@ -320,7 +320,7 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             }
         };
 
-        if vp.v_mountedhere().is_some() {
+        if vp.mountedhere().is_some() {
             vput(vp);
             args.free();
             return Err(Errno::EBUSY);
@@ -328,17 +328,17 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 
         // Allocate and initialize the file system.
         mp = vfs_mount_alloc(Some(vp), vfsp);
-        mp.update_stat(|sp| sp.f_owner = p.ucred().cr_uid.get());
+        mp.with_stat(|sp| sp.f_owner = p.ucred().cr_uid.get());
     }
 
     // update:
-    let Some(vmount) = vp.v_mount.get() else {
+    let Some(vmount) = vp.mount() else {
         panic(format_args!("sys_mount: covered vnode has no mount"));
     };
     // Ensure that the parent mountpoint does not get unmounted.
     if let Err(e) = vfs_busy(vmount, VB_READ | VB_NOWAIT | VB_DUPOK) {
-        if mp.mnt_flag.get() & MNT_UPDATE != 0 {
-            mp.mnt_flag.set(mntflag);
+        if mp.flag() & MNT_UPDATE != 0 {
+            mp.set_flag(mntflag);
             vfs_unbusy(mp);
         } else {
             vfs_unbusy(mp);
@@ -351,9 +351,9 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 
     // Set the mount level flags.
     if flags & MNT_RDONLY != 0 {
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_RDONLY);
-    } else if mp.mnt_flag.get() & MNT_RDONLY != 0 {
-        mp.mnt_flag.set(mp.mnt_flag.get() | MNT_WANTRDWR);
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+    } else if mp.flag() & MNT_RDONLY != 0 {
+        mp.set_flag(mp.flag() | MNT_WANTRDWR);
     }
     let settable = MNT_NOSUID
         | MNT_NOEXEC
@@ -364,34 +364,33 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
         | MNT_NOATIME
         | MNT_NOPERM
         | MNT_FORCE;
-    mp.mnt_flag
-        .set((mp.mnt_flag.get() & !settable) | (flags & settable));
+    mp.set_flag((mp.flag() & !settable) | (flags & settable));
     // Mount the filesystem.
     let path_len = fspath.iter().position(|&c| c == 0).unwrap_or(MNAMELEN);
     let mut error = VFS_MOUNT(mp, &fspath[..path_len], args.as_mut(), &mut nd, p);
     if error.is_ok() {
-        mp.update_stat(|sp| sp.f_ctime = gettime() as u64);
+        mp.with_stat(|sp| sp.f_ctime = gettime() as u64);
     }
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         vfs_unbusy(vmount);
         vput(vp);
-        if mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
-            mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_RDONLY);
+        if mp.flag() & MNT_WANTRDWR != 0 {
+            mp.set_flag(mp.flag() & !MNT_RDONLY);
         }
-        mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_OP_FLAGS);
+        mp.set_flag(mp.flag() & !MNT_OP_FLAGS);
         if error.is_err() {
-            mp.mnt_flag.set(mntflag);
+            mp.set_flag(mntflag);
         }
 
-        if mp.mnt_flag.get() & MNT_RDONLY == 0 {
-            if mp.mnt_syncer.get().is_none() {
+        if mp.flag() & MNT_RDONLY == 0 {
+            if mp.syncer().is_none() {
                 error = vfs_allocate_syncvnode(mp);
             }
         } else {
-            if let Some(syncer) = mp.mnt_syncer.get() {
+            if let Some(syncer) = mp.syncer() {
                 vgone(syncer);
             }
-            mp.mnt_syncer.set(None);
+            mp.set_syncer(None);
         }
 
         vfs_unbusy(mp);
@@ -399,18 +398,17 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
         return error;
     }
 
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_OP_FLAGS);
-    vp.set_v_mountedhere(Some(mp));
+    mp.set_flag(mp.flag() & !MNT_OP_FLAGS);
+    vp.set_mountedhere(Some(mp));
 
     // Put the new filesystem on the mount list after root.
     cache_purge(vp);
     if error.is_ok() {
-        // SAFETY: a new mount on no list; mounts never move.
-        unsafe { MOUNTLIST.0.insert_tail(mp) };
+        crate::sys::mount::mountlist_insert_tail(mp);
         checkdirs(vp);
         vfs_unbusy(vmount);
         let _ = VOP_UNLOCK(vp);
-        if mp.mnt_flag.get() & MNT_RDONLY == 0 {
+        if mp.flag() & MNT_RDONLY == 0 {
             // The C overwrites this error with VFS_START's below.
             let _ = vfs_allocate_syncvnode(mp);
         }
@@ -421,8 +419,8 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
             vrele(vp);
         }
     } else {
-        if let Some(covered) = mp.mnt_vnodecovered.get() {
-            covered.set_v_mountedhere(None);
+        if let Some(covered) = mp.vnodecovered() {
+            covered.set_mountedhere(None);
         }
         vfs_unbusy(mp);
         vfs_mount_free(mp);
@@ -441,10 +439,10 @@ pub fn sys_mount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 pub fn checkdirs(olddp: &'static Vnode) {
     let mut free_count = 0u32;
 
-    if olddp.v_usecount.get() == 1 {
+    if olddp.usecount() == 1 {
         return;
     }
-    let Some(newdp) = olddp.v_mountedhere().and_then(|mp| VFS_ROOT(mp).ok()) else {
+    let Some(newdp) = olddp.mountedhere().and_then(|mp| VFS_ROOT(mp).ok()) else {
         panic(format_args!("mount: lost mount"));
     };
     {
@@ -489,19 +487,19 @@ pub fn sys_unmount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
     let mut nd = ndinit(LOOKUP, FOLLOW | LOCKLEAF, upath(uap.path.get()), p);
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
-    let Some(mp) = vp.v_mount.get() else {
+    let Some(mp) = vp.mount() else {
         vput(vp);
         return Err(Errno::EINVAL);
     };
 
     // Don't allow unmounting the root file system.
-    if mp.mnt_flag.get() & MNT_ROOTFS != 0 {
+    if mp.flag() & MNT_ROOTFS != 0 {
         vput(vp);
         return Err(Errno::EINVAL);
     }
 
     // Must be the root of the filesystem
-    if vp.v_flag.get() & VROOT == 0 {
+    if vp.flag() & VROOT == 0 {
         vput(vp);
         return Err(Errno::EINVAL);
     }
@@ -514,31 +512,24 @@ pub fn sys_unmount(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
     dounmount(mp, uap.flags.get() & MNT_FORCE, p)
 }
 
-/// A mount on `dounmount`'s work queue, which only holds `&'static Mount`s.
-fn queued(m: &Mount) -> &'static Mount {
-    // SAFETY: the queue only ever holds the busied, mounted file systems inserted above,
-    // which are `malloc`ed and stay allocated while mounted (`&'static Mount`, as everywhere).
-    unsafe { &*ptr::from_ref(m) }
-}
-
 /// Do the actual file system unmount.
 pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
-    let mplist: SlistHead<MntDounmount> = SlistHead::new();
+    // The work queue (`SLIST_HEAD(, mount) mplist`) through `mnt_dounmount`: every mount on it
+    // is write-busied by this thread, so no other unmount links it meanwhile.
+    let mplist: List<ByDounmount<BsdProcGlue>> = List::new();
 
-    // SAFETY: the mount is busied by the caller and on no unmount queue; mounts never move.
-    unsafe { mplist.insert_head(mp) };
+    mplist.insert_head(mp);
 
     // Collect nested mount points. This takes advantage of the mount list being ordered -
     // nested mount points come after their parent.
     let error = 'err: {
         let mut cur = mp;
-        while let Some(next) = TailqHead::<MntList>::next(cur) {
+        while let Some(next) = mountlist_next(cur, false) {
             cur = next;
             for nmp in mplist.iter() {
                 if !cur
-                    .mnt_vnodecovered
-                    .get()
-                    .and_then(|vp| vp.v_mount.get())
+                    .vnodecovered()
+                    .and_then(|vp| vp.mount())
                     .is_some_and(|m| ptr::eq(m, nmp))
                 {
                     continue;
@@ -553,24 +544,20 @@ pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> 
                         // removed from the mount list already. Restart the iteration from
                         // the last collected busy entry.
                         if let Some(first) = mplist.first() {
-                            cur = queued(first);
+                            cur = first;
                         }
                         break;
                     }
                     break 'err error;
                 }
-                // SAFETY: a busied mount on no unmount queue.
-                unsafe { mplist.insert_head(cur) };
+                mplist.insert_head(cur);
                 break;
             }
         }
 
         // Nested mount points cannot appear during this loop as mounting requires a read lock
         // for the parent mount point.
-        while let Some(m) = mplist.first() {
-            let m = queued(m);
-            // SAFETY: `m` is the queue's first element.
-            unsafe { mplist.remove_head() };
+        while let Some(m) = mplist.pop_head() {
             if let Err(error) = dounmount_leaf(m, flags, p) {
                 break 'err error;
             }
@@ -578,10 +565,7 @@ pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> 
         return Ok(());
     };
 
-    while let Some(m) = mplist.first() {
-        let m = queued(m);
-        // SAFETY: `m` is the queue's first element.
-        unsafe { mplist.remove_head() };
+    while let Some(m) = mplist.pop_head() {
         vfs_unbusy(m);
     }
     Err(error)
@@ -591,21 +575,21 @@ pub fn dounmount(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> 
 pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
     let mut hadsyncer = false;
 
-    mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_ASYNC);
+    mp.set_flag(mp.flag() & !MNT_ASYNC);
     cache_purgevfs(mp); // remove cache entries for this file sys
-    if let Some(syncer) = mp.mnt_syncer.get() {
+    if let Some(syncer) = mp.syncer() {
         hadsyncer = true;
         vgone(syncer);
-        mp.mnt_syncer.set(None);
+        mp.set_syncer(None);
     }
 
     // Before calling file system unmount, make sure all unveils to vnodes in here are
     // dropped.
-    for vp in mp.mnt_vnodelist.iter() {
+    for vp in mp.vnodes() {
         unveil_removevnode(vp);
     }
 
-    let mut error = if mp.mnt_flag.get() & MNT_RDONLY != 0 {
+    let mut error = if mp.flag() & MNT_RDONLY != 0 {
         Ok(())
     } else {
         VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p)
@@ -615,21 +599,20 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     }
 
     if error.is_err() && flags & MNT_DOOMED == 0 {
-        if mp.mnt_flag.get() & MNT_RDONLY == 0 && hadsyncer {
+        if mp.flag() & MNT_RDONLY == 0 && hadsyncer {
             let _ = vfs_allocate_syncvnode(mp);
         }
         vfs_unbusy(mp);
         return error;
     }
 
-    // SAFETY: a mounted file system is on the mount list.
-    unsafe { MOUNTLIST.0.remove(mp) };
-    if let Some(coveredvp) = mp.mnt_vnodecovered.get() {
-        coveredvp.set_v_mountedhere(None);
+    crate::sys::mount::mountlist_remove(mp);
+    if let Some(coveredvp) = mp.vnodecovered() {
+        coveredvp.set_mountedhere(None);
         vrele(coveredvp);
     }
 
-    if !mp.mnt_vnodelist.is_empty() {
+    if !mp.vnodelist_is_empty() {
         panic(format_args!("unmount: dangling vnode"));
     }
 
@@ -641,17 +624,17 @@ pub fn dounmount_leaf(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
 
 /// Sync each mounted filesystem.
 pub fn sys_sync(p: &Proc, _v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
-    for mp in MOUNTLIST.0.iter_reverse() {
+    for mp in crate::sys::mount::mountlist(true) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }
-        if mp.mnt_flag.get() & MNT_RDONLY == 0 {
-            let asyncflag = mp.mnt_flag.get() & MNT_ASYNC;
-            mp.mnt_flag.set(mp.mnt_flag.get() & !MNT_ASYNC);
+        if mp.flag() & MNT_RDONLY == 0 {
+            let asyncflag = mp.flag() & MNT_ASYNC;
+            mp.set_flag(mp.flag() & !MNT_ASYNC);
             uvm_vnp_sync(Some(mp));
             let _ = VFS_SYNC(mp, MNT_NOWAIT, 0, p.ucred_ptr(), p);
             if asyncflag != 0 {
-                mp.mnt_flag.set(mp.mnt_flag.get() | MNT_ASYNC);
+                mp.set_flag(mp.flag() | MNT_ASYNC);
             }
         }
         vfs_unbusy(mp);
@@ -668,7 +651,7 @@ pub fn sys_quotactl(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
     nd.ni_unveil = UNVEIL_READ | UNVEIL_WRITE;
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
-    let mp = vp.v_mount.get();
+    let mp = vp.mount();
     vrele(vp);
     let Some(mp) = mp else {
         return Err(Errno::ENOENT);
@@ -717,15 +700,15 @@ pub fn sys_statfs(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     nd.ni_unveil = UNVEIL_READ;
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
-    let mp = vp.v_mount.get();
+    let mp = vp.mount();
     vrele(vp);
     let Some(mp) = mp else {
         return Err(Errno::ENOENT);
     };
     statfs_mnt(mp, p)?;
-    mp.update_stat(|sp| sp.f_flags = (mp.mnt_flag.get() & MNT_VISFLAGMASK) as u32);
+    mp.with_stat(|sp| sp.f_flags = (mp.flag() & MNT_VISFLAGMASK) as u32);
 
-    copyout_statfs(&mp.mnt_stat.get(), uap.buf.get() as usize, p)
+    copyout_statfs(&mp.stat(), uap.buf.get() as usize, p)
 }
 
 /// Get filesystem statistics.
@@ -733,16 +716,16 @@ pub fn sys_fstatfs(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
     let uap: &SysFstatfsArgs = sysargs(v);
 
     let fp = getvnode(p, uap.fd.get())?;
-    let Some(mp) = fp.vnode().v_mount.get() else {
+    let Some(mp) = fp.vnode().mount() else {
         let _ = frele(fp, p);
         return Err(Errno::ENOENT);
     };
     let error = statfs_mnt(mp, p);
     let _ = frele(fp, p);
     error?;
-    mp.update_stat(|sp| sp.f_flags = (mp.mnt_flag.get() & MNT_VISFLAGMASK) as u32);
+    mp.with_stat(|sp| sp.f_flags = (mp.flag() & MNT_VISFLAGMASK) as u32);
 
-    copyout_statfs(&mp.mnt_stat.get(), uap.buf.get() as usize, p)
+    copyout_statfs(&mp.stat(), uap.buf.get() as usize, p)
 }
 
 /// Get statistics on all filesystems.
@@ -754,7 +737,7 @@ pub fn sys_getfsstat(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let mut sfsp = uap.buf.get() as usize;
     let mut count = 0usize;
 
-    for mp in MOUNTLIST.0.iter() {
+    for mp in crate::sys::mount::mountlist(false) {
         if vfs_busy(mp, VB_READ | VB_NOWAIT).is_err() {
             continue;
         }
@@ -769,8 +752,8 @@ pub fn sys_getfsstat(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
                 continue;
             }
 
-            mp.update_stat(|sp| sp.f_flags = (mp.mnt_flag.get() & MNT_VISFLAGMASK) as u32);
-            if let Err(error) = copyout_statfs(&mp.mnt_stat.get(), sfsp, p) {
+            mp.with_stat(|sp| sp.f_flags = (mp.flag() & MNT_VISFLAGMASK) as u32);
+            if let Err(error) = copyout_statfs(&mp.stat(), sfsp, p) {
                 vfs_unbusy(mp);
                 return Err(error);
             }
@@ -797,7 +780,7 @@ pub fn sys_fchdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let Some(fp) = fd_getfile(fdp, uap.fd.get()) else {
         return Err(Errno::EBADF);
     };
-    if fp.f_type() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
+    if fp.f_type() != DTYPE_VNODE || fp.vnode().vtype() != VDIR {
         let _ = frele(fp, p);
         return Err(Errno::ENOTDIR);
     }
@@ -808,7 +791,7 @@ pub fn sys_fchdir(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let mut error = VOP_ACCESS(vp, VEXEC, p.ucred_ptr(), p);
 
     while error.is_ok()
-        && let Some(mp) = vp.v_mountedhere()
+        && let Some(mp) = vp.mountedhere()
     {
         if vfs_busy(mp, VB_READ | VB_WAIT).is_err() {
             continue;
@@ -887,7 +870,7 @@ pub fn sys_chroot(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
 fn change_dir(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
     namei(ndp)?;
     let vp = ndvp(ndp.ni_vp);
-    let error = if vp.v_type.get() != VDIR {
+    let error = if vp.vtype() != VDIR {
         Err(Errno::ENOTDIR)
     } else {
         VOP_ACCESS(vp, VEXEC, p.ucred_ptr(), p)
@@ -1311,7 +1294,7 @@ pub fn doopenat(
         }
         p.p_dupfd.set(0);
         let vp = ndvp(nd.ni_vp);
-        if pledgeopen != 0 && vp.v_type.get() != VCHR {
+        if pledgeopen != 0 && vp.vtype() != VCHR {
             fdflags |= UF_PLEDGEOPEN;
         }
         fp.f_flag.store((flags & FMASK) as u32, Ordering::SeqCst);
@@ -1332,13 +1315,9 @@ pub fn doopenat(
         if localtrunc {
             let error = if fp.flag() & FWRITE == 0 {
                 Err(Errno::EACCES)
-            } else if vp
-                .v_mount
-                .get()
-                .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-            {
+            } else if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
                 Err(Errno::EROFS)
-            } else if vp.v_type.get() == VDIR {
+            } else if vp.vtype() == VDIR {
                 Err(Errno::EISDIR)
             } else {
                 vn_writechk(vp).and_then(|()| {
@@ -1382,10 +1361,7 @@ pub fn sys_getfh(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let mut fh = Fhandle {
-        fh_fsid: vp
-            .v_mount
-            .get()
-            .map_or(Fsid::default(), |mp| mp.mnt_stat.get().f_fsid),
+        fh_fsid: vp.mount().map_or(Fsid::default(), |mp| mp.fsid()),
         ..Fhandle::default()
     };
     let error = VFS_VPTOFH(vp, &mut fh.fh_fid);
@@ -1452,10 +1428,10 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         vp = Some(v);
 
         // Now do an effective vn_open
-        if v.v_type.get() == crate::sys::vnode::VSOCK {
+        if v.vtype() == crate::sys::vnode::VSOCK {
             break 'bad Errno::EOPNOTSUPP;
         }
-        if flags & O_DIRECTORY != 0 && v.v_type.get() != VDIR {
+        if flags & O_DIRECTORY != 0 && v.vtype() != VDIR {
             break 'bad Errno::ENOTDIR;
         }
         if flags & FREAD != 0
@@ -1464,7 +1440,7 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
             break 'bad e;
         }
         if flags & (FWRITE | O_TRUNC) != 0 {
-            if v.v_type.get() == VDIR {
+            if v.vtype() == VDIR {
                 break 'bad Errno::EISDIR;
             }
             if let Err(e) = VOP_ACCESS(v, VWRITE, cred, p).and_then(|()| vn_writechk(v)) {
@@ -1483,7 +1459,7 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
             break 'bad e;
         }
         if flags & FWRITE != 0 {
-            v.v_writecount.set(v.v_writecount.get() + 1);
+            v.set_writecount(v.writecount() + 1);
         }
 
         // done with modified vn_open, now finish what sys_open does.
@@ -1553,14 +1529,14 @@ pub fn sys_fhstatfs(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Resul
         return Err(Errno::ESTALE);
     };
     let vp = VFS_FHTOVP(mp, &fh.fh_fid)?;
-    let mp = vp.v_mount.get();
+    let mp = vp.mount();
     vput(vp);
     let Some(mp) = mp else {
         return Err(Errno::ESTALE);
     };
     statfs_mnt(mp, p)?;
-    mp.update_stat(|sp| sp.f_flags = (mp.mnt_flag.get() & MNT_VISFLAGMASK) as u32);
-    copyout(statfs_bytes(&mp.mnt_stat.get()), uap.buf.get() as usize)
+    mp.with_stat(|sp| sp.f_flags = (mp.flag() & MNT_VISFLAGMASK) as u32);
+    copyout(statfs_bytes(&mp.stat()), uap.buf.get() as usize)
 }
 
 /// Create a special file or named pipe.
@@ -1736,7 +1712,7 @@ pub fn dolinkat(
     let vp = ndvp(nd.ni_vp);
 
     let error = 'out: {
-        if vp.v_type.get() == VDIR {
+        if vp.vtype() == VDIR {
             break 'out Err(Errno::EPERM);
         }
 
@@ -1773,7 +1749,7 @@ pub fn dolinkat(
 
 /// `a->v_mount == b->v_mount`.
 fn opt_mount_eq(a: &Vnode, b: &Vnode) -> bool {
-    match (a.v_mount.get(), b.v_mount.get()) {
+    match (a.mount(), b.mount()) {
         (Some(x), Some(y)) => ptr::eq(x, y),
         (None, None) => true,
         _ => false,
@@ -1855,7 +1831,7 @@ pub fn dounlinkat(p: &Proc, fd: i32, path: *const u8, flag: i32) -> Result<(), E
 
     let error = 'out: {
         if flag & AT_REMOVEDIR != 0 {
-            if vp.v_type.get() != VDIR {
+            if vp.vtype() != VDIR {
                 break 'out Err(Errno::ENOTDIR);
             }
             // No rmdir "." please.
@@ -1863,13 +1839,13 @@ pub fn dounlinkat(p: &Proc, fd: i32, path: *const u8, flag: i32) -> Result<(), E
                 break 'out Err(Errno::EINVAL);
             }
             // A mounted on directory cannot be deleted.
-            if vp.v_mountedhere().is_some() {
+            if vp.mountedhere().is_some() {
                 break 'out Err(Errno::EBUSY);
             }
         }
 
         // The root of a mounted filesystem cannot be deleted.
-        if vp.v_flag.get() & VROOT != 0 {
+        if vp.flag() & VROOT != 0 {
             break 'out Err(Errno::EBUSY);
         }
         Ok(())
@@ -2161,7 +2137,7 @@ pub fn doreadlinkat(
     nd.ni_unveil = UNVEIL_READ;
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
-    let error = if vp.v_type.get() != crate::sys::vnode::VLNK {
+    let error = if vp.vtype() != crate::sys::vnode::VLNK {
         Err(Errno::EINVAL)
     } else {
         let mut aiov = [Iovec {
@@ -2250,11 +2226,7 @@ pub fn dovchflags(p: &Proc, vp: &'static Vnode, flags: u32) -> Result<(), Errno>
 
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
     let error = 'out: {
-        if vp
-            .v_mount
-            .get()
-            .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-        {
+        if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
             break 'out Err(Errno::EROFS);
         } else if flags == VNOVAL as u32 {
             break 'out Err(Errno::EINVAL);
@@ -2326,11 +2298,7 @@ pub fn dofchmodat(
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else {
         vattr_null(&mut vattr);
@@ -2357,11 +2325,7 @@ pub fn sys_fchmod(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let fp = getvnode(p, uap.fd.get())?;
     let vp = fp.vnode();
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         Err(Errno::EPERM)
@@ -2444,11 +2408,7 @@ pub fn dofchownat(
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else {
         chown_vnode(p, vp, uid, gid)
@@ -2469,11 +2429,7 @@ pub fn sys_lchown(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else {
         chown_vnode(p, vp, uid, gid)
@@ -2491,11 +2447,7 @@ pub fn sys_fchown(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let fp = getvnode(p, uap.fd.get())?;
     let vp = fp.vnode();
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else if p.fd().ofileflags(uap.fd.get()) & UF_PLEDGEOPEN != 0 {
         Err(Errno::EPERM)
@@ -2643,11 +2595,7 @@ pub fn dovutimens(p: &Proc, vp: &'static Vnode, ts: &mut [Timespec; 2]) -> Resul
     }
 
     let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-    let error = if vp
-        .v_mount
-        .get()
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
-    {
+    let error = if vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0) {
         Err(Errno::EROFS)
     } else {
         VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p)
@@ -2689,11 +2637,11 @@ pub fn dotruncate(p: &Proc, vp: &'static Vnode, len: Off) -> Result<(), Errno> {
     if len < 0 {
         return Err(Errno::EINVAL);
     }
-    if vp.v_type.get() == VDIR {
+    if vp.vtype() == VDIR {
         return Err(Errno::EISDIR);
     }
     vn_writechk(vp)?;
-    if vp.v_type.get() == crate::sys::vnode::VREG && len as u64 > lim_cur_proc(p, RLIMIT_FSIZE) {
+    if vp.vtype() == crate::sys::vnode::VREG && len as u64 > lim_cur_proc(p, RLIMIT_FSIZE) {
         VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p)?;
         if len as u64 > vattr.va_size {
             // if extending over the limit, send signal and fail
@@ -2794,7 +2742,7 @@ pub fn dorenameat(
 
     let mut flags = LOCKPARENT | LOCKLEAF | NOCACHE | SAVESTART;
     // rename("foo/", "bar/");  is  OK
-    if fvp.v_type.get() == VDIR {
+    if fvp.vtype() == VDIR {
         flags |= STRIPSLASHES;
     }
 
@@ -2813,9 +2761,9 @@ pub fn dorenameat(
         let mut same = false;
         let mut error = 'out: {
             if let Some(tvp) = tvp {
-                if fvp.v_type.get() == VDIR && tvp.v_type.get() != VDIR {
+                if fvp.vtype() == VDIR && tvp.vtype() != VDIR {
                     break 'out Err(Errno::ENOTDIR);
-                } else if fvp.v_type.get() != VDIR && tvp.v_type.get() == VDIR {
+                } else if fvp.vtype() != VDIR && tvp.vtype() == VDIR {
                     break 'out Err(Errno::EISDIR);
                 }
             }
@@ -2934,7 +2882,7 @@ pub fn sys_getdents(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result
             break 'bad Err(Errno::EBADF);
         }
         let vp = fp.vnode();
-        if vp.v_type.get() != VDIR {
+        if vp.vtype() != VDIR {
             break 'bad Err(Errno::EINVAL);
         }
 
@@ -2993,9 +2941,9 @@ pub fn sys_revoke(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     namei(&mut nd)?;
     let vp = ndvp(nd.ni_vp);
     let error = 'out: {
-        if vp.v_type.get() != VCHR
-            || major(vp.v_rdev()) >= nchrdev()
-            || cdevsw(major(vp.v_rdev())).d_type != D_TTY
+        if vp.vtype() != VCHR
+            || major(vp.rdev()) >= nchrdev()
+            || cdevsw(major(vp.rdev())).d_type != D_TTY
         {
             break 'out Err(Errno::ENOTTY);
         }
@@ -3007,7 +2955,7 @@ pub fn sys_revoke(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
         {
             break 'out Err(e);
         }
-        if vp.v_usecount.get() > 1 || vp.v_flag.get() & VALIASED != 0 {
+        if vp.usecount() > 1 || vp.flag() & VALIASED != 0 {
             let _ = VOP_REVOKE(vp, REVOKEALL);
         }
         Ok(())
@@ -3028,7 +2976,7 @@ pub fn getvnode(p: &Proc, fd: i32) -> Result<FileRef, Errno> {
         return Err(Errno::EINVAL);
     }
 
-    if fp.vnode().v_type.get() == VBAD {
+    if fp.vnode().vtype() == VBAD {
         let _ = frele(fp, p);
         return Err(Errno::EBADF);
     }

@@ -84,7 +84,6 @@ use crate::kern::kern_pledge::{checkzoneinfopath, pledge_namei};
 use crate::kern::kern_unveil::{unveil_check_component, unveil_check_final, unveil_start_relative};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::vfs_init::{NAMEI_POOL, rootvnode};
-use crate::kern::vfs_subr::{vfs_busy, vfs_unbusy, vput, vref, vrele};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_LOOKUP, VOP_READLINK, VOP_UNLOCK};
 use crate::machine::copy::copyinstr;
@@ -106,6 +105,7 @@ use crate::sys::proc::Proc;
 use crate::sys::syslimits::{NAME_MAX, SYMLOOP_MAX};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{VDIR, VLNK, VROOT, Vnode};
+use crate::sys::vnode::{vfs_busy, vfs_unbusy, vput, vref, vrele};
 
 /// `component_push(cnp, component, len)`: appends `/component` to the realpath buffer; false
 /// when it would not fit.
@@ -346,7 +346,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
         let Some(fp) = fd_getfile(fdp, ndp.ni_dirfd) else {
             return namei_fail(ndp, Errno::EBADF);
         };
-        if fp.f_type() != DTYPE_VNODE || fp.vnode().v_type.get() != VDIR {
+        if fp.f_type() != DTYPE_VNODE || fp.vnode().vtype() != VDIR {
             let _ = frele(fp, p);
             return namei_fail(ndp, Errno::ENOTDIR);
         }
@@ -358,7 +358,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
     }
 
     let error = loop {
-        if dp.v_mount.get().is_none() {
+        if dp.mount().is_none() {
             // Give up if the directory is no longer mounted
             vrele(dp);
             return namei_fail(ndp, Errno::ENOENT);
@@ -641,7 +641,7 @@ fn lookup_walk(
         name = cp;
         ndp.ni_cnd.cn_nameptr = at(name);
 
-        if st.dp.v_type.get() != VDIR {
+        if st.dp.vtype() != VDIR {
             return Err(Bad(Errno::ENOTDIR));
         }
 
@@ -747,15 +747,11 @@ fn lookup_walk(
                             ndp.ni_unveil_match = ptr::null();
                             break 'nextname;
                         }
-                        if st.dp.v_flag.get() & VROOT == 0
-                            || ndp.ni_cnd.cn_flags & NOCROSSMOUNT != 0
-                        {
+                        if st.dp.flag() & VROOT == 0 || ndp.ni_cnd.cn_flags & NOCROSSMOUNT != 0 {
                             break;
                         }
                         let tdp = st.dp;
-                        let Some(covered) =
-                            st.dp.v_mount.get().and_then(|mp| mp.mnt_vnodecovered.get())
-                        else {
+                        let Some(covered) = st.dp.mount().and_then(|mp| mp.vnodecovered()) else {
                             break;
                         };
                         st.dp = covered;
@@ -836,8 +832,8 @@ fn lookup_walk(
                 st.dp = found;
                 // Check to see if the vnode has been mounted on; if so find the root of the
                 // mounted file system.
-                while st.dp.v_type.get() == VDIR
-                    && let Some(mp) = st.dp.v_mountedhere()
+                while st.dp.vtype() == VDIR
+                    && let Some(mp) = st.dp.mountedhere()
                     && ndp.ni_cnd.cn_flags & NOCROSSMOUNT == 0
                 {
                     if vfs_busy(mp, VB_READ | VB_WAIT).is_err() {
@@ -861,7 +857,7 @@ fn lookup_walk(
 
                 // Check for symbolic link. Back up over any slashes that we skipped, as we
                 // will need them again.
-                if st.dp.v_type.get() == VLNK && ndp.ni_cnd.cn_flags & (FOLLOW | REQUIREDIR) != 0 {
+                if st.dp.vtype() == VLNK && ndp.ni_cnd.cn_flags & (FOLLOW | REQUIREDIR) != 0 {
                     ndp.ni_pathlen += slashes;
                     ndp.ni_next = at(next - slashes);
                     ndp.ni_cnd.cn_flags |= ISSYMLINK;
@@ -873,7 +869,7 @@ fn lookup_walk(
                 }
 
                 // Check for directory, if the component was followed by a series of slashes.
-                if st.dp.v_type.get() != VDIR && ndp.ni_cnd.cn_flags & REQUIREDIR != 0 {
+                if st.dp.vtype() != VDIR && ndp.ni_cnd.cn_flags & REQUIREDIR != 0 {
                     return Err(Bad2(Errno::ENOTDIR));
                 }
             }
@@ -895,7 +891,7 @@ fn lookup_walk(
 
     // terminal:
     // __pledge_open() only opens regular files in /usr/share/zoneinfo
-    if ndp.ni_cnd.cn_flags & BPU_ZONEINFO != 0 && st.dp.v_type.get() != crate::sys::vnode::VREG {
+    if ndp.ni_cnd.cn_flags & BPU_ZONEINFO != 0 && st.dp.vtype() != crate::sys::vnode::VREG {
         return Err(Bad2(Errno::EACCES));
     }
     // Check for read-only file systems.
@@ -922,8 +918,8 @@ fn lookup_walk(
 
 /// Whether the vnode's file system is mounted read-only.
 fn mnt_rdonly(vp: Option<&'static Vnode>) -> bool {
-    vp.and_then(|vp| vp.v_mount.get())
-        .is_some_and(|mp| mp.mnt_flag.get() & MNT_RDONLY != 0)
+    vp.and_then(|vp| vp.mount())
+        .is_some_and(|mp| mp.flag() & MNT_RDONLY != 0)
 }
 
 /// Reacquire a path name component.
@@ -987,7 +983,7 @@ pub fn vfs_relookup(
     };
 
     #[cfg(feature = "diagnostic")]
-    if dp.v_type.get() == VLNK && cnp.cn_flags & FOLLOW != 0 {
+    if dp.vtype() == VLNK && cnp.cn_flags & FOLLOW != 0 {
         crate::kern::subr_prf::panic(format_args!("relookup: symlink found."));
     }
 
@@ -1240,7 +1236,7 @@ mod tests {
         let nd = lookup(p, b"/a/b///", LOOKUP, FOLLOW | STRIPSLASHES).unwrap();
         let vp = nd.ni_vp.unwrap();
         assert_eq!(node_of(vp), B);
-        assert_eq!(vp.v_type.get(), VREG);
+        assert_eq!(vp.vtype(), VREG);
         vrele(vp);
     }
 

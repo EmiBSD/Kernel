@@ -53,9 +53,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! File system initialisation: the configured file system types (`vfsconflist[]`), `vfsinit`
-//! (the `namei` buffer pool, the vnode table, the name cache, each type's `vfs_init`), the
-//! root vnode and the lookups by type name and number.
+//! File system initialisation: the configured file system types (`vfsconflist[]`) and
+//! `vfsinit`'s `bsd` half (the `namei` buffer pool, the name cache and the export lists' radix
+//! keys); since N5.2 the vnode table, each type's `vfs_init`, the root vnode and the lookups by
+//! type name and number are the kernel crate's (`kernel::fs::init`), over this table.
 //!
 //! Upstream: sys/kern/vfs_init.c @ 3ce1f3f79392
 //!
@@ -68,16 +69,13 @@
 //!   `option UDF`), `fuse` (feature `fuse`, `option FUSE`), `tmpfs` (feature `tmpfs`, `option
 //!   TMPFS`, commented out in GENERIC). A new entry joins as a `Vfsconf::new(...)` line behind a
 //!   cargo feature named after the `option(4)`.
-//! - `rootvnode` is an `AtomicPtr` behind [`rootvnode`]/[`set_rootvnode`]; `maxvfsconf` is an
-//!   `AtomicI32`.
 //! - `vfs_byname` takes the name as bytes (`&[u8]`, NUL or slice end terminated).
 
-use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
+use core::sync::atomic::Ordering;
 
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_pool::pool_init;
 use crate::kern::vfs_cache::nchinit;
-use crate::kern::vfs_subr::vntblinit;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::mount::Vfsconf;
 use crate::sys::param::MAXPATHLEN;
@@ -86,9 +84,6 @@ use crate::sys::vnode::Vnode;
 
 /// `namei_pool`: the `MAXPATHLEN` pathname buffers of `namei`.
 pub static NAMEI_POOL: Pool = Pool::new();
-
-/// `rootvnode`: this defines the root filesystem.
-static ROOTVNODE: AtomicPtr<Vnode> = AtomicPtr::new(ptr::null_mut());
 
 /// `vfsconflist[]`: the filesystem types this kernel is configured with (see the module's
 /// deviations).
@@ -187,23 +182,19 @@ const NVFSCONF: usize = cfg!(feature = "ffs") as usize
     + cfg!(feature = "fuse") as usize
     + cfg!(feature = "tmpfs") as usize;
 
-/// `maxvfsconf`: initially the size of the list, `vfsinit` will set it to the highest defined
-/// type number.
-pub static MAXVFSCONF: AtomicI32 = AtomicI32::new(VFSCONFLIST.len() as i32);
-
 /// `rootvnode`: the root (i.e. "/") vnode, `None` until a root file system is mounted.
 pub fn rootvnode() -> Option<&'static Vnode> {
-    // SAFETY: only `set_rootvnode` stores here, and only vnodes, which are never freed.
-    unsafe { ROOTVNODE.load(Ordering::Acquire).as_ref() }
+    kernel::fs::init::rootvnode::<BsdProcGlue>()
 }
 
 /// `rootvnode = vp`.
 pub fn set_rootvnode(vp: Option<&'static Vnode>) {
-    let p = vp.map_or(ptr::null_mut(), |vp| ptr::from_ref(vp).cast_mut());
-    ROOTVNODE.store(p, Ordering::Release);
+    kernel::fs::init::set_rootvnode::<BsdProcGlue>(vp);
 }
 
-/// Initialize the vnode structures and initialize each file system type.
+/// Initialize the vnode structures and initialize each file system type: the `namei` pool,
+/// then the kernel's `vfsinit` over `vfsconflist[]` (the vnode table; the export lists' radix
+/// keys and the name cache in the C's place; each type's `vfs_init`).
 pub fn vfsinit() {
     pool_init(
         &NAMEI_POOL,
@@ -215,32 +206,27 @@ pub fn vfsinit() {
         None,
     );
 
-    // Initialize the vnode table.
-    vntblinit();
+    kernel::fs::init::vfsinit::<BsdProcGlue>(
+        &VFSCONFLIST,
+        crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
+        || {
+            // vntblinit's tail
+            #[cfg(feature = "nfsserver")]
+            crate::net::radix::rn_init(size_of::<crate::netinet::in_::SockaddrIn>() as u32);
 
-    // Initialize the vnode name cache.
-    nchinit();
-
-    let mut maxvfsconf = 0;
-    for vfsp in VFSCONFLIST.iter() {
-        if vfsp.vfc_typenum > maxvfsconf {
-            maxvfsconf = vfsp.vfc_typenum;
-        }
-        if let Some(init) = vfsp.vfc_vfsops.vfs_init {
-            let _ = init(vfsp);
-        }
-    }
-    MAXVFSCONF.store(maxvfsconf, Ordering::Relaxed);
+            // Initialize the vnode name cache.
+            nchinit();
+        },
+    );
 }
 
 /// `vfs_byname(name)`: the configured type called `name`.
 pub fn vfs_byname(name: &[u8]) -> Option<&'static Vfsconf> {
-    let name = name.split(|&c| c == 0).next().unwrap_or(&[]);
-    VFSCONFLIST.iter().find(|vfsp| vfsp.name() == name)
+    kernel::fs::init::vfs_byname::<BsdProcGlue>(name)
 }
 
 /// `vfs_bytypenum(typenum)`: the configured type numbered `typenum`.
 pub fn vfs_bytypenum(typenum: i32) -> Option<&'static Vfsconf> {
-    VFSCONFLIST.iter().find(|vfsp| vfsp.vfc_typenum == typenum)
+    kernel::fs::init::vfs_bytypenum::<BsdProcGlue>(typenum)
 }
 /* </CODE> */

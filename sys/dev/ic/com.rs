@@ -126,7 +126,6 @@ use crate::kern::tty::{
 };
 use crate::kern::tty_conf::linesw;
 use crate::kern::tty_subr::{getc, q_to_b};
-use crate::kern::vfs_subr::vdevgone;
 use crate::machine::bus::{
     BUS_SPACE_BARRIER_READ, BUS_SPACE_BARRIER_WRITE, BusAddr, BusSize, BusSpaceHandle, BusSpaceTag,
     bus_space_barrier, bus_space_map, bus_space_read_1, bus_space_read_4, bus_space_unmap,
@@ -165,6 +164,7 @@ use crate::sys::ttydefaults::{
 use crate::sys::types::{Dev, makedev, minor};
 use crate::sys::uio::Uio;
 use crate::sys::vnode::VCHR;
+use crate::sys::vnode::vdevgone;
 
 /// `#define com_lcr com_cfcr`.
 const COM_LCR: BusSize = COM_CFCR;

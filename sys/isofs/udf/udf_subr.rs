@@ -76,7 +76,6 @@ use crate::isofs::udf::udf_vnops::{udf_data, udf_readatoffset, udf_transname};
 use crate::kern::kern_malloc::malloc;
 use crate::kern::subr_disk::dkcksum;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_subr::vput;
 use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{B_BUSY, B_DONE, B_INVAL, B_RAW, B_READ, B_WRITE, Buf};
 use crate::sys::buf::{biowait, brelse, geteblk};
@@ -89,6 +88,7 @@ use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_UDFFENTRY, M_UDFMOUNT, M_WAITOK};
 use crate::sys::param::btodb;
 use crate::sys::types::{Daddr, Dev, Ino, Off};
+use crate::sys::vnode::vput;
 
 /// Convert a CS0 dstring to a 16-bit Unicode string. Returns the length of the Unicode
 /// string, in unicode characters (not bytes!). Note that the transname destination buffer is

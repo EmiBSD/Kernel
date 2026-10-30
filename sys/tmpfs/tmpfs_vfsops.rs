@@ -83,7 +83,6 @@ use crate::kern::kern_rwlock::{
 use crate::kern::subr_pool::pool_init;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_subr::{copy_statfs_info, vflush, vfs_getnewfsid};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::intr::IPL_NONE;
@@ -103,6 +102,7 @@ use crate::sys::stat::ALLPERMS;
 use crate::sys::types::{Gid, Ino, Mode, Uid};
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNOVAL, Vnode, WRITECLOSE};
+use crate::sys::vnode::{copy_statfs_info, vflush, vfs_getnewfsid};
 use crate::tmpfs::tmpfs::{
     TMPFS_MAXNAMLEN, TmpfsDirent, TmpfsFid, TmpfsMount, TmpfsNode, VFS_TO_TMPFS, VP_TO_TMPFS_NODE,
     tmpfs_node_gen,
@@ -169,12 +169,12 @@ pub fn tmpfs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
 /// `tmpfs_mount_update`: `mount -u`. Only a read-write to read-only change is supported:
 /// it flushes the files opened for writing.
 pub fn tmpfs_mount_update(mp: &'static Mount) -> Result<(), Errno> {
-    if mp.mnt_flag.get() & MNT_RDONLY == 0 {
+    if mp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EOPNOTSUPP);
     }
 
     // ro->rw transition: nothing to do?
-    if mp.mnt_flag.get() & MNT_WANTRDWR != 0 {
+    if mp.flag() & MNT_WANTRDWR != 0 {
         return Ok(());
     }
 
@@ -213,7 +213,7 @@ pub fn tmpfs_mount(
     _ndp: &mut Nameidata<'_>,
     _p: &Proc,
 ) -> Result<(), Errno> {
-    if mp.mnt_flag.get() & MNT_UPDATE != 0 {
+    if mp.flag() & MNT_UPDATE != 0 {
         return tmpfs_mount_update(mp);
     }
 
@@ -295,13 +295,12 @@ pub fn tmpfs_mount(
     root.tn_spec.tn_dir.tn_parent.set(Some(root));
     tmp.tm_root.set(Some(root));
 
-    mp.mnt_data
-        .set(ptr::from_ref(tmp).cast_mut().cast::<c_void>());
-    mp.mnt_flag.set(mp.mnt_flag.get() | MNT_LOCAL);
-    mp.update_stat(|sp| sp.f_namemax = TMPFS_MAXNAMLEN as u32);
+    mp.set_data(ptr::from_ref(tmp).cast_mut().cast::<c_void>());
+    mp.set_flag(mp.flag() | MNT_LOCAL);
+    mp.with_stat(|sp| sp.f_namemax = TMPFS_MAXNAMLEN as u32);
     vfs_getnewfsid(mp);
 
-    mp.update_stat(|sp| {
+    mp.with_stat(|sp| {
         sp.mount_info.__align[..TmpfsArgs::SIZE].copy_from_slice(&data[..TmpfsArgs::SIZE]);
 
         sp.f_mntonname = [0; MNAMELEN];
@@ -368,7 +367,7 @@ pub fn tmpfs_unmount(mp: &'static Mount, mntflags: i32, _p: &Proc) -> Result<(),
         M_MISCFSMNT,
         size_of::<TmpfsMount>(),
     );
-    mp.mnt_data.set(ptr::null_mut());
+    mp.set_data(ptr::null_mut());
 
     Ok(())
 }
@@ -482,7 +481,6 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::vfs_lookup::ndinit;
-    use crate::kern::vfs_subr::{vfs_mount_alloc, vput, vrele};
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::dirent::Dirent;
@@ -491,6 +489,7 @@ pub(crate) mod tests {
     use crate::sys::types::Off;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::{VLNK, VREG, VROOT, Vattr};
+    use crate::sys::vnode::{vfs_mount_alloc, vput, vrele};
     use crate::tmpfs::tmpfs::{TMPFS_DIRSEQ_EOF, TMPFS_DIRSEQ_START, VP_TO_TMPFS_DIR};
     use crate::tmpfs::tmpfs_subr::{
         tmpfs_alloc_file, tmpfs_chmod, tmpfs_chown, tmpfs_dir_cached, tmpfs_dir_getdents,
@@ -612,9 +611,9 @@ pub(crate) mod tests {
         let tmp = VFS_TO_TMPFS(mp);
         assert_eq!(TMPFS_BYTES_USED.load(Ordering::Relaxed), 64 * 1024);
         assert_eq!(tmp.tm_nodes_max.get(), 3 + 64);
-        assert_eq!(&mp.mnt_stat.get().f_mntonname[..5], b"/tmp\0");
-        assert_eq!(&mp.mnt_stat.get().f_mntfromname[..6], b"tmpfs\0");
-        assert!(mp.mnt_flag.get() & MNT_LOCAL != 0);
+        assert_eq!(&mp.stat().f_mntonname[..5], b"/tmp\0");
+        assert_eq!(&mp.stat().f_mntfromname[..6], b"tmpfs\0");
+        assert!(mp.flag() & MNT_LOCAL != 0);
 
         // the root: its own parent, mode as given, a vnode flagged VROOT
         let root = tmp.root();
@@ -628,7 +627,7 @@ pub(crate) mod tests {
         assert_eq!(root.tn_links.get(), 2);
         assert_eq!(root.tn_mode.get(), 0o1777);
         let dvp = tmpfs_root(mp).expect("root vnode");
-        assert!(dvp.v_flag.get() & VROOT != 0);
+        assert!(dvp.flag() & VROOT != 0);
         assert!(ptr::eq(VP_TO_TMPFS_DIR(dvp), root));
 
         // a file, a directory and a symbolic link
@@ -732,7 +731,7 @@ pub(crate) mod tests {
         vput(lvp);
         vput(dvp);
         tmpfs_unmount(mp, 0, p).expect("unmount");
-        assert!(mp.mnt_data.get().is_null());
+        assert!(mp.data().is_null());
         assert_eq!(TMPFS_BYTES_USED.load(Ordering::Relaxed), 0);
     }
 

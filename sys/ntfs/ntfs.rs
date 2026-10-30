@@ -848,7 +848,7 @@ impl Default for Ntfsmount {
 /// `VFSTONTFS(mp)`: convert mount ptr to ntfsmount ptr.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VFSTONTFS(mp: &Mount) -> &'static Ntfsmount {
-    let data = mp.mnt_data.get();
+    let data = mp.data();
     if data.is_null() {
         panic(format_args!("VFSTONTFS: mount {:p} has no ntfsmount", mp));
     }
@@ -860,8 +860,8 @@ pub fn VFSTONTFS(mp: &Mount) -> &'static Ntfsmount {
 /// `VTOF(v)`: the fnode of an NTFS vnode.
 #[allow(non_snake_case)] // the C macro's name
 pub fn VTOF(vp: &Vnode) -> &'static Fnode {
-    let data = vp.v_data.get();
-    if data.is_null() || vp.v_tag.get() != VT_NTFS {
+    let data = vp.data();
+    if data.is_null() || vp.tag() != VT_NTFS {
         panic(format_args!("VTOF: vnode {:p} has no fnode", vp));
     }
     // SAFETY: an NTFS vnode's `v_data` (checked above) is the fnode `ntfs_vgetex` hung

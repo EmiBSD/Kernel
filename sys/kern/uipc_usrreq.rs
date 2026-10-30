@@ -119,7 +119,6 @@ use crate::kern::uipc_socket2::{
     sounlock, sounlock_pair,
 };
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{vattr_null, vput, vrele};
 use crate::kern::vfs_vnops::vn_isunder;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_LOCK, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
@@ -166,6 +165,7 @@ use crate::sys::unpcb::{
     sotounpcb,
 };
 use crate::sys::vnode::{VBLK, VDIR, VSOCK, VWRITE, Vattr};
+use crate::sys::vnode::{vattr_null, vput, vrele};
 
 /// `PIPSIZ`: both send and receive buffers are allocated `PIPSIZ` bytes of buffering for
 /// stream sockets, although the total for sender and receiver is actually only `PIPSIZ`.
@@ -584,7 +584,7 @@ pub fn uipc_bind(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<()
         let Some(vp) = nd.ni_vp else {
             panic(format_args!("uipc_bind: VOP_CREATE returned no vnode"));
         };
-        vp.set_v_socket(Some(unp.unp_socket));
+        vp.g.v_socket.set(Some(unp.unp_socket));
         unp.unp_vnode.set(Some(vp));
         let cred = p.ucred();
         unp.unp_connid.set(Sockpeercred {
@@ -1005,7 +1005,7 @@ pub fn unp_detach(unp: &'static Unpcb) {
         // Enforce `i_lock' -> solock() lock order.
         sounlock(so);
         let _ = VOP_LOCK(vp, LK_EXCLUSIVE);
-        vp.set_v_socket(None);
+        vp.g.v_socket.set(None);
 
         kernel_lock();
         vput(vp);
@@ -1103,13 +1103,13 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
             panic(format_args!("unp_connect: namei returned no vnode"));
         };
         let error: Result<(), Errno> = 'put: {
-            if vp.v_type.get() != VSOCK {
+            if vp.vtype() != VSOCK {
                 break 'put Err(Errno::ENOTSOCK);
             }
             if let Err(e) = VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p) {
                 break 'put Err(e);
             }
-            let Some(so2) = vp.v_socket() else {
+            let Some(so2) = vp.g.v_socket.get() else {
                 break 'put Err(Errno::ECONNREFUSED);
             };
             if so.so_type.get() != so2.so_type.get() {
@@ -1335,8 +1335,7 @@ pub fn unp_externalize(
             {
                 let vp = fp.vnode();
 
-                if vp.v_type.get() == VBLK || (vp.v_type.get() == VDIR && !vn_isunder(vp, rdir, p))
-                {
+                if vp.vtype() == VBLK || (vp.vtype() == VDIR && !vn_isunder(vp, rdir, p)) {
                     error = Err(Errno::EPERM);
                     break;
                 }

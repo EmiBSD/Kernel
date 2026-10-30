@@ -350,13 +350,13 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
 
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
-        self.raw().map_or(0, |r| r.nout())
+        self.raw().map_or(0, RawPool::nout)
     }
 
     /// `pr_size` of the pool once made, as `vmstat -m` reports it: an item holds the count
     /// and the pool's address beside the `T`. `None` before `init`.
     pub fn item_size(&self) -> Option<usize> {
-        self.raw().map(|r| r.size())
+        self.raw().map(RawPool::size)
     }
 
     /// `pool_sethiwat(9)`: the pool keeps at most `n` idle items (`uvm_anon_init`'s
@@ -1270,6 +1270,23 @@ impl<T: 'static> PoolBox<T> {
         a.item == b.item
     }
 
+    /// Gives the handle up for a reference that lives for ever: the item is never put back
+    /// (`vnode_pool`'s vnodes, never freed, recycled in place by `getnewvnode`), as
+    /// [`PoolArc::leak`] and [`crate::malloc::MBox::leak`] do. A `T` that is `Sync` but not
+    /// `Send` may be leaked so: nothing will ever drop it, here or on another CPU.
+    pub fn leak(this: Self) -> &'static T {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: the handle is the item's only owner (the invariant: `leak` takes a
+        // `PoolBox` by value, and a `SharedBox`'s handle is its private field, never given
+        // out, so this is not one) and it is never dropped (`ManuallyDrop`, not returned), so
+        // the one path that puts the item back (`Drop`) never runs and the value, initialised
+        // by `BoxPool::get`, stays valid for the rest of the kernel's life (that no one else
+        // frees or writes an item that is out is `RawPool`'s registration contract,
+        // `sys/hal/trust.rs`). The handle is gone, so no `&mut T` can be made of the item
+        // again (`DerefMut` and `into_raw` need it): only shared references exist from now on.
+        unsafe { this.item.as_ref() }
+    }
+
     /// The value, pinned: it stays where it is until this handle drops it in place (a thread
     /// on its process's lists while its one owner keeps its box).
     pub fn as_pin(&self) -> Pin<&T> {
@@ -1760,6 +1777,24 @@ mod tests {
         let held = P.get(PR_NOWAIT, || 13).unwrap();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(held)));
         assert!(r.is_err());
+    }
+
+    /// A leaked box's item stays out of its pool for ever, its value shared (`vnode_pool`'s
+    /// vnodes, recycled in place, never freed).
+    #[test]
+    fn a_leaked_box_stays_out_of_its_pool() {
+        static P: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, 0, "testleak"), Ok(()));
+        let b = P.get(PR_NOWAIT, || 41).unwrap();
+        let v: &'static u64 = PoolBox::leak(b);
+        assert_eq!(*v, 41);
+        assert_eq!(P.nout(), 1);
+        let again = P.get(PR_NOWAIT, || 42).unwrap();
+        assert!(!core::ptr::eq(&*again, v));
+        drop(again);
+        assert_eq!(P.nout(), 1);
+        assert_eq!(*v, 41);
     }
 
     /// A backend without an idle try (the default `RawPool::get_idle`, this double's) answers

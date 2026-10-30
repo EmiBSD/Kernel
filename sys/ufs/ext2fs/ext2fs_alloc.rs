@@ -200,7 +200,7 @@ pub fn ext2fs_inode_alloc(
         if ino == 0 {
             break 'noinodes;
         }
-        let Some(mp) = pvp.v_mount.get() else {
+        let Some(mp) = pvp.mount() else {
             panic(format_args!("ext2fs_inode_alloc: vnode without a mount"));
         };
         let vp = match VFS_VGET(mp, u64::from(ino)) {

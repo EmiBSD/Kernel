@@ -204,8 +204,8 @@ pub fn ITOV(ip: &FusefsNode) -> &'static Vnode {
 /// `VTOI(vp)`: the node of a FUSE vnode.
 #[allow(non_snake_case)] // the C name
 pub fn VTOI(vp: &Vnode) -> &'static FusefsNode {
-    let ip = vp.v_data.get();
-    if ip.is_null() || vp.v_tag.get() != VT_FUSEFS {
+    let ip = vp.data();
+    if ip.is_null() || vp.tag() != VT_FUSEFS {
         panic(format_args!("VTOI: vnode {:p} has no fusefs node", vp));
     }
     // SAFETY: a FUSE vnode's `v_data` (checked above) is the node `fusefs_vget` hung there,

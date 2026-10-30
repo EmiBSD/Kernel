@@ -132,8 +132,6 @@ use crate::kern::uipc_socket::soinit;
 use crate::kern::vfs_init::{set_rootvnode, vfsinit};
 use crate::kern::vfs_lockf::lf_init;
 use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_subr::{MOUNTLIST, vref, vrele};
-use crate::kern::vfs_sync::{SYNCERPROC, syncer_thread};
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::kprintf;
 use crate::machine::autoconf::pdevinit;
@@ -142,6 +140,7 @@ use crate::machine::copy::copyout;
 use crate::machine::cpu::{Cpu, cpu_configure, cpu_startup, curcpu};
 use crate::machine::param::MachineParam;
 use crate::sys::buf::buf_daemon;
+use crate::sys::vnode::{vref, vrele};
 
 use crate::kern::vm_bsd::uvm_init;
 use crate::kern::vm_bsd::uvm_init_limits;
@@ -573,10 +572,10 @@ pub fn main() -> ! {
     };
 
     if mounted {
-        let Some(rootmp) = MOUNTLIST.0.first() else {
+        let Some(rootmp) = crate::sys::mount::mountlist_first(false) else {
             panic(format_args!("cannot mount root"));
         };
-        rootmp.mnt_flag.set(rootmp.mnt_flag.get() | MNT_ROOTFS);
+        rootmp.set_flag(rootmp.flag() | MNT_ROOTFS);
 
         // Get the vnode for '/'. Set p->p_fd->fd_cdir to reference it.
         let Ok(root) = VFS_ROOT(rootmp) else {
@@ -613,10 +612,16 @@ pub fn main() -> ! {
     if kthread_create(buf_daemon, core::ptr::null_mut(), b"cleaner").is_err() {
         panic(format_args!("fork cleaner"));
     }
-    // Create the update daemon kernel thread.
-    match kthread_create(syncer_thread, core::ptr::null_mut(), b"update") {
-        Ok(sp) => SYNCERPROC.store(ptr::from_ref(sp).cast_mut(), Ordering::Relaxed),
-        Err(_) => panic(format_args!("fork update")),
+    // Create the update daemon kernel thread (`syncerproc`: the thread names itself to the
+    // cache, `kernel::fs::sync::syncer_thread`).
+    if kthread_create(
+        |_| kernel::fs::sync::syncer_thread::<BsdProcGlue>(),
+        core::ptr::null_mut(),
+        b"update",
+    )
+    .is_err()
+    {
+        panic(format_args!("fork update"));
     }
     let _ = unported!("kthread_create (aiodoned, zerothread: M7)");
     #[cfg(feature = "qemu")]
