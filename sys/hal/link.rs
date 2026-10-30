@@ -145,8 +145,9 @@ impl<T: 'static> core::fmt::Debug for Link<T> {
 /// and stored only for a `T: Sync`, so no thread can reach a `T` through it that `T` does not
 /// allow to be shared.
 ///
-/// Invariant: `ptr` is null or the address of a `&'static T` given to [`SyncLink::set`] or
-/// [`SyncLink::to`] for a `T: Sync`; nothing else ever writes it.
+/// Invariant: `ptr` is null or the address of a `&'static T` given to [`SyncLink::set`],
+/// [`SyncLink::replace`] (its swap) or [`SyncLink::to`] for a `T: Sync`; nothing else ever
+/// writes it.
 pub struct SyncLink<T: 'static> {
     ptr: AtomicPtr<T>,
 }
