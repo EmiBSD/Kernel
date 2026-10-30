@@ -863,14 +863,14 @@ pub fn cd9660_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 }
 
 /// `cd9660_link` (`vop_link`): read-only.
-pub fn cd9660_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn cd9660_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EROFS)
 }
 
 /// `cd9660_symlink` (`vop_symlink`): read-only.
-pub fn cd9660_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn cd9660_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let _ = VOP_ABORTOP(ap.a_dvp, ap.a_cnp);
     vput(ap.a_dvp);
     Err(Errno::EROFS)

@@ -71,6 +71,7 @@
 
 use core::ffi::c_void;
 use core::ptr::{self};
+use kernel::file::LockOwner;
 
 use crate::kassert;
 use crate::kern::kern_resource::lim_cur_proc;
@@ -130,9 +131,8 @@ pub static VNOPS: Fileops = Fileops {
 /// Common code for vnode open operations. Check permissions, and call the `VOP_OPEN` or
 /// `VOP_CREATE` routine.
 pub fn vn_open(ndp: &mut Nameidata<'_>, mut fmode: i32, cmode: u32) -> Result<(), Errno> {
-    // SAFETY: `cn_proc` is the thread doing the open (`ndinitat`), which outlives it; the
-    // reference is detached from `ndp` so `ndp` can be changed below.
-    let p: &Proc = unsafe { &*ndp.ni_cnd.cn_proc };
+    // The thread doing the open, for the componentname's life (not tied to `ndp`'s borrow).
+    let p: &Proc = ndp.ni_cnd.proc();
     let cred = p.ucred_ptr();
     let mut va = Vattr::new();
 
@@ -587,7 +587,7 @@ pub fn vn_closefile(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
         };
         let _ = VOP_ADVLOCK(
             vp,
-            ptr::from_ref(fp).cast(),
+            LockOwner::File(fp.addr()),
             i32::from(F_UNLCK),
             &mut lf,
             F_FLOCK,

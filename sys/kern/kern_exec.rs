@@ -87,9 +87,11 @@
 //! - The 4-clause licence (advertising clause) was accepted by the user at M2 for this
 //!   project.
 
+use crate::sys::vnode::RdwrBuf;
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::dev::rnd::{arc4random, arc4random_buf};
 use crate::kern::exec_elf::{exec_elf_fixup, exec_elf_makecmds};
@@ -104,11 +106,8 @@ use crate::kern::kern_synch::wakeup;
 use crate::kern::kern_time::cancel_all_itimers;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_syscalls::NameiBuf;
-use crate::kern::vfs_vnops::{vn_close, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_GETATTR, VOP_OPEN, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvmspace_exec;
 use crate::kern::vm_bsd::{km_alloc, km_free};
@@ -138,6 +137,7 @@ use crate::sys::namei::{
     BYPASSUNVEIL, EXECPATH, FOLLOW, LOCKLEAF, LOOKUP, NOFOLLOW, Nameidata, NiDirp, SAVENAME,
     UNVEIL_EXEC,
 };
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{MAXPATHLEN, NCARGS, PAGE_MASK};
 use crate::sys::pledge::PLEDGE_EXEC;
 use crate::sys::proc::ProcExt;
@@ -157,8 +157,10 @@ use crate::sys::time::Timespec;
 use crate::sys::timetc::Timekeep;
 use crate::sys::types::{Register, Vaddr, Vsize};
 use crate::sys::ucred::CredRef;
-use crate::sys::uio::{UioRw, UioSeg};
+use crate::sys::uio::UioRw;
+use crate::sys::vnode::vfs_getcwd_common;
 use crate::sys::vnode::{VEXEC, VREG, VSGID, VSUID};
+use crate::sys::vnode::{vn_close, vn_rdwr};
 use crate::sys::vnode::{vput, vref, vrele};
 use crate::unported;
 use hal::once::OnceStatic;
@@ -381,12 +383,10 @@ pub fn check_exec(
     let error = vn_rdwr(
         UioRw::UIO_READ,
         vp,
-        epp.ep_hdr.as_mut_ptr().cast(),
-        hdrlen,
+        RdwrBuf::Kernel(&mut epp.ep_hdr[..hdrlen]),
         0,
-        UioSeg::UIO_SYSSPACE,
         0,
-        cred,
+        Cred::from_raw(cred),
         Some(&mut resid),
         Some(p),
     );

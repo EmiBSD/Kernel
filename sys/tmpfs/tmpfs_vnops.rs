@@ -119,6 +119,7 @@
 //!   which panics without a thread (the C would follow NULL).
 //! - The filters reach their vnode through `kn_hook` (`kn_vnode`), as ufs's do.
 
+use crate::sys::namei::cn_ucred;
 use core::ptr::{self, NonNull};
 
 use crate::kassert;
@@ -127,10 +128,7 @@ use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status, rw_enter_write, 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
 use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lockf::lf_advlock;
-use crate::kern::vfs_vnops::{vn_fsizechk, vn_lock};
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_ISLOCKED, VOP_UNLOCK};
 use crate::kern::vfs_vops::{vop_generic_abortop, vop_generic_bmap, vop_generic_revoke};
 use crate::kern::vm_bsd::uvm_vnp_uncache;
@@ -144,11 +142,13 @@ use crate::sys::event::{
 use crate::sys::fcntl::{FWRITE, O_APPEND};
 use crate::sys::file::foffset;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY, LK_RWFLAGS};
+use crate::sys::lockf::lf_advlock;
 use crate::sys::mount::{MNT_NOATIME, MNT_RDONLY, Mount};
 use crate::sys::namei::{
     CREATE, Componentname, DELETE, HASBUF, ISDOTDOT, ISLASTCN, LOCKPARENT, MAKEENTRY, PDIRUNLOCK,
     RENAME, SAVENAME,
 };
+use crate::sys::namei::{cache_enter, cache_lookup, cache_purge};
 use crate::sys::param::{MAXPATHLEN, PAGE_SIZE};
 use crate::sys::proc::Proc;
 use crate::sys::stat::{APPEND, IMMUTABLE, S_ISTXT};
@@ -170,6 +170,7 @@ use crate::sys::vnode::{
     VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref,
 };
 use crate::sys::vnode::{vaccess, vattr_null, vput, vrecycle, vref, vrele};
+use crate::sys::vnode::{vn_fsizechk, vn_lock};
 use crate::tmpfs::tmpfs::{
     TMPFS_DIRSEQ_EOF, TMPFS_MAXNAMLEN, TMPFS_NODE_ACCESSED, TMPFS_NODE_CHANGED,
     TMPFS_NODE_MODIFIED, TMPFS_NODE_STATUSALL, TmpfsDirent, TmpfsMount, TmpfsNode, VFS_TO_TMPFS,
@@ -352,7 +353,7 @@ fn is_dot_or_dotdot(cnp: &Componentname) -> bool {
 ///
 /// - Caller holds a reference and lock on `dvp`.
 /// - We return looked-up vnode (`vpp`) locked, with a reference held.
-pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vpp = &mut *ap.a_vpp;
     let cnp = &mut *ap.a_cnp;
@@ -368,7 +369,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
     let error: Result<(), Errno> = 'out: {
         // Check accessibility of directory.
-        if let Err(e) = VOP_ACCESS(dvp, VEXEC, cred, curp()) {
+        if let Err(e) = VOP_ACCESS(dvp, VEXEC, cred.as_raw(), curp()) {
             break 'out Err(e);
         }
 
@@ -431,7 +432,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                 // creating or renaming an entry and are working on the last component of
                 // the path name.
                 if lastcn && (cnp.cn_nameiop == CREATE || cnp.cn_nameiop == RENAME) {
-                    if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred, curp()) {
+                    if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred.as_raw(), curp()) {
                         break 'out Err(e);
                     }
                     // We are creating an entry in the file system, so save its name for
@@ -452,14 +453,14 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
             // Check the permissions.
             if lastcn && (cnp.cn_nameiop == DELETE || cnp.cn_nameiop == RENAME) {
-                if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred, curp()) {
+                if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred.as_raw(), curp()) {
                     break 'out Err(e);
                 }
 
                 // If not root and directory is sticky, check for permission on directory or
                 // on file. This implements append-only directories.
                 if dnode.tn_mode.get() & S_ISTXT != 0 {
-                    let uid = cnp.cred().cr_uid.get();
+                    let uid = cn_ucred(cnp).cr_uid.get();
                     if uid != 0 && uid != dnode.tn_uid.get() && uid != tnode.tn_uid.get() {
                         break 'out Err(Errno::EPERM);
                     }
@@ -481,7 +482,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         // Cache the result, unless request was for creation (as it does not improve the
         // performance).
         if cnp.cn_flags & MAKEENTRY != 0 && cnp.cn_nameiop != CREATE {
-            cache_enter(dvp, *vpp, cnp);
+            cache_enter(dvp, *vpp, cnp.name());
         }
         error
     };
@@ -507,7 +508,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_create` (`vop_create`): create a regular file (or a socket's node).
-pub fn tmpfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vap = &*ap.a_vap;
 
@@ -519,7 +520,7 @@ pub fn tmpfs_create(ap: &mut VopCreateArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_mknod` (`vop_mknod`): make a device special file or a fifo.
-pub fn tmpfs_mknod(ap: &mut VopMknodArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
     let vt = ap.a_vap.va_type;
 
     if vt != VBLK && vt != VCHR && vt != VFIFO {
@@ -812,7 +813,7 @@ pub fn tmpfs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 ///
 /// - Both directory (`dvp`) and file (`vp`) are locked.
 /// - `VOP_REMOVE` unlocks and drops the reference on both.
-pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
     let cnp = &*ap.a_cnp;
@@ -862,7 +863,7 @@ pub fn tmpfs_remove(ap: &mut VopRemoveArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_link` (`vop_link`): create a hard link.
-pub fn tmpfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
     let cnp = &*ap.a_cnp;
@@ -915,7 +916,7 @@ pub fn tmpfs_link(ap: &mut VopLinkArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_mkdir` (`vop_mkdir`).
-pub fn tmpfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
 
     kassert!(ap.a_vap.va_type == VDIR);
@@ -925,7 +926,7 @@ pub fn tmpfs_mkdir(ap: &mut VopMkdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_rmdir` (`vop_rmdir`): remove an empty directory.
-pub fn tmpfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vp = ap.a_vp;
     let cnp = &*ap.a_cnp;
@@ -989,7 +990,7 @@ pub fn tmpfs_rmdir(ap: &mut VopRmdirArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `tmpfs_symlink` (`vop_symlink`).
-pub fn tmpfs_symlink(ap: &mut VopSymlinkArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let vap = &mut *ap.a_vap;
 
@@ -1203,7 +1204,7 @@ pub fn tmpfs_islocked(ap: &mut VopIslockedArgs) -> i32 {
 ///   `fvp` can refer to the same object (i.e. when it is root).
 /// - Both `tdvp` and `tvp` are referenced and locked. It is our responsibility to release
 ///   the references and unlock them (or destroy).
-pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
+pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let fdvp = ap.a_fdvp;
     let fvp = ap.a_fvp;
     let tdvp = ap.a_tdvp;
@@ -1218,7 +1219,7 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     kassert!(ap.a_tcnp.cn_flags & HASBUF != 0);
 
     let cred = ap.a_fcnp.cn_cred;
-    kassert!(ptr::eq(ap.a_tcnp.cn_cred, cred));
+    kassert!(ptr::eq(ap.a_tcnp.cn_cred.as_raw(), cred.as_raw()));
 
     // Check for cross-device rename. Also don't allow renames of mount points.
     if !same(fvp.mount(), tdvp.mount())
@@ -1259,7 +1260,7 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_>) -> Result<(), Errno> {
     let error = if same(tvp, Some(tdvp)) {
         Err(Errno::EINVAL)
     } else {
-        tmpfs_sane_rename(fdvp, ap.a_fcnp, tdvp, ap.a_tcnp, cred, false)
+        tmpfs_sane_rename(fdvp, ap.a_fcnp, tdvp, ap.a_tcnp, cred.as_raw(), false)
     };
 
     // out: All done, whether with success or failure. Release the directory nodes now, as
@@ -1313,7 +1314,7 @@ fn tmpfs_sane_rename(
     // locking anything or taking destructive actions so that we can back out safely and
     // sleep safely. XXX Is sleeping an issue here? Can this just be moved into
     // tmpfs_rename_attachdetach?
-    let tlen = tcnp.cn_namelen as usize;
+    let tlen = tcnp.namelen() as usize;
     let mut newname = if tmpfs_strname_neqlen(fcnp, tcnp) {
         match tmpfs_strname_alloc(tmpfs, tlen) {
             Some(name) => Some(name),
@@ -2276,7 +2277,7 @@ fn tmpfs_rename_cache_purge(
 }
 
 /// `tmpfs_rename_abort`: abort both lookups of a rename and release every vnode.
-fn tmpfs_rename_abort(ap: &mut VopRenameArgs<'_>) {
+fn tmpfs_rename_abort(ap: &mut VopRenameArgs<'_, '_, '_>) {
     let fdvp = ap.a_fdvp;
     let fvp = ap.a_fvp;
     let tdvp = ap.a_tdvp;
@@ -2399,11 +2400,9 @@ mod tests {
 
     use super::*;
     use crate::kern::vfs_init::set_rootvnode;
-    use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_syscalls::{
         dolinkat, domkdirat, doreadlinkat, dorenameat, dosymlinkat, dounlinkat,
     };
-    use crate::kern::vfs_vnops::{vn_close, vn_open, vn_rdwr};
     use crate::kern::vfs_vops::{
         VOP_GETATTR, VOP_KQFILTER, VOP_OPEN, VOP_PATHCONF, VOP_READDIR, VOP_SETATTR,
     };
@@ -2411,12 +2410,16 @@ mod tests {
     use crate::sys::fcntl::{AT_FDCWD, AT_REMOVEDIR, FREAD, O_CREAT};
     use crate::sys::lock::LK_RECURSEFAIL;
     use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
+    use crate::sys::namei::{namei, ndinit};
     use crate::sys::param::DEV_BSIZE;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
+    use crate::sys::vnode::RdwrBuf;
     use crate::sys::vnode::Vattr;
     use crate::sys::vnode::{vfs_mount_alloc, vfs_unbusy};
+    use crate::sys::vnode::{vn_close, vn_open, vn_rdwr};
     use crate::tmpfs::tmpfs_vfsops::tests::{args, setup, tmpfs_conf};
     use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
+    use kernel::fs::vops::Cred;
 
     /// The test setup plus a tmpfs of 1 MB mounted as "/" (mode 0755, owned by root) and made
     /// the thread's current directory.
@@ -2579,12 +2582,10 @@ mod tests {
         vn_rdwr(
             UioRw::UIO_READ,
             vp,
-            byte.as_mut_ptr().cast(),
-            1,
+            RdwrBuf::Kernel(&mut byte[..1]),
             0,
-            UioSeg::UIO_SYSSPACE,
             0,
-            p.ucred(),
+            Cred::real(p.ucred()),
             Some(&mut resid),
             Some(p),
         )
@@ -2593,12 +2594,10 @@ mod tests {
         vn_rdwr(
             UioRw::UIO_WRITE,
             vp,
-            byte.as_mut_ptr().cast(),
+            RdwrBuf::KernelRead(&byte[..0]),
             0,
             0,
-            UioSeg::UIO_SYSSPACE,
-            0,
-            p.ucred(),
+            Cred::real(p.ucred()),
             None,
             Some(p),
         )
@@ -2608,14 +2607,12 @@ mod tests {
             vn_rdwr(
                 UioRw::UIO_WRITE,
                 vp,
-                byte.as_mut_ptr().cast(),
-                1,
+                RdwrBuf::KernelRead(&byte[..1]),
                 i64::MAX,
-                UioSeg::UIO_SYSSPACE,
                 0,
-                p.ucred(),
+                Cred::real(p.ucred()),
                 None,
-                Some(p),
+                Some(p)
             ),
             Err(Errno::EFBIG)
         );
@@ -2632,14 +2629,12 @@ mod tests {
                 vn_rdwr(
                     rw,
                     root,
-                    byte.as_mut_ptr().cast(),
-                    1,
+                    RdwrBuf::Kernel(&mut byte[..1]),
                     0,
-                    UioSeg::UIO_SYSSPACE,
                     0,
-                    p.ucred(),
+                    Cred::real(p.ucred()),
                     None,
-                    Some(p),
+                    Some(p)
                 ),
                 Err(want)
             );
@@ -2890,12 +2885,10 @@ mod tests {
         vn_rdwr(
             UioRw::UIO_READ,
             vp,
-            buf.as_mut_ptr().cast(),
-            DEV_BSIZE,
+            RdwrBuf::Kernel(&mut buf[..DEV_BSIZE]),
             0,
-            UioSeg::UIO_SYSSPACE,
             0,
-            p.ucred(),
+            Cred::real(p.ucred()),
             Some(&mut resid),
             Some(p),
         )

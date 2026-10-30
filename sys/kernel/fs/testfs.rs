@@ -409,7 +409,7 @@ impl Vnops<TestGlue> for TestVops {
     fn advlock(
         &self,
         vp: &'static Vnode<TestGlue>,
-        id: *const core::ffi::c_void,
+        id: crate::file::LockOwner,
         op: i32,
         fl: &mut hal::sys::fcntl::Flock,
         flags: i32,
@@ -417,14 +417,7 @@ impl Vnops<TestGlue> for TestVops {
         let Some(node) = node_of(vp) else {
             return Err(Errno::EOPNOTSUPP);
         };
-        super::lockf::lf_advlock::<TestGlue>(
-            &node.lockf,
-            512,
-            crate::file::LockOwner::File(id.addr()),
-            op,
-            fl,
-            flags,
-        )
+        super::lockf::lf_advlock::<TestGlue>(&node.lockf, 512, id, op, fl, flags)
     }
     fn read(
         &self,

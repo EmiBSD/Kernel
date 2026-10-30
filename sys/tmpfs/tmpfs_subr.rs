@@ -106,6 +106,7 @@
 //! - `pool_put(&namei_pool, cnp->cn_pnbuf)` in `tmpfs_alloc_file` gives the buffer back
 //!   through `vfs_init.rs`'s `NAMEI_POOL`.
 
+use crate::sys::namei::cn_ucred;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
@@ -119,7 +120,6 @@ use crate::kern::kern_tc::{getnanotime, nanotime};
 use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_ISLOCKED};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::sys::dirent::{
@@ -144,6 +144,7 @@ use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Gid, Mode, Off, Uid, Vsize};
 use crate::sys::ucred::Ucred;
 use crate::sys::uio::Uio;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     VA_UTIMES_CHANGE, VA_UTIMES_NULL, VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VN_KNOTE, VNON, VNOVAL,
     VREG, VROOT, VSOCK, VT_TMPFS, VTEXT, VWRITE, Vattr, Vnode, Vtype,
@@ -489,7 +490,7 @@ pub fn tmpfs_alloc_file(
         let node = match tmpfs_alloc_node(
             tmp,
             vap.va_type,
-            cnp.cred().cr_uid.get(),
+            cn_ucred(cnp).cr_uid.get(),
             dnode.tn_gid.get(),
             vap.va_mode,
             target,

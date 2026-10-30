@@ -75,9 +75,9 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_pool::pool_init;
-use crate::kern::vfs_cache::nchinit;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::mount::Vfsconf;
+use crate::sys::namei::nchinit;
 use crate::sys::param::MAXPATHLEN;
 use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::vnode::Vnode;

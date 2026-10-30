@@ -47,7 +47,6 @@
 //! - `cnp->cn_proc` is read through `cn_proc` (`fuse_vnops.rs`), detached from `cnp` so that
 //!   the component's flags can change meanwhile.
 
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::miscfs::fuse::fuse_device::fuse_device_queue_fbuf;
 use crate::miscfs::fuse::fuse_vnops::{cn_proc, vmount};
@@ -61,11 +60,12 @@ use crate::sys::namei::{
     CREATE, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, PDIRUNLOCK, RENAME, SAVENAME, WANTPARENT,
 };
 use crate::sys::types::Ino;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{VDIR, VEXEC, VWRITE, VopLookupArgs, Vtype, iftovt};
 use crate::sys::vnode::{vput, vref};
 
 /// `fusefs_lookup` (`vop_lookup`).
-pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let vdp = ap.a_dvp; // vnode for directory being searched
     let dp = VTOI(vdp); // inode for directory being searched
     let fmp = dp.i_fmp; // file system that directory is in
@@ -78,7 +78,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     let lockparent = flags & LOCKPARENT != 0;
     let wantparent = flags & (LOCKPARENT | WANTPARENT) != 0;
 
-    VOP_ACCESS(vdp, VEXEC, cred, p)?;
+    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), p)?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0
@@ -121,7 +121,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             if (nameiop == CREATE || nameiop == RENAME) && flags & ISLASTCN != 0 {
                 // Access for write is interpreted as allowing creation of files in the
                 // directory.
-                VOP_ACCESS(vdp, VWRITE, cred, p)?;
+                VOP_ACCESS(vdp, VWRITE, cred.as_raw(), p)?;
 
                 ap.a_cnp.cn_flags |= SAVENAME;
 
@@ -152,7 +152,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     let error = 'reclaim: {
         if nameiop == DELETE && flags & ISLASTCN != 0 {
             // Write access to directory required to delete files.
-            if let Err(e) = VOP_ACCESS(vdp, VWRITE, cred, p) {
+            if let Err(e) = VOP_ACCESS(vdp, VWRITE, cred.as_raw(), p) {
                 break 'reclaim e;
             }
 
@@ -161,7 +161,7 @@ pub fn fusefs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
         if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
             // Write access to directory required to delete files.
-            if let Err(e) = VOP_ACCESS(vdp, VWRITE, cred, p) {
+            if let Err(e) = VOP_ACCESS(vdp, VWRITE, cred.as_raw(), p) {
                 break 'reclaim e;
             }
 

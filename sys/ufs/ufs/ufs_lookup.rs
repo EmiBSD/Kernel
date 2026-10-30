@@ -74,11 +74,12 @@
 //! - The `newdirbp` argument of `ufs_direnter` (the soft dependency code's) is kept and
 //!   unused, as in C.
 
+use crate::sys::namei::cn_ucred;
+use crate::sys::vnode::RdwrBuf;
 use core::sync::atomic::{AtomicI32, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::vfs_cache::{NCHSTATS, cache_enter, cache_lookup};
-use crate::kern::vfs_vnops::{vn_lock, vn_rdwr};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_BWRITE, VOP_UNLOCK};
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::kprintf;
@@ -93,10 +94,12 @@ use crate::sys::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, PDIRUNLOCK,
     RENAME, SAVENAME, WANTPARENT,
 };
+use crate::sys::namei::{NCHSTATS, cache_enter, cache_lookup};
 use crate::sys::param::roundup;
 use crate::sys::ucred::Ucred;
-use crate::sys::uio::{UioRw, UioSeg};
+use crate::sys::uio::UioRw;
 use crate::sys::vnode::{IO_NODELOCKED, IO_SYNC, VDIR, VEXEC, VWRITE, Vnode, VopLookupArgs};
+use crate::sys::vnode::{vn_lock, vn_rdwr};
 use crate::sys::vnode::{vnoperm, vput, vref, vrele};
 use crate::ufs::ufs::dinode::{IFDIR, IFMT, ISVTX, ROOTINO, Ufsino};
 use crate::ufs::ufs::dir::{
@@ -138,8 +141,8 @@ fn vmount(vp: &Vnode) -> &'static crate::sys::mount::Mount {
 }
 
 /// `cnp->cn_cred`, which a lookup always has.
-fn cn_cred(cnp: &Componentname) -> &Ucred {
-    cnp.cred()
+fn cn_cred<'c>(cnp: &'c Componentname<'_>) -> &'c Ucred {
+    cn_ucred(cnp)
 }
 
 /// `ufs_lookup` (`vop_lookup`): convert a component of a pathname into a pointer to a
@@ -168,7 +171,7 @@ fn cn_cred(cnp: &Componentname) -> &Ucred {
 ///   of path and rewriting (`RENAME` and `LOCKPARENT`), lock target inode and return info to
 ///   allow rewrite; if not at end, add name to cache; if at end and neither creating nor
 ///   deleting, add name to cache
-pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let cred = cnp.cn_cred;
     let nameiop = cnp.cn_nameiop;
@@ -188,7 +191,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     if dp.dip_mode() & IFMT != IFDIR {
         return Err(Errno::ENOTDIR);
     }
-    VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), cnp.proc())?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0
@@ -214,7 +217,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     let mut slotneeded: i32 = 0;
     if (nameiop == CREATE || nameiop == RENAME) && flags & ISLASTCN != 0 {
         slotstatus = Slotstatus::None;
-        slotneeded = ((size_of::<Direct>() - MAXNAMLEN) as i32 + cnp.cn_namelen as i32 + 3) & !3;
+        slotneeded = ((size_of::<Direct>() - MAXNAMLEN) as i32 + cnp.namelen() as i32 + 3) & !3;
     }
 
     // If there is cached information on a previous search of this directory, pick up where
@@ -374,7 +377,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
             // Check for a name match.
             if d_ino(data, ep) != 0 {
                 let namlen = usize::from(d_namlen(data, ep));
-                if namlen as i64 == cnp.cn_namelen && d_name(data, ep, namlen) == cnp.name() {
+                if namlen as i64 == cnp.namelen() && d_name(data, ep, namlen) == cnp.name() {
                     // Save directory entry's inode number and reclen in ndp->ni_ufs area, and
                     // release directory buffer.
                     dp.i_ino.set(d_ino(data, ep));
@@ -414,7 +417,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         {
             // Access for write is interpreted as allowing creation of files in the
             // directory.
-            VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
+            VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
             // Return an indication of where the new directory entry should be put. If we
             // didn't find a slot, then set dp->i_count to 0 indicating that the new slot
             // belongs at the end of the directory. If we found a slot, then the new entry can
@@ -456,7 +459,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         }
         // Insert name into cache (as non-existent) if appropriate.
         if cnp.cn_flags & MAKEENTRY != 0 && nameiop != CREATE {
-            cache_enter(vdp, *ap.a_vpp, cnp);
+            cache_enter(vdp, *ap.a_vpp, cnp.name());
         }
         return Err(Errno::ENOENT);
     };
@@ -486,7 +489,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // ndp->ni_dvp), otherwise we go on and lock the inode, being careful with ".".
     if nameiop == DELETE && flags & ISLASTCN != 0 {
         // Write access to directory required to delete files.
-        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
         // Return pointer to current entry in dp->i_offset, and distance past previous entry
         // (if there is a previous entry in this block) in dp->i_count. Save directory inode
         // pointer in ndp->ni_dvp for dirremove().
@@ -526,7 +529,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     // present directory. Must get inode of directory entry to verify it's a regular file, or
     // empty directory.
     if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
-        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
         // Careful about locking second inode. This can only occur if the target is ".".
         if dp.i_number.get() == dp.i_ino.get() {
             return Err(Errno::EISDIR);
@@ -588,7 +591,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
     // Insert name into cache if appropriate.
     if cnp.cn_flags & MAKEENTRY != 0 {
-        cache_enter(vdp, *ap.a_vpp, cnp);
+        cache_enter(vdp, *ap.a_vpp, cnp.name());
     }
     Ok(())
 }
@@ -644,7 +647,7 @@ pub fn ufs_makedirentry(ip: &Inode, cnp: &Componentname, newdirp: &mut Direct) {
     if cnp.cn_flags & SAVENAME == 0 {
         panic(format_args!("ufs_makedirentry: missing name"));
     }
-    let namelen = cnp.cn_namelen as usize;
+    let namelen = cnp.namelen() as usize;
     newdirp.d_ino = ip.i_number.get();
     newdirp.d_namlen = namelen as u8;
     let pad = namelen & !(DIR_ROUNDUP - 1);
@@ -682,7 +685,7 @@ pub fn ufs_direnter(
             dp,
             i64::from(dp.i_offset.get()),
             DIRBLKSIZ as i32,
-            cr,
+            cr.as_raw(),
             flags,
         )?;
         dp.dip_set_size(dp.i_offset.get() as u64 + DIRBLKSIZ as u64);
@@ -831,7 +834,7 @@ pub fn ufs_direnter(
         if let Some(tvp) = tvp {
             let _ = VOP_UNLOCK(tvp);
         }
-        error = UFS_TRUNCATE(dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr);
+        error = UFS_TRUNCATE(dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr.as_raw());
         #[cfg(feature = "ufs_dirhash")]
         if error.is_ok() && dp.i_dirhash.get().is_some() {
             ufsdirhash_dirtrunc(dp, dp.i_endoff.get());
@@ -962,12 +965,10 @@ pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
         let error = vn_rdwr(
             UioRw::UIO_READ,
             ip.itov(),
-            dbuf.as_mut_ptr().cast(),
-            MINDIRSIZ,
+            RdwrBuf::Kernel(&mut dbuf[..MINDIRSIZ]),
             off,
-            UioSeg::UIO_SYSSPACE,
             IO_NODELOCKED,
-            cred,
+            Cred::from_raw(cred),
             Some(&mut count),
             curproc(),
         );
@@ -1033,12 +1034,10 @@ pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Resu
             if let Err(e) = vn_rdwr(
                 UioRw::UIO_READ,
                 cur,
-                dirbuf.as_mut_ptr().cast(),
-                Dirtemplate::SIZE,
+                RdwrBuf::Kernel(&mut dirbuf[..Dirtemplate::SIZE]),
                 0,
-                UioSeg::UIO_SYSSPACE,
                 IO_NODELOCKED,
-                cred,
+                Cred::from_raw(cred),
                 None,
                 curproc(),
             ) {

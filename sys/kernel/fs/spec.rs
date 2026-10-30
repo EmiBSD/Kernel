@@ -144,7 +144,7 @@
 //!   revoke of an alias) finds under it, leaves it and restarts from the head after the
 //!   sleep, as the C's `goto loop`.
 
-use core::ffi::c_void;
+use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 
@@ -634,7 +634,7 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
     fn advlock(
         &self,
         vp: &'static Vnode<G>,
-        id: *const c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
@@ -1127,7 +1127,7 @@ pub fn spec_pathconf(name: i32, retval: &mut Register) -> Result<(), Errno> {
 /// lock list `bsd`'s until N5.3).
 pub fn spec_advlock<G: ProcGlue>(
     vp: &'static Vnode<G>,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,

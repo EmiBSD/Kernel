@@ -95,7 +95,6 @@ use core::ptr::{self, NonNull};
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::vfs_init::NAMEI_POOL;
-use crate::kern::vfs_lookup::vfs_lookup;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::netinet::in_::{IPPORT_RESERVED, SockaddrIn};
 use crate::nfs::nfs::{ND_NFSV3, Nethostaddr, NfsrvDescript, NfssvcSock};
@@ -114,6 +113,7 @@ use crate::nfs::xdr_subs::{
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::mount::{Fhandle, MNT_EXPORTANON, MNT_EXRDONLY, VFS_CHECKEXP, VFS_FHTOVP};
+use crate::sys::namei::vfs_lookup;
 use crate::sys::namei::{
     HASBUF, ISSYMLINK, LOCKPARENT, NOCROSSMOUNT, Nameidata, RDONLY, SAVENAME, SAVESTART,
 };
@@ -143,8 +143,8 @@ use crate::sys::vnode::{vfs_getvfs, vput, vref, vrele};
 /// `ndp.ni_cnd.cn_cred` is the credentials `nfsrv_fhtovp` maps for the export (the caller's
 /// `nd_cr`). The error is the C's `int`: an errno or an NFS status.
 #[allow(clippy::too_many_arguments)] // the C signature
-pub fn nfs_namei(
-    ndp: &mut Nameidata<'_>,
+pub fn nfs_namei<'a>(
+    ndp: &mut Nameidata<'a>,
     fhp: &Fhandle,
     len: usize,
     slp: &NfssvcSock,
@@ -152,7 +152,7 @@ pub fn nfs_namei(
     mdp: &mut Option<&'static Mbuf>,
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
-    p: &Proc,
+    p: &'a Proc,
     cred: &UcredCell,
 ) -> Result<(), i32> {
     *retdirp = None;
@@ -178,8 +178,8 @@ pub fn nfs_namei(
 /// The part of `nfs_namei` before its `out:` label: everything that can fail, with the buffer
 /// `buf` (`cn_pnbuf`) still the caller's to give back.
 #[allow(clippy::too_many_arguments)] // nfs_namei's, split
-fn namei_lookup(
-    ndp: &mut Nameidata<'_>,
+fn namei_lookup<'a>(
+    ndp: &mut Nameidata<'a>,
     buf: NonNull<u8>,
     fhp: &Fhandle,
     len: usize,
@@ -188,7 +188,7 @@ fn namei_lookup(
     mdp: &mut Option<&'static Mbuf>,
     dposp: &mut *mut u8,
     retdirp: &mut Option<&'static Vnode>,
-    p: &Proc,
+    p: &'a Proc,
     cred: &UcredCell,
 ) -> Result<(), i32> {
     if len >= MAXPATHLEN {
@@ -573,6 +573,7 @@ mod tests {
     use crate::sys::mbuf::{M_DONTWAIT, MT_SONAME};
     use crate::sys::types::makedev;
     use crate::sys::vnode::{VCHR, VDIR, VLNK, VREG, Vtype};
+    use kernel::fs::vops::Cred;
 
     /// The words of `b` (a reply), as raw XDR words in network order.
     fn words(b: &[u8]) -> Vec<u32> {
@@ -875,12 +876,12 @@ mod tests {
     fn namei_and_fhtovp_over_an_exported_ffs() {
         use crate::kern::kern_descrip::sys_close;
         use crate::kern::uipc_mbuf::tests::mbinit_again;
-        use crate::kern::vfs_lookup::{namei, ndinit};
         use crate::kern::vfs_subr::tests::exports::{args, sin};
         use crate::kern::vfs_syscalls::{sys_mkdir, sys_mount, sys_open, sys_symlink};
         use crate::sys::fcntl::{O_CREAT, O_RDWR};
         use crate::sys::mount::{MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE, UfsArgs, VFS_VPTOFH};
         use crate::sys::namei::{FOLLOW, LOCKLEAF, LOOKUP, NiDirp};
+        use crate::sys::namei::{namei, ndinit};
         use crate::ufs::ffs::ffs_vfsops::tests::{
             mount_root, newfs, path, setup, sys, teardown, unmount_root,
         };
@@ -958,7 +959,7 @@ mod tests {
             let mut md = Some(head);
             let mut dpos = mtod::<u8>(head);
             let mut nd = ndinit(LOOKUP, flags, NiDirp::Sys(b""), p);
-            nd.ni_cnd.cn_cred = &**cred;
+            nd.ni_cnd.cn_cred = Cred::real(&**cred);
             let mut retdir = None;
             let r = nfs_namei(
                 &mut nd,

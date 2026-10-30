@@ -88,9 +88,9 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicU32;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_lockf::LockfStateSlot;
 use crate::nfs::nfsproto::{NFS_MAXFHSIZE, Nfsfh, Nfsuint64};
 use crate::sys::buf::ByFreelist;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::rwlock::{Rrwlock, Rwlock};
 use crate::sys::time::Timespec;
 use crate::sys::tree::RbtEntry;
@@ -176,7 +176,7 @@ pub struct NfsNode {
     /// `n_vnode`: associated vnode.
     pub n_vnode: Cell<Option<&'static Vnode>>,
     /// `n_lockf`: locking record of file.
-    pub n_lockf: LockfStateSlot,
+    pub n_lockf: LockfSlot,
     /// `n_lock`: NFSnode lock.
     pub n_lock: Rrwlock,
     /// `n_error`: save write error value (an errno, 0 for none).
@@ -239,7 +239,7 @@ impl NfsNode {
             n_mtime: Cell::new(Timespec::new(0, 0)),
             n_ctime: Cell::new(0),
             n_vnode: Cell::new(None),
-            n_lockf: Cell::new(None),
+            n_lockf: LockfSlot::new(),
             n_lock: Rrwlock::new("nfsnode"),
             n_error: Cell::new(0),
             n_atim: Cell::new(Timespec::new(0, 0)),

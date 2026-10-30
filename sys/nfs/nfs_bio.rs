@@ -99,7 +99,6 @@ use crate::kern::kern_sig::psignal;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup, wakeup_one};
 use crate::kern::subr_prf::{panic, uprintf};
-use crate::kern::vfs_vnops::vn_fsizechk;
 use crate::kern::vfs_vops::{VOP_BWRITE, VOP_GETATTR};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
@@ -141,6 +140,7 @@ use crate::sys::types::{Daddr, Off};
 use crate::sys::ucred::{NOCRED, Ucred};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::vinvalbuf;
+use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_SYNC, V_SAVE, VLNK, VN_KNOTE, VREG, VROOT, VTEXT, Vattr, Vnode, VopWriteArgs,
 };

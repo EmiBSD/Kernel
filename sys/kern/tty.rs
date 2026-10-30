@@ -88,20 +88,20 @@ use kernel::uio::UioMove;
 use crate::dev::cons::{cn_devvp_set, cn_tab, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::machine::conf::cdevsw;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp, UNVEIL_READ, UNVEIL_WRITE};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
 use crate::sys::proc::{Proc, Session};
 use crate::sys::tty::{Speedtab, Tty};
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::{Uio, UioRw};
 use crate::sys::vnode::VREAD;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::vrele;
 
 pub use kernel::tty::{

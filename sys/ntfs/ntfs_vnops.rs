@@ -82,8 +82,6 @@ use core::sync::atomic::AtomicI32;
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::{eopnotsupp, nullop};
-use crate::kern::vfs_cache::{cache_enter, cache_lookup, cache_purge};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::vop_generic_bwrite;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::machine::intr::{splbio, splx};
@@ -103,12 +101,14 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mount::VFS_VGET;
 use crate::sys::namei::{DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, MAKEENTRY, PDIRUNLOCK, RENAME};
+use crate::sys::namei::{cache_enter, cache_lookup, cache_purge};
 use crate::sys::stat::{
     S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, S_IXGRP, S_IXOTH, S_IXUSR,
 };
 use crate::sys::types::{Ino, Mode, Nlink, Off, Register};
 use crate::sys::ucred::Ucred;
 use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     VDIR, VEXEC, VLNK, VREAD, VREG, VWRITE, VopAccessArgs, VopBmapArgs, VopCloseArgs, VopFsyncArgs,
     VopGetattrArgs, VopInactiveArgs, VopLookupArgs, VopOpenArgs, VopPathconfArgs, VopPrintArgs,
@@ -601,14 +601,14 @@ pub fn ntfs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
 }
 
 /// `ntfs_lookup` (`vop_lookup`).
-pub fn ntfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn ntfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let dip = VTONT(dvp);
     let ntmp = dip.mp();
     let cnp = &mut *ap.a_cnp;
     let lockparent = cnp.cn_flags & LOCKPARENT != 0;
 
-    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc())?;
+    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
 
     if cnp.cn_flags & ISLASTCN != 0 && (cnp.cn_nameiop == DELETE || cnp.cn_nameiop == RENAME) {
         return Err(Errno::EROFS);
@@ -665,7 +665,7 @@ pub fn ntfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     }
 
     if cnp.cn_flags & MAKEENTRY != 0 {
-        cache_enter(dvp, *ap.a_vpp, cnp);
+        cache_enter(dvp, *ap.a_vpp, cnp.name());
     }
 
     Ok(())
@@ -733,6 +733,7 @@ mod tests {
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
     use crate::sys::vnode::{VROOT, Vattr, Vnode, VopFsyncArgs, VopInactiveArgs};
     use crate::sys::vnode::{bdevvp, vflushbuf, vfs_mount_alloc, vfs_mount_free, vrele};
+    use kernel::fs::vops::Cred;
 
     /// The cluster size: two 512-byte sectors.
     const CL: usize = 1024;
@@ -1331,14 +1332,18 @@ mod tests {
     }
 
     /// `VOP_LOOKUP` of `name` in `dvp` (the last component, the parent kept locked).
-    fn lookup(p: &'static Proc, dvp: &'static Vnode, name: &[u8]) -> Result<&'static Vnode, Errno> {
-        let mut cnp = Componentname::new();
-        cnp.cn_nameiop = LOOKUP;
-        cnp.cn_flags = ISLASTCN | LOCKPARENT | if name == b".." { ISDOTDOT } else { 0 };
-        cnp.cn_proc = p;
-        cnp.cn_cred = p.ucred();
-        cnp.cn_nameptr = name.as_ptr();
-        cnp.cn_namelen = name.len() as i64;
+    fn lookup(
+        p: &'static Proc,
+        dvp: &'static Vnode,
+        name: &'static [u8],
+    ) -> Result<&'static Vnode, Errno> {
+        let mut cnp = Componentname::new(
+            LOOKUP,
+            ISLASTCN | LOCKPARENT | if name == b".." { ISDOTDOT } else { 0 },
+            p,
+            Cred::real(p.ucred()),
+        );
+        cnp.set_name_lit(name);
         let mut vpp = None;
         VOP_LOOKUP(dvp, &mut vpp, &mut cnp)?;
         Ok(vpp.unwrap())

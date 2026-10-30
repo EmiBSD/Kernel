@@ -1586,7 +1586,7 @@ macro_rules! test_file_glue {
             fn lf_purgelocks(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
             fn spec_advlock(
                 _vp: &'static $crate::fs::vnode::Vnode<$proc>,
-                _id: *const core::ffi::c_void,
+                _id: $crate::file::LockOwner,
                 _op: i32,
                 _fl: &mut hal::sys::fcntl::Flock,
                 _flags: i32,

@@ -83,7 +83,6 @@ use crate::kern::kern_rwlock::{
 use crate::kern::subr_pool::pool_init;
 use crate::kern::subr_prf::{panic, printf};
 use crate::kern::subr_xxx::eopnotsupp;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::machine::intr::IPL_NONE;
 use crate::sys::errno::Errno;
@@ -101,6 +100,7 @@ use crate::sys::proc::Proc;
 use crate::sys::stat::ALLPERMS;
 use crate::sys::types::{Gid, Ino, Mode, Uid};
 use crate::sys::ucred::Ucred;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNOVAL, Vnode, WRITECLOSE};
 use crate::sys::vnode::{copy_statfs_info, vflush, vfs_getnewfsid};
 use crate::tmpfs::tmpfs::{
@@ -480,11 +480,11 @@ pub(crate) mod tests {
     use std::{assert, assert_eq};
 
     use super::*;
-    use crate::kern::vfs_lookup::ndinit;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
     use crate::sys::dirent::Dirent;
     use crate::sys::mount::TMPFS_ARGS_VERSION;
+    use crate::sys::namei::ndinit;
     use crate::sys::namei::{Componentname, LOOKUP, NiDirp};
     use crate::sys::types::Off;
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -495,6 +495,7 @@ pub(crate) mod tests {
         tmpfs_alloc_file, tmpfs_chmod, tmpfs_chown, tmpfs_dir_cached, tmpfs_dir_getdents,
         tmpfs_dir_lookup, tmpfs_reg_resize, tmpfs_truncate,
     };
+    use kernel::fs::vops::Cred;
     use kernel::vm::aobj::uao_init;
 
     /// The configuration entry of tmpfs in `vfsconflist[]`.
@@ -545,12 +546,9 @@ pub(crate) mod tests {
     }
 
     /// A component name for `name`, with the thread's credentials and no pathname buffer.
-    fn cn(p: &'static Proc, name: &'static [u8]) -> Componentname {
-        let mut cnp = Componentname::new();
-        cnp.cn_proc = p;
-        cnp.cn_cred = p.ucred();
-        cnp.cn_nameptr = name.as_ptr();
-        cnp.cn_namelen = name.len() as i64;
+    fn cn(p: &'static Proc, name: &'static [u8]) -> Componentname<'static> {
+        let mut cnp = Componentname::new(0, 0, p, Cred::real(p.ucred()));
+        cnp.set_name_lit(name);
         cnp
     }
 

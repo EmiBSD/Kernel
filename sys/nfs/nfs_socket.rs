@@ -121,8 +121,6 @@ use crate::kern::uipc_socket::{
 };
 use crate::kern::uipc_socket2::{solock_shared, soreserve, sosleep_nsec, sounlock_shared};
 #[cfg(feature = "nfsclient")]
-use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "nfsclient")]
 use crate::log;
 #[cfg(feature = "nfsclient")]
 use crate::machine::cpu::curproc;
@@ -184,6 +182,8 @@ use crate::sys::mount::{
     MNAMELEN, NFSMNT_DUMBTIMR, NFSMNT_INT, NFSMNT_NOCONN, NFSMNT_RCVLOCK, NFSMNT_SNDLOCK,
     NFSMNT_SOFT, NFSMNT_WANTRCV, NFSMNT_WANTSND,
 };
+#[cfg(feature = "nfsclient")]
+use crate::sys::namei::cache_purge;
 use crate::sys::param::{PCATCH, PSOCK, PZERO, align, aligned_pointer};
 use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::Proc;

@@ -95,8 +95,6 @@ use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::{Str, panic};
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_OPEN, VOP_UNLOCK};
 use crate::kprintf;
 use crate::machine::conf::{nblkdev, swapdev};
@@ -116,6 +114,7 @@ use crate::sys::mount::{
     MNT_WANTRDWR, Mount, Statfs, UfsArgs, VFS_VGET, Vfsconf, Vfsops,
 };
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{DEV_BSIZE, dbtob, howmany};
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::Proc;
@@ -123,6 +122,7 @@ use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Daddr, Ino, Off, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, V_SAVE, VBAD, VBLK, VNON, VT_EXT2FS, Vnode, WRITECLOSE};
 use crate::sys::vnode::{
     bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
@@ -318,7 +318,7 @@ pub fn ext2fs_mount(
             fs.e2fs_ronly.set(1);
         }
         if mp.flag() & MNT_RELOAD != 0 {
-            ext2fs_reload(mp, ndp.ni_cnd.cn_cred, p)?;
+            ext2fs_reload(mp, ndp.ni_cnd.cn_cred.as_raw(), p)?;
         }
         if fs.e2fs_ronly.get() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
             fs.e2fs_ronly.set(0);

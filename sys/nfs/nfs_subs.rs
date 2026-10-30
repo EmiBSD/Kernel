@@ -114,8 +114,6 @@ use crate::kern::subr_pool::pool_init;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_align, m_get, m_trailingspace};
 #[cfg(feature = "nfsclient")]
-use crate::kern::vfs_cache::cache_purge;
-#[cfg(feature = "nfsclient")]
 use crate::kern::vm_bsd::uvm_vnp_setsize;
 use crate::machine::copy::copyout;
 use crate::machine::intr::{IPL_NONE, IPL_SOFTNET, splbio, splx};
@@ -169,6 +167,8 @@ use crate::sys::mount::NFSMNT_NFSV3;
 #[cfg(feature = "nfsclient")]
 use crate::sys::mount::Vfsconf;
 use crate::sys::mutex::Mutex;
+#[cfg(feature = "nfsclient")]
+use crate::sys::namei::cache_purge;
 use crate::sys::param::DEV_BSIZE;
 #[cfg(feature = "nfsclient")]
 use crate::sys::param::{BLKDEV_IOSIZE, MAXBSIZE};

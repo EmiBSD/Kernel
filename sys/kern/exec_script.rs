@@ -80,11 +80,10 @@
 use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_descrip::{BsdFileData, falloc, fdinsert, fdrelease};
 use crate::kern::kern_exec::{check_exec, namei_pnbuf_put};
-use crate::kern::vfs_lookup::ndinitat;
-use crate::kern::vfs_vnops::{VNOPS, vn_close, vn_lock};
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::errno::Errno;
 use crate::sys::exec::{
@@ -95,9 +94,11 @@ use crate::sys::fcntl::{AT_FDCWD, FREAD};
 use crate::sys::file::{DTYPE_VNODE, frele};
 use crate::sys::filedesc::{fdplock, fdpunlock};
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::namei::{LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::ndinitat;
+use crate::sys::namei::{Componentname, LOOKUP, Nameidata, NiDirp};
 use crate::sys::param::{MAXINTERP, MAXPATHLEN};
 use crate::sys::proc::Proc;
+use crate::sys::vnode::{VNOPS, vn_close, vn_lock};
 use crate::sys::vnode::{VREAD, VSGID, VSUID};
 
 /// The first line of a script as `exec_script_makecmds` reads it: the interpreter and the
@@ -253,7 +254,7 @@ pub fn exec_script_makecmds(
             ndp.ni_next = shnd.ni_next;
             ndp.ni_loopcnt = shnd.ni_loopcnt;
             ndp.ni_unveil_match = shnd.ni_unveil_match;
-            core::mem::swap(&mut ndp.ni_cnd, &mut shnd.ni_cnd);
+            swap_componentname(&mut ndp.ni_cnd, &mut shnd.ni_cnd);
             namei_pnbuf_put(&mut shnd);
 
             // set things up so that the fake args list will be used.
@@ -313,6 +314,23 @@ fn exec_script_fail(
     epp.ep_vmcmds.kill();
 
     Err(error)
+}
+
+/// The swap of two `struct componentname`s of different lifetimes (the caller's and the
+/// shell's lookup, which borrow different path strings): every member but the thread, the
+/// same in both (`p`).
+fn swap_componentname(a: &mut Componentname<'_>, b: &mut Componentname<'_>) {
+    core::mem::swap(&mut a.cn_nameiop, &mut b.cn_nameiop);
+    core::mem::swap(&mut a.cn_flags, &mut b.cn_flags);
+    let (ca, cb) = (a.cn_cred.as_raw(), b.cn_cred.as_raw());
+    a.cn_cred = Cred::from_raw(cb);
+    b.cn_cred = Cred::from_raw(ca);
+    core::mem::swap(&mut a.cn_pnbuf, &mut b.cn_pnbuf);
+    core::mem::swap(&mut a.cn_rpbuf, &mut b.cn_rpbuf);
+    core::mem::swap(&mut a.cn_rpi, &mut b.cn_rpi);
+    core::mem::swap(&mut a.cn_nameptr, &mut b.cn_nameptr);
+    core::mem::swap(&mut a.cn_namelen, &mut b.cn_namelen);
+    core::mem::swap(&mut a.cn_consume, &mut b.cn_consume);
 }
 /* </CODE> */
 

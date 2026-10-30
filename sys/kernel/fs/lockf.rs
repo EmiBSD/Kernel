@@ -403,22 +403,24 @@ pub fn lf_advlock<G: ProcGlue>(
     if start < 0 {
         return Err(Errno::EINVAL);
     }
-    let end = if fl.l_len > 0 {
-        if fl.l_len - 1 > Off::MAX - start {
-            return Err(Errno::EOVERFLOW);
+    let end = match fl.l_len.cmp(&0) {
+        Ordering::Greater => {
+            if fl.l_len - 1 > Off::MAX - start {
+                return Err(Errno::EOVERFLOW);
+            }
+            let end = start + (fl.l_len - 1);
+            // Avoid ambiguity at the end of the range.
+            if end == Off::MAX { -1 } else { end }
         }
-        let end = start + (fl.l_len - 1);
-        // Avoid ambiguity at the end of the range.
-        if end == Off::MAX { -1 } else { end }
-    } else if fl.l_len < 0 {
-        if start.wrapping_add(fl.l_len) < 0 {
-            return Err(Errno::EINVAL);
+        Ordering::Less => {
+            if start.wrapping_add(fl.l_len) < 0 {
+                return Err(Errno::EINVAL);
+            }
+            let end = start - 1;
+            start += fl.l_len;
+            end
         }
-        let end = start - 1;
-        start += fl.l_len;
-        end
-    } else {
-        -1
+        Ordering::Equal => -1,
     };
 
     let mut w = LOCKF_LOCK.write();
@@ -449,14 +451,12 @@ pub fn lf_advlock<G: ProcGlue>(
             blkhd: SecondaryList::new(),
         };
         let pid = if flags & F_POSIX != 0 { pid } else { -1 };
-        match lf_alloc::<G>(uid, allowfail, m, pid) {
-            Some(lock) => lock,
-            None => {
-                state(slot, &mut p0).refs -= 1;
-                ls_settle(slot, &mut p0);
-                return Err(Errno::ENOLCK);
-            }
-        }
+        let Some(lock) = lf_alloc::<G>(uid, allowfail, m, pid) else {
+            state(slot, &mut p0).refs -= 1;
+            ls_settle(slot, &mut p0);
+            return Err(Errno::ENOLCK);
+        };
+        lock
     };
 
     let error = match op {
@@ -465,9 +465,9 @@ pub fn lf_advlock<G: ProcGlue>(
             let [mut p0, mut p1] = w.split::<2>();
             let ls = state(slot, &mut p0);
             let rq = Range::of(&lock, &p1);
-            let error = lf_clearlock::<G>(ls, &rq, &mut p1);
+            lf_clearlock::<G>(ls, &rq, &mut p1);
             lf_free::<G>(ls, lock);
-            error
+            Ok(())
         }
         F_GETLK => {
             let [mut p0, p1] = w.split::<2>();
@@ -545,7 +545,7 @@ fn lf_setlock<G: ProcGlue>(
             // we sleep waiting for an exclusive lock.
             if rq.flags & F_FLOCK != 0 && rq.ty == F_WRLCK {
                 let unlck = Range { ty: F_UNLCK, ..rq };
-                let _ = lf_clearlock::<G>(ls, &unlck, &mut p1);
+                lf_clearlock::<G>(ls, &unlck, &mut p1);
             }
             // Add our lock to the blocked list and sleep until we're free. Remember who
             // blocked us (for deadlock detection).
@@ -690,7 +690,6 @@ fn lf_setlock<G: ProcGlue>(
                 };
                 let ob = ls.locks.take(oh);
                 lf_free::<G>(ls, ob);
-                continue;
             }
             (4, Some(o)) => {
                 // Add lock after overlap on the list.
@@ -708,7 +707,6 @@ fn lf_setlock<G: ProcGlue>(
                 }
                 o.m.get_mut(&mut p1).end = rq.start - 1;
                 lf_wakelock(o, 0, &mut p1);
-                continue;
             }
             (5, Some(o)) => {
                 // Add the new lock before overlap.
@@ -739,13 +737,9 @@ fn lf_free_request<G: ProcGlue>(ls: &mut LockfState, req: Request) {
 ///
 /// Generally, find the lock (or an overlap to that lock) and remove it (or shrink it), then
 /// wakeup anyone we can.
-fn lf_clearlock<G: ProcGlue>(
-    ls: &mut LockfState,
-    lock: &Range,
-    p1: &mut WitnessPart<'_>,
-) -> Result<(), Errno> {
+fn lf_clearlock<G: ProcGlue>(ls: &mut LockfState, lock: &Range, p1: &mut WitnessPart<'_>) {
     let Some(first) = ls.locks.first() else {
-        return Ok(());
+        return;
     };
     let mut lf = Some(hold(first));
     loop {
@@ -794,7 +788,6 @@ fn lf_clearlock<G: ProcGlue>(
         }
         break;
     }
-    Ok(())
 }
 
 /// Check whether there is a blocking lock, and if so return its process identifier.

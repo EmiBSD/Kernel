@@ -101,7 +101,7 @@ use hal::sys::syslimits::{NAME_MAX, SYMLOOP_MAX};
 use hal::user::UserPtr;
 
 use super::init::rootvnode;
-use super::mount::{vfs_busy, vfs_unbusy};
+use super::mount::{Mount, vfs_busy, vfs_unbusy};
 use super::namei::{
     BPU_LOCALTIME, BPU_ZONEINFO, BYPASSUNVEIL, CREATE, Componentname, DELETE, EXECPATH, FOLLOW,
     HASBUF, ISDOTDOT, ISLASTCN, ISSYMLINK, KERNELPATH, LOCKLEAF, LOCKPARENT, MAKEENTRY, MAXPATHLEN,
@@ -119,8 +119,8 @@ use crate::uio::{Iovec, Uio, UioSeg};
 
 /// The pathname buffer of a componentname being walked (`namei` gave it one): `panic(9)`
 /// without one.
-fn pnbuf_of(b: &Option<PathBuf>) -> &[u8; MAXPATHLEN] {
-    match b.as_deref() {
+fn pnbuf_of(b: Option<&PathBuf>) -> &[u8; MAXPATHLEN] {
+    match b {
         Some(b) => b,
         None => kpanic(format_args!("namei: no cn_pnbuf")),
     }
@@ -294,13 +294,11 @@ where
 
     // Get a buffer for the name to be translated, and copy the name into the buffer.
     if ndp.ni_cnd.cn_flags & HASBUF == 0 {
-        match pathbuf_get::<G>() {
-            Some(b) => ndp.ni_cnd.cn_pnbuf = Some(b),
-            None => {
-                ndp.ni_vp = None;
-                return Err(NO_PATHBUF);
-            }
-        }
+        let Some(b) = pathbuf_get::<G>() else {
+            ndp.ni_vp = None;
+            return Err(NO_PATHBUF);
+        };
+        ndp.ni_cnd.cn_pnbuf = Some(b);
     }
     let copied = {
         let pn = pnbuf_of_mut(&mut ndp.ni_cnd.cn_pnbuf);
@@ -364,7 +362,7 @@ where
 
     // Check if starting from root directory or current directory.
     let mut dp: &'static Vnode<G>;
-    if pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[0] == b'/' {
+    if pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[0] == b'/' {
         dp = rootdir;
         vref(dp);
         if ndp.ni_cnd.cn_flags & (REALPATH | EXECPATH) != 0 && ndp.ni_cnd.cn_rpi == 0 {
@@ -483,7 +481,7 @@ where
             Some(mut cp) => {
                 let (next, len) = (ndp.ni_next, ndp.ni_pathlen);
                 cp[linklen..linklen + len]
-                    .copy_from_slice(&pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[next..next + len]);
+                    .copy_from_slice(&pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[next..next + len]);
                 // The old buffer goes back to its pool.
                 ndp.ni_cnd.cn_pnbuf = Some(cp);
             }
@@ -493,7 +491,7 @@ where
         if ndp.ni_cnd.cn_flags & BPU_LOCALTIME != 0 {
             // /etc/localtime can be a symbolic link but must point into /usr/share/zoneinfo/
             // without ..
-            if !G::checkzoneinfopath(pn_str(pnbuf_of(&ndp.ni_cnd.cn_pnbuf))) {
+            if !G::checkzoneinfopath(pn_str(pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref()))) {
                 break Errno::EACCES;
             }
             ndp.ni_cnd.cn_flags &= !BPU_LOCALTIME;
@@ -502,7 +500,7 @@ where
         vput(vp);
         dp = dvp;
         // Check if root directory should replace current directory.
-        if pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[0] == b'/' {
+        if pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[0] == b'/' {
             vrele(dp);
             dp = rootdir;
             vref(dp);
@@ -657,8 +655,8 @@ where
     // If we have a leading string of slashes, remove them, and just make sure the current
     // node is a directory.
     let mut terminal = false;
-    if pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[name] == b'/' {
-        let pn = pnbuf_of(&ndp.ni_cnd.cn_pnbuf);
+    if pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[name] == b'/' {
+        let pn = pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref());
         let mut cp = name;
         while pn[cp] == b'/' {
             cp += 1;
@@ -674,7 +672,7 @@ where
         // If we've exhausted the path name, then just return the current node. If the caller
         // requested the parent node (i.e. it's a CREATE, DELETE, or RENAME), and we don't have
         // one (because this is the root directory), then we must fail.
-        if pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[name] == 0 {
+        if pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[name] == 0 {
             if ndp.ni_dvp.is_none() && wantparent {
                 return Err(Bad(Errno::EISDIR));
             }
@@ -696,7 +694,7 @@ where
             // XXX: Figure out the length of the last component.
             let mut cp = name;
             {
-                let pn = pnbuf_of(&ndp.ni_cnd.cn_pnbuf);
+                let pn = pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref());
                 while pn[cp] != 0 && pn[cp] != b'/' {
                     cp += 1;
                 }
@@ -709,7 +707,7 @@ where
 
             if ndp.ni_cnd.cn_flags & (REALPATH | EXECPATH) != 0 {
                 let cn = &mut ndp.ni_cnd;
-                let pn = pnbuf_of(&cn.cn_pnbuf);
+                let pn = pnbuf_of(cn.cn_pnbuf.as_ref());
                 let component = &pn[name..cp];
                 if component == b".." {
                     pop_from(rpbuf_of(&mut cn.cn_rpbuf), &mut cn.cn_rpi);
@@ -732,7 +730,7 @@ where
             let slashes;
             let at_end;
             {
-                let pn = pnbuf_of(&ndp.ni_cnd.cn_pnbuf);
+                let pn = pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref());
                 if pn[cp] == b'/' {
                     while pn[cp] == b'/' {
                         cp += 1;
@@ -790,7 +788,7 @@ where
                             break;
                         }
                         let tdp = st.dp;
-                        let Some(covered) = st.dp.mount().and_then(|mp| mp.vnodecovered()) else {
+                        let Some(covered) = st.dp.mount().and_then(Mount::vnodecovered) else {
                             break;
                         };
                         st.dp = covered;
@@ -860,7 +858,7 @@ where
                     next = next + consume - slashes;
                     ndp.ni_next = next;
                     ndp.ni_cnd.cn_consume = 0;
-                    if pnbuf_of(&ndp.ni_cnd.cn_pnbuf)[next] == 0 {
+                    if pnbuf_of(ndp.ni_cnd.cn_pnbuf.as_ref())[next] == 0 {
                         ndp.ni_cnd.cn_flags |= ISLASTCN;
                     }
                 }
@@ -956,7 +954,7 @@ where
 
 /// Whether the vnode's file system is mounted read-only.
 fn mnt_rdonly<G: ProcGlue>(vp: Option<&'static Vnode<G>>) -> bool {
-    vp.and_then(|vp| vp.mount())
+    vp.and_then(Vnode::mount)
         .is_some_and(|mp| mp.flag() & hal::sys::mount::MNT_RDONLY != 0)
 }
 

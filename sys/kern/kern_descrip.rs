@@ -123,7 +123,6 @@ use crate::kern::init_sysent::SYSENT;
 use crate::kern::kern_pledge::{pledge_fcntl, pledge_flock, pledge_ioctl};
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
 #[cfg(not(test))]
@@ -150,6 +149,7 @@ use crate::sys::syscallargs::{
 };
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Off, Register, minor};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
 
 /// `f_data`: what a `bsd` file is open on.
@@ -225,20 +225,13 @@ fn vnode_of(d: &BsdFileData) -> &'static Vnode {
     }
 }
 
-/// A record lock owner as `VOP_ADVLOCK`'s `id` (compared, never followed).
-fn owner_id(owner: LockOwner) -> *const core::ffi::c_void {
-    match owner {
-        LockOwner::Table(a) | LockOwner::File(a) => core::ptr::without_provenance(a),
-    }
-}
-
 impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
     type Data = BsdFileData;
     type FileList = FileListLink;
     type VnodeG = crate::sys::vnode::VnodeG;
-    type Componentname<'a> = crate::sys::namei::Componentname;
+    type Componentname<'a> = crate::sys::namei::Componentname<'a>;
     type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
     /// The kernel's `namei` is not `bsd`'s yet (N5.3's switch): no unveil match to keep.
     type UnveilMatch = ();
@@ -267,7 +260,7 @@ impl FileGlue for BsdFileGlue {
         fl: &mut Flock,
         flags: i32,
     ) -> Result<(), Errno> {
-        VOP_ADVLOCK(vnode_of(d), owner_id(owner), op, fl, flags)
+        VOP_ADVLOCK(vnode_of(d), owner, op, fl, flags)
     }
 
     fn pathconf(d: &BsdFileData, name: i32) -> Result<Register, Errno> {
@@ -378,7 +371,7 @@ impl FileGlue for BsdFileGlue {
         p: &Proc,
     ) -> Result<usize, Errno> {
         let mut bp = bp;
-        crate::kern::vfs_getcwd::vfs_getcwd_common(
+        crate::sys::vnode::vfs_getcwd_common(
             vp,
             None,
             Some((path, &mut bp)),
@@ -395,26 +388,26 @@ impl FileGlue for BsdFileGlue {
         &VFS_TABLES
     }
     fn vnode_g_init(vp: &'static Vnode) {
-        crate::kern::vfs_cache::cache_tree_init(&vp.g.v_nc_tree);
+        crate::sys::namei::cache_tree_init(&vp.g.v_nc_tree);
         vp.g.v_cache_dst.init();
     }
     fn vnode_recycle(vp: &'static Vnode) {
         vp.g.v_socket.set(None);
     }
     fn cache_purge(vp: &'static Vnode) {
-        crate::kern::vfs_cache::cache_purge(vp);
+        crate::sys::namei::cache_purge(vp);
     }
     fn lf_purgelocks(vp: &'static Vnode) {
-        crate::kern::vfs_lockf::lf_purgelocks(&vp.g.v_speclockf);
+        crate::sys::lockf::lf_purgelocks(&vp.g.v_speclockf);
     }
     fn spec_advlock(
         vp: &'static Vnode,
-        id: *const core::ffi::c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
     ) -> Result<(), Errno> {
-        crate::kern::vfs_lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
+        crate::sys::lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
     }
     fn abortop(cnp: &mut Self::Componentname<'_>) {
         crate::kern::vfs_vops::abortop_putname(cnp);

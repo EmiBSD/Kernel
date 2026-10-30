@@ -119,8 +119,6 @@ use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_subr::{hashfree, hashinit};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_OPEN, VOP_UNLOCK};
 use crate::machine::conf::nblkdev;
 use crate::machine::copy::copyinstr;
@@ -141,6 +139,7 @@ use crate::sys::mount::{
     UdfArgs, VFS_VGET, Vfsconf, Vfsops,
 };
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::btodb;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::proc::Proc;
@@ -149,6 +148,7 @@ use crate::sys::syslimits::NAME_MAX;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Ino, Uid, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, V_SAVE, VBLK, VCHR, VDIR, VFIFO, VLNK, VREG, VROOT, VSOCK, Vnode,
 };

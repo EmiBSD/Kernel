@@ -66,6 +66,7 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::slice;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::vfs_cache::cache_revlookup;
@@ -119,11 +120,12 @@ pub fn vfs_getcwd_scandir(
         return Err(error);
     }
 
-    let mut cn = Componentname::new();
-    cn.cn_nameiop = LOOKUP;
-    cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
-    cn.cn_proc = p;
-    cn.cn_cred = p.ucred_ptr();
+    let mut cn = Componentname::new(
+        LOOKUP,
+        ISLASTCN | ISDOTDOT | RDONLY,
+        p,
+        Cred::from_raw(p.ucred_ptr()),
+    );
     cn.cn_pnbuf = ptr::null_mut();
     cn.cn_nameptr = DOTDOT.as_ptr();
     cn.cn_namelen = 2;

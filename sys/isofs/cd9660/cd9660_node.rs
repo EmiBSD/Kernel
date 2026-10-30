@@ -128,7 +128,6 @@ use crate::isofs::cd9660::iso::{
 use crate::kern::kern_malloc::free;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::cache_purge;
 use crate::kern::vfs_vops::{VOP_LOCK, VOP_UNLOCK};
 use crate::queue_adapter;
 use crate::sys::buf::BufLegacy;
@@ -138,6 +137,7 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::LK_EXCLUSIVE;
 use crate::sys::malloc::{M_ISOFSMNT, M_ISOFSNODE, M_WAITOK};
 use crate::sys::mount::{ISOFSMNT_EXTATT, Vfsconf};
+use crate::sys::namei::cache_purge;
 use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::rwlock::Rrwlock;
 use crate::sys::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};

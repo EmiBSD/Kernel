@@ -684,33 +684,29 @@ pub fn cache_enter<G: ProcGlue>(
         let [mut p0, mut p1] = g.split::<2>();
         let nc = cache_of::<G>(&mut p0);
         // allocate, or recycle (free and allocate) an ncp.
-        let b = match item.take() {
-            Some(b) => b,
-            None => {
-                if nc.numcache >= nc.initialvnodes {
-                    let head = nc.lru.first().or_else(|| nc.neg.first()).map(hold);
-                    match head {
-                        Some(h) => cache_zap(nc, &mut p1, h),
-                        None => kpanic(format_args!("wtf? leak?")),
-                    }
-                }
-                match pool.get_idle(PR_WAITOK, || Namecache::new(dvp, vp, name)) {
-                    Some((b, y)) => {
-                        yields = Some(y);
-                        b
-                    }
-                    None => {
-                        // The pool must grow, which may sleep: not in the section.
-                        drop(p1);
-                        drop(p0);
-                        drop(g);
-                        let Some(b) = pool.get(PR_WAITOK, || Namecache::new(dvp, vp, name)) else {
-                            return;
-                        };
-                        item = Some(b);
-                        continue;
-                    }
-                }
+        let b = if let Some(b) = item.take() {
+            b
+        } else {
+            if nc.numcache >= nc.initialvnodes {
+                let head = nc.lru.first().or_else(|| nc.neg.first()).map(hold);
+                let Some(h) = head else {
+                    kpanic(format_args!("wtf? leak?"));
+                };
+                cache_zap(nc, &mut p1, h);
+            }
+            if let Some((b, y)) = pool.get_idle(PR_WAITOK, || Namecache::new(dvp, vp, name)) {
+                yields = Some(y);
+                b
+            } else {
+                // The pool must grow, which may sleep: not in the section.
+                drop(p1);
+                drop(p0);
+                drop(g);
+                let Some(b) = pool.get(PR_WAITOK, || Namecache::new(dvp, vp, name)) else {
+                    return;
+                };
+                item = Some(b);
+                continue;
             }
         };
         if dvp.nc.get(&p1).tree.is_empty() {

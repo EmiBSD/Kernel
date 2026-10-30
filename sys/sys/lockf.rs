@@ -60,7 +60,9 @@
 //! - The header only forward-declares `struct lockf_state`; `vfs_lockf.c` defines it, so the
 //!   type and the functions live in `kern/vfs_lockf.rs` and are re-exported here.
 //! - `struct lockf_state **` (the slot a vnode or an inode keeps, `v_speclockf`, `i_lockf`)
-//!   is [`LockfStateSlot`], a `Cell` holding `Option<&'static LockfState>`.
+//!   is [`LockfSlot`], a `Cell` holding `Option<&'static LockfState>`.
 
-pub use crate::kern::vfs_lockf::{LockfState, LockfStateSlot, lf_advlock, lf_init, lf_purgelocks};
+pub use crate::kern::vfs_lockf::{
+    LockfSlot, LockfState, MAXLOCKSPERUID, lf_advlock, lf_init, lf_purgelocks,
+};
 /* </CODE> */

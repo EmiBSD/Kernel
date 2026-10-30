@@ -113,7 +113,7 @@
 //!   `queue.h` list entry, `de_hash` (the [`DeHash`] adapter); `de_prev == NULL` (a denode on
 //!   no chain) is the `de_hashed` flag, set while the denode is linked (see
 //!   `msdosfs_denode.rs`).
-//! - `de_lockf` is a `LockfStateSlot` (`sys/lockf.rs`).
+//! - `de_lockf` is a `LockfSlot` (`sys/lockf.rs`).
 //! - `de_Name` is a `Cell<[u8; 11]>`; `de_fc` is an array of `Cell<Fatcache>`.
 //! - `fc_setcache`, `DE_INTERNALIZE32`, `DE_INTERNALIZE`, `DE_EXTERNALIZE`, `DETIMES`, `VTODE`
 //!   are functions with the macros' names in lower case; `DETOV` is [`Denode::detov`]. The
@@ -137,7 +137,7 @@ use crate::msdosfs::fat::fat32;
 use crate::msdosfs::msdosfs_conv::unix2dostime;
 use crate::msdosfs::msdosfsmount::Msdosfsmount;
 use crate::queue_adapter;
-use crate::sys::lockf::LockfStateSlot;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::mount::{Fid, MSDOSFSMNT_NOWIN95};
 use crate::sys::queue::ListEntry;
 use crate::sys::rwlock::Rrwlock;
@@ -226,7 +226,7 @@ pub struct Denode {
     /// `de_pmp`: addr of our mount struct.
     pub de_pmp: Cell<Option<&'static Msdosfsmount>>,
     /// `de_lockf`: byte level lock list.
-    pub de_lockf: LockfStateSlot,
+    pub de_lockf: LockfSlot,
     /// `de_lock`: denode lock.
     pub de_lock: Rrwlock,
     /// `de_Name`: name, from DOS directory entry.
@@ -273,7 +273,7 @@ impl Denode {
             de_fndcnt: Cell::new(0),
             de_refcnt: Cell::new(0),
             de_pmp: Cell::new(None),
-            de_lockf: Cell::new(None),
+            de_lockf: LockfSlot::new(),
             de_lock: Rrwlock::new("denode"),
             de_Name: Cell::new([0; 11]),
             de_Attributes: Cell::new(0),

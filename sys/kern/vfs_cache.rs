@@ -361,10 +361,10 @@ pub fn cache_revlookup(
 }
 
 /// Add an entry to the cache.
-pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Componentname) {
+pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, name: &[u8]) {
     let initialvnodes = i64::from(crate::conf::param::INITIALVNODES.load(Ordering::Relaxed));
 
-    if DOINGCACHE.load(Ordering::Relaxed) == 0 || cnp.cn_namelen > NAMECACHE_MAXLEN as i64 {
+    if DOINGCACHE.load(Ordering::Relaxed) == 0 || name.len() > NAMECACHE_MAXLEN {
         return;
     }
 
@@ -398,7 +398,6 @@ pub fn cache_enter(dvp: &'static Vnode, vp: Option<&'static Vnode>, cnp: &Compon
     // fill in cache info
     ncp.nc_dvp.set(Some(dvp));
     ncp.nc_dvpid.set(u64::from(dvp.id()));
-    let name = cnp.name();
     ncp.nc_nlen.set(name.len() as u8);
     let mut nc_name = [0u8; NAMECACHE_MAXLEN];
     nc_name[..name.len()].copy_from_slice(name);
@@ -518,13 +517,13 @@ mod tests {
     };
     use crate::kern::vfs_vops::VOP_ISLOCKED;
     use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
+    use crate::sys::proc::Proc;
     use crate::sys::vnode::vrele;
+    use kernel::fs::vops::Cred;
 
     /// A componentname for `name` in a lookup with `flags`.
-    fn cn(name: &'static [u8], op: u64, flags: u64) -> Componentname {
-        let mut cnp = Componentname::new();
-        cnp.cn_nameiop = op;
-        cnp.cn_flags = flags;
+    fn cn(p: &'static Proc, name: &'static [u8], op: u64, flags: u64) -> Componentname<'static> {
+        let mut cnp = Componentname::new(op, flags, p, Cred::NULL);
         cnp.cn_nameptr = name.as_ptr();
         cnp.cn_namelen = name.len() as i64;
         cnp
@@ -550,19 +549,19 @@ mod tests {
 
     #[test]
     fn enter_then_hit() {
-        let (_g, _p, mp) = testfs::setup_root();
+        let (_g, p, mp) = testfs::setup_root();
         let dvp = vget_node(mp, A).unwrap();
         let vp = vget_node(mp, C).unwrap();
         let _ = VOP_UNLOCK(vp);
         let uses = vp.usecount();
 
-        cache_enter(dvp, Some(vp), &cn(b"c", LOOKUP, MAKEENTRY));
+        cache_enter(dvp, Some(vp), b"c");
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 1);
         // A directory entry other than . and .. goes into the reverse map.
         assert!(vp.g.v_cache_dst.first().is_some());
 
         // A hit on the last component without LOCKPARENT unlocks the parent.
-        let mut c = cn(b"c", LOOKUP, MAKEENTRY | ISLASTCN);
+        let mut c = cn(p, b"c", LOOKUP, MAKEENTRY | ISLASTCN);
         let hits = NCHSTATS.ncs_goodhits.load(Ordering::SeqCst);
         let found = cache_lookup(dvp, &mut c).unwrap().unwrap();
         assert!(ptr::eq(found, vp));
@@ -575,7 +574,7 @@ mod tests {
 
         // With LOCKPARENT on the last component the parent stays locked.
         crate::kern::vfs_vnops::vn_lock(dvp, crate::sys::lock::LK_EXCLUSIVE).unwrap();
-        let mut c = cn(b"c", LOOKUP, MAKEENTRY | ISLASTCN | LOCKPARENT);
+        let mut c = cn(p, b"c", LOOKUP, MAKEENTRY | ISLASTCN | LOCKPARENT);
         let found = cache_lookup(dvp, &mut c).unwrap().unwrap();
         assert_eq!(VOP_ISLOCKED(dvp), 1);
         assert!(c.cn_flags & PDIRUNLOCK == 0);
@@ -586,25 +585,25 @@ mod tests {
 
     #[test]
     fn negative_entries_and_misses() {
-        let (_g, _p, mp) = testfs::setup_root();
+        let (_g, p, mp) = testfs::setup_root();
         let dvp = vget_node(mp, A).unwrap();
 
-        let mut c = cn(b"nope", LOOKUP, MAKEENTRY);
+        let mut c = cn(p, b"nope", LOOKUP, MAKEENTRY);
         assert!(matches!(cache_lookup(dvp, &mut c), Ok(None))); // a miss
-        cache_enter(dvp, None, &c);
+        cache_enter(dvp, None, c.name());
         assert_eq!(NUMNEG.load(Ordering::SeqCst), 1);
         let neg = NCHSTATS.ncs_neghits.load(Ordering::SeqCst);
         assert!(matches!(cache_lookup(dvp, &mut c), Err(Errno::ENOENT)));
         assert_eq!(NCHSTATS.ncs_neghits.load(Ordering::SeqCst), neg + 1);
 
         // CREATE of the last component drops the negative entry instead.
-        let mut c = cn(b"nope", CREATE, MAKEENTRY | ISLASTCN);
+        let mut c = cn(p, b"nope", CREATE, MAKEENTRY | ISLASTCN);
         assert!(matches!(cache_lookup(dvp, &mut c), Ok(None)));
         assert_eq!(NUMNEG.load(Ordering::SeqCst), 0);
 
         // Names longer than NAMECACHE_MAXLEN are never cached.
-        let long = cn(testfs::NODES[LONG].name, LOOKUP, MAKEENTRY);
-        cache_enter(dvp, None, &long);
+        let long = cn(p, testfs::NODES[LONG].name, LOOKUP, MAKEENTRY);
+        cache_enter(dvp, None, long.name());
         assert_eq!(NUMNEG.load(Ordering::SeqCst), 0);
         let mut long = long;
         let n = NCHSTATS.ncs_long.load(Ordering::SeqCst);
@@ -616,11 +615,11 @@ mod tests {
 
     #[test]
     fn purge_invalidates_entries_naming_the_vnode() {
-        let (_g, _p, mp) = testfs::setup_root();
+        let (_g, p, mp) = testfs::setup_root();
         let dvp = vget_node(mp, A).unwrap();
         let vp = vget_node(mp, B).unwrap();
         let _ = VOP_UNLOCK(vp);
-        cache_enter(dvp, Some(vp), &cn(b"b", LOOKUP, MAKEENTRY));
+        cache_enter(dvp, Some(vp), b"b");
         assert!(!dvp.g.v_nc_tree.is_empty());
         assert_eq!(dvp.holdcnt(), 1, "a directory with entries is held");
 
@@ -628,7 +627,7 @@ mod tests {
         cache_purge(vp);
         assert_ne!(vp.id(), id);
         // The entry is still in the parent's tree but its capability is stale: a false hit.
-        let mut c = cn(b"b", LOOKUP, MAKEENTRY | ISLASTCN);
+        let mut c = cn(p, b"b", LOOKUP, MAKEENTRY | ISLASTCN);
         let falsehits = NCHSTATS.ncs_falsehits.load(Ordering::SeqCst);
         assert!(matches!(cache_lookup(dvp, &mut c), Ok(None)));
         assert_eq!(NCHSTATS.ncs_falsehits.load(Ordering::SeqCst), falsehits + 1);
@@ -636,7 +635,7 @@ mod tests {
         assert_eq!(dvp.holdcnt(), 0, "the last entry gone, the hold is dropped");
 
         // Purging the directory empties its own tree.
-        cache_enter(dvp, Some(vp), &cn(b"b", LOOKUP, MAKEENTRY));
+        cache_enter(dvp, Some(vp), b"b");
         cache_purge(dvp);
         assert!(dvp.g.v_nc_tree.is_empty());
         assert_eq!(NUMCACHE.load(Ordering::SeqCst), 0);
@@ -655,7 +654,7 @@ mod tests {
             cache_revlookup(vp, &mut bp, Some(&mut buf)),
             Ok(None)
         ));
-        cache_enter(dvp, Some(vp), &cn(b"c", LOOKUP, MAKEENTRY));
+        cache_enter(dvp, Some(vp), b"c");
         let found = cache_revlookup(vp, &mut bp, Some(&mut buf)).unwrap();
         assert!(found.is_some_and(|d| ptr::eq(d, dvp)));
         assert_eq!((bp, &buf[bp..]), (7, &b"c"[..]));

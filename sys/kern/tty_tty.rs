@@ -65,7 +65,6 @@ use crate::kern::kern_prot::suser;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del};
 use crate::kern::proc_glue::session_of;
 use crate::kern::proc_glue::zapverauth;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_IOCTL, VOP_KQFILTER, VOP_OPEN, VOP_READ, VOP_UNLOCK, VOP_WRITE};
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
@@ -79,6 +78,7 @@ use crate::sys::types::Dev;
 use crate::sys::ucred::NOCRED;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::Vnode;
+use crate::sys::vnode::vn_lock;
 
 /// `cttyvp(p)`: the vnode of `p`'s controlling terminal, if it has one.
 fn cttyvp(p: &Proc) -> Option<&'static Vnode> {

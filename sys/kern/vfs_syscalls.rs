@@ -85,6 +85,7 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::Ordering;
+use kernel::file::LockOwner;
 
 use hal::list::List;
 use hal::user::UserPtr;
@@ -103,11 +104,7 @@ use crate::kern::kern_unveil::{unveil_add, unveil_removevnode};
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables};
 use crate::kern::subr_pool::{pool_get, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::{cache_purge, cache_purgevfs};
-use crate::kern::vfs_getcwd::vfs_getcwd_common;
 use crate::kern::vfs_init::{NAMEI_POOL, rootvnode, set_rootvnode, vfs_byname};
-use crate::kern::vfs_lookup::{namei, ndinit, ndinitat};
-use crate::kern::vfs_vnops::{VNOPS, vn_lock, vn_open, vn_stat, vn_writechk};
 use crate::kern::vfs_vops::{
     VOP_ABORTOP, VOP_ACCESS, VOP_ADVLOCK, VOP_FSYNC, VOP_GETATTR, VOP_LINK, VOP_MKDIR, VOP_MKNOD,
     VOP_OPEN, VOP_PATHCONF, VOP_READDIR, VOP_READLINK, VOP_REMOVE, VOP_RENAME, VOP_REVOKE,
@@ -142,6 +139,8 @@ use crate::sys::namei::{
     Nameidata, NiDirp, REALPATH, RENAME, SAVENAME, SAVESTART, STRIPSLASHES, UNVEIL_CREATE,
     UNVEIL_PLEDGEOPEN, UNVEIL_READ, UNVEIL_WRITE, WANTPARENT,
 };
+use crate::sys::namei::{cache_purge, cache_purgevfs};
+use crate::sys::namei::{namei, ndinit, ndinitat};
 use crate::sys::param::MAXPATHLEN;
 use crate::sys::pledge::{
     PLEDGE_CHOWN, PLEDGE_CPATH, PLEDGE_DPATH, PLEDGE_FATTR, PLEDGE_RPATH, PLEDGE_TTY,
@@ -162,10 +161,12 @@ use crate::sys::types::{Dev, Gid, Mode, Off, Register, Uid, major};
 use crate::sys::ucred::CredRef;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{R_OK, SEEK_SET, W_OK, X_OK};
+use crate::sys::vnode::vfs_getcwd_common;
 use crate::sys::vnode::{
     GETCWD_CHECK_ACCESS, REVOKEALL, V_SAVE, VA_UTIMES_CHANGE, VA_UTIMES_NULL, VALIASED, VBAD, VBLK,
     VCHR, VDIR, VEXEC, VNOVAL, VREAD, VROOT, VSGID, VSUID, VWRITE, Vattr, Vnode,
 };
+use crate::sys::vnode::{VNOPS, vn_lock, vn_open, vn_stat, vn_writechk};
 use crate::sys::vnode::{
     vattr_null, vfs_busy, vfs_getvfs, vfs_mount_alloc, vfs_mount_free, vfs_unbusy, vgone,
     vinvalbuf, vnoperm, vput, vref, vrele,
@@ -1302,7 +1303,7 @@ pub fn doopenat(
         if flags & (O_EXLOCK | O_SHLOCK) != 0 {
             let (mut lf, type_) = open_flock(flags);
             let _ = VOP_UNLOCK(vp);
-            let id = ptr::without_provenance(fp.addr());
+            let id = LockOwner::File(fp.addr());
             if let Err(error) = VOP_ADVLOCK(vp, id, F_SETLK, &mut lf, type_) {
                 let mut g = fdplock(fdp);
                 // closef will vn_close the file for us.
@@ -1468,7 +1469,7 @@ pub fn sys_fhopen(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
         if flags & (O_EXLOCK | O_SHLOCK) != 0 {
             let (mut lf, type_) = open_flock(flags);
             let _ = VOP_UNLOCK(v);
-            let id = ptr::without_provenance(fp.addr());
+            let id = LockOwner::File(fp.addr());
             if let Err(e) = VOP_ADVLOCK(v, id, F_SETLK, &mut lf, type_) {
                 vp = None; // closef will vn_close the file
                 break 'bad e;

@@ -513,10 +513,10 @@ pub(crate) mod tests {
     use crate::kern::proc_glue::BsdProcGlue;
     use crate::kern::proc_glue::{procinit, test_proc};
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::kern::vfs_cache::{NUMCACHE, NUMNEG};
     use crate::kern::vfs_init::{set_rootvnode, vfsinit};
     use crate::kern::vfs_vops::{VOP_ISLOCKED, VOP_UNLOCK};
     use crate::sys::mount::{MNT_UNMOUNT, VB_READ, mountlist_insert_tail};
+    use crate::sys::namei::{NUMCACHE, NUMNEG};
     use crate::sys::types::{Mode, Uid};
     use crate::sys::ucred::Ucred;
     use crate::sys::vnode::{
@@ -537,9 +537,7 @@ pub(crate) mod tests {
         use super::setup;
         use crate::kern::kern_subr::uiomove;
         use crate::kern::subr_xxx::eopnotsupp;
-        use crate::kern::vfs_cache::{cache_enter, cache_lookup};
         use crate::kern::vfs_init::set_rootvnode;
-        use crate::kern::vfs_vnops::vn_lock;
         use crate::kern::vfs_vops::{VOP_UNLOCK, vop_generic_abortop};
         use crate::sys::dirent::{DT_DIR, DT_LNK, DT_REG, Dirent, dirent_recsize};
         use crate::sys::errno::Errno;
@@ -549,7 +547,9 @@ pub(crate) mod tests {
         use crate::sys::namei::{
             CREATE, ISDOTDOT, ISLASTCN, LOCKPARENT, MAKEENTRY, PDIRUNLOCK, RENAME,
         };
+        use crate::sys::namei::{cache_enter, cache_lookup};
         use crate::sys::proc::Proc;
+        use crate::sys::vnode::vn_lock;
         use crate::sys::vnode::{
             VDIR, VLNK, VREG, VROOT, VT_TMPFS, Vnode, VopAccessArgs, VopGetattrArgs,
             VopInactiveArgs, VopIslockedArgs, VopLockArgs, VopLookupArgs, VopReaddirArgs,
@@ -790,7 +790,7 @@ pub(crate) mod tests {
 
         /// The lookup of `ufs_lookup`, over the fixed tree: the name cache first, then the
         /// directory; the parent stays locked only for `LOCKPARENT` on the last component.
-        fn testfs_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+        fn testfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             let dvp = ap.a_dvp;
             let cnp = &mut *ap.a_cnp;
             *ap.a_vpp = None;
@@ -827,7 +827,7 @@ pub(crate) mod tests {
                     return Err(Errno::EJUSTRETURN);
                 }
                 if cnp.cn_flags & MAKEENTRY != 0 && cnp.cn_nameiop != CREATE {
-                    cache_enter(dvp, None, cnp);
+                    cache_enter(dvp, None, cnp.name());
                 }
                 return Err(Errno::ENOENT);
             };
@@ -854,7 +854,7 @@ pub(crate) mod tests {
                 vp
             };
             if cnp.cn_flags & MAKEENTRY != 0 {
-                cache_enter(dvp, Some(vp), cnp);
+                cache_enter(dvp, Some(vp), cnp.name());
             }
             *ap.a_vpp = Some(vp);
             Ok(())

@@ -103,8 +103,6 @@ use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_tc::getnanotime;
 use crate::kern::subr_prf::{panic, printf};
-use crate::kern::vfs_cache::cache_purge;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::cpu::curproc;
@@ -131,6 +129,7 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::{M_MSDOSFSMNT, M_MSDOSFSNODE, M_WAITOK, M_ZERO};
 use crate::sys::mount::{MNT_RDONLY, Vfsconf};
+use crate::sys::namei::cache_purge;
 use crate::sys::proc::Proc;
 use crate::sys::queue::ListHead;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
@@ -139,6 +138,7 @@ use crate::sys::types::{Daddr, Dev};
 use crate::sys::ucred::{NOCRED, Ucred};
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::PRTACTIVE;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VREG, VROOT, VT_MSDOSFS, VopInactiveArgs, VopReclaimArgs,
 };

@@ -61,12 +61,7 @@ use std::vec::Vec;
 
 use bsd::kern::kern_descrip::filedesc_init;
 use bsd::kern::proc_glue::{BsdProcessG, BsdThreadG, procinit};
-use bsd::kern::vfs_cache::{cache_enter, cache_lookup};
-use bsd::kern::vfs_getcwd::vfs_getcwd_common;
 use bsd::kern::vfs_init::{set_rootvnode, vfsinit};
-use bsd::kern::vfs_lockf::{LockfStateSlot, lf_advlock, lf_init};
-use bsd::kern::vfs_lookup::{namei, ndinit};
-use bsd::kern::vfs_vnops::{vn_close, vn_lock, vn_open};
 use bsd::kern::vfs_vops::VOP_UNLOCK;
 use bsd::kern::vm_bsd::{uvm_page_init, uvm_page_physload};
 use bsd::machine::Machine;
@@ -74,6 +69,7 @@ use bsd::machine::cpu::Cpu;
 use bsd::sys::errno::Errno;
 use bsd::sys::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock};
 use bsd::sys::lock::{LK_EXCLUSIVE, LK_NOWAIT};
+use bsd::sys::lockf::{LockfSlot, lf_advlock, lf_init};
 use bsd::sys::mount::{
     MNT_LOCAL, MNT_ROOTFS, Mount, VFS_ROOT, Vfsconf, Vfsops, mountlist_insert_tail,
 };
@@ -81,18 +77,24 @@ use bsd::sys::namei::{
     CREATE, Componentname, FOLLOW, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, NOCACHE,
     NiDirp, PDIRUNLOCK, RENAME,
 };
+use bsd::sys::namei::{cache_enter, cache_lookup};
+use bsd::sys::namei::{namei, ndinit};
 use bsd::sys::param::{MAXPATHLEN, PAGE_SIZE};
 use bsd::sys::proc::{Proc, Process};
 use bsd::sys::systm::PHYSMEM;
 use bsd::sys::types::Vaddr;
 use bsd::sys::unistd::SEEK_SET;
+use bsd::sys::vnode::vfs_getcwd_common;
 use bsd::sys::vnode::{
     GETCWD_CHECK_ACCESS, VDIR, VREG, VROOT, VT_TMPFS, Vattr, Vnode, VopAccessArgs, VopGetattrArgs,
     VopInactiveArgs, VopIslockedArgs, VopLockArgs, VopLookupArgs, VopUnlockArgs, Vops,
 };
 use bsd::sys::vnode::{getnewvnode, vfs_mount_alloc, vfs_unbusy, vget, vput, vref, vrele};
+use bsd::sys::vnode::{vn_close, vn_lock, vn_open};
 use hal::vm::param::atop;
 use hal::vm::uvmexp::UVMEXP;
+use kernel::file::LockOwner;
+use kernel::fs::vops::Cred;
 
 /// The host memory loaded as the physical memory.
 const BLOCK_BYTES: usize = 64 << 20;
@@ -187,7 +189,7 @@ fn bench_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
 
 /// `ufs_lookup`'s protocol over the fixed tree: the name cache first, then the directory;
 /// the parent stays locked only for `LOCKPARENT` on the last component.
-fn bench_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+fn bench_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let dvp = ap.a_dvp;
     let cnp = &mut *ap.a_cnp;
     *ap.a_vpp = None;
@@ -243,7 +245,7 @@ fn bench_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
         vp
     };
     if cnp.cn_flags & MAKEENTRY != 0 {
-        cache_enter(dvp, Some(vp), cnp);
+        cache_enter(dvp, Some(vp), cnp.name());
     }
     *ap.a_vpp = Some(vp);
     Ok(())
@@ -472,18 +474,17 @@ fn main() {
     }
     if wanted(names[3]) {
         let _ = vn_lock(root, LK_EXCLUSIVE);
-        let name: &'static [u8] = b"a";
         report(
             names[3],
             measure(|| {
                 rounds(|| {
-                    let mut cn = Componentname::new();
-                    cn.cn_nameiop = LOOKUP;
-                    cn.cn_flags = MAKEENTRY | ISLASTCN | LOCKPARENT;
-                    cn.cn_proc = p;
-                    cn.cn_cred = p.ucred_ptr();
-                    cn.cn_nameptr = name.as_ptr();
-                    cn.cn_namelen = 1;
+                    let mut cn = Componentname::new(
+                        LOOKUP,
+                        MAKEENTRY | ISLASTCN | LOCKPARENT,
+                        p,
+                        Cred::from_raw(p.ucred_ptr()),
+                    );
+                    cn.set_name_lit(b"a");
                     if let Ok(Some(vp)) = cache_lookup(black_box(root), &mut cn) {
                         vput(vp);
                     }
@@ -497,7 +498,7 @@ fn main() {
         // of a name that is not cached and recycles the LRU's head.
         let names16: Vec<Vec<u8>> = (0..16).map(|i| format!("z{i:02}").into_bytes()).collect();
         let saved = bsd::conf::param::INITIALVNODES.load(Ordering::Relaxed);
-        let cached = bsd::kern::vfs_cache::NUMCACHE.load(Ordering::Relaxed) as i32;
+        let cached = bsd::sys::namei::NUMCACHE.load(Ordering::Relaxed) as i32;
         bsd::conf::param::INITIALVNODES.store(cached + 8, Ordering::Relaxed);
         let mut i = 0;
         report(
@@ -506,18 +507,15 @@ fn main() {
                 rounds(|| {
                     let name = &names16[i % 16];
                     i += 1;
-                    let mut cn = Componentname::new();
-                    cn.cn_nameptr = name.as_ptr();
-                    cn.cn_namelen = name.len() as i64;
-                    cache_enter(black_box(root), Some(fvp), &cn);
+                    cache_enter(black_box(root), Some(fvp), name);
                 })
             }),
         );
         bsd::conf::param::INITIALVNODES.store(saved, Ordering::Relaxed);
     }
     if wanted(names[5]) {
-        let slot: &'static LockfStateSlot = Box::leak(Box::new(LockfStateSlot::new(None)));
-        let id: *const core::ffi::c_void = core::ptr::from_ref(p).cast();
+        let slot: &'static LockfSlot = Box::leak(Box::new(LockfSlot::new()));
+        let id = LockOwner::File(core::ptr::from_ref(p).addr());
         report(
             names[5],
             measure(|| {

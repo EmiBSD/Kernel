@@ -702,7 +702,7 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `lf_advlock(&vp->v_speclockf, 0, id, op, fl, flags)` (`spec_advlock`).
     fn spec_advlock(
         vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
-        id: *const core::ffi::c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,

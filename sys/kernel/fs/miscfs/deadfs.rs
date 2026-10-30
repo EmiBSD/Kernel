@@ -61,7 +61,6 @@
 //!   kernel table with a fixed id (`VopsId::DEAD`, what `vclean` sets and `kind()` answers).
 //!   `chkvnlock` returns `bool` (LZ's).
 
-use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::ptr;
 
@@ -313,7 +312,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
     fn advlock(
         &self,
         _: &'static Vnode<G>,
-        _: *const c_void,
+        _: crate::file::LockOwner,
         _: i32,
         _: &mut Flock,
         _: i32,

@@ -159,7 +159,7 @@
 //!   on as it came so that no lock section parks or takes a token on the way (each is an spl
 //!   pair, N5.1's lesson).
 
-use core::ffi::c_void;
+use crate::file::LockOwner;
 use core::marker::PhantomData;
 use core::ptr;
 
@@ -545,11 +545,12 @@ pub trait Vnops<G: ProcGlue>: Sync + 'static {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    /// `vop_advlock`: `id` is the lock's owner, an address compared and never followed.
+    /// `vop_advlock`: `id` is the lock's owner (a descriptor table or a file, compared and
+    /// never followed, D-N5.3-11).
     fn advlock(
         &self,
         vp: &'static Vnode<G>,
-        id: *const c_void,
+        id: LockOwner,
         op: i32,
         fl: &mut Flock,
         flags: i32,
@@ -1013,7 +1014,7 @@ pub fn vop_pathconf<G: ProcGlue>(
 /// `VOP_ADVLOCK(vp, id, op, fl, flags)`.
 pub fn vop_advlock<G: ProcGlue>(
     vp: &'static Vnode<G>,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,

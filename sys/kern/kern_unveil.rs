@@ -71,6 +71,7 @@ use core::cmp::Ordering as CmpOrdering;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::slice;
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
@@ -86,8 +87,8 @@ use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::malloc::{M_PROC, M_WAITOK, M_ZERO};
 use crate::sys::namei::{
-    BYPASSUNVEIL, Componentname, HASBUF, ISDOTDOT, ISLASTCN, LOOKUP, Nameidata, PDIRUNLOCK, RDONLY,
-    UNVEIL_CREATE, UNVEIL_EXEC, UNVEIL_MASK, UNVEIL_READ, UNVEIL_USERSET, UNVEIL_WRITE,
+    BYPASSUNVEIL, Componentname, HASBUF, ISDOTDOT, Nameidata, PDIRUNLOCK, UNVEIL_CREATE,
+    UNVEIL_EXEC, UNVEIL_MASK, UNVEIL_READ, UNVEIL_USERSET, UNVEIL_WRITE,
 };
 use crate::sys::param::MAXPATHLEN;
 use crate::sys::pledge::PLEDGE_UNVEIL;
@@ -223,7 +224,7 @@ fn proc_root(p: &Proc) -> Option<&'static Vnode> {
 
 /// The NUL-terminated name at `cn_nameptr`, without its NUL: what `strlen(cn_nameptr)`
 /// measures in the C.
-fn nameptr_str(cnp: &Componentname) -> &[u8] {
+fn nameptr_str<'c>(cnp: &'c Componentname<'_>) -> &'c [u8] {
     let base = cnp.cn_pnbuf;
     let name = cnp.cn_nameptr;
     if base.is_null() || name.is_null() {
@@ -428,15 +429,7 @@ pub fn unveil_find_cover(dp: &'static Vnode, p: &Proc) -> isize {
     let mut vp = dp;
 
     while !vp_eq(Some(vp), root) {
-        let mut cn = Componentname::new();
-        cn.cn_nameiop = LOOKUP;
-        cn.cn_flags = ISLASTCN | ISDOTDOT | RDONLY;
-        cn.cn_proc = p;
-        cn.cn_cred = p.ucred_ptr();
-        cn.cn_pnbuf = ptr::null_mut();
-        cn.cn_nameptr = b"..".as_ptr();
-        cn.cn_namelen = 2;
-        cn.cn_consume = 0;
+        let mut cn = Componentname::dotdot(p, Cred::from_raw(p.ucred_ptr()));
 
         // If we are at the root of a filesystem, and we are still mounted somewhere, take
         // the .. in the above filesystem.
@@ -880,12 +873,13 @@ mod tests {
 
     use super::*;
     use crate::kern::proc_glue::{proc_tables, test_pooled_process, test_process, test_thread};
-    use crate::kern::vfs_lookup::{namei, ndinit};
     use crate::kern::vfs_subr::tests::testfs::{self, A, C, LONG, N, ROOT, any_locked, usecounts};
     use crate::kern::vfs_syscalls::sys_unveil;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
+    use crate::sys::namei::LOOKUP;
     use crate::sys::namei::{FOLLOW, NiDirp};
+    use crate::sys::namei::{namei, ndinit};
     use crate::sys::systm::SysArgs;
     use crate::sys::types::Register;
 

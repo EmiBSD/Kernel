@@ -83,17 +83,17 @@
 //! - `v_socket` is the member [`VnodeG::v_socket`] (the socket is `bsd`'s), not a variant of
 //!   the kernel's `v_un`; `kinfo_file`'s `v_un` reads it first.
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64};
+use kernel::file::LockOwner;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::buf::Buf;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
 use crate::sys::fcntl::Flock;
-use crate::sys::lockf::LockfStateSlot;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::mount::Mount;
 use crate::sys::namei::{Componentname, NamecacheRbCache, NcMe};
 use crate::sys::proc::Proc;
@@ -135,7 +135,7 @@ pub struct VnodeG {
     /// with no lock, as the C does (`uipc_usrreq.c:787`).
     pub v_socket: Link<Socket>,
     /// `v_speclockf` (`v_specinfo->si_lockf`): a device vnode's advisory lock list.
-    pub v_speclockf: LockfStateSlot,
+    pub v_speclockf: LockfSlot,
 }
 
 impl Default for VnodeG {
@@ -144,7 +144,7 @@ impl Default for VnodeG {
             v_nc_tree: RbtHead::new(),
             v_cache_dst: TailqHead::new(),
             v_socket: Link::new(),
-            v_speclockf: Cell::new(None),
+            v_speclockf: LockfSlot::new(),
         }
     }
 }
@@ -171,9 +171,16 @@ pub static NUMVNODES: &AtomicI64 = &crate::kern::kern_descrip::VFS_TABLES.numvno
 /// `maxvnodes` (the kernel's word, `kern.maxvnodes`).
 pub static MAXVNODES: &AtomicI32 = &crate::kern::kern_descrip::VFS_TABLES.maxvnodes;
 
+/// `vnode.h`'s `vn_*` functions and the vnode files' operations (`vfs_vnops.c`), and
+/// `vfs_getcwd_common` (`vfs_getcwd.c`), where the C declares them.
+pub use crate::kern::vfs_getcwd::{vfs_getcwd_common, vfs_getcwd_getcache, vfs_getcwd_scandir};
 /// What `kern/vfs_subr.rs` keeps (the NFS export list, the shutdown trio), named here as LZ's
 /// whole module was.
 pub use crate::kern::vfs_subr::*;
+pub use crate::kern::vfs_vnops::{
+    VNOPS, vn_close, vn_closefile, vn_fsizechk, vn_ioctl, vn_isunder, vn_kqfilter, vn_lock,
+    vn_marktext, vn_open, vn_read, vn_seek, vn_stat, vn_statfile, vn_write, vn_writechk,
+};
 pub use kernel::fs::mount::{
     vfs_busy, vfs_isbusy, vfs_mount_alloc, vfs_mount_free, vfs_mount_take, vfs_unbusy,
 };
@@ -184,6 +191,8 @@ pub use kernel::fs::subr::{
     vfs_getnewfsid, vfs_mount_foreach_vnode, vfs_mountedon, vget, vgone, vgonel, vhold, vnoperm,
     vput, vputonfreelist, vrecycle, vref, vrele, vwaitforio,
 };
+/// `vn_rdwr` is the kernel's (N5.3): its buffer a slice or a user range ([`RdwrBuf`]).
+pub use kernel::fs::vnops::{RdwrBuf, vn_rdwr};
 
 /// `vp->v_op = ops`: a file system's table (registered with the kernel on its first use).
 pub fn set_vops(vp: &Vnode, ops: &'static Vops) {
@@ -272,35 +281,35 @@ pub struct VopIslockedArgs {
 }
 
 /// `struct vop_lookup_args`.
-pub struct VopLookupArgs<'a> {
+pub struct VopLookupArgs<'a, 'b> {
     /// `a_dvp`: the directory searched.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`: the vnode found, NULL when there is none.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`: the component looked up.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_create_args`.
-pub struct VopCreateArgs<'a> {
+pub struct VopCreateArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
 
 /// `struct vop_mknod_args`.
-pub struct VopMknodArgs<'a> {
+pub struct VopMknodArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
@@ -436,71 +445,71 @@ pub struct VopFsyncArgs<'a> {
 }
 
 /// `struct vop_remove_args`.
-pub struct VopRemoveArgs<'a> {
+pub struct VopRemoveArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_link_args`.
-pub struct VopLinkArgs<'a> {
+pub struct VopLinkArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_rename_args`.
-pub struct VopRenameArgs<'a> {
+pub struct VopRenameArgs<'a, 'b, 'c> {
     /// `a_fdvp`.
     pub a_fdvp: &'static Vnode,
     /// `a_fvp`.
     pub a_fvp: &'static Vnode,
     /// `a_fcnp`.
-    pub a_fcnp: &'a mut Componentname,
+    pub a_fcnp: &'a mut Componentname<'b>,
     /// `a_tdvp`.
     pub a_tdvp: &'static Vnode,
     /// `a_tvp`: NULL when the target does not exist.
     pub a_tvp: Option<&'static Vnode>,
     /// `a_tcnp`.
-    pub a_tcnp: &'a mut Componentname,
+    pub a_tcnp: &'a mut Componentname<'c>,
 }
 
 /// `struct vop_mkdir_args`.
-pub struct VopMkdirArgs<'a> {
+pub struct VopMkdirArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
 }
 
 /// `struct vop_rmdir_args`.
-pub struct VopRmdirArgs<'a> {
+pub struct VopRmdirArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_symlink_args`.
-pub struct VopSymlinkArgs<'a> {
+pub struct VopSymlinkArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_vpp`.
     pub a_vpp: &'a mut Option<&'static Vnode>,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
     /// `a_target`: the link's contents, without the NUL.
@@ -530,11 +539,11 @@ pub struct VopReadlinkArgs<'a, 'b> {
 }
 
 /// `struct vop_abortop_args`.
-pub struct VopAbortopArgs<'a> {
+pub struct VopAbortopArgs<'a, 'b> {
     /// `a_dvp`.
     pub a_dvp: &'static Vnode,
     /// `a_cnp`.
-    pub a_cnp: &'a mut Componentname,
+    pub a_cnp: &'a mut Componentname<'b>,
 }
 
 /// `struct vop_inactive_args`.
@@ -601,8 +610,8 @@ pub struct VopPathconfArgs<'a> {
 pub struct VopAdvlockArgs<'a> {
     /// `a_vp`.
     pub a_vp: &'static Vnode,
-    /// `a_id`: the lock's owner (a `struct file *` or a `struct process *`).
-    pub a_id: *const c_void,
+    /// `a_id`: the lock's owner (a descriptor table or a file, D-N5.3-11).
+    pub a_id: LockOwner,
     /// `a_op`.
     pub a_op: i32,
     /// `a_fl`.
@@ -632,7 +641,7 @@ pub type VopUnlockFn = fn(&mut VopUnlockArgs) -> Result<(), Errno>;
 /// The type of `vop_islocked`: the lock status, as the C returns it.
 pub type VopIslockedFn = fn(&mut VopIslockedArgs) -> i32;
 /// The type of `vop_abortop`.
-pub type VopAbortopFn = fn(&mut VopAbortopArgs<'_>) -> Result<(), Errno>;
+pub type VopAbortopFn = fn(&mut VopAbortopArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_access`.
 pub type VopAccessFn = fn(&mut VopAccessArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_advlock`.
@@ -644,7 +653,7 @@ pub type VopBwriteFn = fn(&mut VopBwriteArgs) -> Result<(), Errno>;
 /// The type of `vop_close`.
 pub type VopCloseFn = fn(&mut VopCloseArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_create`.
-pub type VopCreateFn = fn(&mut VopCreateArgs<'_>) -> Result<(), Errno>;
+pub type VopCreateFn = fn(&mut VopCreateArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_fsync`.
 pub type VopFsyncFn = fn(&mut VopFsyncArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_getattr`.
@@ -654,11 +663,11 @@ pub type VopInactiveFn = fn(&mut VopInactiveArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_ioctl`.
 pub type VopIoctlFn = fn(&mut VopIoctlArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_link`.
-pub type VopLinkFn = fn(&mut VopLinkArgs<'_>) -> Result<(), Errno>;
+pub type VopLinkFn = fn(&mut VopLinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_lookup`.
-pub type VopLookupFn = fn(&mut VopLookupArgs<'_>) -> Result<(), Errno>;
+pub type VopLookupFn = fn(&mut VopLookupArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_mknod`.
-pub type VopMknodFn = fn(&mut VopMknodArgs<'_>) -> Result<(), Errno>;
+pub type VopMknodFn = fn(&mut VopMknodArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_open`.
 pub type VopOpenFn = fn(&mut VopOpenArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_pathconf`.
@@ -674,21 +683,21 @@ pub type VopReadlinkFn = fn(&mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_reclaim`.
 pub type VopReclaimFn = fn(&mut VopReclaimArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_remove`.
-pub type VopRemoveFn = fn(&mut VopRemoveArgs<'_>) -> Result<(), Errno>;
+pub type VopRemoveFn = fn(&mut VopRemoveArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_rename`.
-pub type VopRenameFn = fn(&mut VopRenameArgs<'_>) -> Result<(), Errno>;
+pub type VopRenameFn = fn(&mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno>;
 /// The type of `vop_revoke`.
 pub type VopRevokeFn = fn(&mut VopRevokeArgs) -> Result<(), Errno>;
 /// The type of `vop_mkdir`.
-pub type VopMkdirFn = fn(&mut VopMkdirArgs<'_>) -> Result<(), Errno>;
+pub type VopMkdirFn = fn(&mut VopMkdirArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_rmdir`.
-pub type VopRmdirFn = fn(&mut VopRmdirArgs<'_>) -> Result<(), Errno>;
+pub type VopRmdirFn = fn(&mut VopRmdirArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_setattr`.
 pub type VopSetattrFn = fn(&mut VopSetattrArgs<'_>) -> Result<(), Errno>;
 /// The type of `vop_strategy`.
 pub type VopStrategyFn = fn(&mut VopStrategyArgs) -> Result<(), Errno>;
 /// The type of `vop_symlink`.
-pub type VopSymlinkFn = fn(&mut VopSymlinkArgs<'_>) -> Result<(), Errno>;
+pub type VopSymlinkFn = fn(&mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_write`.
 pub type VopWriteFn = fn(&mut VopWriteArgs<'_, '_>) -> Result<(), Errno>;
 /// The type of `vop_kqfilter`.

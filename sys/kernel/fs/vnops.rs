@@ -84,6 +84,7 @@
 //! - `vn_closefile`'s `VOP_ADVLOCK(vp, (caddr_t)fp, ...)` names the owner as
 //!   [`LockOwner::File`] (D-N5.3-11).
 
+use crate::file::LockOwner;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -661,7 +662,7 @@ pub fn vn_closefile<G: FileGlue>(fp: &File<G>, p: Option<&Thread<G::Proc>>) -> R
         };
         let _ = vop_advlock(
             vp,
-            ptr::from_ref(fp).cast(),
+            LockOwner::File(fp.addr()),
             i32::from(F_UNLCK),
             &mut lf,
             F_FLOCK,

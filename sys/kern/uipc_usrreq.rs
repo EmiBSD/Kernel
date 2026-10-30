@@ -118,8 +118,6 @@ use crate::kern::uipc_socket2::{
     socantsendmore, soisconnected, soisdisconnected, solock, solock_pair, sonewconn, soreserve,
     sounlock, sounlock_pair,
 };
-use crate::kern::vfs_lookup::{namei, ndinit};
-use crate::kern::vfs_vnops::vn_isunder;
 use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ACCESS, VOP_CREATE, VOP_LOCK, VOP_UNLOCK};
 use crate::machine::cpu::curproc;
 use crate::machine::intr::IPL_SOFTNET;
@@ -141,6 +139,7 @@ use crate::sys::mutex::Mutex;
 use crate::sys::namei::{
     CREATE, FOLLOW, LOCKLEAF, LOCKPARENT, LOOKUP, NOFOLLOW, NiDirp, UNVEIL_CREATE, UNVEIL_WRITE,
 };
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::NODEV;
 use crate::sys::pledge::PLEDGE_UNIX;
 use crate::sys::pool::{PR_NOWAIT, PR_WAITOK, PR_ZERO, Pool};
@@ -164,6 +163,7 @@ use crate::sys::unpcb::{
     Fdpass, UNP_BINDING, UNP_CONNECTING, UNP_FEIDS, UNP_FEIDSBIND, UNP_GCDEAD, UnpHead, Unpcb,
     sotounpcb,
 };
+use crate::sys::vnode::vn_isunder;
 use crate::sys::vnode::{VBLK, VDIR, VSOCK, VWRITE, Vattr};
 use crate::sys::vnode::{vattr_null, vput, vrele};
 

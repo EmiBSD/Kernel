@@ -55,9 +55,9 @@
 use core::cell::Cell;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_lockf::LockfStateSlot;
 use crate::miscfs::fuse::fusefs::FusefsMnt;
 use crate::queue_adapter;
+use crate::sys::lockf::LockfSlot;
 use crate::sys::queue::ListEntry;
 use crate::sys::rwlock::Rrwlock;
 use crate::sys::types::{Ino, Off};
@@ -139,7 +139,7 @@ pub struct FusefsNode {
     /// `i_parent_cache`: parent inode (only dirs).
     pub i_parent_cache: Cell<Ino>,
     /// `i_lockf`: byte-level lock state.
-    pub i_lockf: LockfStateSlot,
+    pub i_lockf: LockfSlot,
     /// `i_lock`: inode lock.
     pub i_lock: Rrwlock,
     /// `fufh`: I/O: one handle per kind.
@@ -171,7 +171,7 @@ impl FusefsNode {
             i_fmp: fmp,
             i_number: ino,
             i_parent_cache: Cell::new(0),
-            i_lockf: Cell::new(None),
+            i_lockf: LockfSlot::new(),
             i_lock: Rrwlock::new("fuseinode"),
             fufh: [
                 Cell::new(FusefsFilehandle::new()),

@@ -512,7 +512,7 @@ impl FileGlue for BenchFiles {
     fn lf_purgelocks(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
     fn spec_advlock(
         _vp: &'static kernel::fs::vnode::Vnode<BenchGlue>,
-        _id: *const core::ffi::c_void,
+        _id: kernel::file::LockOwner,
         _op: i32,
         _fl: &mut hal::sys::fcntl::Flock,
         _flags: i32,

@@ -85,6 +85,7 @@ use hal::user::UserPtr;
 
 use super::cache::cache_revlookup;
 use super::init::rootvnode;
+use super::mount::Mount;
 use super::namei::{Componentname, MAXPATHLEN, Nameidata};
 use super::subr::{vget, vput, vref, vrele};
 use super::vnode::{
@@ -384,7 +385,7 @@ where
                 }
 
                 let tvp = cur;
-                let covered = cur.mount().and_then(|mp| mp.vnodecovered());
+                let covered = cur.mount().and_then(Mount::vnodecovered);
 
                 vput(tvp);
 

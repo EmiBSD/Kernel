@@ -153,8 +153,6 @@ use crate::kern::sys_socket::fp_socket;
 use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
-use crate::kern::vfs_cache::NCHSTATS;
-use crate::kern::vfs_lockf::MAXLOCKSPERUID;
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
@@ -178,7 +176,9 @@ use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, FileRef, frele};
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
+use crate::sys::lockf::MAXLOCKSPERUID;
 use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
+use crate::sys::namei::NCHSTATS;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
 use crate::sys::queue::SlistHead;
@@ -2176,7 +2176,7 @@ mod tests {
         // test.
         fp.install(
             crate::sys::file::DTYPE_DMABUF,
-            &crate::kern::vfs_vnops::VNOPS,
+            &crate::sys::vnode::VNOPS,
             BsdFileData::None,
         );
         fp.f_flag.store((FREAD | FWRITE) as u32, Ordering::Relaxed);

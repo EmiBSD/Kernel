@@ -150,10 +150,12 @@
 //!   `kernel::proc::ProcTables` (one `static`; each host test thread its own,
 //!   [`proc_test_reset`]).
 
+use crate::sys::vnode::RdwrBuf;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
+use kernel::fs::vops::Cred;
 
 use hal::link::{Link, PtrWord};
 use hal::pool::PoolArc;
@@ -1040,9 +1042,9 @@ impl kernel::acct::AcctFile for BsdAcctFile {
             crate::kern::subr_prf::panic(format_args!("acct: no curproc"));
         };
         let mut nd =
-            crate::kern::vfs_lookup::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
+            crate::sys::namei::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
         nd.ni_unveil = crate::sys::namei::UNVEIL_WRITE;
-        crate::kern::vfs_vnops::vn_open(
+        crate::sys::vnode::vn_open(
             &mut nd,
             crate::sys::fcntl::FWRITE | crate::sys::fcntl::O_APPEND,
             0,
@@ -1052,12 +1054,8 @@ impl kernel::acct::AcctFile for BsdAcctFile {
         };
         let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
         if vp.vtype() != crate::sys::vnode::VREG {
-            let _ = crate::kern::vfs_vnops::vn_close(
-                vp,
-                crate::sys::fcntl::FWRITE,
-                p.ucred_ptr(),
-                Some(p),
-            );
+            let _ =
+                crate::sys::vnode::vn_close(vp, crate::sys::fcntl::FWRITE, p.ucred_ptr(), Some(p));
             return Err(Errno::EACCES);
         }
         Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
@@ -1067,17 +1065,15 @@ impl kernel::acct::AcctFile for BsdAcctFile {
 impl kernel::acct::AcctSink for BsdAcctSink {
     fn write(&self, rec: &[u8]) -> Result<(), Errno> {
         let p = crate::machine::cpu::curproc();
-        crate::kern::vfs_vnops::vn_rdwr(
+        crate::sys::vnode::vn_rdwr(
             crate::sys::uio::UioRw::UIO_WRITE,
             self.0,
-            rec.as_ptr().cast_mut().cast::<c_void>(),
-            rec.len(),
+            RdwrBuf::KernelRead(rec),
             0,
-            crate::sys::uio::UioSeg::UIO_SYSSPACE,
             crate::sys::vnode::IO_APPEND
                 | crate::sys::vnode::IO_UNIT
                 | crate::sys::vnode::IO_NOLIMIT,
-            p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr()),
+            Cred::from_raw(p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr())),
             None,
             p,
         )
@@ -1101,7 +1097,7 @@ impl kernel::acct::AcctSink for BsdAcctSink {
             Some(p) if by_curproc => p.ucred_ptr(),
             _ => crate::sys::ucred::NOCRED,
         };
-        let _ = crate::kern::vfs_vnops::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
+        let _ = crate::sys::vnode::vn_close(self.0, crate::sys::fcntl::FWRITE, cred, p);
     }
 }
 

@@ -63,9 +63,12 @@
 //! after which the caller does not touch it, as in C.
 //!
 //! ## Deviations
-//! - `struct lockf_state **state` is `&LockfStateSlot` (a `Cell<Option<&'static
-//!   LockfState>>`) and `ls_owner` keeps it as a raw pointer to the slot, which lives in the
-//!   vnode's `specinfo` (or a file system's inode) until `lf_purgelocks` empties it.
+//! - `struct lockf_state **state` is `&LockfSlot` (a `Cell<Option<&'static LockfState>>`)
+//!   and `ls_owner` keeps it as a raw pointer to the slot, which lives in the vnode's
+//!   `specinfo` (or a file system's inode) until `lf_purgelocks` empties it.
+//! - N5.3 (the kernel's shape, ahead of the switch to `kernel::fs::lockf`): the owner is a
+//!   `LockOwner` (a descriptor table or a file, compared and never followed, D-N5.3-11) and
+//!   the slot is named `LockfSlot`, made by `LockfSlot::new()`.
 //! - `lf_findoverlap` returns the case and the overlap as a pair instead of filling
 //!   `**overlap`; `lf_getblock` returns `Option`, `lf_deadlock` a `bool`.
 //! - `lf_flags` is an `i32` (the C's `short`) since the `F_*` flags it holds are `i32`s.
@@ -76,9 +79,9 @@
 //!   traces are compiled out, as in C.
 
 use core::cell::Cell;
-use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
+use kernel::file::LockOwner;
 
 use crate::kassert;
 use crate::kern::kern_rwlock::{rw_assert_wrlock, rw_enter_write, rw_exit_write};
@@ -121,7 +124,7 @@ pub struct Lockf {
     /// `lf_end`: the byte # of the end of the lock (-1=EOF).
     pub lf_end: Cell<Off>,
     /// `lf_id`: the id of the resource holding the lock.
-    pub lf_id: Cell<*const c_void>,
+    pub lf_id: Cell<LockOwner>,
     /// `lf_state`: state associated with the lock.
     pub lf_state: Cell<Option<&'static LockfState>>,
     /// `lf_entry`: the link in `ls_locks` or `ls_pending`.
@@ -149,7 +152,7 @@ impl Lockf {
             lf_type: Cell::new(0),
             lf_start: Cell::new(0),
             lf_end: Cell::new(0),
-            lf_id: Cell::new(ptr::null()),
+            lf_id: Cell::new(LockOwner::Table(0)),
             lf_state: Cell::new(None),
             lf_entry: TailqEntry::new(),
             lf_blk: Cell::new(None),
@@ -180,7 +183,28 @@ queue_adapter!(
 );
 
 /// `struct lockf_state *`: the slot a vnode (`v_speclockf`) or an inode (`i_lockf`) keeps.
-pub type LockfStateSlot = Cell<Option<&'static LockfState>>;
+pub struct LockfSlot(Cell<Option<&'static LockfState>>);
+
+impl LockfSlot {
+    /// An empty slot (`NULL`).
+    pub const fn new() -> Self {
+        Self(Cell::new(None))
+    }
+}
+
+impl Default for LockfSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::ops::Deref for LockfSlot {
+    type Target = Cell<Option<&'static LockfState>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// `struct lockf_state`: the locks of one file.
 ///
@@ -191,7 +215,7 @@ pub struct LockfState {
     /// `ls_pending`: list of pending locks.
     pub ls_pending: TailqHead<LfEntry>,
     /// `ls_owner`: owner (the slot that points back at us).
-    pub ls_owner: Cell<*const LockfStateSlot>,
+    pub ls_owner: Cell<*const LockfSlot>,
     /// `ls_refs`: reference counter.
     pub ls_refs: Cell<i32>,
 }
@@ -325,9 +349,9 @@ fn lf_free(lock: &'static Lockf) {
 
 /// Do an advisory lock operation.
 pub fn lf_advlock(
-    state: &LockfStateSlot,
+    state: &LockfSlot,
     size: Off,
-    id: *const c_void,
+    id: LockOwner,
     op: i32,
     fl: &mut Flock,
     flags: i32,
@@ -792,7 +816,7 @@ fn lf_findoverlap(
 }
 
 /// Purge all locks associated with the given lock state.
-pub fn lf_purgelocks(state: &LockfStateSlot) {
+pub fn lf_purgelocks(state: &LockfSlot) {
     rw_enter_write(&LOCKF_LOCK);
 
     if let Some(ls) = state.get() {
@@ -931,8 +955,8 @@ mod tests {
         Machine::set_curproc(Machine::curcpu(), None);
     }
 
-    const A: *const c_void = 0x1000 as *const c_void;
-    const B: *const c_void = 0x2000 as *const c_void;
+    const A: LockOwner = LockOwner::Table(0x1000);
+    const B: LockOwner = LockOwner::Table(0x2000);
 
     /// A `struct flock` for `[start, start + len)` from `SEEK_SET`.
     fn fl(type_: i16, start: Off, len: Off) -> Flock {
@@ -947,8 +971,8 @@ mod tests {
 
     /// `F_SETLK` of `[start, start + len)` by `id`, without waiting.
     fn setlk(
-        slot: &LockfStateSlot,
-        id: *const c_void,
+        slot: &LockfSlot,
+        id: LockOwner,
         type_: i16,
         start: Off,
         len: Off,
@@ -957,7 +981,7 @@ mod tests {
     }
 
     /// `F_UNLCK` of `[start, start + len)` by `id`.
-    fn unlk(slot: &LockfStateSlot, id: *const c_void, start: Off, len: Off) -> Result<(), Errno> {
+    fn unlk(slot: &LockfSlot, id: LockOwner, start: Off, len: Off) -> Result<(), Errno> {
         lf_advlock(
             slot,
             0,
@@ -969,7 +993,7 @@ mod tests {
     }
 
     /// The locks of the slot, in list order: `(owner, type, start, end)`.
-    fn locks(slot: &LockfStateSlot) -> Vec<(*const c_void, i16, Off, Off)> {
+    fn locks(slot: &LockfSlot) -> Vec<(LockOwner, i16, Off, Off)> {
         slot.get().map_or_else(Vec::new, |ls| {
             ls.ls_locks
                 .iter()
@@ -988,7 +1012,7 @@ mod tests {
     #[test]
     fn unlocking_the_middle_splits_a_lock_in_three_pieces_minus_one() {
         let (_g, _p) = setup();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         setlk(&slot, A, F_WRLCK, 0, 100).unwrap();
         assert_eq!(locks(&slot), [(A, F_WRLCK, 0, 99)]);
 
@@ -1009,7 +1033,7 @@ mod tests {
     #[test]
     fn a_different_type_in_the_middle_splits_the_owners_lock() {
         let (_g, _p) = setup();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         setlk(&slot, A, F_RDLCK, 0, 100).unwrap();
         setlk(&slot, A, F_WRLCK, 40, 20).unwrap();
         assert_eq!(
@@ -1039,7 +1063,7 @@ mod tests {
     #[test]
     fn overlapping_ends_trim_the_older_lock() {
         let (_g, _p) = setup();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         setlk(&slot, A, F_RDLCK, 0, 50).unwrap();
         // Starts inside, ends after: the old one keeps its front (case 4).
         setlk(&slot, A, F_WRLCK, 25, 50).unwrap();
@@ -1063,7 +1087,7 @@ mod tests {
     #[test]
     fn other_owners_conflict_on_writes_and_getlk_reports_the_blocker() {
         let (_g, p) = setup();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         setlk(&slot, A, F_RDLCK, 0, 10).unwrap();
         setlk(&slot, A, F_WRLCK, 20, 10).unwrap();
 
@@ -1103,7 +1127,7 @@ mod tests {
     #[test]
     fn ranges_follow_whence_and_negative_lengths() {
         let (_g, _p) = setup();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         // SEEK_END counts from the size; a negative length reaches backwards.
         let mut f = fl(F_WRLCK, -10, 5);
         f.l_whence = SEEK_END as i16;
@@ -1125,7 +1149,7 @@ mod tests {
         );
 
         // Unlocking or asking with no state answers without allocating one.
-        let empty = LockfStateSlot::new(None);
+        let empty = LockfSlot::new();
         let mut q = fl(F_WRLCK, 0, 0);
         lf_advlock(&empty, 0, A, F_GETLK, &mut q, F_POSIX).unwrap();
         assert_eq!(q.l_type, F_UNLCK);
@@ -1142,7 +1166,7 @@ mod tests {
         let uid = p.ucred().cr_uid.get();
         let count = || with_uidinfo(uid, |uip| uip.ui_lockcnt.get());
         let before = count();
-        let slot = LockfStateSlot::new(None);
+        let slot = LockfSlot::new();
         setlk(&slot, A, F_WRLCK, 0, 100).unwrap();
         unlk(&slot, A, 10, 10).unwrap(); // a split allocates a second lock
         assert_eq!(count(), before + 2);

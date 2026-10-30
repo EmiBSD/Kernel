@@ -101,7 +101,6 @@ use crate::kern::kern_timeout::{timeout_add, timeout_del, timeout_set_proc};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::uipc_mbuf::{m_freem, m_get};
 use crate::kern::uipc_syscalls::sockargs;
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_UNLOCK};
 use crate::machine::conf::swapdev;
 use crate::machine::copy::{copyin, copyinstr, copyout};
@@ -145,6 +144,7 @@ use crate::sys::swap::NETDEV;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Ino, Uid};
 use crate::sys::ucred::{CredRef, Ucred};
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNON, VREG, VROOT, Vattr, Vnode};
 use crate::sys::vnode::{
     bdevvp, copy_statfs_info, vflush, vfs_getnewfsid, vfs_rootmountalloc, vfs_unbusy, vget, vgone,

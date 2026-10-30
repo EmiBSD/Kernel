@@ -76,6 +76,7 @@ use core::mem::offset_of;
 use core::ptr::NonNull;
 use core::slice;
 use core::sync::atomic::Ordering;
+use kernel::file::LockOwner;
 
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_event::knote_locked;
@@ -95,7 +96,6 @@ use crate::kern::uipc_socket2::{
     solock, solock_nonet, solock_shared, soqremque, sosleep_nsec, sounlock, sounlock_nonet,
     sounlock_shared,
 };
-use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_GETATTR, VOP_READ};
 use crate::machine::copy::{copyin, copyin_obj, copyout};
 use crate::netinet::in_::{IPPORT_RESERVED, InAddr, SockaddrIn};
@@ -110,6 +110,7 @@ use crate::sys::mbuf::{
     M_EXT, M_WAIT, MCLBYTES, MLEN, MT_CONTROL, MT_SONAME, MT_SOOPTS, Mbuf, mclget, mtod,
 };
 use crate::sys::namei::{KERNELPATH, LOCKLEAF, NOFOLLOW, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{MAXPATHLEN, PCATCH, PSOCK, align};
 use crate::sys::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
 use crate::sys::proc::{PS_CHROOT, PS_PLEDGE, Proc};
@@ -1768,13 +1769,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
             l_type: F_WRLCK,
             l_whence: SEEK_SET as i16,
         };
-        if let Err(e) = VOP_ADVLOCK(
-            vp,
-            core::ptr::from_ref(fdp).cast(),
-            F_GETLK,
-            &mut fl,
-            F_POSIX,
-        ) {
+        if let Err(e) = VOP_ADVLOCK(vp, LockOwner::Table(fdp.addr()), F_GETLK, &mut fl, F_POSIX) {
             break 'verror Err(e);
         }
         if fl.l_type == F_UNLCK {

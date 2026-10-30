@@ -76,7 +76,6 @@ use crate::kern::kern_prot::groupmember;
 use crate::kern::kern_sig::{sigabort, single_thread_clear, single_thread_set};
 use crate::kern::subr_prf::{Str, panic, uprintf};
 use crate::kern::tty_pty::{ptcopen, ptmopen};
-use crate::kern::vfs_vnops::vn_ioctl;
 use crate::machine::conf::{bdevsw, cdevsw};
 use crate::machine::copy::copyinstr;
 use crate::machine::cpu::{CPU_CHR2BLK, CPU_ID_AA64ISAR0, CPU_ID_AA64ISAR1, CPU_SSE};
@@ -158,6 +157,7 @@ use crate::sys::ttycom::{
     TIOCSWINSZ, TIOCUCNTL,
 };
 use crate::sys::types::{Gid, Pid, Register, Uid, major};
+use crate::sys::vnode::vn_ioctl;
 use crate::sys::vnode::{VBAD, VBLK, VCHR, VDIR, VISTTY, Vnode};
 use hal::vm::uvmexp::{VM_LOADAVG, VM_MALLOC_CONF, VM_MAXSLP, VM_PSSTRINGS, VM_UVMEXP};
 
@@ -1574,7 +1574,7 @@ mod tests {
     use std::{assert, assert_eq};
 
     use super::*;
-    use crate::kern::vfs_lookup::ndinit;
+    use crate::sys::namei::ndinit;
     use crate::sys::namei::{LOOKUP, NiDirp};
 
     /// A thread of a process pledged to `promises` (plus "error").

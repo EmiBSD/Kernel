@@ -78,6 +78,7 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::slice;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_descrip::fd_getfile;
 use crate::kern::kern_pledge::{checkzoneinfopath, pledge_namei};
@@ -169,11 +170,14 @@ fn pnbuf<'b>(cnp: &Componentname) -> &'b mut [u8] {
 
 /// `ndinitat(ndp, op, flags, segflg, dirfd, namep, p)`: a `nameidata` for a lookup relative
 /// to `dirfd`.
-pub fn ndinitat<'a>(op: u64, flags: u64, dirfd: i32, namep: NiDirp<'a>, p: &Proc) -> Nameidata<'a> {
-    let mut cnd = Componentname::new();
-    cnd.cn_nameiop = op;
-    cnd.cn_flags = flags;
-    cnd.cn_proc = p;
+pub fn ndinitat<'a>(
+    op: u64,
+    flags: u64,
+    dirfd: i32,
+    namep: NiDirp<'a>,
+    p: &'a Proc,
+) -> Nameidata<'a> {
+    let cnd = Componentname::new(op, flags, p, Cred::NULL);
     Nameidata {
         ni_dirp: namep,
         ni_dirfd: dirfd,
@@ -196,7 +200,7 @@ pub fn ndinitat<'a>(op: u64, flags: u64, dirfd: i32, namep: NiDirp<'a>, p: &Proc
 }
 
 /// `NDINIT(ndp, op, flags, segflg, namep, p)`: `ndinitat` relative to the current directory.
-pub fn ndinit<'a>(op: u64, flags: u64, namep: NiDirp<'a>, p: &Proc) -> Nameidata<'a> {
+pub fn ndinit<'a>(op: u64, flags: u64, namep: NiDirp<'a>, p: &'a Proc) -> Nameidata<'a> {
     ndinitat(op, flags, AT_FDCWD, namep, p)
 }
 
@@ -237,15 +241,13 @@ fn namei_fail(ndp: &mut Nameidata<'_>, error: Errno) -> Result<(), Errno> {
 ///     }
 /// ```
 pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
+    // The thread, for the componentname's life (not tied to the borrow of `ndp`).
     let p = ndp.ni_cnd.proc();
-    // SAFETY: the thread outlives its own lookup; detached from `ndp` so `ndp` can be
-    // borrowed mutably below.
-    let p: &Proc = unsafe { &*ptr::from_ref(p) };
 
-    ndp.ni_cnd.cn_cred = p.ucred_ptr();
+    ndp.ni_cnd.cn_cred = Cred::from_raw(p.ucred_ptr());
     #[cfg(feature = "diagnostic")]
     {
-        if ndp.ni_cnd.cn_cred.is_null() {
+        if ndp.ni_cnd.cn_cred == Cred::NULL {
             crate::kern::subr_prf::panic(format_args!("namei: bad cred/proc"));
         }
         if ndp.ni_cnd.cn_nameiop & !crate::sys::namei::OPMASK != 0 {
@@ -438,7 +440,7 @@ pub fn namei(ndp: &mut Nameidata<'_>) -> Result<(), Errno> {
             uio_rw: UioRw::UIO_READ,
             uio_procp: Some(p),
         };
-        if let Err(e) = VOP_READLINK(vp, &mut auio, ndp.ni_cnd.cn_cred) {
+        if let Err(e) = VOP_READLINK(vp, &mut auio, ndp.ni_cnd.cn_cred.as_raw()) {
             badlink(ndp, cp);
             break e;
         }
@@ -619,10 +621,8 @@ fn lookup_walk(
 ) -> Result<(), LookupError> {
     use LookupError::{Bad, Bad2};
 
+    // The thread, for the componentname's life (not tied to the borrow of `ndp`).
     let p = ndp.ni_cnd.proc();
-    // SAFETY: the thread outlives its own lookup; detached from `ndp` so `ndp` can be
-    // borrowed mutably below.
-    let p: &Proc = unsafe { &*ptr::from_ref(p) };
     let pn = pnbuf_ref(&ndp.ni_cnd);
     let base = ndp.ni_cnd.cn_pnbuf.cast_const();
     let at = |i: usize| base.wrapping_add(i);
@@ -1035,7 +1035,12 @@ mod tests {
     use crate::sys::vnode::VREG;
 
     /// `namei` of a kernel path, the result reduced to the node it found.
-    fn lookup(p: &Proc, path: &[u8], op: u64, flags: u64) -> Result<Nameidata<'static>, Errno> {
+    fn lookup(
+        p: &'static Proc,
+        path: &[u8],
+        op: u64,
+        flags: u64,
+    ) -> Result<Nameidata<'static>, Errno> {
         let path: &'static [u8] = std::boxed::Box::leak(path.to_vec().into_boxed_slice());
         let mut nd = ndinit(op, flags, NiDirp::Sys(path), p);
         namei(&mut nd).map(|()| nd)
@@ -1043,7 +1048,7 @@ mod tests {
 
     /// Looks `path` up with `LOOKUP` and `flags`, checks it found node `want`, releases it and
     /// checks nothing leaked.
-    fn finds(p: &Proc, path: &[u8], flags: u64, want: usize) {
+    fn finds(p: &'static Proc, path: &[u8], flags: u64, want: usize) {
         let before = usecounts();
         let nd = lookup(p, path, LOOKUP, flags).unwrap_or_else(|e| {
             std::panic!("{:?}: error {e:?}", core::str::from_utf8(path));
@@ -1251,7 +1256,8 @@ mod tests {
     #[test]
     fn component_push_and_pop() {
         let rpbuf: &'static mut [u8; MAXPATHLEN] = testfs::leak([0u8; MAXPATHLEN]);
-        let mut cn = Componentname::new();
+        let p = crate::kern::proc_glue::test_thread(crate::kern::proc_glue::test_process(1));
+        let mut cn = Componentname::new(0, 0, p, Cred::NULL);
         cn.cn_rpbuf = rpbuf.as_mut_ptr();
         rpbuf[0] = b'/';
         cn.cn_rpi = 1;

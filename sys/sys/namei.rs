@@ -63,9 +63,12 @@
 //!   is not in `cn_pnbuf` (`".."` in `vfs_getcwd_scandir`). Whoever sets `cn_nameptr` makes
 //!   it point at `cn_namelen` readable bytes for the lookup's duration; [`Componentname::name`]
 //!   relies on that, as the C code does.
-//! - `cn_proc`, `cn_cred` are raw pointers with accessors that assert them non-null (the
-//!   thread and its credentials outlive the lookup); `ni_unveil_match` is a raw pointer into
-//!   the process's unveil table (`kern_unveil.rs`), NULL for no match.
+//! - `ni_unveil_match` is a raw pointer into the process's unveil table (`kern_unveil.rs`),
+//!   NULL for no match.
+//! - N5.3 (the kernel's shape, ahead of the switch to `kernel::fs::namei`): `cn_proc` is a
+//!   reference to the thread, which outlives the lookup (`&'a Proc`: the C's NULL test is a
+//!   type), `cn_cred` the opaque `Cred<'a>` the vnode operations take, and
+//!   [`Componentname::new`] builds one from both.
 //! - `struct namecache`'s members are `Cell`s; `nc_nlen` is a `u8` (a `char` holding a
 //!   length of at most `NAMECACHE_MAXLEN`).
 //! - `struct nchstats` is a structure of `AtomicU64`s (the C bumps them racily, as `uvmexp`);
@@ -75,7 +78,9 @@
 
 use core::cell::Cell;
 use core::ptr;
+
 use core::sync::atomic::{AtomicU64, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_unveil::Unveil;
@@ -89,6 +94,14 @@ use crate::sys::uio::UioSeg;
 use crate::sys::vnode::Vnode;
 use crate::tree_adapter;
 
+/// `namei.h`'s functions (`vfs_lookup.c`, `vfs_cache.c`), where the C declares them.
+pub use crate::kern::vfs_cache::{
+    DOINGCACHE, NCHSTATS, NUMCACHE, NUMNEG, cache_enter, cache_lookup, cache_purge, cache_purgevfs,
+    cache_revlookup, cache_tree_init, cache_zap, nchinit,
+};
+pub use crate::kern::vfs_lookup::{
+    component_pop, component_push, namei, ndinit, ndinitat, vfs_lookup, vfs_relookup,
+};
 pub use crate::sys::fcntl::AT_FDCWD;
 
 /// `ni_dirp`: where the pathname is.
@@ -102,16 +115,16 @@ pub enum NiDirp<'a> {
 
 /// `struct componentname`: the subset of the `nameidata` structure that is passed through the
 /// VOP interface.
-pub struct Componentname {
+pub struct Componentname<'a> {
     // Arguments to lookup.
     /// `cn_nameiop`: namei operation.
     pub cn_nameiop: u64,
     /// `cn_flags`: flags to namei.
     pub cn_flags: u64,
     /// `cn_proc`: process requesting lookup.
-    pub cn_proc: *const Proc,
+    pub cn_proc: &'a Proc,
     /// `cn_cred`: credentials.
-    pub cn_cred: *const Ucred,
+    pub cn_cred: Cred<'a>,
     // Shared between lookup and commit routines.
     /// `cn_pnbuf`: pathname buffer (`MAXPATHLEN` bytes from `namei_pool`), or null.
     pub cn_pnbuf: *mut u8,
@@ -127,14 +140,15 @@ pub struct Componentname {
     pub cn_consume: i64,
 }
 
-impl Componentname {
-    /// A zeroed `struct componentname`.
-    pub const fn new() -> Self {
+impl<'a> Componentname<'a> {
+    /// A `struct componentname` of the operation `op` with `flags`, for the thread `p` with
+    /// the credential `cred`, no name and no buffer yet.
+    pub fn new(op: u64, flags: u64, p: &'a Proc, cred: Cred<'a>) -> Self {
         Self {
-            cn_nameiop: 0,
-            cn_flags: 0,
-            cn_proc: ptr::null(),
-            cn_cred: ptr::null(),
+            cn_nameiop: op,
+            cn_flags: flags,
+            cn_proc: p,
+            cn_cred: cred,
             cn_pnbuf: ptr::null_mut(),
             cn_rpbuf: ptr::null_mut(),
             cn_rpi: 0,
@@ -144,20 +158,30 @@ impl Componentname {
         }
     }
 
-    /// `cnp->cn_proc`.
-    pub fn proc(&self) -> &Proc {
-        kassert!(!self.cn_proc.is_null());
-        // SAFETY: set by `ndinitat` (or the caller that builds a componentname by hand) to
-        // the thread doing the lookup, which outlives it.
-        unsafe { &*self.cn_proc }
+    /// The `".."` lookup `vfs_getcwd_scandir` (and unveil's cover search) makes: `LOOKUP`,
+    /// `ISLASTCN | ISDOTDOT | RDONLY`, no pathname buffer, the name the literal `".."`.
+    pub fn dotdot(p: &'a Proc, cred: Cred<'a>) -> Self {
+        let mut cn = Self::new(LOOKUP, ISLASTCN | ISDOTDOT | RDONLY, p, cred);
+        cn.set_name_lit(b"..");
+        cn
     }
 
-    /// `cnp->cn_cred`.
-    pub fn cred(&self) -> &Ucred {
-        kassert!(!self.cn_cred.is_null());
-        // SAFETY: `namei` sets it to the thread's `p_ucred`, which the thread holds for the
-        // lookup's duration.
-        unsafe { &*self.cn_cred }
+    /// `cnp->cn_proc`, for as long as the componentname's thread lives (not tied to the
+    /// borrow of `cnp`, whose flags the operations change while they use the thread).
+    pub fn proc(&self) -> &'a Proc {
+        self.cn_proc
+    }
+
+    /// `cn_namelen`: the length of the component being looked up.
+    pub fn namelen(&self) -> i64 {
+        self.cn_namelen
+    }
+
+    /// The component's name is a string of the kernel's (`".."`, a test's name), outside the
+    /// pathname buffer.
+    pub fn set_name_lit(&mut self, s: &'static [u8]) {
+        self.cn_nameptr = s.as_ptr();
+        self.cn_namelen = s.len() as i64;
     }
 
     /// The component being looked up: the `cn_namelen` bytes at `cn_nameptr`.
@@ -171,10 +195,16 @@ impl Componentname {
     }
 }
 
-impl Default for Componentname {
-    fn default() -> Self {
-        Self::new()
-    }
+/// `cnp->cn_cred` as the C dereferences it (`cnp->cn_cred->cr_uid`): the credential a
+/// lookup always has (`namei` sets it to the thread's `p_ucred`, nfsd to the request's).
+pub fn cn_ucred<'c>(cnp: &'c Componentname<'_>) -> &'c Ucred {
+    let cred = cnp.cn_cred.as_raw();
+    kassert!(!cred.is_null());
+    // SAFETY: LZ's `Componentname::cred`, moved here with the credential's type: `namei` sets
+    // `cn_cred` to the thread's `p_ucred` and nfsd to the request's credential, each held by
+    // its holder for the lookup's duration, so the pointer is a live `Ucred` for the borrow
+    // of `cnp`; NULL is refused above.
+    unsafe { &*cred }
 }
 
 /// `struct nameidata`: encapsulation of namei parameters.
@@ -211,7 +241,7 @@ pub struct Nameidata<'a> {
     /// process's `ps_uvpaths`, or NULL).
     pub ni_unveil_match: *const Unveil,
     /// `ni_cnd`: lookup parameters.
-    pub ni_cnd: Componentname,
+    pub ni_cnd: Componentname<'a>,
 }
 
 /// `LOOKUP`: perform name lookup only.

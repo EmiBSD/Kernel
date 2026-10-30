@@ -63,13 +63,13 @@ use core::ptr::{self, NonNull};
 
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::vfs_lookup::{namei, ndinit};
 use crate::kern::vfs_vops::{VOP_GETATTR, VOP_READ};
 use crate::machine::cpu::curproc;
 use crate::sys::device::FIRMWARE_MAX;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_TEMP};
 use crate::sys::namei::{KERNELPATH, LOCKLEAF, LOOKUP, NOFOLLOW, NiDirp};
+use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::MAXPATHLEN;
 use crate::sys::pledge::PLEDGE_RPATH;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};

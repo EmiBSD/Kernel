@@ -301,11 +301,11 @@ mod tests {
     use crate::kern::kern_descrip::sys_close;
     use crate::kern::sys_generic::sys_write;
     use crate::kern::vfs_init::{set_rootvnode, vfs_byname};
-    use crate::kern::vfs_lookup::ndinit;
     use crate::kern::vfs_syscalls::{sys_open, sys_sync};
     use crate::kern::vfs_vops::VOP_UNLOCK;
     use crate::sys::fcntl::{O_CREAT, O_RDWR};
     use crate::sys::mount::{MNT_LOCAL, VFS_ROOT, VFS_STATFS};
+    use crate::sys::namei::ndinit;
     use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp};
     use crate::sys::types::major;
     use crate::sys::vnode::{vfs_mount_alloc, vfs_unbusy, vref};

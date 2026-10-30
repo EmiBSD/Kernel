@@ -110,8 +110,6 @@ use crate::kern::kern_subr::hashinit;
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::{Str, panic, tablefull, uprintf};
-use crate::kern::vfs_lookup::ndinit;
-use crate::kern::vfs_vnops::{vn_close, vn_lock, vn_open};
 #[cfg(feature = "diagnostic")]
 use crate::kern::vfs_vops::VOP_ISLOCKED;
 use crate::kern::vfs_vops::{VOP_READ, VOP_UNLOCK, VOP_WRITE};
@@ -123,6 +121,7 @@ use crate::sys::lock::{LK_EXCLUSIVE, LK_NOWAIT, LK_RETRY};
 use crate::sys::malloc::{M_DQUOT, M_WAITOK, M_ZERO};
 use crate::sys::mount::{MNT_QUOTA, Mount, VB_NOWAIT, VB_READ};
 use crate::sys::namei::NiDirp;
+use crate::sys::namei::ndinit;
 use crate::sys::param::PINOD;
 use crate::sys::proc::Proc;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
@@ -134,6 +133,7 @@ use crate::sys::vnode::{VNON, VREG, VSYSTEM, Vnode, cred_ref};
 use crate::sys::vnode::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vput};
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::{vfs_isbusy, vprint};
+use crate::sys::vnode::{vn_close, vn_lock, vn_open};
 use crate::ufs::ufs::inode::{Inode, vtoi};
 use crate::ufs::ufs::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,

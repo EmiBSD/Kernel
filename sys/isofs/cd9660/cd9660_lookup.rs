@@ -85,8 +85,6 @@ use crate::isofs::cd9660::iso::{
     ASSOCCHAR, Cdino, ISO_DIRECTORY_RECORD_SIZE, IsoDirectoryRecord, isonum_711,
 };
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_cache::{cache_enter, cache_lookup};
-use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::sys::buf::Buf;
 use crate::sys::buf::BufLegacy;
@@ -97,9 +95,11 @@ use crate::sys::mount::{MNT_RDONLY, Mount};
 use crate::sys::namei::{
     CREATE, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, Nchstats, PDIRUNLOCK, RENAME,
 };
+use crate::sys::namei::{cache_enter, cache_lookup};
 use crate::sys::param::DEV_BSHIFT;
 use crate::sys::syslimits::NAME_MAX;
 use crate::sys::types::Off;
+use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{VEXEC, Vnode, VopLookupArgs};
 use crate::sys::vnode::{vput, vref};
 
@@ -151,7 +151,7 @@ fn vmount(vp: &Vnode) -> &'static Mount {
 ///   deleting, add name to cache
 ///
 /// NOTE: (`LOOKUP | LOCKPARENT`) currently returns the parent inode unlocked.
-pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
+pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let cred = cnp.cn_cred;
     let nameiop = cnp.cn_nameiop;
@@ -167,7 +167,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
     let lockparent = flags & LOCKPARENT != 0;
 
     // Check accessibility of directory.
-    VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), cnp.proc())?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0
@@ -286,7 +286,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
                     cd9660_rrip_getname(&rec, &mut altname, &mut altlen, &mut i_ino, imp);
                     dp.i_ino.set(i_ino);
                     let altlen = usize::from(altlen).min(altname.len());
-                    if altlen as i64 == cnp.cn_namelen && name == &altname[..altlen] {
+                    if altlen as i64 == cnp.namelen() && name == &altname[..altlen] {
                         break 'scan Scan::Found(entryoffsetinblock);
                     }
                     ino = 0;
@@ -359,7 +359,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
                 // Insert name into cache (as non-existent) if appropriate.
                 if cnp.cn_flags & MAKEENTRY != 0 {
-                    cache_enter(vdp, *ap.a_vpp, cnp);
+                    cache_enter(vdp, *ap.a_vpp, cnp.name());
                 }
                 if nameiop == CREATE || nameiop == RENAME {
                     return Err(Errno::EJUSTRETURN);
@@ -446,7 +446,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_>) -> Result<(), Errno> {
 
     // Insert name into cache if appropriate.
     if cnp.cn_flags & MAKEENTRY != 0 {
-        cache_enter(vdp, *ap.a_vpp, cnp);
+        cache_enter(vdp, *ap.a_vpp, cnp.name());
     }
     Ok(())
 }
