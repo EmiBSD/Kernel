@@ -189,34 +189,49 @@ impl<T: Sync + 'static> SyncLink<T> {
     /// The target, `None` when the link is empty.
     #[inline]
     pub fn get(&self) -> Option<&'static T> {
-        let p = self.ptr.load(Ordering::Acquire);
-        if p.is_null() {
-            return None;
-        }
-        // SAFETY: by the type's invariant `p` is the address of a `&'static T` that `set` (or
-        // `to`) was given, the only writers: it is aligned, points to a `T` valid for the
-        // whole run of the kernel, and the shared reference made here is exactly the one
-        // that was handed in, so it aliases only shared references. `T: Sync` (this impl's
-        // bound), so handing that reference to whichever thread shares the link is sound,
-        // although the link's own `Send`/`Sync` did not ask it. The `Acquire` load pairs with
-        // the `Release` store of `set`, so the `T` as it was built before it was linked is
-        // visible here.
-        Some(unsafe { &*p })
+        self.read(None)
     }
 
     /// Points the link at `to` (`None` empties it).
     #[inline]
     pub fn set(&self, to: Option<&'static T>) {
-        let p = to.map_or(ptr::null_mut(), |r| ptr::from_ref(r).cast_mut());
-        self.ptr.store(p, Ordering::Release);
+        self.ptr.store(Self::word(to), Ordering::Release);
     }
 
-    /// Points the link at `to`, returning the target it had (`xchg`).
+    /// Points the link at `to`, returning the target it had: one atomic swap (`xchg`).
     #[inline]
     pub fn replace(&self, to: Option<&'static T>) -> Option<&'static T> {
-        let old = self.get();
-        self.set(to);
-        old
+        self.read(Some(to))
+    }
+
+    /// The pointer word of `to` (null for `None`).
+    #[inline]
+    fn word(to: Option<&'static T>) -> *mut T {
+        to.map_or(ptr::null_mut(), |r| ptr::from_ref(r).cast_mut())
+    }
+
+    /// The target the link has (`swap` `None`: a load), or had before it was swapped to
+    /// `swap`'s target (`Some`: one atomic exchange), as a reference.
+    #[inline]
+    fn read(&self, swap: Option<Option<&'static T>>) -> Option<&'static T> {
+        let p = match swap {
+            None => self.ptr.load(Ordering::Acquire),
+            Some(to) => self.ptr.swap(Self::word(to), Ordering::AcqRel),
+        };
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: `p` is a value of `self.ptr` (the load's, or the swap's previous one), and
+        // by the type's invariant every value it holds is null or the address of a
+        // `&'static T` that `set`, `replace` or `to` was given, the only writers, each from a
+        // reference: it is aligned, points to a `T` valid for the whole run of the kernel,
+        // and the shared reference made here is exactly the one that was handed in, so it
+        // aliases only shared references. `T: Sync` (this impl's bound), so handing that
+        // reference to whichever thread shares the link is sound, although the link's own
+        // `Send`/`Sync` did not ask it. The `Acquire` half of the load or the swap pairs
+        // with the `Release` half of the store or swap that wrote `p`, so the `T` as it was
+        // built before it was linked is visible here.
+        Some(unsafe { &*p })
     }
 }
 
@@ -326,6 +341,37 @@ mod tests {
         l.set(None);
         assert!(l.is_none());
         assert_eq!(SyncLink::to(&A).get(), Some(&7));
+    }
+
+    /// `replace` is one exchange: threads swapping their own targets in see every target
+    /// that was in the link exactly once (a load then a store would hand one out twice and
+    /// lose another).
+    #[test]
+    fn replace_is_one_exchange() {
+        const THREADS: usize = 4;
+        const SWAPS: usize = 2000;
+        let values: &'static [u32] =
+            Box::leak((0..=(THREADS * SWAPS) as u32).collect::<Box<[u32]>>());
+        let l: &'static SyncLink<u32> = Box::leak(Box::new(SyncLink::to(&values[0])));
+        let workers: std::vec::Vec<_> = (0..THREADS)
+            .map(|t| {
+                thread::spawn(move || {
+                    let mut olds = std::vec::Vec::new();
+                    for i in 0..SWAPS {
+                        let v = &values[1 + t * SWAPS + i];
+                        olds.push(*l.replace(Some(v)).unwrap());
+                    }
+                    olds
+                })
+            })
+            .collect();
+        let mut seen: std::vec::Vec<u32> = workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap())
+            .collect();
+        seen.push(*l.get().unwrap());
+        seen.sort_unstable();
+        assert_eq!(seen, values);
     }
 
     #[test]
