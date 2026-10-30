@@ -841,5 +841,103 @@ mod tests {
             assert_eq!(crate::reftest::int(&defs, name), Some(value), "{name}");
         }
     }
+
+    /// Every slot of `VNOPS` (bsd's table over the kernel's vnode file operations) and the
+    /// adapters of this header called once on a tmpfs file, as a file opened by `open(2)`
+    /// holds it (N5.1's lesson: an adapter no host test calls is one a boot finds broken):
+    /// `fo_read` and `fo_write` of an empty file, `fo_ioctl`'s `FIONREAD`, `fo_stat`,
+    /// `fo_seek`, `fo_kqfilter` (an unknown filter), `vn_fsizechk`, a record lock through
+    /// `VOP_ADVLOCK` (`sys::lockf::lf_advlock`), and `fo_close` from the last reference.
+    #[test]
+    fn every_vnops_slot_reaches_the_kernel_s_vnode_file_operations() {
+        use crate::kern::kern_descrip::{BsdFileData, closef, fnew};
+        use crate::kern::vfs_init::set_rootvnode;
+        use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_UNLOCK};
+        use crate::sys::fcntl::{F_FLOCK, F_SETLK, F_UNLCK, F_WRLCK, FREAD, FWRITE, O_CREAT};
+        use crate::sys::file::DTYPE_VNODE;
+        use crate::sys::filio::FIONREAD;
+        use crate::sys::namei::{LOOKUP, NiDirp, ndinit};
+        use crate::sys::stat::Stat;
+        use crate::sys::uio::Iovec;
+        use crate::tmpfs::tmpfs_vfsops::tests::{args, setup, tmpfs_conf};
+        use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
+
+        // A tmpfs as "/", the thread's current directory (tmpfs_vnops' tests' set-up).
+        let (_g, p) = setup();
+        // Unlimited resources (vn_fsizechk reads RLIMIT_FSIZE).
+        let mut limits = kernel::resource::Plimit::new();
+        for l in &mut limits.pl_rlimit {
+            l.rlim_cur = kernel::resource::RLIM_INFINITY;
+            l.rlim_max = kernel::resource::RLIM_INFINITY;
+        }
+        drop(
+            p.process()
+                .set_limit(kernel::resource::PlimitRef::new(limits)),
+        );
+        // The record locks' pools (init_main's lf_init).
+        crate::sys::lockf::lf_init();
+        let mp = vfs_mount_alloc(None, tmpfs_conf());
+        let mut data = args(1 << 20, 0, 0, 0o755);
+        let mut nd = ndinit(LOOKUP, 0, NiDirp::Sys(b"/"), p);
+        tmpfs_mount(mp, b"/", &mut data, &mut nd, p).expect("mount");
+        vfs_unbusy(mp);
+        let root = tmpfs_root(mp).expect("root");
+        set_rootvnode(Some(root));
+        p.fd().set_cdir(Some(root));
+        vref(root);
+        let _ = VOP_UNLOCK(root);
+
+        // open("/f", O_RDWR | O_CREAT, 0644): the vnode on a file of VNOPS.
+        let mut nd = ndinit(0, 0, NiDirp::Sys(b"/f"), p);
+        vn_open(&mut nd, FREAD | FWRITE | O_CREAT, 0o644).expect("open");
+        let vp = nd.ni_vp.expect("a vnode");
+        let _ = VOP_UNLOCK(vp);
+        let fp = fnew(p).expect("a file");
+        fp.f_flag.store(
+            (FREAD | FWRITE) as u32,
+            core::sync::atomic::Ordering::SeqCst,
+        );
+        fp.install(DTYPE_VNODE, &VNOPS, BsdFileData::vnode(vp));
+        assert_eq!(vp.writecount(), 1);
+
+        let mut byte = [0u8; 1];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut byte, Some(p));
+        assert_eq!((VNOPS.fo_read)(&fp, &mut uio, 0), Ok(()));
+        assert_eq!(uio.uio_resid, 1, "an empty file reads nothing");
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_write(&mut iov, &byte[..0], Some(p));
+        assert_eq!((VNOPS.fo_write)(&fp, &mut uio, 0), Ok(()));
+        let mut n = [0xffu8; 4];
+        assert_eq!((VNOPS.fo_ioctl)(&fp, FIONREAD, &mut n, p), Ok(()));
+        assert_eq!(i32::from_ne_bytes(n), 0);
+        let mut st = Stat::default();
+        assert_eq!((VNOPS.fo_stat)(&fp, &mut st, p), Ok(()));
+        assert_eq!(st.st_mode & 0o7777, 0o644);
+        let mut off = 5;
+        let seek = VNOPS.fo_seek.expect("a vnode seeks");
+        assert_eq!(seek(&fp, &mut off, 0, p), Ok(()));
+        assert_eq!(off, 5);
+        let kn: &'static Knote = std::boxed::Box::leak(std::boxed::Box::new(Knote::detached()));
+        kn.kn_filter().set(-100);
+        assert_eq!((VNOPS.fo_kqfilter)(&fp, kn), Err(Errno::EINVAL));
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_write(&mut iov, &byte, Some(p));
+        assert_eq!(vn_fsizechk(vp, &mut uio, 0), Ok(0));
+        let mut fl = Flock {
+            l_type: F_WRLCK,
+            ..Flock::default()
+        };
+        let id = LockOwner::File(fp.addr());
+        assert_eq!(VOP_ADVLOCK(vp, id, F_SETLK, &mut fl, F_FLOCK), Ok(()));
+        fl.l_type = F_UNLCK;
+        assert_eq!(
+            VOP_ADVLOCK(vp, id, i32::from(F_UNLCK), &mut fl, F_FLOCK),
+            Ok(())
+        );
+        // The last reference: fdrop's fo_close (vn_closefile, vn_close's FWRITE count).
+        assert_eq!(closef(fp, p), Ok(()));
+        assert_eq!(vp.writecount(), 0);
+    }
 }
 /* </TESTS> */
