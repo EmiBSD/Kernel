@@ -674,8 +674,7 @@ pub struct Vnode<G: ProcGlue> {
     /// rather than in its `ReadMostly` specinfo, whose readers may not sleep as `lf_setlock`
     /// does.
     pub speclockf: super::lockf::LockfSlot,
-    /// The members of `bsd`'s types (`v_nc_tree`, `v_cache_dst`, `v_socket`, the device's
-    /// `si_lockf`).
+    /// The members of `bsd`'s types (`v_socket`, until the sockets move, N6).
     pub g: <G::FileGlue as FileGlue>::VnodeG,
 }
 
