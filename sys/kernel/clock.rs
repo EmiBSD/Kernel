@@ -248,6 +248,13 @@ hal::abi_pod!(Timespec {
     tv_nsec: i64
 });
 
+/// A time as `struct stat` embeds it (`st_atim`, ...: `hal`'s copy of the layout, N5.3).
+impl From<Timespec> for hal::sys::stat::Timespec {
+    fn from(t: Timespec) -> Self {
+        Self::new(t.tv_sec, t.tv_nsec)
+    }
+}
+
 /// `struct timeval`: seconds and microseconds, the layout userland shares (`#[repr(C)]`,
 /// `time_t` and `suseconds_t`, both `i64`). Ordered as `timercmp` orders.
 #[repr(C)]

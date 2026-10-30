@@ -889,9 +889,9 @@ pub fn uipc_sense(so: &'static Socket, sb: &mut Stat) -> Result<(), Errno> {
         mtx_leave(&UNP_INO_MTX);
     }
     let ctime = unp.unp_ctime.get();
-    sb.st_atim = ctime;
-    sb.st_mtim = ctime;
-    sb.st_ctim = ctime;
+    sb.st_atim = ctime.into();
+    sb.st_mtim = ctime.into();
+    sb.st_ctim = ctime.into();
     sb.st_ino = unp.unp_ino.get();
 
     Ok(())

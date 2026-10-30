@@ -5920,7 +5920,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs
 rust = "sys/kern/uipc_usrreq.rs"
 lz = ["sys/kern/uipc_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/hal/sys/stat.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_cache.rs"
@@ -7884,9 +7884,11 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/spec.rs"]
 notes = "N5.2: Specinfo the alias of the kernel's, the spec_* operations the file systems' special-file tables hold over kernel::fs::spec, and BsdDevsw, the device switch (machine::conf's cdevsw/bdevsw) as the kernel's Devsw bridge"
 
 [[module]]
-rust = "sys/sys/stat.rs"
+rust = "sys/hal/sys/stat.rs"
+crate = "hal"
 lz = ["sys/sys/stat.rs"]
-status = "inherited"
+status = "redesigned"
+notes = "N5.3 (D-N5.3-3, the user's decision): stat.h moved from bsd into hal so kernel::fs::vnops fills the one struct stat; its times are hal's ABI Timespec (kernel::clock::Timespec converts into it with From); bsd's sys/sys/mod.rs re-exports it"
 
 [[module]]
 rust = "sys/sys/swap.rs"

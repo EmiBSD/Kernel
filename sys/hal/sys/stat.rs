@@ -57,6 +57,7 @@
 //! types, and the file flags (`UF_*`, `SF_*`).
 //!
 //! Upstream: sys/sys/stat.h @ 3ce1f3f79392
+//! LZ: sys/sys/stat.rs@3c62ede68802
 //!
 //! ## Deviations
 //! - The `S_IS*(m)` macros are `const fn`s with lowercase names (`s_isdir`, ...); the
@@ -65,11 +66,38 @@
 //!   offset and zeroes the padding before `__st_birthtim`, so no uninitialised byte reaches
 //!   user space.
 //! - The userland prototypes (`stat`, `fstat`, `chmod`, ...) are not kernel material.
+//!
+//! ## Redesign
+//! - N5.3 (D-N5.3-3, the user's decision): the header moves from `bsd` to `hal`, so the
+//!   kernel's `vn_stat` (`kernel::fs::vnops`) fills the one `struct stat` `fstat(2)` copies
+//!   out; `bsd`'s `crate::sys::stat` re-exports it. The times are [`Timespec`], the C's
+//!   `struct timespec` as the structure embeds it (two `i64`, `#[repr(C)]`): `hal` cannot name
+//!   the kernel's `kernel::clock::Timespec`, which converts into it with `From`. The layout,
+//!   the offsets the `const` block asserts and `to_bytes` are LZ's.
 
 use core::mem::offset_of;
 
-use crate::sys::time::Timespec;
 use crate::sys::types::{Blkcnt, Blksize, Dev, Gid, Ino, Mode, Nlink, Off, Uid};
+
+/// `struct timespec` as `struct stat` embeds it (`st_atim`, `st_mtim`, `st_ctim`,
+/// `__st_birthtim`): seconds and nanoseconds, the layout userland shares. The kernel's
+/// arithmetic type is `kernel::clock::Timespec`, of the same layout, which converts into this
+/// one.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timespec {
+    /// `tv_sec`: seconds.
+    pub tv_sec: i64,
+    /// `tv_nsec`: and nanoseconds.
+    pub tv_nsec: i64,
+}
+
+impl Timespec {
+    /// `{ sec, nsec }`.
+    pub const fn new(tv_sec: i64, tv_nsec: i64) -> Self {
+        Self { tv_sec, tv_nsec }
+    }
+}
 
 /// `S_ISUID`: set user id on execution.
 pub const S_ISUID: Mode = 0o004000;
@@ -285,6 +313,7 @@ const _: () = {
     assert!(offset_of!(Stat, st_size) == 80);
     assert!(offset_of!(Stat, st_gen) == 104);
     assert!(offset_of!(Stat, __st_birthtim) == 112);
+    assert!(size_of::<Timespec>() == 16);
 };
 /* </CODE> */
 

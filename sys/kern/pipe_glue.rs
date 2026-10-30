@@ -102,7 +102,6 @@ use crate::sys::syscall::{SYS_pipe, SYS_pipe2};
 use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::syscallargs::{SysPipe2Args, SysPipeArgs};
 use crate::sys::systm::{SysArgs, sysargs};
-use crate::sys::time::Timespec;
 use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
 use crate::sys::types::Register;
 use crate::sys::uio::Uio;
@@ -269,9 +268,9 @@ pub fn pipe_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
     ub.st_blksize = st.blksize;
     ub.st_size = st.size;
     ub.st_blocks = st.blocks;
-    ub.st_atim = Timespec::new(st.atime.tv_sec, st.atime.tv_nsec);
-    ub.st_mtim = Timespec::new(st.mtime.tv_sec, st.mtime.tv_nsec);
-    ub.st_ctim = Timespec::new(st.ctime.tv_sec, st.ctime.tv_nsec);
+    ub.st_atim = st.atime.into();
+    ub.st_mtim = st.mtime.into();
+    ub.st_ctim = st.ctime.into();
     ub.st_uid = cred.cr_uid.get();
     ub.st_gid = cred.cr_gid.get();
     // Left as 0: st_dev, st_ino, st_nlink, st_rdev, st_flags, st_gen.

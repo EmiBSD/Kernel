@@ -110,6 +110,14 @@ impl<T: 'static> Link<T> {
     pub fn points_to(&self, x: &T) -> bool {
         ptr::eq(self.ptr.load(Ordering::Relaxed), ptr::from_ref(x))
     }
+
+    /// The target's address as a number, 0 when the link is empty: what a reader that only
+    /// prints or compares the address takes (`kern.file`'s `v_data` of a socket's vnode,
+    /// `kern_sysctl.c`), without making a reference to a target another CPU may be changing.
+    #[inline]
+    pub fn addr(&self) -> usize {
+        self.ptr.load(Ordering::Relaxed).addr()
+    }
 }
 
 impl<T: 'static> Default for Link<T> {
@@ -200,6 +208,16 @@ mod tests {
         l.set(None);
         assert!(l.is_none());
         assert_eq!(Link::to(&A).get(), Some(&7));
+    }
+
+    #[test]
+    fn the_address_is_the_targets_or_zero() {
+        let l = Link::<u32>::new();
+        assert_eq!(l.addr(), 0);
+        l.set(Some(&B));
+        assert_eq!(l.addr(), ptr::from_ref(&B).addr());
+        l.set(None);
+        assert_eq!(l.addr(), 0);
     }
 
     #[test]

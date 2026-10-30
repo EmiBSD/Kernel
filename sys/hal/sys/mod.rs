@@ -67,6 +67,8 @@ pub mod signal;
 #[forbid(unsafe_code)]
 pub mod softintr;
 #[forbid(unsafe_code)]
+pub mod stat;
+#[forbid(unsafe_code)]
 pub mod syscall;
 #[forbid(unsafe_code)]
 pub mod sysctl;
