@@ -97,7 +97,7 @@ use crate::proc::{ProcGlue, Thread};
 use crate::uio::{Iovec, Uio};
 
 /// `M_TEMP` (`<sys/malloc.h>`): misc temporary data buffers.
-const M_TEMP: i32 = 127;
+pub(super) const M_TEMP: i32 = 127;
 
 /// `DIRBLKSIZ` (`ufs/ufs/dir.h`, `DEV_BSIZE`): only for the smallest directory buffer.
 const DIRBLKSIZ: usize = 512;
@@ -578,10 +578,17 @@ mod tests {
             .and_then(Vnode::mount)
             .unwrap();
         // C looked up only through VFS_VGET: its name is in no cache; the scan looks `..` up
-        // and reads the parent, which the test file system cannot (`EOPNOTSUPP`).
+        // and reads the parent's records (the test file system's readdir, N5.4). Without the
+        // kernel copy the test glue's uiomove leaves the scan's kernel buffer zeroed: a record
+        // shorter than one entry, the C's EINVAL for a corrupt directory; with it, the scan
+        // finds `c` by its file number.
         let cvp = vget_node(mp, C).unwrap();
         let _ = vop_unlock(cvp);
-        assert_eq!(path_of(cvp, 64, p), Err(Errno::EOPNOTSUPP));
+        assert_eq!(path_of(cvp, 64, p), Err(Errno::EINVAL));
+        assert!(!any_locked());
+        crate::testutil::set_copy_kernel(true);
+        assert_eq!(path_of(cvp, 64, p).as_deref(), Ok(&b"/a/c"[..]));
+        crate::testutil::set_copy_kernel(false);
         assert!(!any_locked());
         vrele(cvp);
     }

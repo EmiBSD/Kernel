@@ -2549,7 +2549,7 @@ mod tests {
 
     use super::*;
     use crate::cred::{CredRef, Ucred};
-    use crate::proc::{ProcessRef, SessionTty, UnveilState};
+    use crate::proc::{ProcessRef, SessionTty};
     use crate::testutil;
 
     /// A user buffer of the double's memory (its own range).
@@ -2903,12 +2903,6 @@ mod tests {
                 session_addr: core::ptr::from_ref(sess).addr(),
             })
         }
-        fn unveil_state(pr: &Process<Self>) -> UnveilState {
-            UnveilState {
-                paths: pr.ps_pid == 4343,
-                done: false,
-            }
-        }
     });
 
     /// The test thread's tables, once, with the kernel lock held (the double counts it), as
@@ -3018,6 +3012,7 @@ mod tests {
             .fetch_and(!(PS_ZOMBIE | PS_EXITING), Ordering::Relaxed);
 
         // The unveil state comes from the glue.
+        crate::testutil::set_unveil_paths_pid(Some(4343));
         let pr = listed(4343, 1000);
         assert_eq!(kproc(pr, false, false).p_eflag & EPROC_UNVEIL, EPROC_UNVEIL);
     }

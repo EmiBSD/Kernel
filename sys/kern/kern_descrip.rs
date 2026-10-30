@@ -244,6 +244,10 @@ impl FileGlue for BsdFileGlue {
         (&crate::kern::kern_event::KQUEUEOPS, BsdFileData::Kqueue(kq))
     }
 
+    fn vnode_file(vp: &'static Vnode) -> (&'static Fileops, BsdFileData) {
+        (&crate::sys::vnode::VNOPS, BsdFileData::vnode(vp))
+    }
+
     fn pipe_file(
         end: kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>,
     ) -> (&'static Fileops, BsdFileData) {

@@ -151,11 +151,12 @@ paid_by = "N7"
 # position_check (kernel::descrip's VOP_ADVLOCK, VOP_PATHCONF, VISTTY and v_type on the
 # vnode vnode_of gives), vnode_revoked (kqueue_scan's dead_vops test), getcwd (kern.proc_cwd's
 # vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
-# (a test glue answers with a pager double).
+# (a test glue answers with a pager double). N5.4: vnode_file (a new vnode file's vnops and
+# object, open(2)'s and fhopen(2)'s) joined it (kernel::fs::syscalls).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
-for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+for = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 paid_by = "N8"
 
 # bsd: CPU_INFO_FOREACH, cpu_is_running, ci_proc_pmap, ci_cflushsz, x86_fast_ipi with
@@ -360,9 +361,11 @@ paid_by = "N7"
 # kern_unveil, N8, at the C's points) and checkzoneinfopath; session_has_tty_vnode left it
 # (the kernel's Session::ttyvp, which TIOCSCTTY sets, D-N5.2-9), and textvp_release and
 # textvp_wxallowed with it (the kernel's Process::textvp: process_new's vref, process_zap's
-# vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9).
+# vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9). N5.4: the system calls'
+# hooks joined it (kernel::fs::syscalls): pledge_chown, unveil_add, unveil_removevnode and
+# unveil_set_done (kern_pledge and kern_unveil, N8, required as the other pledge hooks).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
 paid_by = "N8"

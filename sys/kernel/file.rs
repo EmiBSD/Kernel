@@ -632,6 +632,12 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// and whose peer it writes), for the pipe's filters (`kernel::pipe`'s `filt_pipe*`);
     /// `None` for another object.
     fn pipe_of(d: &Self::Data) -> Option<&crate::pipe::PipeEnd<Self::Proc>>;
+    /// `vnops` and the object of a new vnode file (`doopenat`'s and `sys_fhopen`'s `f_ops`
+    /// and `f_data`): the object is the vnode `vp`, whose use count the open took (`vn_open`)
+    /// and the file's last close gives back (`vn_closefile`).
+    fn vnode_file(
+        vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
+    ) -> (&'static Self::Ops, Self::Data);
     /// `pipeops` and the object of a new pipe file (`dopipe`'s `f_ops` and `f_data`): the
     /// object holds `end`, the file's pipe, which goes with the file's last reference
     /// (`pipe_close`'s `pipe_destroy`).

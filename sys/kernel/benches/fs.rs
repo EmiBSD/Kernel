@@ -63,6 +63,15 @@
 //! - `vn_open.close`: `vn_open("/f", FREAD)`, the unlock, `vn_close`.
 //! - `prim.namecache-mtx`: the name cache's lock (D-N5.3-2's leaf) taken and left.
 //!
+//! N5.4's rows (`kernel::fs::syscalls`), the op names of `sys/benches/fs.rs` (N5.4's: the
+//! same system calls on LZ's shape and, at the switch, through `bsd`'s adapter), each called
+//! as its `KernelApi` entry calls it, the paths and the `struct stat` in the user memory of
+//! the host's double, over the names bench's file system and thread:
+//! - `open.close`: `open("/f", O_RDONLY)` and `close` of the descriptor.
+//! - `fstat`: `fstat` of a descriptor of `/f` (`kernel::descrip`'s, the vnode file's stat).
+//! - `lseek`: `lseek(fd, 0, SEEK_SET)`.
+//! - `stat.3`: `stat("/a/b/c")` with the three names cached.
+//!
 //! Since N5.3 the bench registers `proc.rs`'s recycling pool backend before the doubles (as
 //! `vm.rs` and `proc.rs` do): the doubles' pool hands out a fresh zeroed page per item and
 //! never takes one back, which timed the host's `malloc` and `memset` (a `namei`'s path
@@ -79,8 +88,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
-use hal::sys::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock};
+use hal::sys::fcntl::{F_POSIX, F_SETLK, F_UNLCK, F_WRLCK, FREAD, Flock, O_RDONLY};
 use hal::sys::unistd::SEEK_SET;
+use hal::user::UserPtr;
 use kernel::file::LockOwner;
 use kernel::fs::cache::{NCLOCK, cache_counts, cache_enter, cache_lookup, nchinit};
 use kernel::fs::getcwd::vfs_getcwd_common;
@@ -91,6 +101,7 @@ use kernel::fs::namei::{
     CREATE, Componentname, FOLLOW, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, MAXPATHLEN,
     NOCACHE, NiDirp, PDIRUNLOCK, RENAME,
 };
+use kernel::fs::syscalls::{sys_lseek, sys_open, sys_stat};
 use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
 use kernel::fs::vnops::{vn_close, vn_open};
 use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
@@ -602,6 +613,15 @@ fn names_root() -> &'static Thread<TestGlue> {
     kernel::testutil::set_test_maxfiles(4096);
     let pr = kernel::proc::process_alloc::<TestGlue>(1, ());
     drop(pr.set_ucred(kernel::cred::CredRef::new(kernel::cred::Ucred::new())));
+    // The limits of `lim_startup` that matter here: descriptors to open.
+    let mut limits = kernel::resource::Plimit::new();
+    for l in &mut limits.pl_rlimit {
+        l.rlim_cur = kernel::resource::RLIM_INFINITY;
+        l.rlim_max = kernel::resource::RLIM_INFINITY;
+    }
+    limits.pl_rlimit[kernel::resource::RLIMIT_NOFILE].rlim_cur = 512;
+    limits.pl_rlimit[kernel::resource::RLIMIT_NOFILE].rlim_max = 512;
+    drop(pr.set_limit(kernel::resource::PlimitRef::new(limits)));
     pr.set_fd(kernel::descrip::fdinit());
     let t = kernel::proc::thread_alloc::<TestGlue>(&pr, ());
     drop(t.set_cred(pr.ucred()));
@@ -684,6 +704,10 @@ fn main() {
         "getcwd.cached",
         "vn_open.close",
         "prim.namecache-mtx",
+        "open.close",
+        "fstat",
+        "lseek",
+        "stat.3",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -991,5 +1015,60 @@ fn main() {
             }),
         );
     }
+
+    // N5.4's rows: the system calls, their paths and `struct stat` in user memory.
+    let upath_f = UserPtr::<u8>::new(kernel::testutil::USER_BASE + 0x1200);
+    let upath_abc = UserPtr::<u8>::new(kernel::testutil::USER_BASE + 0x1240);
+    let ustat = UserPtr::<u8>::new(kernel::testutil::USER_BASE + 0x1280);
+    need(upath_f.copyout_slice(b"/f\0"), "copyout");
+    need(upath_abc.copyout_slice(b"/a/b/c\0"), "copyout");
+    lookup_rele(p, b"/a/b/c", FOLLOW);
+    let fd = need(sys_open(p, upath_f, O_RDONLY, 0), "open");
+    need(kernel::descrip::sys_fstat(p, fd, ustat.addr()), "fstat");
+    need(sys_lseek(p, fd, 0, SEEK_SET), "lseek");
+    need(sys_stat(p, upath_abc, ustat), "stat");
+    if wanted(names[19]) {
+        report(
+            names[19],
+            measure(|| {
+                rounds(|| {
+                    if let Ok(fd) = sys_open(p, black_box(upath_f), O_RDONLY, 0) {
+                        let _ = kernel::descrip::sys_close(p, fd);
+                    }
+                })
+            }),
+        );
+    }
+    if wanted(names[20]) {
+        report(
+            names[20],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(kernel::descrip::sys_fstat(p, black_box(fd), ustat.addr()));
+                })
+            }),
+        );
+    }
+    if wanted(names[21]) {
+        report(
+            names[21],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_lseek(p, black_box(fd), 0, SEEK_SET));
+                })
+            }),
+        );
+    }
+    if wanted(names[22]) {
+        report(
+            names[22],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_stat(p, black_box(upath_abc), ustat));
+                })
+            }),
+        );
+    }
+    let _ = kernel::descrip::sys_close(p, fd);
 }
 /* </CODE> */

@@ -8635,6 +8635,57 @@ native = ["VnodeFileOps"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/syscalls.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_syscalls.rs"]
+status = "redesigned"
+notes = "N5.4: vfs_syscalls.c: its 64 system calls (mount, unmount, sync, the statfs family, chdir, fchdir, chroot, unveil, __realpath, open, openat, __pledge_open, getfh, fhopen, fhstat, fhstatfs, the mknod, mkfifo, link, symlink, unlink, rename, mkdir and rmdir families, lseek, access, the stat family, pathconf, readlink, the chflags, chmod, chown and utimes families, truncate, ftruncate, fsync, revoke, getdents, umask, quotactl) over Result<T, Errno> and typed user pointers; the mount arguments copied into an MArray of vfc_datasize; dounmount's nested mounts on a hal::list (ByDounmount); unwired until N5.4's switch"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::queued"
+native = []
+kind = "dropped"
+reason = "dounmount's work queue is a hal::list::List of the mounts (ByDounmount), whose walk lends the &'static Mount each link holds: no reference is made again from a pointer"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::get"
+native = ["sys/kernel/fs/namei.rs::pathbuf_get"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::get_zero"
+native = []
+kind = "dropped"
+reason = "no caller at the pin: sys___realpath, sys_unveil and dosymlinkat take the plain buffer and use only the bytes they wrote into it (copyinstr's length, the NUL they put)"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_ptr"
+native = []
+kind = "dropped"
+reason = "cn_rpbuf is the kernel Componentname's owned PathBuf (Option<PathBuf>, N5.3), given to it by sys___realpath: no address is handed over"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_str"
+native = []
+kind = "dropped"
+reason = "the callers slice the PathBuf to the length copyinstr returned or to its first NUL (cstrlen); the bytes are the same"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::as_mut"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::NameiBuf::drop"
+native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module]]
 rust = "sys/hal/sys/syslimits.rs"
 crate = "hal"
 lz = ["sys/sys/syslimits.rs"]
@@ -10239,7 +10290,7 @@ reason = "decision 43, N5.4: host microbenchmarks of the VFS system calls on LZ'
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
 crate = "kernel"
-reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend; N5.4: the system calls' rows (open.close, fstat, lseek, stat.3), the op names of sys/benches/fs.rs, over kernel::fs::syscalls with their paths in the double's user memory and a descriptor limit of 512"
 
 [[extra]]
 rust = "sys/kernel/benches/bio.rs"
@@ -10259,7 +10310,7 @@ reason = "decision 43: host microbenchmarks of N4.8's clock hot paths (the timec
 [[extra]]
 rust = "sys/kernel/benches/pipe.rs"
 crate = "kernel"
-reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+reason = "decision 43: host microbenchmarks of pipe(2) (N5.0: pipe_pair_create and both ends closed, a 512-byte write and read through a pair with and without an EVFILT_READ knote, pipe2(2) and the close of both descriptors) over the doubles, a recycling pool backend and recycling buffer pages (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.4: its glue's vnode_file (a vnode file's ops, never called by the rows)"
 
 [[extra]]
 rust = "sys/kernel/benches/futex.rs"
@@ -11730,12 +11781,12 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"
 crate = "kernel"
-reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread)"
+reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread); N5.4: the namespace grows for the system calls (a tree of names that VOP_CREATE, VOP_MKNOD, VOP_MKDIR, VOP_RMDIR, VOP_REMOVE, VOP_LINK, VOP_SYMLINK and VOP_RENAME change, VOP_READDIR of its records, VOP_PATHCONF, VOP_REVOKE, VFS_VPTOFH, a terminal and a disk node, ufs_lookup's SAVENAME on a creation and a rename's target), the last attributes and mount arguments it saw, one-shot errors (set_create_error, set_open_error, set_mount_error); its setup forgets the buffer cache too (bio_test_reset: getnewvnode reads bcstats.numbufs)"
 
 [[extra]]
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
-reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock"
 
 [[extra]]
 rust = "sys/kernel/benches/vm.rs"
