@@ -206,7 +206,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `thread.rs` `DEFERRED` | `VecDeque<Deferred>` | `push_back`, `pop_front` | O(1) amortized / O(1) |
 | `tc.rs` | `vec![0u8; n*32]` | `extend_from_slice`, `resize` | O(k) / O(n) |
 | `crypto/xform_ipcomp.rs` | `Vec<u8>` | `try_reserve`, `iter`, `iter_mut` | O(n) when it grows |
-| `acct.rs` | `Box<dyn AcctSink>` | `open`, `close` | O(1) |
+| `acct.rs` | `Box<dyn AcctSink>` | `acct_open` (an `AcctVnode`, N5.3), `close` | O(1) |
 | `sched.rs` | `Box::leak` of a `SchedCpu` | | O(1), once per CPU at boot |
 
 ## `bsd` (legacy, `sys/sys/queue.rs` and `sys/sys/tree.rs`)

@@ -182,15 +182,6 @@ trait = "Random"
 for = ["sys/hal/arch/arm64/pmap/asid.rs", "sys/hal/random.rs"]
 paid_by = "N7"
 
-# bsd: the accounting file (sys/kern/proc_glue.rs's BsdAcctFile: vn_open of a regular file with
-# UNVEIL_WRITE, and its BsdAcctSink: vn_rdwr of a record, VFS_STATFS, the VBAD check,
-# vn_close), for kernel::acct (N4.6a); registered by hal_bridges_register. N5, with the vnodes.
-# kernel::acct::AcctFile
-[[bridge]]
-trait = "AcctFile"
-for = ["sys/kernel/acct.rs"]
-paid_by = "N5"
-
 # bsd: the machine's clock hardware (crate::machine::cpu's cpu_initclocks, cpu_startclock,
 # setstatclockrate, delay; arm64's arm_clock_func in intr.rs, first registration winning),
 # implemented by sys/kern/hal_bridges.rs (BsdClockHardware), for kernel::clock's initclocks.

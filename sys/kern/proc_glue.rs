@@ -150,12 +150,10 @@
 //!   `kernel::proc::ProcTables` (one `static`; each host test thread its own,
 //!   [`proc_test_reset`]).
 
-use crate::sys::vnode::RdwrBuf;
 use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
 use core::sync::atomic::{AtomicI64, AtomicIsize, Ordering};
-use kernel::fs::vops::Cred;
 
 use hal::link::{Link, PtrWord};
 use hal::pool::PoolArc;
@@ -191,8 +189,8 @@ use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::time::Timespec;
 use crate::sys::timeout::Timeout;
 use crate::sys::types::{Pid, Register};
+use crate::sys::vnode::REVOKEALL;
 use crate::sys::vnode::vrele;
-use crate::sys::vnode::{REVOKEALL, Vnode};
 
 pub use kernel::proc::{inferior, zapverauth};
 pub use kernel::sig::{SigaltstackWord, SigvalWord};
@@ -990,89 +988,6 @@ pub fn sys_waitid(q: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
 pub fn sys_acct(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysAcctArgs = sysargs(v);
     kernel::acct::sys_acct(p, hal::user::UserPtr::new(uap.path.get().addr()))
-}
-
-/// The accounting file of `kernel::acct` (bridges.toml `AcctFile`, N5): `vn_open` of a
-/// regular file for `FWRITE | O_APPEND` with `UNVEIL_WRITE`, unlocked.
-pub struct BsdAcctFile;
-
-/// The registered [`BsdAcctFile`].
-pub static BSD_ACCT_FILE: BsdAcctFile = BsdAcctFile;
-
-/// An open accounting file: its vnode (held open by `vn_open` until `close`).
-struct BsdAcctSink(&'static Vnode);
-
-impl kernel::acct::AcctFile for BsdAcctFile {
-    fn open(
-        &self,
-        path: hal::user::UserPtr<u8>,
-    ) -> Result<alloc::boxed::Box<dyn kernel::acct::AcctSink>, Errno> {
-        let Some(p) = crate::machine::cpu::curproc() else {
-            crate::kern::subr_prf::panic(format_args!("acct: no curproc"));
-        };
-        let mut nd =
-            crate::sys::namei::ndinit(0, 0, crate::sys::namei::NiDirp::User(path.addr()), p);
-        nd.ni_unveil = crate::sys::namei::UNVEIL_WRITE;
-        crate::sys::vnode::vn_open(
-            &mut nd,
-            crate::sys::fcntl::FWRITE | crate::sys::fcntl::O_APPEND,
-            0,
-        )?;
-        let Some(vp) = nd.ni_vp else {
-            return Err(Errno::ENOENT);
-        };
-        let _ = crate::kern::vfs_vops::VOP_UNLOCK(vp);
-        if vp.vtype() != crate::sys::vnode::VREG {
-            let _ = crate::sys::vnode::vn_close(
-                vp,
-                crate::sys::fcntl::FWRITE,
-                Cred::from_raw(p.ucred_ptr()),
-                Some(p),
-            );
-            return Err(Errno::EACCES);
-        }
-        Ok(alloc::boxed::Box::new(BsdAcctSink(vp)))
-    }
-}
-
-impl kernel::acct::AcctSink for BsdAcctSink {
-    fn write(&self, rec: &[u8]) -> Result<(), Errno> {
-        let p = crate::machine::cpu::curproc();
-        crate::sys::vnode::vn_rdwr(
-            crate::sys::uio::UioRw::UIO_WRITE,
-            self.0,
-            RdwrBuf::KernelRead(rec),
-            0,
-            crate::sys::vnode::IO_APPEND
-                | crate::sys::vnode::IO_UNIT
-                | crate::sys::vnode::IO_NOLIMIT,
-            Cred::from_raw(p.map_or(crate::sys::ucred::NOCRED, |p| p.ucred_ptr())),
-            None,
-            p,
-        )
-    }
-
-    fn free_space(&self) -> Option<(i64, i64)> {
-        let mp = self.0.mount()?;
-        let p = crate::machine::cpu::curproc()?;
-        let mut sb = crate::sys::mount::Statfs::default();
-        let _ = crate::sys::mount::VFS_STATFS(mp, &mut sb, p);
-        Some((sb.f_bavail, sb.f_blocks as i64))
-    }
-
-    fn is_bad(&self) -> bool {
-        self.0.vtype() == crate::sys::vnode::VBAD
-    }
-
-    fn close(self: alloc::boxed::Box<Self>, by_curproc: bool) {
-        let p = crate::machine::cpu::curproc();
-        let cred = match p {
-            Some(p) if by_curproc => p.ucred_ptr(),
-            _ => crate::sys::ucred::NOCRED,
-        };
-        let _ =
-            crate::sys::vnode::vn_close(self.0, crate::sys::fcntl::FWRITE, Cred::from_raw(cred), p);
-    }
 }
 
 /// `KernelApi::proc`: the `Native` entries of the process system calls (N4.6a), each running

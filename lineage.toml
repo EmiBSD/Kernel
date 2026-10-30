@@ -9847,7 +9847,7 @@ rust = "sys/kernel/acct.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_acct.rs", "sys/sys/acct.rs"]
 status = "redesigned"
-notes = "N4.6a: acct(2), acct_process, encode_comp_t, acct_start/acct_thread/acct_shutdown, struct acct (abi_pod!) and the A* flags; acctp/savacctp owned by Rwlocked acctlk as Box<dyn AcctSink> from the AcctFile bridge (N5); ac_tty from the session (decision 15)"
+notes = "N4.6a: acct(2), acct_process, encode_comp_t, acct_start/acct_thread/acct_shutdown, struct acct (abi_pod!) and the A* flags; acctp/savacctp owned by Rwlocked acctlk as Box<dyn AcctSink> from the AcctFile bridge (N5); ac_tty from the session (decision 15); N5.3: the AcctFile bridge gone, the sink is the kernel's AcctVnode<G> over kernel::fs (acct_open: vn_open, the VREG check; vn_rdwr, VFS_STATFS, vn_close)"
 
 [[module.fn]]
 lz = "sys/kern/kern_acct.rs::AcctVnodes"

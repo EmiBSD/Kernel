@@ -943,19 +943,24 @@ mod tests {
             .copyin_slice(&mut out)
             .unwrap();
         assert!(out.iter().all(|&c| c == b'x'));
-        // A write from a kernel slice: the test file system has no VOP_WRITE.
+        // A write from a kernel slice: VOP_WRITE gets all of it, with the caller's flags (the
+        // test file system records the size and the ioflag).
         assert_eq!(
             vn_rdwr(
                 UioRw::UIO_WRITE,
                 vp,
                 RdwrBuf::KernelRead(&buf),
                 0,
-                0,
+                crate::fs::vnode::IO_UNIT,
                 cred,
                 None,
                 Some(p)
             ),
-            Err(Errno::EOPNOTSUPP)
+            Ok(())
+        );
+        assert_eq!(
+            crate::fs::testfs::last_write(),
+            Some((buf.len(), crate::fs::vnode::IO_UNIT))
         );
         assert!(!any_locked());
         vn_close(vp, FREAD, cred, Some(p)).unwrap();

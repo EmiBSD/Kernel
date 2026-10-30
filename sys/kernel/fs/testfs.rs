@@ -69,6 +69,8 @@ pub enum Kind {
     Reg,
     /// A socket (`VSOCK`: what `vn_open` refuses).
     Sock,
+    /// A character device (`VCHR`: `/dev/console`).
+    Chr,
 }
 
 /// `/`.
@@ -89,7 +91,7 @@ pub const LONG: usize = 6;
 pub const S: usize = 7;
 /// `/dev`.
 pub const DEV: usize = 8;
-/// `/dev/console`, a file (`TIOCCONS`'s lookup).
+/// `/dev/console`, a character device (`TIOCCONS`'s lookup; what `acct(2)` refuses).
 pub const CONSOLE: usize = 9;
 /// The number of nodes.
 pub const N: usize = 10;
@@ -105,7 +107,7 @@ pub const KINDS: [Kind; N] = [
     Kind::Reg,
     Kind::Sock,
     Kind::Dir,
-    Kind::Reg,
+    Kind::Chr,
 ];
 
 /// The tree's names and parents (the root is its own parent, as `..` of `/` is `/`).
@@ -140,6 +142,14 @@ std::thread_local! {
     static MP: RefCell<Option<&'static Mount<TestGlue>>> = const { RefCell::new(None) };
     /// Whether this thread's `VOP_ACCESS` refuses ([`set_deny_access`]).
     static DENY_ACCESS: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+    /// This thread's last `VOP_WRITE`: its size and `ioflag` ([`last_write`]).
+    static LAST_WRITE: core::cell::Cell<Option<(usize, i32)>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// This thread's last `VOP_WRITE` (taken): the bytes it was asked to write and its `ioflag`.
+pub fn last_write() -> Option<(usize, i32)> {
+    LAST_WRITE.with(core::cell::Cell::take)
 }
 
 /// Makes this thread's `VOP_ACCESS` refuse every request (`EACCES`), or allow it again (the
@@ -208,6 +218,7 @@ pub fn vget_node(
         Kind::Dir => VDIR,
         Kind::Reg => VREG,
         Kind::Sock => super::vnode::VSOCK,
+        Kind::Chr => super::vnode::VCHR,
     });
     if idx == ROOT {
         vp.set_flag(VROOT);
@@ -451,6 +462,19 @@ impl Vnops<TestGlue> for TestVops {
         let n = uio.uio_resid.min(buf.len());
         <TestFiles as crate::file::FileGlue>::uiomove(&mut buf[..n], uio)
     }
+    fn write(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        uio: &mut Uio<'_, TestGlue>,
+        ioflag: i32,
+        _cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        // The bytes go nowhere; the call is recorded (`last_write`).
+        let n = uio.uio_resid;
+        LAST_WRITE.with(|w| w.set(Some((n, ioflag))));
+        let mut buf = std::vec![0u8; n];
+        <TestFiles as crate::file::FileGlue>::uiomove(&mut buf, uio)
+    }
     fn fsync(
         &self,
         _vp: &'static Vnode<TestGlue>,
@@ -526,12 +550,15 @@ impl Vfs<TestGlue> for TestFs {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
+    /// A file system of 100 blocks, 50 of them free.
     fn statfs(
         &self,
         _mp: &'static Mount<TestGlue>,
-        _sbp: &mut Statfs,
+        sbp: &mut Statfs,
         _p: &Thread<TestGlue>,
     ) -> Result<(), Errno> {
+        sbp.f_blocks = 100;
+        sbp.f_bavail = 50;
         Ok(())
     }
     fn sync(
