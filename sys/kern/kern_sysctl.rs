@@ -626,10 +626,12 @@ pub fn sysctl_rdstruct(
 /// `PTRTOINT64(vp->v_un.vu_socket)`: whatever pointer the vnode's union holds.
 fn vnode_un_ptr(vp: &Vnode) -> u64 {
     // `v_socket` is bsd's member of the vnode (`VnodeG`), the other members the kernel's
-    // `v_un`: one of them is set, as the C's union.
-    match vp.g.v_socket.get() {
-        Some(so) => ptrtoint64(so),
-        None => vp.un_addr() as u64,
+    // `v_un`: one of them is set, as the C's union. The socket's address is read, never
+    // followed (`Link::addr`): `unp_detach` clears the link under the vnode's lock alone,
+    // and this reader holds none, as the C's.
+    match vp.g.v_socket.addr() {
+        0 => vp.un_addr() as u64,
+        so => so as u64,
     }
 }
 
@@ -2544,6 +2546,21 @@ mod tests {
         assert!(e.is_some_and(|e| e.start() == at && e.end() == at + PAGE_SIZE));
         drop(g);
         drop(pr.set_vmspace(None));
+    }
+
+    /// `kern.file`'s `v_un` of a vnode (`PTRTOINT64(vp->v_un.vu_socket)`): the bound socket's
+    /// address while the vnode has one (read, never followed), else the kernel's member of
+    /// the union, 0 for none.
+    #[test]
+    fn a_vnode_s_v_un_is_its_socket_s_address_or_the_union_s() {
+        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
+        assert_eq!(vnode_un_ptr(vp), 0);
+        let so: &'static Socket =
+            Box::leak(Box::new(Socket::new(&crate::kern::uipc_proto::UNIXSW[0])));
+        vp.g.v_socket.set(Some(so));
+        assert_eq!(vnode_un_ptr(vp), core::ptr::from_ref(so).addr() as u64);
+        vp.g.v_socket.set(None);
+        assert_eq!(vnode_un_ptr(vp), 0);
     }
 }
 /* </TESTS> */
