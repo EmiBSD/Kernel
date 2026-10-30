@@ -1019,8 +1019,10 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// look up `path` (the pathname, without its NUL) for what `ni.ni_pledge` says; a
     /// `__pledge_open` of a listed path may set `BYPASSUNVEIL` (and `BPU_LOCALTIME`,
     /// `BPU_ZONEINFO`) in `ni`'s flags. `namei` calls it for every path but a `KERNELPATH`
-    /// one. The default is `panic(9)`: a glue whose processes look names up cannot drop
-    /// pledge by forgetting it.
+    /// one. The pathname is lent out of the componentname for the call: `path` is the
+    /// pathname, and `ni.ni_cnd`'s own buffer is empty meanwhile (its `name()` is empty), so
+    /// a glue reads the path from `path` alone. The default is `panic(9)`: a glue whose
+    /// processes look names up cannot drop pledge by forgetting it.
     fn pledge_namei(
         _p: &Thread<Self>,
         _ni: &mut crate::fs::vops::Nd<'_, Self>,
