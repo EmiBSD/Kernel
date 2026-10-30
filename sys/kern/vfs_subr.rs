@@ -588,8 +588,24 @@ pub(crate) mod tests {
         pub(crate) const LOOP: usize = 6;
         /// `/a/xxx...x` (40 bytes, longer than `NAMECACHE_MAXLEN`).
         pub(crate) const LONG: usize = 7;
+        /// `/usr/share/zoneinfo`.
+        pub(crate) const ZONEINFO: usize = 10;
+        /// `/usr/share/zoneinfo/UTC`, a file.
+        pub(crate) const UTC: usize = 11;
+        /// `/usr/share/zoneinfo/link -> UTC`.
+        pub(crate) const ZLINK: usize = 12;
+        /// `/usr/share/zoneinfo/Etc`, a directory.
+        pub(crate) const ETCZ: usize = 13;
+        /// `/etc/localtime -> /usr/share/zoneinfo/UTC`.
+        pub(crate) const LOCALTIME: usize = 15;
+        /// `/etc/lt-link -> /usr/share/zoneinfo/link`.
+        pub(crate) const LT_LINK: usize = 16;
+        /// `/etc/lt-dir -> /usr/share/zoneinfo/Etc`.
+        pub(crate) const LT_DIR: usize = 17;
+        /// `/etc/lt-up -> /usr/share/zoneinfo/../zoneinfo/UTC`.
+        pub(crate) const LT_UP: usize = 18;
         /// The number of nodes.
-        pub(crate) const N: usize = 8;
+        pub(crate) const N: usize = 19;
 
         /// The tree.
         pub(crate) static NODES: [Node; N] = [
@@ -632,6 +648,63 @@ pub(crate) mod tests {
                 name: b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
                 parent: A,
                 kind: Kind::Reg,
+            },
+            // 8: /usr, 9: /usr/share, then zoneinfo's tree and /etc's links.
+            Node {
+                name: b"usr",
+                parent: ROOT,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"share",
+                parent: 8,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"zoneinfo",
+                parent: 9,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"UTC",
+                parent: ZONEINFO,
+                kind: Kind::Reg,
+            },
+            Node {
+                name: b"link",
+                parent: ZONEINFO,
+                kind: Kind::Lnk(b"UTC"),
+            },
+            Node {
+                name: b"Etc",
+                parent: ZONEINFO,
+                kind: Kind::Dir,
+            },
+            // 14: /etc.
+            Node {
+                name: b"etc",
+                parent: ROOT,
+                kind: Kind::Dir,
+            },
+            Node {
+                name: b"localtime",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/UTC"),
+            },
+            Node {
+                name: b"lt-link",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/link"),
+            },
+            Node {
+                name: b"lt-dir",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/Etc"),
+            },
+            Node {
+                name: b"lt-up",
+                parent: 14,
+                kind: Kind::Lnk(b"/usr/share/zoneinfo/../zoneinfo/UTC"),
             },
         ];
 

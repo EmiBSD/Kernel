@@ -137,7 +137,8 @@ mod tests {
     use crate::kern::vfs_init::rootvnode;
     use crate::kern::vfs_subr::tests::setup;
     use crate::kern::vfs_subr::tests::testfs::{
-        self, A, ABS, B, C, L, LOOP, N, ROOT, any_locked, node_of, usecounts, vget_node, vnode_of,
+        self, A, ABS, B, C, ETCZ, L, LOCALTIME, LOOP, LT_DIR, LT_LINK, LT_UP, N, ROOT, UTC, ZLINK,
+        any_locked, node_of, usecounts, vget_node, vnode_of,
     };
     use crate::kern::vfs_vops::{VOP_ABORTOP, VOP_ISLOCKED, VOP_UNLOCK};
     use crate::sys::errno::Errno;
@@ -306,6 +307,57 @@ mod tests {
         );
         finds(p, b"/loop", NOFOLLOW, LOOP);
         assert!(!any_locked());
+    }
+
+    /// `__pledge_open`'s /etc/localtime (vfs_lookup.c:315-326, the symbolic link check and
+    /// `terminal:`): with BPU_LOCALTIME a link must point into /usr/share/zoneinfo/ without a
+    /// `..` (kern_pledge's checkzoneinfopath, EACCES otherwise); the walk then goes on under
+    /// BPU_ZONEINFO, which refuses another symbolic link (ELOOP) and a last component that
+    /// is not a regular file (EACCES). Without the flags the same links resolve.
+    #[test]
+    fn localtime_follows_the_zoneinfo_rules() {
+        let (_g, p, _mp) = testfs::setup_root();
+        let before = usecounts();
+        finds(p, b"/etc/localtime", FOLLOW | BPU_LOCALTIME, UTC);
+        // Not a link: the flag has nothing to check.
+        finds(p, b"/usr/share/zoneinfo/UTC", FOLLOW | BPU_LOCALTIME, UTC);
+        for (path, flags, want) in [
+            // a link out of zoneinfo, or through a `..`
+            (&b"/a/abs"[..], FOLLOW | BPU_LOCALTIME, Errno::EACCES),
+            (b"/etc/lt-up", FOLLOW | BPU_LOCALTIME, Errno::EACCES),
+            // zoneinfo allows no symbolic link
+            (b"/etc/lt-link", FOLLOW | BPU_LOCALTIME, Errno::ELOOP),
+            (
+                b"/usr/share/zoneinfo/link",
+                FOLLOW | BPU_ZONEINFO,
+                Errno::ELOOP,
+            ),
+            // only a regular file at the end
+            (b"/etc/lt-dir", FOLLOW | BPU_LOCALTIME, Errno::EACCES),
+            (
+                b"/usr/share/zoneinfo/Etc",
+                FOLLOW | BPU_ZONEINFO,
+                Errno::EACCES,
+            ),
+        ] {
+            assert_eq!(
+                lookup(p, path, LOOKUP, flags).err(),
+                Some(want),
+                "{:?}",
+                core::str::from_utf8(path)
+            );
+            assert!(!any_locked(), "{:?}", core::str::from_utf8(path));
+        }
+        // Without the flags, the links resolve as any.
+        finds(p, b"/etc/lt-link", FOLLOW, UTC);
+        finds(p, b"/etc/lt-dir", FOLLOW, ETCZ);
+        finds(p, b"/etc/lt-up", FOLLOW, UTC);
+        finds(p, b"/usr/share/zoneinfo/link", NOFOLLOW, ZLINK);
+        finds(p, b"/etc/localtime", NOFOLLOW, LOCALTIME);
+        finds(p, b"/etc/lt-dir", NOFOLLOW, LT_DIR);
+        finds(p, b"/etc/lt-link", NOFOLLOW, LT_LINK);
+        finds(p, b"/etc/lt-up", NOFOLLOW, LT_UP);
+        assert_eq!(usecounts()[ROOT], before[ROOT]);
     }
 
     #[test]
