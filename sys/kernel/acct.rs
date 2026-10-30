@@ -130,8 +130,9 @@
 //!   `lastcomm` names the terminal again).
 //! - N5.3: the file is the kernel's vnode ([`AcctVnode`]): the `AcctFile` bridge, through
 //!   which `bsd` opened, wrote, measured and closed it (N4.6a), is gone; `acct_thread` and
-//!   `acct_shutdown` close it with `NOCRED` and no thread, as the C (`bsd` passed the
-//!   running thread).
+//!   `acct_shutdown` close it with `NOCRED` and the running thread (the watcher, or the
+//!   thread shutting down), as the C's `vn_close(vp, FWRITE, NOCRED, p)` with
+//!   `p = curproc`.
 
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -247,9 +248,8 @@ trait AcctSink: Send + Sync {
     fn free_space(&self) -> Option<(i64, i64)>;
     /// `vp->v_type == VBAD`: the vnode was revoked (its file system forcibly unmounted).
     fn is_bad(&self) -> bool;
-    /// `vn_close(vp, FWRITE, cred, p)`: with the running thread and its credentials when
-    /// `by_curproc` (`acct(2)`), `NOCRED` and no thread otherwise (the watcher,
-    /// `acct_shutdown`).
+    /// `vn_close(vp, FWRITE, cred, p)` by the running thread: with its credentials when
+    /// `by_curproc` (`acct(2)`), with `NOCRED` otherwise (the watcher, `acct_shutdown`).
     fn close(self: Box<Self>, by_curproc: bool);
 }
 
@@ -290,9 +290,9 @@ impl<G: ProcGlue> AcctSink for AcctVnode<G> {
 
     fn close(self: Box<Self>, by_curproc: bool) {
         G::with_curproc(|p| {
-            let (cred, p) = match p {
-                Some(p) if by_curproc => (Cred::real(p.ucred()), Some(p)),
-                _ => (Cred::NOCRED, None),
+            let cred = match p {
+                Some(p) if by_curproc => Cred::real(p.ucred()),
+                _ => Cred::NOCRED,
             };
             let _ = vn_close(self.0, FWRITE, cred, p);
         });
@@ -744,8 +744,15 @@ mod tests {
             Some((64, IO_APPEND | IO_UNIT | IO_NOLIMIT))
         );
         sink.close(true);
+        assert_eq!(testfs::last_close(), Some((false, true)), "acct(2): its caller's");
         assert_eq!(vp.writecount(), 0);
         assert_eq!(testfs::usecounts()[F], uses[F]);
+        // The watcher's and acct_shutdown's close: NOCRED, the running thread (the C's
+        // `vn_close(vp, FWRITE, NOCRED, p)`, p = curproc).
+        let sink = acct_open(p, path(b"/f\0")).unwrap();
+        sink.close(false);
+        assert_eq!(testfs::last_close(), Some((true, true)));
+        assert_eq!(vp.writecount(), 0);
         // A character device: refused, and closed again.
         assert_eq!(
             acct_open(p, path(b"/dev/console\0")).err(),

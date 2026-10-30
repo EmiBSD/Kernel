@@ -145,6 +145,15 @@ std::thread_local! {
     /// This thread's last `VOP_WRITE`: its size and `ioflag` ([`last_write`]).
     static LAST_WRITE: core::cell::Cell<Option<(usize, i32)>> =
         const { core::cell::Cell::new(None) };
+    /// This thread's last `VOP_CLOSE`: whether its credentials were `NOCRED` and whether it
+    /// named a thread ([`last_close`]).
+    static LAST_CLOSE: core::cell::Cell<Option<(bool, bool)>> =
+        const { core::cell::Cell::new(None) };
+}
+
+/// This thread's last `VOP_CLOSE` (taken): `(cred is NOCRED, a thread given)`.
+pub fn last_close() -> Option<(bool, bool)> {
+    LAST_CLOSE.with(core::cell::Cell::take)
 }
 
 /// This thread's last `VOP_WRITE` (taken): the bytes it was asked to write and its `ioflag`.
@@ -491,9 +500,10 @@ impl Vnops<TestGlue> for TestVops {
         &self,
         _vp: &'static Vnode<TestGlue>,
         _fflag: i32,
-        _cred: Cred<'_>,
-        _p: Option<&Thread<TestGlue>>,
+        cred: Cred<'_>,
+        p: Option<&Thread<TestGlue>>,
     ) -> Result<(), Errno> {
+        LAST_CLOSE.with(|c| c.set(Some((cred.is_nocred(), p.is_some()))));
         Ok(())
     }
     fn strategy(&self, _vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
