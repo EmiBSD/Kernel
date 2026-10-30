@@ -94,7 +94,8 @@
 //! - `vndstrategy`'s transfer is [`vnd_rdwr`]: `vn_rdwr` of `b_data`, built here over the
 //!   buffer's address as LZ's `vn_rdwr` built its uio (N5.3: the kernel's `vn_rdwr` takes a
 //!   slice, and a driver names a lent buffer, physio's window included, by its address
-//!   until N7 gives it the token's view); the transfer is `vn_rdwr`'s own.
+//!   until N7 gives it the token's view); the transfer is `vn_rdwr`'s own. N7 removes
+//!   `vnd_rdwr` with vnd's redesign (lineage.toml's note).
 //! - `VNDDEBUG`'s `DNPRINTF` tracing is not configured (it is off in GENERIC); the
 //!   `DIAGNOSTIC` "sloppy" message is behind the `diagnostic` feature.
 

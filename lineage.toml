@@ -4792,6 +4792,7 @@ rust = "sys/dev/vnd.rs"
 lz = ["sys/dev/vnd.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/crypto/blf.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+notes = "N5.3: vnd_rdwr, a private vn_rdwr over b_data's address (vfs_vnops.c:308-340 but the unused aresid == NULL leg), no unsafe: the kernel's vn_rdwr takes a slice and vndstrategy has only the buffer's address; accepted by the main session (D-N5.3-10, review 1 S4); N7 removes it with vnd's redesign"
 
 [[module]]
 rust = "sys/dev/vndioctl.rs"
