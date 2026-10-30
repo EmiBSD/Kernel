@@ -94,6 +94,13 @@
 //!   `EOPNOTSUPP` as the C does without it (`tools/xtask/diff-openbsd/expected.toml`,
 //!   `syscalls/probes#6`).
 //! - `KTRACE` is not configured.
+//! - Five pointers the C dereferences without a test are `Option`s here, and their `None`
+//!   answers an errno where the C would fault on NULL: `mount(2)`'s update of a vnode with
+//!   no `v_mount` (`EINVAL`), `unmount(2)`'s (`EINVAL`), `quotactl(2)`'s (`ENOENT`),
+//!   `__realpath(2)` with no current directory (`ENOENT`, as `namei` without a root file
+//!   system) and `fhstatfs(2)` of a vnode with no mount (`ESTALE`). None is reachable on a
+//!   booted system: a looked-up vnode is on a mount and every process has a current
+//!   directory.
 //!
 //! ## Redesign
 //! - N5.4: LZ's `sys/kern/vfs_syscalls.rs` (`bsd`, each `sys_*(p, v, retval)` over
