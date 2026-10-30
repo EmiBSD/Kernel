@@ -132,8 +132,11 @@ step is not.
 | `next(e)`, `prev(e)`, `contains(e)` | `TAILQ_NEXT`, `TAILQ_PREV` | O(1) |
 | `iter` | `TAILQ_FOREACH` | O(1) a step, O(n) the walk |
 | `push(box)` | `TAILQ_INSERT_TAIL` | O(1) |
+| `insert_before(at, box)`, `insert_after(at, box)` | `TAILQ_INSERT_BEFORE`, `TAILQ_INSERT_AFTER` | O(1) |
+| `move_to_tail(e)` | `TAILQ_REMOVE` + `TAILQ_INSERT_TAIL` of an element the list keeps (the name cache's LRU) | O(1) |
+| `move_before(at, e)`, `move_after(at, e)` | `TAILQ_REMOVE` + `TAILQ_INSERT_BEFORE`, `_AFTER` of an element the list keeps | O(1) |
 | `pop()` | `TAILQ_FIRST` + `TAILQ_REMOVE` | O(1) |
-| `take(r)` | `TAILQ_REMOVE(e)` by a counted reference, anywhere on the list | O(1), no walk |
+| `take(r)` | `TAILQ_REMOVE(e)` by a counted reference, anywhere on the list | O(1), no walk (the stored pointer read from the predecessor's link) |
 
 ## `hal::owned::SecondaryTree` (a second RBT over owned elements; the free-space trees)
 
@@ -192,6 +195,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `PerCpu::iter`, `Counters::read`, `zero` | O(ncpu) |
 | `Refcnt::take`, `rele`, `rele_wake`, `read`, `shared` | O(1); `finalize` sleeps until the count is 0 |
 | `OnceStatic::get`, `set`; `Mutexed::lock`; `Rwlocked::read`, `write` | O(1) apart from the wait for the lock |
+| `Link::addr` | O(1): one relaxed load (the address printed, nothing followed) |
 
 ## `alloc` in the `kernel` crate (six sites, test code apart)
 
