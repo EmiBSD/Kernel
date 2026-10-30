@@ -138,11 +138,11 @@
 //!   `p_fd`, `ps_uvpaths`) are `hal::link::PtrWord`s (an address, read and
 //!   dereferenced by the legacy code as before); `ps_textvp` and `s_ttyvp` (and `s_ttyp`
 //!   until N4.7b, when it became the kernel `Session`'s counted handle and `pgrp_destroy`
-//!   went with it), whose targets the legacy code treats as `'static`, are
-//!   `hal::link::Link`s, read without
-//!   `unsafe`; the plain members are atomic words with LZ's `get()`/`set()` ([`ItimerWord`],
-//!   [`IsizeWord`]), so every value is `Send` and `Sync` without a premise, as a pooled
-//!   kernel object requires.
+//!   went with it), whose targets the legacy code treats as `'static`, were
+//!   `hal::link::Link`s, read without `unsafe`, until N5.3 made them the kernel's
+//!   (`Process::textvp`, `Session::ttyvp`); the plain members are atomic words with LZ's
+//!   `get()`/`set()` ([`ItimerWord`], [`IsizeWord`]), so every value is `Send` and `Sync`
+//!   without a premise, as a pooled kernel object requires.
 //! - N4.5b: `ps_sigacts`, `p_sigstk` and `p_sigval` are `kernel::proc`'s own members
 //!   (`kernel::sig`); the glue gives the signals `exit1`, the core dump and the machine's
 //!   `sendsig`, `signotify`, `PROC_STACK` and `TCB_GET`.
@@ -252,10 +252,9 @@ impl IsizeWord {
     }
 }
 
-/// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them.
+/// The members of `struct process` of `bsd`'s subsystems; a process dereferences to them
+/// (`ps_textvp` is the kernel's `Process::textvp` since N5.3).
 pub struct BsdProcessG {
-    /// `ps_textvp`: vnode of executable, referenced (none for the boot module image).
-    pub ps_textvp: Link<Vnode>,
     /// \[m\] `ps_realit_to`: `ITIMER_REAL` timeout.
     pub ps_realit_to: Timeout,
     /// \[m\] `ps_timer[ITIMER_REAL]`, \[T\] `ps_timer[ITIMER_VIRTUAL, ITIMER_PROF]`.
@@ -275,7 +274,6 @@ impl BsdProcessG {
     /// The members of a new process.
     pub const fn new() -> Self {
         Self {
-            ps_textvp: Link::new(),
             ps_realit_to: Timeout::zeroed(),
             ps_timer: [const { ItimerWord::new() }; 3],
             ps_uvpaths: PtrWord::new(),
@@ -659,12 +657,8 @@ impl ProcGlue for BsdProcGlue {
         );
     }
 
-    /// The text vnode's reference (for sysctl) and the unveils copied.
+    /// The unveils copied.
     fn process_forked(parent: &Process, child: &Process) {
-        child.ps_textvp.set(parent.ps_textvp.get());
-        if let Some(vp) = child.ps_textvp.get() {
-            crate::sys::vnode::vref(vp);
-        }
         crate::kern::kern_unveil::unveil_copy(parent, child);
     }
 
@@ -678,14 +672,6 @@ impl ProcGlue for BsdProcGlue {
 
     fn pledge_protexec(p: &Proc, prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
         crate::kern::kern_pledge::pledge_protexec(p, prot)
-    }
-
-    /// `ps_textvp`'s mount carries `MNT_WXALLOWED` (no text vnode or no mount: no).
-    fn textvp_wxallowed(pr: &Process) -> bool {
-        pr.ps_textvp
-            .get()
-            .and_then(|vp| vp.mount())
-            .is_some_and(|mp| mp.flag() & crate::sys::mount::MNT_WXALLOWED != 0)
     }
 
     fn pledge_namei(
@@ -800,15 +786,6 @@ impl ProcGlue for BsdProcGlue {
 
     fn unveil_destroy(pr: &Process) {
         crate::kern::kern_unveil::unveil_destroy(pr);
-    }
-
-    /// `vrele(pr->ps_textvp)`, the reference dropped.
-    fn textvp_release(pr: &Process) {
-        let otvp = pr.ps_textvp.get();
-        pr.ps_textvp.set(None);
-        if let Some(otvp) = otvp {
-            vrele(otvp);
-        }
     }
 }
 

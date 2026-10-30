@@ -1042,7 +1042,7 @@ impl FileWalk<'_> {
     /// `text`), current and root directories, then every open descriptor.
     fn fill_process(&mut self, pr: &Process, text: bool) -> Result<(), Errno> {
         let fdp = pr.fd();
-        if text && let Some(vp) = pr.ps_textvp.get() {
+        if text && let Some(vp) = pr.textvp.get() {
             self.fillit(None, None, KERN_FILE_TEXT, Some(vp), Some(pr))?;
         }
         if let Some(vp) = fdp.cdir() {

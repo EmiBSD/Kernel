@@ -61,8 +61,8 @@
 //!   thread would race them; `kthread_exit` unwinds the thread, which its spawner catches.
 
 //! - The `ProcGlue` members of `vm` (N5.0: the `VmProc` double is gone; the vm calls take a
-//!   real thread): `pledge_protexec` and `textvp_wxallowed` answer per test thread
-//!   ([`set_pledge_protexec`], [`set_textvp_wxallowed`]); a vnode file's vnode is
+//!   real thread): `pledge_protexec` answers per test thread ([`set_pledge_protexec`]); the
+//!   text vnode is the process's own (`Process::textvp`); a vnode file's vnode is
 //!   [`TestFileData`]'s `vnode`.
 //! - `vm::vnode`'s `VnodeOps`, not a slot: [`MemVnode`], a vnode whose file is a `Vec` in
 //!   memory ([`mem_vnode`] leaks one), which records what it saw during its last read.
@@ -140,7 +140,6 @@ std::thread_local! {
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
-    static TEXTVP_WXALLOWED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
 
@@ -1252,17 +1251,6 @@ pub fn set_pledge_protexec(denied: bool) {
     PLEDGE_PROTEXEC_DENIED.with(|c| c.set(denied));
 }
 
-/// What this thread's test glues' `textvp_wxallowed` answers (`false` until
-/// [`set_textvp_wxallowed`]).
-pub fn textvp_wxallowed() -> bool {
-    TEXTVP_WXALLOWED.with(Cell::get)
-}
-
-/// Makes this thread's test glues answer `on` for the text vnode's `MNT_WXALLOWED`.
-pub fn set_textvp_wxallowed(on: bool) {
-    TEXTVP_WXALLOWED.with(|c| c.set(on));
-}
-
 /// Records a test glue's hook call.
 pub fn file_log_push(s: String) {
     FILE_LOG.with(|l| l.borrow_mut().push(s));
@@ -1661,9 +1649,6 @@ macro_rules! test_proc_glue {
                 prot: $crate::vm::types::VmProt,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::pledge_protexec_answer(prot)
-            }
-            fn textvp_wxallowed(_pr: &$crate::proc::Process<Self>) -> bool {
-                $crate::testutil::textvp_wxallowed()
             }
             fn pledge_namei(
                 _p: &$crate::proc::Thread<Self>,

@@ -63,7 +63,7 @@
 //!
 //! What is still `bsd`'s is reached through the process glue ([`ProcGlue`]): `init`'s death
 //! (`init_exited`, the QEMU exit of the smokes), the interval timers (`cancel_all_itimers`,
-//! N4.8a), the unveils (`unveil_destroy`, N8), the text vnode (`textvp_release`, N5), the
+//! N4.8a), the unveils (`unveil_destroy`, N8), the
 //! machine's pmap (`pmap_deactivate`, `pmap_purge`, N4.8/N10).
 //!
 //! ## Deviations
@@ -1017,7 +1017,9 @@ pub fn process_zap<G: ProcGlue>(pr: ProcessRef<G>) {
     crate::proc::chgproccnt::<G>(pr.ucred().cr_ruid.get(), -1);
 
     // Release reference to text vnode
-    G::textvp_release(&pr);
+    if let Some(otvp) = pr.textvp.replace(None) {
+        crate::fs::subr::vrele(otvp);
+    }
 
     kassert!(pr.ps_threadcnt.get() == 0);
     kassert!(pr.ps_exitcnt.get() == 1);

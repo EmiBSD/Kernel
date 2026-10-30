@@ -361,7 +361,9 @@ paid_by = "N7"
 # textvp_release). N5.3: namei's hooks joined it (kernel::fs::lookup): pledge_namei,
 # unveil_start_relative, unveil_check_component and unveil_check_final (kern_pledge and
 # kern_unveil, N8, at the C's points) and checkzoneinfopath; session_has_tty_vnode left it
-# (the kernel's Session::ttyvp, which TIOCSCTTY sets, D-N5.2-9).
+# (the kernel's Session::ttyvp, which TIOCSCTTY sets, D-N5.2-9), and textvp_release and
+# textvp_wxallowed with it (the kernel's Process::textvp: process_new's vref, process_zap's
+# vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

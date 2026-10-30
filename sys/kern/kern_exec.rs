@@ -818,11 +818,11 @@ fn execve_common(
     pr.ps_acflag.set(pr.ps_acflag.get() & !AFORK);
 
     // record proc's vnode, for use by sysctl
-    let otvp = pr.ps_textvp.get();
+    let otvp = pr.textvp.get();
     if let Some(vp) = pack.ep_vp {
         vref(vp);
     }
-    pr.ps_textvp.set(pack.ep_vp);
+    pr.textvp.set(pack.ep_vp);
     if let Some(otvp) = otvp {
         vrele(otvp);
     }
