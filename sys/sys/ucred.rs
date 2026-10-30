@@ -79,9 +79,6 @@ use core::ptr;
 use hal::intr::IPL_NONE;
 use hal::mutex::Mutexed;
 
-use crate::sys::syslimits::NGROUPS_MAX;
-use crate::sys::types::{Gid, Uid};
-
 pub use kernel::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
 
 /// `NOCRED`: no credential available.
@@ -132,19 +129,9 @@ impl Default for CredSlot {
     }
 }
 
-/// `struct xucred`: userspace version, for use in syscalls arguments.
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct Xucred {
-    /// `cr_uid`: user id.
-    pub cr_uid: Uid,
-    /// `cr_gid`: group id.
-    pub cr_gid: Gid,
-    /// `cr_ngroups`: number of groups.
-    pub cr_ngroups: i16,
-    /// `cr_groups`: groups.
-    pub cr_groups: [Gid; NGROUPS_MAX],
-}
+/// `struct xucred`: userspace version, for use in syscalls arguments; `hal`'s since N5.4
+/// (with `export_args`, which embeds it), the hole after `cr_ngroups` named.
+pub use hal::sys::mount::Xucred;
 
 // A `CredRef` is one non-null pointer: `Option<CredRef>` takes its null niche, so an
 // all-zero `CredSlot` (a zeroed softc's) holds `None`.

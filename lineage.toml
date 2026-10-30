@@ -5933,7 +5933,7 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs"]
 notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's"
 
 [[module]]
@@ -7141,7 +7141,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_vfsops.rs"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_vnops.rs"
@@ -7152,7 +7152,8 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 [[module]]
 rust = "sys/nfs/nfsdiskless.rs"
 lz = ["sys/nfs/nfsdiskless.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/mount.rs"]
 
 [[module]]
 rust = "sys/nfs/nfsm_subs.rs"
@@ -8725,6 +8726,11 @@ rust = "sys/sys/ucred.rs"
 lz = ["sys/sys/ucred.rs"]
 status = "redesigned"
 
+[[module.fn]]
+lz = "sys/sys/ucred.rs::Xucred"
+native = ["sys/hal/sys/mount.rs::Xucred"]
+kind = "moved"
+
 [[module]]
 rust = "sys/sys/uio.rs"
 lz = ["sys/sys/uio.rs"]
@@ -9719,7 +9725,7 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10)"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10); N5.4: table() takes the VFS entries (version 12)"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
@@ -9748,7 +9754,7 @@ reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl"
+reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl; N5.4: version 12 adds VfsEntries (KernelApi::vfs, last), the sixty-five VFS system calls' typed entries"
 
 [[module]]
 rust = "sys/kernel/clock.rs"

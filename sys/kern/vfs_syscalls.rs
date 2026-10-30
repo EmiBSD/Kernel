@@ -89,12 +89,15 @@ use core::sync::atomic::Ordering;
 use kernel::file::LockOwner;
 use libkern::strnlen;
 
+use hal::api::VfsEntries;
 use hal::list::List;
+use hal::syscall::SysResult;
 use hal::user::UserPtr;
 use kernel::fs::mount::ByDounmount;
 use kernel::fs::sync::vfs_allocate_syncvnode;
 
 use crate::kern::kern_descrip::BsdFileData;
+use crate::kern::kern_descrip::native;
 use crate::kern::kern_descrip::{closef, dupfdopen, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_pledge::{pledge_chown, pledge_flock};
@@ -153,6 +156,18 @@ use crate::sys::signal::SIGXFSZ;
 use crate::sys::stat::{
     ACCESSPERMS, ALLPERMS, S_IFBLK, S_IFCHR, S_IFIFO, S_IFMT, S_ISTXT, Stat, UTIME_NOW, UTIME_OMIT,
     s_isfifo,
+};
+use crate::sys::syscall::{
+    SYS___getcwd, SYS___pledge_open, SYS___realpath, SYS_access, SYS_chdir, SYS_chflags,
+    SYS_chflagsat, SYS_chmod, SYS_chown, SYS_chroot, SYS_faccessat, SYS_fchdir, SYS_fchflags,
+    SYS_fchmod, SYS_fchmodat, SYS_fchown, SYS_fchownat, SYS_fhopen, SYS_fhstat, SYS_fhstatfs,
+    SYS_fstatat, SYS_fstatfs, SYS_fsync, SYS_ftruncate, SYS_futimens, SYS_futimes, SYS_getdents,
+    SYS_getfh, SYS_getfsstat, SYS_lchown, SYS_link, SYS_linkat, SYS_lseek, SYS_lstat, SYS_mkdir,
+    SYS_mkdirat, SYS_mkfifo, SYS_mkfifoat, SYS_mknod, SYS_mknodat, SYS_mount, SYS_open, SYS_openat,
+    SYS_pathconf, SYS_pathconfat, SYS_quotactl, SYS_readlink, SYS_readlinkat, SYS_rename,
+    SYS_renameat, SYS_revoke, SYS_rmdir, SYS_stat, SYS_statfs, SYS_symlink, SYS_symlinkat,
+    SYS_sync, SYS_truncate, SYS_umask, SYS_unlink, SYS_unlinkat, SYS_unmount, SYS_unveil,
+    SYS_utimensat, SYS_utimes,
 };
 use crate::sys::syscallargs::*;
 use crate::sys::systm::{INFSLP, SysArgs, kernel_lock, kernel_unlock, sysargs};
@@ -3001,5 +3016,1001 @@ pub fn sys_pwritev(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<
     )?;
     retval[0] = n as Register;
     Ok(())
+}
+/// `KernelApi::vfs`: the `Native` entries of the VFS system calls, each `mi_syscall` on its
+/// own `sysent[]` row (`kern_descrip::native`: the prologue, pledge, the pinned syscalls and
+/// the row's kernel lock, as on the `Legacy` path).
+pub const VFS_ENTRIES: VfsEntries = VfsEntries {
+    open: native_open,
+    link: native_link,
+    unlink: native_unlink,
+    chdir: native_chdir,
+    fchdir: native_fchdir,
+    mknod: native_mknod,
+    chmod: native_chmod,
+    chown: native_chown,
+    mount: native_mount,
+    unmount: native_unmount,
+    access: native_access,
+    chflags: native_chflags,
+    fchflags: native_fchflags,
+    sync: native_sync,
+    stat: native_stat,
+    lstat: native_lstat,
+    fstatat: native_fstatat,
+    revoke: native_revoke,
+    symlink: native_symlink,
+    readlink: native_readlink,
+    umask: native_umask,
+    chroot: native_chroot,
+    getfsstat: native_getfsstat,
+    statfs: native_statfs,
+    fstatfs: native_fstatfs,
+    fhstatfs: native_fhstatfs,
+    utimes: native_utimes,
+    futimes: native_futimes,
+    utimensat: native_utimensat,
+    futimens: native_futimens,
+    fsync: native_fsync,
+    getdents: native_getdents,
+    chflagsat: native_chflagsat,
+    unveil: native_unveil,
+    realpath: native_realpath,
+    fchown: native_fchown,
+    fchmod: native_fchmod,
+    pledge_open: native_pledge_open,
+    rename: native_rename,
+    mkfifo: native_mkfifo,
+    mkdir: native_mkdir,
+    rmdir: native_rmdir,
+    quotactl: native_quotactl,
+    getfh: native_getfh,
+    lseek: native_lseek,
+    truncate: native_truncate,
+    ftruncate: native_ftruncate,
+    pathconfat: native_pathconfat,
+    pathconf: native_pathconf,
+    lchown: native_lchown,
+    fhopen: native_fhopen,
+    fhstat: native_fhstat,
+    getcwd: native_getcwd,
+    faccessat: native_faccessat,
+    fchmodat: native_fchmodat,
+    fchownat: native_fchownat,
+    linkat: native_linkat,
+    mkdirat: native_mkdirat,
+    mkfifoat: native_mkfifoat,
+    mknodat: native_mknodat,
+    openat: native_openat,
+    readlinkat: native_readlinkat,
+    renameat: native_renameat,
+    symlinkat: native_symlinkat,
+    unlinkat: native_unlinkat,
+};
+
+/// `KernelApi::vfs.open`.
+fn native_open(
+    nr: Register,
+    path: usize,
+    flags: i32,
+    mode: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_open,
+        [
+            path as Register,
+            flags as Register,
+            mode as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.link`.
+fn native_link(nr: Register, path: usize, link: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_link,
+        [path as Register, link as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.unlink`.
+fn native_unlink(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_unlink, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.chdir`.
+fn native_chdir(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_chdir, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.fchdir`.
+fn native_fchdir(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_fchdir, [fd as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.mknod`.
+fn native_mknod(
+    nr: Register,
+    path: usize,
+    mode: u32,
+    dev: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_mknod,
+        [path as Register, mode as Register, dev as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.chmod`.
+fn native_chmod(nr: Register, path: usize, mode: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_chmod,
+        [path as Register, mode as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.chown`.
+fn native_chown(
+    nr: Register,
+    path: usize,
+    uid: u32,
+    gid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_chown,
+        [path as Register, uid as Register, gid as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mount`.
+fn native_mount(
+    nr: Register,
+    r#type: usize,
+    path: usize,
+    flags: i32,
+    data: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_mount,
+        [
+            r#type as Register,
+            path as Register,
+            flags as Register,
+            data as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.unmount`.
+fn native_unmount(nr: Register, path: usize, flags: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_unmount,
+        [path as Register, flags as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.access`.
+fn native_access(nr: Register, path: usize, amode: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_access,
+        [path as Register, amode as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.chflags`.
+fn native_chflags(nr: Register, path: usize, flags: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_chflags,
+        [path as Register, flags as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fchflags`.
+fn native_fchflags(nr: Register, fd: i32, flags: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fchflags,
+        [fd as Register, flags as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.sync`.
+fn native_sync(nr: Register, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_sync, [0; 6], rval)
+}
+
+/// `KernelApi::vfs.stat`.
+fn native_stat(nr: Register, path: usize, ub: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_stat,
+        [path as Register, ub as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.lstat`.
+fn native_lstat(nr: Register, path: usize, ub: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_lstat,
+        [path as Register, ub as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fstatat`.
+fn native_fstatat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    buf: usize,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_fstatat,
+        [
+            fd as Register,
+            path as Register,
+            buf as Register,
+            flag as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.revoke`.
+fn native_revoke(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_revoke, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.symlink`.
+fn native_symlink(nr: Register, path: usize, link: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_symlink,
+        [path as Register, link as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.readlink`.
+fn native_readlink(
+    nr: Register,
+    path: usize,
+    buf: usize,
+    count: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_readlink,
+        [
+            path as Register,
+            buf as Register,
+            count as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.umask`.
+fn native_umask(nr: Register, newmask: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_umask, [newmask as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.chroot`.
+fn native_chroot(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_chroot, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.getfsstat`.
+fn native_getfsstat(
+    nr: Register,
+    buf: usize,
+    bufsize: usize,
+    flags: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getfsstat,
+        [
+            buf as Register,
+            bufsize as Register,
+            flags as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.statfs`.
+fn native_statfs(nr: Register, path: usize, buf: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_statfs,
+        [path as Register, buf as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fstatfs`.
+fn native_fstatfs(nr: Register, fd: i32, buf: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fstatfs,
+        [fd as Register, buf as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fhstatfs`.
+fn native_fhstatfs(nr: Register, fhp: usize, buf: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fhstatfs,
+        [fhp as Register, buf as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.utimes`.
+fn native_utimes(nr: Register, path: usize, tptr: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_utimes,
+        [path as Register, tptr as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.futimes`.
+fn native_futimes(nr: Register, fd: i32, tptr: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_futimes,
+        [fd as Register, tptr as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.utimensat`.
+fn native_utimensat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    times: usize,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_utimensat,
+        [
+            fd as Register,
+            path as Register,
+            times as Register,
+            flag as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.futimens`.
+fn native_futimens(nr: Register, fd: i32, times: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_futimens,
+        [fd as Register, times as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fsync`.
+fn native_fsync(nr: Register, fd: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_fsync, [fd as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.getdents`.
+fn native_getdents(
+    nr: Register,
+    fd: i32,
+    buf: usize,
+    buflen: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_getdents,
+        [fd as Register, buf as Register, buflen as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.chflagsat`.
+fn native_chflagsat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    flags: u32,
+    atflags: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_chflagsat,
+        [
+            fd as Register,
+            path as Register,
+            flags as Register,
+            atflags as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.unveil`.
+fn native_unveil(
+    nr: Register,
+    path: usize,
+    permissions: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_unveil,
+        [path as Register, permissions as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.realpath`.
+fn native_realpath(
+    nr: Register,
+    pathname: usize,
+    resolved: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS___realpath,
+        [pathname as Register, resolved as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fchown`.
+fn native_fchown(nr: Register, fd: i32, uid: u32, gid: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fchown,
+        [fd as Register, uid as Register, gid as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fchmod`.
+fn native_fchmod(nr: Register, fd: i32, mode: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fchmod,
+        [fd as Register, mode as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.pledge_open`.
+fn native_pledge_open(
+    nr: Register,
+    path: usize,
+    flags: i32,
+    mode: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS___pledge_open,
+        [
+            path as Register,
+            flags as Register,
+            mode as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.rename`.
+fn native_rename(nr: Register, from: usize, to: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_rename,
+        [from as Register, to as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mkfifo`.
+fn native_mkfifo(nr: Register, path: usize, mode: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_mkfifo,
+        [path as Register, mode as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mkdir`.
+fn native_mkdir(nr: Register, path: usize, mode: u32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_mkdir,
+        [path as Register, mode as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.rmdir`.
+fn native_rmdir(nr: Register, path: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(nr, SYS_rmdir, [path as Register, 0, 0, 0, 0, 0], rval)
+}
+
+/// `KernelApi::vfs.quotactl`.
+fn native_quotactl(
+    nr: Register,
+    path: usize,
+    cmd: i32,
+    uid: i32,
+    arg: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_quotactl,
+        [
+            path as Register,
+            cmd as Register,
+            uid as Register,
+            arg as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.getfh`.
+fn native_getfh(nr: Register, fname: usize, fhp: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_getfh,
+        [fname as Register, fhp as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.lseek`.
+fn native_lseek(
+    nr: Register,
+    fd: i32,
+    offset: i64,
+    whence: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_lseek,
+        [
+            fd as Register,
+            offset as Register,
+            whence as Register,
+            0,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.truncate`.
+fn native_truncate(nr: Register, path: usize, length: i64, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_truncate,
+        [path as Register, length as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.ftruncate`.
+fn native_ftruncate(nr: Register, fd: i32, length: i64, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_ftruncate,
+        [fd as Register, length as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.pathconfat`.
+fn native_pathconfat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    name: i32,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_pathconfat,
+        [
+            fd as Register,
+            path as Register,
+            name as Register,
+            flag as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.pathconf`.
+fn native_pathconf(nr: Register, path: usize, name: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_pathconf,
+        [path as Register, name as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.lchown`.
+fn native_lchown(
+    nr: Register,
+    path: usize,
+    uid: u32,
+    gid: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_lchown,
+        [path as Register, uid as Register, gid as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fhopen`.
+fn native_fhopen(nr: Register, fhp: usize, flags: i32, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fhopen,
+        [fhp as Register, flags as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fhstat`.
+fn native_fhstat(nr: Register, fhp: usize, sb: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS_fhstat,
+        [fhp as Register, sb as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.getcwd`.
+fn native_getcwd(nr: Register, buf: usize, len: usize, rval: &mut [Register; 2]) -> SysResult {
+    native(
+        nr,
+        SYS___getcwd,
+        [buf as Register, len as Register, 0, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.faccessat`.
+fn native_faccessat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    amode: i32,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_faccessat,
+        [
+            fd as Register,
+            path as Register,
+            amode as Register,
+            flag as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fchmodat`.
+fn native_fchmodat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    mode: u32,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_fchmodat,
+        [
+            fd as Register,
+            path as Register,
+            mode as Register,
+            flag as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.fchownat`.
+fn native_fchownat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    uid: u32,
+    gid: u32,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_fchownat,
+        [
+            fd as Register,
+            path as Register,
+            uid as Register,
+            gid as Register,
+            flag as Register,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.linkat`.
+fn native_linkat(
+    nr: Register,
+    fd1: i32,
+    path1: usize,
+    fd2: i32,
+    path2: usize,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_linkat,
+        [
+            fd1 as Register,
+            path1 as Register,
+            fd2 as Register,
+            path2 as Register,
+            flag as Register,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mkdirat`.
+fn native_mkdirat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    mode: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_mkdirat,
+        [fd as Register, path as Register, mode as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mkfifoat`.
+fn native_mkfifoat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    mode: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_mkfifoat,
+        [fd as Register, path as Register, mode as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.mknodat`.
+fn native_mknodat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    mode: u32,
+    dev: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_mknodat,
+        [
+            fd as Register,
+            path as Register,
+            mode as Register,
+            dev as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.openat`.
+fn native_openat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    flags: i32,
+    mode: u32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_openat,
+        [
+            fd as Register,
+            path as Register,
+            flags as Register,
+            mode as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.readlinkat`.
+fn native_readlinkat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    buf: usize,
+    count: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_readlinkat,
+        [
+            fd as Register,
+            path as Register,
+            buf as Register,
+            count as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.renameat`.
+fn native_renameat(
+    nr: Register,
+    fromfd: i32,
+    from: usize,
+    tofd: i32,
+    to: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_renameat,
+        [
+            fromfd as Register,
+            from as Register,
+            tofd as Register,
+            to as Register,
+            0,
+            0,
+        ],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.symlinkat`.
+fn native_symlinkat(
+    nr: Register,
+    path: usize,
+    fd: i32,
+    link: usize,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_symlinkat,
+        [path as Register, fd as Register, link as Register, 0, 0, 0],
+        rval,
+    )
+}
+
+/// `KernelApi::vfs.unlinkat`.
+fn native_unlinkat(
+    nr: Register,
+    fd: i32,
+    path: usize,
+    flag: i32,
+    rval: &mut [Register; 2],
+) -> SysResult {
+    native(
+        nr,
+        SYS_unlinkat,
+        [fd as Register, path as Register, flag as Register, 0, 0, 0],
+        rval,
+    )
 }
 /* </CODE> */

@@ -61,8 +61,9 @@ use crate::sys::types::Register;
 /// `sys/kern/subr_log.rs`), futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the
 /// process system calls (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2)
 /// (`KernelApi::sysctl`, `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2)
-/// (`KernelApi::time`, `sys/kern/kern_time.rs`) and sigreturn(2) (`KernelApi::sigreturn`,
-/// `sys/kern/kern_sig.rs`) are the kernel crate's, entered through `bsd`'s system call
+/// (`KernelApi::time`, `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`,
+/// `sys/kern/kern_sig.rs`) and the VFS system calls (`KernelApi::vfs`,
+/// `sys/kern/vfs_syscalls.rs`) are the kernel crate's, entered through `bsd`'s system call
 /// prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
@@ -78,6 +79,7 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::kern_sysctl::native_sysctl,
     crate::kern::kern_time::TIME_ENTRIES,
     crate::kern::kern_sig::native_sigreturn,
+    crate::kern::vfs_syscalls::VFS_ENTRIES,
 );
 
 /// The module file the boot loader handed over (`set_image`): its kernel virtual address.

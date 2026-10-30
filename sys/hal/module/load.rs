@@ -967,9 +967,230 @@ mod tests {
         Ok(())
     }
 
+    // The VFS entries of the test table (version 12): the number in rval[0], the
+    // arguments as decimal digits in the error.
+    fn vfs_digits(a: &[i64]) -> i32 {
+        a.iter().fold(0, |d, &v| d * 10 + v as i32)
+    }
+    fn vfs0(nr: isize, a0: usize, a1: i32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs1(nr: isize, a0: usize, a1: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs2(nr: isize, a0: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs3(nr: isize, a0: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs4(nr: isize, a0: usize, a1: u32, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs5(nr: isize, a0: usize, a1: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs6(nr: isize, a0: usize, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs7(nr: isize, a0: usize, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs8(nr: isize, a0: usize, a1: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs9(nr: isize, a0: i32, a1: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs10(nr: isize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[]))
+    }
+    fn vfs11(nr: isize, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs12(nr: isize, a0: usize, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs13(nr: isize, a0: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    fn vfs14(nr: isize, a0: usize, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs15(nr: isize, a0: i32, a1: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs16(nr: isize, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs17(nr: isize, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs18(nr: isize, a0: i32, a1: u32, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs19(nr: isize, a0: usize, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs20(nr: isize, a0: i32, a1: i64, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs21(nr: isize, a0: usize, a1: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs22(nr: isize, a0: i32, a1: i64, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn vfs23(nr: isize, a0: i32, a1: usize, a2: i32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs24(
+        nr: isize,
+        a0: i32,
+        a1: usize,
+        a2: u32,
+        a3: u32,
+        a4: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn vfs25(
+        nr: isize,
+        a0: i32,
+        a1: usize,
+        a2: i32,
+        a3: usize,
+        a4: i32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn vfs26(nr: isize, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs27(nr: isize, a0: i32, a1: usize, a2: i32, a3: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs28(nr: isize, a0: i32, a1: usize, a2: usize, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs29(nr: isize, a0: i32, a1: usize, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn vfs30(nr: isize, a0: usize, a1: i32, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn vfs31(nr: isize, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    const VFS: crate::api::VfsEntries = crate::api::VfsEntries {
+        open: vfs0,
+        link: vfs1,
+        unlink: vfs2,
+        chdir: vfs2,
+        fchdir: vfs3,
+        mknod: vfs4,
+        chmod: vfs5,
+        chown: vfs6,
+        mount: vfs7,
+        unmount: vfs8,
+        access: vfs8,
+        chflags: vfs5,
+        fchflags: vfs9,
+        sync: vfs10,
+        stat: vfs1,
+        lstat: vfs1,
+        fstatat: vfs11,
+        revoke: vfs2,
+        symlink: vfs1,
+        readlink: vfs12,
+        umask: vfs13,
+        chroot: vfs2,
+        getfsstat: vfs14,
+        statfs: vfs1,
+        fstatfs: vfs15,
+        fhstatfs: vfs1,
+        utimes: vfs1,
+        futimes: vfs15,
+        utimensat: vfs11,
+        futimens: vfs15,
+        fsync: vfs3,
+        getdents: vfs16,
+        chflagsat: vfs17,
+        unveil: vfs1,
+        realpath: vfs1,
+        fchown: vfs18,
+        fchmod: vfs9,
+        pledge_open: vfs0,
+        rename: vfs1,
+        mkfifo: vfs5,
+        mkdir: vfs5,
+        rmdir: vfs2,
+        quotactl: vfs19,
+        getfh: vfs1,
+        lseek: vfs20,
+        truncate: vfs21,
+        ftruncate: vfs22,
+        pathconfat: vfs23,
+        pathconf: vfs8,
+        lchown: vfs6,
+        fhopen: vfs8,
+        fhstat: vfs1,
+        getcwd: vfs1,
+        faccessat: vfs23,
+        fchmodat: vfs17,
+        fchownat: vfs24,
+        linkat: vfs25,
+        mkdirat: vfs26,
+        mkfifoat: vfs26,
+        mknodat: vfs17,
+        openat: vfs27,
+        readlinkat: vfs28,
+        renameat: vfs29,
+        symlinkat: vfs30,
+        unlinkat: vfs31,
+    };
+
     static API: KernelApi = KernelApi::new(
         register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
-        TIME, sigreturn,
+        TIME, sigreturn, VFS,
     );
 
     /// The one test that calls `load` (its once-guard is process-wide): no image is
@@ -994,7 +1215,7 @@ mod tests {
             },
             ..KernelApi::new(
                 register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC,
-                sysctl, TIME, sigreturn,
+                sysctl, TIME, sigreturn, VFS,
             )
         };
         assert_eq!(

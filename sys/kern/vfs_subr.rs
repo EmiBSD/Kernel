@@ -1380,12 +1380,16 @@ pub(crate) mod tests {
                     cr_uid: anon,
                     cr_gid: anon,
                     cr_ngroups: 0,
+                    _pad0: 0,
                     cr_groups: [0; NGROUPS_MAX],
                 },
+                _pad0: 0,
                 ex_addr: addr.map_or(0, |a| a.as_ptr() as usize),
                 ex_addrlen: if addr.is_some() { 16 } else { 0 },
+                _pad1: 0,
                 ex_mask: mask.map_or(0, |a| a.as_ptr() as usize),
                 ex_masklen: if mask.is_some() { 16 } else { 0 },
+                _pad2: 0,
             }
         }
 
