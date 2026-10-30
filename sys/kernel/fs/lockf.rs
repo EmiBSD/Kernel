@@ -100,6 +100,11 @@
 //!   `**overlap`; `lf_getblock` returns `Option`, `lf_deadlock` a `bool` (LZ's).
 //! - `LOCKF_DEBUG` is not configured: `lf_print`, `lf_printlist` and the traces are compiled
 //!   out, as in C.
+//! - Inherited from the C: a request asleep in `lf_setlock` keeps the slot it came from (the
+//!   C's `ls_owner`, here the `&LockfSlot` borrowed from the vnode or the inode) across the
+//!   sleep; a forced unmount that reclaims and frees the inode meanwhile leaves it dangling,
+//!   as the C's `ls_owner` does. Here the slot's memory is `bsd`'s inode (its `unsafe`); the
+//!   reclaim must purge or own the slot when the inodes move (N5.x).
 //!
 //! ## Redesign
 //! - LZ's `&'static Lockf`/`&'static LockfState` pool items of `Cell`s under `unsafe impl
