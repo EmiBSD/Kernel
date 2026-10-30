@@ -487,13 +487,6 @@ impl FileGlue for BenchFiles {
         }
     }
     fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
-    fn dounmount(
-        _mp: &'static kernel::fs::mount::Mount<BenchGlue>,
-        _flags: i32,
-        _p: &kernel::proc::Thread<BenchGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
 }
 
 /// The VFS tables of the bench's processes (unused: no file system here).

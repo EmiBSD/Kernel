@@ -1727,13 +1727,6 @@ macro_rules! test_file_glue {
                 VFS_TABLES.with(|t| *t)
             }
             fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
-            fn dounmount(
-                _mp: &'static $crate::fs::mount::Mount<$proc>,
-                _flags: i32,
-                _p: &$crate::proc::Thread<$proc>,
-            ) -> Result<(), hal::sys::errno::Errno> {
-                Ok(())
-            }
         }
     };
 }

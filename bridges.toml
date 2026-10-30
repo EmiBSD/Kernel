@@ -152,7 +152,8 @@ paid_by = "N7"
 # vnode vnode_of gives), vnode_revoked (kqueue_scan's dead_vops test), getcwd (kern.proc_cwd's
 # vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
 # (a test glue answers with a pager double). N5.4: vnode_file (a new vnode file's vnops and
-# object, open(2)'s and fhopen(2)'s) joined it (kernel::fs::syscalls).
+# object, open(2)'s and fhopen(2)'s) joined it (kernel::fs::syscalls); dounmount left it
+# (vop_generic_revoke's forced unmount calls kernel::fs::syscalls::dounmount).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
@@ -285,7 +286,10 @@ paid_by = "N7"
 # nfiles, ttycount, maxthread, somaxconn, sominconn, nosuidcoredump, fscale, splassert,
 # maxlocksperuid, autoconf_serial, ncpu, ncpufound, diskcount) and physmem's variable. Each
 # registration leaves with its subsystem; N9 the last. Decision 46: the C's sysctlfn dispatch
-# as one trait.
+# as one trait. N5.4: the vfs tree left it (kernel::sysctl serves CTL_VFS itself with
+# kernel::fs::subr::VfsSysctl, and register_top refuses the id); kern.numvnodes and
+# kern.bufcachepercent are the kernel's nodes (fs::subr::NumvnodesNode,
+# fs::bio::BufcachepercentNode) that bsd's table still registers, as kern.nchstats's (N5.3).
 # kernel::sysctl::SysctlNode
 [[bridge]]
 trait = "SysctlNode"

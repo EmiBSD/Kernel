@@ -1052,8 +1052,6 @@ mod tests {
     // followed through the system calls, and unmounted; the disk label a CD gets; file
     // handles.
 
-    use core::ptr;
-
     use std::sync::{Mutex, MutexGuard};
     use std::vec::Vec;
     use std::{assert_eq, vec};
@@ -1277,9 +1275,9 @@ mod tests {
 
     /// `stat(2)` of `name`.
     fn stat(p: &Proc, name: &'static [u8]) -> Result<Stat, Errno> {
-        let mut st = Stat::default();
-        sys(sys_stat, p, &[path(name), ptr::from_mut(&mut st) as usize])?;
-        Ok(st)
+        let ub = crate::kern::vfs_subr::tests::user_buf(&[0; Stat::SIZE]);
+        sys(sys_stat, p, &[path(name), ub.addr()])?;
+        Ok(ub.stat())
     }
 
     /// `mount -u` of a disc with an export list (`im_export`): `cd9660_check_export` answers the

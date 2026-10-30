@@ -748,11 +748,11 @@ fn register(
     }
 }
 
-/// Registers the top-level node `ctl` (`CTL_NET`, `CTL_VFS`, `CTL_MACHDEP`, `CTL_DDB`), once;
-/// a second registration of an id, or an id the dispatcher serves itself or never consults,
-/// is refused.
+/// Registers the top-level node `ctl` (`CTL_NET`, `CTL_MACHDEP`, `CTL_DDB`), once; a second
+/// registration of an id, or an id the dispatcher serves itself (`CTL_KERN`, `CTL_HW`,
+/// `CTL_VM`, `CTL_VFS`) or never consults, is refused.
 pub fn register_top(ctl: i32, n: &'static dyn SysctlNode) -> Result<(), AlreadyRegistered> {
-    if !matches!(ctl, CTL_NET | CTL_VFS | CTL_MACHDEP | CTL_DDB) {
+    if !matches!(ctl, CTL_NET | CTL_MACHDEP | CTL_DDB) {
         return Err(AlreadyRegistered("SysctlNode (top: not a registered tree)"));
     }
     register(&TOP, ctl, n, "SysctlNode (top)")
@@ -980,8 +980,8 @@ impl Top {
             CTL_KERN => return Some(Self::Kern),
             CTL_HW => return Some(Self::Hw),
             CTL_VM => return Some(Self::Vm),
+            CTL_VFS => return Some(Self::Vfs),
             CTL_NET => Self::Net,
-            CTL_VFS => Self::Vfs,
             CTL_MACHDEP => Self::Machdep,
             CTL_DDB => Self::Ddb,
             _ => return None,
@@ -1066,7 +1066,8 @@ fn top_sysctl<G: ProcGlue>(
         Top::Kern => kern_sysctl(p, name, req),
         Top::Hw => hw_sysctl(p, name, req),
         Top::Vm => crate::vm::meter::uvm_sysctl(p, name, req),
-        Top::Net | Top::Vfs | Top::Machdep | Top::Ddb => match node(&TOP, ctl) {
+        Top::Vfs => crate::fs::subr::VfsSysctl::<G>::NODE.sysctl(name, req),
+        Top::Net | Top::Machdep | Top::Ddb => match node(&TOP, ctl) {
             Some(n) => n.sysctl(name, req),
             None => Err(Errno::EOPNOTSUPP),
         },
@@ -3475,6 +3476,36 @@ mod tests {
         assert!(!Top::Kern.dolock() && !Top::Hw.dolock() && !Top::Net.dolock());
     }
 
+    /// `vfs.*` is the kernel's own tree since N5.4 (`vfs_sysctl`, `kernel::fs::subr`'s
+    /// `VfsSysctl`), served with no registration: `vfs.generic.maxtypenum` an `int`, a name
+    /// too short `ENOTDIR`, an unknown type `EOPNOTSUPP` (vfs_subr.c's answers).
+    #[test]
+    fn vfs_is_the_kernel_s_own_tree() {
+        use hal::sys::mount::{VFS_GENERIC, VFS_MAXTYPENUM};
+        let (_pr, p) = caller(4950, 0);
+        let at = testutil::USER_BASE + 0x5d00;
+        assert_eq!(
+            sysctl(
+                &p,
+                at,
+                &[CTL_VFS, VFS_GENERIC, VFS_MAXTYPENUM],
+                0,
+                Some(0),
+                0,
+                0
+            ),
+            (Ok(()), Some(4))
+        );
+        assert_eq!(
+            sysctl(&p, at, &[CTL_VFS, VFS_GENERIC], 0, Some(0), 0, 0).0,
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            sysctl(&p, at, &[CTL_VFS, 99, 1], 0, Some(0), 0, 0).0,
+            Err(Errno::EOPNOTSUPP)
+        );
+    }
+
     #[test]
     fn the_registry_refuses_ids_the_dispatcher_does_not_consult() {
         static N: RdString = RdString(b"x");
@@ -3485,6 +3516,7 @@ mod tests {
         assert!(register_hw(HW_DISKNAMES, &N).is_err());
         assert!(register_top(CTL_KERN, &N).is_err());
         assert!(register_top(CTL_VM, &N).is_err());
+        assert!(register_top(CTL_VFS, &N).is_err());
         assert!(register_top(99, &N).is_err());
         // A registered id is registered once.
         registered();

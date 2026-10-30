@@ -5032,7 +5032,7 @@ status = "inherited"
 rust = "sys/isofs/cd9660/cd9660_vfsops.rs"
 lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/isofs/cd9660/cd9660_vnops.rs"
@@ -5631,7 +5631,7 @@ notes = "N4.8a: settime, ratecheck, ppsratecheck (ppsratecheck_shared under kern
 rust = "sys/kern/kern_unveil.rs"
 lz = ["sys/kern/kern_unveil.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/kern/kern_watchdog.rs"
@@ -5933,14 +5933,15 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/
 rust = "sys/kern/vfs_subr.rs"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/sys/sysctl.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/syscalls.rs"]
 notes = "N5.2: what stays bsd's of vfs_subr.c: the NFS server's export lists (vfs_hang_addrlist, vfs_free_netcred, vfs_free_addrlist, vfs_export, vfs_export_lookup, export_lookup: 12 unsafe, N6) and the shutdown trio (vfs_unmountall, vfs_shutdown, vfs_syncwait: sys_sync, dounmount and sr_quiesce are bsd's until N5.4/N7); its tests: setup, testfs, the vnode table's tests over the kernel with bsd's glue, the export list's"
 
 [[module]]
 rust = "sys/kern/vfs_syscalls.rs"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/clock.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/syscalls.rs"]
+notes = "N5.4: an adapter of no logic over kernel::fs::syscalls: bsd's sysent[] rows of the 64 calls of vfs_syscalls.c and __getcwd (struct sys_*_args unpacked, retval[0] set), the positioned I/O rows over kernel::descrip, VFS_ENTRIES (the Native entries over kern_descrip::native), and LZ's names for the other bsd modules and their tests (dounmount and getvnode re-exported; domknodat, dolinkat, dosymlinkat, dounlinkat, doreadlinkat, dorenameat and domkdirat over a pathname's address)"
 
 [[module]]
 rust = "sys/kern/vfs_vops.rs"
@@ -7101,7 +7102,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/nam
 rust = "sys/nfs/nfs_serv.rs"
 lz = ["sys/nfs/nfs_serv.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_socket.rs"
@@ -7118,7 +7119,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_srvsubs.rs"
 lz = ["sys/nfs/nfs_srvsubs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_subs.rs"
@@ -8639,7 +8640,7 @@ rust = "sys/kernel/fs/syscalls.rs"
 crate = "kernel"
 lz = ["sys/kern/vfs_syscalls.rs"]
 status = "redesigned"
-notes = "N5.4: vfs_syscalls.c: its 64 system calls (mount, unmount, sync, the statfs family, chdir, fchdir, chroot, unveil, __realpath, open, openat, __pledge_open, getfh, fhopen, fhstat, fhstatfs, the mknod, mkfifo, link, symlink, unlink, rename, mkdir and rmdir families, lseek, access, the stat family, pathconf, readlink, the chflags, chmod, chown and utimes families, truncate, ftruncate, fsync, revoke, getdents, umask, quotactl) over Result<T, Errno> and typed user pointers; the mount arguments copied into an MArray of vfc_datasize; dounmount's nested mounts on a hal::list (ByDounmount); unwired until N5.4's switch"
+notes = "N5.4: vfs_syscalls.c: its 64 system calls (mount, unmount, sync, the statfs family, chdir, fchdir, chroot, unveil, __realpath, open, openat, __pledge_open, getfh, fhopen, fhstat, fhstatfs, the mknod, mkfifo, link, symlink, unlink, rename, mkdir and rmdir families, lseek, access, the stat family, pathconf, readlink, the chflags, chmod, chown and utimes families, truncate, ftruncate, fsync, revoke, getdents, umask, quotactl) over Result<T, Errno> and typed user pointers; the mount arguments copied into an MArray of vfc_datasize; dounmount's nested mounts on a hal::list (ByDounmount); bsd's sys/kern/vfs_syscalls.rs is its adapter"
 
 [[module.fn]]
 lz = "sys/kern/vfs_syscalls.rs::queued"
@@ -8683,6 +8684,49 @@ kind = "merged"
 [[module.fn]]
 lz = "sys/kern/vfs_syscalls.rs::NameiBuf::drop"
 native = ["sys/kernel/fs/namei.rs::PathBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::upath"
+native = []
+kind = "dropped"
+reason = "the calls take their paths as UserPtr<u8> and give namei NiDirp::User(path.addr()) themselves; no raw pointer is converted"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs"
+native = ["mount_args"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::copyin"
+native = ["mount_args"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::as_mut"
+native = []
+kind = "dropped"
+reason = "mount_args returns an MArray<u8> (hal::malloc), whose DerefMut is the arguments' bytes VFS_MOUNT reads; no slice is made from an address"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::MountArgs::free"
+native = []
+kind = "dropped"
+reason = "the MArray's drop is the C's free(args, M_TEMP, vfc_datasize), on every path of sys_mount"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::statfs_bytes"
+native = ["sys/hal/user.rs::bytes_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::copyin_timevals"
+native = ["utimes_times"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/vfs_syscalls.rs::copyin_timespecs"
+native = ["utimens_times"]
 kind = "merged"
 
 [[module]]
@@ -8874,7 +8918,7 @@ adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.r
 rust = "sys/tmpfs/tmpfs_vnops.rs"
 lz = ["sys/tmpfs/tmpfs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs.rs"
@@ -9000,7 +9044,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
@@ -9073,7 +9117,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"

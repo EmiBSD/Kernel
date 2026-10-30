@@ -302,9 +302,6 @@ impl FileGlue for BsdFileGlue {
     fn vnode_recycle(vp: &'static Vnode) {
         vp.g.v_socket.set(None);
     }
-    fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
-        crate::kern::vfs_syscalls::dounmount(mp, flags, p)
-    }
 }
 
 /// The kernel VFS core's tables of `bsd`'s processes: the vnode table, the mounts, the

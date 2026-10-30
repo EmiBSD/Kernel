@@ -658,13 +658,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
     fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `dounmount(mp, flags, p)` (`vop_generic_revoke`'s forced unmount of a revoked block
-    /// device's file system; `bsd`'s until N5.4).
-    fn dounmount(
-        mp: &'static crate::fs::mount::Mount<Self::Proc>,
-        flags: i32,
-        p: &Thread<Self::Proc>,
-    ) -> Result<(), Errno>;
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

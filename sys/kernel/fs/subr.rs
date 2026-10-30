@@ -77,8 +77,9 @@
 //!   always has `curproc`; LZ's, kept).
 //! - `vprint` is compiled under feature `diagnostic` or `debug`, `printlockedvnodes` under
 //!   `debug`, as in C. The DDB printers wait for the ddb command loop (LZ's, kept).
-//! - `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` stay in `bsd`'s `vfs_subr.rs` until
-//!   `dounmount` and `sys_sync` move (N5.4); so does the NFS export list
+//! - `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` stay in `bsd`'s `vfs_subr.rs`, over
+//!   the kernel's `dounmount` and `sys_sync` since N5.4 (`kernel::fs::syscalls`, through
+//!   `bsd`'s `vfs_syscalls.rs`), until `sr_quiesce` moves (N7); so does the NFS export list
 //!   (`vfs_hang_addrlist`, `vfs_export`, `vfs_export_lookup`, feature `nfsserver`, and
 //!   `vntblinit`'s `rn_init`), until the NFS server moves (N6).
 //! - `vfs_stall` reads each successor before the body ([`mountlist_safe_restart`]), and a
@@ -1351,8 +1352,24 @@ pub fn printlockedvnodes<G: ProcGlue>() {
     }
 }
 
+/// `kern.numvnodes` (XXX numvnodes is a long): the vnodes `G`'s table has allocated, read
+/// as an `int` (kern_sysctl.c's `sysctl_rdint(oldp, oldlenp, newp, numvnodes)`). The glue
+/// registers [`NumvnodesNode::NODE`] in its `kern` table, as `kern.nchstats`'s node.
+pub struct NumvnodesNode<G>(core::marker::PhantomData<fn() -> G>);
+
+impl<G: ProcGlue> NumvnodesNode<G> {
+    /// The node.
+    pub const NODE: NumvnodesNode<G> = NumvnodesNode(core::marker::PhantomData);
+}
+
+impl<G: ProcGlue> crate::sysctl::SysctlNode for NumvnodesNode<G> {
+    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        crate::sysctl::rdint(req, vfs::<G>().numvnodes.load(Ordering::Relaxed) as i32)
+    }
+}
+
 /// `vfs_sysctl`: the `CTL_VFS` tree (`vfs.generic.*`, and each type's `vfs.<type>` node
-/// through its operations), registered with the kernel's sysctl dispatcher.
+/// through its operations), which the kernel's sysctl dispatcher serves itself (N5.4).
 pub struct VfsSysctl<G: ProcGlue>(core::marker::PhantomData<G>);
 
 impl<G: ProcGlue> VfsSysctl<G> {
@@ -2103,6 +2120,38 @@ mod tests {
                 .free
                 .first()
                 .is_some_and(|v| ptr::eq(v, vp))
+        );
+    }
+
+    /// `kern.numvnodes` (kern_sysctl.c:608-609): the table's count as an `int`, read-only.
+    #[test]
+    fn numvnodes_is_the_table_s_count_read_only() {
+        use crate::sysctl::{SysctlNode, SysctlReq};
+        let (_g, _mp) = setup_root();
+        vfs::<TestGlue>().numvnodes.store(1234, Ordering::SeqCst);
+        let old = crate::testutil::USER_BASE + 0x1f00;
+        let mut len = 4;
+        let mut req = SysctlReq {
+            oldp: old,
+            oldlenp: &mut len,
+            newp: 0,
+            newlen: 0,
+        };
+        assert_eq!(
+            NumvnodesNode::<TestGlue>::NODE.sysctl(&[], &mut req),
+            Ok(())
+        );
+        assert_eq!(hal::user::UserPtr::<i32>::new(old).copyin(), Ok(1234));
+        let mut len = 4;
+        let mut req = SysctlReq {
+            oldp: 0,
+            oldlenp: &mut len,
+            newp: old,
+            newlen: 4,
+        };
+        assert_eq!(
+            NumvnodesNode::<TestGlue>::NODE.sysctl(&[], &mut req),
+            Err(Errno::EPERM)
         );
     }
 

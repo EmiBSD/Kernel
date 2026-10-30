@@ -66,8 +66,8 @@
 //!   call them), not their argument structures; `vop_generic_badop` never returns, so it
 //!   fills a slot of any type.
 //! - `vop_generic_abortop`'s `pool_put(&namei_pool, cnp->cn_pnbuf)` and `vop_generic_revoke`'s
-//!   `dounmount(mp, MNT_FORCE | MNT_DOOMED, p)` are the glue's (`namei` and `dounmount` are
-//!   `bsd`'s until N5.3 and N5.4).
+//!   `dounmount(mp, MNT_FORCE | MNT_DOOMED, p)` were the glue's until `namei` and `dounmount`
+//!   moved into `kernel` (N5.3 and N5.4); `dounmount` is `kernel::fs::syscalls`'s.
 //! - `vop_generic_bwrite` passes the buffer as it came ([`IoBuf`]): a token to the kernel's
 //!   `bwrite`, a lent buffer's parked token likewise.
 
@@ -85,7 +85,6 @@ use super::subr::{vfs, vgonel};
 use super::vnode::{PINOD, REVOKEALL, VALIASED, VBLK, VNODE_MTX, VXLOCK, VXWANT, Vnode};
 use super::vops::{Cn, IoBuf};
 use crate::assert::kpanic;
-use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 
 /// Eliminate all activity associated with the requested vnode and with all vnodes aliased to
@@ -106,7 +105,7 @@ pub fn vop_generic_revoke<G: ProcGlue>(vp: &'static Vnode<G>, flags: i32) -> Res
             // to not leave a dangling zombie mount point laying around in VFS.
             if vfs_busy(mp, VB_WRITE | VB_WAIT).is_ok() {
                 if let Some(p) = p {
-                    let _ = <G::FileGlue as FileGlue>::dounmount(mp, MNT_FORCE | MNT_DOOMED, p);
+                    let _ = super::syscalls::dounmount(mp, MNT_FORCE | MNT_DOOMED, p);
                 }
                 break;
             }

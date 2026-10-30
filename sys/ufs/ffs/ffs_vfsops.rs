@@ -1626,8 +1626,6 @@ pub(crate) mod tests {
     // files and directories through the system calls, sync, unmount, check the image's
     // counters and mount it again.
 
-    use core::ptr;
-
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert_eq, vec};
@@ -2820,16 +2818,16 @@ pub(crate) mod tests {
         // Not exported yet: every client is refused.
         assert_eq!(check([10, 0, 2, 9]), Err(Errno::EACCES));
 
+        // The type and the arguments in the double's user memory, where the kernel's
+        // `sys_mount` copies them in.
         let update = |args: &mut UfsArgs| {
+            let ub = crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(
+                core::slice::from_ref(args),
+            ));
             sys(
                 sys_mount,
                 p,
-                &[
-                    b"ffs\0".as_ptr() as usize,
-                    path(b"/\0"),
-                    MNT_UPDATE as usize,
-                    ptr::from_mut(args) as usize,
-                ],
+                &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
             )
         };
         update(&mut args).unwrap();

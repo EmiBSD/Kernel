@@ -56,8 +56,9 @@
 //! External virtual filesystem routines that stay `bsd`'s at N5.2: the NFS server's export
 //! lists (`vfs_hang_addrlist`, `vfs_free_netcred`, `vfs_free_addrlist`, `vfs_export`,
 //! `vfs_export_lookup`; `NFSSERVER`, the radix tree and the mbufs are `bsd`'s until N6) and
-//! the shutdown's `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` (they call `sys_sync`,
-//! `dounmount` and `sr_quiesce`, `bsd`'s until N5.4 and N7). The vnode table, the mounts, the
+//! the shutdown's `vfs_unmountall`, `vfs_shutdown` and `vfs_syncwait` (they call `sys_sync`
+//! and `dounmount`, the kernel's since N5.4 through `vfs_syscalls.rs`, and `sr_quiesce`,
+//! `bsd`'s until N7). The vnode table, the mounts, the
 //! special-device aliases and the other helpers of `vfs_subr.c` are the kernel crate's
 //! (`kernel::fs::subr`, `kernel::fs::mount`), which `sys/vnode.rs` names for `bsd`.
 //!
@@ -1073,6 +1074,87 @@ pub(crate) mod tests {
             .copyout_slice(&bytes)
             .expect("the double's user memory");
         UserStr(addr)
+    }
+
+    /// A system call's user buffer in the user memory of the host double (a `struct stat`, a
+    /// `struct statfs`, a file system's mount arguments), where the kernel's copies
+    /// (`hal::user`, N5.4's calls) read and write it: one buffer at a time, at most 12 KiB at
+    /// `USER_BASE + 0x8000` (below `user_str`'s slots, above `kern_sysctl`'s and under
+    /// `kern_prot`'s ranges).
+    pub(crate) struct UserBuf {
+        addr: usize,
+        len: usize,
+    }
+
+    impl UserBuf {
+        /// The user address, as a system call's argument.
+        pub(crate) fn addr(&self) -> usize {
+            self.addr
+        }
+
+        /// The buffer's bytes as the call left them.
+        pub(crate) fn bytes(&self) -> std::vec::Vec<u8> {
+            let mut b = std::vec![0u8; self.len];
+            hal::user::UserPtr::<u8>::new(self.addr)
+                .copyin_slice(&mut b)
+                .expect("the double's user memory");
+            b
+        }
+
+        /// The `struct stat` the call wrote (`Stat::to_bytes`'s layout read back).
+        pub(crate) fn stat(&self) -> crate::sys::stat::Stat {
+            use crate::sys::stat::Stat;
+            use core::mem::offset_of;
+            let b = self.bytes();
+            let word = |off: usize, n: usize| -> [u8; 8] {
+                let mut w = [0u8; 8];
+                w[..n].copy_from_slice(&b[off..off + n]);
+                w
+            };
+            let w4 = |off: usize| -> [u8; 4] {
+                let w = word(off, 4);
+                [w[0], w[1], w[2], w[3]]
+            };
+            let u32_at = |off: usize| u32::from_ne_bytes(w4(off));
+            let i32_at = |off: usize| i32::from_ne_bytes(w4(off));
+            let u64_at = |off: usize| u64::from_ne_bytes(word(off, 8));
+            let i64_at = |off: usize| i64::from_ne_bytes(word(off, 8));
+            let ts_at = |off: usize| hal::sys::stat::Timespec {
+                tv_sec: i64_at(off),
+                tv_nsec: i64_at(off + 8),
+            };
+            Stat {
+                st_mode: u32_at(offset_of!(Stat, st_mode)) as _,
+                st_dev: i32_at(offset_of!(Stat, st_dev)) as _,
+                st_ino: u64_at(offset_of!(Stat, st_ino)) as _,
+                st_nlink: u32_at(offset_of!(Stat, st_nlink)) as _,
+                st_uid: u32_at(offset_of!(Stat, st_uid)) as _,
+                st_gid: u32_at(offset_of!(Stat, st_gid)) as _,
+                st_rdev: i32_at(offset_of!(Stat, st_rdev)) as _,
+                st_atim: ts_at(offset_of!(Stat, st_atim)),
+                st_mtim: ts_at(offset_of!(Stat, st_mtim)),
+                st_ctim: ts_at(offset_of!(Stat, st_ctim)),
+                st_size: i64_at(offset_of!(Stat, st_size)) as _,
+                st_blocks: i64_at(offset_of!(Stat, st_blocks)) as _,
+                st_blksize: i32_at(offset_of!(Stat, st_blksize)) as _,
+                st_flags: u32_at(offset_of!(Stat, st_flags)),
+                st_gen: u32_at(offset_of!(Stat, st_gen)),
+                __st_birthtim: ts_at(offset_of!(Stat, __st_birthtim)),
+            }
+        }
+    }
+
+    /// `bytes` copied into the double's user memory as a system call's buffer ([`UserBuf`]).
+    pub(crate) fn user_buf(bytes: &[u8]) -> UserBuf {
+        const BASE: usize = kernel::testutil::USER_BASE + 0x8000;
+        assert!(bytes.len() <= 0x3000, "a user buffer of at most 12 KiB");
+        hal::user::UserPtr::<u8>::new(BASE)
+            .copyout_slice(bytes)
+            .expect("the double's user memory");
+        UserBuf {
+            addr: BASE,
+            len: bytes.len(),
+        }
     }
 
     /// Real memory, the process, file and vfs pools, empty vnode lists; returns the guard and a

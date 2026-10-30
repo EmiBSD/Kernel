@@ -781,6 +781,31 @@ pub fn bufinit(physmem: usize) {
     TARGETPAGES.store(BUFPAGES.load(Mem::Relaxed) - RESERVE_PAGES, Mem::Relaxed);
 }
 
+/// `kern.bufcachepercent` (kern_sysctl.c's `KERN_CACHEPCT`): the share of memory the cache
+/// may use, between 5 and 90 (`EINVAL` puts the old one back); a change resizes the cache
+/// to that share of all the pages and makes it the high water mark. The glue registers
+/// [`BufcachepercentNode`] in its `kern` table, as `kern.nchstats`'s node.
+pub struct BufcachepercentNode;
+
+impl crate::sysctl::SysctlNode for BufcachepercentNode {
+    fn sysctl(&self, _name: &[i32], req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        let opct = BUFCACHEPERCENT.load(Mem::Relaxed);
+        crate::sysctl::int(req, &BUFCACHEPERCENT)?;
+        let pct = BUFCACHEPERCENT.load(Mem::Relaxed);
+        if !(5..=90).contains(&pct) {
+            BUFCACHEPERCENT.store(opct, Mem::Relaxed);
+            return Err(Errno::EINVAL);
+        }
+        let pages = uvm_pagecount(&NO_CONSTRAINT) as u64;
+        if pct != opct {
+            let pgs = (pct as u64 * pages / 100) as i32;
+            bufadjust(i64::from(pgs)); // adjust bufpages
+            BUFHIGHPAGES.store(BUFPAGES.load(Mem::Relaxed), Mem::Relaxed); // set high water mark
+        }
+        Ok(())
+    }
+}
+
 /// `bufadjust(newbufpages)`: changes the cache's size (`kern.bufcachepercent`, the page
 /// daemon's back-off).
 pub fn bufadjust(newbufpages: i64) {
@@ -3217,6 +3242,45 @@ mod tests {
         assert!(!incore(vb, 0) && !incore(vb, 2 * SECTORS));
         assert!(incore(vb, 4 * SECTORS));
         assert_eq!(stat(&BCSTATS.numbufs), 96);
+    }
+
+    /// `kern.bufcachepercent` (kern_sysctl.c:785-804): read; outside 5..90 `EINVAL` with the
+    /// old share kept; a new share resizes the cache to that part of all the pages and makes
+    /// it the high water mark; the same share again resizes nothing.
+    #[test]
+    fn bufcachepercent_is_bounded_and_resizes_the_cache() {
+        use crate::sysctl::{SysctlNode, SysctlReq};
+        use hal::user::UserPtr;
+        let _g = bufcache_install(BYTES, 64);
+        let old = crate::testutil::USER_BASE + 0x1f00;
+        let new = crate::testutil::USER_BASE + 0x1f80;
+        let ask = |v: Option<i32>| {
+            if let Some(v) = v {
+                UserPtr::<i32>::new(new).copyout(&v).unwrap();
+            }
+            let mut len = 4;
+            let mut req = SysctlReq {
+                oldp: old,
+                oldlenp: &mut len,
+                newp: if v.is_some() { new } else { 0 },
+                newlen: if v.is_some() { 4 } else { 0 },
+            };
+            let r = BufcachepercentNode.sysctl(&[], &mut req);
+            (r, UserPtr::<i32>::new(old).copyin().unwrap())
+        };
+        assert_eq!(ask(None), (Ok(()), BUFCACHEPERCENT_DEFAULT));
+        assert_eq!(ask(Some(4)).0, Err(Errno::EINVAL));
+        assert_eq!(ask(Some(91)).0, Err(Errno::EINVAL));
+        assert_eq!(BUFCACHEPERCENT.load(Mem::Relaxed), BUFCACHEPERCENT_DEFAULT);
+
+        let pages = uvm_pagecount(&NO_CONSTRAINT) as i64;
+        assert_eq!(ask(Some(50)), (Ok(()), BUFCACHEPERCENT_DEFAULT));
+        let want = (pages * 50 / 100).max(BUFLOWPAGES.load(Mem::Relaxed));
+        assert_eq!(BUFPAGES.load(Mem::Relaxed), want);
+        assert_eq!(BUFHIGHPAGES.load(Mem::Relaxed), want);
+        BUFHIGHPAGES.store(1, Mem::Relaxed);
+        assert_eq!(ask(Some(50)), (Ok(()), 50));
+        assert_eq!(BUFHIGHPAGES.load(Mem::Relaxed), 1);
     }
 
     #[test]

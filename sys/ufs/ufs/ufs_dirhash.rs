@@ -1516,14 +1516,9 @@ mod tests {
     /// `stat(2)`: the inode number of `path`.
     fn ino_of(p: &Proc, path: &str) -> Result<u64, Errno> {
         let c = cpath(path);
-        let mut sb = [0u8; Stat::SIZE];
-        sys(
-            sys_stat,
-            p,
-            &[c.as_ptr() as usize, sb.as_mut_ptr() as usize],
-        )?;
-        let o = core::mem::offset_of!(Stat, st_ino);
-        Ok(u64::from_ne_bytes(sb[o..o + 8].try_into().unwrap()))
+        let ub = crate::kern::vfs_subr::tests::user_buf(&[0; Stat::SIZE]);
+        sys(sys_stat, p, &[c.as_ptr() as usize, ub.addr()])?;
+        Ok(ub.stat().st_ino)
     }
 
     fn link(p: &Proc, from: &str, to: &str) -> Result<isize, Errno> {
