@@ -245,7 +245,7 @@ trait AcctSink: Send + Sync {
     /// thread's credentials.
     fn write(&self, rec: &[u8]) -> Result<(), Errno>;
     /// `VFS_STATFS` of its file system: `(f_bavail, f_blocks)`, `None` when it has no mount.
-    fn free_space(&self) -> Option<(i64, i64)>;
+    fn free_space(&self) -> Option<(i64, u64)>;
     /// `vp->v_type == VBAD`: the vnode was revoked (its file system forcibly unmounted).
     fn is_bad(&self) -> bool;
     /// `vn_close(vp, FWRITE, cred, p)` by the running thread: with its credentials when
@@ -274,13 +274,13 @@ impl<G: ProcGlue> AcctSink for AcctVnode<G> {
         })
     }
 
-    fn free_space(&self) -> Option<(i64, i64)> {
+    fn free_space(&self) -> Option<(i64, u64)> {
         let mp = self.0.mount()?;
         G::with_curproc(|p| {
             let p = p?;
             let mut sb = Statfs::new();
             let _ = VFS_STATFS(mp, &mut sb, p);
-            Some((sb.f_bavail, i64::try_from(sb.f_blocks).unwrap_or(i64::MAX)))
+            Some((sb.f_bavail, sb.f_blocks))
         })
     }
 
@@ -543,6 +543,15 @@ enum Watch {
     Stop,
 }
 
+/// `f_bavail > pct * f_blocks / 100` as the C computes it (kern_acct.c:324, :336): the
+/// product is `u_int64_t` (the `int` percentage converted, the arithmetic modular), and the
+/// signed `f_bavail` is converted to it, so a negative count (the reserve in use) compares
+/// as a huge one.
+fn bavail_above(bavail: i64, pct: i32, blocks: u64) -> bool {
+    let limit = i64::from(pct).cast_unsigned().wrapping_mul(blocks) / 100;
+    bavail.cast_unsigned() > limit
+}
+
 /// One pass of the watcher over the state: thresholds of [`ACCTSUSPEND`]/[`ACCTRESUME`]
 /// percent of the file system's blocks.
 fn watch(st: &mut AcctState) -> Watch {
@@ -554,7 +563,7 @@ fn watch(st: &mut AcctState) -> Watch {
             return Watch::Stop;
         }
         let (bavail, blocks) = sav.free_space().unwrap_or((0, 0));
-        if bavail > i64::from(ACCTRESUME.load(Ordering::Relaxed)) * blocks / 100 {
+        if bavail_above(bavail, ACCTRESUME.load(Ordering::Relaxed), blocks) {
             st.acctp = st.savacctp.take();
             return Watch::Resumed;
         }
@@ -567,7 +576,7 @@ fn watch(st: &mut AcctState) -> Watch {
             return Watch::Stop;
         }
         let (bavail, blocks) = cur.free_space().unwrap_or((0, 0));
-        if bavail <= i64::from(ACCTSUSPEND.load(Ordering::Relaxed)) * blocks / 100 {
+        if !bavail_above(bavail, ACCTSUSPEND.load(Ordering::Relaxed), blocks) {
             st.savacctp = st.acctp.take();
             return Watch::Suspended;
         }
@@ -674,7 +683,7 @@ mod tests {
         fn write(&self, _rec: &[u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn free_space(&self) -> Option<(i64, i64)> {
+        fn free_space(&self) -> Option<(i64, u64)> {
             Some((self.bavail.load(Ordering::Relaxed), 100))
         }
         fn is_bad(&self) -> bool {
@@ -715,6 +724,35 @@ mod tests {
         assert!(st.acctp.is_none() && st.savacctp.is_none());
         assert!(closed.load(Ordering::Relaxed));
         assert_eq!(watch(&mut st), Watch::Stop);
+    }
+
+    /// The thresholds compare as the C's (kern_acct.c:324, :336): a negative `f_bavail` (the
+    /// reserve in use) is converted to the product's unsigned type, a huge count: it does
+    /// not suspend accounting, and it resumes a suspended one.
+    #[test]
+    fn a_negative_bavail_compares_as_the_c_s_unsigned_count() {
+        assert!(bavail_above(-1, 2, 100));
+        assert!(!bavail_above(2, 2, 100));
+        assert!(bavail_above(3, 2, 100));
+        assert!(!bavail_above(0, 0, 0));
+        // A negative percentage converts as the C's int to u_int64_t.
+        assert!(!bavail_above(5, -1, 100));
+        let bavail = Arc::new(AtomicI64::new(-5));
+        let bad = Arc::new(AtomicBool::new(false));
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut st = AcctState {
+            acctp: Some(Box::new(Sink {
+                bavail: Arc::clone(&bavail),
+                bad: Arc::clone(&bad),
+                closed: Arc::clone(&closed),
+            })),
+            savacctp: None,
+        };
+        assert_eq!(watch(&mut st), Watch::Again, "not suspended");
+        bavail.store(1, Ordering::Relaxed);
+        assert_eq!(watch(&mut st), Watch::Suspended);
+        bavail.store(-5, Ordering::Relaxed);
+        assert_eq!(watch(&mut st), Watch::Resumed);
     }
 
     /// `acct(2)`'s open over the test file system (kern_acct.c:94-104): a regular file opens
