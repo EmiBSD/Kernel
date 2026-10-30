@@ -604,6 +604,14 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
+    /// The members of `bsd`'s types a UFS inode carries (`inode_u`, `inode_ext`, `i_dquot`):
+    /// `fs::ufs::ufs::inode::Inode::g` (docs/SCAFFOLDING.md).
+    type InodeG: Default + Send + Sync + 'static;
+    /// The members of `bsd`'s types a UFS mount carries (`ufsmount_u`, `um_export`, the
+    /// quotas): `fs::ufs::ufs::ufsmount::Ufsmount::g` (docs/SCAFFOLDING.md).
+    type UfsmountG: Default + Sync + 'static;
+    /// `i_hash`: the inode hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
+    type InodeHash: PinAdapter<Elem = crate::fs::ufs::ufs::inode::Inode<Self::Proc>>;
 
     /// The open files, `fhdlk` and the pools (one `static` of `bsd`'s).
     fn tables() -> &'static FileTables<Self>;
@@ -658,6 +666,13 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
     fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
+    /// `ip->i_e2fs_nlink` of an ext2fs inode from its glue member (`IS_EXT2_VNODE` in
+    /// `ufs_ihashget`; `bsd`'s ext2fs keeps the dinode until N5.6): `None` for a glue without
+    /// ext2fs.
+    fn inode_e2fs_nlink(g: &Self::InodeG) -> Option<i32> {
+        let _ = g;
+        None
+    }
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in
@@ -669,6 +684,19 @@ macro_rules! file_glue_links {
         hal::pin_adapter!(
             /// `f_list`: `filehead`.
             pub FileListLink: $crate::file::File<$glue>, f_list
+        );
+    };
+}
+
+/// Declares `InodeHashLink`, the inode hash's adapter (`i_hash`) for the inodes of the process
+/// glue `$proc`, in the module that implements its file glue: `kernel::ufs_glue_links!(Procs);`
+/// then `type InodeHash = InodeHashLink;` inside the `impl FileGlue`.
+#[macro_export]
+macro_rules! ufs_glue_links {
+    ($proc:ty) => {
+        hal::pin_adapter!(
+            /// `i_hash`: the inode hash's chains.
+            pub InodeHashLink: $crate::fs::ufs::ufs::inode::Inode<$proc>, i_hash
         );
     };
 }

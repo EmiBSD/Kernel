@@ -183,6 +183,7 @@ impl BsdFileData {
 pub struct BsdFileGlue;
 
 kernel::file_glue_links!(BsdFileGlue);
+kernel::ufs_glue_links!(crate::kern::proc_glue::BsdProcGlue);
 
 /// `numfiles`: actual number of open files (`kern.nfiles`).
 pub static NUMFILES: AtomicI32 = AtomicI32::new(0);
@@ -218,6 +219,9 @@ impl FileGlue for BsdFileGlue {
     type VnodeG = crate::sys::vnode::VnodeG;
     /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
     type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
+    type InodeG = ();
+    type UfsmountG = ();
+    type InodeHash = InodeHashLink;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()

@@ -368,6 +368,7 @@ static BENCH_VNODE_OPS: kernel::fs::vnops::VnodeFileOps = kernel::fs::vnops::Vno
 pub struct BenchFiles;
 
 kernel::file_glue_links!(BenchFiles);
+kernel::ufs_glue_links!(BenchGlue);
 
 /// `numfiles`.
 static NUMFILES: AtomicI32 = AtomicI32::new(0);
@@ -430,6 +431,9 @@ impl FileGlue for BenchFiles {
     type FileList = FileListLink;
     type VnodeG = ();
     type UnveilMatch = ();
+    type InodeG = ();
+    type UfsmountG = ();
+    type InodeHash = InodeHashLink;
 
     fn tables() -> &'static FileTables<Self> {
         &FILE_TABLES

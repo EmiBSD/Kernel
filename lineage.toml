@@ -8278,6 +8278,62 @@ native = ["SyncVops::TABLE"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ufs/dinode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/dinode.rs"]
+status = "redesigned"
+notes = "N5.5a1: dinode.h's on-disk ufs1_dinode and ufs2_dinode, the constants and the mode bits, moved unchanged in shape; both dinodes hal::abi_pod! (pod_from_bytes/pod_to_bytes replace LZ's unsafe unaligned casts)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/dir.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/dir.rs"]
+status = "redesigned"
+notes = "N5.5a1: dir.h's on-disk directory format (struct direct read and written at its offsets, bounds-checked; dirtemplate; DIRSIZ), moved unchanged in shape; DIRBLKSIZ is 1 << fs::bio's DEV_BSHIFT"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/inode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/inode.rs"]
+status = "redesigned"
+notes = "N5.5a1: struct inode as Inode<G>, an item of the file system's recorded TypedPool, hung from the vnode's typed node slot and reached as InodeRef<G> (PoolArc; vtoi counts a handle, D-N5.5a-3); the C's words as relaxed atomics with LZ's get/set (not D-N5.5a-4's Guarded::new_kernel cells: the kernel lock's witness raises the IPL, one spl pair per change); the identity plain fields; the FFS dinode as DinWords<N> (atomic words, the C's 128/256 bytes) in a set-once cell, DIP at offset_of!; inode_vtbl as the InodeOps trait (decision 46); inode_u, inode_ext and i_dquot the glue's InodeG until N5.5a2/N5.5b/N5.6"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufsmount.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufsmount.rs"]
+status = "redesigned"
+notes = "N5.5a1: struct ufsmount as Ufsmount<G>, its words relaxed atomics with LZ's get/set, um_mountp/um_devvp Links; ufsmount_u, um_export and the quota members the glue's UfsmountG until N5.5a2/N5.5b/N5.6/N6; still malloc'd and freed by bsd's mounts through mnt_data (vfstoufs keeps its unsafe)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_ihash.rs"]
+status = "redesigned"
+notes = "N5.5a1: the inode hash as PinLists of the pinned inodes bound to the kernel lock (walks under klock::reader, insertions and removals under klock::witness), in the glue's VfsTables (UfsTables, a ReadMostly cell the host tests forget); ufs_ihash is Ihash::chain; arc4random_buf of the key is four arc4random words"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_bmap.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_bmap.rs"]
+status = "redesigned"
+notes = "N5.5a1: ufs_bmap, ufs_bmaparray and ufs_getlbns over the buffer cache's tokens (getblk, VOP_STRATEGY, biowait, brelse), the um_* words read from the inode's copies; getlbns, the arithmetic over a pointer count, its own function (tested against the C's paths)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.5a1: ufs_start, ufs_root, ufs_fhtovp over the kernel's VFS_VGET; UfsTables (ufs_init's done flag and the inode hash, in the glue's VfsTables) and ufs_test_reset; ufs_init and ufs_check_export stay bsd's until N5.5a2 and N6"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_extern.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_extern.rs"]
+status = "redesigned"
+notes = "N5.5a1: the kernel's half of ufs_extern.h's re-exports (bmap, ihash, vfsops), growing with N5.5a2 and N5.5a3"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]

@@ -131,6 +131,13 @@
 //!   with the file system's own cast, `bsd`'s `data<T>`); the members of `bsd`'s types (the
 //!   name cache's heads, `v_socket`, the device's lock list) are the glue's
 //!   [`FileGlue::VnodeG`], as `Process<G>` keeps its `bsd` members.
+//! - N5.5a (D-N5.5a-6): a kernel file system's node is [`Vnode::node`]'s, a typed slot beside
+//!   the word: a pool item's counted handle with its type erased (`hal::pool::AnyArc`), set by
+//!   the file system's `vget` ([`Vnode::set_node`]), lent to who names its type
+//!   ([`Vnode::node_with`]: the UFS inode's `VTOI`, a type's check where LZ's cast trusted the
+//!   tag) and taken by its reclaim ([`Vnode::take_node`]). The word stays for the file systems
+//!   still in `bsd` (cd9660, msdosfs, nfs, ntfs, tmpfs, fuse, mfs's node) and goes with the last
+//!   of them.
 //! - `vn_lock` keeps the C's `Result` and protocol (the `v_lockcount` count under
 //!   `vnode_mtx`, the unlock and `ENOENT` when `VXLOCK` appeared, `LK_RETRY`); [`Locked`] is
 //!   the guard of a lock the caller leaves in the same function (its drop is `VOP_UNLOCK`).
@@ -143,6 +150,7 @@ use hal::link::Link;
 use hal::list::ListEntry;
 use hal::malloc::MBox;
 use hal::mutex::Mutexed;
+use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
@@ -663,8 +671,12 @@ pub struct Vnode<G: ProcGlue> {
     rdev: AtomicU64,
     /// `si_specnext`: the special-device alias chain.
     pub(super) specnext: ListEntry<Vnode<G>>,
-    /// `v_data`: private data for fs.
+    /// `v_data`: private data for fs, as the file systems still in `bsd` keep it.
     data: AtomicPtr<c_void>,
+    /// `v_data` as the kernel's file systems keep it: their node's counted handle, its type
+    /// erased (the UFS inode). Read on every operation (a reader count), replaced at `vget`
+    /// and at reclaim.
+    node: ReadMostly<Option<AnyArc>>,
     /// `v_klist`: identity of poller(s).
     pub klist: Klist<G>,
     /// \[N\] `v_nc_tree`, `v_cache_dst`: the name cache's heads (`fs::cache::NCLOCK`'s part
@@ -710,6 +722,7 @@ impl<G: ProcGlue> Vnode<G> {
             rdev: AtomicU64::new(0),
             specnext: ListEntry::new(),
             data: AtomicPtr::new(ptr::null_mut()),
+            node: ReadMostly::new(None),
             klist: Klist::new(),
             nc: super::cache::NcHeads::cell(),
             speclockf: super::lockf::LockfSlot::new(),
@@ -899,6 +912,36 @@ impl<G: ProcGlue> Vnode<G> {
     #[inline]
     pub fn set_data(&self, p: *mut c_void) {
         self.data.store(p, Ordering::Relaxed);
+    }
+
+    /// `vp->v_data = node` of a kernel file system (its `vget`): `panic(9)` over a node there
+    /// already (the C's `vget` fills a vnode fresh from `getnewvnode`).
+    pub fn set_node(&self, node: AnyArc) {
+        if self.node.replace(Some(node)).is_some() {
+            kpanic(format_args!("vnode {self:p}: v_data over v_data"));
+        }
+    }
+
+    /// `vp->v_data = NULL` of a kernel file system (its reclaim; `ffs_vinit`'s move to an
+    /// alias): its node's handle, which the caller drops (the last one frees the node).
+    pub fn take_node(&self) -> Option<AnyArc> {
+        self.node.replace(None)
+    }
+
+    /// Whether a kernel file system's node is in the slot.
+    pub fn has_node(&self) -> bool {
+        self.node.read().is_some()
+    }
+
+    /// `f((T *)vp->v_data)`: the node lent to `f` when it is a `T`, `None` otherwise (none,
+    /// or another file system's). `f` runs inside the slot's read: it must not sleep (nor
+    /// replace the slot).
+    #[inline]
+    pub fn node_with<T: Send + Sync + 'static, R>(&self, f: impl FnOnce(&T) -> R) -> Option<R> {
+        match &*self.node.read() {
+            Some(n) => n.downcast_ref::<T>().map(f),
+            None => None,
+        }
     }
 
     /// `vp->v_mountedhere`.

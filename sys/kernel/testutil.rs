@@ -1479,6 +1479,7 @@ macro_rules! test_file_glue {
         pub struct $name;
 
         $crate::file_glue_links!($name);
+        $crate::ufs_glue_links!($proc);
 
         std::thread_local! {
             static VFS_TABLES: &'static $crate::fs::subr::VfsTables<$proc> =
@@ -1634,6 +1635,9 @@ macro_rules! test_file_glue {
             type FileList = FileListLink;
             type VnodeG = ();
             type UnveilMatch = $crate::testutil::UnveilCount;
+            type InodeG = ();
+            type UfsmountG = ();
+            type InodeHash = InodeHashLink;
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)

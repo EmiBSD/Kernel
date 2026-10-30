@@ -45,6 +45,7 @@ pub mod sync;
 pub mod syscalls;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testfs;
+pub mod ufs;
 pub mod vnode;
 pub mod vnops;
 pub mod vops;

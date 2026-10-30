@@ -247,6 +247,8 @@ pub struct VfsTables<G: ProcGlue> {
     pub prtactive: AtomicI32,
     /// `vfs_getnewfsid`'s `xxxfs_mntid`.
     mntid: AtomicU32,
+    /// The UFS layer's globals (`ufs_init`'s `done`, the inode hash).
+    pub ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -283,6 +285,7 @@ impl<G: ProcGlue> VfsTables<G> {
             stall_lock: SplitRwlock::new("vfs_stall"),
             prtactive: AtomicI32::new(0),
             mntid: AtomicU32::new(0),
+            ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables::new(),
         }
     }
 }
@@ -406,6 +409,7 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     }
     sync::syncer_test_reset::<G>();
     super::cache::namecache_test_reset::<G>();
+    crate::fs::ufs::ufs::ufs_vfsops::ufs_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
@@ -580,7 +584,7 @@ pub fn getnewvnode_id<G: ProcGlue>(
         }
         #[cfg(feature = "diagnostic")]
         {
-            if !vp.data().is_null() {
+            if !vp.data().is_null() || vp.has_node() {
                 vprint(Some("cleaned vnode"), vp);
                 kpanic(format_args!("cleaned vnode isn't"));
             }
@@ -600,6 +604,7 @@ pub fn getnewvnode_id<G: ProcGlue>(
     insmntque(vp, mp);
     vp.set_usecount(1);
     vp.set_data(ptr::null_mut());
+    drop(vp.take_node());
     Ok(vp)
 }
 
@@ -1324,7 +1329,7 @@ pub fn vprint<G: ProcGlue>(label: Option<&str>, vp: &'static Vnode<G>) {
     if !first {
         printf(format_args!(")"));
     }
-    if vp.data().is_null() {
+    if vp.data().is_null() && !vp.has_node() {
         printf(format_args!("\n"));
     } else {
         printf(format_args!("\n\t"));
