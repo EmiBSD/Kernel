@@ -1036,8 +1036,10 @@ mod tests {
     // Host tests for the advisory record locks (LZ's six, on the kernel's types): the
     // splitting, merging, upgrading and downgrading of one owner's ranges, the conflicts
     // between owners, `F_GETLK`, the range conversion of `lf_advlock`, `lf_purgelocks` and the
-    // uid charge; and, on a state built by hand (the sleeps a blocked request makes are not a
-    // host test's), deadlock detection and the wakeup of a blocked request.
+    // uid charge; on a state built by hand, deadlock detection and the wakeup of a blocked
+    // request; and with a second host thread that really sleeps in `lf_setlock` (a process of
+    // its own as `curproc`): its wakeup by an unlock, `lf_purgelocks`' `EINTR`, `EDEADLK`
+    // for the other side of a wait cycle, and case 3 moving a sleeper to the new lock.
 
     use std::vec::Vec;
 
@@ -1390,6 +1392,176 @@ mod tests {
         assert_eq!(flk(A, F_WRLCK), Err(Errno::EAGAIN));
         assert_eq!(locks(&slot), [(A, F_RDLCK, 0, -1), (B, F_RDLCK, 0, -1)]);
         lf_purgelocks::<G>(&slot);
+        assert!(slot.is_empty());
+    }
+
+    /// A waiting `F_SETLK` (`F_POSIX | F_WAIT`) of `[start, start + len)` by `id`.
+    fn setlkw(
+        slot: &LockfSlot,
+        id: LockOwner,
+        type_: i16,
+        start: Off,
+        len: Off,
+    ) -> Result<(), Errno> {
+        lf_advlock::<G>(
+            slot,
+            0,
+            id,
+            F_SETLK,
+            &mut fl(type_, start, len),
+            F_POSIX | F_WAIT,
+        )
+    }
+
+    /// A thread of a new process `pid` (this host thread's own glue tables, root's
+    /// credentials) made this host thread's `curproc`: a second locker beside the test's.
+    fn other_thread(pid: i32) -> &'static Thread<G> {
+        crate::proc::procinit::<G>(64, 64);
+        let pr = crate::proc::process_alloc::<G>(pid, ());
+        drop(pr.set_ucred(crate::cred::CredRef::new(crate::cred::Ucred::new())));
+        let t = crate::proc::thread_alloc::<G>(&pr, ());
+        drop(t.set_cred(pr.ucred()));
+        let p: &'static Thread<G> = hal::pool::PoolBox::leak(t);
+        core::mem::forget(pr);
+        G::set_curproc(Some(p));
+        p
+    }
+
+    /// The requests asleep on the slot's state (`ls_pending`).
+    fn pending(slot: &LockfSlot) -> usize {
+        let mut w = LOCKF_LOCK.write();
+        let [mut p0] = w.split::<1>();
+        slot.0
+            .get_mut(&mut p0)
+            .as_deref()
+            .map_or(0, |ls| ls.pending.iter().count())
+    }
+
+    /// Waits until `n` requests sleep on the slot (bounded: a request that never sleeps is a
+    /// failed test, not a hung run). The waiter goes on the pending list under the lock and
+    /// releases it in its sleep, so a count read under the lock sees it asleep.
+    fn until_pending(slot: &LockfSlot, n: usize) {
+        for _ in 0..10_000 {
+            if pending(slot) == n {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::panic!("no {n} request(s) asleep on the lock within 10 s");
+    }
+
+    /// The range of the lock the first sleeping request waits on (`lf_blk`).
+    fn first_waiter_blocker(slot: &LockfSlot) -> Option<(Off, Off)> {
+        let mut w = LOCKF_LOCK.write();
+        let [mut p0, p1] = w.split::<2>();
+        slot.0
+            .get_mut(&mut p0)
+            .as_deref()
+            .and_then(|ls| ls.pending.first())
+            .and_then(|l| l.m.get(&p1).blk.get())
+            .map(|b| {
+                let m = b.m.get(&p1);
+                (m.start, m.end)
+            })
+    }
+
+    /// A request that sleeps on a conflicting lock is woken by its unlock and takes its
+    /// range (vfs_lockf.c's `lf_setlock` sleep and `lf_wakelock`).
+    #[test]
+    fn a_sleeping_request_takes_the_lock_its_holder_releases() {
+        let (_g, _p) = setup();
+        let slot: &'static LockfSlot =
+            std::boxed::Box::leak(std::boxed::Box::new(LockfSlot::new()));
+        setlk(slot, A, F_WRLCK, 0, 10).unwrap();
+        let waiter = std::thread::spawn(move || {
+            other_thread(2);
+            let r = setlkw(slot, B, F_RDLCK, 5, 1);
+            G::set_curproc(None);
+            r
+        });
+        until_pending(slot, 1);
+        assert_eq!(first_waiter_blocker(slot), Some((0, 9)));
+        unlk(slot, A, 0, 0).unwrap();
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(pending(slot), 0);
+        assert_eq!(locks(slot), [(B, F_RDLCK, 5, 5)]);
+        lf_purgelocks::<G>(slot);
+        assert!(slot.is_empty());
+    }
+
+    /// `lf_purgelocks` (a vnode reclaimed) interrupts a sleeping request: it wakes with
+    /// `F_INTR` and returns `EINTR`, and the purge waits for it to leave before it frees the
+    /// state (vfs_lockf.c:724-763).
+    #[test]
+    fn lf_purgelocks_interrupts_a_sleeping_request_with_eintr() {
+        let (_g, _p) = setup();
+        let slot: &'static LockfSlot =
+            std::boxed::Box::leak(std::boxed::Box::new(LockfSlot::new()));
+        setlk(slot, A, F_WRLCK, 0, 10).unwrap();
+        let waiter = std::thread::spawn(move || {
+            other_thread(3);
+            let r = setlkw(slot, B, F_WRLCK, 0, 10);
+            G::set_curproc(None);
+            r
+        });
+        until_pending(slot, 1);
+        lf_purgelocks::<G>(slot);
+        assert_eq!(waiter.join().unwrap(), Err(Errno::EINTR));
+        assert!(slot.is_empty());
+    }
+
+    /// A wait cycle between two processes: the second side's request is `EDEADLK` at once,
+    /// while the first still sleeps (`lf_deadlock` over the pending list); the first takes
+    /// its range once the second side unlocks.
+    #[test]
+    fn the_other_side_of_a_wait_cycle_is_edeadlk() {
+        let (_g, _p) = setup();
+        let slot: &'static LockfSlot =
+            std::boxed::Box::leak(std::boxed::Box::new(LockfSlot::new()));
+        setlk(slot, A, F_WRLCK, 0, 10).unwrap();
+        let waiter = std::thread::spawn(move || {
+            other_thread(4);
+            setlk(slot, B, F_WRLCK, 20, 10).unwrap();
+            let r = setlkw(slot, B, F_WRLCK, 0, 10);
+            G::set_curproc(None);
+            r
+        });
+        until_pending(slot, 1);
+        // pid 1 waits for pid 4's [20, 30) while pid 4 waits for pid 1's [0, 10).
+        assert_eq!(setlkw(slot, A, F_WRLCK, 20, 10), Err(Errno::EDEADLK));
+        assert_eq!(pending(slot), 1, "the first side still sleeps");
+        unlk(slot, A, 0, 10).unwrap();
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(locks(slot), [(B, F_WRLCK, 0, 9), (B, F_WRLCK, 20, 29)]);
+        lf_purgelocks::<G>(slot);
+        assert!(slot.is_empty());
+    }
+
+    /// Case 3 (the request contains a lock of its owner) hands the old lock's sleepers to the
+    /// new one instead of waking them (vfs_lockf.c:466-484, case 3): the sleeper stays
+    /// asleep, now on the new lock, and takes its range when that one is unlocked.
+    #[test]
+    fn case_3_moves_a_sleeping_request_to_the_containing_lock() {
+        let (_g, _p) = setup();
+        let slot: &'static LockfSlot =
+            std::boxed::Box::leak(std::boxed::Box::new(LockfSlot::new()));
+        setlk(slot, A, F_WRLCK, 0, 10).unwrap();
+        let waiter = std::thread::spawn(move || {
+            other_thread(5);
+            let r = setlkw(slot, B, F_WRLCK, 5, 1);
+            G::set_curproc(None);
+            r
+        });
+        until_pending(slot, 1);
+        assert_eq!(first_waiter_blocker(slot), Some((0, 9)));
+        setlk(slot, A, F_WRLCK, 0, 100).unwrap();
+        assert_eq!(locks(slot), [(A, F_WRLCK, 0, 99)]);
+        assert_eq!(pending(slot), 1, "moved, not woken");
+        assert_eq!(first_waiter_blocker(slot), Some((0, 99)));
+        unlk(slot, A, 0, 0).unwrap();
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert_eq!(locks(slot), [(B, F_WRLCK, 5, 5)]);
+        lf_purgelocks::<G>(slot);
         assert!(slot.is_empty());
     }
 }
