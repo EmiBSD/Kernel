@@ -1210,9 +1210,6 @@ mod tests {
         fn stop(&self, tp: &Tty<Kg>, rw: i32) {
             let _ = ptsstop(tp, rw);
         }
-        fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
-            Ok(())
-        }
         fn console_dev(&self) -> Option<Dev> {
             None
         }

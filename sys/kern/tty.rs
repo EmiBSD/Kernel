@@ -88,21 +88,13 @@ use kernel::uio::UioMove;
 use crate::dev::cons::{cn_devvp_set, cn_tab, cnwrite, constty};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::proc_glue::BsdProcGlue;
-use crate::kern::vfs_vops::{VOP_ACCESS, VOP_UNLOCK};
 use crate::machine::conf::cdevsw;
 use crate::sys::errno::Errno;
 use crate::sys::event::Knote;
-use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
-use crate::sys::namei::{FOLLOW, LOOKUP, NiDirp, UNVEIL_READ, UNVEIL_WRITE};
-use crate::sys::namei::{namei, ndinit};
-use crate::sys::pledge::{PLEDGE_RPATH, PLEDGE_WPATH};
 use crate::sys::proc::Proc;
 use crate::sys::tty::{Speedtab, Tty};
 use crate::sys::types::{Dev, major};
 use crate::sys::uio::{Uio, UioRw};
-use crate::sys::vnode::VREAD;
-use crate::sys::vnode::vn_lock;
-use crate::sys::vnode::vrele;
 
 pub use kernel::tty::{
     CCLASSMASK, CHAR_TYPE, TK_CANCC, TK_NIN, TK_NOUT, TK_RAWCC, TTCLOS, TTOPEN, TTYBG, TTYIN,
@@ -151,21 +143,6 @@ impl TtyDevsw<BsdProcGlue> for BsdTtyDevsw {
 
     fn stop(&self, tp: &Tty, rw: i32) {
         let _ = (cdevsw(major(tp.t_dev.get())).d_stop)(tp, rw);
-    }
-
-    fn console_access(&self, p: &Proc) -> Result<(), Errno> {
-        let mut nid = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/dev/console"), p);
-        nid.ni_pledge = PLEDGE_RPATH | PLEDGE_WPATH;
-        nid.ni_unveil = UNVEIL_READ | UNVEIL_WRITE;
-        namei(&mut nid)?;
-        let Some(vp) = nid.ni_vp else {
-            return Err(Errno::ENOENT);
-        };
-        let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_ACCESS(vp, VREAD, p.ucred_ptr(), p);
-        let _ = VOP_UNLOCK(vp);
-        vrele(vp);
-        error
     }
 
     fn console_dev(&self) -> Option<Dev> {

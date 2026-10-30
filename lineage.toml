@@ -5851,7 +5851,7 @@ license = "none"
 rust = "sys/kern/tty.rs"
 lz = ["sys/kern/tty.rs"]
 status = "redesigned"
-notes = "N4.7b: the glue of kernel::tty (0 unsafe, forbid): the frozen names for BsdProcGlue, ttymalloc leaking the counted handle (&'static Tty), ttyfree retiring, ttkqfilter through cdevsw d_tty, sysctl_tty over a SysctlReq, TtyUio (uiomove for the kernel's tty), the TtyDevsw bridge's bsd half (d_stop, cnwrite, /dev/console access, s_ttyvp, cn_dev); LZ's eleven unsafe went into the kernel's types"
+notes = "N4.7b: the glue of kernel::tty (0 unsafe, forbid): the frozen names for BsdProcGlue, ttymalloc leaking the counted handle (&'static Tty), ttyfree retiring, ttkqfilter through cdevsw d_tty, sysctl_tty over a SysctlReq, TtyUio (uiomove for the kernel's tty), the TtyDevsw bridge's bsd half (d_stop, cnwrite, /dev/console access, s_ttyvp, cn_dev); LZ's eleven unsafe went into the kernel's types; N5.3: the /dev/console access check and s_ttyvp left the bridge (kernel::tty's own namei and VOP_ACCESS, the kernel Session's ttyvp)"
 
 [[module]]
 rust = "sys/kern/tty_conf.rs"

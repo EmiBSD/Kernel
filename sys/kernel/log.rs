@@ -1851,9 +1851,6 @@ mod tests {
             self.tty
         }
         fn stop(&self, _tp: &crate::tty::Tty<Kg>, _rw: i32) {}
-        fn console_access(&self, _p: &Thread<Kg>) -> Result<(), Errno> {
-            Ok(())
-        }
         fn console_dev(&self) -> Option<hal::sys::types::Dev> {
             None
         }

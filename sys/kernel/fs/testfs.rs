@@ -87,8 +87,12 @@ pub const F: usize = 5;
 pub const LONG: usize = 6;
 /// `/s`, a socket.
 pub const S: usize = 7;
+/// `/dev`.
+pub const DEV: usize = 8;
+/// `/dev/console`, a file (`TIOCCONS`'s lookup).
+pub const CONSOLE: usize = 9;
 /// The number of nodes.
-pub const N: usize = 8;
+pub const N: usize = 10;
 
 /// The tree's kinds.
 pub const KINDS: [Kind; N] = [
@@ -100,6 +104,8 @@ pub const KINDS: [Kind; N] = [
     Kind::Reg,
     Kind::Reg,
     Kind::Sock,
+    Kind::Dir,
+    Kind::Reg,
 ];
 
 /// The tree's names and parents (the root is its own parent, as `..` of `/` is `/`).
@@ -112,6 +118,8 @@ pub const NAMES: [(&[u8], usize); N] = [
     (b"f", ROOT),
     (b"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", A),
     (b"s", ROOT),
+    (b"dev", ROOT),
+    (b"console", DEV),
 ];
 
 /// A node's in-core state: its lock, its index and its record locks.
@@ -130,6 +138,14 @@ std::thread_local! {
         const { RefCell::new(Vec::new()) };
     /// This thread's mount.
     static MP: RefCell<Option<&'static Mount<TestGlue>>> = const { RefCell::new(None) };
+    /// Whether this thread's `VOP_ACCESS` refuses ([`set_deny_access`]).
+    static DENY_ACCESS: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
+}
+
+/// Makes this thread's `VOP_ACCESS` refuse every request (`EACCES`), or allow it again (the
+/// default, which [`setup`] restores).
+pub fn set_deny_access(on: bool) {
+    DENY_ACCESS.with(|d| d.set(on));
 }
 
 /// How many times `VOP_INACTIVE` ran, on any test thread.
@@ -377,7 +393,11 @@ impl Vnops<TestGlue> for TestVops {
         _cred: Cred<'_>,
         _p: &Thread<TestGlue>,
     ) -> Result<(), Errno> {
-        Ok(())
+        if DENY_ACCESS.with(core::cell::Cell::get) {
+            Err(Errno::EACCES)
+        } else {
+            Ok(())
+        }
     }
     fn open(
         &self,
@@ -676,6 +696,7 @@ pub fn setup() -> MutexGuard<'static, ()> {
     hal::klock::kernel_lock();
     vfs_test_reset::<TestGlue>();
     NODES.with(|n| n.borrow_mut().clear());
+    DENY_ACCESS.with(|d| d.set(false));
     super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
     super::lockf::lf_init();
     let _ = register_devsw::<TestGlue>(&TEST_DEVSW);

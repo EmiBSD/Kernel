@@ -318,7 +318,8 @@ paid_by = "N7"
 # /dev/console access check (namei + VOP_ACCESS, VFS) and s_ttyvp (TIOCSCTTY's vnode test, N5);
 # d_tty and the pty master test stay in bsd's cdevsw adapters (they call the kernel with the tty
 # and the side). Paid when the console and the device switch move (N7, decision 45's CharDevice).
-# N5.3: session_has_ttyvp left it (the kernel's Session::ttyvp, D-N5.2-9).
+# N5.3: session_has_ttyvp left it (the kernel's Session::ttyvp, D-N5.2-9), and console_access
+# (TIOCCONS's namei, vn_lock and VOP_ACCESS(VREAD) are kernel::tty's own over kernel::fs).
 # kernel::tty::TtyDevsw
 [[bridge]]
 trait = "TtyDevsw"
