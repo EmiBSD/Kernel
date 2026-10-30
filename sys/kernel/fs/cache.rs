@@ -534,10 +534,9 @@ pub fn cache_lookup<G: ProcGlue>(
                 None => {
                     if cnp.cn_nameiop != CREATE || flags & ISLASTCN == 0 {
                         bump(&stats.ncs_neghits);
-                        // Move this slot to end of the negative LRU chain.
-                        if nc.neg.next(ncp).is_some() {
-                            nc.neg.move_to_tail(ncp);
-                        }
+                        // Move this slot to end of the negative LRU chain (the C's
+                        // TAILQ_NEXT test is move_to_tail's own).
+                        nc.neg.move_to_tail(ncp);
                         return Err(Errno::ENOENT);
                     }
                     bump(&stats.ncs_badhits);
@@ -552,10 +551,9 @@ pub fn cache_lookup<G: ProcGlue>(
                     Found::Miss
                 }
                 Some(vp) => {
-                    // Move this slot to end of the regular LRU chain.
-                    if nc.lru.next(ncp).is_some() {
-                        nc.lru.move_to_tail(ncp);
-                    }
+                    // Move this slot to end of the regular LRU chain (the C's TAILQ_NEXT
+                    // test is move_to_tail's own).
+                    nc.lru.move_to_tail(ncp);
                     Found::Hit(vp, vp.id())
                 }
             },
