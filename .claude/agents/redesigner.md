@@ -64,6 +64,14 @@ the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
    order of every `hal` collection method is `docs/COLLECTIONS.md` (one row each, with the
    note on when an RBT's `next` is O(1) amortized and when it is not); a method you add to a
    `hal` collection, or whose order you change, gets its row in the same commit.
+   Every generic, glue associated type, adapter or hop that exists only because `bsd` still
+   does (an associated type of `ProcGlue`/`FileGlue`, a `bsd` alias or adapter module, a path
+   through `bsd`'s `native()`) is a row of `docs/SCAFFOLDING.md` (what, `file:line`, why, the
+   milestone that removes it), added or removed in the commit that adds or removes it; bridges
+   stay in `bridges.toml` and are only linked. An abstraction with no second real user and no
+   equivalent in the C that is not scaffolding is over-architecture: do not write it. The
+   priority is to decouple and delete `bsd`; what you defer for speed goes to the N12 row of
+   `docs/ROADMAP.md` (the user's rules of 2026-10-30).
 7. File layout (`rust-kernel.md`, `lineage.md`): `/* <LICENSES> */` with the author's ISC block
    first and the original notice(s) of every LZ source whole after one blank line;
    `/* <CODE> */` with the `//! Upstream:` lines of every source, one `//! LZ: <path>@<12-hex>`

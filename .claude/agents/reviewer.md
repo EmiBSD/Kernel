@@ -72,6 +72,13 @@ on the side it must match, and a concrete failing input or sequence when it is a
    behaviour, not just that the code runs; the counts in the commit body match.
 7. Commit shape (`git-commits.md`): the subject, the body's numbers, `LZ:` lines matching the
    `lz` list, `Unsafe:` matching the tool, no redesign mixed with an `lz-sync:` or `lineage:`.
+8. Size and scaffolding (the user's rule of 2026-10-30; the priority is to decouple and delete
+   `bsd`, optimizing is N12): compare the redesigned module's lines with the C's and with LZ's,
+   and name every abstraction with no second real user and no equivalent in the C. Say for each
+   whether it is scaffolding (it exists only while `bsd` does: it must be a row of
+   `docs/SCAFFOLDING.md`, written in the same commit) or over-architecture (a defect to fix in
+   the slice). Check that `docs/SCAFFOLDING.md` gained the rows for what the slice added and lost
+   those for what it removed.
 
 Final message: verdict (approve / changes needed), then the defects ranked by severity, each
 with evidence and the fix, then lesser notes, then the `Security-Review:` paragraph when the

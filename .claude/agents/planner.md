@@ -52,6 +52,12 @@ inventory can be wrong.
   switch.
 - Say plainly what the design does not fix and which slice will (a `'static` that is still a
   lie until its owner's slice, a race the C has and keeps).
+- Scaffolding (the user's rules of 2026-10-30): the brief lists every generic, glue associated
+  type, adapter or hop the slice adds or removes only because `bsd` still exists, as the rows it
+  writes in or deletes from `docs/SCAFFOLDING.md` (bridges are `bridges.toml`'s, only linked),
+  and proposes no abstraction without a second real user or an equivalent in the C. The
+  priority is to decouple and delete `bsd`; a cost deferred to performance work is named for
+  the N12 row of `docs/ROADMAP.md`.
 
 ## The brief
 
