@@ -40,7 +40,10 @@
 //! `acct.rs`). N4.6b: sysctl(2) (`KernelApi::sysctl`, `sys/kernel/sysctl.rs`). N4.8: the
 //! ten time system calls and reboot(2) (`KernelApi::time`, `sys/kernel/time.rs` and
 //! `reboot.rs`). N4.8b: sigreturn(2) (`KernelApi::sigreturn`, `sys/kernel/sig.rs` over
-//! `hal::sig`'s frame).
+//! `hal::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
+//! `sys/kernel/fs/syscalls.rs` and `getcwd.rs`: the sixty-four of `vfs_syscalls.c`, `open(2)`,
+//! `stat(2)`, `mount(2)`, `unveil(2)`, ..., and `__getcwd(2)`), which write the return
+//! registers themselves.
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -66,6 +69,18 @@ use hal::sys::syscall::{
     SYS_vfork, SYS_wait4, SYS_waitid, SYS_write, SYS_writev,
 };
 use hal::sys::syscall::{
+    SYS___getcwd, SYS___pledge_open, SYS___realpath, SYS_access, SYS_chdir, SYS_chflags,
+    SYS_chflagsat, SYS_chmod, SYS_chown, SYS_chroot, SYS_faccessat, SYS_fchdir, SYS_fchflags,
+    SYS_fchmod, SYS_fchmodat, SYS_fchown, SYS_fchownat, SYS_fhopen, SYS_fhstat, SYS_fhstatfs,
+    SYS_fstatat, SYS_fstatfs, SYS_fsync, SYS_ftruncate, SYS_futimens, SYS_futimes, SYS_getdents,
+    SYS_getfh, SYS_getfsstat, SYS_lchown, SYS_link, SYS_linkat, SYS_lseek, SYS_lstat, SYS_mkdir,
+    SYS_mkdirat, SYS_mkfifo, SYS_mkfifoat, SYS_mknod, SYS_mknodat, SYS_mount, SYS_open, SYS_openat,
+    SYS_pathconf, SYS_pathconfat, SYS_quotactl, SYS_readlink, SYS_readlinkat, SYS_rename,
+    SYS_renameat, SYS_revoke, SYS_rmdir, SYS_stat, SYS_statfs, SYS_symlink, SYS_symlinkat,
+    SYS_sync, SYS_truncate, SYS_umask, SYS_unlink, SYS_unlinkat, SYS_unmount, SYS_unveil,
+    SYS_utimensat, SYS_utimes,
+};
+use hal::sys::syscall::{
     SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
     SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_reboot, SYS_setitimer, SYS_settimeofday,
 };
@@ -83,7 +98,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 105;
+pub const NATIVE: u32 = 170;
 
 /// What the module says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
@@ -199,6 +214,71 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_setitimer as usize] = Sysent::Native(sys_setitimer);
     table[SYS_reboot as usize] = Sysent::Native(sys_reboot);
     table[SYS_sigreturn as usize] = Sysent::Native(sys_sigreturn);
+    table[SYS_open as usize] = Sysent::Native(sys_open);
+    table[SYS_link as usize] = Sysent::Native(sys_link);
+    table[SYS_unlink as usize] = Sysent::Native(sys_unlink);
+    table[SYS_chdir as usize] = Sysent::Native(sys_chdir);
+    table[SYS_fchdir as usize] = Sysent::Native(sys_fchdir);
+    table[SYS_mknod as usize] = Sysent::Native(sys_mknod);
+    table[SYS_chmod as usize] = Sysent::Native(sys_chmod);
+    table[SYS_chown as usize] = Sysent::Native(sys_chown);
+    table[SYS_mount as usize] = Sysent::Native(sys_mount);
+    table[SYS_unmount as usize] = Sysent::Native(sys_unmount);
+    table[SYS_access as usize] = Sysent::Native(sys_access);
+    table[SYS_chflags as usize] = Sysent::Native(sys_chflags);
+    table[SYS_fchflags as usize] = Sysent::Native(sys_fchflags);
+    table[SYS_sync as usize] = Sysent::Native(sys_sync);
+    table[SYS_stat as usize] = Sysent::Native(sys_stat);
+    table[SYS_lstat as usize] = Sysent::Native(sys_lstat);
+    table[SYS_fstatat as usize] = Sysent::Native(sys_fstatat);
+    table[SYS_revoke as usize] = Sysent::Native(sys_revoke);
+    table[SYS_symlink as usize] = Sysent::Native(sys_symlink);
+    table[SYS_readlink as usize] = Sysent::Native(sys_readlink);
+    table[SYS_umask as usize] = Sysent::Native(sys_umask);
+    table[SYS_chroot as usize] = Sysent::Native(sys_chroot);
+    table[SYS_getfsstat as usize] = Sysent::Native(sys_getfsstat);
+    table[SYS_statfs as usize] = Sysent::Native(sys_statfs);
+    table[SYS_fstatfs as usize] = Sysent::Native(sys_fstatfs);
+    table[SYS_fhstatfs as usize] = Sysent::Native(sys_fhstatfs);
+    table[SYS_utimes as usize] = Sysent::Native(sys_utimes);
+    table[SYS_futimes as usize] = Sysent::Native(sys_futimes);
+    table[SYS_utimensat as usize] = Sysent::Native(sys_utimensat);
+    table[SYS_futimens as usize] = Sysent::Native(sys_futimens);
+    table[SYS_fsync as usize] = Sysent::Native(sys_fsync);
+    table[SYS_getdents as usize] = Sysent::Native(sys_getdents);
+    table[SYS_chflagsat as usize] = Sysent::Native(sys_chflagsat);
+    table[SYS_unveil as usize] = Sysent::Native(sys_unveil);
+    table[SYS___realpath as usize] = Sysent::Native(sys_realpath);
+    table[SYS_fchown as usize] = Sysent::Native(sys_fchown);
+    table[SYS_fchmod as usize] = Sysent::Native(sys_fchmod);
+    table[SYS___pledge_open as usize] = Sysent::Native(sys_pledge_open);
+    table[SYS_rename as usize] = Sysent::Native(sys_rename);
+    table[SYS_mkfifo as usize] = Sysent::Native(sys_mkfifo);
+    table[SYS_mkdir as usize] = Sysent::Native(sys_mkdir);
+    table[SYS_rmdir as usize] = Sysent::Native(sys_rmdir);
+    table[SYS_quotactl as usize] = Sysent::Native(sys_quotactl);
+    table[SYS_getfh as usize] = Sysent::Native(sys_getfh);
+    table[SYS_lseek as usize] = Sysent::Native(sys_lseek);
+    table[SYS_truncate as usize] = Sysent::Native(sys_truncate);
+    table[SYS_ftruncate as usize] = Sysent::Native(sys_ftruncate);
+    table[SYS_pathconfat as usize] = Sysent::Native(sys_pathconfat);
+    table[SYS_pathconf as usize] = Sysent::Native(sys_pathconf);
+    table[SYS_lchown as usize] = Sysent::Native(sys_lchown);
+    table[SYS_fhopen as usize] = Sysent::Native(sys_fhopen);
+    table[SYS_fhstat as usize] = Sysent::Native(sys_fhstat);
+    table[SYS___getcwd as usize] = Sysent::Native(sys_getcwd);
+    table[SYS_faccessat as usize] = Sysent::Native(sys_faccessat);
+    table[SYS_fchmodat as usize] = Sysent::Native(sys_fchmodat);
+    table[SYS_fchownat as usize] = Sysent::Native(sys_fchownat);
+    table[SYS_linkat as usize] = Sysent::Native(sys_linkat);
+    table[SYS_mkdirat as usize] = Sysent::Native(sys_mkdirat);
+    table[SYS_mkfifoat as usize] = Sysent::Native(sys_mkfifoat);
+    table[SYS_mknodat as usize] = Sysent::Native(sys_mknodat);
+    table[SYS_openat as usize] = Sysent::Native(sys_openat);
+    table[SYS_readlinkat as usize] = Sysent::Native(sys_readlinkat);
+    table[SYS_renameat as usize] = Sysent::Native(sys_renameat);
+    table[SYS_symlinkat as usize] = Sysent::Native(sys_symlinkat);
+    table[SYS_unlinkat as usize] = Sysent::Native(sys_unlinkat);
     table
 };
 
@@ -1132,6 +1212,650 @@ fn sys_setitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 /// 55 = `reboot(int opt)`.
 fn sys_reboot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.reboot)(SYS_reboot as Register, args[0] as i32, rval)
+}
+
+/// 5 = `int open(const char *path, int flags, mode_t mode)`.
+fn sys_open(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.open)(
+        SYS_open as Register,
+        args[0] as usize,
+        args[1] as i32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 9 = `int link(const char *path, const char *link)`.
+fn sys_link(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.link)(
+        SYS_link as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 10 = `int unlink(const char *path)`.
+fn sys_unlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.unlink)(SYS_unlink as Register, args[0] as usize, rval)
+}
+
+/// 12 = `int chdir(const char *path)`.
+fn sys_chdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chdir)(SYS_chdir as Register, args[0] as usize, rval)
+}
+
+/// 13 = `int fchdir(int fd)`.
+fn sys_fchdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchdir)(SYS_fchdir as Register, args[0] as i32, rval)
+}
+
+/// 14 = `int mknod(const char *path, mode_t mode, dev_t dev)`.
+fn sys_mknod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mknod)(
+        SYS_mknod as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 15 = `int chmod(const char *path, mode_t mode)`.
+fn sys_chmod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chmod)(
+        SYS_chmod as Register,
+        args[0] as usize,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// 16 = `int chown(const char *path, uid_t uid, gid_t gid)`.
+fn sys_chown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chown)(
+        SYS_chown as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 21 = `int mount(const char *type, const char *path, int flags, void *data)`.
+fn sys_mount(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mount)(
+        SYS_mount as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// 22 = `int unmount(const char *path, int flags)`.
+fn sys_unmount(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.unmount)(
+        SYS_unmount as Register,
+        args[0] as usize,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// 33 = `int access(const char *path, int amode)`.
+fn sys_access(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.access)(
+        SYS_access as Register,
+        args[0] as usize,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// 34 = `int chflags(const char *path, u_int flags)`.
+fn sys_chflags(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chflags)(
+        SYS_chflags as Register,
+        args[0] as usize,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// 35 = `int fchflags(int fd, u_int flags)`.
+fn sys_fchflags(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchflags)(
+        SYS_fchflags as Register,
+        args[0] as i32,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// 36 = `void sync(void)`.
+fn sys_sync(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.sync)(SYS_sync as Register, rval)
+}
+
+/// 38 = `int stat(const char *path, struct stat *ub)`.
+fn sys_stat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.stat)(
+        SYS_stat as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 40 = `int lstat(const char *path, struct stat *ub)`.
+fn sys_lstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.lstat)(
+        SYS_lstat as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 42 = `int fstatat(int fd, const char *path, struct stat *buf, int flag)`.
+fn sys_fstatat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fstatat)(
+        SYS_fstatat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 56 = `int revoke(const char *path)`.
+fn sys_revoke(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.revoke)(SYS_revoke as Register, args[0] as usize, rval)
+}
+
+/// 57 = `int symlink(const char *path, const char *link)`.
+fn sys_symlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.symlink)(
+        SYS_symlink as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 58 = `ssize_t readlink(const char *path, char *buf, size_t count)`.
+fn sys_readlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.readlink)(
+        SYS_readlink as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 60 = `mode_t umask(mode_t newmask)`.
+fn sys_umask(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.umask)(SYS_umask as Register, args[0] as u32, rval)
+}
+
+/// 61 = `int chroot(const char *path)`.
+fn sys_chroot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chroot)(SYS_chroot as Register, args[0] as usize, rval)
+}
+
+/// 62 = `int getfsstat(struct statfs *buf, size_t bufsize, int flags)`.
+fn sys_getfsstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.getfsstat)(
+        SYS_getfsstat as Register,
+        args[0] as usize,
+        args[1] as usize,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 63 = `int statfs(const char *path, struct statfs *buf)`.
+fn sys_statfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.statfs)(
+        SYS_statfs as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 64 = `int fstatfs(int fd, struct statfs *buf)`.
+fn sys_fstatfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fstatfs)(
+        SYS_fstatfs as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 65 = `int fhstatfs(const fhandle_t *fhp, struct statfs *buf)`.
+fn sys_fhstatfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fhstatfs)(
+        SYS_fhstatfs as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 76 = `int utimes(const char *path, const struct timeval *tptr)`.
+fn sys_utimes(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.utimes)(
+        SYS_utimes as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 77 = `int futimes(int fd, const struct timeval *tptr)`.
+fn sys_futimes(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.futimes)(
+        SYS_futimes as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 84 = `int utimensat(int fd, const char *path, const struct timespec *times, int flag)`.
+fn sys_utimensat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.utimensat)(
+        SYS_utimensat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 85 = `int futimens(int fd, const struct timespec *times)`.
+fn sys_futimens(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.futimens)(
+        SYS_futimens as Register,
+        args[0] as i32,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 95 = `int fsync(int fd)`.
+fn sys_fsync(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fsync)(SYS_fsync as Register, args[0] as i32, rval)
+}
+
+/// 99 = `int getdents(int fd, void *buf, size_t buflen)`.
+fn sys_getdents(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.getdents)(
+        SYS_getdents as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 107 = `int chflagsat(int fd, const char *path, u_int flags, int atflags)`.
+fn sys_chflagsat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.chflagsat)(
+        SYS_chflagsat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 114 = `int unveil(const char *path, const char *permissions)`.
+fn sys_unveil(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.unveil)(
+        SYS_unveil as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 115 = `int __realpath(const char *pathname, char *resolved)`.
+fn sys_realpath(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.realpath)(
+        SYS___realpath as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 123 = `int fchown(int fd, uid_t uid, gid_t gid)`.
+fn sys_fchown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchown)(
+        SYS_fchown as Register,
+        args[0] as i32,
+        args[1] as u32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 124 = `int fchmod(int fd, mode_t mode)`.
+fn sys_fchmod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchmod)(SYS_fchmod as Register, args[0] as i32, args[1] as u32, rval)
+}
+
+/// 125 = `int __pledge_open(const char *path, int flags, mode_t mode)`.
+fn sys_pledge_open(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.pledge_open)(
+        SYS___pledge_open as Register,
+        args[0] as usize,
+        args[1] as i32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 128 = `int rename(const char *from, const char *to)`.
+fn sys_rename(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.rename)(
+        SYS_rename as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 132 = `int mkfifo(const char *path, mode_t mode)`.
+fn sys_mkfifo(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mkfifo)(
+        SYS_mkfifo as Register,
+        args[0] as usize,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// 136 = `int mkdir(const char *path, mode_t mode)`.
+fn sys_mkdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mkdir)(
+        SYS_mkdir as Register,
+        args[0] as usize,
+        args[1] as u32,
+        rval,
+    )
+}
+
+/// 137 = `int rmdir(const char *path)`.
+fn sys_rmdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.rmdir)(SYS_rmdir as Register, args[0] as usize, rval)
+}
+
+/// 148 = `int quotactl(const char *path, int cmd, int uid, char *arg)`.
+fn sys_quotactl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.quotactl)(
+        SYS_quotactl as Register,
+        args[0] as usize,
+        args[1] as i32,
+        args[2] as i32,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// 161 = `int getfh(const char *fname, fhandle_t *fhp)`.
+fn sys_getfh(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.getfh)(
+        SYS_getfh as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 166 = `off_t lseek(int fd, off_t offset, int whence)`.
+fn sys_lseek(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.lseek)(
+        SYS_lseek as Register,
+        args[0] as i32,
+        args[1] as i64,
+        args[2] as i32,
+        rval,
+    )
+}
+
+/// 167 = `int truncate(const char *path, off_t length)`.
+fn sys_truncate(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.truncate)(
+        SYS_truncate as Register,
+        args[0] as usize,
+        args[1] as i64,
+        rval,
+    )
+}
+
+/// 168 = `int ftruncate(int fd, off_t length)`.
+fn sys_ftruncate(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.ftruncate)(
+        SYS_ftruncate as Register,
+        args[0] as i32,
+        args[1] as i64,
+        rval,
+    )
+}
+
+/// 190 = `long pathconfat(int fd, const char *path, int name, int flag)`.
+fn sys_pathconfat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.pathconfat)(
+        SYS_pathconfat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 191 = `long pathconf(const char *path, int name)`.
+fn sys_pathconf(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.pathconf)(
+        SYS_pathconf as Register,
+        args[0] as usize,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// 254 = `int lchown(const char *path, uid_t uid, gid_t gid)`.
+fn sys_lchown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.lchown)(
+        SYS_lchown as Register,
+        args[0] as usize,
+        args[1] as u32,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 264 = `int fhopen(const fhandle_t *fhp, int flags)`.
+fn sys_fhopen(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fhopen)(
+        SYS_fhopen as Register,
+        args[0] as usize,
+        args[1] as i32,
+        rval,
+    )
+}
+
+/// 294 = `int fhstat(const fhandle_t *fhp, struct stat *sb)`.
+fn sys_fhstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fhstat)(
+        SYS_fhstat as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 304 = `int __getcwd(char *buf, size_t len)`.
+fn sys_getcwd(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.getcwd)(
+        SYS___getcwd as Register,
+        args[0] as usize,
+        args[1] as usize,
+        rval,
+    )
+}
+
+/// 313 = `int faccessat(int fd, const char *path, int amode, int flag)`.
+fn sys_faccessat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.faccessat)(
+        SYS_faccessat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 314 = `int fchmodat(int fd, const char *path, mode_t mode, int flag)`.
+fn sys_fchmodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchmodat)(
+        SYS_fchmodat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 315 = `int fchownat(int fd, const char *path, uid_t uid, gid_t gid, int flag)`.
+fn sys_fchownat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.fchownat)(
+        SYS_fchownat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        args[3] as u32,
+        args[4] as i32,
+        rval,
+    )
+}
+
+/// 317 = `int linkat(int fd1, const char *path1, int fd2, const char *path2, int flag)`.
+fn sys_linkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.linkat)(
+        SYS_linkat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as usize,
+        args[4] as i32,
+        rval,
+    )
+}
+
+/// 318 = `int mkdirat(int fd, const char *path, mode_t mode)`.
+fn sys_mkdirat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mkdirat)(
+        SYS_mkdirat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 319 = `int mkfifoat(int fd, const char *path, mode_t mode)`.
+fn sys_mkfifoat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mkfifoat)(
+        SYS_mkfifoat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        rval,
+    )
+}
+
+/// 320 = `int mknodat(int fd, const char *path, mode_t mode, dev_t dev)`.
+fn sys_mknodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.mknodat)(
+        SYS_mknodat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as u32,
+        args[3] as i32,
+        rval,
+    )
+}
+
+/// 321 = `int openat(int fd, const char *path, int flags, mode_t mode)`.
+fn sys_openat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.openat)(
+        SYS_openat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as u32,
+        rval,
+    )
+}
+
+/// 322 = `ssize_t readlinkat(int fd, const char *path, char *buf, size_t count)`.
+fn sys_readlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.readlinkat)(
+        SYS_readlinkat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as usize,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// 323 = `int renameat(int fromfd, const char *from, int tofd, const char *to)`.
+fn sys_renameat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.renameat)(
+        SYS_renameat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        args[3] as usize,
+        rval,
+    )
+}
+
+/// 324 = `int symlinkat(const char *path, int fd, const char *link)`.
+fn sys_symlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.symlinkat)(
+        SYS_symlinkat as Register,
+        args[0] as usize,
+        args[1] as i32,
+        args[2] as usize,
+        rval,
+    )
+}
+
+/// 325 = `int unlinkat(int fd, const char *path, int flag)`.
+fn sys_unlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.vfs.unlinkat)(
+        SYS_unlinkat as Register,
+        args[0] as i32,
+        args[1] as usize,
+        args[2] as i32,
+        rval,
+    )
 }
 /* </CODE> */
 
@@ -2139,8 +2863,8 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_and_sigreturn_is_legacy()
-    {
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_sigreturn_and_vfs_is_legacy()
+     {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
                 || nr == SYS_pipe2 as Register
@@ -2153,6 +2877,7 @@ mod tests {
                 || EVENT_CALLS.iter().any(|&v| v as Register == nr)
                 || PROC_CALLS.iter().any(|&v| v as Register == nr)
                 || TIME_CALLS.iter().any(|&v| v as Register == nr)
+                || VFS_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
@@ -2194,6 +2919,165 @@ mod tests {
             let mut rval = [-7; 2];
             assert_eq!(syscall(&API, nr as Register, &a, &mut rval), Err(want));
             assert_eq!(rval[0], nr as Register, "SYS {nr} reached its time entry");
+        }
+    }
+
+    /// The VFS system calls (N5.4), in `syscalls.master`'s order.
+    const VFS_CALLS: [i32; 65] = [
+        SYS_open,
+        SYS_link,
+        SYS_unlink,
+        SYS_chdir,
+        SYS_fchdir,
+        SYS_mknod,
+        SYS_chmod,
+        SYS_chown,
+        SYS_mount,
+        SYS_unmount,
+        SYS_access,
+        SYS_chflags,
+        SYS_fchflags,
+        SYS_sync,
+        SYS_stat,
+        SYS_lstat,
+        SYS_fstatat,
+        SYS_revoke,
+        SYS_symlink,
+        SYS_readlink,
+        SYS_umask,
+        SYS_chroot,
+        SYS_getfsstat,
+        SYS_statfs,
+        SYS_fstatfs,
+        SYS_fhstatfs,
+        SYS_utimes,
+        SYS_futimes,
+        SYS_utimensat,
+        SYS_futimens,
+        SYS_fsync,
+        SYS_getdents,
+        SYS_chflagsat,
+        SYS_unveil,
+        SYS___realpath,
+        SYS_fchown,
+        SYS_fchmod,
+        SYS___pledge_open,
+        SYS_rename,
+        SYS_mkfifo,
+        SYS_mkdir,
+        SYS_rmdir,
+        SYS_quotactl,
+        SYS_getfh,
+        SYS_lseek,
+        SYS_truncate,
+        SYS_ftruncate,
+        SYS_pathconfat,
+        SYS_pathconf,
+        SYS_lchown,
+        SYS_fhopen,
+        SYS_fhstat,
+        SYS___getcwd,
+        SYS_faccessat,
+        SYS_fchmodat,
+        SYS_fchownat,
+        SYS_linkat,
+        SYS_mkdirat,
+        SYS_mkfifoat,
+        SYS_mknodat,
+        SYS_openat,
+        SYS_readlinkat,
+        SYS_renameat,
+        SYS_symlinkat,
+        SYS_unlinkat,
+    ];
+
+    /// Each VFS translation (N5.4) calls its own entry with its own number, the arguments in
+    /// `<sys/syscallargs.h>`'s order as the entry types them (a pointer or a `size_t` a
+    /// `usize`, an `int` or a `dev_t` an `i32`, a `mode_t`, `uid_t`, `gid_t` or `u_int` a
+    /// `u32`, an `off_t` an `i64`) and the trap's return registers, through the table as well.
+    #[test]
+    fn the_vfs_calls_are_native_and_pass_their_number_arguments_and_rval() {
+        for nr in VFS_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+        }
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let cases: [(NativeFn, i32, i32); 65] = [
+            (sys_open, SYS_open, 123),
+            (sys_link, SYS_link, 12),
+            (sys_unlink, SYS_unlink, 1),
+            (sys_chdir, SYS_chdir, 1),
+            (sys_fchdir, SYS_fchdir, 1),
+            (sys_mknod, SYS_mknod, 123),
+            (sys_chmod, SYS_chmod, 12),
+            (sys_chown, SYS_chown, 123),
+            (sys_mount, SYS_mount, 1234),
+            (sys_unmount, SYS_unmount, 12),
+            (sys_access, SYS_access, 12),
+            (sys_chflags, SYS_chflags, 12),
+            (sys_fchflags, SYS_fchflags, 12),
+            (sys_sync, SYS_sync, 0),
+            (sys_stat, SYS_stat, 12),
+            (sys_lstat, SYS_lstat, 12),
+            (sys_fstatat, SYS_fstatat, 1234),
+            (sys_revoke, SYS_revoke, 1),
+            (sys_symlink, SYS_symlink, 12),
+            (sys_readlink, SYS_readlink, 123),
+            (sys_umask, SYS_umask, 1),
+            (sys_chroot, SYS_chroot, 1),
+            (sys_getfsstat, SYS_getfsstat, 123),
+            (sys_statfs, SYS_statfs, 12),
+            (sys_fstatfs, SYS_fstatfs, 12),
+            (sys_fhstatfs, SYS_fhstatfs, 12),
+            (sys_utimes, SYS_utimes, 12),
+            (sys_futimes, SYS_futimes, 12),
+            (sys_utimensat, SYS_utimensat, 1234),
+            (sys_futimens, SYS_futimens, 12),
+            (sys_fsync, SYS_fsync, 1),
+            (sys_getdents, SYS_getdents, 123),
+            (sys_chflagsat, SYS_chflagsat, 1234),
+            (sys_unveil, SYS_unveil, 12),
+            (sys_realpath, SYS___realpath, 12),
+            (sys_fchown, SYS_fchown, 123),
+            (sys_fchmod, SYS_fchmod, 12),
+            (sys_pledge_open, SYS___pledge_open, 123),
+            (sys_rename, SYS_rename, 12),
+            (sys_mkfifo, SYS_mkfifo, 12),
+            (sys_mkdir, SYS_mkdir, 12),
+            (sys_rmdir, SYS_rmdir, 1),
+            (sys_quotactl, SYS_quotactl, 1234),
+            (sys_getfh, SYS_getfh, 12),
+            (sys_lseek, SYS_lseek, 123),
+            (sys_truncate, SYS_truncate, 12),
+            (sys_ftruncate, SYS_ftruncate, 12),
+            (sys_pathconfat, SYS_pathconfat, 1234),
+            (sys_pathconf, SYS_pathconf, 12),
+            (sys_lchown, SYS_lchown, 123),
+            (sys_fhopen, SYS_fhopen, 12),
+            (sys_fhstat, SYS_fhstat, 12),
+            (sys_getcwd, SYS___getcwd, 12),
+            (sys_faccessat, SYS_faccessat, 1234),
+            (sys_fchmodat, SYS_fchmodat, 1234),
+            (sys_fchownat, SYS_fchownat, 12345),
+            (sys_linkat, SYS_linkat, 12345),
+            (sys_mkdirat, SYS_mkdirat, 123),
+            (sys_mkfifoat, SYS_mkfifoat, 123),
+            (sys_mknodat, SYS_mknodat, 1234),
+            (sys_openat, SYS_openat, 1234),
+            (sys_readlinkat, SYS_readlinkat, 1234),
+            (sys_renameat, SYS_renameat, 1234),
+            (sys_symlinkat, SYS_symlinkat, 123),
+            (sys_unlinkat, SYS_unlinkat, 123),
+        ];
+        for (f, nr, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
+            assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
+            let mut rval = [-7; 2];
+            assert_eq!(syscall(&API, nr as Register, &a, &mut rval), Err(want));
+            assert_eq!(rval[0], nr as Register, "SYS {nr} reached its VFS entry");
         }
     }
 
@@ -2430,8 +3314,9 @@ mod tests {
             Err(4242)
         );
         assert_eq!(
-            NATIVE, 105,
-            "93 through sysctl(2), 11 more with the time calls, 1 with sigreturn(2)"
+            NATIVE, 170,
+            "93 through sysctl(2), 11 more with the time calls, 1 with sigreturn(2), 65 with the \
+             VFS calls (N5.4)"
         );
     }
 

@@ -73,8 +73,9 @@
 //! - The `..` lookup of `vfs_getcwd_scandir` is [`Componentname::dotdot`] (the C's stack
 //!   componentname with `cn_nameptr = ".."`, no pathname buffer).
 //! - `sys___getcwd` is the kernel's ([`sys___getcwd`]) over a user address and a length;
-//!   the system call's entry stays `bsd`'s (`Legacy`, a wrapper in `vfs_syscalls.rs`) until
-//!   the VFS entries flip together (D-N5.3-6, N5.4).
+//!   the system call's entry was `bsd`'s (`Legacy`, a wrapper in `vfs_syscalls.rs`) until the
+//!   VFS entries flipped together (D-N5.3-6): `Native` since N5.4, through
+//!   `KernelApi::vfs`'s `getcwd` and that wrapper.
 //! - N5.4 (D-N5.4-5, the user's): the length is the C's `int` (the register's low 32 bits),
 //!   so `__getcwd(buf, 1 << 31)` is `ERANGE` and `(1 << 32) + 4096` is 4096, as OpenBSD
 //!   answers; LZ (and N5.3) clamped the whole `size_t` and succeeded where OpenBSD refuses.

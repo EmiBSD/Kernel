@@ -9825,7 +9825,7 @@ reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::ap
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94)"
+reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170)"
 
 [[extra]]
 rust = "sys/hal/module/rt.rs"
