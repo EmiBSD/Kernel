@@ -158,8 +158,14 @@ static LOCKF_LOCK: RawRwlock = RawRwlock::new("lockflk");
 const LOCK_PART: u8 = 1;
 
 /// `lockf_state_pool` (`"lockfspl"`).
+///
+/// The two pools need no `*_test_reset` (testing.md), as the process-wide pools of
+/// `kernel::proc` (`ucredpl`, `zombiepl`): in the host tests they are the heap doubles
+/// (`testutil::memory_is_the_doubles`, which the tests assert), so no item comes from the
+/// memory `bsd`'s `setup_real_memory` replaces; and nothing global names an item past its
+/// test (a state lives in its vnode's slot, a lock on its state's lists, both the test's).
 static LOCKF_STATE_POOL: BoxPool<LockfState> = BoxPool::new();
-/// `lockf_pool` (`"lockfpl"`).
+/// `lockf_pool` (`"lockfpl"`), as [`LOCKF_STATE_POOL`].
 static LOCKF_POOL: BoxPool<Lockf> = BoxPool::new();
 
 /// `maxlocksperuid`: we enforce a limit on locks by uid, so that a single user cannot run the
@@ -1043,6 +1049,8 @@ mod tests {
     fn setup() -> (std::sync::MutexGuard<'static, ()>, &'static Thread<G>) {
         let (g, p) = test_thread();
         lf_init();
+        // The pools are the heap doubles: they need no reset between tests (the pools' note).
+        assert_eq!(crate::testutil::memory_is_the_doubles(), Some(true));
         (g, p)
     }
 
