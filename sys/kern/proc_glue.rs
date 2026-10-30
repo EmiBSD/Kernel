@@ -694,6 +694,41 @@ impl ProcGlue for BsdProcGlue {
             .is_some_and(|mp| mp.flag() & crate::sys::mount::MNT_WXALLOWED != 0)
     }
 
+    fn pledge_namei(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        path: &[u8],
+    ) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_namei(p, ni, path)
+    }
+
+    fn checkzoneinfopath(path: &[u8]) -> bool {
+        crate::kern::kern_pledge::checkzoneinfopath(path)
+    }
+
+    fn unveil_start_relative(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        dp: &'static crate::sys::vnode::Vnode,
+    ) {
+        crate::kern::kern_unveil::unveil_start_relative(p, ni, dp);
+    }
+
+    fn unveil_check_component(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+        dp: &'static crate::sys::vnode::Vnode,
+    ) {
+        crate::kern::kern_unveil::unveil_check_component(p, ni, dp);
+    }
+
+    fn unveil_check_final(
+        p: &Proc,
+        ni: &mut crate::sys::namei::Nameidata<'_>,
+    ) -> Result<(), Errno> {
+        crate::kern::kern_unveil::unveil_check_final(p, ni)
+    }
+
     fn unveil_state(pr: &Process) -> kernel::proc::UnveilState {
         kernel::proc::UnveilState {
             paths: !pr.ps_uvpaths.get().is_null(),
@@ -1839,7 +1874,9 @@ mod tests {
             [
                 ("processpl", 1536),
                 ("pgrppl", 136),
-                ("sessionpl", 160),
+                // N5.3: the kernel's `Session::ttyvp` beside bsd's `s_ttyvp` until the
+                // switch, which takes the latter out (160 again).
+                ("sessionpl", 168),
                 ("filepl", 176),
                 ("fdescpl", 560),
                 ("ucredpl", 120),

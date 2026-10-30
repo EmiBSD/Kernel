@@ -407,12 +407,12 @@ impl FileOps<BenchFiles> for BenchKqueueOps {
     fn stat(
         &self,
         fp: &File<BenchFiles>,
-        st: &mut testutil::TestStat,
+        st: &mut hal::sys::stat::Stat,
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         let (size, _blksize) = kernel::event::kqueue_stat::<BenchGlue>(fp);
-        *st = testutil::TestStat::default();
-        st.st_size = size as u64;
+        *st = hal::sys::stat::Stat::default();
+        st.st_size = size as i64;
         Ok(())
     }
     fn close(&self, fp: &File<BenchFiles>, p: Option<&Thread<BenchGlue>>) -> Result<(), Errno> {
@@ -426,12 +426,11 @@ impl FileGlue for BenchFiles {
     type Proc = BenchGlue;
     type Ops = dyn FileOps<BenchFiles>;
     type Data = BenchData;
-    type Stat = testutil::TestStat;
-    type Vnode = testutil::TestVnode;
     type FileList = FileListLink;
     type VnodeG = ();
-    type Componentname = ();
+    type Componentname<'a> = ();
     type Nameidata<'a> = ();
+    type UnveilMatch = ();
 
     fn tables() -> &'static FileTables<Self> {
         &FILE_TABLES
@@ -441,12 +440,6 @@ impl FileGlue for BenchFiles {
     }
     fn tablefull(_tab: &str) {}
     fn stall_wait() {}
-    fn vref(v: &'static Self::Vnode) {
-        v.refs.fetch_add(1, Ordering::Relaxed);
-    }
-    fn vrele(v: &'static Self::Vnode) {
-        v.refs.fetch_sub(1, Ordering::Relaxed);
-    }
     fn advlock(
         _d: &Self::Data,
         _owner: LockOwner,
@@ -502,17 +495,14 @@ impl FileGlue for BenchFiles {
     fn pledge_ioctl(_p: &Thread<BenchGlue>, _com: u64, _fp: &File<Self>) -> Result<(), Errno> {
         Ok(())
     }
-    fn stat_hide_gen(st: &mut Self::Stat) {
-        st.st_gen = 0;
-    }
-    fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno> {
-        UserPtr::<testutil::TestStat>::new(sb).copyout(st)
-    }
     fn uiomove(buf: &mut [u8], uio: &mut kernel::uio::Uio<'_, BenchGlue>) -> Result<(), Errno> {
         testutil::test_uiomove(buf, uio)
     }
     fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
         &VFS_TABLES
+    }
+    fn vnode_of(_d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
+        None
     }
     fn vnode_g_init(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
     fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
@@ -529,7 +519,7 @@ impl FileGlue for BenchFiles {
     ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
-    fn abortop(_cnp: &mut Self::Componentname) {}
+    fn abortop(_cnp: &mut Self::Componentname<'_>) {}
     fn dounmount(
         _mp: &'static kernel::fs::mount::Mount<BenchGlue>,
         _flags: i32,
@@ -608,7 +598,7 @@ impl FileOps<BenchFiles> for BenchPipeOps {
     fn stat(
         &self,
         _fp: &File<BenchFiles>,
-        _st: &mut testutil::TestStat,
+        _st: &mut hal::sys::stat::Stat,
         _p: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

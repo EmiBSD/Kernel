@@ -126,7 +126,7 @@ use hal::malloc::MBox;
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
 use hal::pool::{BoxPool, PR_WAITOK, PoolBox, TypedPool};
-use hal::rwlock::{RW_READ, RW_WRITE, SplitRwlock};
+use hal::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
@@ -193,8 +193,17 @@ pub type ListsGuard<'a, G> = MutexedGuard<'a, FreeLists<G>>;
 
 /// The vnode and mount tables of one glue's processes: `bsd`'s `static`, or a test thread's.
 pub struct VfsTables<G: ProcGlue> {
+    /// `namei_pool` (`"namei"`): the pathname buffers.
+    pub namei: BoxPool<[u8; super::namei::MAXPATHLEN]>,
     /// `vnode_pool`.
     pub vnodes: BoxPool<Vnode<G>>,
+    /// `nch_pool` (`"nchpl"`): the name cache's entries.
+    pub nch_pool: BoxPool<super::cache::Namecache<G>>,
+    /// The name cache (`nclruhead`, `nclruneghead`, the counts), part 0 of
+    /// `fs::cache::NCLOCK`.
+    pub namecache: Guarded<super::cache::NameCache<G>>,
+    /// `nchstats`: cache effectiveness statistics (racy, as the C's).
+    pub nchstats: super::cache::Nchstats,
     /// The file systems' operations tables (ids `VopsId::FIRST_FS..`).
     vops: [OnceStatic<&'static dyn Vnops<G>>; (VopsId::MAX - VopsId::FIRST_FS) as usize],
     /// The free and hold lists, at `IPL_BIO`.
@@ -235,7 +244,14 @@ impl<G: ProcGlue> VfsTables<G> {
     /// Empty tables: no vnode, no mount, nothing registered.
     pub const fn new() -> Self {
         Self {
+            namei: BoxPool::new(),
             vnodes: BoxPool::new(),
+            nch_pool: BoxPool::new(),
+            namecache: Guarded::new_static_mutexed(
+                &super::cache::NCLOCK,
+                super::cache::NameCache::new(),
+            ),
+            nchstats: super::cache::Nchstats::new(),
             vops: [const { OnceStatic::new() }; (VopsId::MAX - VopsId::FIRST_FS) as usize],
             lists: Mutexed::new(
                 IPL_BIO,
@@ -380,6 +396,7 @@ pub fn vfs_test_reset<G: ProcGlue>() {
         }
     }
     sync::syncer_test_reset::<G>();
+    super::cache::namecache_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }

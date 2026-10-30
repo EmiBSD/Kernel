@@ -196,6 +196,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `Refcnt::take`, `rele`, `rele_wake`, `read`, `shared` | O(1); `finalize` sleeps until the count is 0 |
 | `OnceStatic::get`, `set`; `Mutexed::lock`; `Rwlocked::read`, `write` | O(1) apart from the wait for the lock |
 | `Link::addr` | O(1): one relaxed load (the address printed, nothing followed) |
+| `SyncLink::get`, `set`, `replace`, `addr`, `is_none`, `points_to` | O(1): one atomic load, store or swap (`fd_cdir`, `fd_rdir`, `s_ttyvp`) |
 
 ## `alloc` in the `kernel` crate (six sites, test code apart)
 

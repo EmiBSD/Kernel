@@ -1020,6 +1020,61 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn pledge_protexec(p: &Thread<Self>, prot: crate::vm::types::VmProt) -> Result<(), Errno>;
     /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
     fn unveil_destroy(_pr: &Process<Self>) {}
+    /// `pledge_namei(p, ni, path)` (`kern_pledge.c`, N8): whether the pledged thread `p` may
+    /// look up `path` (the pathname, without its NUL) for what `ni.ni_pledge` says; a
+    /// `__pledge_open` of a listed path may set `BYPASSUNVEIL` (and `BPU_LOCALTIME`,
+    /// `BPU_ZONEINFO`) in `ni`'s flags. `namei` calls it for every path but a `KERNELPATH`
+    /// one. The default is `panic(9)`: a glue whose processes look names up cannot drop
+    /// pledge by forgetting it.
+    fn pledge_namei(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _path: &[u8],
+    ) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_namei: the glue has no namei hooks"))
+    }
+    /// `checkzoneinfopath(path)` (`kern_pledge.c`): whether `path` is a file under
+    /// `/usr/share/zoneinfo/` without `..` (`namei`'s check of `/etc/localtime`'s link).
+    /// The default is `panic(9)`, as `pledge_namei`'s.
+    fn checkzoneinfopath(_path: &[u8]) -> bool {
+        kpanic(format_args!(
+            "checkzoneinfopath: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_start_relative(p, ni, dp)` (`kern_unveil.c`, N8): the unveil match of a
+    /// lookup that starts at `dp` (a relative path). The default is `panic(9)`, as
+    /// `pledge_namei`'s.
+    fn unveil_start_relative(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _dp: &'static crate::fs::vnode::Vnode<Self>,
+    ) {
+        kpanic(format_args!(
+            "unveil_start_relative: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_check_component(p, ni, dp)` (`kern_unveil.c`, N8): the unveil match of a
+    /// component in `dp`. The default is `panic(9)`, as `pledge_namei`'s.
+    fn unveil_check_component(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+        _dp: &'static crate::fs::vnode::Vnode<Self>,
+    ) {
+        kpanic(format_args!(
+            "unveil_check_component: the glue has no namei hooks"
+        ))
+    }
+    /// `unveil_check_final(p, ni)` (`kern_unveil.c`, N8): whether the lookup's result is
+    /// unveiled for what `ni.ni_unveil` asks (`ENOENT`, `EACCES`). The default is `panic(9)`,
+    /// as `pledge_namei`'s.
+    fn unveil_check_final(
+        _p: &Thread<Self>,
+        _ni: &mut crate::fs::vops::Nd<'_, Self>,
+    ) -> Result<(), Errno> {
+        kpanic(format_args!(
+            "unveil_check_final: the glue has no namei hooks"
+        ))
+    }
     /// `process_zap`'s `vrele` of the text vnode (`ps_textvp`, N5).
     fn textvp_release(_pr: &Process<Self>) {}
     /// `pr->ps_textvp->v_mount && (pr->ps_textvp->v_mount->mnt_flag & MNT_WXALLOWED)`
@@ -1442,6 +1497,9 @@ pub struct Session<G: ProcGlue> {
     /// \[K\] `s_ttyp`: controlling terminal, counted; not cleared when the session loses
     /// it, to remember that it once had one (`TIOCSCTTY`, `kernel::tty`).
     pub s_ttyp: Guarded<Option<crate::tty::TtyRef<G>>>,
+    /// \[K\] `s_ttyvp`: vnode of controlling terminal, referenced (`vn_ioctl`'s
+    /// `TIOCSCTTY`); written under the kernel lock, an atomic word read without it.
+    pub ttyvp: hal::link::SyncLink<crate::fs::vnode::Vnode<G>>,
     /// The members of `bsd`'s subsystems.
     pub g: G::SessionG,
 }
@@ -1459,6 +1517,7 @@ impl<G: ProcGlue> Session<G> {
             s_verauthppid: I32Word::new(0),
             s_verauthuid: U32Word::new(0),
             s_ttyp: Guarded::new_kernel(None),
+            ttyvp: hal::link::SyncLink::new(),
             g,
         }
     }

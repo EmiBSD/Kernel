@@ -195,7 +195,7 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
-use hal::link::Link;
+use hal::link::SyncLink;
 use hal::malloc::{M_WAITOK, MArray};
 use hal::mutex::{Mutexed, SharedMutex};
 use hal::pinlist::PinList;
@@ -211,6 +211,7 @@ use hal::sys::fcntl::{
 use hal::sys::filio::{FIOASYNC, FIOCLEX, FIOGETOWN, FIONBIO, FIONCLEX, FIOSETOWN};
 use hal::sys::ioccom::{IOC_IN, IOC_OUT, IOC_VOID, IOCPARM_MAX, iocparm_len};
 use hal::sys::limits::SSIZE_MAX;
+use hal::sys::stat::Stat;
 use hal::sys::syslimits::PIPE_BUF;
 use hal::sys::types::{Off, Register};
 use hal::sys::unistd::{_PC_PIPE_BUF, SEEK_CUR, SEEK_SET};
@@ -222,6 +223,8 @@ use crate::file::{
     FO_POSITION, File, FileGlue, FileOps, FileRef, FileSlot, LockOwner, VFS_STALLING, fnew,
     foffset, vfs_stall_barrier,
 };
+use crate::fs::subr::{vref, vrele};
+use crate::fs::vnode::Vnode;
 use crate::proc::{PS_PLEDGE, PS_SUGID, PS_SUGIDEXEC, ProcGlue, Process, Thread, suser};
 use crate::resource::RLIMIT_NOFILE;
 use crate::uio::{IovBuf, Iovec, Uio, UioRw, UioSeg, iovec_copyin};
@@ -454,9 +457,9 @@ pub struct Filedesc<G: FileGlue> {
     /// \[f/w\] `fd_cmask`: mask for file creation (read unlocked by `open`, as in C).
     cmask: AtomicU32,
     /// \[K\] `fd_cdir`: current directory.
-    cdir: Link<G::Vnode>,
+    cdir: SyncLink<Vnode<G::Proc>>,
     /// \[K\] `fd_rdir`: root directory.
-    rdir: Link<G::Vnode>,
+    rdir: SyncLink<Vnode<G::Proc>>,
     /// \[k\] `fd_kqlist`: kqueues attached to this filedesc, under [`Filedesc::kqlist_mtx`]
     /// (the C's `fdplock`; `kernel::event` walks it one counted kqueue at a time).
     pub(crate) kqlist: PinList<<G::Proc as ProcGlue>::KqNext>,
@@ -483,8 +486,8 @@ impl<G: FileGlue> Filedesc<G> {
             fd_openfd: AtomicI32::new(0),
             fd_flags: AtomicI32::new(0),
             cmask: AtomicU32::new(CMASK_DEFAULT),
-            cdir: Link::new(),
-            rdir: Link::new(),
+            cdir: SyncLink::new(),
+            rdir: SyncLink::new(),
             kqlist: PinList::new(),
             kqlist_mtx: Mutexed::new(hal::intr::IPL_HIGH, ()),
             nkqueues: AtomicU32::new(0),
@@ -529,29 +532,32 @@ impl<G: FileGlue> Filedesc<G> {
     }
 
     /// `fd_cdir`.
-    pub fn cdir(&self) -> Option<&'static G::Vnode> {
+    pub fn cdir(&self) -> Option<&'static Vnode<G::Proc>> {
         self.cdir.get()
     }
 
     /// `fd_cdir = vp` (the caller holds the use count it gives, `vref`).
-    pub fn set_cdir(&self, vp: Option<&'static G::Vnode>) {
+    pub fn set_cdir(&self, vp: Option<&'static Vnode<G::Proc>>) {
         self.cdir.set(vp);
     }
 
     /// `fd_cdir = vp`, the old value back (its use count the caller's).
-    pub fn replace_cdir(&self, vp: Option<&'static G::Vnode>) -> Option<&'static G::Vnode> {
+    pub fn replace_cdir(
+        &self,
+        vp: Option<&'static Vnode<G::Proc>>,
+    ) -> Option<&'static Vnode<G::Proc>> {
         let old = self.cdir.get();
         self.cdir.set(vp);
         old
     }
 
     /// `fd_rdir`.
-    pub fn rdir(&self) -> Option<&'static G::Vnode> {
+    pub fn rdir(&self) -> Option<&'static Vnode<G::Proc>> {
         self.rdir.get()
     }
 
     /// `fd_rdir = vp` (as [`Filedesc::set_cdir`]).
-    pub fn set_rdir(&self, vp: Option<&'static G::Vnode>) {
+    pub fn set_rdir(&self, vp: Option<&'static Vnode<G::Proc>>) {
         self.rdir.set(vp);
     }
 
@@ -1313,15 +1319,15 @@ pub fn sys_fstat<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
     sb: usize,
 ) -> Result<(), Errno> {
     let fp = fd_getfile(p.fd(), fd).ok_or(Errno::EBADF)?;
-    let mut ub = G::Stat::default();
+    let mut ub = Stat::default();
     let error = fp.ops().stat(&fp, &mut ub, p);
     let _ = fp.frele(Some(p));
     error?;
     // Don't let non-root see generation numbers (for NFS security)
     if suser(p).is_err() {
-        G::stat_hide_gen(&mut ub);
+        ub.st_gen = 0;
     }
-    G::stat_copyout(&ub, sb)
+    UserPtr::<u8>::new(sb).copyout_slice(&ub.to_bytes())
 }
 
 /// Return pathconf information about a file descriptor (`fpathconf(2)`).
@@ -1624,11 +1630,11 @@ pub fn fdcopy<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(pr: &Process<P>)
         .fd_openfd
         .store(openfd.load(Ordering::Relaxed), Ordering::Relaxed);
     if let Some(cdir) = fdp.cdir() {
-        G::vref(cdir);
+        vref(cdir);
         newfdp.cdir.set(Some(cdir));
     }
     if let Some(rdir) = fdp.rdir() {
-        G::vref(rdir);
+        vref(rdir);
         newfdp.rdir.set(Some(rdir));
     }
     newfdp
@@ -1668,11 +1674,11 @@ pub fn fdfree<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(p: &Thread<P>) {
     fdp.fd_openfd.store(0, Ordering::Relaxed);
     if let Some(cdir) = fdp.cdir.get() {
         fdp.cdir.set(None);
-        G::vrele(cdir);
+        vrele(cdir);
     }
     if let Some(rdir) = fdp.rdir.get() {
         fdp.rdir.set(None);
-        G::vrele(rdir);
+        vrele(rdir);
     }
     kassert!(fdp.fd_nuserevents.load(Ordering::SeqCst) == 0);
 }
@@ -2223,9 +2229,11 @@ mod tests {
     use super::*;
     use crate::cred::{CredRef, Ucred};
     use crate::file::FileTables;
+    use crate::fs::vnode::{VDIR, Vnode};
     use crate::proc::{ProcessRef, process_alloc, procinit, thread_alloc};
     use crate::resource::{Plimit, PlimitRef};
-    use crate::testutil::{self, TestFileData, TestStat, TestVnode, file_log};
+    use crate::testutil::{self, TestFileData, file_log};
+    use hal::sys::stat::Stat;
 
     crate::test_file_glue!(Files, Procs);
     crate::test_proc_glue!(Procs, Files);
@@ -2281,7 +2289,7 @@ mod tests {
         fn kqfilter(&self, _: &File<Files>, _: &crate::event::Knote<Procs>) -> Result<(), Errno> {
             Err(Errno::EINVAL)
         }
-        fn stat(&self, _: &File<Files>, st: &mut TestStat, _: &Thread<Procs>) -> Result<(), Errno> {
+        fn stat(&self, _: &File<Files>, st: &mut Stat, _: &Thread<Procs>) -> Result<(), Errno> {
             st.st_gen = 7;
             st.st_size = 11;
             Ok(())
@@ -2322,6 +2330,15 @@ mod tests {
 
     fn thread(pid: i32) -> (ProcessRef<Procs>, P) {
         thread_as(pid, 0, 512)
+    }
+
+    /// `st_size` and `st_gen` of the `struct stat` copied out at the user address `sb`.
+    fn stat_at(sb: usize) -> (i64, u32) {
+        let mut b = [0u8; Stat::SIZE];
+        UserPtr::<u8>::new(sb).copyin_slice(&mut b).unwrap();
+        let size = i64::from_ne_bytes(b[80..88].try_into().unwrap());
+        let gen_ = u32::from_ne_bytes(b[104..108].try_into().unwrap());
+        (size, gen_)
     }
 
     /// `falloc` + install + `fdinsert`: a new file of type `ty` (open `flag`) at the lowest
@@ -2662,11 +2679,16 @@ mod tests {
                 fdexpand(&p, &mut g).unwrap();
             }
         }
-        let vn: &'static TestVnode = std::boxed::Box::leak(std::boxed::Box::default());
-        Files::vref(vn);
+        // A directory the table holds (one use), the kernel lock held as fdcopy's caller
+        // holds it (vref's assertion).
+        hal::klock::kernel_lock();
+        let vn: &'static Vnode<Procs> =
+            std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
+        vn.set_vtype(VDIR);
+        vn.set_usecount(1);
         p.fd().set_cdir(Some(vn));
         let copy = fdcopy(&pr);
-        assert_eq!(vn.refs.load(Ordering::Relaxed), 2);
+        assert_eq!(vn.usecount(), 2);
         assert_eq!(copy.nfiles(), 50);
         assert_eq!(fd_getfile(&copy, a).map(|f| id(&f)), Some(60));
         assert_eq!(copy.ofileflags(a), UF_EXCLOSE);
@@ -2685,8 +2707,13 @@ mod tests {
         let (pr, p) = thread(11);
         let a = open(&p, 70);
         let _b = open_as(&p, 71, DTYPE_VNODE, FREAD);
-        let vn: &'static TestVnode = std::boxed::Box::leak(std::boxed::Box::default());
-        Files::vref(vn);
+        // A directory the table holds and the test too (two uses): fdfree's vrele leaves the
+        // test's.
+        hal::klock::kernel_lock();
+        let vn: &'static Vnode<Procs> =
+            std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
+        vn.set_vtype(VDIR);
+        vn.set_usecount(2);
         p.fd().set_rdir(Some(vn));
         let shared = fdshare(&pr);
         assert_eq!(p.fd().shares(), 2);
@@ -2704,7 +2731,7 @@ mod tests {
                 String::from("close 71 true"),
             ]
         );
-        assert_eq!(vn.refs.load(Ordering::Relaxed), 0);
+        assert_eq!(vn.usecount(), 1);
         assert!(shared.rdir().is_none());
         assert_eq!(shared.fd_openfd.load(Ordering::Relaxed), 0);
         assert!(fd_getfile(&shared, a).is_none());
@@ -2857,13 +2884,13 @@ mod tests {
         let fd = open(&root, 1);
         let sb = testutil::USER_BASE + 0x3c00;
         assert_eq!(sys_fstat(&root, fd, sb), Ok(()));
-        let st = UserPtr::<TestStat>::new(sb).copyin().unwrap();
-        assert_eq!((st.st_size, st.st_gen), (11, 7));
+        let st = stat_at(sb);
+        assert_eq!((st.0, st.1), (11, 7));
         let (_qr, user) = thread_as(17, 1000, 512);
         let ufd = open(&user, 2);
         assert_eq!(sys_fstat(&user, ufd, sb), Ok(()));
-        let st = UserPtr::<TestStat>::new(sb).copyin().unwrap();
-        assert_eq!((st.st_size, st.st_gen), (11, 0));
+        let st = stat_at(sb);
+        assert_eq!((st.0, st.1), (11, 0));
         assert_eq!(sys_fstat(&user, 9, sb), Err(Errno::EBADF));
 
         assert_eq!(

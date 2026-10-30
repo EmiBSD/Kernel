@@ -2394,11 +2394,11 @@ pub fn sysctl_proc_cwd<G: ProcGlue>(
         // No current directory before a root file system is mounted.
         return Err(Errno::ENOENT);
     };
-    <G::FileGlue as crate::file::FileGlue>::vref(vp);
+    crate::fs::subr::vref(vp);
     drop(findpr);
 
     let Some(mut path) = MArray::new(M_TEMP, M_WAITOK, len, |_| 0u8) else {
-        <G::FileGlue as crate::file::FileGlue>::vrele(vp);
+        crate::fs::subr::vrele(vp);
         return Err(Errno::ENOMEM);
     };
 
@@ -2416,7 +2416,7 @@ pub fn sysctl_proc_cwd<G: ProcGlue>(
             .map(|()| bp);
     }
 
-    <G::FileGlue as crate::file::FileGlue>::vrele(vp);
+    crate::fs::subr::vrele(vp);
     drop(path);
 
     error.map(|_| ())

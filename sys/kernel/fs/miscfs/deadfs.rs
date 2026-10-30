@@ -97,7 +97,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _dvp: &'static Vnode<G>,
         vpp: &mut Option<&'static Vnode<G>>,
-        _cnp: &mut Cn<G>,
+        _cnp: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_lookup(vpp)
     }
@@ -105,7 +105,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -114,7 +114,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -202,21 +202,26 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
-    fn link(&self, _: &'static Vnode<G>, _: &'static Vnode<G>, _: &mut Cn<G>) -> Result<(), Errno> {
+    fn link(
+        &self,
+        _: &'static Vnode<G>,
+        _: &'static Vnode<G>,
+        _: &mut Cn<'_, G>,
+    ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
     fn rename(
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &'static Vnode<G>,
         _: Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
@@ -224,7 +229,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
@@ -233,7 +238,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &'static Vnode<G>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
     ) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
@@ -241,7 +246,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
         &self,
         _: &'static Vnode<G>,
         _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<G>,
+        _: &mut Cn<'_, G>,
         _: &mut Vattr,
         _: &[u8],
     ) -> Result<(), Errno> {
@@ -259,7 +264,7 @@ impl<G: ProcGlue> Vnops<G> for DeadVops<G> {
     fn readlink(&self, _: &'static Vnode<G>, _: &mut Uio<'_, G>, _: Cred<'_>) -> Result<(), Errno> {
         dead_ebadf()
     }
-    fn abortop(&self, _: &'static Vnode<G>, _: &mut Cn<G>) -> Result<(), Errno> {
+    fn abortop(&self, _: &'static Vnode<G>, _: &mut Cn<'_, G>) -> Result<(), Errno> {
         default::vop_generic_badop()
     }
     fn inactive(&self, vp: &'static Vnode<G>, _p: Option<&Thread<G>>) -> Result<(), Errno> {

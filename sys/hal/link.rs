@@ -34,6 +34,14 @@
 //! links consistent (a list's, a tree's) is the owner's business: a race between two writers
 //! can make a list wrong, never a reference dangle.
 //!
+//! [`SyncLink<T>`] (N5.3) is a `Link` for a member whose type would make the compiler prove
+//! `T: Sync` through a cycle of explicit `Send`/`Sync` impls: a descriptor table's directories
+//! (`fd_cdir`, `fd_rdir`) and a session's terminal (`s_ttyvp`) are vnodes, and a vnode's
+//! knotes lead through a kqueue back to its descriptor table, whose counted handle
+//! (`PoolArc`) is `Sync` only when the table is; that cycle of `T: Send + Sync` bounds is
+//! inductive and the compiler gives up on it (`E0275`). A `SyncLink` is `Send` and `Sync`
+//! whatever `T` is, and lends its target only when `T: Sync`, which is what sharing it needs.
+//!
 //! [`PtrWord<T>`] (N4.2) is the other half of LZ's `Cell<*const T>`: an address that the type
 //! never follows, for a member whose target is not `'static` and is still dereferenced by
 //! legacy code under its own `unsafe` (`ps_fd`, `ps_sigacts`, `p_kq` while those subsystems
@@ -132,6 +140,98 @@ impl<T: 'static> core::fmt::Debug for Link<T> {
     }
 }
 
+/// A reference to a `T` that lives for ever, or none (`NULL`), settable through `&self`, as
+/// [`Link`], but `Send` and `Sync` whatever `T` is (the module's notes): its target is lent
+/// and stored only for a `T: Sync`, so no thread can reach a `T` through it that `T` does not
+/// allow to be shared.
+///
+/// Invariant: `ptr` is null or the address of a `&'static T` given to [`SyncLink::set`] or
+/// [`SyncLink::to`] for a `T: Sync`; nothing else ever writes it.
+pub struct SyncLink<T: 'static> {
+    ptr: AtomicPtr<T>,
+}
+
+impl<T: 'static> SyncLink<T> {
+    /// No target (`NULL`).
+    pub const fn new() -> Self {
+        Self {
+            ptr: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+
+    /// Whether the link is empty (`== NULL`).
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        self.ptr.load(Ordering::Relaxed).is_null()
+    }
+
+    /// The target's address as a number, 0 when the link is empty (nothing followed).
+    #[inline]
+    pub fn addr(&self) -> usize {
+        self.ptr.load(Ordering::Relaxed).addr()
+    }
+
+    /// Whether the link names `x` (an address comparison, nothing followed).
+    #[inline]
+    pub fn points_to(&self, x: &T) -> bool {
+        ptr::eq(self.ptr.load(Ordering::Relaxed), ptr::from_ref(x))
+    }
+}
+
+impl<T: Sync + 'static> SyncLink<T> {
+    /// A link to `to` from the start.
+    pub const fn to(to: &'static T) -> Self {
+        Self {
+            ptr: AtomicPtr::new(ptr::from_ref(to).cast_mut()),
+        }
+    }
+
+    /// The target, `None` when the link is empty.
+    #[inline]
+    pub fn get(&self) -> Option<&'static T> {
+        let p = self.ptr.load(Ordering::Acquire);
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: by the type's invariant `p` is the address of a `&'static T` that `set` (or
+        // `to`) was given, the only writers: it is aligned, points to a `T` valid for the
+        // whole run of the kernel, and the shared reference made here is exactly the one
+        // that was handed in, so it aliases only shared references. `T: Sync` (this impl's
+        // bound), so handing that reference to whichever thread shares the link is sound,
+        // although the link's own `Send`/`Sync` did not ask it. The `Acquire` load pairs with
+        // the `Release` store of `set`, so the `T` as it was built before it was linked is
+        // visible here.
+        Some(unsafe { &*p })
+    }
+
+    /// Points the link at `to` (`None` empties it).
+    #[inline]
+    pub fn set(&self, to: Option<&'static T>) {
+        let p = to.map_or(ptr::null_mut(), |r| ptr::from_ref(r).cast_mut());
+        self.ptr.store(p, Ordering::Release);
+    }
+
+    /// Points the link at `to`, returning the target it had (`xchg`).
+    #[inline]
+    pub fn replace(&self, to: Option<&'static T>) -> Option<&'static T> {
+        let old = self.get();
+        self.set(to);
+        old
+    }
+}
+
+impl<T: 'static> Default for SyncLink<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: 'static> core::fmt::Debug for SyncLink<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SyncLink({:p})", self.ptr.load(Ordering::Relaxed))
+    }
+}
+
 /// An address kept as a word (`struct filedesc *ps_fd` while the descriptors are `bsd`'s): LZ's
 /// `Cell<*const T>` with its `get()`/`set()`, made `Send` and `Sync` by being an atomic, not by
 /// a premise. Nothing here follows the pointer: whoever dereferences what `get` returns does
@@ -208,6 +308,24 @@ mod tests {
         l.set(None);
         assert!(l.is_none());
         assert_eq!(Link::to(&A).get(), Some(&7));
+    }
+
+    #[test]
+    fn a_sync_link_is_shared_whatever_its_target_and_lends_a_sync_one() {
+        fn shared<T: Send + Sync>() {}
+        // A target that is not Sync: the link is shareable all the same (it lends nothing).
+        shared::<SyncLink<core::cell::Cell<u8>>>();
+        let l = SyncLink::<u32>::new();
+        assert!(l.is_none() && l.get().is_none() && l.addr() == 0);
+        l.set(Some(&A));
+        assert_eq!(l.get(), Some(&7));
+        assert!(l.points_to(&A) && !l.points_to(&B));
+        assert_eq!(l.addr(), ptr::from_ref(&A).addr());
+        assert_eq!(l.replace(Some(&B)), Some(&7));
+        assert_eq!(l.get().copied(), Some(9));
+        l.set(None);
+        assert!(l.is_none());
+        assert_eq!(SyncLink::to(&A).get(), Some(&7));
     }
 
     #[test]

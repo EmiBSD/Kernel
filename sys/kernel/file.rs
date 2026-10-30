@@ -115,6 +115,7 @@ use hal::pinlist::{PinAdapter, PinEntry, PinList};
 use hal::pool::{Last, PoolArc, PoolHome, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::Flock;
+use hal::sys::stat::Stat;
 use hal::sys::types::{Off, Register};
 
 use crate::assert::kpanic;
@@ -566,7 +567,7 @@ pub trait FileOps<G: FileGlue>: Sync {
     /// `fo_kqfilter(fp, kn)`: attaches the knote to the file's object.
     fn kqfilter(&self, fp: &File<G>, kn: &Knote<G::Proc>) -> Result<(), Errno>;
     /// `fo_stat(fp, ub, p)`.
-    fn stat(&self, fp: &File<G>, st: &mut G::Stat, p: &Thread<G::Proc>) -> Result<(), Errno>;
+    fn stat(&self, fp: &File<G>, st: &mut Stat, p: &Thread<G::Proc>) -> Result<(), Errno>;
     /// `fo_close(fp, p)`: `p` is `None` for a file closed with no thread (one that was in a
     /// message). It may sleep: no spin lock is held.
     fn close(&self, fp: &File<G>, p: Option<&Thread<G::Proc>>) -> Result<(), Errno>;
@@ -595,21 +596,22 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Ops: ?Sized + FileOps<Self> + 'static;
     /// `f_data`: the object of a file (a vnode, a socket, a pipe, a kqueue).
     type Data: Send + Sync + 'static;
-    /// `struct stat`, as `fo_stat` fills it.
-    type Stat: Default;
-    /// `struct vnode` (`fd_cdir`, `fd_rdir`).
-    type Vnode: Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
     type FileList: PinAdapter<Elem = File<Self>>;
     /// The members of `struct vnode` of `bsd`'s types: the name cache's heads (`v_nc_tree`,
     /// `v_cache_dst`, N5.3), `v_socket` and a device's advisory locks (`si_lockf`, N5.3);
     /// `Default` is a new vnode's (`kernel::fs::vnode`).
     type VnodeG: Default + Sync + 'static;
-    /// `struct componentname` (`namei`'s, `bsd`'s until N5.3): what `VOP_LOOKUP` and the
-    /// directory operations receive.
-    type Componentname;
-    /// `struct nameidata` (`bsd`'s until N5.3): what `VFS_MOUNT` receives.
+    /// `struct componentname` (`namei`'s, `bsd`'s until N5.3's switch; the kernel's
+    /// `fs::namei::Componentname` for the test glues): what `VOP_LOOKUP` and the directory
+    /// operations receive.
+    type Componentname<'a>;
+    /// `struct nameidata` (`bsd`'s until N5.3's switch; the kernel's for the test glues):
+    /// what `VFS_MOUNT` and the pledge and unveil hooks receive.
     type Nameidata<'a>;
+    /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
+    /// `Default` is NULL.
+    type UnveilMatch: Copy + Default;
 
     /// The open files, `fhdlk` and the pools (one `static` of `bsd`'s).
     fn tables() -> &'static FileTables<Self>;
@@ -620,10 +622,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `vfs_stall_barrier()`'s wait while [`VFS_STALLING`] is set (`rw_enter_read` and
     /// `rw_exit_read` of `vfs_stall_lock`).
     fn stall_wait();
-    /// `vref(vp)`.
-    fn vref(v: &'static Self::Vnode);
-    /// `vrele(vp)`.
-    fn vrele(v: &'static Self::Vnode);
     /// `VOP_ADVLOCK(vp, id, op, fl, flags)` of a vnode file's vnode.
     fn advlock(
         d: &Self::Data,
@@ -649,6 +647,9 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// Whether a vnode file's vnode was revoked (its operations are deadfs's:
     /// `kqueue_scan`'s `vp->v_op == &dead_vops`); `false` for any other object.
     fn vnode_revoked(d: &Self::Data) -> bool;
+    /// The vnode a `DTYPE_VNODE` file's object is (`(struct vnode *)fp->f_data`); `None` for
+    /// another object (a socket, a pipe, a kqueue).
+    fn vnode_of(d: &Self::Data) -> Option<&'static crate::fs::vnode::Vnode<Self::Proc>>;
     /// The vnode a `DTYPE_VNODE` file's object is (`(struct vnode *)fp->f_data`), as the
     /// pager and `mmap(2)` see it (`VnodeOps`, the kernel's vnode since N5.2); `None` for
     /// another object.
@@ -669,16 +670,12 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn pledge_flock(p: &Thread<Self::Proc>) -> Result<(), Errno>;
     /// `pledge_ioctl(p, com, fp)`.
     fn pledge_ioctl(p: &Thread<Self::Proc>, com: u64, fp: &File<Self>) -> Result<(), Errno>;
-    /// `fstat(2)` for a caller that is not root: `ub.st_gen = 0`.
-    fn stat_hide_gen(st: &mut Self::Stat);
-    /// `copyout(&ub, sb, sizeof(ub))` of `fstat(2)`: the structure's user bytes at `sb`.
-    fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), Errno>;
     /// `vfs_getcwd_common(vp, NULL, &bp, path, limit, GETCWD_CHECK_ACCESS, p)`
     /// (`kern.proc_cwd`, N4.6b): the path of the directory `vp` written backwards into `path`
     /// from `bp` (where the caller put the terminating NUL), the new `bp` returned. The
     /// default is a glue without file systems (the kernel's tests): no path (`ENOENT`).
     fn getcwd(
-        _vp: &'static Self::Vnode,
+        _vp: &'static crate::fs::vnode::Vnode<Self::Proc>,
         _path: &mut [u8],
         _bp: usize,
         _limit: i32,
@@ -712,7 +709,7 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     ) -> Result<(), Errno>;
     /// `vop_generic_abortop`'s `pool_put(&namei_pool, cnp->cn_pnbuf)` when the lookup left a
     /// buffer (`HASBUF`) and was not asked to keep it (`SAVESTART`).
-    fn abortop(cnp: &mut Self::Componentname);
+    fn abortop(cnp: &mut Self::Componentname<'_>);
     /// `dounmount(mp, flags, p)` (`vop_generic_revoke`'s forced unmount of a revoked block
     /// device's file system; `bsd`'s until N5.4).
     fn dounmount(
@@ -818,7 +815,7 @@ mod tests {
         fn stat(
             &self,
             _: &File<Files>,
-            _: &mut testutil::TestStat,
+            _: &mut hal::sys::stat::Stat,
             _: &Thread<Procs>,
         ) -> Result<(), Errno> {
             Ok(())

@@ -396,7 +396,7 @@ impl FileOps<BenchFiles> for BenchOps {
     fn stat(
         &self,
         _: &File<BenchFiles>,
-        _: &mut testutil::TestStat,
+        _: &mut hal::sys::stat::Stat,
         _: &Thread<BenchGlue>,
     ) -> Result<(), Errno> {
         Ok(())

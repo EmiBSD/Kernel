@@ -3914,8 +3914,9 @@ pub(crate) mod tests {
     use crate::descrip::{fdinit, fdrelease, filedesc_init};
     use crate::proc::{PS_PLEDGE, process_alloc, procinit, thread_alloc};
     use crate::resource::{Plimit, PlimitRef, RLIMIT_NOFILE};
-    use crate::testutil::{self, TestFileData, TestStat};
+    use crate::testutil::{self, TestFileData};
     use crate::uio::Uio;
+    use hal::sys::stat::Stat;
 
     crate::test_file_glue!(Kf, Kg);
     crate::test_proc_glue!(Kg, Kf);
@@ -4042,7 +4043,7 @@ pub(crate) mod tests {
             }
             Ok(())
         }
-        fn stat(&self, _: &File<Kf>, _: &mut TestStat, _: &Thread<Kg>) -> Result<(), Errno> {
+        fn stat(&self, _: &File<Kf>, _: &mut Stat, _: &Thread<Kg>) -> Result<(), Errno> {
             Ok(())
         }
         fn close(&self, _: &File<Kf>, _: Option<&Thread<Kg>>) -> Result<(), Errno> {

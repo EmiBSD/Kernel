@@ -1144,6 +1144,8 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub kq: Option<crate::event::KqRef<P>>,
     /// A vnode file's vnode (`vnode_ops`): a [`MemVnode`] or any other double.
     pub vnode: Option<&'static dyn VnodeOps>,
+    /// A vnode file's vnode as the vnode layer sees it (`vnode_of`).
+    pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
     pub pipe: Option<crate::pipe::PipeEnd<P>>,
 }
@@ -1157,44 +1159,61 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             revoked: core::sync::atomic::AtomicBool::new(false),
             kq: None,
             vnode: None,
+            kvnode: None,
             pipe: None,
         }
     }
-}
-
-/// The `struct stat` of a test glue.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TestStat {
-    /// `st_size`.
-    pub st_size: u64,
-    /// `st_gen`.
-    pub st_gen: u32,
-    /// `st_mode`.
-    pub st_mode: u32,
-}
-
-hal::abi_pod!(TestStat {
-    st_size: u64,
-    st_gen: u32,
-    st_mode: u32
-});
-
-/// The vnode of a test glue's `fd_cdir`/`fd_rdir`: its use count.
-#[derive(Debug, Default)]
-pub struct TestVnode {
-    /// `v_usecount`.
-    pub refs: core::sync::atomic::AtomicI32,
 }
 
 std::thread_local! {
     static FILE_LOG: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static FILE_LOG_ON: Cell<bool> = const { Cell::new(true) };
     static MAXFILES: Cell<i32> = const { Cell::new(1000) };
+    static NAMEI_PLEDGE: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
+    static UNVEIL_FINAL: Cell<Option<hal::sys::errno::Errno>> = const { Cell::new(None) };
 }
 
-/// Whether this thread's test glues record their hot hooks (`knote_fdclose`): on for the
-/// tests, off for a bench that measures the descriptors and not the record.
+/// What the test proc glues' `pledge_namei` answers on this thread from now on (`None`:
+/// allowed).
+pub fn set_namei_pledge(e: Option<hal::sys::errno::Errno>) {
+    NAMEI_PLEDGE.with(|c| c.set(e));
+}
+
+/// The test proc glues' `pledge_namei`: the answer [`set_namei_pledge`] set, the call logged
+/// (while [`file_log_on`]).
+pub fn namei_pledge(path: &[u8]) -> Result<(), hal::sys::errno::Errno> {
+    if file_log_on() {
+        file_log_push(std::format!(
+            "pledge_namei {}",
+            std::string::String::from_utf8_lossy(path)
+        ));
+    }
+    NAMEI_PLEDGE.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// What the test proc glues' `unveil_check_final` answers on this thread from now on.
+pub fn set_unveil_final(e: Option<hal::sys::errno::Errno>) {
+    UNVEIL_FINAL.with(|c| c.set(e));
+}
+
+/// The test proc glues' `unveil_check_final`: the answer [`set_unveil_final`] set, logged
+/// (while [`file_log_on`]).
+pub fn unveil_final() -> Result<(), hal::sys::errno::Errno> {
+    hook_log("unveil_check_final");
+    UNVEIL_FINAL.with(Cell::get).map_or(Ok(()), Err)
+}
+
+/// Records the call of a hot hook of this thread's test glues (`namei`'s unveil hooks)
+/// while [`file_log_on`].
+pub fn hook_log(what: &str) {
+    if file_log_on() {
+        file_log_push(std::string::String::from(what));
+    }
+}
+
+/// Whether this thread's test glues record their hot hooks (`knote_fdclose`, `namei`'s
+/// pledge and unveil hooks): on for the tests, off for a bench that measures the descriptors
+/// or the names and not the record.
 pub fn file_log_on() -> bool {
     FILE_LOG_ON.with(Cell::get)
 }
@@ -1340,12 +1359,12 @@ macro_rules! test_file_glue {
             fn stat(
                 &self,
                 fp: &$crate::file::File<$name>,
-                st: &mut $crate::testutil::TestStat,
+                st: &mut hal::sys::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 let (size, _blksize) = $crate::event::kqueue_stat::<$proc>(fp);
-                *st = $crate::testutil::TestStat::default();
-                st.st_size = size as u64;
+                *st = hal::sys::stat::Stat::default();
+                st.st_size = size as i64;
                 Ok(())
             }
             fn close(
@@ -1415,7 +1434,7 @@ macro_rules! test_file_glue {
             fn stat(
                 &self,
                 _fp: &$crate::file::File<$name>,
-                _st: &mut $crate::testutil::TestStat,
+                _st: &mut hal::sys::stat::Stat,
                 _p: &$crate::proc::Thread<$proc>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
@@ -1436,12 +1455,11 @@ macro_rules! test_file_glue {
             type Proc = $proc;
             type Ops = dyn $crate::file::FileOps<$name>;
             type Data = $crate::testutil::TestFileData<$proc>;
-            type Stat = $crate::testutil::TestStat;
-            type Vnode = $crate::testutil::TestVnode;
             type FileList = FileListLink;
             type VnodeG = ();
-            type Componentname = ();
-            type Nameidata<'a> = ();
+            type Componentname<'a> = $crate::fs::namei::Componentname<'a, $proc>;
+            type Nameidata<'a> = $crate::fs::namei::Nameidata<'a, $proc>;
+            type UnveilMatch = ();
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)
@@ -1454,12 +1472,6 @@ macro_rules! test_file_glue {
             }
             fn stall_wait() {
                 $crate::testutil::file_log_push(std::string::String::from("stall"));
-            }
-            fn vref(v: &'static Self::Vnode) {
-                v.refs.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            }
-            fn vrele(v: &'static Self::Vnode) {
-                v.refs.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
             }
             fn advlock(
                 d: &Self::Data,
@@ -1517,6 +1529,9 @@ macro_rules! test_file_glue {
             fn vnode_revoked(d: &Self::Data) -> bool {
                 d.revoked.load(core::sync::atomic::Ordering::Relaxed)
             }
+            fn vnode_of(d: &Self::Data) -> Option<&'static $crate::fs::vnode::Vnode<$proc>> {
+                d.kvnode
+            }
             fn vnode_ops(d: &Self::Data) -> Option<&'static dyn $crate::vm::vnode::VnodeOps> {
                 d.vnode
             }
@@ -1554,12 +1569,6 @@ macro_rules! test_file_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
             }
-            fn stat_hide_gen(st: &mut Self::Stat) {
-                st.st_gen = 0;
-            }
-            fn stat_copyout(st: &Self::Stat, sb: usize) -> Result<(), hal::sys::errno::Errno> {
-                hal::user::UserPtr::<$crate::testutil::TestStat>::new(sb).copyout(st)
-            }
             fn uiomove(
                 buf: &mut [u8],
                 uio: &mut $crate::uio::Uio<'_, $proc>,
@@ -1572,7 +1581,7 @@ macro_rules! test_file_glue {
             fn vnode_g_init(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
             fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
             fn cache_purge(vp: &'static $crate::fs::vnode::Vnode<$proc>) {
-                vp.set_id(vp.id().wrapping_add(1));
+                $crate::fs::cache::cache_purge(vp);
             }
             fn lf_purgelocks(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
             fn spec_advlock(
@@ -1584,7 +1593,14 @@ macro_rules! test_file_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
             }
-            fn abortop(_cnp: &mut ()) {}
+            /// `vop_generic_abortop`'s `pool_put(&namei_pool, cnp->cn_pnbuf)` of a buffer the
+            /// lookup left (`HASBUF`) and was not asked to keep (`SAVESTART`).
+            fn abortop(cnp: &mut $crate::fs::namei::Componentname<'_, $proc>) {
+                use $crate::fs::namei::{HASBUF, SAVESTART};
+                if cnp.cn_flags & (HASBUF | SAVESTART) == HASBUF {
+                    drop(cnp.take_pnbuf());
+                }
+            }
             fn dounmount(
                 _mp: &'static $crate::fs::mount::Mount<$proc>,
                 _flags: i32,
@@ -1693,6 +1709,36 @@ macro_rules! test_proc_glue {
             }
             fn textvp_wxallowed(_pr: &$crate::proc::Process<Self>) -> bool {
                 $crate::testutil::textvp_wxallowed()
+            }
+            fn pledge_namei(
+                _p: &$crate::proc::Thread<Self>,
+                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+                path: &[u8],
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::namei_pledge(path)
+            }
+            fn checkzoneinfopath(path: &[u8]) -> bool {
+                path.starts_with(b"/usr/share/zoneinfo/")
+            }
+            fn unveil_start_relative(
+                _p: &$crate::proc::Thread<Self>,
+                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+                _dp: &'static $crate::fs::vnode::Vnode<Self>,
+            ) {
+                $crate::testutil::hook_log("unveil_start_relative");
+            }
+            fn unveil_check_component(
+                _p: &$crate::proc::Thread<Self>,
+                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+                _dp: &'static $crate::fs::vnode::Vnode<Self>,
+            ) {
+                $crate::testutil::hook_log("unveil_check_component");
+            }
+            fn unveil_check_final(
+                _p: &$crate::proc::Thread<Self>,
+                _ni: &mut $crate::fs::vops::Nd<'_, Self>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::unveil_final()
             }
             /// The test glue keeps no interval timers: nothing is set, the old value stays zero.
             fn setitimer(

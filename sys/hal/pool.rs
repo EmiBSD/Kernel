@@ -149,6 +149,9 @@ pub const PR_WAITOK: i32 = 0x0001;
 pub const PR_NOWAIT: i32 = 0x0002;
 /// `PR_LIMITFAIL`: `pool_get` fails at the hard limit even with `PR_WAITOK`.
 pub const PR_LIMITFAIL: i32 = 0x0004;
+/// `PR_RWLOCK`: the pool's own lock is a reader-writer lock (`pool_init` of a pool whose
+/// users sleep holding one: `lockfpl`, `lockfspl`).
+pub const PR_RWLOCK: i32 = 0x0010;
 
 /// Where the parked references start in `Inner::refs` ([`PoolArc::forget`]): the low half
 /// counts every reference (handles and parked ones), the high half the parked ones among

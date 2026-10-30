@@ -537,6 +537,9 @@ fn main() {
         );
     }
     if wanted(names[6]) {
+        // cache.enter.zap's row recycled the LRU's oldest entries (a, b and c among
+        // them) and getcwd enters no name: the path cached again.
+        lookup_rele(p, b"/a/b/c", FOLLOW);
         let mut path = [0u8; MAXPATHLEN];
         report(
             names[6],

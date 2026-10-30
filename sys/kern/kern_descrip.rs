@@ -125,7 +125,6 @@ use crate::kern::kern_sig::ptsignal;
 use crate::kern::subr_prf::{panic, tablefull};
 use crate::kern::vfs_vnops::vn_lock;
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_PATHCONF, VOP_UNLOCK};
-use crate::machine::copy::copyout;
 use crate::machine::cpu::curproc;
 #[cfg(not(test))]
 use crate::machine::intr::IPL_MPFLOOR;
@@ -139,7 +138,6 @@ use crate::sys::proc::Proc;
 use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
 use crate::sys::socketvar::{SS_DNS, Socket};
-use crate::sys::stat::Stat;
 use crate::sys::syscall::{
     SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl, SYS_flock, SYS_fpathconf,
     SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev,
@@ -153,7 +151,6 @@ use crate::sys::syscallargs::{
 use crate::sys::systm::{SysArgs, sysargs};
 use crate::sys::types::{Dev, Off, Register, minor};
 use crate::sys::vnode::{VCHR, VFIFO, VISTTY, Vnode};
-use crate::sys::vnode::{vref, vrele};
 
 /// `f_data`: what a `bsd` file is open on.
 pub enum BsdFileData {
@@ -239,12 +236,12 @@ impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
     type Data = BsdFileData;
-    type Stat = Stat;
-    type Vnode = Vnode;
     type FileList = FileListLink;
     type VnodeG = crate::sys::vnode::VnodeG;
-    type Componentname = crate::sys::namei::Componentname;
+    type Componentname<'a> = crate::sys::namei::Componentname;
     type Nameidata<'a> = crate::sys::namei::Nameidata<'a>;
+    /// The kernel's `namei` is not `bsd`'s yet (N5.3's switch): no unveil match to keep.
+    type UnveilMatch = ();
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()
@@ -261,14 +258,6 @@ impl FileGlue for BsdFileGlue {
     fn stall_wait() {
         let _ = VFS_TABLES.stall_lock.enter(hal::rwlock::RW_READ);
         VFS_TABLES.stall_lock.exit();
-    }
-
-    fn vref(v: &'static Vnode) {
-        vref(v);
-    }
-
-    fn vrele(v: &'static Vnode) {
-        vrele(v);
     }
 
     fn advlock(
@@ -349,6 +338,13 @@ impl FileGlue for BsdFileGlue {
         }
     }
 
+    fn vnode_of(d: &BsdFileData) -> Option<&'static Vnode> {
+        match d {
+            BsdFileData::Vnode(v) => v.get(),
+            _ => None,
+        }
+    }
+
     fn vnode_ops(d: &BsdFileData) -> Option<&'static dyn kernel::vm::vnode::VnodeOps> {
         match d {
             BsdFileData::Vnode(v) => v
@@ -372,14 +368,6 @@ impl FileGlue for BsdFileGlue {
 
     fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
         pledge_ioctl(p, com, fp)
-    }
-
-    fn stat_hide_gen(st: &mut Stat) {
-        st.st_gen = 0;
-    }
-
-    fn stat_copyout(st: &Stat, sb: usize) -> Result<(), Errno> {
-        copyout(&st.to_bytes(), sb)
     }
 
     fn getcwd(
@@ -428,7 +416,7 @@ impl FileGlue for BsdFileGlue {
     ) -> Result<(), Errno> {
         crate::kern::vfs_lockf::lf_advlock(&vp.g.v_speclockf, 0, id, op, fl, flags)
     }
-    fn abortop(cnp: &mut Self::Componentname) {
+    fn abortop(cnp: &mut Self::Componentname<'_>) {
         crate::kern::vfs_vops::abortop_putname(cnp);
     }
     fn dounmount(mp: &'static crate::sys::mount::Mount, flags: i32, p: &Proc) -> Result<(), Errno> {
@@ -897,7 +885,7 @@ mod tests {
     fn no_kq(_: &File, _: &Knote) -> Result<(), Errno> {
         Err(Errno::EINVAL)
     }
-    fn ok_stat(_: &File, _: &mut Stat, _: &Proc) -> Result<(), Errno> {
+    fn ok_stat(_: &File, _: &mut crate::sys::stat::Stat, _: &Proc) -> Result<(), Errno> {
         Ok(())
     }
     fn ok_close(_: &File, _: Option<&Proc>) -> Result<(), Errno> {

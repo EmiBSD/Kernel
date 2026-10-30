@@ -5147,7 +5147,7 @@ notes = "M5: clockintr_cpu_init, clockintr_trigger, clockintr_dispatch, clockint
 rust = "sys/kern/kern_descrip.rs"
 lz = ["sys/kern/kern_descrip.rs", "sys/sys/file.rs"]
 status = "redesigned"
-notes = "N4.3: the glue of bsd's descriptors over kernel::file and kernel::descrip (BsdFileGlue, BsdFileData, BsdFdKq, the open files' tables and NUMFILES, the sysent[] rows of dup..getdtablecount, filedescopen, the bsd-signature wrappers falloc/fnew/closef/fd_getfile_mode/file_count); LZ's path kept (the frozen amd64 conf.rs imports filedescopen from it), so no [[dropped]]"
+notes = "N4.3: the glue of bsd's descriptors over kernel::file and kernel::descrip (BsdFileGlue, BsdFileData, BsdFdKq, the open files' tables and NUMFILES, the sysent[] rows of dup..getdtablecount, filedescopen, the bsd-signature wrappers falloc/fnew/closef/fd_getfile_mode/file_count); LZ's path kept (the frozen amd64 conf.rs imports filedescopen from it), so no [[dropped]]; N5.3: BsdFileGlue's namei members (LZ's Componentname and Nameidata, UnveilMatch, vnode_of) until the switch; its Stat and Vnode types and vref, vrele and stat legs gone"
 
 [[module]]
 rust = "sys/kern/kern_event.rs"
@@ -5196,7 +5196,7 @@ adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.
 rust = "sys/kern/proc_glue.rs"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs"]
 status = "redesigned"
-notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's; N4.8b b3c: tcb_get, tcb_set and tcb_invalid are hal::thread's"
+notes = "N4.2: bsd's side of kernel::proc: BsdProcGlue (ProcGlue) with the members of bsd's subsystems a process, thread, group and session carry (BsdProcessG: the klist and its own mutex in a recycled ProcStore, sigacts, the sigio list, the descriptor table, the timeouts, the unveil table, the pinsyscall tables; BsdThreadG: p_fd, p_kq, p_sleep_to, p_sigstk, p_sigval, p_self, p_exited; BsdPgrpG; BsdSessionG: s_ttyvp/s_ttyp links, s_verauthto), the per-glue tables (a static, or per host test thread), the lookups under a kernel-lock witness (tfind, prfind, pgfind, zombiefind), counted handles from list references (process_ref, pgrp_ref, prfind_ref, session_of, pgrp_of), the walks that sleep (allprocess_foreach by refcnt, allprocess_rescan), and the hooks into kern_sig, tty and kern_timeout; LZ's kern_proc.rs (deleted) went to sys/kernel/proc.rs and here; N4.8b: the system call prologue's members (proc_pc over Machine::proc_pc, sigcode_svc_offset, user_vmspace over the thread's word, pledge_syscall over kern_pledge, scdebug_call/scdebug_ret under syscall_debug); N4.8b: sendsig, signotify, proc_stack and proc_pc are no longer the glue's; N4.8b b3c: tcb_get, tcb_set and tcb_invalid are hal::thread's; N5.3: BsdProcGlue's namei hooks over kern_pledge and kern_unveil"
 
 [[module.fn]]
 lz = "sys/kern/kern_proc.rs::HashTable"
@@ -8190,7 +8190,7 @@ rust = "sys/kernel/fs/subr.rs"
 crate = "kernel"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "redesigned"
-notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7)"
+notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7); N5.3: VfsTables gains namei_pool, nch_pool, the name cache (part 0 of NCLOCK) and nchstats; vfs_test_reset forgets the cache"
 [[module.fn]]
 lz = "sys/kern/vfs_subr.rs::IFTOVT_TAB"
 native = ["sys/kernel/fs/vnode.rs::IFTOVT_TAB"]
@@ -8297,7 +8297,7 @@ rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
 status = "redesigned"
-notes = "N5.2: struct vnode as Vnode<G>: the [K] words Relaxed atomics behind LZ's accessor names, [V] a Guarded cell of the one vnode_mtx (VNODE_MTX, IPL_BIO), [B] v_holdcnt a cell of the free lists' lock, hal ListEntry links, v_mount/v_uvm Links, v_un a ReadMostly cell holding the Specinfo by value, v_op an id into the registry (VopsId, kind()), v_data an AtomicPtr word, bsd's members (name cache heads, v_socket, si_lockf) the glue's VnodeG; enum vtype/vtagtype, struct vattr, the V*/IO_*/LK_* constants, iftovt/vttoif; vn_lock (vfs_vnops.c) and the Locked guard"
+notes = "N5.2: struct vnode as Vnode<G>: the [K] words Relaxed atomics behind LZ's accessor names, [V] a Guarded cell of the one vnode_mtx (VNODE_MTX, IPL_BIO), [B] v_holdcnt a cell of the free lists' lock, hal ListEntry links, v_mount/v_uvm Links, v_un a ReadMostly cell holding the Specinfo by value, v_op an id into the registry (VopsId, kind()), v_data an AtomicPtr word, bsd's members (name cache heads, v_socket, si_lockf) the glue's VnodeG; enum vtype/vtagtype, struct vattr, the V*/IO_*/LK_* constants, iftovt/vttoif; vn_lock (vfs_vnops.c) and the Locked guard; N5.3: the name cache's heads (nc, NcHeads<G>, part 1 of NCLOCK) and the device's record locks (speclockf, a LockfSlot) as members of Vnode"
 
 [[module.fn]]
 lz = "sys/sys/vnode.rs::Buflists"
@@ -8358,7 +8358,7 @@ rust = "sys/kernel/fs/vops.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/sys/mount.rs", "sys/kern/vfs_vops.rs"]
 status = "redesigned"
-notes = "N5.2: struct vops as the trait Vnops<G> (each slot a method with the C's arguments, defaulting to the NULL slot's EOPNOTSUPP) and struct vfsops as Vfs<G>; bsd implements both on its Vops/Vfsops tables; the vfs_vops.c wrappers (vop_*: VBIOERROR in fsync, the releases of remove, ENOTDIR of readdir, pathconf's constant names, the curproc asserts) and the VFS_* macros as functions; Cred an opaque copy of struct ucred * (NOCRED/FSCRED compared, never dereferenced); IoBuf the buffer of strategy/bwrite as it came (token or lent)"
+notes = "N5.2: struct vops as the trait Vnops<G> (each slot a method with the C's arguments, defaulting to the NULL slot's EOPNOTSUPP) and struct vfsops as Vfs<G>; bsd implements both on its Vops/Vfsops tables; the vfs_vops.c wrappers (vop_*: VBIOERROR in fsync, the releases of remove, ENOTDIR of readdir, pathconf's constant names, the curproc asserts) and the VFS_* macros as functions; Cred an opaque copy of struct ucred * (NOCRED/FSCRED compared, never dereferenced); IoBuf the buffer of strategy/bwrite as it came (token or lent); N5.3: Cn<'a, G>, the glue's Componentname, in the lookup family's signatures"
 
 [[module]]
 rust = "sys/kernel/fs/miscfs/deadfs.rs"
@@ -8485,6 +8485,48 @@ crate = "kernel"
 lz = ["sys/kern/kern_physio.rs"]
 status = "redesigned"
 notes = "N5.1: physio(9) over a bufpl box on an OwnedList of its own (never bufhead: numbufs untouched), its B_BUSY token consumed by the strategy routine (a closure; bsd's adapter parks it for the driver's fn(&'static Buf)) and taken back from the buffer's slot at B_DONE under the cache's lock (the C's splbio); each piece wired by uvm_vslock_device and mapped by DeviceLock::vmapbuf (km::PhysWindow, borrowing the lock, the address only), unmapped before uvm_vsunlock_device; a thread without an address space is EFAULT"
+
+[[module]]
+rust = "sys/kernel/fs/cache.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_cache.rs", "sys/sys/namei.rs"]
+status = "redesigned"
+notes = "N5.3: vfs_cache.c over the name cache's own Mutexed leaf NCLOCK at IPL_NONE (D-N5.3-2, N12 removes it): the LRU lists and counts a Guarded part 0 (NameCache<G> in VfsTables), each vnode's heads (v_nc_tree, v_cache_dst) a Guarded part 1 keyed to it (NcHeads<G>); the entries PoolBoxes of nch_pool owned by the positive or the negative LRU (OwnedList), indexed by the directory's tree and the destination's list (SecondaryTree, SecondaryList); cache_zap by a hold; nchstats as atomics (Nchstats); cache_counts and namecache_test_reset for the tests and benches; unwired until N5.3's switch"
+
+[[module]]
+rust = "sys/kernel/fs/getcwd.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_getcwd.rs"]
+status = "redesigned"
+notes = "N5.3: vfs_getcwd.c: vfs_getcwd_scandir (the directory buffer an MArray, the entries walked by offset), vfs_getcwd_getcache, vfs_getcwd_common over a slice and an index (the C's bufp and bpp), sys___getcwd; unwired until N5.3's switch"
+
+[[module]]
+rust = "sys/kernel/fs/lockf.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_lockf.rs", "sys/sys/lockf.rs"]
+status = "redesigned"
+notes = "N5.3: vfs_lockf.c and lockf.h: the per-object state a LockfSlot (a Guarded Option<PoolBox<LockfState>> under lockf_lock's RawRwlock, part 0), the locks PoolBoxes owned by the state's list or its pending list (OwnedList), each lock's mutable part a Guarded part 1, the blocked-on link and list SecondaryRef and SecondaryList; lf_advlock, lf_setlock (the six overlap cases as positioned inserts and moves), lf_clearlock, lf_getlock, lf_getblock, lf_findoverlap, lf_split, lf_wakelock, lf_deadlock, lf_purgelocks, lf_alloc and lf_free over the uidinfo; the owner a LockOwner; unwired until N5.3's switch"
+
+[[module]]
+rust = "sys/kernel/fs/lookup.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_lookup.rs"]
+status = "redesigned"
+notes = "N5.3: vfs_lookup.c: ndinitat and ndinit, component_push and component_pop, namei, vfs_lookup and vfs_relookup over the owned path buffer (the component an offset and a length into it, never a pointer); the pledge and unveil hooks ProcGlue legs at the C's points; every check of the C kept at its point (Security-Review); unwired until N5.3's switch"
+
+[[module]]
+rust = "sys/kernel/fs/namei.rs"
+crate = "kernel"
+lz = ["sys/sys/namei.rs"]
+status = "redesigned"
+notes = "N5.3: namei.h: Componentname<G> (the path buffer owned, the component an offset and a length into it or a literal, the thread and the credential lent), Nameidata<G>, PathBuf (a PoolBox of MAXPATHLEN bytes of namei_pool), NiDirp, the operations and flags, the KERN_NCHSTATS indexes, the unveil flags"
+
+[[module]]
+rust = "sys/kernel/fs/vnops.rs"
+crate = "kernel"
+lz = ["sys/kern/vfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.3: vfs_vnops.c: vn_open, vn_writechk, vn_fsizechk, vn_marktext, vn_close, vn_rdwr over RdwrBuf (a kernel slice or a user range), the vnode files' operations as VnodeFileOps (FileOps<G>, decision 46), vn_read, vn_write, vn_statfile, vn_stat into hal's Stat, vn_ioctl, vn_closefile, vn_kqfilter, vn_seek, vn_isunder; vn_lock stays in vnode.rs (N5.2); unwired until N5.3's switch"
 
 [[module]]
 rust = "sys/hal/sys/syslimits.rs"
@@ -9144,7 +9186,7 @@ reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that n
 [[extra]]
 rust = "sys/hal/link.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp)"
 
 [[module]]
 rust = "sys/hal/list.rs"
@@ -9520,7 +9562,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock)"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools)"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -9641,7 +9683,7 @@ rust = "sys/kernel/proc.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_proc.rs", "sys/sys/proc.rs", "sys/sys/user.rs"]
 status = "redesigned"
-notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack); N4.8b b3c: ProcGlue loses tcb_get, tcb_set and tcb_invalid (hal::thread)"
+notes = "N4.2: struct process/proc/pgrp/session/uidinfo generic over ProcGlue (bsd's members in a glue value each type derefs to; p_runq the glue's entry type), the lists and hashes as hal PinLists under the kernel lock's witnesses (adapters declared by the glue, proc_glue_links!), ProcTables per glue (hashes from procinit, procpl/processpl/pgrppl/sessionpl), a process's threads owned by its OwnedTree under ps_mtx, credentials/vmspace/limits as handles under ps_mtx with address words, a thread's own credential copy (shape A), words for the plain members, StrSlot p_wmesg, MachineSlot first (P1); kern_proc.c's functions (procinit, uid_find as with_uidinfo, chgproccnt, inferior, tfind/tfind_user/prfind/pgfind/zombiefind under a witness, enternewpgrp/enterthispgrp/leavepgrp/pgdelete/zapverauth/fixjobc/killjobc/orphanpg); proc_printit/db_*/pgrpdump not ported (LZ's); N4.8b: ProcGlue gains the prologue's calls out: proc_pc, sigcode_svc_offset, user_vmspace (None fails the MAP_STACK check), pledge_syscall (required), scdebug_call, scdebug_ret; N4.8b: ProcGlue loses sendsig, signotify, proc_stack and proc_pc (hal::sig, kernel::sig's signotify, hal::trap::proc_pc/proc_stack); N4.8b b3c: ProcGlue loses tcb_get, tcb_set and tcb_invalid (hal::thread); N5.3: ProcGlue's namei hooks (pledge_namei, checkzoneinfopath, unveil_start_relative, unveil_check_component, unveil_check_final); Session's s_ttyvp a kernel vnode (SyncLink)"
 
 [[module.fn]]
 lz = "sys/sys/proc.rs::PInentry"
@@ -10085,7 +10127,7 @@ reason = "decision 43, N5.3: host microbenchmarks of names, files and record loc
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
 crate = "kernel"
-reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend"
 
 [[extra]]
 rust = "sys/kernel/benches/bio.rs"
@@ -10541,7 +10583,7 @@ rust = "sys/kernel/file.rs"
 crate = "kernel"
 lz = ["sys/sys/file.rs"]
 status = "redesigned"
-notes = "N4.3: struct file as a TypedPool item (filepl, recorded) behind FileRef (a PoolArc: f_count is the handle count; FREF a clone, FRELE PoolArc::try_last -> fdrop with the close's error, a plain last drop closes with no thread); f_ops/f_data/f_type installed once (Installed, OnceStatic), f_mtx a Mutexed<FileStats>, filehead a PinList under fhdlk (FileTables); a message's descriptor a parked reference (forget/adopt). FileGlue: the bsd hooks (vnode, socket, kqueue, pledge, signals), a bridge row"
+notes = "N4.3: struct file as a TypedPool item (filepl, recorded) behind FileRef (a PoolArc: f_count is the handle count; FREF a clone, FRELE PoolArc::try_last -> fdrop with the close's error, a plain last drop closes with no thread); f_ops/f_data/f_type installed once (Installed, OnceStatic), f_mtx a Mutexed<FileStats>, filehead a PinList under fhdlk (FileTables); a message's descriptor a parked reference (forget/adopt). FileGlue: the bsd hooks (vnode, socket, kqueue, pledge, signals), a bridge row; N5.3: FileGlue's namei members (the Componentname and Nameidata GATs, UnveilMatch, vnode_of) for kernel::fs's names until the switch; FileGlue's Stat and Vnode types and its vref, vrele and stat legs gone (hal's Stat, kernel::fs's vnodes)"
 
 [[module.fn]]
 lz = "sys/sys/file.rs::File::default"
@@ -10554,7 +10596,7 @@ rust = "sys/kernel/descrip.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_descrip.rs", "sys/sys/filedesc.rs", "sys/kern/sys_generic.rs"]
 status = "redesigned"
-notes = "N4.3: kern_descrip.c and sys_generic.c's read/write/ioctl/utrace over a Filedesc<G> in fdescpl (FdRef): the slots and flags in fd_fplock's Mutexed, the bitmaps and marks in fd_lock's Rwlocked (FdGuard), the arrays filedesc0's or owned MArrays; fd_refcnt the processes sharing it, the last fdfree empties it"
+notes = "N4.3: kern_descrip.c and sys_generic.c's read/write/ioctl/utrace over a Filedesc<G> in fdescpl (FdRef): the slots and flags in fd_fplock's Mutexed, the bitmaps and marks in fd_lock's Rwlocked (FdGuard), the arrays filedesc0's or owned MArrays; fd_refcnt the processes sharing it, the last fdfree empties it; N5.3: fd_cdir and fd_rdir kernel vnodes (SyncLink), referenced through fs::subr; fstat into hal's Stat"
 
 [[module.fn]]
 lz = "sys/sys/filedesc.rs::Process::fd"
@@ -11576,12 +11618,12 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"
 crate = "kernel"
-reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source"
+reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread)"
 
 [[extra]]
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
-reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on"
 
 [[extra]]
 rust = "sys/kernel/benches/vm.rs"
