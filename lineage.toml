@@ -7648,7 +7648,7 @@ rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs"]
-notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps the *_args with their 3 read_unaligned (LZ's, N5.4) and struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6)"
+notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
 rust = "sys/sys/mplock.rs"
@@ -7909,7 +7909,7 @@ rust = "sys/hal/sys/mount.rs"
 crate = "hal"
 lz = ["sys/sys/mount.rs", "sys/kern/vfs_subr.rs"]
 status = "redesigned"
-notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); the *_args stay bsd's (N5.4)"
+notes = "N5.1: struct bcachestats moved into hal so kernel::fs::bio (bcstats' owner) and bsd (vfs.generic.bcachestat) share one copy, AbiPod through hal::abi_pod! (LZ declared it in vfs_bio.rs); bsd's sys/sys/mount.rs re-exports it; N5.2: the ABI half of mount.h (struct statfs, fsid_t, struct fid, fhandle_t, MountInfo, the MOUNT_*, MNT_*, VB_*, VFS_* constants) and vfs.generic.conf's VfsconfAbi (LZ's private struct of vfs_subr.rs) moved here, Statfs, Fhandle, Fsid, Fid and MountInfo AbiPod through abi_pod! (LZ's two unsafe impl AbiPod go); N5.4 (D-N5.4-3): the mount arguments moved here, ExportArgs, UfsArgs, MfsArgs, IsoArgs, NfsArgs, MsdosfsArgs, NtfsArgs, UdfArgs, TmpfsArgs and FusefsArgs with their constants, and <sys/ucred.h>'s struct xucred (Xucred, which export_args embeds; ucred.h's licence block and Upstream/LZ lines with it), each AbiPod through abi_pod! with its holes named and from_bytes over hal::user::pod_from_bytes; bsd's sys/sys/mount.rs and sys/sys/ucred.rs re-export them"
 
 [[module]]
 rust = "sys/kernel/fs/buf.rs"
@@ -9844,7 +9844,7 @@ reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocati
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn"
+reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native)"
 
 [[extra]]
 rust = "sys/hal/api.rs"
