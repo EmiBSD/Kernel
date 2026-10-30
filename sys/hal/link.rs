@@ -189,7 +189,7 @@ impl<T: Sync + 'static> SyncLink<T> {
     /// The target, `None` when the link is empty.
     #[inline]
     pub fn get(&self) -> Option<&'static T> {
-        self.read(None)
+        self.read(Access::Load)
     }
 
     /// Points the link at `to` (`None` empties it).
@@ -201,7 +201,7 @@ impl<T: Sync + 'static> SyncLink<T> {
     /// Points the link at `to`, returning the target it had: one atomic swap (`xchg`).
     #[inline]
     pub fn replace(&self, to: Option<&'static T>) -> Option<&'static T> {
-        self.read(Some(to))
+        self.read(Access::Swap(to))
     }
 
     /// The pointer word of `to` (null for `None`).
@@ -210,13 +210,13 @@ impl<T: Sync + 'static> SyncLink<T> {
         to.map_or(ptr::null_mut(), |r| ptr::from_ref(r).cast_mut())
     }
 
-    /// The target the link has (`swap` `None`: a load), or had before it was swapped to
-    /// `swap`'s target (`Some`: one atomic exchange), as a reference.
+    /// The target the link has (`Access::Load`), or had before it was swapped to another
+    /// (`Access::Swap`: one atomic exchange), as a reference.
     #[inline]
-    fn read(&self, swap: Option<Option<&'static T>>) -> Option<&'static T> {
-        let p = match swap {
-            None => self.ptr.load(Ordering::Acquire),
-            Some(to) => self.ptr.swap(Self::word(to), Ordering::AcqRel),
+    fn read(&self, access: Access<T>) -> Option<&'static T> {
+        let p = match access {
+            Access::Load => self.ptr.load(Ordering::Acquire),
+            Access::Swap(to) => self.ptr.swap(Self::word(to), Ordering::AcqRel),
         };
         if p.is_null() {
             return None;
@@ -234,6 +234,23 @@ impl<T: Sync + 'static> SyncLink<T> {
         Some(unsafe { &*p })
     }
 }
+
+/// What [`SyncLink`]'s reader does to the word: read it, or exchange it for a new target.
+enum Access<T: 'static> {
+    /// A load.
+    Load,
+    /// A swap to this target (`None` empties the link).
+    Swap(Option<&'static T>),
+}
+
+// A reference is `Copy` whatever `T` is, so the choice is too (a derive would ask `T: Copy`).
+impl<T: 'static> Clone for Access<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: 'static> Copy for Access<T> {}
 
 impl<T: 'static> Default for SyncLink<T> {
     fn default() -> Self {
