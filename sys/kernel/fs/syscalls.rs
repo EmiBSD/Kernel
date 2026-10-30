@@ -2797,9 +2797,12 @@ pub fn dorenameat<G: ProcGlue>(
             if ptr::eq(fvp, tdvp) {
                 error = Err(Errno::EINVAL);
             }
-            // If source is the same as the destination (that is the same inode number)
+            // If source is the same as the destination (that is the same inode number): the
+            // C's `error = -1`, which replaces the EINVAL above and makes the call answer 0
+            // (`rename(".", "..")` at a root, where `..` is the root itself).
             if tvp.is_some_and(|tvp| ptr::eq(fvp, tvp)) {
                 same = true;
+                error = Ok(());
             }
             error
         };
@@ -4132,6 +4135,65 @@ mod tests {
         assert_eq!(sys_rename(p, path(b"/a/c/"), path2(b"/e/")), Ok(()));
         assert!(tree_find(ROOT, b"e").is_some());
         assert!(!testfs::any_locked());
+    }
+
+    /// The C's `error = -1` wins over its EINVAL (vfs_syscalls.c:2971-2978, :3004-3005). At a
+    /// root, `..` looked up for the rename's target is the root itself as both the directory
+    /// and the file (vfs_lookup.c:555-562), and `.` looked up for DELETE is the directory
+    /// (ufs_lookup's): `rename(".", "..")` has fvp == tdvp == tvp and answers 0, renaming
+    /// nothing; at the absolute root and at a changed one.
+    #[test]
+    fn rename_of_dot_onto_dotdot_at_a_root_answers_0() {
+        let (_g, p) = test_thread();
+        let root = rootvnode::<Pg>().unwrap();
+        // namei's half first: `..` at the root, as dorenameat's target looks it up.
+        let mut nd = ndinit(
+            RENAME,
+            LOCKPARENT | LOCKLEAF | NOCACHE | SAVESTART,
+            NiDirp::Sys(b".."),
+            p,
+        );
+        namei(&mut nd).unwrap();
+        let (dvp, vp) = (ndvp(nd.ni_dvp), ndvp(nd.ni_vp));
+        assert!(
+            ptr::eq(dvp, root) && ptr::eq(vp, root),
+            "`..` at the root is the root"
+        );
+        let _ = vop_abortop(dvp, &mut nd.ni_cnd);
+        vrele(dvp);
+        vput(vp);
+        if let Some(sd) = nd.ni_startdir {
+            vrele(sd);
+        }
+        drop(nd.ni_cnd.take_pnbuf());
+
+        // The names the tree has, which a rename would move.
+        let names = || {
+            (
+                tree_find(ROOT, b"a"),
+                tree_find(ROOT, b"f"),
+                tree_find(A, b"c"),
+                tree_find(ROOT, b".."),
+                tree_find(A, b".."),
+            )
+        };
+        let before = (usecounts(), names());
+        assert_eq!(sys_rename(p, path(b"."), path2(b"..")), Ok(()));
+        assert_eq!((usecounts(), names()), before);
+        assert!(!testfs::any_locked());
+
+        // In a changed root (/a), its `..` is /a itself: the same answer.
+        assert_eq!(sys_chroot(p, path(b"/a")), Ok(()));
+        assert_eq!(sys_chdir(p, path(b"/")), Ok(()));
+        assert!(p.fd().cdir().is_some_and(|c| ptr::eq(c, node(A))));
+        assert_eq!(sys_rename(p, path(b"."), path2(b"..")), Ok(()));
+        assert!(!testfs::any_locked());
+        assert_eq!(names(), before.1);
+        // A name and its own parent still differ: EINVAL as before.
+        assert_eq!(
+            sys_rename(p, path(b"/c"), path2(b"/c/x")),
+            Err(Errno::EINVAL)
+        );
     }
 
     /// `mkdir` and `mkdirat` (vfs_syscalls.c:3013-3067): EEXIST; the directory made with the
