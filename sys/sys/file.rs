@@ -150,7 +150,8 @@ impl FileOps<BsdFileGlue> for Fileops {
 pub trait FileExt {
     /// `(struct vnode *)fp->f_data` of a `DTYPE_VNODE` file (`panic(9)` for another).
     fn vnode(&self) -> &'static Vnode;
-    /// `fp->f_cred`, as the vnode layer takes it (a pointer the file keeps alive).
+    /// `fp->f_cred`'s address, as `kinfo_file`'s `f_ucred` word records it (`KERN_FILE`):
+    /// a number, never dereferenced; the vnode layer takes the file's credential as a `Cred`.
     fn f_cred_ptr(&self) -> *const Ucred;
 }
 
