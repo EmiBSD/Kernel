@@ -57,13 +57,15 @@
 //! ## Deviations
 //! - The structure is `malloc(M_UFSMNT)`ed by `ffs_mountfs` and `ext2fs_mountfs` and freed by
 //!   their unmounts, all `bsd`'s until N5.5b and N5.6, which reach it from `mnt_data`
-//!   (`vfstoufs`, `bsd`'s, its one `unsafe` kept). The kernel reads its words through the
-//!   inodes' copies (`inode.rs`).
-//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS), `um_export` (`struct
-//!   netexport`, the NFS server's) and the quota members (`um_quotas`, `um_cred`, `um_btime`,
-//!   `um_itime`, `um_qflags`) are members of `bsd`'s types: they are the glue's member
-//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until their owners move (the
-//!   quotas at N5.5a2, `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6).
+//!   (`vfstoufs`, `bsd`'s, its one `unsafe` kept). The kernel reaches it through the inodes'
+//!   `i_ump` and the words they copy (`inode.rs`), and through the argument `bsd` passes
+//!   beside a mount to the quota functions (`quota.rs`'s deviations).
+//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS) and `um_export` (`struct
+//!   netexport`, the NFS server's) are members of `bsd`'s types: they are the glue's member
+//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until their owners move
+//!   (`um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6). The quota members
+//!   (`um_quotas`, `um_cred`, `um_btime`, `um_itime`, `um_qflags`) are the structure's own
+//!   since N5.5a2.
 //! - `MNINDIR`, `blkptrtodb` and `is_sequential` are functions with the macros' names in lower
 //!   case.
 //!
@@ -121,8 +123,7 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_itime: [AtomicI64; MAXQUOTAS],
     /// `um_qflags`: quota specific flags.
     pub um_qflags: [AtomicU8; MAXQUOTAS],
-    /// The members of `bsd`'s types (`ufsmount_u`, `um_export`, the quotas; the module's
-    /// deviations).
+    /// The members of `bsd`'s types (`ufsmount_u`, `um_export`; the module's deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
 

@@ -71,18 +71,20 @@
 //! ([`Vnode::take_node`]), and the last handle puts the item (and its dinode) back.
 //!
 //! ## Deviations
-//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS), `inode_ext` (`dirhash` of UFS, `e2fs` of
-//!   EXT2FS) and `i_dquot[]` are members of `bsd`'s types (ffs's super block, ext2fs's, the
-//!   quota and dirhash structures): they are the glue's member [`Inode::g`]
-//!   (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (dquot and dirhash at
-//!   N5.5a2, `i_fs` at N5.5b, the ext2fs members at N5.6). EXT2FS's dinode (`i_e2din`) is that
-//!   member's too: the kernel's [`Dinode`] holds the FFS dinodes only, and a `DIP` of an ext2fs
-//!   inode is `panic(9)` (the C's `DIP` reads FFS members there; nothing calls it so).
-//! - `i_ump` is [`Inode::mount`] and the copies of the `struct ufsmount` words the UFS layer
-//!   reads (`um_fstype`, `um_nindir`, `um_bptrtodb`, `um_seqinc`), written once by the file
-//!   system's `vget` from the mount's, which never change after the mount; `i_devvp` (the C's
-//!   macro for `i_ump->um_devvp`) is [`Inode::i_devvp`]. `bsd` reaches the whole structure from
-//!   the mount (`vfstoufs`).
+//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS) and EXT2FS's `inode_ext` (`e2fs`) are
+//!   members of `bsd`'s types (ffs's super block, ext2fs's): they are the glue's member
+//!   [`Inode::g`] (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (`i_fs` at
+//!   N5.5b, the ext2fs members at N5.6). `i_dquot[]` and UFS's `inode_ext.dirhash` are the
+//!   inode's own since N5.5a2 ([`Inode::i_dquot`], [`Inode::i_dirhash`]). EXT2FS's dinode
+//!   (`i_e2din`) is the glue member's too: the kernel's [`Dinode`] holds the FFS dinodes only,
+//!   and a `DIP` of an ext2fs inode is `panic(9)` (the C's `DIP` reads FFS members there;
+//!   nothing calls it so).
+//! - `i_ump` is [`Inode::ump`], the mount's `struct ufsmount` as the file system's `vget` lends
+//!   it (`bsd`'s `vfstoufs`, a `&'static` the unmount's `vflush` ends: no inode, and so no
+//!   [`InodeRef`], outlives it; docs/SCAFFOLDING.md), beside [`Inode::mount`] and the copies
+//!   of the words the UFS layer reads on every block (`um_fstype`, `um_nindir`,
+//!   `um_bptrtodb`, `um_seqinc`), written once by `vget`, which never change after the mount;
+//!   `i_devvp` (the C's macro for `i_ump->um_devvp`) is [`Inode::i_devvp`].
 //! - The `DIP` macros select the UFS1 or UFS2 member by the dinode the inode holds, as the C
 //!   does by `um_fstype` under `FFS2`; LZ's `ffs2` feature is `bsd`'s (ffs reads a UFS2 dinode
 //!   only with it), the kernel reads either. A getter returns the wider of the two members'

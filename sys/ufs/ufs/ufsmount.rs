@@ -160,8 +160,13 @@ pub fn vfstoufs(mp: &Mount) -> &'static Ufsmount {
         ));
     }
     // SAFETY: a UFS mount's `mnt_data` (checked above) is the `struct ufsmount` that
-    // `ffs_mountfs` allocated, which lives until `ffs_unmount` frees it and clears
-    // `mnt_data`.
+    // `ffs_mountfs` (or `ext2fs_mountfs`) allocated, which lives until `ffs_unmount`
+    // (`ext2fs_unmount`) frees it and clears `mnt_data`. The `'static` is a claim on the
+    // callers: they hold the reference only while the mount is mounted. `bsd`'s own callers
+    // use it within an operation on the mount; the kernel's inodes store it as `i_ump`
+    // (`ffs_vget`, `ext2fs_vget`) for their life, and no inode, so no `InodeRef`, outlives
+    // the unmount's `vflush`, which reclaims every vnode of the mount (the inode's slot
+    // handle taken, the last handle dropped) before the structure is freed.
     unsafe { &*data.cast::<Ufsmount>() }
 }
 /* </CODE> */

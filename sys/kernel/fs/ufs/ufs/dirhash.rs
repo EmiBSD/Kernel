@@ -230,7 +230,8 @@ pub struct Dirhash {
     /// `dh_seqoff`: sequential access optimisation offset.
     pub dh_seqoff: AtomicI32,
     /// `dh_hash != NULL`, read without `dh_mtx` (`ufsdirhash_build`'s unlocked read):
-    /// written under it when the arrays are published or recycled.
+    /// cleared under it when a recycle takes the arrays, set by `ufsdirhash_build` under the
+    /// list's lock when it publishes them (no other thread sees the dirhash before).
     dh_hashed: AtomicBool,
     /// `dh_list`: chain of all dirhashes. Protected by `ufsdirhash_mtx`.
     pub dh_list: PinEntry<Dirhash>,
