@@ -1346,9 +1346,7 @@ pub fn setup_root_cached(
     bufpages: i64,
 ) -> (MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
     let g = setup_on(crate::testutil::pages_install(bytes));
-    super::bufq::bufq_test_reset();
-    super::bio::BUFPAGES.store(bufpages, Ordering::Relaxed);
-    super::bio::bufinit(bytes / hal::sys::param::PAGE_SIZE);
+    crate::testutil::bufcache_init(bytes, bufpages);
     root_on(g)
 }
 
