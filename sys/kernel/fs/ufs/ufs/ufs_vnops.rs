@@ -703,29 +703,29 @@ pub fn ufs_chown<G: ProcGlue>(
         quota_flags |= UFS_QUOTA_NOGID;
     }
 
-    getinoquota(&ip)?;
-    let _ = ufs_quota_free_blocks2(&ip, change, cred, quota_flags);
-    let _ = ufs_quota_free_inode2(&ip, cred, quota_flags);
-    let _ = ufs_quota_delete(&ip);
+    getinoquota(ip)?;
+    let _ = ufs_quota_free_blocks2(ip, change, cred, quota_flags);
+    let _ = ufs_quota_free_inode2(ip, cred, quota_flags);
+    let _ = ufs_quota_delete(ip);
 
     ip.dip_set_gid(gid);
     ip.dip_set_uid(uid);
 
     let error: Result<(), Errno> = 'error: {
-        if let Err(e) = getinoquota(&ip) {
+        if let Err(e) = getinoquota(ip) {
             break 'error Err(e);
         }
 
-        if let Err(e) = ufs_quota_alloc_blocks2(&ip, change, cred, quota_flags) {
+        if let Err(e) = ufs_quota_alloc_blocks2(ip, change, cred, quota_flags) {
             break 'error Err(e);
         }
 
-        if let Err(e) = ufs_quota_alloc_inode2(&ip, cred, quota_flags) {
-            let _ = ufs_quota_free_blocks2(&ip, change, cred, quota_flags);
+        if let Err(e) = ufs_quota_alloc_inode2(ip, cred, quota_flags) {
+            let _ = ufs_quota_free_blocks2(ip, change, cred, quota_flags);
             break 'error Err(e);
         }
 
-        if getinoquota(&ip).is_err() {
+        if getinoquota(ip).is_err() {
             kpanic(format_args!("chown: lost quota"));
         }
 
@@ -744,15 +744,15 @@ pub fn ufs_chown<G: ProcGlue>(
     };
 
     // error:
-    let _ = ufs_quota_delete(&ip);
+    let _ = ufs_quota_delete(ip);
 
     ip.dip_set_gid(ogid);
     ip.dip_set_uid(ouid);
 
-    if getinoquota(&ip).is_ok() {
-        let _ = ufs_quota_alloc_blocks2(&ip, change, cred, quota_flags | UFS_QUOTA_FORCE);
-        let _ = ufs_quota_alloc_inode2(&ip, cred, quota_flags | UFS_QUOTA_FORCE);
-        let _ = getinoquota(&ip);
+    if getinoquota(ip).is_ok() {
+        let _ = ufs_quota_alloc_blocks2(ip, change, cred, quota_flags | UFS_QUOTA_FORCE);
+        let _ = ufs_quota_alloc_inode2(ip, cred, quota_flags | UFS_QUOTA_FORCE);
+        let _ = getinoquota(ip);
     }
     error
 }
@@ -1708,7 +1708,8 @@ fn strategy_clrbuf(bp: &mut IoBuf) {
     match bp {
         IoBuf::Token(t) => t.clear(),
         IoBuf::Lent(b) => {
-            let mut t = b.take_parked().unwrap_or_else(|| BufRef::foreign(*b));
+            let lent = *b;
+            let mut t = lent.take_parked().unwrap_or_else(|| BufRef::foreign(lent));
             t.clear();
             crate::fs::buf::Buf::park(t);
         }
