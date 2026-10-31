@@ -2017,13 +2017,16 @@ impl<G: ProcGlue> Filter<G> for UfsRead {
     /// `filt_ufsread`: the bytes past the file offset; always ready for poll and select.
     fn event(kn: &Knote<G>, hint: i64) -> bool {
         let vp = kn_vnode(kn);
-        let ip = vtoi(vp);
 
-        // filesystem is gone, so set the EOF flag and schedule the knote for deletion.
+        // filesystem is gone, so set the EOF flag and schedule the knote for deletion. The
+        // vnode has no inode any more: vclean reclaims it before its VN_KNOTE(NOTE_REVOKE),
+        // so the inode is reached only past this test (the C loads the NULL v_data and does
+        // not follow it).
         if hint == i64::from(NOTE_REVOKE) {
             kn.set_flags(EV_EOF | EV_ONESHOT);
             return true;
         }
+        let ip = vtoi(vp);
 
         let size = if ip.fstype() == UM_EXT2FS {
             <G::FileGlue as FileGlue>::ext2fs_size(&ip) as i64
@@ -2954,6 +2957,36 @@ mod tests {
         // revoke: the vnode is cleaned, its inode reclaimed off it.
         crate::fs::vops::vop_revoke(f, crate::fs::vnode::REVOKEALL).unwrap();
         assert!(f.node_with(|_: &Inode<TestGlue>| ()).is_none());
+        vput(root);
+    }
+
+    #[test]
+    fn a_revoked_file_s_read_filter_ends_without_its_inode() {
+        // tail -f on a file, then umount -f: vclean reclaims the inode (the vnode's node
+        // goes), then knotes NOTE_REVOKE; the read filter must not reach the inode.
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        let kn = Knote::<TestGlue>::detached();
+        assert!(kn.set_hook_vnode(f).is_ok());
+        let _ = vop_unlock(f);
+        vgone(f);
+        assert!(f.node_with(|_: &Inode<TestGlue>| ()).is_none());
+        assert!(<UfsRead as Filter<TestGlue>>::event(
+            &kn,
+            i64::from(NOTE_REVOKE)
+        ));
+        assert!(kn.has_flags(EV_EOF) && kn.has_flags(EV_ONESHOT));
+        // The write and vnode filters read no inode at all.
+        assert!(<UfsWrite as Filter<TestGlue>>::event(
+            &kn,
+            i64::from(NOTE_REVOKE)
+        ));
+        assert!(<UfsVnode as Filter<TestGlue>>::event(
+            &kn,
+            i64::from(NOTE_REVOKE)
+        ));
         vput(root);
     }
 
