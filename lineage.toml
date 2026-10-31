@@ -8584,12 +8584,52 @@ lz = ["sys/ufs/ufs/ufs_lookup.rs"]
 status = "redesigned"
 notes = "N5.5a3: ufs_lookup in the kernel's Vnops::lookup shape; directory blocks are the busy buffer's token from InodeOps::bufatoff/buf_alloc, read and written through it (LZ's four unsafe data() blocks gone); ufs_direnter loses the unused newdirbp"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_lookup.rs::cn_cred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "redesigned"
 notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::UFSREAD_FILTOPS"
+native = ["UfsRead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::UFSWRITE_FILTOPS"
+native = ["UfsWrite"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::UFSVNODE_FILTOPS"
+native = ["UfsVnode"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::filt_ufsread"
+native = ["UfsRead::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::filt_ufswrite"
+native = ["UfsWrite::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::filt_ufsvnode"
+native = ["UfsVnode::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_vnops.rs::vmount"
+native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_quota.rs"
@@ -9454,7 +9494,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.r
 rust = "sys/ufs/ffs/ffs_subr.rs"
 lz = ["sys/ufs/ffs/ffs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
+adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_tables.rs"
@@ -9465,13 +9505,13 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
 lz = ["sys/ufs/ffs/ffs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
@@ -9524,7 +9564,7 @@ adapted_by = ["sys/kernel/fs/ufs/ufs/dirhash.rs"]
 rust = "sys/ufs/ufs/inode.rs"
 lz = ["sys/ufs/ufs/inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/quota.rs"
@@ -9547,7 +9587,8 @@ adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
 lz = ["sys/ufs/ufs/ufs_extern.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_ihash.rs"
@@ -9565,7 +9606,7 @@ adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs
 rust = "sys/ufs/ufs/ufs_lookup.rs"
 lz = ["sys/ufs/ufs/ufs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_quota.rs"
@@ -9583,7 +9624,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs
 rust = "sys/ufs/ufs/ufs_vnops.rs"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufsmount.rs"

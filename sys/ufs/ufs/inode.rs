@@ -97,7 +97,6 @@ use crate::ufs::ffs::fs::Fs;
 use crate::ufs::ufs::dinode::Ufsino;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ufs::dinode::{NDADDR, NIADDR};
-use crate::ufs::ufs::ufsmount::UM_EXT2FS;
 #[cfg(feature = "ext2fs")]
 use hal::link::PtrWord;
 pub use kernel::fs::ufs::ufs::inode::{
@@ -442,21 +441,14 @@ pub fn UFS_BUF_ALLOC(
         .map(lent)
 }
 
-/// `UFS_BUFATOFF(ip, offset, res, bpp)`: the buffer and the offset of `res` in its data.
+/// `UFS_BUFATOFF(ip, offset, res, bpp)`: the buffer and the offset of `res` in its data, lent
+/// as `bsd`'s buffers are (no `bsd` caller is left since N5.5a3: the kernel's `ufs_lookup` and
+/// `ufs_readdir` take the inode's token).
 #[allow(non_snake_case)] // the C macro's name
-///
-/// `bsd`'s callers (`ufs_lookup`, `ufs_readdir`) read FFS directories only: ffs's
-/// `ffs_bufatoff` lends them its buffer as `bsd`'s `bread` does, in the read's own section of
-/// the cache's lock, where the inode's `InodeOps::bufatoff` gives the kernel's callers the
-/// token (a lend of it would be one more section).
 pub fn UFS_BUFATOFF(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize), Errno> {
-    if ip.fstype() == UM_EXT2FS {
-        return ip
-            .vtbl()
-            .bufatoff(ip, offset)
-            .map(|(b, off)| (lent(b), off));
-    }
-    crate::ufs::ffs::ffs_subr::ffs_bufatoff(ip, offset)
+    ip.vtbl()
+        .bufatoff(ip, offset)
+        .map(|(b, off)| (lent(b), off))
 }
 /* </CODE> */
 

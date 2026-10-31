@@ -246,21 +246,37 @@ paid_by = "N6"
 # ext2fs's inodes hold none, as the C's). Decision 46: the C's table as a trait, which stays as
 # API when ffs moves. Called through bsd's UFS_* functions (sys/ufs/ufs/inode.rs) at N5.5a1;
 # the kernel's ufs_inactive, ufs_reclaim and dirhash (N5.5a2: truncate, update, inode_free,
-# bufatoff, the last as the busy buffer's token) and lookup and vnode operations (N5.5a3)
-# join. Paid when ffs moves (N5.5b).
+# bufatoff, the last as the busy buffer's token) and lookup and vnode operations (N5.5a3:
+# all six, bufatoff and buf_alloc as tokens; ffs_bufatoff's lent twin went with bsd's
+# lookup) join. Paid when ffs moves (N5.5b).
 # kernel::fs::ufs::ufs::inode::InodeOps
 [[bridge]]
 trait = "InodeOps"
-for = ["sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_inode.rs", "sys/ufs/ufs/inode.rs"]
+for = ["sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_inode.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/ufs/ufs/inode.rs"]
 paid_by = "N5"
 
-# bsd: struct vops, the operations table of each bsd file system (ffs, mfs, ext2fs, cd9660,
-# msdosfs, udf, tmpfs, fuse, nfs, ntfs and their special-file tables: 25 statics of
+# bsd: the three slots of ffs_vops/ffs_specvops that are ffs's own (ffs_read, ffs_write,
+# ffs_fsync; ffs_vnops.c:60-134), implemented on ffs's FfsVtbl by sys/ufs/ffs/ffs_vnops.rs
+# (each packs its struct vop_*_args) and held by the kernel's composed tables UfsVnops and
+# UfsSpecVnops (bsd's FFS_VOPS and FFS_SPECVOPS statics, N5.5a3). Decision 46's written
+# reason: not a C table but the residue of one (the rest of ffs_vops is the UFS layer's), so
+# a sub-trait beside InodeOps rather than a re-declared Vnops; the kernel's ffs implements it
+# and the row goes when ffs moves (N5.5b).
+# kernel::fs::ufs::ufs::ufs_vnops::UfsFs
+[[bridge]]
+trait = "UfsFs"
+for = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
+paid_by = "N5"
+
+# bsd: struct vops, the operations table of each bsd file system (mfs, ext2fs, cd9660,
+# msdosfs, udf, tmpfs, fuse, nfs, ntfs and their special-file tables: 23 statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
 # method packs the slot's struct vop_*_args; a NULL slot answers EOPNOTSUPP) and registered by
 # address on a table's first getnewvnode (VopsId), dispatched by every vop_* of
-# kernel::fs::vops (N5.2). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
-# ntfs at N10 (the user's N5 scope decision of 2026-10-28), so N10.
+# kernel::fs::vops (N5.2). ffs's vnode table is the kernel's UfsVnops (and UfsSpecVnops)
+# since N5.5a3: bsd's FFS_VOPS and FFS_SPECVOPS are statics of them, not Vops. Paid when the
+# last bsd file system moves: N5.5 to N5.9, nfs at N6, ntfs at N10 (the user's N5 scope
+# decision of 2026-10-28), so N10.
 # kernel::fs::vops::Vnops
 [[bridge]]
 trait = "Vnops"
@@ -270,7 +286,8 @@ paid_by = "N10"
 # bsd: struct vfsops, the operations of each bsd file system type (vfsconflist[]'s entries,
 # kern/vfs_init.rs), implemented on bsd's Vfsops by sys/kern/vfs_vops.rs and held by the
 # kernel's Vfsconf (N5.2); vfs_checkexp (the NFS server's) stays bsd's, reached through
-# as_any. Paid with Vnops, when the last bsd file system moves (nfs at N6, ntfs at N10), so
+# as_any. ffs's vnode table is the kernel's UfsVnops since N5.5a3, its vfsops still bsd's
+# (N5.5b). Paid with Vnops, when the last bsd file system moves (nfs at N6, ntfs at N10), so
 # N10.
 # kernel::fs::vops::Vfs
 [[bridge]]

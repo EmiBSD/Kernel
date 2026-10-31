@@ -66,11 +66,8 @@
 //!   buffer twice, as in C.
 
 use crate::kern::kern_subr::uiomove;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::kern::vfs_vops::{
-    vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
-    vop_generic_lookup, vop_generic_revoke,
-};
 use crate::kern::vm_bsd::{uvm_vnp_setsize, uvm_vnp_uncache};
 use crate::machine::intr::{splbio, splx};
 use crate::sys::buf::BufLegacy;
@@ -79,114 +76,85 @@ use crate::sys::buf::{bawrite, bdwrite, bread, bread_cluster, brelse, bwrite};
 use crate::sys::errno::Errno;
 use crate::sys::event::{NOTE_EXTEND, NOTE_WRITE};
 use crate::sys::mount::{MNT_NOATIME, MNT_WAIT};
-use crate::sys::specdev::{
-    spec_advlock, spec_ioctl, spec_kqfilter, spec_open, spec_pathconf, spec_strategy,
-};
+use crate::sys::proc::Proc;
 use crate::sys::stat::APPEND;
 use crate::sys::systm::INFSLP;
+use crate::sys::uio::Uio;
 #[cfg(feature = "diagnostic")]
 use crate::sys::uio::UioRw;
 use crate::sys::vnode::VN_KNOTE;
+use crate::sys::vnode::Vnode;
 use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VREG, VopFsyncArgs, VopReadArgs,
-    VopReclaimArgs, VopWriteArgs, Vops,
+    VopReclaimArgs, VopWriteArgs,
 };
 use crate::sys::vnode::{vnoperm, vwaitforio};
+use crate::ufs::ffs::ffs_vfsops::{FFS_VTBL, FfsVtbl};
 use crate::ufs::ffs::fs::{blkoff, blksize, lblkno, lblktosize};
 use crate::ufs::ufs::dinode::{ISGID, ISUID, NIADDR};
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{
     IN_ACCESS, IN_CHANGE, IN_UPDATE, UFS_BUF_ALLOC, UFS_TRUNCATE, UFS_UPDATE, vtoi,
 };
-use crate::ufs::ufs::ufs_bmap::ufs_bmap;
-use crate::ufs::ufs::ufs_inode::{ufs_inactive, ufs_reclaim};
-use crate::ufs::ufs::ufs_lookup::ufs_lookup;
-use crate::ufs::ufs::ufs_vnops::{
-    ufs_access, ufs_advlock, ufs_close, ufs_create, ufs_getattr, ufs_ioctl, ufs_islocked,
-    ufs_kqfilter, ufs_link, ufs_lock, ufs_mkdir, ufs_mknod, ufs_open, ufs_pathconf, ufs_print,
-    ufs_readdir, ufs_readlink, ufs_remove, ufs_rename, ufs_rmdir, ufs_setattr, ufs_strategy,
-    ufs_symlink, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
-};
+use crate::ufs::ufs::ufs_inode::ufs_reclaim;
 use kernel::fs::bio::{DirtyPick, DirtyScan, vnode_dirty_for_each, vnode_dirty_scan};
+use kernel::fs::ufs::ufs::ufs_vnops::{UfsFs, UfsSpecVnops, UfsVnops};
+use kernel::fs::vops::Cred;
 
-/// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS.
-pub static FFS_VOPS: Vops = Vops {
-    vop_lookup: Some(ufs_lookup),
-    vop_create: Some(ufs_create),
-    vop_mknod: Some(ufs_mknod),
-    vop_open: Some(ufs_open),
-    vop_close: Some(ufs_close),
-    vop_access: Some(ufs_access),
-    vop_getattr: Some(ufs_getattr),
-    vop_setattr: Some(ufs_setattr),
-    vop_read: Some(ffs_read),
-    vop_write: Some(ffs_write),
-    vop_ioctl: Some(ufs_ioctl),
-    vop_kqfilter: Some(ufs_kqfilter),
-    vop_revoke: Some(vop_generic_revoke),
-    vop_fsync: Some(ffs_fsync),
-    vop_remove: Some(ufs_remove),
-    vop_link: Some(ufs_link),
-    vop_rename: Some(ufs_rename),
-    vop_mkdir: Some(ufs_mkdir),
-    vop_rmdir: Some(ufs_rmdir),
-    vop_symlink: Some(ufs_symlink),
-    vop_readdir: Some(ufs_readdir),
-    vop_readlink: Some(ufs_readlink),
-    vop_abortop: Some(vop_generic_abortop),
-    vop_inactive: Some(ufs_inactive),
-    vop_reclaim: Some(ffs_reclaim),
-    vop_lock: Some(ufs_lock),
-    vop_unlock: Some(ufs_unlock),
-    vop_bmap: Some(ufs_bmap),
-    vop_strategy: Some(ufs_strategy),
-    vop_print: Some(ufs_print),
-    vop_islocked: Some(ufs_islocked),
-    vop_pathconf: Some(ufs_pathconf),
-    vop_advlock: Some(ufs_advlock),
-    vop_bwrite: Some(vop_generic_bwrite),
-};
+/// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS: the kernel's
+/// UFS table over ffs's own operations ([`FfsVtbl`]'s `UfsFs`).
+pub static FFS_VOPS: UfsVnops<BsdProcGlue, FfsVtbl> = UfsVnops::new(&FFS_VTBL);
 
 /// `ffs_specvops`: the operations of a device special file on an FFS.
-pub static FFS_SPECVOPS: Vops = Vops {
-    vop_close: Some(ufsspec_close),
-    vop_access: Some(ufs_access),
-    vop_getattr: Some(ufs_getattr),
-    vop_setattr: Some(ufs_setattr),
-    vop_read: Some(ufsspec_read),
-    vop_write: Some(ufsspec_write),
-    vop_fsync: Some(ffs_fsync),
-    vop_inactive: Some(ufs_inactive),
-    vop_reclaim: Some(ffs_reclaim),
-    vop_lock: Some(ufs_lock),
-    vop_unlock: Some(ufs_unlock),
-    vop_print: Some(ufs_print),
-    vop_islocked: Some(ufs_islocked),
+pub static FFS_SPECVOPS: UfsSpecVnops<BsdProcGlue, FfsVtbl> = UfsSpecVnops::new(&FFS_VTBL);
 
-    // XXX: Keep in sync with spec_vops
-    vop_lookup: Some(vop_generic_lookup),
-    vop_create: Some(|_| vop_generic_badop()),
-    vop_mknod: Some(|_| vop_generic_badop()),
-    vop_open: Some(spec_open),
-    vop_ioctl: Some(spec_ioctl),
-    vop_kqfilter: Some(spec_kqfilter),
-    vop_revoke: Some(vop_generic_revoke),
-    vop_remove: Some(|_| vop_generic_badop()),
-    vop_link: Some(|_| vop_generic_badop()),
-    vop_rename: Some(|_| vop_generic_badop()),
-    vop_mkdir: Some(|_| vop_generic_badop()),
-    vop_rmdir: Some(|_| vop_generic_badop()),
-    vop_symlink: Some(|_| vop_generic_badop()),
-    vop_readdir: Some(|_| vop_generic_badop()),
-    vop_readlink: Some(|_| vop_generic_badop()),
-    vop_abortop: Some(|_| vop_generic_badop()),
-    vop_bmap: Some(vop_generic_bmap),
-    vop_strategy: Some(spec_strategy),
-    vop_pathconf: Some(spec_pathconf),
-    vop_advlock: Some(spec_advlock),
-    vop_bwrite: Some(vop_generic_bwrite),
-};
+/// The slots of `ffs_vops` that are ffs's own (`ffs_read`, `ffs_write`, `ffs_fsync`), for the
+/// kernel's composed tables: each packs its `struct vop_*_args` and calls the function below.
+impl UfsFs<BsdProcGlue> for FfsVtbl {
+    fn read(
+        &self,
+        vp: &'static Vnode,
+        uio: &mut Uio<'_>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        ffs_read(&mut VopReadArgs {
+            a_vp: vp,
+            a_uio: uio,
+            a_ioflag: ioflag,
+            a_cred: cred,
+        })
+    }
+    fn write(
+        &self,
+        vp: &'static Vnode,
+        uio: &mut Uio<'_>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        ffs_write(&mut VopWriteArgs {
+            a_vp: vp,
+            a_uio: uio,
+            a_ioflag: ioflag,
+            a_cred: cred,
+        })
+    }
+    fn fsync(
+        &self,
+        vp: &'static Vnode,
+        cred: Cred<'_>,
+        waitfor: i32,
+        p: &Proc,
+    ) -> Result<(), Errno> {
+        ffs_fsync(&mut VopFsyncArgs {
+            a_vp: vp,
+            a_cred: cred,
+            a_waitfor: waitfor,
+            a_p: p,
+        })
+    }
+}
 
 /// `ffs_read` (`vop_read`): vnode op for reading.
 pub fn ffs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {

@@ -314,6 +314,18 @@ impl FileGlue for BsdFileGlue {
     fn inode_e2fs_nlink(g: &Self::InodeG) -> Option<i32> {
         Some(i32::from(g.i_e2fs_nlink()))
     }
+    /// `EXT2FS_ITIMES(ip)` into ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's
+    /// member until N5.6.
+    #[cfg(feature = "ext2fs")]
+    fn ext2fs_itimes(ip: &crate::ufs::ufs::inode::Inode) {
+        use crate::ufs::ufs::inode::InodeExt;
+        ip.ext2fs_itimes();
+    }
+    /// `ext2fs_size(ip)`, from ext2fs's dinode (as `ext2fs_itimes`).
+    #[cfg(feature = "ext2fs")]
+    fn ext2fs_size(ip: &crate::ufs::ufs::inode::Inode) -> u64 {
+        crate::ufs::ext2fs::ext2fs_inode::ext2fs_size(ip)
+    }
 
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES
