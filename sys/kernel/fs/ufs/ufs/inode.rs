@@ -110,6 +110,11 @@
 //!   with LZ's `get`/`set` ([`U32Word`], [`I32Word`], [`U64Word`], [`CiCell`]; docs/IDIOMS.md,
 //!   the counters' row): the C changes them under the vnode's lock and the kernel lock and
 //!   reads some unlocked (`ufs_ihashget`'s `i_number`), as the vnode's `[K]` words of N5.2.
+//!   Every writer holds the kernel lock (OpenBSD runs every ufs path `KERNEL_LOCK`ed:
+//!   vfs_vnops.c's `vn_read`/`vn_write`/`vn_ioctl`, uvm_vnode.c's pager; the native
+//!   kernel::fs::vnops and kernel::vm::vnode the same), which orders the writes: a change is
+//!   a load and a store, as the C's `ip->i_flag |= f`, and the setters check the lock under
+//!   `diagnostic` (`hal::klock::kernel_assert_locked`).
 //!   Not D-N5.5a-4's `Guarded::new_kernel` cell: `klock::witness()` raises the interrupt
 //!   level (sys/hal/klock.rs:432-447), one spl pair per change where the C has none (on every
 //!   `read`'s `IN_ACCESS`, every lookup's `i_diroff`); an atomic word needs no witness, and
@@ -120,9 +125,10 @@
 //!   `&mut` borrows in `with_din1`/`with_din2`/`with_shortlink`) -> [`Dinode`], the FFS dinode
 //!   as `DinWords<N>` (N atomic words, the C's 128 or 256 bytes, an item of the file system's
 //!   `dino1pl`/`dino2pl` `BoxPool`) in a set-once cell the file system's `vget` fills: each
-//!   `DIP` reads or writes its member's bytes at the on-disk structure's `offset_of!`, a
-//!   change through a compare-and-swap of its word (a neighbour member is never lost), and the
-//!   whole dinode is copied in and out as bytes (`ffs_vget`, `ffs_update`).
+//!   `DIP` reads or writes its member's bytes at the on-disk structure's `offset_of!` (a
+//!   change is a load and a store of its word, the neighbour members kept, by a writer that
+//!   holds the kernel lock as every word's), and the whole dinode is copied in and out as
+//!   bytes (`ffs_vget`, `ffs_update`).
 //! - LZ's `dinode1_at`/`set_dinode1_at` and their UFS2 twins (`unsafe` unaligned reads and
 //!   writes) -> `pod_from_bytes`/`pod_to_bytes` of the `hal::abi_pod!` dinodes.
 
@@ -172,9 +178,11 @@ macro_rules! word {
                 self.0.load(Ordering::Relaxed)
             }
 
-            /// Stores `v`.
+            /// Stores `v`: by a holder of the kernel lock (checked under `diagnostic`).
             #[inline]
             pub fn set(&self, v: $t) {
+                #[cfg(feature = "diagnostic")]
+                hal::klock::kernel_assert_locked();
                 self.0.store(v, Ordering::Relaxed);
             }
         }
@@ -236,8 +244,10 @@ impl CiCell {
         }
     }
 
-    /// `ip->i_ci = ci`.
+    /// `ip->i_ci = ci`, by a holder of the kernel lock (checked under `diagnostic`).
     pub fn set(&self, ci: ClusterInfo) {
+        #[cfg(feature = "diagnostic")]
+        hal::klock::kernel_assert_locked();
         let r = Ordering::Relaxed;
         self.lastr.store(ci.ci_lastr, r);
         self.lastw.store(ci.ci_lastw, r);
@@ -281,9 +291,10 @@ macro_rules! din_field {
 din_field!(u16 => u16, i16 => u16, u32 => u32, i32 => u32, u64 => u64, i64 => u64);
 
 /// The in-core copy of an FFS dinode (`*ip->i_din1`, `*ip->i_din2`): the on-disk structure's
-/// `N * 8` bytes as `N` relaxed atomic words, so the inode's readers and its one writer (the
-/// vnode's lock holder) share it without a lock. A member is read and written at the on-disk
-/// structure's offset ([`DinWords::get`], [`DinWords::set`]); the whole is copied as bytes.
+/// `N * 8` bytes as `N` relaxed atomic words, so the inode's readers share it with its writers
+/// (holders of the kernel lock, which orders them: [`Inode`]'s locks) without a lock of its
+/// own. A member is read and written at the on-disk structure's offset ([`DinWords::get`],
+/// [`DinWords::set`]); the whole is copied as words.
 pub struct DinWords<const N: usize> {
     w: [AtomicU64; N],
 }
@@ -330,9 +341,12 @@ impl<const N: usize> DinWords<N> {
         T::from_bits(w >> Self::shift(off, T::SIZE))
     }
 
-    /// The member at byte `off` set to `v`; the word's other members are kept (a
-    /// compare-and-swap of the word).
+    /// The member at byte `off` set to `v`, the word's other members kept: a load and a
+    /// store of the word, by a holder of the kernel lock (checked under `diagnostic`), whose
+    /// writes it orders.
     pub fn set<T: DinField>(&self, off: usize, v: T) {
+        #[cfg(feature = "diagnostic")]
+        hal::klock::kernel_assert_locked();
         let s = Self::shift(off, T::SIZE);
         let mask = if T::SIZE == 8 {
             u64::MAX
@@ -340,11 +354,11 @@ impl<const N: usize> DinWords<N> {
             ((1u64 << (T::SIZE * 8)) - 1) << s
         };
         let bits = (v.to_bits() << s) & mask;
-        let _ = self
-            .word(off, T::SIZE)
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
-                Some((w & !mask) | bits)
-            });
+        let w = self.word(off, T::SIZE);
+        w.store(
+            (w.load(Ordering::Relaxed) & !mask) | bits,
+            Ordering::Relaxed,
+        );
     }
 
     /// The dinode's words (one relaxed load each).
@@ -353,9 +367,12 @@ impl<const N: usize> DinWords<N> {
         core::array::from_fn(|i| self.w[i].load(Ordering::Relaxed))
     }
 
-    /// The dinode's words set to `words` (one relaxed store each).
+    /// The dinode's words set to `words` (one relaxed store each), by a holder of the
+    /// kernel lock (checked under `diagnostic`).
     #[inline]
     fn set_words(&self, words: [u64; N]) {
+        #[cfg(feature = "diagnostic")]
+        hal::klock::kernel_assert_locked();
         for (w, v) in self.w.iter().zip(words) {
             w.store(v, Ordering::Relaxed);
         }
@@ -394,8 +411,11 @@ impl<const N: usize> DinWords<N> {
     }
 
     /// The bytes `off..off + src.len()` of the dinode set to `src`; the bytes of the first and
-    /// last words outside the range are kept.
+    /// last words outside the range are kept (a load and a store of each, by a holder of the
+    /// kernel lock, checked under `diagnostic`).
     pub fn write_bytes(&self, off: usize, src: &[u8]) {
+        #[cfg(feature = "diagnostic")]
+        hal::klock::kernel_assert_locked();
         if off + src.len() > N * 8 {
             kpanic(format_args!(
                 "dinode: bytes {off}+{} past the end",
@@ -424,11 +444,9 @@ impl<const N: usize> DinWords<N> {
                 i += n;
                 continue;
             }
-            let _ = self.w[wi].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
-                let mut bytes = w.to_ne_bytes();
-                bytes[first..first + n].copy_from_slice(part);
-                Some(u64::from_ne_bytes(bytes))
-            });
+            let mut bytes = self.w[wi].load(Ordering::Relaxed).to_ne_bytes();
+            bytes[first..first + n].copy_from_slice(part);
+            self.w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
             i += n;
         }
     }
@@ -534,7 +552,12 @@ impl<G: ProcGlue> Default for InodeInit<G> {
 ///
 /// Locks: the identity and the mount's words are set when the item is made and never change;
 /// the words the C changes under the inode's lock (`i_lock`, held through its vnode) and the
-/// kernel lock are relaxed atomics; `i_hash` is the inode hash's (the kernel lock).
+/// kernel lock are relaxed atomics, the dinode's ([`DinWords`]) among them; `i_hash` is the
+/// inode hash's (the kernel lock). Every writer of a word holds the kernel lock, as every
+/// ufs path in OpenBSD runs `KERNEL_LOCK`ed; that lock orders the writes, so a change is a
+/// load and a store ([`Inode::set_flag`], [`DinWords::set`]) and the setters check it under
+/// `diagnostic`. Readers may not hold it: a relaxed load returns a whole word, one a writer
+/// stored.
 pub struct Inode<G: ProcGlue> {
     /// `i_hash`: hash chain.
     pub i_hash: PinEntry<Inode<G>>,
