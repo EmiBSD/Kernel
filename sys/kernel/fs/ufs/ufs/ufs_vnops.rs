@@ -217,38 +217,6 @@ impl<G: ProcGlue> UfsFiltops<G> {
     const VNODE: Filterops<G> = Filterops::of::<UfsVnode>();
 }
 
-/// The three operations of `ffs_vops` and `ffs_specvops` that are the file system's own
-/// (`ffs_read`, `ffs_write`, `ffs_fsync`): the residue of the C's table that the UFS layer
-/// does not provide (decision 46's written reason; `bsd`'s ffs implements it until N5.5b,
-/// `bridges.toml`). `ffs_reclaim`, ffs's fourth, needs nothing of ffs's types and is the
-/// tables' own `reclaim`.
-pub trait UfsFs<G: ProcGlue>: Sync + 'static {
-    /// `vop_read` of a file, directory or symbolic link.
-    fn read(
-        &self,
-        vp: &'static Vnode<G>,
-        uio: &mut Uio<'_, G>,
-        ioflag: i32,
-        cred: Cred<'_>,
-    ) -> Result<(), Errno>;
-    /// `vop_write`.
-    fn write(
-        &self,
-        vp: &'static Vnode<G>,
-        uio: &mut Uio<'_, G>,
-        ioflag: i32,
-        cred: Cred<'_>,
-    ) -> Result<(), Errno>;
-    /// `vop_fsync`.
-    fn fsync(
-        &self,
-        vp: &'static Vnode<G>,
-        cred: Cred<'_>,
-        waitfor: i32,
-        p: &Thread<G>,
-    ) -> Result<(), Errno>;
-}
-
 /// `ffs_vops`: the operations of a file, directory or symbolic link on a UFS file system
 /// whose own operations are `F`'s.
 pub struct UfsVnops<G: ProcGlue, F: UfsFs<G>> {
@@ -285,6 +253,38 @@ impl<G: ProcGlue, F: UfsFs<G>> UfsSpecVnops<G, F> {
             _g: PhantomData,
         }
     }
+}
+
+/// The three operations of `ffs_vops` and `ffs_specvops` that are the file system's own
+/// (`ffs_read`, `ffs_write`, `ffs_fsync`): the residue of the C's table that the UFS layer
+/// does not provide (decision 46's written reason; `bsd`'s ffs implements it until N5.5b,
+/// `bridges.toml`). `ffs_reclaim`, ffs's fourth, needs nothing of ffs's types and is the
+/// tables' own `reclaim`.
+pub trait UfsFs<G: ProcGlue>: Sync + 'static {
+    /// `vop_read` of a file, directory or symbolic link.
+    fn read(
+        &self,
+        vp: &'static Vnode<G>,
+        uio: &mut Uio<'_, G>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno>;
+    /// `vop_write`.
+    fn write(
+        &self,
+        vp: &'static Vnode<G>,
+        uio: &mut Uio<'_, G>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno>;
+    /// `vop_fsync`.
+    fn fsync(
+        &self,
+        vp: &'static Vnode<G>,
+        cred: Cred<'_>,
+        waitfor: i32,
+        p: &Thread<G>,
+    ) -> Result<(), Errno>;
 }
 
 /// Whether the vnode's file system is mounted read-only.
@@ -1953,10 +1953,11 @@ pub fn ufs_kqfilter<G: ProcGlue>(vp: &'static Vnode<G>, kn: &Knote<G>) -> Result
         _ => return Err(Errno::EINVAL),
     }
 
-    // kn->kn_hook = (caddr_t)vp
-    if kn.set_hook_vnode(vp).is_err() {
-        kpanic(format_args!("ufs_kqfilter: knote {kn:p} has a hook"));
-    }
+    // kn->kn_hook = (caddr_t)vp. The C stores over whatever was there; here the hook is set
+    // once, and a knote reaches VOP_KQFILTER once (kqueue_register attaches a fresh knote;
+    // a second EV_ADD of the same ident and filter modifies it, never attaches it again),
+    // so it holds no hook yet: a set one is left as it is, with no panic the C lacks.
+    let _ = kn.set_hook_vnode(vp);
 
     vp.klist.insert_legacy(kn);
 
