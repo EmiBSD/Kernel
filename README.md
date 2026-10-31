@@ -51,6 +51,22 @@
   | `lib` | `libkern` and `libz`, the leaves below `hal` | 10 |
   | `bsd` | the LandingZone tree, the kernel that boots today, replaced subsystem by subsystem and deleted at N9 | legacy |
 
+## Where it sits
+
+```mermaid
+flowchart LR
+    obsd["OpenBSD-src (mirror)"] -- "the specification, read-only" --> k["Kernel"]
+    lz["LandingZone"] -- "the tree at lz-origin,<br/>then every commit as lz-sync" --> k
+    dev["DevTools"] -- "clang for the inherited userland;<br/>rustc when self-hosted" --> k
+    k -- "the kernel image, boot(8) and efiboot,<br/>abi_openbsd.ko, bsd.rd" --> os["OS"]
+    k -. "the ABI headers, once abi exports them" .-> ul["Userland"]
+```
+
+LandingZone ports; this repository redesigns what it ported and never writes back to it.
+OS assembles the kernel with Userland and the toolchains of DevTools into a release. The
+whole picture, and every decision that crosses repositories, is in
+[Governance](https://github.com/EmiBSD/Governance) (`docs/architecture.md`).
+
 ## The target: the kernel at N9
 
 The module view of the one architecture diagram ([docs/ZERO_UNSAFE.md](docs/ZERO_UNSAFE.md)
