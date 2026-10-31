@@ -2918,5 +2918,143 @@ pub(crate) mod tests {
         assert_eq!(crate::reftest::int(&ufsmount, "UM_UFS1"), Some(1));
         assert_eq!(crate::reftest::int(&ufsmount, "UM_UFS2"), Some(2));
     }
+    /// Decision 43's ufs pairs (brief N5.5a 7.4b): the hot operations of the UFS layer over an
+    /// FFS2 image `newfs` builds, through the system calls and `namei`, as bsd's ffs reaches
+    /// the UFS code. A sub-slice runs it on its base and on its tip, dev and release,
+    /// interleaved, and puts the medians in its `Bench:` lines:
+    ///
+    /// `cargo test -p bsd --lib [--release] ufs_bench -- --ignored --nocapture --test-threads 1`
+    ///
+    /// (`UFSBENCH=<row>` runs the rows whose name contains it). Each row prints
+    /// `UFSBENCH <row> median <ns> ns/op`, the median of seven samples, each the median of
+    /// 200 timed batches. `#[ignore]`: a measurement, not a check.
+    #[test]
+    #[ignore = "decision 43's ufs bench: run by hand, --release, --test-threads 1"]
+    fn ufs_bench() {
+        use std::boxed::Box;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        use crate::kern::vfs_syscalls::{sys_lseek, sys_stat};
+        use crate::sys::namei::{FOLLOW, LOOKUP, NOCACHE, NiDirp, namei, ndinit};
+
+        const REPS: usize = 7;
+        const ROUNDS: usize = 200;
+
+        let mut img = newfs::Image::new(newfs::FFS2_4M);
+        img.add_file(b"f", b"hello, world\n");
+        for n in [
+            &b"passwd"[..],
+            b"group",
+            b"hosts",
+            b"fstab",
+            b"rc",
+            b"rc.conf",
+            b"motd",
+            b"services",
+        ] {
+            img.add_file(n, b"x");
+        }
+        let (_g, p) = setup(img.finish());
+        let mp = mount_root(p, false);
+
+        let p_f = path(b"/f\0");
+        let p_n = path(b"/n\0");
+        let p_root = path(b"/\0");
+        let ub = crate::kern::vfs_subr::tests::user_buf(&[0u8; 256]);
+        let mut dbuf = vec![0u8; 4096];
+        let fd_root = sys(sys_open, p, &[p_root, O_RDONLY as usize, 0]).unwrap() as usize;
+        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/f"), p);
+        namei(&mut nd).unwrap();
+        let fvp = nd.ni_vp.unwrap();
+
+        let mut rows: Vec<(&str, usize, Box<dyn FnMut()>)> = Vec::new();
+        rows.push((
+            "ffs.vtoi.dip",
+            1000,
+            Box::new(|| {
+                let ip = vtoi(black_box(fvp));
+                black_box(ip.dip_size());
+            }),
+        ));
+        rows.push((
+            "ffs.lookup.hit.1",
+            100,
+            Box::new(|| {
+                let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/f"), p);
+                namei(&mut nd).unwrap();
+                vrele(nd.ni_vp.unwrap());
+            }),
+        ));
+        rows.push((
+            "ffs.lookup.miss",
+            100,
+            Box::new(|| {
+                let mut nd = ndinit(LOOKUP, FOLLOW | NOCACHE, NiDirp::Sys(b"/f"), p);
+                namei(&mut nd).unwrap();
+                vrele(nd.ni_vp.unwrap());
+            }),
+        ));
+        rows.push((
+            "ffs.readdir.1blk",
+            100,
+            Box::new(|| {
+                sys(sys_lseek, p, &[fd_root, 0, 0]).unwrap();
+                let n = sys(
+                    sys_getdents,
+                    p,
+                    &[fd_root, dbuf.as_mut_ptr() as usize, dbuf.len()],
+                )
+                .unwrap();
+                black_box(n);
+            }),
+        ));
+        rows.push((
+            "ffs.create.remove",
+            20,
+            Box::new(|| {
+                let fd = sys(sys_open, p, &[p_n, (O_RDWR | O_CREAT) as usize, 0o644]).unwrap();
+                sys(sys_close, p, &[fd as usize]).unwrap();
+                sys(sys_unlink, p, &[p_n]).unwrap();
+            }),
+        ));
+        rows.push((
+            "ffs.stat",
+            100,
+            Box::new(|| {
+                sys(sys_stat, p, &[p_f, ub.addr()]).unwrap();
+            }),
+        ));
+
+        let only = std::env::var("UFSBENCH").ok();
+        for (name, batch, f) in rows.iter_mut() {
+            if only.as_deref().is_some_and(|o| !name.contains(o)) {
+                continue;
+            }
+            for _ in 0..*batch {
+                f();
+            }
+            let mut med = Vec::new();
+            for _ in 0..REPS {
+                let mut samples = Vec::new();
+                for _ in 0..ROUNDS {
+                    let t = Instant::now();
+                    for _ in 0..*batch {
+                        f();
+                    }
+                    samples.push(t.elapsed().as_nanos() as f64 / *batch as f64);
+                }
+                samples.sort_by(f64::total_cmp);
+                med.push(samples[ROUNDS / 2]);
+            }
+            med.sort_by(f64::total_cmp);
+            std::println!("UFSBENCH {name} median {:.1} ns/op", med[REPS / 2]);
+        }
+        drop(rows);
+        vrele(fvp);
+        sys(sys_close, p, &[fd_root]).unwrap();
+        unmount_root(p, mp);
+        teardown();
+    }
 }
 /* </TESTS> */
