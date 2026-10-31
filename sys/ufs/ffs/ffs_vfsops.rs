@@ -1020,6 +1020,8 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     if let Some(u) = ump {
         if let Some(fs) = u.g.um_fs.get() {
             let size = fs_allocsize(fs.fs_sbsize.get());
+            // Unlinked before the free (the unmount's reason).
+            u.g.um_fs.set(None);
             free(NonNull::from(fs).cast(), M_UFSMNT, size);
         }
         // `mp->mnt_data = NULL`; the last handle, `u`, frees the structure.
@@ -1161,6 +1163,9 @@ pub fn ffs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
         free(csp, M_UFSMNT, summary_allocsize(fs));
     }
     let fssize = fs_allocsize(fs.fs_sbsize.get());
+    // The structure may outlive this call (its count); its link to the super block may not:
+    // a late holder's `fs()` panics "no um_fs" instead of reading the freed block.
+    ump.g.um_fs.set(None);
     free(NonNull::from(fs).cast(), M_UFSMNT, fssize);
     // `free(ump); mp->mnt_data = NULL`: the mount's handle goes; the inodes' went with
     // `vflush`, so this call's, dropped on return, is the last and frees the structure.

@@ -726,6 +726,8 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
     let _ = VOP_UNLOCK(devvp);
     if let Some(u) = ump {
         if let Some(fs) = u.g.um_e2fs.get() {
+            // Unlinked before the free (the unmount's reason).
+            u.g.um_e2fs.set(None);
             free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
         }
         // `mp->mnt_data = NULL`; the last handle, `u`, frees the structure.
@@ -769,6 +771,9 @@ pub fn ext2fs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
     if let Some(gd) = NonNull::new(fs.e2fs_gd.get().cast::<u8>()) {
         free(gd, M_UFSMNT, gdescs_space);
     }
+    // The structure may outlive this call (its count); its link to the super block may not:
+    // a late holder's `e2fs()` panics "no um_e2fs" instead of reading the freed block.
+    ump.g.um_e2fs.set(None);
     free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
     // `free(ump); mp->mnt_data = NULL`: the mount's handle goes; the inodes' went with
     // `vflush`, so this call's, dropped on return, is the last and frees the structure.
