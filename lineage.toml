@@ -8732,6 +8732,128 @@ status = "redesigned"
 notes = "N5.5a1: the kernel's half of ufs_extern.h's re-exports (bmap, ihash, vfsops), growing with N5.5a2 and N5.5a3"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ffs/fs.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/fs.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired: bsd's ffs keeps its own Fs until N5.5b2): struct fs as the on-disk abi_pod! Fs (1,384 bytes, the C's sizeof) and the in-core Superblock: the C's fs_sbsize bytes as relaxed words (FsWords over inode.rs's word core, the DinWords idiom) with fs_field! accessors at offset_of!, and the arrays its in-core pointers name owned (space: the summaries and fs_maxcluster, the C's one malloc; fs_contigdirs read-mostly); the slots of those pointers hold 0 in core; struct cg as the abi_pod! Cg and CgView, a view over the busy buffer's bytes with cg_field! accessors and bounds-checked maps (the old ocg layout kept); cg_frsum the C's u_int32_t again; 0 unsafe (LZ: 10)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf"
+native = ["CgView"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::new"
+native = ["CgView::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg"
+native = []
+kind = "dropped"
+reason = "the header is read and written member by member through CgView's cg_field! accessors at offset_of!(Cg, ..), not cast to a structure"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::tail"
+native = ["CgView::tail"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::is_cg"
+native = ["CgView::is_cg"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_chkmagic"
+native = ["CgView::cg_chkmagic"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_inosused"
+native = ["CgView::cg_inosused"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_blksfree"
+native = ["CgView::cg_blksfree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_clustersfree"
+native = ["CgView::cg_clustersfree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_clustersum"
+native = ["CgView::cg_clustersum"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_clustersum_add"
+native = ["CgView::add_cg_clustersum"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_blktot_add"
+native = ["CgView::add_cg_blktot"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::CgBuf::cg_blks_add"
+native = ["CgView::add_cg_blks"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::Fs::fs_cs"
+native = ["Superblock::fs_cs"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::Fs::contigdirs"
+native = ["Superblock::with_contigdirs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::Fs::set_contigdirs"
+native = ["Superblock::with_contigdirs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::Fs::set_maxcluster"
+native = ["Superblock::set_maxcluster"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::Fs::fsmnt"
+native = ["Superblock::fsmnt"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::add"
+native = ["CsumWords::add_cs_nbfree", "CgView::add_cg_frsum"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/fs.rs::sub"
+native = ["CsumWords::add_cs_nbfree", "CgView::add_cg_frsum"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_tables.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_tables.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired): LZ's compile-time tables moved unchanged in shape into the kernel's ffs"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_subr.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_subr.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired): the block and fragment map operations over the in-core Superblock, ffs_fragacct over the cylinder group's view (the C's u_int32_t cg_frsum), ffs_bufatoff returning the busy buffer's token; ffs_vinit joins at N5.5b2 with the vnode tables it installs (bsd's runs bsd's ffs until then)"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
