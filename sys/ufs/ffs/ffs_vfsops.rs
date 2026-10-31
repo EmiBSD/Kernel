@@ -217,6 +217,14 @@ impl InodeOps<BsdProcGlue> for FfsVtbl {
 
 /// `ffs_ino_pool`: memory pool for inodes (recorded: `vtoi` counts a handle back from an
 /// inode the vnode lends).
+///
+/// The three `hal` pools are made once per host-test process, where LZ's `pool_init` ran
+/// again per test, and need no `*_test_reset` (testing.md), as `kernel::proc`'s `ucredpl`
+/// and kernel::fs::lockf's pools: in the host tests their items come from
+/// `kernel::testutil`'s heap doubles (`memory_is_the_doubles`, which `proc_test_reset`
+/// checks at the file system tests' `procinit`), never from the memory a later test's
+/// `setup_real_memory` replaces; and no global names an item past its test (an inode lives in
+/// its vnode's slot and its mount's hash, both forgotten by `vfs_test_reset`).
 pub static FFS_INO_POOL: TypedPool<Inode> = TypedPool::new();
 /// `ffs_dinode1_pool`: memory pool for UFS1 dinodes.
 pub static FFS_DINODE1_POOL: BoxPool<Ufs1Din> = BoxPool::new();

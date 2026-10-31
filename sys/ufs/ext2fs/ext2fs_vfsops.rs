@@ -181,7 +181,10 @@ pub static EXT2FS_VFSOPS: Vfsops = Vfsops {
     vfs_checkexp: ufs_check_export,
 };
 
-/// `ext2fs_inode_pool`: memory pool for inodes.
+/// `ext2fs_inode_pool`: memory pool for inodes: a `hal` pool made once per host-test process,
+/// with no `*_test_reset`, for the reason `ffs_vfsops`'s `FFS_INO_POOL` gives (the host
+/// tests' items are the heap doubles'); the dinode pool below is `bsd`'s and made again per
+/// test, as LZ's.
 pub static EXT2FS_INODE_POOL: hal::pool::TypedPool<Inode> = hal::pool::TypedPool::new();
 /// `ext2fs_dinode_pool`: memory pool for dinodes.
 pub static EXT2FS_DINODE_POOL: Pool = Pool::new();
