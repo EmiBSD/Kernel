@@ -179,3 +179,7 @@ metadata:
 - A bsd test that passed a host pointer as a user address (`ptr::from_mut(&mut dqblk) as usize`) breaks when the call's copy moves to `hal::user`: use `vfs_subr::tests::user_buf(bytes)` and read back `u.bytes()` (N5.5a2's quota image test).
 - `git -C <wt> stash create` gives the uncommitted switch as a commit for `git archive` bench and QEMU trees; a scratch QEMU tree that runs `just userland` needs `reference/openbsd-src` symlinked in (os.symlink from qprep.py), or the bench program cannot rebuild.
 - A new `KINDS` entry of xtask's bench goes at the end of the table (the tests index KINDS[1] and KINDS[6]), and parse_bench's test string and count must gain its `@@BENCH` line.
+- A regex sweep of a type spelling (`*const Ucred` -> `Cred<'_>`) also rewrites doc comments and unrelated locals (vfs_checkexp's credanon): keep a skip list, then read `git diff -U0 | grep '^+.*//'` and revert what is prose.
+- An auto-import script that checks `use X` anywhere in the file is fooled by the TESTS module's own import: test only the text before `/* <TESTS> */`; rustc reports a missing type as E0425 as well as E0412/E0433.
+- A waiter `until grep -q '^rc=' log` on a multi-step script's log matches the first step's rc line: wait for the script's explicit end marker (`== done`).
+- The bench pair for a commit not made yet: `git stash create` (staged + worktree) gives the tree to archive, and the worktree stays free to edit while the bench trees build in their own target dirs.
