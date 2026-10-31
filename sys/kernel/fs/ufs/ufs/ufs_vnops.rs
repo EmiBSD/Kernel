@@ -917,6 +917,22 @@ pub fn ufs_rename<G: ProcGlue>(
     let mut doingdirectory = false;
     let mut oldparent = 0;
     let mut newparent = 0;
+    // `goto abortit`: abort both lookups, release every vnode, return the error.
+    macro_rules! abortit {
+        ($e:expr) => {
+            return rename_abortit(
+                $e,
+                Abort {
+                    tdvp,
+                    tvp,
+                    tcnp,
+                    fdvp,
+                    fvp,
+                },
+                fcnp,
+            )
+        };
+    }
 
     #[cfg(feature = "diagnostic")]
     if tcnp.cn_flags & crate::fs::namei::HASBUF == 0
@@ -929,27 +945,13 @@ pub fn ufs_rename<G: ProcGlue>(
     if fmp != tdvp.mount().map(core::ptr::from_ref)
         || tvp.is_some_and(|t| fmp != t.mount().map(core::ptr::from_ref))
     {
-        let a = Abort {
-            tdvp,
-            tvp,
-            tcnp,
-            fdvp,
-            fvp,
-        };
-        return rename_abortit(Errno::EXDEV, a, fcnp);
+        abortit!(Errno::EXDEV);
     }
 
     if let Some(t) = tvp
         && (vtoi(t).dip_flags() & (IMMUTABLE | APPEND) != 0 || vtoi(tdvp).dip_flags() & APPEND != 0)
     {
-        let a = Abort {
-            tdvp,
-            tvp,
-            tcnp,
-            fdvp,
-            fvp,
-        };
-        return rename_abortit(Errno::EPERM, a, fcnp);
+        abortit!(Errno::EPERM);
     }
 
     // Check if just deleting a link name or if we've lost a race. If another process
@@ -962,14 +964,7 @@ pub fn ufs_rename<G: ProcGlue>(
         if fvp.vtype() == VDIR {
             // Linked directories are impossible, so we must have lost the race. Pretend
             // that the rename completed before the lookup.
-            let a = Abort {
-                tdvp,
-                tvp,
-                tcnp,
-                fdvp,
-                fvp,
-            };
-            return rename_abortit(Errno::ENOENT, a, fcnp);
+            abortit!(Errno::ENOENT);
         }
 
         // Release destination completely.
@@ -992,20 +987,17 @@ pub fn ufs_rename<G: ProcGlue>(
         vrele(fdvp);
         // A successful DELETE lookup of the last component returns its vnode.
         let Some(nfvp) = nfvp else {
-            return Err(Errno::ENOENT);
+            // A DELETE lookup of the last component that succeeds returns its vnode
+            // (ufs_lookup's DELETE path), so the C's VOP_REMOVE has one.
+            kpanic(format_args!(
+                "ufs_rename: relookup of the source found no vnode"
+            ));
         };
         return vop_remove(fdvp, nfvp, fcnp);
     }
 
     if let Err(e) = vn_lock(fvp, LK_EXCLUSIVE) {
-        let a = Abort {
-            tdvp,
-            tvp,
-            tcnp,
-            fdvp,
-            fvp,
-        };
-        return rename_abortit(e, a, fcnp);
+        abortit!(e);
     }
 
     // fvp, tdvp, tvp now locked
@@ -1013,25 +1005,11 @@ pub fn ufs_rename<G: ProcGlue>(
     let ip = vtoi(fvp);
     if ip.dip_nlink() as Nlink >= LINK_MAX {
         let _ = vop_unlock(fvp);
-        let a = Abort {
-            tdvp,
-            tvp,
-            tcnp,
-            fdvp,
-            fvp,
-        };
-        return rename_abortit(Errno::EMLINK, a, fcnp);
+        abortit!(Errno::EMLINK);
     }
     if ip.dip_flags() & (IMMUTABLE | APPEND) != 0 || dp.dip_flags() & APPEND != 0 {
         let _ = vop_unlock(fvp);
-        let a = Abort {
-            tdvp,
-            tvp,
-            tcnp,
-            fdvp,
-            fvp,
-        };
-        return rename_abortit(Errno::EPERM, a, fcnp);
+        abortit!(Errno::EPERM);
     }
     if ip.dip_mode() & IFMT == IFDIR {
         let mut error = vop_access(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
@@ -1042,14 +1020,7 @@ pub fn ufs_rename<G: ProcGlue>(
         }
         if error.is_err() {
             let _ = vop_unlock(fvp);
-            let a = Abort {
-                tdvp,
-                tvp,
-                tcnp,
-                fdvp,
-                fvp,
-            };
-            return rename_abortit(Errno::EACCES, a, fcnp);
+            abortit!(Errno::EACCES);
         }
         // Avoid ".", "..", and aliases of "." for obvious reasons.
         if (fcnp.namelen() == 1 && fcnp.name() == b".")
@@ -1059,14 +1030,7 @@ pub fn ufs_rename<G: ProcGlue>(
             || ip.i_flag.get() & IN_RENAME != 0
         {
             let _ = vop_unlock(fvp);
-            let a = Abort {
-                tdvp,
-                tvp,
-                tcnp,
-                fdvp,
-                fvp,
-            };
-            return rename_abortit(Errno::EINVAL, a, fcnp);
+            abortit!(Errno::EINVAL);
         }
         ip.set_flag(IN_RENAME);
         oldparent = dp.i_number;
