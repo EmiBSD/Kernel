@@ -24,8 +24,9 @@
 # Schema, one [[bridge]] per trait:
 #   trait   = the trait's name, a bare identifier (its crate and module in the comment above the row)
 #   for     = the files that call through it
-#   paid_by = the milestone whose subsystem moves the implementation in and removes the row
-#             ("N3".."N9"; a slice "N4.1" where one is meant)
+#   paid_by = the milestone whose subsystem moves the implementation in and removes the row:
+#             "N2".."N10" only (`lz check` refuses a slice such as "N5.5b"); the slice that
+#             pays it, when one is meant, goes in the comment above the row
 # The comment above each row says what implements it today.
 
 # bsd: the interrupt controller's part of spl(9) (struct arm_intr_func: raise, lower, x, setipl,
