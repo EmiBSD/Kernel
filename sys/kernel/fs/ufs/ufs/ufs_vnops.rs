@@ -1729,20 +1729,17 @@ fn strategy_done(bp: IoBuf) {
     }
 }
 
-/// `clrbuf(bp)` of the buffer of `VOP_STRATEGY` as it came.
+/// `clrbuf(bp)` of the buffer of `VOP_STRATEGY` as it came: a lent buffer's parked token, or
+/// for a lent buffer with none parked (a driver's own buffer) the foreign handle `bsd`'s
+/// `clrbuf` takes, given back parked.
 fn strategy_clrbuf(bp: &mut IoBuf) {
     match bp {
         IoBuf::Token(t) => t.clear(),
-        IoBuf::Lent(b) => match b.take_parked() {
-            Some(mut t) => {
-                t.clear();
-                crate::fs::buf::Buf::park(t);
-            }
-            None => kpanic(format_args!(
-                "ufs_strategy: buffer {:p} without its token",
-                *b
-            )),
-        },
+        IoBuf::Lent(b) => {
+            let mut t = b.take_parked().unwrap_or_else(|| BufRef::foreign(*b));
+            t.clear();
+            crate::fs::buf::Buf::park(t);
+        }
     }
 }
 
