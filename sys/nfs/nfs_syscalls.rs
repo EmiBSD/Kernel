@@ -170,8 +170,6 @@ use crate::sys::socketvar::SB_NOINTR;
 use crate::sys::syscallargs::SysNfssvcArgs;
 #[cfg(feature = "nfsserver")]
 use crate::sys::systm::sysargs;
-#[cfg(feature = "nfsserver")]
-use crate::sys::ucred::UcredCell;
 
 #[cfg(feature = "nfsclient")]
 use crate::kern::kern_kthread::{kthread_create, kthread_exit};
@@ -647,11 +645,15 @@ fn nfssvc_nfsd(nfsd: &'static Nfsd) -> Result<(), Errno> {
                 ) else {
                     panic(format_args!("nfssvc_nfsd: nfsd without a process"));
                 };
-                // The request's credential is lent to the procedure beside its descriptor,
-                // and given back after it.
-                let nd_cr = core::mem::replace(&mut ndr.nd_cr, UcredCell::new());
+                // The request's credential is lent to the procedure beside its descriptor
+                // (the member is empty meanwhile), and given back after it.
+                let Some(nd_cr) = ndr.nd_cr.take() else {
+                    panic(format_args!(
+                        "nfssvc_nfsd: a request without its credential"
+                    ));
+                };
                 let r = proc_fn(ndr, &nd_cr, slp, procp, &mut mreq);
-                ndr.nd_cr = nd_cr;
+                ndr.nd_cr = Some(nd_cr);
                 if mreq.is_none() {
                     m_freem(ndr.nd_nam2);
                     m_freem(ndr.nd_mrep.take());

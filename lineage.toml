@@ -7069,7 +7069,7 @@ adapted_by = ["sys/crypto/idgen.rs"]
 rust = "sys/nfs/nfs.rs"
 lz = ["sys/nfs/nfs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_bio.rs"

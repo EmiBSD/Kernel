@@ -659,8 +659,11 @@ pub struct NfsrvDescript {
     /// `nd_retxid`: reply xid, in host order (`nfs_getreq` converts it, `nfs_rephead` converts back).
     pub nd_retxid: u32,
     /// `nd_cr`: credentials, the request's own, updated in place (`nfsrv_fhtovp`'s
-    /// anonymous mapping).
-    pub nd_cr: UcredCell,
+    /// anonymous mapping). `nfs_getreq` fills it; `nfssvc_nfsd` takes it out for the server
+    /// procedure's call, which receives it as an argument of its own (`NfsrvProc`), and puts it
+    /// back after: `None` during the call, so a read of the member there finds no credential
+    /// instead of a placeholder (a fresh `UcredCell` is root's ids).
+    pub nd_cr: Option<UcredCell>,
 }
 
 impl NfsrvDescript {
@@ -676,7 +679,7 @@ impl NfsrvDescript {
             nd_flag: 0,
             nd_repstat: 0,
             nd_retxid: 0,
-            nd_cr: UcredCell::new(),
+            nd_cr: Some(UcredCell::new()),
         }
     }
 }

@@ -79,7 +79,8 @@
 //!   points `cred`, `cn_cred` and the VOPs' `a_cred` at the descriptor's member while it
 //!   passes the descriptor on to be dissected, which a borrow of the member (a `Cred`) and
 //!   the descriptor's `&mut` cannot both be; `nfsrv_fhtovp`'s anonymous mapping still
-//!   writes the one credential every later use reads (N5.5a2c).
+//!   writes the one credential every later use reads (N5.5a2c). The member is an `Option`,
+//!   empty while it is lent.
 //! - Every procedure returns `Result<(), Errno>`: `Ok(())` is the C's 0 (the reply is in
 //!   `*mrq`), `Err` the C's non-zero error (the request is dropped). The status put in the
 //!   reply stays the C's `int` (an errno or an NFS status, `NFSERR_*`), as `nfs_namei` and
@@ -3659,8 +3660,9 @@ mod tests {
         let slp = NfssvcSock::new();
         let mut mrq = None;
         // nfssvc_nfsd lends the request's credential beside the descriptor.
-        let nd_cr = core::mem::replace(&mut nd.nd_cr, UcredCell::new());
+        let nd_cr = nd.nd_cr.take().expect("the request's credential");
         let r = f(&mut nd, &nd_cr, &slp, p, &mut mrq);
+        nd.nd_cr = Some(nd_cr);
         assert!(nd.nd_mrep.is_none(), "the request was freed");
         (r, mrq.map(reply_words))
     }
