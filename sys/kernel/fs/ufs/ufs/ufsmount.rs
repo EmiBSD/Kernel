@@ -150,9 +150,9 @@ impl<G: ProcGlue> Ufsmount<G> {
     /// `ump = malloc(sizeof(*ump), M_UFSMNT, M_WAITOK | M_ZERO)` (`ffs_mountfs`,
     /// `ext2fs_mountfs`): a zeroed structure in its counted block, one handle, which the mount
     /// hangs from its typed slot (`Mount::set_node`). `M_WAITOK` sleeps for the memory and
-    /// never fails, as the C's.
+    /// never fails, as the C's; no `M_ZERO`: the block is written whole with [`Ufsmount::new`].
     pub fn alloc() -> UfsmountRef<G> {
-        match MArc::new(M_UFSMNT, M_WAITOK | M_ZERO, Self::new()) {
+        match MArc::new(M_UFSMNT, M_WAITOK, Self::new()) {
             Some(ump) => ump,
             None => kpanic(format_args!("ufsmount: malloc(M_UFSMNT) failed")),
         }
@@ -205,9 +205,6 @@ impl<G: ProcGlue> Default for Ufsmount<G> {
 /// `M_UFSMNT`: the malloc type of the UFS mount structures and the inode hash table
 /// (`<sys/malloc.h>`; `vmstat -m`'s `UFS mount`).
 pub const M_UFSMNT: i32 = 28;
-
-/// `M_ZERO` (`<sys/malloc.h>`).
-const M_ZERO: i32 = 0x0008;
 
 /// `UM_UFS1`: filesystem type.
 pub const UM_UFS1: u64 = 1;

@@ -2883,6 +2883,51 @@ pub(crate) mod tests {
         teardown();
     }
 
+    /// The export list is the mount's glue member (N5.5b0) and mounts are recycled, where the
+    /// C's list lives in a `struct ufsmount` that `ffs_mountfs` `malloc(M_ZERO)`s afresh: an
+    /// export left by an unmount (no `MNT_DELEXPORT`) is gone from the recycled mount after
+    /// `ffs_mountfs`.
+    #[test]
+    fn a_recycled_mount_starts_with_no_exports() {
+        use crate::kern::uipc_mbuf::tests::mbinit_again;
+        use crate::kern::vfs_subr::tests::exports::{args, sin};
+        use crate::kern::vfs_syscalls::sys_mount;
+        use crate::sys::mount::{MNT_EXPORTED, MNT_UPDATE, UfsArgs};
+
+        let img = newfs::Image::new(newfs::FFS2_4M);
+        let (_g, p) = setup(img.finish());
+        mbinit_again();
+        let mp = mount_root(p, false);
+        let net = sin(2, [10, 0, 2, 0]);
+        let mask = sin(2, [255, 255, 255, 0]);
+        let args = UfsArgs {
+            fspec: 0,
+            export_info: args(MNT_EXPORTED, 0, Some(net), Some(mask)),
+        };
+        let ub = crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(
+            core::slice::from_ref(&args),
+        ));
+        sys(
+            sys_mount,
+            p,
+            &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
+        )
+        .unwrap();
+        assert!(mp.g.export.ne_rtable_inet.get().is_some(), "exported");
+
+        // Unmounted with its list still hanging (the C's free(ump) forgets it), then mounted
+        // again: vfs_mount_alloc hands the same mount out of its free list.
+        unmount_root(p, mp);
+        let again = mount_root(p, false);
+        assert!(core::ptr::eq(again, mp), "the mount was recycled");
+        assert!(again.g.export.ne_rtable_inet.get().is_none());
+        assert_eq!(again.g.export.ne_defexported.netc_exflags.get(), 0);
+        assert_eq!(again.flag() & MNT_EXPORTED, 0);
+
+        unmount_root(p, again);
+        teardown();
+    }
+
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
     fn fs_h_constants_match_the_c_header() {

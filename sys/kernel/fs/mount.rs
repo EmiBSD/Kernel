@@ -638,7 +638,9 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
 
 impl<G: ProcGlue> Mount<G> {
     /// A recycled mount made as `malloc(M_ZERO)` leaves a new one (it is on no list, its
-    /// last reference gone: no one else reaches it).
+    /// last reference gone: no one else reaches it), but for the glue member `g`, which the
+    /// file systems that use it clear where they start (the UFS mountfs empties the export
+    /// list, `bsd`'s `Netexport::clear`), and the typed slot, which must be empty already.
     fn reset(&self) {
         self.listed.store(false, Ordering::Relaxed);
         self.vfc.set(None);
@@ -1149,6 +1151,18 @@ mod tests {
         assert_eq!(held.v, 7);
         drop(held);
         assert_eq!(drops.load(Ordering::Relaxed), 1, "the last handle frees it");
+    }
+
+    /// `vfs_mount_alloc` reuses a free mount only with an empty slot: one left full (an
+    /// unmount that did not take its structure back) is a panic, never a structure handed to
+    /// the next file system.
+    #[test]
+    #[should_panic(expected = "has mnt_data")]
+    fn a_reused_mount_with_a_full_slot_is_a_panic() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> = Box::leak(Box::new(Mount::new_unpooled(None)));
+        mp.set_node(MArc::erase(MArc::new(M_MOUNT, M_WAITOK, 3u64).unwrap()));
+        mp.reset();
     }
 
     #[test]
