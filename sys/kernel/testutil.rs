@@ -1637,6 +1637,7 @@ macro_rules! test_file_glue {
             type UnveilMatch = $crate::testutil::UnveilCount;
             type InodeG = ();
             type UfsmountG = ();
+            type MountG = ();
             type InodeHash = InodeHashLink;
             type DqHash = DqHashLink;
             type DqFree = DqFreeLink;

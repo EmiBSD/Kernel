@@ -66,7 +66,7 @@
 //!   calls the quota and dirhash initialisations, `bsd`'s until then, and this module's
 //!   [`ufs_ihashinit`](super::ufs_ihash::ufs_ihashinit) once [`UfsTables::init_done`] says so.
 //! - `ufs_check_export` reads `um_export` (the NFS server's export list, `bsd`'s until N6):
-//!   it stays `bsd`'s, over the ufsmount's glue member.
+//!   it stays `bsd`'s, over the mount's glue member (`Mount::g`, N5.5b0).
 //!
 //! ## Redesign
 //! - N5.5a: LZ's `UFS_INIT_DONE` static -> [`UfsTables::init_done`], beside the inode hash

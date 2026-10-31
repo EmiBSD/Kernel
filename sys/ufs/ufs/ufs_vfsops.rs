@@ -74,7 +74,7 @@ use crate::sys::mbuf::Mbuf;
 use crate::sys::mount::{Mount, Vfsconf};
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vfs_export_lookup;
-use crate::ufs::ufs::ufsmount::vfstoufs;
+
 pub use kernel::fs::ufs::ufs::ufs_vfsops::{ufs_fhtovp, ufs_root, ufs_start};
 
 /// `ufs_check_export` (`vfs_checkexp`): verify a remote client has export rights and return
@@ -85,10 +85,9 @@ pub fn ufs_check_export(
     exflagsp: &mut i32,
     credanonp: &mut *const Ucred,
 ) -> Result<(), Errno> {
-    let ump = vfstoufs(mp);
-
-    // Get the export permission structure for this <mp, client> tuple.
-    let Some(np) = vfs_export_lookup(mp, &ump.g.um_export, Some(nam)) else {
+    // Get the export permission structure for this <mp, client> tuple (`um_export`, the
+    // mount's glue member since N5.5b0: no `VFSTOUFS` needed).
+    let Some(np) = vfs_export_lookup(mp, &mp.g.export, Some(nam)) else {
         return Err(Errno::EACCES);
     };
 

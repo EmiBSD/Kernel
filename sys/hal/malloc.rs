@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! `MBox<T>`: a `T` in a `malloc(9)` block of the C's type, owned; its drop is the `free`.
-//! `MArray<T>`: `n` of them, `mallocarray(9)`'s.
+//! `MArray<T>`: `n` of them, `mallocarray(9)`'s. `MArc<T>`: a `T` in a `malloc(9)` block, counted.
 //!
 //! The C writes `p = malloc(sizeof(*p), M_KEVENT, M_WAITOK)` and later `free(p, M_KEVENT,
 //! sizeof(*p))`, the type and the size repeated at both ends; LZ keeps the shape. An `MBox<T>`
@@ -34,6 +34,14 @@
 //!
 //! **Before registration** (early boot, host tests that register none) there is no
 //! `kmem_map`: [`MBox::new`] answers `None` whatever the flags (the value is dropped).
+//!
+//! ## Deviations
+//! - An [`MArc<T>`]'s block is the `T` with its reference count and its malloc type beside it
+//!   (`MInner<T>`: 16 bytes, more when `T`'s alignment pads it), so a structure the C
+//!   `malloc`s and frees from one place, and that is shared by handles here (the UFS mount
+//!   structure, `M_UFSMNT`), adds those bytes to its type's `vmstat -m` row (the in-use and
+//!   high-water bytes; the request counts are the C's). No `diff-openbsd` scenario prints
+//!   `vmstat -m`; `TypedPool`'s items carry the same 16 bytes (`sys/hal/pool.rs`).
 //!
 //! ## Redesign
 //! - `malloc(size, type, flags)` + initialisation -> [`MBox::new`], `None` only when the C's
@@ -61,15 +69,32 @@
 //!   `hal::pinlist`): the block never moves and the value is dropped in place before it is
 //!   freed; the two ways to a `T` that could move it, `DerefMut` and [`MBox::into_inner`],
 //!   are for `T: Unpin` only.
+//! - N5.5b0: [`MArc<T>`], a `malloc(9)`'d structure many holders reach and the last frees
+//!   (`struct ufsmount`: `malloc(M_UFSMNT)` by `ffs_mountfs`, hung from `mnt_data`, reached by
+//!   every inode's `i_ump`, `free`d by `ffs_unmount` after `vflush`): the count beside the
+//!   value, `Clone` counts, the last drop drops the `T` and frees the block. It is erased into
+//!   the [`AnyArc`] of a typed slot (the mount's, the vnode's) as a [`crate::pool::PoolArc`]
+//!   is, and taken back as a handle by naming its type ([`AnyArc::downcast_arc`]). Made over
+//!   [`MBox`] (the block, its checks and its type; [`MBox::into_raw`] gives the box up to the
+//!   counted handle), so the only new `unsafe` is the handle's: the shared reference to the
+//!   block, the last drop's free, the `Send`/`Sync` of a counted shared value, and the erased
+//!   release. `PoolArc`'s proof, for a block of `malloc(9)` instead of a pool item. The erased
+//!   handle's fields are private to `pool.rs` (N5.5b0's review): `MArc::erase` builds it
+//!   through `AnyArc::from_raw` and `MErased::VT` through `ErasedVt::new` (two `unsafe` with
+//!   their contracts), and `AnyArc::downcast_arc` takes the block back through the safe
+//!   `AnyArc::into_raw_if`, which checks the kind and the type.
 
+use core::any::TypeId;
 use core::marker::PhantomData;
-use core::mem::ManuallyDrop;
+use core::mem::{ManuallyDrop, offset_of};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
 use crate::bridges;
+use crate::pool::{AnyArc, ErasedKind, ErasedVt, MAX_REFS, REFS_MASK};
 use crate::trust::check_block;
 
 /// `M_WAITOK`: `malloc` may sleep, and then never fails.
@@ -195,6 +220,14 @@ impl<T> MBox<T> {
         this.mem.free(this.ptr.cast(), this.ty, size_of::<T>());
         value
     }
+
+    /// Gives the box up, as `Box::into_raw`: the block, holding its initialised `T`, which
+    /// nothing frees here. Its taker frees it with the registered `malloc(9)`'s `free(ptr, ty,
+    /// size_of::<T>())` after dropping the `T`, or leaks it ([`MArc`], whose block is an
+    /// `MBox<MInner<T>>` given up so).
+    pub(crate) fn into_raw(this: Self) -> NonNull<T> {
+        ManuallyDrop::new(this).ptr
+    }
 }
 
 impl<T> Deref for MBox<T> {
@@ -230,6 +263,190 @@ unsafe impl<T: Send> Send for MBox<T> {}
 
 // SAFETY: `&MBox<T>` gives only `&T`, so sharing it is sharing `&T`.
 unsafe impl<T: Sync> Sync for MBox<T> {}
+
+/// What an [`MArc<T>`]'s block holds: the count, the malloc type, the value.
+struct MInner<T> {
+    /// The live handles (the `MArc`s and the [`AnyArc`]s erased from them), in the low half
+    /// as [`crate::pool::PoolArc`]'s count ([`REFS_MASK`], [`MAX_REFS`]); none is parked.
+    refs: AtomicUsize,
+    /// The malloc type the block is counted under.
+    ty: i32,
+    /// The value.
+    value: T,
+}
+
+/// A `T` in a block of `malloc(9)` of type `ty`, shared: `Deref<Target = T>`, `Clone` adds a
+/// reference, the last drop drops the `T` and frees the block (`free(p, ty, size)`). The
+/// structure the C `malloc`s at one place, hangs where many reach it, and `free`s once they
+/// are gone (`struct ufsmount`, `mnt_data`, every inode's `i_ump`).
+///
+/// Invariant: `inner` is the block of an `MBox<MInner<T>>` that [`MArc::new`] made and gave up
+/// ([`MBox::into_raw`]): an initialised `MInner<T>` in a block of the registered [`Malloc`] of
+/// `size_of::<MInner<T>>()` bytes counted under `inner.ty`, whose `refs` counts (in its low
+/// half) the live handles to it, this one included, and the [`AnyArc`]s erased from them; the
+/// value is dropped and the block freed only when that count reaches 0, so the block outlives
+/// every handle. Only shared references to the block are made while handles live.
+pub struct MArc<T: Send + Sync + 'static> {
+    inner: NonNull<MInner<T>>,
+    _owns: PhantomData<MInner<T>>,
+}
+
+impl<T: Send + Sync + 'static> MArc<T> {
+    /// `malloc(sizeof(T), ty, flags)` holding `value`, one handle: `None` when `malloc`
+    /// returns `NULL` (`M_NOWAIT`, `M_CANFAIL`) or before the bridge is registered; with
+    /// `M_WAITOK` alone it sleeps for the memory, as the C does. The block holds the count and
+    /// the type beside the value (the module's deviations).
+    pub fn new(ty: i32, flags: i32, value: T) -> Option<Self> {
+        let b = MBox::new(
+            ty,
+            flags,
+            MInner {
+                refs: AtomicUsize::new(1),
+                ty,
+                value,
+            },
+        )?;
+        Some(MArc {
+            inner: MBox::into_raw(b),
+            _owns: PhantomData,
+        })
+    }
+
+    fn inner(&self) -> &MInner<T> {
+        // SAFETY: the block is initialised and outlives every handle, this one included (the
+        // invariant: it is freed only when the count this handle holds, among the others,
+        // reaches 0, which needs this handle's drop, so not while `&self` is borrowed); only
+        // shared references to the block are made while handles live (no API gives `&mut`), so
+        // this one aliases no `&mut`.
+        unsafe { self.inner.as_ref() }
+    }
+
+    /// The malloc type the block is counted under.
+    pub fn ty(this: &Self) -> i32 {
+        this.inner().ty
+    }
+
+    /// Whether two handles name the same block.
+    pub fn ptr_eq(a: &Self, b: &Self) -> bool {
+        a.inner == b.inner
+    }
+
+    /// The handle with its type erased ([`AnyArc`]): the same reference, counted as before,
+    /// lent back as a `&T` to who names `T` ([`AnyArc::downcast_ref`]) and taken back as a
+    /// handle by [`AnyArc::downcast_arc`]: a mount's typed slot (`mnt_data`).
+    pub fn erase(this: Self) -> AnyArc {
+        let this = ManuallyDrop::new(this);
+        // SAFETY: `from_raw`'s contract: `this.inner` is the block of this live handle over a
+        // `T: Send + Sync + 'static` (the type's invariant), whose reference is given over here
+        // (`ManuallyDrop`: the handle is not dropped); `MErased::<T>::VT` is made for that `T`
+        // and for `MArc`'s blocks (`ErasedKind::Malloc`).
+        unsafe { AnyArc::from_raw(this.inner.cast(), &MErased::<T>::VT) }
+    }
+}
+
+impl<T: Send + Sync + 'static> Deref for MArc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.inner().value
+    }
+}
+
+impl<T: Send + Sync + 'static> Clone for MArc<T> {
+    fn clone(&self) -> Self {
+        let old = self.inner().refs.fetch_add(1, Ordering::Relaxed);
+        if old & REFS_MASK >= MAX_REFS {
+            hal_panic(format_args!("MArc: reference count overflow"));
+        }
+        MArc {
+            inner: self.inner,
+            _owns: PhantomData,
+        }
+    }
+}
+
+impl<T: Send + Sync + 'static> Drop for MArc<T> {
+    fn drop(&mut self) {
+        // Release: this handle's accesses happen before the last one's free.
+        if self.inner().refs.fetch_sub(1, Ordering::Release) & REFS_MASK != 1 {
+            return;
+        }
+        // The last reference: every other handle's accesses happen before the free.
+        fence(Ordering::Acquire);
+        let ty = self.inner().ty;
+        let Some(mem) = bridges::malloc() else {
+            hal_panic(format_args!("MArc: a block of a malloc never registered"));
+        };
+        // SAFETY: the count reached 0 with this handle's release, so no other handle, and no
+        // `AnyArc` erased from one, exists, and none can be made (a clone needs a live handle);
+        // the shared references `inner` made above borrowed `self` and have ended. The block
+        // holds an initialised `MInner<T>` (the invariant), dropped once, here, before the
+        // block goes back, whole, to the `Malloc` that granted it (registered once, so the
+        // one `bridges::malloc` answers now), with its type and its size, as
+        // `MBox::into_raw`'s taker must.
+        unsafe { core::ptr::drop_in_place(self.inner.as_ptr()) };
+        mem.free(self.inner.cast(), ty, size_of::<MInner<T>>());
+    }
+}
+
+// SAFETY: a handle gives `&T` on any CPU (`T: Sync`) and the last one, on whichever CPU drops
+// it, drops the `T` there (`T: Send`); the count is atomic.
+unsafe impl<T: Send + Sync + 'static> Send for MArc<T> {}
+
+// SAFETY: `&MArc<T>` gives `&T` and clones (an atomic increment); with `T: Sync` sharing it
+// across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
+unsafe impl<T: Send + Sync + 'static> Sync for MArc<T> {}
+
+/// The [`ErasedVt`] of an [`MArc<T>`].
+struct MErased<T>(PhantomData<T>);
+
+impl<T: Send + Sync + 'static> MErased<T> {
+    // SAFETY: `ErasedVt::new`'s contract, for `MArc<T>`'s blocks: every block is an
+    // initialised `MInner<T>` (`MArc`'s invariant) whose `refs` (an `AtomicUsize` counted in
+    // its low half, a clone adding one, as `MArc::clone` does) and `value` (a `T: Send + Sync
+    // + 'static`, only ever lent shared) sit at the offsets given; `TypeId::of::<T>` is the
+    // `T`'s; `merased_release::<T>` drops one handle's reference (the last frees the block);
+    // `ErasedKind::Malloc` is used by no other layout.
+    const VT: ErasedVt = unsafe {
+        ErasedVt::new(
+            TypeId::of::<T>,
+            ErasedKind::Malloc,
+            offset_of!(MInner<T>, refs),
+            offset_of!(MInner<T>, value),
+            merased_release::<T>,
+        )
+    };
+}
+
+impl AnyArc {
+    /// The handle back, when the erased value is an [`MArc<T>`]'s `T`: the same reference,
+    /// counted as before; `None` (the erased handle dropped) for another type or for a pool
+    /// item ([`crate::pool::PoolArc::erase`]'s), whose block is not a malloc'd `MInner<T>`.
+    pub fn downcast_arc<T: Send + Sync + 'static>(self) -> Option<MArc<T>> {
+        // `Err` is the erased handle, dropped here (its reference released).
+        let item = self.into_raw_if::<T>(ErasedKind::Malloc).ok()?;
+        // The kind and the type checked: `item` is the block of an `MArc<T>` whose reference
+        // the erased handle owned and gave over, now this handle's.
+        Some(MArc {
+            inner: item.cast(),
+            _owns: PhantomData,
+        })
+    }
+}
+
+/// One reference fewer to the `MInner<T>` at `item` ([`AnyArc`]'s drop of an erased
+/// [`MArc<T>`]); the last one drops the `T` and frees the block.
+///
+/// # Safety
+///
+/// `item` names the `MInner<T>` of a block holding a reference the caller owns and gives up
+/// here, once.
+unsafe fn merased_release<T: Send + Sync + 'static>(item: NonNull<()>) {
+    drop(MArc::<T> {
+        inner: item.cast(),
+        _owns: PhantomData,
+    });
+}
 
 /// `n` values of `T` in one block of `malloc(9)` of type `ty`, owned (`mallocarray(9)`):
 /// `Deref`/`DerefMut<Target = [T]>`; the drop drops every element and frees the block.
@@ -552,6 +769,126 @@ mod tests {
         let p = b.as_pin();
         assert!(core::ptr::eq(p.get_ref(), &*b));
         assert_eq!(p.v, 9);
+    }
+
+    /// `M_UFSMNT`, a type of the C's table no other test of this crate uses (the tests run in
+    /// parallel and compare a type's bytes out).
+    const M_UFSMNT: i32 = 28;
+
+    /// The bytes an `MArc<Timer>` takes: the timer and the 16-byte header.
+    const ARC_BYTES: isize = (size_of::<Timer>() + 16) as isize;
+
+    fn timer(ticks: u64, drops: &Arc<AtomicU32>) -> Timer {
+        Timer {
+            ticks,
+            drops: Arc::clone(drops),
+        }
+    }
+
+    #[test]
+    fn a_counted_block_is_freed_by_its_last_handle() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let before = testutil::malloc_out(M_UFSMNT);
+        let a = MArc::new(M_UFSMNT, M_WAITOK, timer(3, &drops)).unwrap();
+        assert_eq!(MArc::ty(&a), M_UFSMNT);
+        assert_eq!(a.ticks, 3);
+        assert_eq!(testutil::malloc_out(M_UFSMNT), before + ARC_BYTES);
+        let b = a.clone();
+        assert!(MArc::ptr_eq(&a, &b));
+        drop(a);
+        assert_eq!(drops.load(Ordering::Relaxed), 0, "a handle is left");
+        assert_eq!(b.ticks, 3);
+        let c = b.clone();
+        let crossed = std::thread::spawn(move || c.ticks).join().unwrap();
+        assert_eq!(crossed, 3);
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            0,
+            "a clone dropped on another CPU"
+        );
+        drop(b);
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            1,
+            "the last drop drops the value"
+        );
+        assert_eq!(
+            testutil::malloc_out(M_UFSMNT),
+            before,
+            "and frees the block"
+        );
+    }
+
+    #[test]
+    fn an_erased_counted_block_lends_its_type_and_gives_its_handle_back() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let before = testutil::malloc_out(M_UFSMNT);
+        let a = MArc::new(M_UFSMNT, M_WAITOK, timer(7, &drops)).unwrap();
+        let kept = a.clone();
+        let e = MArc::erase(a);
+        assert_eq!(e.downcast_ref::<Timer>().map(|t| t.ticks), Some(7));
+        assert!(e.downcast_ref::<u64>().is_none(), "another type is refused");
+        let f = e.clone();
+        assert!(AnyArc::ptr_eq(&e, &f));
+        assert!(
+            e.clone().downcast_arc::<u64>().is_none(),
+            "and its handle too"
+        );
+        let back = e.downcast_arc::<Timer>().unwrap();
+        assert!(MArc::ptr_eq(&back, &kept));
+        drop((back, kept));
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            0,
+            "the erased clone keeps the block"
+        );
+        assert_eq!(f.downcast_ref::<Timer>().map(|t| t.ticks), Some(7));
+        drop(f);
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            1,
+            "the last erased drop frees it"
+        );
+        assert_eq!(testutil::malloc_out(M_UFSMNT), before);
+    }
+
+    /// `into_raw_if` refuses another type or kind without touching the count: the erased
+    /// handle comes back whole, still lending its value.
+    #[test]
+    fn a_refused_raw_take_gives_the_erased_handle_back_counted() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let e = MArc::erase(MArc::new(M_UFSMNT, M_WAITOK, timer(4, &drops)).unwrap());
+        let e = e.into_raw_if::<u64>(ErasedKind::Malloc).unwrap_err();
+        let e = e.into_raw_if::<Timer>(ErasedKind::Pool).unwrap_err();
+        assert_eq!(e.downcast_ref::<Timer>().map(|t| t.ticks), Some(4));
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(e);
+        assert_eq!(drops.load(Ordering::Relaxed), 1, "still the last reference");
+    }
+
+    #[test]
+    fn a_pool_item_is_never_taken_back_as_a_counted_block() {
+        use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
+        static P: TypedPool<Timer> = TypedPool::new();
+        testutil::install();
+        assert_eq!(P.init(0, PR_WAITOK, "marcpl"), Ok(()));
+        let drops = Arc::new(AtomicU32::new(0));
+        let h = P.get_shared(PR_WAITOK, || timer(9, &drops)).unwrap();
+        let e = PoolArc::erase(h);
+        assert_eq!(e.downcast_ref::<Timer>().map(|t| t.ticks), Some(9));
+        assert!(
+            e.downcast_arc::<Timer>().is_none(),
+            "a pool's Timer is no MArc"
+        );
+        assert_eq!(
+            drops.load(Ordering::Relaxed),
+            1,
+            "the refused handle was dropped"
+        );
+        assert_eq!(P.nout(), 0);
     }
 }
 /* </TESTS> */

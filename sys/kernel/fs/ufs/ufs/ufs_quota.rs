@@ -81,8 +81,10 @@
 //!   kept).
 //! - [`dqget`] answers `ENOMEM` when `malloc(M_WAITOK)` cannot be satisfied (the C cannot
 //!   fail there).
-//! - `VFSTOUFS(mp)` is the caller's (`quota.rs`'s deviations): `qsync`, `quotaon`,
-//!   `quotaoff` and `ufs_quotactl` take the mount's `struct ufsmount` beside the mount.
+//! - `VFSTOUFS(mp)` is a counted handle out of the mount's typed slot (N5.5b0,
+//!   `ufsmount.rs`'s [`vfstoufs`]): `qsync`, `quotaon` and `quotaoff` take one as the C
+//!   casts, and `ufs_quotactl` one per command that reads the structure (`setquota`,
+//!   `setuse`, `getquota`); the internal functions borrow it.
 //! - `KTRACE` is not configured: `ktrquota` is not called.
 //! - The `DIAGNOSTIC` checks (`chkdquot`, the `vfs_isbusy` and `VOP_ISLOCKED` panics) are
 //!   under feature `diagnostic`.
@@ -130,7 +132,7 @@ use super::quota::{
     Q_QUOTAON, Q_SETQUOTA, Q_SETUSE, Q_SYNC, SUBCMDMASK, SUBCMDSHIFT, UFS_QUOTA_FORCE, USRQUOTA,
     UfsQuotaFlags,
 };
-use super::ufsmount::{QTF_CLOSING, QTF_OPENING, Ufsmount};
+use super::ufsmount::{QTF_CLOSING, QTF_OPENING, Ufsmount, vfstoufs};
 use crate::assert::kpanic;
 use crate::cred::{CredRef, Ucred};
 use crate::file::FileGlue;
@@ -734,10 +736,10 @@ fn cred_of(c: Option<&CredRef>) -> Cred<'_> {
 pub fn quotaon<G: ProcGlue>(
     p: &Thread<G>,
     mp: &'static Mount<G>,
-    ump: &'static Ufsmount<G>,
     type_: usize,
     fname: usize,
 ) -> Result<(), Errno> {
+    let ump = vfstoufs(mp);
     #[cfg(feature = "diagnostic")]
     if !crate::fs::mount::vfs_isbusy(mp) {
         kpanic(format_args!("quotaon: mount point not busy"));
@@ -765,7 +767,7 @@ pub fn quotaon<G: ProcGlue>(
             drop(ump.um_cred[type_].replace(Some(mine)));
         }
     } else {
-        let _ = quotaoff(p, mp, ump, type_);
+        let _ = quotaoff(p, mp, type_);
         ump.um_quotas[type_].set(Some(vp));
         drop(ump.um_cred[type_].replace(Some(p.cred_ref())));
     }
@@ -777,7 +779,7 @@ pub fn quotaon<G: ProcGlue>(
     // Set up the time limits for this quota.
     ump.um_btime[type_].store(MAX_DQ_TIME, Ordering::Relaxed);
     ump.um_itime[type_].store(MAX_IQ_TIME, Ordering::Relaxed);
-    if let Ok(dq) = dqget(None, 0, ump, type_) {
+    if let Ok(dq) = dqget(None, 0, &ump, type_) {
         let b = dq.dqb();
         if b.dqb_btime > 0 {
             ump.um_btime[type_].store(i64::from(b.dqb_btime), Ordering::Relaxed);
@@ -794,7 +796,7 @@ pub fn quotaon<G: ProcGlue>(
 
     ump.um_qflags[type_].fetch_and(!QTF_OPENING, Ordering::Relaxed);
     if error.is_err() {
-        let _ = quotaoff(p, mp, ump, type_);
+        let _ = quotaoff(p, mp, type_);
     }
     error
 }
@@ -820,9 +822,9 @@ fn quotaoff_vnode<G: ProcGlue>(vp: &'static Vnode<G>, type_: usize) {
 pub fn quotaoff<G: ProcGlue>(
     p: &Thread<G>,
     mp: &'static Mount<G>,
-    ump: &'static Ufsmount<G>,
     type_: usize,
 ) -> Result<(), Errno> {
+    let ump = vfstoufs(mp);
     #[cfg(feature = "diagnostic")]
     if !crate::fs::mount::vfs_isbusy(mp) {
         kpanic(format_args!("quotaoff: mount point not busy"));
@@ -852,7 +854,7 @@ pub fn quotaoff<G: ProcGlue>(
 /// `getquota` (`Q_GETQUOTA`): return current values in a dqblk structure at the user
 /// address `addr`.
 fn getquota<G: ProcGlue>(
-    ump: &'static Ufsmount<G>,
+    ump: &Ufsmount<G>,
     id: u32,
     type_: usize,
     addr: usize,
@@ -920,7 +922,7 @@ pub fn setquota_dqblk(
 /// `setquota` (`Q_SETQUOTA`): assign an entire dqblk structure, read from the user address
 /// `addr`.
 fn setquota<G: ProcGlue>(
-    ump: &'static Ufsmount<G>,
+    ump: &Ufsmount<G>,
     id: u32,
     type_: usize,
     addr: usize,
@@ -984,12 +986,7 @@ pub fn setuse_dqblk(
 
 /// `setuse` (`Q_SETUSE`): set current inode and block usage, read from the user address
 /// `addr`.
-fn setuse<G: ProcGlue>(
-    ump: &'static Ufsmount<G>,
-    id: u32,
-    type_: usize,
-    addr: usize,
-) -> Result<(), Errno> {
+fn setuse<G: ProcGlue>(ump: &Ufsmount<G>, id: u32, type_: usize, addr: usize) -> Result<(), Errno> {
     let usage = UserPtr::<Dqblk>::new(addr).copyin()?;
     // KTRACE (KTR_STRUCT, ktrquota): not configured.
 
@@ -1032,7 +1029,8 @@ fn qsync_vnode<G: ProcGlue>(vp: &'static Vnode<G>) {
 }
 
 /// `qsync` (`Q_SYNC`): sync quota files to disk.
-pub fn qsync<G: ProcGlue>(mp: &'static Mount<G>, ump: &'static Ufsmount<G>) -> Result<(), Errno> {
+pub fn qsync<G: ProcGlue>(mp: &'static Mount<G>) -> Result<(), Errno> {
+    let ump = vfstoufs(mp);
     // Check if the mount point has any quotas. If not, simply return.
     if ump.um_quotas.iter().all(Link::is_none) {
         return Ok(());
@@ -1120,7 +1118,7 @@ fn dqio<G: ProcGlue>(
 pub fn dqget<G: ProcGlue>(
     vp: Option<&'static Vnode<G>>,
     id: u32,
-    ump: &'static Ufsmount<G>,
+    ump: &Ufsmount<G>,
     type_: usize,
 ) -> Result<&'static Dquot<G>, Errno> {
     let Some(dqvp) = ump.um_quotas[type_].get() else {
@@ -1315,7 +1313,6 @@ pub fn ufs_quota_delete<G: ProcGlue>(ip: &Inode<G>) -> Result<(), Errno> {
 /// address.
 pub fn ufs_quotactl<G: ProcGlue>(
     mp: &'static Mount<G>,
-    ump: &'static Ufsmount<G>,
     cmds: i32,
     uid: Uid,
     arg: usize,
@@ -1341,12 +1338,12 @@ pub fn ufs_quotactl<G: ProcGlue>(
     }
 
     let error = match cmd {
-        Q_QUOTAON => quotaon(p, mp, ump, type_, arg),
-        Q_QUOTAOFF => quotaoff(p, mp, ump, type_),
-        Q_SETQUOTA => setquota(ump, uid, type_, arg),
-        Q_SETUSE => setuse(ump, uid, type_, arg),
-        Q_GETQUOTA => getquota(ump, uid, type_, arg),
-        Q_SYNC => qsync(mp, ump),
+        Q_QUOTAON => quotaon(p, mp, type_, arg),
+        Q_QUOTAOFF => quotaoff(p, mp, type_),
+        Q_SETQUOTA => setquota(&vfstoufs(mp), uid, type_, arg),
+        Q_SETUSE => setuse(&vfstoufs(mp), uid, type_, arg),
+        Q_GETQUOTA => getquota(&vfstoufs(mp), uid, type_, arg),
+        Q_SYNC => qsync(mp),
         _ => Err(Errno::EINVAL),
     };
 

@@ -607,9 +607,14 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// The members of `bsd`'s types a UFS inode carries (`inode_u`, `inode_ext`, `i_dquot`):
     /// `fs::ufs::ufs::inode::Inode::g` (docs/SCAFFOLDING.md).
     type InodeG: Default + Send + Sync + 'static;
-    /// The members of `bsd`'s types a UFS mount carries (`ufsmount_u`, `um_export`, the
-    /// quotas): `fs::ufs::ufs::ufsmount::Ufsmount::g` (docs/SCAFFOLDING.md).
-    type UfsmountG: Default + Sync + 'static;
+    /// The members of `bsd`'s types a UFS mount carries (`ufsmount_u`; `um_export` is
+    /// [`FileGlue::MountG`]'s since N5.5b0): `fs::ufs::ufs::ufsmount::Ufsmount::g`
+    /// (docs/SCAFFOLDING.md). `Send`: the structure is a counted handle's value.
+    type UfsmountG: Default + Send + Sync + 'static;
+    /// The members of `bsd`'s types a mount carries: the UFS export list (`um_export`, the
+    /// NFS server's, `bsd`'s until N6), `fs::mount::Mount::g` (docs/SCAFFOLDING.md);
+    /// `Default` is a new mount's.
+    type MountG: Default + Sync + 'static;
     /// `i_hash`: the inode hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
     type InodeHash: PinAdapter<Elem = crate::fs::ufs::ufs::inode::Inode<Self::Proc>>;
     /// `dq_hash`: the dquot hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).

@@ -67,7 +67,9 @@
 //!   `vfs_root`, `vfs_vget` and `vfs_fhtovp` return the vnode where the C fills `*vpp`;
 //!   `vfs_mount` receives the kernel copy of the user's arguments as a byte slice of
 //!   `vfc_datasize` bytes, which the file system reads as its own `*_args` structure.
-//! - Its per-mount data hangs from `mnt_data` (`*mut c_void`, as in C).
+//! - Its per-mount data hangs from `mnt_data` (`*mut c_void`, as in C); a UFS mount's is the
+//!   kernel's typed slot (`Mount::set_node`, N5.5b0), and its export list the mount's glue
+//!   member ([`BsdMountG`]).
 //!
 //! ## Deviations
 //! - `mnt_stat` is read with the kernel's `Mount::stat` and changed with `Mount::with_stat`.
@@ -358,6 +360,29 @@ impl Default for Netexport {
         Self::new()
     }
 }
+
+impl Netexport {
+    /// The list emptied as the C starts each UFS mount's (`um_export` inside the
+    /// `malloc(M_ZERO)`ed `struct ufsmount` of `ffs_mountfs` and `ext2fs_mountfs`): a recycled
+    /// mount's previous entries are forgotten, not freed, as the C's `free(ump)` forgets them.
+    pub fn clear(&self) {
+        self.ne_rtable_inet.set(None);
+        self.ne_defexported.netc_exflags.set(0);
+        self.ne_defexported.netc_len.set(0);
+        self.ne_defexported.netc_anon.assign(&Ucred::new());
+    }
+}
+
+/// The members of `bsd`'s types a mount carries (the glue's `MountG`, `Mount::g`;
+/// docs/SCAFFOLDING.md).
+#[derive(Default)]
+pub struct BsdMountG {
+    /// `um_export` of a UFS mount (`struct ufsmount`'s, the NFS server's export list): the
+    /// mount's since N5.5b0, so the UFS structure itself is `Send` and lives in the mount's
+    /// typed slot. Its three readers hold the mount (`ffs_mount`'s and `ext2fs_mount`'s
+    /// `vfs_export`, `ufs_check_export`'s `vfs_export_lookup`).
+    pub export: Netexport,
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -462,6 +487,28 @@ mod tests {
         assert_eq!(args.flags, NFSMNT_NFSV3 | NFSMNT_RSIZE);
         assert_eq!(args.acregmin, 7);
         assert!(NfsArgs::from_bytes(&bytes[..NfsArgs::SIZE - 1]).is_none());
+    }
+
+    /// A recycled mount's export list starts empty, as the C's zeroed `struct ufsmount` does
+    /// (`ffs_mountfs`, `ext2fs_mountfs`; N5.5b0): no individual export left, the default
+    /// export's flags, length and anonymous credentials zero.
+    #[test]
+    fn a_cleared_export_list_is_a_new_one() {
+        let g = BsdMountG::default();
+        let nep = &g.export;
+        let rnh: &'static RadixNodeHead =
+            std::boxed::Box::leak(std::boxed::Box::new(RadixNodeHead::new()));
+        nep.ne_rtable_inet.set(Some(rnh));
+        nep.ne_defexported
+            .netc_exflags
+            .set(MNT_EXRDONLY | MNT_EXPORTANON);
+        nep.ne_defexported.netc_len.set(64);
+        nep.ne_defexported.netc_anon.set_uid(Uid::MAX - 1);
+        nep.clear();
+        assert!(nep.ne_rtable_inet.get().is_none());
+        assert_eq!(nep.ne_defexported.netc_exflags.get(), 0);
+        assert_eq!(nep.ne_defexported.netc_len.get(), 0);
+        assert_eq!(nep.ne_defexported.netc_anon.cr_uid.get(), 0);
     }
 }
 /* </TESTS> */

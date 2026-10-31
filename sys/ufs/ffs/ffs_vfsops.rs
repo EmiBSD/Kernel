@@ -77,6 +77,7 @@ use core::cell::Cell;
 use core::ptr::{self, NonNull};
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use hal::malloc::MArc;
 use hal::pool::{BoxPool, PoolArc, TypedPool};
 use kernel::fs::vops::{Cred, IoBuf};
 
@@ -146,7 +147,7 @@ use crate::ufs::ufs::ufs_vfsops::{ufs_check_export, ufs_fhtovp, ufs_init, ufs_ro
 #[cfg(feature = "ffs2")]
 use crate::ufs::ufs::ufsmount::UM_UFS2;
 use crate::ufs::ufs::ufsmount::UfsmountExt;
-use crate::ufs::ufs::ufsmount::{UM_UFS1, Ufsmount, vfstoufs};
+use crate::ufs::ufs::ufsmount::{UM_UFS1, Ufsmount, UfsmountRef, vfstoufs};
 
 /// `ffs_vfsops`.
 pub static FFS_VFSOPS: Vfsops = Vfsops {
@@ -403,7 +404,7 @@ pub fn ffs_mount(
     p: &Proc,
 ) -> Result<(), Errno> {
     let args = UfsArgs::from_bytes(data);
-    let mut ump: Option<&'static Ufsmount> = None;
+    let mut ump: Option<UfsmountRef> = None;
     let mut ronly = 0;
     let mut fname = [0u8; MNAMELEN];
     let mut fspec = [0u8; MNAMELEN];
@@ -414,8 +415,7 @@ pub fn ffs_mount(
         let devvp: &'static Vnode;
         'success: {
             if mp.flag() & MNT_UPDATE != 0 {
-                let u = vfstoufs(mp);
-                ump = Some(u);
+                let u: &UfsmountRef = ump.insert(vfstoufs(mp));
                 let fs = u.fs();
                 ronly = fs.fs_ronly.get();
                 let mut error = Ok(());
@@ -470,7 +470,7 @@ pub fn ffs_mount(
                 };
                 if a.fspec == 0 {
                     // Process export requests.
-                    if let Err(e) = vfs_export(mp, &u.g.um_export, &a.export_info) {
+                    if let Err(e) = vfs_export(mp, &mp.g.export, &a.export_info) {
                         break 'error_1 Err(e);
                     }
                     break 'success;
@@ -514,7 +514,7 @@ pub fn ffs_mount(
                     // UPDATE
                     // If it's not the same vnode, or at least the same device then it's not
                     // correct.
-                    let Some(u) = ump else {
+                    let Some(u) = &ump else {
                         panic(format_args!("ffs_mount: update without ufsmount"));
                     };
                     if !ptr::eq(devvp, u.devvp()) {
@@ -573,7 +573,7 @@ pub fn ffs_mount(
         // success:
         if !path.is_empty() && mp.flag() & MNT_UPDATE != 0 {
             // Update clean flag after changing read-onlyness.
-            let Some(u) = ump else {
+            let Some(u) = &ump else {
                 panic(format_args!("ffs_mount: update without ufsmount"));
             };
             let fs = u.fs();
@@ -722,7 +722,7 @@ pub fn ffs_reload(mountp: &'static Mount, cred: Cred<'_>, p: &Proc) -> Result<()
     }
     brelse(bp);
     ump.um_maxsymlinklen.set(fs.fs_maxsymlinklen.get() as u32);
-    ffs1_compat_read(fs, ump, fs.fs_sblockloc.get());
+    ffs1_compat_read(fs, &ump, fs.fs_sblockloc.get());
     ffs_oldfscompat(fs);
     let mut st = mountp.stat();
     let _ = ffs_statfs(mountp, &mut st, p);
@@ -831,7 +831,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     VOP_OPEN(devvp, omode, FSCRED, p)?;
 
     let mut bp: Option<&'static Buf> = None;
-    let mut ump: Option<&'static Ufsmount> = None;
+    let mut ump: Option<UfsmountRef> = None;
 
     let error: Errno = 'out: {
         // Try reading the super-block in each of its possible locations.
@@ -891,15 +891,9 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
             break 'out Errno::EROFS;
         }
 
-        let Some(um) = malloc(size_of::<Ufsmount>(), M_UFSMNT, M_WAITOK | M_ZERO) else {
-            panic(format_args!("ffs_mountfs: no memory"));
-        };
-        let um = um.cast::<Ufsmount>();
-        // SAFETY: a fresh allocation of a `Ufsmount`'s size from malloc, aligned for it.
-        unsafe { ptr::write(um.as_ptr(), Ufsmount::new()) };
-        // SAFETY: just initialised; freed only by ffs_unmount or the error path below.
-        let u: &'static Ufsmount = unsafe { &*um.as_ptr() };
-        ump = Some(u);
+        let u: &UfsmountRef = ump.insert(Ufsmount::alloc());
+        // The C's zeroed structure starts its export list empty (`um_export`, the mount's).
+        mp.g.export.clear();
         let sbsize = bfs.fs_sbsize.get();
         let Some(fsmem) = malloc(fs_allocsize(sbsize), M_UFSMNT, M_WAITOK | M_ZERO) else {
             panic(format_args!("ffs_mountfs: no memory"));
@@ -955,7 +949,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
                 fs.set_maxcluster(i, fs.fs_contigsumsize.get());
             }
         }
-        mp.set_data(um.as_ptr().cast());
+        mp.set_node(MArc::erase(u.clone()));
         mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             // Use on-disk fsid if it exists, else fake it
@@ -1026,10 +1020,13 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     if let Some(u) = ump {
         if let Some(fs) = u.g.um_fs.get() {
             let size = fs_allocsize(fs.fs_sbsize.get());
+            // Unlinked before the free (the unmount's reason).
+            u.g.um_fs.set(None);
             free(NonNull::from(fs).cast(), M_UFSMNT, size);
         }
-        free(NonNull::from(u).cast(), M_UFSMNT, size_of::<Ufsmount>());
-        mp.set_data(ptr::null_mut());
+        // `mp->mnt_data = NULL`; the last handle, `u`, frees the structure.
+        drop(mp.take_node());
+        drop(u);
     }
     Err(error)
 }
@@ -1138,7 +1135,7 @@ pub fn ffs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
     if fs.fs_ronly.get() == 0 {
         fs.fs_clean
             .set(i8::from(fs.fs_flags.get() & FS_UNCLEAN == 0));
-        let error = ffs_sbupdate(ump, MNT_WAIT);
+        let error = ffs_sbupdate(&ump, MNT_WAIT);
         // ignore write errors if mounted RW on read-only device
         if let Err(e) = error
             && e != Errno::EROFS
@@ -1166,9 +1163,13 @@ pub fn ffs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(), Er
         free(csp, M_UFSMNT, summary_allocsize(fs));
     }
     let fssize = fs_allocsize(fs.fs_sbsize.get());
+    // The structure may outlive this call (its count); its link to the super block may not:
+    // a late holder's `fs()` panics "no um_fs" instead of reading the freed block.
+    ump.g.um_fs.set(None);
     free(NonNull::from(fs).cast(), M_UFSMNT, fssize);
-    free(NonNull::from(ump).cast(), M_UFSMNT, size_of::<Ufsmount>());
-    mp.set_data(ptr::null_mut());
+    // `free(ump); mp->mnt_data = NULL`: the mount's handle goes; the inodes' went with
+    // `vflush`, so this call's, dropped on return, is the last and frees the structure.
+    drop(mp.take_node());
     mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
@@ -1349,7 +1350,7 @@ pub fn ffs_sync(
         }
     }
     if fs.fs_fmod.get() != 0
-        && let Err(e) = ffs_sbupdate(ump, waitfor)
+        && let Err(e) = ffs_sbupdate(&ump, waitfor)
     {
         allerror = Err(e);
     }
@@ -1384,7 +1385,7 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
             Inode::new(InodeInit {
                 vnode: Some(vp),
                 mount: Some(mp),
-                ump: Some(ump),
+                ump: Some(ump.clone()),
                 devvp: Some(ump.devvp()),
                 dev,
                 number: ino,
@@ -2879,6 +2880,55 @@ pub(crate) mod tests {
         assert_eq!(check([10, 0, 2, 9]), Err(Errno::EACCES));
 
         unmount_root(p, mp);
+        teardown();
+    }
+
+    /// The export list is the mount's glue member (N5.5b0) and mounts are recycled, where the
+    /// C's list lives in a `struct ufsmount` that `ffs_mountfs` `malloc(M_ZERO)`s afresh: an
+    /// export left by an unmount (no `MNT_DELEXPORT`) is gone from the recycled mount after
+    /// `ffs_mountfs`.
+    #[cfg(feature = "nfsserver")]
+    #[test]
+    fn a_recycled_mount_starts_with_no_exports() {
+        use crate::kern::uipc_mbuf::tests::mbinit_again;
+        use crate::kern::vfs_subr::tests::exports::{args, sin};
+        use crate::kern::vfs_syscalls::sys_mount;
+        use crate::sys::mount::{MNT_EXPORTED, MNT_UPDATE, UfsArgs};
+
+        let img = newfs::Image::new(newfs::FFS2_4M);
+        let (_g, p) = setup(img.finish());
+        mbinit_again();
+        let mp = mount_root(p, false);
+        let net = sin(2, [10, 0, 2, 0]);
+        let mask = sin(2, [255, 255, 255, 0]);
+        let args = UfsArgs {
+            fspec: 0,
+            export_info: args(MNT_EXPORTED, 0, Some(net), Some(mask)),
+        };
+        let ub = crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(
+            core::slice::from_ref(&args),
+        ));
+        sys(
+            sys_mount,
+            p,
+            &[path(b"ffs\0"), path(b"/\0"), MNT_UPDATE as usize, ub.addr()],
+        )
+        .unwrap();
+        assert!(mp.g.export.ne_rtable_inet.get().is_some(), "exported");
+
+        // Unmounted with its list still hanging (the C's free(ump) forgets it), then mounted
+        // again: vfs_mount_alloc hands the same mount out of its free list.
+        unmount_root(p, mp);
+        assert!(
+            mp.g.export.ne_rtable_inet.get().is_some(),
+            "the unmount leaves the list, as the C's free(ump) does"
+        );
+        let again = mount_root(p, false);
+        assert!(core::ptr::eq(again, mp), "the mount was recycled");
+        assert!(again.g.export.ne_rtable_inet.get().is_none());
+        assert_eq!(again.flag() & MNT_EXPORTED, 0);
+
+        unmount_root(p, again);
         teardown();
     }
 

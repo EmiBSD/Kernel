@@ -95,7 +95,7 @@ use crate::ufs::ext2fs::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Indir, vtoi};
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
-use crate::ufs::ufs::ufsmount::{blkptrtodb, is_sequential, mnindir, vfstoufs};
+use crate::ufs::ufs::ufsmount::{blkptrtodb, is_sequential, mnindir};
 
 /// `ext2fs_bmap` (`vop_bmap`): the device vnode and the disk block of logical block
 /// `a_bn`.
@@ -184,7 +184,9 @@ pub fn ext2fs_bmaparray(
     let Some(mp) = vp.mount() else {
         panic(format_args!("ext2fs_bmaparray: vnode without a mount"));
     };
-    let ump = vfstoufs(mp);
+    // `VFSTOUFS(mp)`: the inode's own handle on the structure, borrowed (no count on the
+    // read path).
+    let ump = ip.ump();
 
     #[cfg(feature = "diagnostic")]
     if ap.is_some() != nump.is_some() {

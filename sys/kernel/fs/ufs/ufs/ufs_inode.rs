@@ -275,8 +275,7 @@ mod tests {
     fn inode(ino: Ufsino, nlink: i16, mode: u16) -> (&'static Vnode<TestGlue>, InodeRef<TestGlue>) {
         let vp = test_vnode::<TestGlue>(VREG, 0);
         let devvp = test_vnode::<TestGlue>(crate::fs::vnode::VBLK, 0);
-        let ump: &'static Ufsmount<TestGlue> =
-            std::boxed::Box::leak(std::boxed::Box::new(Ufsmount::new()));
+        let ump = Ufsmount::<TestGlue>::alloc();
         let ip = INODES
             .get_homed(PR_WAITOK, || {
                 Inode::new(InodeInit {

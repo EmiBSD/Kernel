@@ -131,6 +131,15 @@
 //!   current mount kept by `vfs_busy`. A mount's vnode list (`mnt_vnodelist`) is a leaf mutex
 //!   of the mount's too, taken by `insmntque` and the walks of
 //!   [`super::subr::vfs_mount_foreach_vnode`].
+//! - N5.5b0: `mnt_data` of a kernel file system is the mount's typed node slot
+//!   ([`Mount::node`]: `ReadMostly<Option<AnyArc>>`, the vnode's `v_data` slot's type): the
+//!   file system hangs its counted per-mount structure there where the C sets `mnt_data`
+//!   ([`Mount::set_node`], an erased `hal::malloc::MArc`), takes it back where the C clears
+//!   it ([`Mount::take_node`], the unmount, after `vflush`) and reaches it by naming its type
+//!   ([`Mount::node_arc`]: a counted handle, held across the sleeps the operation makes, the
+//!   C's `VFSTOUFS(mp)` made a count). The raw `data` word stays for the file systems still in
+//!   `bsd` (docs/SCAFFOLDING.md). The members of `bsd`'s types a mount carries are the glue's
+//!   member [`Mount::g`] (`FileGlue::MountG`: the UFS export list, `um_export`, until N6).
 
 use core::ffi::c_void;
 use core::ptr;
@@ -139,10 +148,12 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64,
 use hal::intr::IPL_NONE;
 use hal::link::Link;
 use hal::list::{List, ListEntry};
-use hal::malloc::MBox;
+use hal::malloc::{MArc, MBox};
 use hal::mutex::Mutexed;
+use hal::pool::AnyArc;
 use hal::refcnt::Refcnt;
 use hal::rwlock::{RW_NOSLEEP, RW_READ, RW_WRITE, SplitRwlock};
+use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{
     Fsid, MFSNAMELEN, MNAMELEN, MNT_UNMOUNT, Statfs, VB_NOWAIT, VB_READ, VB_WAIT, VB_WRITE,
@@ -151,14 +162,13 @@ use hal::sys::mount::{
 use super::vnode::Vnode;
 use super::vops::Vfs;
 use crate::assert::{kassert, kpanic};
+use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 
 /// `M_MOUNT`: the malloc type of `struct mount` (`<sys/malloc.h>`).
 pub const M_MOUNT: i32 = 5;
 /// `M_WAITOK` (`<sys/malloc.h>`).
 const M_WAITOK: i32 = 0x0001;
-/// `M_ZERO` (`<sys/malloc.h>`).
-const M_ZERO: i32 = 0x0008;
 
 /// `struct vfsconf`: filesystem configuration information. One of these exists for each
 /// type of filesystem supported by the kernel (`vfsconflist[]`, `bsd`'s `vfs_init.rs`).
@@ -280,8 +290,13 @@ pub struct Mount<G: ProcGlue> {
     /// `f_owner`, as the statistics last left them (written under their lock, read without
     /// it).
     words: [AtomicU32; 6],
-    /// `mnt_data`: private data.
+    /// `mnt_data`: private data, as the C's word (the file systems still in `bsd`).
     data: AtomicPtr<c_void>,
+    /// `mnt_data` of a kernel file system: its per-mount structure, counted and typed (an
+    /// erased `MArc`; the module's redesign).
+    node: ReadMostly<Option<AnyArc>>,
+    /// The members of `bsd`'s types a mount carries (`FileGlue::MountG`, docs/SCAFFOLDING.md).
+    pub g: <G::FileGlue as FileGlue>::MountG,
 }
 
 impl<G: ProcGlue> Mount<G> {
@@ -302,6 +317,8 @@ impl<G: ProcGlue> Mount<G> {
             io: [const { AtomicU64::new(0) }; 4],
             words: [const { AtomicU32::new(0) }; 6],
             data: AtomicPtr::new(ptr::null_mut()),
+            node: ReadMostly::new(None),
+            g: Default::default(),
         }
     }
 
@@ -383,6 +400,35 @@ impl<G: ProcGlue> Mount<G> {
     #[inline]
     pub fn set_data(&self, p: *mut c_void) {
         self.data.store(p, Ordering::Relaxed);
+    }
+
+    /// `mp->mnt_data = node` of a kernel file system (its `mountfs`): `panic(9)` over a node
+    /// there already (the C fills `mnt_data` of a mount fresh from `vfs_mount_alloc`).
+    pub fn set_node(&self, node: AnyArc) {
+        if self.node.replace(Some(node)).is_some() {
+            kpanic(format_args!("mount {self:p}: mnt_data over mnt_data"));
+        }
+    }
+
+    /// `mp->mnt_data = NULL` of a kernel file system (its unmount, after `vflush`, and its
+    /// `mountfs`'s error path): the structure's handle, which the caller drops (the last one
+    /// frees the structure).
+    pub fn take_node(&self) -> Option<AnyArc> {
+        self.node.replace(None)
+    }
+
+    /// Whether a kernel file system's structure is in the slot.
+    pub fn has_node(&self) -> bool {
+        self.node.read().is_some()
+    }
+
+    /// `(T *)mp->mnt_data` held: a counted handle to the structure when it is a `T` (an
+    /// `MArc<T>`'s), `None` otherwise (none, or another file system's). The handle may be
+    /// held across sleeps; the slot is read once, its count raised before the read ends.
+    #[inline]
+    pub fn node_arc<T: Send + Sync + 'static>(&self) -> Option<MArc<T>> {
+        let node = self.node.read().as_ref().cloned()?;
+        node.downcast_arc::<T>()
     }
 
     /// A copy of `mp->mnt_stat`.
@@ -570,7 +616,9 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
             mp.reset();
             mp
         }
-        None => match MBox::new(M_MOUNT, M_WAITOK | M_ZERO, Mount::new()) {
+        // The C's `M_ZERO`: `MBox::new` writes the zeroed mount whole, so the flag would only
+        // add a memset.
+        None => match MBox::new(M_MOUNT, M_WAITOK, Mount::new()) {
             Some(b) => MBox::leak(b),
             None => kpanic(format_args!("vfs_mount_alloc: out of memory")),
         },
@@ -590,7 +638,9 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
 
 impl<G: ProcGlue> Mount<G> {
     /// A recycled mount made as `malloc(M_ZERO)` leaves a new one (it is on no list, its
-    /// last reference gone: no one else reaches it).
+    /// last reference gone: no one else reaches it), but for the glue member `g`, which the
+    /// file systems that use it clear where they start (the UFS mountfs empties the export
+    /// list, `bsd`'s `Netexport::clear`), and the typed slot, which must be empty already.
     fn reset(&self) {
         self.listed.store(false, Ordering::Relaxed);
         self.vfc.set(None);
@@ -616,6 +666,11 @@ impl<G: ProcGlue> Mount<G> {
             w.store(0, Ordering::Relaxed);
         }
         self.data.store(ptr::null_mut(), Ordering::Relaxed);
+        if self.has_node() {
+            kpanic(format_args!(
+                "vfs_mount_alloc: reused mount {self:p} has mnt_data"
+            ));
+        }
     }
 }
 
@@ -1050,6 +1105,73 @@ mod tests {
             Vfsconf::new(&crate::fs::testfs::TEST_VFS, b"testfs", 99, 0, 0);
         assert_eq!(c.name(), b"testfs");
         assert_eq!(c.vfc_typenum, 99);
+    }
+
+    /// A per-mount structure whose drop is counted.
+    struct Ump {
+        v: u32,
+        drops: std::sync::Arc<AtomicU32>,
+    }
+
+    impl Drop for Ump {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// The mount's typed slot (N5.5b0): `mnt_data` set by the mount, a counted handle lent by
+    /// naming its type, taken back by the unmount; the structure freed by its last handle,
+    /// whoever holds it.
+    #[test]
+    fn the_node_slot_lends_counted_handles_of_its_type() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> = Box::leak(Box::new(Mount::new_unpooled(None)));
+        assert!(!mp.has_node());
+        assert!(mp.node_arc::<Ump>().is_none(), "an empty slot");
+        let drops = std::sync::Arc::new(AtomicU32::new(0));
+        let ump = MArc::new(
+            M_MOUNT,
+            M_WAITOK,
+            Ump {
+                v: 7,
+                drops: std::sync::Arc::clone(&drops),
+            },
+        )
+        .unwrap();
+        mp.set_node(MArc::erase(ump));
+        assert!(mp.has_node());
+        let held = mp.node_arc::<Ump>().unwrap();
+        assert_eq!(held.v, 7);
+        assert!(mp.node_arc::<u32>().is_none(), "another type is refused");
+        assert!(mp.has_node(), "and the slot keeps its own");
+        // The unmount takes the mount's handle; a holder's keeps the structure.
+        drop(mp.take_node());
+        assert!(!mp.has_node() && mp.take_node().is_none());
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(held.v, 7);
+        drop(held);
+        assert_eq!(drops.load(Ordering::Relaxed), 1, "the last handle frees it");
+    }
+
+    /// `vfs_mount_alloc` reuses a free mount only with an empty slot: one left full (an
+    /// unmount that did not take its structure back) is a panic, never a structure handed to
+    /// the next file system.
+    #[test]
+    #[should_panic(expected = "has mnt_data")]
+    fn a_reused_mount_with_a_full_slot_is_a_panic() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> = Box::leak(Box::new(Mount::new_unpooled(None)));
+        mp.set_node(MArc::erase(MArc::new(M_MOUNT, M_WAITOK, 3u64).unwrap()));
+        mp.reset();
+    }
+
+    #[test]
+    #[should_panic(expected = "mnt_data over mnt_data")]
+    fn a_second_node_in_the_slot_is_a_panic() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> = Box::leak(Box::new(Mount::new_unpooled(None)));
+        mp.set_node(MArc::erase(MArc::new(M_MOUNT, M_WAITOK, 1u64).unwrap()));
+        mp.set_node(MArc::erase(MArc::new(M_MOUNT, M_WAITOK, 2u64).unwrap()));
     }
 }
 /* </TESTS> */

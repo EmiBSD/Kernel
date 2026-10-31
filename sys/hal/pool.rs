@@ -162,13 +162,13 @@ const PARK_SHIFT: u32 = usize::BITS / 2;
 const PARKED_ONE: usize = 1 << PARK_SHIFT;
 
 /// The references in `Inner::refs` (its low half).
-const REFS_MASK: usize = PARKED_ONE - 1;
+pub(crate) const REFS_MASK: usize = PARKED_ONE - 1;
 
 /// The most references a [`PoolArc`] counts: past it a clone panics, before the count could
 /// reach the parked half and free a live item. `MAXCPUS` below the half's top, so the clones
 /// in flight on the other CPUs when one panics cannot carry into it; a C-shaped limit below
 /// this one (`FDUP_MAX_COUNT`, `UINT_MAX - 2 * MAXCPUS`) refuses before it panics.
-const MAX_REFS: usize = REFS_MASK - crate::cpu::MAXCPUS;
+pub(crate) const MAX_REFS: usize = REFS_MASK - crate::cpu::MAXCPUS;
 
 const _: () = assert!(
     usize::BITS == 64,
@@ -887,56 +887,162 @@ unsafe impl<T: Send + Sync + 'static> Send for PoolArc<T> {}
 // across CPUs is sound, and a clone moved elsewhere is covered by `Send` above.
 unsafe impl<T: Send + Sync + 'static> Sync for PoolArc<T> {}
 
-/// A [`PoolArc<T>`] whose `T` is erased ([`PoolArc::erase`]): a callback's argument that the
+/// A counted handle whose `T` is erased: a [`PoolArc<T>`] ([`PoolArc::erase`]) or a
+/// [`crate::malloc::MArc<T>`] ([`crate::malloc::MArc::erase`]). A callback's argument that the
 /// code holding it (a timeout wheel, a task queue) neither knows nor reads, where the C passes
-/// a `void *` its callee casts back. `Clone` and `Drop` count as the handle's (the last drop
-/// drops the `T` and puts the item back); the callee gets its value by naming its type
+/// a `void *` its callee casts back, and a typed slot of a vnode or a mount (`v_data`,
+/// `mnt_data`). `Clone` and `Drop` count as the handle's (the last drop drops the `T` and
+/// frees its item or block); the callee gets its value by naming its type
 /// ([`AnyArc::downcast_ref`]), so a wrong cast answers `None` instead of reading another
-/// object.
+/// object, and a malloc'd value its handle back ([`AnyArc::downcast_arc`]).
 ///
-/// Invariant: `item` names the `Inner<T>` of a live `PoolArc<T>` reference that this value
-/// owns (one count of the item's `refs`, given up by the handle `erase` consumed), and `vt` is
-/// `Erased::<T>::VT` of that same `T`.
+/// Invariant: `item` names the item (`Inner<T>`) or the block (`MInner<T>`) of a live handle's
+/// reference that this value owns (one count of its `refs`, given up by the handle erased),
+/// for a `T: Send + Sync + 'static`, and `vt` is an [`ErasedVt`] made for that same `T` and
+/// that same kind of handle: `vt.refs` and `vt.value` are the offsets of the count and of the
+/// value in the item, `vt.release` its handle's drop. The fields are private to this module,
+/// so the invariant is established only by [`PoolArc::erase`] (here, with `Erased::<T>::VT`)
+/// and by [`AnyArc::from_raw`], whose contract is the invariant; a clone copies both fields of
+/// a value that holds it.
 pub struct AnyArc {
     item: NonNull<()>,
     vt: &'static ErasedVt,
 }
 
-/// What an [`AnyArc`] needs of its erased `T`: its identity, and the handle's count moved up
-/// and down.
-struct ErasedVt {
-    /// `TypeId::of::<T>`.
-    type_id: fn() -> TypeId,
-    /// One more reference ([`Clone`] of the handle).
-    acquire: unsafe fn(NonNull<()>),
-    /// One reference fewer ([`Drop`] of the handle; the last frees the item).
-    release: unsafe fn(NonNull<()>),
+/// The kind of handle an [`AnyArc`] erased.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ErasedKind {
+    /// A [`PoolArc`]: an item of a [`TypedPool`].
+    Pool,
+    /// A [`crate::malloc::MArc`]: a block of `malloc(9)`.
+    Malloc,
 }
 
-/// The [`ErasedVt`] of `T`.
+/// What an [`AnyArc`] needs of its erased `T` and of the handle it erased: their identity, where
+/// the count and the value sit in the item, and the handle's drop.
+///
+/// Invariant: the fields describe the items of one kind of handle of one `T` (the contract of
+/// [`ErasedVt::new`]; `Erased::<T>::VT`, built here, keeps it by construction). They are private
+/// to this module, so a vtable outside it is only ever made through that contract.
+pub(crate) struct ErasedVt {
+    /// `TypeId::of::<T>`.
+    type_id: fn() -> TypeId,
+    /// The handle the value was erased from.
+    kind: ErasedKind,
+    /// The offset of the item's `refs` (an `AtomicUsize`, counted in its low half as
+    /// [`PoolArc`]'s: [`REFS_MASK`], [`MAX_REFS`]).
+    refs: usize,
+    /// The offset of the item's `T`.
+    value: usize,
+    /// One reference fewer ([`Drop`] of the handle; the last frees the item).
+    release: ErasedRelease,
+}
+
+/// An [`ErasedVt`]'s release: given an item whose reference its caller owns, gives that
+/// reference up once (the last frees the item).
+pub(crate) type ErasedRelease = unsafe fn(NonNull<()>);
+
+impl ErasedVt {
+    /// The vtable of the handles of `kind` over a `T` whose `TypeId::of` is `type_id`.
+    ///
+    /// # Safety
+    ///
+    /// Every item of those handles holds, at offset `refs`, an initialised `AtomicUsize` that
+    /// counts its references in its low half as [`PoolArc`]'s count does ([`REFS_MASK`],
+    /// [`MAX_REFS`]: a clone adds one), and at offset `value` an initialised `T` that is
+    /// `Send + Sync + 'static`, of which only shared references are made while a reference
+    /// is counted; `type_id` is `TypeId::of::<T>`; `release`, given an item whose reference
+    /// its caller owns, gives that reference up once (the last frees the item). `kind` names
+    /// a kind no other layout uses: [`ErasedKind::Malloc`] for `MArc`'s `MInner<T>`.
+    pub(crate) const unsafe fn new(
+        type_id: fn() -> TypeId,
+        kind: ErasedKind,
+        refs: usize,
+        value: usize,
+        release: ErasedRelease,
+    ) -> Self {
+        Self {
+            type_id,
+            kind,
+            refs,
+            value,
+            release,
+        }
+    }
+}
+
+/// The [`ErasedVt`] of a [`PoolArc<T>`].
 struct Erased<T>(PhantomData<T>);
 
 impl<T: Send + Sync + 'static> Erased<T> {
     const VT: ErasedVt = ErasedVt {
         type_id: TypeId::of::<T>,
-        acquire: erased_acquire::<T>,
+        kind: ErasedKind::Pool,
+        refs: offset_of!(Inner<T>, refs),
+        value: offset_of!(Inner<T>, value),
         release: erased_release::<T>,
     };
 }
 
 impl AnyArc {
+    /// An erased handle over `item`, whose reference the caller gives over ([`crate::malloc::
+    /// MArc::erase`]).
+    ///
+    /// # Safety
+    ///
+    /// The type's invariant: `item` names the item of a live handle of `vt`'s kind over a
+    /// `T: Send + Sync + 'static`, holding one reference that the caller owns and gives over
+    /// here (it does not release it), and `vt` was made ([`ErasedVt::new`]) for that `T` and
+    /// that kind of handle.
+    pub(crate) unsafe fn from_raw(item: NonNull<()>, vt: &'static ErasedVt) -> Self {
+        AnyArc { item, vt }
+    }
+
+    /// The item, its reference given over to the caller, when the erased value is a `T` held
+    /// by a handle of `kind`; the value itself back otherwise (`Err`, still counted). The
+    /// caller owns the reference and gives it up once, as the handle of `kind` over a `T`
+    /// that the item is ([`AnyArc::downcast_arc`]).
+    pub(crate) fn into_raw_if<T: Send + Sync + 'static>(
+        self,
+        kind: ErasedKind,
+    ) -> Result<NonNull<()>, Self> {
+        if self.vt.kind != kind || (self.vt.type_id)() != TypeId::of::<T>() {
+            return Err(self);
+        }
+        // Not dropped: the reference goes with the item.
+        Ok(ManuallyDrop::new(self).item)
+    }
+
+    /// The item's count, which this value holds one of.
+    fn refs(&self) -> &AtomicUsize {
+        let at = self.item.as_ptr().wrapping_byte_add(self.vt.refs);
+        // SAFETY: `item` names the item of a live reference this value owns (the invariant,
+        // which only `PoolArc::erase` and `from_raw`'s contract establish: the fields are
+        // private to this module), so it outlives the borrow of `self` the result carries;
+        // `vt` was made for that item's kind and `T`, so `vt.refs` is the offset of its
+        // `refs` (`offset_of!` in `Erased::VT`, `ErasedVt::new`'s contract otherwise), and
+        // `at` is an initialised, aligned `AtomicUsize` inside the item. A shared reference to
+        // an atomic aliases the other handles' shared references (the handles make only shared
+        // ones to their count).
+        unsafe { &*at.cast::<AtomicUsize>() }
+    }
+
     /// The value, when it is a `T`: `None` for any other type.
     pub fn downcast_ref<T: Send + Sync + 'static>(&self) -> Option<&T> {
         if (self.vt.type_id)() != TypeId::of::<T>() {
             return None;
         }
-        // SAFETY: `item` names the `Inner` of a live reference this value owns (the
-        // invariant), and its `T` is the one `vt` was made for, whose `TypeId` equals this `T`'s
-        // (checked just above): the item is an initialised `Inner<T>` that outlives this
-        // value's reference, so outlives the borrow of `self` the result carries. Only shared
-        // references to an item are made while handles live (`PoolArc`'s invariant; its
-        // `get_mut` needs the one handle, and this reference is counted beside it).
-        Some(unsafe { &(*self.item.cast::<Inner<T>>().as_ptr()).value })
+        let at = self.item.as_ptr().wrapping_byte_add(self.vt.value);
+        // SAFETY: `item` names the item of a live reference this value owns (the invariant,
+        // established only by `PoolArc::erase` and `from_raw`'s contract: the fields are
+        // private to this module), and its `T` is the one `vt` was made for, whose `TypeId`
+        // equals this `T`'s (checked just above); `vt.value` is the offset of that `T` in it
+        // (`offset_of!` in `Erased::VT`, `ErasedVt::new`'s contract otherwise), so `at` is an
+        // initialised `T` that outlives this value's reference, so outlives the borrow of
+        // `self` the result carries. Only shared references to an item's value are made while
+        // a reference is counted (`PoolArc`'s invariant, its `get_mut` needing the one handle,
+        // and this reference is counted beside it; `ErasedVt::new`'s contract for the others).
+        Some(unsafe { &*at.cast::<T>() })
     }
 
     /// Whether two erased handles name the same item.
@@ -947,10 +1053,12 @@ impl AnyArc {
 
 impl Clone for AnyArc {
     fn clone(&self) -> Self {
-        // SAFETY: `acquire`'s contract: `item` names the `Inner` of `vt`'s `T` holding a
-        // reference this value owns (the invariant), alive for the call; the reference made
-        // is owned by the value returned, which carries the same `vt`.
-        unsafe { (self.vt.acquire)(self.item) };
+        // A handle's clone ([`PoolArc`]'s and `MArc`'s count the same way): the reference
+        // made is owned by the value returned, which carries the same item and `vt`.
+        let old = self.refs().fetch_add(1, Ordering::Relaxed);
+        if old & REFS_MASK >= MAX_REFS {
+            hal_panic(format_args!("AnyArc: reference count overflow"));
+        }
         AnyArc {
             item: self.item,
             vt: self.vt,
@@ -960,20 +1068,21 @@ impl Clone for AnyArc {
 
 impl Drop for AnyArc {
     fn drop(&mut self) {
-        // SAFETY: `release`'s contract: `item` names the `Inner` of `vt`'s `T` holding a
-        // reference this value owns (the invariant), given up here once, as the value is not
-        // used after its drop.
+        // SAFETY: `release`'s contract: `item` names the item of `vt`'s `T` and kind holding a
+        // reference this value owns (the invariant, private fields), given up here once, as
+        // the value is not used after its drop.
         unsafe { (self.vt.release)(self.item) };
     }
 }
 
-// SAFETY: an `AnyArc` is a `PoolArc<T>` with its type erased, made only by `PoolArc::erase`,
-// which requires `T: Send + Sync`; a `PoolArc<T>` of such a `T` is `Send` (its last drop, on any
-// CPU, drops the `T` there) and its count is atomic.
+// SAFETY: an `AnyArc` is a handle over a `T: Send + Sync` with its type erased, made only by
+// `PoolArc::erase` (which requires it) or `AnyArc::from_raw` (whose contract requires it): the
+// fields are private to this module. Such a handle is `Send` (its last drop, on any CPU, drops
+// the `T` there) and its count is atomic.
 unsafe impl Send for AnyArc {}
 
-// SAFETY: `&AnyArc` gives `&T` (`downcast_ref`, `T: Sync`) and clones (an atomic increment), as
-// `&PoolArc<T>` does.
+// SAFETY: `&AnyArc` gives `&T` (`downcast_ref`, `T: Sync` by the invariant above) and clones
+// (an atomic increment), as `&PoolArc<T>` and `&MArc<T>` do.
 unsafe impl Sync for AnyArc {}
 
 /// A [`PoolArc`] that counts nothing, built over a borrowed value ([`PoolArc::homed_view`])
@@ -990,21 +1099,6 @@ impl<T: Send + Sync + 'static> Deref for View<'_, T> {
     fn deref(&self) -> &PoolArc<T> {
         &self.arc
     }
-}
-
-/// One more reference to the `Inner<T>` at `item` ([`AnyArc`]'s clone).
-///
-/// # Safety
-///
-/// `item` names the `Inner<T>` of an item holding a reference the caller owns, alive for the
-/// call; the reference made here is owned by whoever the caller hands `item` to next.
-unsafe fn erased_acquire<T: Send + Sync + 'static>(item: NonNull<()>) {
-    let arc = ManuallyDrop::new(PoolArc::<T> {
-        inner: item.cast(),
-        _owns: PhantomData,
-    });
-    // The count goes up by a clone, given up for the caller's new owner.
-    core::mem::forget(PoolArc::clone(&arc));
 }
 
 /// One reference fewer to the `Inner<T>` at `item` ([`AnyArc`]'s drop); the last one drops the

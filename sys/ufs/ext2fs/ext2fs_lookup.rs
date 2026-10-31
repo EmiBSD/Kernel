@@ -144,7 +144,6 @@ use crate::ufs::ufs::dinode::{ISVTX, ROOTINO, Ufsino};
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::ufs_lookup::{DIRCHK, ufs_dirbad};
-use crate::ufs::ufs::ufsmount::vfstoufs;
 
 /// `MINDIRSIZ`: the first half of a `struct ext2fs_dirtemplate`, an entry whose name is at
 /// most 4 bytes.
@@ -376,7 +375,9 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     // directory to determine that the entry does not exist. Caching the location of the last
     // DELETE or RENAME has not reduced profiling time and hence has been removed in the
     // interest of simplicity.
-    let bmask = vfstoufs(vmount(vdp)).mountp().iosize() as i32 - 1;
+    // `VFSTOUFS(vdp->v_mount)->um_mountp` is `vdp->v_mount` itself (`ext2fs_mountfs` sets
+    // `um_mountp` to its mount): read without a count on the lookup path.
+    let bmask = vmount(vdp).iosize() as i32 - 1;
     let mut entryoffsetinblock: i32;
     let mut numdirpasses;
     if nameiop != LOOKUP || dp.i_diroff.get() == 0 || dp.i_diroff.get() as u64 > ext2fs_size(&dp) {
@@ -820,7 +821,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
             uio_procp: None,
         };
         let error = VOP_WRITE(dvp, &mut auio, IO_SYNC, cnp.cn_cred);
-        if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().bsize() as i64 {
+        if i64::from(dirblksize) > vmount(dvp).bsize() as i64 {
             // XXX should grow with balloc()
             panic(format_args!("ext2fs_direnter: frag size"));
         } else if error.is_ok() {

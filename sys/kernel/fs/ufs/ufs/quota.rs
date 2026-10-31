@@ -71,9 +71,6 @@
 //!   is a real one (`Cred::ucred`), so the kernel's (`NOCRED`, `FSCRED`, NULL) is charged
 //!   without a check (`ufs_quota.rs`'s deviations); a release's, which the C ignores, is
 //!   passed the same way.
-//! - `VFSTOUFS(mp)` is the caller's: the functions that take a mount (`qsync`, `quotaoff`,
-//!   `ufs_quotactl`) take its `struct ufsmount` beside it, until the mount's typed node slot
-//!   holds the structure (`bsd`'s `vfstoufs` until then).
 //!
 //! ## Redesign
 //! - LZ's `unsafe impl AbiPod for Dqblk` (the machine's copy trait) -> `hal::abi_pod!`, which
@@ -86,9 +83,7 @@ use super::inode::Inode;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
 #[cfg(not(feature = "quota"))]
-use {
-    super::ufsmount::Ufsmount, crate::fs::mount::Mount, crate::proc::Thread, hal::sys::types::Uid,
-};
+use {crate::fs::mount::Mount, crate::proc::Thread, hal::sys::types::Uid};
 
 #[cfg(feature = "quota")]
 pub use super::ufs_quota::{
@@ -270,7 +265,6 @@ pub fn getinoquota<G: ProcGlue>(_ip: &Inode<G>) -> Result<(), Errno> {
 pub fn quotaoff<G: ProcGlue>(
     _p: &Thread<G>,
     _mp: &'static Mount<G>,
-    _ump: &'static Ufsmount<G>,
     _type: usize,
 ) -> Result<(), Errno> {
     Ok(())
@@ -279,7 +273,7 @@ pub fn quotaoff<G: ProcGlue>(
 /// `qsync`: write the file system's quota changes to disk; nothing to write without
 /// `QUOTA`.
 #[cfg(not(feature = "quota"))]
-pub fn qsync<G: ProcGlue>(_mp: &'static Mount<G>, _ump: &'static Ufsmount<G>) -> Result<(), Errno> {
+pub fn qsync<G: ProcGlue>(_mp: &'static Mount<G>) -> Result<(), Errno> {
     Ok(())
 }
 
@@ -287,7 +281,6 @@ pub fn qsync<G: ProcGlue>(_mp: &'static Mount<G>, _ump: &'static Ufsmount<G>) ->
 #[cfg(not(feature = "quota"))]
 pub fn ufs_quotactl<G: ProcGlue>(
     _mp: &'static Mount<G>,
-    _ump: &'static Ufsmount<G>,
     _cmds: i32,
     _uid: Uid,
     _arg: usize,

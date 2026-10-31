@@ -64,6 +64,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | lz-sync | The monthly absorption of LZ's later commits: each gets one record in `lz-sync.toml` (`applied`, `not-applicable`, `covered-by-redesign`, `deferred-to-N10`) in an `lz-sync:` commit that does nothing else (`docs/SYNC.md`) |
 | M0..M16g | The milestones of LZ (the port), before this repository's N milestones; cited where a piece arrived (M14: the boot loaders) |
 | machine lock | `/tmp/emibsd/ci.lock`, shared with LandingZone: while it exists no second CI, smoke or full build runs on the Mac |
+| `MArc` | A counted `malloc(9)` block (`hal::malloc::MArc<T>`): the value with its count and its malloc type beside it, `Clone` counts, the last drop drops the value and frees the block with its type and size; erased into an `AnyArc` it fills the mount's typed slot and comes back by naming its type. The UFS mount structure's since N5.5b0 (`UfsmountRef`) |
 | milestone, N0..N12 | The rows of `docs/ROADMAP.md`, each with a mechanical exit criterion and a tag at its close: N0 bootstrap, N1 leaves, N2 foundations, N3 memory, N4 processes, N5 VFS, ..., N9 `bsd` deleted, N10 amd64 homologated, N11 verification, N12 performance |
 | MMIO | **Memory-Mapped I/O.** Device registers reached by reading and writing memory addresses; `hal::Mmio<Regs>` types them |
 | MP, UP | **Multiprocessor, uniprocessor.** OpenBSD's `option MULTIPROCESSOR`; since decision 40 the only kernel built is MP, and `smoke-up` boots it with one CPU |
@@ -89,6 +90,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | sysctl | OpenBSD's interface to read and set kernel state by a numeric path (`sysctl(2)`, the MIB); the names and numbers userland sees never change |
 | TLB | **Translation Lookaside Buffer.** A CPU's cache of page-table entries; a change to a mapping must flush it (`pmap`, `hal`) |
 | trailer | The `Key: value` lines closing a commit message: `LZ:`, `Unsafe:`, `Security-Review:`, `Bench:`, `Co-Authored-By:` (`.claude/rules/git-commits.md`) |
+| `UfsmountRef` | A counted handle to a mount's UFS structure (`MArc<Ufsmount<G>>`, `kernel::fs::ufs::ufs::ufsmount`): `ffs_mountfs`/`ext2fs_mountfs` hang one in the mount's typed slot and the unmount takes it back after `vflush`, `vfstoufs` counts one out of the slot for an operation, each inode holds one as `i_ump`; the last handle frees the structure |
 | `unported!` | The macro that makes an inherited gap visible: prints it once and returns `ENOSYS`; never a `todo!()` or a silently dropped path |
 | `unsafe-report` | `cargo xtask unsafe-report`: counts every `unsafe` block, fn, impl and trait per subsystem and per crate; `--check` enforces the budget, `--write` records the totals |
 | `Unsafe:` | A commit trailer, `subsystem before -> after`, one line per subsystem whose `unsafe` count the commit moved |
