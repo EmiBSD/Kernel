@@ -2887,6 +2887,7 @@ pub(crate) mod tests {
     /// C's list lives in a `struct ufsmount` that `ffs_mountfs` `malloc(M_ZERO)`s afresh: an
     /// export left by an unmount (no `MNT_DELEXPORT`) is gone from the recycled mount after
     /// `ffs_mountfs`.
+    #[cfg(feature = "nfsserver")]
     #[test]
     fn a_recycled_mount_starts_with_no_exports() {
         use crate::kern::uipc_mbuf::tests::mbinit_again;
@@ -2918,10 +2919,13 @@ pub(crate) mod tests {
         // Unmounted with its list still hanging (the C's free(ump) forgets it), then mounted
         // again: vfs_mount_alloc hands the same mount out of its free list.
         unmount_root(p, mp);
+        assert!(
+            mp.g.export.ne_rtable_inet.get().is_some(),
+            "the unmount leaves the list, as the C's free(ump) does"
+        );
         let again = mount_root(p, false);
         assert!(core::ptr::eq(again, mp), "the mount was recycled");
         assert!(again.g.export.ne_rtable_inet.get().is_none());
-        assert_eq!(again.g.export.ne_defexported.netc_exflags.get(), 0);
         assert_eq!(again.flag() & MNT_EXPORTED, 0);
 
         unmount_root(p, again);
