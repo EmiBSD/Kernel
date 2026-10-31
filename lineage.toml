@@ -8578,6 +8578,20 @@ status = "redesigned"
 notes = "N5.5a2: ufs_inactive and ufs_reclaim over InodeRef and InodeOps (the inode's table), the kernel's Vnops::inactive shape"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_lookup.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_lookup.rs"]
+status = "redesigned"
+notes = "N5.5a3: ufs_lookup in the kernel's Vnops::lookup shape; directory blocks are the busy buffer's token from InodeOps::bufatoff/buf_alloc, read and written through it (LZ's four unsafe data() blocks gone); ufs_direnter loses the unused newdirbp"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_vnops.rs"]
+status = "redesigned"
+notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone)"
+
+[[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_quota.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]

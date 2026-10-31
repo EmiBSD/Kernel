@@ -56,16 +56,26 @@
 //!
 //! ## Deviations
 //! - The header declares no types; its prototypes are the functions of `ufs_bmap.rs`,
-//!   `ufs_ihash.rs` and `ufs_vfsops.rs` here, re-exported so that `use ufs_extern::*` reads
-//!   like the C's `#include`. The prototypes of `ufs_inode.c`, `ufs_lookup.c`,
-//!   `ufs_vnops.c` and `ufs_quota.c`, and `ufs_init` and `ufs_check_export` of
-//!   `ufs_vfsops.c`, are `bsd`'s until N5.5a2 and N5.5a3 (`bsd`'s `ufs_extern.rs` re-exports
-//!   them beside these).
+//!   `ufs_ihash.rs`, `ufs_lookup.rs`, `ufs_vfsops.rs` and `ufs_vnops.rs` here (N5.5a3: the
+//!   last two files), re-exported so that `use ufs_extern::*` reads like the C's `#include`.
+//!   `ufs_inode.c`'s and `ufs_quota.c`'s are reached through their modules;
+//!   `ufs_check_export` is `bsd`'s until the export list moves (N6).
 //!
 //! ## Redesign
 //! - N5.5a: the kernel's half of LZ's re-export module, growing with each sub-slice.
 
 pub use super::ufs_bmap::{ufs_bmap, ufs_bmaparray, ufs_getlbns};
 pub use super::ufs_ihash::{ufs_ihashget, ufs_ihashinit, ufs_ihashins, ufs_ihashrem};
+pub use super::ufs_lookup::{
+    ufs_checkpath, ufs_dirbad, ufs_dirbadentry, ufs_dirempty, ufs_direnter, ufs_dirremove,
+    ufs_dirrewrite, ufs_lookup, ufs_makedirentry,
+};
 pub use super::ufs_vfsops::{ufs_fhtovp, ufs_root, ufs_start};
+pub use super::ufs_vnops::{
+    ufs_access, ufs_advlock, ufs_chmod, ufs_chown, ufs_close, ufs_create, ufs_getattr, ufs_ioctl,
+    ufs_islocked, ufs_itimes, ufs_kqfilter, ufs_link, ufs_lock, ufs_makeinode, ufs_mkdir,
+    ufs_mknod, ufs_open, ufs_pathconf, ufs_print, ufs_readdir, ufs_readlink, ufs_remove,
+    ufs_rename, ufs_rmdir, ufs_setattr, ufs_strategy, ufs_symlink, ufs_unlock, ufsspec_close,
+    ufsspec_read, ufsspec_write,
+};
 /* </CODE> */

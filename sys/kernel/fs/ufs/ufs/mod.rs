@@ -20,7 +20,7 @@
 //! The UFS layer: OpenBSD `sys/ufs/ufs/`, one module per file of LZ's (N5.5a1: the headers
 //! `dinode`, `dir`, `inode`, `ufsmount`, `ufs_extern` and the files `ufs_bmap`, `ufs_ihash`,
 //! `ufs_vfsops`; N5.5a2: `dirhash`, `quota`, `ufs_dirhash` (feature `ufs_dirhash`,
-//! `option UFS_DIRHASH`), `ufs_inode`, `ufs_quota`; the rest follow at N5.5a3).
+//! `option UFS_DIRHASH`), `ufs_inode`, `ufs_quota`; N5.5a3: `ufs_lookup`, `ufs_vnops`).
 
 pub mod dinode;
 pub mod dir;
@@ -33,7 +33,9 @@ pub mod ufs_dirhash;
 pub mod ufs_extern;
 pub mod ufs_ihash;
 pub mod ufs_inode;
+pub mod ufs_lookup;
 pub mod ufs_quota;
 pub mod ufs_vfsops;
+pub mod ufs_vnops;
 pub mod ufsmount;
 /* </CODE> */

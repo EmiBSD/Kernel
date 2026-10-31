@@ -211,7 +211,10 @@
 //! - `kn_hook` has a counted, typed form beside the address word: one slot set once by the
 //!   attach, holding `EVFILT_TIMER`'s timer or, for a filter of another module, its object
 //!   as an erased handle ([`Knote::set_hook_shared`], [`Knote::hook_shared`]: N4.7b's ttys),
-//!   so such a filter finds its object without a lookup and the knote keeps it alive.
+//!   so such a filter finds its object without a lookup and the knote keeps it alive; or a
+//!   vnode, which is never freed and so needs no count ([`Knote::set_hook_vnode`],
+//!   [`Knote::hook_vnode`]: N5.5a3's UFS filters, whose inode a count would keep past its
+//!   reclaim).
 
 use core::cell::Cell;
 use core::ffi::c_void;
@@ -738,6 +741,9 @@ enum KnHook<G: ProcGlue> {
     Timer(PoolArc<FiltTimer<G>>),
     /// The object of a filter of another module, erased ([`Knote::set_hook_shared`]).
     Shared(AnyArc),
+    /// The vnode of a file system's filter (`ufs_kqfilter`'s `kn_hook = vp`,
+    /// [`Knote::set_hook_vnode`]): vnodes are never freed, so the hook holds no count.
+    Vnode(&'static crate::fs::vnode::Vnode<G>),
 }
 
 /// The lock a [`Knote::detached`]'s status is keyed to (host tests only; never taken).
@@ -794,8 +800,28 @@ impl<G: ProcGlue> Knote<G> {
     pub fn set_hook_shared(&self, obj: AnyArc) -> Result<(), AnyArc> {
         self.hook.set(KnHook::Shared(obj)).map_err(|h| match h {
             KnHook::Shared(a) => a,
-            KnHook::Timer(_) => kpanic(format_args!("knote {self:p}: a timer hook")),
+            KnHook::Timer(_) | KnHook::Vnode(_) => {
+                kpanic(format_args!("knote {self:p}: a timer or vnode hook"))
+            }
         })
+    }
+
+    /// `kn->kn_hook = (caddr_t)vp` of a file system's filter (`ufs_kqfilter`): set once, by
+    /// the attach. `Err` gives the vnode back when the knote already has a hook.
+    pub fn set_hook_vnode(
+        &self,
+        vp: &'static crate::fs::vnode::Vnode<G>,
+    ) -> Result<(), &'static crate::fs::vnode::Vnode<G>> {
+        self.hook.set(KnHook::Vnode(vp)).map_err(|_| vp)
+    }
+
+    /// The vnode [`Knote::set_hook_vnode`] hooked (`None` before the attach, or for another
+    /// hook).
+    pub fn hook_vnode(&self) -> Option<&'static crate::fs::vnode::Vnode<G>> {
+        match self.hook.get()? {
+            KnHook::Vnode(vp) => Some(*vp),
+            KnHook::Timer(_) | KnHook::Shared(_) => None,
+        }
     }
 
     /// The object [`Knote::set_hook_shared`] hooked, when it is a `T` (`None` before the
@@ -803,7 +829,7 @@ impl<G: ProcGlue> Knote<G> {
     pub fn hook_shared<T: Send + Sync + 'static>(&self) -> Option<&T> {
         match self.hook.get()? {
             KnHook::Shared(a) => a.downcast_ref::<T>(),
-            KnHook::Timer(_) => None,
+            KnHook::Timer(_) | KnHook::Vnode(_) => None,
         }
     }
 
