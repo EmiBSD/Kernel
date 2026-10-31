@@ -158,6 +158,17 @@ uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 `cargo test -p xtask -- --ignored servers_answer` checks the three modes against
 `openssl s_client` on the Mac alone.
 
+## DevTools toolchain (T3)
+
+`just toolchain` installs the EmiBSD toolchains that DevTools releases
+(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.1` and
+`rust-1.99.1+emibsd.1`, pinned by tag and sha256 in the justfile, fetched with `gh release
+download` (never "latest"), checked before unpacking, and unpacked unmodified into
+`~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). The Rust one becomes rustup's
+toolchain `emibsd` (`rustup toolchain link`); the LLVM one's `bin/` (`ld.lld`, `llvm-objcopy`,
+clang) is `EMIBSD_LLVM_BIN`. Needs `gh`, logged in, and `zstd` (Homebrew). The kernel still
+builds with the `rust-toolchain.toml` pin until the switch commit names `emibsd`.
+
 ## e2fsprogs (M10d)
 
 `just smoke-ext2fs` checks the ext2 file system the guest made with OpenBSD's
