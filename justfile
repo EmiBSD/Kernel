@@ -3329,10 +3329,11 @@ cc_script := disk_login + " " + \
 # --- quality -----------------------------------------------------------------
 
 # host unit tests (libkern + libz + bsd through sys/arch/host, plus xtask's own), built
-# MULTIPROCESSOR as every kernel is (decision 40)
+# MULTIPROCESSOR as every kernel is (decision 40); the kernel with the options bsd's default
+# features forward to it (QUOTA, UFS_DIRHASH), so the modules they gate are tested
 test:
     cargo test -p libkern -p libz -p bsd -p xtask
-    cargo test -p hal -p kernel -p abi
+    cargo test -p hal -p kernel -p abi --features kernel/quota,kernel/ufs_dirhash
     cargo test -p hal --features diagnostic
     cargo test -p libsa -p boot -p efi
     cargo test -p efiboot-arm64
