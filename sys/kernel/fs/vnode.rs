@@ -137,7 +137,12 @@
 //!   ([`Vnode::node_with`]: the UFS inode's `VTOI`, a type's check where LZ's cast trusted the
 //!   tag) and taken by its reclaim ([`Vnode::take_node`]). The word stays for the file systems
 //!   still in `bsd` (cd9660, msdosfs, nfs, ntfs, tmpfs, fuse, mfs's node) and goes with the last
-//!   of them.
+//!   of them. `getnewvnode` clears both (fs::subr): a node a reclaim left in a recycled vnode
+//!   is caught first by `DIAGNOSTIC`'s "cleaned vnode isn't" panic, which tests the slot as
+//!   the word; without it, where the C overwrites `v_data` and so forgets the old pointer, the
+//!   kernel drops the leftover handle, and a still-hashed inode stops the kernel there (its
+//!   `PinEntry`'s drop panics while linked) instead of being left dangling. No second check
+//!   is added: the first is the C's.
 //! - `vn_lock` keeps the C's `Result` and protocol (the `v_lockcount` count under
 //!   `vnode_mtx`, the unlock and `ENOENT` when `VXLOCK` appeared, `LK_RETRY`); [`Locked`] is
 //!   the guard of a lock the caller leaves in the same function (its drop is `VOP_UNLOCK`).

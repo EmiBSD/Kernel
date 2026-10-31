@@ -604,6 +604,8 @@ pub fn getnewvnode_id<G: ProcGlue>(
     insmntque(vp, mp);
     vp.set_usecount(1);
     vp.set_data(ptr::null_mut());
+    // A leftover node is DIAGNOSTIC's "cleaned vnode isn't" above; without it, dropped as the
+    // C forgets `v_data` (kernel::fs::vnode's Redesign says why no second check).
     drop(vp.take_node());
     Ok(vp)
 }
