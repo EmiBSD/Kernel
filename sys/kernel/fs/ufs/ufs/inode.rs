@@ -378,6 +378,13 @@ impl<const N: usize> DinWords<N> {
     fn set_words(&self, words: [u64; N]) {
         #[cfg(feature = "diagnostic")]
         hal::klock::kernel_assert_locked();
+        self.put_words(words);
+    }
+
+    /// The words of a dinode no one else can see yet (`new`'s): stored without the lock's
+    /// check.
+    #[inline]
+    fn put_words(&self, words: [u64; N]) {
         for (w, v) in self.w.iter().zip(words) {
             w.store(v, Ordering::Relaxed);
         }
@@ -458,10 +465,11 @@ impl<const N: usize> DinWords<N> {
 }
 
 impl DinWords<16> {
-    /// The in-core copy of `d`.
+    /// The in-core copy of `d`: a value no one else sees yet, so its words are stored
+    /// without the kernel lock's check.
     pub fn new(d: &Ufs1Dinode) -> Self {
         let w = Self::zeroed();
-        w.store(d);
+        w.put_words(Self::words_of(d));
         w
     }
 
@@ -472,17 +480,23 @@ impl DinWords<16> {
 
     /// `*ip->i_din1 = *d`.
     pub fn store(&self, d: &Ufs1Dinode) {
+        self.set_words(Self::words_of(d));
+    }
+
+    /// The words of `d`'s bytes.
+    fn words_of(d: &Ufs1Dinode) -> [u64; 16] {
         let mut words = [0u64; 16];
         let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
-        self.set_words(words);
+        words
     }
 }
 
 impl DinWords<32> {
-    /// The in-core copy of `d`.
+    /// The in-core copy of `d`: a value no one else sees yet, so its words are stored
+    /// without the kernel lock's check.
     pub fn new(d: &Ufs2Dinode) -> Self {
         let w = Self::zeroed();
-        w.store(d);
+        w.put_words(Self::words_of(d));
         w
     }
 
@@ -493,9 +507,14 @@ impl DinWords<32> {
 
     /// `*ip->i_din2 = *d`.
     pub fn store(&self, d: &Ufs2Dinode) {
+        self.set_words(Self::words_of(d));
+    }
+
+    /// The words of `d`'s bytes.
+    fn words_of(d: &Ufs2Dinode) -> [u64; 32] {
         let mut words = [0u64; 32];
         let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
-        self.set_words(words);
+        words
     }
 }
 
