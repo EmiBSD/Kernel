@@ -316,14 +316,19 @@ pub fn pnbuf_free<G: ProcGlue>(cnp: &mut Componentname<'_, G>) {
 
 /// `ufs_itimes`: update the times in the inode.
 pub fn ufs_itimes<G: ProcGlue>(vp: &'static Vnode<G>) {
-    let ip = vtoi(vp);
+    itimes(vp, &vtoi(vp));
+}
+
+/// [`ufs_itimes`] of the inode `ip` of `vp` a caller holds already (`ufs_getattr`,
+/// `ufs_setattr`: one handle per operation, as the C's one `VTOI`).
+fn itimes<G: ProcGlue>(vp: &'static Vnode<G>, ip: &Inode<G>) {
     if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_UPDATE) == 0 {
         return;
     }
 
     if !rdonly(vp) {
         if ip.fstype() == UM_EXT2FS {
-            <G::FileGlue as FileGlue>::ext2fs_itimes(&ip);
+            <G::FileGlue as FileGlue>::ext2fs_itimes(ip);
             // goto out
             ip.clr_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
             return;
@@ -474,7 +479,7 @@ pub fn ufs_access<G: ProcGlue>(
 pub fn ufs_getattr<G: ProcGlue>(vp: &'static Vnode<G>, vap: &mut Vattr) -> Result<(), Errno> {
     let ip = vtoi(vp);
 
-    ufs_itimes(vp);
+    itimes(vp, &ip);
 
     // Copy from inode table.
     vap.va_fsid = i64::from(ip.i_dev);
@@ -561,7 +566,7 @@ pub fn ufs_setattr<G: ProcGlue>(
         if rdonly(vp) {
             return Err(Errno::EROFS);
         }
-        ufs_chown(vp, vap.va_uid, vap.va_gid, cred)?;
+        ufs_chown(vp, &ip, vap.va_uid, vap.va_gid, cred)?;
     }
     if vap.va_size != VNOVAL as u64 {
         let oldsize = ip.dip_size();
@@ -605,7 +610,7 @@ pub fn ufs_setattr<G: ProcGlue>(
         {
             ip.set_flag(IN_ACCESS);
         }
-        ufs_itimes(vp);
+        itimes(vp, &ip);
         if vap.va_mtime.tv_nsec != i64::from(VNOVAL) {
             ip.dip_set_mtime(vap.va_mtime.tv_sec);
             ip.dip_set_mtimensec(vap.va_mtime.tv_nsec as i32);
@@ -621,19 +626,20 @@ pub fn ufs_setattr<G: ProcGlue>(
         if rdonly(vp) {
             return Err(Errno::EROFS);
         }
-        error = ufs_chmod(vp, vap.va_mode as i32, cred);
+        error = ufs_chmod(vp, &ip, vap.va_mode as i32, cred);
     }
     VN_KNOTE(vp, hint);
     error
 }
 
-/// `ufs_chmod`: change the mode on a file. Inode must be locked before calling.
+/// `ufs_chmod`: change the mode on a file. Inode must be locked before calling (`ip` is
+/// `vp`'s, the caller's handle).
 pub fn ufs_chmod<G: ProcGlue>(
     vp: &'static Vnode<G>,
+    ip: &Inode<G>,
     mode: i32,
     cred: Cred<'_>,
 ) -> Result<(), Errno> {
-    let ip = vtoi(vp);
     let c = ucred(cred);
     let mode = mode as Mode;
 
@@ -657,14 +663,15 @@ pub fn ufs_chmod<G: ProcGlue>(
     Ok(())
 }
 
-/// `ufs_chown`: perform chown operation on inode ip; inode must be locked prior to call.
+/// `ufs_chown`: perform chown operation on inode ip; inode must be locked prior to call
+/// (`ip` is `vp`'s, the caller's handle).
 pub fn ufs_chown<G: ProcGlue>(
     vp: &'static Vnode<G>,
+    ip: &Inode<G>,
     uid: Uid,
     gid: Gid,
     cred: Cred<'_>,
 ) -> Result<(), Errno> {
-    let ip = vtoi(vp);
     let c = ucred(cred);
     let mut quota_flags: UfsQuotaFlags = 0;
 
