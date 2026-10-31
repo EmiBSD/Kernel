@@ -77,6 +77,7 @@ use crate::sys::vnode::Vnode;
 use crate::ufs::ext2fs::ext2fs::fsbtodb;
 use crate::ufs::ext2fs::ext2fs_alloc::{ext2fs_alloc, ext2fs_blkfree, ext2fs_blkpref};
 use crate::ufs::ext2fs::ext2fs_dinode::{NDADDR, NIADDR};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode};
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
 
@@ -102,7 +103,7 @@ fn bap_set(b: &mut [u8], i: usize, v: u32) {
 /// The inode's block pointers as the bytes they are stored in, for `ext2fs_blkpref`.
 fn inode_bap(ip: &Inode) -> [u8; (NDADDR + NIADDR) * 4] {
     let mut b = [0u8; (NDADDR + NIADDR) * 4];
-    for (i, v) in ip.i_e2fs_blocks().iter().enumerate() {
+    for (i, v) in ip.g.i_e2fs_blocks().iter().enumerate() {
         b[4 * i..4 * i + 4].copy_from_slice(&v.to_ne_bytes());
     }
     b
@@ -125,7 +126,7 @@ pub fn ext2fs_buf_alloc(
 
     // The first NDADDR blocks are direct blocks
     if (bn as usize) < NDADDR {
-        let nb = u32::from_le(ip.i_e2fs_block(bn as usize));
+        let nb = u32::from_le(ip.g.i_e2fs_block(bn as usize));
         if nb != 0 {
             let (bp, error) = bread(vp, Daddr::from(bn), bsize);
             if let Err(e) = error {
@@ -140,9 +141,9 @@ pub fn ext2fs_buf_alloc(
         let pref = ext2fs_blkpref(ip, bn, bn as i32, Some(&bap));
         let mut newb = 0;
         ext2fs_alloc(ip, bn, pref as u32, cred, &mut newb)?;
-        ip.i_e2fs_last_lblk().set(lbn as u32);
-        ip.i_e2fs_last_blk().set(newb);
-        ip.set_i_e2fs_block(bn as usize, newb.to_le());
+        ip.g.i_e2fs_last_lblk().set(lbn as u32);
+        ip.g.i_e2fs_last_blk().set(newb);
+        ip.g.set_i_e2fs_block(bn as usize, newb.to_le());
         ip.set_flag(IN_CHANGE | IN_UPDATE);
         let bp = getblk_wait(vp, Daddr::from(bn), bsize);
         bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
@@ -172,7 +173,7 @@ pub fn ext2fs_buf_alloc(
 
     let error: Errno = 'fail: {
         // Fetch the first indirect block allocating if necessary.
-        let mut nb = u32::from_le(ip.i_e2fs_block(NDADDR + indirs[0].in_off as usize));
+        let mut nb = u32::from_le(ip.g.i_e2fs_block(NDADDR + indirs[0].in_off as usize));
         if nb == 0 {
             let pref = ext2fs_blkpref(ip, lbn as u32, 0, None);
             let mut newb = 0;
@@ -180,7 +181,7 @@ pub fn ext2fs_buf_alloc(
             nb = newb;
             allociblk[nalloc] = nb;
             nalloc += 1;
-            ip.i_e2fs_last_blk().set(newb);
+            ip.g.i_e2fs_last_blk().set(newb);
             let bp = getblk_wait(vp, indirs[1].in_lbn, bsize);
             bp.set_blkno(fsbtodb(fs, Daddr::from(newb)));
             clrbuf(bp);
@@ -191,7 +192,7 @@ pub fn ext2fs_buf_alloc(
             unwindidx = 0;
             let slot = NDADDR + indirs[0].in_off as usize;
             allocib = Some(slot);
-            ip.set_i_e2fs_block(slot, newb.to_le());
+            ip.g.set_i_e2fs_block(slot, newb.to_le());
             ip.set_flag(IN_CHANGE | IN_UPDATE);
         }
 
@@ -222,7 +223,7 @@ pub fn ext2fs_buf_alloc(
             nb = newb;
             allociblk[nalloc] = nb;
             nalloc += 1;
-            ip.i_e2fs_last_blk().set(newb);
+            ip.g.i_e2fs_last_blk().set(newb);
             let nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
             nbp.set_blkno(fsbtodb(fs, Daddr::from(nb)));
             clrbuf(nbp);
@@ -259,8 +260,8 @@ pub fn ext2fs_buf_alloc(
             nb = newb;
             // The C also records the data block in allociblk, which nothing reads once the
             // block is in place.
-            ip.i_e2fs_last_lblk().set(lbn as u32);
-            ip.i_e2fs_last_blk().set(newb);
+            ip.g.i_e2fs_last_lblk().set(lbn as u32);
+            ip.g.i_e2fs_last_blk().set(newb);
             // SAFETY: the buffer is ours (busy from bread) and mapped.
             bap_set(unsafe { bp.data() }, indirs[num].in_off as usize, nb);
             // If required, write synchronously, otherwise use delayed write.
@@ -305,7 +306,7 @@ pub fn ext2fs_buf_alloc(
         let unwindidx = unwindidx as usize;
         if unwindidx == 0 {
             if let Some(slot) = allocib {
-                ip.set_i_e2fs_block(slot, 0);
+                ip.g.set_i_e2fs_block(slot, 0);
             }
         } else {
             let (bp, r) = bread(vp, indirs[unwindidx].in_lbn, bsize);
@@ -331,7 +332,7 @@ pub fn ext2fs_buf_alloc(
     }
     if deallocated != 0 {
         let nblock = btodb(deallocated as usize) as u32;
-        ip.set_i_e2fs_nblock(ip.i_e2fs_nblock().wrapping_sub(nblock));
+        ip.g.set_i_e2fs_nblock(ip.g.i_e2fs_nblock().wrapping_sub(nblock));
         ip.set_flag(IN_CHANGE | IN_UPDATE);
     }
     Err(error)

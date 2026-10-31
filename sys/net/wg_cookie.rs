@@ -78,7 +78,6 @@ use crate::crypto::blake2s::Blake2sState;
 use crate::crypto::chachapoly::{
     XCHACHA20POLY1305_NONCE_SIZE, xchacha20poly1305_decrypt, xchacha20poly1305_encrypt,
 };
-use crate::crypto::siphash::AtomicSiphashKey;
 use crate::crypto::wipe;
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_rwlock::{
@@ -101,6 +100,7 @@ use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, AF_UNSPEC, SockaddrStorage};
 use crate::sys::time::{Timespec, timespecadd, timespecsub};
 use crate::sys::types::{SaFamily, Time};
+use libkern::siphash::AtomicSiphashKey;
 
 /// `COOKIE_MAC_SIZE`.
 pub const COOKIE_MAC_SIZE: usize = 16;

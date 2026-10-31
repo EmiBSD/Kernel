@@ -89,7 +89,6 @@ use core::sync::atomic::{AtomicI64, Ordering};
 
 use libkern::StaticCell;
 
-use crate::crypto::siphash::{SipHash24, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_subr::hashinit;
@@ -112,6 +111,7 @@ use crate::sys::queue::{ListHead, TailqHead};
 use crate::sys::socket::{AF_INET, AF_UNSPEC};
 use crate::sys::systm::INFSLP;
 use crate::sys::types::SaFamily;
+use libkern::siphash::{SipHash24, SiphashKey};
 
 /// The hash chains, with the claim that makes them shareable.
 #[derive(Clone, Copy)]

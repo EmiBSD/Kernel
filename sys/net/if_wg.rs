@@ -125,7 +125,6 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use libkern::{explicit_bzero, strlcpy, timingsafe_bcmp};
 
 use crate::crypto::curve25519::curve25519_generate_public;
-use crate::crypto::siphash::AtomicSiphashKey;
 use crate::dev::rnd::{arc4random, arc4random_buf, arc4random_uniform};
 use crate::kern::init_main::NCPUS;
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_init_flags, mtx_leave};
@@ -228,6 +227,7 @@ use crate::sys::types::{InPort, SaFamily};
 use hal::intr::IPL_NONE;
 use hal::mutex::Mutexed;
 use libkern::StaticCell;
+use libkern::siphash::AtomicSiphashKey;
 
 /// `WG_KEY_LEN`.
 pub const WG_KEY_LEN: usize = 32;

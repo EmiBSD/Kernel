@@ -239,6 +239,15 @@ std::thread_local! {
     static LAST_SYNC_FLAGS: core::cell::Cell<Option<i32>> = const { core::cell::Cell::new(None) };
     /// What this thread's next `VOP_CREATE` answers, once ([`set_create_error`]).
     static CREATE_ERROR: core::cell::Cell<Option<Errno>> = const { core::cell::Cell::new(None) };
+    /// The error this thread's next `VOP_STRATEGY` gives its buffer, once
+    /// ([`set_strategy_error`]).
+    static STRATEGY_ERROR: core::cell::Cell<Option<Errno>> = const { core::cell::Cell::new(None) };
+}
+
+/// Makes this thread's next `VOP_STRATEGY` complete its buffer with `e` (`B_ERROR`), as a
+/// disk's failed read.
+pub fn set_strategy_error(e: Errno) {
+    STRATEGY_ERROR.with(|c| c.set(Some(e)));
 }
 
 /// Makes this thread's next `VOP_CREATE` fail with `e`.
@@ -748,6 +757,10 @@ impl Vnops<TestGlue> for TestVops {
     }
     fn strategy(&self, _vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
         if let Some(t) = bp.into_token() {
+            if let Some(e) = STRATEGY_ERROR.with(core::cell::Cell::take) {
+                t.buf().set(super::buf::B_ERROR);
+                t.buf().set_error(Some(e));
+            }
             super::bio::biodone(t);
         }
         Ok(())
@@ -1275,7 +1288,11 @@ pub static TEST_DEVSW: TestDevsw = TestDevsw;
 /// system, the device switch; the old lists and the buffer cache forgotten. The guard of the
 /// kernel's memory.
 pub fn setup() -> MutexGuard<'static, ()> {
-    let g = crate::testutil::pages_reset();
+    setup_on(crate::testutil::pages_reset())
+}
+
+/// [`setup`] over the memory guard `g` the caller made.
+fn setup_on(g: MutexGuard<'static, ()>) -> MutexGuard<'static, ()> {
     hal::klock::kernel_lock();
     vfs_test_reset::<TestGlue>();
     // The buffer cache is the process's, not the thread's: a cache test's buffers (and
@@ -1305,6 +1322,7 @@ pub fn setup() -> MutexGuard<'static, ()> {
     LAST_ACCESS_UID.with(|c| c.set(None));
     LAST_SYNC_FLAGS.with(|c| c.set(None));
     CREATE_ERROR.with(|c| c.set(None));
+    STRATEGY_ERROR.with(|c| c.set(None));
     crate::testutil::unveil_done_reset();
     super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
     super::lockf::lf_init();
@@ -1316,7 +1334,24 @@ pub fn setup() -> MutexGuard<'static, ()> {
 /// vnode, which is the thread's `rootvnode`, unlocked and referenced twice (the mount's
 /// root and the caller's).
 pub fn setup_root() -> (MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
-    let g = setup();
+    root_on(setup())
+}
+
+/// [`setup_root`] over `bytes` of page memory and a buffer cache of `bufpages` pages
+/// (`testutil::bufcache_install`'s), for the tests that read and write a file's blocks
+/// through the cache: [`setup`]'s memory has no pages, so `getblk` would wait for buffer
+/// space for ever.
+pub fn setup_root_cached(
+    bytes: usize,
+    bufpages: i64,
+) -> (MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
+    let g = setup_on(crate::testutil::pages_install(bytes));
+    crate::testutil::bufcache_init(bytes, bufpages);
+    root_on(g)
+}
+
+/// The test file system mounted as root over [`setup`]'s tables (`g` their guard).
+fn root_on(g: MutexGuard<'static, ()>) -> (MutexGuard<'static, ()>, &'static Mount<TestGlue>) {
     let mp = vfs_mount_alloc(None, &TEST_CONF[0]);
     vfs_unbusy(mp);
     mountlist_insert_tail(mp);

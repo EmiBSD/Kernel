@@ -129,7 +129,12 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::wipe;
+/// Zeroes `x` in place, past the optimiser (bsd's `crypto::wipe`, which `kernel::crypto` keeps:
+/// this crate is a leaf and cannot name it).
+fn wipe<T: Default>(x: &mut T) {
+    *x = T::default();
+    core::hint::black_box(&*x);
+}
 
 /// `SIPHASH_BLOCK_LENGTH`.
 pub const SIPHASH_BLOCK_LENGTH: usize = 8;
@@ -384,9 +389,10 @@ impl AtomicSiphashKey {
         ctx.end()
     }
 
-    /// The key's words, `[k0, k1]` (the tests).
-    #[cfg(test)]
-    pub(crate) fn words(&self) -> [u64; 2] {
+    /// The key's words, `[k0, k1]`: for the tests of this crate and of its users (`bsd`'s
+    /// pf SYN-cookie rotation tests), never in a kernel image (feature `doubles`).
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn words(&self) -> [u64; 2] {
         [
             self.words[0].load(Ordering::Relaxed),
             self.words[1].load(Ordering::Relaxed),
@@ -416,8 +422,70 @@ mod tests {
     // paper's algorithm (Python) that reproduces the 2-4 vectors. Property tests: random
     // splits give the one-call hash; the end wipes the context.
 
+    use std::vec::Vec;
+
     use super::*;
-    use crate::crypto::testutil::XorShift;
+
+    /// A xorshift64* generator for the property tests (bsd's `crypto::testutil::XorShift`):
+    /// deterministic from its seed, so a failure reproduces.
+    struct XorShift(u64);
+
+    impl XorShift {
+        /// A generator started at `seed` (a zero state would stay zero, so the low bit is set).
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        /// The next 64 random bits.
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+
+        /// A value in `0..n`; `n` is not zero.
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+
+        /// `n` random bytes.
+        fn bytes(&mut self, n: usize) -> Vec<u8> {
+            (0..n).map(|_| self.next_u64() as u8).collect()
+        }
+
+        /// `msg` cut at random points into consecutive pieces, some of them empty; their
+        /// concatenation is `msg`.
+        fn split<'a>(&mut self, msg: &'a [u8]) -> Vec<&'a [u8]> {
+            let mut pieces = Vec::new();
+            let mut rest = msg;
+            while !rest.is_empty() {
+                let n = self.below(rest.len().min(150) + 1);
+                let (piece, tail) = rest.split_at(n);
+                pieces.push(piece);
+                rest = tail;
+            }
+            pieces
+        }
+    }
+
+    /// Fails to compile when one of the types is `Copy` (bsd's `crypto::testutil::assert_not_copy`):
+    /// every type implements `AmbiguousIfCopy<()>`, a `Copy` type also `AmbiguousIfCopy<IsCopy>`,
+    /// and naming the trait's item with its parameter left to inference compiles only when
+    /// exactly one of the two applies.
+    macro_rules! assert_not_copy {
+        ($($t:ty),+ $(,)?) => {{
+            trait AmbiguousIfCopy<A> {
+                fn some_item() {}
+            }
+            impl<T: ?Sized> AmbiguousIfCopy<()> for T {}
+            enum IsCopy {}
+            impl<T: ?Sized + Copy> AmbiguousIfCopy<IsCopy> for T {}
+            $(let _ = <$t as AmbiguousIfCopy<_>>::some_item;)+
+        }};
+    }
 
     /// The key of the paper's test vectors: the bytes 0, 1, ..., 15 in memory.
     fn paper_key() -> SiphashKey {
@@ -538,7 +606,7 @@ mod tests {
 
     #[test]
     fn the_contexts_are_not_copy() {
-        crate::crypto::testutil::assert_not_copy!(SipHash24Ctx, SipHash48Ctx, SiphashKey);
+        assert_not_copy!(SipHash24Ctx, SipHash48Ctx, SiphashKey);
     }
 
     #[test]

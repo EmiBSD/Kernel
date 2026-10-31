@@ -96,7 +96,6 @@
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kern::kern_subr::{hashfree, hashinit};
 use crate::kern::subr_prf::panic;
@@ -106,6 +105,7 @@ use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NTFSNTHASH, M_WAITOK};
 use crate::sys::queue::ListHead;
 use crate::sys::types::Dev;
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// `LIST_HEAD(nthashhead, ntnode)`.
 pub type Nthashhead = ListHead<NtnodeHash>;

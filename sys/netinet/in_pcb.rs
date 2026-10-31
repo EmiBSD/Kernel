@@ -224,7 +224,6 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use libkern::explicit_bzero;
 
-use crate::crypto::siphash::AtomicSiphashKey;
 use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -295,6 +294,7 @@ use crate::sys::socket::{
 use crate::sys::socket::{AF_INET6, PF_INET, PF_INET6};
 use crate::sys::socketvar::{SS_NOFDREF, Socket, soref};
 use crate::sys::systm::net_assert_locked;
+use libkern::siphash::AtomicSiphashKey;
 
 // flags in inp_flags:
 

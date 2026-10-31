@@ -52,8 +52,6 @@ pub use kernel::crypto::rmd160;
 pub use kernel::crypto::set_key;
 pub use kernel::crypto::sha1;
 pub use kernel::crypto::sha2;
-#[forbid(unsafe_code)]
-pub mod siphash;
 pub use kernel::crypto::sk;
 pub use kernel::crypto::spr;
 #[cfg(test)]

@@ -79,7 +79,6 @@
 use core::cell::Cell;
 use core::ptr::NonNull;
 
-use crate::crypto::siphash::AtomicSiphashKey;
 use crate::isofs::udf::ecma167_udf::{ExtfileEntry, FileEntry, LbAddr, LongAd, LongAdImpl, Packed};
 use crate::kern::subr_prf::panic;
 use crate::machine::intr::IPL_NONE;
@@ -95,6 +94,7 @@ use crate::sys::queue::{ListEntry, ListHead};
 use crate::sys::rwlock::Rrwlock;
 use crate::sys::types::{Daddr, Dev};
 use crate::sys::vnode::{VT_UDF, Vnode};
+use libkern::siphash::AtomicSiphashKey;
 
 /// `UDF_HASHTBLSIZE`.
 pub const UDF_HASHTBLSIZE: i32 = 100;

@@ -167,7 +167,6 @@ use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::crypto::xform::{AuthHash, CompAlgo, EncXform};
 use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
 use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
@@ -212,6 +211,7 @@ use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 use crate::sys::tree::{RbtEntry, RbtHead};
 use crate::sys::types::SaFamily;
 use crate::{kassert, queue_adapter, tree_adapter};
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 use libkern::staticcell::StaticCell;
 
 /// `DPRINTF(fmt, args...)` of the IPsec files: `printf("%s: " fmt "\n", __func__, args)`

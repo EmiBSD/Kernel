@@ -87,6 +87,7 @@ use crate::sys::vnode::Vnode;
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, dtog, dtogd, freespace, fsbtodb, ino_to_cg};
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_FIRSTINO, Ext2fsDinode};
 use crate::ufs::ufs::dinode::{IFDIR, IFMT, Ufsino};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use libkern::skpc;
 
@@ -143,14 +144,14 @@ pub fn ext2fs_alloc(
             bpref = 0;
         }
         let cg = if bpref == 0 {
-            ino_to_cg(fs, ip.i_number.get())
+            ino_to_cg(fs, ip.i_number)
         } else {
             dtog(fs, bpref)
         };
         let bno = ext2fs_hashalloc(ip, cg as i32, bpref, fs.e2fs_bsize.get(), ext2fs_alloccg);
         if bno > 0 {
             let nblocks = btodb(fs.e2fs_bsize.get() as usize) as u32;
-            ip.set_i_e2fs_nblock(ip.i_e2fs_nblock().wrapping_add(nblocks));
+            ip.g.set_i_e2fs_nblock(ip.g.i_e2fs_nblock().wrapping_add(nblocks));
             ip.set_flag(IN_CHANGE | IN_UPDATE);
             *bnp = bno;
             return Ok(());
@@ -193,7 +194,7 @@ pub fn ext2fs_inode_alloc(
         let cg = if mode & IFMT == IFDIR {
             ext2fs_dirpref(fs)
         } else {
-            ino_to_cg(fs, pip.i_number.get()) as i32
+            ino_to_cg(fs, pip.i_number) as i32
         };
         let ipref = (cg as u32).wrapping_mul(fs.e2fs_ipg()).wrapping_add(1);
         let ino = ext2fs_hashalloc(pip, cg, ipref, mode as i32, ext2fs_nodealloccg);
@@ -211,21 +212,21 @@ pub fn ext2fs_inode_alloc(
             }
         };
         let ip = vtoi(vp);
-        if ip.i_e2fs_mode() != 0 && ip.i_e2fs_nlink() != 0 {
+        if ip.g.i_e2fs_mode() != 0 && ip.g.i_e2fs_nlink() != 0 {
             kprintf!(
                 "mode = 0{:o}, nlinks {}, inum = {}, fs = {}\n",
-                ip.i_e2fs_mode(),
-                ip.i_e2fs_nlink(),
-                ip.i_number.get(),
+                ip.g.i_e2fs_mode(),
+                ip.g.i_e2fs_nlink(),
+                ip.i_number,
                 fs.fsmnt_str()
             );
             panic(format_args!("ext2fs_valloc: dup alloc"));
         }
 
-        ip.with_e2din(|d| *d = Ext2fsDinode::default());
+        ip.g.with_e2din(|d| *d = Ext2fsDinode::default());
 
         // Set up a new generation number for this inode.
-        ip.set_i_e2fs_gen(next_gennumber() as u32);
+        ip.g.set_i_e2fs_gen(next_gennumber() as u32);
         return Ok(vp);
     }
     // noinodes:
@@ -284,8 +285,8 @@ pub fn ext2fs_blkpref(ip: &Inode, lbn: u32, baps: i32, bap: Option<&[u8]>) -> Da
     let fs = ip.e2fs();
     // if we are doing contiguous lbn allocation, try to alloc blocks contiguously on disk
 
-    let last_blk = ip.i_e2fs_last_blk().get();
-    if last_blk != 0 && lbn == ip.i_e2fs_last_lblk().get().wrapping_add(1) {
+    let last_blk = ip.g.i_e2fs_last_blk().get();
+    if last_blk != 0 && lbn == ip.g.i_e2fs_last_lblk().get().wrapping_add(1) {
         return Daddr::from(last_blk.wrapping_add(1));
     }
 
@@ -305,7 +306,7 @@ pub fn ext2fs_blkpref(ip: &Inode, lbn: u32, baps: i32, bap: Option<&[u8]>) -> Da
 
     // fall back to the first block of the cylinder containing the inode
 
-    let cg = ino_to_cg(fs, ip.i_number.get());
+    let cg = ino_to_cg(fs, ip.i_number);
     Daddr::from(
         fs.e2fs_bpg()
             .wrapping_mul(cg)
@@ -529,8 +530,8 @@ pub fn ext2fs_blkfree(ip: &Inode, bno: u32) {
     let fs = ip.e2fs();
     let cg = dtog(fs, bno) as usize;
     if bno >= fs.e2fs_bcount() {
-        kprintf!("bad block {}, ino {}\n", bno, ip.i_number.get());
-        ext2fs_fserr(fs, ip.i_e2fs_uid().get(), "bad block");
+        kprintf!("bad block {}, ino {}\n", bno, ip.i_number);
+        ext2fs_fserr(fs, ip.g.i_e2fs_uid().get(), "bad block");
         return;
     }
     let (bp, error) = bread(
@@ -550,7 +551,7 @@ pub fn ext2fs_blkfree(ip: &Inode, bno: u32) {
         if isclr(bbp, bno as usize) {
             panic(format_args!(
                 "ext2fs_blkfree: freeing free block: dev = 0x{:x}, block = {}, fs = {}",
-                ip.i_dev.get(),
+                ip.i_dev,
                 bno,
                 fs.fsmnt_str()
             ));
@@ -575,7 +576,7 @@ pub fn ext2fs_inode_free(pip: &Inode, ino: Ufsino, mode: Mode) {
     if ino > fs.e2fs_icount() || ino < EXT2_FIRSTINO {
         panic(format_args!(
             "ifree: range: dev = 0x{:x}, ino = {}, fs = {}",
-            pip.i_dev.get(),
+            pip.i_dev,
             ino,
             fs.fsmnt_str()
         ));
@@ -598,7 +599,7 @@ pub fn ext2fs_inode_free(pip: &Inode, ino: Ufsino, mode: Mode) {
         if isclr(ibp, ino as usize) {
             kprintf!(
                 "dev = 0x{:x}, ino = {}, fs = {}\n",
-                pip.i_dev.get(),
+                pip.i_dev,
                 ino,
                 fs.fsmnt_str()
             );
@@ -704,9 +705,12 @@ mod tests {
 
     /// An inode numbered `ino` on `fs`.
     fn inode(fs: &'static MExt2fs, ino: Ufsino) -> &'static Inode {
-        let ip: &'static Inode = Box::leak(Box::new(Inode::new()));
-        ip.i_e2fs.set(Some(fs));
-        ip.i_number.set(ino);
+        let ip: &'static Inode =
+            Box::leak(Box::new(Inode::new(crate::ufs::ufs::inode::InodeInit {
+                number: ino,
+                ..Default::default()
+            })));
+        ip.g.i_e2fs.set(Some(fs));
         ip
     }
 
@@ -726,8 +730,8 @@ mod tests {
     fn blkpref_follows_the_last_block_then_the_pointers_then_the_group() {
         let fs = fs(2, vec![]);
         let ip = inode(fs, 40); // group 1
-        ip.i_e2fs_last_blk().set(100);
-        ip.i_e2fs_last_lblk().set(4);
+        ip.g.i_e2fs_last_blk().set(100);
+        ip.g.i_e2fs_last_lblk().set(4);
         assert_eq!(ext2fs_blkpref(ip, 5, 0, None), 101);
 
         let mut bap = [0u8; 12];

@@ -10,6 +10,11 @@ publish = false
 [lib]
 path = "lib.rs"
 
+[features]
+# Host tests only, never a kernel image: test accessors for the tests of the crates that use
+# libkern (bsd's [dev-dependencies]), as the kernel crate's `doubles`.
+doubles = []
+
 # Intentionally empty: libkern is a leaf, as in OpenBSD.
 [dependencies]
 

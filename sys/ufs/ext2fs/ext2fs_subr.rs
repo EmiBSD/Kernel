@@ -65,8 +65,6 @@
 //!   fifo is refused with `EOPNOTSUPP`, the C's answer without `option FIFO`: `fifofs` is
 //!   not ported (`ext2fs_fifovops`).
 
-use core::ptr;
-
 use crate::kern::kern_tc::getmicrouptime;
 use crate::sys::buf::Buf;
 use crate::sys::buf::{bread, brelse};
@@ -81,6 +79,7 @@ use crate::ufs::ext2fs::ext2fs::{blkoff, fsbtodb, lblkno};
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_ROOTINO, EXT4_EXTENTS};
 use crate::ufs::ext2fs::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
 use crate::ufs::ext2fs::ext2fs_vnops::EXT2FS_SPECVOPS;
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, vtoi};
 
 /// `ext2fs_bufatoff`: the buffer with the contents of block `offset` from the beginning of
@@ -90,7 +89,7 @@ pub fn ext2fs_bufatoff(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize),
     let fs = ip.e2fs();
     let lbn = lblkno(fs, offset);
 
-    if ip.i_e2fs_flags() & EXT4_EXTENTS != 0 {
+    if ip.g.i_e2fs_flags() & EXT4_EXTENTS != 0 {
         let mut path = Ext4ExtentPath::new();
         let ep = ext4_ext_find_extent(fs, ip, lbn, &mut path).and_then(|p| p.ext());
         if let Some(bp) = path.ep_bp.take() {
@@ -123,18 +122,19 @@ pub fn ext2fs_bufatoff(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize),
 pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vnode, Errno> {
     let mut vp = vp;
     let ip = vtoi(vp);
-    vp.set_vtype(iftovt(ip.i_e2fs_mode().into()));
+    vp.set_vtype(iftovt(ip.g.i_e2fs_mode().into()));
 
     match vp.vtype() {
         VCHR | VBLK => {
             crate::sys::vnode::set_vops(vp, &EXT2FS_SPECVOPS);
 
-            let rdev = u32::from_le(ip.with_e2din(|d| d.e2di_rdev())) as Dev;
+            let rdev = u32::from_le(ip.g.with_e2din(|d| d.e2di_rdev())) as Dev;
             if let Some(nvp) = checkalias(vp, rdev, Some(mp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.
-                nvp.set_data(vp.data());
-                vp.set_data(ptr::null_mut());
+                if let Some(node) = vp.take_node() {
+                    nvp.set_node(node);
+                }
                 vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
@@ -148,7 +148,7 @@ pub fn ext2fs_vinit(mp: &'static Mount, vp: &'static Vnode) -> Result<&'static V
         VNON | VBAD | VSOCK | VLNK | VDIR | VREG => {}
     }
 
-    if ip.i_number.get() == EXT2_ROOTINO {
+    if ip.i_number == EXT2_ROOTINO {
         vp.set_flag(vp.flag() | VROOT);
     }
 

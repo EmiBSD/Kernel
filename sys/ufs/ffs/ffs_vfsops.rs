@@ -73,17 +73,20 @@
 //! - `rootdev` is `sys/systm.rs`'s `ROOTDEV`, `swapdev` the machine's (`conf.c`);
 //!   `rootvp`/`swapdev_vp` are `init_main.rs`'s.
 
+use core::cell::Cell;
 use core::ptr::{self, NonNull};
+
 use core::sync::atomic::{AtomicBool, Ordering};
+use hal::pool::{BoxPool, PoolArc, TypedPool};
+use kernel::fs::vops::{Cred, IoBuf};
 
 use crate::dev::rnd::arc4random;
 use crate::kern::init_main::{rootvp, set_rootvp, set_swapdev_vp, swapdev_vp};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_sysctl::sysctl_bounded_arr;
 use crate::kern::kern_tc::gettime;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_disk::disk_map;
-use crate::kern::subr_pool::{pool_get, pool_init};
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_vops::{VOP_CLOSE, VOP_FSYNC, VOP_OPEN, VOP_UNLOCK};
 use crate::kprintf;
@@ -106,11 +109,11 @@ use crate::sys::mount::{
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
 use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{DEV_BSIZE, MAXBSIZE, PAGE_SIZE, howmany};
-use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
+use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::Proc;
-use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Ino, major};
+use crate::sys::types::{Mode, Off};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
@@ -132,17 +135,18 @@ use crate::ufs::ffs::fs::{
     SBLOCKSEARCH, SBSIZE, cgtod, fs_kernmaxfilesize, fsbtodb, ino_to_cg, ino_to_fsba, ino_to_fsbo,
     nindir,
 };
-use crate::ufs::ufs::dinode::{NDADDR, NIADDR, ROOTINO, Ufs1Dinode, Ufs2Dinode, Ufsino};
+use crate::ufs::ufs::dinode::{NDADDR, NIADDR, ROOTINO, Ufsino};
 use crate::ufs::ufs::dir::MAXNAMLEN;
 use crate::ufs::ufs::inode::{
-    IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, Inode, InodeVtbl, UFS_UPDATE, Ufid,
-    dinode1_at, dinode2_at, vtoi,
+    BsdInodeG, Dinode, IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, Inode, InodeInit,
+    InodeOps, UFS_UPDATE, Ufid, Ufs1Din, Ufs2Din, dinode1_at, dinode2_at, vtoi,
 };
 use crate::ufs::ufs::quota::{MAXQUOTAS, qsync, quotaoff, ufs_quotactl};
 use crate::ufs::ufs::ufs_ihash::{ufs_ihashget, ufs_ihashins};
 use crate::ufs::ufs::ufs_vfsops::{ufs_check_export, ufs_fhtovp, ufs_init, ufs_root, ufs_start};
 #[cfg(feature = "ffs2")]
 use crate::ufs::ufs::ufsmount::UM_UFS2;
+use crate::ufs::ufs::ufsmount::UfsmountExt;
 use crate::ufs::ufs::ufsmount::{UM_UFS1, Ufsmount, vfstoufs};
 
 /// `ffs_vfsops`.
@@ -162,23 +166,71 @@ pub static FFS_VFSOPS: Vfsops = Vfsops {
     vfs_checkexp: ufs_check_export,
 };
 
-/// `ffs_vtbl`: the inode operations FFS gives the UFS layer.
-pub static FFS_VTBL: InodeVtbl = InodeVtbl {
-    iv_truncate: ffs_truncate,
-    iv_update: ffs_update,
-    iv_inode_alloc: ffs_inode_alloc,
-    iv_inode_free: ffs_inode_free,
-    iv_buf_alloc: ffs_balloc,
-    iv_bufatoff: ffs_bufatoff,
-};
+/// `struct inode_vtbl` of FFS: the kernel's `InodeOps` over FFS's functions.
+pub struct FfsVtbl;
 
-/// `ffs_ino_pool`: memory pool for inodes.
-pub static FFS_INO_POOL: Pool = Pool::new();
+/// `ffs_vtbl`: the inode operations FFS gives the UFS layer.
+pub static FFS_VTBL: FfsVtbl = FfsVtbl;
+
+impl InodeOps<BsdProcGlue> for FfsVtbl {
+    fn truncate(&self, ip: &Inode, off: Off, flags: i32, cred: Cred<'_>) -> Result<(), Errno> {
+        ffs_truncate(ip, off, flags, cred.as_raw())
+    }
+
+    fn update(&self, ip: &Inode, waitfor: i32) -> Result<(), Errno> {
+        ffs_update(ip, waitfor)
+    }
+
+    fn inode_alloc(
+        &self,
+        pip: &Inode,
+        mode: Mode,
+        cred: Cred<'_>,
+    ) -> Result<&'static Vnode, Errno> {
+        ffs_inode_alloc(pip, mode, cred.as_raw())
+    }
+
+    fn inode_free(&self, pip: &Inode, ino: Ufsino, mode: Mode) -> Result<(), Errno> {
+        ffs_inode_free(pip, ino, mode)
+    }
+
+    fn buf_alloc(
+        &self,
+        ip: &Inode,
+        startoffset: Off,
+        size: i32,
+        cred: Cred<'_>,
+        flags: i32,
+    ) -> Result<IoBuf, Errno> {
+        let mut bp = None;
+        ffs_balloc(ip, startoffset, size, cred.as_raw(), flags, Some(&mut bp))?;
+        match bp {
+            Some(bp) => Ok(IoBuf::Lent(bp)),
+            None => panic(format_args!("UFS_BUF_ALLOC: no buffer")),
+        }
+    }
+
+    fn bufatoff(&self, ip: &Inode, offset: Off) -> Result<(IoBuf, usize), Errno> {
+        ffs_bufatoff(ip, offset).map(|(bp, off)| (IoBuf::Lent(bp), off))
+    }
+}
+
+/// `ffs_ino_pool`: memory pool for inodes (recorded: `vtoi` counts a handle back from an
+/// inode the vnode lends).
+///
+/// The three `hal` pools are made once per host-test process, where LZ's `pool_init` ran
+/// again per test, and need no `*_test_reset` (testing.md), as `kernel::proc`'s `ucredpl`
+/// and kernel::fs::lockf's pools: in the host tests their items come from
+/// `kernel::testutil`'s heap doubles (`memory_is_the_doubles`, which `proc_test_reset`
+/// checks at the file system tests' `procinit`), never from the memory a later test's
+/// `setup_real_memory` replaces; and no global names an item past its test (an inode lives in
+/// its vnode's slot and its mount's hash, both forgotten by `vfs_test_reset`).
+pub static FFS_INO_POOL: TypedPool<Inode> = TypedPool::new();
 /// `ffs_dinode1_pool`: memory pool for UFS1 dinodes.
-pub static FFS_DINODE1_POOL: Pool = Pool::new();
+pub static FFS_DINODE1_POOL: BoxPool<Ufs1Din> = BoxPool::new();
 /// `ffs_dinode2_pool`: memory pool for UFS2 dinodes.
 #[cfg(feature = "ffs2")]
-pub static FFS_DINODE2_POOL: Pool = Pool::new();
+pub static FFS_DINODE2_POOL: BoxPool<Ufs2Din> = BoxPool::new();
 
 /// `ffs_init`'s `done`: the pools are initialised.
 pub static FFS_INIT_DONE: AtomicBool = AtomicBool::new(false);
@@ -419,7 +471,7 @@ pub fn ffs_mount(
                 };
                 if a.fspec == 0 {
                     // Process export requests.
-                    if let Err(e) = vfs_export(mp, &u.um_export, &a.export_info) {
+                    if let Err(e) = vfs_export(mp, &u.g.um_export, &a.export_info) {
                         break 'error_1 Err(e);
                     }
                     break 'success;
@@ -573,7 +625,7 @@ fn ffs_reload_vnode(
 
     let (bp, error) = bread(
         devvp,
-        fsbtodb(fs, ino_to_fsba(fs, ip.i_number.get())),
+        fsbtodb(fs, ino_to_fsba(fs, ip.i_number)),
         fs.fs_bsize.get(),
     );
     if let Err(e) = error {
@@ -586,15 +638,15 @@ fn ffs_reload_vnode(
         // SAFETY: the buffer is ours (busy from bread) and mapped; the slice dies before it
         // is released.
         let data = unsafe { bp.data() };
-        let idx = ino_to_fsbo(fs, ip.i_number.get());
+        let idx = ino_to_fsbo(fs, ip.i_number);
         if fs.fs_magic.get() == FS_UFS1_MAGIC {
             let d = dinode1_at(data, idx);
-            ip.with_din1(|din| *din = d);
+            ip.ufs1_din().store(&d);
         } else {
             #[cfg(feature = "ffs2")]
             {
                 let d = dinode2_at(data, idx);
-                ip.with_din2(|din| *din = d);
+                ip.ufs2_din().store(&d);
             }
         }
     }
@@ -867,7 +919,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
         // SAFETY: `fsmem` is at least `size_of::<Fs>()` bytes from malloc (aligned), and
         // `Fs` is valid for any bytes; it lives until the unmount frees it.
         let fs: &'static Fs = unsafe { &*fsmem.as_ptr().cast::<Fs>() };
-        u.um_fs.set(Some(fs));
+        u.g.um_fs.set(Some(fs));
         if (sbsize as usize) < SBSIZE {
             b.set(B_INVAL);
         }
@@ -924,7 +976,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
         u.um_seqinc.set(fs.fs_frag.get() as u64);
         u.um_maxsymlinklen.set(fs.fs_maxsymlinklen.get() as u32);
         for q in 0..MAXQUOTAS {
-            u.um_quotas[q].set(None);
+            u.g.um_quotas[q].set(None);
         }
 
         devvp.set_specmountpoint(Some(mp));
@@ -973,7 +1025,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
     let _ = VOP_UNLOCK(devvp);
 
     if let Some(u) = ump {
-        if let Some(fs) = u.um_fs.get() {
+        if let Some(fs) = u.g.um_fs.get() {
             let size = fs_allocsize(fs.fs_sbsize.get());
             free(NonNull::from(fs).cast(), M_UFSMNT, size);
         }
@@ -1128,7 +1180,7 @@ pub fn ffs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     if mp.flag() & MNT_QUOTA != 0 {
         vflush(mp, None, SKIPSYSTEM | flags)?;
         for i in 0..MAXQUOTAS {
-            if ump.um_quotas[i].get().is_none() {
+            if ump.g.um_quotas[i].get().is_none() {
                 continue;
             }
             let _ = quotaoff(p, mp, i);
@@ -1203,7 +1255,7 @@ fn ffs_sync_vnode(vp: &'static Vnode, fsa: &mut FfsSyncArgs<'_>) -> Result<(), E
     // If unmounting or converting rw to ro, then stop deferring timestamp writes.
     if fsa.waitfor == MNT_WAIT && ip.i_flag.get() & IN_LAZYMOD != 0 {
         ip.set_flag(IN_MODIFIED);
-        let _ = UFS_UPDATE(ip, 1);
+        let _ = UFS_UPDATE(&ip, 1);
     }
 
     if ip.i_effnlink.get() == 0 {
@@ -1328,29 +1380,34 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         // Allocate a new vnode/inode.
         let vp = getnewvnode(VT_UFS, Some(mp), &FFS_VOPS)?;
 
-        let Some(mem) = pool_get(&FFS_INO_POOL, PR_WAITOK | PR_ZERO) else {
+        let fs = ump.fs();
+        let Some(ip) = FFS_INO_POOL.get_homed(PR_WAITOK, || {
+            Inode::new(InodeInit {
+                vnode: Some(vp),
+                mount: Some(mp),
+                devvp: Some(ump.devvp()),
+                dev,
+                number: ino,
+                fstype: ump.um_fstype.get(),
+                nindir: ump.um_nindir.get(),
+                bptrtodb: ump.um_bptrtodb.get(),
+                seqinc: ump.um_seqinc.get(),
+                vtbl: Some(&FFS_VTBL),
+                g: BsdInodeG {
+                    i_fs: Cell::new(Some(fs)),
+                    ..BsdInodeG::default()
+                },
+            })
+        }) else {
             panic(format_args!("ffs_vget: no inode"));
         };
-        let ipp = mem.cast::<Inode>();
-        // SAFETY: a fresh `ffs_ino_pool` item, sized and aligned for an `Inode`.
-        unsafe { ptr::write(ipp.as_ptr(), Inode::new()) };
-        // SAFETY: just initialised; freed only by `ffs_reclaim`.
-        let ip: &'static Inode = unsafe { &*ipp.as_ptr() };
-        rrw_init_flags(&ip.i_lock, "inode", RWL_DUPOK | RWL_IS_VNODE);
-        ip.i_ump.set(Some(ump));
         vref(ump.devvp());
-        vp.set_data(ipp.as_ptr().cast());
-        ip.i_vnode.set(Some(vp));
-        let fs = ump.fs();
-        ip.i_fs.set(Some(fs));
-        ip.i_dev.set(dev);
-        ip.i_number.set(ino);
-        ip.i_vtbl.set(Some(&FFS_VTBL));
+        vp.set_node(PoolArc::erase(ip.clone()));
 
         // Put it onto its hash chain and lock it so that other requests for this inode will
         // block if they arrive while we are sleeping waiting for old data structures to be
         // purged or for the contents of the disk portion of this inode to be read.
-        if let Err(error) = ufs_ihashins(ip) {
+        if let Err(error) = ufs_ihashins(ip.as_pin()) {
             // VOP_INACTIVE will treat this as a stale file and recycle it quickly
             vrele(vp);
 
@@ -1388,22 +1445,18 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
             if ufs2 {
                 #[cfg(feature = "ffs2")]
                 {
-                    let Some(d) = pool_get(&FFS_DINODE2_POOL, PR_WAITOK) else {
+                    let d = dinode2_at(data, idx);
+                    let Some(d) = FFS_DINODE2_POOL.get(PR_WAITOK, || Ufs2Din::new(&d)) else {
                         panic(format_args!("ffs_vget: no dinode"));
                     };
-                    let d = d.cast::<Ufs2Dinode>();
-                    // SAFETY: a fresh `ffs_dinode2_pool` item, sized and aligned for it.
-                    unsafe { ptr::write(d.as_ptr(), dinode2_at(data, idx)) };
-                    ip.dinode_u.set(d.as_ptr().cast());
+                    ip.set_din(Dinode::Ufs2(d));
                 }
             } else {
-                let Some(d) = pool_get(&FFS_DINODE1_POOL, PR_WAITOK) else {
+                let d = dinode1_at(data, idx);
+                let Some(d) = FFS_DINODE1_POOL.get(PR_WAITOK, || Ufs1Din::new(&d)) else {
                     panic(format_args!("ffs_vget: no dinode"));
                 };
-                let d = d.cast::<Ufs1Dinode>();
-                // SAFETY: a fresh `ffs_dinode1_pool` item, sized and aligned for it.
-                unsafe { ptr::write(d.as_ptr(), dinode1_at(data, idx)) };
-                ip.dinode_u.set(d.as_ptr().cast());
+                ip.set_din(Dinode::Ufs1(d));
             }
         }
 
@@ -1435,10 +1488,9 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         // Ensure that uid and gid are correct. This is a temporary fix until fsck has been
         // changed to do the update.
         if fs.fs_magic.get() == FS_UFS1_MAGIC && fs.fs_inodefmt.get() < FS_44INODEFMT {
-            ip.with_din1(|d| {
-                d.di_uid = u32::from(d.di_ouid());
-                d.di_gid = u32::from(d.di_ogid());
-            });
+            let d = ip.din1();
+            ip.dip_set_uid(u32::from(d.di_ouid()));
+            ip.dip_set_gid(u32::from(d.di_ogid()));
         }
 
         return Ok(vp);
@@ -1464,7 +1516,7 @@ pub fn ffs_vptofh(vp: &'static Vnode, fhp: &mut Fid) -> Result<(), Errno> {
     Ufid {
         ufid_len: size_of::<Ufid>() as u16,
         ufid_pad: fhp.fid_reserved,
-        ufid_ino: ip.i_number.get(),
+        ufid_ino: ip.i_number,
         ufid_gen: ip.dip_gen(),
     }
     .to_fid(fhp);
@@ -1571,34 +1623,11 @@ pub fn ffs_init(vfsp: &'static Vfsconf) -> Result<(), Errno> {
         return Ok(());
     }
 
-    pool_init(
-        &FFS_INO_POOL,
-        size_of::<Inode>(),
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "ffsino",
-        None,
-    );
-    pool_init(
-        &FFS_DINODE1_POOL,
-        size_of::<Ufs1Dinode>(),
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "dino1pl",
-        None,
-    );
+    // A second call (a host test's, FFS_INIT_DONE cleared) keeps the pools made first.
+    let _ = FFS_INO_POOL.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
+    let _ = FFS_DINODE1_POOL.init(IPL_NONE, PR_WAITOK, "dino1pl");
     #[cfg(feature = "ffs2")]
-    pool_init(
-        &FFS_DINODE2_POOL,
-        size_of::<Ufs2Dinode>(),
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "dino2pl",
-        None,
-    );
+    let _ = FFS_DINODE2_POOL.init(IPL_NONE, PR_WAITOK, "dino2pl");
 
     ufs_init(vfsp)
 }
@@ -2896,6 +2925,144 @@ pub(crate) mod tests {
         let ufsmount = crate::reftest::defines("sys/ufs/ufs/ufsmount.h");
         assert_eq!(crate::reftest::int(&ufsmount, "UM_UFS1"), Some(1));
         assert_eq!(crate::reftest::int(&ufsmount, "UM_UFS2"), Some(2));
+    }
+    /// Decision 43's ufs pairs (brief N5.5a 7.4b): the hot operations of the UFS layer over an
+    /// FFS2 image `newfs` builds, through the system calls and `namei`, as bsd's ffs reaches
+    /// the UFS code. A sub-slice runs it on its base and on its tip, dev and release,
+    /// interleaved, and puts the medians in its `Bench:` lines:
+    ///
+    /// `cargo test -p bsd --lib [--release] ufs_bench -- --ignored --nocapture --test-threads 1`
+    ///
+    /// (`UFSBENCH=<row>` runs the rows whose name contains it). Each row prints
+    /// `UFSBENCH <row> median <ns> ns/op`, the median of seven samples, each the median of
+    /// 200 timed batches. `#[ignore]`: a measurement, not a check.
+    #[test]
+    #[ignore = "decision 43's ufs bench: run by hand, --release, --test-threads 1"]
+    fn ufs_bench() {
+        use std::boxed::Box;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        use crate::kern::vfs_syscalls::{sys_lseek, sys_stat};
+        use crate::sys::namei::{FOLLOW, LOOKUP, NOCACHE, NiDirp, namei, ndinit};
+
+        const REPS: usize = 7;
+        const ROUNDS: usize = 200;
+
+        let mut img = newfs::Image::new(newfs::FFS2_4M);
+        img.add_file(b"f", b"hello, world\n");
+        for n in [
+            &b"passwd"[..],
+            b"group",
+            b"hosts",
+            b"fstab",
+            b"rc",
+            b"rc.conf",
+            b"motd",
+            b"services",
+        ] {
+            img.add_file(n, b"x");
+        }
+        let (_g, p) = setup(img.finish());
+        let mp = mount_root(p, false);
+
+        let p_f = path(b"/f\0");
+        let p_n = path(b"/n\0");
+        let p_root = path(b"/\0");
+        let ub = crate::kern::vfs_subr::tests::user_buf(&[0u8; 256]);
+        let mut dbuf = vec![0u8; 4096];
+        let fd_root = sys(sys_open, p, &[p_root, O_RDONLY as usize, 0]).unwrap() as usize;
+        let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/f"), p);
+        namei(&mut nd).unwrap();
+        let fvp = nd.ni_vp.unwrap();
+
+        let mut rows: Vec<(&str, usize, Box<dyn FnMut()>)> = Vec::new();
+        rows.push((
+            "ffs.vtoi.dip",
+            1000,
+            Box::new(|| {
+                let ip = vtoi(black_box(fvp));
+                black_box(ip.dip_size());
+            }),
+        ));
+        rows.push((
+            "ffs.lookup.hit.1",
+            100,
+            Box::new(|| {
+                let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/f"), p);
+                namei(&mut nd).unwrap();
+                vrele(nd.ni_vp.unwrap());
+            }),
+        ));
+        rows.push((
+            "ffs.lookup.miss",
+            100,
+            Box::new(|| {
+                let mut nd = ndinit(LOOKUP, FOLLOW | NOCACHE, NiDirp::Sys(b"/f"), p);
+                namei(&mut nd).unwrap();
+                vrele(nd.ni_vp.unwrap());
+            }),
+        ));
+        rows.push((
+            "ffs.readdir.1blk",
+            100,
+            Box::new(|| {
+                sys(sys_lseek, p, &[fd_root, 0, 0]).unwrap();
+                let n = sys(
+                    sys_getdents,
+                    p,
+                    &[fd_root, dbuf.as_mut_ptr() as usize, dbuf.len()],
+                )
+                .unwrap();
+                black_box(n);
+            }),
+        ));
+        rows.push((
+            "ffs.create.remove",
+            20,
+            Box::new(|| {
+                let fd = sys(sys_open, p, &[p_n, (O_RDWR | O_CREAT) as usize, 0o644]).unwrap();
+                sys(sys_close, p, &[fd as usize]).unwrap();
+                sys(sys_unlink, p, &[p_n]).unwrap();
+            }),
+        ));
+        rows.push((
+            "ffs.stat",
+            100,
+            Box::new(|| {
+                sys(sys_stat, p, &[p_f, ub.addr()]).unwrap();
+            }),
+        ));
+
+        let only = std::env::var("UFSBENCH").ok();
+        for (name, batch, f) in rows.iter_mut() {
+            if only.as_deref().is_some_and(|o| !name.contains(o)) {
+                continue;
+            }
+            for _ in 0..*batch {
+                f();
+            }
+            let mut med = Vec::new();
+            for _ in 0..REPS {
+                let mut samples = Vec::new();
+                for _ in 0..ROUNDS {
+                    let t = Instant::now();
+                    for _ in 0..*batch {
+                        f();
+                    }
+                    samples.push(t.elapsed().as_nanos() as f64 / *batch as f64);
+                }
+                samples.sort_by(f64::total_cmp);
+                med.push(samples[ROUNDS / 2]);
+            }
+            med.sort_by(f64::total_cmp);
+            std::println!("UFSBENCH {name} median {:.1} ns/op", med[REPS / 2]);
+        }
+        drop(rows);
+        vrele(fvp);
+        sys(sys_close, p, &[fd_root]).unwrap();
+        unmount_root(p, mp);
+        teardown();
     }
 }
 /* </TESTS> */

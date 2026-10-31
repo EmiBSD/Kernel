@@ -46,6 +46,17 @@ Locations are on `main` at the commit that last edited this file.
 | `VnodeG` | `sys/kernel/file.rs:603` | The members of `struct vnode` of `bsd`'s types: `v_socket` | N6 (the sockets) |
 | `UnveilMatch` | `sys/kernel/file.rs:606` | `ni_unveil_match`, a pointer into `bsd`'s unveil table | N8 (unveil) |
 | `vnode_ops`'s default method | `sys/kernel/file.rs:628` | The production path is the default (the kernel's vnode); only the kernel's test glue overrides it, for the vm tests' `MemVnode` pager double (N5.3) | When the vm tests use a VFS vnode, N9 at the latest |
+| `InodeG` | `sys/kernel/file.rs` (`FileGlue`) | The members of `bsd`'s types a UFS inode carries (`inode_u`: ffs's `i_fs`, ext2fs's `i_e2fs`; `inode_ext`: ext2fs's members and the dirhash; `i_dquot`; ext2fs's dinode pointer), `bsd`'s `BsdInodeG` from N5.5a1's switch | Member by member: `i_dquot` and the dirhash at N5.5a2, `i_fs` at N5.5b, the ext2fs members at N5.6; the type with them |
+| `UfsmountG` | `sys/kernel/file.rs` (`FileGlue`) | The members of `bsd`'s types a UFS mount carries (`ufsmount_u`: `um_fs`, `um_e2fs`; `um_export`, the NFS server's; the quota members) | The quotas at N5.5a2, `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6 |
+| `InodeHash` and the macro `ufs_glue_links!` | `sys/kernel/file.rs` | The inode hash's adapter (`i_hash`) for `Inode<G>`, declared in the crate that names the glue (as `FileList`) | With the glue generic, N9 |
+| `inode_e2fs_nlink`'s default method | `sys/kernel/file.rs` | `ufs_ihashget`'s `IS_EXT2_VNODE` reads an ext2fs inode's link count, which `bsd`'s ext2fs keeps in `InodeG` | N5.6 (ext2fs's dinode in the kernel) |
+| `VfsTables::ufs` (`UfsTables<G>`) | `sys/kernel/fs/subr.rs` | The UFS layer's globals (`ufs_init`'s `done`, the inode hash) per glue, since `Inode<G>` is generic | With the glue generic, N9 |
+
+## The kernel's members kept for `bsd`'s users
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `Vnode::data` (`v_data` as the C's raw word, `data()`/`set_data()`) beside `Vnode::node` (the kernel file systems' counted, typed handle), and the double tests over both: `getnewvnode`'s cleaned-vnode check and reset, `vprint` | `sys/kernel/fs/vnode.rs:680` (the member), `:684` (`node`); `sys/kernel/fs/subr.rs:587`, `:606-609`, `:1334` | The file systems still in `bsd` keep their node behind the C's `void *` (msdosfs, cd9660, udf, tmpfs, fuse, ntfs, nfs, and mfs's device node); the UFS inode of ffs, mfs and ext2fs is in the typed slot since N5.5a | The last `bsd` file system's move into the kernel (nfs at N6, ntfs at N10): `data` and the double tests go, `node` stays |
 
 ## `bsd`'s adapters over the kernel's types
 
@@ -53,6 +64,9 @@ Locations are on `main` at the commit that last edited this file.
 |---|---|---|---|
 | Type aliases keeping LZ's names: `Vnode`, `Mount`, `Vfsconf`, `Specinfo`, `Componentname`, `Nameidata` | `sys/sys/vnode.rs:122`, `sys/sys/mount.rs:137`, `:140`, `sys/sys/specdev.rs:83`, `sys/sys/namei.rs:96`, `:99` | `bsd`'s file systems and drivers still call these types by LZ's names | Each alias with its last `bsd` user; all at N9 |
 | Adapter modules of no logic: `sys/sys/namei.rs` (500 lines), `sys/sys/lockf.rs` (89), `sys/kern/vfs_syscalls.rs` (1,735) | those files | LZ's signatures for `bsd`'s importers and `init_sysent.rs`'s rows, over `kernel::fs` (N5.3, N5.4) | When their importers move (the file systems N5.5-N5.9, nfs N6) and the system-call table is the kernel's (N9) |
+| The UFS layer's aliases and adapters: `Inode`, `InodeRef`, `InodeInit` (`sys/ufs/ufs/inode.rs`), `Ufsmount` (`sys/ufs/ufs/ufsmount.rs`); the modules `dinode.rs`, `dir.rs`, `ufs_ihash.rs`, `ufs_bmap.rs` (re-exports and LZ's `vop_bmap` slot), `ufs_vfsops.rs` (`ufs_init` and `ufs_check_export` beside the re-exports) | `sys/ufs/ufs/` | `bsd`'s ffs, ext2fs, mfs and the UFS files still here (lookup, vnops, quotas, dirhash) call LZ's names over the kernel's `fs::ufs::ufs` (N5.5a1) | `ufs_init` at N5.5a2; the rest with ffs (N5.5b) and ext2fs (N5.6) |
+| `BsdInodeG` (with `DirhashSlot`) and the `InodeExt` trait (`ump`, `fs`, `e2fs`, `ext2fs_itimes`) | `sys/ufs/ufs/inode.rs` | `bsd`'s `InodeG`: the members of ffs's, ext2fs's, the quotas' and the dirhash's types an inode carries, and the readers of them (an inherent method cannot be added to the kernel's type in `bsd`) | The quota and dirhash members at N5.5a2, `i_fs` at N5.5b, the ext2fs members at N5.6 |
+| `BsdUfsmountG` and the `UfsmountExt` trait (`fs`, `e2fs`, `with_e2fsb`); `vfstoufs` and its `unsafe` | `sys/ufs/ufs/ufsmount.rs` | `bsd`'s `UfsmountG`; the structure is still allocated into `mnt_data` by `bsd`'s mounts (its `um_export`, a `Netexport` of radix nodes, is not `Send`, which the mount's typed slot needs) | The quotas at N5.5a2 (the first kernel reader of the structure, which moves it into the mount's slot), `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6 |
 
 ## The system-call hop
 
@@ -62,7 +76,4 @@ Locations are on `main` at the commit that last edited this file.
 
 ## Arriving
 
-- N5.5a1 (in progress, DECISIONS-N5.5a D-N5.5a-8): `FileGlue`'s `InodeG`, `Din` and `UfsmountG`
-  (the members of ext2fs's and ffs's inode and mount that the kernel's `Inode` and `Ufsmount`
-  carry until N5.6 and N5.5b), and the bridges `InodeOps` and `UfsFs` (`bridges.toml`, paid
-  N5.5b). The slice writes their rows here.
+Nothing announced.

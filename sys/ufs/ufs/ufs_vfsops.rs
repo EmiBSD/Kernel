@@ -53,47 +53,34 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The file-system-type operations the UFS file systems share: `ufs_start`, `ufs_root`,
-//! `ufs_check_export`, `ufs_init` and the generic half of `fhtovp`.
+//! The file-system-type operations the UFS file systems share: `ufs_start`, `ufs_root` and
+//! the generic half of `fhtovp` are the kernel's (`kernel::fs::ufs::ufs::ufs_vfsops`,
+//! N5.5a1); `ufs_check_export` and `ufs_init` stay here.
 //!
 //! Upstream: sys/ufs/ufs/ufs_vfsops.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `ufs_init`'s `static int done` is the atomic [`UFS_INIT_DONE`]; the host tests clear it
-//!   to initialise again over fresh memory.
+//! - `ufs_init`'s `static int done` is the kernel's (`UfsTables::init_done`, in `bsd`'s VFS
+//!   tables); the host tests clear it with the inode hash (`vfs_test_reset`) to initialise
+//!   again over fresh memory. `ufs_init` stays here until N5.5a2 moves the quotas and dirhash
+//!   it initialises (D-N5.5a-13).
 //! - `ufs_check_export`: without `nfsserver` there is no export list (`vfs_export_lookup`
 //!   finds nothing), so every client is refused with `EACCES`, as the C does when the lookup
 //!   fails. `credanonp` is a `*const Ucred` into the entry's `netc_anon`.
 //! - `ufsdirhash_init` (`UFS_DIRHASH`) is under feature `ufs_dirhash`.
 
 use core::ptr;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
-use crate::sys::mount::{Mount, VFS_VGET, Vfsconf};
-use crate::sys::proc::Proc;
+use crate::sys::mount::{Mount, Vfsconf};
 use crate::sys::ucred::Ucred;
-use crate::sys::vnode::Vnode;
-use crate::sys::vnode::{vfs_export_lookup, vput};
-use crate::ufs::ufs::dinode::ROOTINO;
-use crate::ufs::ufs::inode::{Ufid, vtoi};
+use crate::sys::vnode::vfs_export_lookup;
 use crate::ufs::ufs::quota::ufs_quota_init;
 use crate::ufs::ufs::ufs_ihash::ufs_ihashinit;
 use crate::ufs::ufs::ufsmount::vfstoufs;
-
-/// `ufs_init`'s `done`: the UFS layer is initialised.
-pub static UFS_INIT_DONE: AtomicBool = AtomicBool::new(false);
-
-/// `ufs_start` (`vfs_start`): make a filesystem operational. Nothing to do at the moment.
-pub fn ufs_start(_mp: &'static Mount, _flags: i32, _p: &Proc) -> Result<(), Errno> {
-    Ok(())
-}
-
-/// `ufs_root` (`vfs_root`): return the root of a filesystem, referenced and locked.
-pub fn ufs_root(mp: &'static Mount) -> Result<&'static Vnode, Errno> {
-    VFS_VGET(mp, u64::from(ROOTINO))
-}
+pub use kernel::fs::ufs::ufs::ufs_vfsops::{ufs_fhtovp, ufs_root, ufs_start};
 
 /// `ufs_check_export` (`vfs_checkexp`): verify a remote client has export rights and return
 /// these rights via `exflagsp` and `credanonp`.
@@ -106,7 +93,7 @@ pub fn ufs_check_export(
     let ump = vfstoufs(mp);
 
     // Get the export permission structure for this <mp, client> tuple.
-    let Some(np) = vfs_export_lookup(mp, &ump.um_export, Some(nam)) else {
+    let Some(np) = vfs_export_lookup(mp, &ump.g.um_export, Some(nam)) else {
         return Err(Errno::EACCES);
     };
 
@@ -117,7 +104,11 @@ pub fn ufs_check_export(
 
 /// `ufs_init`: initialize UFS file systems, done only once.
 pub fn ufs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
-    if UFS_INIT_DONE.swap(true, Ordering::Relaxed) {
+    if kernel::fs::subr::vfs::<crate::kern::proc_glue::BsdProcGlue>()
+        .ufs
+        .init_done
+        .swap(true, Ordering::Relaxed)
+    {
         return Ok(());
     }
     ufs_ihashinit();
@@ -126,18 +117,5 @@ pub fn ufs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
     crate::ufs::ufs::ufs_dirhash::ufsdirhash_init();
 
     Ok(())
-}
-
-/// `ufs_fhtovp`: the generic part of `fhtovp` called after the underlying filesystem has
-/// validated the file handle: the vnode of the handle's inode, referenced and locked,
-/// `ESTALE` when the inode was freed or reused since.
-pub fn ufs_fhtovp(mp: &'static Mount, ufhp: &Ufid) -> Result<&'static Vnode, Errno> {
-    let nvp = VFS_VGET(mp, u64::from(ufhp.ufid_ino))?;
-    let ip = vtoi(nvp);
-    if ip.dip_mode() == 0 || ip.dip_gen() != ufhp.ufid_gen {
-        vput(nvp);
-        return Err(Errno::ESTALE);
-    }
-    Ok(nvp)
 }
 /* </CODE> */

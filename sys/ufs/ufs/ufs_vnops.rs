@@ -80,7 +80,6 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_prot::{groupmember, suser_ucred};
-use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
 use crate::kern::kern_subr::uiomove;
 use crate::kern::kern_sysctl::SECURELEVEL;
 use crate::kern::kern_tc::getnanotime;
@@ -140,6 +139,7 @@ use crate::sys::vnode::{vaccess, vgone, vnoperm, vput, vref, vrele};
 use crate::sys::vnode::{vn_lock, vn_rdwr};
 use crate::ufs::ufs::dinode::{IFDIR, IFLNK, IFMT, IFREG, ISGID, ISUID, MAXSYMLINKLEN_UFS2};
 use crate::ufs::ufs::dir::{DIRBLKSIZ, DT_DIR, Direct, Dirtemplate, iftodt};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{
     IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_RENAME, IN_UPDATE, Inode, UFS_BUF_ALLOC,
     UFS_BUFATOFF, UFS_INODE_ALLOC, UFS_INODE_FREE, UFS_TRUNCATE, UFS_UPDATE, doingasync, vtoi,
@@ -359,7 +359,7 @@ pub fn ufs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
                 if rdonly(vp) {
                     return Err(Errno::EROFS);
                 }
-                getinoquota(ip)?;
+                getinoquota(&ip)?;
             }
             VBAD | VBLK | VCHR | VSOCK | VFIFO | VNON => {}
         }
@@ -400,8 +400,8 @@ pub fn ufs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
     ufs_itimes(vp);
 
     // Copy from inode table.
-    vap.va_fsid = i64::from(ip.i_dev.get());
-    vap.va_fileid = u64::from(ip.i_number.get());
+    vap.va_fsid = i64::from(ip.i_dev);
+    vap.va_fileid = u64::from(ip.i_number);
     vap.va_mode = ip.dip_mode() & !IFMT;
     vap.va_nlink = ip.i_effnlink.get() as Nlink;
     vap.va_uid = ip.dip_uid();
@@ -493,7 +493,7 @@ pub fn ufs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             VLNK | VREG if rdonly(vp) => return Err(Errno::EROFS),
             _ => {}
         }
-        UFS_TRUNCATE(ip, vap.va_size as i64, 0, cred)?;
+        UFS_TRUNCATE(&ip, vap.va_size as i64, 0, cred)?;
         if vap.va_size < oldsize {
             hint |= NOTE_TRUNCATE;
         }
@@ -535,7 +535,7 @@ pub fn ufs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             ip.dip_set_atime(vap.va_atime.tv_sec);
             ip.dip_set_atimensec(vap.va_atime.tv_nsec as i32);
         }
-        UFS_UPDATE(ip, 0)?;
+        UFS_UPDATE(&ip, 0)?;
     }
     let mut error = Ok(());
     if vap.va_mode != VNOVAL as Mode {
@@ -611,29 +611,29 @@ pub fn ufs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: *const Ucred) -> 
         quota_flags |= UFS_QUOTA_NOGID;
     }
 
-    getinoquota(ip)?;
-    let _ = ufs_quota_free_blocks2(ip, change, cred, quota_flags);
-    let _ = ufs_quota_free_inode2(ip, cred, quota_flags);
-    let _ = ufs_quota_delete(ip);
+    getinoquota(&ip)?;
+    let _ = ufs_quota_free_blocks2(&ip, change, cred, quota_flags);
+    let _ = ufs_quota_free_inode2(&ip, cred, quota_flags);
+    let _ = ufs_quota_delete(&ip);
 
     ip.dip_set_gid(gid);
     ip.dip_set_uid(uid);
 
     let error: Result<(), Errno> = 'error: {
-        if let Err(e) = getinoquota(ip) {
+        if let Err(e) = getinoquota(&ip) {
             break 'error Err(e);
         }
 
-        if let Err(e) = ufs_quota_alloc_blocks2(ip, change, cred, quota_flags) {
+        if let Err(e) = ufs_quota_alloc_blocks2(&ip, change, cred, quota_flags) {
             break 'error Err(e);
         }
 
-        if let Err(e) = ufs_quota_alloc_inode2(ip, cred, quota_flags) {
-            let _ = ufs_quota_free_blocks2(ip, change, cred, quota_flags);
+        if let Err(e) = ufs_quota_alloc_inode2(&ip, cred, quota_flags) {
+            let _ = ufs_quota_free_blocks2(&ip, change, cred, quota_flags);
             break 'error Err(e);
         }
 
-        if getinoquota(ip).is_err() {
+        if getinoquota(&ip).is_err() {
             panic(format_args!("chown: lost quota"));
         }
 
@@ -652,15 +652,15 @@ pub fn ufs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: *const Ucred) -> 
     };
 
     // error:
-    let _ = ufs_quota_delete(ip);
+    let _ = ufs_quota_delete(&ip);
 
     ip.dip_set_gid(ogid);
     ip.dip_set_uid(ouid);
 
-    if getinoquota(ip).is_ok() {
-        let _ = ufs_quota_alloc_blocks2(ip, change, cred, quota_flags | UFS_QUOTA_FORCE);
-        let _ = ufs_quota_alloc_inode2(ip, cred, quota_flags | UFS_QUOTA_FORCE);
-        let _ = getinoquota(ip);
+    if getinoquota(&ip).is_ok() {
+        let _ = ufs_quota_alloc_blocks2(&ip, change, cred, quota_flags | UFS_QUOTA_FORCE);
+        let _ = ufs_quota_alloc_inode2(&ip, cred, quota_flags | UFS_QUOTA_FORCE);
+        let _ = getinoquota(&ip);
     }
     error
 }
@@ -682,7 +682,7 @@ pub fn ufs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
     {
         return Err(Errno::EPERM);
     }
-    let error = ufs_dirremove(dvp, Some(ip), ap.a_cnp.cn_flags, 0);
+    let error = ufs_dirremove(dvp, Some(&ip), ap.a_cnp.cn_flags, 0);
     VN_KNOTE(vp, NOTE_DELETE);
     VN_KNOTE(dvp, NOTE_WRITE);
     error
@@ -718,10 +718,10 @@ pub fn ufs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
             ip.i_effnlink.set(ip.i_effnlink.get() + 1);
             ip.dip_set_nlink(ip.dip_nlink() + 1);
             ip.set_flag(IN_CHANGE);
-            let mut error = UFS_UPDATE(ip, 1);
+            let mut error = UFS_UPDATE(&ip, 1);
             if error.is_ok() {
                 let mut newdir = Direct::new();
-                ufs_makedirentry(ip, cnp, &mut newdir);
+                ufs_makedirentry(&ip, cnp, &mut newdir);
                 error = ufs_direnter(dvp, Some(vp), &mut newdir, cnp, None);
             }
             if error.is_err() {
@@ -892,7 +892,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         }
         // Avoid ".", "..", and aliases of "." for obvious reasons.
         if (fcnp.namelen() == 1 && fcnp.name() == b".")
-            || core::ptr::eq(dp, ip)
+            || core::ptr::eq::<Inode>(&*dp, &*ip)
             || fcnp.cn_flags & ISDOTDOT != 0
             || tcnp.cn_flags & ISDOTDOT != 0
             || ip.i_flag.get() & IN_RENAME != 0
@@ -901,14 +901,14 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             return rename_abortit(Errno::EINVAL, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
         }
         ip.set_flag(IN_RENAME);
-        oldparent = dp.i_number.get();
+        oldparent = dp.i_number;
         doingdirectory = true;
     }
     VN_KNOTE(fdvp, NOTE_WRITE); // XXX right place?
 
     // When the target exists, both the directory and target vnodes are returned locked.
     dp = vtoi(tdvp);
-    let mut xp: Option<&Inode> = tvp.map(vtoi);
+    let mut xp: Option<crate::ufs::ufs::inode::InodeRef> = tvp.map(vtoi);
 
     let exit: Result<(), RenameExit> = 'body: {
         // 1) Bump link count while we're moving stuff around. If we crash somewhere before
@@ -916,7 +916,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         ip.i_effnlink.set(ip.i_effnlink.get() + 1);
         ip.dip_set_nlink(ip.dip_nlink() + 1);
         ip.set_flag(IN_CHANGE);
-        if let Err(e) = UFS_UPDATE(ip, 1) {
+        if let Err(e) = UFS_UPDATE(&ip, 1) {
             let _ = VOP_UNLOCK(fvp);
             break 'body Err(RenameExit::Bad(e));
         }
@@ -930,8 +930,8 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         let _ = VOP_UNLOCK(fvp);
 
         // tdvp and tvp locked
-        if oldparent != dp.i_number.get() {
-            newparent = dp.i_number.get();
+        if oldparent != dp.i_number {
+            newparent = dp.i_number;
         }
         if doingdirectory && newparent != 0 {
             if let Err(e) = access {
@@ -946,7 +946,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             // Compensate for the reference ufs_checkpath() loses.
             vref(tdvp);
             // Only tdvp is locked
-            if let Err(e) = ufs_checkpath(ip, dp, tcnp.cn_cred.as_raw()) {
+            if let Err(e) = ufs_checkpath(&ip, &dp, tcnp.cn_cred.as_raw()) {
                 vrele(tdvp);
                 break 'body Err(RenameExit::Out(e));
             }
@@ -965,9 +965,9 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // 2) If target doesn't exist, link the target to the source and unlink the source.
         //    Otherwise, rewrite the target directory entry to reference the source inode and
         //    expunge the original entry's existence.
-        match xp {
+        match xp.as_deref() {
             None => {
-                if dp.i_dev.get() != ip.i_dev.get() {
+                if dp.i_dev != ip.i_dev {
                     panic(format_args!("rename: EXDEV"));
                 }
                 // Account for ".." in new directory. When source and destination have the
@@ -979,7 +979,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                     dp.i_effnlink.set(dp.i_effnlink.get() + 1);
                     dp.dip_set_nlink(dp.dip_nlink() + 1);
                     dp.set_flag(IN_CHANGE);
-                    if let Err(e) = UFS_UPDATE(dp, 1) {
+                    if let Err(e) = UFS_UPDATE(&dp, 1) {
                         dp.i_effnlink.set(dp.i_effnlink.get() - 1);
                         dp.dip_set_nlink(dp.dip_nlink() - 1);
                         dp.set_flag(IN_CHANGE);
@@ -987,13 +987,13 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                     }
                 }
                 let mut newdir = Direct::new();
-                ufs_makedirentry(ip, tcnp, &mut newdir);
+                ufs_makedirentry(&ip, tcnp, &mut newdir);
                 if let Err(e) = ufs_direnter(tdvp, None, &mut newdir, tcnp, None) {
                     if doingdirectory && newparent != 0 {
                         dp.i_effnlink.set(dp.i_effnlink.get() - 1);
                         dp.dip_set_nlink(dp.dip_nlink() - 1);
                         dp.set_flag(IN_CHANGE);
-                        let _ = UFS_UPDATE(dp, 1);
+                        let _ = UFS_UPDATE(&dp, 1);
                     }
                     break 'body Err(RenameExit::Bad(e));
                 }
@@ -1001,11 +1001,11 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 vput(tdvp);
             }
             Some(x) => {
-                if x.i_dev.get() != dp.i_dev.get() || x.i_dev.get() != ip.i_dev.get() {
+                if x.i_dev != dp.i_dev || x.i_dev != ip.i_dev {
                     panic(format_args!("rename: EXDEV"));
                 }
                 // Short circuit rename(foo, foo).
-                if x.i_number.get() == ip.i_number.get() {
+                if x.i_number == ip.i_number {
                     panic(format_args!("ufs_rename: same file"));
                 }
                 // If the parent directory is "sticky", then the user must own the parent
@@ -1025,7 +1025,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // directories).
                 if x.dip_mode() & IFMT == IFDIR {
                     if x.i_effnlink.get() > 2
-                        || !ufs_dirempty(x, dp.i_number.get(), tcnp.cn_cred.as_raw())
+                        || !ufs_dirempty(x, dp.i_number, tcnp.cn_cred.as_raw())
                     {
                         break 'body Err(RenameExit::Bad(Errno::ENOTEMPTY));
                     }
@@ -1042,8 +1042,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 } else {
                     i32::from(doingdirectory)
                 };
-                if let Err(e) =
-                    ufs_dirrewrite(dp, x, ip.i_number.get(), iftodt(ip.dip_mode()), isrmdir)
+                if let Err(e) = ufs_dirrewrite(&dp, x, ip.i_number, iftodt(ip.dip_mode()), isrmdir)
                 {
                     break 'body Err(RenameExit::Bad(e));
                 }
@@ -1071,7 +1070,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                     let Some(t) = tvp else {
                         panic(format_args!("ufs_rename: no target vnode"));
                     };
-                    if let Err(e) = UFS_TRUNCATE(vtoi(t), 0, IO_SYNC, tcnp.cn_cred.as_raw()) {
+                    if let Err(e) = UFS_TRUNCATE(&vtoi(t), 0, IO_SYNC, tcnp.cn_cred.as_raw()) {
                         break 'body Err(RenameExit::Bad(e));
                     }
                 }
@@ -1090,14 +1089,14 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     match exit {
         Ok(()) => {}
         Err(RenameExit::Bad(e)) => {
-            if let Some(x) = xp {
+            if let Some(x) = xp.as_deref() {
                 vput(x.itov());
             }
             vput(dp.itov());
-            return rename_out(e, fdvp, fvp, ip, doingdirectory);
+            return rename_out(e, fdvp, fvp, &ip, doingdirectory);
         }
         Err(RenameExit::Out(e)) => {
-            return rename_out(e, fdvp, fvp, ip, doingdirectory);
+            return rename_out(e, fdvp, fvp, &ip, doingdirectory);
         }
     }
 
@@ -1132,7 +1131,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     // directory then it cannot have been rmdir'ed; the IN_RENAME flag ensures that it cannot
     // be moved by another rename or removed by a rmdir.
     let mut error = Ok(());
-    if !core::ptr::eq(xp, ip) {
+    if !core::ptr::eq::<Inode>(&*xp, &*ip) {
         if doingdirectory {
             panic(format_args!("ufs_rename: lost dir entry"));
         }
@@ -1141,10 +1140,10 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // directory must be decremented and ".." set to point to the new parent.
         if doingdirectory && newparent != 0 {
             xp.i_offset.set(i32::from(MASTERTEMPLATE.dot_reclen));
-            let _ = ufs_dirrewrite(xp, dp, newparent, DT_DIR, 0);
+            let _ = ufs_dirrewrite(&xp, &dp, newparent, DT_DIR, 0);
             cache_purge(fdvp);
         }
-        error = ufs_dirremove(fdvp, Some(xp), fcnp.cn_flags, 0);
+        error = ufs_dirremove(fdvp, Some(&xp), fcnp.cn_flags, 0);
         xp.clr_flag(IN_RENAME);
     }
     VN_KNOTE(fvp, NOTE_RENAME);
@@ -1197,7 +1196,7 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         // Must simulate part of ufs_makeinode here to acquire the inode, but not have it
         // entered in the parent directory. The entry is made later after writing "." and
         // ".." entries.
-        let tvp = match UFS_INODE_ALLOC(dp, dmode, cnp.cn_cred.as_raw()) {
+        let tvp = match UFS_INODE_ALLOC(&dp, dmode, cnp.cn_cred.as_raw()) {
             Ok(tvp) => tvp,
             Err(e) => break 'out Err(e),
         };
@@ -1208,10 +1207,10 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         ip.dip_set_gid(dp.dip_gid());
 
         if let Err(e) =
-            getinoquota(ip).and_then(|()| ufs_quota_alloc_inode(ip, cnp.cn_cred.as_raw()))
+            getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred.as_raw()))
         {
             pnbuf_free(cnp);
-            let _ = UFS_INODE_FREE(ip, ip.i_number.get(), dmode);
+            let _ = UFS_INODE_FREE(&ip, ip.i_number, dmode);
             vput(tvp);
             vput(dvp);
             return Err(e);
@@ -1229,16 +1228,16 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
             dp.i_effnlink.set(dp.i_effnlink.get() + 1);
             dp.dip_set_nlink(dp.dip_nlink() + 1);
             dp.set_flag(IN_CHANGE);
-            if let Err(e) = UFS_UPDATE(dp, 1) {
+            if let Err(e) = UFS_UPDATE(&dp, 1) {
                 break 'bad Err(e);
             }
 
             // Initialize directory with "." and ".." from static template.
             let mut dirtemplate = MASTERTEMPLATE;
-            dirtemplate.dot_ino = ip.i_number.get();
-            dirtemplate.dotdot_ino = dp.i_number.get();
+            dirtemplate.dot_ino = ip.i_number;
+            dirtemplate.dotdot_ino = dp.i_number;
 
-            let bp = match UFS_BUF_ALLOC(ip, 0, DIRBLKSIZ as i32, cnp.cn_cred.as_raw(), B_CLRBUF) {
+            let bp = match UFS_BUF_ALLOC(&ip, 0, DIRBLKSIZ as i32, cnp.cn_cred.as_raw(), B_CLRBUF) {
                 Ok(bp) => bp,
                 Err(e) => break 'bad Err(e),
             };
@@ -1248,7 +1247,7 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
             // SAFETY: the buffer is ours (busy from UFS_BUF_ALLOC) and mapped; the slice
             // dies before it is written.
             (unsafe { bp.data() })[..Dirtemplate::SIZE].copy_from_slice(&dirtemplate.to_bytes());
-            if let Err(e) = UFS_UPDATE(ip, 1) {
+            if let Err(e) = UFS_UPDATE(&ip, 1) {
                 let _ = VOP_BWRITE(bp);
                 break 'bad Err(e);
             }
@@ -1266,7 +1265,7 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
                 break 'bad Err(e);
             }
             let mut newdir = Direct::new();
-            ufs_makedirentry(ip, cnp, &mut newdir);
+            ufs_makedirentry(&ip, cnp, &mut newdir);
             ufs_direnter(dvp, Some(tvp), &mut newdir, cnp, Some(bp))
         };
 
@@ -1309,7 +1308,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         if ip.i_flag.get() & IN_RENAME != 0 {
             break 'out Err(Errno::EINVAL);
         }
-        if ip.i_effnlink.get() != 2 || !ufs_dirempty(ip, dp.i_number.get(), cnp.cn_cred.as_raw()) {
+        if ip.i_effnlink.get() != 2 || !ufs_dirempty(&ip, dp.i_number, cnp.cn_cred.as_raw()) {
             break 'out Err(Errno::ENOTEMPTY);
         }
         if dp.dip_flags() & APPEND != 0 || ip.dip_flags() & (IMMUTABLE | APPEND) != 0 {
@@ -1319,7 +1318,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         // directory will be reattached to lost+found,
         dp.i_effnlink.set(dp.i_effnlink.get() - 1);
         ip.i_effnlink.set(ip.i_effnlink.get() - 1);
-        if let Err(e) = ufs_dirremove(dvp, Some(ip), cnp.cn_flags, 1) {
+        if let Err(e) = ufs_dirremove(dvp, Some(&ip), cnp.cn_flags, 1) {
             dp.i_effnlink.set(dp.i_effnlink.get() + 1);
             ip.i_effnlink.set(ip.i_effnlink.get() + 1);
             break 'out Err(e);
@@ -1334,7 +1333,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         ip.dip_set_nlink(ip.dip_nlink() - 1);
         ip.set_flag(IN_CHANGE);
         let error = UFS_TRUNCATE(
-            ip,
+            &ip,
             0,
             if doingasync(vp) { 0 } else { IO_SYNC },
             cnp.cn_cred.as_raw(),
@@ -1343,8 +1342,8 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         cache_purge(vp);
         // Kill any active hash; i_effnlink == 0, so it will not come back.
         #[cfg(feature = "ufs_dirhash")]
-        if ip.i_dirhash.get().is_some() {
-            crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(ip);
+        if ip.g.i_dirhash.get().is_some() {
+            crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(&ip);
         }
         error
     };
@@ -1428,7 +1427,7 @@ pub fn ufs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
         if bytesinfile <= 0 {
             break;
         }
-        let (bp, boff) = match UFS_BUFATOFF(ip, off) {
+        let (bp, boff) = match UFS_BUFATOFF(&ip, off) {
             Ok(r) => r,
             Err(e) => {
                 error = Err(e);
@@ -1537,18 +1536,18 @@ pub fn ufs_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
 /// `ufs_lock` (`vop_lock`): lock an inode. If its already locked, set the WANT bit and
 /// sleep.
 pub fn ufs_lock(ap: &mut VopLockArgs) -> Result<(), Errno> {
-    rrw_enter(&vtoi(ap.a_vp).i_lock, ap.a_flags & LK_RWFLAGS)
+    vtoi(ap.a_vp).i_lock.enter(ap.a_flags & LK_RWFLAGS)
 }
 
 /// `ufs_unlock` (`vop_unlock`): unlock an inode. If WANT bit is on, wakeup.
 pub fn ufs_unlock(ap: &mut VopUnlockArgs) -> Result<(), Errno> {
-    rrw_exit(&vtoi(ap.a_vp).i_lock);
+    vtoi(ap.a_vp).i_lock.exit();
     Ok(())
 }
 
 /// `ufs_islocked` (`vop_islocked`): check for a locked inode.
 pub fn ufs_islocked(ap: &mut VopIslockedArgs) -> i32 {
-    rrw_status(&vtoi(ap.a_vp).i_lock)
+    vtoi(ap.a_vp).i_lock.status()
 }
 
 /// `ufs_strategy` (`vop_strategy`): calculate the logical to physical mapping if not done
@@ -1601,9 +1600,9 @@ pub fn ufs_print(ap: &mut VopPrintArgs) -> Result<(), Errno> {
 
         crate::kprintf!(
             "tag VT_UFS, ino {}, on dev {}, {}",
-            ip.i_number.get(),
-            major(ip.i_dev.get()),
-            minor(ip.i_dev.get())
+            ip.i_number,
+            major(ip.i_dev),
+            minor(ip.i_dev)
         );
         crate::kprintf!(
             " flags 0x{:x}, effnlink {}, nlink {}\n",
@@ -1707,7 +1706,7 @@ pub fn ufs_makeinode(
         mode |= IFREG;
     }
 
-    let tvp = match UFS_INODE_ALLOC(pdir, mode, cnp.cn_cred.as_raw()) {
+    let tvp = match UFS_INODE_ALLOC(&pdir, mode, cnp.cn_cred.as_raw()) {
         Ok(tvp) => tvp,
         Err(e) => {
             pnbuf_free(cnp);
@@ -1721,9 +1720,10 @@ pub fn ufs_makeinode(
     let c = ucred(cnp.cn_cred.as_raw());
     ip.dip_set_uid(c.cr_uid.get());
 
-    if let Err(e) = getinoquota(ip).and_then(|()| ufs_quota_alloc_inode(ip, cnp.cn_cred.as_raw())) {
+    if let Err(e) = getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred.as_raw()))
+    {
         pnbuf_free(cnp);
-        let _ = UFS_INODE_FREE(ip, ip.i_number.get(), mode);
+        let _ = UFS_INODE_FREE(&ip, ip.i_number, mode);
         vput(tvp);
         return Err(e);
     }
@@ -1743,12 +1743,12 @@ pub fn ufs_makeinode(
 
     let error: Result<(), Errno> = 'bad: {
         // Make sure inode goes to disk before directory entry.
-        if let Err(e) = UFS_UPDATE(ip, 1) {
+        if let Err(e) = UFS_UPDATE(&ip, 1) {
             break 'bad Err(e);
         }
 
         let mut newdir = Direct::new();
-        ufs_makedirentry(ip, cnp, &mut newdir);
+        ufs_makedirentry(&ip, cnp, &mut newdir);
         if let Err(e) = ufs_direnter(dvp, Some(tvp), &mut newdir, cnp, None) {
             break 'bad Err(e);
         }
@@ -1822,7 +1822,7 @@ pub fn filt_ufsread(kn: &Knote, hint: i64) -> bool {
 
     #[cfg(feature = "ext2fs")]
     let size = if crate::ufs::ext2fs::ext2fs_extern::is_ext2_vnode(vp) {
-        crate::ufs::ext2fs::ext2fs_inode::ext2fs_size(ip) as i64
+        crate::ufs::ext2fs::ext2fs_inode::ext2fs_size(&ip) as i64
     } else {
         ip.dip_size() as i64
     };

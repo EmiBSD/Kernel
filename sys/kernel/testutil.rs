@@ -1479,6 +1479,7 @@ macro_rules! test_file_glue {
         pub struct $name;
 
         $crate::file_glue_links!($name);
+        $crate::ufs_glue_links!($proc);
 
         std::thread_local! {
             static VFS_TABLES: &'static $crate::fs::subr::VfsTables<$proc> =
@@ -1634,6 +1635,9 @@ macro_rules! test_file_glue {
             type FileList = FileListLink;
             type VnodeG = ();
             type UnveilMatch = $crate::testutil::UnveilCount;
+            type InodeG = ();
+            type UfsmountG = ();
+            type InodeHash = InodeHashLink;
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)
@@ -2047,9 +2051,16 @@ pub fn bufcache_install(bytes: usize, bufpages: i64) -> MutexGuard<'static, ()> 
     let g = pages_install(bytes);
     hal::klock::kernel_lock();
     crate::fs::bio::bio_test_reset();
+    bufcache_init(bytes, bufpages);
+    g
+}
+
+/// The buffer cache of an emptied cache (`bio_test_reset`'s) set up over [`pages_install`]'s
+/// `bytes`: the disk queues forgotten, `bufpages` pages, `bufinit`. Shared by
+/// [`bufcache_install`] and `fs::testfs::setup_root_cached`.
+pub fn bufcache_init(bytes: usize, bufpages: i64) {
     crate::fs::bufq::bufq_test_reset();
     crate::fs::bio::BUFPAGES.store(bufpages, Ordering::Relaxed);
     crate::fs::bio::bufinit(bytes / TEST_PAGE);
-    g
 }
 /* </CODE> */

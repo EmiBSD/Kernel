@@ -95,7 +95,6 @@
 
 use core::ptr::{self, NonNull};
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
 use crate::kern::kern_malloc::{free, malloc};
@@ -144,6 +143,7 @@ use crate::sys::vnode::{
 };
 use crate::sys::vnode::{getnewvnode, vget, vinvalbuf, vput, vrecycle, vref, vrele};
 use libkern::StaticCell;
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// The hash chains, with the claim that makes them shareable.
 #[derive(Clone, Copy)]

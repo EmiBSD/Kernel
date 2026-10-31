@@ -92,6 +92,7 @@ use crate::sys::vnode::{Vnode, VopBmapArgs};
 use crate::ufs::ext2fs::ext2fs::fsbtodb;
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT4_EXTENTS, NDADDR, NIADDR};
 use crate::ufs::ext2fs::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Indir, vtoi};
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
 use crate::ufs::ufs::ufsmount::{blkptrtodb, is_sequential, mnindir, vfstoufs};
@@ -108,7 +109,7 @@ pub fn ext2fs_bmap(ap: &mut VopBmapArgs<'_>) -> Result<(), Errno> {
         return Ok(());
     };
 
-    if vtoi(ap.a_vp).i_e2fs_flags() & EXT4_EXTENTS != 0 {
+    if vtoi(ap.a_vp).g.i_e2fs_flags() & EXT4_EXTENTS != 0 {
         return ext4_bmapext(ap.a_vp, ap.a_bn, bnp, None, None, ap.a_runp.as_deref_mut());
     }
     ext2fs_bmaparray(ap.a_vp, ap.a_bn, bnp, None, None, ap.a_runp.as_deref_mut())
@@ -135,7 +136,7 @@ pub fn ext4_bmapext(
     }
 
     let mut path = Ext4ExtentPath::new();
-    let ep = ext4_ext_find_extent(fs, ip, bn, &mut path).and_then(|p| p.ext());
+    let ep = ext4_ext_find_extent(fs, &ip, bn, &mut path).and_then(|p| p.ext());
     if let Some(bp) = path.ep_bp.take() {
         brelse(bp);
     }
@@ -214,7 +215,7 @@ pub fn ext2fs_bmaparray(
 
     let mut num = *nump;
     if num == 0 {
-        let blk = |i: Daddr| Daddr::from(u32::from_le(ip.i_e2fs_block(i as usize)));
+        let blk = |i: Daddr| Daddr::from(u32::from_le(ip.g.i_e2fs_block(i as usize)));
         *bnp = blkptrtodb(ump, blk(bn));
         if *bnp == 0 {
             *bnp = -1;
@@ -230,7 +231,7 @@ pub fn ext2fs_bmaparray(
     }
 
     // Get disk address out of indirect block array
-    let mut daddr = u32::from_le(ip.i_e2fs_block(NDADDR + xap[0].in_off as usize)) as i32;
+    let mut daddr = u32::from_le(ip.g.i_e2fs_block(NDADDR + xap[0].in_off as usize)) as i32;
 
     #[cfg(feature = "diagnostic")]
     if num > NIADDR as i32 + 1 || num < 1 {

@@ -103,7 +103,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use libkern::explicit_bzero;
 
-use crate::crypto::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_set};
@@ -122,6 +121,7 @@ use crate::sys::mbuf::{Mbuf, PF_TAG_SYNCOOKIE_RECREATED};
 use crate::sys::socket::{AF_INET, AF_INET6};
 use crate::sys::syslog::LOG_WARNING;
 use crate::sys::timeout::Timeout;
+use libkern::siphash::{AtomicSiphashKey, SIPHASH_KEY_LENGTH, SiphashKey};
 
 /// `union pf_syncookie`: the cookie byte and its bit-fields (see the module's deviations).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]

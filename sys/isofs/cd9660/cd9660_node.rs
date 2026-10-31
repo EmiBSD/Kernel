@@ -118,7 +118,6 @@ use core::cell::Cell;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
 
-use crate::crypto::siphash::{SipHash24Ctx, SiphashKey};
 use crate::dev::rnd::arc4random_buf;
 use crate::isofs::cd9660::cd9660_extern::IsoMnt;
 use crate::isofs::cd9660::cd9660_lookup::cd9660_bufatoff;
@@ -146,6 +145,7 @@ use crate::sys::types::{Dev, Gid, Uid};
 use crate::sys::vnode::{VT_ISOFS, Vnode, VopInactiveArgs, VopReclaimArgs};
 use crate::sys::vnode::{vget, vput, vrecycle, vrele};
 use libkern::StaticCell;
+use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
 /// `doff_t`.
 pub type Doff = u64;

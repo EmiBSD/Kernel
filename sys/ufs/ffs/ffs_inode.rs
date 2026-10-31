@@ -89,6 +89,7 @@ use crate::ufs::ffs::fs::{
     nindir, numfrags,
 };
 use crate::ufs::ufs::dinode::{NDADDR, NIADDR};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{
     IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, Inode, UFS_BUF_ALLOC, UFS_UPDATE, daddr32_at,
     daddr64_at, doingasync, set_daddr32_at, set_daddr64_at, set_dinode1_at, set_dinode2_at,
@@ -121,12 +122,16 @@ pub fn ffs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
     // Ensure that uid and gid are correct. This is a temporary fix until fsck has been
     // changed to do the update.
     if fs.fs_magic.get() == FS_UFS1_MAGIC && fs.fs_inodefmt.get() < FS_44INODEFMT {
-        ip.with_din1(|d| d.di_u = [d.di_uid as u16, d.di_gid as u16]);
+        // di_ouid, di_ogid (the di_u halves) from the 32-bit ids.
+        let off = core::mem::offset_of!(crate::ufs::ufs::dinode::Ufs1Dinode, di_u);
+        let din = ip.ufs1_din();
+        din.set::<u16>(off, ip.dip_uid() as u16);
+        din.set::<u16>(off + 2, ip.dip_gid() as u16);
     }
 
     let (bp, error) = bread(
         ip.i_devvp(),
-        fsbtodb(fs, ino_to_fsba(fs, ip.i_number.get())),
+        fsbtodb(fs, ino_to_fsba(fs, ip.i_number)),
         fs.fs_bsize.get(),
     );
     if let Err(e) = error {
@@ -142,7 +147,7 @@ pub fn ffs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
         // SAFETY: the buffer is ours (busy from bread) and mapped; the slice dies before it
         // is written.
         let data = unsafe { bp.data() };
-        let idx = ino_to_fsbo(fs, ip.i_number.get());
+        let idx = ino_to_fsbo(fs, ip.i_number);
         #[cfg(feature = "ffs2")]
         let ufs2 = ip.ump().um_fstype.get() == UM_UFS2;
         #[cfg(not(feature = "ffs2"))]
