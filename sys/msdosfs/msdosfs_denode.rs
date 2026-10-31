@@ -94,6 +94,7 @@
 //!   `msdosfs_lookup.rs`.
 
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::dev::rnd::arc4random_buf;
 use crate::kassert;
@@ -134,7 +135,7 @@ use crate::sys::queue::ListHead;
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Dev};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::NOCRED;
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::PRTACTIVE;
 use crate::sys::vnode::vn_lock;
@@ -471,7 +472,7 @@ pub fn detrunc(
     dep: &Denode,
     length: u32,
     flags: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
     let isadir = dep.de_Attributes.get() & ATTR_DIRECTORY != 0;
@@ -581,7 +582,7 @@ pub fn detrunc(
 
 /// `deextend(dep, length, cred)`: extend the file described by `dep` to length specified by
 /// `length`.
-pub fn deextend(dep: &Denode, length: u32, cred: *const Ucred) -> Result<(), Errno> {
+pub fn deextend(dep: &Denode, length: u32, cred: Cred<'_>) -> Result<(), Errno> {
     let pmp = dep.pmp();
 
     // The root of a DOS filesystem cannot be extended.

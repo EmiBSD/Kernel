@@ -75,8 +75,9 @@
 //!   before `nfsmout:` (see `docs/C_TO_RUST.md`).
 //! - `nfsm_dissect`/`nfsd_dissect` return an [`XdrIn`] of the `s` bytes, not a pointer;
 //!   `nfsm_postop_attr` keeps the C's `int *attrflagp` (untouched when there is no reply).
-//! - `struct nfsm_info` has a lifetime for `nmi_procp` (the vnode operations' `a_p`);
-//!   `nmi_cred` is the operations' raw `a_cred`; `nmi_v3` is a `bool`.
+//! - `struct nfsm_info` has a lifetime for `nmi_procp` (the vnode operations' `a_p`) and
+//!   `nmi_cred` (the operations' `a_cred`, a `Cred` borrowing the credential for the RPC;
+//!   `n_rcred`/`n_wcred` lend one more reference held by the caller); `nmi_v3` is a `bool`.
 //! - Lengths: `nfsm_dissect`/`nfsm_adv` sizes, `nfsm_strsiz`'s result and `nfsm_strtom`'s
 //!   are `usize`; `nfsm_mtouio`'s `len` stays an `i32`, since a length `<= 0` is the C's
 //!   no-op.
@@ -87,6 +88,7 @@
 
 use core::marker::PhantomData;
 use core::ptr;
+use kernel::fs::vops::Cred;
 
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::m_freem;
@@ -100,7 +102,6 @@ use crate::nfs::xdr_subs::{fxdr_hyper, fxdr_unsigned, txdr_hyper, xdr_bytes, xdr
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::proc::Proc;
-use crate::sys::ucred::Ucred;
 use crate::sys::uio::Uio;
 #[cfg(feature = "nfsclient")]
 use crate::sys::vnode::Vnode;
@@ -115,7 +116,7 @@ pub struct NfsmInfo<'a> {
     /// `nmi_procp`: XXX XXX XXX
     pub nmi_procp: Option<&'a Proc>,
     /// `nmi_cred`: XXX XXX XXX (a real credential: `nfs_request` puts it in the RPC header).
-    pub nmi_cred: *const Ucred,
+    pub nmi_cred: Cred<'a>,
     /// `nmi_md`: setting up / tearing down: the dissection mbuf.
     pub nmi_md: Option<&'static Mbuf>,
     /// `nmi_dpos`: the dissection position, inside `nmi_md`'s data.
@@ -131,7 +132,7 @@ impl NfsmInfo<'_> {
             nmi_mreq: None,
             nmi_mrep: None,
             nmi_procp: None,
-            nmi_cred: ptr::null(),
+            nmi_cred: Cred::NULL,
             nmi_md: None,
             nmi_dpos: ptr::null_mut(),
             nmi_v3: false,

@@ -122,6 +122,7 @@
 //!   `sysctl_lock` is the kernel's `SYSCTL_LOCK`, the one lock of both halves.
 use core::ops::ControlFlow;
 use core::sync::atomic::{AtomicI32, Ordering};
+use kernel::fs::vops::Cred;
 
 use libkern::{strlcpy, strnlen};
 
@@ -807,7 +808,7 @@ fn fill_file_vnode(kf: &mut KinfoFile, vp: &'static Vnode, p: &Proc, show_pointe
     }
 
     let mut va = Vattr::new();
-    if VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p).is_ok() {
+    if VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p).is_ok() {
         kf.va_fileid = va.va_fileid;
         kf.va_mode = makeimode(va.va_type, va.va_mode);
         kf.va_size = va.va_size;

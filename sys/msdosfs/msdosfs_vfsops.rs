@@ -92,6 +92,7 @@
 //! - `msdosfs_init` is `msdosfs_denode.rs`'s, where the C defines it.
 
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
@@ -152,7 +153,7 @@ pub struct MsdosfsSyncArgs<'a> {
     /// `p`: the thread syncing.
     pub p: &'a Proc,
     /// `cred`: its credentials.
-    pub cred: *const Ucred,
+    pub cred: Cred<'a>,
     /// `allerror`: the last error of a vnode's `VOP_FSYNC`.
     pub allerror: Result<(), Errno>,
     /// `waitfor`: `MNT_WAIT`, `MNT_NOWAIT` or `MNT_LAZY`.
@@ -207,7 +208,7 @@ pub fn msdosfs_mount(
         let mut error = Ok(());
         if pmp.pm_flags.get() & MSDOSFSMNT_RONLY == 0 && mp.flag() & MNT_RDONLY != 0 {
             mp.set_flag(mp.flag() & !MNT_RDONLY);
-            let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
+            let _ = VFS_SYNC(mp, MNT_WAIT, 0, Cred::real(p.ucred()), p);
             mp.set_flag(mp.flag() | MNT_RDONLY);
 
             let mut flags = WRITECLOSE;
@@ -334,7 +335,7 @@ pub fn msdosfs_mountfs(
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = vinvalbuf(devvp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP);
+    let error = vinvalbuf(devvp, V_SAVE, Cred::real(p.ucred()), Some(p), 0, INFSLP);
     let _ = VOP_UNLOCK(devvp);
     error?;
 
@@ -719,7 +720,7 @@ pub fn msdosfs_sync(
     mp: &'static Mount,
     waitfor: i32,
     _stall: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
     let pmp = vfstomsdosfs(mp);
@@ -1424,7 +1425,7 @@ pub(crate) mod tests {
 
         // The root vnode needs the vnode operations of msdosfs_vnops.c (deget locks it), which
         // are not here yet; sync and unmount do not.
-        msdosfs_sync(mp, MNT_WAIT, 0, p.ucred_ptr(), p).unwrap();
+        msdosfs_sync(mp, MNT_WAIT, 0, Cred::real(p.ucred()), p).unwrap();
         unmount(p, mp);
         assert!(devvp.specmountpoint().is_none());
         teardown();

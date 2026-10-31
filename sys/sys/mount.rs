@@ -191,7 +191,7 @@ pub struct Vfsops {
     /// `vfs_statfs(mp, sbp, p)`.
     pub vfs_statfs: fn(&'static Mount, &mut Statfs, &Proc) -> Result<(), Errno>,
     /// `vfs_sync(mp, waitfor, stall, cred, p)`.
-    pub vfs_sync: fn(&'static Mount, i32, i32, *const Ucred, &Proc) -> Result<(), Errno>,
+    pub vfs_sync: fn(&'static Mount, i32, i32, Cred<'_>, &Proc) -> Result<(), Errno>,
     /// `vfs_vget(mp, ino, vpp)`.
     pub vfs_vget: fn(&'static Mount, Ino) -> Result<&'static Vnode, Errno>,
     /// `vfs_fhtovp(mp, fhp, vpp)`.
@@ -251,14 +251,8 @@ pub fn VFS_STATFS(mp: &'static Mount, sbp: &mut Statfs, p: &Proc) -> Result<(), 
 
 /// `VFS_SYNC(MP, W, S, C, P)`.
 #[allow(non_snake_case)] // the C macro's name
-pub fn VFS_SYNC(
-    mp: &'static Mount,
-    w: i32,
-    s: i32,
-    c: *const Ucred,
-    p: &Proc,
-) -> Result<(), Errno> {
-    kernel::fs::vops::VFS_SYNC(mp, w, s, Cred::from_raw(c), p)
+pub fn VFS_SYNC(mp: &'static Mount, w: i32, s: i32, c: Cred<'_>, p: &Proc) -> Result<(), Errno> {
+    kernel::fs::vops::VFS_SYNC(mp, w, s, c, p)
 }
 
 /// `VFS_VGET(MP, INO, VPP)`.

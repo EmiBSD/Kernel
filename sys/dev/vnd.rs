@@ -145,7 +145,7 @@ use crate::sys::namei::{NiDirp, UNVEIL_READ, UNVEIL_WRITE};
 use crate::sys::param::{DEV_BSIZE, dbtob};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Dev, Off, major};
-use crate::sys::ucred::{CredRef, CredSlot, Ucred};
+use crate::sys::ucred::{CredRef, CredSlot};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{IO_NOCACHE, IO_NODELOCKED, IO_NOLIMIT, IO_SYNC, VBLK, Vattr, Vnode};
 use crate::sys::vnode::{RdwrBuf, vn_close, vn_lock, vn_open, vn_rdwr};
@@ -483,6 +483,8 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
         UioRw::UIO_WRITE
     };
     let mut resid = bp.resid();
+    // The unit's credentials, held for the I/O (`vndclear` may take them meanwhile).
+    let cred = sc.sc_cred.cred();
     let error = match sc.sc_vp.get() {
         Some(vp) => vnd_rdwr(
             rw,
@@ -491,7 +493,7 @@ fn vnd_transfer(sc: &VndSoftc, bp: &'static Buf, lp: &Disklabel) {
             usize::try_from(bp.bcount()).unwrap_or(0),
             off,
             IO_NOCACHE | IO_SYNC | IO_NOLIMIT,
-            sc.sc_cred.get(),
+            cred.as_deref().map_or(Cred::NULL, Cred::real),
             &mut resid,
             curproc(),
         ),
@@ -522,7 +524,7 @@ fn vnd_rdwr(
     len: usize,
     off: Off,
     ioflg: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     aresid: &mut usize,
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
@@ -650,7 +652,7 @@ pub fn vndioctl(dev: Dev, cmd: u64, addr: &mut [u8], flag: i32, p: &Proc) -> Res
             match sc.sc_vp.get() {
                 Some(vp) if sc.sc_flags.get() & VNF_INITED != 0 => {
                     let mut vattr = Vattr::new();
-                    VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p)?;
+                    VOP_GETATTR(vp, &mut vattr, Cred::real(p.ucred()), p)?;
 
                     strlcpy(&mut vnu.vnu_file, &sc.sc_file.get());
                     vnu.vnu_dev = vattr.va_fsid as Dev;
@@ -800,7 +802,7 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
 
     let error: Errno = 'fail: {
         let mut vattr = Vattr::new();
-        if let Err(e) = VOP_GETATTR(vp, &mut vattr, p.ucred_ptr(), p) {
+        if let Err(e) = VOP_GETATTR(vp, &mut vattr, Cred::real(p.ucred()), p) {
             break 'fail e;
         }
 
@@ -890,7 +892,7 @@ fn vndioctl_set(dev: Dev, sc: &'static VndSoftc, addr: &mut [u8], p: &Proc) -> R
     if vplocked {
         let _ = VOP_UNLOCK(vp);
     }
-    let _ = vn_close(vp, rw, Cred::from_raw(p.ucred_ptr()), Some(p));
+    let _ = vn_close(vp, rw, Cred::real(p.ucred()), Some(p));
     // crfree(cred): the unit's reference, never placed, goes.
     drop(cred);
     Err(error)
@@ -919,7 +921,7 @@ pub fn vndsetcred(p: &Proc, vp: &'static Vnode, _vio: &VndIoctl) -> Result<CredR
         RdwrBuf::Kernel(&mut buf[..]),
         0,
         0,
-        Cred::from_raw(CredRef::as_ptr(&new)),
+        Cred::real(&new),
         None,
         curproc(),
     );
@@ -945,7 +947,7 @@ pub fn vndclear(sc: &VndSoftc) {
     let _ = vn_close(
         vp,
         vndrw(sc),
-        Cred::from_raw(cred.as_ref().map_or(ptr::null(), CredRef::as_ptr)),
+        cred.as_deref().map_or(Cred::NULL, Cred::real),
         p,
     );
     // crfree(cred): the unit's reference goes.
@@ -1343,7 +1345,7 @@ mod tests {
         vndioctl(raw, VNDIOCCLR, &mut data, FREAD, p).expect("VNDIOCCLR");
         vndclose(raw, FREAD, S_IFCHR as i32, Some(p)).expect("close");
         assert_eq!(sc.sc_flags.get(), 0);
-        assert!(sc.sc_vp.get().is_none() && sc.sc_cred.get().is_null());
+        assert!(sc.sc_vp.get().is_none() && sc.sc_cred.cred().is_none());
         assert!(sc.sc_dk.label().is_none());
         assert_eq!(sc.sc_file.get()[0], 0);
         end();

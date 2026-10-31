@@ -107,6 +107,7 @@
 
 use core::mem::offset_of;
 use core::ptr::{self};
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_prot::{groupmember, suser_ucred};
@@ -180,7 +181,7 @@ use crate::sys::vnode::{
     VopLinkArgs, VopLockArgs, VopMkdirArgs, VopMknodArgs, VopOpenArgs, VopPathconfArgs,
     VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs, VopRemoveArgs, VopRenameArgs,
     VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
-    Vops, cred_ref,
+    Vops,
 };
 use crate::sys::vnode::{vaccess, vflushbuf, vput, vrele};
 use crate::sys::vnode::{vn_fsizechk, vn_lock};
@@ -307,16 +308,14 @@ fn rdonly(vp: &Vnode) -> bool {
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
             "msdosfs: {} credential",
-            if ptr::eq(cred, NOCRED) {
+            if cred == NOCRED {
                 "missing"
-            } else if ptr::eq(cred, FSCRED) {
+            } else if cred == FSCRED {
                 "kernel"
             } else {
                 "NULL"
@@ -1184,7 +1183,7 @@ pub fn msdosfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     // everything below the source directory. Also the user must have write permission in the
     // source so as to be able to change "..". We must repeat the call to namei, as the parent
     // directory is unlocked by the call to doscheckpath().
-    let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+    let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
     let _ = VOP_UNLOCK(fvp);
     if vtode(fdvp).de_StartCluster.get() != vtode(tdvp).de_StartCluster.get() {
         newparent = true;
@@ -1585,7 +1584,7 @@ pub fn msdosfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         vput(dvp);
         dvp_held = false;
         // Truncate the directory that is being deleted.
-        let error = detrunc(ip, 0, IO_SYNC, cnp.cn_cred.as_raw(), cn_proc(cnp));
+        let error = detrunc(ip, 0, IO_SYNC, cnp.cn_cred, cn_proc(cnp));
         cache_purge(vp);
         error
     };
@@ -2260,7 +2259,7 @@ mod tests {
         namei(&mut nd)?;
         let vp = nd.ni_vp.expect("a vnode");
         let mut va = Vattr::new();
-        let error = VOP_GETATTR(vp, &mut va, p.ucred(), p);
+        let error = VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p);
         vput(vp);
         error.map(|()| va)
     }
@@ -2311,7 +2310,7 @@ mod tests {
     /// `VOP_SETATTR` with the vnode locked.
     fn setattr(p: &'static Proc, vp: &'static Vnode, va: &mut Vattr) -> Result<(), Errno> {
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_SETATTR(vp, va, p.ucred(), p);
+        let error = VOP_SETATTR(vp, va, Cred::real(p.ucred()), p);
         let _ = VOP_UNLOCK(vp);
         error
     }
@@ -2345,7 +2344,7 @@ mod tests {
             uio_procp: None,
         };
         let mut eof = 0;
-        VOP_READDIR(vp, &mut uio, p.ucred(), &mut eof).expect("readdir");
+        VOP_READDIR(vp, &mut uio, Cred::real(p.ucred()), &mut eof).expect("readdir");
         let used = size - uio.uio_resid;
         let newoff = uio.uio_offset;
         vput(vp);
@@ -2378,7 +2377,7 @@ mod tests {
 
     /// Writes everything back (`msdosfs_sync` with `MNT_WAIT`) and returns the disk as an image.
     fn synced(p: &'static Proc, mp: &'static Mount) -> Image {
-        msdosfs_sync(mp, MNT_WAIT, 0, p.ucred(), p).expect("sync");
+        msdosfs_sync(mp, MNT_WAIT, 0, Cred::real(p.ucred()), p).expect("sync");
         let mut img = Image::new(mkfat::FAT12_1M);
         img.disk = DISK.lock().unwrap_or_else(|e| e.into_inner()).clone();
         img
@@ -2496,7 +2495,10 @@ mod tests {
                 uio_procp: None,
             };
             let mut eof = 0;
-            assert_eq!(VOP_READDIR(vp, &mut uio, p.ucred(), &mut eof), Err(want));
+            assert_eq!(
+                VOP_READDIR(vp, &mut uio, Cred::real(p.ucred()), &mut eof),
+                Err(want)
+            );
         }
         vput(vp);
     }
@@ -2821,9 +2823,12 @@ mod tests {
         other.cr_uid.set(1000);
         other.cr_gid.set(1000);
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        assert_eq!(VOP_ACCESS(vp, VWRITE, &other, p), Err(Errno::EACCES));
-        VOP_ACCESS(vp, crate::sys::vnode::VREAD, &other, p).expect("readable");
-        VOP_ACCESS(vp, VWRITE, p.ucred(), p).expect("root writes");
+        assert_eq!(
+            VOP_ACCESS(vp, VWRITE, Cred::real(&other), p),
+            Err(Errno::EACCES)
+        );
+        VOP_ACCESS(vp, crate::sys::vnode::VREAD, Cred::real(&other), p).expect("readable");
+        VOP_ACCESS(vp, VWRITE, Cred::real(p.ucred()), p).expect("root writes");
         let _ = VOP_UNLOCK(vp);
 
         // the change reached the entry

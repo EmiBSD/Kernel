@@ -124,8 +124,8 @@
 //!   `kernel::proc` (the user's decision of 2026-10-21, shape A: the thread embeds its copy,
 //!   so `p.ucred()` is a reference into the thread with no load and no lock, and no other
 //!   thread reads it, as no other thread reads `p_ucred` in the C).
-//! - The `NOCRED`/`FSCRED` sentinels stay `bsd`'s pointer constants while the VFS passes
-//!   `*const Ucred` (N5).
+//! - The `NOCRED`/`FSCRED` sentinels are `kernel::fs::vops::Cred`'s (N5.5a2c), with NULL and a
+//!   borrowed real credential: the VFS passes that enum, never a `*const Ucred`.
 //! - A credential its holder owns alone and updates in place, which the C embeds in a
 //!   structure and writes through a pointer (the NFS server's per-request `nd_cr`, mapped to
 //!   an export's anonymous ids by `nfsrv_fhtovp` while the request's code holds pointers to
@@ -400,7 +400,7 @@ impl CredRef {
     }
 
     /// The credentials' address, for what prints or compares it as a number (`kinfo_proc`'s
-    /// `p_ucred` slot, the VFS's `*const Ucred` arguments); never dereferenced here.
+    /// `p_ucred` slot, `kinfo_file`'s `f_ucred`); never dereferenced.
     pub fn as_ptr(this: &Self) -> *const Ucred {
         PoolArc::as_ptr(&this.0)
     }

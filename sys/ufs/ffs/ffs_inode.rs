@@ -64,6 +64,7 @@
 //!   the no-quota answers of `ufs_quota_stub.c` without it.
 
 use core::ptr::NonNull;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
@@ -80,7 +81,7 @@ use crate::sys::malloc::{M_TEMP, M_WAITOK};
 use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::NOCRED;
 use crate::sys::vnode::vinvalbuf;
 use crate::sys::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG};
 use crate::ufs::ffs::ffs_alloc::ffs_blkfree;
@@ -176,7 +177,7 @@ const TRIPLE: usize = 2;
 
 /// `ffs_truncate` (`iv_truncate`): truncate the inode `oip` to at most `length` size,
 /// freeing the disk blocks.
-pub fn ffs_truncate(oip: &Inode, length: Off, flags: i32, cred: *const Ucred) -> Result<(), Errno> {
+pub fn ffs_truncate(oip: &Inode, length: Off, flags: i32, cred: Cred<'_>) -> Result<(), Errno> {
     if length < 0 {
         return Err(Errno::EINVAL);
     }

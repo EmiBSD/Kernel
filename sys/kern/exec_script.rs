@@ -172,7 +172,7 @@ pub fn exec_script_makecmds(
     // The names are copied: the recursive check_exec reads the shell's header into ep_hdr.
     let shellname: Vec<u8> = line.shellname.to_vec();
     let shellarg: Option<Vec<u8>> = line.shellarg.map(<[u8]>::to_vec);
-    let cred = p.ucred_ptr();
+    let cred = Cred::real(p.ucred());
 
     // MNT_NOSUID and STRC are already taken care of by check_exec, so we don't need to
     // worry about them now or later.
@@ -243,7 +243,7 @@ pub fn exec_script_makecmds(
 
             // It succeeded. Close the script if we aren't using it any more.
             if epp.ep_flags & EXEC_HASFD == 0 {
-                let _ = vn_close(scriptvp, FREAD, Cred::from_raw(cred), Some(p));
+                let _ = vn_close(scriptvp, FREAD, cred, Some(p));
             }
 
             // The caller's nameidata now describes the shell's lookup; free the old
@@ -307,7 +307,7 @@ fn exec_script_fail(
         // fdrelease() unlocks p->p_fd.
         let _ = fdrelease(p, g, epp.ep_fd);
     } else {
-        let _ = vn_close(scriptvp, FREAD, Cred::from_raw(p.ucred_ptr()), Some(p));
+        let _ = vn_close(scriptvp, FREAD, Cred::real(p.ucred()), Some(p));
     }
 
     namei_pnbuf_put(ndp);

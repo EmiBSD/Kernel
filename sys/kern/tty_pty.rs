@@ -74,6 +74,7 @@
 
 use core::ptr;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fdinsert, fdremove};
 use crate::kern::kern_prot::{crfree, crget};
@@ -97,7 +98,6 @@ use crate::sys::proc::Proc;
 use crate::sys::stat::{ALLPERMS, S_IRUSR, S_IWGRP, S_IWUSR};
 use crate::sys::tty::{PTMGET, Ptmget, TTY_GID, Tty};
 use crate::sys::types::{Dev, major, minor};
-use crate::sys::ucred::CredRef;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::VNOPS;
 use crate::sys::vnode::{REVOKEALL, VA_UTIMES_NULL, VALIASED, VCHR, Vattr};
@@ -212,7 +212,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
 
     // Get us a fresh cred with root privileges.
     let cred = crget();
-    let error = VOP_OPEN(vp, FREAD | FWRITE, CredRef::as_ptr(&cred), p);
+    let error = VOP_OPEN(vp, FREAD | FWRITE, Cred::real(&cred), p);
     if error.is_ok() {
         // update atime/mtime
         let mut vattr = Vattr::new();
@@ -220,7 +220,7 @@ fn ptm_vn_open(ndp: &mut Nameidata<'_>, p: &Proc) -> Result<(), Errno> {
         vattr.va_atime = getnanotime();
         vattr.va_mtime = vattr.va_atime;
         vattr.va_vaflags |= VA_UTIMES_NULL;
-        let _ = VOP_SETATTR(vp, &mut vattr, p.ucred_ptr(), p);
+        let _ = VOP_SETATTR(vp, &mut vattr, Cred::real(p.ucred()), p);
     }
     crfree(cred);
 
@@ -354,7 +354,7 @@ pub fn ptmioctl(_dev: Dev, cmd: u64, data: &mut [u8], _flag: i32, p: &Proc) -> R
             vattr.va_mode = (S_IRUSR | S_IWUSR | S_IWGRP) & ALLPERMS;
             // Get a fake cred to pretend we're root.
             let cred = crget();
-            let error = VOP_SETATTR(svp, &mut vattr, CredRef::as_ptr(&cred), p);
+            let error = VOP_SETATTR(svp, &mut vattr, Cred::real(&cred), p);
             crfree(cred);
             if let Err(e) = error {
                 vput(svp);

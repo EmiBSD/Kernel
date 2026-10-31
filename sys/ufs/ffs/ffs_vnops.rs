@@ -90,7 +90,7 @@ use crate::sys::vnode::VN_KNOTE;
 use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VREG, VopFsyncArgs, VopReadArgs,
-    VopReclaimArgs, VopWriteArgs, Vops, cred_ref,
+    VopReclaimArgs, VopWriteArgs, Vops,
 };
 use crate::sys::vnode::{vnoperm, vwaitforio};
 use crate::ufs::ffs::fs::{blkoff, blksize, lblkno, lblktosize};
@@ -404,8 +404,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     }
     // If we successfully wrote any data, and we are not the superuser we clear the setuid
     // and setgid bits as a precaution against tampering.
-    // SAFETY: the write's credentials are held by its caller (`cred_ref`'s contract).
-    let cred = unsafe { cred_ref(ap.a_cred) };
+    let cred = ap.a_cred.ucred();
     if resid > uio.uio_resid && cred.is_some_and(|c| c.cr_uid.get() != 0) && !vnoperm(vp) {
         ip.dip_set_mode(ip.dip_mode() & !(ISUID | ISGID));
     }

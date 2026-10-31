@@ -109,6 +109,7 @@
 use crate::sys::namei::cn_ucred;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::dev::rnd::arc4random;
 use crate::kassert;
@@ -1235,7 +1236,7 @@ pub fn tmpfs_chtimes(
         if vaflags & VA_UTIMES_NULL == 0 {
             return Err(error);
         }
-        VOP_ACCESS(vp, VWRITE, ptr::from_ref(cred), p)?;
+        VOP_ACCESS(vp, VWRITE, Cred::real(cred), p)?;
     }
 
     if atime.tv_nsec != i64::from(VNOVAL) {

@@ -86,7 +86,6 @@ use crate::kern::subr_prf::panic;
 use crate::sys::buf::Buf;
 use crate::sys::errno::Errno;
 use crate::sys::types::{Mode, Off};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs::MExt2fs;
@@ -397,8 +396,8 @@ impl InodeExt for Inode {
 
 /// `UFS_TRUNCATE(ip, off, flags, cred)`.
 #[allow(non_snake_case)] // the C macro's name
-pub fn UFS_TRUNCATE(ip: &Inode, off: Off, flags: i32, cred: *const Ucred) -> Result<(), Errno> {
-    ip.vtbl().truncate(ip, off, flags, Cred::from_raw(cred))
+pub fn UFS_TRUNCATE(ip: &Inode, off: Off, flags: i32, cred: Cred<'_>) -> Result<(), Errno> {
+    ip.vtbl().truncate(ip, off, flags, cred)
 }
 
 /// `UFS_UPDATE(ip, sync)`.
@@ -409,12 +408,8 @@ pub fn UFS_UPDATE(ip: &Inode, sync: i32) -> Result<(), Errno> {
 
 /// `UFS_INODE_ALLOC(pip, mode, cred, vpp)`.
 #[allow(non_snake_case)] // the C macro's name
-pub fn UFS_INODE_ALLOC(
-    pip: &Inode,
-    mode: Mode,
-    cred: *const Ucred,
-) -> Result<&'static Vnode, Errno> {
-    pip.vtbl().inode_alloc(pip, mode, Cred::from_raw(cred))
+pub fn UFS_INODE_ALLOC(pip: &Inode, mode: Mode, cred: Cred<'_>) -> Result<&'static Vnode, Errno> {
+    pip.vtbl().inode_alloc(pip, mode, cred)
 }
 
 /// `UFS_INODE_FREE(pip, ino, mode)`.
@@ -439,11 +434,11 @@ pub fn UFS_BUF_ALLOC(
     ip: &Inode,
     startoffset: Off,
     size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: i32,
 ) -> Result<&'static Buf, Errno> {
     ip.vtbl()
-        .buf_alloc(ip, startoffset, size, Cred::from_raw(cred), flags)
+        .buf_alloc(ip, startoffset, size, cred, flags)
         .map(lent)
 }
 

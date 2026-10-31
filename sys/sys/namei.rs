@@ -68,7 +68,6 @@
 //! - `nchinit` is called by the kernel's `vfsinit`, as the C's; `kern.nchstats` reads the
 //!   kernel's counters ([`NCHSTATS`]).
 
-use crate::kassert;
 use crate::kern::kern_descrip::VFS_TABLES;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::sys::ucred::Ucred;
@@ -109,13 +108,13 @@ pub fn pathbuf_get() -> Option<PathBuf> {
 /// `cnp->cn_cred` as the C dereferences it (`cnp->cn_cred->cr_uid`): the credential a
 /// lookup always has (`namei` sets it to the thread's `p_ucred`, nfsd to the request's).
 pub fn cn_ucred<'c>(cnp: &'c Componentname<'_>) -> &'c Ucred {
-    let cred = cnp.cn_cred.as_raw();
-    kassert!(!cred.is_null());
-    // SAFETY: LZ's `Componentname::cred`, moved here with the credential's type: `namei` sets
-    // `cn_cred` to the thread's `p_ucred` and nfsd to the request's credential, each held by
-    // its holder for the lookup's duration, so the pointer is a live `Ucred` for the borrow
-    // of `cnp`; NULL is refused above.
-    unsafe { &*cred }
+    match cnp.cn_cred.ucred() {
+        Some(c) => c,
+        None => crate::kern::subr_prf::panic(format_args!(
+            "cn_ucred: no credential ({:?})",
+            cnp.cn_cred
+        )),
+    }
 }
 /* </CODE> */
 

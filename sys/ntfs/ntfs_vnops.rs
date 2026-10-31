@@ -78,6 +78,7 @@
 
 use core::ptr;
 use core::sync::atomic::AtomicI32;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_subr::uiomove;
 use crate::kern::subr_prf::{panic, printf};
@@ -112,7 +113,7 @@ use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     VDIR, VEXEC, VLNK, VREAD, VREG, VWRITE, VopAccessArgs, VopBmapArgs, VopCloseArgs, VopFsyncArgs,
     VopGetattrArgs, VopInactiveArgs, VopLookupArgs, VopOpenArgs, VopPathconfArgs, VopPrintArgs,
-    VopReadArgs, VopReaddirArgs, VopReclaimArgs, VopStrategyArgs, Vops, cred_ref,
+    VopReadArgs, VopReaddirArgs, VopReclaimArgs, VopStrategyArgs, Vops,
 };
 use crate::sys::vnode::{vput, vref};
 
@@ -159,13 +160,11 @@ pub static NTFS_VOPS: Vops = Vops {
 };
 
 /// The credentials a vnode operation was handed.
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
-            "ntfs: credential {:p} is not a real one",
+            "ntfs: credential {:?} is not a real one",
             cred
         )),
     }
@@ -608,7 +607,7 @@ pub fn ntfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let cnp = &mut *ap.a_cnp;
     let lockparent = cnp.cn_flags & LOCKPARENT != 0;
 
-    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc())?;
 
     if cnp.cn_flags & ISLASTCN != 0 && (cnp.cn_nameiop == DELETE || cnp.cn_nameiop == RENAME) {
         return Err(Errno::EROFS);
@@ -1366,7 +1365,7 @@ mod tests {
                 uio_rw: UioRw::UIO_READ,
                 uio_procp: None,
             };
-            VOP_READ(vp, &mut uio, 0, ptr::null()).unwrap();
+            VOP_READ(vp, &mut uio, 0, Cred::NULL).unwrap();
             let n = chunk - uio.uio_resid;
             if n == 0 {
                 return out;
@@ -1394,7 +1393,7 @@ mod tests {
                 uio_procp: None,
             };
             let mut eof = 0;
-            VOP_READDIR(vp, &mut uio, ptr::null(), &mut eof).unwrap();
+            VOP_READDIR(vp, &mut uio, Cred::NULL, &mut eof).unwrap();
             let used = len - uio.uio_resid;
             let mut pos = 0;
             while pos < used {
@@ -1418,7 +1417,7 @@ mod tests {
 
     fn getattr(p: &'static Proc, vp: &'static Vnode) -> Vattr {
         let mut va = Vattr::new();
-        VOP_GETATTR(vp, &mut va, p.ucred(), p).unwrap();
+        VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p).unwrap();
         va
     }
 
@@ -1624,14 +1623,14 @@ mod tests {
         // Writes are refused; others than root get the mount's mode bits.
         let mut cred = p.ucred().clone();
         assert_eq!(
-            VOP_ACCESS(hello, VWRITE, &cred, p).err(),
+            VOP_ACCESS(hello, VWRITE, Cred::real(&cred), p).err(),
             Some(Errno::EROFS)
         );
         cred.cr_uid.set(1000);
-        assert!(VOP_ACCESS(hello, VREAD, &cred, p).is_ok());
+        assert!(VOP_ACCESS(hello, VREAD, Cred::real(&cred), p).is_ok());
         cred.cr_uid.set(2000);
         cred.cr_ngroups.set(0);
-        assert!(VOP_ACCESS(hello, VREAD | VEXEC, &cred, p).is_ok());
+        assert!(VOP_ACCESS(hello, VREAD | VEXEC, Cred::real(&cred), p).is_ok());
 
         vput(hello);
         vput(root);

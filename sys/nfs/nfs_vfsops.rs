@@ -88,6 +88,7 @@
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering::Relaxed;
+use kernel::fs::vops::Cred;
 
 use libkern::{StaticCell, strlcpy};
 
@@ -143,7 +144,7 @@ use crate::sys::socket::SOCK_DGRAM;
 use crate::sys::swap::NETDEV;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Ino, Uid};
-use crate::sys::ucred::{CredRef, Ucred};
+use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNON, VREG, VROOT, Vattr, Vnode};
 use crate::sys::vnode::{
@@ -236,7 +237,7 @@ pub fn nfs_statfs(mp: &'static Mount, sbp: &mut Statfs, p: &Proc) -> Result<(), 
     // Root's credentials, no groups (crget's).
     let cred = crget();
     if v3 && nmp.nm_flag.get() & NFSMNT_GOTFSINFO == 0 {
-        let _ = nfs_fsinfo(nmp, vp, CredRef::as_ptr(&cred), Some(p));
+        let _ = nfs_fsinfo(nmp, vp, Cred::real(&cred), Some(p));
     }
     NFSSTATS.rpccnt[NFSPROC_FSSTAT].fetch_add(1, Relaxed);
     let mut info = NfsmInfo::new();
@@ -247,7 +248,7 @@ pub fn nfs_statfs(mp: &'static Mount, sbp: &mut Statfs, p: &Proc) -> Result<(), 
     nfsm_fhtom(&mut mb, vp, v3);
 
     info.nmi_procp = Some(p);
-    info.nmi_cred = CredRef::as_ptr(&cred);
+    info.nmi_cred = Cred::real(&cred);
     let r = (|| -> Result<(), Errno> {
         let rq = nfs_request(vp, NFSPROC_FSSTAT, &mut info);
         if v3 {
@@ -340,7 +341,7 @@ fn fsinfo_apply(nmp: &NfsMount, fsp: &Nfsv3Fsinfo) {
 pub fn nfs_fsinfo(
     nmp: &NfsMount,
     vp: &'static Vnode,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
     NFSSTATS.rpccnt[NFSPROC_FSINFO].fetch_add(1, Relaxed);
@@ -407,7 +408,7 @@ pub fn nfs_mountroot() -> Result<(), Errno> {
 
     // Get root attributes (for the time).
     let mut attr = Vattr::new();
-    if VOP_GETATTR(vp, &mut attr, procp.ucred_ptr(), procp).is_err() {
+    if VOP_GETATTR(vp, &mut attr, Cred::real(procp.ucred()), procp).is_err() {
         panic(format_args!("nfs_mountroot: getattr for root"));
     }
     inittodr(attr.va_atime.tv_sec);
@@ -447,7 +448,7 @@ pub fn nfs_mountroot() -> Result<(), Errno> {
         nd.sw_vp = Some(vp);
 
         // Find out how large the swap file is.
-        if VOP_GETATTR(vp, &mut attr, procp.ucred_ptr(), procp).is_err() {
+        if VOP_GETATTR(vp, &mut attr, Cred::real(procp.ucred()), procp).is_err() {
             let _ = printf(format_args!("nfs_mountroot: getattr for swap\n"));
         }
         let _swap_blocks = attr.va_size >> DEV_BSHIFT;
@@ -827,7 +828,7 @@ pub fn mountnfs(
     };
     let vp = NFSTOV(np);
     let mut attr = Vattr::new();
-    if let Err(e) = VOP_GETATTR(vp, &mut attr, p.ucred_ptr(), p) {
+    if let Err(e) = VOP_GETATTR(vp, &mut attr, Cred::real(p.ucred()), p) {
         vput(vp);
         return bad(e);
     }
@@ -914,7 +915,7 @@ pub fn nfs_sync(
     mp: &'static Mount,
     waitfor: i32,
     _stall: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
     let mut allerror = Ok(());

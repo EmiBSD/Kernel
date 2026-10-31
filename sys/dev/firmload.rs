@@ -59,7 +59,8 @@
 //!   current, so no driver sees the difference.
 
 use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::ptr::NonNull;
+use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, malloc};
@@ -132,7 +133,7 @@ fn loadfirmware_path(
         return Err(Errno::ENOENT);
     };
 
-    let cred = ptr::from_ref(p.ucred());
+    let cred = Cred::real(p.ucred());
     let mut va = Vattr::new();
     if let Err(e) = VOP_GETATTR(vp, &mut va, cred, p) {
         vput(vp);

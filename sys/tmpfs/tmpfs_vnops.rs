@@ -121,6 +121,7 @@
 
 use crate::sys::namei::cn_ucred;
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
@@ -165,7 +166,7 @@ use crate::sys::vnode::{
     VopKqfilterArgs, VopLinkArgs, VopLockArgs, VopLookupArgs, VopMkdirArgs, VopMknodArgs,
     VopOpenArgs, VopPathconfArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs,
     VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs,
-    VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref,
+    VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops,
 };
 use crate::sys::vnode::{vaccess, vattr_null, vput, vrecycle, vref, vrele};
 use crate::sys::vnode::{vn_fsizechk, vn_lock};
@@ -294,13 +295,11 @@ fn curp() -> &'static Proc {
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
-            "tmpfs: credential {:p} is not a real one",
+            "tmpfs: credential {:?} is not a real one",
             cred
         )),
     }
@@ -365,7 +364,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
 
     let error: Result<(), Errno> = 'out: {
         // Check accessibility of directory.
-        if let Err(e) = VOP_ACCESS(dvp, VEXEC, cred.as_raw(), curp()) {
+        if let Err(e) = VOP_ACCESS(dvp, VEXEC, cred, curp()) {
             break 'out Err(e);
         }
 
@@ -428,7 +427,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                 // creating or renaming an entry and are working on the last component of
                 // the path name.
                 if lastcn && (cnp.cn_nameiop == CREATE || cnp.cn_nameiop == RENAME) {
-                    if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred.as_raw(), curp()) {
+                    if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred, curp()) {
                         break 'out Err(e);
                     }
                     // We are creating an entry in the file system, so save its name for
@@ -449,7 +448,7 @@ pub fn tmpfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
 
             // Check the permissions.
             if lastcn && (cnp.cn_nameiop == DELETE || cnp.cn_nameiop == RENAME) {
-                if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred.as_raw(), curp()) {
+                if let Err(e) = VOP_ACCESS(dvp, VWRITE, cred, curp()) {
                     break 'out Err(e);
                 }
 
@@ -1215,7 +1214,7 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     kassert!(ap.a_tcnp.cn_flags & HASBUF != 0);
 
     let cred = ap.a_fcnp.cn_cred;
-    kassert!(ptr::eq(ap.a_tcnp.cn_cred.as_raw(), cred.as_raw()));
+    kassert!(ap.a_tcnp.cn_cred == cred);
 
     // Check for cross-device rename. Also don't allow renames of mount points.
     if !same(fvp.mount(), tdvp.mount())
@@ -1256,7 +1255,7 @@ pub fn tmpfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     let error = if same(tvp, Some(tdvp)) {
         Err(Errno::EINVAL)
     } else {
-        tmpfs_sane_rename(fdvp, ap.a_fcnp, tdvp, ap.a_tcnp, cred.as_raw(), false)
+        tmpfs_sane_rename(fdvp, ap.a_fcnp, tdvp, ap.a_tcnp, cred, false)
     };
 
     // out: All done, whether with success or failure. Release the directory nodes now, as
@@ -1278,7 +1277,7 @@ fn tmpfs_sane_rename(
     fcnp: &Componentname,
     tdvp: &'static Vnode,
     tcnp: &Componentname,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     posixly_correct: bool,
 ) -> Result<(), Errno> {
     // KASSERT(VOP_ISLOCKED(fdvp) != LK_EXCLUSIVE);
@@ -1464,7 +1463,7 @@ fn tmpfs_sane_rename(
 fn tmpfs_rename_enter(
     mount: &'static Mount,
     tmpfs: &TmpfsMount,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     fdvp: &'static Vnode,
     fdnode: &'static TmpfsNode,
     fcnp: &Componentname,
@@ -1505,7 +1504,7 @@ fn tmpfs_rename_enter(
 fn tmpfs_rename_enter_common(
     mount: &'static Mount,
     _tmpfs: &TmpfsMount,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     dvp: &'static Vnode,
     dnode: &'static TmpfsNode,
     fcnp: &Componentname,
@@ -1607,7 +1606,7 @@ fn tmpfs_rename_enter_common(
 fn tmpfs_rename_enter_separate(
     mount: &'static Mount,
     tmpfs: &TmpfsMount,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     fdvp: &'static Vnode,
     fdnode: &'static TmpfsNode,
     fcnp: &Componentname,
@@ -1802,7 +1801,7 @@ fn tmpfs_rename_genealogy(
 #[allow(clippy::too_many_arguments)] // the C's parameters
 fn tmpfs_rename_lock(
     mount: &'static Mount,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     overlap_error: Errno,
     a_dvp: &'static Vnode,
     a_dnode: &'static TmpfsNode,
@@ -2040,7 +2039,7 @@ fn tmpfs_do_remove(
     dnode: &'static TmpfsNode,
     de: &'static TmpfsDirent,
     vp: &'static Vnode,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
     kassert!(same(dnode.tn_vnode.get(), Some(dvp)));
     kassert!(de.td_node.get().is_some());
@@ -2120,7 +2119,7 @@ fn tmpfs_rename_check_possible(
 ///
 /// Everything must be locked and referenced.
 fn tmpfs_rename_check_permitted(
-    cred: *const Ucred,
+    cred: Cred<'_>,
     fdnode: &'static TmpfsNode,
     fnode: &'static TmpfsNode,
     tdnode: &'static TmpfsNode,
@@ -2191,7 +2190,7 @@ fn tmpfs_remove_check_possible(
 ///
 /// Everything must be locked and referenced.
 fn tmpfs_remove_check_permitted(
-    cred: *const Ucred,
+    cred: Cred<'_>,
     dnode: &'static TmpfsNode,
     node: &'static TmpfsNode,
 ) -> Result<(), Errno> {
@@ -2215,7 +2214,7 @@ fn tmpfs_remove_check_permitted(
 ///
 /// Everything must be locked and referenced.
 fn tmpfs_check_sticky(
-    cred: *const Ucred,
+    cred: Cred<'_>,
     dnode: &'static TmpfsNode,
     node: Option<&'static TmpfsNode>,
 ) -> Result<(), Errno> {
@@ -2459,7 +2458,7 @@ mod tests {
         namei(&mut nd)?;
         let vp = nd.ni_vp.expect("a vnode");
         let mut va = Vattr::new();
-        let error = VOP_GETATTR(vp, &mut va, p.ucred(), p);
+        let error = VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p);
         vput(vp);
         error.map(|()| va)
     }
@@ -2483,7 +2482,7 @@ mod tests {
             uio_procp: None,
         };
         let mut eof = 0;
-        VOP_READDIR(vp, &mut uio, p.ucred(), &mut eof).expect("readdir");
+        VOP_READDIR(vp, &mut uio, Cred::real(p.ucred()), &mut eof).expect("readdir");
         assert_eq!(eof, 1, "one call reads a small directory to its end");
         let used = 4096 - uio.uio_resid;
         vput(vp);
@@ -2505,7 +2504,7 @@ mod tests {
         vattr_null(&mut va);
         va.va_size = size;
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_SETATTR(vp, &mut va, p.ucred(), p);
+        let error = VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p);
         let _ = VOP_UNLOCK(vp);
         error
     }
@@ -2541,7 +2540,10 @@ mod tests {
         vattr_null(&mut va);
         va.va_nlink = 3;
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        assert_eq!(VOP_SETATTR(vp, &mut va, p.ucred(), p), Err(Errno::EINVAL));
+        assert_eq!(
+            VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p),
+            Err(Errno::EINVAL)
+        );
         let _ = VOP_UNLOCK(vp);
 
         // a second open finds the same vnode; O_CREAT on an existing file opens it
@@ -2557,7 +2559,7 @@ mod tests {
         assert_eq!(node.tn_links.get(), 0, "open but nameless");
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
         assert_eq!(
-            VOP_OPEN(vp, FREAD, p.ucred(), p),
+            VOP_OPEN(vp, FREAD, Cred::real(p.ucred()), p),
             Err(Errno::ENOENT),
             "a file without names cannot be opened again"
         );

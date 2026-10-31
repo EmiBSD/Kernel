@@ -53,14 +53,14 @@
 /* <CODE> */
 //! `<ufs/ufs/quota.h>`: the quota interface is the kernel's (`kernel::fs::ufs::ufs::quota`,
 //! N5.5a2): this module keeps LZ's names and signatures for `bsd`'s file systems and the UFS
-//! files still here, over the C's credential pointer and `struct mount`.
+//! files still here, over `struct mount`.
 //!
 //! Upstream: sys/ufs/ufs/quota.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - A charge's credential (`*const Ucred`, NULL, `NOCRED` or `FSCRED`) is the kernel's
-//!   `Option<&Ucred>` through `cred_ref` (its one `unsafe`, moved here from `ufs_quota.rs`,
-//!   until N5.5a2c's `Cred` carries the credential); a release's is `Cred::from_raw`.
+//! - A charge's or a release's credential is the VOP's `Cred` (NULL, `NOCRED`, `FSCRED` or a
+//!   borrowed real one), passed to the kernel as it came (N5.5a2c; a2's `chkcred`, the
+//!   `unsafe` deref it needed, is gone).
 //! - `qsync`, `quotaoff` and `ufs_quotactl` hand the kernel the mount's `struct ufsmount`
 //!   (`vfstoufs`) beside the mount (the kernel's `quota.rs`, its deviations).
 
@@ -71,8 +71,6 @@ use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Uid};
-use crate::sys::ucred::Ucred;
-use crate::sys::vnode::cred_ref;
 use crate::ufs::ufs::inode::Inode;
 use crate::ufs::ufs::ufsmount::vfstoufs;
 pub use kq::{
@@ -82,65 +80,57 @@ pub use kq::{
     ufs_quota_delete,
 };
 
-/// The credential a charge is checked against: `None` for the kernel's (`NOCRED`, `FSCRED`,
-/// NULL).
-fn chkcred<'a>(cred: *const Ucred) -> Option<&'a Ucred> {
-    // SAFETY: the credential of a quota charge is the one of the vnode operation doing the
-    // allocation, held by its caller for the operation's duration (`cred_ref`'s contract).
-    unsafe { cred_ref(cred) }
-}
-
 /// `ufs_quota_alloc_blocks(i, c, cr)`.
-pub fn ufs_quota_alloc_blocks(ip: &Inode, change: Daddr, cred: *const Ucred) -> Result<(), Errno> {
-    kq::ufs_quota_alloc_blocks(ip, change, chkcred(cred))
+pub fn ufs_quota_alloc_blocks(ip: &Inode, change: Daddr, cred: Cred<'_>) -> Result<(), Errno> {
+    kq::ufs_quota_alloc_blocks(ip, change, cred)
 }
 
 /// `ufs_quota_free_blocks(i, c, cr)`.
-pub fn ufs_quota_free_blocks(ip: &Inode, change: Daddr, cred: *const Ucred) -> Result<(), Errno> {
-    kq::ufs_quota_free_blocks(ip, change, Cred::from_raw(cred))
+pub fn ufs_quota_free_blocks(ip: &Inode, change: Daddr, cred: Cred<'_>) -> Result<(), Errno> {
+    kq::ufs_quota_free_blocks(ip, change, cred)
 }
 
 /// `ufs_quota_alloc_inode(i, cr)`.
-pub fn ufs_quota_alloc_inode(ip: &Inode, cred: *const Ucred) -> Result<(), Errno> {
-    kq::ufs_quota_alloc_inode(ip, chkcred(cred))
+pub fn ufs_quota_alloc_inode(ip: &Inode, cred: Cred<'_>) -> Result<(), Errno> {
+    kq::ufs_quota_alloc_inode(ip, cred)
 }
 
 /// `ufs_quota_alloc_blocks2`: charge `change` disk blocks.
 pub fn ufs_quota_alloc_blocks2(
     ip: &Inode,
     change: Daddr,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
-    kq::ufs_quota_alloc_blocks2(ip, change, chkcred(cred), flags)
+    kq::ufs_quota_alloc_blocks2(ip, change, cred, flags)
 }
 
 /// `ufs_quota_free_blocks2`: give back `change` disk blocks.
 pub fn ufs_quota_free_blocks2(
     ip: &Inode,
     change: Daddr,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
-    kq::ufs_quota_free_blocks2(ip, change, Cred::from_raw(cred), flags)
+    kq::ufs_quota_free_blocks2(ip, change, cred, flags)
 }
 
 /// `ufs_quota_alloc_inode2`: charge an inode.
 pub fn ufs_quota_alloc_inode2(
     ip: &Inode,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
-    kq::ufs_quota_alloc_inode2(ip, chkcred(cred), flags)
+    kq::ufs_quota_alloc_inode2(ip, cred, flags)
 }
 
 /// `ufs_quota_free_inode2`: give back an inode.
 pub fn ufs_quota_free_inode2(
     ip: &Inode,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
-    kq::ufs_quota_free_inode2(ip, Cred::from_raw(cred), flags)
+    kq::ufs_quota_free_inode2(ip, cred, flags)
 }
 
 /// `quotaoff`: turn off a quota type on a file system.

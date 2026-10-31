@@ -191,7 +191,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     if dp.dip_mode() & IFMT != IFDIR {
         return Err(Errno::ENOTDIR);
     }
-    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0
@@ -416,7 +416,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         {
             // Access for write is interpreted as allowing creation of files in the
             // directory.
-            VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+            VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
             // Return an indication of where the new directory entry should be put. If we
             // didn't find a slot, then set dp->i_count to 0 indicating that the new slot
             // belongs at the end of the directory. If we found a slot, then the new entry can
@@ -488,7 +488,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     // ndp->ni_dvp), otherwise we go on and lock the inode, being careful with ".".
     if nameiop == DELETE && flags & ISLASTCN != 0 {
         // Write access to directory required to delete files.
-        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
         // Return pointer to current entry in dp->i_offset, and distance past previous entry
         // (if there is a previous entry in this block) in dp->i_count. Save directory inode
         // pointer in ndp->ni_dvp for dirremove().
@@ -528,7 +528,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     // present directory. Must get inode of directory entry to verify it's a regular file, or
     // empty directory.
     if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
-        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
         // Careful about locking second inode. This can only occur if the target is ".".
         if dp.i_number == dp.i_ino.get() {
             return Err(Errno::EISDIR);
@@ -684,7 +684,7 @@ pub fn ufs_direnter(
             &dp,
             i64::from(dp.i_offset.get()),
             DIRBLKSIZ as i32,
-            cr.as_raw(),
+            cr,
             flags,
         )?;
         dp.dip_set_size(dp.i_offset.get() as u64 + DIRBLKSIZ as u64);
@@ -833,7 +833,7 @@ pub fn ufs_direnter(
         if let Some(tvp) = tvp {
             let _ = VOP_UNLOCK(tvp);
         }
-        error = UFS_TRUNCATE(&dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr.as_raw());
+        error = UFS_TRUNCATE(&dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr);
         #[cfg(feature = "ufs_dirhash")]
         if error.is_ok() && dp.i_dirhash.read().is_some() {
             ufsdirhash_dirtrunc(&dp, dp.i_endoff.get());
@@ -955,7 +955,7 @@ const MINDIRSIZ: usize = Dirtemplate::SIZE / 2;
 /// struct direct.
 ///
 /// NB: does not handle corrupted directories.
-pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
+pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: Cred<'_>) -> bool {
     let m = ip.dip_size() as i64;
     let mut dbuf = [0u8; Dirtemplate::SIZE];
     let mut off: i64 = 0;
@@ -967,7 +967,7 @@ pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
             RdwrBuf::Kernel(&mut dbuf[..MINDIRSIZ]),
             off,
             IO_NODELOCKED,
-            Cred::from_raw(cred),
+            cred,
             Some(&mut count),
             curproc(),
         );
@@ -1011,7 +1011,7 @@ pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
 /// `ufs_checkpath`: check if source directory is in the path of the target directory.
 /// Target is supplied locked, source is unlocked. The target is always vput before
 /// returning.
-pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Result<(), Errno> {
+pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: Cred<'_>) -> Result<(), Errno> {
     let mut vp = Some(target.itov());
     let rootino = ROOTINO;
     let error: Result<(), Errno> = 'out: {
@@ -1036,7 +1036,7 @@ pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Resu
                 RdwrBuf::Kernel(&mut dirbuf[..Dirtemplate::SIZE]),
                 0,
                 IO_NODELOCKED,
-                Cred::from_raw(cred),
+                cred,
                 None,
                 curproc(),
             ) {

@@ -69,6 +69,7 @@
 
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_tc::getnanotime;
@@ -85,7 +86,7 @@ use crate::sys::mount::MNT_RDONLY;
 use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::NOCRED;
 use crate::sys::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG, VopInactiveArgs};
 use crate::sys::vnode::{vinvalbuf, vrecycle};
 use crate::ufs::ext2fs::ext2fs::{
@@ -237,12 +238,7 @@ pub fn ext2fs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
 
 /// `ext2fs_truncate`: truncate the inode `oip` to at most `length` size, freeing the disk
 /// blocks.
-pub fn ext2fs_truncate(
-    oip: &Inode,
-    length: Off,
-    flags: i32,
-    cred: *const Ucred,
-) -> Result<(), Errno> {
+pub fn ext2fs_truncate(oip: &Inode, length: Off, flags: i32, cred: Cred<'_>) -> Result<(), Errno> {
     let ovp = oip.itov();
 
     if length < 0 {

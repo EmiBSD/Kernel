@@ -75,16 +75,15 @@
 //!   unchanged.
 //!
 //! ## Deviations
-//! - `a_cred` is the C's `struct ucred *`, a raw pointer, since `NOCRED` and `FSCRED` are
-//!   sentinel values; [`cred_ref`] turns a real one into a reference (the kernel passes it on
-//!   as an opaque `kernel::fs::vops::Cred`).
+//! - `a_cred` is the kernel's `Cred` (N5.5a2c): `NOCRED`, `FSCRED`, NULL or a borrow of a real
+//!   credential its holder keeps for the operation; LZ's `cred_ref` (an `unsafe` deref of the
+//!   C's pointer) is the safe `Cred::ucred`.
 //! - `struct buf *` (`a_bp`) is a `&'static Buf` (`sys/buf.rs`): a busy buffer lent with its
 //!   token parked in it.
 //! - `v_socket` is the member [`VnodeG::v_socket`] (the socket is `bsd`'s), not a variant of
 //!   the kernel's `v_un`; `kinfo_file`'s `v_un` reads it first.
 
 use core::ffi::c_void;
-use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicI64};
 use kernel::file::LockOwner;
 
@@ -100,7 +99,6 @@ use crate::sys::namei::Componentname;
 use crate::sys::proc::{Proc, ProcExt};
 use crate::sys::socketvar::Socket;
 use crate::sys::types::{Daddr, Dev, Register};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
 use crate::sys::uio::Uio;
 use hal::link::Link;
 use kernel::fs::subr;
@@ -234,34 +232,16 @@ pub fn vfs_getvfs(fsid: &crate::sys::mount::Fsid) -> Option<&'static Mount> {
     subr::vfs_getvfs::<BsdProcGlue>(fsid)
 }
 
-/// Flush out and invalidate all buffers associated with a vnode (`kernel::fs::subr`), the
-/// credential the C's pointer.
+/// Flush out and invalidate all buffers associated with a vnode (`kernel::fs::subr`).
 pub fn vinvalbuf(
     vp: &'static Vnode,
     flags: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: Option<&Proc>,
     slpflag: i32,
     slptimeo: u64,
 ) -> Result<(), Errno> {
-    subr::vinvalbuf(vp, flags, Cred::from_raw(cred), p, slpflag, slptimeo)
-}
-
-/// The credentials of a `VOP_*` argument (`a_cred`) when they are real ones: `None` for NULL,
-/// `NOCRED` and `FSCRED`.
-///
-/// # Safety
-///
-/// `cred` is NULL, `NOCRED`, `FSCRED` or a credential its holder keeps alive for `'a`: the
-/// `a_cred` a vnode operation receives qualifies for the operation's duration (the caller
-/// holds the thread's `p_ucred` or the file's `f_cred`).
-pub unsafe fn cred_ref<'a>(cred: *const Ucred) -> Option<&'a Ucred> {
-    if cred.is_null() || ptr::eq(cred, NOCRED) || ptr::eq(cred, FSCRED) {
-        None
-    } else {
-        // SAFETY: the caller's contract.
-        Some(unsafe { &*cred })
-    }
+    subr::vinvalbuf(vp, flags, cred, p, slpflag, slptimeo)
 }
 
 /// `struct vop_generic_args`.
@@ -317,7 +297,7 @@ pub struct VopOpenArgs<'a> {
     /// `a_mode`.
     pub a_mode: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`.
     pub a_p: &'a Proc,
 }
@@ -329,7 +309,7 @@ pub struct VopCloseArgs<'a> {
     /// `a_fflag`.
     pub a_fflag: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`: NULL when no thread closes (a file in a message).
     pub a_p: Option<&'a Proc>,
 }
@@ -341,7 +321,7 @@ pub struct VopAccessArgs<'a> {
     /// `a_mode`.
     pub a_mode: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`.
     pub a_p: &'a Proc,
 }
@@ -353,7 +333,7 @@ pub struct VopGetattrArgs<'a> {
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`.
     pub a_p: &'a Proc,
 }
@@ -365,7 +345,7 @@ pub struct VopSetattrArgs<'a> {
     /// `a_vap`.
     pub a_vap: &'a mut Vattr,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`.
     pub a_p: &'a Proc,
 }
@@ -379,7 +359,7 @@ pub struct VopReadArgs<'a, 'b> {
     /// `a_ioflag`.
     pub a_ioflag: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
 }
 
 /// `struct vop_write_args`.
@@ -391,7 +371,7 @@ pub struct VopWriteArgs<'a, 'b> {
     /// `a_ioflag`.
     pub a_ioflag: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
 }
 
 /// `struct vop_ioctl_args`.
@@ -405,7 +385,7 @@ pub struct VopIoctlArgs<'a> {
     /// `a_fflag`.
     pub a_fflag: i32,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_p`.
     pub a_p: &'a Proc,
 }
@@ -433,7 +413,7 @@ pub struct VopFsyncArgs<'a> {
     /// `a_vp`.
     pub a_vp: &'static Vnode,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_waitfor`.
     pub a_waitfor: i32,
     /// `a_p`.
@@ -519,7 +499,7 @@ pub struct VopReaddirArgs<'a, 'b> {
     /// `a_uio`.
     pub a_uio: &'a mut Uio<'b>,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
     /// `a_eofflag`.
     pub a_eofflag: &'a mut i32,
 }
@@ -531,7 +511,7 @@ pub struct VopReadlinkArgs<'a, 'b> {
     /// `a_uio`.
     pub a_uio: &'a mut Uio<'b>,
     /// `a_cred`.
-    pub a_cred: *const Ucred,
+    pub a_cred: Cred<'a>,
 }
 
 /// `struct vop_abortop_args`.

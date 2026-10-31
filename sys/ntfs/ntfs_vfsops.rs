@@ -104,6 +104,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
+use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::rootvp;
 use crate::kern::kern_malloc::{free, mallocarray};
@@ -335,7 +336,7 @@ pub fn ntfs_mountfs(
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = vinvalbuf(devvp, V_SAVE, p.ucred_ptr(), Some(p), 0, INFSLP);
+    let error = vinvalbuf(devvp, V_SAVE, Cred::real(p.ucred()), Some(p), 0, INFSLP);
     let _ = VOP_UNLOCK(devvp);
     error?;
 
@@ -704,7 +705,7 @@ pub fn ntfs_sync(
     _mp: &'static Mount,
     _waitfor: i32,
     _stall: i32,
-    _cred: *const Ucred,
+    _cred: Cred<'_>,
     _p: &Proc,
 ) -> Result<(), Errno> {
     Ok(())

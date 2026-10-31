@@ -69,6 +69,7 @@
 //!   without it).
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::{panic, uprintf};
@@ -82,7 +83,6 @@ use crate::sys::param::{btodb, clrbit, howmany, isclr, setbit};
 use crate::sys::select::NBBY;
 use crate::sys::syslog::LOG_ERR;
 use crate::sys::types::{Daddr, Mode, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, dtog, dtogd, freespace, fsbtodb, ino_to_cg};
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_FIRSTINO, Ext2fsDinode};
@@ -100,10 +100,8 @@ pub static EXT2GENNUMBER: AtomicU64 = AtomicU64::new(0);
 
 /// The uid of a credential the allocator is handed (`NOCRED` is a caller's bug, which
 /// `DIAGNOSTIC` catches as "missing credential").
-fn cred_uid(cred: *const Ucred, func: &str) -> Uid {
-    // SAFETY: the credentials an allocation receives are held by its caller (`cred_ref`'s
-    // contract).
-    match unsafe { crate::sys::vnode::cred_ref(cred) } {
+fn cred_uid(cred: Cred<'_>, func: &str) -> Uid {
+    match cred.ucred() {
         Some(c) => c.cr_uid.get(),
         None => panic(format_args!("{}: missing credential", func)),
     }
@@ -127,7 +125,7 @@ pub fn ext2fs_alloc(
     ip: &Inode,
     _lbn: u32,
     mut bpref: u32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     bnp: &mut u32,
 ) -> Result<(), Errno> {
     *bnp = 0;
@@ -182,7 +180,7 @@ pub fn ext2fs_alloc(
 pub fn ext2fs_inode_alloc(
     pip: &Inode,
     mode: Mode,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<&'static Vnode, Errno> {
     let pvp = pip.itov();
     let fs = pip.e2fs();

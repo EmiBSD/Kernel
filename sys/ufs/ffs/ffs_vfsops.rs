@@ -114,7 +114,7 @@ use crate::sys::proc::Proc;
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Ino, major};
 use crate::sys::types::{Mode, Off};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{FSCRED, NOCRED};
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{
     FORCECLOSE, IGNORECLEAN, SKIPSYSTEM, V_SAVE, VBLK, VNON, VT_UFS, Vnode, WRITECLOSE,
@@ -174,7 +174,7 @@ pub static FFS_VTBL: FfsVtbl = FfsVtbl;
 
 impl InodeOps<BsdProcGlue> for FfsVtbl {
     fn truncate(&self, ip: &Inode, off: Off, flags: i32, cred: Cred<'_>) -> Result<(), Errno> {
-        ffs_truncate(ip, off, flags, cred.as_raw())
+        ffs_truncate(ip, off, flags, cred)
     }
 
     fn update(&self, ip: &Inode, waitfor: i32) -> Result<(), Errno> {
@@ -187,7 +187,7 @@ impl InodeOps<BsdProcGlue> for FfsVtbl {
         mode: Mode,
         cred: Cred<'_>,
     ) -> Result<&'static Vnode, Errno> {
-        ffs_inode_alloc(pip, mode, cred.as_raw())
+        ffs_inode_alloc(pip, mode, cred)
     }
 
     fn inode_free(&self, pip: &Inode, ino: Ufsino, mode: Mode) -> Result<(), Errno> {
@@ -203,7 +203,7 @@ impl InodeOps<BsdProcGlue> for FfsVtbl {
         flags: i32,
     ) -> Result<IoBuf, Errno> {
         let mut bp = None;
-        ffs_balloc(ip, startoffset, size, cred.as_raw(), flags, Some(&mut bp))?;
+        ffs_balloc(ip, startoffset, size, cred, flags, Some(&mut bp))?;
         match bp {
             Some(bp) => Ok(IoBuf::Lent(bp)),
             None => panic(format_args!("UFS_BUF_ALLOC: no buffer")),
@@ -423,7 +423,7 @@ pub fn ffs_mount(
 
                 if ronly == 0 && mp.flag() & MNT_RDONLY != 0 {
                     // Flush any dirty data
-                    let _ = VFS_SYNC(mp, MNT_WAIT, 0, p.ucred_ptr(), p);
+                    let _ = VFS_SYNC(mp, MNT_WAIT, 0, Cred::real(p.ucred()), p);
 
                     // Get rid of files open for writing.
                     let mut flags = WRITECLOSE;
@@ -439,7 +439,7 @@ pub fn ffs_mount(
                 }
 
                 if error.is_ok() && mp.flag() & MNT_RELOAD != 0 {
-                    error = ffs_reload(mp, ndp.ni_cnd.cn_cred.as_raw(), p);
+                    error = ffs_reload(mp, ndp.ni_cnd.cn_cred, p);
                 }
                 if let Err(e) = error {
                     break 'error_1 Err(e);
@@ -602,7 +602,7 @@ fn ffs_reload_vnode(
     vp: &'static Vnode,
     fs: &Fs,
     p: &Proc,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     devvp: &'static Vnode,
 ) -> Result<(), Errno> {
     // Step 4: invalidate all inactive vnodes.
@@ -666,7 +666,7 @@ fn ffs_reload_vnode(
 ///  4) invalidate all inactive vnodes.
 ///  5) invalidate all cached file data.
 ///  6) re-read inode data for all active vnodes.
-pub fn ffs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Result<(), Errno> {
+pub fn ffs_reload(mountp: &'static Mount, cred: Cred<'_>, p: &Proc) -> Result<(), Errno> {
     if mountp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EINVAL);
     }
@@ -814,7 +814,7 @@ pub const SBTRY: [i32; 4] = SBLOCKSEARCH;
 /// file system dirty when mounting read-write.
 pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
     let dev = devvp.rdev();
-    let cred = p.ucred_ptr();
+    let cred = Cred::real(p.ucred());
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot). Flush
     // out any old buffers remaining from a previous use.
@@ -1194,7 +1194,7 @@ pub fn ffs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     // Flush filesystem metadata.
     let devvp = ump.devvp();
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_FSYNC(devvp, p.ucred_ptr(), MNT_WAIT, p);
+    let error = VOP_FSYNC(devvp, Cred::real(p.ucred()), MNT_WAIT, p);
     let _ = VOP_UNLOCK(devvp);
     error
 }
@@ -1240,7 +1240,7 @@ struct FfsSyncArgs<'a> {
     /// `inflight`.
     inflight: i32,
     /// `cred`.
-    cred: *const Ucred,
+    cred: Cred<'a>,
 }
 
 /// `ffs_sync_vnode`: write back one (modified) inode for `ffs_sync`.
@@ -1298,7 +1298,7 @@ pub fn ffs_sync(
     mp: &'static Mount,
     waitfor: i32,
     stall: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
     let ump = vfstoufs(mp);

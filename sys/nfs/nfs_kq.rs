@@ -73,6 +73,7 @@ use core::cell::Cell;
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_kthread::{kthread_create, kthread_exit};
@@ -213,7 +214,7 @@ pub fn nfs_kqpoll(_arg: *mut c_void) {
             let osize = np.n_size.get();
 
             'next: {
-                if VOP_GETATTR(ke.vp, &mut attr, p.ucred_ptr(), p) == Err(Errno::ESTALE) {
+                if VOP_GETATTR(ke.vp, &mut attr, Cred::real(p.ucred()), p) == Err(Errno::ESTALE) {
                     nfs_invalidate_attrcache(np);
                     VN_KNOTE(ke.vp, NOTE_DELETE);
                     break 'next;
@@ -421,7 +422,7 @@ pub fn nfs_kqwatch(vp: &'static Vnode) -> Result<(), Errno> {
     // Fetch current attributes. It's only needed when the vnode is not watched yet, but we
     // need to do this without lock held. This is likely cheap due to attrcache, so do it now.
     let mut attr = Vattr::new();
-    let _ = VOP_GETATTR(vp, &mut attr, p.ucred_ptr(), p);
+    let _ = VOP_GETATTR(vp, &mut attr, Cred::real(p.ucred()), p);
 
     rw_enter_write(&NFSKEVQ_LOCK);
 

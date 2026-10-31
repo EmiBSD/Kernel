@@ -1080,9 +1080,7 @@ pub fn nfs_request(
     let nmp = r_nmp(rep);
 
     // Get the RPC header with authorization.
-    // SAFETY: the caller puts in `nmi_cred` the credential of the RPC, alive for the call
-    // (`nfsm_subs.rs`).
-    let Some(cred) = (unsafe { infop.nmi_cred.as_ref() }) else {
+    let Some(cred) = infop.nmi_cred.ucred() else {
         panic(format_args!("nfs_request: no credential"));
     };
     crate::nfs::nfs_subs::nfsm_rpchead(rep, cred, RPCAUTH_UNIX);

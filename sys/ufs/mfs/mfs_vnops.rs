@@ -303,6 +303,7 @@ mod tests {
     use crate::sys::buf::{bufq_init, bufq_peek};
     use crate::sys::vnode::VT_MFS;
     use crate::ufs::ffs::ffs_vfsops::tests::{setup, teardown};
+    use kernel::fs::vops::Cred;
 
     /// A leaked mfsnode over `mem` (a leaked buffer), as `mfs_mount` sets one up.
     fn mfsnode_over(mem: &'static mut [u8]) -> &'static Mfsnode {
@@ -451,7 +452,7 @@ mod tests {
                 a_command: 0,
                 a_data: &mut [],
                 a_fflag: 0,
-                a_cred: core::ptr::null(),
+                a_cred: Cred::NULL,
                 a_p: p,
             }),
             Err(Errno::ENOTTY)
@@ -460,7 +461,7 @@ mod tests {
             mfs_open(&mut VopOpenArgs {
                 a_vp: vp,
                 a_mode: 0,
-                a_cred: core::ptr::null(),
+                a_cred: Cred::NULL,
                 a_p: p,
             }),
             Ok(())

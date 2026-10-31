@@ -287,7 +287,7 @@ pub fn vmcmd_map_readvn(p: &Proc, cmd: &mut ExecVmcmd<'_>) -> Result<(), Errno> 
             },
             cmd.ev_offset as i64,
             IO_UNIT,
-            Cred::from_raw(p.ucred_ptr()),
+            Cred::real(p.ucred()),
             None,
             Some(p),
         )?,

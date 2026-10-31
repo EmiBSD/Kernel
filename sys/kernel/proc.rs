@@ -2530,14 +2530,6 @@ impl<G: ProcGlue> Thread<G> {
         &self.cred
     }
 
-    /// The address of the thread's credentials, for `bsd`'s VFS, which passes `struct ucred *`
-    /// (with its `NOCRED`/`FSCRED` sentinels) until N5: valid while the thread is, and changed
-    /// only by the thread itself ([`Thread::refresh_cred`], [`Thread::set_cred`]).
-    #[inline]
-    pub fn ucred_ptr(&self) -> *const Ucred {
-        &raw const self.cred
-    }
-
     /// `crhold(p->p_ucred)`: the reference the thread's copy came from (`falloc`, sockets,
     /// the signal owner, `fork1`).
     pub fn cred_ref(&self) -> CredRef {
