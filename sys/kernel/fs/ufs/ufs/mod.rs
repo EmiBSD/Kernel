@@ -27,6 +27,8 @@ pub mod dir;
 pub mod dirhash;
 pub mod inode;
 pub mod quota;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testufs;
 pub mod ufs_bmap;
 #[cfg(feature = "ufs_dirhash")]
 pub mod ufs_dirhash;

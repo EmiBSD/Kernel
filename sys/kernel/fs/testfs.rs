@@ -242,12 +242,20 @@ std::thread_local! {
     /// The error this thread's next `VOP_STRATEGY` gives its buffer, once
     /// ([`set_strategy_error`]).
     static STRATEGY_ERROR: core::cell::Cell<Option<Errno>> = const { core::cell::Cell::new(None) };
+    /// The block devices' strategy of this thread (`None`: the buffer completes at once).
+    static BDEV_STRATEGY: core::cell::Cell<Option<fn(super::buf::BufRef)>> = const { core::cell::Cell::new(None) };
 }
 
 /// Makes this thread's next `VOP_STRATEGY` complete its buffer with `e` (`B_ERROR`), as a
 /// disk's failed read.
 pub fn set_strategy_error(e: Errno) {
     STRATEGY_ERROR.with(|c| c.set(Some(e)));
+}
+
+/// Gives this thread's block devices the strategy `f` (a disk double that keeps its blocks,
+/// `kernel::fs::ufs::ufs::testufs`), until the next [`setup`].
+pub fn set_bdev_strategy(f: Option<fn(super::buf::BufRef)>) {
+    BDEV_STRATEGY.with(|c| c.set(f));
 }
 
 /// Makes this thread's next `VOP_CREATE` fail with `e`.
@@ -1266,7 +1274,10 @@ impl Devsw<TestGlue> for TestDevsw {
     }
     fn bdev_strategy(&self, bp: IoBuf) {
         if let Some(t) = bp.into_token() {
-            super::bio::biodone(t);
+            match BDEV_STRATEGY.with(core::cell::Cell::get) {
+                Some(f) => f(t),
+                None => super::bio::biodone(t),
+            }
         }
     }
     fn chrtoblk(&self, _dev: Dev) -> Dev {
@@ -1323,6 +1334,7 @@ fn setup_on(g: MutexGuard<'static, ()>) -> MutexGuard<'static, ()> {
     LAST_SYNC_FLAGS.with(|c| c.set(None));
     CREATE_ERROR.with(|c| c.set(None));
     STRATEGY_ERROR.with(|c| c.set(None));
+    BDEV_STRATEGY.with(|c| c.set(None));
     crate::testutil::unveil_done_reset();
     super::init::vfsinit::<TestGlue>(&TEST_CONF, 64, || {});
     super::lockf::lf_init();
@@ -1380,10 +1392,23 @@ pub fn mount_on(covered: &'static Vnode<TestGlue>) -> &'static Mount<TestGlue> {
 /// descriptor table whose current directory is the root), `curproc` of the test thread; for
 /// the tests that look names up. Leaked: the tests' threads live for the run.
 pub fn test_thread() -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
+    thread_on(setup_root().0)
+}
+
+/// [`test_thread`] over [`setup_root_cached`]'s memory and buffer cache, for the tests that
+/// read and write blocks through the cache as their thread (`kernel::fs::ufs::ufs`'s double).
+pub fn test_thread_cached(
+    bytes: usize,
+    bufpages: i64,
+) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
+    thread_on(setup_root_cached(bytes, bufpages).0)
+}
+
+/// The test thread of [`test_thread`] over the tables of the guard `g`.
+fn thread_on(g: MutexGuard<'static, ()>) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
     std::thread_local! {
         static MADE: core::cell::Cell<bool> = const { core::cell::Cell::new(false) };
     }
-    let (g, _mp) = setup_root();
     if !MADE.with(|m| m.replace(true)) {
         crate::proc::procinit::<TestGlue>(64, 64);
         let _ = crate::descrip::filedesc_init::<TestFiles>();

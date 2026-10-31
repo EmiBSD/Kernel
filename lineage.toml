@@ -12285,9 +12285,14 @@ kind = "dropped"
 reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 
 [[extra]]
+rust = "sys/kernel/fs/ufs/ufs/testufs.rs"
+crate = "kernel"
+reason = "N5.5a3: the UFS layer's test double (host tests and benches only, cfg(any(test, feature = doubles))): an InodeOps and UfsFs over a pool of inodes of its own, FFS2 dinodes in a per-thread table and blocks of one DIRBLKSIZ through the buffer cache onto testfs's block device (whose strategy it hooks), so the kernel's ufs_lookup and vnode operations run without bsd's ffs; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/fs/testfs.rs"
 crate = "kernel"
-reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread); N5.4: the namespace grows for the system calls (a tree of names that VOP_CREATE, VOP_MKNOD, VOP_MKDIR, VOP_RMDIR, VOP_REMOVE, VOP_LINK, VOP_SYMLINK and VOP_RENAME change, VOP_READDIR of its records, VOP_PATHCONF, VOP_REVOKE, VFS_VPTOFH, a terminal and a disk node, ufs_lookup's SAVENAME on a creation and a rename's target), the last attributes and mount arguments it saw, one-shot errors (set_create_error, set_open_error, set_mount_error); its setup forgets the buffer cache too (bio_test_reset: getnewvnode reads bcstats.numbufs)"
+reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestFiles with per-thread VFS tables, a fixed tree of nodes each with a RecursiveRwlock as ufs's inode, a device switch that counts its calls) for the fs tests and benches (cfg(any(test, feature = doubles))); no OpenBSD or LZ source; N5.3: a tree of names (/a/c/d, /f, a socket, a long name), looked up as ufs_lookup does over kernel::fs::cache, each node with a LockfSlot, VOP_ACCESS, VOP_OPEN, VOP_SETATTR, VOP_ADVLOCK and VOP_ABORTOP, mounts on a directory (mount_on), a thread with credentials and descriptors (test_thread); N5.4: the namespace grows for the system calls (a tree of names that VOP_CREATE, VOP_MKNOD, VOP_MKDIR, VOP_RMDIR, VOP_REMOVE, VOP_LINK, VOP_SYMLINK and VOP_RENAME change, VOP_READDIR of its records, VOP_PATHCONF, VOP_REVOKE, VFS_VPTOFH, a terminal and a disk node, ufs_lookup's SAVENAME on a creation and a rename's target), the last attributes and mount arguments it saw, one-shot errors (set_create_error, set_open_error, set_mount_error); its setup forgets the buffer cache too (bio_test_reset: getnewvnode reads bcstats.numbufs); N5.5a3: a test thread over page memory and a buffer cache (test_thread_cached) and a block-device strategy hook (set_bdev_strategy) for the UFS double testufs"
 
 [[extra]]
 rust = "sys/kernel/testutil.rs"

@@ -2534,6 +2534,453 @@ mod tests {
     use super::*;
     use crate::fs::testfs::TestGlue;
 
+    use crate::cred::Ucred;
+    use crate::fs::namei::{CREATE, LOCKPARENT, LOOKUP, RENAME, SAVENAME, SAVESTART, WANTPARENT};
+    use crate::fs::subr::vgone;
+    use crate::fs::ufs::ufs::testufs::{self, BSIZE, cn, create, lookup, setup, vattr};
+    use crate::fs::vops::{
+        VFS_ROOT, vop_access, vop_advlock, vop_close, vop_getattr, vop_ioctl, vop_kqfilter,
+        vop_link, vop_lookup, vop_mkdir, vop_open, vop_pathconf, vop_readdir, vop_readlink,
+        vop_remove, vop_rename, vop_rmdir, vop_setattr, vop_symlink,
+    };
+    use crate::uio::Iovec;
+
+    /// A credential of `uid` (group 0), not root's when `uid` is not 0.
+    fn user(uid: u32) -> Ucred {
+        let mut c = Ucred::new();
+        c.cr_uid.set(uid);
+        c
+    }
+
+    #[test]
+    fn create_lookup_and_remove_through_the_table() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        // CREATE of a missing name: EJUSTRETURN with the slot in the root's block (the ".."
+        // entry, 12 bytes in, has DIRBLKSIZ - 24 bytes free), the name saved.
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"f");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+        assert_ne!(c.cn_flags & SAVENAME, 0);
+        let dp = vtoi(root);
+        assert_eq!(
+            (dp.i_offset.get(), dp.i_count.get()),
+            (12, BSIZE as i32 - 12)
+        );
+        let mut va = vattr(VREG, 0o644);
+        crate::fs::vops::vop_create(root, &mut vpp, &mut c, &mut va).unwrap();
+        let vp = vpp.unwrap();
+        let ip = vtoi(vp);
+        assert_eq!(
+            (ip.i_number, ip.dip_nlink(), ip.dip_mode()),
+            (3, 1, IFREG | 0o644)
+        );
+        assert_eq!(ip.dip_uid(), 0);
+        // The inode written before its entry; the entry fits the block's free slot, so the
+        // directory itself needs no UFS_UPDATE (ufs_direnter's i_count != 0 path).
+        assert_eq!(testufs::updates(), 1);
+        drop(ip);
+        vput(vp);
+        // LOOKUP finds it; the entry is the C's bytes (reclen to the block's end).
+        let vp = lookup(p, cred, root, b"f").unwrap();
+        assert_eq!(vtoi(vp).i_number, 3);
+        assert_eq!(dp.i_reclen.get(), (BSIZE - 24) as u32);
+        vput(vp);
+        // DELETE, then the name is gone and the inode unlinked.
+        let mut c = cn(p, cred, DELETE, LOCKPARENT, b"f");
+        let mut vpp = None;
+        vop_lookup(root, &mut vpp, &mut c).unwrap();
+        let vp = vpp.unwrap();
+        // The entry at 24, after "..": i_count is the distance back to the previous entry.
+        assert_eq!((dp.i_offset.get(), dp.i_count.get()), (24, 12));
+        let ip = vtoi(vp);
+        // VOP_REMOVE releases both vnodes.
+        vref(root);
+        vop_remove(root, vp, &mut c).unwrap();
+        assert_eq!((ip.dip_nlink(), ip.i_effnlink.get()), (0, 0));
+        drop(ip);
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        assert_eq!(lookup(p, cred, root, b"f").err(), Some(Errno::ENOENT));
+        // The unlinked inode was freed with its mode at its last reference (ufs_inactive).
+        assert_eq!(testufs::freed(), [(3, IFREG | 0o644)]);
+    }
+
+    #[test]
+    fn dot_dotdot_and_a_file_that_is_not_a_directory() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        // ".": the directory itself, referenced again.
+        let dot = lookup(p, cred, root, b".").unwrap();
+        assert!(core::ptr::eq(dot, root));
+        vrele(dot);
+        let f = create(p, cred, root, b"f").unwrap();
+        // A lookup in a file is ENOTDIR (before the access check).
+        assert_eq!(lookup(p, cred, f, b"x").err(), Some(Errno::ENOTDIR));
+        vput(f);
+        // mkdir "d", then ".." from it: the parent unlocked for the race, and relocked for
+        // LOCKPARENT at the last component.
+        vref(root);
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"d");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+        let mut va = vattr(VDIR, 0o755);
+        vop_mkdir(root, &mut vpp, &mut c, &mut va).unwrap();
+        let d = vpp.unwrap();
+        let mut c = cn(p, cred, LOOKUP, LOCKPARENT | ISDOTDOT, b"..");
+        let mut vpp = None;
+        vop_lookup(d, &mut vpp, &mut c).unwrap();
+        assert!(core::ptr::eq(vpp.unwrap(), root));
+        assert_eq!(c.cn_flags & crate::fs::namei::PDIRUNLOCK, 0);
+        assert!(vtoi(d).i_lock.status() != 0, "d relocked");
+        vput(root);
+        vput(d);
+    }
+
+    #[test]
+    fn mkdir_writes_dot_and_dotdot_and_rmdir_refuses_a_non_empty_directory() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        vref(root);
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"d");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+        let mut va = vattr(VDIR, 0o755);
+        vop_mkdir(root, &mut vpp, &mut c, &mut va).unwrap();
+        let d = vpp.unwrap();
+        let ip = vtoi(d);
+        assert_eq!((ip.dip_nlink(), ip.i_effnlink.get()), (2, 2));
+        assert_eq!(ip.dip_size(), BSIZE as u64);
+        assert_eq!(vtoi(root).dip_nlink(), 3, "the new directory's \"..\"");
+        // Its block: "." and ".." of the template.
+        let mut eof = 0;
+        let mut buf = [0u8; 512];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
+        vop_readdir(d, &mut uio, Cred::real(cred), &mut eof).unwrap();
+        drop(uio);
+        assert_eq!(eof, 1);
+        assert_eq!(&buf[24..26], b".\0");
+        assert_eq!(u64::from_ne_bytes(buf[32..40].try_into().unwrap()), 2);
+        // A file in it, then rmdir is ENOTEMPTY (the file's entry), d still there.
+        let x = create(p, cred, d, b"x").unwrap();
+        vput(x);
+        drop(ip);
+        vput(d);
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        let mut c = cn(p, cred, DELETE, LOCKPARENT, b"d");
+        let mut vpp = None;
+        vop_lookup(root, &mut vpp, &mut c).unwrap();
+        let d = vpp.unwrap();
+        vref(root);
+        assert_eq!(vop_rmdir(root, d, &mut c), Err(Errno::ENOTEMPTY));
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        let d = lookup(p, cred, root, b"d").unwrap();
+        // Remove x, then rmdir succeeds and the parent loses the link.
+        let mut c = cn(p, cred, DELETE, LOCKPARENT, b"x");
+        let mut vpp = None;
+        vop_lookup(d, &mut vpp, &mut c).unwrap();
+        let x = vpp.unwrap();
+        vop_remove(d, x, &mut c).unwrap(); // x and d released
+        let mut c = cn(p, cred, DELETE, LOCKPARENT, b"d");
+        let mut vpp = None;
+        vop_lookup(root, &mut vpp, &mut c).unwrap();
+        let d = vpp.unwrap();
+        vref(root);
+        vop_rmdir(root, d, &mut c).unwrap();
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        assert_eq!(vtoi(root).dip_nlink(), 2);
+        assert_eq!(lookup(p, cred, root, b"d").err(), Some(Errno::ENOENT));
+        vput(root);
+    }
+
+    #[test]
+    fn rename_in_one_directory_moves_the_entry() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        let ino = vtoi(f).i_number;
+        vput(f);
+        // namei's two lookups as rename(2) makes them: the source unlocked, the target's
+        // directory locked.
+        let mut fc = cn(p, cred, DELETE, WANTPARENT | SAVESTART, b"f");
+        let mut fvp = None;
+        vop_lookup(root, &mut fvp, &mut fc).unwrap();
+        let fvp = fvp.unwrap();
+        let _ = vop_unlock(fvp);
+        vref(root);
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        let mut tc = cn(p, cred, RENAME, LOCKPARENT | SAVESTART, b"g");
+        let mut tvp = None;
+        assert_eq!(vop_lookup(root, &mut tvp, &mut tc), Err(Errno::EJUSTRETURN));
+        vref(root);
+        vop_rename(root, fvp, &mut fc, root, None, &mut tc).unwrap();
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        assert_eq!(lookup(p, cred, root, b"f").err(), Some(Errno::ENOENT));
+        let g = lookup(p, cred, root, b"g").unwrap();
+        assert_eq!(vtoi(g).i_number, ino);
+        assert_eq!(vtoi(g).dip_nlink(), 1, "the link count bump undone");
+        vput(g);
+        vput(root);
+    }
+
+    #[test]
+    fn readdir_converts_the_entries_and_reports_the_end() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"file").unwrap();
+        vput(f);
+        let mut eof = 0;
+        let mut buf = [0u8; 512];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
+        vop_readdir(root, &mut uio, Cred::real(cred), &mut eof).unwrap();
+        let off = uio.uio_offset;
+        drop(uio);
+        assert_eq!((eof, off), (1, BSIZE as i64));
+        // Three dirents of 32 bytes: ".", "..", "file" (d_type DIR, DIR, REG).
+        let types: std::vec::Vec<u8> = (0..3).map(|i| buf[i * 32 + 18]).collect();
+        assert_eq!(types, [DT_DIR, DT_DIR, hal::sys::dirent::DT_REG]);
+        assert_eq!(&buf[64 + 24..64 + 28], b"file");
+        assert_eq!(u16::from_ne_bytes([buf[16], buf[17]]), 32);
+        // A request smaller than what is left of the block is EINVAL.
+        let mut small = [0u8; 8];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut small, Some(p));
+        assert_eq!(
+            vop_readdir(root, &mut uio, Cred::real(cred), &mut eof),
+            Err(Errno::EINVAL)
+        );
+        vput(root);
+    }
+
+    #[test]
+    fn symlinks_short_in_the_inode_and_long_in_a_block() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        for (name, target) in [(&b"s"[..], &b"target"[..]), (&b"l"[..], &[b'x'; 200][..])] {
+            let name: &'static [u8] = if name == b"s" { b"s" } else { b"l" };
+            vref(root);
+            let mut c = cn(p, cred, CREATE, LOCKPARENT, name);
+            let mut vpp = None;
+            assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+            let mut va = vattr(VLNK, 0o755);
+            vop_symlink(root, &mut vpp, &mut c, &mut va, target).unwrap();
+            vn_lock(root, LK_EXCLUSIVE).unwrap();
+            let vp = lookup(p, cred, root, name).unwrap();
+            let ip = vtoi(vp);
+            assert_eq!(ip.dip_size(), target.len() as u64);
+            drop(ip);
+            let mut buf = [0u8; 256];
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
+            vop_readlink(vp, &mut uio, Cred::real(cred)).unwrap();
+            let left = uio.uio_resid;
+            drop(uio);
+            assert_eq!(&buf[..256 - left], target);
+            vput(vp);
+        }
+        vput(root);
+    }
+
+    #[test]
+    fn access_and_setattr_keep_the_c_checks_in_order() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        let mut other = user(1000);
+        // vaccess: write by another user of a 0644 file is EACCES; root may.
+        assert_eq!(
+            vop_access(f, VWRITE, Cred::real(&other), p),
+            Err(Errno::EACCES)
+        );
+        vop_access(f, VWRITE, Cred::real(cred), p).unwrap();
+        // Unsettable attributes: EINVAL first.
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_nlink = 5;
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(cred), p),
+            Err(Errno::EINVAL)
+        );
+        // Flags by a non-owner: suser fails, EPERM.
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_flags = 1;
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(&other), p),
+            Err(Errno::EPERM)
+        );
+        // chmod and chown by a non-owner: EPERM.
+        let mut va = vattr(VNON, 0o600);
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(&other), p),
+            Err(Errno::EPERM)
+        );
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_uid = 1000;
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(&other), p),
+            Err(Errno::EPERM)
+        );
+        // Root gives the file away; the new owner may not set the sticky bit on a file
+        // (EFTYPE) nor set-gid for a group it is not in (EPERM), and chown clears set-id.
+        let ip = vtoi(f);
+        ip.dip_set_mode(ip.dip_mode() | ISUID);
+        vop_setattr(f, &mut va, Cred::real(cred), p).unwrap();
+        assert_eq!(ip.dip_uid(), 1000);
+        assert_eq!(ip.dip_mode() & ISUID, ISUID, "root's chown keeps set-uid");
+        let mut va = vattr(VNON, 0o1644);
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(&other), p),
+            Err(Errno::EFTYPE)
+        );
+        let mut va = vattr(VNON, 0o2644);
+        other.cr_gid.set(5);
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(&other), p),
+            Err(Errno::EPERM)
+        );
+        let mut va = vattr(VNON, 0o640);
+        vop_setattr(f, &mut va, Cred::real(&other), p).unwrap();
+        assert_eq!(ip.dip_mode() & ALLPERMS, 0o640);
+        // A size: truncated through the file system; a directory refuses one (EISDIR).
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_size = 0;
+        vop_setattr(f, &mut va, Cred::real(cred), p).unwrap();
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_size = 0;
+        assert_eq!(
+            vop_setattr(root, &mut va, Cred::real(cred), p),
+            Err(Errno::EISDIR)
+        );
+        // getattr copies the inode.
+        let mut va = Vattr::new();
+        vop_getattr(f, &mut va, Cred::real(cred), p).unwrap();
+        assert_eq!((va.va_fileid, va.va_uid, va.va_nlink), (3, 1000, 1));
+        assert_eq!(va.va_blocksize, BSIZE as i64);
+        // An append-only file must be opened for appending.
+        ip.dip_set_flags(APPEND);
+        assert_eq!(vop_open(f, FWRITE, Cred::real(cred), p), Err(Errno::EPERM));
+        vop_open(f, FWRITE | O_APPEND, Cred::real(cred), p).unwrap();
+        ip.dip_set_flags(0);
+        drop(ip);
+        vput(f);
+        vput(root);
+    }
+
+    #[test]
+    fn link_pathconf_advlock_ioctl_kqfilter_and_close() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        // link "h" to f: two links, both names find it.
+        let _ = vop_unlock(f);
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"h");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+        vref(root);
+        vop_link(root, f, &mut c).unwrap();
+        assert_eq!(vtoi(f).dip_nlink(), 2);
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        let h = lookup(p, cred, root, b"h").unwrap();
+        assert!(core::ptr::eq(h, f));
+        let mut r: Register = 0;
+        vop_pathconf(f, _PC_LINK_MAX, &mut r).unwrap();
+        assert_eq!(r, LINK_MAX as Register);
+        vop_pathconf(f, _PC_REC_MIN_XFER_SIZE, &mut r).unwrap();
+        assert_eq!(r, BSIZE as Register);
+        assert_eq!(vop_pathconf(f, 9999, &mut r), Err(Errno::EINVAL));
+        let mut fl = Flock {
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+            l_type: hal::sys::fcntl::F_WRLCK,
+            l_whence: 0,
+        };
+        vop_advlock(f, LockOwner::Table(1), hal::sys::fcntl::F_GETLK, &mut fl, 0).unwrap();
+        assert_eq!(fl.l_type, hal::sys::fcntl::F_UNLCK);
+        let mut data = [0u8; 8];
+        assert_eq!(
+            vop_ioctl(f, 0, &mut data, 0, Cred::real(cred), p),
+            Err(Errno::ENOTTY)
+        );
+        let kn = Knote::<TestGlue>::detached();
+        kn.kn_filter().set(crate::event::EVFILT_PROC);
+        assert_eq!(vop_kqfilter(f, 0, &kn), Err(Errno::EINVAL));
+        // close of a file referenced twice updates its times.
+        vtoi(f).set_flag(IN_ACCESS);
+        vop_close(f, 0, Cred::real(cred), Some(p)).unwrap();
+        assert_eq!(vtoi(f).i_flag.get() & IN_ACCESS, 0);
+        vput(h);
+        // vgone reclaims: the inode leaves the vnode.
+        vgone(f);
+        assert!(f.node_with(|_: &Inode<TestGlue>| ()).is_none());
+        vput(root);
+    }
+
+    #[test]
+    fn mknod_abortop_print_fsync_and_revoke() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        // mknod: the node is made and dropped from the cache (vgone), to be found anew.
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"n");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EJUSTRETURN));
+        let mut va = vattr(VCHR, 0o600);
+        va.va_rdev = hal::sys::types::makedev(1, 3);
+        crate::fs::vops::vop_mknod(root, &mut vpp, &mut c, &mut va).unwrap();
+        assert!(vpp.is_none());
+        let n = lookup(p, cred, root, b"n").unwrap();
+        assert_eq!(n.vtype(), VCHR);
+        assert_eq!(
+            vtoi(n).dip_rdev(),
+            i64::from(hal::sys::types::makedev(1, 3))
+        );
+        vput(n);
+        // A lookup aborted gives its name back.
+        let mut c = cn(p, cred, CREATE, LOCKPARENT, b"m");
+        crate::fs::vops::vop_abortop(root, &mut c).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        crate::fs::vops::vop_print(f).unwrap();
+        crate::fs::vops::vop_fsync(f, Cred::real(cred), hal::sys::mount::MNT_WAIT, p).unwrap();
+        let _ = vop_unlock(f);
+        // revoke: the vnode is cleaned, its inode reclaimed off it.
+        crate::fs::vops::vop_revoke(f, crate::fs::vnode::REVOKEALL).unwrap();
+        assert!(f.node_with(|_: &Inode<TestGlue>| ()).is_none());
+        vput(root);
+    }
+
+    #[test]
+    fn the_spec_table_keeps_the_ufs_slots() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let t = &testufs::TEST_UFS_SPECVOPS;
+        t.access(root, VEXEC, Cred::real(cred), p).unwrap();
+        let mut va = Vattr::new();
+        t.getattr(root, &mut va, Cred::real(cred), p).unwrap();
+        assert_eq!(va.va_fileid, 2);
+        assert!(t.islocked(root) != 0);
+        t.unlock(root).unwrap();
+        t.lock(root, LK_EXCLUSIVE).unwrap();
+        t.print(root).unwrap();
+        t.fsync(root, Cred::real(cred), 0, p).unwrap();
+        let mut vpp = None;
+        let mut c = cn(p, cred, LOOKUP, 0, b"x");
+        assert_eq!(t.lookup(root, &mut vpp, &mut c), Err(Errno::ENOTDIR));
+        let mut r: Register = 0;
+        t.pathconf(root, _PC_LINK_MAX, &mut r).unwrap();
+        assert_eq!(r, LINK_MAX as Register);
+        vput(root);
+    }
+
     #[test]
     fn vnode_filters_record_the_events_asked_for() {
         // EVFILT_VNODE: only the subscribed notes are recorded; revocation ends it.
