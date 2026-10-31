@@ -89,7 +89,7 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
 use super::dinode::{NDADDR, NIADDR};
-use super::inode::{Indir, daddr32_at, daddr64_at, vtoi};
+use super::inode::{Indir, Inode, daddr32_at, daddr64_at, vtoi};
 use super::ufsmount::UM_UFS2;
 use crate::assert::kpanic;
 use crate::fs::bio::{BCSTATS, biowait, brelse, getblk, incore};
@@ -110,16 +110,17 @@ pub fn ufs_bmap<G: ProcGlue>(
     bnp: Option<&mut Daddr>,
     runp: Option<&mut i32>,
 ) -> Result<(), Errno> {
+    let ip = vtoi(vp);
     // Check for underlying vnode requests and ensure that logical to physical mapping is
     // requested.
     if let Some(vpp) = vpp {
-        *vpp = Some(vtoi(vp).i_devvp());
+        *vpp = Some(ip.i_devvp());
     }
     let Some(bnp) = bnp else {
         return Ok(());
     };
 
-    ufs_bmaparray(vp, bn, bnp, None, None, runp)
+    bmaparray(vp, &ip, bn, bnp, None, None, runp)
 }
 
 /// The buffer of an indirect block, from `getblk` (which cannot fail without `slpflag`).
@@ -138,13 +139,26 @@ fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> B
 /// number of blocks that follow it contiguously on the disk.
 pub fn ufs_bmaparray<G: ProcGlue>(
     vp: &'static Vnode<G>,
+    bn: Daddr,
+    bnp: &mut Daddr,
+    ap: Option<&mut [Indir]>,
+    nump: Option<&mut i32>,
+    runp: Option<&mut i32>,
+) -> Result<(), Errno> {
+    bmaparray(vp, &vtoi(vp), bn, bnp, ap, nump, runp)
+}
+
+/// [`ufs_bmaparray`] over the inode `ip` of `vp`, whose handle the caller lends ([`ufs_bmap`]
+/// took it already: one `vtoi` per call, as the C's two are one pointer).
+fn bmaparray<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    ip: &Inode<G>,
     mut bn: Daddr,
     bnp: &mut Daddr,
     ap: Option<&mut [Indir]>,
     nump: Option<&mut i32>,
     mut runp: Option<&mut i32>,
 ) -> Result<(), Errno> {
-    let ip = vtoi(vp);
     let Some(mp) = vp.mount() else {
         kpanic(format_args!("ufs_bmaparray: vnode without a mount"));
     };
