@@ -46,6 +46,9 @@
  *			pipes
  *	fileread	read(2) of 64 KiB of FILE, from its start to its end
  *			(the caller makes it cold: a fresh mount)
+ *	filecreate	open(2) with O_CREAT of a new file in FILE's directory,
+ *			close(2) and unlink(2) of it (after `fileread`, so the
+ *			read stays cold)
  *
  * `cargo xtask bench` runs `bench all` twice per boot: a warm-up pass it
  * discards, then, with the file system mounted again, the pass it records.
@@ -58,6 +61,7 @@
 #include <err.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -70,6 +74,7 @@
 #define FORKEXEC_OPS	800
 #define PIPE_OPS	5000
 #define READ_CHUNK	(64 * 1024)
+#define CREATE_OPS	2000
 
 static const char *self;
 
@@ -236,12 +241,40 @@ bench_fileread(const char *path)
 	free(buf);
 }
 
+static void
+bench_filecreate(const char *path)
+{
+	unsigned long long t0;
+	char name[PATH_MAX], *slash;
+	size_t room;
+	int i, fd;
+
+	if (strlcpy(name, path, sizeof(name)) >= sizeof(name) ||
+	    (slash = strrchr(name, '/')) == NULL)
+		errx(1, "%s: not a path in a directory", path);
+	room = sizeof(name) - (size_t)(slash + 1 - name);
+	if (strlcpy(slash + 1, "bench.create", room) >= room)
+		errx(1, "%s: too long", path);
+	t0 = 0;
+	for (i = 0; i < CREATE_OPS + CREATE_OPS / 10; i++) {
+		if (i == CREATE_OPS / 10)	/* the files before are warm-up */
+			t0 = now_ns();
+		if ((fd = open(name, O_WRONLY | O_CREAT | O_EXCL, 0644)) == -1)
+			err(1, "%s", name);
+		if (close(fd) == -1)
+			err(1, "close %s", name);
+		if (unlink(name) == -1)
+			err(1, "unlink %s", name);
+	}
+	report("filecreate", now_ns() - t0, CREATE_OPS);
+}
+
 static void __dead
 usage(void)
 {
 	fprintf(stderr, "usage: bench all FILE | bench pagefault | "
 	    "bench forkexit | bench forkexec | bench pipe | "
-	    "bench fileread FILE | bench true\n");
+	    "bench fileread FILE | bench filecreate FILE | bench true\n");
 	exit(2);
 }
 
@@ -266,6 +299,7 @@ main(int argc, char *argv[])
 		bench_fork("forkexec", 1, FORKEXEC_OPS);
 		bench_pipe();
 		bench_fileread(argv[2]);
+		bench_filecreate(argv[2]);
 	} else if (strcmp(what, "pagefault") == 0)
 		bench_pagefault();
 	else if (strcmp(what, "forkexit") == 0)
@@ -276,6 +310,8 @@ main(int argc, char *argv[])
 		bench_pipe();
 	else if (strcmp(what, "fileread") == 0 && argc == 3)
 		bench_fileread(argv[2]);
+	else if (strcmp(what, "filecreate") == 0 && argc == 3)
+		bench_filecreate(argv[2]);
 	else
 		usage();
 	return 0;
