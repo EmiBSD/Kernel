@@ -945,27 +945,30 @@ impl<G: ProcGlue> Inode<G> {
     }
 
     /// `f(SHORTLINK(ip))`: the bytes of `di_db` and `di_ib`, where a short symbolic link
-    /// keeps its target, for the duration of `f`: copied out of the dinode and back after
-    /// `f` (the caller holds the vnode's lock, the only writer).
+    /// keeps its target, for the duration of `f`: copied out of the dinode, and back after
+    /// `f` only when `f` changed them (`ufs_readlink` only reads them; a writer holds the
+    /// kernel lock, as every word's).
     pub fn with_shortlink<R>(&self, f: impl FnOnce(&mut [u8]) -> R) -> R {
         let mut buf = [0u8; MAXSYMLINKLEN_UFS2];
+        let mut was = [0u8; MAXSYMLINKLEN_UFS2];
+        let (off, n) = match self.din() {
+            Dinode::Ufs1(_) => (offset_of!(Ufs1Dinode, di_db), MAXSYMLINKLEN_UFS1),
+            Dinode::Ufs2(_) => (offset_of!(Ufs2Dinode, di_db), MAXSYMLINKLEN_UFS2),
+        };
+        let s = &mut buf[..n];
         match self.din() {
-            Dinode::Ufs1(d) => {
-                let off = offset_of!(Ufs1Dinode, di_db);
-                let s = &mut buf[..MAXSYMLINKLEN_UFS1];
-                d.read_bytes(off, s);
-                let r = f(s);
-                d.write_bytes(off, s);
-                r
-            }
-            Dinode::Ufs2(d) => {
-                let off = offset_of!(Ufs2Dinode, di_db);
-                d.read_bytes(off, &mut buf);
-                let r = f(&mut buf);
-                d.write_bytes(off, &buf);
-                r
+            Dinode::Ufs1(d) => d.read_bytes(off, s),
+            Dinode::Ufs2(d) => d.read_bytes(off, s),
+        }
+        was[..n].copy_from_slice(s);
+        let r = f(s);
+        if *s != was[..n] {
+            match self.din() {
+                Dinode::Ufs1(d) => d.write_bytes(off, s),
+                Dinode::Ufs2(d) => d.write_bytes(off, s),
             }
         }
+        r
     }
 
     /// `ip->i_flag |= f`.
@@ -1398,6 +1401,47 @@ mod tests {
             (1, 2, 3, 4)
         );
         assert_eq!((got.ci_clen, got.ci_ralen, got.ci_maxra), (5, 6, 7));
+    }
+
+    #[test]
+    fn the_short_link_is_read_in_place_and_written_back_when_changed() {
+        use hal::intr::IPL_NONE;
+        use hal::pool::{BoxPool, PR_WAITOK};
+
+        use crate::fs::testfs::{TestGlue, setup};
+        use crate::fs::ufs::ufs::ufsmount::UM_UFS2;
+
+        static DINO2: BoxPool<Ufs2Din> = BoxPool::new();
+        let _g = setup();
+        let _ = DINO2.init(IPL_NONE, PR_WAITOK, "dino2pl");
+        let ip: Inode<TestGlue> = Inode::new(InodeInit {
+            fstype: UM_UFS2,
+            ..InodeInit::default()
+        });
+        ip.set_din(Dinode::Ufs2(
+            DINO2.get(PR_WAITOK, || Ufs2Din::new(&din2())).unwrap(),
+        ));
+        // ufs_readlink's use: the bytes of di_db and di_ib, the dinode left as it was.
+        let mut got = [0u8; 16];
+        let n = ip.with_shortlink(|s| {
+            got.copy_from_slice(&s[..16]);
+            s.len()
+        });
+        assert_eq!(n, MAXSYMLINKLEN_UFS2);
+        assert_eq!(got[..8], 101i64.to_ne_bytes());
+        assert_eq!(got[8..], 102i64.to_ne_bytes());
+        assert_eq!(ip.din2(), din2());
+        // ufs_symlink's: the target written over them, the members around them kept.
+        ip.with_shortlink(|s| {
+            s.fill(0);
+            s[..5].copy_from_slice(b"/tmp/");
+        });
+        let d = ip.din2();
+        assert_eq!(d.di_db[0].to_ne_bytes()[..5], *b"/tmp/");
+        assert_eq!(d.di_db[1..], [0; NDADDR - 1]);
+        assert_eq!(d.di_ib, [0; NIADDR]);
+        assert_eq!(d.di_extb, [13, 14]);
+        assert_eq!(d.di_spare, [131, 132, 133]);
     }
 }
 /* </TESTS> */
