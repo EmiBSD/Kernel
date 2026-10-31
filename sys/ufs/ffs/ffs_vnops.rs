@@ -472,7 +472,10 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `ffs_reclaim` (`vop_reclaim`): reclaim an inode so that it can be used for other
-/// purposes.
+/// purposes. No table names it since N5.5a3: `FFS_VOPS` and `FFS_SPECVOPS` are the kernel's
+/// composed tables, whose `reclaim` is this body. It stays until ffs moves (N5.5b): this
+/// module is `adapted`, which may not lose an LZ item (`lz check` takes no `[[module.fn]]`
+/// row on an adapted module), so the kernel's ffs records its end.
 pub fn ffs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 

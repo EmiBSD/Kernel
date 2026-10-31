@@ -89,8 +89,11 @@
 //!   [`UfsVnops<G, F>`] and [`UfsSpecVnops<G, F>`] implement `Vnops<G>` with the UFS slots
 //!   calling the functions of this module, the generic slots the kernel's `vop_generic_*`
 //!   and `spec_*`, and the three slots that are the file system's own (`read`, `write`,
-//!   `fsync`) and its `reclaim`'s free calling `F:` [`UfsFs`] (the residue of the C's table:
-//!   decision 46's written reason, `bridges.toml`'s row while ffs is `bsd`'s). `bsd`'s
+//!   `fsync`) calling `F:` [`UfsFs`] (the residue of the C's table: decision 46's written
+//!   reason, `bridges.toml`'s row while ffs is `bsd`'s). `reclaim` is `ffs_reclaim`'s body,
+//!   written in the table (`ufs_reclaim`, then the vnode's node taken: the dinode's and the
+//!   inode's frees are their handles' drops), since it needs nothing of ffs's types (`bsd`'s
+//!   `ffs_reclaim`, which no table names now, waits for ffs's move, N5.5b). `bsd`'s
 //!   `FFS_VOPS` and `FFS_SPECVOPS` are statics of these types.
 //! - The knote hook is the vnode itself (`KnHook::Vnode`, `Knote::set_hook_vnode`): LZ's
 //!   `kn_hook` address and its `unsafe` deref (`kn_vnode`) are gone; the three filters are
@@ -215,9 +218,10 @@ impl<G: ProcGlue> UfsFiltops<G> {
 }
 
 /// The three operations of `ffs_vops` and `ffs_specvops` that are the file system's own
-/// (`ffs_read`, `ffs_write`, `ffs_fsync`) and the free of its `reclaim`: the residue of the
-/// C's table that the UFS layer does not provide (decision 46's written reason; `bsd`'s ffs
-/// implements it until N5.5b, `bridges.toml`).
+/// (`ffs_read`, `ffs_write`, `ffs_fsync`): the residue of the C's table that the UFS layer
+/// does not provide (decision 46's written reason; `bsd`'s ffs implements it until N5.5b,
+/// `bridges.toml`). `ffs_reclaim`, ffs's fourth, needs nothing of ffs's types and is the
+/// tables' own `reclaim`.
 pub trait UfsFs<G: ProcGlue>: Sync + 'static {
     /// `vop_read` of a file, directory or symbolic link.
     fn read(
