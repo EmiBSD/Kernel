@@ -6,5 +6,5 @@ stays short (its readers cut it at 24 KB): new lessons go in the topic files.
 
 - [tooling](tooling.md) — Worktree sandbox, git, shell, clippy, fmt, lz check, lineage.toml, bridges.toml, xtask, benches, builds (178 lessons)
 - [hal-machine](hal-machine.md) — hal, unsafe and SAFETY, arm64/amd64 machine code, pmaps, boot, asm, the runtime primitives (57 lessons)
-- [host-tests](host-tests.md) — Host tests and doubles: kernel::testutil, setup_real_memory, flakes, parallel tests (59 lessons)
+- [host-tests](host-tests.md) — Host tests and doubles: kernel::testutil, setup_real_memory, flakes, parallel tests (60 lessons)
 - [design](design.md) — Rust and ownership idioms of the redesign: witnesses, guards, intrusive lists, cells, pools (105 lessons)
