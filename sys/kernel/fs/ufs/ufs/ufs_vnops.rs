@@ -2992,6 +2992,104 @@ mod tests {
     }
 
     #[test]
+    fn a_sticky_directory_keeps_others_from_removing_and_renaming_over_its_files() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let user = user(1000);
+        let root = VFS_ROOT(mp).unwrap();
+        vtoi(root).dip_set_mode(IFDIR | 0o1777);
+        // b is root's, a the user's.
+        vput(create(p, cred, root, b"b").unwrap());
+        let a = create(p, &user, root, b"a").unwrap();
+        assert_eq!(vtoi(a).dip_uid(), 1000);
+        vput(a);
+        // DELETE of root's b by the user: EPERM (ufs_lookup.c's ISVTX test), after the
+        // directory's write access passed.
+        let mut c = cn(p, &user, DELETE, LOCKPARENT, b"b");
+        let mut vpp = None;
+        assert_eq!(vop_lookup(root, &mut vpp, &mut c), Err(Errno::EPERM));
+        assert!(vpp.is_none());
+        // Its own a it may delete (the lookup answers it).
+        let mut c = cn(p, &user, DELETE, LOCKPARENT, b"a");
+        vop_lookup(root, &mut vpp, &mut c).unwrap();
+        vput(vpp.take().unwrap());
+        // rename(a, b) by the user: the target is root's in a sticky directory, EPERM; both
+        // names stay.
+        let mut fc = cn(p, &user, DELETE, WANTPARENT | SAVESTART, b"a");
+        let mut fvp = None;
+        vop_lookup(root, &mut fvp, &mut fc).unwrap();
+        let fvp = fvp.unwrap();
+        let _ = vop_unlock(fvp);
+        vref(root);
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        let mut tc = cn(p, &user, RENAME, LOCKPARENT | SAVESTART, b"b");
+        let mut tvp = None;
+        vop_lookup(root, &mut tvp, &mut tc).unwrap();
+        vref(root);
+        assert_eq!(
+            vop_rename(root, fvp, &mut fc, root, tvp, &mut tc),
+            Err(Errno::EPERM)
+        );
+        vn_lock(root, LK_EXCLUSIVE).unwrap();
+        vput(lookup(p, cred, root, b"a").unwrap());
+        let b = lookup(p, cred, root, b"b").unwrap();
+        assert_eq!(vtoi(b).dip_uid(), 0);
+        vput(b);
+        vput(root);
+    }
+
+    #[test]
+    fn a_read_only_mount_and_the_immutable_flags_refuse_writes() {
+        let (_g, p, mp) = setup();
+        let cred = p.ucred();
+        let root = VFS_ROOT(mp).unwrap();
+        let f = create(p, cred, root, b"f").unwrap();
+        let ip = vtoi(f);
+        // IMMUTABLE: nobody writes it (EPERM), even root.
+        ip.dip_set_flags(IMMUTABLE);
+        assert_eq!(
+            vop_access(f, VWRITE, Cred::real(cred), p),
+            Err(Errno::EPERM)
+        );
+        ip.dip_set_flags(0);
+        // chflags of a system-immutable file under securelevel > 0: EPERM, even root.
+        ip.dip_set_flags(SF_IMMUTABLE);
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_flags = 0;
+        SECURELEVEL.store(1, Ordering::Relaxed);
+        let r = vop_setattr(f, &mut va, Cred::real(cred), p);
+        SECURELEVEL.store(0, Ordering::Relaxed);
+        assert_eq!(r, Err(Errno::EPERM));
+        assert_eq!(ip.dip_flags(), SF_IMMUTABLE);
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_flags = 0;
+        vop_setattr(f, &mut va, Cred::real(cred), p).unwrap();
+        assert_eq!(ip.dip_flags(), 0);
+        // A read-only mount: write access, flags and mode are EROFS; read access is not.
+        mp.flag_set(MNT_RDONLY);
+        assert_eq!(
+            vop_access(f, VWRITE, Cred::real(cred), p),
+            Err(Errno::EROFS)
+        );
+        vop_access(f, crate::fs::vnode::VREAD, Cred::real(cred), p).unwrap();
+        let mut va = vattr(VNON, VNOVAL as Mode);
+        va.va_flags = 0;
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(cred), p),
+            Err(Errno::EROFS)
+        );
+        let mut va = vattr(VNON, 0o600);
+        assert_eq!(
+            vop_setattr(f, &mut va, Cred::real(cred), p),
+            Err(Errno::EROFS)
+        );
+        mp.flag_clr(MNT_RDONLY);
+        drop(ip);
+        vput(f);
+        vput(root);
+    }
+
+    #[test]
     fn the_spec_table_keeps_the_ufs_slots() {
         let (_g, p, mp) = setup();
         let cred = p.ucred();
