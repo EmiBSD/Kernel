@@ -433,6 +433,7 @@ impl FileGlue for BenchFiles {
     type UnveilMatch = ();
     type InodeG = ();
     type UfsmountG = ();
+    type MountG = ();
     type InodeHash = InodeHashLink;
     type DqHash = DqHashLink;
     type DqFree = DqFreeLink;
