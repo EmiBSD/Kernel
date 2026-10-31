@@ -87,6 +87,7 @@
 use core::mem::offset_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+use hal::malloc::MArc;
 use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::{rootvp, set_rootvp, set_swapdev_vp};
@@ -150,7 +151,7 @@ use crate::ufs::ufs::quota::ufs_quotactl;
 use crate::ufs::ufs::ufs_ihash::{ufs_ihashget, ufs_ihashins};
 use crate::ufs::ufs::ufs_vfsops::{ufs_check_export, ufs_init, ufs_root, ufs_start};
 use crate::ufs::ufs::ufsmount::UfsmountExt;
-use crate::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, vfstoufs};
+use crate::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, UfsmountRef, vfstoufs};
 
 /// The super block members `e2fs_sbfill` computes from.
 struct SbScalars {
@@ -287,15 +288,14 @@ pub fn ext2fs_mount(
     p: &Proc,
 ) -> Result<(), Errno> {
     let args = UfsArgs::from_bytes(data);
-    let mut ump: Option<&'static Ufsmount> = None;
+    let mut ump: Option<UfsmountRef> = None;
     let mut fname = [0u8; MNAMELEN];
     let mut fspec = [0u8; MNAMELEN];
 
     // If updating, check whether changing from read-only to read/write; if there is no
     // device name, that's all we do.
     if mp.flag() & MNT_UPDATE != 0 {
-        let u = vfstoufs(mp);
-        ump = Some(u);
+        let u: &UfsmountRef = ump.insert(vfstoufs(mp));
         let fs = u.e2fs();
         if fs.e2fs_ronly.get() == 0 && mp.flag() & MNT_RDONLY != 0 {
             let mut flags = WRITECLOSE;
@@ -328,7 +328,7 @@ pub fn ext2fs_mount(
         match args {
             // Process export requests.
             Some(a) if a.fspec == 0 => {
-                return vfs_export(mp, &u.g.um_export, &a.export_info);
+                return vfs_export(mp, &mp.g.export, &a.export_info);
             }
             None => return Ok(()), // success
             Some(_) => {}
@@ -364,7 +364,7 @@ pub fn ext2fs_mount(
                 break 'error_devvp e;
             }
         } else {
-            let Some(u) = ump else {
+            let Some(u) = &ump else {
                 panic(format_args!("ext2fs_mount: update without ufsmount"));
             };
             if !ptr::eq(devvp, u.devvp()) {
@@ -399,7 +399,7 @@ pub fn ext2fs_mount(
                     Str(&mp.stat().f_mntfromname)
                 );
             }
-            let _ = ext2fs_cgupdate(u, MNT_WAIT);
+            let _ = ext2fs_cgupdate(&u, MNT_WAIT);
         }
 
         return Ok(());
@@ -651,7 +651,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
     VOP_OPEN(devvp, omode, FSCRED, p)?;
 
     let bp: Option<&'static Buf>;
-    let mut ump: Option<&'static Ufsmount> = None;
+    let mut ump: Option<UfsmountRef> = None;
 
     let error: Errno = 'out: {
         // Read the superblock from disk.
@@ -667,15 +667,9 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
             break 'out e;
         }
 
-        let Some(um) = malloc(size_of::<Ufsmount>(), M_UFSMNT, M_WAITOK | M_ZERO) else {
-            panic(format_args!("ext2fs_mountfs: no memory"));
-        };
-        let um = um.cast::<Ufsmount>();
-        // SAFETY: a fresh allocation of a `Ufsmount`'s size from malloc, aligned for it.
-        unsafe { ptr::write(um.as_ptr(), Ufsmount::new()) };
-        // SAFETY: just initialised; freed only by ext2fs_unmount or the error path below.
-        let u: &'static Ufsmount = unsafe { &*um.as_ptr() };
-        ump = Some(u);
+        let u: &UfsmountRef = ump.insert(Ufsmount::alloc());
+        // The C's zeroed structure starts its export list empty (`um_export`, the mount's).
+        mp.g.export.clear();
         let Some(fsmem) = malloc(size_of::<MExt2fs>(), M_UFSMNT, M_WAITOK | M_ZERO) else {
             panic(format_args!("ext2fs_mountfs: no memory"));
         };
@@ -704,7 +698,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
             fs.e2fs_fmod.set(1);
         }
 
-        mp.set_data(um.as_ptr().cast());
+        mp.set_node(MArc::erase(u.clone()));
         mp.with_stat(|sp| {
             sp.f_fsid.val[0] = dev;
             sp.f_fsid.val[1] = mp.vfc().vfc_typenum;
@@ -734,8 +728,9 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
         if let Some(fs) = u.g.um_e2fs.get() {
             free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
         }
-        free(NonNull::from(u).cast(), M_UFSMNT, size_of::<Ufsmount>());
-        mp.set_data(ptr::null_mut());
+        // `mp->mnt_data = NULL`; the last handle, `u`, frees the structure.
+        drop(mp.take_node());
+        drop(u);
     }
     Err(error)
 }
@@ -752,11 +747,11 @@ pub fn ext2fs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
     let gdescs_space = fs.e2fs_ngdb.get() as usize * fs.e2fs_bsize.get() as usize;
 
     if fs.e2fs_ronly.get() == 0
-        && ext2fs_cgupdate(ump, MNT_WAIT).is_ok()
+        && ext2fs_cgupdate(&ump, MNT_WAIT).is_ok()
         && fs.e2fs_state() & E2FS_ERRORS == 0
     {
         fs.set_e2fs_state(E2FS_ISCLEAN);
-        let _ = ext2fs_sbupdate(ump, MNT_WAIT);
+        let _ = ext2fs_sbupdate(&ump, MNT_WAIT);
     }
 
     let devvp = ump.devvp();
@@ -775,8 +770,9 @@ pub fn ext2fs_unmount(mp: &'static Mount, mntflags: i32, p: &Proc) -> Result<(),
         free(gd, M_UFSMNT, gdescs_space);
     }
     free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
-    free(NonNull::from(ump).cast(), M_UFSMNT, size_of::<Ufsmount>());
-    mp.set_data(ptr::null_mut());
+    // `free(ump); mp->mnt_data = NULL`: the mount's handle goes; the inodes' went with
+    // `vflush`, so this call's, dropped on return, is the last and frees the structure.
+    drop(mp.take_node());
     mp.set_flag(mp.flag() & !MNT_LOCAL);
     Ok(())
 }
@@ -946,7 +942,7 @@ pub fn ext2fs_sync(
     if fs.e2fs_fmod.get() != 0 {
         fs.e2fs_fmod.set(0);
         fs.set_e2fs_wtime(gettime() as u32);
-        if let Err(e) = ext2fs_cgupdate(ump, waitfor) {
+        if let Err(e) = ext2fs_cgupdate(&ump, waitfor) {
             allerror = Err(e);
         }
     }
@@ -982,7 +978,7 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
             Inode::new(crate::ufs::ufs::inode::InodeInit {
                 vnode: Some(vp),
                 mount: Some(mp),
-                ump: Some(ump),
+                ump: Some(ump.clone()),
                 devvp: Some(ump.devvp()),
                 dev,
                 number: ino,

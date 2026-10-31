@@ -227,7 +227,7 @@ impl FileGlue for BsdFileGlue {
     type UfsmountG = crate::ufs::ufs::ufsmount::BsdUfsmountG;
     #[cfg(not(feature = "ffs"))]
     type UfsmountG = ();
-    type MountG = ();
+    type MountG = crate::sys::mount::BsdMountG;
     type InodeHash = InodeHashLink;
     type DqHash = DqHashLink;
     type DqFree = DqFreeLink;

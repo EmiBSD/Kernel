@@ -79,9 +79,9 @@
 //!   (`i_e2din`) is the glue member's too: the kernel's [`Dinode`] holds the FFS dinodes only,
 //!   and a `DIP` of an ext2fs inode is `panic(9)` (the C's `DIP` reads FFS members there;
 //!   nothing calls it so).
-//! - `i_ump` is [`Inode::ump`], the mount's `struct ufsmount` as the file system's `vget` lends
-//!   it (`bsd`'s `vfstoufs`, a `&'static` the unmount's `vflush` ends: no inode, and so no
-//!   [`InodeRef`], outlives it; docs/SCAFFOLDING.md), beside [`Inode::mount`] and the copies
+//! - `i_ump` is [`Inode::ump`], the inode's counted handle on the mount's `struct ufsmount`
+//!   (`vfstoufs` of the file system's `vget`, N5.5b0: an `hal::malloc::MArc` cloned out of
+//!   the mount's typed slot, dropped with the inode), beside [`Inode::mount`] and the copies
 //!   of the words the UFS layer reads on every block (`um_fstype`, `um_nindir`,
 //!   `um_bptrtodb`, `um_seqinc`), written once by `vget`, which never change after the mount;
 //!   `i_devvp` (the C's macro for `i_ump->um_devvp`) is [`Inode::i_devvp`].
@@ -161,7 +161,7 @@ use super::dinode::{
 use super::dirhash::Dirhash;
 use super::quota::MAXQUOTAS;
 use super::ufs_quota::Dquot;
-use super::ufsmount::{UM_UFS1, Ufsmount};
+use super::ufsmount::{UM_UFS1, Ufsmount, UfsmountRef};
 use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
@@ -568,8 +568,8 @@ pub struct InodeInit<G: ProcGlue> {
     pub vnode: Option<&'static Vnode<G>>,
     /// `i_ump->um_mountp`.
     pub mount: Option<&'static Mount<G>>,
-    /// `i_ump`.
-    pub ump: Option<&'static Ufsmount<G>>,
+    /// `i_ump`: the inode's handle on the mount's UFS structure (`vfstoufs` cloned).
+    pub ump: Option<UfsmountRef<G>>,
     /// `i_devvp` (`i_ump->um_devvp`).
     pub devvp: Option<&'static Vnode<G>>,
     /// `i_dev`.
@@ -626,9 +626,9 @@ pub struct Inode<G: ProcGlue> {
     pub i_vnode: Link<Vnode<G>>,
     /// `i_ump->um_mountp`.
     mount: Option<&'static Mount<G>>,
-    /// `i_ump`: the mount's UFS structure (lent by the file system's `vget` for the inode's
-    /// life: every inode of a mount is reclaimed before its unmount frees the structure).
-    ump: Option<&'static Ufsmount<G>>,
+    /// `i_ump`: the mount's UFS structure, a counted handle held for the inode's life (the
+    /// last handle, the mount's or an inode's, frees the structure).
+    ump: Option<UfsmountRef<G>>,
     /// `i_devvp`: the mount's device vnode.
     devvp: Option<&'static Vnode<G>>,
     /// `i_flag`: flags, see below.
@@ -764,8 +764,8 @@ impl<G: ProcGlue> Inode<G> {
     }
 
     /// `ip->i_ump`: the mount's UFS structure, which every inode of a mounted UFS has.
-    pub fn ump(&self) -> &'static Ufsmount<G> {
-        match self.ump {
+    pub fn ump(&self) -> &Ufsmount<G> {
+        match &self.ump {
             Some(u) => u,
             None => kpanic(format_args!("inode {self:p}: no ufsmount")),
         }

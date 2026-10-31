@@ -522,7 +522,7 @@ mod tests {
             Err(Errno::EINVAL)
         );
         assert_eq!(MFS_MINOR.load(Ordering::Relaxed), minor + 1);
-        assert!(mp.data().is_null());
+        assert!(!mp.has_node(), "no UFS structure left in the mount's slot");
         teardown();
     }
 

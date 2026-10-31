@@ -33,12 +33,13 @@
 //! (inode 2, `.` and `..`).
 
 use core::cell::{Cell, RefCell};
-use std::boxed::Box;
+
 use std::collections::HashMap;
 use std::sync::MutexGuard;
 use std::vec::Vec;
 
 use hal::intr::IPL_NONE;
+use hal::malloc::MArc;
 use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
@@ -49,7 +50,7 @@ use super::dir::DIRBLKSIZ;
 use super::inode::{Dinode, Inode, InodeInit, InodeOps, Ufs2Din, vtoi};
 use super::ufs_ihash::{ufs_ihashget, ufs_ihashinit, ufs_ihashins};
 use super::ufs_vnops::{MASTERTEMPLATE, UfsFs, UfsSpecVnops, UfsVnops};
-use super::ufsmount::{UM_UFS2, Ufsmount};
+use super::ufsmount::{UM_UFS2, Ufsmount, vfstoufs};
 use crate::file::FileGlue;
 use crate::fs::bio::{biodone, bread, brelse, bwrite, getblk};
 use crate::fs::buf::{B_CLRBUF, B_READ, BufRef};
@@ -94,13 +95,11 @@ static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
 /// `ffs_dinode2_pool`.
 static DINO2: BoxPool<Ufs2Din> = BoxPool::new();
 
-/// The mount's device vnode and its UFS structure.
+/// The mount's device vnode (its UFS structure is in the mount's typed slot, `vfstoufs`).
 #[derive(Clone, Copy)]
 struct Fsys {
     /// `um_devvp`.
     devvp: &'static Vnode<TestGlue>,
-    /// The mount's UFS structure.
-    ump: &'static Ufsmount<TestGlue>,
 }
 
 std::thread_local! {
@@ -194,9 +193,11 @@ fn mount() -> &'static Mount<TestGlue> {
         st.f_iosize = BSIZE as u32;
         st.f_bsize = BSIZE as u32;
     });
-    let ump: &'static Ufsmount<TestGlue> = Box::leak(Box::new(Ufsmount::new()));
+    // ffs_mountfs's structure, hung from the mount's slot.
+    let ump = Ufsmount::<TestGlue>::alloc();
     ump.um_maxsymlinklen.set(120);
-    FSYS.with(|f| f.set(Some(Fsys { devvp, ump })));
+    mp.set_node(MArc::erase(ump));
+    FSYS.with(|f| f.set(Some(Fsys { devvp })));
 
     // The root directory: "." and ".." of inode 2 in disk block 100.
     let mut t = MASTERTEMPLATE;
@@ -227,7 +228,7 @@ fn vget(mp: &'static Mount<TestGlue>, ino: Ufsino) -> Result<&'static Vnode<Test
         Inode::new(InodeInit {
             vnode: Some(vp),
             mount: Some(mp),
-            ump: Some(f.ump),
+            ump: Some(vfstoufs(mp)),
             devvp: Some(f.devvp),
             dev: TEST_DEV,
             number: ino,

@@ -55,17 +55,16 @@
 //! LZ: sys/ufs/ufs/ufsmount.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The structure is `malloc(M_UFSMNT)`ed by `ffs_mountfs` and `ext2fs_mountfs` and freed by
-//!   their unmounts, all `bsd`'s until N5.5b and N5.6, which reach it from `mnt_data`
-//!   (`vfstoufs`, `bsd`'s, its one `unsafe` kept). The kernel reaches it through the inodes'
-//!   `i_ump` and the words they copy (`inode.rs`), and through the argument `bsd` passes
-//!   beside a mount to the quota functions (`quota.rs`'s deviations).
-//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS) and `um_export` (`struct
-//!   netexport`, the NFS server's) are members of `bsd`'s types: they are the glue's member
-//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until their owners move
-//!   (`um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6). The quota members
-//!   (`um_quotas`, `um_cred`, `um_btime`, `um_itime`, `um_qflags`) are the structure's own
-//!   since N5.5a2.
+//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS) is a member of `bsd`'s types:
+//!   the glue's member [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until its
+//!   owners move (`um_fs` at N5.5b2, `um_e2fs` at N5.6). `um_export` (`struct netexport`, the
+//!   NFS server's) is the mount's glue member since N5.5b0 (`Mount::g`, `bsd`'s `BsdMountG`,
+//!   until N6): `bsd`'s `vfs_export` and `vfs_export_lookup` read it from the mount, which all
+//!   three of its readers hold. The quota members (`um_quotas`, `um_cred`, `um_btime`,
+//!   `um_itime`, `um_qflags`) are the structure's own since N5.5a2.
+//! - The block is the structure and the count of its handles ([`UfsmountRef`], an
+//!   `hal::malloc::MArc`): 16 bytes more per mount in `vmstat -m`'s `UFS mount` row than the
+//!   C's (the request counts are the C's).
 //! - `MNINDIR`, `blkptrtodb` and `is_sequential` are functions with the macros' names in lower
 //!   case.
 //!
@@ -76,10 +75,24 @@
 //!   `um_maxsymlinklen`; `um_mountp` and `um_devvp` are `Link`s (the mount and the device
 //!   vnode are never freed). The `unsafe impl Sync` goes with the members it covered, to the
 //!   glue's member.
+//! - N5.5b0 (D-N5.5b-1, the user's): LZ's raw `malloc(M_UFSMNT)` written with `ptr::write`
+//!   into `mnt_data` (sys/ufs/ffs/ffs_vfsops.rs:894-901, sys/ufs/ext2fs/ext2fs_vfsops.rs:
+//!   670-677) and cast back by `bsd`'s `vfstoufs` behind a type-name check (an `unsafe` deref
+//!   giving every caller and every inode a `&'static`) -> [`Ufsmount::alloc`], a counted
+//!   `malloc(M_UFSMNT)` block ([`UfsmountRef`]) that `ffs_mountfs`/`ext2fs_mountfs` erase into
+//!   the mount's typed slot (`Mount::set_node`) where the C sets `mnt_data`, and that the
+//!   unmount takes back after `vflush` (`Mount::take_node`) where the C frees it. [`vfstoufs`]
+//!   counts a handle out of the slot (the type checked by the slot's downcast, LZ's panic
+//!   kept); each inode holds one for its life (`i_ump`); the last handle frees the block. So
+//!   the structure outlives every holder by its count, where LZ's `&'static` rested on the
+//!   unmount's `vflush` reclaiming every inode first. The cost against the C's one load of
+//!   `mnt_data`: the slot's read and a count pair per `VFSTOUFS` (the `Vfs` operations, not
+//!   read, write or lookup), one count pair per inode life.
 
 use core::sync::atomic::{AtomicI64, AtomicU8};
 
 use hal::link::Link;
+use hal::malloc::{M_WAITOK, MArc};
 use hal::slot::ReadMostly;
 use hal::sys::types::Daddr;
 
@@ -123,11 +136,28 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_itime: [AtomicI64; MAXQUOTAS],
     /// `um_qflags`: quota specific flags.
     pub um_qflags: [AtomicU8; MAXQUOTAS],
-    /// The members of `bsd`'s types (`ufsmount_u`, `um_export`; the module's deviations).
+    /// The members of `bsd`'s types (`ufsmount_u`; the module's deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
 
+/// `struct ufsmount *` held: a counted handle to a mount's UFS structure, in a block of
+/// `malloc(M_UFSMNT)` that the last handle frees. The mount's typed slot holds one while it is
+/// mounted, each inode one for its life, each operation reached from the mount one
+/// ([`vfstoufs`]).
+pub type UfsmountRef<G> = MArc<Ufsmount<G>>;
+
 impl<G: ProcGlue> Ufsmount<G> {
+    /// `ump = malloc(sizeof(*ump), M_UFSMNT, M_WAITOK | M_ZERO)` (`ffs_mountfs`,
+    /// `ext2fs_mountfs`): a zeroed structure in its counted block, one handle, which the mount
+    /// hangs from its typed slot (`Mount::set_node`). `M_WAITOK` sleeps for the memory and
+    /// never fails, as the C's.
+    pub fn alloc() -> UfsmountRef<G> {
+        match MArc::new(M_UFSMNT, M_WAITOK | M_ZERO, Self::new()) {
+            Some(ump) => ump,
+            None => kpanic(format_args!("ufsmount: malloc(M_UFSMNT) failed")),
+        }
+    }
+
     /// A zeroed structure, as `malloc(M_ZERO)` returns it.
     pub fn new() -> Self {
         Self {
@@ -176,6 +206,9 @@ impl<G: ProcGlue> Default for Ufsmount<G> {
 /// (`<sys/malloc.h>`; `vmstat -m`'s `UFS mount`).
 pub const M_UFSMNT: i32 = 28;
 
+/// `M_ZERO` (`<sys/malloc.h>`).
+const M_ZERO: i32 = 0x0008;
+
 /// `UM_UFS1`: filesystem type.
 pub const UM_UFS1: u64 = 1;
 /// `UM_UFS2`.
@@ -187,6 +220,16 @@ pub const UM_EXT2FS: u64 = 3;
 pub const QTF_OPENING: u8 = 0x01;
 /// `QTF_CLOSING`: Q_QUOTAOFF in progress.
 pub const QTF_CLOSING: u8 = 0x02;
+
+/// `VFSTOUFS(mp)`: convert mount ptr to ufsmount ptr, held: a counted handle out of the
+/// mount's typed slot, which the caller may keep across the operation's sleeps. `panic(9)`
+/// when the mount holds no UFS structure (LZ's check: an unmounted or a non-UFS mount).
+pub fn vfstoufs<G: ProcGlue>(mp: &Mount<G>) -> UfsmountRef<G> {
+    match mp.node_arc::<Ufsmount<G>>() {
+        Some(ump) => ump,
+        None => kpanic(format_args!("VFSTOUFS: mount {mp:p} is not a mounted UFS")),
+    }
+}
 
 /// `MNINDIR(ump)`: indirect pointers per block.
 pub fn mnindir<G: ProcGlue>(ump: &Ufsmount<G>) -> u64 {
@@ -227,6 +270,38 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// `VFSTOUFS` of a mount whose slot holds the structure `ffs_mountfs` hung there: a
+    /// counted handle to it; the unmount's take leaves the inodes' handles valid.
+    #[test]
+    fn vfstoufs_counts_a_handle_out_of_the_mounts_slot() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(Mount::new_unpooled(None)));
+        let ump = Ufsmount::<TestGlue>::alloc();
+        assert_eq!(MArc::ty(&ump), M_UFSMNT);
+        ump.um_nindir.set(4096);
+        mp.set_node(MArc::erase(ump.clone()));
+        let held = vfstoufs(mp);
+        assert!(MArc::ptr_eq(&held, &ump));
+        assert_eq!(mnindir(&held), 4096);
+        drop(mp.take_node());
+        assert_eq!(
+            held.um_nindir.get(),
+            4096,
+            "a holder's handle outlives the unmount"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a mounted UFS")]
+    fn vfstoufs_of_a_mount_without_the_structure_is_a_panic() {
+        let _g = crate::fs::testfs::setup();
+        let mp: &'static Mount<TestGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(Mount::new_unpooled(None)));
+        mp.set_node(MArc::erase(MArc::new(M_UFSMNT, M_WAITOK, 5u64).unwrap()));
+        let _ = vfstoufs(mp);
     }
 
     #[test]

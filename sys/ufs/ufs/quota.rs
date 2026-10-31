@@ -61,8 +61,6 @@
 //! - A charge's or a release's credential is the VOP's `Cred` (NULL, `NOCRED`, `FSCRED` or a
 //!   borrowed real one), passed to the kernel as it came (N5.5a2c; a2's `chkcred`, the
 //!   `unsafe` deref it needed, is gone).
-//! - `qsync`, `quotaoff` and `ufs_quotactl` hand the kernel the mount's `struct ufsmount`
-//!   (`vfstoufs`) beside the mount (the kernel's `quota.rs`, its deviations).
 
 use kernel::fs::ufs::ufs::quota as kq;
 use kernel::fs::vops::Cred;
@@ -72,7 +70,6 @@ use crate::sys::mount::Mount;
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Uid};
 use crate::ufs::ufs::inode::Inode;
-use crate::ufs::ufs::ufsmount::vfstoufs;
 pub use kq::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,
     Q_QUOTAON, Q_SETQUOTA, Q_SETUSE, Q_SYNC, QUOTAFILENAME, QUOTAGROUP, SUBCMDMASK, SUBCMDSHIFT,
@@ -135,12 +132,12 @@ pub fn ufs_quota_free_inode2(
 
 /// `quotaoff`: turn off a quota type on a file system.
 pub fn quotaoff(p: &Proc, mp: &'static Mount, type_: usize) -> Result<(), Errno> {
-    kq::quotaoff(p, mp, vfstoufs(mp), type_)
+    kq::quotaoff(p, mp, type_)
 }
 
 /// `qsync`: write the file system's quota changes to disk.
 pub fn qsync(mp: &'static Mount) -> Result<(), Errno> {
-    kq::qsync(mp, vfstoufs(mp))
+    kq::qsync(mp)
 }
 
 /// `ufs_quotactl` (`vfs_quotactl`): do operations associated with quotas.
@@ -151,7 +148,7 @@ pub fn ufs_quotactl(
     arg: usize,
     p: &Proc,
 ) -> Result<(), Errno> {
-    kq::ufs_quotactl(mp, vfstoufs(mp), cmds, uid, arg, p)
+    kq::ufs_quotactl(mp, cmds, uid, arg, p)
 }
 /* </CODE> */
 
