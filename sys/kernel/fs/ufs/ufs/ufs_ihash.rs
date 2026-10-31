@@ -73,6 +73,10 @@
 //!   and `vmstat -m`'s "UFS mount" MemUse grows by that much. No `diff-openbsd` scenario
 //!   prints it; recorded here, not changed (a pool's or a malloc type's size follows its type,
 //!   the standing rule).
+//! - `hashinit` is written in `ufs_ihashinit`, as kernel::proc's and kernel::vm::aobj's are
+//!   in theirs, where the C has one, kern_subr.c's; neither private one fits without a new
+//!   shared function over the malloc type and the bucket (one kernel `hashinit` for the
+//!   three is N12's list).
 //!
 //! ## Redesign
 //! - LZ's chains of `sys/queue.rs` `ListHead`s in a `StaticCell`, linked and unlinked in
