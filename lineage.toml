@@ -9588,7 +9588,7 @@ adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue
 rust = "sys/ufs/ufs/ufs_extern.rs"
 lz = ["sys/ufs/ufs/ufs_extern.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
+adapted_by = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_ihash.rs"
