@@ -8453,6 +8453,61 @@ lz = ["sys/ufs/ufs/dirhash.rs"]
 status = "redesigned"
 notes = "N5.5a2: struct dirhash as Dirhash: dh_mtx a Rwlocked owning DhTables (the two arrays in DhArrays, an MArray of ufsdirhash_pool PoolBoxes and an MArray of free counts, None once recycled), dh_score/dh_seqopt/dh_seqoff and the unlocked dh_hash test relaxed words, dh_list a PinEntry; DH_ENTRY and dh_blkfree[] slice indexing"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::dh_entry_ptr"
+native = ["DhArrays::block"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::dh_entry"
+native = ["DhArrays::entry"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::set_dh_entry"
+native = ["DhArrays::set_entry"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::blkfree_ptr"
+native = []
+kind = "dropped"
+reason = "the free counts are an MArray of bytes indexed by DhTables::blkfree and set_blkfree (a bad block a bounds panic)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::blkfree"
+native = ["DhTables::blkfree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::set_blkfree"
+native = ["DhTables::set_blkfree"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::firstfree"
+native = []
+kind = "dropped"
+reason = "DhTables::firstfree is a plain array read under dh_mtx's guard"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::set_firstfree"
+native = []
+kind = "dropped"
+reason = "DhTables::firstfree is a plain array written under dh_mtx's guard"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::Dirhash::default"
+native = []
+kind = "dropped"
+reason = "a dirhash is made from its filled tables (Dirhash::new); none is made empty"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/dirhash.rs::DirhashListHead"
+native = []
+kind = "dropped"
+reason = "ufsdirhash_list is a hal PinList bound to ufsdirhash_mtx (ufs_dirhash.rs's UFSDIRHASH_LIST), which needs no Sync wrapper"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/quota.rs"
 crate = "kernel"
@@ -8467,6 +8522,53 @@ lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "redesigned"
 notes = "N5.5a2: the inode owns its dirhash in a ReadMostly<Option<MBox<Dirhash>>>; ufsdirhash_list a PinList bound to ufsdirhash_mtx (SharedRwlock over a static RawRwlock), TAILQ_REMOVE+INSERT_AFTER is step_over; directory blocks as BufRef tokens from InodeOps::bufatoff; the lock-section helper `locked`"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::dirhashlist_unlock"
+native = []
+kind = "dropped"
+reason = "DIRHASHLIST_UNLOCK is the drop of the list's WriteWitness that dirhashlist_lock returns"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::dirhash_lock"
+native = []
+kind = "dropped"
+reason = "DIRHASH_LOCK is dh.tables.write(), the Rwlocked's guard of the tables"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::dirhash_unlock"
+native = []
+kind = "dropped"
+reason = "DIRHASH_UNLOCK is the drop of the tables' guard"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::dirhash_blkalloc_waitok"
+native = ["build_tables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::dirhash_blkfree"
+native = []
+kind = "dropped"
+reason = "DIRHASH_BLKFREE is the drop of a block's PoolBox, which puts it back into ufsdirhash_pool"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::i_dirhash"
+native = []
+kind = "dropped"
+reason = "each function reads the inode's i_dirhash cell (ReadMostly::read); no unsafe deref is left"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::free_arrays"
+native = []
+kind = "dropped"
+reason = "the arrays are a DhArrays whose drop frees the blocks and both malloc arrays, as the C's free sequence"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_dirhash.rs::ufsdirhash_uninit"
+native = []
+kind = "dropped"
+reason = "nothing calls it in the C or in LZ (dirhash.h declares it), and a hal pool is never destroyed: ufsdirhash_pool lives as long as the kernel"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_inode.rs"
 crate = "kernel"
@@ -8480,6 +8582,79 @@ crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "redesigned"
 notes = "N5.5a2: Dquot<G> of relaxed words (dq_dqb eight u32 words, dq_vp a Link, dq_cred a ReadMostly<Option<CredRef>>), an MBox of M_DQUOT leaked (never freed, as the C); the dqhash chains and dqfreelist hal::list::Lists of the 'static dquots in the glue's UfsTables::dq (no witness, no spl); quota file I/O through a 32-byte kernel uio"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::Dqhashtbl"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::Dqfreelst"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::DQHASHTBL"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::DQHASHKEY"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::DQHASH"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::DQFREELIST"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::NUMDQUOT"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::DESIREDDQUOT"
+native = ["DqTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::QUOTATYPES"
+native = []
+kind = "dropped"
+reason = "quotatypes[] is INITQFNAMES (quota.rs), indexed by quotamsg"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::chkcred"
+native = ["sys/ufs/ufs/quota.rs::chkcred"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::mntonname"
+native = ["quotamsg"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::um_cred"
+native = []
+kind = "dropped"
+reason = "dqget reads the ufsmount's um_cred cell (ReadMostly::read().clone(), the C's crhold)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::dqhash"
+native = ["DqTables::chain"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_quota.rs::dqalloc"
+native = []
+kind = "dropped"
+reason = "dqget makes the dquot with MBox::new(M_DQUOT, M_WAITOK, ..) and MBox::leak, never freed as the C's"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs"
@@ -9224,7 +9399,7 @@ adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/u
 rust = "sys/ufs/ext2fs/ext2fs_vfsops.rs"
 lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
@@ -9259,7 +9434,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.r
 rust = "sys/ufs/ffs/ffs_subr.rs"
 lz = ["sys/ufs/ffs/ffs_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
+adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_tables.rs"
@@ -9270,7 +9445,7 @@ status = "inherited"
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vnops.rs"
@@ -9322,18 +9497,20 @@ adapted_by = ["sys/kernel/fs/ufs/ufs/dir.rs"]
 [[module]]
 rust = "sys/ufs/ufs/dirhash.rs"
 lz = ["sys/ufs/ufs/dirhash.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/ufs/ufs/dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/inode.rs"
 lz = ["sys/ufs/ufs/inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/quota.rs"
 lz = ["sys/ufs/ufs/quota.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/fs/ufs/ufs/quota.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_bmap.rs"
@@ -9345,7 +9522,7 @@ adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vno
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_extern.rs"
@@ -9362,37 +9539,37 @@ adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/vnode.rs", "sys/kerne
 rust = "sys/ufs/ufs/ufs_inode.rs"
 lz = ["sys/ufs/ufs/ufs_inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_inode.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_lookup.rs"
 lz = ["sys/ufs/ufs/ufs_lookup.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_quota.rs"
 lz = ["sys/ufs/ufs/ufs_quota.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_vfsops.rs"
 lz = ["sys/ufs/ufs/ufs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_vnops.rs"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufsmount.rs"
 lz = ["sys/ufs/ufs/ufsmount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs"]
 
 [[module]]
 rust = "sys/hal/vm/param.rs"

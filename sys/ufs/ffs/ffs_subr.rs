@@ -83,8 +83,30 @@ use crate::ufs::ufs::dinode::ROOTINO;
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, vtoi};
 
-/// `ffs_bufatoff`: the buffer with the contents of block `offset` from the beginning of
-/// directory `ip`, and the offset in it of the remaining space in the directory (`*res`).
+/// `ffs_bufatoff` (`iv_bufatoff`, the kernel's callers through `InodeOps::bufatoff`): the
+/// busy buffer's token with the contents of block `offset` from the beginning of directory
+/// `ip`, and the offset in it of the remaining space in the directory (`*res`).
+pub fn ffs_bufatoff_token(
+    ip: &Inode,
+    offset: Off,
+) -> Result<(kernel::fs::buf::BufRef, usize), Errno> {
+    let vp = ip.itov();
+    let fs = ip.fs();
+    let lbn = lblkno(fs, offset);
+    let bsize = blksize(fs, ip, lbn);
+
+    let (t, error) = kernel::fs::bio::bread(&vp.bufs, lbn, fs.fs_bsize.get());
+    if let Err(e) = error {
+        kernel::fs::bio::brelse(t);
+        return Err(e);
+    }
+    kernel::fs::bio::buf_adjcnt(&t, bsize as i64);
+    Ok((t, blkoff(fs, offset) as usize))
+}
+
+/// [`ffs_bufatoff_token`] for `bsd`'s callers (`UFS_BUFATOFF`: `ufs_lookup`, `ufs_readdir`),
+/// the buffer lent as `bsd`'s `bread` lends it, in the read's own section of the cache's lock
+/// (docs/SCAFFOLDING.md: until N5.5a3 moves them).
 pub fn ffs_bufatoff(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize), Errno> {
     let vp = ip.itov();
     let fs = ip.fs();

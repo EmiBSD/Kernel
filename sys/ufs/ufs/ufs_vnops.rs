@@ -1342,7 +1342,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         cache_purge(vp);
         // Kill any active hash; i_effnlink == 0, so it will not come back.
         #[cfg(feature = "ufs_dirhash")]
-        if ip.g.i_dirhash.get().is_some() {
+        if ip.i_dirhash.read().is_some() {
             crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(&ip);
         }
         error

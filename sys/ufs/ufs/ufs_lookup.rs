@@ -260,18 +260,17 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             None
         };
         match ufsdirhash_lookup(&dp, cnp.name(), prevoffp) {
-            Ok((offset, b)) => {
+            Ok((offset, t)) => {
                 dp.i_offset.set(offset);
-                bp = Some(b);
-                // SAFETY: the buffer is ours (busy from ufsdirhash_lookup) and mapped; the
-                // slice dies before the buffer is released.
-                let data = unsafe { b.data() };
+                let data = t.bytes();
                 let ep = (offset & bmask) as usize;
                 // foundentry: save directory entry's inode number and reclen in ndp->ni_ufs
-                // area, and release directory buffer.
+                // area, and release directory buffer (the kernel's token, released here: the
+                // `found:` code below reads nothing more of it).
                 dp.i_ino.set(d_ino(data, ep));
                 dp.i_reclen.set(u32::from(d_reclen(data, ep)));
                 found = Some(dirsiz(d_namlen(data, ep)));
+                kernel::fs::bio::brelse(t);
                 true
             }
             Err(Errno::ENOENT) => {
@@ -700,7 +699,7 @@ pub fn ufs_direnter(
         dirp.write_to(data, blkoff);
 
         #[cfg(feature = "ufs_dirhash")]
-        if dp.g.i_dirhash.get().is_some() {
+        if dp.i_dirhash.read().is_some() {
             ufsdirhash_newblk(&dp, dp.i_offset.get());
             ufsdirhash_add(
                 &dp,
@@ -770,7 +769,7 @@ pub fn ufs_direnter(
             dsize = dirsiz(d_namlen(dirbuf, nep));
             spacefree += nep_reclen - dsize;
             #[cfg(feature = "ufs_dirhash")]
-            if dp.g.i_dirhash.get().is_some() {
+            if dp.i_dirhash.read().is_some() {
                 let namlen = usize::from(d_namlen(dirbuf, nep));
                 ufsdirhash_move(
                     &dp,
@@ -802,7 +801,7 @@ pub fn ufs_direnter(
         }
 
         #[cfg(feature = "ufs_dirhash")]
-        if dp.g.i_dirhash.get().is_some()
+        if dp.i_dirhash.read().is_some()
             && (d_ino(dirbuf, ep) == 0 || usize::from(dirp.d_reclen) == spacefree)
         {
             ufsdirhash_add(
@@ -813,7 +812,7 @@ pub fn ufs_direnter(
         }
         dirp.write_to(dirbuf, ep);
         #[cfg(feature = "ufs_dirhash")]
-        if dp.g.i_dirhash.get().is_some() {
+        if dp.i_dirhash.read().is_some() {
             let blk = off - (dp.i_offset.get() as usize & (DIRBLKSIZ - 1));
             ufsdirhash_checkblock(
                 &dp,
@@ -836,7 +835,7 @@ pub fn ufs_direnter(
         }
         error = UFS_TRUNCATE(&dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr.as_raw());
         #[cfg(feature = "ufs_dirhash")]
-        if error.is_ok() && dp.g.i_dirhash.get().is_some() {
+        if error.is_ok() && dp.i_dirhash.read().is_some() {
             ufsdirhash_dirtrunc(&dp, dp.i_endoff.get());
         }
         if let Some(tvp) = tvp {
@@ -869,7 +868,7 @@ pub fn ufs_dirremove(
         // Remove the dirhash entry. This is complicated by the fact that `ep' is the previous
         // entry when dp->i_count != 0.
         #[cfg(feature = "ufs_dirhash")]
-        if dp.g.i_dirhash.get().is_some() {
+        if dp.i_dirhash.read().is_some() {
             let rp = if dp.i_count.get() == 0 {
                 off
             } else {
@@ -888,7 +887,7 @@ pub fn ufs_dirremove(
             set_d_reclen(data, off, r as u16);
         }
         #[cfg(feature = "ufs_dirhash")]
-        if dp.g.i_dirhash.get().is_some() {
+        if dp.i_dirhash.read().is_some() {
             let blk = off - ((dp.i_offset.get() - dp.i_count.get()) as usize & (DIRBLKSIZ - 1));
             ufsdirhash_checkblock(
                 &dp,

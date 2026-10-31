@@ -301,24 +301,20 @@ pub fn ufsdirhash_build<G: ProcGlue>(ip: &Inode<G>) -> bool {
 
     // Use non-blocking mallocs so that we will revert to a linear lookup on failure rather
     // than potentially blocking forever.
-    match build_tables(ip, narrays, nslots, dirblocks, nblocks) {
-        Some(t) => match MBox::new(M_DIRHASH, M_NOWAIT, Dirhash::new(t)) {
-            Some(dh) => {
-                let old = ip.i_dirhash.replace(Some(dh));
-                kassert!(old.is_none());
-                drop(old);
-                let r = ip.i_dirhash.read();
-                if let Some(dh) = r.as_ref() {
-                    let mut w = dirhashlist_lock();
-                    UFSDIRHASH_LIST.insert_tail(&mut w, dh.as_pin());
-                    note_last(&w);
-                    dh.set_hashed(true);
-                }
-                return true;
-            }
-            None => {}
-        },
-        None => {}
+    if let Some(t) = build_tables(ip, narrays, nslots, dirblocks, nblocks)
+        && let Some(dh) = MBox::new(M_DIRHASH, M_NOWAIT, Dirhash::new(t))
+    {
+        let old = ip.i_dirhash.replace(Some(dh));
+        kassert!(old.is_none());
+        drop(old);
+        let r = ip.i_dirhash.read();
+        if let Some(dh) = r.as_ref() {
+            let mut w = dirhashlist_lock();
+            UFSDIRHASH_LIST.insert_tail(&mut w, dh.as_pin());
+            note_last(&w);
+            dh.set_hashed(true);
+        }
+        return true;
     }
     // fail: the arrays went with the tables.
     unaccount(memreqd);
@@ -554,15 +550,13 @@ pub fn ufsdirhash_lookup<G: ProcGlue>(
                 // Found. Get the prev offset if needed.
                 if let Some(prevoffp) = prevoffp.take() {
                     let prevoff = if offset & (DIRBLK - 1) != 0 {
-                        match ufsdirhash_getprev(data, dp, offset) {
-                            Some(prevoff) => prevoff,
-                            None => {
-                                if let Some(b) = bp.take() {
-                                    brelse(b);
-                                }
-                                return Err(Errno::EJUSTRETURN);
+                        let Some(prevoff) = ufsdirhash_getprev(data, dp, offset) else {
+                            if let Some(b) = bp.take() {
+                                brelse(b);
                             }
-                        }
+                            return Err(Errno::EJUSTRETURN);
+                        };
+                        prevoff
                     } else {
                         offset
                     };

@@ -176,3 +176,194 @@ pub fn ufs_reclaim<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     Ok(())
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::vec::Vec;
+
+    use hal::intr::IPL_NONE;
+    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::sys::types::{Mode, Off};
+
+    use super::*;
+    use crate::fs::subr::vref;
+    use crate::fs::testfs::{TestGlue, setup};
+    use crate::fs::ufs::ufs::dinode::{Ufs1Dinode, Ufsino};
+    use crate::fs::ufs::ufs::inode::{
+        Dinode, IN_HASHED, Inode, InodeInit, InodeOps, InodeRef, Ufs1Din,
+    };
+    use crate::fs::ufs::ufs::ufs_ihash::{ufs_ihashget, ufs_ihashinit, ufs_ihashins};
+    use crate::fs::ufs::ufs::ufsmount::{UM_UFS1, Ufsmount};
+    use crate::fs::vnode::VREG;
+    use crate::fs::vops::IoBuf;
+    use crate::testutil::test_vnode;
+
+    /// The tests' `ffs_ino_pool` and `ffs_dinode1_pool`.
+    static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
+    static DINO1: BoxPool<Ufs1Din> = BoxPool::new();
+    /// The calls the test table saw, in order, with the mode `inode_free` was given.
+    static CALLS: Mutex<Vec<(&'static str, Mode)>> = Mutex::new(Vec::new());
+
+    /// An `InodeOps` that records its calls (the file system's half of the inode's life).
+    struct Ops;
+
+    fn note(what: &'static str, mode: Mode) {
+        CALLS.lock().unwrap().push((what, mode));
+    }
+
+    impl InodeOps<TestGlue> for Ops {
+        fn truncate(
+            &self,
+            _: &Inode<TestGlue>,
+            off: Off,
+            _: i32,
+            cred: Cred<'_>,
+        ) -> Result<(), Errno> {
+            assert_eq!(off, 0);
+            assert!(cred.is_nocred());
+            note("truncate", 0);
+            Ok(())
+        }
+        fn update(&self, _: &Inode<TestGlue>, waitfor: i32) -> Result<(), Errno> {
+            assert_eq!(waitfor, 0);
+            note("update", 0);
+            Ok(())
+        }
+        fn inode_alloc(
+            &self,
+            _: &Inode<TestGlue>,
+            _: Mode,
+            _: Cred<'_>,
+        ) -> Result<&'static Vnode<TestGlue>, Errno> {
+            Err(Errno::ENOSPC)
+        }
+        fn inode_free(&self, _: &Inode<TestGlue>, _: Ufsino, mode: Mode) -> Result<(), Errno> {
+            note("inode_free", mode);
+            Ok(())
+        }
+        fn buf_alloc(
+            &self,
+            _: &Inode<TestGlue>,
+            _: Off,
+            _: i32,
+            _: Cred<'_>,
+            _: i32,
+        ) -> Result<IoBuf, Errno> {
+            Err(Errno::EIO)
+        }
+        fn bufatoff(&self, _: &Inode<TestGlue>, _: Off) -> Result<(IoBuf, usize), Errno> {
+            Err(Errno::EIO)
+        }
+    }
+
+    static OPS: Ops = Ops;
+
+    /// The pools, the inode hash and an empty call log, over testfs's fresh tables.
+    fn life_setup() -> std::sync::MutexGuard<'static, ()> {
+        let g = setup();
+        let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
+        let _ = DINO1.init(IPL_NONE, PR_WAITOK, "dino1pl");
+        ufs_ihashinit::<TestGlue>(64);
+        CALLS.lock().unwrap().clear();
+        g
+    }
+
+    /// A referenced vnode holding a new FFS1 inode `ino` of `nlink` links and `mode`, on a
+    /// UFS mount structure without quotas, with a held device vnode, as `ffs_vget` makes them.
+    fn inode(ino: Ufsino, nlink: i16, mode: u16) -> (&'static Vnode<TestGlue>, InodeRef<TestGlue>) {
+        let vp = test_vnode::<TestGlue>(VREG, 0);
+        let devvp = test_vnode::<TestGlue>(crate::fs::vnode::VBLK, 0);
+        let ump: &'static Ufsmount<TestGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(Ufsmount::new()));
+        let ip = INODES
+            .get_homed(PR_WAITOK, || {
+                Inode::new(InodeInit {
+                    vnode: Some(vp),
+                    ump: Some(ump),
+                    devvp: Some(devvp),
+                    dev: 9,
+                    number: ino,
+                    fstype: UM_UFS1,
+                    vtbl: Some(&OPS),
+                    ..InodeInit::default()
+                })
+            })
+            .unwrap();
+        let d = Ufs1Dinode {
+            di_mode: mode,
+            di_nlink: nlink,
+            ..Ufs1Dinode::default()
+        };
+        ip.set_din(Dinode::Ufs1(
+            DINO1.get(PR_WAITOK, || Ufs1Din::new(&d)).unwrap(),
+        ));
+        ip.dip_set_rdev(5);
+        vp.set_node(PoolArc::erase(ip.clone()));
+        (vp, ip)
+    }
+
+    fn calls() -> Vec<(&'static str, Mode)> {
+        CALLS.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn an_unlinked_inode_is_truncated_freed_and_written_back() {
+        let _g = life_setup();
+        let (vp, ip) = inode(3, 0, 0o100644);
+        ufs_inactive(vp, None).unwrap();
+        // ufs_inode.c:79-95: truncate to 0, the mode and rdev cleared, the inode freed with
+        // the mode it had, then the change written (IN_CHANGE | IN_UPDATE).
+        assert_eq!(
+            calls(),
+            [("truncate", 0), ("inode_free", 0o100644), ("update", 0)]
+        );
+        assert_eq!((ip.dip_mode(), ip.dip_rdev()), (0, 0));
+        assert_ne!(ip.i_flag.get() & (IN_CHANGE | IN_UPDATE), 0);
+        // Still referenced: vrecycle leaves it (the C's v_usecount test).
+        assert_eq!(vp.usecount(), 1);
+    }
+
+    #[test]
+    fn a_linked_inode_is_written_back_only_when_a_time_changed() {
+        let _g = life_setup();
+        let (vp, ip) = inode(4, 1, 0o100644);
+        ufs_inactive(vp, None).unwrap();
+        assert!(calls().is_empty());
+        ip.set_flag(IN_ACCESS);
+        ufs_inactive(vp, None).unwrap();
+        assert_eq!(calls(), [("update", 0)]);
+        assert_eq!(ip.dip_mode(), 0o100644);
+        // A stale file handle's inode (mode 0) is left alone.
+        let (vp2, _ip2) = inode(5, 0, 0);
+        CALLS.lock().unwrap().clear();
+        ufs_inactive(vp2, None).unwrap();
+        assert!(calls().is_empty());
+    }
+
+    #[test]
+    fn reclaim_writes_lazy_times_unhashes_and_drops_the_device() {
+        let _g = life_setup();
+        let (vp, ip) = inode(6, 1, 0o100644);
+        ufs_ihashins(ip.as_pin()).unwrap();
+        let found = ufs_ihashget::<TestGlue>(9, 6).unwrap();
+        assert!(core::ptr::eq(found, vp));
+        crate::fs::subr::vput(found);
+        let devvp = ip.i_devvp();
+        vref(devvp);
+        let held = devvp.usecount();
+        ip.set_flag(IN_LAZYMOD);
+        ufs_reclaim(vp).unwrap();
+        // ufs_inode.c:129-151: the deferred times written, the inode off the hash, the
+        // device's reference given back, no dquot left.
+        assert_eq!(calls(), [("update", 0)]);
+        assert_ne!(ip.i_flag.get() & IN_MODIFIED, 0);
+        assert_eq!(ip.i_flag.get() & IN_HASHED, 0);
+        assert!(ufs_ihashget::<TestGlue>(9, 6).is_none());
+        assert_eq!(devvp.usecount(), held - 1);
+        assert!(ip.i_dquot.iter().all(hal::link::Link::is_none));
+        assert!(ip.i_dirhash.read().is_none());
+    }
+}
+/* </TESTS> */

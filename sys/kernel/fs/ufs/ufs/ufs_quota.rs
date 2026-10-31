@@ -788,11 +788,7 @@ pub fn quotaon<G: ProcGlue>(
     }
 
     // Update the vnode and ucred for quota file updates.
-    if !ump.um_quotas[type_].points_to(vp) {
-        let _ = quotaoff(p, mp, ump, type_);
-        ump.um_quotas[type_].set(Some(vp));
-        drop(ump.um_cred[type_].replace(Some(p.cred_ref())));
-    } else {
+    if ump.um_quotas[type_].points_to(vp) {
         let ocred = ump.um_cred[type_].read().clone();
 
         let _ = vn_close(vp, FREAD | FWRITE, cred_of(ocred.as_ref()), Some(p));
@@ -801,6 +797,10 @@ pub fn quotaon<G: ProcGlue>(
             // The slot's old reference goes as it is replaced (`crfree(ocred)`).
             drop(ump.um_cred[type_].replace(Some(mine)));
         }
+    } else {
+        let _ = quotaoff(p, mp, ump, type_);
+        ump.um_quotas[type_].set(Some(vp));
+        drop(ump.um_cred[type_].replace(Some(p.cred_ref())));
     }
 
     ump.um_qflags[type_].fetch_or(QTF_OPENING, Ordering::Relaxed);
@@ -833,13 +833,13 @@ pub fn quotaon<G: ProcGlue>(
 }
 
 /// `quotaoff_vnode`: drop a vnode's dquot of the type being turned off.
-fn quotaoff_vnode<G: ProcGlue>(vp: &'static Vnode<G>, type_: usize) -> Result<(), Errno> {
+fn quotaoff_vnode<G: ProcGlue>(vp: &'static Vnode<G>, type_: usize) {
     if vp.vtype() == Vtype::VNON {
-        return Ok(());
+        return;
     }
 
     if vget(vp, LK_EXCLUSIVE).is_err() {
-        return Ok(());
+        return;
     }
     let ip = vtoi(vp);
     let dq = ip.i_dquot[type_].get();
@@ -847,7 +847,6 @@ fn quotaoff_vnode<G: ProcGlue>(vp: &'static Vnode<G>, type_: usize) -> Result<()
     dqrele(Some(vp), dq);
     drop(ip);
     vput(vp);
-    Ok(())
 }
 
 /// `quotaoff` (`Q_QUOTAOFF`): turn off disk quotas for a filesystem.
@@ -867,7 +866,10 @@ pub fn quotaoff<G: ProcGlue>(
     ump.um_qflags[type_].fetch_or(QTF_CLOSING, Ordering::Relaxed);
     // Search vnodes associated with this mount point, deleting any references to quota file
     // being closed.
-    let _ = vfs_mount_foreach_vnode(mp, &mut |vp| quotaoff_vnode(vp, type_));
+    let _ = vfs_mount_foreach_vnode(mp, &mut |vp| {
+        quotaoff_vnode(vp, type_);
+        Ok(())
+    });
 
     let error = vn_close(qvp, FREAD | FWRITE, Cred::real(p.ucred()), Some(p));
     ump.um_quotas[type_].set(None);
@@ -1041,13 +1043,13 @@ fn setuse<G: ProcGlue>(
 }
 
 /// `qsync_vnode`: write a vnode's modified dquots.
-fn qsync_vnode<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
+fn qsync_vnode<G: ProcGlue>(vp: &'static Vnode<G>) {
     if vp.vtype() == Vtype::VNON {
-        return Ok(());
+        return;
     }
 
     if vget(vp, LK_EXCLUSIVE | LK_NOWAIT).is_err() {
-        return Ok(());
+        return;
     }
 
     let ip = vtoi(vp);
@@ -1060,7 +1062,6 @@ fn qsync_vnode<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
     }
     drop(ip);
     vput(vp);
-    Ok(())
 }
 
 /// `qsync` (`Q_SYNC`): sync quota files to disk.
@@ -1071,7 +1072,10 @@ pub fn qsync<G: ProcGlue>(mp: &'static Mount<G>, ump: &'static Ufsmount<G>) -> R
     }
     // Search vnodes associated with this mount point, synchronizing any modified dquot
     // structures.
-    let _ = vfs_mount_foreach_vnode(mp, &mut |vp| qsync_vnode(vp));
+    let _ = vfs_mount_foreach_vnode(mp, &mut |vp| {
+        qsync_vnode(vp);
+        Ok(())
+    });
     Ok(())
 }
 

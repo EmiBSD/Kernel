@@ -127,7 +127,7 @@ use crate::sys::vnode::{
 use crate::ufs::ffs::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use crate::ufs::ffs::ffs_balloc::ffs_balloc;
 use crate::ufs::ffs::ffs_inode::{ffs_truncate, ffs_update};
-use crate::ufs::ffs::ffs_subr::{ffs_bufatoff, ffs_vinit};
+use crate::ufs::ffs::ffs_subr::{ffs_bufatoff_token, ffs_vinit};
 use crate::ufs::ffs::ffs_vnops::FFS_VOPS;
 use crate::ufs::ffs::fs::{
     AFPDIR, AVFILESIZ, CgBuf, FRAGTBL, FS_42INODEFMT, FS_42POSTBLFMT, FS_44INODEFMT,
@@ -211,7 +211,7 @@ impl InodeOps<BsdProcGlue> for FfsVtbl {
     }
 
     fn bufatoff(&self, ip: &Inode, offset: Off) -> Result<(IoBuf, usize), Errno> {
-        ffs_bufatoff(ip, offset).map(|(bp, off)| (IoBuf::Lent(bp), off))
+        ffs_bufatoff_token(ip, offset).map(|(t, off)| (IoBuf::Token(t), off))
     }
 }
 
@@ -976,7 +976,7 @@ pub fn ffs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Resul
         u.um_seqinc.set(fs.fs_frag.get() as u64);
         u.um_maxsymlinklen.set(fs.fs_maxsymlinklen.get() as u32);
         for q in 0..MAXQUOTAS {
-            u.g.um_quotas[q].set(None);
+            u.um_quotas[q].set(None);
         }
 
         devvp.set_specmountpoint(Some(mp));
@@ -1180,7 +1180,7 @@ pub fn ffs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(), Er
     if mp.flag() & MNT_QUOTA != 0 {
         vflush(mp, None, SKIPSYSTEM | flags)?;
         for i in 0..MAXQUOTAS {
-            if ump.g.um_quotas[i].get().is_none() {
+            if ump.um_quotas[i].is_none() {
                 continue;
             }
             let _ = quotaoff(p, mp, i);

@@ -60,14 +60,11 @@
 //! Upstream: sys/ufs/ufs/ufs_vfsops.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `ufs_init`'s `static int done` is the kernel's (`UfsTables::init_done`, in `bsd`'s VFS
-//!   tables); the host tests clear it with the inode hash (`vfs_test_reset`) to initialise
-//!   again over fresh memory. `ufs_init` stays here until N5.5a2 moves the quotas and dirhash
-//!   it initialises (D-N5.5a-13).
+//! - `ufs_init` is the kernel's (N5.5a2), over `bsd`'s `initialvnodes`; this module keeps the
+//!   `Vfsops` slot's shape.
 //! - `ufs_check_export`: without `nfsserver` there is no export list (`vfs_export_lookup`
 //!   finds nothing), so every client is refused with `EACCES`, as the C does when the lookup
 //!   fails. `credanonp` is a `*const Ucred` into the entry's `netc_anon`.
-//! - `ufsdirhash_init` (`UFS_DIRHASH`) is under feature `ufs_dirhash`.
 
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -77,8 +74,6 @@ use crate::sys::mbuf::Mbuf;
 use crate::sys::mount::{Mount, Vfsconf};
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vfs_export_lookup;
-use crate::ufs::ufs::quota::ufs_quota_init;
-use crate::ufs::ufs::ufs_ihash::ufs_ihashinit;
 use crate::ufs::ufs::ufsmount::vfstoufs;
 pub use kernel::fs::ufs::ufs::ufs_vfsops::{ufs_fhtovp, ufs_root, ufs_start};
 
@@ -102,20 +97,10 @@ pub fn ufs_check_export(
     Ok(())
 }
 
-/// `ufs_init`: initialize UFS file systems, done only once.
+/// `ufs_init` (`vfs_init`): initialize UFS file systems, done only once (the kernel's).
 pub fn ufs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
-    if kernel::fs::subr::vfs::<crate::kern::proc_glue::BsdProcGlue>()
-        .ufs
-        .init_done
-        .swap(true, Ordering::Relaxed)
-    {
-        return Ok(());
-    }
-    ufs_ihashinit();
-    ufs_quota_init();
-    #[cfg(feature = "ufs_dirhash")]
-    crate::ufs::ufs::ufs_dirhash::ufsdirhash_init();
-
-    Ok(())
+    kernel::fs::ufs::ufs::ufs_vfsops::ufs_init::<crate::kern::proc_glue::BsdProcGlue>(
+        crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
+    )
 }
 /* </CODE> */
