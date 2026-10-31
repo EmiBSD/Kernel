@@ -171,7 +171,7 @@ use super::vnode::{
     VNODE_MTX, VNON, VREG, VSOCK, VXLOCK, Vattr, Vnode, stat, vn_lock,
 };
 use super::vops::{
-    Cn, Cred, IoBuf, Vnops, vop_access, vop_getattr, vop_islocked, vop_setattr, vop_unlock,
+    Cred, IoBuf, Vnops, vop_access, vop_getattr, vop_islocked, vop_setattr, vop_unlock,
 };
 use crate::assert::kpanic;
 use crate::event::{__EV_POLL, __EV_SELECT, Knote, seltrue_kqfilter};
@@ -407,42 +407,186 @@ impl<G: ProcGlue> SpecVops<G> {
     pub const TABLE: SpecVops<G> = SpecVops(PhantomData);
 }
 
+/// The slots `spec_vops` and the special-file tables of the file systems share (the C's
+/// "XXX: Keep in sync with spec_vops" in `ffs_specvops`): `lookup` (generic), the
+/// badops, `open`, `ioctl`, `kqfilter`, `bmap` (generic), `strategy`, `pathconf` and
+/// `advlock`, written once for [`SpecVops`] and `ufs`'s `UfsSpecVnops` (`impl Vnops<G>`
+/// bodies of a glue `G: ProcGlue`).
+macro_rules! spec_shared_slots {
+    () => {
+        fn lookup(
+            &self,
+            _dvp: &'static crate::fs::vnode::Vnode<G>,
+            vpp: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
+            _cnp: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_lookup(vpp)
+        }
+        fn create(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+            _: &mut crate::fs::vnode::Vattr,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn mknod(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+            _: &mut crate::fs::vnode::Vattr,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn open(
+            &self,
+            vp: &'static crate::fs::vnode::Vnode<G>,
+            mode: i32,
+            cred: crate::fs::vops::Cred<'_>,
+            p: &crate::proc::Thread<G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_open(vp, mode, cred, p)
+        }
+        fn ioctl(
+            &self,
+            vp: &'static crate::fs::vnode::Vnode<G>,
+            command: u64,
+            data: &mut [u8],
+            fflag: i32,
+            _cred: crate::fs::vops::Cred<'_>,
+            p: &crate::proc::Thread<G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_ioctl(vp, command, data, fflag, p)
+        }
+        fn kqfilter(
+            &self,
+            vp: &'static crate::fs::vnode::Vnode<G>,
+            _fflag: i32,
+            kn: &crate::event::Knote<G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_kqfilter(vp, kn)
+        }
+        fn remove(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn link(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn rename(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: Option<&'static crate::fs::vnode::Vnode<G>>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn mkdir(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+            _: &mut crate::fs::vnode::Vattr,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn rmdir(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn symlink(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut Option<&'static crate::fs::vnode::Vnode<G>>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+            _: &mut crate::fs::vnode::Vattr,
+            _: &[u8],
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn readdir(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::uio::Uio<'_, G>,
+            _: crate::fs::vops::Cred<'_>,
+            _: &mut i32,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn readlink(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::uio::Uio<'_, G>,
+            _: crate::fs::vops::Cred<'_>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn abortop(
+            &self,
+            _: &'static crate::fs::vnode::Vnode<G>,
+            _: &mut crate::fs::vops::Cn<'_, G>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_badop()
+        }
+        fn bmap(
+            &self,
+            vp: &'static crate::fs::vnode::Vnode<G>,
+            bn: hal::sys::types::Daddr,
+            vpp: Option<&mut Option<&'static crate::fs::vnode::Vnode<G>>>,
+            bnp: Option<&mut hal::sys::types::Daddr>,
+            runp: Option<&mut i32>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::default::vop_generic_bmap(vp, bn, vpp, bnp, runp)
+        }
+        fn strategy(
+            &self,
+            _vp: &'static crate::fs::vnode::Vnode<G>,
+            bp: crate::fs::vops::IoBuf,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_strategy::<G>(bp)
+        }
+        fn pathconf(
+            &self,
+            _vp: &'static crate::fs::vnode::Vnode<G>,
+            name: i32,
+            retval: &mut hal::sys::types::Register,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_pathconf(name, retval)
+        }
+        fn advlock(
+            &self,
+            vp: &'static crate::fs::vnode::Vnode<G>,
+            id: crate::file::LockOwner,
+            op: i32,
+            fl: &mut hal::sys::fcntl::Flock,
+            flags: i32,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            crate::fs::spec::spec_advlock(vp, id, op, fl, flags)
+        }
+    };
+}
+pub(crate) use spec_shared_slots;
+
 impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
-    fn lookup(
-        &self,
-        _dvp: &'static Vnode<G>,
-        vpp: &mut Option<&'static Vnode<G>>,
-        _cnp: &mut Cn<'_, G>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_lookup(vpp)
-    }
-    fn create(
-        &self,
-        _: &'static Vnode<G>,
-        _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<'_, G>,
-        _: &mut Vattr,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn mknod(
-        &self,
-        _: &'static Vnode<G>,
-        _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<'_, G>,
-        _: &mut Vattr,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn open(
-        &self,
-        vp: &'static Vnode<G>,
-        mode: i32,
-        cred: Cred<'_>,
-        p: &Thread<G>,
-    ) -> Result<(), Errno> {
-        spec_open(vp, mode, cred, p)
-    }
+    spec_shared_slots!();
     fn close(
         &self,
         vp: &'static Vnode<G>,
@@ -497,20 +641,6 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
     ) -> Result<(), Errno> {
         spec_write(vp, uio, ioflag)
     }
-    fn ioctl(
-        &self,
-        vp: &'static Vnode<G>,
-        command: u64,
-        data: &mut [u8],
-        fflag: i32,
-        _cred: Cred<'_>,
-        p: &Thread<G>,
-    ) -> Result<(), Errno> {
-        spec_ioctl(vp, command, data, fflag, p)
-    }
-    fn kqfilter(&self, vp: &'static Vnode<G>, _fflag: i32, kn: &Knote<G>) -> Result<(), Errno> {
-        spec_kqfilter(vp, kn)
-    }
     fn revoke(&self, vp: &'static Vnode<G>, flags: i32) -> Result<(), Errno> {
         default::vop_generic_revoke(vp, flags)
     }
@@ -522,75 +652,6 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
         _p: &Thread<G>,
     ) -> Result<(), Errno> {
         spec_fsync(vp, waitfor)
-    }
-    fn remove(
-        &self,
-        _: &'static Vnode<G>,
-        _: &'static Vnode<G>,
-        _: &mut Cn<'_, G>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn link(
-        &self,
-        _: &'static Vnode<G>,
-        _: &'static Vnode<G>,
-        _: &mut Cn<'_, G>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn rename(
-        &self,
-        _: &'static Vnode<G>,
-        _: &'static Vnode<G>,
-        _: &mut Cn<'_, G>,
-        _: &'static Vnode<G>,
-        _: Option<&'static Vnode<G>>,
-        _: &mut Cn<'_, G>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn mkdir(
-        &self,
-        _: &'static Vnode<G>,
-        _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<'_, G>,
-        _: &mut Vattr,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn rmdir(
-        &self,
-        _: &'static Vnode<G>,
-        _: &'static Vnode<G>,
-        _: &mut Cn<'_, G>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn symlink(
-        &self,
-        _: &'static Vnode<G>,
-        _: &mut Option<&'static Vnode<G>>,
-        _: &mut Cn<'_, G>,
-        _: &mut Vattr,
-        _: &[u8],
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn readdir(
-        &self,
-        _: &'static Vnode<G>,
-        _: &mut Uio<'_, G>,
-        _: Cred<'_>,
-        _: &mut i32,
-    ) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn readlink(&self, _: &'static Vnode<G>, _: &mut Uio<'_, G>, _: Cred<'_>) -> Result<(), Errno> {
-        default::vop_generic_badop()
-    }
-    fn abortop(&self, _: &'static Vnode<G>, _: &mut Cn<'_, G>) -> Result<(), Errno> {
-        default::vop_generic_badop()
     }
     fn inactive(&self, vp: &'static Vnode<G>, _p: Option<&Thread<G>>) -> Result<(), Errno> {
         spec_inactive(vp)
@@ -607,39 +668,8 @@ impl<G: ProcGlue> Vnops<G> for SpecVops<G> {
     fn islocked(&self, _vp: &'static Vnode<G>) -> i32 {
         0 // nullop
     }
-    fn bmap(
-        &self,
-        vp: &'static Vnode<G>,
-        bn: Daddr,
-        vpp: Option<&mut Option<&'static Vnode<G>>>,
-        bnp: Option<&mut Daddr>,
-        runp: Option<&mut i32>,
-    ) -> Result<(), Errno> {
-        default::vop_generic_bmap(vp, bn, vpp, bnp, runp)
-    }
-    fn strategy(&self, _vp: &'static Vnode<G>, bp: IoBuf) -> Result<(), Errno> {
-        spec_strategy::<G>(bp)
-    }
     fn print(&self, vp: &'static Vnode<G>) -> Result<(), Errno> {
         spec_print(vp)
-    }
-    fn pathconf(
-        &self,
-        _vp: &'static Vnode<G>,
-        name: i32,
-        retval: &mut Register,
-    ) -> Result<(), Errno> {
-        spec_pathconf(name, retval)
-    }
-    fn advlock(
-        &self,
-        vp: &'static Vnode<G>,
-        id: LockOwner,
-        op: i32,
-        fl: &mut Flock,
-        flags: i32,
-    ) -> Result<(), Errno> {
-        spec_advlock(vp, id, op, fl, flags)
     }
     fn bwrite(&self, bp: IoBuf) -> Result<(), Errno> {
         default::vop_generic_bwrite(bp)
