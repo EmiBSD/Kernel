@@ -661,8 +661,11 @@ pub struct NfsrvDescript {
     /// `nd_cr`: credentials, the request's own, updated in place (`nfsrv_fhtovp`'s
     /// anonymous mapping). `nfs_getreq` fills it; `nfssvc_nfsd` takes it out for the server
     /// procedure's call, which receives it as an argument of its own (`NfsrvProc`), and puts it
-    /// back after: `None` during the call, so a read of the member there finds no credential
-    /// instead of a placeholder (a fresh `UcredCell` is root's ids).
+    /// back after: `None` during the call, so a read of the member there finds no credential.
+    /// [`NfsrvDescript::new`] stores a placeholder with root's ids, which no one reads: a
+    /// request without an AUTH_UNIX credential reaches only `nfsrv_null` and `nfsrv_noop`,
+    /// which read none, as in the C (nfs_socket.c:1472-1496, :1551 run before :1520). Never
+    /// make it `None` there: every NULL ping would then panic at the take.
     pub nd_cr: Option<UcredCell>,
 }
 
