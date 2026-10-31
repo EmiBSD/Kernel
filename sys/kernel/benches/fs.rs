@@ -73,6 +73,14 @@
 //! - `lseek`: `lseek(fd, 0, SEEK_SET)`.
 //! - `stat.3`: `stat("/a/b/c")` with the three names cached.
 //!
+//! N5.5a3's rows (`kernel::fs::ufs::ufs`), over the UFS layer's double (`testufs`: fresh
+//! tables with a buffer cache, a root directory of eight files in one block), the names
+//! bench's thread; no name-cache entry is made (no `MAKEENTRY`), so each lookup scans:
+//! - `ufs.lookup.hit`: `ufs_lookup` of the last of the eight names, its vnode (the inode
+//!   hash's) `vput`.
+//! - `ufs.lookup.miss`: `ufs_lookup` of a missing name (`ENOENT`).
+//! - `ufs.readdir`: `ufs_readdir` of the root's block into a 512-byte kernel buffer.
+//!
 //! Since N5.3 the bench registers `proc.rs`'s recycling pool backend before the doubles (as
 //! `vm.rs` and `proc.rs` do): the doubles' pool hands out a fresh zeroed page per item and
 //! never takes one back, which timed the host's `malloc` and `memset` (a `namei`'s path
@@ -113,11 +121,13 @@ use hal::sys::errno::Errno;
 use hal::sys::types::makedev;
 use kernel::fs::subr::{cdevvp, getnewvnode, vdrop, vfinddev, vfs, vget, vhold, vput, vref, vrele};
 use kernel::fs::testfs::{TestGlue, setup_root};
+use kernel::fs::ufs::ufs::testufs;
 use kernel::fs::vnode::{
     LK_EXCLUSIVE, LK_RWFLAGS, VCHR, VNODE_MTX, VREG, VT_NON, VT_TMPFS, Vnode, vn_lock,
 };
-use kernel::fs::vops::{Cred, Vnops, vop_islocked, vop_unlock};
+use kernel::fs::vops::{Cred, Vnops, vop_islocked, vop_readdir, vop_unlock};
 use kernel::proc::Thread;
+use kernel::uio::{Iovec, Uio};
 
 /// Repetitions per bench.
 const REPS: usize = 7;
@@ -709,6 +719,9 @@ fn main() {
         "fstat",
         "lseek",
         "stat.3",
+        "ufs.lookup.hit",
+        "ufs.lookup.miss",
+        "ufs.readdir",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1071,5 +1084,57 @@ fn main() {
         );
     }
     let _ = kernel::descrip::sys_close(p, fd);
+
+    // N5.5a3's rows: the UFS layer's lookup and readdir over its double (`testufs`: a fresh
+    // mount with a root directory of eight files, its blocks in the buffer cache). The
+    // componentname asks for no name-cache entry (no MAKEENTRY), so every lookup scans the
+    // directory block, as a miss of the name cache does. The double's setup takes the
+    // kernel memory's guard afresh: the rows above give theirs back first.
+    drop(_memory);
+    let (_ufs_memory, ump) = testufs::setup_cached();
+    let up = p;
+    let ucred = up.ucred();
+    let uroot = need(VFS_ROOT(ump), "ufs root");
+    let files: [&'static [u8]; 8] = [b"a0", b"a1", b"a2", b"a3", b"a4", b"a5", b"a6", b"a7"];
+    for name in files {
+        vput(need(testufs::create(up, ucred, uroot, name), "ufs create"));
+    }
+    if wanted(names[23]) {
+        report(
+            names[23],
+            measure(|| {
+                rounds(|| {
+                    if let Ok(vp) = testufs::lookup(up, ucred, black_box(uroot), b"a7") {
+                        vput(vp);
+                    }
+                })
+            }),
+        );
+    }
+    if wanted(names[24]) {
+        report(
+            names[24],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(testufs::lookup(up, ucred, black_box(uroot), b"zz"));
+                })
+            }),
+        );
+    }
+    if wanted(names[25]) {
+        let mut buf = [0u8; 512];
+        report(
+            names[25],
+            measure(|| {
+                rounds(|| {
+                    let mut eof = 0;
+                    let mut iov = [Iovec::new()];
+                    let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(up));
+                    let _ = black_box(vop_readdir(uroot, &mut uio, Cred::real(ucred), &mut eof));
+                })
+            }),
+        );
+    }
+    vput(uroot);
 }
 /* </CODE> */

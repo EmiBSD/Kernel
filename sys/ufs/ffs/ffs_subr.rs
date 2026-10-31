@@ -67,9 +67,8 @@
 use core::cell::Cell;
 
 use crate::kern::kern_tc::getmicrouptime;
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::sys::buf::Buf;
-use crate::sys::buf::{bread, brelse, buf_adjcnt};
 use crate::sys::errno::Errno;
 use crate::sys::mount::Mount;
 use crate::sys::types::{Daddr, Dev, Off};
@@ -86,10 +85,7 @@ use crate::ufs::ufs::inode::{Inode, vtoi};
 /// `ffs_bufatoff` (`iv_bufatoff`, the kernel's callers through `InodeOps::bufatoff`): the
 /// busy buffer's token with the contents of block `offset` from the beginning of directory
 /// `ip`, and the offset in it of the remaining space in the directory (`*res`).
-pub fn ffs_bufatoff_token(
-    ip: &Inode,
-    offset: Off,
-) -> Result<(kernel::fs::buf::BufRef, usize), Errno> {
+pub fn ffs_bufatoff(ip: &Inode, offset: Off) -> Result<(kernel::fs::buf::BufRef, usize), Errno> {
     let vp = ip.itov();
     let fs = ip.fs();
     let lbn = lblkno(fs, offset);
@@ -102,24 +98,6 @@ pub fn ffs_bufatoff_token(
     }
     kernel::fs::bio::buf_adjcnt(&t, bsize as i64);
     Ok((t, blkoff(fs, offset) as usize))
-}
-
-/// [`ffs_bufatoff_token`] for `bsd`'s callers (`UFS_BUFATOFF`: `ufs_lookup`, `ufs_readdir`),
-/// the buffer lent as `bsd`'s `bread` lends it, in the read's own section of the cache's lock
-/// (docs/SCAFFOLDING.md: until N5.5a3 moves them).
-pub fn ffs_bufatoff(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize), Errno> {
-    let vp = ip.itov();
-    let fs = ip.fs();
-    let lbn = lblkno(fs, offset);
-    let bsize = blksize(fs, ip, lbn);
-
-    let (bp, error) = bread(vp, lbn, fs.fs_bsize.get());
-    if let Err(e) = error {
-        brelse(bp);
-        return Err(e);
-    }
-    buf_adjcnt(bp, bsize as i64);
-    Ok((bp, blkoff(fs, offset) as usize))
 }
 
 /// `ffs_fragacct`: update the frsum fields to reflect addition or deletion of some frags.
@@ -213,7 +191,7 @@ pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vn
     vp.set_vtype(iftovt(ip.dip_mode()));
     match vp.vtype() {
         VCHR | VBLK => {
-            crate::sys::vnode::set_vops(vp, &FFS_SPECVOPS);
+            vp.set_ops_id(kernel::fs::subr::vops_id::<BsdProcGlue>(&FFS_SPECVOPS));
             if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.

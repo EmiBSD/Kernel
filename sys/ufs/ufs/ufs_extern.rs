@@ -74,9 +74,12 @@ pub use crate::ufs::ufs::ufs_vfsops::{
     ufs_check_export, ufs_fhtovp, ufs_init, ufs_root, ufs_start,
 };
 pub use crate::ufs::ufs::ufs_vnops::{
-    ufs_access, ufs_advlock, ufs_close, ufs_create, ufs_getattr, ufs_ioctl, ufs_islocked,
-    ufs_itimes, ufs_kqfilter, ufs_link, ufs_lock, ufs_makeinode, ufs_mkdir, ufs_mknod, ufs_open,
-    ufs_pathconf, ufs_print, ufs_readdir, ufs_readlink, ufs_remove, ufs_rename, ufs_rmdir,
-    ufs_setattr, ufs_strategy, ufs_symlink, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
+    ufs_close, ufs_ioctl, ufs_islocked, ufs_itimes, ufs_kqfilter, ufs_lock, ufs_pathconf,
+    ufs_print, ufs_strategy, ufs_unlock, ufsspec_close, ufsspec_read, ufsspec_write,
+};
+pub use kernel::fs::ufs::ufs::ufs_vnops::{
+    ufs_access, ufs_advlock, ufs_create, ufs_getattr, ufs_link, ufs_makeinode, ufs_mkdir,
+    ufs_mknod, ufs_open, ufs_readdir, ufs_readlink, ufs_remove, ufs_rename, ufs_rmdir, ufs_setattr,
+    ufs_symlink,
 };
 /* </CODE> */

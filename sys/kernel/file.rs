@@ -678,6 +678,17 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
         let _ = g;
         None
     }
+    /// `EXT2FS_ITIMES(ip)` of an ext2fs inode (`ufs_itimes`'s `IS_EXT2_VNODE` branch: the
+    /// times go into ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's member until
+    /// N5.6). A glue without ext2fs has no ext2fs inode: `panic(9)`.
+    fn ext2fs_itimes(ip: &crate::fs::ufs::ufs::inode::Inode<Self::Proc>) {
+        crate::assert::kpanic(format_args!("inode {ip:p}: not an ext2fs inode"))
+    }
+    /// `ext2fs_size(ip)` of an ext2fs inode (`filt_ufsread`'s `IS_EXT2_VNODE` branch), as
+    /// [`FileGlue::ext2fs_itimes`].
+    fn ext2fs_size(ip: &crate::fs::ufs::ufs::inode::Inode<Self::Proc>) -> u64 {
+        crate::assert::kpanic(format_args!("inode {ip:p}: not an ext2fs inode"))
+    }
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

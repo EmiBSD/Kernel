@@ -120,14 +120,13 @@ use crate::sys::vnode::{
     FORCECLOSE, IGNORECLEAN, SKIPSYSTEM, V_SAVE, VBLK, VNON, VT_UFS, Vnode, WRITECLOSE,
 };
 use crate::sys::vnode::{
-    bdevvp, copy_statfs_info, getnewvnode, vcount, vflush, vfs_export, vfs_mount_foreach_vnode,
-    vfs_mount_free, vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput,
-    vref, vrele,
+    bdevvp, copy_statfs_info, vcount, vflush, vfs_export, vfs_mount_foreach_vnode, vfs_mount_free,
+    vfs_mountedon, vfs_rootmountalloc, vfs_unbusy, vget, vgonel, vinvalbuf, vput, vref, vrele,
 };
 use crate::ufs::ffs::ffs_alloc::{ffs_inode_alloc, ffs_inode_free};
 use crate::ufs::ffs::ffs_balloc::ffs_balloc;
 use crate::ufs::ffs::ffs_inode::{ffs_truncate, ffs_update};
-use crate::ufs::ffs::ffs_subr::{ffs_bufatoff_token, ffs_vinit};
+use crate::ufs::ffs::ffs_subr::{ffs_bufatoff, ffs_vinit};
 use crate::ufs::ffs::ffs_vnops::FFS_VOPS;
 use crate::ufs::ffs::fs::{
     AFPDIR, AVFILESIZ, CgBuf, FRAGTBL, FS_42INODEFMT, FS_42POSTBLFMT, FS_44INODEFMT,
@@ -211,7 +210,7 @@ impl InodeOps<BsdProcGlue> for FfsVtbl {
     }
 
     fn bufatoff(&self, ip: &Inode, offset: Off) -> Result<(IoBuf, usize), Errno> {
-        ffs_bufatoff_token(ip, offset).map(|(t, off)| (IoBuf::Token(t), off))
+        ffs_bufatoff(ip, offset).map(|(t, off)| (IoBuf::Token(t), off))
     }
 }
 
@@ -1378,7 +1377,7 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
         }
 
         // Allocate a new vnode/inode.
-        let vp = getnewvnode(VT_UFS, Some(mp), &FFS_VOPS)?;
+        let vp = kernel::fs::subr::getnewvnode::<BsdProcGlue>(VT_UFS, Some(mp), &FFS_VOPS)?;
 
         let fs = ump.fs();
         let Some(ip) = FFS_INO_POOL.get_homed(PR_WAITOK, || {
