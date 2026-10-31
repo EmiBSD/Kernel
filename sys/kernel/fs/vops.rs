@@ -227,17 +227,6 @@ impl<'a> Cred<'a> {
         }
     }
 
-    /// The C's pointer (the sentinels' words `-1` and `-2`, NULL, or the credential's
-    /// address), for what records it as a number (`kinfo_file`'s, a trace).
-    pub fn as_raw(self) -> *const Ucred {
-        match self {
-            Cred::Null => ptr::null(),
-            Cred::NoCred => ptr::without_provenance(usize::MAX),
-            Cred::FsCred => ptr::without_provenance(usize::MAX - 1),
-            Cred::Real(c) => ptr::from_ref(c),
-        }
-    }
-
     /// `cred == FSCRED`.
     #[inline]
     pub const fn is_fscred(self) -> bool {
@@ -248,12 +237,6 @@ impl<'a> Cred<'a> {
     #[inline]
     pub const fn is_nocred(self) -> bool {
         matches!(self, Cred::NoCred)
-    }
-
-    /// `cred == NULL`.
-    #[inline]
-    pub const fn is_null(self) -> bool {
-        matches!(self, Cred::Null)
     }
 }
 
@@ -1187,14 +1170,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_credential_sentinels_are_the_c_s_words() {
+    fn the_credential_sentinels_are_told_apart() {
         assert!(Cred::FSCRED.is_fscred());
         assert!(!Cred::FSCRED.is_nocred());
         assert!(Cred::NOCRED.is_nocred());
-        assert_eq!(Cred::NOCRED.as_raw().addr(), usize::MAX);
-        assert_eq!(Cred::FSCRED.as_raw().addr(), usize::MAX - 1);
-        assert!(Cred::NULL.as_raw().is_null());
-        assert!(Cred::NULL.is_null() && !Cred::NOCRED.is_null());
+        assert!(!Cred::NULL.is_nocred() && !Cred::NULL.is_fscred());
     }
 
     #[test]
@@ -1203,7 +1183,6 @@ mod tests {
         let b = Ucred::new();
         let (ca, cb) = (Cred::real(&a), Cred::real(&b));
         assert!(ca.ucred().is_some_and(|c| ptr::eq(c, &a)));
-        assert_eq!(ca.as_raw(), ptr::from_ref(&a));
         // Equal contents, different credentials: the C compares the pointers.
         assert_eq!(ca, Cred::real(&a));
         assert_ne!(ca, cb);
@@ -1214,7 +1193,7 @@ mod tests {
         }
         assert_ne!(Cred::NOCRED, Cred::FSCRED);
         assert_ne!(Cred::NULL, Cred::NOCRED);
-        assert!(!ca.is_nocred() && !ca.is_fscred() && !ca.is_null());
+        assert!(!ca.is_nocred() && !ca.is_fscred());
     }
 }
 /* </TESTS> */
