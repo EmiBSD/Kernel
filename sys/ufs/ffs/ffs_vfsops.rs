@@ -1385,6 +1385,7 @@ pub fn ffs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
             Inode::new(InodeInit {
                 vnode: Some(vp),
                 mount: Some(mp),
+                ump: Some(ump),
                 devvp: Some(ump.devvp()),
                 dev,
                 number: ino,

@@ -1638,6 +1638,8 @@ macro_rules! test_file_glue {
             type InodeG = ();
             type UfsmountG = ();
             type InodeHash = InodeHashLink;
+            type DqHash = DqHashLink;
+            type DqFree = DqFreeLink;
 
             fn tables() -> &'static $crate::file::FileTables<Self> {
                 FILE_TABLES.with(|t| *t)

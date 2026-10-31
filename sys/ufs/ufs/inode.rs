@@ -109,7 +109,6 @@ use crate::ufs::ufs::dirhash::Dirhash;
 use crate::ufs::ufs::quota::MAXQUOTAS;
 #[cfg(feature = "quota")]
 use crate::ufs::ufs::ufs_quota::Dquot;
-use crate::ufs::ufs::ufsmount::{Ufsmount, vfstoufs};
 #[cfg(feature = "ext2fs")]
 use hal::link::PtrWord;
 pub use kernel::fs::ufs::ufs::inode::{
@@ -381,8 +380,6 @@ pub type InodeInit = kernel::fs::ufs::ufs::inode::InodeInit<BsdProcGlue>;
 /// The members of `struct inode` that `bsd`'s types answer: `i_ump`, `inode_u`, and
 /// `EXT2FS_ITIMES` (over the kernel's flags and ext2fs's dinode).
 pub trait InodeExt {
-    /// `ip->i_ump`: the mount's `struct ufsmount`.
-    fn ump(&self) -> &'static Ufsmount;
     /// `ip->i_fs`: the FFS super block.
     fn fs(&self) -> &'static Fs;
     /// `ip->i_e2fs`: the inode's in-core ext2fs super block (feature `ext2fs`).
@@ -395,10 +392,6 @@ pub trait InodeExt {
 }
 
 impl InodeExt for Inode {
-    fn ump(&self) -> &'static Ufsmount {
-        vfstoufs(self.mount())
-    }
-
     fn fs(&self) -> &'static Fs {
         match self.g.i_fs.get() {
             Some(fs) => fs,

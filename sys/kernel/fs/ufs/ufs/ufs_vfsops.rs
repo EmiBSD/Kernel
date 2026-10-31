@@ -80,6 +80,7 @@ use hal::sys::errno::Errno;
 use super::dinode::ROOTINO;
 use super::inode::{Ufid, vtoi};
 use super::ufs_ihash::Ihash;
+use super::ufs_quota::DqTables;
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
 use crate::fs::vnode::Vnode;
@@ -93,6 +94,8 @@ pub struct UfsTables<G: ProcGlue> {
     pub init_done: AtomicBool,
     /// The inode hash, once `ufs_ihashinit` made it.
     pub(super) ihash: ReadMostly<Option<Ihash<G>>>,
+    /// The dquot hash and free list, once `ufs_quota_init` made them.
+    pub(super) dq: ReadMostly<Option<DqTables<G>>>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -101,6 +104,7 @@ impl<G: ProcGlue> UfsTables<G> {
         Self {
             init_done: AtomicBool::new(false),
             ihash: ReadMostly::new(None),
+            dq: ReadMostly::new(None),
         }
     }
 }
@@ -142,6 +146,24 @@ pub fn ufs_fhtovp<G: ProcGlue>(
     Ok(nvp)
 }
 
+/// `ufs_init`: initialize UFS file systems, done only once: the inode hash, the quotas'
+/// tables and the dirhash (`UFS_DIRHASH`), sized by `initialvnodes`.
+pub fn ufs_init<G: ProcGlue>(initialvnodes: i32) -> Result<(), Errno> {
+    if crate::fs::subr::vfs::<G>()
+        .ufs
+        .init_done
+        .swap(true, core::sync::atomic::Ordering::Relaxed)
+    {
+        return Ok(());
+    }
+    super::ufs_ihash::ufs_ihashinit::<G>(initialvnodes);
+    super::quota::ufs_quota_init::<G>(initialvnodes);
+    #[cfg(feature = "ufs_dirhash")]
+    super::ufs_dirhash::ufsdirhash_init();
+
+    Ok(())
+}
+
 /// The UFS layer of `G` forgotten (a host test's file systems start afresh, as
 /// `setup_real_memory` gives each test fresh kernel memory): `init_done` cleared and the
 /// inode hash forgotten, never freed (testing.md).
@@ -149,6 +171,9 @@ pub fn ufs_fhtovp<G: ProcGlue>(
 pub fn ufs_test_reset<G: ProcGlue>() {
     let t = &crate::fs::subr::vfs::<G>().ufs;
     core::mem::forget(t.ihash.replace(None));
+    core::mem::forget(t.dq.replace(None));
+    #[cfg(feature = "ufs_dirhash")]
+    super::ufs_dirhash::dirhash_test_reset();
     t.init_done
         .store(false, core::sync::atomic::Ordering::SeqCst);
 }

@@ -134,7 +134,6 @@ use crate::sys::vnode::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vpu
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::{vfs_isbusy, vprint};
 use crate::sys::vnode::{vn_close, vn_lock, vn_open};
-use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, vtoi};
 use crate::ufs::ufs::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,

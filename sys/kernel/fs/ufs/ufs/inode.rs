@@ -141,10 +141,12 @@ use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use hal::link::Link;
+use hal::malloc::MBox;
 use hal::once::OnceStatic;
 use hal::pinlist::PinEntry;
 use hal::pool::{PoolArc, PoolBox, PoolHome};
 use hal::rwlock::RecursiveRwlock;
+use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_ASYNC};
 use hal::sys::types::{Daddr, Dev, Mode, Off};
@@ -153,7 +155,10 @@ use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,
 };
-use super::ufsmount::UM_UFS1;
+use super::dirhash::Dirhash;
+use super::quota::MAXQUOTAS;
+use super::ufs_quota::Dquot;
+use super::ufsmount::{UM_UFS1, Ufsmount};
 use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
@@ -534,6 +539,8 @@ pub struct InodeInit<G: ProcGlue> {
     pub vnode: Option<&'static Vnode<G>>,
     /// `i_ump->um_mountp`.
     pub mount: Option<&'static Mount<G>>,
+    /// `i_ump`.
+    pub ump: Option<&'static Ufsmount<G>>,
     /// `i_devvp` (`i_ump->um_devvp`).
     pub devvp: Option<&'static Vnode<G>>,
     /// `i_dev`.
@@ -559,6 +566,7 @@ impl<G: ProcGlue> Default for InodeInit<G> {
         Self {
             vnode: None,
             mount: None,
+            ump: None,
             devvp: None,
             dev: 0,
             number: 0,
@@ -589,6 +597,9 @@ pub struct Inode<G: ProcGlue> {
     pub i_vnode: Link<Vnode<G>>,
     /// `i_ump->um_mountp`.
     mount: Option<&'static Mount<G>>,
+    /// `i_ump`: the mount's UFS structure (lent by the file system's `vget` for the inode's
+    /// life: every inode of a mount is reclaimed before its unmount frees the structure).
+    ump: Option<&'static Ufsmount<G>>,
     /// `i_devvp`: the mount's device vnode.
     devvp: Option<&'static Vnode<G>>,
     /// `i_flag`: flags, see below.
@@ -615,6 +626,11 @@ pub struct Inode<G: ProcGlue> {
     pub i_lockf: LockfSlot,
     /// `i_lock`: inode lock.
     pub i_lock: RecursiveRwlock,
+    /// `i_dquot`: dquot structures (`ufs_quota.rs`; none without `QUOTA`).
+    pub i_dquot: [Link<Dquot<G>>; MAXQUOTAS],
+    /// `i_dirhash` (`inode_ext.dirhash`): hashing for large directories (`ufs_dirhash.rs`),
+    /// written by `ufsdirhash_build` and `ufsdirhash_free` only, under the inode's lock.
+    pub i_dirhash: ReadMostly<Option<MBox<Dirhash>>>,
     // Side effects; used during directory lookup.
     /// `i_count`: size of free slot in directory.
     pub i_count: I32Word,
@@ -681,6 +697,7 @@ impl<G: ProcGlue> Inode<G> {
                 l
             },
             mount: init.mount,
+            ump: init.ump,
             devvp: init.devvp,
             i_flag: U32Word::new(0),
             i_dev: init.dev,
@@ -694,6 +711,8 @@ impl<G: ProcGlue> Inode<G> {
             i_modrev: U64Word::new(0),
             i_lockf: LockfSlot::new(),
             i_lock: RecursiveRwlock::new("inode"),
+            i_dquot: [const { Link::new() }; MAXQUOTAS],
+            i_dirhash: ReadMostly::new(None),
             i_count: I32Word::new(0),
             i_endoff: I32Word::new(0),
             i_diroff: I32Word::new(0),
@@ -712,6 +731,14 @@ impl<G: ProcGlue> Inode<G> {
         match self.i_vnode.get() {
             Some(vp) => vp,
             None => kpanic(format_args!("inode {self:p}: no vnode")),
+        }
+    }
+
+    /// `ip->i_ump`: the mount's UFS structure, which every inode of a mounted UFS has.
+    pub fn ump(&self) -> &'static Ufsmount<G> {
+        match self.ump {
+            Some(u) => u,
+            None => kpanic(format_args!("inode {self:p}: no ufsmount")),
         }
     }
 

@@ -15,6 +15,8 @@ path = "lib.rs"
 diagnostic = ["hal/diagnostic"] # `option DIAGNOSTIC` -> the kernel's KASSERT(9)s are active
 debug = []                      # `option DEBUG` -> the kernel's KDASSERT(9)s are active (uvm_pmr_assertvalid)
 tmpfs = []                      # `option TMPFS` -> vm::aobj's uao_grow/uao_shrink (tmpfs's regular files)
+quota = []                      # `option QUOTA` -> fs::ufs::ufs's disk quotas (ufs_quota.c); without it ufs_quota_stub.c's answers
+ufs_dirhash = []                # `option UFS_DIRHASH` -> fs::ufs::ufs::ufs_dirhash, hashed lookups in large directories
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,

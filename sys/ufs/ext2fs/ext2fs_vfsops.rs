@@ -981,6 +981,7 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
             Inode::new(crate::ufs::ufs::inode::InodeInit {
                 vnode: Some(vp),
                 mount: Some(mp),
+                ump: Some(ump),
                 devvp: Some(ump.devvp()),
                 dev,
                 number: ino,

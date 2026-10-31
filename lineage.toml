@@ -8447,6 +8447,41 @@ status = "redesigned"
 notes = "N5.5a1: ufs_bmap, ufs_bmaparray and ufs_getlbns over the buffer cache's tokens (getblk, VOP_STRATEGY, biowait, brelse), the um_* words read from the inode's copies; getlbns, the arithmetic over a pointer count, its own function (tested against the C's paths)"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ufs/dirhash.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/dirhash.rs"]
+status = "redesigned"
+notes = "N5.5a2: struct dirhash as Dirhash: dh_mtx a Rwlocked owning DhTables (the two arrays in DhArrays, an MArray of ufsdirhash_pool PoolBoxes and an MArray of free counts, None once recycled), dh_score/dh_seqopt/dh_seqoff and the unlocked dh_hash test relaxed words, dh_list a PinEntry; DH_ENTRY and dh_blkfree[] slice indexing"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/quota.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/quota.rs"]
+status = "redesigned"
+notes = "N5.5a2: quota.h's constants, Dqblk by hal::abi_pod!, the four charge macros and ufs_quota_stub.c's answers without feature quota; a charge's credential is Option<&Ucred>, VFSTOUFS(mp) the caller's"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
+status = "redesigned"
+notes = "N5.5a2: the inode owns its dirhash in a ReadMostly<Option<MBox<Dirhash>>>; ufsdirhash_list a PinList bound to ufsdirhash_mtx (SharedRwlock over a static RawRwlock), TAILQ_REMOVE+INSERT_AFTER is step_over; directory blocks as BufRef tokens from InodeOps::bufatoff; the lock-section helper `locked`"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_inode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_inode.rs"]
+status = "redesigned"
+notes = "N5.5a2: ufs_inactive and ufs_reclaim over InodeRef and InodeOps (the inode's table), the kernel's Vnops::inactive shape"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ufs/ufs_quota.rs"
+crate = "kernel"
+lz = ["sys/ufs/ufs/ufs_quota.rs"]
+status = "redesigned"
+notes = "N5.5a2: Dquot<G> of relaxed words (dq_dqb eight u32 words, dq_vp a Link, dq_cred a ReadMostly<Option<CredRef>>), an MBox of M_DQUOT leaked (never freed, as the C); the dqhash chains and dqfreelist hal::list::Lists of the 'static dquots in the glue's UfsTables::dq (no witness, no spl); quota file I/O through a 32-byte kernel uio"
+
+[[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_vfsops.rs"]

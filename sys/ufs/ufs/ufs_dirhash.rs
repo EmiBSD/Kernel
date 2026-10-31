@@ -110,7 +110,6 @@ use crate::ufs::ufs::dirhash::{
     DH_NBLKOFF, DH_NFSTATS, DH_SCOREINIT, DH_SCOREMAX, DIRALIGN, DIRHASH_DEL, DIRHASH_EMPTY,
     Dirhash, DirhashList, DirhashListHead,
 };
-use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, UFS_BUFATOFF};
 use libkern::siphash::{SipHash24, SiphashKey};
 

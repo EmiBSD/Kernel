@@ -75,11 +75,16 @@
 //!   vnode are never freed). The `unsafe impl Sync` goes with the members it covered, to the
 //!   glue's member.
 
+use core::sync::atomic::{AtomicI64, AtomicU8};
+
 use hal::link::Link;
+use hal::slot::ReadMostly;
 use hal::sys::types::Daddr;
 
 use super::inode::{I32Word, U32Word, U64Word};
+use super::quota::MAXQUOTAS;
 use crate::assert::kpanic;
+use crate::cred::CredRef;
 use crate::file::FileGlue;
 use crate::fs::mount::Mount;
 use crate::fs::vnode::Vnode;
@@ -105,6 +110,17 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_savedmaxfilesize: U64Word,
     /// `um_maxsymlinklen`: max size of short symlink.
     pub um_maxsymlinklen: U32Word,
+    /// `um_quotas`: pointer to quota files.
+    pub um_quotas: [Link<Vnode<G>>; MAXQUOTAS],
+    /// `um_cred`: quota file access cred, the mount's reference while the quota file is open
+    /// (`None`, the C's NULL or `NOCRED`, while it is not).
+    pub um_cred: [ReadMostly<Option<CredRef>>; MAXQUOTAS],
+    /// `um_btime`: block quota time limit.
+    pub um_btime: [AtomicI64; MAXQUOTAS],
+    /// `um_itime`: inode quota time limit.
+    pub um_itime: [AtomicI64; MAXQUOTAS],
+    /// `um_qflags`: quota specific flags.
+    pub um_qflags: [AtomicU8; MAXQUOTAS],
     /// The members of `bsd`'s types (`ufsmount_u`, `um_export`, the quotas; the module's
     /// deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
@@ -123,6 +139,11 @@ impl<G: ProcGlue> Ufsmount<G> {
             um_seqinc: U64Word::new(0),
             um_savedmaxfilesize: U64Word::new(0),
             um_maxsymlinklen: U32Word::new(0),
+            um_quotas: [const { Link::new() }; MAXQUOTAS],
+            um_cred: [const { ReadMostly::new(None) }; MAXQUOTAS],
+            um_btime: [const { AtomicI64::new(0) }; MAXQUOTAS],
+            um_itime: [const { AtomicI64::new(0) }; MAXQUOTAS],
+            um_qflags: [const { AtomicU8::new(0) }; MAXQUOTAS],
             g: Default::default(),
         }
     }
