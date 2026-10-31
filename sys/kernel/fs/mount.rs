@@ -169,8 +169,6 @@ use crate::proc::ProcGlue;
 pub const M_MOUNT: i32 = 5;
 /// `M_WAITOK` (`<sys/malloc.h>`).
 const M_WAITOK: i32 = 0x0001;
-/// `M_ZERO` (`<sys/malloc.h>`).
-const M_ZERO: i32 = 0x0008;
 
 /// `struct vfsconf`: filesystem configuration information. One of these exists for each
 /// type of filesystem supported by the kernel (`vfsconflist[]`, `bsd`'s `vfs_init.rs`).
@@ -618,7 +616,9 @@ pub fn vfs_mount_alloc<G: ProcGlue>(
             mp.reset();
             mp
         }
-        None => match MBox::new(M_MOUNT, M_WAITOK | M_ZERO, Mount::new()) {
+        // The C's `M_ZERO`: `MBox::new` writes the zeroed mount whole, so the flag would only
+        // add a memset.
+        None => match MBox::new(M_MOUNT, M_WAITOK, Mount::new()) {
             Some(b) => MBox::leak(b),
             None => kpanic(format_args!("vfs_mount_alloc: out of memory")),
         },
