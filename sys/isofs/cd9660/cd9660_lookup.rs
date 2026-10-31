@@ -167,7 +167,7 @@ pub fn cd9660_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let lockparent = flags & LOCKPARENT != 0;
 
     // Check accessibility of directory.
-    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0

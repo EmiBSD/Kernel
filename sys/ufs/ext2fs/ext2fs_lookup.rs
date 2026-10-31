@@ -126,7 +126,6 @@ use crate::sys::namei::{
 use crate::sys::namei::{cache_enter, cache_lookup};
 use crate::sys::param::roundup;
 use crate::sys::types::Off;
-use crate::sys::ucred::Ucred;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::{
     IO_NODELOCKED, IO_SYNC, VDIR, VEXEC, VWRITE, Vnode, VopLookupArgs, VopReaddirArgs,
@@ -346,7 +345,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let wantparent = flags & (LOCKPARENT | WANTPARENT) != 0;
 
     // Check accessibility of directory.
-    VOP_ACCESS(vdp, VEXEC, cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cred, cnp.proc())?;
 
     if flags & ISLASTCN != 0
         && vmount(vdp).flag() & MNT_RDONLY != 0
@@ -471,7 +470,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             }
             // Access for write is interpreted as allowing creation of files in the
             // directory.
-            VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+            VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
             // Return an indication of where the new directory entry should be put. If we
             // didn't find a slot, then set dp->i_count to 0 indicating that the new slot
             // belongs at the end of the directory. If we found a slot, then the new entry can
@@ -539,7 +538,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     // ndp->ni_dvp), otherwise we go on and lock the inode, being careful with ".".
     if nameiop == DELETE && flags & ISLASTCN != 0 {
         // Write access to directory required to delete files.
-        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
         // Return pointer to current entry in dp->i_offset, and distance past previous entry
         // (if there is a previous entry in this block) in dp->i_count. Save directory inode
         // pointer in ndp->ni_dvp for dirremove().
@@ -578,7 +577,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     // present directory. Must get inode of directory entry to verify it's a regular file, or
     // empty directory.
     if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
-        VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cred, cnp.proc())?;
         // Careful about locking second inode. This can only occur if the target is ".".
         if dp.i_number == dp.i_ino.get() {
             return Err(Errno::EISDIR);
@@ -820,7 +819,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
             uio_rw: UioRw::UIO_WRITE,
             uio_procp: None,
         };
-        let error = VOP_WRITE(dvp, &mut auio, IO_SYNC, cnp.cn_cred.as_raw());
+        let error = VOP_WRITE(dvp, &mut auio, IO_SYNC, cnp.cn_cred);
         if i64::from(dirblksize) > vfstoufs(vmount(dvp)).mountp().bsize() as i64 {
             // XXX should grow with balloc()
             panic(format_args!("ext2fs_direnter: frag size"));
@@ -895,12 +894,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
     let mut error = VOP_BWRITE(bp);
     dp.set_flag(IN_CHANGE | IN_UPDATE);
     if error.is_ok() && dp.i_endoff.get() != 0 && (dp.i_endoff.get() as u64) < ext2fs_size(&dp) {
-        error = ext2fs_truncate(
-            &dp,
-            Off::from(dp.i_endoff.get()),
-            IO_SYNC,
-            cnp.cn_cred.as_raw(),
-        );
+        error = ext2fs_truncate(&dp, Off::from(dp.i_endoff.get()), IO_SYNC, cnp.cn_cred);
     }
     error
 }
@@ -965,7 +959,7 @@ pub fn ext2fs_dirrewrite(dp: &Inode, ip: &Inode, _cnp: &Componentname) -> Result
 /// struct ext2fs_direct.
 ///
 /// NB: does not handle corrupted directories.
-pub fn ext2fs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
+pub fn ext2fs_dirempty(ip: &Inode, parentino: Ufsino, cred: Cred<'_>) -> bool {
     let mut dbuf = [0u8; Ext2fsDirtemplate::SIZE];
     let mut off: Off = 0;
     while (off as u64) < ext2fs_size(ip) {
@@ -976,7 +970,7 @@ pub fn ext2fs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> boo
             RdwrBuf::Kernel(&mut dbuf[..MINDIRSIZ]),
             off,
             IO_NODELOCKED,
-            Cred::from_raw(cred),
+            cred,
             Some(&mut count),
             curproc(),
         );
@@ -1020,7 +1014,7 @@ pub fn ext2fs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> boo
 /// `ext2fs_checkpath`: check if source directory is in the path of the target directory.
 /// Target is supplied locked, source is unlocked. The target is always vput before
 /// returning.
-pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Result<(), Errno> {
+pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: Cred<'_>) -> Result<(), Errno> {
     let mut vp = Some(target.itov());
     let rootino = ROOTINO;
     let error: Result<(), Errno> = 'out: {
@@ -1045,7 +1039,7 @@ pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> R
                 RdwrBuf::Kernel(&mut dirbuf[..Ext2fsDirtemplate::SIZE]),
                 0,
                 IO_NODELOCKED,
-                Cred::from_raw(cred),
+                cred,
                 None,
                 curproc(),
             ) {

@@ -88,7 +88,6 @@ use crate::sys::mount::MNT_WAIT;
 use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::{Daddr, Off};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
 #[cfg(feature = "ffs2")]
 use crate::ufs::ffs::ffs_alloc::ffs2_blkpref;
@@ -103,6 +102,7 @@ use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode, daddr32_at, set
 use crate::ufs::ufs::inode::{daddr64_at, set_daddr64_at};
 use crate::ufs::ufs::quota::ufs_quota_free_blocks;
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
+use kernel::fs::vops::Cred;
 
 /// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
 fn getblk_wait(vp: &'static Vnode, blkno: Daddr, size: i32) -> &'static Buf {
@@ -128,7 +128,7 @@ unsafe fn bdata(bp: &Buf) -> &mut [u8] {
 /// `VOP_FSYNC(vp, p->p_ucred, MNT_WAIT, p)` with `curproc`.
 fn fsync_wait(vp: &'static Vnode) {
     if let Some(p) = curproc() {
-        let _ = VOP_FSYNC(vp, p.ucred_ptr(), MNT_WAIT, p);
+        let _ = VOP_FSYNC(vp, Cred::real(p.ucred()), MNT_WAIT, p);
     }
 }
 
@@ -150,7 +150,7 @@ pub fn ffs1_balloc(
     ip: &Inode,
     startoffset: Off,
     size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: i32,
     mut bpp: Option<&mut Option<&'static Buf>>,
 ) -> Result<(), Errno> {
@@ -484,7 +484,7 @@ pub fn ffs2_balloc(
     ip: &Inode,
     off: Off,
     size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: i32,
     mut bpp: Option<&mut Option<&'static Buf>>,
 ) -> Result<(), Errno> {
@@ -901,7 +901,7 @@ pub fn ffs_balloc(
     ip: &Inode,
     off: Off,
     size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: i32,
     bpp: Option<&mut Option<&'static Buf>>,
 ) -> Result<(), Errno> {

@@ -207,7 +207,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     if dp.de_Attributes.get() & ATTR_DIRECTORY == 0 {
         return Err(Errno::ENOTDIR);
     }
-    VOP_ACCESS(vdp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(vdp, VEXEC, cnp.cn_cred, cnp.proc())?;
 
     // We now have a segment name to search for, and a directory to search.
     //
@@ -239,7 +239,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                 {
                     // Access for write is interpreted as allowing creation of files in the
                     // directory.
-                    VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
+                    VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
                     // Return an indication of where the new directory entry should be put.
                     dp.de_fndoffset.set(slotoffset);
                     dp.de_fndcnt.set(wincnt - 1);
@@ -283,7 +283,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         }
 
         // Write access to directory required to delete files.
-        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
 
         // Return pointer to current entry in dp->i_offset. Save directory inode pointer in
         // ndp->ni_dvp for dirremove().
@@ -310,7 +310,7 @@ pub fn msdosfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             return Err(Errno::EROFS); // really? XXX
         }
 
-        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred.as_raw(), cnp.proc())?;
+        VOP_ACCESS(vdp, VWRITE, cnp.cn_cred, cnp.proc())?;
 
         // Careful about locking second inode. This can only occur if the target is ".".
         if dp.de_StartCluster.get() == scn && isadir {
@@ -1138,7 +1138,7 @@ mod tests {
 
     /// A component name for `name`.
     fn cn<'p>(p: &'p Proc, name: &'static [u8], nameiop: u64, flags: u64) -> Componentname<'p> {
-        let mut cnp = Componentname::new(nameiop, flags, p, Cred::from_raw(p.ucred_ptr()));
+        let mut cnp = Componentname::new(nameiop, flags, p, Cred::real(p.ucred()));
         cnp.set_name_lit(name);
         cnp
     }
@@ -1584,7 +1584,7 @@ mod tests {
         };
         assert_eq!(blkoff, 32);
         assert_ne!(cluster, full);
-        msdosfs_sync(mp, MNT_WAIT, 0, p.ucred_ptr(), p).unwrap();
+        msdosfs_sync(mp, MNT_WAIT, 0, Cred::real(p.ucred()), p).unwrap();
         {
             // The chain on the disk: the directory's cluster, then the new one.
             let d = DISK.lock().unwrap();

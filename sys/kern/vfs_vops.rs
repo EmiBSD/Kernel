@@ -64,8 +64,8 @@
 //! traits. Since N5.2 the wrappers' checks (`vfs_vops.c`: `VBIOERROR` after an fsync, the
 //! releases of `VOP_REMOVE`, `ENOTDIR` of `VOP_READDIR`, `VOP_PATHCONF`'s constant names, the
 //! `curproc` asserts, `VOP_LOCK`'s `vnode_mtx` check) are the kernel's (`kernel::fs::vops`);
-//! each `VOP_*` here is a thin adapter over the kernel's function (the credential the C's
-//! pointer, a buffer the lent `&'static Buf` passed on as it came). `bsd`'s `struct vops` of
+//! each `VOP_*` here is a thin adapter over the kernel's function (the credential the
+//! kernel's `Cred`, a buffer the lent `&'static Buf` passed on as it came). `bsd`'s `struct vops` of
 //! `Option<fn>` slots implements the kernel's `Vnops` (each method packs the slot's `struct
 //! vop_*_args`; a NULL slot answers `EOPNOTSUPP`, the wrapper's answer in C), and its
 //! `struct vfsops` the kernel's `Vfs`, so every `bsd` file system's `static` tables reach the
@@ -92,7 +92,6 @@ use crate::sys::mount::{Fid, Mount, Statfs, Vfsconf, Vfsops};
 use crate::sys::namei::{Componentname, Nameidata};
 use crate::sys::proc::Proc;
 use crate::sys::types::{Daddr, Ino, Register, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::uio::Uio;
 use crate::sys::vnode::{
     Vattr, Vnode, VopAbortopArgs, VopAccessArgs, VopAdvlockArgs, VopBmapArgs, VopBwriteArgs,
@@ -196,7 +195,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopOpenArgs {
                 a_vp: vp,
                 a_mode: mode,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -214,7 +213,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopCloseArgs {
                 a_vp: vp,
                 a_fflag: fflag,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -226,7 +225,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopAccessArgs {
                 a_vp: vp,
                 a_mode: mode,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -244,7 +243,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopGetattrArgs {
                 a_vp: vp,
                 a_vap: vap,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -262,7 +261,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopSetattrArgs {
                 a_vp: vp,
                 a_vap: vap,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -281,7 +280,7 @@ impl Vnops<BsdProcGlue> for Vops {
                 a_vp: vp,
                 a_uio: uio,
                 a_ioflag: ioflag,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
             }),
             None => Err(Errno::EOPNOTSUPP),
         }
@@ -299,7 +298,7 @@ impl Vnops<BsdProcGlue> for Vops {
                 a_vp: vp,
                 a_uio: uio,
                 a_ioflag: ioflag,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
             }),
             None => Err(Errno::EOPNOTSUPP),
         }
@@ -320,7 +319,7 @@ impl Vnops<BsdProcGlue> for Vops {
                 a_command: command,
                 a_data: data,
                 a_fflag: fflag,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_p: p,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -358,7 +357,7 @@ impl Vnops<BsdProcGlue> for Vops {
         match self.vop_fsync {
             Some(f) => f(&mut VopFsyncArgs {
                 a_vp: vp,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_waitfor: waitfor,
                 a_p: p,
             }),
@@ -485,7 +484,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopReaddirArgs {
                 a_vp: vp,
                 a_uio: uio,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
                 a_eofflag: eofflag,
             }),
             None => Err(Errno::EOPNOTSUPP),
@@ -497,7 +496,7 @@ impl Vnops<BsdProcGlue> for Vops {
             Some(f) => f(&mut VopReadlinkArgs {
                 a_vp: vp,
                 a_uio: uio,
-                a_cred: cred.as_raw(),
+                a_cred: cred,
             }),
             None => Err(Errno::EOPNOTSUPP),
         }
@@ -656,7 +655,7 @@ impl Vfs<BsdProcGlue> for Vfsops {
         cred: Cred<'_>,
         p: &Proc,
     ) -> Result<(), Errno> {
-        (self.vfs_sync)(mp, waitfor, stall, cred.as_raw(), p)
+        (self.vfs_sync)(mp, waitfor, stall, cred, p)
     }
 
     fn vget(&self, mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno> {
@@ -743,8 +742,8 @@ pub fn VOP_MKNOD(
 /// `VOP_OPEN(vp, mode, cred, p)`.
 #[allow(non_snake_case)] // the C name
 #[inline]
-pub fn VOP_OPEN(vp: &'static Vnode, mode: i32, cred: *const Ucred, p: &Proc) -> Result<(), Errno> {
-    vops::vop_open(vp, mode, Cred::from_raw(cred), p)
+pub fn VOP_OPEN(vp: &'static Vnode, mode: i32, cred: Cred<'_>, p: &Proc) -> Result<(), Errno> {
+    vops::vop_open(vp, mode, cred, p)
 }
 
 /// `VOP_CLOSE(vp, fflag, cred, p)`.
@@ -753,22 +752,17 @@ pub fn VOP_OPEN(vp: &'static Vnode, mode: i32, cred: *const Ucred, p: &Proc) -> 
 pub fn VOP_CLOSE(
     vp: &'static Vnode,
     fflag: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
-    vops::vop_close(vp, fflag, Cred::from_raw(cred), p)
+    vops::vop_close(vp, fflag, cred, p)
 }
 
 /// `VOP_ACCESS(vp, mode, cred, p)`.
 #[allow(non_snake_case)] // the C name
 #[inline]
-pub fn VOP_ACCESS(
-    vp: &'static Vnode,
-    mode: i32,
-    cred: *const Ucred,
-    p: &Proc,
-) -> Result<(), Errno> {
-    vops::vop_access(vp, mode, Cred::from_raw(cred), p)
+pub fn VOP_ACCESS(vp: &'static Vnode, mode: i32, cred: Cred<'_>, p: &Proc) -> Result<(), Errno> {
+    vops::vop_access(vp, mode, cred, p)
 }
 
 /// `VOP_GETATTR(vp, vap, cred, p)`.
@@ -777,10 +771,10 @@ pub fn VOP_ACCESS(
 pub fn VOP_GETATTR(
     vp: &'static Vnode,
     vap: &mut Vattr,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    vops::vop_getattr(vp, vap, Cred::from_raw(cred), p)
+    vops::vop_getattr(vp, vap, cred, p)
 }
 
 /// `VOP_SETATTR(vp, vap, cred, p)`.
@@ -789,10 +783,10 @@ pub fn VOP_GETATTR(
 pub fn VOP_SETATTR(
     vp: &'static Vnode,
     vap: &mut Vattr,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    vops::vop_setattr(vp, vap, Cred::from_raw(cred), p)
+    vops::vop_setattr(vp, vap, cred, p)
 }
 
 /// `VOP_READ(vp, uio, ioflag, cred)`.
@@ -802,9 +796,9 @@ pub fn VOP_READ(
     vp: &'static Vnode,
     uio: &mut Uio<'_>,
     ioflag: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
-    vops::vop_read(vp, uio, ioflag, Cred::from_raw(cred))
+    vops::vop_read(vp, uio, ioflag, cred)
 }
 
 /// `VOP_WRITE(vp, uio, ioflag, cred)`.
@@ -814,9 +808,9 @@ pub fn VOP_WRITE(
     vp: &'static Vnode,
     uio: &mut Uio<'_>,
     ioflag: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
-    vops::vop_write(vp, uio, ioflag, Cred::from_raw(cred))
+    vops::vop_write(vp, uio, ioflag, cred)
 }
 
 /// `VOP_IOCTL(vp, command, data, fflag, cred, p)`.
@@ -827,10 +821,10 @@ pub fn VOP_IOCTL(
     command: u64,
     data: &mut [u8],
     fflag: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
-    vops::vop_ioctl(vp, command, data, fflag, Cred::from_raw(cred), p)
+    vops::vop_ioctl(vp, command, data, fflag, cred, p)
 }
 
 /// `VOP_KQFILTER(vp, fflag, kn)`.
@@ -851,13 +845,8 @@ pub fn VOP_REVOKE(vp: &'static Vnode, flags: i32) -> Result<(), Errno> {
 /// `EIO`.
 #[allow(non_snake_case)] // the C name
 #[inline]
-pub fn VOP_FSYNC(
-    vp: &'static Vnode,
-    cred: *const Ucred,
-    waitfor: i32,
-    p: &Proc,
-) -> Result<(), Errno> {
-    vops::vop_fsync(vp, Cred::from_raw(cred), waitfor, p)
+pub fn VOP_FSYNC(vp: &'static Vnode, cred: Cred<'_>, waitfor: i32, p: &Proc) -> Result<(), Errno> {
+    vops::vop_fsync(vp, cred, waitfor, p)
 }
 
 /// `VOP_REMOVE(dvp, vp, cnp)`: removes the entry and releases both vnodes.
@@ -938,21 +927,17 @@ pub fn VOP_SYMLINK(
 pub fn VOP_READDIR(
     vp: &'static Vnode,
     uio: &mut Uio<'_>,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     eofflag: &mut i32,
 ) -> Result<(), Errno> {
-    vops::vop_readdir(vp, uio, Cred::from_raw(cred), eofflag)
+    vops::vop_readdir(vp, uio, cred, eofflag)
 }
 
 /// `VOP_READLINK(vp, uio, cred)`.
 #[allow(non_snake_case)] // the C name
 #[inline]
-pub fn VOP_READLINK(
-    vp: &'static Vnode,
-    uio: &mut Uio<'_>,
-    cred: *const Ucred,
-) -> Result<(), Errno> {
-    vops::vop_readlink(vp, uio, Cred::from_raw(cred))
+pub fn VOP_READLINK(vp: &'static Vnode, uio: &mut Uio<'_>, cred: Cred<'_>) -> Result<(), Errno> {
+    vops::vop_readlink(vp, uio, cred)
 }
 
 /// `VOP_ABORTOP(dvp, cnp)`.
@@ -1128,7 +1113,7 @@ mod tests {
         };
         ($name:ident, $args:ty, $bit:expr, cred) => {
             fn $name(ap: &mut $args) -> Result<(), Errno> {
-                assert!(core::ptr::eq(ap.a_cred, NOCRED), "a_cred passes through");
+                assert!(ap.a_cred == NOCRED, "a_cred passes through");
                 hit($bit);
                 Ok(())
             }
@@ -1436,7 +1421,7 @@ mod tests {
             Ok(())
         },
         vfs_sync: |_, _, _, cred, _| {
-            assert!(core::ptr::eq(cred, NOCRED));
+            assert!(cred == NOCRED);
             vhit(6);
             Ok(())
         },

@@ -87,6 +87,7 @@
 use core::mem::offset_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::{rootvp, set_rootvp, set_swapdev_vp};
 use crate::kern::kern_malloc::{free, malloc};
@@ -119,7 +120,7 @@ use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::proc::Proc;
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Daddr, Ino, Off, major};
-use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{FSCRED, NOCRED};
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, V_SAVE, VBAD, VBLK, VNON, VT_EXT2FS, Vnode, WRITECLOSE};
 use crate::sys::vnode::{
@@ -313,7 +314,7 @@ pub fn ext2fs_mount(
             fs.e2fs_ronly.set(1);
         }
         if mp.flag() & MNT_RELOAD != 0 {
-            ext2fs_reload(mp, ndp.ni_cnd.cn_cred.as_raw(), p)?;
+            ext2fs_reload(mp, ndp.ni_cnd.cn_cred, p)?;
         }
         if fs.e2fs_ronly.get() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
             fs.e2fs_ronly.set(0);
@@ -414,7 +415,7 @@ fn ext2fs_reload_vnode(
     vp: &'static Vnode,
     fs: &MExt2fs,
     p: &Proc,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     devvp: &'static Vnode,
 ) -> Result<(), Errno> {
     // Step 4: invalidate all inactive vnodes.
@@ -582,7 +583,7 @@ fn sb_scalars(fs: &MExt2fs) -> SbScalars {
 ///  4) invalidate all inactive vnodes.
 ///  5) invalidate all cached file data.
 ///  6) re-read inode data for all active vnodes.
-pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Result<(), Errno> {
+pub fn ext2fs_reload(mountp: &'static Mount, cred: Cred<'_>, p: &Proc) -> Result<(), Errno> {
     if mountp.flag() & MNT_RDONLY == 0 {
         return Err(Errno::EINVAL);
     }
@@ -632,7 +633,7 @@ pub fn ext2fs_reload(mountp: &'static Mount, cred: *const Ucred, p: &Proc) -> Re
 /// `ext2fs_mountfs`: common code for mount and mountroot.
 pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Result<(), Errno> {
     let dev = devvp.rdev();
-    let cred = p.ucred_ptr();
+    let cred = Cred::real(p.ucred());
     // Disallow multiple mounts of the same device. Disallow mounting of a device that is
     // currently in use (except for root, which might share swap device for miniroot).
     // Flush out any old buffers remaining from a previous use.
@@ -788,7 +789,7 @@ pub fn ext2fs_flushfiles(mp: &'static Mount, flags: i32, p: &Proc) -> Result<(),
     // Flush filesystem metadata.
     let devvp = ump.devvp();
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
-    let error = VOP_FSYNC(devvp, p.ucred_ptr(), MNT_WAIT, p);
+    let error = VOP_FSYNC(devvp, Cred::real(p.ucred()), MNT_WAIT, p);
     let _ = VOP_UNLOCK(devvp);
     error
 }
@@ -843,7 +844,7 @@ struct Ext2fsSyncArgs<'a> {
     /// `p`.
     p: &'a Proc,
     /// `cred`.
-    cred: *const Ucred,
+    cred: Cred<'a>,
 }
 
 /// `ext2fs_sync_vnode`: write back one (modified) inode for `ext2fs_sync`.
@@ -893,7 +894,7 @@ pub fn ext2fs_sync(
     mp: &'static Mount,
     waitfor: i32,
     stall: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: &Proc,
 ) -> Result<(), Errno> {
     let ump = vfstoufs(mp);
@@ -1663,7 +1664,7 @@ pub(crate) mod tests {
                 iov_len: chunk,
             }];
             let mut u = uio(&mut iov, out.len() as Off, UioRw::UIO_READ);
-            VOP_READ(vp, &mut u, 0, ptr::null()).unwrap();
+            VOP_READ(vp, &mut u, 0, Cred::NULL).unwrap();
             let n = chunk - u.uio_resid;
             if n == 0 {
                 return out;
@@ -1680,7 +1681,7 @@ pub(crate) mod tests {
             iov_len: buf.len(),
         }];
         let mut u = uio(&mut iov, offset, UioRw::UIO_WRITE);
-        VOP_WRITE(vp, &mut u, 0, p.ucred_ptr()).unwrap();
+        VOP_WRITE(vp, &mut u, 0, Cred::real(p.ucred())).unwrap();
         assert_eq!(u.uio_resid, 0);
     }
 
@@ -1822,7 +1823,7 @@ pub(crate) mod tests {
         let root = VFS_ROOT(mp).unwrap();
         let hello = VFS_VGET(mp, 12).unwrap();
         let ip = vtoi(hello);
-        let cred = p.ucred_ptr();
+        let cred = Cred::real(p.ucred());
 
         // Grow hello.txt to three blocks: two new ones, the first 8 free ones of the group.
         let data = pattern(3000, 1);

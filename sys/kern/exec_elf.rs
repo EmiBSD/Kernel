@@ -349,7 +349,7 @@ pub fn elf_read_from(p: &Proc, vp: ExecFile<'_>, off: u64, buf: &mut [u8]) -> Re
                 RdwrBuf::Kernel(&mut buf[..]),
                 off as i64,
                 0,
-                Cred::from_raw(p.ucred_ptr()),
+                Cred::real(p.ucred()),
                 Some(&mut resid),
                 Some(p),
             )?;
@@ -489,14 +489,14 @@ pub fn elf_load_file(p: &Proc, path: &[u8], epp: &mut ExecPackage<'_>) -> Result
     if let Err((error, opened)) = result {
         // bad1: the C closes the vnode whether or not anything opened it.
         if opened {
-            let _ = VOP_CLOSE(vp, FREAD, p.ucred_ptr(), Some(p));
+            let _ = VOP_CLOSE(vp, FREAD, Cred::real(p.ucred()), Some(p));
         }
         // bad:
         vput(vp);
         return Err(error);
     }
     // bad1: VOP_CLOSE on the success path too, as the C falls through.
-    let _ = VOP_CLOSE(vp, FREAD, p.ucred_ptr(), Some(p));
+    let _ = VOP_CLOSE(vp, FREAD, Cred::real(p.ucred()), Some(p));
     vput(vp);
     Ok(())
 }
@@ -519,11 +519,11 @@ fn elf_load_file_vnode(
     if vp.vtype() != VREG {
         return Err((Errno::EACCES, false));
     }
-    VOP_GETATTR(vp, &mut epp.ep_vap, p.ucred_ptr(), p).map_err(|e| (e, false))?;
+    VOP_GETATTR(vp, &mut epp.ep_vap, Cred::real(p.ucred()), p).map_err(|e| (e, false))?;
     if vp.mount().is_some_and(|mp| mp.flag() & MNT_NOEXEC != 0) {
         return Err((Errno::EACCES, false));
     }
-    VOP_ACCESS(vp, VREAD, p.ucred_ptr(), p).map_err(|e| (e, true))?;
+    VOP_ACCESS(vp, VREAD, Cred::real(p.ucred()), p).map_err(|e| (e, true))?;
     let mut ehbytes = [0u8; size_of::<ElfEhdr>()];
     elf_read_from(p, file, 0, &mut ehbytes).map_err(|e| (e, true))?;
     let Some(eh) = read_image!(ElfEhdr, &ehbytes, 0) else {
@@ -864,7 +864,7 @@ fn exec_elf_makecmds_inner(p: &Proc, epp: &mut ExecPackage<'_>) -> Result<(), Er
                     RdwrBuf::Kernel(&mut bytes[..]),
                     pp.p_offset as i64,
                     IO_UNIT,
-                    Cred::from_raw(p.ucred_ptr()),
+                    Cred::real(p.ucred()),
                     None,
                     Some(p),
                 ),

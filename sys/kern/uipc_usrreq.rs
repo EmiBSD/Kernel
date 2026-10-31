@@ -91,6 +91,7 @@ use core::mem::offset_of;
 use core::ptr::{self, NonNull};
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::conf::param::MAXFILES;
 use crate::kassert;
@@ -1106,7 +1107,7 @@ pub fn unp_connect(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<
             if vp.vtype() != VSOCK {
                 break 'put Err(Errno::ENOTSOCK);
             }
-            if let Err(e) = VOP_ACCESS(vp, VWRITE, p.ucred_ptr(), p) {
+            if let Err(e) = VOP_ACCESS(vp, VWRITE, Cred::real(p.ucred()), p) {
                 break 'put Err(e);
             }
             let Some(so2) = vp.g.v_socket.get() else {

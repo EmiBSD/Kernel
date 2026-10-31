@@ -91,6 +91,7 @@
 
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::isofs::udf::ecma167_udf::{
     ExtfileEntry, FileEntry, FileidDesc, LongAd, Packed, ShortAd, TAGID_EXTFENTRY, TAGID_FID,
@@ -145,7 +146,7 @@ use crate::sys::vnode::{
     VDIR, VEXEC, VLNK, VREG, VT_UDF, VWRITE, Vnode, VopAccessArgs, VopBmapArgs, VopCloseArgs,
     VopGetattrArgs, VopInactiveArgs, VopIoctlArgs, VopIslockedArgs, VopLockArgs, VopLookupArgs,
     VopOpenArgs, VopPathconfArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs,
-    VopReclaimArgs, VopStrategyArgs, VopUnlockArgs, Vops, cred_ref,
+    VopReclaimArgs, VopStrategyArgs, VopUnlockArgs, Vops,
 };
 use crate::sys::vnode::{getnewvnode, vaccess, vget, vput, vref, vrele};
 
@@ -328,12 +329,10 @@ fn udf_permtomode(up: &Unode) -> Mode {
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
-        None => panic(format_args!("udf: credential {:p} is not a real one", cred)),
+        None => panic(format_args!("udf: credential {:?} is not a real one", cred)),
     }
 }
 
@@ -1256,7 +1255,7 @@ pub fn udf_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     *ap.a_vpp = None;
 
     // Make sure the process can scan the requested directory.
-    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc())?;
+    VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc())?;
 
     // Check if the (directory, name) tuple has been already cached.
     if let Some(vp) = cache_lookup(dvp, cnp)? {
@@ -2099,7 +2098,7 @@ mod tests {
                 uio_rw: UioRw::UIO_READ,
                 uio_procp: None,
             };
-            VOP_READ(vp, &mut uio, 0, ptr::null()).unwrap();
+            VOP_READ(vp, &mut uio, 0, Cred::NULL).unwrap();
             let n = chunk - uio.uio_resid;
             if n == 0 {
                 return out;
@@ -2127,7 +2126,7 @@ mod tests {
                 uio_procp: None,
             };
             let mut eof = 0;
-            VOP_READDIR(vp, &mut uio, ptr::null(), &mut eof).unwrap();
+            VOP_READDIR(vp, &mut uio, Cred::NULL, &mut eof).unwrap();
             let used = len - uio.uio_resid;
             let mut pos = 0;
             while pos < used {
@@ -2146,7 +2145,7 @@ mod tests {
 
     fn getattr(p: &'static Proc, vp: &'static Vnode) -> Vattr {
         let mut va = Vattr::new();
-        VOP_GETATTR(vp, &mut va, p.ucred(), p).unwrap();
+        VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p).unwrap();
         va
     }
 

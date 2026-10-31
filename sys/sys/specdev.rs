@@ -75,7 +75,7 @@ use crate::sys::vnode::{
     VopSetattrArgs, VopStrategyArgs, VopWriteArgs,
 };
 use kernel::fs::spec::{self, Devsw};
-use kernel::fs::vops::{Cred, IoBuf};
+use kernel::fs::vops::IoBuf;
 
 pub use kernel::fs::spec::{CLONE_MAPSZ, CLONE_SHIFT, SPECHSZ, spechash};
 
@@ -84,7 +84,7 @@ pub type Specinfo = kernel::fs::spec::Specinfo<BsdProcGlue>;
 
 /// Open a special file.
 pub fn spec_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
-    spec::spec_open(ap.a_vp, ap.a_mode, Cred::from_raw(ap.a_cred), ap.a_p)
+    spec::spec_open(ap.a_vp, ap.a_mode, ap.a_cred, ap.a_p)
 }
 
 /// Vnode op for read.
@@ -125,22 +125,22 @@ pub fn spec_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
 
 /// Device close routine.
 pub fn spec_close(ap: &mut VopCloseArgs<'_>) -> Result<(), Errno> {
-    spec::spec_close(ap.a_vp, ap.a_fflag, Cred::from_raw(ap.a_cred), ap.a_p)
+    spec::spec_close(ap.a_vp, ap.a_fflag, ap.a_cred, ap.a_p)
 }
 
 /// `spec_getattr`: a clone reads its parent's attributes.
 pub fn spec_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
-    spec::spec_getattr(ap.a_vp, ap.a_vap, Cred::from_raw(ap.a_cred), ap.a_p)
+    spec::spec_getattr(ap.a_vp, ap.a_vap, ap.a_cred, ap.a_p)
 }
 
 /// `spec_setattr`: a clone sets its parent's attributes.
 pub fn spec_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
-    spec::spec_setattr(ap.a_vp, ap.a_vap, Cred::from_raw(ap.a_cred), ap.a_p)
+    spec::spec_setattr(ap.a_vp, ap.a_vap, ap.a_cred, ap.a_p)
 }
 
 /// `spec_access`: a clone answers with its parent's permissions.
 pub fn spec_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
-    spec::spec_access(ap.a_vp, ap.a_mode, Cred::from_raw(ap.a_cred), ap.a_p)
+    spec::spec_access(ap.a_vp, ap.a_mode, ap.a_cred, ap.a_p)
 }
 
 /// Print out the contents of a special device vnode.

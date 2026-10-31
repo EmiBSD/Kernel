@@ -432,7 +432,7 @@ pub fn unveil_find_cover(dp: &'static Vnode, p: &Proc) -> isize {
     let mut vp = dp;
 
     while !vp_eq(Some(vp), root) {
-        let mut cn = Componentname::dotdot(p, Cred::from_raw(p.ucred_ptr()));
+        let mut cn = Componentname::dotdot(p, Cred::real(p.ucred()));
 
         // If we are at the root of a filesystem, and we are still mounted somewhere, take
         // the .. in the above filesystem.

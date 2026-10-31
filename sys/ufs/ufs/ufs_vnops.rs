@@ -77,6 +77,7 @@
 use crate::sys::vnode::RdwrBuf;
 use core::ptr::{self};
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_prot::{groupmember, suser_ucred};
@@ -133,7 +134,7 @@ use crate::sys::vnode::{
     VopLinkArgs, VopLockArgs, VopMkdirArgs, VopMknodArgs, VopOpenArgs, VopPathconfArgs,
     VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs, VopRemoveArgs, VopRenameArgs,
     VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, VopWriteArgs,
-    cred_ref, iftovt, makeimode,
+    iftovt, makeimode,
 };
 use crate::sys::vnode::{vaccess, vgone, vnoperm, vput, vref, vrele};
 use crate::sys::vnode::{vn_lock, vn_rdwr};
@@ -211,16 +212,14 @@ fn rdonly(vp: &Vnode) -> bool {
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-pub(crate) fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+pub(crate) fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
             "ufs: {} credential",
-            if core::ptr::eq(cred, NOCRED) {
+            if cred == NOCRED {
                 "missing"
-            } else if core::ptr::eq(cred, FSCRED) {
+            } else if cred == FSCRED {
                 "kernel"
             } else {
                 "NULL"
@@ -549,7 +548,7 @@ pub fn ufs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `ufs_chmod`: change the mode on a file. Inode must be locked before calling.
-pub fn ufs_chmod(vp: &'static Vnode, mode: i32, cred: *const Ucred) -> Result<(), Errno> {
+pub fn ufs_chmod(vp: &'static Vnode, mode: i32, cred: Cred<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
     let c = ucred(cred);
     let mode = mode as Mode;
@@ -575,7 +574,7 @@ pub fn ufs_chmod(vp: &'static Vnode, mode: i32, cred: *const Ucred) -> Result<()
 }
 
 /// `ufs_chown`: perform chown operation on inode ip; inode must be locked prior to call.
-pub fn ufs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: *const Ucred) -> Result<(), Errno> {
+pub fn ufs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: Cred<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
     let c = ucred(cred);
     let mut quota_flags: UfsQuotaFlags = 0;
@@ -880,11 +879,11 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         return rename_abortit(Errno::EPERM, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
     if ip.dip_mode() & IFMT == IFDIR {
-        let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+        let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
         if error.is_ok()
             && let Some(t) = tvp
         {
-            error = VOP_ACCESS(t, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+            error = VOP_ACCESS(t, VWRITE, tcnp.cn_cred, tcnp.proc());
         }
         if error.is_err() {
             let _ = VOP_UNLOCK(fvp);
@@ -926,7 +925,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // orphan everything below the source directory. Also the user must have write
         // permission in the source so as to be able to change "..". We must repeat the call
         // to namei, as the parent directory is unlocked by the call to checkpath().
-        let access = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+        let access = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
         let _ = VOP_UNLOCK(fvp);
 
         // tdvp and tvp locked
@@ -946,7 +945,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             // Compensate for the reference ufs_checkpath() loses.
             vref(tdvp);
             // Only tdvp is locked
-            if let Err(e) = ufs_checkpath(&ip, &dp, tcnp.cn_cred.as_raw()) {
+            if let Err(e) = ufs_checkpath(&ip, &dp, tcnp.cn_cred) {
                 vrele(tdvp);
                 break 'body Err(RenameExit::Out(e));
             }
@@ -1011,7 +1010,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // If the parent directory is "sticky", then the user must own the parent
                 // directory, or the destination of the rename, otherwise the destination may
                 // not be changed (except by root). This implements append-only directories.
-                let tuid = ucred(tcnp.cn_cred.as_raw()).cr_uid.get();
+                let tuid = ucred(tcnp.cn_cred).cr_uid.get();
                 if dp.dip_mode() & S_ISTXT != 0
                     && tuid != 0
                     && tuid != dp.dip_uid()
@@ -1024,9 +1023,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // source and target are compatible (both directories, or both not
                 // directories).
                 if x.dip_mode() & IFMT == IFDIR {
-                    if x.i_effnlink.get() > 2
-                        || !ufs_dirempty(x, dp.i_number, tcnp.cn_cred.as_raw())
-                    {
+                    if x.i_effnlink.get() > 2 || !ufs_dirempty(x, dp.i_number, tcnp.cn_cred) {
                         break 'body Err(RenameExit::Bad(Errno::ENOTEMPTY));
                     }
                     if !doingdirectory {
@@ -1070,7 +1067,7 @@ pub fn ufs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                     let Some(t) = tvp else {
                         panic(format_args!("ufs_rename: no target vnode"));
                     };
-                    if let Err(e) = UFS_TRUNCATE(&vtoi(t), 0, IO_SYNC, tcnp.cn_cred.as_raw()) {
+                    if let Err(e) = UFS_TRUNCATE(&vtoi(t), 0, IO_SYNC, tcnp.cn_cred) {
                         break 'body Err(RenameExit::Bad(e));
                     }
                 }
@@ -1196,19 +1193,17 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         // Must simulate part of ufs_makeinode here to acquire the inode, but not have it
         // entered in the parent directory. The entry is made later after writing "." and
         // ".." entries.
-        let tvp = match UFS_INODE_ALLOC(&dp, dmode, cnp.cn_cred.as_raw()) {
+        let tvp = match UFS_INODE_ALLOC(&dp, dmode, cnp.cn_cred) {
             Ok(tvp) => tvp,
             Err(e) => break 'out Err(e),
         };
 
         let ip = vtoi(tvp);
 
-        ip.dip_set_uid(ucred(cnp.cn_cred.as_raw()).cr_uid.get());
+        ip.dip_set_uid(ucred(cnp.cn_cred).cr_uid.get());
         ip.dip_set_gid(dp.dip_gid());
 
-        if let Err(e) =
-            getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred.as_raw()))
-        {
+        if let Err(e) = getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred)) {
             pnbuf_free(cnp);
             let _ = UFS_INODE_FREE(&ip, ip.i_number, dmode);
             vput(tvp);
@@ -1237,7 +1232,7 @@ pub fn ufs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
             dirtemplate.dot_ino = ip.i_number;
             dirtemplate.dotdot_ino = dp.i_number;
 
-            let bp = match UFS_BUF_ALLOC(&ip, 0, DIRBLKSIZ as i32, cnp.cn_cred.as_raw(), B_CLRBUF) {
+            let bp = match UFS_BUF_ALLOC(&ip, 0, DIRBLKSIZ as i32, cnp.cn_cred, B_CLRBUF) {
                 Ok(bp) => bp,
                 Err(e) => break 'bad Err(e),
             };
@@ -1308,7 +1303,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         if ip.i_flag.get() & IN_RENAME != 0 {
             break 'out Err(Errno::EINVAL);
         }
-        if ip.i_effnlink.get() != 2 || !ufs_dirempty(&ip, dp.i_number, cnp.cn_cred.as_raw()) {
+        if ip.i_effnlink.get() != 2 || !ufs_dirempty(&ip, dp.i_number, cnp.cn_cred) {
             break 'out Err(Errno::ENOTEMPTY);
         }
         if dp.dip_flags() & APPEND != 0 || ip.dip_flags() & (IMMUTABLE | APPEND) != 0 {
@@ -1336,7 +1331,7 @@ pub fn ufs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
             &ip,
             0,
             if doingasync(vp) { 0 } else { IO_SYNC },
-            cnp.cn_cred.as_raw(),
+            cnp.cn_cred,
         );
 
         cache_purge(vp);
@@ -1706,7 +1701,7 @@ pub fn ufs_makeinode(
         mode |= IFREG;
     }
 
-    let tvp = match UFS_INODE_ALLOC(&pdir, mode, cnp.cn_cred.as_raw()) {
+    let tvp = match UFS_INODE_ALLOC(&pdir, mode, cnp.cn_cred) {
         Ok(tvp) => tvp,
         Err(e) => {
             pnbuf_free(cnp);
@@ -1717,11 +1712,10 @@ pub fn ufs_makeinode(
     let ip = vtoi(tvp);
 
     ip.dip_set_gid(pdir.dip_gid());
-    let c = ucred(cnp.cn_cred.as_raw());
+    let c = ucred(cnp.cn_cred);
     ip.dip_set_uid(c.cr_uid.get());
 
-    if let Err(e) = getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred.as_raw()))
-    {
+    if let Err(e) = getinoquota(&ip).and_then(|()| ufs_quota_alloc_inode(&ip, cnp.cn_cred)) {
         pnbuf_free(cnp);
         let _ = UFS_INODE_FREE(&ip, ip.i_number, mode);
         vput(tvp);

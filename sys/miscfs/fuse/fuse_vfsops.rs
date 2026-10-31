@@ -55,6 +55,7 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicI32, Ordering};
+use kernel::fs::vops::Cred;
 
 use libkern::strlcpy;
 
@@ -353,7 +354,7 @@ pub fn fusefs_sync(
     _mp: &'static Mount,
     _waitfor: i32,
     _stall: i32,
-    _cred: *const Ucred,
+    _cred: Cred<'_>,
     _p: &Proc,
 ) -> Result<(), Errno> {
     Ok(())
@@ -418,7 +419,7 @@ pub fn fusefs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
             // file operations.
             let p = curp();
             let mut vattr = Vattr::new();
-            if let Err(error) = VOP_GETATTR(nvp, &mut vattr, ptr::from_ref(p.ucred()), p) {
+            if let Err(error) = VOP_GETATTR(nvp, &mut vattr, Cred::real(p.ucred()), p) {
                 vrele(nvp);
                 return Err(error);
             }
@@ -770,9 +771,9 @@ mod tests {
             uio_procp: Some(p),
         };
         let r = if write {
-            VOP_WRITE(vp, &mut uio, 0, p.ucred())
+            VOP_WRITE(vp, &mut uio, 0, Cred::real(p.ucred()))
         } else {
-            VOP_READ(vp, &mut uio, 0, p.ucred())
+            VOP_READ(vp, &mut uio, 0, Cred::real(p.ucred()))
         };
         r.expect("rdwr");
         len - uio.uio_resid
@@ -797,7 +798,7 @@ mod tests {
             uio_procp: Some(p),
         };
         let mut eof = 0;
-        VOP_READDIR(vp, &mut uio, p.ucred(), &mut eof).expect("readdir");
+        VOP_READDIR(vp, &mut uio, Cred::real(p.ucred()), &mut eof).expect("readdir");
         let used = 512 - uio.uio_resid;
         let mut out = Vec::new();
         let mut off = 0;
@@ -887,7 +888,7 @@ mod tests {
 
         // getattr
         let mut va = Vattr::new();
-        VOP_GETATTR(vp, &mut va, p.ucred(), p).expect("getattr");
+        VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p).expect("getattr");
         assert_eq!(va.va_type, VREG);
         assert_eq!(va.va_mode, 0o644);
         assert_eq!(va.va_size, HELLO.len() as u64);
@@ -900,7 +901,7 @@ mod tests {
         assert_eq!(va.va_fileid, 2);
 
         // open for reading, read
-        VOP_OPEN(vp, FREAD, p.ucred(), p).expect("open");
+        VOP_OPEN(vp, FREAD, Cred::real(p.ucred()), p).expect("open");
         assert_eq!(ip.fufh(FUFH_RDONLY).fh_id, 10 + O_RDONLY as u64);
         let mut buf = [0u8; 64];
         let n = rdwr(vp, p, &mut buf, 0, false);
@@ -909,7 +910,7 @@ mod tests {
         assert_eq!(&buf[..n], b"world\n");
 
         // open for writing, write
-        VOP_OPEN(vp, FWRITE, p.ucred(), p).expect("open");
+        VOP_OPEN(vp, FWRITE, Cred::real(p.ucred()), p).expect("open");
         assert_eq!(ip.fufh(FUFH_WRONLY).fh_id, 10 + O_WRONLY as u64);
         let mut hi = *b"HELLO";
         assert_eq!(rdwr(vp, p, &mut hi, 0, true), 5);
@@ -922,17 +923,20 @@ mod tests {
         let mut va = Vattr::new();
         vattr_null(&mut va);
         va.va_size = 5;
-        VOP_SETATTR(vp, &mut va, p.ucred(), p).expect("setattr");
+        VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p).expect("setattr");
         assert_eq!(ip.filesize.get(), 5);
         vattr_null(&mut va);
         va.va_flags = 1;
         assert_eq!(
-            VOP_SETATTR(vp, &mut va, p.ucred(), p),
+            VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p),
             Err(Errno::EOPNOTSUPP)
         );
         vattr_null(&mut va);
         va.va_rdev = 0;
-        assert_eq!(VOP_SETATTR(vp, &mut va, p.ucred(), p), Err(Errno::EINVAL));
+        assert_eq!(
+            VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p),
+            Err(Errno::EINVAL)
+        );
 
         // readdir in two calls: the entries, then the end.
         LOG.with(|l| l.borrow_mut().clear());
@@ -1016,14 +1020,17 @@ mod tests {
         assert_eq!(fmp.max_read, 4096);
         let root = VFS_ROOT(mp).expect("root");
         let mut va = Vattr::new();
-        VOP_GETATTR(root, &mut va, p.ucred(), p).expect("getattr");
+        VOP_GETATTR(root, &mut va, Cred::real(p.ucred()), p).expect("getattr");
         assert_eq!(va.va_type, VDIR);
 
         // The daemon exits: its descriptor's close fails what is queued and ends the session.
         TEST_DAEMON.with(|d| d.set(None));
         fuseclose(dev, 0, 0, Some(p)).expect("close");
         assert_eq!(fmp.sess_init.get(), 0);
-        assert_eq!(VOP_GETATTR(root, &mut va, p.ucred(), p), Err(Errno::ENXIO));
+        assert_eq!(
+            VOP_GETATTR(root, &mut va, Cred::real(p.ucred()), p),
+            Err(Errno::ENXIO)
+        );
         let mut vpp = None;
         let mut cnp = cn(p, b"hello", LOCKPARENT | ISLASTCN);
         assert_eq!(VOP_LOOKUP(root, &mut vpp, &mut cnp), Err(Errno::ENXIO));

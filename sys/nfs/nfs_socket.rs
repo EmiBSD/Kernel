@@ -202,7 +202,7 @@ use crate::sys::systm::{INFSLP, net_lock, net_unlock};
 #[cfg(feature = "nfsserver")]
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 use crate::sys::time::sec_to_nsec;
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::UcredCell;
 #[cfg(feature = "nfsclient")]
 use crate::sys::uio::Iovec;
 use crate::sys::uio::{Uio, UioRw, UioSeg};
@@ -1080,9 +1080,7 @@ pub fn nfs_request(
     let nmp = r_nmp(rep);
 
     // Get the RPC header with authorization.
-    // SAFETY: the caller puts in `nmi_cred` the credential of the RPC, alive for the call
-    // (`nfsm_subs.rs`).
-    let Some(cred) = (unsafe { infop.nmi_cred.as_ref() }) else {
+    let Some(cred) = infop.nmi_cred.ucred() else {
         panic(format_args!("nfs_request: no credential"));
     };
     crate::nfs::nfs_subs::nfsm_rpchead(rep, cred, RPCAUTH_UNIX);
@@ -1782,9 +1780,11 @@ pub fn nfs_getreq(
         }
         nfsd_adv(nd, nfsm_rndup(len as usize))?;
         let tl = words::<3>(&nfsd_dissect(nd, 3 * NFSX_UNSIGNED)?);
-        nd.nd_cr.assign(&Ucred::new());
-        nd.nd_cr.set_uid(fxdr_unsigned(tl[0]));
-        nd.nd_cr.set_gid(fxdr_unsigned(tl[1]));
+        // The request's credential, built as the C fills `nd_cr` and stored once complete (a
+        // request that fails here is dropped).
+        let cr = UcredCell::new();
+        cr.set_uid(fxdr_unsigned(tl[0]));
+        cr.set_gid(fxdr_unsigned(tl[1]));
         let len = fxdr_unsigned(tl[2]) as i32;
         if len < 0 || len as usize > RPCAUTH_UNIXGIDS {
             m_freem(nd.nd_mrep.take());
@@ -1796,9 +1796,10 @@ pub fn nfs_getreq(
             core::array::from_fn(|j| if j < len + 2 { tl.get(j) } else { 0 })
         };
         for (i, w) in tl[..len].iter().enumerate().take(NGROUPS_MAX) {
-            nd.nd_cr.set_group(i, fxdr_unsigned(*w)); // the groups past NGROUPS_MAX are skipped
+            cr.set_group(i, fxdr_unsigned(*w)); // the groups past NGROUPS_MAX are skipped
         }
-        nd.nd_cr.set_ngroups(min(len, NGROUPS_MAX) as i16);
+        cr.set_ngroups(min(len, NGROUPS_MAX) as i16);
+        nd.nd_cr = Some(cr);
         // tl[len]: the verifier's flavor; tl[len + 1]: its length.
         let len = fxdr_unsigned(tl[len + 1]) as i32;
         if len < 0 || len as usize > RPCAUTH_MAXSIZ {
@@ -2426,10 +2427,11 @@ mod tests {
         assert_eq!(nd.nd_repstat, 0);
         assert_eq!(nd.nd_flag, ND_NFSV3);
         assert_eq!(nd.nd_procnum, NFSPROC_GETATTR);
-        assert_eq!(nd.nd_cr.cr_uid.get(), 1000);
-        assert_eq!(nd.nd_cr.cr_gid.get(), 10);
-        assert_eq!(nd.nd_cr.cr_ngroups.get(), 2);
-        assert_eq!(nd.nd_cr.cr_groups[1].get(), 30);
+        let cr = nd.nd_cr.as_ref().expect("the request's credential");
+        assert_eq!(cr.cr_uid.get(), 1000);
+        assert_eq!(cr.cr_gid.get(), 10);
+        assert_eq!(cr.cr_ngroups.get(), 2);
+        assert_eq!(cr.cr_groups[1].get(), 30);
         m_freem(nd.nd_mrep);
 
         // Version 2 procedure numbers are mapped to version 3's (v2 READ is 6, v3 READ 6;

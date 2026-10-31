@@ -74,6 +74,7 @@
 
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::kern_malloc::free;
@@ -95,7 +96,7 @@ use crate::sys::mount::Mount;
 use crate::sys::namei::cache_purge;
 use crate::sys::pool::{PR_WAITOK, PR_ZERO};
 use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
-use crate::sys::ucred::{CredRef, CredSlot, FSCRED, NOCRED, Ucred};
+use crate::sys::ucred::{CredRef, CredSlot, Ucred};
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::PRTACTIVE;
 use crate::sys::vnode::vn_lock;
@@ -110,26 +111,20 @@ pub(crate) fn vfstonfs_vp(vp: &Vnode) -> &'static NfsMount {
     }
 }
 
-/// The credential `cred` points at, `None` for NULL, `NOCRED` and `FSCRED`.
-fn nfs_realcred(cred: *const Ucred) -> Option<&'static Ucred> {
-    if cred.is_null() || cred == NOCRED || cred == FSCRED {
-        return None;
-    }
-    // SAFETY: any other credential pointer the NFS code stores or is handed (a VOP's
-    // `a_cred`, `n_rcred`, `n_wcred`) is a `crget`ed credential on which its holder keeps a
-    // reference while it is used here.
-    Some(unsafe { &*cred })
+/// The credential `cred` is, `None` for NULL, `NOCRED` and `FSCRED`.
+fn nfs_realcred(cred: Cred<'_>) -> Option<&Ucred> {
+    cred.ucred()
 }
 
-/// `crhold(cred)` of a credential pointer about to be kept in `n_rcred`/`n_wcred`: one
-/// more reference to placed credentials, or placed copies of a thread's own (which no pool
+/// `crhold(cred)` of a credential about to be kept in `n_rcred`/`n_wcred`: one more
+/// reference to placed credentials, or placed copies of a thread's own (which no pool
 /// counts); `None` for NULL, `NOCRED` and `FSCRED`.
-pub(crate) fn nfs_crhold(cred: *const Ucred) -> Option<CredRef> {
+pub(crate) fn nfs_crhold(cred: Cred<'_>) -> Option<CredRef> {
     nfs_realcred(cred).map(|cr| CredRef::from_ref(cr).unwrap_or_else(|| crdup(cr)))
 }
 
 /// `if (slot) crfree(slot); slot = cred; crhold(cred)`: `n_rcred`/`n_wcred` take `cred`.
-pub(crate) fn nfs_crset(slot: &CredSlot, cred: *const Ucred) {
+pub(crate) fn nfs_crset(slot: &CredSlot, cred: Cred<'_>) {
     match nfs_crhold(cred) {
         Some(cr) => slot.set(cr),
         None => drop(slot.take()),
@@ -239,7 +234,13 @@ pub fn nfs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
         // filled; it was just taken off the node, so this function owns it until the `free`
         // below.
         let s = unsafe { sp.as_ref() };
-        let _ = nfs_vinvalbuf(vp, 0, s.s_cred.get(), curproc());
+        let cr = s.s_cred.cred();
+        let _ = nfs_vinvalbuf(
+            vp,
+            0,
+            cr.as_deref().map_or(Cred::NULL, Cred::real),
+            curproc(),
+        );
     }
     np.n_flag
         .set(np.n_flag.get() & (NMODIFIED | NFLUSHINPROG | NFLUSHWANT));
@@ -294,7 +295,7 @@ pub fn nfs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     drop(np.n_wcred.take());
     // The pool takes the node back without dropping it: its credential slots, the only
     // fields that own anything, are empty now.
-    crate::kassert!(np.n_rcred.get().is_null() && np.n_wcred.get().is_null());
+    crate::kassert!(np.n_rcred.cred().is_none() && np.n_wcred.cred().is_none());
 
     cache_purge(vp);
     match NonNull::new(vp.data()) {

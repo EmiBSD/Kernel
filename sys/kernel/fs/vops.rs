@@ -150,17 +150,19 @@
 //!   `getnewvnode(tag, mp, &FOO_VOPS)` keeps its spelling. `struct vfsops` the same, as
 //!   [`Vfs<G>`] (the C's 13 members; `vfs_checkexp` is the NFS server's and stays `bsd`'s,
 //!   reached through [`Vfs::as_any`]).
-//! - `struct ucred *a_cred` with its `NOCRED`/`FSCRED` sentinels is [`Cred`], an opaque copy
-//!   of the pointer: the kernel compares the sentinels and passes it on, it never reads a
-//!   credential's fields through it (a typed credential arrives with `namei`, N5.3), so the
-//!   adapters of `bsd`, whose callers hold the C's pointer, need no deref.
+//! - `struct ucred *a_cred` with its `NOCRED`/`FSCRED` sentinels is [`Cred`], an enum of the
+//!   three sentinels and a borrowed real credential (N5.5a2c; LZ's `cred_ref`, the one
+//!   `unsafe` deref of `sys/sys/vnode.rs`, is its safe [`Cred::ucred`]): `bsd`'s `struct
+//!   vop_*_args`, its `VOP_*` adapters and their callers pass it as it came, and a file
+//!   system that reads a credential's ids reads them through the borrow, so no `a_cred` is
+//!   ever a pointer trusted by an `unsafe` block. `==` compares the sentinels and the
+//!   credentials' addresses, as the C compares its pointers.
 //! - `struct buf *` of `VOP_STRATEGY`/`VOP_BWRITE` is [`IoBuf`]: the owner's token (the
 //!   kernel's buffer cache, N5.1), or a buffer `bsd` lent with its token parked in it, passed
 //!   on as it came so that no lock section parks or takes a token on the way (each is an spl
 //!   pair, N5.1's lesson).
 
 use crate::file::LockOwner;
-use core::marker::PhantomData;
 use core::ptr;
 
 use hal::sys::errno::Errno;
@@ -186,60 +188,82 @@ pub type Cn<'a, G> = super::namei::Componentname<'a, G>;
 pub type Nd<'a, G> = super::namei::Nameidata<'a, G>;
 
 /// `struct ucred *` as a vnode operation receives it: a real credential, NULL or one of the
-/// sentinels `NOCRED` and `FSCRED`. An opaque copy of the C's pointer (see the module's
-/// notes): compared and passed on, never dereferenced here.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Cred<'a> {
-    ptr: *const Ucred,
-    _life: PhantomData<&'a Ucred>,
+/// sentinels `NOCRED` and `FSCRED`. A real one is a borrow of a credential its holder keeps
+/// alive for `'a` (a thread's own copy, a file's `f_cred`, a holder's `CredRef`, nfsd's
+/// request), so reading it ([`Cred::ucred`]) needs no trust in a pointer.
+#[derive(Clone, Copy)]
+pub enum Cred<'a> {
+    /// NULL (a caller with no credential, the C's `NULL` `a_cred`).
+    Null,
+    /// `NOCRED`: no credential available.
+    NoCred,
+    /// `FSCRED`: filesystem credential.
+    FsCred,
+    /// A real credential.
+    Real(&'a Ucred),
 }
 
 impl<'a> Cred<'a> {
     /// `NOCRED`: no credential available.
-    pub const NOCRED: Cred<'static> = Cred {
-        ptr: ptr::without_provenance(usize::MAX),
-        _life: PhantomData,
-    };
+    pub const NOCRED: Cred<'static> = Cred::NoCred;
     /// `FSCRED`: filesystem credential.
-    pub const FSCRED: Cred<'static> = Cred {
-        ptr: ptr::without_provenance(usize::MAX - 1),
-        _life: PhantomData,
-    };
+    pub const FSCRED: Cred<'static> = Cred::FsCred;
     /// NULL.
-    pub const NULL: Cred<'static> = Cred {
-        ptr: ptr::null(),
-        _life: PhantomData,
-    };
+    pub const NULL: Cred<'static> = Cred::Null;
 
     /// A real credential.
-    pub fn real(c: &'a Ucred) -> Self {
-        Self {
-            ptr: ptr::from_ref(c),
-            _life: PhantomData,
-        }
+    #[inline]
+    pub const fn real(c: &'a Ucred) -> Self {
+        Cred::Real(c)
     }
 
-    /// The C's pointer as `bsd`'s callers pass it (a real credential, NULL or a sentinel).
-    pub const fn from_raw(ptr: *const Ucred) -> Self {
-        Self {
-            ptr,
-            _life: PhantomData,
+    /// The credential when it is a real one (`cred->cr_uid` & co.), `None` for NULL,
+    /// `NOCRED` and `FSCRED`.
+    #[inline]
+    pub const fn ucred(self) -> Option<&'a Ucred> {
+        match self {
+            Cred::Real(c) => Some(c),
+            Cred::Null | Cred::NoCred | Cred::FsCred => None,
         }
-    }
-
-    /// The C's pointer, for `bsd`'s file systems (`a_cred`).
-    pub fn as_raw(self) -> *const Ucred {
-        self.ptr
     }
 
     /// `cred == FSCRED`.
-    pub fn is_fscred(self) -> bool {
-        ptr::eq(self.ptr, Cred::FSCRED.ptr)
+    #[inline]
+    pub const fn is_fscred(self) -> bool {
+        matches!(self, Cred::FsCred)
     }
 
     /// `cred == NOCRED`.
-    pub fn is_nocred(self) -> bool {
-        ptr::eq(self.ptr, Cred::NOCRED.ptr)
+    #[inline]
+    pub const fn is_nocred(self) -> bool {
+        matches!(self, Cred::NoCred)
+    }
+}
+
+/// `cred1 == cred2` as the C compares the pointers: the same sentinel, or the same
+/// credential (by address, never by contents).
+impl PartialEq for Cred<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Cred::Real(a), Cred::Real(b)) => ptr::eq(a, b),
+            (Cred::Null, Cred::Null)
+            | (Cred::NoCred, Cred::NoCred)
+            | (Cred::FsCred, Cred::FsCred) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Cred<'_> {}
+
+impl core::fmt::Debug for Cred<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Cred::Null => f.write_str("NULL"),
+            Cred::NoCred => f.write_str("NOCRED"),
+            Cred::FsCred => f.write_str("FSCRED"),
+            Cred::Real(c) => write!(f, "{:p}", *c),
+        }
     }
 }
 
@@ -1146,14 +1170,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_credential_sentinels_are_the_c_s_words() {
+    fn the_credential_sentinels_are_told_apart() {
         assert!(Cred::FSCRED.is_fscred());
         assert!(!Cred::FSCRED.is_nocred());
         assert!(Cred::NOCRED.is_nocred());
-        assert_eq!(Cred::NOCRED.as_raw().addr(), usize::MAX);
-        assert_eq!(Cred::FSCRED.as_raw().addr(), usize::MAX - 1);
-        assert!(Cred::NULL.as_raw().is_null());
-        assert_eq!(Cred::from_raw(Cred::FSCRED.as_raw()), Cred::FSCRED);
+        assert!(!Cred::NULL.is_nocred() && !Cred::NULL.is_fscred());
+    }
+
+    #[test]
+    fn a_real_credential_is_read_and_compared_by_address() {
+        let a = Ucred::new();
+        let b = Ucred::new();
+        let (ca, cb) = (Cred::real(&a), Cred::real(&b));
+        assert!(ca.ucred().is_some_and(|c| ptr::eq(c, &a)));
+        // Equal contents, different credentials: the C compares the pointers.
+        assert_eq!(ca, Cred::real(&a));
+        assert_ne!(ca, cb);
+        for s in [Cred::NULL, Cred::NOCRED, Cred::FSCRED] {
+            assert!(s.ucred().is_none());
+            assert_ne!(s, ca);
+            assert_eq!(s, s);
+        }
+        assert_ne!(Cred::NOCRED, Cred::FSCRED);
+        assert_ne!(Cred::NULL, Cred::NOCRED);
+        assert!(!ca.is_nocred() && !ca.is_fscred());
     }
 }
 /* </TESTS> */

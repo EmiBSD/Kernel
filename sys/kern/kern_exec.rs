@@ -319,7 +319,7 @@ pub fn check_exec(
     };
     epp.ep_vp = Some(vp);
 
-    let cred = p.ucred_ptr();
+    let cred = Cred::real(p.ucred());
     // bad1: free the namei pathname buffer, and put the vnode (which we don't yet have
     // open).
     let bad1 = |ndp: &mut Nameidata<'_>, error: Errno| -> Result<(), Errno> {
@@ -380,7 +380,7 @@ pub fn check_exec(
         RdwrBuf::Kernel(&mut epp.ep_hdr[..hdrlen]),
         0,
         0,
-        Cred::from_raw(cred),
+        cred,
         Some(&mut resid),
         Some(p),
     );
@@ -402,7 +402,7 @@ pub fn check_exec(
     };
 
     // bad2: close the vnode, free the pathname buf, and punt.
-    let _ = vn_close(vp, FREAD, Cred::from_raw(cred), Some(p));
+    let _ = vn_close(vp, FREAD, cred, Some(p));
     namei_pnbuf_put(ndp);
     Err(error)
 }
@@ -589,7 +589,7 @@ fn execve_common(
         exec_free_package(pack);
         // close and put the exec'd file
         if let Some(vp) = pack.ep_vp {
-            let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
+            let _ = vn_close(vp, FREAD, Cred::real(cred), Some(p));
         }
         namei_pnbuf_put(nid);
         km_free(argp, NCARGS, &KV_EXEC, &KP_PAGEABLE);
@@ -720,7 +720,7 @@ fn execve_common(
         exec_free_package(pack);
         namei_pnbuf_put(nid);
         if let Some(vp) = pack.ep_vp {
-            let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
+            let _ = vn_close(vp, FREAD, Cred::real(cred), Some(p));
         }
         km_free(argp, NCARGS, &KV_EXEC, &KP_PAGEABLE);
         // free_pack_abort:
@@ -973,7 +973,7 @@ fn execve_common(
 
     namei_pnbuf_put(&mut nid);
     if let Some(vp) = pack.ep_vp {
-        let _ = vn_close(vp, FREAD, Cred::from_raw(ptr::from_ref(cred)), Some(p));
+        let _ = vn_close(vp, FREAD, Cred::real(cred), Some(p));
     }
 
     // notify others that we exec'd

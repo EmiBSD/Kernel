@@ -95,7 +95,6 @@ use crate::sys::syslog::LOG_ERR;
 use crate::sys::systm::INFSLP;
 use crate::sys::time::Timeval;
 use crate::sys::types::{Daddr, Mode, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
 use crate::ufs::ffs::ffs_subr::{
     ffs_clrblock, ffs_fragacct, ffs_isblock, ffs_isfreeblock, ffs_setblock,
@@ -109,6 +108,7 @@ use crate::ufs::ufs::dinode::{IFDIR, IFMT, NDADDR, Ufsino};
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::quota::{ufs_quota_alloc_blocks, ufs_quota_free_blocks};
+use kernel::fs::vops::Cred;
 use libkern::{StaticCell, scanc, skpc};
 
 /// `fserr_interval`: at most one "file system full" message every 2 seconds.
@@ -152,10 +152,8 @@ fn uprintf_unported() {
 
 /// The uid of a credential the allocator is handed (`NOCRED` is a caller's bug, which
 /// `DIAGNOSTIC` catches as "missing credential").
-fn cred_uid(cred: *const Ucred, func: &str) -> Uid {
-    // SAFETY: the credentials an allocation receives are held by its caller (`cred_ref`'s
-    // contract).
-    match unsafe { crate::sys::vnode::cred_ref(cred) } {
+fn cred_uid(cred: Cred<'_>, func: &str) -> Uid {
+    match cred.ucred() {
         Some(c) => c.cr_uid.get(),
         None => panic(format_args!("{}: missing credential", func)),
     }
@@ -181,7 +179,7 @@ pub fn ffs_alloc(
     _lbn: Daddr,
     mut bpref: Daddr,
     size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     bnp: &mut Daddr,
 ) -> Result<(), Errno> {
     *bnp = 0;
@@ -257,7 +255,7 @@ pub fn ffs_realloccg(
     mut bpref: Daddr,
     osize: i32,
     nsize: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     mut bpp: Option<&mut Option<&'static Buf>>,
     blknop: Option<&mut Daddr>,
 ) -> Result<(), Errno> {
@@ -459,11 +457,7 @@ pub fn ffs_realloccg(
 ///   1) allocate an inode in cylinder group 0.
 ///   2) quadratically rehash into other cylinder groups, until an available inode is
 ///      located.
-pub fn ffs_inode_alloc(
-    pip: &Inode,
-    mode: Mode,
-    cred: *const Ucred,
-) -> Result<&'static Vnode, Errno> {
+pub fn ffs_inode_alloc(pip: &Inode, mode: Mode, cred: Cred<'_>) -> Result<&'static Vnode, Errno> {
     let pvp = pip.itov();
     let fs = pip.fs();
 

@@ -89,7 +89,7 @@ use hal::sys::syslimits::PATH_MAX;
 
 use super::vnode::Vnode;
 use super::vops::Cred;
-use crate::assert::kpanic;
+use crate::assert::{kassert, kpanic};
 use crate::file::FileGlue;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::UioSeg;
@@ -227,16 +227,15 @@ impl<'a, G: ProcGlue> Componentname<'a, G> {
     }
 
     /// The lookup state of `self` and `other` exchanged (the operation, the flags, the
-    /// credential, the buffers, the name, `cn_rpi`, `cn_consume`): every member but the
-    /// thread, which the two share. For `exec`'s interpreter lookup, made in a nameidata of
+    /// buffers, the name, `cn_rpi`, `cn_consume`): every member but the thread and its
+    /// credential, which the two share (`namei` sets each `cn_cred` to the thread's, as the
+    /// C's one nameidata has one). For `exec`'s interpreter lookup, made in a nameidata of
     /// its own (the interpreter's name is not the script's), whose result becomes the
     /// script's (the C reuses one nameidata).
     pub fn swap_lookup(&mut self, other: &mut Componentname<'_, G>) {
+        kassert!(self.cn_cred == other.cn_cred);
         core::mem::swap(&mut self.cn_nameiop, &mut other.cn_nameiop);
         core::mem::swap(&mut self.cn_flags, &mut other.cn_flags);
-        let (a, b) = (self.cn_cred.as_raw(), other.cn_cred.as_raw());
-        self.cn_cred = Cred::from_raw(b);
-        other.cn_cred = Cred::from_raw(a);
         core::mem::swap(&mut self.cn_pnbuf, &mut other.cn_pnbuf);
         core::mem::swap(&mut self.cn_rpbuf, &mut other.cn_rpbuf);
         core::mem::swap(&mut self.cn_rpi, &mut other.cn_rpi);

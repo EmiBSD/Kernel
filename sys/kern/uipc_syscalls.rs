@@ -77,6 +77,7 @@ use core::ptr::NonNull;
 use core::slice;
 use core::sync::atomic::Ordering;
 use kernel::file::LockOwner;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_event::knote_locked;
@@ -1753,7 +1754,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let mut data = [0u8; Ypbinding::SIZE];
     let error: Result<(), Errno> = 'verror: {
         let mut va = Vattr::new();
-        if let Err(e) = VOP_GETATTR(vp, &mut va, p.ucred_ptr(), p) {
+        if let Err(e) = VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p) {
             break 'verror Err(e);
         }
         if vp.vtype() != VREG || va.va_size != Ypbinding::SIZE as u64 {
@@ -1789,7 +1790,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
             uio_procp: Some(p),
         };
 
-        VOP_READ(vp, &mut uio, 0, p.ucred_ptr())
+        VOP_READ(vp, &mut uio, 0, Cred::real(p.ucred()))
     };
     vput(vp);
     kernel_unlock();

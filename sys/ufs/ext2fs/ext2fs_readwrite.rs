@@ -80,7 +80,7 @@ use crate::sys::uio::UioRw;
 use crate::sys::vnode::vn_fsizechk;
 use crate::sys::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VN_KNOTE, VREG, Vnode, VopReadArgs,
-    VopWriteArgs, cred_ref,
+    VopWriteArgs,
 };
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, blkoff, e2fs_overflow, fsbtodb, lblkno, lblktosize};
 use crate::ufs::ext2fs::ext2fs_balloc::ext2fs_buf_alloc;
@@ -422,8 +422,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     }
     // If we successfully wrote any data, and we are not the superuser we clear the setuid
     // and setgid bits as a precaution against tampering.
-    // SAFETY: the write's credentials are held by its caller (`cred_ref`'s contract).
-    let cred = unsafe { cred_ref(ap.a_cred) };
+    let cred = ap.a_cred.ucred();
     if resid > uio.uio_resid && cred.is_some_and(|c| c.cr_uid.get() != 0) {
         ip.g.set_i_e2fs_mode(ip.g.i_e2fs_mode() & !((ISUID | ISGID) as u16));
     }

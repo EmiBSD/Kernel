@@ -85,6 +85,7 @@
 use crate::sys::namei::pathbuf_get;
 use core::ffi::c_void;
 use core::ptr::{self};
+use kernel::fs::vops::Cred;
 
 use crate::isofs::cd9660::cd9660_bmap::cd9660_bmap;
 use crate::isofs::cd9660::cd9660_extern::{
@@ -141,7 +142,6 @@ use crate::sys::vnode::{
     VopCloseArgs, VopGetattrArgs, VopIoctlArgs, VopIslockedArgs, VopKqfilterArgs, VopLinkArgs,
     VopLockArgs, VopOpenArgs, VopPathconfArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs,
     VopReadlinkArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs, VopUnlockArgs, Vops,
-    cred_ref,
 };
 use crate::sys::vnode::{vaccess, vput};
 
@@ -287,16 +287,14 @@ pub static CD9660VNODE_FILTOPS: Filterops = Filterops {
 };
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
             "cd9660: {} credential",
-            if ptr::eq(cred, NOCRED) {
+            if cred == NOCRED {
                 "missing"
-            } else if ptr::eq(cred, FSCRED) {
+            } else if cred == FSCRED {
                 "kernel"
             } else {
                 "NULL"

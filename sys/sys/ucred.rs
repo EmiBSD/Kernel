@@ -60,9 +60,10 @@
 //! holds the functions it declares.
 //!
 //! ## Deviations
-//! - `NOCRED` and `FSCRED` stay the C's pointer sentinels: the VFS still passes credentials
-//!   as `*const Ucred` (a thread's own copy, `Proc::ucred_ptr`, or a holder's `CredRef`)
-//!   until N5.
+//! - `NOCRED` and `FSCRED` are the kernel's `Cred::NOCRED` and `Cred::FSCRED` (N5.5a2c): the
+//!   VFS passes a credential as `kernel::fs::vops::Cred` (re-exported here), a borrow of a
+//!   thread's own copy, of a holder's `CredRef` or of nfsd's request, or one of the
+//!   sentinels; nothing dereferences a pointer to read one.
 //! - `cr_startcopy` (the `#define` naming where `crset` starts copying) is a comment: `crset`
 //!   copies the members by name.
 //!
@@ -72,36 +73,31 @@
 //! - The holders of a `struct ucred *` that `crhold` and `crfree` it by hand (a file's
 //!   `f_cred`, a sigio's `sio_ucred`, an nfs node's, a quota's) hold a [`CredSlot`]: the
 //!   counted reference in a mutex-guarded cell, given back by dropping it, never by a raw
-//!   count; `get()` keeps the address the legacy VFS passes as `*const Ucred`.
-
-use core::ptr;
+//!   count; a VOP is handed a borrow of one more reference (`cred()`), never the slot's
+//!   address.
 
 use hal::intr::IPL_NONE;
 use hal::mutex::Mutexed;
 
 pub use kernel::cred::{CountCell, CredRef, IdCell, Ucred, UcredCell};
+pub use kernel::fs::vops::Cred;
 
 /// `NOCRED`: no credential available.
-pub const NOCRED: *const Ucred = ptr::without_provenance(usize::MAX);
+pub const NOCRED: Cred<'static> = Cred::NOCRED;
 /// `FSCRED`: filesystem credential.
-pub const FSCRED: *const Ucred = ptr::without_provenance(usize::MAX - 1);
+pub const FSCRED: Cred<'static> = Cred::FSCRED;
 
 /// A holder's counted reference to credentials: a `struct ucred *` the holder `crhold`s and
 /// `crfree`s (a file's `f_cred`, a sigio's `sio_ucred`, an nfs node's, a quota's), kept in
 /// a cell of its own so the reference is given back by dropping it, never by a raw count.
-/// `get()` keeps LZ's reader, the address the legacy VFS passes (null when empty).
+/// LZ's reader `get()`, the address the VFS was passed, is [`CredSlot::cred`]: a reference
+/// the caller holds while it lends the credential (the slot may be set meanwhile).
 pub struct CredSlot(Mutexed<Option<CredRef>>);
 
 impl CredSlot {
     /// No credentials (`NULL`).
     pub const fn new() -> Self {
         Self(Mutexed::new(IPL_NONE, None))
-    }
-
-    /// The credentials' address, null when there are none: valid while the slot holds
-    /// them.
-    pub fn get(&self) -> *const Ucred {
-        self.0.lock().as_ref().map_or(ptr::null(), CredRef::as_ptr)
     }
 
     /// One more reference to the credentials (`crhold(holder->cred)`), `None` when there

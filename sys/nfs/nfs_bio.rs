@@ -92,6 +92,7 @@ use core::cmp::{max, min};
 use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::init_main::PROC0;
 use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write};
@@ -137,7 +138,7 @@ use crate::sys::signal::SIGKILL;
 use crate::sys::systm::INFSLP;
 use crate::sys::time::sec_to_nsec;
 use crate::sys::types::{Daddr, Off};
-use crate::sys::ucred::{NOCRED, Ucred};
+use crate::sys::ucred::NOCRED;
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::vnode::vinvalbuf;
 use crate::sys::vnode::vn_fsizechk;
@@ -216,7 +217,7 @@ pub fn nfs_bioread(
     vp: &'static Vnode,
     uio: &mut Uio<'_>,
     _ioflag: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
     let np = VTONFS(vp);
     let nmp = vfstonfs_vp(vp);
@@ -580,7 +581,7 @@ pub fn nfs_getcacheblk(
 pub fn nfs_vinvalbuf(
     vp: &'static Vnode,
     flags: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     p: Option<&Proc>,
 ) -> Result<(), Errno> {
     let nmp = vfstonfs_vp(vp);
@@ -770,7 +771,7 @@ pub fn nfs_doio(bp: &'static Buf, p: Option<&Proc>) -> Result<(), Errno> {
                 NFSSTATS.readlink_bios.fetch_add(1, Ordering::Relaxed);
                 BCSTATS.pendingreads.fetch_add(1, Ordering::Relaxed);
                 BCSTATS.numreads.fetch_add(1, Ordering::Relaxed);
-                let cred = curproc().map_or(NOCRED, |cp| cp.ucred_ptr());
+                let cred = curproc().map_or(NOCRED, |cp| Cred::real(cp.ucred()));
                 error = nfs_readlinkrpc(vp, &mut uio, cred);
             }
             t => panic(format_args!("nfs_doio:  type {:x} unexpected", t as i32)),

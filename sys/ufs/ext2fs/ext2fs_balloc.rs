@@ -72,7 +72,6 @@ use crate::sys::errno::Errno;
 use crate::sys::param::btodb;
 use crate::sys::systm::INFSLP;
 use crate::sys::types::Daddr;
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::Vnode;
 use crate::ufs::ext2fs::ext2fs::fsbtodb;
 use crate::ufs::ext2fs::ext2fs_alloc::{ext2fs_alloc, ext2fs_blkfree, ext2fs_blkpref};
@@ -80,6 +79,7 @@ use crate::ufs::ext2fs::ext2fs_dinode::{NDADDR, NIADDR};
 use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode};
 use crate::ufs::ufs::ufs_bmap::ufs_getlbns;
+use kernel::fs::vops::Cred;
 
 /// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
 fn getblk_wait(vp: &'static Vnode, blkno: Daddr, size: i32) -> &'static Buf {
@@ -116,7 +116,7 @@ pub fn ext2fs_buf_alloc(
     ip: &Inode,
     bn: u32,
     _size: i32,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     flags: i32,
 ) -> Result<&'static Buf, Errno> {
     let fs = ip.e2fs();

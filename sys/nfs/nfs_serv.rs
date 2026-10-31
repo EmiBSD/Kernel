@@ -74,6 +74,13 @@
 //! behind the `nfsserver` feature.
 //!
 //! ## Deviations
+//! - A procedure takes the request's credential `nd->nd_cr` as an argument of its own
+//!   ([`NfsrvProc`]), lent by `nfssvc_nfsd` beside the descriptor for the call: the C
+//!   points `cred`, `cn_cred` and the VOPs' `a_cred` at the descriptor's member while it
+//!   passes the descriptor on to be dissected, which a borrow of the member (a `Cred`) and
+//!   the descriptor's `&mut` cannot both be; `nfsrv_fhtovp`'s anonymous mapping still
+//!   writes the one credential every later use reads (N5.5a2c). The member is an `Option`,
+//!   empty while it is lent.
 //! - Every procedure returns `Result<(), Errno>`: `Ok(())` is the C's 0 (the reply is in
 //!   `*mrq`), `Err` the C's non-zero error (the request is dropped). The status put in the
 //!   reply stays the C's `int` (an errno or an NFS status, `NFSERR_*`), as `nfs_namei` and
@@ -181,7 +188,7 @@ use crate::sys::proc::Proc;
 use crate::sys::socket::SOCK_DGRAM;
 use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Mode, Off, Register, makedev};
-use crate::sys::ucred::Ucred;
+use crate::sys::ucred::{Ucred, UcredCell};
 use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
 use crate::sys::unistd::{_PC_CHOWN_RESTRICTED, _PC_LINK_MAX, _PC_NAME_MAX, _PC_NO_TRUNC};
 use crate::sys::vnode::vn_lock;
@@ -195,8 +202,15 @@ use crate::ufs::ufs::dir::DIRBLKSIZ;
 /// A server procedure (`int (*)(struct nfsrv_descript *, struct nfssvc_sock *, struct proc *,
 /// struct mbuf **)`): serves the request `nd` from the socket `slp` in the nfsd `procp` and
 /// leaves the reply in `*mrq`. `Err` is the C's non-zero return: the request is dropped.
-pub type NfsrvProc =
-    fn(&mut NfsrvDescript, &NfssvcSock, &Proc, &mut Option<&'static Mbuf>) -> Result<(), Errno>;
+/// The request's credential `nd->nd_cr` is the second argument, lent by `nfssvc_nfsd` beside
+/// the descriptor (see the module's deviations).
+pub type NfsrvProc = fn(
+    &mut NfsrvDescript,
+    &UcredCell,
+    &NfssvcSock,
+    &Proc,
+    &mut Option<&'static Mbuf>,
+) -> Result<(), Errno>;
 
 /// The status of a vnode operation as the C's `int error` (0 or an errno).
 fn status_of<T>(r: &Result<T, Errno>) -> i32 {
@@ -305,6 +319,7 @@ const AUTH_TOOWEAK_STATUS: i32 = NFSERR_AUTHERR | AUTH_TOOWEAK as i32;
 /// `nfsrv_fhtovp(fhp, lockflag, &vp, &nfsd->nd_cr, slp, nfsd->nd_nam, &rdonly)`.
 fn fhtovp(
     nfsd: &NfsrvDescript,
+    nd_cr: &UcredCell,
     fh: &Fhandle,
     lockflag: bool,
     slp: &NfssvcSock,
@@ -312,12 +327,14 @@ fn fhtovp(
     let Some(nam) = nfsd.nd_nam else {
         return Err(AUTH_TOOWEAK_STATUS);
     };
-    nfsrv_fhtovp(fh, lockflag, &nfsd.nd_cr, slp, nam)
+    nfsrv_fhtovp(fh, lockflag, nd_cr, slp, nam)
 }
 
 /// `nfs_namei(ndp, fhp, len, slp, nfsd->nd_nam, &nfsd->nd_md, &nfsd->nd_dpos, retdirp, p)`.
+#[allow(clippy::too_many_arguments)] // nfs_namei's, and the request's credential beside the descriptor
 fn namei<'a>(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     ndp: &mut Nameidata<'a>,
     fh: &Fhandle,
     len: usize,
@@ -339,7 +356,7 @@ fn namei<'a>(
         &mut nfsd.nd_dpos,
         retdirp,
         p,
-        &nfsd.nd_cr,
+        nd_cr,
     )
 }
 
@@ -461,18 +478,19 @@ fn nfsm_srvnamesiz(nfsd: &mut NfsrvDescript) -> Result<(usize, i32), Errno> {
 /// `nfs v3 access service`
 pub fn nfsrv3_access(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
     let mut nfsmode = fxdr_unsigned(nfsd_dissect(nfsd, NFSX_UNSIGNED)?.get(0));
-    let (vp, rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, NFSX_UNSIGNED)? {
@@ -483,7 +501,7 @@ pub fn nfsrv3_access(
     };
     let isdir = vp.vtype() == VDIR;
     if nfsmode & NFSV3ACCESS_READ != 0
-        && nfsrv_access(vp, VREAD, &nfsd.nd_cr, rdonly, procp, false).is_err()
+        && nfsrv_access(vp, VREAD, nd_cr, rdonly, procp, false).is_err()
     {
         nfsmode &= !NFSV3ACCESS_READ;
     }
@@ -492,9 +510,7 @@ pub fn nfsrv3_access(
     } else {
         NFSV3ACCESS_MODIFY | NFSV3ACCESS_EXTEND
     };
-    if nfsmode & testmode != 0
-        && nfsrv_access(vp, VWRITE, &nfsd.nd_cr, rdonly, procp, false).is_err()
-    {
+    if nfsmode & testmode != 0 && nfsrv_access(vp, VWRITE, nd_cr, rdonly, procp, false).is_err() {
         nfsmode &= !testmode;
     }
     let testmode = if isdir {
@@ -502,9 +518,7 @@ pub fn nfsrv3_access(
     } else {
         NFSV3ACCESS_EXECUTE
     };
-    if nfsmode & testmode != 0
-        && nfsrv_access(vp, VEXEC, &nfsd.nd_cr, rdonly, procp, false).is_err()
-    {
+    if nfsmode & testmode != 0 && nfsrv_access(vp, VEXEC, nd_cr, rdonly, procp, false).is_err() {
         nfsmode &= !testmode;
     }
     let mut va = Vattr::new();
@@ -521,17 +535,18 @@ pub fn nfsrv3_access(
 /// `nfs getattr service`
 pub fn nfsrv_getattr(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             nfsm_reply(nfsd, slp, mrq, error, 0)?;
@@ -556,11 +571,12 @@ pub fn nfsrv_getattr(
 /// `nfs setattr service`
 pub fn nfsrv_setattr(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -608,7 +624,7 @@ pub fn nfsrv_setattr(
     }
 
     // Now that we have all the fields, lets do it.
-    let (vp, rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, 2 * NFSX_UNSIGNED)? {
@@ -648,7 +664,7 @@ pub fn nfsrv_setattr(
             }
         } else if vp.vtype() == VDIR {
             break 'out Errno::EISDIR.as_i32();
-        } else if let Err(e) = nfsrv_access(vp, VWRITE, &nfsd.nd_cr, rdonly, procp, true) {
+        } else if let Err(e) = nfsrv_access(vp, VWRITE, nd_cr, rdonly, procp, true) {
             break 'out e.as_i32();
         }
         let error = status_of(&VOP_SETATTR(vp, &mut va, cred, procp));
@@ -685,11 +701,12 @@ const VNOVAL_SIZE: u64 = u64::MAX;
 /// `nfs lookup rpc`
 pub fn nfsrv_lookup(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -706,9 +723,9 @@ pub fn nfsrv_lookup(
     }
 
     let mut nd = ndinit(LOOKUP, LOCKLEAF | SAVESTART, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirattr = Vattr::new();
     let mut dirattr_ok = false;
     if let Some(dirp) = dirp {
@@ -757,18 +774,19 @@ pub fn nfsrv_lookup(
 /// `nfs readlink service`
 pub fn nfsrv_readlink(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, 2 * NFSX_UNSIGNED)? {
@@ -867,11 +885,12 @@ fn nfsrv_read_bad(
 /// `nfs read service`
 pub fn nfsrv_read(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -890,7 +909,7 @@ pub fn nfsrv_read(
         return Ok(());
     }
 
-    let (vp, rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => return nfsrv_read_bad(nfsd, slp, mrq, error, None),
     };
@@ -906,8 +925,8 @@ pub fn nfsrv_read(
         }
         .as_i32();
     }
-    if error == 0 && nfsrv_access(vp, VREAD, &nfsd.nd_cr, rdonly, procp, true).is_err() {
-        error = status_of(&nfsrv_access(vp, VEXEC, &nfsd.nd_cr, rdonly, procp, true));
+    if error == 0 && nfsrv_access(vp, VREAD, nd_cr, rdonly, procp, true).is_err() {
+        error = status_of(&nfsrv_access(vp, VEXEC, nd_cr, rdonly, procp, true));
     }
     let mut va = Vattr::new();
     let getret = VOP_GETATTR(vp, &mut va, cred, procp);
@@ -1088,11 +1107,12 @@ fn nfsrv_write_bad(
 /// `nfs write service`
 pub fn nfsrv_write(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     if nfsd.nd_mrep.is_none() {
@@ -1157,7 +1177,7 @@ pub fn nfsrv_write(
     if len > NFS_MAXDATA as i32 || len < 0 || i < i64::from(len) {
         return nfsrv_write_bad(nfsd, slp, mrq, Errno::EIO.as_i32(), None);
     }
-    let (vp, rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => return nfsrv_write_bad(nfsd, slp, mrq, error, None),
     };
@@ -1174,7 +1194,7 @@ pub fn nfsrv_write(
         vput(vp);
         return nfsrv_write_bad(nfsd, slp, mrq, error.as_i32(), forat_ok.then_some(&forat));
     }
-    if let Err(e) = nfsrv_access(vp, VWRITE, &nfsd.nd_cr, rdonly, procp, true) {
+    if let Err(e) = nfsrv_access(vp, VWRITE, nd_cr, rdonly, procp, true) {
         vput(vp);
         return nfsrv_write_bad(nfsd, slp, mrq, e.as_i32(), forat_ok.then_some(&forat));
     }
@@ -1341,11 +1361,12 @@ fn nfsrv_create_nfsmout(
 /// `nfs create service`: now does a truncate to 0 length via setattr if it already exists.
 pub fn nfsrv_create(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1367,9 +1388,9 @@ pub fn nfsrv_create(
         NiDirp::Sys(&[]),
         procp,
     );
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -1433,7 +1454,7 @@ pub fn nfsrv_create(
                 va.va_type = VFIFO;
             }
             if va.va_type != VFIFO
-                && let Err(e) = suser_ucred(&nfsd.nd_cr)
+                && let Err(e) = suser_ucred(nd_cr)
             {
                 startdir_rele(&mut nd);
                 pnbuf_put_hasbuf(&mut nd.ni_cnd);
@@ -1456,7 +1477,7 @@ pub fn nfsrv_create(
             nd.ni_cnd.cn_nameiop = LOOKUP;
             nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             nd.ni_cnd.cn_proc = procp;
-            nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+            nd.ni_cnd.cn_cred = cred;
             if let Err(e) = vfs_lookup(&mut nd) {
                 pnbuf_put_hasbuf(&mut nd.ni_cnd);
                 nfsm_reply(nfsd, slp, mrq, e.as_i32(), 0)?;
@@ -1492,7 +1513,7 @@ pub fn nfsrv_create(
         abortop(&mut nd);
         if va.va_size != VNOVAL_SIZE {
             let rdonly = nd.ni_cnd.cn_flags & RDONLY != 0;
-            let r = nfsrv_access(evp, VWRITE, &nfsd.nd_cr, rdonly, procp, false).and_then(|()| {
+            let r = nfsrv_access(evp, VWRITE, nd_cr, rdonly, procp, false).and_then(|()| {
                 let tempsize = va.va_size;
                 vattr_null(&mut va);
                 va.va_size = tempsize;
@@ -1565,11 +1586,12 @@ pub fn nfsrv_create(
 /// `nfs v3 mknod service`
 pub fn nfsrv_mknod(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -1590,9 +1612,9 @@ pub fn nfsrv_mknod(
         NiDirp::Sys(&[]),
         procp,
     );
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -1658,7 +1680,7 @@ pub fn nfsrv_mknod(
             status_of(&r)
         } else {
             if va.va_type != VFIFO
-                && let Err(e) = suser_ucred(&nfsd.nd_cr)
+                && let Err(e) = suser_ucred(nd_cr)
             {
                 startdir_rele(&mut nd);
                 pnbuf_put(&mut nd.ni_cnd);
@@ -1676,7 +1698,7 @@ pub fn nfsrv_mknod(
             nd.ni_cnd.cn_nameiop = LOOKUP;
             nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART);
             nd.ni_cnd.cn_proc = procp;
-            nd.ni_cnd.cn_cred = Cred::from_raw(procp.ucred_ptr());
+            nd.ni_cnd.cn_cred = Cred::real(procp.ucred());
             let r = vfs_lookup(&mut nd);
             pnbuf_put(&mut nd.ni_cnd);
             if let Err(e) = r {
@@ -1739,11 +1761,12 @@ pub fn nfsrv_mknod(
 /// `nfs remove service`
 pub fn nfsrv_remove(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1760,9 +1783,9 @@ pub fn nfsrv_remove(
     }
 
     let mut nd = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -1780,7 +1803,7 @@ pub fn nfsrv_remove(
             let vp = ni_vp(&nd);
             let error = 'out: {
                 if vp.vtype() == VDIR
-                    && let Err(e) = suser_ucred(&nfsd.nd_cr)
+                    && let Err(e) = suser_ucred(nd_cr)
                 {
                     break 'out e.as_i32();
                 }
@@ -1854,11 +1877,12 @@ fn nfsrv_rename_nfsmout(
 /// `nfs rename service`
 pub fn nfsrv_rename(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(fnfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -1876,12 +1900,12 @@ pub fn nfsrv_rename(
 
     // Remember our original uid so that we can reset cr_uid before the second nfs_namei()
     // call, in case it is remapped.
-    let saved_uid = nfsd.nd_cr.cr_uid.get();
+    let saved_uid = nd_cr.cr_uid.get();
 
     let mut fromnd = ndinit(DELETE, WANTPARENT | SAVESTART, NiDirp::Sys(&[]), procp);
-    fromnd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    fromnd.ni_cnd.cn_cred = cred;
     let mut fdirp = None;
-    let r = namei(nfsd, &mut fromnd, &ffh, len, slp, &mut fdirp, procp);
+    let r = namei(nfsd, nd_cr, &mut fromnd, &ffh, len, slp, &mut fdirp, procp);
     let mut fdirfor = Vattr::new();
     let mut fdirfor_ok = false;
     if let Some(d) = fdirp {
@@ -1915,7 +1939,7 @@ pub fn nfsrv_rename(
         Ok(l) => l,
         Err(e) => return nfsrv_rename_nfsmout(&mut fromnd, fdirp, Some(fvp), Err(e)),
     };
-    nfsd.nd_cr.set_uid(saved_uid);
+    nd_cr.set_uid(saved_uid);
 
     let mut tond = ndinit(
         RENAME,
@@ -1923,9 +1947,9 @@ pub fn nfsrv_rename(
         NiDirp::Sys(&[]),
         procp,
     );
-    tond.ni_cnd.cn_cred = Cred::from_raw(cred);
+    tond.ni_cnd.cn_cred = cred;
     let mut tdirp = None;
-    let r = namei(nfsd, &mut tond, &tfh, len2, slp, &mut tdirp, procp);
+    let r = namei(nfsd, nd_cr, &mut tond, &tfh, len2, slp, &mut tdirp, procp);
     let mut tdirfor = Vattr::new();
     let mut tdirfor_ok = false;
     if let Some(d) = tdirp {
@@ -2054,11 +2078,12 @@ pub fn nfsrv_rename(
 /// `nfs link service`
 pub fn nfsrv_link(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2078,7 +2103,7 @@ pub fn nfsrv_link(
         return Ok(());
     }
 
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, false, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, false, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(
@@ -2100,8 +2125,8 @@ pub fn nfsrv_link(
     let mut error = 0;
     if vp.vtype() != VDIR {
         let mut nd = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), procp);
-        nd.ni_cnd.cn_cred = Cred::from_raw(cred);
-        let r = namei(nfsd, &mut nd, &dfh, len, slp, &mut dirp, procp);
+        nd.ni_cnd.cn_cred = cred;
+        let r = namei(nfsd, nd_cr, &mut nd, &dfh, len, slp, &mut dirp, procp);
         if let Some(d) = dirp {
             if v3 {
                 dirfor_ok = VOP_GETATTR(d, &mut dirfor, cred, procp).is_ok();
@@ -2192,11 +2217,12 @@ fn nfsrv_symlink_nfsmout(
 /// `nfs symbolic link service`
 pub fn nfsrv_symlink(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2213,9 +2239,9 @@ pub fn nfsrv_symlink(
     }
 
     let mut nd = ndinit(CREATE, LOCKPARENT | SAVESTART, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -2286,7 +2312,7 @@ pub fn nfsrv_symlink(
                 nd.ni_cnd.cn_flags &= !(LOCKPARENT | SAVESTART | FOLLOW);
                 nd.ni_cnd.cn_flags |= NOFOLLOW | LOCKLEAF;
                 nd.ni_cnd.cn_proc = procp;
-                nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+                nd.ni_cnd.cn_cred = cred;
                 error = status_of(&vfs_lookup(&mut nd));
                 if error == 0 {
                     let vp = ni_vp(&nd);
@@ -2359,11 +2385,12 @@ fn nfsrv_mkdir_nfsmout(
 /// `nfs mkdir service`
 pub fn nfsrv_mkdir(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2380,9 +2407,9 @@ pub fn nfsrv_mkdir(
     }
 
     let mut nd = ndinit(CREATE, LOCKPARENT, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -2479,11 +2506,12 @@ pub fn nfsrv_mkdir(
 /// `nfs rmdir service`
 pub fn nfsrv_rmdir(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2500,9 +2528,9 @@ pub fn nfsrv_rmdir(
     }
 
     let mut nd = ndinit(DELETE, LOCKPARENT | LOCKLEAF, NiDirp::Sys(&[]), procp);
-    nd.ni_cnd.cn_cred = Cred::from_raw(cred);
+    nd.ni_cnd.cn_cred = cred;
     let mut dirp = None;
-    let r = namei(nfsd, &mut nd, &fh, len, slp, &mut dirp, procp);
+    let r = namei(nfsd, nd_cr, &mut nd, &fh, len, slp, &mut dirp, procp);
     let mut dirfor = Vattr::new();
     let mut dirfor_ok = false;
     if let Some(d) = dirp {
@@ -2687,11 +2715,12 @@ fn nfsrv_readdir_siz(siz: i32, xfer: i32) -> usize {
 /// of the dir. "entry" structures, but are in the rpc.
 pub fn nfsrv_readdir(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
@@ -2721,7 +2750,7 @@ pub fn nfsrv_readdir(
         let xfer = nfs_srvmaxdata(nfsd) as i32;
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(cnt, xfer);
-        fhtovp(nfsd, &fh, true, slp).and_then(|(vp, rdonly)| {
+        fhtovp(nfsd, nd_cr, &fh, true, slp).and_then(|(vp, rdonly)| {
             if vp.vtype() != VDIR {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
@@ -2747,7 +2776,7 @@ pub fn nfsrv_readdir(
         error = status_of(&g);
     }
     if error == 0 {
-        error = status_of(&nfsrv_access(vp, VEXEC, &nfsd.nd_cr, rdonly, procp, false));
+        error = status_of(&nfsrv_access(vp, VEXEC, nd_cr, rdonly, procp, false));
     }
     if error != 0 {
         vput(vp);
@@ -2892,11 +2921,12 @@ fn nfsrv_flrep(off: u64, fattr: &NfsFattr, nfh: &Nfsfh) -> [u8; FLREP_SIZE] {
 /// entry (version 3 only).
 pub fn nfsrv_readdirplus(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -2919,7 +2949,7 @@ pub fn nfsrv_readdirplus(
         let xfer = nfs_srvmaxdata(nfsd) as i32;
         let cnt = nfsrv_readdir_cnt(cnt, xfer);
         let siz = nfsrv_readdir_siz(siz, xfer);
-        fhtovp(nfsd, &fh, true, slp).and_then(|(vp, rdonly)| {
+        fhtovp(nfsd, nd_cr, &fh, true, slp).and_then(|(vp, rdonly)| {
             if vp.vtype() != VDIR {
                 vput(vp);
                 Err(Errno::ENOTDIR.as_i32())
@@ -2941,7 +2971,7 @@ pub fn nfsrv_readdirplus(
     let mut getret = g.is_ok();
     let mut error = status_of(&g);
     if error == 0 {
-        error = status_of(&nfsrv_access(vp, VEXEC, &nfsd.nd_cr, rdonly, procp, false));
+        error = status_of(&nfsrv_access(vp, VEXEC, nd_cr, rdonly, procp, false));
     }
     if error != 0 {
         vput(vp);
@@ -3125,11 +3155,12 @@ pub fn nfsrv_readdirplus(
 /// `nfs commit service`
 pub fn nfsrv_commit(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
@@ -3142,7 +3173,7 @@ pub fn nfsrv_commit(
         (tl.fxdr_hyper(0), fxdr_unsigned(tl.get(2)) as i32)
     };
     let _cnt = cnt.max(0);
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, 2 * NFSX_UNSIGNED)? {
@@ -3178,18 +3209,19 @@ pub fn nfsrv_commit(
 /// `nfs statfs service`
 pub fn nfsrv_statfs(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
     let v3 = nfsd.nd_flag & ND_NFSV3 != 0;
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, NFSX_UNSIGNED)? {
@@ -3239,17 +3271,18 @@ pub fn nfsrv_statfs(
 /// `nfs fsinfo service`
 pub fn nfsrv_fsinfo(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, NFSX_UNSIGNED)? {
@@ -3304,17 +3337,18 @@ pub fn nfsrv_fsinfo(
 /// `nfs pathconf service`
 pub fn nfsrv_pathconf(
     nfsd: &mut NfsrvDescript,
+    nd_cr: &UcredCell,
     slp: &NfssvcSock,
     procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    let cred: *const Ucred = &*nfsd.nd_cr;
+    let cred = Cred::real(nd_cr);
 
     let Some(nfh) = nfsm_srvmtofh(nfsd, slp, mrq)? else {
         return Ok(());
     };
     let fh = nfh.fh_generic();
-    let (vp, _rdonly) = match fhtovp(nfsd, &fh, true, slp) {
+    let (vp, _rdonly) = match fhtovp(nfsd, nd_cr, &fh, true, slp) {
         Ok(x) => x,
         Err(error) => {
             if let Some(mut mb) = nfsm_reply(nfsd, slp, mrq, error, NFSX_UNSIGNED)? {
@@ -3360,6 +3394,7 @@ pub fn nfsrv_pathconf(
 /// Null operation, used by clients to ping server
 pub fn nfsrv_null(
     nfsd: &mut NfsrvDescript,
+    _nd_cr: &UcredCell,
     slp: &NfssvcSock,
     _procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
@@ -3371,6 +3406,7 @@ pub fn nfsrv_null(
 /// No operation, used for obsolete procedures
 pub fn nfsrv_noop(
     nfsd: &mut NfsrvDescript,
+    _nd_cr: &UcredCell,
     slp: &NfssvcSock,
     _procp: &Proc,
     mrq: &mut Option<&'static Mbuf>,
@@ -3416,12 +3452,14 @@ pub fn nfsrv_access(
             return Err(Errno::ETXTBSY);
         }
     }
-    let r = VOP_ACCESS(vp, flags, cred, p);
+    let r = VOP_ACCESS(vp, flags, Cred::real(cred), p);
     // Allow certain operations for the owner (reads and writes on files that are already
     // open).
     if override_ && r == Err(Errno::EACCES) {
         let mut vattr = Vattr::new();
-        if VOP_GETATTR(vp, &mut vattr, cred, p).is_ok() && cred.cr_uid.get() == vattr.va_uid {
+        if VOP_GETATTR(vp, &mut vattr, Cred::real(cred), p).is_ok()
+            && cred.cr_uid.get() == vattr.va_uid
+        {
             return Ok(());
         }
     }
@@ -3621,7 +3659,10 @@ mod tests {
             .expect("a procedure of the table");
         let slp = NfssvcSock::new();
         let mut mrq = None;
-        let r = f(&mut nd, &slp, p, &mut mrq);
+        // nfssvc_nfsd lends the request's credential beside the descriptor.
+        let nd_cr = nd.nd_cr.take().expect("the request's credential");
+        let r = f(&mut nd, &nd_cr, &slp, p, &mut mrq);
+        nd.nd_cr = Some(nd_cr);
         assert!(nd.nd_mrep.is_none(), "the request was freed");
         (r, mrq.map(reply_words))
     }
@@ -3757,7 +3798,10 @@ mod tests {
         nd.nd_repstat = Errno::EBADRPC.as_i32();
         let slp = NfssvcSock::new();
         let mut mrq = None;
-        assert_eq!(nfsrv_noop(&mut nd, &slp, p, &mut mrq), Ok(()));
+        assert_eq!(
+            nfsrv_noop(&mut nd, &UcredCell::new(), &slp, p, &mut mrq),
+            Ok(())
+        );
         Rd::new(reply_words(mrq.expect("a reply")), RPC_GARBAGE).done();
 
         // A version 3 file handle of the wrong length: GARBAGE_ARGS, no NFS status.

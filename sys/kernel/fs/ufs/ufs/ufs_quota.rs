@@ -75,10 +75,10 @@
 //!   `LIST_HEAD` is 8, so the table `hashinit` makes in `M_DQUOT` is twice the C's and
 //!   `vmstat -m`'s "UFS quota" MemUse grows by that much; no `diff-openbsd` scenario prints
 //!   it.
-//! - `ufs_quota_alloc_blocks2` and `ufs_quota_alloc_inode2` take the credential as
-//!   `Option<&Ucred>`, `None` for the kernel's (`NOCRED`, `FSCRED`, NULL): no limit is
-//!   checked for it. The C tests `NOCRED` only in the former and dereferences the pointer
-//!   otherwise (LZ's deviation, kept).
+//! - `ufs_quota_alloc_blocks2` and `ufs_quota_alloc_inode2` check the limits only for a real
+//!   credential (`Cred::ucred`), not for the kernel's (`NOCRED`, `FSCRED`, NULL). The C tests
+//!   `NOCRED` only in the former and dereferences the pointer otherwise (LZ's deviation,
+//!   kept).
 //! - [`dqget`] answers `ENOMEM` when `malloc(M_WAITOK)` cannot be satisfied (the C cannot
 //!   fail there).
 //! - `VFSTOUFS(mp)` is the caller's (`quota.rs`'s deviations): `qsync`, `quotaon`,
@@ -386,7 +386,7 @@ fn skiptype(flags: UfsQuotaFlags, i: usize) -> bool {
 pub fn ufs_quota_alloc_blocks2<G: ProcGlue>(
     ip: &Inode<G>,
     change: Daddr,
-    cred: Option<&Ucred>,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
@@ -397,7 +397,7 @@ pub fn ufs_quota_alloc_blocks2<G: ProcGlue>(
     }
 
     if flags & UFS_QUOTA_FORCE == 0
-        && let Some(c) = cred.filter(|c| c.cr_uid.get() != 0)
+        && let Some(c) = cred.ucred().filter(|c| c.cr_uid.get() != 0)
     {
         for i in 0..MAXQUOTAS {
             if skiptype(flags, i) || ip.i_dquot[i].is_none() {
@@ -594,14 +594,14 @@ fn chkdqchg<G: ProcGlue>(
 /// `ufs_quota_alloc_inode2`: check the inode limit, applying corrective action.
 pub fn ufs_quota_alloc_inode2<G: ProcGlue>(
     ip: &Inode<G>,
-    cred: Option<&Ucred>,
+    cred: Cred<'_>,
     flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
     chkdquot(ip);
 
     if flags & UFS_QUOTA_FORCE == 0
-        && let Some(c) = cred.filter(|c| c.cr_uid.get() != 0)
+        && let Some(c) = cred.ucred().filter(|c| c.cr_uid.get() != 0)
     {
         for i in 0..MAXQUOTAS {
             if skiptype(flags, i) || ip.i_dquot[i].is_none() {

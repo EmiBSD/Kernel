@@ -111,6 +111,7 @@ use core::ffi::c_void;
 use core::mem::offset_of;
 use core::ptr::{self};
 use core::sync::atomic::{AtomicI32, Ordering};
+use kernel::fs::vops::Cred;
 
 use crate::kassert;
 use crate::kern::init_main::PROC0;
@@ -213,7 +214,7 @@ use crate::sys::vnode::{
     VopLinkArgs, VopLockArgs, VopLookupArgs, VopMkdirArgs, VopMknodArgs, VopOpenArgs,
     VopPathconfArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs, VopReclaimArgs,
     VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs, VopSymlinkArgs,
-    VopUnlockArgs, VopWriteArgs, Vops, Vtype, cred_ref, vttoif,
+    VopUnlockArgs, VopWriteArgs, Vops, Vtype, vttoif,
 };
 use crate::sys::vnode::{vaccess, vattr_null, vput, vref, vrele, vwaitforio};
 use crate::unported;
@@ -527,16 +528,14 @@ pub static NFS_FIFOVOPS: Vops = Vops {
 };
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials an NFS operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
             "nfs: {} credential",
-            if ptr::eq(cred, NOCRED) {
+            if cred == NOCRED {
                 "missing"
-            } else if ptr::eq(cred, FSCRED) {
+            } else if cred == FSCRED {
                 "kernel"
             } else {
                 "NULL"
@@ -1042,7 +1041,7 @@ fn nfsm_wcc_data(
 pub fn nfs_setattrrpc(
     vp: &'static Vnode,
     vap: &Vattr,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     procp: Option<&Proc>,
 ) -> Result<(), Errno> {
     let mut vp = vp;
@@ -1198,7 +1197,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                 cnp.cn_flags &= !PDIRUNLOCK;
             }
 
-            if let Err(err2) = VOP_ACCESS(dvp, VEXEC, cnp.cn_cred.as_raw(), cnp.proc()) {
+            if let Err(err2) = VOP_ACCESS(dvp, VEXEC, cnp.cn_cred, cnp.proc()) {
                 if let Some(hvp) = hitvp {
                     vput_or_vrele(hvp, dvp);
                 }
@@ -1208,7 +1207,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
 
             match hitvp {
                 None => {
-                    if VOP_GETATTR(dvp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
+                    if VOP_GETATTR(dvp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
                         && vattr.va_mtime.tv_sec == VTONFS(dvp).n_ctime.get()
                     {
                         return Err(Errno::ENOENT);
@@ -1218,7 +1217,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                     // goto dorpc
                 }
                 Some(newvp) => {
-                    if VOP_GETATTR(newvp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
+                    if VOP_GETATTR(newvp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
                         && vattr.va_ctime.tv_sec == VTONFS(newvp).n_ctime.get()
                     {
                         NFSSTATS.lookupcache_hits.fetch_add(1, Ordering::Relaxed);
@@ -1253,7 +1252,7 @@ pub fn nfs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         if let Err(e) = nfs_request(dvp, NFSPROC_LOOKUP, &mut info) {
             if v3 {
                 nfsm_try!('nfsmout, nfsm_postop_attr(&mut info, &mut dvp, &mut attrflag));
@@ -1456,7 +1455,7 @@ pub fn nfs_islocked(ap: &mut VopIslockedArgs) -> i32 {
 pub fn nfs_readlinkrpc(
     vp: &'static Vnode,
     uiop: &mut Uio<'_>,
-    cred: *const Ucred,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
     let mut vp = vp;
     let mut info = NfsmInfo::new();
@@ -1524,7 +1523,8 @@ pub fn nfs_readrpc(vp: &'static Vnode, uiop: &mut Uio<'_>) -> Result<(), Errno> 
         }
 
         info.nmi_procp = curproc();
-        info.nmi_cred = VTONFS(vp).n_rcred.get();
+        let rcred = VTONFS(vp).n_rcred.cred();
+        info.nmi_cred = rcred.as_deref().map_or(Cred::NULL, Cred::real);
         let error = nfs_request(vp, NFSPROC_READ, &mut info);
         if v3 {
             nfsm_postop_attr(&mut info, &mut vp, &mut attrflag)?;
@@ -1573,7 +1573,6 @@ pub fn nfs_writerpc(
     let v3 = nfs_isv3(vp);
     let mut wccflag;
     let mut committed = NFSV3WRITE_FILESYNC;
-    let mut info = NfsmInfo::new();
 
     #[cfg(feature = "diagnostic")]
     if uiop.uio_iovcnt() != 1 {
@@ -1586,98 +1585,106 @@ pub fn nfs_writerpc(
     }
     let error: Result<(), Errno> = 'nfsmout: {
         while tsiz > 0 {
-            info = NfsmInfo::new();
+            // Each RPC has its own state, and its own read of `n_wcred` (below), as in C; the
+            // reply is freed when the RPC is done, on every path (the C's `nfsmout:`).
+            let mut info = NfsmInfo::new();
             info.nmi_v3 = v3;
+            let wcred;
+            let rpc: Result<i64, Errno> = 'rpc: {
+                NFSSTATS.rpccnt[NFSPROC_WRITE].fetch_add(1, Ordering::Relaxed);
+                let mut len = tsiz.min(i64::from(nmp.nm_wsize.get()));
+                let req = nfsm_reqhead(nfsx_fh(v3) + 5 * NFSX_UNSIGNED + nfsm_rndup(len as usize));
+                info.nmi_mreq = Some(req);
+                let mut mb = req;
+                nfsm_fhtom(&mut mb, vp, v3);
+                if v3 {
+                    let mut tl = nfsm_build(&mut mb, 5 * NFSX_UNSIGNED);
+                    tl.txdr_hyper(0, uiop.uio_offset as u64);
+                    tl.set(2, txdr_unsigned(len as u32));
+                    tl.set(3, txdr_unsigned(*iomode));
+                    tl.set(4, txdr_unsigned(len as u32));
+                } else {
+                    let mut tl = nfsm_build(&mut mb, 4 * NFSX_UNSIGNED);
+                    // Set both "begin" and "current" to non-garbage.
+                    let x = txdr_unsigned(uiop.uio_offset as u32);
+                    tl.set(0, x); // "begin offset"
+                    tl.set(1, x); // "current offset"
+                    let x = txdr_unsigned(len as u32);
+                    tl.set(2, x); // total to this offset
+                    tl.set(3, x); // size of this write
+                }
+                nfsm_uiotombuf(&mut mb, uiop, len as usize);
 
-            NFSSTATS.rpccnt[NFSPROC_WRITE].fetch_add(1, Ordering::Relaxed);
-            let mut len = tsiz.min(i64::from(nmp.nm_wsize.get()));
-            let req = nfsm_reqhead(nfsx_fh(v3) + 5 * NFSX_UNSIGNED + nfsm_rndup(len as usize));
-            info.nmi_mreq = Some(req);
-            let mut mb = req;
-            nfsm_fhtom(&mut mb, vp, v3);
-            if v3 {
-                let mut tl = nfsm_build(&mut mb, 5 * NFSX_UNSIGNED);
-                tl.txdr_hyper(0, uiop.uio_offset as u64);
-                tl.set(2, txdr_unsigned(len as u32));
-                tl.set(3, txdr_unsigned(*iomode));
-                tl.set(4, txdr_unsigned(len as u32));
-            } else {
-                let mut tl = nfsm_build(&mut mb, 4 * NFSX_UNSIGNED);
-                // Set both "begin" and "current" to non-garbage.
-                let x = txdr_unsigned(uiop.uio_offset as u32);
-                tl.set(0, x); // "begin offset"
-                tl.set(1, x); // "current offset"
-                let x = txdr_unsigned(len as u32);
-                tl.set(2, x); // total to this offset
-                tl.set(3, x); // size of this write
-            }
-            nfsm_uiotombuf(&mut mb, uiop, len as usize);
+                info.nmi_procp = curproc();
+                wcred = VTONFS(vp).n_wcred.cred();
+                info.nmi_cred = wcred.as_deref().map_or(Cred::NULL, Cred::real);
+                let error = nfs_request(vp, NFSPROC_WRITE, &mut info);
+                wccflag = NFSV3_WCCRATTR;
+                if v3 {
+                    wccflag = NFSV3_WCCCHK;
+                    nfsm_try!('rpc, nfsm_wcc_data(&mut info, &mut vp, &mut wccflag));
+                }
 
-            info.nmi_procp = curproc();
-            info.nmi_cred = VTONFS(vp).n_wcred.get();
-            let error = nfs_request(vp, NFSPROC_WRITE, &mut info);
-            wccflag = NFSV3_WCCRATTR;
-            if v3 {
-                wccflag = NFSV3_WCCCHK;
-                nfsm_try!('nfsmout, nfsm_wcc_data(&mut info, &mut vp, &mut wccflag));
-            }
+                if let Err(e) = error {
+                    break 'rpc Err(e);
+                }
 
-            if let Err(e) = error {
-                break 'nfsmout Err(e);
-            }
-
-            if v3 {
-                wccflag = NFSV3_WCCCHK;
-                let tl = nfsm_try!(
-                    'nfsmout,
-                    nfsm_dissect(&mut info, 2 * NFSX_UNSIGNED + NFSX_V3WRITEVERF)
-                );
-                let rlen = i64::from(fxdr_unsigned(tl.get(0)) as i32);
-                let commit = fxdr_unsigned(tl.get(1));
-                let mut verf = [0u8; NFSX_V3WRITEVERF];
-                verf.copy_from_slice(&tl.bytes()[2 * NFSX_UNSIGNED..][..NFSX_V3WRITEVERF]);
-                if rlen <= 0 {
-                    // info.nmi_mrep free'd after the loop
-                    break 'nfsmout Err(errno_of(NFSERR_IO));
-                } else if rlen < len {
-                    let backup = (len - rlen) as usize;
-                    if let Some(iov) = uiop.uio_iov.first_mut() {
-                        iov.iov_base = iov
-                            .iov_base
-                            .cast::<u8>()
-                            .wrapping_sub(backup)
-                            .cast::<c_void>();
-                        iov.iov_len += backup;
+                if v3 {
+                    wccflag = NFSV3_WCCCHK;
+                    let tl = nfsm_try!(
+                        'rpc,
+                        nfsm_dissect(&mut info, 2 * NFSX_UNSIGNED + NFSX_V3WRITEVERF)
+                    );
+                    let rlen = i64::from(fxdr_unsigned(tl.get(0)) as i32);
+                    let commit = fxdr_unsigned(tl.get(1));
+                    let mut verf = [0u8; NFSX_V3WRITEVERF];
+                    verf.copy_from_slice(&tl.bytes()[2 * NFSX_UNSIGNED..][..NFSX_V3WRITEVERF]);
+                    if rlen <= 0 {
+                        // info.nmi_mrep freed after the RPC
+                        break 'rpc Err(errno_of(NFSERR_IO));
+                    } else if rlen < len {
+                        let backup = (len - rlen) as usize;
+                        if let Some(iov) = uiop.uio_iov.first_mut() {
+                            iov.iov_base = iov
+                                .iov_base
+                                .cast::<u8>()
+                                .wrapping_sub(backup)
+                                .cast::<c_void>();
+                            iov.iov_len += backup;
+                        }
+                        uiop.uio_offset -= backup as Off;
+                        uiop.uio_resid += backup;
+                        len = rlen;
                     }
-                    uiop.uio_offset -= backup as Off;
-                    uiop.uio_resid += backup;
-                    len = rlen;
-                }
 
-                // Return the lowest commitment level obtained by any of the RPCs.
-                committed = nfs_lowest_commit(committed, commit);
-                if nmp.nm_flag.get() & NFSMNT_HASWRITEVERF == 0 {
-                    nmp.nm_verf.set(verf);
-                    nmp.nm_flag.set(nmp.nm_flag.get() | NFSMNT_HASWRITEVERF);
-                } else if nmp.nm_verf.get() != verf {
-                    *must_commit = true;
-                    nmp.nm_verf.set(verf);
+                    // Return the lowest commitment level obtained by any of the RPCs.
+                    committed = nfs_lowest_commit(committed, commit);
+                    if nmp.nm_flag.get() & NFSMNT_HASWRITEVERF == 0 {
+                        nmp.nm_verf.set(verf);
+                        nmp.nm_flag.set(nmp.nm_flag.get() | NFSMNT_HASWRITEVERF);
+                    } else if nmp.nm_verf.get() != verf {
+                        *must_commit = true;
+                        nmp.nm_verf.set(verf);
+                    }
+                } else {
+                    nfsm_try!('rpc, nfsm_loadattr(&mut info, &mut vp, None));
                 }
-            } else {
-                nfsm_try!('nfsmout, nfsm_loadattr(&mut info, &mut vp, None));
-            }
-            if wccflag != 0 {
-                let np = VTONFS(vp);
-                np.n_mtime.set(np.n_vattr.get().va_mtime);
-            }
+                if wccflag != 0 {
+                    let np = VTONFS(vp);
+                    np.n_mtime.set(np.n_vattr.get().va_mtime);
+                }
+                Ok(len)
+            };
             m_freem_reply(&mut info);
-            tsiz -= len;
+            match rpc {
+                Ok(len) => tsiz -= len,
+                Err(e) => break 'nfsmout Err(e),
+            }
         }
         Ok(())
     };
 
     // nfsmout:
-    m_freem_reply(&mut info);
     *iomode = committed;
     if error.is_err() {
         uiop.uio_resid = tsiz as usize;
@@ -1803,19 +1810,13 @@ pub fn nfs_mknodrpc(
 
         assert_cn_curproc(cnp);
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         let mut error = nfs_request(dvp, NFSPROC_MKNOD, &mut info);
         if error.is_ok() {
             nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
             if gotvp == 0 {
                 let mut np = None;
-                error = nfs_lookitup(
-                    dvp,
-                    cnp.name(),
-                    cnp.cn_cred.as_raw(),
-                    cn_proc(cnp),
-                    Some(&mut np),
-                );
+                error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
                 if error.is_ok() {
                     newvp = np.map(NFSTOV);
                 }
@@ -1923,19 +1924,13 @@ pub fn nfs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
 
             assert_cn_curproc(cnp);
             info.nmi_procp = cn_proc(cnp);
-            info.nmi_cred = cnp.cn_cred.as_raw();
+            info.nmi_cred = cnp.cn_cred;
             let mut error = nfs_request(dvp, NFSPROC_CREATE, &mut info);
             if error.is_ok() {
                 nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
                 if gotvp == 0 {
                     let mut np = None;
-                    error = nfs_lookitup(
-                        dvp,
-                        cnp.name(),
-                        cnp.cn_cred.as_raw(),
-                        cn_proc(cnp),
-                        Some(&mut np),
-                    );
+                    error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
                     if error.is_ok() {
                         newvp = np.map(NFSTOV);
                     }
@@ -1966,7 +1961,7 @@ pub fn nfs_create(ap: &mut VopCreateArgs<'_, '_>) -> Result<(), Errno> {
                 vap.va_mtime = ts;
             }
             if let Some(nvp) = newvp {
-                error = nfs_setattrrpc(nvp, vap, cnp.cn_cred.as_raw(), cn_proc(cnp));
+                error = nfs_setattrrpc(nvp, vap, cnp.cn_cred, cn_proc(cnp));
             }
         }
         break;
@@ -2012,7 +2007,7 @@ pub fn nfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
         Err(Errno::EPERM)
     } else if vp.usecount() == 1
         || (np.n_sillyrename.get().is_some()
-            && VOP_GETATTR(vp, &mut vattr, cnp.cn_cred.as_raw(), cnp.proc()).is_ok()
+            && VOP_GETATTR(vp, &mut vattr, cnp.cn_cred, cnp.proc()).is_ok()
             && vattr.va_nlink > 1)
     {
         // Purge the name cache so that the chance of a lookup for the name succeeding while
@@ -2021,10 +2016,10 @@ pub fn nfs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
         // the file..
         cache_purge(vp);
         // throw away biocache buffers, mainly to avoid unnecessary delayed writes later.
-        let mut error = nfs_vinvalbuf(vp, 0, cnp.cn_cred.as_raw(), cn_proc(cnp));
+        let mut error = nfs_vinvalbuf(vp, 0, cnp.cn_cred, cn_proc(cnp));
         // Do the rpc
         if error != Err(Errno::EINTR) {
-            error = nfs_removerpc(dvp, cnp.name(), cnp.cn_cred.as_raw(), cn_proc(cnp));
+            error = nfs_removerpc(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp));
         }
         // Kludge City: If the first reply to the remove rpc is lost.. the reply to the
         // retransmitted request will be ENOENT since the file was in fact removed. Therefore,
@@ -2055,10 +2050,11 @@ pub fn nfs_removeit(sp: &Sillyrename) -> Result<(), Errno> {
     if sp.s_dvp.vtype() == VBAD {
         return Ok(());
     }
+    let cred = sp.s_cred.cred();
     nfs_removerpc(
         sp.s_dvp,
         &sp.s_name[..sp.s_namlen as usize],
-        sp.s_cred.get(),
+        cred.as_deref().map_or(Cred::NULL, Cred::real),
         None,
     )
 }
@@ -2068,7 +2064,7 @@ pub fn nfs_removeit(sp: &Sillyrename) -> Result<(), Errno> {
 pub fn nfs_removerpc(
     dvp: &'static Vnode,
     name: &[u8],
-    cred: *const Ucred,
+    cred: Cred<'_>,
     proc: Option<&Proc>,
 ) -> Result<(), Errno> {
     let mut wdvp = dvp;
@@ -2149,7 +2145,7 @@ pub fn nfs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             fcnp.name(),
             tdvp,
             tcnp.name(),
-            tcnp.cn_cred.as_raw(),
+            tcnp.cn_cred,
             cn_proc(tcnp),
         );
 
@@ -2195,7 +2191,7 @@ pub fn nfs_renameit(
         scnp.name(),
         sdvp,
         &sp.s_name[..sp.s_namlen as usize],
-        scnp.cn_cred.as_raw(),
+        scnp.cn_cred,
         curproc(),
     )
 }
@@ -2207,7 +2203,7 @@ pub fn nfs_renamerpc(
     fname: &[u8],
     tdvp: &'static Vnode,
     tname: &[u8],
-    cred: *const Ucred,
+    cred: Cred<'_>,
     proc: Option<&Proc>,
 ) -> Result<(), Errno> {
     let (mut wfdvp, mut wtdvp) = (fdvp, tdvp);
@@ -2273,7 +2269,7 @@ pub fn nfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
 
     // Push all writes to the server, so that the attribute cache doesn't get "out of sync"
     // with the server. XXX There should be a better way!
-    let _ = VOP_FSYNC(vp, cnp.cn_cred.as_raw(), MNT_WAIT, cnp.proc());
+    let _ = VOP_FSYNC(vp, cnp.cn_cred, MNT_WAIT, cnp.proc());
 
     NFSSTATS.rpccnt[NFSPROC_LINK].fetch_add(1, Ordering::Relaxed);
     let req = nfsm_reqhead(2 * nfsx_fh(v3) + NFSX_UNSIGNED + nfsm_rndup(cnp.name().len()));
@@ -2285,7 +2281,7 @@ pub fn nfs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         let error = nfs_request(vp, NFSPROC_LINK, &mut info);
         if v3 {
             nfsm_try!('nfsmout, nfsm_postop_attr(&mut info, &mut vp, &mut attrflag));
@@ -2356,7 +2352,7 @@ pub fn nfs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
         }
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         let error = nfs_request(dvp, NFSPROC_SYMLINK, &mut info);
         if v3 {
             if error.is_ok() {
@@ -2418,7 +2414,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         }
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         let error = nfs_request(dvp, NFSPROC_MKDIR, &mut info);
         if error.is_ok() {
             nfsm_try!('nfsmout, nfsm_mtofh(&mut info, dvp, &mut newvp, &mut gotvp));
@@ -2438,13 +2434,7 @@ pub fn nfs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
 
     if error.is_ok() && newvp.is_none() {
         let mut np = None;
-        error = nfs_lookitup(
-            dvp,
-            cnp.name(),
-            cnp.cn_cred.as_raw(),
-            cn_proc(cnp),
-            Some(&mut np),
-        );
+        error = nfs_lookitup(dvp, cnp.name(), cnp.cn_cred, cn_proc(cnp), Some(&mut np));
         if error.is_ok()
             && let Some(np) = np
         {
@@ -2490,7 +2480,7 @@ pub fn nfs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         nfsm_try!('nfsmout, nfsm_strtom(&mut info, &mut mb, cnp.name(), NFS_MAXNAMLEN));
 
         info.nmi_procp = cn_proc(cnp);
-        info.nmi_cred = cnp.cn_cred.as_raw();
+        info.nmi_cred = cnp.cn_cred;
         let error = nfs_request(dvp, NFSPROC_RMDIR, &mut info);
         if info.nmi_v3 {
             nfsm_try!('nfsmout, nfsm_wcc_data(&mut info, &mut dvp, &mut wccflag));
@@ -2740,7 +2730,7 @@ fn nfsm_mtobuf(info: &mut NfsmInfo<'_>, dst: &mut [u8]) -> Result<(), Errno> {
 pub fn nfs_readdirrpc(
     vp: &'static Vnode,
     uiop: &mut Uio<'_>,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     end_of_directory: &mut bool,
 ) -> Result<(), Errno> {
     let mut wvp = vp;
@@ -2887,7 +2877,7 @@ pub fn nfs_readdirrpc(
 pub fn nfs_readdirplusrpc(
     vp: &'static Vnode,
     uiop: &mut Uio<'_>,
-    cred: *const Ucred,
+    cred: Cred<'_>,
     end_of_directory: &mut bool,
     _p: Option<&Proc>,
 ) -> Result<(), Errno> {
@@ -3134,7 +3124,9 @@ pub fn nfs_sillyrename(
             sp.s_name = name;
             sp.s_namlen = len as i64;
 
-            if nfs_lookitup(dvp, &sp.s_name[..len], sp.s_cred.get(), cn_proc(cnp), None).is_err() {
+            let cred = sp.s_cred.cred();
+            let cred = cred.as_deref().map_or(Cred::NULL, Cred::real);
+            if nfs_lookitup(dvp, &sp.s_name[..len], cred, cn_proc(cnp), None).is_err() {
                 break;
             }
         }
@@ -3143,10 +3135,11 @@ pub fn nfs_sillyrename(
             break 'bad Err(e);
         }
         let mut npp = Some(np);
+        let cred = sp.s_cred.cred();
         let _ = nfs_lookitup(
             dvp,
             &sp.s_name[..sp.s_namlen as usize],
-            sp.s_cred.get(),
+            cred.as_deref().map_or(Cred::NULL, Cred::real),
             cn_proc(cnp),
             Some(&mut npp),
         );
@@ -3174,7 +3167,7 @@ pub fn nfs_sillyrename(
 pub fn nfs_lookitup(
     dvp: &'static Vnode,
     name: &[u8],
-    cred: *const Ucred,
+    cred: Cred<'_>,
     procp: Option<&Proc>,
     npp: Option<&mut Option<&'static NfsNode>>,
 ) -> Result<(), Errno> {
@@ -3291,7 +3284,8 @@ pub fn nfs_commit(
     tl.set(2, txdr_unsigned(cnt as u32));
 
     info.nmi_procp = procp;
-    info.nmi_cred = VTONFS(vp).n_wcred.get();
+    let wcred = VTONFS(vp).n_wcred.cred();
+    info.nmi_cred = wcred.as_deref().map_or(Cred::NULL, Cred::real);
     // Ok(true): the verifier changed.
     let r: Result<bool, Errno> = 'nfsmout: {
         let error = nfs_request(vp, NFSPROC_COMMIT, &mut info);
@@ -3378,7 +3372,7 @@ pub fn nfs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
 /// Walk through the buffer pool and push any dirty pages associated with the vnode.
 pub fn nfs_flush(
     vp: &'static Vnode,
-    _cred: *const Ucred,
+    _cred: Cred<'_>,
     waitfor: i32,
     p: Option<&Proc>,
     commit: bool,

@@ -69,6 +69,7 @@
 //! - The filters reach their vnode through `kn_hook` (`kn_vnode`), as tmpfs's do.
 
 use core::ptr::{self, NonNull};
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_event::{klist_insert_locked, klist_remove_locked};
 use crate::kern::kern_rwlock::{rrw_enter, rrw_exit, rrw_status};
@@ -125,7 +126,7 @@ use crate::sys::vnode::{
     VopIoctlArgs, VopIslockedArgs, VopKqfilterArgs, VopLinkArgs, VopLockArgs, VopMkdirArgs,
     VopMknodArgs, VopOpenArgs, VopPrintArgs, VopReadArgs, VopReaddirArgs, VopReadlinkArgs,
     VopReclaimArgs, VopRemoveArgs, VopRenameArgs, VopRmdirArgs, VopSetattrArgs, VopStrategyArgs,
-    VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, cred_ref, iftovt, makeimode,
+    VopSymlinkArgs, VopUnlockArgs, VopWriteArgs, Vops, iftovt, makeimode,
 };
 use crate::sys::vnode::{vaccess, vgone, vput, vrele};
 
@@ -228,13 +229,11 @@ pub(crate) fn cn_proc<'p>(cnp: &Componentname<'p>) -> &'p Proc {
 }
 
 /// `*cred` of a credential the C dereferences: a real one (`NOCRED`/`FSCRED` panic).
-fn ucred<'a>(cred: *const Ucred) -> &'a Ucred {
-    // SAFETY: the credentials a vnode operation receives are held by its caller for the
-    // operation's duration (`cred_ref`'s contract).
-    match unsafe { cred_ref(cred) } {
+fn ucred<'a>(cred: Cred<'a>) -> &'a Ucred {
+    match cred.ucred() {
         Some(c) => c,
         None => panic(format_args!(
-            "fusefs: credential {:p} is not a real one",
+            "fusefs: credential {:?} is not a real one",
             cred
         )),
     }
@@ -460,7 +459,7 @@ pub fn fusefs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     }
 
     let mut vattr = Vattr::new();
-    VOP_GETATTR(ap.a_vp, &mut vattr, ptr::from_ref(cred), p)?;
+    VOP_GETATTR(ap.a_vp, &mut vattr, Cred::real(cred), p)?;
 
     vaccess(
         ap.a_vp.vtype(),
@@ -1338,7 +1337,7 @@ pub fn fusefs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
 
     if ioflag & IO_APPEND != 0 {
         let mut vattr = Vattr::new();
-        VOP_GETATTR(vp, &mut vattr, ptr::from_ref(cred), p)?;
+        VOP_GETATTR(vp, &mut vattr, Cred::real(cred), p)?;
 
         uio.uio_offset = vattr.va_size as i64;
     }

@@ -88,6 +88,7 @@
 use crate::sys::vnode::RdwrBuf;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use crate::kern::kern_prot::{groupmember, suser_ucred};
 use crate::kern::kern_subr::uiomove;
@@ -123,7 +124,6 @@ use crate::sys::stat::{
 use crate::sys::syslimits::LINK_MAX;
 use crate::sys::time::Timespec;
 use crate::sys::types::{Dev, Gid, Mode, Nlink, Off, Register, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::uio::UioRw;
 use crate::sys::unistd::_PC_TIMESTAMP_RESOLUTION;
 use crate::sys::vnode::{
@@ -487,7 +487,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
 }
 
 /// `ext2fs_chmod`: change the mode on a file. Inode must be locked before calling.
-fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: *const Ucred) -> Result<(), Errno> {
+fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: Cred<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
     let c = ucred(cred);
 
@@ -512,7 +512,7 @@ fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: *const Ucred) -> Result<()
 }
 
 /// `ext2fs_chown`: perform chown operation on inode ip; inode must be locked prior to call.
-fn ext2fs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: *const Ucred) -> Result<(), Errno> {
+fn ext2fs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: Cred<'_>) -> Result<(), Errno> {
     let ip = vtoi(vp);
     let c = ucred(cred);
 
@@ -746,11 +746,11 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         return rename_abortit(Errno::EPERM, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
     if e2mode(&ip) & IFMT == IFDIR {
-        let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+        let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
         if error.is_ok()
             && let Some(t) = tvp
         {
-            error = VOP_ACCESS(t, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+            error = VOP_ACCESS(t, VWRITE, tcnp.cn_cred, tcnp.proc());
         }
         if error.is_err() {
             let _ = VOP_UNLOCK(fvp);
@@ -792,7 +792,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // orphan everything below the source directory. Also the user must have write
         // permission in the source so as to be able to change "..". We must repeat the call
         // to namei, as the parent directory is unlocked by the call to checkpath().
-        let access = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
+        let access = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred, tcnp.proc());
         let _ = VOP_UNLOCK(fvp);
         if oldparent != dp.i_number {
             newparent = dp.i_number;
@@ -810,7 +810,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             // Compensate for the reference ext2fs_checkpath() loses (the module's
             // deviations).
             vref(tdvp);
-            if let Err(e) = ext2fs_checkpath(&ip, &dp, tcnp.cn_cred.as_raw()) {
+            if let Err(e) = ext2fs_checkpath(&ip, &dp, tcnp.cn_cred) {
                 vrele(tdvp);
                 break 'body Err(RenameExit::Out(e));
             }
@@ -867,7 +867,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // If the parent directory is "sticky", then the user must own the parent
                 // directory, or the destination of the rename, otherwise the destination may
                 // not be changed (except by root). This implements append-only directories.
-                let tuid = ucred(tcnp.cn_cred.as_raw()).cr_uid.get();
+                let tuid = ucred(tcnp.cn_cred).cr_uid.get();
                 if e2mode(&dp) & S_ISTXT != 0
                     && tuid != 0
                     && tuid != dp.g.i_e2fs_uid().get()
@@ -879,9 +879,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // source and target are compatible (both directories, or both not
                 // directories).
                 if e2mode(x) & IFMT == IFDIR {
-                    if !ext2fs_dirempty(x, dp.i_number, tcnp.cn_cred.as_raw())
-                        || x.g.i_e2fs_nlink() > 2
-                    {
+                    if !ext2fs_dirempty(x, dp.i_number, tcnp.cn_cred) || x.g.i_e2fs_nlink() > 2 {
                         break 'body Err(RenameExit::Bad(Errno::ENOTEMPTY));
                     }
                     if !doingdirectory {
@@ -912,7 +910,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                     if x.g.i_e2fs_nlink() != 0 {
                         panic(format_args!("rename: linked directory"));
                     }
-                    error = ext2fs_truncate(x, 0, IO_SYNC, tcnp.cn_cred.as_raw());
+                    error = ext2fs_truncate(x, 0, IO_SYNC, tcnp.cn_cred);
                 }
                 x.set_flag(IN_CHANGE);
                 if let Some(t) = tvp {
@@ -1059,13 +1057,12 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         // Must simulate part of ext2fs_makeinode here to acquire the inode, but not have it
         // entered in the parent directory. The entry is made later after writing "." and ".."
         // entries.
-        let tvp = match ext2fs_inode_alloc(&dp, dmode, cnp.cn_cred.as_raw()) {
+        let tvp = match ext2fs_inode_alloc(&dp, dmode, cnp.cn_cred) {
             Ok(tvp) => tvp,
             Err(e) => break 'out Err(e),
         };
         let ip = vtoi(tvp);
-        ip.g.i_e2fs_uid()
-            .set(ucred(cnp.cn_cred.as_raw()).cr_uid.get());
+        ip.g.i_e2fs_uid().set(ucred(cnp.cn_cred).cr_uid.get());
         ip.g.i_e2fs_gid().set(dp.g.i_e2fs_gid().get());
         ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
         ip.g.set_i_e2fs_mode(dmode as u16);
@@ -1162,7 +1159,7 @@ pub fn ext2fs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     // Verify the directory is empty (and valid). (Rmdir ".." won't be valid since ".." will
     // contain a reference to the current directory and thus be non-empty.)
     let error: Result<(), Errno> = 'out: {
-        if ip.g.i_e2fs_nlink() != 2 || !ext2fs_dirempty(&ip, dp.i_number, cnp.cn_cred.as_raw()) {
+        if ip.g.i_e2fs_nlink() != 2 || !ext2fs_dirempty(&ip, dp.i_number, cnp.cn_cred) {
             break 'out Err(Errno::ENOTEMPTY);
         }
         if dp.g.i_e2fs_flags() & EXT2_APPEND != 0
@@ -1186,7 +1183,7 @@ pub fn ext2fs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         // the parent directory, but there may be other hard links so decrement by 2 and
         // worry about them later.
         nlink_add(&ip, -2);
-        let error = ext2fs_truncate(&ip, 0, IO_SYNC, cnp.cn_cred.as_raw());
+        let error = ext2fs_truncate(&ip, 0, IO_SYNC, cnp.cn_cred);
         cache_purge(ip.itov());
         error
     };
@@ -1290,7 +1287,7 @@ pub fn ext2fs_makeinode(
         mode |= IFREG;
     }
 
-    let tvp = match ext2fs_inode_alloc(&pdir, mode, cnp.cn_cred.as_raw()) {
+    let tvp = match ext2fs_inode_alloc(&pdir, mode, cnp.cn_cred) {
         Ok(tvp) => tvp,
         Err(e) => {
             pnbuf_free(cnp);
@@ -1298,7 +1295,7 @@ pub fn ext2fs_makeinode(
         }
     };
     let ip = vtoi(tvp);
-    let c = ucred(cnp.cn_cred.as_raw());
+    let c = ucred(cnp.cn_cred);
     ip.g.i_e2fs_gid().set(pdir.g.i_e2fs_gid().get());
     ip.g.i_e2fs_uid().set(c.cr_uid.get());
     ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
@@ -1919,7 +1916,7 @@ mod tests {
         namei(&mut nd)?;
         let vp = nd.ni_vp.expect("a vnode");
         let mut va = Vattr::new();
-        let error = VOP_GETATTR(vp, &mut va, p.ucred(), p);
+        let error = VOP_GETATTR(vp, &mut va, Cred::real(p.ucred()), p);
         vput(vp);
         error.map(|()| va)
     }
@@ -1976,7 +1973,7 @@ mod tests {
         vattr_null(&mut va);
         f(&mut va);
         let _ = vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
-        let error = VOP_SETATTR(vp, &mut va, p.ucred(), p);
+        let error = VOP_SETATTR(vp, &mut va, Cred::real(p.ucred()), p);
         vput(vp);
         error
     }
@@ -2015,7 +2012,7 @@ mod tests {
             uio_procp: None,
         };
         let mut eof = 0;
-        let error = VOP_READDIR(vp, &mut uio, p.ucred(), &mut eof);
+        let error = VOP_READDIR(vp, &mut uio, Cred::real(p.ucred()), &mut eof);
         let used = size - uio.uio_resid;
         let newoff = uio.uio_offset;
         vput(vp);
@@ -2360,7 +2357,7 @@ mod tests {
                 uio_rw: UioRw::UIO_READ,
                 uio_procp: None,
             };
-            VOP_READLINK(vp, &mut uio, p.ucred()).unwrap();
+            VOP_READLINK(vp, &mut uio, Cred::real(p.ucred())).unwrap();
             let n = 300 - uio.uio_resid;
             vput(vp);
             buf.truncate(n);

@@ -67,9 +67,10 @@
 //!   functions below are those answers, written from this header and `quotactl(2)`.
 //! - `struct dquot` is defined by `ufs_quota.c` at this pin, so it is `ufs_quota.rs`'s.
 //! - The `ufs_quota_{alloc,free}_{blocks,inode}` macros are functions with those names.
-//! - A charge's credential is `Option<&Ucred>` (`None` for the kernel's: `NOCRED`, `FSCRED`,
-//!   NULL), the only thing the limit checks read of it; a release's is the VOP's [`Cred`],
-//!   which the C ignores.
+//! - A charge's credential is the VOP's [`Cred`]; the limit checks read its ids only when it
+//!   is a real one (`Cred::ucred`), so the kernel's (`NOCRED`, `FSCRED`, NULL) is charged
+//!   without a check (`ufs_quota.rs`'s deviations); a release's, which the C ignores, is
+//!   passed the same way.
 //! - `VFSTOUFS(mp)` is the caller's: the functions that take a mount (`qsync`, `quotaoff`,
 //!   `ufs_quotactl`) take its `struct ufsmount` beside it, until the mount's typed node slot
 //!   holds the structure (`bsd`'s `vfstoufs` until then).
@@ -82,7 +83,6 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
 use super::inode::Inode;
-use crate::cred::Ucred;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
 #[cfg(not(feature = "quota"))]
@@ -186,7 +186,7 @@ pub const UFS_QUOTA_FORCE: UfsQuotaFlags = 0x1000;
 pub fn ufs_quota_alloc_blocks<G: ProcGlue>(
     ip: &Inode<G>,
     change: Daddr,
-    cred: Option<&Ucred>,
+    cred: Cred<'_>,
 ) -> Result<(), Errno> {
     ufs_quota_alloc_blocks2(ip, change, cred, 0)
 }
@@ -201,10 +201,7 @@ pub fn ufs_quota_free_blocks<G: ProcGlue>(
 }
 
 /// `ufs_quota_alloc_inode(i, cr)`.
-pub fn ufs_quota_alloc_inode<G: ProcGlue>(
-    ip: &Inode<G>,
-    cred: Option<&Ucred>,
-) -> Result<(), Errno> {
+pub fn ufs_quota_alloc_inode<G: ProcGlue>(ip: &Inode<G>, cred: Cred<'_>) -> Result<(), Errno> {
     ufs_quota_alloc_inode2(ip, cred, 0)
 }
 
@@ -218,7 +215,7 @@ pub fn ufs_quota_free_inode<G: ProcGlue>(ip: &Inode<G>, cred: Cred<'_>) -> Resul
 pub fn ufs_quota_alloc_blocks2<G: ProcGlue>(
     _ip: &Inode<G>,
     _change: Daddr,
-    _cred: Option<&Ucred>,
+    _cred: Cred<'_>,
     _flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
     Ok(())
@@ -240,7 +237,7 @@ pub fn ufs_quota_free_blocks2<G: ProcGlue>(
 #[cfg(not(feature = "quota"))]
 pub fn ufs_quota_alloc_inode2<G: ProcGlue>(
     _ip: &Inode<G>,
-    _cred: Option<&Ucred>,
+    _cred: Cred<'_>,
     _flags: UfsQuotaFlags,
 ) -> Result<(), Errno> {
     Ok(())

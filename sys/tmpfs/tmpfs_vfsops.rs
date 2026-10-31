@@ -73,6 +73,7 @@
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::Ordering;
+use kernel::fs::vops::Cred;
 
 use libkern::strlcpy;
 
@@ -99,7 +100,6 @@ use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::proc::Proc;
 use crate::sys::stat::ALLPERMS;
 use crate::sys::types::{Gid, Ino, Mode, Uid};
-use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vn_lock;
 use crate::sys::vnode::{FORCECLOSE, VDIR, VNOVAL, Vnode, WRITECLOSE};
 use crate::sys::vnode::{copy_statfs_info, vflush, vfs_getnewfsid};
@@ -457,7 +457,7 @@ pub fn tmpfs_sync(
     _mp: &'static Mount,
     _waitfor: i32,
     _stall: i32,
-    _cred: *const Ucred,
+    _cred: Cred<'_>,
     _p: &Proc,
 ) -> Result<(), Errno> {
     Ok(())
