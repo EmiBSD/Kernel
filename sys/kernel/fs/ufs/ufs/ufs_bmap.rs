@@ -420,7 +420,18 @@ pub fn getlbns(
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::sync::MutexGuard;
+
+    use hal::intr::IPL_NONE;
+    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+
     use super::*;
+    use crate::fs::subr::vput;
+    use crate::fs::testfs::{B, TestGlue, set_strategy_error, setup_root_cached, vget_node};
+    use crate::fs::ufs::ufs::dinode::Ufs2Dinode;
+    use crate::fs::ufs::ufs::inode::{Dinode, InodeInit, Ufs2Din};
+    use crate::fs::vnode::VBLK;
+    use crate::testutil::test_vnode;
 
     /// `ufs_getlbns` of `bn` with `nindir` pointers per block: the levels and the path.
     fn path(nindir: i64, bn: Daddr) -> Result<(i32, std::vec::Vec<(Daddr, i32)>), Errno> {
@@ -491,6 +502,141 @@ mod tests {
                 ]
             )
         );
+    }
+
+    /// The tests' `ffs_ino_pool` and `ffs_dinode2_pool` (made once per process: the heap
+    /// doubles, as ufs_ihash's tests' pools).
+    static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
+    static DINO2: BoxPool<Ufs2Din> = BoxPool::new();
+
+    /// The mount's `f_iosize`: 128 UFS2 block pointers per indirect block.
+    const IOSIZE: u32 = 1024;
+    /// `um_seqinc` (`fs_frag`): a block follows another when it is 8 fragments on.
+    const FRAG: u64 = 8;
+    /// `um_bptrtodb` (`fs_fsbtodb`): a fragment is two disk blocks.
+    const FSBTODB: u64 = 1;
+
+    /// A file of the test file system's root mount (over a buffer cache of 512 pages, so a
+    /// `getblk` never waits for space) holding a UFS2 inode with the dinode `d` on the device
+    /// vnode `devvp`, as `ffs_vget` makes them: the vnode referenced and locked, its node one
+    /// handle.
+    fn file(
+        d: &Ufs2Dinode,
+    ) -> (
+        MutexGuard<'static, ()>,
+        &'static Vnode<TestGlue>,
+        &'static Vnode<TestGlue>,
+    ) {
+        let (g, mp) = setup_root_cached(8 << 20, 512);
+        mp.with_stat(|sp| sp.f_iosize = IOSIZE);
+        let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
+        let _ = DINO2.init(IPL_NONE, PR_WAITOK, "dino2pl");
+        let devvp = test_vnode::<TestGlue>(VBLK, 0);
+        let vp = vget_node(mp, B).unwrap();
+        let ip = INODES
+            .get_homed(PR_WAITOK, || {
+                Inode::new(InodeInit {
+                    vnode: Some(vp),
+                    mount: Some(mp),
+                    devvp: Some(devvp),
+                    fstype: UM_UFS2,
+                    nindir: u64::from(IOSIZE) / 8,
+                    bptrtodb: FSBTODB,
+                    seqinc: FRAG,
+                    ..InodeInit::default()
+                })
+            })
+            .unwrap();
+        ip.set_din(Dinode::Ufs2(
+            DINO2.get(PR_WAITOK, || Ufs2Din::new(d)).unwrap(),
+        ));
+        vp.set_node(PoolArc::erase(ip));
+        (g, vp, devvp)
+    }
+
+    /// The file's vnode given back: its node taken, unlocked and released.
+    fn done(vp: &'static Vnode<TestGlue>) {
+        drop(vp.take_node());
+        vput(vp);
+    }
+
+    /// `ufs_bmaparray(vp, bn)` with a run asked for: the disk block and the run.
+    fn bmap_run(vp: &'static Vnode<TestGlue>, bn: Daddr) -> Result<(Daddr, i32), Errno> {
+        let mut bnp = 0;
+        let mut run = -1;
+        ufs_bmaparray(vp, bn, &mut bnp, None, None, Some(&mut run))?;
+        Ok((bnp, run))
+    }
+
+    #[test]
+    fn a_direct_block_maps_with_its_run_and_a_hole_to_minus_one() {
+        let mut d = Ufs2Dinode::default();
+        // Blocks 0-2 contiguous (8 fragments apart), 3 elsewhere, 4 a hole.
+        d.di_db[..4].copy_from_slice(&[100, 108, 116, 200]);
+        let (_g, vp, devvp) = file(&d);
+        assert_eq!(bmap_run(vp, 0), Ok((100 << FSBTODB, 2)));
+        assert_eq!(bmap_run(vp, 1), Ok((108 << FSBTODB, 1)));
+        assert_eq!(bmap_run(vp, 3), Ok((200 << FSBTODB, 0)));
+        assert_eq!(bmap_run(vp, 4), Ok((-1, 0)), "a hole: -1, no run");
+        // ufs_bmap: the device vnode and the block, no run asked for.
+        let mut vpp = None;
+        let mut bnp = 0;
+        assert_eq!(
+            ufs_bmap(vp, 2, Some(&mut vpp), Some(&mut bnp), None),
+            Ok(())
+        );
+        assert!(vpp.is_some_and(|v| core::ptr::eq(v, devvp)));
+        assert_eq!(bnp, 116 << FSBTODB);
+        done(vp);
+    }
+
+    #[test]
+    fn an_indirect_block_in_the_cache_is_read_from_it() {
+        // No disk address for the first indirect block yet (a delayed write's): the C reads
+        // it from the cache, where getblk finds it done.
+        let (_g, vp, _) = file(&Ufs2Dinode::default());
+        let ind = -(NDADDR as Daddr);
+        let Some(mut t) = getblk(&vp.bufs, ind, IOSIZE as i32, 0, INFSLP) else {
+            std::panic!("getblk: no buffer");
+        };
+        for (i, p) in [300i64, 308, 316, 999].into_iter().enumerate() {
+            t.data()[i * 8..i * 8 + 8].copy_from_slice(&p.to_ne_bytes());
+        }
+        t.buf().set(B_DONE);
+        brelse(t);
+        assert!(incore(&vp.bufs, ind));
+        let lbn = NDADDR as Daddr;
+        assert_eq!(bmap_run(vp, lbn), Ok((300 << FSBTODB, 2)));
+        assert_eq!(bmap_run(vp, lbn + 2), Ok((316 << FSBTODB, 0)));
+        assert_eq!(
+            bmap_run(vp, lbn + 4),
+            Ok((-1, 0)),
+            "a hole in the indirect block"
+        );
+        // The path the C records: the inode's pointer, then the block's, which exists.
+        let mut a = [Indir::default(); NIADDR + 1];
+        let mut num = 0;
+        let mut bnp = 0;
+        ufs_bmaparray(vp, lbn + 1, &mut bnp, Some(&mut a), Some(&mut num), None).unwrap();
+        assert_eq!(bnp, 308 << FSBTODB);
+        assert_eq!(num, 2);
+        assert_eq!((a[1].in_lbn, a[1].in_off, a[1].in_exists), (ind, 1, 1));
+        done(vp);
+    }
+
+    #[test]
+    fn a_failed_read_of_an_indirect_block_is_the_error() {
+        let mut d = Ufs2Dinode::default();
+        d.di_ib[0] = 500;
+        let (_g, vp, _) = file(&d);
+        set_strategy_error(Errno::EIO);
+        assert_eq!(bmap_run(vp, NDADDR as Daddr), Err(Errno::EIO));
+        // The C's brelse of the failed buffer: released and invalidated, out of the vnode's
+        // cache (a buffer left busy would make the next getblk wait: checked without one).
+        assert!(!incore(&vp.bufs, -(NDADDR as Daddr)));
+        // The next conversion reads the block again, and this time the read succeeds.
+        assert!(bmap_run(vp, NDADDR as Daddr).is_ok());
+        done(vp);
     }
 }
 /* </TESTS> */

@@ -191,21 +191,7 @@ pub fn ufs_ihashget<G: ProcGlue>(dev: Dev, inum: Ufsino) -> Option<&'static Vnod
         if vget(vp, LK_EXCLUSIVE).is_err() {
             continue 'retry;
         }
-        let ip = super::inode::vtoi(vp);
-        // Check if the inode is valid. The condition has been adapted from ufs_inactive().
-        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
-        // XXX DIP does not cover ext2fs so hack around this for now since this is using
-        // ufs_ihashget as well.
-        let unlinked = if vp.tag() == VT_EXT2FS {
-            match <G::FileGlue as FileGlue>::inode_e2fs_nlink(&ip.g) {
-                Some(n) => n <= 0,
-                None => kpanic(format_args!("ufs_ihashget: an ext2fs inode of no ext2fs")),
-            }
-        } else {
-            ip.dip_nlink() <= 0
-        };
-        drop(ip);
-        if unlinked && !rdonly {
+        if unlinked_and_writable(vp, &super::inode::vtoi(vp)) {
             // This should recycle the inode immediately, unless there are other threads
             // that try to access it. Pause to give the threads a chance to finish with the
             // inode.
@@ -216,6 +202,24 @@ pub fn ufs_ihashget<G: ProcGlue>(dev: Dev, inum: Ufsino) -> Option<&'static Vnod
 
         return Some(vp);
     }
+}
+
+/// `ufs_ihashget`'s test of a found inode: unlinked on a writable mount, so that the caller
+/// gives it back (its `vput` recycles it) and looks again. The condition has been adapted from
+/// `ufs_inactive()`.
+fn unlinked_and_writable<G: ProcGlue>(vp: &Vnode<G>, ip: &Inode<G>) -> bool {
+    let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
+    // XXX DIP does not cover ext2fs so hack around this for now since this is using
+    // ufs_ihashget as well.
+    let unlinked = if vp.tag() == VT_EXT2FS {
+        match <G::FileGlue as FileGlue>::inode_e2fs_nlink(&ip.g) {
+            Some(n) => n <= 0,
+            None => kpanic(format_args!("ufs_ihashget: an ext2fs inode of no ext2fs")),
+        }
+    } else {
+        ip.dip_nlink() <= 0
+    };
+    unlinked && !rdonly
 }
 
 /// `ufs_ihashins(ip)`: insert the inode into the hash table, and return it locked. `EEXIST`
@@ -274,7 +278,7 @@ mod tests {
 
     use super::*;
     use crate::fs::subr::vput;
-    use crate::fs::testfs::{TestGlue, setup};
+    use crate::fs::testfs::{B, TestGlue, setup, setup_root, vget_node};
     use crate::fs::ufs::ufs::dinode::Ufs1Dinode;
     use crate::fs::ufs::ufs::inode::{Dinode, InodeInit, InodeRef, Ufs1Din, vtoi};
     use crate::fs::ufs::ufs::ufsmount::UM_UFS1;
@@ -403,6 +407,85 @@ mod tests {
         let vp = test_vnode::<TestGlue>(VREG, 0);
         vp.set_node(PoolArc::erase(OTHER.get_shared(PR_WAITOK, || 7).unwrap()));
         let _ = vtoi(vp);
+    }
+
+    /// Inode `(dev, B)` of `links` links on a file of the root mount, hashed, its vnode
+    /// unreferenced (on the free list) and unlocked, as an inode no one holds.
+    fn hashed_file(
+        dev: Dev,
+        links: i16,
+    ) -> (
+        std::sync::MutexGuard<'static, ()>,
+        &'static crate::fs::mount::Mount<TestGlue>,
+        &'static Vnode<TestGlue>,
+        InodeRef<TestGlue>,
+    ) {
+        let (g, mp) = setup_root();
+        let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
+        let _ = DINO1.init(IPL_NONE, PR_WAITOK, "dino1pl");
+        ufs_ihashinit::<TestGlue>(64);
+        let vp = vget_node(mp, B).unwrap();
+        let ip = INODES
+            .get_homed(PR_WAITOK, || {
+                Inode::new(InodeInit {
+                    vnode: Some(vp),
+                    mount: Some(mp),
+                    dev,
+                    number: B as Ufsino,
+                    fstype: UM_UFS1,
+                    ..InodeInit::default()
+                })
+            })
+            .unwrap();
+        let d = Ufs1Dinode {
+            di_mode: 0o100644,
+            di_nlink: links,
+            ..Ufs1Dinode::default()
+        };
+        ip.set_din(Dinode::Ufs1(
+            DINO1.get(PR_WAITOK, || Ufs1Din::new(&d)).unwrap(),
+        ));
+        vp.set_node(PoolArc::erase(ip.clone()));
+        ufs_ihashins(ip.as_pin()).unwrap();
+        vput(vp);
+        assert_eq!(vp.usecount(), 0);
+        (g, mp, vp, ip)
+    }
+
+    #[test]
+    fn only_an_unlinked_inode_of_a_writable_mount_is_given_back() {
+        // ufs_ihashget's test, the condition of ufs_inactive: the walk gives such an inode
+        // back (vput, whose inactive recycles it, then a pause and the walk again). The walk
+        // itself is not run here: its pause is sched's yield, which needs a scheduled thread
+        // the file system tests do not have.
+        let (_g, mp, vp, ip) = hashed_file(11, 0);
+        assert!(unlinked_and_writable(vp, &ip), "unlinked, writable");
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        assert!(!unlinked_and_writable(vp, &ip), "unlinked, read-only");
+        mp.set_flag(mp.flag() & !MNT_RDONLY);
+        ip.dip_set_nlink(1);
+        assert!(!unlinked_and_writable(vp, &ip), "linked");
+        ip.dip_set_nlink(-1);
+        assert!(
+            unlinked_and_writable(vp, &ip),
+            "a negative count is unlinked too"
+        );
+        ufs_ihashrem(&ip);
+        drop(vp.take_node());
+    }
+
+    #[test]
+    fn an_unlinked_inode_of_a_read_only_mount_is_returned() {
+        let (_g, mp, vp, ip) = hashed_file(12, 0);
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        // ufs_inactive does not recycle there: the C hands the vnode over.
+        let got = ufs_ihashget::<TestGlue>(12, B as Ufsino);
+        assert!(got.is_some_and(|v| core::ptr::eq(v, vp)));
+        assert_eq!(vp.usecount(), 1);
+        vput(vp);
+        mp.set_flag(mp.flag() & !MNT_RDONLY);
+        ufs_ihashrem(&ip);
+        drop(vp.take_node());
     }
 }
 /* </TESTS> */

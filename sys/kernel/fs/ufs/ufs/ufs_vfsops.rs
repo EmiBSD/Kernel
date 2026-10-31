@@ -153,3 +153,81 @@ pub fn ufs_test_reset<G: ProcGlue>() {
         .store(false, core::sync::atomic::Ordering::SeqCst);
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use hal::intr::IPL_NONE;
+    use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+
+    use super::*;
+    use crate::fs::testfs::{B, TestGlue, any_locked, setup_root, vget_node};
+    use crate::fs::ufs::ufs::dinode::Ufs1Dinode;
+    use crate::fs::ufs::ufs::inode::{Dinode, Inode, InodeInit, Ufs1Din};
+    use crate::fs::ufs::ufs::ufsmount::UM_UFS1;
+
+    /// The tests' `ffs_ino_pool` and `ffs_dinode1_pool` (the heap doubles, made once).
+    static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
+    static DINO1: BoxPool<Ufs1Din> = BoxPool::new();
+
+    /// The handle `ffs_vptofh` writes for inode `B` of generation `generation`.
+    fn fid(generation: u32) -> Ufid {
+        Ufid {
+            ufid_len: size_of::<Ufid>() as u16,
+            ufid_pad: 0,
+            ufid_ino: B as u32,
+            ufid_gen: generation,
+        }
+    }
+
+    #[test]
+    fn a_handle_of_a_freed_or_reused_inode_is_stale() {
+        let (_g, mp) = setup_root();
+        let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
+        let _ = DINO1.init(IPL_NONE, PR_WAITOK, "dino1pl");
+        // Inode B of generation 7, in core: VFS_VGET finds its vnode again.
+        let vp = vget_node(mp, B).unwrap();
+        let ip = INODES
+            .get_homed(PR_WAITOK, || {
+                Inode::new(InodeInit {
+                    vnode: Some(vp),
+                    mount: Some(mp),
+                    number: B as u32,
+                    fstype: UM_UFS1,
+                    ..InodeInit::default()
+                })
+            })
+            .unwrap();
+        let d = Ufs1Dinode {
+            di_mode: 0o100644,
+            di_nlink: 1,
+            di_gen: 7,
+            ..Ufs1Dinode::default()
+        };
+        ip.set_din(Dinode::Ufs1(
+            DINO1.get(PR_WAITOK, || Ufs1Din::new(&d)).unwrap(),
+        ));
+        vp.set_node(PoolArc::erase(ip.clone()));
+        vput(vp);
+        assert_eq!(vp.usecount(), 0);
+
+        // The file's own handle: its vnode, referenced and locked.
+        let got = ufs_fhtovp(mp, &fid(7)).unwrap();
+        assert!(core::ptr::eq(got, vp));
+        assert_eq!(vp.usecount(), 1);
+        vput(got);
+
+        // The number reused by another generation: ESTALE, the vnode given back.
+        assert!(matches!(ufs_fhtovp(mp, &fid(8)), Err(Errno::ESTALE)));
+        assert_eq!(vp.usecount(), 0);
+        assert!(!any_locked());
+
+        // The inode freed (mode 0): ESTALE whatever the generation.
+        ip.dip_set_mode(0);
+        assert!(matches!(ufs_fhtovp(mp, &fid(7)), Err(Errno::ESTALE)));
+        assert_eq!(vp.usecount(), 0);
+        assert!(!any_locked());
+        drop(vp.take_node());
+    }
+}
+/* </TESTS> */
