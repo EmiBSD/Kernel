@@ -1573,10 +1573,6 @@ pub fn nfs_writerpc(
     let v3 = nfs_isv3(vp);
     let mut wccflag;
     let mut committed = NFSV3WRITE_FILESYNC;
-    // `n_wcred`, held for the RPCs (the C reads the slot before each one): a writer that sets
-    // it meanwhile is one the C may equally have seen after the last read.
-    let wcred = VTONFS(vp).n_wcred.cred();
-    let mut info = NfsmInfo::new();
 
     #[cfg(feature = "diagnostic")]
     if uiop.uio_iovcnt() != 1 {
@@ -1589,98 +1585,106 @@ pub fn nfs_writerpc(
     }
     let error: Result<(), Errno> = 'nfsmout: {
         while tsiz > 0 {
-            info = NfsmInfo::new();
+            // Each RPC has its own state, and its own read of `n_wcred` (below), as in C; the
+            // reply is freed when the RPC is done, on every path (the C's `nfsmout:`).
+            let mut info = NfsmInfo::new();
             info.nmi_v3 = v3;
+            let wcred;
+            let rpc: Result<i64, Errno> = 'rpc: {
+                NFSSTATS.rpccnt[NFSPROC_WRITE].fetch_add(1, Ordering::Relaxed);
+                let mut len = tsiz.min(i64::from(nmp.nm_wsize.get()));
+                let req = nfsm_reqhead(nfsx_fh(v3) + 5 * NFSX_UNSIGNED + nfsm_rndup(len as usize));
+                info.nmi_mreq = Some(req);
+                let mut mb = req;
+                nfsm_fhtom(&mut mb, vp, v3);
+                if v3 {
+                    let mut tl = nfsm_build(&mut mb, 5 * NFSX_UNSIGNED);
+                    tl.txdr_hyper(0, uiop.uio_offset as u64);
+                    tl.set(2, txdr_unsigned(len as u32));
+                    tl.set(3, txdr_unsigned(*iomode));
+                    tl.set(4, txdr_unsigned(len as u32));
+                } else {
+                    let mut tl = nfsm_build(&mut mb, 4 * NFSX_UNSIGNED);
+                    // Set both "begin" and "current" to non-garbage.
+                    let x = txdr_unsigned(uiop.uio_offset as u32);
+                    tl.set(0, x); // "begin offset"
+                    tl.set(1, x); // "current offset"
+                    let x = txdr_unsigned(len as u32);
+                    tl.set(2, x); // total to this offset
+                    tl.set(3, x); // size of this write
+                }
+                nfsm_uiotombuf(&mut mb, uiop, len as usize);
 
-            NFSSTATS.rpccnt[NFSPROC_WRITE].fetch_add(1, Ordering::Relaxed);
-            let mut len = tsiz.min(i64::from(nmp.nm_wsize.get()));
-            let req = nfsm_reqhead(nfsx_fh(v3) + 5 * NFSX_UNSIGNED + nfsm_rndup(len as usize));
-            info.nmi_mreq = Some(req);
-            let mut mb = req;
-            nfsm_fhtom(&mut mb, vp, v3);
-            if v3 {
-                let mut tl = nfsm_build(&mut mb, 5 * NFSX_UNSIGNED);
-                tl.txdr_hyper(0, uiop.uio_offset as u64);
-                tl.set(2, txdr_unsigned(len as u32));
-                tl.set(3, txdr_unsigned(*iomode));
-                tl.set(4, txdr_unsigned(len as u32));
-            } else {
-                let mut tl = nfsm_build(&mut mb, 4 * NFSX_UNSIGNED);
-                // Set both "begin" and "current" to non-garbage.
-                let x = txdr_unsigned(uiop.uio_offset as u32);
-                tl.set(0, x); // "begin offset"
-                tl.set(1, x); // "current offset"
-                let x = txdr_unsigned(len as u32);
-                tl.set(2, x); // total to this offset
-                tl.set(3, x); // size of this write
-            }
-            nfsm_uiotombuf(&mut mb, uiop, len as usize);
+                info.nmi_procp = curproc();
+                wcred = VTONFS(vp).n_wcred.cred();
+                info.nmi_cred = wcred.as_deref().map_or(Cred::NULL, Cred::real);
+                let error = nfs_request(vp, NFSPROC_WRITE, &mut info);
+                wccflag = NFSV3_WCCRATTR;
+                if v3 {
+                    wccflag = NFSV3_WCCCHK;
+                    nfsm_try!('rpc, nfsm_wcc_data(&mut info, &mut vp, &mut wccflag));
+                }
 
-            info.nmi_procp = curproc();
-            info.nmi_cred = wcred.as_deref().map_or(Cred::NULL, Cred::real);
-            let error = nfs_request(vp, NFSPROC_WRITE, &mut info);
-            wccflag = NFSV3_WCCRATTR;
-            if v3 {
-                wccflag = NFSV3_WCCCHK;
-                nfsm_try!('nfsmout, nfsm_wcc_data(&mut info, &mut vp, &mut wccflag));
-            }
+                if let Err(e) = error {
+                    break 'rpc Err(e);
+                }
 
-            if let Err(e) = error {
-                break 'nfsmout Err(e);
-            }
-
-            if v3 {
-                wccflag = NFSV3_WCCCHK;
-                let tl = nfsm_try!(
-                    'nfsmout,
-                    nfsm_dissect(&mut info, 2 * NFSX_UNSIGNED + NFSX_V3WRITEVERF)
-                );
-                let rlen = i64::from(fxdr_unsigned(tl.get(0)) as i32);
-                let commit = fxdr_unsigned(tl.get(1));
-                let mut verf = [0u8; NFSX_V3WRITEVERF];
-                verf.copy_from_slice(&tl.bytes()[2 * NFSX_UNSIGNED..][..NFSX_V3WRITEVERF]);
-                if rlen <= 0 {
-                    // info.nmi_mrep free'd after the loop
-                    break 'nfsmout Err(errno_of(NFSERR_IO));
-                } else if rlen < len {
-                    let backup = (len - rlen) as usize;
-                    if let Some(iov) = uiop.uio_iov.first_mut() {
-                        iov.iov_base = iov
-                            .iov_base
-                            .cast::<u8>()
-                            .wrapping_sub(backup)
-                            .cast::<c_void>();
-                        iov.iov_len += backup;
+                if v3 {
+                    wccflag = NFSV3_WCCCHK;
+                    let tl = nfsm_try!(
+                        'rpc,
+                        nfsm_dissect(&mut info, 2 * NFSX_UNSIGNED + NFSX_V3WRITEVERF)
+                    );
+                    let rlen = i64::from(fxdr_unsigned(tl.get(0)) as i32);
+                    let commit = fxdr_unsigned(tl.get(1));
+                    let mut verf = [0u8; NFSX_V3WRITEVERF];
+                    verf.copy_from_slice(&tl.bytes()[2 * NFSX_UNSIGNED..][..NFSX_V3WRITEVERF]);
+                    if rlen <= 0 {
+                        // info.nmi_mrep freed after the RPC
+                        break 'rpc Err(errno_of(NFSERR_IO));
+                    } else if rlen < len {
+                        let backup = (len - rlen) as usize;
+                        if let Some(iov) = uiop.uio_iov.first_mut() {
+                            iov.iov_base = iov
+                                .iov_base
+                                .cast::<u8>()
+                                .wrapping_sub(backup)
+                                .cast::<c_void>();
+                            iov.iov_len += backup;
+                        }
+                        uiop.uio_offset -= backup as Off;
+                        uiop.uio_resid += backup;
+                        len = rlen;
                     }
-                    uiop.uio_offset -= backup as Off;
-                    uiop.uio_resid += backup;
-                    len = rlen;
-                }
 
-                // Return the lowest commitment level obtained by any of the RPCs.
-                committed = nfs_lowest_commit(committed, commit);
-                if nmp.nm_flag.get() & NFSMNT_HASWRITEVERF == 0 {
-                    nmp.nm_verf.set(verf);
-                    nmp.nm_flag.set(nmp.nm_flag.get() | NFSMNT_HASWRITEVERF);
-                } else if nmp.nm_verf.get() != verf {
-                    *must_commit = true;
-                    nmp.nm_verf.set(verf);
+                    // Return the lowest commitment level obtained by any of the RPCs.
+                    committed = nfs_lowest_commit(committed, commit);
+                    if nmp.nm_flag.get() & NFSMNT_HASWRITEVERF == 0 {
+                        nmp.nm_verf.set(verf);
+                        nmp.nm_flag.set(nmp.nm_flag.get() | NFSMNT_HASWRITEVERF);
+                    } else if nmp.nm_verf.get() != verf {
+                        *must_commit = true;
+                        nmp.nm_verf.set(verf);
+                    }
+                } else {
+                    nfsm_try!('rpc, nfsm_loadattr(&mut info, &mut vp, None));
                 }
-            } else {
-                nfsm_try!('nfsmout, nfsm_loadattr(&mut info, &mut vp, None));
-            }
-            if wccflag != 0 {
-                let np = VTONFS(vp);
-                np.n_mtime.set(np.n_vattr.get().va_mtime);
-            }
+                if wccflag != 0 {
+                    let np = VTONFS(vp);
+                    np.n_mtime.set(np.n_vattr.get().va_mtime);
+                }
+                Ok(len)
+            };
             m_freem_reply(&mut info);
-            tsiz -= len;
+            match rpc {
+                Ok(len) => tsiz -= len,
+                Err(e) => break 'nfsmout Err(e),
+            }
         }
         Ok(())
     };
 
     // nfsmout:
-    m_freem_reply(&mut info);
     *iomode = committed;
     if error.is_err() {
         uiop.uio_resid = tsiz as usize;
