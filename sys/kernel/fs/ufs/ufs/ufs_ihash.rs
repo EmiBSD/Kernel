@@ -68,6 +68,11 @@
 //!   inode's glue member (`FileGlue::inode_e2fs_nlink`) while ext2fs is `bsd`'s (N5.6).
 //! - `arc4random_buf(&ihashkey, ..)` is four `arc4random()` words of the same generator (the
 //!   kernel reaches `rnd.c` a word at a time, `hal::random`).
+//! - A chain is a `PinList`, 40 bytes (its head and the kernel lock's key) where the C's
+//!   `LIST_HEAD` is 8, so the table `hashinit` makes in `M_UFSMNT` is about five times the C's
+//!   and `vmstat -m`'s "UFS mount" MemUse grows by that much. No `diff-openbsd` scenario
+//!   prints it; recorded here, not changed (a pool's or a malloc type's size follows its type,
+//!   the standing rule).
 //!
 //! ## Redesign
 //! - LZ's chains of `sys/queue.rs` `ListHead`s in a `StaticCell`, linked and unlinked in

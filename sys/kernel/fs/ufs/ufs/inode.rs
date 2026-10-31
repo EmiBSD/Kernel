@@ -95,6 +95,11 @@
 //! - `VTOI`/`ITOV`/`DOINGASYNC` are [`vtoi`], [`Inode::itov`] and [`doingasync`].
 //! - `struct ufid` is [`Ufid`], converted to and from the `struct fid` it overlays.
 //! - The non-`_KERNEL` userland compatibility names (`i_atime`, ...) are left out.
+//! - `struct inode` is 400 bytes where LZ's was 304 (the inode hash's pin entry, the atomic
+//!   words, the vnode link, the glue member), so the `ffsino` and `ext2inopl` pools' item size,
+//!   `vmstat -m`'s and `systat pool`'s Size column, grows with it (plus the 16 bytes of a
+//!   `TypedPool` item, sys/hal/pool.rs's deviation). No `diff-openbsd` scenario prints it; a
+//!   pool's size follows its type (the standing rule), recorded here, not changed.
 //!
 //! ## Redesign
 //! - LZ's `pool_get` of a raw `ffs_ino_pool` item written with `ptr::write`, hung from
