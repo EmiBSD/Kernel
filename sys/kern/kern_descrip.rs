@@ -228,6 +228,8 @@ impl FileGlue for BsdFileGlue {
     #[cfg(not(feature = "ffs"))]
     type UfsmountG = ();
     type InodeHash = InodeHashLink;
+    type DqHash = DqHashLink;
+    type DqFree = DqFreeLink;
 
     fn tables() -> &'static FileTables<Self> {
         file_tables()

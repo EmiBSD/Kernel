@@ -71,18 +71,20 @@
 //! ([`Vnode::take_node`]), and the last handle puts the item (and its dinode) back.
 //!
 //! ## Deviations
-//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS), `inode_ext` (`dirhash` of UFS, `e2fs` of
-//!   EXT2FS) and `i_dquot[]` are members of `bsd`'s types (ffs's super block, ext2fs's, the
-//!   quota and dirhash structures): they are the glue's member [`Inode::g`]
-//!   (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (dquot and dirhash at
-//!   N5.5a2, `i_fs` at N5.5b, the ext2fs members at N5.6). EXT2FS's dinode (`i_e2din`) is that
-//!   member's too: the kernel's [`Dinode`] holds the FFS dinodes only, and a `DIP` of an ext2fs
-//!   inode is `panic(9)` (the C's `DIP` reads FFS members there; nothing calls it so).
-//! - `i_ump` is [`Inode::mount`] and the copies of the `struct ufsmount` words the UFS layer
-//!   reads (`um_fstype`, `um_nindir`, `um_bptrtodb`, `um_seqinc`), written once by the file
-//!   system's `vget` from the mount's, which never change after the mount; `i_devvp` (the C's
-//!   macro for `i_ump->um_devvp`) is [`Inode::i_devvp`]. `bsd` reaches the whole structure from
-//!   the mount (`vfstoufs`).
+//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS) and EXT2FS's `inode_ext` (`e2fs`) are
+//!   members of `bsd`'s types (ffs's super block, ext2fs's): they are the glue's member
+//!   [`Inode::g`] (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (`i_fs` at
+//!   N5.5b, the ext2fs members at N5.6). `i_dquot[]` and UFS's `inode_ext.dirhash` are the
+//!   inode's own since N5.5a2 ([`Inode::i_dquot`], [`Inode::i_dirhash`]). EXT2FS's dinode
+//!   (`i_e2din`) is the glue member's too: the kernel's [`Dinode`] holds the FFS dinodes only,
+//!   and a `DIP` of an ext2fs inode is `panic(9)` (the C's `DIP` reads FFS members there;
+//!   nothing calls it so).
+//! - `i_ump` is [`Inode::ump`], the mount's `struct ufsmount` as the file system's `vget` lends
+//!   it (`bsd`'s `vfstoufs`, a `&'static` the unmount's `vflush` ends: no inode, and so no
+//!   [`InodeRef`], outlives it; docs/SCAFFOLDING.md), beside [`Inode::mount`] and the copies
+//!   of the words the UFS layer reads on every block (`um_fstype`, `um_nindir`,
+//!   `um_bptrtodb`, `um_seqinc`), written once by `vget`, which never change after the mount;
+//!   `i_devvp` (the C's macro for `i_ump->um_devvp`) is [`Inode::i_devvp`].
 //! - The `DIP` macros select the UFS1 or UFS2 member by the dinode the inode holds, as the C
 //!   does by `um_fstype` under `FFS2`; LZ's `ffs2` feature is `bsd`'s (ffs reads a UFS2 dinode
 //!   only with it), the kernel reads either. A getter returns the wider of the two members'
@@ -95,8 +97,9 @@
 //! - `VTOI`/`ITOV`/`DOINGASYNC` are [`vtoi`], [`Inode::itov`] and [`doingasync`].
 //! - `struct ufid` is [`Ufid`], converted to and from the `struct fid` it overlays.
 //! - The non-`_KERNEL` userland compatibility names (`i_atime`, ...) are left out.
-//! - `struct inode` is 400 bytes where LZ's was 304 (the inode hash's pin entry, the atomic
-//!   words, the vnode link, the glue member), so the `ffsino` and `ext2inopl` pools' item size,
+//! - `struct inode` is 440 bytes where LZ's was 304 (the inode hash's pin entry, the atomic
+//!   words, the vnode link, the glue member; N5.5a2's `i_dirhash` cell and `i_ump`, 400 at
+//!   N5.5a1), so the `ffsino` and `ext2inopl` pools' item size,
 //!   `vmstat -m`'s and `systat pool`'s Size column, grows with it (plus the 16 bytes of a
 //!   `TypedPool` item, sys/hal/pool.rs's deviation). No `diff-openbsd` scenario prints it; a
 //!   pool's size follows its type (the standing rule), recorded here, not changed.
@@ -141,19 +144,24 @@ use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use hal::link::Link;
+use hal::malloc::MBox;
 use hal::once::OnceStatic;
 use hal::pinlist::PinEntry;
 use hal::pool::{PoolArc, PoolBox, PoolHome};
 use hal::rwlock::RecursiveRwlock;
+use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_ASYNC};
 use hal::sys::types::{Daddr, Dev, Mode, Off};
-use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
+use hal::user::{AbiPod, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
 
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,
 };
-use super::ufsmount::UM_UFS1;
+use super::dirhash::Dirhash;
+use super::quota::MAXQUOTAS;
+use super::ufs_quota::Dquot;
+use super::ufsmount::{UM_UFS1, Ufsmount};
 use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
@@ -390,6 +398,32 @@ impl<const N: usize> DinWords<N> {
         }
     }
 
+    /// The structure `T` the words hold, read whole (one relaxed load per word): a `T` of
+    /// `N * 8` bytes (a dinode, quota.h's `dqblk`).
+    pub fn load_pod<T: AbiPod + Default>(&self) -> T {
+        Self::check_size::<T>();
+        pod_from_bytes(bytes_of(&self.words())).unwrap_or_default()
+    }
+
+    /// The words set to `d`'s bytes (one relaxed store per word), by a holder of the kernel
+    /// lock (checked under `diagnostic`).
+    pub fn store_pod<T: AbiPod>(&self, d: &T) {
+        Self::check_size::<T>();
+        let mut words = [0u64; N];
+        let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
+        self.set_words(words);
+    }
+
+    /// `panic(9)` unless `T` is the words' `N * 8` bytes.
+    fn check_size<T>() {
+        if size_of::<T>() != N * 8 {
+            kpanic(format_args!(
+                "DinWords<{N}>: a structure of {} bytes",
+                size_of::<T>()
+            ));
+        }
+    }
+
     /// The bytes `off..off + out.len()` of the dinode into `out`.
     pub fn read_bytes(&self, off: usize, out: &mut [u8]) {
         if off + out.len() > N * 8 {
@@ -534,6 +568,8 @@ pub struct InodeInit<G: ProcGlue> {
     pub vnode: Option<&'static Vnode<G>>,
     /// `i_ump->um_mountp`.
     pub mount: Option<&'static Mount<G>>,
+    /// `i_ump`.
+    pub ump: Option<&'static Ufsmount<G>>,
     /// `i_devvp` (`i_ump->um_devvp`).
     pub devvp: Option<&'static Vnode<G>>,
     /// `i_dev`.
@@ -559,6 +595,7 @@ impl<G: ProcGlue> Default for InodeInit<G> {
         Self {
             vnode: None,
             mount: None,
+            ump: None,
             devvp: None,
             dev: 0,
             number: 0,
@@ -589,6 +626,9 @@ pub struct Inode<G: ProcGlue> {
     pub i_vnode: Link<Vnode<G>>,
     /// `i_ump->um_mountp`.
     mount: Option<&'static Mount<G>>,
+    /// `i_ump`: the mount's UFS structure (lent by the file system's `vget` for the inode's
+    /// life: every inode of a mount is reclaimed before its unmount frees the structure).
+    ump: Option<&'static Ufsmount<G>>,
     /// `i_devvp`: the mount's device vnode.
     devvp: Option<&'static Vnode<G>>,
     /// `i_flag`: flags, see below.
@@ -615,6 +655,11 @@ pub struct Inode<G: ProcGlue> {
     pub i_lockf: LockfSlot,
     /// `i_lock`: inode lock.
     pub i_lock: RecursiveRwlock,
+    /// `i_dquot`: dquot structures (`ufs_quota.rs`; none without `QUOTA`).
+    pub i_dquot: [Link<Dquot<G>>; MAXQUOTAS],
+    /// `i_dirhash` (`inode_ext.dirhash`): hashing for large directories (`ufs_dirhash.rs`),
+    /// written by `ufsdirhash_build` and `ufsdirhash_free` only, under the inode's lock.
+    pub i_dirhash: ReadMostly<Option<MBox<Dirhash>>>,
     // Side effects; used during directory lookup.
     /// `i_count`: size of free slot in directory.
     pub i_count: I32Word,
@@ -681,6 +726,7 @@ impl<G: ProcGlue> Inode<G> {
                 l
             },
             mount: init.mount,
+            ump: init.ump,
             devvp: init.devvp,
             i_flag: U32Word::new(0),
             i_dev: init.dev,
@@ -694,6 +740,8 @@ impl<G: ProcGlue> Inode<G> {
             i_modrev: U64Word::new(0),
             i_lockf: LockfSlot::new(),
             i_lock: RecursiveRwlock::new("inode"),
+            i_dquot: [const { Link::new() }; MAXQUOTAS],
+            i_dirhash: ReadMostly::new(None),
             i_count: I32Word::new(0),
             i_endoff: I32Word::new(0),
             i_diroff: I32Word::new(0),
@@ -712,6 +760,14 @@ impl<G: ProcGlue> Inode<G> {
         match self.i_vnode.get() {
             Some(vp) => vp,
             None => kpanic(format_args!("inode {self:p}: no vnode")),
+        }
+    }
+
+    /// `ip->i_ump`: the mount's UFS structure, which every inode of a mounted UFS has.
+    pub fn ump(&self) -> &'static Ufsmount<G> {
+        match self.ump {
+            Some(u) => u,
+            None => kpanic(format_args!("inode {self:p}: no ufsmount")),
         }
     }
 

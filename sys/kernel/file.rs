@@ -612,6 +612,11 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type UfsmountG: Default + Sync + 'static;
     /// `i_hash`: the inode hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
     type InodeHash: PinAdapter<Elem = crate::fs::ufs::ufs::inode::Inode<Self::Proc>>;
+    /// `dq_hash`: the dquot hash's adapter ([`ufs_glue_links!`](crate::ufs_glue_links)).
+    type DqHash: hal::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
+    /// `dq_freelist`: the dquot free list's adapter
+    /// ([`ufs_glue_links!`](crate::ufs_glue_links)).
+    type DqFree: hal::list::ListAdapter<Elem = crate::fs::ufs::ufs::ufs_quota::Dquot<Self::Proc>>;
 
     /// The open files, `fhdlk` and the pools (one `static` of `bsd`'s).
     fn tables() -> &'static FileTables<Self>;
@@ -690,13 +695,22 @@ macro_rules! file_glue_links {
 
 /// Declares `InodeHashLink`, the inode hash's adapter (`i_hash`) for the inodes of the process
 /// glue `$proc`, in the module that implements its file glue: `kernel::ufs_glue_links!(Procs);`
-/// then `type InodeHash = InodeHashLink;` inside the `impl FileGlue`.
+/// then `type InodeHash = InodeHashLink;`, `type DqHash = DqHashLink;` and `type DqFree =
+/// DqFreeLink;` inside the `impl FileGlue`.
 #[macro_export]
 macro_rules! ufs_glue_links {
     ($proc:ty) => {
         hal::pin_adapter!(
             /// `i_hash`: the inode hash's chains.
             pub InodeHashLink: $crate::fs::ufs::ufs::inode::Inode<$proc>, i_hash
+        );
+        hal::list_adapter!(
+            /// `dq_hash`: the dquot hash's chains.
+            pub DqHashLink: $crate::fs::ufs::ufs::ufs_quota::Dquot<$proc>, dq_hash
+        );
+        hal::list_adapter!(
+            /// `dq_freelist`: the dquot free list.
+            pub DqFreeLink: $crate::fs::ufs::ufs::ufs_quota::Dquot<$proc>, dq_freelist
         );
     };
 }

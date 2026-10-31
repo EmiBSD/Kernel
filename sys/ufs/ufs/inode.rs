@@ -61,20 +61,16 @@
 //! Upstream: sys/ufs/ufs/inode.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `inode_u` (`i_fs`, `i_e2fs`), `inode_ext` (ext2fs's [`Ext2fsInodeExt`], the dirhash),
-//!   `i_dquot[]` and ext2fs's dinode (`i_e2din`) are [`BsdInodeG`]'s, reached as `ip.g`:
-//!   ffs's super block is `bsd`'s until N5.5b, ext2fs's members until N5.6, the quota and
-//!   dirhash structures until N5.5a2. `i_fs`, `i_e2fs` and `i_ump` are read through
-//!   [`InodeExt`] (`ip.fs()`, `ip.e2fs()`, `ip.ump()`, the mount's `struct ufsmount`); the
+//! - `inode_u` (`i_fs`, `i_e2fs`), ext2fs's `inode_ext` ([`Ext2fsInodeExt`]) and ext2fs's
+//!   dinode (`i_e2din`) are [`BsdInodeG`]'s, reached as `ip.g`: ffs's super block is `bsd`'s
+//!   until N5.5b, ext2fs's members until N5.6 (`i_dquot[]` and the dirhash are the kernel
+//!   inode's since N5.5a2). `i_fs` and `i_e2fs` are read through [`InodeExt`] (`ip.fs()`,
+//!   `ip.e2fs()`; `i_ump` is the kernel's `ip.ump()`); the
 //!   `i_e2fs_*` shorthands are [`BsdInodeG`]'s methods (`ip.g.i_e2fs_mode()`, ...), over
 //!   `i_e2din` ([`BsdInodeG::with_e2din`], the one dinode pointer cast to `ext2fs_dinode`);
 //!   `i_e2fs_blocks` is `i_e2fs_blocks()` (a copy of the 15 pointers), `i_e2fs_block(i)` and
 //!   `set_i_e2fs_block(i, v)`. The C's `i_e2fs_faddr_hi` names a member that does not exist
 //!   and is left out. `EXT2FS_ITIMES` is [`InodeExt::ext2fs_itimes`].
-//! - `i_dquot[]` exists only with feature `quota` (`option QUOTA`), whose `ufs_quota.rs`
-//!   defines `struct dquot`; `NODQUOT` is `None`.
-//! - `i_dirhash` is a [`DirhashSlot`] (an atomic pointer word), NULL without feature
-//!   `ufs_dirhash` (`option UFS_DIRHASH`).
 //! - The `struct inode_vtbl` calls (`UFS_TRUNCATE`, `UFS_UPDATE`, ...) are functions with the
 //!   macros' names over the kernel's `InodeOps` ([`Inode::vtbl`]); `iv_inode_alloc` and
 //!   `iv_buf_alloc` return the vnode or buffer the C passes back through `vpp`/`bpp`,
@@ -82,8 +78,6 @@
 //!   buffers are.
 
 use core::cell::Cell;
-use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[cfg(feature = "ext2fs")]
 use crate::kern::kern_tc::gettime;
@@ -104,12 +98,7 @@ use crate::ufs::ffs::fs::Fs;
 use crate::ufs::ufs::dinode::Ufsino;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ufs::dinode::{NDADDR, NIADDR};
-use crate::ufs::ufs::dirhash::Dirhash;
-#[cfg(feature = "quota")]
-use crate::ufs::ufs::quota::MAXQUOTAS;
-#[cfg(feature = "quota")]
-use crate::ufs::ufs::ufs_quota::Dquot;
-use crate::ufs::ufs::ufsmount::{Ufsmount, vfstoufs};
+use crate::ufs::ufs::ufsmount::UM_EXT2FS;
 #[cfg(feature = "ext2fs")]
 use hal::link::PtrWord;
 pub use kernel::fs::ufs::ufs::inode::{
@@ -161,26 +150,6 @@ impl Default for Ext2fsInodeExt {
     }
 }
 
-/// `inode_ext.dirhash`: the inode's `malloc`ed `struct dirhash` (`ufs_dirhash.rs`), an
-/// atomic word with LZ's `Cell` reader and writer.
-#[derive(Debug, Default)]
-pub struct DirhashSlot(AtomicPtr<Dirhash>);
-
-impl DirhashSlot {
-    /// The dirhash, `None` for NULL.
-    pub fn get(&self) -> Option<NonNull<Dirhash>> {
-        NonNull::new(self.0.load(Ordering::Relaxed))
-    }
-
-    /// `ip->i_dirhash = dh`.
-    pub fn set(&self, dh: Option<NonNull<Dirhash>>) {
-        self.0.store(
-            dh.map_or(ptr::null_mut(), NonNull::as_ptr),
-            Ordering::Relaxed,
-        );
-    }
-}
-
 /// The members of `bsd`'s types an inode carries (the glue's `InodeG`, docs/SCAFFOLDING.md).
 #[derive(Default)]
 pub struct BsdInodeG {
@@ -190,7 +159,7 @@ pub struct BsdInodeG {
     /// `i_fs` for an ext2fs inode.
     #[cfg(feature = "ext2fs")]
     pub i_e2fs: Cell<Option<&'static MExt2fs>>,
-    /// `inode_ext.e2fs`: the ext2fs members (feature `ext2fs`), in place of `i_dirhash` for an
+    /// `inode_ext.e2fs`: the ext2fs members (feature `ext2fs`), in place of the dirhash for an
     /// ext2fs inode.
     #[cfg(feature = "ext2fs")]
     pub i_e2fs_ext: Ext2fsInodeExt,
@@ -198,17 +167,13 @@ pub struct BsdInodeG {
     /// `ext2fs_dinode_pool` (NULL for an FFS inode, whose dinode is the kernel's).
     #[cfg(feature = "ext2fs")]
     pub i_e2din: PtrWord<Ext2fsDinode>,
-    /// `i_dquot`: dquot structures.
-    #[cfg(feature = "quota")]
-    pub i_dquot: [Cell<Option<&'static Dquot>>; MAXQUOTAS],
-    /// `i_dirhash` (`inode_ext.dirhash`): hashing for large directories.
-    pub i_dirhash: DirhashSlot,
 }
 
 // SAFETY: LZ's argument for `struct inode` (sys/ufs/ufs/inode.rs:244-245 at the pin), moved
 // with the members it covered (the same site, not a new one, as `VnodeG`'s at N5.2): they are
 // changed under the inode's lock or the kernel lock, as in C. Paid member by member: the quota
-// and dirhash ones at N5.5a2, `i_fs` at N5.5b, the ext2fs ones at N5.6.
+// and dirhash ones went at N5.5a2 (the kernel inode's), `i_fs` at N5.5b, the ext2fs ones at
+// N5.6.
 unsafe impl Sync for BsdInodeG {}
 
 /// Generates a getter and a setter of a member of the ext2fs dinode (feature `ext2fs`).
@@ -381,8 +346,6 @@ pub type InodeInit = kernel::fs::ufs::ufs::inode::InodeInit<BsdProcGlue>;
 /// The members of `struct inode` that `bsd`'s types answer: `i_ump`, `inode_u`, and
 /// `EXT2FS_ITIMES` (over the kernel's flags and ext2fs's dinode).
 pub trait InodeExt {
-    /// `ip->i_ump`: the mount's `struct ufsmount`.
-    fn ump(&self) -> &'static Ufsmount;
     /// `ip->i_fs`: the FFS super block.
     fn fs(&self) -> &'static Fs;
     /// `ip->i_e2fs`: the inode's in-core ext2fs super block (feature `ext2fs`).
@@ -395,10 +358,6 @@ pub trait InodeExt {
 }
 
 impl InodeExt for Inode {
-    fn ump(&self) -> &'static Ufsmount {
-        vfstoufs(self.mount())
-    }
-
     fn fs(&self) -> &'static Fs {
         match self.g.i_fs.get() {
             Some(fs) => fs,
@@ -490,10 +449,19 @@ pub fn UFS_BUF_ALLOC(
 
 /// `UFS_BUFATOFF(ip, offset, res, bpp)`: the buffer and the offset of `res` in its data.
 #[allow(non_snake_case)] // the C macro's name
+///
+/// `bsd`'s callers (`ufs_lookup`, `ufs_readdir`) read FFS directories only: ffs's
+/// `ffs_bufatoff` lends them its buffer as `bsd`'s `bread` does, in the read's own section of
+/// the cache's lock, where the inode's `InodeOps::bufatoff` gives the kernel's callers the
+/// token (a lend of it would be one more section).
 pub fn UFS_BUFATOFF(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize), Errno> {
-    ip.vtbl()
-        .bufatoff(ip, offset)
-        .map(|(b, off)| (lent(b), off))
+    if ip.fstype() == UM_EXT2FS {
+        return ip
+            .vtbl()
+            .bufatoff(ip, offset)
+            .map(|(b, off)| (lent(b), off));
+    }
+    crate::ufs::ffs::ffs_subr::ffs_bufatoff(ip, offset)
 }
 /* </CODE> */
 
@@ -502,18 +470,6 @@ pub fn UFS_BUFATOFF(ip: &Inode, offset: Off) -> Result<(&'static Buf, usize), Er
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_dirhash_slot_keeps_a_pointer_or_none() {
-        let s = DirhashSlot::default();
-        assert!(s.get().is_none());
-        let mut word = 0u64;
-        let p = NonNull::from(&mut word).cast::<Dirhash>();
-        s.set(Some(p));
-        assert_eq!(s.get(), Some(p));
-        s.set(None);
-        assert!(s.get().is_none());
-    }
-
     #[cfg(feature = "ext2fs")]
     #[test]
     fn the_ext2fs_members_read_and_write_the_glues_dinode() {
@@ -521,7 +477,7 @@ mod tests {
         assert!(g.e2din_is_null());
         let din: &'static mut Ext2fsDinode =
             std::boxed::Box::leak(std::boxed::Box::new(Ext2fsDinode::default()));
-        g.i_e2din.set(ptr::from_mut(din));
+        g.i_e2din.set(core::ptr::from_mut(din));
         assert!(!g.e2din_is_null());
         g.set_i_e2fs_mode(0o100600);
         g.set_i_e2fs_nlink(2);

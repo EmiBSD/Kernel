@@ -69,22 +69,15 @@
 //!   the duration of a closure.
 //! - `um_export` (`struct netexport`) is kept whether or not `nfsserver` is configured, as the
 //!   C does; without the feature `vfs_export` answers `ENOTSUP` and the list stays empty.
-//! - The quota members (`um_quotas`, `um_cred`, `um_btime`, `um_itime`, `um_qflags`) exist
-//!   with or without feature `quota`, as the C has no `#ifdef QUOTA` here; without it they stay
-//!   NULL and zero. `um_cred` is NULL or `NOCRED` while no quota file is open (`ufs_quota.rs`).
 
 use core::cell::Cell;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::sys::mount::{Mount, Netexport};
-use crate::sys::types::Time;
-use crate::sys::ucred::CredSlot;
-use crate::sys::vnode::Vnode;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs::{Ext2fs, MExt2fs};
 use crate::ufs::ffs::fs::Fs;
-use crate::ufs::ufs::quota::MAXQUOTAS;
 pub use kernel::fs::ufs::ufs::ufsmount::{
     QTF_CLOSING, QTF_OPENING, UM_EXT2FS, UM_UFS1, UM_UFS2, blkptrtodb, is_sequential, mnindir,
 };
@@ -101,17 +94,6 @@ pub struct BsdUfsmountG {
     /// of `um_fs` for an ext2fs mount.
     #[cfg(feature = "ext2fs")]
     pub um_e2fs: Cell<Option<&'static MExt2fs>>,
-    /// `um_quotas`: pointer to quota files.
-    pub um_quotas: [Cell<Option<&'static Vnode>>; MAXQUOTAS],
-    /// `um_cred`: quota file access cred (the mount's reference while the quota file is
-    /// open; empty, the C's NULL or `NOCRED`, while it is not).
-    pub um_cred: [CredSlot; MAXQUOTAS],
-    /// `um_btime`: block quota time limit.
-    pub um_btime: [Cell<Time>; MAXQUOTAS],
-    /// `um_itime`: inode quota time limit.
-    pub um_itime: [Cell<Time>; MAXQUOTAS],
-    /// `um_qflags`: quota specific flags.
-    pub um_qflags: [Cell<u8>; MAXQUOTAS],
     /// `um_export`: export information.
     pub um_export: Netexport,
 }
@@ -122,11 +104,6 @@ impl Default for BsdUfsmountG {
             um_fs: Cell::new(None),
             #[cfg(feature = "ext2fs")]
             um_e2fs: Cell::new(None),
-            um_quotas: [const { Cell::new(None) }; MAXQUOTAS],
-            um_cred: [const { CredSlot::new() }; MAXQUOTAS],
-            um_btime: [const { Cell::new(0) }; MAXQUOTAS],
-            um_itime: [const { Cell::new(0) }; MAXQUOTAS],
-            um_qflags: [const { Cell::new(0) }; MAXQUOTAS],
             um_export: Netexport::new(),
         }
     }
@@ -134,9 +111,8 @@ impl Default for BsdUfsmountG {
 
 // SAFETY: LZ's argument for `struct ufsmount` (sys/ufs/ufs/ufsmount.rs:125-127 at the pin),
 // moved with the members it covered (the same site, not a new one): they are changed under the
-// kernel lock while mounting and unmounting (the quota members by `quotaon`/`quotaoff`, under
-// the kernel lock too), as in C. Paid member by member: the quotas at N5.5a2, `um_fs` at N5.5b,
-// `um_e2fs` at N5.6, `um_export` at N6.
+// kernel lock while mounting and unmounting, as in C. Paid member by member: the quotas went at
+// N5.5a2 (the kernel structure's), `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6.
 unsafe impl Sync for BsdUfsmountG {}
 
 /// The members of `struct ufsmount` that `bsd`'s types answer.
@@ -184,8 +160,13 @@ pub fn vfstoufs(mp: &Mount) -> &'static Ufsmount {
         ));
     }
     // SAFETY: a UFS mount's `mnt_data` (checked above) is the `struct ufsmount` that
-    // `ffs_mountfs` allocated, which lives until `ffs_unmount` frees it and clears
-    // `mnt_data`.
+    // `ffs_mountfs` (or `ext2fs_mountfs`) allocated, which lives until `ffs_unmount`
+    // (`ext2fs_unmount`) frees it and clears `mnt_data`. The `'static` is a claim on the
+    // callers: they hold the reference only while the mount is mounted. `bsd`'s own callers
+    // use it within an operation on the mount; the kernel's inodes store it as `i_ump`
+    // (`ffs_vget`, `ext2fs_vget`) for their life, and no inode, so no `InodeRef`, outlives
+    // the unmount's `vflush`, which reclaims every vnode of the mount (the inode's slot
+    // handle taken, the last handle dropped) before the structure is freed.
     unsafe { &*data.cast::<Ufsmount>() }
 }
 /* </CODE> */

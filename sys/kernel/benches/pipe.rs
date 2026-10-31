@@ -434,6 +434,8 @@ impl FileGlue for BenchFiles {
     type InodeG = ();
     type UfsmountG = ();
     type InodeHash = InodeHashLink;
+    type DqHash = DqHashLink;
+    type DqFree = DqFreeLink;
 
     fn tables() -> &'static FileTables<Self> {
         &FILE_TABLES

@@ -53,105 +53,18 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The end of an inode's life: `ufs_inactive` (the last reference went: free a removed file's
-//! blocks and inode, write the times back) and `ufs_reclaim` (the vnode is being reused:
-//! unhash the inode and drop what hangs from it).
+//! The end of an inode's life (`ufs_inactive`, `ufs_reclaim`) is the kernel's
+//! (`kernel::fs::ufs::ufs::ufs_inode`, N5.5a2): this module keeps LZ's names and the shape of
+//! `bsd`'s `Vops` slot for ffs's tables.
 //!
 //! Upstream: sys/ufs/ufs/ufs_inode.c @ 3ce1f3f79392
-//!
-//! ## Deviations
-//! - `UFS_DIRHASH`'s `ufsdirhash_free` in `ufs_reclaim` is under feature `ufs_dirhash`.
-//! - The quota calls are `quota.rs`'s: `ufs_quota.rs`'s with feature `quota` (`option QUOTA`),
-//!   the no-quota answers of `ufs_quota_stub.c` without it.
 
-use crate::kern::vfs_vops::VOP_UNLOCK;
 use crate::sys::errno::Errno;
-use crate::sys::mount::MNT_RDONLY;
-use crate::sys::namei::cache_purge;
-use crate::sys::ucred::NOCRED;
-#[cfg(feature = "diagnostic")]
-use crate::sys::vnode::PRTACTIVE;
-use crate::sys::vnode::{Vnode, VopInactiveArgs};
-use crate::sys::vnode::{vrecycle, vrele};
-use crate::ufs::ufs::inode::{
-    IN_ACCESS, IN_CHANGE, IN_LAZYMOD, IN_MODIFIED, IN_UPDATE, UFS_INODE_FREE, UFS_TRUNCATE,
-    UFS_UPDATE, vtoi,
-};
-use crate::ufs::ufs::quota::{getinoquota, ufs_quota_delete, ufs_quota_free_inode};
-use crate::ufs::ufs::ufs_ihash::ufs_ihashrem;
+use crate::sys::vnode::VopInactiveArgs;
+pub use kernel::fs::ufs::ufs::ufs_inode::ufs_reclaim;
 
-/// `ufs_inactive` (`vop_inactive`): last reference to an inode. If necessary, write or
-/// delete it.
+/// `ufs_inactive` (`vop_inactive`), the slot of `bsd`'s `Vops` tables.
 pub fn ufs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
-    let vp = ap.a_vp;
-    let ip = vtoi(vp);
-    let mut error = Ok(());
-
-    #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
-        crate::sys::vnode::vprint(Some("ufs_inactive: pushing active"), vp);
-    }
-
-    // Ignore inodes related to stale file handles.
-    if !(ip.din_is_null() || ip.dip_mode() == 0) {
-        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
-        if ip.dip_nlink() <= 0 && !rdonly {
-            if getinoquota(&ip).is_ok() {
-                let _ = ufs_quota_free_inode(&ip, NOCRED);
-            }
-
-            error = UFS_TRUNCATE(&ip, 0, 0, NOCRED);
-
-            ip.dip_set_rdev(0);
-            let mode = ip.dip_mode();
-            ip.dip_set_mode(0);
-            ip.set_flag(IN_CHANGE | IN_UPDATE);
-
-            let _ = UFS_INODE_FREE(&ip, ip.i_number, mode);
-        }
-
-        if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) != 0 {
-            let _ = UFS_UPDATE(&ip, 0);
-        }
-    }
-    // out:
-    let _ = VOP_UNLOCK(vp);
-
-    // If we are done with the inode, reclaim it so that it can be reused immediately.
-    if ip.din_is_null() || ip.dip_mode() == 0 {
-        vrecycle(vp, ap.a_p);
-    }
-
-    error
-}
-
-/// `ufs_reclaim`: reclaim an inode so that it can be used for other purposes (the UFS half
-/// of a file system's `vop_reclaim`).
-pub fn ufs_reclaim(vp: &'static Vnode) -> Result<(), Errno> {
-    #[cfg(feature = "diagnostic")]
-    if PRTACTIVE.load(core::sync::atomic::Ordering::Relaxed) != 0 && vp.usecount() != 0 {
-        crate::sys::vnode::vprint(Some("ufs_reclaim: pushing active"), vp);
-    }
-
-    let ip = vtoi(vp);
-
-    // Stop deferring timestamp writes.
-    if ip.i_flag.get() & IN_LAZYMOD != 0 {
-        ip.set_flag(IN_MODIFIED);
-        let _ = UFS_UPDATE(&ip, 0);
-    }
-
-    // Remove the inode from its hash chain.
-    ufs_ihashrem(&ip);
-    // Purge old data structures associated with the inode.
-    cache_purge(vp);
-
-    vrele(ip.i_devvp());
-    #[cfg(feature = "ufs_dirhash")]
-    if ip.g.i_dirhash.get().is_some() {
-        crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(&ip);
-    }
-    let _ = ufs_quota_delete(&ip);
-    Ok(())
+    kernel::fs::ufs::ufs::ufs_inode::ufs_inactive(ap.a_vp, ap.a_p)
 }
 /* </CODE> */

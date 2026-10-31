@@ -245,12 +245,13 @@ paid_by = "N6"
 # ffs_bufatoff; its buffers lent, IoBuf::Lent) and held by each FFS inode (Inode::vtbl, N5.5a1;
 # ext2fs's inodes hold none, as the C's). Decision 46: the C's table as a trait, which stays as
 # API when ffs moves. Called through bsd's UFS_* functions (sys/ufs/ufs/inode.rs) at N5.5a1;
-# the kernel's ufs_inactive (N5.5a2) and lookup and vnode operations (N5.5a3) join. Paid when
-# ffs moves (N5.5b).
+# the kernel's ufs_inactive, ufs_reclaim and dirhash (N5.5a2: truncate, update, inode_free,
+# bufatoff, the last as the busy buffer's token) and lookup and vnode operations (N5.5a3)
+# join. Paid when ffs moves (N5.5b).
 # kernel::fs::ufs::ufs::inode::InodeOps
 [[bridge]]
 trait = "InodeOps"
-for = ["sys/ufs/ufs/inode.rs"]
+for = ["sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_inode.rs", "sys/ufs/ufs/inode.rs"]
 paid_by = "N5"
 
 # bsd: struct vops, the operations table of each bsd file system (ffs, mfs, ext2fs, cd9660,

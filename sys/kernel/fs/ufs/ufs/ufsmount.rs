@@ -57,13 +57,15 @@
 //! ## Deviations
 //! - The structure is `malloc(M_UFSMNT)`ed by `ffs_mountfs` and `ext2fs_mountfs` and freed by
 //!   their unmounts, all `bsd`'s until N5.5b and N5.6, which reach it from `mnt_data`
-//!   (`vfstoufs`, `bsd`'s, its one `unsafe` kept). The kernel reads its words through the
-//!   inodes' copies (`inode.rs`).
-//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS), `um_export` (`struct
-//!   netexport`, the NFS server's) and the quota members (`um_quotas`, `um_cred`, `um_btime`,
-//!   `um_itime`, `um_qflags`) are members of `bsd`'s types: they are the glue's member
-//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until their owners move (the
-//!   quotas at N5.5a2, `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6).
+//!   (`vfstoufs`, `bsd`'s, its one `unsafe` kept). The kernel reaches it through the inodes'
+//!   `i_ump` and the words they copy (`inode.rs`), and through the argument `bsd` passes
+//!   beside a mount to the quota functions (`quota.rs`'s deviations).
+//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS) and `um_export` (`struct
+//!   netexport`, the NFS server's) are members of `bsd`'s types: they are the glue's member
+//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until their owners move
+//!   (`um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6). The quota members
+//!   (`um_quotas`, `um_cred`, `um_btime`, `um_itime`, `um_qflags`) are the structure's own
+//!   since N5.5a2.
 //! - `MNINDIR`, `blkptrtodb` and `is_sequential` are functions with the macros' names in lower
 //!   case.
 //!
@@ -75,11 +77,16 @@
 //!   vnode are never freed). The `unsafe impl Sync` goes with the members it covered, to the
 //!   glue's member.
 
+use core::sync::atomic::{AtomicI64, AtomicU8};
+
 use hal::link::Link;
+use hal::slot::ReadMostly;
 use hal::sys::types::Daddr;
 
 use super::inode::{I32Word, U32Word, U64Word};
+use super::quota::MAXQUOTAS;
 use crate::assert::kpanic;
+use crate::cred::CredRef;
 use crate::file::FileGlue;
 use crate::fs::mount::Mount;
 use crate::fs::vnode::Vnode;
@@ -105,8 +112,18 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_savedmaxfilesize: U64Word,
     /// `um_maxsymlinklen`: max size of short symlink.
     pub um_maxsymlinklen: U32Word,
-    /// The members of `bsd`'s types (`ufsmount_u`, `um_export`, the quotas; the module's
-    /// deviations).
+    /// `um_quotas`: pointer to quota files.
+    pub um_quotas: [Link<Vnode<G>>; MAXQUOTAS],
+    /// `um_cred`: quota file access cred, the mount's reference while the quota file is open
+    /// (`None`, the C's NULL or `NOCRED`, while it is not).
+    pub um_cred: [ReadMostly<Option<CredRef>>; MAXQUOTAS],
+    /// `um_btime`: block quota time limit.
+    pub um_btime: [AtomicI64; MAXQUOTAS],
+    /// `um_itime`: inode quota time limit.
+    pub um_itime: [AtomicI64; MAXQUOTAS],
+    /// `um_qflags`: quota specific flags.
+    pub um_qflags: [AtomicU8; MAXQUOTAS],
+    /// The members of `bsd`'s types (`ufsmount_u`, `um_export`; the module's deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
 
@@ -123,6 +140,11 @@ impl<G: ProcGlue> Ufsmount<G> {
             um_seqinc: U64Word::new(0),
             um_savedmaxfilesize: U64Word::new(0),
             um_maxsymlinklen: U32Word::new(0),
+            um_quotas: [const { Link::new() }; MAXQUOTAS],
+            um_cred: [const { ReadMostly::new(None) }; MAXQUOTAS],
+            um_btime: [const { AtomicI64::new(0) }; MAXQUOTAS],
+            um_itime: [const { AtomicI64::new(0) }; MAXQUOTAS],
+            um_qflags: [const { AtomicU8::new(0) }; MAXQUOTAS],
             g: Default::default(),
         }
     }
