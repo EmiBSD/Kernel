@@ -18,10 +18,17 @@
 
 /* <CODE> */
 //! The fast file system: OpenBSD `sys/ufs/ffs/`, one module per file of LZ's (N5.5b1: the
-//! header `fs` and the files `ffs_tables`, `ffs_subr`). `bsd`'s ffs still mounts
+//! header `fs` and the files `ffs_tables`, `ffs_subr`, `ffs_alloc`, `ffs_balloc`,
+//! `ffs_inode`, and of `ffs_vfsops` the inode operations' table). `bsd`'s ffs still mounts
 //! every FFS file system until N5.5b2 switches it to this one.
 
+pub mod ffs_alloc;
+pub mod ffs_balloc;
+pub mod ffs_inode;
 pub mod ffs_subr;
 pub mod ffs_tables;
+pub mod ffs_vfsops;
 pub mod fs;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testffs;
 /* </CODE> */

@@ -8854,6 +8854,56 @@ status = "redesigned"
 notes = "N5.5b1 (unwired): the block and fragment map operations over the in-core Superblock, ffs_fragacct over the cylinder group's view (the C's u_int32_t cg_frsum), ffs_bufatoff returning the busy buffer's token; ffs_vinit joins at N5.5b2 with the vnode tables it installs (bsd's runs bsd's ffs until then)"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_alloc.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_alloc.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired): the allocator over the in-core Superblock and CgView over the cylinder group buffer's token (LZ: CgBuf::new unsafe at eight sites); the rate limits Mutexed<Timespec> statics read by fork::ratecheck (the C's ratecheck_mtx section); uprintf the kernel's, closing LZ's unported! gap; ffs_alloc's and ffs_realloccg's out-parameters their results (every caller asks for the buffer)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_alloc.rs::uprintf_unported"
+native = []
+kind = "dropped"
+reason = "the kernel's uprintf (tty.rs) prints the C's message on the process's terminal (uprintf_fs): the unported! gap is closed"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_balloc.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_balloc.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired): balloc over the kernel cache's tokens (LZ: lent buffers, their data through an unsafe bdata at nine sites); the data block's buffer is the result; the direct-block half shared by ffs1_balloc and ffs2_balloc (balloc_direct, the C's two copies differing only in their blkpref); the levels from getlbns over the inode's MNINDIR"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_balloc.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the kernel's buffers are tokens whose owner borrows their bytes safely (BufRef::data)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_balloc.rs::write_realloc_buf"
+native = ["balloc_direct"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_inode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_inode.rs"]
+status = "redesigned"
+notes = "N5.5b1 (unwired): ffs_update and ffs_truncate over the kernel cache's tokens; ffs_indirtrunc's copy an MArray<u8> of M_TEMP and its read of a known disk address ufs_bmaparray's (getblk, B_READ, vop_strategy, biowait); 0 unsafe (LZ: 6)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.5b1: only ffs_vtbl so far, as Ffs<G> and its VTBL constant implementing the kernel's InodeOps over the kernel's ffs functions; the mount, the vfsops and the vnode tables join at N5.5b2 (bsd's sys/ufs/ffs/ffs_vfsops.rs mounts every FFS until then)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_VTBL"
+native = ["Ffs::VTBL"]
+kind = "renamed"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
@@ -12410,6 +12460,11 @@ reason = "a Pipe is built only by Pipe::new with its glue, inside PipePair::new"
 rust = "sys/kernel/fs/ufs/ufs/testufs.rs"
 crate = "kernel"
 reason = "N5.5a3: the UFS layer's test double (host tests and benches only, cfg(any(test, feature = doubles))): an InodeOps and UfsFs over a pool of inodes of its own, FFS2 dinodes in a per-thread table and blocks of one DIRBLKSIZ through the buffer cache onto testfs's block device (whose strategy it hooks), so the kernel's ufs_lookup and vnode operations run without bsd's ffs; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/fs/ufs/ffs/testffs.rs"
+crate = "kernel"
+reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the FFS1/FFS2 image builder moved from bsd's ffs_vfsops tests (over the on-disk abi_pod! Fs and Cg and CgView), and a mount of an image as far as N5.5b1 has ffs (the in-core Superblock, the summaries, the mount's UFS structure, a vget of ffs_vget's steps with the kernel's Ffs as the inodes' operations) over a block device of testfs whose strategy serves the image; N5.5b2's ffs_mountfs and ffs_vget replace the mount and the vget"
 
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"

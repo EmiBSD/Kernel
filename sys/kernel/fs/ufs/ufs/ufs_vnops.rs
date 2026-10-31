@@ -318,7 +318,7 @@ pub fn ufs_itimes<G: ProcGlue>(vp: &'static Vnode<G>) {
 
 /// [`ufs_itimes`] of the inode `ip` of `vp` a caller holds already (`ufs_getattr`,
 /// `ufs_setattr`: one handle per operation, as the C's one `VTOI`).
-fn itimes<G: ProcGlue>(vp: &'static Vnode<G>, ip: &Inode<G>) {
+pub(in crate::fs::ufs) fn itimes<G: ProcGlue>(vp: &'static Vnode<G>, ip: &Inode<G>) {
     if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_UPDATE) == 0 {
         return;
     }

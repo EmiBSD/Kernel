@@ -234,6 +234,12 @@ pub const NODEV: Dev = -1;
 /// `DEV_BSHIFT` (`<sys/param.h>`): log2 of `DEV_BSIZE`.
 pub const DEV_BSHIFT: u32 = 9;
 
+/// `btodb(bytes)` (`<sys/param.h>`): bytes to `DEV_BSIZE` disk blocks, rounded down.
+#[inline]
+pub const fn btodb(bytes: i64) -> i64 {
+    bytes >> DEV_BSHIFT
+}
+
 /// `VBIOWAIT` (`v_bioflag`): waiting for output to complete.
 pub const VBIOWAIT: u32 = 0x0001;
 /// `VBIOONSYNCLIST`: vnode is on syncer worklist.

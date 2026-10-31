@@ -161,7 +161,7 @@ pub(super) fn bufatoff<G: ProcGlue>(ip: &Inode<G>, offset: Off) -> Result<(BufRe
 }
 
 /// `UFS_BUF_ALLOC(ip, startoffset, size, cred, flags, bpp)`: the busy buffer's token.
-pub(super) fn buf_alloc<G: ProcGlue>(
+pub(in crate::fs::ufs) fn buf_alloc<G: ProcGlue>(
     ip: &Inode<G>,
     startoffset: Off,
     size: i32,
