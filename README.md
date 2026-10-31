@@ -57,7 +57,7 @@
 flowchart LR
     obsd["OpenBSD-src (mirror)"] -- "the specification, read-only" --> k["Kernel"]
     lz["LandingZone"] -- "the tree at lz-origin,<br/>then every commit as lz-sync" --> k
-    dev["DevTools"] -- "clang for the inherited userland;<br/>rustc when self-hosted" --> k
+    dev["DevTools"] -- "upstream LLVM and Rust,<br/>once the system builds itself" --> k
     k -- "the kernel image, boot(8) and efiboot,<br/>abi_openbsd.ko, bsd.rd" --> os["OS"]
     k -. "the ABI headers, once abi exports them" .-> ul["Userland"]
 ```
