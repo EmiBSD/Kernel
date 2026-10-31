@@ -5129,8 +5129,10 @@ pub(crate) mod tests {
         // The C's knote is 120 bytes, LZ's about 200; the kqueue grew with its chains'
         // owners and the knote with its three entries and its counted members (the user's
         // decision of 2026-10-22: accepted, pinned here). N4.7b: 288 -> 296, the counted
-        // hook (one slot for the timer and a tty's erased handle, `KnHook`).
-        assert_eq!(sizes, [296, 336, 88], "knotepl, kqueuepl, kqtimerpl");
+        // hook (one slot for the timer and a tty's erased handle, `KnHook`). N5.5a3: 296 ->
+        // 304, the hook's third kind (a vnode, D-N5.5a-14): three pointer variants need a tag
+        // word, where two shared the null niche of `AnyArc`'s first word.
+        assert_eq!(sizes, [304, 336, 88], "knotepl, kqueuepl, kqtimerpl");
     }
 
     #[test]
