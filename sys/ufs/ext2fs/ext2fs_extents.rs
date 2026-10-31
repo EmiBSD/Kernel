@@ -116,7 +116,7 @@ use crate::sys::buf::BufLegacy;
 use crate::sys::buf::{bread, brelse};
 use crate::sys::types::Daddr;
 use crate::ufs::ext2fs::ext2fs::{MExt2fs, fsbtodb};
-use crate::ufs::ext2fs::ext2fs_dinode::{Ext2fsDinode, NDADDR, NIADDR};
+use crate::ufs::ext2fs::ext2fs_dinode::{NDADDR, NIADDR};
 use crate::ufs::ufs::inode::Inode;
 
 /// `EXT4_EXT_MAGIC`: the magic number of an extent tree header.
@@ -298,7 +298,7 @@ fn ext4_ext_binsearch(_ip: &Inode, path: &mut Ext4ExtentPath, lbn: Daddr, n: usi
 /// cache's `EXT4_EXT_CACHE_*` type when `lbn` is in the cached range, `EXT4_EXT_CACHE_NO`
 /// otherwise.
 pub fn ext4_ext_in_cache(ip: &Inode, lbn: Daddr, ep: &mut Ext4Extent) -> u32 {
-    let ecp = ip.i_e2fs_ext_cache().get();
+    let ecp = ip.g.i_e2fs_ext_cache().get();
     let mut ret = EXT4_EXT_CACHE_NO;
 
     // cache is invalid
@@ -318,7 +318,7 @@ pub fn ext4_ext_in_cache(ip: &Inode, lbn: Daddr, ep: &mut Ext4Extent) -> u32 {
 
 /// `ext4_ext_put_cache`: put an extent in the ext4 cache, as `type_` (`EXT4_EXT_CACHE_*`).
 pub fn ext4_ext_put_cache(ip: &Inode, ep: &Ext4Extent, type_: u32) {
-    ip.i_e2fs_ext_cache().set(Ext4ExtentCache {
+    ip.g.i_e2fs_ext_cache().set(Ext4ExtentCache {
         ec_type: type_,
         ec_blk: ep.e_blk,
         ec_len: u32::from(ep.e_len),
@@ -336,7 +336,7 @@ pub fn ext4_ext_find_extent<'a>(
     lbn: Daddr,
     path: &'a mut Ext4ExtentPath,
 ) -> Option<&'a mut Ext4ExtentPath> {
-    let din = ip.dinode_u.get().cast::<Ext2fsDinode>();
+    let din = ip.g.i_e2din.get_mut();
     if din.is_null() {
         panic(format_args!(
             "ext4_ext_find_extent: inode {:p} has no dinode",
@@ -412,6 +412,7 @@ mod tests {
     use std::{assert, assert_eq};
 
     use super::*;
+    use crate::ufs::ext2fs::ext2fs_dinode::Ext2fsDinode;
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]
@@ -442,8 +443,10 @@ mod tests {
             e2di_blocks: blocks,
             ..Ext2fsDinode::default()
         }));
-        let ip: &'static Inode = Box::leak(Box::new(Inode::new()));
-        ip.dinode_u.set(ptr::from_mut(din).cast());
+        let ip: &'static Inode = Box::leak(Box::new(Inode::new(
+            crate::ufs::ufs::inode::InodeInit::default(),
+        )));
+        ip.g.i_e2din.set(ptr::from_mut(din));
         ip
     }
 
@@ -508,7 +511,7 @@ mod tests {
             e_start_lo: 5,
         };
         ext4_ext_put_cache(ip, &cached, EXT4_EXT_CACHE_IN);
-        assert_eq!(ip.i_e2fs_ext_cache().get().ec_start, (1 << 32) | 5);
+        assert_eq!(ip.g.i_e2fs_ext_cache().get().ec_start, (1 << 32) | 5);
         assert_eq!(ext4_ext_in_cache(ip, 11, &mut ep), EXT4_EXT_CACHE_IN);
         assert_eq!(ep, cached);
         let mut other = Ext4Extent::default();

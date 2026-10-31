@@ -1176,7 +1176,6 @@ pub(crate) mod tests {
         #[cfg(feature = "ffs")]
         {
             crate::ufs::ffs::ffs_vfsops::FFS_INIT_DONE.store(false, Ordering::SeqCst);
-            crate::ufs::ufs::ufs_vfsops::UFS_INIT_DONE.store(false, Ordering::SeqCst);
         }
         vfsinit();
         testfs::reset();

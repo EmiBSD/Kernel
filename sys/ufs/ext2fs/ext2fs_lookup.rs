@@ -142,6 +142,7 @@ use crate::ufs::ext2fs::ext2fs_dir::{
 use crate::ufs::ext2fs::ext2fs_inode::{ext2fs_setsize, ext2fs_size, ext2fs_truncate};
 use crate::ufs::ext2fs::ext2fs_subr::ext2fs_bufatoff;
 use crate::ufs::ufs::dinode::{ISVTX, ROOTINO, Ufsino};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::ufs_lookup::{DIRCHK, ufs_dirbad};
 use crate::ufs::ufs::ufsmount::vfstoufs;
@@ -292,7 +293,7 @@ pub fn ext2fs_readdir(ap: &mut VopReaddirArgs<'_, '_>) -> Result<(), Errno> {
         uio.uio_offset = off;
     }
     free(dirbuf, M_TEMP, e2fs_count);
-    *ap.a_eofflag = i32::from(ext2fs_size(vtoi(vp)) as Off <= uio.uio_offset);
+    *ap.a_eofflag = i32::from(ext2fs_size(&vtoi(vp)) as Off <= uio.uio_offset);
     error
 }
 
@@ -379,20 +380,20 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     let bmask = vfstoufs(vmount(vdp)).mountp().iosize() as i32 - 1;
     let mut entryoffsetinblock: i32;
     let mut numdirpasses;
-    if nameiop != LOOKUP || dp.i_diroff.get() == 0 || dp.i_diroff.get() as u64 > ext2fs_size(dp) {
+    if nameiop != LOOKUP || dp.i_diroff.get() == 0 || dp.i_diroff.get() as u64 > ext2fs_size(&dp) {
         dp.i_offset.set(0);
         numdirpasses = 1;
     } else {
         dp.i_offset.set(dp.i_diroff.get());
         entryoffsetinblock = dp.i_offset.get() & bmask;
         if entryoffsetinblock != 0 {
-            let (b, _) = ext2fs_bufatoff(dp, Off::from(dp.i_offset.get()))?;
+            let (b, _) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get()))?;
             bp = Some(b);
         }
         numdirpasses = 2;
     }
     let mut prevoff: Doff = dp.i_offset.get();
-    let mut endsearch = roundup(ext2fs_size(dp) as usize, dirblksize as usize) as Doff;
+    let mut endsearch = roundup(ext2fs_size(&dp) as usize, dirblksize as usize) as Doff;
     let mut enduseful: Doff = 0;
 
     // The entry found: its offset in its block and its name length.
@@ -404,7 +405,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                 brelse(b);
             }
 
-            let (b, _) = ext2fs_bufatoff(dp, Off::from(dp.i_offset.get()))?;
+            let (b, _) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get()))?;
             bp = Some(b);
             entryoffsetinblock = 0;
 
@@ -420,7 +421,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             let data: &[u8] = unsafe { b.data() };
             let mut entry_found = false;
             if let Err(e) = ext2fs_search_dirblock(
-                dp,
+                &dp,
                 data,
                 &mut entry_found,
                 cnp,
@@ -461,7 +462,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         // then can consider allowing file to be created.
         if (nameiop == CREATE || nameiop == RENAME)
             && flags & ISLASTCN != 0
-            && dp.i_e2fs_nlink() != 0
+            && dp.g.i_e2fs_nlink() != 0
         {
             // Creation of files on a read-only mounted file system is pointless, so don't
             // proceed any further.
@@ -477,7 +478,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             // be put in the range from dp->i_offset to dp->i_offset + dp->i_count.
             if ss.slotstatus == Slotstatus::None {
                 dp.i_offset
-                    .set(roundup(ext2fs_size(dp) as usize, dirblksize as usize) as Doff);
+                    .set(roundup(ext2fs_size(&dp) as usize, dirblksize as usize) as Doff);
                 dp.i_count.set(0);
                 enduseful = dp.i_offset.get();
             } else {
@@ -517,9 +518,9 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     };
     // Check that directory length properly reflects presence of this entry.
     let reach = entryoffsetinblock as u64 + ext2fs_dirsiz(usize::from(namlen)) as u64;
-    if reach > ext2fs_size(dp) {
-        ufs_dirbad(dp, dp.i_offset.get(), "i_size too small");
-        if let Err(e) = ext2fs_setsize(dp, reach) {
+    if reach > ext2fs_size(&dp) {
+        ufs_dirbad(&dp, dp.i_offset.get(), "i_size too small");
+        if let Err(e) = ext2fs_setsize(&dp, reach) {
             brelse(b);
             return Err(e);
         }
@@ -547,7 +548,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         } else {
             dp.i_count.set(dp.i_offset.get() - prevoff);
         }
-        if dp.i_number.get() == dp.i_ino.get() {
+        if dp.i_number == dp.i_ino.get() {
             vref(vdp);
             *ap.a_vpp = Some(vdp);
             return Ok(());
@@ -557,10 +558,10 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         // else she may not delete it (unless she's root). This implements append-only
         // directories.
         let uid = cn_ucred(cnp).cr_uid.get();
-        if u32::from(dp.i_e2fs_mode()) & ISVTX != 0
+        if u32::from(dp.g.i_e2fs_mode()) & ISVTX != 0
             && uid != 0
-            && uid != dp.i_e2fs_uid().get()
-            && vtoi(tdp).i_e2fs_uid().get() != uid
+            && uid != dp.g.i_e2fs_uid().get()
+            && vtoi(tdp).g.i_e2fs_uid().get() != uid
         {
             vput(tdp);
             return Err(Errno::EPERM);
@@ -579,7 +580,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
         VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
         // Careful about locking second inode. This can only occur if the target is ".".
-        if dp.i_number.get() == dp.i_ino.get() {
+        if dp.i_number == dp.i_ino.get() {
             return Err(Errno::EISDIR);
         }
         let tdp = VFS_VGET(vmount(vdp), u64::from(dp.i_ino.get()))?;
@@ -625,7 +626,7 @@ pub fn ext2fs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             cnp.cn_flags &= !PDIRUNLOCK;
         }
         *ap.a_vpp = Some(tdp);
-    } else if dp.i_number.get() == dp.i_ino.get() {
+    } else if dp.i_number == dp.i_ino.get() {
         vref(vdp); // we want ourself, ie "."
         *ap.a_vpp = Some(vdp);
     } else {
@@ -787,10 +788,10 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
     }
     let dp = vtoi(dvp);
     let mut newdir = Ext2fsDirect::new();
-    newdir.e2d_ino = ip.i_number.get();
+    newdir.e2d_ino = ip.i_number;
     newdir.e2d_namlen = cnp.namelen() as u8;
     newdir.e2d_type = if has_ftype(ip) {
-        inot2ext2dt(e2iftodt(ip.i_e2fs_mode()))
+        inot2ext2dt(e2iftodt(ip.g.i_e2fs_mode()))
     } else {
         0
     };
@@ -825,8 +826,8 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
             panic(format_args!("ext2fs_direnter: frag size"));
         } else if error.is_ok() {
             ext2fs_setsize(
-                dp,
-                roundup(ext2fs_size(dp) as usize, dirblksize as usize) as u64,
+                &dp,
+                roundup(ext2fs_size(&dp) as usize, dirblksize as usize) as u64,
             )?;
             dp.set_flag(IN_CHANGE);
         }
@@ -839,7 +840,7 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
     // beginning of the block, leaving the free space in one usable chunk at the end.
 
     // Get the block containing the space for the new directory entry.
-    let (bp, boff) = ext2fs_bufatoff(dp, Off::from(dp.i_offset.get()))?;
+    let (bp, boff) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get()))?;
     {
         // SAFETY: the buffer is ours (busy from ext2fs_bufatoff) and mapped; the slice dies
         // before it is written.
@@ -893,9 +894,9 @@ pub fn ext2fs_direnter(ip: &Inode, dvp: &'static Vnode, cnp: &Componentname) -> 
     }
     let mut error = VOP_BWRITE(bp);
     dp.set_flag(IN_CHANGE | IN_UPDATE);
-    if error.is_ok() && dp.i_endoff.get() != 0 && (dp.i_endoff.get() as u64) < ext2fs_size(dp) {
+    if error.is_ok() && dp.i_endoff.get() != 0 && (dp.i_endoff.get() as u64) < ext2fs_size(&dp) {
         error = ext2fs_truncate(
-            dp,
+            &dp,
             Off::from(dp.i_endoff.get()),
             IO_SYNC,
             cnp.cn_cred.as_raw(),
@@ -915,7 +916,7 @@ pub fn ext2fs_dirremove(dvp: &'static Vnode, _cnp: &Componentname) -> Result<(),
     let dp = vtoi(dvp);
     if dp.i_count.get() == 0 {
         // First entry in block: set d_ino to zero.
-        let (bp, off) = ext2fs_bufatoff(dp, Off::from(dp.i_offset.get()))?;
+        let (bp, off) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get()))?;
         // SAFETY: the buffer is ours (busy from ext2fs_bufatoff) and mapped; the slice dies
         // before it is written.
         set_e2d_ino(unsafe { bp.data() }, off, 0);
@@ -924,7 +925,7 @@ pub fn ext2fs_dirremove(dvp: &'static Vnode, _cnp: &Componentname) -> Result<(),
         return error;
     }
     // Collapse new free space into previous entry.
-    let (bp, off) = ext2fs_bufatoff(dp, Off::from(dp.i_offset.get() - dp.i_count.get()))?;
+    let (bp, off) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get() - dp.i_count.get()))?;
     {
         // SAFETY: as above.
         let data = unsafe { bp.data() };
@@ -944,9 +945,9 @@ pub fn ext2fs_dirrewrite(dp: &Inode, ip: &Inode, _cnp: &Componentname) -> Result
         // SAFETY: the buffer is ours (busy from ext2fs_bufatoff) and mapped; the slice dies
         // before it is written.
         let data = unsafe { bp.data() };
-        set_e2d_ino(data, off, ip.i_number.get());
+        set_e2d_ino(data, off, ip.i_number);
         let t = if has_ftype(ip) {
-            inot2ext2dt(e2iftodt(ip.i_e2fs_mode()))
+            inot2ext2dt(e2iftodt(ip.g.i_e2fs_mode()))
         } else {
             0
         };
@@ -1023,10 +1024,10 @@ pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> R
     let mut vp = Some(target.itov());
     let rootino = ROOTINO;
     let error: Result<(), Errno> = 'out: {
-        if target.i_number.get() == source.i_number.get() {
+        if target.i_number == source.i_number {
             break 'out Err(Errno::EEXIST);
         }
-        if target.i_number.get() == rootino {
+        if target.i_number == rootino {
             break 'out Ok(());
         }
 
@@ -1055,7 +1056,7 @@ pub fn ext2fs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> R
                 break 'out Err(Errno::ENOTDIR);
             }
             let ino = t.dotdot_ino;
-            if ino == source.i_number.get() {
+            if ino == source.i_number {
                 break 'out Err(Errno::EINVAL);
             }
             if ino == rootino {

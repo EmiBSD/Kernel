@@ -134,6 +134,7 @@ use crate::sys::vnode::{vfs_busy, vfs_mount_foreach_vnode, vfs_unbusy, vget, vpu
 #[cfg(feature = "diagnostic")]
 use crate::sys::vnode::{vfs_isbusy, vprint};
 use crate::sys::vnode::{vn_close, vn_lock, vn_open};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, vtoi};
 use crate::ufs::ufs::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,
@@ -319,9 +320,9 @@ pub fn getinoquota(ip: &Inode) -> Result<(), Errno> {
     // Set up the user quota based on file uid, then the group quota based on file gid.
     // EINVAL means that quotas are not enabled.
     for (type_, id) in [(USRQUOTA, ip.dip_uid()), (GRPQUOTA, ip.dip_gid())] {
-        if ip.i_dquot[type_].get().is_none() {
+        if ip.g.i_dquot[type_].get().is_none() {
             match dqget(Some(vp), id, ump, type_) {
-                Ok(dq) => ip.i_dquot[type_].set(Some(dq)),
+                Ok(dq) => ip.g.i_dquot[type_].set(Some(dq)),
                 Err(Errno::EINVAL) => {}
                 Err(e) => return Err(e),
             }
@@ -370,7 +371,7 @@ pub fn ufs_quota_alloc_blocks2(
         && let Some(c) = chkcred(cred).filter(|c| c.cr_uid.get() != 0)
     {
         for i in 0..MAXQUOTAS {
-            if skiptype(flags, i) || ip.i_dquot[i].get().is_none() {
+            if skiptype(flags, i) || ip.g.i_dquot[i].get().is_none() {
                 continue;
             }
             chkdqchg(ip, change, c, i)?;
@@ -380,7 +381,7 @@ pub fn ufs_quota_alloc_blocks2(
         if skiptype(flags, i) {
             continue;
         }
-        let Some(dq) = ip.i_dquot[i].get() else {
+        let Some(dq) = ip.g.i_dquot[i].get() else {
             continue;
         };
         dqwait(dq, PINOD + 1, "chkdq");
@@ -410,7 +411,7 @@ pub fn ufs_quota_free_blocks2(
         if skiptype(flags, i) {
             continue;
         }
-        let Some(dq) = ip.i_dquot[i].get() else {
+        let Some(dq) = ip.g.i_dquot[i].get() else {
             continue;
         };
         dqwait(dq, PINOD + 1, "chkdq");
@@ -460,7 +461,7 @@ fn mntonname(ip: &Inode) -> ([u8; crate::sys::mount::MNAMELEN], usize) {
 /// `chkdqchg`: check for a valid change to a users allocation. Issue an error message if
 /// appropriate.
 fn chkdqchg(ip: &Inode, change: i64, cred: &Ucred, type_: usize) -> Result<(), Errno> {
-    let Some(dq) = ip.i_dquot[type_].get() else {
+    let Some(dq) = ip.g.i_dquot[type_].get() else {
         return Ok(());
     };
     let b = dq.dq_dqb.get();
@@ -490,7 +491,7 @@ fn chkdqchg(ip: &Inode, change: i64, cred: &Ucred, type_: usize) -> Result<(), E
             Err(Errno::EDQUOT)
         }
         Limit::SoftCrossed => {
-            let grace = ip.ump().um_btime[type_].get();
+            let grace = ip.ump().g.um_btime[type_].get();
             dq.update(|b| b.dqb_btime = (now + grace) as u32);
             if owner {
                 uprintf(format_args!(
@@ -530,7 +531,7 @@ pub fn ufs_quota_alloc_inode2(
         && let Some(c) = chkcred(cred).filter(|c| c.cr_uid.get() != 0)
     {
         for i in 0..MAXQUOTAS {
-            if skiptype(flags, i) || ip.i_dquot[i].get().is_none() {
+            if skiptype(flags, i) || ip.g.i_dquot[i].get().is_none() {
                 continue;
             }
             chkiqchg(ip, 1, c, i)?;
@@ -540,7 +541,7 @@ pub fn ufs_quota_alloc_inode2(
         if skiptype(flags, i) {
             continue;
         }
-        let Some(dq) = ip.i_dquot[i].get() else {
+        let Some(dq) = ip.g.i_dquot[i].get() else {
             continue;
         };
         dqwait(dq, PINOD + 1, "chkiq");
@@ -565,7 +566,7 @@ pub fn ufs_quota_free_inode2(
         if skiptype(flags, i) {
             continue;
         }
-        let Some(dq) = ip.i_dquot[i].get() else {
+        let Some(dq) = ip.g.i_dquot[i].get() else {
             continue;
         };
         dqwait(dq, PINOD + 1, "chkiq");
@@ -583,7 +584,7 @@ pub fn ufs_quota_free_inode2(
 /// `chkiqchg`: check for a valid change to a users allocation. Issue an error message if
 /// appropriate.
 fn chkiqchg(ip: &Inode, change: i64, cred: &Ucred, type_: usize) -> Result<(), Errno> {
-    let Some(dq) = ip.i_dquot[type_].get() else {
+    let Some(dq) = ip.g.i_dquot[type_].get() else {
         return Ok(());
     };
     let b = dq.dq_dqb.get();
@@ -613,7 +614,7 @@ fn chkiqchg(ip: &Inode, change: i64, cred: &Ucred, type_: usize) -> Result<(), E
             Err(Errno::EDQUOT)
         }
         Limit::SoftCrossed => {
-            let grace = ip.ump().um_itime[type_].get();
+            let grace = ip.ump().g.um_itime[type_].get();
             dq.update(|b| b.dqb_itime = (now + grace) as u32);
             if owner {
                 uprintf(format_args!(
@@ -652,12 +653,12 @@ fn chkdquot(ip: &Inode) {
     }
 
     for i in 0..MAXQUOTAS {
-        if ump.um_quotas[i].get().is_none()
-            || ump.um_qflags[i].get() & (QTF_OPENING | QTF_CLOSING) != 0
+        if ump.g.um_quotas[i].get().is_none()
+            || ump.g.um_qflags[i].get() & (QTF_OPENING | QTF_CLOSING) != 0
         {
             continue;
         }
-        if ip.i_dquot[i].get().is_none() {
+        if ip.g.i_dquot[i].get().is_none() {
             vprint(Some("chkdquot: missing dquot"), vp);
             panic(format_args!("missing dquot"));
         }
@@ -676,7 +677,7 @@ fn quotaon_vnode(vp: &'static Vnode) -> Result<(), Errno> {
         return Ok(());
     }
 
-    let error = getinoquota(vtoi(vp));
+    let error = getinoquota(&vtoi(vp));
     vput(vp);
 
     error
@@ -684,7 +685,7 @@ fn quotaon_vnode(vp: &'static Vnode) -> Result<(), Errno> {
 
 /// The credential `quotaon` keeps in `um_cred[type]`, if any: one more reference.
 fn um_cred(ump: &Ufsmount, type_: usize) -> Option<CredRef> {
-    ump.um_cred[type_].cred()
+    ump.g.um_cred[type_].cred()
 }
 
 /// `quotaon` (`Q_QUOTAON`): set up a quota file for a particular file system. `fname` is
@@ -709,12 +710,12 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     }
 
     // Update the vnode and ucred for quota file updates.
-    if !ump.um_quotas[type_].get().is_some_and(|q| ptr::eq(q, vp)) {
+    if !ump.g.um_quotas[type_].get().is_some_and(|q| ptr::eq(q, vp)) {
         let _ = quotaoff(p, mp, type_);
-        ump.um_quotas[type_].set(Some(vp));
-        ump.um_cred[type_].set(p.cred_ref());
+        ump.g.um_quotas[type_].set(Some(vp));
+        ump.g.um_cred[type_].set(p.cred_ref());
     } else {
-        let ocred = ump.um_cred[type_].cred();
+        let ocred = ump.g.um_cred[type_].cred();
 
         let _ = vn_close(
             vp,
@@ -725,24 +726,24 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
         let mine = p.cred_ref();
         if !ocred.is_some_and(|o| CredRef::ptr_eq(&o, &mine)) {
             // The slot's old reference goes as it is replaced.
-            ump.um_cred[type_].set(mine);
+            ump.g.um_cred[type_].set(mine);
         }
     }
 
-    ump.um_qflags[type_].set(ump.um_qflags[type_].get() | QTF_OPENING);
+    ump.g.um_qflags[type_].set(ump.g.um_qflags[type_].get() | QTF_OPENING);
     mp.set_flag(mp.flag() | MNT_QUOTA);
     vp.set_flag(vp.flag() | VSYSTEM);
 
     // Set up the time limits for this quota.
-    ump.um_btime[type_].set(MAX_DQ_TIME);
-    ump.um_itime[type_].set(MAX_IQ_TIME);
+    ump.g.um_btime[type_].set(MAX_DQ_TIME);
+    ump.g.um_itime[type_].set(MAX_IQ_TIME);
     if let Ok(dq) = dqget(None, 0, ump, type_) {
         let b = dq.dq_dqb.get();
         if b.dqb_btime > 0 {
-            ump.um_btime[type_].set(Time::from(b.dqb_btime));
+            ump.g.um_btime[type_].set(Time::from(b.dqb_btime));
         }
         if b.dqb_itime > 0 {
-            ump.um_itime[type_].set(Time::from(b.dqb_itime));
+            ump.g.um_itime[type_].set(Time::from(b.dqb_itime));
         }
         dqrele(None, Some(dq));
     }
@@ -751,7 +752,7 @@ pub fn quotaon(p: &Proc, mp: &'static Mount, type_: usize, fname: usize) -> Resu
     // opened. NB: only need to add dquot's for inodes being modified.
     let error = vfs_mount_foreach_vnode(mp, &mut |vp| quotaon_vnode(vp));
 
-    ump.um_qflags[type_].set(ump.um_qflags[type_].get() & !QTF_OPENING);
+    ump.g.um_qflags[type_].set(ump.g.um_qflags[type_].get() & !QTF_OPENING);
     if error.is_err() {
         let _ = quotaoff(p, mp, type_);
     }
@@ -768,7 +769,7 @@ fn quotaoff_vnode(vp: &'static Vnode, type_: usize) -> Result<(), Errno> {
         return Ok(());
     }
     let ip = vtoi(vp);
-    let dq = ip.i_dquot[type_].take();
+    let dq = ip.g.i_dquot[type_].take();
     dqrele(Some(vp), dq);
     vput(vp);
     Ok(())
@@ -782,20 +783,20 @@ pub fn quotaoff(p: &Proc, mp: &'static Mount, type_: usize) -> Result<(), Errno>
     if !vfs_isbusy(mp) {
         panic(format_args!("quotaoff: mount point not busy"));
     }
-    let Some(qvp) = ump.um_quotas[type_].get() else {
+    let Some(qvp) = ump.g.um_quotas[type_].get() else {
         return Ok(());
     };
-    ump.um_qflags[type_].set(ump.um_qflags[type_].get() | QTF_CLOSING);
+    ump.g.um_qflags[type_].set(ump.g.um_qflags[type_].get() | QTF_CLOSING);
     // Search vnodes associated with this mount point, deleting any references to quota file
     // being closed.
     let _ = vfs_mount_foreach_vnode(mp, &mut |vp| quotaoff_vnode(vp, type_));
 
     let error = vn_close(qvp, FREAD | FWRITE, Cred::from_raw(p.ucred_ptr()), Some(p));
-    ump.um_quotas[type_].set(None);
+    ump.g.um_quotas[type_].set(None);
     // um_cred[type] = NOCRED; crfree(cred): the mount's reference goes.
-    drop(ump.um_cred[type_].take());
-    ump.um_qflags[type_].set(ump.um_qflags[type_].get() & !QTF_CLOSING);
-    if ump.um_quotas.iter().all(|q| q.get().is_none()) {
+    drop(ump.g.um_cred[type_].take());
+    ump.g.um_qflags[type_].set(ump.g.um_qflags[type_].get() & !QTF_CLOSING);
+    if ump.g.um_quotas.iter().all(|q| q.get().is_none()) {
         mp.set_flag(mp.flag() & !MNT_QUOTA);
     }
     error
@@ -880,8 +881,8 @@ fn setquota(mp: &'static Mount, id: u32, type_: usize, addr: usize) -> Result<()
         dq.dq_id.get(),
         newlim,
         gettime(),
-        ump.um_btime[type_].get(),
-        ump.um_itime[type_].get(),
+        ump.g.um_btime[type_].get(),
+        ump.g.um_itime[type_].get(),
     );
     dq.dq_dqb.set(b);
     dq.dq_flags.set(flags);
@@ -941,8 +942,8 @@ fn setuse(mp: &'static Mount, id: u32, type_: usize, addr: usize) -> Result<(), 
         dq.dq_flags.get(),
         usage,
         gettime(),
-        ump.um_btime[type_].get(),
-        ump.um_itime[type_].get(),
+        ump.g.um_btime[type_].get(),
+        ump.g.um_itime[type_].get(),
     );
     dq.dq_dqb.set(b);
     dq.dq_flags.set(flags);
@@ -961,7 +962,7 @@ fn qsync_vnode(vp: &'static Vnode) -> Result<(), Errno> {
     }
 
     for i in 0..MAXQUOTAS {
-        if let Some(dq) = vtoi(vp).i_dquot[i].get()
+        if let Some(dq) = vtoi(vp).g.i_dquot[i].get()
             && dq.isset(DQ_MOD)
         {
             let _ = dqsync(Some(vp), dq);
@@ -976,7 +977,7 @@ pub fn qsync(mp: &'static Mount) -> Result<(), Errno> {
     let ump = vfstoufs(mp);
 
     // Check if the mount point has any quotas. If not, simply return.
-    if ump.um_quotas.iter().all(|q| q.get().is_none()) {
+    if ump.g.um_quotas.iter().all(|q| q.get().is_none()) {
         return Ok(());
     }
     // Search vnodes associated with this mount point, synchronizing any modified dquot
@@ -1070,10 +1071,10 @@ pub fn dqget(
     ump: &'static Ufsmount,
     type_: usize,
 ) -> Result<&'static Dquot, Errno> {
-    let Some(dqvp) = ump.um_quotas[type_].get() else {
+    let Some(dqvp) = ump.g.um_quotas[type_].get() else {
         return Err(Errno::EINVAL);
     };
-    if ump.um_qflags[type_].get() & QTF_CLOSING != 0 {
+    if ump.g.um_qflags[type_].get() & QTF_CLOSING != 0 {
         return Err(Errno::EINVAL);
     }
     // Check the cache first.
@@ -1168,10 +1169,10 @@ pub fn dqget(
         let now = gettime();
         dq.update(|b| {
             if b.dqb_btime == 0 {
-                b.dqb_btime = (now + ump.um_btime[type_].get()) as u32;
+                b.dqb_btime = (now + ump.g.um_btime[type_].get()) as u32;
             }
             if b.dqb_itime == 0 {
-                b.dqb_itime = (now + ump.um_itime[type_].get()) as u32;
+                b.dqb_itime = (now + ump.g.um_itime[type_].get()) as u32;
             }
         });
     }
@@ -1256,7 +1257,7 @@ pub fn dqsync(vp: Option<&'static Vnode>, dq: &'static Dquot) -> Result<(), Errn
 pub fn ufs_quota_delete(ip: &Inode) -> Result<(), Errno> {
     let vp = ip.itov();
     for i in 0..MAXQUOTAS {
-        if let Some(dq) = ip.i_dquot[i].take() {
+        if let Some(dq) = ip.g.i_dquot[i].take() {
             dqrele(Some(vp), Some(dq));
         }
     }

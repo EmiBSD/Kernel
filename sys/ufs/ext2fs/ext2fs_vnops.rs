@@ -147,8 +147,9 @@ use crate::ufs::ext2fs::ext2fs_lookup::{
     ext2fs_lookup, ext2fs_readdir, has_ftype,
 };
 use crate::ufs::ext2fs::ext2fs_readwrite::{ext2fs_read, ext2fs_write};
-use crate::ufs::ext2fs::ext2fs_vfsops::{EXT2FS_DINODE_POOL, EXT2FS_INODE_POOL};
+use crate::ufs::ext2fs::ext2fs_vfsops::EXT2FS_DINODE_POOL;
 use crate::ufs::ufs::dinode::{IFDIR, IFLNK, IFMT, IFREG, ISGID, ISUID, Ufsino};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_RENAME, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::ufs_ihash::ufs_ihashrem;
 use crate::ufs::ufs::ufs_lookup::ufs_dirbad;
@@ -250,12 +251,12 @@ fn rdonly(vp: &Vnode) -> bool {
 
 /// `ip->i_e2fs_nlink += d` (`d` is -1, 1 or -2).
 fn nlink_add(ip: &Inode, d: i32) {
-    ip.set_i_e2fs_nlink((i32::from(ip.i_e2fs_nlink()) + d) as u16);
+    ip.g.set_i_e2fs_nlink((i32::from(ip.g.i_e2fs_nlink()) + d) as u16);
 }
 
 /// `ip->i_e2fs_mode` as a `mode_t`.
 fn e2mode(ip: &Inode) -> Mode {
-    Mode::from(ip.i_e2fs_mode())
+    Mode::from(ip.g.i_e2fs_mode())
 }
 
 /// `ext2fs_create` (`vop_create`): create a regular file.
@@ -286,7 +287,7 @@ pub fn ext2fs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
     if vap.va_rdev != VNOVAL as Dev {
         // Want to be able to use this to make badblock inodes, so don't truncate the dev
         // number.
-        ip.with_e2din(|d| d.set_e2di_rdev((vap.va_rdev as u32).to_le()));
+        ip.g.with_e2din(|d| d.set_e2di_rdev((vap.va_rdev as u32).to_le()));
     }
     // Remove inode so that it will be reloaded by VFS_VGET and checked to see if it is an
     // alias of an existing entry in the inode cache.
@@ -301,7 +302,8 @@ pub fn ext2fs_mknod(ap: &mut VopMknodArgs<'_, '_>) -> Result<(), Errno> {
 /// `ext2fs_open` (`vop_open`): open called. Just check the `APPEND` flag.
 pub fn ext2fs_open(ap: &mut VopOpenArgs<'_>) -> Result<(), Errno> {
     // Files marked append-only must be opened for appending.
-    if vtoi(ap.a_vp).i_e2fs_flags() & EXT2_APPEND != 0 && ap.a_mode & (FWRITE | O_APPEND) == FWRITE
+    if vtoi(ap.a_vp).g.i_e2fs_flags() & EXT2_APPEND != 0
+        && ap.a_mode & (FWRITE | O_APPEND) == FWRITE
     {
         return Err(Errno::EPERM);
     }
@@ -315,15 +317,15 @@ pub fn ext2fs_access(ap: &mut VopAccessArgs<'_>) -> Result<(), Errno> {
     let mode = ap.a_mode;
 
     // If immutable bit set, nobody gets to write it.
-    if mode & VWRITE != 0 && ip.i_e2fs_flags() & EXT2_IMMUTABLE != 0 {
+    if mode & VWRITE != 0 && ip.g.i_e2fs_flags() & EXT2_IMMUTABLE != 0 {
         return Err(Errno::EPERM);
     }
 
     vaccess(
         vp.vtype(),
-        e2mode(ip),
-        ip.i_e2fs_uid().get(),
-        ip.i_e2fs_gid().get(),
+        e2mode(&ip),
+        ip.g.i_e2fs_uid().get(),
+        ip.g.i_e2fs_gid().get(),
         mode,
         ucred(ap.a_cred),
     )
@@ -337,33 +339,33 @@ pub fn ext2fs_getattr(ap: &mut VopGetattrArgs<'_>) -> Result<(), Errno> {
 
     ip.ext2fs_itimes();
     // Copy from inode table
-    vap.va_fsid = i64::from(ip.i_dev.get());
-    vap.va_fileid = u64::from(ip.i_number.get());
-    vap.va_mode = e2mode(ip) & ALLPERMS;
-    vap.va_nlink = Nlink::from(ip.i_e2fs_nlink());
-    vap.va_uid = ip.i_e2fs_uid().get();
-    vap.va_gid = ip.i_e2fs_gid().get();
-    vap.va_rdev = u32::from_le(ip.with_e2din(|d| d.e2di_rdev())) as Dev;
-    vap.va_size = ext2fs_size(ip);
-    vap.va_atime = Timespec::new(i64::from(ip.i_e2fs_atime()), 0);
-    vap.va_mtime = Timespec::new(i64::from(ip.i_e2fs_mtime()), 0);
-    vap.va_ctime = Timespec::new(i64::from(ip.i_e2fs_ctime()), 0);
-    vap.va_flags = if ip.i_e2fs_flags() & EXT2_APPEND != 0 {
+    vap.va_fsid = i64::from(ip.i_dev);
+    vap.va_fileid = u64::from(ip.i_number);
+    vap.va_mode = e2mode(&ip) & ALLPERMS;
+    vap.va_nlink = Nlink::from(ip.g.i_e2fs_nlink());
+    vap.va_uid = ip.g.i_e2fs_uid().get();
+    vap.va_gid = ip.g.i_e2fs_gid().get();
+    vap.va_rdev = u32::from_le(ip.g.with_e2din(|d| d.e2di_rdev())) as Dev;
+    vap.va_size = ext2fs_size(&ip);
+    vap.va_atime = Timespec::new(i64::from(ip.g.i_e2fs_atime()), 0);
+    vap.va_mtime = Timespec::new(i64::from(ip.g.i_e2fs_mtime()), 0);
+    vap.va_ctime = Timespec::new(i64::from(ip.g.i_e2fs_ctime()), 0);
+    vap.va_flags = if ip.g.i_e2fs_flags() & EXT2_APPEND != 0 {
         u64::from(SF_APPEND)
     } else {
         0
     };
-    if ip.i_e2fs_flags() & EXT2_IMMUTABLE != 0 {
+    if ip.g.i_e2fs_flags() & EXT2_IMMUTABLE != 0 {
         vap.va_flags |= u64::from(SF_IMMUTABLE);
     }
-    vap.va_gen = u64::from(ip.i_e2fs_gen());
+    vap.va_gen = u64::from(ip.g.i_e2fs_gen());
     // this doesn't belong here
     vap.va_blocksize = match vp.vtype() {
         VBLK => BLKDEV_IOSIZE as i64,
         VCHR => MAXBSIZE as i64,
         _ => i64::from(vmount(vp).iosize()),
     };
-    vap.va_bytes = dbtob(ip.i_e2fs_nblock() as usize) as u64;
+    vap.va_bytes = dbtob(ip.g.i_e2fs_nblock() as usize) as u64;
     vap.va_type = vp.vtype();
     vap.va_filerev = ip.i_modrev.get();
     Ok(())
@@ -393,16 +395,16 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             return Err(Errno::EROFS);
         }
         let c = ucred(cred);
-        if c.cr_uid.get() != ip.i_e2fs_uid().get() {
+        if c.cr_uid.get() != ip.g.i_e2fs_uid().get() {
             suser_ucred(c)?;
         }
         if c.cr_uid.get() == 0 {
-            if ip.i_e2fs_flags() & (EXT2_APPEND | EXT2_IMMUTABLE) != 0
+            if ip.g.i_e2fs_flags() & (EXT2_APPEND | EXT2_IMMUTABLE) != 0
                 && SECURELEVEL.load(Ordering::Relaxed) > 0
             {
                 return Err(Errno::EPERM);
             }
-            let mut f = ip.i_e2fs_flags() & !(EXT2_APPEND | EXT2_IMMUTABLE);
+            let mut f = ip.g.i_e2fs_flags() & !(EXT2_APPEND | EXT2_IMMUTABLE);
             f |= if vap.va_flags & u64::from(SF_APPEND) != 0 {
                 EXT2_APPEND
             } else if vap.va_flags & u64::from(SF_IMMUTABLE) != 0 {
@@ -410,7 +412,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             } else {
                 0
             };
-            ip.set_i_e2fs_flags(f);
+            ip.g.set_i_e2fs_flags(f);
         } else {
             return Err(Errno::EPERM);
         }
@@ -419,7 +421,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             return Ok(());
         }
     }
-    if ip.i_e2fs_flags() & (EXT2_APPEND | EXT2_IMMUTABLE) != 0 {
+    if ip.g.i_e2fs_flags() & (EXT2_APPEND | EXT2_IMMUTABLE) != 0 {
         return Err(Errno::EPERM);
     }
     // Go through the fields and update iff not VNOVAL.
@@ -437,7 +439,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             VLNK | VREG if rdonly(vp) => return Err(Errno::EROFS),
             _ => {}
         }
-        ext2fs_truncate(ip, vap.va_size as Off, 0, cred)?;
+        ext2fs_truncate(&ip, vap.va_size as Off, 0, cred)?;
     }
     if vap.va_vaflags & VA_UTIMES_CHANGE != 0
         || vap.va_atime.tv_nsec != i64::from(VNOVAL)
@@ -447,7 +449,7 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
             return Err(Errno::EROFS);
         }
         let c = ucred(cred);
-        if c.cr_uid.get() != ip.i_e2fs_uid().get()
+        if c.cr_uid.get() != ip.g.i_e2fs_uid().get()
             && let Err(e) = suser_ucred(c)
         {
             if vap.va_vaflags & VA_UTIMES_NULL == 0 {
@@ -468,12 +470,12 @@ pub fn ext2fs_setattr(ap: &mut VopSetattrArgs<'_>) -> Result<(), Errno> {
         }
         ip.ext2fs_itimes();
         if vap.va_mtime.tv_nsec != i64::from(VNOVAL) {
-            ip.set_i_e2fs_mtime(vap.va_mtime.tv_sec as u32);
+            ip.g.set_i_e2fs_mtime(vap.va_mtime.tv_sec as u32);
         }
         if vap.va_atime.tv_nsec != i64::from(VNOVAL) {
-            ip.set_i_e2fs_atime(vap.va_atime.tv_sec as u32);
+            ip.g.set_i_e2fs_atime(vap.va_atime.tv_sec as u32);
         }
-        ext2fs_update(ip, 1)?;
+        ext2fs_update(&ip, 1)?;
     }
     if vap.va_mode != VNOVAL as Mode {
         if rdonly(vp) {
@@ -489,21 +491,21 @@ fn ext2fs_chmod(vp: &'static Vnode, mode: Mode, cred: *const Ucred) -> Result<()
     let ip = vtoi(vp);
     let c = ucred(cred);
 
-    if c.cr_uid.get() != ip.i_e2fs_uid().get() {
+    if c.cr_uid.get() != ip.g.i_e2fs_uid().get() {
         suser_ucred(c)?;
     }
     if c.cr_uid.get() != 0 {
         if vp.vtype() != VDIR && mode & S_ISTXT != 0 {
             return Err(Errno::EFTYPE);
         }
-        if !groupmember(ip.i_e2fs_gid().get(), c) && mode & ISGID != 0 {
+        if !groupmember(ip.g.i_e2fs_gid().get(), c) && mode & ISGID != 0 {
             return Err(Errno::EPERM);
         }
     }
-    let m = (e2mode(ip) & !ALLPERMS) | (mode & ALLPERMS);
-    ip.set_i_e2fs_mode(m as u16);
+    let m = (e2mode(&ip) & !ALLPERMS) | (mode & ALLPERMS);
+    ip.g.set_i_e2fs_mode(m as u16);
     ip.set_flag(IN_CHANGE);
-    if vp.flag() & VTEXT != 0 && e2mode(ip) & S_ISTXT == 0 {
+    if vp.flag() & VTEXT != 0 && e2mode(&ip) & S_ISTXT == 0 {
         let _ = uvm_vnp_uncache(vp);
     }
     Ok(())
@@ -515,36 +517,36 @@ fn ext2fs_chown(vp: &'static Vnode, uid: Uid, gid: Gid, cred: *const Ucred) -> R
     let c = ucred(cred);
 
     let uid = if uid == VNOVAL as Uid {
-        ip.i_e2fs_uid().get()
+        ip.g.i_e2fs_uid().get()
     } else {
         uid
     };
     let gid = if gid == VNOVAL as Gid {
-        ip.i_e2fs_gid().get()
+        ip.g.i_e2fs_gid().get()
     } else {
         gid
     };
     // If we don't own the file, are trying to change the owner of the file, or are not a
     // member of the target group, the caller must be superuser or the call fails.
-    if c.cr_uid.get() != ip.i_e2fs_uid().get()
-        || uid != ip.i_e2fs_uid().get()
-        || (gid != ip.i_e2fs_gid().get() && !groupmember(gid, c))
+    if c.cr_uid.get() != ip.g.i_e2fs_uid().get()
+        || uid != ip.g.i_e2fs_uid().get()
+        || (gid != ip.g.i_e2fs_gid().get() && !groupmember(gid, c))
     {
         suser_ucred(c)?;
     }
-    let ogid = ip.i_e2fs_gid().get();
-    let ouid = ip.i_e2fs_uid().get();
+    let ogid = ip.g.i_e2fs_gid().get();
+    let ouid = ip.g.i_e2fs_uid().get();
 
-    ip.i_e2fs_gid().set(gid);
-    ip.i_e2fs_uid().set(uid);
+    ip.g.i_e2fs_gid().set(gid);
+    ip.g.i_e2fs_uid().set(uid);
     if ouid != uid || ogid != gid {
         ip.set_flag(IN_CHANGE);
     }
     if ouid != uid && c.cr_uid.get() != 0 {
-        ip.set_i_e2fs_mode((e2mode(ip) & !ISUID) as u16);
+        ip.g.set_i_e2fs_mode((e2mode(&ip) & !ISUID) as u16);
     }
     if ogid != gid && c.cr_uid.get() != 0 {
-        ip.set_i_e2fs_mode((e2mode(ip) & !ISGID) as u16);
+        ip.g.set_i_e2fs_mode((e2mode(&ip) & !ISGID) as u16);
     }
     Ok(())
 }
@@ -556,14 +558,14 @@ pub fn ext2fs_remove(ap: &mut VopRemoveArgs<'_, '_>) -> Result<(), Errno> {
 
     let ip = vtoi(vp);
     if vp.vtype() == VDIR
-        || ip.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
-        || vtoi(dvp).i_e2fs_flags() & EXT2_APPEND != 0
+        || ip.g.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
+        || vtoi(dvp).g.i_e2fs_flags() & EXT2_APPEND != 0
     {
         return Err(Errno::EPERM);
     }
     let error = ext2fs_dirremove(dvp, ap.a_cnp);
     if error.is_ok() {
-        nlink_add(ip, -1);
+        nlink_add(&ip, -1);
         ip.set_flag(IN_CHANGE);
     }
     error
@@ -588,22 +590,22 @@ pub fn ext2fs_link(ap: &mut VopLinkArgs<'_, '_>) -> Result<(), Errno> {
         }
         let ip = vtoi(vp);
         let error: Result<(), Errno> = 'out1: {
-            if Nlink::from(ip.i_e2fs_nlink()) >= LINK_MAX {
+            if Nlink::from(ip.g.i_e2fs_nlink()) >= LINK_MAX {
                 let _ = VOP_ABORTOP(dvp, cnp);
                 break 'out1 Err(Errno::EMLINK);
             }
-            if ip.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0 {
+            if ip.g.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0 {
                 let _ = VOP_ABORTOP(dvp, cnp);
                 break 'out1 Err(Errno::EPERM);
             }
-            nlink_add(ip, 1);
+            nlink_add(&ip, 1);
             ip.set_flag(IN_CHANGE);
-            let mut error = ext2fs_update(ip, 1);
+            let mut error = ext2fs_update(&ip, 1);
             if error.is_ok() {
-                error = ext2fs_direnter(ip, dvp, cnp);
+                error = ext2fs_direnter(&ip, dvp, cnp);
             }
             if error.is_err() {
-                nlink_add(ip, -1);
+                nlink_add(&ip, -1);
                 ip.set_flag(IN_CHANGE);
             }
             pnbuf_free(cnp);
@@ -695,8 +697,8 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
 
     // Check if just deleting a link name.
     if let Some(t) = tvp
-        && (vtoi(t).i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
-            || vtoi(tdvp).i_e2fs_flags() & EXT2_APPEND != 0)
+        && (vtoi(t).g.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
+            || vtoi(tdvp).g.i_e2fs_flags() & EXT2_APPEND != 0)
     {
         return rename_abortit(Errno::EPERM, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
@@ -733,17 +735,17 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     }
     let mut dp = vtoi(fdvp);
     let ip = vtoi(fvp);
-    if Nlink::from(ip.i_e2fs_nlink()) >= LINK_MAX {
+    if Nlink::from(ip.g.i_e2fs_nlink()) >= LINK_MAX {
         let _ = VOP_UNLOCK(fvp);
         return rename_abortit(Errno::EMLINK, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
-    if ip.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
-        || dp.i_e2fs_flags() & EXT2_APPEND != 0
+    if ip.g.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
+        || dp.g.i_e2fs_flags() & EXT2_APPEND != 0
     {
         let _ = VOP_UNLOCK(fvp);
         return rename_abortit(Errno::EPERM, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
     }
-    if e2mode(ip) & IFMT == IFDIR {
+    if e2mode(&ip) & IFMT == IFDIR {
         let mut error = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
         if error.is_ok()
             && let Some(t) = tvp
@@ -756,7 +758,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         }
         // Avoid ".", "..", and aliases of "." for obvious reasons.
         if (fcnp.namelen() == 1 && fcnp.name() == b".")
-            || ptr::eq(dp, ip)
+            || ptr::eq::<Inode>(&*dp, &*ip)
             || fcnp.cn_flags & ISDOTDOT != 0
             || tcnp.cn_flags & ISDOTDOT != 0
             || ip.i_flag.get() & IN_RENAME != 0
@@ -765,22 +767,22 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             return rename_abortit(Errno::EINVAL, tdvp, tvp, tcnp, fdvp, fvp, fcnp);
         }
         ip.set_flag(IN_RENAME);
-        oldparent = dp.i_number.get();
+        oldparent = dp.i_number;
         doingdirectory = true;
     }
     vrele(fdvp);
 
     // When the target exists, both the directory and target vnodes are returned locked.
     dp = vtoi(tdvp);
-    let mut xp: Option<&Inode> = tvp.map(vtoi);
+    let mut xp: Option<crate::ufs::ufs::inode::InodeRef> = tvp.map(vtoi);
     let mut error: Result<(), Errno> = Ok(());
 
     let exit: Result<(), RenameExit> = 'body: {
         // 1) Bump link count while we're moving stuff around. If we crash somewhere before
         //    completing our work, the link count may be wrong, but correctable.
-        nlink_add(ip, 1);
+        nlink_add(&ip, 1);
         ip.set_flag(IN_CHANGE);
-        if let Err(e) = ext2fs_update(ip, 1) {
+        if let Err(e) = ext2fs_update(&ip, 1) {
             let _ = VOP_UNLOCK(fvp);
             break 'body Err(RenameExit::Bad(e));
         }
@@ -792,8 +794,8 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // to namei, as the parent directory is unlocked by the call to checkpath().
         let access = VOP_ACCESS(fvp, VWRITE, tcnp.cn_cred.as_raw(), tcnp.proc());
         let _ = VOP_UNLOCK(fvp);
-        if oldparent != dp.i_number.get() {
-            newparent = dp.i_number.get();
+        if oldparent != dp.i_number {
+            newparent = dp.i_number;
         }
         if doingdirectory && newparent != 0 {
             if let Err(e) = access {
@@ -808,7 +810,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             // Compensate for the reference ext2fs_checkpath() loses (the module's
             // deviations).
             vref(tdvp);
-            if let Err(e) = ext2fs_checkpath(ip, dp, tcnp.cn_cred.as_raw()) {
+            if let Err(e) = ext2fs_checkpath(&ip, &dp, tcnp.cn_cred.as_raw()) {
                 vrele(tdvp);
                 break 'body Err(RenameExit::Out(e));
             }
@@ -827,49 +829,49 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // 2) If target doesn't exist, link the target to the source and unlink the source.
         //    Otherwise, rewrite the target directory entry to reference the source inode and
         //    expunge the original entry's existence.
-        match xp {
+        match xp.as_deref() {
             None => {
-                if dp.i_dev.get() != ip.i_dev.get() {
+                if dp.i_dev != ip.i_dev {
                     panic(format_args!("rename: EXDEV"));
                 }
                 // Account for ".." in new directory. When source and destination have the
                 // same parent we don't fool with the link count.
                 if doingdirectory && newparent != 0 {
-                    if Nlink::from(dp.i_e2fs_nlink()) >= LINK_MAX {
+                    if Nlink::from(dp.g.i_e2fs_nlink()) >= LINK_MAX {
                         break 'body Err(RenameExit::Bad(Errno::EMLINK));
                     }
-                    nlink_add(dp, 1);
+                    nlink_add(&dp, 1);
                     dp.set_flag(IN_CHANGE);
-                    if let Err(e) = ext2fs_update(dp, 1) {
+                    if let Err(e) = ext2fs_update(&dp, 1) {
                         break 'body Err(RenameExit::Bad(e));
                     }
                 }
-                if let Err(e) = ext2fs_direnter(ip, tdvp, tcnp) {
+                if let Err(e) = ext2fs_direnter(&ip, tdvp, tcnp) {
                     if doingdirectory && newparent != 0 {
-                        nlink_add(dp, -1);
+                        nlink_add(&dp, -1);
                         dp.set_flag(IN_CHANGE);
-                        let _ = ext2fs_update(dp, 1);
+                        let _ = ext2fs_update(&dp, 1);
                     }
                     break 'body Err(RenameExit::Bad(e));
                 }
                 vput(tdvp);
             }
             Some(x) => {
-                if x.i_dev.get() != dp.i_dev.get() || x.i_dev.get() != ip.i_dev.get() {
+                if x.i_dev != dp.i_dev || x.i_dev != ip.i_dev {
                     panic(format_args!("rename: EXDEV"));
                 }
                 // Short circuit rename(foo, foo).
-                if x.i_number.get() == ip.i_number.get() {
+                if x.i_number == ip.i_number {
                     panic(format_args!("rename: same file"));
                 }
                 // If the parent directory is "sticky", then the user must own the parent
                 // directory, or the destination of the rename, otherwise the destination may
                 // not be changed (except by root). This implements append-only directories.
                 let tuid = ucred(tcnp.cn_cred.as_raw()).cr_uid.get();
-                if e2mode(dp) & S_ISTXT != 0
+                if e2mode(&dp) & S_ISTXT != 0
                     && tuid != 0
-                    && tuid != dp.i_e2fs_uid().get()
-                    && x.i_e2fs_uid().get() != tuid
+                    && tuid != dp.g.i_e2fs_uid().get()
+                    && x.g.i_e2fs_uid().get() != tuid
                 {
                     break 'body Err(RenameExit::Bad(Errno::EPERM));
                 }
@@ -877,8 +879,8 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 // source and target are compatible (both directories, or both not
                 // directories).
                 if e2mode(x) & IFMT == IFDIR {
-                    if !ext2fs_dirempty(x, dp.i_number.get(), tcnp.cn_cred.as_raw())
-                        || x.i_e2fs_nlink() > 2
+                    if !ext2fs_dirempty(x, dp.i_number, tcnp.cn_cred.as_raw())
+                        || x.g.i_e2fs_nlink() > 2
                     {
                         break 'body Err(RenameExit::Bad(Errno::ENOTEMPTY));
                     }
@@ -889,13 +891,13 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 } else if doingdirectory {
                     break 'body Err(RenameExit::Bad(Errno::EISDIR));
                 }
-                if let Err(e) = ext2fs_dirrewrite(dp, ip, tcnp) {
+                if let Err(e) = ext2fs_dirrewrite(&dp, &ip, tcnp) {
                     break 'body Err(RenameExit::Bad(e));
                 }
                 // If the target directory is in the same directory as the source directory,
                 // decrement the link count on the parent of the target directory.
                 if doingdirectory && newparent == 0 {
-                    nlink_add(dp, -1);
+                    nlink_add(&dp, -1);
                     dp.set_flag(IN_CHANGE);
                 }
                 vput(tdvp);
@@ -907,7 +909,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
                 nlink_add(x, -1);
                 if doingdirectory {
                     nlink_add(x, -1);
-                    if x.i_e2fs_nlink() != 0 {
+                    if x.g.i_e2fs_nlink() != 0 {
                         panic(format_args!("rename: linked directory"));
                     }
                     error = ext2fs_truncate(x, 0, IO_SYNC, tcnp.cn_cred.as_raw());
@@ -925,13 +927,13 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     match exit {
         Ok(()) => {}
         Err(RenameExit::Bad(e)) => {
-            if let Some(x) = xp {
+            if let Some(x) = xp.as_deref() {
                 vput(x.itov());
             }
             vput(dp.itov());
-            return rename_out(e, fvp, ip, doingdirectory);
+            return rename_out(e, fvp, &ip, doingdirectory);
         }
-        Err(RenameExit::Out(e)) => return rename_out(e, fvp, ip, doingdirectory),
+        Err(RenameExit::Out(e)) => return rename_out(e, fvp, &ip, doingdirectory),
     }
 
     // 3) Unlink the source.
@@ -963,7 +965,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
     // directory then it cannot have been rmdir'ed; its link count of three would cause a
     // rmdir to fail with ENOTEMPTY. The IRENAME flag ensures that it cannot be moved by
     // another rename.
-    if !ptr::eq(x, ip) {
+    if !ptr::eq::<Inode>(&*x, &*ip) {
         if doingdirectory {
             panic(format_args!("ext2fs_rename: lost dir entry"));
         }
@@ -971,7 +973,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         // If the source is a directory with a new parent, the link count of the old parent
         // directory must be decremented and ".." set to point to the new parent.
         if doingdirectory && newparent != 0 {
-            nlink_add(dp, -1);
+            nlink_add(&dp, -1);
             dp.set_flag(IN_CHANGE);
             let mut dirbuf = [0u8; Ext2fsDirtemplate::SIZE];
             let read = vn_rdwr(
@@ -987,7 +989,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
             if read.is_ok() {
                 let mut t = Ext2fsDirtemplate::from_le_bytes(&dirbuf);
                 if t.dotdot_namlen != 2 || t.dotdot_name[0] != b'.' || t.dotdot_name[1] != b'.' {
-                    ufs_dirbad(x, 12, "ext2fs_rename: mangled dir");
+                    ufs_dirbad(&x, 12, "ext2fs_rename: mangled dir");
                 } else {
                     t.dotdot_ino = newparent;
                     let out = t.to_le_bytes();
@@ -1007,7 +1009,7 @@ pub fn ext2fs_rename(ap: &mut VopRenameArgs<'_, '_, '_>) -> Result<(), Errno> {
         }
         error = ext2fs_dirremove(fdvp, fcnp);
         if error.is_ok() {
-            nlink_add(x, -1);
+            nlink_add(&x, -1);
             x.set_flag(IN_CHANGE);
         }
         x.clr_flag(IN_RENAME);
@@ -1050,46 +1052,46 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
     }
     let dp = vtoi(dvp);
     let error: Result<(), Errno> = 'out: {
-        if Nlink::from(dp.i_e2fs_nlink()) >= LINK_MAX {
+        if Nlink::from(dp.g.i_e2fs_nlink()) >= LINK_MAX {
             break 'out Err(Errno::EMLINK);
         }
         let dmode = (vap.va_mode & ACCESSPERMS) | IFDIR;
         // Must simulate part of ext2fs_makeinode here to acquire the inode, but not have it
         // entered in the parent directory. The entry is made later after writing "." and ".."
         // entries.
-        let tvp = match ext2fs_inode_alloc(dp, dmode, cnp.cn_cred.as_raw()) {
+        let tvp = match ext2fs_inode_alloc(&dp, dmode, cnp.cn_cred.as_raw()) {
             Ok(tvp) => tvp,
             Err(e) => break 'out Err(e),
         };
         let ip = vtoi(tvp);
-        ip.i_e2fs_uid()
+        ip.g.i_e2fs_uid()
             .set(ucred(cnp.cn_cred.as_raw()).cr_uid.get());
-        ip.i_e2fs_gid().set(dp.i_e2fs_gid().get());
+        ip.g.i_e2fs_gid().set(dp.g.i_e2fs_gid().get());
         ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
-        ip.set_i_e2fs_mode(dmode as u16);
+        ip.g.set_i_e2fs_mode(dmode as u16);
         tvp.set_vtype(VDIR); // Rest init'd in getnewvnode().
-        ip.set_i_e2fs_nlink(2);
+        ip.g.set_i_e2fs_nlink(2);
         // The C stores this result and overwrites it at once with the parent's.
-        let _ = ext2fs_update(ip, 1);
+        let _ = ext2fs_update(&ip, 1);
 
         let error: Result<(), Errno> = 'bad: {
             // Bump link count in parent directory to reflect work done below. Should be done
             // before reference is created so reparation is possible if we crash.
-            nlink_add(dp, 1);
+            nlink_add(&dp, 1);
             dp.set_flag(IN_CHANGE);
-            if let Err(e) = ext2fs_update(dp, 1) {
+            if let Err(e) = ext2fs_update(&dp, 1) {
                 break 'bad Err(e);
             }
 
             // Initialize directory with "." and ".." from static template.
-            let ftype = has_ftype(ip);
+            let ftype = has_ftype(&ip);
             let dirtemplate = Ext2fsDirtemplate {
-                dot_ino: ip.i_number.get(),
+                dot_ino: ip.i_number,
                 dot_reclen: 12,
                 dot_namlen: 1,
                 dot_type: if ftype { EXT2_FT_DIR } else { 0 },
                 dot_name: *b".\0\0\0",
-                dotdot_ino: dp.i_number.get(),
+                dotdot_ino: dp.i_number,
                 dotdot_reclen: (dp.e2fs().e2fs_bsize.get() - 12) as i16,
                 dotdot_namlen: 2,
                 dotdot_type: if ftype { EXT2_FT_DIR } else { 0 },
@@ -1106,7 +1108,7 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
                 None,
                 curproc(),
             ) {
-                nlink_add(dp, -1);
+                nlink_add(&dp, -1);
                 dp.set_flag(IN_CHANGE);
                 break 'bad Err(e);
             }
@@ -1115,8 +1117,8 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
                 // XXX should grow with balloc()
                 panic(format_args!("ext2fs_mkdir: blksize"));
             } else {
-                if let Err(e) = ext2fs_setsize(ip, bsize as u64) {
-                    nlink_add(dp, -1);
+                if let Err(e) = ext2fs_setsize(&ip, bsize as u64) {
+                    nlink_add(&dp, -1);
                     dp.set_flag(IN_CHANGE);
                     break 'bad Err(e);
                 }
@@ -1124,9 +1126,9 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
             }
 
             // Directory set up, now install its entry in the parent directory.
-            let error = ext2fs_direnter(ip, dvp, cnp);
+            let error = ext2fs_direnter(&ip, dvp, cnp);
             if error.is_err() {
-                nlink_add(dp, -1);
+                nlink_add(&dp, -1);
                 dp.set_flag(IN_CHANGE);
             }
             error
@@ -1135,7 +1137,7 @@ pub fn ext2fs_mkdir(ap: &mut VopMkdirArgs<'_, '_>) -> Result<(), Errno> {
         // No need to do an explicit VOP_TRUNCATE here, vrele will do this for us because we
         // set the link count to 0.
         if error.is_err() {
-            ip.set_i_e2fs_nlink(0);
+            ip.g.set_i_e2fs_nlink(0);
             ip.set_flag(IN_CHANGE);
             vput(tvp);
         } else {
@@ -1160,11 +1162,11 @@ pub fn ext2fs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
     // Verify the directory is empty (and valid). (Rmdir ".." won't be valid since ".." will
     // contain a reference to the current directory and thus be non-empty.)
     let error: Result<(), Errno> = 'out: {
-        if ip.i_e2fs_nlink() != 2 || !ext2fs_dirempty(ip, dp.i_number.get(), cnp.cn_cred.as_raw()) {
+        if ip.g.i_e2fs_nlink() != 2 || !ext2fs_dirempty(&ip, dp.i_number, cnp.cn_cred.as_raw()) {
             break 'out Err(Errno::ENOTEMPTY);
         }
-        if dp.i_e2fs_flags() & EXT2_APPEND != 0
-            || ip.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
+        if dp.g.i_e2fs_flags() & EXT2_APPEND != 0
+            || ip.g.i_e2fs_flags() & (EXT2_IMMUTABLE | EXT2_APPEND) != 0
         {
             break 'out Err(Errno::EPERM);
         }
@@ -1173,7 +1175,7 @@ pub fn ext2fs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         if let Err(e) = ext2fs_dirremove(ap.a_dvp, cnp) {
             break 'out Err(e);
         }
-        nlink_add(dp, -1);
+        nlink_add(&dp, -1);
         dp.set_flag(IN_CHANGE);
         cache_purge(ap.a_dvp);
         vput(ap.a_dvp);
@@ -1183,8 +1185,8 @@ pub fn ext2fs_rmdir(ap: &mut VopRmdirArgs<'_, '_>) -> Result<(), Errno> {
         // already been adjusted above. We've removed the "." reference and the reference in
         // the parent directory, but there may be other hard links so decrement by 2 and
         // worry about them later.
-        nlink_add(ip, -2);
-        let error = ext2fs_truncate(ip, 0, IO_SYNC, cnp.cn_cred.as_raw());
+        nlink_add(&ip, -2);
+        let error = ext2fs_truncate(&ip, 0, IO_SYNC, cnp.cn_cred.as_raw());
         cache_purge(ip.itov());
         error
     };
@@ -1210,8 +1212,8 @@ pub fn ext2fs_symlink(ap: &mut VopSymlinkArgs<'_, '_>) -> Result<(), Errno> {
     let len = target.len();
     let error = if len < EXT2_MAXSYMLINKLEN {
         let ip = vtoi(vp);
-        ip.with_e2din(|d| d.e2di_shortlink_mut()[..len].copy_from_slice(target));
-        ext2fs_setsize(ip, len as u64).map(|()| ip.set_flag(IN_CHANGE | IN_UPDATE))
+        ip.g.with_e2din(|d| d.e2di_shortlink_mut()[..len].copy_from_slice(target));
+        ext2fs_setsize(&ip, len as u64).map(|()| ip.set_flag(IN_CHANGE | IN_UPDATE))
     } else {
         vn_rdwr(
             UioRw::UIO_WRITE,
@@ -1234,11 +1236,11 @@ pub fn ext2fs_readlink(ap: &mut VopReadlinkArgs<'_, '_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
     let ip = vtoi(vp);
 
-    let isize = ext2fs_size(ip);
+    let isize = ext2fs_size(&ip);
     if isize < EXT2_MAXSYMLINKLEN as u64 {
         let mut link = [0u8; EXT2_MAXSYMLINKLEN];
         let n = isize as usize;
-        ip.with_e2din(|d| link[..n].copy_from_slice(&d.e2di_shortlink()[..n]));
+        ip.g.with_e2din(|d| link[..n].copy_from_slice(&d.e2di_shortlink()[..n]));
         return uiomove(&mut link[..n], ap.a_uio);
     }
     VOP_READ(vp, ap.a_uio, 0, ap.a_cred)
@@ -1262,7 +1264,7 @@ pub fn ext2fs_advlock(ap: &mut VopAdvlockArgs<'_>) -> Result<(), Errno> {
 
     lf_advlock(
         &ip.i_lockf,
-        ext2fs_size(ip) as Off,
+        ext2fs_size(&ip) as Off,
         ap.a_id,
         ap.a_op,
         ap.a_fl,
@@ -1288,7 +1290,7 @@ pub fn ext2fs_makeinode(
         mode |= IFREG;
     }
 
-    let tvp = match ext2fs_inode_alloc(pdir, mode, cnp.cn_cred.as_raw()) {
+    let tvp = match ext2fs_inode_alloc(&pdir, mode, cnp.cn_cred.as_raw()) {
         Ok(tvp) => tvp,
         Err(e) => {
             pnbuf_free(cnp);
@@ -1297,23 +1299,25 @@ pub fn ext2fs_makeinode(
     };
     let ip = vtoi(tvp);
     let c = ucred(cnp.cn_cred.as_raw());
-    ip.i_e2fs_gid().set(pdir.i_e2fs_gid().get());
-    ip.i_e2fs_uid().set(c.cr_uid.get());
+    ip.g.i_e2fs_gid().set(pdir.g.i_e2fs_gid().get());
+    ip.g.i_e2fs_uid().set(c.cr_uid.get());
     ip.set_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
-    ip.set_i_e2fs_mode(mode as u16);
+    ip.g.set_i_e2fs_mode(mode as u16);
     tvp.set_vtype(iftovt(mode)); // Rest init'd in getnewvnode().
-    ip.set_i_e2fs_nlink(1);
-    if e2mode(ip) & ISGID != 0 && !groupmember(ip.i_e2fs_gid().get(), c) && suser_ucred(c).is_err()
+    ip.g.set_i_e2fs_nlink(1);
+    if e2mode(&ip) & ISGID != 0
+        && !groupmember(ip.g.i_e2fs_gid().get(), c)
+        && suser_ucred(c).is_err()
     {
-        ip.set_i_e2fs_mode((e2mode(ip) & !ISGID) as u16);
+        ip.g.set_i_e2fs_mode((e2mode(&ip) & !ISGID) as u16);
     }
 
     let error: Result<(), Errno> = 'bad: {
         // Make sure inode goes to disk before directory entry.
-        if let Err(e) = ext2fs_update(ip, 1) {
+        if let Err(e) = ext2fs_update(&ip, 1) {
             break 'bad Err(e);
         }
-        if let Err(e) = ext2fs_direnter(ip, dvp, cnp) {
+        if let Err(e) = ext2fs_direnter(&ip, dvp, cnp) {
             break 'bad Err(e);
         }
         if cnp.cn_flags & SAVESTART == 0 {
@@ -1327,7 +1331,7 @@ pub fn ext2fs_makeinode(
     // Write error occurred trying to update the inode or the directory so must deallocate
     // the inode.
     pnbuf_free(cnp);
-    ip.set_i_e2fs_nlink(0);
+    ip.g.set_i_e2fs_nlink(0);
     ip.set_flag(IN_CHANGE);
     tvp.set_vtype(VNON);
     vput(tvp);
@@ -1339,7 +1343,7 @@ pub fn ext2fs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
 
     vflushbuf(vp, ap.a_waitfor == MNT_WAIT);
-    ext2fs_update(vtoi(vp), i32::from(ap.a_waitfor == MNT_WAIT))
+    ext2fs_update(&vtoi(vp), i32::from(ap.a_waitfor == MNT_WAIT))
 }
 
 /// `ext2fs_reclaim` (`vop_reclaim`): reclaim an inode so that it can be used for other
@@ -1354,23 +1358,23 @@ pub fn ext2fs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
 
     // Remove the inode from its hash chain.
     let ip = vtoi(vp);
-    ufs_ihashrem(ip);
+    ufs_ihashrem(&ip);
 
     // Purge old data structures associated with the inode.
     cache_purge(vp);
-    if let Some(ump) = ip.i_ump.get()
-        && let Some(devvp) = ump.um_devvp.get()
-    {
-        vrele(devvp);
-    }
+    vrele(ip.i_devvp());
 
-    if let Some(din) = NonNull::new(ip.dinode_u.get().cast::<u8>()) {
+    // The dinode goes back to its pool now, as the C's; the pointer is cleared first, so a
+    // handle to the inode kept past its reclaim finds no dinode instead of a freed one.
+    if let Some(din) = NonNull::new(ip.g.i_e2din.get_mut().cast::<u8>()) {
+        ip.g.i_e2din.set(ptr::null());
         pool_put(&EXT2FS_DINODE_POOL, din);
     }
 
-    let ipp = NonNull::from(ip).cast::<u8>();
-    vp.set_data(ptr::null_mut());
-    pool_put(&EXT2FS_INODE_POOL, ipp);
+    // vp->v_data = NULL: the vnode's handle to the inode goes; with the last one the inode
+    // goes back to ext2fs_inode_pool.
+    drop(ip);
+    drop(vp.take_node());
 
     Ok(())
 }
@@ -1433,7 +1437,7 @@ mod tests {
     };
     use crate::ufs::ext2fs::ext2fs_vfsops::tests::{DISK, mount, setup, teardown};
     use crate::ufs::ufs::ufs_ihash::ufs_ihashget;
-    use crate::ufs::ufs::ufsmount::vfstoufs;
+    use crate::ufs::ufs::ufsmount::{UfsmountExt, vfstoufs};
     use kernel::fs::vops::Cred;
 
     /// The block size.
@@ -2592,12 +2596,12 @@ mod tests {
         write_file(p, "/root-owned", b"r");
         let ino = stat(p, "/root-owned").unwrap().va_fileid;
         let vp = lookup(p, "/root-owned").unwrap();
-        assert_eq!(vtoi(vp).i_e2fs_uid().get(), 0);
-        let dev = vtoi(vp).i_dev.get();
+        assert_eq!(vtoi(vp).g.i_e2fs_uid().get(), 0);
+        let dev = vtoi(vp).i_dev;
         vrele(vp);
         for _ in 0..2 {
             let vp = VFS_VGET(mp, ino).unwrap();
-            assert_eq!(vtoi(vp).i_number.get() as u64, ino);
+            assert_eq!(vtoi(vp).i_number as u64, ino);
             vput(vp);
         }
         let vp = ufs_ihashget(dev, ino as Ufsino).expect("in the hash");

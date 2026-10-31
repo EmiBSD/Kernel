@@ -95,6 +95,7 @@ use crate::ufs::ext2fs::ext2fs_alloc::{ext2fs_blkfree, ext2fs_inode_free};
 use crate::ufs::ext2fs::ext2fs_balloc::ext2fs_buf_alloc;
 use crate::ufs::ext2fs::ext2fs_dinode::{EXT2_MAXSYMLINKLEN, NDADDR, NIADDR, e2fs_isave};
 use crate::ufs::ufs::dinode::{IFMT, IFREG};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode, vtoi};
 
 /// `SINGLE`: index of single indirect block.
@@ -106,10 +107,10 @@ const TRIPLE: usize = 2;
 
 /// `ext2fs_size`: get the size of an inode (the high 32 bits count for a regular file).
 pub fn ext2fs_size(ip: &Inode) -> u64 {
-    let mut size = u64::from(ip.i_e2fs_size());
+    let mut size = u64::from(ip.g.i_e2fs_size());
 
-    if u32::from(ip.i_e2fs_mode()) & IFMT == IFREG {
-        size |= u64::from(ip.i_e2fs_size_hi()) << 32;
+    if u32::from(ip.g.i_e2fs_mode()) & IFMT == IFREG {
+        size |= u64::from(ip.g.i_e2fs_size_hi()) << 32;
     }
 
     size
@@ -122,11 +123,11 @@ pub fn ext2fs_setsize(ip: &Inode, size: u64) -> Result<(), Errno> {
 
     if size <= fs.e2fs_maxfilesize.get() as u64 {
         // If HUGE_FILEs are off, e2fs_maxfilesize will protect us.
-        if u32::from(ip.i_e2fs_mode()) & IFMT == IFREG || ip.i_e2fs_mode() == 0 {
-            ip.set_i_e2fs_size_hi((size >> 32) as u32);
+        if u32::from(ip.g.i_e2fs_mode()) & IFMT == IFREG || ip.g.i_e2fs_mode() == 0 {
+            ip.g.set_i_e2fs_size_hi((size >> 32) as u32);
         }
 
-        ip.set_i_e2fs_size(size as u32);
+        ip.g.set_i_e2fs_size(size as u32);
         return Ok(());
     }
 
@@ -155,25 +156,25 @@ pub fn ext2fs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     }
 
     // Get rid of inodes related to stale file handles.
-    if !(ip.din_is_null() || ip.i_e2fs_mode() == 0 || ip.i_e2fs_dtime() != 0) {
+    if !(ip.g.e2din_is_null() || ip.g.i_e2fs_mode() == 0 || ip.g.i_e2fs_dtime() != 0) {
         let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
-        if ip.i_e2fs_nlink() == 0 && !rdonly {
-            if ext2fs_size(ip) != 0 {
-                error = ext2fs_truncate(ip, 0, 0, NOCRED);
+        if ip.g.i_e2fs_nlink() == 0 && !rdonly {
+            if ext2fs_size(&ip) != 0 {
+                error = ext2fs_truncate(&ip, 0, 0, NOCRED);
             }
             let ts = getnanotime();
-            ip.set_i_e2fs_dtime(ts.tv_sec as u32);
+            ip.g.set_i_e2fs_dtime(ts.tv_sec as u32);
             ip.set_flag(IN_CHANGE | IN_UPDATE);
-            ext2fs_inode_free(ip, ip.i_number.get(), ip.i_e2fs_mode().into());
+            ext2fs_inode_free(&ip, ip.i_number, ip.g.i_e2fs_mode().into());
         }
         if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) != 0 {
-            let _ = ext2fs_update(ip, 0);
+            let _ = ext2fs_update(&ip, 0);
         }
     }
     // out:
     let _ = VOP_UNLOCK(vp);
     // If we are done with the inode, reclaim it so that it can be reused immediately.
-    if ip.din_is_null() || ip.i_e2fs_dtime() != 0 {
+    if ip.g.e2din_is_null() || ip.g.i_e2fs_dtime() != 0 {
         vrecycle(vp, ap.a_p);
     }
     error
@@ -200,7 +201,7 @@ pub fn ext2fs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
     let fs = ip.e2fs();
     let (bp, error) = bread(
         ip.i_devvp(),
-        fsbtodb(fs, Daddr::from(ino_to_fsba(fs, ip.i_number.get()))),
+        fsbtodb(fs, Daddr::from(ino_to_fsba(fs, ip.i_number))),
         fs.e2fs_bsize.get(),
     );
     if let Err(e) = error {
@@ -212,19 +213,19 @@ pub fn ext2fs_update(ip: &Inode, waitfor: i32) -> Result<(), Errno> {
     // See note about 16-bit UID/GID limitation in ext2fs_vget(). Now that we are about to
     // write the inode, construct the split UID and GID fields out of the two 32-bit fields
     // we kept in memory.
-    let uid = ip.i_e2fs_uid().get();
-    let gid = ip.i_e2fs_gid().get();
-    ip.set_i_e2fs_uid_low(uid as u16);
-    ip.set_i_e2fs_gid_low(gid as u16);
-    ip.set_i_e2fs_uid_high((uid >> 16) as u16);
-    ip.set_i_e2fs_gid_high((gid >> 16) as u16);
+    let uid = ip.g.i_e2fs_uid().get();
+    let gid = ip.g.i_e2fs_gid().get();
+    ip.g.set_i_e2fs_uid_low(uid as u16);
+    ip.g.set_i_e2fs_gid_low(gid as u16);
+    ip.g.set_i_e2fs_uid_high((uid >> 16) as u16);
+    ip.g.set_i_e2fs_gid_high((gid >> 16) as u16);
 
     {
         // SAFETY: the buffer is ours (busy from bread) and mapped; the slice dies before it
         // is written.
         let data = unsafe { bp.data() };
-        let off = ino_to_fsbo(fs, ip.i_number.get()) as usize * fs.dinode_size();
-        ip.with_e2din(|d| e2fs_isave(fs, d, &mut data[off..]));
+        let off = ino_to_fsbo(fs, ip.i_number) as usize * fs.dinode_size();
+        ip.g.with_e2din(|d| e2fs_isave(fs, d, &mut data[off..]));
     }
     if waitfor != 0 {
         bwrite(bp)
@@ -259,7 +260,7 @@ pub fn ext2fs_truncate(
             panic(format_args!("ext2fs_truncate: partial truncate of symlink"));
         }
         let n = ext2fs_size(oip) as usize;
-        oip.with_e2din(|d| d.e2di_shortlink_mut()[..n].fill(0));
+        oip.g.with_e2din(|d| d.e2di_shortlink_mut()[..n].fill(0));
         let _ = ext2fs_setsize(oip, 0);
         oip.set_flag(IN_CHANGE | IN_UPDATE);
         return ext2fs_update(oip, 1);
@@ -327,16 +328,16 @@ pub fn ext2fs_truncate(
     // Update file and block pointers on disk before we start freeing blocks. If we crash
     // before free'ing blocks below, the blocks will be returned to the free list.
     // lastiblock values are also normalized to -1 for calls to ext2fs_indirtrunc below.
-    let oldblks = oip.i_e2fs_blocks();
+    let oldblks = oip.g.i_e2fs_blocks();
     for level in (SINGLE..=TRIPLE).rev() {
         if lastiblock[level] < 0 {
-            oip.set_i_e2fs_block(NDADDR + level, 0);
+            oip.g.set_i_e2fs_block(NDADDR + level, 0);
             lastiblock[level] = -1;
         }
     }
     let mut i = NDADDR as Daddr - 1;
     while i > lastblock {
-        oip.set_i_e2fs_block(i as usize, 0);
+        oip.g.set_i_e2fs_block(i as usize, 0);
         i -= 1;
     }
     oip.set_flag(IN_CHANGE | IN_UPDATE);
@@ -346,8 +347,8 @@ pub fn ext2fs_truncate(
     // Having written the new inode to disk, save its new configuration and put back the old
     // block pointers long enough to process them. Note that we save the new block
     // configuration so we can check it when we are done.
-    let newblks = oip.i_e2fs_blocks();
-    oip.with_e2din(|d| d.e2di_blocks = oldblks);
+    let newblks = oip.g.i_e2fs_blocks();
+    oip.g.with_e2din(|d| d.e2di_blocks = oldblks);
     let _ = ext2fs_setsize(oip, osize as u64);
     let vflags = (if length > 0 { V_SAVE } else { 0 }) | V_SAVEMETA;
     let mut allerror = vinvalbuf(ovp, vflags, cred, curproc(), 0, INFSLP);
@@ -360,7 +361,7 @@ pub fn ext2fs_truncate(
         indir_lbn[DOUBLE] = indir_lbn[SINGLE] - nindir(fs) - 1;
         indir_lbn[TRIPLE] = indir_lbn[DOUBLE] - nindir(fs) * nindir(fs) - 1;
         for level in (SINGLE..=TRIPLE).rev() {
-            let bn = u32::from_le(oip.i_e2fs_block(NDADDR + level));
+            let bn = u32::from_le(oip.g.i_e2fs_block(NDADDR + level));
             if bn != 0 {
                 let mut count = 0;
                 if let Err(e) = ext2fs_indirtrunc(
@@ -375,7 +376,7 @@ pub fn ext2fs_truncate(
                 }
                 blocksreleased += count;
                 if lastiblock[level] < 0 {
-                    oip.set_i_e2fs_block(NDADDR + level, 0);
+                    oip.g.set_i_e2fs_block(NDADDR + level, 0);
                     ext2fs_blkfree(oip, bn);
                     blocksreleased += nblocks;
                 }
@@ -388,9 +389,9 @@ pub fn ext2fs_truncate(
         // All whole direct blocks or frags.
         let mut i = NDADDR as Daddr - 1;
         while i > lastblock {
-            let bn = u32::from_le(oip.i_e2fs_block(i as usize));
+            let bn = u32::from_le(oip.g.i_e2fs_block(i as usize));
             if bn != 0 {
-                oip.set_i_e2fs_block(i as usize, 0);
+                oip.g.set_i_e2fs_block(i as usize, 0);
                 ext2fs_blkfree(oip, bn);
                 blocksreleased += btodb(bsize as usize) as i64;
             }
@@ -401,12 +402,12 @@ pub fn ext2fs_truncate(
     #[cfg(feature = "diagnostic")]
     {
         for level in SINGLE..=TRIPLE {
-            if newblks[NDADDR + level] != oip.i_e2fs_block(NDADDR + level) {
+            if newblks[NDADDR + level] != oip.g.i_e2fs_block(NDADDR + level) {
                 panic(format_args!("ext2fs_truncate1"));
             }
         }
         for (i, &blk) in newblks[..NDADDR].iter().enumerate() {
-            if blk != oip.i_e2fs_block(i) {
+            if blk != oip.g.i_e2fs_block(i) {
                 panic(format_args!("ext2fs_truncate2"));
             }
         }
@@ -422,7 +423,10 @@ pub fn ext2fs_truncate(
     let _ = newblks;
     // Put back the real size.
     let _ = ext2fs_setsize(oip, length as u64);
-    oip.set_i_e2fs_nblock(ext2fs_truncate_nblock(oip.i_e2fs_nblock(), blocksreleased));
+    oip.g.set_i_e2fs_nblock(ext2fs_truncate_nblock(
+        oip.g.i_e2fs_nblock(),
+        blocksreleased,
+    ));
     oip.set_flag(IN_CHANGE);
     allerror
 }
@@ -628,9 +632,11 @@ mod tests {
         fs.e2fs_maxfilesize.set(maxfilesize);
         let din: &'static mut Ext2fsDinode = Box::leak(Box::new(Ext2fsDinode::default()));
         din.e2di_mode = mode as u16;
-        let ip: &'static Inode = Box::leak(Box::new(Inode::new()));
-        ip.i_e2fs.set(Some(fs));
-        ip.dinode_u.set(core::ptr::from_mut(din).cast());
+        let ip: &'static Inode = Box::leak(Box::new(Inode::new(
+            crate::ufs::ufs::inode::InodeInit::default(),
+        )));
+        ip.g.i_e2fs.set(Some(fs));
+        ip.g.i_e2din.set(core::ptr::from_mut(din));
         ip
     }
 
@@ -638,13 +644,13 @@ mod tests {
     fn the_high_size_word_counts_for_regular_files_only() {
         let ip = inode(IFREG | 0o644, E2FS_REV1, 1 << 40);
         ext2fs_setsize(ip, (5 << 32) | 7).unwrap();
-        assert_eq!((ip.i_e2fs_size(), ip.i_e2fs_size_hi()), (7, 5));
+        assert_eq!((ip.g.i_e2fs_size(), ip.g.i_e2fs_size_hi()), (7, 5));
         assert_eq!(ext2fs_size(ip), (5 << 32) | 7);
 
         let dir = inode(IFDIR | 0o755, E2FS_REV1, 1 << 40);
-        dir.set_i_e2fs_size_hi(3);
+        dir.g.set_i_e2fs_size_hi(3);
         ext2fs_setsize(dir, 1024).unwrap();
-        assert_eq!((ext2fs_size(dir), dir.i_e2fs_size_hi()), (1024, 3));
+        assert_eq!((ext2fs_size(dir), dir.g.i_e2fs_size_hi()), (1024, 3));
     }
 
     #[test]

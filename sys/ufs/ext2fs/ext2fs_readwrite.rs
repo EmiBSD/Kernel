@@ -95,6 +95,7 @@ use crate::ufs::ext2fs::ext2fs_inode::{
     ext2fs_setsize, ext2fs_size, ext2fs_truncate, ext2fs_update,
 };
 use crate::ufs::ufs::dinode::{ISGID, ISUID};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_UPDATE, Inode, vtoi};
 
 /// `ext2fs_read` (`vop_read`): vnode op for reading.
@@ -104,10 +105,10 @@ pub fn ext2fs_read(ap: &mut VopReadArgs<'_, '_>) -> Result<(), Errno> {
     let uio = &mut *ap.a_uio;
     let fs = ip.e2fs();
 
-    if ip.i_e2fs_flags() & EXT4_EXTENTS != 0 {
-        ext4_ext_read(vp, ip, fs, uio)
+    if ip.g.i_e2fs_flags() & EXT4_EXTENTS != 0 {
+        ext4_ext_read(vp, &ip, fs, uio)
     } else {
-        ext2_ind_read(vp, ip, fs, uio)
+        ext2_ind_read(vp, &ip, fs, uio)
     }
 }
 
@@ -309,9 +310,9 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     match vp.vtype() {
         VREG => {
             if ioflag & IO_APPEND != 0 {
-                uio.uio_offset = ext2fs_size(ip) as Off;
+                uio.uio_offset = ext2fs_size(&ip) as Off;
             }
-            if ip.i_e2fs_flags() & EXT2_APPEND != 0 && uio.uio_offset != ext2fs_size(ip) as Off {
+            if ip.g.i_e2fs_flags() & EXT2_APPEND != 0 && uio.uio_offset != ext2fs_size(&ip) as Off {
                 return Err(Errno::EPERM);
             }
         }
@@ -337,7 +338,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     let overrun = vn_fsizechk(vp, uio, ioflag)?;
 
     let resid = uio.uio_resid;
-    let osize = ext2fs_size(ip) as Off;
+    let osize = ext2fs_size(&ip) as Off;
     let mut flags = if ioflag & IO_SYNC != 0 { B_SYNC } else { 0 };
     let bsize = i64::from(fs.e2fs_bsize.get());
 
@@ -356,7 +357,7 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         }
 
         let bp = match ext2fs_buf_alloc(
-            ip,
+            &ip,
             lbn as u32,
             (blkoffset + xfersize) as i32,
             ap.a_cred,
@@ -368,14 +369,14 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
                 break;
             }
         };
-        if uio.uio_offset + xfersize > ext2fs_size(ip) as Off {
-            if let Err(e) = ext2fs_setsize(ip, (uio.uio_offset + xfersize) as u64) {
+        if uio.uio_offset + xfersize > ext2fs_size(&ip) as Off {
+            if let Err(e) = ext2fs_setsize(&ip, (uio.uio_offset + xfersize) as u64) {
                 // The C breaks with the buffer still busy (see the module's deviations).
                 brelse(bp);
                 error = Err(e);
                 break;
             }
-            uvm_vnp_setsize(vp, ext2fs_size(ip) as Off);
+            uvm_vnp_setsize(vp, ext2fs_size(&ip) as Off);
             extended = true;
         }
         let _ = uvm_vnp_uncache(vp);
@@ -424,19 +425,19 @@ pub fn ext2fs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     // SAFETY: the write's credentials are held by its caller (`cred_ref`'s contract).
     let cred = unsafe { cred_ref(ap.a_cred) };
     if resid > uio.uio_resid && cred.is_some_and(|c| c.cr_uid.get() != 0) {
-        ip.set_i_e2fs_mode(ip.i_e2fs_mode() & !((ISUID | ISGID) as u16));
+        ip.g.set_i_e2fs_mode(ip.g.i_e2fs_mode() & !((ISUID | ISGID) as u16));
     }
     if resid > uio.uio_resid {
         VN_KNOTE(vp, NOTE_WRITE | if extended { NOTE_EXTEND } else { 0 });
     }
     if error.is_err() {
         if ioflag & IO_UNIT != 0 {
-            let _ = ext2fs_truncate(ip, osize, ioflag & IO_SYNC, ap.a_cred);
+            let _ = ext2fs_truncate(&ip, osize, ioflag & IO_SYNC, ap.a_cred);
             uio.uio_offset -= (resid - uio.uio_resid) as i64;
             uio.uio_resid = resid;
         }
     } else if resid > uio.uio_resid && ioflag & IO_SYNC != 0 {
-        error = ext2fs_update(ip, 1);
+        error = ext2fs_update(&ip, 1);
     }
     // correct the result for writes clamped by vn_fsizechk()
     uio.uio_resid += overrun;

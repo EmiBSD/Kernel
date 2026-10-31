@@ -112,9 +112,8 @@
 //!   reads some unlocked (`ufs_ihashget`'s `i_number`), as the vnode's `[K]` words of N5.2.
 //!   Not D-N5.5a-4's `Guarded::new_kernel` cell: `klock::witness()` raises the interrupt
 //!   level (sys/hal/klock.rs:432-447), one spl pair per change where the C has none (on every
-//!   `read`'s `IN_ACCESS`, every lookup's `i_diroff`), and `bsd`'s file system tests run
-//!   their operations without the kernel lock; an atomic word needs neither, and its loads
-//!   and stores are the C's plain ones. The identity (`i_dev`, `i_number`) is plain fields,
+//!   `read`'s `IN_ACCESS`, every lookup's `i_diroff`); an atomic word needs no witness, and
+//!   its loads and stores are the C's plain ones. The identity (`i_dev`, `i_number`) is plain fields,
 //!   set when the pool makes the item; `i_vnode` a `Link` (`ffs_vinit` moves the inode to the
 //!   alias of a device vnode).
 //! - LZ's `dinode_u` (a raw pointer to a pool dinode, read and written through `unsafe`
@@ -138,7 +137,7 @@ use hal::rwlock::RecursiveRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_ASYNC};
 use hal::sys::types::{Daddr, Dev, Mode, Off};
-use hal::user::{pod_from_bytes, pod_to_bytes};
+use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
 
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,
@@ -348,6 +347,20 @@ impl<const N: usize> DinWords<N> {
             });
     }
 
+    /// The dinode's words (one relaxed load each).
+    #[inline]
+    fn words(&self) -> [u64; N] {
+        core::array::from_fn(|i| self.w[i].load(Ordering::Relaxed))
+    }
+
+    /// The dinode's words set to `words` (one relaxed store each).
+    #[inline]
+    fn set_words(&self, words: [u64; N]) {
+        for (w, v) in self.w.iter().zip(words) {
+            w.store(v, Ordering::Relaxed);
+        }
+    }
+
     /// The bytes `off..off + out.len()` of the dinode into `out`.
     pub fn read_bytes(&self, off: usize, out: &mut [u8]) {
         if off + out.len() > N * 8 {
@@ -356,9 +369,27 @@ impl<const N: usize> DinWords<N> {
                 out.len()
             ));
         }
-        for (i, b) in out.iter_mut().enumerate() {
+        if off.is_multiple_of(8) && out.len().is_multiple_of(8) {
+            // Whole words (the dinode copied whole, a block pointer array): one fixed-size
+            // store per word.
+            for (dst, w) in out
+                .as_chunks_mut::<8>()
+                .0
+                .iter_mut()
+                .zip(&self.w[off / 8..])
+            {
+                *dst = w.load(Ordering::Relaxed).to_ne_bytes();
+            }
+            return;
+        }
+        let mut i = 0;
+        while i < out.len() {
             let at = off + i;
-            *b = self.w[at / 8].load(Ordering::Relaxed).to_ne_bytes()[at % 8];
+            let first = at % 8;
+            let n = (8 - first).min(out.len() - i);
+            let w = self.w[at / 8].load(Ordering::Relaxed).to_ne_bytes();
+            out[i..i + n].copy_from_slice(&w[first..first + n]);
+            i += n;
         }
     }
 
@@ -371,6 +402,13 @@ impl<const N: usize> DinWords<N> {
                 src.len()
             ));
         }
+        if off.is_multiple_of(8) && src.len().is_multiple_of(8) {
+            // Whole words: no neighbour to keep, one store per word.
+            for (w, part) in self.w[off / 8..].iter().zip(src.as_chunks::<8>().0) {
+                w.store(u64::from_ne_bytes(*part), Ordering::Relaxed);
+            }
+            return;
+        }
         let mut i = 0;
         while i < src.len() {
             let at = off + i;
@@ -378,6 +416,14 @@ impl<const N: usize> DinWords<N> {
             let first = at % 8;
             let n = (8 - first).min(src.len() - i);
             let part = &src[i..i + n];
+            if n == 8 {
+                // A whole word: no neighbour to keep.
+                let mut bytes = [0u8; 8];
+                bytes.copy_from_slice(part);
+                self.w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
+                i += n;
+                continue;
+            }
             let _ = self.w[wi].fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
                 let mut bytes = w.to_ne_bytes();
                 bytes[first..first + n].copy_from_slice(part);
@@ -398,16 +444,14 @@ impl DinWords<16> {
 
     /// `*ip->i_din1`: a copy of the whole dinode.
     pub fn load(&self) -> Ufs1Dinode {
-        let mut b = [0u8; 128];
-        self.read_bytes(0, &mut b);
-        pod_from_bytes(&b).unwrap_or_default()
+        pod_from_bytes(bytes_of(&self.words())).unwrap_or_default()
     }
 
     /// `*ip->i_din1 = *d`.
     pub fn store(&self, d: &Ufs1Dinode) {
-        let mut b = [0u8; 128];
-        let _ = pod_to_bytes(d, &mut b);
-        self.write_bytes(0, &b);
+        let mut words = [0u64; 16];
+        let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
+        self.set_words(words);
     }
 }
 
@@ -421,16 +465,14 @@ impl DinWords<32> {
 
     /// `*ip->i_din2`: a copy of the whole dinode.
     pub fn load(&self) -> Ufs2Dinode {
-        let mut b = [0u8; 256];
-        self.read_bytes(0, &mut b);
-        pod_from_bytes(&b).unwrap_or_default()
+        pod_from_bytes(bytes_of(&self.words())).unwrap_or_default()
     }
 
     /// `*ip->i_din2 = *d`.
     pub fn store(&self, d: &Ufs2Dinode) {
-        let mut b = [0u8; 256];
-        let _ = pod_to_bytes(d, &mut b);
-        self.write_bytes(0, &b);
+        let mut words = [0u64; 32];
+        let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
+        self.set_words(words);
     }
 }
 
@@ -1279,6 +1321,27 @@ mod tests {
         assert_eq!(got.di_ib, [i32::from_ne_bytes(*b"xxxx"); NIADDR]);
         assert_eq!(got.di_flags, 0x51, "the member after the range kept");
         assert_eq!(got.di_ctimensec, 10, "the member before the range kept");
+    }
+
+    #[test]
+    fn whole_word_ranges_keep_the_words_outside_them() {
+        let d = Ufs2Din::new(&din2());
+        // UFS2's SHORTLINK: the 120 bytes of di_db and di_ib, whole words from offset 112.
+        let mut s = [0u8; MAXSYMLINKLEN_UFS2];
+        d.read_bytes(offset_of!(Ufs2Dinode, di_db), &mut s);
+        assert_eq!(s[..8], 101i64.to_ne_bytes());
+        assert_eq!(s[112..], (1i64 << 50).to_ne_bytes());
+        s.fill(b'y');
+        d.write_bytes(offset_of!(Ufs2Dinode, di_db), &s);
+        let got = d.load();
+        assert_eq!(got.di_db, [i64::from_ne_bytes(*b"yyyyyyyy"); NDADDR]);
+        assert_eq!(got.di_ib, [i64::from_ne_bytes(*b"yyyyyyyy"); NIADDR]);
+        assert_eq!(got.di_extb, [13, 14], "the words before the range kept");
+        assert_eq!(
+            got.di_spare,
+            [131, 132, 133],
+            "the words after the range kept"
+        );
     }
 
     #[test]

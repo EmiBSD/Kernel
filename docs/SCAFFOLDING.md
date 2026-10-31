@@ -58,6 +58,9 @@ Locations are on `main` at the commit that last edited this file.
 |---|---|---|---|
 | Type aliases keeping LZ's names: `Vnode`, `Mount`, `Vfsconf`, `Specinfo`, `Componentname`, `Nameidata` | `sys/sys/vnode.rs:122`, `sys/sys/mount.rs:137`, `:140`, `sys/sys/specdev.rs:83`, `sys/sys/namei.rs:96`, `:99` | `bsd`'s file systems and drivers still call these types by LZ's names | Each alias with its last `bsd` user; all at N9 |
 | Adapter modules of no logic: `sys/sys/namei.rs` (500 lines), `sys/sys/lockf.rs` (89), `sys/kern/vfs_syscalls.rs` (1,735) | those files | LZ's signatures for `bsd`'s importers and `init_sysent.rs`'s rows, over `kernel::fs` (N5.3, N5.4) | When their importers move (the file systems N5.5-N5.9, nfs N6) and the system-call table is the kernel's (N9) |
+| The UFS layer's aliases and adapters: `Inode`, `InodeRef`, `InodeInit` (`sys/ufs/ufs/inode.rs`), `Ufsmount` (`sys/ufs/ufs/ufsmount.rs`); the modules `dinode.rs`, `dir.rs`, `ufs_ihash.rs`, `ufs_bmap.rs` (re-exports and LZ's `vop_bmap` slot), `ufs_vfsops.rs` (`ufs_init` and `ufs_check_export` beside the re-exports) | `sys/ufs/ufs/` | `bsd`'s ffs, ext2fs, mfs and the UFS files still here (lookup, vnops, quotas, dirhash) call LZ's names over the kernel's `fs::ufs::ufs` (N5.5a1) | `ufs_init` at N5.5a2; the rest with ffs (N5.5b) and ext2fs (N5.6) |
+| `BsdInodeG` (with `DirhashSlot`) and the `InodeExt` trait (`ump`, `fs`, `e2fs`, `ext2fs_itimes`) | `sys/ufs/ufs/inode.rs` | `bsd`'s `InodeG`: the members of ffs's, ext2fs's, the quotas' and the dirhash's types an inode carries, and the readers of them (an inherent method cannot be added to the kernel's type in `bsd`) | The quota and dirhash members at N5.5a2, `i_fs` at N5.5b, the ext2fs members at N5.6 |
+| `BsdUfsmountG` and the `UfsmountExt` trait (`fs`, `e2fs`, `with_e2fsb`); `vfstoufs` and its `unsafe` | `sys/ufs/ufs/ufsmount.rs` | `bsd`'s `UfsmountG`; the structure is still allocated into `mnt_data` by `bsd`'s mounts (its `um_export`, a `Netexport` of radix nodes, is not `Send`, which the mount's typed slot needs) | The quotas at N5.5a2 (the first kernel reader of the structure, which moves it into the mount's slot), `um_fs` at N5.5b, `um_e2fs` at N5.6, `um_export` at N6 |
 
 ## The system-call hop
 
@@ -67,7 +70,4 @@ Locations are on `main` at the commit that last edited this file.
 
 ## Arriving
 
-- N5.5a1 (in progress, DECISIONS-N5.5a D-N5.5a-8): `FileGlue`'s `InodeG`, `Din` and `UfsmountG`
-  (the members of ext2fs's and ffs's inode and mount that the kernel's `Inode` and `Ufsmount`
-  carry until N5.6 and N5.5b), and the bridges `InodeOps` and `UfsFs` (`bridges.toml`, paid
-  N5.5b). The slice writes their rows here.
+Nothing announced.

@@ -96,22 +96,22 @@ pub fn ufs_inactive(ap: &mut VopInactiveArgs<'_>) -> Result<(), Errno> {
     if !(ip.din_is_null() || ip.dip_mode() == 0) {
         let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
         if ip.dip_nlink() <= 0 && !rdonly {
-            if getinoquota(ip).is_ok() {
-                let _ = ufs_quota_free_inode(ip, NOCRED);
+            if getinoquota(&ip).is_ok() {
+                let _ = ufs_quota_free_inode(&ip, NOCRED);
             }
 
-            error = UFS_TRUNCATE(ip, 0, 0, NOCRED);
+            error = UFS_TRUNCATE(&ip, 0, 0, NOCRED);
 
             ip.dip_set_rdev(0);
             let mode = ip.dip_mode();
             ip.dip_set_mode(0);
             ip.set_flag(IN_CHANGE | IN_UPDATE);
 
-            let _ = UFS_INODE_FREE(ip, ip.i_number.get(), mode);
+            let _ = UFS_INODE_FREE(&ip, ip.i_number, mode);
         }
 
         if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) != 0 {
-            let _ = UFS_UPDATE(ip, 0);
+            let _ = UFS_UPDATE(&ip, 0);
         }
     }
     // out:
@@ -138,24 +138,20 @@ pub fn ufs_reclaim(vp: &'static Vnode) -> Result<(), Errno> {
     // Stop deferring timestamp writes.
     if ip.i_flag.get() & IN_LAZYMOD != 0 {
         ip.set_flag(IN_MODIFIED);
-        let _ = UFS_UPDATE(ip, 0);
+        let _ = UFS_UPDATE(&ip, 0);
     }
 
     // Remove the inode from its hash chain.
-    ufs_ihashrem(ip);
+    ufs_ihashrem(&ip);
     // Purge old data structures associated with the inode.
     cache_purge(vp);
 
-    if let Some(ump) = ip.i_ump.get()
-        && let Some(devvp) = ump.um_devvp.get()
-    {
-        vrele(devvp);
-    }
+    vrele(ip.i_devvp());
     #[cfg(feature = "ufs_dirhash")]
-    if ip.i_dirhash.get().is_some() {
-        crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(ip);
+    if ip.g.i_dirhash.get().is_some() {
+        crate::ufs::ufs::ufs_dirhash::ufsdirhash_free(&ip);
     }
-    let _ = ufs_quota_delete(ip);
+    let _ = ufs_quota_delete(&ip);
     Ok(())
 }
 /* </CODE> */

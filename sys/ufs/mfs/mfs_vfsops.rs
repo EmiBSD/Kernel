@@ -109,6 +109,7 @@ use crate::ufs::mfs::mfs_vnops::{MFS_VOPS, mfs_doio};
 use crate::ufs::mfs::mfsnode::{Mfsnode, vtomfs};
 use crate::ufs::ufs::quota::ufs_quotactl;
 use crate::ufs::ufs::ufs_vfsops::ufs_root;
+use crate::ufs::ufs::ufsmount::UfsmountExt;
 use crate::ufs::ufs::ufsmount::vfstoufs;
 
 /// `mfs_minor`: used for building internal dev_t.

@@ -90,7 +90,6 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::init_main::{rootvp, set_rootvp, set_swapdev_vp};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_rwlock::rrw_init_flags;
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_disk::disk_map;
 use crate::kern::subr_pool::{pool_get, pool_init};
@@ -116,9 +115,8 @@ use crate::sys::mount::{
 use crate::sys::namei::{FOLLOW, LOOKUP, Nameidata, NiDirp};
 use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{DEV_BSIZE, dbtob, howmany};
-use crate::sys::pool::{PR_WAITOK, PR_ZERO, Pool};
+use crate::sys::pool::{PR_WAITOK, Pool};
 use crate::sys::proc::Proc;
-use crate::sys::rwlock::{RWL_DUPOK, RWL_IS_VNODE};
 use crate::sys::systm::{INFSLP, ROOTDEV};
 use crate::sys::types::{Daddr, Ino, Off, major};
 use crate::sys::ucred::{FSCRED, NOCRED, Ucred};
@@ -150,6 +148,7 @@ use crate::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode
 use crate::ufs::ufs::quota::ufs_quotactl;
 use crate::ufs::ufs::ufs_ihash::{ufs_ihashget, ufs_ihashins};
 use crate::ufs::ufs::ufs_vfsops::{ufs_check_export, ufs_init, ufs_root, ufs_start};
+use crate::ufs::ufs::ufsmount::UfsmountExt;
 use crate::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, vfstoufs};
 
 /// The super block members `e2fs_sbfill` computes from.
@@ -183,21 +182,14 @@ pub static EXT2FS_VFSOPS: Vfsops = Vfsops {
 };
 
 /// `ext2fs_inode_pool`: memory pool for inodes.
-pub static EXT2FS_INODE_POOL: Pool = Pool::new();
+pub static EXT2FS_INODE_POOL: hal::pool::TypedPool<Inode> = hal::pool::TypedPool::new();
 /// `ext2fs_dinode_pool`: memory pool for dinodes.
 pub static EXT2FS_DINODE_POOL: Pool = Pool::new();
 
 /// `ext2fs_init` (`vfs_init`): the inode and dinode pools, then the UFS layer.
 pub fn ext2fs_init(vfsp: &'static Vfsconf) -> Result<(), Errno> {
-    pool_init(
-        &EXT2FS_INODE_POOL,
-        size_of::<Inode>(),
-        0,
-        IPL_NONE,
-        PR_WAITOK,
-        "ext2inopl",
-        None,
-    );
+    // A second call (a host test's) keeps the pool made first.
+    let _ = EXT2FS_INODE_POOL.init_recorded(IPL_NONE, PR_WAITOK, "ext2inopl");
     pool_init(
         &EXT2FS_DINODE_POOL,
         size_of::<Ext2fsDinode>(),
@@ -332,7 +324,7 @@ pub fn ext2fs_mount(
         match args {
             // Process export requests.
             Some(a) if a.fspec == 0 => {
-                return vfs_export(mp, &u.um_export, &a.export_info);
+                return vfs_export(mp, &u.g.um_export, &a.export_info);
             }
             None => return Ok(()), // success
             Some(_) => {}
@@ -440,7 +432,7 @@ fn ext2fs_reload_vnode(
     let ip = vtoi(vp);
     let (bp, error) = bread(
         devvp,
-        fsbtodb(fs, Daddr::from(ino_to_fsba(fs, ip.i_number.get()))),
+        fsbtodb(fs, Daddr::from(ino_to_fsba(fs, ip.i_number))),
         fs.e2fs_bsize.get(),
     );
     if let Err(e) = error {
@@ -453,8 +445,8 @@ fn ext2fs_reload_vnode(
         // SAFETY: the buffer is ours (busy from bread) and mapped; the slice dies before it
         // is released.
         let data = unsafe { bp.data() };
-        let off = ino_to_fsbo(fs, ip.i_number.get()) as usize * fs.dinode_size();
-        ip.with_e2din(|d| e2fs_iload(fs, &data[off..], d));
+        let off = ino_to_fsbo(fs, ip.i_number) as usize * fs.dinode_size();
+        ip.g.with_e2din(|d| e2fs_iload(fs, &data[off..], d));
     }
     brelse(bp);
     vput(vp);
@@ -688,7 +680,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
         // and an `UnsafeCell`) is valid as zero bytes, which is `MExt2fs::new()`. It lives
         // until the unmount (or the error path below) frees it.
         let fs: &'static MExt2fs = unsafe { &*fsmem.as_ptr().cast::<MExt2fs>() };
-        u.um_e2fs.set(Some(fs));
+        u.g.um_e2fs.set(Some(fs));
 
         // Copy in the superblock, compute in-memory values and load group descriptors.
         fs.with_e2fs_mut(|e| e2fs_sbload(sb, e));
@@ -735,7 +727,7 @@ pub fn ext2fs_mountfs(devvp: &'static Vnode, mp: &'static Mount, p: &Proc) -> Re
     let _ = VOP_CLOSE(devvp, omode, cred, Some(p));
     let _ = VOP_UNLOCK(devvp);
     if let Some(u) = ump {
-        if let Some(fs) = u.um_e2fs.get() {
+        if let Some(fs) = u.g.um_e2fs.get() {
             free(NonNull::from(fs).cast(), M_UFSMNT, size_of::<MExt2fs>());
         }
         free(NonNull::from(u).cast(), M_UFSMNT, size_of::<Ufsmount>());
@@ -860,7 +852,7 @@ fn ext2fs_sync_vnode(vp: &'static Vnode, esa: &mut Ext2fsSyncArgs<'_>) -> Result
     let ip = vtoi(vp);
     let mut nlink0 = 0;
 
-    if ip.i_e2fs_nlink() == 0 {
+    if ip.g.i_e2fs_nlink() == 0 {
         nlink0 = 1;
     }
 
@@ -981,31 +973,37 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
         // Allocate a new vnode/inode.
         let vp = getnewvnode(VT_EXT2FS, Some(mp), &EXT2FS_VOPS)?;
 
-        let Some(mem) = pool_get(&EXT2FS_INODE_POOL, PR_WAITOK | PR_ZERO) else {
+        let fs = ump.e2fs();
+        let Some(ip) = EXT2FS_INODE_POOL.get_homed(PR_WAITOK, || {
+            Inode::new(crate::ufs::ufs::inode::InodeInit {
+                vnode: Some(vp),
+                mount: Some(mp),
+                devvp: Some(ump.devvp()),
+                dev,
+                number: ino,
+                fstype: ump.um_fstype.get(),
+                nindir: ump.um_nindir.get(),
+                bptrtodb: ump.um_bptrtodb.get(),
+                seqinc: ump.um_seqinc.get(),
+                vtbl: None,
+                g: crate::ufs::ufs::inode::BsdInodeG {
+                    i_e2fs: core::cell::Cell::new(Some(fs)),
+                    ..Default::default()
+                },
+            })
+        }) else {
             panic(format_args!("ext2fs_vget: no inode"));
         };
-        let ipp = mem.cast::<Inode>();
-        // SAFETY: a fresh `ext2fs_inode_pool` item, sized and aligned for an `Inode`.
-        unsafe { ptr::write(ipp.as_ptr(), Inode::new()) };
-        // SAFETY: just initialised; freed only by `ext2fs_reclaim`.
-        let ip: &'static Inode = unsafe { &*ipp.as_ptr() };
-        rrw_init_flags(&ip.i_lock, "inode", RWL_DUPOK | RWL_IS_VNODE);
-        vp.set_data(ipp.as_ptr().cast());
-        ip.i_vnode.set(Some(vp));
-        ip.i_ump.set(Some(ump));
+        vp.set_node(hal::pool::PoolArc::erase(ip.clone()));
         // The C takes this reference after ext2fs_vinit (see the module's deviations).
         vref(ump.devvp());
-        let fs = ump.e2fs();
-        ip.i_e2fs.set(Some(fs));
-        ip.i_dev.set(dev);
-        ip.i_number.set(ino);
-        ip.i_e2fs_last_lblk().set(0);
-        ip.i_e2fs_last_blk().set(0);
+        ip.g.i_e2fs_last_lblk().set(0);
+        ip.g.i_e2fs_last_blk().set(0);
 
         // Put it onto its hash chain and lock it so that other requests for this inode will
         // block if they arrive while we are sleeping waiting for old data structures to be
         // purged or for the contents of the disk portion of this inode to be read.
-        if let Err(error) = ufs_ihashins(ip) {
+        if let Err(error) = ufs_ihashins(ip.as_pin()) {
             vrele(vp);
 
             if error == Errno::EEXIST {
@@ -1036,33 +1034,33 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
         let d = d.cast::<Ext2fsDinode>();
         // SAFETY: a fresh `ext2fs_dinode_pool` item, sized and aligned for it.
         unsafe { ptr::write(d.as_ptr(), Ext2fsDinode::default()) };
-        ip.dinode_u.set(d.as_ptr().cast());
+        ip.g.i_e2din.set(d.as_ptr());
         {
             // SAFETY: the buffer is ours (busy from bread) and mapped; the slice dies
             // before it is released.
             let data = unsafe { bp.data() };
             let off = fs.dinode_size() * ino_to_fsbo(fs, ino) as usize;
-            ip.with_e2din(|din| e2fs_iload(fs, &data[off..], din));
+            ip.g.with_e2din(|din| e2fs_iload(fs, &data[off..], din));
         }
         brelse(bp);
 
-        ip.i_effnlink.set(i32::from(ip.i_e2fs_nlink()));
+        ip.i_effnlink.set(i32::from(ip.g.i_e2fs_nlink()));
 
         // The fields for storing the UID and GID of an ext2fs inode are limited to 16 bits.
         // To overcome this limitation, Linux decided to scatter the highest bits of these
         // values into a previously reserved area on the disk inode. We deal with this
         // situation by having two 32-bit fields *out* of the disk inode to hold the
         // complete values. Now that we are reading in the inode, compute these fields.
-        ip.i_e2fs_uid()
-            .set(u32::from(ip.i_e2fs_uid_low()) | (u32::from(ip.i_e2fs_uid_high()) << 16));
-        ip.i_e2fs_gid()
-            .set(u32::from(ip.i_e2fs_gid_low()) | (u32::from(ip.i_e2fs_gid_high()) << 16));
+        ip.g.i_e2fs_uid()
+            .set(u32::from(ip.g.i_e2fs_uid_low()) | (u32::from(ip.g.i_e2fs_uid_high()) << 16));
+        ip.g.i_e2fs_gid()
+            .set(u32::from(ip.g.i_e2fs_gid_low()) | (u32::from(ip.g.i_e2fs_gid_high()) << 16));
 
         // If the inode was deleted, reset all fields
-        if ip.i_e2fs_dtime() != 0 {
-            ip.set_i_e2fs_nblock(0);
-            ip.set_i_e2fs_mode(0);
-            let _ = ext2fs_setsize(ip, 0);
+        if ip.g.i_e2fs_dtime() != 0 {
+            ip.g.set_i_e2fs_nblock(0);
+            ip.g.set_i_e2fs_mode(0);
+            let _ = ext2fs_setsize(&ip, 0);
         }
 
         // Initialize the vnode from the inode, check for aliases. Note that the underlying
@@ -1077,8 +1075,8 @@ pub fn ext2fs_vget(mp: &'static Mount, ino: Ino) -> Result<&'static Vnode, Errno
 
         // Set up a generation number for this inode if it does not already have one. This
         // should only happen on old filesystems.
-        if ip.i_e2fs_gen() == 0 {
-            ip.set_i_e2fs_gen(next_gennumber() as u32);
+        if ip.g.i_e2fs_gen() == 0 {
+            ip.g.set_i_e2fs_gen(next_gennumber() as u32);
             if vp.mount().is_some_and(|m| m.flag() & MNT_RDONLY == 0) {
                 ip.set_flag(IN_MODIFIED);
             }
@@ -1107,7 +1105,7 @@ pub fn ext2fs_fhtovp(mp: &'static Mount, fhp: &Fid) -> Result<&'static Vnode, Er
 
     let nvp = VFS_VGET(mp, u64::from(ufhp.ufid_ino))?;
     let ip = vtoi(nvp);
-    if ip.i_e2fs_mode() == 0 || ip.i_e2fs_dtime() != 0 || ip.i_e2fs_gen() != ufhp.ufid_gen {
+    if ip.g.i_e2fs_mode() == 0 || ip.g.i_e2fs_dtime() != 0 || ip.g.i_e2fs_gen() != ufhp.ufid_gen {
         vput(nvp);
         return Err(Errno::ESTALE);
     }
@@ -1120,8 +1118,8 @@ pub fn ext2fs_vptofh(vp: &'static Vnode, fhp: &mut Fid) -> Result<(), Errno> {
     Ufid {
         ufid_len: size_of::<Ufid>() as u16,
         ufid_pad: fhp.fid_reserved,
-        ufid_ino: ip.i_number.get(),
-        ufid_gen: ip.i_e2fs_gen(),
+        ufid_ino: ip.i_number,
+        ufid_gen: ip.g.i_e2fs_gen(),
     }
     .to_fid(fhp);
     Ok(())
@@ -1746,9 +1744,9 @@ pub(crate) mod tests {
         assert_eq!(root.vtype(), VDIR);
         assert_eq!(root.flag() & VROOT, VROOT);
         let rip = vtoi(root);
-        assert_eq!(rip.i_number.get(), ROOTINO);
-        assert_eq!(rip.i_e2fs_uid().get(), 1000 | 1 << 16);
-        assert_eq!(rip.i_e2fs_gid().get(), 20);
+        assert_eq!(rip.i_number, ROOTINO);
+        assert_eq!(rip.g.i_e2fs_uid().get(), 1000 | 1 << 16);
+        assert_eq!(rip.g.i_e2fs_gid().get(), 20);
         assert_eq!(rip.i_effnlink.get(), 2);
         let dir = read_all(root, 300);
         assert_eq!(dir.len(), B);
@@ -1776,7 +1774,7 @@ pub(crate) mod tests {
         assert_eq!(bmap(ext, 1).0, 2 * 28);
         assert_eq!(bmap(ext, 2).0, 2 * 30);
         assert_eq!(
-            ext2fs_bufatoff(vtoi(ext), 2 * B as Off + 5).map(|(bp, off)| {
+            ext2fs_bufatoff(&vtoi(ext), 2 * B as Off + 5).map(|(bp, off)| {
                 // SAFETY: the buffer is ours (busy) and mapped.
                 let b = unsafe { bp.data() }[off];
                 brelse(bp);
@@ -1825,20 +1823,20 @@ pub(crate) mod tests {
         // Grow hello.txt to three blocks: two new ones, the first 8 free ones of the group.
         let data = pattern(3000, 1);
         write_at(p, hello, 0, &data);
-        assert_eq!(ext2fs_size(ip), 3000);
+        assert_eq!(ext2fs_size(&ip), 3000);
         assert_eq!(fs.e2fs_fbcount(), NFREE - 2);
         assert_eq!(fs.gd(0).ext2bgd_nbfree as u32, NFREE - 2);
-        assert_eq!(ip.i_e2fs_nblock(), 6);
-        assert_eq!(ip.i_e2fs_block(1), 33);
-        assert_eq!(ip.i_e2fs_block(2), 34);
+        assert_eq!(ip.g.i_e2fs_nblock(), 6);
+        assert_eq!(ip.g.i_e2fs_block(1), 33);
+        assert_eq!(ip.g.i_e2fs_block(2), 34);
         assert_eq!(read_all(hello, 512), data);
 
         // Truncate it back into its first block.
-        ext2fs_truncate(ip, 12, 0, cred).unwrap();
-        assert_eq!(ext2fs_size(ip), 12);
+        ext2fs_truncate(&ip, 12, 0, cred).unwrap();
+        assert_eq!(ext2fs_size(&ip), 12);
         assert_eq!(fs.e2fs_fbcount(), NFREE);
-        assert_eq!(ip.i_e2fs_nblock(), 2);
-        assert_eq!(ip.i_e2fs_blocks()[1..], [0; 14]);
+        assert_eq!(ip.g.i_e2fs_nblock(), 2);
+        assert_eq!(ip.g.i_e2fs_blocks()[1..], [0; 14]);
         assert_eq!(read_all(hello, 512), data[..12]);
 
         // A byte at logical block 13: an indirect block and a data block, holes before. With no
@@ -1846,7 +1844,7 @@ pub(crate) mod tests {
         // then 41..=48.
         write_at(p, hello, 13 * B as Off, b"Z");
         assert_eq!(fs.e2fs_fbcount(), NFREE - 2);
-        assert_eq!(ip.i_e2fs_block(12), 33);
+        assert_eq!(ip.g.i_e2fs_block(12), 33);
         assert_eq!(bmap(hello, 13).0, 2 * 41);
         let all = read_all(hello, 4096);
         assert_eq!(all.len(), 13 * B + 1);
@@ -1856,19 +1854,19 @@ pub(crate) mod tests {
 
         // Truncate to nothing: the data block under the indirect block, the indirect block and
         // the first block go back.
-        ext2fs_truncate(ip, 0, 0, cred).unwrap();
-        assert_eq!(ext2fs_size(ip), 0);
+        ext2fs_truncate(&ip, 0, 0, cred).unwrap();
+        assert_eq!(ext2fs_size(&ip), 0);
         assert_eq!(fs.e2fs_fbcount(), NFREE + 1);
-        assert_eq!(ip.i_e2fs_nblock(), 0);
-        assert_eq!(ip.i_e2fs_blocks(), [0; 15]);
+        assert_eq!(ip.g.i_e2fs_nblock(), 0);
+        assert_eq!(ip.g.i_e2fs_blocks(), [0; 15]);
 
         // A new inode: the first free one, 15; let go with no links, it is freed again.
-        let nvp = ext2fs_inode_alloc(vtoi(root), IFREG | 0o644, cred).unwrap();
+        let nvp = ext2fs_inode_alloc(&vtoi(root), IFREG | 0o644, cred).unwrap();
         let nip = vtoi(nvp);
-        assert_eq!(nip.i_number.get(), 15);
+        assert_eq!(nip.i_number, 15);
         assert_eq!(fs.e2fs_ficount(), NIFREE - 1);
-        assert_ne!(nip.i_e2fs_gen(), 0);
-        nip.set_i_e2fs_mode((IFREG | 0o644) as u16);
+        assert_ne!(nip.g.i_e2fs_gen(), 0);
+        nip.g.set_i_e2fs_mode((IFREG | 0o644) as u16);
         vput(nvp);
         assert_eq!(fs.e2fs_ficount(), NIFREE);
 

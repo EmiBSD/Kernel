@@ -65,10 +65,7 @@
 //!   scan that starts again from the head; the `B_SCANNED` marks keep it from visiting a
 //!   buffer twice, as in C.
 
-use core::ptr::{self, NonNull};
-
 use crate::kern::kern_subr::uiomove;
-use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::panic;
 use crate::kern::vfs_vops::{
     vop_generic_abortop, vop_generic_badop, vop_generic_bmap, vop_generic_bwrite,
@@ -96,11 +93,9 @@ use crate::sys::vnode::{
     VopReclaimArgs, VopWriteArgs, Vops, cred_ref,
 };
 use crate::sys::vnode::{vnoperm, vwaitforio};
-#[cfg(feature = "ffs2")]
-use crate::ufs::ffs::ffs_vfsops::FFS_DINODE2_POOL;
-use crate::ufs::ffs::ffs_vfsops::{FFS_DINODE1_POOL, FFS_INO_POOL};
 use crate::ufs::ffs::fs::{blkoff, blksize, lblkno, lblktosize};
 use crate::ufs::ufs::dinode::{ISGID, ISUID, NIADDR};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{
     IN_ACCESS, IN_CHANGE, IN_UPDATE, UFS_BUF_ALLOC, UFS_TRUNCATE, UFS_UPDATE, vtoi,
 };
@@ -353,7 +348,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
             flags &= !B_CLRBUF;
         }
 
-        let bp = match UFS_BUF_ALLOC(ip, uio.uio_offset, xfersize as i32, ap.a_cred, flags) {
+        let bp = match UFS_BUF_ALLOC(&ip, uio.uio_offset, xfersize as i32, ap.a_cred, flags) {
             Ok(bp) => bp,
             Err(e) => {
                 error = Err(e);
@@ -367,7 +362,7 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
         }
         let _ = uvm_vnp_uncache(vp);
 
-        let size = blksize(fs, ip, lbn) as i64 - bp.resid() as i64;
+        let size = blksize(fs, &ip, lbn) as i64 - bp.resid() as i64;
         if size < xfersize {
             xfersize = size;
         }
@@ -419,12 +414,12 @@ pub fn ffs_write(ap: &mut VopWriteArgs<'_, '_>) -> Result<(), Errno> {
     }
     if error.is_err() {
         if ioflag & IO_UNIT != 0 {
-            let _ = UFS_TRUNCATE(ip, osize, ioflag & IO_SYNC, ap.a_cred);
+            let _ = UFS_TRUNCATE(&ip, osize, ioflag & IO_SYNC, ap.a_cred);
             uio.uio_offset -= (resid - uio.uio_resid) as i64;
             uio.uio_resid = resid;
         }
     } else if resid > uio.uio_resid && ioflag & IO_SYNC != 0 {
-        error = UFS_UPDATE(ip, 1);
+        error = UFS_UPDATE(&ip, 1);
     }
     // correct the result for writes clamped by vn_fsizechk()
     uio.uio_resid += overrun;
@@ -506,31 +501,19 @@ pub fn ffs_fsync(ap: &mut VopFsyncArgs<'_>) -> Result<(), Errno> {
         break;
     }
     splx(s);
-    UFS_UPDATE(vtoi(vp), i32::from(ap.a_waitfor == MNT_WAIT))
+    UFS_UPDATE(&vtoi(vp), i32::from(ap.a_waitfor == MNT_WAIT))
 }
 
 /// `ffs_reclaim` (`vop_reclaim`): reclaim an inode so that it can be used for other
 /// purposes.
 pub fn ffs_reclaim(ap: &mut VopReclaimArgs<'_>) -> Result<(), Errno> {
     let vp = ap.a_vp;
-    let ip = vtoi(vp);
 
     ufs_reclaim(vp)?;
 
-    if let Some(din) = NonNull::new(ip.dinode_u.get().cast::<u8>()) {
-        #[cfg(feature = "ffs2")]
-        if ip.is_ufs2() {
-            pool_put(&FFS_DINODE2_POOL, din);
-        } else {
-            pool_put(&FFS_DINODE1_POOL, din);
-        }
-        #[cfg(not(feature = "ffs2"))]
-        pool_put(&FFS_DINODE1_POOL, din);
-    }
-
-    let ipp = NonNull::from(ip).cast::<u8>();
-    vp.set_data(ptr::null_mut());
-    pool_put(&FFS_INO_POOL, ipp);
+    // vp->v_data = NULL: the vnode's handle to the inode goes; with the last one the dinode
+    // (pool_put of ffs_dinode{1,2}_pool) and the inode (ffs_ino_pool) go back to their pools.
+    drop(vp.take_node());
 
     Ok(())
 }

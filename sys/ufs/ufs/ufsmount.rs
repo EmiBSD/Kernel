@@ -48,51 +48,53 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `<ufs/ufs/ufsmount.h>`: the UFS specific mount structure data (`struct ufsmount`), hung
-//! from a UFS mount's `mnt_data`.
+//! `<ufs/ufs/ufsmount.h>`: the UFS specific mount structure data (`struct ufsmount`) is the
+//! kernel's (`kernel::fs::ufs::ufs::ufsmount`, N5.5a1): this module keeps LZ's names, the
+//! members of `bsd`'s types it carries ([`BsdUfsmountG`], the glue's `UfsmountG`) and
+//! [`vfstoufs`].
 //!
 //! Upstream: sys/ufs/ufs/ufsmount.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - The structure is `malloc(M_UFSMNT)`ed by `ffs_mountfs` and freed by `ffs_unmount`; it is
-//!   reached as `&'static Ufsmount` through [`vfstoufs`] (the C's `VFSTOUFS` cast), whose one
-//!   `unsafe` checks that the mount is a UFS one. The members are `Cell`s.
-//! - `ufsmount_u` (the super-block pointer of FFS or of EXT2FS) is `um_fs`; with feature
-//!   `ext2fs` (`option EXT2FS`) the union's other member is the separate field `um_e2fs`
-//!   (`Cell<Option<&'static MExt2fs>>`, [`Ufsmount::e2fs`]): a mount is FFS's or ext2fs's,
-//!   never both. The C's `um_e2fsb` (`um_e2fs->s_es`) names a member that does not exist
-//!   (nothing uses it); [`Ufsmount::with_e2fsb`] is its meaning, the in-core super block
-//!   `um_e2fs->e2fs` for the duration of a closure.
+//! - The structure is `malloc(M_UFSMNT)`ed by `ffs_mountfs` and `ext2fs_mountfs` and freed by
+//!   their unmounts; it is reached as `&'static Ufsmount` through [`vfstoufs`] (the C's
+//!   `VFSTOUFS` cast), whose one `unsafe` checks that the mount is a UFS one: kept until
+//!   N5.5b types its holders (the kernel's typed slot of the mount waits for its first kernel
+//!   reader, N5.5a2's quotas: this member's `um_export` is not `Send`).
+//! - `ufsmount_u` (the super-block pointer of FFS or of EXT2FS) is `g.um_fs`; with feature
+//!   `ext2fs` (`option EXT2FS`) the union's other member is the separate field `g.um_e2fs`
+//!   ([`UfsmountExt::e2fs`]): a mount is FFS's or ext2fs's, never both. The C's `um_e2fsb`
+//!   (`um_e2fs->s_es`) names a member that does not exist (nothing uses it);
+//!   [`UfsmountExt::with_e2fsb`] is its meaning, the in-core super block `um_e2fs->e2fs` for
+//!   the duration of a closure.
 //! - `um_export` (`struct netexport`) is kept whether or not `nfsserver` is configured, as the
 //!   C does; without the feature `vfs_export` answers `ENOTSUP` and the list stays empty.
 //! - The quota members (`um_quotas`, `um_cred`, `um_btime`, `um_itime`, `um_qflags`) exist
 //!   with or without feature `quota`, as the C has no `#ifdef QUOTA` here; without it they stay
 //!   NULL and zero. `um_cred` is NULL or `NOCRED` while no quota file is open (`ufs_quota.rs`).
-//! - `MNINDIR`, `blkptrtodb` and `is_sequential` are functions with the macros' names in lower
-//!   case.
 
 use core::cell::Cell;
 
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::sys::mount::{Mount, Netexport};
-use crate::sys::types::{Daddr, Dev, Time};
+use crate::sys::types::Time;
 use crate::sys::ucred::CredSlot;
 use crate::sys::vnode::Vnode;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs::{Ext2fs, MExt2fs};
 use crate::ufs::ffs::fs::Fs;
 use crate::ufs::ufs::quota::MAXQUOTAS;
+pub use kernel::fs::ufs::ufs::ufsmount::{
+    QTF_CLOSING, QTF_OPENING, UM_EXT2FS, UM_UFS1, UM_UFS2, blkptrtodb, is_sequential, mnindir,
+};
 
-/// `struct ufsmount`: the UFS specific mount structure data.
-pub struct Ufsmount {
-    /// `um_mountp`: filesystem vfs structure.
-    pub um_mountp: Cell<Option<&'static Mount>>,
-    /// `um_dev`: device mounted.
-    pub um_dev: Cell<Dev>,
-    /// `um_devvp`: block device mounted vnode.
-    pub um_devvp: Cell<Option<&'static Vnode>>,
-    /// `um_fstype`: type of file system (`UM_UFS1`, `UM_UFS2`).
-    pub um_fstype: Cell<u64>,
+/// `struct ufsmount` of `bsd`'s mounts: the kernel's.
+pub type Ufsmount = kernel::fs::ufs::ufs::ufsmount::Ufsmount<BsdProcGlue>;
+
+/// The members of `bsd`'s types a UFS mount carries (the glue's `UfsmountG`,
+/// docs/SCAFFOLDING.md).
+pub struct BsdUfsmountG {
     /// `um_fs`: pointer to superblock (FFS).
     pub um_fs: Cell<Option<&'static Fs>>,
     /// `um_e2fs` (`ufsmount_u.e2fs`): pointer to the in-core super block (EXT2FS), in place
@@ -104,12 +106,6 @@ pub struct Ufsmount {
     /// `um_cred`: quota file access cred (the mount's reference while the quota file is
     /// open; empty, the C's NULL or `NOCRED`, while it is not).
     pub um_cred: [CredSlot; MAXQUOTAS],
-    /// `um_nindir`: indirect ptrs per block.
-    pub um_nindir: Cell<u64>,
-    /// `um_bptrtodb`: indir ptr to disk block.
-    pub um_bptrtodb: Cell<u64>,
-    /// `um_seqinc`: inc between seq blocks.
-    pub um_seqinc: Cell<u64>,
     /// `um_btime`: block quota time limit.
     pub um_btime: [Cell<Time>; MAXQUOTAS],
     /// `um_itime`: inode quota time limit.
@@ -118,98 +114,64 @@ pub struct Ufsmount {
     pub um_qflags: [Cell<u8>; MAXQUOTAS],
     /// `um_export`: export information.
     pub um_export: Netexport,
-    /// `um_savedmaxfilesize`: XXX - limit maxfilesize.
-    pub um_savedmaxfilesize: Cell<u64>,
-    /// `um_maxsymlinklen`: max size of short symlink.
-    pub um_maxsymlinklen: Cell<u32>,
 }
 
-// SAFETY: the members are changed under the kernel lock while mounting and unmounting, as in
-// C.
-unsafe impl Sync for Ufsmount {}
-
-impl Ufsmount {
-    /// A zeroed structure, as `malloc(M_ZERO)` returns it.
-    pub const fn new() -> Self {
+impl Default for BsdUfsmountG {
+    fn default() -> Self {
         Self {
-            um_mountp: Cell::new(None),
-            um_dev: Cell::new(0),
-            um_devvp: Cell::new(None),
-            um_fstype: Cell::new(0),
             um_fs: Cell::new(None),
             #[cfg(feature = "ext2fs")]
             um_e2fs: Cell::new(None),
             um_quotas: [const { Cell::new(None) }; MAXQUOTAS],
             um_cred: [const { CredSlot::new() }; MAXQUOTAS],
-            um_nindir: Cell::new(0),
-            um_bptrtodb: Cell::new(0),
-            um_seqinc: Cell::new(0),
             um_btime: [const { Cell::new(0) }; MAXQUOTAS],
             um_itime: [const { Cell::new(0) }; MAXQUOTAS],
             um_qflags: [const { Cell::new(0) }; MAXQUOTAS],
             um_export: Netexport::new(),
-            um_savedmaxfilesize: Cell::new(0),
-            um_maxsymlinklen: Cell::new(0),
         }
     }
+}
 
+// SAFETY: LZ's argument for `struct ufsmount` (sys/ufs/ufs/ufsmount.rs:125-127 at the pin),
+// moved with the members it covered (the same site, not a new one): they are changed under the
+// kernel lock while mounting and unmounting (the quota members by `quotaon`/`quotaoff`, under
+// the kernel lock too), as in C. Paid member by member: the quotas at N5.5a2, `um_fs` at N5.5b,
+// `um_e2fs` at N5.6, `um_export` at N6.
+unsafe impl Sync for BsdUfsmountG {}
+
+/// The members of `struct ufsmount` that `bsd`'s types answer.
+pub trait UfsmountExt {
     /// `ump->um_fs`, which every mounted UFS has.
-    pub fn fs(&self) -> &'static Fs {
-        match self.um_fs.get() {
+    fn fs(&self) -> &'static Fs;
+    /// `ump->um_e2fs`, which every mounted ext2fs has (feature `ext2fs`).
+    #[cfg(feature = "ext2fs")]
+    fn e2fs(&self) -> &'static MExt2fs;
+    /// `f(&ump->um_e2fsb)`: the in-core ext2fs super block, for the duration of `f`.
+    #[cfg(feature = "ext2fs")]
+    fn with_e2fsb<R>(&self, f: impl FnOnce(&Ext2fs) -> R) -> R;
+}
+
+impl UfsmountExt for Ufsmount {
+    fn fs(&self) -> &'static Fs {
+        match self.g.um_fs.get() {
             Some(fs) => fs,
             None => panic(format_args!("ufsmount {:p}: no um_fs", self)),
         }
     }
 
-    /// `ump->um_e2fs`, which every mounted ext2fs has (feature `ext2fs`).
     #[cfg(feature = "ext2fs")]
-    pub fn e2fs(&self) -> &'static MExt2fs {
-        match self.um_e2fs.get() {
+    fn e2fs(&self) -> &'static MExt2fs {
+        match self.g.um_e2fs.get() {
             Some(fs) => fs,
             None => panic(format_args!("ufsmount {:p}: no um_e2fs", self)),
         }
     }
 
-    /// `f(&ump->um_e2fsb)`: the in-core ext2fs super block, for the duration of `f`.
     #[cfg(feature = "ext2fs")]
-    pub fn with_e2fsb<R>(&self, f: impl FnOnce(&Ext2fs) -> R) -> R {
+    fn with_e2fsb<R>(&self, f: impl FnOnce(&Ext2fs) -> R) -> R {
         self.e2fs().with_e2fs(f)
     }
-
-    /// `ump->um_devvp`, which every mounted UFS has.
-    pub fn devvp(&self) -> &'static Vnode {
-        match self.um_devvp.get() {
-            Some(vp) => vp,
-            None => panic(format_args!("ufsmount {:p}: no um_devvp", self)),
-        }
-    }
-
-    /// `ump->um_mountp`.
-    pub fn mountp(&self) -> &'static Mount {
-        match self.um_mountp.get() {
-            Some(mp) => mp,
-            None => panic(format_args!("ufsmount {:p}: no um_mountp", self)),
-        }
-    }
 }
-
-impl Default for Ufsmount {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// `UM_UFS1`: filesystem type.
-pub const UM_UFS1: u64 = 1;
-/// `UM_UFS2`.
-pub const UM_UFS2: u64 = 2;
-/// `UM_EXT2FS`.
-pub const UM_EXT2FS: u64 = 3;
-
-/// `QTF_OPENING`: Q_QUOTAON in progress.
-pub const QTF_OPENING: u8 = 0x01;
-/// `QTF_CLOSING`: Q_QUOTAOFF in progress.
-pub const QTF_CLOSING: u8 = 0x02;
 
 /// `VFSTOUFS(mp)`: convert mount ptr to ufsmount ptr.
 pub fn vfstoufs(mp: &Mount) -> &'static Ufsmount {
@@ -225,20 +187,5 @@ pub fn vfstoufs(mp: &Mount) -> &'static Ufsmount {
     // `ffs_mountfs` allocated, which lives until `ffs_unmount` frees it and clears
     // `mnt_data`.
     unsafe { &*data.cast::<Ufsmount>() }
-}
-
-/// `MNINDIR(ump)`: indirect pointers per block.
-pub fn mnindir(ump: &Ufsmount) -> u64 {
-    ump.um_nindir.get()
-}
-
-/// `blkptrtodb(ump, b)`: a block pointer to a disk block.
-pub fn blkptrtodb(ump: &Ufsmount, b: Daddr) -> Daddr {
-    b << ump.um_bptrtodb.get()
-}
-
-/// `is_sequential(ump, a, b)`: whether `b` follows `a` on the disk.
-pub fn is_sequential(ump: &Ufsmount, a: Daddr, b: Daddr) -> bool {
-    b == a + ump.um_seqinc.get() as Daddr
 }
 /* </CODE> */

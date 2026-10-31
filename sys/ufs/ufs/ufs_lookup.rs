@@ -241,16 +241,16 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     #[cfg(not(feature = "ufs_dirhash"))]
     let hashed = false;
     #[cfg(feature = "ufs_dirhash")]
-    let hashed = ufsdirhash_build(dp) && {
+    let hashed = ufsdirhash_build(&dp) && {
         // Look for a free slot if needed.
         enduseful = dp.dip_size() as Doff;
         if slotstatus != Slotstatus::Found {
             slotoffset = -1;
-            if let Some((off, size)) = ufsdirhash_findfree(dp, slotneeded) {
+            if let Some((off, size)) = ufsdirhash_findfree(&dp, slotneeded) {
                 slotoffset = off;
                 slotsize = size;
                 slotstatus = Slotstatus::Compact;
-                enduseful = ufsdirhash_enduseful(dp).unwrap_or(dp.dip_size() as Doff);
+                enduseful = ufsdirhash_enduseful(&dp).unwrap_or(dp.dip_size() as Doff);
             }
         }
         // Look up the component.
@@ -259,7 +259,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         } else {
             None
         };
-        match ufsdirhash_lookup(dp, cnp.name(), prevoffp) {
+        match ufsdirhash_lookup(&dp, cnp.name(), prevoffp) {
             Ok((offset, b)) => {
                 dp.i_offset.set(offset);
                 bp = Some(b);
@@ -297,7 +297,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             dp.i_offset.set(dp.i_diroff.get());
             entryoffsetinblock = dp.i_offset.get() & bmask;
             if entryoffsetinblock != 0 {
-                let (b, _) = UFS_BUFATOFF(dp, i64::from(dp.i_offset.get()))?;
+                let (b, _) = UFS_BUFATOFF(&dp, i64::from(dp.i_offset.get()))?;
                 bp = Some(b);
             }
             numdirpasses = 2;
@@ -315,7 +315,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
                 if let Some(b) = bp.take() {
                     brelse(b);
                 }
-                let (b, _) = UFS_BUFATOFF(dp, i64::from(dp.i_offset.get()))?;
+                let (b, _) = UFS_BUFATOFF(&dp, i64::from(dp.i_offset.get()))?;
                 bp = Some(b);
                 entryoffsetinblock = 0;
             }
@@ -340,7 +340,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             if reclen == 0
                 || (DIRCHK.load(Ordering::Relaxed) != 0 && ufs_dirbadentry(vdp, data, ep))
             {
-                ufs_dirbad(dp, dp.i_offset.get(), "mangled entry");
+                ufs_dirbad(&dp, dp.i_offset.get(), "mangled entry");
                 let i = DIRBLKSIZ as i32 - (entryoffsetinblock & (DIRBLKSIZ as i32 - 1));
                 dp.i_offset.set(dp.i_offset.get() + i);
                 entryoffsetinblock += i;
@@ -470,7 +470,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     }
     // Check that directory length properly reflects presence of this entry.
     if dp.i_offset.get() as u64 + ep_dirsiz as u64 > dp.dip_size() {
-        ufs_dirbad(dp, dp.i_offset.get(), "i_ffs_size too small");
+        ufs_dirbad(&dp, dp.i_offset.get(), "i_ffs_size too small");
         dp.dip_set_size(dp.i_offset.get() as u64 + ep_dirsiz as u64);
         dp.set_flag(IN_CHANGE | IN_UPDATE);
     }
@@ -498,7 +498,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
         } else {
             dp.i_count.set(dp.i_offset.get() - prevoff);
         }
-        if dp.i_number.get() == dp.i_ino.get() {
+        if dp.i_number == dp.i_ino.get() {
             vref(vdp);
             *ap.a_vpp = Some(vdp);
             return Ok(());
@@ -531,7 +531,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
     if nameiop == RENAME && wantparent && flags & ISLASTCN != 0 {
         VOP_ACCESS(vdp, VWRITE, cred.as_raw(), cnp.proc())?;
         // Careful about locking second inode. This can only occur if the target is ".".
-        if dp.i_number.get() == dp.i_ino.get() {
+        if dp.i_number == dp.i_ino.get() {
             return Err(Errno::EISDIR);
         }
         let tdp = VFS_VGET(vmount(vdp), u64::from(dp.i_ino.get()))?;
@@ -577,7 +577,7 @@ pub fn ufs_lookup(ap: &mut VopLookupArgs<'_, '_>) -> Result<(), Errno> {
             cnp.cn_flags &= !PDIRUNLOCK;
         }
         *ap.a_vpp = Some(tdp);
-    } else if dp.i_number.get() == dp.i_ino.get() {
+    } else if dp.i_number == dp.i_ino.get() {
         vref(vdp); // we want ourself, ie "."
         *ap.a_vpp = Some(vdp);
     } else {
@@ -604,7 +604,7 @@ pub fn ufs_dirbad(ip: &Inode, offset: Doff, how: &str) {
     kprintf!(
         "{}: bad dir ino {} at offset {}: {}\n",
         Str(&name[..len]),
-        ip.i_number.get(),
+        ip.i_number,
         offset,
         how
     );
@@ -648,7 +648,7 @@ pub fn ufs_makedirentry(ip: &Inode, cnp: &Componentname, newdirp: &mut Direct) {
         panic(format_args!("ufs_makedirentry: missing name"));
     }
     let namelen = cnp.namelen() as usize;
-    newdirp.d_ino = ip.i_number.get();
+    newdirp.d_ino = ip.i_number;
     newdirp.d_namlen = namelen as u8;
     let pad = namelen & !(DIR_ROUNDUP - 1);
     newdirp.d_name[pad..pad + DIR_ROUNDUP].fill(0);
@@ -682,7 +682,7 @@ pub fn ufs_direnter(
         }
         let flags = B_CLRBUF | B_SYNC;
         let bp = UFS_BUF_ALLOC(
-            dp,
+            &dp,
             i64::from(dp.i_offset.get()),
             DIRBLKSIZ as i32,
             cr.as_raw(),
@@ -700,18 +700,18 @@ pub fn ufs_direnter(
         dirp.write_to(data, blkoff);
 
         #[cfg(feature = "ufs_dirhash")]
-        if dp.i_dirhash.get().is_some() {
-            ufsdirhash_newblk(dp, dp.i_offset.get());
+        if dp.g.i_dirhash.get().is_some() {
+            ufsdirhash_newblk(&dp, dp.i_offset.get());
             ufsdirhash_add(
-                dp,
+                &dp,
                 &dirp.d_name[..usize::from(dirp.d_namlen)],
                 dp.i_offset.get(),
             );
-            ufsdirhash_checkblock(dp, &data[blkoff..blkoff + DIRBLKSIZ], dp.i_offset.get());
+            ufsdirhash_checkblock(&dp, &data[blkoff..blkoff + DIRBLKSIZ], dp.i_offset.get());
         }
 
         let error = VOP_BWRITE(bp);
-        let ret = UFS_UPDATE(dp, 1);
+        let ret = UFS_UPDATE(&dp, 1);
         error?;
         return ret;
     }
@@ -729,7 +729,7 @@ pub fn ufs_direnter(
         dp.dip_set_size((dp.i_offset.get() + dp.i_count.get()) as u64);
     }
     // Get the block containing the space for the new directory entry.
-    let (bp, off) = UFS_BUFATOFF(dp, i64::from(dp.i_offset.get()))?;
+    let (bp, off) = UFS_BUFATOFF(&dp, i64::from(dp.i_offset.get()))?;
     {
         // SAFETY: the buffer is ours (busy from UFS_BUFATOFF) and mapped; the slice dies
         // before it is written.
@@ -770,10 +770,10 @@ pub fn ufs_direnter(
             dsize = dirsiz(d_namlen(dirbuf, nep));
             spacefree += nep_reclen - dsize;
             #[cfg(feature = "ufs_dirhash")]
-            if dp.i_dirhash.get().is_some() {
+            if dp.g.i_dirhash.get().is_some() {
                 let namlen = usize::from(d_namlen(dirbuf, nep));
                 ufsdirhash_move(
-                    dp,
+                    &dp,
                     d_name(dirbuf, nep, namlen),
                     dp.i_offset.get() + nep as Doff,
                     dp.i_offset.get() + ep as Doff,
@@ -802,21 +802,21 @@ pub fn ufs_direnter(
         }
 
         #[cfg(feature = "ufs_dirhash")]
-        if dp.i_dirhash.get().is_some()
+        if dp.g.i_dirhash.get().is_some()
             && (d_ino(dirbuf, ep) == 0 || usize::from(dirp.d_reclen) == spacefree)
         {
             ufsdirhash_add(
-                dp,
+                &dp,
                 &dirp.d_name[..usize::from(dirp.d_namlen)],
                 dp.i_offset.get() + ep as Doff,
             );
         }
         dirp.write_to(dirbuf, ep);
         #[cfg(feature = "ufs_dirhash")]
-        if dp.i_dirhash.get().is_some() {
+        if dp.g.i_dirhash.get().is_some() {
             let blk = off - (dp.i_offset.get() as usize & (DIRBLKSIZ - 1));
             ufsdirhash_checkblock(
-                dp,
+                &dp,
                 &data[blk..blk + DIRBLKSIZ],
                 dp.i_offset.get() & !(DIRBLKSIZ as i32 - 1),
             );
@@ -834,10 +834,10 @@ pub fn ufs_direnter(
         if let Some(tvp) = tvp {
             let _ = VOP_UNLOCK(tvp);
         }
-        error = UFS_TRUNCATE(dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr.as_raw());
+        error = UFS_TRUNCATE(&dp, i64::from(dp.i_endoff.get()), IO_SYNC, cr.as_raw());
         #[cfg(feature = "ufs_dirhash")]
-        if error.is_ok() && dp.i_dirhash.get().is_some() {
-            ufsdirhash_dirtrunc(dp, dp.i_endoff.get());
+        if error.is_ok() && dp.g.i_dirhash.get().is_some() {
+            ufsdirhash_dirtrunc(&dp, dp.i_endoff.get());
         }
         if let Some(tvp) = tvp {
             let _ = vn_lock(tvp, LK_EXCLUSIVE | LK_RETRY);
@@ -861,7 +861,7 @@ pub fn ufs_dirremove(
 ) -> Result<(), Errno> {
     let dp = vtoi(dvp);
 
-    let (bp, off) = UFS_BUFATOFF(dp, i64::from(dp.i_offset.get() - dp.i_count.get()))?;
+    let (bp, off) = UFS_BUFATOFF(&dp, i64::from(dp.i_offset.get() - dp.i_count.get()))?;
     {
         // SAFETY: the buffer is ours (busy from UFS_BUFATOFF) and mapped; the slice dies
         // before it is written.
@@ -869,14 +869,14 @@ pub fn ufs_dirremove(
         // Remove the dirhash entry. This is complicated by the fact that `ep' is the previous
         // entry when dp->i_count != 0.
         #[cfg(feature = "ufs_dirhash")]
-        if dp.i_dirhash.get().is_some() {
+        if dp.g.i_dirhash.get().is_some() {
             let rp = if dp.i_count.get() == 0 {
                 off
             } else {
                 off + usize::from(d_reclen(data, off))
             };
             let namlen = usize::from(d_namlen(data, rp));
-            ufsdirhash_remove(dp, d_name(data, rp, namlen), dp.i_offset.get());
+            ufsdirhash_remove(&dp, d_name(data, rp, namlen), dp.i_offset.get());
         }
 
         if dp.i_count.get() == 0 {
@@ -888,10 +888,10 @@ pub fn ufs_dirremove(
             set_d_reclen(data, off, r as u16);
         }
         #[cfg(feature = "ufs_dirhash")]
-        if dp.i_dirhash.get().is_some() {
+        if dp.g.i_dirhash.get().is_some() {
             let blk = off - ((dp.i_offset.get() - dp.i_count.get()) as usize & (DIRBLKSIZ - 1));
             ufsdirhash_checkblock(
-                dp,
+                &dp,
                 &data[blk..blk + DIRBLKSIZ],
                 dp.i_offset.get() & !(DIRBLKSIZ as i32 - 1),
             );
@@ -998,7 +998,7 @@ pub fn ufs_dirempty(ip: &Inode, parentino: Ufsino, cred: *const Ucred) -> bool {
         }
         // At this point namlen must be 1 or 2. 1 implies ".", 2 implies ".." if second char
         // is also "."
-        if namlen == 1 && ino == ip.i_number.get() {
+        if namlen == 1 && ino == ip.i_number {
             continue;
         }
         if name[1] == b'.' && ino == parentino {
@@ -1016,10 +1016,10 @@ pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Resu
     let mut vp = Some(target.itov());
     let rootino = ROOTINO;
     let error: Result<(), Errno> = 'out: {
-        if target.i_number.get() == source.i_number.get() {
+        if target.i_number == source.i_number {
             break 'out Err(Errno::EEXIST);
         }
-        if target.i_number.get() == rootino {
+        if target.i_number == rootino {
             break 'out Ok(());
         }
 
@@ -1047,7 +1047,7 @@ pub fn ufs_checkpath(source: &Inode, target: &Inode, cred: *const Ucred) -> Resu
             if t.dotdot_namlen != 2 || t.dotdot_name[0] != b'.' || t.dotdot_name[1] != b'.' {
                 break 'out Err(Errno::ENOTDIR);
             }
-            if t.dotdot_ino == source.i_number.get() {
+            if t.dotdot_ino == source.i_number {
                 break 'out Err(Errno::EINVAL);
             }
             if t.dotdot_ino == rootino {

@@ -110,6 +110,7 @@ use crate::ufs::ufs::dirhash::{
     DH_NBLKOFF, DH_NFSTATS, DH_SCOREINIT, DH_SCOREMAX, DIRALIGN, DIRHASH_DEL, DIRHASH_EMPTY,
     Dirhash, DirhashList, DirhashListHead,
 };
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, UFS_BUFATOFF};
 use libkern::siphash::{SipHash24, SiphashKey};
 
@@ -199,7 +200,7 @@ fn dirhash_blkfree(v: *mut Doff) {
 /// `ufsdirhash_free`, which only the inode's owner calls.
 unsafe fn i_dirhash(ip: &Inode) -> Option<&Dirhash> {
     // SAFETY: a set `i_dirhash` points at a live, initialised `Dirhash` (the contract).
-    ip.i_dirhash.get().map(|p| unsafe { p.as_ref() })
+    ip.g.i_dirhash.get().map(|p| unsafe { p.as_ref() })
 }
 
 /// The bytes of the hash arrays of a hash of `narrays` blocks and `nblk` block counters,
@@ -361,7 +362,7 @@ pub fn ufsdirhash_build(ip: &Inode) -> bool {
         dh.dh_seqopt.set(0);
         dh.dh_seqoff.set(0);
         dh.dh_score.set(DH_SCOREINIT);
-        ip.i_dirhash.set(Some(dhp));
+        ip.g.i_dirhash.set(Some(dhp));
 
         let bmask = ip.ump().mountp().iosize() as i32 - 1;
         let mut bp: Option<&'static Buf> = None;
@@ -421,7 +422,7 @@ pub fn ufsdirhash_build(ip: &Inode) -> bool {
     let hash = dh.dh_hash.replace(ptr::null_mut());
     let blkfree = dh.dh_blkfree.replace(ptr::null_mut());
     free_arrays(hash, narrays, blkfree, nblocks);
-    ip.i_dirhash.set(None);
+    ip.g.i_dirhash.set(None);
     free(dhp.cast(), M_DIRHASH, size_of::<Dirhash>());
     dirhashlist_lock();
     UFS_DIRHASHMEM.fetch_sub(memreqd, Ordering::Relaxed);
@@ -431,7 +432,7 @@ pub fn ufsdirhash_build(ip: &Inode) -> bool {
 
 /// `ufsdirhash_free`: free any hash table associated with inode `ip`.
 pub fn ufsdirhash_free(ip: &Inode) {
-    let Some(dhp) = ip.i_dirhash.get() else {
+    let Some(dhp) = ip.g.i_dirhash.get() else {
         return;
     };
     // SAFETY: the inode's owner frees its dirhash, which is live until the `free` below.
@@ -454,7 +455,7 @@ pub fn ufsdirhash_free(ip: &Inode) {
         free_arrays(hash, dh.dh_narrays.get(), blkfree, dh.dh_nblk.get());
         mem += arrays_mem(dh.dh_narrays.get(), dh.dh_nblk.get());
     }
-    ip.i_dirhash.set(None);
+    ip.g.i_dirhash.set(None);
     free(dhp.cast(), M_DIRHASH, size_of::<Dirhash>());
 
     dirhashlist_lock();
@@ -1593,7 +1594,7 @@ mod tests {
     ) -> R {
         let ino = ino_of(p, path).unwrap();
         let vp: &'static Vnode = VFS_VGET(mp, ino).unwrap();
-        let r = f(vtoi(vp));
+        let r = f(&vtoi(vp));
         vput(vp);
         r
     }

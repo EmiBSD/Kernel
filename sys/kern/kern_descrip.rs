@@ -219,7 +219,13 @@ impl FileGlue for BsdFileGlue {
     type VnodeG = crate::sys::vnode::VnodeG;
     /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
     type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
+    #[cfg(feature = "ffs")]
+    type InodeG = crate::ufs::ufs::inode::BsdInodeG;
+    #[cfg(not(feature = "ffs"))]
     type InodeG = ();
+    #[cfg(feature = "ffs")]
+    type UfsmountG = crate::ufs::ufs::ufsmount::BsdUfsmountG;
+    #[cfg(not(feature = "ffs"))]
     type UfsmountG = ();
     type InodeHash = InodeHashLink;
 
@@ -300,6 +306,13 @@ impl FileGlue for BsdFileGlue {
     fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
         crate::kern::kern_subr::uiomove(buf, uio)
     }
+    /// `ip->i_e2fs_nlink` from ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's
+    /// member until N5.6.
+    #[cfg(feature = "ext2fs")]
+    fn inode_e2fs_nlink(g: &Self::InodeG) -> Option<i32> {
+        Some(i32::from(g.i_e2fs_nlink()))
+    }
+
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES
     }

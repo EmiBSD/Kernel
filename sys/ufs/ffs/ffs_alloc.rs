@@ -106,6 +106,7 @@ use crate::ufs::ffs::fs::{
     fragstoblks, freespace, fsbtodb, ino_to_cg, ino_to_fsba, inopb, nindir, numfrags, sub,
 };
 use crate::ufs::ufs::dinode::{IFDIR, IFMT, NDADDR, Ufsino};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
 use crate::ufs::ufs::quota::{ufs_quota_alloc_blocks, ufs_quota_free_blocks};
 use libkern::{StaticCell, scanc, skpc};
@@ -190,7 +191,7 @@ pub fn ffs_alloc(
     {
         kprintf!(
             "dev = 0x{:x}, bsize = {}, size = {}, fs = {}\n",
-            ip.i_dev.get(),
+            ip.i_dev,
             fs.fs_bsize.get(),
             size,
             fs.fsmnt()
@@ -215,7 +216,7 @@ pub fn ffs_alloc(
             bpref = 0;
         }
         let cg = if bpref == 0 {
-            ino_to_cg(fs, ip.i_number.get())
+            ino_to_cg(fs, ip.i_number)
         } else {
             dtog(fs, bpref)
         };
@@ -275,7 +276,7 @@ pub fn ffs_realloccg(
     {
         kprintf!(
             "dev = 0x{:x}, bsize = {}, osize = {}, nsize = {}, fs = {}\n",
-            ip.i_dev.get(),
+            ip.i_dev,
             fs.fs_bsize.get(),
             osize,
             nsize,
@@ -296,7 +297,7 @@ pub fn ffs_realloccg(
             if bprev == 0 {
                 kprintf!(
                     "dev = 0x{:x}, bsize = {}, bprev = {}, fs = {}\n",
-                    ip.i_dev.get(),
+                    ip.i_dev,
                     fs.fs_bsize.get(),
                     bprev,
                     fs.fsmnt()
@@ -382,7 +383,7 @@ pub fn ffs_realloccg(
                 optim => {
                     kprintf!(
                         "dev = 0x{:x}, optim = {}, fs = {}\n",
-                        ip.i_dev.get(),
+                        ip.i_dev,
                         optim,
                         fs.fsmnt()
                     );
@@ -474,7 +475,7 @@ pub fn ffs_inode_alloc(
         let mut ipref = if mode & IFMT == IFDIR {
             ffs_dirpref(pip)
         } else {
-            pip.i_number.get()
+            pip.i_number
         };
         if ipref >= fs.fs_ncg.get() * fs.fs_ipg.get() {
             ipref = 0;
@@ -512,7 +513,7 @@ pub fn ffs_inode_alloc(
             kprintf!(
                 "mode = 0{:o}, inum = {}, fs = {}\n",
                 ip.dip_mode(),
-                ip.i_number.get(),
+                ip.i_number,
                 fs.fsmnt()
             );
             panic(format_args!("ffs_valloc: dup alloc"));
@@ -585,7 +586,7 @@ pub fn ffs_dirpref(pip: &Inode) -> Ufsino {
             }
             break 'end mincg;
         } else {
-            ino_to_cg(fs, pip.i_number.get())
+            ino_to_cg(fs, pip.i_number)
         };
 
         // Count various limits which used for optimal allocation of a directory inode.
@@ -688,7 +689,7 @@ pub fn ffs1_blkpref(
     // speed random file access and to speed up fsck, the filesystem reserves the first
     // fs_metaspace blocks (typically half of fs_minfree) of the data area of each cylinder
     // group to hold these later indirect blocks.
-    let inocg = ino_to_cg(fs, ip.i_number.get());
+    let inocg = ino_to_cg(fs, ip.i_number);
     if indx < 0 {
         // Our preference for indirect blocks is the zone at the beginning of the inode's
         // cylinder group data area that we try to reserve for indirect blocks.
@@ -716,7 +717,7 @@ pub fn ffs2_blkpref(
     let fs = ip.fs();
     // Allocation of indirect blocks is indicated by passing negative values in indx (see
     // ffs1_blkpref).
-    let inocg = ino_to_cg(fs, ip.i_number.get());
+    let inocg = ino_to_cg(fs, ip.i_number);
     if indx < 0 {
         // Our preference for indirect blocks is the zone at the beginning of the inode's
         // cylinder group data area that we try to reserve for indirect blocks.
@@ -1241,7 +1242,7 @@ pub fn ffs_blkfree(ip: &Inode, mut bno: Daddr, size: i64) {
     {
         kprintf!(
             "dev = 0x{:x}, bsize = {}, size = {}, fs = {}\n",
-            ip.i_dev.get(),
+            ip.i_dev,
             fs.fs_bsize.get(),
             size,
             fs.fsmnt()
@@ -1250,7 +1251,7 @@ pub fn ffs_blkfree(ip: &Inode, mut bno: Daddr, size: i64) {
     }
     let cg = dtog(fs, bno);
     if i64::from(bno as u32) >= fs.fs_size.get() {
-        kprintf!("bad block {}, ino {}\n", bno, ip.i_number.get());
+        kprintf!("bad block {}, ino {}\n", bno, ip.i_number);
         ffs_fserr(fs, ip.dip_uid(), "bad block");
         return;
     }
@@ -1268,7 +1269,7 @@ pub fn ffs_blkfree(ip: &Inode, mut bno: Daddr, size: i64) {
         if !ffs_isfreeblock(fs, cgp.cg_blksfree(), blkno) {
             kprintf!(
                 "dev = 0x{:x}, block = {}, fs = {}\n",
-                ip.i_dev.get(),
+                ip.i_dev,
                 bno,
                 fs.fsmnt()
             );
@@ -1297,7 +1298,7 @@ pub fn ffs_blkfree(ip: &Inode, mut bno: Daddr, size: i64) {
             if isset(cgp.cg_blksfree(), (bno + i) as usize) {
                 kprintf!(
                     "dev = 0x{:x}, block = {}, fs = {}\n",
-                    ip.i_dev.get(),
+                    ip.i_dev,
                     bno + i,
                     fs.fsmnt()
                 );
@@ -1346,7 +1347,7 @@ pub fn ffs_freefile(pip: &Inode, ino: Ufsino, mode: Mode) -> Result<(), Errno> {
     if ino >= fs.fs_ipg.get() * fs.fs_ncg.get() {
         panic(format_args!(
             "ffs_freefile: range: dev = 0x{:x}, ino = {}, fs = {}",
-            pip.i_dev.get(),
+            pip.i_dev,
             ino,
             fs.fsmnt()
         ));
@@ -1365,7 +1366,7 @@ pub fn ffs_freefile(pip: &Inode, ino: Ufsino, mode: Mode) -> Result<(), Errno> {
     if isclr(cgp.cg_inosused(), ino as usize) {
         kprintf!(
             "dev = 0x{:x}, ino = {}, fs = {}\n",
-            pip.i_dev.get(),
+            pip.i_dev,
             ino,
             fs.fsmnt()
         );

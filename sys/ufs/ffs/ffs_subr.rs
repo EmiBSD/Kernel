@@ -65,7 +65,6 @@
 //!   not ported (`ffs_fifovops`).
 
 use core::cell::Cell;
-use core::ptr;
 
 use crate::kern::kern_tc::getmicrouptime;
 use crate::kern::subr_prf::panic;
@@ -81,6 +80,7 @@ use crate::sys::vnode::{checkalias, vgone, vrele};
 use crate::ufs::ffs::ffs_vnops::FFS_SPECVOPS;
 use crate::ufs::ffs::fs::{AROUND, FRAGTBL, Fs, INSIDE, blkoff, blksize, lblkno};
 use crate::ufs::ufs::dinode::ROOTINO;
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{Inode, vtoi};
 
 /// `ffs_bufatoff`: the buffer with the contents of block `offset` from the beginning of
@@ -195,8 +195,9 @@ pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vn
             if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.
-                nvp.set_data(vp.data());
-                vp.set_data(ptr::null_mut());
+                if let Some(node) = vp.take_node() {
+                    nvp.set_node(node);
+                }
                 vp.set_ops_id(crate::sys::vnode::VopsId::SPEC);
                 vrele(vp);
                 vgone(vp);
@@ -209,7 +210,7 @@ pub fn ffs_vinit(mntp: &'static Mount, vp: &'static Vnode) -> Result<&'static Vn
         VFIFO => return Err(Errno::EOPNOTSUPP),
         VNON | VBAD | VSOCK | VLNK | VDIR | VREG => {}
     }
-    if ip.i_number.get() == ROOTINO {
+    if ip.i_number == ROOTINO {
         vp.set_flag(vp.flag() | VROOT);
     }
     // Initialize modrev times.

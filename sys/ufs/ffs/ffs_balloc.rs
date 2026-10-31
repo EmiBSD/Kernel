@@ -97,6 +97,7 @@ use crate::ufs::ffs::ffs_alloc::{ffs_alloc, ffs_blkfree, ffs_realloccg, ffs1_blk
 use crate::ufs::ffs::fs::{FS_UFS2_MAGIC, cgtod, dbtofsb, dtog};
 use crate::ufs::ffs::fs::{blkoff, blksize, fragroundup, fsbtodb, lblkno, lblktosize};
 use crate::ufs::ufs::dinode::{NDADDR, NIADDR};
+use crate::ufs::ufs::inode::InodeExt;
 use crate::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode, daddr32_at, set_daddr32_at};
 #[cfg(feature = "ffs2")]
 use crate::ufs::ufs::inode::{daddr64_at, set_daddr64_at};
