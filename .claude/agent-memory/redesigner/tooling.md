@@ -183,3 +183,7 @@ metadata:
 - An auto-import script that checks `use X` anywhere in the file is fooled by the TESTS module's own import: test only the text before `/* <TESTS> */`; rustc reports a missing type as E0425 as well as E0412/E0433.
 - A waiter `until grep -q '^rc=' log` on a multi-step script's log matches the first step's rc line: wait for the script's explicit end marker (`== done`).
 - The bench pair for a commit not made yet: `git stash create` (staged + worktree) gives the tree to archive, and the worktree stays free to edit while the bench trees build in their own target dirs.
+- The worktree guard refuses a heredoc python followed by other commands and `PATH=... cargo` inside compound commands: keep exact replacements in spec files applied by one scratch script (t-a3/rep.py SPEC: `@@@ path` / old / `===` / new blocks, each old text unique), one call per spec.
+- An empty replacement through such a script leaves a blank line: in a markdown table it splits the table; collapse runs of blank lines afterwards (t-a3/blank.py).
+- `git stash create` gives the uncommitted switch as a commit for the bench trees while the worktree stays editable; keep the next commit's new files out of the worktree until the switch is committed (the hook's lz check reads every file, and a new file without its lineage row fails it).
+- A Bash call that blocks on a wait is moved to the background after 180 s: wait in slices with `perl bounded.pl 175 zsh waitdone.sh LOG` (a loop until the script's own `== done` line), not on any `rc=` line, which a multi-step log prints early.
