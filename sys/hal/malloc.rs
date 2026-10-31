@@ -78,7 +78,11 @@
 //!   [`MBox`] (the block, its checks and its type; [`MBox::into_raw`] gives the box up to the
 //!   counted handle), so the only new `unsafe` is the handle's: the shared reference to the
 //!   block, the last drop's free, the `Send`/`Sync` of a counted shared value, and the erased
-//!   release. `PoolArc`'s proof, for a block of `malloc(9)` instead of a pool item.
+//!   release. `PoolArc`'s proof, for a block of `malloc(9)` instead of a pool item. The erased
+//!   handle's fields are private to `pool.rs` (N5.5b0's review): `MArc::erase` builds it
+//!   through `AnyArc::from_raw` and `MErased::VT` through `ErasedVt::new` (two `unsafe` with
+//!   their contracts), and `AnyArc::downcast_arc` takes the block back through the safe
+//!   `AnyArc::into_raw_if`, which checks the kind and the type.
 
 use core::any::TypeId;
 use core::marker::PhantomData;
@@ -332,10 +336,11 @@ impl<T: Send + Sync + 'static> MArc<T> {
     /// handle by [`AnyArc::downcast_arc`]: a mount's typed slot (`mnt_data`).
     pub fn erase(this: Self) -> AnyArc {
         let this = ManuallyDrop::new(this);
-        AnyArc {
-            item: this.inner.cast(),
-            vt: &MErased::<T>::VT,
-        }
+        // SAFETY: `from_raw`'s contract: `this.inner` is the block of this live handle over a
+        // `T: Send + Sync + 'static` (the type's invariant), whose reference is given over here
+        // (`ManuallyDrop`: the handle is not dropped); `MErased::<T>::VT` is made for that `T`
+        // and for `MArc`'s blocks (`ErasedKind::Malloc`).
+        unsafe { AnyArc::from_raw(this.inner.cast(), &MErased::<T>::VT) }
     }
 }
 
@@ -396,12 +401,20 @@ unsafe impl<T: Send + Sync + 'static> Sync for MArc<T> {}
 struct MErased<T>(PhantomData<T>);
 
 impl<T: Send + Sync + 'static> MErased<T> {
-    const VT: ErasedVt = ErasedVt {
-        type_id: TypeId::of::<T>,
-        kind: ErasedKind::Malloc,
-        refs: offset_of!(MInner<T>, refs),
-        value: offset_of!(MInner<T>, value),
-        release: merased_release::<T>,
+    // SAFETY: `ErasedVt::new`'s contract, for `MArc<T>`'s blocks: every block is an
+    // initialised `MInner<T>` (`MArc`'s invariant) whose `refs` (an `AtomicUsize` counted in
+    // its low half, a clone adding one, as `MArc::clone` does) and `value` (a `T: Send + Sync
+    // + 'static`, only ever lent shared) sit at the offsets given; `TypeId::of::<T>` is the
+    // `T`'s; `merased_release::<T>` drops one handle's reference (the last frees the block);
+    // `ErasedKind::Malloc` is used by no other layout.
+    const VT: ErasedVt = unsafe {
+        ErasedVt::new(
+            TypeId::of::<T>,
+            ErasedKind::Malloc,
+            offset_of!(MInner<T>, refs),
+            offset_of!(MInner<T>, value),
+            merased_release::<T>,
+        )
     };
 }
 
@@ -410,14 +423,12 @@ impl AnyArc {
     /// counted as before; `None` (the erased handle dropped) for another type or for a pool
     /// item ([`crate::pool::PoolArc::erase`]'s), whose block is not a malloc'd `MInner<T>`.
     pub fn downcast_arc<T: Send + Sync + 'static>(self) -> Option<MArc<T>> {
-        if !self.is::<T>(ErasedKind::Malloc) {
-            return None;
-        }
-        let this = ManuallyDrop::new(self);
+        // `Err` is the erased handle, dropped here (its reference released).
+        let item = self.into_raw_if::<T>(ErasedKind::Malloc).ok()?;
         // The kind and the type checked: `item` is the block of an `MArc<T>` whose reference
-        // this value owned (`AnyArc`'s invariant), now the handle's.
+        // the erased handle owned and gave over, now this handle's.
         Some(MArc {
-            inner: this.item.cast(),
+            inner: item.cast(),
             _owns: PhantomData,
         })
     }
@@ -841,6 +852,21 @@ mod tests {
             "the last erased drop frees it"
         );
         assert_eq!(testutil::malloc_out(M_UFSMNT), before);
+    }
+
+    /// `into_raw_if` refuses another type or kind without touching the count: the erased
+    /// handle comes back whole, still lending its value.
+    #[test]
+    fn a_refused_raw_take_gives_the_erased_handle_back_counted() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let e = MArc::erase(MArc::new(M_UFSMNT, M_WAITOK, timer(4, &drops)).unwrap());
+        let e = e.into_raw_if::<u64>(ErasedKind::Malloc).unwrap_err();
+        let e = e.into_raw_if::<Timer>(ErasedKind::Pool).unwrap_err();
+        assert_eq!(e.downcast_ref::<Timer>().map(|t| t.ticks), Some(4));
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(e);
+        assert_eq!(drops.load(Ordering::Relaxed), 1, "still the last reference");
     }
 
     #[test]
