@@ -9967,7 +9967,7 @@ reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items a
 [[extra]]
 rust = "sys/hal/malloc.rs"
 crate = "hal"
-reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; N3.5 S0: MBox::leak, a block never freed as &'static T (the boot submaps); N5.5a: MBox over T: ?Sized and AnyBox, the box with its type erased (mnt_data); docs/ZERO_UNSAFE.md 0.1, decision 19"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; N3.5 S0: MBox::leak, a block never freed as &'static T (the boot submaps); docs/ZERO_UNSAFE.md 0.1, decision 19"
 
 [[module]]
 rust = "sys/hal/mapped.rs"

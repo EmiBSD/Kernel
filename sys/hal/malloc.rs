@@ -61,17 +61,7 @@
 //!   `hal::pinlist`): the block never moves and the value is dropped in place before it is
 //!   freed; the two ways to a `T` that could move it, `DerefMut` and [`MBox::into_inner`],
 //!   are for `T: Unpin` only.
-//! - N5.5a: a `void *` slot the owner fills with one of several types and casts back
-//!   (`mnt_data`: a file system's mount structure, `struct ufsmount` for ffs, mfs and ext2fs)
-//!   -> [`AnyBox`], the box with its type erased: [`MBox::erase`] coerces the pointer to
-//!   `dyn Any + Send + Sync` (an unsizing coercion, safe code), [`AnyBox::downcast_ref`] lends
-//!   the value to who names its type and [`AnyBox::downcast`] gives the typed box back; the
-//!   drop frees the block under the box's type and the erased value's size (its vtable's,
-//!   the size `malloc` was asked for), so `vmstat -m` counts it as before. `MBox` is generic
-//!   over `T: ?Sized` for it: the existing blocks hold for any `T` (the drop reads the size
-//!   from the value before dropping it), and no `unsafe` is added.
 
-use core::any::Any;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
@@ -122,10 +112,9 @@ pub fn nkmempages() -> i32 {
 /// A `T` in a block of `malloc(9)` of type `ty`, owned: `Deref`/`DerefMut`, the drop drops the
 /// `T` and frees the block.
 ///
-/// Invariant: `ptr` came from the registered [`Malloc`]'s `malloc(size_of_val(&*ptr), ty, _)`
-/// (`size_of::<T>()` for a sized `T`; for a `dyn` the size its vtable gives, the size of the
-/// type [`MBox::erase`] erased), holds an initialised `T`, and only this box references it.
-pub struct MBox<T: ?Sized> {
+/// Invariant: `ptr` came from the registered [`Malloc`]'s `malloc(size_of::<T>(), ty, _)`,
+/// holds an initialised `T`, and only this box references it.
+pub struct MBox<T> {
     ptr: NonNull<T>,
     ty: i32,
     mem: &'static dyn Malloc,
@@ -162,40 +151,6 @@ impl<T> MBox<T> {
         })
     }
 
-    /// The value, the block freed (`T: Unpin`: a pinned value never leaves its block).
-    pub fn into_inner(this: Self) -> T
-    where
-        T: Unpin,
-    {
-        let this = ManuallyDrop::new(this);
-        // SAFETY: the box holds an initialised `T` that only it references (the invariant);
-        // it is read out once, and `ManuallyDrop` keeps the box's drop from dropping it again,
-        // so the block is freed below without touching the value.
-        let value = unsafe { this.ptr.as_ptr().read() };
-        this.mem.free(this.ptr.cast(), this.ty, size_of::<T>());
-        value
-    }
-
-    /// The box with its type erased ([`AnyBox`]): the same block, under the same malloc type,
-    /// owned as before; lent back as a `&T` to who names `T` ([`AnyBox::downcast_ref`]).
-    pub fn erase(this: Self) -> AnyBox
-    where
-        T: Any + Send + Sync,
-    {
-        let this = ManuallyDrop::new(this);
-        // The unsizing coercion keeps the address and adds `T`'s vtable: the block is the
-        // same, and its size is the vtable's `size_of::<T>()`.
-        let ptr: NonNull<dyn Any + Send + Sync> = this.ptr;
-        MBox {
-            ptr,
-            ty: this.ty,
-            mem: this.mem,
-            _owns: PhantomData,
-        }
-    }
-}
-
-impl<T: ?Sized> MBox<T> {
     /// The malloc type the block is counted under.
     pub fn ty(this: &Self) -> i32 {
         this.ty
@@ -226,39 +181,23 @@ impl<T: ?Sized> MBox<T> {
         // meets a `&mut`; `leak` gives a `&'static T` and never frees the block.
         unsafe { Pin::new_unchecked(self.ptr.as_ref()) }
     }
-}
 
-/// An [`MBox`] whose `T` is erased ([`MBox::erase`]): a `malloc(9)` block holding one value of
-/// a type its owner chose (a file system's mount structure in `mnt_data`), where the C keeps a
-/// `void *` and its users cast it back. The value is lent to who names its type
-/// ([`AnyBox::downcast_ref`]: another type answers `None`, never a reinterpretation), and the
-/// drop drops it and frees the block under its malloc type and size.
-pub type AnyBox = MBox<dyn Any + Send + Sync>;
-
-impl MBox<dyn Any + Send + Sync> {
-    /// The value, when it is a `T`: `None` for any other type.
-    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
-        (**self).downcast_ref::<T>()
-    }
-
-    /// The typed box back, when the value is a `T`; the erased box again otherwise.
-    pub fn downcast<T: Any>(this: Self) -> Result<MBox<T>, Self> {
-        if !(*this).is::<T>() {
-            return Err(this);
-        }
+    /// The value, the block freed (`T: Unpin`: a pinned value never leaves its block).
+    pub fn into_inner(this: Self) -> T
+    where
+        T: Unpin,
+    {
         let this = ManuallyDrop::new(this);
-        // The value is a `T` (checked above): the thin pointer names it, in the block
-        // `MBox::<T>::new` made for it, `size_of::<T>()` bytes under the same type.
-        Ok(MBox {
-            ptr: this.ptr.cast::<T>(),
-            ty: this.ty,
-            mem: this.mem,
-            _owns: PhantomData,
-        })
+        // SAFETY: the box holds an initialised `T` that only it references (the invariant);
+        // it is read out once, and `ManuallyDrop` keeps the box's drop from dropping it again,
+        // so the block is freed below without touching the value.
+        let value = unsafe { this.ptr.as_ptr().read() };
+        this.mem.free(this.ptr.cast(), this.ty, size_of::<T>());
+        value
     }
 }
 
-impl<T: ?Sized> Deref for MBox<T> {
+impl<T> Deref for MBox<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -268,7 +207,7 @@ impl<T: ?Sized> Deref for MBox<T> {
     }
 }
 
-impl<T: ?Sized + Unpin> DerefMut for MBox<T> {
+impl<T: Unpin> DerefMut for MBox<T> {
     fn deref_mut(&mut self) -> &mut T {
         // SAFETY: as for `deref`, and `&mut self` makes this the only reference while it
         // lives.
@@ -276,28 +215,21 @@ impl<T: ?Sized + Unpin> DerefMut for MBox<T> {
     }
 }
 
-impl<T: ?Sized> Drop for MBox<T> {
+impl<T> Drop for MBox<T> {
     fn drop(&mut self) {
         // SAFETY: the box's `T` is initialised and only the box references it (the
-        // invariant); its size is read through a shared reference that ends at once (for an
-        // erased box, the size its vtable gives: the size `malloc` was asked for), then it is
-        // dropped once, here, before its block is freed.
-        let size = unsafe {
-            let size = size_of_val(self.ptr.as_ref());
-            core::ptr::drop_in_place(self.ptr.as_ptr());
-            size
-        };
-        self.mem.free(self.ptr.cast(), self.ty, size);
+        // invariant); it is dropped once, here, before its block is freed.
+        unsafe { core::ptr::drop_in_place(self.ptr.as_ptr()) };
+        self.mem.free(self.ptr.cast(), self.ty, size_of::<T>());
     }
 }
 
 // SAFETY: the box owns its `T` outright (only it references the block), so sending the box
-// sends the `T` (for an erased box, a `dyn Any + Send + Sync`, `Send` by its bound); the bridge
-// is `Sync`.
-unsafe impl<T: ?Sized + Send> Send for MBox<T> {}
+// sends the `T`; the bridge is `Sync`.
+unsafe impl<T: Send> Send for MBox<T> {}
 
 // SAFETY: `&MBox<T>` gives only `&T`, so sharing it is sharing `&T`.
-unsafe impl<T: ?Sized + Sync> Sync for MBox<T> {}
+unsafe impl<T: Sync> Sync for MBox<T> {}
 
 /// `n` values of `T` in one block of `malloc(9)` of type `ty`, owned (`mallocarray(9)`):
 /// `Deref`/`DerefMut<Target = [T]>`; the drop drops every element and frees the block.
@@ -487,82 +419,6 @@ mod tests {
         assert_eq!(t.ticks, 1);
         drop(t);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-    }
-
-    /// `M_UFSMNT`, a type of the C's table.
-    const M_UFSMNT: i32 = 28;
-
-    #[test]
-    fn an_erased_box_lends_its_value_to_its_type_alone_and_frees_it() {
-        // `mnt_data` as N5.5a's mounts keep it: the file system's structure erased into the
-        // mount, cast back by name; another type finds nothing.
-        testutil::install();
-        let drops = Arc::new(AtomicU32::new(0));
-        let before = testutil::malloc_out(M_UFSMNT);
-        let b = MBox::new(
-            M_UFSMNT,
-            M_WAITOK,
-            Timer {
-                ticks: 9,
-                drops: Arc::clone(&drops),
-            },
-        )
-        .unwrap();
-        let addr = core::ptr::from_ref::<Timer>(&b).addr();
-        let any: AnyBox = MBox::erase(b);
-        assert_eq!(MBox::ty(&any), M_UFSMNT);
-        assert_eq!(
-            testutil::malloc_out(M_UFSMNT),
-            before + size_of::<Timer>() as isize,
-            "counted as before"
-        );
-        assert_eq!(any.downcast_ref::<Timer>().map(|t| t.ticks), Some(9));
-        assert_eq!(
-            any.downcast_ref::<Timer>()
-                .map(|t| core::ptr::from_ref(t).addr()),
-            Some(addr),
-            "the same block"
-        );
-        assert!(any.downcast_ref::<u64>().is_none());
-        assert_eq!(drops.load(Ordering::Relaxed), 0);
-        drop(any);
-        assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            testutil::malloc_out(M_UFSMNT),
-            before,
-            "freed under its type and size"
-        );
-    }
-
-    #[test]
-    fn an_erased_box_gives_its_typed_box_back_to_its_type_alone() {
-        testutil::install();
-        let before = testutil::malloc_out(M_UFSMNT);
-        let any = MBox::erase(MBox::new(M_UFSMNT, M_WAITOK, [7u64; 3]).unwrap());
-        let any = match MBox::downcast::<u32>(any) {
-            Ok(_) => panic!("a [u64; 3] downcast to u32"),
-            Err(any) => any,
-        };
-        let Ok(typed) = MBox::downcast::<[u64; 3]>(any) else {
-            panic!("the box's own type refused");
-        };
-        assert_eq!(MBox::ty(&typed), M_UFSMNT);
-        assert_eq!(*typed, [7, 7, 7]);
-        assert_eq!(MBox::into_inner(typed), [7, 7, 7]);
-        assert_eq!(testutil::malloc_out(M_UFSMNT), before);
-    }
-
-    #[test]
-    fn a_leaked_erased_box_stays_counted() {
-        testutil::install();
-        let before = testutil::malloc_out(M_UFSMNT);
-        let any = MBox::erase(MBox::new(M_UFSMNT, M_WAITOK, 11u32).unwrap());
-        let v: &'static (dyn Any + Send + Sync) = MBox::leak(any);
-        assert_eq!(v.downcast_ref::<u32>(), Some(&11));
-        assert_eq!(
-            testutil::malloc_out(M_UFSMNT),
-            before + size_of::<u32>() as isize
-        );
     }
 
     /// `M_UVMAMAP`, a type of the C's table.
