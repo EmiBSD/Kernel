@@ -52,6 +52,12 @@ Locations are on `main` at the commit that last edited this file.
 | `inode_e2fs_nlink`'s default method | `sys/kernel/file.rs` | `ufs_ihashget`'s `IS_EXT2_VNODE` reads an ext2fs inode's link count, which `bsd`'s ext2fs keeps in `InodeG` | N5.6 (ext2fs's dinode in the kernel) |
 | `VfsTables::ufs` (`UfsTables<G>`) | `sys/kernel/fs/subr.rs` | The UFS layer's globals (`ufs_init`'s `done`, the inode hash) per glue, since `Inode<G>` is generic | With the glue generic, N9 |
 
+## The kernel's members kept for `bsd`'s users
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `Vnode::data` (`v_data` as the C's raw word, `data()`/`set_data()`) beside `Vnode::node` (the kernel file systems' counted, typed handle), and the double tests over both: `getnewvnode`'s cleaned-vnode check and reset, `vprint` | `sys/kernel/fs/vnode.rs:675` (the member), `:679` (`node`); `sys/kernel/fs/subr.rs:587`, `:606-607`, `:1332` | The file systems still in `bsd` keep their node behind the C's `void *` (msdosfs, cd9660, udf, tmpfs, fuse, ntfs, nfs, and mfs's device node); the UFS inode of ffs, mfs and ext2fs is in the typed slot since N5.5a | The last `bsd` file system's move into the kernel (nfs at N6, ntfs at N10): `data` and the double tests go, `node` stays |
+
 ## `bsd`'s adapters over the kernel's types
 
 | What | Where | Why | Removed by |
