@@ -56,7 +56,7 @@ Locations are on `main` at the commit that last edited this file.
 
 | What | Where | Why | Removed by |
 |---|---|---|---|
-| `Vnode::data` (`v_data` as the C's raw word, `data()`/`set_data()`) beside `Vnode::node` (the kernel file systems' counted, typed handle), and the double tests over both: `getnewvnode`'s cleaned-vnode check and reset, `vprint` | `sys/kernel/fs/vnode.rs:675` (the member), `:679` (`node`); `sys/kernel/fs/subr.rs:587`, `:606-607`, `:1332` | The file systems still in `bsd` keep their node behind the C's `void *` (msdosfs, cd9660, udf, tmpfs, fuse, ntfs, nfs, and mfs's device node); the UFS inode of ffs, mfs and ext2fs is in the typed slot since N5.5a | The last `bsd` file system's move into the kernel (nfs at N6, ntfs at N10): `data` and the double tests go, `node` stays |
+| `Vnode::data` (`v_data` as the C's raw word, `data()`/`set_data()`) beside `Vnode::node` (the kernel file systems' counted, typed handle), and the double tests over both: `getnewvnode`'s cleaned-vnode check and reset, `vprint` | `sys/kernel/fs/vnode.rs:680` (the member), `:684` (`node`); `sys/kernel/fs/subr.rs:587`, `:606-609`, `:1334` | The file systems still in `bsd` keep their node behind the C's `void *` (msdosfs, cd9660, udf, tmpfs, fuse, ntfs, nfs, and mfs's device node); the UFS inode of ffs, mfs and ext2fs is in the typed slot since N5.5a | The last `bsd` file system's move into the kernel (nfs at N6, ntfs at N10): `data` and the double tests go, `node` stays |
 
 ## `bsd`'s adapters over the kernel's types
 
