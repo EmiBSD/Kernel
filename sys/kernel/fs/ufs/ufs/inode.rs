@@ -153,7 +153,7 @@ use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_ASYNC};
 use hal::sys::types::{Daddr, Dev, Mode, Off};
-use hal::user::{bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
+use hal::user::{AbiPod, bytes_of, bytes_of_mut, pod_from_bytes, pod_to_bytes};
 
 use super::dinode::{
     MAXSYMLINKLEN_UFS1, MAXSYMLINKLEN_UFS2, NDADDR, NIADDR, Ufs1Dinode, Ufs2Dinode, Ufsino,
@@ -395,6 +395,32 @@ impl<const N: usize> DinWords<N> {
     fn put_words(&self, words: [u64; N]) {
         for (w, v) in self.w.iter().zip(words) {
             w.store(v, Ordering::Relaxed);
+        }
+    }
+
+    /// The structure `T` the words hold, read whole (one relaxed load per word): a `T` of
+    /// `N * 8` bytes (a dinode, quota.h's `dqblk`).
+    pub fn load_pod<T: AbiPod + Default>(&self) -> T {
+        Self::check_size::<T>();
+        pod_from_bytes(bytes_of(&self.words())).unwrap_or_default()
+    }
+
+    /// The words set to `d`'s bytes (one relaxed store per word), by a holder of the kernel
+    /// lock (checked under `diagnostic`).
+    pub fn store_pod<T: AbiPod>(&self, d: &T) {
+        Self::check_size::<T>();
+        let mut words = [0u64; N];
+        let _ = pod_to_bytes(d, bytes_of_mut(&mut words));
+        self.set_words(words);
+    }
+
+    /// `panic(9)` unless `T` is the words' `N * 8` bytes.
+    fn check_size<T>() {
+        if size_of::<T>() != N * 8 {
+            kpanic(format_args!(
+                "DinWords<{N}>: a structure of {} bytes",
+                size_of::<T>()
+            ));
         }
     }
 

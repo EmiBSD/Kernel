@@ -73,7 +73,8 @@
 //!   (`ufs_test_reset` forgets it, the dquots of the old table with it, never freed).
 //! - A hash chain is a `hal::list::List` (a tail queue's two links, 16 bytes) where the C's
 //!   `LIST_HEAD` is 8, so the table `hashinit` makes in `M_DQUOT` is twice the C's and
-//!   `vmstat -m`'s "dquot" MemUse grows by that much; no `diff-openbsd` scenario prints it.
+//!   `vmstat -m`'s "UFS quota" MemUse grows by that much; no `diff-openbsd` scenario prints
+//!   it.
 //! - `ufs_quota_alloc_blocks2` and `ufs_quota_alloc_inode2` take the credential as
 //!   `Option<&Ucred>`, `None` for the kernel's (`NOCRED`, `FSCRED`, NULL): no limit is
 //!   checked for it. The C tests `NOCRED` only in the former and dereferences the pointer
@@ -90,8 +91,8 @@
 //! - LZ's `Dquot` of `Cell`s under one `unsafe impl Sync`, made by `malloc` and an `unsafe`
 //!   write and deref (sys/ufs/ufs/ufs_quota.rs:1005-1020 at the pin) -> [`Dquot`]'s members
 //!   as relaxed atomic words with LZ's names (the C changes them under the kernel lock, which
-//!   every path here holds, and `DQ_LOCK` across the quota file's I/O), the `dqblk` as eight
-//!   such words, `dq_vp` a `Link`, `dq_cred` a counted `CredRef` in a `ReadMostly` cell (the
+//!   every path here holds, and `DQ_LOCK` across the quota file's I/O), the `dqblk` as the
+//!   in-core dinode's idiom (`inode.rs`'s `DinWords`: four words, copied whole), `dq_vp` a `Link`, `dq_cred` a counted `CredRef` in a `ReadMostly` cell (the
 //!   C's `crhold`/`crfree` made the reference's own count); the dquot an `MBox` of `M_DQUOT`
 //!   given up for a `&'static` (`MBox::leak`): the C never frees one (ufs_quota.c has no
 //!   `free(dq`; recycled through the free list).
@@ -123,7 +124,7 @@ use hal::sys::types::{Daddr, Off, Uid};
 use hal::user::{UserPtr, bytes_of, pod_from_bytes};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
-use super::inode::{Inode, vtoi};
+use super::inode::{DinWords, Inode, vtoi};
 use super::quota::{
     Dqblk, GRPQUOTA, INITQFNAMES, MAX_DQ_TIME, MAX_IQ_TIME, MAXQUOTAS, Q_GETQUOTA, Q_QUOTAOFF,
     Q_QUOTAON, Q_SETQUOTA, Q_SETUSE, Q_SYNC, SUBCMDMASK, SUBCMDSHIFT, UFS_QUOTA_FORCE, USRQUOTA,
@@ -146,7 +147,7 @@ use crate::tc::gettime;
 use crate::uio::{Iovec, Uio, UioRw};
 
 /// `M_DQUOT`: the malloc type of the dquots and their hash table (`<sys/malloc.h>`;
-/// `vmstat -m`'s "dquot").
+/// `vmstat -m`'s "UFS quota").
 pub const M_DQUOT: i32 = 27;
 
 /// `DQ_LOCK`: this quota locked (no MODS).
@@ -164,49 +165,6 @@ pub const DQ_INODS: u16 = 0x20;
 
 /// `DQUOTINC`: minimum free dquots desired.
 const DQUOTINC: i64 = 5;
-
-/// `struct dqblk` as eight relaxed words (`dq_dqb`), read and written whole.
-struct DqbWords([AtomicU32; 8]);
-
-impl DqbWords {
-    /// All zero, as `malloc(M_ZERO)` returns it.
-    const fn new() -> Self {
-        Self([const { AtomicU32::new(0) }; 8])
-    }
-
-    /// The `dqblk`.
-    fn get(&self) -> Dqblk {
-        let [bh, bs, cb, ih, is, ci, bt, it] =
-            core::array::from_fn(|i| self.0[i].load(Ordering::Relaxed));
-        Dqblk {
-            dqb_bhardlimit: bh,
-            dqb_bsoftlimit: bs,
-            dqb_curblocks: cb,
-            dqb_ihardlimit: ih,
-            dqb_isoftlimit: is,
-            dqb_curinodes: ci,
-            dqb_btime: bt,
-            dqb_itime: it,
-        }
-    }
-
-    /// `dq->dq_dqb = *b`.
-    fn set(&self, b: &Dqblk) {
-        let v = [
-            b.dqb_bhardlimit,
-            b.dqb_bsoftlimit,
-            b.dqb_curblocks,
-            b.dqb_ihardlimit,
-            b.dqb_isoftlimit,
-            b.dqb_curinodes,
-            b.dqb_btime,
-            b.dqb_itime,
-        ];
-        for (w, v) in self.0.iter().zip(v) {
-            w.store(v, Ordering::Relaxed);
-        }
-    }
-}
 
 /// `struct dquot`: the disk usage of a user or group on a filesystem. There is one
 /// allocated for each quota that exists on any filesystem for the current user or group. A
@@ -233,7 +191,7 @@ pub struct Dquot<G: ProcGlue> {
     /// `dq_cred`: credentials for writing file, the dquot's reference (`None` is `NOCRED`).
     dq_cred: ReadMostly<Option<CredRef>>,
     /// `dq_dqb`: actual usage & quotas.
-    dq_dqb: DqbWords,
+    dq_dqb: DinWords<4>,
 }
 
 impl<G: ProcGlue> Dquot<G> {
@@ -248,7 +206,7 @@ impl<G: ProcGlue> Dquot<G> {
             dq_id: AtomicU32::new(0),
             dq_vp: Link::new(),
             dq_cred: ReadMostly::new(None),
-            dq_dqb: DqbWords::new(),
+            dq_dqb: DinWords::zeroed(),
         }
     }
 
@@ -294,15 +252,15 @@ impl<G: ProcGlue> Dquot<G> {
 
     /// `dq_dqb`: the usage and the limits.
     pub fn dqb(&self) -> Dqblk {
-        self.dq_dqb.get()
+        self.dq_dqb.load_pod()
     }
 
     /// Changes `dq_dqb` (the `dq_curblocks`, `dq_btime`, ... shorthands on the left of an
     /// assignment).
     fn update(&self, f: impl FnOnce(&mut Dqblk)) {
-        let mut b = self.dq_dqb.get();
+        let mut b = self.dq_dqb.load_pod();
         f(&mut b);
-        self.dq_dqb.set(&b);
+        self.dq_dqb.store_pod(&b);
     }
 
     /// The wait channel of the dquot (`tsleep_nsec(dq, ..)`, `wakeup(dq)`).
@@ -341,12 +299,18 @@ pub struct DqTables<G: ProcGlue> {
 }
 
 impl<G: ProcGlue> DqTables<G> {
-    /// The hash chain of the quota file `dqvp` and the identifier `id`.
-    fn chain(&self, dqvp: &Vnode<G>, id: u32) -> &Chain<G> {
+    /// The index of the hash chain of the quota file `dqvp` and the identifier `id`
+    /// (`SipHash24_End(&ctx) & dqhash`).
+    fn chain_index(&self, dqvp: &Vnode<G>, id: u32) -> usize {
         let mut ctx = SipHash24Ctx::new(&self.key);
         ctx.update(&ptr::from_ref(dqvp).addr().to_ne_bytes());
         ctx.update(&u64::from(id).to_ne_bytes());
-        &self.tbl[(ctx.end() & self.mask) as usize]
+        (ctx.end() & self.mask) as usize
+    }
+
+    /// The hash chain of the quota file `dqvp` and the identifier `id`.
+    fn chain(&self, dqvp: &Vnode<G>, id: u32) -> &Chain<G> {
+        &self.tbl[self.chain_index(dqvp, id)]
     }
 }
 
@@ -366,6 +330,9 @@ pub enum Limit {
 /// The dquot tables, when `ufs_quota_init` has made them: `panic(9)` before. `f` must not
 /// sleep (the cell's reader).
 fn with_dq<G: ProcGlue, R>(f: impl FnOnce(&DqTables<G>) -> R) -> R {
+    // The tables' lists are kept consistent by the kernel lock, as the C's.
+    #[cfg(feature = "diagnostic")]
+    hal::klock::kernel_assert_locked();
     let t = vfs::<G>().ufs.dq.read();
     match t.as_ref() {
         Some(dt) => f(dt),
@@ -972,7 +939,7 @@ fn setquota<G: ProcGlue>(
         ump.um_btime[type_].load(Ordering::Relaxed),
         ump.um_itime[type_].load(Ordering::Relaxed),
     );
-    dq.dq_dqb.set(&b);
+    dq.dq_dqb.store_pod(&b);
     dq.set_flags(flags);
     dqrele(None, Some(dq));
     Ok(())
@@ -1036,7 +1003,7 @@ fn setuse<G: ProcGlue>(
         ump.um_btime[type_].load(Ordering::Relaxed),
         ump.um_itime[type_].load(Ordering::Relaxed),
     );
-    dq.dq_dqb.set(&b);
+    dq.dq_dqb.store_pod(&b);
     dq.set_flags(flags);
     dqrele(None, Some(dq));
     Ok(())
@@ -1142,7 +1109,7 @@ fn dqio<G: ProcGlue>(
     if rw == UioRw::UIO_READ
         && let Some(b) = pod_from_bytes::<Dqblk>(&buf)
     {
-        dq.dq_dqb.set(&b);
+        dq.dq_dqb.store_pod(&b);
     }
     (error, resid)
 }
@@ -1162,10 +1129,10 @@ pub fn dqget<G: ProcGlue>(
     if ump.um_qflags[type_].load(Ordering::Relaxed) & QTF_CLOSING != 0 {
         return Err(Errno::EINVAL);
     }
-    // Check the cache first.
+    // Check the cache first (the chain's index computed once, as the C's dqh).
+    let dqh = with_dq::<G, _>(|dt| dt.chain_index(dqvp, id));
     let hit = with_dq::<G, _>(|dt| {
-        let dq = dt
-            .chain(dqvp, id)
+        let dq = dt.tbl[dqh]
             .iter()
             .find(|dq| dq.id() == id && dq.dq_vp.points_to(dqvp))?;
         // Cache hit with no references. Take the structure off the free list.
@@ -1221,7 +1188,7 @@ pub fn dqget<G: ProcGlue>(
     if !same(vp, dqvp) {
         let _ = vn_lock(dqvp, LK_EXCLUSIVE | LK_RETRY);
     }
-    with_dq::<G, _>(|dt| dt.chain(dqvp, id).insert_head(dq));
+    with_dq::<G, _>(|dt| dt.tbl[dqh].insert_head(dq));
     dqref(dq);
     dq.set_flags(DQ_LOCK);
     dq.dq_id.store(id, Ordering::Relaxed);
@@ -1231,7 +1198,7 @@ pub fn dqget<G: ProcGlue>(
     drop(dq.dq_cred.replace(cr));
     let (error, resid) = dqio(dqvp, dq, UioRw::UIO_READ);
     if resid == size_of::<Dqblk>() && error.is_ok() {
-        dq.dq_dqb.set(&Dqblk::default());
+        dq.dq_dqb.store_pod(&Dqblk::default());
     }
     if !same(vp, dqvp) {
         let _ = vop_unlock(dqvp);
@@ -1243,7 +1210,7 @@ pub fn dqget<G: ProcGlue>(
     // I/O error in reading quota file, release quota structure and reflect problem to
     // caller.
     if let Err(e) = error {
-        with_dq::<G, _>(|dt| dt.chain(dqvp, id).remove(dq));
+        with_dq::<G, _>(|dt| dt.tbl[dqh].remove(dq));
         dqrele(vp, Some(dq));
         return Err(e);
     }
@@ -1391,7 +1358,10 @@ pub fn ufs_quotactl<G: ProcGlue>(
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
     use super::*;
+    use crate::fs::testfs::TestGlue;
 
     const NOW: i64 = 1_000_000;
     const WEEK: i64 = 7 * 24 * 60 * 60;
@@ -1521,19 +1491,115 @@ mod tests {
 
     #[test]
     fn the_dqblk_words_hold_the_record_whole() {
-        let w = DqbWords::new();
-        assert_eq!(w.get(), Dqblk::default());
+        let dq = Dquot::<crate::fs::testfs::TestGlue>::new();
+        assert_eq!(dq.dqb(), Dqblk::default());
         let mut b = dqblk(1, 2, 3, 4, 5, 6);
         b.dqb_btime = 7;
         b.dqb_itime = u32::MAX;
-        w.set(&b);
-        assert_eq!(w.get(), b);
-        let dq = Dquot::<crate::fs::testfs::TestGlue>::new();
+        dq.dq_dqb.store_pod(&b);
+        assert_eq!(dq.dqb(), b);
         dq.update(|b| b.dqb_curinodes = 9);
         assert_eq!(dq.dqb().dqb_curinodes, 9);
         dq.setflag(DQ_MOD | DQ_LOCK);
         dq.clrflag(DQ_LOCK);
         assert!(dq.isset(DQ_MOD) && !dq.isset(DQ_LOCK));
+    }
+    /// A quota file vnode whose reads answer (testfs's operations: `bytes` accounted, the
+    /// dqblk left as it was) or fail (`FILE_VOPS`: no read, `EOPNOTSUPP`), and a UFS mount
+    /// structure with it as the user quota file; the dquot tables of `initialvnodes`.
+    fn quota_world(
+        initialvnodes: i32,
+    ) -> (
+        std::sync::MutexGuard<'static, ()>,
+        &'static Ufsmount<TestGlue>,
+        &'static Vnode<TestGlue>,
+        &'static Vnode<TestGlue>,
+    ) {
+        let g = crate::fs::testfs::setup();
+        ufs_quota_init::<TestGlue>(initialvnodes);
+        let good = crate::testutil::test_vnode::<TestGlue>(crate::fs::vnode::VREG, 0);
+        good.set_ops_id(crate::fs::subr::vops_id::<TestGlue>(
+            &crate::fs::testfs::TEST_VOPS,
+        ));
+        let bad = crate::testutil::test_vnode::<TestGlue>(crate::fs::vnode::VREG, 0);
+        let ump: &'static Ufsmount<TestGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(Ufsmount::new()));
+        ump.um_quotas[USRQUOTA].set(Some(good));
+        (g, ump, good, bad)
+    }
+
+    /// Whether the dquot hash holds a dquot of `(dqvp, id)`.
+    fn hashed(dqvp: &'static Vnode<TestGlue>, id: u32) -> bool {
+        with_dq::<TestGlue, _>(|dt| {
+            dt.chain(dqvp, id)
+                .iter()
+                .any(|d| d.id() == id && d.dq_vp.points_to(dqvp))
+        })
+    }
+
+    #[test]
+    fn a_released_dquot_is_found_again_and_the_oldest_is_recycled() {
+        // initialvnodes 1: desireddquot grows by DQUOTINC while the free list is empty and
+        // numdquot is under MAXQUOTAS * initialvnodes (2): 5 -> 10 -> 15, so 15 dquots are
+        // made before any is recycled (ufs_quota.c:874-877).
+        let (_g, ump, good, _bad) = quota_world(1);
+        let held: Vec<_> = (1..=15)
+            .map(|id| dqget(None, id, ump, USRQUOTA).unwrap())
+            .collect();
+        assert!((1..=15).all(|id| hashed(good, id)));
+        for &dq in &held {
+            dqrele(None, Some(dq));
+        }
+        // A cache hit takes an unreferenced dquot off the free list (ufs_quota.c:858-870).
+        let again = dqget(None, 2, ump, USRQUOTA).unwrap();
+        assert!(ptr::eq(again, held[1]));
+        assert_eq!(again.cnt(), 1);
+        // A new id: the free list is not empty and numdquot == desireddquot, so its first
+        // dquot (id 1's) is recycled: off the free list and off its old chain
+        // (ufs_quota.c:880-889).
+        let new = dqget(None, 16, ump, USRQUOTA).unwrap();
+        assert!(ptr::eq(new, held[0]));
+        assert_eq!((new.id(), new.cnt()), (16, 1));
+        assert!(!hashed(good, 1) && hashed(good, 16));
+        with_dq::<TestGlue, _>(|dt| assert_eq!(dt.numdquot.load(Ordering::Relaxed), 15));
+    }
+
+    #[test]
+    fn every_dquot_held_is_eusers() {
+        // initialvnodes 1: desireddquot stops at 15 (the test above), so with 15 held the
+        // free list is empty and nothing may be made: tablefull and EUSERS.
+        let (_g, ump, _good, _bad) = quota_world(1);
+        let held: Vec<_> = (1..=15)
+            .map(|id| dqget(None, id, ump, USRQUOTA).unwrap())
+            .collect();
+        assert_eq!(dqget(None, 16, ump, USRQUOTA).err(), Some(Errno::EUSERS));
+        // One given back is the one the next id gets.
+        dqrele(None, Some(held[14]));
+        assert!(ptr::eq(dqget(None, 16, ump, USRQUOTA).unwrap(), held[14]));
+    }
+
+    #[test]
+    fn a_dquot_whose_read_failed_is_recycled_without_a_second_unhash() {
+        let (_g, ump, good, bad) = quota_world(1);
+        let held: Vec<_> = (1..=14)
+            .map(|id| dqget(None, id, ump, USRQUOTA).unwrap())
+            .collect();
+        // The fifteenth (the last numdquot may reach) is made, hashed, read from a file whose
+        // read fails, unhashed and released to the free list (ufs_quota.c:930-935).
+        ump.um_quotas[USRQUOTA].set(Some(bad));
+        assert_eq!(
+            dqget(None, 20, ump, USRQUOTA).err(),
+            Some(Errno::EOPNOTSUPP)
+        );
+        assert!(!hashed(bad, 20));
+        // The next id recycles it: on no chain, so the recycle unhashes nothing (LZ's
+        // dq_hashed, now the entry's is_linked).
+        ump.um_quotas[USRQUOTA].set(Some(good));
+        let dq = dqget(None, 21, ump, USRQUOTA).unwrap();
+        assert!(held.iter().all(|&h| !ptr::eq(h, dq)));
+        with_dq::<TestGlue, _>(|dt| assert_eq!(dt.numdquot.load(Ordering::Relaxed), 15));
+        assert_eq!(dq.id(), 21);
+        assert!(hashed(good, 21));
     }
 }
 /* </TESTS> */
