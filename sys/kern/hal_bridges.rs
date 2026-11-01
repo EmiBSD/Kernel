@@ -125,7 +125,7 @@ pub fn hal_bridges_heap_ready() {
 /// The next `struct pool` of [`STATIC_POOLS`] no one has, if one is left.
 fn static_pool() -> Option<&'static Pool> {
     let i = STATIC_POOLS_USED
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
             (n < NSTATIC_POOLS).then_some(n + 1)
         })
         .ok()?;

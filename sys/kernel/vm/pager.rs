@@ -814,12 +814,11 @@ pub fn uvm_pager_dropcluster(
             kpanic(format_args!(
                 "uvm_pager_dropcluster: anon page without anon"
             ));
-        } else {
-            // if we were planning on async io then we would have PG_RELEASED set, clear that
-            // with the others.
-            pg.clear_bits(PG_BUSY | PG_WANTED | PG_FAKE | PG_RELEASED);
-            // UVM_PAGE_OWN(ppsp[lcv], NULL): not configured.
         }
+        // if we were planning on async io then we would have PG_RELEASED set, clear that
+        // with the others.
+        pg.clear_bits(PG_BUSY | PG_WANTED | PG_FAKE | PG_RELEASED);
+        // UVM_PAGE_OWN(ppsp[lcv], NULL): not configured.
 
         // if we are operating on behalf of the pagedaemon and we had a successful pageout
         // update the page!

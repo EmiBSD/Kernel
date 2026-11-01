@@ -824,13 +824,13 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         let refs = &view.inner().refs;
         let taken = match how {
             Rebuild::Count | Rebuild::CountUnlessLast => {
-                refs.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
+                refs.try_update(Ordering::Relaxed, Ordering::Relaxed, |c| {
                     let n = c & REFS_MASK;
                     (n != 0 && n < MAX_REFS).then(|| c + 1)
                 })
             }
             // Acquire: the parking handle's writes happen before the adopter's reads.
-            Rebuild::Adopt => refs.fetch_update(Ordering::Acquire, Ordering::Relaxed, |c| {
+            Rebuild::Adopt => refs.try_update(Ordering::Acquire, Ordering::Relaxed, |c| {
                 (c >> PARK_SHIFT != 0).then(|| c - PARKED_ONE)
             }),
         };

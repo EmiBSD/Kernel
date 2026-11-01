@@ -2024,47 +2024,46 @@ pub fn postsig<G: ProcGlue>(p: &Thread<G>, signum: i32, sctx: &Sigctx) {
         klock::kernel_lock();
         sigexit(p, signum);
         // NOTREACHED
-    } else {
-        // If we get here, the signal must be caught.
-        #[cfg(feature = "diagnostic")]
-        if sctx.sig_action == SIG_IGN || p.p_sigmask.get() & mask != 0 {
-            kpanic(format_args!("postsig action"));
-        }
-        // Set the new mask value and also defer further occurrences of this signal.
-        //
-        // Special case: user has done a sigpause. Here the current mask is not of interest,
-        // but rather the mask from before the sigpause is what we want restored after the
-        // signal processing is completed.
-        let returnmask = if p.p_flag.load(Ordering::Relaxed) & P_SIGSUSPEND != 0 {
-            p.p_flag.fetch_and(!P_SIGSUSPEND, Ordering::Relaxed);
-            p.p_oldmask.get()
-        } else {
-            p.p_sigmask.get()
-        };
-        if p.p_sisig.get() == signum {
-            p.p_sisig.set(0);
-            p.p_sitrapno.set(0);
-            p.p_sicode.set(SI_USER);
-            p.p_sigval.set(Sigval::from_ptr(0));
-        }
-
-        if sendsig(
-            p,
-            sctx.sig_action,
-            signum,
-            returnmask,
-            &si,
-            sctx.sig_info,
-            sctx.sig_onstack,
-        )
-        .is_err()
-        {
-            klock::kernel_lock();
-            sigexit(p, SIGILL);
-            // NOTREACHED
-        }
-        postsig_done(p, signum, sctx.sig_catchmask, sctx.sig_reset);
     }
+    // If we get here, the signal must be caught.
+    #[cfg(feature = "diagnostic")]
+    if sctx.sig_action == SIG_IGN || p.p_sigmask.get() & mask != 0 {
+        kpanic(format_args!("postsig action"));
+    }
+    // Set the new mask value and also defer further occurrences of this signal.
+    //
+    // Special case: user has done a sigpause. Here the current mask is not of interest,
+    // but rather the mask from before the sigpause is what we want restored after the
+    // signal processing is completed.
+    let returnmask = if p.p_flag.load(Ordering::Relaxed) & P_SIGSUSPEND != 0 {
+        p.p_flag.fetch_and(!P_SIGSUSPEND, Ordering::Relaxed);
+        p.p_oldmask.get()
+    } else {
+        p.p_sigmask.get()
+    };
+    if p.p_sisig.get() == signum {
+        p.p_sisig.set(0);
+        p.p_sitrapno.set(0);
+        p.p_sicode.set(SI_USER);
+        p.p_sigval.set(Sigval::from_ptr(0));
+    }
+
+    if sendsig(
+        p,
+        sctx.sig_action,
+        signum,
+        returnmask,
+        &si,
+        sctx.sig_info,
+        sctx.sig_onstack,
+    )
+    .is_err()
+    {
+        klock::kernel_lock();
+        sigexit(p, SIGILL);
+        // NOTREACHED
+    }
+    postsig_done(p, signum, sctx.sig_catchmask, sctx.sig_reset);
 }
 
 /// `sigexit`: force the current process to exit with the specified signal, dumping core if

@@ -3223,6 +3223,49 @@ userland:
     cargo xtask userland --arch amd64
     cargo xtask userland --arch arm64
 
+# --- toolchain (DevTools T3, the user's decision of 2026-10-31) -----------------------------
+
+# The EmiBSD toolchains that DevTools releases (github.com/EmiBSD/DevTools), macOS arm64 host:
+# fetched by tag, never "latest", checked against the pinned sha256 before unpacking, and used in
+# place, unmodified, from `toolchain_dir` (outside every repository, so `cargo clean` never removes
+# it). The Rust one is linked as rustup's toolchain `emibsd`; the LLVM one's bin/ is
+# `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy). A tag already unpacked is left as it is. Needs `gh`
+# (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
+toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
+devtools_llvm := "llvm-23.1.4+emibsd.1"
+devtools_llvm_sha256 := "4f6b15c8106ad45eb834f1490c64ddf411a9680ba42b4d7b5bbd2ffcf50ae499"
+devtools_rust := "rust-1.99.1+emibsd.1"
+devtools_rust_sha256 := "c30aa833a2e634ce9a349be9f7581d1a4b55f3403bce21444dacb323d4f1c933"
+
+toolchain:
+    #!/bin/zsh
+    set -eu
+    dir="{{toolchain_dir}}"
+    mkdir -p "$dir"
+    fetch() {
+        local name="$1-aarch64-apple-darwin" sha="$2"
+        if [ -d "$dir/$name" ]; then echo "toolchain: $name already unpacked"; return; fi
+        local tmp; tmp=$(mktemp -d "$dir/.fetch.XXXXXX")
+        gh release download "$1" --repo EmiBSD/DevTools --pattern "$name.tar.zst" --dir "$tmp"
+        local got; got=$(shasum -a 256 "$tmp/$name.tar.zst" | cut -d' ' -f1)
+        if [ "$got" != "$sha" ]; then
+            echo "toolchain: $name.tar.zst has sha256 $got, the pin says $sha"
+            unlink "$tmp/$name.tar.zst"; rmdir "$tmp"; exit 1
+        fi
+        zstd -dcq "$tmp/$name.tar.zst" | tar -xf - -C "$tmp"
+        unlink "$tmp/$name.tar.zst"
+        [ -d "$tmp/$name" ] || { echo "toolchain: $name.tar.zst does not unpack into $name/"; exit 1; }
+        mv "$tmp/$name" "$dir/$name"
+        rmdir "$tmp"
+        echo "toolchain: $name unpacked, sha256 $got"
+    }
+    fetch "{{devtools_llvm}}" "{{devtools_llvm_sha256}}"
+    fetch "{{devtools_rust}}" "{{devtools_rust_sha256}}"
+    command -v rustup >/dev/null || PATH=/opt/homebrew/opt/rustup/bin:$PATH
+    rustup toolchain link emibsd "$dir/{{devtools_rust}}-aarch64-apple-darwin"
+    echo "toolchain: rustup's emibsd is $(rustup run emibsd rustc --version)"
+    echo "toolchain: EMIBSD_LLVM_BIN=$dir/{{devtools_llvm}}-aarch64-apple-darwin/bin ($("$dir/{{devtools_llvm}}-aarch64-apple-darwin/bin/ld.lld" --version))"
+
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected
 # differences are in tools/xtask/diff-openbsd/). The first run downloads the OpenBSD snapshot
