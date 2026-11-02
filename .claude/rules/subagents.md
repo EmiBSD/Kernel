@@ -33,11 +33,14 @@ is never told this repository exists, `reference-readonly.md`).
 Effort (the user's decision, 2026-10-19): every definition fixes `effort` in its frontmatter,
 so a run never inherits the main session's level: `low` for `image-worker` and
 `openbsd-probe`, `medium` for `mechanical` and `surveyor` (their value is completeness, which
-the instruction gives, not reasoning per step), `high` for `milestone-coordinator`,
-`integrator`, `redesigner`, `debugger`, `reviewer` and `planner`. The launching session may
-raise one run to `xhigh` through the Agent tool's `effort` parameter when the task justifies
-it (a module over 3,000 lines, a `security-review.md` area, a close that failed once) and says
-so in the prompt; it never lowers one. `CLAUDE_CODE_EFFORT_LEVEL`, if ever set, overrides all
+the instruction gives, not reasoning per step) and for `integrator` (merges, the shared files
+and the close's runs are rulebook work; the user's decision of 2026-11-01, after comparing the
+roles with Anthropic's guidance on effort), `high` for `milestone-coordinator`, `redesigner`,
+`debugger`, `reviewer` and `planner`. The launching session may raise one run through the
+Agent tool's `effort` parameter when the task justifies it and says so in the prompt: an
+`integrator` to `high` when it finishes a stopped agent's redesign (that is a redesigner's
+work); any role to `xhigh` for a module over 3,000 lines, a `security-review.md` area or a
+close that failed once. It never lowers one. `CLAUDE_CODE_EFFORT_LEVEL`, if ever set, overrides all
 of this; it is not set.
 
 Turns (the user's decision, 2026-10-19): the read-only roles carry `maxTurns` in their
