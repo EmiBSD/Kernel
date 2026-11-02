@@ -49,9 +49,19 @@ just smoke                         # after milestone M0
 
 ## Editor
 
-rust-analyzer works out of the box on the host target thanks to `sys/arch/host`. To analyse
-arch-specific code, set `rust-analyzer.cargo.target` to one of the bare targets temporarily.
-`just clippy` checks all three targets regardless of editor settings.
+`rust-analyzer.toml` at the root configures rust-analyzer for the editor and for Claude
+Code's LSP plugin alike (the user's decision of 2026-11-01): the tree is analysed as
+`just build` builds it, arm64 (`aarch64-unknown-none-softfloat`) with `--features qemu`, and
+`checkOnSave` is off, so no `cargo check` runs on a save (decision 23: develop first, compile
+later; nothing runs while `/tmp/emibsd/ci.lock` exists). What is left is the index and
+rust-analyzer's own diagnostics; the host side (`sys/arch/host`, the tests) is out of that
+view, and `just clippy` checks every target regardless. The server is the toolchain's
+component (`rustup component add rust-analyzer`, pinned with `rust-toolchain.toml`); Claude
+Code reaches it through the `rust-analyzer-lsp` plugin of `claude-plugins-official`
+(`claude plugin install rust-analyzer-lsp@claude-plugins-official`, user scope; a session
+started after the install sees it). Measured on 2026-11-01 with `rust-analyzer analysis-stats`
+over the whole workspace (33 crates): the index in 6 s, the inference of every body in 158 s,
+4.6 GB peak; the live server infers on demand, so that is the ceiling, not the steady state.
 
 ## What `just` expects
 
