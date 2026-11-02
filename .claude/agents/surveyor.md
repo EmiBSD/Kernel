@@ -26,7 +26,10 @@ safe API.
 ## How
 
 Read cheaply: `grep -rn`, `grep -rl | wc -l`, `sed -n 'a,bp'`, the `<CODE>` zone with
-`sed -n '/<CODE>/,/<\/CODE>/p'`, the `<TESTS>` zone likewise. The module under survey and the C
+`sed -n '/<CODE>/,/<\/CODE>/p'`, the `<TESTS>` zone likewise. Callers and the 50-module count
+through the LSP tool first (`findReferences`, `incomingCalls` on the item's definition;
+`workspaceSymbol` to find it), grep for what it cannot see (`reference/`, comments, the C):
+the exact list of modules, not the files that share a name. The module under survey and the C
 behind it are read completely, in ranges. `cargo xtask unsafe-report --shapes` and
 `unsafe-report --json` only parse sources and may run once each, redirected to the scratchpad;
 `cargo xtask lz trace` answers where an item went. Nothing heavier. Every fact carries
