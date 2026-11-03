@@ -3225,17 +3225,21 @@ userland:
 
 # --- toolchain (DevTools T3, the user's decision of 2026-10-31) -----------------------------
 
-# The EmiBSD toolchains that DevTools releases (github.com/EmiBSD/DevTools), macOS arm64 host:
-# fetched by tag, never "latest", checked against the pinned sha256 before unpacking, and used in
-# place, unmodified, from `toolchain_dir` (outside every repository, so `cargo clean` never removes
-# it). The Rust one is linked as rustup's toolchain `emibsd`; the LLVM one's bin/ is
-# `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy). A tag already unpacked is left as it is. Needs `gh`
-# (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
+# The EmiBSD toolchains that DevTools releases (github.com/EmiBSD/DevTools), macOS arm64 host,
+# one tarball per target architecture since DevTools' D-0008 (2026-11-02): fetched by tag, never
+# "latest", checked against the pinned sha256 before unpacking, and used in place, unmodified,
+# from `toolchain_dir` (outside every repository, so `cargo clean` never removes it). The arm64
+# Rust is linked as rustup's toolchain `emibsd`, the amd64 one as `emibsd-amd64` (unused until
+# N10, decision 44); each LLVM's bin/ is that arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy,
+# clang). A directory already unpacked is left as it is. Needs `gh` (logged in) and `zstd`
+# (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
 devtools_llvm := "llvm-23.1.4+emibsd.1"
-devtools_llvm_sha256 := "4f6b15c8106ad45eb834f1490c64ddf411a9680ba42b4d7b5bbd2ffcf50ae499"
 devtools_rust := "rust-1.99.1+emibsd.1"
-devtools_rust_sha256 := "c30aa833a2e634ce9a349be9f7581d1a4b55f3403bce21444dacb323d4f1c933"
+devtools_llvm_sha256_arm64 := "fd37a7437e30bfa803dac82a72ff56170b86edf6e84c4c101f8c0e277c2f1165"
+devtools_rust_sha256_arm64 := "b229378962fa5e3638f4a0ca8d28661f0fe18ba137895d24317a8b2802e0e417"
+devtools_llvm_sha256_amd64 := "18aa91402e18b002ce577ab80898ff50ae29ad7146184e1590b22d90760bc1a4"
+devtools_rust_sha256_amd64 := "8cc842e4b99837f805128c9be7f34ac6020168ec3f020e11c8bcd1f8eca92ecd"
 
 toolchain:
     #!/bin/zsh
@@ -3243,7 +3247,7 @@ toolchain:
     dir="{{toolchain_dir}}"
     mkdir -p "$dir"
     fetch() {
-        local name="$1-aarch64-apple-darwin" sha="$2"
+        local name="$1-aarch64-apple-darwin-$2" sha="$3"
         if [ -d "$dir/$name" ]; then echo "toolchain: $name already unpacked"; return; fi
         local tmp; tmp=$(mktemp -d "$dir/.fetch.XXXXXX")
         gh release download "$1" --repo EmiBSD/DevTools --pattern "$name.tar.zst" --dir "$tmp"
@@ -3259,12 +3263,17 @@ toolchain:
         rmdir "$tmp"
         echo "toolchain: $name unpacked, sha256 $got"
     }
-    fetch "{{devtools_llvm}}" "{{devtools_llvm_sha256}}"
-    fetch "{{devtools_rust}}" "{{devtools_rust_sha256}}"
+    fetch "{{devtools_llvm}}" arm64 "{{devtools_llvm_sha256_arm64}}"
+    fetch "{{devtools_rust}}" arm64 "{{devtools_rust_sha256_arm64}}"
+    fetch "{{devtools_llvm}}" amd64 "{{devtools_llvm_sha256_amd64}}"
+    fetch "{{devtools_rust}}" amd64 "{{devtools_rust_sha256_amd64}}"
     command -v rustup >/dev/null || PATH=/opt/homebrew/opt/rustup/bin:$PATH
-    rustup toolchain link emibsd "$dir/{{devtools_rust}}-aarch64-apple-darwin"
-    echo "toolchain: rustup's emibsd is $(rustup run emibsd rustc --version)"
-    echo "toolchain: EMIBSD_LLVM_BIN=$dir/{{devtools_llvm}}-aarch64-apple-darwin/bin ($("$dir/{{devtools_llvm}}-aarch64-apple-darwin/bin/ld.lld" --version))"
+    for arch name in arm64 emibsd amd64 emibsd-amd64; do
+        rustup toolchain link "$name" "$dir/{{devtools_rust}}-aarch64-apple-darwin-$arch"
+        echo "toolchain: rustup's $name is $(rustup run "$name" rustc --version)"
+        llvm="$dir/{{devtools_llvm}}-aarch64-apple-darwin-$arch/bin"
+        echo "toolchain: $arch EMIBSD_LLVM_BIN=$llvm ($("$llvm/ld.lld" --version))"
+    done
 
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected

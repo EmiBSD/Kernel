@@ -174,10 +174,15 @@ uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 (github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.1` and
 `rust-1.99.1+emibsd.1`, pinned by tag and sha256 in the justfile, fetched with `gh release
 download` (never "latest"), checked before unpacking, and unpacked unmodified into
-`~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). The Rust one becomes rustup's
-toolchain `emibsd` (`rustup toolchain link`); the LLVM one's `bin/` (`ld.lld`, `llvm-objcopy`,
-clang) is `EMIBSD_LLVM_BIN`. Needs `gh`, logged in, and `zstd` (Homebrew). The kernel still
-builds with the `rust-toolchain.toml` pin until the switch commit names `emibsd`.
+`~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). Since DevTools' D-0008
+(2026-11-02) each release has one tarball per target architecture, `-arm64` and `-amd64`, and
+the recipe fetches both pairs. The arm64 Rust becomes rustup's toolchain `emibsd`, the amd64 one
+`emibsd-amd64` (`rustup toolchain link`; unused until N10, decision 44); each LLVM's `bin/`
+(`ld.lld`, `llvm-objcopy`, clang) is that arch's `EMIBSD_LLVM_BIN`. The kernel targets are
+`aarch64-emibsd-none-softfloat` and `x86_64-emibsd-none-softfloat` (upstream's bare-metal targets
+with the vendor `emibsd`); `aarch64-unknown-none-softfloat` is no longer shipped. Needs `gh`,
+logged in, and `zstd` (Homebrew). The kernel still builds with the `rust-toolchain.toml` pin and
+upstream's target names until the switch commit names `emibsd` and the renamed targets.
 
 ## e2fsprogs (M10d)
 
