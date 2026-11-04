@@ -158,18 +158,20 @@ fn bread_or_release<G: ProcGlue>(
     }
 }
 
+/// `ffs1_blkpref` or `ffs2_blkpref`: the format's block preference.
+type Blkpref<G> = fn(&Inode<G>, Daddr, i32, Option<&dyn Fn(usize) -> Daddr>) -> Daddr;
+
 /// The direct-block half of `ffs1_balloc`/`ffs2_balloc` (the file's first `NDADDR`
 /// blocks), the two's code being the same but for their `blkpref`: the fragment the file
 /// ends in grown into a block when the write goes past it, then block `lbn` read, grown or
 /// allocated.
-#[allow(clippy::too_many_arguments)] // the C's arguments and its blkpref
 fn balloc_direct<G: ProcGlue>(
     ip: &Inode<G>,
     lbn: Daddr,
     size: i32,
     cred: Cred<'_>,
     flags: i32,
-    blkpref: fn(&Inode<G>, Daddr, i32, Option<&dyn Fn(usize) -> Daddr>) -> Daddr,
+    blkpref: Blkpref<G>,
 ) -> Option<Result<BufRef, Errno>> {
     let vp = ip.itov();
     let fs = ip.i_fs();
@@ -216,10 +218,9 @@ fn balloc_direct<G: ProcGlue>(
         if nsize <= osize {
             // The existing block is already at least as big as we want. Just read the
             // block.
-            return Some(bread_or_release(vp, lbn, bsize).map(|t| {
-                buf_adjcnt(&t, i64::from(osize));
-                t
-            }));
+            return Some(
+                bread_or_release(vp, lbn, bsize).inspect(|t| buf_adjcnt(t, i64::from(osize))),
+            );
         }
         // The existing block is smaller than we want, grow it.
         let pref = blkpref(ip, lbn, lbn as i32, Some(&db));

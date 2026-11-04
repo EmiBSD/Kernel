@@ -444,7 +444,7 @@ fn bap_assign<G: ProcGlue>(ip: &Inode<G>, b: &mut [u8], i: usize, value: Daddr) 
         return set_daddr64_at(b, i, value);
     }
     let _ = ip;
-    set_daddr32_at(b, i, value)
+    set_daddr32_at(b, i, value);
 }
 
 /// `ffs_indirtrunc`: release blocks associated with the inode `ip` and stored in the
@@ -533,12 +533,10 @@ pub fn ffs_indirtrunc<G: ProcGlue>(
         }
         copy = Some(c);
 
-        if !doingasync(vp) {
-            if let Err(e) = bwrite(t) {
-                allerror = Err(e);
-            }
-        } else {
+        if doingasync(vp) {
             bawrite(t);
+        } else if let Err(e) = bwrite(t) {
+            allerror = Err(e);
         }
     }
     let baps: &[u8] = match (&copy, &mut held) {

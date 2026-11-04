@@ -737,8 +737,8 @@ impl Superblock {
     /// `panic(9)` for a range outside it or not of whole `int32_t`s.
     pub fn read_csum_bytes(&self, off: usize, out: &mut [u8]) {
         let words = self.csum_range(off, out.len());
-        for (dst, w) in out.chunks_exact_mut(4).zip(words) {
-            dst.copy_from_slice(&w.load(Ordering::Relaxed).to_ne_bytes());
+        for (dst, w) in out.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+            *dst = w.load(Ordering::Relaxed).to_ne_bytes();
         }
     }
 
@@ -748,11 +748,8 @@ impl Superblock {
         #[cfg(feature = "diagnostic")]
         hal::klock::kernel_assert_locked();
         let words = self.csum_range(off, src.len());
-        for (part, w) in src.chunks_exact(4).zip(words) {
-            w.store(
-                i32::from_ne_bytes([part[0], part[1], part[2], part[3]]),
-                Ordering::Relaxed,
-            );
+        for (part, w) in src.as_chunks::<4>().0.iter().zip(words) {
+            w.store(i32::from_ne_bytes(*part), Ordering::Relaxed);
         }
     }
 

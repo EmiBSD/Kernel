@@ -1040,15 +1040,12 @@ pub fn ffs_alloccg<G: ProcGlue>(ip: &Inode<G>, cg: u32, mut bpref: Daddr, size: 
 
         Some(cgbase(fs, cg) + bno)
     };
-    match r {
-        Some(blkno) => {
-            bdwrite(t);
-            blkno
-        }
-        None => {
-            brelse(t);
-            0
-        }
+    if let Some(blkno) = r {
+        bdwrite(t);
+        blkno
+    } else {
+        brelse(t);
+        0
     }
 }
 
