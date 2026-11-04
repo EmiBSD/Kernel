@@ -1,0 +1,10 @@
+# rust-analyzer's workspace configuration (the editor's and Claude Code's LSP plugin).
+# The kernel is analysed as `just build` builds it: arm64, `--features qemu`; the host
+# tests are out of this view. No `cargo check` on save (decision 23: develop first,
+# compile later): only the index and rust-analyzer's own diagnostics.
+[cargo]
+target = "aarch64-unknown-none-softfloat"
+features = ["qemu"]
+allTargets = false
+
+checkOnSave = false

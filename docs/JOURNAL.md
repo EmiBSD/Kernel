@@ -705,3 +705,35 @@ Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (54
 - Userland was not the place: it is in planning, with a designer session working in its tree;
   two `cargo clippy --fix` runs from this session deadlocked against it on one `target/`
   (the lesson is in the session memory: tooling experiments go to the Kernel).
+
+### DevTools' toolchain: the first consumer (2026-10-31)
+
+- DevTools published its first releases and asked the Kernel for a recipe that installs them by
+  pin and for the smoke that proves them (its T1-T3). The first pair (llvm-22.1.6+emibsd.3,
+  rust-1.98.1+emibsd.2) was withdrawn the same day: rustup's 1.98.1 is built on LLVM 22.1.8, not
+  22.1.6, and DevTools' one LLVM now follows the series the pinned rustc was released with
+  (llvm-23.1.4+emibsd.1, rust-1.99.1+emibsd.1).
+- `just toolchain` (e01cf41b) fetches by tag with `gh release download`, checks the sha256
+  before unpacking, unpacks unmodified into `~/devel/emibsd/toolchains` and links rustup's
+  `emibsd` (the user's answers: after N5.5b1, before b2; recipe, smoke, then the switch).
+- An isolated trial (the toolchain and the linker chosen by the environment only, in a worktree):
+  `just build`, `just clippy` and `just smoke-boot` green with DevTools' rustc 1.99.1 and LLD
+  23.1.4; the kernel's `.comment` names both. Kernel text 5,900,931 bytes against rustup 1.98.1's
+  5,990,948.
+- The bump to rustup's 1.99.1 (d8b4a38b): `fetch_update` -> `try_update` at 7 sites and clippy's
+  new `redundant_else` at 2, so the switch measures only who built the compiler.
+- The machine lock: DevTools' first lock was `flock(2)` on a file at `/tmp/emibsd/ci.lock`, which
+  blocked every `mkdir` taker and excluded nothing; DevTools moved to the directory protocol the
+  same day (its 777d9bd, D-0007).
+
+### /insight calls of N5 (ledger.tsv)
+
+- 2026-10-28, design fork of N5.2 (the vnode handle and its lock), Gemini 4 Argon (at effort
+  `low`: reasoning mandatory) + GPT Sol: 14 claims, 12 held, 2 not applicable; became work:
+  decisions D6 and D7 (the lock in the node, `RecursiveRwlock`), the `vn_lock` guard disarmed on
+  the inactive path, two `vget` entry points. $0.10.
+- 2026-10-30, a hot-path measurement of N5.5a1 (create.remove +29 %, host), Gemini 4 Argon +
+  GPT Sol, the user's ask: 10 claims, 9 held, 1 plausible and unmeasured (`InodeInit` built and
+  moved); became work: one fair pair on the same recycling pool double, which put the rise at
+  +13.8 %, accepted with its reason in the a1 merge (vtoi's counted handle; N12). $0.08.
+

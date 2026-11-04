@@ -451,7 +451,7 @@ pub fn witness() -> KernelWitness {
 pub fn reader() -> KernelReader {
     require_held("klock::reader");
     if witnesses()
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
             (n >= 0).then_some(n + 1)
         })
         .is_err()

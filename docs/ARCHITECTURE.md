@@ -219,6 +219,12 @@ revision 6, with no crate in between (see "Dependencies").
 
 Stable Rust, pinned in `rust-toolchain.toml`.
 
+Since 2026-10-31 the pin is 1.99.1, the version DevTools (github.com/EmiBSD/DevTools) builds:
+`just toolchain` installs its releases by tag and sha256 into `~/devel/emibsd/toolchains`
+(`docs/SETUP.md`), the Rust one as rustup's toolchain `emibsd`. Its rustc ships no `rust-lld`
+(the linker is the LLVM release's `ld.lld`) and no `llvm-tools` (`EMIBSD_LLVM_BIN` names its
+`llvm-objcopy`). Until the switch commit names `emibsd`, the kernel builds with rustup's 1.99.1.
+
 - `x86_64-unknown-none`: kernel code model, no SSE/AVX, no red zone.
 - `aarch64-unknown-none-softfloat`: no NEON/FP. The hardfloat variant lets the compiler use `q`
   registers in `memcpy`; a kernel that does not save FP state on traps must not touch them. This is

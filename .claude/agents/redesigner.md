@@ -34,8 +34,11 @@ the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
 2. Measure first and keep the numbers for the commit: `cargo xtask unsafe-report` for the
    subsystem, the `just test` count, the smokes that cover the module (the justfile's `smokes`,
    `tools/xtask`), the `diff-openbsd` scenarios, `just bench` when performance is the point.
-3. The timing rule (`re-engineering.md`): an item used by more than 50 modules (`grep -rl`) is
-   not redesigned while an LZ milestone that touches those modules is open. If your scope hits
+3. The timing rule (`re-engineering.md`): an item used by more than 50 modules (the LSP
+   tool's `findReferences` on its definition, grep for what it cannot see) is
+   not redesigned while an LZ milestone that touches those modules is open. The same list is
+   the one every `[[module.fn]]` row and every `adapted_by` is written from, and the one you
+   walk when an API changes: no caller is left to the close's compile-and-fix pass. If your scope hits
    one, stop and report; do not work around it.
 4. Study how the tree already does the same thing (`grep -rn` the redesigned siblings,
    `docs/IDIOMS.md`) and copy its idioms before inventing one. An idiom used for the first time

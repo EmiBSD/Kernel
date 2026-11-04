@@ -31,3 +31,7 @@ date	brief	model	in_tokens	out_tokens	cost_usd	seconds	finish	file
 20261022	n4.5-switch/BRIEF.md	~openai/gpt-sol-latest	7740	1697	0.0363	45	stop	20261022-062107-openai_gpt-sol-latest.md
 20261022	n4.6-exit-sysctl/BRIEF.md	google/gemini-4-argon	15093	3482	0.0650	45	stop	20261022-220414-google_gemini-4-argon.md
 20261022	n4.6-exit-sysctl/BRIEF.md	~openai/gpt-sol-latest	11639	1620	0.0453	34	stop	20261022-220414-openai_gpt-sol-latest.md
+20261028	vnode-handle/BRIEF.md	google/gemini-4-argon	12185	3673	0.0611	49	stop	20261028-201415-google_gemini-4-argon.md
+20261028	vnode-handle/BRIEF.md	~openai/gpt-sol-latest	9743	1781	0.0422	36	stop	20261028-201415-openai_gpt-sol-latest.md
+20261030	n5.5a1-create-remove/BRIEF.md	google/gemini-4-argon	9976	2189	0.0418	31	stop	20261030-232833-google_gemini-4-argon.md
+20261030	n5.5a1-create-remove/BRIEF.md	~openai/gpt-sol-latest	8057	1612	0.0363	25	stop	20261030-232833-openai_gpt-sol-latest.md

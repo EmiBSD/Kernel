@@ -586,7 +586,7 @@ impl PageMd {
     pub fn clear_attrs(&self) {
         let cleared = self
             .attrs
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
                 (a & PG_HAL_VIEW == 0).then_some(0)
             });
         if cleared.is_err() {
@@ -624,7 +624,7 @@ impl PageMd {
             PG_HAL_VIEW
         };
         self.attrs
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
                 (a & PG_HAL_VIEW == 0).then_some(a | bits)
             })
             .is_ok()
@@ -636,7 +636,7 @@ impl PageMd {
     /// false for it).
     pub(crate) fn claim_for_good(&self) -> bool {
         self.attrs
-            .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
+            .try_update(Ordering::AcqRel, Ordering::Relaxed, |a| {
                 (a & PG_HAL_VIEW == 0).then_some(a | PG_HAL_VIEW | PG_HAL_VIEW_W | PG_HAL_KEEP)
             })
             .is_ok()

@@ -22,8 +22,10 @@ userland sees never changes.
 
 Inspect with `git log --oneline <base>..<branch>`, `git diff <base> <branch> -- <path>`,
 `git show <branch>:<path>`; code zones with `sed -n '/<CODE>/,/<\/CODE>/p'`; the LZ side with
-`git -C reference/emibsd-lz show <pin>:<path>`; the C in ranges. `cargo xtask lz trace` (in the
-main checkout, read-only) answers where an item went. Every finding has `path:line` evidence on
+`git -C reference/emibsd-lz show <pin>:<path>`; the C in ranges. Whether every caller followed a
+changed API, and who implements a trait, through the LSP tool on the branch's checkout
+(`findReferences`, `incomingCalls`, `goToImplementation`), grep for what it cannot see.
+`cargo xtask lz trace` (in the main checkout, read-only) answers where an item went. Every finding has `path:line` evidence on
 the native side and `reference/emibsd-lz/<path>:<line>` or `reference/openbsd-src/<path>:<line>`
 on the side it must match, and a concrete failing input or sequence when it is a defect.
 

@@ -49,9 +49,19 @@ just smoke                         # after milestone M0
 
 ## Editor
 
-rust-analyzer works out of the box on the host target thanks to `sys/arch/host`. To analyse
-arch-specific code, set `rust-analyzer.cargo.target` to one of the bare targets temporarily.
-`just clippy` checks all three targets regardless of editor settings.
+`rust-analyzer.toml` at the root configures rust-analyzer for the editor and for Claude
+Code's LSP plugin alike (the user's decision of 2026-11-01): the tree is analysed as
+`just build` builds it, arm64 (`aarch64-unknown-none-softfloat`) with `--features qemu`, and
+`checkOnSave` is off, so no `cargo check` runs on a save (decision 23: develop first, compile
+later; nothing runs while `/tmp/emibsd/ci.lock` exists). What is left is the index and
+rust-analyzer's own diagnostics; the host side (`sys/arch/host`, the tests) is out of that
+view, and `just clippy` checks every target regardless. The server is the toolchain's
+component (`rustup component add rust-analyzer`, pinned with `rust-toolchain.toml`); Claude
+Code reaches it through the `rust-analyzer-lsp` plugin of `claude-plugins-official`
+(`claude plugin install rust-analyzer-lsp@claude-plugins-official`, user scope; a session
+started after the install sees it). Measured on 2026-11-01 with `rust-analyzer analysis-stats`
+over the whole workspace (33 crates): the index in 6 s, the inference of every body in 158 s,
+4.6 GB peak; the live server infers on demand, so that is the ceiling, not the steady state.
 
 ## What `just` expects
 
@@ -157,6 +167,22 @@ to it into one to the Mac's 127.0.0.1, so no port forwarding is configured. `jus
 uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 `cargo test -p xtask -- --ignored servers_answer` checks the three modes against
 `openssl s_client` on the Mac alone.
+
+## DevTools toolchain (T3)
+
+`just toolchain` installs the EmiBSD toolchains that DevTools releases
+(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.1` and
+`rust-1.99.1+emibsd.1`, pinned by tag and sha256 in the justfile, fetched with `gh release
+download` (never "latest"), checked before unpacking, and unpacked unmodified into
+`~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). Since DevTools' D-0008
+(2026-11-02) each release has one tarball per target architecture, `-arm64` and `-amd64`, and
+the recipe fetches both pairs. The arm64 Rust becomes rustup's toolchain `emibsd`, the amd64 one
+`emibsd-amd64` (`rustup toolchain link`; unused until N10, decision 44); each LLVM's `bin/`
+(`ld.lld`, `llvm-objcopy`, clang) is that arch's `EMIBSD_LLVM_BIN`. The kernel targets are
+`aarch64-emibsd-none-softfloat` and `x86_64-emibsd-none-softfloat` (upstream's bare-metal targets
+with the vendor `emibsd`); `aarch64-unknown-none-softfloat` is no longer shipped. Needs `gh`,
+logged in, and `zstd` (Homebrew). The kernel still builds with the `rust-toolchain.toml` pin and
+upstream's target names until the switch commit names `emibsd` and the renamed targets.
 
 ## e2fsprogs (M10d)
 
