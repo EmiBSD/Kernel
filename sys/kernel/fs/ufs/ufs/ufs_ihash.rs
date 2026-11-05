@@ -115,7 +115,7 @@ use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::subr::{vfs, vget, vput};
 #[cfg(feature = "ext2fs")]
-use crate::fs::vnode::VT_EXT2FS;
+use crate::fs::ufs::ext2fs::ext2fs_extern::is_ext2_vnode;
 use crate::fs::vnode::{LK_EXCLUSIVE, Vnode};
 use crate::fs::vops::{vop_lock, vop_unlock};
 use crate::proc::ProcGlue;
@@ -214,7 +214,7 @@ fn unlinked_and_writable<G: ProcGlue>(vp: &Vnode<G>, ip: &Inode<G>) -> bool {
     // XXX DIP does not cover ext2fs so hack around this for now since this is using
     // ufs_ihashget as well.
     #[cfg(feature = "ext2fs")]
-    let unlinked = if vp.tag() == VT_EXT2FS {
+    let unlinked = if is_ext2_vnode(vp) {
         // An unsigned 16 bits: `<= 0` is `== 0`.
         ip.i_e2din().i_e2fs_nlink() == 0
     } else {

@@ -91,6 +91,17 @@
 //!   `ROOTDEV` and the machine's `conf.c` until N7); `rootvp` and `swapdev_vp` are `bsd`'s
 //!   `init_main.c` globals, reached through the glue (`FileGlue::rootvp`, `set_rootvp`,
 //!   `set_swapdev_vp`, docs/SCAFFOLDING.md), as ffs's.
+//! - `e2fs_sbcheck` checks what the C's checks and no more: a super block whose
+//!   `e2fs_inode_size` is 0 or larger than the block (so `e2fs_ipb` is 0), or whose
+//!   `e2fs_ipg` is 0, divides by zero in [`e2fs_sbfill`] (`e2fs_ipb`, `e2fs_itpg`) and in
+//!   `ino_to_cg`/`ino_to_fsba` (`ext2fs.rs`). The kernel panics on the division, where the C
+//!   traps on amd64 and, on arm64 (`udiv` by 0 answers 0), goes on with out-of-bounds inode
+//!   offsets; mounting needs root. The C's checks are kept as they are, no `EINVAL` is added
+//!   (that would be a new difference from OpenBSD, the user's call; the main session's
+//!   decision on review 1 of N5.6c3).
+//! - [`ext2fs_init`]'s pools answer `EBUSY` on a second call (a host test's), which is the
+//!   C's call per `vfsconf` kept; any other error of theirs (the kernel's `ENOMEM` without a
+//!   pool backend; the C's `pool_init` cannot fail) is the call's error.
 //! - The `struct ext2fs_reload_args`/`struct ext2fs_sync_args` callbacks of
 //!   `vfs_mount_foreach_vnode` are closures over those structures.
 //!
@@ -234,8 +245,14 @@ struct Ext2fsSyncArgs<'a, G: ProcGlue> {
 /// call (a host test's) keeps the pools made first: their `init` answers `EBUSY`.
 pub fn ext2fs_init<G: ProcGlue>(_vfsp: &'static Vfsconf<G>) -> Result<(), Errno> {
     let t = &vfs::<G>().ufs;
-    let _ = t.ext2fs_ino.init_recorded(IPL_NONE, PR_WAITOK, "ext2inopl");
-    let _ = t.ext2fs_dino.init(IPL_NONE, PR_WAITOK, "ext2dinopl");
+    match t.ext2fs_ino.init_recorded(IPL_NONE, PR_WAITOK, "ext2inopl") {
+        Ok(()) | Err(Errno::EBUSY) => {}
+        Err(e) => return Err(e),
+    }
+    match t.ext2fs_dino.init(IPL_NONE, PR_WAITOK, "ext2dinopl") {
+        Ok(()) | Err(Errno::EBUSY) => {}
+        Err(e) => return Err(e),
+    }
 
     ufs_init::<G>(vfs::<G>().initialvnodes.load(Ordering::Relaxed))
 }
