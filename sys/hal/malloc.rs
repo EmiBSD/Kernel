@@ -289,7 +289,9 @@ struct MInner<T> {
 /// `size_of::<MInner<T>>()` bytes counted under `inner.ty`, whose `refs` counts (in its low
 /// half) the live handles to it, this one included, and the [`AnyArc`]s erased from them; the
 /// value is dropped and the block freed only when that count reaches 0, so the block outlives
-/// every handle. Only shared references to the block are made while handles live.
+/// every handle. Only shared references to the block are made while handles live. The value
+/// never leaves its block and is never lent mutably while handles live (`as_pin`); a move-out
+/// or `&mut` API would need `T: Unpin`.
 pub struct MArc<T: Send + Sync + 'static> {
     inner: NonNull<MInner<T>>,
     _owns: PhantomData<MInner<T>>,

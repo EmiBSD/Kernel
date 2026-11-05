@@ -301,8 +301,8 @@ pub struct VfsTables<G: ProcGlue> {
     pub ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables<G>,
     /// msdosfs's globals (the denode hash, `msdosfs_vops`), N5.7: the last member in the
     /// source. The default representation may reorder members, so the evidence that the
-    /// others did not move is N5.7c2's layout probe (`ufs` at offset 144 with and without
-    /// the feature), not this order.
+    /// others did not move is the test `the_ufs_tables_stay_where_they_were_without_msdosfs`
+    /// (`ufs` at offset 144 with and without the feature), not this order.
     #[cfg(feature = "msdosfs")]
     pub msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables<G>,
 }
@@ -2461,6 +2461,18 @@ mod tests {
         }
         let r = std::panic::catch_unwind(|| hashinit::<ByHash>(0, 28, hal::malloc::M_WAITOK));
         assert!(r.is_err(), "hashinit: bad cnt");
+    }
+
+    /// The UFS layer's tables sit where they sat before msdosfs's member was added (N5.7c2,
+    /// decision 43: no existing path's data moved). 144 is the offset of `ufs` measured then
+    /// in the test glue's tables without the feature, the same in every feature set the tests
+    /// build (none, `msdosfs` alone, `just test`'s with and without `msdosfs`): plain `cargo
+    /// test -p kernel` checks it without the member, `just test` with it. The default
+    /// representation decides the order, so a change elsewhere in `VfsTables` (or in the
+    /// compiler's layout) can move it too: then measure again, and say why in the commit.
+    #[test]
+    fn the_ufs_tables_stay_where_they_were_without_msdosfs() {
+        assert_eq!(core::mem::offset_of!(VfsTables<TestGlue>, ufs), 144);
     }
 }
 /* </TESTS> */
