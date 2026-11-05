@@ -55,9 +55,13 @@
 //! LZ: sys/ufs/ufs/ufsmount.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS) is a member of `bsd`'s types:
-//!   the glue's member [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until its
-//!   owners move (`um_fs` at N5.5b2, `um_e2fs` at N5.6). `um_export` (`struct netexport`, the
+//! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS): FFS's is the structure's own
+//!   since N5.5b1, a `Superblock` (`fs::ufs::ffs::fs`) set once by the kernel's `ffs_mountfs`
+//!   ([`Ufsmount::um_fs`], [`Ufsmount::set_um_fs`]), held inline as the C holds the pointer;
+//!   unset on an EXT2FS mount, whose `um_e2fs` is the glue's member [`Ufsmount::g`]
+//!   (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until N5.6. Until N5.5b2 switches ffs,
+//!   `bsd`'s ffs keeps its own `um_fs` in the glue's member and leaves this one unset.
+//!   `um_export` (`struct netexport`, the
 //!   NFS server's) is the mount's glue member since N5.5b0 (`Mount::g`, `bsd`'s `BsdMountG`,
 //!   until N6): `bsd`'s `vfs_export` and `vfs_export_lookup` read it from the mount, which all
 //!   three of its readers hold. The quota members (`um_quotas`, `um_cred`, `um_btime`,
@@ -88,11 +92,16 @@
 //!   unmount's `vflush` reclaiming every inode first. The cost against the C's one load of
 //!   `mnt_data`: the slot's read and a count pair per `VFSTOUFS` (the `Vfs` operations, not
 //!   read, write or lookup), one count pair per inode life.
+//! - N5.5b1: `ufsmount_u.fs` (`um_fs`, the C's pointer to a `malloc`ed super-block) -> a
+//!   set-once `Superblock` held inline ([`Ufsmount::um_fs`]): the super-block's own `malloc`
+//!   is its words' array (`ffs/fs.rs`), so the `UFS mount` row's requests stay the C's, and
+//!   it is freed with the structure's last handle, as the unmount frees both.
 
 use core::sync::atomic::{AtomicI64, AtomicU8};
 
 use hal::link::Link;
 use hal::malloc::{M_WAITOK, MArc};
+use hal::once::OnceStatic;
 use hal::slot::ReadMostly;
 use hal::sys::types::Daddr;
 
@@ -102,6 +111,7 @@ use crate::assert::kpanic;
 use crate::cred::CredRef;
 use crate::file::FileGlue;
 use crate::fs::mount::Mount;
+use crate::fs::ufs::ffs::fs::Superblock;
 use crate::fs::vnode::Vnode;
 use crate::proc::ProcGlue;
 
@@ -136,6 +146,8 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_itime: [AtomicI64; MAXQUOTAS],
     /// `um_qflags`: quota specific flags.
     pub um_qflags: [AtomicU8; MAXQUOTAS],
+    /// `ufsmount_u.fs`: FFS's in-core super-block, set once by `ffs_mountfs`.
+    fs: OnceStatic<Superblock>,
     /// The members of `bsd`'s types (`ufsmount_u`; the module's deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
@@ -175,6 +187,7 @@ impl<G: ProcGlue> Ufsmount<G> {
             um_btime: [const { AtomicI64::new(0) }; MAXQUOTAS],
             um_itime: [const { AtomicI64::new(0) }; MAXQUOTAS],
             um_qflags: [const { AtomicU8::new(0) }; MAXQUOTAS],
+            fs: OnceStatic::new(),
             g: Default::default(),
         }
     }
@@ -192,6 +205,23 @@ impl<G: ProcGlue> Ufsmount<G> {
         match self.um_mountp.get() {
             Some(mp) => mp,
             None => kpanic(format_args!("ufsmount {self:p}: no um_mountp")),
+        }
+    }
+
+    /// `ump->um_fs`: the FFS super-block in core; `panic(9)` on a mount without one (EXT2FS's,
+    /// whose `ufsmount_u` the C reads as `um_e2fs`).
+    #[inline]
+    pub fn um_fs(&self) -> &Superblock {
+        match self.fs.get() {
+            Some(fs) => fs,
+            None => kpanic(format_args!("ufsmount {self:p}: no um_fs")),
+        }
+    }
+
+    /// `ump->um_fs = fs`, once (`ffs_mountfs`); `panic(9)` on a second.
+    pub fn set_um_fs(&self, fs: Superblock) {
+        if self.fs.set(fs).is_err() {
+            kpanic(format_args!("ufsmount {self:p}: a second um_fs"));
         }
     }
 }

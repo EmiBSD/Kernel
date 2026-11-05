@@ -74,7 +74,9 @@
 //! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS) and EXT2FS's `inode_ext` (`e2fs`) are
 //!   members of `bsd`'s types (ffs's super block, ext2fs's): they are the glue's member
 //!   [`Inode::g`] (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (`i_fs` at
-//!   N5.5b, the ext2fs members at N5.6). `i_dquot[]` and UFS's `inode_ext.dirhash` are the
+//!   N5.5b2, the ext2fs members at N5.6); the kernel's ffs (N5.5b1) reads `i_fs` as
+//!   [`Inode::i_fs`], the super-block its mount's structure holds (`ufsmount_u.fs`), not a
+//!   pointer of the inode's own. `i_dquot[]` and UFS's `inode_ext.dirhash` are the
 //!   inode's own since N5.5a2 ([`Inode::i_dquot`], [`Inode::i_dirhash`]). EXT2FS's dinode
 //!   (`i_e2din`) is the glue member's too: the kernel's [`Dinode`] holds the FFS dinodes only,
 //!   and a `DIP` of an ext2fs inode is `panic(9)` (the C's `DIP` reads FFS members there;
@@ -139,6 +141,11 @@
 //!   bytes (`ffs_vget`, `ffs_update`).
 //! - LZ's `dinode1_at`/`set_dinode1_at` and their UFS2 twins (`unsafe` unaligned reads and
 //!   writes) -> `pod_from_bytes`/`pod_to_bytes` of the `hal::abi_pod!` dinodes.
+//! - N5.5b1: [`DinWords`]'s member and byte accesses are [`words_get`], [`words_set`],
+//!   [`words_read_bytes`] and [`words_write_bytes`] over any slice of words, the one word core
+//!   FFS's in-core super-block shares (`ffs/fs.rs`'s `Superblock`, an array of the disk's
+//!   `fs_sbsize` bytes); [`DinField`] gains the one-byte members (`fs_fmod`, `fs_clean`).
+//!   [`Inode::i_fs`] is `inode_u.fs` through the inode's mount handle.
 
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
@@ -167,6 +174,7 @@ use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::mount::Mount;
+use crate::fs::ufs::ffs::fs::Superblock;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, IoBuf};
 use crate::proc::ProcGlue;
@@ -301,7 +309,126 @@ macro_rules! din_field {
     };
 }
 
-din_field!(u16 => u16, i16 => u16, u32 => u32, i32 => u32, u64 => u64, i64 => u64);
+din_field!(u8 => u8, i8 => u8, u16 => u16, i16 => u16, u32 => u32, i32 => u32, u64 => u64, i64 => u64);
+
+/// The shift of a member of `size` bytes at byte `off` of its word, in bits.
+#[inline]
+fn word_shift(off: usize, size: usize) -> u32 {
+    let b = off % 8;
+    let s = if cfg!(target_endian = "little") {
+        b * 8
+    } else {
+        (8 - b - size) * 8
+    };
+    s as u32
+}
+
+/// The word of `w` holding the member at `off` of `size` bytes: `panic(9)` for one outside
+/// the words or across two of them (no member of the C's on-disk structures is either);
+/// `what` names the structure in the message.
+#[inline]
+fn word_at<'a>(w: &'a [AtomicU64], what: &str, off: usize, size: usize) -> &'a AtomicU64 {
+    if !off.is_multiple_of(size) || off + size > w.len() * 8 {
+        kpanic(format_args!("{what}: member at {off} of {size} bytes"));
+    }
+    &w[off / 8]
+}
+
+/// The member at byte `off` of the structure `w` holds as relaxed words (an `offset_of!` of
+/// the on-disk structure): [`DinWords::get`], and the super-block's words (`ffs/fs.rs`).
+#[inline]
+pub fn words_get<T: DinField>(w: &[AtomicU64], what: &str, off: usize) -> T {
+    let v = word_at(w, what, off, T::SIZE).load(Ordering::Relaxed);
+    T::from_bits(v >> word_shift(off, T::SIZE))
+}
+
+/// The member at byte `off` of `w` set to `v`, the word's other members kept: a load and a
+/// store of the word, by a holder of the kernel lock (checked under `diagnostic`), whose
+/// writes it orders.
+pub fn words_set<T: DinField>(w: &[AtomicU64], what: &str, off: usize, v: T) {
+    #[cfg(feature = "diagnostic")]
+    hal::klock::kernel_assert_locked();
+    let s = word_shift(off, T::SIZE);
+    let mask = if T::SIZE == 8 {
+        u64::MAX
+    } else {
+        ((1u64 << (T::SIZE * 8)) - 1) << s
+    };
+    let bits = (v.to_bits() << s) & mask;
+    let word = word_at(w, what, off, T::SIZE);
+    word.store(
+        (word.load(Ordering::Relaxed) & !mask) | bits,
+        Ordering::Relaxed,
+    );
+}
+
+/// The bytes `off..off + out.len()` of the structure `w` holds into `out`.
+pub fn words_read_bytes(w: &[AtomicU64], what: &str, off: usize, out: &mut [u8]) {
+    if off + out.len() > w.len() * 8 {
+        kpanic(format_args!(
+            "{what}: bytes {off}+{} past the end",
+            out.len()
+        ));
+    }
+    if off.is_multiple_of(8) && out.len().is_multiple_of(8) {
+        // Whole words (the structure copied whole, a block pointer array): one fixed-size
+        // store per word.
+        for (dst, w) in out.as_chunks_mut::<8>().0.iter_mut().zip(&w[off / 8..]) {
+            *dst = w.load(Ordering::Relaxed).to_ne_bytes();
+        }
+        return;
+    }
+    let mut i = 0;
+    while i < out.len() {
+        let at = off + i;
+        let first = at % 8;
+        let n = (8 - first).min(out.len() - i);
+        let word = w[at / 8].load(Ordering::Relaxed).to_ne_bytes();
+        out[i..i + n].copy_from_slice(&word[first..first + n]);
+        i += n;
+    }
+}
+
+/// The bytes `off..off + src.len()` of the structure `w` holds set to `src`; the bytes of the
+/// first and last words outside the range are kept (a load and a store of each, by a holder
+/// of the kernel lock, checked under `diagnostic`).
+pub fn words_write_bytes(w: &[AtomicU64], what: &str, off: usize, src: &[u8]) {
+    #[cfg(feature = "diagnostic")]
+    hal::klock::kernel_assert_locked();
+    if off + src.len() > w.len() * 8 {
+        kpanic(format_args!(
+            "{what}: bytes {off}+{} past the end",
+            src.len()
+        ));
+    }
+    if off.is_multiple_of(8) && src.len().is_multiple_of(8) {
+        // Whole words: no neighbour to keep, one store per word.
+        for (word, part) in w[off / 8..].iter().zip(src.as_chunks::<8>().0) {
+            word.store(u64::from_ne_bytes(*part), Ordering::Relaxed);
+        }
+        return;
+    }
+    let mut i = 0;
+    while i < src.len() {
+        let at = off + i;
+        let wi = at / 8;
+        let first = at % 8;
+        let n = (8 - first).min(src.len() - i);
+        let part = &src[i..i + n];
+        if n == 8 {
+            // A whole word: no neighbour to keep.
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(part);
+            w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
+            i += n;
+            continue;
+        }
+        let mut bytes = w[wi].load(Ordering::Relaxed).to_ne_bytes();
+        bytes[first..first + n].copy_from_slice(part);
+        w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
+        i += n;
+    }
+}
 
 /// The in-core copy of an FFS dinode (`*ip->i_din1`, `*ip->i_din2`): the on-disk structure's
 /// `N * 8` bytes as `N` relaxed atomic words, so the inode's readers share it with its writers
@@ -325,53 +452,16 @@ impl<const N: usize> DinWords<N> {
         }
     }
 
-    /// The shift of a member of `size` bytes at byte `off` of its word, in bits.
-    #[inline]
-    fn shift(off: usize, size: usize) -> u32 {
-        let b = off % 8;
-        let s = if cfg!(target_endian = "little") {
-            b * 8
-        } else {
-            (8 - b - size) * 8
-        };
-        s as u32
-    }
-
-    /// The word holding the member at `off` of `size` bytes: `panic(9)` for one outside the
-    /// dinode or across two words (no member of the C's structures is either).
-    #[inline]
-    fn word(&self, off: usize, size: usize) -> &AtomicU64 {
-        if !off.is_multiple_of(size) || off + size > N * 8 {
-            kpanic(format_args!("dinode: member at {off} of {size} bytes"));
-        }
-        &self.w[off / 8]
-    }
-
     /// The member at byte `off` (an `offset_of!` of the on-disk structure).
     #[inline]
     pub fn get<T: DinField>(&self, off: usize) -> T {
-        let w = self.word(off, T::SIZE).load(Ordering::Relaxed);
-        T::from_bits(w >> Self::shift(off, T::SIZE))
+        words_get(&self.w, "dinode", off)
     }
 
-    /// The member at byte `off` set to `v`, the word's other members kept: a load and a
-    /// store of the word, by a holder of the kernel lock (checked under `diagnostic`), whose
-    /// writes it orders.
+    /// The member at byte `off` set to `v`, the word's other members kept ([`words_set`]).
+    #[inline]
     pub fn set<T: DinField>(&self, off: usize, v: T) {
-        #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
-        let s = Self::shift(off, T::SIZE);
-        let mask = if T::SIZE == 8 {
-            u64::MAX
-        } else {
-            ((1u64 << (T::SIZE * 8)) - 1) << s
-        };
-        let bits = (v.to_bits() << s) & mask;
-        let w = self.word(off, T::SIZE);
-        w.store(
-            (w.load(Ordering::Relaxed) & !mask) | bits,
-            Ordering::Relaxed,
-        );
+        words_set(&self.w, "dinode", off, v);
     }
 
     /// The dinode's words (one relaxed load each).
@@ -426,75 +516,12 @@ impl<const N: usize> DinWords<N> {
 
     /// The bytes `off..off + out.len()` of the dinode into `out`.
     pub fn read_bytes(&self, off: usize, out: &mut [u8]) {
-        if off + out.len() > N * 8 {
-            kpanic(format_args!(
-                "dinode: bytes {off}+{} past the end",
-                out.len()
-            ));
-        }
-        if off.is_multiple_of(8) && out.len().is_multiple_of(8) {
-            // Whole words (the dinode copied whole, a block pointer array): one fixed-size
-            // store per word.
-            for (dst, w) in out
-                .as_chunks_mut::<8>()
-                .0
-                .iter_mut()
-                .zip(&self.w[off / 8..])
-            {
-                *dst = w.load(Ordering::Relaxed).to_ne_bytes();
-            }
-            return;
-        }
-        let mut i = 0;
-        while i < out.len() {
-            let at = off + i;
-            let first = at % 8;
-            let n = (8 - first).min(out.len() - i);
-            let w = self.w[at / 8].load(Ordering::Relaxed).to_ne_bytes();
-            out[i..i + n].copy_from_slice(&w[first..first + n]);
-            i += n;
-        }
+        words_read_bytes(&self.w, "dinode", off, out);
     }
 
-    /// The bytes `off..off + src.len()` of the dinode set to `src`; the bytes of the first and
-    /// last words outside the range are kept (a load and a store of each, by a holder of the
-    /// kernel lock, checked under `diagnostic`).
+    /// The bytes `off..off + src.len()` of the dinode set to `src` ([`words_write_bytes`]).
     pub fn write_bytes(&self, off: usize, src: &[u8]) {
-        #[cfg(feature = "diagnostic")]
-        hal::klock::kernel_assert_locked();
-        if off + src.len() > N * 8 {
-            kpanic(format_args!(
-                "dinode: bytes {off}+{} past the end",
-                src.len()
-            ));
-        }
-        if off.is_multiple_of(8) && src.len().is_multiple_of(8) {
-            // Whole words: no neighbour to keep, one store per word.
-            for (w, part) in self.w[off / 8..].iter().zip(src.as_chunks::<8>().0) {
-                w.store(u64::from_ne_bytes(*part), Ordering::Relaxed);
-            }
-            return;
-        }
-        let mut i = 0;
-        while i < src.len() {
-            let at = off + i;
-            let wi = at / 8;
-            let first = at % 8;
-            let n = (8 - first).min(src.len() - i);
-            let part = &src[i..i + n];
-            if n == 8 {
-                // A whole word: no neighbour to keep.
-                let mut bytes = [0u8; 8];
-                bytes.copy_from_slice(part);
-                self.w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
-                i += n;
-                continue;
-            }
-            let mut bytes = self.w[wi].load(Ordering::Relaxed).to_ne_bytes();
-            bytes[first..first + n].copy_from_slice(part);
-            self.w[wi].store(u64::from_ne_bytes(bytes), Ordering::Relaxed);
-            i += n;
-        }
+        words_write_bytes(&self.w, "dinode", off, src);
     }
 }
 
@@ -769,6 +796,14 @@ impl<G: ProcGlue> Inode<G> {
             Some(u) => u,
             None => kpanic(format_args!("inode {self:p}: no ufsmount")),
         }
+    }
+
+    /// `ip->i_fs` (`inode_u.fs`): the FFS super-block of the inode's mount, through the
+    /// inode's handle on it ([`Ufsmount::um_fs`]: two dependent loads where the C's inode
+    /// holds the pointer itself); `panic(9)` for an inode of a mount without one (EXT2FS's).
+    #[inline]
+    pub fn i_fs(&self) -> &Superblock {
+        self.ump().um_fs()
     }
 
     /// `ip->i_ump->um_mountp`: the mount the inode belongs to.
