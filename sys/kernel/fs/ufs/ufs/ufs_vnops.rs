@@ -108,6 +108,8 @@
 //! - N5.5b3 (D-N5.5b-7): `ufs_setattr` reads `kern.securelevel` through its inner function's
 //!   parameter (`ufs_setattr_at(.., &SECURELEVEL)`), so a host test passes a word of its own
 //!   instead of writing the system's, which the sysctl tests of the same process read.
+//! - N5.6c2: `rdonly`, `Abort`, `rename_abortit` and `RenameExit` are the crate's, for
+//!   ext2fs's operations, which repeat the C's (one helper, not a copy).
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -289,7 +291,7 @@ pub trait UfsFs<G: ProcGlue>: Sync + 'static {
 }
 
 /// Whether the vnode's file system is mounted read-only.
-fn rdonly<G: ProcGlue>(vp: &Vnode<G>) -> bool {
+pub(crate) fn rdonly<G: ProcGlue>(vp: &Vnode<G>) -> bool {
     vmount(vp).flag() & MNT_RDONLY != 0
 }
 
@@ -854,8 +856,8 @@ pub fn ufs_link<G: ProcGlue>(
     error
 }
 
-/// How `ufs_rename` leaves: the C's `bad:` and `out:` labels.
-enum RenameExit {
+/// How `ufs_rename` (and `ext2fs_rename`, N5.6c2) leaves: the C's `bad:` and `out:` labels.
+pub(crate) enum RenameExit {
     /// `goto bad`: release the target directory (and target) first.
     Bad(Errno),
     /// `goto out`.
@@ -863,21 +865,22 @@ enum RenameExit {
 }
 
 /// The four vnodes and two names of a rename, for `abortit:`.
-struct Abort<'r, 'c, G: ProcGlue> {
+pub(crate) struct Abort<'r, 'c, G: ProcGlue> {
     /// `tdvp`.
-    tdvp: &'static Vnode<G>,
+    pub(crate) tdvp: &'static Vnode<G>,
     /// `tvp`.
-    tvp: Option<&'static Vnode<G>>,
+    pub(crate) tvp: Option<&'static Vnode<G>>,
     /// `tcnp`.
-    tcnp: &'r mut Cn<'c, G>,
+    pub(crate) tcnp: &'r mut Cn<'c, G>,
     /// `fdvp`.
-    fdvp: &'static Vnode<G>,
+    pub(crate) fdvp: &'static Vnode<G>,
     /// `fvp`.
-    fvp: &'static Vnode<G>,
+    pub(crate) fvp: &'static Vnode<G>,
 }
 
-/// `abortit:` of `ufs_rename`: abort both lookups and release every vnode.
-fn rename_abortit<G: ProcGlue>(
+/// `abortit:` of `ufs_rename` (and of `ext2fs_rename`, whose label is the same): abort both
+/// lookups and release every vnode.
+pub(crate) fn rename_abortit<G: ProcGlue>(
     error: Errno,
     a: Abort<'_, '_, G>,
     fcnp: &mut Cn<'_, G>,

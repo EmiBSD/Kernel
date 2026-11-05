@@ -68,8 +68,8 @@
 //! the first indirect block to which they point. Triple indirect blocks are addressed by one
 //! less than the address of the first double indirect block to which they point.
 //!
-//! The vnode operation `ext2fs_bmap` over these two joins the module with the vnode
-//! operations' tables (N5.6c2); until then `bsd`'s is the one the mounts call.
+//! The vnode operation `ext2fs_bmap` chooses between the two by the inode's
+//! `EXT4_EXTENTS` flag; it is the `vop_bmap` slot of `ext2fs_vops` (`ext2fs_vnops.rs`).
 //!
 //! ## Deviations
 //! - `ext4_bmapext` and `ext2fs_bmaparray` take the `struct indir` array as a slice and its
@@ -88,6 +88,8 @@
 //!   its counted hold, the pointers read in the token's bytes. `VFSTOUFS(mp)` is the inode's
 //!   own mount words (`blkptrtodb`, `is_sequential`, `MNINDIR`), borrowed: no count on the
 //!   read path.
+//! - N5.6c2: `ext2fs_bmap` over `bsd`'s `VopBmapArgs` -> the kernel's `Vnops<G>` slot shape
+//!   (`vp`, `bn`, the three optional out-parameters).
 
 use core::sync::atomic::Ordering;
 
@@ -95,7 +97,7 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
 use super::ext2fs::fsbtodb;
-use super::ext2fs_dinode::{NDADDR, NIADDR};
+use super::ext2fs_dinode::{EXT4_EXTENTS, NDADDR, NIADDR};
 use super::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
 use crate::assert::kpanic;
 use crate::fs::bio::getblk_wait;
@@ -109,6 +111,32 @@ use crate::proc::ProcGlue;
 
 /// `MAXBSIZE`: the largest transfer (`<sys/param.h>`).
 const MAXBSIZE: i32 = 64 * 1024;
+
+/// `ext2fs_bmap` (`vop_bmap`): the device vnode and the disk block of logical block `bn`.
+pub fn ext2fs_bmap<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    bn: Daddr,
+    vpp: Option<&mut Option<&'static Vnode<G>>>,
+    bnp: Option<&mut Daddr>,
+    runp: Option<&mut i32>,
+) -> Result<(), Errno> {
+    let ip = vtoi(vp);
+    // Check for underlying vnode requests and ensure that logical to physical mapping is
+    // requested.
+    if let Some(vpp) = vpp {
+        *vpp = Some(ip.i_devvp());
+    }
+    let Some(bnp) = bnp else {
+        return Ok(());
+    };
+
+    if ip.i_e2din().i_e2fs_flags() & EXT4_EXTENTS != 0 {
+        drop(ip);
+        return ext4_bmapext(vp, bn, bnp, None, None, runp);
+    }
+    drop(ip);
+    ext2fs_bmaparray(vp, bn, bnp, None, None, runp)
+}
 
 /// `ext4_bmapext`: logical block number of a file -> physical block number on disk within
 /// ext4 extents. `*bnp` is -1 when the extent maps the block to disk block 0.

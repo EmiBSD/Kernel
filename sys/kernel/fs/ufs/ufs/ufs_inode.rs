@@ -91,7 +91,7 @@ use crate::proc::{ProcGlue, Thread};
 
 /// `prtactive`'s `vprint` of an active vnode (`DIAGNOSTIC`).
 #[cfg(feature = "diagnostic")]
-fn pushing_active<G: ProcGlue>(vp: &'static Vnode<G>, what: &str) {
+pub(crate) fn pushing_active<G: ProcGlue>(vp: &'static Vnode<G>, what: &str) {
     if crate::fs::subr::vfs::<G>()
         .prtactive
         .load(core::sync::atomic::Ordering::Relaxed)

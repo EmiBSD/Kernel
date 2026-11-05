@@ -29,7 +29,8 @@
 //! `e2fs_sbfill` computes it, the descriptors read, the UFS structure hung from the mount's
 //! slot) and its `vget` makes an inode the way `ext2fs_vget` does, over a vnode table of the
 //! fixture's own (block maps through `ext2fs_bmaparray`/`ext4_bmapext`, the UFS layer's
-//! locks and strategy) and a table of the fixture's own in place of the inode hash (whose
+//! locks and strategy, ext2fs's `access`, `read` and `write` since N5.6c2) and a table of the
+//! fixture's own in place of the inode hash (whose
 //! `ext2fs` branch reads `bsd`'s glue until N5.6c3). N5.6c3 replaces both with the real
 //! mount and the C's two tables.
 
@@ -67,6 +68,7 @@ use crate::fs::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, UfsmountRef, vfstoufs};
 use crate::fs::vnode::{LK_EXCLUSIVE, VREG, VT_EXT2FS, Vnode, iftovt};
 use crate::fs::vops::{Cred, IoBuf, Nd, Vfs, Vnops, vop_lock, vop_unlock};
 use crate::proc::Thread;
+use crate::uio::Uio;
 
 /// `newfs`: the test ext2 file system, built in memory, 1 KiB blocks, one block group.
 pub mod newfs {
@@ -641,8 +643,10 @@ impl Vfs<TestGlue> for TestExt2Vfs {
 }
 
 /// The fixture's vnode operations for its inodes: the UFS layer's locks and strategy, the
-/// block maps of `ext2fs_bmap` (the extent tree or the block pointers), `fsync` as a flush
-/// of the vnode's buffers, `inactive` an unlock, `reclaim` the fixture's table entry and the
+/// block maps of `ext2fs_bmap` (the extent tree or the block pointers), ext2fs's `access`,
+/// `read` and `write` and the generic `bwrite` (N5.6c2: what `ext2fs_readdir`,
+/// `ext2fs_lookup` and the directory writes call through the table), `fsync` as a flush of
+/// the vnode's buffers, `inactive` an unlock, `reclaim` the fixture's table entry and the
 /// device's reference dropped with the vnode's handle. A member (one byte wide) so that its
 /// address is its own: `vops_id` keys tables by address.
 struct TestExt2Vnops {
@@ -714,6 +718,36 @@ impl Vnops<TestGlue> for TestExt2Vnops {
     }
     fn strategy(&self, vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
         ufs_strategy(vp, bp)
+    }
+    fn access(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        mode: i32,
+        cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        super::ext2fs_vnops::ext2fs_access(vp, mode, cred)
+    }
+    fn read(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        uio: &mut Uio<'_, TestGlue>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        super::ext2fs_readwrite::ext2fs_read(vp, uio, ioflag, cred)
+    }
+    fn write(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        uio: &mut Uio<'_, TestGlue>,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> Result<(), Errno> {
+        super::ext2fs_readwrite::ext2fs_write(vp, uio, ioflag, cred)
+    }
+    fn bwrite(&self, bp: IoBuf) -> Result<(), Errno> {
+        crate::fs::default::vop_generic_bwrite(bp)
     }
 }
 /* </CODE> */

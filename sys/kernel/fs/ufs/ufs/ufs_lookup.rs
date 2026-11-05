@@ -146,7 +146,7 @@ enum Slotstatus {
 }
 
 /// The vnode's mount, which a UFS vnode always has.
-pub(super) fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
+pub(crate) fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
     match vp.mount() {
         Some(mp) => mp,
         None => kpanic(format_args!("ufs: vnode {vp:p} without a mount")),

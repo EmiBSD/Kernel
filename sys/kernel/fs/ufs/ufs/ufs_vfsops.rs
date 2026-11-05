@@ -77,7 +77,9 @@
 //!   glue, and the glue's tables are the one place its globals can live; `ffs_init` makes them.
 //!   So are ffs's two vnode tables (LZ's `FFS_VOPS` and `FFS_SPECVOPS` statics of
 //!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique, and, since
-//!   N5.5b3, mfs's (LZ's `MFS_VOPS` of `sys/ufs/mfs/mfs_vnops.rs`, feature `mfs`).
+//!   N5.5b3, mfs's (LZ's `MFS_VOPS` of `sys/ufs/mfs/mfs_vnops.rs`, feature `mfs`), and since
+//!   N5.6c2 ext2fs's two (LZ's `EXT2FS_VOPS` and `EXT2FS_SPECVOPS` of
+//!   `sys/ufs/ext2fs/ext2fs_vnops.rs`, feature `ext2fs`).
 
 use core::sync::atomic::AtomicBool;
 
@@ -94,6 +96,8 @@ use super::ufs_quota::DqTables;
 use super::ufs_vnops::{UfsSpecVnops, UfsVnops};
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs_vnops::{Ext2fsSpecVnops, Ext2fsVnops};
 use crate::fs::ufs::ffs::ffs_vfsops::Ffs;
 #[cfg(feature = "mfs")]
 use crate::fs::ufs::mfs::mfs_vnops::MfsVnops;
@@ -134,6 +138,13 @@ pub struct UfsTables<G: ProcGlue> {
     /// for the same reason.
     #[cfg(feature = "mfs")]
     pub mfs_vops: MfsVnops<G>,
+    /// `ext2fs_vops`: the operations of a file, directory or symbolic link on an ext2fs
+    /// (N5.6c2), a member for the same reason.
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_vops: Ext2fsVnops<G>,
+    /// `ext2fs_specvops`: the operations of a device special file on an ext2fs (N5.6c2).
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_specvops: Ext2fsSpecVnops<G>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -152,6 +163,10 @@ impl<G: ProcGlue> UfsTables<G> {
             ffs_specvops: UfsSpecVnops::new(&Ffs::<G>::VTBL),
             #[cfg(feature = "mfs")]
             mfs_vops: MfsVnops::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_vops: Ext2fsVnops::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_specvops: Ext2fsSpecVnops::new(),
         }
     }
 }

@@ -56,10 +56,9 @@
 //! Upstream: sys/ufs/ext2fs/ext2fs_subr.c @ 3ce1f3f79392
 //! LZ: sys/ufs/ext2fs/ext2fs_subr.rs@3c62ede68802
 //!
-//! `ext2fs_vinit` joins the module with the vnode operations' tables (N5.6c2); until then
-//! `bsd`'s is the one the mounts call.
-//!
 //! ## Deviations
+//! - `option FIFO` is in GENERIC but `miscfs/fifofs` is not ported: `ext2fs_vinit` refuses a
+//!   fifo with `EOPNOTSUPP`, as a kernel without `FIFO` does (`ffs_vinit`'s too).
 //! - `ext2fs_bufatoff` returns the buffer and the offset of `*res` in its data, as
 //!   `ffs_bufatoff` does (the C's optional `res` is always computed).
 //! - When the inode has an extent tree but no extent covers the block, the C goes on to the
@@ -70,17 +69,27 @@
 //! - LZ's lent buffers (`&'static Buf`) -> the kernel cache's tokens: `ext2fs_bufatoff`
 //!   returns the `BufRef` `bread` gave (the kernel's `ffs_bufatoff` shape), and the extent
 //!   path's leaf is a token released by its owner.
+//! - N5.6c2: `ext2fs_vinit` is the kernel's `ffs_vinit` shape: it returns the vnode to use
+//!   (the C's `*vpp`), a device's table is the glue's `UfsTables::ext2fs_specvops` keyed by
+//!   its address (`vops_id`), and an alias found by `checkalias` takes the vnode's typed
+//!   node (`take_node`/`set_node`, the C's `v_data` moved).
 
 use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Off};
+use hal::sys::types::{Daddr, Dev, Off};
 
 use super::ext2fs::{blkoff, fsbtodb, lblkno};
-use super::ext2fs_dinode::EXT4_EXTENTS;
+use super::ext2fs_dinode::{EXT2_ROOTINO, EXT4_EXTENTS};
 use super::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
 use crate::fs::bio::{bread, brelse};
 use crate::fs::buf::BufRef;
-use crate::fs::ufs::ufs::inode::Inode;
+use crate::fs::mount::Mount;
+use crate::fs::subr::{checkalias, vfs, vgone, vops_id, vrele};
+use crate::fs::ufs::ufs::inode::{Inode, vtoi};
+use crate::fs::vnode::{
+    VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, VopsId, iftovt,
+};
 use crate::proc::ProcGlue;
+use crate::tc::getmicrouptime;
 
 /// `ext2fs_bufatoff`: the buffer with the contents of block `offset` from the beginning of
 /// directory `ip`, and the offset in it of the remaining space in the directory (`*res`).
@@ -115,6 +124,52 @@ pub fn ext2fs_bufatoff<G: ProcGlue>(ip: &Inode<G>, offset: Off) -> Result<(BufRe
         return Err(e);
     }
     Ok((t, blkoff(fs, offset) as usize))
+}
+
+/// `ext2fs_vinit`: initialize the vnode associated with a new inode, handle aliased vnodes.
+/// Returns the vnode to use, which replaces `vp` when a device vnode had an alias.
+pub fn ext2fs_vinit<G: ProcGlue>(
+    mp: &'static Mount<G>,
+    vp: &'static Vnode<G>,
+) -> Result<&'static Vnode<G>, Errno> {
+    let mut vp = vp;
+    let ip = vtoi(vp);
+    vp.set_vtype(iftovt(ip.i_e2din().i_e2fs_mode().into()));
+
+    match vp.vtype() {
+        VCHR | VBLK => {
+            vp.set_ops_id(vops_id::<G>(&vfs::<G>().ufs.ext2fs_specvops));
+
+            let rdev = u32::from_le(ip.i_e2din().e2di_rdev()) as Dev;
+            if let Some(nvp) = checkalias(vp, rdev, Some(mp)) {
+                // Discard unneeded vnode, but save its inode. Note that the lock is carried
+                // over in the inode to the replacement vnode.
+                if let Some(node) = vp.take_node() {
+                    nvp.set_node(node);
+                }
+                vp.set_ops_id(VopsId::SPEC);
+                vrele(vp);
+                vgone(vp);
+                // Reinitialize aliased vnode.
+                vp = nvp;
+                ip.i_vnode.set(Some(vp));
+            }
+        }
+        // FIFO: vp->v_op = &ext2fs_fifovops (miscfs/fifofs, not ported); without FIFO:
+        VFIFO => return Err(Errno::EOPNOTSUPP),
+        VNON | VBAD | VSOCK | VLNK | VDIR | VREG => {}
+    }
+
+    if ip.i_number == EXT2_ROOTINO {
+        vp.set_flag(vp.flag() | VROOT);
+    }
+
+    // Initialize modrev times
+    let tv = getmicrouptime();
+    let modrev = ((tv.tv_sec as u64) << 32) | (tv.tv_usec as u64).wrapping_mul(4294);
+    ip.i_modrev.set(modrev);
+
+    Ok(vp)
 }
 /* </CODE> */
 

@@ -8610,7 +8610,7 @@ rust = "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "redesigned"
-notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone)"
+notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone). N5.6c2: rdonly and rename's abortit: (Abort, rename_abortit, RenameExit) shared with ext2fs_rename"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/ufs_vnops.rs::UFSREAD_FILTOPS"
@@ -8733,7 +8733,7 @@ rust = "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_vfsops.rs"]
 status = "redesigned"
-notes = "N5.5a1: ufs_start, ufs_root, ufs_fhtovp over the kernel's VFS_VGET; UfsTables (ufs_init's done flag and the inode hash, in the glue's VfsTables) and ufs_test_reset; ufs_init and ufs_check_export stay bsd's until N5.5a2 and N6"
+notes = "N5.5a1: ufs_start, ufs_root, ufs_fhtovp over the kernel's VFS_VGET; UfsTables (ufs_init's done flag and the inode hash, in the glue's VfsTables) and ufs_test_reset; ufs_init and ufs_check_export stay bsd's until N5.5a2 and N6. N5.6c2: UfsTables gains ext2fs's two vnode tables (feature ext2fs)"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/ufs_vfsops.rs::UFS_INIT_DONE"
@@ -9246,7 +9246,7 @@ rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_bmap.rs"
 crate = "kernel"
 lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
 status = "redesigned"
-notes = "N5.6c1 (unwired; the vnode operation ext2fs_bmap joins at N5.6c2): ext2fs_bmaparray and ext4_bmapext over the kernel cache's tokens, the indirect block read as the kernel's ufs_bmaparray reads it (getblk, vop_strategy of the token, biowait); 0 unsafe (LZ: 1)"
+notes = "N5.6c1 (unwired): ext2fs_bmaparray and ext4_bmapext over the kernel cache's tokens, the indirect block read as the kernel's ufs_bmaparray reads it (getblk, vop_strategy of the token, biowait); 0 unsafe (LZ: 1). N5.6c2: the vnode operation ext2fs_bmap in the kernel's Vnops<G> slot shape, ext2fs_vops's bmap"
 
 [[module.fn]]
 lz = "sys/ufs/ext2fs/ext2fs_bmap.rs::getblk_wait"
@@ -9265,14 +9265,82 @@ rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_inode.rs"
 crate = "kernel"
 lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
 status = "redesigned"
-notes = "N5.6c1 (unwired; the vnode operation ext2fs_inactive joins at N5.6c2): ext2fs_size, ext2fs_setsize, ext2fs_update, ext2fs_truncate and ext2fs_indirtrunc over the kernel cache's tokens and an MArray<u8> of M_TEMP (the kernel ffs_inode's shape), EXT2FS_ITIMES as ext2fs_itimes; 0 unsafe (LZ: 6)"
+notes = "N5.6c1 (unwired): ext2fs_size, ext2fs_setsize, ext2fs_update, ext2fs_truncate and ext2fs_indirtrunc over the kernel cache's tokens and an MArray<u8> of M_TEMP (the kernel ffs_inode's shape), EXT2FS_ITIMES as ext2fs_itimes; 0 unsafe (LZ: 6). N5.6c2: the vnode operation ext2fs_inactive in the kernel's Vnops<G> slot shape, the dinode's NULL the inode's empty slot (din_is_null)"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_subr.rs"
 crate = "kernel"
 lz = ["sys/ufs/ext2fs/ext2fs_subr.rs"]
 status = "redesigned"
-notes = "N5.6c1 (unwired; ext2fs_vinit joins at N5.6c2 with the tables): ext2fs_bufatoff returning the BufRef token, as the kernel's ffs_bufatoff"
+notes = "N5.6c1 (unwired): ext2fs_bufatoff returning the BufRef token, as the kernel's ffs_bufatoff. N5.6c2: ext2fs_vinit in the kernel ffs_vinit's shape (the vnode to use returned, a device's table UfsTables::ext2fs_specvops by its address, the alias given the typed node)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_extern.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_extern.rs"]
+status = "redesigned"
+notes = "N5.6c2: the header's prototypes are the kernel's ext2fs_*.rs items and ext2fs_vops/ext2fs_specvops the table types Ext2fsVnops/Ext2fsSpecVnops; LZ's pub use of them goes (their callers name the defining modules), as ffs_extern's and mfs_extern's did; IS_EXT2_VNODE as is_ext2_vnode"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_lookup.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_lookup.rs"]
+status = "redesigned"
+notes = "N5.6c2 (unwired): ext2fs_readdir and ext2fs_lookup in the kernel's Vnops<G> method shapes; directory blocks the busy buffer's token of ext2fs_bufatoff, read and written through it, the read buffer of ext2fs_readdir an MArray<u8> of M_TEMP; ext2fs_dirconv2ffs writes the struct dirent's bytes; ext2fs_search_dirblock returns whether it found the name; ext2fs_dirbadentry takes the super-block; 0 unsafe (LZ: 6)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_lookup.rs::vmount"
+native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_lookup.rs::dirent_uiomove"
+native = ["ext2fs_readdir"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_readwrite.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_readwrite.rs"]
+status = "redesigned"
+notes = "N5.6c2 (unwired): ext2fs_read (ext2_ind_read, ext4_ext_read) and ext2fs_write in the kernel's Vnops<G> method shapes over the buffer cache's tokens, the kernel ffs_read/ffs_write's shape; 0 unsafe (LZ: 3)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_vnops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_vnops.rs"]
+status = "redesigned"
+notes = "N5.6c2 (unwired): the ext2fs operations in the kernel's Vnops<G> method shapes; the C's two tables as Ext2fsVnops<G> and Ext2fsSpecVnops<G>, each its own impl Vnops<G> written slot by slot (D-N5.6-4, the MfsVnops precedent), members of the glue's UfsTables (one address each); the UFS slots the kernel's ufs_*, the spec slots spec_shared_slots!, ext2fs_vops's NULL revoke the trait's default; ext2fs_rename's abortit: and exits the UFS layer's; ext2fs_setattr's securelevel injected (ext2fs_setattr_at); 0 unsafe (LZ: 0)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::EXT2FS_VOPS"
+native = ["Ext2fsVnops", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::EXT2FS_SPECVOPS"
+native = ["Ext2fsSpecVnops", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::vmount"
+native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::rdonly"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::rdonly"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::rename_abortit"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::rename_abortit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::RenameExit"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::RenameExit"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/vnode.rs"
