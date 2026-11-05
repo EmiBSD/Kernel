@@ -105,9 +105,12 @@
 //!   The buffer of `VOP_STRATEGY` is the kernel's `IoBuf`, passed on to the device as it came.
 //! - `ufs_mkdir`'s call of `ufs_direnter` no longer passes the soft dependency code's
 //!   `newdirbp` (`ufs_lookup.rs`).
+//! - N5.5b3 (D-N5.5b-7): `ufs_setattr` reads `kern.securelevel` through its inner function's
+//!   parameter (`ufs_setattr_at(.., &SECURELEVEL)`), so a host test passes a word of its own
+//!   instead of writing the system's, which the sysctl tests of the same process read.
 
 use core::marker::PhantomData;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::sys::dirent::{DT_DIR, Dirent, iftodt};
 use hal::sys::errno::Errno;
@@ -512,6 +515,18 @@ pub fn ufs_setattr<G: ProcGlue>(
     cred: Cred<'_>,
     p: &Thread<G>,
 ) -> Result<(), Errno> {
+    ufs_setattr_at(vp, vap, cred, p, &SECURELEVEL)
+}
+
+/// [`ufs_setattr`] under the securelevel `securelevel` (`kern.securelevel`'s word, the
+/// system's; a host test passes its own, D-N5.5b-7).
+fn ufs_setattr_at<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    vap: &mut Vattr,
+    cred: Cred<'_>,
+    p: &Thread<G>,
+    securelevel: &AtomicI32,
+) -> Result<(), Errno> {
     let ip = vtoi(vp);
     let mut hint = NOTE_ATTRIB;
 
@@ -537,7 +552,7 @@ pub fn ufs_setattr<G: ProcGlue>(
         }
         if c.cr_uid.get() == 0 || vnoperm(vp) {
             if ip.dip_flags() & (SF_IMMUTABLE | SF_APPEND) != 0
-                && SECURELEVEL.load(Ordering::Relaxed) > 0
+                && securelevel.load(Ordering::Relaxed) > 0
             {
                 return Err(Errno::EPERM);
             }
@@ -2879,9 +2894,10 @@ mod tests {
         ip.dip_set_flags(SF_IMMUTABLE);
         let mut va = vattr(VNON, VNOVAL as Mode);
         va.va_flags = 0;
-        SECURELEVEL.store(1, Ordering::Relaxed);
-        let r = vop_setattr(f, &mut va, Cred::real(cred), p);
-        SECURELEVEL.store(0, Ordering::Relaxed);
+        // The test's own word: the system's `kern.securelevel` stays as the sysctl tests
+        // that read it in this process expect (D-N5.5b-7).
+        let level = AtomicI32::new(1);
+        let r = ufs_setattr_at(f, &mut va, Cred::real(cred), p, &level);
         assert_eq!(r, Err(Errno::EPERM));
         assert_eq!(ip.dip_flags(), SF_IMMUTABLE);
         let mut va = vattr(VNON, VNOVAL as Mode);
