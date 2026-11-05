@@ -364,12 +364,11 @@ pub fn ffs_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), Errn
     })
 }
 
-/// `memset(dst, 0, MNAMELEN); strlcpy(dst, src, MNAMELEN)`.
+/// `memset(dst, 0, MNAMELEN); strlcpy(dst, src, MNAMELEN)`: the C's pair, over libkern's
+/// `strlcpy(9)` (statfs(2) copies the whole buffer out, so the zeroed tail is visible).
 fn mname_copy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
     *dst = [0; MNAMELEN];
-    let src = src.split(|&c| c == 0).next().unwrap_or(&[]);
-    let n = src.len().min(MNAMELEN - 1);
-    dst[..n].copy_from_slice(&src[..n]);
+    libkern::strlcpy(dst, src);
 }
 
 /// `ffs_mount` (`vfs_mount`): mount system call. `data` is the kernel copy of the user's
@@ -2498,6 +2497,22 @@ mod tests {
         assert_eq!(a[2].in_off, 3);
         vput(vp);
         ffs_unmount(mp, 0, p).unwrap();
+    }
+
+    #[test]
+    fn a_mount_name_is_copied_nul_padded_and_truncated() {
+        // A name that was longer leaves no byte past the new one's NUL (statfs(2) copies
+        // the whole buffer out).
+        let mut dst = [0xffu8; MNAMELEN];
+        mname_copy(&mut dst, b"/dev/sd0a\0junk");
+        assert_eq!(&dst[..10], b"/dev/sd0a\0");
+        assert!(dst[10..].iter().all(|&c| c == 0));
+        // Without a NUL the source ends at its end; past MNAMELEN - 1 bytes it is cut.
+        mname_copy(&mut dst, &[b'x'; MNAMELEN + 5]);
+        assert!(dst[..MNAMELEN - 1].iter().all(|&c| c == b'x'));
+        assert_eq!(dst[MNAMELEN - 1], 0);
+        mname_copy(&mut dst, b"");
+        assert!(dst.iter().all(|&c| c == 0));
     }
 }
 /* </TESTS> */
