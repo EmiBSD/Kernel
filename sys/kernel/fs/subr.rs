@@ -50,6 +50,42 @@
  *
  *	@(#)vfs_subr.c	8.13 (Berkeley) 4/18/94
  */
+
+/*
+ * Copyright (c) 1982, 1986, 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * (c) UNIX System Laboratories, Inc.
+ * All or some portions of this file are derived from material licensed
+ * to the University of California by American Telephone and Telegraph
+ * Co. or Unix System Laboratories, Inc. and are reproduced herein with
+ * the permission of UNIX System Laboratories, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)kern_subr.c	8.3 (Berkeley) 1/21/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
@@ -61,7 +97,9 @@
 //! ([`VfsTables`]) and the vnode as the buffer cache and the pager reach it.
 //!
 //! Upstream: sys/kern/vfs_subr.c @ 3ce1f3f79392
+//! Upstream: sys/kern/kern_subr.c @ 3ce1f3f79392
 //! LZ: sys/kern/vfs_subr.rs@3c62ede68802
+//! LZ: sys/kern/kern_subr.rs@3c62ede68802
 //!
 //! Vnodes are never freed: a vnode whose last user goes (`vrele`, `vput`) is deactivated
 //! (`VOP_INACTIVE`) and put on the free list (or the hold list while buffers reference it),
@@ -122,11 +160,13 @@
 //!   (`f_iosize`, `f_bsize`, `f_flags`, `f_fsid`, `f_owner`) are unlocked copies
 //!   (`Mount::iosize`), and a device vnode's `v_rdev` an unlocked copy of its specinfo's
 //!   `si_rdev` (`Vnode::rdev`), one load per element of an alias chain's walk.
-//! - N5.7c2: the file systems' node hashes share [`hashinit`] (`kern_subr.c`'s `hashinit(9)`
-//!   over `hal::pinlist` chains in a `malloc(9)` array) and [`siphash_key`] (the C's
-//!   `arc4random_buf` of a `SIPHASH_KEY`: four `arc4random()` words), the UFS inode hash's
-//!   and msdosfs's denode hash; `VfsTables` gains msdosfs's tables (`msdosfs`, feature
-//!   `msdosfs`), appended last.
+//! - N5.7c2: the file systems' node hashes share [`hashinit`] (`kern_subr.c`'s `hashinit(9)`,
+//!   LZ's `kern_subr.rs` one, which returns its table as a slice of `queue.h` heads: here
+//!   `hal::pinlist` chains in a `malloc(9)` array, `MArray<PinList<A>>`, with the mask; `bsd`
+//!   keeps LZ's for its own file systems, `kern_subr.rs`'s other items stay there) and
+//!   [`siphash_key`] (the C's `arc4random_buf` of a `SIPHASH_KEY`: four `arc4random()`
+//!   words), the UFS inode hash's and msdosfs's denode hash; `VfsTables` gains msdosfs's
+//!   tables (`msdosfs`, feature `msdosfs`), appended last.
 
 use core::any::Any;
 use core::ptr;
@@ -259,8 +299,10 @@ pub struct VfsTables<G: ProcGlue> {
     mntid: AtomicU32,
     /// The UFS layer's globals (`ufs_init`'s `done`, the inode hash).
     pub ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables<G>,
-    /// msdosfs's globals (the denode hash, `msdosfs_vops`), N5.7: the last member, so the
-    /// others keep their offsets with or without the feature.
+    /// msdosfs's globals (the denode hash, `msdosfs_vops`), N5.7: the last member in the
+    /// source. The default representation may reorder members, so the evidence that the
+    /// others did not move is N5.7c2's layout probe (`ufs` at offset 144 with and without
+    /// the feature), not this order.
     #[cfg(feature = "msdosfs")]
     pub msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables<G>,
 }
