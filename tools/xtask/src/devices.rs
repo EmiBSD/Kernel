@@ -79,10 +79,19 @@
 //! The paths follow the boot image's, which lives in the run directory (`boot::run_dir`,
 //! `$EMIBSD_RUN_DIR`: `target/smoke/<recipe>/` under `smoke-all`), so parallel recipes never
 //! share a stick or a WAV file.
+//!
+//! `cargo xtask fsck-msdos --arch A` (N5.7c3, D-N5.7-9): the host check of the stick after a
+//! boot wrote it (`smoke-usb`'s and `smoke-uhci`'s `cp`, through the kernel's msdosfs): the
+//! FAT32 partition, copied out of `<image>.usb` at [`STICK_PART_START`] into
+//! `<image>.usb.fat` (the tool takes no offset), is checked by macOS's own `fsck_msdos -n`
+//! (found in `$PATH`, `/sbin` on macOS; nothing installed), which must exit 0: no problem
+//! found, nothing changed. An architecture `$EMIBSD_ARCHS` leaves out (decision 44) prints
+//! the `SKIPPED (decision 44)` line of its boots (`boot::skip_disabled`) and succeeds.
 
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::Result;
@@ -670,6 +679,76 @@ fn make_stick(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `cargo xtask fsck-msdos --arch A` (module docs): `fsck_msdos -n` of the stick of the boot
+/// image of `arch` in the run directory.
+pub(crate) fn fsck_msdos(root: &Path, arch: crate::boot::Arch) -> Result<()> {
+    if crate::boot::skip_disabled("fsck-msdos", arch)? {
+        return Ok(());
+    }
+    let stick = stick_path(&crate::boot::image_path(root, arch, None));
+    fsck_stick(&stick)?;
+    println!("fsck-msdos {}: ok", arch.name());
+    Ok(())
+}
+
+/// `fsck_msdos` in `$PATH` (macOS's `/sbin/fsck_msdos`).
+fn fsck_msdos_tool() -> Result<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .map(|d| d.join("fsck_msdos"))
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            "fsck_msdos not found in $PATH (macOS's /sbin/fsck_msdos; docs/SETUP.md)"
+                .to_string()
+                .into()
+        })
+}
+
+/// `fsck_msdos -n` of the FAT32 partition of the stick at `stick`, copied out to
+/// `<stick>.fat` and removed when clean: `Err` unless the tool exits 0.
+fn fsck_stick(stick: &Path) -> Result<()> {
+    let tool = fsck_msdos_tool()?;
+    let image = fs::read(stick).map_err(|e| format!("{}: {e}", stick.display()))?;
+    let start = (STICK_PART_START * 512) as usize;
+    if image.len() <= start {
+        return Err(format!(
+            "{}: {} bytes, no FAT partition at byte {start}",
+            stick.display(),
+            image.len()
+        )
+        .into());
+    }
+    let part = stick.with_extension("usb.fat");
+    fs::write(&part, &image[start..]).map_err(|e| format!("{}: {e}", part.display()))?;
+    println!(
+        "fsck-msdos: {} ({} bytes of {} from byte {start}), {}",
+        part.display(),
+        image.len() - start,
+        stick.display(),
+        tool.display()
+    );
+    let out = Command::new(&tool)
+        .arg("-n")
+        .arg(&part)
+        .output()
+        .map_err(|e| format!("{}: {e}", tool.display()))?;
+    print!("{}", String::from_utf8_lossy(&out.stdout));
+    eprint!("{}", String::from_utf8_lossy(&out.stderr));
+    match out.status.code() {
+        Some(0) => {
+            println!("fsck_msdos -n: exit status 0, clean");
+            fs::remove_file(&part).map_err(|e| format!("{}: {e}", part.display()))?;
+            Ok(())
+        }
+        other => Err(format!(
+            "fsck_msdos -n {}: exit status {other:?}, expected 0 (no problem found, nothing \
+             changed)",
+            part.display()
+        )
+        .into()),
+    }
+}
+
 /// A master boot record with one partition of type 0x0c (FAT32, LBA), not bootable.
 fn stick_mbr(start: u32, sectors: u32) -> [u8; 512] {
     let mut sector = [0u8; 512];
@@ -689,6 +768,31 @@ fn stick_mbr(start: u32, sectors: u32) -> [u8; 512] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The stick `make_stick` writes is what macOS's `fsck_msdos -n` finds clean; a FAT whose
+    /// chain is cross-linked fails the check.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fsck_msdos_finds_a_fresh_stick_clean_and_a_cross_link_not() {
+        let dir = std::env::temp_dir().join(format!("emibsd-fsck-msdos-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let stick = dir.join("stick.usb");
+        make_stick(&stick).unwrap();
+        fsck_stick(&stick).unwrap();
+        assert!(
+            !dir.join("stick.usb.fat").exists(),
+            "the copy is removed when clean"
+        );
+        // The first FAT's entry of cluster 3 pointing back at cluster 2 (the root's).
+        let mut image = fs::read(&stick).unwrap();
+        let part = (STICK_PART_START * 512) as usize;
+        let res = usize::from(u16::from_le_bytes([image[part + 14], image[part + 15]]));
+        let fat = part + res * 512;
+        image[fat + 12..fat + 16].copy_from_slice(&2u32.to_le_bytes());
+        fs::write(&stick, &image).unwrap();
+        assert!(fsck_stick(&stick).is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn cksum_vectors() {

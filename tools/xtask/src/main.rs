@@ -157,6 +157,8 @@
 //!                                          check the ext2 file system on partition a of
 //!                                          the persistent disk with e2fsprogs' e2fsck -fn;
 //!                                          debugfs must cat PATH and print TEXT (e2fs.rs)
+//! cargo xtask fsck-msdos --arch A          check the USB smokes' stick's FAT32 file system
+//!                                          with macOS's fsck_msdos -n (devices.rs)
 //! ```
 //!
 //! Paths are resolved from the workspace root (derived from `CARGO_MANIFEST_DIR`), never from the
@@ -214,7 +216,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
                      bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
                      symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
-                     e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | \
+                     e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
 
 fn main() -> ExitCode {
@@ -464,6 +466,10 @@ fn run(args: &[String]) -> Result<()> {
                 optional_flag(rest, "--disk-set"),
                 &flags(rest, "--cat"),
             )
+        }
+        ["fsck-msdos", rest @ ..] => {
+            let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
+            devices::fsck_msdos(&root, arch)
         }
         _ => Err(USAGE.into()),
     }
