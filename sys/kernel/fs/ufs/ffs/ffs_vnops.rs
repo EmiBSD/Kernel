@@ -467,3 +467,249 @@ pub fn ffs_fsync<G: ProcGlue>(
     ip.vtbl().update(&ip, i32::from(waitfor == MNT_WAIT))
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // ffs_read's and ffs_write's checks and error paths, on a file of an image mounted by
+    // testffs (the kernel's ffs_mountfs). The transfers are UIO_SYSSPACE uios over the
+    // tests' own buffers (testffs::attach turns the copy of kernel iovecs on); a copy that
+    // fails is an iovec at BAD, which the copy double refuses with EFAULT as the machine's
+    // copyin refuses an unmapped user page. No user memory is used.
+
+    use std::assert_eq;
+    use std::vec;
+    use std::vec::Vec;
+
+    use hal::sys::types::Off;
+
+    use super::*;
+    use crate::cred::Ucred;
+    use crate::fs::subr::vput;
+    use crate::fs::testfs::TestGlue;
+    use crate::fs::ufs::ffs::testffs::newfs::{FFS1_1G, FFS2_1G, Image, Params};
+    use crate::fs::ufs::ffs::testffs::{new_file, pattern, setup};
+    use crate::fs::ufs::ufs::dinode::IFREG;
+    use crate::uio::{Iovec, UioRw, UioSeg};
+
+    /// The image: FFS2's with `option FFS2`, FFS1's without (ffs_mountfs refuses an FFS2
+    /// super-block without it, as the C's ffs_validate does).
+    const ONE: Params = if cfg!(feature = "ffs2") {
+        FFS2_1G
+    } else {
+        FFS1_1G
+    };
+
+    /// A kernel address the copy double refuses with `EFAULT`: below 4 GiB and outside its
+    /// foreign run, where the host maps nothing.
+    const BAD: usize = 0x1000;
+
+    /// A kernel iovec over `b`.
+    fn kiov(b: &[u8]) -> Iovec {
+        Iovec {
+            iov_base: b.as_ptr().cast_mut().cast(),
+            iov_len: b.len(),
+        }
+    }
+
+    /// An iovec of `n` bytes whose copy fails.
+    fn bad(n: usize) -> Iovec {
+        Iovec {
+            iov_base: core::ptr::without_provenance_mut(BAD),
+            iov_len: n,
+        }
+    }
+
+    /// `ffs_write` of the kernel iovecs `iovs` (whose buffers outlive the call) at `off`:
+    /// the result, then the uio's offset and resid after it.
+    fn write(
+        vp: &'static Vnode<TestGlue>,
+        iovs: &mut [Iovec],
+        off: Off,
+        ioflag: i32,
+        cred: Cred<'_>,
+    ) -> (Result<(), Errno>, Off, usize) {
+        let resid = iovs.iter().map(|v| v.iov_len).sum();
+        let mut uio = Uio {
+            uio_iov: iovs,
+            uio_offset: off,
+            uio_resid: resid,
+            uio_segflg: UioSeg::UIO_SYSSPACE,
+            uio_rw: UioRw::UIO_WRITE,
+            uio_procp: None,
+        };
+        let r = ffs_write(vp, &mut uio, ioflag, cred);
+        (r, uio.uio_offset, uio.uio_resid)
+    }
+
+    /// The file's `n` bytes at `off`, read by `ffs_read`.
+    fn read(vp: &'static Vnode<TestGlue>, off: Off, n: usize) -> Vec<u8> {
+        let mut out = vec![0u8; n];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut out, None);
+        uio.uio_offset = off;
+        assert_eq!(ffs_read(vp, &mut uio, 0, Cred::NOCRED), Ok(()));
+        assert_eq!(uio.uio_resid, 0);
+        out
+    }
+
+    #[test]
+    fn a_read_at_a_negative_offset_is_einval() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let vp = new_file(mp, th);
+        let mut out = [0u8; 8];
+        for len in [8, 0] {
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_read(&mut iov, &mut out[..len], None);
+            uio.uio_offset = -1;
+            // Checked before the empty transfer's early return, as in C.
+            assert_eq!(ffs_read(vp, &mut uio, 0, Cred::NOCRED), Err(Errno::EINVAL));
+            assert_eq!((uio.uio_offset, uio.uio_resid), (-1, len));
+        }
+        // At 0, an empty file reads nothing and succeeds.
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::kernel_read(&mut iov, &mut out, None);
+        assert_eq!(ffs_read(vp, &mut uio, 0, Cred::NOCRED), Ok(()));
+        assert_eq!((uio.uio_offset, uio.uio_resid), (0, 8));
+        vput(vp);
+    }
+
+    #[test]
+    fn a_write_past_the_largest_file_is_efbig() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let vp = new_file(mp, th);
+        let ip = vtoi(vp);
+        let max = ip.i_fs().fs_maxfilesize();
+        let b = [1u8; 2];
+        let cred = Cred::real(th.ucred());
+        // Ending one byte past fs_maxfilesize, and at a negative offset.
+        for off in [(max - 1) as Off, -1] {
+            assert_eq!(
+                write(vp, &mut [kiov(&b)], off, 0, cred),
+                (Err(Errno::EFBIG), off, 2)
+            );
+        }
+        assert_eq!(ip.dip_size(), 0);
+        assert_eq!(ip.dip_blocks(), 0);
+        drop(ip);
+        vput(vp);
+    }
+
+    #[test]
+    fn an_append_only_file_is_written_at_its_end_only() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let vp = new_file(mp, th);
+        let ip = vtoi(vp);
+        let cred = Cred::real(th.ucred());
+        let b = pattern(100, 3);
+        assert_eq!(write(vp, &mut [kiov(&b)], 0, 0, cred), (Ok(()), 100, 0));
+        ip.dip_set_flags(ip.dip_flags() | APPEND);
+        // Anywhere but at its size: EPERM, nothing written (even by root).
+        for off in [0, 50, 101] {
+            assert_eq!(
+                write(vp, &mut [kiov(&b)], off, 0, cred),
+                (Err(Errno::EPERM), off, 100)
+            );
+        }
+        assert_eq!(ip.dip_size(), 100);
+        // IO_APPEND moves the offset to the size first; at the size it is allowed.
+        assert_eq!(
+            write(vp, &mut [kiov(&b)], 0, IO_APPEND, cred),
+            (Ok(()), 200, 0)
+        );
+        assert_eq!(write(vp, &mut [kiov(&b)], 200, 0, cred), (Ok(()), 300, 0));
+        assert_eq!(ip.dip_size(), 300);
+        assert_eq!(read(vp, 100, 100), &b[..]);
+        drop(ip);
+        vput(vp);
+    }
+
+    #[test]
+    fn io_unit_truncates_and_rewinds_a_failed_write() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let cred = Cred::real(th.ucred());
+        for ioflag in [0, IO_UNIT] {
+            let vp = new_file(mp, th);
+            let ip = vtoi(vp);
+            let bsize = ip.i_fs().fs_bsize() as usize;
+            let data = pattern(bsize, 5);
+            // A whole block copied, then a copy that fails in the second block.
+            let r = write(vp, &mut [kiov(&data), bad(10)], 0, ioflag, cred);
+            if ioflag == 0 {
+                // What was moved stays, and the size the second block's pass had set.
+                assert_eq!(r, (Err(Errno::EFAULT), bsize as Off, 10));
+                assert_eq!(ip.dip_size(), bsize as u64 + 10);
+                assert_eq!(read(vp, 0, bsize), &data[..]);
+            } else {
+                // The file is truncated back to its size before the write (its blocks
+                // freed) and the uio rewound as if nothing had been moved.
+                assert_eq!(r, (Err(Errno::EFAULT), 0, bsize + 10));
+                assert_eq!(ip.dip_size(), 0);
+                assert_eq!(ip.dip_blocks(), 0);
+            }
+            drop(ip);
+            vput(vp);
+        }
+    }
+
+    #[test]
+    fn a_writer_other_than_root_clears_setuid_and_setgid() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let mut user = Ucred::new();
+        user.cr_uid.set(1000);
+        let root = Ucred::new();
+        let b = pattern(10, 1);
+        let mode = IFREG | ISUID | ISGID | 0o755;
+        for (cred, kept) in [(&root, true), (&user, false)] {
+            let vp = new_file(mp, th);
+            let ip = vtoi(vp);
+            ip.dip_set_mode(mode);
+            // Writing nothing returns first: the bits stay whoever writes.
+            assert_eq!(
+                write(vp, &mut [kiov(&b[..0])], 0, 0, Cred::real(cred)),
+                (Ok(()), 0, 0)
+            );
+            assert_eq!(ip.dip_mode(), mode);
+            assert_eq!(
+                write(vp, &mut [kiov(&b)], 0, 0, Cred::real(cred)),
+                (Ok(()), 10, 0)
+            );
+            let want = if kept { mode } else { IFREG | 0o755 };
+            assert_eq!(ip.dip_mode(), want);
+            drop(ip);
+            vput(vp);
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_into_a_whole_block_zeroes_it() {
+        let (_g, th, mp) = setup(Image::new(ONE).finish());
+        let cred = Cred::real(th.ucred());
+        let vp = new_file(mp, th);
+        let ip = vtoi(vp);
+        let bsize = ip.i_fs().fs_bsize() as usize;
+        let old = pattern(bsize, 9);
+        // A part of a block (B_CLRBUF: the block is read in first): a failed copy leaves the
+        // file's bytes as they were.
+        assert_eq!(
+            write(vp, &mut [kiov(&old)], 0, 0, cred),
+            (Ok(()), bsize as Off, 0)
+        );
+        assert_eq!(
+            write(vp, &mut [bad(100)], 0, 0, cred),
+            (Err(Errno::EFAULT), 0, 100)
+        );
+        assert_eq!(read(vp, 0, bsize), &old[..]);
+        // A whole block (no B_CLRBUF): what the buffer held is cleared where the copy
+        // failed, so no earlier bytes of its pages survive, and the size is kept.
+        assert_eq!(
+            write(vp, &mut [bad(bsize)], 0, 0, cred),
+            (Err(Errno::EFAULT), 0, bsize)
+        );
+        assert_eq!(read(vp, 0, bsize), vec![0u8; bsize]);
+        assert_eq!(ip.dip_size(), bsize as u64);
+        drop(ip);
+        vput(vp);
+    }
+}
+/* </TESTS> */
