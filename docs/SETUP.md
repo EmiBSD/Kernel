@@ -218,7 +218,10 @@ wrote it (`cp` through the kernel's msdosfs) with macOS's own `fsck_msdos -n`, w
 `fsck_msdos` in `PATH` (`/sbin` on macOS) and fails with an `xtask: fsck_msdos not found ...`
 line when it is not there. The tool takes no offset, so the partition is copied out of the
 stick (`<image>.usb`) into `<image>.usb.fat` beside it in the run directory, which a clean
-check removes; `-n` writes nothing.
+check removes; `-n` writes nothing. The run directory is `target/smoke/<recipe>/` under
+`smoke-all` (`EMIBSD_RUN_DIR`) and `target/` otherwise: a plain `just smoke-usb` leaves the
+stick at `target/emibsd-arm64.usb`, and a check that fails keeps its copy at
+`target/emibsd-arm64.usb.fat` to look at.
 
 ## swtpm (M16e)
 

@@ -770,10 +770,14 @@ mod tests {
     use super::*;
 
     /// The stick `make_stick` writes is what macOS's `fsck_msdos -n` finds clean; a FAT whose
-    /// chain is cross-linked fails the check.
-    #[cfg(target_os = "macos")]
+    /// chain is cross-linked fails the check. Skipped, saying so, on a host without the tool
+    /// in `PATH` (the smokes' step itself fails then, as `e2fsck`'s does without e2fsprogs).
     #[test]
     fn fsck_msdos_finds_a_fresh_stick_clean_and_a_cross_link_not() {
+        if let Err(e) = fsck_msdos_tool() {
+            println!("skipped: {e}");
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("emibsd-fsck-msdos-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let stick = dir.join("stick.usb");
