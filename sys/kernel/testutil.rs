@@ -81,7 +81,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
@@ -333,7 +333,15 @@ struct TestPool {
     nout: AtomicU64,
     /// The pool's name (`wchan`), the key of [`POOL_KNOBS`].
     wchan: &'static str,
+    /// While [`set_pool_recycle`] is on: the free items, by address (the provenance exposed
+    /// when they were carved or given back), carved from 64 KiB slabs every `stride` bytes.
+    free: Mutex<Vec<usize>>,
+    /// The size rounded up to the item's alignment (at least 16).
+    stride: usize,
 }
+
+/// Whether the pools recycle their items ([`set_pool_recycle`]).
+static POOL_RECYCLE: AtomicBool = AtomicBool::new(false);
 
 /// Each pool's last high-water mark and whether its cache was asked for, by the pool's name.
 static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
@@ -344,6 +352,23 @@ impl RawPool for TestPool {
     fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
         if pool_fails(self.wchan) {
             return None;
+        }
+        if POOL_RECYCLE.load(Ordering::Relaxed) {
+            let mut free = self
+                .free
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if free.is_empty() {
+                let per = (64 * 1024 / self.stride).max(1);
+                let slab = pages(per * self.stride)?.as_ptr();
+                for i in 0..per {
+                    free.push(slab.wrapping_add(i * self.stride).expose_provenance());
+                }
+            }
+            let addr = free.pop()?;
+            let p = NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))?;
+            self.nout.fetch_add(1, Ordering::Relaxed);
+            return Some((p, self.size));
         }
         let p = pages(self.size)?;
         self.nout.fetch_add(1, Ordering::Relaxed);
@@ -369,8 +394,14 @@ impl RawPool for TestPool {
         POOL_YIELDS.with(|c| c.set(c.get() + 1));
     }
 
-    fn put(&self, _item: NonNull<u8>) {
+    fn put(&self, item: NonNull<u8>) {
         self.nout.fetch_sub(1, Ordering::Relaxed);
+        if POOL_RECYCLE.load(Ordering::Relaxed) {
+            self.free
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(item.as_ptr().expose_provenance());
+        }
     }
 
     fn nout(&self) -> u64 {
@@ -433,6 +464,8 @@ impl PoolBackend for TestPools {
             size: size.max(1),
             nout: AtomicU64::new(0),
             wchan,
+            free: Mutex::new(Vec::new()),
+            stride: size.max(1).next_multiple_of(align.max(16)),
         })))
     }
 }
@@ -917,6 +950,16 @@ pub fn pool_knobs(wchan: &str) -> Option<(u32, bool)> {
 /// Makes this thread see `cold || panicstr` as `cold` says (the sleeps' early return).
 pub fn set_cold(cold: bool) {
     COLD.with(|c| c.set(cold));
+}
+
+/// Makes every pool of the double recycle its items (`true`: items carved from slabs, an item
+/// given back handed out again, as `pool(9)`'s free lists do, its bytes as they were left) or
+/// hand out a fresh page per item (`false`, the default). Process-wide, for the benches (D-N5.5b-5): a bench op
+/// that takes pool items would time the host's page allocation otherwise (a fresh zeroed page
+/// per item), not the kernel; the tests keep the fresh pages, where a stale pointer into an
+/// item given back fails loudly. Items given back before the switch is turned on stay out.
+pub fn set_pool_recycle(on: bool) {
+    POOL_RECYCLE.store(on, Ordering::Relaxed);
 }
 
 /// Makes the test pools' `get_idle` ask this thread for `pool_get`'s yield (`true`), as

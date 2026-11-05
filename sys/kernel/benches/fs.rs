@@ -81,19 +81,35 @@
 //! - `ufs.lookup.miss`: `ufs_lookup` of a missing name (`ENOENT`).
 //! - `ufs.readdir`: `ufs_readdir` of the root's block into a 512-byte kernel buffer.
 //!
-//! Since N5.3 the bench registers `proc.rs`'s recycling pool backend before the doubles (as
-//! `vm.rs` and `proc.rs` do): the doubles' pool hands out a fresh zeroed page per item and
-//! never takes one back, which timed the host's `malloc` and `memset` (a `namei`'s path
-//! buffer, a name cache entry, a lock), not the kernel; LZ's bench (`sys/benches/fs.rs`)
-//! gets its items from `pool(9)`'s free lists. `getnewvnode.recycle`'s figure moves with it.
+//! N5.5b3's rows (`kernel::fs::ufs::ffs`, the op names and the image of `bsd`'s `ufs_bench`,
+//! the decision-43 pairs of N5.5a1 to N5.5b2, which these replace), over the kernel ffs's
+//! fixture (`testffs`: an FFS image of `newfs` as the disk of a block device, mounted at `/`
+//! by the kernel's `ffs_mountfs`; FFS2 with feature `ffs2`, FFS1 without), a root directory of
+//! nine files, each op the system calls and `namei` a thread of the test glue makes; run on a
+//! thread of their own (the fixture's thread and kernel memory, the rows above give theirs
+//! back first):
+//! - `ffs.vtoi.dip`: `vtoi` of a vnode and its dinode's `di_size`.
+//! - `ffs.lookup.hit.1`: `namei("/f")` with the name cached, and the `vrele`.
+//! - `ffs.lookup.miss`: `namei("/f", NOCACHE)`: `ufs_lookup`'s scan.
+//! - `ffs.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's block.
+//! - `ffs.create.remove`: `open("/n", O_CREAT)`, `close` and `unlink`.
+//! - `ffs.stat`: `stat("/f")`.
+//!
+//! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
+//! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
+//! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
+//! `memset` (a `namei`'s path buffer, a name cache entry, a lock, an inode), not the kernel;
+//! LZ's bench (`sys/benches/fs.rs`) got its items from `pool(9)`'s free lists.
+//!
+//! `cargo bench -p kernel --features doubles,ffs2 --bench fs` for the ffs rows over FFS2 (the
+//! image `bsd`'s `ufs_bench` used).
 
 #![forbid(unsafe_code)]
 
-use core::ptr::NonNull;
 use std::boxed::Box;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
@@ -115,7 +131,6 @@ use kernel::fs::vnode::{GETCWD_CHECK_ACCESS, LK_NOWAIT, VDIR, VROOT, Vattr};
 use kernel::fs::vnops::{vn_close, vn_open};
 use kernel::fs::vops::{Nd, VFS_ROOT, Vfs};
 
-use hal::pool::{PoolBackend, RawPool};
 use hal::rwlock::RecursiveRwlock;
 use hal::sys::errno::Errno;
 use hal::sys::types::makedev;
@@ -135,129 +150,6 @@ const REPS: usize = 7;
 const ROUNDS: usize = 200;
 /// Ops per timed batch.
 const BATCH: usize = 100;
-
-// ---------------------------------------------------------------------------------------
-// A pool backend that recycles its items (proc.rs's, itself vm.rs's), registered before the
-// doubles: the doubles' pool hands out a fresh zeroed page per item and never takes one back.
-
-/// A page of the host.
-const PAGE: usize = 4096;
-
-/// A free list of items of one size, as addresses (the provenance exposed when they were
-/// carved or given back).
-struct FreeList {
-    stride: usize,
-    free: Mutex<Vec<usize>>,
-}
-
-impl FreeList {
-    const fn new(stride: usize) -> Self {
-        Self {
-            stride,
-            free: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Vec<usize>> {
-        self.free
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// An item: one given back, or a fresh slab carved into items.
-    fn get(&self) -> Option<NonNull<u8>> {
-        let mut free = self.lock();
-        if free.is_empty() {
-            let per = (64 * 1024 / self.stride).max(1);
-            let mut rest: &'static mut [u8] = fresh(per * self.stride);
-            while rest.len() >= self.stride {
-                let (item, tail) = rest.split_at_mut(self.stride);
-                free.push(
-                    NonNull::from(item)
-                        .cast::<u8>()
-                        .as_ptr()
-                        .expose_provenance(),
-                );
-                rest = tail;
-            }
-        }
-        let addr = free.pop()?;
-        NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))
-    }
-
-    fn put(&self, item: NonNull<u8>) {
-        self.lock().push(item.as_ptr().expose_provenance());
-    }
-}
-
-/// `len` bytes of fresh, zeroed, page-aligned memory, leaked.
-fn fresh(len: usize) -> &'static mut [u8] {
-    // A byte block one page longer, cut at its first page boundary.
-    let block: &'static mut [u8] = vec![0u8; len + PAGE].leak();
-    let skip = block.as_ptr().addr().next_multiple_of(PAGE) - block.as_ptr().addr();
-    let (_, tail) = block.split_at_mut(skip);
-    let (run, _) = tail.split_at_mut(len);
-    run
-}
-
-/// One pool of the recycling double.
-struct BenchPool {
-    items: FreeList,
-    size: usize,
-    nout: AtomicU64,
-}
-
-impl RawPool for BenchPool {
-    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
-        let p = self.items.get()?;
-        self.nout.fetch_add(1, Ordering::Relaxed);
-        Some((p, self.size))
-    }
-
-    fn put(&self, item: NonNull<u8>) {
-        self.nout.fetch_sub(1, Ordering::Relaxed);
-        self.items.put(item);
-    }
-
-    fn nout(&self) -> u64 {
-        self.nout.load(Ordering::Relaxed)
-    }
-
-    fn size(&self) -> usize {
-        self.size
-    }
-
-    fn set_hiwat(&self, _n: u32) {}
-
-    fn cache_init(&self) {}
-}
-
-/// The recycling pool backend.
-struct BenchPools;
-
-impl PoolBackend for BenchPools {
-    fn create(
-        &self,
-        size: usize,
-        align: usize,
-        _ipl: i32,
-        _flags: i32,
-        _wchan: &'static str,
-    ) -> Option<&'static dyn RawPool> {
-        if align > PAGE {
-            return None;
-        }
-        let size = size.max(1);
-        let stride = size.next_multiple_of(align.max(16));
-        Some(Box::leak(Box::new(BenchPool {
-            items: FreeList::new(stride),
-            size,
-            nout: AtomicU64::new(0),
-        })))
-    }
-}
-
-static BENCH_POOLS: BenchPools = BenchPools;
 
 // ---------------------------------------------------------------------------------------
 // The file systems of the bench.
@@ -722,6 +614,12 @@ fn main() {
         "ufs.lookup.hit",
         "ufs.lookup.miss",
         "ufs.readdir",
+        "ffs.vtoi.dip",
+        "ffs.lookup.hit.1",
+        "ffs.lookup.miss",
+        "ffs.readdir.1blk",
+        "ffs.create.remove",
+        "ffs.stat",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -731,9 +629,10 @@ fn main() {
     }
     let wanted = |n: &str| args.is_empty() || args.iter().any(|a| a == n);
 
-    // The recycling pools, the doubles, the kernel lock, the test file system mounted as root.
-    let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
+    // The doubles with their pools recycling (D-N5.5b-5), the kernel lock, the test file
+    // system mounted as root.
     kernel::testutil::install();
+    kernel::testutil::set_pool_recycle(true);
     let (_memory, mp) = setup_root();
     // A file system's vnode in use (one reference kept), unlocked.
     let vp: &'static Vnode<TestGlue> =
@@ -1136,5 +1035,129 @@ fn main() {
         );
     }
     vput(uroot);
+
+    // N5.5b3's rows: the kernel ffs through the system calls, on a thread of its own (the
+    // fixture makes its thread and takes the kernel memory's guard afresh).
+    drop(_ufs_memory);
+    std::thread::scope(|s| {
+        s.spawn(|| ffs_rows(&wanted, &names[26..], &report));
+    });
+}
+
+/// The image of the ffs rows: `ufs_bench`'s FFS2 one with `option FFS2`, FFS1 without (the
+/// kernel's `ffs_mountfs` refuses an FFS2 super-block then, as the C's `ffs_validate`).
+#[cfg(feature = "ffs2")]
+const FFS_IMAGE: kernel::fs::ufs::ffs::testffs::newfs::Params =
+    kernel::fs::ufs::ffs::testffs::newfs::FFS2_4M;
+#[cfg(not(feature = "ffs2"))]
+const FFS_IMAGE: kernel::fs::ufs::ffs::testffs::newfs::Params =
+    kernel::fs::ufs::ffs::testffs::newfs::FFS1_4M;
+
+/// N5.5b3's ffs rows (the module's docs), `names` theirs in order.
+fn ffs_rows(wanted: &dyn Fn(&str) -> bool, names: &[&str], report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::fcntl::{O_CREAT, O_RDWR};
+    use kernel::descrip::sys_close;
+    use kernel::fs::syscalls::{sys_getdents, sys_unlink};
+    use kernel::fs::ufs::ffs::testffs::{self, newfs};
+    use kernel::fs::ufs::ufs::inode::vtoi;
+
+    let mut img = newfs::Image::new(FFS_IMAGE);
+    img.add_file(b"f", b"hello, world\n");
+    for n in [
+        &b"passwd"[..],
+        b"group",
+        b"hosts",
+        b"fstab",
+        b"rc",
+        b"rc.conf",
+        b"motd",
+        b"services",
+    ] {
+        img.add_file(n, b"x");
+    }
+    let (_memory, p) = testffs::attach(img.finish());
+    kernel::testutil::set_file_log(false);
+    let mp = testffs::mount_root(p, 0);
+
+    let base = kernel::testutil::USER_BASE + 0x2000;
+    let p_f = UserPtr::<u8>::new(base);
+    let p_n = UserPtr::<u8>::new(base + 0x10);
+    let p_root = UserPtr::<u8>::new(base + 0x20);
+    let ustat = UserPtr::<u8>::new(base + 0x100);
+    let udents = base + 0x1000;
+    need(p_f.copyout_slice(b"/f\0"), "copyout");
+    need(p_n.copyout_slice(b"/n\0"), "copyout");
+    need(p_root.copyout_slice(b"/\0"), "copyout");
+    let fd_root = need(sys_open(p, p_root, O_RDONLY, 0), "open /");
+    let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/f"), p);
+    need(namei(&mut nd), "namei /f");
+    let Some(fvp) = nd.ni_vp else {
+        eprintln!("fs: no /f");
+        std::process::exit(1);
+    };
+    // The warm-up of each: the name cached, the blocks in the buffer cache.
+    need(sys_stat(p, p_f, ustat), "stat");
+    need(sys_getdents(p, fd_root, udents, 4096), "getdents");
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| {
+                rounds(|| {
+                    let ip = vtoi(black_box(fvp));
+                    black_box(ip.dip_size());
+                })
+            }),
+        );
+    }
+    if wanted(names[1]) {
+        report(
+            names[1],
+            measure(|| rounds(|| lookup_rele(p, b"/f", FOLLOW))),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| rounds(|| lookup_rele(p, b"/f", FOLLOW | NOCACHE))),
+        );
+    }
+    if wanted(names[3]) {
+        report(
+            names[3],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_root, 0, SEEK_SET);
+                    let _ = black_box(sys_getdents(p, black_box(fd_root), udents, 4096));
+                })
+            }),
+        );
+    }
+    if wanted(names[4]) {
+        report(
+            names[4],
+            measure(|| {
+                rounds(|| {
+                    if let Ok(fd) = sys_open(p, black_box(p_n), O_RDWR | O_CREAT, 0o644) {
+                        let _ = sys_close(p, fd);
+                    }
+                    let _ = black_box(sys_unlink(p, p_n));
+                })
+            }),
+        );
+    }
+    if wanted(names[5]) {
+        report(
+            names[5],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_stat(p, black_box(p_f), ustat));
+                })
+            }),
+        );
+    }
+    vrele(fvp);
+    let _ = sys_close(p, fd_root);
+    testffs::unmount_root(p, mp);
 }
 /* </CODE> */
