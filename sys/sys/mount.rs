@@ -284,12 +284,17 @@ pub fn VFS_CHECKEXP(
     cred: &mut *const Ucred,
 ) -> Result<(), Errno> {
     // `vfs_checkexp` is the NFS server's, `bsd`'s: the table as `bsd` knows it, or for the
-    // kernel's ffs (N5.5b2) its `vfs_checkexp`, `ufs_check_export` over the mount's export
-    // list (`bsd`'s until N6), and for the kernel's mfs (N5.5b3) its `mfs_checkexp`.
+    // kernel's ffs (N5.5b2) and ext2fs (N5.6c3) their `vfs_checkexp`, `ufs_check_export` over
+    // the mount's export list (`bsd`'s until N6), and for the kernel's mfs (N5.5b3) its
+    // `mfs_checkexp`.
     match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
         Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
         #[cfg(feature = "ffs")]
         None if mp.vfc().name() == MOUNT_FFS => {
+            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
+        }
+        #[cfg(feature = "ext2fs")]
+        None if mp.vfc().name() == MOUNT_EXT2FS => {
             crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
         }
         #[cfg(feature = "mfs")]

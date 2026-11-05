@@ -101,7 +101,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "ext2fs")]
     Vfsconf::new(
-        &crate::ufs::ext2fs::ext2fs_vfsops::EXT2FS_VFSOPS,
+        &kernel::fs::ufs::ext2fs::ext2fs_vfsops::Ext2fsVfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_EXT2FS,
         17,
         crate::sys::mount::MNT_LOCAL | crate::sys::mount::MNT_SWAPPABLE,

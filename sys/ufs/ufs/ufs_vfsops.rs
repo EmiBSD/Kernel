@@ -53,29 +53,27 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The file-system-type operations the UFS file systems share: `ufs_start`, `ufs_root` and
-//! the generic half of `fhtovp` are the kernel's (`kernel::fs::ufs::ufs::ufs_vfsops`,
-//! N5.5a1); `ufs_check_export` and `ufs_init` stay here.
+//! The file-system-type operations the UFS file systems share: `ufs_start`, `ufs_root`, the
+//! generic half of `fhtovp` and `ufs_init` are the kernel's (`kernel::fs::ufs::ufs::ufs_vfsops`,
+//! N5.5a1, N5.5a2); `ufs_check_export`, the NFS server's `vfs_checkexp` of the kernel's ffs
+//! and ext2fs mounts (`VFS_CHECKEXP`), stays here until N6.
 //!
 //! Upstream: sys/ufs/ufs/ufs_vfsops.c @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `ufs_init` is the kernel's (N5.5a2), over `bsd`'s `initialvnodes`; this module keeps the
-//!   `Vfsops` slot's shape.
+//! - The re-exports of the kernel's `ufs_start`, `ufs_root` and `ufs_fhtovp` and the `Vfsops`
+//!   slot of `ufs_init` went with their last `bsd` caller, `bsd`'s ext2fs (N5.6c3).
 //! - `ufs_check_export`: without `nfsserver` there is no export list (`vfs_export_lookup`
 //!   finds nothing), so every client is refused with `EACCES`, as the C does when the lookup
 //!   fails. `credanonp` is a `*const Ucred` into the entry's `netc_anon`.
 
 use core::ptr;
-use core::sync::atomic::Ordering;
 
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
-use crate::sys::mount::{Mount, Vfsconf};
+use crate::sys::mount::Mount;
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::vfs_export_lookup;
-
-pub use kernel::fs::ufs::ufs::ufs_vfsops::{ufs_fhtovp, ufs_root, ufs_start};
 
 /// `ufs_check_export` (`vfs_checkexp`): verify a remote client has export rights and return
 /// these rights via `exflagsp` and `credanonp`.
@@ -94,12 +92,5 @@ pub fn ufs_check_export(
     *exflagsp = np.netc_exflags.get();
     *credanonp = ptr::from_ref(&*np.netc_anon);
     Ok(())
-}
-
-/// `ufs_init` (`vfs_init`): initialize UFS file systems, done only once (the kernel's).
-pub fn ufs_init(_vfsp: &'static Vfsconf) -> Result<(), Errno> {
-    kernel::fs::ufs::ufs::ufs_vfsops::ufs_init::<crate::kern::proc_glue::BsdProcGlue>(
-        crate::conf::param::INITIALVNODES.load(Ordering::Relaxed),
-    )
 }
 /* </CODE> */

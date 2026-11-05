@@ -23,8 +23,8 @@
 //! the fast file system over it (N5.5b1, N5.5b2); `mfs` the memory file system, an FFS in a
 //! process's memory (N5.5b3, feature `mfs`); `ext2fs` the second extended file system over
 //! the same layer (feature `ext2fs`): its on-disk format and allocators since N5.6c1, its
-//! directories, file I/O, vnode operations and tables since N5.6c2, while `bsd`'s ext2fs
-//! still serves the mounts until N5.6c3.
+//! directories, file I/O, vnode operations and tables since N5.6c2, its mount since N5.6c3,
+//! when `bsd`'s ext2fs went.
 
 #[cfg(feature = "ext2fs")]
 pub mod ext2fs;

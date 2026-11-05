@@ -95,6 +95,13 @@
 //! - `ffs.create.remove`: `open("/n", O_CREAT)`, `close` and `unlink`.
 //! - `ffs.stat`: `stat("/f")`.
 //!
+//! N5.6c3's rows (feature `ext2fs`), the same system calls over the kernel ext2fs's fixture
+//! (`testext2fs`: its one-group image of 1 KiB blocks, mounted at `/` by the kernel's
+//! `ext2fs_mountfs`), a first measurement for N12 (no `bsd` row to pair them with):
+//! - `ext2.lookup.hit.1`: `namei("/hello.txt")` with the name cached, and the `vrele`.
+//! - `ext2.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's block.
+//! - `ext2.stat`: `stat("/hello.txt")`.
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -620,6 +627,12 @@ fn main() {
         "ffs.readdir.1blk",
         "ffs.create.remove",
         "ffs.stat",
+        #[cfg(feature = "ext2fs")]
+        "ext2.lookup.hit.1",
+        #[cfg(feature = "ext2fs")]
+        "ext2.readdir.1blk",
+        #[cfg(feature = "ext2fs")]
+        "ext2.stat",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1047,6 +1060,77 @@ fn main() {
     std::thread::scope(|s| {
         s.spawn(|| ffs_rows(&wanted, &names[ffs..], &report));
     });
+
+    // N5.6c3's rows: the kernel ext2fs, on a thread of its own after ffs's.
+    #[cfg(feature = "ext2fs")]
+    {
+        let ext2 = names
+            .iter()
+            .position(|n| n.starts_with("ext2."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| ext2_rows(&wanted, &names[ext2..], &report));
+        });
+    }
+}
+
+/// N5.6c3's ext2fs rows (the module's docs), `names` theirs in order.
+#[cfg(feature = "ext2fs")]
+fn ext2_rows(
+    wanted: &dyn Fn(&str) -> bool,
+    names: &[&str],
+    report: &dyn Fn(&str, (f64, f64, f64)),
+) {
+    use kernel::descrip::sys_close;
+    use kernel::fs::syscalls::sys_getdents;
+    use kernel::fs::ufs::ext2fs::testext2fs::{self, newfs};
+    use kernel::fs::ufs::ffs::testffs;
+
+    let (_memory, p) = testext2fs::attach(newfs::image(false));
+    kernel::testutil::set_file_log(false);
+    let mp = testext2fs::mount_root(p, 0);
+
+    let base = kernel::testutil::USER_BASE + 0x2000;
+    let p_f = UserPtr::<u8>::new(base);
+    let p_root = UserPtr::<u8>::new(base + 0x20);
+    let ustat = UserPtr::<u8>::new(base + 0x100);
+    let udents = base + 0x1000;
+    need(p_f.copyout_slice(b"/hello.txt\0"), "copyout");
+    need(p_root.copyout_slice(b"/\0"), "copyout");
+    let fd_root = need(sys_open(p, p_root, O_RDONLY, 0), "open /");
+    // The warm-up of each: the name cached, the blocks in the buffer cache.
+    need(sys_stat(p, p_f, ustat), "stat");
+    need(sys_getdents(p, fd_root, udents, 4096), "getdents");
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| rounds(|| lookup_rele(p, b"/hello.txt", FOLLOW))),
+        );
+    }
+    if wanted(names[1]) {
+        report(
+            names[1],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_root, 0, SEEK_SET);
+                    let _ = black_box(sys_getdents(p, black_box(fd_root), udents, 4096));
+                })
+            }),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_stat(p, black_box(p_f), ustat));
+                })
+            }),
+        );
+    }
+    let _ = sys_close(p, fd_root);
+    testffs::unmount_root(p, mp);
 }
 
 /// The image of the ffs rows: `ufs_bench`'s FFS2 one with `option FFS2`, FFS1 without (the

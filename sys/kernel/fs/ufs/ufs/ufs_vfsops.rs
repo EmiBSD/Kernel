@@ -79,7 +79,10 @@
 //!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique, and, since
 //!   N5.5b3, mfs's (LZ's `MFS_VOPS` of `sys/ufs/mfs/mfs_vnops.rs`, feature `mfs`), and since
 //!   N5.6c2 ext2fs's two (LZ's `EXT2FS_VOPS` and `EXT2FS_SPECVOPS` of
-//!   `sys/ufs/ext2fs/ext2fs_vnops.rs`, feature `ext2fs`).
+//!   `sys/ufs/ext2fs/ext2fs_vnops.rs`, feature `ext2fs`), and since N5.6c3 ext2fs's pools (LZ's
+//!   `EXT2FS_INODE_POOL` and `EXT2FS_DINODE_POOL`: `ext2fs_ino`, `ext2fs_dino`), which the
+//!   kernel's `ext2fs_init` makes on each call as the C's (no `done` flag: a second `init`
+//!   answers `EBUSY`), so `ufs_test_reset` clears nothing of ext2fs's.
 
 use core::sync::atomic::AtomicBool;
 
@@ -96,6 +99,8 @@ use super::ufs_quota::DqTables;
 use super::ufs_vnops::{UfsSpecVnops, UfsVnops};
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs_dinode::Ext2Inode;
 #[cfg(feature = "ext2fs")]
 use crate::fs::ufs::ext2fs::ext2fs_vnops::{Ext2fsSpecVnops, Ext2fsVnops};
 use crate::fs::ufs::ffs::ffs_vfsops::Ffs;
@@ -145,6 +150,14 @@ pub struct UfsTables<G: ProcGlue> {
     /// `ext2fs_specvops`: the operations of a device special file on an ext2fs (N5.6c2).
     #[cfg(feature = "ext2fs")]
     pub ext2fs_specvops: Ext2fsSpecVnops<G>,
+    /// `ext2fs_inode_pool` (`"ext2inopl"`): EXT2FS's inodes (recorded, as `ffs_ino`), made by
+    /// `ext2fs_init` (N5.6c3).
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_ino: TypedPool<Inode<G>>,
+    /// `ext2fs_dinode_pool` (`"ext2dinopl"`): EXT2FS's dinodes, each with the inode's
+    /// `inode_ext.e2fs` members (`Ext2Inode`, N5.6c1).
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_dino: BoxPool<Ext2Inode>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -167,6 +180,10 @@ impl<G: ProcGlue> UfsTables<G> {
             ext2fs_vops: Ext2fsVnops::new(),
             #[cfg(feature = "ext2fs")]
             ext2fs_specvops: Ext2fsSpecVnops::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_ino: TypedPool::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_dino: BoxPool::new(),
         }
     }
 }

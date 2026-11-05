@@ -21,13 +21,12 @@
 //!
 //! `ufs` is the layer the UFS-like file systems share (inodes, directories, the vnode
 //! operations); `ffs` is the fast file system on it. Both are compiled with feature `ffs`
-//! (`option FFS`), as `conf/files` builds them for `ffs | mfs`; `ext2fs` is the second extended
-//! file system, compiled with feature `ext2fs` (`option EXT2FS`). The file systems themselves
-//! are the kernel's since N5.5b2 (`ffs`) and N5.5b3 (`mfs`, the memory file system on `ffs`,
-//! feature `mfs`, `option MFS`: `kernel::fs::ufs::mfs`); `ffs` keeps `bsd`'s adapters.
+//! (`option FFS`), as `conf/files` builds them for `ffs | mfs`. The file systems themselves
+//! are the kernel's since N5.5b2 (`ffs`), N5.5b3 (`mfs`, the memory file system on `ffs`,
+//! feature `mfs`, `option MFS`: `kernel::fs::ufs::mfs`) and N5.6c3 (`ext2fs`, the second
+//! extended file system, feature `ext2fs`, `option EXT2FS`: `kernel::fs::ufs::ext2fs`, no
+//! adapter here); `ffs` keeps `bsd`'s adapters.
 
-#[cfg(feature = "ext2fs")]
-pub mod ext2fs;
 pub mod ffs;
 #[allow(clippy::module_inception)] // OpenBSD's sys/ufs/ufs
 pub mod ufs;

@@ -219,14 +219,6 @@ impl FileGlue for BsdFileGlue {
     type VnodeG = crate::sys::vnode::VnodeG;
     /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
     type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
-    #[cfg(feature = "ffs")]
-    type InodeG = crate::ufs::ufs::inode::BsdInodeG;
-    #[cfg(not(feature = "ffs"))]
-    type InodeG = ();
-    #[cfg(feature = "ffs")]
-    type UfsmountG = crate::ufs::ufs::ufsmount::BsdUfsmountG;
-    #[cfg(not(feature = "ffs"))]
-    type UfsmountG = ();
     type MountG = crate::sys::mount::BsdMountG;
     type InodeHash = InodeHashLink;
     type DqHash = DqHashLink;
@@ -309,24 +301,7 @@ impl FileGlue for BsdFileGlue {
     fn uiomove(buf: &mut [u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
         crate::kern::kern_subr::uiomove(buf, uio)
     }
-    /// `ip->i_e2fs_nlink` from ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's
-    /// member until N5.6.
-    #[cfg(feature = "ext2fs")]
-    fn inode_e2fs_nlink(g: &Self::InodeG) -> Option<i32> {
-        Some(i32::from(g.i_e2fs_nlink()))
-    }
-    /// `EXT2FS_ITIMES(ip)` into ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's
-    /// member until N5.6.
-    #[cfg(feature = "ext2fs")]
-    fn ext2fs_itimes(ip: &crate::ufs::ufs::inode::Inode) {
-        use crate::ufs::ufs::inode::InodeExt;
-        ip.ext2fs_itimes();
-    }
-    /// `ext2fs_size(ip)`, from ext2fs's dinode (as `ext2fs_itimes`).
-    #[cfg(feature = "ext2fs")]
-    fn ext2fs_size(ip: &crate::ufs::ufs::inode::Inode) -> u64 {
-        crate::ufs::ext2fs::ext2fs_inode::ext2fs_size(ip)
-    }
+
     /// `vfs_export(mp, &ump->um_export, argp)` of the kernel's `ffs_mount`: the export list is
     /// the mount's `BsdMountG` member (`bsd`'s until N6).
     fn vfs_export(

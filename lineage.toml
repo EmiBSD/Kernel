@@ -5681,7 +5681,7 @@ status = "inherited"
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -5927,7 +5927,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -7651,7 +7651,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -8311,47 +8311,47 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::with_e2din"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::with_e2din"]
-kind = "moved"
+native = ["Inode::i_e2din"]
+kind = "renamed"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_last_lblk"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_last_lblk"]
-kind = "moved"
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_last_blk"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_last_blk"]
-kind = "moved"
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_uid"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_uid"]
-kind = "moved"
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_gid"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_gid"]
-kind = "moved"
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_ext_cache"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_ext_cache"]
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode::i_e2fs_ext_cache"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_blocks"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_blocks"]
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode::i_e2fs_blocks"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::i_e2fs_block"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::i_e2fs_block"]
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode::i_e2fs_block"]
 kind = "moved"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/inode.rs::Inode::set_i_e2fs_block"
-native = ["sys/ufs/ufs/inode.rs::BsdInodeG::set_i_e2fs_block"]
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs::Ext2Inode::set_i_e2fs_block"]
 kind = "moved"
 
 [[module.fn]]
@@ -8406,6 +8406,47 @@ lz = "sys/ufs/ufs/inode.rs::Inode::fs"
 native = ["Inode::i_fs"]
 kind = "renamed"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::Inode::e2fs"
+native = ["Inode::i_e2fs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_TRUNCATE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().truncate(..) (Ffs::truncate for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_UPDATE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().update(..) (Ffs::update for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_INODE_ALLOC"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().inode_alloc(..) (Ffs::inode_alloc for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_INODE_FREE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().inode_free(..) (Ffs::inode_free for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_BUF_ALLOC"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().buf_alloc(..) (Ffs::buf_alloc for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_BUFATOFF"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().bufatoff(..) (Ffs::bufatoff for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufsmount.rs"
 crate = "kernel"
@@ -8417,6 +8458,16 @@ notes = "N5.5a1: struct ufsmount as Ufsmount<G>, its words relaxed atomics with 
 lz = "sys/ufs/ufs/ufsmount.rs::Ufsmount::fs"
 native = ["Ufsmount::um_fs"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufsmount.rs::Ufsmount::e2fs"
+native = ["Ufsmount::um_e2fs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/ufsmount.rs::Ufsmount::with_e2fsb"
+native = ["Ufsmount::um_e2fs"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"
@@ -9151,10 +9202,15 @@ native = []
 kind = "dropped"
 reason = "e2fs_cgsave copies the in-core descriptors' bytes out (the C's memcpy) or swaps them on a big-endian machine; the tests' newfs writes Ext2Gd with pod_to_bytes"
 
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::default"
+native = ["Ext2Superblock::new"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs"
 crate = "kernel"
-lz = ["sys/ufs/ext2fs/ext2fs_dinode.rs"]
+lz = ["sys/ufs/ext2fs/ext2fs_dinode.rs", "sys/ufs/ufs/inode.rs"]
 status = "redesigned"
 notes = "N5.6c1: struct ext2fs_dinode as an abi_pod! image, and the inode's ext2fs state in core as Ext2Inode (D-N5.6-2): the dinode's 156 bytes in DinWords<20> with the i_e2fs_* accessors at offset_of!, inode_ext.e2fs's members relaxed words; one item of ext2dinopl in the kernel inode's Dinode::Ext2; e2fs_iload/e2fs_isave copy min(EXT2_DINODE_SIZE, 156) bytes; 0 unsafe (LZ: 4)"
 
@@ -9187,6 +9243,21 @@ reason = "e2fs_iload writes the buffer's bytes into the in-core dinode's words (
 [[module.fn]]
 lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::ext2_dinode_size"
 native = ["sys/kernel/fs/ufs/ext2fs/ext2fs.rs::Ext2Superblock::dinode_size"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::Ext2fsInodeExt"
+native = ["Ext2Inode"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::Ext2fsInodeExt::new"
+native = ["Ext2Inode::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::Ext2fsInodeExt::default"
+native = ["Ext2Inode::new"]
 kind = "merged"
 
 [[module]]
@@ -9263,9 +9334,14 @@ reason = "the UFS layer's block-pointer readers beside daddr32_at: ufs/inode.rs'
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_inode.rs"
 crate = "kernel"
-lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
+lz = ["sys/ufs/ext2fs/ext2fs_inode.rs", "sys/ufs/ufs/inode.rs"]
 status = "redesigned"
 notes = "N5.6c1 (unwired): ext2fs_size, ext2fs_setsize, ext2fs_update, ext2fs_truncate and ext2fs_indirtrunc over the kernel cache's tokens and an MArray<u8> of M_TEMP (the kernel ffs_inode's shape), EXT2FS_ITIMES as ext2fs_itimes; 0 unsafe (LZ: 6). N5.6c2: the vnode operation ext2fs_inactive in the kernel's Vnops<G> slot shape, the dinode's NULL the inode's empty slot (din_is_null)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::Inode::ext2fs_itimes"
+native = ["ext2fs_itimes"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_subr.rs"
@@ -9340,6 +9416,56 @@ kind = "merged"
 [[module.fn]]
 lz = "sys/ufs/ext2fs/ext2fs_vnops.rs::RenameExit"
 native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::RenameExit"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.6c3: ext2fs_vfsops as Ext2fsVfs<G>: Vfs<G> (the Ffs<G> shape; named Ext2fsVfs since the on-disk struct ext2fs is Ext2fs), the C's functions generic over the glue in its order; the in-core super block the UFS mount's UfsSuper::Ext2 (no malloc'ed MExt2fs, no &'static); the pools UfsTables members; e2fs_sbfill in the C's 32-bit widths; ext2fs_vget's vref before ufs_ihashins (LZ's deviation, the user's decision of 2026-11-05); 0 unsafe (LZ: 13)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::SbScalars"
+native = []
+kind = "dropped"
+reason = "e2fs_sbfill reads each member through the in-core super block's accessors (one relaxed load each), not a copy of nine of them"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::sb_scalars"
+native = []
+kind = "dropped"
+reason = "the copy SbScalars was is gone: e2fs_sbfill reads the members through the accessors"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::EXT2FS_VFSOPS"
+native = ["Ext2fsVfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::EXT2FS_INODE_POOL"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::EXT2FS_DINODE_POOL"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::strlcpy_zero"
+native = ["e2fs_set_fsmnt", "e2fs_set_sb_fsmnt"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::e2fs_gd_area"
+native = []
+kind = "dropped"
+reason = "the group descriptors are words of the in-core super block's own array (Ext2Superblock's gd), read and written by e2fs_cgload/e2fs_cgsave and the gd accessors: no slice over a malloc"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_vfsops.rs::getblk_wait"
+native = ["sys/kernel/fs/bio.rs::getblk_wait"]
 kind = "merged"
 
 [[module]]
@@ -9993,92 +10119,6 @@ status = "adapted"
 adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
-rust = "sys/ufs/ext2fs/ext2fs.rs"
-lz = ["sys/ufs/ext2fs/ext2fs.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_alloc.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_alloc.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_balloc.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_balloc.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_bmap.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_bswap.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_bswap.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_dinode.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_dinode.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_dir.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_dir.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_extents.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_extents.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_extern.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_extern.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_inode.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_lookup.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_lookup.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_readwrite.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_readwrite.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_subr.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_subr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/inode.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_vfsops.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs"]
-
-[[module]]
-rust = "sys/ufs/ext2fs/ext2fs_vnops.rs"
-lz = ["sys/ufs/ext2fs/ext2fs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"]
-
-[[module]]
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
@@ -10114,7 +10154,7 @@ adapted_by = ["sys/kernel/fs/ufs/ufs/dirhash.rs"]
 rust = "sys/ufs/ufs/inode.rs"
 lz = ["sys/ufs/ufs/inode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/ffs/fs.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/ffs/fs.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/quota.rs"
@@ -10123,40 +10163,10 @@ status = "adapted"
 adapted_by = ["sys/kernel/fs/ufs/ufs/quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs"]
 
 [[module]]
-rust = "sys/ufs/ufs/ufs_bmap.rs"
-lz = ["sys/ufs/ufs/ufs_bmap.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/ufs_bmap.rs"]
-
-[[module]]
 rust = "sys/ufs/ufs/ufs_dirhash.rs"
 lz = ["sys/ufs/ufs/ufs_dirhash.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_extern.rs"
-lz = ["sys/ufs/ufs/ufs_extern.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_ihash.rs"
-lz = ["sys/ufs/ufs/ufs_ihash.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_inode.rs"
-lz = ["sys/ufs/ufs/ufs_inode.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_inode.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_lookup.rs"
-lz = ["sys/ufs/ufs/ufs_lookup.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_lookup.rs"]
 
 [[module]]
 rust = "sys/ufs/ufs/ufs_quota.rs"
@@ -10169,18 +10179,6 @@ rust = "sys/ufs/ufs/ufs_vfsops.rs"
 lz = ["sys/ufs/ufs/ufs_vfsops.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/mount.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufs_vnops.rs"
-lz = ["sys/ufs/ufs/ufs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vnops.rs"]
-
-[[module]]
-rust = "sys/ufs/ufs/ufsmount.rs"
-lz = ["sys/ufs/ufs/ufsmount.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/ffs/fs.rs"]
 
 [[module]]
 rust = "sys/hal/vm/param.rs"

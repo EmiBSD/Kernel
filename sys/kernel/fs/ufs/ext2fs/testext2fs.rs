@@ -21,54 +21,44 @@
 //! "doubles"))`; not an OpenBSD file): [`newfs`], the image builder (a small ext2 file system
 //! of one block group, `newfs_ext2fs(8)`'s layout in small: the super-block, the group
 //! descriptor, the bitmaps, the inode table, a root directory and three files), lifted from
-//! `bsd`'s `ext2fs_vfsops.rs` tests; and the device half, testffs's: the image is the disk of
-//! testfs's block device ([`attach`], `testffs::disk`, `testffs::sync`).
-//!
-//! Until the kernel's `ext2fs_mountfs` and `ext2fs_vget` exist (N5.6c3), [`mount`] makes the
-//! mount the way `ext2fs_mountfs` does (the super-block read in, its geometry computed as
-//! `e2fs_sbfill` computes it, the descriptors read, the UFS structure hung from the mount's
-//! slot) and its `vget` makes an inode the way `ext2fs_vget` does, over a vnode table of the
-//! fixture's own (block maps through `ext2fs_bmaparray`/`ext4_bmapext`, the UFS layer's
-//! locks and strategy, ext2fs's `access`, `read` and `write` since N5.6c2) and a table of the
-//! fixture's own in place of the inode hash (whose
-//! `ext2fs` branch reads `bsd`'s glue until N5.6c3). N5.6c3 replaces both with the real
-//! mount and the C's two tables.
+//! `bsd`'s `ext2fs_vfsops.rs` tests; and [`attach`], [`mount`], [`mount_root`], the image
+//! mounted by the kernel's `ext2fs_mountfs` (since N5.6c3; N5.6c1's mount of its own steps,
+//! its `vget`, its vnode tables and its inode table went), its inodes made by `ext2fs_vget`,
+//! over testffs's device half: the image is the disk of testfs's block device
+//! (`testffs::attach`, `testffs::disk`, `testffs::sync`).
 
-use core::cell::RefCell;
+use core::cell::Cell;
 
 use std::boxed::Box;
-use std::collections::HashMap;
 use std::sync::MutexGuard;
-use std::vec::Vec;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::MArc;
-use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+use hal::pool::PR_WAITOK;
 use hal::sys::errno::Errno;
-use hal::sys::mount::{Fid, MNT_LOCAL, MNT_RDONLY, MOUNT_EXT2FS, Statfs};
-use hal::sys::types::{Daddr, Ino, Mode, Uid};
+use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
+use hal::sys::types::Daddr;
+use hal::user::UserPtr;
 
-use super::ext2fs::{
-    E2FS_REV0, EXT2_GD_SIZE, EXT2F_INCOMPAT_EXTENTS, EXT2F_ROCOMPAT_LARGE_FILE, Ext2Superblock,
-    LOG_MINBSIZE, SBLOCK, SBSIZE, e2fs_cgload, e2fs_sbload, fsbtodb, ino_to_fsba, ino_to_fsbo,
-    nindir,
+use super::ext2fs::{Ext2Superblock, SBLOCK, SBSIZE, e2fs_sbload, nindir};
+use super::ext2fs_dinode::{EXT2_ROOTINO, Ext2Inode};
+use super::ext2fs_vfsops::{
+    Ext2fsVfs, e2fs_sbfill, ext2fs_init, ext2fs_mountfs, ext2fs_statfs, ext2fs_vget,
 };
-use super::ext2fs_bmap::{ext2fs_bmaparray, ext4_bmapext};
-use super::ext2fs_dinode::{EXT4_EXTENTS, Ext2Inode, e2fs_iload};
-use crate::fs::bio::{bread, brelse};
-use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_unbusy};
-use crate::fs::subr::{getnewvnode, vflushbuf, vref, vrele};
-use crate::fs::testfs::TestGlue;
+use crate::fs::bio::{biodone, bread, brelse};
+use crate::fs::buf::{B_ERROR, BufRef};
+use crate::fs::init::{rootvnode, set_rootvnode};
+use crate::fs::mount::{
+    Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
+};
+use crate::fs::subr::{vfs, vput, vref, vrele};
+use crate::fs::testfs::{TestGlue, set_bdev_strategy};
 use crate::fs::ufs::ffs::testffs;
 use crate::fs::ufs::ufs::dinode::{IFREG, Ufsino};
 use crate::fs::ufs::ufs::inode::{Dinode, Inode, InodeInit, vtoi};
 use crate::fs::ufs::ufs::testufs::TEST_DEV;
-use crate::fs::ufs::ufs::ufs_vnops::{ufs_islocked, ufs_lock, ufs_strategy, ufs_unlock};
-use crate::fs::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, UfsmountRef, vfstoufs};
-use crate::fs::vnode::{LK_EXCLUSIVE, VREG, VT_EXT2FS, Vnode, iftovt};
-use crate::fs::vops::{Cred, IoBuf, Nd, Vfs, Vnops, vop_lock, vop_unlock};
-use crate::proc::Thread;
-use crate::uio::Uio;
+use crate::fs::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, UfsmountRef};
+use crate::fs::vnode::{VREG, Vnode};
+use crate::fs::vops::{Cred, vop_unlock};
+use crate::proc::{ProcGlue, Thread};
 
 /// `newfs`: the test ext2 file system, built in memory, 1 KiB blocks, one block group.
 pub mod newfs {
@@ -224,67 +214,158 @@ pub mod newfs {
         }
     }
 
+    /// What [`Image::new`] makes a file system of: `nblk` blocks and `ipg` inodes of `isz`
+    /// bytes in one group, `rbcount` blocks reserved, the free counts and the incompatible
+    /// features of the super block.
+    pub struct Params {
+        /// Blocks in the file system.
+        pub nblk: usize,
+        /// Inodes per group (and in all).
+        pub ipg: u32,
+        /// The inode size.
+        pub isz: usize,
+        /// Blocks reserved for the super-user.
+        pub rbcount: u32,
+        /// Free blocks.
+        pub nfree: u32,
+        /// Free inodes.
+        pub nifree: u32,
+        /// `e2fs_features_incompat`.
+        pub incompat: u32,
+    }
+
+    impl Image {
+        /// A file system of `p` (1 KiB blocks, one group, revision 1, sparse super blocks,
+        /// clean, the group descriptor in [`GDT`], the bitmaps in [`BBITMAP`] and [`IBITMAP`],
+        /// the inode table from [`ITABLE`]): the super block, the descriptor (one directory)
+        /// and the bitmaps' bits past the last block and the last inode; nothing used yet.
+        pub fn new(p: &Params) -> Image {
+            let mut img = Image(vec![0; p.nblk * B]);
+
+            let mut sb = Ext2fs::new();
+            sb.e2fs_icount = p.ipg;
+            sb.e2fs_bcount = p.nblk as u32;
+            sb.e2fs_rbcount = p.rbcount;
+            sb.e2fs_fbcount = p.nfree;
+            sb.e2fs_ficount = p.nifree;
+            sb.e2fs_first_dblock = 1;
+            sb.e2fs_bpg = 8192;
+            sb.e2fs_fpg = 8192;
+            sb.e2fs_ipg = p.ipg;
+            sb.e2fs_wtime = 1_700_000_000;
+            sb.e2fs_max_mnt_count = 20;
+            sb.e2fs_magic = E2FS_MAGIC;
+            sb.e2fs_state = E2FS_ISCLEAN;
+            sb.e2fs_beh = 1;
+            sb.e2fs_rev = E2FS_REV1;
+            sb.e2fs_first_ino = EXT2_FIRSTINO;
+            sb.e2fs_inode_size = p.isz as u16;
+            sb.e2fs_features_incompat = p.incompat;
+            sb.e2fs_features_rocompat = EXT2F_ROCOMPAT_SPARSE_SUPER;
+            sb.to_disk(&mut img.0[B..2 * B]);
+
+            let gd = Ext2Gd {
+                ext2bgd_b_bitmap: BBITMAP as u32,
+                ext2bgd_i_bitmap: IBITMAP as u32,
+                ext2bgd_i_tables: ITABLE as u32,
+                ext2bgd_nbfree: p.nfree as u16,
+                ext2bgd_nifree: p.nifree as u16,
+                ext2bgd_ndirs: 1,
+                ..Ext2Gd::default()
+            };
+            let mut b = [0u8; EXT2_GD_SIZE];
+            let _ = pod_to_bytes(&gd, &mut b);
+            img.put(GDT, 0, &b);
+
+            for bit in (p.nblk - 1)..8 * B {
+                img.setbit(BBITMAP, bit);
+            }
+            for bit in p.ipg as usize..8 * B {
+                img.setbit(IBITMAP, bit);
+            }
+            img
+        }
+
+        /// `blocks` marked used in the block bitmap (bit `b - 1` is block `b`).
+        pub fn use_blocks(&mut self, blocks: impl IntoIterator<Item = usize>) {
+            for b in blocks {
+                self.setbit(BBITMAP, b - 1);
+            }
+        }
+
+        /// `inodes` marked used in the inode bitmap (bit `i - 1` is inode `i`).
+        pub fn use_inodes(&mut self, inodes: impl IntoIterator<Item = usize>) {
+            for i in inodes {
+                self.setbit(IBITMAP, i - 1);
+            }
+        }
+    }
+
+    /// [`mkfs`]'s blocks (one group).
+    pub const MKFS_NBLK: usize = 1024;
+    /// [`mkfs`]'s inodes (one group).
+    pub const MKFS_IPG: usize = 64;
+
+    /// The inode table's size, in blocks, of [`mkfs`]'s file system for inodes of `isz` bytes.
+    pub const fn itblocks(isz: usize) -> usize {
+        MKFS_IPG * isz / B
+    }
+
+    /// A fresh ext2 file system of [`MKFS_NBLK`] blocks and [`MKFS_IPG`] inodes of `isz`
+    /// bytes (revision 1, `FILETYPE`, sparse super blocks): the super block, one group
+    /// descriptor, the bitmaps, the inode table and an empty root directory owned by root, as
+    /// `newfs_ext2fs` leaves it (without lost+found).
+    pub fn mkfs(isz: usize) -> Vec<u8> {
+        let rootblk = ITABLE + itblocks(isz);
+        let reserved = (EXT2_FIRSTINO - 1) as usize; // inodes 1..=10
+        let mut img = Image::new(&Params {
+            nblk: MKFS_NBLK,
+            ipg: MKFS_IPG as u32,
+            isz,
+            rbcount: 50,
+            nfree: (MKFS_NBLK - 1 - rootblk) as u32,
+            nifree: (MKFS_IPG - reserved) as u32,
+            incompat: EXT2F_INCOMPAT_FTYPE,
+        });
+        img.use_blocks(1..=rootblk);
+        img.use_inodes(1..=reserved);
+
+        // The root directory.
+        let at = (EXT2_ROOTINO as usize - 1) * isz;
+        img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_mode), 0o40755);
+        img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_nlink), 2);
+        img.u32(ITABLE, at + offset_of!(Ext2fsDinode, e2di_size), B as u32);
+        img.u32(ITABLE, at + offset_of!(Ext2fsDinode, e2di_nblock), 2);
+        img.u32(
+            ITABLE,
+            at + offset_of!(Ext2fsDinode, e2di_blocks),
+            rootblk as u32,
+        );
+        if isz > 128 {
+            img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_isize), 32);
+        }
+        img.dirent(rootblk, 0, EXT2_ROOTINO, 12, b".", 2);
+        img.dirent(rootblk, 12, EXT2_ROOTINO, (B - 12) as u16, b"..", 2);
+        img.0
+    }
+
     /// The test file system; with `extents`, it has the `EXTENTS` incompatible feature (and
     /// mounts only read-only). Inode 12 is `hello.txt` (one block), 13 `big` (14 blocks,
     /// two behind the single indirect block), 14 `ext` (an index root in the inode, one leaf
     /// with two extents).
     pub fn image(extents: bool) -> Vec<u8> {
-        let mut img = Image(vec![0; NBLK as usize * B]);
-
-        // Super block.
-        let mut sb = Ext2fs::new();
-        sb.e2fs_icount = IPG;
-        sb.e2fs_bcount = NBLK;
-        sb.e2fs_rbcount = 3;
-        sb.e2fs_fbcount = NFREE;
-        sb.e2fs_ficount = NIFREE;
-        sb.e2fs_first_dblock = 1;
-        sb.e2fs_bpg = 8192;
-        sb.e2fs_fpg = 8192;
-        sb.e2fs_ipg = IPG;
-        sb.e2fs_wtime = 1_700_000_000;
-        sb.e2fs_max_mnt_count = 20;
-        sb.e2fs_magic = E2FS_MAGIC;
-        sb.e2fs_state = E2FS_ISCLEAN;
-        sb.e2fs_beh = 1;
-        sb.e2fs_rev = E2FS_REV1;
-        sb.e2fs_first_ino = EXT2_FIRSTINO;
-        sb.e2fs_inode_size = ISZ as u16;
-        sb.e2fs_features_incompat =
-            EXT2F_INCOMPAT_FTYPE | if extents { EXT2F_INCOMPAT_EXTENTS } else { 0 };
-        sb.e2fs_features_rocompat = EXT2F_ROCOMPAT_SPARSE_SUPER;
-        sb.to_disk(&mut img.0[1024..2048]);
-
-        // Group descriptor.
-        let gd = Ext2Gd {
-            ext2bgd_b_bitmap: BBITMAP as u32,
-            ext2bgd_i_bitmap: IBITMAP as u32,
-            ext2bgd_i_tables: ITABLE as u32,
-            ext2bgd_nbfree: NFREE as u16,
-            ext2bgd_nifree: NIFREE as u16,
-            ext2bgd_ndirs: 1,
-            ..Ext2Gd::default()
-        };
-        let mut b = [0u8; EXT2_GD_SIZE];
-        let _ = pod_to_bytes(&gd, &mut b);
-        img.put(GDT, 0, &b);
-
-        // Block bitmap: bit b is block b + 1; blocks 1..=28 and 30 are used, and the bits past
-        // the last block.
-        for b in 1..=28 {
-            img.setbit(BBITMAP, b - 1);
-        }
-        img.setbit(BBITMAP, 30 - 1);
-        for bit in (NBLK as usize - 1)..8 * B {
-            img.setbit(BBITMAP, bit);
-        }
-        // Inode bitmap: inodes 1..=14, and the bits past the last inode.
-        for i in 1..=14 {
-            img.setbit(IBITMAP, i - 1);
-        }
-        for bit in IPG as usize..8 * B {
-            img.setbit(IBITMAP, bit);
-        }
+        let mut img = Image::new(&Params {
+            nblk: NBLK as usize,
+            ipg: IPG,
+            isz: ISZ,
+            rbcount: 3,
+            nfree: NFREE,
+            nifree: NIFREE,
+            incompat: EXT2F_INCOMPAT_FTYPE | if extents { EXT2F_INCOMPAT_EXTENTS } else { 0 },
+        });
+        // Blocks 1..=28 and 30 are used, inodes 1..=14.
+        img.use_blocks((1..=28).chain([30]));
+        img.use_inodes(1..=14);
 
         // The root directory.
         let mut root = [0u32; 15];
@@ -336,29 +417,79 @@ pub mod newfs {
     }
 }
 
-/// The fixture's dinodes (`ext2dinopl`).
-static DINO: BoxPool<Ext2Inode> = BoxPool::new();
-/// The fixture's inodes (`ext2inopl`).
-static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
+/// The user memory of the kernel ext2fs's tests over the system calls, `ext2fs_vfsops`'s and
+/// `ext2fs_vnops`'s, which share it (both hold MEMORY: one test at a time; no other test of
+/// the binary uses the range): four path slots of 256 bytes from `USER_BASE + 0xe000`
+/// ([`up`]), then [`UBUF`] to `USER_BASE + 0xf000`.
+pub const UPATH: usize = crate::testutil::USER_BASE + 0xe000;
+/// The buffer after the path slots.
+pub const UBUF: usize = crate::testutil::USER_BASE + 0xe400;
+/// [`UBUF`]'s length.
+pub const UBUF_LEN: usize = 0xf000 - 0xe400;
 
-std::thread_local! {
-    /// The inodes `vget` made, by number: the fixture's inode hash.
-    static VNODES: RefCell<HashMap<Ufsino, &'static Vnode<TestGlue>>> =
-        RefCell::new(HashMap::new());
+/// The NUL-terminated `s` in user memory, in path slot `i` of [`UPATH`].
+pub fn up(i: usize, s: &[u8]) -> UserPtr<u8> {
+    if s.len() >= 256 || i >= 4 {
+        std::panic!("testext2fs: up: slot {i}, {} bytes", s.len());
+    }
+    let at = UPATH + i * 256;
+    let mut b = s.to_vec();
+    b.push(0);
+    if let Err(e) = UserPtr::<u8>::new(at).copyout_slice(&b) {
+        std::panic!("testext2fs: up: {e:?}");
+    }
+    UserPtr::new(at)
 }
 
-/// A test thread over fresh VFS tables with page memory and a buffer cache, and `image` as
-/// the disk of testfs's block device (testffs's [`testffs::attach`]): nothing mounted yet.
-pub fn attach(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
+/// The fixture's configuration entry: the kernel's ext2fs as `vfsconflist[]` has it
+/// (`"ext2fs"`, type 17, `struct ufs_args`, `MNT_LOCAL | MNT_SWAPPABLE`).
+pub static TEST_EXT2_CONF: Vfsconf<TestGlue> = Vfsconf::new(
+    &Ext2fsVfs::<TestGlue>::VFS,
+    MOUNT_EXT2FS,
+    17,
+    MNT_LOCAL | MNT_SWAPPABLE,
+    UfsArgs::SIZE,
+);
+
+std::thread_local! {
+    /// The disk block (`b_blkno`, in `DEV_BSIZE` units) whose transfer [`failing_strategy`]
+    /// fails with `EIO`, if any.
+    static FAIL_BLKNO: Cell<Option<Daddr>> = const { Cell::new(None) };
+}
+
+/// A test thread over fresh VFS tables with page memory and a buffer cache, its `uiomove`
+/// copying kernel iovecs, `ext2fs_init` run (the pools, the UFS layer), and `image` as the
+/// disk of testfs's block device (testffs's [`testffs::attach`]): nothing mounted yet.
+pub fn attach(image: std::vec::Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
     let r = testffs::attach(image);
-    let _ = DINO.init(IPL_NONE, PR_WAITOK, "ext2dinopl");
-    let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ext2inopl");
-    VNODES.with(|v| v.borrow_mut().clear());
+    if let Err(e) = ext2fs_init(&TEST_EXT2_CONF) {
+        std::panic!("testext2fs: ext2fs_init: {e:?}");
+    }
+    FAIL_BLKNO.with(|c| c.set(None));
     r
 }
 
-/// The in-core super-block of the disk, as `ext2fs_mountfs` reads it and `e2fs_sbfill`
-/// computes it: the super block, the geometry, the group descriptors.
+/// The disk's strategy with one block that answers `EIO` (`blkno`, or none): testffs's
+/// otherwise, installed for this thread's device.
+pub fn fail_block(blkno: Option<Daddr>) {
+    FAIL_BLKNO.with(|c| c.set(blkno));
+    set_bdev_strategy(Some(failing_strategy));
+}
+
+/// testffs's `d_strategy`, except for [`FAIL_BLKNO`]'s block: `B_ERROR`, `EIO`, `biodone`.
+fn failing_strategy(t: BufRef) {
+    if FAIL_BLKNO.with(Cell::get) == Some(t.buf().blkno()) {
+        t.buf().set_error(Some(Errno::EIO));
+        t.buf().set(B_ERROR);
+        biodone(t);
+        return;
+    }
+    testffs::disk_strategy(t);
+}
+
+/// The in-core super-block of the disk, as `ext2fs_mountfs` reads it and fills it
+/// (`e2fs_sbload`, then the kernel's `e2fs_sbfill`): for the pure tests of the allocators and
+/// the extent tree, which take no mount.
 pub fn superblock() -> Ext2Superblock {
     let devvp = testffs::devvp();
     let (t, error) = bread(&devvp.bufs, SBLOCK, SBSIZE as i32);
@@ -368,49 +499,14 @@ pub fn superblock() -> Ext2Superblock {
     let fs = Ext2Superblock::new();
     e2fs_sbload(t.bytes(), &fs);
     brelse(t);
-    let log_bsize = fs.e2fs_log_bsize();
-    fs.e2fs_ncg
-        .set((fs.e2fs_bcount() - fs.e2fs_first_dblock()).div_ceil(fs.e2fs_bpg()) as i32);
-    fs.e2fs_fsbtodb.set(log_bsize as i32 + 1);
-    fs.e2fs_bsize.set(1024 << log_bsize);
-    fs.e2fs_bshift.set((LOG_MINBSIZE + log_bsize) as i32);
-    fs.e2fs_fsize.set(1024 << fs.e2fs_log_fsize());
-    fs.e2fs_qbmask.set(i64::from(fs.e2fs_bsize.get() - 1));
-    fs.e2fs_bmask.set(!(fs.e2fs_bsize.get() - 1));
-    fs.e2fs_ipb
-        .set(fs.e2fs_bsize.get() / fs.dinode_size() as i32);
-    fs.e2fs_itpg
-        .set((fs.e2fs_ipg() / fs.e2fs_ipb.get() as u32) as i32);
-    let bsize = fs.e2fs_bsize.get() as usize;
-    let per_block = bsize / EXT2_GD_SIZE;
-    let ngdb = (fs.e2fs_ncg.get() as usize).div_ceil(per_block);
-    fs.e2fs_ngdb.set(ngdb as i32);
-    fs.gd_alloc(ngdb, bsize);
-    for i in 0..ngdb {
-        let dblk = Daddr::from(i32::from(bsize <= 1024)) + i as Daddr + 1;
-        let (t, error) = bread(&devvp.bufs, fsbtodb(&fs, dblk), bsize as i32);
-        if let Err(e) = error {
-            std::panic!("testext2fs: group descriptors: {e:?}");
-        }
-        e2fs_cgload(t.bytes(), &fs, i * per_block, bsize);
-        brelse(t);
+    if let Err(e) = e2fs_sbfill(devvp, &fs) {
+        std::panic!("testext2fs: e2fs_sbfill: {e:?}");
     }
-    let large = fs.e2fs_features_rocompat() & EXT2F_ROCOMPAT_LARGE_FILE != 0;
-    let maxfilesize = if !large || fs.e2fs_rev() == E2FS_REV0 {
-        i64::from(i32::MAX)
-    } else {
-        let b = i64::from(fs.e2fs_bsize.get());
-        let n = b / 4;
-        ((12 + n + n * n + n * n * n) * b).min(i64::from(u32::MAX) << 9)
-    };
-    let ext = fs.e2fs_features_incompat() & EXT2F_INCOMPAT_EXTENTS != 0;
-    fs.e2fs_maxfilesize
-        .set(if ext { maxfilesize * 4 } else { maxfilesize });
     fs
 }
 
 /// The UFS structure of an ext2fs mount of `fs` on testffs's device, as `ext2fs_mountfs`
-/// fills it.
+/// fills it, hung from no mount (the pure tests').
 pub fn ufsmount(fs: Ext2Superblock) -> UfsmountRef<TestGlue> {
     let ump = Ufsmount::<TestGlue>::alloc();
     ump.um_fstype.set(UM_EXT2FS);
@@ -425,7 +521,7 @@ pub fn ufsmount(fs: Ext2Superblock) -> UfsmountRef<TestGlue> {
 
 /// An inode numbered `ino` of the mount whose UFS structure is `ump`, with no vnode (the
 /// allocators' and the extent tree's pure tests): its dinode a fresh, zeroed item of the
-/// fixture's pool.
+/// glue's `ext2dinopl`.
 pub fn detached(ump: &UfsmountRef<TestGlue>, ino: Ufsino) -> &'static Inode<TestGlue> {
     let ip: &'static Inode<TestGlue> = Box::leak(Box::new(Inode::new(InodeInit {
         ump: Some(ump.clone()),
@@ -438,100 +534,82 @@ pub fn detached(ump: &UfsmountRef<TestGlue>, ino: Ufsino) -> &'static Inode<Test
         seqinc: 1,
         ..InodeInit::default()
     })));
-    let Some(din) = DINO.get(PR_WAITOK, Ext2Inode::new) else {
+    let Some(din) = vfs::<TestGlue>()
+        .ufs
+        .ext2fs_dino
+        .get(PR_WAITOK, Ext2Inode::new)
+    else {
         std::panic!("testext2fs: no dinode");
     };
     ip.set_din(Dinode::Ext2(din));
     ip
 }
 
-/// The fixture's configuration entry: `"ext2fs"`, type 17, `struct ufs_args`, with the
-/// fixture's `vfsops` ([`mount`]'s).
-static TEST_EXT2_CONF: Vfsconf<TestGlue> =
-    Vfsconf::new(&TEST_EXT2_VFS, MOUNT_EXT2FS, 17, MNT_LOCAL, 0);
-
-/// A new mount of the disk with the flags `flags` (`MNT_RDONLY`): the super-block in core
-/// ([`superblock`]), `e2fs_ronly`, the UFS structure hung from the mount's slot, the mount's
-/// `f_iosize`, unbusied.
-pub fn mount(flags: i32) -> &'static Mount<TestGlue> {
+/// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_FORCE`), as
+/// `ext2fs_mount` makes one: `ext2fs_mountfs` on the device vnode, the statistics, the mount
+/// unbusied; `Err` freed the mount.
+pub fn try_mount(p: &Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
     let mp = vfs_mount_alloc(None, &TEST_EXT2_CONF);
     mp.set_flag(mp.flag() | flags);
-    let fs = superblock();
-    fs.e2fs_ronly.set(i8::from(flags & MNT_RDONLY != 0));
-    let bsize = fs.e2fs_bsize.get() as u32;
-    let ump = ufsmount(fs);
-    ump.um_mountp.set(Some(mp));
-    mp.set_node(MArc::erase(ump));
-    mp.with_stat(|st| {
-        st.f_iosize = bsize;
-        st.f_bsize = bsize;
-    });
+    mp.with_stat(|sp| sp.f_mntonname[..4].copy_from_slice(b"/ext"));
+    let r = ext2fs_mountfs(testffs::devvp(), mp, p);
+    if r.is_ok() {
+        let mut st = mp.stat();
+        let _ = ext2fs_statfs(mp, &mut st, p);
+        mp.with_stat(|sp| *sp = st);
+    }
     vfs_unbusy(mp);
+    match r {
+        Ok(()) => Ok(mp),
+        Err(e) => {
+            vfs_mount_free(mp);
+            Err(e)
+        }
+    }
+}
+
+/// [`try_mount`] by the test's thread (the glue's `curproc`); `panic` on an error.
+pub fn mount(flags: i32) -> &'static Mount<TestGlue> {
+    let r = TestGlue::with_curproc(|p| match p {
+        Some(p) => try_mount(p, flags),
+        None => std::panic!("testext2fs: no curproc"),
+    });
+    match r {
+        Ok(mp) => mp,
+        Err(e) => std::panic!("testext2fs: ext2fs_mountfs: {e:?}"),
+    }
+}
+
+/// A new mount of the disk at `/`, as `main` mounts the root: [`mount`], the mount list, the
+/// root vnode and the thread's current directory (testfs's root, which [`attach`]'s thread
+/// started with, released). `testffs::unmount_root` undoes it.
+pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
+    let mp = match try_mount(p, flags) {
+        Ok(mp) => mp,
+        Err(e) => std::panic!("testext2fs: ext2fs_mountfs: {e:?}"),
+    };
+    mountlist_insert_tail(mp);
+    let vp = root(mp);
+    if let Some(old) = rootvnode::<TestGlue>() {
+        vrele(old);
+    }
+    set_rootvnode(Some(vp));
+    vref(vp);
+    if let Some(old) = p.fd().replace_cdir(Some(vp)) {
+        vrele(old);
+    }
+    let _ = vop_unlock(vp);
     mp
 }
 
-/// `ext2fs_vget`'s steps for the fixture: the inode of `ino` on `mp`, its vnode locked and
-/// referenced (`vput` it); the inode read from its block with `e2fs_iload`, its effective
-/// ids made from the split ones.
+/// The inode `ino` of `mp`: `ext2fs_vget`, its vnode locked and referenced (`vput` it).
 pub fn vget(mp: &'static Mount<TestGlue>, ino: Ufsino) -> Result<&'static Vnode<TestGlue>, Errno> {
-    if let Some(vp) = VNODES.with(|v| v.borrow().get(&ino).copied()) {
-        crate::fs::subr::vget(vp, LK_EXCLUSIVE)?;
-        return Ok(vp);
-    }
-    let ump = vfstoufs(mp);
-    let devvp = ump.devvp();
-    let vp = getnewvnode(VT_EXT2FS, Some(mp), &TEST_EXT2_VOPS)?;
-    let Some(ip) = INODES.get_homed(PR_WAITOK, || {
-        Inode::new(InodeInit {
-            vnode: Some(vp),
-            mount: Some(mp),
-            ump: Some(ump.clone()),
-            devvp: Some(devvp),
-            dev: TEST_DEV,
-            number: ino,
-            fstype: UM_EXT2FS,
-            nindir: ump.um_nindir.get(),
-            bptrtodb: ump.um_bptrtodb.get(),
-            seqinc: 1,
-            ..InodeInit::default()
-        })
-    }) else {
-        return Err(Errno::ENOMEM);
-    };
-    let Some(din) = DINO.get(PR_WAITOK, Ext2Inode::new) else {
-        return Err(Errno::ENOMEM);
-    };
-    let fs = ump.um_e2fs();
-    let (t, error) = bread(
-        &devvp.bufs,
-        fsbtodb(fs, Daddr::from(ino_to_fsba(fs, ino))),
-        fs.e2fs_bsize.get(),
-    );
-    if let Err(e) = error {
-        brelse(t);
-        return Err(e);
-    }
-    let off = ino_to_fsbo(fs, ino) as usize * fs.dinode_size();
-    e2fs_iload(fs, &t.bytes()[off..], &din);
-    brelse(t);
-    din.i_e2fs_uid
-        .set(u32::from(din.i_e2fs_uid_low()) | (u32::from(din.i_e2fs_uid_high()) << 16));
-    din.i_e2fs_gid
-        .set(u32::from(din.i_e2fs_gid_low()) | (u32::from(din.i_e2fs_gid_high()) << 16));
-    let mode = Mode::from(din.i_e2fs_mode());
-    ip.set_din(Dinode::Ext2(din));
-    ip.i_effnlink.set(i32::from(ip.i_e2din().i_e2fs_nlink()));
-    vp.set_node(PoolArc::erase(ip.clone()));
-    vref(devvp);
-    let _ = vop_lock(vp, LK_EXCLUSIVE);
-    vp.set_vtype(iftovt(mode));
-    VNODES.with(|v| v.borrow_mut().insert(ino, vp));
-    Ok(vp)
+    ext2fs_vget(mp, u64::from(ino))
 }
 
 /// The root vnode of `mp`, locked and referenced (`vput` it).
 pub fn root(mp: &'static Mount<TestGlue>) -> &'static Vnode<TestGlue> {
-    match vget(mp, 2) {
+    match vget(mp, EXT2_ROOTINO) {
         Ok(vp) => vp,
         Err(e) => std::panic!("testext2fs: no root: {e:?}"),
     }
@@ -549,7 +627,7 @@ pub fn new_file(mp: &'static Mount<TestGlue>, p: &Thread<TestGlue>) -> &'static 
             Err(e) => std::panic!("testext2fs: ext2fs_inode_alloc: {e:?}"),
         };
     drop(rip);
-    crate::fs::subr::vput(root);
+    vput(root);
     let ip = vtoi(vp);
     let d = ip.i_e2din();
     d.set_i_e2fs_mode((IFREG | 0o644) as u16);
@@ -557,197 +635,5 @@ pub fn new_file(mp: &'static Mount<TestGlue>, p: &Thread<TestGlue>) -> &'static 
     ip.i_effnlink.set(1);
     vp.set_vtype(VREG);
     vp
-}
-
-/// The fixture's `vfsops`: `vget` and `root` only ([`vget`]).
-struct TestExt2Vfs;
-
-/// [`TestExt2Vfs`]'s one instance.
-static TEST_EXT2_VFS: TestExt2Vfs = TestExt2Vfs;
-
-impl Vfs<TestGlue> for TestExt2Vfs {
-    fn mount(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &[u8],
-        _: &mut [u8],
-        _: &mut Nd<'_, TestGlue>,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn start(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn unmount(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn root(&self, mp: &'static Mount<TestGlue>) -> Result<&'static Vnode<TestGlue>, Errno> {
-        vget(mp, 2)
-    }
-    fn quotactl(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: Uid,
-        _: usize,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn statfs(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &mut Statfs,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn sync(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: i32,
-        _: Cred<'_>,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn vget(
-        &self,
-        mp: &'static Mount<TestGlue>,
-        ino: Ino,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        vget(mp, ino as Ufsino)
-    }
-    fn fhtovp(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &Fid,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn vptofh(&self, _: &'static Vnode<TestGlue>, _: &mut Fid) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-}
-
-/// The fixture's vnode operations for its inodes: the UFS layer's locks and strategy, the
-/// block maps of `ext2fs_bmap` (the extent tree or the block pointers), ext2fs's `access`,
-/// `read` and `write` and the generic `bwrite` (N5.6c2: what `ext2fs_readdir`,
-/// `ext2fs_lookup` and the directory writes call through the table), `fsync` as a flush of
-/// the vnode's buffers, `inactive` an unlock, `reclaim` the fixture's table entry and the
-/// device's reference dropped with the vnode's handle. A member (one byte wide) so that its
-/// address is its own: `vops_id` keys tables by address.
-struct TestExt2Vnops {
-    /// Gives the table a size, hence an address of its own.
-    _id: u8,
-}
-
-/// [`TestExt2Vnops`]'s one instance.
-static TEST_EXT2_VOPS: TestExt2Vnops = TestExt2Vnops { _id: 0 };
-
-impl Vnops<TestGlue> for TestExt2Vnops {
-    fn lock(&self, vp: &'static Vnode<TestGlue>, flags: i32) -> Result<(), Errno> {
-        ufs_lock(vp, flags)
-    }
-    fn unlock(&self, vp: &'static Vnode<TestGlue>) -> Result<(), Errno> {
-        ufs_unlock(vp)
-    }
-    fn islocked(&self, vp: &'static Vnode<TestGlue>) -> i32 {
-        ufs_islocked(vp)
-    }
-    fn fsync(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        _cred: Cred<'_>,
-        waitfor: i32,
-        _p: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        vflushbuf(vp, waitfor == hal::sys::mount::MNT_WAIT);
-        Ok(())
-    }
-    fn inactive(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        _p: Option<&Thread<TestGlue>>,
-    ) -> Result<(), Errno> {
-        vop_unlock(vp)
-    }
-    fn reclaim(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        _p: Option<&Thread<TestGlue>>,
-    ) -> Result<(), Errno> {
-        let ip = vtoi(vp);
-        VNODES.with(|v| v.borrow_mut().remove(&ip.i_number));
-        vrele(ip.i_devvp());
-        drop(ip);
-        drop(vp.take_node());
-        Ok(())
-    }
-    fn bmap(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        bn: Daddr,
-        vpp: Option<&mut Option<&'static Vnode<TestGlue>>>,
-        bnp: Option<&mut Daddr>,
-        runp: Option<&mut i32>,
-    ) -> Result<(), Errno> {
-        let ip = vtoi(vp);
-        if let Some(vpp) = vpp {
-            *vpp = Some(ip.i_devvp());
-        }
-        let Some(bnp) = bnp else {
-            return Ok(());
-        };
-        if ip.i_e2din().i_e2fs_flags() & EXT4_EXTENTS != 0 {
-            return ext4_bmapext(vp, bn, bnp, None, None, runp);
-        }
-        ext2fs_bmaparray(vp, bn, bnp, None, None, runp)
-    }
-    fn strategy(&self, vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
-        ufs_strategy(vp, bp)
-    }
-    fn access(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        mode: i32,
-        cred: Cred<'_>,
-        _p: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        super::ext2fs_vnops::ext2fs_access(vp, mode, cred)
-    }
-    fn read(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        uio: &mut Uio<'_, TestGlue>,
-        ioflag: i32,
-        cred: Cred<'_>,
-    ) -> Result<(), Errno> {
-        super::ext2fs_readwrite::ext2fs_read(vp, uio, ioflag, cred)
-    }
-    fn write(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        uio: &mut Uio<'_, TestGlue>,
-        ioflag: i32,
-        cred: Cred<'_>,
-    ) -> Result<(), Errno> {
-        super::ext2fs_readwrite::ext2fs_write(vp, uio, ioflag, cred)
-    }
-    fn bwrite(&self, bp: IoBuf) -> Result<(), Errno> {
-        crate::fs::default::vop_generic_bwrite(bp)
-    }
 }
 /* </CODE> */

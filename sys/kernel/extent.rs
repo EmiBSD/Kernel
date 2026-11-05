@@ -164,7 +164,7 @@ use hal::rwlock::Rwlocked;
 use hal::sleep::{PCATCH, PRIBIO, wakeup};
 
 use crate::assert::kpanic;
-use crate::prf::printf;
+use crate::prf::{Str, printf};
 use crate::sys::errno::Errno;
 
 /// `ER_ALLOC`: region descriptor dynamically allocated.
@@ -620,7 +620,7 @@ impl<const N: usize> FixedRegions for ExtentFixed<N> {
         if self.pool.init_arena(&self.fex_storage).is_err() || self.fex_extent.set(fresh).is_err() {
             kpanic(format_args!(
                 "extent_create: the fixed storage of `{}' served an extent already",
-                Name(name)
+                Str(name)
             ));
         }
         let ex = self.fex_extent.get()?;
@@ -710,19 +710,6 @@ enum Freed {
     TakeAndGoOn(RKey),
 }
 
-/// An extent's name as the C prints it (`%s`: up to its NUL, if any; each byte as a char, as
-/// LZ's `Str`, so a non-ASCII byte prints as its Latin-1 character).
-struct Name<'a>(&'a [u8]);
-
-impl fmt::Display for Name<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &c in self.0.iter().take_while(|&&c| c != 0) {
-            fmt::Write::write_char(f, char::from(c))?;
-        }
-        Ok(())
-    }
-}
-
 /// `ex_flags` as `%b` prints it with [`EXF_BITS`]: hex, then the names of the bits set in
 /// angle brackets.
 struct ExfBits(i32);
@@ -800,7 +787,7 @@ pub fn extent_print_all(pr: fn(fmt::Arguments<'_>)) {
     for ep in EXT_LIST.iter(&g) {
         match try_lock_free(&ep.st) {
             Some(st) => print_locked(ep, &st, pr),
-            None => pr(format_args!("extent `{}' <locked>\n", Name(ep.ex_name))),
+            None => pr(format_args!("extent `{}' <locked>\n", Str(ep.ex_name))),
         }
     }
 }
@@ -847,7 +834,7 @@ fn create_check(name: &[u8], start: u64, end: u64) {
     if cfg!(feature = "diagnostic") && end < start {
         printf(format_args!(
             "extent_create: extent `{}', start 0x{start:x}, end 0x{end:x}\n",
-            Name(name)
+            Str(name)
         ));
         kpanic(format_args!("extent_create: end < start"));
     }
@@ -1000,14 +987,14 @@ fn extent_do_alloc_region(
         if size < 1 {
             printf(format_args!(
                 "extent_do_alloc_region: extent `{}', size 0x{size:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!("extent_do_alloc_region: bad size"));
         }
         if end < start {
             printf(format_args!(
                 "extent_do_alloc_region: extent `{}', start 0x{start:x}, size 0x{size:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!("extent_do_alloc_region: overflow"));
         }
@@ -1023,7 +1010,7 @@ fn extent_do_alloc_region(
         if cfg!(feature = "diagnostic") {
             printf(format_args!(
                 "extent_do_alloc_region: extent `{}' (0x{:x} - 0x{:x})\n",
-                Name(ex.ex_name),
+                Str(ex.ex_name),
                 ex.ex_start,
                 ex.ex_end
             ));
@@ -1187,7 +1174,7 @@ fn extent_do_alloc(
         {
             printf(format_args!(
                 "extent_do_alloc: extent `{}', ex_start 0x{:x}, ex_end 0x{:x}\n",
-                Name(ex.ex_name),
+                Str(ex.ex_name),
                 ex.ex_start,
                 ex.ex_end
             ));
@@ -1199,7 +1186,7 @@ fn extent_do_alloc(
         if size < 1 || size - 1 > subend.wrapping_sub(substart) {
             printf(format_args!(
                 "extent_do_alloc: extent `{}', size 0x{size:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!("extent_do_alloc: bad size"));
         }
@@ -1209,7 +1196,7 @@ fn extent_do_alloc(
         if boundary != 0 && boundary < size {
             printf(format_args!(
                 "extent_do_alloc: extent `{}', size 0x{size:x}, boundary 0x{boundary:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!("extent_do_alloc: bad boundary"));
         }
@@ -1235,7 +1222,7 @@ fn extent_do_alloc(
             if cfg!(feature = "diagnostic") {
                 printf(format_args!(
                     "extent_do_alloc: extent `{}' (0x{:x} - 0x{:x}), alignment 0x{alignment:x}\n",
-                    Name(ex.ex_name),
+                    Str(ex.ex_name),
                     ex.ex_start,
                     ex.ex_end
                 ));
@@ -1397,11 +1384,11 @@ fn extent_free(ex: &Extent, start: u64, size: u64, flags: i32) -> Result<(), Err
             ex.print();
             printf(format_args!(
                 "extent_free: extent `{}', start 0x{start:x}, size 0x{size:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!(
                 "extent_free: extent `{}', region not within extent",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
         }
         // Check for an overflow.
@@ -1409,7 +1396,7 @@ fn extent_free(ex: &Extent, start: u64, size: u64, flags: i32) -> Result<(), Err
             ex.print();
             printf(format_args!(
                 "extent_free: extent `{}', start 0x{start:x}, size 0x{size:x}\n",
-                Name(ex.ex_name)
+                Str(ex.ex_name)
             ));
             kpanic(format_args!("extent_free: overflow"));
         }
@@ -1646,7 +1633,7 @@ fn extent_print1(ex: &Extent, pr: fn(fmt::Arguments<'_>)) {
 fn print_locked(ex: &Extent, st: &ExState, pr: fn(fmt::Arguments<'_>)) {
     pr(format_args!(
         "extent `{}' (0x{:x} - 0x{:x}), flags={}\n",
-        Name(ex.ex_name),
+        Str(ex.ex_name),
         ex.ex_start,
         ex.ex_end,
         ExfBits(ex.flags_of(st))
