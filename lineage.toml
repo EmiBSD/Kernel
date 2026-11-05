@@ -9188,6 +9188,46 @@ status = "redesigned"
 notes = "N5.6c1: the extent path holds the node's bytes (the leaf's BufRef token, or a copy of the inode's 60-byte root) and the entries' slots in it, read by pod_from_bytes of the abi_pod! entries; the C's binary searches over the slots; the node-count check refusing a corrupt tree kept; 0 unsafe (LZ: 7)"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_alloc.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_alloc.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired): the allocators over the kernel cache's tokens (the bitmaps the token's bytes) and the in-core super-block's descriptor members; ext2fs_alloc returns the block; uprintf the kernel's; 0 unsafe (LZ: 4)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_balloc.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_balloc.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired): ext2fs_buf_alloc over the kernel cache's tokens, the data block's token the result (the kernel ffs_balloc's shape), the levels from getlbns over the inode's MNINDIR; 0 unsafe (LZ: 5)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_balloc.rs::inode_bap"
+native = ["ext2fs_buf_alloc"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_bmap.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired; the vnode operation ext2fs_bmap joins at N5.6c2): ext2fs_bmaparray and ext4_bmapext over the kernel cache's tokens, the indirect block read as the kernel's ufs_bmaparray reads it (getblk, vop_strategy of the token, biowait); 0 unsafe (LZ: 1)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_inode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_inode.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired; the vnode operation ext2fs_inactive joins at N5.6c2): ext2fs_size, ext2fs_setsize, ext2fs_update, ext2fs_truncate and ext2fs_indirtrunc over the kernel cache's tokens and an MArray<u8> of M_TEMP (the kernel ffs_inode's shape), EXT2FS_ITIMES as ext2fs_itimes; 0 unsafe (LZ: 6)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_subr.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_subr.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired; ext2fs_vinit joins at N5.6c2 with the tables): ext2fs_bufatoff returning the BufRef token, as the kernel's ffs_bufatoff"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
