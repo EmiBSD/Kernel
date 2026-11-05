@@ -36,7 +36,6 @@ use hal::pool::PR_WAITOK;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
 use hal::sys::types::Daddr;
-use hal::user::UserPtr;
 
 use super::ext2fs::{Ext2Superblock, SBLOCK, SBSIZE, e2fs_sbload, nindir};
 use super::ext2fs_dinode::{EXT2_ROOTINO, Ext2Inode};
@@ -415,30 +414,6 @@ pub mod newfs {
 
         img.0
     }
-}
-
-/// The user memory of the kernel ext2fs's tests over the system calls, `ext2fs_vfsops`'s and
-/// `ext2fs_vnops`'s, which share it (both hold MEMORY: one test at a time; no other test of
-/// the binary uses the range): four path slots of 256 bytes from `USER_BASE + 0xe000`
-/// ([`up`]), then [`UBUF`] to `USER_BASE + 0xf000`.
-pub const UPATH: usize = crate::testutil::USER_BASE + 0xe000;
-/// The buffer after the path slots.
-pub const UBUF: usize = crate::testutil::USER_BASE + 0xe400;
-/// [`UBUF`]'s length.
-pub const UBUF_LEN: usize = 0xf000 - 0xe400;
-
-/// The NUL-terminated `s` in user memory, in path slot `i` of [`UPATH`].
-pub fn up(i: usize, s: &[u8]) -> UserPtr<u8> {
-    if s.len() >= 256 || i >= 4 {
-        std::panic!("testext2fs: up: slot {i}, {} bytes", s.len());
-    }
-    let at = UPATH + i * 256;
-    let mut b = s.to_vec();
-    b.push(0);
-    if let Err(e) = UserPtr::<u8>::new(at).copyout_slice(&b) {
-        std::panic!("testext2fs: up: {e:?}");
-    }
-    UserPtr::new(at)
 }
 
 /// The fixture's configuration entry: the kernel's ext2fs as `vfsconflist[]` has it

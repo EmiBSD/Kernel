@@ -9469,6 +9469,56 @@ native = ["sys/kernel/fs/bio.rs::getblk_wait"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/fs/msdosfs/bootsect.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/bootsect.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired: bsd's msdosfs keeps its own until N5.7c3): the three boot sectors as hal::abi_pod! images read with pod_view!'s at (the C's union bootsector is its three members, each the same 512 bytes; the BPBs at bsBPB's offset 11, BSBPB_OFF); 0 unsafe (LZ: 3)"
+
+[[module.fn]]
+lz = "sys/msdosfs/bootsect.rs::Bootsector"
+native = []
+kind = "dropped"
+reason = "union bootsector is its three members read at offset 0 of the same bytes (Bootsector33, Bootsector50, Bootsector710, hal::abi_pod! images); the C reaches it only for their bsBPB, at BSBPB_OFF in all three"
+
+[[module.fn]]
+lz = "sys/msdosfs/bootsect.rs::Bootsector::bs33"
+native = []
+kind = "dropped"
+reason = "bsp->bs33 is Bootsector33::at(buf, 0) (pod_view!), with no union to read through"
+
+[[module.fn]]
+lz = "sys/msdosfs/bootsect.rs::Bootsector::bs50"
+native = []
+kind = "dropped"
+reason = "bsp->bs50 is Bootsector50::at(buf, 0) (pod_view!), with no union to read through"
+
+[[module.fn]]
+lz = "sys/msdosfs/bootsect.rs::Bootsector::bs710"
+native = []
+kind = "dropped"
+reason = "bsp->bs710 is Bootsector710::at(buf, 0) (pod_view!), with no union to read through"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/bpb.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/bpb.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired): struct byte_bpb33/50/710 and struct fsinfo as hal::abi_pod! images; byte_view!'s unsafe in-place casts -> pod_view!'s at/put over pod_from_bytes/pod_to_bytes (None past the end); 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/msdosfs/bpb.rs::byte_view"
+native = ["pod_view"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/direntry.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/direntry.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired): struct direntry and struct winentry as hal::abi_pod! images copied out of a directory block and back (Direntry::at -> Option, Direntry::put; D-N5.7-6: one 32-byte copy per entry viewed, named for ROADMAP N12)"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
@@ -12846,6 +12896,11 @@ reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, c
 rust = "sys/kernel/fs/ufs/ext2fs/testext2fs.rs"
 crate = "kernel"
 reason = "N5.6c1: the kernel ext2fs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the one-group ext2 image builder moved from bsd's ext2fs_vfsops tests (over the abi_pod! Ext2fs, Ext2Gd and Ext2fsDinode), served by testffs's block device; until N5.6c3 a mount made the way ext2fs_mountfs makes one and an inode the way ext2fs_vget makes one, over a vnode table and an inode table of its own; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/fs/word.rs"
+crate = "kernel"
+reason = "N5.7c1 (D-N5.7-4): the words of the file systems' in-core structures (the word! macro and U32Word, I32Word, U64Word, I8Word, I64Word, lifted from fs::ufs::ufs::inode, which re-exports them; U8Word and U16Word for msdosfs's denode), shared by ufs, ext2fs and msdosfs; native types with no LZ item (LZ's members were Cells)"
 
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"

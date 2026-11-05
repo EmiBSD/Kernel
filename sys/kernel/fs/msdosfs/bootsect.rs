@@ -1,0 +1,250 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+ * Written by Paul Popelka (paulp@uts.amdahl.com)
+ *
+ * You can do anything you want with this software, just don't say you wrote
+ * it, and don't remove this notice.
+ *
+ * This software is provided "as is".
+ *
+ * The author supplies this software to be publicly redistributed on the
+ * understanding that the author is not responsible for the correct
+ * functioning of this software in any circumstances and is not liable for
+ * any damages caused by this software.
+ *
+ * October 1992
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! `<msdosfs/bootsect.h>`: the format of a boot sector. This is the first sector on a DOS
+//! floppy disk or the first sector of a partition on a hard disk. But, it is not the first
+//! sector of a partitioned hard disk.
+//!
+//! Upstream: sys/msdosfs/bootsect.h @ 3ce1f3f79392
+//! LZ: sys/msdosfs/bootsect.rs@3c62ede68802
+//!
+//! ## Deviations
+//! - The `int8_t` arrays are `u8` arrays (see `bpb.rs`: they are bytes read through
+//!   `getushort`/`getulong` or copied), so every structure is bytes only and read out of a
+//!   buffer at its offset with `at` (`bpb.rs`'s `pod_view!`).
+//! - `union bootsector` is not a type: its three members are three images of the same 512
+//!   bytes, each [`Bootsector33`], [`Bootsector50`] or [`Bootsector710`] read at offset 0 of
+//!   the boot block, and the C reaches the union only for its members' `bsBPB` (at offset 11
+//!   in all three, read as `bpb.rs`'s `ByteBpb33`/`ByteBpb50`/`ByteBpb710` there).
+//! - The `#if 0` block of `bsBPB` shorthands (`bsBytesPerSec`, ...) is not compiled in C and
+//!   is left out.
+//!
+//! ## Redesign
+//! - LZ's `#[repr(C)]` union `Bootsector` read through three `unsafe` member accessors
+//!   (`bs33`, `bs50`, `bs710`), and the `byte_view!` in-place casts -> three `hal::abi_pod!`
+//!   images with `pod_view!`'s `at` (a copy of the 512 bytes, `None` past the end) and the
+//!   offset of their `bsBPB` ([`BSBPB_OFF`]). 0 `unsafe` (LZ: 3).
+
+use core::mem::offset_of;
+
+use crate::fs::msdosfs::bpb::pod_view;
+
+/// `BOOTSIG0`: first byte of the boot sector signature.
+pub const BOOTSIG0: u8 = 0x55;
+/// `BOOTSIG1`: second byte of the boot sector signature.
+pub const BOOTSIG1: u8 = 0xaa;
+/// `BOOTSIG2`: FAT32's third signature byte.
+pub const BOOTSIG2: u8 = 0;
+/// `BOOTSIG3`: FAT32's fourth signature byte.
+pub const BOOTSIG3: u8 = 0;
+/// `EXBOOTSIG`: ext. boot signature (`exBootSignature`).
+pub const EXBOOTSIG: u8 = 0x29;
+
+/// `struct bootsector33`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_snake_case)] // the C field names
+pub struct Bootsector33 {
+    /// `bsJump`: jump inst E9xxxx or EBxx90.
+    pub bsJump: [u8; 3],
+    /// `bsOemName`: OEM name and version.
+    pub bsOemName: [u8; 8],
+    /// `bsBPB`: BIOS parameter block.
+    pub bsBPB: [u8; 19],
+    /// `bsDriveNumber`: drive number (0x80).
+    pub bsDriveNumber: u8,
+    /// `bsBootCode`: pad so struct is 512b.
+    pub bsBootCode: [u8; 479],
+    /// `bsBootSectSig0`.
+    pub bsBootSectSig0: u8,
+    /// `bsBootSectSig1`.
+    pub bsBootSectSig1: u8,
+}
+
+hal::abi_pod!(Bootsector33 {
+    bsJump: [u8; 3],
+    bsOemName: [u8; 8],
+    bsBPB: [u8; 19],
+    bsDriveNumber: u8,
+    bsBootCode: [u8; 479],
+    bsBootSectSig0: u8,
+    bsBootSectSig1: u8,
+});
+pod_view!(Bootsector33);
+
+/// `struct extboot`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_snake_case)] // the C field names
+pub struct Extboot {
+    /// `exDriveNumber`: drive number (0x80).
+    pub exDriveNumber: u8,
+    /// `exReserved1`: reserved.
+    pub exReserved1: u8,
+    /// `exBootSignature`: ext. boot signature (0x29).
+    pub exBootSignature: u8,
+    /// `exVolumeID`: volume ID number.
+    pub exVolumeID: [u8; 4],
+    /// `exVolumeLabel`: volume label.
+    pub exVolumeLabel: [u8; 11],
+    /// `exFileSysType`: fs type (FAT12 or FAT16).
+    pub exFileSysType: [u8; 8],
+}
+
+hal::abi_pod!(Extboot {
+    exDriveNumber: u8,
+    exReserved1: u8,
+    exBootSignature: u8,
+    exVolumeID: [u8; 4],
+    exVolumeLabel: [u8; 11],
+    exFileSysType: [u8; 8],
+});
+pod_view!(Extboot);
+
+/// `struct bootsector50`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_snake_case)] // the C field names
+pub struct Bootsector50 {
+    /// `bsJump`: jump inst E9xxxx or EBxx90.
+    pub bsJump: [u8; 3],
+    /// `bsOemName`: OEM name and version.
+    pub bsOemName: [u8; 8],
+    /// `bsBPB`: BIOS parameter block.
+    pub bsBPB: [u8; 25],
+    /// `bsExt`: Bootsector Extension.
+    pub bsExt: [u8; 26],
+    /// `bsBootCode`: pad so structure is 512b.
+    pub bsBootCode: [u8; 448],
+    /// `bsBootSectSig0`.
+    pub bsBootSectSig0: u8,
+    /// `bsBootSectSig1`.
+    pub bsBootSectSig1: u8,
+}
+
+hal::abi_pod!(Bootsector50 {
+    bsJump: [u8; 3],
+    bsOemName: [u8; 8],
+    bsBPB: [u8; 25],
+    bsExt: [u8; 26],
+    bsBootCode: [u8; 448],
+    bsBootSectSig0: u8,
+    bsBootSectSig1: u8,
+});
+pod_view!(Bootsector50);
+
+/// `struct bootsector710`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(non_snake_case)] // the C field names
+pub struct Bootsector710 {
+    /// `bsJump`: jump inst E9xxxx or EBxx90.
+    pub bsJump: [u8; 3],
+    /// `bsOEMName`: OEM name and version.
+    pub bsOEMName: [u8; 8],
+    /// `bsBPB`: BIOS parameter block.
+    pub bsBPB: [u8; 53],
+    /// `bsExt`: Bootsector Extension.
+    pub bsExt: [u8; 26],
+    /// `bsBootCode`: pad so structure is 512b.
+    pub bsBootCode: [u8; 418],
+    /// `bsBootSectSig2`: 2 & 3 are only defined for FAT32?
+    pub bsBootSectSig2: u8,
+    /// `bsBootSectSig3`.
+    pub bsBootSectSig3: u8,
+    /// `bsBootSectSig0`.
+    pub bsBootSectSig0: u8,
+    /// `bsBootSectSig1`.
+    pub bsBootSectSig1: u8,
+}
+
+hal::abi_pod!(Bootsector710 {
+    bsJump: [u8; 3],
+    bsOEMName: [u8; 8],
+    bsBPB: [u8; 53],
+    bsExt: [u8; 26],
+    bsBootCode: [u8; 418],
+    bsBootSectSig2: u8,
+    bsBootSectSig3: u8,
+    bsBootSectSig0: u8,
+    bsBootSectSig1: u8,
+});
+pod_view!(Bootsector710);
+
+/// The offset of `bsBPB` in all three boot sectors: where `msdosfs_mountfs` reads the BPBs
+/// (`(struct byte_bpb50 *)bsp->bs50.bsBPB`).
+pub const BSBPB_OFF: usize = offset_of!(Bootsector50, bsBPB);
+
+const _: () = {
+    assert!(Bootsector33::SIZE == 512);
+    assert!(Extboot::SIZE == 26);
+    assert!(Bootsector50::SIZE == 512);
+    assert!(Bootsector710::SIZE == 512);
+    assert!(offset_of!(Bootsector33, bsBPB) == BSBPB_OFF);
+    assert!(offset_of!(Bootsector710, bsBPB) == BSBPB_OFF);
+    assert!(BSBPB_OFF == 11);
+    assert!(offset_of!(Bootsector50, bsExt) == 36);
+    assert!(offset_of!(Bootsector710, bsExt) == 64);
+};
+/* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fs::msdosfs::bpb::{ByteBpb50, getushort};
+
+    #[test]
+    fn signatures_sit_at_the_end_of_the_sector() {
+        let mut sector = [0u8; 512];
+        sector[510] = BOOTSIG0;
+        sector[511] = BOOTSIG1;
+        sector[BSBPB_OFF..BSBPB_OFF + 2].copy_from_slice(&512u16.to_le_bytes());
+        let b33 = Bootsector33::at(&sector, 0).unwrap();
+        let b50 = Bootsector50::at(&sector, 0).unwrap();
+        let b710 = Bootsector710::at(&sector, 0).unwrap();
+        assert_eq!(b33.bsBootSectSig0, BOOTSIG0);
+        assert_eq!(b50.bsBootSectSig1, BOOTSIG1);
+        assert_eq!(b710.bsBootSectSig0, BOOTSIG0);
+        assert_eq!(b710.bsBootSectSig3, 0);
+        // The three members' bsBPB are the same bytes, the BPB views' too.
+        assert_eq!(&b33.bsBPB[..2], &b710.bsBPB[..2]);
+        let bpb = ByteBpb50::at(&sector, BSBPB_OFF).unwrap();
+        assert_eq!(getushort(&bpb.bpbBytesPerSec), 512);
+        // A short boot block has no sector to read.
+        assert!(Bootsector50::at(&sector[..511], 0).is_none());
+    }
+}
+/* </TESTS> */

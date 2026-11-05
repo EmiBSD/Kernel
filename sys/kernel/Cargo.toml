@@ -20,6 +20,7 @@ quota = []                      # `option QUOTA` -> fs::ufs::ufs's disk quotas (
 ufs_dirhash = []                # `option UFS_DIRHASH` -> fs::ufs::ufs::ufs_dirhash, hashed lookups in large directories
 mfs = []                        # `option MFS` -> fs::ufs::mfs, the memory file system (an FFS in a process's memory)
 ext2fs = []                     # `option EXT2FS` -> fs::ufs::ext2fs, the second extended file system on the UFS layer
+msdosfs = []                    # `option MSDOSFS` -> fs::msdosfs, the MS-DOS FAT file system
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,
