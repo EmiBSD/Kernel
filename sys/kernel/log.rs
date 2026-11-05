@@ -1411,9 +1411,19 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Where the tests put their user messages (past every other test's range: `kern.msgbuf`
-    /// copies up to the end of the double's user memory).
-    const UMSG: usize = USER_BASE + 0xe000;
+    /// Where the tests put their user messages: the end range of the double's user memory
+    /// (`hal::arch::host::copy`'s docs), since `kern.msgbuf` copies up to its end. From here
+    /// the header and the 256-byte chunks stop 216 bytes before the end (the next chunk
+    /// faults), short of the end slots other tests use, and clear of mfs's image range.
+    const UMSG: usize = USER_BASE + 0x3_0000;
+
+    // The whole buffer cannot fit between UMSG and the end: the copy faults; and the bytes
+    // past its last whole chunk hold the end slots (uio's 144, pipe's 4).
+    const _: () = {
+        let room = USER_BASE + testutil::USER_LEN - UMSG;
+        assert!(MSG_HDRSIZE + MSG_RING > room);
+        assert!((room - MSG_HDRSIZE) % COPY_CHUNK >= 144);
+    };
 
     /// `Errno::ENOTCONN`'s value on OpenBSD (`<sys/errno.h>`).
     const ENOTCONN_VALUE: i32 = 57;
@@ -1563,11 +1573,7 @@ mod tests {
         // The whole buffer does not fit the double's user memory: the copy faults past it,
         // after the header and the first chunks.
         let r = sysctl_msgbuf(Buf::Msgbuf, UMSG, &mut len, 0);
-        if MSG_HDRSIZE + MSG_RING > testutil::USER_LEN - 0xe000 {
-            assert_eq!(r, Err(Errno::EFAULT));
-        } else {
-            assert_eq!(r, Ok(()));
-        }
+        assert_eq!(r, Err(Errno::EFAULT));
         let got = testutil::user_bytes(UMSG, MSG_HDRSIZE + 11).unwrap();
         assert_eq!(&got[..8], &MSG_MAGIC.to_ne_bytes());
         assert_eq!(&got[8..16], &11i64.to_ne_bytes(), "msg_bufx");

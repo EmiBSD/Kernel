@@ -175,11 +175,10 @@ pub fn mfs_mount<G: ProcGlue>(
     UserPtr::<u8>::new(args.fspec).copyinstr(&mut fspec)?;
     let devvp = getnewvnode(VT_MFS, None, &vfs::<G>().ufs.mfs_vops)?;
     devvp.set_vtype(VBLK);
-    let minor = MFS_MINOR.load(Ordering::Relaxed);
+    let minor = MFS_MINOR.fetch_add(1, Ordering::Relaxed);
     if checkalias(devvp, makedev(255, minor), None).is_some() {
         kpanic(format_args!("mfs_mount: dup dev"));
     }
-    MFS_MINOR.store(minor.wrapping_add(1), Ordering::Relaxed);
     // `mfs_size` is the C's `long`: the argument's bits, as the C's assignment keeps them.
     let mfsp = Mfsnode::new(devvp, args.base, args.size as i64, p.p_tid.get());
     devvp.set_node(MArc::erase(mfsp.clone()));
@@ -393,7 +392,7 @@ pub(super) mod fixture {
     use crate::fs::testfs::{TestGlue, test_thread_cached};
     use crate::fs::vops::{VFS_ROOT, VFS_STATFS, vop_unlock};
     use crate::proc::Thread;
-    use crate::testutil::{USER_BASE, USER_LEN, user_bytes};
+    use crate::testutil::{USER_BASE, user_bytes};
 
     /// The fixture's configuration entry: mfs as `vfsconflist[]` has it (`"mfs"`, type 3,
     /// `struct mfs_args`).
@@ -405,8 +404,12 @@ pub(super) mod fixture {
         MfsArgs::SIZE,
     );
 
-    /// Where the image lies in the user memory (the 64 KiB below hold the tests' arguments).
+    /// Where the image lies in the user memory: the double's mfs range
+    /// (`hal::arch::host::copy`'s docs; the 64 KiB below hold the tests' arguments, the
+    /// 64 KiB above the end-of-memory slots).
     pub const UIMAGE: usize = USER_BASE + 0x1_0000;
+    /// The range's length: the largest image (and memory size) a test mounts.
+    pub const UIMAGE_MAX: usize = 0x2_0000;
     /// The name `newfs -DMFS` hands the kernel as `fspec` (`mfs:<pid>`), in user memory.
     pub const UFSPEC: usize = USER_BASE + 0xa000;
     /// The path slots: four of 256 bytes.
@@ -427,9 +430,14 @@ pub(super) mod fixture {
         if let Err(e) = mfs_init(&TEST_MFS_CONF) {
             std::panic!("mfs fixture: mfs_init: {e:?}");
         }
-        // The image, and zeros to the end of the user memory: an earlier test's image there
-        // is gone (the double's memory is the process's, not the test's).
-        let mut mem = vec![0u8; USER_BASE + USER_LEN - UIMAGE];
+        // The image, and zeros to the end of the range: an earlier test's image there is
+        // gone (the double's memory is the process's, not the test's). Nothing outside the
+        // range is touched.
+        assert!(
+            image.len() <= UIMAGE_MAX,
+            "an image larger than the mfs range"
+        );
+        let mut mem = vec![0u8; UIMAGE_MAX];
         mem[..image.len()].copy_from_slice(image);
         UserPtr::<u8>::new(UIMAGE).copyout_slice(&mem).unwrap();
         let mut s = FSPEC.to_vec();
@@ -758,21 +766,24 @@ mod tests {
 
     #[test]
     fn a_file_system_that_ends_inside_the_first_slot_mounts_from_the_second() {
-        // 68 KiB: the read 64 KiB in returns 4 KiB, short of a super-block; FFS1's at 8 KiB is
-        // found next.
-        let params = Params {
-            size: 68 << 10,
-            fpg: 136,
-            ipg: 32,
-            ..FFS1_4M
-        };
-        let mut img = Image::new(params);
-        img.add_file(b"f", b"small\n");
-        let (_g, p) = attach(&img.finish());
-        let mp = mount_root(p, params.size, 0);
-        assert_eq!(read_file(p, b"/f").unwrap(), b"small\n");
-        unmount_root(p, mp);
-        check(&image(params.size), false);
+        // 64 KiB, the smallest that mounts: the read 64 KiB in moves no bytes (the C's copy of
+        // none); 68 KiB: it returns 4 KiB, short of a super-block. Either way FFS1's at 8 KiB
+        // is found next.
+        for (size, fpg) in [(64 << 10, 128), (68 << 10, 136)] {
+            let params = Params {
+                size,
+                fpg,
+                ipg: 32,
+                ..FFS1_4M
+            };
+            let mut img = Image::new(params);
+            img.add_file(b"f", b"small\n");
+            let (_g, p) = attach(&img.finish());
+            let mp = mount_root(p, params.size, 0);
+            assert_eq!(read_file(p, b"/f").unwrap(), b"small\n");
+            unmount_root(p, mp);
+            check(&image(params.size), false);
+        }
     }
 
     #[test]
