@@ -138,26 +138,6 @@ pub struct Bpb50 {
     pub bpbHugeSectors: u32,
 }
 
-impl Bpb50 {
-    /// A zeroed BPB, as `malloc(M_ZERO)` leaves it in a `struct msdosfsmount`.
-    pub const fn new() -> Self {
-        Self {
-            bpbBytesPerSec: 0,
-            bpbSecPerClust: 0,
-            bpbResSectors: 0,
-            bpbFATs: 0,
-            bpbRootDirEnts: 0,
-            bpbSectors: 0,
-            bpbMedia: 0,
-            bpbFATsecs: 0,
-            bpbSecPerTrack: 0,
-            bpbHeads: 0,
-            bpbHiddenSecs: 0,
-            bpbHugeSectors: 0,
-        }
-    }
-}
-
 /// `struct bpb710`: BPB for DOS 7.10 (FAT32). This one has a few extensions to bpb50.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[allow(non_snake_case)] // the C field names

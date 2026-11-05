@@ -9511,6 +9511,12 @@ lz = "sys/msdosfs/bpb.rs::byte_view"
 native = ["pod_view"]
 kind = "renamed"
 
+[[module.fn]]
+lz = "sys/msdosfs/bpb.rs::Bpb50::new"
+native = []
+kind = "dropped"
+reason = "the zeroed BPB of a zeroed struct msdosfsmount is Bpb50::default() (derived, the same value); msdosfs_mountfs fills pm_bpb member by member before the structure is published"
+
 [[module]]
 rust = "sys/kernel/fs/msdosfs/direntry.rs"
 crate = "kernel"

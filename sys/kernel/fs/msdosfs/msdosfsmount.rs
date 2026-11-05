@@ -89,9 +89,11 @@
 //!   caller reads it with `Direntry::at`). `FATOFS` computes in `u32`, the type of `cn` and of
 //!   the multipliers.
 //! - `fsi_size(pmp)` shifts `1024` by `pm_BlkPerSec >> 2` with the machines' masking of a
-//!   32-bit shift count (`wrapping_shl`): for 64 KiB sectors the C's `1024 << 32` is undefined,
-//!   and both machines' shift instructions (x86's `shl`, arm64's `lslv` W-form) take the count
-//!   modulo 32, which gives 1024. [`fsi_size_checked`] refuses with `EINVAL` an FSInfo size
+//!   32-bit shift count (`wrapping_shl`). The count is at most 16 from a disk (`bpbBytesPerSec`
+//!   is 16-bit and `msdosfs_mountfs` requires a power of two of at least 512, so 32 KiB
+//!   sectors at most); a count of 32 (the C's undefined `1024 << 32`) is unreachable, and
+//!   would give 1024, as both machines' shift instructions (x86's `shl`, arm64's `lslv`
+//!   W-form) take the count modulo 32. [`fsi_size_checked`] refuses with `EINVAL` an FSInfo size
 //!   above `MAXBSIZE` (FAT32 with sectors of 16 KiB or more: 256 KiB, 64 MiB), the user's
 //!   decision D-N5.7-U3 of 2026-11-05: OpenBSD's `bread` of such a size maps pages past its
 //!   buffer's `MAXPHYS` slot (`buf_map`, `vfs_biomem.c`) where the kernel's panics;
@@ -146,6 +148,7 @@ use crate::fs::msdosfs::fat::{CLUST_FIRST, MSDOSFSROOT};
 use crate::fs::vnode::Vnode;
 use crate::fs::word::U32Word;
 use crate::proc::ProcGlue;
+use crate::vm::io::MAXBSIZE;
 
 /// `M_MSDOSFSMNT`: the malloc type of the msdos mount structures (`<sys/malloc.h>`;
 /// `vmstat -m`'s `MSDOSFS mount`).
@@ -165,9 +168,6 @@ pub const MSDOSFS_FATMIRROR: u32 = 0x2000_0000;
 
 /// `N_INUSEBITS`: number of bits in one `pm_inusemap` item.
 pub const N_INUSEBITS: u32 = 8 * size_of::<u32>() as u32;
-
-/// `MAXBSIZE`: the largest buffer `bread` maps (`<sys/param.h>`).
-const MAXBSIZE: i32 = 64 * 1024;
 
 /// Generates a `pm_bpb` shorthand: `pmp->pm_x`, read.
 macro_rules! bpb_shorthand {
@@ -332,7 +332,10 @@ pub trait DeArith: Copy + Shl<u32, Output = Self> + Shr<u32, Output = Self> {
 /// empty bitmap (`maxcluster + 1` wrapped), a size that overflows (the C's `SIZE_MAX /
 /// bmapsiz` check) or a `NULL` from `malloc`, as the C answers each.
 pub fn inusemap_alloc(maxcluster: u32) -> Result<MArray<AtomicU32>, Errno> {
-    let bmapsiz = maxcluster.wrapping_add(1).div_ceil(N_INUSEBITS) as usize;
+    // `pm_maxcluster + 1` wraps at its `uint32_t`; `howmany` then computes in `size_t`, the
+    // type of `N_INUSEBITS` (`8 * sizeof(u_int)`), where its `+ 31` cannot wrap: the
+    // `usize` `div_ceil`, which never wraps, is that value.
+    let bmapsiz = (maxcluster.wrapping_add(1) as usize).div_ceil(N_INUSEBITS as usize);
     if bmapsiz == 0 || usize::MAX / bmapsiz < size_of::<u32>() {
         return Err(Errno::EINVAL);
     }
@@ -453,7 +456,7 @@ pub fn fsi_size<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> i32 {
 /// decision D-N5.7-U3).
 pub fn fsi_size_checked<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> Result<i32, Errno> {
     let size = fsi_size(pmp);
-    if !(0..=MAXBSIZE).contains(&size) {
+    if size > MAXBSIZE as i32 {
         return Err(Errno::EINVAL);
     }
     Ok(size)
@@ -497,7 +500,7 @@ pub(crate) fn test_pmp(
         pm_gid: U32Word::new(0),
         pm_mask: U32Word::new(0),
         pm_devvp: devvp,
-        pm_bpb: Bpb50::new(),
+        pm_bpb: Bpb50::default(),
         pm_BlkPerSec: 0,
         pm_FATsecs: 0,
         pm_fatblk: 0,
@@ -592,7 +595,8 @@ mod tests {
             (8192, 16384, Ok(16384)),
             (16384, 256 * 1024, Err(Errno::EINVAL)),
             (32768, 64 * 1024 * 1024, Err(Errno::EINVAL)),
-            // 1024 << 32: the shift count modulo 32, as both machines' instructions.
+            // Unreachable: bpbBytesPerSec is 16-bit. 1024 << 32 gives 1024, the shift count
+            // modulo 32, as both machines' instructions.
             (65536, 1024, Ok(1024)),
         ] {
             let pmp = test_pmp(FAT32_MASK, 100, |pm| pm.pm_BlkPerSec = bps / 512);

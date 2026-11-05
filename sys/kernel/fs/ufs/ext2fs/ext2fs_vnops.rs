@@ -1833,7 +1833,7 @@ mod tests {
     /// every test runs [`mounted::fsck`] on the disk: a small `fsck_ext2fs` that checks what
     /// `e2fsck -fn` would (directory record chains, link counts, block counts in 512-byte
     /// units, duplicate blocks, the bitmaps, and the free and directory counts of the super
-    /// block and the group descriptor). User memory: testext2fs's path slots and buffer
+    /// block and the group descriptor). User memory: testfs's path slots and buffer
     /// (`testfs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vfsops`'s tests share
     /// (both hold MEMORY: one at a time).
     mod mounted {

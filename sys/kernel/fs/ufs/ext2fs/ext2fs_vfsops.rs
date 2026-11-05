@@ -1336,7 +1336,7 @@ mod tests {
     // block checks name by name, the largest file, the super block and descriptors written
     // back byte for byte, the mount updates and the reload, a stalled sync, vget's
     // generation and deleted inodes, and the device vnode's count across a vget that fails
-    // half-way (the user's decision of 2026-11-05). User memory: testext2fs's path slots and
+    // half-way (the user's decision of 2026-11-05). User memory: testfs's path slots and
     // buffer (`testfs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vnops`'s tests
     // over the system calls share (both hold MEMORY: one at a time).
 

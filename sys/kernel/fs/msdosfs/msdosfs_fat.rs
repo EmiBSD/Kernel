@@ -334,28 +334,29 @@ pub fn pcbmap<G: ProcGlue>(
         }
         let byteoffset = fatofs(pmp, cn);
         let (bn, bsize, bo) = fatblock(pmp, byteoffset);
-        if bn != bp_bn || bp.is_none() {
-            if let Some(old) = bp.take() {
-                brelse(old);
+        let b = match &mut bp {
+            Some(b) if bn == bp_bn => b,
+            slot => {
+                if let Some(old) = slot.take() {
+                    brelse(old);
+                }
+                bp_bn = bn;
+                slot.insert(bread_or_release(
+                    &pmp.pm_devvp.bufs,
+                    Daddr::from(bn),
+                    bsize as i32,
+                )?)
             }
-            bp = Some(bread_or_release(
-                &pmp.pm_devvp.bufs,
-                Daddr::from(bn),
-                bsize as i32,
-            )?);
-            bp_bn = bn;
-        }
+        };
         prevcn = cn;
         // The C's `bo >= bsize`, widened to the entry's bytes (D-N5.7-U2).
         if bo + fat_width(fatmask) > bsize as usize {
-            if let Some(b) = bp.take() {
-                brelse(b);
+            if let Some(t) = bp.take() {
+                brelse(t);
             }
             return Err(Errno::EIO);
         }
-        if let Some(b) = &bp {
-            cn = fat_read(fatmask, b.bytes(), bo, prevcn);
-        }
+        cn = fat_read(fatmask, b.bytes(), bo, prevcn);
 
         // Force the special cluster numbers to be the same for all cluster sizes to let the
         // rest of msdosfs handle all cases the same.
@@ -827,24 +828,25 @@ pub fn freeclusterchain<G: ProcGlue>(pmp: &Msdosfsmount<G>, mut cluster: u32) ->
     while cluster >= CLUST_FIRST && cluster <= pmp.pm_maxcluster {
         let byteoffset = fatofs(pmp, cluster);
         let (bn, bsize, bo) = fatblock(pmp, byteoffset);
-        if lbn != bn || bp.is_none() {
-            if let Some(old) = bp.take() {
-                updatefats(pmp, old, lbn);
+        let b = match &mut bp {
+            Some(b) if lbn == bn => b,
+            slot => {
+                if let Some(old) = slot.take() {
+                    updatefats(pmp, old, lbn);
+                }
+                lbn = bn;
+                slot.insert(bread_or_release(
+                    &pmp.pm_devvp.bufs,
+                    Daddr::from(bn),
+                    bsize as i32,
+                )?)
             }
-            bp = Some(bread_or_release(
-                &pmp.pm_devvp.bufs,
-                Daddr::from(bn),
-                bsize as i32,
-            )?);
-            lbn = bn;
-        }
+        };
         usemap_free(pmp, cluster);
-        if let Some(b) = &mut bp {
-            let data = b.data();
-            let next = fat_read(fatmask, data, bo, cluster);
-            fat_write(fatmask, data, bo, cluster, MSDOSFSFREE);
-            cluster = next;
-        }
+        let data = b.data();
+        let next = fat_read(fatmask, data, bo, cluster);
+        fat_write(fatmask, data, bo, cluster, MSDOSFSFREE);
+        cluster = next;
         if (cluster | !fatmask) >= CLUST_RSRVD {
             cluster |= fatmask;
         }
@@ -872,22 +874,22 @@ pub fn fillinusemap<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> Result<(), Errno> {
     for cn in CLUST_FIRST..=pmp.pm_maxcluster {
         let byteoffset = fatofs(pmp, cn);
         let bo = (byteoffset % pmp.pm_fatblocksize) as usize;
-        if bo == 0 || bp.is_none() {
-            // Read new FAT block.
-            if let Some(old) = bp.take() {
-                brelse(old);
+        let b = match &mut bp {
+            Some(b) if bo != 0 => b,
+            slot => {
+                // Read new FAT block.
+                if let Some(old) = slot.take() {
+                    brelse(old);
+                }
+                let (bn, bsize, _) = fatblock(pmp, byteoffset);
+                slot.insert(bread_or_release(
+                    &pmp.pm_devvp.bufs,
+                    Daddr::from(bn),
+                    bsize as i32,
+                )?)
             }
-            let (bn, bsize, _) = fatblock(pmp, byteoffset);
-            bp = Some(bread_or_release(
-                &pmp.pm_devvp.bufs,
-                Daddr::from(bn),
-                bsize as i32,
-            )?);
-        }
-        let readcn = match &bp {
-            Some(b) => fat_read(fatmask, b.bytes(), bo, cn),
-            None => continue,
         };
+        let readcn = fat_read(fatmask, b.bytes(), bo, cn);
 
         if readcn == 0 {
             usemap_free(pmp, cn);
