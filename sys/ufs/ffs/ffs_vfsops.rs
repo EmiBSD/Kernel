@@ -52,7 +52,7 @@
 //! (`kernel::fs::ufs::ffs::ffs_vfsops`, N5.5b2): `vfsconflist[]` names its `Ffs::VFS`. This
 //! module keeps `ffs_mountroot` (`subr_disk.c`'s `setroot` calls it) over the kernel's, with
 //! `bsd`'s `rootdev` and the machine's `swapdev`, and in its tests the fixture `bsd`'s nfs,
-//! quota, dirhash and mfs tests mount an image with.
+//! quota and dirhash tests mount an image with (mfs's are the kernel's since N5.5b3).
 //!
 //! Upstream: sys/ufs/ffs/ffs_vfsops.c @ 3ce1f3f79392
 //!
@@ -82,7 +82,7 @@ pub fn ffs_mountroot() -> Result<(), Errno> {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
-    // The fixture of `bsd`'s tests that mount an FFS image (nfs's, quota's, dirhash's, mfs's):
+    // The fixture of `bsd`'s tests that mount an FFS image (nfs's, quota's, dirhash's):
     // `newfs`, the kernel's image builder, a block device vnode whose strategy reads and writes
     // the image, and the root mount through the kernel's `ffs_mountfs`; with the tests of
     // `ffs_mount`'s export update (the exports are `bsd`'s until N6) and decision 43's ufs
@@ -117,15 +117,9 @@ pub(crate) mod tests {
     use crate::ufs::ufs::inode::vtoi;
     use kernel::fs::ufs::ffs::ffs_vfsops::{ffs_mountfs, ffs_statfs};
 
-    /// `newfs`: the kernel's FFS image builder (`kernel::fs::ufs::ffs::testffs::newfs`), and
-    /// the clean flag of an image.
+    /// `newfs`: the kernel's FFS image builder (`kernel::fs::ufs::ffs::testffs::newfs`).
     pub(crate) mod newfs {
         pub(crate) use kernel::fs::ufs::ffs::testffs::newfs::*;
-
-        /// The super-block's `fs_clean` in an image.
-        pub(crate) fn clean(disk: &[u8], ufs2: bool) -> i8 {
-            super_block(disk, ufs2).fs_clean
-        }
     }
 
     /// The disk the strategy below reads and writes.

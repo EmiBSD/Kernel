@@ -50,7 +50,8 @@
 /* <CODE> */
 //! `<ufs/ffs/fs.h>`: the layout of a fast file system is the kernel's
 //! (`kernel::fs::ufs::ffs::fs`, N5.5b1; `bsd`'s ffs went at N5.5b2), re-exported under LZ's
-//! path for `bsd`'s mfs (until N5.5b3) and `libsa`'s layout tests (until N9).
+//! path for `libsa`'s layout tests (until N9; `bsd`'s mfs, its other user, is the kernel's
+//! since N5.5b3).
 //!
 //! Upstream: sys/ufs/ffs/fs.h @ 3ce1f3f79392
 
