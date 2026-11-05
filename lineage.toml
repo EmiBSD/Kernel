@@ -9045,6 +9045,149 @@ kind = "dropped"
 reason = "no zeroed mfsnode exists: mfs_mount builds the node whole with its vnode, memory and thread (Mfsnode::new), as the C fills every member right after the malloc"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs.rs"]
+status = "redesigned"
+notes = "N5.6c1 (unwired: bsd's ext2fs keeps its MExt2fs until N5.6c3): struct ext2fs and struct ext2_gd as abi_pod! images, and struct m_ext2fs as Ext2Superblock (D-N5.6-3): struct ext2fs and e2fs_fsmnt as relaxed words of one malloc(M_UFSMNT) array with e2fs_field! accessors at offset_of!, the scalars relaxed words, the group descriptors ngdb*bsize bytes of words in a read-mostly slot read four words a descriptor and changed a member at a time; held by Ufsmount's UfsSuper::Ext2; e2fs_sbload/sbsave/cgload/cgsave copy bytes on a little-endian machine and swap on a big-endian one; 0 unsafe (LZ: 10)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs"
+native = ["Ext2Superblock"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::new"
+native = ["Ext2Superblock::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::with_e2fs"
+native = ["e2fs_field", "Ext2Superblock::read_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::with_e2fs_mut"
+native = ["e2fs_field", "Ext2Superblock::write_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::e2fs_copy"
+native = ["Ext2Superblock::read_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::set_e2fs"
+native = ["Ext2Superblock::write_bytes", "e2fs_sbload"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::fsmnt"
+native = ["Ext2Superblock::fsmnt"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::fsmnt_str"
+native = ["Ext2Superblock::fsmnt", "Fsmnt"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::gd"
+native = ["Ext2Superblock::gd"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::set_gd"
+native = ["Ext2Superblock::gd_set"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::with_gd_mut"
+native = ["Ext2Superblock::set_gd_nbfree", "Ext2Superblock::set_gd_nifree", "Ext2Superblock::set_gd_ndirs"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::gd_ptr"
+native = ["Ext2Superblock::gd_off"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::MExt2fs::dinode_size"
+native = ["Ext2Superblock::dinode_size"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::sb_scalar"
+native = ["e2fs_field"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::Ext2Gd::from_le_bytes"
+native = []
+kind = "dropped"
+reason = "e2fs_cgload copies the disk's bytes into the in-core descriptors' words on a little-endian machine (the C's memcpy) and swaps whole descriptors with e2fs_cg_bswap on a big-endian one; Ext2Gd is an abi_pod! image read by pod_from_bytes"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs.rs::Ext2Gd::to_le_bytes"
+native = []
+kind = "dropped"
+reason = "e2fs_cgsave copies the in-core descriptors' bytes out (the C's memcpy) or swaps them on a big-endian machine; the tests' newfs writes Ext2Gd with pod_to_bytes"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_dinode.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_dinode.rs"]
+status = "redesigned"
+notes = "N5.6c1: struct ext2fs_dinode as an abi_pod! image, and the inode's ext2fs state in core as Ext2Inode (D-N5.6-2): the dinode's 156 bytes in DinWords<20> with the i_e2fs_* accessors at offset_of!, inode_ext.e2fs's members relaxed words; one item of ext2dinopl in the kernel inode's Dinode::Ext2; e2fs_iload/e2fs_isave copy min(EXT2_DINODE_SIZE, 156) bytes; 0 unsafe (LZ: 4)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::Ext2fsDinode::e2di_rdev"
+native = ["Ext2Inode::e2di_rdev"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::Ext2fsDinode::set_e2di_rdev"
+native = ["Ext2Inode::set_e2di_rdev"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::Ext2fsDinode::e2di_shortlink"
+native = ["Ext2Inode::e2di_shortlink"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::Ext2fsDinode::e2di_shortlink_mut"
+native = ["Ext2Inode::set_e2di_shortlink"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::copy_into"
+native = []
+kind = "dropped"
+reason = "e2fs_iload writes the buffer's bytes into the in-core dinode's words (DinWords::write_bytes), and the big-endian path builds an abi_pod! image with pod_from_bytes"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_bswap.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_bswap.rs"]
+status = "redesigned"
+notes = "N5.6c1: LZ's swappers over the kernel's abi_pod! images; e2fs_i_bswap reads the inode size from the kernel's Ext2Superblock; unreached on both (little-endian) machines"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_dir.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_dir.rs"]
+status = "redesigned"
+notes = "N5.6c1: <ufs/ext2fs/ext2fs_dir.h> in the kernel with LZ's shape (the entries read and written as little-endian bytes at their offsets, no unsafe)"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_extents.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_extents.rs"]
+status = "redesigned"
+notes = "N5.6c1: the extent path holds the node's bytes (the leaf's BufRef token, or a copy of the inode's 60-byte root) and the entries' slots in it, read by pod_from_bytes of the abi_pod! entries; the C's binary searches over the slots; the node-count check refusing a corrupt tree kept; 0 unsafe (LZ: 7)"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
@@ -12545,6 +12688,11 @@ reason = "N5.5a3: the UFS layer's test double (host tests and benches only, cfg(
 rust = "sys/kernel/fs/ufs/ffs/testffs.rs"
 crate = "kernel"
 reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the FFS1/FFS2 image builder moved from bsd's ffs_vfsops tests (over the on-disk abi_pod! Fs and Cg and CgView), and an image as the disk of a block device of testfs whose strategy serves it; since N5.5b2 mounted by the kernel's ffs_mountfs (attach, mount, setup, mount_root/unmount_root at the root for the system-call tests), its inodes made by ffs_vget"
+
+[[extra]]
+rust = "sys/kernel/fs/ufs/ext2fs/testext2fs.rs"
+crate = "kernel"
+reason = "N5.6c1: the kernel ext2fs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the one-group ext2 image builder moved from bsd's ext2fs_vfsops tests (over the abi_pod! Ext2fs, Ext2Gd and Ext2fsDinode), served by testffs's block device; until N5.6c3 a mount made the way ext2fs_mountfs makes one and an inode the way ext2fs_vget makes one, over a vnode table and an inode table of its own; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"

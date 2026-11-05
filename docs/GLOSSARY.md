@@ -41,6 +41,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | EL0, EL1 | **Exception Level 0 and 1** on arm64: userland and the kernel. The KPTI trampolines switch page tables on every crossing |
 | ELF | **Executable and Linkable Format.** The format of the kernel image, of `abi_openbsd.ko` and of every userland binary |
 | errno | The error number a failed syscall returns to userland (`<sys/errno.h>`, `hal::sys::errno`). Inside the kernel it is the `Err` of a `Result<T, Errno>`; `abi` turns it into the number |
+| `Ext2Superblock` | The kernel ext2fs's `struct m_ext2fs` in core (`kernel::fs::ufs::ext2fs::ext2fs::Ext2Superblock`, the mount's `um_e2fs`, N5.6c1): `struct ext2fs` and the name mounted on as relaxed atomic words in one `malloc(M_UFSMNT)` array, read and written at `offset_of!(Ext2fs, member)` by its accessors, the scalars relaxed words, the group descriptors words of a second array in a read-mostly slot |
 | `[[extra]]` | A `lineage.toml` row for a native file with no LZ source, with its reason (a project helper) |
 | FFS, MFS, NFS | **Fast File System, Memory File System, Network File System.** OpenBSD's root file system, its in-memory one (the installer's ramdisk) and the network one; N5 and N6 |
 | `Ffs` | The kernel's fast file system of a glue (`kernel::fs::ufs::ffs::ffs_vfsops::Ffs<G>`, N5.5b2): a zero-sized type whose constants are two of the C's tables, `VFS` (`ffs_vfsops`, which `vfsconflist[]` names) and `VTBL` (`ffs_vtbl`, an inode's `i_vtbl`), and whose `UfsFs` fills the composed vnode tables `ffs_vops` and `ffs_specvops` (the glue's `UfsTables` members) |
@@ -96,6 +97,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | TLB | **Translation Lookaside Buffer.** A CPU's cache of page-table entries; a change to a mapping must flush it (`pmap`, `hal`) |
 | trailer | The `Key: value` lines closing a commit message: `LZ:`, `Unsafe:`, `Security-Review:`, `Bench:`, `Co-Authored-By:` (`.claude/rules/git-commits.md`) |
 | `UfsmountRef` | A counted handle to a mount's UFS structure (`MArc<Ufsmount<G>>`, `kernel::fs::ufs::ufs::ufsmount`): `ffs_mountfs`/`ext2fs_mountfs` hang one in the mount's typed slot and the unmount takes it back after `vflush`, `vfstoufs` counts one out of the slot for an operation, each inode holds one as `i_ump`; the last handle frees the structure |
+| `UfsSuper` | The in-core super-block a UFS mount holds (`kernel::fs::ufs::ufs::ufsmount::UfsSuper`, N5.6c1): the C's union `ufsmount_u` as an enum, `Ffs(Superblock)` or `Ext2(Ext2Superblock)`, set once in `Ufsmount`'s slot; `um_fs()` and `um_e2fs()` check the variant |
 | `unported!` | The macro that makes an inherited gap visible: prints it once and returns `ENOSYS`; never a `todo!()` or a silently dropped path |
 | `unsafe-report` | `cargo xtask unsafe-report`: counts every `unsafe` block, fn, impl and trait per subsystem and per crate; `--check` enforces the budget, `--write` records the totals |
 | `Unsafe:` | A commit trailer, `subsystem before -> after`, one line per subsystem whose `unsafe` count the commit moved |

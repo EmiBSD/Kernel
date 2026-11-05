@@ -58,9 +58,12 @@
 //! - `ufsmount_u` (the super-block pointer of FFS or EXT2FS): FFS's is the structure's own
 //!   since N5.5b1, a `Superblock` (`fs::ufs::ffs::fs`) set once by the kernel's `ffs_mountfs`
 //!   ([`Ufsmount::um_fs`], [`Ufsmount::set_um_fs`]), held inline as the C holds the pointer;
-//!   unset on an EXT2FS mount, whose `um_e2fs` is the glue's member [`Ufsmount::g`]
-//!   (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md) until N5.6. Until N5.5b2 switches ffs,
-//!   `bsd`'s ffs keeps its own `um_fs` in the glue's member and leaves this one unset.
+//!   EXT2FS's the kernel's `Ext2Superblock` since N5.6c1 ([`Ufsmount::um_e2fs`], the other
+//!   variant of [`UfsSuper`]), set by the kernel's `ext2fs_mountfs` from N5.6c3: until then
+//!   `bsd`'s ext2fs leaves the slot unset and keeps its `um_e2fs` in the glue's member
+//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md). The slot is as large as
+//!   the larger variant, so an FFS mount's block grows by the difference (`vmstat -m`'s `UFS
+//!   mount` bytes; the requests are the C's).
 //!   `um_export` (`struct netexport`, the
 //!   NFS server's) is the mount's glue member since N5.5b0 (`Mount::g`, `bsd`'s `BsdMountG`,
 //!   until N6): `bsd`'s `vfs_export` and `vfs_export_lookup` read it from the mount, which all
@@ -96,6 +99,10 @@
 //!   set-once `Superblock` held inline ([`Ufsmount::um_fs`]): the super-block's own `malloc`
 //!   is its words' array (`ffs/fs.rs`), so the `UFS mount` row's requests stay the C's, and
 //!   it is freed with the structure's last handle, as the unmount frees both.
+//! - N5.6c1 (D-N5.6-3): the set-once slot holds [`UfsSuper`], the C's `ufsmount_u` as an enum
+//!   of the two in-core super-blocks (`Ffs`, and `Ext2` with feature `ext2fs`): `um_fs()`
+//!   checks the variant where it checked the slot (one compare more), `um_e2fs()` the other
+//!   way; the variant is the check of `um_fstype` the C leaves to its callers.
 
 use core::sync::atomic::{AtomicI64, AtomicU8};
 
@@ -111,9 +118,21 @@ use crate::assert::kpanic;
 use crate::cred::CredRef;
 use crate::file::FileGlue;
 use crate::fs::mount::Mount;
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs::Ext2Superblock;
 use crate::fs::ufs::ffs::fs::Superblock;
 use crate::fs::vnode::Vnode;
 use crate::proc::ProcGlue;
+
+/// `ufsmount_u`: the in-core super-block of the file system the mount holds, FFS's or EXT2FS's
+/// (the C's union of the two pointers, told apart by `um_fstype`; here by the variant).
+pub enum UfsSuper {
+    /// `um_fs`: FFS's (`fs::ufs::ffs::fs`).
+    Ffs(Superblock),
+    /// `um_e2fs`: EXT2FS's (`fs::ufs::ext2fs::ext2fs`, `option EXT2FS`).
+    #[cfg(feature = "ext2fs")]
+    Ext2(Ext2Superblock),
+}
 
 /// `struct ufsmount`: the UFS specific mount structure data.
 pub struct Ufsmount<G: ProcGlue> {
@@ -146,8 +165,8 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_itime: [AtomicI64; MAXQUOTAS],
     /// `um_qflags`: quota specific flags.
     pub um_qflags: [AtomicU8; MAXQUOTAS],
-    /// `ufsmount_u.fs`: FFS's in-core super-block, set once by `ffs_mountfs`.
-    fs: OnceStatic<Superblock>,
+    /// `ufsmount_u`: the in-core super-block, set once by `ffs_mountfs` or `ext2fs_mountfs`.
+    fs: OnceStatic<UfsSuper>,
     /// The members of `bsd`'s types (`ufsmount_u`; the module's deviations).
     pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
@@ -213,15 +232,34 @@ impl<G: ProcGlue> Ufsmount<G> {
     #[inline]
     pub fn um_fs(&self) -> &Superblock {
         match self.fs.get() {
-            Some(fs) => fs,
-            None => kpanic(format_args!("ufsmount {self:p}: no um_fs")),
+            Some(UfsSuper::Ffs(fs)) => fs,
+            _ => kpanic(format_args!("ufsmount {self:p}: no um_fs")),
         }
     }
 
     /// `ump->um_fs = fs`, once (`ffs_mountfs`); `panic(9)` on a second.
     pub fn set_um_fs(&self, fs: Superblock) {
-        if self.fs.set(fs).is_err() {
+        if self.fs.set(UfsSuper::Ffs(fs)).is_err() {
             kpanic(format_args!("ufsmount {self:p}: a second um_fs"));
+        }
+    }
+
+    /// `ump->um_e2fs`: the EXT2FS super-block in core; `panic(9)` on a mount without one (an
+    /// FFS mount's `ufsmount_u` is `um_fs`).
+    #[cfg(feature = "ext2fs")]
+    #[inline]
+    pub fn um_e2fs(&self) -> &Ext2Superblock {
+        match self.fs.get() {
+            Some(UfsSuper::Ext2(fs)) => fs,
+            _ => kpanic(format_args!("ufsmount {self:p}: no um_e2fs")),
+        }
+    }
+
+    /// `ump->um_e2fs = fs`, once (`ext2fs_mountfs`); `panic(9)` on a second.
+    #[cfg(feature = "ext2fs")]
+    pub fn set_um_e2fs(&self, fs: Ext2Superblock) {
+        if self.fs.set(UfsSuper::Ext2(fs)).is_err() {
+            kpanic(format_args!("ufsmount {self:p}: a second ufsmount_u"));
         }
     }
 }
