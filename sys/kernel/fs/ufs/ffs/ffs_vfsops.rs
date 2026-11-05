@@ -75,6 +75,11 @@
 //!   `init_main.c` globals, reached through the glue (`FileGlue::rootvp`, `set_rootvp`,
 //!   `set_swapdev_vp`, docs/SCAFFOLDING.md); the error paths release the swap vnode they
 //!   made, which the C reads back from its global.
+//! - Two paths where the C dereferences NULL answer an error: [`ffs_mountroot`] returns
+//!   `ENODEV` for a `NODEV` root (`bdevvp` succeeds with a NULL `rootvp`, which the C's
+//!   `ffs_mountfs` then faults on), and [`ffs_mount`] returns `EINVAL` for a new mount without
+//!   arguments (the C's `copyinstr(args->fspec, ..)` with `args == NULL`; only in-kernel
+//!   callers pass none, since `sys_mount` always copies arguments in).
 //! - `ffs_vars[]` holds only the `UFS_DIRHASH` variables (feature `ufs_dirhash`); without the
 //!   feature it is empty and [`ffs_sysctl`] answers every name as `sysctl_bounded_arr` does
 //!   for an unknown one (LZ's).

@@ -58,7 +58,9 @@
 //!
 //! ## Deviations
 //! - `rootdev` is `sys/systm.rs`'s `ROOTDEV` and `swapdev` the machine's (`conf.c`) until N7
-//!   (docs/SCAFFOLDING.md); `rootvp` and `swapdev_vp` are the kernel's VFS tables'.
+//!   (docs/SCAFFOLDING.md); `rootvp` and `swapdev_vp` stay `init_main`'s statics, which the
+//!   kernel's `ffs_mountroot` reaches through `FileGlue::rootvp`, `set_rootvp` and
+//!   `set_swapdev_vp` (`kern_descrip.rs`'s `BsdFileGlue`, docs/SCAFFOLDING.md, N7).
 
 use core::sync::atomic::Ordering;
 

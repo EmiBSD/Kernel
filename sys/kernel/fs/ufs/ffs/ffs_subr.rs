@@ -60,6 +60,9 @@
 //! - The maps are byte slices (`u_char *cp` in C); `ffs_fragacct`'s `fraglist` is the
 //!   cylinder group's `cg_frsum`, reached through its [`CgView`].
 //! - `ffs_bufatoff` returns the buffer and the offset of `*res` in its data.
+//! - `ffs_vinit` takes the vnode and returns the one to use (an alias may replace it). A
+//!   fifo is refused with `EOPNOTSUPP`, the C's answer without `option FIFO`: `fifofs` is
+//!   not ported (`ffs_fifovops`).
 //!
 //! ## Redesign
 //! - N5.5b1: LZ's functions over `&Fs` (a `Cell` structure) and `Inode` -> over the in-core
