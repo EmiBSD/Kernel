@@ -36,6 +36,7 @@ use hal::pool::PR_WAITOK;
 use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_EXT2FS, UfsArgs};
 use hal::sys::types::Daddr;
+use hal::user::UserPtr;
 
 use super::ext2fs::{Ext2Superblock, SBLOCK, SBSIZE, e2fs_sbload, nindir};
 use super::ext2fs_dinode::{EXT2_ROOTINO, Ext2Inode};
@@ -213,67 +214,158 @@ pub mod newfs {
         }
     }
 
+    /// What [`Image::new`] makes a file system of: `nblk` blocks and `ipg` inodes of `isz`
+    /// bytes in one group, `rbcount` blocks reserved, the free counts and the incompatible
+    /// features of the super block.
+    pub struct Params {
+        /// Blocks in the file system.
+        pub nblk: usize,
+        /// Inodes per group (and in all).
+        pub ipg: u32,
+        /// The inode size.
+        pub isz: usize,
+        /// Blocks reserved for the super-user.
+        pub rbcount: u32,
+        /// Free blocks.
+        pub nfree: u32,
+        /// Free inodes.
+        pub nifree: u32,
+        /// `e2fs_features_incompat`.
+        pub incompat: u32,
+    }
+
+    impl Image {
+        /// A file system of `p` (1 KiB blocks, one group, revision 1, sparse super blocks,
+        /// clean, the group descriptor in [`GDT`], the bitmaps in [`BBITMAP`] and [`IBITMAP`],
+        /// the inode table from [`ITABLE`]): the super block, the descriptor (one directory)
+        /// and the bitmaps' bits past the last block and the last inode; nothing used yet.
+        pub fn new(p: &Params) -> Image {
+            let mut img = Image(vec![0; p.nblk * B]);
+
+            let mut sb = Ext2fs::new();
+            sb.e2fs_icount = p.ipg;
+            sb.e2fs_bcount = p.nblk as u32;
+            sb.e2fs_rbcount = p.rbcount;
+            sb.e2fs_fbcount = p.nfree;
+            sb.e2fs_ficount = p.nifree;
+            sb.e2fs_first_dblock = 1;
+            sb.e2fs_bpg = 8192;
+            sb.e2fs_fpg = 8192;
+            sb.e2fs_ipg = p.ipg;
+            sb.e2fs_wtime = 1_700_000_000;
+            sb.e2fs_max_mnt_count = 20;
+            sb.e2fs_magic = E2FS_MAGIC;
+            sb.e2fs_state = E2FS_ISCLEAN;
+            sb.e2fs_beh = 1;
+            sb.e2fs_rev = E2FS_REV1;
+            sb.e2fs_first_ino = EXT2_FIRSTINO;
+            sb.e2fs_inode_size = p.isz as u16;
+            sb.e2fs_features_incompat = p.incompat;
+            sb.e2fs_features_rocompat = EXT2F_ROCOMPAT_SPARSE_SUPER;
+            sb.to_disk(&mut img.0[B..2 * B]);
+
+            let gd = Ext2Gd {
+                ext2bgd_b_bitmap: BBITMAP as u32,
+                ext2bgd_i_bitmap: IBITMAP as u32,
+                ext2bgd_i_tables: ITABLE as u32,
+                ext2bgd_nbfree: p.nfree as u16,
+                ext2bgd_nifree: p.nifree as u16,
+                ext2bgd_ndirs: 1,
+                ..Ext2Gd::default()
+            };
+            let mut b = [0u8; EXT2_GD_SIZE];
+            let _ = pod_to_bytes(&gd, &mut b);
+            img.put(GDT, 0, &b);
+
+            for bit in (p.nblk - 1)..8 * B {
+                img.setbit(BBITMAP, bit);
+            }
+            for bit in p.ipg as usize..8 * B {
+                img.setbit(IBITMAP, bit);
+            }
+            img
+        }
+
+        /// `blocks` marked used in the block bitmap (bit `b - 1` is block `b`).
+        pub fn use_blocks(&mut self, blocks: impl IntoIterator<Item = usize>) {
+            for b in blocks {
+                self.setbit(BBITMAP, b - 1);
+            }
+        }
+
+        /// `inodes` marked used in the inode bitmap (bit `i - 1` is inode `i`).
+        pub fn use_inodes(&mut self, inodes: impl IntoIterator<Item = usize>) {
+            for i in inodes {
+                self.setbit(IBITMAP, i - 1);
+            }
+        }
+    }
+
+    /// [`mkfs`]'s blocks (one group).
+    pub const MKFS_NBLK: usize = 1024;
+    /// [`mkfs`]'s inodes (one group).
+    pub const MKFS_IPG: usize = 64;
+
+    /// The inode table's size, in blocks, of [`mkfs`]'s file system for inodes of `isz` bytes.
+    pub const fn itblocks(isz: usize) -> usize {
+        MKFS_IPG * isz / B
+    }
+
+    /// A fresh ext2 file system of [`MKFS_NBLK`] blocks and [`MKFS_IPG`] inodes of `isz`
+    /// bytes (revision 1, `FILETYPE`, sparse super blocks): the super block, one group
+    /// descriptor, the bitmaps, the inode table and an empty root directory owned by root, as
+    /// `newfs_ext2fs` leaves it (without lost+found).
+    pub fn mkfs(isz: usize) -> Vec<u8> {
+        let rootblk = ITABLE + itblocks(isz);
+        let reserved = (EXT2_FIRSTINO - 1) as usize; // inodes 1..=10
+        let mut img = Image::new(&Params {
+            nblk: MKFS_NBLK,
+            ipg: MKFS_IPG as u32,
+            isz,
+            rbcount: 50,
+            nfree: (MKFS_NBLK - 1 - rootblk) as u32,
+            nifree: (MKFS_IPG - reserved) as u32,
+            incompat: EXT2F_INCOMPAT_FTYPE,
+        });
+        img.use_blocks(1..=rootblk);
+        img.use_inodes(1..=reserved);
+
+        // The root directory.
+        let at = (EXT2_ROOTINO as usize - 1) * isz;
+        img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_mode), 0o40755);
+        img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_nlink), 2);
+        img.u32(ITABLE, at + offset_of!(Ext2fsDinode, e2di_size), B as u32);
+        img.u32(ITABLE, at + offset_of!(Ext2fsDinode, e2di_nblock), 2);
+        img.u32(
+            ITABLE,
+            at + offset_of!(Ext2fsDinode, e2di_blocks),
+            rootblk as u32,
+        );
+        if isz > 128 {
+            img.u16(ITABLE, at + offset_of!(Ext2fsDinode, e2di_isize), 32);
+        }
+        img.dirent(rootblk, 0, EXT2_ROOTINO, 12, b".", 2);
+        img.dirent(rootblk, 12, EXT2_ROOTINO, (B - 12) as u16, b"..", 2);
+        img.0
+    }
+
     /// The test file system; with `extents`, it has the `EXTENTS` incompatible feature (and
     /// mounts only read-only). Inode 12 is `hello.txt` (one block), 13 `big` (14 blocks,
     /// two behind the single indirect block), 14 `ext` (an index root in the inode, one leaf
     /// with two extents).
     pub fn image(extents: bool) -> Vec<u8> {
-        let mut img = Image(vec![0; NBLK as usize * B]);
-
-        // Super block.
-        let mut sb = Ext2fs::new();
-        sb.e2fs_icount = IPG;
-        sb.e2fs_bcount = NBLK;
-        sb.e2fs_rbcount = 3;
-        sb.e2fs_fbcount = NFREE;
-        sb.e2fs_ficount = NIFREE;
-        sb.e2fs_first_dblock = 1;
-        sb.e2fs_bpg = 8192;
-        sb.e2fs_fpg = 8192;
-        sb.e2fs_ipg = IPG;
-        sb.e2fs_wtime = 1_700_000_000;
-        sb.e2fs_max_mnt_count = 20;
-        sb.e2fs_magic = E2FS_MAGIC;
-        sb.e2fs_state = E2FS_ISCLEAN;
-        sb.e2fs_beh = 1;
-        sb.e2fs_rev = E2FS_REV1;
-        sb.e2fs_first_ino = EXT2_FIRSTINO;
-        sb.e2fs_inode_size = ISZ as u16;
-        sb.e2fs_features_incompat =
-            EXT2F_INCOMPAT_FTYPE | if extents { EXT2F_INCOMPAT_EXTENTS } else { 0 };
-        sb.e2fs_features_rocompat = EXT2F_ROCOMPAT_SPARSE_SUPER;
-        sb.to_disk(&mut img.0[1024..2048]);
-
-        // Group descriptor.
-        let gd = Ext2Gd {
-            ext2bgd_b_bitmap: BBITMAP as u32,
-            ext2bgd_i_bitmap: IBITMAP as u32,
-            ext2bgd_i_tables: ITABLE as u32,
-            ext2bgd_nbfree: NFREE as u16,
-            ext2bgd_nifree: NIFREE as u16,
-            ext2bgd_ndirs: 1,
-            ..Ext2Gd::default()
-        };
-        let mut b = [0u8; EXT2_GD_SIZE];
-        let _ = pod_to_bytes(&gd, &mut b);
-        img.put(GDT, 0, &b);
-
-        // Block bitmap: bit b is block b + 1; blocks 1..=28 and 30 are used, and the bits past
-        // the last block.
-        for b in 1..=28 {
-            img.setbit(BBITMAP, b - 1);
-        }
-        img.setbit(BBITMAP, 30 - 1);
-        for bit in (NBLK as usize - 1)..8 * B {
-            img.setbit(BBITMAP, bit);
-        }
-        // Inode bitmap: inodes 1..=14, and the bits past the last inode.
-        for i in 1..=14 {
-            img.setbit(IBITMAP, i - 1);
-        }
-        for bit in IPG as usize..8 * B {
-            img.setbit(IBITMAP, bit);
-        }
+        let mut img = Image::new(&Params {
+            nblk: NBLK as usize,
+            ipg: IPG,
+            isz: ISZ,
+            rbcount: 3,
+            nfree: NFREE,
+            nifree: NIFREE,
+            incompat: EXT2F_INCOMPAT_FTYPE | if extents { EXT2F_INCOMPAT_EXTENTS } else { 0 },
+        });
+        // Blocks 1..=28 and 30 are used, inodes 1..=14.
+        img.use_blocks((1..=28).chain([30]));
+        img.use_inodes(1..=14);
 
         // The root directory.
         let mut root = [0u32; 15];
@@ -323,6 +415,30 @@ pub mod newfs {
 
         img.0
     }
+}
+
+/// The user memory of the kernel ext2fs's tests over the system calls, `ext2fs_vfsops`'s and
+/// `ext2fs_vnops`'s, which share it (both hold MEMORY: one test at a time; no other test of
+/// the binary uses the range): four path slots of 256 bytes from `USER_BASE + 0xe000`
+/// ([`up`]), then [`UBUF`] to `USER_BASE + 0xf000`.
+pub const UPATH: usize = crate::testutil::USER_BASE + 0xe000;
+/// The buffer after the path slots.
+pub const UBUF: usize = crate::testutil::USER_BASE + 0xe400;
+/// [`UBUF`]'s length.
+pub const UBUF_LEN: usize = 0xf000 - 0xe400;
+
+/// The NUL-terminated `s` in user memory, in path slot `i` of [`UPATH`].
+pub fn up(i: usize, s: &[u8]) -> UserPtr<u8> {
+    if s.len() >= 256 || i >= 4 {
+        std::panic!("testext2fs: up: slot {i}, {} bytes", s.len());
+    }
+    let at = UPATH + i * 256;
+    let mut b = s.to_vec();
+    b.push(0);
+    if let Err(e) = UserPtr::<u8>::new(at).copyout_slice(&b) {
+        std::panic!("testext2fs: up: {e:?}");
+    }
+    UserPtr::new(at)
 }
 
 /// The fixture's configuration entry: the kernel's ext2fs as `vfsconflist[]` has it

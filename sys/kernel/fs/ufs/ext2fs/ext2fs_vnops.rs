@@ -1827,13 +1827,15 @@ mod tests {
     /// The vnode and directory operations (`ext2fs_vnops.rs`, `ext2fs_lookup.rs`) over the
     /// real mount, through the system calls' own paths (`sys_open`, `sys_read`, `sys_write`,
     /// `sys_link`, `sys_unlink`, `sys_rename`, `sys_mkdir`, `sys_rmdir`, `sys_symlink`,
-    /// `sys_mknod`, ...) on a fresh ext2 file system built in memory ([`mounted::mkfs`]),
+    /// `sys_mknod`, ...) on a fresh ext2 file system built in memory (testext2fs's
+    /// `newfs::mkfs`),
     /// mounted read-write as the root (moved from `bsd`'s tests, N5.6c3). After the unmount
     /// every test runs [`mounted::fsck`] on the disk: a small `fsck_ext2fs` that checks what
     /// `e2fsck -fn` would (directory record chains, link counts, block counts in 512-byte
     /// units, duplicate blocks, the bitmaps, and the free and directory counts of the super
-    /// block and the group descriptor). User memory: USER_BASE + 0xe000..0xf000, the range
-    /// `ext2fs_vfsops`'s tests use too (both hold MEMORY: one at a time).
+    /// block and the group descriptor). User memory: testext2fs's path slots and buffer
+    /// (`testext2fs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vfsops`'s tests share
+    /// (both hold MEMORY: one at a time).
     mod mounted {
         use core::mem::offset_of;
         use std::collections::BTreeMap;
@@ -1849,17 +1851,17 @@ mod tests {
         use hal::sys::syslimits::LINK_MAX;
         use hal::sys::types::makedev;
         use hal::sys::unistd::{_PC_LINK_MAX, _PC_TIMESTAMP_RESOLUTION};
-        use hal::user::{UserPtr, pod_to_bytes};
+        use hal::user::UserPtr;
 
-        use super::super::super::ext2fs::{
-            E2FS_ISCLEAN, E2FS_MAGIC, E2FS_REV1, EXT2_GD_SIZE, EXT2F_INCOMPAT_FTYPE,
-            EXT2F_ROCOMPAT_SPARSE_SUPER, Ext2Gd, Ext2fs,
-        };
-        use super::super::super::ext2fs_dinode::{EXT2_FIRSTINO, EXT2_ROOTINO, Ext2fsDinode};
+        use super::super::super::ext2fs::{E2FS_ISCLEAN, Ext2fs};
+        use super::super::super::ext2fs_dinode::{EXT2_ROOTINO, Ext2fsDinode};
         use super::super::super::ext2fs_dir::{
             EXT2_FT_REG_FILE, EXT2_FT_SYMLINK, e2d_type, e2iftodt, ext2fs_dirsiz, inot2ext2dt,
         };
-        use super::super::super::testext2fs::mount_root;
+        use super::super::super::testext2fs::newfs::{
+            B, BBITMAP, GDT, IBITMAP, ITABLE, MKFS_IPG, MKFS_NBLK, itblocks, mkfs,
+        };
+        use super::super::super::testext2fs::{UBUF, UBUF_LEN, mount_root, up};
         use super::*;
         use crate::clock::Timespec;
         use crate::descrip::{sys_close, sys_read, sys_write};
@@ -1876,128 +1878,12 @@ mod tests {
         use crate::fs::ufs::ufs::ufsmount::vfstoufs;
         use crate::fs::vnode::{LK_RETRY, VLNK, vn_lock};
         use crate::fs::vops::{VFS_VGET, vop_getattr, vop_pathconf, vop_readdir, vop_setattr};
-        use crate::testutil::USER_BASE;
         use crate::uio::Uio;
 
-        const B: usize = 1024;
         /// Blocks in the file system (one group).
-        const NBLK: usize = 1024;
+        const NBLK: usize = MKFS_NBLK;
         /// Inodes in the file system (one group).
-        const IPG: usize = 64;
-        /// Where things are (block numbers).
-        const GDT: usize = 2;
-        const BBITMAP: usize = 3;
-        const IBITMAP: usize = 4;
-        const ITABLE: usize = 5;
-        /// The path slots: four of 256 bytes.
-        const UPATH: usize = USER_BASE + 0xe000;
-        /// The buffer, to USER_BASE + 0xf000.
-        const UBUF: usize = USER_BASE + 0xe400;
-        /// Its length.
-        const UBUF_LEN: usize = 0xf000 - 0xe400;
-
-        /// The inode table's size, in blocks, for inodes of `isz` bytes.
-        const fn itblocks(isz: usize) -> usize {
-            IPG * isz / B
-        }
-
-        /// A fresh ext2 file system (revision 1, `FILETYPE`, sparse super blocks, 1 KiB
-        /// blocks, `isz`-byte inodes): the super block, one group descriptor, the bitmaps, the
-        /// inode table and an empty root directory owned by root, as `newfs_ext2fs` leaves it
-        /// (without lost+found).
-        pub(super) fn mkfs(isz: usize) -> Vec<u8> {
-            let mut img = vec![0u8; NBLK * B];
-            let rootblk = ITABLE + itblocks(isz);
-            let used_blocks = rootblk; // blocks 1..=rootblk
-            let nfree = (NBLK - 1 - used_blocks) as u32;
-            let reserved = (EXT2_FIRSTINO - 1) as usize; // inodes 1..=10
-            let nifree = (IPG - reserved) as u32;
-
-            let mut sb = Ext2fs::new();
-            sb.e2fs_icount = IPG as u32;
-            sb.e2fs_bcount = NBLK as u32;
-            sb.e2fs_rbcount = 50;
-            sb.e2fs_fbcount = nfree;
-            sb.e2fs_ficount = nifree;
-            sb.e2fs_first_dblock = 1;
-            sb.e2fs_bpg = 8192;
-            sb.e2fs_fpg = 8192;
-            sb.e2fs_ipg = IPG as u32;
-            sb.e2fs_wtime = 1_700_000_000;
-            sb.e2fs_max_mnt_count = 20;
-            sb.e2fs_magic = E2FS_MAGIC;
-            sb.e2fs_state = E2FS_ISCLEAN;
-            sb.e2fs_beh = 1;
-            sb.e2fs_rev = E2FS_REV1;
-            sb.e2fs_first_ino = EXT2_FIRSTINO;
-            sb.e2fs_inode_size = isz as u16;
-            sb.e2fs_features_incompat = EXT2F_INCOMPAT_FTYPE;
-            sb.e2fs_features_rocompat = EXT2F_ROCOMPAT_SPARSE_SUPER;
-            sb.to_disk(&mut img[B..2 * B]);
-
-            let gd = Ext2Gd {
-                ext2bgd_b_bitmap: BBITMAP as u32,
-                ext2bgd_i_bitmap: IBITMAP as u32,
-                ext2bgd_i_tables: ITABLE as u32,
-                ext2bgd_nbfree: nfree as u16,
-                ext2bgd_nifree: nifree as u16,
-                ext2bgd_ndirs: 1,
-                ..Ext2Gd::default()
-            };
-            let mut b = [0u8; EXT2_GD_SIZE];
-            assert!(pod_to_bytes(&gd, &mut b));
-            img[GDT * B..GDT * B + EXT2_GD_SIZE].copy_from_slice(&b);
-
-            let setbit = |img: &mut Vec<u8>, blk: usize, bit: usize| {
-                img[blk * B + bit / 8] |= 1 << (bit % 8);
-            };
-            // Block bitmap: bit b is block b + 1.
-            for b in 1..=used_blocks {
-                setbit(&mut img, BBITMAP, b - 1);
-            }
-            for bit in (NBLK - 1)..8 * B {
-                setbit(&mut img, BBITMAP, bit);
-            }
-            for i in 0..reserved {
-                setbit(&mut img, IBITMAP, i);
-            }
-            for bit in IPG..8 * B {
-                setbit(&mut img, IBITMAP, bit);
-            }
-
-            // The root directory.
-            let at = ITABLE * B + (EXT2_ROOTINO as usize - 1) * isz;
-            let put16 = |img: &mut Vec<u8>, o: usize, v: u16| {
-                img[o..o + 2].copy_from_slice(&v.to_le_bytes());
-            };
-            let put32 = |img: &mut Vec<u8>, o: usize, v: u32| {
-                img[o..o + 4].copy_from_slice(&v.to_le_bytes());
-            };
-            put16(&mut img, at + offset_of!(Ext2fsDinode, e2di_mode), 0o40755);
-            put16(&mut img, at + offset_of!(Ext2fsDinode, e2di_nlink), 2);
-            put32(&mut img, at + offset_of!(Ext2fsDinode, e2di_size), B as u32);
-            put32(&mut img, at + offset_of!(Ext2fsDinode, e2di_nblock), 2);
-            put32(
-                &mut img,
-                at + offset_of!(Ext2fsDinode, e2di_blocks),
-                rootblk as u32,
-            );
-            if isz > 128 {
-                put16(&mut img, at + offset_of!(Ext2fsDinode, e2di_isize), 32);
-            }
-            let d = rootblk * B;
-            put32(&mut img, d, EXT2_ROOTINO);
-            put16(&mut img, d + 4, 12);
-            img[d + 6] = 1;
-            img[d + 7] = 2;
-            img[d + 8] = b'.';
-            put32(&mut img, d + 12, EXT2_ROOTINO);
-            put16(&mut img, d + 16, (B - 12) as u16);
-            img[d + 18] = 2;
-            img[d + 19] = 2;
-            img[d + 20..d + 22].copy_from_slice(b"..");
-            img
-        }
+        const IPG: usize = MKFS_IPG;
 
         /// What `fsck` found: every allocated inode with its mode, link count, size and data,
         /// and every directory's entries.
@@ -2312,24 +2198,14 @@ mod tests {
             ((t, g), p, mp)
         }
 
-        /// The NUL-terminated `s` in user memory, in slot `i`.
-        fn up(i: usize, s: &str) -> UserPtr<u8> {
-            assert!(s.len() < 256 && i < 4);
-            let at = UPATH + i * 256;
-            let mut b = s.as_bytes().to_vec();
-            b.push(0);
-            UserPtr::<u8>::new(at).copyout_slice(&b).unwrap();
-            UserPtr::new(at)
-        }
-
-        /// `s` as the first path argument.
+        /// `s` as the first path argument (testext2fs's slot 0).
         fn c(s: &str) -> UserPtr<u8> {
-            up(0, s)
+            up(0, s.as_bytes())
         }
 
-        /// `s` as the second path argument.
+        /// `s` as the second path argument (slot 1).
         fn c2(s: &str) -> UserPtr<u8> {
-            up(1, s)
+            up(1, s.as_bytes())
         }
 
         /// The vnode `path` names, unlocked and referenced.

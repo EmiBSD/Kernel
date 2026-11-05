@@ -1336,9 +1336,9 @@ mod tests {
     // block checks name by name, the largest file, the super block and descriptors written
     // back byte for byte, the mount updates and the reload, a stalled sync, vget's
     // generation and deleted inodes, and the device vnode's count across a vget that fails
-    // half-way (the user's decision of 2026-11-05). User memory: USER_BASE + 0xe000..0xf000
-    // (four path slots, then a buffer), which no other test of the binary uses (the tests
-    // hold MEMORY: one at a time).
+    // half-way (the user's decision of 2026-11-05). User memory: testext2fs's path slots and
+    // buffer (`testext2fs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vnops`'s tests
+    // over the system calls share (both hold MEMORY: one at a time).
 
     use std::vec::Vec;
     use std::{assert, assert_eq, assert_ne, vec};
@@ -1352,31 +1352,15 @@ mod tests {
         self, B, BBITMAP, BIG_SIZE, BIG0, EXT_SIZE, GDT, HELLO, HELLO_DATA, IBITMAP, IPG, ITABLE,
         Image, NBLK, NFREE, NIFREE, pattern,
     };
-    use super::super::testext2fs::{attach, fail_block, new_file, try_mount};
+    use super::super::testext2fs::{UBUF, attach, fail_block, new_file, try_mount, up};
     use super::*;
-
     use crate::fs::testfs::TestGlue;
     use crate::fs::ufs::ffs::testffs::{devvp, disk, set_disk};
     use crate::fs::ufs::ufs::dinode::{IFREG, ROOTINO};
     use crate::fs::vnode::{VDIR, VREG, VROOT};
     use crate::fs::vops::{VFS_ROOT, vop_bmap, vop_read, vop_write};
-    use crate::testutil::{USER_BASE, printf_count};
+    use crate::testutil::printf_count;
     use crate::uio::{Iovec, Uio};
-
-    /// The path slots: four of 256 bytes.
-    const UPATH: usize = USER_BASE + 0xe000;
-    /// The buffer, to USER_BASE + 0xf000.
-    const UBUF: usize = USER_BASE + 0xe400;
-
-    /// The NUL-terminated `s` in user memory, in slot `i`.
-    fn up(i: usize, s: &[u8]) -> UserPtr<u8> {
-        assert!(s.len() < 256 && i < 4);
-        let at = UPATH + i * 256;
-        let mut b = s.to_vec();
-        b.push(0);
-        UserPtr::<u8>::new(at).copyout_slice(&b).unwrap();
-        UserPtr::new(at)
-    }
 
     /// A `Nameidata` for `ext2fs_mount`'s `ndp` (an update reads its credential).
     fn nd(p: &Thread<TestGlue>) -> Nd<'_, TestGlue> {
