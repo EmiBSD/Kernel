@@ -834,13 +834,10 @@ pub fn msdosfs_sync<G: ProcGlue>(
     };
 
     // If we ever switch to not updating all of the fats all the time, this would be the
-    // place to update them from the first one.
-    if pmp.pm_fmod.get() != 0 {
-        if pmp.pm_flags.get() & MSDOSFSMNT_RONLY != 0 {
-            kpanic(format_args!("msdosfs_sync: rofs mod"));
-        } else {
-            // update fats here
-        }
+    // place to update them from the first one (the C's empty `else` of the test below:
+    // update fats here).
+    if pmp.pm_fmod.get() != 0 && pmp.pm_flags.get() & MSDOSFSMNT_RONLY != 0 {
+        kpanic(format_args!("msdosfs_sync: rofs mod"));
     }
     // Write back each (modified) denode.
     let _ = vfs_mount_foreach_vnode(mp, &mut |vp| msdosfs_sync_vnode(vp, &mut msa));
