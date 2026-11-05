@@ -394,5 +394,69 @@ pub(crate) mod tests {
         unmount_root(p, again);
         teardown();
     }
+
+    /// msdosfs's export list (N5.7c3: `bsd`'s msdosfs test, moved here with the switch, as the
+    /// kernel's msdosfs reaches `bsd`'s export lists only through this crate's glue): `mount
+    /// -u` of a FAT file system with `msdosfs_args` whose `fspec` is NULL reaches the kernel's
+    /// `msdosfs_mount`, which hands the list to `vfs_export`; `VFS_CHECKEXP`'s `MOUNT_MSDOS`
+    /// arm (`ufs_check_export` over the mount's list) then answers the listed client and
+    /// refuses the others.
+    #[cfg(all(feature = "nfsserver", feature = "msdosfs"))]
+    #[test]
+    fn mount_update_exports_a_fat_file_system() {
+        use crate::kern::uipc_mbuf::tests::mbinit_again;
+        use crate::kern::vfs_subr::tests::exports::{args, check_export, sin};
+        use crate::kern::vfs_syscalls::sys_mount;
+        use crate::sys::mount::{MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE};
+        use kernel::fs::msdosfs::msdosfs_vfsops::{msdosfs_mountfs, msdosfs_statfs};
+        use kernel::fs::msdosfs::testmsdosfs::{mkfat, noargs};
+
+        let mut img = mkfat::Image::new(mkfat::FAT12_1M);
+        let root = img.root();
+        img.add_file(root, None, b"README  TXT", &[b'r'; 3000]);
+        img.mkdir(root, b"SUBDIR     ", 1);
+        let (_g, p) = setup(img.finish());
+        mbinit_again();
+        // The FAT image at `/`, as mount_root mounts an FFS one.
+        let mp = vfs_mount_alloc(None, vfs_byname(b"msdos").unwrap());
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
+        msdosfs_mountfs(diskvp(), mp, p, &noargs()).unwrap();
+        let mut st = mp.stat();
+        msdosfs_statfs(mp, &mut st, p).unwrap();
+        mp.with_stat(|sp| *sp = st);
+        vfs_unbusy(mp);
+        crate::sys::mount::mountlist_insert_tail(mp);
+        let rootvp = VFS_ROOT(mp).unwrap();
+        set_rootvnode(Some(rootvp));
+        p.fd().set_cdir(Some(rootvp));
+        vref(rootvp);
+        let _ = VOP_UNLOCK(rootvp);
+
+        let ro = MNT_EXPORTED | MNT_EXRDONLY;
+        assert_eq!(check_export(mp, [10, 0, 0, 5]), Err(Errno::EACCES));
+        let net = sin(2, [10, 0, 0, 0]);
+        let mask = sin(2, [255, 255, 255, 0]);
+        let mut a = noargs();
+        a.export_info = args(ro, 32767, Some(net), Some(mask));
+        let ub =
+            crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(core::slice::from_ref(&a)));
+        sys(
+            sys_mount,
+            p,
+            &[
+                path(b"msdos\0"),
+                path(b"/\0"),
+                MNT_UPDATE as usize,
+                ub.addr(),
+            ],
+        )
+        .unwrap();
+        assert!(mp.flag() & MNT_EXPORTED != 0);
+        assert_eq!(check_export(mp, [10, 0, 0, 5]), Ok((ro, 32767)));
+        assert_eq!(check_export(mp, [10, 0, 1, 5]), Err(Errno::EACCES));
+
+        unmount_root(p, mp);
+        teardown();
+    }
 }
 /* </TESTS> */

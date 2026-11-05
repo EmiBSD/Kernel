@@ -64,7 +64,8 @@
 //! - `vfsconflist[]` holds the ported file systems in `vfs_init.c`'s order: `ffs` (feature `ffs`,
 //!   `option FFS`), `mfs` (feature `mfs`, `option MFS`), `ext2fs` (feature `ext2fs`, `option
 //!   EXT2FS`), `cd9660` (feature `cd9660`, `option CD9660`), `msdos` (feature `msdosfs`, `option
-//!   MSDOSFS`), `nfs` (feature `nfsclient`, `option NFSCLIENT`), `ntfs` (feature `ntfs`, `option
+//!   MSDOSFS`; the kernel's `fs::msdosfs` since N5.7c3), `nfs` (feature `nfsclient`, `option
+//!   NFSCLIENT`), `ntfs` (feature `ntfs`, `option
 //!   NTFS`, in amd64's GENERIC only: cfg `option_ntfs`, `sys/build.rs`), `udf` (feature `udf`,
 //!   `option UDF`), `fuse` (feature `fuse`, `option FUSE`), `tmpfs` (feature `tmpfs`, `option
 //!   TMPFS`, commented out in GENERIC). A new entry joins as a `Vfsconf::new(...)` line behind a
@@ -117,7 +118,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "msdosfs")]
     Vfsconf::new(
-        &crate::msdosfs::msdosfs_vfsops::MSDOSFS_VFSOPS,
+        &kernel::fs::msdosfs::msdosfs_vfsops::MsdosfsVfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_MSDOS,
         4,
         crate::sys::mount::MNT_LOCAL | crate::sys::mount::MNT_SWAPPABLE,

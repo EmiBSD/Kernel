@@ -102,6 +102,14 @@
 //! - `ext2.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's block.
 //! - `ext2.stat`: `stat("/hello.txt")`.
 //!
+//! N5.7c3's rows (feature `msdosfs`), the same system calls over the kernel msdosfs's fixture
+//! (`testmsdosfs`: `mkfat`'s FAT12 image of 512-byte clusters holding `HELLO.TXT`, a
+//! long-named file and a directory, mounted at `/` by the kernel's `msdosfs_mountfs`), a
+//! first measurement for N12 (no `bsd` row to pair them with):
+//! - `msdos.lookup.hit.1`: `namei("/hello.txt")` with the name cached, and the `vrele`.
+//! - `msdos.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's first block.
+//! - `msdos.stat`: `stat("/hello.txt")`.
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -633,6 +641,12 @@ fn main() {
         "ext2.readdir.1blk",
         #[cfg(feature = "ext2fs")]
         "ext2.stat",
+        #[cfg(feature = "msdosfs")]
+        "msdos.lookup.hit.1",
+        #[cfg(feature = "msdosfs")]
+        "msdos.readdir.1blk",
+        #[cfg(feature = "msdosfs")]
+        "msdos.stat",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1072,6 +1086,82 @@ fn main() {
             s.spawn(|| ext2_rows(&wanted, &names[ext2..], &report));
         });
     }
+
+    // N5.7c3's rows: the kernel msdosfs, on a thread of its own after ext2fs's.
+    #[cfg(feature = "msdosfs")]
+    {
+        let msdos = names
+            .iter()
+            .position(|n| n.starts_with("msdos."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| msdos_rows(&wanted, &names[msdos..], &report));
+        });
+    }
+}
+
+/// N5.7c3's msdosfs rows (the module's docs), `names` theirs in order.
+#[cfg(feature = "msdosfs")]
+fn msdos_rows(
+    wanted: &dyn Fn(&str) -> bool,
+    names: &[&str],
+    report: &dyn Fn(&str, (f64, f64, f64)),
+) {
+    use kernel::descrip::sys_close;
+    use kernel::fs::msdosfs::testmsdosfs::{self, mkfat};
+    use kernel::fs::syscalls::sys_getdents;
+    use kernel::fs::ufs::ffs::testffs;
+
+    let mut img = mkfat::Image::new(mkfat::FAT12_1M);
+    let root = img.root();
+    img.add_file(root, None, b"HELLO   TXT", b"hello, fat\n");
+    img.add_file(root, Some(b"m10c-fat.txt"), b"M10C-FATTXT", b"m10c-fat-42");
+    img.mkdir(root, b"SUBDIR     ", 1);
+    let (_memory, p) = testmsdosfs::attach(img.finish());
+    kernel::testutil::set_file_log(false);
+    let mp = testmsdosfs::mount_root(p, 0);
+
+    let base = kernel::testutil::USER_BASE + 0x2000;
+    let p_f = UserPtr::<u8>::new(base);
+    let p_root = UserPtr::<u8>::new(base + 0x20);
+    let ustat = UserPtr::<u8>::new(base + 0x100);
+    let udents = base + 0x1000;
+    need(p_f.copyout_slice(b"/hello.txt\0"), "copyout");
+    need(p_root.copyout_slice(b"/\0"), "copyout");
+    let fd_root = need(sys_open(p, p_root, O_RDONLY, 0), "open /");
+    // The warm-up of each: the name cached, the blocks in the buffer cache.
+    need(sys_stat(p, p_f, ustat), "stat");
+    need(sys_getdents(p, fd_root, udents, 4096), "getdents");
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| rounds(|| lookup_rele(p, b"/hello.txt", FOLLOW))),
+        );
+    }
+    if wanted(names[1]) {
+        report(
+            names[1],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_root, 0, SEEK_SET);
+                    let _ = black_box(sys_getdents(p, black_box(fd_root), udents, 4096));
+                })
+            }),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_stat(p, black_box(p_f), ustat));
+                })
+            }),
+        );
+    }
+    let _ = sys_close(p, fd_root);
+    testffs::unmount_root(p, mp);
 }
 
 /// N5.6c3's ext2fs rows (the module's docs), `names` theirs in order.

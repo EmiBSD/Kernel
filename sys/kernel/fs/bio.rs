@@ -1252,18 +1252,6 @@ pub fn bread_cluster(
     doread_wait(rbp)
 }
 
-/// [`bread_cluster`] for `bsd`'s legacy callers: the first buffer with its token parked in
-/// it, as a counted link.
-pub fn bread_cluster_parked(
-    vb: &'static VnodeBufs,
-    blkno: Daddr,
-    size: i32,
-) -> (SecondaryRef<ByBufhead>, Result<(), Errno>) {
-    let rbp = bio_doread_in(vb, blkno, size, 0, Park::Valid);
-    cluster_readahead(vb, blkno, size, &rbp);
-    doread_wait_parked(rbp)
-}
-
 /// `bread_cluster`'s read-ahead of the blocks after `blkno`, when the first one was not in
 /// the cache: one buffer with the pages of all of them, read in one request, whose callback
 /// hands each block's pages to its own buffer. The read-ahead buffers' tokens are kept in a
