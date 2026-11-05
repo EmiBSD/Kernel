@@ -79,7 +79,9 @@
 //!   `ext2fs_checkpath` consume the reference on `tdvp` that a failed lookup of the target
 //!   releases again. Here `tdvp` gets `ufs_rename`'s compensating reference around
 //!   `ext2fs_checkpath`; the source's lookup of the `fvp == tvp` case returns its error
-//!   (`ENOENT` when the name went away); the final lookup of the source holds `fdvp` across
+//!   (`ENOENT` when the name went away; a success always brings the vnode, and none is a
+//!   `panic(9)`, as `ufs_rename`'s, where the C's `VOP_REMOVE` would follow NULL); the final
+//!   lookup of the source holds `fdvp` across
 //!   the call and, when it fails, ends the rename as when the name has disappeared (0, as the
 //!   C's ignored result gives). LZ's.
 //! - `ext2fs_setattr` keeps the C's precedence in the flags it sets: `SF_APPEND` sets
@@ -709,7 +711,11 @@ pub fn ext2fs_rename<G: ProcGlue>(
         vfs_relookup(fdvp, &mut nfvp, fcnp)?; // relookup did vrele()
         vrele(fdvp);
         let Some(nfvp) = nfvp else {
-            return Err(Errno::ENOENT);
+            // A DELETE lookup of the last component that succeeds returns its vnode, so the
+            // C's VOP_REMOVE has one (it would follow a NULL one); as ufs_rename.
+            kpanic(format_args!(
+                "ext2fs_rename: relookup of the source found no vnode"
+            ));
         };
         return vop_remove(fdvp, nfvp, fcnp);
     }

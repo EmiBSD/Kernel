@@ -104,6 +104,12 @@
 //! - `ext2fs_direnter` zeroes the new entry's name padding: the C copies the byte after the
 //!   name (`cn_namelen + 1`) and leaves the rest of its stack `struct ext2fs_direct` as it
 //!   was.
+//! - `ext2fs_direnter`'s compaction checks each entry it moves or trims, and the new entry,
+//!   against the block: a corrupt entry (one running past the block, or of no length) is
+//!   `panic(9)` naming the directory and the offset, where the C writes past the block (or,
+//!   on a zero length, loops). No errno exists there to return (`ext2fs_lookup` has already
+//!   panicked on a zero length of a read-write mount, `ufs_dirbad`, and checks the rest only
+//!   under `dirchk`).
 //! - `dirchk` is `ufs_lookup.rs`'s [`DIRCHK`], the C's `extern int dirchk`.
 //!
 //! ## Redesign
@@ -144,7 +150,6 @@ use crate::fs::bio::brelse;
 use crate::fs::buf::BufRef;
 use crate::fs::cache::{cache_enter, cache_lookup};
 use crate::fs::getcwd::M_TEMP;
-use crate::fs::mount::Mount;
 use crate::fs::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, PDIRUNLOCK,
     RENAME, SAVENAME, WANTPARENT,
@@ -152,7 +157,7 @@ use crate::fs::namei::{
 use crate::fs::subr::{vput, vref};
 use crate::fs::ufs::ufs::dinode::{ISVTX, ROOTINO, Ufsino};
 use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
-use crate::fs::ufs::ufs::ufs_lookup::{DIRCHK, ufs_dirbad};
+use crate::fs::ufs::ufs::ufs_lookup::{DIRCHK, ufs_dirbad, vmount};
 use crate::fs::ufs::ufs::ufs_vnops::ucred;
 use crate::fs::vnode::{IO_NODELOCKED, IO_SYNC, LK_EXCLUSIVE, LK_RETRY, VDIR, VEXEC, VWRITE};
 use crate::fs::vnode::{Vnode, vn_lock};
@@ -169,14 +174,6 @@ const MINDIRSIZ: usize = Ext2fsDirtemplate::SIZE / 2;
 
 /// The bytes of a `struct dirent` (`<sys/dirent.h>`), in the order userland reads them.
 type DirentBytes = [u8; size_of::<Dirent>()];
-
-/// The vnode's mount, which an ext2fs vnode always has.
-fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
-    match vp.mount() {
-        Some(mp) => mp,
-        None => kpanic(format_args!("ext2fs: vnode {vp:p} without a mount")),
-    }
-}
 
 /// Whether directory entries keep the file type: a revision 1 file system with the
 /// `FILETYPE` incompatible feature (`ip->i_e2fs->e2fs.e2fs_rev > E2FS_REV0 &&
@@ -840,6 +837,20 @@ pub fn ext2fs_direnter<G: ProcGlue>(
     let (mut bp, boff) = ext2fs_bufatoff(&dp, Off::from(dp.i_offset.get()))?;
     {
         let dirbuf = &mut bp.data()[boff..];
+        // A corrupt entry in the region would have the C write past the block: panic(9)
+        // naming the directory and the entry (the module's deviations).
+        let end = dirbuf.len();
+        let check = |at: usize, len: usize, reclen: u16| {
+            if at + len > end || reclen == 0 {
+                kpanic(format_args!(
+                    "ext2fs_direnter: bad entry at {} in directory {} (reclen {}, {} bytes left)",
+                    dp.i_offset.get() as usize + at,
+                    dp.i_number,
+                    reclen,
+                    end.saturating_sub(at)
+                ));
+            }
+        };
         // Find space for the new entry. In the simple case, the entry at offset base will
         // have the space. If it does not, then namei arranged that compacting the region
         // dp->i_offset to dp->i_offset + dp->i_count would yield the space.
@@ -849,6 +860,12 @@ pub fn ext2fs_direnter<G: ProcGlue>(
         let mut loc = i32::from(e2d_reclen(dirbuf, ep));
         while loc < dp.i_count.get() {
             let nep = loc as usize;
+            check(
+                nep,
+                ext2fs_dirsiz(usize::from(e2d_namlen(dirbuf, nep))),
+                e2d_reclen(dirbuf, nep),
+            );
+            check(ep, dsize, e2d_reclen(dirbuf, ep));
             if e2d_ino(dirbuf, ep) != 0 {
                 // trim the existing slot
                 set_e2d_reclen(dirbuf, ep, dsize as u16);
@@ -864,6 +881,7 @@ pub fn ext2fs_direnter<G: ProcGlue>(
         }
         // Update the pointer fields in the previous entry (if any), copy in the new entry,
         // and write out the block.
+        check(ep, dsize, e2d_reclen(dirbuf, ep));
         if e2d_ino(dirbuf, ep) == 0 {
             #[cfg(feature = "diagnostic")]
             if spacefree + (dsize as i32) < newentrysize as i32 {
@@ -883,6 +901,7 @@ pub fn ext2fs_direnter<G: ProcGlue>(
             set_e2d_reclen(dirbuf, ep, dsize as u16);
             ep += dsize;
         }
+        check(ep, newentrysize, 1);
         newdir.write_to(dirbuf, ep, newentrysize);
     }
     let mut error = vop_bwrite::<G>(IoBuf::Token(bp));
@@ -1280,16 +1299,29 @@ mod tests {
         let nvp = new_file(mp, p);
         let dvp = root(mp);
         let dp = vtoi(dvp);
-        // Found: the entry's inode, locked; the directory stays locked (LOCKPARENT).
+        // Found: the entry's inode, locked; the directory stays locked (LOCKPARENT). A
+        // remembered offset at the directory's end (as if a last LOOKUP had found a name in a
+        // block since truncated away) makes the search start there, find nothing, and take its
+        // second pass from 0 up to it.
+        dp.i_diroff.set(B as i32);
         let mut c = cn(p, cred, LOOKUP, LOCKPARENT, b"hello.txt");
+        assert_ne!(c.cn_flags & ISLASTCN, 0);
         let mut vpp = None;
         ext2fs_lookup(dvp, &mut vpp, &mut c).unwrap();
         let vp = vpp.unwrap();
         assert_eq!(vtoi(vp).i_number, 12);
         assert_eq!((dp.i_offset.get(), dp.i_reclen.get()), (24, 20));
-        // The block of the entry is remembered for the next LOOKUP.
+        // The last component's LOOKUP remembers the block of the entry (24 & ~(B - 1)).
         assert_eq!(dp.i_diroff.get(), 0);
         vput(vp);
+        // A DELETE lookup leaves the remembered block alone.
+        dp.i_diroff.set(B as i32);
+        let mut c = cn(p, cred, DELETE, LOCKPARENT, b"hello.txt");
+        let mut vpp = None;
+        ext2fs_lookup(dvp, &mut vpp, &mut c).unwrap();
+        assert_eq!(dp.i_diroff.get(), B as i32);
+        vput(vpp.unwrap());
+        dp.i_diroff.set(0);
         // Missing.
         let mut c = cn(p, cred, LOOKUP, LOCKPARENT, b"nope");
         let mut vpp = None;

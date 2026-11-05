@@ -73,6 +73,8 @@
 //!   [`InodeOps`]' methods: the file system's truncate, update and inode free are reached
 //!   through the inode's own table, as the C's `i_vtbl` (`bridges.toml`'s `InodeOps` row
 //!   while ffs and ext2fs are `bsd`'s). `ufs_reclaim` takes no `p` (the C's has none).
+//! - N5.6c2: `pushing_active` (`DIAGNOSTIC`'s `prtactive` print) is the crate's
+//!   (`pub(crate)`), for `ext2fs_inactive` and `ext2fs_reclaim`, which print the same.
 //!
 //! [`InodeRef`]: super::inode::InodeRef
 //! [`InodeOps`]: super::inode::InodeOps
