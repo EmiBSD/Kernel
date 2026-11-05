@@ -143,7 +143,7 @@
 //!   writes) -> `pod_from_bytes`/`pod_to_bytes` of the `hal::abi_pod!` dinodes.
 //! - N5.5b1: [`DinWords`]'s member and byte accesses are [`words_get`], [`words_set`],
 //!   [`words_read_bytes`] and [`words_write_bytes`] over any slice of words, the one word core
-//!   FFS's in-core super-block shares (`ffs/fs.rs`'s `FsWords`, an array of the disk's
+//!   FFS's in-core super-block shares (`ffs/fs.rs`'s `Superblock`, an array of the disk's
 //!   `fs_sbsize` bytes); [`DinField`] gains the one-byte members (`fs_fmod`, `fs_clean`).
 //!   [`Inode::i_fs`] is `inode_u.fs` through the inode's mount handle.
 

@@ -95,7 +95,7 @@
 //!   [`Fs`], the on-disk structure as a plain `hal::abi_pod!` (read out of a buffer by
 //!   `pod_from_bytes`, laid out by `newfs`, the layout asserted against the C's offsets), and
 //!   [`Superblock`], the in-core copy: the C's `fs_sbsize` bytes as relaxed atomic words
-//!   ([`FsWords`], the dinode's idiom, `DinWords`, over a `malloc(M_UFSMNT)` array of the C's
+//!   (the dinode's idiom, `DinWords`, over a `malloc(M_UFSMNT)` array of the C's
 //!   size: the same word core, `inode.rs`'s `words_get`/`words_set`), each member read and
 //!   written at `offset_of!(Fs, member)` by the accessors [`fs_field!`] writes
 //!   (`fs.fs_bsize()`, `fs.set_fs_fmod(1)`, `fs.add_fs_cstotal_nbfree(-1)`); the C's
@@ -563,68 +563,15 @@ impl core::fmt::Display for Fsmnt {
     }
 }
 
-/// The in-core super-block's bytes: the C's `fs_sbsize` bytes (at least `struct fs`) as
-/// relaxed atomic words in one `malloc(M_UFSMNT)` array, read and written as `DinWords`
-/// reads and writes the dinode (`inode.rs`'s word core): a member at its `offset_of!`, a
-/// change a load and a store by a holder of the kernel lock (checked under `diagnostic`).
-pub struct FsWords {
-    w: MArray<AtomicU64>,
-}
-
-impl FsWords {
-    /// `malloc(fs_sbsize, M_UFSMNT, M_WAITOK)` holding `sb` (`fs_sbsize` bytes of the disk's
-    /// super-block), in words, at least `struct fs` (the module's deviation).
-    fn new(sb: &[u8]) -> Self {
-        let n = sb.len().max(size_of::<Fs>()).div_ceil(8);
-        let Some(w) = MArray::new(M_UFSMNT, M_WAITOK, n, |_| AtomicU64::new(0)) else {
-            kpanic(format_args!(
-                "ffs: malloc(M_UFSMNT) of the super-block failed"
-            ));
-        };
-        let w = Self { w };
-        words_write_bytes(&w.w, "fs", 0, sb);
-        w
-    }
-
-    /// The member at byte `off` (an `offset_of!(Fs, ..)`).
-    #[inline]
-    pub fn get<T: DinField>(&self, off: usize) -> T {
-        words_get(&self.w, "fs", off)
-    }
-
-    /// The member at byte `off` set to `v`, the word's other members kept.
-    #[inline]
-    pub fn set<T: DinField>(&self, off: usize, v: T) {
-        words_set(&self.w, "fs", off, v);
-    }
-
-    /// The bytes `off..off + out.len()` into `out` (`ffs_sbupdate`'s copy).
-    pub fn read_bytes(&self, off: usize, out: &mut [u8]) {
-        words_read_bytes(&self.w, "fs", off, out);
-    }
-
-    /// The bytes `off..off + src.len()` set to `src` (`ffs_reload`'s copy).
-    pub fn write_bytes(&self, off: usize, src: &[u8]) {
-        words_write_bytes(&self.w, "fs", off, src);
-    }
-
-    /// The copy's size in bytes (`fs_sbsize` rounded up to a word, at least `struct fs`).
-    pub fn len(&self) -> usize {
-        self.w.len() * 8
-    }
-
-    /// Always false: the copy holds at least `struct fs`.
-    pub fn is_empty(&self) -> bool {
-        self.w.is_empty()
-    }
-}
-
 /// `struct fs *` in core (`ump->um_fs`): the super-block's words and the arrays the C's
 /// in-core pointers name, owned. Set once by `ffs_mountfs` into its mount's UFS structure
 /// (`Ufsmount::set_um_fs`), freed with it.
 pub struct Superblock {
-    /// `*fs`.
-    pub words: FsWords,
+    /// `*fs`: the disk's `fs_sbsize` bytes (at least `struct fs`) as relaxed atomic words in
+    /// one `malloc(M_UFSMNT)` array, read and written as `DinWords` reads and writes the
+    /// dinode (`inode.rs`'s word core): a member at its `offset_of!`, a change a load and a
+    /// store by a holder of the kernel lock (checked under `diagnostic`).
+    words: MArray<AtomicU64>,
     /// `fs_csp` and `fs_maxcluster`: the C's one `space` of `malloc(M_UFSMNT)`, the cylinder
     /// group summaries (`fs_cssize` bytes, whole fragments) and, when `fs_contigsumsize > 0`,
     /// one `int32_t` per cylinder group.
@@ -647,11 +594,18 @@ impl Superblock {
     /// `fs_contigdirs` yet ([`Superblock::contigdirs_alloc`]). `panic(9)` for a super-block
     /// with no fragment size (the C divides by it).
     pub fn new(sb: &[u8]) -> Self {
-        let words = FsWords::new(sb);
-        let get = |off: usize| words.get::<i32>(off);
+        // In words, at least struct fs (the module's deviations).
+        let n = sb.len().max(size_of::<Fs>()).div_ceil(8);
+        let Some(words) = MArray::new(M_UFSMNT, M_WAITOK, n, |_| AtomicU64::new(0)) else {
+            kpanic(format_args!(
+                "ffs: malloc(M_UFSMNT) of the super-block failed"
+            ));
+        };
+        words_write_bytes(&words, "fs", 0, sb);
+        let get = |off: usize| words_get::<i32>(&words, "fs", off);
         let cssize = get(offset_of!(Fs, fs_cssize)).max(0) as usize;
         let fsize = get(offset_of!(Fs, fs_fsize));
-        let ncg = words.get::<u32>(offset_of!(Fs, fs_ncg)) as usize;
+        let ncg = words_get::<u32>(&words, "fs", offset_of!(Fs, fs_ncg)) as usize;
         let contigsumsize = get(offset_of!(Fs, fs_contigsumsize));
         if fsize <= 0 {
             kpanic(format_args!("ffs: fs_fsize {fsize}"));
@@ -684,13 +638,29 @@ impl Superblock {
     /// The member at byte `off` of the copy.
     #[inline]
     fn get<T: DinField>(&self, off: usize) -> T {
-        self.words.get(off)
+        words_get(&self.words, "fs", off)
     }
 
     /// The member at byte `off` of the copy set to `v`.
     #[inline]
     fn set<T: DinField>(&self, off: usize, v: T) {
-        self.words.set(off, v);
+        words_set(&self.words, "fs", off, v);
+    }
+
+    /// The copy's bytes `off..off + out.len()` into `out` (`ffs_sbupdate`'s copy).
+    pub fn read_bytes(&self, off: usize, out: &mut [u8]) {
+        words_read_bytes(&self.words, "fs", off, out);
+    }
+
+    /// The copy's bytes `off..off + src.len()` set to `src` (`ffs_reload`'s copy).
+    pub fn write_bytes(&self, off: usize, src: &[u8]) {
+        words_write_bytes(&self.words, "fs", off, src);
+    }
+
+    /// The copy's size in bytes: `fs_sbsize` rounded up to a word, at least `struct fs`
+    /// (`ffs_sbupdate` writes `fs_sbsize` of them).
+    pub fn copy_len(&self) -> usize {
+        self.words.len() * 8
     }
 
     /// `fs->fs_id`.
@@ -702,7 +672,7 @@ impl Superblock {
     /// `fs->fs_fsmnt`.
     pub fn fsmnt(&self) -> Fsmnt {
         let mut name = [0u8; MAXMNTLEN];
-        self.words.read_bytes(offset_of!(Fs, fs_fsmnt), &mut name);
+        self.read_bytes(offset_of!(Fs, fs_fsmnt), &mut name);
         Fsmnt(name)
     }
 
@@ -716,7 +686,7 @@ impl Superblock {
             .min(MAXMNTLEN - 1);
         let mut buf = [0u8; MAXMNTLEN];
         buf[..n].copy_from_slice(&name[..n]);
-        self.words.write_bytes(offset_of!(Fs, fs_fsmnt), &buf);
+        self.write_bytes(offset_of!(Fs, fs_fsmnt), &buf);
     }
 
     /// `fs->fs_cs(fs, indx)`: the summary of cylinder group `indx`; `panic(9)` past the
@@ -1838,7 +1808,7 @@ mod tests {
         let want = fs2();
         let b = sb_bytes(&want, 2048);
         let fs = Superblock::new(&b);
-        assert_eq!(fs.words.len(), 2048);
+        assert_eq!(fs.copy_len(), 2048);
         assert_eq!(fs.fs_bsize(), 8192);
         assert_eq!(fs.fs_ncg(), 3);
         assert_eq!(fs.fs_inopb(), 32);
@@ -1858,7 +1828,7 @@ mod tests {
         fs.set_fs_cgrotor(2);
         fs.set_fsmnt(b"/usr\0junk");
         let mut out = vec![0u8; 2048];
-        fs.words.read_bytes(0, &mut out);
+        fs.read_bytes(0, &mut out);
         let got: Fs = pod_from_bytes(&out).unwrap();
         let mut w = want;
         w.fs_fmod = 1;
@@ -1891,7 +1861,7 @@ mod tests {
         testutil::install();
         let f = fs2();
         let fs = Superblock::new(&sb_bytes(&f, 1024));
-        assert_eq!(fs.words.len(), size_of::<Fs>());
+        assert_eq!(fs.copy_len(), size_of::<Fs>());
         assert_eq!(fs.fs_bsize(), 8192);
         assert_eq!(fs.fs_magic(), 0, "past the disk's bytes: zero");
     }

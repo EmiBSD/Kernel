@@ -8736,7 +8736,7 @@ rust = "sys/kernel/fs/ufs/ffs/fs.rs"
 crate = "kernel"
 lz = ["sys/ufs/ffs/fs.rs"]
 status = "redesigned"
-notes = "N5.5b1 (unwired: bsd's ffs keeps its own Fs until N5.5b2): struct fs as the on-disk abi_pod! Fs (1,384 bytes, the C's sizeof) and the in-core Superblock: the C's fs_sbsize bytes as relaxed words (FsWords over inode.rs's word core, the DinWords idiom) with fs_field! accessors at offset_of!, and the arrays its in-core pointers name owned (space: the summaries and fs_maxcluster, the C's one malloc; fs_contigdirs read-mostly); the slots of those pointers hold 0 in core; struct cg as the abi_pod! Cg and CgView, a view over the busy buffer's bytes with cg_field! accessors and bounds-checked maps (the old ocg layout kept); cg_frsum the C's u_int32_t again; 0 unsafe (LZ: 10)"
+notes = "N5.5b1 (unwired: bsd's ffs keeps its own Fs until N5.5b2): struct fs as the on-disk abi_pod! Fs (1,384 bytes, the C's sizeof) and the in-core Superblock: the C's fs_sbsize bytes as relaxed words (an MArray over inode.rs's word core, the DinWords idiom) with fs_field! accessors at offset_of!, and the arrays its in-core pointers name owned (space: the summaries and fs_maxcluster, the C's one malloc; fs_contigdirs read-mostly); the slots of those pointers hold 0 in core; struct cg as the abi_pod! Cg and CgView, a view over the busy buffer's bytes with cg_field! accessors and bounds-checked maps (the old ocg layout kept); cg_frsum the C's u_int32_t again; 0 unsafe (LZ: 10)"
 
 [[module.fn]]
 lz = "sys/ufs/ffs/fs.rs::CgBuf"
