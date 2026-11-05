@@ -39,16 +39,11 @@ use hal::sys::types::Daddr;
 
 use super::ext2fs::{Ext2Superblock, SBLOCK, SBSIZE, e2fs_sbload, nindir};
 use super::ext2fs_dinode::{EXT2_ROOTINO, Ext2Inode};
-use super::ext2fs_vfsops::{
-    Ext2fsVfs, e2fs_sbfill, ext2fs_init, ext2fs_mountfs, ext2fs_statfs, ext2fs_vget,
-};
+use super::ext2fs_vfsops::{Ext2fsVfs, e2fs_sbfill, ext2fs_init, ext2fs_mountfs, ext2fs_vget};
 use crate::fs::bio::{biodone, bread, brelse};
 use crate::fs::buf::{B_ERROR, BufRef};
-use crate::fs::init::{rootvnode, set_rootvnode};
-use crate::fs::mount::{
-    Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
-};
-use crate::fs::subr::{vfs, vput, vref, vrele};
+use crate::fs::mount::{Mount, Vfsconf};
+use crate::fs::subr::{vfs, vput};
 use crate::fs::testfs::{TestGlue, set_bdev_strategy};
 use crate::fs::ufs::ffs::testffs;
 use crate::fs::ufs::ufs::dinode::{IFREG, Ufsino};
@@ -56,8 +51,8 @@ use crate::fs::ufs::ufs::inode::{Dinode, Inode, InodeInit, vtoi};
 use crate::fs::ufs::ufs::testufs::TEST_DEV;
 use crate::fs::ufs::ufs::ufsmount::{UM_EXT2FS, Ufsmount, UfsmountRef};
 use crate::fs::vnode::{VREG, Vnode};
-use crate::fs::vops::{Cred, vop_unlock};
-use crate::proc::{ProcGlue, Thread};
+use crate::fs::vops::Cred;
+use crate::proc::Thread;
 
 /// `newfs`: the test ext2 file system, built in memory, 1 KiB blocks, one block group.
 pub mod newfs {
@@ -522,58 +517,26 @@ pub fn detached(ump: &UfsmountRef<TestGlue>, ino: Ufsino) -> &'static Inode<Test
 
 /// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_FORCE`), as
 /// `ext2fs_mount` makes one: `ext2fs_mountfs` on the device vnode, the statistics, the mount
-/// unbusied; `Err` freed the mount.
+/// unbusied; `Err` freed the mount (`testffs::mount_conf`).
 pub fn try_mount(p: &Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
-    let mp = vfs_mount_alloc(None, &TEST_EXT2_CONF);
-    mp.set_flag(mp.flag() | flags);
-    mp.with_stat(|sp| sp.f_mntonname[..4].copy_from_slice(b"/ext"));
-    let r = ext2fs_mountfs(testffs::devvp(), mp, p);
-    if r.is_ok() {
-        let mut st = mp.stat();
-        let _ = ext2fs_statfs(mp, &mut st, p);
-        mp.with_stat(|sp| *sp = st);
-    }
-    vfs_unbusy(mp);
-    match r {
-        Ok(()) => Ok(mp),
-        Err(e) => {
-            vfs_mount_free(mp);
-            Err(e)
-        }
-    }
+    testffs::mount_conf(p, &TEST_EXT2_CONF, b"/ext", flags, |devvp, mp| {
+        ext2fs_mountfs(devvp, mp, p)
+    })
 }
 
 /// [`try_mount`] by the test's thread (the glue's `curproc`); `panic` on an error.
 pub fn mount(flags: i32) -> &'static Mount<TestGlue> {
-    let r = TestGlue::with_curproc(|p| match p {
-        Some(p) => try_mount(p, flags),
-        None => std::panic!("testext2fs: no curproc"),
-    });
-    match r {
-        Ok(mp) => mp,
-        Err(e) => std::panic!("testext2fs: ext2fs_mountfs: {e:?}"),
-    }
+    testffs::mount_by_curproc("testext2fs: ext2fs_mountfs", |p| try_mount(p, flags))
 }
 
-/// A new mount of the disk at `/`, as `main` mounts the root: [`mount`], the mount list, the
-/// root vnode and the thread's current directory (testfs's root, which [`attach`]'s thread
-/// started with, released). `testffs::unmount_root` undoes it.
+/// A new mount of the disk at `/`, as `main` mounts the root: [`try_mount`], then
+/// `testffs::make_root`. `testffs::unmount_root` undoes it.
 pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
     let mp = match try_mount(p, flags) {
         Ok(mp) => mp,
         Err(e) => std::panic!("testext2fs: ext2fs_mountfs: {e:?}"),
     };
-    mountlist_insert_tail(mp);
-    let vp = root(mp);
-    if let Some(old) = rootvnode::<TestGlue>() {
-        vrele(old);
-    }
-    set_rootvnode(Some(vp));
-    vref(vp);
-    if let Some(old) = p.fd().replace_cdir(Some(vp)) {
-        vrele(old);
-    }
-    let _ = vop_unlock(vp);
+    testffs::make_root(p, mp);
     mp
 }
 

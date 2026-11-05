@@ -40,16 +40,12 @@ use hal::sys::mount::{
 
 use super::msdosfs_vfsops::{MsdosfsVfs, msdosfs_mountfs};
 use super::msdosfsmount::{MsdosfsmountRef, vfstomsdosfs};
-use crate::fs::init::{rootvnode, set_rootvnode};
-use crate::fs::mount::{
-    Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
-};
-use crate::fs::subr::{vref, vrele};
+use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::testfs::TestGlue;
 use crate::fs::ufs::ffs::testffs;
 use crate::fs::vnode::Vnode;
-use crate::fs::vops::{Cred, Vfs, vop_unlock};
-use crate::proc::{ProcGlue, Thread};
+use crate::fs::vops::{Cred, Vfs};
+use crate::proc::Thread;
 
 /// `mkfat`: a FAT image built in memory the way `newfs_msdos(8)` and `makefs -t msdos` build
 /// one, for the tests and as a record of the on-disk layout.
@@ -474,37 +470,17 @@ pub fn attach(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestG
 
 /// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_SYNCHRONOUS`), as
 /// `msdosfs_mount` makes one: `msdosfs_mountfs` on the device vnode, the statistics
-/// (`VFS_STATFS`), the mount unbusied, not on the mount list; `Err` freed the mount.
+/// (`VFS_STATFS`), the mount unbusied, not on the mount list; `Err` freed the mount
+/// (`testffs::mount_conf`).
 pub fn try_mount(p: &Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
-    let mp = vfs_mount_alloc(None, &TEST_MSDOS_CONF);
-    mp.set_flag(mp.flag() | flags);
-    mp.with_stat(|sp| sp.f_mntonname[..6].copy_from_slice(b"/msdos"));
-    let r = msdosfs_mountfs(testffs::devvp(), mp, p, &noargs());
-    if r.is_ok() {
-        let mut st = mp.stat();
-        let _ = MsdosfsVfs::<TestGlue>::VFS.statfs(mp, &mut st, p);
-        mp.with_stat(|sp| *sp = st);
-    }
-    vfs_unbusy(mp);
-    match r {
-        Ok(()) => Ok(mp),
-        Err(e) => {
-            vfs_mount_free(mp);
-            Err(e)
-        }
-    }
+    testffs::mount_conf(p, &TEST_MSDOS_CONF, b"/msdos", flags, |devvp, mp| {
+        msdosfs_mountfs(devvp, mp, p, &noargs())
+    })
 }
 
 /// [`try_mount`] by the test's thread (the glue's `curproc`); `panic` on an error.
 pub fn mount(flags: i32) -> &'static Mount<TestGlue> {
-    let r = TestGlue::with_curproc(|p| match p {
-        Some(p) => try_mount(p, flags),
-        None => std::panic!("testmsdosfs: no curproc"),
-    });
-    match r {
-        Ok(mp) => mp,
-        Err(e) => std::panic!("testmsdosfs: msdosfs_mountfs: {e:?}"),
-    }
+    testffs::mount_by_curproc("testmsdosfs: msdosfs_mountfs", |p| try_mount(p, flags))
 }
 
 /// `VFS_SYNC(MNT_WAIT)` (a read-write mount's, as `dounmount` syncs) and `VFS_UNMOUNT` of a
@@ -524,9 +500,8 @@ pub fn unmount(p: &Thread<TestGlue>, mp: &'static Mount<TestGlue>) {
 
 /// A new mount of the disk at `/` as `mount_msdos -l -m 777` makes it (long names, mask
 /// 0777, owner and group 0: what `msdosfs_mount` writes after `msdosfs_mountfs`), as `main`
-/// mounts the root: [`try_mount`], the mount list, the root vnode and the thread's current
-/// directory (testfs's root, which [`attach`]'s thread started with, released).
-/// `testffs::unmount_root` undoes it.
+/// mounts the root: [`try_mount`], then `testffs::make_root`. `testffs::unmount_root` undoes
+/// it.
 pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
     let mp = match try_mount(p, flags) {
         Ok(mp) => mp,
@@ -537,17 +512,7 @@ pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<Te
     pmp.pm_flags
         .set(pmp.pm_flags.get() | MSDOSFSMNT_LONGNAME as u32);
     drop(pmp);
-    mountlist_insert_tail(mp);
-    let vp = root(mp);
-    if let Some(old) = rootvnode::<TestGlue>() {
-        vrele(old);
-    }
-    set_rootvnode(Some(vp));
-    vref(vp);
-    if let Some(old) = p.fd().replace_cdir(Some(vp)) {
-        vrele(old);
-    }
-    let _ = vop_unlock(vp);
+    testffs::make_root(p, mp);
     mp
 }
 

@@ -37,7 +37,7 @@ use hal::sys::types::Mode;
 use hal::user::{pod_from_bytes, pod_to_bytes};
 
 use super::ffs_subr::{ffs_clrblock, ffs_isblock, ffs_setblock};
-use super::ffs_vfsops::{Ffs, ffs_init, ffs_mountfs, ffs_statfs, ffs_vget};
+use super::ffs_vfsops::{Ffs, ffs_init, ffs_mountfs, ffs_vget};
 use super::fs::*;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_READ, BufRef};
@@ -55,8 +55,8 @@ use crate::fs::ufs::ufs::dir::{
 use crate::fs::ufs::ufs::inode::{dinode1_at, dinode2_at, set_dinode1_at, set_dinode2_at, vtoi};
 use crate::fs::ufs::ufs::testufs::TEST_DEV;
 use crate::fs::vnode::{VREG, Vnode};
-use crate::fs::vops::{Cred, vop_unlock};
-use crate::proc::Thread;
+use crate::fs::vops::{Cred, VFS_ROOT, VFS_STATFS, vop_unlock};
+use crate::proc::{ProcGlue, Thread};
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: usize = 1 << DEV_BSHIFT;
@@ -891,17 +891,26 @@ pub fn attach(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestG
     (g, p)
 }
 
-/// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_FORCE`), as
-/// `ffs_mount` makes one: `ffs_mountfs` on the device vnode, the statistics (`VFS_STATFS`),
-/// the mount unbusied.
-pub fn mount(p: &'static Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
-    let mp = vfs_mount_alloc(None, &TEST_FFS_CONF);
+/// A new mount of the disk for the configuration `conf` with the flags `flags`
+/// (`MNT_RDONLY`, `MNT_FORCE`, ...), `onname` in its `f_mntonname`, as the file system's
+/// `mount` makes one: `mountfs` on the device vnode, the statistics (`VFS_STATFS`), the mount
+/// unbusied, not on the mount list; `Err` freed the mount. The one body of the ffs, ext2fs
+/// and msdosfs fixtures' mounts ([`mount`], `testext2fs::try_mount`,
+/// `testmsdosfs::try_mount`).
+pub fn mount_conf(
+    p: &Thread<TestGlue>,
+    conf: &'static Vfsconf<TestGlue>,
+    onname: &[u8],
+    flags: i32,
+    mountfs: impl FnOnce(&'static Vnode<TestGlue>, &'static Mount<TestGlue>) -> Result<(), Errno>,
+) -> Result<&'static Mount<TestGlue>, Errno> {
+    let mp = vfs_mount_alloc(None, conf);
     mp.set_flag(mp.flag() | flags);
-    mp.with_stat(|sp| sp.f_mntonname[..4].copy_from_slice(b"/ffs"));
-    let r = ffs_mountfs(devvp(), mp, p);
+    mp.with_stat(|sp| sp.f_mntonname[..onname.len()].copy_from_slice(onname));
+    let r = mountfs(devvp(), mp);
     if r.is_ok() {
         let mut st = mp.stat();
-        let _ = ffs_statfs(mp, &mut st, p);
+        let _ = VFS_STATFS(mp, &mut st, p);
         mp.with_stat(|sp| *sp = st);
     }
     vfs_unbusy(mp);
@@ -914,13 +923,32 @@ pub fn mount(p: &'static Thread<TestGlue>, flags: i32) -> Result<&'static Mount<
     }
 }
 
-/// A new mount of the disk at `/`, as `main` mounts the root: [`mount`], the mount list, the
-/// root vnode and the thread's current directory (testfs's root, which [`attach`]'s thread
-/// started with, released).
-pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
-    let mp = mount(p, flags).unwrap_or_else(|e| std::panic!("testffs: ffs_mountfs: {e:?}"));
+/// `f(p)` by the test's thread (the glue's `curproc`): the mount it makes; `panic` on an
+/// error, naming `what` (the ext2fs and msdosfs fixtures' `mount`).
+pub fn mount_by_curproc(
+    what: &str,
+    f: impl FnOnce(&Thread<TestGlue>) -> Result<&'static Mount<TestGlue>, Errno>,
+) -> &'static Mount<TestGlue> {
+    let r = TestGlue::with_curproc(|p| match p {
+        Some(p) => f(p),
+        None => std::panic!("{what}: no curproc"),
+    });
+    match r {
+        Ok(mp) => mp,
+        Err(e) => std::panic!("{what}: {e:?}"),
+    }
+}
+
+/// `mp`, a mount of [`mount_conf`], made the root as `main` mounts it: the mount list, the
+/// root vnode (`VFS_ROOT`) and the thread's current directory (testfs's root, which
+/// [`attach`]'s thread started with, released). [`unmount_root`] undoes it. The one body of
+/// the ffs, ext2fs and msdosfs fixtures' `mount_root`.
+pub fn make_root(p: &'static Thread<TestGlue>, mp: &'static Mount<TestGlue>) {
     mountlist_insert_tail(mp);
-    let vp = root(mp);
+    let vp = match VFS_ROOT(mp) {
+        Ok(vp) => vp,
+        Err(e) => std::panic!("testffs: no root: {e:?}"),
+    };
     if let Some(old) = rootvnode::<TestGlue>() {
         vrele(old);
     }
@@ -930,6 +958,21 @@ pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<Te
         vrele(old);
     }
     let _ = vop_unlock(vp);
+}
+
+/// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_FORCE`), as
+/// `ffs_mount` makes one: `ffs_mountfs` on the device vnode, the statistics (`VFS_STATFS`),
+/// the mount unbusied ([`mount_conf`]).
+pub fn mount(p: &'static Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
+    mount_conf(p, &TEST_FFS_CONF, b"/ffs", flags, |devvp, mp| {
+        ffs_mountfs(devvp, mp, p)
+    })
+}
+
+/// A new mount of the disk at `/`, as `main` mounts the root: [`mount`], then [`make_root`].
+pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
+    let mp = mount(p, flags).unwrap_or_else(|e| std::panic!("testffs: ffs_mountfs: {e:?}"));
+    make_root(p, mp);
     mp
 }
 
