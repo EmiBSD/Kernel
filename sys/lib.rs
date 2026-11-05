@@ -51,8 +51,6 @@ pub mod isofs;
 pub mod kern;
 pub mod machine;
 pub mod miscfs;
-#[cfg(feature = "msdosfs")]
-pub mod msdosfs;
 pub mod net;
 pub mod netinet;
 pub mod netinet6;

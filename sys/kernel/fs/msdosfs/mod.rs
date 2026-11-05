@@ -22,8 +22,9 @@
 //! `direntry`, `fat`), the name and time conversions (`msdosfs_conv`), the mount structure
 //! (`msdosfsmount`), the denode type (`denode`) and the FAT engine (`msdosfs_fat`); N5.7c2
 //! the denode cache (`msdosfs_denode`), the directories (`msdosfs_lookup`) and the vnode
-//! operations with their table (`msdosfs_vnops`); `bsd`'s msdosfs keeps running on its own
-//! code until N5.7c3 switches `vfsconflist[]` to this one.
+//! operations with their table (`msdosfs_vnops`); N5.7c3 the mount and the file system's
+//! table (`msdosfs_vfsops`, `MsdosfsVfs`) and the tests' fixture (`testmsdosfs`, host tests
+//! and benches only), and switches `vfsconflist[]` to this one.
 
 pub mod bootsect;
 pub mod bpb;
@@ -34,6 +35,9 @@ pub mod msdosfs_conv;
 pub mod msdosfs_denode;
 pub mod msdosfs_fat;
 pub mod msdosfs_lookup;
+pub mod msdosfs_vfsops;
 pub mod msdosfs_vnops;
 pub mod msdosfsmount;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testmsdosfs;
 /* </CODE> */

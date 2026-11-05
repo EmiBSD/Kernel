@@ -5927,7 +5927,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -6402,73 +6402,6 @@ rust = "sys/miscfs/fuse/fusefs_node.rs"
 lz = ["sys/miscfs/fuse/fusefs_node.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/lockf.rs"]
-
-[[module]]
-rust = "sys/msdosfs/bootsect.rs"
-lz = ["sys/msdosfs/bootsect.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/msdosfs/bpb.rs"
-lz = ["sys/msdosfs/bpb.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/msdosfs/denode.rs"
-lz = ["sys/msdosfs/denode.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/lockf.rs"]
-
-[[module]]
-rust = "sys/msdosfs/direntry.rs"
-lz = ["sys/msdosfs/direntry.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/msdosfs/fat.rs"
-lz = ["sys/msdosfs/fat.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_conv.rs"
-lz = ["sys/msdosfs/msdosfs_conv.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_denode.rs"
-lz = ["sys/msdosfs/msdosfs_denode.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_fat.rs"
-lz = ["sys/msdosfs/msdosfs_fat.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs"]
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_lookup.rs"
-lz = ["sys/msdosfs/msdosfs_lookup.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_vfsops.rs"
-lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/msdosfs/msdosfs_vnops.rs"
-lz = ["sys/msdosfs/msdosfs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/msdosfs/msdosfsmount.rs"
-lz = ["sys/msdosfs/msdosfsmount.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/mount.rs"]
 
 [[module]]
 rust = "sys/net/art.rs"
@@ -7440,7 +7373,7 @@ status = "inherited"
 rust = "sys/sys/buf.rs"
 lz = ["sys/sys/buf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/vm/object.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/msdosfs/msdosfs_vnops.rs"]
 
 [[module]]
 rust = "sys/sys/cdio.rs"
@@ -7651,7 +7584,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -9579,7 +9512,7 @@ rust = "sys/kernel/fs/msdosfs/denode.rs"
 crate = "kernel"
 lz = ["sys/msdosfs/denode.rs"]
 status = "redesigned"
-notes = "N5.7c1 (unwired; D-N5.7-2): struct denode as Denode<G>, made whole where the C fills it (Denode::new: de_vnode, de_dev, de_pmp and the entry's position given) and published as DenodeRef<G> (hal::malloc::MArc of M_MSDOSFSNODE) in the vnode's typed slot; the members the C changes under de_lock and the kernel lock relaxed words (fs::word), de_Name eleven U8Words, each de_fc slot a U64Word; de_devvp a hal Link; de_pmp a counted MsdosfsmountRef; de_lockf a plain LockfSlot (IDIOMS row 191's ManuallyDrop gone); de_lock a RecursiveRwlock; de_hash a PinEntry for c2's chains; vtode the slot's typed read; the template denode of create/mkdir a Denode::new with no vnode; 0 unsafe (LZ: 2); N5.7c2: de_chain, the chain msdosfs_hashins linked the denode on (what the C's de_prev knows), for msdosfs_hashrem after a rename moved the entry"
+notes = "N5.7c1 (unwired; D-N5.7-2): struct denode as Denode<G>, made whole where the C fills it (Denode::new: de_vnode, de_dev, de_pmp and the entry's position given) and published as DenodeRef<G> (hal::malloc::MArc of M_MSDOSFSNODE) in the vnode's typed slot; the members the C changes under de_lock and the kernel lock relaxed words (fs::word), de_Name eleven U8Words, each de_fc slot a U64Word; de_devvp a hal Link; de_pmp a counted MsdosfsmountRef; de_lockf a plain LockfSlot (the ManuallyDrop<LockfSlot> idiom gone, its IDIOMS row deleted at N5.7c3); de_lock a RecursiveRwlock; de_hash a PinEntry for c2's chains; vtode the slot's typed read; the template denode of create/mkdir a Denode::new with no vnode; 0 unsafe (LZ: 2); N5.7c2: de_chain, the chain msdosfs_hashins linked the denode on (what the C's de_prev knows), for msdosfs_hashrem after a rename moved the entry"
 
 [[module.fn]]
 lz = "sys/msdosfs/denode.rs::Denode::default"
@@ -9659,7 +9592,7 @@ rust = "sys/kernel/fs/msdosfs/msdosfs_lookup.rs"
 crate = "kernel"
 lz = ["sys/msdosfs/msdosfs_lookup.rs"]
 status = "redesigned"
-notes = "N5.7c2 (unwired): msdosfs_lookup (its search msdosfs_lookup_search, one block a step: Block), createde, dosdirempty, doscheckpath (one DenodeRef at a time), readep/readde over BufRef tokens, removede, uniqdosname; every entry read with Direntry::at and written with Direntry::put (entry_at/entry_put: past its block is panic(9), unreachable by construction); readep's EIO for an entry past its block (direntry_in_block, D-N5.7-U4's belt, U1's predicate for c3's fhtovp); the scan's offsets at the C's 32-bit widths; test_full_root, the tests' full FAT16 root image; 0 unsafe (LZ: 10)"
+notes = "N5.7c2 (unwired): msdosfs_lookup (its search msdosfs_lookup_search, one block a step: Block), createde, dosdirempty, doscheckpath (one DenodeRef at a time), readep/readde over BufRef tokens, removede, uniqdosname; every entry read with Direntry::at and written with Direntry::put (entry_at/entry_put: past its block is panic(9), unreachable by construction); readep's EIO for an entry past its block (direntry_in_block, D-N5.7-U4's belt, U1's predicate for c3's fhtovp); the scan's offsets at the C's 32-bit widths; 0 unsafe (LZ: 10); N5.7c3: the tests over testmsdosfs's real mounts (c2's test_full_root gone)"
 
 [[module.fn]]
 lz = "sys/msdosfs/msdosfs_lookup.rs::bdata"
@@ -9672,6 +9605,28 @@ lz = "sys/msdosfs/msdosfs_lookup.rs::cn_proc"
 native = []
 kind = "dropped"
 reason = "the kernel's componentname gives its thread itself (Componentname::proc); createde passes Some(cnp.proc()), the C's cnp->cn_proc"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.7c3 (unwired until the switch): msdosfs_mount (the update paths, the export update through FileGlue::vfs_export, the device by namei, the arguments applied after msdosfs_mountfs), msdosfs_mountfs (the boot sector's BPBs read from the token at BSBPB_OFF, the geometry in locals with E.1's checks in the C's order, errnos and printf, in the C's unsigned widths; fsi_size_checked before the FSInfo read, D-N5.7-U3; the bitmap of inusemap_alloc; the structure built whole, filled by fillinusemap, published counted in the mount's typed slot), unmount (take_node after vflush), root, statfs, sync and sync_vnode (the C's one splbio pair per vnode), fhtovp (ESTALE before deget for an entry outside readep's block, D-N5.7-U1), vptofh; MsdosfsVfs<G>::VFS, one impl Vfs<G>; quotactl and vget EOPNOTSUPP, sysctl the trait's default; 0 unsafe (LZ: 7 with its tests')"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::MSDOSFS_VFSOPS"
+native = ["MsdosfsVfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::msdosfs_check_export"
+native = ["sys/ufs/ufs/ufs_vfsops.rs::ufs_check_export"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/msdosfs/msdosfs_vnops.rs"
@@ -10411,8 +10366,8 @@ adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs",
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
-notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs"]
+notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since), and since N5.7c3 msdosfs's export test (the kernel's msdosfs over this disk and bsd's glue, VFS_CHECKEXP's MOUNT_MSDOS arm); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
@@ -13135,6 +13090,11 @@ reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, c
 rust = "sys/kernel/fs/ufs/ext2fs/testext2fs.rs"
 crate = "kernel"
 reason = "N5.6c1: the kernel ext2fs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the one-group ext2 image builder moved from bsd's ext2fs_vfsops tests (over the abi_pod! Ext2fs, Ext2Gd and Ext2fsDinode), served by testffs's block device; until N5.6c3 a mount made the way ext2fs_mountfs makes one and an inode the way ext2fs_vget makes one, over a vnode table and an inode table of its own; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/fs/msdosfs/testmsdosfs.rs"
+crate = "kernel"
+reason = "N5.7c3: the kernel msdosfs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkfat, the FAT12/16/32 image builder moved as it was from bsd's msdosfs_vfsops tests; an image as the disk of testffs's block device, mounted by the kernel's msdosfs_mountfs through MsdosfsVfs (attach, try_mount, mount, mount_root, unmount, root); full_root, the FAT16 image of a full root directory for D-N5.7-U4's tests (c2's hand-built test_full_root replaced by a real mount); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/word.rs"

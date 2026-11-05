@@ -794,9 +794,9 @@ mod tests {
     /// pm_BytesPerSec` is 2 and 8 times that.
     #[test]
     fn the_fat16_root_s_size_is_its_blocks_bytes() {
-        use crate::fs::msdosfs::msdosfs_lookup::test_full_root;
+        use crate::fs::msdosfs::testmsdosfs::full_root;
         for (bps, spc, ents, bytes) in [(1024, 2, 208, 6656), (4096, 1, 512, 16384)] {
-            let (_g, _p, pmp) = test_full_root(bps, spc, ents);
+            let (_g, _p, pmp) = full_root(bps, spc, ents);
             let root = deget(&pmp, MSDOSFSROOT, MSDOSFSROOT_OFS).unwrap();
             let vp = root.detov();
             assert_eq!(root.de_FileSize.get(), bytes);
@@ -817,9 +817,9 @@ mod tests {
     /// makes a new one from the entry.
     #[test]
     fn deget_hashes_the_denode_until_its_reclaim() {
-        use crate::fs::msdosfs::msdosfs_lookup::test_full_root;
+        use crate::fs::msdosfs::testmsdosfs::full_root;
         use crate::fs::subr::vgone;
-        let (_g, _p, pmp) = test_full_root(1024, 2, 208);
+        let (_g, _p, pmp) = full_root(1024, 2, 208);
         let dep = deget(&pmp, MSDOSFSROOT, 32).unwrap();
         let vp = dep.detov();
         assert_eq!(&dep.name(), b"F0000001TXT");
@@ -848,6 +848,94 @@ mod tests {
         let fvp = fresh.detov();
         drop(fresh);
         vput(fvp);
+    }
+
+    /// A FAT12 image of `mkfat` with `F.TXT`, 1,300 bytes in three clusters, mounted
+    /// read-write: the guard, the thread, the mount's structure.
+    fn mounted_with_a_file() -> (
+        std::sync::MutexGuard<'static, ()>,
+        &'static crate::proc::Thread<TestGlue>,
+        MsdosfsmountRef<TestGlue>,
+    ) {
+        use crate::fs::msdosfs::msdosfsmount::vfstomsdosfs;
+        use crate::fs::msdosfs::testmsdosfs::{attach, mkfat, try_mount};
+        let mut img = mkfat::Image::new(mkfat::FAT12_1M);
+        let root = img.root();
+        img.add_file(root, None, b"F       TXT", &[b'f'; 1300]);
+        img.add_file(root, None, b"G       TXT", b"g");
+        let (g, p) = attach(img.finish());
+        let mp = try_mount(p, 0).unwrap();
+        (g, p, vfstomsdosfs(mp))
+    }
+
+    /// `reinsert` moves a renamed file's denode to the chain of its new position: `deget`
+    /// finds it there, and makes a new denode from the entry for the old one.
+    #[test]
+    fn reinsert_hashes_a_moved_entry_at_its_new_position() {
+        let (_g, _p, pmp) = mounted_with_a_file();
+        let dep = deget(&pmp, MSDOSFSROOT, 0).unwrap();
+        let vp = dep.detov();
+        let _ = vop_unlock(vp);
+        // As msdosfs_rename moves the entry: the position changes, then the hash.
+        dep.de_diroffset.set(64);
+        reinsert(dep.as_pin());
+        assert!(dep.de_hash.is_linked());
+        let at_new = deget(&pmp, MSDOSFSROOT, 64).unwrap();
+        assert!(MArc::ptr_eq(&dep, &at_new));
+        let nvp = at_new.detov();
+        drop(at_new);
+        vput(nvp);
+        // The old position is a new denode, read from the entry still there.
+        let at_old = deget(&pmp, MSDOSFSROOT, 0).unwrap();
+        assert!(!MArc::ptr_eq(&dep, &at_old));
+        assert_eq!(&at_old.name(), b"F       TXT");
+        let ovp = at_old.detov();
+        drop(at_old);
+        vput(ovp);
+        // A directory keeps its chain (its position is its "." entry's, which a rename
+        // does not move).
+        dep.de_Attributes.set(ATTR_DIRECTORY);
+        let chain = dep.de_chain.get();
+        dep.de_diroffset.set(96);
+        reinsert(dep.as_pin());
+        assert_eq!(dep.de_chain.get(), chain);
+        dep.de_Attributes.set(0);
+        dep.de_diroffset.set(64);
+        drop(dep);
+        crate::fs::subr::vrele(vp);
+    }
+
+    /// The last reference to a deleted file (`de_refcnt` 0, as `removede` leaves it):
+    /// `msdosfs_inactive` truncates it (its clusters freed), marks its slot deleted and
+    /// recycles the vnode, whose reclaim unhashes the denode and gives the device's reference
+    /// back; on a read-only mount the file is left as it is.
+    #[test]
+    fn inactive_truncates_a_deleted_file_and_reclaims_it() {
+        let (_g, _p, pmp) = mounted_with_a_file();
+        let free = pmp.pm_freeclustercount.get();
+        let devrefs = pmp.pm_devvp.usecount();
+        let dep = deget(&pmp, MSDOSFSROOT, 0).unwrap();
+        let vp = dep.detov();
+        assert_eq!(pmp.pm_devvp.usecount(), devrefs + 1, "deget's vref");
+        assert_eq!(dep.de_FileSize.get(), 1300);
+        dep.de_refcnt.set(0);
+        vput(vp);
+        assert_eq!(pmp.pm_freeclustercount.get(), free + 3);
+        assert_eq!(dep.de_FileSize.get(), 0);
+        assert_eq!(dep.de_Name[0].get(), SLOT_DELETED);
+        assert!(!dep.de_hash.is_linked(), "reclaimed: off its chain");
+        assert!(!vp.has_node());
+        assert_eq!(pmp.pm_devvp.usecount(), devrefs, "the reclaim's vrele");
+        drop(dep);
+
+        // A live file's last reference leaves it hashed and whole.
+        let dep = deget(&pmp, MSDOSFSROOT, 32).unwrap();
+        let vp = dep.detov();
+        vput(vp);
+        assert!(dep.de_hash.is_linked());
+        assert_eq!(dep.de_FileSize.get(), 1);
+        assert!(vp.has_node());
+        drop(dep);
     }
 }
 /* </TESTS> */

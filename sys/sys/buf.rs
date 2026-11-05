@@ -72,7 +72,7 @@
 //! the token is consumed (the C's rule: a `struct buf *` is the `B_BUSY` owner's until
 //! `brelse` or `biodone`). The busiest of them keep the token parked through the kernel's own
 //! lock sections instead of a take and a park ([`brelse`], [`biodone`], [`bufq_queue`],
-//! [`bufq_dequeue`], [`bread`], [`bread_cluster`], [`getblk`]: the kernel's `*_parked`
+//! [`bufq_dequeue`], [`bread`], [`getblk`]: the kernel's `*_parked`
 //! functions). The C's rule is the one `unsafe` this boundary keeps ([`legacy_ref`]),
 //! with LZ's `unsafe fn data()` (the drivers' and file systems' view of `b_data`), both paid
 //! at N7 (D-N5.1-1, the user's decision of 2026-10-28: option (a)).
@@ -321,17 +321,6 @@ pub fn breadn(
 ) -> (&'static Buf, Result<(), Errno>) {
     let (t, rv) = bio::breadn(&vp.bufs, blkno, size, rablks, rasizes);
     (lend(t), rv)
-}
-
-/// `bread_cluster(vp, blkno, size, &bp)`: `bread` with the following blocks read ahead in
-/// one I/O.
-pub fn bread_cluster(
-    vp: &'static Vnode,
-    blkno: Daddr,
-    size: i32,
-) -> (&'static Buf, Result<(), Errno>) {
-    let (r, rv) = bio::bread_cluster_parked(&vp.bufs, blkno, size);
-    (parked_ref(&r), rv)
 }
 
 /// `bwrite(bp)`: writes the busy buffer; a synchronous write waits and releases it.

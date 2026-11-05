@@ -135,6 +135,7 @@ std::thread_local! {
     static RANDOM: Cell<u64> = const { Cell::new(0x9e37_79b9_7f4a_7c15) };
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
+    static MALLOC_REQS: RefCell<BTreeMap<i32, (u64, usize)>> = const { RefCell::new(BTreeMap::new()) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
@@ -436,6 +437,11 @@ impl Malloc for TestMalloc {
         }
         let p = pages(size.max(1))?;
         MALLOC_OUT.with(|m| *m.borrow_mut().entry(ty).or_insert(0) += size as i64);
+        MALLOC_REQS.with(|m| {
+            let mut m = m.borrow_mut();
+            let r = m.entry(ty).or_insert((0, 0));
+            *r = (r.0 + 1, size);
+        });
         Some((p, size))
     }
 
@@ -939,6 +945,12 @@ fn page_fails() -> bool {
 /// The bytes of `malloc(9)` blocks of type `ty` this thread holds, as the double counts them.
 pub fn malloc_out(ty: i32) -> i64 {
     MALLOC_OUT.with(|m| m.borrow().get(&ty).copied().unwrap_or(0))
+}
+
+/// The `malloc(9)` requests of type `ty` this thread made (`vmstat -m`'s requests) and the
+/// size of the last one, as the double counts them.
+pub fn malloc_requests(ty: i32) -> (u64, usize) {
+    MALLOC_REQS.with(|m| m.borrow().get(&ty).copied().unwrap_or((0, 0)))
 }
 
 /// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether

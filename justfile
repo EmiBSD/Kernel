@@ -2583,10 +2583,12 @@ smoke-usb: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --usb {{disk_login}} {{replace(usb_session, "SD", "sd2")}} {{usb_check}} \
         --expect 'xhci0 at pci0 dev 4 function 0 vendor 0x1b36 product 0x000d rev 0x01: msix' \
         --expect 'sd2 at scsibus2 targ 1 lun 0: <QEMU, QEMU HARDDISK, 2.5+>'
+    cargo xtask fsck-msdos --arch amd64
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --usb {{disk_login}} {{replace(usb_session, "SD", "sd2")}} {{usb_check}} \
         --expect 'xhci0 at pci0 dev 1 function 0 vendor 0x1b36 product 0x000d rev 0x01: msix' \
         --expect 'sd2 at scsibus2 targ 1 lun 0: <QEMU, QEMU HARDDISK, 2.5+>'
+    cargo xtask fsck-msdos --arch arm64
 
 # `smoke-usb`'s session on the stick's disk `SD` (replaced per arch).
 usb_session := "--send-after '# ' --send 'mount_msdos /dev/SDi /mnt && cat /mnt/M12USB.TXT && " + \
@@ -2649,10 +2651,12 @@ smoke-uhci: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --usb-hc uhci {{disk_login}} {{replace(usb_session, "SD", "sd2")}} {{uhci_check}} \
         --expect 'uhci0 at pci0 dev 4 function 0 vendor 0x8086 product 0x7020 rev 0x01: apic 0 int 23' \
         --expect 'sd2 at scsibus2 targ 1 lun 0: <QEMU, QEMU HARDDISK, 2.5+>'
+    cargo xtask fsck-msdos --arch amd64
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --expect-ramdisk --until-seen \
         --usb-hc uhci {{disk_login}} {{replace(usb_session, "SD", "sd2")}} {{uhci_check}} \
         --expect 'uhci0 at pci0 dev 1 function 0 vendor 0x8086 product 0x7020 rev 0x01: irq' \
         --expect 'sd2 at scsibus2 targ 1 lun 0: <QEMU, QEMU HARDDISK, 2.5+>'
+    cargo xtask fsck-msdos --arch arm64
 
 # `smoke-uhci`'s expectations, both archs.
 uhci_check := "--expect 'usb0 at uhci0: USB revision 1.0' " + \

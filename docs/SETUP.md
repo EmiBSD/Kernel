@@ -210,6 +210,19 @@ image (`target/disk-<arch>-ext2fs.img`): e2fsck runs with `-n`, and they reach t
 partition through e2fsprogs' `image?offset=BYTES` syntax, the offset found from the image's
 MBR and OpenBSD disklabel, so nothing is copied or written.
 
+## fsck_msdos (N5.7c3)
+
+`just smoke-usb` and `just smoke-uhci` check the USB stick's FAT32 file system after the guest
+wrote it (`cp` through the kernel's msdosfs) with macOS's own `fsck_msdos -n`, which must exit
+0 (`cargo xtask fsck-msdos`, `tools/xtask/src/devices.rs`). Nothing is installed: xtask finds
+`fsck_msdos` in `PATH` (`/sbin` on macOS) and fails with an `xtask: fsck_msdos not found ...`
+line when it is not there. The tool takes no offset, so the partition is copied out of the
+stick (`<image>.usb`) into `<image>.usb.fat` beside it in the run directory, which a clean
+check removes; `-n` writes nothing. The run directory is `target/smoke/<recipe>/` under
+`smoke-all` (`EMIBSD_RUN_DIR`) and `target/` otherwise: a plain `just smoke-usb` leaves the
+stick at `target/emibsd-arm64.usb`, and a check that fails keeps its copy at
+`target/emibsd-arm64.usb.fat` to look at.
+
 ## swtpm (M16e)
 
 `just smoke-tpm` checks tpm(4) against a TPM 2.0 that QEMU emulates (`tpm-tis`, `tpm-crb`) with

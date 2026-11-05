@@ -448,14 +448,20 @@ pub fn detobn<G: ProcGlue>(pmp: &Msdosfsmount<G>, dirclu: u32, dirofs: u32) -> u
 /// `fsi_size(pmp)`: calculate size of fsinfo block (the module's deviations: the shift count
 /// taken modulo 32, as both machines' instructions take it).
 pub fn fsi_size<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> i32 {
-    1024i32.wrapping_shl(pmp.pm_BlkPerSec >> 2)
+    fsi_size_of(pmp.pm_BlkPerSec)
 }
 
-/// [`fsi_size`] for the FSInfo read of `msdosfs_mountfs`: `EINVAL` when it exceeds
+/// The macro's value for a sector of `blkpersec` blocks (`pm_BlkPerSec`).
+fn fsi_size_of(blkpersec: u32) -> i32 {
+    1024i32.wrapping_shl(blkpersec >> 2)
+}
+
+/// [`fsi_size`] for the FSInfo read of `msdosfs_mountfs`, from the sector's `blkpersec`
+/// blocks (`pm_BlkPerSec`: the structure is built after that read): `EINVAL` when it exceeds
 /// `MAXBSIZE`, the largest buffer the cache maps (the module's deviations, the user's
 /// decision D-N5.7-U3).
-pub fn fsi_size_checked<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> Result<i32, Errno> {
-    let size = fsi_size(pmp);
+pub fn fsi_size_checked(blkpersec: u32) -> Result<i32, Errno> {
+    let size = fsi_size_of(blkpersec);
     if size > MAXBSIZE as i32 {
         return Err(Errno::EINVAL);
     }
@@ -601,7 +607,7 @@ mod tests {
         ] {
             let pmp = test_pmp(FAT32_MASK, 100, |pm| pm.pm_BlkPerSec = bps / 512);
             assert_eq!(fsi_size(&pmp), size, "{bps}");
-            assert_eq!(fsi_size_checked(&pmp), checked, "{bps}");
+            assert_eq!(fsi_size_checked(bps / 512), checked, "{bps}");
         }
     }
 
