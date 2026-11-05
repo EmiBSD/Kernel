@@ -9659,7 +9659,7 @@ rust = "sys/kernel/fs/msdosfs/msdosfs_lookup.rs"
 crate = "kernel"
 lz = ["sys/msdosfs/msdosfs_lookup.rs"]
 status = "redesigned"
-notes = "N5.7c2 (unwired): msdosfs_lookup (its search msdosfs_lookup_search, one block a step: Block), createde, dosdirempty, doscheckpath (one DenodeRef at a time), readep/readde over BufRef tokens, removede, uniqdosname; every entry read with Direntry::at and written with Direntry::put (entry_at/entry_put: past its block is panic(9), unreachable by construction); readep's EIO for an entry past its block (direntry_in_block, D-N5.7-U4's belt, U1's predicate for c3's fhtovp); the scan's offsets at the C's 32-bit widths; test_full_root, the tests' full FAT16 root image; 0 unsafe (LZ: 10)"
+notes = "N5.7c2 (unwired): msdosfs_lookup (its search msdosfs_lookup_search, one block a step: Block), createde, dosdirempty, doscheckpath (one DenodeRef at a time), readep/readde over BufRef tokens, removede, uniqdosname; every entry read with Direntry::at and written with Direntry::put (entry_at/entry_put: past its block is panic(9), unreachable by construction); readep's EIO for an entry past its block (direntry_in_block, D-N5.7-U4's belt, U1's predicate for c3's fhtovp); the scan's offsets at the C's 32-bit widths; 0 unsafe (LZ: 10); N5.7c3: the tests over testmsdosfs's real mounts (c2's test_full_root gone)"
 
 [[module.fn]]
 lz = "sys/msdosfs/msdosfs_lookup.rs::bdata"
@@ -9672,6 +9672,28 @@ lz = "sys/msdosfs/msdosfs_lookup.rs::cn_proc"
 native = []
 kind = "dropped"
 reason = "the kernel's componentname gives its thread itself (Componentname::proc); createde passes Some(cnp.proc()), the C's cnp->cn_proc"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.7c3 (unwired until the switch): msdosfs_mount (the update paths, the export update through FileGlue::vfs_export, the device by namei, the arguments applied after msdosfs_mountfs), msdosfs_mountfs (the boot sector's BPBs read from the token at BSBPB_OFF, the geometry in locals with E.1's checks in the C's order, errnos and printf, in the C's unsigned widths; fsi_size_checked before the FSInfo read, D-N5.7-U3; the bitmap of inusemap_alloc; the structure built whole, filled by fillinusemap, published counted in the mount's typed slot), unmount (take_node after vflush), root, statfs, sync and sync_vnode (the C's one splbio pair per vnode), fhtovp (ESTALE before deget for an entry outside readep's block, D-N5.7-U1), vptofh; MsdosfsVfs<G>::VFS, one impl Vfs<G>; quotactl and vget EOPNOTSUPP, sysctl the trait's default; 0 unsafe (LZ: 7 with its tests')"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::MSDOSFS_VFSOPS"
+native = ["MsdosfsVfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vfsops.rs::msdosfs_check_export"
+native = ["sys/ufs/ufs/ufs_vfsops.rs::ufs_check_export"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/msdosfs/msdosfs_vnops.rs"
@@ -13135,6 +13157,11 @@ reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, c
 rust = "sys/kernel/fs/ufs/ext2fs/testext2fs.rs"
 crate = "kernel"
 reason = "N5.6c1: the kernel ext2fs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the one-group ext2 image builder moved from bsd's ext2fs_vfsops tests (over the abi_pod! Ext2fs, Ext2Gd and Ext2fsDinode), served by testffs's block device; until N5.6c3 a mount made the way ext2fs_mountfs makes one and an inode the way ext2fs_vget makes one, over a vnode table and an inode table of its own; no OpenBSD or LZ source"
+
+[[extra]]
+rust = "sys/kernel/fs/msdosfs/testmsdosfs.rs"
+crate = "kernel"
+reason = "N5.7c3: the kernel msdosfs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkfat, the FAT12/16/32 image builder moved as it was from bsd's msdosfs_vfsops tests; an image as the disk of testffs's block device, mounted by the kernel's msdosfs_mountfs through MsdosfsVfs (attach, try_mount, mount, mount_root, unmount, root); full_root, the FAT16 image of a full root directory for D-N5.7-U4's tests (c2's hand-built test_full_root replaced by a real mount); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/word.rs"

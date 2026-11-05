@@ -329,8 +329,9 @@ pub fn tree_node(idx: usize) -> Option<TreeNode> {
     TREE.with(|t| t.borrow().get(idx).cloned())
 }
 
-/// Links a new node into this thread's tree: its index.
-fn tree_add(name: &[u8], parent: usize, kind: Kind, rdev: Option<Dev>) -> usize {
+/// Links a new node into this thread's tree: its index. A test plants a block device of its
+/// own with it (`Kind::Blk` and its number: msdosfs's `mount(2)` tests).
+pub fn tree_add(name: &[u8], parent: usize, kind: Kind, rdev: Option<Dev>) -> usize {
     TREE.with(|t| {
         let mut t = t.borrow_mut();
         t.push(TreeNode {
@@ -764,14 +765,24 @@ impl Vnops<TestGlue> for TestVops {
         LAST_CLOSE.with(|c| c.set(Some((cred.is_nocred(), p.is_some()))));
         Ok(())
     }
-    fn strategy(&self, _vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
-        if let Some(t) = bp.into_token() {
-            if let Some(e) = STRATEGY_ERROR.with(core::cell::Cell::take) {
-                t.buf().set(super::buf::B_ERROR);
-                t.buf().set_error(Some(e));
-            }
-            super::bio::biodone(t);
+    /// The I/O done at once (`biodone`), its bytes untouched; on a block device of the tree,
+    /// with a device strategy set ([`set_bdev_strategy`]), that strategy's, as
+    /// `spec_strategy` gives a block special file's buffers to the device's `d_strategy`.
+    fn strategy(&self, vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
+        let Some(t) = bp.into_token() else {
+            return Ok(());
+        };
+        if vp.vtype() == super::vnode::VBLK
+            && let Some(f) = BDEV_STRATEGY.with(core::cell::Cell::get)
+        {
+            f(t);
+            return Ok(());
         }
+        if let Some(e) = STRATEGY_ERROR.with(core::cell::Cell::take) {
+            t.buf().set(super::buf::B_ERROR);
+            t.buf().set_error(Some(e));
+        }
+        super::bio::biodone(t);
         Ok(())
     }
     /// `ufs_create`: a regular file named `cnp`'s name in `dvp`; the new vnode locked, `dvp`
