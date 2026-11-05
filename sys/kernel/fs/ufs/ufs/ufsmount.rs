@@ -61,9 +61,13 @@
 //!   EXT2FS's the kernel's `Ext2Superblock` since N5.6c1 ([`Ufsmount::um_e2fs`], the other
 //!   variant of [`UfsSuper`]), set by the kernel's `ext2fs_mountfs` from N5.6c3: until then
 //!   `bsd`'s ext2fs leaves the slot unset and keeps its `um_e2fs` in the glue's member
-//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md). The slot is as large as
-//!   the larger variant, so an FFS mount's block grows by the difference (`vmstat -m`'s `UFS
-//!   mount` bytes; the requests are the C's).
+//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md). From the types (an
+//!   estimate, not a measurement of a kernel: a host test printed the sizes once), both
+//!   variants are 144 bytes on an LP64 machine (`Ext2Superblock` no larger than
+//!   `Superblock`, asserted below), so the slot grows by the enum's tag only,
+//!   `OnceStatic<UfsSuper>` 152 -> 160 bytes, 8 more per mount; the block stays in
+//!   `malloc`'s 512-byte bucket, so `vmstat -m`'s `UFS mount` row should not change (the
+//!   requests are the C's).
 //!   `um_export` (`struct netexport`, the
 //!   NFS server's) is the mount's glue member since N5.5b0 (`Mount::g`, `bsd`'s `BsdMountG`,
 //!   until N6): `bsd`'s `vfs_export` and `vfs_export_lookup` read it from the mount, which all
@@ -310,6 +314,11 @@ pub fn blkptrtodb<G: ProcGlue>(ump: &Ufsmount<G>, b: Daddr) -> Daddr {
 pub fn is_sequential<G: ProcGlue>(ump: &Ufsmount<G>, a: Daddr, b: Daddr) -> bool {
     b == a + ump.um_seqinc.get() as Daddr
 }
+
+// EXT2FS's in-core super-block is no larger than FFS's, so `ufsmount_u` costs an FFS mount
+// the enum's tag only (the module's deviations).
+#[cfg(feature = "ext2fs")]
+const _: () = assert!(size_of::<Ext2Superblock>() <= size_of::<Superblock>());
 /* </CODE> */
 
 /* <TESTS> */

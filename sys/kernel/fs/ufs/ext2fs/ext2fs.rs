@@ -89,8 +89,10 @@
 //! - The in-core super-block's `malloc(M_UFSMNT)` holds `struct ext2fs` and `e2fs_fsmnt` (the
 //!   C's `struct m_ext2fs` without its scalars, which live in the mount's UFS structure with
 //!   the rest of [`Ext2Superblock`]): the `UFS mount` row's requests are the C's, its bytes
-//!   about 70 fewer per ext2fs mount; an FFS mount's block grows by the size of the larger
-//!   variant of `ufsmount_u` (`ufsmount.rs`).
+//!   about 70 fewer per ext2fs mount. [`Ext2Superblock`] is no larger than FFS's in-core
+//!   super-block (144 bytes each on an LP64 machine, from the types; asserted in
+//!   `ufsmount.rs`), so an FFS mount's block grows by `ufsmount_u`'s enum tag only, 8
+//!   bytes, inside the same `malloc` bucket (`ufsmount.rs`'s deviations).
 //!
 //! ## Redesign
 //! - LZ's `MExt2fs`, the `malloc`ed `struct m_ext2fs` cast to `&'static MExt2fs` (its
