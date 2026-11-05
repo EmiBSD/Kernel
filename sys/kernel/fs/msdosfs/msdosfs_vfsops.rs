@@ -112,12 +112,6 @@
 //!   and is never refused; any other crafted handle (a cluster past `pm_maxcluster`, an
 //!   offset inside the block but not on an entry) gets the C's answer. What an NFS client
 //!   sees: `ESTALE` for such a handle, instead of a bogus file or a server crash.
-//! - The structure is built in [`msdosfs_mountfs`]'s locals and published once filled (the
-//!   module's redesign): a mount refused by a check of the boot sector, of the FSInfo block
-//!   or of the bitmap, or by `fillinusemap`'s read, never allocates its `M_MSDOSFSMNT` block,
-//!   where the C `malloc`s it after the boot sector's read and frees it on the error path,
-//!   so `vmstat -m`'s `MSDOSFS mount` row counts one request fewer for each such refused
-//!   mount; a mount that succeeds makes the C's request.
 //!
 //! ## Redesign
 //! - LZ's `MSDOSFS_VFSOPS` (a `bsd` `Vfsops` of function pointers over `bsd`'s mount, its
@@ -142,6 +136,13 @@
 //!   drops the locals (the bitmap freed with them). `msdosfs_unmount` takes the slot's handle
 //!   back after `vflush` (every denode, and the handle each held, gone), and the last handle
 //!   frees the block with its bitmap. 0 `unsafe` (LZ: 7 with its tests').
+//! - A mount refused after the boot sector's read, where the C has `malloc`ed its structure
+//!   (and `free`s it on the error path), makes that request on its error path: one
+//!   `M_MSDOSFSMNT` block of the published block's size (an `MArc` of an uninitialised
+//!   `Msdosfsmount`, never read), dropped at once, so `vmstat -m`'s `MSDOSFS mount` row keeps
+//!   the C's requests, bytes in use and high-water mark; a mount refused before the read
+//!   (`vfs_mountedon`, `EBUSY`, `vinvalbuf`, `VOP_OPEN`, the read itself) makes none, as the
+//!   C's (the user's decision D-N5.7-U5 of 2026-11-05).
 //! - `VFSTOMSDOSFS` is `msdosfsmount.rs`'s `vfstomsdosfs`, a counted handle per call (one
 //!   count pair per `Vfs` operation reached from the mount, ROADMAP N12's row); the members
 //!   `msdosfs_mount` writes after `msdosfs_mountfs` and on an update (`pm_uid`, `pm_gid`,
@@ -151,10 +152,11 @@
 //!   `vfs_mount_foreach_vnode`.
 
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ptr;
 
 use hal::intr::{IPL_BIO, splraise};
-use hal::malloc::MArc;
+use hal::malloc::{M_WAITOK, MArc};
 use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::fcntl::{FREAD, FWRITE};
@@ -187,8 +189,8 @@ use crate::fs::msdosfs::msdosfs_denode::{deget, msdosfs_init};
 use crate::fs::msdosfs::msdosfs_fat::fillinusemap;
 use crate::fs::msdosfs::msdosfs_lookup::direntry_in_block;
 use crate::fs::msdosfs::msdosfsmount::{
-    MSDOSFS_FATMIRROR, MSDOSFSMNT_MNTOPT, MSDOSFSMNT_RONLY, MSDOSFSMNT_WAITONFAT, Msdosfsmount,
-    fsi_size_checked, inusemap_alloc, vfstomsdosfs,
+    M_MSDOSFSMNT, MSDOSFS_FATMIRROR, MSDOSFSMNT_MNTOPT, MSDOSFSMNT_RONLY, MSDOSFSMNT_WAITONFAT,
+    Msdosfsmount, fsi_size_checked, inusemap_alloc, vfstomsdosfs,
 };
 use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
 use crate::fs::spec::devsw;
@@ -403,8 +405,10 @@ pub fn msdosfs_mountfs<G: ProcGlue>(
     let omode = if ronly { FREAD } else { FREAD | FWRITE };
     vop_open(devvp, omode, Cred::FSCRED, p)?;
 
-    // Used in error_exit (the C's `bp`; its `pmp` is not made before the last step).
+    // Used in error_exit (the C's `bp`; its `pmp` is not made before the last step, so
+    // `malloced` says whether the C would have `malloc`ed it: the module's redesign).
     let mut bp: Option<BufRef> = None;
+    let mut malloced = false;
 
     let error: Errno = 'error_exit: {
         // Read the boot sector of the filesystem, and then check the boot signature. If not
@@ -428,6 +432,7 @@ pub fn msdosfs_mountfs<G: ProcGlue>(
 
         // pmp = malloc(sizeof *pmp, M_MSDOSFSMNT, M_WAITOK | M_ZERO): the structure is built
         // below; its export list, the mount's glue member, starts empty.
+        malloced = true;
         <G::FileGlue as FileGlue>::ufs_export_init(mp);
         let mut pm_flags = 0;
         let mut pm_curfat = 0;
@@ -714,6 +719,16 @@ pub fn msdosfs_mountfs<G: ProcGlue>(
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
     let _ = vop_close(devvp, omode, Cred::NOCRED, Some(p));
     let _ = vop_unlock(devvp);
+
+    // free(pmp, M_MSDOSFSMNT, 0): the C's request, made and freed here (the module's
+    // redesign, D-N5.7-U5).
+    if malloced {
+        drop(MArc::new(
+            M_MSDOSFSMNT,
+            M_WAITOK,
+            MaybeUninit::<Msdosfsmount<G>>::uninit(),
+        ));
+    }
     Err(error)
 }
 
@@ -1221,6 +1236,51 @@ mod tests {
         let mp = try_mount(p, 0).unwrap();
         assert_eq!(pmp_of(mp).pm_nmbrofclusters, 2031);
         unmount(p, mp);
+    }
+
+    /// A mount refused after the boot sector's read makes the C's one `M_MSDOSFSMNT` request,
+    /// of the published structure's block size, and frees it (D-N5.7-U5); one refused before
+    /// the read (the read failing, a device mounted already) makes none.
+    #[test]
+    fn a_refused_mount_makes_the_c_s_malloc_request() {
+        use crate::fs::msdosfs::msdosfsmount::M_MSDOSFSMNT;
+        use crate::testutil::{malloc_out, malloc_requests};
+        let (good, _) = sample(mkfat::FAT12_1M);
+        let (_g, p) = attach(good.clone());
+        // A mount: one request, its block in use while mounted.
+        let (n0, _) = malloc_requests(M_MSDOSFSMNT);
+        let out0 = malloc_out(M_MSDOSFSMNT);
+        let mp = try_mount(p, 0).unwrap();
+        let (n1, size) = malloc_requests(M_MSDOSFSMNT);
+        assert_eq!(n1, n0 + 1);
+        assert_eq!(malloc_out(M_MSDOSFSMNT) - out0, size as i64);
+        unmount(p, mp);
+        assert_eq!(malloc_out(M_MSDOSFSMNT), out0);
+        // Refused by a BPB check: the same request, of the same size, freed.
+        let mut bad = good.clone();
+        bad[13] = 3;
+        set_disk(bad);
+        assert_eq!(try_mount(p, 0).err(), Some(Errno::EINVAL));
+        assert_eq!(malloc_requests(M_MSDOSFSMNT), (n1 + 1, size));
+        assert_eq!(malloc_out(M_MSDOSFSMNT), out0);
+        // Refused before the read: the read failing, then a device mounted already.
+        set_disk(good);
+        FAIL_BLKNO.with(|c| c.set(0));
+        set_bdev_strategy(Some(failing_strategy));
+        assert_eq!(try_mount(p, 0).err(), Some(Errno::EIO));
+        assert_eq!(malloc_requests(M_MSDOSFSMNT).0, n1 + 1);
+        set_bdev_strategy(Some(testffs::disk_strategy));
+        let mp = try_mount(p, 0).unwrap();
+        let other = vfs_mount_alloc(None, &TEST_MSDOS_CONF);
+        assert_eq!(
+            msdosfs_mountfs(devvp(), other, p, &noargs()),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(malloc_requests(M_MSDOSFSMNT).0, n1 + 2, "the mount's alone");
+        vfs_unbusy(other);
+        vfs_mount_free(other);
+        unmount(p, mp);
+        assert_eq!(malloc_out(M_MSDOSFSMNT), out0);
     }
 
     #[test]
