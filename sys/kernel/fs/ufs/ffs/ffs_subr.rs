@@ -66,18 +66,29 @@
 //!   [`Superblock`]'s accessors and the kernel's `Inode<G>`; `ffs_bufatoff` returns the busy
 //!   buffer's token (`bread` of the kernel's buffer cache), as LZ's did since N5.5a2.
 //!   `ffs_fragacct` adds to `cg_frsum` through the cylinder group's view, the C's `u_int32_t`
-//!   arithmetic (LZ's `&[Cell<i32>]`). `ffs_vinit` joins at N5.5b2 with the vnode tables it
-//!   installs (`ffs_specvops`); until then `bsd`'s runs `bsd`'s ffs.
+//!   arithmetic (LZ's `&[Cell<i32>]`).
+//! - N5.5b2: `ffs_vinit` over the kernel's vnode: `v_op = &ffs_specvops` is the vnode's id of
+//!   the kernel's [`Ffs::SPECVOPS`] (`vops_id`), and the alias takes the inode's node from the
+//!   discarded vnode's slot (`take_node`/`set_node`: the inode's handle moves, its lock with
+//!   it, as the C moves `v_data`).
 
 use hal::sys::errno::Errno;
-use hal::sys::types::{Daddr, Off};
+use hal::sys::types::{Daddr, Dev, Off};
 
+use super::ffs_vfsops::Ffs;
 use super::fs::{AROUND, CgView, FRAGTBL, INSIDE, Superblock, blkoff, blksize, lblkno};
 use crate::assert::kpanic;
 use crate::fs::bio::{bread, brelse, buf_adjcnt};
 use crate::fs::buf::BufRef;
-use crate::fs::ufs::ufs::inode::Inode;
+use crate::fs::mount::Mount;
+use crate::fs::subr::{checkalias, vgone, vops_id, vrele};
+use crate::fs::ufs::ufs::dinode::ROOTINO;
+use crate::fs::ufs::ufs::inode::{Inode, vtoi};
+use crate::fs::vnode::{
+    VBAD, VBLK, VCHR, VDIR, VFIFO, VLNK, VNON, VREG, VROOT, VSOCK, Vnode, VopsId, iftovt,
+};
 use crate::proc::ProcGlue;
+use crate::tc::getmicrouptime;
 
 /// `ffs_bufatoff` (`iv_bufatoff`): the busy buffer with the contents of block `offset` from
 /// the beginning of directory `ip`, and the offset in it of the remaining space in the
@@ -181,6 +192,46 @@ pub fn ffs_isfreeblock(fs: &Superblock, cp: &[u8], h: Daddr) -> bool {
         1 => cp[h >> 3] & (0x01 << (h & 0x7)) == 0,
         _ => cp[h] == 0,
     }
+}
+
+/// `ffs_vinit`: initialize the vnode associated with a new inode, handle aliased vnodes.
+/// Returns the vnode to use, which replaces `vp` when a device vnode had an alias.
+pub fn ffs_vinit<G: ProcGlue>(
+    mntp: &'static Mount<G>,
+    vp: &'static Vnode<G>,
+) -> Result<&'static Vnode<G>, Errno> {
+    let mut vp = vp;
+    let ip = vtoi(vp);
+    vp.set_vtype(iftovt(ip.dip_mode()));
+    match vp.vtype() {
+        VCHR | VBLK => {
+            vp.set_ops_id(vops_id::<G>(&Ffs::<G>::SPECVOPS));
+            if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
+                // Discard unneeded vnode, but save its inode. Note that the lock is carried
+                // over in the inode to the replacement vnode.
+                if let Some(node) = vp.take_node() {
+                    nvp.set_node(node);
+                }
+                vp.set_ops_id(VopsId::SPEC);
+                vrele(vp);
+                vgone(vp);
+                // Reinitialize aliased inode.
+                vp = nvp;
+                ip.i_vnode.set(Some(vp));
+            }
+        }
+        // FIFO: vp->v_op = &ffs_fifovops (miscfs/fifofs, not ported); without FIFO:
+        VFIFO => return Err(Errno::EOPNOTSUPP),
+        VNON | VBAD | VSOCK | VLNK | VDIR | VREG => {}
+    }
+    if ip.i_number == ROOTINO {
+        vp.set_flag(vp.flag() | VROOT);
+    }
+    // Initialize modrev times.
+    let mtv = getmicrouptime();
+    let modrev = ((mtv.tv_sec as u64) << 32) | (mtv.tv_usec as u64).wrapping_mul(4294);
+    ip.i_modrev.set(modrev);
+    Ok(vp)
 }
 /* </CODE> */
 

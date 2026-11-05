@@ -8896,12 +8896,89 @@ rust = "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "redesigned"
-notes = "N5.5b1: only ffs_vtbl so far, as Ffs<G> and its VTBL constant implementing the kernel's InodeOps over the kernel's ffs functions; the mount, the vfsops and the vnode tables join at N5.5b2 (bsd's sys/ufs/ffs/ffs_vfsops.rs mounts every FFS until then)"
+notes = "N5.5b1: ffs_vtbl as Ffs<G> and its VTBL constant implementing the kernel's InodeOps over the kernel's ffs functions; N5.5b2: the whole of ffs_vfsops.c, generic over the glue (ffs_mountroot, ffs_mount, ffs_reload, ffs_validate, ffs_mountfs, the compatibility code, ffs_unmount, ffs_flushfiles, ffs_statfs, ffs_sync, ffs_vget, the file handles, ffs_sbupdate, ffs_init, ffs_sysctl) and impl Vfs for Ffs with its VFS constant, over the UFS mount's Superblock and the mount's typed slot"
 
 [[module.fn]]
 lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_VTBL"
 native = ["Ffs::VTBL"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_VFSOPS"
+native = ["Ffs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_INO_POOL"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_DINODE1_POOL"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_DINODE2_POOL"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::FFS_INIT_DONE"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::fs_allocsize"
+native = []
+kind = "dropped"
+reason = "the copy in core is the Superblock's words, sized by Superblock::new (fs.rs: at least struct fs, the disk's fs_sbsize otherwise)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::fs_in_buf"
+native = []
+kind = "dropped"
+reason = "the super-block is read out of its buffer as a copy of the on-disk struct fs (pod_from_bytes), no reference cast over the buffer"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::fs_strlcpy_fsmnt"
+native = ["sys/kernel/fs/ufs/ffs/fs.rs::Superblock::set_fsmnt"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::summary_allocsize"
+native = []
+kind = "dropped"
+reason = "the summary space is the Superblock's own array (fs.rs), sized and freed with it"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_vnops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_vnops.rs"]
+status = "redesigned"
+notes = "N5.5b2: ffs_read, ffs_write, ffs_fsync generic over the glue on the kernel's buffer tokens, Ffs's UfsFs impl and the VOPS and SPECVOPS constants (the UFS layer's composed tables); ffs_reclaim is the composed tables' reclaim (D-N5.5b-8)"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vnops.rs::FFS_VOPS"
+native = ["Ffs::VOPS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vnops.rs::FFS_SPECVOPS"
+native = ["Ffs::SPECVOPS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vnops.rs::ffs_reclaim"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ufs_common_slots"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/ffs/ffs_extern.rs"
+crate = "kernel"
+lz = ["sys/ufs/ffs/ffs_extern.rs"]
+status = "redesigned"
+notes = "N5.5b2: the CTL_VFS names (FFS_*, FFS_NAMES); LZ's pub use of the prototypes, tables and pools goes (their callers name the defining modules)"
 
 [[module]]
 rust = "sys/kernel/fs/vnode.rs"
@@ -12464,7 +12541,7 @@ reason = "N5.5a3: the UFS layer's test double (host tests and benches only, cfg(
 [[extra]]
 rust = "sys/kernel/fs/ufs/ffs/testffs.rs"
 crate = "kernel"
-reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the FFS1/FFS2 image builder moved from bsd's ffs_vfsops tests (over the on-disk abi_pod! Fs and Cg and CgView), and a mount of an image as far as N5.5b1 has ffs (the in-core Superblock, the summaries, the mount's UFS structure, a vget of ffs_vget's steps with the kernel's Ffs as the inodes' operations) over a block device of testfs whose strategy serves the image; N5.5b2's ffs_mountfs and ffs_vget replace the mount and the vget"
+reason = "N5.5b1: the kernel ffs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): newfs, the FFS1/FFS2 image builder moved from bsd's ffs_vfsops tests (over the on-disk abi_pod! Fs and Cg and CgView), and an image as the disk of a block device of testfs whose strategy serves it; since N5.5b2 mounted by the kernel's ffs_mountfs (attach, mount, setup, mount_root/unmount_root at the root for the system-call tests), its inodes made by ffs_vget"
 
 [[extra]]
 rust = "sys/kernel/fs/testfs.rs"

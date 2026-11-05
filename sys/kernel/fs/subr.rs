@@ -228,6 +228,14 @@ pub struct VfsTables<G: ProcGlue> {
     pub(super) syncer: Mutexed<Wheel<G>>,
     /// `rootvnode`: the root (i.e. "/") vnode.
     pub(super) rootvnode: Link<Vnode<G>>,
+    /// `rootvp`: the vnode of the root device (`rootdev`), made by the root file system's
+    /// `mountroot`.
+    pub(super) rootvp: Link<Vnode<G>>,
+    /// `swapdev_vp`: the vnode of the swap device (`swapdev`), made by `ffs_mountroot`.
+    pub(super) swapdev_vp: Link<Vnode<G>>,
+    /// `initialvnodes` (`conf/param.c`), as `vfsinit` was given it: the size the file systems'
+    /// hashes start from (`ufs_ihashinit`, through `ffs_init`'s `ufs_init`).
+    pub initialvnodes: AtomicI32,
     /// The device switch ([`super::spec::Devsw`]).
     pub(super) devsw: OnceStatic<&'static dyn super::spec::Devsw<G>>,
     /// `vfsconflist[]`: the configured file system types.
@@ -276,6 +284,9 @@ impl<G: ProcGlue> VfsTables<G> {
             clonemaps: TypedPool::new(),
             syncer: Mutexed::new(IPL_BIO, Wheel::new()),
             rootvnode: Link::new(),
+            rootvp: Link::new(),
+            swapdev_vp: Link::new(),
+            initialvnodes: AtomicI32::new(0),
             devsw: OnceStatic::new(),
             vfsconf: OnceStatic::new(),
             maxvfsconf: AtomicI32::new(0),
@@ -411,6 +422,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     super::cache::namecache_test_reset::<G>();
     crate::fs::ufs::ufs::ufs_vfsops::ufs_test_reset::<G>();
     t.rootvnode.set(None);
+    t.rootvp.set(None);
+    t.swapdev_vp.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }
 

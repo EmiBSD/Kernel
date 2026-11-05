@@ -65,7 +65,11 @@
 //!   tables. `namei_pool` and `nchinit` are `bsd`'s (the name cache and `namei`, N5.3), made
 //!   by `bsd`'s `vfsinit` before it calls this one.
 //! - `rootvnode` is a link of the tables (LZ's `AtomicPtr` and its `unsafe` deref,
-//!   vfs_init.rs:197, go).
+//!   vfs_init.rs:197, go). So are `rootvp` and `swapdev_vp` (`init_main.c`'s globals, LZ's
+//!   `AtomicPtr`s in `sys/kern/init_main.rs` with an `unsafe` deref each) since N5.5b2: the
+//!   kernel's `ffs_mountroot` makes them and its `ffs_mountfs` compares with `rootvp`; `bsd`'s
+//!   `rootvp()`/`set_rootvp()` are wrappers over these. `initialvnodes` is recorded in the
+//!   tables by [`vfsinit`] for the types' `vfs_init`s (`ffs_init`'s `ufs_init`).
 
 use core::sync::atomic::Ordering;
 
@@ -87,6 +91,26 @@ pub fn set_rootvnode<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
     vfs::<G>().rootvnode.set(vp);
 }
 
+/// `rootvp`: the vnode of the root device, `None` until a root file system is mounted.
+pub fn rootvp<G: ProcGlue>() -> Option<&'static Vnode<G>> {
+    vfs::<G>().rootvp.get()
+}
+
+/// `rootvp = vp`.
+pub fn set_rootvp<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
+    vfs::<G>().rootvp.set(vp);
+}
+
+/// `swapdev_vp`: the vnode of the swap device, `None` until made.
+pub fn swapdev_vp<G: ProcGlue>() -> Option<&'static Vnode<G>> {
+    vfs::<G>().swapdev_vp.get()
+}
+
+/// `swapdev_vp = vp`.
+pub fn set_swapdev_vp<G: ProcGlue>(vp: Option<&'static Vnode<G>>) {
+    vfs::<G>().swapdev_vp.set(vp);
+}
+
 /// Initialize the vnode structures and initialize each file system type of `table`
 /// (`vfsconflist[]`); `initialvnodes` is `conf/param.c`'s: `namei_pool`, the vnode table,
 /// the name cache, the types. `between` runs after the vnode table, where the C has
@@ -99,6 +123,7 @@ pub fn vfsinit<G: ProcGlue>(
     let t = vfs::<G>();
     // A second call (a test's) keeps the first table.
     let _ = t.vfsconf.set(table);
+    t.initialvnodes.store(initialvnodes, Ordering::Relaxed);
 
     // pool_init(&namei_pool, MAXPATHLEN, 0, IPL_NONE, PR_WAITOK, "namei", NULL); a second
     // call (a test's) keeps the first pool.

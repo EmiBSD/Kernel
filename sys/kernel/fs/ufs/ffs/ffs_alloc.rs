@@ -1580,7 +1580,7 @@ mod tests {
     use super::*;
     use crate::cred::Ucred;
     use crate::fs::subr::vput;
-    use crate::fs::ufs::ufs::dinode::{IFREG, ROOTINO};
+    use crate::fs::ufs::ufs::dinode::IFREG;
 
     /// The formats the tests build: FFS2's only with `option FFS2`.
     const FORMATS: &[Params] = if cfg!(feature = "ffs2") {
@@ -1728,7 +1728,7 @@ mod tests {
     fn an_inode_is_the_first_free_one_and_comes_back() {
         for &p in FORMATS {
             let (_g, th, mp) = setup(Image::new(p).finish());
-            let rootvp = super::super::testffs::vget(mp, ROOTINO).unwrap();
+            let rootvp = super::super::testffs::root(mp);
             let rip = vtoi(rootvp);
             let fs = rip.i_fs();
             let ni = fs.fs_cstotal_nifree();
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn an_ffs2_inode_past_the_initialised_blocks_initialises_the_next() {
         let (_g, _th, mp) = setup(Image::new(FFS2_1G).finish());
-        let rootvp = super::super::testffs::vget(mp, ROOTINO).unwrap();
+        let rootvp = super::super::testffs::root(mp);
         let rip = vtoi(rootvp);
         let fs = rip.i_fs();
         let inopb = fs.fs_inopb();
@@ -1804,7 +1804,7 @@ mod tests {
     #[test]
     fn freeing_a_free_inode_on_a_read_only_mount_is_only_reported() {
         let (_g, _th, mp) = setup(Image::new(FFS2_1G).finish());
-        let rootvp = super::super::testffs::vget(mp, ROOTINO).unwrap();
+        let rootvp = super::super::testffs::root(mp);
         let rip = vtoi(rootvp);
         let fs = rip.i_fs();
         fs.set_fs_ronly(1);
@@ -2049,7 +2049,7 @@ mod tests {
         let cg0 = ((Daddr::from(fs.fs_cblkno)) << fs.fs_fsbtodb) as usize * 512;
         img[cg0 + 4..cg0 + 8].fill(0);
         let (_g, _th, mp) = setup(img);
-        let rootvp = super::super::testffs::vget(mp, ROOTINO).unwrap();
+        let rootvp = super::super::testffs::root(mp);
         let rip = vtoi(rootvp);
         assert!(ffs_cgread(rip.i_fs(), &rip, 0).is_none());
         assert_eq!(ffs_alloccg(&rip, 0, 0, fs.fs_bsize), 0);

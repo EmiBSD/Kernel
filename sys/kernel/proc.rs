@@ -961,6 +961,14 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// which its run, sleep and signal adapters lend (N4.8 retires it with `curproc`'s).
     /// The witness is the kernel's alone ([`Placed`]).
     fn thread_placed(_p: Placed<'_, Self>) {}
+    /// `p` pinned, for a call that names a thread a `struct uio` holds (`uio_procp`) and links
+    /// it (`vn_fsizechk`'s `psignal`): `bsd`'s threads know their own `&'static` (`p_self`,
+    /// [`ProcGlue::thread_placed`]'s record, docs/SCAFFOLDING.md). `None` for a glue whose
+    /// threads do not (the tests'): the caller then takes the uio as the C takes a NULL
+    /// `uio_procp`.
+    fn thread_pin(_p: &Thread<Self>) -> Option<Pin<&Thread<Self>>> {
+        None
+    }
     /// `process_initialize`'s timeouts of `bsd`'s (`ps_realit_to`, `kern_time.c`, N4.8a).
     fn process_initialized(_pr: &Process<Self>) {}
     /// `process_new`'s `bsd` members: the unveils (`unveil_copy`, N8).

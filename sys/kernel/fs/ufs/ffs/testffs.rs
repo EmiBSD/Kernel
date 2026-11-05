@@ -20,12 +20,9 @@
 //! The kernel ffs's test fixtures (host tests and benches only, `cfg(any(test, feature =
 //! "doubles"))`; not an OpenBSD file): [`newfs`], the image builder (`newfs(8)`'s `mkfs.c`
 //! in small: the super-block, the cylinder groups, the root directory, files in it), and
-//! [`setup`], an image mounted under the kernel's ffs code as far as N5.5b1 has it: the
-//! super-block in core and the summaries read from the image, the mount's UFS structure in
-//! its typed slot, the inodes `vget` makes with the kernel's [`Ffs`] as their operations,
-//! and the device a block device of testfs's switch whose strategy reads and writes the
-//! image ([`disk`]). N5.5b2's `ffs_mountfs` and `ffs_vget` replace [`setup`]'s mount and
-//! `vget` (their steps are the C's, in the order the C takes them).
+//! [`setup`], an image mounted by the kernel's `ffs_mountfs` (since N5.5b2; N5.5b1's mount
+//! of its own steps and its `vget` went), its inodes made by `ffs_vget`, over a block device
+//! of testfs's switch whose strategy reads and writes the image ([`disk`]).
 
 use core::cell::{Cell, RefCell};
 
@@ -34,37 +31,32 @@ use std::sync::MutexGuard;
 use std::vec;
 use std::vec::Vec;
 
-use hal::intr::IPL_NONE;
-use hal::malloc::MArc;
-use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
-use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
-use hal::sys::types::{Ino, Uid};
+use hal::sys::mount::{MNT_LOCAL, MNT_SWAPPABLE, MOUNT_FFS, UfsArgs, VB_WAIT, VB_WRITE};
+use hal::sys::types::Mode;
 use hal::user::{pod_from_bytes, pod_to_bytes};
 
 use super::ffs_subr::{ffs_clrblock, ffs_isblock, ffs_setblock};
-use super::ffs_vfsops::Ffs;
+use super::ffs_vfsops::{Ffs, ffs_init, ffs_mountfs, ffs_statfs, ffs_vget};
 use super::fs::*;
 use crate::fs::bio::{DEV_BSHIFT, biodone};
 use crate::fs::buf::{B_READ, BufRef};
-use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_unbusy};
-use crate::fs::subr::{bdevvp, getnewvnode, vflushbuf, vput};
+use crate::fs::init::{rootvnode, set_rootvnode};
+use crate::fs::mount::{
+    Mount, Vfsconf, mountlist_insert_tail, vfs_busy, vfs_mount_alloc, vfs_mount_free, vfs_unbusy,
+};
+use crate::fs::subr::{bdevvp, vflushbuf, vput, vref, vrele};
+use crate::fs::syscalls::dounmount;
 use crate::fs::testfs::{TestGlue, set_bdev_strategy, test_thread_cached};
 use crate::fs::ufs::ufs::dinode::*;
 use crate::fs::ufs::ufs::dir::{
     DIRBLKSIZ, DT_DIR, DT_REG, Direct, d_namlen, d_reclen, dirsiz, set_d_reclen,
 };
-use crate::fs::ufs::ufs::inode::{
-    Dinode, Inode, InodeInit, Ufs1Din, Ufs2Din, dinode1_at, dinode2_at, set_dinode1_at,
-    set_dinode2_at, vtoi,
-};
-use crate::fs::ufs::ufs::testufs::{TEST_DEV, TEST_UFS_VOPS};
-use crate::fs::ufs::ufs::ufs_ihash::{ufs_ihashget, ufs_ihashinit, ufs_ihashins};
-use crate::fs::ufs::ufs::ufsmount::{UM_UFS1, UM_UFS2, Ufsmount, vfstoufs};
-use crate::fs::vnode::{VREG, VT_UFS, Vnode, iftovt};
-use crate::fs::vops::{Cred, Nd, Vfs};
+use crate::fs::ufs::ufs::inode::{dinode1_at, dinode2_at, set_dinode1_at, set_dinode2_at, vtoi};
+use crate::fs::ufs::ufs::testufs::TEST_DEV;
+use crate::fs::vnode::{VREG, Vnode};
+use crate::fs::vops::{Cred, vop_unlock};
 use crate::proc::Thread;
-use hal::sys::types::Mode;
 
 /// `DEV_BSIZE`.
 const DEV_BSIZE: usize = 1 << DEV_BSHIFT;
@@ -817,13 +809,6 @@ pub mod newfs {
     }
 }
 
-/// `ffs_ino_pool` of the fixture.
-static INODES: TypedPool<Inode<TestGlue>> = TypedPool::new();
-/// `ffs_dinode1_pool`.
-static DINO1: BoxPool<Ufs1Din> = BoxPool::new();
-/// `ffs_dinode2_pool`.
-static DINO2: BoxPool<Ufs2Din> = BoxPool::new();
-
 std::thread_local! {
     /// The disk's bytes.
     static DISK: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -831,18 +816,25 @@ std::thread_local! {
     static DEVVP: Cell<Option<&'static Vnode<TestGlue>>> = const { Cell::new(None) };
 }
 
-/// The fixture's `vfsops`: `vget` and `root`, the rest `EOPNOTSUPP` (N5.5b2's are `Ffs`'s).
-struct TestFfsVfs;
-
-/// The fixture's `vfsops`.
-static TEST_FFS_VFS: TestFfsVfs = TestFfsVfs;
-
-/// The fixture's configuration entry.
-static TEST_FFS_CONF: Vfsconf<TestGlue> = Vfsconf::new(&TEST_FFS_VFS, b"testffs", 97, MNT_LOCAL, 0);
+/// The fixture's configuration entry: the kernel's ffs as `vfsconflist[]` has it (`"ffs"`,
+/// type 1, `struct ufs_args`).
+pub static TEST_FFS_CONF: Vfsconf<TestGlue> = Vfsconf::new(
+    &Ffs::<TestGlue>::VFS,
+    MOUNT_FFS,
+    1,
+    MNT_LOCAL | MNT_SWAPPABLE,
+    UfsArgs::SIZE,
+);
 
 /// The disk's bytes as they are now (the cache's delayed writes not included: [`sync`]).
 pub fn disk() -> Vec<u8> {
     DISK.with(|d| d.borrow().clone())
+}
+
+/// The disk's bytes replaced by `image` (a test that changes the image under a mount, as
+/// `fsck` does before `mount -u -o reload`).
+pub fn set_disk(image: Vec<u8>) {
+    DISK.with(|d| *d.borrow_mut() = image);
 }
 
 /// The mount's device vnode.
@@ -863,10 +855,8 @@ pub fn sync(vps: &[&'static Vnode<TestGlue>]) {
 }
 
 /// A test thread over fresh VFS tables with page memory and a buffer cache, and `image`
-/// mounted (not on the mount list): `ffs_mountfs`'s steps as N5.5b1 has them (the
-/// super-block of the image's format, its summaries, `fs_contigdirs` of a read-write
-/// mount, the mount's UFS structure in its slot). The guard of the kernel's memory, the
-/// thread, the mount.
+/// mounted read-write by the kernel's `ffs_mountfs` (not on the mount list): the guard of
+/// the kernel's memory, the thread, the mount.
 pub fn setup(
     image: Vec<u8>,
 ) -> (
@@ -874,30 +864,23 @@ pub fn setup(
     &'static Thread<TestGlue>,
     &'static Mount<TestGlue>,
 ) {
+    let (g, p) = attach(image);
+    let mp = mount(p, 0).unwrap_or_else(|e| std::panic!("testffs: ffs_mountfs: {e:?}"));
+    (g, p, mp)
+}
+
+/// A test thread over fresh VFS tables with page memory and a buffer cache, its `uiomove`
+/// copying kernel iovecs, `ffs_init` run (the pools, the UFS layer), and `image` as the disk
+/// of testfs's block device [`TEST_DEV`]: nothing mounted yet ([`mount`]).
+pub fn attach(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
     let (g, p) = test_thread_cached(1 << 22, 192);
-    let _ = INODES.init_recorded(IPL_NONE, PR_WAITOK, "ffsino");
-    let _ = DINO1.init(IPL_NONE, PR_WAITOK, "dino1pl");
-    let _ = DINO2.init(IPL_NONE, PR_WAITOK, "dino2pl");
-    ufs_ihashinit::<TestGlue>(64);
-
-    // The super-block: SBLOCKSEARCH's first two places.
-    let (loc, ufs2) = [(SBLOCK_UFS2, true), (SBLOCK_UFS1, false)]
-        .into_iter()
-        .map(|(l, u)| (l as usize, u))
-        .find(|&(l, u)| {
-            let m = i32_at(&image, l + core::mem::offset_of!(Fs, fs_magic));
-            m == if u { FS_UFS2_MAGIC } else { FS_UFS1_MAGIC }
-        })
-        .unwrap_or_else(|| std::panic!("testffs: no super-block"));
-    let fs = newfs::super_block(&image, ufs2);
-    let sbsize = fs.fs_sbsize as usize;
-    let sb = Superblock::new(&image[loc..loc + sbsize]);
-    let cs = (fs.fs_csaddr << fs.fs_fsbtodb) as usize * DEV_BSIZE;
-    sb.write_csum_bytes(0, &image[cs..cs + sb.csum_len()]);
-    sb.set_fs_ronly(0);
-    sb.contigdirs_alloc();
+    // The UFS layer reads directories into kernel buffers (`ufs_dirempty`, `ufs_readlink`):
+    // the test glue's uiomove copies those bytes too.
+    crate::testutil::set_copy_kernel(true);
+    if let Err(e) = ffs_init(&TEST_FFS_CONF) {
+        std::panic!("testffs: ffs_init: {e:?}");
+    }
     DISK.with(|d| *d.borrow_mut() = image);
-
     let devvp = match bdevvp::<TestGlue>(TEST_DEV) {
         Ok(Some(vp)) => vp,
         Ok(None) => std::panic!("testffs: no device vnode"),
@@ -905,161 +888,74 @@ pub fn setup(
     };
     set_bdev_strategy(Some(disk_strategy));
     DEVVP.with(|c| c.set(Some(devvp)));
+    (g, p)
+}
+
+/// A new mount of the disk with the flags `flags` (`MNT_RDONLY`, `MNT_FORCE`), as
+/// `ffs_mount` makes one: `ffs_mountfs` on the device vnode, the statistics (`VFS_STATFS`),
+/// the mount unbusied.
+pub fn mount(p: &'static Thread<TestGlue>, flags: i32) -> Result<&'static Mount<TestGlue>, Errno> {
     let mp = vfs_mount_alloc(None, &TEST_FFS_CONF);
+    mp.set_flag(mp.flag() | flags);
+    mp.with_stat(|sp| sp.f_mntonname[..4].copy_from_slice(b"/ffs"));
+    let r = ffs_mountfs(devvp(), mp, p);
+    if r.is_ok() {
+        let mut st = mp.stat();
+        let _ = ffs_statfs(mp, &mut st, p);
+        mp.with_stat(|sp| *sp = st);
+    }
     vfs_unbusy(mp);
-    mp.with_stat(|st| {
-        st.f_iosize = fs.fs_bsize as u32;
-        st.f_bsize = fs.fs_fsize as u32;
-    });
-    let ump = Ufsmount::<TestGlue>::alloc();
-    ump.um_mountp.set(Some(mp));
-    ump.um_dev.set(TEST_DEV);
-    ump.um_devvp.set(Some(devvp));
-    ump.um_fstype.set(if ufs2 { UM_UFS2 } else { UM_UFS1 });
-    ump.um_nindir.set(fs.fs_nindir as u64);
-    ump.um_bptrtodb.set(fs.fs_fsbtodb as u64);
-    ump.um_seqinc.set(fs.fs_frag as u64);
-    ump.um_maxsymlinklen.set(fs.fs_maxsymlinklen as u32);
-    ump.um_savedmaxfilesize.set(fs.fs_maxfilesize);
-    ump.set_um_fs(sb);
-    mp.set_node(MArc::erase(ump));
-    (g, p, mp)
+    match r {
+        Ok(()) => Ok(mp),
+        Err(e) => {
+            vfs_mount_free(mp);
+            Err(e)
+        }
+    }
 }
 
-/// `ffs_vget`'s steps (N5.5b2 brings the real one): the vnode of inode `ino`, locked and
-/// referenced: the inode hash, a new vnode, the inode with the kernel's `Ffs` as its
-/// operations, its dinode read from its block, `ufs_ihashins`.
-pub fn vget(mp: &'static Mount<TestGlue>, ino: Ufsino) -> Result<&'static Vnode<TestGlue>, Errno> {
-    if let Some(vp) = ufs_ihashget::<TestGlue>(TEST_DEV, ino) {
-        return Ok(vp);
+/// A new mount of the disk at `/`, as `main` mounts the root: [`mount`], the mount list, the
+/// root vnode and the thread's current directory (testfs's root, which [`attach`]'s thread
+/// started with, released).
+pub fn mount_root(p: &'static Thread<TestGlue>, flags: i32) -> &'static Mount<TestGlue> {
+    let mp = mount(p, flags).unwrap_or_else(|e| std::panic!("testffs: ffs_mountfs: {e:?}"));
+    mountlist_insert_tail(mp);
+    let vp = root(mp);
+    if let Some(old) = rootvnode::<TestGlue>() {
+        vrele(old);
     }
-    let ump = vfstoufs(mp);
-    let fs = ump.um_fs();
-    let vp = getnewvnode(VT_UFS, Some(mp), &TEST_UFS_VOPS)?;
-    let ufs2 = ump.um_fstype.get() == UM_UFS2;
-    let Some(ip) = INODES.get_homed(PR_WAITOK, || {
-        Inode::new(InodeInit {
-            vnode: Some(vp),
-            mount: Some(mp),
-            ump: Some(ump.clone()),
-            devvp: Some(devvp()),
-            dev: TEST_DEV,
-            number: ino,
-            fstype: ump.um_fstype.get(),
-            nindir: ump.um_nindir.get(),
-            bptrtodb: ump.um_bptrtodb.get(),
-            seqinc: ump.um_seqinc.get(),
-            vtbl: Some(&Ffs::<TestGlue>::VTBL),
-            ..InodeInit::default()
-        })
-    }) else {
-        return Err(Errno::ENOMEM);
-    };
-    // The dinode, from the image (the device's buffer if the cache holds it).
-    let (mut t, r) = crate::fs::bio::bread(
-        &devvp().bufs,
-        fsbtodb(fs, ino_to_fsba(fs, ino)),
-        fs.fs_bsize(),
-    );
-    r?;
-    let idx = ino_to_fsbo(fs, ino);
-    let (mode, nlink) = if ufs2 {
-        let d = dinode2_at(t.data(), idx);
-        let Some(din) = DINO2.get(PR_WAITOK, || Ufs2Din::new(&d)) else {
-            return Err(Errno::ENOMEM);
-        };
-        ip.set_din(Dinode::Ufs2(din));
-        (Mode::from(d.di_mode), i32::from(d.di_nlink))
-    } else {
-        let d = dinode1_at(t.data(), idx);
-        let Some(din) = DINO1.get(PR_WAITOK, || Ufs1Din::new(&d)) else {
-            return Err(Errno::ENOMEM);
-        };
-        ip.set_din(Dinode::Ufs1(din));
-        (Mode::from(d.di_mode), i32::from(d.di_nlink))
-    };
-    crate::fs::bio::brelse(t);
-    ip.i_effnlink.set(nlink);
-    vp.set_node(PoolArc::erase(ip.clone()));
-    let _ = ufs_ihashins(ip.as_pin());
-    vp.set_vtype(iftovt(mode));
-    Ok(vp)
+    set_rootvnode(Some(vp));
+    vref(vp);
+    if let Some(old) = p.fd().replace_cdir(Some(vp)) {
+        vrele(old);
+    }
+    let _ = vop_unlock(vp);
+    mp
 }
 
-impl Vfs<TestGlue> for TestFfsVfs {
-    fn mount(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &[u8],
-        _: &mut [u8],
-        _: &mut Nd<'_, TestGlue>,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
+/// [`mount_root`] undone: the current directory and the root vnode released, then
+/// `dounmount` (`unmount(2)`'s path: `VFS_UNMOUNT`, the mount list, the mount freed).
+pub fn unmount_root(p: &'static Thread<TestGlue>, mp: &'static Mount<TestGlue>) {
+    if let Some(cdir) = p.fd().replace_cdir(None) {
+        vrele(cdir);
     }
-    fn start(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
+    if let Some(vp) = rootvnode::<TestGlue>() {
+        set_rootvnode::<TestGlue>(None);
+        vrele(vp);
     }
-    fn unmount(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
+    if let Err(e) = vfs_busy(mp, VB_WRITE | VB_WAIT) {
+        std::panic!("testffs: vfs_busy: {e:?}");
     }
-    fn root(&self, mp: &'static Mount<TestGlue>) -> Result<&'static Vnode<TestGlue>, Errno> {
-        vget(mp, ROOTINO)
+    if let Err(e) = dounmount(mp, 0, p) {
+        std::panic!("testffs: dounmount: {e:?}");
     }
-    fn quotactl(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: Uid,
-        _: usize,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn statfs(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &mut Statfs,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn sync(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: i32,
-        _: i32,
-        _: Cred<'_>,
-        _: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
-    fn vget(
-        &self,
-        mp: &'static Mount<TestGlue>,
-        ino: Ino,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        vget(mp, ino as Ufsino)
-    }
-    fn fhtovp(
-        &self,
-        _: &'static Mount<TestGlue>,
-        _: &Fid,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        Err(Errno::EOPNOTSUPP)
-    }
-    fn vptofh(&self, _: &'static Vnode<TestGlue>, _: &mut Fid) -> Result<(), Errno> {
-        Err(Errno::EOPNOTSUPP)
+}
+
+/// The root vnode of `mp`, locked and referenced (`vput` it): `VFS_ROOT`.
+pub fn root(mp: &'static Mount<TestGlue>) -> &'static Vnode<TestGlue> {
+    match ffs_vget(mp, u64::from(ROOTINO)) {
+        Ok(vp) => vp,
+        Err(e) => std::panic!("testffs: no root: {e:?}"),
     }
 }
 
@@ -1084,10 +980,7 @@ fn disk_strategy(mut t: BufRef) {
 /// `IFREG | 0644` with one link (what `ufs_makeinode` does next), its vnode locked and
 /// referenced (`vput` it).
 pub fn new_file(mp: &'static Mount<TestGlue>, p: &Thread<TestGlue>) -> &'static Vnode<TestGlue> {
-    let root = match vget(mp, ROOTINO) {
-        Ok(vp) => vp,
-        Err(e) => std::panic!("testffs: no root: {e:?}"),
-    };
+    let root = root(mp);
     let rip = vtoi(root);
     let vp = match super::ffs_alloc::ffs_inode_alloc(&rip, IFREG | 0o644, Cred::real(p.ucred())) {
         Ok(vp) => vp,

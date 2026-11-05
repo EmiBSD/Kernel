@@ -71,14 +71,21 @@
 //! ## Redesign
 //! - N5.5a: LZ's `UFS_INIT_DONE` static -> [`UfsTables::init_done`], beside the inode hash
 //!   it guards; `ufs_root` and `ufs_fhtovp` are the kernel's over its `VFS_VGET` and `vtoi`.
+//! - N5.5b2: FFS's pools (`ffs_ino_pool`, `ffs_dinode1_pool`, `ffs_dinode2_pool`) and
+//!   `ffs_init`'s `done`, LZ's statics of `sys/ufs/ffs/ffs_vfsops.rs`, are members of
+//!   [`UfsTables`] beside the inode hash (D-N5.5b-10): the kernel's ffs is generic over the
+//!   glue, and the glue's tables are the one place its globals can live; `ffs_init` makes them.
 
 use core::sync::atomic::AtomicBool;
 
+use hal::pool::{BoxPool, TypedPool};
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 
 use super::dinode::ROOTINO;
-use super::inode::{Ufid, vtoi};
+#[cfg(feature = "ffs2")]
+use super::inode::Ufs2Din;
+use super::inode::{Inode, Ufid, Ufs1Din, vtoi};
 use super::ufs_ihash::Ihash;
 use super::ufs_quota::DqTables;
 use crate::fs::mount::Mount;
@@ -88,7 +95,9 @@ use crate::fs::vops::VFS_VGET;
 use crate::proc::{ProcGlue, Thread};
 
 /// The UFS layer's globals of a glue: `ufs_init`'s `done` and the inode hash
-/// (`ufs_ihash.c`'s `ihashtbl`, `ihash`, `ihashkey`).
+/// (`ufs_ihash.c`'s `ihashtbl`, `ihash`, `ihashkey`), and FFS's (`ffs_vfsops.c`'s pools and
+/// `ffs_init`'s `done`, since N5.5b2: a static generic over the glue cannot exist, and these
+/// are the tables of the glue's inodes).
 pub struct UfsTables<G: ProcGlue> {
     /// `ufs_init`'s `done`: the UFS layer is initialised.
     pub init_done: AtomicBool,
@@ -96,6 +105,16 @@ pub struct UfsTables<G: ProcGlue> {
     pub(super) ihash: ReadMostly<Option<Ihash<G>>>,
     /// The dquot hash and free list, once `ufs_quota_init` made them.
     pub(super) dq: ReadMostly<Option<DqTables<G>>>,
+    /// `ffs_init`'s `done`: FFS's pools are made.
+    pub ffs_init_done: AtomicBool,
+    /// `ffs_ino_pool` (`"ffsino"`): FFS's inodes (recorded: `vtoi` counts a handle back from
+    /// an inode the vnode lends).
+    pub ffs_ino: TypedPool<Inode<G>>,
+    /// `ffs_dinode1_pool` (`"dino1pl"`): UFS1 dinodes.
+    pub ffs_dino1: BoxPool<Ufs1Din>,
+    /// `ffs_dinode2_pool` (`"dino2pl"`): UFS2 dinodes (`FFS2`).
+    #[cfg(feature = "ffs2")]
+    pub ffs_dino2: BoxPool<Ufs2Din>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -105,6 +124,11 @@ impl<G: ProcGlue> UfsTables<G> {
             init_done: AtomicBool::new(false),
             ihash: ReadMostly::new(None),
             dq: ReadMostly::new(None),
+            ffs_init_done: AtomicBool::new(false),
+            ffs_ino: TypedPool::new(),
+            ffs_dino1: BoxPool::new(),
+            #[cfg(feature = "ffs2")]
+            ffs_dino2: BoxPool::new(),
         }
     }
 }
@@ -165,8 +189,12 @@ pub fn ufs_init<G: ProcGlue>(initialvnodes: i32) -> Result<(), Errno> {
 }
 
 /// The UFS layer of `G` forgotten (a host test's file systems start afresh, as
-/// `setup_real_memory` gives each test fresh kernel memory): `init_done` cleared and the
-/// inode hash forgotten, never freed (testing.md).
+/// `setup_real_memory` gives each test fresh kernel memory): `init_done` and `ffs_init_done`
+/// cleared and the inode hash forgotten, never freed (testing.md). FFS's pools stay: a second
+/// `ffs_init` keeps the pools made first, whose items come from `kernel::testutil`'s heap
+/// doubles in the host tests, never from the memory a later test replaces, and no global names
+/// an item past its test (an inode lives in its vnode's slot and its mount's hash, both
+/// forgotten here and by `vfs_test_reset`).
 #[cfg(any(test, feature = "doubles"))]
 pub fn ufs_test_reset<G: ProcGlue>() {
     let t = &crate::fs::subr::vfs::<G>().ufs;
@@ -175,6 +203,8 @@ pub fn ufs_test_reset<G: ProcGlue>() {
     #[cfg(feature = "ufs_dirhash")]
     super::ufs_dirhash::dirhash_test_reset();
     t.init_done
+        .store(false, core::sync::atomic::Ordering::SeqCst);
+    t.ffs_init_done
         .store(false, core::sync::atomic::Ordering::SeqCst);
 }
 /* </CODE> */
