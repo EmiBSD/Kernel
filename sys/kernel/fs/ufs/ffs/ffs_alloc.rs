@@ -74,8 +74,9 @@
 //! - `ffs_alloc`'s `*bnp` is its result; `ffs_realloccg` returns the grown buffer and the new
 //!   block (the C's `*bpp` and `*blknop`): its one caller, `ffs_balloc`, always asks for both
 //!   (every `UFS_BUF_ALLOC` passes a `bpp`), so the C's `bpp == NULL` branches have no caller.
-//! - The C's `DIAGNOSTIC` "missing credential" check is made always: the C would follow the
-//!   NULL credential at the next line.
+//! - The C's `DIAGNOSTIC` "missing credential" check is made always: the C would follow
+//!   `NOCRED` (`(struct ucred *)-1`) at the next line. The kernel's check panics on
+//!   `FSCRED` and a NULL credential too, which the C would follow the same way.
 //! - `uprintf`'s message goes to the current thread's process (`curproc->p_p`), and nowhere
 //!   when no thread runs (the C would follow a NULL `curproc`).
 //! - The quota calls are `quota.rs`'s: `ufs_quota.rs`'s with feature `quota` (`option QUOTA`),
@@ -109,9 +110,10 @@ use hal::sys::types::{Daddr, Ino, Mode, Uid};
 
 use super::ffs_subr::{ffs_clrblock, ffs_fragacct, ffs_isblock, ffs_isfreeblock, ffs_setblock};
 use super::fs::{
-    AROUND, CgView, FRAGTBL, FS_OPTSPACE, FS_OPTTIME, FS_UFS2_MAGIC, INSIDE, Superblock, blkmap,
-    blknum, cbtocylno, cbtorpos, cgbase, cgdata, cgmeta, cgtod, clrbit, dtog, dtogd, fragnum,
-    fragoff, fragstoblks, freespace, fsbtodb, ino_to_cg, isclr, isset, nindir, numfrags, setbit,
+    AROUND, Cg, CgView, FRAGTBL, FS_OPTSPACE, FS_OPTTIME, FS_UFS2_MAGIC, INSIDE, Superblock,
+    blkmap, blknum, cbtocylno, cbtorpos, cgbase, cgdata, cgmeta, cgtod, clrbit, dtog, dtogd,
+    fragnum, fragoff, fragstoblks, freespace, fsbtodb, ino_to_cg, isclr, isset, nindir, numfrags,
+    setbit,
 };
 #[cfg(feature = "ffs2")]
 use super::fs::{ino_to_fsba, inopb};
@@ -868,7 +870,8 @@ pub fn ffs_hashalloc<G: ProcGlue>(
 }
 
 /// `ffs_cgread`: the busy buffer of cylinder group `cg`'s block, or `None` when it cannot be
-/// read or is not one.
+/// read or is not one (a block shorter than `struct cg`, from a bad `fs_cgsize`, is not one:
+/// the C would read its magic past the block).
 pub fn ffs_cgread<G: ProcGlue>(fs: &Superblock, ip: &Inode<G>, cg: u32) -> Option<BufRef> {
     let (mut t, error) = bread(
         &ip.i_devvp().bufs,
@@ -880,7 +883,7 @@ pub fn ffs_cgread<G: ProcGlue>(fs: &Superblock, ip: &Inode<G>, cg: u32) -> Optio
         return None;
     }
 
-    if !cgview(&mut t).cg_chkmagic() {
+    if t.bytes().len() < size_of::<Cg>() || !cgview(&mut t).cg_chkmagic() {
         brelse(t);
         return None;
     }

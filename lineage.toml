@@ -8831,12 +8831,12 @@ kind = "moved"
 
 [[module.fn]]
 lz = "sys/ufs/ffs/fs.rs::add"
-native = ["CsumWords::add_cs_nbfree", "CgView::add_cg_frsum"]
+native = ["fs_field", "cg_field", "CsumWords::add_cs_ndir", "CsumWords::add_cs_nbfree", "CsumWords::add_cs_nifree", "CsumWords::add_cs_nffree", "CgView::add_cg_frsum", "CgView::add_cg_clustersum", "CgView::add_cg_blktot", "CgView::add_cg_blks"]
 kind = "merged"
 
 [[module.fn]]
 lz = "sys/ufs/ffs/fs.rs::sub"
-native = ["CsumWords::add_cs_nbfree", "CgView::add_cg_frsum"]
+native = ["fs_field", "cg_field", "CsumWords::add_cs_ndir", "CsumWords::add_cs_nbfree", "CsumWords::add_cs_nifree", "CsumWords::add_cs_nffree", "CgView::add_cg_frsum", "CgView::add_cg_clustersum", "CgView::add_cg_blktot", "CgView::add_cg_blks"]
 kind = "merged"
 
 [[module]]

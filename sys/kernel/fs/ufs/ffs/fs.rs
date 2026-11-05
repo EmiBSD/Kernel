@@ -80,6 +80,11 @@
 //!   (asserted below).
 //! - A super-block whose `fs_sbsize` is smaller than `struct fs` (no `newfs` writes one) is
 //!   held in `struct fs`'s size, as LZ held it; the C's copy would end inside the structure.
+//! - The summary area is `fs_cssize` rounded up to whole fragments, where the C `malloc`s
+//!   `fs_cssize` bytes exactly (ffs_vfsops.c:734-738) and then reads whole fragments into
+//!   them (:740-748), past the block when `fs_cssize` is not a multiple of `fs_fsize`. So the
+//!   `UFS mount` row's bytes are the C's when it is, as on every `newfs` image (`newfs`
+//!   rounds `fs_cssize` up to a fragment).
 //! - The other macros are functions with the macros' names in lower case (`fsbtodb`,
 //!   `cgtod`, `ino_to_fsba`, `blkoff`, `lblkno`, `fragroundup`, `blksize`, ...), and
 //!   `NINDIR`/`INOPB`/`INOPF`/`NSPB`/`NSPF`/`CGSIZE`/`FS_KERNMAXFILESIZE` are `nindir`,
@@ -573,7 +578,8 @@ pub struct Superblock {
     /// store by a holder of the kernel lock (checked under `diagnostic`).
     words: MArray<AtomicU64>,
     /// `fs_csp` and `fs_maxcluster`: the C's one `space` of `malloc(M_UFSMNT)`, the cylinder
-    /// group summaries (`fs_cssize` bytes, whole fragments) and, when `fs_contigsumsize > 0`,
+    /// group summaries (`fs_cssize` bytes in whole fragments, the module's deviations) and,
+    /// when `fs_contigsumsize > 0`,
     /// one `int32_t` per cylinder group.
     space: MArray<AtomicI32>,
     /// The words of `space` the summaries take (`fs_maxcluster` starts there).
@@ -1181,16 +1187,11 @@ impl<'a> CgView<'a> {
                 && get_ne::<i32>(self.b, ocg::CG_MAGIC) == CG_MAGIC)
     }
 
-    /// The bytes from `off` to the end of the block, which must start past the header (the
-    /// new layout's whole `struct cg`, the old one's up to `cg_frsum`): `panic(9)` for an
-    /// offset outside the block, where the C would read or write past it.
+    /// The bytes from `off` to the end of the block: `panic(9)` for an offset past the
+    /// block, where the C would read or write past it (an offset inside the header is the
+    /// C's too: it stays inside the block).
     fn tail(&mut self, off: usize) -> &mut [u8] {
-        let hdr = if self.is_cg() {
-            size_of::<Cg>()
-        } else {
-            ocg::CG_BTOT
-        };
-        if off < hdr || off > self.b.len() {
+        if off > self.b.len() {
             kpanic(format_args!(
                 "cg map offset {off} out of range ({} bytes)",
                 self.b.len()
@@ -2021,16 +2022,6 @@ mod tests {
             .copy_from_slice(&300u32.to_ne_bytes());
         let mut cgp = CgView::new(&mut b);
         let _ = cgp.cg_blksfree();
-    }
-
-    #[test]
-    #[should_panic(expected = "cg map offset 100 out of range")]
-    fn a_map_inside_the_header_is_refused() {
-        let mut b = cg_block(256);
-        b[offset_of!(Cg, cg_iusedoff)..offset_of!(Cg, cg_iusedoff) + 4]
-            .copy_from_slice(&100u32.to_ne_bytes());
-        let mut cgp = CgView::new(&mut b);
-        let _ = cgp.cg_inosused();
     }
 
     #[test]
