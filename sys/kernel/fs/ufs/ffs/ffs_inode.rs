@@ -85,8 +85,9 @@ use super::fs::{
     nindir, numfrags,
 };
 use crate::assert::kpanic;
+use crate::fs::bio::bwrite;
+use crate::fs::bio::getblk_wait;
 use crate::fs::bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, btodb, buf_adjcnt};
-use crate::fs::bio::{bwrite, getblk};
 use crate::fs::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::fs::getcwd::M_TEMP;
 use crate::fs::subr::vinvalbuf;
@@ -484,11 +485,7 @@ pub fn ffs_indirtrunc<G: ProcGlue>(
     // have the on disk address, so we have to set the b_blkno field explicitly instead of
     // letting bread do everything for us.
     let vp = ip.itov();
-    let mut t = loop {
-        if let Some(t) = getblk(&vp.bufs, lbn, bsize, 0, INFSLP) {
-            break t;
-        }
-    };
+    let mut t = getblk_wait(&vp.bufs, lbn, bsize);
     if !t.buf().isset(B_DONE | B_DELWRI) {
         vp.bufs.owner().charge_io(false); // pay for read
         BCSTATS

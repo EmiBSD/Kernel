@@ -74,7 +74,6 @@
 //!   `getlbns` over the inode's `MNINDIR` (the C's `ufs_getlbns(vp, ..)` reaches the same
 //!   inode through `VTOI`, a count pair here).
 
-use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
@@ -82,22 +81,13 @@ use super::ext2fs::fsbtodb;
 use super::ext2fs_alloc::{ext2fs_alloc, ext2fs_blkfree, ext2fs_blkpref};
 use super::ext2fs_dinode::{NDADDR, NIADDR};
 use crate::assert::kpanic;
-use crate::fs::bio::{bdwrite, bread, brelse, btodb, bwrite, getblk};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{bdwrite, bread, brelse, btodb, bwrite};
 use crate::fs::buf::{B_CLRBUF, B_INVAL, B_SYNC, BufRef};
-use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode};
+use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Indir, Inode, le32_at};
 use crate::fs::ufs::ufs::ufs_bmap::getlbns;
-use crate::fs::vnode::Vnode;
 use crate::fs::vops::Cred;
 use crate::proc::ProcGlue;
-
-/// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
-fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> BufRef {
-    loop {
-        if let Some(t) = getblk(&vp.bufs, blkno, size, 0, INFSLP) {
-            return t;
-        }
-    }
-}
 
 /// `bwrite` with `B_SYNC` in `flags`, else `bdwrite`: "if required, write synchronously,
 /// otherwise use delayed write".
@@ -107,11 +97,6 @@ fn write_or_delay(t: BufRef, flags: i32) {
     } else {
         bdwrite(t);
     }
-}
-
-/// `bap[i]` of an indirect block's bytes, host order (`letoh32`).
-fn bap_get(b: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]])
 }
 
 /// `bap[i] = htole32(v)`.
@@ -158,7 +143,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
         d.i_e2fs_last_blk.set(newb);
         d.set_i_e2fs_block(bn as usize, newb.to_le());
         ip.set_flag(IN_CHANGE | IN_UPDATE);
-        let mut t = getblk_wait(vp, lbn, bsize);
+        let mut t = getblk_wait(&vp.bufs, lbn, bsize);
         t.buf().set_blkno(fsbtodb(fs, Daddr::from(newb)));
         if flags & B_CLRBUF != 0 {
             t.clear();
@@ -194,7 +179,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
             allociblk[nalloc] = nb;
             nalloc += 1;
             d.i_e2fs_last_blk.set(newb);
-            let mut t = getblk_wait(vp, indirs[1].in_lbn, bsize);
+            let mut t = getblk_wait(&vp.bufs, indirs[1].in_lbn, bsize);
             t.buf().set_blkno(fsbtodb(fs, Daddr::from(newb)));
             t.clear();
             // Write synchronously so that indirect blocks never point at garbage.
@@ -216,7 +201,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
                 brelse(t);
                 break 'fail e;
             }
-            nb = bap_get(t.data(), indirs[i].in_off as usize);
+            nb = le32_at(t.bytes(), indirs[i].in_off as usize);
             if i == num {
                 break t;
             }
@@ -237,7 +222,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
             allociblk[nalloc] = nb;
             nalloc += 1;
             d.i_e2fs_last_blk.set(newb);
-            let mut nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, indirs[i].in_lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, Daddr::from(nb)));
             nbp.clear();
             // Write synchronously so that indirect blocks never point at garbage.
@@ -269,7 +254,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
             d.i_e2fs_last_blk.set(newb);
             bap_set(t.data(), indirs[num].in_off as usize, nb);
             write_or_delay(t, flags);
-            let mut nbp = getblk_wait(vp, lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, Daddr::from(nb)));
             if flags & B_CLRBUF != 0 {
                 nbp.clear();
@@ -285,7 +270,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
             }
             nbp
         } else {
-            let nbp = getblk_wait(vp, lbn, bsize);
+            let nbp = getblk_wait(&vp.bufs, lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, Daddr::from(nb)));
             nbp
         };
@@ -319,7 +304,7 @@ pub fn ext2fs_buf_alloc<G: ProcGlue>(
             write_or_delay(t, flags);
         }
         for ind in &indirs[unwindidx + 1..=num] {
-            let t = getblk_wait(vp, ind.in_lbn, bsize);
+            let t = getblk_wait(&vp.bufs, ind.in_lbn, bsize);
             t.buf().set(B_INVAL);
             brelse(t);
         }
@@ -350,6 +335,7 @@ mod tests {
     use crate::fs::subr::vput;
     use crate::fs::ufs::ffs::testffs;
     use crate::fs::ufs::ufs::inode::vtoi;
+    use crate::fs::vnode::Vnode;
 
     /// `ext2fs_bmaparray`'s disk address of logical block `lbn` of `vp`.
     fn bmap(vp: &'static Vnode<crate::fs::testfs::TestGlue>, lbn: Daddr) -> Daddr {

@@ -92,12 +92,12 @@ use super::dinode::{NDADDR, NIADDR};
 use super::inode::{Indir, Inode, daddr32_at, daddr64_at, vtoi};
 use super::ufsmount::UM_UFS2;
 use crate::assert::kpanic;
-use crate::fs::bio::{BCSTATS, biowait, brelse, getblk, incore};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{BCSTATS, biowait, brelse, incore};
 use crate::fs::buf::{B_DELWRI, B_DONE, B_READ, BufRef};
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{IoBuf, vop_strategy};
 use crate::proc::ProcGlue;
-use hal::sleep::INFSLP;
 
 /// `MAXBSIZE`: the largest transfer (`<sys/param.h>`).
 const MAXBSIZE: i32 = 64 * 1024;
@@ -121,15 +121,6 @@ pub fn ufs_bmap<G: ProcGlue>(
     };
 
     bmaparray(vp, &ip, bn, bnp, None, None, runp)
-}
-
-/// The buffer of an indirect block, from `getblk` (which cannot fail without `slpflag`).
-fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> BufRef {
-    loop {
-        if let Some(t) = getblk(&vp.bufs, blkno, size, 0, INFSLP) {
-            return t;
-        }
-    }
 }
 
 /// `ufs_bmaparray`: the bmap conversion, and if requested the array of logical blocks which
@@ -232,7 +223,7 @@ fn bmaparray<G: ProcGlue>(
         }
 
         xap[x].in_exists = 1;
-        let mut t = getblk_wait(vp, metalbn, mp.iosize() as i32);
+        let mut t = getblk_wait(&vp.bufs, metalbn, mp.iosize() as i32);
         if t.buf().isset(B_DONE | B_DELWRI) {
             // Already there.
         } else if cfg!(feature = "diagnostic") && daddr == 0 {
@@ -424,8 +415,10 @@ mod tests {
 
     use hal::intr::IPL_NONE;
     use hal::pool::{BoxPool, PR_WAITOK, PoolArc, TypedPool};
+    use hal::sleep::INFSLP;
 
     use super::*;
+    use crate::fs::bio::getblk;
     use crate::fs::subr::vput;
     use crate::fs::testfs::{B, TestGlue, set_strategy_error, setup_root_cached, vget_node};
     use crate::fs::ufs::ufs::dinode::Ufs2Dinode;

@@ -91,7 +91,6 @@
 
 use core::sync::atomic::Ordering;
 
-use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
@@ -99,9 +98,10 @@ use super::ext2fs::fsbtodb;
 use super::ext2fs_dinode::{NDADDR, NIADDR};
 use super::ext2fs_extents::{Ext4ExtentPath, ext4_ext_find_extent};
 use crate::assert::kpanic;
-use crate::fs::bio::{BCSTATS, biowait, brelse, getblk, incore};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{BCSTATS, biowait, brelse, incore};
 use crate::fs::buf::{B_DELWRI, B_DONE, B_READ, BufRef};
-use crate::fs::ufs::ufs::inode::{Indir, vtoi};
+use crate::fs::ufs::ufs::inode::{Indir, le32_at, u32_at, vtoi};
 use crate::fs::ufs::ufs::ufs_bmap::getlbns;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{IoBuf, vop_strategy};
@@ -146,20 +146,6 @@ pub fn ext4_bmapext<G: ProcGlue>(
         *bnp = -1;
     }
     Ok(())
-}
-
-/// The buffer of an indirect block, from `getblk` (which cannot fail without `slpflag`).
-fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> BufRef {
-    loop {
-        if let Some(t) = getblk(&vp.bufs, blkno, size, 0, INFSLP) {
-            return t;
-        }
-    }
-}
-
-/// `((u_int32_t *)b_data)[i]` as stored (little-endian on disk): the raw block pointer.
-fn bap32(b: &[u8], i: usize) -> u32 {
-    u32::from_ne_bytes([b[4 * i], b[4 * i + 1], b[4 * i + 2], b[4 * i + 3]])
 }
 
 /// `ext2fs_bmaparray`: the bmap conversion, and if requested the array of logical blocks
@@ -254,7 +240,7 @@ pub fn ext2fs_bmaparray<G: ProcGlue>(
         }
 
         xap[x].in_exists = 1;
-        let mut t = getblk_wait(vp, metalbn, mp.iosize() as i32);
+        let mut t = getblk_wait(&vp.bufs, metalbn, mp.iosize() as i32);
         if t.buf().isset(B_DONE | B_DELWRI) {
             // Already there.
         } else if cfg!(feature = "diagnostic") && daddr == 0 {
@@ -278,7 +264,7 @@ pub fn ext2fs_bmaparray<G: ProcGlue>(
 
         let data = t.bytes();
         let off = xap[x].in_off as usize;
-        daddr = u32::from_le(bap32(data, off)) as i32;
+        daddr = le32_at(data, off) as i32;
         if num == 1
             && daddr != 0
             && let Some(runp) = runp.as_deref_mut()
@@ -286,7 +272,10 @@ pub fn ext2fs_bmaparray<G: ProcGlue>(
             let mut i = off + 1;
             while (i as u64) < ip.nindir()
                 && *runp < maxrun
-                && ip.is_sequential(Daddr::from(bap32(data, i - 1)), Daddr::from(bap32(data, i)))
+                && ip.is_sequential(
+                    Daddr::from(u32_at(data, i - 1)),
+                    Daddr::from(u32_at(data, i)),
+                )
             {
                 i += 1;
                 *runp += 1;

@@ -92,7 +92,7 @@ use crate::assert::kpanic;
 use crate::fs::bio::{bdwrite, bread, brelse, btodb};
 use crate::fs::ufs::ffs::fs::{clrbit, isclr, setbit};
 use crate::fs::ufs::ufs::dinode::{IFDIR, IFMT, Ufsino};
-use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, vtoi};
+use crate::fs::ufs::ufs::inode::{IN_CHANGE, IN_UPDATE, Inode, le32_at, vtoi};
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, VFS_VGET};
 use crate::log::LOG_ERR;
@@ -319,8 +319,7 @@ pub fn ext2fs_blkpref<G: ProcGlue>(
     if let Some(bap) = bap {
         let mut i = baps;
         while i >= 0 {
-            let o = i as usize * 4;
-            let b = u32::from_le_bytes([bap[o], bap[o + 1], bap[o + 2], bap[o + 3]]);
+            let b = le32_at(bap, i as usize);
             if b != 0 {
                 return Daddr::from(b.wrapping_add(1));
             }

@@ -1285,6 +1285,19 @@ pub fn daddr32_at(b: &[u8], i: usize) -> Daddr {
     Daddr::from(i32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]))
 }
 
+/// `((u_int32_t *)b_data)[i]` as stored: an EXT2FS block pointer of an indirect block or of
+/// the inode's `e2di_blocks` bytes, little-endian on disk (the C compares these raw in
+/// `is_sequential`).
+pub fn u32_at(b: &[u8], i: usize) -> u32 {
+    let o = i * 4;
+    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+/// `letoh32(((u_int32_t *)b_data)[i])`: an EXT2FS block pointer in host order.
+pub fn le32_at(b: &[u8], i: usize) -> u32 {
+    u32::from_le(u32_at(b, i))
+}
+
 /// `((int32_t *)b_data)[i] = v`.
 pub fn set_daddr32_at(b: &mut [u8], i: usize, v: Daddr) {
     b[i * 4..i * 4 + 4].copy_from_slice(&(v as i32).to_ne_bytes());

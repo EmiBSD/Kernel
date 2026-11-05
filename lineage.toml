@@ -8457,6 +8457,12 @@ lz = ["sys/ufs/ufs/ufs_bmap.rs"]
 status = "redesigned"
 notes = "N5.5a1: ufs_bmap, ufs_bmaparray and ufs_getlbns over the buffer cache's tokens (getblk, VOP_STRATEGY, biowait, brelse), the um_* words read from the inode's copies; getlbns, the arithmetic over a pointer count, its own function (tested against the C's paths)"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/ufs_bmap.rs::getblk_wait"
+native = []
+kind = "dropped"
+reason = "the getblk(vp, blkno, size, 0, INFSLP) loop is kernel::fs::bio::getblk_wait, the one helper of the buffer cache every UFS file system's caller uses (N5.6c1 review)"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/dirhash.rs"
 crate = "kernel"
@@ -8894,6 +8900,12 @@ lz = "sys/ufs/ffs/ffs_balloc.rs::write_realloc_buf"
 native = ["balloc_direct"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_balloc.rs::getblk_wait"
+native = []
+kind = "dropped"
+reason = "the getblk(vp, blkno, size, 0, INFSLP) loop is kernel::fs::bio::getblk_wait, the one helper of the buffer cache every UFS file system's caller uses (N5.6c1 review)"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ffs/ffs_inode.rs"
 crate = "kernel"
@@ -8960,6 +8972,12 @@ lz = "sys/ufs/ffs/ffs_vfsops.rs::summary_allocsize"
 native = []
 kind = "dropped"
 reason = "the summary space is the Superblock's own array (fs.rs), sized and freed with it"
+
+[[module.fn]]
+lz = "sys/ufs/ffs/ffs_vfsops.rs::getblk_wait"
+native = []
+kind = "dropped"
+reason = "the getblk(vp, blkno, size, 0, INFSLP) loop is kernel::fs::bio::getblk_wait, the one helper of the buffer cache every UFS file system's caller uses (N5.6c1 review)"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ffs/ffs_vnops.rs"
@@ -9206,12 +9224,36 @@ lz = "sys/ufs/ext2fs/ext2fs_balloc.rs::inode_bap"
 native = ["ext2fs_buf_alloc"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_balloc.rs::getblk_wait"
+native = []
+kind = "dropped"
+reason = "the getblk(vp, blkno, size, 0, INFSLP) loop is kernel::fs::bio::getblk_wait, the one helper of the buffer cache every UFS file system's caller uses (N5.6c1 review)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_balloc.rs::bap_get"
+native = []
+kind = "dropped"
+reason = "the UFS layer's block-pointer readers beside daddr32_at: ufs/inode.rs's u32_at (as stored, the C's raw compare) and le32_at (letoh32) (N5.6c1 review)"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_bmap.rs"
 crate = "kernel"
 lz = ["sys/ufs/ext2fs/ext2fs_bmap.rs"]
 status = "redesigned"
 notes = "N5.6c1 (unwired; the vnode operation ext2fs_bmap joins at N5.6c2): ext2fs_bmaparray and ext4_bmapext over the kernel cache's tokens, the indirect block read as the kernel's ufs_bmaparray reads it (getblk, vop_strategy of the token, biowait); 0 unsafe (LZ: 1)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_bmap.rs::getblk_wait"
+native = []
+kind = "dropped"
+reason = "the getblk(vp, blkno, size, 0, INFSLP) loop is kernel::fs::bio::getblk_wait, the one helper of the buffer cache every UFS file system's caller uses (N5.6c1 review)"
+
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_bmap.rs::bap32"
+native = []
+kind = "dropped"
+reason = "the UFS layer's block-pointer readers beside daddr32_at: ufs/inode.rs's u32_at (as stored, the C's raw compare) and le32_at (letoh32) (N5.6c1 review)"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_inode.rs"

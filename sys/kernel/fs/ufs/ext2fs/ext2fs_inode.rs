@@ -99,12 +99,13 @@ use super::ext2fs_alloc::ext2fs_blkfree;
 use super::ext2fs_balloc::ext2fs_buf_alloc;
 use super::ext2fs_dinode::{EXT2_MAXSYMLINKLEN, NDADDR, NIADDR, e2fs_isave};
 use crate::assert::kpanic;
-use crate::fs::bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, btodb, bwrite, getblk};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, btodb, bwrite};
 use crate::fs::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::fs::getcwd::M_TEMP;
 use crate::fs::subr::vinvalbuf;
 use crate::fs::ufs::ufs::dinode::{IFMT, IFREG};
-use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode};
+use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode, le32_at};
 use crate::fs::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG};
 use crate::fs::vops::{Cred, IoBuf, vop_strategy};
 use crate::proc::ProcGlue;
@@ -487,11 +488,7 @@ fn ext2fs_indirtrunc<G: ProcGlue>(
     // have the on disk address, so we have to set the b_blkno field explicitly instead of
     // letting bread do everything for us.
     let vp = ip.itov();
-    let mut t = loop {
-        if let Some(t) = getblk(&vp.bufs, lbn, bsize, 0, INFSLP) {
-            break t;
-        }
-    };
+    let mut t = getblk_wait(&vp.bufs, lbn, bsize);
     if !t.buf().isset(B_DONE | B_DELWRI) {
         vp.bufs.owner().charge_io(false); // pay for read
         BCSTATS
@@ -542,10 +539,7 @@ fn ext2fs_indirtrunc<G: ProcGlue>(
         (None, Some(t)) => t.bytes(),
         (None, None) => kpanic(format_args!("ext2fs_indirtrunc: no block pointers")),
     };
-    let bap = |i: i64| {
-        let o = i as usize * 4;
-        u32::from_le_bytes([baps[o], baps[o + 1], baps[o + 2], baps[o + 3]])
-    };
+    let bap = |i: i64| le32_at(baps, i as usize);
 
     // Recursively free totally unused blocks.
     let mut i = nindir(fs) - 1;

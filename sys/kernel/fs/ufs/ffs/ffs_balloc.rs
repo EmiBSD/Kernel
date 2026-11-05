@@ -87,7 +87,6 @@
 //!   come from `getlbns` over the inode's `MNINDIR` (the C's `ufs_getlbns(vp, ..)` reaches
 //!   the same inode through `VTOI`, a count pair here). Over the in-core `Superblock`.
 
-use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_WAIT;
 use hal::sys::types::{Daddr, Off};
@@ -99,7 +98,8 @@ use super::ffs_alloc::{ffs_alloc, ffs_blkfree, ffs_realloccg, ffs1_blkpref};
 use super::fs::{FS_UFS2_MAGIC, cgtod, dbtofsb, dtog};
 use super::fs::{blkoff, blksize, fragroundup, fsbtodb, lblkno, lblktosize};
 use crate::assert::kpanic;
-use crate::fs::bio::{bawrite, bdwrite, bread, brelse, btodb, buf_adjcnt, bwrite, getblk};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{bawrite, bdwrite, bread, brelse, btodb, buf_adjcnt, bwrite};
 use crate::fs::buf::{B_CLRBUF, B_SYNC, BufRef};
 #[cfg(feature = "ffs2")]
 use crate::fs::buf::{B_DELWRI, B_INVAL};
@@ -113,15 +113,6 @@ use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, vop_fsync};
 use crate::proc::ProcGlue;
 use crate::vm::vnode::uvm_vnp_setsize;
-
-/// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
-fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> BufRef {
-    loop {
-        if let Some(t) = getblk(&vp.bufs, blkno, size, 0, INFSLP) {
-            return t;
-        }
-    }
-}
 
 /// `VOP_FSYNC(vp, p->p_ucred, MNT_WAIT, p)` with `curproc`.
 fn fsync_wait<G: ProcGlue>(vp: &'static Vnode<G>) {
@@ -240,7 +231,7 @@ fn balloc_direct<G: ProcGlue>(
             Ok(b) => b,
             Err(e) => return Some(Err(e)),
         };
-        let mut t = getblk_wait(vp, lbn, bsize);
+        let mut t = getblk_wait(&vp.bufs, lbn, bsize);
         if nsize < bsize {
             t.buf().set_bcount(i64::from(nsize));
         }
@@ -308,7 +299,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
 
             allociblk[nalloc] = nb;
             nalloc += 1;
-            let mut t = getblk_wait(vp, indirs[1].in_lbn, bsize);
+            let mut t = getblk_wait(&vp.bufs, indirs[1].in_lbn, bsize);
             t.buf().set_blkno(fsbtodb(fs, nb));
             t.clear();
 
@@ -349,7 +340,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
             };
             allociblk[nalloc] = nb;
             nalloc += 1;
-            let mut nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, indirs[i].in_lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, nb));
             nbp.clear();
 
@@ -380,7 +371,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
                 }
             };
             // *allocblk++ = nb: nothing reads it on the way out.
-            let mut nbp = getblk_wait(vp, lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, nb));
             if flags & B_CLRBUF != 0 {
                 nbp.clear();
@@ -397,7 +388,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
                 Err(e) => break 'fail e,
             }
         } else {
-            let t = getblk_wait(vp, lbn, bsize);
+            let t = getblk_wait(&vp.bufs, lbn, bsize);
             t.buf().set_blkno(fsbtodb(fs, nb));
             t
         };
@@ -509,7 +500,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
 
             allociblk[nalloc] = nb;
             nalloc += 1;
-            let mut t = getblk_wait(vp, indirs[1].in_lbn, bsize);
+            let mut t = getblk_wait(&vp.bufs, indirs[1].in_lbn, bsize);
             t.buf().set_blkno(fsbtodb(fs, nb));
             t.clear();
 
@@ -558,7 +549,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
             };
             allociblk[nalloc] = nb;
             nalloc += 1;
-            let mut nbp = getblk_wait(vp, indirs[i].in_lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, indirs[i].in_lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, nb));
             nbp.clear();
 
@@ -595,7 +586,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
             };
             // *allocblk++ = nb: nothing reads it on the way out.
 
-            let mut nbp = getblk_wait(vp, lbn, bsize);
+            let mut nbp = getblk_wait(&vp.bufs, lbn, bsize);
             nbp.buf().set_blkno(fsbtodb(fs, nb));
             if flags & B_CLRBUF != 0 {
                 nbp.clear();
@@ -620,7 +611,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
                 Err(e) => break 'fail e,
             }
         } else {
-            let mut t = getblk_wait(vp, lbn, bsize);
+            let mut t = getblk_wait(&vp.bufs, lbn, bsize);
             t.buf().set_blkno(fsbtodb(fs, nb));
             t.clear();
             t
@@ -653,11 +644,11 @@ pub fn ffs2_balloc<G: ProcGlue>(
                 break;
             }
 
-            let bp = getblk_wait(vp, indirs[i as usize].in_lbn, bsize);
+            let bp = getblk_wait(&vp.bufs, indirs[i as usize].in_lbn, bsize);
             if bp.buf().isset(B_DELWRI) {
                 let nb = fsbtodb(fs, cgtod(fs, dtog(fs, dbtofsb(fs, bp.buf().blkno()))));
                 let _ = bwrite(bp);
-                let bp = getblk_wait(ip.i_devvp(), nb, fs.fs_cgsize());
+                let bp = getblk_wait(&ip.i_devvp().bufs, nb, fs.fs_cgsize());
                 if bp.buf().isset(B_DELWRI) {
                     let _ = bwrite(bp);
                 } else {
@@ -689,7 +680,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
         }
 
         for i in (unwindidx + 1)..=num {
-            let bp = getblk_wait(vp, indirs[i as usize].in_lbn, bsize);
+            let bp = getblk_wait(&vp.bufs, indirs[i as usize].in_lbn, bsize);
             bp.buf().set(B_INVAL);
             brelse(bp);
         }
