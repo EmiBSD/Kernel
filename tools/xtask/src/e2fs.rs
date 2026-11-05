@@ -34,6 +34,10 @@
 //!
 //! e2fsprogs is Homebrew's keg-only formula `e2fsprogs`: its tools are located only through
 //! `brew --prefix e2fsprogs` (`<prefix>/sbin/e2fsck`, `<prefix>/sbin/debugfs`), docs/SETUP.md.
+//!
+//! An architecture `$EMIBSD_ARCHS` leaves out (decision 44) prints the `SKIPPED (decision
+//! 44)` line of its boots (`boot::skip_disabled`) and succeeds: its smoke boots never wrote
+//! the disk (N5.6c3; before, the amd64 step of `smoke-ext2fs` failed in a fresh worktree).
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -176,8 +180,13 @@ fn e2fsprogs_sbin() -> Result<PathBuf> {
     Ok(sbin)
 }
 
-/// `cargo xtask e2fsck` (module docs). `cats` holds the `PATH=TEXT` pairs.
+/// `cargo xtask e2fsck` (module docs). `cats` holds the `PATH=TEXT` pairs. An architecture
+/// `$EMIBSD_ARCHS` leaves out (decision 44) is skipped with `boot::skip_disabled`'s line, as
+/// its boots are: nothing wrote its disk.
 pub fn e2fsck(root: &Path, arch: Arch, set: Option<&str>, cats: &[&str]) -> Result<()> {
+    if boot::skip_disabled("e2fsck", arch)? {
+        return Ok(());
+    }
     let sbin = e2fsprogs_sbin()?;
     let disk = boot::disk_path(root, arch, set);
     let part = find_partition_a(&disk)?;
@@ -290,6 +299,18 @@ mod tests {
         assert!(ext2_partition(&label(7), 0).is_err());
         assert!(ext2_partition(&[0u8; 512], 0).is_err());
         assert!(ext2_partition(&label(FS_EXT2FS), 16).is_err());
+    }
+
+    /// A disabled architecture's check is skipped (no disk read, no e2fsprogs needed); an
+    /// enabled one's looks for its disk, which this root does not have.
+    #[test]
+    fn a_disabled_architecture_is_skipped() -> Result<()> {
+        let root = Path::new("/nonexistent/emibsd-e2fsck-test");
+        for arch in [Arch::Amd64, Arch::Arm64] {
+            let r = e2fsck(root, arch, Some("ext2fs"), &[]);
+            assert_eq!(r.is_ok(), !boot::arch_enabled(arch)?, "{}", arch.name());
+        }
+        Ok(())
     }
 
     #[test]
