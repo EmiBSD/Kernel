@@ -97,6 +97,8 @@ use super::ufs_vnops::{UfsSpecVnops, UfsVnops};
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
 #[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs_dinode::Ext2Inode;
+#[cfg(feature = "ext2fs")]
 use crate::fs::ufs::ext2fs::ext2fs_vnops::{Ext2fsSpecVnops, Ext2fsVnops};
 use crate::fs::ufs::ffs::ffs_vfsops::Ffs;
 #[cfg(feature = "mfs")]
@@ -145,6 +147,14 @@ pub struct UfsTables<G: ProcGlue> {
     /// `ext2fs_specvops`: the operations of a device special file on an ext2fs (N5.6c2).
     #[cfg(feature = "ext2fs")]
     pub ext2fs_specvops: Ext2fsSpecVnops<G>,
+    /// `ext2fs_inode_pool` (`"ext2inopl"`): EXT2FS's inodes (recorded, as `ffs_ino`), made by
+    /// `ext2fs_init` (N5.6c3).
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_ino: TypedPool<Inode<G>>,
+    /// `ext2fs_dinode_pool` (`"ext2dinopl"`): EXT2FS's dinodes, each with the inode's
+    /// `inode_ext.e2fs` members (`Ext2Inode`, N5.6c1).
+    #[cfg(feature = "ext2fs")]
+    pub ext2fs_dino: BoxPool<Ext2Inode>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -167,6 +177,10 @@ impl<G: ProcGlue> UfsTables<G> {
             ext2fs_vops: Ext2fsVnops::new(),
             #[cfg(feature = "ext2fs")]
             ext2fs_specvops: Ext2fsSpecVnops::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_ino: TypedPool::new(),
+            #[cfg(feature = "ext2fs")]
+            ext2fs_dino: BoxPool::new(),
         }
     }
 }

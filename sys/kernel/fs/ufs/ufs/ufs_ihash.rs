@@ -212,6 +212,12 @@ fn unlinked_and_writable<G: ProcGlue>(vp: &Vnode<G>, ip: &Inode<G>) -> bool {
     // XXX DIP does not cover ext2fs so hack around this for now since this is using
     // ufs_ihashget as well.
     let unlinked = if vp.tag() == VT_EXT2FS {
+        #[cfg(feature = "ext2fs")]
+        if !ip.din_is_null() {
+            // An unsigned 16 bits: `<= 0` is `== 0`.
+            return ip.i_e2din().i_e2fs_nlink() == 0 && !rdonly;
+        }
+        // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
         match <G::FileGlue as FileGlue>::inode_e2fs_nlink(&ip.g) {
             Some(n) => n <= 0,
             None => kpanic(format_args!("ufs_ihashget: an ext2fs inode of no ext2fs")),

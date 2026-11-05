@@ -960,8 +960,8 @@ pub fn root(mp: &'static Mount<TestGlue>) -> &'static Vnode<TestGlue> {
 }
 
 /// The disk's `d_strategy`: the buffer's bytes in or out of the image at `b_blkno`, then
-/// `biodone`.
-fn disk_strategy(mut t: BufRef) {
+/// `biodone` (testext2fs's failing strategy falls back to it).
+pub fn disk_strategy(mut t: BufRef) {
     {
         let at = t.buf().blkno() as usize * DEV_BSIZE;
         let n = t.buf().bcount() as usize;

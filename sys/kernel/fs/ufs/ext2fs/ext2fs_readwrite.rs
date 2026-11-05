@@ -555,5 +555,75 @@ mod tests {
         drop(ip);
         vput(vp);
     }
+
+    /// An iovec of `n` bytes whose copy fails (below 4 GiB, outside the copy double's foreign
+    /// run: `kcopy_in` answers `EFAULT`, as an unmapped page answers copyin).
+    fn bad(n: usize) -> Iovec {
+        Iovec {
+            iov_base: core::ptr::without_provenance_mut(0x1000),
+            iov_len: n,
+        }
+    }
+
+    #[test]
+    fn a_write_past_the_largest_file_is_efbig() {
+        let (_g, p) = attach(newfs::image(false));
+        let mp = mount(0);
+        let vp = new_file(mp, p);
+        let max = vtoi(vp).i_e2fs().e2fs_maxfilesize.get();
+        let cred = Cred::real(p.ucred());
+        // The C's test: the end of the transfer past `e2fs_maxfilesize`, before vn_fsizechk.
+        assert_eq!(write(p, vp, max, b"x", cred), (Err(Errno::EFBIG), 1));
+        assert_eq!(write(p, vp, max - 1, b"x", cred).0, Ok(()));
+        assert_eq!(ext2fs_size(&vtoi(vp)), max as u64);
+        let _ = ext2fs_truncate(&vtoi(vp), 0, 0, cred);
+        vput(vp);
+    }
+
+    #[test]
+    fn io_unit_truncates_and_rewinds_a_failed_write() {
+        let (_g, p) = attach(newfs::image(false));
+        let mp = mount(0);
+        let cred = Cred::real(p.ucred());
+        for ioflag in [0, IO_UNIT] {
+            let vp = new_file(mp, p);
+            let ip = vtoi(vp);
+            let data = newfs::pattern(newfs::B, 5);
+            // A whole block copied, then a copy that fails in the second block.
+            let mut iovs = [
+                Iovec {
+                    iov_base: data.as_ptr().cast_mut().cast(),
+                    iov_len: data.len(),
+                },
+                bad(10),
+            ];
+            let mut uio = Uio {
+                uio_iov: &mut iovs,
+                uio_offset: 0,
+                uio_resid: newfs::B + 10,
+                uio_segflg: crate::uio::UioSeg::UIO_SYSSPACE,
+                uio_rw: crate::uio::UioRw::UIO_WRITE,
+                uio_procp: None,
+            };
+            let r = ext2fs_write(vp, &mut uio, ioflag, cred);
+            let (off, resid) = (uio.uio_offset, uio.uio_resid);
+            assert_eq!(r, Err(Errno::EFAULT));
+            if ioflag == 0 {
+                // What was moved stays, and the size the second block's pass had set.
+                assert_eq!((off, resid), (newfs::B as Off, 10));
+                assert_eq!(ext2fs_size(&ip), newfs::B as u64 + 10);
+                assert_eq!(read(p, vp, 0, newfs::B).1, data);
+            } else {
+                // The file is truncated back to its size before the write (its blocks freed)
+                // and the uio rewound as if nothing had been moved.
+                assert_eq!((off, resid), (0, newfs::B + 10));
+                assert_eq!(ext2fs_size(&ip), 0);
+                assert_eq!(ip.i_e2din().i_e2fs_nblock(), 0);
+            }
+            let _ = ext2fs_truncate(&ip, 0, 0, cred);
+            drop(ip);
+            vput(vp);
+        }
+    }
 }
 /* </TESTS> */

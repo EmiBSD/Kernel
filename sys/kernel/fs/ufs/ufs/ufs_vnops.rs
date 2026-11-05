@@ -148,7 +148,6 @@ use super::ufs_lookup::{
     buf_alloc, bufatoff, ufs_checkpath, ufs_dirempty, ufs_direnter, ufs_dirremove, ufs_dirrewrite,
     ufs_lookup, ufs_makedirentry, vmount,
 };
-use super::ufsmount::UM_EXT2FS;
 use crate::assert::kpanic;
 use crate::clock::Timespec;
 use crate::cred::{Ucred, groupmember, suser_ucred};
@@ -169,6 +168,10 @@ use crate::fs::namei::{
 };
 use crate::fs::spec::{spec_close, spec_read, spec_write};
 use crate::fs::subr::{vaccess, vgone, vnoperm, vput, vref, vrele};
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs_extern::is_ext2_vnode;
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::ext2fs_inode::{ext2fs_itimes, ext2fs_size};
 use crate::fs::vnode::{
     IO_NODELOCKED, IO_SYNC, LK_EXCLUSIVE, LK_RWFLAGS, VA_UTIMES_CHANGE, VA_UTIMES_NULL, VBAD, VBLK,
     VCHR, VDIR, VEXEC, VFIFO, VLNK, VN_KNOTE, VNON, VNOVAL, VREG, VSOCK, VTEXT, VWRITE, Vattr,
@@ -330,8 +333,14 @@ pub(in crate::fs::ufs) fn itimes<G: ProcGlue>(vp: &'static Vnode<G>, ip: &Inode<
     }
 
     if !rdonly(vp) {
-        if ip.fstype() == UM_EXT2FS {
-            <G::FileGlue as FileGlue>::ext2fs_itimes(ip);
+        #[cfg(feature = "ext2fs")]
+        if is_ext2_vnode(vp) {
+            if ip.din_is_null() {
+                // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
+                <G::FileGlue as FileGlue>::ext2fs_itimes(ip);
+            } else {
+                ext2fs_itimes(ip);
+            }
             // goto out
             ip.clr_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
             return;
@@ -2018,11 +2027,17 @@ impl<G: ProcGlue> Filter<G> for UfsRead {
         }
         let ip = vtoi(vp);
 
-        let size = if ip.fstype() == UM_EXT2FS {
+        #[cfg(feature = "ext2fs")]
+        let size = if !is_ext2_vnode(vp) {
+            ip.dip_size() as i64
+        } else if ip.din_is_null() {
+            // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
             <G::FileGlue as FileGlue>::ext2fs_size(&ip) as i64
         } else {
-            ip.dip_size() as i64
+            ext2fs_size(&ip) as i64
         };
+        #[cfg(not(feature = "ext2fs"))]
+        let size = ip.dip_size() as i64;
         kn.kn_data().set(size - foffset(&kn.fp()));
         if kn.kn_data().get() == 0 && kn.kn_sfflags.get() & NOTE_EOF != 0 {
             kn.kn_fflags().set(kn.kn_fflags().get() | NOTE_EOF);

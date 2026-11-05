@@ -9343,6 +9343,13 @@ native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::RenameExit"]
 kind = "merged"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/ext2fs/ext2fs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.6c3: ext2fs_vfsops as Ext2fsVfs<G>: Vfs<G> (the Ffs<G> shape; named Ext2fsVfs since the on-disk struct ext2fs is Ext2fs), the C's functions generic over the glue in its order; the in-core super block the UFS mount's UfsSuper::Ext2 (no malloc'ed MExt2fs, no &'static); the pools UfsTables members; e2fs_sbfill in the C's 32-bit widths; ext2fs_vget's vref before ufs_ihashins (LZ's deviation, the user's decision of 2026-11-05); 0 unsafe (LZ: 13)"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
