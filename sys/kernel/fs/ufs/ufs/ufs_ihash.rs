@@ -67,16 +67,16 @@
 //!   `i_e2fs_nlink`, an unsigned 16 bits, so `<= 0` is `== 0`) reads the count from the
 //!   inode's `Dinode::Ext2` (N5.6c3; before, from the glue's `FileGlue::inode_e2fs_nlink`).
 //! - `arc4random_buf(&ihashkey, ..)` is four `arc4random()` words of the same generator (the
-//!   kernel reaches `rnd.c` a word at a time, `hal::random`).
+//!   kernel reaches `rnd.c` a word at a time, `hal::random`): `fs::subr::siphash_key`, shared
+//!   with msdosfs's denode hash since N5.7c2.
 //! - A chain is a `PinList`, 40 bytes (its head and the kernel lock's key) where the C's
 //!   `LIST_HEAD` is 8, so the table `hashinit` makes in `M_UFSMNT` is about five times the C's
 //!   and `vmstat -m`'s "UFS mount" MemUse grows by that much. No `diff-openbsd` scenario
 //!   prints it; recorded here, not changed (a pool's or a malloc type's size follows its type,
 //!   the standing rule).
-//! - `hashinit` is written in `ufs_ihashinit`, as kernel::proc's and kernel::vm::aobj's are
-//!   in theirs, where the C has one, kern_subr.c's; neither private one fits without a new
-//!   shared function over the malloc type and the bucket (one kernel `hashinit` for the
-//!   three is N12's list).
+//! - `hashinit` is the kernel's shared `fs::subr::hashinit` over the chains' adapter (N5.7c2,
+//!   msdosfs's denode hash its other user), the C's kern_subr.c one; kernel::proc's and
+//!   kernel::vm::aobj's private ones (other buckets) stay N12's list.
 //!
 //! ## Redesign
 //! - LZ's chains of `sys/queue.rs` `ListHead`s in a `StaticCell`, linked and unlinked in
@@ -102,7 +102,6 @@ use core::pin::Pin;
 use hal::klock;
 use hal::malloc::{M_WAITOK, MArray};
 use hal::pinlist::PinList;
-use hal::random::arc4random;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
 use hal::sys::types::Dev;
@@ -113,7 +112,7 @@ use super::inode::{IN_HASHED, Inode};
 use super::ufsmount::M_UFSMNT;
 use crate::assert::kpanic;
 use crate::file::FileGlue;
-use crate::fs::subr::{vfs, vget, vput};
+use crate::fs::subr::{hashinit, siphash_key, vfs, vget, vput};
 #[cfg(feature = "ext2fs")]
 use crate::fs::ufs::ext2fs::ext2fs_extern::is_ext2_vnode;
 use crate::fs::vnode::{LK_EXCLUSIVE, Vnode};
@@ -152,23 +151,13 @@ fn with_ihash<G: ProcGlue, R>(f: impl FnOnce(&Ihash<G>) -> R) -> R {
 /// `ufs_ihashinit`: initialize inode hash table: `hashinit(initialvnodes, M_UFSMNT,
 /// M_WAITOK, &ihash)` and a random key.
 pub fn ufs_ihashinit<G: ProcGlue>(initialvnodes: i32) {
-    if initialvnodes <= 0 {
-        kpanic(format_args!("hashinit: bad cnt"));
-    }
-    let n = (initialvnodes as usize).next_power_of_two();
-    let Some(tbl) = MArray::new(M_UFSMNT, M_WAITOK, n, |_| PinList::new()) else {
+    let Some((tbl, mask)) = hashinit(initialvnodes, M_UFSMNT, M_WAITOK) else {
         kpanic(format_args!("ufs_ihashinit: no memory"));
     };
-    // arc4random_buf(&ihashkey, sizeof(ihashkey)): the key's 16 bytes from the generator,
-    // a word at a time.
-    let word = || u64::from(arc4random()) << 32 | u64::from(arc4random());
     let ih = Ihash {
         tbl,
-        mask: n as u64 - 1,
-        key: SiphashKey {
-            k0: word(),
-            k1: word(),
-        },
+        mask,
+        key: siphash_key(),
     };
     let old = vfs::<G>().ufs.ihash.replace(Some(ih));
     if old.is_some() {

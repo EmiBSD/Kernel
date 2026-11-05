@@ -219,3 +219,4 @@ metadata:
 - Removing a struct member (the glue's `g`) makes `..X::default()` a clippy needless_update wherever every other field was already written (ffs_vget's InodeInit): grep `..InodeInit::default()` after such a removal.
 - A regex for bench row names `[a-z_]+\.` misses `ext2.*` (a digit): ksum-style parsers want `[a-z_0-9]+`.
 - Clippy 1.99 pedantic in new kernel code (N5.7c1): `uninlined_format_args` (`{self:p}`, `({month})`), `redundant_else` after an `if .. { return }` block, and `return_self_not_must_use` on a trait's methods returning `Self` (`#[must_use]` on each); `cargo clippy -p kernel --features <the slice's> -- -D warnings` on the host catches them before the full `just clippy`.
+- lz check takes no `[[module.fn]]` row between two macro-made types: `queue_adapter!`'s LZ type is no item at the pin and `hal::pin_adapter!`'s native one is not parsed either (N5.7c2's DeHash -> DeHashLink, both refused).

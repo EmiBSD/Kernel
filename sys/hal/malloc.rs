@@ -83,6 +83,10 @@
 //!   through `AnyArc::from_raw` and `MErased::VT` through `ErasedVt::new` (two `unsafe` with
 //!   their contracts), and `AnyArc::downcast_arc` takes the block back through the safe
 //!   `AnyArc::into_raw_if`, which checks the kind and the type.
+//! - N5.7c2: [`MArc::as_pin`], the value of a counted block pinned (a denode on its hash
+//!   chain, `hal::pinlist`, while the vnode's typed slot holds it): [`MBox::as_pin`]'s
+//!   argument for a block the last of many handles drops in place, one `unsafe`. No `MArc`
+//!   API moves the value or lends it mutably (no `DerefMut`, `get_mut` or `into_inner`).
 
 use core::any::TypeId;
 use core::marker::PhantomData;
@@ -285,7 +289,9 @@ struct MInner<T> {
 /// `size_of::<MInner<T>>()` bytes counted under `inner.ty`, whose `refs` counts (in its low
 /// half) the live handles to it, this one included, and the [`AnyArc`]s erased from them; the
 /// value is dropped and the block freed only when that count reaches 0, so the block outlives
-/// every handle. Only shared references to the block are made while handles live.
+/// every handle. Only shared references to the block are made while handles live. The value
+/// never leaves its block and is never lent mutably while handles live (`as_pin`); a move-out
+/// or `&mut` API would need `T: Unpin`.
 pub struct MArc<T: Send + Sync + 'static> {
     inner: NonNull<MInner<T>>,
     _owns: PhantomData<MInner<T>>,
@@ -329,6 +335,23 @@ impl<T: Send + Sync + 'static> MArc<T> {
     /// Whether two handles name the same block.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.inner == b.inner
+    }
+
+    /// The value, pinned: it stays where it is until the last handle drops it in place (a
+    /// denode linked on its hash chain while its vnode's slot holds a handle).
+    pub fn as_pin(&self) -> Pin<&T> {
+        let value = &self.inner().value;
+        // SAFETY: `Pin`'s contract: the value is not moved, nor its memory invalidated or
+        // reused, before its drop runs. The value is written into its block once, by `new`
+        // (inside the `MInner` the `MBox` placed), and the block is freed only by the drop of
+        // the last handle, which drops the `MInner`, the value with it, in place first (the
+        // invariant: the count of live handles and erased handles reaches 0 only there).
+        // Nothing in between can move it or reach it mutably: every way to the value, from a
+        // handle (`Deref`), from an erased one (`AnyArc::downcast_ref`) or from a handle taken
+        // back (`AnyArc::downcast_arc`), gives `&T` only; no `DerefMut`, `get_mut`,
+        // `into_inner` or `try_unwrap` exists, so whatever pinning promises for a `T` that is
+        // not `Unpin` holds from here to that drop, even after this borrow ends.
+        unsafe { Pin::new_unchecked(value) }
     }
 
     /// The handle with its type erased ([`AnyArc`]): the same reference, counted as before,
@@ -889,6 +912,60 @@ mod tests {
             "the refused handle was dropped"
         );
         assert_eq!(P.nout(), 0);
+    }
+
+    /// A counted value with a list entry: the shape of a denode on its hash chain.
+    struct Chained<T> {
+        v: T,
+        e: crate::pinlist::PinEntry<Chained<T>>,
+    }
+
+    crate::pin_adapter!(impl[T: Send + Sync + 'static] ByChained<T>: Chained<T>, e);
+
+    /// `as_pin` lends the block's value in place: linked through it, the list names the value
+    /// every handle reaches, the other handles keep the block while it is linked, and the
+    /// last drop after the unlink drops it in place and frees the block.
+    #[test]
+    fn a_counted_value_is_pinned_where_every_handle_reaches_it() {
+        use crate::intr::IPL_NONE;
+        use crate::mutex::Mutexed;
+        use crate::pinlist::{PinEntry, PinList};
+
+        testutil::install();
+        let before = testutil::malloc_out(M_UFSMNT);
+        let a = MArc::new(
+            M_UFSMNT,
+            M_WAITOK,
+            Chained {
+                v: 11u64,
+                e: PinEntry::new(),
+            },
+        )
+        .unwrap();
+        let p = a.as_pin();
+        assert!(core::ptr::eq(p.get_ref(), &*a), "the value, not a copy");
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        let l: PinList<ByChained<u64>> = PinList::new();
+        l.insert_head(&mut g, a.as_pin());
+        let erased = MArc::erase(a.clone());
+        drop(a);
+        let back = erased.downcast_arc::<Chained<u64>>().unwrap();
+        let first = l.first(&g).unwrap();
+        assert!(
+            core::ptr::eq(first, &*back),
+            "the list names the block's value"
+        );
+        assert_eq!(first.v, 11);
+        l.remove(&mut g, &back);
+        assert!(l.is_empty(&g));
+        drop(g);
+        drop(back);
+        assert_eq!(
+            testutil::malloc_out(M_UFSMNT),
+            before,
+            "freed by the last handle"
+        );
     }
 }
 /* </TESTS> */
