@@ -1336,8 +1336,8 @@ mod tests {
     // block checks name by name, the largest file, the super block and descriptors written
     // back byte for byte, the mount updates and the reload, a stalled sync, vget's
     // generation and deleted inodes, and the device vnode's count across a vget that fails
-    // half-way (the user's decision of 2026-11-05). User memory: testext2fs's path slots and
-    // buffer (`testext2fs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vnops`'s tests
+    // half-way (the user's decision of 2026-11-05). User memory: testfs's path slots and
+    // buffer (`testfs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vnops`'s tests
     // over the system calls share (both hold MEMORY: one at a time).
 
     use std::vec::Vec;
@@ -1352,9 +1352,10 @@ mod tests {
         self, B, BBITMAP, BIG_SIZE, BIG0, EXT_SIZE, GDT, HELLO, HELLO_DATA, IBITMAP, IPG, ITABLE,
         Image, NBLK, NFREE, NIFREE, pattern,
     };
-    use super::super::testext2fs::{UBUF, attach, fail_block, new_file, try_mount, up};
+    use super::super::testext2fs::{attach, fail_block, new_file, try_mount};
     use super::*;
     use crate::fs::testfs::TestGlue;
+    use crate::fs::testfs::{UBUF, up};
     use crate::fs::ufs::ffs::testffs::{devvp, disk, set_disk};
     use crate::fs::ufs::ufs::dinode::{IFREG, ROOTINO};
     use crate::fs::vnode::{VDIR, VREG, VROOT};

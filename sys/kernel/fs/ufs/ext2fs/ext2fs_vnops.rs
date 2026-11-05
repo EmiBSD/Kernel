@@ -1833,8 +1833,8 @@ mod tests {
     /// every test runs [`mounted::fsck`] on the disk: a small `fsck_ext2fs` that checks what
     /// `e2fsck -fn` would (directory record chains, link counts, block counts in 512-byte
     /// units, duplicate blocks, the bitmaps, and the free and directory counts of the super
-    /// block and the group descriptor). User memory: testext2fs's path slots and buffer
-    /// (`testext2fs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vfsops`'s tests share
+    /// block and the group descriptor). User memory: testfs's path slots and buffer
+    /// (`testfs::up`, USER_BASE + 0xe000..0xf000), which `ext2fs_vfsops`'s tests share
     /// (both hold MEMORY: one at a time).
     mod mounted {
         use core::mem::offset_of;
@@ -1858,10 +1858,10 @@ mod tests {
         use super::super::super::ext2fs_dir::{
             EXT2_FT_REG_FILE, EXT2_FT_SYMLINK, e2d_type, e2iftodt, ext2fs_dirsiz, inot2ext2dt,
         };
+        use super::super::super::testext2fs::mount_root;
         use super::super::super::testext2fs::newfs::{
             B, BBITMAP, GDT, IBITMAP, ITABLE, MKFS_IPG, MKFS_NBLK, itblocks, mkfs,
         };
-        use super::super::super::testext2fs::{UBUF, UBUF_LEN, mount_root, up};
         use super::*;
         use crate::clock::Timespec;
         use crate::descrip::{sys_close, sys_read, sys_write};
@@ -1872,6 +1872,7 @@ mod tests {
             sys_fsync, sys_link, sys_mkdir, sys_mknod, sys_open, sys_readlink, sys_rename,
             sys_rmdir, sys_symlink, sys_unlink,
         };
+        use crate::fs::testfs::{UBUF, UBUF_LEN, up};
         use crate::fs::ufs::ffs::testffs::{disk, unmount_root};
         use crate::fs::ufs::ufs::dinode::{IFDIR, IFLNK, IFMT};
         use crate::fs::ufs::ufs::inode::IN_MODIFIED;

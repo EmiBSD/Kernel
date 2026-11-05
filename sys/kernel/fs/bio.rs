@@ -1053,6 +1053,20 @@ pub fn bread(vb: &'static VnodeBufs, blkno: Daddr, size: i32) -> (BufRef, Result
     doread_wait(d)
 }
 
+/// `bread(vp, blkno, size, &bp)` with the C callers' error path, `if (error) { brelse(bp);
+/// return (error); }`: the token on success, the read's error once the buffer is released
+/// (ffs's `ffs_balloc`, msdosfs's FAT engine).
+pub fn bread_or_release(vb: &'static VnodeBufs, blkno: Daddr, size: i32) -> Result<BufRef, Errno> {
+    let (t, error) = bread(vb, blkno, size);
+    match error {
+        Ok(()) => Ok(t),
+        Err(e) => {
+            brelse(t);
+            Err(e)
+        }
+    }
+}
+
 /// [`bread`] for `bsd`'s legacy callers: the buffer with its token parked in it, as a counted
 /// link (no section of the cache's lock of its own for the park).
 pub fn bread_parked(

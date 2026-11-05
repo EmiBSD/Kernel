@@ -51,6 +51,7 @@ use hal::rwlock::{RW_NOSLEEP, RW_READ, RW_RECURSEFAIL, RW_WRITE, RecursiveRwlock
 use hal::sys::errno::Errno;
 use hal::sys::mount::{Fid, MNT_LOCAL, Statfs};
 use hal::sys::types::{Dev, Ino, Mode, Uid};
+use hal::user::UserPtr;
 
 use super::cache::{cache_enter, cache_lookup};
 use super::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_alloc, vfs_unbusy};
@@ -1435,5 +1436,30 @@ fn thread_on(g: MutexGuard<'static, ()>) -> (MutexGuard<'static, ()>, &'static T
     }
     TestGlue::set_curproc(Some(p));
     (g, p)
+}
+
+/// The user memory of the kernel's file system tests over the system calls (ext2fs's
+/// `ext2fs_vfsops` and `ext2fs_vnops`, msdosfs's), which share it: every one holds MEMORY, so
+/// one runs at a time, and no other test of the binary uses the range. Four path slots of
+/// 256 bytes from `USER_BASE + 0xe000` ([`up`]), then [`UBUF`] to `USER_BASE + 0xf000`
+/// (inside the host copy double's documented argument range; `hal::arch::host::copy`).
+pub const UPATH: usize = crate::testutil::USER_BASE + 0xe000;
+/// The buffer after the path slots.
+pub const UBUF: usize = crate::testutil::USER_BASE + 0xe400;
+/// [`UBUF`]'s length.
+pub const UBUF_LEN: usize = 0xf000 - 0xe400;
+
+/// The NUL-terminated `s` in user memory, in path slot `i` of [`UPATH`].
+pub fn up(i: usize, s: &[u8]) -> UserPtr<u8> {
+    if s.len() >= 256 || i >= 4 {
+        std::panic!("testfs: up: slot {i}, {} bytes", s.len());
+    }
+    let at = UPATH + i * 256;
+    let mut b = s.to_vec();
+    b.push(0);
+    if let Err(e) = UserPtr::<u8>::new(at).copyout_slice(&b) {
+        std::panic!("testfs: up: {e:?}");
+    }
+    UserPtr::new(at)
 }
 /* </CODE> */

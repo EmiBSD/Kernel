@@ -152,9 +152,11 @@
 //!   the inode's last handle, as FFS's. `inode_u.e2fs` is [`Inode::i_e2fs`], through the
 //!   mount's handle as `i_fs`. The `DIP` accessors' `match` gains the variant, which panics
 //!   (the C's `DIP` never reads an ext2fs inode). [`I8Word`] and [`I64Word`] join the words.
+//! - N5.7c1 (D-N5.7-4): the `word!` macro and its types move to `fs::word` for msdosfs, their
+//!   third user; this module re-exports them, so ufs's and ext2fs's names do not change.
 
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicI8, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 
 use hal::link::Link;
 use hal::malloc::MBox;
@@ -186,58 +188,8 @@ use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, IoBuf};
 use crate::proc::ProcGlue;
 
-/// Generates a word of the inode or of its mount: a relaxed atomic read and written whole by
-/// `get()`/`set()`, as LZ's `Cell`.
-macro_rules! word {
-    ($(#[$doc:meta])* $name:ident, $t:ty, $atomic:ty) => {
-        $(#[$doc])*
-        #[derive(Debug, Default)]
-        pub struct $name($atomic);
-
-        impl $name {
-            /// `v`.
-            pub const fn new(v: $t) -> Self {
-                Self(<$atomic>::new(v))
-            }
-
-            /// The value.
-            #[inline]
-            pub fn get(&self) -> $t {
-                self.0.load(Ordering::Relaxed)
-            }
-
-            /// Stores `v`: by a holder of the kernel lock (checked under `diagnostic`).
-            #[inline]
-            pub fn set(&self, v: $t) {
-                #[cfg(feature = "diagnostic")]
-                hal::klock::kernel_assert_locked();
-                self.0.store(v, Ordering::Relaxed);
-            }
-        }
-    };
-}
-
-word!(
-    /// A `u_int32_t` word (`i_flag`, `i_ino`, `i_reclen`, `um_maxsymlinklen`).
-    U32Word, u32, AtomicU32
-);
-word!(
-    /// An `int32_t` word (`i_effnlink`, the directory offsets, `um_dev`).
-    I32Word, i32, AtomicI32
-);
-word!(
-    /// A `u_int64_t` word (`i_modrev`, the `um_*` words of the mount).
-    U64Word, u64, AtomicU64
-);
-word!(
-    /// An `int8_t` word (EXT2FS's in-core super-block flags `e2fs_ronly`, `e2fs_fmod`).
-    I8Word, i8, AtomicI8
-);
-word!(
-    /// An `int64_t` word (EXT2FS's `e2fs_qbmask`, `e2fs_maxfilesize`, the extent cache's
-    /// `ec_start`).
-    I64Word, i64, AtomicI64
-);
+/// The words of the inode and of its mount, `fs::word`'s (lifted there at N5.7c1).
+pub use crate::fs::word::{I8Word, I32Word, I64Word, U32Word, U64Word};
 
 /// `i_ci`: the inode's `struct cluster_info`, each member a relaxed atomic, read and written
 /// whole by `get()`/`set()` as LZ's `Cell<ClusterInfo>` (the read-ahead's state, changed under
