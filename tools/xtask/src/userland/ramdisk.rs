@@ -1065,22 +1065,9 @@ pub(super) fn build_ramdisk(ctx: &Ctx<'_>) -> Result<()> {
     let owners = ctx.out.join("host/owners.txt");
     write_if_changed(&owners, &owners_table(&attrs))?;
 
-    // The size (partition `a` of the disktab entry): twice the contents, in whole MiB, at
-    // least 2 MiB (inodes, directories and indirect blocks fit with room to spare).
-    const MIB: u64 = 1 << 20;
-    let size = (tree_bytes(&staging)? * 2).div_ceil(MIB).max(2) * MIB;
     let disktab = ctx.out.join("host/disktab");
-    write_if_changed(&disktab, &disktab_entry(size / 512))?;
     let image = ctx.out.join("ramdisk.ffs");
-    let _ = fs::remove_file(&image);
-    run(Command::new(&makefs)
-        .args(["-t", "ffs", "-T", &TIMESTAMP.to_string()])
-        .env("EMIBSD_DISKTAB", &disktab)
-        .env("EMIBSD_OWNERS", &owners)
-        .env("EMIBSD_STAGING", &staging)
-        .args(["-o", FS_OPTIONS])
-        .arg(&image)
-        .arg(&staging))?;
+    make_image(&makefs, &staging, &owners, &disktab, &image)?;
     let size = fs::metadata(&image).map(|m| m.len()).unwrap_or(0);
     println!(
         "  ramdisk: {} ({size} bytes; makefs -t ffs -o {FS_OPTIONS}; /etc: {} pwd.db spwd.db passwd; \
@@ -1100,6 +1087,113 @@ pub(super) fn build_ramdisk(ctx: &Ctx<'_>) -> Result<()> {
         passwd::ROOT_PASSWORD,
     );
     Ok(())
+}
+
+/// makefs over `staging` into `image`, as every ramdisk is made: the size (partition `a` of
+/// the disktab entry written to `disktab`) is twice the contents, in whole MiB, at least
+/// 2 MiB (inodes, directories and indirect blocks fit with room to spare); the owners,
+/// groups and modes come from the table `owners` ([`owners_table`]).
+fn make_image(
+    makefs: &Path,
+    staging: &Path,
+    owners: &Path,
+    disktab: &Path,
+    image: &Path,
+) -> Result<()> {
+    const MIB: u64 = 1 << 20;
+    let size = (tree_bytes(staging)? * 2).div_ceil(MIB).max(2) * MIB;
+    write_if_changed(disktab, &disktab_entry(size / 512))?;
+    let _ = fs::remove_file(image);
+    run(Command::new(makefs)
+        .args(["-t", "ffs", "-T", &TIMESTAMP.to_string()])
+        .env("EMIBSD_DISKTAB", disktab)
+        .env("EMIBSD_OWNERS", owners)
+        .env("EMIBSD_STAGING", staging)
+        .args(["-o", FS_OPTIONS])
+        .arg(image)
+        .arg(staging))
+}
+
+/// A program added to a copy of the ramdisk ([`ramdisk_with`]): its absolute path in the
+/// image and the host file it is copied from. It is installed root:bin, mode 555, as
+/// `bsd.own.mk`'s `BINOWN`, `BINGRP` and `BINMODE` install a program.
+pub(crate) struct ExtraProgram<'a> {
+    pub(crate) path: &'a str,
+    pub(crate) from: &'a Path,
+}
+
+/// The ownership lines of `extra`: each path absolute, without `.` or `..` components or an
+/// empty one, and named once.
+fn extra_attrs(extra: &[ExtraProgram<'_>]) -> Result<Vec<Attr>> {
+    let bin = group_id("bin").ok_or("the image has no group `bin`")?;
+    let mut seen = BTreeSet::new();
+    let mut attrs = Vec::new();
+    for e in extra {
+        let rel = e
+            .path
+            .strip_prefix('/')
+            .ok_or_else(|| format!("{}: not an absolute path in the image", e.path))?;
+        if rel
+            .split('/')
+            .any(|c| c.is_empty() || c == "." || c == "..")
+        {
+            return Err(format!("{}: not a plain path in the image", e.path).into());
+        }
+        if !seen.insert(e.path) {
+            return Err(format!("{}: named twice", e.path).into());
+        }
+        attrs.push(Attr::root(e.path, bin, 0o555));
+    }
+    Ok(attrs)
+}
+
+/// A copy of the ramdisk `just userland` made, with `extra` added, written to
+/// `<out>/ramdisk.ffs`: the staging tree that image was made from (`<userland>/ramdisk-root`)
+/// is copied to `<out>/ramdisk-root` (where [`check_devices`] reads it), the programs are
+/// added where they do not exist yet, and makefs, its options, the ownership table (the
+/// userland's plus the programs') and the size rule are [`build_ramdisk`]'s. `smoke-devtools`
+/// boots it (`devtools.rs`). Returns the image's path.
+pub(crate) fn ramdisk_with(
+    userland: &Path,
+    out: &Path,
+    extra: &[ExtraProgram<'_>],
+) -> Result<PathBuf> {
+    let base_image = userland.join("ramdisk.ffs");
+    let base = userland.join("ramdisk-root");
+    let makefs = userland.join("host/bin/makefs");
+    let base_owners = userland.join("host/owners.txt");
+    for p in [&base_image, &base, &makefs, &base_owners] {
+        if !p.exists() {
+            return Err(format!("{}: missing; run just userland first", p.display()).into());
+        }
+    }
+    check_devices(&base_image)?;
+    let attrs = extra_attrs(extra)?;
+
+    let staging = out.join("ramdisk-root");
+    if staging.exists() {
+        fs::remove_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    }
+    copy_tree(&base, &staging, &mut HashMap::new())?;
+    for e in extra {
+        let to = staging.join(e.path.trim_start_matches('/'));
+        if fs::symlink_metadata(&to).is_ok() {
+            return Err(format!("{}: already in the ramdisk", e.path).into());
+        }
+        if let Some(dir) = to.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        fs::copy(e.from, &to).map_err(|err| format!("{}: {err}", e.from.display()))?;
+    }
+
+    let mut table =
+        fs::read_to_string(&base_owners).map_err(|e| format!("{}: {e}", base_owners.display()))?;
+    table.push_str(&owners_table(&attrs));
+    let owners = out.join("owners.txt");
+    write_if_changed(&owners, &table)?;
+    let image = out.join("ramdisk.ffs");
+    make_image(&makefs, &staging, &owners, &out.join("disktab"), &image)?;
+    Ok(image)
 }
 
 /// `/root/tone.wav` (M12): one second of a 440 Hz sine at half scale, 48 kHz, 16-bit
@@ -1478,6 +1572,39 @@ mod tests {
         assert!(err.contains("/dev/wskbd0 /dev/wsmouse1 missing"), "{err}");
         assert!(err.contains("just userland"), "{err}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extra_programs_are_root_bin_555_at_plain_absolute_paths() {
+        let from = Path::new("/nonexistent");
+        let p = |path| ExtraProgram { path, from };
+        let attrs = extra_attrs(&[p("/usr/bin/hello-c"), p("/usr/bin/hello-rust")]).expect("ok");
+        assert_eq!(
+            owners_table(&attrs),
+            "555 0 7 /usr/bin/hello-c\n555 0 7 /usr/bin/hello-rust\n"
+        );
+        for bad in [
+            "usr/bin/x",
+            "/usr/../etc/x",
+            "/usr//x",
+            "/usr/./x",
+            "/usr/bin/",
+        ] {
+            assert!(extra_attrs(&[p(bad)]).is_err(), "{bad}");
+        }
+        let Err(err) = extra_attrs(&[p("/usr/bin/x"), p("/usr/bin/x")]) else {
+            panic!("a path named twice was accepted");
+        };
+        assert!(err.to_string().contains("named twice"), "{err}");
+    }
+
+    #[test]
+    fn ramdisk_with_wants_the_userland_build() {
+        let dir = std::env::temp_dir().join(format!("emibsd-ramdisk-with-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let err = ramdisk_with(&dir.join("userland"), &dir.join("out"), &[]).expect_err("none");
+        assert!(err.to_string().contains("run just userland first"), "{err}");
+        assert!(!dir.join("out").exists());
     }
 }
 /* </TESTS> */

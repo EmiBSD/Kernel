@@ -136,6 +136,11 @@
 //!                                          with K's symbols (default: the debug kernel)
 //! cargo xtask userland --arch A            cross-compile OpenBSD's libc, init, ksh, echo and
 //!                                          ls from the reference sources (target/userland/A)
+//! cargo xtask devtools-hello --arch A --llvm DIR --rust DIR
+//!                                          the C, C++ and Rust hellos of smoke-devtools,
+//!                                          built with DevTools' toolchains in DIR against
+//!                                          target/userland/A/sysroot, and the ramdisk
+//!                                          that carries them (devtools.rs)
 //! cargo xtask comp --arch A [--jobs N]     M14: OpenBSD's compiler (clang, lld, libc++) from
 //!                                          gnu/llvm by its build glue, into target/comp/A
 //!                                          (userland/comp.rs); N jobs, default half the CPUs
@@ -171,6 +176,7 @@ mod boot;
 mod bridges;
 mod bsdmake;
 mod devices;
+mod devtools;
 mod diffopenbsd;
 mod distrib;
 mod e2fs;
@@ -207,7 +213,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
                      bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
-                     symbolize --arch A [--kernel K] | userland --arch A | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
+                     symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
 
@@ -381,6 +387,15 @@ fn run(args: &[String]) -> Result<()> {
         ["userland", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             userland::userland(&root, arch)
+        }
+        ["devtools-hello", rest @ ..] => {
+            let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
+            devtools::hello(
+                &root,
+                arch,
+                Path::new(flag(rest, "--llvm")?),
+                Path::new(flag(rest, "--rust")?),
+            )
         }
         ["comp", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;

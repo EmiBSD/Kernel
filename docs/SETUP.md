@@ -184,6 +184,12 @@ with the vendor `emibsd`); `aarch64-unknown-none-softfloat` is no longer shipped
 logged in, and `zstd` (Homebrew). The kernel still builds with the `rust-toolchain.toml` pin and
 upstream's target names until the switch commit names `emibsd` and the renamed targets.
 
+`just smoke-devtools` proves the arm64 artifacts (DevTools' T1 and T2): it builds a C, a C++ and
+a static Rust hello (and the C one dynamic) with them against `target/userland/arm64/sysroot`,
+adds them to a copy of the ramdisk (`cargo xtask devtools-hello`) and runs them under the
+kernel. Without the toolchain it prints `SKIPPED`; it needs `just userland` and is not in
+`smokes`.
+
 ## e2fsprogs (M10d)
 
 `just smoke-ext2fs` checks the ext2 file system the guest made with OpenBSD's

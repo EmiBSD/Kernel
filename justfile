@@ -3275,6 +3275,49 @@ toolchain:
         echo "toolchain: $arch EMIBSD_LLVM_BIN=$llvm ($("$llvm/ld.lld" --version))"
     done
 
+# DevTools' T1 and T2 proof (its README's milestones): a C hello, a C++ hello and a static Rust
+# hello, and the C one linked dynamically, built with the toolchains `just toolchain` installed
+# (unmodified, in `toolchain_dir`) for `<cpu>-emibsd-emibsd` against the Kernel's own userland
+# sysroot (`target/userland/<arch>/sysroot`, the one DevTools built its runtimes against), put
+# in /usr/bin of a copy of the userland ramdisk (`cargo xtask devtools-hello`,
+# tools/xtask/src/devtools.rs), and run from ksh(1) in a single-user boot of the MP kernel;
+# each prints one line the session expects, and its exit status must be 0. Not in `smokes`:
+# it needs `just toolchain` (a download, the user's) and builds the programs and their
+# ramdisk in its body. Without the toolchain it prints `smoke-devtools: <arch> SKIPPED (no
+# DevTools toolchain ...)` and passes; amd64 is `SKIPPED (decision 44)` until N10. Needs
+# `just userland`.
+smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-abi
+    #!/bin/zsh
+    set -eu
+    hello() {
+        local arch=$1 kernel=$2
+        local llvm="{{toolchain_dir}}/{{devtools_llvm}}-aarch64-apple-darwin-$arch"
+        local rust="{{toolchain_dir}}/{{devtools_rust}}-aarch64-apple-darwin-$arch"
+        if [ ! -f "$llvm/MANIFEST" ] || [ ! -f "$rust/MANIFEST" ]; then
+            echo "smoke-devtools: $arch SKIPPED (no DevTools toolchain: $llvm or $rust is missing; just toolchain installs them)"
+            return 0
+        fi
+        cargo xtask devtools-hello --arch $arch --llvm "$llvm" --rust "$rust"
+        cargo xtask smoke {{reject}} {{smp}} --arch $arch --kernel $kernel \
+            --ramdisk "${EMIBSD_RUN_DIR:-target}/devtools/$arch/ramdisk.ffs" --cmdline "-s" --expect-ramdisk --until-seen \
+            {{devtools_steps}}
+    }
+    hello amd64 target/{{amd64}}/debug/bsd
+    hello arm64 target/{{arm64}}/debug/bsd
+
+# `smoke-devtools`'s session: each program, then its exit status (`$?`, so the typed line never
+# holds what is expected); the lines are tools/xtask/src/devtools.rs's `EXPECTED`.
+devtools_steps := "--reject 'panic:' " + \
+    "--send-after 'RETURN for sh:' --send '\\n' " + \
+    "--send-after '# ' --send '/usr/bin/hello-c from-c; echo c-rc-$?\\n' " + \
+    "--send-after 'c-rc-0' --send '/usr/bin/hello-cxx; echo cxx-rc-$?\\n' " + \
+    "--send-after 'cxx-rc-0' --send '/usr/bin/hello-rust x; echo rust-rc-$?\\n' " + \
+    "--send-after 'rust-rc-0' --send '/usr/bin/hello-c-dyn dynamic; echo dyn-rc-$?\\n' " + \
+    "--expect 'devtools: C hello, argv[1]=from-c' --expect 'c-rc-0' " + \
+    "--expect 'devtools: C++ hello, thrown and caught' --expect 'cxx-rc-0' " + \
+    "--expect 'devtools: Rust hello on emibsd (2 args, panic caught: true)' --expect 'rust-rc-0' " + \
+    "--expect 'devtools: C hello, argv[1]=dynamic' --expect 'dyn-rc-0'"
+
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected
 # differences are in tools/xtask/diff-openbsd/). The first run downloads the OpenBSD snapshot
