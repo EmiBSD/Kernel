@@ -79,7 +79,10 @@
 //!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique, and, since
 //!   N5.5b3, mfs's (LZ's `MFS_VOPS` of `sys/ufs/mfs/mfs_vnops.rs`, feature `mfs`), and since
 //!   N5.6c2 ext2fs's two (LZ's `EXT2FS_VOPS` and `EXT2FS_SPECVOPS` of
-//!   `sys/ufs/ext2fs/ext2fs_vnops.rs`, feature `ext2fs`).
+//!   `sys/ufs/ext2fs/ext2fs_vnops.rs`, feature `ext2fs`), and since N5.6c3 ext2fs's pools (LZ's
+//!   `EXT2FS_INODE_POOL` and `EXT2FS_DINODE_POOL`: `ext2fs_ino`, `ext2fs_dino`), which the
+//!   kernel's `ext2fs_init` makes on each call as the C's (no `done` flag: a second `init`
+//!   answers `EBUSY`), so `ufs_test_reset` clears nothing of ext2fs's.
 
 use core::sync::atomic::AtomicBool;
 

@@ -154,7 +154,9 @@ paid_by = "N7"
 # vfs_getcwd_common); vnode_ops stays a provided member whose default is the kernel's vnode
 # (a test glue answers with a pager double). N5.4: vnode_file (a new vnode file's vnops and
 # object, open(2)'s and fhopen(2)'s) joined it (kernel::fs::syscalls); dounmount left it
-# (vop_generic_revoke's forced unmount calls kernel::fs::syscalls::dounmount).
+# (vop_generic_revoke's forced unmount calls kernel::fs::syscalls::dounmount). N5.6c3:
+# the UFS members InodeG and UfsmountG and the ext2fs methods inode_e2fs_nlink,
+# ext2fs_itimes and ext2fs_size left it (ext2fs is the kernel's).
 # kernel::file::FileGlue
 [[bridge]]
 trait = "FileGlue"
@@ -239,14 +241,16 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: struct vops, the operations table of each bsd file system (mfs, ext2fs, cd9660,
-# msdosfs, udf, tmpfs, fuse, nfs, ntfs and their special-file tables: 23 statics of
+# bsd: struct vops, the operations table of each bsd file system (cd9660, msdosfs, udf,
+# tmpfs, fuse, nfs, ntfs and their special-file tables: statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
 # method packs the slot's struct vop_*_args; a NULL slot answers EOPNOTSUPP) and registered by
 # address on a table's first getnewvnode (VopsId), dispatched by every vop_* of
 # kernel::fs::vops (N5.2). ffs's vnode tables are the kernel's since N5.5b2 (UfsTables'
 # ffs_vops and ffs_specvops, UfsVnops and UfsSpecVnops over the kernel's Ffs: the InodeOps and
-# UfsFs rows went with bsd's ffs). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
+# UfsFs rows went with bsd's ffs), mfs's at N5.5b3 (UfsTables::mfs_vops) and ext2fs's at
+# N5.6c3 (UfsTables::ext2fs_vops and ext2fs_specvops, Ext2fsVnops and Ext2fsSpecVnops, the
+# C's two tables). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
 # ntfs at N10 (the user's N5 scope decision of 2026-10-28), so N10.
 # kernel::fs::vops::Vnops
 [[bridge]]
@@ -259,7 +263,8 @@ paid_by = "N10"
 # kernel's Vfsconf (N5.2); vfs_checkexp (the NFS server's) stays bsd's, reached through
 # as_any. ffs's vfsops are the kernel's since N5.5b2 (Ffs::VFS in vfsconflist[]; its
 # vfs_checkexp is bsd's ufs_check_export, reached by VFS_CHECKEXP's arm for a kernel ffs
-# mount), mfs's at N5.5b3. Paid with Vnops, when the last bsd file system moves (nfs at N6,
+# mount), mfs's at N5.5b3, ext2fs's at N5.6c3 (Ext2fsVfs::VFS; its vfs_checkexp is
+# ufs_check_export by VFS_CHECKEXP's MOUNT_EXT2FS arm). Paid with Vnops, when the last bsd file system moves (nfs at N6,
 # ntfs at N10), so N10.
 # kernel::fs::vops::Vfs
 [[bridge]]

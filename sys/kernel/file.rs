@@ -608,13 +608,7 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
-    /// The members of `bsd`'s types a UFS inode carries (`inode_u`, `inode_ext`, `i_dquot`):
-    /// `fs::ufs::ufs::inode::Inode::g` (docs/SCAFFOLDING.md).
-    type InodeG: Default + Send + Sync + 'static;
-    /// The members of `bsd`'s types a UFS mount carries (`ufsmount_u`; `um_export` is
-    /// [`FileGlue::MountG`]'s since N5.5b0): `fs::ufs::ufs::ufsmount::Ufsmount::g`
-    /// (docs/SCAFFOLDING.md). `Send`: the structure is a counted handle's value.
-    type UfsmountG: Default + Send + Sync + 'static;
+
     /// The members of `bsd`'s types a mount carries: the UFS export list (`um_export`, the
     /// NFS server's, `bsd`'s until N6), `fs::mount::Mount::g` (docs/SCAFFOLDING.md);
     /// `Default` is a new mount's.
@@ -680,24 +674,7 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
     fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
-    /// `ip->i_e2fs_nlink` of an ext2fs inode from its glue member (`IS_EXT2_VNODE` in
-    /// `ufs_ihashget`; `bsd`'s ext2fs keeps the dinode until N5.6): `None` for a glue without
-    /// ext2fs.
-    fn inode_e2fs_nlink(g: &Self::InodeG) -> Option<i32> {
-        let _ = g;
-        None
-    }
-    /// `EXT2FS_ITIMES(ip)` of an ext2fs inode (`ufs_itimes`'s `IS_EXT2_VNODE` branch: the
-    /// times go into ext2fs's dinode, which `bsd`'s ext2fs keeps in the glue's member until
-    /// N5.6). A glue without ext2fs has no ext2fs inode: `panic(9)`.
-    fn ext2fs_itimes(ip: &crate::fs::ufs::ufs::inode::Inode<Self::Proc>) {
-        crate::assert::kpanic(format_args!("inode {ip:p}: not an ext2fs inode"))
-    }
-    /// `ext2fs_size(ip)` of an ext2fs inode (`filt_ufsread`'s `IS_EXT2_VNODE` branch), as
-    /// [`FileGlue::ext2fs_itimes`].
-    fn ext2fs_size(ip: &crate::fs::ufs::ufs::inode::Inode<Self::Proc>) -> u64 {
-        crate::assert::kpanic(format_args!("inode {ip:p}: not an ext2fs inode"))
-    }
+
     /// `vfs_export(mp, &ump->um_export, argp)` of a UFS mount (`ffs_mount`'s export update,
     /// `mount -u` without a device name): the NFS server's export list is the mount's glue
     /// member, `bsd`'s until N6 ([`FileGlue::MountG`], docs/SCAFFOLDING.md). A glue without one

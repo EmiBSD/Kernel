@@ -59,9 +59,8 @@
 //!   since N5.5b1, a `Superblock` (`fs::ufs::ffs::fs`) set once by the kernel's `ffs_mountfs`
 //!   ([`Ufsmount::um_fs`], [`Ufsmount::set_um_fs`]), held inline as the C holds the pointer;
 //!   EXT2FS's the kernel's `Ext2Superblock` since N5.6c1 ([`Ufsmount::um_e2fs`], the other
-//!   variant of [`UfsSuper`]), set by the kernel's `ext2fs_mountfs` from N5.6c3: until then
-//!   `bsd`'s ext2fs leaves the slot unset and keeps its `um_e2fs` in the glue's member
-//!   [`Ufsmount::g`] (`FileGlue::UfsmountG`, docs/SCAFFOLDING.md). From the types (an
+//!   variant of [`UfsSuper`]), set by the kernel's `ext2fs_mountfs` since N5.6c3 (the glue's
+//!   `UfsmountG` member, `bsd`'s ext2fs's `um_e2fs`, went with it). From the types (an
 //!   estimate, not a measurement of a kernel: a host test printed the sizes once), both
 //!   variants are 144 bytes on an LP64 machine (`Ext2Superblock` no larger than
 //!   `Superblock`, asserted below), so the slot grows by the enum's tag only,
@@ -120,7 +119,6 @@ use super::inode::{I32Word, U32Word, U64Word};
 use super::quota::MAXQUOTAS;
 use crate::assert::kpanic;
 use crate::cred::CredRef;
-use crate::file::FileGlue;
 use crate::fs::mount::Mount;
 #[cfg(feature = "ext2fs")]
 use crate::fs::ufs::ext2fs::ext2fs::Ext2Superblock;
@@ -171,8 +169,6 @@ pub struct Ufsmount<G: ProcGlue> {
     pub um_qflags: [AtomicU8; MAXQUOTAS],
     /// `ufsmount_u`: the in-core super-block, set once by `ffs_mountfs` or `ext2fs_mountfs`.
     fs: OnceStatic<UfsSuper>,
-    /// The members of `bsd`'s types (`ufsmount_u`; the module's deviations).
-    pub g: <G::FileGlue as FileGlue>::UfsmountG,
 }
 
 /// `struct ufsmount *` held: a counted handle to a mount's UFS structure, in a block of
@@ -211,7 +207,6 @@ impl<G: ProcGlue> Ufsmount<G> {
             um_itime: [const { AtomicI64::new(0) }; MAXQUOTAS],
             um_qflags: [const { AtomicU8::new(0) }; MAXQUOTAS],
             fs: OnceStatic::new(),
-            g: Default::default(),
         }
     }
 

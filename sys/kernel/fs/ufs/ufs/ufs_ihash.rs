@@ -65,7 +65,7 @@
 //!   `DIAGNOSTIC` clearing of the links is the list's own (an unlinked entry holds none).
 //! - The `EXT2FS` branch of `ufs_ihashget` (`IS_EXT2_VNODE`: an ext2fs inode's link count is
 //!   `i_e2fs_nlink`, an unsigned 16 bits, so `<= 0` is `== 0`) reads the count from the
-//!   inode's glue member (`FileGlue::inode_e2fs_nlink`) while ext2fs is `bsd`'s (N5.6).
+//!   inode's `Dinode::Ext2` (N5.6c3; before, from the glue's `FileGlue::inode_e2fs_nlink`).
 //! - `arc4random_buf(&ihashkey, ..)` is four `arc4random()` words of the same generator (the
 //!   kernel reaches `rnd.c` a word at a time, `hal::random`).
 //! - A chain is a `PinList`, 40 bytes (its head and the kernel lock's key) where the C's
@@ -114,7 +114,9 @@ use super::ufsmount::M_UFSMNT;
 use crate::assert::kpanic;
 use crate::file::FileGlue;
 use crate::fs::subr::{vfs, vget, vput};
-use crate::fs::vnode::{LK_EXCLUSIVE, VT_EXT2FS, Vnode};
+#[cfg(feature = "ext2fs")]
+use crate::fs::vnode::VT_EXT2FS;
+use crate::fs::vnode::{LK_EXCLUSIVE, Vnode};
 use crate::fs::vops::{vop_lock, vop_unlock};
 use crate::proc::ProcGlue;
 
@@ -211,20 +213,15 @@ fn unlinked_and_writable<G: ProcGlue>(vp: &Vnode<G>, ip: &Inode<G>) -> bool {
     let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
     // XXX DIP does not cover ext2fs so hack around this for now since this is using
     // ufs_ihashget as well.
+    #[cfg(feature = "ext2fs")]
     let unlinked = if vp.tag() == VT_EXT2FS {
-        #[cfg(feature = "ext2fs")]
-        if !ip.din_is_null() {
-            // An unsigned 16 bits: `<= 0` is `== 0`.
-            return ip.i_e2din().i_e2fs_nlink() == 0 && !rdonly;
-        }
-        // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
-        match <G::FileGlue as FileGlue>::inode_e2fs_nlink(&ip.g) {
-            Some(n) => n <= 0,
-            None => kpanic(format_args!("ufs_ihashget: an ext2fs inode of no ext2fs")),
-        }
+        // An unsigned 16 bits: `<= 0` is `== 0`.
+        ip.i_e2din().i_e2fs_nlink() == 0
     } else {
         ip.dip_nlink() <= 0
     };
+    #[cfg(not(feature = "ext2fs"))]
+    let unlinked = ip.dip_nlink() <= 0;
     unlinked && !rdonly
 }
 

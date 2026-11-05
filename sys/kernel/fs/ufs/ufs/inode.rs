@@ -71,16 +71,15 @@
 //! ([`Vnode::take_node`]), and the last handle puts the item (and its dinode) back.
 //!
 //! ## Deviations
-//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS) and EXT2FS's `inode_ext` (`e2fs`) are
-//!   members of `bsd`'s types (ffs's super block, ext2fs's): they are the glue's member
-//!   [`Inode::g`] (`FileGlue::InodeG`, docs/SCAFFOLDING.md) until their owners move (`i_fs` at
-//!   N5.5b2, the ext2fs members at N5.6); the kernel's ffs (N5.5b1) reads `i_fs` as
-//!   [`Inode::i_fs`], the super-block its mount's structure holds (`ufsmount_u.fs`), not a
-//!   pointer of the inode's own. `i_dquot[]` and UFS's `inode_ext.dirhash` are the
-//!   inode's own since N5.5a2 ([`Inode::i_dquot`], [`Inode::i_dirhash`]). EXT2FS's dinode
-//!   (`i_e2din`) is the glue member's too: the kernel's [`Dinode`] holds the FFS dinodes only,
-//!   and a `DIP` of an ext2fs inode is `panic(9)` (the C's `DIP` reads FFS members there;
-//!   nothing calls it so).
+//! - `inode_u` (`i_fs` of FFS, `i_e2fs` of EXT2FS) is no pointer of the inode's own: the
+//!   kernel's ffs (N5.5b1) reads `i_fs` as [`Inode::i_fs`] and ext2fs (N5.6c1) `i_e2fs` as
+//!   [`Inode::i_e2fs`], the super-block its mount's structure holds (`ufsmount_u`). EXT2FS's
+//!   dinode (`i_e2din`) and its `inode_ext.e2fs` members are one item, the third variant of
+//!   [`Dinode`] (`Dinode::Ext2`, N5.6c1; the kernel's ext2fs is the only one since N5.6c3,
+//!   when `bsd`'s ext2fs and the glue's `InodeG` member went), and a `DIP` of an ext2fs inode
+//!   is `panic(9)` (the C's `DIP` reads FFS members there; nothing calls it so). `i_dquot[]`
+//!   and UFS's `inode_ext.dirhash` are the inode's own since N5.5a2 ([`Inode::i_dquot`],
+//!   [`Inode::i_dirhash`]).
 //! - `i_ump` is [`Inode::ump`], the inode's counted handle on the mount's `struct ufsmount`
 //!   (`vfstoufs` of the file system's `vget`, N5.5b0: an `hal::malloc::MArc` cloned out of
 //!   the mount's typed slot, dropped with the inode), beside [`Inode::mount`] and the copies
@@ -177,7 +176,6 @@ use super::quota::MAXQUOTAS;
 use super::ufs_quota::Dquot;
 use super::ufsmount::{UM_UFS1, Ufsmount, UfsmountRef};
 use crate::assert::kpanic;
-use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::mount::Mount;
@@ -635,8 +633,6 @@ pub struct InodeInit<G: ProcGlue> {
     pub seqinc: u64,
     /// `i_vtbl`.
     pub vtbl: Option<&'static dyn InodeOps<G>>,
-    /// The members of `bsd`'s types (the glue's).
-    pub g: <G::FileGlue as FileGlue>::InodeG,
 }
 
 impl<G: ProcGlue> Default for InodeInit<G> {
@@ -653,7 +649,6 @@ impl<G: ProcGlue> Default for InodeInit<G> {
             bptrtodb: 0,
             seqinc: 0,
             vtbl: None,
-            g: Default::default(),
         }
     }
 }
@@ -728,9 +723,6 @@ pub struct Inode<G: ProcGlue> {
     vtbl: Option<&'static dyn InodeOps<G>>,
     /// Where the pool placed the inode ([`vtoi`]'s `PoolArc::from_ref`).
     home: PoolHome<Inode<G>>,
-    /// The members of `bsd`'s types (`inode_u`, `inode_ext`, `i_dquot`; the module's
-    /// deviations).
-    pub g: <G::FileGlue as FileGlue>::InodeG,
 }
 
 hal::pool_home!(impl[G: ProcGlue] Inode<G>, home);
@@ -804,7 +796,6 @@ impl<G: ProcGlue> Inode<G> {
             din: OnceStatic::new(),
             vtbl: init.vtbl,
             home: PoolHome::new(),
-            g: init.g,
         }
     }
 

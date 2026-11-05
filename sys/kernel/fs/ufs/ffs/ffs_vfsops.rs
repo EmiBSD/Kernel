@@ -1372,7 +1372,6 @@ pub fn ffs_vget<G: ProcGlue>(mp: &'static Mount<G>, ino: Ino) -> Result<&'static
                 bptrtodb: ump.um_bptrtodb.get(),
                 seqinc: ump.um_seqinc.get(),
                 vtbl: Some(&Ffs::<G>::VTBL),
-                ..InodeInit::default()
             })
         }) else {
             kpanic(format_args!("ffs_vget: no inode"));

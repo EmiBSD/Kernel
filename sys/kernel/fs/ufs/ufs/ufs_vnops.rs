@@ -67,10 +67,6 @@
 //!   `ufsfifo_write`, `ufsfifo_close` (and `ffs_fifovops`, `ffsfifo_reclaim`) come with it;
 //!   until then `ffs_vinit` refuses a fifo with `EOPNOTSUPP`, as a kernel without `FIFO`
 //!   does.
-//! - `EXT2FS`'s branches (`EXT2FS_ITIMES` in `ufs_itimes`, `ext2fs_size` in
-//!   `filt_ufsread`) test the inode's `um_fstype` (`IS_EXT2_VNODE`) and reach ext2fs's
-//!   dinode through the glue (`FileGlue::ext2fs_itimes`, `FileGlue::ext2fs_size`: `bsd`'s
-//!   ext2fs keeps it until N5.6).
 //! - `pool_put(&namei_pool, cnp->cn_pnbuf)` is [`pnbuf_free`].
 //! - Credentials that the C dereferences (`cred->cr_uid`) go through [`ucred`], which panics
 //!   on `NOCRED`/`FSCRED`, where the C would follow a bad pointer.
@@ -82,8 +78,16 @@
 //! - LZ's `ufs_*(&mut VopXxxArgs)` over `bsd`'s vnode and `VOP_*` adapters -> generic
 //!   functions with the kernel's `Vnops<G>` method shapes (`vp`, the C's arguments, the
 //!   out-parameters `&mut`), over the kernel's vnode, `vop_*` functions and an `InodeRef`
-//!   (`vtoi`, held for the call). `bsd`'s ext2fs still calls eight of them (and the three
-//!   `ufsspec_*`) through `bsd`'s adapter (docs/SCAFFOLDING.md).
+//!   (`vtoi`, held for the call). The kernel's ext2fs's two tables (N5.6c2) call them
+//!   directly; `bsd`'s `Vops`-shape adapter of them went with `bsd`'s ext2fs (N5.6c3).
+//! - `EXT2FS`'s branches (`EXT2FS_ITIMES` in `ufs_itimes`, `ext2fs_size` in `filt_ufsread`,
+//!   `#ifdef EXT2FS`: feature `ext2fs`) test `IS_EXT2_VNODE` and call the kernel's ext2fs
+//!   (`ext2fs_itimes`, `ext2fs_size` of the inode's `Dinode::Ext2`), N5.6c3; the glue's
+//!   `FileGlue::ext2fs_itimes`/`ext2fs_size`, which reached `bsd`'s dinode, went.
+//! - `ufs_strategy` takes the buffer's token (`IoBuf::into_token`, `panic(9)` without one):
+//!   since N5.6c3 no `bsd` file system lends a buffer to a UFS vnode (`bsd`'s `VOP_STRATEGY`
+//!   callers name device vnodes, whose table is `spec_strategy`'s), so the `IoBuf::Lent` arms
+//!   of `strategy_done` and `strategy_clrbuf` went with `bsd`'s ext2fs.
 //! - ffs's two tables (`ffs_vops` and `ffs_specvops`, `sys/ufs/ffs/ffs_vnops.c:60-134`, LZ's
 //!   `Vops` statics of `sys/ufs/ffs/ffs_vnops.rs`) are composed here once:
 //!   [`UfsVnops<G, F>`] and [`UfsSpecVnops<G, F>`] implement `Vnops<G>` with the UFS slots
@@ -157,7 +161,7 @@ use crate::event::{
     NOTE_RENAME, NOTE_REVOKE, NOTE_TRUNCATE, NOTE_WRITE,
 };
 use crate::file::{FileGlue, LockOwner, foffset};
-use crate::fs::bio::{biodone, biodone_parked, brelse};
+use crate::fs::bio::{biodone, brelse};
 use crate::fs::buf::{B_CLRBUF, B_ERROR, BufRef};
 use crate::fs::cache::cache_purge;
 use crate::fs::default;
@@ -335,12 +339,7 @@ pub(in crate::fs::ufs) fn itimes<G: ProcGlue>(vp: &'static Vnode<G>, ip: &Inode<
     if !rdonly(vp) {
         #[cfg(feature = "ext2fs")]
         if is_ext2_vnode(vp) {
-            if ip.din_is_null() {
-                // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
-                <G::FileGlue as FileGlue>::ext2fs_itimes(ip);
-            } else {
-                ext2fs_itimes(ip);
-            }
+            ext2fs_itimes(ip);
             // goto out
             ip.clr_flag(IN_ACCESS | IN_CHANGE | IN_UPDATE);
             return;
@@ -1715,38 +1714,22 @@ pub fn ufs_islocked<G: ProcGlue>(vp: &'static Vnode<G>) -> i32 {
     vtoi(vp).i_lock.status()
 }
 
-/// `biodone(bp)` of the buffer of `VOP_STRATEGY` as it came: its token, or the token parked
-/// in a lent buffer (the C's `splbio(); biodone(bp); splx(s)`: one section of the cache's
-/// lock, which blocks the disk interrupt).
-fn strategy_done(bp: IoBuf) {
-    match bp {
-        IoBuf::Token(t) => biodone(t),
-        IoBuf::Lent(b) => {
-            if !biodone_parked(b) {
-                biodone(BufRef::foreign(b));
-            }
-        }
-    }
-}
-
-/// `clrbuf(bp)` of the buffer of `VOP_STRATEGY` as it came: a lent buffer's parked token, or
-/// for a lent buffer with none parked (a driver's own buffer) the foreign handle `bsd`'s
-/// `clrbuf` takes, given back parked.
-fn strategy_clrbuf(bp: &mut IoBuf) {
-    match bp {
-        IoBuf::Token(t) => t.clear(),
-        IoBuf::Lent(b) => {
-            let lent = *b;
-            let mut t = lent.take_parked().unwrap_or_else(|| BufRef::foreign(lent));
-            t.clear();
-            crate::fs::buf::Buf::park(t);
-        }
+/// The token of the buffer `VOP_STRATEGY` was given: the kernel's file systems pass their
+/// own (`IoBuf::Token`), and since N5.6c3 no `bsd` file system lends a buffer to a UFS
+/// vnode (bsd's `VOP_STRATEGY` callers name device vnodes, `spec_strategy`'s): a lent one is
+/// a buffer that cannot reach here, `panic(9)`.
+fn strategy_token(bp: IoBuf) -> BufRef {
+    match bp.into_token() {
+        Some(t) => t,
+        None => kpanic(format_args!("ufs_strategy: a lent buffer with no token")),
     }
 }
 
 /// `ufs_strategy` (`vop_strategy`): calculate the logical to physical mapping if not done
-/// already, then call the device strategy routine.
-pub fn ufs_strategy<G: ProcGlue>(vp: &'static Vnode<G>, mut bp: IoBuf) -> Result<(), Errno> {
+/// already, then call the device strategy routine. A buffer that ends here is finished by
+/// `biodone` (the C's `splbio(); biodone(bp); splx(s)`: one section of the cache's lock).
+pub fn ufs_strategy<G: ProcGlue>(vp: &'static Vnode<G>, bp: IoBuf) -> Result<(), Errno> {
+    let mut bp = strategy_token(bp);
     let ip = vtoi(vp);
     if vp.vtype() == VBLK || vp.vtype() == VCHR {
         kpanic(format_args!("ufs_strategy: spec"));
@@ -1759,21 +1742,21 @@ pub fn ufs_strategy<G: ProcGlue>(vp: &'static Vnode<G>, mut bp: IoBuf) -> Result
         if let Err(e) = error {
             b.set_error(Some(e));
             b.set(B_ERROR);
-            strategy_done(bp);
+            biodone(bp);
             return Err(e);
         }
         if blkno == -1 {
-            strategy_clrbuf(&mut bp);
+            bp.clear();
         }
     }
     if bp.buf().blkno() == -1 {
-        strategy_done(bp);
+        biodone(bp);
         return Ok(());
     }
     let devvp = ip.i_devvp();
     bp.buf().set_dev(devvp.rdev());
     drop(ip);
-    let _ = vop_strategy(devvp, bp);
+    let _ = vop_strategy(devvp, IoBuf::Token(bp));
     Ok(())
 }
 
@@ -2028,13 +2011,10 @@ impl<G: ProcGlue> Filter<G> for UfsRead {
         let ip = vtoi(vp);
 
         #[cfg(feature = "ext2fs")]
-        let size = if !is_ext2_vnode(vp) {
-            ip.dip_size() as i64
-        } else if ip.din_is_null() {
-            // `bsd`'s ext2fs keeps its dinode in the glue's member until N5.6c3's switch.
-            <G::FileGlue as FileGlue>::ext2fs_size(&ip) as i64
-        } else {
+        let size = if is_ext2_vnode(vp) {
             ext2fs_size(&ip) as i64
+        } else {
+            ip.dip_size() as i64
         };
         #[cfg(not(feature = "ext2fs"))]
         let size = ip.dip_size() as i64;

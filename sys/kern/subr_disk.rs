@@ -1425,7 +1425,11 @@ pub fn dk_mountroot() -> Result<(), Errno> {
     let fstype = dl.d_partitions[part].p_fstype;
     #[cfg(feature = "ext2fs")]
     if fstype == FS_EXT2FS {
-        return crate::ufs::ext2fs::ext2fs_vfsops::ext2fs_mountroot();
+        // The kernel's (N5.6c3), over `rootdev` and the machine's `swapdev`, as the ffs
+        // adapter's `ffs_mountroot` (no ext2fs adapter: this is its one caller).
+        return kernel::fs::ufs::ext2fs::ext2fs_vfsops::ext2fs_mountroot::<
+            crate::kern::proc_glue::BsdProcGlue,
+        >(rootdev, crate::machine::conf::swapdev());
     }
     #[cfg(feature = "cd9660")]
     if fstype == crate::sys::disklabel::FS_ISO9660 {

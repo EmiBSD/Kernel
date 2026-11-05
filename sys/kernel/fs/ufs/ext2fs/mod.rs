@@ -24,8 +24,8 @@
 //! truncate (`ext2fs_alloc`, `ext2fs_balloc`, `ext2fs_bmap`, `ext2fs_inode`,
 //! `ext2fs_subr`); N5.6c2 the directories, file I/O, the vnode operations and their two
 //! tables (`ext2fs_lookup`, `ext2fs_readwrite`, `ext2fs_vnops`, `ext2fs_extern`); N5.6c3 the
-//! mount (`ext2fs_vfsops`: `Ext2fsVfs<G>`, `ext2fs_mountroot`) and the fixture's real mount,
-//! unwired: `bsd`'s ext2fs serves the mounts until N5.6c3's switch.
+//! mount (`ext2fs_vfsops`: `Ext2fsVfs<G>`, `ext2fs_mountroot`), which `bsd`'s
+//! `vfsconflist[]` and `dk_mountroot` name since `bsd`'s ext2fs went.
 
 #[allow(clippy::module_inception)] // OpenBSD's sys/ufs/ext2fs/ext2fs.h
 pub mod ext2fs;
