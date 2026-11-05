@@ -1690,6 +1690,18 @@ pub fn getblk(
     }
 }
 
+/// `getblk(vp, blkno, size, 0, INFSLP)`: [`getblk`] without `slpflag` or a timeout, which
+/// sleeps for a busy buffer until it has one and so cannot fail (the file systems' calls
+/// that use the C's result unchecked).
+#[inline]
+pub(crate) fn getblk_wait(vb: &'static VnodeBufs, blkno: Daddr, size: i32) -> BufRef {
+    loop {
+        if let Some(t) = getblk(vb, blkno, size, 0, INFSLP) {
+            return t;
+        }
+    }
+}
+
 /// [`getblk`] for `bsd`'s legacy callers: the buffer with its token parked in it, as a
 /// counted link (a cached one's parked in getblk's own section of the cache's lock).
 pub fn getblk_parked(

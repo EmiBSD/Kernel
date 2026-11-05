@@ -82,3 +82,4 @@ metadata:
 - The kernel's `cursig` in a host test needs the process's signal actions: `crate::sig::test_sigacts(p.process())` first (`ps_sigacts: none` panics otherwise) (N5.5b3).
 - `vgone` of a device vnode in use runs `VOP_CLOSE` before the reclaim (vclean's `DOCLOSE`): mfs_close drained the queue the reclaim test meant `mfs_reclaim` to fail; call the reclaim slot directly to test its own drain (N5.5b3).
 - Run a mutation check under bounded.pl: removing a queue's drain left a buffer busy and the next `getblk` slept for ever (INFSLP); the hang is the detection, the bound gives the run back (N5.5b3).
+- Until N5.6c3 the kernel's `ufs_ihashget` reads an ext2fs inode's link count through `FileGlue::inode_e2fs_nlink`, which `TestGlue` answers `None` (a panic): a kernel ext2fs fixture keeps its own inode table instead of `ufs_ihash*` (testext2fs::vget), and uses VT_EXT2FS vnodes so no FFS `DIP` runs on them (N5.6c1).

@@ -146,9 +146,16 @@
 //!   FFS's in-core super-block shares (`ffs/fs.rs`'s `Superblock`, an array of the disk's
 //!   `fs_sbsize` bytes); [`DinField`] gains the one-byte members (`fs_fmod`, `fs_clean`).
 //!   [`Inode::i_fs`] is `inode_u.fs` through the inode's mount handle.
+//! - N5.6c1 (D-N5.6-2): EXT2FS's `dinode_u.e2fs_din` and `inode_ext.e2fs` (`bsd`'s glue
+//!   members until N5.6c3) -> a third [`Dinode`] variant (feature `ext2fs`, `option EXT2FS`),
+//!   one item of `ext2dinopl` holding the dinode's words and the five in-core members
+//!   (`fs::ufs::ext2fs::ext2fs_dinode::Ext2Inode`), read as [`Inode::i_e2din`]; it dies with
+//!   the inode's last handle, as FFS's. `inode_u.e2fs` is [`Inode::i_e2fs`], through the
+//!   mount's handle as `i_fs`. The `DIP` accessors' `match` gains the variant, which panics
+//!   (the C's `DIP` never reads an ext2fs inode). [`I8Word`] and [`I64Word`] join the words.
 
 use core::mem::offset_of;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI8, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use hal::link::Link;
 use hal::malloc::MBox;
@@ -174,6 +181,8 @@ use crate::file::FileGlue;
 use crate::fs::buf::ClusterInfo;
 use crate::fs::lockf::LockfSlot;
 use crate::fs::mount::Mount;
+#[cfg(feature = "ext2fs")]
+use crate::fs::ufs::ext2fs::{ext2fs::Ext2Superblock, ext2fs_dinode::Ext2Inode};
 use crate::fs::ufs::ffs::fs::Superblock;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::{Cred, IoBuf};
@@ -221,6 +230,15 @@ word!(
 word!(
     /// A `u_int64_t` word (`i_modrev`, the `um_*` words of the mount).
     U64Word, u64, AtomicU64
+);
+word!(
+    /// An `int8_t` word (EXT2FS's in-core super-block flags `e2fs_ronly`, `e2fs_fmod`).
+    I8Word, i8, AtomicI8
+);
+word!(
+    /// An `int64_t` word (EXT2FS's `e2fs_qbmask`, `e2fs_maxfilesize`, the extent cache's
+    /// `ec_start`).
+    I64Word, i64, AtomicI64
 );
 
 /// `i_ci`: the inode's `struct cluster_info`, each member a relaxed atomic, read and written
@@ -579,13 +597,17 @@ impl DinWords<32> {
     }
 }
 
-/// `dinode_u`: the FFS dinode an inode holds, an item of the file system's dinode pool,
-/// given back with the inode.
+/// `dinode_u`: the dinode an inode holds, an item of the file system's dinode pool, given
+/// back with the inode's last handle.
 pub enum Dinode {
     /// `i_din1`: an FFS1 dinode.
     Ufs1(PoolBox<Ufs1Din>),
     /// `i_din2`: an FFS2 dinode.
     Ufs2(PoolBox<Ufs2Din>),
+    /// `i_e2din` and `inode_ext.e2fs`: an EXT2FS dinode and the inode's ext2fs members, one
+    /// item of `ext2dinopl` (`option EXT2FS`).
+    #[cfg(feature = "ext2fs")]
+    Ext2(PoolBox<Ext2Inode>),
 }
 
 /// What [`Inode::new`] takes: the inode's identity and the mount's words, which never change
@@ -727,6 +749,8 @@ macro_rules! dip_field {
             match self.din() {
                 Dinode::Ufs1(d) => d.get::<$t1>(offset_of!(Ufs1Dinode, $field)) as $t,
                 Dinode::Ufs2(d) => d.get::<$t2>(offset_of!(Ufs2Dinode, $field)) as $t,
+                #[cfg(feature = "ext2fs")]
+                Dinode::Ext2(_) => self.not_ffs(),
             }
         }
 
@@ -736,6 +760,8 @@ macro_rules! dip_field {
             match self.din() {
                 Dinode::Ufs1(d) => d.set::<$t1>(offset_of!(Ufs1Dinode, $field), v as $t1),
                 Dinode::Ufs2(d) => d.set::<$t2>(offset_of!(Ufs2Dinode, $field), v as $t2),
+                #[cfg(feature = "ext2fs")]
+                Dinode::Ext2(_) => self.not_ffs(),
             }
         }
     };
@@ -804,6 +830,15 @@ impl<G: ProcGlue> Inode<G> {
     #[inline]
     pub fn i_fs(&self) -> &Superblock {
         self.ump().um_fs()
+    }
+
+    /// `ip->i_e2fs` (`inode_u.e2fs`): the EXT2FS super-block of the inode's mount, through
+    /// the inode's handle on it ([`Ufsmount::um_e2fs`]: two dependent loads, as
+    /// [`Inode::i_fs`]); `panic(9)` for an inode of an FFS mount.
+    #[cfg(feature = "ext2fs")]
+    #[inline]
+    pub fn i_e2fs(&self) -> &Ext2Superblock {
+        self.ump().um_e2fs()
     }
 
     /// `ip->i_ump->um_mountp`: the mount the inode belongs to.
@@ -876,11 +911,32 @@ impl<G: ProcGlue> Inode<G> {
         }
     }
 
+    /// `DIP(ip, ..)` of an EXT2FS inode: `panic(9)`, the C's "DIP does not cover ext2fs" (its
+    /// macros read `i_ffs1_*`/`i_ffs2_*`, never `i_e2din`).
+    #[cfg(feature = "ext2fs")]
+    #[cold]
+    fn not_ffs(&self) -> ! {
+        kpanic(format_args!("inode {self:p}: an EXT2FS dinode, not FFS"))
+    }
+
+    /// The EXT2FS dinode and the ext2fs members in core (`ip->i_e2din`, `inode_ext.e2fs`):
+    /// `panic(9)` for an FFS inode, where the C would follow its NULL `i_e2din`.
+    #[cfg(feature = "ext2fs")]
+    #[inline]
+    pub fn i_e2din(&self) -> &Ext2Inode {
+        match self.din() {
+            Dinode::Ext2(d) => d,
+            _ => kpanic(format_args!("inode {self:p}: not EXT2FS")),
+        }
+    }
+
     /// The UFS1 dinode in core (`ip->i_din1`): `panic(9)` for another.
     pub fn ufs1_din(&self) -> &Ufs1Din {
         match self.din() {
             Dinode::Ufs1(d) => d,
             Dinode::Ufs2(_) => kpanic(format_args!("inode {self:p}: not UFS1")),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -889,6 +945,8 @@ impl<G: ProcGlue> Inode<G> {
         match self.din() {
             Dinode::Ufs2(d) => d,
             Dinode::Ufs1(_) => kpanic(format_args!("inode {self:p}: not UFS2")),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -985,6 +1043,8 @@ impl<G: ProcGlue> Inode<G> {
             Dinode::Ufs2(d) => {
                 d.get::<i64>(Self::ptr_off(offset_of!(Ufs2Dinode, di_db), NDADDR, 8, i))
             }
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -1001,6 +1061,8 @@ impl<G: ProcGlue> Inode<G> {
                 Self::ptr_off(offset_of!(Ufs2Dinode, di_db), NDADDR, 8, i),
                 v,
             ),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -1016,6 +1078,8 @@ impl<G: ProcGlue> Inode<G> {
             Dinode::Ufs2(d) => {
                 d.get::<i64>(Self::ptr_off(offset_of!(Ufs2Dinode, di_ib), NIADDR, 8, i))
             }
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -1032,6 +1096,8 @@ impl<G: ProcGlue> Inode<G> {
                 Self::ptr_off(offset_of!(Ufs2Dinode, di_ib), NIADDR, 8, i),
                 v,
             ),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
     }
 
@@ -1064,11 +1130,15 @@ impl<G: ProcGlue> Inode<G> {
         let (off, n) = match self.din() {
             Dinode::Ufs1(_) => (offset_of!(Ufs1Dinode, di_db), MAXSYMLINKLEN_UFS1),
             Dinode::Ufs2(_) => (offset_of!(Ufs2Dinode, di_db), MAXSYMLINKLEN_UFS2),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         };
         let s = &mut buf[..n];
         match self.din() {
             Dinode::Ufs1(d) => d.read_bytes(off, s),
             Dinode::Ufs2(d) => d.read_bytes(off, s),
+            #[cfg(feature = "ext2fs")]
+            Dinode::Ext2(_) => self.not_ffs(),
         }
         was[..n].copy_from_slice(s);
         let r = f(s);
@@ -1076,6 +1146,8 @@ impl<G: ProcGlue> Inode<G> {
             match self.din() {
                 Dinode::Ufs1(d) => d.write_bytes(off, s),
                 Dinode::Ufs2(d) => d.write_bytes(off, s),
+                #[cfg(feature = "ext2fs")]
+                Dinode::Ext2(_) => self.not_ffs(),
             }
         }
         r
@@ -1211,6 +1283,19 @@ impl Ufid {
 pub fn daddr32_at(b: &[u8], i: usize) -> Daddr {
     let o = i * 4;
     Daddr::from(i32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]))
+}
+
+/// `((u_int32_t *)b_data)[i]` as stored: an EXT2FS block pointer of an indirect block or of
+/// the inode's `e2di_blocks` bytes, little-endian on disk (the C compares these raw in
+/// `is_sequential`).
+pub fn u32_at(b: &[u8], i: usize) -> u32 {
+    let o = i * 4;
+    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+/// `letoh32(((u_int32_t *)b_data)[i])`: an EXT2FS block pointer in host order.
+pub fn le32_at(b: &[u8], i: usize) -> u32 {
+    u32::from_le(u32_at(b, i))
 }
 
 /// `((int32_t *)b_data)[i] = v`.

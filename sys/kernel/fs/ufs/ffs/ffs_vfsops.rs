@@ -175,7 +175,8 @@ use super::fs::{
 };
 use crate::assert::kpanic;
 use crate::file::{DM_OPENBLCK, FileGlue};
-use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite, getblk};
+use crate::fs::bio::getblk_wait;
+use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite};
 use crate::fs::buf::{B_INVAL, B_NOCACHE, BufRef};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_free, vfs_unbusy};
@@ -1500,15 +1501,6 @@ pub fn ffs_vptofh<G: ProcGlue>(vp: &'static Vnode<G>, fhp: &mut Fid) -> Result<(
     Ok(())
 }
 
-/// `getblk(vp, blkno, size, 0, INFSLP)`, which cannot fail without `slpflag`.
-fn getblk_wait<G: ProcGlue>(vp: &'static Vnode<G>, blkno: Daddr, size: i32) -> BufRef {
-    loop {
-        if let Some(t) = getblk(&vp.bufs, blkno, size, 0, INFSLP) {
-            return t;
-        }
-    }
-}
-
 /// `ffs_sbupdate`: write a superblock and associated information back to disk: the summary
 /// space a block at a time, then the copy in core's `fs_sbsize` bytes with the
 /// compatibility rewrites of old file systems.
@@ -1526,7 +1518,11 @@ pub fn ffs_sbupdate<G: ProcGlue>(mp: &Ufsmount<G>, waitfor: i32) -> Result<(), E
         if i + fs.fs_frag() > blks {
             size = (blks - i) * fs.fs_fsize();
         }
-        let mut t = getblk_wait(devvp, fsbtodb(fs, fs.fs_csaddr() + Daddr::from(i)), size);
+        let mut t = getblk_wait(
+            &devvp.bufs,
+            fsbtodb(fs, fs.fs_csaddr() + Daddr::from(i)),
+            size,
+        );
         let n = size as usize;
         fs.read_csum_bytes(space, &mut t.data()[..n]);
         space += n;
@@ -1543,7 +1539,7 @@ pub fn ffs_sbupdate<G: ProcGlue>(mp: &Ufsmount<G>, waitfor: i32) -> Result<(), E
     allerror?;
 
     let mut t = getblk_wait(
-        devvp,
+        &devvp.bufs,
         fs.fs_sblockloc() >> (fs.fs_fshift() - fs.fs_fsbtodb()),
         fs.fs_sbsize(),
     );
