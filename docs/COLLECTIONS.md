@@ -180,6 +180,9 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `StaticArena::extend`, `init_arena` | | O(N) once, at init |
 | `MBox::new`, `MArray::new` | `malloc(9)` | O(1) amortized: the bucket's free list; `km_alloc` when the bucket is empty (below) |
 | drop of an `MBox`/`MArray` | `free(9)` | O(1) |
+| `MArc::new`; drop of the last `MArc` | `malloc(9)`, `free(9)` | as `MBox::new` and its drop, plus one atomic |
+| `MArc::clone`, drop of a handle | the refcount | O(1), one atomic |
+| `MArc::ptr_eq`, `erase`, `as_pin` | | O(1), no atomic |
 | `KmBuf::alloc_wired`, `alloc_pageable` | `km_alloc` | O(pages) plus the kernel map's entry allocation, O(log m) in the map's entries |
 | drop of a `KmBuf` | `km_free` | O(pages) + O(log m) |
 | `MappedBytes::map_frames`, `kenter_frames`, `map_direct` | `pmap_kenter_pa` per frame | O(frames) |

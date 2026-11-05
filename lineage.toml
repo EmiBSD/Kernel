@@ -10572,7 +10572,7 @@ rust = "sys/hal/pinlist.rs"
 crate = "hal"
 lz = ["sys/sys/queue.rs", "sys/kern/kern_timeout.rs"]
 status = "redesigned"
-notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows"
+notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows; N5.7c2: pin_adapter!'s generic form (impl[..] Name<..>: Elem<..>, field), the adapter of a glue-generic element declared where the element is, its Unpin refusal in a function generic over the same parameters"
 
 [[module.fn]]
 lz = "sys/kern/kern_timeout.rs::circq_init"
@@ -10925,7 +10925,7 @@ reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items a
 [[extra]]
 rust = "sys/hal/malloc.rs"
 crate = "hal"
-reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; N3.5 S0: MBox::leak, a block never freed as &'static T (the boot submaps); N5.5b0: MArc<T>, a counted malloc block erasable into AnyArc (the UFS mount structure in the mount's typed slot), over MBox::into_raw; docs/ZERO_UNSAFE.md 0.1, decision 19"
+reason = "hal runtime, written new: MBox<T>, a T in a malloc(9) block of the C's type, and the Malloc bridge; N3.4a: MArray<T>, mallocarray(9)'s n values with its overflow test; N3.5 S0: MBox::leak, a block never freed as &'static T (the boot submaps); N5.5b0: MArc<T>, a counted malloc block erasable into AnyArc (the UFS mount structure in the mount's typed slot), over MBox::into_raw; N5.7c2: MArc::as_pin, a counted block's value pinned (a denode on its hash chain); docs/ZERO_UNSAFE.md 0.1, decision 19"
 
 [[module]]
 rust = "sys/hal/mapped.rs"

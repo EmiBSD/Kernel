@@ -130,7 +130,11 @@
 //!   refuses an `impl PinAdapter for` and any naming of the seal (`PinSealed`, which has no
 //!   use but an impl) anywhere under `sys/` outside this file (the macro's body), and an
 //!   `impl Unpin for` in `sys/kernel/` or `sys/abi/` (a manual `Unpin` is the only safe way
-//!   to defeat `Pin`; `hal` writes none for an element type).
+//!   to defeat `Pin`; `hal` writes none for an element type). The macro's generic form
+//!   (N5.7c2, an element generic over a glue) runs the refusal over the element with its
+//!   parameters as declared, so it refuses an element `Unpin` for every instantiation; one
+//!   made `Unpin` only for some (an `impl` bounded beyond the form's list) is what the
+//!   kernel-and-abi rule refuses.
 //! - I2, the lock: a list's head cells and the link cells of the elements on it are read and
 //!   written only by holders of a witness of the lock the list is bound to (checked once per
 //!   operation, against the list's identity and, for an element named by the caller, against
@@ -207,8 +211,48 @@ pub trait PinAdapter: sealed::PinSealed {
 /// Declares `$name`, the [`PinAdapter`] of `$elem`'s field `$field`, and refuses at compile
 /// time an `$elem` that is `Unpin` (the module's I1): `pin_adapter!(pub ToList: Timeout,
 /// entry);`.
+///
+/// The generic form declares the adapter of an element generic over type parameters, where
+/// the element is declared (`pin_adapter!(impl[G: ProcGlue] pub DeHashLink<G>: Denode<G>,
+/// de_hash);`, `pool_home!`'s form): `$name` takes the parameters after `impl`, and the
+/// `Unpin` refusal runs in a function generic over them, so it refuses an element that is
+/// `Unpin` for every instantiation those bounds allow (a field-by-field `Unpin` element, an
+/// unconditional `impl Unpin`, one bounded by what the list implies). An `impl Unpin`
+/// conditional on a bound the list does not imply would pass that check: `cargo xtask
+/// hal-check` refuses every `impl .. Unpin for` in `sys/kernel/` and `sys/abi/` (rule 6),
+/// the crates whose elements use this form.
 #[macro_export]
 macro_rules! pin_adapter {
+    (
+        $(#[$meta:meta])*
+        impl[$($gen:tt)*] $vis:vis $name:ident<$($p:ident),+ $(,)?>: $elem:ty, $field:ident
+    ) => {
+        $(#[$meta])*
+        $vis struct $name<$($gen)*>(::core::marker::PhantomData<fn() -> ($($p,)+)>);
+
+        impl<$($gen)*> $crate::pinlist::sealed::PinSealed for $name<$($p),+> {}
+
+        impl<$($gen)*> $crate::pinlist::PinAdapter for $name<$($p),+> {
+            type Elem = $elem;
+            fn entry(e: &$elem) -> &$crate::pinlist::PinEntry<$elem> {
+                &e.$field
+            }
+        }
+
+        // An element `Unpin` for every allowed instantiation makes the call below ambiguous
+        // (two impls apply): refused.
+        const _: () = {
+            trait NotUnpin<M> {
+                fn not_unpin() {}
+            }
+            impl<T: ?Sized> NotUnpin<()> for T {}
+            impl<T: ?Sized + ::core::marker::Unpin> NotUnpin<u8> for T {}
+            #[allow(dead_code, reason = "a compile-time check, never called")]
+            fn check<$($gen)*>() {
+                <$elem as NotUnpin<_>>::not_unpin();
+            }
+        };
+    };
     ($(#[$meta:meta])* $vis:vis $name:ident: $elem:ty, $field:ident) => {
         $(#[$meta])*
         $vis struct $name;
@@ -1698,6 +1742,48 @@ mod tests {
             l.remove(&mut w, &nodes[i]);
         }
         assert!(l.is_empty(&w));
+    }
+
+    /// An element generic over a parameter, as a kernel element is over its glue.
+    struct GNode<T> {
+        v: T,
+        e: PinEntry<GNode<T>>,
+    }
+
+    impl<T> GNode<T> {
+        const fn new(v: T) -> Self {
+            Self {
+                v,
+                e: PinEntry::new(),
+            }
+        }
+    }
+
+    crate::pin_adapter!(
+        /// The generic form's adapter.
+        impl[T: Send + Sync] ByGE<T>: GNode<T>, e
+    );
+
+    /// The generic form gives one adapter per instantiation, each a family of its own lists.
+    #[test]
+    fn the_generic_form_links_each_instantiation_s_elements() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut w = m.lock();
+        let words: PinList<ByGE<u32>> = PinList::new();
+        let names: PinList<ByGE<&'static str>> = PinList::new();
+        let a = core::pin::pin!(GNode::new(7u32));
+        let b = core::pin::pin!(GNode::new(9u32));
+        let c = core::pin::pin!(GNode::new("c"));
+        words.insert_tail(&mut w, a.as_ref());
+        words.insert_head(&mut w, b.as_ref());
+        names.insert_tail(&mut w, c.as_ref());
+        assert_eq!(words.iter(&w).map(|n| n.v).collect::<Vec<_>>(), [9, 7]);
+        assert_eq!(names.first(&w).map(|n| n.v), Some("c"));
+        words.remove(&mut w, &a);
+        words.remove(&mut w, &b);
+        names.remove(&mut w, &c);
+        assert!(words.is_empty(&w) && names.is_empty(&w));
     }
 }
 /* </TESTS> */
