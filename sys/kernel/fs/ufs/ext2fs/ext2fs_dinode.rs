@@ -67,7 +67,8 @@
 //! fields are defined by types with precise widths.
 //!
 //! ## Deviations
-//! - `EXT2_DINODE_SIZE(fs)` is [`ext2_dinode_size`]; `e2fs_iload`/`e2fs_isave` are functions
+//! - `EXT2_DINODE_SIZE(fs)` is the in-core super-block's `dinode_size()`
+//!   (`ext2fs.rs`'s `Ext2Superblock`); `e2fs_iload`/`e2fs_isave` are functions
 //!   that are always compiled: they copy `MIN(EXT2_DINODE_SIZE(fs), sizeof(*new))` bytes on a
 //!   little-endian machine and go through `e2fs_i_bswap` (`ext2fs_bswap.rs`) on a big-endian
 //!   one, where the C picks one with `#if BYTE_ORDER`. They take the buffer's bytes, not a
@@ -291,11 +292,6 @@ pub const EXT4_EOFBLOCKS: u32 = 0x0040_0000;
 /// `EXT2_REV0_DINODE_SIZE`: size of the revision 0 on-disk inode.
 pub const EXT2_REV0_DINODE_SIZE: usize = 128;
 
-/// `EXT2_DINODE_SIZE(fs)`: the size of an on-disk inode.
-pub fn ext2_dinode_size(fs: &Ext2Superblock) -> usize {
-    fs.dinode_size()
-}
-
 /// `sizeof(struct ext2fs_dinode)`.
 pub const EXT2FS_DINODE_SIZE: usize = size_of::<Ext2fsDinode>();
 
@@ -507,7 +503,7 @@ e2din_field! {
 /// `new`: `MIN(EXT2_DINODE_SIZE(fs), sizeof(*new))` bytes, little-endian on disk (the bytes
 /// of `new` past them are left as they are).
 pub fn e2fs_iload(fs: &Ext2Superblock, old: &[u8], new: &Ext2Inode) {
-    let n = min(ext2_dinode_size(fs), EXT2FS_DINODE_SIZE);
+    let n = min(fs.dinode_size(), EXT2FS_DINODE_SIZE);
     let Some(src) = old.get(..n) else {
         kpanic(format_args!("e2fs_iload: {} bytes, want {}", old.len(), n));
     };
@@ -529,7 +525,7 @@ pub fn e2fs_iload(fs: &Ext2Superblock, old: &[u8], new: &Ext2Inode) {
 /// `MIN(EXT2_DINODE_SIZE(fs), sizeof(*old))` bytes, little-endian on disk (the bytes of the
 /// buffer past them are left as they are).
 pub fn e2fs_isave(fs: &Ext2Superblock, old: &Ext2Inode, new: &mut [u8]) {
-    let n = min(ext2_dinode_size(fs), EXT2FS_DINODE_SIZE);
+    let n = min(fs.dinode_size(), EXT2FS_DINODE_SIZE);
     let Some(dst) = new.get_mut(..n) else {
         kpanic(format_args!("e2fs_isave: {} bytes, want {}", new.len(), n));
     };
@@ -575,9 +571,9 @@ mod tests {
 
     #[test]
     fn dinode_size_follows_the_revision() {
-        assert_eq!(ext2_dinode_size(&fs(0, 256)), 128);
-        assert_eq!(ext2_dinode_size(&fs(1, 256)), 256);
-        assert_eq!(ext2_dinode_size(&fs(1, 128)), 128);
+        assert_eq!(fs(0, 256).dinode_size(), 128);
+        assert_eq!(fs(1, 256).dinode_size(), 256);
+        assert_eq!(fs(1, 128).dinode_size(), 128);
     }
 
     #[test]

@@ -9184,6 +9184,11 @@ native = []
 kind = "dropped"
 reason = "e2fs_iload writes the buffer's bytes into the in-core dinode's words (DinWords::write_bytes), and the big-endian path builds an abi_pod! image with pod_from_bytes"
 
+[[module.fn]]
+lz = "sys/ufs/ext2fs/ext2fs_dinode.rs::ext2_dinode_size"
+native = ["sys/kernel/fs/ufs/ext2fs/ext2fs.rs::Ext2Superblock::dinode_size"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ext2fs/ext2fs_bswap.rs"
 crate = "kernel"

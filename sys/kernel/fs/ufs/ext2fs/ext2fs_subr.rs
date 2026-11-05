@@ -117,3 +117,62 @@ pub fn ext2fs_bufatoff<G: ProcGlue>(ip: &Inode<G>, offset: Off) -> Result<(BufRe
     Ok((t, blkoff(fs, offset) as usize))
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests for `ext2fs_bufatoff` over the extents image: a file mapped by its extent
+    // tree (the disk block of the extent, read from the device) and a directory mapped by its
+    // block pointers (read through the directory's vnode), each with the offset in the block.
+
+    use std::assert_eq;
+
+    use hal::sys::mount::MNT_RDONLY;
+
+    use super::super::ext2fs::Ext2Superblock;
+    use super::super::testext2fs::newfs::{self, B, ROOTDIR};
+    use super::super::testext2fs::{attach, mount, vget};
+    use super::*;
+    use crate::fs::subr::vput;
+    use crate::fs::ufs::ufs::inode::vtoi;
+
+    /// The disk address of file system block `b`.
+    fn blkno(fs: &Ext2Superblock, b: usize) -> Daddr {
+        fsbtodb(fs, b as Daddr)
+    }
+
+    #[test]
+    fn bufatoff_reads_through_the_extent_tree_or_the_block_pointers() {
+        let (_g, _p) = attach(newfs::image(true));
+        let mp = mount(MNT_RDONLY);
+        let vp = vget(mp, 14).unwrap();
+        let ip = vtoi(vp);
+        let fs = ip.i_e2fs();
+        let want = newfs::pattern(newfs::EXT_SIZE, 14);
+        for (off, blk) in [(0, 27), (B + 3, 28), (2 * B + 5, 30)] {
+            let (t, res) = ext2fs_bufatoff(&ip, off as Off).unwrap();
+            assert_eq!(t.buf().blkno(), blkno(fs, blk), "offset {off}");
+            assert_eq!(res, off % B);
+            let lbn = off / B;
+            let n = (want.len() - lbn * B).min(B);
+            assert_eq!(t.bytes()[..n], want[lbn * B..lbn * B + n]);
+            brelse(t);
+        }
+        drop(ip);
+        vput(vp);
+
+        // The root directory has no extent tree: its block pointer, through its vnode.
+        let vp = vget(mp, 2).unwrap();
+        let ip = vtoi(vp);
+        let (t, res) = ext2fs_bufatoff(&ip, 24).unwrap();
+        assert_eq!(t.buf().blkno(), blkno(ip.i_e2fs(), ROOTDIR));
+        assert_eq!(res, 24);
+        // The third entry, "hello.txt" (inode 12), starts there.
+        assert_eq!(t.bytes()[24..28], 12u32.to_le_bytes());
+        assert_eq!(t.bytes()[32..41], *b"hello.txt");
+        brelse(t);
+        drop(ip);
+        vput(vp);
+    }
+}
+/* </TESTS> */

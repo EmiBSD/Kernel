@@ -413,6 +413,9 @@ mod tests {
         // Room for one block for a user: the double indirect block, then nothing.
         fs.set_e2fs_rbcount(fs.e2fs_fbcount() - 1);
         let free = fs.e2fs_fbcount();
+        testffs::sync(&[vp]);
+        let bitmap = |d: &[u8]| d[newfs::BBITMAP * B..(newfs::BBITMAP + 1) * B].to_vec();
+        let before = bitmap(&testffs::disk());
         let lbn = 12 + (B / 4) as u32;
         assert_eq!(
             ext2fs_buf_alloc(&ip, lbn, B as i32, Cred::real(&user), B_CLRBUF).map(|_| ()),
@@ -425,8 +428,17 @@ mod tests {
             0,
             "the inode's pointer is cleared"
         );
-        assert_eq!(d.i_e2fs_nblock(), 0);
-        assert!(ip.i_flag.get() & (IN_CHANGE | IN_UPDATE) != 0);
+        assert_eq!(
+            d.i_e2fs_nblock(),
+            0,
+            "the freed block's sectors are taken back"
+        );
+        testffs::sync(&[vp]);
+        assert_eq!(
+            bitmap(&testffs::disk()),
+            before,
+            "the freed block is clear in the bitmap again"
+        );
         drop(ip);
         vput(vp);
     }
