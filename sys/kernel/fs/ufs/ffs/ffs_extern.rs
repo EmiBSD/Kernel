@@ -49,18 +49,22 @@
 
 /* <CODE> */
 //! `<ufs/ffs/ffs_extern.h>`: the `CTL_VFS` names of the fast file system (`FFS_*`,
-//! `FFS_NAMES`), and the prototypes, operation tables and pools of `ufs/ffs`.
+//! `FFS_NAMES`); the prototypes, operation tables and pools it declares are the items of
+//! the modules that define them.
 //!
 //! Upstream: sys/ufs/ffs/ffs_extern.h @ 3ce1f3f79392
+//! LZ: sys/ufs/ffs/ffs_extern.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The prototypes, `ffs_vops`/`ffs_specvops` and the pools are the items of `ffs_*.rs`,
-//!   re-exported here. `ffs_init`, which the header lists under `ffs_inode.c`, is defined in
-//!   `ffs_vfsops.c` (and `ffs_vfsops.rs`).
 //! - `ffs_fifovops` and `ffsfifo_reclaim` wait for `miscfs/fifofs` (`option FIFO`).
 //! - `FFS_NAMES` is an array of `Ctlname`s.
+//!
+//! ## Redesign
+//! - N5.5b2: LZ's `pub use` of the prototypes, the tables and the pools from `ffs_*.rs`
+//!   goes: their callers name the defining modules (`ffs_vfsops`, `ffs_vnops`, `ffs_alloc`,
+//!   ...), and the pools are the glue's tables' (`UfsTables`); the constants are LZ's.
 
-use crate::sys::sysctl::{CTLTYPE_INT, Ctlname};
+use hal::sys::sysctl::{CTLTYPE_INT, Ctlname};
 
 /// `FFS_CLUSTERREAD`: cluster reading enabled.
 pub const FFS_CLUSTERREAD: i32 = 1;
@@ -111,28 +115,6 @@ pub const FFS_NAMES: [Ctlname; FFS_MAXID as usize] = {
     n[19] = Ctlname::new(b"dirhash_mem", CTLTYPE_INT);
     n
 };
-
-#[cfg(feature = "ffs2")]
-pub use crate::ufs::ffs::ffs_alloc::ffs2_blkpref;
-pub use crate::ufs::ffs::ffs_alloc::{
-    ffs_alloc, ffs_blkfree, ffs_clusteracct, ffs_freefile, ffs_inode_alloc, ffs_inode_free,
-    ffs_realloccg, ffs1_blkpref,
-};
-pub use crate::ufs::ffs::ffs_balloc::ffs_balloc;
-pub use crate::ufs::ffs::ffs_inode::{ffs_truncate, ffs_update};
-pub use crate::ufs::ffs::ffs_subr::{
-    ffs_bufatoff, ffs_clrblock, ffs_fragacct, ffs_isblock, ffs_isfreeblock, ffs_setblock, ffs_vinit,
-};
-#[cfg(feature = "ffs2")]
-pub use crate::ufs::ffs::ffs_vfsops::FFS_DINODE2_POOL;
-pub use crate::ufs::ffs::ffs_vfsops::{
-    FFS_DINODE1_POOL, FFS_INO_POOL, ffs_fhtovp, ffs_flushfiles, ffs_init, ffs_mount, ffs_mountfs,
-    ffs_mountroot, ffs_oldfscompat, ffs_reload, ffs_sbupdate, ffs_statfs, ffs_sync, ffs_sysctl,
-    ffs_unmount, ffs_vget, ffs_vptofh,
-};
-pub use crate::ufs::ffs::ffs_vnops::{
-    FFS_SPECVOPS, FFS_VOPS, ffs_fsync, ffs_read, ffs_reclaim, ffs_write,
-};
 /* </CODE> */
 
 /* <TESTS> */
@@ -147,15 +129,32 @@ mod tests {
         for (name, value) in [
             ("FFS_CLUSTERREAD", FFS_CLUSTERREAD),
             ("FFS_SD_DIR_ENTRY", FFS_SD_DIR_ENTRY),
+            ("FFS_DIRHASH_DIRSIZE", FFS_DIRHASH_DIRSIZE),
+            ("FFS_DIRHASH_MAXMEM", FFS_DIRHASH_MAXMEM),
             ("FFS_DIRHASH_MEM", FFS_DIRHASH_MEM),
             ("FFS_MAXID", FFS_MAXID),
         ] {
-            assert_eq!(
+            std::assert_eq!(
                 crate::reftest::int(&defs, name),
                 Some(i64::from(value)),
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn the_names_are_the_dirhash_ones_only() {
+        let named: std::vec::Vec<usize> = (0..FFS_MAXID as usize)
+            .filter(|&i| FFS_NAMES[i] != Ctlname::NONE)
+            .collect();
+        std::assert_eq!(
+            named,
+            std::vec![
+                FFS_DIRHASH_DIRSIZE as usize,
+                FFS_DIRHASH_MAXMEM as usize,
+                FFS_DIRHASH_MEM as usize
+            ]
+        );
     }
 }
 /* </TESTS> */

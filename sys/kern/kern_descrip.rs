@@ -327,6 +327,35 @@ impl FileGlue for BsdFileGlue {
     fn ext2fs_size(ip: &crate::ufs::ufs::inode::Inode) -> u64 {
         crate::ufs::ext2fs::ext2fs_inode::ext2fs_size(ip)
     }
+    /// `vfs_export(mp, &ump->um_export, argp)` of the kernel's `ffs_mount`: the export list is
+    /// the mount's `BsdMountG` member (`bsd`'s until N6).
+    fn vfs_export(
+        mp: &'static crate::sys::mount::Mount,
+        argp: &crate::sys::mount::ExportArgs,
+    ) -> Result<(), Errno> {
+        crate::kern::vfs_subr::vfs_export(mp, &mp.g.export, argp)
+    }
+    /// The kernel's `ffs_mountfs` starts the recycled mount's export list empty, as the C's
+    /// `malloc(M_ZERO)` of the `ufsmount` does.
+    fn ufs_export_init(mp: &crate::sys::mount::Mount) {
+        mp.g.export.clear();
+    }
+    /// `disk_map` (`subr_disk.c`, `bsd`'s until N7).
+    fn disk_map(path: &[u8], mappath: &mut [u8], flags: i32) -> bool {
+        crate::kern::subr_disk::disk_map(path, mappath, flags)
+    }
+    /// `rootvp`: `init_main.rs`'s (until N7).
+    fn rootvp() -> Option<&'static Vnode> {
+        crate::kern::init_main::rootvp()
+    }
+    /// `rootvp = vp`.
+    fn set_rootvp(vp: Option<&'static Vnode>) {
+        crate::kern::init_main::set_rootvp(vp);
+    }
+    /// `swapdev_vp = vp`.
+    fn set_swapdev_vp(vp: Option<&'static Vnode>) {
+        crate::kern::init_main::set_swapdev_vp(vp);
+    }
 
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES

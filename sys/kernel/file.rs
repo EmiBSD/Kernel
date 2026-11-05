@@ -147,6 +147,10 @@ pub const FIF_HASLOCK: u32 = 0x01;
 /// `FIF_INSERTED`: present in `filehead`.
 pub const FIF_INSERTED: u32 = 0x80;
 
+/// `DM_OPENBLCK` (`<sys/disk.h>`, `bsd`'s `subr_disk` until N7): [`FileGlue::disk_map`] maps
+/// a disklabel UID to the block device.
+pub const DM_OPENBLCK: i32 = 0x2;
+
 /// `FDUP_MAX_COUNT`: the reference count past which a file is no longer duplicated (below
 /// `hal`'s handle limit, so a duplication is refused before a clone could panic).
 pub const FDUP_MAX_COUNT: u32 = u32::MAX - 2 * hal::cpu::MAXCPUS as u32;
@@ -694,6 +698,38 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn ext2fs_size(ip: &crate::fs::ufs::ufs::inode::Inode<Self::Proc>) -> u64 {
         crate::assert::kpanic(format_args!("inode {ip:p}: not an ext2fs inode"))
     }
+    /// `vfs_export(mp, &ump->um_export, argp)` of a UFS mount (`ffs_mount`'s export update,
+    /// `mount -u` without a device name): the NFS server's export list is the mount's glue
+    /// member, `bsd`'s until N6 ([`FileGlue::MountG`], docs/SCAFFOLDING.md). A glue without one
+    /// answers `EOPNOTSUPP`.
+    fn vfs_export(
+        _mp: &'static crate::fs::mount::Mount<Self::Proc>,
+        _argp: &hal::sys::mount::ExportArgs,
+    ) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
+    /// The empty `um_export` of a new UFS mount (`ffs_mountfs`'s `malloc(M_ZERO)` of its
+    /// `struct ufsmount`): the export list of the recycled mount's glue member (`bsd`'s until
+    /// N6) emptied, its entries forgotten as the C's `free(ump)` forgets them. Nothing for a
+    /// glue without one.
+    fn ufs_export_init(_mp: &crate::fs::mount::Mount<Self::Proc>) {}
+    /// `disk_map(path, mappath, sizeof(mappath), flags) != -1` (`subr_disk.c`, `bsd`'s until
+    /// N7, docs/SCAFFOLDING.md): `path` names a disk by its disklabel UID and `mappath` now
+    /// holds the device's path; `false` (the C's -1) for any other path, and for a glue
+    /// without disks.
+    fn disk_map(_path: &[u8], _mappath: &mut [u8], _flags: i32) -> bool {
+        false
+    }
+    /// `rootvp` (`init_main.c`'s global, `bsd`'s until N7, docs/SCAFFOLDING.md): the vnode of
+    /// the root device, which `ffs_mountfs` lets share its device with the swap partition (a
+    /// miniroot's); `None` before a root mount, and for a glue without one.
+    fn rootvp() -> Option<&'static crate::fs::vnode::Vnode<Self::Proc>> {
+        None
+    }
+    /// `rootvp = vp` (`ffs_mountroot`'s `bdevvp(rootdev, &rootvp)`).
+    fn set_rootvp(_vp: Option<&'static crate::fs::vnode::Vnode<Self::Proc>>) {}
+    /// `swapdev_vp = vp` (`ffs_mountroot`'s `bdevvp(swapdev, &swapdev_vp)`).
+    fn set_swapdev_vp(_vp: Option<&'static crate::fs::vnode::Vnode<Self::Proc>>) {}
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

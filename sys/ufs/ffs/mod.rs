@@ -17,21 +17,12 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The fast file system: OpenBSD `sys/ufs/ffs/`.
-//!
-//! Headers (types): `fs`, `ffs_extern`. Files (functions): `ffs_alloc`, `ffs_balloc`,
-//! `ffs_inode`, `ffs_subr`, `ffs_tables`, `ffs_vfsops`, `ffs_vnops`. FFS2 support is
-//! feature `ffs2` (`option FFS2`). OpenBSD no longer has soft updates (`ffs_softdep.c`).
+//! The fast file system: OpenBSD `sys/ufs/ffs/`, the kernel's since N5.5b2
+//! (`kernel::fs::ufs::ffs`). Two adapters stay: `ffs_vfsops` (`ffs_mountroot` over the
+//! kernel's, and the fixture `bsd`'s tests mount an FFS image with) and `fs` (the layout under
+//! LZ's path, for `bsd`'s mfs and `libsa`'s layout tests).
 
-pub mod ffs_alloc;
-pub mod ffs_balloc;
-#[forbid(unsafe_code)]
-pub mod ffs_extern;
-pub mod ffs_inode;
-pub mod ffs_subr;
-#[forbid(unsafe_code)]
-pub mod ffs_tables;
 pub mod ffs_vfsops;
-pub mod ffs_vnops;
+#[forbid(unsafe_code)]
 pub mod fs;
 /* </CODE> */

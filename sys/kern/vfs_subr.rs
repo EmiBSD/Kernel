@@ -1172,11 +1172,8 @@ pub(crate) mod tests {
         kernel::fs::subr::vfs_test_reset::<BsdProcGlue>();
         let _ = kernel::fs::spec::register_devsw::<BsdProcGlue>(&crate::sys::specdev::BSD_DEVSW);
         // The file systems' pools and tables live in that memory too: let vfsinit's vfs_init
-        // calls set them up again.
-        #[cfg(feature = "ffs")]
-        {
-            crate::ufs::ffs::ffs_vfsops::FFS_INIT_DONE.store(false, Ordering::SeqCst);
-        }
+        // calls set them up again (ffs's flag is the kernel's UFS tables', which
+        // vfs_test_reset cleared).
         vfsinit();
         testfs::reset();
         set_rootvnode(None);

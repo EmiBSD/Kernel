@@ -539,6 +539,11 @@ impl Fs {
             None => kpanic(format_args!("Fs::zeroed")),
         }
     }
+
+    /// `fs->fs_fsmnt` of a super-block read out of its buffer (`ffs_mountfs`'s messages).
+    pub fn fsmnt(&self) -> Fsmnt {
+        Fsmnt(self.fs_fsmnt)
+    }
 }
 
 impl Default for Fs {

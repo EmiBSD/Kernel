@@ -644,6 +644,13 @@ impl ProcGlue for BsdProcGlue {
         crate::sys::proc::place_thread(p);
     }
 
+    /// The thread's `&'static` (`p_self`, recorded by `thread_placed`) pinned, for the
+    /// kernel's `ffs_write`'s `vn_fsizechk` (LZ's `vn_fsizechk` adapter's pin).
+    fn thread_pin(p: &Proc) -> Option<core::pin::Pin<&Proc>> {
+        use crate::sys::proc::ProcExt;
+        Some(hal::pin::pin_static(p.as_static()))
+    }
+
     /// `timeout_set_flags(&pr->ps_realit_to, realitexpire, pr, KCLOCK_UPTIME, 0)`.
     fn process_initialized(pr: &Process) {
         crate::kern::kern_timeout::timeout_set_flags(

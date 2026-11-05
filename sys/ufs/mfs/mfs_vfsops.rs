@@ -100,17 +100,16 @@ use crate::sys::types::makedev;
 use crate::sys::ucred::Ucred;
 use crate::sys::vnode::{FORCECLOSE, VBLK, VT_MFS, WRITECLOSE};
 use crate::sys::vnode::{checkalias, getnewvnode, vfs_busy, vrele};
-use crate::ufs::ffs::ffs_vfsops::{
-    ffs_fhtovp, ffs_flushfiles, ffs_init, ffs_mountfs, ffs_statfs, ffs_sync, ffs_sysctl,
-    ffs_unmount, ffs_vget, ffs_vptofh,
-};
-use crate::ufs::ffs::fs::{Fs, MAXMNTLEN};
+use crate::ufs::ffs::fs::{Fs, Superblock};
 use crate::ufs::mfs::mfs_vnops::{MFS_VOPS, mfs_doio};
 use crate::ufs::mfs::mfsnode::{Mfsnode, vtomfs};
 use crate::ufs::ufs::quota::ufs_quotactl;
 use crate::ufs::ufs::ufs_vfsops::ufs_root;
-use crate::ufs::ufs::ufsmount::UfsmountExt;
 use crate::ufs::ufs::ufsmount::vfstoufs;
+use kernel::fs::ufs::ffs::ffs_vfsops::{
+    ffs_fhtovp, ffs_flushfiles, ffs_init, ffs_mountfs, ffs_statfs, ffs_sync, ffs_sysctl,
+    ffs_unmount, ffs_vget, ffs_vptofh,
+};
 
 /// `mfs_minor`: used for building internal dev_t.
 static MFS_MINOR: AtomicU32 = AtomicU32::new(0);
@@ -132,13 +131,10 @@ pub static MFS_VFSOPS: Vfsops = Vfsops {
     vfs_checkexp: mfs_checkexp,
 };
 
-/// `memset(fs->fs_fsmnt, 0, sizeof(fs->fs_fsmnt)); strlcpy(fs->fs_fsmnt, name, ...)`.
-fn fs_strlcpy_fsmnt(fs: &Fs, name: &[u8]) {
-    let mut m = [0u8; MAXMNTLEN];
-    let name = name.split(|&c| c == 0).next().unwrap_or(&[]);
-    let n = name.len().min(m.len() - 1);
-    m[..n].copy_from_slice(&name[..n]);
-    fs.fs_fsmnt.set(m);
+/// `memset(fs->fs_fsmnt, 0, sizeof(fs->fs_fsmnt)); strlcpy(fs->fs_fsmnt, name, ...)`: the
+/// kernel's in-core super-block's (N5.5b2).
+fn fs_strlcpy_fsmnt(fs: &Superblock, name: &[u8]) {
+    fs.set_fsmnt(name);
 }
 
 /// `memset(dst, 0, MNAMELEN); strlcpy(dst, src, MNAMELEN)`.
@@ -164,16 +160,16 @@ pub fn mfs_mount(
     // name, that's all we do.
     if mp.flag() & MNT_UPDATE != 0 {
         let ump = vfstoufs(mp);
-        let fs = ump.fs();
-        if fs.fs_ronly.get() == 0 && mp.flag() & MNT_RDONLY != 0 {
+        let fs = ump.um_fs();
+        if fs.fs_ronly() == 0 && mp.flag() & MNT_RDONLY != 0 {
             let mut flags = WRITECLOSE;
             if mp.flag() & MNT_FORCE != 0 {
                 flags |= FORCECLOSE;
             }
             ffs_flushfiles(mp, flags, p)?;
         }
-        if fs.fs_ronly.get() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
-            fs.fs_ronly.set(0);
+        if fs.fs_ronly() != 0 && mp.flag() & MNT_WANTRDWR != 0 {
+            fs.set_fs_ronly(0);
         }
         // EXPORTMFS: not configured.
         return Ok(());
@@ -210,12 +206,11 @@ pub fn mfs_mount(
         return Err(e);
     }
     let ump = vfstoufs(mp);
-    let fs = ump.fs();
+    let fs = ump.um_fs();
 
     fs_strlcpy_fsmnt(fs, path);
-    let fsmnt = fs.fs_fsmnt.get();
     mp.with_stat(|sp| {
-        sp.f_mntonname.copy_from_slice(&fsmnt[..MNAMELEN]);
+        fs.read_bytes(core::mem::offset_of!(Fs, fs_fsmnt), &mut sp.f_mntonname);
         mname_copy(&mut sp.f_mntfromname, &fspec);
         mname_copy(&mut sp.f_mntfromspec, &fspec);
         sp.mount_info.__align[..MfsArgs::SIZE].copy_from_slice(&data[..MfsArgs::SIZE]);
@@ -419,10 +414,10 @@ mod tests {
 
         let mp = mount_mfs(p, &mut image, false);
         let ump = vfstoufs(mp);
-        let fs = ump.fs();
-        assert_eq!(fs.fs_magic.get(), FS_UFS2_MAGIC);
-        assert_eq!(&fs.fs_fsmnt.get()[..2], b"/\0");
-        assert_eq!(fs.fs_ronly.get(), 0);
+        let fs = ump.um_fs();
+        assert_eq!(fs.fs_magic(), FS_UFS2_MAGIC);
+        assert_eq!(fs.fsmnt().as_bytes(), b"/");
+        assert_eq!(fs.fs_ronly(), 0);
 
         // The "device" is a made-up block device vnode of the mfs type, and the mount knows
         // what it was mounted from, on, and with.
@@ -486,7 +481,7 @@ mod tests {
         let mp = mount_mfs(p, &mut image, true);
         assert_eq!(read_file(p, b"/note\0").unwrap(), note);
         assert_eq!(read_file(p, b"/big\0").unwrap(), big);
-        assert_eq!(vfstoufs(mp).fs().fs_ronly.get(), 1);
+        assert_eq!(vfstoufs(mp).um_fs().fs_ronly(), 1);
         teardown();
     }
 
@@ -531,20 +526,21 @@ mod tests {
         let mut image = newfs::Image::new(newfs::FFS1_4M).finish();
         let (_g, p) = setup(Vec::new());
         let mp = mount_mfs(p, &mut image, false);
-        let fs = vfstoufs(mp).fs();
+        let ump = vfstoufs(mp);
+        let fs = ump.um_fs();
         let mut nd = ndinit(LOOKUP, FOLLOW, NiDirp::Sys(b"/"), p);
 
         // An update to read-only flushes the files open for writing; the C leaves `fs_ronly` to
         // the generic code, and so does this.
         mp.set_flag(mp.flag() | MNT_UPDATE | MNT_RDONLY);
         mfs_mount(mp, b"/\0", &mut [], &mut nd, p).unwrap();
-        assert_eq!(fs.fs_ronly.get(), 0);
+        assert_eq!(fs.fs_ronly(), 0);
 
         // A read-only file system asked to be read-write.
-        fs.fs_ronly.set(1);
+        fs.set_fs_ronly(1);
         mp.set_flag((mp.flag() & !MNT_RDONLY) | MNT_UPDATE | MNT_WANTRDWR);
         mfs_mount(mp, b"/\0", &mut [], &mut nd, p).unwrap();
-        assert_eq!(fs.fs_ronly.get(), 0);
+        assert_eq!(fs.fs_ronly(), 0);
 
         mp.set_flag(mp.flag() & !(MNT_UPDATE | MNT_WANTRDWR));
         teardown();

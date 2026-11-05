@@ -70,6 +70,8 @@
 //!   TMPFS`, commented out in GENERIC). A new entry joins as a `Vfsconf::new(...)` line behind a
 //!   cargo feature named after the `option(4)`.
 //! - `vfs_byname` takes the name as bytes (`&[u8]`, NUL or slice end terminated).
+//! - `ffs`'s entry names the kernel's `ffs_vfsops` (`Ffs::<BsdProcGlue>::VFS`, N5.5b2); the
+//!   other types' are `bsd`'s `Vfsops` tables.
 
 use core::sync::atomic::Ordering;
 
@@ -82,7 +84,7 @@ use crate::sys::vnode::Vnode;
 static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     #[cfg(feature = "ffs")]
     Vfsconf::new(
-        &crate::ufs::ffs::ffs_vfsops::FFS_VFSOPS,
+        &kernel::fs::ufs::ffs::ffs_vfsops::Ffs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_FFS,
         1,
         crate::sys::mount::MNT_LOCAL | crate::sys::mount::MNT_SWAPPABLE,

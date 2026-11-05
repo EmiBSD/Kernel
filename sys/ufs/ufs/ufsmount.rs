@@ -60,25 +60,25 @@
 //!   `ffs_mountfs` and `ext2fs_mountfs` hang from the mount's typed slot and their unmounts
 //!   take back; [`vfstoufs`] (the C's `VFSTOUFS` cast) counts a handle out of the slot, which
 //!   its caller holds for the operation, and each inode holds one for its life.
-//! - `ufsmount_u` (the super-block pointer of FFS or of EXT2FS) is `g.um_fs`; with feature
-//!   `ext2fs` (`option EXT2FS`) the union's other member is the separate field `g.um_e2fs`
-//!   ([`UfsmountExt::e2fs`]): a mount is FFS's or ext2fs's, never both. The C's `um_e2fsb`
-//!   (`um_e2fs->s_es`) names a member that does not exist (nothing uses it);
-//!   [`UfsmountExt::with_e2fsb`] is its meaning, the in-core super block `um_e2fs->e2fs` for
-//!   the duration of a closure. Both are links to the super blocks `bsd`'s mounts `malloc`
-//!   and free (a `&'static` the unmount ends, until N5.5b2 and N5.6 own them).
+//! - `ufsmount_u`: FFS's super block is the kernel structure's own since N5.5b2
+//!   (`Ufsmount::um_fs`); with feature `ext2fs` (`option EXT2FS`) the union's other member is
+//!   the field `g.um_e2fs` ([`UfsmountExt::e2fs`]): a mount is FFS's or ext2fs's, never both.
+//!   The C's `um_e2fsb` (`um_e2fs->s_es`) names a member that does not exist (nothing uses
+//!   it); [`UfsmountExt::with_e2fsb`] is its meaning, the in-core super block
+//!   `um_e2fs->e2fs` for the duration of a closure. It is a link to the super block `bsd`'s
+//!   ext2fs mount `malloc`s and frees (a `&'static` the unmount ends, until N5.6 owns it).
 //! - `um_export` (`struct netexport`) is the mount's glue member since N5.5b0
 //!   (`sys/sys/mount.rs`'s `BsdMountG`, `mp.g.export`), cleared by the mounts where the C's
 //!   zeroed structure starts it empty. It is kept whether or not `nfsserver` is configured, as
 //!   the C does; without the feature `vfs_export` answers `ENOTSUP` and the list stays empty.
 
+#[cfg(feature = "ext2fs")]
 use hal::link::Link;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs::{Ext2fs, MExt2fs};
-use crate::ufs::ffs::fs::Fs;
 pub use kernel::fs::ufs::ufs::ufsmount::{
     QTF_CLOSING, QTF_OPENING, UM_EXT2FS, UM_UFS1, UM_UFS2, blkptrtodb, is_sequential, mnindir,
     vfstoufs,
@@ -91,22 +91,18 @@ pub type Ufsmount = kernel::fs::ufs::ufs::ufsmount::Ufsmount<BsdProcGlue>;
 pub type UfsmountRef = kernel::fs::ufs::ufs::ufsmount::UfsmountRef<BsdProcGlue>;
 
 /// The members of `bsd`'s types a UFS mount carries (the glue's `UfsmountG`,
-/// docs/SCAFFOLDING.md): links to the super blocks, `Send` and `Sync` by composition (`Fs` and
-/// `MExt2fs` are `Sync`).
+/// docs/SCAFFOLDING.md): ext2fs's link to its super block, `Send` and `Sync` by composition
+/// (`MExt2fs` is `Sync`).
 #[derive(Default)]
 pub struct BsdUfsmountG {
-    /// `um_fs`: pointer to superblock (FFS).
-    pub um_fs: Link<Fs>,
     /// `um_e2fs` (`ufsmount_u.e2fs`): pointer to the in-core super block (EXT2FS), in place
-    /// of `um_fs` for an ext2fs mount.
+    /// of `um_fs` (the kernel's, an FFS mount's) for an ext2fs mount.
     #[cfg(feature = "ext2fs")]
     pub um_e2fs: Link<MExt2fs>,
 }
 
 /// The members of `struct ufsmount` that `bsd`'s types answer.
 pub trait UfsmountExt {
-    /// `ump->um_fs`, which every mounted UFS has.
-    fn fs(&self) -> &'static Fs;
     /// `ump->um_e2fs`, which every mounted ext2fs has (feature `ext2fs`).
     #[cfg(feature = "ext2fs")]
     fn e2fs(&self) -> &'static MExt2fs;
@@ -116,13 +112,6 @@ pub trait UfsmountExt {
 }
 
 impl UfsmountExt for Ufsmount {
-    fn fs(&self) -> &'static Fs {
-        match self.g.um_fs.get() {
-            Some(fs) => fs,
-            None => panic(format_args!("ufsmount {:p}: no um_fs", self)),
-        }
-    }
-
     #[cfg(feature = "ext2fs")]
     fn e2fs(&self) -> &'static MExt2fs {
         match self.g.um_e2fs.get() {

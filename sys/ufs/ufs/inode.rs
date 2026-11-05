@@ -61,11 +61,11 @@
 //! Upstream: sys/ufs/ufs/inode.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `inode_u` (`i_fs`, `i_e2fs`), ext2fs's `inode_ext` ([`Ext2fsInodeExt`]) and ext2fs's
-//!   dinode (`i_e2din`) are [`BsdInodeG`]'s, reached as `ip.g`: ffs's super block is `bsd`'s
-//!   until N5.5b, ext2fs's members until N5.6 (`i_dquot[]` and the dirhash are the kernel
-//!   inode's since N5.5a2). `i_fs` and `i_e2fs` are read through [`InodeExt`] (`ip.fs()`,
-//!   `ip.e2fs()`; `i_ump` is the kernel's `ip.ump()`); the
+//! - `inode_u.e2fs` (`i_e2fs`), ext2fs's `inode_ext` ([`Ext2fsInodeExt`]) and ext2fs's dinode
+//!   (`i_e2din`) are [`BsdInodeG`]'s, reached as `ip.g`, until N5.6 (`i_dquot[]` and the
+//!   dirhash are the kernel inode's since N5.5a2; ffs's `i_fs` since N5.5b2, the kernel's
+//!   `ip.i_fs()` over the inode's UFS mount). `i_e2fs` is read through [`InodeExt`]
+//!   (`ip.e2fs()`; `i_ump` is the kernel's `ip.ump()`); the
 //!   `i_e2fs_*` shorthands are [`BsdInodeG`]'s methods (`ip.g.i_e2fs_mode()`, ...), over
 //!   `i_e2din` ([`BsdInodeG::with_e2din`], the one dinode pointer cast to `ext2fs_dinode`);
 //!   `i_e2fs_blocks` is `i_e2fs_blocks()` (a copy of the 15 pointers), `i_e2fs_block(i)` and
@@ -77,6 +77,7 @@
 //!   `iv_bufatoff` the buffer and the offset of `res` in it, lent (`IoBuf::Lent`) as `bsd`'s
 //!   buffers are.
 
+#[cfg(feature = "ext2fs")]
 use core::cell::Cell;
 
 #[cfg(feature = "ext2fs")]
@@ -93,7 +94,6 @@ use crate::ufs::ext2fs::ext2fs::MExt2fs;
 use crate::ufs::ext2fs::ext2fs_dinode::Ext2fsDinode;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ext2fs::ext2fs_extents::Ext4ExtentCache;
-use crate::ufs::ffs::fs::Fs;
 use crate::ufs::ufs::dinode::Ufsino;
 #[cfg(feature = "ext2fs")]
 use crate::ufs::ufs::dinode::{NDADDR, NIADDR};
@@ -151,10 +151,8 @@ impl Default for Ext2fsInodeExt {
 /// The members of `bsd`'s types an inode carries (the glue's `InodeG`, docs/SCAFFOLDING.md).
 #[derive(Default)]
 pub struct BsdInodeG {
-    /// `i_fs` (`inode_u.fs`): associated filesystem.
-    pub i_fs: Cell<Option<&'static Fs>>,
     /// `i_e2fs` (`inode_u.e2fs`): associated ext2fs file system (feature `ext2fs`), in place of
-    /// `i_fs` for an ext2fs inode.
+    /// `i_fs` (the kernel's, an FFS inode's) for an ext2fs inode.
     #[cfg(feature = "ext2fs")]
     pub i_e2fs: Cell<Option<&'static MExt2fs>>,
     /// `inode_ext.e2fs`: the ext2fs members (feature `ext2fs`), in place of the dirhash for an
@@ -170,7 +168,7 @@ pub struct BsdInodeG {
 // SAFETY: LZ's argument for `struct inode` (sys/ufs/ufs/inode.rs:244-245 at the pin), moved
 // with the members it covered (the same site, not a new one, as `VnodeG`'s at N5.2): they are
 // changed under the inode's lock or the kernel lock, as in C. Paid member by member: the quota
-// and dirhash ones went at N5.5a2 (the kernel inode's), `i_fs` at N5.5b, the ext2fs ones at
+// and dirhash ones went at N5.5a2 (the kernel inode's), `i_fs` at N5.5b2, the ext2fs ones at
 // N5.6.
 unsafe impl Sync for BsdInodeG {}
 
@@ -341,11 +339,9 @@ pub type InodeRef = kernel::fs::ufs::ufs::inode::InodeRef<BsdProcGlue>;
 /// What [`Inode::new`] takes.
 pub type InodeInit = kernel::fs::ufs::ufs::inode::InodeInit<BsdProcGlue>;
 
-/// The members of `struct inode` that `bsd`'s types answer: `i_ump`, `inode_u`, and
+/// The members of `struct inode` that `bsd`'s types answer: `inode_u.e2fs` and
 /// `EXT2FS_ITIMES` (over the kernel's flags and ext2fs's dinode).
 pub trait InodeExt {
-    /// `ip->i_fs`: the FFS super block.
-    fn fs(&self) -> &'static Fs;
     /// `ip->i_e2fs`: the inode's in-core ext2fs super block (feature `ext2fs`).
     #[cfg(feature = "ext2fs")]
     fn e2fs(&self) -> &'static MExt2fs;
@@ -356,13 +352,6 @@ pub trait InodeExt {
 }
 
 impl InodeExt for Inode {
-    fn fs(&self) -> &'static Fs {
-        match self.g.i_fs.get() {
-            Some(fs) => fs,
-            None => panic(format_args!("inode {:p}: no fs", self)),
-        }
-    }
-
     #[cfg(feature = "ext2fs")]
     fn e2fs(&self) -> &'static MExt2fs {
         match self.g.i_e2fs.get() {

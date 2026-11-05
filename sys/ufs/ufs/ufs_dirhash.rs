@@ -70,7 +70,6 @@ mod tests {
     // looked up, shrunk, renamed into and grown with `ufsdirhash_checkblock` on, then checked
     // against a linear walk; and recycling under a small `ufs_dirhashmaxmem`.
 
-    use core::ptr;
     use core::sync::atomic::Ordering;
     use std::collections::BTreeSet;
     use std::sync::MutexGuard;
@@ -110,10 +109,10 @@ mod tests {
     use crate::sys::vnode::{
         bdevvp, vflushbuf, vfs_busy, vfs_mount_alloc, vfs_unbusy, vput, vref, vrele,
     };
-    use crate::ufs::ffs::ffs_extern::FFS_DIRHASH_MEM;
     use crate::ufs::ffs::ffs_vfsops::tests::newfs;
-    use crate::ufs::ffs::ffs_vfsops::{ffs_mountfs, ffs_statfs, ffs_sysctl};
     use crate::ufs::ufs::inode::vtoi;
+    use kernel::fs::ufs::ffs::ffs_extern::FFS_DIRHASH_MEM;
+    use kernel::fs::ufs::ffs::ffs_vfsops::{ffs_mountfs, ffs_statfs, ffs_sysctl};
 
     /// The disk the strategy below reads and writes.
     static DISK: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
@@ -337,21 +336,14 @@ mod tests {
         })
     }
 
-    /// `sysctl vfs.ffs.dirhash_mem`.
+    /// `sysctl vfs.ffs.dirhash_mem`, into the user double's memory (the kernel's `ffs_sysctl`
+    /// copies out through `hal::user`).
     fn sysctl_dirhash_mem(p: &Proc) -> i32 {
-        let mut v = 0i32;
+        let u = crate::kern::vfs_subr::tests::user_buf(&[0u8; 4]);
         let mut len = size_of::<i32>();
-        ffs_sysctl(
-            &[FFS_DIRHASH_MEM],
-            ptr::from_mut(&mut v) as usize,
-            &mut len,
-            0,
-            0,
-            p,
-        )
-        .unwrap();
+        ffs_sysctl(&[FFS_DIRHASH_MEM], u.addr(), &mut len, 0, 0, p).unwrap();
         assert_eq!(len, size_of::<i32>());
-        v
+        i32::from_ne_bytes(u.bytes()[..4].try_into().unwrap())
     }
 
     /// Every name in `names` resolves to `ino` in `dir`, and a few names not there do not.
