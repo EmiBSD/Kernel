@@ -124,8 +124,9 @@
 //!   `hal::pinlist::PinList`s of the pinned denodes (`Pin<&Denode>` from the counted block,
 //!   `hal::malloc::MArc::as_pin`) bound to the kernel lock, in a `ReadMostly` cell of the
 //!   glue's tables (`MsdosfsTables::dehash`), so the host tests start each test afresh
-//!   (`msdosfs_test_reset`). The adapter of the chains ([`DeHashLink`]) is declared here by
-//!   the generic form of `hal::pin_adapter!` (no glue associated type, D-N5.7-3). A walk takes
+//!   (`msdosfs_test_reset`). The adapter of the chains, LZ's `DeHash` (`queue_adapter!` in
+//!   `denode.rs`), is [`DeHashLink`], declared here by the generic form of
+//!   `hal::pin_adapter!` (no glue associated type, D-N5.7-3). A walk takes
 //!   `klock::reader()` (a per-CPU count, no interrupt level), an insertion or a removal
 //!   `klock::witness()`, which raises the interrupt level for its section: one spl pair per
 //!   `msdosfs_hashins` and per `msdosfs_hashrem` of a hashed denode (once in a denode's life
@@ -341,12 +342,11 @@ fn msdosfs_hashins<G: ProcGlue>(dep: Pin<&Denode<G>>) -> Result<(), Errno> {
 
 /// `msdosfs_hashrem(dep)`: take the denode off its chain, if it is on one.
 fn msdosfs_hashrem<G: ProcGlue>(dep: &Denode<G>) {
-    if !dep.de_hash.is_linked() {
-        return;
-    }
     with_dehash::<G, _>(|dh| {
         let mut w = klock::witness();
-        dh.chain(dep.de_chain.get()).remove(&mut w, dep);
+        if dep.de_hash.is_linked() {
+            dh.chain(dep.de_chain.get()).remove(&mut w, dep);
+        }
     });
 }
 
