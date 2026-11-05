@@ -95,6 +95,9 @@ pub mod newfs {
         pub fpg: i32,
         /// `fs_ipg` (a multiple of `INOPB`).
         pub ipg: u32,
+        /// `fs_contigsumsize`: the longest cluster the summary counts, 0 for none (`newfs
+        /// -a`'s `maxcontig`, capped at `FS_MAXCONTIG`).
+        pub contigsumsize: i32,
     }
 
     /// FFS2, 4 MB: 8 KB blocks, 1 KB fragments, two cylinder groups of 512 inodes.
@@ -105,6 +108,7 @@ pub mod newfs {
         fsize: 1024,
         fpg: 2048,
         ipg: 512,
+        contigsumsize: 0,
     };
 
     /// FFS1, 4 MB, as `makefs` builds the install ramdisks: 4 KB blocks, 512-byte fragments,
@@ -116,6 +120,7 @@ pub mod newfs {
         fsize: 512,
         fpg: 4096,
         ipg: 512,
+        contigsumsize: 0,
     };
 
     /// FFS2, 2 MB in one cylinder group: the allocator tests' image.
@@ -128,6 +133,12 @@ pub mod newfs {
     pub const FFS1_1G: Params = Params {
         size: 2 << 20,
         ..FFS1_4M
+    };
+
+    /// FFS2, 2 MB in one cylinder group, with a cluster summary of runs up to 4 blocks.
+    pub const FFS2_1G_CLUSTERS: Params = Params {
+        contigsumsize: 4,
+        ..FFS2_1G
     };
 
     /// The fixed time stamp of everything `newfs` writes.
@@ -211,7 +222,8 @@ pub mod newfs {
             fs.fs_fsbtodb = ilog2(p.fsize / DEV_BSIZE as i32);
             fs.fs_size = (p.size / p.fsize as usize) as i64;
             fs.fs_nspf = p.fsize / DEV_BSIZE as i32;
-            fs.fs_maxcontig = 1;
+            fs.fs_maxcontig = p.contigsumsize.max(1);
+            fs.fs_contigsumsize = p.contigsumsize;
             fs.fs_nrpos = 1;
             fs.fs_cpg = 1;
             fs.fs_inodefmt = FS_44INODEFMT;
@@ -348,6 +360,16 @@ pub mod newfs {
             }
             c.cg_freeoff = c.cg_iusedoff + (ipg as usize).div_ceil(8) as u32;
             c.cg_nextfreeoff = c.cg_freeoff + (fpg as usize).div_ceil(8) as u32;
+            let contig = self.fs.fs_contigsumsize;
+            if contig > 0 {
+                // mkfs: the cluster summary after the fragment map (int32_t aligned), then
+                // the map of free blocks.
+                c.cg_clustersumoff = (c.cg_nextfreeoff - 4).next_multiple_of(4);
+                c.cg_clusteroff = c.cg_clustersumoff + (contig as u32 + 1) * 4;
+                c.cg_nextfreeoff =
+                    c.cg_clusteroff + ((fpg / self.fs.fs_frag) as usize).div_ceil(8) as u32;
+                c.cg_nclusterblks = c.cg_ndblk / self.fs.fs_frag as u32;
+            }
             c.cg_cs.cs_nifree = ipg as i32;
             let mut blk = vec![0u8; self.fs.fs_cgsize as usize];
             assert!(pod_to_bytes(&c, &mut blk));
@@ -361,6 +383,9 @@ pub mod newfs {
             }
             let blocks_free = |v: &mut CgView<'_>, d: i64| {
                 ffs_setblock(&sb, v.cg_blksfree(), d / i64::from(frag));
+                if contig > 0 {
+                    setbit(v.cg_clustersfree(), (d / i64::from(frag)) as usize);
+                }
                 v.add_cg_cs_nbfree(1);
                 if !ufs2 {
                     v.add_cg_blktot(0, 1);
@@ -462,6 +487,7 @@ pub mod newfs {
             let fsize = self.fs.fs_fsize;
             let bsize = self.fs.fs_bsize;
             let ufs2 = self.fs.fs_magic == FS_UFS2_MAGIC;
+            let contig = self.fs.fs_contigsumsize;
             let mut v = self.cg(0);
             let ndblk = i64::from(v.cg_ndblk());
             let mut d = 0;
@@ -473,6 +499,9 @@ pub mod newfs {
             }
             assert!(d < ndblk, "newfs: cg 0 is full");
             ffs_clrblock(&sb, v.cg_blksfree(), d / i64::from(frag));
+            if contig > 0 {
+                clrbit(v.cg_clustersfree(), (d / i64::from(frag)) as usize);
+            }
             v.add_cg_cs_nbfree(-1);
             if mode & IFMT == IFDIR {
                 v.add_cg_cs_ndir(1);
@@ -665,6 +694,24 @@ pub mod newfs {
                     cs_nffree: fs.fs_cstotal.cs_nffree as i32,
                 };
             }
+            // The cluster summaries from the final maps (mkfs counts them at initcg's end;
+            // its later allocations, the root directory's, leave them as they were).
+            let contig = self.fs.fs_contigsumsize;
+            if contig > 0 {
+                for cg in 0..self.fs.fs_ncg {
+                    let mut v = self.cg(cg);
+                    let n = v.cg_nclusterblks() as usize;
+                    let mut run = 0;
+                    for i in 0..=n {
+                        if i < n && isset(v.cg_clustersfree(), i) {
+                            run += 1;
+                        } else if run > 0 {
+                            v.add_cg_clustersum(run.min(contig as usize), 1);
+                            run = 0;
+                        }
+                    }
+                }
+            }
             let sb = incore(&self.fs);
             let mut sbb = vec![0u8; SBLOCKSIZE];
             assert!(pod_to_bytes(&self.fs, &mut sbb));
@@ -719,6 +766,24 @@ pub mod newfs {
             let used = v.cg_inosused();
             let ni = (0..fs.fs_ipg).filter(|&i| !isset(used, i as usize)).count() as i32;
             let nd = v.cg_cs_ndir();
+            if fs.fs_contigsumsize > 0 {
+                // The cluster summary against the cluster map's runs.
+                let contig = fs.fs_contigsumsize as usize;
+                let n = v.cg_nclusterblks() as usize;
+                let mut want = [0i32; FS_MAXCONTIG + 1];
+                let mut run = 0;
+                for i in 0..=n {
+                    if i < n && isset(v.cg_clustersfree(), i) {
+                        run += 1;
+                    } else if run > 0 {
+                        want[run.min(contig)] += 1;
+                        run = 0;
+                    }
+                }
+                for (k, w) in want.iter().enumerate().take(contig + 1).skip(1) {
+                    assert_eq!(v.cg_clustersum(k), *w, "cg {cg} clustersum[{k}]");
+                }
+            }
             assert_eq!(v.cg_cs_nbfree(), nb, "cg {cg} nbfree");
             assert_eq!(v.cg_cs_nffree(), nf, "cg {cg} nffree");
             assert_eq!(v.cg_cs_nifree(), ni, "cg {cg} nifree");
@@ -1052,7 +1117,7 @@ mod tests {
 
     #[test]
     fn newfs_images_are_consistent() {
-        for p in [FFS2_4M, FFS1_4M, FFS2_1G, FFS1_1G] {
+        for p in [FFS2_4M, FFS1_4M, FFS2_1G, FFS1_1G, FFS2_1G_CLUSTERS] {
             let mut img = Image::new(p);
             img.add_file(b"a", &pattern(3000, 1));
             img.add_file(b"b", &pattern(20000, 2));

@@ -1665,6 +1665,9 @@ mod tests {
         }
     }
 
+    // FFS2 only (its 1 KB fragments and block positions): without `option FFS2` the kernel
+    // mounts no FFS2 image.
+    #[cfg(feature = "ffs2")]
     #[test]
     fn fragments_reassembled_into_a_block_count_as_a_block() {
         let (_g, th, mp) = setup(Image::new(FFS2_1G).finish());
@@ -1700,7 +1703,7 @@ mod tests {
 
     #[test]
     fn a_full_file_system_refuses_a_user_but_not_the_super_user() {
-        let (_g, th, mp) = setup(Image::new(FFS2_1G).finish());
+        let (_g, th, mp) = setup(Image::new(FORMATS[0]).finish());
         let vp = new_file(mp, th);
         let ip = vtoi(vp);
         let fs = ip.i_fs();
@@ -1862,6 +1865,151 @@ mod tests {
             ip.dip_set_ib(0, 0);
             drop(ip);
             vput(vp);
+        }
+    }
+
+    /// Cylinder group 0's cluster summary entry `i` and cluster map bit `blk`, through the
+    /// cache.
+    #[cfg(feature = "ffs2")]
+    fn cluster<G: ProcGlue>(ip: &Inode<G>, i: usize, blk: usize) -> (i32, bool) {
+        let mut t = ffs_cgread(ip.i_fs(), ip, 0).unwrap();
+        let mut v = CgView::new(t.data());
+        let r = (v.cg_clustersum(i), isset(v.cg_clustersfree(), blk));
+        brelse(t);
+        r
+    }
+
+    // FFS2 only: without `option FFS2` the kernel mounts no FFS2 image.
+    #[cfg(feature = "ffs2")]
+    #[test]
+    fn the_cluster_summary_follows_block_allocations_and_frees() {
+        let (_g, th, mp) =
+            setup(Image::new(super::super::testffs::newfs::FFS2_1G_CLUSTERS).finish());
+        let cred = Cred::real(th.ucred());
+        let vp = new_file(mp, th);
+        let ip = vtoi(vp);
+        let fs = ip.i_fs();
+        let bsize = fs.fs_bsize();
+        // newfs: one run of free blocks from 29 (after the root directory's) to the end,
+        // counted as a run of fs_contigsumsize; fs_maxcluster starts at fs_contigsumsize.
+        assert_eq!(fs.fs_contigsumsize(), 4);
+        assert_eq!(fs.maxcluster(0), 4);
+        assert_eq!(cluster(&ip, 4, 29), (1, true));
+        // The run's first block: the run behind it is still long.
+        let b1 = ffs_alloc(&ip, 0, 0, bsize, cred).unwrap();
+        assert_eq!(b1, 29 * 8);
+        assert_eq!(cluster(&ip, 4, 29), (1, false));
+        // Block 32: the run splits into 30-31 (a run of 2) and 33 on (still 4).
+        let b2 = ffs_alloc(&ip, 1, 32 * 8, bsize, cred).unwrap();
+        assert_eq!(b2, 32 * 8);
+        assert_eq!(cluster(&ip, 2, 32), (1, false));
+        assert_eq!(cluster(&ip, 4, 33), (1, true));
+        assert_eq!(fs.maxcluster(0), 4);
+        check_incore(fs, true);
+        // Both back: one run again.
+        ffs_blkfree(&ip, b2, i64::from(bsize));
+        assert_eq!(cluster(&ip, 2, 32), (0, true));
+        ffs_blkfree(&ip, b1, i64::from(bsize));
+        assert_eq!(cluster(&ip, 4, 29), (1, true));
+        check_incore(fs, true);
+        ip.dip_set_blocks(0);
+        drop(ip);
+        vput(vp);
+    }
+
+    /// A cylinder group block of eight blocks of eight fragments with a cluster summary of
+    /// 4 and the cluster map's first byte `map` (summary and map at 168 and 188).
+    fn cluster_block(map: u8, sums: [i32; 5]) -> Vec<u8> {
+        let c = super::super::fs::Cg {
+            cg_magic: super::super::fs::CG_MAGIC,
+            cg_clustersumoff: 168,
+            cg_clusteroff: 188,
+            cg_nclusterblks: 8,
+            ..Default::default()
+        };
+        let mut b = vec![0u8; 256];
+        assert!(hal::user::pod_to_bytes(&c, &mut b));
+        for (i, s) in sums.iter().enumerate() {
+            b[168 + i * 4..172 + i * 4].copy_from_slice(&s.to_ne_bytes());
+        }
+        b[188] = map;
+        b
+    }
+
+    /// An in-core super-block of one group of 64 fragments, 8 per block, and `contig`.
+    fn small_fs(contig: i32) -> Superblock {
+        let mut f = super::super::fs::Fs::zeroed();
+        f.fs_ncg = 1;
+        f.fs_frag = 8;
+        f.fs_fragshift = 3;
+        f.fs_fsize = 1024;
+        f.fs_fpg = 64;
+        f.fs_contigsumsize = contig;
+        super::super::testffs::newfs::incore(&f)
+    }
+
+    #[test]
+    fn clusteracct_counts_the_runs_and_lowers_maxcluster() {
+        let fs = small_fs(4);
+        // Blocks 0 and 1 free: one run of 2.
+        let mut b = cluster_block(0b0000_0011, [0, 0, 1, 0, 0]);
+        let mut v = CgView::new(&mut b);
+        // Block 0 taken: the run of 2 becomes a run of 1, the longest now.
+        ffs_clusteracct(&fs, &mut v, 0, -1);
+        assert_eq!((v.cg_clustersum(1), v.cg_clustersum(2)), (1, 0));
+        assert!(!isset(v.cg_clustersfree(), 0));
+        assert_eq!(fs.maxcluster(0), 1);
+        // Back: a run of 2 again.
+        ffs_clusteracct(&fs, &mut v, 0, 1);
+        assert_eq!((v.cg_clustersum(1), v.cg_clustersum(2)), (0, 1));
+        assert_eq!(fs.maxcluster(0), 2);
+        // Block 3 freed between 2 (taken) and 4..7 (free): a run of 5, counted as 4.
+        drop(v);
+        let mut b = cluster_block(0b1111_0000, [0, 0, 0, 0, 1]);
+        let mut v = CgView::new(&mut b);
+        ffs_clusteracct(&fs, &mut v, 3, 1);
+        assert_eq!(
+            v.cg_clustersum(4),
+            1,
+            "the run behind absorbed, capped at 4"
+        );
+        assert_eq!(fs.maxcluster(0), 4);
+        // Without a cluster summary nothing is touched.
+        let none = small_fs(0);
+        let mut b = cluster_block(0, [0; 5]);
+        let mut v = CgView::new(&mut b);
+        ffs_clusteracct(&none, &mut v, 3, 1);
+        assert!(!isset(v.cg_clustersfree(), 3));
+    }
+
+    #[test]
+    fn mapsearch_finds_the_c_fragment_and_moves_frotor() {
+        let fs = small_fs(0);
+        // (free map's 8 bytes, bpref, allocsiz, the fragment found, cg_frotor after).
+        let table: [([u8; 8], Daddr, i32, Daddr, u32); 5] = [
+            // A run of 3 at fragments 18-20: found from the map's start.
+            ([0, 0, 0b0001_1100, 0, 0, 0, 0, 0], 0, 3, 18, 16),
+            // The same from a preference past it: the search wraps to the start.
+            ([0, 0, 0b0001_1100, 0, 0, 0, 0, 0], 40, 3, 18, 16),
+            // A whole block (byte 4 all free) for a block's request.
+            ([0, 0, 0b0001_1100, 0, 0xff, 0, 0, 0], 0, 8, 32, 32),
+            // A run of 1 among runs of 2: the run of 1 at fragment 62.
+            ([0b0000_0110, 0, 0, 0, 0, 0, 0, 0b0100_0000], 0, 1, 62, 56),
+            // The preference's byte first: the run of 2 at 49-50, not the one at 1-2.
+            ([0b0000_0110, 0, 0, 0, 0, 0, 0b0000_0110, 0], 48, 2, 49, 48),
+        ];
+        for (map, bpref, allocsiz, want, frotor) in table {
+            let mut b = vec![0u8; 256];
+            let c = super::super::fs::Cg {
+                cg_magic: super::super::fs::CG_MAGIC,
+                cg_freeoff: 168,
+                ..Default::default()
+            };
+            assert!(hal::user::pod_to_bytes(&c, &mut b));
+            b[168..176].copy_from_slice(&map);
+            let mut v = CgView::new(&mut b);
+            assert_eq!(ffs_mapsearch(&fs, &mut v, bpref, allocsiz), want, "{map:?}");
+            assert_eq!(v.cg_frotor(), frotor);
         }
     }
 

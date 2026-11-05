@@ -827,6 +827,34 @@ mod tests {
     }
 
     #[test]
+    fn truncate_frees_a_double_indirect_tree() {
+        for &p in FORMATS {
+            let (_g, th, mp) = setup(Image::new(p).finish());
+            let cred = Cred::real(th.ucred());
+            let vp = new_file(mp, th);
+            let ip = vtoi(vp);
+            let fs = ip.i_fs();
+            let bsize = fs.fs_bsize() as usize;
+            let (nb, nf) = (fs.fs_cstotal_nbfree(), fs.fs_cstotal_nffree());
+            // The first block under the double indirect: the double indirect block, the
+            // single indirect under it and the data block.
+            let lbn = NDADDR + nindir(fs) as usize;
+            write(&ip, (bsize * lbn) as Off, &pattern(bsize, 9), cred);
+            assert!(ip.dip_ib(1) != 0);
+            assert_eq!(ip.dip_ib(0), 0);
+            assert_eq!(ip.dip_blocks(), 3 * btodb(bsize as i64));
+            check_incore(fs, p.ufs2, &[vp]);
+            ffs_truncate(&ip, 0, IO_SYNC, cred).unwrap();
+            assert_eq!(ip.dip_ib(1), 0);
+            assert_eq!(ip.dip_blocks(), 0);
+            assert_eq!((fs.fs_cstotal_nbfree(), fs.fs_cstotal_nffree()), (nb, nf));
+            check_incore(fs, p.ufs2, &[vp]);
+            drop(ip);
+            vput(vp);
+        }
+    }
+
+    #[test]
     fn a_short_symlink_is_cleared_in_the_inode() {
         let (_g, th, mp) = setup(Image::new(FORMATS[0]).finish());
         let vp = new_file(mp, th);
