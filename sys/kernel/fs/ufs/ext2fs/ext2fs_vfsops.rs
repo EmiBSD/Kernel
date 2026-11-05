@@ -195,7 +195,7 @@ use crate::fs::vnode::{
     WRITECLOSE, vn_lock,
 };
 use crate::fs::vops::{Cred, Nd, VFS_VGET, Vfs, vop_close, vop_fsync, vop_open, vop_unlock};
-use crate::prf::printf;
+use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread};
 use crate::tc::gettime;
 use crate::time::inittodr;
@@ -211,18 +211,6 @@ pub struct Ext2fsVfs<G>(PhantomData<fn() -> G>);
 impl<G: ProcGlue> Ext2fsVfs<G> {
     /// `ext2fs_vfsops`: the table a mount's `mnt_op` names (`vfsconflist[]`'s `"ext2fs"`).
     pub const VFS: Ext2fsVfs<G> = Ext2fsVfs(PhantomData);
-}
-
-/// A device name as `%s` prints it: its bytes, one character each.
-struct Name<'a>(&'a [u8]);
-
-impl core::fmt::Display for Name<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for &b in self.0 {
-            core::fmt::Write::write_char(f, char::from(b))?;
-        }
-        Ok(())
-    }
 }
 
 /// `struct ext2fs_sync_args`.
@@ -445,10 +433,9 @@ pub fn ext2fs_mount<G: ProcGlue>(
                 fs.set_e2fs_wtime(gettime() as u32);
             } else {
                 let from = mp.stat().f_mntfromname;
-                let n = from.iter().position(|&c| c == 0).unwrap_or(MNAMELEN);
                 printf(format_args!(
                     "{}: file system not clean; please fsck(8)\n",
-                    Name(&from[..n])
+                    Str(&from)
                 ));
             }
             let _ = ext2fs_cgupdate(&u, MNT_WAIT);

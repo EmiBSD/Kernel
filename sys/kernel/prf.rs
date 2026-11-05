@@ -33,6 +33,20 @@ pub use hal::prf::{log, printf};
 
 use crate::sys::errno::Errno;
 
+/// A C string as `printf(9)`'s `%s` prints it: its bytes up to the first NUL, if any, each as
+/// a character (a byte above 0x7f prints as its Latin-1 character, as LZ's `Str` did). The one
+/// printer of a name kept as bytes (an extent's, a task queue's, a device's).
+pub struct Str<'a>(pub &'a [u8]);
+
+impl core::fmt::Display for Str<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for &c in self.0.iter().take_while(|&&c| c != 0) {
+            core::fmt::Write::write_char(f, char::from(c))?;
+        }
+        Ok(())
+    }
+}
+
 /// Reports the gap `name` once per `once` flag and yields `ENOSYS`; [`unported!`] is the way
 /// to call it.
 pub fn report_unported(name: &str, once: &AtomicBool) -> Errno {

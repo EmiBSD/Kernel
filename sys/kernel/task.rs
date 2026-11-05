@@ -105,7 +105,7 @@ use hal::rwlock::Rwlocked;
 use hal::sleep::{INFSLP, PWAIT};
 
 use crate::assert::kpanic;
-use crate::prf::printf;
+use crate::prf::{Str, printf};
 use crate::thread::{self, Start};
 
 /// `void (*t_func)(void *)`: the function a task calls, with its argument (the caller's, never
@@ -433,7 +433,7 @@ fn destroy(tq: &Taskq) {
         TqState::Running => g.life = TqState::Destroyed,
         TqState::Destroyed => kpanic(format_args!(
             "unexpected {} tq state {:?}",
-            Name(tq.name),
+            Str(tq.name),
             g.life
         )),
     }
@@ -459,7 +459,7 @@ pub(crate) fn taskq_create_thread(tq: TqHandle) {
         TqState::Created => g.life = TqState::Running,
         TqState::Running => kpanic(format_args!(
             "unexpected {} tq state {:?}",
-            Name(tq.name),
+            Str(tq.name),
             g.life
         )),
     }
@@ -474,7 +474,7 @@ pub(crate) fn taskq_create_thread(tq: TqHandle) {
         if rv.is_err() {
             printf(format_args!(
                 "unable to create thread for \"{}\" taskq\n",
-                Name(tq.name)
+                Str(tq.name)
             ));
 
             g.running -= 1;
@@ -640,7 +640,7 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
                 (Some(Func::Shared(func)), Some(arg)) => Work::RunShared(func, arg.clone()),
                 _ => kpanic(format_args!(
                     "taskq_thread: {}: a task without a function",
-                    Name(tq.name)
+                    Str(tq.name)
                 )),
             }
         }
@@ -711,18 +711,6 @@ fn taskq_worker(tq: &Taskq) -> Option<*const u32> {
     tq.threads.remove(&mut g, &me);
     g.running -= 1;
     (g.running == 0).then(|| ptr::from_ref(&g.running))
-}
-
-/// A queue's name as the C prints it (`%s`, the bytes as they are).
-struct Name(&'static [u8]);
-
-impl core::fmt::Display for Name {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for &b in self.0 {
-            core::fmt::Write::write_char(f, char::from(b))?;
-        }
-        Ok(())
-    }
 }
 
 /// Test hook: whether `tq`'s worklist is empty (a snapshot under its lock).
