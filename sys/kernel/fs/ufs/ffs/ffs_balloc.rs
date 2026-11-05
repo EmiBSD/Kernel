@@ -86,6 +86,8 @@
 //!   block is the result, so the C's `*bpp` cannot be left stale. The levels of indirection
 //!   come from `getlbns` over the inode's `MNINDIR` (the C's `ufs_getlbns(vp, ..)` reaches
 //!   the same inode through `VTOI`, a count pair here). Over the in-core `Superblock`.
+//! - N5.7c1: the module's private `bread_or_release` is `fs::bio::bread_or_release`, shared
+//!   with msdosfs's FAT engine (a pure move: the same body, the same calls).
 
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_WAIT;
@@ -99,7 +101,9 @@ use super::fs::{FS_UFS2_MAGIC, cgtod, dbtofsb, dtog};
 use super::fs::{blkoff, blksize, fragroundup, fsbtodb, lblkno, lblktosize};
 use crate::assert::kpanic;
 use crate::fs::bio::getblk_wait;
-use crate::fs::bio::{bawrite, bdwrite, bread, brelse, btodb, buf_adjcnt, bwrite};
+use crate::fs::bio::{
+    bawrite, bdwrite, bread, bread_or_release, brelse, btodb, buf_adjcnt, bwrite,
+};
 use crate::fs::buf::{B_CLRBUF, B_SYNC, BufRef};
 #[cfg(feature = "ffs2")]
 use crate::fs::buf::{B_DELWRI, B_INVAL};
@@ -130,22 +134,6 @@ fn write_or_delay(t: BufRef, flags: i32) {
         let _ = bwrite(t);
     } else {
         bdwrite(t);
-    }
-}
-
-/// `bread(vp, lbn, size, &bp)`, the buffer released on an error (the C's `brelse(*bpp)`).
-fn bread_or_release<G: ProcGlue>(
-    vp: &'static Vnode<G>,
-    lbn: Daddr,
-    size: i32,
-) -> Result<BufRef, Errno> {
-    let (t, error) = bread(&vp.bufs, lbn, size);
-    match error {
-        Ok(()) => Ok(t),
-        Err(e) => {
-            brelse(t);
-            Err(e)
-        }
     }
 }
 
@@ -200,7 +188,7 @@ fn balloc_direct<G: ProcGlue>(
     if nb != 0 && ip.dip_size() as Off >= lblktosize(fs, lbn + 1) {
         // The block is an already-allocated direct block and the file already extends past
         // this block, thus this must be a whole block. Just read the block.
-        return Some(bread_or_release(vp, lbn, bsize));
+        return Some(bread_or_release(&vp.bufs, lbn, bsize));
     }
     let (t, newb) = if nb != 0 {
         // Consider need to reallocate a fragment.
@@ -210,7 +198,7 @@ fn balloc_direct<G: ProcGlue>(
             // The existing block is already at least as big as we want. Just read the
             // block.
             return Some(
-                bread_or_release(vp, lbn, bsize).inspect(|t| buf_adjcnt(t, i64::from(osize))),
+                bread_or_release(&vp.bufs, lbn, bsize).inspect(|t| buf_adjcnt(t, i64::from(osize))),
             );
         }
         // The existing block is smaller than we want, grow it.
@@ -315,7 +303,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
         // Fetch through the indirect blocks, allocating as necessary.
         let mut i = 1usize;
         let mut bp = loop {
-            let mut bp = match bread_or_release(vp, indirs[i].in_lbn, bsize) {
+            let mut bp = match bread_or_release(&vp.bufs, indirs[i].in_lbn, bsize) {
                 Ok(t) => t,
                 Err(e) => break 'fail e,
             };
@@ -383,7 +371,7 @@ pub fn ffs1_balloc<G: ProcGlue>(
         }
         brelse(bp);
         let nbp = if flags & B_CLRBUF != 0 {
-            match bread_or_release(vp, lbn, bsize) {
+            match bread_or_release(&vp.bufs, lbn, bsize) {
                 Ok(t) => t,
                 Err(e) => break 'fail e,
             }
@@ -518,7 +506,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
         // Fetch through the indirect blocks, allocating as necessary.
         let mut i = 1usize;
         let mut bp = loop {
-            let mut bp = match bread_or_release(vp, indirs[i].in_lbn, bsize) {
+            let mut bp = match bread_or_release(&vp.bufs, indirs[i].in_lbn, bsize) {
                 Ok(t) => t,
                 Err(e) => break 'fail e,
             };
@@ -606,7 +594,7 @@ pub fn ffs2_balloc<G: ProcGlue>(
         brelse(bp);
 
         let nbp = if flags & B_CLRBUF != 0 {
-            match bread_or_release(vp, lbn, bsize) {
+            match bread_or_release(&vp.bufs, lbn, bsize) {
                 Ok(t) => t,
                 Err(e) => break 'fail e,
             }

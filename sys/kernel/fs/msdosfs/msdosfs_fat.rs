@@ -126,7 +126,9 @@
 //!   block stays the same, as the C's `bp`; `updatefats` holds the modified block's token and
 //!   each mirror's at once (`src.bytes()` into `dst.data()`, the C's `bcopy`), and writes the
 //!   FSInfo block's free count at its offset (`fsinfree`, four bytes) where the C casts the
-//!   block to `struct fsinfo`. LZ's private `getblk_wait` is `bio::getblk_wait`.
+//!   block to `struct fsinfo`. LZ's private `getblk_wait` is `bio::getblk_wait`, and every
+//!   FAT block read with the C's `if (error) { brelse(bp); return (error); }` is
+//!   `bio::bread_or_release` (ffs_balloc's, lifted there).
 //! - The mount's geometry is read as plain members (one load each, the C's) and the in-use
 //!   bitmap as `MArray<AtomicU32>` words changed by a load and a store under the kernel lock
 //!   (`usemap_alloc`, `usemap_free`, the C's `|=`/`&=`), with the C's `KASSERT` bound.
@@ -147,7 +149,7 @@ use hal::sys::errno::Errno;
 use hal::sys::types::Daddr;
 
 use crate::assert::{kassert, kpanic};
-use crate::fs::bio::{DEV_BSHIFT, bdwrite, bread, brelse, bwrite, getblk_wait};
+use crate::fs::bio::{DEV_BSHIFT, bdwrite, bread, bread_or_release, brelse, bwrite, getblk_wait};
 use crate::fs::buf::BufRef;
 use crate::fs::msdosfs::bpb::{Fsinfo, getulong, getushort, putulong, putushort};
 use crate::fs::msdosfs::denode::{
@@ -239,19 +241,6 @@ fn fatblock<G: ProcGlue>(pmp: &Msdosfsmount<G>, ofs: u32) -> (u32, u32, usize) {
         .wrapping_add(pmp.pm_fatblk)
         .wrapping_add(pmp.pm_curfat.wrapping_mul(pmp.pm_FATsecs));
     (bn, size, (ofs % pmp.pm_fatblocksize) as usize)
-}
-
-/// The token of the FAT block `bn` of `bsize` bytes, read (`bread`); `brelse` and the error on
-/// a failed read, as every caller's `if (error) { brelse(bp); return (error); }`.
-fn fat_bread<G: ProcGlue>(pmp: &Msdosfsmount<G>, bn: u32, bsize: u32) -> Result<BufRef, Errno> {
-    let (t, error) = bread(&pmp.pm_devvp.bufs, Daddr::from(bn), bsize as i32);
-    match error {
-        Ok(()) => Ok(t),
-        Err(e) => {
-            brelse(t);
-            Err(e)
-        }
-    }
 }
 
 /// `pcbmap(dep, findcn, bnp, cnp, sp)`: map the logical cluster number of a file into a
@@ -349,7 +338,11 @@ pub fn pcbmap<G: ProcGlue>(
             if let Some(old) = bp.take() {
                 brelse(old);
             }
-            bp = Some(fat_bread(pmp, bn, bsize)?);
+            bp = Some(bread_or_release(
+                &pmp.pm_devvp.bufs,
+                Daddr::from(bn),
+                bsize as i32,
+            )?);
             bp_bn = bn;
         }
         prevcn = cn;
@@ -592,7 +585,7 @@ pub fn fatentry<G: ProcGlue>(
     let fatmask = pmp.pm_fatmask;
     let byteoffset = fatofs(pmp, cn);
     let (bn, bsize, bo) = fatblock(pmp, byteoffset);
-    let mut bp = fat_bread(pmp, bn, bsize)?;
+    let mut bp = bread_or_release(&pmp.pm_devvp.bufs, Daddr::from(bn), bsize as i32)?;
 
     if function & FAT_GET != 0 {
         let mut readcn = fat_read(fatmask, bp.bytes(), bo, cn);
@@ -635,7 +628,7 @@ fn fatchain<G: ProcGlue>(
     while count > 0 {
         let byteoffset = fatofs(pmp, start);
         let (bn, bsize, mut bo) = fatblock(pmp, byteoffset);
-        let mut bp = fat_bread(pmp, bn, bsize)?;
+        let mut bp = bread_or_release(&pmp.pm_devvp.bufs, Daddr::from(bn), bsize as i32)?;
         let data = bp.data();
         while count > 0 {
             // The entry at `bo` is cluster `start` (before the increment); it points at the
@@ -838,7 +831,11 @@ pub fn freeclusterchain<G: ProcGlue>(pmp: &Msdosfsmount<G>, mut cluster: u32) ->
             if let Some(old) = bp.take() {
                 updatefats(pmp, old, lbn);
             }
-            bp = Some(fat_bread(pmp, bn, bsize)?);
+            bp = Some(bread_or_release(
+                &pmp.pm_devvp.bufs,
+                Daddr::from(bn),
+                bsize as i32,
+            )?);
             lbn = bn;
         }
         usemap_free(pmp, cluster);
@@ -881,7 +878,11 @@ pub fn fillinusemap<G: ProcGlue>(pmp: &Msdosfsmount<G>) -> Result<(), Errno> {
                 brelse(old);
             }
             let (bn, bsize, _) = fatblock(pmp, byteoffset);
-            bp = Some(fat_bread(pmp, bn, bsize)?);
+            bp = Some(bread_or_release(
+                &pmp.pm_devvp.bufs,
+                Daddr::from(bn),
+                bsize as i32,
+            )?);
         }
         let readcn = match &bp {
             Some(b) => fat_read(fatmask, b.bytes(), bo, cn),
