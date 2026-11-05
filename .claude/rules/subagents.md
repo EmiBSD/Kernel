@@ -174,7 +174,12 @@ A prompt that misses one of these gets a question back, not a guess.
   `goToImplementation`, `workspaceSymbol`; rust-analyzer, configured by `rust-analyzer.toml`
   as `just build` builds the tree, the user's decision of 2026-11-01), grep after, for what
   the LSP cannot see (the `reference/` trees, comments, the C): an exact list of the modules
-  that use an item costs one call instead of the files grep names. An LZ
+  that use an item costs one call instead of the files grep names. The server indexes the
+  main checkout only, never a worktree (measured at N5.5b1's review, 2026-11-04: 4 calls on a
+  worktree's new code, all empty): ask it with the main checkout's path of a file, for what
+  the branch did not change (who calls an existing item, who implements a trait), and grep
+  the worktree for the branch's own new or changed items, whose main version it would show.
+  It follows main by itself after each merge. An LZ
   module being redesigned, and the C behind it, are still read completely, in ranges.
 - Behaviour: OpenBSD's behaviour is the specification and what userland sees never changes
   (the syscall ABI, sysctl MIBs, ioctls, device majors, every `#[repr(C)]` shared with
