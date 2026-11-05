@@ -720,6 +720,16 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     fn disk_map(_path: &[u8], _mappath: &mut [u8], _flags: i32) -> bool {
         false
     }
+    /// `rootvp` (`init_main.c`'s global, `bsd`'s until N7, docs/SCAFFOLDING.md): the vnode of
+    /// the root device, which `ffs_mountfs` lets share its device with the swap partition (a
+    /// miniroot's); `None` before a root mount, and for a glue without one.
+    fn rootvp() -> Option<&'static crate::fs::vnode::Vnode<Self::Proc>> {
+        None
+    }
+    /// `rootvp = vp` (`ffs_mountroot`'s `bdevvp(rootdev, &rootvp)`).
+    fn set_rootvp(_vp: Option<&'static crate::fs::vnode::Vnode<Self::Proc>>) {}
+    /// `swapdev_vp = vp` (`ffs_mountroot`'s `bdevvp(swapdev, &swapdev_vp)`).
+    fn set_swapdev_vp(_vp: Option<&'static crate::fs::vnode::Vnode<Self::Proc>>) {}
 }
 
 /// Declares the `filehead` adapter of the glue `$glue` (`hal::pin_adapter!` of `f_list`), in

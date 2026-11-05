@@ -75,6 +75,8 @@
 //!   `ffs_init`'s `done`, LZ's statics of `sys/ufs/ffs/ffs_vfsops.rs`, are members of
 //!   [`UfsTables`] beside the inode hash (D-N5.5b-10): the kernel's ffs is generic over the
 //!   glue, and the glue's tables are the one place its globals can live; `ffs_init` makes them.
+//!   So are ffs's two vnode tables (LZ's `FFS_VOPS` and `FFS_SPECVOPS` statics of
+//!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique.
 
 use core::sync::atomic::AtomicBool;
 
@@ -88,8 +90,10 @@ use super::inode::Ufs2Din;
 use super::inode::{Inode, Ufid, Ufs1Din, vtoi};
 use super::ufs_ihash::Ihash;
 use super::ufs_quota::DqTables;
+use super::ufs_vnops::{UfsSpecVnops, UfsVnops};
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
+use crate::fs::ufs::ffs::ffs_vfsops::Ffs;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::VFS_VGET;
 use crate::proc::{ProcGlue, Thread};
@@ -115,6 +119,14 @@ pub struct UfsTables<G: ProcGlue> {
     /// `ffs_dinode2_pool` (`"dino2pl"`): UFS2 dinodes (`FFS2`).
     #[cfg(feature = "ffs2")]
     pub ffs_dino2: BoxPool<Ufs2Din>,
+    /// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS, the UFS
+    /// layer's composed table over the kernel's `Ffs`. A member of the glue's tables (a
+    /// `static`), so the table has one address per glue, which the VFS's registry keys it by
+    /// (`vops_id`): a promoted generic constant has none of its own (identical constants are
+    /// merged, and `ffs_vops` and `ffs_specvops` hold the same bytes).
+    pub ffs_vops: UfsVnops<G, Ffs<G>>,
+    /// `ffs_specvops`: the operations of a device special file on an FFS (as `ffs_vops`).
+    pub ffs_specvops: UfsSpecVnops<G, Ffs<G>>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -129,6 +141,8 @@ impl<G: ProcGlue> UfsTables<G> {
             ffs_dino1: BoxPool::new(),
             #[cfg(feature = "ffs2")]
             ffs_dino2: BoxPool::new(),
+            ffs_vops: UfsVnops::new(&Ffs::<G>::VTBL),
+            ffs_specvops: UfsSpecVnops::new(&Ffs::<G>::VTBL),
         }
     }
 }

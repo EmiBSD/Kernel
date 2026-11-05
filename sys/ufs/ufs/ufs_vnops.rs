@@ -54,8 +54,8 @@
 
 /* <CODE> */
 //! The vnode operations the UFS file systems share are the kernel's
-//! (`kernel::fs::ufs::ufs::ufs_vnops`, N5.5a3), and so is ffs's vnode table (`ffs_vnops.rs`'s
-//! `FFS_VOPS` and `FFS_SPECVOPS` are statics of the kernel's `UfsVnops` and `UfsSpecVnops`).
+//! (`kernel::fs::ufs::ufs::ufs_vnops`, N5.5a3), and so is ffs's vnode table (the kernel's
+//! `UfsTables::ffs_vops` and `ffs_specvops`, N5.5b2).
 //! This module keeps LZ's names for `bsd`'s file systems, and the slots of `bsd`'s `Vops`
 //! shape that ext2fs's tables still name (`ufs_close`, `ufs_ioctl`, `ufs_kqfilter`,
 //! `ufs_lock`, `ufs_unlock`, `ufs_strategy`, `ufs_print`, `ufs_islocked`, the three

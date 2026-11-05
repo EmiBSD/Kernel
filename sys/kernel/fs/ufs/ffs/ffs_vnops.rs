@@ -72,17 +72,19 @@
 //!   tables (`UfsVnops<G, F>`, `UfsSpecVnops<G, F>`, `ufs_vnops.rs`), whose three slots that
 //!   are the file system's own call `F: UfsFs<G>`; `ffs_reclaim`'s body is the tables'
 //!   `reclaim` (D-N5.5b-8: `lineage.toml`'s `merged` row).
-//! - N5.5b2: LZ's `FFS_VOPS`/`FFS_SPECVOPS` statics over `bsd`'s `FfsVtbl` -> the constants
-//!   [`Ffs::VOPS`] and [`Ffs::SPECVOPS`] of the kernel's [`Ffs<G>`], which implements
+//! - N5.5b2: LZ's `FFS_VOPS`/`FFS_SPECVOPS` statics over `bsd`'s `FfsVtbl` -> the glue's
+//!   tables' `UfsTables::ffs_vops` and `ffs_specvops` (`ufs_vfsops.rs`: a `static`'s members,
+//!   one address each per glue, which the VFS's registry keys the tables by) over the
+//!   kernel's [`Ffs<G>`], which implements
 //!   [`UfsFs<G>`] with [`ffs_read`], [`ffs_write`] and [`ffs_fsync`]: generic functions over
 //!   the kernel's vnode, `Uio` and buffer tokens (`bread`, `bread_cluster`, `UFS_BUF_ALLOC`'s
 //!   token), each block's bytes moved by the glue's `uiomove` over the token's data, where LZ
 //!   lent the buffers and sliced them through an `unsafe` view; LZ's `VopReadArgs`,
-//!   `VopWriteArgs` and `VopFsyncArgs` packing goes (the arguments are the methods'). Each
-//!   table is named at one site (`ffs_vget` for `VOPS`, `ffs_vinit` for `SPECVOPS`), so its
-//!   promotion is one allocation per glue and the VFS's registry gives it one id (`vops_id`
-//!   keys tables by address). The spl pairs are LZ's: `ffs_fsync`'s `splbio` around the
-//!   dirty-list scan, released for each write.
+//!   `VopWriteArgs` and `VopFsyncArgs` packing goes (the arguments are the methods'). Not
+//!   promoted constants: the two tables hold the same bytes, so their promotions were merged
+//!   into one address and the device vnodes got the file table's id (`init` answered ENOTTY
+//!   to `TIOCSCTTY` on `/dev/console`). The spl pairs are LZ's: `ffs_fsync`'s `splbio` around
+//!   the dirty-list scan, released for each write.
 
 use hal::intr::{IPL_BIO, splraise_raw, splx};
 use hal::sleep::INFSLP;
@@ -102,7 +104,7 @@ use crate::fs::subr::{vnoperm, vwaitforio};
 use crate::fs::ufs::ufs::dinode::{ISGID, ISUID, NIADDR};
 use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_UPDATE, vtoi};
 use crate::fs::ufs::ufs::ufs_lookup::buf_alloc;
-use crate::fs::ufs::ufs::ufs_vnops::{UfsFs, UfsSpecVnops, UfsVnops};
+use crate::fs::ufs::ufs::ufs_vnops::UfsFs;
 use crate::fs::vnode::{
     IO_APPEND, IO_NOCACHE, IO_SYNC, IO_UNIT, VDIR, VLNK, VN_KNOTE, VREG, Vnode,
 };
@@ -111,15 +113,6 @@ use crate::fs::vops::Cred;
 use crate::proc::{ProcGlue, Thread};
 use crate::uio::Uio;
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
-
-impl<G: ProcGlue> Ffs<G> {
-    /// `ffs_vops`: the operations of a file, directory or symbolic link on an FFS: the UFS
-    /// layer's composed table over ffs's own operations ([`Ffs`]'s [`UfsFs`]).
-    pub const VOPS: UfsVnops<G, Ffs<G>> = UfsVnops::new(&Ffs::<G>::VTBL);
-
-    /// `ffs_specvops`: the operations of a device special file on an FFS.
-    pub const SPECVOPS: UfsSpecVnops<G, Ffs<G>> = UfsSpecVnops::new(&Ffs::<G>::VTBL);
-}
 
 /// The slots of `ffs_vops` and `ffs_specvops` that are ffs's own.
 impl<G: ProcGlue> UfsFs<G> for Ffs<G> {

@@ -68,20 +68,19 @@
 //!   `ffs_fragacct` adds to `cg_frsum` through the cylinder group's view, the C's `u_int32_t`
 //!   arithmetic (LZ's `&[Cell<i32>]`).
 //! - N5.5b2: `ffs_vinit` over the kernel's vnode: `v_op = &ffs_specvops` is the vnode's id of
-//!   the kernel's [`Ffs::SPECVOPS`] (`vops_id`), and the alias takes the inode's node from the
+//!   the glue's `UfsTables::ffs_specvops` (`vops_id`), and the alias takes the inode's node from the
 //!   discarded vnode's slot (`take_node`/`set_node`: the inode's handle moves, its lock with
 //!   it, as the C moves `v_data`).
 
 use hal::sys::errno::Errno;
 use hal::sys::types::{Daddr, Dev, Off};
 
-use super::ffs_vfsops::Ffs;
 use super::fs::{AROUND, CgView, FRAGTBL, INSIDE, Superblock, blkoff, blksize, lblkno};
 use crate::assert::kpanic;
 use crate::fs::bio::{bread, brelse, buf_adjcnt};
 use crate::fs::buf::BufRef;
 use crate::fs::mount::Mount;
-use crate::fs::subr::{checkalias, vgone, vops_id, vrele};
+use crate::fs::subr::{checkalias, vfs, vgone, vops_id, vrele};
 use crate::fs::ufs::ufs::dinode::ROOTINO;
 use crate::fs::ufs::ufs::inode::{Inode, vtoi};
 use crate::fs::vnode::{
@@ -205,7 +204,7 @@ pub fn ffs_vinit<G: ProcGlue>(
     vp.set_vtype(iftovt(ip.dip_mode()));
     match vp.vtype() {
         VCHR | VBLK => {
-            vp.set_ops_id(vops_id::<G>(&Ffs::<G>::SPECVOPS));
+            vp.set_ops_id(vops_id::<G>(&vfs::<G>().ufs.ffs_specvops));
             if let Some(nvp) = checkalias(vp, ip.dip_rdev() as Dev, Some(mntp)) {
                 // Discard unneeded vnode, but save its inode. Note that the lock is carried
                 // over in the inode to the replacement vnode.

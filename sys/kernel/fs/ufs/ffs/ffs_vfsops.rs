@@ -71,8 +71,10 @@
 //!   mount's export list where the C's `malloc(M_ZERO)` of the `ufsmount` starts it empty
 //!   (`FileGlue::ufs_export_init`).
 //! - `rootdev` and `swapdev` are the caller's ([`ffs_mountroot`]'s arguments: `bsd`'s
-//!   `ROOTDEV` and the machine's `conf.c` until N7); `rootvp` and `swapdev_vp` are the VFS
-//!   tables' (`fs::init`).
+//!   `ROOTDEV` and the machine's `conf.c` until N7); `rootvp` and `swapdev_vp` are `bsd`'s
+//!   `init_main.c` globals, reached through the glue (`FileGlue::rootvp`, `set_rootvp`,
+//!   `set_swapdev_vp`, docs/SCAFFOLDING.md); the error paths release the swap vnode they
+//!   made, which the C reads back from its global.
 //! - `ffs_vars[]` holds only the `UFS_DIRHASH` variables (feature `ufs_dirhash`); without the
 //!   feature it is empty and [`ffs_sysctl`] answers every name as `sysctl_bounded_arr` does
 //!   for an unknown one (LZ's).
@@ -116,8 +118,8 @@
 //!   where LZ cast the buffer (`fs_in_buf`, an `unsafe` reference).
 //! - LZ's `FFS_INO_POOL`, `FFS_DINODE1_POOL`, `FFS_DINODE2_POOL` and `FFS_INIT_DONE` statics
 //!   -> members of the glue's `UfsTables` (`ufs_vfsops.rs`), made once by [`ffs_init`].
-//! - `ffs_vget` gives the new vnode the kernel's composed table [`Ffs::VOPS`]
-//!   (`ffs_vnops.rs`) and its inode the UFS mount's handle and [`Ffs::VTBL`]; the dinode is
+//! - `ffs_vget` gives the new vnode the kernel's composed table (`UfsTables::ffs_vops`, the
+//!   glue's tables' member) and its inode the UFS mount's handle and [`Ffs::VTBL`]; the dinode is
 //!   copied out of the busy buffer's token (`dinode1_at`/`dinode2_at`), LZ's lent buffer and
 //!   `unsafe` slice gone.
 //! - `ffs1_compat_read` sign-extends `fs_ffs1_flags` into `fs_flags` as the C's `int8_t` to
@@ -166,7 +168,6 @@ use crate::assert::kpanic;
 use crate::file::{DM_OPENBLCK, FileGlue};
 use crate::fs::bio::{DEV_BSHIFT, bawrite, bread, brelse, bwrite, getblk};
 use crate::fs::buf::{B_INVAL, B_NOCACHE, BufRef};
-use crate::fs::init::{rootvp, set_rootvp, set_swapdev_vp, swapdev_vp};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf, mountlist_insert_tail, vfs_mount_free, vfs_unbusy};
 use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
@@ -209,8 +210,9 @@ const DEV_BSIZE: i64 = 1 << DEV_BSHIFT;
 pub const SBTRY: [i32; 4] = SBLOCKSEARCH;
 
 /// The fast file system of the glue `G`: `ffs_vfsops` ([`Ffs::VFS`]), `ffs_vtbl` (the inode
-/// operations, [`Ffs::VTBL`]) and the vnode tables `ffs_vops` and `ffs_specvops`
-/// (`ffs_vnops.rs`).
+/// operations, [`Ffs::VTBL`]), and the file system's own slots of the vnode tables `ffs_vops`
+/// and `ffs_specvops` (`ffs_vnops.rs`'s `UfsFs`; the tables are the glue's
+/// `UfsTables::ffs_vops` and `ffs_specvops`).
 pub struct Ffs<G>(PhantomData<fn() -> G>);
 
 impl<G: ProcGlue> Ffs<G> {
@@ -305,26 +307,28 @@ pub fn ffs_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), Errn
         };
 
         // Get vnodes for swapdev and rootdev.
-        set_swapdev_vp::<G>(None);
-        let made = bdevvp::<G>(swapdev).and_then(|svp| {
-            set_swapdev_vp(svp);
+        <G::FileGlue as FileGlue>::set_swapdev_vp(None);
+        let mut svp = None;
+        let made = bdevvp::<G>(swapdev).and_then(|vp| {
+            svp = vp;
+            <G::FileGlue as FileGlue>::set_swapdev_vp(vp);
             bdevvp::<G>(rootdev)
         });
         let rvp = match made {
             Ok(Some(rvp)) => rvp,
             r => {
                 printf(format_args!("ffs_mountroot: can't setup bdevvp's\n"));
-                if let Some(svp) = swapdev_vp::<G>() {
+                if let Some(svp) = svp {
                     vrele(svp);
                 }
                 // A NODEV root (`bdevvp`'s NULL) has no vnode to mount from.
                 return Err(r.err().unwrap_or(Errno::ENODEV));
             }
         };
-        set_rootvp(Some(rvp));
+        <G::FileGlue as FileGlue>::set_rootvp(Some(rvp));
 
         let release = || {
-            if let Some(svp) = swapdev_vp::<G>() {
+            if let Some(svp) = svp {
                 vrele(svp);
             }
             vrele(rvp);
@@ -783,7 +787,8 @@ pub fn ffs_mountfs<G: ProcGlue>(
     // currently in use (except for root, which might share swap device for miniroot). Flush
     // out any old buffers remaining from a previous use.
     vfs_mountedon(devvp)?;
-    if vcount(devvp) > 1 && !rootvp::<G>().is_some_and(|r| ptr::eq(r, devvp)) {
+    if vcount(devvp) > 1 && !<G::FileGlue as FileGlue>::rootvp().is_some_and(|r| ptr::eq(r, devvp))
+    {
         return Err(Errno::EBUSY);
     }
     let _ = vn_lock(devvp, LK_EXCLUSIVE | LK_RETRY);
@@ -1341,7 +1346,7 @@ pub fn ffs_vget<G: ProcGlue>(mp: &'static Mount<G>, ino: Ino) -> Result<&'static
         }
 
         // Allocate a new vnode/inode.
-        let vp = getnewvnode(VT_UFS, Some(mp), &Ffs::<G>::VOPS)?;
+        let vp = getnewvnode(VT_UFS, Some(mp), &tables.ffs_vops)?;
 
         let fs = ump.um_fs();
         let Some(ip) = tables.ffs_ino.get_homed(PR_WAITOK, || {
@@ -2279,6 +2284,47 @@ mod tests {
             let r = root(mp);
             assert_ne!(r.flag() & crate::fs::vnode::VROOT, 0);
             vput(r);
+            ffs_unmount(mp, 0, p).unwrap();
+        }
+    }
+
+    /// The two tables `ffs_vinit` chooses from have one registry id each: a device node's
+    /// vnode gets `ffs_specvops`, a file's `ffs_vops` (the regression of promoted constants,
+    /// whose identical bytes were merged into one address and so one id).
+    #[test]
+    fn a_device_node_gets_the_special_files_table() {
+        use crate::fs::ufs::ufs::dinode::{IFCHR, IFREG};
+        use crate::fs::vnode::{VCHR, VREG};
+        for &params in FORMATS {
+            let mut img = Image::new(params);
+            let dev = img.add_file(b"console", b"");
+            img.with_dinode(dev, |d| match d {
+                Din::Ufs1(d) => {
+                    d.di_mode = (IFCHR | 0o600) as u16;
+                    d.di_db[0] = TEST_DEV_OF_FIXTURE;
+                }
+                Din::Ufs2(d) => {
+                    d.di_mode = (IFCHR | 0o600) as u16;
+                    d.di_db[0] = i64::from(TEST_DEV_OF_FIXTURE);
+                }
+            });
+            let file = img.add_file(b"f", b"x");
+            let (_g, p, mp) = setup(img.finish());
+            let t = &vfs::<TestGlue>().ufs;
+
+            let vp = ffs_vget(mp, u64::from(dev)).unwrap();
+            assert_eq!(vp.vtype(), VCHR);
+            assert_eq!(vp.rdev(), TEST_DEV_OF_FIXTURE);
+            assert!(ptr::addr_eq(vp.ops(), &t.ffs_specvops), "ffs_specvops");
+            assert!(!ptr::addr_eq(vp.ops(), &t.ffs_vops));
+            assert_eq!(vtoi(vp).dip_mode() & IFCHR, IFCHR);
+            vput(vp);
+
+            let vp = ffs_vget(mp, u64::from(file)).unwrap();
+            assert_eq!(vp.vtype(), VREG);
+            assert_eq!(vtoi(vp).dip_mode() & IFREG, IFREG);
+            assert!(ptr::addr_eq(vp.ops(), &t.ffs_vops), "ffs_vops");
+            vput(vp);
             ffs_unmount(mp, 0, p).unwrap();
         }
     }
