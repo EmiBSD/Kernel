@@ -114,6 +114,9 @@
 //!   instead of writing the system's, which the sysctl tests of the same process read.
 //! - N5.6c2: `rdonly`, `Abort`, `rename_abortit` and `RenameExit` are the crate's, for
 //!   ext2fs's operations, which repeat the C's (one helper, not a copy).
+//! - N5.7c2: msdosfs's operations use `rdonly`, `ucred`, `pnbuf_free` and `rename_abortit`
+//!   too; `rename_abortit` returns its label's error as a `Result`, since `msdosfs_rename`
+//!   reaches the label with the C's `error = 0` (a rename onto itself).
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -886,10 +889,11 @@ pub(crate) struct Abort<'r, 'c, G: ProcGlue> {
     pub(crate) fvp: &'static Vnode<G>,
 }
 
-/// `abortit:` of `ufs_rename` (and of `ext2fs_rename`, whose label is the same): abort both
-/// lookups and release every vnode.
+/// `abortit:` of `ufs_rename` (and of `ext2fs_rename` and `msdosfs_rename`, whose label is
+/// the same): abort both lookups, release every vnode and return `error` (msdosfs's `error
+/// = 0` of a rename onto itself comes back `Ok`).
 pub(crate) fn rename_abortit<G: ProcGlue>(
-    error: Errno,
+    error: Result<(), Errno>,
     a: Abort<'_, '_, G>,
     fcnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
@@ -912,7 +916,7 @@ pub(crate) fn rename_abortit<G: ProcGlue>(
     let _ = vop_abortop(fdvp, fcnp);
     vrele(fdvp);
     vrele(fvp);
-    Err(error)
+    error
 }
 
 /// `ufs_rename` (`vop_rename`): rename system call.
@@ -952,7 +956,7 @@ pub fn ufs_rename<G: ProcGlue>(
     macro_rules! abortit {
         ($e:expr) => {
             return rename_abortit(
-                $e,
+                Err($e),
                 Abort {
                     tdvp,
                     tvp,

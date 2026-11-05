@@ -8176,7 +8176,7 @@ rust = "sys/kernel/fs/subr.rs"
 crate = "kernel"
 lz = ["sys/kern/vfs_subr.rs"]
 status = "redesigned"
-notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7); N5.3: VfsTables gains namei_pool, nch_pool, the name cache (part 0 of NCLOCK) and nchstats; vfs_test_reset forgets the cache"
+notes = "N5.2: vfs_subr.c's vnode table and helpers over VfsTables<G> (one per glue: the vnode BoxPool, items leaked; the free and hold lists under one Mutexed at IPL_BIO; the mount lists, speclisth and the syncer wheel; the Vnops registry by address, VopsId; rootvnode; the device switch); getnewvnode, insmntque, bdevvp, cdevvp, getdevvp, checkalias, vget, vref, vputonfreelist, vput, vrele, vhold, vdrop, vfs_mount_foreach_vnode, vflush, vclean, vrecycle, vgone, vgonel, vfinddev, vdevgone, vcount, vprint, printlockedvnodes, vfs_sysctl as the SysctlNode VfsSysctl, vfs_mountedon, vaccess, vnoperm, vfs_stall, vfs_stall_barrier, vwaitforio, vinvalbuf, vflushbuf, copy_statfs_info; the vnode's BufVnode and VnodeOps impls (from vfs_subr.rs and vm_bsd.rs); the shutdown trio and the NFS export list stay bsd's (D-N5.2-7); N5.3: VfsTables gains namei_pool, nch_pool, the name cache (part 0 of NCLOCK) and nchstats; vfs_test_reset forgets the cache; N5.7c2: hashinit (kern_subr.c's hashinit(9) over PinList chains in an MArray) and siphash_key, shared by the UFS inode hash and msdosfs's denode hash; VfsTables gains msdosfs's MsdosfsTables (feature msdosfs), appended last; vfs_test_reset forgets the denode hash"
 [[module.fn]]
 lz = "sys/kern/vfs_subr.rs::IFTOVT_TAB"
 native = ["sys/kernel/fs/vnode.rs::IFTOVT_TAB"]
@@ -8474,7 +8474,7 @@ rust = "sys/kernel/fs/ufs/ufs/ufs_ihash.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_ihash.rs"]
 status = "redesigned"
-notes = "N5.5a1: the inode hash as PinLists of the pinned inodes bound to the kernel lock (walks under klock::reader, insertions and removals under klock::witness), in the glue's VfsTables (UfsTables, a ReadMostly cell the host tests forget); ufs_ihash is Ihash::chain; arc4random_buf of the key is four arc4random words"
+notes = "N5.5a1: the inode hash as PinLists of the pinned inodes bound to the kernel lock (walks under klock::reader, insertions and removals under klock::witness), in the glue's VfsTables (UfsTables, a ReadMostly cell the host tests forget); ufs_ihash is Ihash::chain; arc4random_buf of the key is four arc4random words; N5.7c2: ufs_ihashinit over the shared fs::subr::hashinit and siphash_key"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/ufs_ihash.rs::Ihashtbl"
@@ -8661,7 +8661,7 @@ rust = "sys/kernel/fs/ufs/ufs/ufs_vnops.rs"
 crate = "kernel"
 lz = ["sys/ufs/ufs/ufs_vnops.rs"]
 status = "redesigned"
-notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone). N5.6c2: rdonly and rename's abortit: (Abort, rename_abortit, RenameExit) shared with ext2fs_rename"
+notes = "N5.5a3: the 27 ufs operations in the Vnops<G> method shapes; ffs_vops and ffs_specvops composed once as UfsVnops<G, F>/UfsSpecVnops<G, F> over the file system's residue UfsFs<G> (read, write, fsync; bridges.toml); the filters UfsRead/UfsWrite/UfsVnode: Filter<G> with the vnode as KnHook::Vnode (LZ's kn_hook deref gone). N5.6c2: rdonly and rename's abortit: (Abort, rename_abortit, RenameExit) shared with ext2fs_rename; N5.7c2: rename_abortit returns its label's error as a Result (msdosfs_rename's abortit with error 0)"
 
 [[module.fn]]
 lz = "sys/ufs/ufs/ufs_vnops.rs::UFSREAD_FILTOPS"
@@ -9579,7 +9579,7 @@ rust = "sys/kernel/fs/msdosfs/denode.rs"
 crate = "kernel"
 lz = ["sys/msdosfs/denode.rs"]
 status = "redesigned"
-notes = "N5.7c1 (unwired; D-N5.7-2): struct denode as Denode<G>, made whole where the C fills it (Denode::new: de_vnode, de_dev, de_pmp and the entry's position given) and published as DenodeRef<G> (hal::malloc::MArc of M_MSDOSFSNODE) in the vnode's typed slot; the members the C changes under de_lock and the kernel lock relaxed words (fs::word), de_Name eleven U8Words, each de_fc slot a U64Word; de_devvp a hal Link; de_pmp a counted MsdosfsmountRef; de_lockf a plain LockfSlot (IDIOMS row 191's ManuallyDrop gone); de_lock a RecursiveRwlock; de_hash a PinEntry for c2's chains; vtode the slot's typed read; the template denode of create/mkdir a Denode::new with no vnode; 0 unsafe (LZ: 2)"
+notes = "N5.7c1 (unwired; D-N5.7-2): struct denode as Denode<G>, made whole where the C fills it (Denode::new: de_vnode, de_dev, de_pmp and the entry's position given) and published as DenodeRef<G> (hal::malloc::MArc of M_MSDOSFSNODE) in the vnode's typed slot; the members the C changes under de_lock and the kernel lock relaxed words (fs::word), de_Name eleven U8Words, each de_fc slot a U64Word; de_devvp a hal Link; de_pmp a counted MsdosfsmountRef; de_lockf a plain LockfSlot (IDIOMS row 191's ManuallyDrop gone); de_lock a RecursiveRwlock; de_hash a PinEntry for c2's chains; vtode the slot's typed read; the template denode of create/mkdir a Denode::new with no vnode; 0 unsafe (LZ: 2); N5.7c2: de_chain, the chain msdosfs_hashins linked the denode on (what the C's de_prev knows), for msdosfs_hashrem after a rename moved the entry"
 
 [[module.fn]]
 lz = "sys/msdosfs/denode.rs::Denode::default"
@@ -9601,6 +9601,158 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/msdosfs/msdosfs_fat.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_denode.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_denode.rs"]
+status = "redesigned"
+notes = "N5.7c2 (unwired; D-N5.7-3): the denode hash as Dehash<G> (Ihash's shape: a hashinit table of PinLists of the pinned denodes, MArc::as_pin, bound to the kernel lock, its adapter DeHashLink<G> from pin_adapter!'s generic form) in MsdosfsTables<G> (VfsTables::msdosfs: the hash in a ReadMostly cell, msdosfs_vops as MsdosfsVnops<G>, one address per glue); msdosfs_init over the shared hashinit and siphash_key; msdosfs_hashget finds under klock::reader and vgets outside, rechecks v_id; deget builds the denode whole, publishes it (Denode::alloc) and hangs it in the vnode's typed slot, the EEXIST retry and the C's readep error path kept (D-N5.7-10); the FAT12/16 root's size rootdirsize * DEV_BSIZE (D-N5.7-U4); de_chain records the chain for msdosfs_hashrem; deupdat, detrunc, deextend, reinsert, msdosfs_reclaim (take_node) and msdosfs_inactive over BufRef tokens; 0 unsafe (LZ: 14)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::Dehashtbl"
+native = ["Dehash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::DEHASHTBL"
+native = ["Dehash", "MsdosfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::DEHASH"
+native = ["Dehash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::DEHASHKEY"
+native = ["Dehash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::msdosfs_dehash"
+native = ["Dehash::msdosfs_dehash"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::dehash_chain"
+native = ["Dehash::chain"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_denode.rs::_"
+native = []
+kind = "dropped"
+reason = "LZ's assertion that a Denode needs no drop (msdosfs_reclaim freed it without one) has no subject: the kernel's denode is dropped in place by the last handle of its counted block (hal::malloc::MArc), de_lockf a plain LockfSlot"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_lookup.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_lookup.rs"]
+status = "redesigned"
+notes = "N5.7c2 (unwired): msdosfs_lookup (its search msdosfs_lookup_search, one block a step: Block), createde, dosdirempty, doscheckpath (one DenodeRef at a time), readep/readde over BufRef tokens, removede, uniqdosname; every entry read with Direntry::at and written with Direntry::put (entry_at/entry_put: past its block is panic(9), unreachable by construction); readep's EIO for an entry past its block (direntry_in_block, D-N5.7-U4's belt, U1's predicate for c3's fhtovp); the scan's offsets at the C's 32-bit widths; test_full_root, the tests' full FAT16 root image; 0 unsafe (LZ: 10)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_lookup.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_lookup.rs::cn_proc"
+native = []
+kind = "dropped"
+reason = "the kernel's componentname gives its thread itself (Componentname::proc); createde passes Some(cnp.proc()), the C's cnp->cn_proc"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.7c2 (unwired): the msdosfs operations in the kernel's Vnops<G> method shapes; the C's table (34 slots, no spec table) as MsdosfsVnops<G>, one impl Vnops<G> written slot by slot, a member of the glue's MsdosfsTables (one address); abortop/bwrite/revoke the kernel's generic ones; the filters MsdosfsRead/MsdosfsWrite/MsdosfsVnode: Filter<G> with the vnode as the knote's typed hook (LZ's kn_hook deref gone), filt_msdosfsread's denode read after its NOTE_REVOKE test; msdosfs_strategy takes the IoBuf's token (a lent one is panic(9)) and biodones a hole in one cache section; the template denodes of create and mkdir Denode::new with no vnode; rename's abortit: the UFS layer's rename_abortit (its error now a Result: msdosfs's error 0); vmount, rdonly, ucred, pnbuf_free the UFS layer's, getblk_wait bio's; 0 unsafe (LZ: 8)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::MSDOSFS_VOPS"
+native = ["MsdosfsVnops", "sys/kernel/fs/msdosfs/msdosfs_denode.rs::MsdosfsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::MSDOSFSREAD_FILTOPS"
+native = ["MsdosfsRead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::MSDOSFSWRITE_FILTOPS"
+native = ["MsdosfsWrite"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::MSDOSFSVNODE_FILTOPS"
+native = ["MsdosfsVnode"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::filt_msdosfsread"
+native = ["MsdosfsRead::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::filt_msdosfswrite"
+native = ["MsdosfsWrite::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::filt_msdosfsvnode"
+native = ["MsdosfsVnode::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::vmount"
+native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::rdonly"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::rdonly"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::ucred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::pnbuf_free"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::pnbuf_free"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::rename_abortit"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::rename_abortit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::getblk_wait"
+native = ["sys/kernel/fs/bio.rs::getblk_wait"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::cn_proc"
+native = []
+kind = "dropped"
+reason = "the kernel's componentname gives its thread itself (Componentname::proc); create, mkdir and rmdir pass Some(cnp.proc()), the C's cnp->cn_proc"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::bdata"
 native = []
 kind = "dropped"
 reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"

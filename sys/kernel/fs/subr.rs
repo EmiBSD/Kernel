@@ -122,6 +122,11 @@
 //!   (`f_iosize`, `f_bsize`, `f_flags`, `f_fsid`, `f_owner`) are unlocked copies
 //!   (`Mount::iosize`), and a device vnode's `v_rdev` an unlocked copy of its specinfo's
 //!   `si_rdev` (`Vnode::rdev`), one load per element of an alias chain's walk.
+//! - N5.7c2: the file systems' node hashes share [`hashinit`] (`kern_subr.c`'s `hashinit(9)`
+//!   over `hal::pinlist` chains in a `malloc(9)` array) and [`siphash_key`] (the C's
+//!   `arc4random_buf` of a `SIPHASH_KEY`: four `arc4random()` words), the UFS inode hash's
+//!   and msdosfs's denode hash; `VfsTables` gains msdosfs's tables (`msdosfs`, feature
+//!   `msdosfs`), appended last.
 
 use core::any::Any;
 use core::ptr;
@@ -130,9 +135,10 @@ use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 use hal::intr::{IPL_BIO, IPL_NONE};
 use hal::link::Link;
 use hal::list::{List, ListEntry};
-use hal::malloc::MBox;
+use hal::malloc::{MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::once::OnceStatic;
+use hal::pinlist::{PinAdapter, PinList};
 use hal::pool::{BoxPool, PR_WAITOK, PoolBox, TypedPool};
 use hal::rwlock::{Guarded, RW_READ, RW_WRITE, SplitRwlock};
 use hal::sleep::INFSLP;
@@ -142,6 +148,7 @@ use hal::sys::mount::{
     VB_DUPOK, VB_WAIT, VB_WRITE,
 };
 use hal::sys::types::{Daddr, Dev, Gid, Mode, Uid, major, makedev, minor};
+use libkern::siphash::SiphashKey;
 
 use super::bio::{self, BufVnode, DirtyPick, DirtyScan, NODEV};
 use super::buf::{B_BUSY, B_DELWRI, Buf, BufRef};
@@ -252,6 +259,10 @@ pub struct VfsTables<G: ProcGlue> {
     mntid: AtomicU32,
     /// The UFS layer's globals (`ufs_init`'s `done`, the inode hash).
     pub ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables<G>,
+    /// msdosfs's globals (the denode hash, `msdosfs_vops`), N5.7: the last member, so the
+    /// others keep their offsets with or without the feature.
+    #[cfg(feature = "msdosfs")]
+    pub msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -290,6 +301,8 @@ impl<G: ProcGlue> VfsTables<G> {
             prtactive: AtomicI32::new(0),
             mntid: AtomicU32::new(0),
             ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables::new(),
+            #[cfg(feature = "msdosfs")]
+            msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables::new(),
         }
     }
 }
@@ -304,6 +317,35 @@ impl<G: ProcGlue> Default for VfsTables<G> {
 #[inline]
 pub fn vfs<G: ProcGlue>() -> &'static VfsTables<G> {
     <G::FileGlue as FileGlue>::vfs()
+}
+
+/// `hashinit(elements, type, flags, &hashmask)` (`kern_subr.c`'s `hashinit(9)`): a table of
+/// empty chains, `elements` rounded up to a power of two, in a block of `malloc(9)` of type
+/// `ty`, with its mask (`hashsize - 1`); `None` when `malloc` returns `NULL` (`M_NOWAIT`,
+/// `M_CANFAIL`), as the C's. `elements <= 0` is `panic(9)` (`"hashinit: bad cnt"`).
+pub fn hashinit<A: PinAdapter>(
+    elements: i32,
+    ty: i32,
+    flags: i32,
+) -> Option<(MArray<PinList<A>>, u64)> {
+    if elements <= 0 {
+        kpanic(format_args!("hashinit: bad cnt"));
+    }
+    // A power of two stays; anything else rounds up to the next one (the C's loop).
+    let hashsize = (elements as usize).next_power_of_two();
+    let tbl = MArray::new(ty, flags, hashsize, |_| PinList::new())?;
+    Some((tbl, hashsize as u64 - 1))
+}
+
+/// `arc4random_buf(&key, sizeof(key))` of a `SIPHASH_KEY`: the key's 16 bytes from the
+/// generator, a word at a time (the kernel reaches `rnd.c` through `hal::random`'s
+/// `arc4random`).
+pub fn siphash_key() -> SiphashKey {
+    let word = || u64::from(hal::random::arc4random()) << 32 | u64::from(hal::random::arc4random());
+    SiphashKey {
+        k0: word(),
+        k1: word(),
+    }
 }
 
 /// The operations table of `id` (`vp->v_op`).
@@ -414,6 +456,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     sync::syncer_test_reset::<G>();
     super::cache::namecache_test_reset::<G>();
     crate::fs::ufs::ufs::ufs_vfsops::ufs_test_reset::<G>();
+    #[cfg(feature = "msdosfs")]
+    crate::fs::msdosfs::msdosfs_denode::msdosfs_test_reset::<G>();
     #[cfg(feature = "mfs")]
     crate::fs::ufs::mfs::mfs_vfsops::mfs_test_reset();
     t.rootvnode.set(None);
@@ -2355,6 +2399,26 @@ mod tests {
         assert_eq!(ops.vtype(), VREG);
         assert_eq!(ops.mount_id(), mp.addr());
         vput(vp);
+    }
+
+    /// An element for `hashinit`'s chains.
+    struct HashElem {
+        e: hal::pinlist::PinEntry<HashElem>,
+    }
+
+    hal::pin_adapter!(ByHash: HashElem, e);
+
+    /// `hashinit` rounds the count up to a power of two, keeps one that is, and gives the
+    /// mask; a count of 0 or less is `panic(9)`, as kern_subr.c's.
+    #[test]
+    fn hashinit_rounds_up_to_a_power_of_two() {
+        crate::testutil::install();
+        for (elements, size) in [(1, 1), (2, 2), (3, 4), (32, 32), (64, 64), (65, 128)] {
+            let (tbl, mask) = hashinit::<ByHash>(elements, 28, hal::malloc::M_WAITOK).unwrap();
+            assert_eq!((tbl.len(), mask), (size, size as u64 - 1));
+        }
+        let r = std::panic::catch_unwind(|| hashinit::<ByHash>(0, 28, hal::malloc::M_WAITOK));
+        assert!(r.is_err(), "hashinit: bad cnt");
     }
 }
 /* </TESTS> */

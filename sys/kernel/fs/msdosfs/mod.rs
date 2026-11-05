@@ -20,8 +20,10 @@
 //! The MS-DOS FAT file system: OpenBSD `sys/msdosfs/`, one module per file of LZ's, feature
 //! `msdosfs` (`option MSDOSFS`). N5.7c1 brings the on-disk format (`bootsect`, `bpb`,
 //! `direntry`, `fat`), the name and time conversions (`msdosfs_conv`), the mount structure
-//! (`msdosfsmount`), the denode type (`denode`) and the FAT engine (`msdosfs_fat`); `bsd`'s
-//! msdosfs keeps running on its own code until N5.7c3 switches `vfsconflist[]` to this one.
+//! (`msdosfsmount`), the denode type (`denode`) and the FAT engine (`msdosfs_fat`); N5.7c2
+//! the denode cache (`msdosfs_denode`), the directories (`msdosfs_lookup`) and the vnode
+//! operations with their table (`msdosfs_vnops`); `bsd`'s msdosfs keeps running on its own
+//! code until N5.7c3 switches `vfsconflist[]` to this one.
 
 pub mod bootsect;
 pub mod bpb;
@@ -29,6 +31,9 @@ pub mod denode;
 pub mod direntry;
 pub mod fat;
 pub mod msdosfs_conv;
+pub mod msdosfs_denode;
 pub mod msdosfs_fat;
+pub mod msdosfs_lookup;
+pub mod msdosfs_vnops;
 pub mod msdosfsmount;
 /* </CODE> */

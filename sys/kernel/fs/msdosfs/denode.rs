@@ -105,8 +105,9 @@
 //!
 //! ## Deviations
 //! - The hand-made hash chain (`de_next`, and `de_prev` pointing at the previous link) is a
-//!   pinned list entry, `de_hash`, of the denode hash's chains (`msdosfs_denode.rs`, N5.7c2);
-//!   `de_prev == NULL` (a denode on no chain) is the entry's own state.
+//!   pinned list entry, `de_hash`, of the denode hash's chains (`msdosfs_denode.rs`, N5.7c2),
+//!   with the chain's index (`de_chain`, what `de_prev` knows of its chain); `de_prev ==
+//!   NULL` (a denode on no chain) is the entry's own state.
 //! - `de_Name` is eleven byte words read and written whole ([`Denode::name`],
 //!   [`Denode::set_name`]); each `de_fc` slot is one 64-bit word holding `fc_frcn` and
 //!   `fc_fsrcn` ([`Denode::fc`], [`fc_setcache`]).
@@ -252,6 +253,9 @@ impl Fatcache {
 pub struct Denode<G: ProcGlue> {
     /// `de_next`/`de_prev`: hash chain.
     pub de_hash: PinEntry<Denode<G>>,
+    /// The chain `msdosfs_hashins` put `de_hash` on (the C's `de_prev` points into it): the
+    /// entry's position changes before `reinsert` takes the denode off its old chain.
+    pub de_chain: U32Word,
     /// `de_vnode`: addr of vnode we are part of (`None` for the template a create fills).
     pub de_vnode: Option<&'static Vnode<G>>,
     /// `de_devvp`: vnode of blk dev we live on.
@@ -320,6 +324,7 @@ impl<G: ProcGlue> Denode<G> {
     ) -> Self {
         Self {
             de_hash: PinEntry::new(),
+            de_chain: U32Word::new(0),
             de_vnode: vp,
             de_devvp: Link::new(),
             de_flag: U32Word::new(0),

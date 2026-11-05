@@ -653,7 +653,7 @@ pub fn ext2fs_rename<G: ProcGlue>(
     macro_rules! abortit {
         ($e:expr) => {
             return rename_abortit(
-                $e,
+                Err($e),
                 Abort {
                     tdvp,
                     tvp,
