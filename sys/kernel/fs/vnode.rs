@@ -153,7 +153,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use hal::link::Link;
 use hal::list::ListEntry;
-use hal::malloc::MBox;
+use hal::malloc::{MArc, MBox};
 use hal::mutex::Mutexed;
 use hal::pool::AnyArc;
 use hal::rwlock::Guarded;
@@ -947,6 +947,16 @@ impl<G: ProcGlue> Vnode<G> {
             Some(n) => n.downcast_ref::<T>().map(f),
             None => None,
         }
+    }
+
+    /// `(T *)vp->v_data` held: a counted handle to the node when it is a `T` (an `MArc<T>`'s,
+    /// mfs's device node), `None` otherwise (none, or another file system's, or a pool item's).
+    /// The handle may be held across sleeps; the slot is read once, its count raised before
+    /// the read ends.
+    #[inline]
+    pub fn node_arc<T: Send + Sync + 'static>(&self) -> Option<MArc<T>> {
+        let node = self.node.read().as_ref().cloned()?;
+        node.downcast_arc::<T>()
     }
 
     /// `vp->v_mountedhere`.

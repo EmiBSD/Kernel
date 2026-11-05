@@ -63,6 +63,9 @@
 //!   `bufq_init` fills it in (`mtx_init(&bq->bufq_mtx, IPL_BIO)`: the mutex at `IPL_NONE`
 //!   raises to `IPL_MPFLOOR`, above `IPL_BIO`, as one at `IPL_BIO` does).
 //! - `bufqs` is a `hal::list::List` of `&'static` queues (a softc's) under its own mutex.
+//! - N5.5b3: `bufq_queue` and `bufq_dequeue` are split at the queue's lock ([`bufq_park`],
+//!   [`bufq_unpark`]) and [`Fifo::new`] is public, so a queue that is no registered `Bufq`
+//!   (mfs's node, which dies at reclaim) keeps the fifo discipline under a lock of its own.
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
@@ -194,10 +197,19 @@ pub struct Fifo {
 }
 
 impl Fifo {
-    const fn new() -> Self {
+    /// An empty fifo head (`bufq_fifo_create`'s `SIMPLEQ_INIT`). A queue without the
+    /// registry (mfs's node, which dies at reclaim: `ufs::mfs::mfsnode`) holds one under its
+    /// own mutex and queues the links [`bufq_park`] makes.
+    pub const fn new() -> Self {
         Self {
             q: SecondaryList::new(),
         }
+    }
+}
+
+impl Default for Fifo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -349,6 +361,14 @@ pub fn bufq_destroy(bq: &'static Bufq) {
 /// before the queue's lock is taken (the cache's lock comes first: `biodone` holds it when it
 /// calls `bufq_done`).
 pub fn bufq_queue(bq: &'static Bufq, t: BufRef) {
+    bufq_queue_member(bq, bufq_park(t));
+}
+
+/// The first half of [`bufq_queue`], for a discipline a queue's owner keeps under a lock of
+/// its own (mfs's node): the token `t` parked in its buffer (one section of the cache's lock,
+/// taken before the owner's) and the buffer's link for the discipline. [`bufq_unpark`] takes
+/// the token back.
+pub fn bufq_park(t: BufRef) -> Member<ByBufhead> {
     let m = match (t.counted(), t.foreign_buf()) {
         (Some(r), _) => Member::from_ref(r),
         (None, Some(b)) => Some(Member::of_static(b)),
@@ -358,7 +378,21 @@ pub fn bufq_queue(bq: &'static Bufq, t: BufRef) {
         kpanic(format_args!("bufq_queue: a consumed token"));
     };
     Buf::park(t);
-    bufq_queue_member(bq, m);
+    m
+}
+
+/// The second half of [`bufq_dequeue`]: the token parked in the buffer of a link a discipline
+/// gave back (taken after the discipline's lock is left: the cache's lock is not taken under
+/// it).
+pub fn bufq_unpark(m: Member<ByBufhead>) -> BufRef {
+    let t = m.get().take_parked();
+    drop(m);
+    match t {
+        Some(t) => t,
+        None => kpanic(format_args!(
+            "bufq_dequeue: a queued buffer without its token"
+        )),
+    }
 }
 
 /// [`bufq_queue`] of a cache or physio buffer a legacy strategy routine holds by address, its
@@ -392,14 +426,7 @@ fn bufq_queue_member(bq: &'static Bufq, m: Member<ByBufhead>) {
 /// `bufq_dequeue(bq)`: the next buffer for the disk, its token taken back.
 pub fn bufq_dequeue(bq: &Bufq) -> Option<BufRef> {
     let m = bq.st.lock().discipline().dequeue()?;
-    let t = m.get().take_parked();
-    drop(m);
-    match t {
-        Some(t) => Some(t),
-        None => kpanic(format_args!(
-            "bufq_dequeue: a queued buffer without its token"
-        )),
-    }
+    Some(bufq_unpark(m))
 }
 
 /// [`bufq_dequeue`] for a legacy driver: the next buffer with its token left parked, as the

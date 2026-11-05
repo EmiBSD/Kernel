@@ -414,6 +414,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     sync::syncer_test_reset::<G>();
     super::cache::namecache_test_reset::<G>();
     crate::fs::ufs::ufs::ufs_vfsops::ufs_test_reset::<G>();
+    #[cfg(feature = "mfs")]
+    crate::fs::ufs::mfs::mfs_vfsops::mfs_test_reset();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }

@@ -18,6 +18,7 @@ tmpfs = []                      # `option TMPFS` -> vm::aobj's uao_grow/uao_shri
 ffs2 = []                       # `option FFS2` -> fs::ufs::ffs's FFS2 (UFS2 dinodes) paths: ffs2_blkpref, ffs2_balloc, the lazy inode blocks
 quota = []                      # `option QUOTA` -> fs::ufs::ufs's disk quotas (ufs_quota.c); without it ufs_quota_stub.c's answers
 ufs_dirhash = []                # `option UFS_DIRHASH` -> fs::ufs::ufs::ufs_dirhash, hashed lookups in large directories
+mfs = []                        # `option MFS` -> fs::ufs::mfs, the memory file system (an FFS in a process's memory)
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,

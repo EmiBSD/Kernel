@@ -8991,6 +8991,60 @@ status = "redesigned"
 notes = "N5.5b2: the CTL_VFS names (FFS_*, FFS_NAMES); LZ's pub use of the prototypes, tables and pools goes (their callers name the defining modules)"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_extern.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_extern.rs"]
+status = "redesigned"
+notes = "N5.5b3: the header's prototypes as re-exports of the kernel's mfs_vfsops and mfs_vnops items, as LZ's; mfs_vops is the table type MfsVnops"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.5b3: mfs_vfsops as Mfs<G> implementing the kernel's Vfs with its VFS constant (vfsconflist's mfs entry), its slots the C's functions (mfs_mount, mfs_start, mfs_init, the kernel ffs's and the UFS layer's); mfs_mount builds the counted Mfsnode and hangs it in the device vnode's typed slot; mfs_start's signal unmount as mfs_signalled; the host tests over an FFS image in the copy double's user memory"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::MFS_VFSOPS"
+native = ["Mfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::fs_strlcpy_fsmnt"
+native = ["sys/kernel/fs/ufs/ffs/fs.rs::Superblock::set_fsmnt"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.5b3: mfs_vops as MfsVnops<G> implementing the kernel's Vnops with the C's slots (badop, nullop and the generic ones as the C's table names them), its one instance the glue's UfsTables::mfs_vops; mfs_strategy, mfs_doio, mfs_close over the buffers' tokens and the node's own fifo; mfs_doio's request past the end fails EFAULT as the C's copy of that length (LZ's no-bytes success closed); mfs_reclaim fails what is queued (bufq_destroy's drain) and takes the node from the slot"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vnops.rs::MFS_VOPS"
+native = ["MfsVnops", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "split"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfsnode.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfsnode.rs"]
+status = "redesigned"
+notes = "N5.5b3: struct mfsnode as Mfsnode<G>, built whole by mfs_mount in a counted malloc(M_MFSNODE) block (MfsnodeRef, hal::malloc::MArc) in the device vnode's typed slot; mfs_bufq the fifo discipline under the node's IPL_BIO mutex without the bufqs registry (D-N5.5b-3); mfs_buflist gone (unused in the C); vtomfs a counted handle out of the slot"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfsnode.rs::Mfsnode::default"
+native = []
+kind = "dropped"
+reason = "no zeroed mfsnode exists: mfs_mount builds the node whole with its vnode, memory and thread (Mfsnode::new), as the C fills every member right after the malloc"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]

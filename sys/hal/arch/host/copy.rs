@@ -43,8 +43,10 @@ use crate::sys::errno::Errno;
 
 /// Where the double's user address space starts.
 pub const USER_BASE: usize = 0x1000_0000;
-/// Its size.
-pub const USER_LEN: usize = 64 * 1024;
+/// Its size: 256 KiB, room for a memory file system's image (mfs's host tests, N5.5b3:
+/// `ffs_mountfs` reads the super-block search's first slot, 64 KiB in, so the smallest image
+/// that mounts is 72 KiB) beside the 64 KiB the other tests lay out their arguments in.
+pub const USER_LEN: usize = 256 * 1024;
 /// Where the double's foreign kernel memory starts (a `ForeignWindow`'s side of `kcopy`).
 pub const FOREIGN_BASE: usize = 0x3000_0000;
 /// Its size.

@@ -99,6 +99,10 @@
 //!   which never reaches the disk.
 //! - A `ffs_reload` of a changed geometry (`fs_ncg`, `fs_cssize`, `fs_contigsumsize`) panics
 //!   on the summary area's bounds where the C overruns its arrays.
+//! - `ffs_mountfs`'s super-block search takes a buffer shorter than a super-block (a memory
+//!   file system that ends inside the slot it reads, `mfs_doio`'s clamp) for no super-block
+//!   and tries the next slot, where the C reads `struct fs` past `b_bcount`, out of whatever
+//!   the buffer's memory held before (N5.5b3).
 //!
 //! ## Redesign
 //! - N5.5b1: LZ's `FfsVtbl` unit struct and its `FFS_VTBL` static (`impl InodeOps` for
@@ -370,8 +374,9 @@ pub fn ffs_mountroot<G: ProcGlue>(rootdev: Dev, swapdev: Dev) -> Result<(), Errn
 }
 
 /// `memset(dst, 0, MNAMELEN); strlcpy(dst, src, MNAMELEN)`: the C's pair, over libkern's
-/// `strlcpy(9)` (statfs(2) copies the whole buffer out, so the zeroed tail is visible).
-fn mname_copy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
+/// `strlcpy(9)` (statfs(2) copies the whole buffer out, so the zeroed tail is visible); mfs's
+/// `mfs_mount` makes the same pairs.
+pub(crate) fn mname_copy(dst: &mut [u8; MNAMELEN], src: &[u8]) {
     *dst = [0; MNAMELEN];
     libkern::strlcpy(dst, src);
 }
@@ -824,11 +829,11 @@ pub fn ffs_mountfs<G: ProcGlue>(
                 break 'out e;
             }
 
+            // A buffer shorter than a super-block (a memory file system that ends inside
+            // this slot: `mfs_doio` clamps the transfer at its end) holds none.
             let Some(fs) = pod_from_bytes::<Fs>(b.bytes()) else {
-                kpanic(format_args!(
-                    "ffs_mountfs: a super-block buffer of {} bytes",
-                    b.bytes().len()
-                ));
+                i += 1;
+                continue;
             };
             sbloc = SBTRY[i];
 
