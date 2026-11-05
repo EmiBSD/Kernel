@@ -8411,6 +8411,42 @@ lz = "sys/ufs/ufs/inode.rs::Inode::e2fs"
 native = ["Inode::i_e2fs"]
 kind = "renamed"
 
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_TRUNCATE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().truncate(..) (Ffs::truncate for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_UPDATE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().update(..) (Ffs::update for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_INODE_ALLOC"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().inode_alloc(..) (Ffs::inode_alloc for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_INODE_FREE"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().inode_free(..) (Ffs::inode_free for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_BUF_ALLOC"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().buf_alloc(..) (Ffs::buf_alloc for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
+[[module.fn]]
+lz = "sys/ufs/ufs/inode.rs::UFS_BUFATOFF"
+native = []
+kind = "dropped"
+reason = "the C macro is the InodeOps method the kernel's UFS code calls as ip.vtbl().bufatoff(..) (Ffs::bufatoff for ffs); bsd's wrapper went with its last caller, bsd's ext2fs (N5.6c3)"
+
 [[module]]
 rust = "sys/kernel/fs/ufs/ufs/ufsmount.rs"
 crate = "kernel"
