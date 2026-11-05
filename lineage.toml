@@ -8995,7 +8995,7 @@ rust = "sys/kernel/fs/ufs/mfs/mfs_extern.rs"
 crate = "kernel"
 lz = ["sys/ufs/mfs/mfs_extern.rs"]
 status = "redesigned"
-notes = "N5.5b3: the header's prototypes as re-exports of the kernel's mfs_vfsops and mfs_vnops items, as LZ's; mfs_vops is the table type MfsVnops"
+notes = "N5.5b3: the header's prototypes are the kernel's mfs_vfsops and mfs_vnops items, mfs_vops the table type MfsVnops; LZ's pub use of them goes (their callers name the defining modules), as ffs_extern's did at N5.5b2; the module keeps the header's record alone"
 
 [[module]]
 rust = "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"

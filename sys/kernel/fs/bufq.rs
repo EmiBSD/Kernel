@@ -64,7 +64,7 @@
 //!   raises to `IPL_MPFLOOR`, above `IPL_BIO`, as one at `IPL_BIO` does).
 //! - `bufqs` is a `hal::list::List` of `&'static` queues (a softc's) under its own mutex.
 //! - N5.5b3: `bufq_queue` and `bufq_dequeue` are split at the queue's lock ([`bufq_park`],
-//!   [`bufq_unpark`]) and [`Fifo::new`] is public, so a queue that is no registered `Bufq`
+//!   [`bufq_unpark`]) and [`Fifo::new`] is the crate's, so a queue that is no registered `Bufq`
 //!   (mfs's node, which dies at reclaim) keeps the fifo discipline under a lock of its own.
 
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
@@ -200,16 +200,10 @@ impl Fifo {
     /// An empty fifo head (`bufq_fifo_create`'s `SIMPLEQ_INIT`). A queue without the
     /// registry (mfs's node, which dies at reclaim: `ufs::mfs::mfsnode`) holds one under its
     /// own mutex and queues the links [`bufq_park`] makes.
-    pub const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             q: SecondaryList::new(),
         }
-    }
-}
-
-impl Default for Fifo {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

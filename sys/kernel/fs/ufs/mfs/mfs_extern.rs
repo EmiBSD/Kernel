@@ -54,14 +54,10 @@
 //! LZ: sys/ufs/mfs/mfs_extern.rs@3c62ede68802
 //!
 //! ## Redesign
-//! - The header's prototypes are the items of `mfs_vfsops.rs` and `mfs_vnops.rs`, re-exported
-//!   here as LZ's are (the header's forward declarations of structures need no Rust);
-//!   `mfs_vops` is the table type [`MfsVnops`] (its one instance the glue's
-//!   `UfsTables::mfs_vops`).
-
-pub use super::mfs_vfsops::{mfs_checkexp, mfs_init, mfs_mount, mfs_start};
-pub use super::mfs_vnops::{
-    MfsVnops, mfs_close, mfs_doio, mfs_inactive, mfs_ioctl, mfs_open, mfs_print, mfs_reclaim,
-    mfs_strategy,
-};
+//! - The header's prototypes are the items of `mfs_vfsops.rs` (`mfs_mount`, `mfs_start`,
+//!   `mfs_checkexp`, `mfs_init`) and `mfs_vnops.rs` (`mfs_open` ... `mfs_print`, `mfs_doio`),
+//!   and `mfs_vops` is the table type `MfsVnops` (its one instance the glue's
+//!   `UfsTables::mfs_vops`). LZ's `pub use` of them goes, as `ffs_extern`'s did at N5.5b2:
+//!   their callers name the defining modules. The header's forward declarations of
+//!   structures need no Rust; nothing else is left here.
 /* </CODE> */

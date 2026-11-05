@@ -125,18 +125,12 @@ pub struct MfsVnops<G: ProcGlue> {
 }
 
 impl<G: ProcGlue> MfsVnops<G> {
-    /// The table.
-    pub const fn new() -> Self {
+    /// The table (the glue's `UfsTables::mfs_vops`).
+    pub(crate) const fn new() -> Self {
         Self {
             _id: 0,
             _g: PhantomData,
         }
-    }
-}
-
-impl<G: ProcGlue> Default for MfsVnops<G> {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -546,7 +540,7 @@ mod tests {
     use super::super::mfs_vfsops::fixture::{UIMAGE, attach, image};
     use super::super::mfsnode::{M_MFSNODE, MfsnodeRef};
     use super::*;
-    use crate::fs::bio::{bread, brelse, bwrite, getblk};
+    use crate::fs::bio::{biowait, bread, brelse, bwrite, getblk};
     use crate::fs::buf::{B_ASYNC, B_DONE};
     use crate::fs::subr::{checkalias, getnewvnode, vfs};
     use crate::fs::testfs::TestGlue;
@@ -684,8 +678,10 @@ mod tests {
         let (vp, mfsp) = devvp(904, p.p_tid.get() + 1000);
         assert!(malloc_out(M_MFSNODE) > before);
 
+        // A synchronous read, its requester's counted link kept for the biowait below.
         let t = getblk(&vp.bufs, 1, 512, 0, INFSLP).unwrap();
-        t.buf().set(B_READ | B_ASYNC);
+        t.buf().set(B_READ);
+        let r = t.counted().unwrap();
         mfsp.queue(t);
         drop(mfsp);
 
@@ -694,9 +690,11 @@ mod tests {
         mfs_reclaim(vp).unwrap();
         assert!(!vp.has_node());
         assert_eq!(malloc_out(M_MFSNODE), before);
-        // The failed read left nothing valid in the cache.
-        let t = getblk(&vp.bufs, 1, 512, 0, INFSLP).unwrap();
-        assert!(!t.buf().isset(B_DONE));
+        // The requester wakes with the drain's error.
+        let (t, rv) = biowait(r);
+        assert_eq!(rv, Err(Errno::ENXIO));
+        assert_eq!(t.buf().error(), Some(Errno::ENXIO));
+        assert!(t.buf().isset(B_ERROR) && t.buf().isset(B_DONE));
         t.buf().set(crate::fs::buf::B_INVAL);
         brelse(t);
     }

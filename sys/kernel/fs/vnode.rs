@@ -1206,6 +1206,27 @@ mod tests {
         }
     }
 
+    /// The vnode's typed slot read as a counted handle (`node_arc`, N5.5b3, mfs's `VTOMFS`):
+    /// a handle of the slot's type, `None` for another type or an empty slot; the node lives
+    /// while a handle does, past the reclaim's `take_node`.
+    #[test]
+    fn node_arc_lends_counted_handles_of_the_slot_s_type() {
+        use crate::fs::subr::M_VNODE;
+        use hal::malloc::M_WAITOK;
+        let _g = crate::fs::testfs::setup();
+        let vp: &'static Vnode<crate::fs::testfs::TestGlue> =
+            std::boxed::Box::leak(std::boxed::Box::new(Vnode::new_unpooled()));
+        assert!(vp.node_arc::<u64>().is_none(), "an empty slot");
+        vp.set_node(MArc::erase(MArc::new(M_VNODE, M_WAITOK, 7u64).unwrap()));
+        let held = vp.node_arc::<u64>().unwrap();
+        assert_eq!(*held, 7);
+        assert!(vp.node_arc::<u32>().is_none(), "another type is refused");
+        assert!(vp.has_node(), "the slot keeps its own handle");
+        drop(vp.take_node());
+        assert!(!vp.has_node() && vp.node_arc::<u64>().is_none());
+        assert_eq!(*held, 7, "a holder's handle outlives the reclaim's");
+    }
+
     #[test]
     fn iftovt_and_vttoif_are_the_c_s_tables() {
         assert_eq!(iftovt(stat::S_IFREG | 0o644), VREG);

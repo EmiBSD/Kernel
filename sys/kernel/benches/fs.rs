@@ -1039,8 +1039,13 @@ fn main() {
     // N5.5b3's rows: the kernel ffs through the system calls, on a thread of its own (the
     // fixture makes its thread and takes the kernel memory's guard afresh).
     drop(_ufs_memory);
+    // The ffs rows are the names from the first `ffs.` one on.
+    let ffs = names
+        .iter()
+        .position(|n| n.starts_with("ffs."))
+        .unwrap_or(names.len());
     std::thread::scope(|s| {
-        s.spawn(|| ffs_rows(&wanted, &names[26..], &report));
+        s.spawn(|| ffs_rows(&wanted, &names[ffs..], &report));
     });
 }
 
