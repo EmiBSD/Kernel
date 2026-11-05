@@ -29,6 +29,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | close | The end of a milestone: `just check`, `ci`, `ci-full` and `diff-openbsd` green, the numbers in the closing `docs:` commit, the annotated tag `n<N>-<name>` on it |
 | `crate::machine` | The one path through which generic code (`kern/`, `uvm/`, `dev/`) reaches architecture code; `crate::arch::amd64` and `crate::arch::arm64` are never named outside `sys/arch/` and `sys/machine/` |
 | DDB, `ddb(4)` | OpenBSD's in-kernel debugger, entered on a panic or from the console |
+| Denode | msdosfs's node of a file (`struct denode`, `kernel::fs::msdosfs::denode::Denode`, N5.7c1): the in-core copy of a FAT directory entry, identified by the position of that entry (`de_dirclust`, `de_diroffset`), with its fat cache and the vnode lock; a counted `malloc(M_MSDOSFSNODE)` block in the vnode's typed slot (`DenodeRef`, `vtode`) |
 | decision N | A numbered decision of the user, recorded in `docs/ZERO_UNSAFE.md` ("Decisions") or `docs/PHASE2.md`; cited as "decision 44". The number is the reference, never the date alone |
 | Deviations | The `//! ## Deviations` list of a module: every inherited gap (an `unported!` path, a stub) it still has; a redesign closes an entry or keeps it visible, never widens it |
 | `diff-openbsd` | The oracle: `just diff-openbsd` runs the same scenarios on EmiBSD and on a real OpenBSD snapshot in QEMU and compares them step by step; `expected.toml` lists the differences EmiBSD must have, each with its reason |

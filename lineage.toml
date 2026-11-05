@@ -9519,6 +9519,87 @@ status = "redesigned"
 notes = "N5.7c1 (unwired): struct direntry and struct winentry as hal::abi_pod! images copied out of a directory block and back (Direntry::at -> Option, Direntry::put; D-N5.7-6: one 32-byte copy per entry viewed, named for ROADMAP N12)"
 
 [[module]]
+rust = "sys/kernel/fs/msdosfs/fat.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/fat.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired): the special cluster numbers and masks; FAT12/FAT16/FAT32/MSDOSFSEOF over the mount structure's plain pm_fatmask (one load, LZ: a Cell)"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_conv.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_conv.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired): moved into the kernel crate in LZ's shape (no unsafe there): the time and name conversions over the abi_pod! Winentry value and hal's struct dirent; regyear/leapyear statics; the three [u8; 256] tables kept with their reference-backed test"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfsmount.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfsmount.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired; D-N5.7-5): struct msdosfsmount built whole by msdosfs_mountfs and published as MsdosfsmountRef<G> (hal::malloc::MArc of M_MSDOSFSMNT) in the mount's typed slot; identity, BPB and geometry plain members, the members the C writes after the mount (pm_uid/gid/mask, pm_flags, pm_fmod, pm_freeclustercount, pm_fsinfo) relaxed words under the kernel lock, the in-use bitmap an MArray<AtomicU32> of M_MSDOSFSFAT (inusemap_alloc, M_CANFAIL -> EINVAL); pm_export the mount's glue member (BsdMountG.export); vfstomsdosfs the slot's typed read; fsi_size wrapping_shl and fsi_size_checked (D-N5.7-U3, EINVAL above MAXBSIZE); 0 unsafe (LZ: 3)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfsmount.rs::Msdosfsmount::new"
+native = []
+kind = "dropped"
+reason = "no zeroed structure: msdosfs_mountfs builds the structure whole before it is published (Msdosfsmount::alloc), as the C fills its malloc(M_ZERO) block member by member before hanging it; the tests build theirs with test_pmp"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfsmount.rs::Msdosfsmount::default"
+native = []
+kind = "dropped"
+reason = "the zeroed structure's Default goes with Msdosfsmount::new (built whole by msdosfs_mountfs)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfsmount.rs::Msdosfsmount::mountp"
+native = []
+kind = "dropped"
+reason = "pm_mountp is a plain &'static Mount<G> member set when the structure is built, read directly as the C's pmp->pm_mountp (no Option to check)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfsmount.rs::Msdosfsmount::devvp"
+native = []
+kind = "dropped"
+reason = "pm_devvp is a plain &'static Vnode<G> member set when the structure is built, read directly as the C's pmp->pm_devvp (no Option to check)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfsmount.rs::Msdosfsmount::inusemap"
+native = ["Msdosfsmount", "inusemap_alloc"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/denode.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/denode.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired; D-N5.7-2): struct denode as Denode<G>, made whole where the C fills it (Denode::new: de_vnode, de_dev, de_pmp and the entry's position given) and published as DenodeRef<G> (hal::malloc::MArc of M_MSDOSFSNODE) in the vnode's typed slot; the members the C changes under de_lock and the kernel lock relaxed words (fs::word), de_Name eleven U8Words, each de_fc slot a U64Word; de_devvp a hal Link; de_pmp a counted MsdosfsmountRef; de_lockf a plain LockfSlot (IDIOMS row 191's ManuallyDrop gone); de_lock a RecursiveRwlock; de_hash a PinEntry for c2's chains; vtode the slot's typed read; the template denode of create/mkdir a Denode::new with no vnode; 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/msdosfs/denode.rs::Denode::default"
+native = []
+kind = "dropped"
+reason = "no zeroed denode without its identity: Denode::new takes the vnode, the device, the mount structure's handle and the entry's position (deget's and the template's)"
+
+[[module]]
+rust = "sys/kernel/fs/msdosfs/msdosfs_fat.rs"
+crate = "kernel"
+lz = ["sys/msdosfs/msdosfs_fat.rs"]
+status = "redesigned"
+notes = "N5.7c1 (unwired): the FAT engine over BufRef tokens of fs::bio (pcbmap, fatentry, fatchain, updatefats with both tokens of a mirror copy and the FSInfo count at its offset, the bitmap's words, clusteralloc/chainlength/scanfree, freeclusterchain, fillinusemap, extendfile); pcbmap's EIO for an entry straddling its FAT block (D-N5.7-U2); every arithmetic over an on-disk value at the C's u32 widths; 0 unsafe (LZ: 10)"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_fat.rs::getblk_wait"
+native = ["sys/kernel/fs/bio.rs::getblk_wait"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/msdosfs/msdosfs_fat.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
