@@ -88,6 +88,8 @@
 //! - `ufs_direnter`'s `newdirbp` (the soft dependency code's, unused in C and in LZ) is gone:
 //!   its one caller, `ufs_mkdir`, has given the buffer's token to `VOP_BWRITE` before the
 //!   call, and nothing reads it.
+//! - N5.6c2: `vmount` is the crate's (`pub(crate)`), for ext2fs's lookup and vnode
+//!   operations, which need the same helper (one helper, not a copy).
 //!
 //! [`UfsVnops`]: super::ufs_vnops::UfsVnops
 //! [`ucred`]: super::ufs_vnops::ucred
@@ -146,7 +148,7 @@ enum Slotstatus {
 }
 
 /// The vnode's mount, which a UFS vnode always has.
-pub(super) fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
+pub(crate) fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
     match vp.mount() {
         Some(mp) => mp,
         None => kpanic(format_args!("ufs: vnode {vp:p} without a mount")),

@@ -51,15 +51,13 @@
 
 /* <CODE> */
 //! ext2fs inodes: the size of a file (`ext2fs_size`, `ext2fs_setsize`, with the high 32
-//! bits of a regular file's size), writing an inode back to its block (`ext2fs_update`, its
-//! times first: `<ufs/ufs/inode.h>`'s `EXT2FS_ITIMES`) and truncating a file
-//! (`ext2fs_truncate`, with `ext2fs_indirtrunc` freeing the blocks under an indirect block).
+//! bits of a regular file's size), the last reference to an inode (`ext2fs_inactive`, the
+//! vnode operation), writing an inode back to its block (`ext2fs_update`, its times first:
+//! `<ufs/ufs/inode.h>`'s `EXT2FS_ITIMES`) and truncating a file (`ext2fs_truncate`, with
+//! `ext2fs_indirtrunc` freeing the blocks under an indirect block).
 //!
 //! Upstream: sys/ufs/ext2fs/ext2fs_inode.c @ 3ce1f3f79392
 //! LZ: sys/ufs/ext2fs/ext2fs_inode.rs@3c62ede68802
-//!
-//! The vnode operation `ext2fs_inactive` joins the module with the vnode operations' tables
-//! (N5.6c2); until then `bsd`'s is the one the mounts call.
 //!
 //! ## Deviations
 //! - The dinode goes to its block through `e2fs_isave` over the buffer's bytes at the
@@ -85,17 +83,21 @@
 //! - `EXT2FS_ITIMES` (LZ's `InodeExt::ext2fs_itimes` in `bsd`'s `ufs/inode.rs`) is
 //!   [`ext2fs_itimes`] here, beside its callers (the kernel's UFS layer calls it under
 //!   `option EXT2FS` from N5.6c3, as the C's `#ifdef EXT2FS`).
+//! - N5.6c2: `ext2fs_inactive` over `bsd`'s `VopInactiveArgs` -> the kernel's `Vnops<G>`
+//!   slot shape (`vp`, `p`), the slot of `ext2fs_vops` and `ext2fs_specvops`
+//!   (`ext2fs_vnops.rs`); the C's `ip->i_e2din == NULL` is the inode's empty dinode slot
+//!   (`din_is_null`), and the inode's handle is dropped before `vrecycle`, as `ufs_inactive`'s.
 
 use hal::malloc::{M_WAITOK, MArray};
 use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
 use hal::sys::mount::MNT_RDONLY;
-use hal::sys::types::{Daddr, Off};
+use hal::sys::types::{Daddr, Mode, Off};
 
 use super::ext2fs::{
     E2FS_REV0, EXT2F_ROCOMPAT_LARGE_FILE, blkoff, fsbtodb, ino_to_fsba, ino_to_fsbo, lblkno, nindir,
 };
-use super::ext2fs_alloc::ext2fs_blkfree;
+use super::ext2fs_alloc::{ext2fs_blkfree, ext2fs_inode_free};
 use super::ext2fs_balloc::ext2fs_buf_alloc;
 use super::ext2fs_dinode::{EXT2_MAXSYMLINKLEN, NDADDR, NIADDR, e2fs_isave};
 use crate::assert::kpanic;
@@ -103,13 +105,14 @@ use crate::fs::bio::getblk_wait;
 use crate::fs::bio::{BCSTATS, bawrite, bdwrite, biowait, bread, brelse, btodb, bwrite};
 use crate::fs::buf::{B_CLRBUF, B_DELWRI, B_DONE, B_INVAL, B_READ, B_SYNC};
 use crate::fs::getcwd::M_TEMP;
-use crate::fs::subr::vinvalbuf;
+use crate::fs::subr::{vinvalbuf, vrecycle};
 use crate::fs::ufs::ufs::dinode::{IFMT, IFREG};
+use crate::fs::ufs::ufs::inode::vtoi;
 use crate::fs::ufs::ufs::inode::{IN_ACCESS, IN_CHANGE, IN_MODIFIED, IN_UPDATE, Inode, le32_at};
-use crate::fs::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG};
-use crate::fs::vops::{Cred, IoBuf, vop_strategy};
-use crate::proc::ProcGlue;
-use crate::tc::gettime;
+use crate::fs::vnode::{IO_SYNC, V_SAVE, V_SAVEMETA, VDIR, VLNK, VREG, Vnode};
+use crate::fs::vops::{Cred, IoBuf, vop_strategy, vop_unlock};
+use crate::proc::{ProcGlue, Thread};
+use crate::tc::{getnanotime, gettime};
 use crate::vm::vnode::{uvm_vnp_setsize, uvm_vnp_uncache};
 
 /// `SINGLE`: index of single indirect block.
@@ -180,6 +183,45 @@ pub fn ext2fs_setsize<G: ProcGlue>(ip: &Inode<G>, size: u64) -> Result<(), Errno
         fs.e2fs_fmod.set(1);
     }
     Err(Errno::EFBIG)
+}
+
+/// `ext2fs_inactive` (`vop_inactive`): last reference to an inode. If necessary, write or
+/// delete it.
+pub fn ext2fs_inactive<G: ProcGlue>(
+    vp: &'static Vnode<G>,
+    p: Option<&Thread<G>>,
+) -> Result<(), Errno> {
+    let ip = vtoi(vp);
+    let mut error = Ok(());
+
+    #[cfg(feature = "diagnostic")]
+    crate::fs::ufs::ufs::ufs_inode::pushing_active(vp, "ext2fs_inactive: pushing active");
+
+    // Get rid of inodes related to stale file handles.
+    if !(ip.din_is_null() || ip.i_e2din().i_e2fs_mode() == 0 || ip.i_e2din().i_e2fs_dtime() != 0) {
+        let d = ip.i_e2din();
+        let rdonly = vp.mount().is_some_and(|mp| mp.flag() & MNT_RDONLY != 0);
+        if d.i_e2fs_nlink() == 0 && !rdonly {
+            if ext2fs_size(&ip) != 0 {
+                error = ext2fs_truncate(&ip, 0, 0, Cred::NOCRED);
+            }
+            let ts = getnanotime();
+            d.set_i_e2fs_dtime(ts.tv_sec as u32);
+            ip.set_flag(IN_CHANGE | IN_UPDATE);
+            ext2fs_inode_free(&ip, ip.i_number, Mode::from(d.i_e2fs_mode()));
+        }
+        if ip.i_flag.get() & (IN_ACCESS | IN_CHANGE | IN_MODIFIED | IN_UPDATE) != 0 {
+            let _ = ext2fs_update(&ip, 0);
+        }
+    }
+    // out:
+    let _ = vop_unlock(vp);
+    // If we are done with the inode, reclaim it so that it can be reused immediately.
+    if ip.din_is_null() || ip.i_e2din().i_e2fs_dtime() != 0 {
+        drop(ip);
+        vrecycle(vp, p);
+    }
+    error
 }
 
 /// `ext2fs_update`: update the access, modified, and inode change times as specified by
