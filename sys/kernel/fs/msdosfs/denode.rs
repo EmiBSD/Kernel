@@ -138,7 +138,8 @@
 //!   erased into the vnode's typed slot (`Vnode::set_node` in `deget`, where the C sets
 //!   `v_data`; `take_node` in `msdosfs_reclaim`, mfs's precedent): the last handle frees the
 //!   block and drops its members, so a handle kept across `bread` never dangles and
-//!   `de_lockf` is a plain `LockfSlot` (docs/IDIOMS.md row 191 loses its one user).
+//!   `de_lockf` is a plain `LockfSlot` (docs/IDIOMS.md's `ManuallyDrop<LockfSlot>` row lost
+//!   its one user, and N5.7c3 deleted it).
 //!   [`vtode`] is the slot's typed read and a count (the type replaces LZ's tag check; cost
 //!   against the C's one load: the slot's read, two atomics, and a count pair per operation,
 //!   ROADMAP N12's row).

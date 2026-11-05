@@ -215,7 +215,8 @@ const DEV_BSIZE: u32 = 512;
 
 /// `DIOCCACHESYNC` (`<sys/dkio.h>`, `_IOW('d', 120, int)`): sync the disk's write cache,
 /// which `msdosfs_mount` asks of the device when it goes read-only (the device may not
-/// support it).
+/// support it). A private copy until N7 brings `<sys/dkio.h>`'s constants to the kernel (or
+/// hal's ABI constants hold them), which replace it.
 const DIOCCACHESYNC: u64 = hal::sys::ioccom::_iow::<i32>(b'd', 120);
 
 /// The msdos file system of the glue `G`: `msdosfs_vfsops` ([`MsdosfsVfs::VFS`]). Its vnode
