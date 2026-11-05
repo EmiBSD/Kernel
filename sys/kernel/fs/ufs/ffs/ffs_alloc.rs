@@ -1573,9 +1573,7 @@ mod tests {
     use super::super::fs::{CgView, cgdmin};
     #[cfg(feature = "ffs2")]
     use super::super::fs::{ino_to_fsba, ino_to_fsbo};
-    use super::super::testffs::newfs::{
-        FFS1_1G, FFS2_1G, FFS2_4M, Image, Params, check_with, super_block,
-    };
+    use super::super::testffs::newfs::{FFS1_1G, FFS2_1G, Image, Params, check_with, super_block};
     use super::super::testffs::{disk, new_file, setup, sync};
     use super::*;
     use crate::cred::Ucred;
@@ -1588,6 +1586,11 @@ mod tests {
     } else {
         &[FFS1_1G]
     };
+
+    /// The one format of a test whose subject is not the format: FFS2's with `option FFS2`,
+    /// FFS1's without, where the kernel's `ffs_mountfs` refuses an FFS2 super-block as the
+    /// C's `ffs_validate` does.
+    const ONE: Params = FORMATS[0];
 
     /// `fsck`'s check of the synced image against the in-core summaries and totals.
     fn check_incore(fs: &Superblock, ufs2: bool) {
@@ -1803,7 +1806,7 @@ mod tests {
 
     #[test]
     fn freeing_a_free_inode_on_a_read_only_mount_is_only_reported() {
-        let (_g, _th, mp) = setup(Image::new(FFS2_1G).finish());
+        let (_g, _th, mp) = setup(Image::new(ONE).finish());
         let rootvp = super::super::testffs::root(mp);
         let rip = vtoi(rootvp);
         let fs = rip.i_fs();
@@ -2025,9 +2028,10 @@ mod tests {
 
     #[test]
     fn hashalloc_tries_the_group_then_the_quadratic_rehash_then_each_group() {
+        // Four groups of 2 MB in either format.
         let p = Params {
             size: 8 << 20,
-            ..FFS2_4M
+            ..ONE
         };
         let (_g, th, mp) = setup(Image::new(p).finish());
         let vp = new_file(mp, th);
@@ -2043,9 +2047,9 @@ mod tests {
 
     #[test]
     fn a_cylinder_group_without_its_magic_is_not_read() {
-        let mut img = Image::new(FFS2_1G).finish();
+        let mut img = Image::new(ONE).finish();
         // Cylinder group 0's magic, zeroed.
-        let fs = super_block(&img, true);
+        let fs = super_block(&img, ONE.ufs2);
         let cg0 = ((Daddr::from(fs.fs_cblkno)) << fs.fs_fsbtodb) as usize * 512;
         img[cg0 + 4..cg0 + 8].fill(0);
         let (_g, _th, mp) = setup(img);
