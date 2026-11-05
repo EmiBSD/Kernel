@@ -23,7 +23,20 @@
 //!
 //! - User memory: one address space of [`USER_LEN`] bytes at [`USER_BASE`]; anything outside
 //!   it is `EFAULT`, as an unmapped user page is. The tests read and write it through
-//!   [`user_bytes`] and `hal::user::UserPtr`.
+//!   [`user_bytes`] and `hal::user::UserPtr`. It is one array for the whole test process, so
+//!   tests that run at once keep to ranges of their own (offsets from `USER_BASE`):
+//!   - `0x0_0000..0x1_0000`: the 64 KiB the tests lay their arguments out in (paths, buffers,
+//!     `struct stat`s, the `bsd` tests' `user_buf` at `0x8000`).
+//!   - `0x1_0000..0x3_0000`: the memory file system's image (`kernel::fs::ufs::mfs`'s host
+//!     fixture, N5.5b3), 128 KiB at most, written and zeroed by the fixture alone. An image
+//!     smaller than 64 KiB cannot mount (the super-block search's first slot, 64 KiB in,
+//!     lies past its end and that read faults, as the C's copy of a negative length does);
+//!     one of 64 KiB or more mounts from FFS1's slot at 8 KiB.
+//!   - `0x3_0000..0x4_0000`: the end of the memory, for the copies that must fault past it:
+//!     `kern.msgbuf`'s copy (`kernel::log`'s tests: the 40-byte header and 256-byte chunks
+//!     from `0x3_0000`, so its last whole chunk ends 216 bytes before the end and the next
+//!     faults) and, in those last 216 bytes, which that copy never writes, `uio`'s nine
+//!     iovecs at `USER_LEN - 144` and `pipe`'s word at `USER_LEN - 4`.
 //! - Foreign memory (a `hal::user::ForeignWindow`'s pages): one run of [`FOREIGN_LEN`] bytes at
 //!   [`FOREIGN_BASE`] ([`foreign_bytes`], [`set_foreign_bytes`]). The doubles' addresses lie
 //!   below 4 GiB ([`DOUBLE_LIMIT`]), where no host memory is (macOS keeps the low 4 GiB of a
@@ -43,8 +56,8 @@ use crate::sys::errno::Errno;
 
 /// Where the double's user address space starts.
 pub const USER_BASE: usize = 0x1000_0000;
-/// Its size.
-pub const USER_LEN: usize = 64 * 1024;
+/// Its size: 256 KiB since N5.5b3 (64 KiB before), the three ranges of the module's docs.
+pub const USER_LEN: usize = 256 * 1024;
 /// Where the double's foreign kernel memory starts (a `ForeignWindow`'s side of `kcopy`).
 pub const FOREIGN_BASE: usize = 0x3000_0000;
 /// Its size.

@@ -20,11 +20,13 @@
 //! The UNIX file system's layers in the kernel: OpenBSD `sys/ufs/`. `ufs` is the layer the
 //! UFS-like file systems share (the inode, its mount, the hash, block mapping, and, as the
 //! sub-slices of N5.5a move them, lookup, the vnode operations, quotas and dirhash); `ffs`
-//! the fast file system over it (N5.5b1: the super-block, the cylinder groups, the
-//! allocators, balloc and truncate; `bsd`'s ffs mounts until N5.5b2); `mfs` and `ext2fs`
-//! are `bsd`'s until N5.5b3 and N5.6 and run on it.
+//! the fast file system over it (N5.5b1, N5.5b2); `mfs` the memory file system, an FFS in a
+//! process's memory (N5.5b3, feature `mfs`); `ext2fs` is `bsd`'s until N5.6 and runs on the
+//! UFS layer.
 
 pub mod ffs;
+#[cfg(feature = "mfs")]
+pub mod mfs;
 #[allow(clippy::module_inception)] // OpenBSD's sys/ufs/ufs
 pub mod ufs;
 /* </CODE> */

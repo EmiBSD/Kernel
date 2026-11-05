@@ -285,13 +285,15 @@ pub fn VFS_CHECKEXP(
 ) -> Result<(), Errno> {
     // `vfs_checkexp` is the NFS server's, `bsd`'s: the table as `bsd` knows it, or for the
     // kernel's ffs (N5.5b2) its `vfs_checkexp`, `ufs_check_export` over the mount's export
-    // list (`bsd`'s until N6).
+    // list (`bsd`'s until N6), and for the kernel's mfs (N5.5b3) its `mfs_checkexp`.
     match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
         Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
         #[cfg(feature = "ffs")]
         None if mp.vfc().name() == MOUNT_FFS => {
             crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
         }
+        #[cfg(feature = "mfs")]
+        None if mp.vfc().name() == MOUNT_MFS => kernel::fs::ufs::mfs::mfs_vfsops::mfs_checkexp(mp),
         None => panic(format_args!(
             "VFS_CHECKEXP: mount {:p} of a kernel file system",
             mp

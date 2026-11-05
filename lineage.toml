@@ -5927,7 +5927,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -7651,7 +7651,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -8991,6 +8991,60 @@ status = "redesigned"
 notes = "N5.5b2: the CTL_VFS names (FFS_*, FFS_NAMES); LZ's pub use of the prototypes, tables and pools goes (their callers name the defining modules)"
 
 [[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_extern.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_extern.rs"]
+status = "redesigned"
+notes = "N5.5b3: the header's prototypes are the kernel's mfs_vfsops and mfs_vnops items, mfs_vops the table type MfsVnops; LZ's pub use of them goes (their callers name the defining modules), as ffs_extern's did at N5.5b2; the module keeps the header's record alone"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.5b3: mfs_vfsops as Mfs<G> implementing the kernel's Vfs with its VFS constant (vfsconflist's mfs entry), its slots the C's functions (mfs_mount, mfs_start, mfs_init, the kernel ffs's and the UFS layer's); mfs_mount builds the counted Mfsnode and hangs it in the device vnode's typed slot; mfs_start's signal unmount as mfs_signalled; the host tests over an FFS image in the copy double's user memory"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::MFS_VFSOPS"
+native = ["Mfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::fs_strlcpy_fsmnt"
+native = ["sys/kernel/fs/ufs/ffs/fs.rs::Superblock::set_fsmnt"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.5b3: mfs_vops as MfsVnops<G> implementing the kernel's Vnops with the C's slots (badop, nullop and the generic ones as the C's table names them), its one instance the glue's UfsTables::mfs_vops; mfs_strategy, mfs_doio, mfs_close over the buffers' tokens and the node's own fifo; mfs_doio's request past the end fails EFAULT as the C's copy of that length (LZ's no-bytes success closed); mfs_reclaim fails what is queued (bufq_destroy's drain) and takes the node from the slot"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfs_vnops.rs::MFS_VOPS"
+native = ["MfsVnops", "sys/kernel/fs/ufs/ufs/ufs_vfsops.rs::UfsTables"]
+kind = "split"
+
+[[module]]
+rust = "sys/kernel/fs/ufs/mfs/mfsnode.rs"
+crate = "kernel"
+lz = ["sys/ufs/mfs/mfsnode.rs"]
+status = "redesigned"
+notes = "N5.5b3: struct mfsnode as Mfsnode<G>, built whole by mfs_mount in a counted malloc(M_MFSNODE) block (MfsnodeRef, hal::malloc::MArc) in the device vnode's typed slot; mfs_bufq the fifo discipline under the node's IPL_BIO mutex without the bufqs registry (D-N5.5b-3); mfs_buflist gone (unused in the C); vtomfs a counted handle out of the slot"
+
+[[module.fn]]
+lz = "sys/ufs/mfs/mfsnode.rs::Mfsnode::default"
+native = []
+kind = "dropped"
+reason = "no zeroed mfsnode exists: mfs_mount builds the node whole with its vnode, memory and thread (Mfsnode::new), as the C fills every member right after the malloc"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
@@ -9731,37 +9785,14 @@ rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"]
-notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota, dirhash and mfs tests mount an FFS image with (over the kernel's newfs), the export tests and decision 43's ufs bench; the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
+notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
 lz = ["sys/ufs/ffs/fs.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/ufs/ffs/fs.rs"]
-notes = "N5.5b2: pub use of the kernel's sys/kernel/fs/ufs/ffs/fs.rs under LZ's path, for bsd's mfs (until N5.5b3) and libsa's layout tests (until N9)"
-
-[[module]]
-rust = "sys/ufs/mfs/mfs_extern.rs"
-lz = ["sys/ufs/mfs/mfs_extern.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/ufs/mfs/mfs_vfsops.rs"
-lz = ["sys/ufs/mfs/mfs_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/ffs/fs.rs"]
-
-[[module]]
-rust = "sys/ufs/mfs/mfs_vnops.rs"
-lz = ["sys/ufs/mfs/mfs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/ufs/mfs/mfsnode.rs"
-lz = ["sys/ufs/mfs/mfsnode.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
+notes = "N5.5b2: pub use of the kernel's sys/kernel/fs/ufs/ffs/fs.rs under LZ's path, for libsa's layout tests (until N9); bsd's mfs, its other user, is the kernel's since N5.5b3"
 
 [[module]]
 rust = "sys/ufs/ufs/dinode.rs"

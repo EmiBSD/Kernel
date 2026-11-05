@@ -76,7 +76,8 @@
 //!   [`UfsTables`] beside the inode hash (D-N5.5b-10): the kernel's ffs is generic over the
 //!   glue, and the glue's tables are the one place its globals can live; `ffs_init` makes them.
 //!   So are ffs's two vnode tables (LZ's `FFS_VOPS` and `FFS_SPECVOPS` statics of
-//!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique.
+//!   `sys/ufs/ffs/ffs_vnops.rs`), whose addresses the VFS's registry needs unique, and, since
+//!   N5.5b3, mfs's (LZ's `MFS_VOPS` of `sys/ufs/mfs/mfs_vnops.rs`, feature `mfs`).
 
 use core::sync::atomic::AtomicBool;
 
@@ -94,6 +95,8 @@ use super::ufs_vnops::{UfsSpecVnops, UfsVnops};
 use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
 use crate::fs::ufs::ffs::ffs_vfsops::Ffs;
+#[cfg(feature = "mfs")]
+use crate::fs::ufs::mfs::mfs_vnops::MfsVnops;
 use crate::fs::vnode::Vnode;
 use crate::fs::vops::VFS_VGET;
 use crate::proc::{ProcGlue, Thread};
@@ -127,6 +130,10 @@ pub struct UfsTables<G: ProcGlue> {
     pub ffs_vops: UfsVnops<G, Ffs<G>>,
     /// `ffs_specvops`: the operations of a device special file on an FFS (as `ffs_vops`).
     pub ffs_specvops: UfsSpecVnops<G, Ffs<G>>,
+    /// `mfs_vops`: the operations of a memory file system's device vnode (N5.5b3), a member
+    /// for the same reason.
+    #[cfg(feature = "mfs")]
+    pub mfs_vops: MfsVnops<G>,
 }
 
 impl<G: ProcGlue> UfsTables<G> {
@@ -143,6 +150,8 @@ impl<G: ProcGlue> UfsTables<G> {
             ffs_dino2: BoxPool::new(),
             ffs_vops: UfsVnops::new(&Ffs::<G>::VTBL),
             ffs_specvops: UfsSpecVnops::new(&Ffs::<G>::VTBL),
+            #[cfg(feature = "mfs")]
+            mfs_vops: MfsVnops::new(),
         }
     }
 }
