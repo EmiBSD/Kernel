@@ -771,9 +771,10 @@ mod tests {
         ump.set_stbl(table(2, 80));
         assert!(ump.with_stbl(|t| t == Some(&[2u8; 80][..])));
         assert_eq!(malloc_requests(M_UDFMOUNT).0, n0 + 2);
-        // Both blocks are out: the first is never freed, as the C's.
-        assert!(out1 > out0);
-        assert!(malloc_out(M_UDFMOUNT) > out1);
+        // Both blocks are out: the first is never freed, as the C's (a free of the first
+        // would leave out1 - 64 + 80).
+        assert_eq!(out1, out0 + 64);
+        assert_eq!(malloc_out(M_UDFMOUNT), out1 + 80);
     }
 
     #[test]
