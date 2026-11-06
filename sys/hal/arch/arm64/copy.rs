@@ -35,8 +35,9 @@
 //! own rights never reach user memory); `pcb_onfault` (the running thread's pcb, through
 //! `ci_curpcb`) is saved, pointed at the routine's fault exit for the copy and restored on
 //! every exit, so a fault on an unmapped page is `EFAULT` (`kdata_abort`'s recovery,
-//! `trap.rs`). The kernel side is always a slice here, so only the user address can be
-//! wrong, and the assembly turns that into `EFAULT`.
+//! `trap.rs`). The kernel side is a slice here, so only the user address can be wrong, and
+//! the assembly turns that into `EFAULT`; but for `copy_raw`, whose kernel side is a
+//! window's pages or a `UIO_SYSSPACE` iovec's buffer, under its caller's guarantee.
 //!
 //! ## Deviations
 //! - No retguard.
@@ -47,6 +48,10 @@
 //!   gone. `kcopy` is `kcopy_in`/`kcopy_out`, `pub(crate)` and `unsafe`, the kernel side a
 //!   slice: `hal` calls them for a `ForeignWindow`'s range and for the one `KcopyToken`
 //!   (`hal::user`, the user's decision 13 of N4.8), never with a caller's raw pointers.
+//! - N5.9t1: `copy_raw`, the three routines between raw addresses (one `unsafe fn`
+//!   dispatching on `RawCopy`), for a `ForeignWindow`'s legs to and from a uio's iovecs
+//!   (`ForeignWindow::copyout_at`, `copyin_at`, `kcopy_to`, `kcopy_from`): the kernel side
+//!   of a window is no slice, so neither side is one.
 
 use core::arch::global_asm;
 use core::mem::offset_of;
@@ -54,6 +59,7 @@ use core::mem::offset_of;
 use super::include::pcb::Pcb;
 use crate::cpu::CORE_CURPCB;
 use crate::sys::errno::Errno;
+use crate::user::RawCopy;
 
 global_asm!(
     include_str!("copy.S"),
@@ -157,7 +163,9 @@ pub(crate) fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
 ///
 /// `[kva, kva + buf.len())` holds no Rust object that something writes during the copy (a
 /// page of it that is not mapped is allowed: that fault is the `EFAULT`): the foreign pages
-/// of a `hal::user::ForeignWindow`, or what the `hal::user::KcopyToken`'s holder vouches for.
+/// of a `hal::user::ForeignWindow` (an extracted range's, or an aobj's not marked as viewed by
+/// `hal`, `kernel::vm::aobj::UAO_FLAG_HALVIEW`), or what the `hal::user::KcopyToken`'s holder
+/// vouches for.
 pub(crate) unsafe fn kcopy_in(kva: usize, buf: &mut [u8]) -> Result<(), Errno> {
     let s = core::ptr::with_exposed_provenance::<u8>(kva);
     // SAFETY: the routine reads the caller's range (its guarantee: no Rust object written
@@ -180,5 +188,41 @@ pub(crate) unsafe fn kcopy_out(buf: &[u8], kva: usize) -> Result<(), Errno> {
     // writes the caller's range, which by its guarantee is no Rust object's memory; a fault
     // exits through `pcb_onfault` with `EFAULT`.
     errno(unsafe { sym::kcopy(buf.as_ptr(), d, buf.len()) })
+}
+
+/// `copyout(src, dst, len)`, `copyin(src, dst, len)` or `kcopy(src, dst, len)`, as `kind`
+/// says, between raw addresses: a `hal::user::ForeignWindow`'s legs to and from a uio's
+/// iovecs (`uiomove((void *)va + off, n, uio)` of the C's tmpfs), where neither side is a
+/// slice. A fault on an unmapped page of either side is `EFAULT` (`pcb_onfault`); a fault on
+/// a kernel-map page is served first by `uvm_fault` (`kdata_abort`), as the C's.
+///
+/// # Safety
+///
+/// Each kernel side (`src` of `Out`, `dst` of `In`, both of `Kernel`) is `len` bytes that
+/// hold no Rust object anything references during the copy (a page of it that is not mapped
+/// is allowed: that fault is the `EFAULT`): the pages of a `hal::user::ForeignWindow`, or a
+/// `UIO_SYSSPACE` iovec's buffer its builder vouches for (`struct uio`'s contract). A user
+/// side may be any address: the routine checks it.
+pub(crate) unsafe fn copy_raw(
+    kind: RawCopy,
+    src: usize,
+    dst: usize,
+    len: usize,
+) -> Result<(), Errno> {
+    let s = core::ptr::with_exposed_provenance::<u8>(src);
+    let d = core::ptr::with_exposed_provenance_mut::<u8>(dst);
+    // SAFETY: the kernel sides are the caller's (its guarantee: no Rust object referenced
+    // during the copy, so writing or reading them invalidates no reference; an unmapped page
+    // exits through `pcb_onfault` with `EFAULT`). A user side is checked by the routine to lie
+    // in the user half without overflow before the first access, and is reached only with
+    // `ldtr`/`sttr` (user rights), a fault there being `EFAULT` (the module's checks); user
+    // memory holds no Rust object. No slice or reference of either side is made here.
+    errno(unsafe {
+        match kind {
+            RawCopy::Out => sym::copyout(s, d, len),
+            RawCopy::In => sym::copyin(s, d, len),
+            RawCopy::Kernel => sym::kcopy(s, d, len),
+        }
+    })
 }
 /* </CODE> */

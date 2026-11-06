@@ -42,17 +42,28 @@
 //!   below 4 GiB ([`DOUBLE_LIMIT`]), where no host memory is (macOS keeps the low 4 GiB of a
 //!   64-bit process unmapped, `__PAGEZERO`): a kernel copy there outside the foreign run faults
 //!   (`EFAULT`), as a window onto a page that went away does.
-//! - A kernel address at or above [`DOUBLE_LIMIT`] is the host's own memory: the
-//!   `hal::user::KcopyToken`'s holder (`bsd`'s `uiomove`, whose host tests build
+//! - A kernel address at or above [`DOUBLE_LIMIT`] in the lower half is the host's own
+//!   memory: the `hal::user::KcopyToken`'s holder (`bsd`'s `uiomove`, whose host tests build
 //!   `UIO_SYSSPACE` uios over their own buffers) vouches for it, as on the machine.
+//! - A kernel address in the upper half is a kernel-map address (N5.9t1: the kernel tests'
+//!   `kernel_map` lies there, `kernel::testutil::KM_VA_BASE`): a kernel copy reaches it a page
+//!   at a time through the frame the kernel pmap maps there (host memory through the identity
+//!   direct map), and a page the pmap does not map yet is faulted in through the hook
+//!   [`set_kernel_fault_hook`] installs (`uvm_fault(kernel_map)`, the host's data abort), once,
+//!   before the copy is `EFAULT`: tmpfs's window over its aobj (`kernel::vm::km::ObjectWindow`)
+//!   is copied through, as on the machine, where `kdata_abort` serves the fault before
+//!   `pcb_onfault`. [`copy_raw`] is the machine's raw legs, over a bounce of its own.
 
 // The host double alone links std outside the tests (rust-kernel.md: the host doubles).
 extern crate std;
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::vec::Vec;
 
+use super::param::{PAGE_MASK, PAGE_SIZE};
 use crate::sys::errno::Errno;
+use crate::sys::types::{Paddr, Vaddr};
+use crate::user::RawCopy;
 
 /// Where the double's user address space starts.
 pub const USER_BASE: usize = 0x1000_0000;
@@ -157,29 +168,94 @@ pub(crate) fn copyoutstr(kbuf: &[u8], uaddr: usize) -> Result<usize, Errno> {
     Err(Errno::ENAMETOOLONG)
 }
 
-/// `kcopy(kva, buf, buf.len())`: the foreign region's bytes (`EFAULT` past its end), or the
-/// host's own memory at `kva`.
+/// The host's data abort for a kernel-map address ([`set_kernel_fault_hook`]): `uvm_fault`
+/// on `kernel_map` at the address, for a write or not; `true` when the page is now mapped.
+static KERNEL_FAULT: OnceLock<fn(usize, bool) -> bool> = OnceLock::new();
+
+/// Installs the host's data abort for kernel-map addresses (`kernel::testutil::install`'s
+/// `uvm_fault(kernel_map(), va, ..)`, once per process; a later call keeps the first): a
+/// kernel copy that meets a kernel-map page the kernel pmap does not map yet calls it once
+/// and retries, `EFAULT` when it fails, as `kdata_abort` serves the fault before
+/// `pcb_onfault`.
+pub fn set_kernel_fault_hook(hook: fn(usize, bool) -> bool) {
+    let _ = KERNEL_FAULT.set(hook);
+}
+
+/// Whether `kva` is a kernel-map address: the upper half (the host's own memory, a process's,
+/// lies in the lower one; the doubles' below [`DOUBLE_LIMIT`]).
+fn is_kernel_map(kva: usize) -> bool {
+    kva >> 63 == 1
+}
+
+/// The host bytes behind the kernel-map address `va`: the frame the kernel pmap maps at its
+/// page (a frame is host memory through the identity direct map, as the kernel tests that
+/// write their pages install it, `kernel::testutil::pages_install`), the page faulted in once
+/// through the hook on a miss; `EFAULT` when it stays unmapped.
+fn kernel_map_bytes(va: usize, write: bool) -> Result<usize, Errno> {
+    let pmap = crate::pmap::kernel();
+    if let Some(pa) = pmap.extract(Vaddr::new(va)) {
+        return Ok(pa.as_usize());
+    }
+    let hook = KERNEL_FAULT.get().ok_or(Errno::EFAULT)?;
+    if !hook(va & !PAGE_MASK, write) {
+        return Err(Errno::EFAULT);
+    }
+    pmap.extract(Vaddr::new(va))
+        .map(Paddr::as_usize)
+        .ok_or(Errno::EFAULT)
+}
+
+/// The host address of the first bytes of the kernel range `[kva, kva + len)` and how many
+/// of them lie contiguous there: within its page for a kernel-map address, the whole range
+/// for the host's own memory. `EFAULT` for a range that wraps.
+fn host_run(kva: usize, len: usize, write: bool) -> Result<(usize, usize), Errno> {
+    if kva.checked_add(len).is_none() {
+        return Err(Errno::EFAULT);
+    }
+    if is_kernel_map(kva) {
+        let n = len.min(PAGE_SIZE - (kva & PAGE_MASK));
+        return Ok((kernel_map_bytes(kva, write)?, n));
+    }
+    Ok((kva, len))
+}
+
+/// `kcopy(kva, buf, buf.len())`: the foreign region's bytes (`EFAULT` past its end), a
+/// kernel-map range's frames page by page (faulted in through the hook), or the host's own
+/// memory at `kva`.
 ///
 /// # Safety
 ///
 /// As the machine's (`arch/arm64/copy.rs`): `[kva, kva + buf.len())` outside the foreign
-/// region is the caller's memory to read, no Rust object written during the copy.
+/// region is the caller's memory to read, holding no Rust object written during the copy
+/// (its bytes may change meanwhile through another mapping: no reference is made).
 pub(crate) unsafe fn kcopy_in(kva: usize, buf: &mut [u8]) -> Result<(), Errno> {
     if is_foreign(kva) {
         let r = range(FOREIGN_BASE, FOREIGN_LEN, kva, buf.len())?;
         buf.copy_from_slice(&lock(&FOREIGN)[r]);
         return Ok(());
     }
-    let src = core::ptr::with_exposed_provenance::<u8>(kva);
-    // SAFETY: the caller's guarantee: the range is readable host memory (the token holder's
-    // own buffer, on the host its test's) that nothing writes during the copy; `buf` is a
-    // distinct, exclusively borrowed slice of the same length.
-    unsafe { core::ptr::copy(src, buf.as_mut_ptr(), buf.len()) };
+    let mut done = 0;
+    while done < buf.len() {
+        let (at, n) = host_run(kva + done, buf.len() - done, false)?;
+        let src = core::ptr::with_exposed_provenance::<u8>(at);
+        let dst = &mut buf[done..done + n];
+        // SAFETY: the caller's guarantee: the range is readable memory holding no Rust object
+        // written during the copy (another mapping may change its bytes meanwhile, which a
+        // copy through a raw pointer tolerates: no reference is made), the token holder's own
+        // buffer (on the host its test's) or the
+        // pages of a window the kernel map holds, whose `n` bytes from `at` lie in the one
+        // frame the kernel pmap maps there (`host_run` stops at the page's end), host memory
+        // through the identity direct map; `dst` is a distinct, exclusively borrowed slice of
+        // `n` bytes.
+        unsafe { core::ptr::copy(src, dst.as_mut_ptr(), n) };
+        done += n;
+    }
     Ok(())
 }
 
-/// `kcopy(buf, kva, buf.len())`: into the foreign region (`EFAULT` past its end), or the
-/// host's own memory at `kva`.
+/// `kcopy(buf, kva, buf.len())`: into the foreign region (`EFAULT` past its end), a
+/// kernel-map range's frames page by page (faulted in through the hook), or the host's own
+/// memory at `kva`.
 ///
 /// # Safety
 ///
@@ -191,10 +267,67 @@ pub(crate) unsafe fn kcopy_out(buf: &[u8], kva: usize) -> Result<(), Errno> {
         lock(&FOREIGN)[r].copy_from_slice(buf);
         return Ok(());
     }
-    let dst = core::ptr::with_exposed_provenance_mut::<u8>(kva);
-    // SAFETY: the caller's guarantee: the range is writable host memory no Rust reference
-    // covers during the copy; `buf` is only read, for its length.
-    unsafe { core::ptr::copy(buf.as_ptr(), dst, buf.len()) };
+    let mut done = 0;
+    while done < buf.len() {
+        let (at, n) = host_run(kva + done, buf.len() - done, true)?;
+        let dst = core::ptr::with_exposed_provenance_mut::<u8>(at);
+        let src = &buf[done..done + n];
+        // SAFETY: the caller's guarantee: the range is writable memory no Rust reference
+        // covers during the copy (as in `kcopy_in`, a kernel-map range is copied a frame at a
+        // time, `host_run` keeping each run inside one page); `src` is only read, for `n`
+        // bytes.
+        unsafe { core::ptr::copy(src.as_ptr(), dst, n) };
+        done += n;
+    }
+    Ok(())
+}
+
+/// `copyout`, `copyin` or `kcopy` between raw addresses, as `kind` says (the machine's
+/// `copy_raw`, `arch/arm64/copy.rs`): a `hal::user::ForeignWindow`'s legs to and from a
+/// uio's iovecs, through a bounce of the double's own (512 bytes at a time: the double's
+/// cost, not the machine's, which copies once), each side as [`kcopy_in`], [`kcopy_out`],
+/// [`copyin`] and [`copyout`] reach it.
+///
+/// # Safety
+///
+/// As the machine's: each kernel side is `len` bytes holding no Rust object referenced during
+/// the copy (a window's pages, a `UIO_SYSSPACE` iovec's buffer); a user side may be any
+/// address.
+pub(crate) unsafe fn copy_raw(
+    kind: RawCopy,
+    src: usize,
+    dst: usize,
+    len: usize,
+) -> Result<(), Errno> {
+    let mut chunk = [0u8; 512];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(chunk.len());
+        let c = &mut chunk[..n];
+        let s = src.checked_add(done).ok_or(Errno::EFAULT)?;
+        let d = dst.checked_add(done).ok_or(Errno::EFAULT)?;
+        // SAFETY: `kcopy_in` reads and `kcopy_out` writes `n` bytes of a kernel side of this
+        // call, inside the `len` bytes the caller guarantees hold no Rust object referenced
+        // during the copy (this function's contract, theirs); `c` is a local buffer of `n`
+        // bytes, borrowed for each step alone.
+        unsafe {
+            match kind {
+                RawCopy::Out => {
+                    kcopy_in(s, c)?;
+                    copyout(c, d)?;
+                }
+                RawCopy::In => {
+                    copyin(s, c)?;
+                    kcopy_out(c, d)?;
+                }
+                RawCopy::Kernel => {
+                    kcopy_in(s, c)?;
+                    kcopy_out(c, d)?;
+                }
+            }
+        }
+        done += n;
+    }
     Ok(())
 }
 

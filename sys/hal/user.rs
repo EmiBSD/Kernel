@@ -52,7 +52,13 @@
 //! fault into `EFAULT` (`pcb_onfault`), as the C's `uiomove`/`kcopy` on the window do. Only
 //! the kernel map's token mints one ([`KernelMapper::foreign_window`]): its holder vouches,
 //! as for every address it maps, that the range is its own and that no Rust object lives in
-//! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics).
+//! it (`sys/hal/trust.rs`); the window bounds every copy (one past its end panics). Since
+//! N5.9 a window is also made over a memory object the kernel maps itself (tmpfs's aobj,
+//! whose pages a user mapping of the same file may write meanwhile), and copies straight to
+//! and from a uio's iovecs: to and from user addresses the assembly checks (`copyout_at`,
+//! `copyin_at`), and to and from kernel buffers for the one holder of the
+//! [`WindowKcopyToken`] (`kcopy_to`, `kcopy_from`): `kernel::uio`'s window leg of
+//! `uiomove`, so no other code that holds a window can name a kernel address to it.
 //!
 //! A [`KcopyToken`] is the one holder of `kcopy` onto kernel addresses it names itself:
 //! `bsd`'s `uiomove`, whose `UIO_SYSSPACE` iovecs are kernel buffers their builders vouch
@@ -86,6 +92,15 @@
 //! - N4.6b: [`bytes_of`] and [`bytes_of_mut`] are public (no new `unsafe`: the two blocks were
 //!   here), so that `bsd`'s `SysctlPlain` is a blanket over `AbiPod` and its 12 `unsafe impl`s
 //!   go.
+//! - N5.9t1: a window's second maker, the kernel's `uvm_map(kernel_map, .., aobj, ..)`
+//!   (`kernel::vm::km::ObjectWindow`, tmpfs's data path), and its legs straight to and from a
+//!   uio's iovecs: [`ForeignWindow::copyout_at`], [`ForeignWindow::copyin_at`],
+//!   [`ForeignWindow::kcopy_to`] and [`ForeignWindow::kcopy_from`], one private `raw` over the
+//!   machine's `copy_raw` (the C's `uiomove((void *)va + off, n, uio)`: one copy per byte, no
+//!   bounce, no slice of the window). The two kernel-address legs take a
+//!   [`WindowKcopyToken`], one per kernel, taken by `kernel::uio` (review 1's B2: a safe
+//!   copy onto any kernel address its caller names, open to whoever holds a window, would
+//!   have been the arbitrary kernel write decision 13 of N4.8 refused).
 //! - N4.8b: the `UserCopy` bridge is gone: the copies are the machine's, `hal`'s own
 //!   (`crate::arch::current::copy`); `bsd`'s `uiomove`'s `UIO_SYSSPACE` leg, an `unsafe`
 //!   `kcopy` over raw pointers in LZ (`kern_subr.rs`), is the [`KcopyToken`]'s safe copy
@@ -145,9 +160,44 @@ mod machine {
     }
 }
 
-/// A run of kernel virtual addresses onto pages of another address space (`uvm_io`'s and
-/// `sys_kbind`'s extracted window): copied through, never referenced. Made only by the
-/// kernel map's token ([`KernelMapper::foreign_window`]), which it borrows.
+/// Which machine routine a raw copy is (`arch/<machine>/copy.rs`'s `copy_raw`): the legs of a
+/// [`ForeignWindow`] to and from a uio's iovecs, where neither side is a slice.
+#[cfg(any(
+    not(target_os = "none"),
+    all(target_arch = "aarch64", not(feature = "module-rt"))
+))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RawCopy {
+    /// `copyout(src, dst, len)`: the kernel's `src` to the user's `dst`.
+    Out,
+    /// `copyin(src, dst, len)`: the user's `src` to the kernel's `dst`.
+    In,
+    /// `kcopy(src, dst, len)`: kernel to kernel, a fault being `EFAULT`.
+    Kernel,
+}
+
+/// The direction of a [`ForeignWindow`]'s raw leg, seen from the window.
+#[cfg(any(
+    not(target_os = "none"),
+    target_arch = "x86_64",
+    target_arch = "aarch64"
+))]
+#[derive(Clone, Copy)]
+enum WindowLeg {
+    /// The window to a user address (`copyout`).
+    ToUser,
+    /// A user address to the window (`copyin`).
+    FromUser,
+    /// The window to a kernel buffer (`kcopy`).
+    ToKernel,
+    /// A kernel buffer to the window (`kcopy`).
+    FromKernel,
+}
+
+/// A run of kernel virtual addresses onto pages no Rust object occupies: another address
+/// space's (`uvm_io`'s and `sys_kbind`'s extracted window) or a memory object's (tmpfs's
+/// `uvm_map` of its aobj): copied through, never referenced. Made only by the kernel map's
+/// token ([`KernelMapper::foreign_window`]), which it borrows.
 #[cfg(any(
     not(target_os = "none"),
     target_arch = "x86_64",
@@ -193,11 +243,13 @@ impl ForeignWindow<'_> {
             all(target_arch = "aarch64", not(feature = "module-rt"))
         ))]
         // SAFETY: `[kva, kva + buf.len())` lies inside the window (`at` checked it), which the
-        // kernel map's token minted over a range of foreign pages its own `uvm_map_extract`
-        // put there, holding no Rust object, and keeps mapped while the window lives (its
-        // contract, `foreign_window`); the pages are also written by their own process, which
-        // the copy tolerates (it is the C's `kcopy`, no reference made), and a page that went
-        // away is `EFAULT` (`pcb_onfault`). `buf` is the caller's, borrowed for the copy.
+        // kernel map's token minted over a range its holder's `uvm_map_extract` or `uvm_map`
+        // of an aobj not marked as viewed by `hal` put in the kernel map (the token's
+        // contract, `foreign_window`): pages no Rust object occupies, mapped while the window
+        // lives; another mapping of the same pages may write them meanwhile, which the copy
+        // tolerates (it is the C's `kcopy`, no reference made), and a page not resident yet
+        // faults in (`uvm_fault`) or is `EFAULT` (`pcb_onfault`). `buf` is the caller's,
+        // borrowed for the copy.
         let r = unsafe { machine::kcopy_in(kva, buf) };
         #[cfg(not(any(
             not(target_os = "none"),
@@ -221,8 +273,10 @@ impl ForeignWindow<'_> {
             not(target_os = "none"),
             all(target_arch = "aarch64", not(feature = "module-rt"))
         ))]
-        // SAFETY: as in `read_at`: the range lies inside the window, foreign pages no Rust
-        // object occupies, mapped while the window lives; a page that went away is `EFAULT`.
+        // SAFETY: as in `read_at`: the range lies inside the window, the pages of an
+        // extracted range or of an aobj not marked as viewed by `hal`, which no Rust object
+        // occupies, mapped while the window lives; another mapping may write them meanwhile
+        // (no reference is made), and a page not resident yet faults in or is `EFAULT`.
         let r = unsafe { machine::kcopy_out(src, kva) };
         #[cfg(not(any(
             not(target_os = "none"),
@@ -230,6 +284,96 @@ impl ForeignWindow<'_> {
         )))]
         let r = {
             let _ = kva;
+            Err(Errno::EFAULT)
+        };
+        r
+    }
+
+    /// `copyout(va + off, uaddr, n)`: `n` bytes of the window from `off` to the user address
+    /// `uaddr`, with no kernel slice between (a `UIO_USERSPACE` read of the C's
+    /// `uiomove((void *)va + off, n, uio)`); `EFAULT` when a page of either side faults (or
+    /// where `hal` has no copy). A range past the window's end panics.
+    pub fn copyout_at(&self, off: usize, uaddr: usize, n: usize) -> Result<(), Errno> {
+        self.raw(WindowLeg::ToUser, off, uaddr, n)
+    }
+
+    /// `copyin(uaddr, va + off, n)`: `n` bytes from the user address `uaddr` into the window
+    /// from `off` (a `UIO_USERSPACE` write); `EFAULT` when a page of either side faults. A
+    /// range past the window's end panics.
+    pub fn copyin_at(&self, off: usize, uaddr: usize, n: usize) -> Result<(), Errno> {
+        self.raw(WindowLeg::FromUser, off, uaddr, n)
+    }
+
+    /// `kcopy(va + off, kva, n)`: `n` bytes of the window from `off` to the kernel buffer at
+    /// `kva`, for the holder of the [`WindowKcopyToken`] alone (`kernel::uio`'s window leg
+    /// of `uiomove`, whose `kva` is a `UIO_SYSSPACE` read's iovec: its builder vouches for the
+    /// buffer, `struct uio`'s contract); `EFAULT` when a page faults. A range past the
+    /// window's end panics.
+    pub fn kcopy_to(
+        &self,
+        _token: &WindowKcopyToken,
+        off: usize,
+        kva: usize,
+        n: usize,
+    ) -> Result<(), Errno> {
+        self.raw(WindowLeg::ToKernel, off, kva, n)
+    }
+
+    /// `kcopy(kva, va + off, n)`: `n` bytes of the kernel buffer at `kva` (a `UIO_SYSSPACE`
+    /// write's iovec, vouched for as in [`ForeignWindow::kcopy_to`]) into the window from
+    /// `off`, for the [`WindowKcopyToken`]'s holder alone; `EFAULT` when a page faults. A
+    /// range past the window's end panics.
+    pub fn kcopy_from(
+        &self,
+        _token: &WindowKcopyToken,
+        off: usize,
+        kva: usize,
+        n: usize,
+    ) -> Result<(), Errno> {
+        self.raw(WindowLeg::FromKernel, off, kva, n)
+    }
+
+    /// The four raw legs: the window's `n` bytes at `off` and the address `other`, in the
+    /// direction and with the routine `leg` names.
+    fn raw(&self, leg: WindowLeg, off: usize, other: usize, n: usize) -> Result<(), Errno> {
+        let kva = self.at(off, n);
+        if n == 0 {
+            return Ok(());
+        }
+        #[cfg(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        ))]
+        let r = {
+            let (kind, src, dst) = match leg {
+                WindowLeg::ToUser => (RawCopy::Out, kva, other),
+                WindowLeg::FromUser => (RawCopy::In, other, kva),
+                WindowLeg::ToKernel => (RawCopy::Kernel, kva, other),
+                WindowLeg::FromKernel => (RawCopy::Kernel, other, kva),
+            };
+            // SAFETY: the window's side, `[kva, kva + n)`, lies inside the window (`at`
+            // checked it), which the kernel map's token minted over a range its holder's
+            // `uvm_map_extract` or `uvm_map` of an aobj not marked as viewed by `hal` put in
+            // the kernel map (the token's
+            // contract, `foreign_window`): pages no Rust object occupies, mapped while the
+            // window lives; another mapping of the same pages may write them meanwhile, which
+            // the copy tolerates (no reference is made), and a page not resident yet faults
+            // in (`uvm_fault`) or is `EFAULT`. The other side is a user address the routine
+            // checks (`ToUser`, `FromUser`), or a kernel buffer of at least `n` bytes that no
+            // Rust reference covers during the copy (`ToKernel`, `FromKernel`): those two legs
+            // are reached only through a `&WindowKcopyToken` (`kcopy_to`, `kcopy_from`), whose
+            // one holder, `kernel::uio` (taken once at boot, never lent), passes only a
+            // `UIO_SYSSPACE` iovec's address, whose builder vouches for it (`struct uio`'s
+            // contract, the trust `KcopyToken` documents; `Uio`'s public fields let kernel code
+            // build such an iovec, the same trust `bsd`'s `uiomove` rests on, not new in kind).
+            unsafe { machine::copy_raw(kind, src, dst, n) }
+        };
+        #[cfg(not(any(
+            not(target_os = "none"),
+            all(target_arch = "aarch64", not(feature = "module-rt"))
+        )))]
+        let r = {
+            let _ = (leg, kva, other);
             Err(Errno::EFAULT)
         };
         r
@@ -254,13 +398,23 @@ impl ForeignWindow<'_> {
 ))]
 impl KernelMapper {
     /// The window `[va, va + len)` onto foreign pages the kernel map holds there (`uvm_io`'s
-    /// and `sys_kbind`'s extracted range). Nothing here checks the range: `write_at` through
-    /// a window is a write to any kernel address its maker names, the strongest primitive the
-    /// token gives. The token's contract, beside every address it maps: its holder mints a
-    /// window only over a range its own `uvm_map_extract` returned into the kernel map
-    /// (pages of another address space, no Rust object among them), and unmaps that range
-    /// only after the window is gone. (N3.5 S1 makes that a type: windows minted only from
-    /// the extract's result.) A range that wraps the address space panics.
+    /// and `sys_kbind`'s extracted range, tmpfs's mapped object). Nothing here checks the
+    /// range: `write_at` through a window is a write to any kernel address its maker names,
+    /// the strongest primitive the token gives. The token's contract, beside every address it
+    /// maps: its holder mints a window only over a range its own `uvm_map_extract` returned
+    /// into the kernel map (pages of another address space, no Rust object among them), or a
+    /// range its own `uvm_map(kernel_map, .., uobj, ..)` of a memory object returned (the
+    /// pages of an aobj not marked as viewed by `hal`, `kernel::vm::aobj::UAO_FLAG_HALVIEW`,
+    /// which `uvm_map_object_window` refuses: they hold no Rust object and fault in on first
+    /// touch through
+    /// `uvm_fault(kernel_map)`, a failed fault being `EFAULT` by `pcb_onfault`, as the C's
+    /// `uiomove` from the same address), and unmaps that range only after the window is gone;
+    /// the kernel-address legs ([`ForeignWindow::kcopy_to`], [`ForeignWindow::kcopy_from`])
+    /// take the [`WindowKcopyToken`], whose one holder (`kernel::uio`) names only
+    /// `UIO_SYSSPACE` iovecs whose builders vouch for them.
+    /// (N3.5 S1 makes the first a type: windows minted only from the extract's or the map's
+    /// result, `kernel::vm::km::KernelWindow` and `ObjectWindow`.) A range that wraps the
+    /// address space panics.
     pub fn foreign_window(&self, va: Vaddr, len: usize) -> ForeignWindow<'_> {
         if va.as_usize().checked_add(len).is_none() {
             hal_panic(format_args!(
@@ -590,6 +744,39 @@ impl KcopyToken {
     }
 }
 
+/// The right to a [`ForeignWindow`]'s kernel-address legs ([`ForeignWindow::kcopy_to`],
+/// [`ForeignWindow::kcopy_from`]), the [`KcopyToken`]'s shape for the kernel's window leg
+/// of `uiomove` (`kernel::uio::uiomove_window`, N5.9t1, the main session's decision on
+/// review 1): one per kernel, taken once, by `kernel::uio` at `bsd`'s boot right after the
+/// `KcopyToken` (`hal_bridges_register`, before the ABI module loads) and by the host tests'
+/// doubles' install; later takes get `None`, so no other module of any crate can hold it,
+/// and `kernel::uio` keeps it private (never `Clone`, never lent).
+///
+/// The holder's contract, the `KcopyToken`'s (decision 30's documented trust,
+/// `sys/hal/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer
+/// of at least the length copied that its builder owns for the copy (`struct uio`'s
+/// contract), holding no Rust object that something else references during the copy;
+/// nothing here can check it. Gone with `UioMove` at N7, when a sysspace iovec is typed.
+pub struct WindowKcopyToken {
+    _private: (),
+}
+
+/// The one window token.
+static WINDOW_KCOPY_TOKEN: WindowKcopyToken = WindowKcopyToken { _private: () };
+/// Whether [`WINDOW_KCOPY_TOKEN`] was taken.
+static WINDOW_KCOPY_TAKEN: AtomicBool = AtomicBool::new(false);
+
+impl WindowKcopyToken {
+    /// The token, to its first taker only; `None` afterwards.
+    pub fn take() -> Option<&'static WindowKcopyToken> {
+        if WINDOW_KCOPY_TAKEN.swap(true, Ordering::AcqRel) {
+            None
+        } else {
+            Some(&WINDOW_KCOPY_TOKEN)
+        }
+    }
+}
+
 /// The `T` an ioctl's argument bytes hold (`*(struct winsize *)data`): its first
 /// `size_of::<T>()` bytes, copied out; `None` when `b` is shorter (the C's `IOCPARM_LEN`
 /// always covers it, so a short slice is a caller's mistake the kernel reports, never reads
@@ -799,6 +986,55 @@ mod tests {
         w.write_at(127, &[9]).unwrap();
         w.read_at(128, &mut []).unwrap();
         assert_eq!(testutil::foreign_bytes(64 + 127, 1), [9]);
+    }
+
+    #[test]
+    fn a_window_copies_straight_to_and_from_user_and_kernel_addresses() {
+        // The raw legs (N5.9t1): the window's bytes to user memory and back, and to and from a
+        // kernel buffer named by its address (a UIO_SYSSPACE iovec's), with no slice of the
+        // window between.
+        testutil::install();
+        let base = testutil::foreign_base();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(base + 1024), 256);
+        let user = testutil::user_base() + 4096;
+        w.write_at(16, b"tmpfs-page").unwrap();
+        w.copyout_at(16, user, 10).unwrap();
+        assert_eq!(
+            crate::arch::host::copy::user_bytes(user, 10).as_deref(),
+            Some(&b"tmpfs-page"[..])
+        );
+        UserPtr::<[u8; 4]>::new(user + 64).copyout(b"uio!").unwrap();
+        w.copyin_at(200, user + 64, 4).unwrap();
+        assert_eq!(testutil::foreign_bytes(1024 + 200, 4), b"uio!");
+
+        // The kernel legs need the window token, one per process: this test is its taker.
+        let token = WindowKcopyToken::take().expect("the first take");
+        assert!(WindowKcopyToken::take().is_none(), "a second take");
+        let mut kbuf = [0u8; 10];
+        let kva = kbuf.as_mut_ptr().expose_provenance();
+        w.kcopy_to(token, 16, kva, 10).unwrap();
+        assert_eq!(&kbuf, b"tmpfs-page");
+        let src = *b"sysspace";
+        w.kcopy_from(token, 100, src.as_ptr().expose_provenance(), 8)
+            .unwrap();
+        assert_eq!(testutil::foreign_bytes(1024 + 100, 8), b"sysspace");
+
+        // An empty leg at the end copies nothing; a user side outside user memory is EFAULT.
+        w.copyout_at(256, 8, 0).unwrap();
+        assert_eq!(w.copyout_at(0, 8, 4), Err(Errno::EFAULT));
+        assert_eq!(w.copyin_at(0, usize::MAX - 2, 4), Err(Errno::EFAULT));
+    }
+
+    #[test]
+    #[should_panic(expected = "past the window's")]
+    fn a_raw_leg_past_the_window_panics() {
+        testutil::install();
+        let w = testutil::pmap_boot()
+            .mapper
+            .foreign_window(Vaddr::new(testutil::foreign_base()), 16);
+        let _ = w.copyout_at(8, testutil::user_base(), 9);
     }
 
     #[test]
