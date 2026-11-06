@@ -241,8 +241,8 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: struct vops, the operations table of each bsd file system (tmpfs,
-# fuse, nfs, ntfs and their special-file tables: statics of
+# bsd: struct vops, the operations table of each bsd file system (fuse,
+# nfs, ntfs and their special-file tables: statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
 # method packs the slot's struct vop_*_args; a NULL slot answers EOPNOTSUPP) and registered by
 # address on a table's first getnewvnode (VopsId), dispatched by every vop_* of
@@ -252,8 +252,9 @@ paid_by = "N6"
 # N5.6c3 (UfsTables::ext2fs_vops and ext2fs_specvops, Ext2fsVnops and Ext2fsSpecVnops, the
 # C's two tables), msdosfs's at N5.7c3 (MsdosfsTables::vops, MsdosfsVnops, the C's one
 # table), cd9660's at N5.8c2 (IsofsTables::vops and specvops, Cd9660Vnops and
-# Cd9660SpecVnops, the C's two tables) and udf's at N5.8u2 (UdfTables::vops, UdfVnops, the
-# C's one table). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
+# Cd9660SpecVnops, the C's two tables), udf's at N5.8u2 (UdfTables::vops, UdfVnops, the
+# C's one table) and tmpfs's at N5.9t2 (TmpfsTables::vops, specvops and fifovops, the C's
+# three tables). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
 # ntfs at N10 (the user's N5 scope decision of 2026-10-28), so N10.
 # kernel::fs::vops::Vnops
 [[bridge]]
@@ -271,7 +272,8 @@ paid_by = "N10"
 # (MsdosfsVfs::VFS; its vfs_checkexp is ufs_check_export by VFS_CHECKEXP's MOUNT_MSDOS arm,
 # over the mount's export list), cd9660's at N5.8c2 (Cd9660Vfs::VFS; its vfs_checkexp is
 # ufs_check_export by VFS_CHECKEXP's MOUNT_CD9660 arm), udf's at N5.8u2 (UdfVfs::VFS; its
-# vfs_checkexp is VFS_CHECKEXP's MOUNT_UDF arm, EACCES). Paid with Vnops, when the last bsd file system moves (nfs at N6,
+# vfs_checkexp is VFS_CHECKEXP's MOUNT_UDF arm, EACCES), tmpfs's at N5.9t2 (TmpfsVfs::VFS;
+# its vfs_checkexp is VFS_CHECKEXP's MOUNT_TMPFS arm, EOPNOTSUPP). Paid with Vnops, when the last bsd file system moves (nfs at N6,
 # ntfs at N10), so N10.
 # kernel::fs::vops::Vfs
 [[bridge]]

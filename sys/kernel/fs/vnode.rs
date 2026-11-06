@@ -136,7 +136,7 @@
 //!   the file system's `vget` ([`Vnode::set_node`]), lent to who names its type
 //!   ([`Vnode::node_with`]: the UFS inode's `VTOI`, a type's check where LZ's cast trusted the
 //!   tag) and taken by its reclaim ([`Vnode::take_node`]). The word stays for the file systems
-//!   still in `bsd` (nfs, ntfs, tmpfs, fuse, mfs's node) and goes with the last
+//!   still in `bsd` (nfs, ntfs, fuse, mfs's node) and goes with the last
 //!   of them. `getnewvnode` clears both (fs::subr): a node a reclaim left in a recycled vnode
 //!   is caught first by `DIAGNOSTIC`'s "cleaned vnode isn't" panic, which tests the slot as
 //!   the word; without it, where the C overwrites `v_data` and so forgets the old pointer, the

@@ -66,7 +66,7 @@
 //! `tmpfs_dirent_pool` whose place on its directory's `tn_dir` holds a reference likewise
 //! (`tmpfs_dir_attach` to `tmpfs_dir_detach`); detached, it is its holder's handle, which
 //! `tmpfs_free_dirent` drops. The other pointers of the C are counted handles too ([`NodeRef`]
-//! cells): the entry's `td_node`, a directory's `tn_parent` and `tn_readdir_lastp`, a node's
+//! cells; the entry's `td_node` shares one cell with its name): the entry's `td_node`, a directory's `tn_parent` and `tn_readdir_lastp`, a node's
 //! `tn_dirent_hint`, the mount's `tm_root`, the vnode's typed slot (`v_data`); every one the
 //! C clears (`tmpfs_dir_detach` clears the entry's node, the node's hint and the
 //! subdirectory's parent) is cleared at that point, so no cycle (a directory and its parent,
@@ -117,7 +117,11 @@
 //! - `TMPFS_VALIDATE_DIR`'s size check is the C's `sizeof(tmpfs_dirent_t)`
 //!   ([`TMPFS_DIRENT_CHARGE`], 48: D-N5.9-6), the size a directory grows by per entry (a
 //!   directory's `st_size`); LZ's `size_of::<TmpfsDirent>()` happened to be 48 too, a
-//!   coincidence of its members that the kernel's counted entry (120 bytes) does not keep.
+//!   coincidence of its members that the kernel's counted entry (112 bytes) does not keep.
+//! - The entry's `td_node` and `td_name` share one `ReadMostly` cell (N5.9t2, D-t2-1, for
+//!   D-N5.9-18's leaner item): 112 bytes, the pool item 128, against t1's two cells (120
+//!   and 136); `td_namelen` stays a word apart, so a lookup's length test reads no cell, and
+//!   the name block keeps the C's `roundup2(len, TMPFS_NAME_QUANTUM)` bytes of `M_TEMP`.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -200,6 +204,17 @@ impl<T: Send + Sync + 'static> Default for NodeRef<T> {
     }
 }
 
+/// What a directory entry's `td_node` and `td_name` hold, in one cell (one reader count for
+/// both, the entry 8 bytes leaner than two cells: D-t2-1).
+struct DeRefs<G: ProcGlue> {
+    /// `td_node`: the inode this entry refers to (`NULL` while detached).
+    node: Option<TmpfsNodeRef<G>>,
+    /// `td_name`: the name, its `tmpfs_strname_alloc` block (`roundup2(len, 32)` bytes of
+    /// `M_TEMP`), `NULL` in a fresh item (`PR_ZERO`) until `tmpfs_alloc_dirent` sets it;
+    /// `tmpfs_rename` replaces it.
+    name: Option<MArray<u8>>,
+}
+
 /// `struct tmpfs_dirent` (`tmpfs_dirent_t`): internal representation of a tmpfs directory
 /// entry. All fields are protected by vnode lock (the C's); the link by the kernel lock.
 pub struct TmpfsDirent<G: ProcGlue> {
@@ -207,15 +222,12 @@ pub struct TmpfsDirent<G: ProcGlue> {
     pub td_entries: PinEntry<TmpfsDirent<G>>,
     /// The item's place in `tmpfs_dirent_pool`, for the list's parked reference.
     home: PoolHome<TmpfsDirent<G>>,
-    /// `td_node`: the inode this entry refers to (`NULL` while detached).
-    pub td_node: NodeRef<TmpfsNode<G>>,
+    /// `td_node` and `td_name` ([`DeRefs`]): read by a count, replaced where the C assigns.
+    refs: ReadMostly<DeRefs<G>>,
     /// `td_seq`: sequence number, see `tmpfs_dir_getseq()`.
     pub td_seq: U64Word,
-    /// `td_name`: the name, its `tmpfs_strname_alloc` block (`roundup2(len, 32)` bytes of
-    /// `M_TEMP`), `NULL` in a fresh item (`PR_ZERO`) until `tmpfs_alloc_dirent` sets it;
-    /// `tmpfs_rename` writes a new name over it or replaces it.
-    td_name: ReadMostly<Option<MArray<u8>>>,
-    /// `td_namelen`: the name's length.
+    /// `td_namelen`: the name's length (apart from the block, whose size is the rounded
+    /// length, as the C's).
     pub td_namelen: U16Word,
 }
 
@@ -226,11 +238,37 @@ impl<G: ProcGlue> TmpfsDirent<G> {
         Self {
             td_entries: PinEntry::new(),
             home: PoolHome::new(),
-            td_node: NodeRef::new(),
+            refs: ReadMostly::new(DeRefs {
+                node: None,
+                name: None,
+            }),
             td_seq: U64Word::new(0),
-            td_name: ReadMostly::new(None),
             td_namelen: U16Word::new(0),
         }
+    }
+
+    /// `de->td_node`, counted again (`None` for `NULL`).
+    pub fn td_node(&self) -> Option<TmpfsNodeRef<G>> {
+        self.refs.read().node.clone()
+    }
+
+    /// `de->td_node = node`: the old handle, which the caller drops.
+    pub fn set_td_node(&self, node: Option<TmpfsNodeRef<G>>) -> Option<TmpfsNodeRef<G>> {
+        self.refs.update(|r| core::mem::replace(&mut r.node, node))
+    }
+
+    /// `de->td_node == NULL`.
+    pub fn td_node_is_none(&self) -> bool {
+        self.refs.read().node.is_none()
+    }
+
+    /// `de->td_node == node` (an address comparison, nothing counted).
+    pub fn td_node_is(&self, node: &TmpfsNode<G>) -> bool {
+        self.refs
+            .read()
+            .node
+            .as_ref()
+            .is_some_and(|h| core::ptr::eq(PoolArc::as_ptr(h), node))
     }
 
     /// Whether the entry's name is `name` (`de->td_namelen == len && !memcmp(de->td_name,
@@ -238,8 +276,9 @@ impl<G: ProcGlue> TmpfsDirent<G> {
     pub fn name_is(&self, name: &[u8]) -> bool {
         usize::from(self.td_namelen.get()) == name.len()
             && self
-                .td_name
+                .refs
                 .read()
+                .name
                 .as_deref()
                 .and_then(|b| b.get(..name.len()))
                 == Some(name)
@@ -248,38 +287,27 @@ impl<G: ProcGlue> TmpfsDirent<G> {
     /// `f(name)`: the name lent to `f`, which must not sleep (the cell's read).
     pub fn with_name<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
         let len = usize::from(self.td_namelen.get());
-        let b = self.td_name.read();
-        f(b.as_deref().and_then(|b| b.get(..len)).unwrap_or(&[]))
+        let r = self.refs.read();
+        f(r.name.as_deref().and_then(|b| b.get(..len)).unwrap_or(&[]))
     }
 
     /// `de->td_name = name; de->td_namelen = len`: the old block (none for a fresh entry),
     /// which the caller frees (`tmpfs_strname_free`): `tmpfs_alloc_dirent`'s, `tmpfs_rename`'s
     /// new name.
     pub fn set_name(&self, name: MArray<u8>, len: u16) -> Option<MArray<u8>> {
-        let old = self.td_name.replace(Some(name));
+        let old = self.refs.update(|r| r.name.replace(name));
         self.td_namelen.set(len);
         old
     }
 
-    /// `memcpy(de->td_name, name, len); de->td_namelen = len`: a new name in the same block
-    /// (`tmpfs_rename` when the rounded lengths agree; the block holds them).
-    pub fn rename_in_place(&self, name: &[u8]) {
-        self.td_name.update(|b| {
-            if let Some(b) = b {
-                b[..name.len()].copy_from_slice(name);
-            }
-        });
-        self.td_namelen.set(name.len() as u16);
-    }
-
     /// `de->td_name = NULL`: the block, which `tmpfs_free_dirent` frees.
     pub fn take_name(&self) -> Option<MArray<u8>> {
-        self.td_name.replace(None)
+        self.refs.update(|r| r.name.take())
     }
 
     /// `de->td_node`, which the caller knows is set (the C dereferences it).
     pub fn node(&self) -> TmpfsNodeRef<G> {
-        match self.td_node.get() {
+        match self.td_node() {
             Some(node) => node,
             None => kpanic(format_args!(
                 "tmpfs: directory entry {self:p} without a node"
@@ -759,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_compares_its_name_length_first_and_renames_in_place() {
+    fn an_entry_compares_its_name_length_first_and_takes_a_new_name() {
         let (_g, _p) = super::super::testtmpfs::setup();
         let de = TmpfsDirent::<TestGlue>::new();
         assert!(!de.name_is(b""), "a fresh entry has no name");
@@ -769,11 +797,23 @@ mod tests {
         assert!(de.name_is(b"file"));
         assert!(!de.name_is(b"fil"), "a shorter name with the same bytes");
         assert!(!de.name_is(b"filE"));
-        de.rename_in_place(b"other");
+        // tmpfs_rename's new name: a fresh block, the old one handed back for its free.
+        let mut b = MArray::new(127, hal::malloc::M_WAITOK, 64, |_| 0u8).expect("a block");
+        b[..5].copy_from_slice(b"other");
+        assert_eq!(de.set_name(b, 5).map(|b| b.len()), Some(32));
         assert!(de.name_is(b"other"));
         de.with_name(|n| assert_eq!(n, b"other"));
-        assert_eq!(de.take_name().map(|b| b.len()), Some(32));
+        assert_eq!(de.take_name().map(|b| b.len()), Some(64));
         assert!(!de.name_is(b"other"));
+        // td_node shares the name's cell: set, compared, cleared.
+        assert!(de.td_node_is_none());
+    }
+
+    /// D-t2-1: the entry's two counted members share one cell (112 bytes; t1's two cells
+    /// made it 120), the name's length apart.
+    #[test]
+    fn the_entry_is_one_cell_leaner() {
+        assert_eq!(size_of::<TmpfsDirent<TestGlue>>(), 112);
     }
 }
 /* </TESTS> */

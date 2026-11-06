@@ -190,6 +190,10 @@
 //!   and lends to no one: review 1's B2), one copy per byte as the C's, never a bounce. The slice leg stays
 //!   `bsd`'s `uiomove` (the `UioMove`/`FileGlue::uiomove` bridges) until N7, when the two share
 //!   this walk; `vm::io`'s `PT_IO` write (its deviation) is the second user named.
+//! - N5.9t2: [`uiomove_user_out`], the same walk (`uiomove_walk`, now the one body of both)
+//!   for a `UIO_USERSPACE` read out of kernel bytes no one writes meanwhile (tmpfs's
+//!   `readlink(2)` from the link's block, D-N5.9-17): `hal`'s checked `copyout` of the slice,
+//!   straight to the iovec; a `UIO_SYSSPACE` one stays `bsd`'s `uiomove` until N7.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -507,6 +511,51 @@ pub fn uiomove_window<G: ProcGlue>(
     len: usize,
     uio: &mut Uio<'_, G>,
 ) -> Result<(), Errno> {
+    let (seg, rw) = (uio.uio_segflg, uio.uio_rw);
+    uiomove_walk(len, uio, |done, iov, cnt| {
+        let at = off + done;
+        match (seg, rw) {
+            (UioSeg::UIO_USERSPACE, UioRw::UIO_READ) => w.copyout_at(at, iov.iov_base.addr(), cnt),
+            (UioSeg::UIO_USERSPACE, UioRw::UIO_WRITE) => w.copyin_at(at, iov.iov_base.addr(), cnt),
+            (UioSeg::UIO_SYSSPACE, UioRw::UIO_READ) => {
+                w.kcopy_to(window_kcopy(), at, iov.iov_base.expose_provenance(), cnt)
+            }
+            (UioSeg::UIO_SYSSPACE, UioRw::UIO_WRITE) => {
+                w.kcopy_from(window_kcopy(), at, iov.iov_base.expose_provenance(), cnt)
+            }
+        }
+    })
+}
+
+/// `uiomove(buf, len, uio)` of a `UIO_USERSPACE` read out of kernel bytes no one may write
+/// meanwhile (tmpfs's `uiomove(node->tn_spec.tn_lnk.tn_link, len, uio)` for `readlink(2)`,
+/// D-N5.9-17): moves `buf` (at most `uio_resid` of it) to the user iovecs of `uio` by `hal`'s
+/// checked `copyout` of the slice, advancing the iovecs, `uio_resid` and `uio_offset`, as
+/// [`uiomove_window`] does; the first error is returned with that iovec untouched. A
+/// `UIO_SYSSPACE` uio, or a write (which would copy into `buf`), is `panic(9)`: those go
+/// through `bsd`'s `uiomove` (`FileGlue::uiomove`) until N7.
+pub fn uiomove_user_out<G: ProcGlue>(buf: &[u8], uio: &mut Uio<'_, G>) -> Result<(), Errno> {
+    if uio.uio_segflg != UioSeg::UIO_USERSPACE || uio.uio_rw != UioRw::UIO_READ {
+        crate::assert::kpanic(format_args!(
+            "uiomove_user_out: not a user read ({:?}, {:?})",
+            uio.uio_segflg, uio.uio_rw
+        ));
+    }
+    uiomove_walk(buf.len(), uio, |done, iov, cnt| {
+        UserPtr::<u8>::new(iov.iov_base.addr()).copyout_slice(&buf[done..done + cnt])
+    })
+}
+
+/// `uiomove(9)`'s walk (`kern_subr.c`), the one body of [`uiomove_window`] and
+/// [`uiomove_user_out`]: `n = min(len, uio_resid)` bytes over the iovecs, empty ones skipped,
+/// `sched_pause(preempt)` before each user leg, `leg(done, iov, cnt)` moving `cnt` bytes
+/// between the source at `done` and the iovec, then the iovec, `uio_resid` and `uio_offset`
+/// advanced; the first error is returned with that iovec untouched.
+fn uiomove_walk<G: ProcGlue>(
+    len: usize,
+    uio: &mut Uio<'_, G>,
+    mut leg: impl FnMut(usize, &Iovec, usize) -> Result<(), Errno>,
+) -> Result<(), Errno> {
     #[cfg(feature = "diagnostic")]
     if uio.uio_segflg == UioSeg::UIO_USERSPACE {
         let mine = G::with_curproc(|p| match (p, uio.uio_procp) {
@@ -519,6 +568,7 @@ pub fn uiomove_window<G: ProcGlue>(
         }
     }
 
+    let user = uio.uio_segflg == UioSeg::UIO_USERSPACE;
     let mut n = len.min(uio.uio_resid);
     let mut done = 0;
     while n > 0 {
@@ -534,27 +584,10 @@ pub fn uiomove_window<G: ProcGlue>(
             continue;
         }
         let cnt = iov.iov_len.min(n);
-        let at = off + done;
-        match (uio.uio_segflg, uio.uio_rw) {
-            (UioSeg::UIO_USERSPACE, rw) => {
-                crate::sched::sched_pause_preempt::<G>();
-                let uaddr = iov.iov_base.addr();
-                if rw == UioRw::UIO_READ {
-                    w.copyout_at(at, uaddr, cnt)?;
-                } else {
-                    w.copyin_at(at, uaddr, cnt)?;
-                }
-            }
-            (UioSeg::UIO_SYSSPACE, rw) => {
-                let kva = iov.iov_base.expose_provenance();
-                let token = window_kcopy();
-                if rw == UioRw::UIO_READ {
-                    w.kcopy_to(token, at, kva, cnt)?;
-                } else {
-                    w.kcopy_from(token, at, kva, cnt)?;
-                }
-            }
+        if user {
+            crate::sched::sched_pause_preempt::<G>();
         }
+        leg(done, iov, cnt)?;
         iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
         iov.iov_len -= cnt;
         uio.uio_resid -= cnt;
@@ -883,6 +916,65 @@ mod tests {
         let mut kr = Uio::<TestGlue>::kernel_read(&mut iov, &mut k, None);
         assert_eq!(uiomove_window(&gone, 0, 16, &mut kr), Err(Errno::EFAULT));
         assert_eq!(kr.uio_resid, 16);
+    }
+
+    /// `uiomove_user_out` moves a slice to user iovecs as `uiomove(9)` does (an empty iovec
+    /// skipped, at most `uio_resid`, the counts advanced); a bad address is `EFAULT` with the
+    /// iovec untouched; a kernel uio is refused.
+    #[test]
+    fn a_slice_moves_to_user_iovecs_and_a_kernel_uio_is_refused() {
+        let (_g, _w) = object_window(1);
+        let ubuf = crate::fs::testfs::UBUF + 0x200;
+        let mut iovs = [
+            Iovec::new(),
+            Iovec {
+                iov_base: core::ptr::without_provenance_mut(ubuf),
+                iov_len: 3,
+            },
+            Iovec {
+                iov_base: core::ptr::without_provenance_mut(ubuf + 16),
+                iov_len: 64,
+            },
+        ];
+        let mut rd = Uio::<TestGlue> {
+            uio_iov: &mut iovs,
+            uio_offset: 0,
+            uio_resid: 8,
+            uio_segflg: UioSeg::UIO_USERSPACE,
+            uio_rw: UioRw::UIO_READ,
+            uio_procp: None,
+        };
+        uiomove_user_out(b"target/of/a/link", &mut rd).unwrap();
+        assert_eq!(testutil::user_bytes(ubuf, 3).as_deref(), Some(&b"tar"[..]));
+        assert_eq!(
+            testutil::user_bytes(ubuf + 16, 5).as_deref(),
+            Some(&b"get/o"[..])
+        );
+        assert_eq!((rd.uio_resid, rd.uio_offset), (0, 8));
+        assert_eq!(rd.uio_iov[0].iov_len, 59);
+
+        let mut iovs = [Iovec {
+            iov_base: core::ptr::without_provenance_mut(8),
+            iov_len: 4,
+        }];
+        let mut bad = Uio::<TestGlue> {
+            uio_iov: &mut iovs,
+            uio_offset: 0,
+            uio_resid: 4,
+            uio_segflg: UioSeg::UIO_USERSPACE,
+            uio_rw: UioRw::UIO_READ,
+            uio_procp: None,
+        };
+        assert_eq!(uiomove_user_out(b"abcd", &mut bad), Err(Errno::EFAULT));
+        assert_eq!((bad.uio_resid, bad.uio_iov[0].iov_len), (4, 4));
+
+        let mut k = [0u8; 4];
+        let mut iov = [Iovec::new()];
+        let mut kr = Uio::<TestGlue>::kernel_read(&mut iov, &mut k, None);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            uiomove_user_out(b"abcd", &mut kr)
+        }));
+        assert!(r.is_err(), "a kernel uio is refused");
     }
 
     #[test]

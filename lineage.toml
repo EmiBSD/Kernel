@@ -5835,7 +5835,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -7492,7 +7492,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -9884,7 +9884,7 @@ rust = "sys/kernel/fs/tmpfs/tmpfs.rs"
 crate = "kernel"
 lz = ["sys/tmpfs/tmpfs.rs"]
 status = "redesigned"
-notes = "N5.9t1 (D-N5.9-4, -5, -6; D-t1-4..7): tmpfs.h's node, entry and mount as TmpfsNode<G>, TmpfsDirent<G> (items of recorded pools, PoolHome; their places on tm_nodes and tn_dir parked references, the C's alloc-to-free lives) and TmpfsMount<G> (a counted M_MISCFSMNT block in the mount's slot); the C's other pointers counted handles in NodeRef cells cleared where the C clears them; union tn_spec an enum (TnDir, TnReg with its object and the cached ObjectWindow, the link's OnceStatic block); the attributes relaxed words, tn_gen an atomic, tn_nlock/tm_lock RawRwlocks (the lists' witnesses), tm_acc_lock an Rwlocked<TmAcc>; the C's LP64 sizeof(tmpfs_node_t) 272 and sizeof(tmpfs_dirent_t) 48 as the charges (pinned by _Static_asserts over the reference headers); vptonode/vptodir/vfstotmpfs counted handles; bsd's sys/tmpfs/tmpfs.rs still runs until N5.9t2's switch; 0 unsafe (LZ: 7)"
+notes = "N5.9t1 (D-N5.9-4, -5, -6; D-t1-4..7): tmpfs.h's node, entry and mount as TmpfsNode<G>, TmpfsDirent<G> (items of recorded pools, PoolHome; their places on tm_nodes and tn_dir parked references, the C's alloc-to-free lives) and TmpfsMount<G> (a counted M_MISCFSMNT block in the mount's slot); the C's other pointers counted handles in NodeRef cells cleared where the C clears them; union tn_spec an enum (TnDir, TnReg with its object and the cached ObjectWindow, the link's OnceStatic block); the attributes relaxed words, tn_gen an atomic, tn_nlock/tm_lock RawRwlocks (the lists' witnesses), tm_acc_lock an Rwlocked<TmAcc>; the C's LP64 sizeof(tmpfs_node_t) 272 and sizeof(tmpfs_dirent_t) 48 as the charges (pinned by _Static_asserts over the reference headers); vptonode/vptodir/vfstotmpfs counted handles; at N5.9t2 the entry's td_node and td_name in one ReadMostly cell (D-t2-1); serving every mount since N5.9t2's switch (bsd's sys/tmpfs/ deleted); 0 unsafe (LZ: 7)"
 
 [[module.fn]]
 lz = "sys/tmpfs/tmpfs.rs::TmpfsDirent::name"
@@ -9930,6 +9930,16 @@ kind = "renamed"
 lz = "sys/tmpfs/tmpfs.rs::VP_TO_TMPFS_NODE"
 native = ["vptonode"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsNode::default"
+native = ["TmpfsNode::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsMount::default"
+native = ["TmpfsMount::new"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/tmpfs/tmpfs_mem.rs"
@@ -9990,7 +10000,7 @@ rust = "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"
 crate = "kernel"
 lz = ["sys/tmpfs/tmpfs_vfsops.rs"]
 status = "redesigned"
-notes = "N5.9t1 (D-N5.9-5, -6): tmpfs_vfsops as impl Vfs<G> for TmpfsVfs<G> (TmpfsVfs::VFS), the functions the C's; TmpfsTables<G> (the two recorded pools with the C's names, the global limit and use, the vnode tables tmpfs_vnode_get installs) as VfsTables::tmpfs under feature tmpfs; tmpfs_mount builds the TmpfsMount where the C mallocs it (MArc of M_MISCFSMNT), allocates the root against it and hangs it at the C's mnt_data; the unmount's two rounds under tm_lock once each (the C takes none in the first round and tm_lock per freed node in the second; the kernel nests tm_acc_lock under tm_lock in the second, an order the C never makes, only the unmount running there); statfs at the C's charges; unwired until N5.9t2 (bsd's TMPFS_VFSOPS still in vfsconflist[]); 0 unsafe (LZ: 1)"
+notes = "N5.9t1 (D-N5.9-5, -6): tmpfs_vfsops as impl Vfs<G> for TmpfsVfs<G> (TmpfsVfs::VFS), the functions the C's; TmpfsTables<G> (the two recorded pools with the C's names, the global limit and use, the vnode tables tmpfs_vnode_get installs) as VfsTables::tmpfs under feature tmpfs; tmpfs_mount builds the TmpfsMount where the C mallocs it (MArc of M_MISCFSMNT), allocates the root against it and hangs it at the C's mnt_data; the unmount's two rounds under tm_lock once each (the C takes none in the first round and tm_lock per freed node in the second; the kernel nests tm_acc_lock under tm_lock in the second, an order the C never makes, only the unmount running there); statfs at the C's charges; in vfsconflist[] since N5.9t2's switch (TmpfsVfs::<BsdProcGlue>::VFS), the three vnode tables TmpfsTables members; 0 unsafe (LZ: 1)"
 
 [[module.fn]]
 lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_DIRENT_POOL"
@@ -10006,6 +10016,99 @@ kind = "merged"
 lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_VFSOPS"
 native = ["TmpfsVfs::VFS"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.9t2 (D-N5.9-17; D-t2-*): tmpfs_vops as TmpfsVnops<G>, one impl Vnops<G> of the C's 34 slots (decision 46), a member of the glue's TmpfsTables (one address per glue); the nine slots the three tables share one macro (tmpfs_common_slots!); the operations the C's over the kernel's arguments, the node vptonode's counted handle, the rename helpers holding entries and nodes by handles (the genealogy walk O(depth), a count pair a step); the three filterops Filter impls (TmpfsFiltops) with the knote's typed vnode hook; readlink of a user uio straight from the link's block (kernel::uio::uiomove_user_out), of a kernel uio LZ's stack copy through FileGlue::uiomove; rename's new name a fresh tmpfs_strname_alloc block; 0 unsafe (LZ: 3)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::TMPFS_VOPS"
+native = ["TmpfsVnops", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::TMPFSREAD_FILTOPS"
+native = ["TmpfsRead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::TMPFSWRITE_FILTOPS"
+native = ["TmpfsWrite"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::TMPFSVNODE_FILTOPS"
+native = ["TmpfsVnode"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::curp"
+native = []
+kind = "dropped"
+reason = "curproc is the operation's own thread: Vnops' argument, cn_proc or uio_procp"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::ucred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::pnbuf_free"
+native = []
+kind = "dropped"
+reason = "the pathname buffer is Componentname::take_pnbuf's, dropped where the C pool_puts it (tmpfs_remove, tmpfs_link, tmpfs_rmdir)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::td_node"
+native = ["sys/kernel/fs/tmpfs/tmpfs.rs::TmpfsDirent::node"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::GOODTIME"
+native = ["goodtime"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::filt_tmpfsread"
+native = ["TmpfsRead::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::filt_tmpfswrite"
+native = ["TmpfsWrite::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vnops.rs::filt_tmpfsvnode"
+native = ["TmpfsVnode::event"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_specops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_specops.rs"]
+status = "redesigned"
+notes = "N5.9t2: tmpfs_specvops as TmpfsSpecVnops<G> (impl Vnops<G>, a member of TmpfsTables): tmpfs's nine common slots, tmpfs_spec_read/write, spec_close, spec_fsync, vop_generic_revoke/bwrite, and spec_vops' other slots through fs::spec::spec_shared_slots! (cd9660's shape); 0 unsafe (LZ: 0)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_specops.rs::TMPFS_SPECVOPS"
+native = ["TmpfsSpecVnops", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
+kind = "split"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_fifoops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_fifoops.rs"]
+status = "redesigned"
+notes = "N5.9t2 (D-N5.9-14): tmpfs_fifovops as TmpfsFifoVnops<G> (impl Vnops<G>, a member of TmpfsTables, installed by nothing: tmpfs_vnode_get refuses a fifo node with EOPNOTSUPP), the fifo_* slots and tmpfs_fifo_read/write's ends the visible unported! gaps LZ had; 0 unsafe (LZ: 0)"
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_fifoops.rs::TMPFS_FIFOVOPS"
+native = ["TmpfsFifoVnops", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
+kind = "split"
+
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
@@ -10829,7 +10932,7 @@ status = "inherited"
 rust = "sys/sys/vnode.rs"
 lz = ["sys/sys/vnode.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/cache.rs"]
+adapted_by = ["sys/kernel/vm/vnode.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
 notes = "N5.2: the face of kernel::fs::vnode for the bsd file systems: Vnode the alias of the kernel's Vnode<BsdProcGlue>, VnodeG (v_nc_tree, v_cache_dst, v_socket, si_lockf: bsd's members, LZ's unsafe impl Sync moved onto it from struct vnode, decision 2), the struct vop_*_args and struct vops of Option<fn> slots (kern/vfs_vops.rs implements the kernel's Vnops on it), cred_ref (2 unsafe, LZ's; gone at N5.5a2c: a_cred is the kernel's Cred, read through Cred::ucred), vfs_subr.c's names over kernel::fs::subr (wrappers where the glue cannot be inferred), set_vops; Vnode::data_as (LZ's unsafe data<T>, no callers) deleted; N5.3: VnodeG narrowed to v_socket (the name cache's heads and the device's record locks are the kernel vnode's); the vn_* functions and vfs_getcwd_common the kernel's, VNOPS bsd's table of the kernel's vnode file operations, vn_fsizechk's adapter (the uio's thread pinned)"
 
 [[module]]
@@ -10837,48 +10940,6 @@ rust = "sys/hal/sys/wait.rs"
 crate = "hal"
 lz = ["sys/sys/wait.rs"]
 status = "inherited"
-
-[[module]]
-rust = "sys/tmpfs/tmpfs.rs"
-lz = ["sys/tmpfs/tmpfs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/kernel/vm/types.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/lockf.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_fifoops.rs"
-lz = ["sys/tmpfs/tmpfs_fifoops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_mem.rs"
-lz = ["sys/tmpfs/tmpfs_mem.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/namei.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_specops.rs"
-lz = ["sys/tmpfs/tmpfs_specops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_subr.rs"
-lz = ["sys/tmpfs/tmpfs_subr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/types.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_vfsops.rs"
-lz = ["sys/tmpfs/tmpfs_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/vm/aobj.rs", "sys/hal/rwlock.rs", "sys/hal/vm/uvmexp.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/tmpfs/tmpfs_vnops.rs"
-lz = ["sys/tmpfs/tmpfs_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/syscalls.rs"]
 
 [[module]]
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
@@ -13628,7 +13689,7 @@ reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only
 [[extra]]
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
-reason = "N5.9t1: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, a small vnode table (TestTmpfsVops: the node's lock, tmpfs_inactive's and tmpfs_reclaim's work) until tmpfs_vnops lands (N5.9t2), the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init and the tables), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args) and a mount over no device; no OpenBSD or LZ source"
+reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
 crate = "kernel"

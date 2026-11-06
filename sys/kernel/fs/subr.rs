@@ -316,7 +316,7 @@ pub struct VfsTables<G: ProcGlue> {
     #[cfg(feature = "udf")]
     pub udf: crate::fs::isofs::udf::udf_extern::UdfTables<G>,
     /// tmpfs's globals (the pools `tmpfs_node_pool`, `tmpfs_dirent_pool`, the global limit
-    /// and use, `tmpfs_vops`, `tmpfs_specvops`), N5.9t1: the last member in the source; the
+    /// and use, `tmpfs_vops`, `tmpfs_specvops`, `tmpfs_fifovops`), N5.9t1: the last member; the
     /// same layout test checks `ufs` did not move.
     #[cfg(feature = "tmpfs")]
     pub tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables<G>,
