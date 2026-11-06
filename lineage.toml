@@ -10110,6 +10110,61 @@ native = ["TmpfsFifoVnops", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
 kind = "split"
 
 [[module]]
+rust = "sys/kernel/fs/fuse/fusebuf_h.rs"
+crate = "kernel"
+lz = ["sys/sys/fusebuf.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired: bsd's sys/sys/fusebuf.rs serves bsd's fuse until N5.9f2's switch): <sys/fusebuf.h>'s constants and the 25 wire structures as hal::abi_pod!s (LZ's fuse_abi! unsafe impls and abi_bytes/abi_bytes_mut gone for hal::user::bytes_of/bytes_of_mut; the 40 size/offset const asserts kept and every member's offset pinned by a test), struct fuse_dirent its 24-byte head (the [u8; 0] name gone, FUSE_NAME_OFFSET its size); struct fusebuf as Fusebuf, an item of the recorded fmsg pool (PoolHome, the device queues' parked references): the header and the operation's lengths plain (written by fb_setup before publication), the error and data length words, the op union FusebufOp (sixteen relaxed words read and written as whole members at offset 0), the data an MArray of M_FUSEFS in a ReadMostly cell moved out by the copying side; 0 unsafe (LZ: 7)"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::fuse_abi"
+native = ["sys/hal/user.rs::abi_pod"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::FuseDirent::from_bytes"
+native = ["sys/hal/user.rs::pod_from_bytes"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::abi_bytes"
+native = ["sys/hal/user.rs::bytes_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::abi_bytes_mut"
+native = ["sys/hal/user.rs::bytes_of_mut"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::Fusebuf::update_hdr"
+native = []
+kind = "dropped"
+reason = "the header is written once, whole, by fb_setup before the request is published (Fusebuf::new); nothing changes it afterwards, as in the C, whose fb_setup is its only writer"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::Fusebuf::fb_dat"
+native = ["Fusebuf::dat_with", "Fusebuf::dat_update"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::Fusebuf::set_fb_dat"
+native = ["Fusebuf::set_dat", "Fusebuf::take_dat"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::Fusebuf::fb_dat_slice"
+native = []
+kind = "dropped"
+reason = "the data is an owned MArray in the fusebuf's cell: Fusebuf::dat_with and dat_update lend its bytes, take_dat moves it out for a copy that can sleep; no raw slice of a shared pointer is made"
+
+[[module.fn]]
+lz = "sys/sys/fusebuf.rs::Fusebuf::default"
+native = []
+kind = "dropped"
+reason = "a fusebuf is made only by fb_setup, whole (Fusebuf::new with its header and lengths, the C's PR_ZERO pool_get then its stores); no zeroed value exists apart from it"
+
+[[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
 lz = ["sys/isofs/cd9660/iso.rs"]
