@@ -96,10 +96,17 @@
 //!   of 2026-11-06 ("free them"). `vmstat -m`'s `UDF mount` requests are the C's; its `InUse`
 //!   is lower than OpenBSD's after a failed mount or a mount with more than one sparing table.
 //! - On that error path, once the VAT was read, the mount's vnodes are flushed (`vflush`,
-//!   not forced: the VAT's) before the mount structure goes (D-u2-1): the C leaves the VAT's
-//!   vnode cached on the freed mount, its unode naming the freed structure and holding a
-//!   reference to the device (a second mount of it answers `EBUSY` until the vnode is
-//!   recycled, which then reads freed memory).
+//!   not forced: the VAT's) before the mount structure goes (D-u2-1; the user's U6 of
+//!   2026-11-06, in U4's class): the C's `udf_vat_get` `vput`s the VAT's vnode, which stays
+//!   cached on the freed mount, its unode naming the freed structure and holding the
+//!   device's `vref` (udf_subr.c:196-209, udf_vfsops.c:637; the bail at :430 frees the
+//!   structure under it). So after a failed mount of a VAT medium OpenBSD keeps one more
+//!   `udfndpl` item and one more `UDF file entry` block in use (`vmstat -m`'s `InUse`), and a
+//!   retry of the mount answers `EBUSY` (`vcount(devvp) > 1`, :237) until the vnode is
+//!   recycled, which then reads freed memory; here both come back and a retry mounts (the
+//!   same `EINVAL` for the same medium). No choice is the C's: without the flush the unode
+//!   would keep the mount structure and its hash alive instead (`UDF mount`'s `InUse` higher
+//!   than OpenBSD's).
 //! - [`udf_fhtovp`] reads `ifid_ino` as the `udfino_t` [`udf_vptofh`] stored (zero-extended),
 //!   as cd9660's (the user's D-N5.8-U2): the C's `int` is sign-extended into `VFS_VGET`'s
 //!   `ino_t` and `udf_vget` panics ("alien ino_t") for a handle whose top bit is set.
@@ -1509,9 +1516,11 @@ mod tests {
         assert_eq!(held(), before);
     }
 
-    /// What a failed mount made it gives back (the user's U4): the VAT block and the VAT's
-    /// node (its vnode flushed, D-u2-1) when the file set descriptor is missing, where the C
-    /// leaks the block and leaves the vnode on the freed mount.
+    /// What a failed mount made it gives back (the user's U4 and U6): the VAT block and the
+    /// VAT's node, its file entry and its device reference (its vnode flushed, D-u2-1) when
+    /// the file set descriptor is missing, where the C leaks the block and leaves the vnode
+    /// on the freed mount; so a retry of the same medium fails as the first did (`EINVAL`),
+    /// where OpenBSD answers `EBUSY` until that vnode is recycled.
     #[test]
     fn a_failed_mount_frees_the_vat() {
         let mut img = mkudf::vat_image();
@@ -1521,6 +1530,10 @@ mod tests {
         let (n, _) = malloc_requests(M_UDFMOUNT);
         assert_eq!(try_mount(p, VAT_LASTBLOCK).err(), Some(Errno::EINVAL));
         assert_eq!(malloc_requests(M_UDFMOUNT).0, n + 3);
+        assert_eq!(held(), before);
+        // The same medium again: the mount reaches the same check, not the device's `EBUSY`.
+        assert_eq!(try_mount(p, VAT_LASTBLOCK).err(), Some(Errno::EINVAL));
+        assert_eq!(malloc_requests(M_UDFMOUNT).0, n + 6);
         assert_eq!(held(), before);
         // The device is free again: a second mount of the fixed volume is made.
         set_disk(mkudf::vat_image().0);

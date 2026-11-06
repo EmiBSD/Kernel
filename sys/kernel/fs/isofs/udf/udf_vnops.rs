@@ -78,9 +78,10 @@
 //!   the C's `readdir` breaks out with that -1 (the "." entry) and returns it, this returns
 //!   `ERESTART`, its value (LZ's).
 //! - The directory stream's fragment buffer is freed when the stream is (`udf_closedir`) on
-//!   every path; the C leaks it when reading the next extent fails or the FID is too long. A
-//!   FID that would start past the end of its chunk is an invalid fragment (`EINVAL`), as one
-//!   longer than a block is (LZ's).
+//!   every path; the C leaks it when reading the next extent fails or the FID is too long
+//!   (`vmstat -m`'s `UDF file id` row keeps the C's requests, its `InUse` lower than
+//!   OpenBSD's after such a failure, as U4's rows). A FID that would start past the end of
+//!   its chunk is an invalid fragment (`EINVAL`), as one longer than a block is (LZ's).
 //! - `udf_read` stops on a zero-length chunk (an embedded file whose allocation descriptor
 //!   area is empty), where the C would loop for ever (LZ's).
 //! - `udf_timetotimespec` ignores months past December (the C reads past `mon_lens`) (LZ's).
@@ -118,12 +119,14 @@
 //!   the members of the parsed `FentryHdr` and the allocation descriptors out of the copy at
 //!   the C's offsets (8 or 16 bytes a step, from the first on every call, as the C's walk;
 //!   D-N5.8-5).
-//! - The directory stream ([`udf_opendir`]) is a `PoolBox` of the glue's `ds_pool` holding
-//!   counted handles of the directory's unode and of the mount (a count pair each per
-//!   `readdir` and `lookup`, ROADMAP N12's row), its chunk a `UdfData` (the token of the
-//!   chunk's buffer) and its fragment buffer an `MArray` of `M_UDFFID`; dropping it is
-//!   `udf_closedir` (the buffer released, the fragment freed, the item put back). LZ wrote it
-//!   into a raw pool item and lent `&'static mut` views of it (three `unsafe`).
+//! - The directory stream ([`udf_opendir`]) is a `PoolBox` of the glue's `ds_pool` that
+//!   holds no handle: the C's `ds->node` and `ds->ump` are the directory's unode, which
+//!   `readdir` and `lookup` already hold through `VTOU` and lend to each [`udf_getfid`] (the
+//!   mount reached through it), so a walk takes no count of its own; its chunk is a `UdfData`
+//!   (the token of the chunk's buffer) and its fragment buffer an `MArray` of `M_UDFFID`;
+//!   dropping it is `udf_closedir` (the buffer released, the fragment freed, the item put
+//!   back). LZ wrote it into a raw pool item and lent `&'static mut` views of it (three
+//!   `unsafe`).
 //! - `readdir`'s entry is one `struct dirent` reused across the directory, as the C's, copied
 //!   out through `fs::subr::dirent_uiomove` (its first `d_reclen` bytes, which
 //!   `uiomove(dirent, de_size, uio)` copies: what an earlier, longer name left past the NUL
@@ -131,7 +134,8 @@
 //! - LZ's name buffers (a raw `udf_trans_pool` item cast to a slice in an `unsafe` block)
 //!   -> `PoolBox`es of the glue's `trans_pool` (`udf_cmpname`'s char buffer is its item's
 //!   bytes, `hal::user::bytes_of_mut`). The item is zeroed when taken (the C's `PR_WAITOK`
-//!   leaves it as it was: 510 bytes written per name, a cost named for ROADMAP N12).
+//!   leaves it as it was: the array's 510 bytes written per name, in the pool's item of the
+//!   C's 512, a cost named for ROADMAP N12).
 //! - `udf_reclaim` takes the unode out of the vnode's slot where the C frees it: the last
 //!   handle frees it, which is the VAT block's for the VAT's unode until the unmount takes
 //!   the block (`udf.rs`). `VTOU` is a counted handle per operation (ROADMAP N12's row).
@@ -533,11 +537,12 @@ pub fn udf_read<G: ProcGlue>(vp: &'static Vnode<G>, uio: &mut Uio<'_, G>) -> Res
             break;
         }
         let error = match &mut data {
-            // The buffer's bytes, moved out of its token.
-            UdfData::Buf(t, off) => match t.data().get_mut(*off..*off + n) {
-                Some(d) => <G::FileGlue as FileGlue>::uiomove(d, uio),
-                None => Err(Errno::EIO),
-            },
+            // The buffer's bytes, moved out of its token. In range, as the C's `uiomove(data,
+            // size, uio)` assumes without a check: `udf_readatoffset` cut `size` to the
+            // buffer's bytes past `off`.
+            UdfData::Buf(t, off) => {
+                <G::FileGlue as FileGlue>::uiomove(&mut t.data()[*off..*off + n], uio)
+            }
             // The file entry's, through a bounce buffer (the module's redesign).
             UdfData::Entry(off) => {
                 let src = up.fentry().get(*off..*off + n).unwrap_or(&[]);

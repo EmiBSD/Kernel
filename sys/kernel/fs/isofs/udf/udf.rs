@@ -89,9 +89,12 @@
 //!   (a descriptor longer than 64 KiB: the root's ICB length, a sparing table's size), where
 //!   the C's `buf_map` maps pages past its slot (the user's D-N5.8-U3); it returns the
 //!   buffer's token on success and releases the buffer on an error, as every C caller does.
-//!   A rounded size of 0 (a root ICB or a sparing table of length 0) reads a buffer of no
-//!   bytes, as the C's: its data is empty ([`lblk_bytes`]), so the descriptor it should hold
-//!   is missing (`EINVAL`), where the C reads it through the buffer's `NULL` `b_data`.
+//! - A rounded size of 0 (a root ICB or a sparing table of length 0) reads a buffer of no
+//!   bytes, as the C's, whose data is empty ([`lblk_bytes`]): the descriptor it should hold
+//!   is missing, and the mount answers `EINVAL`, where the C reads it through the buffer's
+//!   `NULL` `b_data` (D-u2-4; the class of the user's U6 of 2026-11-06: where the C reads
+//!   freed or absent memory, the kernel answers an error, and `udf_vfsops.rs`'s error path
+//!   frees what it made).
 //! - `u_vnode` and `u_fentry` are unset in a unode before `udf_vget` fills them, as in the
 //!   C's zeroed `pool_get` item: `udf_vget` gets the unode before its vnode (the C's
 //!   order), and a `vget` refused before it has a file entry still makes and frees an item
