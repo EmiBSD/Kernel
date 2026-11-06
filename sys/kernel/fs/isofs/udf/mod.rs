@@ -1,0 +1,43 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! The UDF file system: OpenBSD `sys/isofs/udf/`, one module per file of LZ's, feature `udf`
+//! (`option UDF`), read-only. N5.8u1 brings the on-disc descriptors (`ecma167_udf`,
+//! `ecma167-udf.h`), the node, the mount structure, the directory stream and the block
+//! reads (`udf`), the pools (`udf_extern`), the names, the volume name of the label spoof,
+//! the block size check and the VAT (`udf_subr`), and the leaves of the two operation files
+//! that those need: `udf_init` and `udf_checktag` (`udf_vfsops`), the unode hash, the time
+//! stamps, the name conversions and the read of a node's data through its block map
+//! (`udf_vnops`); N5.8u2 the mount, the file system's table and the vnode operations, and
+//! switches `vfsconflist[]` to this one. `testudf` is the tests' fixture (host tests and
+//! benches only).
+
+pub mod ecma167_udf;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testudf;
+#[allow(
+    clippy::module_inception,
+    reason = "OpenBSD's layout: sys/isofs/udf/udf.h"
+)]
+pub mod udf;
+pub mod udf_extern;
+pub mod udf_subr;
+pub mod udf_vfsops;
+pub mod udf_vnops;
+/* </CODE> */

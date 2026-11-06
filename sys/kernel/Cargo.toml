@@ -22,6 +22,7 @@ mfs = []                        # `option MFS` -> fs::ufs::mfs, the memory file 
 ext2fs = []                     # `option EXT2FS` -> fs::ufs::ext2fs, the second extended file system on the UFS layer
 msdosfs = []                    # `option MSDOSFS` -> fs::msdosfs, the MS-DOS FAT file system
 cd9660 = []                     # `option CD9660` -> fs::isofs::cd9660, the ISO 9660 file system
+udf = []                        # `option UDF` -> fs::isofs::udf, the UDF file system of DVDs
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,

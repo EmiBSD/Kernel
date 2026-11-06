@@ -311,6 +311,10 @@ pub struct VfsTables<G: ProcGlue> {
     /// after msdosfs's in the source; the same layout test checks `ufs` did not move.
     #[cfg(feature = "cd9660")]
     pub cd9660: crate::fs::isofs::cd9660::cd9660_node::IsofsTables<G>,
+    /// udf's globals (the pools `unode_pool`, `udf_ds_pool`, `udf_trans_pool`), N5.8u1: the
+    /// last member in the source; the same layout test checks `ufs` did not move.
+    #[cfg(feature = "udf")]
+    pub udf: crate::fs::isofs::udf::udf_extern::UdfTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -353,6 +357,8 @@ impl<G: ProcGlue> VfsTables<G> {
             msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables::new(),
             #[cfg(feature = "cd9660")]
             cd9660: crate::fs::isofs::cd9660::cd9660_node::IsofsTables::new(),
+            #[cfg(feature = "udf")]
+            udf: crate::fs::isofs::udf::udf_extern::UdfTables::new(),
         }
     }
 }
