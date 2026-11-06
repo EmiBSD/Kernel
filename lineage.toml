@@ -2072,7 +2072,7 @@ kind = "moved"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/disk.rs"
@@ -2094,7 +2094,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efidev.rs"
@@ -7085,7 +7085,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/stand/boot/bootarg.rs"
@@ -7095,7 +7095,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/stand/boot/vars.rs"

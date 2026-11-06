@@ -377,7 +377,6 @@ fn gather() -> Result<BootInfo, BootError> {
         mp: boot_mp(),
         howto: 0,
         duid: None,
-        abi_module: None,
     })
 }
 
