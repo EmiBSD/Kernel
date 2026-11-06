@@ -167,9 +167,10 @@ use crate::fs::isofs::udf::ecma167_udf::{
     UDF_ICB_TAG_FLAGS_STICKY, UdfSparingTable, geticblen,
 };
 use crate::fs::isofs::udf::udf::{
-    M_UDFFID, MAXBSIZE, UDF_MNT_USES_META, UdfData, UdfDirstream, Udfino, Umount, Unicode, Unode,
-    UnodeRef, VTOU, lblk_bytes, udf_getid, udf_readlblks,
+    M_UDFFID, MAXBSIZE, UDF_MNT_USES_META, UdfData, UdfDirstream, Udfino, Umount, Unode, UnodeRef,
+    VTOU, lblk_bytes, udf_getid, udf_readlblks,
 };
+use crate::fs::isofs::udf::udf_extern::TransName;
 use crate::fs::isofs::udf::udf_subr::udf_rawnametounicode;
 use crate::fs::isofs::udf::udf_vfsops::{udf_checktag, udf_vget};
 use crate::fs::mount::Mount;
@@ -581,17 +582,13 @@ pub fn udf_transname<G: ProcGlue>(
     }
 
     // allocate a buffer big enough to hold an 8->16 bit expansion
-    let Some(mut transname) = vfs::<G>()
-        .udf
-        .trans_pool
-        .get(PR_WAITOK, || [0 as Unicode; MAXNAMLEN])
-    else {
+    let Some(mut transname) = vfs::<G>().udf.trans_pool.get(PR_WAITOK, TransName::new) else {
         kpanic(format_args!(
             "udf_transname: pool_get(udf_trans_pool) failed"
         ));
     };
 
-    let unilen = match udf_rawnametounicode(len as u32, cs0string, &mut transname[..]) {
+    let unilen = match udf_rawnametounicode(len as u32, cs0string, &mut transname.0[..]) {
         Ok(n) if n < destname.len() => n,
         _ => {
             #[cfg(feature = "diagnostic")]
@@ -603,7 +600,7 @@ pub fn udf_transname<G: ProcGlue>(
     };
 
     // Pack it back to 8-bit Unicode.
-    for (d, &t) in destname.iter_mut().zip(transname[..unilen].iter()) {
+    for (d, &t) in destname.iter_mut().zip(transname.0[..unilen].iter()) {
         *d = if t & 0xff00 != 0 {
             b'?' // Fudge the 16bit chars
         } else {
@@ -630,14 +627,10 @@ pub fn udf_cmpname<G: ProcGlue>(
     ump: &Umount<G>,
 ) -> bool {
     // This is overkill, but not worth creating a new pool
-    let Some(mut item) = vfs::<G>()
-        .udf
-        .trans_pool
-        .get(PR_WAITOK, || [0 as Unicode; MAXNAMLEN])
-    else {
+    let Some(mut item) = vfs::<G>().udf.trans_pool.get(PR_WAITOK, TransName::new) else {
         kpanic(format_args!("udf_cmpname: pool_get(udf_trans_pool) failed"));
     };
-    let transname = bytes_of_mut(&mut item[..]);
+    let transname = bytes_of_mut(&mut item.0[..]);
 
     let cs0len = udf_transname(cs0string, transname, cs0len, Some(ump));
 

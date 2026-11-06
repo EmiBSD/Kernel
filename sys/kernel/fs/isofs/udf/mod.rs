@@ -18,15 +18,13 @@
 
 /* <CODE> */
 //! The UDF file system: OpenBSD `sys/isofs/udf/`, one module per file of LZ's, feature `udf`
-//! (`option UDF`), read-only. N5.8u1 brings the on-disc descriptors (`ecma167_udf`,
-//! `ecma167-udf.h`), the node, the mount structure, the directory stream and the block
-//! reads (`udf`), the pools (`udf_extern`), the names, the volume name of the label spoof,
-//! the block size check and the VAT (`udf_subr`), and the leaves of the two operation files
-//! that those need: `udf_init` and `udf_checktag` (`udf_vfsops`), the unode hash, the time
-//! stamps, the name conversions and the read of a node's data through its block map
-//! (`udf_vnops`); N5.8u2 the mount, the file system's table and the vnode operations, and
-//! switches `vfsconflist[]` to this one. `testudf` is the tests' fixture (host tests and
-//! benches only).
+//! (`option UDF`), read-only: the on-disc descriptors (`ecma167_udf`, `ecma167-udf.h`), the
+//! node, the mount structure, the directory stream and the block reads (`udf`), the pools
+//! and the vnode table (`udf_extern`), the names, the volume name of the label spoof, the
+//! block size check and the VAT (`udf_subr`), the mount and the file system's table
+//! (`udf_vfsops`), and the vnode operations (`udf_vnops`); N5.8u1 brought the first four,
+//! N5.8u2 the last two, and `vfsconflist[]` names this one since. `testudf` is the tests'
+//! fixture (host tests and benches only).
 
 pub mod ecma167_udf;
 #[cfg(any(test, feature = "doubles"))]

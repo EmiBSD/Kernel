@@ -102,7 +102,7 @@ pub fn readdisklabel(
         }
         #[cfg(feature = "udf")]
         if error.is_err() {
-            error = crate::isofs::udf::udf_subr::udf_disklabelspoof(dev, strat, lp);
+            error = crate::kern::subr_disk::udf_disklabelspoof(dev, strat, lp);
         }
         error
     })();
