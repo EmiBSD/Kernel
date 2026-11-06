@@ -85,7 +85,6 @@
 //!   last handle frees the block (docs/IDIOMS.md, the row of a C in-core structure filled
 //!   member by member and hung); the requests of a refused mount follow the C's through
 //!   N5.8c2's shim (D-N5.7-U5).
-
 //! - `VFSTOISOFS(mp)` ([`vfstoisofs`]) is the slot's typed read, a counted handle (the type
 //!   replaces LZ's name check; `panic(9)` on another file system's mount). Cost against the
 //!   C's one load: the slot's read and a count pair, once per `Vfs` call (ROADMAP N12's

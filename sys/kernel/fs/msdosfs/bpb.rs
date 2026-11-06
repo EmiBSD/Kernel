@@ -45,7 +45,6 @@
 //! compiler adds no padding; each is a `hal::abi_pod!` image, read out of a buffer's bytes at
 //! its offset and written back there (`fs::pod`'s `pod_view!`, its `at` and `put`: the C's
 //! cast of a pointer into `b_data`).
-
 //!
 //! ## Deviations
 //! - The `int8_t` members of `struct byte_bpb33` and `struct byte_bpb50` are `u8`: every

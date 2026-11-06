@@ -85,7 +85,6 @@
 //!   `hal::abi_pod!` images with `fs::pod`'s `pod_view!` (`at(buf, off)`: a copy out with
 //!   `pod_from_bytes`, `None` past the end; D-N5.8-4, docs/IDIOMS.md's row of the on-disk
 //!   structures of byte fields, msdosfs's `bpb.rs` the precedent). Cost
-
 //!   against the C's in-place access: one copy of the structure per view: a volume descriptor
 //!   (2,048 bytes) per descriptor of the mount's scan and of the label's, once a mount; the
 //!   readers of one member of a descriptor read it at its `offset_of!` instead (N5.8c2).

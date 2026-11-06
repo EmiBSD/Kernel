@@ -9838,7 +9838,6 @@ notes = "N5.8c1 (unwired): cd9660_lookup over the kernel's Vnops::lookup argumen
 
 [[module]]
 rust = "sys/kernel/fs/vnode.rs"
-
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
 status = "redesigned"
@@ -13233,7 +13232,6 @@ reason = "N5.8c1: the kernel cd9660's test fixtures (host tests and benches only
 
 [[extra]]
 rust = "sys/kernel/fs/word.rs"
-
 crate = "kernel"
 reason = "N5.7c1 (D-N5.7-4): the words of the file systems' in-core structures (the word! macro and U32Word, I32Word, U64Word, I8Word, I64Word, lifted from fs::ufs::ufs::inode, which re-exports them; U8Word and U16Word for msdosfs's denode), shared by ufs, ext2fs and msdosfs; native types with no LZ item (LZ's members were Cells)"
 
