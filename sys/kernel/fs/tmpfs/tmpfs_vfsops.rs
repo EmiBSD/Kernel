@@ -70,6 +70,15 @@
 //!   trait's default (`EOPNOTSUPP`); `vfs_checkexp`'s is `VFS_CHECKEXP`'s arm (`bsd`'s, at the
 //!   switch).
 //! - `ta_version` is not checked (the C neither).
+//! - `vmstat -m`'s item sizes of the two pools are the kernel structures' and the counted
+//!   handle's header, not the C's: `tmpfs_node` 384 (C 272, LZ 352), `tmpfs_dirent` 128 (C
+//!   48, LZ 48). The C's 48 is not reachable with `hal` as it is: the entry's list link and
+//!   the pool's header alone take 48, and a leaner name handle than the `MArray` (an
+//!   `MBox<[u8]>`) is no `hal` type (`MBox` is sized only) and would weigh as much. The class
+//!   the user accepted at N3 (`docs/ZERO_UNSAFE.md`'s list of the item sizes, `vmsppl` 448
+//!   against LZ's 288, ...; U3 of N5.9, the main session under the user's standing order);
+//!   the pool names, the requests and the C's charges (`statfs`, a directory's size) are the
+//!   C's.
 //!
 //! ## Redesign
 //! - LZ's `TMPFS_VFSOPS` (a `bsd` `Vfsops` of function pointers) -> `impl Vfs<G> for

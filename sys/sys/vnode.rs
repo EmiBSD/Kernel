@@ -832,18 +832,30 @@ mod tests {
     fn every_vnops_slot_reaches_the_kernel_s_vnode_file_operations() {
         use crate::kern::kern_descrip::{BsdFileData, closef, fnew};
         use crate::kern::vfs_init::set_rootvnode;
+        use crate::kern::vfs_init::vfs_byname;
         use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_UNLOCK};
+        use crate::machine::Machine;
+        use crate::machine::cpu::Cpu;
         use crate::sys::fcntl::{F_FLOCK, F_SETLK, F_UNLCK, F_WRLCK, FREAD, FWRITE, O_CREAT};
         use crate::sys::file::DTYPE_VNODE;
         use crate::sys::filio::FIONREAD;
         use crate::sys::namei::{LOOKUP, NiDirp, ndinit};
         use crate::sys::stat::Stat;
         use crate::sys::uio::Iovec;
-        use crate::tmpfs::tmpfs_vfsops::tests::{args, setup, tmpfs_conf};
-        use crate::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
+        use kernel::fs::tmpfs::testtmpfs::args;
+        use kernel::fs::tmpfs::tmpfs_vfsops::{tmpfs_mount, tmpfs_root};
 
-        // A tmpfs as "/", the thread's current directory (tmpfs_vnops' tests' set-up).
-        let (_g, p) = setup();
+        // A tmpfs as "/", the thread's current directory: the kernel's tmpfs over bsd's glue
+        // (N5.9t2), through vfsconflist[]'s entry (vfsinit ran its tmpfs_init).
+        let (_g, p) = crate::kern::vfs_subr::tests::setup();
+        Machine::set_curproc(Machine::curcpu(), Some(p));
+        let _ = hal::rwlock::init_shared();
+        let _ = kernel::vm::aobj::uao_init();
+        kernel::fs::subr::vfs::<crate::kern::proc_glue::BsdProcGlue>()
+            .tmpfs
+            .bytes_used
+            .store(0, core::sync::atomic::Ordering::Relaxed);
+        let tmpfs_conf = || vfs_byname(b"tmpfs").expect("tmpfs in vfsconflist[]");
         // Unlimited resources (vn_fsizechk reads RLIMIT_FSIZE).
         let mut limits = kernel::resource::Plimit::new();
         for l in &mut limits.pl_rlimit {

@@ -59,8 +59,6 @@ pub mod nfs;
 pub mod ntfs;
 pub mod scsi;
 pub mod sys;
-#[cfg(feature = "tmpfs")]
-pub mod tmpfs;
 #[cfg(feature = "ffs")]
 pub mod ufs;
 
