@@ -71,7 +71,7 @@
 //!   copy in place) (LZ's).
 //! - `iso_mountfs`'s error path also releases the primary descriptor's buffer, which the C
 //!   leaks on every `goto out` once that descriptor is found and until it is released
-//!   (cd9660_vfsops.c:346): a read error or a wrong standard identifier at a later block of
+//!   (cd9660_vfsops.c:355): a read error or a wrong standard identifier at a later block of
 //!   the scan, and a bad logical block size (LZ's).
 //! - `cd9660_mountroot`: a `rootdev` without a device (`bdevvp` answering no vnode, which the
 //!   C would pass on as NULL) is `ENODEV`, as in `ffs_mountroot` (LZ's).
