@@ -780,12 +780,11 @@ pub fn cd9660_readlink<G: ProcGlue>(
         }
     };
     let mut local: [u8; MAXPATHLEN];
-    let symname: &mut [u8] = match pooled.as_deref_mut() {
-        Some(b) => &mut b[..],
-        None => {
-            local = [0; MAXPATHLEN];
-            &mut local
-        }
+    let symname: &mut [u8] = if let Some(b) = pooled.as_deref_mut() {
+        &mut b[..]
+    } else {
+        local = [0; MAXPATHLEN];
+        &mut local
     };
 
     // Ok, we just gathering a symbolic name in SL record.
