@@ -35,7 +35,7 @@ pub mod cache;
 pub mod default;
 pub mod getcwd;
 pub mod init;
-#[cfg(feature = "cd9660")]
+#[cfg(any(feature = "cd9660", feature = "udf"))]
 pub mod isofs;
 pub mod lockf;
 pub mod lookup;
@@ -45,7 +45,7 @@ pub mod mount;
 pub mod msdosfs;
 pub mod namei;
 pub mod physio;
-#[cfg(any(test, feature = "msdosfs", feature = "cd9660"))]
+#[cfg(any(test, feature = "msdosfs", feature = "cd9660", feature = "udf"))]
 pub mod pod;
 pub mod spec;
 pub mod subr;

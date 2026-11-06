@@ -18,9 +18,11 @@
 
 /* <CODE> */
 //! The ISO 9660 and UDF file systems of CD-ROMs and DVDs: OpenBSD `sys/isofs/`, one directory
-//! per file system as LZ's (`cd9660`, feature `cd9660`, `option CD9660`, from N5.8c1; `udf`
-//! follows at N5.8u1).
+//! per file system as LZ's (`cd9660`, feature `cd9660`, `option CD9660`, from N5.8c1; `udf`,
+//! feature `udf`, `option UDF`, from N5.8u1).
 
 #[cfg(feature = "cd9660")]
 pub mod cd9660;
+#[cfg(feature = "udf")]
+pub mod udf;
 /* </CODE> */
