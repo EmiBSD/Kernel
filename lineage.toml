@@ -1688,7 +1688,7 @@ notes = "M2: db_stack_trace_print from a given frame (db_stack_dump); M4: the tr
 rust = "sys/arch/arm64/arm64/disksubr.rs"
 lz = ["sys/arch/arm64/arm64/disksubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/fpu.rs"
@@ -4995,41 +4995,6 @@ lz = ["sys/dev/wsfont/wsfont.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/isofs/udf/ecma167_udf.rs"
-lz = ["sys/isofs/udf/ecma167_udf.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/isofs/udf/udf.rs"
-lz = ["sys/isofs/udf/udf.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs"]
-
-[[module]]
-rust = "sys/isofs/udf/udf_extern.rs"
-lz = ["sys/isofs/udf/udf_extern.rs"]
-status = "inherited"
-license = "public domain"
-
-[[module]]
-rust = "sys/isofs/udf/udf_subr.rs"
-lz = ["sys/isofs/udf/udf_subr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs"]
-
-[[module]]
-rust = "sys/isofs/udf/udf_vfsops.rs"
-lz = ["sys/isofs/udf/udf_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/isofs/udf/udf_vnops.rs"
-lz = ["sys/isofs/udf/udf_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
 rust = "sys/kern/clock_subr.rs"
 lz = ["sys/kern/clock_subr.rs"]
 status = "inherited"
@@ -5624,7 +5589,7 @@ status = "inherited"
 rust = "sys/kern/subr_disk.rs"
 lz = ["sys/kern/subr_disk.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_subr.rs"]
 
 [[module]]
 rust = "sys/kern/subr_evcount.rs"
@@ -5870,7 +5835,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -7527,7 +7492,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -9730,7 +9695,7 @@ rust = "sys/kernel/fs/isofs/udf/udf.rs"
 crate = "kernel"
 lz = ["sys/isofs/udf/udf.rs"]
 status = "redesigned"
-notes = "N5.8u1 (unwired; D-N5.8-6, -7): Unode<G> made whole where the C fills its pool item (Unode::new: u_vnode, u_ump, u_ino, the file entry's M_UDFFENTRY MArray, parsed once into FentryHdr) and published as an item of the glue's recorded unode_pool (Unode::alloc, UnodeRef<G> = PoolArc), VTOU the vnode slot's read and count (PoolArc::from_ref, LZ's VT_UDF check kept); un_u a word, u_devvp a Link; the hash link UnodeHashLink<G> from pin_adapter!'s generic form; Umount<G> published where the C mallocs it (Umount::alloc, an M_UDFMOUNT MArc, UmountRef<G>), the members the C fills during the mount relaxed words, um_devvp a Link (udf_vget's alias replacement), um_hashtbl (UdfHash<G>) and um_root_icb OnceStatics set once, um_stbl a ReadMostly<Option<MArray>> each sparable map replaces (the replaced table kept allocated as the C leaks it, D-N5.8-R3), um_vat a ReadMostly<Option<MBox<VatBlock>>> (the VAT node's handle and its frozen length) the unmount takes, um_hashmtx a Mutexed<()> whose guard is the chains' witness; VFSTOUDFFS the mount slot's typed read; UdfData {Entry, Buf(BufRef)} and UdfData::bytes over the token (LZ's udf_data); UdfDirstream<G>; rdsector over bread, udf_readlblks with D-N5.8-U3's MAXBSIZE bound (EINVAL before the read); 0 unsafe (LZ: 4)"
+notes = "N5.8u1-u2 (D-N5.8-6, -7): Unode<G> made where the C fills its pool item (Unode::new: u_ump, u_ino, the file entry's M_UDFFENTRY MArray parsed once into FentryHdr, or none in the item a refused vget frees: D-N5.7-U5's shim; u_vnode a Link udf_vget sets once, D-u2-2) and published as an item of the glue's recorded unode_pool (Unode::alloc, UnodeRef<G> = PoolArc), VTOU the vnode slot's read and count (PoolArc::from_ref, LZ's VT_UDF check kept); un_u a word, u_devvp a Link; the hash link UnodeHashLink<G> from pin_adapter!'s generic form; Umount<G> published where the C mallocs it (Umount::alloc, an M_UDFMOUNT MArc, UmountRef<G>), the members the C fills during the mount relaxed words, um_devvp a Link (udf_vget's alias replacement), um_hashtbl (UdfHash<G>) and um_root_icb OnceStatics set once, um_stbl a ReadMostly<Option<MArray>> each sparable map replaces (the replaced table freed where the C leaks it: the user's U4), um_vat a ReadMostly<Option<MBox<VatBlock>>> (the VAT node's handle and its frozen length) the unmount takes, um_hashmtx a Mutexed<()> whose guard is the chains' witness; VFSTOUDFFS the mount slot's typed read; UdfData {Entry, Buf(BufRef)} and UdfData::bytes over the token (LZ's udf_data), lblk_bytes (a buffer of no bytes is empty, D-u2-4); UdfDirstream without node and ump (the walk's arguments); rdsector over bread, udf_readlblks with D-N5.8-U3's MAXBSIZE bound (EINVAL before the read); 0 unsafe (LZ: 4)"
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf.rs::Unode::ump"
@@ -9781,14 +9746,14 @@ crate = "kernel"
 lz = ["sys/isofs/udf/udf_extern.rs"]
 status = "redesigned"
 license = "public domain"
-notes = "N5.8u1 (unwired; D-N5.8-7): the C's extern pools as UdfTables<G> (unode_pool a recorded TypedPool<Unode<G>>, udf_ds_pool a BoxPool<UdfDirstream<G>>, udf_trans_pool a BoxPool<[Unicode; MAXNAMLEN]>), VfsTables::udf under feature udf; LZ's pub use of the prototypes gone (the functions reached by their paths); udf_vops joins at N5.8u2; 0 unsafe (LZ: 0)"
+notes = "N5.8u1-u2 (D-N5.8-7): the C's extern pools and vnode operations as UdfTables<G> (vops a UdfVnops<G>, one address per glue; unode_pool a recorded TypedPool<Unode<G>>, udf_ds_pool a BoxPool<UdfDirstream>, udf_trans_pool a BoxPool<[Unicode; MAXNAMLEN]>, whose item bsd's pool backend gives pool_init's default alignment: the C's 512 bytes), VfsTables::udf under feature udf; LZ's pub use of the prototypes gone (the functions reached by their paths); 0 unsafe (LZ: 0)"
 
 [[module]]
 rust = "sys/kernel/fs/isofs/udf/udf_subr.rs"
 crate = "kernel"
 lz = ["sys/isofs/udf/udf_subr.rs"]
 status = "redesigned"
-notes = "N5.8u1 (unwired): udf_rawnametounicode as LZ's; udf_volume_id, the label spoof's parse (the anchor at 256, the VDS walk to the primary volume descriptor, its vol_id through udf_transname) over a reader closure, 56 bytes a block (D-N5.8-2; bsd's shell is N5.8u2's); udf_lb_size, D-N5.8-U3's logical block size check; udf_vat_get (udf_vget an argument until N5.8u2), the VAT block an MBox<VatBlock> of M_UDFMOUNT holding the VAT unode's counted handle and the VAT's length (the C's request and its frozen u_vatlen, no M_UDFFENTRY copy as LZ's), udf_vat_map, udf_vat_read over UdfData; 0 unsafe (LZ: 5)"
+notes = "N5.8u1-u2: udf_rawnametounicode as LZ's; udf_volume_id, the label spoof's parse (the anchor at 256, the VDS walk to the primary volume descriptor, its vol_id through udf_transname) over a reader closure, 56 bytes a block (D-N5.8-2; bsd's shell in kern/subr_disk.rs); udf_lb_size, D-N5.8-U3's logical block size check, which udf_mountfs calls; udf_vat_get over udf_vfsops's udf_vget, the VAT block an MBox<VatBlock> of M_UDFMOUNT holding the VAT unode's counted handle and the VAT's length (the C's request and its frozen u_vatlen, no M_UDFFENTRY copy as LZ's), udf_vat_map, udf_vat_read over UdfData; 0 unsafe (LZ: 5)"
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf_subr.rs::udf_vat_free"
@@ -9796,19 +9761,75 @@ native = []
 kind = "dropped"
 reason = "the VAT block is an MBox in the mount's um_vat slot: udf_unmount and the mount's error path take it (N5.8u2), its drop frees it"
 
+[[module.fn]]
+lz = "sys/isofs/udf/udf_subr.rs::udf_disklabelspoof"
+native = ["sys/kern/subr_disk.rs::udf_disklabelspoof", "udf_volume_id"]
+kind = "split"
+lines = "L164-L258"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_subr.rs::spoof_read"
+native = ["sys/kern/subr_disk.rs::spoof_with"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/fs/isofs/udf/udf_vfsops.rs"
 crate = "kernel"
 lz = ["sys/isofs/udf/udf_vfsops.rs"]
 status = "redesigned"
-notes = "N5.8u1 (unwired, the leaves u1's modules need): udf_init over the glue's UdfTables (the C's names, IPL_NONE, PR_WAITOK; unode_pool recorded; a second call keeps the pools, EBUSY), udf_checktag over the tag's bytes by value; the mount, Vfs and partition maps are N5.8u2's (bsd's twin runs until its switch); 0 unsafe in this part (LZ's file: 16)"
+notes = "N5.8u1-u2: impl Vfs<G> for UdfVfs<G> (UdfVfs::VFS, vfsconflist[]'s udf) over the C's functions generic over the glue; udf_init over the glue's UdfTables (the C's names, IPL_NONE, PR_WAITOK; unode_pool recorded; a second call keeps the pools, EBUSY); udf_mount and udf_mountfs in the C's order with its errnos and printfs, the Umount published where the C mallocs it (Mount::set_node), the descriptors' members read at their offsets in the buffer's token, D-N5.8-U3's lb_size check where the C takes um_bshift, the error path freeing the VAT block and the sparing table (the user's U4) and flushing the VAT's vnode (D-u2-1); udf_unmount taking um_vat after vflush; udf_vget reading the file entry into its M_UDFFENTRY MArray (M_NOWAIT, the C's int sizes), the unode got after the read and before getnewvnode, u_vnode set once, D-N5.7-U5's shim for the three exits before the unode (one udfndpl item made and freed), the alias's slot move as cd9660's; Ifid read field by field, udf_fhtovp zero-extending ifid_ino (D-N5.8-U2); the partition maps' handlers over the descriptor's bytes (udf_get_spartmap's table an MArray each map replaces, freed when refused); udf_checktag over the tag's bytes by value; udf_checkexp is bsd's VFS_CHECKEXP arm (EACCES); 0 unsafe (LZ: 16)"
 
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::UDF_TRANS_POOL"
+native = ["sys/kernel/fs/isofs/udf/udf_extern.rs::UdfTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::UNODE_POOL"
+native = ["sys/kernel/fs/isofs/udf/udf_extern.rs::UdfTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::UDF_DS_POOL"
+native = ["sys/kernel/fs/isofs/udf/udf_extern.rs::UdfTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::UDF_VFSOPS"
+native = ["UdfVfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::ffs"
+native = []
+kind = "dropped"
+reason = "ffs(um_bsize) - 1 of a block size udf_lb_size checked a power of two is its trailing_zeros, which udf_mountfs takes as um_bshift"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::bdata"
+native = []
+kind = "dropped"
+reason = "the B_BUSY owner's view of b_data is its BufRef token's bytes (fs::buf; udf.rs's lblk_bytes), with no unsafe wrapper"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::Ifid::SIZE"
+native = ["IFID_SIZE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vfsops.rs::udf_checkexp"
+native = ["sys/sys/mount.rs::VFS_CHECKEXP"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/fs/isofs/udf/udf_vnops.rs"
 crate = "kernel"
 lz = ["sys/isofs/udf/udf_vnops.rs"]
 status = "redesigned"
-notes = "N5.8u1 (unwired, the leaves u1's modules need): udf_hashlookup, udf_hashins (no duplicate scan, the C's race kept), udf_hashrem over the mount's UdfHash of pinned unodes under um_hashmtx (Mutexed<()>, never held across vget); udf_isaleapyear, udf_timetotimespec; udf_transname and udf_cmpname over PoolBoxes of trans_pool (cmpname's char buffer the item's bytes, hal::user::bytes_of_mut); udf_readatoffset returning UdfData (the buffer's token, released on an error), udf_bmap_internal over the parsed FentryHdr and the file entry's MArray (the AD offset in 64 bits, the sparing table's p_offset the C's int); the vnode operations and their table are N5.8u2's; 0 unsafe in this part (LZ's file: 18)"
+notes = "N5.8u1-u2: UdfVnops<G>, one impl Vnops<G> of the C's 34 slots (the 18 functions; the eopnotsupp remove and the NULL slots, kqfilter among them, the trait's defaults), UdfTables::vops; udf_hashlookup, udf_hashins (no duplicate scan, the C's race kept), udf_hashrem over the mount's UdfHash of pinned unodes under um_hashmtx (Mutexed<()>, never held across vget); udf_allocv, udf_permtomode, udf_access, udf_getattr over the parsed FentryHdr; udf_read moving buffer data out of the token (the in-entry data through a 256-byte bounce); the directory stream a PoolBox of ds_pool without handles (the walk's unode lent to udf_getfid), its fragment buffer an MArray of M_UDFFID; udf_readdir with one struct dirent reused (the C's bytes past the NUL) through fs::subr::dirent_uiomove; udf_lookup with the global nchstats (VfsTables); udf_strategy over the buffer's token; udf_reclaim taking the unode out of the vnode (the last handle frees it); udf_isaleapyear, udf_timetotimespec; udf_transname and udf_cmpname over PoolBoxes of trans_pool; udf_readatoffset returning UdfData, udf_bmap_internal over the parsed FentryHdr and the file entry's MArray; 0 unsafe (LZ: 18)"
 
 [[module.fn]]
 lz = "sys/isofs/udf/udf_vnops.rs::udf_hashchain"
@@ -9820,6 +9841,43 @@ lz = "sys/isofs/udf/udf_vnops.rs::udf_data"
 native = ["sys/kernel/fs/isofs/udf/udf.rs::UdfData::bytes"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::UDF_VOPS"
+native = ["UdfVnops", "sys/kernel/fs/isofs/udf/udf_extern.rs::UdfTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::ucred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::uiomove_from"
+native = []
+kind = "dropped"
+reason = "udf_read moves a buffer's data out of its token's bytes, and a file entry's through the bounce buffer written in place there"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::dirent_bytes"
+native = ["sys/kernel/fs/subr.rs::dirent_uiomove"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::ds_chunk"
+native = []
+kind = "dropped"
+reason = "the stream's chunk is its UdfData, whose bytes() udf_getfid reads with the walk's unode"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::ds_buf"
+native = []
+kind = "dropped"
+reason = "the fragment buffer is the stream's own MArray of M_UDFFID, borrowed as its bytes"
+
+[[module.fn]]
+lz = "sys/isofs/udf/udf_vnops.rs::dirent_zero"
+native = ["dirent_zeroed"]
+kind = "renamed"
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
@@ -10698,8 +10756,8 @@ adapted_by = ["sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/file.rs",
 rust = "sys/ufs/ffs/ffs_vfsops.rs"
 lz = ["sys/ufs/ffs/ffs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"]
-notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since), since N5.7c3 msdosfs's export test (the kernel's msdosfs over this disk and bsd's glue, VFS_CHECKEXP's MOUNT_MSDOS arm), and since N5.8c2 cd9660's export test (MOUNT_CD9660's arm) and the CD label spoof's test (subr_disk.rs's shell over the kernel's iso_volume_label, through this disk's strategy); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/ufs/ufs/inode.rs", "sys/kernel/fs/ufs/ufs/ufsmount.rs", "sys/kernel/fs/ufs/ufs/ufs_ihash.rs", "sys/kernel/fs/ufs/ufs/ufs_dirhash.rs", "sys/kernel/fs/ufs/ufs/ufs_quota.rs", "sys/kernel/fs/vops.rs", "sys/kernel/fs/ufs/ufs/ufs_vnops.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs"]
+notes = "N5.5b2: an adapter of no logic but ffs_mountroot over the kernel's (bsd's ROOTDEV and the machine's swapdev until N7), and in its TESTS the fixture bsd's nfs, quota and dirhash tests mount an FFS image with (over the kernel's newfs; mfs's tests are the kernel's since N5.5b3), the export tests (decision 43's ufs bench until N5.5b3, the kernel's benches/fs.rs ffs rows since), since N5.7c3 msdosfs's export test (the kernel's msdosfs over this disk and bsd's glue, VFS_CHECKEXP's MOUNT_MSDOS arm), and since N5.8c2 cd9660's export test (MOUNT_CD9660's arm) and the CD label spoof's test (subr_disk.rs's shell over the kernel's iso_volume_label, through this disk's strategy), and since N5.8u2 udf's two (a_udf_volume_refuses_every_export, MOUNT_UDF's arm; a_udf_volume_gets_a_disk_label, the UDF label spoof's shell over the kernel's udf_volume_id); the file system is the kernel's sys/kernel/fs/ufs/ffs/ffs_vfsops.rs"
 
 [[module]]
 rust = "sys/ufs/ffs/fs.rs"
@@ -11390,7 +11448,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -13436,7 +13494,7 @@ reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures o
 [[extra]]
 rust = "sys/kernel/fs/isofs/udf/testudf.rs"
 crate = "kernel"
-reason = "N5.8u1: the kernel udf's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkudf, the part of LZ's in-memory UDF builder (udf_vnops.rs's tests) the u1 tests need (tags, time stamps, file entries, allocation descriptors, the anchor and the primary volume descriptor), whose whole image moves here at N5.8u2; a mount structure over testffs's device (test_ump), unodes of it (test_node, fentry_copy) with vnodes of a small table (TestUdfVops); no OpenBSD or LZ source"
+reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkudf, LZ's in-memory UDF builder (udf_vnops.rs's tests: tags, time stamps, file entries, allocation and file identifier descriptors, the anchor, the volume descriptor sequence, the test volume M10C) with the variants named tests need (a VAT, sparing tables, a metadata partition, a block size and a root ICB length to patch); TEST_UDF_CONF and the mounts through udf_mountfs over testffs's device (try_mount, mount_root, unmount, root); a mount structure over testffs's device (test_ump), unodes of it (test_node, fentry_copy) with vnodes of udf's own table (N5.8u1's TestUdfVops gone); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"

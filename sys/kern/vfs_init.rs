@@ -72,8 +72,10 @@
 //!   cargo feature named after the `option(4)`.
 //! - `vfs_byname` takes the name as bytes (`&[u8]`, NUL or slice end terminated).
 //! - `ffs`'s entry names the kernel's `ffs_vfsops` (`Ffs::<BsdProcGlue>::VFS`, N5.5b2), `mfs`'s
-//!   the kernel's `mfs_vfsops` (`Mfs::<BsdProcGlue>::VFS`, N5.5b3); the other types' are
-//!   `bsd`'s `Vfsops` tables.
+//!   the kernel's `mfs_vfsops` (`Mfs::<BsdProcGlue>::VFS`, N5.5b3), and `ext2fs`'s (N5.6c3),
+//!   `msdos`'s (N5.7c3), `cd9660`'s (N5.8c2) and `udf`'s (`UdfVfs::<BsdProcGlue>::VFS`,
+//!   N5.8u2) the kernel's; the other types' (`nfs`, `ntfs`, `fuse`, `tmpfs`) are `bsd`'s
+//!   `Vfsops` tables.
 
 use core::sync::atomic::Ordering;
 
@@ -142,7 +144,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "udf")]
     Vfsconf::new(
-        &crate::isofs::udf::udf_vfsops::UDF_VFSOPS,
+        &kernel::fs::isofs::udf::udf_vfsops::UdfVfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_UDF,
         13,
         crate::sys::mount::MNT_LOCAL,

@@ -119,6 +119,16 @@
 //! - `cd9660.read.1blk`: `lseek(fd, 0, SEEK_SET)` and a `read` of the file's one block (12
 //!   bytes, the block cached).
 //!
+//! N5.8u2's rows (feature `udf`), over the kernel udf's fixture (`testudf`: mkudf's test
+//! volume "M10C", LZ's, mounted at `/` by the kernel's `udf_mountfs`), a first measurement for
+//! N12 (no `bsd` row to pair them with):
+//! - `udf.lookup.hit.1`: `namei("/m10c-udf.txt")` with the name cached, and the `vrele`.
+//! - `udf.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's block (six
+//!   entries; the C's two `udf_trans_pool` items per name, a directory stream and its
+//!   buffer's read each call).
+//! - `udf.read.1blk`: `lseek(fd, 0, SEEK_SET)` and a `read` of the file's one block (12
+//!   bytes, the block cached).
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -662,6 +672,12 @@ fn main() {
         "cd9660.readdir.1blk",
         #[cfg(feature = "cd9660")]
         "cd9660.read.1blk",
+        #[cfg(feature = "udf")]
+        "udf.lookup.hit.1",
+        #[cfg(feature = "udf")]
+        "udf.readdir.1blk",
+        #[cfg(feature = "udf")]
+        "udf.read.1blk",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1125,6 +1141,76 @@ fn main() {
             s.spawn(|| cd9660_rows(&wanted, &names[cd9660..], &report));
         });
     }
+
+    // N5.8u2's rows: the kernel udf, on a thread of its own after cd9660's.
+    #[cfg(feature = "udf")]
+    {
+        let udf = names
+            .iter()
+            .position(|n| n.starts_with("udf."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| udf_rows(&wanted, &names[udf..], &report));
+        });
+    }
+}
+
+/// N5.8u2's udf rows (the module's docs), `names` theirs in order.
+#[cfg(feature = "udf")]
+fn udf_rows(wanted: &dyn Fn(&str) -> bool, names: &[&str], report: &dyn Fn(&str, (f64, f64, f64))) {
+    use kernel::descrip::{sys_close, sys_read};
+    use kernel::fs::isofs::udf::testudf::{self, mkudf};
+    use kernel::fs::syscalls::sys_getdents;
+
+    let (_memory, p) = testudf::attach(mkudf::image().0);
+    kernel::testutil::set_file_log(false);
+    let mp = testudf::mount_root(p, 0);
+
+    let base = kernel::testutil::USER_BASE + 0x2000;
+    let p_f = UserPtr::<u8>::new(base);
+    let p_root = UserPtr::<u8>::new(base + 0x20);
+    let ubuf = base + 0x800;
+    let udents = base + 0x1000;
+    need(p_f.copyout_slice(b"/m10c-udf.txt\0"), "copyout");
+    need(p_root.copyout_slice(b"/\0"), "copyout");
+    let fd_root = need(sys_open(p, p_root, O_RDONLY, 0), "open /");
+    let fd_f = need(sys_open(p, p_f, O_RDONLY, 0), "open /m10c-udf.txt");
+    // The warm-up of each: the name cached, the blocks in the buffer cache.
+    lookup_rele(p, b"/m10c-udf.txt", FOLLOW);
+    need(sys_getdents(p, fd_root, udents, 4096), "getdents");
+    need(sys_read(p, fd_f, ubuf, 2048), "read");
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| rounds(|| lookup_rele(p, b"/m10c-udf.txt", FOLLOW))),
+        );
+    }
+    if wanted(names[1]) {
+        report(
+            names[1],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_root, 0, SEEK_SET);
+                    let _ = black_box(sys_getdents(p, black_box(fd_root), udents, 4096));
+                })
+            }),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_f, 0, SEEK_SET);
+                    let _ = black_box(sys_read(p, black_box(fd_f), ubuf, 2048));
+                })
+            }),
+        );
+    }
+    let _ = sys_close(p, fd_f);
+    let _ = sys_close(p, fd_root);
+    testudf::unmount(p, mp);
 }
 
 /// N5.8c2's cd9660 rows (the module's docs), `names` theirs in order.

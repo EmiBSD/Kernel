@@ -59,11 +59,13 @@
 //! - `udf_disklabelspoof` is split (D-N5.8-2): [`udf_volume_id`] here reads the anchor and
 //!   the volume descriptor sequence through a reader and returns the primary volume
 //!   descriptor's name; `bsd`'s `kern/subr_disk.rs` keeps the shell that lends the C's
-//!   buffer to the driver's strategy and fills the disk label (N5.8u2). A sequence whose end
-//!   wraps below its start finds no descriptor (`EINVAL`), where the C reads the descriptor
-//!   through an uninitialised pointer.
+//!   buffer to the driver's strategy and fills the disk label. A sequence whose end wraps
+//!   below its start finds no descriptor (`EINVAL`), where the C reads the descriptor
+//!   through an uninitialised pointer. The name's translation takes an item of the glue's
+//!   `trans_pool`, which `vfsinit` makes (`udf_init`): as in the C, a UDF medium whose label
+//!   is read before it (softraid's boot probe, `cpu_configure`) finds no pool (`panic(9)`).
 //! - [`udf_lb_size`] refuses a logical block size outside `DEV_BSIZE..=MAXBSIZE` or not a
-//!   power of two with `EINVAL`, which `udf_mountfs` (N5.8u2) answers where the C takes
+//!   power of two with `EINVAL`, which `udf_mountfs` answers where the C takes
 //!   `ffs(um_bsize) - 1` of any size (a shift by -1 for 0, a division by zero in
 //!   `udf_get_spartmap`, the wrong blocks for a size not a power of two: the user's
 //!   D-N5.8-U3).
@@ -77,8 +79,6 @@
 //!   reclaimed during the mount its unode and file entry are released at the unmount instead.
 //!   The block holds no vnode reference, so a non-forced `vflush` still reclaims the VAT's
 //!   vnode. Its size is the block's (16 bytes), not `sizeof(struct unode)` (88 on arm64).
-//! - `udf_vat_get` takes `udf_vget` as an argument until the mount lands (N5.8u2, which
-//!   drops it).
 //! - `udf_vat_map` answers `EINVAL` for a volume that uses a VAT but has none (the C reads
 //!   through `NULL`); `udf_vat_read` releases the buffer only when there is one: a VAT
 //!   recorded in its file entry has none (the C would `brelse(NULL)`).
@@ -109,11 +109,9 @@ use crate::fs::isofs::udf::udf::{
     DEV_BSIZE, M_UDFMOUNT, MAXBSIZE, UDF_MNT_FIND_VAT, UDF_MNT_USES_VAT, Umount, Unicode, VTOU,
     VatBlock,
 };
-use crate::fs::isofs::udf::udf_vfsops::udf_checktag;
+use crate::fs::isofs::udf::udf_vfsops::{udf_checktag, udf_vget};
 use crate::fs::isofs::udf::udf_vnops::{udf_readatoffset, udf_transname};
-use crate::fs::mount::Mount;
 use crate::fs::subr::vput;
-use crate::fs::vnode::Vnode;
 use crate::proc::ProcGlue;
 
 /// The block size the spoof reads (`bsize = 2048`, the C's).
@@ -130,10 +128,6 @@ const PVD_VOL_ID: usize = offset_of!(PriVolDesc, vol_id);
 /// the 2,048-byte block at the disk block `blkno` (the spoof's shell reads through the
 /// driver's strategy; a test, an image).
 pub type UdfLabelRead<'a> = dyn FnMut(Daddr, &mut [u8]) -> Result<(), Errno> + 'a;
-
-/// `udf_vget(mp, ino, &vp)` (`udf_vfsops.c`, N5.8u2): the locked vnode of the file entry
-/// `ino` of `mp`.
-pub type UdfVget<G> = fn(&'static Mount<G>, Ino) -> Result<&'static Vnode<G>, Errno>;
 
 /// Convert a CS0 dstring to a 16-bit Unicode string. Returns the length of the Unicode
 /// string, in unicode characters (not bytes!). Note that the transname destination buffer is
@@ -256,9 +250,9 @@ pub fn udf_lb_size(lb_size: u32) -> Result<i32, Errno> {
 }
 
 /// Get a vnode for the Virtual Allocation Table (VAT).
-pub fn udf_vat_get<G: ProcGlue>(ump: &Umount<G>, lb: u32, vget: UdfVget<G>) -> Result<(), Errno> {
+pub fn udf_vat_get<G: ProcGlue>(ump: &Umount<G>, lb: u32) -> Result<(), Errno> {
     let ino = lb.wrapping_sub(ump.um_start.get()).wrapping_sub(3);
-    let vp = vget(ump.um_mountp, Ino::from(ino))?;
+    let vp = udf_vget(ump.um_mountp, Ino::from(ino))?;
 
     let up = VTOU(vp);
     // The C's `uint64_t` arithmetic, then a `long`, in the cached node (whose word is also its
@@ -343,11 +337,10 @@ mod tests {
     use super::*;
     use crate::fs::isofs::udf::testudf::mkudf::{B, dstring, file_entry, volume};
     use crate::fs::isofs::udf::testudf::{attach, test_node, test_ump};
-    use crate::fs::isofs::udf::udf::{M_UDFFENTRY, UmountRef, UnodeRef, VFSTOUDFFS};
-    use crate::fs::isofs::udf::udf_vnops::{udf_hashins, udf_hashlookup};
+    use crate::fs::isofs::udf::udf::{M_UDFFENTRY, UmountRef, UnodeRef};
+    use crate::fs::isofs::udf::udf_vnops::udf_hashins;
     use crate::fs::subr::{vflush, vfs, vrele};
     use crate::fs::testfs::TestGlue;
-    use crate::fs::vnode::LK_EXCLUSIVE;
     use crate::fs::vops::vop_unlock;
     use crate::testutil::{malloc_out, malloc_requests};
 
@@ -457,17 +450,10 @@ mod tests {
         }
     }
 
-    /// `udf_vget` as `udf_vat_get` calls it: the unodes the test hashed.
-    fn hashed_vget(
-        mp: &'static Mount<TestGlue>,
-        ino: Ino,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        udf_hashlookup(&VFSTOUDFFS(mp), ino as u32, LK_EXCLUSIVE)?.ok_or(Errno::ENOENT)
-    }
-
     #[test]
     fn the_vat_maps_sectors_through_its_entries() {
-        let (_g, _p) = attach(vec![0; B]);
+        // 100 blocks: `missing`'s file entry (block 96) is read, all zeros.
+        let (_g, _p) = attach(vec![0; 100 * B]);
         let ump = test_ump(|u| {
             u.um_start.set(1000);
             u.um_flags.set(UDF_MNT_FIND_VAT);
@@ -485,8 +471,8 @@ mod tests {
         vrele(vp);
 
         let (n, _) = malloc_requests(M_UDFMOUNT);
-        // The VAT's file entry is at lb - um_start - 3.
-        udf_vat_get(&ump, 1053, hashed_vget).unwrap();
+        // The VAT's file entry is at lb - um_start - 3 (udf_vget finds it hashed).
+        udf_vat_get(&ump, 1053).unwrap();
         assert_eq!(malloc_requests(M_UDFMOUNT).0, n + 1);
         assert_eq!(ump.um_flags.get(), UDF_MNT_USES_VAT);
         assert_eq!(up.u_vatlen(), 3);
@@ -520,9 +506,10 @@ mod tests {
         let lost = test_ump(|u| u.um_flags.set(UDF_MNT_USES_VAT));
         let mut sector = 1;
         assert_eq!(udf_vat_map(&lost, &mut sector), Err(Errno::EINVAL));
-        // No such file entry: the VAT get fails as udf_vget does.
+        // No such file entry: the VAT get fails as udf_vget does ("Invalid file entry!",
+        // the C's ENOMEM).
         let missing = test_ump(|u| u.um_flags.set(UDF_MNT_FIND_VAT));
-        assert_eq!(udf_vat_get(&missing, 99, hashed_vget), Err(Errno::ENOENT));
+        assert_eq!(udf_vat_get(&missing, 99), Err(Errno::ENOMEM));
         assert_eq!(missing.um_flags.get(), UDF_MNT_FIND_VAT);
 
         // The unmount's take ends the VAT's hold on its node.
@@ -555,7 +542,7 @@ mod tests {
             u.um_flags.set(UDF_MNT_FIND_VAT);
         });
         let up = hashed_vat(&ump, 50, 3);
-        udf_vat_get(&ump, 1053, hashed_vget).unwrap();
+        udf_vat_get(&ump, 1053).unwrap();
         // udf_lookup's `u_diroff` write on a node whose ino is the VAT's (a crafted volume).
         up.set_u_diroff(1000);
         let mut sector = 3;
@@ -581,13 +568,13 @@ mod tests {
             u.um_flags.set(UDF_MNT_FIND_VAT);
         });
         let up = hashed_vat(&ump, 50, 3);
-        let vp = up.u_vnode;
+        let vp = up.vnode();
         drop(up);
-        udf_vat_get(&ump, 1053, hashed_vget).unwrap();
+        udf_vat_get(&ump, 1053).unwrap();
         assert_eq!(t.unode_pool.nout(), items + 1);
 
-        // No vnode reference: the unmount's vflush reclaims it (TestUdfVops::reclaim takes
-        // the node out of the vnode, as udf_reclaim does).
+        // No vnode reference: the unmount's vflush reclaims it (udf_reclaim takes the node
+        // out of the vnode).
         assert_eq!(vflush(ump.um_mountp, None, 0), Ok(()));
         assert!(!vp.has_node());
         for (s, want) in [(0, Ok(1007)), (2, Ok(1009))] {

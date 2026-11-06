@@ -85,9 +85,9 @@ pub(crate) mod tests {
     // The fixture of `bsd`'s tests that mount an FFS image (nfs's, quota's, dirhash's):
     // `newfs`, the kernel's image builder, a block device vnode whose strategy reads and writes
     // the image, and the root mount through the kernel's `ffs_mountfs`; with the tests of
-    // `ffs_mount`'s export update (the exports are `bsd`'s until N6), of the kernel msdosfs's
-    // and cd9660's (`VFS_CHECKEXP`'s arms), and of the CD label `subr_disk.rs`'s shell spoofs
-    // over the kernel's parser (N5.8c2). The image tests of the
+    // `ffs_mount`'s export update (the exports are `bsd`'s until N6), of the kernel msdosfs's,
+    // cd9660's and udf's (`VFS_CHECKEXP`'s arms), and of the CD and UDF labels
+    // `subr_disk.rs`'s shells spoof over the kernel's parsers (N5.8c2, N5.8u2). The image tests of the
     // file system itself are the kernel's (`kernel::fs::ufs::ffs::ffs_vfsops`'s tests, over
     // its test glue), and so are decision 43's ffs pairs since N5.5b3 (`benches/fs.rs`'s
     // `ffs.*` rows, which replace this module's `ufs_bench`).
@@ -563,6 +563,97 @@ pub(crate) mod tests {
         let mut lp = Disklabel::zeroed();
         assert_eq!(
             iso_disklabelspoof(DISKDEV, transfer, &mut lp),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!((lp.d_magic, lp.d_npartitions), (0, 0));
+        teardown();
+    }
+
+    /// A UDF volume (the kernel's udf over this module's disk and `bsd`'s glue, N5.8u2):
+    /// mounted at `/`, read through the system calls, and `VFS_CHECKEXP`'s `MOUNT_UDF` arm
+    /// (the C's `udf_checkexp`) refuses every client (`EACCES`); without the arm the match's
+    /// last arm panics.
+    #[cfg(all(feature = "nfsserver", feature = "udf"))]
+    #[test]
+    fn a_udf_volume_refuses_every_export() {
+        use crate::kern::uipc_mbuf::tests::mbinit_again;
+        use crate::kern::vfs_subr::tests::exports::check_export;
+        use kernel::fs::isofs::udf::testudf::mkudf;
+        use kernel::fs::isofs::udf::udf_vfsops::{udf_init, udf_mountfs, udf_statfs};
+
+        let (_g, p) = setup(mkudf::image().0);
+        mbinit_again();
+        let _ = udf_init::<crate::kern::proc_glue::BsdProcGlue>();
+        // The volume at `/`, read-only, as mount_root mounts an FFS image.
+        let mp = vfs_mount_alloc(None, vfs_byname(b"udf").unwrap());
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
+        udf_mountfs(diskvp(), mp, 0, p).unwrap();
+        let mut st = mp.stat();
+        udf_statfs(mp, &mut st, p).unwrap();
+        mp.with_stat(|sp| *sp = st);
+        vfs_unbusy(mp);
+        crate::sys::mount::mountlist_insert_tail(mp);
+        let rootvp = VFS_ROOT(mp).unwrap();
+        set_rootvnode(Some(rootvp));
+        p.fd().set_cdir(Some(rootvp));
+        vref(rootvp);
+        let _ = VOP_UNLOCK(rootvp);
+        assert_eq!(read_file(p, b"/m10c-udf.txt\0").unwrap(), mkudf::TEXT);
+
+        assert_eq!(check_export(mp, [10, 0, 0, 5]), Err(Errno::EACCES));
+        assert_eq!(check_export(mp, [127, 0, 0, 1]), Err(Errno::EACCES));
+
+        unmount_root(p, mp);
+        teardown();
+    }
+
+    /// `udf_disklabelspoof` (`subr_disk.rs`'s shell over the kernel's `udf_volume_id`,
+    /// N5.8u2; LZ's test, moved) through a driver's strategy over this module's disk: the
+    /// volume's name the type name, the whole medium in `a` and `c`, the checksum; a disk
+    /// without an anchor is `EINVAL`, its label left as it was.
+    #[cfg(feature = "udf")]
+    #[test]
+    fn a_udf_volume_gets_a_disk_label() {
+        use crate::kern::subr_disk::{dkcksum, udf_disklabelspoof};
+        use crate::sys::disklabel::{
+            DISKMAGIC, Disklabel, FS_UDF, MAXPARTITIONS, RAW_PART, dl_getpoffset, dl_getpsize,
+            dl_setdsize,
+        };
+        use kernel::fs::isofs::udf::testudf::mkudf::{self, B, PLEN, PSTART};
+        use kernel::fs::isofs::udf::udf_vfsops::udf_init;
+
+        let (_g, _p) = setup(mkudf::image().0);
+        // The name's translation takes a trans_pool item (vfsinit's udf_init).
+        let _ = udf_init::<crate::kern::proc_glue::BsdProcGlue>();
+        let size = ((PSTART + PLEN) * B / DEV_BSIZE) as u64;
+        let label = || {
+            let mut lp = Disklabel::zeroed();
+            lp.d_secsize = DEV_BSIZE as u32;
+            lp.d_secpercyl = 64;
+            dl_setdsize(&mut lp, size);
+            lp
+        };
+        let mut lp = label();
+        udf_disklabelspoof(DISKDEV, transfer, &mut lp).unwrap();
+        assert_eq!(&lp.d_typename[..5], b"M10C\0");
+        for i in [0, RAW_PART as usize] {
+            assert_eq!(lp.d_partitions[i].p_fstype, FS_UDF);
+            assert_eq!(dl_getpsize(&lp.d_partitions[i]), size);
+            assert_eq!(dl_getpoffset(&lp.d_partitions[i]), 0);
+        }
+        assert_eq!(usize::from(lp.d_npartitions), MAXPARTITIONS);
+        assert_eq!(
+            (lp.d_magic, lp.d_magic2, lp.d_version),
+            (DISKMAGIC, DISKMAGIC, 1)
+        );
+        assert_eq!(dkcksum(&lp), 0);
+
+        // Not UDF: no anchor.
+        DISK.lock().unwrap_or_else(|e| e.into_inner())[256 * B..257 * B].fill(0);
+        let mut lp = label();
+        assert_eq!(
+            udf_disklabelspoof(DISKDEV, transfer, &mut lp),
             Err(Errno::EINVAL)
         );
         assert_eq!((lp.d_magic, lp.d_npartitions), (0, 0));

@@ -88,12 +88,15 @@
 //!   `DPRINTF`s are not configured.
 //! - `dk_mountroot`: `EXT2FS` (feature `ext2fs`), `FFS` (feature `ffs`) and `CD9660` (feature
 //!   `cd9660`) are the file systems the kernel configuration names with a mountroot.
-//! - `iso_disklabelspoof` (`isofs/cd9660/cd9660_vfsops.c`) is here since N5.8c2, a shell of no
-//!   `unsafe` over the kernel's `iso_volume_label` (the descriptor scan and its checks): the
-//!   label and `dkcksum` are this module's until N7 (D-N5.8-2). Its reads go through
+//! - `iso_disklabelspoof` (`isofs/cd9660/cd9660_vfsops.c`, N5.8c2) and `udf_disklabelspoof`
+//!   (`isofs/udf/udf_subr.c`, N5.8u2) are here, shells of no `unsafe` over the kernel's
+//!   `iso_volume_label` and `udf_volume_id` (the descriptor scans and their checks): the
+//!   label and `dkcksum` are this module's until N7 (D-N5.8-2). Their reads go through
 //!   [`spoof_with`]: the C's `geteblk` buffer, read raw by the driver's own `strat` (never a
 //!   lookup by major: `readdisklabel`'s `dev` may carry a character major), its token's
-//!   bytes handed to the parser.
+//!   bytes handed to the parser. udf's sets the buffer's `b_resid` to `b_blkno /
+//!   d_secpercyl` as the C does, only for a label whose `d_secpercyl` is not 0 (the C divides
+//!   by it) (LZ's).
 //! - `setroot`'s `RB_ASKNAME` dialogue (the "root device:" and "swap device:" prompts read
 //!   with `getsn` under `cnpollc`) is reported and skipped: `getsn` is not ported. A kernel
 //!   booted with `-a` goes on with its configured root. `NFSCLIENT` (feature `nfsclient`):
@@ -964,18 +967,20 @@ pub fn spooffat(dosbb: &[u8; DEV_BSIZE], lp: &mut Disklabel, partoffp: &mut Dadd
     }
 }
 
-/// The label spoofs' block reader (the loop body of `iso_disklabelspoof`): the C's
-/// `geteblk(bsize)` buffer of `dev`, each block read raw into it by the driver's `strat`
-/// (`b_blkno`, `b_bcount`, the flags, `(*strat)(bp)`, `biowait`), the first bytes of its
-/// token handed to the kernel's parser `parse`; the buffer invalidated and released at the
-/// end. 0 `unsafe`: the buffer is lent to the driver and taken back as a token
-/// (`sys::buf::lend`, `token_of`).
-#[cfg(feature = "cd9660")]
+/// The label spoofs' block reader (the loop body of `iso_disklabelspoof` and
+/// `udf_disklabelspoof`): the C's `geteblk(bsize)` buffer of `dev`, each block read raw into
+/// it by the driver's `strat` (`b_blkno`, `b_bcount`, the flags, udf's `b_resid = b_blkno /
+/// secpercyl` when `secpercyl` is given and not 0, `(*strat)(bp)`, `biowait`), the first
+/// bytes of its token handed to the kernel's parser `parse`; the buffer invalidated and
+/// released at the end. 0 `unsafe`: the buffer is lent to the driver and taken back as a
+/// token (`sys::buf::lend`, `token_of`).
+#[cfg(any(feature = "cd9660", feature = "udf"))]
 fn spoof_with<R>(
     dev: Dev,
     strat: DevTypeStrategy,
     bsize: usize,
-    parse: impl FnOnce(&mut kernel::fs::isofs::cd9660::cd9660_vfsops::LabelRead<'_>) -> R,
+    secpercyl: Option<u32>,
+    parse: impl FnOnce(&mut dyn FnMut(Daddr, &mut [u8]) -> Result<(), Errno>) -> R,
 ) -> R {
     let t = kernel::fs::bio::geteblk(bsize);
     t.buf().set_dev(dev);
@@ -989,6 +994,9 @@ fn spoof_with<R>(
         b.set_bcount(bsize as i64);
         b.clr(B_READ | B_WRITE | B_DONE);
         b.set(B_BUSY | B_READ | B_RAW);
+        if let Some(spc) = secpercyl.filter(|&s| s != 0) {
+            b.set_resid((blkno / Daddr::from(spc)) as usize);
+        }
 
         let bp = crate::sys::buf::lend(t);
         strat(bp);
@@ -1033,7 +1041,7 @@ pub fn iso_disklabelspoof(
     use kernel::fs::isofs::cd9660::cd9660_vfsops::iso_volume_label;
     use kernel::fs::isofs::cd9660::iso::ISO_DEFAULT_BLOCK_SIZE;
 
-    let volume_id = spoof_with(dev, strat, ISO_DEFAULT_BLOCK_SIZE, iso_volume_label)?;
+    let volume_id = spoof_with(dev, strat, ISO_DEFAULT_BLOCK_SIZE, None, iso_volume_label)?;
 
     // build a disklabel for the CD
     strncpy(&mut lp.d_typename, &volume_id);
@@ -1049,6 +1057,52 @@ pub fn iso_disklabelspoof(
     dl_setpoffset(&mut lp.d_partitions[RAW_PART as usize], 0);
     dl_setpsize(&mut lp.d_partitions[RAW_PART as usize], dsize);
     lp.d_partitions[RAW_PART as usize].p_fstype = crate::sys::disklabel::FS_ISO9660;
+    lp.d_npartitions = MAXPARTITIONS as u16;
+    lp.d_version = 1;
+
+    lp.d_magic = DISKMAGIC;
+    lp.d_magic2 = DISKMAGIC;
+    lp.d_checksum = dkcksum(lp);
+    Ok(())
+}
+
+/// `udf_disklabelspoof`: do a lazy probe on the underlying media to check if it's a UDF
+/// volume (the kernel's `udf_volume_id` over the device's blocks), in which case we fake a
+/// disk label for it (the whole medium in partitions `a` and `c`).
+#[cfg(feature = "udf")]
+pub fn udf_disklabelspoof(
+    dev: Dev,
+    strat: DevTypeStrategy,
+    lp: &mut Disklabel,
+) -> Result<(), Errno> {
+    use kernel::fs::isofs::udf::udf_subr::udf_volume_id;
+
+    // bsize = 2048: the C's.
+    let vid = spoof_with(
+        dev,
+        strat,
+        2048,
+        Some(lp.d_secpercyl),
+        udf_volume_id::<crate::kern::proc_glue::BsdProcGlue>,
+    )?;
+
+    // Okay, it's a UDF volume. Spoof a disk label for it (the type name only when the
+    // volume's name translated).
+    if let Some(vid) = vid {
+        libkern::strlcpy(&mut lp.d_typename, &vid);
+    }
+
+    for p in lp.d_partitions.iter_mut().take(MAXPARTITIONS) {
+        dl_setpsize(p, 0);
+        dl_setpoffset(p, 0);
+    }
+
+    // Fake two partitions, 'a' and 'c'.
+    let dsize = dl_getdsize(lp);
+    dl_setpsize(&mut lp.d_partitions[0], dsize);
+    lp.d_partitions[0].p_fstype = crate::sys::disklabel::FS_UDF;
+    dl_setpsize(&mut lp.d_partitions[RAW_PART as usize], dsize);
+    lp.d_partitions[RAW_PART as usize].p_fstype = crate::sys::disklabel::FS_UDF;
     lp.d_npartitions = MAXPARTITIONS as u16;
     lp.d_version = 1;
 
