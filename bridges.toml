@@ -41,7 +41,8 @@ trait = "IntrHardware"
 for = ["sys/hal/intr.rs"]
 paid_by = "N7"
 
-# bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
+# bsd: pool_init/pool_get/pool_put, pr_nout, pr_npages (RawPool::npages, N5.9f2: vfs.fuse's
+# fusefs_pool_pages), pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend

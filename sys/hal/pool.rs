@@ -208,6 +208,12 @@ pub trait RawPool: Sync {
     fn put(&self, item: NonNull<u8>);
     /// `pr_nout`: the items out of the pool now.
     fn nout(&self) -> u64;
+    /// `pr_npages`: the pages the pool holds now (`vfs.fuse.fusefs_pool_pages` reads
+    /// `fusefs_fbuf_pool`'s). The default answers 0: a backend that keeps no pages of its
+    /// own (the host doubles of `hal` and the benches).
+    fn npages(&self) -> u64 {
+        0
+    }
     /// `pr_size`: the size of one item, the one `vmstat -m` reports for the pool (at least
     /// the size it was created with).
     fn size(&self) -> usize;
@@ -354,6 +360,12 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// `pr_nout`: the items out of the pool now (0 before `init`).
     pub fn nout(&self) -> u64 {
         self.raw().map_or(0, RawPool::nout)
+    }
+
+    /// `pr_npages`: the pages the pool holds now (0 before `init`), as the C's
+    /// `sysctl_bounded_arr` reads `&pool.pr_npages` (N5.9f2's `vfs.fuse.fusefs_pool_pages`).
+    pub fn npages(&self) -> u64 {
+        self.raw().map_or(0, RawPool::npages)
     }
 
     /// `pr_size` of the pool once made, as `vmstat -m` reports it: an item holds the count
