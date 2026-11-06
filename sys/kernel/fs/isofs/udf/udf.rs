@@ -66,15 +66,22 @@
 //! - `um_vat` is the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes ([`VatBlock`]: a counted
 //!   handle of the VAT's unode and the VAT's length, not a copy of the unode;
 //!   `udf_subr.rs`'s deviations); `um_stbl` is the `malloc(M_UDFMOUNT)`ed copy of the sparing
-//!   table as bytes, which each sparable partition map the mount reads replaces, the one
-//!   replaced kept allocated as the C leaks it (D-N5.8-R3: [`Umount::set_stbl`]).
+//!   table as bytes, which each sparable partition map the mount reads replaces. The replaced
+//!   table is freed ([`Umount::set_stbl`]), where the C overwrites the pointer and leaks the
+//!   block (udf_vfsops.c:762): the user's U4 of 2026-11-06, "free them" (with the tables and
+//!   the VAT block `udf_mountfs`'s error path frees, `udf_vfsops.rs`'s deviations). `vmstat
+//!   -m`'s `UDF mount` row keeps the C's requests; its `InUse` is lower than OpenBSD's after a
+//!   failed mount or a mount with more than one sparing table.
 //! - `um_root_icb` is set once by the mount, after its metadata adjustment (the C's `bcopy`
 //!   then its two member writes, udf_vfsops.c:384-388, are one value made first); zero
 //!   before.
 //! - `struct udf_dirstream`'s `bp` and `data` are one [`UdfData`] (where the current chunk
 //!   is: in the file entry, or in a buffer whose token it holds), `None` before the first
 //!   chunk; `buf` is the `malloc(M_UDFFID)`ed fragment buffer, `um_bsize` bytes; `error` is
-//!   a `Result`, `fid_fragment` a `bool`.
+//!   a `Result`, `fid_fragment` a `bool`. Its `node` and `ump` are not members: the walk's
+//!   caller holds the unode (and through it the mount) and lends it to each step, so the
+//!   stream holds no counted handle (a pool item is moved only whole: a handle to the unode,
+//!   whose hash link is pinned, would keep the item from being lent mutably).
 //! - `RDSECTOR(devvp, sector, size, bp)`, which reads `ump` from the caller's scope, is
 //!   [`rdsector`] with `ump` as an argument, returning `bread`'s pair; the shift by
 //!   `um_bshift` wraps (the mount validates the block size first, D-N5.8-U3).
@@ -82,6 +89,13 @@
 //!   (a descriptor longer than 64 KiB: the root's ICB length, a sparing table's size), where
 //!   the C's `buf_map` maps pages past its slot (the user's D-N5.8-U3); it returns the
 //!   buffer's token on success and releases the buffer on an error, as every C caller does.
+//!   A rounded size of 0 (a root ICB or a sparing table of length 0) reads a buffer of no
+//!   bytes, as the C's: its data is empty ([`lblk_bytes`]), so the descriptor it should hold
+//!   is missing (`EINVAL`), where the C reads it through the buffer's `NULL` `b_data`.
+//! - `u_vnode` and `u_fentry` are unset in a unode before `udf_vget` fills them, as in the
+//!   C's zeroed `pool_get` item: `udf_vget` gets the unode before its vnode (the C's
+//!   order), and a `vget` refused before it has a file entry still makes and frees an item
+//!   of the pool, as the C's (D-N5.7-U5's shim, `udf_vfsops.rs`).
 //! - The prototypes (`udf_allocv`, `udf_hashlookup`, `udf_hashins`, `udf_hashrem`,
 //!   `udf_checktag`) are the functions of `udf_vnops.rs` and `udf_vfsops.rs`.
 //!
@@ -89,15 +103,16 @@
 //! - LZ's `Unode` (`Cell` members of a raw `unode_pool` item hung from `v_data`, reached by
 //!   `VTOU`'s `unsafe` deref behind a tag check as a `&'static Unode`; `u_fentry` a raw
 //!   `malloc` block read through an `unsafe` slice; a `queue_adapter!` hash link) ->
-//!   [`Unode`], made whole where the C fills its `pool_get(PR_ZERO)` item (`udf_vget`, N5.8u2,
-//!   holds the file entry's copy before the unode is hashed or hung: [`Unode::new`]) and
-//!   published as an item of the glue's recorded `unode_pool` ([`Unode::alloc`], `"udfndpl"`,
-//!   the UFS inode's shape, docs/IDIOMS.md's `v_data` row; D-N5.8-7), erased into the vnode's
-//!   typed slot; [`VTOU`] is the slot's read and a count (`PoolArc::from_ref`), LZ's
-//!   `VT_UDF` check kept. The file entry's copy is an `MArray` of `M_UDFFENTRY` owned by the
-//!   unode and parsed once into [`FentryHdr`] (D-N5.8-5: no view rebuilt per `bmap`, where
-//!   LZ rebuilt one per `udf_bmap_internal` call). What the C writes after publication is a
-//!   word (`un_u`) or a `Link` (`u_devvp`, given back by the reclaim); the identity is plain.
+//!   [`Unode`], made where the C fills its `pool_get(PR_ZERO)` item (`udf_vget` holds the
+//!   file entry's copy before it gets the unode: [`Unode::new`]) and published as an item of
+//!   the glue's recorded `unode_pool` ([`Unode::alloc`], `"udfndpl"`, the UFS inode's shape,
+//!   docs/IDIOMS.md's `v_data` row; D-N5.8-7), erased into the vnode's typed slot; [`VTOU`]
+//!   is the slot's read and a count (`PoolArc::from_ref`), LZ's `VT_UDF` check kept. The file
+//!   entry's copy is an `MArray` of `M_UDFFENTRY` owned by the unode and parsed once into
+//!   [`FentryHdr`] (D-N5.8-5: no view rebuilt per `bmap`, where LZ rebuilt one per
+//!   `udf_bmap_internal` call). What the C writes after it gets the item is a word (`un_u`)
+//!   or a `Link` (`u_vnode`, set once by `udf_vget` when the vnode is got, D-u2-2;
+//!   `u_devvp`, given back by the reclaim); the identity is plain.
 //! - LZ's `Umount` (`Cell` members of a raw `malloc` block hung from `mnt_data`, reached by
 //!   `VFSTOUDFFS`'s `unsafe` deref; a raw hash table slice, a raw sparing table, a raw VAT
 //!   unode copy) -> [`Umount`], published where the C mallocs it (`udf_mountfs`,
@@ -254,9 +269,9 @@ pub struct Unode<G: ProcGlue> {
     pub u_le: PinEntry<Unode<G>>,
     /// The item's place in `unode_pool`, for [`VTOU`]'s count.
     home: PoolHome<Unode<G>>,
-    /// `u_vnode` (the C never changes it, even when `checkalias` moves the unode to an
-    /// alias: udf_vfsops.c:686).
-    pub u_vnode: &'static Vnode<G>,
+    /// `u_vnode`, set once by `udf_vget` when it has the vnode (the C never changes it, even
+    /// when `checkalias` moves the unode to an alias: udf_vfsops.c:686).
+    pub u_vnode: Link<Vnode<G>>,
     /// `u_devvp`, referenced by `udf_vget`, given back by `udf_reclaim`.
     pub u_devvp: Link<Vnode<G>>,
     /// `u_ump`: the mount, a counted handle for the node's life.
@@ -272,8 +287,9 @@ pub struct Unode<G: ProcGlue> {
     /// The members of the file entry (the module's deviations).
     pub fe: FentryHdr,
     /// `u_fentry`: the file entry, its extended attributes and allocation descriptors, then
-    /// zeros (the `malloc(M_UDFFENTRY | M_ZERO)` block `udf_vget` filled).
-    pub u_fentry: MArray<u8>,
+    /// zeros (the `malloc(M_UDFFENTRY | M_ZERO)` block `udf_vget` filled); `None` in the item
+    /// a refused `vget` frees (the C's `NULL`).
+    u_fentry: Option<MArray<u8>>,
 }
 
 /// A counted handle of a published [`Unode`]: the vnode's slot holds one, and so does the
@@ -281,21 +297,22 @@ pub struct Unode<G: ProcGlue> {
 pub type UnodeRef<G> = PoolArc<Unode<G>>;
 
 impl<G: ProcGlue> Unode<G> {
-    /// The node of the file `ino` of the mount `ump`, whose vnode is `vp` and whose file
-    /// entry `udf_vget` copied into `fentry`, as the C fills its zeroed item before hashing
-    /// it: `u_devvp` unset (the caller sets and references it), unhashed, unlocked.
-    pub fn new(vp: &'static Vnode<G>, ump: UmountRef<G>, ino: Udfino, fentry: MArray<u8>) -> Self {
+    /// The node of the file `ino` of the mount `ump` whose file entry `udf_vget` copied into
+    /// `fentry`, as the C fills its zeroed item: `u_vnode` and `u_devvp` unset (the caller
+    /// sets them, and references the device), unhashed, unlocked. With no `fentry`, the
+    /// item of a `vget` refused before it read one (the module's deviations).
+    pub fn new(ump: UmountRef<G>, ino: Udfino, fentry: Option<MArray<u8>>) -> Self {
         Self {
             u_le: PinEntry::new(),
             home: PoolHome::new(),
-            u_vnode: vp,
+            u_vnode: Link::new(),
             u_devvp: Link::new(),
             u_dev: ump.um_dev,
             u_ump: ump,
             u_lock: RecursiveRwlock::new("unode"),
             u_ino: ino,
             un_u: I64Word::new(0),
-            fe: FentryHdr::parse(&fentry),
+            fe: FentryHdr::parse(fentry.as_deref().unwrap_or(&[])),
             u_fentry: fentry,
         }
     }
@@ -335,6 +352,19 @@ impl<G: ProcGlue> Unode<G> {
             Some(vp) => vp,
             None => kpanic(format_args!("unode {self:p}: no u_devvp")),
         }
+    }
+
+    /// `up->u_vnode`, which `udf_vget` sets.
+    pub fn vnode(&self) -> &'static Vnode<G> {
+        match self.u_vnode.get() {
+            Some(vp) => vp,
+            None => kpanic(format_args!("unode {self:p}: no u_vnode")),
+        }
+    }
+
+    /// `up->u_fentry`'s bytes (none in a refused `vget`'s item).
+    pub fn fentry(&self) -> &[u8] {
+        self.u_fentry.as_deref().unwrap_or(&[])
     }
 }
 
@@ -511,14 +541,14 @@ impl<G: ProcGlue> Umount<G> {
     /// `ump->um_stbl = malloc(..)` and its bytes, by `udf_get_spartmap` for each sparable
     /// partition map: the table read last is the one the block map uses.
     pub fn set_stbl(&self, t: MArray<u8>) {
-        if let Some(old) = self.um_stbl.replace(Some(t)) {
-            // The C overwrites `um_stbl` without freeing it (udf_vfsops.c:762): the replaced
-            // table stays allocated and counted under M_UDFMOUNT for ever, so vmstat -m's
-            // `UDF mount` row stays the C's (D-N5.8-R3, the user's U5 rule). Pending the
-            // user's question (with udf_mountfs's leaks on its error path, N5.8u2): freeing
-            // it instead is `drop(old)` here.
-            core::mem::forget(old);
-        }
+        // The C overwrites `um_stbl` without freeing it (udf_vfsops.c:762), leaking the
+        // replaced table; it is freed here (the user's U4, the module's deviations).
+        drop(self.um_stbl.replace(Some(t)));
+    }
+
+    /// `ump->um_stbl`, taken: freed by the unmount and by the mount's error path.
+    pub fn take_stbl(&self) -> Option<MArray<u8>> {
+        self.um_stbl.replace(None)
     }
 
     /// `ump->um_vat`: the VAT's node and its length, `None` when there is none. The slot's
@@ -555,8 +585,8 @@ impl UdfData {
     /// the buffer (fewer when the copy or the buffer ends first).
     pub fn bytes<'a, G: ProcGlue>(&'a self, up: &'a Unode<G>, size: i32) -> &'a [u8] {
         let (bytes, off): (&[u8], usize) = match self {
-            UdfData::Entry(off) => (&up.u_fentry, *off),
-            UdfData::Buf(t, off) => (t.bytes(), *off),
+            UdfData::Entry(off) => (up.fentry(), *off),
+            UdfData::Buf(t, off) => (lblk_bytes(t), *off),
         };
         let size = usize::try_from(size).unwrap_or(0);
         let end = off.saturating_add(size).min(bytes.len());
@@ -565,12 +595,10 @@ impl UdfData {
 }
 
 /// `struct udf_dirstream`: a walk over the file identifier descriptors of a directory
-/// (`udf_opendir`, N5.8u2, makes one in `udf_ds_pool`).
-pub struct UdfDirstream<G: ProcGlue> {
-    /// `node`: the directory.
-    pub node: UnodeRef<G>,
-    /// `ump`.
-    pub ump: UmountRef<G>,
+/// (`udf_opendir` makes one in `udf_ds_pool`). Its `node` and `ump`, the directory's unode
+/// and its mount, which the caller of the walk holds for the walk's life, are the walk's
+/// arguments (`udf_getfid`'s), not members (the module's deviations).
+pub struct UdfDirstream {
     /// `bp` and `data`: where the current chunk is (the module's deviations).
     pub data: Option<UdfData>,
     /// `buf`: the fragment buffer, `um_bsize` bytes of `M_UDFFID`.
@@ -612,6 +640,12 @@ pub fn rdsector<G: ProcGlue>(
     // `um_bshift` is the validated block size's (D-N5.8-U3); the shift wraps all the same.
     let blkno = sector.wrapping_shl(ump.um_bshift.get() as u32) / Daddr::from(DEV_BSIZE);
     bread(&devvp.bufs, blkno, size)
+}
+
+/// The bytes of a buffer `udf_readlblks` or [`rdsector`] read: none for a buffer of no bytes,
+/// which is not mapped (the C's `NULL` `b_data`; the module's deviations).
+pub fn lblk_bytes(t: &BufRef) -> &[u8] {
+    if t.is_mapped() { t.bytes() } else { &[] }
 }
 
 /// `udf_readlblks(ump, sector, size, bp)`: read the logical blocks holding `size` bytes from
@@ -752,8 +786,9 @@ mod tests {
     }
 
     /// Two sparable partition maps (or two logical volume descriptors) each read a sparing
-    /// table (udf_vfsops.c:762): the second replaces the first, which stays allocated as
-    /// the C leaks it (D-N5.8-R3), so `M_UDFMOUNT`'s requests and bytes out are the C's.
+    /// table (udf_vfsops.c:762): the second replaces the first, which is freed where the C
+    /// leaks it (the user's U4): `M_UDFMOUNT`'s requests are the C's, one table is out; the
+    /// unmount's take frees the second.
     #[test]
     fn a_second_sparing_table_replaces_the_first() {
         let (_g, _p) = attach(vec![0; B]);
@@ -771,10 +806,12 @@ mod tests {
         ump.set_stbl(table(2, 80));
         assert!(ump.with_stbl(|t| t == Some(&[2u8; 80][..])));
         assert_eq!(malloc_requests(M_UDFMOUNT).0, n0 + 2);
-        // Both blocks are out: the first is never freed, as the C's (a free of the first
-        // would leave out1 - 64 + 80).
+        // The first is freed (a leak, the C's, would leave out1 + 80).
         assert_eq!(out1, out0 + 64);
-        assert_eq!(malloc_out(M_UDFMOUNT), out1 + 80);
+        assert_eq!(malloc_out(M_UDFMOUNT), out1 - 64 + 80);
+        drop(ump.take_stbl());
+        assert_eq!(malloc_out(M_UDFMOUNT), out0);
+        assert!(ump.with_stbl(|t| t.is_none()));
     }
 
     #[test]

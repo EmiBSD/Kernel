@@ -38,22 +38,25 @@
 //!   glue typed by what they hold (`hal::pool`'s `TypedPool` of the recorded unodes,
 //!   `BoxPool`s of the directory streams and of the name buffers), the member `udf` of the
 //!   glue's VFS tables (a static generic over the glue cannot exist), made by `udf_init` with
-//!   the C's names and flags (D-N5.8-7). `udf_vops` joins them with the vnode operations
-//!   (N5.8u2). 0 `unsafe` (LZ: 0).
+//!   the C's names and flags (D-N5.8-7), and the C's `extern struct vops udf_vops`
+//!   (`UdfVnops`, `udf_vnops.rs`: one address per glue). 0 `unsafe` (LZ: 0).
 
 use hal::pool::{BoxPool, TypedPool};
 use hal::sys::dirent::MAXNAMLEN;
 
 use crate::fs::isofs::udf::udf::{UdfDirstream, Unicode, Unode};
+use crate::fs::isofs::udf::udf_vnops::UdfVnops;
 use crate::proc::ProcGlue;
 
-/// udf's globals of a glue: the C's `extern` pools.
+/// udf's globals of a glue: the C's `extern` pools and vnode operations.
 pub struct UdfTables<G: ProcGlue> {
+    /// `udf_vops`: the operations of a UDF vnode.
+    pub vops: UdfVnops<G>,
     /// `unode_pool` (`"udfndpl"`): the unodes (recorded: `VTOU` counts a handle back from
     /// a unode the vnode lends).
     pub unode_pool: TypedPool<Unode<G>>,
     /// `udf_ds_pool` (`"udfdspl"`): the directory streams.
-    pub ds_pool: BoxPool<UdfDirstream<G>>,
+    pub ds_pool: BoxPool<UdfDirstream>,
     /// `udf_trans_pool` (`"udftrpl"`): the names' 8- to 16-bit expansion buffers,
     /// `MAXNAMLEN * sizeof(unicode_t)` bytes each.
     pub trans_pool: BoxPool<[Unicode; MAXNAMLEN]>,
@@ -63,6 +66,7 @@ impl<G: ProcGlue> UdfTables<G> {
     /// No pool made yet.
     pub const fn new() -> Self {
         Self {
+            vops: UdfVnops::new(),
             unode_pool: TypedPool::new(),
             ds_pool: BoxPool::new(),
             trans_pool: BoxPool::new(),
