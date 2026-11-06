@@ -122,18 +122,12 @@ use crate::sys::errno::Errno;
 use crate::sys::types::Vaddr;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 use crate::arch::current::copy as machine;
 
 /// No copy of the machine's in `hal` (amd64 until N10): every copy is `EFAULT`, as before the
 /// `UserCopy` bridge was registered.
-#[cfg(not(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-)))]
+#[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
 mod machine {
     use crate::sys::errno::Errno;
 
@@ -161,10 +155,7 @@ mod machine {
 
 /// Which machine routine a raw copy is (`arch/<machine>/copy.rs`'s `copy_raw`): the legs of a
 /// [`ForeignWindow`] to and from a uio's iovecs, where neither side is a slice.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RawCopy {
     /// `copyout(src, dst, len)`: the kernel's `src` to the user's `dst`.
@@ -237,10 +228,7 @@ impl ForeignWindow<'_> {
         if buf.is_empty() {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: `[kva, kva + buf.len())` lies inside the window (`at` checked it), which the
         // kernel map's token minted over a range its holder's `uvm_map_extract` or `uvm_map`
         // of an aobj not marked as viewed by `hal` put in the kernel map (the token's
@@ -250,10 +238,7 @@ impl ForeignWindow<'_> {
         // faults in (`uvm_fault`) or is `EFAULT` (`pcb_onfault`). `buf` is the caller's,
         // borrowed for the copy.
         let r = unsafe { machine::kcopy_in(kva, buf) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = kva;
             Err(Errno::EFAULT)
@@ -268,19 +253,13 @@ impl ForeignWindow<'_> {
         if src.is_empty() {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: as in `read_at`: the range lies inside the window, the pages of an
         // extracted range or of an aobj not marked as viewed by `hal`, which no Rust object
         // occupies, mapped while the window lives; another mapping may write them meanwhile
         // (no reference is made), and a page not resident yet faults in or is `EFAULT`.
         let r = unsafe { machine::kcopy_out(src, kva) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = kva;
             Err(Errno::EFAULT)
@@ -339,10 +318,7 @@ impl ForeignWindow<'_> {
         if n == 0 {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         let r = {
             let (kind, src, dst) = match leg {
                 WindowLeg::ToUser => (RawCopy::Out, kva, other),
@@ -367,10 +343,7 @@ impl ForeignWindow<'_> {
             // build such an iovec, the same trust `bsd`'s `uiomove` rests on, not new in kind).
             unsafe { machine::copy_raw(kind, src, dst, n) }
         };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (leg, kva, other);
             Err(Errno::EFAULT)
@@ -704,18 +677,12 @@ impl KcopyToken {
     /// `kcopy(kva, buf, buf.len())`: the bytes at the kernel address `kva` into `buf`;
     /// `EFAULT` when a page faults (or where `hal` has no copy).
     pub fn kcopy_in(&self, kva: usize, buf: &mut [u8]) -> Result<(), Errno> {
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: the token's contract (the type's docs): `kva` names a kernel buffer of at
         // least `buf.len()` bytes its holder vouches for, no Rust object written meanwhile; a
         // page that is not mapped is `EFAULT`. `buf` is the caller's, borrowed for the copy.
         let r = unsafe { machine::kcopy_in(kva, buf) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (kva, buf);
             Err(Errno::EFAULT)
@@ -726,17 +693,11 @@ impl KcopyToken {
     /// `kcopy(buf, kva, buf.len())`: `buf` to the kernel address `kva`; `EFAULT` when a page
     /// faults (or where `hal` has no copy).
     pub fn kcopy_out(&self, buf: &[u8], kva: usize) -> Result<(), Errno> {
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: the token's contract: `kva` names a kernel buffer of at least `buf.len()`
         // bytes its holder vouches for, which no Rust reference covers during the copy.
         let r = unsafe { machine::kcopy_out(buf, kva) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (buf, kva);
             Err(Errno::EFAULT)

@@ -97,7 +97,7 @@
 //! do, until their owners move (N4.8, the trap entry; the pmap's switch record): `pmap_setttb`
 //! (`sys/arch/arm64/arm64/cpuswitch.rs`, the new thread's address space, called with the
 //! thread `ci_curproc` now names) and `syscall_return` (`exception.S`, a new user thread's way
-//! out). The ABI module's copy of `hal` (`module-rt`) does not compile this module.
+//! out).
 //!
 //! ## Deviations
 //! - No retguard: the cookie load/calc/check around the stack pivot has no counterpart in

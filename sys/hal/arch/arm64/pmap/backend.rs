@@ -222,12 +222,10 @@
 //!   refuses a CPU already on the kernel's tables with another value, so no caller can load
 //!   the kernel's tables under a user pmap's ASID.
 
-#[cfg(not(feature = "module-rt"))]
 use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
-#[cfg(not(feature = "module-rt"))]
 use super::super::exception::trampoline_range;
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
@@ -254,8 +252,7 @@ use super::layout::{
     image_layout_ok, image_page_prot, image_ptps, kernel_leaf, kernel_map_slot, tcr_t1sz,
     tlbi_asid, tlbi_page, vp_idx,
 };
-// pmap_postinit's (the kernel's alone: the ABI module's image has no trampoline).
-#[cfg(not(feature = "module-rt"))]
+// pmap_postinit's.
 use super::layout::{VP_ENTRIES, VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS};
 use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvHead, PvKind, Table, copy_frame, direct_map,
@@ -292,7 +289,6 @@ const AP_BITS_USER: [u64; 8] = [
 
 /// The upper half's first address (`T1SZ` 16, four levels): the sign bits of every kernel
 /// address, where `pmap_tramp_walk` starts.
-#[cfg(not(feature = "module-rt"))]
 const KERNEL_VA_TOP: usize = !((1 << 48) - 1);
 
 /// The `MAIR_EL1` fields `pmap_bootstrap` writes (indices 2, 3, 4) and what it keeps.
@@ -617,7 +613,6 @@ fn pmap_kernel_nonglobal(root: Paddr) {
 /// The boot-time proof of [`pmap_kernel_nonglobal`]'s rule: panics on a block or page of the
 /// kernel's tables without `ATTR_nG`, which would match every ASID and so stay in the TLB
 /// while user code runs under `pmap_tramp`.
-#[cfg(not(feature = "module-rt"))]
 fn pmap_kernel_nonglobal_check(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
         if d & ATTR_nG == 0 {
@@ -1355,9 +1350,7 @@ fn pmap_fault_fixup(pm: &Pmap, va: usize, ftype: VmProt) -> bool {
 /// `trampoline_vectors_end` entered into `pmap_tramp` at their kernel addresses, read-only and
 /// executable at EL1 (`PMAP_WIRED`, the C's protections), then the proof that its tables hold
 /// those pages and nothing else ([`pmap_tramp_check`]). The kernel virtual space reserve of
-/// the C's tail (`pmap_kvp_map`) is not configured (see the deviations). The kernel's alone:
-/// the ABI module's image (`module-rt`) has no trampoline.
-#[cfg(not(feature = "module-rt"))]
+/// the C's tail (`pmap_kvp_map`) is not configured (see the deviations).
 pub fn postinit() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) {
@@ -1404,7 +1397,6 @@ pub fn postinit() {
 /// of ours down to level 3, whose leaves are exactly the pages of `range`, each at the kernel's
 /// physical address, non-global, read-only, executable at EL1 and out of EL0's reach; anything else
 /// panics, before user code ever runs under them.
-#[cfg(not(feature = "module-rt"))]
 fn pmap_tramp_check(range: &Range<usize>) {
     let Some(root) = PMAP_TRAMP.md.root() else {
         hal_panic(format_args!("pmap_postinit: pmap_tramp has no tables"));
@@ -1419,7 +1411,6 @@ fn pmap_tramp_check(range: &Range<usize>) {
 
 /// The valid leaves under `t`, a table of `level` whose first address is `base`, each checked
 /// against `range` ([`pmap_tramp_check`]).
-#[cfg(not(feature = "module-rt"))]
 fn pmap_tramp_walk(t: Table, level: usize, base: usize, range: &Range<usize>) -> usize {
     const POS: [u32; 4] = [VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS];
     let more = || -> ! {

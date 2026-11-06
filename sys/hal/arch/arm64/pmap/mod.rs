@@ -41,7 +41,6 @@ pub mod layout;
 mod vp;
 
 pub use asid::asid_width;
-#[cfg(not(feature = "module-rt"))]
 pub use backend::postinit;
 pub(crate) use backend::{Backend, PmapMd};
 pub use backend::{

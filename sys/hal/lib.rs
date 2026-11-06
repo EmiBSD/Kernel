@@ -152,10 +152,7 @@ pub mod rwlock;
 pub mod seqlock;
 // The signal frame of the running thread (N4.8b): wherever a machine's trap code is (arm64;
 // amd64's is N10's) and on the host, where it is a double.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[forbid(unsafe_code)]
 pub mod sig;
 pub mod sleep;

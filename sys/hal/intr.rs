@@ -259,7 +259,7 @@ pub trait IntrHardware: Sync {
 /// before one.
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[cfg_attr(
-    any(not(target_os = "none"), feature = "module-rt"),
+    not(target_os = "none"),
     allow(dead_code, reason = "the machine's IRQ entry alone calls it")
 )]
 pub(crate) fn dispatch_irq(frame: &mut crate::trap::Trapframe) {
@@ -272,7 +272,7 @@ pub(crate) fn dispatch_irq(frame: &mut crate::trap::Trapframe) {
 /// `arm_cpu_fiq`'s dispatch, as [`dispatch_irq`].
 #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[cfg_attr(
-    any(not(target_os = "none"), feature = "module-rt"),
+    not(target_os = "none"),
     allow(dead_code, reason = "the machine's FIQ entry alone calls it")
 )]
 pub(crate) fn dispatch_fiq(frame: &mut crate::trap::Trapframe) {
