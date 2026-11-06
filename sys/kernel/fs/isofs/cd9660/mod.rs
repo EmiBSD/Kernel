@@ -19,13 +19,21 @@
 /* <CODE> */
 //! The ISO 9660 file system: OpenBSD `sys/isofs/cd9660/`, one module per file of LZ's,
 //! feature `cd9660` (`option CD9660`). N5.8c1 brings the on-disc format (`iso`) and the
-//! names (`cd9660_util`); N5.8c2 the mount and the file system's table
+//! names (`cd9660_util`), the Rock Ridge analysis (`iso_rrip`, `cd9660_rrip`), the mount structure
+//! (`cd9660_extern`), the node and its hash (`cd9660_node`), the block map (`cd9660_bmap`)
+//! and the directory lookup (`cd9660_lookup`); N5.8c2 the mount and the file system's table
 //! (`cd9660_vfsops`, `Cd9660Vfs`) and the vnode operations (`cd9660_vnops`), and switches
 //! `vfsconflist[]` to this one. `testcd9660` is the tests' fixture (host tests and benches
 //! only).
 
+pub mod cd9660_bmap;
+pub mod cd9660_extern;
+pub mod cd9660_lookup;
+pub mod cd9660_node;
+pub mod cd9660_rrip;
 pub mod cd9660_util;
 pub mod iso;
+pub mod iso_rrip;
 #[cfg(any(test, feature = "doubles"))]
 pub mod testcd9660;
 /* </CODE> */

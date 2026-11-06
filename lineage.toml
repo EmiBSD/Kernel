@@ -9744,7 +9744,101 @@ kind = "dropped"
 reason = "the type of the dropped cd9660_wchar2char hook (a conversion routine's signature); nothing else names it"
 
 [[module]]
+rust = "sys/kernel/fs/isofs/cd9660/iso_rrip.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/iso_rrip.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired): the ISO_SUSP_* flags and IsoRripAnalyze<'a, G> as LZ's, plus the analysis's own copy of the node's attributes (inode, stored back once by cd9660_rrip_analyze: the node's attributes are words) and held, the device block the caller holds busy (D-N5.8-U1); 0 unsafe (LZ: 0)"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_extern.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_extern.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired; D-N5.8-6): IsoMnt<G> built whole by iso_mountfs (N5.8c2), its members plain, published once in a counted malloc(M_ISOFSMNT) block (IsoMntRef<G> = MArc, IsoMnt::alloc) erased into the mount's typed slot; im_export left for the mount's glue (BsdMountG.export, as msdosfs's pm_export); vfstoisofs the slot's typed read (kpanic on None, LZ's vfc_name check made by the type); the block macros over IsoMnt<G>; 0 unsafe (LZ: 1)"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_node.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_node.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired; D-N5.8-7): IsoNode<G> made where the C fills its malloc(M_ZERO) block (IsoNode::new: i_vnode, i_dev, i_number, i_mnt given) and published in a counted malloc(M_ISOFSNODE) block (IsoNodeRef<G> = MArc, IsoNode::alloc) erased into the vnode's typed slot; vtoi the slot's typed read; what the C writes after the hashing (iso_extent, i_size, iso_start, the attributes as eleven words, i_flag, the lookup's offsets, ci_lastr) relaxed words, i_vnode and i_devvp Links (checkalias's move), i_mnt a counted handle; the hash Isohash<G> (hashinit PinLists of pinned nodes, IsoHashLink<G> from pin_adapter!'s generic form, LZ's IsoHash queue_adapter!) in IsofsTables<G> (VfsTables::cd9660, ReadMostly), no lock but the kernel lock as the C (klock::reader for walks, witness for insert and remove), i_chain for cd9660_ihashrem; cd9660_init over the shared hashinit and siphash_key; cd9660_ihashins with the C's duplicate scan and EEXIST, the vnode locked after; cd9660_reclaim (take_node), cd9660_inactive; cd9660_defattr/deftstamp into a &mut IsoRripInode over BufRef tokens; cd9660_test_reset; 0 unsafe (LZ: 6)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_node.rs::Isohashtbl"
+native = ["Isohash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_node.rs::ISOHASHTBL"
+native = ["Isohash", "IsofsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_node.rs::ISOHASH"
+native = ["Isohash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_node.rs::ISOHASHKEY"
+native = ["Isohash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_node.rs::cd9660_isohash"
+native = ["Isohash::cd9660_isohash"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_rrip.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_rrip.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired; D-N5.8-U1, the user's): the SUSP entries as hal::abi_pod! images read with fs::pod's pod_view! (LZ: from_bytes_impl!'s unsafe casts); the four tables associated constants of RripTables<G>; the readers write the analysis's copy of the attributes; cd9660_rrip_loop over the record's bytes and each continuation token (fs::bio's BufRef, released before the next bread), a CE naming the caller's held device block or the continuation block being walked ends the walk, and so does a chain past ISO_RRIP_MAXCE (64) areas; hostname read only for a HOST component; cd9660_rrip_analyze/getname/getsymname/offset take the held block; 0 unsafe (LZ: 15)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_rrip.rs::RRIP_TABLE_ANALYZE"
+native = ["RripTables::RRIP_TABLE_ANALYZE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_rrip.rs::RRIP_TABLE_GETNAME"
+native = ["RripTables::RRIP_TABLE_GETNAME"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_rrip.rs::RRIP_TABLE_GETSYMNAME"
+native = ["RripTables::RRIP_TABLE_GETSYMNAME"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_rrip.rs::RRIP_TABLE_EXTREF"
+native = ["RripTables::RRIP_TABLE_EXTREF"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_rrip.rs::hostname"
+native = ["hostnamelen", "Src::copy_to"]
+kind = "split"
+lines = "L528-L539"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_bmap.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_bmap.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired): cd9660_bmap over the kernel's Vnops::bmap arguments (LZ's VopBmapArgs), the node vtoi's counted handle; the block number the doff_t sum shifted (wrapping), the run the 64-bit difference stored into the C's int; 0 unsafe (LZ: 0)"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_lookup.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_lookup.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired): cd9660_lookup over the kernel's Vnops::lookup arguments, the directory's BufRef token held across the Rock Ridge name and cd9660_vget_internal's use of the record as the C holds bp, cd9660_vget_internal a function argument (VgetInternal<G>) until N5.8c2 brings it; cd9660_bufatoff over bread_or_release of the directory's vnode; ISO_NCHSTATS a static Nchstats; 0 unsafe (LZ: 2)"
+
+[[module]]
 rust = "sys/kernel/fs/vnode.rs"
+
 crate = "kernel"
 lz = ["sys/sys/vnode.rs", "sys/kern/vfs_vnops.rs"]
 status = "redesigned"

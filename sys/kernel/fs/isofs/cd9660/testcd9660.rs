@@ -21,9 +21,31 @@
 //! 25 blocks of an image made by OpenBSD's makefs (`makefs -t cd9660 -o
 //! rockridge,label=M10C` of a tree with `m10c-iso.txt`, holding "m10c-iso-42\n", and `sub/`
 //! with a symbolic link `link -> ../m10c-iso.txt` and `Mixed_Case-name.long.txt`), moved
-//! from LZ's `iso.rs` tests (N5.8c1); c2 adds the image writer and the mounts.
+//! from LZ's `iso.rs` tests (N5.8c1); a mount structure of that image over testffs's disk
+//! and nodes of it with vnodes of a small table ([`TestIsoVops`]: the lock, the block map and
+//! the strategy, through the device), until N5.8c2 brings the image writer, the real mounts
+//! and cd9660's own tables.
 
-use crate::fs::isofs::cd9660::iso::IsoDirectoryRecord;
+use std::sync::MutexGuard;
+use std::vec::Vec;
+
+use hal::sys::errno::Errno;
+use hal::sys::types::Daddr;
+
+use crate::fs::buf::BufRef;
+use crate::fs::isofs::cd9660::cd9660_bmap::cd9660_bmap;
+use crate::fs::isofs::cd9660::cd9660_extern::{IsoFtype, IsoMnt, IsoMntRef};
+use crate::fs::isofs::cd9660::cd9660_node::{
+    IsoNode, IsoNodeRef, cd9660_inactive, cd9660_init, cd9660_reclaim, vtoi,
+};
+use crate::fs::isofs::cd9660::iso::{Cdino, IsoDirectoryRecord};
+use crate::fs::mount::vfs_mount_alloc;
+use crate::fs::subr::{getnewvnode, vref};
+use crate::fs::testfs::{TEST_CONF, TestGlue};
+use crate::fs::ufs::ffs::testffs;
+use crate::fs::vnode::{LK_RWFLAGS, VT_ISOFS, Vnode};
+use crate::fs::vops::{Cred, IoBuf, Vnops, vop_strategy};
+use crate::proc::Thread;
 
 /// The makefs image's records and blocks.
 pub mod image {
@@ -269,6 +291,129 @@ pub mod image {
         }
         img
     }
+}
+
+/// The vnode table of the fixture's nodes: the node's lock, the block map, the strategy
+/// (mapped through `cd9660_bmap` to the device, `ufs_strategy`'s shape), `access` granted,
+/// and cd9660's `inactive` and `reclaim`; every other slot the C's NULL.
+pub struct TestIsoVops;
+
+impl Vnops<TestGlue> for TestIsoVops {
+    fn lock(&self, vp: &'static Vnode<TestGlue>, flags: i32) -> Result<(), Errno> {
+        vtoi(vp).i_lock.enter(flags & LK_RWFLAGS)
+    }
+    fn unlock(&self, vp: &'static Vnode<TestGlue>) -> Result<(), Errno> {
+        vtoi(vp).i_lock.exit();
+        Ok(())
+    }
+    fn islocked(&self, vp: &'static Vnode<TestGlue>) -> i32 {
+        vtoi(vp).i_lock.status()
+    }
+    fn access(
+        &self,
+        _vp: &'static Vnode<TestGlue>,
+        _mode: i32,
+        _cred: Cred<'_>,
+        _p: &Thread<TestGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn inactive(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        p: Option<&Thread<TestGlue>>,
+    ) -> Result<(), Errno> {
+        cd9660_inactive(vp, p)
+    }
+    fn reclaim(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        _p: Option<&Thread<TestGlue>>,
+    ) -> Result<(), Errno> {
+        cd9660_reclaim(vp)
+    }
+    fn bmap(
+        &self,
+        vp: &'static Vnode<TestGlue>,
+        bn: Daddr,
+        vpp: Option<&mut Option<&'static Vnode<TestGlue>>>,
+        bnp: Option<&mut Daddr>,
+        runp: Option<&mut i32>,
+    ) -> Result<(), Errno> {
+        cd9660_bmap(vp, bn, vpp, bnp, runp)
+    }
+    fn strategy(&self, vp: &'static Vnode<TestGlue>, bp: IoBuf) -> Result<(), Errno> {
+        let Some(t): Option<BufRef> = bp.into_token() else {
+            std::panic!("testcd9660: a lent buffer");
+        };
+        let b = t.buf();
+        if b.blkno() == b.lblkno() {
+            let mut bn = 0;
+            cd9660_bmap(vp, b.lblkno(), None, Some(&mut bn), None)?;
+            b.set_blkno(bn);
+        }
+        let devvp = vtoi(vp).devvp();
+        b.set_dev(devvp.rdev());
+        vop_strategy(devvp, IoBuf::Token(t))
+    }
+}
+
+/// The table, a `static` (one address for the registry, D-b2-10).
+pub static TEST_ISO_VOPS: TestIsoVops = TestIsoVops;
+
+/// `image` as the disk of testffs's block device, and cd9660's hash made: the memory guard
+/// and the test thread.
+pub fn attach_image(image: Vec<u8>) -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
+    let (g, p) = testffs::attach(image);
+    if let Err(e) = cd9660_init::<TestGlue>() {
+        std::panic!("testcd9660: cd9660_init: {e:?}");
+    }
+    (g, p)
+}
+
+/// The mount structure of the makefs image as `iso_mountfs` builds it (2048-byte blocks, 25
+/// of them, the root at block 20, no Rock Ridge skip) on a fresh mount of testfs's type and
+/// testffs's device, changed by `f`, published (not hung on the mount).
+pub fn test_mnt(ftype: IsoFtype, f: impl FnOnce(&mut IsoMnt<TestGlue>)) -> IsoMntRef<TestGlue> {
+    let devvp = testffs::devvp();
+    let mut root = [0u8; 34];
+    root.copy_from_slice(&image::PVD_HEAD[156..190]);
+    let mut imp = IsoMnt {
+        im_flags: 0,
+        im_mountp: vfs_mount_alloc(None, &TEST_CONF[0]),
+        im_dev: devvp.rdev(),
+        im_devvp: devvp,
+        logical_block_size: 2048,
+        im_bshift: 11,
+        im_bmask: 2047,
+        volume_space_size: 25,
+        root,
+        root_extent: 20,
+        root_size: 2048,
+        iso_ftype: ftype,
+        rr_skip: 0,
+        rr_skip0: 0,
+        joliet_level: 0,
+    };
+    f(&mut imp);
+    imp.alloc()
+}
+
+/// A node of `imp` numbered `ino` with a vnode of its own of [`TEST_ISO_VOPS`] (referenced,
+/// unlocked), its device vnode referenced, as `cd9660_vget_internal` links them; not hashed.
+pub fn test_node(
+    imp: &IsoMntRef<TestGlue>,
+    ino: Cdino,
+) -> (IsoNodeRef<TestGlue>, &'static Vnode<TestGlue>) {
+    let vp = match getnewvnode(VT_ISOFS, Some(imp.im_mountp), &TEST_ISO_VOPS) {
+        Ok(vp) => vp,
+        Err(e) => std::panic!("testcd9660: getnewvnode: {e:?}"),
+    };
+    let ip = IsoNode::new(vp, imp.im_dev, ino, imp.clone()).alloc();
+    vp.set_node(hal::malloc::MArc::erase(ip.clone()));
+    ip.i_devvp.set(Some(imp.im_devvp));
+    vref(imp.im_devvp);
+    (ip, vp)
 }
 
 /// A record view of a fixture.
