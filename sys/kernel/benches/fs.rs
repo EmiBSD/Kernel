@@ -129,6 +129,24 @@
 //! - `udf.read.1blk`: `lseek(fd, 0, SEEK_SET)` and a `read` of the file's one block (12
 //!   bytes, the block cached).
 //!
+//! N5.9t1's rows (feature `tmpfs`), over the kernel tmpfs's fixture (`testtmpfs`: a mount of
+//! no device, the fixture's vnode table; the vnode operations land at N5.9t2, so the rows
+//! call tmpfs's functions under the locked vnodes), a first measurement for N12 (decision
+//! 43: tmpfs is on the mmap-fault path, the vnode pager's `VOP_READ`):
+//! - `tmpfs.read.4k`: `tmpfs_uiomove` of a page at offset 0 into a kernel uio (the C's
+//!   `uao_reference`, `uvm_map` of a one-page window, the page's fault on the first touch,
+//!   one copy, `uvm_unmap`: a whole page is not kept).
+//! - `tmpfs.read.cached`: 64 bytes at offset 128, the page kept by the previous call (the one
+//!   copy through the kept window).
+//! - `tmpfs.write.4k`: `tmpfs_uiomove` of a page from a kernel uio into the file's second page.
+//! - `tmpfs.lookup.hit.1`: `tmpfs_dir_lookup` of the first of three names (the C's scan, a
+//!   counted handle of the entry).
+//! - `tmpfs.readdir.1blk`: `tmpfs_dir_getdents` of the root from offset 0 into 4 KiB (the dot
+//!   entries and three names).
+//! On the host the copies go through the double's 512-byte bounce and a fault's page is the
+//! kernel's page system over a heap block: the rows time the kernel's work over the doubles,
+//! not the machine's copy.
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -678,6 +696,16 @@ fn main() {
         "udf.readdir.1blk",
         #[cfg(feature = "udf")]
         "udf.read.1blk",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.read.4k",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.read.cached",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.write.4k",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.lookup.hit.1",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.readdir.1blk",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1153,6 +1181,118 @@ fn main() {
             s.spawn(|| udf_rows(&wanted, &names[udf..], &report));
         });
     }
+
+    // N5.9t1's rows: the kernel tmpfs, on a thread of its own after udf's.
+    #[cfg(feature = "tmpfs")]
+    {
+        let tmpfs = names
+            .iter()
+            .position(|n| n.starts_with("tmpfs."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| tmpfs_rows(&wanted, &names[tmpfs..], &report));
+        });
+    }
+}
+
+/// N5.9t1's tmpfs rows (the module's docs), `names` theirs in order.
+#[cfg(feature = "tmpfs")]
+fn tmpfs_rows(
+    wanted: &dyn Fn(&str) -> bool,
+    names: &[&str],
+    report: &dyn Fn(&str, (f64, f64, f64)),
+) {
+    use kernel::fs::namei::Componentname;
+    use kernel::fs::tmpfs::testtmpfs;
+    use kernel::fs::tmpfs::tmpfs::vptonode;
+    use kernel::fs::tmpfs::tmpfs_subr::{
+        tmpfs_alloc_file, tmpfs_dir_getdents, tmpfs_dir_lookup, tmpfs_reg_resize, tmpfs_uiomove,
+    };
+    use kernel::fs::tmpfs::tmpfs_vfsops::{tmpfs_root, tmpfs_unmount};
+
+    let (_memory, p) = testtmpfs::setup();
+    kernel::testutil::set_file_log(false);
+    let mut data = testtmpfs::args(1 << 20, 0, 0, 0o1777);
+    let mp = need(testtmpfs::mount(p, &mut data), "mount");
+    let dvp = need(tmpfs_root(mp), "root");
+    let mut va = Vattr::new();
+    va.va_type = VREG;
+    va.va_mode = 0o644;
+    va.va_rdev = -1;
+    let mut vps = Vec::new();
+    for name in [&b"file"[..], b"two", b"three"] {
+        let name: &'static [u8] = Box::leak(name.to_vec().into_boxed_slice());
+        let mut cnp = Componentname::new(0, 0, p, Cred::real(p.ucred()));
+        cnp.set_name_lit(name);
+        vps.push(need(tmpfs_alloc_file(dvp, &va, &mut cnp, None), "create"));
+    }
+    let fvp = vps[0];
+    let node = vptonode(fvp);
+    let root = vptonode(dvp);
+    need(tmpfs_reg_resize(fvp, 8192), "resize");
+    let mut page = std::vec![0x5au8; 4096];
+    let mut small = [0u8; 64];
+    let mut dents = std::vec![0u8; 4096];
+    let move_at = |off: i64, buf: &mut [u8], write: bool| {
+        let mut iov = [Iovec::new()];
+        let len = buf.len();
+        let mut uio = if write {
+            Uio::<TestGlue>::kernel_write(&mut iov, buf, None)
+        } else {
+            Uio::<TestGlue>::kernel_read(&mut iov, buf, None)
+        };
+        uio.uio_offset = off;
+        let _ = black_box(tmpfs_uiomove(&node, &mut uio, len));
+    };
+    // The warm-up: both pages faulted in.
+    move_at(0, &mut page, true);
+    move_at(4096, &mut page, true);
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| rounds(|| move_at(0, &mut page, false))),
+        );
+    }
+    if wanted(names[1]) {
+        move_at(128, &mut small, false);
+        report(
+            names[1],
+            measure(|| rounds(|| move_at(128, &mut small, false))),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| rounds(|| move_at(4096, &mut page, true))),
+        );
+    }
+    let mut cnp = Componentname::new(0, 0, p, Cred::real(p.ucred()));
+    cnp.set_name_lit(b"file");
+    if wanted(names[3]) {
+        report(
+            names[3],
+            measure(|| rounds(|| drop(black_box(tmpfs_dir_lookup(&root, black_box(&cnp)))))),
+        );
+    }
+    if wanted(names[4]) {
+        report(
+            names[4],
+            measure(|| {
+                rounds(|| {
+                    let mut iov = [Iovec::new()];
+                    let mut uio = Uio::<TestGlue>::kernel_read(&mut iov, &mut dents, None);
+                    let _ = black_box(tmpfs_dir_getdents(&root, &mut uio));
+                })
+            }),
+        );
+    }
+    drop((node, root));
+    for vp in vps {
+        vput(vp);
+    }
+    vput(dvp);
+    need(tmpfs_unmount(mp, 0, p), "unmount");
 }
 
 /// N5.8u2's udf rows (the module's docs), `names` theirs in order.
