@@ -516,8 +516,9 @@ pub fn namei<G: ProcGlue>(ndp: &mut Nameidata<'_, G>) -> Result<(), Errno> {
     namei_fail(ndp, error)
 }
 
-/// `a == b` for two optional vnodes.
-fn opt_eq<G: ProcGlue>(a: Option<&'static Vnode<G>>, b: Option<&'static Vnode<G>>) -> bool {
+/// `a == b` for two pointers that may be NULL (vnodes here; `fuse_vnops`'s rename compares
+/// mounts too).
+pub(crate) fn opt_eq<T>(a: Option<&T>, b: Option<&T>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => ptr::eq(a, b),
         (None, None) => true,

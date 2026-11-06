@@ -10330,7 +10330,7 @@ rust = "sys/kernel/fs/fuse/fusefs.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fusefs.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): struct fusefs_mnt a counted M_FUSEFS block (FusefsMntRef), its changing members words, VFSTOFUSEFS vfstofusefs (a handle from the mount's typed slot); FuseTables<G>, VfsTables::fuse under feature fuse (the C's fusefs_fbuf_pool, fuse_d_list, stat_* counters and inode hash; N5.9f2 adds fusefs_vops); M_FUSEFS a private constant; 0 unsafe (LZ: 2)"
+notes = "N5.9f1 (unwired): struct fusefs_mnt a counted M_FUSEFS block (FusefsMntRef), its changing members words, VFSTOFUSEFS vfstofusefs (a handle from the mount's typed slot); FuseTables<G>, VfsTables::fuse under feature fuse (the C's fusefs_fbuf_pool, fuse_d_list, stat_* counters and inode hash; N5.9f2: fusefs_vops, FuseVnops); M_FUSEFS a private constant; 0 unsafe (LZ: 2)"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fusefs.rs::FUSEFS_NAMES"
@@ -10349,6 +10349,27 @@ crate = "kernel"
 lz = ["sys/miscfs/fuse/fuse_file.rs"]
 status = "redesigned"
 notes = "N5.9f1 (unwired): LZ's functions over the kernel's node and mount, the handle kind a FufhKind, the requests counted handles; 0 unsafe (LZ: 0)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_lookup.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_lookup.rs"]
+status = "redesigned"
+notes = "N5.9f2: fusefs_lookup over the kernel's vop_lookup arguments, the node and mount counted handles (vtoi, i_fmp), the name written through Fusebuf::dat_update, the reply's entry read at offset 0 of the op union; the C's .. dance kept step for step; the reclaim path's FORGET handed to the device's queue; 0 unsafe (LZ: 1)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_vnops.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_vnops.rs"]
+status = "redesigned"
+notes = "N5.9f2: FuseVnops<G>, one impl Vnops<G> of the C's 34 slots (decision 46; revoke and bwrite NULL), FuseTables::vops; the three filterops impl Filter; the requests' data through dat_update/take_dat/set_dat (LZ's fb_dat_slice gone); readdir's dirents through fs::subr::dirent_uiomove; D-N5.9-U2's readdir and write bounds (EIO); the helpers the kernel's (ufs's vmount, ucred, pnbuf_free, kn_vnode; lookup's opt_eq; spec's BLKDEV_IOSIZE); 0 unsafe (LZ: 6)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_vfsops.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_vfsops.rs"]
+status = "redesigned"
+notes = "N5.9f2: FusefsVfs<G> (impl Vfs<G>, FusefsVfs::VFS); struct fusefs_mnt and the nodes counted M_FUSEFS blocks in the mount's and the vnodes' typed slots; D-N5.9-U1's ENXIO/EBUSY at the C's VCHR test; D-N5.9-10's MNAMELEN; fusefs_init the fmsg pool and the hash; fusefs_sysctl over FuseTables' counters and TypedPool::npages (LZ's mirror atomic gone); checkexp bsd's VFS_CHECKEXP arm; 0 unsafe (LZ: 2)"
 
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
@@ -13934,7 +13955,7 @@ reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tes
 [[extra]]
 rust = "sys/kernel/fs/fuse/testfuse.rs"
 crate = "kernel"
-reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a vnode table for hashed nodes until fuse_vnops (N5.9f2); no OpenBSD or LZ source"
+reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a node on a mount structure that is not a real one; N5.9f2: fusefs_init in the set-up, fuse_vnops' table for the nodes (TestFuseVops gone), a daemon scripted by opcode (script/scripted, the requests seen recorded), LZ's fuse_vfsops tests' file system (hello_fs) and set-up moved (the configuration entry, args, the daemon's descriptor of the device, mount, mounted, rdwr, readdir); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
