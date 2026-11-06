@@ -61,9 +61,10 @@
 //! ## Redesign
 //! - LZ's `fuse_abi!` wrote an `unsafe impl AbiPod` per protocol structure and
 //!   `abi_bytes`/`abi_bytes_mut` made byte slices of them with two `unsafe` blocks: the
-//!   structures are `hal::abi_pod!`s now (the tiling checked at compile time, the 40 size and
-//!   offset checks of LZ kept beside it and every member the daemon's bytes depend on pinned
-//!   by a test), their bytes `hal::user::bytes_of`/`bytes_of_mut`.
+//!   structures are `hal::abi_pod!`s now (the tiling checked at compile time; of LZ's 37 size
+//!   and offset checks 36 kept beside it, `align_of::<FusebufOp>() == 8` replaced by the
+//!   union's size being whole words, and every member the daemon's bytes depend on pinned by
+//!   a test), their bytes `hal::user::bytes_of`/`bytes_of_mut`.
 //! - `struct fuse_dirent` is its 24-byte head: the flexible `name[]` (LZ's `name: [u8; 0]`,
 //!   which an `abi_pod!` tiling cannot see) is no member; the name is the bytes past
 //!   [`FUSE_NAME_OFFSET`], as the C reads them. The size is the C's `sizeof` (24) either way.

@@ -46,6 +46,8 @@
 //! ## Deviations
 //! - `VTOI(vp)` checks the vnode's tag and its typed slot and panics on a vnode that is not a
 //!   FUSE one or has no node, where the C would follow the pointer (LZ's).
+//! - `vmstat -m`: a node's `M_FUSEFS` block is 224 bytes (the 208-byte `FusefsNode` and the
+//!   `MArc`'s count and type; C 160, LZ 200), in the 256-byte bucket as the C's.
 //!
 //! ## Redesign
 //! - The node is a counted block of `malloc(M_FUSEFS)` ([`FusefsNodeRef`], `MArc`): the

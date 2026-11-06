@@ -45,6 +45,8 @@
 //! - `fb_queue` returns the daemon's error as a `Result`; an error number that is not an
 //!   `Errno` (the daemon chooses it) becomes `EIO`, where the C returns the number as it is
 //!   (LZ's).
+//! - `fb_queue` answers `ENXIO` without sleeping when the device closed while the request was
+//!   being queued (the device's deviations), where the C's requester sleeps for ever.
 //! - The host tests and benches (`cfg(test)`, `doubles`) have no daemon process: when the
 //!   fixture's simulated daemon is set (`testfuse::TEST_DAEMON`), `fb_queue` runs it between
 //!   `sleep_setup` and `sleep_finish` (`tsleep_nsec`'s two halves), where the daemon process
@@ -167,7 +169,11 @@ pub fn fb_setup<G: ProcGlue>(len: usize, ino: Ino, op: u32, p: &Thread<G>) -> Fu
 /// in order for the current process to wakeup. The FUSE device is automatically closed when
 /// the daemon terminates and any waiting fbuf is woken up.
 pub fn fb_queue<G: ProcGlue>(dev: Dev, fbuf: &FusebufRef) -> Result<(), Errno> {
-    fuse_device_queue_fbuf::<G>(dev, fbuf.clone());
+    if !fuse_device_queue_fbuf::<G>(dev, fbuf.clone()) {
+        // The device closed under the queueing: the request was failed, not queued (the
+        // device's deviations); nothing will wake a sleep on it.
+        return fb_result(fbuf);
+    }
     let chan = PoolArc::as_ptr(fbuf);
     #[cfg(any(test, feature = "doubles"))]
     if let Some(daemon) = crate::fs::fuse::testfuse::test_daemon() {
@@ -195,3 +201,51 @@ pub fn fb_delete(fbuf: impl Into<Option<FusebufRef>>) {
     drop(fbuf.into());
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests for fb_setup's table of the operations' lengths: every opcode of
+    // <sys/fusebuf.h> against fusebuf.c's switch, by the structures' C sizes (the wire
+    // asserts pin them), the unknown ones as the C's zeroed members.
+
+    use std::assert_eq;
+
+    use super::*;
+    use crate::fs::fuse::fusebuf_h::{FUSE_DESTROY, FUSE_RMDIR, FUSE_UNLINK};
+
+    #[test]
+    fn every_operation_has_the_cs_lengths() {
+        for (op, lens) in [
+            (FUSE_LOOKUP, (0, 128, false)),
+            (FUSE_FORGET, (8, 0, false)),
+            (FUSE_GETATTR, (16, 104, false)),
+            (FUSE_SETATTR, (88, 104, false)),
+            (FUSE_READLINK, (0, 0, true)),
+            (FUSE_SYMLINK, (0, 128, false)),
+            (FUSE_MKNOD, (16, 128, false)),
+            (FUSE_MKDIR, (8, 128, false)),
+            (FUSE_UNLINK, (0, 0, false)),
+            (FUSE_RMDIR, (0, 0, false)),
+            (FUSE_RENAME, (8, 0, false)),
+            (FUSE_LINK, (8, 128, false)),
+            (FUSE_OPEN, (8, 16, false)),
+            (FUSE_READ, (40, 0, true)),
+            (FUSE_WRITE, (40, 8, false)),
+            (FUSE_STATFS, (0, 80, false)),
+            (FUSE_RELEASE, (24, 0, false)),
+            (FUSE_FSYNC, (16, 0, false)),
+            (FUSE_FLUSH, (24, 0, false)),
+            (FUSE_INIT, (16, 24, false)),
+            (FUSE_OPENDIR, (8, 16, false)),
+            (FUSE_READDIR, (40, 0, true)),
+            (FUSE_RELEASEDIR, (24, 0, false)),
+            (FUSE_DESTROY, (0, 0, false)),
+            (0, (0, 0, false)),
+            (99, (0, 0, false)),
+        ] {
+            assert_eq!(op_lens(op), lens, "opcode {op}");
+        }
+    }
+}
+/* </TESTS> */

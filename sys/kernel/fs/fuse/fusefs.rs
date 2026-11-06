@@ -49,6 +49,13 @@
 //! ## Deviations
 //! - `FUSE_DEBUG` is not defined (as in GENERIC), so `DPRINTF` expands to nothing and every
 //!   `DPRINTF` of the `.c` files is a comment (LZ's).
+//! - `vmstat -m`'s sizes (the C's `sizeof`s pinned by `_Static_assert`s over the reference
+//!   headers): the `"fmsg"` pool's item is 304 bytes (the 288-byte `Fusebuf` and the item's
+//!   count and pool; C 224, LZ 216: the N3 class of item sizes, U3); a mount's `M_FUSEFS`
+//!   block 48 bytes (`MArc`'s 16 beside the 32-byte `FusefsMnt`; C 32, LZ 32), in the 64-byte
+//!   bucket where the C's is in the 32; a node's 224 (C 160, LZ 200), the 256-byte bucket as
+//!   the C's; the device's 280 in `M_DEVBUF`'s 512-byte bucket (C 128: `fuse_device`'s
+//!   deviations). The kinds, counts and places are the C's.
 //!
 //! ## Redesign
 //! - `struct fusefs_mnt` ([`FusefsMnt`]) is a counted block of `malloc(M_FUSEFS)`

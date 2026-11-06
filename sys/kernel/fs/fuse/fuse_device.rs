@@ -63,8 +63,19 @@
 //!   every message is cleared, which the port does (LZ's fix, kept).
 //! - A cleared `FUSE_FORGET` or `FUSE_INIT` fusebuf, which nobody waits for, is freed with
 //!   the queue's reference (and so is one queued on a device that is not open), where the C
-//!   (and LZ) leak it: `vmstat -m`'s `fmsg` `InUse` is lower than OpenBSD's after a cleanup,
-//!   its requests equal (D-N5.9-15).
+//!   (and LZ) leak it: `vmstat -m`'s `fmsg` `InUse` is lower than OpenBSD's after a cleanup
+//!   and its `Releases` higher by as many, its requests equal (D-N5.9-15).
+//! - A request queued through a device handle taken before `fuseclose` ran (its requester
+//!   slept for the device's `fd_lock` meanwhile) is not queued on the closed device: it is
+//!   failed with `ENXIO`, as `fuseclose`'s cleanup fails a queued one, and `fb_queue` answers
+//!   `ENXIO` without sleeping, where the C queues it during `fuseclose`'s `refcnt_finalize`
+//!   wait and its requester sleeps for ever, unkillable (LZ's then frees a device with the
+//!   request linked on it). `fuseclose`'s cleanup marks the device closed in the same
+//!   `fd_lock` section that empties the input queue, so the mark and the insert cannot
+//!   interleave.
+//! - `vmstat -m`: the device is a block of 280 bytes (the `MArc`'s count and type beside the
+//!   264-byte `FuseD`; C 128, LZ 184), in `M_DEVBUF`'s 512-byte bucket where the C's is in the
+//!   128-byte one (the N3 class of item sizes, U3; `fusefs`'s deviations list the others).
 //! - `fuseclose` does not wait for the device's other users (the C's `refcnt_finalize(..,
 //!   "fusedfd")`): the device is a counted block, and the memory goes with its last handle,
 //!   so `vmstat -m`'s `M_DEVBUF` block may be freed a moment after `close(2)` returns
@@ -90,9 +101,9 @@
 //!   another thread) took it off, failed and woke its requester already; the C's
 //!   `SIMPLEQ_REMOVE_AFTER` then unlinks through a stale `lastfbuf`.
 //!
-//! Kept as the C, named: a request queued through a device handle taken before `fuseclose`'s
-//! cleanup sleeps for ever (the C's `refcnt_finalize` window, D-N5.9-9); the daemon reads and
-//! writes without `PCATCH` on the requester's side (`fb_queue`).
+//! Kept as the C, named: a request whose device is not open when it is queued (no unit of its
+//! `dev_t` on the list) goes nowhere and its requester sleeps for ever (`fb_queue`,
+//! D-N5.9-9), without `PCATCH`.
 //!
 //! ## Redesign
 //! - `struct fuse_d` ([`FuseD`]) is a counted block of `malloc(M_DEVBUF)` ([`FuseDRef`],
@@ -274,12 +285,21 @@ fn fuse_device_fail(f: &Fusebuf) {
     wakeup(ptr::from_ref(f));
 }
 
-/// `fuse_device_cleanup`'s body on the device: every request of both queues failed.
-fn fuse_device_cleanup_fd<G: ProcGlue>(fd: &FuseD<G>) {
+/// `fuse_device_cleanup`'s body on the device: every request of both queues failed. When
+/// `closing` (`fuseclose`'s), the device is marked closed in the same `fd_lock` section that
+/// empties its input queue (the list's parked handle taken: `fuse_lookup` finds it no more),
+/// so a request queued through a handle taken before is either failed here or refused by
+/// [`fuse_device_queue_fbuf_fd`], never left on a closed device.
+fn fuse_device_cleanup_fd<G: ProcGlue>(fd: &FuseD<G>, closing: bool) {
     let t = tables::<G>();
 
     // clear FIFO IN
     let mut w = fd.fd_lock.write();
+    let parked = if closing {
+        fd.fd_self.replace(None)
+    } else {
+        None
+    };
     while let Some(q) = fd.fd_fbufs_in.first(&w).map(adopt) {
         fd.fd_fbufs_in.remove_first(&mut w);
         fd.fd_nin.set(fd.fd_nin.get() - 1);
@@ -291,6 +311,8 @@ fn fuse_device_cleanup_fd<G: ProcGlue>(fd: &FuseD<G>) {
     }
     fd.fd_rklist.knote_locked(&w, 0);
     drop(w);
+    // The caller's handle keeps the device: this drop frees nothing.
+    drop(parked);
 
     // clear FIFO WAIT
     let mut kw = klock::witness();
@@ -307,19 +329,36 @@ fn fuse_device_cleanup_fd<G: ProcGlue>(fd: &FuseD<G>) {
 /// `fuse_device_cleanup`: cleanup all msgs from `fd_fbufs_in` and `fd_fbufs_wait`.
 pub fn fuse_device_cleanup<G: ProcGlue>(dev: Dev) {
     if let Some(fd) = fuse_lookup::<G>(dev) {
-        fuse_device_cleanup_fd(&fd);
+        fuse_device_cleanup_fd(&fd, false);
     }
 }
 
 /// `fuse_device_queue_fbuf`: puts a request on the device's input queue, which keeps the
 /// reference `fbuf` until the request is taken off, and lets the daemon know. Nothing happens
-/// when the device is not open (the reference goes).
-pub fn fuse_device_queue_fbuf<G: ProcGlue>(dev: Dev, fbuf: FusebufRef) {
-    let Some(fd) = fuse_lookup::<G>(dev) else {
-        return;
-    };
+/// when the device is not open (the reference goes; the requester sleeps for ever, as the
+/// C's). `false` when the device closed while the caller waited for its `fd_lock`: the
+/// request is failed with `ENXIO` as `fuseclose`'s cleanup fails a queued one, and is not
+/// queued (the module's deviations).
+pub fn fuse_device_queue_fbuf<G: ProcGlue>(dev: Dev, fbuf: FusebufRef) -> bool {
+    match fuse_lookup::<G>(dev) {
+        Some(fd) => fuse_device_queue_fbuf_fd(&fd, fbuf),
+        None => true,
+    }
+}
 
+/// `fuse_device_queue_fbuf`'s body on the device `fd`, held by the caller (see
+/// [`fuse_device_queue_fbuf`]).
+fn fuse_device_queue_fbuf_fd<G: ProcGlue>(fd: &FuseD<G>, fbuf: FusebufRef) -> bool {
     let mut w = fd.fd_lock.write();
+    // The device closed while this thread slept for its lock (fuseclose's cleanup marks it
+    // in its own fd_lock section): a request queued now would be left on a device nothing
+    // reads, which the C's requester sleeps on for ever.
+    if fd.fd_self.read().is_none() {
+        drop(w);
+        fuse_device_fail(&fbuf);
+        drop(fbuf);
+        return false;
+    }
     fd.fd_fbufs_in.insert_tail(&mut w, fbuf.as_pin());
     PoolArc::forget(fbuf);
     fd.fd_nin.set(fd.fd_nin.get() + 1);
@@ -329,6 +368,7 @@ pub fn fuse_device_queue_fbuf<G: ProcGlue>(dev: Dev, fbuf: FusebufRef) {
 
     // Let file system daemons know there is a request ready to process
     wakeup_one(ptr::from_ref(&fd.fd_fbufs_in));
+    true
 }
 
 /// `fuse_device_set_fmp`'s body on the device.
@@ -390,7 +430,7 @@ pub fn fuseclose<G: ProcGlue>(
         return Err(Errno::EBADF);
     };
 
-    fuse_device_cleanup_fd(&fd);
+    fuse_device_cleanup_fd(&fd, true);
 
     // Let fusefs_unmount know the device is closed so it doesn't try and send FBT_DESTROY
     // to a dead file system daemon.
@@ -404,7 +444,6 @@ pub fn fuseclose<G: ProcGlue>(
         let mut w = klock::witness();
         tables::<G>().devices.remove(&mut w, &fd);
     }
-    drop(fd.fd_self.replace(None));
     tables::<G>()
         .stat_opened_fusedev
         .fetch_sub(1, Ordering::Relaxed);
@@ -542,27 +581,37 @@ pub fn fusewrite<G: ProcGlue>(dev: Dev, uio: &mut Uio<'_, G>, _ioflag: i32) -> R
 
     let error = fusewrite_reply(&fd, &fbuf, &hdr, uio);
 
+    fusewrite_dequeue(&fd, &fbuf);
+
+    error
+}
+
+/// `fusewrite`'s `end:`: removes the fbuf from the wait queue and wakes its requester (a
+/// `FUSE_INIT` reply has none: the queue's reference, its last, frees it), only while it is
+/// still queued (the module's deviations: a cleanup during the reply's copies took it off and
+/// woke the requester already); whether it was.
+fn fusewrite_dequeue<G: ProcGlue>(fd: &FuseD<G>, fbuf: &Fusebuf) -> bool {
     // Remove the fbuf from the wait queue
     let queued = {
         let mut kw = klock::witness();
         fbuf.fb_link.is_linked().then(|| {
-            fd.fd_fbufs_wait.remove(&mut kw, &fbuf);
-            adopt(&fbuf)
+            fd.fd_fbufs_wait.remove(&mut kw, fbuf);
+            adopt(fbuf)
         })
     };
-    if let Some(q) = queued {
-        tables::<G>()
-            .stat_fbufs_wait
-            .fetch_sub(1, Ordering::Relaxed);
+    let Some(q) = queued else {
+        return false;
+    };
+    tables::<G>()
+        .stat_fbufs_wait
+        .fetch_sub(1, Ordering::Relaxed);
 
-        // FBT_INIT doesn't expect a response. Otherwise let the VFS syscall that is
-        // waiting on this fbuf know the reponse is ready.
-        if fbuf.fb_type() != FUSE_INIT {
-            wakeup(PoolArc::as_ptr(&q));
-        }
+    // FBT_INIT doesn't expect a response. Otherwise let the VFS syscall that is waiting on
+    // this fbuf know the reponse is ready.
+    if fbuf.fb_type() != FUSE_INIT {
+        wakeup(PoolArc::as_ptr(&q));
     }
-
-    error
+    true
 }
 
 /// The part of `fusewrite` between finding the request and its `end:` label: fills the
@@ -1198,6 +1247,68 @@ mod tests {
 
         drop(fd);
         drop(kq);
+        fuseclose::<G>(dev, 0, 0, Some(p)).expect("close");
+    }
+
+    /// Review 1's B1: a requester holding a handle to a device that `fuseclose` closed meanwhile
+    /// (it slept for `fd_lock`) does not queue on it: the request fails with `ENXIO`, the
+    /// device goes with the last handle without a request linked on it (no panic), and the
+    /// pool's items come back.
+    #[test]
+    fn a_request_for_a_device_closed_meanwhile_is_failed_not_queued() {
+        let (_g, p) = setup();
+        let dev = open_dev(p, 0);
+        let _fmp = mount_fmp(dev, FUSEBUFMAXSIZE as i32);
+        let out0 = fmsg_out();
+
+        let held = fuse_lookup::<G>(dev).expect("open");
+        fuseclose::<G>(dev, 0, 0, Some(p)).expect("close");
+        let f = fb_setup(0, 4, FUSE_GETATTR, p);
+        assert!(!fuse_device_queue_fbuf_fd(&held, f.clone()));
+        assert_eq!(f.fb_err(), Errno::ENXIO as i32);
+        assert!(!f.fb_link.is_linked());
+        assert_eq!(stats(), (0, 0, 0));
+        // A forget nobody waits for is freed at once.
+        assert!(!fuse_device_queue_fbuf_fd(
+            &held,
+            fb_setup(0, 5, FUSE_FORGET, p)
+        ));
+        drop(held);
+        fb_delete(f);
+        assert_eq!(fmsg_out(), out0);
+    }
+
+    /// Review 1's S1: a reply whose request a cleanup took off the wait queue meanwhile
+    /// dequeues nothing: no double count, no removal of an unlinked request.
+    #[test]
+    fn a_reply_after_the_cleanup_dequeues_nothing() {
+        let (_g, p) = setup();
+        let dev = open_dev(p, 0);
+        let _fmp = mount_fmp(dev, FUSEBUFMAXSIZE as i32);
+        let fd = fuse_lookup::<G>(dev).expect("open");
+
+        let g = fb_setup(0, 3, FUSE_GETATTR, p);
+        fuse_device_queue_fbuf::<G>(dev, g.clone());
+        read_req(dev).expect("getattr");
+        assert_eq!(stats().2, 1);
+        // fusewrite found it (its own handle), then the device was cleaned up.
+        let found = PoolArc::from_ref(&*g).expect("a handle");
+        fuse_device_cleanup_fd(&fd, false);
+        assert_eq!((stats().2, g.fb_err()), (0, Errno::ENXIO as i32));
+        assert!(!fusewrite_dequeue(&fd, &found));
+        assert_eq!(stats().2, 0, "not counted off twice");
+
+        // On a request still queued it dequeues once.
+        let g2 = fb_setup(0, 3, FUSE_GETATTR, p);
+        fuse_device_queue_fbuf::<G>(dev, g2.clone());
+        read_req(dev).expect("getattr");
+        assert!(fusewrite_dequeue(&fd, &g2));
+        assert!(!fusewrite_dequeue(&fd, &g2));
+        assert_eq!(stats().2, 0);
+
+        drop((found, fd));
+        fb_delete(g);
+        fb_delete(g2);
         fuseclose::<G>(dev, 0, 0, Some(p)).expect("close");
     }
 }
