@@ -3656,9 +3656,10 @@ ci-full:
 # one `kernel-<tag>-<arch>.tar.zst` per arch, `<tag>` = `<YYYYMMDD>-<8-hex>` (the build's UTC
 # date and the commit), the name OS's tools/manifest.py fetches (`<name>-<tag>-<arch>`). It
 # unpacks into `kernel-<tag>-<arch>/`, whose `SHA256` (OpenBSD's format) covers every file:
-# - `bsd`, `bsd.mp`: the release-profile MULTIPROCESSOR kernel (LTO, symbols kept),
-#   `--features qemu` as every boot the smokes make; one kernel under the two names the
-#   installer asks for (decision 40);
+# - `bsd.mp`: the release-profile MULTIPROCESSOR kernel (LTO, symbols kept), `--features
+#   qemu` as every boot the smokes make; the only kernel (decision 40), under the one name
+#   the installer will ask for (the user's decision of 2026-11-05: no `bsd`; the installer
+#   installs `bsd.mp` as `/bsd`);
 # - `bsd.RAMDISK`: the same with the ramdisk compiled in and empty (feature `miniroot`,
 #   `rd_root_size` = `miniroot_sectors` sectors), which `cargo xtask rdsetroot` fills with a
 #   miniroot to make `bsd.rd`;
@@ -3684,7 +3685,6 @@ dist-arm64: dist-clean-tree (build-release-arm64 "--features qemu") build-init-a
     out=target/dist/arm64
     rm -rf "$out/$name" "$out/$name.tar.zst" "$out/$name.tar.zst.sha256"
     mkdir -p "$out/$name"
-    cp target/{{arm64}}/release/bsd "$out/$name/bsd"
     cp target/{{arm64}}/release/bsd "$out/$name/bsd.mp"
     cp target/bsdrd/{{arm64}}/release/bsd "$out/$name/bsd.RAMDISK"
     cp target/abi/{{arm64}}/debug/abi_openbsd "$out/$name/abi_openbsd.ko"
@@ -3697,16 +3697,16 @@ dist-arm64: dist-clean-tree (build-release-arm64 "--features qemu") build-init-a
         print "Build number: $EMIBSD_BUILD"
         print "Toolchain: $(rustc -V)"
         print "LandingZone: $(sed -n 's/^Commit: //p' lz/PINNED.md)"
-        print "bsd, bsd.mp: release profile (LTO, symbols kept), features default + qemu"
+        print "bsd.mp: release profile (LTO, symbols kept), features default + qemu"
         print "bsd.RAMDISK: release profile, features default + qemu + miniroot, rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
         print "abi_openbsd.ko, BOOTAA64.EFI: dev profile, as just build makes them"
     } > "$out/$name/BUILDINFO"
     stamp=$(TZ=UTC date -r $SOURCE_DATE_EPOCH +%Y%m%d%H%M.%S)
-    (cd "$out/$name" && shasum -a 256 --tag abi_openbsd.ko BOOTAA64.EFI BUILDINFO bsd bsd.RAMDISK bsd.mp > SHA256 \
-        && chmod 644 abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd bsd.RAMDISK bsd.mp \
-        && TZ=UTC touch -t $stamp . abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd bsd.RAMDISK bsd.mp)
+    (cd "$out/$name" && shasum -a 256 --tag abi_openbsd.ko BOOTAA64.EFI BUILDINFO bsd.RAMDISK bsd.mp > SHA256 \
+        && chmod 644 abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp \
+        && TZ=UTC touch -t $stamp . abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp)
     (cd "$out" && COPYFILE_DISABLE=1 tar -n --format ustar --uid 0 --gid 0 --uname root --gname wheel --no-xattrs --no-mac-metadata \
-        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/abi_openbsd.ko" "$name/bsd" "$name/bsd.RAMDISK" "$name/bsd.mp" \
+        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/abi_openbsd.ko" "$name/bsd.RAMDISK" "$name/bsd.mp" \
         | zstd -19 -q -o "$name.tar.zst" && shasum -a 256 "$name.tar.zst" > "$name.tar.zst.sha256")
     rm -rf target/smoke/dist
     echo "dist: $out/$name.tar.zst"
