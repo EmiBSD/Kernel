@@ -148,6 +148,14 @@
 //! kernel's page system over a heap block: the rows time the kernel's work over the doubles,
 //! not the machine's copy.
 //!
+//! N5.9f1's row (feature `fuse`), over the kernel fuse's fixture (`testfuse`: `/dev/fuse0`
+//! open with a mount structure attached), a first measurement for N12 (fuse is on no listed
+//! hot path: the daemon's two context switches dominate a real request):
+//! - `fuse.roundtrip`: `fb_setup` of a `FUSE_GETATTR`, `fb_queue` (the queue, the sleep's two
+//!   halves around the bench's daemon: `fuseread` of the request into a buffer, `fusewrite` of
+//!   a `fuse_attr_out` reply from one) and `fb_delete`: one `fmsg` item, two `arc4random()`
+//!   words, the in and wait queues, no data block.
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -709,6 +717,8 @@ fn main() {
         "tmpfs.readdir.1blk",
         #[cfg(feature = "tmpfs")]
         "tmpfs.stat",
+        #[cfg(feature = "fuse")]
+        "fuse.roundtrip",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1196,6 +1206,77 @@ fn main() {
             s.spawn(|| tmpfs_rows(&wanted, &names[tmpfs..], &report));
         });
     }
+
+    // N5.9f1's row: the kernel fuse, on a thread of its own after tmpfs's.
+    #[cfg(feature = "fuse")]
+    {
+        let fuse = names
+            .iter()
+            .position(|n| n.starts_with("fuse."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| fuse_rows(&wanted, &names[fuse..], &report));
+        });
+    }
+}
+
+/// N5.9f1's fuse row (the module's docs), `names` theirs in order.
+#[cfg(feature = "fuse")]
+fn fuse_rows(
+    wanted: &dyn Fn(&str) -> bool,
+    names: &[&str],
+    report: &dyn Fn(&str, (f64, f64, f64)),
+) {
+    use hal::sys::types::Dev;
+    use kernel::fs::fuse::fuse_device::{fuseclose, fuseread, fusewrite};
+    use kernel::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
+    use kernel::fs::fuse::fusebuf_h::{FUSE_GETATTR, FuseAttrOut, FuseInHeader, FuseOutHeader};
+    use kernel::fs::fuse::testfuse;
+
+    /// The bench's daemon: reads the one request queued into a buffer and answers it with a
+    /// `fuse_attr_out` written from another, no allocation.
+    fn daemon(dev: Dev) {
+        let mut req = [0u8; 256];
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::<TestGlue>::kernel_read(&mut iov, &mut req, None);
+        if fuseread(dev, &mut uio, kernel::fs::vnode::IO_NDELAY).is_err() {
+            return;
+        }
+        let Some(hdr) = hal::user::pod_from_bytes::<FuseInHeader>(&req) else {
+            return;
+        };
+        let mut rep = [0u8; size_of::<FuseOutHeader>() + size_of::<FuseAttrOut>()];
+        let out = FuseOutHeader {
+            len: rep.len() as u32,
+            error: 0,
+            unique: hdr.unique,
+        };
+        let _ = hal::user::pod_to_bytes(&out, &mut rep);
+        let mut iov = [Iovec::new()];
+        let mut uio = Uio::<TestGlue>::kernel_write(&mut iov, &rep, None);
+        let _ = black_box(fusewrite(dev, &mut uio, 0));
+    }
+
+    let (_memory, p) = testfuse::setup();
+    kernel::testutil::set_file_log(false);
+    let dev = testfuse::open_dev(p, 0);
+    let fmp = testfuse::mount_fmp(dev, 4096);
+    testfuse::set_daemon(Some(daemon));
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| {
+                rounds(|| {
+                    let f = fb_setup(0, 2, FUSE_GETATTR, p);
+                    let _ = black_box(fb_queue::<TestGlue>(dev, &f));
+                    fb_delete(f);
+                })
+            }),
+        );
+    }
+    testfuse::set_daemon(None);
+    drop(fmp);
+    need(fuseclose::<TestGlue>(dev, 0, 0, Some(p)), "close");
 }
 
 /// N5.9t1's tmpfs rows (the module's docs), `names` theirs in order.

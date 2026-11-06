@@ -320,6 +320,11 @@ pub struct VfsTables<G: ProcGlue> {
     /// same layout test checks `ufs` did not move.
     #[cfg(feature = "tmpfs")]
     pub tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables<G>,
+    /// fuse's globals (the `"fmsg"` pool, `fuse_d_list`, the three `stat_*` counters, the
+    /// inode hash; N5.9f2 adds `fusefs_vops`), N5.9f1: the last member; the same layout test
+    /// checks `ufs` did not move.
+    #[cfg(feature = "fuse")]
+    pub fuse: crate::fs::fuse::fusefs::FuseTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -366,6 +371,8 @@ impl<G: ProcGlue> VfsTables<G> {
             udf: crate::fs::isofs::udf::udf_extern::UdfTables::new(),
             #[cfg(feature = "tmpfs")]
             tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables::new(),
+            #[cfg(feature = "fuse")]
+            fuse: crate::fs::fuse::fusefs::FuseTables::new(),
         }
     }
 }
@@ -527,6 +534,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     crate::fs::ufs::mfs::mfs_vfsops::mfs_test_reset();
     #[cfg(feature = "tmpfs")]
     crate::fs::tmpfs::tmpfs_vfsops::tmpfs_test_reset::<G>();
+    #[cfg(feature = "fuse")]
+    crate::fs::fuse::fusefs::fuse_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }

@@ -125,3 +125,6 @@ metadata:
 - A readdir buffer smaller than one entry (32 bytes for ".") returns Ok with nothing moved, uio_offset unchanged (the syscall turns it into EINVAL); test the cut with room for exactly one entry (N5.9t2).
 - After write(2) through a descriptor, the file offset is at the write's end: a kqueue read filter reports 0 bytes then (not re-armed), so a kevent test counts the events it expects after the offset moved (N5.9t2).
 - vmstat(8) -m skips a pool nothing has taken from (pr_nget 0): a boot that never mounts tmpfs shows no tmpfs_node/tmpfs_dirent rows, so smoke-diag cannot show a new pool's item size; pin it with a host test of item_size (N5.9t2).
+- The kernel tests' `TestSleep` is real: a wakeup before `sleep_setup` is lost and the sleeper waits for ever; a simulated peer run on the sleeper's own thread (fuse's daemon in `fb_queue`) goes between `hal::sleep::sleep_setup` and `sleep_finish` (N5.9f1).
+- A kqueue for a filter test over `TestGlue` (whose thread is testfs's): `kqueue_init::<TestGlue>()`, `kqueue_alloc::<TestGlue>(p.process().fd_ref())`, then `test_knote`/`test_knote_drop`; one knote per `kqfilter` call (the hook is set once) (N5.9f1).
+- A pool item's 'freed' is testable: `TypedPool::nout()` before and after (fuse's FORGET/INIT buffers freed by the device, mutation-checked) (N5.9f1).
