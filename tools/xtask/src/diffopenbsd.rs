@@ -153,7 +153,7 @@ pub(crate) fn diff_openbsd(root: &Path, args: &[&str]) -> Result<()> {
             | "--expect-tone" | "--usb-mouse" | "--usb-tablet" | "--usb-wacom-tablet"
             | "--usb-ccid" => {}
             "--usb-hc" | "--nic" | "--audio" | "--parallel" | "--monitor-after" | "--monitor"
-            | "--sendkey-after" | "--sendkeys" | "--machine" => {
+            | "--sendkey-after" | "--sendkeys" | "--machine" | "--scsi-cd" => {
                 it.next();
             }
             // M16a: a storage controller and its disk (`storage.rs`).
