@@ -130,9 +130,8 @@
 //!   bytes, the block cached).
 //!
 //! N5.9t1's rows (feature `tmpfs`), over the kernel tmpfs's fixture (`testtmpfs`: a mount of
-//! no device, the fixture's vnode table; the vnode operations land at N5.9t2, so the rows
-//! call tmpfs's functions under the locked vnodes), a first measurement for N12 (decision
-//! 43: tmpfs is on the mmap-fault path, the vnode pager's `VOP_READ`):
+//! no device; the rows call tmpfs's functions under the locked vnodes), a first measurement
+//! for N12 (decision 43: tmpfs is on the mmap-fault path, the vnode pager's `VOP_READ`):
 //! - `tmpfs.read.4k`: `tmpfs_uiomove` of a page at offset 0 into a kernel uio (the C's
 //!   `uao_reference`, `uvm_map` of a one-page window, the page's fault on the first touch,
 //!   one copy, `uvm_unmap`: a whole page is not kept).
@@ -143,6 +142,8 @@
 //!   counted handle of the entry).
 //! - `tmpfs.readdir.1blk`: `tmpfs_dir_getdents` of the root from offset 0 into 4 KiB (the dot
 //!   entries and three names).
+//! - `tmpfs.stat` (N5.9t2, the vnode operations'): `stat("/file")` with the mount made the
+//!   root (`namei` with the name cached, `tmpfs_getattr` through `vn_stat`, the copy out).
 //! On the host the copies go through the double's 512-byte bounce and a fault's page is the
 //! kernel's page system over a heap block: the rows time the kernel's work over the doubles,
 //! not the machine's copy.
@@ -706,6 +707,8 @@ fn main() {
         "tmpfs.lookup.hit.1",
         #[cfg(feature = "tmpfs")]
         "tmpfs.readdir.1blk",
+        #[cfg(feature = "tmpfs")]
+        "tmpfs.stat",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1287,12 +1290,33 @@ fn tmpfs_rows(
             }),
         );
     }
+    if wanted(names[5]) {
+        kernel::fs::ufs::ffs::testffs::make_root(p, mp);
+        let base = kernel::testutil::USER_BASE + 0x2000;
+        let p_f = UserPtr::<u8>::new(base);
+        let ustat = UserPtr::<u8>::new(base + 0x100);
+        need(p_f.copyout_slice(b"/file\0"), "copyout");
+        // The warm-up: the name cached.
+        need(sys_stat(p, p_f, ustat), "stat");
+        report(
+            names[5],
+            measure(|| {
+                rounds(|| {
+                    let _ = black_box(sys_stat(p, black_box(p_f), ustat));
+                })
+            }),
+        );
+    }
     drop((node, root));
     for vp in vps {
         vput(vp);
     }
     vput(dvp);
-    need(tmpfs_unmount(mp, 0, p), "unmount");
+    if wanted(names[5]) {
+        kernel::fs::ufs::ffs::testffs::unmount_root(p, mp);
+    } else {
+        need(tmpfs_unmount(mp, 0, p), "unmount");
+    }
 }
 
 /// N5.8u2's udf rows (the module's docs), `names` theirs in order.

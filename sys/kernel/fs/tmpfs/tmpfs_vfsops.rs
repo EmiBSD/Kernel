@@ -102,7 +102,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 use hal::intr::IPL_NONE;
 use hal::malloc::{M_WAITOK, MArc};
-use hal::once::OnceStatic;
 use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::sys::errno::Errno;
 use hal::sys::limits::INT_MAX;
@@ -120,14 +119,17 @@ use crate::fs::tmpfs::tmpfs::{
     TMPFS_MAXNAMLEN, TMPFS_NODE_CHARGE, TmpfsDirent, TmpfsFid, TmpfsMount, TmpfsNode, TmpfsNodeRef,
     tmpfs_node_gen, vfstotmpfs, vptonode,
 };
+use crate::fs::tmpfs::tmpfs_fifoops::TmpfsFifoVnops;
 use crate::fs::tmpfs::tmpfs_mem::{tmpfs_mntmem_destroy, tmpfs_pages_avail, tmpfs_pages_total};
+use crate::fs::tmpfs::tmpfs_specops::TmpfsSpecVnops;
 use crate::fs::tmpfs::tmpfs_subr::{
     free_node_unlinked, tmpfs_alloc_node, tmpfs_dir_detach, tmpfs_free_dirent, tmpfs_vnode_get,
 };
+use crate::fs::tmpfs::tmpfs_vnops::TmpfsVnops;
 use crate::fs::vnode::{
     FORCECLOSE, LK_EXCLUSIVE, LK_RETRY, VDIR, VNOVAL, Vnode, WRITECLOSE, vn_lock,
 };
-use crate::fs::vops::{Cred, Nd, Vfs, Vnops, vop_unlock};
+use crate::fs::vops::{Cred, Nd, Vfs, vop_unlock};
 use crate::prf::printf;
 use crate::proc::{ProcGlue, Thread};
 
@@ -147,11 +149,13 @@ pub struct TmpfsTables<G: ProcGlue> {
     /// `tmpfs_bytes_used`: the memory reserved by the mounts with a limit plus the memory
     /// used by those without one.
     pub bytes_used: AtomicU64,
-    /// `tmpfs_vops`, the operations `tmpfs_vnode_get` gives a vnode (the vnode operations'
-    /// table, set by their module; a test fixture's in host tests).
-    pub vops: OnceStatic<&'static dyn Vnops<G>>,
+    /// `tmpfs_vops`, the operations `tmpfs_vnode_get` gives a vnode (one address per glue).
+    pub vops: TmpfsVnops<G>,
     /// `tmpfs_specvops`, those of a device node's vnode.
-    pub specvops: OnceStatic<&'static dyn Vnops<G>>,
+    pub specvops: TmpfsSpecVnops<G>,
+    /// `tmpfs_fifovops`, those of a fifo's (installed by nothing until fifofs is ported:
+    /// `tmpfs_fifoops.rs`'s deviations).
+    pub fifovops: TmpfsFifoVnops<G>,
 }
 
 impl<G: ProcGlue> TmpfsTables<G> {
@@ -162,8 +166,9 @@ impl<G: ProcGlue> TmpfsTables<G> {
             dirent_pool: TypedPool::new(),
             bytes_limit: AtomicU64::new(0),
             bytes_used: AtomicU64::new(0),
-            vops: OnceStatic::new(),
-            specvops: OnceStatic::new(),
+            vops: TmpfsVnops::new(),
+            specvops: TmpfsSpecVnops::new(),
+            fifovops: TmpfsFifoVnops::new(),
         }
     }
 }
@@ -394,7 +399,7 @@ pub fn tmpfs_unmount<G: ProcGlue>(
                 let Some(de) = de else {
                     break;
                 };
-                if let Some(cnode) = de.td_node.get() {
+                if let Some(cnode) = de.td_node() {
                     cnode.tn_vnode.set(None);
                 }
                 tmpfs_dir_detach(&node, &de);
@@ -770,7 +775,7 @@ mod tests {
 
         // Lookups.
         let de = tmpfs_dir_lookup(&root, &cn(p, b"dir")).expect("dir's entry");
-        assert!(de.td_node.points_to(&sub));
+        assert!(de.td_node_is(&sub));
         assert_eq!(de.td_seq.get(), TMPFS_DIRSEQ_START + 1);
         drop(de);
         assert!(tmpfs_dir_lookup(&root, &cn(p, b"none")).is_none());

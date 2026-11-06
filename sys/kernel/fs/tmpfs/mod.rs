@@ -22,9 +22,9 @@
 //! (`tmpfs`, `tmpfs.h`), the accounting, the pools' items and the names (`tmpfs_mem`), the
 //! nodes' and entries' life, the directories, the attributes and the data path through the
 //! object window (`tmpfs_subr`), and the mount and the file system's table
-//! (`tmpfs_vfsops`); N5.9t1 brought these four, unwired (`bsd`'s `sys/tmpfs/` still runs),
-//! N5.9t2 brings the vnode operations and the switch. `testtmpfs` is the tests' fixture
-//! (host tests and benches only).
+//! (`tmpfs_vfsops`), the vnode operations of files, device nodes and fifos (`tmpfs_vnops`,
+//! `tmpfs_specops`, `tmpfs_fifoops`); N5.9t1 brought the first four, N5.9t2 the vnode
+//! operations. `testtmpfs` is the tests' fixture (host tests and benches only).
 
 #[cfg(any(test, feature = "doubles"))]
 pub mod testtmpfs;
@@ -33,7 +33,10 @@ pub mod testtmpfs;
     reason = "OpenBSD's layout: sys/tmpfs/tmpfs.h"
 )]
 pub mod tmpfs;
+pub mod tmpfs_fifoops;
 pub mod tmpfs_mem;
+pub mod tmpfs_specops;
 pub mod tmpfs_subr;
 pub mod tmpfs_vfsops;
+pub mod tmpfs_vnops;
 /* </CODE> */

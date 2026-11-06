@@ -437,10 +437,7 @@ pub fn tmpfs_vnode_get<'n, G: ProcGlue>(
     // Get a new vnode and associate it with our inode. Share the lock with underlying UVM
     // object, if there is one (VREG case): `#if 0` in the C.
     let t = &vfs::<G>().tmpfs;
-    let Some(&vops) = t.vops.get() else {
-        kpanic(format_args!("tmpfs_vnode_get: no tmpfs_vops"));
-    };
-    let mut vp = match crate::fs::subr::getnewvnode(VT_TMPFS, Some(mp), vops) {
+    let mut vp = match crate::fs::subr::getnewvnode(VT_TMPFS, Some(mp), &t.vops) {
         Ok(vp) => vp,
         Err(e) => {
             drop(nlock);
@@ -455,10 +452,7 @@ pub fn tmpfs_vnode_get<'n, G: ProcGlue>(
     // Type-specific initialization.
     match node.tn_type {
         VBLK | VCHR => {
-            let Some(&specvops) = t.specvops.get() else {
-                kpanic(format_args!("tmpfs_vnode_get: no tmpfs_specvops"));
-            };
-            vp.set_ops_id(vops_id::<G>(specvops));
+            vp.set_ops_id(vops_id::<G>(&t.specvops));
             if let Some(nvp) = checkalias(vp, node.rdev(), Some(mp)) {
                 if let Some(data) = vp.take_node() {
                     nvp.set_node(data);
@@ -595,7 +589,7 @@ pub fn tmpfs_alloc_dirent<G: ProcGlue>(
 
 /// `tmpfs_free_dirent`: free a directory entry (detached: the caller's handle is its last).
 pub fn tmpfs_free_dirent<G: ProcGlue>(tmp: &TmpfsMount<G>, de: TmpfsDirentRef<G>) {
-    kassert!(de.td_node.is_none());
+    kassert!(de.td_node_is_none());
     kassert!(de.td_seq.get() == TMPFS_DIRSEQ_NONE);
     if let Some(name) = de.take_name() {
         tmpfs_strname_free(tmp, Some(name), usize::from(de.td_namelen.get()));
@@ -641,7 +635,7 @@ pub fn tmpfs_dir_attach<G: ProcGlue>(
     } else {
         None
     };
-    drop(de.td_node.set(Some(node)));
+    drop(de.set_td_node(Some(node)));
 
     // Insert the entry to the directory (parent of inode).
     {
@@ -685,7 +679,7 @@ pub fn tmpfs_dir_detach<G: ProcGlue>(dnode: &TmpfsNodeRef<G>, de: &TmpfsDirentRe
     kassert!(dvp.is_none_or(|dvp| vop_islocked(dvp) != 0));
 
     // Deassociate the inode and entry.
-    drop(de.td_node.set(None));
+    drop(de.set_td_node(None));
     drop(node.tn_dirent_hint.set(None));
 
     kassert!(node.tn_links.get() > 0);
@@ -772,7 +766,7 @@ pub fn tmpfs_dir_cached<G: ProcGlue>(node: &TmpfsNode<G>) -> Option<TmpfsDirentR
     kassert!(vnode_islocked(node));
 
     let de = de?;
-    kassert!(de.td_node.points_to(node));
+    kassert!(de.td_node_is(node));
 
     // Directories always have a valid hint. For files, check if there are any hard links.
     // If there are - hint might be invalid.

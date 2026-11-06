@@ -10006,6 +10006,27 @@ kind = "merged"
 lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_VFSOPS"
 native = ["TmpfsVfs::VFS"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_vnops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_vnops.rs"]
+status = "redesigned"
+notes = "N5.9t2 (D-N5.9-17; D-t2-*): tmpfs_vops as TmpfsVnops<G>, one impl Vnops<G> of the C's 34 slots (decision 46), a member of the glue's TmpfsTables (one address per glue); the nine slots the three tables share one macro (tmpfs_common_slots!); the operations the C's over the kernel's arguments, the node vptonode's counted handle, the rename helpers holding entries and nodes by handles (the genealogy walk O(depth), a count pair a step); the three filterops Filter impls (TmpfsFiltops) with the knote's typed vnode hook; readlink of a user uio straight from the link's block (kernel::uio::uiomove_user_out), of a kernel uio LZ's stack copy through FileGlue::uiomove; rename's new name a fresh tmpfs_strname_alloc block; 0 unsafe (LZ: 3)"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_specops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_specops.rs"]
+status = "redesigned"
+notes = "N5.9t2: tmpfs_specvops as TmpfsSpecVnops<G> (impl Vnops<G>, a member of TmpfsTables): tmpfs's nine common slots, tmpfs_spec_read/write, spec_close, spec_fsync, vop_generic_revoke/bwrite, and spec_vops' other slots through fs::spec::spec_shared_slots! (cd9660's shape); 0 unsafe (LZ: 0)"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_fifoops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_fifoops.rs"]
+status = "redesigned"
+notes = "N5.9t2 (D-N5.9-14): tmpfs_fifovops as TmpfsFifoVnops<G> (impl Vnops<G>, a member of TmpfsTables, installed by nothing: tmpfs_vnode_get refuses a fifo node with EOPNOTSUPP), the fifo_* slots and tmpfs_fifo_read/write's ends the visible unported! gaps LZ had; 0 unsafe (LZ: 0)"
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
@@ -13628,7 +13649,7 @@ reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only
 [[extra]]
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
-reason = "N5.9t1: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, a small vnode table (TestTmpfsVops: the node's lock, tmpfs_inactive's and tmpfs_reclaim's work) until tmpfs_vnops lands (N5.9t2), the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init and the tables), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args) and a mount over no device; no OpenBSD or LZ source"
+reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
 crate = "kernel"

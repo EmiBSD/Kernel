@@ -398,7 +398,7 @@ mod tests {
         assert_eq!(tmp.tm_nodes_cnt.get(), 0);
 
         let de = tmpfs_dirent_get(&tmp).expect("an entry");
-        assert!(de.td_node.is_none() && !de.name_is(b"x"));
+        assert!(de.td_node_is_none() && !de.name_is(b"x"));
         assert_eq!(tmp.tm_acc.read().tm_bytes_used, TMPFS_DIRENT_CHARGE as u64);
         tmpfs_dirent_put(&tmp, de);
         assert_eq!(tmp.tm_acc.read().tm_bytes_used, 0);

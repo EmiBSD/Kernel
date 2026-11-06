@@ -17,11 +17,11 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The host tests' fixture of the kernel's tmpfs (N5.9t1): tmpfs's configuration entry, a
-//! small vnode table of the operations its modules' tests need until `tmpfs_vnops` lands
-//! (t2: the lock, `tmpfs_inactive`'s and `tmpfs_reclaim`'s work, testcd9660's `TestIsoVops`
-//! shape), the set-up (pages enough for the kernel map's faults, the kernel maps, the test
-//! thread, `tmpfs_init` and the tables), the mount arguments' bytes and a mount over no device. Host tests and benches only (`cfg(test)` or `doubles`).
+//! The host tests' fixture of the kernel's tmpfs (N5.9t1, completed at N5.9t2): tmpfs's
+//! configuration entry, the set-up (pages enough for the kernel map's faults, the kernel
+//! maps, the test thread, `tmpfs_init`), the mount arguments' bytes, a mount over no device
+//! and the same made the root (testffs's `make_root`, the thread's current directory). Host
+//! tests and benches only (`cfg(test)` or `doubles`).
 
 use core::mem::offset_of;
 use std::sync::MutexGuard;
@@ -30,17 +30,12 @@ use hal::sys::errno::Errno;
 use hal::sys::mount::{MNT_LOCAL, MOUNT_TMPFS, TMPFS_ARGS_VERSION, TmpfsArgs};
 use hal::sys::types::{Mode, Uid};
 
-use crate::fs::cache::cache_purge;
 use crate::fs::lookup::ndinit;
 use crate::fs::mount::{Mount, Vfsconf, vfs_mount_alloc, vfs_mount_free, vfs_unbusy};
 use crate::fs::namei::{LOOKUP, NiDirp};
-use crate::fs::subr::{vfs, vrecycle};
+use crate::fs::subr::vfs;
 use crate::fs::testfs::TestGlue;
-use crate::fs::tmpfs::tmpfs::{tmpfs_node_reclaiming, vfstotmpfs, vptonode};
-use crate::fs::tmpfs::tmpfs_subr::{tmpfs_free_node, tmpfs_uio_cached, tmpfs_uio_uncache};
 use crate::fs::tmpfs::tmpfs_vfsops::{TmpfsVfs, tmpfs_init, tmpfs_mount};
-use crate::fs::vnode::{LK_RWFLAGS, VREG, Vnode};
-use crate::fs::vops::{Vnops, vop_unlock};
 use crate::proc::Thread;
 
 /// The fixture's configuration entry: the kernel's tmpfs as `vfsconflist[]` has it
@@ -53,68 +48,9 @@ pub static TEST_TMPFS_CONF: Vfsconf<TestGlue> = Vfsconf::new(
     TmpfsArgs::SIZE,
 );
 
-/// The fixture's vnode table: the node's lock (`tn_vlock`), `tmpfs_inactive`'s work (the kept
-/// page dropped, the vnode unlocked, recycled when the node has no link) and
-/// `tmpfs_reclaim`'s (the association broken under `tn_nlock`, the node freed when it has no
-/// link and no `tmpfs_vnode_get` races); every other slot `EOPNOTSUPP`.
-pub struct TestTmpfsVops;
-
-impl Vnops<TestGlue> for TestTmpfsVops {
-    fn lock(&self, vp: &'static Vnode<TestGlue>, flags: i32) -> Result<(), Errno> {
-        vptonode(vp).tn_vlock.enter(flags & LK_RWFLAGS)
-    }
-    fn unlock(&self, vp: &'static Vnode<TestGlue>) -> Result<(), Errno> {
-        vptonode(vp).tn_vlock.exit();
-        Ok(())
-    }
-    fn islocked(&self, vp: &'static Vnode<TestGlue>) -> i32 {
-        vptonode(vp).tn_vlock.status()
-    }
-    fn inactive(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        p: Option<&Thread<TestGlue>>,
-    ) -> Result<(), Errno> {
-        let node = vptonode(vp);
-        if vp.vtype() == VREG && tmpfs_uio_cached(&node) {
-            tmpfs_uio_uncache(&node);
-        }
-        let _ = vop_unlock(vp);
-        if node.tn_links.get() == 0 {
-            let _ = vrecycle(vp, p);
-        }
-        Ok(())
-    }
-    fn reclaim(
-        &self,
-        vp: &'static Vnode<TestGlue>,
-        _p: Option<&Thread<TestGlue>>,
-    ) -> Result<(), Errno> {
-        let Some(mp) = vp.mount() else {
-            std::panic!("testtmpfs: reclaim of a vnode without a mount");
-        };
-        let tmp = vfstotmpfs(mp);
-        let node = vptonode(vp);
-        let racing = {
-            let _w = node.tn_nlock.write();
-            node.tn_vnode.set(None);
-            drop(vp.take_node());
-            tmpfs_node_reclaiming(&node)
-        };
-        cache_purge(vp);
-        if node.tn_links.get() == 0 && !racing {
-            tmpfs_free_node(&tmp, node);
-        }
-        Ok(())
-    }
-}
-
-/// The table, a `static` (one address for the registry).
-pub static TEST_TMPFS_VOPS: TestTmpfsVops = TestTmpfsVops;
-
 /// 16 MiB of pages (a window's faults wait for memory when the pages run out), the kernel
-/// maps, the test thread over testfs's root, `tmpfs_init` and the fixture's tables, nothing
-/// used: the memory guard and the thread.
+/// maps, the test thread over testfs's root, `tmpfs_init`, nothing used: the memory guard
+/// and the thread.
 pub fn setup() -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
     let (g, p) = crate::fs::testfs::test_thread_cached(16 << 20, 64);
     crate::testutil::kernel_maps_install();
@@ -124,8 +60,6 @@ pub fn setup() -> (MutexGuard<'static, ()>, &'static Thread<TestGlue>) {
         std::panic!("testtmpfs: tmpfs_init: {e:?}");
     }
     let t = &vfs::<TestGlue>().tmpfs;
-    let _ = t.vops.set(&TEST_TMPFS_VOPS);
-    let _ = t.specvops.set(&TEST_TMPFS_VOPS);
     t.bytes_used.store(0, core::sync::atomic::Ordering::Relaxed);
     (g, p)
 }
@@ -166,5 +100,23 @@ pub fn mount(
             Err(e)
         }
     }
+}
+
+/// [`setup`] and a tmpfs of 1 MiB (root's, mode 0755) made the root and the thread's current
+/// directory (testffs's `make_root`), for the vnode operations' tests through the system
+/// calls' paths; `testffs::unmount_root` undoes it.
+pub fn setup_root() -> (
+    MutexGuard<'static, ()>,
+    &'static Thread<TestGlue>,
+    &'static Mount<TestGlue>,
+) {
+    let (g, p) = setup();
+    let mut data = args(1 << 20, 0, 0, 0o755);
+    let mp = match mount(p, &mut data) {
+        Ok(mp) => mp,
+        Err(e) => std::panic!("testtmpfs: tmpfs_mount: {e:?}"),
+    };
+    crate::fs::ufs::ffs::testffs::make_root(p, mp);
+    (g, p, mp)
 }
 /* </CODE> */
