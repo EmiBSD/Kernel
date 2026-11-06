@@ -10165,6 +10165,192 @@ kind = "dropped"
 reason = "a fusebuf is made only by fb_setup, whole (Fusebuf::new with its header and lengths, the C's PR_ZERO pool_get then its stores); no zeroed value exists apart from it"
 
 [[module]]
+rust = "sys/kernel/fs/fuse/fusebuf.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fusebuf.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired): fb_setup answers a counted handle to its fmsg item (FusebufRef), the value built whole inside the pool's get (pool_get then the data's malloc, the C's order); fb_queue lends the device a clone (parked by its queue) and sleeps on the item's address (PWAIT, no PCATCH, no timeout: the C's); fb_delete drops a handle; fb_uuid two arc4random() words (one rndlock section more than the C's arc4random_buf, D-f1-6, an N12 row); the tests' simulated daemon (testfuse) runs between sleep_setup and sleep_finish; 0 unsafe (LZ: 1)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_device.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_device.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired: arm64's conf.rs/ioconf.rs name bsd's entry points until N5.9f2's switch): the cdevsw entry points generic over the glue with the C's signatures (D-N5.9-7); struct fuse_d a counted M_DEVBUF block (FuseDRef), the device list's place a reference parked on itself (fd_self), refcnt_finalize's wait gone; fd_fbufs_in under fd_lock (RawRwlock) and fd_fbufs_wait under the kernel lock, PinLists of the requests' items, each queued request one parked reference; fuse_lookup by the whole dev_t (D-N5.9-U1's mechanism); the read filter FuseRead: Filter<G> with the device as the knote's shared hook (MPSAFE filters run without the kernel lock, D-f1-3), fd_rklist an owner klist of fd_lock, fd_nin the in-queue's length for the event; U2's third bound in fusewrite (a reply shorter than op_out_len: EINVAL, the requester EIO); a cleared FORGET/INIT buffer freed; 0 unsafe (LZ: 13)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FusebufHead"
+native = ["sys/hal/pinlist.rs::PinList"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FuseD::default"
+native = []
+kind = "dropped"
+reason = "a device is made only by fuseopen, whole (FuseD::new of its dev_t and unit, the C's malloc(M_ZERO) then its stores)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FuseDListHead"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FuseDListHead::deref"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FUSE_D_LIST"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::STAT_FBUFS_IN"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::STAT_FBUFS_WAIT"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::STAT_OPENED_FUSEDEV"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FUSE_RD_FILTOPS"
+native = ["FuseRead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::fuse_lookup_dev"
+native = ["fuse_lookup"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::fuse_device_fail_head"
+native = ["fuse_device_fail", "fuse_device_cleanup_fd"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::filt_fuse_rdetach"
+native = ["FuseRead::detach"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::filt_fuse_read"
+native = ["FuseRead::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::filt_fuse_modify"
+native = ["FuseRead::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::filt_fuse_process"
+native = ["FuseRead::process"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_ihash.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_ihash.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired): the three StaticCells (table, mask, key) one Fuseihash in FuseTables::ihash (a ReadMostly cell fuse_ihashinit fills), the chains a hashinit MArray of PinLists under the kernel lock (reader walks, witness changes: one spl pair per insertion and removal, the N12 row of the vnode hashes), the key fs::subr::siphash_key (msdosfs's denode hash shape); a node is matched by the mount block it holds; fuse_ihashrem through the node's recorded chain and is_linked; 0 unsafe (LZ: 4)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_ihash.rs::FuseIhashtbl"
+native = ["Fuseihash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_ihash.rs::FUSE_IHASHTBL"
+native = ["Fuseihash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_ihash.rs::FUSE_IHASHSZ"
+native = ["Fuseihash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_ihash.rs::FUSE_IHASHKEY"
+native = ["Fuseihash"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_ihash.rs::fuse_ihash"
+native = ["Fuseihash::fuse_ihash"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fusefs_node.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fusefs_node.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired): struct fusefs_node a counted M_FUSEFS block (FusefsNodeRef) the vnode's typed slot holds, i_fmp a counted handle to the mount's block, the C's shared members words; i_hash a PinEntry (LZ's i_hashed flag is its is_linked) and i_chain the chain it is on; fufh[] indexed by FufhKind (the three valid kinds; LZ's idx of FUFH_INVALID could name no slot), the slots' fh_type the C's FufhType; ITOV/VTOI itov/vtoi (a handle from the slot); 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::FufhType::idx"
+native = ["FufhKind"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::FufhType::from_idx"
+native = ["FufhKind"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::FusefsFilehandle::new"
+native = []
+kind = "dropped"
+reason = "a node's handle slots start zeroed as the C's malloc(M_ZERO) leaves them (FufhSlot in FusefsNode::new); a handle value is always built whole where the C stores one"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::FusefsFilehandle::default"
+native = []
+kind = "dropped"
+reason = "as FusefsFilehandle::new: the zeroed slots are FufhSlot's default"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::ITOV"
+native = ["itov"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs_node.rs::VTOI"
+native = ["vtoi"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fusefs.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fusefs.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired): struct fusefs_mnt a counted M_FUSEFS block (FusefsMntRef), its changing members words, VFSTOFUSEFS vfstofusefs (a handle from the mount's typed slot); FuseTables<G>, VfsTables::fuse under feature fuse (the C's fusefs_fbuf_pool, fuse_d_list, stat_* counters and inode hash; N5.9f2 adds fusefs_vops); M_FUSEFS a private constant; 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs.rs::FUSEFS_NAMES"
+native = []
+kind = "dropped"
+reason = "no kernel code reads it: the vfs.fuse names are sysctl(8)'s own table in userland (sbin/sysctl/sysctl.c's fusefsname from <miscfs/fuse/fusefs.h>), and the kernel's fusefs_sysctl answers by number"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fusefs.rs::VFSTOFUSEFS"
+native = ["vfstofusefs"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_file.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_file.rs"]
+status = "redesigned"
+notes = "N5.9f1 (unwired): LZ's functions over the kernel's node and mount, the handle kind a FufhKind, the requests counted handles; 0 unsafe (LZ: 0)"
+
+[[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
 lz = ["sys/isofs/cd9660/iso.rs"]
@@ -13745,6 +13931,11 @@ reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
 crate = "kernel"
 reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args), a mount over no device and the same made the root (setup_root, testffs::make_root; LZ's tmpfs_vnops tests' setup_root); t1's stand-in vnode table gone for the real ones (TmpfsTables); no OpenBSD or LZ source"
+[[extra]]
+rust = "sys/kernel/fs/fuse/testfuse.rs"
+crate = "kernel"
+reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a vnode table for hashed nodes until fuse_vnops (N5.9f2); no OpenBSD or LZ source"
+
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
 crate = "kernel"

@@ -19,8 +19,22 @@
 /* <CODE> */
 //! FUSE, the userland file system interface: OpenBSD `sys/miscfs/fuse/` and `<sys/fusebuf.h>`,
 //! one module per file of LZ's, feature `fuse` (`option FUSE` and `pseudo-device fuse`):
-//! the protocol and the request buffer (`fusebuf_h`, `<sys/fusebuf.h>`); N5.9f1 brings fuse's
-//! modules unwired (`bsd`'s `sys/miscfs/fuse/` serves every mount until N5.9f2's switch).
+//! the protocol and the request buffer (`fusebuf_h`, `<sys/fusebuf.h>`), the requests' life
+//! (`fusebuf`), the `/dev/fuse0` character device the daemon reads requests from and writes
+//! replies to (`fuse_device`), the node and its hash (`fusefs_node`, `fuse_ihash`), the
+//! mount structure and the globals (`fusefs`), the file handles (`fuse_file`); N5.9f1 brought
+//! them unwired (`bsd`'s `sys/miscfs/fuse/` serves every mount until N5.9f2's switch, which
+//! adds `fuse_lookup`, `fuse_vnops` and `fuse_vfsops`). `FUSE_DEBUG` is off, as in GENERIC:
+//! the `DPRINTF`s are not compiled. `testfuse` is the tests' fixture (host tests and benches
+//! only).
 
+pub mod fuse_device;
+pub mod fuse_file;
+pub mod fuse_ihash;
+pub mod fusebuf;
 pub mod fusebuf_h;
+pub mod fusefs;
+pub mod fusefs_node;
+#[cfg(any(test, feature = "doubles"))]
+pub mod testfuse;
 /* </CODE> */
