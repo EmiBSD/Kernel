@@ -21,10 +21,10 @@
 //! name nothing of `bsd` and the 18 constant headers of `sys/`, moved in at N2.2; the rest of
 //! the hardware arrives with its owner, the pmap at N3, cpu and traps at N4, the buses at N7)
 //! and the runtime written new (locks that own their data, typed pools, owned memory, the
-//! typed user copy, the bridge registry, the system call dispatch point and the ABI module's
-//! loader). The only crate of the system where `unsafe` may appear; every site carries a
-//! soundness proof and `cargo xtask hal-check` refuses a `pub unsafe fn`: the API is safe
-//! (docs/ZERO_UNSAFE.md, section 0).
+//! typed user copy, the bridge registry, the system call dispatch point and the table the
+//! ABI reaches the kernel through). The only crate of the system where `unsafe` may appear;
+//! every site carries a soundness proof and `cargo xtask hal-check` refuses a
+//! `pub unsafe fn`: the API is safe (docs/ZERO_UNSAFE.md, section 0).
 #![no_std]
 // `clippy::pedantic` is on in this crate (the user's decision of 2026-10-29, measured first:
 // docs/JOURNAL.md). What it asks and this crate declines, each with its reason; the three cast
@@ -71,7 +71,6 @@
 pub mod api;
 pub mod arch;
 pub mod machine;
-pub mod module;
 pub mod sys;
 #[forbid(unsafe_code)]
 pub mod syscall;

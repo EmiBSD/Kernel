@@ -92,21 +92,7 @@ build-init-amd64:
 build-init-arm64:
     cargo build -p init --target {{arm64}}
 
-# N2.4: abi_openbsd.ko (sys/abi/ko), the ABI module the boot loaders hand the kernel
-# (decision 22): an ELF linked position-independent at 0 (relocation-model=pie, as
-# efiboot), without debug information (boot(8) reads the whole file into efiboot's 1 MiB
-# heap), in a target directory of its own so the kernel's builds are not redone:
-# target/abi/<target>/debug/abi_openbsd, which `cargo xtask image` and the media put on the
-# boot medium as /abi_openbsd.ko. docs/ARCHITECTURE.md, "abi_openbsd.ko".
-build-abi-amd64:
-    {{ if has_amd64 == "true" { "" } else { "echo 'build-abi-amd64: amd64 SKIPPED (decision 44)' # " } }}RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{amd64}} --target-dir target/abi
-
-build-abi-arm64:
-    RUSTFLAGS="-C relocation-model=pie" CARGO_PROFILE_DEV_STRIP=debuginfo cargo build -p abi_openbsd --target {{arm64}} --target-dir target/abi
-
-build-abi: build-abi-amd64 build-abi-arm64
-
-build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64 build-abi
+build: build-amd64 build-arm64 build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64
 
 # M14: OpenBSD's efiboot, amd64's BOOTX64.EFI (sys/arch/amd64/stand/efiboot, with libsa and
 # boot(8)'s sys/stand/boot). Linked position-independent at 0 (relocation-model=pie, which
@@ -126,10 +112,10 @@ efiboot-arm64:
 
 # --- boot images and QEMU ---------------------------------------------------
 
-image-amd64: (build-amd64 "--features qemu") build-init-amd64 build-abi-amd64
+image-amd64: (build-amd64 "--features qemu") build-init-amd64
     cargo xtask image --arch amd64 --kernel target/{{amd64}}/debug/bsd
 
-image-arm64: (build-arm64 "--features qemu") build-init-arm64 build-abi-arm64
+image-arm64: (build-arm64 "--features qemu") build-init-arm64
     cargo xtask image --arch arm64 --kernel target/{{arm64}}/debug/bsd
 
 run-amd64: image-amd64
@@ -163,7 +149,7 @@ smoke: smoke-build
 
 # What the smoke recipes boot: the MULTIPROCESSOR kernels with `--features qemu` (`smoke-up`
 # boots them too, on one processor), the init stand-ins and `smoke-cd80`'s cd80.iso (M16g).
-smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64
+smoke-build: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 efiboot-amd64 efiboot-arm64 build-bsdrd cd-iso-amd64
 
 # `smoke-boot`, the first of `smokes` (it was `smoke`'s own body until the smokes ran in
 # parallel). Boots per arch, every one with a virtio network card on QEMU's user network: a
@@ -1984,7 +1970,7 @@ re_session := "--send-after 'login:' --send 'root\\n' --send-after 'Password:' -
 # random_start says "random: good seed from bootblocks" and not the Limine boot's no-entropy
 # warning. `machine dtb` is arm64's machine command (it has no `machine memory`). Part of
 # `smoke`.
-smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-amd64 efiboot-arm64 build-abi
+smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") efiboot-amd64 efiboot-arm64
     @test -x target/userland/amd64/host/bin/makefs -a -f target/userland/amd64/ramdisk-root/etc/fstab || \
         { echo "smoke-efiboot: no makefs or staged root; run just userland first"; exit 1; }
     cargo xtask efiboot-disk --arch amd64 --efi target/efiboot/amd64/BOOTX64.EFI --kernel target/{{amd64}}/debug/bsd --root-dev sd1a
@@ -2004,7 +1990,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect "BlkSiz" \
         --expect "booting hd0a:/bsd: " --expect "]=0x" --expect "entry point at 0x1000000" \
         --expect "bsd: booted on amd64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 170 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi: 331 syscalls, 170 native" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0: apid 0 (boot processor)" \
@@ -2027,7 +2013,7 @@ smoke-efiboot: (build-amd64 "--features qemu") (build-arm64 "--features qemu") e
         --expect ">> EmiBSD/arm64 BOOTAA64 1.26" --expect "efiboot: boot.conf read" --expect "boot> " \
         --expect "-r-xr-xr-x 0,0" --expect "booting sd0a:/bsd: " --expect "]=0x" \
         --expect "bsd: booted on arm64 by boot(8) efiboot" --expect "bsd: boot(8) bootarg protocol, " \
-        --expect "abi_openbsd.ko: 331 syscalls, 170 native" --reject "abi_openbsd.ko: not loaded" \
+        --expect "abi: 331 syscalls, 170 native" \
         --expect "bsd: {{ncpu}} processors, boot processor hwid 0x0" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "random: good seed from bootblocks" --reject "warning: no entropy supplied by boot loader" \
         --expect "cpu0 at mainbus0 mpidr 0: ARM Cortex-A72" --expect "cpu{{aps}} at mainbus0 mpidr {{aps}}: ARM Cortex-A72" \
@@ -2193,20 +2179,19 @@ smoke-powerbtn: (build-arm64 "--features qemu") build-init-arm64
         --expect "rc: multi-user" --expect "m16f-armed-41" --expect "m16f-still-up-42" \
         --reject "syncing disks" --reject "Attempting to power down" --reject "The operating system has halted"
 
-# N2.4 (decision 22): the ABI module. Limine hands /abi_openbsd.ko over beside the kernel,
-# hal's loader places, relocates and maps it before init(8) runs and prints its one line,
-# and every system call goes through it (each entry Legacy at N2.4): single user from the
-# ramdisk, a command that execs, opens and reads, then the shell's own answer. A kernel that
-# did not load it says `not loaded`, which fails the run. Part of `smoke`.
-smoke-abi: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-abi
+# N2.4 (decision 22; linked into the image since decision 47): the ABI. The boot glue hands
+# it the kernel's table before main(), it registers its system call handler and the glue
+# prints the handler's line (the table's size and its Native entries), and every system call
+# goes through it: single user from the ramdisk, a command that execs, opens and reads, then
+# the shell's own answer through a pipe. Part of `smoke`.
+smoke-abi: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test -f target/userland/amd64/ramdisk.ffs -a -f target/userland/arm64/ramdisk.ffs || \
         { echo "smoke-abi: no ramdisk image; run just userland first"; exit 1; }
     cargo xtask smoke {{reject}} {{smp}} --arch amd64 --kernel target/{{amd64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
     cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/debug/bsd --cmdline "-s" --expect-ramdisk --until-seen {{abi_steps}}
 
 # `smoke-abi`'s expectations and session.
-abi_steps := "--reject 'abi_openbsd.ko: not loaded' " + \
-    "--expect 'abi_openbsd.ko: 331 syscalls, 170 native' " + \
+abi_steps := "--expect 'abi: 331 syscalls, 170 native' " + \
     "--send-after 'RETURN for sh:' --send '\\n' " + \
     "--send-after '# ' --send 'ls / >/dev/null && echo abi-ok-$((40+2))\\n' " + \
     "--expect 'abi-ok-42' " + \
@@ -3290,7 +3275,7 @@ toolchain:
 # ramdisk in its body. Without the toolchain it prints `smoke-devtools: <arch> SKIPPED (no
 # DevTools toolchain ...)` and passes; amd64 is `SKIPPED (decision 44)` until N10. Needs
 # `just userland`.
-smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-abi
+smoke-devtools: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     #!/bin/zsh
     set -eu
     hello() {
@@ -3345,7 +3330,7 @@ diff-openbsd: (build-amd64 "--features qemu") (build-arm64 "--features qemu") bu
 # xtask bench compare BEFORE AFTER` gives the `Bench:` lines of a milestone close. Needs
 # `just userland` and the installed snapshot (`just diff-openbsd` once). Beside `ci`, not in it,
 # and run under the machine lock with nothing else on the Mac (docs/ARCHITECTURE.md, "bench").
-bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
+bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-init-amd64 build-init-arm64
     @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/bench" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/bench" } else { "" } }} || \
         { echo "bench: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench} cargo xtask bench {{smp4}}
@@ -3353,8 +3338,8 @@ bench: (build-amd64 "--features qemu") (build-arm64 "--features qemu") build-ini
 # Decision 42: `bench` with the kernel alone in the release profile (Cargo.toml's
 # `[profile.release]`: LTO, one codegen unit, symbols kept), a diagnostic beside the debug
 # baseline, never in its place: `cargo xtask bench --profile release` boots
-# target/<triple>/release/bsd, while init, abi_openbsd.ko and the ramdisk are `bench`'s own
-# (debug), so only the kernel changes profile; the report records `profile = "release"`.
+# target/<triple>/release/bsd (the ABI linked in), while init and the ramdisk are `bench`'s
+# own (debug), so only the kernel changes profile; the report records `profile = "release"`.
 # Reports go to target/bench-release/<arch>/ unless EMIBSD_RUN_DIR says otherwise; ARGS go to
 # `cargo xtask bench` (`--arch amd64`, ...). Under the machine lock, as `bench`.
 build-release-amd64 features="":
@@ -3363,7 +3348,7 @@ build-release-amd64 features="":
 build-release-arm64 features="":
     cargo build -p bsd --release --target {{arm64}} {{features}}
 
-bench-release *args: (build-release-amd64 "--features qemu") (build-release-arm64 "--features qemu") build-init-amd64 build-init-arm64 build-abi
+bench-release *args: (build-release-amd64 "--features qemu") (build-release-arm64 "--features qemu") build-init-amd64 build-init-arm64
     @test {{ if has_amd64 == "true" { "-f target/userland/amd64/root/usr/bin/bench" } else { "" } }}{{both_archs_a}}{{ if has_arm64 == "true" { "-f target/userland/arm64/root/usr/bin/bench" } else { "" } }} || \
         { echo "bench-release: no bench in target/userland; run just userland first"; exit 1; }
     EMIBSD_RUN_DIR=${EMIBSD_RUN_DIR:-target/bench-release} cargo xtask bench {{smp4}} --profile release {{args}}
@@ -3458,8 +3443,6 @@ clippy:
     {{no_amd64}}cargo clippy -p efiboot-amd64 --target {{amd64}} -- -D warnings
     cargo clippy -p efiboot-arm64 --target {{arm64}} -- -D warnings
     cargo clippy -p hal -p kernel -p abi -- -D warnings
-    {{no_amd64}}cargo clippy -p abi_openbsd --target {{amd64}} -- -D warnings
-    cargo clippy -p abi_openbsd --target {{arm64}} -- -D warnings
 
 fmt:
     cargo fmt --all -- --check
@@ -3664,8 +3647,8 @@ ci-full:
 #   decision of 2026-11-05: no `bsd`; the installer installs `bsd.mp` as `/bsd`);
 # - `bsd.RAMDISK`: the same with the ramdisk compiled in and empty (feature `miniroot`,
 #   `rd_root_size` = `miniroot_sectors` sectors), which `cargo xtask rdsetroot` fills with a
-#   miniroot to make `bsd.rd`;
-# - `abi_openbsd.ko` and `BOOTAA64.EFI`, as `just build` makes them;
+#   miniroot to make `bsd.rd`; both carry the ABI, linked in (decision 47);
+# - `BOOTAA64.EFI`, as `just build` makes it;
 # - `BUILDINFO`: the commit, the dates, the toolchain, the profiles, the ramdisk's size.
 # Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once
 # before anything is packed (the user-mode lines of `smoke-boot` up to init's last check,
@@ -3675,12 +3658,12 @@ ci-full:
 # dated SOURCE_DATE_EPOCH and owned by root:wheel, and BUILDINFO holds no clock time, only
 # the tag's UTC day, so the same commit packs the same tar that day. The main
 # session publishes it as a GitHub pre-release tagged `<tag>` (git-commits.md, Releases).
-dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 build-abi-arm64 efiboot-arm64
+dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     #!/usr/bin/env zsh
     set -eu
     EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features miniroot --target-dir target/bsdrd
     EMIBSD_RUN_DIR=target/smoke/dist cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
-        --expect "bsd: booted on arm64" --expect "EmiBSD 8.0 (GENERIC) #" \
+        --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 170 native" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
         --expect "init: unveil ok" --expect "panic: init died (signal 0, exit "
     rdsize=$(cargo xtask rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
@@ -3694,7 +3677,6 @@ dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 build-abi-arm64
     mkdir -p "$out/$name"
     cp target/{{arm64}}/release/bsd "$out/$name/bsd.mp"
     cp target/bsdrd/{{arm64}}/release/bsd "$out/$name/bsd.RAMDISK"
-    cp target/abi/{{arm64}}/debug/abi_openbsd "$out/$name/abi_openbsd.ko"
     cp target/efiboot/arm64/BOOTAA64.EFI "$out/$name/BOOTAA64.EFI"
     {
         print "EmiBSD kernel $tag arm64"
@@ -3704,16 +3686,16 @@ dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 build-abi-arm64
         print "Build number: $EMIBSD_BUILD"
         print "Toolchain: $(rustc -V)"
         print "LandingZone: $(sed -n 's/^Commit: //p' lz/PINNED.md)"
-        print "bsd.mp: release profile (LTO, symbols kept), features default (no qemu)"
+        print "bsd.mp: release profile (LTO, symbols kept), features default (no qemu), the ABI (crate abi) linked in"
         print "bsd.RAMDISK: release profile, features default + miniroot (no qemu), rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
-        print "abi_openbsd.ko, BOOTAA64.EFI: dev profile, as just build makes them"
+        print "BOOTAA64.EFI: dev profile, as just build makes it"
     } > "$out/$name/BUILDINFO"
     stamp=$(TZ=UTC date -r $SOURCE_DATE_EPOCH +%Y%m%d%H%M.%S)
-    (cd "$out/$name" && shasum -a 256 --tag abi_openbsd.ko BOOTAA64.EFI BUILDINFO bsd.RAMDISK bsd.mp > SHA256 \
-        && chmod 644 abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp \
-        && TZ=UTC touch -t $stamp . abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp)
+    (cd "$out/$name" && shasum -a 256 --tag BOOTAA64.EFI BUILDINFO bsd.RAMDISK bsd.mp > SHA256 \
+        && chmod 644 BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp \
+        && TZ=UTC touch -t $stamp . BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp)
     (cd "$out" && COPYFILE_DISABLE=1 tar -n --format ustar --uid 0 --gid 0 --uname root --gname wheel --no-xattrs --no-mac-metadata \
-        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/abi_openbsd.ko" "$name/bsd.RAMDISK" "$name/bsd.mp" \
+        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/bsd.RAMDISK" "$name/bsd.mp" \
         | zstd -19 -q -o "$name.tar.zst" && shasum -a 256 "$name.tar.zst" > "$name.tar.zst.sha256")
     rm -rf target/smoke/dist
     echo "dist: $out/$name.tar.zst"

@@ -17,36 +17,27 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! `bsd`'s side of the ABI module `abi_openbsd.ko` (decision 22) until the subsystems it
-//! stands for move: the `Legacy` system call path (LZ's `sysent[]` and `mi_syscall`, what
-//! both arch traps called themselves), the `KernelApi` table `bsd` fills, the platform the
-//! module loader maps the module through (the kernel's pmap and the boot hand-over), and
-//! the boot steps that register the fallback and load the module before `init(8)` runs.
+//! `bsd`'s side of the ABI (`abi`, linked into the image, decision 47) until the subsystems
+//! it stands for move: the `Legacy` system call path (LZ's `sysent[]` and `mi_syscall`, what
+//! both arch traps called themselves), the `KernelApi` table `bsd` fills, and the boot step
+//! that hands that table to `abi::abi_init` before `main()`, so the ABI's handler answers
+//! every system call from the first one on.
 //!
-//! The arch traps call [`syscall`], which goes through `hal`'s dispatch point: to the
-//! module's handler once it registered (every entry `Legacy` at N2.4, so back here), to
-//! [`legacy_syscall`] otherwise. Either way a system call reaches `mi_syscall` with the same
-//! thread, number, arguments and return registers as before, and comes back with the same
-//! `Result`; only the route changed.
+//! The arch traps reach `hal`'s dispatch point (arm64's directly, amd64's through
+//! [`syscall`]), which calls the ABI's handler: a `Native` entry goes to its `KernelApi`
+//! group, a `Legacy` one (and a number outside the table) back here, to [`legacy_syscall`].
+//! Either way a system call reaches `mi_syscall` with the same thread, number, arguments and
+//! return registers as LZ's, and comes back with the same `Result`; only the route changed.
 //!
-//! Where the module runs: the machine's module window beside the kernel image (amd64's in
-//! the image's slot, arm64's in the image's gigabyte, N3.1), which the loader takes and
-//! enters itself (`hal::pmap`); nothing here maps it. The loader's writable copy is a
-//! `kernel_map` range from the kernel's allocator (`kernel::vm::km::module_memory()`, N3.2),
-//! released before the module's entry point is called, and a page of the module is
-//! executable only when its segment is.
-//!
-//! No `unsafe`: every call here is a safe function of `bsd`, `hal` or `kernel`. Deleted at
-//! N9 with `bsd`.
+//! The image crate (`bsd` until N9) is the one that names `abi`: `kernel` never does, and
+//! `abi` names nothing but `hal` (docs/SCAFFOLDING.md, the boot glue's call). No `unsafe`:
+//! every call here is a safe function of `abi`, `bsd`, `hal` or `kernel`. Deleted at N9 with
+//! `bsd`.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-
-use hal::module::ModulePlatform;
 use kernel::api::KernelApi;
 
 use crate::kern::init_sysent::SYSENT;
 use crate::kern::subr_prf::panic;
-use crate::machine::copy::{copyin, copyout};
 use crate::machine::cpu::curproc;
 use crate::sys::errno::Errno;
 use crate::sys::syscall::SYS_MAXSYSCALL;
@@ -54,21 +45,18 @@ use crate::sys::syscall_mi::mi_syscall;
 use crate::sys::systm::SysArgs;
 use crate::sys::types::Register;
 
-/// The `KernelApi` `bsd` hands the module: the `Legacy` path and the user copy are `bsd`'s;
-/// pipe(2), the vm system calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`), the descriptor
-/// system calls (`KernelApi::fd`, `sys/kern/kern_descrip.rs`), the event system calls
-/// (`KernelApi::event`, `sys/kern/kern_event.rs`), sendsyslog(2) (`KernelApi::sendsyslog`,
-/// `sys/kern/subr_log.rs`), futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the
-/// process system calls (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2)
-/// (`KernelApi::sysctl`, `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2)
-/// (`KernelApi::time`, `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`,
-/// `sys/kern/kern_sig.rs`) and the VFS system calls (`KernelApi::vfs`,
-/// `sys/kern/vfs_syscalls.rs`) are the kernel crate's, entered through `bsd`'s system call
-/// prologue.
+/// The `KernelApi` `bsd` hands the ABI: the `Legacy` path is `bsd`'s; pipe(2), the vm system
+/// calls (`KernelApi::vm`, `sys/kern/vm_bsd.rs`), the descriptor system calls
+/// (`KernelApi::fd`, `sys/kern/kern_descrip.rs`), the event system calls (`KernelApi::event`,
+/// `sys/kern/kern_event.rs`), sendsyslog(2) (`KernelApi::sendsyslog`, `sys/kern/subr_log.rs`),
+/// futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the process system calls
+/// (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2) (`KernelApi::sysctl`,
+/// `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2) (`KernelApi::time`,
+/// `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`, `sys/kern/kern_sig.rs`) and
+/// the VFS system calls (`KernelApi::vfs`, `sys/kern/vfs_syscalls.rs`) are the kernel crate's,
+/// entered through `bsd`'s system call prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
-    api_copyin,
-    api_copyout,
     crate::kern::pipe_glue::native_pipe2,
     crate::kern::vm_bsd::VM_ENTRIES,
     crate::kern::kern_descrip::FD_ENTRIES,
@@ -82,29 +70,14 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::vfs_syscalls::VFS_ENTRIES,
 );
 
-/// The module file the boot loader handed over (`set_image`): its kernel virtual address.
-static IMAGE_VA: AtomicUsize = AtomicUsize::new(0);
-/// Its length; 0 while there is none.
-static IMAGE_LEN: AtomicUsize = AtomicUsize::new(0);
-
-/// The loader's platform over the boot hand-over (`hal::module::ModulePlatform`).
-struct BsdPlatform;
-
-impl ModulePlatform for BsdPlatform {
-    fn image(&self) -> Option<(usize, usize)> {
-        let len = IMAGE_LEN.load(Ordering::Acquire);
-        (len != 0).then(|| (IMAGE_VA.load(Ordering::Relaxed), len))
-    }
-}
-
-/// The system call path both arch traps call where they chose the `sysent[]` entry:
-/// `hal`'s dispatch point, its errno value back as an [`Errno`].
+/// The system call path amd64's trap calls where it chose the `sysent[]` entry: `hal`'s
+/// dispatch point, its errno value back as an [`Errno`].
 pub fn syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Result<(), Errno> {
     hal::syscall::dispatch(code, args, rval).map_err(errno_of)
 }
 
-/// The `Legacy` fallback: what the traps did before (`ENOSYS` for a number outside
-/// `sysent[]`, else `mi_syscall` on the entry), for the thread on this CPU.
+/// The `Legacy` path, `KernelApi::syscall_legacy`: what the traps did before (`ENOSYS` for a
+/// number outside `sysent[]`, else `mi_syscall` on the entry), for the thread on this CPU.
 pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) -> Result<(), i32> {
     let Some(p) = curproc() else {
         panic(format_args!("syscall: no curproc"));
@@ -117,36 +90,18 @@ pub fn legacy_syscall(code: Register, args: &SysArgs, rval: &mut [Register; 2]) 
     error.map_err(Errno::as_i32)
 }
 
-/// The first boot step, from the boot glue before `main`: registers the `Legacy` fallback
-/// (so a system call is answered from the first one on, as before) and records the module
-/// file the boot loader handed over, if any: its kernel virtual address and length
-/// (Limine's module, or boot(8)'s through the direct map).
-pub fn abi_module_boot(image: Option<(usize, usize)>) {
-    let _ = hal::syscall::set_legacy(legacy_syscall);
-    let _ = hal::bridges::register_module_platform(&BsdPlatform);
-    if let Some((va, len)) = image {
-        IMAGE_VA.store(va, Ordering::Relaxed);
-        IMAGE_LEN.store(len, Ordering::Release);
-    }
-}
-
-/// The second boot step, from `main` before `init(8)` may exec: loads the module, which
-/// registers its handler; prints the one line that says whether it did.
-pub fn abi_module_attach() {
-    match hal::module::load(&KERNEL_API, kernel::vm::km::module_memory()) {
-        Ok(loaded) => crate::kprintf!("{loaded}\n"),
-        Err(e) => crate::kprintf!("{e}\n"),
+/// The boot step, from the boot glue after `hal_bridges_register` and before `main()`: hands
+/// the table to the ABI, which registers its system call handler, and prints the one line
+/// that says what the handler's table holds. Panics when no handler is registered after it,
+/// which no system call may find out later.
+pub fn abi_boot() {
+    abi::abi_init(&KERNEL_API);
+    let Some(info) = hal::syscall::handler_info() else {
+        panic(format_args!(
+            "abi: abi_init registered no system call handler"
+        ));
     };
-}
-
-/// `KernelApi::copyin`.
-fn api_copyin(uaddr: usize, kbuf: &mut [u8]) -> Result<(), i32> {
-    copyin(uaddr, kbuf).map_err(Errno::as_i32)
-}
-
-/// `KernelApi::copyout`.
-fn api_copyout(kbuf: &[u8], uaddr: usize) -> Result<(), i32> {
-    copyout(kbuf, uaddr).map_err(Errno::as_i32)
+    crate::kprintf!("abi: {} syscalls, {} native\n", info.syscalls, info.native);
 }
 
 /// An errno value from `hal` back as the [`Errno`] it was made from.

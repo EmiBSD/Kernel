@@ -96,7 +96,7 @@
 //! is never locked, PTPs and pv entries are freed only after the shootdown's wait.
 //!
 //! **The trust boundary.** A physical address is trusted everywhere (`enter`, `kenter`,
-//! `zero_page`, `copy_page`, `module_enter`): that `pa` is a page the caller may map or write
+//! `zero_page`, `copy_page`): that `pa` is a page the caller may map or write
 //! is the frame proof a typed page would bring (`kernel::vm::page::VmPage` exists since N3.3,
 //! but the pmap's callers still pass frames); until then it is the caller's word, as in the C. What `hal` can check it checks: a user pmap refuses the kernel's half, the
 //! kernel pmap is changed only through the [`KernelMapper`] token, and the page provider is
@@ -137,7 +137,7 @@
 //!   kernel pmap, which has no such page, refuses `PROT_EXEC` through the token (its
 //!   backend's deviations): there nothing executes but the boot loader's mapping of the image
 //!   (under boot(8)/efiboot its whole 64 MB block, read-write, an inherited deviation of the
-//!   backend) and the module window.
+//!   backend).
 //! - Switching the running CPU to a pmap's root (`lcr3` in `pmap_activate`, arm64's
 //!   `pmap_setttb`, `efi_enter`/`efi_leave`) takes a second token, [`Switcher`], from the
 //!   same `bootstrap`: a safe `load` would let any caller run on a root whose pmap it then
@@ -979,10 +979,6 @@ pub(crate) trait PmapBackend {
     fn direct_unmap(va: Vaddr) -> Option<Paddr>;
     /// `pmap_flush_cache`.
     fn flush_cache(va: Vaddr, len: Vsize);
-    /// [`module_window`].
-    fn module_window() -> Option<(Vaddr, usize)>;
-    /// [`module_enter`].
-    fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool;
     /// [`Pmap::cr3`].
     #[cfg(target_arch = "x86_64")]
     fn cr3(pmap: &Pmap) -> u64;
@@ -1208,24 +1204,6 @@ pub fn direct_unmap(va: Vaddr) -> Option<Paddr> {
 /// `clflush`; the arm64 data-cache operations).
 pub fn flush_cache(va: Vaddr, len: Vsize) {
     Backend::flush_cache(va, len);
-}
-
-/// The kernel virtual window the ABI module `abi_openbsd.ko` must run from (decision 22): its
-/// first address and its size, outside `kernel_map`, for the kernel's lifetime; `None` on a
-/// machine without one (the host double; amd64 and arm64 have one, N3.1). Its size is 0 when
-/// the bootstrap could not link it. Without a window, or with an empty one, the module is not
-/// loaded. The module loader's (`sys/hal/module/load.rs`).
-pub(crate) fn module_window() -> Option<(Vaddr, usize)> {
-    Backend::module_window()
-}
-
-/// Maps `pa` at `va`, a page of [`module_window`], in the kernel pmap with `prot`, wired, for
-/// the kernel's lifetime: the module's pages. `false`, mapping nothing, when `va` is not a page
-/// of the window, is mapped already, `pa` is not a page's address, or `prot` is both writable
-/// and executable (W^X); always `false` without a window. The module loader's, as
-/// [`module_window`].
-pub(crate) fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
-    Backend::module_enter(va, pa, prot)
 }
 
 // The pmap and the page data are shared between CPUs: a pmap's handles cross them, every page

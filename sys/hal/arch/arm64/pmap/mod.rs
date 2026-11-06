@@ -39,7 +39,6 @@ pub(crate) mod backend;
 pub(crate) mod cpufunc;
 pub mod layout;
 mod vp;
-mod window;
 
 pub use asid::asid_width;
 #[cfg(not(feature = "module-rt"))]

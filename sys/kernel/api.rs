@@ -17,13 +17,13 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The kernel's side of `KernelApi`, the vtable handed to the ABI module when `hal` loads
-//! it (decision 22, docs/ZERO_UNSAFE.md 0.1): the module's registration, which the kernel
-//! owns, and the table's construction. The type itself is `hal::api`'s, so the module
-//! names it without depending on this crate.
+//! The kernel's side of `KernelApi`, the table handed to the ABI (`abi::abi_init`, linked
+//! into the image, decision 47; docs/ZERO_UNSAFE.md 0.1): the ABI's registration, which the
+//! kernel owns, and the table's construction. The type itself is `hal::api`'s, so `abi`
+//! names it without depending on this crate, and this crate never names `abi`.
 //!
-//! Who fills it: `bsd` builds the table today with [`table`] (its `main` owns the functions
-//! that answer: the LZ system call path, `copyin`/`copyout`, `pipe2` and the virtual memory
+//! Who fills it: `bsd` builds the table today with [`table`] (its boot glue owns the
+//! functions that answer: the LZ system call path, `pipe2` and the virtual memory
 //! system's fifteen (`VmEntries`, N3.5), the descriptors' twenty (`FdEntries`, N4.3) and
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
@@ -41,32 +41,28 @@
 //! table alone.
 
 pub use hal::api::{
-    AbiInit, AbiModuleHeader, ApiPrefix, EventEntries, FdEntries, FutexEntry, KERNEL_API_VERSION,
-    KernelApi, ProcEntries, SigreturnEntry, SyscallHandler, SysctlEntry, TimeEntries, VfsEntries,
-    VmEntries,
+    EventEntries, FdEntries, FutexEntry, KernelApi, ProcEntries, SigreturnEntry, SyscallHandler,
+    SysctlEntry, TimeEntries, VfsEntries, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
-/// The registered module: the table it was given and its handler.
-struct Module {
+/// The registered handler: the table the ABI was given and its handler.
+struct Registered {
     api: &'static KernelApi,
     handler: SyscallHandler,
 }
 
-/// The module's registration, once `abi_init` made it.
-static MODULE: OnceStatic<Module> = OnceStatic::new();
+/// The ABI's registration, once `abi_init` made it.
+static ABI: OnceStatic<Registered> = OnceStatic::new();
 
-/// The table of this version, with the kernel's registration and the functions the caller
-/// owns.
+/// The table, with the kernel's registration and the functions the caller owns.
 #[allow(
     clippy::too_many_arguments,
     reason = "one argument per member of the table, as KernelApi::new"
 )]
 pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-    copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
-    copyout: fn(&[u8], usize) -> Result<(), i32>,
     pipe2: fn(Register, usize, Register) -> SysResult,
     vm: VmEntries,
     fd: FdEntries,
@@ -82,8 +78,6 @@ pub const fn table(
     KernelApi::new(
         register_syscall_handler,
         syscall_legacy,
-        copyin,
-        copyout,
         pipe2,
         vm,
         fd,
@@ -98,7 +92,7 @@ pub const fn table(
     )
 }
 
-/// `KernelApi::register_syscall_handler`: keeps the module's handler with the table it was
+/// `KernelApi::register_syscall_handler`: keeps the ABI's handler with the table it was
 /// given and registers in `hal` the trampoline that calls it. Once: a second registration
 /// is ignored, so the handler never changes under a running system call.
 pub fn register_syscall_handler(
@@ -106,17 +100,18 @@ pub fn register_syscall_handler(
     handler: SyscallHandler,
     info: HandlerInfo,
 ) {
-    if MODULE.set(Module { api, handler }).is_ok() {
-        let _ = hal::syscall::set_handler(module_syscall, info);
+    if ABI.set(Registered { api, handler }).is_ok() {
+        let _ = hal::syscall::set_handler(abi_syscall, info);
     }
 }
 
-/// What `hal`'s dispatch point calls once the module registered: the module's handler with
-/// its table.
-fn module_syscall(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    match MODULE.get() {
-        Some(m) => (m.handler)(m.api, code, args, rval),
-        None => hal::syscall::legacy(code, args, rval),
+/// What `hal`'s dispatch point calls once the ABI registered: its handler with its table.
+/// `hal` holds this trampoline only after [`ABI`] is set, so the `None` arm answers as
+/// `hal` does with nothing registered.
+fn abi_syscall(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    match ABI.get() {
+        Some(r) => (r.handler)(r.api, code, args, rval),
+        None => Err(hal::syscall::ENOSYS),
     }
 }
 /* </CODE> */
@@ -128,14 +123,6 @@ mod tests {
 
     fn legacy(code: Register, _: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[0] = code;
-        Ok(())
-    }
-
-    fn copyin(_: usize, _: &mut [u8]) -> Result<(), i32> {
-        Ok(())
-    }
-
-    fn copyout(_: &[u8], _: usize) -> Result<(), i32> {
         Ok(())
     }
 
@@ -761,13 +748,11 @@ mod tests {
     };
 
     static API: KernelApi = table(
-        legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME,
-        sigreturn, VFS,
+        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS,
     );
 
     #[test]
-    fn the_table_is_this_version_with_the_kernels_registration() {
-        assert_eq!(API.prefix, ApiPrefix::CURRENT);
+    fn the_table_holds_the_kernels_registration_and_the_callers_entries() {
         let register: fn(&'static KernelApi, SyscallHandler, HandlerInfo) =
             register_syscall_handler;
         assert!(core::ptr::fn_addr_eq(

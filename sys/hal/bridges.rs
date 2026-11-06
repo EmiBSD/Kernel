@@ -57,7 +57,6 @@
 use crate::cons::Console;
 use crate::intr::IntrHardware;
 use crate::malloc::Malloc;
-use crate::module::ModulePlatform;
 use crate::netlock::NetLock;
 use crate::once::OnceStatic;
 #[cfg(any(
@@ -145,16 +144,6 @@ bridge!(
     PRINTF: Printf,
     register_printf,
     printf
-);
-
-bridge!(
-    /// Registers the module loader's platform (`sys/hal/module/load.rs`): the boot loader's
-    /// hand-over of `abi_openbsd.ko` (`sys/kern/abi_module.rs`), once, by the kernel's boot
-    /// path before `main` loads the module; the loader's three `unsafe` rest on it with the
-    /// kernel's `ModuleMemory` (the platform premise). Paid by N4 (the boot entry, N4.1).
-    MODULE_PLATFORM: ModulePlatform,
-    register_module_platform,
-    module_platform
 );
 
 bridge!(

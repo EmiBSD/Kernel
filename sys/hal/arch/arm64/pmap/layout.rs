@@ -77,18 +77,16 @@
 //!   ([`asid_slot`]), the operands of `ttlb_flush`'s and `pmap_free_asid`'s `tlbi`
 //!   ([`tlbi_page`], [`tlbi_asid`]), and the ASID width `pmap_bootstrap` probes
 //!   ([`nasid_probe`], which also says why it stays at 8 bits).
-//! - New in native (N3.1 commit 7): the ABI module window's geometry and its two pure
-//!   checks, where it goes in the image's level-2 table ([`module_window_place`]) and which
-//!   protections it maps ([`module_prot_ok`]); `window.rs` links and fills it. And the
-//!   level-1 slots of the kernel's managed range ([`kernel_map_slot`]), whose table
-//!   descriptors `pmap_growkernel` marks `Lx_PT_PXN` (the backend's deviations).
+//! - New in native (N3.1 commit 7): the level-1 slots of the kernel's managed range
+//!   ([`kernel_map_slot`]), whose table descriptors `pmap_growkernel` marks `Lx_PT_PXN` (the
+//!   backend's deviations).
 //! - N3.1 commit 8: `pmap_map_stolen`'s choice of protection by section, for the image's
 //!   pages ([`image_page_prot`]), the checks the bootstrap makes of the section bounds the
 //!   boot glue passes ([`image_layout_ok`]) and how many level-3 tables they take
 //!   ([`image_ptps`]), and the `TCR_EL1` the switch to the kernel's tables runs under while
 //!   its identity table is in `TTBR0_EL1` ([`tcr_identity`]). N3.1 commit 8b: `ap_bits_kern`
 //!   ([`AP_BITS_KERN`]) and the kernel leaf every page the pmap maps outside `pmap_enter`
-//!   takes ([`kernel_leaf`]: the image, the switch's identity page, the module window) moved
+//!   takes ([`kernel_leaf`]: the image, the switch's identity page) moved
 //!   here from the backend, so the host tests check them; the `TCR_EL1` bits `pmap_init`
 //!   clears ([`TCR_HPD`]).
 //! - N4.8d: the distance between the kernel's root and `pmap_tramp`'s
@@ -104,7 +102,7 @@ use super::super::include::pte::{
 };
 use super::super::include::vmparam::{VM_MAX_KERNEL_ADDRESS, VM_MIN_KERNEL_ADDRESS};
 use crate::pmap::{KernelImage, PG_PMAP2, PMAP_MD0, PMAP_MD1, PMAP_MD2, PMAP_MD3, VmProt};
-use crate::sys::mman::{PROT_EXEC, PROT_NONE, PROT_READ, PROT_WRITE};
+use crate::sys::mman::{PROT_EXEC, PROT_READ, PROT_WRITE};
 
 // V->P mapping data
 
@@ -233,11 +231,6 @@ pub const ID_AA64MMFR0_ASID_BITS_MASK: u64 = 0xf << 4;
 pub const ID_AA64MMFR0_ASID_BITS_16: u64 = 0x2 << 4;
 /// `EFI_SPACE_BITS` (`efi_machdep.c`): the width of the EFI runtime pmap's address space.
 pub const EFI_SPACE_BITS: u32 = 48;
-/// The ABI module window's size (`window.rs`): the largest image the module loader takes
-/// (`hal::module::elf::MAX_SPAN`), so the window never refuses a module the loader accepts.
-pub const MODULE_WINDOW_SIZE: usize = crate::module::elf::MAX_SPAN as usize;
-/// The level-3 tables the window needs: one per level-2 entry (2 MiB).
-pub const MODULE_WINDOW_NPTP: usize = MODULE_WINDOW_SIZE >> VP_IDX2_POS;
 
 /// `ap_bits_kern[]`: the access bits of a kernel mapping, by `PROT_*`.
 pub const AP_BITS_KERN: [u64; 8] = [
@@ -360,10 +353,9 @@ pub const fn tcr_identity(tcr: u64) -> u64 {
 }
 
 /// `pmap_pte_update`'s descriptor of a write-back kernel mapping of `pa` with `prot`, never
-/// guarded (no `ATTR_GP`: the kernel and the ABI module are built without BTI landing pads,
-/// the backend's deviations): the image's pages (`pmap_map_stolen`), the switch's identity
-/// page and the module window's leaves (`window.rs`). 0 for `PROT_NONE`, as
-/// `pmap_pte_update` stores.
+/// guarded (no `ATTR_GP`: the kernel is built without BTI landing pads, the backend's
+/// deviations): the image's pages (`pmap_map_stolen`) and the switch's identity page. 0 for
+/// `PROT_NONE`, as `pmap_pte_update` stores.
 pub const fn kernel_leaf(pa: u64, prot: VmProt) -> u64 {
     let access_bits = AP_BITS_KERN[(prot & PROT_MASK) as usize];
     if access_bits == 0 {
@@ -434,44 +426,12 @@ pub fn image_ptps(img: &KernelImage) -> usize {
     last - first + 1
 }
 
-/// Where the module window goes in the level-2 table of the gigabyte at `gib` (the kernel
-/// image's), whose last entry in use is `last`: the index of its first level-2 entry, the
-/// one after `last`, and its first address. `None` when `gib` is not a gigabyte's address,
-/// the [`MODULE_WINDOW_NPTP`] entries do not fit in the table after `last`, or the window
-/// would meet the kernel's managed range (`VM_MIN_KERNEL_ADDRESS`..=`VM_MAX_KERNEL_ADDRESS`,
-/// `vmmap` and `kernel_map`), whose tables `pmap_growkernel` makes.
-pub const fn module_window_place(gib: usize, last: usize) -> Option<(usize, usize)> {
-    if gib & ((1 << VP_IDX1_POS) - 1) != 0 || last >= VP_ENTRIES {
-        return None;
-    }
-    let first = last + 1;
-    if first + MODULE_WINDOW_NPTP > VP_ENTRIES {
-        return None;
-    }
-    let base = gib + (first << VP_IDX2_POS);
-    // Its last byte, inside the gigabyte (aligned, so no overflow even at the top one).
-    let end = base + (MODULE_WINDOW_SIZE - 1);
-    if base <= VM_MAX_KERNEL_ADDRESS && VM_MIN_KERNEL_ADDRESS <= end {
-        return None;
-    }
-    Some((first, base))
-}
-
 /// Whether the level-1 slot `l1` of the kernel's level-0 slot is one of the managed range's
 /// (`VM_MIN_KERNEL_ADDRESS`..=`VM_MAX_KERNEL_ADDRESS`: `vmmap` and `kernel_map`), whose
 /// table descriptors `pmap_growkernel` makes never executable at EL1; the image's
 /// gigabyte is not one.
 pub const fn kernel_map_slot(l1: usize) -> bool {
     vp_idx(1, VM_MIN_KERNEL_ADDRESS) <= l1 && l1 <= vp_idx(1, VM_MAX_KERNEL_ADDRESS)
-}
-
-/// Whether the module window maps a page with `prot`: a protection the kernel's access bits
-/// grant (`ap_bits_kern`, not `PROT_NONE`) and never both writable and executable (W^X; the
-/// loader asks for read, read-write or read-execute only).
-pub const fn module_prot_ok(prot: VmProt) -> bool {
-    prot & !PROT_MASK == 0
-        && prot != PROT_NONE
-        && prot & (PROT_WRITE | PROT_EXEC) != (PROT_WRITE | PROT_EXEC)
 }
 
 const _: () = {
@@ -482,8 +442,6 @@ const _: () = {
     );
     assert!(PMAP_ASID_MASK == 0xffff);
     assert!(TRAMP_ROOT_OFFSET > 0 && TRAMP_ROOT_OFFSET & PAGE_MASK == 0);
-    assert!(MODULE_WINDOW_SIZE.is_multiple_of(1 << VP_IDX2_POS));
-    assert!(MODULE_WINDOW_NPTP > 0 && MODULE_WINDOW_NPTP < VP_ENTRIES);
     // The managed range lies in one level-0 slot, so its level-1 slots name it alone.
     assert!(vp_idx(0, VM_MIN_KERNEL_ADDRESS) == vp_idx(0, VM_MAX_KERNEL_ADDRESS));
     assert!(VM_MIN_KERNEL_ADDRESS & ((1 << VP_IDX1_POS) - 1) == 0);
@@ -494,6 +452,7 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::mman::PROT_NONE;
 
     #[test]
     fn the_indices_split_a_va_by_level() {
@@ -618,38 +577,6 @@ mod tests {
     }
 
     #[test]
-    fn the_module_window_goes_after_the_last_entry() {
-        // The image's gigabyte (`kernel.ld`'s `__kernel_base`).
-        const GIB: usize = 0xffff_ffff_8000_0000;
-        assert_eq!(MODULE_WINDOW_NPTP, 8);
-        // boot(8)/efiboot: locore0's 32 blocks of 2 MiB (the 64 MB block).
-        assert_eq!(module_window_place(GIB, 31), Some((32, GIB + (32 << 21))));
-        // Limine: the image's own entries.
-        assert_eq!(module_window_place(GIB, 10), Some((11, GIB + (11 << 21))));
-        // The last that fits, and the first that does not.
-        assert_eq!(
-            module_window_place(GIB, 503),
-            Some((504, GIB + (504 << 21)))
-        );
-        assert_eq!(module_window_place(GIB, 504), None);
-        assert_eq!(module_window_place(GIB, 511), None);
-        assert_eq!(module_window_place(GIB, 512), None);
-        // The top gigabyte: the window's last byte is the address space's.
-        const TOP: usize = 0xffff_ffff_c000_0000;
-        assert_eq!(
-            module_window_place(TOP, 503),
-            Some((504, TOP + (504 << 21)))
-        );
-        // Never in the managed kernel range, never off a gigabyte.
-        assert_eq!(module_window_place(VM_MIN_KERNEL_ADDRESS, 1), None);
-        assert_eq!(
-            module_window_place(VM_MIN_KERNEL_ADDRESS + (3 << 30), 1),
-            None
-        );
-        assert_eq!(module_window_place(GIB + 4096, 1), None);
-    }
-
-    #[test]
     fn the_managed_range_has_its_own_level_1_slots() {
         // VM_MIN_KERNEL_ADDRESS..=VM_MAX_KERNEL_ADDRESS: 16 GiB, one GiB per slot: 0 to 15.
         for (l1, managed) in [
@@ -665,25 +592,6 @@ mod tests {
         assert!(!kernel_map_slot(vp_idx(1, 0xffff_ffff_8000_0000)));
         assert!(!kernel_map_slot(vp_idx(1, 0xffff_ffff_8400_0000)));
         assert!(kernel_map_slot(vp_idx(1, VM_MAX_KERNEL_ADDRESS)));
-    }
-
-    #[test]
-    fn the_module_window_takes_w_xor_x() {
-        use crate::sys::mman::PROT_READ;
-        for (prot, ok) in [
-            (PROT_READ, true),
-            (PROT_READ | PROT_WRITE, true),
-            (PROT_READ | PROT_EXEC, true),
-            (PROT_EXEC, true),
-            (PROT_WRITE, true),
-            (PROT_NONE, false),
-            (PROT_WRITE | PROT_EXEC, false),
-            (PROT_READ | PROT_WRITE | PROT_EXEC, false),
-            (0x08, false),
-            (-1, false),
-        ] {
-            assert_eq!(module_prot_ok(prot), ok, "{prot:#x}");
-        }
     }
 
     /// An image as both boot paths lay it out (`kernel.ld`): the text from the gigabyte's
@@ -779,8 +687,7 @@ mod tests {
         let rx = kernel_leaf(pa, PROT_READ | PROT_EXEC);
         let r = kernel_leaf(pa, PROT_READ);
         let rw = kernel_leaf(pa, PROT_READ | PROT_WRITE);
-        // Text (and the identity page, and the module's text): executable at EL1 only,
-        // read-only.
+        // Text (and the identity page): executable at EL1 only, read-only.
         assert_eq!(rx & (ATTR_PXN | ATTR_UXN), ATTR_UXN);
         assert_eq!(rx & attr_ap(3), attr_ap(2));
         // Read-only data: never executable, read-only.
@@ -800,14 +707,14 @@ mod tests {
             assert_ne!(leaf & ATTR_nG, 0, "{prot:#x}");
             assert_eq!(leaf & ATTR_IDX_MASK, attr_idx(PTE_ATTR_WB), "{prot:#x}");
             assert_eq!(leaf & attr_sh(3), attr_sh(SH_INNER), "{prot:#x}");
-            // No branch-target guard on any kernel leaf (the window's included).
+            // No branch-target guard on any kernel leaf.
             assert_eq!(leaf & ATTR_GP, 0, "{prot:#x}");
         }
         // No access is no leaf; the flag bits of the address do not leak in.
         assert_eq!(kernel_leaf(pa, PROT_NONE), 0);
         assert_eq!(kernel_leaf(pa | 0xfff, PROT_READ) & PTE_RPGN, pa);
         // `ap_bits_kern` grants write and execute together, as the C's: W^X is the callers'
-        // (the module window refuses it, the kernel pmap refuses any `PROT_EXEC`, the image
+        // (the kernel pmap refuses any `PROT_EXEC`, the image
         // asks for one of the three above).
         assert_eq!(
             kernel_leaf(pa, PROT_READ | PROT_WRITE | PROT_EXEC) & (ATTR_PXN | attr_ap(2)),
