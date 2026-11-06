@@ -1765,6 +1765,19 @@ pub fn sched_pause<G: ProcGlue>() {
     }
 }
 
+/// `sched_pause(preempt)`: [`preempt`] when the running CPU's scheduler asks its thread to
+/// give the CPU up (`SPCF_SHOULDYIELD`): `uiomove(9)`'s pause before each user leg
+/// (`kern_subr.c`; the kernel's window leg, `kernel::uio::uiomove_window`).
+pub fn sched_pause_preempt<G: ProcGlue>() {
+    let n = hal::cpu::cpu_number();
+    if tables::<G>()
+        .cpu(n)
+        .is_some_and(|c| c.schedflags() & SPCF_SHOULDYIELD != 0)
+    {
+        preempt::<G>();
+    }
+}
+
 /// `sched_yield(2)`'s work for the thread `p` (the system call's): a thread of a
 /// multi-threaded process drops to the lowest priority among its siblings so that they can
 /// make some progress, then gives the CPU up.

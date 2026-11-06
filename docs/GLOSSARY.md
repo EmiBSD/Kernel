@@ -78,6 +78,7 @@ explaining, and a new directory under `sys/`, is a new row here, in the same com
 | milestone, N0..N12 | The rows of `docs/ROADMAP.md`, each with a mechanical exit criterion and a tag at its close: N0 bootstrap, N1 leaves, N2 foundations, N3 memory, N4 processes, N5 VFS, ..., N9 `bsd` deleted, N10 amd64 homologated, N11 verification, N12 performance |
 | MMIO | **Memory-Mapped I/O.** Device registers reached by reading and writing memory addresses; `hal::Mmio<Regs>` types them |
 | MP, UP | **Multiprocessor, uniprocessor.** OpenBSD's `option MULTIPROCESSOR`; since decision 40 the only kernel built is MP, and `smoke-up` boots it with one CPU |
+| `ObjectWindow` | A range of `kernel_map` that maps a memory object's pages (`kernel::vm::km::ObjectWindow`, N5.9t1: tmpfs's `uvm_map(kernel_map, .., aobj, ..)`), made only by `uvm_map_object_window` and unmapped by its drop; its bytes move only by copies through its `ForeignWindow` (`kernel::uio::uiomove_window`), never through a slice, since a user mapping may write the pages meanwhile |
 | `OnceStatic<T>` | `hal`'s init-once static: written once at boot, read afterwards, replacing LZ's `StaticCell` and every `static mut` |
 | `pf(4)` | OpenBSD's packet filter, the firewall; a security-sensitive area, redesigned at N8 |
 | pin | The LZ commit the tree is synced to (`lz/PINNED.md`, `lineage.toml [meta].lz`); moves only in an `lz: bump pin` commit with the user's OK. `reference/PINNED.md` is the OpenBSD commit LZ itself is pinned to |

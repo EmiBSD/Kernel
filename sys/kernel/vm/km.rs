@@ -306,6 +306,14 @@
 //!   only, never a slice (the bytes are shared with user space: the C's semantics), and only
 //!   `vm::glue`'s `DeviceLock` makes one, over the range it wired and borrowing it, so the
 //!   window is gone before the pages are unwired.
+//! - N5.9t1: the token's other maker of a window, an object's own range: tmpfs's
+//!   `uvm_map(kernel_map, .., node->tn_uobj, ..)` and `uvm_unmap` around its `uiomove`
+//!   (LZ: `bsd`'s `tmpfs_subr.rs`, an `unsafe` slice over the range) is an [`ObjectWindow`],
+//!   made only by [`uvm_map_object_window`] (the C's call over an aobj's handle, never the
+//!   kernel object, whose pages hold `KmBuf`'s Rust slices; the map entry owning the object
+//!   reference it was given) and unmapped by its drop; [`KernelWindow`]'s twin over the
+//!   C's other source of a kernel range. Its bytes move only by copies through the window
+//!   (`kernel::uio::uiomove_window` straight to the uio's iovecs), never through a slice.
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -318,6 +326,7 @@ use hal::mapped::MappedBytes;
 use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
 use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef};
+use hal::pool::PoolArc;
 use hal::rwlock::{Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
 use hal::sys::errno::Errno;
@@ -330,7 +339,7 @@ use hal::vm::param::round_page;
 use hal::vm::uvmexp::UVMEXP;
 
 use super::amap::AMAP_REFALL;
-use super::aobj::{UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
+use super::aobj::{Aobj, UAO_FLAG_KERNOBJ, uao_create, uao_dropswap, uao_init};
 use super::map::{
     DeadQueue, VM_MAP_PAGEABLE, VmMap, uvm_map, uvm_map_create, uvm_map_extract, uvm_map_setup,
     uvm_map_submap, uvm_unmap, uvm_unmap_detach, uvm_unmap_remove,
@@ -1105,6 +1114,99 @@ pub fn foreign_window(range: Extracted) -> KernelWindow {
     KernelWindow { window, range }
 }
 
+/// A range of `kernel_map` that maps a memory object's pages (tmpfs's aobj, `tmpfs_uiomove`'s
+/// and `tmpfs_zeropg`'s `uvm_map(kernel_map, &va, len, uobj, off, ..)`), and the one window
+/// that copies through it: made only by [`uvm_map_object_window`], given back once, by its
+/// drop (`uvm_unmap(kernel_map, va, va + len)`, which detaches the object reference the map
+/// entry holds). No slice of the range is ever made: a user mapping of the same object may
+/// write its pages meanwhile, and a page faults in on first touch (`uvm_fault(kernel_map)`)
+/// or is `EFAULT`; every access is a copy through [`ObjectWindow::window`].
+pub struct ObjectWindow {
+    window: ForeignWindow<'static>,
+    va: Vaddr,
+    len: usize,
+}
+
+impl ObjectWindow {
+    /// The window: `read_at`/`write_at` and the raw legs to a uio's iovecs, within the range.
+    pub fn window(&self) -> &ForeignWindow<'static> {
+        &self.window
+    }
+
+    /// The range's first kernel address.
+    pub fn va(&self) -> Vaddr {
+        self.va
+    }
+
+    /// The range's length.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether the range is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+impl Drop for ObjectWindow {
+    fn drop(&mut self) {
+        // The window cannot be copied through any more (`&mut self`); the range goes.
+        let va = self.va.as_usize();
+        uvm_unmap(kernel_map(), va, va + self.len);
+    }
+}
+
+/// `uvm_map(kernel_map, &va, len, uobj, uoffset, 0, UVM_MAPFLAG(PROT_READ | PROT_WRITE,
+/// PROT_READ | PROT_WRITE, MAP_INHERIT_NONE, adv, 0))` as a value: `len` bytes (whole pages)
+/// of the anonymous object `aobj` from `uoffset`, mapped in `kernel_map` at the address the
+/// map chose, wrapped in the only window that may copy through them ([`ObjectWindow`]); its
+/// drop unmaps them. The map entry takes the object reference the caller made for it
+/// (`uao_reference` before, as the C's tmpfs); on an error none is taken and the caller gives
+/// its own back (`uao_detach`). The one way to an object's window: the range is the map's
+/// result, never a caller's number.
+///
+/// The object is a pool item's aobj not marked as viewed by `hal` (`PoolArc<Aobj>`, the C
+/// maps only `tn_uobj`, tmpfs_subr.c:1250, :1275), whose pages hold no Rust object: never the
+/// kernel object, a `static` (`ObjRef::Kernel`) whose pages back `KmBuf::alloc_pageable`'s
+/// slices, which no `PoolArc<Aobj>` names (review 1's B1), and never an aobj marked
+/// `UAO_FLAG_HALVIEW` (the timekeep page, `hal`'s `TimekeepAtomic`), which is `panic(9)`: an
+/// invariant of the kernel no userland path reaches (the closing review's F1).
+pub fn uvm_map_object_window(
+    aobj: PoolArc<Aobj>,
+    uoffset: Voff,
+    len: usize,
+    adv: i32,
+) -> Result<ObjectWindow, Errno> {
+    if aobj.is_hal_viewed() {
+        kpanic(format_args!(
+            "uvm_map_object_window: an aobj hal views (UAO_FLAG_HALVIEW)"
+        ));
+    }
+    let mut va = 0usize;
+    uvm_map(
+        kernel_map(),
+        &mut va,
+        len,
+        Some(ObjRef::Aobj(aobj)),
+        uoffset,
+        0,
+        uvm_mapflag(
+            PROT_READ | PROT_WRITE,
+            PROT_READ | PROT_WRITE,
+            MAP_INHERIT_NONE,
+            adv,
+            0,
+        ),
+    )?;
+    let va = Vaddr::new(va);
+    Ok(ObjectWindow {
+        window: token().foreign_window(va, len),
+        va,
+        len,
+    })
+}
+
 /// `uvm_km_init`: init kernel maps and objects to reflect reality (i.e. KVM already
 /// allocated for text, data, bss, and static data structures).
 ///
@@ -1627,9 +1729,10 @@ pub const fn module_memory() -> &'static dyn ModuleMemory {
 }
 
 /// The host tests' window over the double's foreign memory (`testutil::FOREIGN_BASE`), which no
-/// extract filled: the copies of `vm::io` and `vm::mmap` tested without a map. Test code only.
+/// extract filled: the copies of `vm::io` and `vm::mmap` tested without a map (and `uio`'s
+/// window leg over kernel-map space no entry holds). Test code only.
 #[cfg(test)]
-pub(super) fn test_window(va: Vaddr, len: usize) -> ForeignWindow<'static> {
+pub(crate) fn test_window(va: Vaddr, len: usize) -> ForeignWindow<'static> {
     token().foreign_window(va, len)
 }
 /* </CODE> */
@@ -2174,6 +2277,101 @@ mod tests {
         );
         assert_eq!((w.va().as_usize(), w.len()), (0x40_0000, 2 * PAGE_SIZE));
         drop(w);
+    }
+
+    #[test]
+    fn an_objects_window_faults_its_pages_in_and_gives_its_range_back() {
+        // tmpfs's window (N5.9t1): an aobj of two pages mapped in kernel_map, its pages
+        // faulted in by the copies (the host's kdata_abort, uvm_fault(kernel_map)), read back
+        // through a second window, and the range gone with each window.
+        let _g = setup();
+        let Some(ObjRef::Aobj(aobj)) = uao_create(Vsize::new(2 * PAGE_SIZE), 0) else {
+            panic!("no aobj");
+        };
+        let refs = aobj.object().refs();
+        super::super::aobj::uao_reference(&aobj);
+        let w =
+            uvm_map_object_window(aobj.clone(), 0, 2 * PAGE_SIZE, MADV_NORMAL).expect("the window");
+        let va = w.va();
+        assert_eq!((w.len(), w.is_empty()), (2 * PAGE_SIZE, false));
+        assert_eq!(
+            entry_at(KvMap::Kernel, va),
+            Some(false),
+            "an object entry, not the kernel's"
+        );
+        assert_eq!(aobj.object().refs(), refs + 1, "the entry's reference");
+        // Across the page boundary: both pages fault in.
+        w.window().write_at(PAGE_SIZE - 3, b"pageSix").unwrap();
+        let mut back = [0u8; 7];
+        w.window().read_at(PAGE_SIZE - 3, &mut back).unwrap();
+        assert_eq!(&back, b"pageSix");
+        drop(w);
+        assert_eq!(entry_at(KvMap::Kernel, va), None, "the range is gone");
+        assert_eq!(aobj.object().refs(), refs, "the entry's reference detached");
+
+        // A second window over the second page alone sees what the first wrote.
+        super::super::aobj::uao_reference(&aobj);
+        let w2 = uvm_map_object_window(aobj.clone(), PAGE_SIZE as Voff, PAGE_SIZE, MADV_NORMAL)
+            .expect("the second window");
+        let mut back = [0u8; 4];
+        w2.window().read_at(0, &mut back).unwrap();
+        assert_eq!(&back, b"eSix");
+        drop(w2);
+        assert_eq!(aobj.object().refs(), refs);
+    }
+
+    #[test]
+    fn the_kernel_object_cannot_be_given_a_window() {
+        // B1 of N5.9t1's review: uvm_map_object_window takes a pool item's aobj handle; the
+        // kernel object, whose pages back KmBuf's slices, is the static ObjRef::Kernel (no
+        // PoolArc<Aobj> names it), so no window can be minted over a Rust object's pages.
+        let _g = setup();
+        assert!(matches!(
+            super::super::aobj::kernel_object(),
+            Some(ObjRef::Kernel(_))
+        ));
+        let Some(ObjRef::Aobj(aobj)) = uao_create(Vsize::new(PAGE_SIZE), 0) else {
+            panic!("no aobj");
+        };
+        assert!(
+            !aobj.object().is_kern_object(),
+            "a created aobj is not the kernel's"
+        );
+    }
+
+    #[test]
+    fn an_aobj_hal_views_is_refused_a_window() {
+        // The closing review's F1: an aobj marked UAO_FLAG_HALVIEW (timekeep_object marks its
+        // own before hal's view; vm::map's timekeep test checks that one) cannot be mapped
+        // through a window; the refusal comes before any map change.
+        let _g = setup();
+        let Some(ObjRef::Aobj(aobj)) = uao_create(Vsize::new(PAGE_SIZE), 0) else {
+            panic!("no aobj");
+        };
+        assert!(!aobj.is_hal_viewed());
+        aobj.mark_hal_viewed();
+        let size = kernel_map().size();
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(uvm_map_object_window(
+                aobj.clone(),
+                0,
+                PAGE_SIZE,
+                MADV_NORMAL,
+            ));
+        }));
+        assert!(r.is_err(), "refused");
+        assert_eq!(kernel_map().size(), size, "nothing mapped");
+    }
+
+    #[test]
+    fn a_copy_through_kernel_map_space_no_entry_holds_is_efault() {
+        // The host's data abort finds no entry (a window onto a range that went away): the
+        // copy is EFAULT, as pcb_onfault makes it on the machine.
+        let _g = setup();
+        let w = test_window(Vaddr::new(testutil::KM_VA_BASE + (1 << 38)), PAGE_SIZE);
+        let mut buf = [0u8; 8];
+        assert_eq!(w.read_at(0, &mut buf), Err(Errno::EFAULT));
+        assert_eq!(w.write_at(8, &buf), Err(Errno::EFAULT));
     }
 
     /// A frame of the page system's, for a test that maps it (given back by the next set-up).

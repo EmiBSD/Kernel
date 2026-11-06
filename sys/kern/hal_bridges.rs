@@ -374,6 +374,9 @@ pub fn hal_bridges_register() {
     // module is not loaded yet, and an earlier take by anyone panics the boot here, so no
     // forbid crate can hold it.
     crate::kern::kern_subr::kcopy_take();
+    // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
+    // N5.9t1), taken by kernel::uio here for the same reason.
+    kernel::uio::window_kcopy_take();
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);

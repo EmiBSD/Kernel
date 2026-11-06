@@ -914,6 +914,11 @@ pub fn timekeep_object(
     let Some(obj) = crate::vm::aobj::uao_create(hal::sys::types::Vsize::new(timekeep_sz), 0) else {
         return Err(Errno::ENOMEM);
     };
+    // hal views this page as a TimekeepAtomic (below): no kernel window may map it
+    // (UAO_FLAG_HALVIEW, vm::km::uvm_map_object_window's refusal), N5.9t1.
+    if let crate::vm::object::ObjRef::Aobj(a) = &obj {
+        a.mark_hal_viewed();
+    }
     obj.reference();
 
     let mut va = 0usize;

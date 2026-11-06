@@ -70,7 +70,11 @@
 //!   `kernel_map`, `kmem_map` and a one-page `exec_map` (the kernel's `VmMap`s, switched to
 //!   best fit as `uvm_init_late` does) once per process, in a range no host address uses, and
 //!   counts the calls `km` makes to them per thread ([`km_map_calls`]). `km`'s pages are the
-//!   kernel's page system over a heap block ([`pages_install`]).
+//!   kernel's page system over a heap block ([`pages_install`]). A kernel copy through a
+//!   window of `kernel_map` (tmpfs's `vm::km::ObjectWindow`) reaches its pages through the
+//!   host kernel pmap, faulting them in with `uvm_fault(kernel_map)` ([`install`]'s hook of
+//!   `hal::arch::host::copy::set_kernel_fault_hook`, N5.9t1): such a test installs its pages
+//!   with [`pages_install`], whose frames are memory.
 //! - The page system itself (`vm::page`, `vm::pmemrange`), not a double: [`pmap_boot`]
 //!   bootstraps the host pmap once per process with the kernel's provider
 //!   (`vm::page::PHYS_PAGES`), and [`pages_setup`]/[`pages_install`] load fresh segments
@@ -881,7 +885,25 @@ pub fn install() {
             crate::thread::kthread_run_deferred_queue();
         }
         crate::vm::init::uvm_machine_init(&TEST_VM_MACHINE);
+        // The host's data abort for kernel-map addresses (N5.9t1): a kernel copy through a
+        // window onto an object's pages faults them in, as kdata_abort does.
+        hal::arch::host::copy::set_kernel_fault_hook(kernel_fault);
+        // The window leg's token (N5.9t1, review 1's B2), as bsd's boot takes it.
+        crate::uio::window_kcopy_take();
     });
+}
+
+/// The host's `kdata_abort` for a kernel-map address ([`install`]'s hook of
+/// `hal::arch::host::copy`): `uvm_fault(kernel_map, va, 0, access)`, no thread's counters
+/// (the C counts on `curproc`'s; the tests read none); `false` before the maps exist.
+fn kernel_fault(va: usize, write: bool) -> bool {
+    let access = if write {
+        hal::sys::mman::PROT_WRITE
+    } else {
+        hal::sys::mman::PROT_READ
+    };
+    crate::vm::km::map_of(KvMap::Kernel)
+        .is_some_and(|map| crate::vm::fault::uvm_fault(map, va, 0, access, None).is_ok())
 }
 
 /// How many times the `printf(9)` double was given `s` (whole, by any test of the process).
