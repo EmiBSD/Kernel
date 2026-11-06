@@ -305,6 +305,10 @@ pub struct VfsTables<G: ProcGlue> {
     /// (`ufs` at offset 144 with and without the feature), not this order.
     #[cfg(feature = "msdosfs")]
     pub msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables<G>,
+    /// cd9660's globals (the node hash; N5.8c2 adds `cd9660_vops`, `cd9660_specvops`), N5.8c1:
+    /// after msdosfs's in the source; the same layout test checks `ufs` did not move.
+    #[cfg(feature = "cd9660")]
+    pub cd9660: crate::fs::isofs::cd9660::cd9660_node::IsofsTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -345,6 +349,8 @@ impl<G: ProcGlue> VfsTables<G> {
             ufs: crate::fs::ufs::ufs::ufs_vfsops::UfsTables::new(),
             #[cfg(feature = "msdosfs")]
             msdosfs: crate::fs::msdosfs::msdosfs_denode::MsdosfsTables::new(),
+            #[cfg(feature = "cd9660")]
+            cd9660: crate::fs::isofs::cd9660::cd9660_node::IsofsTables::new(),
         }
     }
 }
@@ -500,6 +506,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     crate::fs::ufs::ufs::ufs_vfsops::ufs_test_reset::<G>();
     #[cfg(feature = "msdosfs")]
     crate::fs::msdosfs::msdosfs_denode::msdosfs_test_reset::<G>();
+    #[cfg(feature = "cd9660")]
+    crate::fs::isofs::cd9660::cd9660_node::cd9660_test_reset::<G>();
     #[cfg(feature = "mfs")]
     crate::fs::ufs::mfs::mfs_vfsops::mfs_test_reset();
     t.rootvnode.set(None);

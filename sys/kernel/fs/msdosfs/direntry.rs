@@ -73,7 +73,7 @@
 //!
 //! ## Deviations
 //! - Both entries are read out of a directory block's bytes at their offset with `at` and
-//!   written back with `put` (`bpb.rs`'s `pod_view!`), where the C casts a pointer into
+//!   written back with `put` (`fs::pod`'s `pod_view!`), where the C casts a pointer into
 //!   `b_data`; a `struct direntry *` that the C casts to `struct winentry *` is the same
 //!   offset read as a [`Winentry`]. An entry past the end of the block is `None`, where the
 //!   C would read beyond the buffer.
@@ -92,7 +92,7 @@
 //!   C's (ROADMAP N12's row). The `at_mut` view's writers write the copy back with
 //!   `Direntry::put`.
 
-use crate::fs::msdosfs::bpb::pod_view;
+use crate::fs::pod::pod_view;
 
 /// `SLOT_EMPTY`: slot has never been used.
 pub const SLOT_EMPTY: u8 = 0x00;

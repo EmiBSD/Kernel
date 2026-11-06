@@ -43,7 +43,7 @@
 //! ## Deviations
 //! - The `int8_t` arrays are `u8` arrays (see `bpb.rs`: they are bytes read through
 //!   `getushort`/`getulong` or copied), so every structure is bytes only and read out of a
-//!   buffer at its offset with `at` (`bpb.rs`'s `pod_view!`).
+//!   buffer at its offset with `at` (`fs::pod`'s `pod_view!`).
 //! - `union bootsector` is not a type: its three members are three images of the same 512
 //!   bytes, each [`Bootsector33`], [`Bootsector50`] or [`Bootsector710`] read at offset 0 of
 //!   the boot block, and the C reaches the union only for its members' `bsBPB` (at offset 11
@@ -59,7 +59,7 @@
 
 use core::mem::offset_of;
 
-use crate::fs::msdosfs::bpb::pod_view;
+use crate::fs::pod::pod_view;
 
 /// `BOOTSIG0`: first byte of the boot sector signature.
 pub const BOOTSIG0: u8 = 0x55;

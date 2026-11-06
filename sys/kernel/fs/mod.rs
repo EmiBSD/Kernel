@@ -23,8 +23,9 @@
 //! (`vfs_subr.c`, `vfs_sync.c`, `vfs_init.c`, `vfs_default.c`, the special files and deadfs,
 //! N5.2); the names, the name cache, `getcwd`, the vnode file operations and the record
 //! locks (`vfs_lookup.c`, `vfs_cache.c`, `vfs_getcwd.c`, `vfs_vnops.c`, `vfs_lockf.c`,
-//! N5.3); the file systems themselves (`ufs`, N5.5-N5.6; `msdosfs`, N5.7) and the words of
-//! their in-core structures (`word`).
+//! N5.3); the file systems themselves (`ufs`, N5.5-N5.6; `msdosfs`, N5.7; `isofs`, N5.8), the
+//! words of their in-core structures (`word`) and the views of their on-disk ones (`pod`,
+//! compiled with a file system that reads one).
 
 pub mod bio;
 pub mod biomem;
@@ -34,6 +35,8 @@ pub mod cache;
 pub mod default;
 pub mod getcwd;
 pub mod init;
+#[cfg(feature = "cd9660")]
+pub mod isofs;
 pub mod lockf;
 pub mod lookup;
 pub mod miscfs;
@@ -42,6 +45,8 @@ pub mod mount;
 pub mod msdosfs;
 pub mod namei;
 pub mod physio;
+#[cfg(any(test, feature = "msdosfs", feature = "cd9660"))]
+pub mod pod;
 pub mod spec;
 pub mod subr;
 pub mod sync;
