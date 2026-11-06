@@ -24,9 +24,9 @@
 //! replies to (`fuse_device`), the node and its hash (`fusefs_node`, `fuse_ihash`), the
 //! mount structure and the globals (`fusefs`), the file handles (`fuse_file`), the lookup
 //! (`fuse_lookup`), the vnode operations (`fuse_vnops`) and the file-system-type operations
-//! (`fuse_vfsops`); N5.9f1 brought the first seven, N5.9f2 the last three, unwired until its
-//! switch (`bsd`'s `sys/miscfs/fuse/` serves every mount until then). `FUSE_DEBUG` is off, as
-//! in GENERIC:
+//! (`fuse_vfsops`); N5.9f1 brought the first seven, N5.9f2 the last three and the switch
+//! (`vfsconflist[]`'s `"fuse"` and arm64's `cdevsw[92]` name them; `bsd`'s `sys/miscfs/` is
+//! gone). `FUSE_DEBUG` is off, as in GENERIC:
 //! the `DPRINTF`s are not compiled. `testfuse` is the tests' fixture (host tests and benches
 //! only).
 

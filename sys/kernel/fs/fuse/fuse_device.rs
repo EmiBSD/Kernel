@@ -51,7 +51,7 @@
 //! (`vn_open`, `vn_read`, `vn_write`, `vn_closefile`, `vn_kqfilter` take it), as the C's.
 //!
 //! The entry points carry the `cdevsw` signatures over the glue (`bsd`'s `Uio`, `Proc` and
-//! `Knote` are the kernel's over `BsdProcGlue`), so N5.9f2's switch names
+//! `Knote` are the kernel's over `BsdProcGlue`), so arm64's `conf.rs` names (N5.9f2)
 //! `fuseopen::<BsdProcGlue>` and the others in `cdev_fuse_init` with no adapter (D-N5.9-7).
 //!
 //! ## Deviations

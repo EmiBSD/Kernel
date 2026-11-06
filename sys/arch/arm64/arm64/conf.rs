@@ -60,7 +60,7 @@
 //!   drivers present are `wd` (0 block, 3 character, M16a; `NWD` is 0 on arm64), `cn` (0), `ctty` (1), `mm` (2), `pts`/`ptc` (5, 6), `com` (8),
 //!   `wsdisplay` (12, M13), `wskbd` (67, M13), `wsmouse` (68, M13), `wsmux` (69, M13),
 //!   `filedesc` (22), `bpf` (23), `sd` (4 block, 13 character), `cd` (6 block, 15 character), `vnd` (14 block,
-//!   41 character), `rd` (17 block, 47 character), `audio` (42, M12), `usb` (61, M12), `uhid` (62, M16b), `ugen` (63, M16b), `ucom` (66, M16b), `pf` (73), `bio` (79), `ptm` (81), `diskmap` (90, M14), `fuse` (92, feature `fuse`) and `ipmi` (96, M16e). `log` (7) waits for `subr_log.c`'s `logopen` ..
+//!   41 character), `rd` (17 block, 47 character), `audio` (42, M12), `usb` (61, M12), `uhid` (62, M16b), `ugen` (63, M16b), `ucom` (66, M16b), `pf` (73), `bio` (79), `ptm` (81), `diskmap` (90, M14), `fuse` (92, feature `fuse`; the kernel's `fs::fuse` since N5.9f2) and `ipmi` (96, M16e). `log` (7) waits for `subr_log.c`'s `logopen` ..
 //!   `logkqfilter`. M16d: `random` (45, `rnd.c`).
 //! - The tables are [`Devsw`]s of `Cell`s so that a console driver can take over a slot at
 //!   boot (`machine::conf::cdevsw_set`); `nblkdev`/`nchrdev` are their lengths.
@@ -117,6 +117,8 @@ use crate::dev::wscons::wsmux::{
     NWSMUX, wsmuxclose, wsmuxioctl, wsmuxkqfilter, wsmuxopen, wsmuxread,
 };
 use crate::kern::kern_descrip::filedescopen;
+#[cfg(feature = "fuse")]
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_log::{logclose, logioctl, logkqfilter, logopen, logread};
 use crate::kern::tty_pty::{
     NPTY, ptcclose, ptckqfilter, ptcopen, ptcread, ptcwrite, ptmclose, ptmioctl, ptmopen, ptsclose,
@@ -124,10 +126,6 @@ use crate::kern::tty_pty::{
 };
 use crate::kern::tty_tty::{cttyioctl, cttykqfilter, cttyopen, cttyread, cttywrite};
 use crate::machine::conf::Devsw;
-#[cfg(feature = "fuse")]
-use crate::miscfs::fuse::fuse_device::{
-    NFUSE, fuseclose, fusekqfilter, fuseopen, fuseread, fusewrite,
-};
 use crate::net::bpf::{NBPFILTER, bpfclose, bpfioctl, bpfkqfilter, bpfopen, bpfread, bpfwrite};
 use crate::net::pf_ioctl::{NPF, pfclose, pfioctl, pfopen};
 use crate::scsi::cd::{NCD, cdclose, cddump, cdioctl, cdopen, cdread, cdsize, cdstrategy, cdwrite};
@@ -143,6 +141,10 @@ use crate::sys::conf::{
 };
 use crate::sys::param::NODEV;
 use crate::sys::types::{Dev, major, makedev, minor};
+#[cfg(feature = "fuse")]
+use kernel::fs::fuse::fuse_device::{
+    NFUSE, fuseclose, fusekqfilter, fuseopen, fuseread, fusewrite,
+};
 
 /// `NLPT`: arm64's GENERIC has no `lpt` (M16d).
 pub const NLPT: i32 = 0;
@@ -462,13 +464,15 @@ pub static CDEVSW: Devsw<Cdevsw, 101> = Devsw([
     )),
     cnotdef(), // 91: pppx (not ported)
     #[cfg(feature = "fuse")]
+    // 92: /dev/fuse0 (N5.9f2: kernel::fs::fuse's entry points, the cdevsw signatures over
+    // the glue: no adapter)
     Cell::new(cdev_fuse_init(
         NFUSE,
-        fuseopen,
-        fuseclose,
-        fuseread,
-        fusewrite,
-        fusekqfilter,
+        fuseopen::<BsdProcGlue>,
+        fuseclose::<BsdProcGlue>,
+        fuseread::<BsdProcGlue>,
+        fusewrite::<BsdProcGlue>,
+        fusekqfilter::<BsdProcGlue>,
     )), // 92: fuse
     #[cfg(not(feature = "fuse"))]
     cnotdef(), // 92: fuse (feature `fuse` off)

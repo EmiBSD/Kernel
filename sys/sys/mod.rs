@@ -62,8 +62,6 @@ pub mod file;
 #[forbid(unsafe_code)]
 pub mod filedesc;
 pub use hal::sys::filio;
-#[cfg(feature = "fuse")]
-pub mod fusebuf;
 pub use hal::sys::futex;
 pub mod gpio;
 pub use hal::sys::intrmap;
