@@ -67,14 +67,16 @@
 //!   `ffs(um_bsize) - 1` of any size (a shift by -1 for 0, a division by zero in
 //!   `udf_get_spartmap`, the wrong blocks for a size not a power of two: the user's
 //!   D-N5.8-U3).
-//! - `udf_vat_get`'s `M_UDFMOUNT` block holds a counted handle of the VAT's unode, not a
+//! - `udf_vat_get`'s `M_UDFMOUNT` block ([`VatBlock`]) holds a counted handle of the VAT's
+//!   unode and the VAT's length (the C's `u_vatlen` of its copy, frozen there), not a
 //!   structure copy: the C's `*ump->um_vat = *up` shares `u_fentry` with the cached unode,
 //!   which `udf_reclaim` frees while the copy keeps reading it (LZ copied the file entry into
 //!   a second, `M_UDFFENTRY` block, a request the C does not make). The handle keeps the
 //!   unode, its file entry and its pool item alive until the unmount (or the mount's error
 //!   path) takes the block: `vmstat -m`'s requests are the C's, and when the VAT's vnode is
 //!   reclaimed during the mount its unode and file entry are released at the unmount instead.
-//!   Its size is the handle's, not `sizeof(struct unode)`.
+//!   The block holds no vnode reference, so a non-forced `vflush` still reclaims the VAT's
+//!   vnode. Its size is the block's (16 bytes), not `sizeof(struct unode)` (88 on arm64).
 //! - `udf_vat_get` takes `udf_vget` as an argument until the mount lands (N5.8u2, which
 //!   drops it).
 //! - `udf_vat_map` answers `EINVAL` for a volume that uses a VAT but has none (the C reads
@@ -88,7 +90,7 @@
 //!   the precedent).
 //! - LZ's VAT copy (a raw `malloc` of a `Unode` written with `ptr::write`, a raw `malloc` of
 //!   the file entry copied with `copy_nonoverlapping`, `udf_vat_free`'s raw frees) -> an
-//!   `MBox<UnodeRef>` in the mount's `um_vat` slot (the module's deviations); LZ's
+//!   `MBox<VatBlock>` in the mount's `um_vat` slot (the module's deviations); LZ's
 //!   `udf_data` slice of the buffer (`unsafe`) -> the `BufRef` token's bytes. 0 `unsafe`
 //!   (LZ: 5).
 
@@ -104,7 +106,8 @@ use crate::fs::isofs::udf::ecma167_udf::{
     AnchorVdp, DescTag, PriVolDesc, TAGID_ANCHOR, TAGID_PRI_VOL,
 };
 use crate::fs::isofs::udf::udf::{
-    M_UDFMOUNT, UDF_MNT_FIND_VAT, UDF_MNT_USES_VAT, Umount, Unicode, VTOU,
+    DEV_BSIZE, M_UDFMOUNT, MAXBSIZE, UDF_MNT_FIND_VAT, UDF_MNT_USES_VAT, Umount, Unicode, VTOU,
+    VatBlock,
 };
 use crate::fs::isofs::udf::udf_vfsops::udf_checktag;
 use crate::fs::isofs::udf::udf_vnops::{udf_readatoffset, udf_transname};
@@ -113,15 +116,10 @@ use crate::fs::subr::vput;
 use crate::fs::vnode::Vnode;
 use crate::proc::ProcGlue;
 
-/// `DEV_BSIZE`.
-const DEV_BSIZE: u32 = 512;
-/// `MAXBSIZE` (`<sys/param.h>`).
-const MAXBSIZE: u32 = 64 * 1024;
-
 /// The block size the spoof reads (`bsize = 2048`, the C's).
 const SPOOF_BSIZE: u32 = 2048;
 /// `btodb(bsize)`: the disk blocks of one.
-const SPOOF_DBLOCKS: Daddr = (SPOOF_BSIZE / DEV_BSIZE) as Daddr;
+const SPOOF_DBLOCKS: Daddr = (SPOOF_BSIZE / DEV_BSIZE as u32) as Daddr;
 /// The bytes the parse reads of a block: the tag and the anchor's extents, the tag and the
 /// primary volume descriptor up to its `vol_id`.
 const SPOOF_HEAD: usize = 56;
@@ -250,7 +248,7 @@ pub fn udf_volume_id<G: ProcGlue>(read: &mut UdfLabelRead<'_>) -> Result<Option<
 /// (`um_bsize`, whose `um_bmask` and `um_bshift` follow): `EINVAL` for a size outside
 /// `DEV_BSIZE..=MAXBSIZE` or not a power of two (the module's deviations, D-N5.8-U3).
 pub fn udf_lb_size(lb_size: u32) -> Result<i32, Errno> {
-    if !(DEV_BSIZE..=MAXBSIZE).contains(&lb_size) || !lb_size.is_power_of_two() {
+    if !(DEV_BSIZE as u32..=MAXBSIZE as u32).contains(&lb_size) || !lb_size.is_power_of_two() {
         return Err(Errno::EINVAL);
     }
     // At most `MAXBSIZE`: an `int`.
@@ -263,12 +261,14 @@ pub fn udf_vat_get<G: ProcGlue>(ump: &Umount<G>, lb: u32, vget: UdfVget<G>) -> R
     let vp = vget(ump.um_mountp, Ino::from(ino))?;
 
     let up = VTOU(vp);
-    // The C's `uint64_t` arithmetic, then a `long`.
-    up.set_u_vatlen((letoh64(up.fe.inf_len).wrapping_sub(36) >> 2) as i64);
+    // The C's `uint64_t` arithmetic, then a `long`, in the cached node (whose word is also its
+    // `u_diroff`) and in the copy, where the VAT's users read it.
+    let vatlen = (letoh64(up.fe.inf_len).wrapping_sub(36) >> 2) as i64;
+    up.set_u_vatlen(vatlen);
 
     // ump->um_vat = malloc(sizeof(struct unode), M_UDFMOUNT, M_WAITOK); *ump->um_vat = *up
-    // (the module's deviations: the node itself, counted).
-    let Some(vat) = MBox::new(M_UDFMOUNT, M_WAITOK, up) else {
+    // (the module's deviations: the node itself, counted, and the length).
+    let Some(vat) = MBox::new(M_UDFMOUNT, M_WAITOK, VatBlock { up, vatlen }) else {
         kpanic(format_args!("udf_vat_get: malloc(M_UDFMOUNT) failed"));
     };
     drop(ump.um_vat.replace(Some(vat)));
@@ -290,10 +290,10 @@ pub fn udf_vat_map<G: ProcGlue>(ump: &Umount<G>, sector: &mut u32) -> Result<(),
     }
 
     // Sanity check the given sector
-    let Some(vat) = ump.vat() else {
+    let Some((_, vatlen)) = ump.vat() else {
         return Err(Errno::EINVAL);
     };
-    if i64::from(*sector) >= vat.u_vatlen() {
+    if i64::from(*sector) >= vatlen {
         return Err(Errno::EINVAL);
     }
 
@@ -302,7 +302,7 @@ pub fn udf_vat_map<G: ProcGlue>(ump: &Umount<G>, sector: &mut u32) -> Result<(),
 
 /// Read from the VAT.
 fn udf_vat_read<G: ProcGlue>(ump: &Umount<G>, sector: &mut u32) -> Result<(), Errno> {
-    let Some(vat) = ump.vat() else {
+    let Some((vat, _)) = ump.vat() else {
         return Err(Errno::EINVAL);
     };
     let mut size = 4;
@@ -343,13 +343,13 @@ mod tests {
     use super::*;
     use crate::fs::isofs::udf::testudf::mkudf::{B, dstring, file_entry, volume};
     use crate::fs::isofs::udf::testudf::{attach, test_node, test_ump};
-    use crate::fs::isofs::udf::udf::VFSTOUDFFS;
+    use crate::fs::isofs::udf::udf::{M_UDFFENTRY, UmountRef, UnodeRef, VFSTOUDFFS};
     use crate::fs::isofs::udf::udf_vnops::{udf_hashins, udf_hashlookup};
-    use crate::fs::subr::vrele;
+    use crate::fs::subr::{vflush, vfs, vrele};
     use crate::fs::testfs::TestGlue;
     use crate::fs::vnode::LK_EXCLUSIVE;
     use crate::fs::vops::vop_unlock;
-    use crate::testutil::malloc_requests;
+    use crate::testutil::{malloc_out, malloc_requests};
 
     #[test]
     fn cs0_names_become_unicode() {
@@ -490,7 +490,10 @@ mod tests {
         assert_eq!(malloc_requests(M_UDFMOUNT).0, n + 1);
         assert_eq!(ump.um_flags.get(), UDF_MNT_USES_VAT);
         assert_eq!(up.u_vatlen(), 3);
-        assert!(ump.vat().is_some_and(|v| PoolArc::ptr_eq(&v, &up)));
+        assert!(
+            ump.vat()
+                .is_some_and(|(v, n)| PoolArc::ptr_eq(&v, &up) && n == 3)
+        );
         // The vnode went back unlocked (vput).
         assert_eq!(up.u_lock.status(), 0);
 
@@ -524,6 +527,80 @@ mod tests {
 
         // The unmount's take ends the VAT's hold on its node.
         drop(ump.um_vat.replace(None));
+    }
+
+    /// A VAT of `n` entries `7 + i` and its tail, recorded in its extended file entry at `lb`,
+    /// hashed on `ump` (unlocked, unreferenced, as `udf_vget` leaves a node after `vput`).
+    fn hashed_vat(ump: &UmountRef<TestGlue>, lb: u32, n: u32) -> UnodeRef<TestGlue> {
+        let mut vat = Vec::new();
+        for e in 0..n {
+            vat.extend((7 + e).to_le_bytes());
+        }
+        vat.extend([0u8; 36]);
+        let fe = file_entry(lb, true, 248, 3, 0, 0, vat.len() as u64, &vat);
+        let (up, vp) = test_node(ump, lb, &fe);
+        udf_hashins(&up).unwrap();
+        vop_unlock(vp).unwrap();
+        vrele(vp);
+        up
+    }
+
+    /// The VAT's length is the block's, frozen when the VAT was read (the C's copy): the
+    /// cached node's word, which is also its `u_diroff`, can change without moving the bound.
+    #[test]
+    fn the_vat_s_length_is_its_block_s() {
+        let (_g, _p) = attach(vec![0; B]);
+        let ump = test_ump(|u| {
+            u.um_start.set(1000);
+            u.um_flags.set(UDF_MNT_FIND_VAT);
+        });
+        let up = hashed_vat(&ump, 50, 3);
+        udf_vat_get(&ump, 1053, hashed_vget).unwrap();
+        // udf_lookup's `u_diroff` write on a node whose ino is the VAT's (a crafted volume).
+        up.set_u_diroff(1000);
+        let mut sector = 3;
+        assert_eq!(udf_vat_map(&ump, &mut sector), Err(Errno::EINVAL));
+        up.set_u_diroff(0);
+        let mut sector = 2;
+        assert_eq!(udf_vat_map(&ump, &mut sector), Ok(()));
+        assert_eq!(sector, 1009);
+        drop(ump.um_vat.replace(None));
+    }
+
+    /// The VAT block holds the node, not its vnode (D-u1-3): a non-forced `vflush` reclaims
+    /// the VAT's vnode and succeeds, the VAT still answers through the node, and taking the
+    /// block (the unmount's) gives the pool item and the file entry back.
+    #[test]
+    fn the_vat_block_outlives_its_vnode_until_it_is_taken() {
+        let (_g, _p) = attach(vec![0; B]);
+        let t = &vfs::<TestGlue>().udf;
+        let items = t.unode_pool.nout();
+        let fentries = malloc_out(M_UDFFENTRY);
+        let ump = test_ump(|u| {
+            u.um_start.set(1000);
+            u.um_flags.set(UDF_MNT_FIND_VAT);
+        });
+        let up = hashed_vat(&ump, 50, 3);
+        let vp = up.u_vnode;
+        drop(up);
+        udf_vat_get(&ump, 1053, hashed_vget).unwrap();
+        assert_eq!(t.unode_pool.nout(), items + 1);
+
+        // No vnode reference: the unmount's vflush reclaims it (TestUdfVops::reclaim takes
+        // the node out of the vnode, as udf_reclaim does).
+        assert_eq!(vflush(ump.um_mountp, None, 0), Ok(()));
+        assert!(!vp.has_node());
+        for (s, want) in [(0, Ok(1007)), (2, Ok(1009))] {
+            let mut sector = s;
+            assert_eq!(udf_vat_map(&ump, &mut sector).map(|()| sector), want);
+        }
+        assert_eq!(t.unode_pool.nout(), items + 1);
+        assert!(malloc_out(M_UDFFENTRY) > fentries);
+
+        // udf_unmount's free(um_vat): the node, its pool item and its file entry go.
+        drop(ump.um_vat.replace(None));
+        assert_eq!(t.unode_pool.nout(), items);
+        assert_eq!(malloc_out(M_UDFFENTRY), fentries);
     }
 }
 /* </TESTS> */

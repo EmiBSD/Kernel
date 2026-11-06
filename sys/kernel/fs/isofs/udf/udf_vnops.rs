@@ -109,16 +109,13 @@ use crate::fs::isofs::udf::ecma167_udf::{
     LongAd, ShortAd, SpareMapEntry, Timestamp, UdfSparingTable, geticblen,
 };
 use crate::fs::isofs::udf::udf::{
-    UdfData, Udfino, Umount, Unicode, Unode, UnodeRef, udf_readlblks,
+    MAXBSIZE, UdfData, Udfino, Umount, Unicode, Unode, UnodeRef, udf_readlblks,
 };
 use crate::fs::isofs::udf::udf_subr::udf_rawnametounicode;
 use crate::fs::subr::{vfs, vget, vput};
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, Vnode, vn_lock};
 use crate::prf::printf;
 use crate::proc::ProcGlue;
-
-/// `MAXBSIZE` (`<sys/param.h>`).
-const MAXBSIZE: i32 = 64 * 1024;
 
 /// `UDF_INVALID_BMAP`: the C's -1, `ERESTART`'s value (the module's deviations).
 pub const UDF_INVALID_BMAP: Errno = Errno::ERESTART;
@@ -519,7 +516,10 @@ pub fn udf_bmap_internal<G: ProcGlue>(up: &Unode<G>, offset: Off) -> Result<UdfB
     let mut sector = lsector + Daddr::from(ump.um_start.get());
 
     // Check the sparing table. Each entry represents the beginning of a packet.
-    if let Some(stbl) = ump.stbl() {
+    ump.with_stbl(|stbl| {
+        let Some(stbl) = stbl else {
+            return;
+        };
         let entries = stbl.get(UdfSparingTable::SIZE..).unwrap_or(&[]);
         for i in 0..usize::try_from(ump.um_stbl_len.get()).unwrap_or(0) {
             // An entry past the table's copy ends the scan (the C reads past it).
@@ -533,7 +533,7 @@ pub fn udf_bmap_internal<G: ProcGlue>(up: &Unode<G>, offset: Off) -> Result<UdfB
                 break;
             }
         }
-    }
+    });
 
     Ok(UdfBmap::Block { sector, max_size })
 }

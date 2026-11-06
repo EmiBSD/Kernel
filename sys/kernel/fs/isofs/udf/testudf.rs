@@ -42,11 +42,11 @@ use crate::fs::subr::{getnewvnode, hashinit, siphash_key, vref, vrele};
 use crate::fs::testfs::{TEST_CONF, TestGlue};
 use crate::fs::ufs::ffs::testffs;
 use crate::fs::vnode::{LK_RWFLAGS, VT_UDF, Vnode};
-use crate::fs::vops::{Cred, Vnops};
+use crate::fs::vops::Vnops;
 use crate::proc::Thread;
 
-/// The vnode table of the fixture's unodes: the unode's lock, `access` granted, `inactive`
-/// the C's unlock, and `udf_reclaim`'s steps (off the hash, the device vnode given back, the node
+/// The vnode table of the fixture's unodes: the unode's lock, `inactive` the C's unlock,
+/// and `udf_reclaim`'s steps (off the hash, the device vnode given back, the node
 /// out of the vnode); every other slot the C's NULL.
 pub struct TestUdfVops;
 
@@ -60,15 +60,6 @@ impl Vnops<TestGlue> for TestUdfVops {
     }
     fn islocked(&self, vp: &'static Vnode<TestGlue>) -> i32 {
         VTOU(vp).u_lock.status()
-    }
-    fn access(
-        &self,
-        _vp: &'static Vnode<TestGlue>,
-        _mode: i32,
-        _cred: Cred<'_>,
-        _p: &Thread<TestGlue>,
-    ) -> Result<(), Errno> {
-        Ok(())
     }
     fn inactive(
         &self,

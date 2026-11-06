@@ -63,9 +63,14 @@
 //! - `um_hashtbl`, `um_hashsz` and `um_hashkey` are one [`UdfHash`], set once by the mount
 //!   (absent before it, the C's `NULL` table); `um_hashmtx` is a `hal::mutex::Mutexed<()>`
 //!   whose guard is the chains' witness.
-//! - `um_vat` is the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes, holding a counted handle
-//!   of the VAT's unode, not a copy of it (`udf_subr.rs`'s deviations); `um_stbl` is the
-//!   `malloc(M_UDFMOUNT)`ed copy of the sparing table as bytes, set once by the mount.
+//! - `um_vat` is the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes ([`VatBlock`]: a counted
+//!   handle of the VAT's unode and the VAT's length, not a copy of the unode;
+//!   `udf_subr.rs`'s deviations); `um_stbl` is the `malloc(M_UDFMOUNT)`ed copy of the sparing
+//!   table as bytes, which each sparable partition map the mount reads replaces, the one
+//!   replaced kept allocated as the C leaks it (D-N5.8-R3: [`Umount::set_stbl`]).
+//! - `um_root_icb` is set once by the mount, after its metadata adjustment (the C's `bcopy`
+//!   then its two member writes, udf_vfsops.c:384-388, are one value made first); zero
+//!   before.
 //! - `struct udf_dirstream`'s `bp` and `data` are one [`UdfData`] (where the current chunk
 //!   is: in the file entry, or in a buffer whose token it holds), `None` before the first
 //!   chunk; `buf` is the `malloc(M_UDFFID)`ed fragment buffer, `um_bsize` bytes; `error` is
@@ -100,12 +105,14 @@
 //!   mount's slot during the mount, so it cannot be built whole; D-N5.8-6) in a counted
 //!   `malloc(M_UDFMOUNT)` block ([`Umount::alloc`], `hal::malloc::MArc`); every member the
 //!   C fills during the mount is a relaxed word under the kernel lock (`fs::word`,
-//!   docs/IDIOMS.md's row of a structure used mid-fill), the root ICB two words; the hash
-//!   table and the sparing table are `hal::once::OnceStatic`s set once by the mount and
-//!   freed with the structure (a read is one load: `udf_bmap_internal` reads the sparing
-//!   table on every map), and the VAT block a `hal::slot::ReadMostly` slot that the unmount
-//!   and the mount's error path take (its unode's handle names the mount back: the take
-//!   ends the cycle); [`VFSTOUDFFS`] is the mount slot's typed read.
+//!   docs/IDIOMS.md's row of a structure used mid-fill); the hash table and the root ICB
+//!   are `hal::once::OnceStatic`s set once by the mount (udf_vfsops.c:355, :384) and freed
+//!   with the structure (a read is one load); the sparing table is a `hal::slot::ReadMostly`
+//!   slot a later sparable map replaces (udf_vfsops.c:762, called per map of each logical
+//!   volume descriptor: a compare-and-swap pair per `udf_bmap_internal` of a sparable
+//!   volume, against the C's load), and so is the VAT block, which the unmount and the
+//!   mount's error path take (its unode's handle names the mount back: the take ends the
+//!   cycle); [`VFSTOUDFFS`] is the mount slot's typed read.
 //! - LZ's lent buffers (`rdsector`/`udf_readlblks` returning `&'static Buf`, `udf_data`'s
 //!   `unsafe` slice of `b_data`) -> `fs::bio`'s `BufRef` tokens: [`UdfData::Buf`] holds the
 //!   chunk's token, [`UdfData::bytes`] lends its bytes. 0 `unsafe` (LZ: 4).
@@ -136,7 +143,7 @@ use crate::fs::isofs::udf::udf_vfsops::udf_checktag;
 use crate::fs::mount::Mount;
 use crate::fs::subr::vfs;
 use crate::fs::vnode::{VT_UDF, Vnode};
-use crate::fs::word::{I32Word, I64Word, U32Word, U64Word};
+use crate::fs::word::{I32Word, I64Word, U32Word};
 use crate::proc::ProcGlue;
 
 /// `M_UDFMOUNT`: UDF mount structures (`<sys/malloc.h>`; `bsd`'s `sys/malloc.rs` until N7
@@ -148,9 +155,9 @@ pub const M_UDFFENTRY: i32 = 141;
 pub const M_UDFFID: i32 = 142;
 
 /// `MAXBSIZE` (`<sys/param.h>`).
-const MAXBSIZE: i32 = 64 * 1024;
+pub(crate) const MAXBSIZE: i32 = 64 * 1024;
 /// `DEV_BSIZE`.
-const DEV_BSIZE: Daddr = 1 << DEV_BSHIFT;
+pub(crate) const DEV_BSIZE: i32 = 1 << DEV_BSHIFT;
 
 /// `UDF_HASHTBLSIZE`.
 pub const UDF_HASHTBLSIZE: i32 = 100;
@@ -395,11 +402,11 @@ pub struct Umount<G: ProcGlue> {
     pub um_meta_start: U32Word,
     /// `um_meta_len`.
     pub um_meta_len: U32Word,
-    /// `um_vat`: the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes, holding the VAT's node
-    /// (the module's deviations).
-    pub um_vat: ReadMostly<Option<MBox<UnodeRef<G>>>>,
-    /// `um_root_icb`: the `long_ad`'s 16 bytes as two words.
-    um_root_icb: [U64Word; 2],
+    /// `um_vat`: the `malloc(M_UDFMOUNT)` block `udf_vat_get` makes (the module's
+    /// deviations).
+    pub um_vat: ReadMostly<Option<MBox<VatBlock<G>>>>,
+    /// `um_root_icb`, once the mount read the file set descriptor.
+    um_root_icb: OnceStatic<LongAd>,
     /// `um_hashmtx`: the hash chains' lock.
     pub um_hashmtx: Mutexed<()>,
     /// The hash, once the mount made it.
@@ -408,8 +415,18 @@ pub struct Umount<G: ProcGlue> {
     pub um_psecs: I32Word,
     /// `um_stbl_len`.
     pub um_stbl_len: I32Word,
-    /// `um_stbl`: the sparing table, once the mount read it.
-    um_stbl: OnceStatic<MArray<u8>>,
+    /// `um_stbl`: the sparing table the mount read last.
+    um_stbl: ReadMostly<Option<MArray<u8>>>,
+}
+
+/// What `udf_vat_get`'s `malloc(M_UDFMOUNT)` block holds: the VAT's node and the length the C
+/// computes into its copy (`u_vatlen`, frozen there: the node's own `un_u` word is also its
+/// `u_diroff`).
+pub struct VatBlock<G: ProcGlue> {
+    /// The VAT's node, counted (its file entry is the VAT's map).
+    pub up: UnodeRef<G>,
+    /// `um_vat->u_vatlen`: the number of entries of the VAT.
+    pub vatlen: i64,
 }
 
 /// A counted handle of a published [`Umount`]: the mount's slot holds one, each node one.
@@ -434,12 +451,12 @@ impl<G: ProcGlue> Umount<G> {
             um_meta_start: U32Word::new(0),
             um_meta_len: U32Word::new(0),
             um_vat: ReadMostly::new(None),
-            um_root_icb: [U64Word::new(0), U64Word::new(0)],
+            um_root_icb: OnceStatic::new(),
             um_hashmtx: Mutexed::new(IPL_NONE, ()),
             um_hashtbl: OnceStatic::new(),
             um_psecs: I32Word::new(0),
             um_stbl_len: I32Word::new(0),
-            um_stbl: OnceStatic::new(),
+            um_stbl: ReadMostly::new(None),
         }
     }
 
@@ -460,26 +477,17 @@ impl<G: ProcGlue> Umount<G> {
         }
     }
 
-    /// `ump->um_root_icb`.
+    /// `ump->um_root_icb`: zero before the mount set it (`M_ZERO`).
     pub fn root_icb(&self) -> LongAd {
-        let mut b = [0u8; 16];
-        b[..8].copy_from_slice(&self.um_root_icb[0].get().to_le_bytes());
-        b[8..].copy_from_slice(&self.um_root_icb[1].get().to_le_bytes());
-        LongAd::at(&b, 0).unwrap_or_else(zeroed)
+        self.um_root_icb.get().copied().unwrap_or_else(zeroed)
     }
 
-    /// `ump->um_root_icb = *icb` (`bcopy` of the 16 bytes).
-    pub fn set_root_icb(&self, icb: &LongAd) {
-        let mut b = [0u8; 16];
-        let _ = LongAd::put(&mut b, 0, icb);
-        let (lo, hi) = b.split_at(8);
-        let word = |s: &[u8]| {
-            let mut w = [0u8; 8];
-            w.copy_from_slice(s);
-            u64::from_le_bytes(w)
-        };
-        self.um_root_icb[0].set(word(lo));
-        self.um_root_icb[1].set(word(hi));
+    /// `ump->um_root_icb = icb`, the file set descriptor's root ICB with the mount's
+    /// metadata adjustment made: once (`panic(9)` twice).
+    pub fn set_root_icb(&self, icb: LongAd) {
+        if self.um_root_icb.set(icb).is_err() {
+            kpanic(format_args!("umount {self:p}: um_root_icb twice"));
+        }
     }
 
     /// The hash, `None` before the mount made it (the C's `NULL` table).
@@ -494,22 +502,32 @@ impl<G: ProcGlue> Umount<G> {
         }
     }
 
-    /// The sparing table's bytes, `None` when the volume has none (`um_stbl == NULL`).
-    pub fn stbl(&self) -> Option<&[u8]> {
-        self.um_stbl.get().map(|t| &t[..])
+    /// `f` of the sparing table's bytes, `None` when the volume has none (`um_stbl ==
+    /// NULL`); `f` runs inside the slot's read and must not sleep.
+    pub fn with_stbl<R>(&self, f: impl FnOnce(Option<&[u8]>) -> R) -> R {
+        f(self.um_stbl.read().as_ref().map(|t| &t[..]))
     }
 
-    /// `um_stbl = ..`: once (`panic(9)` twice).
+    /// `ump->um_stbl = malloc(..)` and its bytes, by `udf_get_spartmap` for each sparable
+    /// partition map: the table read last is the one the block map uses.
     pub fn set_stbl(&self, t: MArray<u8>) {
-        if self.um_stbl.set(t).is_err() {
-            kpanic(format_args!("umount {self:p}: um_stbl twice"));
+        if let Some(old) = self.um_stbl.replace(Some(t)) {
+            // The C overwrites `um_stbl` without freeing it (udf_vfsops.c:762): the replaced
+            // table stays allocated and counted under M_UDFMOUNT for ever, so vmstat -m's
+            // `UDF mount` row stays the C's (D-N5.8-R3, the user's U5 rule). Pending the
+            // user's question (with udf_mountfs's leaks on its error path, N5.8u2): freeing
+            // it instead is `drop(old)` here.
+            core::mem::forget(old);
         }
     }
 
-    /// `ump->um_vat`: a handle of the VAT's node, `None` when there is none. The slot's read
-    /// ends here, so the caller may sleep with the handle.
-    pub fn vat(&self) -> Option<UnodeRef<G>> {
-        self.um_vat.read().as_ref().map(|v| PoolArc::clone(v))
+    /// `ump->um_vat`: the VAT's node and its length, `None` when there is none. The slot's
+    /// read ends here, so the caller may sleep with the handle.
+    pub fn vat(&self) -> Option<(UnodeRef<G>, i64)> {
+        self.um_vat
+            .read()
+            .as_ref()
+            .map(|v| (PoolArc::clone(&v.up), v.vatlen))
     }
 }
 
@@ -592,7 +610,7 @@ pub fn rdsector<G: ProcGlue>(
     size: i32,
 ) -> (BufRef, Result<(), Errno>) {
     // `um_bshift` is the validated block size's (D-N5.8-U3); the shift wraps all the same.
-    let blkno = sector.wrapping_shl(ump.um_bshift.get() as u32) / DEV_BSIZE;
+    let blkno = sector.wrapping_shl(ump.um_bshift.get() as u32) / Daddr::from(DEV_BSIZE);
     bread(&devvp.bufs, blkno, size)
 }
 
@@ -647,6 +665,7 @@ mod tests {
     use crate::fs::isofs::udf::ecma167_udf::{Timestamp, UDF_ICB_FILETYPE_RANDOMACCESS};
     use crate::fs::isofs::udf::testudf::mkudf::{B, file_entry, long_ad, short_ad, timestamp};
     use crate::fs::isofs::udf::testudf::{attach, fentry_copy, test_node, test_ump};
+    use crate::testutil::{malloc_out, malloc_requests};
 
     /// The bytes of a timestamp.
     fn ts(t: &Timestamp) -> [u8; 12] {
@@ -717,17 +736,44 @@ mod tests {
         l[8..10].copy_from_slice(&3u16.to_le_bytes());
         l[12..16].copy_from_slice(&0xdead_beefu32.to_le_bytes());
         let icb = LongAd::at(&l, 0).unwrap();
-        ump.set_root_icb(&icb);
+        // Zero before the mount sets it (M_ZERO).
+        assert_eq!(udf_getid(&ump.root_icb()), 0);
+        ump.set_root_icb(icb);
         let back = ump.root_icb();
         let mut b = [0u8; 16];
         assert!(LongAd::put(&mut b, 0, &back));
         assert_eq!(b, l);
         assert_eq!(udf_getid(&back), 0x1234_5678);
-        assert!(ump.stbl().is_none());
+        assert!(ump.with_stbl(|t| t.is_none()));
         assert!(ump.vat().is_none());
         assert!(ump.hashtbl().is_some());
         // The mount's slot answers with the structure.
         assert!(MArc::ptr_eq(&VFSTOUDFFS(ump.um_mountp), &ump));
+    }
+
+    /// Two sparable partition maps (or two logical volume descriptors) each read a sparing
+    /// table (udf_vfsops.c:762): the second replaces the first, which stays allocated as
+    /// the C leaks it (D-N5.8-R3), so `M_UDFMOUNT`'s requests and bytes out are the C's.
+    #[test]
+    fn a_second_sparing_table_replaces_the_first() {
+        let (_g, _p) = attach(vec![0; B]);
+        let ump = test_ump(|_| {});
+        let table = |fill: u8, n: usize| {
+            let Some(t) = MArray::new(M_UDFMOUNT, M_WAITOK, n, |_| fill) else {
+                std::panic!("malloc");
+            };
+            t
+        };
+        let (n0, _) = malloc_requests(M_UDFMOUNT);
+        let out0 = malloc_out(M_UDFMOUNT);
+        ump.set_stbl(table(1, 64));
+        let out1 = malloc_out(M_UDFMOUNT);
+        ump.set_stbl(table(2, 80));
+        assert!(ump.with_stbl(|t| t == Some(&[2u8; 80][..])));
+        assert_eq!(malloc_requests(M_UDFMOUNT).0, n0 + 2);
+        // Both blocks are out: the first is never freed, as the C's.
+        assert!(out1 > out0);
+        assert!(malloc_out(M_UDFMOUNT) > out1);
     }
 
     #[test]
