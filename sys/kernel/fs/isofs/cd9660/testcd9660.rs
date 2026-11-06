@@ -529,6 +529,14 @@ pub mod mkiso {
         susp(b"PN", &b)
     }
 
+    /// `CE`: a continuation area of `len` bytes at byte `off` of block `blk`.
+    pub fn ce(blk: u32, off: u32, len: u32) -> Vec<u8> {
+        let mut b = n733(blk).to_vec();
+        b.extend_from_slice(&n733(off));
+        b.extend_from_slice(&n733(len));
+        susp(b"CE", &b)
+    }
+
     /// `SL`: a symbolic link's components, each its flags (4 the parent, 2 the current
     /// directory, 0 a name) and its bytes.
     pub fn sl(components: &[(u8, &[u8])]) -> Vec<u8> {

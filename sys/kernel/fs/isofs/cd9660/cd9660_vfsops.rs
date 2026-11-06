@@ -70,7 +70,9 @@
 //!   caller's bytes with the `flags` that `iso_mountfs` changed (the C changes the kernel
 //!   copy in place) (LZ's).
 //! - `iso_mountfs`'s error path also releases the primary descriptor's buffer, which the C
-//!   leaks when the logical block size is bad (LZ's).
+//!   leaks on every `goto out` once that descriptor is found and until it is released
+//!   (cd9660_vfsops.c:346): a read error or a wrong standard identifier at a later block of
+//!   the scan, and a bad logical block size (LZ's).
 //! - `cd9660_mountroot`: a `rootdev` without a device (`bdevvp` answering no vnode, which the
 //!   C would pass on as NULL) is `ENODEV`, as in `ffs_mountroot` (LZ's).
 //! - `option FIFO` is in GENERIC but `miscfs/fifofs` is not ported: `cd9660_fifovops` comes
@@ -1139,7 +1141,8 @@ mod tests {
     // disk, mounted by `iso_mountfs`; LZ's moved from `bsd`): the Rock Ridge, plain ISO 9660
     // and `GENS` mounts read through the system calls, the refusals (no descriptors, a wrong
     // identifier, a bad block size), the C's `malloc` request of a refused mount (D-N5.7-U5's
-    // shim), a Joliet tree, a later session, the `mount(2)` path of `cd9660_mount`, file
+    // shim), a Joliet tree, a Rock Ridge continuation area in the supplementary descriptor's
+    // block (D-N5.8-R1), a later session, the `mount(2)` path of `cd9660_mount`, file
     // handles (D-N5.8-U2: a record past 2 GiB on a sparse disk, crafted handles), every `Vfs`
     // method, `cd9660_mountroot`'s refusals, and the label parser. User memory: testfs's path
     // slots and buffer (`testfs::up`, `UBUF`), under the kernel memory's guard every fixture
@@ -1461,6 +1464,66 @@ mod tests {
             );
             unmount_root(p, mp);
         }
+    }
+
+    /// D-N5.8-R1 (review 1 of N5.8c2): a Rock Ridge disc whose root's continuation area (its
+    /// `ER`) lies in the supplementary (Joliet) descriptor's block, 17, the block the C holds
+    /// busy as `supbp` across the Rock Ridge check (cd9660_vfsops.c:288-289 to :415-416, where
+    /// the C's `bread` would wait for its own buffer): `iso_mountfs` released it before the
+    /// check, so the walk reads the area and finds Rock Ridge, and the cache's busy buffers
+    /// (`bcstats.busymapped`) after the mount are those before it.
+    #[test]
+    fn a_continuation_area_in_the_supplementary_descriptor_s_block_is_read() {
+        use core::sync::atomic::Ordering;
+
+        use hal::sys::stat::S_IFDIR;
+
+        use crate::fs::bio::BCSTATS;
+        use crate::fs::isofs::cd9660::testcd9660::mkiso::{ce, er, px, sp};
+
+        let er = er();
+        let mut su = sp();
+        su.extend(px(S_IFDIR | 0o755, 2, 0, 0));
+        su.extend(ce(17, 1024, er.len() as u32));
+        let mut iso = Iso::new(24);
+        iso.dir(
+            20,
+            &[
+                record(20, 2048, 2, &[0], &su),
+                record(20, 2048, 2, &[1], &[]),
+                record(22, 3, 0, b"RR.TXT;1", &[]),
+            ],
+        );
+        iso.dir(
+            21,
+            &[
+                record(21, 2048, 2, &[0], &[]),
+                record(21, 2048, 2, &[1], &[]),
+                record(22, 3, 0, &ucs2(b"rr.txt;1"), &[]),
+            ],
+        );
+        iso.put(22, 0, b"rr\n");
+        iso.pvd(16, b"R1", 24, &record(20, 2048, 2, &[0], &[]));
+        iso.svd(17, b"%/E", 0, 24, &record(21, 2048, 2, &[0], &[]));
+        iso.put(17, 1024, &er);
+        iso.term(18);
+
+        let (_g, p) = attach_image(iso.finish());
+        let busy = || BCSTATS.busymapped.load(Ordering::Relaxed);
+        let before = busy();
+        let mut a = args(0, 0);
+        let mp = try_mount(p, &mut a).unwrap();
+        assert_eq!(
+            a.flags & ISOFSMNT_NORRIP,
+            0,
+            "Rock Ridge found through block 17"
+        );
+        let imp = vfstoisofs(mp);
+        assert_eq!((imp.iso_ftype, imp.rr_skip), (ISO_FTYPE_RRIP, 0));
+        assert_eq!((imp.root_extent, imp.joliet_level), (20, 0));
+        drop(imp);
+        assert_eq!(busy(), before, "no buffer left busy");
+        Cd9660Vfs::<TestGlue>::VFS.unmount(mp, 0, p).unwrap();
     }
 
     /// A disc whose last session starts at block `sess`: its descriptors at `16 + sess`,

@@ -2620,5 +2620,20 @@ mod tests {
             DISKLIST.0.remove(dk);
         }
     }
+
+    /// `iso_disklabelspoof`'s `strncpy` (LZ's test, moved with it, N5.8c2): it stops at the
+    /// source's first NUL and zero-fills the rest, truncates a longer source, and zero-fills
+    /// past a shorter one.
+    #[cfg(feature = "cd9660")]
+    #[test]
+    fn strncpy_stops_at_a_nul_truncates_and_zero_fills() {
+        let mut d = [b'x'; 8];
+        strncpy(&mut d, b"ab\0cd");
+        assert_eq!(&d, b"ab\0\0\0\0\0\0");
+        strncpy(&mut d, b"0123456789");
+        assert_eq!(&d, b"01234567");
+        strncpy(&mut d, b"xyz");
+        assert_eq!(&d, b"xyz\0\0\0\0\0");
+    }
 }
 /* </TESTS> */

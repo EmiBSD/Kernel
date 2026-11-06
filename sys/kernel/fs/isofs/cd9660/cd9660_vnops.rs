@@ -63,9 +63,6 @@
 //! LZ: sys/isofs/cd9660/cd9660_vnops.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `struct isoreaddir` and `cd9660_read`'s read-ahead arrays are on the stack instead of
-//!   `malloc(M_TEMP)` (LZ's): `vmstat -m`'s `temp` row counts one request fewer per
-//!   `readdir` and per read-ahead.
 //! - `iso_uiodir` and `iso_shipdir` return `Err(None)` for the C's -1 (the user's buffer is
 //!   full), which `cd9660_readdir` turns into success as the C does; `iso_uiodir` takes the
 //!   entry by name (`Ent`) instead of a pointer into the structure. The `bcopy` of
@@ -73,13 +70,15 @@
 //!   `d_reclen` are never copied out) (LZ's).
 //! - `cd9660_getattr` reads a zero-length symbolic link's target through `cd9660_readlink`
 //!   into a `malloc(M_TEMP)` buffer, as in C, with a kernel `Uio` of one `Iovec` (LZ's).
-//! - `cd9660_readlink` gathers the name into a `namei_pool` buffer and copies it out with
-//!   `uiomove` for every caller, the C's path for a user's buffer (D-N5.8-11): the C's
-//!   direct path for a kernel buffer of `MAXPATHLEN` bytes or more (`namei`'s symbolic link,
-//!   `cd9660_getattr`'s) writes the same bytes and leaves the same `uio_resid`, but advances
-//!   neither `uio_offset`, which neither caller reads, nor `namei_pool`'s count, so `vmstat
-//!   -m`'s `namei` pool counts one request more per such call. A record too short for its
-//!   fixed part is `EINVAL` (LZ's).
+//! - `cd9660_readlink` takes the C's two buffers on the C's condition: for a kernel `uio`
+//!   whose first iovec holds `MAXPATHLEN` bytes or more (`namei`'s symbolic link,
+//!   `cd9660_getattr`'s, the NFS server's `nfsrv_readlink`) a `MAXPATHLEN`-byte buffer on its
+//!   own stack, where the C gathers the name into the caller's iovec in place, and for any
+//!   other a `namei_pool` buffer, as the C's; both are copied out by `uiomove` (D-N5.8-11;
+//!   D-c2-6 after review 1). The one difference left: `uiomove` also advances `uio_offset`,
+//!   which the C's direct path leaves where it was, and none of the three callers reads it
+//!   (`vmstat -m`'s `namei` pool counts the C's requests). A record too short for its fixed
+//!   part is `EINVAL` (LZ's).
 //! - The C's `eopnotsupp` slots of `cd9660_vops` (`create`, `mknod`, `write`, `remove`,
 //!   `rename`, `mkdir`, `rmdir`, `advlock`) are the `Vnops` trait's defaults, which answer
 //!   `EOPNOTSUPP` as the C's `eopnotsupp` (and a NULL slot) do. `cd9660_mmap` and
@@ -113,6 +112,11 @@
 //!   (the struct's first `d_reclen` bytes, which `uiomove(dp, dp->d_reclen, ...)` copies;
 //!   one 280-byte serialisation per entry shipped, ROADMAP N12's row), where LZ viewed the
 //!   struct as bytes in an `unsafe` block; `cd9660_readlink` writes no raw iovec (above).
+//! - `struct isoreaddir` (`readdir`'s three entries and offsets) and `cd9660_read`'s `struct
+//!   ra` (the read-ahead blocks and sizes) are `malloc(M_TEMP)` blocks of the structure's
+//!   size as the C's (`hal::malloc::MBox`, freed where the C frees them, by the drop on every
+//!   path), where LZ kept them on the stack: `vmstat -m`'s `temp` row counts the C's requests
+//!   (the main session's D-N5.8-R2 after review 1, D-N5.7-U5's principle).
 //! - `cd9660_strategy` is `ufs_strategy`'s shape: the buffer's token (`IoBuf::into_token`,
 //!   `panic(9)` on a lent buffer with none: the `bsd` callers of `VOP_STRATEGY` and
 //!   `VOP_BWRITE`, nfs's and softraid's, use their own vnodes or device vnodes), the block
@@ -122,7 +126,7 @@
 
 use core::marker::PhantomData;
 
-use hal::malloc::{M_WAITOK, MArray};
+use hal::malloc::{M_WAITOK, MArray, MBox};
 use hal::sys::dirent::{DT_UNKNOWN, Dirent, MAXNAMLEN, dirent_size};
 use hal::sys::errno::Errno;
 use hal::sys::stat::ALLPERMS;
@@ -162,7 +166,7 @@ use crate::fs::vnode::{
 };
 use crate::fs::vops::{Cn, Cred, IoBuf, Vnops, vop_abortop, vop_bmap, vop_strategy};
 use crate::proc::{ProcGlue, Thread};
-use crate::uio::{Iovec, Uio};
+use crate::uio::{Iovec, Uio, UioSeg};
 
 /// `M_TEMP`: miscellaneous temporary data buffers (`<sys/malloc.h>`; `bsd`'s `sys/malloc.rs`
 /// until N7 moves the header).
@@ -239,6 +243,15 @@ struct Isoreaddir<'a, 'b, G: ProcGlue> {
     uio_off: Off,
     /// `eofflag`.
     eofflag: i32,
+}
+
+/// `struct ra`: `cd9660_read`'s read-ahead blocks and their sizes, a `malloc(M_TEMP)` block
+/// as the C's.
+struct Ra {
+    /// `blks`.
+    blks: [Daddr; MAX_RA],
+    /// `sizes`.
+    sizes: [i32; MAX_RA],
 }
 
 /// `cd9660read_filtops`'s filter: the bytes past the file offset.
@@ -383,15 +396,24 @@ pub fn cd9660_read<G: ProcGlue>(vp: &'static Vnode<G>, uio: &mut Uio<'_, G>) -> 
         let size = blksize(imp);
         let rablock = lbn + 1;
         let (mut bp, error) = if ip.i_ci_lastr.get() + 1 == lbn {
-            let mut blks = [0 as Daddr; MAX_RA];
-            let mut sizes = [0i32; MAX_RA];
+            // ra = malloc(sizeof *ra, M_TEMP, M_WAITOK)
+            let ra = Ra {
+                blks: [0; MAX_RA],
+                sizes: [0; MAX_RA],
+            };
+            let Some(mut ra) = MBox::new(M_TEMP, M_WAITOK, ra) else {
+                kpanic(format_args!("cd9660_read: malloc(M_TEMP) failed"));
+            };
             let mut i = 0;
             while i < MAX_RA && lblktosize(imp, rablock + i as Daddr) < ip.i_size.get() as i64 {
-                blks[i] = rablock + i as Daddr;
-                sizes[i] = blksize(imp);
+                ra.blks[i] = rablock + i as Daddr;
+                ra.sizes[i] = blksize(imp);
                 i += 1;
             }
-            breadn(&vp.bufs, lbn, size, &blks[..i], &sizes[..i])
+            let read = breadn(&vp.bufs, lbn, size, &ra.blks[..i], &ra.sizes[..i]);
+            // free(ra, M_TEMP, 0)
+            drop(ra);
+            read
         } else {
             bread(&vp.bufs, lbn, size)
         };
@@ -538,8 +560,10 @@ pub fn cd9660_readdir<G: ProcGlue>(
 
     // These are passed to copyout(), so make sure there's no garbage being leaked in
     // padding or after short names. XXX Is it worth trying to figure out the type?
+    // idp = malloc(sizeof(*idp), M_TEMP, M_WAITOK): freed on every return (the C's two frees,
+    // the early error's and the end's).
     let curroff = uio.uio_offset;
-    let mut idp = Isoreaddir {
+    let idp = Isoreaddir {
         saveent: dirent_zeroed(),
         assocent: dirent_zeroed(),
         current: dirent_zeroed(),
@@ -549,6 +573,9 @@ pub fn cd9660_readdir<G: ProcGlue>(
         uio,
         uio_off: curroff,
         eofflag: 1,
+    };
+    let Some(mut idp) = MBox::new(M_TEMP, M_WAITOK, idp) else {
+        kpanic(format_args!("cd9660_readdir: malloc(M_TEMP) failed"));
     };
 
     let mut bp: Option<BufRef> = None;
@@ -739,18 +766,35 @@ pub fn cd9660_readlink<G: ProcGlue>(
         return Err(Errno::EINVAL);
     }
 
-    // Now get a buffer: a namei buffer for every caller (the module's deviations).
-    let Some(mut symname) = pathbuf_get::<G>() else {
-        kpanic(format_args!("cd9660_readlink: no namei buffer"));
+    // Now get a buffer. Abuse a namei buffer for now; a kernel buffer of MAXPATHLEN bytes or
+    // more takes none (the C gathers the name into it in place; here into a buffer of this
+    // stack, copied out by the same uiomove: the module's deviations).
+    let direct = uio.uio_segflg == UioSeg::UIO_SYSSPACE
+        && uio.uio_iov.first().is_some_and(|v| v.iov_len >= MAXPATHLEN);
+    let mut pooled = if direct {
+        None
+    } else {
+        match pathbuf_get::<G>() {
+            Some(b) => Some(b),
+            None => kpanic(format_args!("cd9660_readlink: no namei buffer")),
+        }
+    };
+    let mut local: [u8; MAXPATHLEN];
+    let symname: &mut [u8] = match pooled.as_deref_mut() {
+        Some(b) => &mut b[..],
+        None => {
+            local = [0; MAXPATHLEN];
+            &mut local
+        }
     };
 
     // Ok, we just gathering a symbolic name in SL record.
     let mut symlen = 0u16;
     let found = record_at(&bp, off).map_or(0, |d| {
-        cd9660_rrip_getsymname(&d, &mut symname[..], &mut symlen, imp, Some(blk))
+        cd9660_rrip_getsymname(&d, symname, &mut symlen, imp, Some(blk))
     });
     if found == 0 {
-        drop(symname);
+        // pool_put(&namei_pool, symname) as the buffer goes out of scope
         brelse(bp);
         return Err(Errno::EINVAL);
     }
@@ -1229,10 +1273,12 @@ mod tests {
     // `pathconf`, the filters' events, `iso_shipdir`'s merge into a kernel buffer; LZ's
     // moved), and those over a mount (testcd9660: the makefs image, mkiso's): `read` with
     // its read-ahead, `readdir` (`d_fileno` and `va_fileid`, an associated file merged, a
-    // buffer too short), `readlink`, `getattr` of a symbolic link of size 0, device nodes
-    // (the special files' table, a node moved to its alias), the kqueue filters through
-    // `kevent(2)`, and every other slot of the two tables once. User memory: testfs's path
-    // slots and buffer, under the kernel memory's guard every fixture holds.
+    // buffer too short), `readlink` (the `namei_pool` requests the C makes, none on its
+    // direct path), `readdir`'s and the read-ahead's `malloc(M_TEMP)` requests, `getattr` of
+    // a symbolic link of size 0, device nodes (the special files' table, a node moved to its
+    // alias), the kqueue filters through `kevent(2)`, and every other slot of the two tables
+    // once. User memory: testfs's path slots and buffer, under the kernel memory's guard
+    // every fixture holds.
 
     use core::ptr;
     use std::sync::MutexGuard;
@@ -1729,6 +1775,8 @@ mod tests {
         size.va_size = 0;
         assert_eq!(cd9660_setattr(cdev, &size), Ok(()));
         vput(cdev);
+        crate::testutil::watch_pool("namei");
+        let namei_gets = crate::testutil::pool_requests;
 
         let alias = bdevvp::<TestGlue>(makedev(2, 7)).unwrap().unwrap();
         let bdev = lookup(p, b"/bdev").unwrap();
@@ -1751,7 +1799,11 @@ mod tests {
         };
         assert_eq!(lnk.vtype(), VLNK);
         assert_eq!(vtoi(lnk).i_size.get(), 0);
+        // getattr reads the link into its M_TEMP buffer of MAXPATHLEN: no namei buffer (the
+        // C's direct path)
+        let before = namei_gets();
         assert_eq!(getattr(p, lnk).va_size, 9);
+        assert_eq!(namei_gets(), before);
         let mut buf = [0u8; 64];
         let mut iov = [Iovec::new()];
         let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
@@ -1767,6 +1819,93 @@ mod tests {
         let mut iov = [Iovec::new()];
         let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
         assert_eq!(cd9660_readlink(vp, &mut uio), Err(Errno::EINVAL));
+        vput(vp);
+        unmount_root(p, mp);
+    }
+
+    /// `cd9660_readlink` takes a `namei_pool` buffer exactly where the C does (review 1 of
+    /// N5.8c2): none for a kernel `uio` of `MAXPATHLEN` bytes (the C's direct path: `namei`
+    /// following a link, `cd9660_getattr`, `nfsrv_readlink`), one for a shorter kernel buffer
+    /// and for a user's (`readlink(2)`), so `vmstat -m`'s `namei` pool counts the C's
+    /// requests; the bytes and `uio_resid` are the same on both paths, `uio_offset` advanced.
+    #[test]
+    fn readlink_takes_a_namei_buffer_only_where_the_c_does() {
+        use crate::fs::syscalls::sys_readlink;
+        use crate::testutil::{pool_requests, watch_pool};
+        let (_g, p, mp) = setup(image::image_bytes(), 0);
+        watch_pool("namei");
+        let n = pool_requests;
+        // A lookup through the link takes the buffers of a lookup of the file it names.
+        let before = n();
+        vput(lookup(p, b"/m10c-iso.txt").unwrap());
+        let file = n() - before;
+        let before = n();
+        vput(lookup(p, b"/sub/link").unwrap());
+        assert_eq!(n() - before, file, "namei's readlink takes no namei buffer");
+
+        let lnk = {
+            let mut nd = ndinit(LOOKUP, LOCKLEAF, NiDirp::Sys(b"/sub/link"), p);
+            namei(&mut nd).unwrap();
+            nd.ni_vp.unwrap()
+        };
+        let readlink_into = |len: usize| {
+            let mut buf = vec![0u8; len];
+            let mut iov = [Iovec::new()];
+            let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
+            let before = n();
+            let r = cd9660_readlink(lnk, &mut uio);
+            let (resid, off) = (uio.uio_resid, uio.uio_offset);
+            r.unwrap();
+            buf.truncate(len - resid);
+            (n() - before, buf, off)
+        };
+        assert_eq!(
+            readlink_into(MAXPATHLEN),
+            (0, b"../m10c-iso.txt".to_vec(), 15)
+        );
+        assert_eq!(readlink_into(64), (1, b"../m10c-iso.txt".to_vec(), 15));
+        vput(lnk);
+
+        // readlink(2): namei's buffers and readlink's one
+        let before = n();
+        assert_eq!(sys_readlink(p, up(0, b"/sub/link"), UBUF, 64), Ok(15));
+        assert_eq!(n() - before, file + 1);
+        unmount_root(p, mp);
+    }
+
+    /// `cd9660_readdir` and a read with read-ahead each make the C's one `malloc(M_TEMP)`
+    /// request of the C's structure's size (`struct isoreaddir`, 888 bytes; `struct ra`, 384)
+    /// and free it before they return; a read without read-ahead makes none (the main
+    /// session's D-N5.8-R2, review 1 of N5.8c2).
+    #[test]
+    fn readdir_and_read_ahead_take_the_c_s_temp_blocks() {
+        use crate::testutil::{malloc_out, malloc_requests};
+        let (img, data) = long_file_image();
+        let (_g, p, mp) = setup(img, ISOFSMNT_NORRIP);
+        assert_eq!(size_of::<Isoreaddir<'static, 'static, TestGlue>>(), 888);
+        assert_eq!(size_of::<Ra>(), 384);
+        let out0 = malloc_out(M_TEMP);
+        let (n0, _) = malloc_requests(M_TEMP);
+        let rvp = lookup(p, b"/").unwrap();
+        let (r, ents, _, _) = readdir(p, rvp, 0, 4096);
+        r.unwrap();
+        assert_eq!(ents.len(), 3);
+        assert_eq!(malloc_requests(M_TEMP), (n0 + 1, 888));
+        assert_eq!(malloc_out(M_TEMP), out0);
+        vput(rvp);
+
+        let vp = lookup(p, b"/long.dat").unwrap();
+        // block 0: no read-ahead (`ci_lastr` is 0), no block
+        assert_eq!(read(p, vp, 0, 2048).unwrap(), &data[..2048]);
+        assert_eq!(malloc_requests(M_TEMP).0, n0 + 1);
+        // blocks 1 to 3, each after the one before: the read-ahead's block each
+        for lbn in 1..4 {
+            let at = lbn * 2048;
+            let want = &data[at..data.len().min(at + 2048)];
+            assert_eq!(read(p, vp, at as Off, 2048).unwrap(), want);
+            assert_eq!(malloc_requests(M_TEMP), (n0 + 1 + lbn as u64, 384));
+        }
+        assert_eq!(malloc_out(M_TEMP), out0);
         vput(vp);
         unmount_root(p, mp);
     }
