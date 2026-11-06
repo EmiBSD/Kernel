@@ -66,8 +66,18 @@
 //!   out`. A correct daemon (libfuse adds whole dirents only) never sends such a reply (the
 //!   user's D-N5.9-U2).
 //! - `fusefs_write` answers `EIO` to a `FUSE_WRITE` reply of `size` 0, once the uio is given
-//!   the chunk back as the C's `diff` path does: the C's loop sends the same chunk again, for
-//!   ever (fuse_vnops.c:1318-1340; Linux's FUSE answers `EIO` too) (D-N5.9-U2).
+//!   the chunk back as the C's `diff` path does: the C's loop goes round again with the uio's
+//!   residual and offset rewound but its iovec already past the chunk (the copy at
+//!   fuse_vnops.c:1326, the give-back at :1336-1343), so it sends the bytes after the chunk
+//!   and then runs past the iovecs (D-N5.9-U2).
+//! - `fusefs_write` ends its loop after a `FUSE_WRITE` reply of fewer bytes than asked (but
+//!   some), once the uio is given the rest of the chunk back (the C's two lines), so write(2)
+//!   returns the bytes the daemon accepted: a POSIX short write, the file and the offset
+//!   right. The C goes round again with the iovec past the chunk (fuse_vnops.c:1326,
+//!   :1336-1343): its next request carries the wrong bytes at `offset + size`, and once the
+//!   iovecs are spent `uiomove` runs past them (`KASSERT(uio->uio_iovcnt > 0)` under
+//!   `DIAGNOSTIC`, or a stale copy). A correct daemon reaches it: libfuse replies with its
+//!   write handler's count (lib/libfuse/fuse_ops.c:645-651) (the user's D-N5.9-U4).
 //! - `fusefs_print`'s `#if defined(DEBUG) || defined(DIAGNOSTIC) || defined(VFSLCKDEBUG)` is
 //!   the `debug`/`diagnostic` features (`VFSLCKDEBUG` has no feature) (LZ's).
 //! - `fusefs_getattr`'s dummy attributes for another user read `f_ctime` under the mount's
@@ -77,13 +87,7 @@
 //! Kept as the C, named (D-N5.9-9): the vnode lock is held across every request's sleep, so
 //! a daemon that touches its own mount through a locked vnode deadlocks; `fusefs_symlink`,
 //! `fusefs_mknod`, `fusefs_create` and `fusefs_mkdir` answer `EIO` to a reply whose `nodeid`
-//! is 0 or `FUSE_ROOT_ID` (fuse_vnops.c:753, :1128, :1195); a `FUSE_WRITE` reply of fewer
-//! bytes than asked (but some) gives the uio's residual and offset the rest back while its
-//! iovec stays past the chunk (fuse_vnops.c:1318-1340), so the next chunk's copy reads past
-//! the bytes it gives back and, once the iovecs are spent, `uiomove` panics ("resid past the
-//! iovecs", `bsd`'s; the C's `KASSERT(uio->uio_iovcnt > 0)` under `DIAGNOSTIC`). A correct
-//! daemon reports whole writes; a bound there would be a third the user decides (N5.9f2's
-//! report).
+//! is 0 or `FUSE_ROOT_ID` (fuse_vnops.c:753, :1128, :1195).
 //!
 //! ## Redesign
 //! - LZ's `FUSEFS_VOPS` (a `bsd` `Vops` of function pointers over argument structures) ->
@@ -1394,8 +1398,7 @@ pub fn fusefs_write<G: ProcGlue>(
             uio.uio_resid += diff;
             uio.uio_offset -= diff as i64;
 
-            // A reply that wrote nothing would have the same chunk sent again, for ever (the
-            // module's deviations, D-N5.9-U2).
+            // A reply that wrote nothing: EIO (the module's deviations, D-N5.9-U2).
             if written == 0 {
                 error = Err(Errno::EIO);
                 break;
@@ -1408,6 +1411,12 @@ pub fn fusefs_write<G: ProcGlue>(
             uvm_vnp_uncache(vp);
 
             fb_delete(fbuf.take());
+
+            // A short write ends the call: the uio's iovec is past the chunk the daemon did
+            // not all take (the module's deviations, D-N5.9-U4).
+            if diff > 0 {
+                break;
+            }
         }
 
         fb_delete(fbuf);
@@ -2477,9 +2486,22 @@ mod tests {
         assert_eq!(sizes, [4, 4, 2]);
         assert_eq!(content(), b"abcdefghij");
 
-        // (A daemon that writes less than asked but something is the C's: the uio's
-        // residual is given the rest back, its iovec not, so the next chunk's copy runs past
-        // the iovecs: the module's "kept as the C"; not run here.)
+        // D-N5.9-U4: a daemon that takes 3 of a 4-byte chunk ends a two-chunk write after
+        // one request: Ok, the residual and the offset what it did not take, where the C
+        // sends the wrong bytes at offset 3 and runs past the iovecs.
+        script(FUSE_WRITE, |r| {
+            Answer::out(&FuseWriteOut {
+                size: r.op::<FuseWriteIn>().size.min(3),
+                ..FuseWriteOut::default()
+            })
+        });
+        let _ = take_seen();
+        assert_eq!(write(p, h, b"ABCDEFGH", 0), (Ok(()), 5, 3));
+        let seen = take_seen();
+        assert_eq!(seen.len(), 1, "one request");
+        let w = seen[0].op::<FuseWriteIn>();
+        assert_eq!((w.offset, w.size, &seen[0].data[..]), (0, 4, &b"ABCD"[..]));
+        assert_eq!(vtoi(h).filesize.get(), 10, "the file is no shorter");
 
         // More than asked: EINVAL (the C's).
         script(FUSE_WRITE, |_| {
@@ -2491,7 +2513,7 @@ mod tests {
         assert_eq!(write(p, h, b"xy", 0).0, Err(Errno::EINVAL));
 
         // D-N5.9-U2: a reply of size 0 is EIO, the chunk given back to the uio, where the C
-        // sends it again for ever.
+        // goes round again with the iovec past the chunk.
         script(FUSE_WRITE, |_| Answer::out(&FuseWriteOut::default()));
         let _ = take_seen();
         assert_eq!(write(p, h, b"abcdef", 2), (Err(Errno::EIO), 6, 2));
@@ -2545,11 +2567,16 @@ mod tests {
             );
         }
 
-        // The names the C refuses: empty, past MAXNAMLEN (never: a u8-sized name list here),
-        // with a '/'.
+        // The names the C refuses: empty, past MAXNAMLEN (a 328-byte reply of a 300-byte
+        // name), with a '/'.
         let mut empty = dirents(&[(5, b"e", 8)], 0, 4096);
         empty[16..20].copy_from_slice(&0u32.to_ne_bytes());
         set(empty);
+        assert_eq!(readdir(root, p, 0, 2 * size).err(), Some(Errno::EIO));
+        let huge: &'static [u8] = &[b'n'; 300];
+        let reply = dirents(&[(5, huge, 8)], 0, 4096);
+        assert_eq!(reply.len(), 328);
+        set(reply);
         assert_eq!(readdir(root, p, 0, 2 * size).err(), Some(Errno::EIO));
         set(dirents(&[(5, b"a/b", 8)], 0, 4096));
         assert_eq!(readdir(root, p, 0, 2 * size).err(), Some(Errno::EIO));

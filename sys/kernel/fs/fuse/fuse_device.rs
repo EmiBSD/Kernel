@@ -385,6 +385,12 @@ fn fuse_device_set_fmp_fd<G: ProcGlue>(fd: &FuseD<G>, fmp: Option<FusefsMntRef<G
     }
 }
 
+/// `fuse_device_set_fmp(fmp, 1)` on the device `fd` the caller found (`fusefs_mount`'s
+/// attachment after U1's test, `fuse_vfsops`).
+pub(crate) fn fuse_device_attach<G: ProcGlue>(fd: &FuseD<G>, fmp: &FusefsMntRef<G>) {
+    fuse_device_set_fmp_fd(fd, Some(fmp.clone()));
+}
+
 /// `fuse_device_set_fmp`: attaches the mount to its device (`set`) or detaches it.
 pub fn fuse_device_set_fmp<G: ProcGlue>(fmp: &FusefsMntRef<G>, set: bool) {
     if let Some(fd) = fuse_lookup::<G>(fmp.dev) {

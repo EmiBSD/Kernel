@@ -52,9 +52,12 @@
 //!   daemon of another device with that minor) and lets the second overwrite the unit's
 //!   `fd_fmp`, so the first mount's requests answer through the second's session. libfuse
 //!   opens the device and then mounts with that descriptor, so a correct daemon sees nothing
-//!   (the user's D-N5.9-U1). The check sits where the C's tests are, before the mount's
-//!   `M_WAITOK` `malloc`, so two `mount(2)`s of one unit racing across that `malloc`'s sleep
-//!   can both pass it, the second overwriting as the C's.
+//!   (the user's D-N5.9-U1). The test sits where the C's tests are, before the mount's
+//!   `M_WAITOK` `malloc` (a refusal there asks for no memory), and is made again right before
+//!   the mount attaches to the unit (`fusefs_mount_attach`, with nothing that sleeps between
+//!   that test and the attachment), since the unit may have closed or another mount attached
+//!   it while this one slept in the `malloc`; a refusal there gives the mount's `M_FUSEFS`
+//!   block back, one `vmstat -m` request on that race path only.
 //! - `f_mntonname` (and the two `"fusefs"` names) are `strlcpy`'d with the C's `MNAMELEN`: a
 //!   mount point of 89 characters is kept whole, where LZ's `MNAMELEN - 1` cut it to 88 (an
 //!   LZ slip the C does not have, fuse_vfsops.c:126; D-N5.9-10).
@@ -103,7 +106,8 @@ use crate::cred::suser_ucred;
 use crate::descrip::fd_getfile;
 use crate::file::{DTYPE_VNODE, FileGlue};
 use crate::fs::fuse::fuse_device::{
-    fuse_device_cleanup, fuse_device_queue_fbuf, fuse_device_set_fmp, fuse_lookup,
+    fuse_device_attach, fuse_device_cleanup, fuse_device_queue_fbuf, fuse_device_set_fmp,
+    fuse_lookup,
 };
 use crate::fs::fuse::fuse_ihash::{fuse_ihashget, fuse_ihashinit, fuse_ihashins};
 use crate::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
@@ -112,8 +116,8 @@ use crate::fs::fuse::fusebuf_h::{
     FUSE_STATFS, FUSEBUFMAXSIZE, FuseInitIn, FuseStatfsOut,
 };
 use crate::fs::fuse::fusefs::{
-    FUSEFS_INFBUFS, FUSEFS_OPENDEVS, FUSEFS_POOL_NBPAGES, FUSEFS_WAITFBUFS, FusefsMnt, M_FUSEFS,
-    vfstofusefs,
+    FUSEFS_INFBUFS, FUSEFS_OPENDEVS, FUSEFS_POOL_NBPAGES, FUSEFS_WAITFBUFS, FusefsMnt,
+    FusefsMntRef, M_FUSEFS, vfstofusefs,
 };
 use crate::fs::fuse::fusefs_node::{FUFH_INVALID, FufhKind, FusefsFilehandle, FusefsNode, vtoi};
 use crate::fs::mount::{Mount, Vfsconf};
@@ -218,7 +222,10 @@ pub fn fusefs_mount<G: ProcGlue>(
             libkern::strlcpy(&mut sp.f_mntfromspec, b"fusefs");
         });
 
-        fuse_device_set_fmp(&fmp, true);
+        // fuse_device_set_fmp(fmp, 1), after U1's test made again.
+        if let Err(e) = fusefs_mount_attach(mp, &fmp) {
+            break 'bad Err(e);
+        }
         let fbuf = fb_setup(0, 0, FUSE_INIT, p);
         fbuf.op_set(&FuseInitIn {
             major: FUSE_KERNEL_VERSION,
@@ -235,6 +242,23 @@ pub fn fusefs_mount<G: ProcGlue>(
 
     // bad:
     let _ = fp.frele(Some(p));
+    error
+}
+
+/// `fuse_device_set_fmp(fmp, 1)` of `fusefs_mount`, after U1's test made again (the
+/// module's deviations): `ENXIO` when no unit of the mount's `dev_t` is open any more, `EBUSY`
+/// when another mount attached it meanwhile, the mount's slot then giving its block up (the
+/// block goes with the caller's handle). Nothing sleeps between the test and the attachment.
+fn fusefs_mount_attach<G: ProcGlue>(mp: &Mount<G>, fmp: &FusefsMntRef<G>) -> Result<(), Errno> {
+    let error = match fuse_lookup::<G>(fmp.dev) {
+        None => Err(Errno::ENXIO),
+        Some(fd) if fd.has_fmp() => Err(Errno::EBUSY),
+        Some(fd) => {
+            fuse_device_attach(&fd, fmp);
+            return Ok(());
+        }
+    };
+    drop(mp.take_node());
     error
 }
 
@@ -960,6 +984,50 @@ mod tests {
 
         fusefs_unmount(mp, 0, p).expect("unmount");
         set_daemon(None);
+        fuseclose::<TestGlue>(dev, 0, 0, Some(p)).expect("close");
+    }
+
+    #[test]
+    fn the_attachment_tests_the_unit_again() {
+        // S1 of N5.9f2's review: U1's test made again right before the attachment, for a
+        // unit that closed, or that another mount attached, while the mount slept in its
+        // M_WAITOK malloc (here: the change made between the two tests by hand).
+        let (_g, p) = setup();
+        let attach = |fmp: &FusefsMntRef<TestGlue>| {
+            fmp.mp.set_node(MArc::erase(fmp.clone()));
+            let r = fusefs_mount_attach(fmp.mp, fmp);
+            (r, fmp.mp.node_arc::<FusefsMnt<TestGlue>>().is_some())
+        };
+
+        // The unit closed meanwhile: ENXIO, the slot given up (the block goes with `gone`).
+        let dev = open_dev(p, 0);
+        let gone = crate::fs::fuse::testfuse::fake_fmp(dev, 0);
+        fuseclose::<TestGlue>(dev, 0, 0, Some(p)).expect("close");
+        assert_eq!(attach(&gone), (Err(Errno::ENXIO), false));
+
+        // Another mount attached the unit meanwhile: EBUSY, the first mount still served.
+        let dev = open_dev(p, 1);
+        let first = crate::fs::fuse::testfuse::mount_fmp(dev, 0);
+        let second = crate::fs::fuse::testfuse::fake_fmp(dev, 0);
+        assert_eq!(attach(&second), (Err(Errno::EBUSY), false));
+        let fd = crate::fs::fuse::fuse_device::fuse_lookup::<TestGlue>(dev).expect("open");
+        assert!(
+            fd.fd_fmp
+                .read()
+                .as_ref()
+                .is_some_and(|m| ptr::eq(&**m, &*first))
+        );
+        drop(fd);
+        fuseclose::<TestGlue>(dev, 0, 0, Some(p)).expect("close");
+
+        // An open unit with no mount: attached, the slot kept.
+        let dev = open_dev(p, 2);
+        let ok = crate::fs::fuse::testfuse::fake_fmp(dev, 0);
+        assert_eq!(attach(&ok), (Ok(()), true));
+        let fd = crate::fs::fuse::fuse_device::fuse_lookup::<TestGlue>(dev).expect("open");
+        assert!(fd.has_fmp());
+        drop(fd);
+        drop(ok.mp.take_node());
         fuseclose::<TestGlue>(dev, 0, 0, Some(p)).expect("close");
     }
 

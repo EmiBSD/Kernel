@@ -210,7 +210,9 @@ pub trait RawPool: Sync {
     fn nout(&self) -> u64;
     /// `pr_npages`: the pages the pool holds now (`vfs.fuse.fusefs_pool_pages` reads
     /// `fusefs_fbuf_pool`'s). The default answers 0: a backend that keeps no pages of its
-    /// own (the host doubles of `hal` and the benches).
+    /// own (the host doubles of `hal` and the benches), and `hal`'s arena backend
+    /// (`ArenaCore`, `BoxPool::init_arena`), which does hold pages (its leaked slot pages)
+    /// but whose count nothing reads (no `pool(9)` row, no sysctl).
     fn npages(&self) -> u64 {
         0
     }

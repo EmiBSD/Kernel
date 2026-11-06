@@ -91,7 +91,7 @@ pub fn fusefs_lookup<G: ProcGlue>(
     cnp: &mut Cn<'_, G>,
 ) -> Result<(), Errno> {
     let dp = vtoi(vdp); // inode for directory being searched
-    let fmp = dp.i_fmp.clone(); // file system that directory is in
+    let fmp = &dp.i_fmp; // file system that directory is in
     let p = cnp.proc();
     let cred = cnp.cn_cred;
     let nameiop = cnp.cn_nameiop;
