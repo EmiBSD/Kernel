@@ -51,7 +51,20 @@
   again with another commit and another tag, `n<N>-<name>-2`. `lz-origin` is LZ's tag and
   is never touched.
 - No semantic versions: the kernel stays `EmiBSD 8.0` to userland; the milestone's name is
-  the version. GitHub releases (`gh release`) are not made for now: tags only, to be decided
-  at the N4 close, when an arm64 image is worth attaching.
+  the version.
+
+## Releases (the user's decision of 2026-11-05)
+
+- The kernel is published for EmiBSD/OS as GitHub pre-releases, one per build: `just
+  dist-arm64` makes `target/dist/arm64/kernel-<tag>-arm64.tar.zst` and its `.sha256`, `<tag>`
+  being `<YYYYMMDD>-<8-hex>` (the build's UTC date and the commit), the name OS's
+  `tools/manifest.py` fetches. The recipe's comment in the justfile lists what is inside.
+- Built from a commit that is on `origin/main`, release profile, arm64 only until N10
+  (decision 44). The main session tags that commit `<tag>` (annotated; the message is the
+  BUILDINFO), pushes the tag and runs `gh release create <tag> --prerelease` with the tarball
+  and its `.sha256`, on the user's word for each publication, as for a push. Subagents never
+  publish.
+- A published tag and its assets never change: a rebuild is a new tag. Milestone tags
+  (`n<N>-<name>`) stay as they are and carry no assets.
 - N0 to N3 were tagged retroactively on 2026-10-22 on the `docs:` commits that declared them
   met, with the numbers those commits and `docs/JOURNAL.md` record.

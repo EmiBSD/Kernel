@@ -3649,3 +3649,70 @@ ci-full:
     EMIBSD_NCPU=4 {{quote(just_executable())}} {{ if has_amd64 == "true" { "smoke-install-amd64 smoke-install-boot-amd64 " } else { "" } }}\
         smoke-install-arm64 smoke-install-boot-arm64 smoke-install-arm64-acpi smoke-install-boot-arm64-acpi \
         {{ if has_amd64 == "true" { "smoke-install80-amd64 " } else { "" } }}smoke-install80-arm64
+
+# --- the kernel's release artifact (the user's decision of 2026-11-05) ----------------------
+
+# What EmiBSD/OS assembles with Userland's sets into the install ISO and the USB stick image:
+# one `kernel-<tag>-<arch>.tar.zst` per arch, `<tag>` = `<YYYYMMDD>-<8-hex>` (the build's UTC
+# date and the commit), the name OS's tools/manifest.py fetches (`<name>-<tag>-<arch>`). It
+# unpacks into `kernel-<tag>-<arch>/`, whose `SHA256` (OpenBSD's format) covers every file:
+# - `bsd`, `bsd.mp`: the release-profile MULTIPROCESSOR kernel (LTO, symbols kept),
+#   `--features qemu` as every boot the smokes make; one kernel under the two names the
+#   installer asks for (decision 40);
+# - `bsd.RAMDISK`: the same with the ramdisk compiled in and empty (feature `miniroot`,
+#   `rd_root_size` = `miniroot_sectors` sectors), which `cargo xtask rdsetroot` fills with a
+#   miniroot to make `bsd.rd`;
+# - `abi_openbsd.ko` and `BOOTAA64.EFI`, as `just build` makes them;
+# - `BUILDINFO`: the commit, the dates, the toolchain, the profiles, the ramdisk's size.
+# Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once
+# (the user-mode checks of `smoke-boot`) before anything is packed. Files are dated
+# SOURCE_DATE_EPOCH and owned by root:wheel, so the same commit packs the same tar. The main
+# session publishes it as a GitHub pre-release tagged `<tag>` (git-commits.md, Releases).
+dist-arm64: dist-clean-tree (build-release-arm64 "--features qemu") build-init-arm64 build-abi-arm64 efiboot-arm64
+    #!/usr/bin/env zsh
+    set -eu
+    EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features qemu,miniroot --target-dir target/bsdrd
+    EMIBSD_RUN_DIR=target/smoke/dist cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk \
+        --expect "bsd: booted on arm64" --expect "EmiBSD 8.0 (GENERIC) #" --expect "selftest: buffer cache ok" \
+        --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
+        --expect "init exited with status 0 (signal 0)"
+    rdsize=$(cargo xtask rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
+    [[ "$rdsize" == "$(( {{miniroot_sectors}} * 512 ))" ]] || { echo "dist: rd_root_size is $rdsize, not {{miniroot_sectors}} sectors" >&2; exit 1; }
+    commit=$(git rev-parse HEAD)
+    tag="$(date -u +%Y%m%d)-${commit[1,8]}"
+    name="kernel-$tag-arm64"
+    out=target/dist/arm64
+    rm -rf "$out/$name" "$out/$name.tar.zst" "$out/$name.tar.zst.sha256"
+    mkdir -p "$out/$name"
+    cp target/{{arm64}}/release/bsd "$out/$name/bsd"
+    cp target/{{arm64}}/release/bsd "$out/$name/bsd.mp"
+    cp target/bsdrd/{{arm64}}/release/bsd "$out/$name/bsd.RAMDISK"
+    cp target/abi/{{arm64}}/debug/abi_openbsd "$out/$name/abi_openbsd.ko"
+    cp target/efiboot/arm64/BOOTAA64.EFI "$out/$name/BOOTAA64.EFI"
+    {
+        print "EmiBSD kernel $tag arm64"
+        print "Commit: $commit"
+        print "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        print "Source date: $(date -u -r $SOURCE_DATE_EPOCH +%Y-%m-%dT%H:%M:%SZ) (SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH)"
+        print "Build number: $EMIBSD_BUILD"
+        print "Toolchain: $(rustc -V)"
+        print "LandingZone: $(sed -n 's/^Commit: //p' lz/PINNED.md)"
+        print "bsd, bsd.mp: release profile (LTO, symbols kept), features default + qemu"
+        print "bsd.RAMDISK: release profile, features default + qemu + miniroot, rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
+        print "abi_openbsd.ko, BOOTAA64.EFI: dev profile, as just build makes them"
+    } > "$out/$name/BUILDINFO"
+    stamp=$(TZ=UTC date -r $SOURCE_DATE_EPOCH +%Y%m%d%H%M.%S)
+    (cd "$out/$name" && shasum -a 256 --tag abi_openbsd.ko BOOTAA64.EFI BUILDINFO bsd bsd.RAMDISK bsd.mp > SHA256 \
+        && chmod 644 abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd bsd.RAMDISK bsd.mp \
+        && TZ=UTC touch -t $stamp . abi_openbsd.ko BOOTAA64.EFI BUILDINFO SHA256 bsd bsd.RAMDISK bsd.mp)
+    (cd "$out" && COPYFILE_DISABLE=1 tar -n --format ustar --uid 0 --gid 0 --uname root --gname wheel --no-xattrs --no-mac-metadata \
+        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/abi_openbsd.ko" "$name/bsd" "$name/bsd.RAMDISK" "$name/bsd.mp" \
+        | zstd -19 -q -o "$name.tar.zst" && shasum -a 256 "$name.tar.zst" > "$name.tar.zst.sha256")
+    rm -rf target/smoke/dist
+    echo "dist: $out/$name.tar.zst"
+    cat "$out/$name.tar.zst.sha256"
+
+# A dist artifact is built from a commit: no build input may differ from HEAD.
+dist-clean-tree:
+    @test -z "$(git status --porcelain --untracked-files=no -- sys tools Cargo.toml Cargo.lock justfile rust-toolchain.toml .cargo)" || \
+        { echo "dist: uncommitted changes to the build's inputs; commit them first" >&2; git status --short -- sys tools Cargo.toml Cargo.lock justfile rust-toolchain.toml .cargo >&2; exit 1; }
