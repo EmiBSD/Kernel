@@ -98,8 +98,9 @@
 //!   `msdosfs_rmdir` and `msdosfs_readdir` are labeled blocks; `msdosfs_rename`'s `bad`,
 //!   `bad1` and `out` are the [`RenameExit`] its body ends with, `abortit` is the UFS
 //!   layer's `rename_abortit` (the same label).
-//! - `msdosfs_readdir` copies the `struct dirent` out as its bytes (`dirent_uiomove`, the
-//!   same layout and the same `d_reclen` bytes as `uiomove(&dirbuf, dirbuf.d_reclen, uio)`).
+//! - `msdosfs_readdir` copies the `struct dirent` out as its bytes (`fs::subr`'s
+//!   `dirent_uiomove`, the same layout and the same `d_reclen` bytes as `uiomove(&dirbuf,
+//!   dirbuf.d_reclen, uio)`; cd9660's `readdir` shares it since N5.8c2).
 //! - `dosdirtemplate` is a static of two `Direntry`s.
 //! - `msdosfs_print` prints under feature `debug` or `diagnostic`; the C's third condition,
 //!   `VFSLCKDEBUG`, has no feature here.
@@ -149,7 +150,6 @@
 //!   `msdosfs_strategy`'s `biodone`. 0 `unsafe` (LZ: 8).
 
 use core::marker::PhantomData;
-use core::mem::offset_of;
 
 use hal::malloc::MArc;
 use hal::sys::dirent::{DT_DIR, DT_REG, Dirent, MAXNAMLEN, dirent_size};
@@ -207,7 +207,7 @@ use crate::fs::msdosfs::msdosfsmount::{
     cntobn, de_clcount, de_cluster, de_cn2bn, de_cn2off, roottobn, vfstomsdosfs,
 };
 use crate::fs::namei::{ISDOTDOT, LOCKLEAF, LOCKPARENT, MODMASK, SAVESTART};
-use crate::fs::subr::{vaccess, vflushbuf, vput, vrele};
+use crate::fs::subr::{dirent_uiomove, vaccess, vflushbuf, vput, vrele};
 use crate::fs::ufs::ufs::ufs_lookup::vmount;
 use crate::fs::ufs::ufs::ufs_vnops::{Abort, pnbuf_free, rdonly, rename_abortit, ucred};
 use crate::fs::vnode::{
@@ -1544,22 +1544,6 @@ pub fn msdosfs_symlink<G: ProcGlue>(
     let _ = vop_abortop(dvp, cnp);
     vput(dvp);
     Err(Errno::EOPNOTSUPP)
-}
-
-/// `uiomove(dp, dp->d_reclen, uio)`: copy out the first `d_reclen` bytes of a
-/// `struct dirent`.
-fn dirent_uiomove<G: ProcGlue>(dp: &Dirent, uio: &mut Uio<'_, G>) -> Result<(), Errno> {
-    let mut b = [0u8; size_of::<Dirent>()];
-    let at = |f: usize, len: usize| f..f + len;
-    b[at(offset_of!(Dirent, d_fileno), 8)].copy_from_slice(&dp.d_fileno.to_ne_bytes());
-    b[at(offset_of!(Dirent, d_off), 8)].copy_from_slice(&dp.d_off.to_ne_bytes());
-    b[at(offset_of!(Dirent, d_reclen), 2)].copy_from_slice(&dp.d_reclen.to_ne_bytes());
-    b[offset_of!(Dirent, d_type)] = dp.d_type;
-    b[offset_of!(Dirent, d_namlen)] = dp.d_namlen;
-    b[at(offset_of!(Dirent, __d_padding), 4)].copy_from_slice(&dp.__d_padding);
-    b[at(Dirent::NAME_OFFSET, MAXNAMLEN + 1)].copy_from_slice(&dp.d_name);
-    let reclen = usize::from(dp.d_reclen).min(b.len());
-    <G::FileGlue as FileGlue>::uiomove(&mut b[..reclen], uio)
 }
 
 /// `msdosfs_readdir` (`vop_readdir`): convert the DOS directory entries (with their Win95

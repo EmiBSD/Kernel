@@ -85,7 +85,9 @@ pub(crate) mod tests {
     // The fixture of `bsd`'s tests that mount an FFS image (nfs's, quota's, dirhash's):
     // `newfs`, the kernel's image builder, a block device vnode whose strategy reads and writes
     // the image, and the root mount through the kernel's `ffs_mountfs`; with the tests of
-    // `ffs_mount`'s export update (the exports are `bsd`'s until N6). The image tests of the
+    // `ffs_mount`'s export update (the exports are `bsd`'s until N6), of the kernel msdosfs's
+    // and cd9660's (`VFS_CHECKEXP`'s arms), and of the CD label `subr_disk.rs`'s shell spoofs
+    // over the kernel's parser (N5.8c2). The image tests of the
     // file system itself are the kernel's (`kernel::fs::ufs::ffs::ffs_vfsops`'s tests, over
     // its test glue), and so are decision 43's ffs pairs since N5.5b3 (`benches/fs.rs`'s
     // `ffs.*` rows, which replace this module's `ufs_bench`).
@@ -125,10 +127,15 @@ pub(crate) mod tests {
     /// The disk the strategy below reads and writes.
     pub(crate) static DISK: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 
-    /// `diskvn`'s strategy: a synchronous transfer between the buffer and the image at
-    /// `b_blkno`, then `biodone`.
+    /// `diskvn`'s strategy: [`transfer`].
     fn disk_strategy(ap: &mut VopStrategyArgs) -> Result<(), Errno> {
-        let bp = ap.a_bp;
+        transfer(ap.a_bp);
+        Ok(())
+    }
+
+    /// The disk's `d_strategy`: a synchronous transfer between the buffer and the image at
+    /// `b_blkno`, then `biodone`.
+    fn transfer(bp: &'static crate::sys::buf::Buf) {
         let off = bp.blkno() as usize * DEV_BSIZE;
         let len = bp.bcount() as usize;
         {
@@ -150,7 +157,6 @@ pub(crate) mod tests {
         let s = splbio();
         biodone(bp);
         splx(s);
-        Ok(())
     }
 
     /// The fake disk's fsync: `vflushbuf`, as `spec_fsync` does.
@@ -456,6 +462,110 @@ pub(crate) mod tests {
         assert_eq!(check_export(mp, [10, 0, 1, 5]), Err(Errno::EACCES));
 
         unmount_root(p, mp);
+        teardown();
+    }
+
+    /// `mount -u` of an ISO 9660 disc (the kernel's cd9660 over this module's disk and `bsd`'s
+    /// glue, N5.8c2): mount(2)'s `MNT_UPDATE` without a device name reaches the kernel's
+    /// `cd9660_mount` and `bsd`'s `vfs_export`, and `VFS_CHECKEXP`'s `MOUNT_CD9660` arm (the
+    /// C's `cd9660_check_export`, `ufs_check_export`'s body over the mount's list) answers the
+    /// listed client and refuses the others; without the arm the match's last arm panics.
+    #[cfg(all(feature = "nfsserver", feature = "cd9660"))]
+    #[test]
+    fn mount_update_exports_an_iso_9660_disc() {
+        use crate::kern::uipc_mbuf::tests::mbinit_again;
+        use crate::kern::vfs_subr::tests::exports::{args, check_export, sin};
+        use crate::kern::vfs_syscalls::sys_mount;
+        use crate::sys::mount::{MNT_EXPORTED, MNT_EXRDONLY, MNT_UPDATE};
+        use kernel::fs::isofs::cd9660::cd9660_vfsops::{cd9660_statfs, iso_mountfs};
+        use kernel::fs::isofs::cd9660::testcd9660::{self, image};
+
+        let (_g, p) = setup(image::image_bytes());
+        mbinit_again();
+        // The disc at `/`, read-only, as mount_root mounts an FFS image.
+        let mp = vfs_mount_alloc(None, vfs_byname(b"cd9660").unwrap());
+        mp.set_flag(mp.flag() | MNT_RDONLY);
+        mp.with_stat(|sp| sp.f_mntonname[0] = b'/');
+        iso_mountfs(diskvp(), mp, p, &mut testcd9660::args(0, 0)).unwrap();
+        let mut st = mp.stat();
+        cd9660_statfs(mp, &mut st, p).unwrap();
+        mp.with_stat(|sp| *sp = st);
+        vfs_unbusy(mp);
+        crate::sys::mount::mountlist_insert_tail(mp);
+        let rootvp = VFS_ROOT(mp).unwrap();
+        set_rootvnode(Some(rootvp));
+        p.fd().set_cdir(Some(rootvp));
+        vref(rootvp);
+        let _ = VOP_UNLOCK(rootvp);
+        assert_eq!(read_file(p, b"/m10c-iso.txt\0").unwrap(), b"m10c-iso-42\n");
+
+        let ro = MNT_EXPORTED | MNT_EXRDONLY;
+        assert_eq!(check_export(mp, [10, 0, 0, 5]), Err(Errno::EACCES));
+        let net = sin(2, [10, 0, 0, 0]);
+        let mask = sin(2, [255, 255, 255, 0]);
+        let mut a = testcd9660::args(0, 0);
+        a.export_info = args(ro, 32767, Some(net), Some(mask));
+        let ub =
+            crate::kern::vfs_subr::tests::user_buf(hal::user::bytes_of(core::slice::from_ref(&a)));
+        sys(
+            sys_mount,
+            p,
+            &[
+                path(b"cd9660\0"),
+                path(b"/\0"),
+                (MNT_UPDATE | MNT_RDONLY) as usize,
+                ub.addr(),
+            ],
+        )
+        .unwrap();
+        assert!(mp.flag() & MNT_EXPORTED != 0);
+        assert_eq!(check_export(mp, [10, 0, 0, 5]), Ok((ro, 32767)));
+        assert_eq!(check_export(mp, [10, 0, 1, 5]), Err(Errno::EACCES));
+
+        unmount_root(p, mp);
+        teardown();
+    }
+
+    /// `iso_disklabelspoof` (`subr_disk.rs`'s shell over the kernel's `iso_volume_label`,
+    /// N5.8c2) through a driver's strategy over this module's disk: the whole disc in `a` and
+    /// `c`, the volume id's halves the type and pack names, the checksum; a disc without a
+    /// primary descriptor is `EINVAL`, its label left as it was.
+    #[cfg(feature = "cd9660")]
+    #[test]
+    fn a_cd_gets_a_disk_label() {
+        use crate::kern::subr_disk::{dkcksum, iso_disklabelspoof};
+        use crate::sys::disklabel::{
+            DISKMAGIC, Disklabel, FS_ISO9660, MAXPARTITIONS, RAW_PART, dl_getpoffset, dl_getpsize,
+        };
+        use kernel::fs::isofs::cd9660::testcd9660::image;
+
+        let (_g, _p) = setup(image::image_bytes());
+        let mut lp = Disklabel::zeroed();
+        lp.d_secsize = 512;
+        lp.d_secperunit = 100;
+        iso_disklabelspoof(DISKDEV, transfer, &mut lp).unwrap();
+        assert_eq!(&lp.d_typename, b"M10C            ");
+        assert_eq!(&lp.d_packname, b"                ");
+        for i in [0, RAW_PART as usize] {
+            assert_eq!(lp.d_partitions[i].p_fstype, FS_ISO9660);
+            assert_eq!(dl_getpsize(&lp.d_partitions[i]), 100);
+            assert_eq!(dl_getpoffset(&lp.d_partitions[i]), 0);
+        }
+        assert_eq!(usize::from(lp.d_npartitions), MAXPARTITIONS);
+        assert_eq!(
+            (lp.d_magic, lp.d_magic2, lp.d_version),
+            (DISKMAGIC, DISKMAGIC, 1)
+        );
+        assert_eq!(dkcksum(&lp), 0);
+
+        // not a CD
+        *DISK.lock().unwrap_or_else(|e| e.into_inner()) = vec![0u8; image::IMAGE_SIZE];
+        let mut lp = Disklabel::zeroed();
+        assert_eq!(
+            iso_disklabelspoof(DISKDEV, transfer, &mut lp),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!((lp.d_magic, lp.d_npartitions), (0, 0));
         teardown();
     }
 }

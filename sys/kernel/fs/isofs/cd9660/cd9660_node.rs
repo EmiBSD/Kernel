@@ -183,6 +183,7 @@ use crate::fs::buf::BufRef;
 use crate::fs::cache::cache_purge;
 use crate::fs::isofs::cd9660::cd9660_extern::{IsoMnt, IsoMntRef, M_ISOFSMNT};
 use crate::fs::isofs::cd9660::cd9660_lookup::cd9660_bufatoff;
+use crate::fs::isofs::cd9660::cd9660_vnops::{Cd9660SpecVnops, Cd9660Vnops};
 use crate::fs::isofs::cd9660::iso::{
     Cdino, IsoDirectoryRecord, IsoExtendedAttributes, isonum_711, isonum_723, isonum_733,
 };
@@ -353,6 +354,11 @@ impl<G: ProcGlue> IsoNode<G> {
     /// Changes `ip->inode` through `f` (the C's writes of `inop->inode.*`), and stores it:
     /// `f` runs on a copy, outside the cell, so it may read the disc (`cd9660_defattr`'s
     /// extended attribute record) without holding the cell's writer bit across the sleep.
+    /// The read, change and store are not one step: what makes them sound is that the node
+    /// has a single writer, `cd9660_vget_internal` (`cd9660_vfsops.rs`), which calls this
+    /// (or `cd9660_rrip_analyze`'s store) under the new vnode's exclusive lock, before any
+    /// other thread can reach the node's attributes (a thread that finds the node in the
+    /// hash waits in `vget` for that lock).
     pub fn update_inode(&self, f: impl FnOnce(&mut IsoRripInode)) {
         let mut ino = self.inode();
         f(&mut ino);
@@ -398,12 +404,16 @@ impl<G: ProcGlue> Isohash<G> {
     }
 }
 
-/// cd9660's globals of a glue: `cd9660_node.c`'s node hash (a static generic over the glue
-/// cannot exist, and these are the tables of the glue's nodes); N5.8c2 adds the vnode tables
-/// `cd9660_vops` and `cd9660_specvops`.
+/// cd9660's globals of a glue: `cd9660_node.c`'s node hash and `cd9660_vnops.c`'s vnode
+/// tables `cd9660_vops` and `cd9660_specvops` (a static generic over the glue cannot exist,
+/// and these are the tables of the glue's nodes; each table one address, for `vops_id`).
 pub struct IsofsTables<G: ProcGlue> {
     /// The node hash, once `cd9660_init` made it.
     pub(super) isohash: ReadMostly<Option<Isohash<G>>>,
+    /// `cd9660_vops`.
+    pub(crate) vops: Cd9660Vnops<G>,
+    /// `cd9660_specvops`.
+    pub(crate) specvops: Cd9660SpecVnops<G>,
 }
 
 impl<G: ProcGlue> IsofsTables<G> {
@@ -411,6 +421,8 @@ impl<G: ProcGlue> IsofsTables<G> {
     pub const fn new() -> Self {
         Self {
             isohash: ReadMostly::new(None),
+            vops: Cd9660Vnops::new(),
+            specvops: Cd9660SpecVnops::new(),
         }
     }
 }
@@ -582,7 +594,10 @@ fn extattr_v1(t: &BufRef) -> Option<IsoExtendedAttributes> {
 /// The buffer of a node's extended attribute record, when the mount reads them and the
 /// record has one (`cd9660_bufatoff` at the negative offset of the record; a read error is
 /// no buffer, as the C's `bp2` stays `NULL`).
-fn extattr_buf<G: ProcGlue>(isodir: &IsoDirectoryRecord<'_>, inop: &IsoNode<G>) -> Option<BufRef> {
+pub(crate) fn extattr_buf<G: ProcGlue>(
+    isodir: &IsoDirectoryRecord<'_>,
+    inop: &IsoNode<G>,
+) -> Option<BufRef> {
     let imp = inop.mnt();
     if imp.im_flags & ISOFSMNT_EXTATT == 0 {
         return None;

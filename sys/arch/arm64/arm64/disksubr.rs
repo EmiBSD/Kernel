@@ -98,7 +98,7 @@ pub fn readdisklabel(
         let mut error = readdoslabel(b, strat, lp, None, spoofonly);
         #[cfg(feature = "cd9660")]
         if error.is_err() {
-            error = crate::isofs::cd9660::cd9660_vfsops::iso_disklabelspoof(dev, strat, lp);
+            error = crate::kern::subr_disk::iso_disklabelspoof(dev, strat, lp);
         }
         #[cfg(feature = "udf")]
         if error.is_err() {

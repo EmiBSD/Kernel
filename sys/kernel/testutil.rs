@@ -136,6 +136,7 @@ std::thread_local! {
     static PAGES_OUT: Cell<i64> = const { Cell::new(0) };
     static MALLOC_OUT: RefCell<BTreeMap<i32, i64>> = const { RefCell::new(BTreeMap::new()) };
     static MALLOC_REQS: RefCell<BTreeMap<i32, (u64, usize)>> = const { RefCell::new(BTreeMap::new()) };
+    static POOL_WATCH: Cell<Option<(&'static str, u64)>> = const { Cell::new(None) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
     static NET_HELD: Cell<bool> = const { Cell::new(false) };
@@ -369,10 +370,12 @@ impl RawPool for TestPool {
             let addr = free.pop()?;
             let p = NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))?;
             self.nout.fetch_add(1, Ordering::Relaxed);
+            count_pool_request(self.wchan);
             return Some((p, self.size));
         }
         let p = pages(self.size)?;
         self.nout.fetch_add(1, Ordering::Relaxed);
+        count_pool_request(self.wchan);
         Some((p, self.size))
     }
 
@@ -951,6 +954,30 @@ pub fn malloc_out(ty: i32) -> i64 {
 /// size of the last one, as the double counts them.
 pub fn malloc_requests(ty: i32) -> (u64, usize) {
     MALLOC_REQS.with(|m| m.borrow().get(&ty).copied().unwrap_or((0, 0)))
+}
+
+/// Counts one item this thread got from the pool named `wchan` when it is the one
+/// [`watch_pool`] named: one thread-local load otherwise, so that the host benches of the
+/// pool's users do not pay for the count.
+fn count_pool_request(wchan: &str) {
+    POOL_WATCH.with(|w| {
+        if let Some((name, n)) = w.get().filter(|&(name, _)| name == wchan) {
+            w.set(Some((name, n + 1)));
+        }
+    });
+}
+
+/// Counts from now on the items this thread gets from the pool named `wchan` (`vmstat -m`'s
+/// pool requests, `pr_nget`; N5.8c2: `namei_pool`'s requests of a readlink), from 0, for
+/// [`pool_requests`]; one pool at a time.
+pub fn watch_pool(wchan: &'static str) {
+    POOL_WATCH.with(|w| w.set(Some((wchan, 0))));
+}
+
+/// The items this thread got from the pool [`watch_pool`] named since it named it (0 while
+/// no pool is watched).
+pub fn pool_requests() -> u64 {
+    POOL_WATCH.with(|w| w.get().map_or(0, |(_, n)| n))
 }
 
 /// The last high-water mark `set_hiwat` gave the pool named `wchan` (0: never) and whether

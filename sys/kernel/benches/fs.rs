@@ -110,6 +110,15 @@
 //! - `msdos.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's first block.
 //! - `msdos.stat`: `stat("/hello.txt")`.
 //!
+//! N5.8c2's rows (feature `cd9660`), over the kernel cd9660's fixture (`testcd9660`: LZ's
+//! makefs image of 25 blocks, Rock Ridge, mounted at `/` by the kernel's `iso_mountfs`), a
+//! first measurement for N12 (no `bsd` row to pair them with):
+//! - `cd9660.lookup.hit.1`: `namei("/m10c-iso.txt")` with the name cached, and the `vrele`.
+//! - `cd9660.readdir.1blk`: `lseek(fd, 0, SEEK_SET)` and `getdents` of the root's block (its
+//!   Rock Ridge names).
+//! - `cd9660.read.1blk`: `lseek(fd, 0, SEEK_SET)` and a `read` of the file's one block (12
+//!   bytes, the block cached).
+//!
 //! The doubles' pools recycle their items (`testutil::set_pool_recycle`, D-N5.5b-5; until
 //! N5.5b3 a copy of `proc.rs`'s recycling backend here): the doubles' pool otherwise hands out
 //! a fresh zeroed page per item and never takes one back, which timed the host's `malloc` and
@@ -647,6 +656,12 @@ fn main() {
         "msdos.readdir.1blk",
         #[cfg(feature = "msdosfs")]
         "msdos.stat",
+        #[cfg(feature = "cd9660")]
+        "cd9660.lookup.hit.1",
+        #[cfg(feature = "cd9660")]
+        "cd9660.readdir.1blk",
+        #[cfg(feature = "cd9660")]
+        "cd9660.read.1blk",
     ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
@@ -1098,6 +1113,81 @@ fn main() {
             s.spawn(|| msdos_rows(&wanted, &names[msdos..], &report));
         });
     }
+
+    // N5.8c2's rows: the kernel cd9660, on a thread of its own after msdosfs's.
+    #[cfg(feature = "cd9660")]
+    {
+        let cd9660 = names
+            .iter()
+            .position(|n| n.starts_with("cd9660."))
+            .unwrap_or(names.len());
+        std::thread::scope(|s| {
+            s.spawn(|| cd9660_rows(&wanted, &names[cd9660..], &report));
+        });
+    }
+}
+
+/// N5.8c2's cd9660 rows (the module's docs), `names` theirs in order.
+#[cfg(feature = "cd9660")]
+fn cd9660_rows(
+    wanted: &dyn Fn(&str) -> bool,
+    names: &[&str],
+    report: &dyn Fn(&str, (f64, f64, f64)),
+) {
+    use kernel::descrip::{sys_close, sys_read};
+    use kernel::fs::isofs::cd9660::testcd9660::{self, image};
+    use kernel::fs::syscalls::sys_getdents;
+    use kernel::fs::ufs::ffs::testffs;
+
+    let (_memory, p) = testcd9660::attach_image(image::image_bytes());
+    kernel::testutil::set_file_log(false);
+    let (mp, _) = testcd9660::mount_root(p, 0);
+
+    let base = kernel::testutil::USER_BASE + 0x2000;
+    let p_f = UserPtr::<u8>::new(base);
+    let p_root = UserPtr::<u8>::new(base + 0x20);
+    let ubuf = base + 0x800;
+    let udents = base + 0x1000;
+    need(p_f.copyout_slice(b"/m10c-iso.txt\0"), "copyout");
+    need(p_root.copyout_slice(b"/\0"), "copyout");
+    let fd_root = need(sys_open(p, p_root, O_RDONLY, 0), "open /");
+    let fd_f = need(sys_open(p, p_f, O_RDONLY, 0), "open /m10c-iso.txt");
+    // The warm-up of each: the name cached, the blocks in the buffer cache.
+    lookup_rele(p, b"/m10c-iso.txt", FOLLOW);
+    need(sys_getdents(p, fd_root, udents, 4096), "getdents");
+    need(sys_read(p, fd_f, ubuf, 2048), "read");
+
+    if wanted(names[0]) {
+        report(
+            names[0],
+            measure(|| rounds(|| lookup_rele(p, b"/m10c-iso.txt", FOLLOW))),
+        );
+    }
+    if wanted(names[1]) {
+        report(
+            names[1],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_root, 0, SEEK_SET);
+                    let _ = black_box(sys_getdents(p, black_box(fd_root), udents, 4096));
+                })
+            }),
+        );
+    }
+    if wanted(names[2]) {
+        report(
+            names[2],
+            measure(|| {
+                rounds(|| {
+                    let _ = sys_lseek(p, fd_f, 0, SEEK_SET);
+                    let _ = black_box(sys_read(p, black_box(fd_f), ubuf, 2048));
+                })
+            }),
+        );
+    }
+    let _ = sys_close(p, fd_f);
+    let _ = sys_close(p, fd_root);
+    testffs::unmount_root(p, mp);
 }
 
 /// N5.7c3's msdosfs rows (the module's docs), `names` theirs in order.
