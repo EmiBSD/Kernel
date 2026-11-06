@@ -3656,31 +3656,38 @@ ci-full:
 # one `kernel-<tag>-<arch>.tar.zst` per arch, `<tag>` = `<YYYYMMDD>-<8-hex>` (the build's UTC
 # date and the commit), the name OS's tools/manifest.py fetches (`<name>-<tag>-<arch>`). It
 # unpacks into `kernel-<tag>-<arch>/`, whose `SHA256` (OpenBSD's format) covers every file:
-# - `bsd.mp`: the release-profile MULTIPROCESSOR kernel (LTO, symbols kept), `--features
-#   qemu` as every boot the smokes make; the only kernel (decision 40), under the one name
-#   the installer will ask for (the user's decision of 2026-11-05: no `bsd`; the installer
-#   installs `bsd.mp` as `/bsd`);
+# - `bsd.mp`: the release-profile MULTIPROCESSOR kernel (LTO, symbols kept), without the
+#   `qemu` feature (the user's decision of 2026-11-06, after OS's install found `halt` ending
+#   in QEMU's semihosting exit, which traps on a machine started without
+#   `-semihosting-config`): `halt` waits for a key and init's exit panics, as OpenBSD's; the
+#   only kernel (decision 40), under the one name the installer will ask for (the user's
+#   decision of 2026-11-05: no `bsd`; the installer installs `bsd.mp` as `/bsd`);
 # - `bsd.RAMDISK`: the same with the ramdisk compiled in and empty (feature `miniroot`,
 #   `rd_root_size` = `miniroot_sectors` sectors), which `cargo xtask rdsetroot` fills with a
 #   miniroot to make `bsd.rd`;
 # - `abi_openbsd.ko` and `BOOTAA64.EFI`, as `just build` makes them;
 # - `BUILDINFO`: the commit, the dates, the toolchain, the profiles, the ramdisk's size.
 # Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once
-# (the user-mode checks of `smoke-boot`) before anything is packed. Files are dated
-# SOURCE_DATE_EPOCH and owned by root:wheel, so the same commit packs the same tar. The main
+# before anything is packed (the user-mode lines of `smoke-boot` up to init's last check,
+# then init's death panic, which is what a kernel without `qemu` answers to the test init's
+# exit: QEMU is stopped once it is seen; the exit status is not read, since init's inet check
+# needs the address vio0 only gets from `qemu`'s selftest, so it is 15 here). Files are
+# dated SOURCE_DATE_EPOCH and owned by root:wheel, and BUILDINFO holds no clock time, only
+# the tag's UTC day, so the same commit packs the same tar that day. The main
 # session publishes it as a GitHub pre-release tagged `<tag>` (git-commits.md, Releases).
-dist-arm64: dist-clean-tree (build-release-arm64 "--features qemu") build-init-arm64 build-abi-arm64 efiboot-arm64
+dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 build-abi-arm64 efiboot-arm64
     #!/usr/bin/env zsh
     set -eu
-    EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features qemu,miniroot --target-dir target/bsdrd
-    EMIBSD_RUN_DIR=target/smoke/dist cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk \
-        --expect "bsd: booted on arm64" --expect "EmiBSD 8.0 (GENERIC) #" --expect "selftest: buffer cache ok" \
+    EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features miniroot --target-dir target/bsdrd
+    EMIBSD_RUN_DIR=target/smoke/dist cargo xtask smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
+        --expect "bsd: booted on arm64" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
-        --expect "init exited with status 0 (signal 0)"
+        --expect "init: unveil ok" --expect "panic: init died (signal 0, exit "
     rdsize=$(cargo xtask rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
     [[ "$rdsize" == "$(( {{miniroot_sectors}} * 512 ))" ]] || { echo "dist: rd_root_size is $rdsize, not {{miniroot_sectors}} sectors" >&2; exit 1; }
     commit=$(git rev-parse HEAD)
-    tag="$(date -u +%Y%m%d)-${commit[1,8]}"
+    day=$(date -u +%Y%m%d)
+    tag="$day-${commit[1,8]}"
     name="kernel-$tag-arm64"
     out=target/dist/arm64
     rm -rf "$out/$name" "$out/$name.tar.zst" "$out/$name.tar.zst.sha256"
@@ -3692,13 +3699,13 @@ dist-arm64: dist-clean-tree (build-release-arm64 "--features qemu") build-init-a
     {
         print "EmiBSD kernel $tag arm64"
         print "Commit: $commit"
-        print "Built: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        print "Built: ${day[1,4]}-${day[5,6]}-${day[7,8]} (UTC day, the tag's)"
         print "Source date: $(date -u -r $SOURCE_DATE_EPOCH +%Y-%m-%dT%H:%M:%SZ) (SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH)"
         print "Build number: $EMIBSD_BUILD"
         print "Toolchain: $(rustc -V)"
         print "LandingZone: $(sed -n 's/^Commit: //p' lz/PINNED.md)"
-        print "bsd.mp: release profile (LTO, symbols kept), features default + qemu"
-        print "bsd.RAMDISK: release profile, features default + qemu + miniroot, rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
+        print "bsd.mp: release profile (LTO, symbols kept), features default (no qemu)"
+        print "bsd.RAMDISK: release profile, features default + miniroot (no qemu), rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
         print "abi_openbsd.ko, BOOTAA64.EFI: dev profile, as just build makes them"
     } > "$out/$name/BUILDINFO"
     stamp=$(TZ=UTC date -r $SOURCE_DATE_EPOCH +%Y%m%d%H%M.%S)
