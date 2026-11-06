@@ -281,17 +281,8 @@ fn tn_vnode<G: ProcGlue>(node: &TmpfsNode<G>) -> &'static Vnode<G> {
     }
 }
 
-/// The C's `a == b` on two vnode pointers that may be NULL.
-fn same<G: ProcGlue>(a: Option<&Vnode<G>>, b: Option<&Vnode<G>>) -> bool {
-    match (a, b) {
-        (Some(a), Some(b)) => ptr::eq(a, b),
-        (None, None) => true,
-        _ => false,
-    }
-}
-
-/// The C's `a == b` on two mount pointers that may be NULL.
-fn same_mount<G: ProcGlue>(a: Option<&Mount<G>>, b: Option<&Mount<G>>) -> bool {
+/// The C's `a == b` on two pointers that may be NULL (vnodes, mounts).
+fn same<T>(a: Option<&T>, b: Option<&T>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => ptr::eq(a, b),
         (None, None) => true,
@@ -1198,9 +1189,9 @@ pub fn tmpfs_rename<G: ProcGlue>(
     kassert!(tcnp.cn_cred == cred);
 
     // Check for cross-device rename. Also don't allow renames of mount points.
-    if !same_mount(fvp.mount(), tdvp.mount())
-        || !same_mount(fdvp.mount(), fvp.mount())
-        || tvp.is_some_and(|tvp| !same_mount(fvp.mount(), tvp.mount()))
+    if !same(fvp.mount(), tdvp.mount())
+        || !same(fdvp.mount(), fvp.mount())
+        || tvp.is_some_and(|tvp| !same(fvp.mount(), tvp.mount()))
     {
         tmpfs_rename_abort(fdvp, fvp, fcnp, tdvp, tvp, tcnp);
         return Err(Errno::EXDEV);
@@ -1266,7 +1257,7 @@ fn tmpfs_sane_rename<G: ProcGlue>(
     // KASSERT(VOP_ISLOCKED(tdvp) != LK_EXCLUSIVE);
     kassert!(fdvp.vtype() == VDIR);
     kassert!(tdvp.vtype() == VDIR);
-    kassert!(same_mount(fdvp.mount(), tdvp.mount()));
+    kassert!(same(fdvp.mount(), tdvp.mount()));
     kassert!(fcnp.cn_flags & ISDOTDOT == 0);
     kassert!(tcnp.cn_flags & ISDOTDOT == 0);
     kassert!(!is_dot_or_dotdot(fcnp));
@@ -1281,7 +1272,7 @@ fn tmpfs_sane_rename<G: ProcGlue>(
     kassert!(tdnode.tn_type == VDIR);
 
     let mount = vmount(fdvp);
-    kassert!(same_mount(Some(mount), tdvp.mount()));
+    kassert!(same(Some(mount), tdvp.mount()));
     // XXX How can we be sure this stays true? (Not that you're likely to mount a tmpfs
     // read-only...)
     kassert!(mount.flag() & MNT_RDONLY == 0);
@@ -1548,7 +1539,7 @@ fn tmpfs_rename_enter_common<G: ProcGlue>(
         };
         kassert!(vop_islocked(fvp) == LK_EXCLUSIVE);
         kassert!(!ptr::eq(fvp, dvp));
-        kassert!(same_mount(fvp.mount(), Some(mount)));
+        kassert!(same(fvp.mount(), Some(mount)));
 
         let entered: Result<RenameEntered<G>, Errno> = 'fail2: {
             // Refuse to rename a mount point.
@@ -1574,7 +1565,7 @@ fn tmpfs_rename_enter_common<G: ProcGlue>(
                             Ok(tvp) => tvp,
                             Err(e) => break 'fail2 Err(e),
                         };
-                        kassert!(same_mount(tvp.mount(), Some(mount)));
+                        kassert!(same(tvp.mount(), Some(mount)));
                         // Refuse to rename over a mount point.
                         if tvp.vtype() == VDIR && tvp.mountedhere().is_some() {
                             // fail3: tvp is not fvp here.
@@ -1850,7 +1841,7 @@ fn tmpfs_rename_lock<G: ProcGlue>(
                     Ok(a_vp) => a_vp,
                     Err(e) => break 'fail1 Err(e),
                 };
-                kassert!(same_mount(a_vp.mount(), Some(mount)));
+                kassert!(same(a_vp.mount(), Some(mount)));
                 // Refuse to rename (over) a mount point.
                 if a_vp.vtype() == VDIR && a_vp.mountedhere().is_some() {
                     // fail2:
@@ -1906,7 +1897,7 @@ fn tmpfs_rename_lock<G: ProcGlue>(
                                 Ok(b_vp) => b_vp,
                                 Err(e) => break 'fail3 Err(e),
                             };
-                            kassert!(same_mount(b_vp.mount(), Some(mount)));
+                            kassert!(same(b_vp.mount(), Some(mount)));
                             kassert!(!same(a_vp, Some(b_vp)));
                             // Refuse to rename (over) a mount point.
                             if b_vp.vtype() == VDIR && b_vp.mountedhere().is_some() {
@@ -3063,7 +3054,8 @@ mod tests {
     /// over an existing file, a directory into another (the link counts and `..` follow),
     /// a directory over a non-empty one, a file over a directory, a directory into its own
     /// subtree (the genealogy's `EINVAL`), an empty directory over an empty one; and two
-    /// names of one node (the source goes), `.` refused.
+    /// names of one node (rename(2) changes nothing: dorenameat's `fvp == tvp` returns before
+    /// `VOP_RENAME`, D-t2-5), `.` refused.
     #[test]
     fn renames_move_entries_within_and_across_directories() {
         let (_g, p, _mp) = setup_root();
@@ -3119,6 +3111,47 @@ mod tests {
         sys_rename(p, c("/e"), c2("/f")).expect("rename");
         assert_eq!(names(p, b"/"), [&b"."[..], b"..", b"d2", b"f"]);
         assert_eq!(stat(p, b"/").expect("stat /").va_nlink, 4);
+    }
+
+    /// Rename's `fvp == tvp` branch (the C's tmpfs_vnops.c:1478-1494), which rename(2) never
+    /// reaches (dorenameat returns first) and a `link(2)` racing between namei and the rename
+    /// locks does: through `tmpfs_sane_rename` itself, two names of one file in a directory
+    /// lose the source name (`tmpfs_do_remove`, the count 2 -> 1); a name renamed onto itself
+    /// (`tde == fde`) keeps both names; a directory onto itself is `EINVAL`. The C's
+    /// `tmpfs_rename_cache_purge` asserts `fvp != tvp` after the first two (a `DIAGNOSTIC`
+    /// kernel panics there, the C's and the kernel's alike); the host tests run without it.
+    #[test]
+    fn rename_of_one_node_onto_itself_is_the_c_s() {
+        let (_g, p, _mp) = setup_root();
+        sys_mkdir(p, c("/d"), 0o755).expect("mkdir /d");
+        sys_mkdir(p, c("/d/sub"), 0o755).expect("mkdir /d/sub");
+        close(p, create(p, b"/d/x", 0o644));
+        sys_link(p, c("/d/x"), c2("/d/y")).expect("link");
+        assert_eq!(stat(p, b"/d/x").expect("stat").va_nlink, 2);
+        let dvp = lookup(p, b"/d").expect("lookup /d");
+        let cred = Cred::real(p.ucred());
+        let rename = |from: &'static [u8], to: &'static [u8]| {
+            let mut fcnp = Cn::<TestGlue>::new(RENAME, 0, p, cred);
+            fcnp.set_name_lit(from);
+            let mut tcnp = Cn::<TestGlue>::new(RENAME, 0, p, cred);
+            tcnp.set_name_lit(to);
+            tmpfs_sane_rename(dvp, &fcnp, dvp, &tcnp, cred, false)
+        };
+
+        // Two names of one file: the source name goes.
+        assert_eq!(rename(b"y", b"x"), Ok(()));
+        assert_eq!(names(p, b"/d"), [&b"."[..], b"..", b"sub", b"x"]);
+        assert_eq!(stat(p, b"/d/x").expect("stat").va_nlink, 1);
+        // One name onto itself: both stay.
+        sys_link(p, c("/d/x"), c2("/d/y")).expect("link");
+        assert_eq!(rename(b"x", b"x"), Ok(()));
+        assert_eq!(names(p, b"/d"), [&b"."[..], b"..", b"sub", b"x", b"y"]);
+        assert_eq!(stat(p, b"/d/x").expect("stat").va_nlink, 2);
+        // A directory onto itself.
+        assert_eq!(rename(b"sub", b"sub"), Err(Errno::EINVAL));
+        assert_eq!(stat(p, b"/d/sub").expect("stat").va_type, VDIR);
+        assert_eq!(vop_islocked(dvp), 0, "the rename unlocked everything");
+        vrele(dvp);
     }
 
     /// LZ's hard links: a second name, `EEXIST`, none to a directory, the count down as
