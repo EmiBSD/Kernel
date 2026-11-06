@@ -19,12 +19,10 @@
 /* <CODE> */
 //! The CD-ROM and DVD file systems: OpenBSD `sys/isofs/`.
 //!
-//! `cd9660` is ISO 9660 with the Rock Ridge and Joliet extensions (feature `cd9660`,
-//! `option CD9660`); `udf` is the Universal Disk Format of DVDs (ECMA-167 with the OSTA UDF
-//! profile; feature `udf`, `option UDF`), read-only.
+//! `udf` is the Universal Disk Format of DVDs (ECMA-167 with the OSTA UDF profile; feature
+//! `udf`, `option UDF`), read-only; ISO 9660 (`cd9660`) is the kernel's since N5.8c2
+//! (`kernel::fs::isofs::cd9660`).
 
-#[cfg(feature = "cd9660")]
-pub mod cd9660;
 #[cfg(feature = "udf")]
 pub mod udf;
 /* </CODE> */

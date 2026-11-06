@@ -310,19 +310,6 @@ pub fn bread(vp: &'static Vnode, blkno: Daddr, size: i32) -> (&'static Buf, Resu
     (parked_ref(&r), rv)
 }
 
-/// `breadn(vp, blkno, size, rablks, rasizes, nrablks, &bp)`: `bread` with read-ahead of the
-/// blocks `rablks` (sizes `rasizes`).
-pub fn breadn(
-    vp: &'static Vnode,
-    blkno: Daddr,
-    size: i32,
-    rablks: &[Daddr],
-    rasizes: &[i32],
-) -> (&'static Buf, Result<(), Errno>) {
-    let (t, rv) = bio::breadn(&vp.bufs, blkno, size, rablks, rasizes);
-    (lend(t), rv)
-}
-
 /// `bwrite(bp)`: writes the busy buffer; a synchronous write waits and releases it.
 pub fn bwrite(bp: &'static Buf) -> Result<(), Errno> {
     bio::bwrite(token_of(bp))

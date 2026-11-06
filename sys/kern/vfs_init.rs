@@ -110,7 +110,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "cd9660")]
     Vfsconf::new(
-        &crate::isofs::cd9660::cd9660_vfsops::CD9660_VFSOPS,
+        &kernel::fs::isofs::cd9660::cd9660_vfsops::Cd9660Vfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_CD9660,
         14,
         crate::sys::mount::MNT_LOCAL,

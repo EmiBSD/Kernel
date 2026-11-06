@@ -285,10 +285,10 @@ pub fn VFS_CHECKEXP(
 ) -> Result<(), Errno> {
     // `vfs_checkexp` is the NFS server's, `bsd`'s: the table as `bsd` knows it, or for the
     // kernel's ffs (N5.5b2) and ext2fs (N5.6c3) their `vfs_checkexp`, `ufs_check_export` over
-    // the mount's export list (`bsd`'s until N6), for the kernel's msdosfs (N5.7c3) its
-    // `msdosfs_check_export`, which is `ufs_check_export`'s body over the same list (the C's
-    // `pm_export` is the mount's glue member), and for the kernel's mfs (N5.5b3) its
-    // `mfs_checkexp`.
+    // the mount's export list (`bsd`'s until N6), for the kernel's msdosfs (N5.7c3) and cd9660
+    // (N5.8c2) their `msdosfs_check_export` and `cd9660_check_export`, which are
+    // `ufs_check_export`'s body over the same list (the C's `pm_export` and `im_export` are the
+    // mount's glue member), and for the kernel's mfs (N5.5b3) its `mfs_checkexp`.
     match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
         Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
         #[cfg(feature = "ffs")]
@@ -301,6 +301,10 @@ pub fn VFS_CHECKEXP(
         }
         #[cfg(feature = "msdosfs")]
         None if mp.vfc().name() == MOUNT_MSDOS => {
+            crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
+        }
+        #[cfg(feature = "cd9660")]
+        None if mp.vfc().name() == MOUNT_CD9660 => {
             crate::ufs::ufs::ufs_vfsops::ufs_check_export(mp, nam, exflg, cred)
         }
         #[cfg(feature = "mfs")]

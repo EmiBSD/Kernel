@@ -88,6 +88,12 @@
 //!   `DPRINTF`s are not configured.
 //! - `dk_mountroot`: `EXT2FS` (feature `ext2fs`), `FFS` (feature `ffs`) and `CD9660` (feature
 //!   `cd9660`) are the file systems the kernel configuration names with a mountroot.
+//! - `iso_disklabelspoof` (`isofs/cd9660/cd9660_vfsops.c`) is here since N5.8c2, a shell of no
+//!   `unsafe` over the kernel's `iso_volume_label` (the descriptor scan and its checks): the
+//!   label and `dkcksum` are this module's until N7 (D-N5.8-2). Its reads go through
+//!   [`spoof_with`]: the C's `geteblk` buffer, read raw by the driver's own `strat` (never a
+//!   lookup by major: `readdisklabel`'s `dev` may carry a character major), its token's
+//!   bytes handed to the parser.
 //! - `setroot`'s `RB_ASKNAME` dialogue (the "root device:" and "swap device:" prompts read
 //!   with `getsn` under `cnpollc`) is reported and skipped: `getsn` is not ported. A kernel
 //!   booted with `-a` goes on with its configured root. `NFSCLIENT` (feature `nfsclient`):
@@ -958,6 +964,100 @@ pub fn spooffat(dosbb: &[u8; DEV_BSIZE], lp: &mut Disklabel, partoffp: &mut Dadd
     }
 }
 
+/// The label spoofs' block reader (the loop body of `iso_disklabelspoof`): the C's
+/// `geteblk(bsize)` buffer of `dev`, each block read raw into it by the driver's `strat`
+/// (`b_blkno`, `b_bcount`, the flags, `(*strat)(bp)`, `biowait`), the first bytes of its
+/// token handed to the kernel's parser `parse`; the buffer invalidated and released at the
+/// end. 0 `unsafe`: the buffer is lent to the driver and taken back as a token
+/// (`sys::buf::lend`, `token_of`).
+#[cfg(feature = "cd9660")]
+fn spoof_with<R>(
+    dev: Dev,
+    strat: DevTypeStrategy,
+    bsize: usize,
+    parse: impl FnOnce(&mut kernel::fs::isofs::cd9660::cd9660_vfsops::LabelRead<'_>) -> R,
+) -> R {
+    let t = kernel::fs::bio::geteblk(bsize);
+    t.buf().set_dev(dev);
+    let mut slot = Some(t);
+    let r = parse(&mut |blkno, out| {
+        let Some(t) = slot.take() else {
+            panic(format_args!("spoof_with: no buffer"));
+        };
+        let b = t.buf();
+        b.set_blkno(blkno);
+        b.set_bcount(bsize as i64);
+        b.clr(B_READ | B_WRITE | B_DONE);
+        b.set(B_BUSY | B_READ | B_RAW);
+
+        let bp = crate::sys::buf::lend(t);
+        strat(bp);
+        let error = biowait(bp);
+        let t = crate::sys::buf::token_of(bp);
+        if error.is_ok() {
+            let data = t.bytes();
+            let n = out.len().min(data.len());
+            out[..n].copy_from_slice(&data[..n]);
+        }
+        slot = Some(t);
+        error
+    });
+    if let Some(t) = slot {
+        t.buf().set(crate::sys::buf::B_INVAL);
+        kernel::fs::bio::brelse(t);
+    }
+    r
+}
+
+/// `strncpy(dst, src, sizeof(dst))`: copy up to the first NUL, zero-fill the rest.
+#[cfg(feature = "cd9660")]
+fn strncpy(dst: &mut [u8], src: &[u8]) {
+    let n = src
+        .iter()
+        .take(dst.len())
+        .position(|&c| c == 0)
+        .unwrap_or(dst.len().min(src.len()));
+    dst[..n].copy_from_slice(&src[..n]);
+    dst[n..].fill(0);
+}
+
+/// `iso_disklabelspoof`: test to see if the device is an ISOFS filesystem (the kernel's
+/// `iso_volume_label` over the device's blocks), and if so build a disk label for it (the
+/// whole disc in partitions `a` and `c`).
+#[cfg(feature = "cd9660")]
+pub fn iso_disklabelspoof(
+    dev: Dev,
+    strat: DevTypeStrategy,
+    lp: &mut Disklabel,
+) -> Result<(), Errno> {
+    use kernel::fs::isofs::cd9660::cd9660_vfsops::iso_volume_label;
+    use kernel::fs::isofs::cd9660::iso::ISO_DEFAULT_BLOCK_SIZE;
+
+    let volume_id = spoof_with(dev, strat, ISO_DEFAULT_BLOCK_SIZE, iso_volume_label)?;
+
+    // build a disklabel for the CD
+    strncpy(&mut lp.d_typename, &volume_id);
+    strncpy(&mut lp.d_packname, &volume_id[16..]);
+    for i in 0..MAXPARTITIONS {
+        dl_setpsize(&mut lp.d_partitions[i], 0);
+        dl_setpoffset(&mut lp.d_partitions[i], 0);
+    }
+    let dsize = dl_getdsize(lp);
+    dl_setpoffset(&mut lp.d_partitions[0], 0);
+    dl_setpsize(&mut lp.d_partitions[0], dsize);
+    lp.d_partitions[0].p_fstype = crate::sys::disklabel::FS_ISO9660;
+    dl_setpoffset(&mut lp.d_partitions[RAW_PART as usize], 0);
+    dl_setpsize(&mut lp.d_partitions[RAW_PART as usize], dsize);
+    lp.d_partitions[RAW_PART as usize].p_fstype = crate::sys::disklabel::FS_ISO9660;
+    lp.d_npartitions = MAXPARTITIONS as u16;
+    lp.d_version = 1;
+
+    lp.d_magic = DISKMAGIC;
+    lp.d_magic2 = DISKMAGIC;
+    lp.d_checksum = dkcksum(lp);
+    Ok(())
+}
+
 /// Check new disk label for sensibility before setting it.
 pub fn setdisklabel(olp: &mut Disklabel, nlp: &mut Disklabel, openmask: u64) -> Result<(), Errno> {
     // sanity clause
@@ -1433,7 +1533,10 @@ pub fn dk_mountroot() -> Result<(), Errno> {
     }
     #[cfg(feature = "cd9660")]
     if fstype == crate::sys::disklabel::FS_ISO9660 {
-        return crate::isofs::cd9660::cd9660_vfsops::cd9660_mountroot();
+        // The kernel's (N5.8c2), over `rootdev` and the machine's `swapdev`, as ext2fs's.
+        return kernel::fs::isofs::cd9660::cd9660_vfsops::cd9660_mountroot::<
+            crate::kern::proc_glue::BsdProcGlue,
+        >(rootdev, crate::machine::conf::swapdev());
     }
     #[cfg(feature = "ffs")]
     {
