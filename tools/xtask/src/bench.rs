@@ -72,8 +72,8 @@
 //! `--profile release` (decision 42, a diagnostic beside the baseline, never in its place)
 //! boots the kernel of the release profile, `target/<triple>/release/bsd` (Cargo.toml's
 //! `[profile.release]`: LTO, one codegen unit, symbols kept), instead of the debug one;
-//! init, `abi_openbsd.ko` and the ramdisk are the same files as with `debug`, so only the
-//! kernel changes profile. The report records it (`profile = "release"`; a report without
+//! init and the ramdisk are the same files as with `debug`, so only the kernel (the ABI
+//! linked in) changes profile. The report records it (`profile = "release"`; a report without
 //! the key is a debug one) and the table's first line says it; `just bench-release` builds
 //! that kernel and sets `EMIBSD_RUN_DIR` to `target/bench-release`.
 
@@ -244,7 +244,7 @@ pub(crate) struct Report {
     kernel_tree_clean: bool,
     kernel_sha256: String,
     /// The kernel's build profile (`--profile`): `debug`, or `release` (decision 42); only
-    /// the kernel's: init and `abi_openbsd.ko` are always the debug builds. Not written for
+    /// the kernel's (the ABI linked in): init is always the debug build. Not written for
     /// `debug`, so a debug report is as it was before the option.
     #[serde(
         default = "default_profile",
