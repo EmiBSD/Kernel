@@ -227,6 +227,11 @@ pub const ISO_LABEL_HEAD: usize = PVD_LOGICAL_BLOCK_SIZE + 4;
 /// `sizeof(struct ifid)`.
 pub const IFID_SIZE: u16 = 16;
 
+/// The reader [`iso_volume_label`] reads the disc with: `read(blkno, buf)` fills `buf` with
+/// the first bytes of the 2,048-byte block at the disk block `blkno` (the label spoof's
+/// shell, `bsd`'s `subr_disk.rs`, reads through the driver's strategy; a test, an image).
+pub type LabelRead<'a> = dyn FnMut(Daddr, &mut [u8]) -> Result<(), Errno> + 'a;
+
 /// `struct ifid`: an ISO 9660 file identifier, overlaid on `struct fid`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ifid {
@@ -668,9 +673,7 @@ pub fn iso_mountfs<G: ProcGlue>(
 /// are the spoofed label's `d_typename` and `d_packname`. `read(blkno, buf)` fills `buf`
 /// ([`ISO_LABEL_HEAD`] bytes) with the first bytes of the 2,048-byte block at the disk block
 /// `blkno`; any error, as any check that fails, is `EINVAL` (the C's).
-pub fn iso_volume_label(
-    read: &mut dyn FnMut(Daddr, &mut [u8]) -> Result<(), Errno>,
-) -> Result<[u8; 32], Errno> {
+pub fn iso_volume_label(read: &mut LabelRead<'_>) -> Result<[u8; 32], Errno> {
     let mut vdp = [0u8; ISO_LABEL_HEAD];
     let mut vdtype = 0;
     for iso_blknum in 16..100i32 {
@@ -678,7 +681,7 @@ pub fn iso_volume_label(
             return Err(Errno::EINVAL);
         }
 
-        vdtype = isonum_711(&vdp[VD_TYPE..VD_TYPE + 1]);
+        vdtype = isonum_711(&vdp[VD_TYPE..=VD_TYPE]);
         if vdp[VD_ID..VD_ID + ISO_STANDARD_ID.len()] != ISO_STANDARD_ID[..] || vdtype == ISO_VD_END
         {
             return Err(Errno::EINVAL);
@@ -1557,7 +1560,9 @@ mod tests {
         }
         assert!(!mp.has_node());
 
-        // mount_cd9660 -g /dev/cd1 /cd: Rock Ridge found, GENS dropped
+        // mount_cd9660 -g /dev/cd1 /cd: Rock Ridge found, GENS dropped (the name again in
+        // slot 0, which the refusals overwrote)
+        a.fspec = up(0, b"/dev/cd1").addr();
         let mut data = data_of(&a);
         v.mount(mp, b"/cd", &mut data, &mut nd(p), p).unwrap();
         let st = mp.stat();

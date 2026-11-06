@@ -854,7 +854,7 @@ pub fn cd9660_pathconf<G: ProcGlue>(
     retval: &mut Register,
 ) -> Result<(), Errno> {
     *retval = match name {
-        _PC_LINK_MAX => 1,
+        _PC_LINK_MAX | _PC_CHOWN_RESTRICTED | _PC_NO_TRUNC => 1,
         _PC_NAME_MAX => {
             if vtoi(vp).mnt().iso_ftype == ISO_FTYPE_RRIP {
                 NAME_MAX as Register
@@ -862,8 +862,6 @@ pub fn cd9660_pathconf<G: ProcGlue>(
                 37
             }
         }
-        _PC_CHOWN_RESTRICTED => 1,
-        _PC_NO_TRUNC => 1,
         _PC_TIMESTAMP_RESOLUTION => 1_000_000_000, // one billion nanoseconds
         _ => return Err(Errno::EINVAL),
     };
@@ -1487,7 +1485,8 @@ mod tests {
 
     /// The Rock Ridge root's entries: `d_fileno` is what `getattr` gives as `va_fileid` for
     /// the vnode the name finds (`pwd(1)` and `ls -i` agree), `d_off` the next entry's
-    /// offset; the whole directory in one call (end of file).
+    /// offset; the whole directory in one call (end of file), the offset left the last
+    /// entry's (the C's `uio_off`, not the block's end).
     #[test]
     fn readdir_entries_are_the_names_vnodes() {
         let (_g, p, mp) = setup(image::image_bytes(), 0);
@@ -1495,7 +1494,8 @@ mod tests {
         let (r, ents, off, eof) = readdir(p, rvp, 0, 4096);
         r.unwrap();
         assert_eq!(eof, 1);
-        assert_eq!(off, 2048);
+        assert_eq!(off, 558);
+        assert_eq!(ents.last().map(|e| e.1), Some(558));
         let names: Vec<&[u8]> = ents.iter().map(|e| &e.2[..]).collect();
         assert_eq!(names, [&b"."[..], b"..", b"m10c-iso.txt", b"sub"]);
         vput(rvp);
@@ -1542,8 +1542,8 @@ mod tests {
         unmount_root(p, mp);
     }
 
-    /// A plain disc whose root holds `FOO.;1` as an associated file, then as a file, then
-    /// `BAR.;1` (blocks 20, 21, 22 their data).
+    /// A plain disc whose root holds `FOO.TXT;1` as an associated file, then as a file, then
+    /// `BAR.TXT;1` (blocks 20, 21, 22 their data; each record 42 bytes).
     fn assoc_image() -> Vec<u8> {
         let mut iso = Iso::new(24);
         iso.dir(
@@ -1551,9 +1551,9 @@ mod tests {
             &[
                 record(18, 2048, 2, &[0], &[]),
                 record(18, 2048, 2, &[1], &[]),
-                record(20, 6, 4, b"FOO.;1", &[]),
-                record(21, 4, 0, b"FOO.;1", &[]),
-                record(22, 4, 0, b"BAR.;1", &[]),
+                record(20, 6, 4, b"FOO.TXT;1", &[]),
+                record(21, 4, 0, b"FOO.TXT;1", &[]),
+                record(22, 4, 0, b"BAR.TXT;1", &[]),
             ],
         );
         iso.put(20, 0, b"assoc\n");
@@ -1565,8 +1565,9 @@ mod tests {
     }
 
     /// The default format holds a file back until the next record shows whether it is the
-    /// associated file of the same name, and ships the pair together: `=FOO` (the associated
-    /// one, its own offset) before `FOO`; a lookup of `=FOO` finds the associated file.
+    /// associated file of the same name, and ships the pair together: `=FOO.TXT` (the
+    /// associated one, its own offset) before `FOO.TXT`; a lookup of `=foo.txt` finds the
+    /// associated file.
     #[test]
     fn readdir_merges_an_associated_file_and_lookup_finds_it() {
         let (_g, p, mp) = setup(assoc_image(), ISOFSMNT_NORRIP);
@@ -1580,16 +1581,16 @@ mod tests {
             [
                 (34, b".".to_vec()),
                 (68, b"..".to_vec()),
-                (108, b"=FOO".to_vec()),
-                (148, b"FOO".to_vec()),
-                (188, b"BAR".to_vec())
+                (110, b"=FOO.TXT".to_vec()),
+                (152, b"FOO.TXT".to_vec()),
+                (194, b"BAR.TXT".to_vec())
             ]
         );
         vput(rvp);
-        let vp = lookup(p, b"/=foo").unwrap();
+        let vp = lookup(p, b"/=foo.txt").unwrap();
         assert_eq!(read(p, vp, 0, 100).unwrap(), b"assoc\n");
         vput(vp);
-        let vp = lookup(p, b"/foo").unwrap();
+        let vp = lookup(p, b"/foo.txt").unwrap();
         assert_eq!(read(p, vp, 0, 100).unwrap(), b"foo\n");
         vput(vp);
         unmount_root(p, mp);
@@ -1605,7 +1606,7 @@ mod tests {
             &[
                 record(18, 2048, 2, &[0], &[]),
                 record(18, 2048, 2, &[1], &[]),
-                record(20, data.len() as u32, 0, b"LONG.;1", &[]),
+                record(20, data.len() as u32, 0, b"LONG.DAT;1", &[]),
             ],
         );
         iso.put(20, 0, &data);
@@ -1621,7 +1622,7 @@ mod tests {
     fn read_returns_the_file_s_bytes_with_and_without_read_ahead() {
         let (img, data) = long_file_image();
         let (_g, p, mp) = setup(img, ISOFSMNT_NORRIP);
-        let vp = lookup(p, b"/long").unwrap();
+        let vp = lookup(p, b"/long.dat").unwrap();
         assert_eq!(read(p, vp, 10, 20).unwrap(), &data[10..30]);
         assert_eq!(read(p, vp, 6000, 1000).unwrap(), &data[6000..]);
         assert_eq!(read(p, vp, data.len() as Off, 10).unwrap(), b"");
@@ -1687,7 +1688,7 @@ mod tests {
                     0,
                     0,
                     0,
-                    b"LNK.;1",
+                    b"LNK.DAT;1",
                     &su(S_IFLNK | 0o777, sl(&[(4, b""), (0, b"target")]), b"lnk"),
                 ),
             ],
@@ -1762,7 +1763,7 @@ mod tests {
 
         // readlink needs Rock Ridge
         let (mp, _) = mount_root(p, ISOFSMNT_NORRIP);
-        let vp = lookup(p, b"/lnk").unwrap();
+        let vp = lookup(p, b"/lnk.dat").unwrap();
         let mut iov = [Iovec::new()];
         let mut uio = Uio::kernel_read(&mut iov, &mut buf, Some(p));
         assert_eq!(cd9660_readlink(vp, &mut uio), Err(Errno::EINVAL));
