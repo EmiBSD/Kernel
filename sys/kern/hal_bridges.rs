@@ -139,7 +139,12 @@ impl PoolBackend for BsdPools {
     /// panic) and is leaked. Either way it lives for ever: `pool_init(9)` assumes its
     /// `struct pool` outlives every item, and no pool is ever destroyed here. The pool is the
     /// C's either way (`pool_init` with the caller's size, name and `ipl`), so `vmstat -m`
-    /// and `kern.pool` show the same row.
+    /// and `kern.pool` show the same row. `align` is the element's alignment: one of
+    /// `ALIGN(1)` or less becomes the C's callers' 0, which `pool_init` makes `ALIGN(1)` (the
+    /// item rounded to it, as the C's); only one above it is passed on. `pool_init` keeps a
+    /// nonzero alignment as the items' stride, and writes its free-item header (pointers,
+    /// aligned to 8) in each item: at a smaller alignment the header was misaligned (N5.8u2,
+    /// the 510-byte `udftrpl` items; the dev kernel's alignment check panicked).
     fn create(
         &self,
         size: usize,
@@ -148,7 +153,11 @@ impl PoolBackend for BsdPools {
         flags: i32,
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool> {
-        let align = u32::try_from(align).ok()?;
+        let align = if align <= crate::sys::param::align(1) {
+            0
+        } else {
+            u32::try_from(align).ok()?
+        };
         let pp = match static_pool() {
             Some(pp) => pp,
             None if HEAP_POOLS_READY.load(Ordering::Acquire) => heap_pool()?,

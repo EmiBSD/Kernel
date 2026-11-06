@@ -39,12 +39,11 @@
 //!   `BoxPool`s of the directory streams and of the name buffers), the member `udf` of the
 //!   glue's VFS tables (a static generic over the glue cannot exist), made by `udf_init` with
 //!   the C's names and flags (D-N5.8-7), and the C's `extern struct vops udf_vops`
-//!   (`UdfVnops`, `udf_vnops.rs`: one address per glue). The name buffer is [`TransName`],
-//!   aligned as `pool_init`'s default (`ALIGN(1)`, 8, which the C asks for with its 0): the
-//!   pool's item is then the C's, 512 bytes; at the array's own alignment (2) the pool's
-//!   items were 510 bytes apart and the free list's item header `pool_p_alloc` writes in each
-//!   was misaligned (the dev kernel's alignment check panicked at the first item, N5.8u2's
-//!   first `smoke-fs`). 0 `unsafe` (LZ: 0).
+//!   (`UdfVnops`, `udf_vnops.rs`: one address per glue). The name buffer's item is the C's,
+//!   512 bytes 8-aligned: `bsd`'s pool backend gives `pool_init` the C's alignment 0 for an
+//!   element of alignment 8 or less (`sys/kern/hal_bridges.rs`, N5.8u2's review 1; the
+//!   switch's first `smoke-fs` had found the array's own alignment, 2, misaligning the
+//!   pool's item headers). 0 `unsafe` (LZ: 0).
 
 use hal::pool::{BoxPool, TypedPool};
 use hal::sys::dirent::MAXNAMLEN;
@@ -52,25 +51,6 @@ use hal::sys::dirent::MAXNAMLEN;
 use crate::fs::isofs::udf::udf::{UdfDirstream, Unicode, Unode};
 use crate::fs::isofs::udf::udf_vnops::UdfVnops;
 use crate::proc::ProcGlue;
-
-/// An item of `udf_trans_pool`: `MAXNAMLEN` `unicode_t`s, the C's `MAXNAMLEN *
-/// sizeof(unicode_t)` bytes at `pool_init`'s default alignment (`ALIGN(1)`: the C's `0`),
-/// which rounds the item to 512 bytes as the C's pool does.
-#[repr(C, align(8))]
-pub struct TransName(pub [Unicode; MAXNAMLEN]);
-
-impl TransName {
-    /// A buffer of zeros.
-    pub const fn new() -> Self {
-        Self([0; MAXNAMLEN])
-    }
-}
-
-impl Default for TransName {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// udf's globals of a glue: the C's `extern` pools and vnode operations.
 pub struct UdfTables<G: ProcGlue> {
@@ -82,8 +62,8 @@ pub struct UdfTables<G: ProcGlue> {
     /// `udf_ds_pool` (`"udfdspl"`): the directory streams.
     pub ds_pool: BoxPool<UdfDirstream>,
     /// `udf_trans_pool` (`"udftrpl"`): the names' 8- to 16-bit expansion buffers,
-    /// `MAXNAMLEN * sizeof(unicode_t)` bytes each ([`TransName`]).
-    pub trans_pool: BoxPool<TransName>,
+    /// `MAXNAMLEN * sizeof(unicode_t)` bytes each.
+    pub trans_pool: BoxPool<[Unicode; MAXNAMLEN]>,
 }
 
 impl<G: ProcGlue> UdfTables<G> {
@@ -103,10 +83,4 @@ impl<G: ProcGlue> Default for UdfTables<G> {
         Self::new()
     }
 }
-
-// The C's item: `roundup(MAXNAMLEN * sizeof(unicode_t), ALIGN(1))` bytes, 8-aligned.
-const _: () = {
-    assert!(size_of::<TransName>() == 512);
-    assert!(align_of::<TransName>() == 8);
-};
 /* </CODE> */
