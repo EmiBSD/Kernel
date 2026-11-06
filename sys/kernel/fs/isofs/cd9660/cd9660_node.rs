@@ -131,15 +131,18 @@
 //! - What the C writes after the node is hashed and hung (`cd9660_vget_internal` reads the
 //!   record only then, and `checkalias` moves the node to a device alias) are relaxed words
 //!   (`fs::word`, docs/IDIOMS.md's counters' row: every cd9660 path is `KERNEL_LOCK`ed):
-//!   `iso_extent`, `i_size`, `iso_start`, the attributes (`inode`, [`IsoRripInode`] kept as
-//!   eleven words read and written whole by [`IsoNode::inode`]/[`IsoNode::set_inode`]), and
-//!   what the C changes under the node's lock (`i_flag`, the lookup's directory offsets
+//!   `iso_extent`, `i_size`, `iso_start`, and what the C changes under the node's lock (`i_flag`, the lookup's directory offsets
 //!   `i_endoff`/`i_diroff`/`i_offset`/`i_ino`, the read-ahead's `ci_lastr`); `i_vnode` and
 //!   `i_devvp` are `hal::link::Link`s (the alias move; `vref`'d after the hashing and given
 //!   back by the reclaim). `i_mnt` is a counted handle of the mount structure held for the
 //!   node's life ([`IsoNode::mnt`] borrows it: one load, the C's `ip->i_mnt`). `i_lock` is a
 //!   `hal::rwlock::RecursiveRwlock` (the C's `RWL_DUPOK | RWL_IS_VNODE` are `WITNESS` flags,
 //!   as the denode's).
+//! - The attributes (`inode`, the C's `ISO_RRIP_INODE`, filled once by `cd9660_vget_internal`
+//!   from the record and read whole by `getattr`, `access` and `inactive`) are a
+//!   `hal::slot::ReadMostly<IsoRripInode>` ([`IsoNode::inode`] a copy out, [`IsoNode::set_inode`]
+//!   the one write; `ufs_vfsops.rs`'s tables the precedent): a read is one compare-and-swap and
+//!   a release, where the C loads the members it needs; review 1 of N5.8c1.
 //! - LZ's three `StaticCell`s and the chains of `sys/queue.rs` `ListHead`s linked and
 //!   unlinked in `unsafe` blocks whose argument was the kernel lock -> [`Isohash`], the
 //!   denode hash's shape (N5.7c2): a `hashinit` table of `hal::pinlist::PinList`s of the
@@ -169,6 +172,7 @@ use hal::rwlock::RecursiveRwlock;
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::mount::ISOFSMNT_EXTATT;
+use hal::sys::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};
 use hal::sys::types::{Dev, Gid, Uid};
 use libkern::siphash::{SipHash24Ctx, SiphashKey};
 
@@ -185,7 +189,7 @@ use crate::fs::isofs::cd9660::iso::{
 use crate::fs::subr::{hashinit, siphash_key, vfs, vget, vput, vrecycle, vrele};
 use crate::fs::vnode::{LK_EXCLUSIVE, VT_ISOFS, Vnode};
 use crate::fs::vops::{vop_lock, vop_unlock};
-use crate::fs::word::{I32Word, I64Word, U32Word, U64Word};
+use crate::fs::word::{I64Word, U32Word, U64Word};
 use crate::proc::{ProcGlue, Thread};
 
 /// `M_ISOFSNODE`: ISOFS vnode private part (`<sys/malloc.h>`; `bsd`'s `sys/malloc.rs` until N7
@@ -194,21 +198,6 @@ pub const M_ISOFSNODE: i32 = 58;
 
 /// `doff_t`.
 pub type Doff = u64;
-
-/// `S_IFDIR`, `S_IFREG` and the permission bits `cd9660_defattr` sets, as the `u_short` of
-/// `iso_mode`.
-mod mode {
-    use hal::sys::stat::{S_IFDIR, S_IFREG, S_IRGRP, S_IROTH, S_IRUSR, S_IXGRP, S_IXOTH, S_IXUSR};
-
-    pub(super) const IFDIR: u16 = S_IFDIR as u16;
-    pub(super) const IFREG: u16 = S_IFREG as u16;
-    pub(super) const RUSR: u16 = S_IRUSR as u16;
-    pub(super) const XUSR: u16 = S_IXUSR as u16;
-    pub(super) const RGRP: u16 = S_IRGRP as u16;
-    pub(super) const XGRP: u16 = S_IXGRP as u16;
-    pub(super) const ROTH: u16 = S_IROTH as u16;
-    pub(super) const XOTH: u16 = S_IXOTH as u16;
-}
 
 /// `ISO_RRIP_INODE`: the attributes of a node.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -231,71 +220,18 @@ pub struct IsoRripInode {
     pub iso_rdev: Dev,
 }
 
-/// A node's [`IsoRripInode`] as words, each read and written whole.
-struct InodeWords {
-    /// `iso_atime`'s seconds and nanoseconds.
-    atime: [I64Word; 2],
-    /// `iso_mtime`'s.
-    mtime: [I64Word; 2],
-    /// `iso_ctime`'s.
-    ctime: [I64Word; 2],
-    /// `iso_mode`, in the low 16 bits.
-    mode: U32Word,
-    /// `iso_uid`.
-    uid: U32Word,
-    /// `iso_gid`.
-    gid: U32Word,
-    /// `iso_links`, sign-extended.
-    links: I32Word,
-    /// `iso_rdev`.
-    rdev: I32Word,
-}
-
-impl InodeWords {
+impl IsoRripInode {
     /// All zero, as `M_ZERO` leaves them.
-    const fn new() -> Self {
-        Self {
-            atime: [const { I64Word::new(0) }; 2],
-            mtime: [const { I64Word::new(0) }; 2],
-            ctime: [const { I64Word::new(0) }; 2],
-            mode: U32Word::new(0),
-            uid: U32Word::new(0),
-            gid: U32Word::new(0),
-            links: I32Word::new(0),
-            rdev: I32Word::new(0),
-        }
-    }
-
-    /// The attributes.
-    fn get(&self) -> IsoRripInode {
-        let ts = |w: &[I64Word; 2]| Timespec::new(w[0].get(), w[1].get());
-        IsoRripInode {
-            iso_atime: ts(&self.atime),
-            iso_mtime: ts(&self.mtime),
-            iso_ctime: ts(&self.ctime),
-            iso_mode: self.mode.get() as u16,
-            iso_uid: self.uid.get(),
-            iso_gid: self.gid.get(),
-            iso_links: self.links.get() as i16,
-            iso_rdev: self.rdev.get(),
-        }
-    }
-
-    /// Stores `v`.
-    fn set(&self, v: &IsoRripInode) {
-        let ts = |w: &[I64Word; 2], t: &Timespec| {
-            w[0].set(t.tv_sec);
-            w[1].set(t.tv_nsec);
-        };
-        ts(&self.atime, &v.iso_atime);
-        ts(&self.mtime, &v.iso_mtime);
-        ts(&self.ctime, &v.iso_ctime);
-        self.mode.set(u32::from(v.iso_mode));
-        self.uid.set(v.iso_uid);
-        self.gid.set(v.iso_gid);
-        self.links.set(i32::from(v.iso_links));
-        self.rdev.set(v.iso_rdev);
-    }
+    pub const ZERO: IsoRripInode = IsoRripInode {
+        iso_atime: Timespec::ZERO,
+        iso_mtime: Timespec::ZERO,
+        iso_ctime: Timespec::ZERO,
+        iso_mode: 0,
+        iso_uid: 0,
+        iso_gid: 0,
+        iso_links: 0,
+        iso_rdev: 0,
+    };
 }
 
 /// `struct iso_node`: the in-core node of a file of a mounted ISO 9660 file system (see the
@@ -335,8 +271,9 @@ pub struct IsoNode<G: ProcGlue> {
     /// `iso_start`: actual start of data file (may be different from `iso_extent`, if the
     /// file has extended attributes).
     pub iso_start: U64Word,
-    /// `inode`: the attributes (see [`IsoNode::inode`]).
-    inode: InodeWords,
+    /// `inode`: the attributes, filled once by `cd9660_vget_internal` (see the module's
+    /// redesign).
+    inode: ReadMostly<IsoRripInode>,
     /// `i_ci.ci_lastr`: the last block read, for the read-ahead (the only member of `struct
     /// cluster_info` cd9660 uses).
     pub i_ci_lastr: I64Word,
@@ -367,7 +304,7 @@ impl<G: ProcGlue> IsoNode<G> {
             iso_extent: U64Word::new(0),
             i_size: U64Word::new(0),
             iso_start: U64Word::new(0),
-            inode: InodeWords::new(),
+            inode: ReadMostly::new(IsoRripInode::ZERO),
             i_ci_lastr: I64Word::new(0),
         }
     }
@@ -403,21 +340,23 @@ impl<G: ProcGlue> IsoNode<G> {
         }
     }
 
-    /// `ip->inode`: the attributes.
+    /// `ip->inode`: the attributes, copied out.
     pub fn inode(&self) -> IsoRripInode {
-        self.inode.get()
+        *self.inode.read()
     }
 
     /// `ip->inode = v`.
     pub fn set_inode(&self, v: &IsoRripInode) {
-        self.inode.set(v);
+        self.inode.update(|i| *i = *v);
     }
 
-    /// Changes `ip->inode` through `f` (the C's writes of `inop->inode.*`), and stores it.
+    /// Changes `ip->inode` through `f` (the C's writes of `inop->inode.*`), and stores it:
+    /// `f` runs on a copy, outside the cell, so it may read the disc (`cd9660_defattr`'s
+    /// extended attribute record) without holding the cell's writer bit across the sleep.
     pub fn update_inode(&self, f: impl FnOnce(&mut IsoRripInode)) {
-        let mut ino = self.inode.get();
+        let mut ino = self.inode();
         f(&mut ino);
-        self.inode.set(&ino);
+        self.set_inode(&ino);
     }
 }
 
@@ -668,9 +607,9 @@ pub fn cd9660_defattr<G: ProcGlue>(
     // If we return 2, fts() will assume there are no subdirectories (just links for the
     // path and .), so instead we return 1.
     ino.iso_mode = if isonum_711(isodir.flags()) & 2 != 0 {
-        mode::IFDIR
+        S_IFDIR as u16
     } else {
-        mode::IFREG
+        S_IFREG as u16
     };
     ino.iso_links = 1;
     let bp2 = if bp.is_none() {
@@ -680,27 +619,27 @@ pub fn cd9660_defattr<G: ProcGlue>(
     };
     if let Some(ap) = bp.or(bp2.as_ref()).and_then(extattr_v1) {
         if ap.perm[1] & 0x10 == 0 {
-            ino.iso_mode |= mode::RUSR;
+            ino.iso_mode |= S_IRUSR as u16;
         }
         if ap.perm[1] & 0x40 == 0 {
-            ino.iso_mode |= mode::XUSR;
+            ino.iso_mode |= S_IXUSR as u16;
         }
         if ap.perm[0] & 0x01 == 0 {
-            ino.iso_mode |= mode::RGRP;
+            ino.iso_mode |= S_IRGRP as u16;
         }
         if ap.perm[0] & 0x04 == 0 {
-            ino.iso_mode |= mode::XGRP;
+            ino.iso_mode |= S_IXGRP as u16;
         }
         if ap.perm[0] & 0x10 == 0 {
-            ino.iso_mode |= mode::ROTH;
+            ino.iso_mode |= S_IROTH as u16;
         }
         if ap.perm[0] & 0x40 == 0 {
-            ino.iso_mode |= mode::XOTH;
+            ino.iso_mode |= S_IXOTH as u16;
         }
         ino.iso_uid = Uid::from(isonum_723(&ap.owner)); // what about 0?
         ino.iso_gid = Gid::from(isonum_723(&ap.group)); // what about 0?
     } else {
-        ino.iso_mode |= mode::RUSR | mode::XUSR | mode::RGRP | mode::XGRP | mode::ROTH | mode::XOTH;
+        ino.iso_mode |= (S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) as u16;
         ino.iso_uid = 0;
         ino.iso_gid = 0;
     }
@@ -839,13 +778,13 @@ pub fn cd9660_test_reset<G: ProcGlue>() {
 #[cfg(test)]
 mod tests {
     // Host tests for the date conversions, the inode numbers of records, the attributes of
-    // plain ISO 9660 records, the node's words, the node hash and the reclaim.
+    // plain ISO 9660 records, the node's attributes, the node hash and the reclaim.
 
     use super::*;
     use crate::fs::isofs::cd9660::cd9660_extern::ISO_FTYPE_DEFAULT;
     use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, rec, test_mnt, test_node};
     use crate::fs::testfs::TestGlue;
-    use hal::sys::stat::{S_IFDIR, S_IFMT, S_IFREG};
+    use hal::sys::stat::S_IFMT;
 
     /// `cd9660_tstamp_conv7` of a 7-byte date.
     fn conv7(d: [u8; 7]) -> (bool, Timespec) {

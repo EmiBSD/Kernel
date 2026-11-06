@@ -87,7 +87,8 @@
 //!   the C holds `bp`, and released where the C releases it; `cd9660_bufatoff` is
 //!   `bread_or_release` of the directory's vnode.
 //! - The directory node is `vtoi`'s counted handle (a count pair per lookup, ROADMAP N12's
-//!   row), its offsets words; `iso_nchstats` is a static of the kernel's `Nchstats`. 0
+//!   row), its offsets words; `iso_nchstats` is a static of the kernel's `Nchstats`; LZ's
+//!   private `vmount` is the UFS layer's shared one (`ufs_lookup.rs`, msdosfs's too). 0
 //!   `unsafe` (LZ: 2).
 
 use core::sync::atomic::Ordering;
@@ -114,6 +115,7 @@ use crate::fs::namei::{
     RENAME,
 };
 use crate::fs::subr::{vput, vref};
+use crate::fs::ufs::ufs::ufs_lookup::vmount;
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VEXEC, Vnode, vn_lock};
 use crate::fs::vops::{vop_access, vop_unlock};
 use crate::proc::ProcGlue;
@@ -139,14 +141,6 @@ enum Scan {
 
 /// `iso_nchstats`.
 pub static ISO_NCHSTATS: Nchstats = Nchstats::new();
-
-/// The vnode's mount, which a cd9660 vnode always has.
-fn vmount<G: ProcGlue>(vp: &Vnode<G>) -> &'static Mount<G> {
-    match vp.mount() {
-        Some(mp) => mp,
-        None => kpanic(format_args!("cd9660: vnode {vp:p} without a mount")),
-    }
-}
 
 /// The token a scan holds, which it holds whenever it reads a record (the C's `bp`).
 fn held(bp: Option<&BufRef>) -> &BufRef {

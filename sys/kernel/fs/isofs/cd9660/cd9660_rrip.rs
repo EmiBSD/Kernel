@@ -119,12 +119,16 @@
 //!   and a `CE` naming a block the walk holds busy makes `getblk` wait for its own buffer, a
 //!   thread hung for ever with its vnode locked). Here the previous continuation buffer is
 //!   released before the next `bread`; a `CE` naming the block the caller holds busy on the
-//!   device (`IsoRripAnalyze::held`: `cd9660_vget_internal`'s, `cd9660_readlink`'s and
-//!   `iso_mountfs`'s record block; `cd9660_lookup` and `cd9660_readdir` hold the directory's
-//!   block on the directory's own vnode, a buffer a read of the device never waits for) or
-//!   the continuation block being walked ends the walk as the C's read error does (the
+//!   device (`IsoRripAnalyze::held`: `cd9660_vget_internal`'s and `cd9660_readlink`'s record
+//!   block, `iso_mountfs`'s root block; `cd9660_lookup` and `cd9660_readdir` hold the
+//!   directory's block on the directory's own vnode, a buffer a read of the device never
+//!   waits for) or the continuation block being walked ends the walk as the C's read error does (the
 //!   remaining fields take their defaults), and so does a chain longer than
-//!   [`ISO_RRIP_MAXCE`] (64) areas. A legitimate disc is read as the C reads it; a crafted
+//!   [`ISO_RRIP_MAXCE`] (64) areas. Every caller holds one device buffer at most while the
+//!   walk runs: the C's `iso_mountfs` also keeps the supplementary descriptor's block busy
+//!   across its Rock Ridge check (cd9660_vfsops.c:288-289 to :415-416), which the kernel's
+//!   releases before it, the root record and `joliet_level` copied into locals (D-N5.8-R1,
+//!   N5.8c2; userland sees nothing). A legitimate disc is read as the C reads it; a crafted
 //!   one gets default Rock Ridge fields where OpenBSD hangs.
 //! - `hostname` is read out of `kernel::sysctl`'s `hostname` (`hostnamelen` bytes) only for
 //!   a `HOST` component, as the C; the `VOLROOT` component copies `f_mntonname` out of the
@@ -491,144 +495,86 @@ struct RripTable<G: ProcGlue> {
     result: i32,
 }
 
+impl<G: ProcGlue> RripTable<G> {
+    /// An entry: the entry type, its reader, its default and its `ISO_SUSP_*` bit.
+    const fn new(
+        type_: [u8; 2],
+        func: RripFunc<G>,
+        func2: Option<RripFunc2<G>>,
+        result: i32,
+    ) -> Self {
+        Self {
+            type_,
+            func,
+            func2,
+            result,
+        }
+    }
+}
+
 /// The analyses' tables (the C's `static RRIP_TABLE`s), for the glue `G`.
 struct RripTables<G>(PhantomData<fn() -> G>);
 
 impl<G: ProcGlue> RripTables<G> {
     /// `rrip_table_analyze`: get attributes.
     const RRIP_TABLE_ANALYZE: [RripTable<G>; 6] = [
-        RripTable {
-            type_: *b"PX",
-            func: cd9660_rrip_attr::<G>,
-            func2: Some(cd9660_rrip_defattr::<G>),
-            result: ISO_SUSP_ATTR,
-        },
-        RripTable {
-            type_: *b"TF",
-            func: cd9660_rrip_tstamp::<G>,
-            func2: Some(cd9660_rrip_deftstamp::<G>),
-            result: ISO_SUSP_TSTAMP,
-        },
-        RripTable {
-            type_: *b"PN",
-            func: cd9660_rrip_device::<G>,
-            func2: None,
-            result: ISO_SUSP_DEVICE,
-        },
-        RripTable {
-            type_: *b"RR",
-            func: cd9660_rrip_idflag::<G>,
-            func2: None,
-            result: ISO_SUSP_IDFLAG,
-        },
-        RripTable {
-            type_: *b"CE",
-            func: cd9660_rrip_cont::<G>,
-            func2: None,
-            result: ISO_SUSP_CONT,
-        },
-        RripTable {
-            type_: *b"ST",
-            func: cd9660_rrip_stop::<G>,
-            func2: None,
-            result: ISO_SUSP_STOP,
-        },
+        RripTable::new(
+            *b"PX",
+            cd9660_rrip_attr,
+            Some(cd9660_rrip_defattr::<G>),
+            ISO_SUSP_ATTR,
+        ),
+        RripTable::new(
+            *b"TF",
+            cd9660_rrip_tstamp,
+            Some(cd9660_rrip_deftstamp::<G>),
+            ISO_SUSP_TSTAMP,
+        ),
+        RripTable::new(*b"PN", cd9660_rrip_device, None, ISO_SUSP_DEVICE),
+        RripTable::new(*b"RR", cd9660_rrip_idflag, None, ISO_SUSP_IDFLAG),
+        RripTable::new(*b"CE", cd9660_rrip_cont, None, ISO_SUSP_CONT),
+        RripTable::new(*b"ST", cd9660_rrip_stop, None, ISO_SUSP_STOP),
     ];
 
     /// `rrip_table_getname`: get alternate name.
     const RRIP_TABLE_GETNAME: [RripTable<G>; 7] = [
-        RripTable {
-            type_: *b"NM",
-            func: cd9660_rrip_altname::<G>,
-            func2: Some(cd9660_rrip_defname::<G>),
-            result: ISO_SUSP_ALTNAME,
-        },
-        RripTable {
-            type_: *b"CL",
-            func: cd9660_rrip_pclink::<G>,
-            func2: None,
-            result: ISO_SUSP_CLINK | ISO_SUSP_PLINK,
-        },
-        RripTable {
-            type_: *b"PL",
-            func: cd9660_rrip_pclink::<G>,
-            func2: None,
-            result: ISO_SUSP_CLINK | ISO_SUSP_PLINK,
-        },
-        RripTable {
-            type_: *b"RE",
-            func: cd9660_rrip_reldir::<G>,
-            func2: None,
-            result: ISO_SUSP_RELDIR,
-        },
-        RripTable {
-            type_: *b"RR",
-            func: cd9660_rrip_idflag::<G>,
-            func2: None,
-            result: ISO_SUSP_IDFLAG,
-        },
-        RripTable {
-            type_: *b"CE",
-            func: cd9660_rrip_cont::<G>,
-            func2: None,
-            result: ISO_SUSP_CONT,
-        },
-        RripTable {
-            type_: *b"ST",
-            func: cd9660_rrip_stop::<G>,
-            func2: None,
-            result: ISO_SUSP_STOP,
-        },
+        RripTable::new(
+            *b"NM",
+            cd9660_rrip_altname,
+            Some(cd9660_rrip_defname::<G>),
+            ISO_SUSP_ALTNAME,
+        ),
+        RripTable::new(
+            *b"CL",
+            cd9660_rrip_pclink,
+            None,
+            ISO_SUSP_CLINK | ISO_SUSP_PLINK,
+        ),
+        RripTable::new(
+            *b"PL",
+            cd9660_rrip_pclink,
+            None,
+            ISO_SUSP_CLINK | ISO_SUSP_PLINK,
+        ),
+        RripTable::new(*b"RE", cd9660_rrip_reldir, None, ISO_SUSP_RELDIR),
+        RripTable::new(*b"RR", cd9660_rrip_idflag, None, ISO_SUSP_IDFLAG),
+        RripTable::new(*b"CE", cd9660_rrip_cont, None, ISO_SUSP_CONT),
+        RripTable::new(*b"ST", cd9660_rrip_stop, None, ISO_SUSP_STOP),
     ];
 
     /// `rrip_table_getsymname`: get symbolic link.
     const RRIP_TABLE_GETSYMNAME: [RripTable<G>; 4] = [
-        RripTable {
-            type_: *b"SL",
-            func: cd9660_rrip_slink::<G>,
-            func2: None,
-            result: ISO_SUSP_SLINK,
-        },
-        RripTable {
-            type_: *b"RR",
-            func: cd9660_rrip_idflag::<G>,
-            func2: None,
-            result: ISO_SUSP_IDFLAG,
-        },
-        RripTable {
-            type_: *b"CE",
-            func: cd9660_rrip_cont::<G>,
-            func2: None,
-            result: ISO_SUSP_CONT,
-        },
-        RripTable {
-            type_: *b"ST",
-            func: cd9660_rrip_stop::<G>,
-            func2: None,
-            result: ISO_SUSP_STOP,
-        },
+        RripTable::new(*b"SL", cd9660_rrip_slink, None, ISO_SUSP_SLINK),
+        RripTable::new(*b"RR", cd9660_rrip_idflag, None, ISO_SUSP_IDFLAG),
+        RripTable::new(*b"CE", cd9660_rrip_cont, None, ISO_SUSP_CONT),
+        RripTable::new(*b"ST", cd9660_rrip_stop, None, ISO_SUSP_STOP),
     ];
 
     /// `rrip_table_extref`: the extension reference.
     const RRIP_TABLE_EXTREF: [RripTable<G>; 3] = [
-        RripTable {
-            type_: *b"ER",
-            func: cd9660_rrip_extref::<G>,
-            func2: None,
-            result: ISO_SUSP_EXTREF,
-        },
-        RripTable {
-            type_: *b"CE",
-            func: cd9660_rrip_cont::<G>,
-            func2: None,
-            result: ISO_SUSP_CONT,
-        },
-        RripTable {
-            type_: *b"ST",
-            func: cd9660_rrip_stop::<G>,
-            func2: None,
-            result: ISO_SUSP_STOP,
-        },
+        RripTable::new(*b"ER", cd9660_rrip_extref, None, ISO_SUSP_EXTREF),
+        RripTable::new(*b"CE", cd9660_rrip_cont, None, ISO_SUSP_CONT),
+        RripTable::new(*b"ST", cd9660_rrip_stop, None, ISO_SUSP_STOP),
     ];
 }
 
@@ -1531,6 +1477,35 @@ mod tests {
         // an NM with bad flags counts as no NM: the ISO name stands
         let r = record(b"A", false, &[susp(b"NM", b"\x40xyz")]);
         assert_eq!(getname(&r, &imp).0, b"A");
+    }
+
+    /// The host's name as `hostname` and `hostnamelen` hold it now.
+    fn host_now() -> Vec<u8> {
+        let n = hostnamelen();
+        with_hostname(|h| h[..n].to_vec())
+    }
+
+    #[test]
+    fn host_components_insert_the_hosts_name() {
+        // Another test may set the host's name meanwhile (sysctl.rs's): the name read is the
+        // one before the walk or the one after it, never a mix of the two. This test only
+        // reads it.
+        let (_g, _p) = attach_image(image::image_bytes());
+        let imp = rrip_mnt(|_| {});
+        let r = record(b"A", false, &[susp(b"NM", &[ISO_SUSP_CFLAG_HOST])]);
+        let before = host_now();
+        let (name, res, _) = getname(&r, &imp);
+        let after = host_now();
+        assert!(name == before || name == after, "{name:?}");
+        assert_ne!(res & ISO_SUSP_ALTNAME, 0);
+        // a symbolic link's HOST component, then a plain one
+        let r = record(b"L", false, &[susp(b"SL", b"\x00\x20\x00\x00\x01x")]);
+        let before = host_now();
+        let (link, res) = getsymname(&r, &imp);
+        let after = host_now();
+        let with = |h: &[u8]| [h, b"/x"].concat();
+        assert!(link == with(&before) || link == with(&after), "{link:?}");
+        assert_eq!(res, ISO_SUSP_SLINK);
     }
 
     #[test]

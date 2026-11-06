@@ -71,12 +71,13 @@
 //! - The attributes an analysis fills (the C's `ana->inop->inode`, written member by member
 //!   through the node) are the analysis's own copy, [`IsoRripAnalyze::inode`], taken from the
 //!   node when `cd9660_rrip_analyze` starts and stored back once when it ends: the node's
-//!   attributes are words (`cd9660_node.rs`), and the node is locked by its vnode meanwhile,
-//!   so nothing can read the copy's state half-made.
+//!   attributes are one `ReadMostly` cell (`cd9660_node.rs`), written once, and the node is
+//!   locked by its vnode meanwhile, so nothing can read the copy's state half-made.
 //! - [`IsoRripAnalyze::held`]: the device block (`DEV_BSIZE` units, as `bread` of `im_devvp`
-//!   names it) of a buffer of the device the caller holds busy while the walk runs, which a
-//!   `CE` entry may not name (the user's decision D-N5.8-U1, `cd9660_rrip.rs`). 0 `unsafe`
-//!   (LZ: 0).
+//!   names it) of the one buffer of the device the caller holds busy while the walk runs,
+//!   which a `CE` entry may not name (the user's decision D-N5.8-U1, `cd9660_rrip.rs`; one at
+//!   most: `iso_mountfs` releases the supplementary descriptor's block before its Rock Ridge
+//!   check, D-N5.8-R1). 0 `unsafe` (LZ: 0).
 
 use hal::sys::types::{Daddr, Off};
 
