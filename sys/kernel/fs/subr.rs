@@ -315,6 +315,11 @@ pub struct VfsTables<G: ProcGlue> {
     /// last member in the source; the same layout test checks `ufs` did not move.
     #[cfg(feature = "udf")]
     pub udf: crate::fs::isofs::udf::udf_extern::UdfTables<G>,
+    /// tmpfs's globals (the pools `tmpfs_node_pool`, `tmpfs_dirent_pool`, the global limit
+    /// and use, `tmpfs_vops`, `tmpfs_specvops`), N5.9t1: the last member in the source; the
+    /// same layout test checks `ufs` did not move.
+    #[cfg(feature = "tmpfs")]
+    pub tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables<G>,
 }
 
 impl<G: ProcGlue> VfsTables<G> {
@@ -359,6 +364,8 @@ impl<G: ProcGlue> VfsTables<G> {
             cd9660: crate::fs::isofs::cd9660::cd9660_node::IsofsTables::new(),
             #[cfg(feature = "udf")]
             udf: crate::fs::isofs::udf::udf_extern::UdfTables::new(),
+            #[cfg(feature = "tmpfs")]
+            tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables::new(),
         }
     }
 }
@@ -518,6 +525,8 @@ pub fn vfs_test_reset<G: ProcGlue>() {
     crate::fs::isofs::cd9660::cd9660_node::cd9660_test_reset::<G>();
     #[cfg(feature = "mfs")]
     crate::fs::ufs::mfs::mfs_vfsops::mfs_test_reset();
+    #[cfg(feature = "tmpfs")]
+    crate::fs::tmpfs::tmpfs_vfsops::tmpfs_test_reset::<G>();
     t.rootvnode.set(None);
     t.numvnodes.store(0, Ordering::Relaxed);
 }

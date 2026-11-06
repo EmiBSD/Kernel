@@ -9878,6 +9878,134 @@ reason = "the fragment buffer is the stream's own MArray of M_UDFFID, borrowed a
 lz = "sys/isofs/udf/udf_vnops.rs::dirent_zero"
 native = ["dirent_zeroed"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs.rs"]
+status = "redesigned"
+notes = "N5.9t1 (D-N5.9-4, -5, -6; D-t1-4..7): tmpfs.h's node, entry and mount as TmpfsNode<G>, TmpfsDirent<G> (items of recorded pools, PoolHome; their places on tm_nodes and tn_dir parked references, the C's alloc-to-free lives) and TmpfsMount<G> (a counted M_MISCFSMNT block in the mount's slot); the C's other pointers counted handles in NodeRef cells cleared where the C clears them; union tn_spec an enum (TnDir, TnReg with its object and the cached ObjectWindow, the link's OnceStatic block); the attributes relaxed words, tn_gen an atomic, tn_nlock/tm_lock RawRwlocks (the lists' witnesses), tm_acc_lock an Rwlocked<TmAcc>; the C's LP64 sizeof(tmpfs_node_t) 272 and sizeof(tmpfs_dirent_t) 48 as the charges (pinned by _Static_asserts over the reference headers); vptonode/vptodir/vfstotmpfs counted handles; bsd's sys/tmpfs/tmpfs.rs still runs until N5.9t2's switch; 0 unsafe (LZ: 7)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsDirent::name"
+native = ["TmpfsDirent::name_is", "TmpfsDirent::with_name"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsNode::tn_pgnum"
+native = ["TnReg"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsNode::tn_pgptr"
+native = ["TnReg"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TmpfsNode::tn_uobj"
+native = ["TnReg::aobj"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TnDev"
+native = ["TnSpec"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::TnLnk"
+native = ["TnSpec"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::VFS_TO_TMPFS"
+native = ["vfstotmpfs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::VP_TO_TMPFS_DIR"
+native = ["vptodir"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs.rs::VP_TO_TMPFS_NODE"
+native = ["vptonode"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_mem.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_mem.rs"]
+status = "redesigned"
+notes = "N5.9t1 (D-N5.9-6): the accounting over TmAcc (tm_acc_lock's data) and the glue's TmpfsTables atomics, charging the C's sizeof(tmpfs_node_t) and sizeof(tmpfs_dirent_t) (TMPFS_NODE_CHARGE 272, TMPFS_DIRENT_CHARGE 48; LZ charged size_of its structs); tmpfs_node_get/tmpfs_dirent_get as get_homed of the recorded pools, the _puts taking the handle; the names MArray<u8>s of the C's rounded M_TEMP size; strname_neqlen's LZ fix kept; 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_mem.rs::TMPFS_BYTES_LIMIT"
+native = ["sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_mem.rs::TMPFS_BYTES_USED"
+native = ["sys/kernel/fs/tmpfs/tmpfs_vfsops.rs::TmpfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_mem.rs::tmpfs_mntmem_init"
+native = ["sys/kernel/fs/tmpfs/tmpfs.rs::TmpfsMount::new"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_subr.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_subr.rs"]
+status = "redesigned"
+notes = "N5.9t1 (D-N5.9-2, -4; D-t1-4..7): the nodes' and entries' life (tmpfs_alloc_node/free_node, the list's parked reference adopted at the free; tmpfs_free_dirent), tmpfs_vnode_get over the glue's TmpfsTables::vops/specvops (the vnode's typed slot), the directories as PinLists under the kernel lock's witness (the walks O(1) a step, the C's), getdents copying struct dirent's bytes by fs::subr::dirent_uiomove, the attributes, and the data path through the object window: tmpfs_uiomove maps the aobj with vm::km::uvm_map_object_window and copies straight into the uio's iovecs (kernel::uio::uiomove_window), the one-page cache a window moved out of TnReg::cached for the copy and back; tmpfs_zeropg through the window; 0 unsafe (LZ: 11)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_subr.rs::dirent_bytes"
+native = ["sys/kernel/fs/subr.rs::dirent_uiomove"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_subr.rs::mapped_bytes"
+native = ["sys/kernel/vm/km.rs::ObjectWindow"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_subr.rs::td_node"
+native = ["sys/kernel/fs/tmpfs/tmpfs.rs::TmpfsDirent::node"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_subr.rs::tmpfs_uio_cache"
+native = ["tmpfs_uiomove"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_subr.rs::tmpfs_uio_lookup"
+native = ["tmpfs_uiomove"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"
+crate = "kernel"
+lz = ["sys/tmpfs/tmpfs_vfsops.rs"]
+status = "redesigned"
+notes = "N5.9t1 (D-N5.9-5, -6): tmpfs_vfsops as impl Vfs<G> for TmpfsVfs<G> (TmpfsVfs::VFS), the functions the C's; TmpfsTables<G> (the two recorded pools with the C's names, the global limit and use, the vnode tables tmpfs_vnode_get installs) as VfsTables::tmpfs under feature tmpfs; tmpfs_mount builds the TmpfsMount where the C mallocs it (MArc of M_MISCFSMNT), allocates the root against it and hangs it at the C's mnt_data; the unmount's two rounds under tm_lock once each (the C takes none in the first round and tm_lock per freed node in the second; the kernel nests tm_acc_lock under tm_lock in the second, an order the C never makes, only the unmount running there); statfs at the C's charges; unwired until N5.9t2 (bsd's TMPFS_VFSOPS still in vfsconflist[]); 0 unsafe (LZ: 1)"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_DIRENT_POOL"
+native = ["TmpfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_NODE_POOL"
+native = ["TmpfsTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/tmpfs/tmpfs_vfsops.rs::TMPFS_VFSOPS"
+native = ["TmpfsVfs::VFS"]
+kind = "renamed"
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
 crate = "kernel"
@@ -11448,7 +11576,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -12419,9 +12547,9 @@ notes = "N4.6c: futex(2) (FUTEX_WAIT/WAKE/REQUEUE and their _PRIVATE forms) into
 [[module]]
 rust = "sys/kernel/uio.rs"
 crate = "kernel"
-lz = ["sys/sys/uio.rs", "sys/kern/sys_generic.rs"]
+lz = ["sys/sys/uio.rs", "sys/kern/sys_generic.rs", "sys/kern/kern_subr.rs"]
 status = "redesigned"
-notes = "N4.3: uio.h's types in the kernel crate, Uio<'a, G: ProcGlue> generic over the glue (uio_procp an Option<&Thread<G>>), and sys_generic.c's iovec_copyin over an IovBuf (the stack eight or an owned MArray<Iovec>, M_IOV) that frees itself; UioMove moved here from kernel::pipe (re-exported there). uiomove and ureadc stay bsd's (kern_subr.rs) while UIO_SYSSPACE iovecs are raw kernel addresses"
+notes = "N4.3: uio.h's types in the kernel crate, Uio<'a, G: ProcGlue> generic over the glue (uio_procp an Option<&Thread<G>>), and sys_generic.c's iovec_copyin over an IovBuf (the stack eight or an owned MArray<Iovec>, M_IOV) that frees itself; UioMove moved here from kernel::pipe (re-exported there). uiomove and ureadc stay bsd's (kern_subr.rs) while UIO_SYSSPACE iovecs are raw kernel addresses; N5.9t1: uiomove_window, kern_subr.c's uiomove walk over a kernel window of an object (tmpfs), each iovec chunk copied straight between the window and the iovec through ForeignWindow's raw legs"
 
 [[module.fn]]
 lz = "sys/kern/sys_generic.rs::iovec_free"
@@ -13496,6 +13624,11 @@ rust = "sys/kernel/fs/isofs/udf/testudf.rs"
 crate = "kernel"
 reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkudf, LZ's in-memory UDF builder (udf_vnops.rs's tests: tags, time stamps, file entries, allocation and file identifier descriptors, the anchor, the volume descriptor sequence, the test volume M10C) with the variants named tests need (a VAT, sparing tables, a metadata partition, a block size and a root ICB length to patch); TEST_UDF_CONF and the mounts through udf_mountfs over testffs's device (try_mount, mount_root, unmount, root); a mount structure over testffs's device (test_ump), unodes of it (test_node, fentry_copy) with vnodes of udf's own table (N5.8u1's TestUdfVops gone); no OpenBSD or LZ source"
 
+
+[[extra]]
+rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"
+crate = "kernel"
+reason = "N5.9t1: the kernel tmpfs's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): TEST_TMPFS_CONF, a small vnode table (TestTmpfsVops: the node's lock, tmpfs_inactive's and tmpfs_reclaim's work) until tmpfs_vnops lands (N5.9t2), the set-up (16 MiB of pages, the kernel maps, the test thread, tmpfs_init and the tables), the mount arguments' bytes (LZ's tmpfs_vfsops tests' args) and a mount over no device; no OpenBSD or LZ source"
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
 crate = "kernel"

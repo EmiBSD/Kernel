@@ -9364,6 +9364,21 @@ pub(crate) mod tests {
         let _g = setup();
         let _ = the_kernel_map();
         let obj = crate::tc::timekeep_object(None).expect("the timekeep object");
+        // N5.9t1 (the closing review's F1): hal views this aobj's page, so it is marked and
+        // no kernel window may map it.
+        let ObjRef::Aobj(a) = &obj else {
+            panic!("the timekeep object is an aobj")
+        };
+        assert!(a.is_hal_viewed());
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(crate::vm::km::uvm_map_object_window(
+                PoolArc::clone(a),
+                0,
+                PAGE_SIZE,
+                0,
+            ));
+        }));
+        assert!(refused.is_err(), "the timekeep aobj is refused a window");
         obj.reference();
         let vm = user_vmspace();
         let map = &vm.vm_map;

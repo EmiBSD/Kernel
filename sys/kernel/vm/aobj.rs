@@ -105,6 +105,9 @@
 //! - `u_pages` and `u_flags` are relaxed atomics (the C's `u_pages` changes only under the
 //!   lock, in [`uao_grow`] and [`uao_shrink`]); the global list and `u_list` are not kept (see
 //!   the deviations).
+//! - N5.9t1: [`UAO_FLAG_HALVIEW`], a kernel flag the C lacks (no userland sees `u_flags`):
+//!   the timekeep object, whose page `hal` views as a `TimekeepAtomic`, is marked before the
+//!   view, and `vm::km::uvm_map_object_window` refuses a marked aobj (closing review's F1).
 //! - [`uao_init`] returns whether the pools were made (pipe's precedent): `ENOMEM` before the
 //!   pool bridge, `EBUSY` the second time.
 
@@ -152,6 +155,11 @@ pub const UAO_FLAG_KERNSWAP: i32 = 0x2;
 pub const UAO_FLAG_CANFAIL: i32 = 0x4;
 /// `UAO_FLAG_NOSWAP`: internal: aobj can't swap (kernel obj only!).
 pub const UAO_FLAG_NOSWAP: i32 = 0x8;
+/// `UAO_FLAG_HALVIEW` (not the C's, N5.9t1): internal: `hal` views the object's page as a
+/// Rust object (`kernel::tc::timekeep_object`'s page, `hal::mapped`'s `TimekeepAtomic`), so
+/// no kernel window may map it (`vm::km::uvm_map_object_window` refuses it). Set once,
+/// before the view is made, never cleared.
+pub const UAO_FLAG_HALVIEW: i32 = 0x4000_0000;
 
 /// `UAO_SWHASH_CLUSTER_SHIFT`: for hash tables, we break the address space of the aobj into
 /// blocks of `UAO_SWHASH_CLUSTER_SIZE` pages, which shall be a power of two.
@@ -280,6 +288,16 @@ impl Aobj {
     /// `u_flags`.
     pub fn flags(&self) -> i32 {
         self.flags.load(Ordering::Relaxed)
+    }
+
+    /// Marks the object as viewed by `hal` ([`UAO_FLAG_HALVIEW`]), before the view is made.
+    pub fn mark_hal_viewed(&self) {
+        self.flags.fetch_or(UAO_FLAG_HALVIEW, Ordering::Release);
+    }
+
+    /// Whether `hal` views the object's page ([`UAO_FLAG_HALVIEW`]).
+    pub fn is_hal_viewed(&self) -> bool {
+        self.flags.load(Ordering::Acquire) & UAO_FLAG_HALVIEW != 0
     }
 
     /// `UAO_USES_SWHASH(aobj)`.

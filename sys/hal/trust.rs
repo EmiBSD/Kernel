@@ -56,10 +56,19 @@
 //! kernel address its maker names, the strongest primitive the token gives. The token's
 //! contract (as for `kenter`'s addresses, which no check here could establish either): its
 //! holder mints a window only over a range its own `uvm_map_extract` returned into the
-//! kernel map, onto foreign pages no Rust object occupies, and unmaps that range only after
-//! the window is gone (N3.5 S1 makes this a type: windows minted only from the extract's
-//! result). The window bounds every copy (a range past it is `panic(9)`); the fault on an
-//! unmapped page is the machine's `pcb_onfault`, an `EFAULT`.
+//! kernel map, onto foreign pages no Rust object occupies, or (N5.9t1) over a range its own
+//! `uvm_map(kernel_map, .., uobj, ..)` of a memory object returned (tmpfs's aobj: an aobj
+//! not marked as viewed by `hal`, `kernel::vm::aobj::UAO_FLAG_HALVIEW`, whose pages hold no
+//! Rust object and fault in on first touch), and unmaps that range only after the
+//! window is gone (N3.5 S1 makes this a type: windows minted only from the extract's or the
+//! map's result, `kernel::vm::km`'s `KernelWindow` and `ObjectWindow`). The window bounds
+//! every copy (a range past it is `panic(9)`); the fault on an unmapped page is the machine's
+//! `pcb_onfault`, an `EFAULT`. A window's raw legs (`copyout_at`, `copyin_at`, `kcopy_to`,
+//! `kcopy_from`, over the machine's `copy_raw`) copy between its pages and a user address the
+//! routine checks, or a kernel buffer named by the one holder of `hal::user::WindowKcopyToken`
+//! (taken once at boot by `kernel::uio`, which the two kernel legs require): only a
+//! `UIO_SYSSPACE` iovec's, which its builder vouches for (`struct uio`'s contract, the
+//! `KcopyToken`'s trust), so holding a window gives no copy onto a kernel address.
 //!
 //! The pmap's page provider (`hal::pmap::PhysPages`, N3.1, passed to `pmap_bootstrap` as a
 //! value by the same boot path) is under the same contract for the frames it hands out, and a
