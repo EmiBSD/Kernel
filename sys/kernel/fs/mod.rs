@@ -34,6 +34,9 @@ pub mod cache;
 pub mod default;
 pub mod getcwd;
 pub mod init;
+#[cfg(feature = "cd9660")]
+pub mod isofs;
+
 pub mod lockf;
 pub mod lookup;
 pub mod miscfs;
@@ -42,6 +45,8 @@ pub mod mount;
 pub mod msdosfs;
 pub mod namei;
 pub mod physio;
+pub mod pod;
+
 pub mod spec;
 pub mod subr;
 pub mod sync;

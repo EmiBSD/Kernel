@@ -9437,11 +9437,11 @@ rust = "sys/kernel/fs/msdosfs/bpb.rs"
 crate = "kernel"
 lz = ["sys/msdosfs/bpb.rs"]
 status = "redesigned"
-notes = "N5.7c1 (unwired): struct byte_bpb33/50/710 and struct fsinfo as hal::abi_pod! images; byte_view!'s unsafe in-place casts -> pod_view!'s at/put over pod_from_bytes/pod_to_bytes (None past the end); 0 unsafe (LZ: 2)"
+notes = "N5.7c1 (unwired): struct byte_bpb33/50/710 and struct fsinfo as hal::abi_pod! images; byte_view!'s unsafe in-place casts -> pod_view!'s at/put over pod_from_bytes/pod_to_bytes (None past the end); 0 unsafe (LZ: 2); N5.8c1: pod_view!, pod_at and pod_put lifted into fs/pod.rs (D-N5.8-4), bpb, bootsect and direntry import them from there"
 
 [[module.fn]]
 lz = "sys/msdosfs/bpb.rs::byte_view"
-native = ["pod_view"]
+native = ["sys/kernel/fs/pod.rs::pod_view"]
 kind = "renamed"
 
 [[module.fn]]
@@ -9711,6 +9711,37 @@ lz = "sys/msdosfs/msdosfs_vnops.rs::bdata"
 native = []
 kind = "dropped"
 reason = "the B_BUSY owner's view of b_data is its BufRef token's data()/bytes() (fs::buf), with no unsafe wrapper"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/iso.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired): the volume descriptors and the extended attribute record as hal::abi_pod! images read with fs::pod's pod_view! (at: a copy, None past the end), where LZ's from_bytes_impl! cast the buffer's bytes in an unsafe block; IsoDirectoryRecord stays LZ's view over the buffer (no copy, D-c1-2); isonum_7xx unchanged; LZ's makefs fixtures moved to testcd9660.rs; 0 unsafe (LZ: 1)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/iso.rs::from_bytes_impl"
+native = ["sys/kernel/fs/pod.rs::pod_view"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_util.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_util.rs"]
+status = "redesigned"
+notes = "N5.8c1 (unwired): isochar, isofncmp and isofntrans as LZ's over byte slices; the cd9660_wchar2char hook (a StaticCell nothing sets) dropped, so isochar's non-ASCII Joliet character is always the C's '?'; 0 unsafe (LZ: 1)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_util.rs::CD9660_WCHAR2CHAR"
+native = []
+kind = "dropped"
+reason = "cd9660_wchar2char, the C's hook for a Unicode conversion routine loaded at run time: nothing in OpenBSD or here sets it, so isochar always takes the NULL branch and answers '?' for a non-ASCII Joliet character, which it still does (BRIEF-N5.8 2.5)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_util.rs::Wchar2char"
+native = []
+kind = "dropped"
+reason = "the type of the dropped cd9660_wchar2char hook (a conversion routine's signature); nothing else names it"
 
 [[module]]
 rust = "sys/kernel/fs/vnode.rs"
@@ -13097,7 +13128,18 @@ crate = "kernel"
 reason = "N5.7c3: the kernel msdosfs's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkfat, the FAT12/16/32 image builder moved as it was from bsd's msdosfs_vfsops tests; an image as the disk of testffs's block device, mounted by the kernel's msdosfs_mountfs through MsdosfsVfs (attach, try_mount, mount, mount_root, unmount, root); full_root, the FAT16 image of a full root directory for D-N5.7-U4's tests (c2's hand-built test_full_root replaced by a real mount); no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/kernel/fs/pod.rs"
+crate = "kernel"
+reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures over a buffer's bytes (pod_view!: SIZE, at, put over hal::user's pod_from_bytes/pod_to_bytes; pod_at, pod_put), lifted from fs::msdosfs::bpb (N5.7c1) for its second and third users, cd9660 and udf; native items with no LZ source (LZ's byte_view! and from_bytes_impl! were unsafe casts, rows renamed and merged)"
+
+[[extra]]
+rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
+crate = "kernel"
+reason = "N5.8c1: the kernel cd9660's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): the records and the 25 blocks of LZ's makefs image (moved from LZ's iso.rs tests), a record view of a fixture; N5.8c1 commit 2 adds the leaked mount structure and node over testffs's disk, N5.8c2 the image writer and the mounts; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/fs/word.rs"
+
 crate = "kernel"
 reason = "N5.7c1 (D-N5.7-4): the words of the file systems' in-core structures (the word! macro and U32Word, I32Word, U64Word, I8Word, I64Word, lifted from fs::ufs::ufs::inode, which re-exports them; U8Word and U16Word for msdosfs's denode), shared by ufs, ext2fs and msdosfs; native types with no LZ item (LZ's members were Cells)"
 

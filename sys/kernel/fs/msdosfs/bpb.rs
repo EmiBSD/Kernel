@@ -43,8 +43,9 @@
 //! The on-disk structures (`struct byte_bpb*`, `struct fsinfo`, and the boot sectors and
 //! directory entries of `bootsect.rs` and `direntry.rs`) are made of bytes only, so that the
 //! compiler adds no padding; each is a `hal::abi_pod!` image, read out of a buffer's bytes at
-//! its offset and written back there ([`pod_view!`]'s `at` and `put`: the C's cast of a
-//! pointer into `b_data`).
+//! its offset and written back there (`fs::pod`'s `pod_view!`, its `at` and `put`: the C's
+//! cast of a pointer into `b_data`).
+
 //!
 //! ## Deviations
 //! - The `int8_t` members of `struct byte_bpb33` and `struct byte_bpb50` are `u8`: every
@@ -61,7 +62,8 @@
 //!
 //! ## Redesign
 //! - LZ's `byte_view!` (an `unsafe` cast of the buffer's bytes to a `&` or `&mut` of the
-//!   structure, two sites, behind a compile-time alignment check) -> [`pod_view!`]: each
+//!   structure, two sites, behind a compile-time alignment check) -> `fs::pod`'s `pod_view!`
+//!   (written here at N5.7c1, lifted into `fs/pod.rs` at N5.8c1 for cd9660 and udf): each
 //!   structure is a `hal::abi_pod!` (the layout checked by the macro: every field a byte or a
 //!   byte array, no padding), `at(buf, off)` copies it out with `pod_from_bytes` and
 //!   `put(buf, off, &v)` back with `pod_to_bytes` (docs/IDIOMS.md, the `pod_from_bytes` row). Cost
@@ -70,7 +72,7 @@
 //!   offsets where a whole copy would be large (the FSInfo block's `fsinfree`, `msdosfs_fat`'s
 //!   `updatefats`). 0 `unsafe` (LZ: 2).
 
-use hal::user::{pod_from_bytes, pod_to_bytes};
+use crate::fs::pod::pod_view;
 
 /// `FATNUM`: mask for numbering active FAT (in `bpbExtFlags`).
 pub const FATNUM: u16 = 0xf;
@@ -200,34 +202,6 @@ pub fn putushort(p: &mut [u8], v: u16) {
 pub fn putulong(p: &mut [u8], v: u32) {
     p[..4].copy_from_slice(&v.to_le_bytes());
 }
-
-/// Gives an on-disk structure (a `hal::abi_pod!` of bytes) its views over a buffer's bytes:
-/// `SIZE`, `at(buf, off)` (the structure that starts at byte `off`, copied out; `None` when
-/// `buf` ends before it does) and `put(buf, off, &v)` (written back there; `false`, nothing
-/// written, when `buf` is too short): the C's `(struct foo *)(bp->b_data + off)`.
-macro_rules! pod_view {
-    ($t:ty) => {
-        impl $t {
-            /// The size of the structure on disk.
-            pub const SIZE: usize = ::core::mem::size_of::<$t>();
-
-            /// The structure that starts at byte `off` of `buf`, or `None` when `buf` is too
-            /// short for it.
-            pub fn at(buf: &[u8], off: usize) -> Option<$t> {
-                $crate::fs::msdosfs::bpb::pod_at(buf, off)
-            }
-
-            /// Writes `v` at byte `off` of `buf`; `false` (nothing written) when `buf` is too
-            /// short for it.
-            pub fn put(buf: &mut [u8], off: usize, v: &$t) -> bool {
-                $crate::fs::msdosfs::bpb::pod_put(buf, off, v)
-            }
-        }
-
-        const _: () = assert!(::core::mem::align_of::<$t>() == 1);
-    };
-}
-pub(crate) use pod_view;
 
 /// `struct byte_bpb33`: the DOS 3.3 BPB as it lies on the disk. Shorts and longs are just
 /// character arrays of the appropriate length.
@@ -423,19 +397,6 @@ hal::abi_pod!(Fsinfo {
     fsisig4: [u8; 4],
 });
 pod_view!(Fsinfo);
-
-/// [`pod_view!`]'s `at`: the `T` at byte `off` of `buf`, copied out.
-pub fn pod_at<T: hal::user::AbiPod>(buf: &[u8], off: usize) -> Option<T> {
-    pod_from_bytes(buf.get(off..)?)
-}
-
-/// [`pod_view!`]'s `put`: `v` written at byte `off` of `buf`.
-pub fn pod_put<T: hal::user::AbiPod>(buf: &mut [u8], off: usize, v: &T) -> bool {
-    match buf.get_mut(off..) {
-        Some(b) => pod_to_bytes(v, b),
-        None => false,
-    }
-}
 
 const _: () = {
     assert!(ByteBpb33::SIZE == 19);
