@@ -74,8 +74,9 @@
 //! - `ffs`'s entry names the kernel's `ffs_vfsops` (`Ffs::<BsdProcGlue>::VFS`, N5.5b2), `mfs`'s
 //!   the kernel's `mfs_vfsops` (`Mfs::<BsdProcGlue>::VFS`, N5.5b3), and `ext2fs`'s (N5.6c3),
 //!   `msdos`'s (N5.7c3), `cd9660`'s (N5.8c2) and `udf`'s (`UdfVfs::<BsdProcGlue>::VFS`,
-//!   N5.8u2) and `tmpfs`'s (`TmpfsVfs::<BsdProcGlue>::VFS`, N5.9t2) the kernel's; the other
-//!   types' (`nfs`, `ntfs`, `fuse`) are `bsd`'s `Vfsops` tables.
+//!   N5.8u2), `tmpfs`'s (`TmpfsVfs::<BsdProcGlue>::VFS`, N5.9t2) and `fuse`'s
+//!   (`FusefsVfs::<BsdProcGlue>::VFS`, N5.9f2) the kernel's; the other types' (`nfs`, `ntfs`)
+//!   are `bsd`'s `Vfsops` tables.
 
 use core::sync::atomic::Ordering;
 
@@ -152,7 +153,7 @@ static VFSCONFLIST: [Vfsconf; NVFSCONF] = [
     ),
     #[cfg(feature = "fuse")]
     Vfsconf::new(
-        &crate::miscfs::fuse::fuse_vfsops::FUSEFS_VFSOPS,
+        &kernel::fs::fuse::fuse_vfsops::FusefsVfs::<BsdProcGlue>::VFS,
         crate::sys::mount::MOUNT_FUSEFS,
         18,
         0,

@@ -1977,8 +1977,8 @@ pub fn ufs_kqfilter<G: ProcGlue>(vp: &'static Vnode<G>, kn: &Knote<G>) -> Result
     Ok(())
 }
 
-/// `kn->kn_hook` of a UFS knote: its vnode.
-fn kn_vnode<G: ProcGlue>(kn: &Knote<G>) -> &'static Vnode<G> {
+/// `kn->kn_hook` of a UFS knote (and of a FUSE one: `fuse_vnops`'s filters): its vnode.
+pub(crate) fn kn_vnode<G: ProcGlue>(kn: &Knote<G>) -> &'static Vnode<G> {
     match kn.hook_vnode() {
         Some(vp) => vp,
         None => kpanic(format_args!("knote {kn:p}: no vnode")),

@@ -195,7 +195,7 @@ pub const D_TTY: u32 = 2;
 pub const D_CLONE: u32 = 0x0001;
 
 /// `BLKDEV_IOSIZE`: I/O size for block devices (`<sys/param.h>`, `PAGE_SIZE`).
-const BLKDEV_IOSIZE: i32 = hal::sys::param::PAGE_SIZE as i32;
+pub(crate) const BLKDEV_IOSIZE: i32 = hal::sys::param::PAGE_SIZE as i32;
 /// `DEV_BSHIFT`: log2(DEV_BSIZE).
 const DEV_BSHIFT: u32 = 9;
 

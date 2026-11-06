@@ -41,7 +41,8 @@ trait = "IntrHardware"
 for = ["sys/hal/intr.rs"]
 paid_by = "N7"
 
-# bsd: pool_init/pool_get/pool_put, pr_nout, pool_sethiwat and pool_cache_init (RawPool's
+# bsd: pool_init/pool_get/pool_put, pr_nout, pr_npages (RawPool::npages, N5.9f2: vfs.fuse's
+# fusefs_pool_pages), pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # hal::pool::PoolBackend
@@ -241,8 +242,8 @@ trait = "NetLock"
 for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
 paid_by = "N6"
 
-# bsd: struct vops, the operations table of each bsd file system (fuse,
-# nfs, ntfs and their special-file tables: statics of
+# bsd: struct vops, the operations table of each bsd file system (nfs,
+# ntfs and their special-file tables: statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
 # method packs the slot's struct vop_*_args; a NULL slot answers EOPNOTSUPP) and registered by
 # address on a table's first getnewvnode (VopsId), dispatched by every vop_* of
@@ -253,8 +254,8 @@ paid_by = "N6"
 # C's two tables), msdosfs's at N5.7c3 (MsdosfsTables::vops, MsdosfsVnops, the C's one
 # table), cd9660's at N5.8c2 (IsofsTables::vops and specvops, Cd9660Vnops and
 # Cd9660SpecVnops, the C's two tables), udf's at N5.8u2 (UdfTables::vops, UdfVnops, the
-# C's one table) and tmpfs's at N5.9t2 (TmpfsTables::vops, specvops and fifovops, the C's
-# three tables). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
+# C's one table), tmpfs's at N5.9t2 (TmpfsTables::vops, specvops and fifovops, the C's
+# three tables) and fuse's at N5.9f2 (FuseTables::vops, FuseVnops, the C's one table). Paid when the last bsd file system moves: N5.5 to N5.9, nfs at N6,
 # ntfs at N10 (the user's N5 scope decision of 2026-10-28), so N10.
 # kernel::fs::vops::Vnops
 [[bridge]]
@@ -273,7 +274,8 @@ paid_by = "N10"
 # over the mount's export list), cd9660's at N5.8c2 (Cd9660Vfs::VFS; its vfs_checkexp is
 # ufs_check_export by VFS_CHECKEXP's MOUNT_CD9660 arm), udf's at N5.8u2 (UdfVfs::VFS; its
 # vfs_checkexp is VFS_CHECKEXP's MOUNT_UDF arm, EACCES), tmpfs's at N5.9t2 (TmpfsVfs::VFS;
-# its vfs_checkexp is VFS_CHECKEXP's MOUNT_TMPFS arm, EOPNOTSUPP). Paid with Vnops, when the last bsd file system moves (nfs at N6,
+# its vfs_checkexp is VFS_CHECKEXP's MOUNT_TMPFS arm, EOPNOTSUPP), fuse's at N5.9f2
+# (FusefsVfs::VFS; its vfs_checkexp is VFS_CHECKEXP's MOUNT_FUSEFS arm, EOPNOTSUPP). Paid with Vnops, when the last bsd file system moves (nfs at N6,
 # ntfs at N10), so N10.
 # kernel::fs::vops::Vfs
 [[bridge]]

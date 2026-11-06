@@ -22,15 +22,20 @@
 //! the protocol and the request buffer (`fusebuf_h`, `<sys/fusebuf.h>`), the requests' life
 //! (`fusebuf`), the `/dev/fuse0` character device the daemon reads requests from and writes
 //! replies to (`fuse_device`), the node and its hash (`fusefs_node`, `fuse_ihash`), the
-//! mount structure and the globals (`fusefs`), the file handles (`fuse_file`); N5.9f1 brought
-//! them unwired (`bsd`'s `sys/miscfs/fuse/` serves every mount until N5.9f2's switch, which
-//! adds `fuse_lookup`, `fuse_vnops` and `fuse_vfsops`). `FUSE_DEBUG` is off, as in GENERIC:
+//! mount structure and the globals (`fusefs`), the file handles (`fuse_file`), the lookup
+//! (`fuse_lookup`), the vnode operations (`fuse_vnops`) and the file-system-type operations
+//! (`fuse_vfsops`); N5.9f1 brought the first seven, N5.9f2 the last three and the switch
+//! (`vfsconflist[]`'s `"fuse"` and arm64's `cdevsw[92]` name them; `bsd`'s `sys/miscfs/` is
+//! gone). `FUSE_DEBUG` is off, as in GENERIC:
 //! the `DPRINTF`s are not compiled. `testfuse` is the tests' fixture (host tests and benches
 //! only).
 
 pub mod fuse_device;
 pub mod fuse_file;
 pub mod fuse_ihash;
+pub mod fuse_lookup;
+pub mod fuse_vfsops;
+pub mod fuse_vnops;
 pub mod fusebuf;
 pub mod fusebuf_h;
 pub mod fusefs;

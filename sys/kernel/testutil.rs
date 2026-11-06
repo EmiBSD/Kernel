@@ -416,6 +416,12 @@ impl RawPool for TestPool {
         self.nout.load(Ordering::Relaxed)
     }
 
+    /// The double's pages: each item out takes whole pages of its own (a fresh block per
+    /// get), so the count follows `nout` (`vfs.fuse.fusefs_pool_pages`' tests).
+    fn npages(&self) -> u64 {
+        self.nout() * self.size.div_ceil(TEST_PAGE) as u64
+    }
+
     fn size(&self) -> usize {
         self.size
     }

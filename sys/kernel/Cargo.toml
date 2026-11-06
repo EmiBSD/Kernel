@@ -23,7 +23,7 @@ ext2fs = []                     # `option EXT2FS` -> fs::ufs::ext2fs, the second
 msdosfs = []                    # `option MSDOSFS` -> fs::msdosfs, the MS-DOS FAT file system
 cd9660 = []                     # `option CD9660` -> fs::isofs::cd9660, the ISO 9660 file system
 udf = []                        # `option UDF` -> fs::isofs::udf, the UDF file system of DVDs
-fuse = []                       # `option FUSE` -> fs::fuse, FUSE and /dev/fuse0 (unwired at N5.9f1: bsd's sys/miscfs/fuse serves until N5.9f2)
+fuse = []                       # `option FUSE` -> fs::fuse, FUSE and /dev/fuse0 (N5.9f1, f2; wired at N5.9f2's switch)
 # No `multiprocessor`: the kernel crate is MULTIPROCESSOR code only (decision 40,
 # 2026-10-17): vm::pmemrange always has its per-CPU page caches.
 # Host tests only, never a kernel image: `kernel::testutil`, the safe doubles of hal's bridges,

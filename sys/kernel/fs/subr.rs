@@ -321,7 +321,7 @@ pub struct VfsTables<G: ProcGlue> {
     #[cfg(feature = "tmpfs")]
     pub tmpfs: crate::fs::tmpfs::tmpfs_vfsops::TmpfsTables<G>,
     /// fuse's globals (the `"fmsg"` pool, `fuse_d_list`, the three `stat_*` counters, the
-    /// inode hash; N5.9f2 adds `fusefs_vops`), N5.9f1: the last member; the same layout test
+    /// inode hash; N5.9f2: `fusefs_vops`), N5.9f1: the last member; the same layout test
     /// checks `ufs` did not move.
     #[cfg(feature = "fuse")]
     pub fuse: crate::fs::fuse::fusefs::FuseTables<G>,

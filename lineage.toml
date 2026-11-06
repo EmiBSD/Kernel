@@ -1643,7 +1643,7 @@ notes = "M2: arm64_bs_tag, fdt_cons_bs_tag, generic_space_read/write_1/2/4/8, ge
 rust = "sys/arch/arm64/arm64/conf.rs"
 lz = ["sys/arch/arm64/arm64/conf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/log.rs"]
+adapted_by = ["sys/kernel/log.rs", "sys/kernel/fs/fuse/fuse_device.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpu.rs"
@@ -5835,7 +5835,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs
 rust = "sys/kern/vfs_init.rs"
 lz = ["sys/kern/vfs_init.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
+adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/init.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_subr.rs"
@@ -6258,58 +6258,6 @@ rust = "sys/lib/libz/zutil.rs"
 lz = ["sys/lib/libz/zutil.rs"]
 status = "redesigned"
 license = "zlib"
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_device.rs"
-lz = ["sys/miscfs/fuse/fuse_device.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/thread.rs", "sys/kernel/event.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_file.rs"
-lz = ["sys/miscfs/fuse/fuse_file.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_ihash.rs"
-lz = ["sys/miscfs/fuse/fuse_ihash.rs"]
-status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/fs/vnode.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_lookup.rs"
-lz = ["sys/miscfs/fuse/fuse_lookup.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_vfsops.rs"
-lz = ["sys/miscfs/fuse/fuse_vfsops.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fuse_vnops.rs"
-lz = ["sys/miscfs/fuse/fuse_vnops.rs"]
-status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fusebuf.rs"
-lz = ["sys/miscfs/fuse/fusebuf.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/miscfs/fuse/fusefs.rs"
-lz = ["sys/miscfs/fuse/fusefs.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/mount.rs"]
-
-[[module]]
-rust = "sys/miscfs/fuse/fusefs_node.rs"
-lz = ["sys/miscfs/fuse/fusefs_node.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/fs/vnode.rs", "sys/kernel/fs/lockf.rs"]
 
 [[module]]
 rust = "sys/net/art.rs"
@@ -7411,11 +7359,6 @@ lz = ["sys/sys/filio.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/sys/fusebuf.rs"
-lz = ["sys/sys/fusebuf.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/hal/sys/futex.rs"
 crate = "hal"
 lz = ["sys/sys/futex.rs"]
@@ -7492,7 +7435,7 @@ notes = "PROT_*, MAP_PRIVATE/MAP_ANON, MADV_*, MAP_INHERIT_* and MCL_CURRENT/MCL
 rust = "sys/sys/mount.rs"
 lz = ["sys/sys/mount.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/file.rs", "sys/kernel/fs/ufs/ffs/ffs_vfsops.rs", "sys/kernel/fs/ufs/mfs/mfs_vfsops.rs", "sys/kernel/fs/ufs/ext2fs/ext2fs_vfsops.rs", "sys/kernel/fs/msdosfs/msdosfs_vfsops.rs", "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs", "sys/kernel/fs/isofs/udf/udf_vfsops.rs", "sys/kernel/fs/tmpfs/tmpfs_vfsops.rs", "sys/kernel/fs/fuse/fuse_vfsops.rs"]
 notes = "N5.2: Mount and Vfsconf the aliases of the kernel's, the VFS_* names over kernel::fs::vops, VFS_CHECKEXP through the table as bsd knows it (as_any), struct vfsops of fn members (kern/vfs_vops.rs implements the kernel's Vfs on it); keeps struct netcred/netexport with their 2 Sync impls (the export list's, kern/vfs_subr.rs, N6); N5.4: the ten *_args and export_args are hal's (sys/hal/sys/mount.rs, D-N5.4-3), re-exported here for the file systems' from_bytes sites, and their 3 read_unaligned went with them"
 
 [[module]]
@@ -10114,7 +10057,7 @@ rust = "sys/kernel/fs/fuse/fusebuf_h.rs"
 crate = "kernel"
 lz = ["sys/sys/fusebuf.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired: bsd's sys/sys/fusebuf.rs serves bsd's fuse until N5.9f2's switch): <sys/fusebuf.h>'s constants and the 25 wire structures as hal::abi_pod!s (LZ's fuse_abi! unsafe impls and abi_bytes/abi_bytes_mut gone for hal::user::bytes_of/bytes_of_mut; the 40 size/offset const asserts kept and every member's offset pinned by a test), struct fuse_dirent its 24-byte head (the [u8; 0] name gone, FUSE_NAME_OFFSET its size); struct fusebuf as Fusebuf, an item of the recorded fmsg pool (PoolHome, the device queues' parked references): the header and the operation's lengths plain (written by fb_setup before publication), the error and data length words, the op union FusebufOp (sixteen relaxed words read and written as whole members at offset 0), the data an MArray of M_FUSEFS in a ReadMostly cell moved out by the copying side; 0 unsafe (LZ: 7)"
+notes = "N5.9f1; wired at N5.9f2 (bsd's sys/sys/fusebuf.rs deleted): <sys/fusebuf.h>'s constants and the 25 wire structures as hal::abi_pod!s (LZ's fuse_abi! unsafe impls and abi_bytes/abi_bytes_mut gone for hal::user::bytes_of/bytes_of_mut; the 40 size/offset const asserts kept and every member's offset pinned by a test), struct fuse_dirent its 24-byte head (the [u8; 0] name gone, FUSE_NAME_OFFSET its size); struct fusebuf as Fusebuf, an item of the recorded fmsg pool (PoolHome, the device queues' parked references): the header and the operation's lengths plain (written by fb_setup before publication), the error and data length words, the op union FusebufOp (sixteen relaxed words read and written as whole members at offset 0), the data an MArray of M_FUSEFS in a ReadMostly cell moved out by the copying side; 0 unsafe (LZ: 7)"
 
 [[module.fn]]
 lz = "sys/sys/fusebuf.rs::fuse_abi"
@@ -10169,14 +10112,14 @@ rust = "sys/kernel/fs/fuse/fusebuf.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fusebuf.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): fb_setup answers a counted handle to its fmsg item (FusebufRef), the value built whole inside the pool's get (pool_get then the data's malloc, the C's order); fb_queue lends the device a clone (parked by its queue) and sleeps on the item's address (PWAIT, no PCATCH, no timeout: the C's); fb_delete drops a handle; fb_uuid two arc4random() words (one rndlock section more than the C's arc4random_buf, D-f1-6, an N12 row); the tests' simulated daemon (testfuse) runs between sleep_setup and sleep_finish; 0 unsafe (LZ: 1)"
+notes = "N5.9f1; wired at N5.9f2: fb_setup answers a counted handle to its fmsg item (FusebufRef), the value built whole inside the pool's get (pool_get then the data's malloc, the C's order); fb_queue lends the device a clone (parked by its queue) and sleeps on the item's address (PWAIT, no PCATCH, no timeout: the C's); fb_delete drops a handle; fb_uuid two arc4random() words (one rndlock section more than the C's arc4random_buf, D-f1-6, an N12 row); the tests' simulated daemon (testfuse) runs between sleep_setup and sleep_finish; 0 unsafe (LZ: 1)"
 
 [[module]]
 rust = "sys/kernel/fs/fuse/fuse_device.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fuse_device.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired: arm64's conf.rs/ioconf.rs name bsd's entry points until N5.9f2's switch): the cdevsw entry points generic over the glue with the C's signatures (D-N5.9-7); struct fuse_d a counted M_DEVBUF block (FuseDRef), the device list's place a reference parked on itself (fd_self), refcnt_finalize's wait gone; fd_fbufs_in under fd_lock (RawRwlock) and fd_fbufs_wait under the kernel lock, PinLists of the requests' items, each queued request one parked reference; fuse_lookup by the whole dev_t (D-N5.9-U1's mechanism); the read filter FuseRead: Filter<G> with the device as the knote's shared hook (MPSAFE filters run without the kernel lock, D-f1-3), fd_rklist an owner klist of fd_lock, fd_nin the in-queue's length for the event; U2's third bound in fusewrite (a reply shorter than op_out_len: EINVAL, the requester EIO); a cleared FORGET/INIT buffer freed; review 1's B1: fuseclose's cleanup marks the device closed (fd_self taken) in the fd_lock section that empties the input queue and fuse_device_queue_fbuf_fd refuses a request for a closed device (ENXIO, fb_queue does not sleep); fusewrite_dequeue the reply's end; 0 unsafe (LZ: 13)"
+notes = "N5.9f1; wired at N5.9f2 (arm64's conf.rs/ioconf.rs name these entry points): the cdevsw entry points generic over the glue with the C's signatures (D-N5.9-7); struct fuse_d a counted M_DEVBUF block (FuseDRef), the device list's place a reference parked on itself (fd_self), refcnt_finalize's wait gone; fd_fbufs_in under fd_lock (RawRwlock) and fd_fbufs_wait under the kernel lock, PinLists of the requests' items, each queued request one parked reference; fuse_lookup by the whole dev_t (D-N5.9-U1's mechanism); the read filter FuseRead: Filter<G> with the device as the knote's shared hook (MPSAFE filters run without the kernel lock, D-f1-3), fd_rklist an owner klist of fd_lock, fd_nin the in-queue's length for the event; U2's third bound in fusewrite (a reply shorter than op_out_len: EINVAL, the requester EIO); a cleared FORGET/INIT buffer freed; review 1's B1: fuseclose's cleanup marks the device closed (fd_self taken) in the fd_lock section that empties the input queue and fuse_device_queue_fbuf_fd refuses a request for a closed device (ENXIO, fb_queue does not sleep); fusewrite_dequeue the reply's end; 0 unsafe (LZ: 13)"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fuse_device.rs::FusebufHead"
@@ -10196,6 +10139,11 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fuse_device.rs::FuseDListHead::deref"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_device.rs::FuseDListHead::Target"
 native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
 kind = "merged"
 
@@ -10259,7 +10207,7 @@ rust = "sys/kernel/fs/fuse/fuse_ihash.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fuse_ihash.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): the three StaticCells (table, mask, key) one Fuseihash in FuseTables::ihash (a ReadMostly cell fuse_ihashinit fills), the chains a hashinit MArray of PinLists under the kernel lock (reader walks, witness changes: one spl pair per insertion and removal, the N12 row of the vnode hashes), the key fs::subr::siphash_key (msdosfs's denode hash shape); a node is matched by the mount block it holds; fuse_ihashrem through the node's recorded chain and is_linked; 0 unsafe (LZ: 4)"
+notes = "N5.9f1; wired at N5.9f2: the three StaticCells (table, mask, key) one Fuseihash in FuseTables::ihash (a ReadMostly cell fuse_ihashinit fills), the chains a hashinit MArray of PinLists under the kernel lock (reader walks, witness changes: one spl pair per insertion and removal, the N12 row of the vnode hashes), the key fs::subr::siphash_key (msdosfs's denode hash shape); a node is matched by the mount block it holds; fuse_ihashrem through the node's recorded chain and is_linked; 0 unsafe (LZ: 4)"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fuse_ihash.rs::FuseIhashtbl"
@@ -10291,7 +10239,7 @@ rust = "sys/kernel/fs/fuse/fusefs_node.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fusefs_node.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): struct fusefs_node a counted M_FUSEFS block (FusefsNodeRef) the vnode's typed slot holds, i_fmp a counted handle to the mount's block, the C's shared members words; i_hash a PinEntry (LZ's i_hashed flag is its is_linked) and i_chain the chain it is on; fufh[] indexed by FufhKind (the three valid kinds; LZ's idx of FUFH_INVALID could name no slot), the slots' fh_type the C's FufhType; ITOV/VTOI itov/vtoi (a handle from the slot); 0 unsafe (LZ: 2)"
+notes = "N5.9f1; wired at N5.9f2: struct fusefs_node a counted M_FUSEFS block (FusefsNodeRef) the vnode's typed slot holds, i_fmp a counted handle to the mount's block, the C's shared members words; i_hash a PinEntry (LZ's i_hashed flag is its is_linked) and i_chain the chain it is on; fufh[] indexed by FufhKind (the three valid kinds; LZ's idx of FUFH_INVALID could name no slot), the slots' fh_type the C's FufhType; ITOV/VTOI itov/vtoi (a handle from the slot); 0 unsafe (LZ: 2)"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fusefs_node.rs::FufhType::idx"
@@ -10330,7 +10278,7 @@ rust = "sys/kernel/fs/fuse/fusefs.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fusefs.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): struct fusefs_mnt a counted M_FUSEFS block (FusefsMntRef), its changing members words, VFSTOFUSEFS vfstofusefs (a handle from the mount's typed slot); FuseTables<G>, VfsTables::fuse under feature fuse (the C's fusefs_fbuf_pool, fuse_d_list, stat_* counters and inode hash; N5.9f2 adds fusefs_vops); M_FUSEFS a private constant; 0 unsafe (LZ: 2)"
+notes = "N5.9f1; wired at N5.9f2: struct fusefs_mnt a counted M_FUSEFS block (FusefsMntRef), its changing members words, VFSTOFUSEFS vfstofusefs (a handle from the mount's typed slot); FuseTables<G>, VfsTables::fuse under feature fuse (the C's fusefs_fbuf_pool, fuse_d_list, stat_* counters and inode hash; N5.9f2: fusefs_vops, FuseVnops); M_FUSEFS a private constant; 0 unsafe (LZ: 2)"
 
 [[module.fn]]
 lz = "sys/miscfs/fuse/fusefs.rs::FUSEFS_NAMES"
@@ -10348,7 +10296,125 @@ rust = "sys/kernel/fs/fuse/fuse_file.rs"
 crate = "kernel"
 lz = ["sys/miscfs/fuse/fuse_file.rs"]
 status = "redesigned"
-notes = "N5.9f1 (unwired): LZ's functions over the kernel's node and mount, the handle kind a FufhKind, the requests counted handles; 0 unsafe (LZ: 0)"
+notes = "N5.9f1; wired at N5.9f2: LZ's functions over the kernel's node and mount, the handle kind a FufhKind, the requests counted handles; 0 unsafe (LZ: 0)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_lookup.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_lookup.rs"]
+status = "redesigned"
+notes = "N5.9f2: fusefs_lookup over the kernel's vop_lookup arguments, the node and mount counted handles (vtoi, i_fmp), the name written through Fusebuf::dat_update, the reply's entry read at offset 0 of the op union; the C's .. dance kept step for step; the reclaim path's FORGET handed to the device's queue; 0 unsafe (LZ: 1)"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_vnops.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_vnops.rs"]
+status = "redesigned"
+notes = "N5.9f2: FuseVnops<G>, one impl Vnops<G> of the C's 34 slots (decision 46; revoke and bwrite NULL), FuseTables::vops; the three filterops impl Filter; the requests' data through dat_update/take_dat/set_dat (LZ's fb_dat_slice gone); readdir's dirents through fs::subr::dirent_uiomove; D-N5.9-U2's readdir and write bounds (EIO); D-N5.9-U4's short write (the loop ends after a reply of fewer bytes than asked); the helpers the kernel's (ufs's vmount, ucred, pnbuf_free, kn_vnode; lookup's opt_eq; spec's BLKDEV_IOSIZE); 0 unsafe (LZ: 6)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::FUSEFS_VOPS"
+native = ["FuseVnops", "sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::FUSEFSREAD_FILTOPS"
+native = ["FusefsRead"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::FUSEFSWRITE_FILTOPS"
+native = ["FusefsWrite"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::FUSEFSVNODE_FILTOPS"
+native = ["FusefsVnode"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::vmount"
+native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::curp"
+native = []
+kind = "dropped"
+reason = "curproc is the operation's own thread (the Vnops argument, cn_proc, uio_procp; proc_or_cur for a NULL a_p); fusefs_vget's is the glue's with_curproc"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::cn_proc"
+native = []
+kind = "dropped"
+reason = "the kernel's componentname gives its thread itself (Componentname::proc), the C's cnp->cn_proc"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::ucred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::pnbuf_free"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::pnbuf_free"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::kn_vnode"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::kn_vnode"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::filt_fusefsread"
+native = ["FusefsRead::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::filt_fusefswrite"
+native = ["FusefsWrite::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::filt_fusefsvnode"
+native = ["FusefsVnode::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vnops.rs::dirent_bytes"
+native = ["sys/kernel/fs/subr.rs::dirent_uiomove"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/fuse/fuse_vfsops.rs"
+crate = "kernel"
+lz = ["sys/miscfs/fuse/fuse_vfsops.rs"]
+status = "redesigned"
+notes = "N5.9f2: FusefsVfs<G> (impl Vfs<G>, FusefsVfs::VFS); struct fusefs_mnt and the nodes counted M_FUSEFS blocks in the mount's and the vnodes' typed slots; D-N5.9-U1's ENXIO/EBUSY at the C's VCHR test and again right before the attachment (fusefs_mount_attach, review 1's S1); D-N5.9-10's MNAMELEN; fusefs_init the fmsg pool and the hash; fusefs_sysctl over FuseTables' counters and TypedPool::npages (LZ's mirror atomic gone); checkexp bsd's VFS_CHECKEXP arm; 0 unsafe (LZ: 2)"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vfsops.rs::FUSEFS_FBUF_POOL"
+native = ["sys/kernel/fs/fuse/fusefs.rs::FuseTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vfsops.rs::FUSEFS_POOL_NPAGES"
+native = ["fusefs_sysctl"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vfsops.rs::FUSEFS_VFSOPS"
+native = ["FusefsVfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vfsops.rs::FUSEFS_VARS"
+native = ["fusefs_sysctl"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/miscfs/fuse/fuse_vfsops.rs::fusefs_checkexp"
+native = ["sys/sys/mount.rs::VFS_CHECKEXP"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/fs/isofs/cd9660/iso.rs"
@@ -11337,7 +11403,7 @@ reason = "M0 bootstrap: semihosting exit under feature qemu; not OpenBSD code"
 
 [[extra]]
 rust = "sys/arch/arm64/conf/ioconf.rs"
-reason = "replaces config(8)'s generated ioconf.c for arm64 GENERIC: cfdata[] and cfroots[] for the ported devices (mainbus0, ampintc*, agtimer*, virtio* at fdt?, vio* at virtio?), pdevinit[] (pf 1, pflog 1, pty 16, loop 1, wg 1, rd 1), reached through machine::autoconf"
+reason = "replaces config(8)'s generated ioconf.c for arm64 GENERIC: cfdata[] and cfroots[] for the ported devices (mainbus0, ampintc*, agtimer*, virtio* at fdt?, vio* at virtio?), pdevinit[] (pf 1, pflog 1, pty 16, loop 1, wg 1, rd 1), reached through machine::autoconf; N5.9f2: pdevinit[]'s fuse names the kernel's fuseattach::<BsdProcGlue> and NFUSE (kernel::fs::fuse::fuse_device)"
 
 [[extra]]
 rust = "sys/crypto/testutil.rs"
@@ -11847,7 +11913,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle)"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -11878,7 +11944,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -13934,7 +14000,7 @@ reason = "N5.9t1, completed at N5.9t2: the kernel tmpfs's test fixture (host tes
 [[extra]]
 rust = "sys/kernel/fs/fuse/testfuse.rs"
 crate = "kernel"
-reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a vnode table for hashed nodes until fuse_vnops (N5.9f2); no OpenBSD or LZ source"
+reason = "N5.9f1: the kernel fuse's test fixture (host tests and benches only, cfg(any(test, feature = doubles))): the set-up (the test thread, the fmsg pool and the inode hash), the simulated daemon fb_queue runs (LZ's TEST_DAEMON of miscfs/fuse/fusebuf.rs, moved) and the daemon's side of the device (LZ's fuse_device tests' helpers read_req, reply, dev_read, dev_write, open_dev, fake_fmp, moved), a node on a mount structure that is not a real one; N5.9f2: fusefs_init in the set-up, fuse_vnops' table for the nodes (TestFuseVops gone), a daemon scripted by opcode (script/scripted, the requests seen recorded), LZ's fuse_vfsops tests' file system (hello_fs) and set-up moved (the configuration entry, args, the daemon's descriptor of the device, mount, mounted, rdwr, readdir); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
@@ -13954,7 +14020,7 @@ reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestF
 [[extra]]
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
-reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock; N5.9f2: the pool double's npages (whole pages per item out)"
 
 [[extra]]
 rust = "sys/kernel/benches/vm.rs"

@@ -49,7 +49,6 @@ pub mod ddb;
 pub mod dev;
 pub mod kern;
 pub mod machine;
-pub mod miscfs;
 pub mod net;
 pub mod netinet;
 pub mod netinet6;

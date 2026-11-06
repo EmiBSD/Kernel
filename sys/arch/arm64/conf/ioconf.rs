@@ -157,9 +157,9 @@ use crate::dev::wscons::wsdisplay::{WSDISPLAY_CA, WSDISPLAY_CD};
 use crate::dev::wscons::wskbd::{WSKBD_CA, WSKBD_CD};
 use crate::dev::wscons::wsmouse::{WSMOUSE_CA, WSMOUSE_CD};
 use crate::dev::wscons::wsmux::wsmuxattach;
-use crate::kern::tty_pty::ptyattach;
 #[cfg(feature = "fuse")]
-use crate::miscfs::fuse::fuse_device::{NFUSE, fuseattach};
+use crate::kern::proc_glue::BsdProcGlue;
+use crate::kern::tty_pty::ptyattach;
 use crate::net::bpf::bpfilterattach;
 use crate::net::if_enc::encattach;
 use crate::net::if_loop::loopattach;
@@ -172,6 +172,8 @@ use crate::scsi::cd::{CD_CA, CD_CD};
 use crate::scsi::scsiconf::{SCSIBUS_CA, SCSIBUS_CD};
 use crate::scsi::sd::{SD_CA, SD_CD};
 use crate::sys::device::{Cfdata, FSTATE_NOTFOUND, FSTATE_STAR, Pdevinit};
+#[cfg(feature = "fuse")]
+use kernel::fs::fuse::fuse_device::{NFUSE, fuseattach};
 
 /// `pv[]` for children of the `fdt` attribute: `mainbus0` (`cfdata[0]`), `ampintc*`
 /// (`cfdata[1]`), `simplebus*` (`cfdata[12]`) and `agintc*` (`cfdata[51]`).
@@ -1289,7 +1291,7 @@ pub static PDEVINIT: StaticCell<[Pdevinit; NPDEVINIT]> = StaticCell::new([
     },
     #[cfg(feature = "fuse")]
     Pdevinit {
-        pdev_attach: fuseattach,
+        pdev_attach: fuseattach::<BsdProcGlue>,
         pdev_count: NFUSE,
     },
     Pdevinit {

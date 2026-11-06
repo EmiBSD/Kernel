@@ -44,7 +44,7 @@
 //! The prototypes of the header are functions of the files that define them:
 //! `fusefs_file_open`/`fusefs_file_close` (`fuse_file`) and the device helpers
 //! `fuse_device_cleanup`, `fuse_device_queue_fbuf`, `fuse_device_set_fmp` (`fuse_device`);
-//! `fusefs_vops` is N5.9f2's.
+//! `fusefs_vops` is `fuse_vnops`'s [`FuseVnops`], the tables' member `vops`.
 //!
 //! ## Deviations
 //! - `FUSE_DEBUG` is not defined (as in GENERIC), so `DPRINTF` expands to nothing and every
@@ -69,7 +69,8 @@
 //!   [`FuseTables`], `VfsTables::fuse` (a static generic over the glue cannot exist): the
 //!   device list a `PinList` under the kernel lock (the C's `LIST_FOREACH` with `next(e)`,
 //!   O(1) a step), the counters atomics, the hash a `ReadMostly` cell `fuse_ihashinit` fills,
-//!   the pool a recorded `TypedPool` (`"fmsg"`). N5.9f2 adds `fusefs_vops`.
+//!   the pool a recorded `TypedPool` (`"fmsg"`), and `fusefs_vops` (`vops`, N5.9f2: one
+//!   address per glue for `vops_id`, a byte, tmpfs's `TmpfsTables` shape).
 //! - `FUSEFS_NAMES` is not kept: nothing reads it (the `vfs.fuse` names are sysctl(8)'s own
 //!   table in userland).
 
@@ -84,6 +85,7 @@ use hal::sys::types::Dev;
 use crate::assert::kpanic;
 use crate::fs::fuse::fuse_device::FuseDLink;
 use crate::fs::fuse::fuse_ihash::Fuseihash;
+use crate::fs::fuse::fuse_vnops::FuseVnops;
 use crate::fs::fuse::fusebuf_h::Fusebuf;
 use crate::fs::mount::Mount;
 use crate::fs::word::{I32Word, U32Word};
@@ -181,10 +183,12 @@ pub struct FuseTables<G: ProcGlue> {
     /// `fusefs_fbuf_pool` (`"fmsg"`), recorded (a device's queue parks a reference on each
     /// request it holds).
     pub fbuf_pool: TypedPool<Fusebuf>,
+    /// `fusefs_vops`, the operations `fusefs_vget` gives a vnode (one address per glue).
+    pub vops: FuseVnops<G>,
 }
 
 impl<G: ProcGlue> FuseTables<G> {
-    /// No device, nothing counted, no hash, no pool made yet.
+    /// No device, nothing counted, no hash, no pool made yet, the vnode table.
     pub const fn new() -> Self {
         Self {
             devices: PinList::new(),
@@ -193,6 +197,7 @@ impl<G: ProcGlue> FuseTables<G> {
             stat_fbufs_wait: AtomicI32::new(0),
             ihash: ReadMostly::new(None),
             fbuf_pool: TypedPool::new(),
+            vops: FuseVnops::new(),
         }
     }
 }

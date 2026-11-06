@@ -81,6 +81,10 @@ impl RawPool for Pool {
         u64::from(self.pr_nout.get())
     }
 
+    fn npages(&self) -> u64 {
+        u64::from(self.pr_npages.get())
+    }
+
     fn size(&self) -> usize {
         self.pr_size.get() as usize
     }

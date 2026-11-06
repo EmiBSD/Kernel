@@ -51,7 +51,7 @@
 //! (`vn_open`, `vn_read`, `vn_write`, `vn_closefile`, `vn_kqfilter` take it), as the C's.
 //!
 //! The entry points carry the `cdevsw` signatures over the glue (`bsd`'s `Uio`, `Proc` and
-//! `Knote` are the kernel's over `BsdProcGlue`), so N5.9f2's switch names
+//! `Knote` are the kernel's over `BsdProcGlue`), so arm64's `conf.rs` names (N5.9f2)
 //! `fuseopen::<BsdProcGlue>` and the others in `cdev_fuse_init` with no adapter (D-N5.9-7).
 //!
 //! ## Deviations
@@ -62,8 +62,8 @@
 //!   more fusebufs are queued (the head keeps pointing at the second); the comment says
 //!   every message is cleared, which the port does (LZ's fix, kept).
 //! - A cleared `FUSE_FORGET` or `FUSE_INIT` fusebuf, which nobody waits for, is freed with
-//!   the queue's reference (and so is one queued on a device that is not open), where the C
-//!   (and LZ) leak it: `vmstat -m`'s `fmsg` `InUse` is lower than OpenBSD's after a cleanup
+//!   the queue's reference (and so is one queued on a device that is not open, and one
+//!   refused on a device closed meanwhile, below), where the C (and LZ) leak it: `vmstat -m`'s `fmsg` `InUse` is lower than OpenBSD's after a cleanup
 //!   and its `Releases` higher by as many, its requests equal (D-N5.9-15).
 //! - A request queued through a device handle taken before `fuseclose` ran (its requester
 //!   slept for the device's `fd_lock` meanwhile) is not queued on the closed device: it is
@@ -75,7 +75,9 @@
 //!   interleave.
 //! - `vmstat -m`: the device is a block of 280 bytes (the `MArc`'s count and type beside the
 //!   264-byte `FuseD`; C 128, LZ 184), in `M_DEVBUF`'s 512-byte bucket where the C's is in the
-//!   128-byte one (the N3 class of item sizes, U3; `fusefs`'s deviations list the others).
+//!   128-byte one (`fusefs`'s deviations list the others). The malloc(9) buckets (`vmstat
+//!   -m`'s `MemUse` of a type) are outside U3's item-size class: a row the user decides at the
+//!   N5 close.
 //! - `fuseclose` does not wait for the device's other users (the C's `refcnt_finalize(..,
 //!   "fusedfd")`): the device is a counted block, and the memory goes with its last handle,
 //!   so `vmstat -m`'s `M_DEVBUF` block may be freed a moment after `close(2)` returns
@@ -253,8 +255,8 @@ fn tables<G: ProcGlue>() -> &'static FuseTables<G> {
 }
 
 /// `uiomove(buf, n, uio)` of the kernel bytes `buf` (`bsd`'s, the `FileGlue::uiomove`
-/// bridge).
-fn uiomove<G: ProcGlue>(buf: &mut [u8], uio: &mut Uio<'_, G>) -> Result<(), Errno> {
+/// bridge): the device's copies and `fuse_vnops`'.
+pub(crate) fn uiomove<G: ProcGlue>(buf: &mut [u8], uio: &mut Uio<'_, G>) -> Result<(), Errno> {
     <G::FileGlue as FileGlue>::uiomove(buf, uio)
 }
 
@@ -334,11 +336,13 @@ pub fn fuse_device_cleanup<G: ProcGlue>(dev: Dev) {
 }
 
 /// `fuse_device_queue_fbuf`: puts a request on the device's input queue, which keeps the
-/// reference `fbuf` until the request is taken off, and lets the daemon know. Nothing happens
-/// when the device is not open (the reference goes; the requester sleeps for ever, as the
-/// C's). `false` when the device closed while the caller waited for its `fd_lock`: the
-/// request is failed with `ENXIO` as `fuseclose`'s cleanup fails a queued one, and is not
-/// queued (the module's deviations).
+/// reference `fbuf` until the request is taken off, and lets the daemon know. The answer is
+/// whether the caller should sleep for the reply (`fb_queue`'s), not whether the request was
+/// queued: `true` when it was, and also when the device is not open (nothing happens, the
+/// reference goes; the requester sleeps for ever, as the C's); `false` when the device closed
+/// while the caller waited for its `fd_lock`: the request is failed with `ENXIO` as
+/// `fuseclose`'s cleanup fails a queued one, and is not queued (the module's deviations).
+/// The callers that expect no reply (`FUSE_INIT` at the mount, `FUSE_FORGET`) ignore it.
 pub fn fuse_device_queue_fbuf<G: ProcGlue>(dev: Dev, fbuf: FusebufRef) -> bool {
     match fuse_lookup::<G>(dev) {
         Some(fd) => fuse_device_queue_fbuf_fd(&fd, fbuf),
@@ -379,6 +383,12 @@ fn fuse_device_set_fmp_fd<G: ProcGlue>(fd: &FuseD<G>, fmp: Option<FusefsMntRef<G
         // Let file system daemons know the device is dead
         wakeup(ptr::from_ref(&fd.fd_fbufs_in));
     }
+}
+
+/// `fuse_device_set_fmp(fmp, 1)` on the device `fd` the caller found (`fusefs_mount`'s
+/// attachment after U1's test, `fuse_vfsops`).
+pub(crate) fn fuse_device_attach<G: ProcGlue>(fd: &FuseD<G>, fmp: &FusefsMntRef<G>) {
+    fuse_device_set_fmp_fd(fd, Some(fmp.clone()));
 }
 
 /// `fuse_device_set_fmp`: attaches the mount to its device (`set`) or detaches it.
@@ -822,14 +832,15 @@ mod tests {
 
     use super::*;
     use crate::event::{EVFILT_VNODE, kqueue_alloc, kqueue_init, test_knote, test_knote_drop};
+    use crate::fs::fuse::fuse_vfsops::PENDING;
     use crate::fs::fuse::fusebuf::{fb_delete, fb_queue, fb_setup};
     use crate::fs::fuse::fusebuf_h::{
         FUSE_GETATTR, FUSE_LOOKUP, FUSE_OPEN, FUSE_READ, FuseAttrOut, FuseEntryOut, FuseForgetIn,
         FuseGetattrIn, FuseInitIn, FuseOpenOut, FuseReadIn,
     };
     use crate::fs::fuse::testfuse::{
-        PENDING, dev_read, dev_write, fusedev, mount_fmp, open_dev, read_req, reply, set_daemon,
-        setup, stats,
+        dev_read, dev_write, fusedev, mount_fmp, open_dev, read_req, reply, set_daemon, setup,
+        stats,
     };
     use crate::fs::testfs::TestGlue;
     use crate::proc::THREAD_PID_OFFSET;

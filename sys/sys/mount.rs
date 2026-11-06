@@ -289,8 +289,9 @@ pub fn VFS_CHECKEXP(
     // (N5.8c2) their `msdosfs_check_export` and `cd9660_check_export`, which are
     // `ufs_check_export`'s body over the same list (the C's `pm_export` and `im_export` are the
     // mount's glue member), for the kernel's mfs (N5.5b3) its `mfs_checkexp`, and for the
-    // kernel's udf (N5.8u2) its `udf_checkexp`, which refuses every client (`EACCES`), and for
-    // the kernel's tmpfs (N5.9t2) its `(void *)eopnotsupp`.
+    // kernel's udf (N5.8u2) its `udf_checkexp`, which refuses every client (`EACCES`), for
+    // the kernel's tmpfs (N5.9t2) its `(void *)eopnotsupp`, and for the kernel's fuse (N5.9f2)
+    // its `fusefs_checkexp` (`EOPNOTSUPP`).
     match mp.op().as_any().and_then(|a| a.downcast_ref::<Vfsops>()) {
         Some(ops) => (ops.vfs_checkexp)(mp, nam, exflg, cred),
         #[cfg(feature = "ffs")]
@@ -317,6 +318,9 @@ pub fn VFS_CHECKEXP(
         // tmpfs_vfsops' `vfs_checkexp`: `(void *)eopnotsupp`.
         #[cfg(feature = "tmpfs")]
         None if mp.vfc().name() == MOUNT_TMPFS => Err(Errno::EOPNOTSUPP),
+        // fuse_vfsops' `fusefs_checkexp`: EOPNOTSUPP.
+        #[cfg(feature = "fuse")]
+        None if mp.vfc().name() == MOUNT_FUSEFS => Err(Errno::EOPNOTSUPP),
         None => panic(format_args!(
             "VFS_CHECKEXP: mount {:p} of a kernel file system",
             mp
