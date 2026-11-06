@@ -75,9 +75,6 @@
 //!   would write past its buffer. So `vmstat -m`'s `temp` row counts one request fewer per
 //!   Rock Ridge record scanned (LZ's deviation).
 //! - `NOSORTBUG` is not defined, as in GENERIC.
-//! - Until N5.8c2 brings `cd9660_vfsops.rs`, `cd9660_lookup` takes `cd9660_vget_internal` as
-//!   its argument `vget_internal` (the one tie of the C's lookup to the mount code: the cycle
-//!   `cd9660_vget_internal` -> `cd9660_rrip_analyze` -> `cd9660_bufatoff` -> lookup's).
 //!
 //! ## Redesign
 //! - LZ's lent directory buffers (two `unsafe` views of `b_data`, the buffer held as
@@ -106,10 +103,10 @@ use crate::fs::isofs::cd9660::cd9660_extern::{ISO_FTYPE_RRIP, blkoff, blksize, l
 use crate::fs::isofs::cd9660::cd9660_node::{Doff, IsoNode, isodirino, vtoi};
 use crate::fs::isofs::cd9660::cd9660_rrip::cd9660_rrip_getname;
 use crate::fs::isofs::cd9660::cd9660_util::isofncmp;
+use crate::fs::isofs::cd9660::cd9660_vfsops::cd9660_vget_internal;
 use crate::fs::isofs::cd9660::iso::{
     ASSOCCHAR, Cdino, ISO_DIRECTORY_RECORD_SIZE, IsoDirectoryRecord, isonum_711,
 };
-use crate::fs::mount::Mount;
 use crate::fs::namei::{
     CREATE, Componentname, DELETE, ISDOTDOT, ISLASTCN, LOCKPARENT, LOOKUP, MAKEENTRY, PDIRUNLOCK,
     RENAME,
@@ -119,15 +116,6 @@ use crate::fs::ufs::ufs::ufs_lookup::vmount;
 use crate::fs::vnode::{LK_EXCLUSIVE, LK_RETRY, VEXEC, Vnode, vn_lock};
 use crate::fs::vops::{vop_access, vop_unlock};
 use crate::proc::ProcGlue;
-
-/// `cd9660_vget_internal(mp, ino, vpp, relocated, isodir)` (`cd9660_vfsops.c`, N5.8c2): the
-/// locked vnode of the file `ino` of `mp`, from the record `isodir` when the caller holds it.
-pub type VgetInternal<G> = fn(
-    &'static Mount<G>,
-    Cdino,
-    bool,
-    Option<IsoDirectoryRecord<'_>>,
-) -> Result<&'static Vnode<G>, Errno>;
 
 /// Where the scan of a directory ended.
 enum Scan {
@@ -152,7 +140,7 @@ fn held(bp: Option<&BufRef>) -> &BufRef {
 
 /// `dbtob(bp->b_blkno) + entryoffsetinblock`: the inode number of a file's record, its byte
 /// offset on the disc (the `daddr_t` sum stored into the `cdino_t`).
-fn record_ino(t: &BufRef, entryoffsetinblock: usize) -> Cdino {
+pub(crate) fn record_ino(t: &BufRef, entryoffsetinblock: usize) -> Cdino {
     (t.buf().blkno() << DEV_BSHIFT).wrapping_add(entryoffsetinblock as i64) as Cdino
 }
 
@@ -187,7 +175,6 @@ pub fn cd9660_lookup<G: ProcGlue>(
     vdp: &'static Vnode<G>,
     vpp: &mut Option<&'static Vnode<G>>,
     cnp: &mut Componentname<'_, G>,
-    vget_internal: VgetInternal<G>,
 ) -> Result<(), Errno> {
     let nameiop = cnp.cn_nameiop;
 
@@ -435,7 +422,7 @@ pub fn cd9660_lookup<G: ProcGlue>(
         drop(dp);
         let _ = vop_unlock(pdp); // race to get the inode
         cnp.cn_flags |= PDIRUNLOCK;
-        let tdp = match vget_internal(vmount(vdp), target, relocated, None) {
+        let tdp = match cd9660_vget_internal(vmount(vdp), target, relocated, None) {
             Ok(tdp) => tdp,
             Err(e) => {
                 if vn_lock(pdp, LK_EXCLUSIVE | LK_RETRY).is_ok() {
@@ -461,7 +448,7 @@ pub fn cd9660_lookup<G: ProcGlue>(
     } else {
         let t = held(bp.as_ref());
         let rec = t.bytes().get(ep..).and_then(IsoDirectoryRecord::new);
-        let error = vget_internal(vmount(vdp), target, relocated, rec);
+        let error = cd9660_vget_internal(vmount(vdp), target, relocated, rec);
         if let Some(t) = bp.take() {
             brelse(t);
         }
@@ -500,70 +487,48 @@ pub fn cd9660_bufatoff<G: ProcGlue>(
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests for the directory scan over the makefs image's root and `sub/` on testffs's
-    // disk, read through a directory vnode of testcd9660's table: Rock Ridge and plain ISO
-    // 9660 names, `.`, `..`, a missing name, the second pass, the relocated test, and the
-    // record handed to `cd9660_vget_internal` (a recording double until N5.8c2).
+    // Host tests for the directory scan over real mounts (testcd9660: the makefs image
+    // mounted by `iso_mountfs` with and without Rock Ridge, mkiso's directory of two blocks),
+    // the vnodes `cd9660_vget_internal` gives for what the scan found: Rock Ridge and plain
+    // ISO 9660 names, `.`, `..`, a missing name, the second pass, a read-only mount's
+    // refusals, a match the scan went past into the next block (`foundino`'s re-read of the
+    // saved block, N5.8c1's review), and `cd9660_bufatoff`.
 
-    use std::cell::RefCell;
+    use std::sync::MutexGuard;
     use std::vec::Vec;
 
+    use hal::sys::mount::ISOFSMNT_NORRIP;
+
     use super::*;
-    use crate::fs::isofs::cd9660::cd9660_extern::{
-        ISO_FTYPE_DEFAULT, ISO_FTYPE_RRIP, IsoFtype, IsoMntRef,
-    };
-    use crate::fs::isofs::cd9660::cd9660_node::IsoNodeRef;
-    use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, test_mnt, test_node};
+    use crate::fs::isofs::cd9660::cd9660_node::vtoi;
+    use crate::fs::isofs::cd9660::testcd9660::mkiso::{self, Iso, record};
+    use crate::fs::isofs::cd9660::testcd9660::{attach_image, image, mount_root, root};
+    use crate::fs::mount::Mount;
+    use crate::fs::subr::vrele;
     use crate::fs::testfs::TestGlue;
+    use crate::fs::ufs::ffs::testffs::unmount_root;
     use crate::fs::ufs::ufs::testufs::cn;
-    use crate::fs::vops::vop_lock;
+    use crate::fs::vnode::VDIR;
     use crate::proc::Thread;
 
-    std::thread_local! {
-        /// What the double of `cd9660_vget_internal` was asked: the inode number, the
-        /// relocated flag, and the record's name when one was given.
-        static ASKED: RefCell<Vec<(Cdino, bool, Option<Vec<u8>>)>> = const { RefCell::new(Vec::new()) };
-        /// The mount the double makes its nodes on.
-        static MNT: RefCell<Option<IsoMntRef<TestGlue>>> = const { RefCell::new(None) };
-    }
-
-    /// The double of `cd9660_vget_internal`: records the call, answers a new locked vnode.
-    fn vget_double(
-        _mp: &'static Mount<TestGlue>,
-        ino: Cdino,
-        relocated: bool,
-        isodir: Option<IsoDirectoryRecord<'_>>,
-    ) -> Result<&'static Vnode<TestGlue>, Errno> {
-        let name = isodir.map(|r| r.name()[..usize::from(isonum_711(r.name_len()))].to_vec());
-        ASKED.with(|a| a.borrow_mut().push((ino, relocated, name)));
-        let imp = MNT.with(|m| m.borrow().clone()).expect("a mount");
-        let (_ip, vp) = test_node(&imp, ino);
-        vop_lock(vp, LK_EXCLUSIVE).expect("locked");
-        Ok(vp)
-    }
-
-    /// The image's root directory as a locked vnode of a mount of `ftype`, and the thread.
-    fn root(
-        ftype: IsoFtype,
+    /// `image` mounted as the root with the mount arguments' `flags`, its root directory's
+    /// vnode locked and referenced.
+    fn setup(
+        image: Vec<u8>,
+        flags: i32,
     ) -> (
-        std::sync::MutexGuard<'static, ()>,
+        MutexGuard<'static, ()>,
         &'static Thread<TestGlue>,
-        IsoNodeRef<TestGlue>,
+        &'static Mount<TestGlue>,
         &'static Vnode<TestGlue>,
     ) {
-        let (g, p) = attach_image(image::image_bytes());
-        let imp = test_mnt(ftype, |_| {});
-        MNT.with(|m| *m.borrow_mut() = Some(imp.clone()));
-        ASKED.with(|a| a.borrow_mut().clear());
-        let (ip, vp) = test_node(&imp, 20 << 11);
-        ip.iso_extent.set(20);
-        ip.iso_start.set(20);
-        ip.i_size.set(2048);
-        vop_lock(vp, LK_EXCLUSIVE).expect("locked");
-        (g, p, ip, vp)
+        let (g, p) = attach_image(image);
+        let (mp, _) = mount_root(p, flags);
+        (g, p, mp, root(mp))
     }
 
-    /// `cd9660_lookup` of `name` in `dvp`: the result and the vnode.
+    /// `cd9660_lookup` of `name` in `dvp` (`LOCKPARENT`, the last component): the result,
+    /// the vnode and the component's flags.
     fn lookup(
         p: &'static Thread<TestGlue>,
         dvp: &'static Vnode<TestGlue>,
@@ -574,86 +539,99 @@ mod tests {
         let cred = p.ucred();
         let mut c = cn(p, cred, op, LOCKPARENT | flags, name);
         let mut vpp = None;
-        let r = cd9660_lookup(dvp, &mut vpp, &mut c, vget_double);
+        let r = cd9660_lookup(dvp, &mut vpp, &mut c);
         (r, vpp, c.cn_flags)
     }
 
-    /// The double's calls.
-    fn asked() -> Vec<(Cdino, bool, Option<Vec<u8>>)> {
-        ASKED.with(|a| a.borrow().clone())
+    /// What `cd9660_vget_internal` read for a vnode: the node's inode number, extent and
+    /// size.
+    fn ident(vp: &'static Vnode<TestGlue>) -> (Cdino, u64, u64) {
+        let ip = vtoi(vp);
+        (ip.i_number, ip.iso_extent.get(), ip.i_size.get())
     }
 
     #[test]
     fn rock_ridge_names_find_their_records() {
-        let (_g, p, dp, dvp) = root(ISO_FTYPE_RRIP);
+        let (_g, p, mp, dvp) = setup(image::image_bytes(), 0);
+        let dp = vtoi(dvp);
         // a file: its inode number is its record's byte offset (block 20, byte 324)
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"m10c-iso.txt");
         r.expect("found");
-        assert_eq!(
-            asked(),
-            [(20 * 2048 + 324, false, Some(b"M10C_ISO.TXT;1".to_vec()))]
-        );
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp), (20 * 2048 + 324, 23, 12));
         // the last component of a LOOKUP remembers where it was found
         assert_eq!(dp.i_diroff.get(), 324);
-        vput(vp.expect("a vnode"));
+        vput(vp);
         // a directory: its inode number is its data's byte offset
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"sub");
         r.expect("found");
-        assert_eq!(asked()[1], (21 << 11, false, Some(b"SUB".to_vec())));
-        vput(vp.expect("a vnode"));
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp), (21 << 11, 21, 2048));
+        assert_eq!(vp.vtype(), VDIR);
+        vput(vp);
         // the ISO 9660 name is no Rock Ridge name
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"M10C_ISO.TXT;1");
         assert_eq!(r, Err(Errno::ENOENT));
         assert!(vp.is_none());
         // a CREATE of a missing name answers EJUSTRETURN
         assert_eq!(lookup(p, dvp, CREATE, 0, b"new").0, Err(Errno::EJUSTRETURN));
-        assert_eq!(asked().len(), 2);
+        drop(dp);
+        vput(dvp);
+        unmount_root(p, mp);
     }
 
     #[test]
     fn dot_is_the_directory_itself() {
-        let (_g, p, _dp, dvp) = root(ISO_FTYPE_RRIP);
+        let (_g, p, _mp, dvp) = setup(image::image_bytes(), 0);
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b".");
         r.expect("found");
         assert!(vp.is_some_and(|v| core::ptr::eq(v, dvp)));
-        assert!(asked().is_empty());
-        crate::fs::subr::vrele(dvp);
+        vrele(dvp);
+        vput(dvp);
     }
 
     #[test]
-    fn dotdot_unlocks_the_parent_and_asks_for_no_record() {
-        let (_g, p, dp, dvp) = root(ISO_FTYPE_DEFAULT);
-        let (r, vp, flags) = lookup(p, dvp, LOOKUP, ISDOTDOT, b"..");
+    fn dotdot_unlocks_the_directory_and_finds_the_parent() {
+        let (_g, p, _mp, dvp) = setup(image::image_bytes(), ISOFSMNT_NORRIP);
+        let (r, sub, _) = lookup(p, dvp, LOOKUP, 0, b"SUB");
         r.expect("found");
-        // the root's parent is the root: its data's offset, the record not handed over
-        assert_eq!(asked(), [(20 << 11, true, None)]);
-        // LOCKPARENT at the last component locks the parent again
+        let sub = sub.expect("a vnode");
+        // the root unlocked, as namei leaves a parent it is done with
+        let _ = vop_unlock(dvp);
+        let (r, vp, flags) = lookup(p, sub, LOOKUP, ISDOTDOT, b"..");
+        r.expect("found");
+        // `..` is the root's vnode, from the node cache (a relocated lookup: the scan's `ino`
+        // is 0 for `..`)
+        let vp = vp.expect("a vnode");
+        assert!(core::ptr::eq(vp, dvp));
+        // LOCKPARENT at the last component locks the directory again
         assert_eq!(flags & PDIRUNLOCK, 0);
-        assert_ne!(dp.i_lock.status(), 0);
-        vput(vp.expect("a vnode"));
+        assert_ne!(vtoi(sub).i_lock.status(), 0);
+        vput(vp);
+        vput(sub);
+        vrele(dvp);
     }
 
     #[test]
     fn plain_names_match_without_case_or_version() {
-        let (_g, p, _dp, dvp) = root(ISO_FTYPE_DEFAULT);
+        let (_g, p, _mp, dvp) = setup(image::image_bytes(), ISOFSMNT_NORRIP);
+        // found past its record (`foundino`): the vnode is the saved record's
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"m10c_iso.txt");
         r.expect("found");
-        // found past its record (`foundino`): the record handed over is the saved one
-        assert_eq!(
-            asked(),
-            [(20 * 2048 + 324, false, Some(b"M10C_ISO.TXT;1".to_vec()))]
-        );
-
-        vput(vp.expect("a vnode"));
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp), (20 * 2048 + 324, 23, 12));
+        vput(vp);
         assert_eq!(
             lookup(p, dvp, LOOKUP, 0, b"m10c-iso.txt").0,
             Err(Errno::ENOENT)
         );
+        vput(dvp);
     }
 
     #[test]
     fn a_lookup_from_the_last_offset_wraps_to_the_start() {
-        let (_g, p, dp, dvp) = root(ISO_FTYPE_RRIP);
+        let (_g, p, _mp, dvp) = setup(image::image_bytes(), 0);
+        let dp = vtoi(dvp);
         // the last lookup ended at the file's record: "sub" comes after it, the second pass
         // finds nothing new; a name before it needs the second pass
         dp.i_diroff.set(324);
@@ -667,15 +645,17 @@ mod tests {
         dp.i_diroff.set(452);
         let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"m10c-iso.txt");
         r.expect("found on the second pass");
-        vput(vp.expect("a vnode"));
-        assert_eq!(asked()[1].0, 20 * 2048 + 324);
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp).0, 20 * 2048 + 324);
+        vput(vp);
+        drop(dp);
+        vput(dvp);
     }
 
     #[test]
     fn a_read_only_mount_refuses_a_delete_or_rename() {
-        let (_g, p, _dp, dvp) = root(ISO_FTYPE_RRIP);
-        let mp = dvp.mount().expect("a mount");
-        mp.set_flag(mp.flag() | MNT_RDONLY);
+        let (_g, p, mp, dvp) = setup(image::image_bytes(), 0);
+        assert_ne!(mp.flag() & MNT_RDONLY, 0);
         assert_eq!(
             lookup(p, dvp, DELETE, 0, b"m10c-iso.txt").0,
             Err(Errno::EROFS)
@@ -684,18 +664,80 @@ mod tests {
             lookup(p, dvp, RENAME, 0, b"m10c-iso.txt").0,
             Err(Errno::EROFS)
         );
-        assert!(asked().is_empty());
+        vput(dvp);
+    }
+
+    /// A plain image whose root directory has two blocks: `.`, `..`, 43 fillers and
+    /// `TARGET.TXT;1` fill the first (to byte 2006 of 2048), `ZZZZ.TXT;1` (44 bytes) starts
+    /// the second; the target's data is block 20, the other file's block 21.
+    fn two_block_root() -> Vec<u8> {
+        let mut iso = Iso::new(22);
+        let mut recs = std::vec![
+            record(18, 4096, 2, &[0], &[]),
+            record(18, 4096, 2, &[1], &[]),
+        ];
+        for i in 0..43 {
+            recs.push(record(
+                21,
+                0,
+                0,
+                std::format!("F{i:03}.TXT;1").as_bytes(),
+                &[],
+            ));
+        }
+        recs.push(record(20, 7, 0, b"TARGET.TXT;1", &[]));
+        recs.push(record(21, 5, 0, b"ZZZZ.TXT;1", &[]));
+        assert_eq!(iso.dir(18, &recs), 4096);
+        iso.put(20, 0, b"target\n");
+        iso.put(21, 0, b"zzzz\n");
+        iso.pvd(16, b"TWO", 22, &record(18, 4096, 2, &[0], &[]));
+        iso.term(17);
+        iso.finish()
+    }
+
+    /// A match the scan only knows for one when it reads the next record, in the next block
+    /// (`foundino`): the saved offset's block is read again for the record handed to
+    /// `cd9660_vget_internal` (cd9660_lookup.c:301-307), so the vnode is the target's.
+    #[test]
+    fn a_match_found_past_a_block_end_is_read_again() {
+        let img = two_block_root();
+        // The packing the test relies on: the target ends at byte 2006, the next record in
+        // the second block.
+        assert_eq!(img[18 * 2048 + 1960], 46);
+        assert_eq!(
+            &img[18 * 2048 + 1960 + 33..18 * 2048 + 1960 + 45],
+            b"TARGET.TXT;1"
+        );
+        assert_eq!(img[18 * 2048 + 2006], 0);
+        assert_eq!(&img[19 * 2048 + 33..19 * 2048 + 43], b"ZZZZ.TXT;1");
+        let (_g, p, _mp, dvp) = setup(img, ISOFSMNT_NORRIP);
+        let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"target.txt");
+        r.expect("found");
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp), (18 * 2048 + 1960, 20, 7));
+        assert_eq!(vtoi(dvp).i_offset.get(), 1960);
+        vput(vp);
+        let (r, vp, _) = lookup(p, dvp, LOOKUP, 0, b"zzzz.txt");
+        r.expect("found");
+        let vp = vp.expect("a vnode");
+        assert_eq!(ident(vp), (19 * 2048, 21, 5));
+        vput(vp);
+        vput(dvp);
+        let _ = mkiso::BS;
     }
 
     #[test]
     fn bufatoff_reads_the_directory_block_of_an_offset() {
-        let (_g, _p, dp, _dvp) = root(ISO_FTYPE_RRIP);
+        let (_g, _p, _mp, dvp) = setup(image::image_bytes(), 0);
+        let dp = vtoi(dvp);
         let (t, off) = cd9660_bufatoff(&dp, 324).expect("read");
         assert_eq!(off, 324);
         assert_eq!(&t.bytes()[324..324 + 128], image::FILE_REC);
         // the directory's block 0 is the device's block 20
         assert_eq!(t.buf().blkno(), 20 << 2);
         brelse(t);
+        drop(dp);
+        vput(dvp);
     }
 }
 /* </TESTS> */

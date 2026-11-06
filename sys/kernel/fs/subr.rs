@@ -167,6 +167,8 @@
 //!   [`siphash_key`] (the C's `arc4random_buf` of a `SIPHASH_KEY`: four `arc4random()`
 //!   words), the UFS inode hash's and msdosfs's denode hash; `VfsTables` gains msdosfs's
 //!   tables (`msdosfs`, feature `msdosfs`), appended last.
+//! - N5.8c2: [`dirent_uiomove`], msdosfs's copy-out of a `struct dirent` (N5.7c2), shared with
+//!   cd9660's `readdir`.
 
 use core::any::Any;
 use core::ptr;
@@ -1562,6 +1564,29 @@ pub fn vfs_mountedon<G: ProcGlue>(vp: &'static Vnode<G>) -> Result<(), Errno> {
         }
     }
     Ok(())
+}
+
+/// `uiomove(dp, dp->d_reclen, uio)`: copy out the first `d_reclen` bytes of a `struct dirent`
+/// (its bytes in the C's layout, as `getdents(2)` hands them to userland): the readdir of
+/// msdosfs (N5.7c2) and of cd9660 (N5.8c2), which keep the entry as the structure.
+pub fn dirent_uiomove<G: ProcGlue>(
+    dp: &hal::sys::dirent::Dirent,
+    uio: &mut Uio<'_, G>,
+) -> Result<(), Errno> {
+    use core::mem::offset_of;
+    use hal::sys::dirent::{Dirent, MAXNAMLEN};
+
+    let mut b = [0u8; size_of::<Dirent>()];
+    let at = |f: usize, len: usize| f..f + len;
+    b[at(offset_of!(Dirent, d_fileno), 8)].copy_from_slice(&dp.d_fileno.to_ne_bytes());
+    b[at(offset_of!(Dirent, d_off), 8)].copy_from_slice(&dp.d_off.to_ne_bytes());
+    b[at(offset_of!(Dirent, d_reclen), 2)].copy_from_slice(&dp.d_reclen.to_ne_bytes());
+    b[offset_of!(Dirent, d_type)] = dp.d_type;
+    b[offset_of!(Dirent, d_namlen)] = dp.d_namlen;
+    b[at(offset_of!(Dirent, __d_padding), 4)].copy_from_slice(&dp.__d_padding);
+    b[at(Dirent::NAME_OFFSET, MAXNAMLEN + 1)].copy_from_slice(&dp.d_name);
+    let reclen = usize::from(dp.d_reclen).min(b.len());
+    <G::FileGlue as FileGlue>::uiomove(&mut b[..reclen], uio)
 }
 
 /// `vaccess(type, file_mode, uid, gid, acc_mode, cred)`: the UNIX permission check (the

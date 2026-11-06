@@ -32,6 +32,8 @@ pub mod cd9660_lookup;
 pub mod cd9660_node;
 pub mod cd9660_rrip;
 pub mod cd9660_util;
+pub mod cd9660_vfsops;
+pub mod cd9660_vnops;
 pub mod iso;
 pub mod iso_rrip;
 #[cfg(any(test, feature = "doubles"))]

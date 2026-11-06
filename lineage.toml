@@ -9641,6 +9641,11 @@ native = ["MsdosfsVnops", "sys/kernel/fs/msdosfs/msdosfs_denode.rs::MsdosfsTable
 kind = "split"
 
 [[module.fn]]
+lz = "sys/msdosfs/msdosfs_vnops.rs::dirent_uiomove"
+native = ["sys/kernel/fs/subr.rs::dirent_uiomove"]
+kind = "moved"
+
+[[module.fn]]
 lz = "sys/msdosfs/msdosfs_vnops.rs::MSDOSFSREAD_FILTOPS"
 native = ["MsdosfsRead"]
 kind = "renamed"
@@ -9834,11 +9839,85 @@ rust = "sys/kernel/fs/isofs/cd9660/cd9660_lookup.rs"
 crate = "kernel"
 lz = ["sys/isofs/cd9660/cd9660_lookup.rs"]
 status = "redesigned"
-notes = "N5.8c1 (unwired): cd9660_lookup over the kernel's Vnops::lookup arguments, the directory's BufRef token held across the Rock Ridge name and cd9660_vget_internal's use of the record as the C holds bp, cd9660_vget_internal a function argument (VgetInternal<G>) until N5.8c2 brings it; cd9660_bufatoff over bread_or_release of the directory's vnode; ISO_NCHSTATS a static Nchstats; vmount the UFS layer's shared one; 0 unsafe (LZ: 2)"
+notes = "N5.8c1 (unwired): cd9660_lookup over the kernel's Vnops::lookup arguments, the directory's BufRef token held across the Rock Ridge name and cd9660_vget_internal's use of the record as the C holds bp; cd9660_bufatoff over bread_or_release of the directory's vnode; ISO_NCHSTATS a static Nchstats; vmount the UFS layer's shared one; N5.8c2: cd9660_vget_internal called where the C calls it (cd9660_vfsops.rs; c1's function argument VgetInternal<G> and its test double gone), record_ino shared with cd9660_readdir; the tests over real mounts, foundino's re-read of the saved block among them; 0 unsafe (LZ: 2)"
 
 [[module.fn]]
 lz = "sys/isofs/cd9660/cd9660_lookup.rs::vmount"
 native = ["sys/kernel/fs/ufs/ufs/ufs_lookup.rs::vmount"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_vfsops.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_vfsops.rs"]
+status = "redesigned"
+notes = "N5.8c2 (unwired until the switch): cd9660_mountroot over FileGlue's rootvp/swapdev_vp, cd9660_mount (the device by namei, the export update through FileGlue::vfs_export, mount_info the caller's bytes with iso_mountfs's flags), iso_mountfs (the descriptors' members read at their offset_of! in the buffer tokens, the C's checks in the C's order and errnos, the struct iso_mnt built whole and published counted in the mount's typed slot, the supplementary descriptor released before the Rock Ridge check with its root record copied, D-N5.8-R1, the root block named to the Rock Ridge walk as held, D-N5.8-U1, D-N5.7-U5's malloc shim on the error path after the C's malloc), iso_volume_label (the label spoof's parser over a reader of a descriptor's first ISO_LABEL_HEAD bytes; the shell is bsd's subr_disk.rs at the switch), unmount (take_node after vflush), root, quotactl, statfs, sync, fhtovp (ifid_ino zero-extended, D-N5.8-U2), vget (the alien check kept), vget_internal (the node published counted into the vnode's slot, hashed, the record the caller's view or a device token whose block the Rock Ridge analysis is told, the attributes' one writer, the node moved to a device alias as ext2fs_vinit), vptofh; Cd9660Vfs<G>::VFS, one impl Vfs<G>; sysctl the trait's default; 0 unsafe (LZ: 11)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vfsops.rs::CD9660_VFSOPS"
+native = ["Cd9660Vfs::VFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vfsops.rs::mname_copy"
+native = ["sys/kernel/fs/ufs/ffs/ffs_vfsops.rs::mname_copy"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/fs/isofs/cd9660/cd9660_vnops.rs"
+crate = "kernel"
+lz = ["sys/isofs/cd9660/cd9660_vnops.rs"]
+status = "redesigned"
+notes = "N5.8c2 (unwired until the switch): the cd9660 operations in the kernel's Vnops<G> method shapes; the C's two tables of 34 slots as Cd9660Vnops<G> and Cd9660SpecVnops<G> (one impl Vnops<G> each, cd9660's nine shared slots one macro, the special files' others spec_vops' through spec_shared_slots!; the eight eopnotsupp slots the trait's defaults), members of the glue's IsofsTables (one address each); the filters Cd9660Read/Cd9660Write/Cd9660Vnode: Filter<G> with the vnode as the knote's typed hook (LZ's kn_hook deref gone), filt_cd9660read's node read after its NOTE_REVOKE test; cd9660_read over BufRef tokens (bread, the kernel's breadn for the read-ahead); cd9660_readdir with the directory's token held across the Rock Ridge names, its dirents copied out through fs::subr::dirent_uiomove (LZ's unsafe byte view gone); cd9660_readlink the C's uiomove path for every caller (D-N5.8-11: no raw iovec write), its record block held for the Rock Ridge walk (D-N5.8-U1); cd9660_getattr's link read into an M_TEMP MArray; cd9660_strategy ufs_strategy's shape (the IoBuf's token, a lent one panic(9)); ucred the UFS layer's; 0 unsafe (LZ: 6)"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::CD9660_VOPS"
+native = ["Cd9660Vnops", "sys/kernel/fs/isofs/cd9660/cd9660_node.rs::IsofsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::CD9660_SPECVOPS"
+native = ["Cd9660SpecVnops", "sys/kernel/fs/isofs/cd9660/cd9660_node.rs::IsofsTables"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::CD9660READ_FILTOPS"
+native = ["Cd9660Read"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::CD9660WRITE_FILTOPS"
+native = ["Cd9660Write"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::CD9660VNODE_FILTOPS"
+native = ["Cd9660Vnode"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::filt_cd9660read"
+native = ["Cd9660Read::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::filt_cd9660write"
+native = ["Cd9660Write::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::filt_cd9660vnode"
+native = ["Cd9660Vnode::event"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::ucred"
+native = ["sys/kernel/fs/ufs/ufs/ufs_vnops.rs::ucred"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/isofs/cd9660/cd9660_vnops.rs::dirent_bytes"
+native = ["sys/kernel/fs/subr.rs::dirent_uiomove"]
 kind = "merged"
 
 [[module]]
@@ -13233,7 +13312,7 @@ reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures o
 [[extra]]
 rust = "sys/kernel/fs/isofs/cd9660/testcd9660.rs"
 crate = "kernel"
-reason = "N5.8c1: the kernel cd9660's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): the records and the 25 blocks of LZ's makefs image (moved from LZ's iso.rs tests), a record view of a fixture; N5.8c1 commit 2 adds the leaked mount structure and node over testffs's disk, N5.8c2 the image writer and the mounts; no OpenBSD or LZ source"
+reason = "N5.8c1: the kernel cd9660's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): the records and the 25 blocks of LZ's makefs image (moved from LZ's iso.rs tests), a record view of a fixture; N5.8c1 commit 2 adds the leaked mount structure and node over testffs's disk; N5.8c2 mkiso (the writer of the images no host tool gives: a Joliet tree, a later session, an associated file, a directory of two blocks, a record past 2 GiB, device nodes, a link of size 0), TEST_CD9660_CONF, the mounts by iso_mountfs (try_mount, mount_root, root) and a sparse disk (attach_sparse); no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/fs/word.rs"
