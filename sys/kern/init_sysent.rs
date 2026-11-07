@@ -81,14 +81,13 @@ use crate::kern::uipc_syscalls::{
     sys_sendmmsg, sys_sendmsg, sys_sendto, sys_setrtable, sys_setsockopt, sys_shutdown, sys_socket,
     sys_socketpair, sys_ypconnect,
 };
-use crate::kern::vfs_syscalls::sys___getcwd;
 use crate::kern::vfs_syscalls::{
-    sys___pledge_open, sys___realpath, sys_access, sys_chdir, sys_chflags, sys_chflagsat,
-    sys_chmod, sys_chown, sys_chroot, sys_faccessat, sys_fchdir, sys_fchflags, sys_fchmod,
-    sys_fchmodat, sys_fchown, sys_fchownat, sys_fhopen, sys_fhstat, sys_fhstatfs, sys_fstatat,
-    sys_fstatfs, sys_fsync, sys_ftruncate, sys_futimens, sys_futimes, sys_getdents, sys_getfh,
-    sys_getfsstat, sys_lchown, sys_link, sys_linkat, sys_lseek, sys_lstat, sys_mkdir, sys_mkdirat,
-    sys_mkfifo, sys_mkfifoat, sys_mknod, sys_mknodat, sys_mount, sys_open, sys_openat,
+    sys___getcwd, sys___pledge_open, sys___realpath, sys_access, sys_chdir, sys_chflags,
+    sys_chflagsat, sys_chmod, sys_chown, sys_chroot, sys_faccessat, sys_fchdir, sys_fchflags,
+    sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat, sys_fhopen, sys_fhstat, sys_fhstatfs,
+    sys_fstatat, sys_fstatfs, sys_fsync, sys_ftruncate, sys_futimens, sys_futimes, sys_getdents,
+    sys_getfh, sys_getfsstat, sys_lchown, sys_link, sys_linkat, sys_lseek, sys_lstat, sys_mkdir,
+    sys_mkdirat, sys_mkfifo, sys_mkfifoat, sys_mknod, sys_mknodat, sys_mount, sys_open, sys_openat,
     sys_pathconf, sys_pathconfat, sys_pread, sys_preadv, sys_pwrite, sys_pwritev, sys_quotactl,
     sys_readlink, sys_readlinkat, sys_rename, sys_renameat, sys_revoke, sys_rmdir, sys_stat,
     sys_statfs, sys_symlink, sys_symlinkat, sys_sync, sys_truncate, sys_umask, sys_unlink,
