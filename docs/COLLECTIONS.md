@@ -142,15 +142,15 @@ step is not.
 
 | Method | C | Order |
 |---|---|---|
-| `new`, `is_empty`, `len`, `first`, `first_mut` | `MBUF_LIST_INITIALIZER`, `ml_empty`, `ml_len`, `ml_first` | O(1) |
-| `last`, `last_mut` | `ml_tail`, `sb_mbtail` | O(1) (the tail word) |
+| `new`, `is_empty`, `len`, `first` | `MBUF_LIST_INITIALIZER`, `ml_empty`, `ml_len`, `ml_first` | O(1) |
+| `last` | `ml_tail`, `sb_mbtail` | O(1) (the tail word) |
 | `next(e)` | `m->m_next`, `m->m_nextpkt` | O(1) |
 | `iter` | `for (m = first; m != NULL; m = m->m_next)` | O(1) a step, O(n) the walk |
 | `push_head(box)` | insert first | O(1) |
 | `push_tail(box)` | `ml_enqueue`, `sbappend`'s tail | O(1) |
 | `pop_head()` | `ml_dequeue` | O(1) |
 | `concat(&mut other)` | `ml_enlist`, `m_cat`'s chain | O(1) |
-| `cursor_mut()`, `move_next`, `current` | a walk that changes the list where it stands | O(1) a step |
+| `cursor_mut()`, `move_next`, `current` | a walk that changes the list where it stands (elements lent shared only) | O(1) a step |
 | `split_after()` (cursor) | `m_split`, `sbdrop`'s record cut | O(1) |
 | `remove_next()` (cursor) | `m->m_next = n->m_next` | O(1) |
 | drop | `m_freem`, `ml_purge` | O(n), one element at a time (no recursion down the links) |

@@ -2802,7 +2802,11 @@ macro_rules! slist_adapter {
 /// Invariant: `tail` is null when `head` is empty, and otherwise names the last element
 /// reachable from `head` by the links (the one whose link is empty); `len` counts those
 /// elements. Every element is owned through the chain (its box in `head` or in its
-/// predecessor's link), so `&mut self` is the only path to any of them.
+/// predecessor's link), so `&mut self` is the only path to any of them. The list lends its
+/// elements shared only (`first`, `last`, `iter`, a cursor's `current`): a `&mut` to one would
+/// let its owner `mem::swap` two elements' links behind the list's back and break the
+/// invariant; a field of an element that changes while it is listed is a `Cell` or an
+/// atomic, or the element is taken off (`pop_head`, `remove_next`) and pushed again.
 pub struct OwnedSlist<A: SlistAdapter> {
     head: SlistLink<A::Elem>,
     /// The last element (its box's pointer), null when the list is empty.
@@ -2835,11 +2839,6 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         self.head.0.as_deref()
     }
 
-    /// The first element, to change it.
-    pub fn first_mut(&mut self) -> Option<&mut A::Elem> {
-        self.head.0.as_deref_mut()
-    }
-
     /// The element after `e` (`m->m_next`, `m->m_nextpkt`).
     pub fn next(e: &A::Elem) -> Option<&A::Elem> {
         A::link(e).0.as_deref()
@@ -2855,12 +2854,12 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         unsafe { t.as_ref() }
     }
 
-    /// The last element, to change it, O(1).
-    pub fn last_mut(&mut self) -> Option<&mut A::Elem> {
+    /// The last element, to link a new one after it (the list's own), O(1).
+    fn last_mut(&mut self) -> Option<&mut A::Elem> {
         let t = self.tail.load(Mem::Relaxed);
         // SAFETY: as for `last`; the reference borrows `self` mutably, the only path to the
-        // element (the list owns it through the chain and hands out references only from
-        // `&self` or `&mut self`), so it is the only reference to it while it lives. `tail`
+        // element (the list owns it through the chain and lends its elements only shared,
+        // from `&self` or a cursor), so it is the only reference to it while it lives. `tail`
         // is the element's box's own pointer (`PoolBox::as_ptr`), never one derived from a
         // reference that has ended.
         unsafe { t.as_mut() }
@@ -2991,8 +2990,8 @@ pub struct SlistCursor<'a, A: SlistAdapter> {
 
 impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
     /// The current element, `None` past the last.
-    pub fn current(&mut self) -> Option<&mut A::Elem> {
-        self.slot.as_mut()?.0.as_deref_mut()
+    pub fn current(&self) -> Option<&A::Elem> {
+        self.slot.as_ref()?.0.as_deref()
     }
 
     /// One element on (`m = m->m_next`); `false`, not moving, when past the last.
@@ -4098,9 +4097,6 @@ mod tests {
         l.push_head(sl(0));
         assert_eq!(values(&l), [0, 1, 2, 3]);
         assert_eq!(l.len(), 4);
-        if let Some(e) = l.last_mut() {
-            e.v = 30;
-        }
         assert_eq!(
             l.first().and_then(OwnedSlist::<SlChain>::next).map(|e| e.v),
             Some(1)
