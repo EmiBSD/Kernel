@@ -1018,11 +1018,16 @@ pub(crate) fn install80(root: &Path, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// `cargo xtask cd80 --arch amd64` (module docs).
+/// `cargo xtask cd80 --arch amd64` (module docs). While `$EMIBSD_ARCHS` leaves amd64 out
+/// (decision 44) it boots nothing and prints `boot::skip_disabled`'s line, as `smoke` does:
+/// `cd-iso-amd64` made no CD.
 pub(crate) fn cd80(root: &Path, args: &[&str]) -> Result<()> {
     let arch = arch_of(args)?;
     if arch != Arch::Amd64 {
         return Err("cd80: cd80.iso is amd64's (ROADMAP M16g)".into());
+    }
+    if boot::skip_disabled("cd80", arch)? {
+        return Ok(());
     }
     let (rev, osrev) = release(root)?;
     let iso = install_dir(root, arch).join(format!("cd{rev}.iso"));
@@ -1106,6 +1111,17 @@ pub(crate) fn cd80(root: &Path, args: &[&str]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With amd64 disabled `cd80` is skipped (no CD looked for); enabled, it looks for the
+    /// release and the CD, which this root does not have. arm64 is refused either way.
+    #[test]
+    fn cd80_skips_a_disabled_amd64() -> Result<()> {
+        let root = Path::new("/nonexistent/emibsd-cd80-test");
+        let r = cd80(root, &["--arch", "amd64"]);
+        assert_eq!(r.is_ok(), !boot::arch_enabled(Arch::Amd64)?);
+        assert!(cd80(root, &["--arch", "arm64"]).is_err());
+        Ok(())
+    }
 
     /// The MBRs and labels of OpenBSD's own install80.img (the snapshot of
     /// `openbsd-snapshot.toml`, read with a hex dump): partition entries byte for byte.
