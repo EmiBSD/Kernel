@@ -319,14 +319,6 @@ impl PmapBackend for Backend {
 
     fn flush_cache(_va: Vaddr, _len: Vsize) {}
 
-    fn module_window() -> Option<(Vaddr, usize)> {
-        None
-    }
-
-    fn module_enter(_va: Vaddr, _pa: Paddr, _prot: VmProt) -> bool {
-        false
-    }
-
     /// The host has no `%cr3`.
     #[cfg(target_arch = "x86_64")]
     fn cr3(_pmap: &Pmap) -> u64 {

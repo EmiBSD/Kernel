@@ -89,13 +89,12 @@
 //!   both boot paths, with these differences: only the image is mapped so (the C maps every
 //!   stolen region; here those are reached through the direct map), from its first page to
 //!   the page holding `_end` (the C maps up to `esym`: boot(8)'s symbol table past `_end` is
-//!   not mapped, since `ddb` loads no symbols and the ABI module efiboot puts there is read
-//!   through the direct map); the padding between two sections is not mapped (the C maps it
-//!   read-write); the image's leaves carry no `ATTR_GP` (the C's kernel pmap guards its text
+//!   not mapped, since `ddb` loads no symbols); the padding between two sections is not
+//!   mapped (the C maps it read-write); the image's leaves carry no `ATTR_GP` (the C's
+//!   kernel pmap guards its text
 //!   for branch target identification; this kernel is built without BTI landing pads, which
 //!   stable rustc cannot emit); and they have no software descriptor, so `pmap_extract`
-//!   answers for the image through its virtual-to-physical offset (`BootstrapParams::image`).
-//!   The same holds for the module window's leaves (`window.rs`), which the C does not have:
+//!   answers for the image through its virtual-to-physical offset (`BootstrapParams::image`):
 //!   no kernel leaf `kernel_leaf` composes is guarded. The C prints `removing ...` twice
 //!   (`pmap_remove_avail`) and `all mapped` after the switch; native prints neither, as LZ
 //!   did not: printing them would add boot lines the smokes and dmesg never had, and the
@@ -146,8 +145,7 @@
 //!   EL1 whatever a leaf says: amd64's posture, whose directories carry `pg_nx`. The image's
 //!   tables (`pmap_map_stolen`'s, under the image's own level-1 entry, never set by
 //!   `pmap_growkernel`), the direct map's (another level-0 slot) and the EFI runtime pmap's
-//!   (its own root) are not touched; the only executable kernel memory is the image's text
-//!   and the module window (`window.rs`), whose tables hang from the image's level-2 table.
+//!   (its own root) are not touched; the only executable kernel memory is the image's text.
 //!   A table `pmap_vp_enter` would hang for the kernel pmap beyond `pmap_growkernel`'s reach
 //!   (uvm never asks) has no `Lx_PT_PXN`, but its leaves are refused `PROT_EXEC` all the
 //!   same.
@@ -199,10 +197,6 @@
 //! - `pmap_steal_memory`, `pmap_kvp_alloc` and `pmap_kpted_alloc` take their frames from the
 //!   page provider (`steal` before the page system is up, `alloc_ptp` after), where LZ called
 //!   `uvm_page_physsteal`/`uvm_pglistalloc`.
-//! - The ABI module's window (`window.rs`, N3.1 commit 7, decision 37's symmetry): the
-//!   bootstrap links it at its end, `module_window`/`module_enter` are its, and the window's
-//!   leaves are [`kernel_leaf`]s, `pmap_pte_update`'s write-back kernel descriptor; until
-//!   then arm64 placed the module in `kernel_map`.
 //! - The image by section and the switch (N3.1 commit 8; LZ kept the boot loader's tables
 //!   below its level-1 copy, so under boot(8)/efiboot the image ran on `locore0.S`'s 32
 //!   level-2 blocks over the whole 64 MB block, read-write and executable at EL1, the block's
@@ -228,12 +222,10 @@
 //!   refuses a CPU already on the kernel's tables with another value, so no caller can load
 //!   the kernel's tables under a user pmap's ASID.
 
-#[cfg(not(feature = "module-rt"))]
 use core::ops::Range;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 
-#[cfg(not(feature = "module-rt"))]
 use super::super::exception::trampoline_range;
 use super::super::include::param::{PAGE_MASK, PAGE_SHIFT, PAGE_SIZE};
 use super::super::include::pte::{
@@ -260,14 +252,12 @@ use super::layout::{
     image_layout_ok, image_page_prot, image_ptps, kernel_leaf, kernel_map_slot, tcr_t1sz,
     tlbi_asid, tlbi_page, vp_idx,
 };
-// pmap_postinit's (the kernel's alone: the ABI module's image has no trampoline).
-#[cfg(not(feature = "module-rt"))]
+// pmap_postinit's.
 use super::layout::{VP_ENTRIES, VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS};
 use super::vp::{
     self, L3, Link, Locked, PTEDS_PER_PAGE, PteDesc, PvHead, PvKind, Table, copy_frame, direct_map,
     direct_unmap, pted_page, pv_insert, pv_unlink, set_direct_map, words, zero_frame,
 };
-use super::window;
 use crate::assert::{hal_panic, kassert};
 use crate::intr::{IPL_NONE, IPL_VM, splraise};
 use crate::mutex::{Mutexed, MutexedGuard};
@@ -299,7 +289,6 @@ const AP_BITS_USER: [u64; 8] = [
 
 /// The upper half's first address (`T1SZ` 16, four levels): the sign bits of every kernel
 /// address, where `pmap_tramp_walk` starts.
-#[cfg(not(feature = "module-rt"))]
 const KERNEL_VA_TOP: usize = !((1 << 48) - 1);
 
 /// The `MAIR_EL1` fields `pmap_bootstrap` writes (indices 2, 3, 4) and what it keeps.
@@ -624,7 +613,6 @@ fn pmap_kernel_nonglobal(root: Paddr) {
 /// The boot-time proof of [`pmap_kernel_nonglobal`]'s rule: panics on a block or page of the
 /// kernel's tables without `ATTR_nG`, which would match every ASID and so stay in the TLB
 /// while user code runs under `pmap_tramp`.
-#[cfg(not(feature = "module-rt"))]
 fn pmap_kernel_nonglobal_check(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
         if d & ATTR_nG == 0 {
@@ -1362,9 +1350,7 @@ fn pmap_fault_fixup(pm: &Pmap, va: usize, ftype: VmProt) -> bool {
 /// `trampoline_vectors_end` entered into `pmap_tramp` at their kernel addresses, read-only and
 /// executable at EL1 (`PMAP_WIRED`, the C's protections), then the proof that its tables hold
 /// those pages and nothing else ([`pmap_tramp_check`]). The kernel virtual space reserve of
-/// the C's tail (`pmap_kvp_map`) is not configured (see the deviations). The kernel's alone:
-/// the ABI module's image (`module-rt`) has no trampoline.
-#[cfg(not(feature = "module-rt"))]
+/// the C's tail (`pmap_kvp_map`) is not configured (see the deviations).
 pub fn postinit() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) {
@@ -1411,7 +1397,6 @@ pub fn postinit() {
 /// of ours down to level 3, whose leaves are exactly the pages of `range`, each at the kernel's
 /// physical address, non-global, read-only, executable at EL1 and out of EL0's reach; anything else
 /// panics, before user code ever runs under them.
-#[cfg(not(feature = "module-rt"))]
 fn pmap_tramp_check(range: &Range<usize>) {
     let Some(root) = PMAP_TRAMP.md.root() else {
         hal_panic(format_args!("pmap_postinit: pmap_tramp has no tables"));
@@ -1426,7 +1411,6 @@ fn pmap_tramp_check(range: &Range<usize>) {
 
 /// The valid leaves under `t`, a table of `level` whose first address is `base`, each checked
 /// against `range` ([`pmap_tramp_check`]).
-#[cfg(not(feature = "module-rt"))]
 fn pmap_tramp_walk(t: Table, level: usize, base: usize, range: &Range<usize>) -> usize {
     const POS: [u32; 4] = [VP_IDX0_POS, VP_IDX1_POS, VP_IDX2_POS, VP_IDX3_POS];
     let more = || -> ! {
@@ -1502,7 +1486,7 @@ fn pmap_kenter(va: Vaddr, pa: Paddr, prot: VmProt, cache: i32) {
 }
 
 /// The kernel pmap's `PROT_EXEC` refusal (see the deviations): no kernel page outside the image
-/// and the module window (`window.rs`, entered by `module_enter` alone) executes.
+/// executes.
 fn refuse_kernel_exec(what: &str, va: Vaddr, prot: VmProt) {
     if prot & PROT_EXEC != 0 {
         hal_panic(format_args!(
@@ -1689,8 +1673,8 @@ impl PmapBackend for Backend {
         // The direct map's level-0 slots (the boot loader's tables below them, see the
         // deviations): never executable, at EL1 or EL0, whatever its leaves say (Limine's
         // were never checked; locore0.S's blocks are ATTR_XN already). Nothing executes from
-        // the direct map: the image, the module window and kernel_map are slot 511's, the
-        // switch's identity page is the lower half's.
+        // the direct map: the image and kernel_map are slot 511's, the switch's identity page
+        // is the lower half's.
         let (first, last) = (
             vp_idx(0, p.direct_base.as_usize()),
             vp_idx(0, p.direct_end.as_usize() - 1),
@@ -1820,8 +1804,6 @@ impl PmapBackend for Backend {
         let vstart = vstart + VMMAP_SIZE;
         VIRTUAL_AVAIL.store(vstart, Ordering::Relaxed);
 
-        // The ABI module's window beside the image, on the kernel's tables now loaded.
-        window::init(Some(img.start));
         (p.first_avail, Vaddr::new(vstart))
     }
 
@@ -2219,15 +2201,6 @@ impl PmapBackend for Backend {
         cpu_dcache_wbinv_range(va.as_usize(), len.as_usize());
     }
 
-    /// The window beside the image (`window.rs`), the module's only place, as on amd64.
-    fn module_window() -> Option<(Vaddr, usize)> {
-        Some(window::window())
-    }
-
-    fn module_enter(va: Vaddr, pa: Paddr, prot: VmProt) -> bool {
-        window::enter(va, pa, prot)
-    }
-
     /// `pmap_kenter_cache`: enter a kernel mapping with the given cache mode.
     fn kenter_cache(va: Vaddr, pa: Paddr, prot: VmProt, cacheable: i32) {
         pmap_kenter(va, pa, prot, cacheable);
@@ -2271,8 +2244,8 @@ const _: () = {
     assert!(MAIR_SET & !MAIR_KEEP == MAIR_SET);
     assert!(PTE_ATTR_DEV_NGNRNE == 2 && PTE_ATTR_CI == 3 && PTE_ATTR_WT == 4);
     assert!(PTE_ATTR_WB == 0 && PTE_ATTR_DEV_NGNRE == 1);
-    // The kernel leaves (`layout.rs`'s `kernel_leaf`: the image, the identity page, the module
-    // window) carry no branch-target guard; their host tests check the rest.
+    // The kernel leaves (`layout.rs`'s `kernel_leaf`: the image, the identity page) carry no
+    // branch-target guard; their host tests check the rest.
     let pa = 0x4000_0000;
     assert!(kernel_leaf(pa, PROT_READ | PROT_EXEC) & ATTR_GP == 0);
     assert!(kernel_leaf(pa, PROT_READ) & ATTR_GP == 0);

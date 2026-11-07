@@ -1072,13 +1072,6 @@ status = "redesigned"
 notes = "N3.1 commit 5: the ASID pairs (pmap_find_asid, pmap_rollover_asid, pmap_allocate_asid, pmap_free_asid): the bitmap inside pmap_asid_mtx (IPL_HIGH), the generation an atomic, the C's 16-bit probe of id_aa64mmfr0_el1 with TCR_EL1.AS (8 bits otherwise, the probe saying why), arc4random through the Random bridge (N7), each CPU's loaded pmap recorded here for the rollover (ci_curpm stays bsd's until N4); N4.8d: the pair's odd ASID now runs user code under pmap_tramp's root (trampoline.S), the deviation that said it did not is gone"
 
 [[module]]
-rust = "sys/hal/arch/arm64/pmap/window.rs"
-crate = "hal"
-lz = ["sys/arch/arm64/arm64/pmap.rs"]
-status = "redesigned"
-notes = "N3.1 commit 7 (G4, decision 37's symmetry): the ABI module's window as amd64's, 16 MiB after the boot loader's last level-2 entry of the image's gigabyte (hal's level-1 copy, the boot loader's level-2 table through the frame view), eight level-3 tables in a typed .bss static linked once by the bootstrap (the one-shot flag), leaves as pmap_pte_update's write-back kernel descriptor (kernel_leaf), the I-cache synced for an executable page, W^X and every address outside the window refused; no unsafe"
-
-[[module]]
 rust = "sys/hal/arch/arm64/pmap/cpufunc.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpufunc.rs", "sys/arch/arm64/arm64/pmap.rs", "sys/arch/arm64/arm64/locore.rs"]
@@ -1130,7 +1123,7 @@ rust = "sys/hal/arch/arm64/pmap/layout.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/include/pmap.rs", "sys/arch/arm64/arm64/pmap.rs"]
 status = "redesigned"
-notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields; at commit 7 the module window's placement and protection checks); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs); N4.8d: TRAMP_ROOT_OFFSET (the C's 2 * PAGE_SIZE literal, one constant for pmap.c and trampoline.S) and the TTBR1_EL1 arithmetic of the trampoline's switches, tramp_ttbr1 and kernel_ttbr1, pinned by host tests"
+notes = "N3.1 commit 5 (D15): include/pmap.h's vp geometry, cache and pted flags as pure constants, with pmap.c's arithmetic that needs no machine (vp_idx, cache_of_pa, asid_slot, the tlbi operands, the ASID width probe, the TCR fields; at commit 7 the module window's placement and protection checks, gone with the window at the N5 close, decision 47); compiled for the host tests by #[path] (sys/hal/arch/host/mod.rs); N4.8d: TRAMP_ROOT_OFFSET (the C's 2 * PAGE_SIZE literal, one constant for pmap.c and trampoline.S) and the TTBR1_EL1 arithmetic of the trampoline's switches, tramp_ttbr1 and kernel_ttbr1, pinned by host tests"
 
 [[module]]
 rust = "sys/arch/amd64/amd64/spl.rs"
@@ -2079,7 +2072,7 @@ kind = "moved"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/conf.rs"
 lz = ["sys/arch/arm64/stand/efiboot/conf.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/disk.rs"
@@ -2101,7 +2094,7 @@ status = "inherited"
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efiboot.rs"
 lz = ["sys/arch/arm64/stand/efiboot/efiboot.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/arch/arm64/stand/efiboot/efidev.rs"
@@ -7092,7 +7085,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/boot.rs"
 lz = ["sys/stand/boot/boot.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/stand/boot/bootarg.rs"
@@ -7102,7 +7095,7 @@ status = "inherited"
 [[module]]
 rust = "sys/stand/boot/cmd.rs"
 lz = ["sys/stand/boot/cmd.rs"]
-status = "redesigned"
+status = "inherited"
 
 [[module]]
 rust = "sys/stand/boot/vars.rs"
@@ -11375,7 +11368,7 @@ rust = "sys/hal/syscall.rs"
 lz = ["sys/arch/amd64/amd64/trap.rs", "sys/arch/arm64/arm64/syscall.rs"]
 status = "redesigned"
 crate = "hal"
-notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry: the module's handler (abi_openbsd.ko through KernelApi) or the Legacy fallback bsd registers; Result<(), i32> at the edge"
+notes = "N2.4a: the system call dispatch point both traps call (the sysent[] choice of amd64 syscall and arm64 svc_handler) and its registry; Result<(), i32> at the edge; N5 close (decision 47): one registration, the ABI's handler (abi::abi_init through KernelApi, before main()); decision 29's Legacy fallback slot (set_legacy, legacy) is gone with the module, dispatch answers ENOSYS with nothing registered"
 
 [[module.fn]]
 lz = "sys/arch/amd64/amd64/trap.rs::syscall"
@@ -11683,7 +11676,7 @@ rust = "sys/hal/arch/arm64/switch.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/cpuswitch.rs", "sys/arch/arm64/arm64/vm_machdep.rs", "sys/arch/arm64/arm64/machdep.rs"]
 status = "redesigned"
-notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt does not compile it. cpuswitch.rs (LZ) has no licence text, so license is not none; N4.8b b3c: tcb_of and set_tcb (pcb_tcb through with_pcb_of, then __aarch64_set_tcb) and tcb_invalid for hal::thread"
+notes = "N4.5a: arm64's half of hal::thread: cpuswitch.S (git mv'd to sys/hal/arch/arm64/, hal_cpu_switchto taking the two slots and the new thread apart, offsets from MachineSlot, CpuCore and Pcb; proc_trampoline as hal_proc_trampoline, reaching trampoline_run by a sym operand), machdep.c cpu_switchto's FPU work (switch), vm_machdep.c cpu_fork's frames (thread_setup) and cpu_init_secondary's idle frame (thread_restart), the running thread's pcb (with_curpcb, set_current_pcb). The assembly still calls bsd's pmap_setttb and syscall_return by name (N4.8); module-rt did not compile it (the feature went with the module at the N5 close, decision 47). cpuswitch.rs (LZ) has no licence text, so license is not none; N4.8b b3c: tcb_of and set_tcb (pcb_tcb through with_pcb_of, then __aarch64_set_tcb) and tcb_invalid for hal::thread"
 
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/cpuswitch.rs::proc_trampoline_run"
@@ -11930,7 +11923,7 @@ notes = "N3.4a: the pmap half of uvm_pagermapin/uvm_pagermapout as a value: Mapp
 [[extra]]
 rust = "sys/hal/user.rs"
 crate = "hal"
-reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, the ABI module's runtime); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out"
+reason = "hal runtime, written new: UserPtr<T>, the safe AbiPod trait and abi_pod!, the UserCopy bridge; N3.5 S0: ForeignWindow, a window onto foreign pages minted by KernelMapper::foreign_window, copied through the bridge's kcopy_in/kcopy_out and bounded, never referenced (uvm_io, sys_kbind); N4.7a: pod_from_bytes/pod_to_bytes, an ioctl argument read or written as its AbiPod structure over the byte views (no unsafe of their own); docs/ZERO_UNSAFE.md 0.1, decision 17; N4.8b: the UserCopy bridge is gone: the copies are the machine's, hal's own (arch/arm64/copy.rs, the host's arch/host/copy.rs), an EFAULT stub where hal has none (amd64 until N10, and the ABI module's runtime until the N5 close: decision 47 dropped hal's module-rt feature); KcopyToken, the one holder of kcopy onto kernel addresses it names (bsd's uiomove UIO_SYSSPACE leg, decision 13 of N4.8), taken once; ForeignWindow and the token each one unsafe per direction over the machine's kcopy_in/kcopy_out"
 
 [[extra]]
 rust = "sys/hal/cons.rs"
@@ -11964,36 +11957,21 @@ reason = "copy of sys/crypto/testutil.rs (host test helper: hex vectors, seeded 
 [[extra]]
 rust = "sys/kernel/api.rs"
 crate = "kernel"
-reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the module handler and registers its trampoline in hal; no LZ source: OpenBSD has no loadable ABI; N4.8b: table() takes the sigreturn entry (version 10); N5.4: table() takes the VFS entries (version 12)"
+reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::api): table() builds it with the kernel registration that keeps the ABI's handler and registers its trampoline in hal; no LZ source: OpenBSD has no table between its system calls and the kernel; N4.8b: table() takes the sigreturn entry; N5.4: table() takes the VFS entries; N5 close (decision 47): the ABI is linked into the image, table() loses copyin and copyout (no caller: abi copies through hal::UserPtr), the registration is Registered in ABI and its trampoline abi_syscall answers ENOSYS before it, as hal does"
 
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the module's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170)"
-
-[[extra]]
-rust = "sys/hal/module/rt.rs"
-crate = "hal"
-reason = "N2.4a: the runtime of the ABI module abi_openbsd.ko, its panic handler (feature module-rt, set by sys/abi/ko alone): the abi crates are forbid and hold no loop and no state (decision 25)"
-
-[[extra]]
-rust = "sys/hal/module/elf.rs"
-crate = "hal"
-reason = "N2.4a (decision 22): ELF64 as the module loader reads it, the gABI and the AMD64/AArch64 supplements' structures as #[repr(C)] read field by field with checked offsets (no crate, docs/ARCHITECTURE.md Dependencies); a static PIE of the running machine, page-aligned W^X PT_LOADs, RELATIVE relocations only"
-
-[[extra]]
-rust = "sys/hal/module/load.rs"
-crate = "hal"
-reason = "N2.4a (decision 22): the loader of abi_openbsd.ko: placement, relocation, mapping each page with its segment's protection in the machine's module window (hal::pmap::module_window/module_enter, amd64 since N3.1 commit 6, arm64 since commit 7; nowhere else), the boot hand-over through ModulePlatform (bsd's image until N4.1) and the writable copy through ModuleMemory (the kernel's vm::km since N3.2, passed as a value; the platform premise), the header check, the call of abi_init, the boot line"
+reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main()"
 
 [[extra]]
 rust = "sys/kern/abi_module.rs"
-reason = "N2.4a: bsd's side of abi_openbsd.ko until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall), the KernelApi table bsd fills, the ModulePlatform bridge over the boot hand-over (the writable copy's memory is the kernel's vm::km::module_memory() since N3.2; the module's pages are mapped by hal's module window on both machines since N3.1 commit 7), and the two boot steps (the fallback and the image from the boot glue, the load from main before init(8)); no unsafe; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native)"
+reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9): the Legacy system call path the traps' sysent[] choice became (ENOSYS outside the table, else mi_syscall) and the KernelApi table bsd fills; N4.8b: KernelApi::sigreturn is kern_sig.rs's native_sigreturn; N5.4: KernelApi::vfs is kern/vfs_syscalls.rs's VFS_ENTRIES (the 65 VFS system calls' native_* over kern_descrip::native); N5 close (decision 47): the ABI is linked into the image, one boot step (abi_boot, from stand::start_kernel after hal_bridges_register) hands KERNEL_API to abi::abi_init before main() and prints the handler's line (abi: N syscalls, M native); the ModulePlatform bridge, the boot hand-over, the Legacy fallback's registration and the load from main are gone; no unsafe"
 
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type (#[repr(C)], an ApiPrefix of version and size first), the module header AbiModuleHeader and their offsets, below both the kernel (which fills and registers the table, kernel::api) and the module (which names them without depending on the kernel crate); the loader checks the module against this very type; N3.5 S1: version 3 adds VmEntries (KernelApi::vm, last), the fifteen vm system calls' typed entries; N4.8b: version 10 adds sigreturn (SigreturnEntry) after sysctl; N5.4: version 12 adds VfsEntries (KernelApi::vfs, last), the sixty-five VFS system calls' typed entries"
+reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr)"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -14224,7 +14202,7 @@ rust = "sys/kernel/vm/km.rs"
 crate = "kernel"
 lz = ["sys/uvm/uvm_km.rs", "sys/uvm/uvm_extern.rs", "sys/kern/vfs_biomem.rs", "sys/arch/arm64/arm64/vm_machdep.rs"]
 status = "redesigned"
-notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs; N5.1: the buffer cache's kva arena as BufArena (buf_mem_init's uvm_map of kernel_map, PROT_NONE; fake ranges no arena reuses without an MMU) handing out BufSlots of MAXPHYS, the only addresses BufSlot::map enters a buffer's pages at (KernelMapper::kenter_frames) and BufArena::unmap takes a view back to (buf_unmap); physio's window as PhysWindow (vm_machdep.c's vmapbuf/vunmapbuf: kv_physwait space, the user pmap's extract per wired page, the token's kenter; kremove and km_free on drop), made only by glue's DeviceLock::vmapbuf over the range it wired and borrowing it, the address only, no slice; KV_PHYSWAIT moved here (arm64's copy, vmapbuf and vunmapbuf left vm_machdep.rs and the machine contract with physio's switch); lz gains sys/kern/vfs_biomem.rs and sys/arch/arm64/arm64/vm_machdep.rs"
+notes = "N3.2: km_alloc/km_free, uvm_km_pgremove_intrsafe, the kv_*/kp_*/kd_* modes (kp_dma* stay in bsd's uvm_km.rs), no_constraint and the kmem_*_mode structs in the kernel crate, over the KmMaps bridge (the kernel maps, N3.5); N3.3: the page system is the kernel's (kernel::vm::page), so the KmPages bridge is gone and km_alloc/km_free work in the C's order over page lists (km_alloc: the pages, then the space, then the mappings; km_free: the range's pages on one list, the mappings removed, the list freed); kp_nomem/kp_pageable on the host double report LZ's unported line again (kernel::prf); holds the KernelMapper token (adopt_mapper from machine::pmap's pmap_bootstrap, lent to the legacy wrappers by legacy_mapper until N7); implements hal's PageMemory (KmBuf) and ModuleMemory (the module loader, gone with it at the N5 close, decision 47); N3.5 S1: the kernel maps' slots (kernel_map, kmem_map, exec_map, phys_map: OnceStatic<&'static VmMap>, install_submap, map_of, is_kernel_map) and uvm_km_pgremove (from bsd's uvm_km.rs, whose copy stays until the flip); uvm_km_init over a static kernel_map_store, uvm_km_suballoc, VM_KERNEL_SPACE_SIZE (from uvm_param.rs: a moved row at S2); Extracted, KernelWindow, uvm_map_extract_window and foreign_window (a window minted only from uvm_map_extract's result, unmapped by its drop); dma_memory (KmBuf's DMA-reachable provider); N3.5 S2: the KmMaps bridge is gone: a mode's virtual space is uvm_map/uvm_unmap of the kernel's own map in its slot (kernel_map from uvm_km_init, kmem_map from kmeminit, exec_map/phys_map from cpu_startup, install_submap), km_allocva sleeps on the map's address; kp_dma* are bsd's sys/kern/vm_bsd.rs; N5.1: the buffer cache's kva arena as BufArena (buf_mem_init's uvm_map of kernel_map, PROT_NONE; fake ranges no arena reuses without an MMU) handing out BufSlots of MAXPHYS, the only addresses BufSlot::map enters a buffer's pages at (KernelMapper::kenter_frames) and BufArena::unmap takes a view back to (buf_unmap); physio's window as PhysWindow (vm_machdep.c's vmapbuf/vunmapbuf: kv_physwait space, the user pmap's extract per wired page, the token's kenter; kremove and km_free on drop), made only by glue's DeviceLock::vmapbuf over the range it wired and borrowing it, the address only, no slice; KV_PHYSWAIT moved here (arm64's copy, vmapbuf and vunmapbuf left vm_machdep.rs and the machine contract with physio's switch); lz gains sys/kern/vfs_biomem.rs and sys/arch/arm64/arm64/vm_machdep.rs"
 [[module.fn]]
 lz = "sys/uvm/uvm_km.rs::kv_map_of"
 native = ["map_of"]

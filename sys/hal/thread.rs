@@ -245,7 +245,6 @@ impl MachineSlot {
     /// or away from the thread is half made (E4); `None` for a slot without one. Panics for a
     /// thread whose context lives (running or suspended: frames of it are on the u-area) and
     /// for `proc0`'s static u-area, before anything changes.
-    #[cfg(not(feature = "module-rt"))]
     pub fn take_uarea(&self) -> Option<UArea> {
         let h = sched_lock();
         if self.ctx.load(AtomicOrdering::Acquire) == CTX_LIVE {
@@ -351,7 +350,6 @@ impl Drop for UArea {
 /// gets `hal`'s static `proc0` u-area (E4), and this CPU's `ci_curpcb` its pcb (`curpcb =
 /// &proc0paddr->u_pcb`). Again on `t`, nothing; on another thread, `panic(9)`: the static
 /// u-area is one thread's.
-#[cfg(not(feature = "module-rt"))]
 pub fn boot_uarea<T: ThreadLayout>(t: Pin<&'static T>) {
     static CLAIMED: AtomicUsize = AtomicUsize::new(0);
     check_type::<T>();
@@ -436,10 +434,6 @@ impl SchedHold {
     /// The hold of a thread that did not take the lock: a new thread's first instructions,
     /// with the lock the switch to it kept (`proc_trampoline_mi`'s `mtx_leave`). Restores no
     /// level. Panics unless this CPU holds the lock.
-    #[cfg_attr(
-        feature = "module-rt",
-        allow(dead_code, reason = "the switch is not the ABI module's")
-    )]
     pub(crate) fn adopt() -> SchedHold {
         SchedHold(SCHED_LOCK.adopt())
     }
@@ -502,10 +496,6 @@ pub struct Next {
     /// The thread, with its provenance.
     thread: NonNull<()>,
     /// Its slot.
-    #[cfg_attr(
-        feature = "module-rt",
-        allow(dead_code, reason = "the switch is not the ABI module's")
-    )]
     slot: NonNull<MachineSlot>,
     /// The hold's generation.
     generation: u32,
@@ -554,10 +544,6 @@ impl Next {
     /// Checks that `h` is the hold this token was made under: a token kept
     /// across an unlock and a new lock is `panic(9)`.
     #[inline]
-    #[cfg_attr(
-        feature = "module-rt",
-        allow(dead_code, reason = "the switch is not the ABI module's")
-    )]
     pub(crate) fn check(&self, h: &SchedHold) {
         if self.generation != h.generation() {
             hal_panic(format_args!(
@@ -589,7 +575,6 @@ pub fn register_start(
 /// borrowed: the hold lies dormant in this suspended frame (E1) and its drop, after this
 /// returns, releases the lock that CPU holds then. `next` must have been made under `h` (the
 /// generation).
-#[cfg(not(feature = "module-rt"))]
 #[allow(
     clippy::needless_pass_by_value,
     reason = "Next is a one-shot token made under the hold and spent by the switch; by value keeps it from being reused"
@@ -617,7 +602,6 @@ pub fn switch_to<T: ThreadLayout>(h: &mut SchedHold, old: Pin<&T>, next: Next) {
 /// CPU's, released by `next`'s own hold), so this never returns. `old`, the running thread,
 /// is marked dead under the hold (E6: its u-area can be given back once the lock is
 /// released, which happens on `next`, after this CPU left `old`'s stack).
-#[cfg(not(feature = "module-rt"))]
 #[allow(
     clippy::needless_pass_by_value,
     reason = "Next is a one-shot token made under the hold and spent by the switch; by value keeps it from being reused"
@@ -721,7 +705,6 @@ pub fn running_anywhere<T: ThreadLayout>(t: &T) -> bool {
 /// is read under the scheduler's lock, which [`tcb_set`] takes for the one write a running
 /// thread makes, so a read from another CPU (`thrkill(2)`'s check) never races it, and
 /// which keeps the thread's u-area from being given back meanwhile (E4, E6).
-#[cfg(not(feature = "module-rt"))]
 pub fn tcb_get<T: ThreadLayout>(t: &T) -> usize {
     let slot = slot_of(t);
     if crate::cpu::curcpu().curproc() == core::ptr::from_ref(t).cast() {
@@ -738,7 +721,6 @@ pub fn tcb_get<T: ThreadLayout>(t: &T) -> usize {
 /// `TPIDR_EL0`). `t` must be the running thread, as the C's macro says: on the machine another
 /// thread is `panic(9)` (its register is another CPU's, or loaded at its next switch); the
 /// host's tests set any thread's.
-#[cfg(not(feature = "module-rt"))]
 pub fn tcb_set<T: ThreadLayout>(t: &T, addr: usize) {
     let slot = slot_of(t);
     if cfg!(target_os = "none") && crate::cpu::curcpu().curproc() != core::ptr::from_ref(t).cast() {
@@ -751,7 +733,6 @@ pub fn tcb_set<T: ThreadLayout>(t: &T, addr: usize) {
 
 /// `TCB_INVALID(addr)`: whether `addr` can never be a TCB on this machine (amd64: a
 /// non-canonical address; arm64 and the host refuse none).
-#[cfg(not(feature = "module-rt"))]
 pub fn tcb_invalid(addr: usize) -> bool {
     crate::arch::current::switch::tcb_invalid(addr)
 }
@@ -762,7 +743,6 @@ pub fn tcb_invalid(addr: usize) -> bool {
 /// saved first when it is the running thread (the CPU holds it). Under the scheduler's hold
 /// `h` (E4: no u-area is given back meanwhile); panics for a child whose context lives or
 /// is dead (E6: the C's `cpu_fork` runs on an `SIDL` child alone, kern_fork.c:437, :583).
-#[cfg(not(feature = "module-rt"))]
 pub fn thread_setup<T: ThreadLayout>(
     h: &SchedHold,
     parent: Pin<&T>,
@@ -790,7 +770,6 @@ pub fn thread_setup<T: ThreadLayout>(
 /// The frames of a thread that has never run and starts with `start` and `arg` (a secondary
 /// CPU's idle thread, `cpu_init_secondary`), under the scheduler's hold `h` (E4); panics for
 /// a thread whose context lives or is dead (E6).
-#[cfg(not(feature = "module-rt"))]
 pub fn thread_restart<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>, start: usize, arg: usize) {
     check_type::<T>();
     let _ = h;
@@ -801,7 +780,6 @@ pub fn thread_restart<T: ThreadLayout>(h: &SchedHold, t: Pin<&T>, start: usize, 
 /// The frames of `slot`'s thread are about to be built: refused (`panic(9)`, naming `what`)
 /// for a context that lives (frames of it are on the u-area, running or suspended) or is
 /// dead; the slot is [`CTX_FRESH`] from now on (E6).
-#[cfg(not(feature = "module-rt"))]
 fn fresh(slot: &MachineSlot, what: &str) {
     match slot.ctx() {
         CTX_NONE | CTX_FRESH => slot.ctx.store(CTX_FRESH, AtomicOrdering::Release),
@@ -814,7 +792,6 @@ fn fresh(slot: &MachineSlot, what: &str) {
 /// The trampoline's machine-independent part (`proc_trampoline_mi`'s first step): the hold of
 /// the lock the switch to this new thread kept, adopted, and the registered start called
 /// with it and the two words.
-#[cfg(not(feature = "module-rt"))]
 pub(crate) fn trampoline(start: usize, arg: usize) {
     let hold = SchedHold::adopt();
     match START.get() {

@@ -158,10 +158,7 @@ pub fn install_debugger(d: &'static dyn Debugger) -> Result<(), AlreadyRegistere
 
 /// The registered trap handler, `None` before registration.
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's trap code alone calls it")
 )]
 #[inline]
@@ -171,10 +168,7 @@ pub(crate) fn handler() -> Option<&'static dyn TrapHandler> {
 
 /// `curcpu()->ci_flush_bp()`: nothing before the hooks are registered.
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's trap code alone calls it")
 )]
 #[inline]
@@ -187,10 +181,7 @@ pub(crate) fn flush_bp() {
 /// `fault(fmt, ...)`: the registered hooks' (the running CPU's panic buffer), a printed line
 /// before.
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's trap code alone calls it")
 )]
 pub(crate) fn fault(args: core::fmt::Arguments<'_>) {
@@ -202,10 +193,7 @@ pub(crate) fn fault(args: core::fmt::Arguments<'_>) {
 
 /// `if (ci->ci_serror) ci->ci_serror()`.
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's SError entry alone calls it")
 )]
 pub(crate) fn serror() {
@@ -217,10 +205,7 @@ pub(crate) fn serror() {
 /// `db_ktrap(kind, frame)` when a debugger is registered; `None` without one (the C built
 /// without `DDB`).
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's trap code alone calls it")
 )]
 pub(crate) fn debugger_ktrap(kind: i32, frame: &mut Trapframe) -> Option<bool> {
@@ -229,10 +214,7 @@ pub(crate) fn debugger_ktrap(kind: i32, frame: &mut Trapframe) -> Option<bool> {
 
 /// Whether a debugger is registered (the C's `#ifdef DDB`).
 #[cfg_attr(
-    any(
-        not(all(target_os = "none", target_arch = "aarch64")),
-        feature = "module-rt"
-    ),
+    not(all(target_os = "none", target_arch = "aarch64")),
     allow(dead_code, reason = "the machine's trap code alone calls it")
 )]
 pub(crate) fn have_debugger() -> bool {
@@ -242,20 +224,14 @@ pub(crate) fn have_debugger() -> bool {
 /// `PROC_PC(p)` of the running thread: the user program counter of its trap frame
 /// (`pcb_tf`; the instruction after the `svc` during a system call), 0 for a thread with
 /// none. The running thread's alone: no other thread's frame is read from this CPU.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 pub fn proc_pc() -> usize {
     user_regs::proc_pc()
 }
 
 /// `PROC_STACK(p)` of the running thread: the user stack pointer of its trap frame, 0 for a
 /// thread with none.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 pub fn proc_stack() -> usize {
     user_regs::proc_stack()
 }
@@ -263,20 +239,13 @@ pub fn proc_stack() -> usize {
 /// `PROC_PC(p)` and `PROC_STACK(p)` of the running thread at once (the system call
 /// prologue's `MAP_STACK` check and `pin_check`), `(0, 0)` for a thread with no frame: one
 /// access to the frame where the two would take two.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 pub fn proc_regs() -> (usize, usize) {
     user_regs::proc_regs()
 }
 
 /// The machine's user frame (arm64's `UserFrame`).
-#[cfg(all(
-    target_os = "none",
-    target_arch = "aarch64",
-    not(feature = "module-rt")
-))]
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
 use crate::arch::arm64::trap as user_regs;
 /// The host's double: the registers a test set.
 #[cfg(not(target_os = "none"))]

@@ -221,7 +221,7 @@ impl CpuCore {
     /// `ci->ci_curpcb = pcb` (`main`'s for `proc0`, a secondary CPU's start).
     #[inline]
     #[cfg_attr(
-        any(not(target_os = "none"), feature = "module-rt"),
+        not(target_os = "none"),
         allow(dead_code, reason = "the machine's switch alone writes it")
     )]
     pub(crate) fn set_curpcb(&self, pcb: *const ()) {
@@ -290,10 +290,7 @@ impl CpuCore {
     /// `ci->ci_trampoline_vectors = va`: only the machine's exception code, with the address
     /// of one of its own tables (`arch/arm64/exception.rs`).
     #[cfg_attr(
-        any(
-            not(all(target_os = "none", target_arch = "aarch64")),
-            feature = "module-rt"
-        ),
+        not(all(target_os = "none", target_arch = "aarch64")),
         allow(dead_code, reason = "arm64's exception code alone sets it")
     )]
     #[inline]
@@ -359,11 +356,7 @@ pub fn attach(core: &'static CpuCore, number: usize) {
     core.set_number(number);
     // `ci->ci_trampoline_vectors = (vaddr_t)trampoline_vectors_none` (`cpu_attach`): the
     // table without a mitigation, until the CPU's identification chooses one.
-    #[cfg(all(
-        target_os = "none",
-        target_arch = "aarch64",
-        not(feature = "module-rt")
-    ))]
+    #[cfg(all(target_os = "none", target_arch = "aarch64"))]
     crate::arch::arm64::exception::attached(core);
     if CORES[number].set(core).is_err() {
         crate::assert::hal_panic(format_args!("cpu attach: cpu{number} attached twice"));

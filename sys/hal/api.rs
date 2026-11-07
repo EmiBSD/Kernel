@@ -17,70 +17,38 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The type of `KernelApi`, the vtable of safe functions the kernel hands the ABI module
-//! when `hal::module` loads it (decision 22, docs/ZERO_UNSAFE.md 0.1), and the header the
-//! module carries. They are declared here, below both sides, so that the module (`abi`)
-//! names them with no dependency on the `kernel` crate's code, and the loader checks the
-//! module against the very type it hands over. `kernel::api` fills the table and keeps the
-//! module's registration; this file holds no function a table entry points at.
+//! The type of `KernelApi`, the table of safe functions the kernel hands the ABI (`abi`):
+//! `abi::abi_init` receives it from the image's boot glue, registers its system call handler
+//! through it, and the handler reaches the kernel through it alone (decision 22, decision 47,
+//! docs/ZERO_UNSAFE.md 0.1). The type is declared here, below both sides, so that `abi`
+//! names it with no dependency on the `kernel` crate; `kernel::api` fills the table and keeps
+//! the ABI's registration; this file holds no function a table entry points at.
 //!
-//! The table crosses a binary boundary (the kernel and `abi_openbsd.ko` are linked apart),
-//! so it is `#[repr(C)]` and starts with [`ApiPrefix`] (its version and size); both sides
-//! are built by the one pinned toolchain from the one tree, and its fields are Rust-ABI
-//! `fn` pointers over slices and `Result`s, laid out the same on both sides. The loader
-//! refuses a table whose prefix is not this version's, and a module whose header names
-//! another version or size.
+//! The groups, in the order they arrived: the system call handler's registration and the
+//! `Legacy` path (N2.4); `pipe2`, the kernel's entry for pipe(2) and pipe2(2), the first
+//! `Native` system calls (N2.6); [`VmEntries`], the fifteen system calls of the virtual memory
+//! system (`mmap(2)` and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`, N3.5);
+//! [`FdEntries`], the twenty of the descriptor tables and their I/O (`read(2)`, `close(2)`,
+//! `dup(2)`, `fcntl(2)`, `ioctl(2)`, ..., N4.3); [`EventEntries`], the seven of kqueue and
+//! select/poll (N4.4); `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`, N4.7a); `futex`,
+//! futex(2)'s ([`FutexEntry`], N4.6c); [`ProcEntries`], the forty-six of the processes (fork,
+//! exit, wait, the limits, the ids and credentials, accounting, the TCB, the thread names, the
+//! routing table, N4.6a); `sysctl`, sysctl(2)'s ([`SysctlEntry`], N4.6b); [`TimeEntries`], the
+//! ten time system calls of kern_time.c and `reboot(2)` (N4.8); `sigreturn`, sigreturn(2)'s
+//! ([`SigreturnEntry`], N4.8b); [`VfsEntries`], the sixty-five of the VFS (`open(2)`,
+//! `stat(2)`, `mount(2)`, `rename(2)`, `getdents(2)`, ..., `__getcwd(2)`, N5.4), one typed
+//! entry each.
 //!
-//! Version 1 (N2.4): the system call handler's registration, the `Legacy` fallback, and the
-//! raw user copy the module's own `UserPtr` work needs. Version 2 (N2.6): `pipe2`, the
-//! kernel's entry for pipe(2) and pipe2(2), the first `Native` system calls. Version 3
-//! (N3.5): [`VmEntries`], the fifteen system calls of the virtual memory system (`mmap(2)`
-//! and its siblings, `kbind(2)`, `pinsyscalls(2)`, `break`), one typed entry each. Version 4
-//! (N4.3): [`FdEntries`], the twenty system calls of the descriptor tables and their I/O
-//! (`read(2)`, `close(2)`, `dup(2)`, `fcntl(2)`, `ioctl(2)`, ...), one typed entry each.
-//! Version 5 (N4.4): [`EventEntries`], the seven of kqueue and select/poll (`kqueue(2)`,
-//! `kqueue1(2)`, `kevent(2)`, `select(2)`, `pselect(2)`, `poll(2)`, `ppoll(2)`). Version 6
-//! (N4.7a): `sendsyslog`, `sendsyslog(2)`'s entry (`kernel::log`). Version 7 (N4.6c):
-//! `futex`, the kernel's entry for futex(2) ([`FutexEntry`]). Version 8 (N4.6a):
-//! [`ProcEntries`], the forty-six of the processes (fork, exit, wait, the limits, the ids
-//! and credentials, accounting, the TCB, the thread names, the routing table). Version 9
-//! (N4.6b): `sysctl`, the kernel's entry for sysctl(2) ([`SysctlEntry`]). Version 10
-//! (N4.8): [`TimeEntries`], the ten time system calls of kern_time.c and `reboot(2)`.
-//! Version 11 (N4.8b): `sigreturn`, the kernel's entry for sigreturn(2) ([`SigreturnEntry`]).
-//! Version 12 (N5.4): [`VfsEntries`], the sixty-five of the VFS (`open(2)`, `stat(2)`,
-//! `mount(2)`, `rename(2)`, `getdents(2)`, ..., `__getcwd(2)`), one typed entry each.
-
-use core::mem::{offset_of, size_of};
+//! Until the N5 close the table crossed a binary boundary (the ABI was the loadable module of
+//! decision 22) and was `#[repr(C)]`, versioned and checked by the loader against the
+//! module's header; linked into the image (decision 47), the compiler's type check is that
+//! check, and the table is a plain Rust struct.
 
 use crate::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
-/// The version of [`KernelApi`] this tree defines; the module's header must name it.
-pub const KERNEL_API_VERSION: u32 = 12;
-
-/// The module's system call handler: the table, the number, the arguments, the return
+/// The ABI's system call handler: the table, the number, the arguments, the return
 /// registers; `Ok(())` or an errno value, as the trap expects ([`SysResult`]).
 pub type SyscallHandler = fn(&'static KernelApi, Register, &SysArgs, &mut Rval) -> SysResult;
-
-/// The module's entry point, which `hal::module` calls once, before `init(8)` starts.
-pub type AbiInit = fn(&'static KernelApi);
-
-/// What every table and header starts with, read before anything else.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ApiPrefix {
-    /// [`KERNEL_API_VERSION`].
-    pub version: u32,
-    /// `size_of::<KernelApi>()`.
-    pub size: u32,
-}
-
-impl ApiPrefix {
-    /// This tree's prefix.
-    pub const CURRENT: Self = Self {
-        version: KERNEL_API_VERSION,
-        size: size_of::<KernelApi>() as u32,
-    };
-}
 
 /// `mmap(2)` and `mquery(2)`: `(nr, addr, len, prot, flags, fd, pos)`, the address in the
 /// `Ok`.
@@ -91,10 +59,9 @@ pub type RangeEntry = fn(Register, usize, usize) -> SysResult;
 /// (`behav`), `minherit` (`inherit`), `msync` (`flags`).
 pub type RangeIntEntry = fn(Register, usize, usize, i32) -> SysResult;
 
-/// The virtual memory system's entries (version 3): each takes the system call's number
+/// The virtual memory system's entries (N3.5): each takes the system call's number
 /// first (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the
 /// arguments as `<sys/syscallargs.h>` types them.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VmEntries {
     /// 17 = `break(char *nsize)`: `(nr, nsize)`.
@@ -146,12 +113,11 @@ pub type PioEntry = fn(Register, i32, usize, usize, i64, &mut Rval) -> SysResult
 /// `pwritev`.
 pub type PiovEntry = fn(Register, i32, usize, i32, i64, &mut Rval) -> SysResult;
 
-/// The descriptor system calls' entries (version 4): each takes the system call's number
+/// The descriptor system calls' entries (N4.3): each takes the system call's number
 /// first (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the
 /// arguments as `<sys/syscallargs.h>` types them, and last the trap's return registers,
 /// which the call writes as the C's `retval` (the count of `read(2)`, the new descriptor
 /// of `dup(2)`, ...) and leaves alone where the C does.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FdEntries {
     /// 3 = `read`.
@@ -203,12 +169,11 @@ pub type KeventList = (usize, i32);
 /// `kevent(2)`'s entry: `(nr, fd, changes, events, timeout, rval)`.
 pub type KeventEntry = fn(Register, i32, KeventList, KeventList, usize, &mut Rval) -> SysResult;
 
-/// The event system calls' entries (version 5): each takes the system call's number first
+/// The event system calls' entries (N4.4): each takes the system call's number first
 /// (the prologue still `bsd`'s checks it: pledge, the pinned syscalls), then the arguments
 /// as `<sys/syscallargs.h>` types them, the three `fd_set` pointers of `select(2)` and
 /// `pselect(2)` and the (list, count) pairs of `kevent(2)` grouped, and last the trap's
 /// return registers.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct EventEntries {
     /// 71 = `select(int nd, fd_set *in, fd_set *ou, fd_set *ex, struct timeval *tv)`:
@@ -243,11 +208,10 @@ pub type FutexEntry = fn(Register, usize, i32, i32, usize, usize, &mut Rval) -> 
 /// integers.
 pub type SysctlEntry = fn(Register, usize, u32, usize, usize, usize, usize, &mut Rval) -> SysResult;
 
-/// The time system calls' entries and `reboot(2)`'s (version 10, N4.8): the clocks, the
+/// The time system calls' entries and `reboot(2)`'s (N4.8): the clocks, the
 /// time of day and its adjustments, `nanosleep(2)`, the interval timers: one typed entry
 /// each, its arguments as the registers carry them (the addresses as integers), the return
 /// registers given to the entry.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TimeEntries {
     /// 87 = `clock_gettime(clockid_t clock_id, struct timespec *tp)`.
@@ -274,18 +238,17 @@ pub struct TimeEntries {
     pub reboot: fn(Register, i32, &mut Rval) -> SysResult,
 }
 
-/// 103 = `sigreturn(struct sigcontext *sigcntxp)` (version 11, N4.8b): `(nr, sigcntxp,
+/// 103 = `sigreturn(struct sigcontext *sigcntxp)` (N4.8b): `(nr, sigcntxp,
 /// rval)`, the context's user address as an integer; `EJUSTRETURN` once the context is
 /// restored (the registers are the context's, nothing is returned in them).
 pub type SigreturnEntry = fn(Register, usize, &mut Rval) -> SysResult;
 
-/// The process system calls' entries (version 8, N4.6a): `fork(2)` and `vfork(2)`,
+/// The process system calls' entries (N4.6a): `fork(2)` and `vfork(2)`,
 /// `__tfork(2)`, `exit(2)` and `__threxit(2)`, `wait4(2)` and `waitid(2)`, the limits and
 /// usage (`getrusage`, `getrlimit`, `setrlimit`, `getpriority`, `setpriority`), `acct(2)`, the
 /// ids and credentials of kern_prot.c, the TCB, the thread names and the routing table: one
 /// typed entry each, its arguments as the registers carry them, the return registers written
 /// by the entry.
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ProcEntries {
     /// `fork(void)`.
@@ -382,7 +345,7 @@ pub struct ProcEntries {
     pub setrtable: fn(Register, i32, &mut Rval) -> SysResult,
 }
 
-/// The VFS system calls' entries (version 12, N5.4): the sixty-four of `vfs_syscalls.c` and
+/// The VFS system calls' entries (N5.4): the sixty-four of `vfs_syscalls.c` and
 /// `__getcwd(2)`, in `syscalls.master`'s order, one typed entry each: the system call's
 /// number first (the prologue still `bsd`'s checks it: pledge, the pinned syscalls, the
 /// kernel lock of a row that is not `NOLOCK`), then the arguments as the registers carry them
@@ -390,7 +353,6 @@ pub struct ProcEntries {
 /// as `u32`, `off_t` as `i64`, `size_t` as `usize`), and last the trap's return registers,
 /// which the call writes as the C's `retval` (the descriptor of `open(2)`, the offset of
 /// `lseek(2)`, the count of `readlink(2)`, ...).
-#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VfsEntries {
     /// 5 = `int open(const char *path, int flags, mode_t mode)` (`NOLOCK`).
@@ -525,59 +487,50 @@ pub struct VfsEntries {
     pub unlinkat: fn(Register, i32, usize, i32, &mut Rval) -> SysResult,
 }
 
-/// The vtable handed to the module.
-#[repr(C)]
+/// The table handed to the ABI.
 pub struct KernelApi {
-    /// [`ApiPrefix::CURRENT`].
-    pub prefix: ApiPrefix,
-    /// Registers the module's system call handler and what it says about itself: from
-    /// here on every system call trap reaches it.
+    /// Registers the ABI's system call handler and what it says about itself: from here on
+    /// every system call trap reaches it.
     pub register_syscall_handler: fn(&'static KernelApi, SyscallHandler, HandlerInfo),
-    /// The `Legacy` path: what a `Legacy` entry of the module's table calls (the LZ
+    /// The `Legacy` path: what a `Legacy` entry of the ABI's table calls (the LZ
     /// `sysent[]` and `mi_syscall`, which `bsd` registers).
     pub syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-    /// `copyin(uaddr, kbuf)`: user bytes at `uaddr` into `kbuf`; an errno value on a fault.
-    pub copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
-    /// `copyout(kbuf, uaddr)`: `kbuf` to user memory at `uaddr`; an errno value on a fault.
-    pub copyout: fn(&[u8], usize) -> Result<(), i32>,
     /// pipe(2) and pipe2(2): `(nr, fdp, flags)`, the system call's number (`SYS_pipe` or
     /// `SYS_pipe2`, which the system call prologue checks: pledge, the pinned syscalls), the
     /// user address of the two descriptors and `pipe2`'s flags (0 for `pipe`).
     pub pipe2: fn(Register, usize, Register) -> SysResult,
-    /// The virtual memory system's system calls (version 3).
+    /// The virtual memory system's system calls (N3.5).
     pub vm: VmEntries,
-    /// The descriptor system calls (version 4).
+    /// The descriptor system calls (N4.3).
     pub fd: FdEntries,
-    /// The event system calls (version 5).
+    /// The event system calls (N4.4).
     pub event: EventEntries,
-    /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)` (version 6): `(nr, buf,
+    /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)` (N4.7a): `(nr, buf,
     /// nbyte, flags, rval)`.
     pub sendsyslog: fn(Register, usize, usize, i32, &mut Rval) -> SysResult,
-    /// futex(2) (version 7).
+    /// futex(2) (N4.6c).
     pub futex: FutexEntry,
-    /// The process system calls (version 8).
+    /// The process system calls (N4.6a).
     pub proc: ProcEntries,
-    /// sysctl(2) (version 9).
+    /// sysctl(2) (N4.6b).
     pub sysctl: SysctlEntry,
-    /// The time system calls and reboot(2) (version 10).
+    /// The time system calls and reboot(2) (N4.8).
     pub time: TimeEntries,
-    /// sigreturn(2) (version 11).
+    /// sigreturn(2) (N4.8b).
     pub sigreturn: SigreturnEntry,
-    /// The VFS system calls (version 12).
+    /// The VFS system calls (N5.4).
     pub vfs: VfsEntries,
 }
 
 impl KernelApi {
-    /// The table of this version over the given functions.
+    /// The table over the given functions.
     #[allow(
         clippy::too_many_arguments,
-        reason = "one argument per member of the table, as its layout"
+        reason = "one argument per member of the table"
     )]
     pub const fn new(
         register_syscall_handler: fn(&'static KernelApi, SyscallHandler, HandlerInfo),
         syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-        copyin: fn(usize, &mut [u8]) -> Result<(), i32>,
-        copyout: fn(&[u8], usize) -> Result<(), i32>,
         pipe2: fn(Register, usize, Register) -> SysResult,
         vm: VmEntries,
         fd: FdEntries,
@@ -591,11 +544,8 @@ impl KernelApi {
         vfs: VfsEntries,
     ) -> Self {
         Self {
-            prefix: ApiPrefix::CURRENT,
             register_syscall_handler,
             syscall_legacy,
-            copyin,
-            copyout,
             pipe2,
             vm,
             fd,
@@ -610,90 +560,6 @@ impl KernelApi {
         }
     }
 }
-
-/// The header the module carries at its ELF entry address (its linker script puts it
-/// there), which `hal::module` checks before it calls `init`.
-#[repr(C)]
-pub struct AbiModuleHeader {
-    /// [`MODULE_MAGIC`].
-    pub magic: [u8; 8],
-    /// The [`ApiPrefix`] of the table the module was built against.
-    pub api: ApiPrefix,
-    /// The module's entry point.
-    pub init: AbiInit,
-}
-
-impl AbiModuleHeader {
-    /// The header of a module whose entry point is `init`, built against this table.
-    pub const fn new(init: AbiInit) -> Self {
-        Self {
-            magic: MODULE_MAGIC,
-            api: ApiPrefix::CURRENT,
-            init,
-        }
-    }
-}
-
-/// The first eight bytes of the module's header.
-pub const MODULE_MAGIC: [u8; 8] = *b"EMIABIKO";
-
-/// Offset of the header's magic.
-pub const HEADER_MAGIC: usize = offset_of!(AbiModuleHeader, magic);
-/// Offset of the version of the table the module was built against (`u32`).
-pub const HEADER_API_VERSION: usize = offset_of!(AbiModuleHeader, api);
-/// Offset of the size of that table (`u32`).
-pub const HEADER_API_SIZE: usize = offset_of!(AbiModuleHeader, api) + 4;
-/// Offset of the entry point (a pointer, relocated).
-pub const HEADER_INIT: usize = offset_of!(AbiModuleHeader, init);
-/// The header's size.
-pub const HEADER_SIZE: usize = size_of::<AbiModuleHeader>();
-
-// The layout the loader reads as bytes before it calls anything.
-const _: () = {
-    assert!(offset_of!(ApiPrefix, version) == 0);
-    assert!(offset_of!(ApiPrefix, size) == 4);
-    assert!(offset_of!(KernelApi, prefix) == 0);
-    // Version 12 only adds: the version 11 fields keep their places, `vfs` comes last.
-    assert!(offset_of!(KernelApi, vfs) == size_of::<KernelApi>() - size_of::<VfsEntries>());
-    assert!(
-        offset_of!(KernelApi, vfs)
-            == offset_of!(KernelApi, sigreturn) + size_of::<SigreturnEntry>()
-    );
-    assert!(size_of::<VfsEntries>() == 65 * size_of::<fn()>());
-    // Version 11 added `sigreturn` after `time`.
-    assert!(
-        offset_of!(KernelApi, sigreturn) == offset_of!(KernelApi, time) + size_of::<TimeEntries>()
-    );
-    // Version 10 added `time` after `sysctl`.
-    assert!(
-        offset_of!(KernelApi, time) == offset_of!(KernelApi, sysctl) + size_of::<SysctlEntry>()
-    );
-    assert!(size_of::<TimeEntries>() == 11 * size_of::<fn()>());
-    // Version 9 added `sysctl` after `proc`.
-    assert!(
-        offset_of!(KernelApi, sysctl) == offset_of!(KernelApi, proc) + size_of::<ProcEntries>()
-    );
-    // Version 8 added `proc` after `futex`.
-    assert!(offset_of!(KernelApi, proc) == offset_of!(KernelApi, futex) + size_of::<FutexEntry>());
-    assert!(size_of::<ProcEntries>() == 46 * size_of::<fn()>());
-    // Version 7 added `futex` after `sendsyslog`.
-    assert!(offset_of!(KernelApi, futex) == offset_of!(KernelApi, sendsyslog) + size_of::<fn()>());
-    // Version 6 added `sendsyslog` after the version 5 fields.
-    assert!(
-        offset_of!(KernelApi, sendsyslog)
-            == offset_of!(KernelApi, event) + size_of::<EventEntries>()
-    );
-    // Version 5 added: the version 4 fields keep their places, `event` follows them.
-    assert!(offset_of!(KernelApi, event) == offset_of!(KernelApi, fd) + size_of::<FdEntries>());
-    assert!(size_of::<EventEntries>() == 7 * size_of::<fn()>());
-    assert!(offset_of!(KernelApi, fd) == offset_of!(KernelApi, vm) + size_of::<VmEntries>());
-    assert!(size_of::<FdEntries>() == 20 * size_of::<fn()>());
-    assert!(size_of::<VmEntries>() == 15 * size_of::<fn()>());
-    // Version 2's fields, the prefix and five entries, keep their offsets: `vm` follows them.
-    assert!(offset_of!(KernelApi, vm) == size_of::<ApiPrefix>() + 5 * size_of::<fn()>());
-    assert!(HEADER_MAGIC == 0 && HEADER_API_VERSION == 8 && HEADER_INIT == 16);
-    assert!(HEADER_SIZE == 24);
-};
 /* </CODE> */
 
 /* <TESTS> */
@@ -706,15 +572,6 @@ mod tests {
     fn legacy(code: Register, _: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[0] = code;
         Ok(())
-    }
-
-    fn copyin(_: usize, buf: &mut [u8]) -> Result<(), i32> {
-        buf.fill(1);
-        Ok(())
-    }
-
-    fn copyout(_: &[u8], _: usize) -> Result<(), i32> {
-        Err(14) // EFAULT
     }
 
     fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
@@ -1289,7 +1146,7 @@ mod tests {
         Err(nr as i32 + scp as i32)
     }
 
-    // The VFS entries of the test table (version 12): the number in rval[0], the
+    // The VFS entries of the test table (N5.4): the number in rval[0], the
     // arguments as decimal digits in the error.
     fn vfs_digits(a: &[i64]) -> i32 {
         a.iter().fold(0, |d, &v| d * 10 + v as i32)
@@ -1511,17 +1368,9 @@ mod tests {
     };
 
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
-        TIME, sigreturn, VFS,
+        register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
+        VFS,
     );
-
-    #[test]
-    fn the_table_names_its_version_and_size() {
-        assert_eq!(API.prefix, ApiPrefix::CURRENT);
-        assert_eq!(API.prefix.version, KERNEL_API_VERSION);
-        assert_eq!(KERNEL_API_VERSION, 12);
-        assert_eq!(API.prefix.size as usize, size_of::<KernelApi>());
-    }
 
     #[test]
     fn the_time_entries_are_the_callers_and_get_the_return_registers() {
@@ -1628,21 +1477,8 @@ mod tests {
         let mut rval = [0; 2];
         assert_eq!((API.syscall_legacy)(9, &[0; 6], &mut rval), Ok(()));
         assert_eq!(rval[0], 9);
-        let mut buf = [0u8; 3];
-        assert_eq!((API.copyin)(0x1000, &mut buf), Ok(()));
-        assert_eq!(buf, [1, 1, 1]);
-        assert_eq!((API.copyout)(&buf, 0x1000), Err(14));
         assert_eq!((API.pipe2)(0, 0, 0), Ok(()));
         assert_eq!((API.pipe2)(101, 0x1000, 0), Err(22));
-    }
-
-    fn init(_: &'static KernelApi) {}
-
-    #[test]
-    fn the_header_names_this_table() {
-        let h = AbiModuleHeader::new(init);
-        assert_eq!(h.magic, MODULE_MAGIC);
-        assert_eq!(h.api, ApiPrefix::CURRENT);
     }
 }
 /* </TESTS> */

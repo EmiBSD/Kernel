@@ -21,9 +21,10 @@
 //! implementation: pmaps, pte descriptors, pv lists, the mapping functions, the bootstrap),
 //! `vp` (the vp tables through the direct map: the frame view, the walks, the descriptor links),
 //! `asid` (the ASID pairs, generations and rollover), `cpufunc` (the TLB, cache and
-//! translation-register instructions), `window` (the ABI module's executable window beside
-//! the image, N3.1 commit 7) and `layout` (the header's constants and the arithmetic that
-//! needs no machine, pure, also compiled for the host tests).
+//! translation-register instructions) and `layout` (the header's constants and the
+//! arithmetic that needs no machine, pure, also compiled for the host tests). N3.1 commit 7's
+//! `window`, the ABI module's executable window beside the image, went with the module at the
+//! N5 close (decision 47).
 //!
 //! What arm64's own code (`bsd`'s `sys/arch/arm64/`, until it moves with its owners) names by
 //! path: [`VMMAP`] and [`VMMAP_SIZE`] (`bus_space`'s device window); the cache modes and the
@@ -39,10 +40,8 @@ pub(crate) mod backend;
 pub(crate) mod cpufunc;
 pub mod layout;
 mod vp;
-mod window;
 
 pub use asid::asid_width;
-#[cfg(not(feature = "module-rt"))]
 pub use backend::postinit;
 pub(crate) use backend::{Backend, PmapMd};
 pub use backend::{

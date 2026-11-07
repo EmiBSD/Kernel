@@ -464,8 +464,8 @@ pub fn iovec_copyin(
 static WINDOW_KCOPY: OnceStatic<&'static WindowKcopyToken> = OnceStatic::new();
 
 /// Takes `hal`'s one `WindowKcopyToken` for [`uiomove_window`]'s kernel iovecs: `bsd`'s boot
-/// calls it in `hal_bridges_register` right after `kcopy_take` (before the ABI module loads,
-/// so no other module of any crate can take it first), the host tests' doubles in
+/// calls it in `hal_bridges_register` right after `kcopy_take` (before the boot glue calls
+/// `abi::abi_init`, so no other module of any crate can take it first), the host tests' doubles in
 /// `testutil::install`; another call keeps what is held. `panic(9)` when the token is gone
 /// and was not stored here: someone else took it.
 pub fn window_kcopy_take() {

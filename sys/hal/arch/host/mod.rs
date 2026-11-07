@@ -41,7 +41,6 @@ pub(crate) mod klock;
 pub mod param;
 pub(crate) mod pmap;
 pub mod sig;
-#[cfg(not(feature = "module-rt"))]
 pub(crate) mod switch;
 pub mod timer;
 

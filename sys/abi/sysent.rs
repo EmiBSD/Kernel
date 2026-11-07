@@ -17,11 +17,11 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The module's system call table: one entry per system call number of
+//! The ABI's system call table: one entry per system call number of
 //! `<sys/syscall.h>` (`hal::sys::syscall`, the ABI edge), each `Native` (translated into a
 //! `kernel` entry point) or `Legacy` (handed to the LZ path `bsd` registered, through
-//! `KernelApi::syscall_legacy`), and the dispatcher `hal` reaches through the handler the
-//! module registered.
+//! `KernelApi::syscall_legacy`), and the dispatcher `hal` reaches through the handler
+//! [`crate::abi_init`] registered.
 //!
 //! N2.4: every entry was `Legacy`, so every system call behaves exactly as LZ's: the number
 //! is not even read here but to pick the entry, and an out-of-range number goes to the
@@ -100,7 +100,7 @@ pub enum Sysent {
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
 pub const NATIVE: u32 = 170;
 
-/// What the module says about itself when it registers ([`crate::abi_init`]).
+/// What the ABI says about itself when it registers ([`crate::abi_init`]).
 pub const INFO: HandlerInfo = HandlerInfo {
     syscalls: SYS_MAXSYSCALL as u32,
     native: NATIVE,
@@ -282,7 +282,7 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table
 };
 
-/// The module's system call handler (`hal::api::SyscallHandler`).
+/// The ABI's system call handler (`hal::api::SyscallHandler`).
 pub fn syscall(
     api: &'static KernelApi,
     nr: Register,
@@ -1873,14 +1873,6 @@ mod tests {
         Err(ENOSYS) // as the LZ path answers an out-of-range number
     }
 
-    fn copyin(_: usize, _: &mut [u8]) -> Result<(), i32> {
-        Ok(())
-    }
-
-    fn copyout(_: &[u8], _: usize) -> Result<(), i32> {
-        Ok(())
-    }
-
     fn register(_: &'static KernelApi, _: hal::api::SyscallHandler, _: HandlerInfo) {}
 
     /// The kernel's pipe entry of the test table: says what reached it.
@@ -2758,8 +2750,8 @@ mod tests {
     };
 
     static API: KernelApi = KernelApi::new(
-        register, legacy, copyin, copyout, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl,
-        TIME, sigreturn, VFS,
+        register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
+        VFS,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).

@@ -49,7 +49,7 @@
 
 /* <CODE> */
 //! `<sys/syscall_mi.h>`: `bsd`'s names over the kernel's (`kernel::syscall`, N4.8b), for the
-//! callers still here: the `Legacy` fallback and the `Native` wrappers that run a `sysent[]`
+//! callers still here: the `Legacy` path and the `Native` wrappers that run a `sysent[]`
 //! row through the prologue (`abi_module.rs`, `vm_bsd.rs`, `kern_descrip.rs`,
 //! `pipe_glue.rs`), and the machine trap code that still calls the return paths by name
 //! (amd64's, N10).

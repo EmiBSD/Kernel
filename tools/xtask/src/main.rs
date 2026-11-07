@@ -95,8 +95,8 @@
 //!                                          ratio EmiBSD / OpenBSD, refused over a 15 %
 //!                                          spread; <run dir>/A/report.toml (bench.rs);
 //!                                          `--profile release` boots the release kernel
-//!                                          (decision 42, a diagnostic: init and the ABI
-//!                                          module stay debug)
+//!                                          (decision 42, a diagnostic: init stays
+//!                                          debug)
 //! cargo xtask bench compare BEFORE AFTER   the `Bench:` lines of what moved between two
 //!                                          reports, beyond their spreads
 //! cargo xtask unsafe-report [--write|--check] [--shapes]

@@ -32,8 +32,8 @@ Everything in this repository (code, comments, docs, commits) is in English.
   `#![forbid(unsafe_code)]` at their roots (the compiler refuses one `unsafe`), `sys/hal/` the
   only crate with `unsafe` (the hardware and the runtime, every site with a `// SAFETY:` proof,
   a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
-  replaced subsystem by subsystem and deleted at N9. `abi` is the loadable module
-  `abi_openbsd.ko` and holds no logic. Section 0 of that document and its one diagram are the
+  replaced subsystem by subsystem and deleted at N9. `abi` is linked into the kernel image
+  (decision 47) and holds no logic (`.claude/rules/abi.md`). Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
   are superseded.
 - No `std` outside `sys/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code, the host benchmark
@@ -55,7 +55,7 @@ sys/                         package `bsd`: the LZ tree, legacy, replaced subsys
   kern/ uvm/ dev/ net/ ...   LZ's subsystems, still the kernel that boots while they move out
   hal/                       crate `hal`: the hardware (arch/amd64, arch/arm64, machine, moved here at N2) and the runtime; the ONLY unsafe
   kernel/                    crate `kernel`: every decision of the OS, #![forbid(unsafe_code)] at the root
-  abi/                       crate `abi`: OpenBSD's userland interface as the loadable module abi_openbsd.ko, forbid, no logic
+  abi/                       crate `abi`: OpenBSD's userland interface, linked into the kernel image, forbid, no logic
   stand/                     the boot loaders (separate binaries, outside the four crates)
   lib/libkern/ lib/libz/     leaf crates
 tools/xtask/                 host tooling: `cargo xtask {image,qemu,smoke,lz,unsafe-report,diff-openbsd,...}`
@@ -86,7 +86,7 @@ Two provenance rules:
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
-| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) |
+| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `hal` only through `hal::api`, `hal::sys`, `hal::syscall`'s types (R6, decision 47) |
 | `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |

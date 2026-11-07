@@ -41,8 +41,8 @@
 //! The entry keeps what the C does around the call: the counter, the interrupts the user had,
 //! the `svc` skipped with the speculation barrier after it, the number and the six argument
 //! registers read from the frame, the return registers, the carry bit, the restart and
-//! `EJUSTRETURN`; the call itself goes to `hal::syscall::dispatch` (the module's handler or
-//! the `Legacy` fallback), and `mi_syscall_return` to the registered trap handler.
+//! `EJUSTRETURN`; the call itself goes to `hal::syscall::dispatch` (the ABI's registered
+//! handler), and `mi_syscall_return` to the registered trap handler.
 //!
 //! ## Redesign
 //! - N4.8b: the system call number is `x8` truncated to an `int`, as the C's `int code`

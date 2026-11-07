@@ -59,8 +59,8 @@
 //! refreshed, the stack pointer checked to lie in a `MAP_STACK` mapping (`uvm_map_inentry`),
 //! the call site checked against the pinned system calls ([`pin_check`]), `pledge(2)`, and
 //! the kernel lock around the body unless the call is `SY_NOLOCK`. Every path into a system
-//! call's body comes through it: `bsd`'s `Legacy` fallback (`sysent[]`) and each `Native`
-//! entry of the ABI module's table (`bsd`'s wrappers over the kernel's functions), the body
+//! call's body comes through it: `bsd`'s `Legacy` path (`sysent[]`) and each `Native`
+//! entry of the ABI's table (`bsd`'s wrappers over the kernel's functions), the body
 //! a closure over the row. [`KernelTrap`] is what `hal`'s trap code asks: the page fault on
 //! the map the trap chose, the signals, `refreshcreds`, `userret`, the system call's return,
 //! the AST and a forked child's first return.

@@ -452,7 +452,7 @@
 //!   `kernel::sysctl`.
 //! - The fifteen `sysent[]` entries of the vm system calls (`sys_mmap`, ..., `sys_obreak`):
 //!   the `sysargs` unpacked and handed to `kernel::vm::mmap`/`unix` with the process's
-//!   address space; and their `Native` entries for the ABI module (`native_mmap`, ...,
+//!   address space; and their `Native` entries for the ABI (`native_mmap`, ...,
 //!   [`VM_ENTRIES`], `KernelApi::vm`), which run `mi_syscall` on the same row (pipe's
 //!   precedent, `pipe_glue.rs`), so the prologue (`refreshcreds`, the pinned syscalls,
 //!   pledge, the kernel lock rule) is the `Legacy` path's.

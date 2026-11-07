@@ -67,9 +67,8 @@
 //! the addresses, and the token goes with `UioMove` when the last `UIO_SYSSPACE` builder is
 //! typed (N7).
 //!
-//! **Where `hal` has no copy of the machine's** (amd64 until N10, the ABI module's runtime,
-//! which copies through `KernelApi`): every copy fails with `EFAULT`, as before a
-//! registration did.
+//! **Where `hal` has no copy of the machine's** (amd64 until N10): every copy fails with
+//! `EFAULT`, as before a registration did.
 //!
 //! ## Redesign
 //! - `copyin(uaddr, &obj, sizeof(obj))` -> `UserPtr::<T>::new(uaddr).copyin()`, returning the
@@ -123,18 +122,12 @@ use crate::sys::errno::Errno;
 use crate::sys::types::Vaddr;
 
 /// The machine's copies (`copy.S`, `copystr.S`; the host's double).
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 use crate::arch::current::copy as machine;
 
-/// No copy of the machine's in `hal` (amd64 until N10, the ABI module's runtime): every copy
-/// is `EFAULT`, as before the `UserCopy` bridge was registered.
-#[cfg(not(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-)))]
+/// No copy of the machine's in `hal` (amd64 until N10): every copy is `EFAULT`, as before the
+/// `UserCopy` bridge was registered.
+#[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
 mod machine {
     use crate::sys::errno::Errno;
 
@@ -162,10 +155,7 @@ mod machine {
 
 /// Which machine routine a raw copy is (`arch/<machine>/copy.rs`'s `copy_raw`): the legs of a
 /// [`ForeignWindow`] to and from a uio's iovecs, where neither side is a slice.
-#[cfg(any(
-    not(target_os = "none"),
-    all(target_arch = "aarch64", not(feature = "module-rt"))
-))]
+#[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RawCopy {
     /// `copyout(src, dst, len)`: the kernel's `src` to the user's `dst`.
@@ -238,10 +228,7 @@ impl ForeignWindow<'_> {
         if buf.is_empty() {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: `[kva, kva + buf.len())` lies inside the window (`at` checked it), which the
         // kernel map's token minted over a range its holder's `uvm_map_extract` or `uvm_map`
         // of an aobj not marked as viewed by `hal` put in the kernel map (the token's
@@ -251,10 +238,7 @@ impl ForeignWindow<'_> {
         // faults in (`uvm_fault`) or is `EFAULT` (`pcb_onfault`). `buf` is the caller's,
         // borrowed for the copy.
         let r = unsafe { machine::kcopy_in(kva, buf) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = kva;
             Err(Errno::EFAULT)
@@ -269,19 +253,13 @@ impl ForeignWindow<'_> {
         if src.is_empty() {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: as in `read_at`: the range lies inside the window, the pages of an
         // extracted range or of an aobj not marked as viewed by `hal`, which no Rust object
         // occupies, mapped while the window lives; another mapping may write them meanwhile
         // (no reference is made), and a page not resident yet faults in or is `EFAULT`.
         let r = unsafe { machine::kcopy_out(src, kva) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = kva;
             Err(Errno::EFAULT)
@@ -340,10 +318,7 @@ impl ForeignWindow<'_> {
         if n == 0 {
             return Ok(());
         }
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         let r = {
             let (kind, src, dst) = match leg {
                 WindowLeg::ToUser => (RawCopy::Out, kva, other),
@@ -368,10 +343,7 @@ impl ForeignWindow<'_> {
             // build such an iovec, the same trust `bsd`'s `uiomove` rests on, not new in kind).
             unsafe { machine::copy_raw(kind, src, dst, n) }
         };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (leg, kva, other);
             Err(Errno::EFAULT)
@@ -672,9 +644,12 @@ impl UserPtr<u32> {
 
 /// The right to `kcopy` onto kernel addresses its holder names itself (`bsd`'s `uiomove`'s
 /// `UIO_SYSSPACE` leg, the user's decision 13 of N4.8): one per kernel, taken once, by
-/// `bsd`'s boot (`hal_bridges_register`'s first step, before the ABI module loads; an
-/// earlier take by anyone panics the boot there), so no `forbid` crate can hold it: their
-/// later takes get `None`.
+/// `bsd`'s boot (`hal_bridges_register`'s first step, before the boot glue calls
+/// `abi::abi_init`; an earlier take by anyone panics the boot there), so no `forbid` crate
+/// can hold it: their later takes get `None`. The ABI, linked into the image (decision 47),
+/// cannot name it (`abi-check` R6 keeps `abi` to `hal::api`, `hal::sys` and
+/// `hal::syscall`'s types), runs no function before `abi_init`, and R5 refuses it a static that could
+/// keep a token.
 ///
 /// The holder's contract (decision 30's documented trust, `sys/hal/trust.rs`): every address
 /// it passes is a kernel buffer of at least the length copied that its builder owns for the
@@ -703,18 +678,12 @@ impl KcopyToken {
     /// `kcopy(kva, buf, buf.len())`: the bytes at the kernel address `kva` into `buf`;
     /// `EFAULT` when a page faults (or where `hal` has no copy).
     pub fn kcopy_in(&self, kva: usize, buf: &mut [u8]) -> Result<(), Errno> {
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: the token's contract (the type's docs): `kva` names a kernel buffer of at
         // least `buf.len()` bytes its holder vouches for, no Rust object written meanwhile; a
         // page that is not mapped is `EFAULT`. `buf` is the caller's, borrowed for the copy.
         let r = unsafe { machine::kcopy_in(kva, buf) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (kva, buf);
             Err(Errno::EFAULT)
@@ -725,17 +694,11 @@ impl KcopyToken {
     /// `kcopy(buf, kva, buf.len())`: `buf` to the kernel address `kva`; `EFAULT` when a page
     /// faults (or where `hal` has no copy).
     pub fn kcopy_out(&self, buf: &[u8], kva: usize) -> Result<(), Errno> {
-        #[cfg(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        ))]
+        #[cfg(any(not(target_os = "none"), target_arch = "aarch64"))]
         // SAFETY: the token's contract: `kva` names a kernel buffer of at least `buf.len()`
         // bytes its holder vouches for, which no Rust reference covers during the copy.
         let r = unsafe { machine::kcopy_out(buf, kva) };
-        #[cfg(not(any(
-            not(target_os = "none"),
-            all(target_arch = "aarch64", not(feature = "module-rt"))
-        )))]
+        #[cfg(not(any(not(target_os = "none"), target_arch = "aarch64")))]
         let r = {
             let _ = (buf, kva);
             Err(Errno::EFAULT)
@@ -748,9 +711,10 @@ impl KcopyToken {
 /// [`ForeignWindow::kcopy_from`]), the [`KcopyToken`]'s shape for the kernel's window leg
 /// of `uiomove` (`kernel::uio::uiomove_window`, N5.9t1, the main session's decision on
 /// review 1): one per kernel, taken once, by `kernel::uio` at `bsd`'s boot right after the
-/// `KcopyToken` (`hal_bridges_register`, before the ABI module loads) and by the host tests'
-/// doubles' install; later takes get `None`, so no other module of any crate can hold it,
-/// and `kernel::uio` keeps it private (never `Clone`, never lent).
+/// `KcopyToken` (`hal_bridges_register`, before the boot glue calls `abi::abi_init`, the
+/// [`KcopyToken`]'s argument) and by the host tests' doubles' install; later takes get
+/// `None`, so no other module of any crate can hold it, and `kernel::uio` keeps it private
+/// (never `Clone`, never lent).
 ///
 /// The holder's contract, the `KcopyToken`'s (decision 30's documented trust,
 /// `sys/hal/trust.rs`): every kernel address it passes is a `UIO_SYSSPACE` iovec's buffer

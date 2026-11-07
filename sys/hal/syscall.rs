@@ -97,7 +97,7 @@
 
 /* <CODE> */
 //! The system call dispatch point: the one place both architectures' traps hand a system
-//! call to, and the registry of who answers it.
+//! call to, and the registration of who answers it.
 //!
 //! Upstream: sys/arch/amd64/amd64/trap.c @ 3ce1f3f79392
 //! Upstream: sys/arch/arm64/arm64/syscall.c @ 3ce1f3f79392
@@ -110,21 +110,24 @@
 //! `Ok(())`, or the errno value (`ERESTART` is -1, `EJUSTRETURN` -2), as an `i32` because
 //! this crate sits below every crate that names `Errno`.
 //!
-//! Two answers can be registered, each once, at boot (docs/ZERO_UNSAFE.md 0.1, the
-//! sequence diagram): the module's handler (`abi_openbsd.ko` registers it through
-//! `KernelApi` when `hal::module` loads it) and the `Legacy` fallback (`bsd`'s `main`
-//! registers the LZ path: `sysent[]` and `mi_syscall`). [`dispatch`] calls the handler when
-//! there is one, the fallback otherwise; nothing registered at all answers `ENOSYS`, which
-//! only a kernel that skipped its own registration can see.
+//! One answer is registered, once, at boot (docs/ZERO_UNSAFE.md 0.1, the sequence diagram):
+//! the ABI's handler, which `abi::abi_init` registers through `KernelApi` when the image's
+//! boot glue calls it, before `main()` and so before the first system call. [`dispatch`]
+//! calls it; with nothing registered it answers `ENOSYS`, which only a kernel that skipped
+//! its own registration can see (the boot glue panics first). The ABI's table reaches the LZ
+//! path (`sysent[]` and `mi_syscall`) for its `Legacy` entries through
+//! `KernelApi::syscall_legacy`, not through this registry.
 //!
 //! ## Redesign
 //! - LZ's two traps each chose the `sysent[]` entry and called `mi_syscall` (amd64
-//!   `syscall`, arm64 `svc_handler`); that choice is now this module's, through two
-//!   registered functions, so the system call table can live in the ABI module (decision 22)
-//!   and `bsd`'s table becomes the `Legacy` fallback until every entry is `Native`.
-//! - The registry is a pair of init-once cells written by registration, never by a store a
-//!   caller can repeat: a second registration is refused, so a system call never sees a
-//!   handler change under it.
+//!   `syscall`, arm64 `svc_handler`); that choice is now this module's, through the
+//!   registered handler, so the system call table lives in the ABI (decision 22; linked into
+//!   the image since decision 47) and `bsd`'s table is the `Legacy` path until every entry is
+//!   `Native`.
+//! - The registration is an init-once cell written by registration, never by a store a
+//!   caller can repeat: a second registration is refused, so a system call never sees the
+//!   handler change under it. Decision 29's second slot, the `Legacy` fallback the traps took
+//!   when the module was not loaded, went with the module at the N5 close (decision 47).
 
 use crate::once::OnceStatic;
 
@@ -146,8 +149,8 @@ pub type SyscallFn = fn(Register, &SysArgs, &mut Rval) -> SysResult;
 /// `ENOSYS` (`<sys/errno.h>`): what an unanswered system call returns.
 pub const ENOSYS: i32 = crate::sys::errno::Errno::ENOSYS.as_i32();
 
-/// What the registered handler says about itself, for the boot line `hal::module` prints.
-#[repr(C)]
+/// What the registered handler says about itself, for the boot line the image's boot glue
+/// prints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandlerInfo {
     /// Entries in its system call table (`SYS_MAXSYSCALL`).
@@ -163,20 +166,11 @@ struct Handler {
     info: HandlerInfo,
 }
 
-/// The module's handler, once `abi_init` registered it.
+/// The ABI's handler, once `abi_init` registered it.
 static HANDLER: OnceStatic<Handler> = OnceStatic::new();
 
-/// The `Legacy` fallback, once `bsd`'s `main` registered it.
-static LEGACY: OnceStatic<SyscallFn> = OnceStatic::new();
-
-/// Registers the `Legacy` fallback: the LZ system call path, which answers every entry the
-/// module's table marks `Legacy`. Once; a second registration is refused and returned.
-pub fn set_legacy(f: SyscallFn) -> Result<(), SyscallFn> {
-    LEGACY.set(f)
-}
-
-/// Registers the module's handler and what it says about itself. Once; a second
-/// registration is refused and returned.
+/// Registers the ABI's handler and what it says about itself. Once; a second registration
+/// is refused and returned.
 pub fn set_handler(call: SyscallFn, info: HandlerInfo) -> Result<(), SyscallFn> {
     HANDLER.set(Handler { call, info }).map_err(|h| h.call)
 }
@@ -186,35 +180,17 @@ pub fn handler_info() -> Option<HandlerInfo> {
     HANDLER.get().map(|h| h.info)
 }
 
-/// Calls the `Legacy` fallback (what a `Legacy` entry of the module's table reaches).
-pub fn legacy(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    route(None, LEGACY.get().copied(), code, args, rval)
-}
-
 /// The dispatch point: what both traps call where the C chose the `sysent[]` entry and
 /// called `mi_syscall`.
 pub fn dispatch(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    route(
-        HANDLER.get().map(|h| h.call),
-        LEGACY.get().copied(),
-        code,
-        args,
-        rval,
-    )
+    route(HANDLER.get().map(|h| h.call), code, args, rval)
 }
 
-/// The choice itself, over what is registered: the handler, else the fallback, else
-/// `ENOSYS`.
-fn route(
-    handler: Option<SyscallFn>,
-    legacy: Option<SyscallFn>,
-    code: Register,
-    args: &SysArgs,
-    rval: &mut Rval,
-) -> SysResult {
-    match (handler, legacy) {
-        (Some(f), _) | (None, Some(f)) => f(code, args, rval),
-        (None, None) => Err(ENOSYS),
+/// The choice itself, over what is registered: the handler, else `ENOSYS`.
+fn route(handler: Option<SyscallFn>, code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    match handler {
+        Some(f) => f(code, args, rval),
+        None => Err(ENOSYS),
     }
 }
 /* </CODE> */
@@ -224,12 +200,12 @@ fn route(
 mod tests {
     use super::*;
 
-    fn module(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    fn handler(code: Register, args: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[0] = code * 10 + args[0];
         Ok(())
     }
 
-    fn fallback(code: Register, _args: &SysArgs, rval: &mut Rval) -> SysResult {
+    fn restart(code: Register, _args: &SysArgs, rval: &mut Rval) -> SysResult {
         rval[1] = code;
         Err(-1) // ERESTART travels as its raw value
     }
@@ -238,28 +214,22 @@ mod tests {
     fn the_handler_answers_when_registered() {
         let mut rval = [0; 2];
         let r = route(
-            Some(module as SyscallFn),
-            Some(fallback as SyscallFn),
+            Some(handler as SyscallFn),
             4,
             &[2, 0, 0, 0, 0, 0],
             &mut rval,
         );
         assert_eq!(r, Ok(()));
         assert_eq!(rval, [42, 0]);
-    }
-
-    #[test]
-    fn the_fallback_answers_without_a_handler() {
-        let mut rval = [0; 2];
-        let r = route(None, Some(fallback as SyscallFn), 5, &[0; 6], &mut rval);
+        let r = route(Some(restart as SyscallFn), 5, &[0; 6], &mut rval);
         assert_eq!(r, Err(-1));
-        assert_eq!(rval, [0, 5]);
+        assert_eq!(rval, [42, 5]);
     }
 
     #[test]
     fn nothing_registered_is_enosys() {
         let mut rval = [7, 7];
-        assert_eq!(route(None, None, 1, &[0; 6], &mut rval), Err(ENOSYS));
+        assert_eq!(route(None, 1, &[0; 6], &mut rval), Err(ENOSYS));
         assert_eq!(rval, [7, 7], "the return registers are left alone");
     }
 

@@ -382,10 +382,6 @@ impl Mutexed<()> {
     /// CPU, and this one's drop uncounts it here). Panics unless this CPU holds the mutex.
     /// For `()` alone: the guard opens only [`crate::rwlock::Guarded`] cells, whose
     /// exclusion its caller argues (one live guard per CPU that holds the lock).
-    #[cfg_attr(
-        feature = "module-rt",
-        allow(dead_code, reason = "the switch is not the ABI module's")
-    )]
     pub(crate) fn adopt(&self) -> MutexedGuard<'_, ()> {
         if self.owner.load(Ordering::Relaxed) & !MTX_WAITERS != self_word() {
             crate::assert::hal_panic(format_args!(

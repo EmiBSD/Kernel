@@ -259,10 +259,8 @@
 //!   whole list back (`uvm_pglistfree`) when there is no space; `km_free` collects the pages
 //!   of the range on one list, removes the mappings and frees the list. N3.2's per-chunk
 //!   frees and its frame-at-a-time callback (two deviations) are gone with it.
-//! - The page provider of `hal::kmbuf::KmBuf` ([`page_memory`]) and the module loader's memory
-//!   ([`module_memory`]) are implemented here and passed down as values; the loader's
-//!   `release` is the C's `km_free` sequence for a writable alias: `pmap_kremove` of the range
-//!   it entered, then `km_free(kp_none)`.
+//! - The page provider of `hal::kmbuf::KmBuf` ([`page_memory`]) is implemented here and
+//!   passed down as a value.
 //! - `pmap_update` is nothing on both machines (every pmap call does its own TLB work), so it
 //!   is not called.
 //! - N3.5 S1: the C's four map pointers (`kernel_map`, `kmem_map`, `exec_map`, `phys_map`,
@@ -323,7 +321,6 @@ use hal::arch::current::param::{PAGE_SHIFT, PAGE_SIZE};
 
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::mapped::MappedBytes;
-use hal::module::ModuleMemory;
 use hal::once::OnceStatic;
 use hal::pmap::{HAVE_PMAP_DIRECT, KernelMapper, PMAP_NOMMU, PMAP_WIRED, Pmap, PmapRef};
 use hal::pool::PoolArc;
@@ -954,7 +951,7 @@ pub fn adopt_mapper(m: KernelMapper) -> Result<LegacyLend, KernelMapper> {
 /// The kernel map's token (also the pager's, for its window: `vm::pager::uvm_pagermapin`);
 /// panics before [`adopt_mapper`]. On the host, where nothing boots,
 /// whoever reaches a path that maps (the map path, `km_free`'s wired path,
-/// [`uvm_km_pgremove_intrsafe`], `module_memory`'s release, the fault handler's
+/// [`uvm_km_pgremove_intrsafe`], the fault handler's
 /// `pmap_enter` on `kernel_map`, `kernel::vm::fault`) has bootstrapped the pmap first: the
 /// kernel's tests in their set-up, `bsd`'s in `uvm_km_test_init`.
 ///
@@ -1700,34 +1697,6 @@ pub const fn page_memory() -> &'static dyn PageMemory {
     &KM_PAGE_MEMORY
 }
 
-/// The module loader's writable copy (`hal::module::load`): `km_alloc(&kv_any, &kp_zero,
-/// &kd_waitok)`, released as the C's `km_free` sequence for a writable alias.
-struct KmModuleMemory;
-
-// The loader's premise (`hal::module::ModuleMemory`): `alloc` is fresh, zeroed, wired kernel
-// memory mapped writable at the address returned; `release` removes those writable mappings
-// and gives back the virtual space only (`kp_none`), so the pages stay, held by the module
-// window's own mappings.
-impl ModuleMemory for KmModuleMemory {
-    fn alloc(&self, len: usize) -> Option<Vaddr> {
-        km_alloc(round_page(len), &KV_ANY, &KP_ZERO, &KD_WAITOK)
-    }
-
-    fn release(&self, va: Vaddr, len: usize) {
-        let len = round_page(len);
-        token().kremove(va, Vsize::new(len));
-        km_free(va, len, &KV_ANY, &KP_NONE);
-    }
-}
-
-static KM_MODULE_MEMORY: KmModuleMemory = KmModuleMemory;
-
-/// The kernel memory the module loader takes, a provider passed to `hal::module::load` as a
-/// value.
-pub const fn module_memory() -> &'static dyn ModuleMemory {
-    &KM_MODULE_MEMORY
-}
-
 /// The host tests' window over the double's foreign memory (`testutil::FOREIGN_BASE`), which no
 /// extract filled: the copies of `vm::io` and `vm::mmap` tested without a map (and `uio`'s
 /// window leg over kernel-map space no entry holds). Test code only.
@@ -2113,21 +2082,6 @@ mod tests {
         // Pageable memory needs an MMU (module deviations).
         assert!(KmBuf::alloc_pageable(page_memory(), PAGE_SIZE).is_none());
         assert_eq!(page_memory().page_size(), PAGE_SIZE);
-    }
-
-    #[test]
-    fn module_memory_keeps_its_pages_when_released() {
-        let _g = setup();
-        let before = avail();
-        let mem = module_memory();
-        let va = mem.alloc(PAGE_SIZE + 1).expect("two pages");
-        assert_eq!(avail(), before - 2);
-        mem.release(va, PAGE_SIZE + 1);
-        // The virtual space went back to kernel_map (the direct map served the host's pages,
-        // so no entry was ever made: the space a machine with an MMU takes is the map path's).
-        assert_eq!(entry_at(KvMap::Kernel, va), None);
-        // kp_none: the pages stay, the module window's mappings hold them.
-        assert_eq!(avail(), before - 2);
     }
 
     /// `n` pages of the buffer cache's for the dummy object `obj` (`buf_alloc_pages`), and

@@ -374,9 +374,13 @@ static TLB_CPUS_REGISTERED: AtomicBool = AtomicBool::new(false);
 /// contract of the module docs.
 pub fn hal_bridges_register() {
     // hal's one kcopy token, first in bsd's boot (a safe copy onto any kernel address its
-    // holder names, N4.8b): the kernel functions initarm already called take nothing, the ABI
-    // module is not loaded yet, and an earlier take by anyone panics the boot here, so no
-    // forbid crate can hold it.
+    // holder names, N4.8b): the kernel functions initarm already called take nothing, and an
+    // earlier take by anyone panics the boot here, so no forbid crate can hold it. The ABI is
+    // linked into the image (decision 47) but can neither take nor hold the token:
+    // `abi-check` R6 refuses `abi` any path into `hal::user`; no function of `abi` runs
+    // before `abi_init`, which the boot glue calls after this function returns (both takes
+    // done); any later take gets `None`; and R5 refuses `abi` a static of interior
+    // mutability that could keep one.
     crate::kern::kern_subr::kcopy_take();
     // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
     // N5.9t1), taken by kernel::uio here for the same reason.
