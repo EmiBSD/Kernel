@@ -12450,6 +12450,10 @@ rust = "sys/benches/legacy_timeout.rs"
 reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's paths (timeout_set of a served wrapper, of a fresh wrapper at a known address, of a new address) over the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
+rust = "sys/benches/net.rs"
+reason = "decision 43, N6.0: host microbenchmarks of the net lock (NET_LOCK over bsd's rwlock) and smr(9) (smr_read_enter/leave, smr_call of an idle entry) on LZ's shape, the before rows of sys/kernel/benches/net.rs by the same names, over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, deleted at N6.0's end; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
@@ -12458,6 +12462,11 @@ reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setru
 rust = "sys/kernel/benches/fs.rs"
 crate = "kernel"
 reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend; N5.4: the system calls' rows (open.close, fstat, lseek, stat.3), the op names of sys/benches/fs.rs, over kernel::fs::syscalls with their paths in the double's user memory and a descriptor limit of 512"
+
+[[extra]]
+rust = "sys/kernel/benches/net.rs"
+crate = "kernel"
+reason = "decision 43 with U10, N6.0: host microbenchmarks of the network stack's runtime in hal (the net lock, smr(9)'s read section, load and deferral, pool items with and without a page source, park/unpark, a header copied or viewed in place, OwnedSlist against OwnedList), the op names of sys/benches/net.rs, over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
 rust = "sys/kernel/benches/bio.rs"
