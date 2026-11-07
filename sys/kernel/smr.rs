@@ -54,11 +54,13 @@
 //! ## Redesign
 //! - LZ's `smr_thread` over `bsd`'s `msleep_nsec`, `SimpleqHead` and `getmicrouptime` (with
 //!   an `unsafe` concatenation) -> [`thread`] over `hal::smr`'s `wait`, `collect` and
-//!   `Batch::run`, the kernel's clock (`kernel::tc`) and `ratecheck` (`kernel::time`).
+//!   `Batch::run` (which runs `smr_grace_wait` over the walk before any call), the kernel's
+//!   clock (`kernel::tc`) and `ratecheck` (`kernel::time`).
 //! - `smr_startup_thread`'s `kthread_create(smr_thread, NULL, NULL, "smr")` -> [`start`], a
 //!   kernel thread whose start is `kernel::fork::Start::Smr`.
 //! - `smr_grace_wait`'s machine walk -> [`SchedCpus`], the `hal::smr::CpuWalk` the thread
-//!   hands `hal::smr::grace_wait` (decision 39: a parameter, no bridge).
+//!   hands `hal::smr::Batch::run` (decision 39: a parameter, no bridge; `running` is the
+//!   walk's contract, `sys/hal/trust.rs`).
 //! - `smr_startup` is gone: `hal::smr`'s queues are statics (no `SIMPLEQ_INIT`) and the
 //!   wakeup timeout is gone with `smr_wakeup` (`hal::smr`'s notes).
 //! - `smr_barrier()`/`smr_flush()` are `hal::smr::barrier`, which needs no walk.
@@ -135,10 +137,9 @@ fn round(cpus: &dyn CpuWalk, loglast: &mut Timeval) -> u64 {
 
     let start = crate::tc::getmicrouptime();
 
-    smr::grace_wait(cpus);
-
-    // WITNESS_CHECKORDER, WITNESS_LOCK: not configured.
-    let count = batch.run();
+    // smr_grace_wait(), then the calls (hal sequences the two: no release runs without its
+    // grace period). WITNESS_CHECKORDER, WITNESS_LOCK: not configured.
+    let count = batch.run(cpus);
     // WITNESS_UNLOCK: not configured.
 
     let end = crate::tc::getmicrouptime();

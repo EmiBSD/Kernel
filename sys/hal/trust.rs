@@ -90,6 +90,23 @@
 //! and reads its pcb there (`hal::thread`'s E4); it checks the alignment of every answer, and
 //! no other address reaches a slot's `p_addr`.
 //!
+//! A pool's page source (`hal::pool::PageSource`, N6.0) is a value the kernel passes when it
+//! makes the pool (`BoxPool::init_with_source`, `TypedPool::init_with_source`): its pages
+//! are kernel memory the pool may write its items into, nothing else's until `free` takes them
+//! back. `bsd`'s pool backend asks for them through `hal::pool::source_page`, which runs
+//! every page through [`check_block`] (the length asked for, aligned to it when the pool
+//! wants it aligned) before `pool(9)` writes a header into it. The one production source is
+//! the kernel's (N6.1's mbuf pages over `km_alloc`).
+//!
+//! The SMR CPU walk (`hal::smr::CpuWalk`, N6.0) is a value the SMR thread passes to
+//! `hal::smr::Batch::run`: the kernel's scheduler (`kernel::smr::SchedCpus`), the one
+//! production walk. Its contract: `running(n)` answers `true` for every CPU that may run a
+//! thread, since a CPU it skips is not waited for and a read section open there could still
+//! see an object the batch then frees. `hal` checks what it can see: a skipped CPU found inside
+//! a read section, and a `peg(n)` after which CPU `n` has not passed a quiescent state, are
+//! `panic(9)`; a skipped CPU that enters a section after the check is what the contract
+//! covers. The `// SAFETY:` of `hal::smr::SmrPtr::load` rests on it.
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

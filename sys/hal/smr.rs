@@ -86,10 +86,11 @@
 //! switch or the idle loop: [`idle`]) after the release was queued, so no read section that
 //! could have seen the object is still open. The protocol of `kern_smr.c` and `<sys/smr.h>`:
 //! the read sections ([`read`], [`read_enter`]/[`read_leave`]), the per-CPU queues and the
-//! system's ([`defer_link`], `smr_dispatch`), the grace period ([`grace_wait`]), the barrier
-//! ([`barrier`]); the SMR thread that drives it is `kernel::smr`'s (it needs the kernel's
-//! clock, `ratecheck` and `kthread_create`), and the CPU walk it waits over is the kernel's
-//! scheduler, handed to [`grace_wait`] as a [`CpuWalk`].
+//! system's ([`defer_link`], `smr_dispatch`), the grace period (`grace_wait`, which only
+//! [`Batch::run`] calls, before it runs anything), the barrier ([`barrier`]); the SMR thread
+//! that drives it is `kernel::smr`'s (it needs the kernel's clock, `ratecheck` and
+//! `kthread_create`), and the CPU walk it waits over is the kernel's scheduler, handed to
+//! [`Batch::run`] as a [`CpuWalk`].
 //!
 //! Upstream: sys/kern/kern_smr.c @ 3ce1f3f79392
 //! Upstream: sys/sys/smr.h @ 3ce1f3f79392
@@ -106,12 +107,19 @@
 //! `smr_call_impl`); the system's list under [`DEFERRED`]'s mutex at `IPL_HIGH` (`smr_lock`);
 //! the batch by the SMR thread alone.
 //!
-//! **The grace period.** [`GRACE_PERIOD`] is announced by [`grace_wait`] (incremented); each
-//! CPU's view of it advances only in [`idle`], which is called from the scheduler's switch and
-//! idle loop, never inside a read section (checked always, not only under `diagnostic`: it is
-//! the premise of [`SmrPtr::load`]). [`grace_wait`] makes every running CPU whose view is
-//! behind pass [`idle`] (the calling thread pegged to it in turn, [`CpuWalk::peg`]), so when
-//! it returns every read section open at the announcement has ended.
+//! **The grace period.** [`GRACE_PERIOD`] is announced by `grace_wait` (incremented, one
+//! caller at a time: [`GRACE`]); each CPU's view of it advances only in [`idle`], which is
+//! called from the scheduler's switch and idle loop, never inside a read section (checked
+//! always, not only under `diagnostic`: it is the premise of [`SmrPtr::load`]). `grace_wait`
+//! makes every running CPU whose view is behind pass [`idle`] (the calling thread pegged to it
+//! in turn, [`CpuWalk::peg`]) and checks that it did, always, so when it returns every read
+//! section open at the announcement has ended. It runs only inside [`Batch::run`], before the
+//! batch's calls, so no release can be run without one.
+//!
+//! **Two read-section counts.** [`read`]'s guards count in one per-CPU word, the C-style
+//! sections of [`read_enter`]/[`read_leave`] (`bsd`'s) in another, so a stray
+//! [`read_leave`] can end only a C-style section, never a guard's that a loaded reference
+//! rests on. [`idle`] refuses either.
 //!
 //! ## Soundness
 //!
@@ -126,9 +134,13 @@
 //!   [`SmrRetired`] whose one way out is its deferral, released by the thread only after a
 //!   [`grace_wait`] that started after the retirement.
 //! - S3, quiescence: a CPU inside a read section never runs [`idle`] ([`idle`] panics on a
-//!   non-zero depth, and [`SmrRead`] is neither `Send` nor `Sync`, so it stays on its CPU),
-//!   so its view cannot reach a period announced after its section began; [`grace_wait`]
-//!   cannot return while that section lives.
+//!   non-zero depth, and [`SmrRead`] is neither `Send` nor `Sync`, so it stays on its CPU;
+//!   only its drop lowers its count), so its view cannot reach a period announced after its
+//!   section began; `grace_wait` cannot return while that section lives, given the
+//!   [`CpuWalk`] it is handed: `running(n)` must not call a CPU that runs threads not
+//!   running (`sys/hal/trust.rs`, the walk's contract; a CPU said not to run while it is
+//!   inside a section is `panic(9)`), and a `peg` that does not make the CPU pass [`idle`]
+//!   is `panic(9)` (checked after every peg, in every kernel).
 //!
 //! ## Deviations
 //! - `WITNESS` and `dt(4)` are not configured (the C's `smr_lock_obj` and `TRACEPOINT`s).
@@ -321,8 +333,11 @@ struct SmrCpu {
     deferred: Chain,
     /// `spc_ndeferred`.
     ndeferred: AtomicU32,
-    /// `spc_smrdepth`: the read sections open on this CPU (counted always: S3).
+    /// `spc_smrdepth`, the guards' half: the [`SmrRead`] sections open on this CPU (counted
+    /// always: S3).
     depth: AtomicU32,
+    /// `spc_smrdepth`, the C-style half: the [`read_enter`] sections open on this CPU.
+    cdepth: AtomicU32,
     /// `spc_smrexpedite`.
     expedite: AtomicU8,
     /// `spc_smrgp`: this CPU's view of the grace period, read by [`grace_wait`] elsewhere.
@@ -336,6 +351,7 @@ impl PerCpuInit for SmrCpu {
         deferred: Chain::new(),
         ndeferred: AtomicU32::new(0),
         depth: AtomicU32::new(0),
+        cdepth: AtomicU32::new(0),
         expedite: AtomicU8::new(0),
         gp: AtomicU8::new(0),
         idle: AtomicUsize::new(0),
@@ -416,9 +432,12 @@ impl<T: SmrLinked> SmrPtr<T> {
         // is its deferral, run by the SMR thread only after a `grace_wait` announced after
         // the retirement (S2). The section `g` was opened on this CPU before this load and
         // stays on it (`SmrRead` is neither `Send` nor `Sync`), and this CPU's view of the
-        // grace period cannot advance while it lives (`idle` panics under a read section, S3),
-        // so that `grace_wait` cannot return, nor the item be freed, before `g` ends. The
-        // reference borrows `g` and `self`, so it cannot outlive either.
+        // grace period cannot advance while it lives (`idle` panics under a read section, and
+        // only `g`'s drop lowers the guards' count, S3), so that `grace_wait` cannot return,
+        // nor the item be freed, before `g` ends: `grace_wait` waits for every CPU the
+        // `CpuWalk` calls running (its contract, a trust boundary of `sys/hal/trust.rs`: a CPU
+        // that may run threads is called running) and checks that each it pegged passed
+        // `idle`. The reference borrows `g` and `self`, so it cannot outlive either.
         unsafe { p.as_ref() }
     }
 
@@ -437,7 +456,7 @@ impl<T: SmrLinked> SmrPtr<T> {
         new: Option<PoolBox<T>>,
     ) -> Option<SmrRetired<T>> {
         if let Some(b) = &new {
-            check_item(b);
+            check_pool(b);
         }
         let slot = self.owner.get_mut(w);
         let p = new
@@ -493,16 +512,20 @@ impl<T: SmrLinked> Drop for SmrRetired<T> {
 }
 
 /// A batch of deferred calls taken by [`collect`] for the SMR thread, oldest first; nothing
-/// else reaches its links. Dropped without [`Batch::run`], its links stay queued for ever.
+/// else reaches its links. Its calls run only after a grace period ([`Batch::run`]); dropped
+/// without running, its links stay queued for ever.
 #[must_use = "a batch not run leaves its calls queued for ever"]
 pub struct Batch {
     head: *mut SmrLink,
 }
 
 impl Batch {
-    /// The calls, in their order: each link marked run, then its function called with its
-    /// argument (the call may free the object the link is in); how many ran.
-    pub fn run(self) -> u64 {
+    /// `smr_grace_wait()` over `cpus`, then the calls, in their order: each link marked run,
+    /// then its function called with its argument (the call may free the object the link is
+    /// in); how many ran. `panic(9)` inside a read section of this CPU (its own quiescent
+    /// state would be a lie).
+    pub fn run(self, cpus: &dyn CpuWalk) -> u64 {
+        grace_wait(cpus);
         let mut count = 0;
         let mut p = self.head;
         while !p.is_null() && p != TAIL {
@@ -525,8 +548,13 @@ impl Batch {
 
 /// The CPUs a grace period waits for, as the scheduler knows them (`CPU_INFO_FOREACH`,
 /// `CPU_IS_RUNNING`, `sched_peg_curproc`): the kernel's, or a test's fake.
+///
+/// A trust boundary (`sys/hal/trust.rs`): [`CpuWalk::running`] must answer `true` for every
+/// CPU that may run a thread, since a CPU it skips is not waited for; `hal` refuses a skipped
+/// CPU it finds inside a read section and checks after every [`CpuWalk::peg`] that the CPU
+/// passed a quiescent state, so a wrong `peg` is `panic(9)`, never a release too early.
 pub trait CpuWalk {
-    /// `CPU_IS_RUNNING(ci)` of CPU `n`.
+    /// `CPU_IS_RUNNING(ci)` of CPU `n`: the contract above.
     fn running(&self, n: usize) -> bool;
     /// `sched_peg_curproc(ci)`: the calling thread moves to CPU `n` (whose switch runs
     /// [`idle`] there) and stays there.
@@ -548,8 +576,12 @@ static DEFERRED: Mutexed<Deferred> = Mutexed::new(
     },
 );
 
-/// `smr_grace_period`: the current grace period, announced by [`grace_wait`].
+/// `smr_grace_period`: the current grace period, announced by `grace_wait`.
 static GRACE_PERIOD: AtomicU8 = AtomicU8::new(0);
+
+/// One `grace_wait` at a time (the C has one SMR thread), so a CPU's view is checked against
+/// the one period announced, by equality.
+static GRACE: RawRwlock = RawRwlock::new("smrgrace");
 
 /// The SMR thread's wait channel (the C's `&smr_ndeferred`).
 static WAIT: u8 = 0;
@@ -599,15 +631,26 @@ fn leave(c: &SmrCpu) {
     }
 }
 
-/// `smr_read_enter()`: opens a read section on this CPU, for the C's call style (a section
-/// begun in one function and ended in another); new code takes [`read`].
+/// `smr_read_enter()`: opens a C-style read section on this CPU (a section begun in one
+/// function and ended in another, `bsd`'s); new code takes [`read`].
 pub fn read_enter() {
-    enter(CPUS.get());
+    let c = &CPUS.get().cdepth;
+    c.store(c.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
 }
 
-/// `smr_read_leave()`: ends a read section opened on this CPU. `panic(9)` when none is open.
+/// `smr_read_leave()`: ends a C-style read section opened on this CPU ([`read_enter`]'s; a
+/// guard's is ended only by its drop). `panic(9)` when none is open.
 pub fn read_leave() {
-    leave(CPUS.get());
+    let c = &CPUS.get().cdepth;
+    match c.load(Ordering::Relaxed).checked_sub(1) {
+        Some(n) => c.store(n, Ordering::Relaxed),
+        None => hal_panic(format_args!("smr_read_leave: no read section")),
+    }
+}
+
+/// The read sections of both kinds open on `c`.
+fn sections(c: &SmrCpu) -> u32 {
+    c.depth.load(Ordering::Relaxed) + c.cdepth.load(Ordering::Relaxed)
 }
 
 /// `smr_read_enter()` .. `smr_read_leave()` as a guard.
@@ -625,7 +668,7 @@ pub fn read() -> SmrRead {
 /// ddb).
 pub fn assert_critical() {
     if !cpu::past_caring() {
-        kassert!(CPUS.get().depth.load(Ordering::Relaxed) > 0);
+        kassert!(sections(CPUS.get()) > 0);
     }
 }
 
@@ -633,7 +676,7 @@ pub fn assert_critical() {
 /// panic or in ddb).
 pub fn assert_noncritical() {
     if !cpu::past_caring() {
-        kassert!(CPUS.get().depth.load(Ordering::Relaxed) == 0);
+        kassert!(sections(CPUS.get()) == 0);
     }
 }
 
@@ -659,7 +702,7 @@ fn dispatch(c: &SmrCpu) {
 /// panic or in ddb, where the view is left as it is.
 pub fn idle() {
     let c = CPUS.get();
-    if c.depth.load(Ordering::Relaxed) != 0 {
+    if sections(c) != 0 {
         if cpu::past_caring() {
             return;
         }
@@ -704,7 +747,8 @@ fn release_box<T: SmrLinked>(arg: *mut c_void) {
     let Some(raw) = NonNull::new(arg.cast::<T>()) else {
         hal_panic(format_args!("smr: a release without its item"));
     };
-    // SAFETY: `arg` is the item pointer of a box of `T::POOL` (checked) that `defer_box`
+    // SAFETY: `arg` is the item pointer of a box of `T::POOL` (checked at `store`, the one
+    // way a box becomes an `SmrRetired`) that `defer_box`
     // gave up (`PoolBox::into_raw`), queued with this function as
     // its link's only call, and the link is run once (`Batch::run` marks it before the call,
     // and a queued link cannot be claimed again), so this rebuilds the item's one handle
@@ -714,46 +758,63 @@ fn release_box<T: SmrLinked>(arg: *mut c_void) {
     drop(unsafe { PoolBox::from_raw(raw, T::POOL) });
 }
 
-/// `panic(9)` unless `b` is an item of `T::POOL` whose link lies within it.
-fn check_item<T: SmrLinked>(b: &PoolBox<T>) {
+/// `panic(9)` unless `b` is an item of `T::POOL` (what its release puts it back into).
+fn check_pool<T: SmrLinked>(b: &PoolBox<T>) {
     if !ptr::eq(PoolBox::pool(b), T::POOL) {
         hal_panic(format_args!("smr: an item of another pool"));
-    }
-    let start = PoolBox::as_ptr(b).addr();
-    let link = ptr::from_ref(b.smr_link()).addr();
-    if link < start || link + size_of::<SmrLink>() > start + size_of::<T>() {
-        hal_panic(format_args!("smr: an item's link outside the item"));
     }
 }
 
 /// `smr_call` of a retired item's link, the box given up to the queue, its release putting
-/// it back. The link lies within the item (checked), which nothing frees before that release.
+/// it back. The link is asked for once and checked to lie within the item, which nothing
+/// frees before that release; the item's pool was checked when it was published.
 fn defer_box<T: SmrLinked>(b: PoolBox<T>) {
-    check_item(&b);
-    b.smr_link()
-        .claim(release_box::<T>, PoolBox::as_ptr(&b).cast_mut().cast());
-    let l = NonNull::from(b.smr_link());
+    let item = PoolBox::as_ptr(&b);
+    let link = b.smr_link();
+    let at = ptr::from_ref(link).addr();
+    if at < item.addr() || at + size_of::<SmrLink>() > item.addr() + size_of::<T>() {
+        hal_panic(format_args!("smr: an item's link outside the item"));
+    }
+    link.claim(release_box::<T>, item.cast_mut().cast());
+    let l = NonNull::from(link);
     let _ = PoolBox::into_raw(b);
     call(l, false);
 }
 
 /// `smr_grace_wait()`: the next grace period announced, and every running CPU whose view is
 /// behind made to pass [`idle`] (the calling thread pegged to it), so every read section
-/// open at the announcement has ended when it returns. One caller at a time: the SMR thread.
-pub fn grace_wait(cpus: &dyn CpuWalk) {
+/// open at the announcement has ended when it returns. One caller at a time ([`GRACE`]),
+/// never inside a read section of its own CPU, whose view it sets; the CPU walk's contract
+/// (`sys/hal/trust.rs`) checked where `hal` can see it: a skipped CPU inside a section, or a
+/// peg that leaves the view behind, is `panic(9)`.
+fn grace_wait(cpus: &dyn CpuWalk) {
+    let _one = GRACE.write();
+    let me = CPUS.get();
+    if sections(me) != 0 {
+        hal_panic(format_args!("smr_grace_wait: inside a read section"));
+    }
     let gp = GRACE_PERIOD.load(Ordering::Relaxed).wrapping_add(1);
     GRACE_PERIOD.store(gp, Ordering::Release);
-    CPUS.get().gp.store(gp, Ordering::Relaxed);
+    me.gp.store(gp, Ordering::Relaxed);
     for n in 0..cpu::ncpus() {
+        let Some(c) = CPUS.cpu(n) else { continue };
         if !cpus.running(n) {
+            if sections(c) != 0 {
+                hal_panic(format_args!(
+                    "smr_grace_wait: cpu{n} said not running is inside a read section"
+                ));
+            }
             continue;
         }
-        let Some(c) = CPUS.cpu(n) else { continue };
         if c.gp.load(Ordering::Acquire) == gp {
             continue;
         }
         cpus.peg(n);
-        kassert!(c.gp.load(Ordering::Acquire) == gp);
+        if c.gp.load(Ordering::Acquire) != gp {
+            hal_panic(format_args!(
+                "smr_grace_wait: cpu{n} pegged but did not pass a quiescent state"
+            ));
+        }
     }
     cpus.unpeg();
 }
@@ -891,20 +952,16 @@ mod tests {
         let before = CALLS.load(Ordering::SeqCst);
         let l = leaked_link();
         defer_link(l, count, ptr::null_mut());
-        assert_eq!(collect().run(), 0, "still on this CPU's queue");
+        assert_eq!(collect().run(&Alone), 0, "still on this CPU's queue");
         idle(); // this CPU's quiescent state dispatches it
-        let b = collect();
-        grace_wait(&Alone);
-        assert_eq!(b.run(), 1);
+        assert_eq!(collect().run(&Alone), 1);
         assert_eq!(CALLS.load(Ordering::SeqCst), before + 1);
-        assert_eq!(collect().run(), 0, "run once");
+        assert_eq!(collect().run(&Alone), 0, "run once");
         // A run entry is queued again after smr_init, as in the C.
         l.init();
         defer_link(l, count, ptr::null_mut());
         idle();
-        let b = collect();
-        grace_wait(&Alone);
-        assert_eq!(b.run(), 1);
+        assert_eq!(collect().run(&Alone), 1);
         assert_eq!(CALLS.load(Ordering::SeqCst), before + 2);
     }
 
@@ -937,13 +994,71 @@ mod tests {
             gp,
             "no quiescent state under a section"
         );
-        drop(g);
-        idle();
-        assert_eq!(me.gp.load(Ordering::SeqCst), gp.wrapping_add(1));
+        // A C-style leave cannot end the guard's section (two counts).
         assert!(
             std::panic::catch_unwind(read_leave).is_err(),
-            "no section to end"
+            "no C-style section"
         );
+        assert!(
+            std::panic::catch_unwind(idle).is_err(),
+            "the guard's section still open"
+        );
+        drop(g);
+        read_enter();
+        assert!(
+            std::panic::catch_unwind(idle).is_err(),
+            "a C-style section open"
+        );
+        read_leave();
+        idle();
+        assert_eq!(me.gp.load(Ordering::SeqCst), gp.wrapping_add(1));
+    }
+
+    /// A walk whose `peg` does nothing (a broken contract `hal` can see).
+    struct NoPeg(usize);
+
+    impl CpuWalk for NoPeg {
+        fn running(&self, n: usize) -> bool {
+            n == self.0
+        }
+        fn peg(&self, _n: usize) {}
+        fn unpeg(&self) {}
+    }
+
+    /// A walk that calls every CPU not running (the contract broken where `hal` checks it).
+    struct NoneRunning;
+
+    impl CpuWalk for NoneRunning {
+        fn running(&self, _n: usize) -> bool {
+            false
+        }
+        fn peg(&self, _n: usize) {}
+        fn unpeg(&self) {}
+    }
+
+    #[test]
+    fn a_grace_period_is_never_cut_short() {
+        let _s = serial();
+        // A run inside a read section of its own CPU.
+        let g = read();
+        assert!(std::panic::catch_unwind(|| collect().run(&Alone)).is_err());
+        drop(g);
+        // A CPU in a read section that the walk says is not running, and a peg that does
+        // not make a CPU pass a quiescent state: both refused, nothing run.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        thread::scope(|s| {
+            s.spawn(move || {
+                let g = read();
+                tx.send(cpu::cpu_number()).expect("sent");
+                let _ = done_rx.recv();
+                drop(g);
+            });
+            let n = rx.recv().expect("the reader's CPU");
+            assert!(std::panic::catch_unwind(|| collect().run(&NoneRunning)).is_err());
+            assert!(std::panic::catch_unwind(|| collect().run(&NoPeg(n))).is_err());
+            done_tx.send(()).expect("sent");
+        });
     }
 
     #[test]
@@ -955,9 +1070,7 @@ mod tests {
             s.spawn(|| {
                 loop {
                     wait();
-                    let b = collect();
-                    grace_wait(&Alone);
-                    let _ = b.run();
+                    let _ = collect().run(&Alone);
                     if stop.load(Ordering::SeqCst) {
                         break;
                     }
@@ -969,7 +1082,12 @@ mod tests {
             assert_eq!(CALLS.load(Ordering::SeqCst), before + 1);
             defer_link(leaked_link(), count, ptr::null_mut());
             stop.store(true, Ordering::SeqCst);
+            let t = std::time::Instant::now();
             barrier(true); // smr_flush(): no pause; the thread's last round
+            assert!(
+                t.elapsed() < std::time::Duration::from_millis(80),
+                "a flush skips SMR_PAUSE (100 ms)"
+            );
             assert_eq!(CALLS.load(Ordering::SeqCst), before + 2);
         });
     }
@@ -1043,9 +1161,7 @@ mod tests {
         drop(o);
         drop(p); // the last object retired too
         idle();
-        let b = collect();
-        grace_wait(&Alone);
-        assert_eq!(b.run(), 2);
+        assert_eq!(collect().run(&Alone), 2);
         assert_eq!(FREED.load(Ordering::SeqCst), freed + 2);
     }
 
@@ -1125,9 +1241,7 @@ mod tests {
                 drop(w);
                 drop(old); // deferred
                 idle();
-                let b = collect();
-                grace_wait(&walk);
-                released += b.run();
+                released += collect().run(&walk);
             }
             stop.store(true, Ordering::SeqCst);
         });
@@ -1136,9 +1250,7 @@ mod tests {
         drop(w);
         drop(last);
         idle();
-        let b = collect();
-        grace_wait(&Alone);
-        released += b.run();
+        released += collect().run(&Alone);
         assert_eq!(released, ROUNDS, "each object released once");
         assert_eq!(FREED.load(Ordering::SeqCst), freed + ROUNDS as usize);
         assert!(seen.load(Ordering::SeqCst) > 0, "the readers saw objects");
@@ -1162,12 +1274,31 @@ mod tests {
         let p: SmrPtr<Stray> = SmrPtr::new_keyed(&WRITERS);
         let b = STRAYS.get(PR_WAITOK, || Stray { _v: 0 }).expect("an item");
         let mut w = WRITERS.write();
-        let r = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
-            p.store(&mut w, Some(b)).is_some()
-        }));
-        assert!(r.is_err(), "a link outside the item");
+        // Published (its pool is the type's); its deferral refuses the link.
+        assert!(p.store(&mut w, Some(b)).is_none());
+        let r = p.take(&mut w).expect("the item back");
         drop(w);
-        core::mem::forget(p);
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| r.defer())).is_err(),
+            "a link outside the item"
+        );
+        // An item of another pool than the type's is refused at its publication.
+        static ELSEWHERE_OBJS: BoxPool<Obj> = BoxPool::new();
+        let _ = ELSEWHERE_OBJS.init(0, PR_WAITOK, "smrelse");
+        let q: SmrPtr<Obj> = SmrPtr::new_keyed(&WRITERS);
+        let o = ELSEWHERE_OBJS
+            .get(PR_WAITOK, || Obj {
+                link: SmrLink::new(),
+                value: 0,
+                freed: AtomicBool::new(false),
+            })
+            .expect("an item");
+        let mut w = WRITERS.write();
+        let r = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+            q.store(&mut w, Some(o)).is_some()
+        }));
+        assert!(r.is_err(), "an item of another pool");
+        drop(w);
     }
 }
 /* </TESTS> */

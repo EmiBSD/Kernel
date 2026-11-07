@@ -83,6 +83,14 @@ Locations are on `main` at the commit that last edited this file.
 | `pub use crate::sys::smr as kern_smr`: LZ's path `crate::kern::kern_smr::{smr_read_enter, smr_read_leave}` for six importers (if_, bpf, rtable, if_ethersubr, if_pfsync, pf) | `sys/kern/mod.rs` | the read sections' functions were `kern_smr.c`'s; the alias keeps the six files, two of them `security-review.md`'s (pf, pfsync), untouched (N6.0) | with the last of the six importers (N6.3, N8)
 | `POOL_ALLOCATOR_SOURCE` (`pool_source_alloc`, `pool_source_free`) and `struct pool`'s `pr_source` | `sys/kern/subr_pool.rs`, `sys/sys/pool.rs` | `bsd`'s `pool(9)` is still the pool backend (`BsdPools`, bridges.toml `PoolBackend`): a pool of the kernel's whose pages come from a `hal::pool::PageSource` (`create_with`) is a `pool_init` with this allocator, which asks the pool's source (N6.0) | N9, with `PoolBackend` (`subr_pool` goes with `bsd`) |
 
+## `hal` items whose only users are `bsd`'s
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `hal::smr::{read_enter, read_leave, defer_link}`, `SmrLink::init`: the C-style read sections (their own per-CPU count), `smr_call` on a `&'static` entry and `smr_init` | `sys/hal/smr.rs` | `sys/sys/smr.rs`'s adapters for `bsd`'s SMR users (art, rtable, route, bpf, if_, if_ethersubr, pflow, pfsync, pf, wg), whose objects are reached by raw pointers; kernel code uses `read()`, `SmrPtr` and `SmrRetired` (N6.0) | with the last `bsd` SMR user (N6.3a-c, N8) |
+| `hal::pool::{Parkable, ParkWord}`, `PoolBox::park`, `PoolBox::unpark` | `sys/hal/pool.rs` | an item crossing into `bsd`'s legacy code by address and back (N6.1's mbufs at the `bsd` boundary); kernel code keeps the box (N6.0) | with the last `bsd` holder of a parked item (N6.1-N6.7, N9) |
+| `hal::netlock::{lock_shared, unlock_shared, sleep_nsec}`: detached holdings for `NET_LOCK_SHARED()`, `NET_UNLOCK_SHARED()` and `sosleep_nsec`'s `rwsleep_nsec` | `sys/hal/netlock.rs` | `bsd`'s callers' call style (`sys/sys/systm.rs`, `uipc_socket2.rs`); kernel code takes the witnesses (`NETLOCK.read()`, `WriteWitness::sleep_nsec`); `lock`/`unlock` also serve the kernel's vnode pager (N6.0) | with the last `bsd` caller (N6.2-N6.7, N9) |
+
 ## The kernel's copies of `bsd`'s header constants
 
 | What | Where | Why | Removed by |

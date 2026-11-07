@@ -11886,7 +11886,7 @@ rust = "sys/hal/smr.rs"
 crate = "hal"
 lz = ["sys/kern/kern_smr.rs", "sys/sys/smr.rs"]
 status = "redesigned"
-notes = "N6.0: kern_smr.c's protocol and <sys/smr.h>'s entry and pointer, written new: SmrLink (struct smr_entry, a state word that refuses a second queueing in every kernel), the per-CPU queues and counts (schedstate_percpu's five SMR members, PerCpu<SmrCpu>) and the system's (smr_lock, smr_deferred, smr_ndeferred, smr_expedite: Mutexed<Deferred> at IPL_HIGH), the read sections (read/read_enter/read_leave, SmrRead; the depth counted always, idle inside a section is panic(9)), idle (smr_idle), defer_link (smr_call), barrier (smr_barrier_impl, its link on its frame), grace_wait over a CpuWalk the caller passes (decision 39), wait and collect (smr_thread's sleeps and SIMPLEQ_CONCAT; the thread itself is sys/kernel/smr.rs), SmrPtr<T: SmrLinked> (SMR_PTR_GET/_LOCKED/SET_LOCKED over a pool item, keyed to the writer's lock) and SmrRetired (the old target, released only by its deferral); smr_wakeup and its timeout dropped (a dispatch to an empty queue wakes the thread, which pauses SMR_PAUSE unless expedited)"
+notes = "N6.0: kern_smr.c's protocol and <sys/smr.h>'s entry and pointer, written new: SmrLink (struct smr_entry, a state word that refuses a second queueing in every kernel), the per-CPU queues and counts (schedstate_percpu's five SMR members, PerCpu<SmrCpu>) and the system's (smr_lock, smr_deferred, smr_ndeferred, smr_expedite: Mutexed<Deferred> at IPL_HIGH), the read sections (read/SmrRead and the C-style read_enter/read_leave, two per-CPU counts so a C-style leave cannot end a guard's section; both counted always, idle inside either is panic(9)), idle (smr_idle), defer_link (smr_call), barrier (smr_barrier_impl, its link on its frame), grace_wait (private, serialised, run by Batch::run before any call, its peg check always on) over a CpuWalk the caller passes (decision 39; running() a trust boundary of sys/hal/trust.rs), wait and collect (smr_thread's sleeps and SIMPLEQ_CONCAT; the thread itself is sys/kernel/smr.rs), SmrPtr<T: SmrLinked> (SMR_PTR_GET/_LOCKED/SET_LOCKED over a pool item, keyed to the writer's lock) and SmrRetired (the old target, released only by its deferral); smr_wakeup and its timeout dropped (a dispatch to an empty queue wakes the thread, which pauses SMR_PAUSE unless expedited)"
 
 [[module.fn]]
 lz = "sys/kern/kern_smr.rs::SMR_PAUSE"
@@ -12979,7 +12979,7 @@ rust = "sys/kernel/smr.rs"
 crate = "kernel"
 lz = ["sys/kern/kern_smr.rs"]
 status = "redesigned"
-notes = "N6.0: kern_smr.c's smr_thread (wait, collect, grace_wait over the scheduler, run, the slow-round report under ratecheck) and smr_startup_thread (start: kthread_create of Start::Smr), and SchedCpus, the hal::smr::CpuWalk over the scheduler (CPU_IS_RUNNING as ProcGlue::cpu_is_running, sched_peg_curproc/sched_unpeg_curproc); the protocol is sys/hal/smr.rs's; sys/kern/kern_smr.rs (bsd) deleted, the user's decision of 2026-11-07 (D-N6.0-U1)"
+notes = "N6.0: kern_smr.c's smr_thread (wait, collect, Batch::run with its grace period over the scheduler, the slow-round report under ratecheck) and smr_startup_thread (start: kthread_create of Start::Smr), and SchedCpus, the hal::smr::CpuWalk over the scheduler (CPU_IS_RUNNING as ProcGlue::cpu_is_running, sched_peg_curproc/sched_unpeg_curproc); the protocol is sys/hal/smr.rs's; sys/kern/kern_smr.rs (bsd) deleted, the user's decision of 2026-11-07 (D-N6.0-U1)"
 
 [[module.fn]]
 lz = "sys/kern/kern_smr.rs::smr_startup_thread"

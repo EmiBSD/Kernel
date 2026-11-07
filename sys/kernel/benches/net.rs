@@ -542,9 +542,7 @@ fn main() {
                 d += t.elapsed();
                 // Dispatched, collected, run and made idle again, untimed.
                 smr::idle();
-                let b = smr::collect();
-                smr::grace_wait(&NoOtherCpu);
-                let _ = b.run();
+                let _ = smr::collect().run(&NoOtherCpu);
                 for l in links {
                     l.init();
                 }
