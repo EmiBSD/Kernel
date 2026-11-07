@@ -1779,7 +1779,10 @@ pub fn pool_multi_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<No
 /// `kv_align`), waiting with `PR_WAITOK`.
 pub fn pool_source_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
     let src = pp.pr_source.get()?;
-    src.alloc(
+    // hal checks the page at its trust boundary (sys/hal/trust.rs) before the pool writes
+    // its page header into it.
+    hal::pool::source_page(
+        src,
         pp.pr_pgsize.get() as usize,
         pool_inpghdr(pp),
         flags & PR_WAITOK != 0,

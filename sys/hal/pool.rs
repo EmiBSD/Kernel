@@ -294,6 +294,21 @@ pub trait PoolBackend: Sync {
     }
 }
 
+/// `pa_alloc` of a pool's page source, for the backend that makes the pool: the page checked
+/// at the trust boundary (`sys/hal/trust.rs`: not null, `len` bytes, aligned to `len` when
+/// `aligned`, to a word otherwise) before `pool(9)` writes into it.
+pub fn source_page(
+    source: &dyn PageSource,
+    len: usize,
+    aligned: bool,
+    wait: bool,
+) -> Option<NonNull<u8>> {
+    let page = source.alloc(len, aligned, wait)?;
+    let align = if aligned { len } else { align_of::<usize>() };
+    check_block("PageSource", page, len, len, align);
+    Some(page)
+}
+
 /// `create` or `create_with` of the registered backend, as `source` asks.
 fn make_pool(
     size: usize,
@@ -2818,6 +2833,35 @@ mod tests {
         assert_eq!(SRC.out.load(Ordering::SeqCst), 1);
         drop(h);
         assert_eq!(SRC.out.load(Ordering::SeqCst), 0);
+    }
+
+    /// A source that hands out a page at an address no page has.
+    struct Misaligned;
+
+    impl PageSource for Misaligned {
+        fn alloc(&self, _len: usize, _aligned: bool, _wait: bool) -> Option<NonNull<u8>> {
+            Some(NonNull::dangling())
+        }
+        fn free(&self, _page: NonNull<u8>, _len: usize, _aligned: bool) {}
+        fn sizes(&self) -> usize {
+            4096 | 1
+        }
+    }
+
+    #[test]
+    fn a_source_page_is_checked_at_the_trust_boundary() {
+        testutil::install();
+        let good = CountingSource {
+            out: AtomicU32::new(0),
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        let p = source_page(&good, 4096, true, true).expect("a page");
+        assert!(p.as_ptr().addr().is_multiple_of(4096));
+        good.free(p, 4096, true);
+        assert!(
+            std::panic::catch_unwind(|| source_page(&Misaligned, 4096, true, false)).is_err(),
+            "a page not aligned to its length"
+        );
     }
 
     /// A parkable item (an mbuf's shape: a byte of its header is its mark).
