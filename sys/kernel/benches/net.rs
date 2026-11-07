@@ -51,6 +51,11 @@
 //!   `m_copyback` of a header.
 //! - `pod.view`: the same two fields changed in place through `hal::pod::view_mut` (the C's
 //!   `mtod(m, struct ip *)`): the bounds and alignment checks, no copy.
+//! - `slist.push_tail`: one element pushed at the tail of an `OwnedSlist` (`ml_enqueue`,
+//!   `sbappend`'s tail: the link of the last element through the tail word); the list
+//!   drained between rounds, untimed.
+//! - `slist.concat`: a list of two elements joined at the tail of another (`ml_enlist`,
+//!   `m_cat`'s chain), 1,000 in a row; the lists made again between rounds, untimed.
 //! - `list.push`: one element pushed at the tail of an `OwnedList` (`TAILQ_INSERT_TAIL`); the
 //!   list drained between rounds, untimed.
 
@@ -65,7 +70,7 @@ use std::time::{Duration, Instant};
 use std::vec::Vec;
 
 use hal::netlock::{self, NETLOCK};
-use hal::owned::{OwnedEntry, OwnedList};
+use hal::owned::{OwnedEntry, OwnedList, OwnedSlist, SlistLink};
 use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
@@ -329,6 +334,31 @@ hal::owned_adapter!(
 /// The pool of `list.push`'s elements.
 static LIST_ELEMS: BoxPool<ListElem> = BoxPool::new();
 
+/// An element of the `slist.*` benches (an mbuf's link and the rest of its header).
+struct SlElem {
+    next: SlistLink<SlElem>,
+    _payload: [u64; 4],
+}
+
+hal::slist_adapter!(
+    /// `m_next`'s chain.
+    SlChain: SlElem, next
+);
+
+/// The pool of the `slist.*` benches' elements.
+static SL_ELEMS: BoxPool<SlElem> = BoxPool::new();
+
+/// A fresh `slist.*` element.
+fn slelem() -> PoolBox<SlElem> {
+    need(
+        SL_ELEMS.get(PR_WAITOK, || SlElem {
+            next: SlistLink::new(),
+            _payload: [0; 4],
+        }),
+        "no element",
+    )
+}
+
 /// An object `smr.load` reads.
 struct SmrObj {
     link: SmrLink,
@@ -391,6 +421,8 @@ fn main() {
         "pool.get_put.sourced",
         "pod.copy",
         "pod.view",
+        "slist.push_tail",
+        "slist.concat",
         "list.push",
     ];
     if args.first().map(String::as_str) == Some("list") {
@@ -403,6 +435,7 @@ fn main() {
 
     if MBUFS.init(0, PR_WAITOK, "mbufpl").is_err()
         || LIST_ELEMS.init(0, PR_WAITOK, "benchlst").is_err()
+        || SL_ELEMS.init(0, PR_WAITOK, "benchsl").is_err()
         || SMR_OBJS.init(0, PR_WAITOK, "benchsmr").is_err()
         || SOURCED
             .init_with_source(0, PR_WAITOK, "mclpl", &BENCH_SOURCE)
@@ -576,6 +609,55 @@ fn main() {
         report(names[9], r);
     }
     if wanted(names[10]) {
+        let mut boxes: Vec<PoolBox<SlElem>> = (0..ELEMS).map(|_| slelem()).collect();
+        let mut list = OwnedSlist::<SlChain>::new();
+        let rounds = OPS / ELEMS;
+        let r = measure(rounds * ELEMS, || {
+            let mut d = Duration::ZERO;
+            for _ in 0..rounds {
+                let t = Instant::now();
+                for b in boxes.drain(..) {
+                    list.push_tail(black_box(b));
+                }
+                d += t.elapsed();
+                while let Some(b) = list.pop_head() {
+                    boxes.push(b);
+                }
+            }
+            d
+        });
+        report(names[10], r);
+    }
+    if wanted(names[11]) {
+        let mut lists: Vec<OwnedSlist<SlChain>> = (0..ELEMS)
+            .map(|_| {
+                let mut l = OwnedSlist::new();
+                l.push_tail(slelem());
+                l.push_tail(slelem());
+                l
+            })
+            .collect();
+        let mut big = OwnedSlist::<SlChain>::new();
+        let rounds = OPS / ELEMS;
+        let r = measure(rounds * ELEMS, || {
+            let mut d = Duration::ZERO;
+            for _ in 0..rounds {
+                let t = Instant::now();
+                for l in &mut lists {
+                    big.concat(black_box(l));
+                }
+                d += t.elapsed();
+                for l in &mut lists {
+                    for _ in 0..2 {
+                        l.push_tail(need(big.pop_head(), "an element"));
+                    }
+                }
+            }
+            d
+        });
+        report(names[11], r);
+    }
+    if wanted(names[12]) {
         let mut boxes: Vec<PoolBox<ListElem>> = (0..ELEMS)
             .map(|_| {
                 need(
@@ -603,7 +685,7 @@ fn main() {
             }
             d
         });
-        report(names[10], r);
+        report(names[12], r);
     }
 }
 /* </CODE> */
