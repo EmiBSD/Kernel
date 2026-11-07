@@ -132,3 +132,4 @@ metadata:
 - A FUSE reclaim's or lookup's FUSE_FORGET waits on the device's input queue until the daemon's next run: in a scripted-daemon test find a request by opcode (not `take_seen()[0]`, which may be a stale FORGET) and run `scripted(dev)` to drain before asserting a FORGET (N5.9f2).
 - A kernel sysctl handler copies out to a user address: a host test passes testfs's `UBUF` as `oldp`/`newp` and reads the value back with `UserPtr::<u8>::new(UBUF).copyin_slice`; a kernel address answers EFAULT (N5.9f2's vfs.fuse test).
 - The kernel's `vop_remove` wrapper vputs both vnodes after the file system's slot (vop_rmdir, vop_mkdir, vop_symlink and vop_link leave that to the file system, as the C's): a direct test lends each vnode referenced and locked once more (N5.9f2's `lent`).
+- Correction to the log::tests flake line above (N5 close): the cause was hal's user-copy double shared at UMSG with kern.msgbuf's copy, not LogDev; fixed in 39819373.
