@@ -63,7 +63,7 @@ static ABI: OnceStatic<Registered> = OnceStatic::new();
 )]
 pub const fn table(
     syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-    pipe2: fn(Register, usize, Register) -> SysResult,
+    pipe2: fn(Register, usize, i32) -> SysResult,
     vm: VmEntries,
     fd: FdEntries,
     event: EventEntries,
@@ -126,7 +126,7 @@ mod tests {
         Ok(())
     }
 
-    fn pipe2(nr: Register, _: usize, _: Register) -> SysResult {
+    fn pipe2(nr: Register, _: usize, _: i32) -> SysResult {
         Err(nr as i32)
     }
 

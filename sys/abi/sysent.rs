@@ -309,7 +309,7 @@ pub fn dispatch(
 
 /// 101 = `pipe2(int *fdp, int flags)`: the kernel's pipe(2) with the flags.
 fn sys_pipe2(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.pipe2)(SYS_pipe2 as Register, args[0] as usize, args[1])
+    (api.pipe2)(SYS_pipe2 as Register, args[0] as usize, args[1] as i32)
 }
 
 /// 263 = `pipe(int *fdp)`: the kernel's pipe(2), no flags.
@@ -1876,8 +1876,8 @@ mod tests {
     fn register(_: &'static KernelApi, _: hal::api::SyscallHandler, _: HandlerInfo) {}
 
     /// The kernel's pipe entry of the test table: says what reached it.
-    fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
-        Err(nr as i32 * 1000 + fdp as i32 + flags as i32)
+    fn pipe2(nr: Register, fdp: usize, flags: i32) -> SysResult {
+        Err(nr as i32 * 1000 + fdp as i32 + flags)
     }
 
     // The vm entries of the test table say what reached them: the number, then each
@@ -3080,6 +3080,20 @@ mod tests {
         assert_eq!(
             syscall(&API, SYS_pipe2 as Register, &[5, 3, 9, 9, 9, 9], &mut rval),
             Err(101 * 1000 + 5 + 3)
+        );
+        // pipe2's flags are the C's `int`: the register's high word never reaches the kernel.
+        assert_eq!(
+            syscall(
+                &API,
+                SYS_pipe2 as Register,
+                &[5, 0x1_0000_0003, 9, 9, 9, 9],
+                &mut rval
+            ),
+            Err(101 * 1000 + 5 + 3)
+        );
+        assert_eq!(
+            syscall(&API, SYS_pipe2 as Register, &[5, -1, 9, 9, 9, 9], &mut rval),
+            Err(101 * 1000 + 5 - 1)
         );
         // pipe(fdp = 5): no flags, whatever the second register holds.
         assert_eq!(

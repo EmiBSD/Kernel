@@ -497,8 +497,9 @@ pub struct KernelApi {
     pub syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
     /// pipe(2) and pipe2(2): `(nr, fdp, flags)`, the system call's number (`SYS_pipe` or
     /// `SYS_pipe2`, which the system call prologue checks: pledge, the pinned syscalls), the
-    /// user address of the two descriptors and `pipe2`'s flags (0 for `pipe`).
-    pub pipe2: fn(Register, usize, Register) -> SysResult,
+    /// user address of the two descriptors and `pipe2`'s flags, the C's `int flags` as the
+    /// ABI read it out of its register (0 for `pipe`).
+    pub pipe2: fn(Register, usize, i32) -> SysResult,
     /// The virtual memory system's system calls (N3.5).
     pub vm: VmEntries,
     /// The descriptor system calls (N4.3).
@@ -531,7 +532,7 @@ impl KernelApi {
     pub const fn new(
         register_syscall_handler: fn(&'static KernelApi, SyscallHandler, HandlerInfo),
         syscall_legacy: fn(Register, &SysArgs, &mut Rval) -> SysResult,
-        pipe2: fn(Register, usize, Register) -> SysResult,
+        pipe2: fn(Register, usize, i32) -> SysResult,
         vm: VmEntries,
         fd: FdEntries,
         event: EventEntries,
@@ -574,7 +575,7 @@ mod tests {
         Ok(())
     }
 
-    fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
+    fn pipe2(nr: Register, fdp: usize, flags: i32) -> SysResult {
         if nr as usize + fdp + flags as usize == 0 {
             Ok(())
         } else {
