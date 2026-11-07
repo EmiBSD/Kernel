@@ -164,10 +164,12 @@
 //! (`Guarded::new_static(&NETLOCK, ..)`, N6.2's socket members). The C's call style, a lock
 //! taken in one function and released in another (`NET_LOCK()` in `soo_ioctl`,
 //! `NET_UNLOCK()` deep in `ifioctl`; the vnode pager letting go of the lock a faulting
-//! process holds), is [`lock`]/[`unlock`] and [`lock_shared`]/[`unlock_shared`]: the
-//! witness forgotten when the lock is taken and resumed when it is released
-//! (`RawRwlock::held_write`, `RawRwlock::held_read`), exactly once; a release of a lock this
-//! process does not hold is `panic(9)`, the C's `rw_exit` diagnostic.
+//! process holds), is [`lock`]/[`unlock`] and [`lock_shared`]/[`unlock_shared`]: holdings
+//! with no witness, *detached*, which this module marks as its own ([`DETACHED_WRITER`],
+//! [`DETACHED_READERS`]) and alone releases. A release finds the mark or is `panic(9)` (the
+//! C's `rw_exit` diagnostic): [`unlock`] releases only the detached write holding of the
+//! running process, [`unlock_shared`] only one of the detached read holdings, so neither can
+//! take a holding a witness owns, and no witness is ever made of a detached holding.
 //!
 //! ## Deviations
 //! - The lock carries no `dt(4)` trace index (`rw_init_flags_trace(.., DT_RWLOCK_IDX_NETLOCK)`):
@@ -177,6 +179,10 @@
 //!   `bsd`'s (`kern/subr_prf.rs`), out of `hal`'s reach; `bsd`'s three wrappers
 //!   (`sys/sys/systm.rs`) make the C's tests over [`status`] and report through them. The
 //!   kernel's first caller (N6.2) decides their shape.
+//! - The vnode pager lets go of a *detached* write holding only ([`held_detached`]): a holding
+//!   a witness owns cannot be released behind it. Today every holder is `bsd`'s (detached),
+//!   as the C's; kernel code that holds a witness across a user copy (N6.2) needs its own
+//!   answer (the witness's `unlocked`).
 //!
 //! ## Redesign
 //! - LZ's `pub static NETLOCK: Rwlock` in `sys/net/if_.rs` (`bsd`'s `rwlock(9)`), reached by
@@ -184,18 +190,28 @@
 //!   the kernel's network code (N6.1-N6.7) and `bsd`'s 50 callers share one lock and one
 //!   protocol, and the kernel's cells can key to it; the bridge and its registration are
 //!   gone. `bsd`'s seven `NET_*` wrappers keep their names over this module.
-//! - `rwsleep_nsec(ident, &netlock, ..)` (`sosleep_nsec`) is [`sleep_nsec`]: the holding
-//!   resumed in its mode, slept on, retaken in that mode and forgotten again.
+//! - `rwsleep_nsec(ident, &netlock, ..)` (`sosleep_nsec`) is [`sleep_nsec`]: the detached
+//!   holding released for the sleep and taken again in its mode.
 
-use core::mem;
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::hal_panic;
-use crate::rwlock::{RW_WRITE, RawRwlock};
+use crate::rwlock::{RW_WRITE, RawRwlock, rw_self};
 use crate::sys::errno::Errno;
 
 /// `netlock`: serialize socket operations to ensure no new sleeping points are introduced
 /// in IP output paths.
 pub static NETLOCK: RawRwlock = RawRwlock::new("netlock");
+
+/// The writer word of the detached write holding ([`lock`]), 0 when there is none. Set by
+/// the holder right after it took the lock, cleared by the holder before it lets it go, so
+/// it is never another process's word while the lock is held.
+static DETACHED_WRITER: AtomicUsize = AtomicUsize::new(0);
+
+/// How many of the lock's read holdings are detached ([`lock_shared`]): incremented after a
+/// reader entered, decremented before one leaves, so it never counts a holding a witness
+/// owns and the readers' count on the lock word is never below the witnesses'.
+static DETACHED_READERS: AtomicU32 = AtomicU32::new(0);
 
 /// `rw_status(&netlock)`: `RW_WRITE` (this process writes), `RW_WRITE_OTHER`, `RW_READ` or 0
 /// (free); the values of `<sys/rwlock.h>`.
@@ -204,60 +220,83 @@ pub fn status() -> i32 {
     NETLOCK.status()
 }
 
-/// `rw_status(&netlock) == RW_WRITE`: the running process holds the net lock for writing.
+/// `rw_status(&netlock) == RW_WRITE`: the running process holds the net lock for writing
+/// (detached or through a witness).
 #[inline]
 pub fn write_held() -> bool {
     status() == RW_WRITE
 }
 
-/// `NET_LOCK()`: waits for the net lock and takes it for writing, the witness forgotten
-/// until [`unlock`].
+/// The running process holds the net lock for writing by [`lock`] (a detached holding, which
+/// [`unlock`] may release).
+#[inline]
+pub fn held_detached() -> bool {
+    DETACHED_WRITER.load(Ordering::Acquire) == rw_self() && write_held()
+}
+
+/// `NET_LOCK()`: waits for the net lock and takes it for writing, detached (no witness), until
+/// [`unlock`].
 pub fn lock() {
-    mem::forget(NETLOCK.write());
+    let me = NETLOCK.write_wait();
+    DETACHED_WRITER.store(me, Ordering::Release);
 }
 
-/// `NET_UNLOCK()`: releases the net lock this process holds for writing (taken by [`lock`]).
-/// `panic(9)` when it does not hold it.
+/// `NET_UNLOCK()`: releases the running process's detached write holding (taken by [`lock`]).
+/// `panic(9)` when it has none (not held, held by another, or held through a witness).
 pub fn unlock() {
-    match NETLOCK.held_write() {
-        Some(w) => drop(w),
-        None => not_held("exit write", status()),
+    let me = rw_self();
+    if DETACHED_WRITER
+        .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        not_held("exit write", status());
     }
+    NETLOCK.exit_write(me);
 }
 
-/// `NET_LOCK_SHARED()`: waits for the net lock and takes it shared, the witness forgotten
-/// until [`unlock_shared`].
+/// `NET_LOCK_SHARED()`: waits for the net lock and takes it shared, detached, until
+/// [`unlock_shared`].
 pub fn lock_shared() {
-    mem::forget(NETLOCK.read());
+    NETLOCK.read_wait();
+    DETACHED_READERS.fetch_add(1, Ordering::AcqRel);
 }
 
-/// `NET_UNLOCK_SHARED()`: releases one shared holding of the net lock (taken by
-/// [`lock_shared`]). `panic(9)` when no reader holds it.
+/// `NET_UNLOCK_SHARED()`: releases one detached read holding (taken by [`lock_shared`];
+/// whose, the lock cannot tell, as the C's `rw_exit_read` cannot). `panic(9)` when there is
+/// none.
 pub fn unlock_shared() {
-    match NETLOCK.held_read() {
-        Some(r) => drop(r),
-        None => not_held("exit read", status()),
+    if take_reader().is_err() {
+        not_held("exit read", status());
     }
+    NETLOCK.exit_read();
 }
 
-/// `rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs)`: sleeps on `ident` with the net lock
-/// released, then takes it again in the mode this process held it in (written or shared)
+/// One detached read holding claimed for its release.
+fn take_reader() -> Result<u32, u32> {
+    DETACHED_READERS.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+}
+
+/// `rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs)`: sleeps on `ident` with the running
+/// process's detached holding released, then takes it again in its mode (written or shared)
 /// before returning the sleep's result (`EWOULDBLOCK` after `nsecs`; `EINTR`/`ERESTART` on a
-/// signal with `PCATCH`). `panic(9)` when this process holds it in neither mode
-/// (`rw_assert_anylock`).
+/// signal with `PCATCH`). `panic(9)` without a detached holding (`rw_assert_anylock`).
 pub fn sleep_nsec<I: ?Sized>(
     ident: *const I,
     prio: i32,
     wmesg: &'static str,
     nsecs: u64,
 ) -> Result<(), Errno> {
-    if let Some(mut w) = NETLOCK.held_write() {
-        let r = w.sleep_nsec(ident, prio, wmesg, nsecs);
-        mem::forget(w);
+    let me = rw_self();
+    if DETACHED_WRITER
+        .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        let r = NETLOCK.sleep_released(ident, prio, wmesg, nsecs, || NETLOCK.exit_write(me));
+        lock();
         r
-    } else if let Some(mut rd) = NETLOCK.held_read() {
-        let r = rd.sleep_nsec(ident, prio, wmesg, nsecs);
-        mem::forget(rd);
+    } else if take_reader().is_ok() {
+        let r = NETLOCK.sleep_released(ident, prio, wmesg, nsecs, || NETLOCK.exit_read());
+        lock_shared();
         r
     } else {
         not_held("rwsleep", status())
@@ -300,7 +339,10 @@ mod tests {
         assert_eq!(status(), 0);
         let w = NETLOCK.write();
         assert_eq!(status(), RW_WRITE);
-        assert!(write_held());
+        assert!(
+            write_held() && !held_detached(),
+            "a witness is no detached holding"
+        );
         thread::scope(|s| {
             s.spawn(|| assert_eq!(status(), RW_WRITE_OTHER));
         });
@@ -325,10 +367,10 @@ mod tests {
         testutil::install();
         let _s = serial();
         lock();
-        assert!(write_held());
+        assert!(write_held() && held_detached());
         unlock();
         assert_eq!(status(), 0);
-        assert!(NETLOCK.held_write().is_none(), "nothing left to resume");
+        assert!(!held_detached());
         lock_shared();
         lock_shared();
         assert_eq!(status(), RW_READ);
@@ -345,6 +387,7 @@ mod tests {
         unlock();
         let r = std::panic::catch_unwind(unlock);
         assert!(r.is_err(), "NET_UNLOCK() of a lock not held");
+        assert!(std::panic::catch_unwind(unlock_shared).is_err());
         assert_eq!(status(), 0);
     }
 
@@ -360,6 +403,36 @@ mod tests {
     }
 
     #[test]
+    fn a_holding_a_witness_owns_is_never_released_by_the_paired_forms() {
+        testutil::install();
+        let _s = serial();
+        let w = NETLOCK.write();
+        assert!(
+            std::panic::catch_unwind(unlock).is_err(),
+            "NET_UNLOCK under a witness"
+        );
+        assert!(
+            std::panic::catch_unwind(|| sleep_nsec(&raw const SERIAL, 0, "nettest", 1)).is_err(),
+            "a sleep under a witness"
+        );
+        assert!(write_held(), "the witness still holds it");
+        drop(w);
+        let r = NETLOCK.read();
+        assert!(
+            std::panic::catch_unwind(unlock_shared).is_err(),
+            "NET_UNLOCK_SHARED of a witness's read holding"
+        );
+        assert_eq!(status(), RW_READ, "the witness's reading stays");
+        // A detached reader beside the witness: only its holding is released.
+        lock_shared();
+        unlock_shared();
+        assert!(std::panic::catch_unwind(unlock_shared).is_err());
+        assert_eq!(status(), RW_READ);
+        drop(r);
+        assert_eq!(status(), 0);
+    }
+
+    #[test]
     fn a_sleep_keeps_the_mode_it_found() {
         testutil::install();
         let _s = serial();
@@ -369,7 +442,7 @@ mod tests {
             sleep_nsec(&raw const ident, 0, "nettest", 1_000_000),
             Err(Errno::EWOULDBLOCK)
         );
-        assert!(write_held(), "taken again for writing");
+        assert!(held_detached(), "taken again for writing, detached");
         unlock();
         lock_shared();
         assert_eq!(

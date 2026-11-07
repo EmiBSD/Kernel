@@ -247,10 +247,11 @@
 //!   (that module's notes).
 //! - N6.0: a `static` lock the C takes in one function and releases in another while other
 //!   code keys data to it (the net lock: `NET_LOCK()` in the socket layer, `NET_UNLOCK()`
-//!   in the interface layer, `[N]` members guarded by it) keeps its witnesses: the taker
-//!   forgets one, the releaser resumes it ([`RawRwlock::held_write`],
-//!   [`RawRwlock::held_read`]) and drops it, so the owner check stays the word's (a second
-//!   resume finds nothing to resume). `hal::netlock` is the user.
+//!   in the interface layer, `[N]` members guarded by it): `hal::netlock` takes and releases
+//!   it without a witness through the crate-private raw paths (`write_wait`, `exit_write`,
+//!   `read_wait`, `exit_read`, `sleep_released`, `rw_self`) and marks those holdings as its
+//!   own, so its release never touches a holding a witness owns; no witness is ever rebuilt
+//!   from the lock word.
 //! - N5.2: a lock the C enters in one function and leaves in another without a witness in
 //!   between (`vfs_busy`/`vfs_unbusy` on `mnt_lock`, a file system's `VOP_LOCK`/`VOP_UNLOCK`
 //!   on its node's `rrwlock`) is [`SplitRwlock`] (`rw_enter`/`rw_exit`) or [`RecursiveRwlock`]
@@ -517,7 +518,7 @@ impl RawRwlock {
     }
 
     /// `rw_enter_write` without flags, which cannot fail.
-    fn write_wait(&self) -> usize {
+    pub(crate) fn write_wait(&self) -> usize {
         match self.enter_write(0) {
             Ok(me) => me,
             Err(e) => self.panic(format_args!("uninterruptible enter failed ({e:?})")),
@@ -554,14 +555,14 @@ impl RawRwlock {
     }
 
     /// `rw_enter_read` without flags, which cannot fail.
-    fn read_wait(&self) {
+    pub(crate) fn read_wait(&self) {
         if let Err(e) = self.enter_read(0) {
             self.panic(format_args!("uninterruptible enter failed ({e:?})"));
         }
     }
 
     /// `rw_exit_read`: one reader fewer; the one that leaves the word free wakes the next.
-    fn exit_read(&self) {
+    pub(crate) fn exit_read(&self) {
         let mut seen = RWLOCK_READ_INCR;
         loop {
             if seen & RWLOCK_WRLOCK != 0 {
@@ -584,7 +585,7 @@ impl RawRwlock {
     }
 
     /// `rw_exit_write`, for the writer that stored `me`.
-    fn exit_write(&self, me: usize) {
+    pub(crate) fn exit_write(&self, me: usize) {
         let found = self.cas(me, 0);
         if found != me {
             self.panic(format_args!(
@@ -649,28 +650,6 @@ impl RawRwlock {
         }
     }
 
-    /// The witness of this process's write holding, resumed: `Some` iff the owner word is
-    /// this process's writer word ([`RawRwlock::status`] is [`RW_WRITE`]), the witness
-    /// rebuilt with that word. For the C's call style around a static lock taken in one
-    /// function and released in another (`NET_LOCK()` in `soo_ioctl`, `NET_UNLOCK()` deep in
-    /// `ifioctl`): the taker forgets its witness (`mem::forget`), the releaser resumes it
-    /// here and drops it (`hal::netlock::unlock`). A forgotten witness is resumed exactly
-    /// once: a second resume finds the word free (`None`), and a second drop of a resumed
-    /// witness panics `exit write when lock not held`, the C's `rw_exit` diagnostic.
-    pub fn held_write(&self) -> Option<WriteWitness<'_>> {
-        let me = rw_self();
-        (self.owner.load(Ordering::SeqCst) == me).then(|| WriteWitness::new(self, me))
-    }
-
-    /// The witness of one read holding, resumed: `Some` iff readers hold the lock
-    /// ([`RawRwlock::status`] is [`RW_READ`]). Whose holding it resumes the lock cannot tell
-    /// (the C's `rw_exit_read` cannot either): the caller's own forgotten [`ReadWitness`],
-    /// as [`RawRwlock::held_write`] for the shared mode (`NET_UNLOCK_SHARED()`).
-    pub fn held_read(&self) -> Option<ReadWitness<'_>> {
-        let w = self.owner.load(Ordering::SeqCst);
-        (w != 0 && w & RWLOCK_WRLOCK == 0).then(|| ReadWitness::new(self))
-    }
-
     /// The `rwsleep_nsec` checks: the priority bits and a channel that is not the lock.
     fn check_sleep<I: ?Sized>(&self, ident: *const I, prio: i32) {
         kassert!(prio & !(PRIMASK | PCATCH) == 0);
@@ -683,7 +662,7 @@ impl RawRwlock {
     /// cannot be missed), released by `exit` before sleeping (so a stop signal taken while
     /// asleep does not hold it), asleep; the sleep's result. With no sleep queues yet there is
     /// no one to wait for: released, the CPU let breathe (the C's `tsleep` while `cold`), `Ok`.
-    fn sleep_released<I: ?Sized>(
+    pub(crate) fn sleep_released<I: ?Sized>(
         &self,
         ident: *const I,
         prio: i32,
@@ -1998,7 +1977,7 @@ pub fn init_shared() -> Result<(), Errno> {
 }
 
 /// `rw_self`: the running process as a writer word, `WRLOCK` set, so never 0.
-fn rw_self() -> usize {
+pub(crate) fn rw_self() -> usize {
     (sleep::curproc_word() & !RWLOCK_MASK) | RWLOCK_WRLOCK
 }
 
@@ -2928,62 +2907,6 @@ mod tests {
             });
         });
         l.exit();
-    }
-
-    #[test]
-    fn a_forgotten_write_witness_is_resumed_once_by_its_holder() {
-        testutil::install();
-        let l = RawRwlock::new("test");
-        assert!(l.held_write().is_none(), "nothing to resume on a free lock");
-        core::mem::forget(l.write());
-        assert_eq!(l.status(), RW_WRITE);
-        assert!(l.held_read().is_none(), "a writer is no reader");
-        // Another process (another test thread) holds nothing to resume.
-        thread::scope(|s| {
-            s.spawn(|| {
-                assert_eq!(l.status(), RW_WRITE_OTHER);
-                assert!(l.held_write().is_none());
-            });
-        });
-        let w = l.held_write().expect("the writer resumes its own witness");
-        drop(w);
-        assert_eq!(l.status(), 0);
-        assert!(
-            l.held_write().is_none(),
-            "resumed once: the word is free now"
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "exit write when lock not held")]
-    fn a_resumed_write_witness_dropped_twice_panics() {
-        testutil::install();
-        let l = RawRwlock::new("test");
-        core::mem::forget(l.write());
-        let me = l.held_write().expect("held");
-        // A second witness of the same holding, made before the first is dropped: the second
-        // drop finds the word free.
-        let again = l.held_write().expect("still held");
-        drop(me);
-        drop(again);
-    }
-
-    #[test]
-    fn a_forgotten_read_witness_is_resumed_and_released() {
-        testutil::install();
-        let l = RawRwlock::new("test");
-        assert!(l.held_read().is_none());
-        core::mem::forget(l.read());
-        core::mem::forget(l.read());
-        assert_eq!(l.status(), RW_READ);
-        assert!(l.held_write().is_none());
-        drop(l.held_read().expect("a reader holds it"));
-        assert_eq!(l.status(), RW_READ, "one reader left");
-        drop(l.held_read().expect("the other reader"));
-        assert_eq!(l.status(), 0);
-        assert!(l.held_read().is_none());
-        // The lock works as before.
-        drop(l.write());
     }
 }
 /* </TESTS> */

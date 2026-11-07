@@ -12001,7 +12001,7 @@ rust = "sys/hal/netlock.rs"
 crate = "hal"
 lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
 status = "redesigned"
-notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms (lock/unlock, lock_shared/unlock_shared over RawRwlock::held_write/held_read), rw_status(&netlock) (status, write_held) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported)"
+notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported)"
 
 [[module]]
 rust = "sys/hal/rwlock.rs"

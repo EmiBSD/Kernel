@@ -1291,8 +1291,9 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         }
 
         // This process may already have the NET_LOCK(), if we faulted in copyin() or
-        // copyout() in the network stack.
-        let netunlocked = hal::netlock::write_held();
+        // copyout() in the network stack (a detached holding: `NET_LOCK()`'s, which
+        // `NET_UNLOCK()` may release; a witness's is never let go behind it).
+        let netunlocked = hal::netlock::held_detached();
         if netunlocked {
             hal::netlock::unlock();
         }
