@@ -20,8 +20,8 @@ arm64 := "aarch64-unknown-none-softfloat"
 # off, their first command line prints `<recipe>: amd64 SKIPPED (decision 44)` and runs
 # nothing (`no_amd64` comments out the rest of every other amd64 line). N10 homologates amd64
 # with `EMIBSD_ARCHS=amd64,arm64` (`just archs=amd64,arm64 <recipe>`), which gives back
-# today's commands exactly. The userland (`userland`, `comp`) is OpenBSD's own build and does
-# not depend on the kernel's archs.
+# today's commands exactly. The userland builds (`userland`, `comp`) follow `archs` too: the
+# user's decision of 2026-11-07 widened decision 44 to them; amd64's is built again at N10.
 archs_raw := env("EMIBSD_ARCHS", "arm64")
 archs := if trim(archs_raw) == "" { "arm64" } else { archs_raw }
 export EMIBSD_ARCHS := archs
@@ -3223,9 +3223,10 @@ symbolize arch:
 # Cross-compile OpenBSD's libc, init(8), ksh(1), cat(1), echo(1), ls(1) and uname(1), unmodified,
 # and makefs(8) for the host, from the reference sources into target/userland/<arch> (with the
 # ffs ramdisk image) with Apple clang and LLD 17 (docs/SETUP.md, "Userland
-# toolchain"). Slow and tool-dependent, so not part of `ci`.
+# toolchain"). Slow and tool-dependent, so not part of `ci`. For the architectures of `archs`
+# only (the user's decision of 2026-11-07: amd64's waits for N10, as its kernel does).
 userland:
-    {{xtask}} userland --arch amd64
+    {{ if has_amd64 == "true" { "" } else { "echo 'userland: amd64 SKIPPED (decision 44)' # " } }}{{xtask}} userland --arch amd64
     {{xtask}} userland --arch arm64
 
 # --- toolchain (DevTools T3, the user's decision of 2026-10-31) -----------------------------
@@ -3381,10 +3382,11 @@ comp_jobs := env("COMP_JOBS", "6")
 # docs/ARCHITECTURE.md, "The comp set"). Needs `just userland`. Not part of `ci`: a first
 # build compiles about 2,850 C++ files per arch (30 min for arm64 with 5 jobs, measured while
 # other builds kept the Mac at a load average near 30), plus about 200 for the macOS build
-# tools, once (under a minute); a run with nothing changed takes 15 to 20 s per arch.
+# tools, once (under a minute); a run with nothing changed takes 15 to 20 s per arch. For the
+# architectures of `archs` only, as `userland` (the user's decision of 2026-11-07).
 # COMP_JOBS=N overrides the job count.
 comp:
-    {{xtask}} comp --arch amd64 --jobs {{comp_jobs}}
+    {{ if has_amd64 == "true" { "" } else { "echo 'comp: amd64 SKIPPED (decision 44)' # " } }}{{xtask}} comp --arch amd64 --jobs {{comp_jobs}}
     {{xtask}} comp --arch arm64 --jobs {{comp_jobs}}
 
 # M14: the compiler inside EmiBSD, without the installer. Boots the ramdisk kernel with the
