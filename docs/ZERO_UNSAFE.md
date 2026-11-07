@@ -554,7 +554,7 @@ adds an operation the C's switch lacks.
 | `struct linesw` | `sys/conf.h` | `LineDiscipline` | N4.6 | to name in the brief |
 | `struct timecounter`, `struct todr_chip_handle` | `sys/timetc.h`, `dev/clock_subr.h` | `Timecounter`, `Todr` | N4.7 | to name |
 | the `*_sysctl` dispatch, `vfs_sysctl`, `pr_sysctl` | `kern/kern_sysctl.c` | `SysctlNode` (`VmSysctl` is the precedent) | N4.7, then N5 and N6 register theirs | to name |
-| `struct vops`, `struct vfsops` | `sys/vnode.h`, `sys/mount.h` | `Vnops`, `Vfs` | N5.2 | done, `kernel::fs::vops` (named in the N5 plan, section 3); every file system but nfs (N6) and ntfs (N10) implements them natively, those two through `LegacyVops`/`LegacyVfs` over `bsd`'s tables; the bridge rows `Vnops` and `Vfs` are paid at N10 |
+| `struct vops`, `struct vfsops` | `sys/vnode.h`, `sys/mount.h` | `Vnops`, `Vfs` | N5.2 | done, `kernel::fs::vops` (named in the N5 plan, section 3); every file system but nfs (N6) and ntfs (N10) implements them natively, those two through `bsd`'s `Vops` and `Vfsops`, which implement the traits over their old tables; the bridge rows `Vnops` and `Vfs` are paid at N10 |
 | `struct inode_vtbl` (ffs and ext2fs's inode operations) | `ufs/ufs/inode.h` | `InodeOps` | N5.5a | done, then removed with bsd's ffs (N5.5b2) |
 | `struct bufq_impl` | `sys/buf.h`, `kern/kern_bufq.c` | `BufqDiscipline` | N5.1 | done, `kernel::fs::bufq` |
 | `struct protosw`, `struct pr_usrreqs`, `struct domain` | `sys/protosw.h`, `sys/domain.h` | `Protocol`, `Usrreqs`, `Domain` | N6.4 | to name |
