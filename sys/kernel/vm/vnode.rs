@@ -114,6 +114,11 @@
 //! - `uvm_vnp_sync(NULL)` is `uvm_vnp_sync(None)`, a mount named by its identity
 //!   ([`VnodeOps::mount_id`]); `uvm_vnp_uncache` returns `bool`.
 //! - `UVM_PAGE_OWN` is not configured; the `DEBUG` printfs are compiled out as in C.
+//! - `uvn_io` lets go of the net lock only when `NET_LOCK()` took it (a detached holding,
+//!   `hal::netlock::held_detached`): one held through a witness cannot be released behind its
+//!   owner, so it is `panic(9)` until N6.2 gives kernel code that holds the lock across a user
+//!   copy its own answer (the witness's `unlocked`); the C releases the lock whatever holds it.
+//!   Every holder today is `bsd`'s `NET_LOCK()`, which the pager releases as the C does.
 //!
 //! ## Redesign
 //! - The vnode (`struct vnode *u_vnode`, `vp->v_uvm`, and the `VOP_*`, `vget`, `vref`,
@@ -1296,6 +1301,13 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         let netunlocked = hal::netlock::held_detached();
         if netunlocked {
             hal::netlock::unlock();
+        } else if hal::netlock::write_held() {
+            // Held through a witness, which cannot be let go behind its owner: until N6.2
+            // gives such a holder its own answer, a panic rather than a silent deadlock with
+            // the vnode lock (the C releases it whatever holds it).
+            kpanic(format_args!(
+                "uvn_io: the net lock held through a witness across a page fault"
+            ));
         }
 
         // do the I/O! (XXX: curproc?)

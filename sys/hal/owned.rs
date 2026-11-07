@@ -2793,6 +2793,9 @@ macro_rules! slist_adapter {
                 &mut e.$field
             }
         }
+
+        // `$field` is a field of the element itself, never one reached through a `Deref`.
+        const _: usize = ::core::mem::offset_of!($elem, $field);
     };
 }
 
@@ -2849,12 +2852,16 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     /// The last element (`ml_tail`, `sb_mbtail`), O(1).
     pub fn last(&self) -> Option<&A::Elem> {
         let t = self.tail.load(Mem::Relaxed);
-        // SAFETY: by the invariant (kept by every change of this module, which reads and writes
-        // the links through the adapter that `slist_adapter!` alone writes, so `link` and
-        // `link_mut` name the same field), a non-null `tail` names the last element of the
-        // chain `head` owns, an initialised `A::Elem` alive while it is on the list; the shared
-        // reference borrows `self`, so no change of the list (all need `&mut self`) and no
-        // `&mut` to the element can happen while it lives, and it reads only.
+        // SAFETY: by the invariant, a non-null `tail` names the last element of the chain `head`
+        // owns, an initialised `A::Elem` alive while it is on the list. Every change of this
+        // module keeps it: the links are read and written through the adapter `slist_adapter!`
+        // alone writes (`link` and `link_mut` name the same field), and an element enters a
+        // list only with its link empty (`push_head`/`push_tail` check it, `panic(9)` in every
+        // kernel: a box outside any list holds no chain, since only a list fills a link and
+        // every way out of one empties it), so the element `tail` names is the one whose link
+        // is empty. The shared reference borrows `self`, so no change of the list (all need
+        // `&mut self`) and no `&mut` to the element can happen while it lives, and it reads
+        // only.
         unsafe { t.as_ref() }
     }
 
@@ -2874,9 +2881,20 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         PoolBox::as_ptr(b).cast_mut()
     }
 
-    /// `ml_enqueue`'s order reversed: `b` first, O(1).
+    /// `panic(9)` unless `b`'s link is empty: an element enters a list alone (the tail's
+    /// premise, `last`'s SAFETY), in every kernel.
+    fn check_alone(b: &PoolBox<A::Elem>) {
+        if A::link(b).0.is_some() {
+            hal_panic(format_args!(
+                "OwnedSlist: an element pushed with its link holding a chain"
+            ));
+        }
+    }
+
+    /// `ml_enqueue`'s order reversed: `b` first, O(1). `panic(9)` for an element whose link
+    /// is not empty.
     pub fn push_head(&mut self, mut b: PoolBox<A::Elem>) {
-        crate::assert::kassert!(A::link(&b).0.is_none());
+        Self::check_alone(&b);
         if self.head.0.is_none() {
             self.tail.store(Self::tail_of(&b), Mem::Relaxed);
         }
@@ -2885,9 +2903,10 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         self.len += 1;
     }
 
-    /// `ml_enqueue`, `sbappend`'s tail insert: `b` last, O(1).
+    /// `ml_enqueue`, `sbappend`'s tail insert: `b` last, O(1). `panic(9)` for an element
+    /// whose link is not empty.
     pub fn push_tail(&mut self, b: PoolBox<A::Elem>) {
-        crate::assert::kassert!(A::link(&b).0.is_none());
+        Self::check_alone(&b);
         let t = Self::tail_of(&b);
         match self.last_mut() {
             Some(last) => A::link_mut(last).0 = Some(b),
@@ -4179,6 +4198,22 @@ mod tests {
         assert_eq!(values(&rest), [2, 3, 6]);
         l.concat(&mut rest);
         assert_eq!((values(&l), l.len()), (std::vec![1, 2, 3, 6], 4));
+    }
+
+    #[test]
+    fn an_element_carrying_a_chain_is_refused() {
+        let mut l = OwnedSlist::<SlChain>::new();
+        let mut a = sl(1);
+        // Only a list fills a link; the test reaches the private field to make the case.
+        a.next.0 = Some(sl(2));
+        assert!(
+            std::panic::catch_unwind(AssertUnwindSafe(|| l.push_tail(a))).is_err(),
+            "push_tail of a box whose link holds a chain"
+        );
+        let mut b = sl(3);
+        b.next.0 = Some(sl(4));
+        assert!(std::panic::catch_unwind(AssertUnwindSafe(|| l.push_head(b))).is_err());
+        assert!(l.is_empty() && l.last().is_none(), "nothing linked");
     }
 
     #[test]

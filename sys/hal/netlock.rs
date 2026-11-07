@@ -276,10 +276,13 @@ fn take_reader() -> Result<u32, u32> {
     DETACHED_READERS.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
 }
 
-/// `rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs)`: sleeps on `ident` with the running
-/// process's detached holding released, then takes it again in its mode (written or shared)
-/// before returning the sleep's result (`EWOULDBLOCK` after `nsecs`; `EINTR`/`ERESTART` on a
-/// signal with `PCATCH`). `panic(9)` without a detached holding (`rw_assert_anylock`).
+/// `rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs)`: sleeps on `ident` with a detached
+/// holding released, then takes it again in its mode before returning the sleep's result
+/// (`EWOULDBLOCK` after `nsecs`; `EINTR`/`ERESTART` on a signal with `PCATCH`): the running
+/// process's detached write holding if it has one, else one of the detached read holdings,
+/// whoever took it (the readers are counted, not owned, as the C's `rw_exit_read` cannot tell
+/// them apart; a witness's reading is never in the count). `panic(9)` when there is neither
+/// (`rw_assert_anylock`).
 pub fn sleep_nsec<I: ?Sized>(
     ident: *const I,
     prio: i32,

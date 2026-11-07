@@ -138,9 +138,10 @@
 //!   only its drop lowers its count), so its view cannot reach a period announced after its
 //!   section began; `grace_wait` cannot return while that section lives, given the
 //!   [`CpuWalk`] it is handed: `running(n)` must not call a CPU that runs threads not
-//!   running (`sys/hal/trust.rs`, the walk's contract; a CPU said not to run while it is
-//!   inside a section is `panic(9)`), and a `peg` that does not make the CPU pass [`idle`]
-//!   is `panic(9)` (checked after every peg, in every kernel).
+//!   running (`sys/hal/trust.rs`, the walk's contract, which the soundness rests on; `hal`
+//!   checks it only at best, by relaxed loads of a skipped CPU's counts, and panics when it
+//!   happens to see one inside a section), and a `peg` that does not make the CPU pass
+//!   [`idle`] is `panic(9)` (checked after every peg, in every kernel).
 //!
 //! ## Deviations
 //! - `WITNESS` and `dt(4)` are not configured (the C's `smr_lock_obj` and `TRACEPOINT`s).

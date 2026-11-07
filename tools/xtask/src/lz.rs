@@ -1362,9 +1362,9 @@ pub(crate) fn hal_macro_trait_impls(rel: &str, toks: &[Tok]) -> Vec<(&'static st
     let ident = |i: usize, s: &str| matches!(toks.get(i), Some(Tok::Ident(x)) if unraw(x) == s);
     let mut out = Vec::new();
     for (name, file, mac, legacy) in HAL_MACRO_TRAITS {
-        if rel == legacy {
-            continue;
-        }
+        // In the legacy file an unqualified name is its own trait; a path through `hal` or
+        // `owned` is still hal's.
+        let in_legacy = rel == legacy;
         let mut allowed = vec![false; toks.len()];
         if rel == file {
             for i in 0..toks.len() {
@@ -1387,11 +1387,16 @@ pub(crate) fn hal_macro_trait_impls(rel: &str, toks: &[Tok]) -> Vec<(&'static st
             let renamed = ident(i, name) && ident(i + 1, "as");
             let hand_impl = ident(i, "impl")
                 && impl_trait_path(&toks[i + 1..]).is_some_and(|path| {
+                    let names_hal = path
+                        .iter()
+                        .any(|t| matches!(t, Tok::Ident(x) if matches!(unraw(x), "hal" | "owned")));
                     path.iter().rev().find_map(|t| match t {
                         Tok::Ident(x) => Some(unraw(x)),
                         _ => None,
                     }) == Some(name)
+                        && (!in_legacy || names_hal)
                 });
+            let renamed = renamed && !in_legacy;
             if renamed || hand_impl {
                 n += 1;
             }
@@ -2175,6 +2180,14 @@ mod tests {
         let legacy =
             "impl<A: Adapter<Entry = SlistEntry<<A as Adapter>::Elem>>> SlistAdapter for A {}";
         assert!(hal_macro_trait_impls("sys/sys/queue.rs", &lex(legacy)).is_empty());
+        // ... but hal's trait named there is still refused.
+        assert_eq!(
+            hal_macro_trait_impls(
+                "sys/sys/queue.rs",
+                &lex("impl hal::owned::SlistAdapter for X {}")
+            ),
+            [("SlistAdapter", 1)]
+        );
         for src in [
             "impl SlistAdapter for Mine { type Elem = u8; }",
             "impl hal::owned::SlistAdapter for Mine {}",
