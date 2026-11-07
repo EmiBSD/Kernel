@@ -3033,6 +3033,11 @@ mod tests {
     /// umask(2)'s `mode_t numask` are the register's low 32 bits, whatever its high word
     /// holds, the first with its sign, the second unsigned (umask's stub folds its `u32`
     /// through `i64` into the `i32` it answers, so `0xffff_ffff` reads back as -1).
+    ///
+    /// The high-word cases test the reading; they cannot tell `int` from `u_int`, nor can
+    /// umask's `-1`, which the stub's fold answers as -1 either way. The family is enforced
+    /// by the `KernelApi` entry's parameter type (`umask` takes a `u32`, `close` an `i32`: the
+    /// other helper does not compile there), and `u_int(-1)` is checked directly below.
     #[test]
     fn the_arguments_are_read_as_scarg_reads_their_c_type() {
         let cases: [(NativeFn, i32, Register, i32); 4] = [
