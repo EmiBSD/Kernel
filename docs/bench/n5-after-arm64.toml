@@ -1,0 +1,1235 @@
+schema = 1
+arch = "arm64"
+date = "2026-11-07T17:27:27Z"
+kernel_commit = "c147286828b2e35813594a3193637839843bfdc6"
+kernel_tree_clean = true
+kernel_sha256 = "76fb4ff77638f59bf018fd4f01517426fc8a204e706329d73d202419781cc16d"
+reps = 10
+discard_worst = 1
+smp = 4
+memory = "512M"
+spread_limit_percent = 15.0
+file_mib = 256
+tcpbench_seconds = 10
+
+[qemu]
+emibsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/edk2-arm64-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/emibsd-arm64-bench.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/disk-arm64-bench.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"
+openbsd = "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/arm64/openbsd-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -device virtio-net-device,netdev=n0 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/arm64/openbsd-scratch.img,id=d1 -device virtio-blk-device,drive=d1 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"
+emibsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/edk2-arm64-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/emibsd-arm64-a.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=59014,remote.type=inet,remote.host=127.0.0.1,remote.port=62368 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/disk-arm64-a.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/edk2-arm64-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/emibsd-arm64-b.img,id=hd0 -device virtio-blk-device,drive=hd0,bootindex=0 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=62368,remote.type=inet,remote.host=127.0.0.1,remote.port=59014 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/disk-arm64-b.img,id=sd0 -device virtio-blk-device,drive=sd0 -semihosting-config enable=on,target=native"]
+openbsd_link = ["qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/arm64/openbsd-a-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=50598,remote.type=inet,remote.host=127.0.0.1,remote.port=49553 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:01 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:01 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot", "qemu-system-aarch64 -m 512M -display none -monitor none -no-reboot -serial stdio -boot menu=on,splash-time=0 -smp 4 -drive if=pflash,format=raw,readonly=on,file=/opt/homebrew/opt/qemu/share/qemu/edk2-aarch64-code.fd -drive if=pflash,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/bench/arm64/openbsd-b-vars.fd -netdev user,id=n0 -M virt,acpi=off -cpu cortex-a72 -netdev dgram,id=n1,local.type=inet,local.host=127.0.0.1,local.port=49553,remote.type=inet,remote.host=127.0.0.1,remote.port=50598 -device virtio-net-device,netdev=n1,mac=52:54:00:bb:00:02 -device virtio-net-device,netdev=n0,mac=52:54:00:aa:00:02 -drive if=none,format=raw,file=/Users/enavarre/devel/emibsd/Kernel/target/openbsd/arm64/disk.img,id=d0 -device virtio-blk-device,drive=d0,bootindex=0 -snapshot"]
+
+[[measurement]]
+name = "boot"
+unit = "s"
+better = "lower"
+emibsd = [9.047, 9.265, 9.135, 9.22, 9.197, 9.228, 9.156, 9.133, 9.281, 9.143]
+openbsd = [31.859, 31.744, 31.389, 31.524, 31.853, 31.751, 31.739, 31.614, 31.391, 31.282]
+emibsd_discarded = 8
+openbsd_discarded = 0
+ratio = 0.29
+
+[measurement.emibsd_stats]
+median = 9.156
+min = 9.047
+max = 9.265
+spread_percent = 2.381
+
+[measurement.openbsd_stats]
+median = 31.614
+min = 31.282
+max = 31.853
+spread_percent = 1.806
+
+[[measurement]]
+name = "pagefault"
+unit = "ns/op"
+better = "lower"
+emibsd = [112889.0, 114150.0, 114163.0, 113393.0, 113009.0, 113243.0, 115343.0, 112783.0, 112525.0, 111130.0]
+openbsd = [124301.0, 125280.0, 122972.0, 124429.0, 124833.0, 128118.0, 123098.0, 123512.0, 123408.0, 121973.0]
+emibsd_discarded = 6
+openbsd_discarded = 5
+ratio = 0.915
+
+[measurement.emibsd_stats]
+median = 113009.0
+min = 111130.0
+max = 114163.0
+spread_percent = 2.684
+
+[measurement.openbsd_stats]
+median = 123512.0
+min = 121973.0
+max = 125280.0
+spread_percent = 2.677
+
+[[measurement]]
+name = "forkexit"
+unit = "ns/op"
+better = "lower"
+emibsd = [2964124.0, 2996883.0, 2971195.0, 2917066.0, 2957159.0, 2967487.0, 2939288.0, 2975985.0, 2944359.0, 2807414.0]
+openbsd = [2214506.0, 2264411.0, 2227130.0, 2176341.0, 2230087.0, 2255666.0, 2252309.0, 2182784.0, 2162248.0, 2227241.0]
+emibsd_discarded = 1
+openbsd_discarded = 1
+ratio = 1.328
+
+[measurement.emibsd_stats]
+median = 2957159.0
+min = 2807414.0
+max = 2975985.0
+spread_percent = 5.7
+
+[measurement.openbsd_stats]
+median = 2227130.0
+min = 2162248.0
+max = 2255666.0
+spread_percent = 4.195
+
+[[measurement]]
+name = "forkexec"
+unit = "ns/op"
+better = "lower"
+emibsd = [7947757.0, 8009207.0, 7978957.0, 7772273.0, 7954292.0, 7881610.0, 7962648.0, 7942855.0, 7948431.0, 7648055.0]
+openbsd = [6368607.0, 6451602.0, 6198688.0, 6308868.0, 6453546.0, 6479781.0, 6254450.0, 6371032.0, 6252675.0, 6208452.0]
+emibsd_discarded = 1
+openbsd_discarded = 5
+ratio = 1.26
+
+[measurement.emibsd_stats]
+median = 7947757.0
+min = 7648055.0
+max = 7978957.0
+spread_percent = 4.163
+
+[measurement.openbsd_stats]
+median = 6308868.0
+min = 6198688.0
+max = 6453546.0
+spread_percent = 4.04
+
+[[measurement]]
+name = "pipe"
+unit = "ns/op"
+better = "lower"
+emibsd = [226213.0, 229110.0, 227836.0, 226618.0, 224357.0, 227470.0, 226383.0, 229655.0, 228167.0, 226316.0]
+openbsd = [187863.0, 186628.0, 184513.0, 186540.0, 188876.0, 185332.0, 185194.0, 186885.0, 185992.0, 184881.0]
+emibsd_discarded = 7
+openbsd_discarded = 4
+ratio = 1.218
+
+[measurement.emibsd_stats]
+median = 226618.0
+min = 224357.0
+max = 229110.0
+spread_percent = 2.097
+
+[measurement.openbsd_stats]
+median = 185992.0
+min = 184513.0
+max = 187863.0
+spread_percent = 1.801
+
+[[measurement]]
+name = "fileread"
+unit = "ns/op"
+better = "lower"
+emibsd = [1025314.0, 1033933.0, 1026239.0, 1014100.0, 1027929.0, 1012461.0, 1020698.0, 1025199.0, 1033773.0, 1010551.0]
+openbsd = [896424.0, 905753.0, 895162.0, 905255.0, 920747.0, 891090.0, 899052.0, 894649.0, 880154.0, 882215.0]
+emibsd_discarded = 1
+openbsd_discarded = 4
+ratio = 1.145
+
+[measurement.emibsd_stats]
+median = 1025199.0
+min = 1010551.0
+max = 1033773.0
+spread_percent = 2.265
+
+[measurement.openbsd_stats]
+median = 895162.0
+min = 880154.0
+max = 905753.0
+spread_percent = 2.86
+
+[[measurement]]
+name = "tcpbench"
+unit = "Mbps"
+better = "higher"
+emibsd = [92.619, 93.847, 94.036, 92.349, 92.22, 92.403, 92.573, 92.372, 92.792, 91.906]
+openbsd = [85.921, 88.181, 88.874, 85.838, 85.424, 85.163, 85.628, 85.203, 85.575, 85.839]
+emibsd_discarded = 9
+openbsd_discarded = 5
+ratio = 1.078
+
+[measurement.emibsd_stats]
+median = 92.573
+min = 92.22
+max = 94.036
+spread_percent = 1.962
+
+[measurement.openbsd_stats]
+median = 85.838
+min = 85.203
+max = 88.874
+spread_percent = 4.277
+
+[[measurement]]
+name = "filecreate"
+unit = "ns/op"
+better = "lower"
+emibsd = [1274498.0, 1306838.0, 1302032.0, 1236870.0, 1293362.0, 1256372.0, 1272905.0, 1302492.0, 1286101.0, 1262902.0]
+openbsd = [1022191.0, 1056316.0, 1005909.0, 1034396.0, 1037147.0, 1058419.0, 1030082.0, 1010987.0, 1013086.0, 996029.0]
+emibsd_discarded = 1
+openbsd_discarded = 5
+ratio = 1.247
+
+[measurement.emibsd_stats]
+median = 1274498.0
+min = 1236870.0
+max = 1302492.0
+spread_percent = 5.149
+
+[measurement.openbsd_stats]
+median = 1022191.0
+min = 996029.0
+max = 1056316.0
+spread_percent = 5.898
+
+[[host]]
+system = "emibsd"
+run = 1
+load_start = 1.83
+load_end = 2.43
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.1
+
+[[host.top]]
+name = "Spotify Helper"
+cpu = 1.3
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.1
+
+[[host.top]]
+name = "Microsoft Outlook"
+cpu = 0.8
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.7
+
+[[host]]
+system = "openbsd"
+run = 1
+load_start = 2.43
+load_end = 2.7
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.7
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.5
+
+[[host.top]]
+name = "Adobe Crash Processor"
+cpu = 1.4
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "Microsoft Outlook"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 2
+load_start = 2.7
+load_end = 2.66
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.1
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "Microsoft Outlook"
+cpu = 0.5
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.4
+
+[[host]]
+system = "emibsd"
+run = 2
+load_start = 2.66
+load_end = 2.5
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.4
+
+[[host.top]]
+name = "WindowServer"
+cpu = 2.0
+
+[[host.top]]
+name = "Adobe Crash Processor"
+cpu = 0.9
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host]]
+system = "emibsd"
+run = 3
+load_start = 2.5
+load_end = 2.37
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.3
+
+[[host.top]]
+name = "WindowServer"
+cpu = 2.1
+
+[[host.top]]
+name = "Finder"
+cpu = 1.3
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.8
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 3
+load_start = 2.37
+load_end = 1.95
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.2
+
+[[host.top]]
+name = "claude"
+cpu = 1.0
+
+[[host.top]]
+name = "Microsoft Outlook"
+cpu = 0.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host]]
+system = "openbsd"
+run = 4
+load_start = 1.95
+load_end = 2.85
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.1
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.0
+
+[[host.top]]
+name = "Adobe Desktop Service"
+cpu = 0.7
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.6
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 4
+load_start = 2.85
+load_end = 3.07
+
+[[host.top]]
+name = "locationd"
+cpu = 3.0
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.9
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "Microsoft Outlook"
+cpu = 0.6
+
+[[host]]
+system = "emibsd"
+run = 5
+load_start = 3.07
+load_end = 3.07
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 19.0
+
+[[host.top]]
+name = "dasd"
+cpu = 11.4
+
+[[host.top]]
+name = "spotlightknowledged.updater"
+cpu = 11.2
+
+[[host.top]]
+name = "mediaanalysisd"
+cpu = 10.6
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.1
+
+[[host]]
+system = "openbsd"
+run = 5
+load_start = 3.07
+load_end = 3.08
+
+[[host.top]]
+name = "locationd"
+cpu = 5.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 3.8
+
+[[host.top]]
+name = "WhatsApp"
+cpu = 2.3
+
+[[host.top]]
+name = "PerfPowerServices"
+cpu = 2.2
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 1.3
+
+[[host]]
+system = "openbsd"
+run = 6
+load_start = 3.08
+load_end = 3.02
+
+[[host.top]]
+name = "WindowServer"
+cpu = 43.5
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 3.5
+
+[[host.top]]
+name = "locationd"
+cpu = 2.9
+
+[[host.top]]
+name = "Code"
+cpu = 2.7
+
+[[host.top]]
+name = "Code Helper"
+cpu = 2.3
+
+[[host]]
+system = "emibsd"
+run = 6
+load_start = 3.02
+load_end = 2.85
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.1
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "bluetoothd"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.2
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.2
+
+[[host]]
+system = "emibsd"
+run = 7
+load_start = 2.85
+load_end = 2.47
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 1.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.7
+
+[[host.top]]
+name = "runningboardd"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "fseventsd"
+cpu = 0.2
+
+[[host]]
+system = "openbsd"
+run = 7
+load_start = 2.47
+load_end = 2.45
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 2.6
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.1
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.6
+
+[[host]]
+system = "openbsd"
+run = 8
+load_start = 2.45
+load_end = 2.12
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "cfprefsd"
+cpu = 0.6
+
+[[host.top]]
+name = "PerfPowerServices"
+cpu = 0.4
+
+[[host.top]]
+name = "claude"
+cpu = 0.4
+
+[[host]]
+system = "emibsd"
+run = 8
+load_start = 2.12
+load_end = 3.13
+
+[[host.top]]
+name = "mediaanalysisd"
+cpu = 208.4
+
+[[host.top]]
+name = "WindowServer"
+cpu = 2.1
+
+[[host.top]]
+name = "Code Helper"
+cpu = 1.5
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 0.8
+
+[[host.top]]
+name = "spotlightknowledged.updater"
+cpu = 0.7
+
+[[host]]
+system = "emibsd"
+run = 9
+load_start = 3.13
+load_end = 2.6
+
+[[host.top]]
+name = "claude"
+cpu = 1.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.9
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.3
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.2
+
+[[host]]
+system = "openbsd"
+run = 9
+load_start = 2.6
+load_end = 2.3
+
+[[host.top]]
+name = "locationd"
+cpu = 5.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 1.2
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.7
+
+[[host.top]]
+name = "searchpartyd"
+cpu = 0.5
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.5
+
+[[host]]
+system = "openbsd"
+run = 10
+load_start = 2.3
+load_end = 2.35
+
+[[host.top]]
+name = "socketfilterfw"
+cpu = 1.0
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.9
+
+[[host.top]]
+name = "claude"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.5
+
+[[host]]
+system = "emibsd"
+run = 10
+load_start = 2.35
+load_end = 2.74
+
+[[host.top]]
+name = "corespotlightd"
+cpu = 18.0
+
+[[host.top]]
+name = "dasd"
+cpu = 3.3
+
+[[host.top]]
+name = "spotlightknowledged.updater"
+cpu = 2.2
+
+[[host.top]]
+name = "airportd"
+cpu = 1.1
+
+[[host.top]]
+name = "launchd"
+cpu = 0.7
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 1
+load_start = 2.71
+load_end = 2.92
+
+[[host.top]]
+name = "loginwindow"
+cpu = 7.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 2.2
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 2
+load_start = 2.92
+load_end = 3.31
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host.top]]
+name = "exchangesyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "opencode"
+cpu = 0.1
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 3
+load_start = 3.31
+load_end = 3.68
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "Adobe Crash Processor"
+cpu = 0.1
+
+[[host.top]]
+name = "xtask"
+cpu = 0.1
+
+[[host.top]]
+name = "launchd"
+cpu = 0.0
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 4
+load_start = 3.68
+load_end = 4.03
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host.top]]
+name = "launchd"
+cpu = 0.0
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 5
+load_start = 4.03
+load_end = 4.18
+
+[[host.top]]
+name = "launchd"
+cpu = 1.2
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.5
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "xtask"
+cpu = 0.4
+
+[[host.top]]
+name = "syspolicyd"
+cpu = 0.2
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 6
+load_start = 4.18
+load_end = 4.46
+
+[[host.top]]
+name = "searchpartyd"
+cpu = 0.4
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "exchangesyncd"
+cpu = 0.3
+
+[[host.top]]
+name = "locationd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 7
+load_start = 4.46
+load_end = 4.14
+
+[[host.top]]
+name = "apsd"
+cpu = 0.9
+
+[[host.top]]
+name = "airportd"
+cpu = 0.5
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "runningboardd"
+cpu = 0.3
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.2
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 8
+load_start = 4.14
+load_end = 3.97
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.2
+
+[[host.top]]
+name = "claude"
+cpu = 0.2
+
+[[host.top]]
+name = "distnoted"
+cpu = 0.1
+
+[[host.top]]
+name = "loginwindow"
+cpu = 0.1
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 9
+load_start = 3.97
+load_end = 3.9
+
+[[host.top]]
+name = "claude"
+cpu = 4.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host.top]]
+name = "launchd"
+cpu = 0.0
+
+[[host]]
+system = "emibsd-tcpbench"
+run = 10
+load_start = 3.9
+load_end = 3.84
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "logd"
+cpu = 0.3
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.3
+
+[[host.top]]
+name = "Spotify"
+cpu = 0.3
+
+[[host.top]]
+name = "ContinuityCaptureAgent"
+cpu = 0.2
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 1
+load_start = 4.07
+load_end = 4.14
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.3
+
+[[host.top]]
+name = "launchd"
+cpu = 0.1
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 2
+load_start = 4.14
+load_end = 3.96
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host.top]]
+name = "opencode"
+cpu = 0.1
+
+[[host.top]]
+name = "launchd"
+cpu = 0.0
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 3
+load_start = 3.96
+load_end = 4.33
+
+[[host.top]]
+name = "mdworker_shared"
+cpu = 2.4
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "mdworker_shared"
+cpu = 0.4
+
+[[host.top]]
+name = "mds_stores"
+cpu = 0.2
+
+[[host.top]]
+name = "launchd"
+cpu = 0.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 4
+load_start = 4.33
+load_end = 4.13
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 0.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 5
+load_start = 4.13
+load_end = 4.1
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "logd"
+cpu = 0.4
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.2
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 6
+load_start = 4.1
+load_end = 4.23
+
+[[host.top]]
+name = "com.apple.DriverKit-AppleBCMWLAN"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "bluetoothd"
+cpu = 0.2
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.1
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.1
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 7
+load_start = 4.23
+load_end = 4.1
+
+[[host.top]]
+name = "claude"
+cpu = 1.5
+
+[[host.top]]
+name = "socketfilterfw"
+cpu = 0.9
+
+[[host.top]]
+name = "Code Helper (Plugin)"
+cpu = 0.8
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.5
+
+[[host.top]]
+name = "Microsoft Update Assistant"
+cpu = 0.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 8
+load_start = 4.1
+load_end = 4.09
+
+[[host.top]]
+name = "Creative Cloud Content Manager.node"
+cpu = 1.2
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.7
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4
+
+[[host.top]]
+name = "ControlCenter"
+cpu = 0.3
+
+[[host.top]]
+name = "clocksyncd"
+cpu = 0.2
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 9
+load_start = 4.09
+load_end = 4.22
+
+[[host.top]]
+name = "socketfilterfw"
+cpu = 1.4
+
+[[host.top]]
+name = "claude"
+cpu = 1.2
+
+[[host.top]]
+name = "loginwindow"
+cpu = 0.6
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.6
+
+[[host.top]]
+name = "launchservicesd"
+cpu = 0.5
+
+[[host]]
+system = "openbsd-tcpbench"
+run = 10
+load_start = 4.22
+load_end = 4.59
+
+[[host.top]]
+name = "claude"
+cpu = 3.0
+
+[[host.top]]
+name = "Code Helper (Renderer)"
+cpu = 2.8
+
+[[host.top]]
+name = "Code Helper"
+cpu = 1.9
+
+[[host.top]]
+name = "WindowServer"
+cpu = 0.9
+
+[[host.top]]
+name = "EOSWebcamService"
+cpu = 0.4

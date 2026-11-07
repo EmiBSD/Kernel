@@ -677,7 +677,72 @@ Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (54
 
 ## N5 VFS and file systems
 
-(The close fills this section; the entries below are dated events inside the milestone.)
+Met 2026-11-07 (N5.0 merged 2026-10-28). Boundary: from `docs: close N4` (2d779661,
+2026-10-24) to the `docs: close N5` commit. `git rev-list --count --no-merges
+2d779661..c1472868`: 338 commits; `git log --oneline --merges --first-parent
+2d779661..c1472868 | wc -l`: 37 merges into `main`, one per slice or fix. The dated entries
+below are events inside the milestone.
+
+- What moved (merge subjects of `git log --merges --first-parent`). `kernel::fs`: the five
+  bridges N4 left (N5.0); the buffer cache, disk queues and physio with a typed `Buf` (N5.1); the
+  vnode, mount and VFS core, `Vnops` and `Vfs` (N5.2); names, files and record locks (N5.3); the
+  VFS system calls (N5.4); `ufs`: the inode, quota, dirhash, credentials, lookup and vnode
+  operations (N5.5a), the mount's typed slot and the counted mount (b0), ffs's super-block,
+  cylinder groups and allocators (b1), ffs's mount and vnode operations and the switch (b2), mfs
+  (b3); ext2fs (N5.6), msdosfs (N5.7), cd9660 and udf with `sys/isofs/` deleted (N5.8), tmpfs and
+  fuse with `sys/tmpfs/` and `sys/miscfs/` deleted (N5.9). Beside them: N12.1 (the map's walks at
+  the C's cost), DevTools' toolchain recipe and Rust 1.99.1, `smoke-devtools`, and at the close
+  the ABI linked into the image (decision 47) with the abi casts. `sys/nfs/` (D3) moves at N6 and
+  `sys/ntfs/` (D4) at N10, the user's decisions of 2026-10-28; until then both are `adapted` over
+  `Vnops` and `Vfs`. Native calls 105 -> 170 of 331 (smoke-abi expects it); `hal` 184 -> 196
+  (`hal_ceiling` stays 600); `bsd` 9490 -> 8832 (`cargo xtask unsafe-report`).
+- Went well. Slices ran surveyor -> planner -> redesigner -> reviewer, serially (the user's rule
+  of 2026-10-29), and each was merged with the recommended option when the user was away, the
+  decisions logged (memory log n5-night-decisions). The close fixed its flakes at the root:
+  flake A, the log tests' race on a shared `LogDev` (137f511e); flakes C and D, macOS's
+  `syspolicyd` against `cargo xtask` rewriting `target/debug/xtask` under `-j4`, fixed by
+  smoke-all running a private copy of xtask (1bebaf17); E, `just comp`'s `ln: File exists`
+  (77be3cd0); D, 84 amd64 precondition lines gated, since smoke-cd80 had booted amd64 against
+  decision 44 (77be3cd0). `init_sysent.rs` was regenerated (05e04140: `check-syscalls` had been
+  red since N5.3). `userland` and `comp` follow `EMIBSD_ARCHS` (the user, 2026-11-07).
+- Failed, and what fixed it. The first bench attempt of the close ran with Firefox and other
+  apps loading the host and was stopped after 3 runs; it was restarted on a quiet Mac and AC
+  power and not counted. EmiBSD/OS found two faults in the pre-release of 2026-11-06: the
+  release kernel was built with the `qemu` feature, so `halt` reached the semihosting exit
+  outside the smokes (fault 1; ac41e133 builds `dist-arm64` without it); an ISO install printed
+  `newfs_msdos: /dev/r0000000000000000.i` (fault 2), traced to OpenBSD's own zero DUID of a
+  spoofed label shared with cd0 (c0687f95, the debugger's trace merged, no kernel change). The
+  overnight run of 2026-11-07 paused for hours on three guard refusals of a command's form; the
+  rule now: a refusal of form is rewritten once, only a refusal of the action stops.
+- The exit criterion was restated at the close per D3 and D4 (docs/ROADMAP.md N5 row): the first
+  text counted `sys/nfs/`, `sys/ntfs/` and "the `Vfs` bridge", which the scope decision moved.
+- Open: three N12 items with no source left (the MBox stack move, `vmount`, `hal::syscall`
+  holding the handler) are not in the row; a no-change `just comp` relinks 11 programs (13-14
+  s, cause unknown); U6 (`vflush` on a failed VAT mount) was taken at night and awaits the
+  user's confirmation; QEMU `fileread` +6.7 % is N12's.
+- Numbers at the close, arm64 (decision 44): `just check` rc=0 at c1472868 (about 2 min; 4907
+  tests passed, 0 failed, 330 ignored); `just comp` rc=0 (about 15 min, arm64 only; it
+  repaired main's `target/comp` built under the old root); `just ci` rc=0 (592 s; smoke-all 66
+  of 86 passed, 20 skipped by decision 44, 107 boots skipped, 8 m 45 s; `lz drift --strict` 0
+  open; `lz check` 1227 modules (709 inherited, 203 adapted, 315 redesigned), 1537 fn rows, 93
+  extras, 24 bridges open (N10 3, N6 1, N7 13, N8 2, N9 5), 0 errors); `just ci-full` rc=0 (1019
+  s: smoke-all on four CPUs 66 of 86, 20 skipped, 5 m 36 s, then smoke-install-arm64,
+  -arm64-acpi, install-boot both and install80 arm64, installed from the stick in 125 s, ok in
+  158 s); `just diff-openbsd` rc=0 (53 s; 111 steps, 108 equal, 3 expected: fifofs unported,
+  `kern.ostype` branding, coredump stub; 0 unexpected); `cargo xtask lz drift --security`: 0
+  open. Crates: kernel 0, abi 0, hal 196, bsd 8832 (883 files), boot 621; forbid 528, legacy
+  7261.
+- `just bench` (arm64, 10 runs, `docs/bench/n5-after-arm64.toml`, 1799 s, AC power) against
+  N4's report, EmiBSD / OpenBSD medians and ratio: boot 9.16 s / 31.61 (0.290), pagefault
+  113009 / 123512 ns (0.915), forkexit 2957159 / 2227130 (1.328), forkexec 7947757 / 6308868
+  (1.260), pipe 226618 / 185992 (1.218), fileread 1025199 / 895162 (1.145), tcpbench 92.6 / 85.8
+  Mbps (1.078), filecreate 1274498 / 1022191 (1.247; new at N5). `cargo xtask bench compare`
+  against `n4-after-arm64.toml`: boot 9.05 -> 9.16 s (+1.2 %), pagefault 115036 -> 113009 (-1.8
+  %), forkexec 8571085 -> 7947757 (-7.3 %, within the 8.7 % spread), pipe 230368 -> 226618 (-1.6
+  %), tcpbench 95.0 -> 92.6 Mbps (-2.6 %), all within the spread; outside it forkexit 3210724 ->
+  2957159 (-7.9 %) and fileread 960900 -> 1025199 (+6.7 %, the cold 256 MiB read through N5's
+  buffer cache and VFS; under decision 43's 10 %, recorded in N12's row).
+- Effort / Time: left for the user.
 
 ### clippy::pedantic in the three crates (2026-10-29)
 
