@@ -19,6 +19,8 @@ Everything in this repository (code, comments, docs, commits) is in English.
   `crate::arch::amd64` / `crate::arch::arm64` are never named outside `sys/arch/` and `sys/machine/`.
 - The system-call ABI and the behaviour OpenBSD's userland sees never change: the ABI equals
   LZ's at the pin, and additions arrive only through `lz-sync:` commits (`.claude/rules/lz-sync.md`).
+  One exception, decision 48: `exec_elf` also accepts the ELF note name "EmiBSD" (same id as
+  "OpenBSD"), for Userland's renamed binaries.
 - `reference/openbsd-src/`, `reference/emibsd-lz/` and `lz/` are read-only. LZ is never written
   to and never told this repository exists. Never copy C verbatim (`.claude/rules/reference-readonly.md`).
 - Every file keeps the full copyright/licence block(s) of every LZ file it derives from, whole,
@@ -134,7 +136,8 @@ the session.
 - Edit, format or create anything under `reference/` or `lz/`; write to, push to, or mention
   this repository in, `reference/emibsd-lz/`.
 - Change anything userland can see: a syscall, a sysctl MIB, an ioctl, a device major, a
-  `#[repr(C)]` shared with userland, a line a smoke or `diff-openbsd` compares.
+  `#[repr(C)]` shared with userland, a line a smoke or `diff-openbsd` compares (decision 48's
+  ELF note name excepted).
 - Copy C verbatim or translate line by line without re-expressing the semantics in Rust.
 - `todo!()`, `unimplemented!()`, or silently dropping a code path (`.claude/rules/scope-and-stubs.md`).
 - `unsafe` without a `// SAFETY:` comment; `unsafe fn` without a `# Safety` section.

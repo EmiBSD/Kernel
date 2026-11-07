@@ -1317,3 +1317,29 @@ recommended, under the user's standing order):
     frozen tree
     keeps orphans N10's compile-and-fix pass deletes (docs/ROADMAP.md, N10). Commits
     27b15faa, 505bd530, 041accc9, aaef6e78 and the `docs:` commit that wrote this.
+48. **The kernel also accepts the ELF note name "EmiBSD"** (the user, 2026-11-07, on
+    Userland's request: "Aceptarlo ya, en paralelo", then "guárdalo como decisión para no
+    perderlo"). Userland renames OpenBSD to EmiBSD in the base system at build time
+    (`tools/world.py`): phase one changes only C macro names; phase two makes csu's ident note
+    and ld.so write and compare the note name "EmiBSD". So `exec_elf`'s `elf_note_names[]`
+    (`sys/kern/exec_elf.rs`) holds "EmiBSD" beside "OpenBSD", both mapped to the same id
+    (`ELF_NOTE_NAME_OPENBSD`), and both kinds of binary exec the same way while the sets and
+    the media mix them. Nothing numeric changes: `NT_OPENBSD_*`, `PT_OPENBSD_*`,
+    `PF_OPENBSD_MUTABLE`, `ELFOSABI_OPENBSD`, the auxiliary vector and the kernel's
+    constant names stay the C's; an OpenBSD binary execs exactly as before, so
+    `diff-openbsd` is unchanged. xtask's userland check (`tools/xtask/src/userland.rs`)
+    accepts `.note.emibsd.ident` beside `.note.openbsd.ident`. The kernel reads no other
+    name of a user binary by text (program-header types and the note only; the
+    `.openbsd.randomdata` of `kernel.ld` and `rnd.rs` is the kernel's own section, which
+    the boot loader fills). It is a deliberate exception to "what userland sees never
+    changes" and to "ABI additions arrive only through `lz-sync:`" (CLAUDE.md): an addition
+    that refuses nothing OpenBSD's userland does, limited to this one name; any further
+    rename (section names, the `.openbsd.*` segments DevTools' lld maps, sysctl text) is a
+    decision of its own. `exec_elf` is a `security-review.md` area: the commit carries a
+    reviewer's `Security-Review:`. Kept apart from N6.1's mbuf slice, which ran at the same
+    time in its own worktree (the user's choice of running it in parallel). It also excepts
+    two rules of `.claude/rules/`: `scope-and-stubs.md`'s "never widens" `## Deviations`
+    (exec_elf's list gains this line) and `re-engineering.md`'s "no new behavioural
+    difference from OpenBSD" (OpenBSD's kernel refuses an "EmiBSD" note). `exec_elf`
+    (`sys/kern/exec_elf.rs`, still `bsd`) keeps `status = "adapted"`: its one change of its
+    own is this decision's, written in its `lineage.toml` notes, until exec moves (N8.4).

@@ -2008,8 +2008,9 @@ fn verify(ctx: &Ctx<'_>, name: &str, exe: &Path, installed: &Path) -> Result<()>
     if !objdump.status.success() || text.lines().any(|l| l.trim_start().starts_with("INTERP ")) {
         return Err(format!("{name}: llvm-objdump -p failed or shows INTERP").into());
     }
-    if !text.contains(".note.openbsd.ident") {
-        return Err(format!("{name}: no .note.openbsd.ident section").into());
+    // Decision 48: Userland's renamed binaries name the section `.note.emibsd.ident`.
+    if !text.contains(".note.openbsd.ident") && !text.contains(".note.emibsd.ident") {
+        return Err(format!("{name}: no .note.openbsd.ident or .note.emibsd.ident section").into());
     }
     let report = exe.with_extension("objdump.txt");
     fs::write(&report, text.as_bytes()).map_err(|e| format!("{}: {e}", report.display()))?;

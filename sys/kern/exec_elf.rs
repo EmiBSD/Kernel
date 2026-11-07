@@ -104,6 +104,10 @@
 //!   `vn_marktext` are made for a vnode only.
 //! - `elf_os_pt_note_name`'s two padding loops `continue` their own loop in C, so they check
 //!   nothing; the port does not check either (only the name comparison decides).
+//! - Decision 48 (the user, 2026-11-07): `elf_note_names[]` also holds "EmiBSD", with the
+//!   same id as "OpenBSD" (`ELF_NOTE_NAME_OPENBSD`), for Userland's binaries whose ident
+//!   note carries the new name. Every numeric value (`NT_OPENBSD_*`, `PT_OPENBSD_*`,
+//!   `ELFOSABI_OPENBSD`, the auxiliary vector) is the C's; an OpenBSD binary execs as before.
 //! - `hwcap`/`hwcap2` are the C's globals (atomics here); arm64's `cpu_identify` (`cpu.c`),
 //!   which sets them, is not ported, so arm64 passes 0.
 //! - The 4-clause licence of the Wasabi Systems block (advertising clause) was accepted by
@@ -162,11 +166,16 @@ use kernel::vm::types::{UVM_UNKNOWN_OFFSET, VmProt};
 /// `ELF_TARG_VER`.
 const ELF_TARG_VER: u32 = EV_CURRENT;
 
-/// `ELF_NOTE_NAME_OPENBSD`: the note name id of "OpenBSD".
+/// `ELF_NOTE_NAME_OPENBSD`: the note name id of "OpenBSD", and of "EmiBSD" (decision 48).
 const ELF_NOTE_NAME_OPENBSD: i32 = 0x01;
 
-/// `elf_note_names[]`: the note names the kernel knows, with their ids.
-const ELF_NOTE_NAMES: &[(&[u8], i32)] = &[(b"OpenBSD", ELF_NOTE_NAME_OPENBSD)];
+/// `elf_note_names[]`: the note names the kernel knows, with their ids. "EmiBSD" is
+/// decision 48 (the user, 2026-11-07): Userland's renamed binaries carry it; it maps to the
+/// same id as "OpenBSD", so both kinds of binary exec the same way.
+const ELF_NOTE_NAMES: &[(&[u8], i32)] = &[
+    (b"OpenBSD", ELF_NOTE_NAME_OPENBSD),
+    (b"EmiBSD", ELF_NOTE_NAME_OPENBSD),
+];
 
 /// Reads a `T` out of `bytes` at `off`, unaligned. `None` when the slice is too short.
 ///
@@ -1136,7 +1145,8 @@ pub fn elf_os_pt_note_name(np: &ElfNote, body: &[u8]) -> Option<(i32, u32)> {
 
 /// `elf_os_pt_note`: reads the `PT_NOTE` segments and the OpenBSD-specific segment types:
 /// sets `EXEC_WXNEEDED`, `EXEC_NOBTCFI` and `EXEC_PROFILE` on the package and returns the
-/// note names seen; `ENOEXEC` unless the "OpenBSD" note is among them.
+/// note names seen; `ENOEXEC` unless the "OpenBSD" note (or "EmiBSD", decision 48) is among
+/// them.
 pub fn elf_os_pt_note(
     p: &Proc,
     epp: &mut ExecPackage<'_>,
@@ -1285,9 +1295,97 @@ mod tests {
         );
     }
 
+    /// Decision 48: "EmiBSD" is the same note as "OpenBSD", profiling flag included.
+    #[test]
+    fn note_name_knows_emibsd() {
+        let n = note(b"EmiBSD\0", 1, &[0, 0, 0, 0]);
+        let (hdr, body) = split(&n);
+        assert_eq!(
+            elf_os_pt_note_name(&hdr, body),
+            Some((ELF_NOTE_NAME_OPENBSD, 1))
+        );
+
+        let n = note(b"EmiBSD\0", NT_OPENBSD_PROF, &[]);
+        let (hdr, body) = split(&n);
+        assert_eq!(
+            elf_os_pt_note_name(&hdr, body),
+            Some((ELF_NOTE_NAME_OPENBSD, NT_OPENBSD_PROF))
+        );
+    }
+
+    /// A name cut short by the body is refused, never read past.
+    #[test]
+    fn note_name_refuses_a_short_body() {
+        let n = note(b"EmiBSD\0", 1, &[]);
+        let (hdr, _) = split(&n);
+        assert_eq!(elf_os_pt_note_name(&hdr, b"EmiBS"), None);
+        assert_eq!(elf_os_pt_note_name(&hdr, b"EmiBSD"), None);
+        assert_eq!(elf_os_pt_note_name(&hdr, b""), None);
+    }
+
+    /// An image whose one program header is a `PT_NOTE` holding `n`, right after it.
+    fn image_with_note(n: &[u8]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&PT_NOTE.to_ne_bytes());
+        v.extend_from_slice(&PF_R.to_ne_bytes());
+        let len = n.len() as u64;
+        for w in [size_of::<ElfPhdr>() as u64, 0, 0, len, len, 4] {
+            v.extend_from_slice(&w.to_ne_bytes());
+        }
+        assert_eq!(v.len(), size_of::<ElfPhdr>());
+        v.extend_from_slice(n);
+        v
+    }
+
+    /// Decision 48 end to end: `elf_os_pt_note`'s verdict and `EXEC_PROFILE` for an
+    /// "EmiBSD" note, an "OpenBSD" one, and a note the kernel does not know.
+    #[test]
+    fn pt_note_verdict_by_name() {
+        let _guard = setup_real_memory();
+        let p = test_proc();
+        let Some(mut eh) = read_image!(ElfEhdr, &[0u8; size_of::<ElfEhdr>()], 0) else {
+            panic!("short header");
+        };
+        eh.e_phoff = 0;
+        eh.e_phnum = 1;
+
+        let cases: [(&[u8], u32, Result<(), Errno>, bool); 4] = [
+            (b"EmiBSD\0", NT_OPENBSD_PROF, Ok(()), true),
+            (b"EmiBSD\0", 1, Ok(()), false),
+            (b"OpenBSD\0", 1, Ok(()), false),
+            (b"GNU\0", 1, Err(Errno::ENOEXEC), false),
+        ];
+        for (name, ty, verdict, profiled) in cases {
+            let image = image_with_note(&note(name, ty, &[0, 0, 0, 0]));
+            let mut pack = ExecPackage::new(b"test");
+            pack.ep_image = Some(&image);
+            let mut names = 0;
+            assert_eq!(
+                elf_os_pt_note(p, &mut pack, &eh, &mut names),
+                verdict,
+                "{name:?}"
+            );
+            assert_eq!(pack.ep_flags & EXEC_PROFILE != 0, profiled, "{name:?}");
+            assert_eq!(
+                names & ELF_NOTE_NAME_OPENBSD != 0,
+                verdict.is_ok(),
+                "{name:?}"
+            );
+        }
+    }
+
     #[test]
     fn note_name_refuses_others() {
-        for name in [&b"GNU\0"[..], b"OpenBSE\0", b"OpenBSD", b"OpenBSDx\0"] {
+        for name in [
+            &b"GNU\0"[..],
+            b"OpenBSE\0",
+            b"OpenBSD",
+            b"OpenBSDx\0",
+            b"EmiBSE\0",
+            b"EmiBSD",
+            b"EmiBSDx\0",
+            b"emibsd\0",
+        ] {
             let n = note(name, 1, &[0, 0, 0, 0]);
             let (hdr, body) = split(&n);
             assert_eq!(elf_os_pt_note_name(&hdr, body), None, "{name:?}");
