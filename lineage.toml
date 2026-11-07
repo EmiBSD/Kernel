@@ -12569,10 +12569,6 @@ rust = "sys/benches/legacy_timeout.rs"
 reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's paths (timeout_set of a served wrapper, of a fresh wrapper at a known address, of a new address) over the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 
 [[extra]]
-rust = "sys/benches/net.rs"
-reason = "decision 43, N6.0: host microbenchmarks of the net lock (NET_LOCK over bsd's rwlock) and smr(9) (smr_read_enter/leave, smr_call of an idle entry) on LZ's shape, the before rows of sys/kernel/benches/net.rs by the same names, over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image, deleted at N6.0's end; no OpenBSD or LZ source"
-
-[[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
 

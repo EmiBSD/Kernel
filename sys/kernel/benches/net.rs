@@ -21,8 +21,8 @@
 //! the net lock, the pool items, the byte views of the protocol headers and the owned lists the network
 //! slices (N6.1-N6.7) build on, over the kernel's host doubles (`kernel::testutil`, feature
 //! `doubles`) and a recycling pool backend (vm.rs's: the doubles' pool hands out a fresh page
-//! per item). `sys/benches/net.rs` timed the net lock's and `smr(9)`'s rows on LZ's shape by
-//! the same names. Never part of a kernel image; it measures and changes nothing.
+//! per item). `sys/benches/net.rs` (N6.0's first commit to its last) timed the net lock's and
+//! `smr(9)`'s rows on LZ's shape by the same names; their numbers are in N6.0's commits. Never part of a kernel image; it measures and changes nothing.
 //!
 //! `cargo bench -p kernel --features doubles --bench net` (release: the `bench` profile) or
 //! with `--profile dev`. Arguments: `list`; the names of the benches to run (all by default).

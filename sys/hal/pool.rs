@@ -2871,7 +2871,7 @@ mod tests {
 
     /// The `&'static` `bsd`'s legacy code makes of a parked pointer, by its own `unsafe`.
     fn leak_ref(p: NonNull<Pk>) -> &'static Pk {
-        // SAFETY (test): `p` is the pointer `park` returned for an item of `PKS`, alive (the
+        // SAFETY: (test) `p` is the pointer `park` returned for an item of `PKS`, alive (the
         // pool's double frees only on `put`) and reached by no other reference.
         unsafe { p.as_ref() }
     }
