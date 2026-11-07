@@ -150,7 +150,7 @@ active days have moved 100 `unsafe`.
 | **N2 Foundations** (met 2026-10-16; section 0.9) | the crates `hal`, `kernel`, `abi` exist and `bsd` links them; `hal` holds the 24 `bsd`-free machine headers and 18 constant headers of `sys/sys/` (decisions 26, 27; `types.rs` at N3) and the new runtime (locks, pools, `MBox`, `KmBuf`, `OnceStatic`, lists and trees, `UserPtr`/`abi_pod!`, the bridge registry); `abi` holds the syscall table (all `Legacy`); `kernel` holds crypto (28 files, already safe), and the first subsystem by the new path, **pipe(2)** (`sys_pipe.rs`, `pipe.rs`), with bridges to descriptors, kqueue and sigio; `xtask`: `hal-check`, `abi-check`, `unsafe-report` v2, `/progress` v2, `bridges.toml` | 2 + 18 + 24 + 18 | 21 (+ 1 moved into `hal`; + 30 new for the module loader; the hardware's remaining 1,626 move by owner: N3 the pmap cluster ~150, N4 cpu/clock/trap ~740, N7 bus/autoconf/glue ~675, N9 ddb glue and tables ~60; decision 26) | `kernel` and `abi` build with `forbid` at the root; `hal` ≤ 2,150 with every site proved; `sys_pipe.rs` and `pipe.rs` deleted from `bsd`; the 24 + 18 headers under `sys/hal/`; `just ci` and `diff-openbsd` equal (`ci-full` at N3's close, decision 24) | 8.5 d |
 | **N3 Memory** (met 2026-10-18, section 0.10) | `sys/uvm/` → `kernel::vm` in owner slices (km, object, anon, amap, aobj, vnode pager, page, pmemrange, addr, map, mmap, glue; `uvm_fault` before the map, re-planned at N3.4, with `security-review.md`); the pmap behind a safe `hal::Pmap` API: no file of the cluster was movable as it stood (all 14 name `bsd`), so N3.1 redesigned the two pmaps into `hal` (the LZ pmap files and `pmap_module.rs` out of `sys/arch`); the two `cpufunc.rs` and `vm_machdep.rs` stay for N4 (decision 26) | 26 + 14 | 215 (measured at the close: `bsd` 10,583 -> 10,196, the `uvm` row gone, `hal` 35 -> 100) | `sys/uvm/` gone from `bsd`; `kernel::vm` answers every `uvm_*` call through its API; `hal::Pmap` has no `pub unsafe fn` | ~15.5 d estimated (N3.1 ~9 and N3.2 ~2 by their planners, items 3-6 of 0.8 4.5); measured: 35 h of wall time, 2026-10-16 23:01 to 2026-10-18 09:49, many agents in parallel |
 | **N4 Processes** | `sys/kern/` by owner into `kernel`: timeout, task, event/kqueue, descriptors (`file`, `kern_descrip`), signals, proc, the scheduler, sysctl's core, tty; `StaticCell` uses in `kern` → `OnceStatic` | 75 + 4 (kqueue and descriptors, N2's before) + 97 of `sys/arch` (cpu, clock, interrupts, trap, syscall entry, copy, into `hal`; decision 26) | 680 + 95 (+ 742 moved) | `sys/kern/` in `bsd` holds only the VFS (N5), the sockets (N6) and the N8 files; the bridges `Proc`, `Fd`, `Kq` removed from `bridges.toml` | 15 d |
-| **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/nfs/`, `sys/ntfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs` | 140 | 816 | those directories gone from `bsd`; the `Vfs` bridge removed | 14 d |
+| **N5 VFS and file systems** | `sys/kern/vfs_*`, `sys/ufs/`, `sys/isofs/`, `sys/msdosfs/`, `sys/tmpfs/`, `sys/miscfs/` → `kernel::fs`; `sys/nfs/` moves at N6 and `sys/ntfs/` at N10 (D3, D4, the user's decisions of 2026-10-28), `adapted` over `Vnops`/`Vfs` until then | 161 | 850 | those directories gone from `bsd` but nfs (N6) and ntfs (N10); the eight rows `paid_by = "N5"` removed, `Vnops` and `Vfs` paid at N10 | 14 d |
 | **N6 Network** | `sys/net/`, `sys/netinet/`, `sys/netinet6/`, the sockets of `sys/kern/uipc_*` → `kernel::net`, except N8's files | 99 | 1,840 | those directories gone from `bsd` but N8's files; the `Sockets` bridge removed | 18 d |
 | **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last; the bus, autoconf and ACPI/FDT glue of `sys/arch` (74 files) into `hal`, its 19 drivers into `kernel::dev` (decisions 26, 28) | 383 + 74 | 4,101 (+ 675 moved; 4,124 with `softraid_crypto`, N8's) | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 44 d |
 | **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
@@ -269,12 +269,12 @@ old N2 (`kern_event`, `kern_descrip`, `event.rs`, `file.rs`) = 775 in 60 files.
 
 **N5 VFS and file systems, 14 d.** 1. The VFS core: `vfs_subr`, `vfs_bio`, `vfs_lockf`,
 `vfs_syscalls`, `vfs_lookup`, `vfs_vnops`, `vfs_cache`, `vfs_init`, `vfs_sync`, `vfs_getcwd`,
-`vfs_vops`, `vfs_default`, `spec_vnops` (149; the `Vfs` bridge becomes the kernel's own; bridge
-`Disk` to the block drivers until N7) (4 d). 2. `ufs` + `ffs` + `ext2fs` (43 files, 228; the `ufs` row 0 since N5.6c3) (3 d).
-3. `nfs` (24, 143; over `kernel::net`'s sockets or the `Sockets` bridge) (2 d). 4. `isofs`
-(cd9660, udf; 16, 89) (1.5 d). 5. `msdosfs` (12, 60) and `ntfs` (9, 54) (1.5 d). 6. `miscfs`
-(fuse, fifofs, deadfs) (10, 37) and `tmpfs` (7, 24) (1.5 d). 7. Close (0.5 d). Out of `bsd`:
-816 `unsafe`, 134 files; those directories deleted.
+`vfs_vops`, `vfs_default`, `spec_vnops` (the `VnodeOps` bridge is deleted with the old vnode and
+the kernel's `Vnops`/`Vfs` replace it; `Devsw` serves the block drivers until N7) (4 d). 2. `ufs` + `ffs` + `ext2fs` (43 files, 228; the `ufs` row 0 since N5.6c3) (3 d).
+3. `nfs` (24, 143; moved to N6 by D3: it needs `kernel::net`'s sockets) (2 d). 4. `isofs`
+(cd9660, udf; 16, 89) (1.5 d). 5. `msdosfs` (12, 60) and `ntfs` (9, 54; moved to N10 by D4) (1.5 d). 6. `miscfs`
+(fuse, fifofs, deadfs) (11, 34) and `tmpfs` (8, 23) (1.5 d). 7. Close (0.5 d). Out of `bsd`:
+850 `unsafe` in 161 files at the baseline; at the close 202 in 53 files remain (nfs 131 in 24 and ntfs 52 in 9, N6 and N10, and 20 adapters with 19, 2026-11-07), those directories otherwise deleted.
 
 **N6 Network stack, 18 d.** 1. The core: `if_`, `route`, `rtable`, `art`, `radix`, `rtsock`,
 `if_ether`, `if_loop`, `netisr`, `pfkeyv2`'s stub (858 in `sys/net/` minus N8's files; bridge
@@ -507,7 +507,8 @@ found the two boot defects fixed in 74eabc4d and 6e996212); `sys/uvm/` is gone f
 - **`vmstat -m` item sizes** (userland-visible, accepted under the user's N3 authority):
   `anonpl` 48, `rwobjpl` 48 (the C's 40), `amappl` 280, `aobjpl` 128, `uvmvnodes` 136, `bufpl`
   +8 (`b_uobj` is a kernel object), `vmmpepl`/`vmmpekpl` 216 (LZ's 200), `vmsppl` 448 (LZ's
-  288), `uaddr`/`uaddrrnd` 16 (24), `uaddrbest` 40 (32).
+  288), `uaddr`/`uaddrrnd` 16 (24), `uaddrbest` 40 (32); at N5.9 `tmpfs_node` 384 (C 272), `tmpfs_dirent` 128 (C 48) (the user's U3, confirmed) and `fmsg` 304 (C 224).
+- **`vmstat -m` MemUse column** (N5.5b0 on): every `MArc` block (`ufsmount`, `msdosfsmount`, `denode`, `fuse_d`) is charged from the malloc size classes, so the bucket can be larger than the C's request: `fuse_d` goes 128 -> 512 (+384 bytes per open fuse device) and `fusefs_mnt` 32 -> 64 (+32 per mount); `ufsmount`, `msdosfsmount` and `denode` are the same class. Accepted as U3 was: the recommended option, taken under the user's overnight authority on 2026-11-07 and recorded as such (source: the N5.9 reviews of f1 and f2).
 - **C slips found by reading** (for the user, never reported upstream): `uvm_fault.c:1468-1485`
   (`uvm_anfree` of an anon with `an_ref` 1 after the lock is released, and `amap_populate`
   after the map is unlocked; confirmed by a reviewer, fixed in `kernel::vm::fault`);
@@ -553,7 +554,9 @@ adds an operation the C's switch lacks.
 | `struct linesw` | `sys/conf.h` | `LineDiscipline` | N4.6 | to name in the brief |
 | `struct timecounter`, `struct todr_chip_handle` | `sys/timetc.h`, `dev/clock_subr.h` | `Timecounter`, `Todr` | N4.7 | to name |
 | the `*_sysctl` dispatch, `vfs_sysctl`, `pr_sysctl` | `kern/kern_sysctl.c` | `SysctlNode` (`VmSysctl` is the precedent) | N4.7, then N5 and N6 register theirs | to name |
-| `struct vops`, `struct vfsops` | `sys/vnode.h`, `sys/mount.h` | `Vnops`, `Vfs` | N5.1 | to name |
+| `struct vops`, `struct vfsops` | `sys/vnode.h`, `sys/mount.h` | `Vnops`, `Vfs` | N5.2 | done, `kernel::fs::vops` (named in the N5 plan, section 3); every file system but nfs (N6) and ntfs (N10) implements them natively, those two through `LegacyVops`/`LegacyVfs` over `bsd`'s tables; the bridge rows `Vnops` and `Vfs` are paid at N10 |
+| `struct inode_vtbl` (ffs and ext2fs's inode operations) | `ufs/ufs/inode.h` | `InodeOps` | N5.5a | done, then removed with bsd's ffs (N5.5b2) |
+| `struct bufq_impl` | `sys/buf.h`, `kern/kern_bufq.c` | `BufqDiscipline` | N5.1 | done, `kernel::fs::bufq` |
 | `struct protosw`, `struct pr_usrreqs`, `struct domain` | `sys/protosw.h`, `sys/domain.h` | `Protocol`, `Usrreqs`, `Domain` | N6.4 | to name |
 | `if_output`/`if_ll_output` of `struct ifnet` | `net/if_var.h:212` | `LinkLayer` (the driver side is decision 45's `NetDevice`) | N6.1 | to name |
 | `struct cfattach`, `cdevsw`/`bdevsw`, the driver side of `ifnet` | `sys/device.h`, `sys/conf.h` | `Driver`, `Bus`, `NetDevice`, `BlockDevice`, `CharDevice`, `Console` | N7.2 | decision 45 |
@@ -613,9 +616,9 @@ pub trait SysctlNode: Sync {   // one per top-level MIB (kern, hw, vm, net, fs, 
     fn sysctl(&self, name: &[i32], old: Option<UserBuf>, new: Option<UserBuf>, p: &Proc) -> Result<usize, Errno>;
 }
 
-// N5.1. struct vops's 34 entries, grouped; vfs_default's bodies are the default methods;
-// spec, fifo and dead are impls. lock/unlock/islocked are not methods: holding the vnode
-// is a guard type (the N5 planner's decision to write down).
+// N5.2. struct vops's 34 entries, grouped; vfs_default's bodies are the default methods;
+// spec and dead are impls (no fifo table exists in the C's kernel here). lock/unlock/islocked
+// ARE methods (the lock is the node's, RecursiveRwlock; vn_lock returns the core's guard).
 pub trait Vnops: Sync {
     // namespace
     fn lookup(&self, dvp: &Vnode, cnp: &mut ComponentName) -> Result<Lookup, Errno>;
