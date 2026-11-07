@@ -90,7 +90,7 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
 - `abi` holds no logic: `cargo xtask abi-check` fails `just check` on a function of `abi` that
   branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
-  limit (decision 21), and on a path into `hal` outside `hal::api`, `hal::syscall` and `hal::sys::*` (R6, decision
+  limit (decision 21), and on a path into `hal` outside `hal::api`, `hal::sys::*` and `hal::syscall`'s types (R6, decision
   47: linked into the image, `abi` shares `hal`'s statics).
 
 ### 0.3 The migration mechanism
@@ -854,7 +854,7 @@ every design that kept `unsafe` inside the kernel:
     `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is
     recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
 
-25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here. Decision 47 adds R6: `sys/abi/` names `hal` only through `hal::api`, `hal::syscall` and `hal::sys::*` (linked into the image, `abi` shares `hal`'s statics).
+25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here. Decision 47 adds R6: `sys/abi/` names `hal` only through `hal::api`, `hal::sys::*` and `hal::syscall`'s types (linked into the image, `abi` shares `hal`'s statics).
 
 Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 survey
 (scratchpad n2/hwmove/INVENTORY.md and PLAN.md: the hardware is 1,627 `unsafe` in 198 files,
@@ -1264,10 +1264,18 @@ recommended, under the user's standing order):
     table, `KernelApi` its only face of the kernel; the kernel does not name the ABI and the
     ABI does not name `bsd`. Cargo keeps `abi` away from `kernel` and `bsd`, but linked in,
     `abi` shares `hal`'s statics and `hal`'s public API acts on the kernel's own state
-    (`hal::cpu::set_panicking`, the kcopy tokens, the first-wins registrations, whose "only
-    these callers" premises the module's private copy of `hal` kept out of its reach for
-    free): so `abi-check` gains R6 (review 1 of the slice; the user's answer of 2026-11-06,
-    "Sí, añadir la lista (Recomendado)"), `sys/abi/` names `hal` only through `hal::api`, `hal::syscall` and `hal::sys::*`. What it lost:
+    (`hal::cpu::set_panicking`, the kcopy tokens, the system call's one registration, whose
+    "only these callers" premises the module's private copy of `hal` kept out of its reach
+    for free): so `abi-check` gains R6 (the slice's reviews; the user's answers of
+    2026-11-06, "Sí, añadir la lista (Recomendado)" and "Solo los tipos (Recomendado)"):
+    `sys/abi/` names `hal` only through `hal::api` and `hal::sys::*`, whole, and the types of
+    `hal::syscall` (`HandlerInfo`, `Register`, `Rval`, `SysArgs`, `SysResult`, `SyscallFn`,
+    `ENOSYS`), never its functions (`dispatch` would be a second kernel call R3 does not
+    count, `set_handler` could win the one registration) nor the module itself. R6 is
+    textual: it trusts what those modules export, so a `pub use` added to `hal::api`,
+    `hal::syscall` or `hal::sys` would widen it with no change under `sys/abi/`. Like R1-R5 it
+    reads only the files under `sys/abi/`, so a `#[path]` module or an `include!`d file
+    outside them would go unread (none exists). The rule: `.claude/rules/abi.md`. What it lost:
     one image instead of two files (22's "una biblioteca dinámica"); "nothing names `abi`"
     (the image crate does: `bsd`'s boot glue until N9, docs/SCAFFOLDING.md); a second ABI
     swapped at boot (it would be a second crate linked in); the boot-time refusal of a module
@@ -1301,6 +1309,8 @@ recommended, under the user's standing order):
     false line in every dmesg), no line (the smokes would lose the handler's check), `abi`
     calling `kernel` directly (every `Native` entry is still a `bsd` wrapper: possible when
     the system-call hop leaves `bsd`, that slice's decision), an `abi-check` rule naming
-    `KcopyToken` alone (R6's list covers the tokens and the rest of `hal`'s state). amd64 (decision 44): the frozen tree
+    `KcopyToken` alone (R6 refuses every `hal` path but `hal::api`, `hal::sys::*` and
+    `hal::syscall`'s types, the tokens' `hal::user` among them). amd64 (decision 44): the
+    frozen tree
     keeps orphans N10's compile-and-fix pass deletes (docs/ROADMAP.md, N10). Commits
     27b15faa, 505bd530, 041accc9, aaef6e78 and the `docs:` commit that wrote this.

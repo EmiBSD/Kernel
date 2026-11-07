@@ -26,10 +26,10 @@
 //!
 //! Cargo keeps the crate away from `kernel` and `bsd` (it depends on `hal` alone); `hal`'s
 //! public API acts on the kernel's own state, so `abi-check` R6 confines it to `hal::api`,
-//! `hal::syscall` and `hal::sys::*` (decision 47). It reaches the kernel only through the
-//! `KernelApi` table the image's boot glue fills and hands to [`abi_init`]
-//! (`sys/kern/abi_module.rs` until N9), and nothing of `kernel` names it. The constant headers of the ABI edge
-//! (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ
+//! `hal::sys::*` and `hal::syscall`'s types (decision 47). It reaches the kernel only
+//! through the `KernelApi` table the image's boot glue fills and hands to [`abi_init`]
+//! (`sys/kern/abi_module.rs` until N9), and nothing of `kernel` names it. The constant
+//! headers of the ABI edge (`<sys/syscall.h>`, `<sys/errno.h>`, ...) are `hal`'s, inherited from LZ
 //! (`sys/hal/sys/`, the user's decision of 2026-10-16): the numbers of the table are
 //! `hal::sys::syscall`'s, not a copy of them.
 #![no_std]

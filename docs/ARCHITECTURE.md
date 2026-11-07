@@ -278,9 +278,8 @@ missing; decision 47 records what went with it. The pieces now:
   (`VmEntries`, `FdEntries`, `EventEntries`, `ProcEntries`, `TimeEntries`, `VfsEntries`, ...).
   It lives in `hal`, below both sides, so `abi` names it with no dependency on `kernel`
   (Cargo keeps `abi` away from `kernel` and `bsd`; `hal`'s public API acts on the kernel's
-  own state, so `abi-check` R6 confines `abi` to `hal::api`, `hal::syscall` and `hal::sys::*`); `kernel::api::table`
-  fills it with the kernel's
-  registration and `bsd` with the functions that answer (`sys/kern/abi_module.rs`); `abi`
+  own state, so `abi-check` R6 confines `abi` to `hal::api`, `hal::sys::*` and `hal::syscall`'s types); `kernel::api::table`
+  fills it with the kernel's registration and `bsd` with the functions that answer (`sys/kern/abi_module.rs`); `abi`
   receives it in `abi_init` and in every call, and keeps no state.
 - **The registration.** `stand::start_kernel` calls `bsd`'s `abi_module::abi_boot` right after
   `hal_bridges_register`, before `main()`: `abi::abi_init(&KERNEL_API)` registers the handler

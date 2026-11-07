@@ -330,10 +330,10 @@ fn is_unpriv_ldst(elr: u64) -> bool {
         // SAFETY: `elr` is the address of the instruction this CPU was executing at EL1 when
         // the abort was taken (the frame's `tf_elr`, an instruction abort's own address being
         // a user one, which the top-bit test above excludes): the kernel fetched it from there
-        // an instant ago, so it lies in mapped kernel text (the image's text, the only
-        // executable EL1 memory, never unmapped), which is readable at EL1 and never written;
-        // an instruction address is 4-byte aligned. The read is volatile: the word is not a
-        // Rust object.
+        // an instant ago, so it lies in mapped kernel text (the image's text: nothing else
+        // in the upper half executes at EL1, and it is never unmapped), which is readable at
+        // EL1 and never written; an instruction address is 4-byte aligned. The read is
+        // volatile: the word is not a Rust object.
         let insn = unsafe { ptr::read_volatile(insn_at) };
         return (insn & 0x3f20_0c00) == 0x3800_0800;
     }

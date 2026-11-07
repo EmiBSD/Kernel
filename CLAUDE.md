@@ -33,7 +33,7 @@ Everything in this repository (code, comments, docs, commits) is in English.
   only crate with `unsafe` (the hardware and the runtime, every site with a `// SAFETY:` proof,
   a ceiling that only the user raises), and `sys/` (`bsd`, the LZ tree) the legacy that is
   replaced subsystem by subsystem and deleted at N9. `abi` is linked into the kernel image
-  (decision 47) and holds no logic. Section 0 of that document and its one diagram are the
+  (decision 47) and holds no logic (`.claude/rules/abi.md`). Section 0 of that document and its one diagram are the
   only description of the architecture; `unsafe-core.toml` and the per-module `forbid` of v1
   are superseded.
 - No `std` outside `sys/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code, the host benchmark
@@ -86,7 +86,7 @@ Two provenance rules:
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
-| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `hal` only through `hal::api`, `hal::syscall`, `hal::sys` (R6, decision 47) |
+| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `hal` only through `hal::api`, `hal::sys`, `hal::syscall`'s types (R6, decision 47) |
 | `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |
