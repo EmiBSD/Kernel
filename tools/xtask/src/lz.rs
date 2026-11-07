@@ -1175,6 +1175,11 @@ pub(crate) fn check(root: &Path) -> Result<()> {
                 "{rel}: {n} hand-written `impl AbiPod`, rename `AbiPod as`, or `impl $t for` with the trait in a macro variable; only abi_pod! (and sys/hal/user.rs's primitives) implement hal's AbiPod, whose checks UserPtr's byte views trust (docs/ZERO_UNSAFE.md, decision 17)"
             ));
         }
+        for (name, n) in hal_macro_trait_impls(&rel, toks) {
+            errors.push(format!(
+                "{rel}: {n} hand-written `impl {name}` or rename `{name} as`; only its macro in hal implements hal's {name}, whose purity an unsafe block of hal trusts (N6.0's review)"
+            ));
+        }
     }
     let core = crate::unsafereport::CoreList::load(root)?;
     let forbid: HashSet<String> = crate::unsafereport::forbid_files(&lexed)
@@ -1334,6 +1339,68 @@ pub(crate) fn abi_pod_impls(rel: &str, toks: &[Tok]) -> usize {
         }
     }
     n
+}
+
+/// `hal`'s safe traits whose impls only a macro of `hal` writes, because an `unsafe` block of
+/// `hal` trusts what the impl returns: the trait, the file that defines the macro, the macro,
+/// and the legacy file that defines a trait of the same name of its own (whose impls are not
+/// `hal`'s). `SlistAdapter` (N6.0): `OwnedSlist`'s raw tail rests on `link` and `link_mut`
+/// naming the same field of the element, which `slist_adapter!` alone guarantees;
+/// `sys/sys/queue.rs` has a `SlistAdapter` of its own (the `SLIST` adapters' blanket impl).
+const HAL_MACRO_TRAITS: [(&str, &str, &str, &str); 1] = [(
+    "SlistAdapter",
+    "sys/hal/owned.rs",
+    "slist_adapter",
+    "sys/sys/queue.rs",
+)];
+
+/// The hand-written impls (`impl .. T for`) and renames (`T as`) of each trait of
+/// [`HAL_MACRO_TRAITS`] that the file `rel`, lexed as `toks`, writes outside the body of the
+/// trait's macro in the file that defines it; the traits with a count above 0. An impl through
+/// a macro variable is [`adapter_impls`]'s refusal. Raw identifiers count as the plain name.
+pub(crate) fn hal_macro_trait_impls(rel: &str, toks: &[Tok]) -> Vec<(&'static str, usize)> {
+    let ident = |i: usize, s: &str| matches!(toks.get(i), Some(Tok::Ident(x)) if unraw(x) == s);
+    let mut out = Vec::new();
+    for (name, file, mac, legacy) in HAL_MACRO_TRAITS {
+        if rel == legacy {
+            continue;
+        }
+        let mut allowed = vec![false; toks.len()];
+        if rel == file {
+            for i in 0..toks.len() {
+                if ident(i, "macro_rules")
+                    && toks.get(i + 1) == Some(&Tok::Punct('!'))
+                    && ident(i + 2, mac)
+                    && let Some(open) = (i + 3 < toks.len()).then_some(i + 3)
+                    && matches!(toks[open], Tok::Punct('{' | '(' | '['))
+                    && let Some(end) = closing(toks, open)
+                {
+                    allowed[open..=end].iter_mut().for_each(|a| *a = true);
+                }
+            }
+        }
+        let mut n = 0;
+        for i in 0..toks.len() {
+            if allowed[i] {
+                continue;
+            }
+            let renamed = ident(i, name) && ident(i + 1, "as");
+            let hand_impl = ident(i, "impl")
+                && impl_trait_path(&toks[i + 1..]).is_some_and(|path| {
+                    path.iter().rev().find_map(|t| match t {
+                        Tok::Ident(x) => Some(unraw(x)),
+                        _ => None,
+                    }) == Some(name)
+                });
+            if renamed || hand_impl {
+                n += 1;
+            }
+        }
+        if n > 0 {
+            out.push((name, n));
+        }
+    }
+    out
 }
 
 /// An identifier without its `r#`: `r#Adapter` names `Adapter`.
@@ -2079,6 +2146,46 @@ mod tests {
             "macro_rules! m { ($t:path) => { impl $t for Mine {} } }",
         ] {
             assert_eq!(abi_pod_impls("sys/abi/x.rs", &lex(refused)), 1, "{refused}");
+        }
+    }
+
+    #[test]
+    fn slist_adapter_impls_only_inside_its_macro() {
+        use crate::unsafereport::lex;
+        let owned = r#"
+        pub trait SlistAdapter: 'static { type Elem; }
+        macro_rules! slist_adapter {
+            ($name:ident: $elem:ty, $field:ident) => {
+                impl $crate::owned::SlistAdapter for $name { type Elem = $elem; }
+            };
+        }
+        impl<A: SlistAdapter> OwnedSlist<A> {}
+        impl<A: SlistAdapter> Default for OwnedSlist<A> {}
+        impl<'a, A: SlistAdapter> IntoIterator for &'a OwnedSlist<A> {}
+    "#;
+        assert!(hal_macro_trait_impls("sys/hal/owned.rs", &lex(owned)).is_empty());
+        // The same macro body elsewhere is not the one the check trusts.
+        assert_eq!(
+            hal_macro_trait_impls("sys/kernel/x.rs", &lex(owned)),
+            [("SlistAdapter", 1)]
+        );
+        let users = "hal::slist_adapter!(pub MChain: Mbuf, m_next); crate::slist_adapter!(SlChain: Sl, next);";
+        assert!(hal_macro_trait_impls("sys/kernel/x.rs", &lex(users)).is_empty());
+        // bsd's own SlistAdapter of sys/sys/queue.rs is not hal's.
+        let legacy =
+            "impl<A: Adapter<Entry = SlistEntry<<A as Adapter>::Elem>>> SlistAdapter for A {}";
+        assert!(hal_macro_trait_impls("sys/sys/queue.rs", &lex(legacy)).is_empty());
+        for src in [
+            "impl SlistAdapter for Mine { type Elem = u8; }",
+            "impl hal::owned::SlistAdapter for Mine {}",
+            "impl<T> r#SlistAdapter for W<T> {}",
+            "use hal::owned::SlistAdapter as S;",
+        ] {
+            assert_eq!(
+                hal_macro_trait_impls("sys/kernel/x.rs", &lex(src)),
+                [("SlistAdapter", 1)],
+                "{src}"
+            );
         }
     }
 

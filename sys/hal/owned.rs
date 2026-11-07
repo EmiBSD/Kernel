@@ -2764,7 +2764,9 @@ impl<T: 'static> Default for SlistLink<T> {
 }
 
 /// The field of an element an [`OwnedSlist`] links it by (two adapters over one type for the
-/// chain and the packet list); written by [`crate::slist_adapter!`].
+/// chain and the packet list); written by [`crate::slist_adapter!`] alone (`cargo xtask lz
+/// check` refuses a hand-written impl): the list's raw tail rests on `link` and `link_mut`
+/// naming the same field of the element.
 pub trait SlistAdapter: 'static {
     /// The element: a pool item changed through its box (`Unpin`).
     type Elem: Unpin + 'static;
@@ -2847,8 +2849,10 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     /// The last element (`ml_tail`, `sb_mbtail`), O(1).
     pub fn last(&self) -> Option<&A::Elem> {
         let t = self.tail.load(Mem::Relaxed);
-        // SAFETY: by the invariant, a non-null `tail` names the last element of the chain
-        // `head` owns, an initialised `A::Elem` alive while it is on the list; the shared
+        // SAFETY: by the invariant (kept by every change of this module, which reads and writes
+        // the links through the adapter that `slist_adapter!` alone writes, so `link` and
+        // `link_mut` name the same field), a non-null `tail` names the last element of the
+        // chain `head` owns, an initialised `A::Elem` alive while it is on the list; the shared
         // reference borrows `self`, so no change of the list (all need `&mut self`) and no
         // `&mut` to the element can happen while it lives, and it reads only.
         unsafe { t.as_ref() }
@@ -3041,8 +3045,10 @@ impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
         let tail = self.tail;
         let cur = self.slot.as_mut()?.0.as_mut()?;
         let mut next = A::link_mut(cur).0.take()?;
-        A::link_mut(cur).0 = A::link_mut(&mut next).0.take();
-        if A::link(cur).0.is_none() {
+        let after = A::link_mut(&mut next).0.take();
+        let last = after.is_none();
+        A::link_mut(cur).0 = after;
+        if last {
             tail.store(PoolBox::as_ptr(cur).cast_mut(), Mem::Relaxed);
         }
         *self.len -= 1;
