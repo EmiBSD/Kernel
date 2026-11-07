@@ -136,6 +136,8 @@ pub mod pinlist;
 #[forbid(unsafe_code)]
 pub mod pmap;
 
+pub mod pod;
+
 pub mod pool;
 #[forbid(unsafe_code)]
 pub mod prf;

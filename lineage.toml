@@ -11634,6 +11634,11 @@ crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
+rust = "sys/hal/pod.rs"
+crate = "hal"
+reason = "hal runtime, written new (N6.0): the views of an AbiPod structure over a byte buffer, at and put (the copy forms, moved from kernel::fs::pod's pod_at and pod_put) and view and view_mut (in place, None when the bytes are short or misaligned: the C's mtod(m, struct ip *) read and written in place, for the network stack's headers)"
+
+[[extra]]
 rust = "sys/hal/slot.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl)"
@@ -14108,7 +14113,7 @@ reason = "N5.7c3: the kernel msdosfs's test fixtures (host tests and benches onl
 [[extra]]
 rust = "sys/kernel/fs/pod.rs"
 crate = "kernel"
-reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures over a buffer's bytes (pod_view!: SIZE, at, put over hal::user's pod_from_bytes/pod_to_bytes; pod_at, pod_put), lifted from fs::msdosfs::bpb (N5.7c1) for its second and third users, cd9660 and udf; native items with no LZ source (LZ's byte_view! and from_bytes_impl! were unsafe casts, rows renamed and merged)"
+reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures over a buffer's bytes (pod_view!: SIZE, at, put over hal::user's pod_from_bytes/pod_to_bytes; pod_at, pod_put), lifted from fs::msdosfs::bpb (N5.7c1) for its second and third users, cd9660 and udf; native items with no LZ source (LZ's byte_view! and from_bytes_impl! were unsafe casts, rows renamed and merged); N6.0: pod_at and pod_put moved to hal::pod::{at, put}, the macro over them"
 
 [[extra]]
 rust = "sys/kernel/fs/isofs/udf/testudf.rs"

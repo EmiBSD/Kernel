@@ -49,6 +49,8 @@
 //! - `pod.copy`: an IPv4 header (20 bytes, an `abi_pod!` image) copied out of a packet's
 //!   bytes at offset 16, one field changed, written back: the C's `m_copydata` and
 //!   `m_copyback` of a header.
+//! - `pod.view`: the same two fields changed in place through `hal::pod::view_mut` (the C's
+//!   `mtod(m, struct ip *)`): the bounds and alignment checks, no copy.
 //! - `list.push`: one element pushed at the tail of an `OwnedList` (`TAILQ_INSERT_TAIL`); the
 //!   list drained between rounds, untimed.
 
@@ -67,7 +69,6 @@ use hal::owned::{OwnedEntry, OwnedList};
 use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
-use hal::user::{pod_from_bytes, pod_to_bytes};
 use kernel::testutil;
 
 /// Ops per repetition.
@@ -328,16 +329,6 @@ hal::owned_adapter!(
 /// The pool of `list.push`'s elements.
 static LIST_ELEMS: BoxPool<ListElem> = BoxPool::new();
 
-/// The `T` at byte `off` of `buf`, copied out (`kernel::fs::pod`'s `pod_at`).
-fn pod_at<T: hal::user::AbiPod>(buf: &[u8], off: usize) -> Option<T> {
-    pod_from_bytes(buf.get(off..)?)
-}
-
-/// `v` written at byte `off` of `buf` (`kernel::fs::pod`'s `pod_put`).
-fn pod_put<T: hal::user::AbiPod>(buf: &mut [u8], off: usize, v: &T) -> bool {
-    buf.get_mut(off..).is_some_and(|b| pod_to_bytes(v, b))
-}
-
 /// An object `smr.load` reads.
 struct SmrObj {
     link: SmrLink,
@@ -399,6 +390,7 @@ fn main() {
         "pool.get_put",
         "pool.get_put.sourced",
         "pod.copy",
+        "pod.view",
         "list.push",
     ];
     if args.first().map(String::as_str) == Some("list") {
@@ -555,10 +547,10 @@ fn main() {
         let r = measure(OPS, || {
             let t = Instant::now();
             for i in 0..OPS {
-                let mut ip: Ip = need(pod_at(black_box(&pkt), IP_OFF), "short packet");
+                let mut ip: Ip = need(hal::pod::at(black_box(&pkt), IP_OFF), "short packet");
                 ip.ip_ttl = ip.ip_ttl.wrapping_sub(1);
                 ip.ip_id = i as u16;
-                if !pod_put(black_box(&mut pkt), IP_OFF, &ip) {
+                if !hal::pod::put(black_box(&mut pkt), IP_OFF, &ip) {
                     eprintln!("net: short packet");
                     std::process::exit(1);
                 }
@@ -568,6 +560,22 @@ fn main() {
         report(names[8], r);
     }
     if wanted(names[9]) {
+        let mut pkt = vec![0u8; 128];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for i in 0..OPS {
+                let ip: &mut Ip = need(
+                    hal::pod::view_mut(black_box(&mut pkt), IP_OFF),
+                    "short or misaligned packet",
+                );
+                ip.ip_ttl = ip.ip_ttl.wrapping_sub(1);
+                ip.ip_id = i as u16;
+            }
+            t.elapsed()
+        });
+        report(names[9], r);
+    }
+    if wanted(names[10]) {
         let mut boxes: Vec<PoolBox<ListElem>> = (0..ELEMS)
             .map(|_| {
                 need(
@@ -595,7 +603,7 @@ fn main() {
             }
             d
         });
-        report(names[9], r);
+        report(names[10], r);
     }
 }
 /* </CODE> */

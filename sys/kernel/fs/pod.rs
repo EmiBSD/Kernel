@@ -28,9 +28,9 @@
 //! the boot sectors, the BPBs and the directory entries use) for their second and third
 //! users, cd9660 and udf (D-N5.8-4). Cost against the C's in-place access: one copy of the
 //! structure per view; a caller that needs one member of a large structure reads it at its
-//! offset instead (docs/IDIOMS.md, the row of the on-disk structures of byte fields).
-
-use hal::user::{AbiPod, pod_from_bytes, pod_to_bytes};
+//! offset instead (docs/IDIOMS.md, the row of the on-disk structures of byte fields). N6.0:
+//! the macro's two functions are `hal::pod::{at, put}` (where the network stack's in-place
+//! views, `hal::pod::{view, view_mut}`, sit beside them).
 
 /// Gives an on-disk structure (a `hal::abi_pod!` of bytes) its views over a buffer's bytes:
 /// `SIZE`, `at(buf, off)` (the structure that starts at byte `off`, copied out; `None` when
@@ -45,13 +45,13 @@ macro_rules! pod_view {
             /// The structure that starts at byte `off` of `buf`, or `None` when `buf` is too
             /// short for it.
             pub fn at(buf: &[u8], off: usize) -> Option<$t> {
-                $crate::fs::pod::pod_at(buf, off)
+                ::hal::pod::at(buf, off)
             }
 
             /// Writes `v` at byte `off` of `buf`; `false` (nothing written) when `buf` is too
             /// short for it.
             pub fn put(buf: &mut [u8], off: usize, v: &$t) -> bool {
-                $crate::fs::pod::pod_put(buf, off, v)
+                ::hal::pod::put(buf, off, v)
             }
         }
 
@@ -59,26 +59,11 @@ macro_rules! pod_view {
     };
 }
 pub(crate) use pod_view;
-
-/// [`pod_view!`]'s `at`: the `T` at byte `off` of `buf`, copied out.
-pub fn pod_at<T: AbiPod>(buf: &[u8], off: usize) -> Option<T> {
-    pod_from_bytes(buf.get(off..)?)
-}
-
-/// [`pod_view!`]'s `put`: `v` written at byte `off` of `buf`.
-pub fn pod_put<T: AbiPod>(buf: &mut [u8], off: usize, v: &T) -> bool {
-    match buf.get_mut(off..) {
-        Some(b) => pod_to_bytes(v, b),
-        None => false,
-    }
-}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// A three-byte image, as the file systems declare theirs.
     #[repr(C)]
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,7 +89,10 @@ mod tests {
         assert!(!Three::put(&mut buf, 2, &v));
         assert!(!Three::put(&mut buf, 5, &v));
         assert_eq!(buf, [9, 8, 7, 4]);
-        assert_eq!(pod_at::<Three>(&buf, 1), Some(Three { a: 8, b: [7, 4] }));
+        assert_eq!(
+            hal::pod::at::<Three>(&buf, 1),
+            Some(Three { a: 8, b: [7, 4] })
+        );
     }
 }
 /* </TESTS> */
