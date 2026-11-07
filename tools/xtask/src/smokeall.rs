@@ -49,6 +49,18 @@
 //!   xtask, QEMU, swtpm) with SIGKILL, appends the cause to the log, and reports the recipe as
 //!   `TIMEOUT`, a failure, while the others go on.
 //!
+//! - `EMIBSD_XTASK` ([`XTASK_ENV`]): the recipes run xtask as `{{xtask}}` (the justfile),
+//!   which is `cargo xtask` alone and, under `smoke-all`, a copy of this very binary made once
+//!   in `target/smoke/bin/` before any recipe starts ([`private_xtask`]). `cargo xtask`
+//!   deletes and rewrites `target/debug/xtask` on every run, even when nothing is rebuilt, and
+//!   macOS's syspolicyd checks each exec of an ad-hoc signed binary by its path, after the
+//!   exec: when one recipe's `cargo` replaced the file while another's had just exec'd it,
+//!   syspolicyd found it gone and Gatekeeper killed the new process (`Terminating process due
+//!   to Gatekeeper rejection`, signal 9: smoke-efiboot, 2026-11-06), or read it half-written
+//!   and crashed (SIGSEGV in `Security::Universal::architecture()`), and the exec it was
+//!   checking then waited in `_dyld_start` forever (smoke-wg's still log, 2026-11-05). The
+//!   copy is never rewritten while the recipes run.
+//!
 //! The rest of what runs at once was made per run before: `smoke2`'s link ports are free
 //! ports asked of the system (and asked again if QEMU finds one taken), its VMs have their
 //! own `-a`/`-b` files. The HTTPS test servers' ports are fixed, but only `smoke-https` uses
@@ -80,6 +92,10 @@ const LIMIT_MARGIN: Duration = Duration::from_secs(300);
 
 /// A recipe whose log has not grown for this long is stopped (the user's figure).
 const QUIET_LIMIT: Duration = Duration::from_secs(600);
+
+/// The environment variable that hands the recipes the xtask binary to run (the justfile's
+/// `xtask` variable; the module documentation says why).
+pub const XTASK_ENV: &str = "EMIBSD_XTASK";
 
 /// A recipe's boot limits when `just --dry-run` shows none (it failed, or the recipe boots
 /// through something else): one hour, before the scale.
@@ -174,6 +190,7 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
         return Err("smoke-all: no recipes given".into());
     }
     let base = root.join("target").join("smoke");
+    let xtask = private_xtask(&base)?;
     let scale = timeout_scale(jobs);
     let queue: VecDeque<String> = order(&base, recipes).into_iter().collect();
     let total = queue.len();
@@ -191,14 +208,15 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
         let root = root.to_path_buf();
         let base = base.clone();
         let just_bin = just_bin.to_string();
+        let xtask = xtask.clone();
         workers.push(thread::spawn(move || {
             loop {
                 let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                 let Some(recipe) = next else {
                     break;
                 };
-                let limit = recipe_limit(&root, &just_bin, &recipe, scale);
-                let done = run_recipe(&root, &base, &just_bin, &recipe, scale, limit);
+                let limit = recipe_limit(&root, &just_bin, &xtask, &recipe, scale);
+                let done = run_recipe(&root, &base, &just_bin, &xtask, &recipe, scale, limit);
                 if tx.send(done).is_err() {
                     break;
                 }
@@ -297,6 +315,21 @@ pub fn smoke_all(root: &Path, jobs: usize, just_bin: &str, recipes: &[&str]) -> 
     }
 }
 
+/// Copies the running xtask (`target/debug/xtask`, which no recipe has run yet) to
+/// `base/bin/xtask`, the binary the recipes run through [`XTASK_ENV`]: written under a
+/// temporary name and renamed into place, so the path never names a partial file.
+fn private_xtask(base: &Path) -> Result<PathBuf> {
+    let me = std::env::current_exe().map_err(|e| format!("smoke-all: this xtask's path: {e}"))?;
+    let dir = base.join("bin");
+    fs::create_dir_all(&dir).map_err(|e| format!("smoke-all: {}: {e}", dir.display()))?;
+    let tmp = dir.join(format!("xtask.{}", std::process::id()));
+    let dest = dir.join("xtask");
+    fs::copy(&me, &tmp)
+        .map_err(|e| format!("smoke-all: {} -> {}: {e}", me.display(), tmp.display()))?;
+    fs::rename(&tmp, &dest).map_err(|e| format!("smoke-all: {}: {e}", dest.display()))?;
+    Ok(dest)
+}
+
 /// The closing line: as ever when no boot was skipped; with skips (decision 44) the recipes
 /// that booted nothing are counted apart, never as passed, and named like the failed ones.
 fn summary_line(
@@ -370,10 +403,11 @@ fn sort_longest_first(v: &mut [(String, Option<f32>)]) {
 
 /// The watchdog's limit for `recipe`: its boots' limits from `just --dry-run`
 /// ([`boot_limits`]) times `scale`, plus [`LIMIT_MARGIN`].
-fn recipe_limit(root: &Path, just_bin: &str, recipe: &str, scale: usize) -> Duration {
+fn recipe_limit(root: &Path, just_bin: &str, xtask: &Path, recipe: &str, scale: usize) -> Duration {
     let shown = Command::new(just_bin)
         .args(["--no-deps", "--dry-run", recipe])
         .current_dir(root)
+        .env(XTASK_ENV, xtask)
         .stdin(Stdio::null())
         .output();
     let boots = match shown {
@@ -392,8 +426,9 @@ fn recipe_limit(root: &Path, just_bin: &str, recipe: &str, scale: usize) -> Dura
 /// line: the limit is larger than needed, which is harmless.)
 ///
 /// The sum of the time limits of the boots in a recipe's commands: `boot::SMOKE_TIMEOUT` for
-/// each `xtask smoke`, its `--timeout` (or the same default) for each `xtask smoke2`. `None`
-/// when there is no boot.
+/// each `xtask smoke`, its `--timeout` (or the same default) for each `xtask smoke2`, xtask
+/// being `cargo xtask` or the path of the binary, quoted or not ([`XTASK_ENV`]). `None` when
+/// there is no boot.
 fn boot_limits(commands: &str) -> Option<Duration> {
     let mut sum = Duration::ZERO;
     let mut boots = 0;
@@ -401,7 +436,7 @@ fn boot_limits(commands: &str) -> Option<Duration> {
         let mut words = line.split_whitespace();
         let Some(cmd) = words
             .by_ref()
-            .skip_while(|w| *w != "xtask")
+            .skip_while(|w| !is_xtask(w))
             .nth(1)
             .filter(|c| *c == "smoke" || *c == "smoke2")
         else {
@@ -422,6 +457,12 @@ fn boot_limits(commands: &str) -> Option<Duration> {
         boots += 1;
     }
     (boots > 0).then_some(sum)
+}
+
+/// `cargo xtask`'s second word, or the path of an xtask binary (`'/k/target/smoke/bin/xtask'`).
+fn is_xtask(word: &str) -> bool {
+    let word = word.trim_matches('\'');
+    word == "xtask" || word.ends_with("/xtask")
 }
 
 /// Why the watchdog stops a recipe that has run `elapsed` with a log still for `quiet`, if
@@ -504,6 +545,7 @@ fn run_recipe(
     root: &Path,
     base: &Path,
     just_bin: &str,
+    xtask: &Path,
     recipe: &str,
     scale: usize,
     limit: Duration,
@@ -544,6 +586,7 @@ fn run_recipe(
         .current_dir(root)
         .env(boot::RUN_DIR_ENV, &dir)
         .env(boot::TIMEOUT_SCALE_ENV, scale.to_string())
+        .env(XTASK_ENV, xtask)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err))
@@ -707,6 +750,12 @@ mod tests {
         // 180 (a smoke's --timeout-like text is not smoke2's flag) + 400 + 180.
         assert_eq!(boot_limits(cmds), Some(Duration::from_secs(760)));
         assert_eq!(boot_limits("cargo xtask smoke-all -j 4 smoke-a\n"), None);
+        // Under smoke-all the recipes run the private copy, by its quoted path.
+        let copy = "'/k/target/smoke/bin/xtask' smoke --arch arm64\n\
+            /k/target/smoke/bin/xtask smoke2 --arch arm64 --timeout 400\n\
+            '/k/target/smoke/bin/xtask' efiboot-disk --arch arm64\n";
+        assert_eq!(boot_limits(copy), Some(Duration::from_secs(580)));
+        assert_eq!(boot_limits("'/k/bin/notxtask' smoke --arch arm64\n"), None);
         assert_eq!(boot_limits("echo nothing\n"), None);
     }
 
@@ -754,6 +803,7 @@ mod tests {
             &dir,
             &dir,
             just.to_str().unwrap(),
+            Path::new("/nonexistent/xtask"),
             "smoke-hang",
             1,
             Duration::from_secs(2),
