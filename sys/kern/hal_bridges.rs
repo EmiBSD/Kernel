@@ -47,7 +47,6 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
 use hal::malloc::Malloc;
-use hal::netlock::NetLock;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
 
@@ -292,25 +291,6 @@ impl Printf for BsdPrintf {
     }
 }
 
-/// `NET_LOCK`, `NET_UNLOCK` and `rw_status(&netlock) == RW_WRITE` (`sys/net/if.rs`), for the
-/// vnode pager's `uvn_io` (N3.4e).
-struct BsdNetLock;
-
-impl NetLock for BsdNetLock {
-    fn write_held(&self) -> bool {
-        crate::kern::kern_rwlock::rw_status(&crate::net::if_::NETLOCK)
-            == crate::sys::rwlock::RW_WRITE
-    }
-
-    fn unlock(&self) {
-        crate::sys::systm::net_unlock();
-    }
-
-    fn lock(&self) {
-        crate::sys::systm::net_lock();
-    }
-}
-
 /// The kernel's scheduler as `hal::sleep`'s sleeps (`kernel::sched::KernelSleep`).
 static KERNEL_SLEEP: kernel::sched::KernelSleep<crate::kern::proc_glue::BsdProcGlue> =
     kernel::sched::KernelSleep::new();
@@ -326,7 +306,6 @@ static BSD_PRINTF: BsdPrintf = BsdPrintf;
 #[cfg(all(machine_x86, feature = "multiprocessor"))]
 static BSD_TLB_CPUS: BsdTlbCpus = BsdTlbCpus;
 static BSD_RANDOM: BsdRandom = BsdRandom;
-static BSD_NET_LOCK: BsdNetLock = BsdNetLock;
 
 /// The machine's clock hardware (`crate::machine::cpu`'s `cpu_initclocks`, `cpu_startclock`,
 /// `setstatclockrate` and `delay`: arm64's `arm_clock_func`, whose first registration wins,
@@ -414,12 +393,6 @@ pub fn hal_bridges_register() {
         let _ = hal::bridges::register_tlb_cpus(&BSD_TLB_CPUS);
         TLB_CPUS_REGISTERED.store(true, Ordering::Release);
     }
-}
-
-/// Registers the bridge of the kernel's vnode pager (`NetLock`; the kernel lock is `hal`'s own),
-/// once: called by `uvm_init` before the first object is made (bridges.toml).
-pub fn hal_bridges_register_vm() {
-    let _ = hal::bridges::register_net_lock(&BSD_NET_LOCK);
 }
 
 /// Whether the TLB shootdown's CPUs are registered (always, once [`hal_bridges_register`]

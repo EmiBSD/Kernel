@@ -218,16 +218,6 @@ trait = "Intrclock"
 for = ["sys/kernel/clockintr.rs"]
 paid_by = "N7"
 
-# bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
-# pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);
-# implemented by sys/kern/hal_bridges.rs (BsdNetLock) and registered by bsd's uvm_init (N3.4e);
-# nobody holds it before registration. N6, with the network stack.
-# hal::netlock::NetLock
-[[bridge]]
-trait = "NetLock"
-for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
-paid_by = "N6"
-
 # bsd: struct vops, the operations table of each bsd file system (nfs,
 # ntfs and their special-file tables: statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each

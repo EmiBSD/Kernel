@@ -106,7 +106,6 @@ use crate::kern::subr_pool::pool_put;
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic, printf, splassert_fail};
 use crate::kern::uipc_mbuf::{m_free, m_get, m_pool_used, m_trailingspace};
 use crate::kern::uipc_socket::{SOCKET_POOL, soalloc, sorele, sorwakeup, sowwakeup};
-use crate::net::if_::NETLOCK;
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{
     M_DONTWAIT, M_EOR, M_EXT, M_PKTHDR, MAXMCLBYTES, MCLBYTES, MLEN, MSIZE, MT_CONTROL, MT_SONAME,
@@ -488,7 +487,7 @@ pub fn soassertlocked_readonly(so: &Socket) {
 /// `soassertlocked(so)`: the socket's locks are held to change its state.
 pub fn soassertlocked(so: &Socket) {
     if is_inet(so) {
-        if rw_status(&NETLOCK) == RW_READ {
+        if hal::netlock::status() == RW_READ {
             net_assert_locked("soassertlocked");
 
             if SPLASSERT_CTL.load(Ordering::Relaxed) > 0 && rw_status(&so.so_lock) != RW_WRITE {
@@ -512,11 +511,17 @@ pub fn sosleep_nsec(
     nsecs: u64,
 ) -> Result<(), Errno> {
     if is_inet(so) {
-        if rw_status(&NETLOCK) == RW_READ {
+        if hal::netlock::status() == RW_READ {
             rw_exit_write(&so.so_lock);
         }
-        let ret = rwsleep_nsec(ident, &NETLOCK, prio, wmesg, nsecs);
-        if rw_status(&NETLOCK) == RW_READ {
+        // rwsleep_nsec's KASSERT that `hal`'s sleep does not know (`nowake` is bsd's).
+        crate::kassert!(
+            !ptr::eq(ident, crate::kern::kern_synch::nowake())
+                || prio & PCATCH != 0
+                || nsecs != crate::sys::systm::INFSLP
+        );
+        let ret = hal::netlock::sleep_nsec(ident, prio, wmesg, nsecs);
+        if hal::netlock::status() == RW_READ {
             rw_enter_write(&so.so_lock);
         }
         ret

@@ -1258,7 +1258,7 @@ impl<G: ProcGlue> Klist<G> {
 
     /// `klist_invalidate`'s body, `p` the running thread (`curproc`).
     fn invalidate_as<W: Divisible>(&self, mut lock: impl FnMut() -> W, p: Option<&Thread<G>>) {
-        kassert!(!hal::netlock::net_lock_write_held());
+        kassert!(!hal::netlock::write_held());
 
         loop {
             let w = lock();

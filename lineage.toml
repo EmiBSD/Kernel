@@ -5810,7 +5810,8 @@ adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_syscalls.rs"
@@ -6292,7 +6293,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -11107,7 +11108,8 @@ notes = "N4.7a: the adapter of kernel::log's <sys/syslog.h> (every constant and 
 [[module]]
 rust = "sys/sys/systm.rs"
 lz = ["sys/sys/systm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/netlock.rs"]
 notes = "physmem only (defined here, filled by the machdeps; the C defines it per arch); the hostname/boottime globals, copyin/copyout, tsleep/wakeup and the other prototypes come with their files; M5-b2: cold and safepri (defined here like physmem), INFSLP, MAXTSLP; M6-a: struct sysent (Sysent::new for the generated table), sy_call_t (Result plus the retval registers), SY_NOLOCK, SCARG as sysargs; M6-b: sy_call_t takes &SysArgs (the six registers) and sysargs::<T> is safe; M7b: NET_LOCK/NET_UNLOCK/NET_LOCK_SHARED/NET_UNLOCK_SHARED and the NET_ASSERT_* (DIAGNOSTIC, splassert_ctl) as functions over netlock (defined in net/if_.rs), the assertions taking the caller's name for __func__; vfs stage 1: mountroot (MOUNTROOT, a StaticCell<Option<MountrootFn>> defined here like cold; NULL until setroot exists); ffs: rootdev as the ROOTDEV atomic (NODEV until setroot sets it); swapdev comes from the arch conf.c (machine::conf::swapdev); M11a: KERNEL_LOCK_INIT/KERNEL_LOCK/KERNEL_UNLOCK/KERNEL_ASSERT_LOCKED/KERNEL_ASSERT_UNLOCKED as kernel_lock_init()..kernel_assert_unlocked(), nothing without MULTIPROCESSOR; M11a: cond_signal"
 
 [[module]]
@@ -11637,11 +11639,6 @@ crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
-rust = "sys/hal/netlock.rs"
-crate = "hal"
-reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
-
-[[extra]]
 rust = "sys/hal/slot.rs"
 crate = "hal"
 reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl)"
@@ -11883,6 +11880,13 @@ crate = "hal"
 lz = ["sys/dev/rnd.rs"]
 status = "redesigned"
 notes = "N3.5 S1: arc4random(9) over the existing Random bridge (bsd's rnd.c generator; panic before registration) and arc4random_uniform(9) re-expressed over it with rnd.c's rejection of the low 2**32 % bound words; for the kernel's map and address selectors; sys/dev/rnd.rs keeps every LZ item for its legacy callers"
+
+[[module]]
+rust = "sys/hal/netlock.rs"
+crate = "hal"
+lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
+status = "redesigned"
+notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms (lock/unlock, lock_shared/unlock_shared over RawRwlock::held_write/held_read), rw_status(&netlock) (status, write_held) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported)"
 
 [[module]]
 rust = "sys/hal/rwlock.rs"

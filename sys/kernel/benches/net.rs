@@ -18,7 +18,7 @@
 
 /* <CODE> */
 //! Host microbenchmarks of the network stack's runtime in `hal` (decision 43 with U10, N6.0):
-//! the pool items, the byte views of the protocol headers and the owned lists the network
+//! the net lock, the pool items, the byte views of the protocol headers and the owned lists the network
 //! slices (N6.1-N6.7) build on, over the kernel's host doubles (`kernel::testutil`, feature
 //! `doubles`) and a recycling pool backend (vm.rs's: the doubles' pool hands out a fresh page
 //! per item). `sys/benches/net.rs` timed the net lock's and `smr(9)`'s rows on LZ's shape by
@@ -28,6 +28,12 @@
 //! with `--profile dev`. Arguments: `list`; the names of the benches to run (all by default).
 //!
 //! What an op is:
+//! - `netlock.write`: the net lock's write witness taken and dropped
+//!   (`hal::netlock::NETLOCK.write()`), a free lock, the one running thread.
+//! - `netlock.read`: its read witness taken and dropped (`NET_LOCK_SHARED()` and
+//!   `NET_UNLOCK_SHARED()`'s work).
+//! - `netlock.paired`: `hal::netlock::lock()` and `unlock()`, the C's `NET_LOCK()` and
+//!   `NET_UNLOCK()` (the witness forgotten, then resumed and dropped).
 //! - `pool.get_put`: a `BoxPool` item of an mbuf's size (256 bytes) taken and dropped (put
 //!   back), on the recycling backend.
 //! - `pod.copy`: an IPv4 header (20 bytes, an `abi_pod!` image) copied out of a packet's
@@ -46,6 +52,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use std::vec::Vec;
 
+use hal::netlock::{self, NETLOCK};
 use hal::owned::{OwnedEntry, OwnedList};
 use hal::pool::{BoxPool, PR_WAITOK, PoolBackend, PoolBox, RawPool};
 use hal::user::{pod_from_bytes, pod_to_bytes};
@@ -273,7 +280,14 @@ fn main() {
     let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
     testutil::install();
 
-    let names = ["pool.get_put", "pod.copy", "list.push"];
+    let names = [
+        "netlock.write",
+        "netlock.read",
+        "netlock.paired",
+        "pool.get_put",
+        "pod.copy",
+        "list.push",
+    ];
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
             println!("{n}");
@@ -305,14 +319,45 @@ fn main() {
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                let b = need(MBUFS.get(PR_WAITOK, || [0; MSIZE]), "no mbuf");
-                drop(black_box(b));
+                drop(black_box(NETLOCK.write()));
             }
             t.elapsed()
         });
         report(names[0], r);
     }
     if wanted(names[1]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(NETLOCK.read()));
+            }
+            t.elapsed()
+        });
+        report(names[1], r);
+    }
+    if wanted(names[2]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                netlock::lock();
+                netlock::unlock();
+            }
+            t.elapsed()
+        });
+        report(names[2], r);
+    }
+    if wanted(names[3]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let b = need(MBUFS.get(PR_WAITOK, || [0; MSIZE]), "no mbuf");
+                drop(black_box(b));
+            }
+            t.elapsed()
+        });
+        report(names[3], r);
+    }
+    if wanted(names[4]) {
         let mut pkt = vec![0u8; 128];
         let r = measure(OPS, || {
             let t = Instant::now();
@@ -327,9 +372,9 @@ fn main() {
             }
             t.elapsed()
         });
-        report(names[1], r);
+        report(names[4], r);
     }
-    if wanted(names[2]) {
+    if wanted(names[5]) {
         let mut boxes: Vec<PoolBox<ListElem>> = (0..ELEMS)
             .map(|_| {
                 need(
@@ -357,7 +402,7 @@ fn main() {
             }
             d
         });
-        report(names[2], r);
+        report(names[5], r);
     }
 }
 /* </CODE> */

@@ -14,67 +14,373 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * Copyright (c) 1982, 1986, 1989, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)if.h	8.1 (Berkeley) 6/10/93
+ */
+
+/*
+ * Copyright (C) 1995, 1996, 1997, and 1998 WIDE Project.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the project nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE PROJECT AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE PROJECT OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/*
+ * Copyright (c) 1980, 1986, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)if.c	8.3 (Berkeley) 1/4/94
+ */
+
+/*-
+ * Copyright (c) 1982, 1988, 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ * (c) UNIX System Laboratories, Inc.
+ * All or some portions of this file are derived from material licensed
+ * to the University of California by American Telephone and Telegraph
+ * Co. or Unix System Laboratories, Inc. and are reproduced herein with
+ * the permission of UNIX System Laboratories, Inc.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)systm.h	8.4 (Berkeley) 2/23/94
+ */
 /* </LICENSES> */
 
 /* <CODE> */
-//! The network lock (`NET_LOCK()`, `NET_UNLOCK()` and `rw_status(&netlock)` of
-//! `<sys/systm.h>`), as the kernel crate needs it while the network stack is `bsd`'s.
+//! The network lock: `if.c`'s `struct rwlock netlock` and `<sys/systm.h>`'s `NET_LOCK()`,
+//! `NET_UNLOCK()`, `NET_LOCK_SHARED()`, `NET_UNLOCK_SHARED()` and `rw_status(&netlock)`.
+//! "Network stack data structures are, unless stated otherwise, protected by the
+//! `NET_LOCK()`. It's a single non-recursive lock for the whole subsystem." The shared form
+//! is for the "softnet" thread and for a read-only `ioctl(2)`/`sysctl(2)` or a socket call
+//! that has locks of its own for what it changes: never where a member the net lock guards
+//! (`[N]`) is written.
 //!
-//! The lock is `bsd`'s `netlock` (`sys/net/if.rs`), reached through the [`NetLock`] bridge,
-//! registered by `bsd` at boot (bridges.toml; paid by N6, when the network stack moves). The
-//! vnode pager (`kernel::vm::vnode`'s `uvn_io`) lets go of it around the vnode layer when the
-//! faulting process holds it (a fault in `copyin()` or `copyout()` in the network stack).
+//! Upstream: sys/net/if.h @ 3ce1f3f79392
+//! Upstream: sys/net/if.c @ 3ce1f3f79392
+//! Upstream: sys/sys/systm.h @ 3ce1f3f79392
+//! LZ: sys/net/if_.rs@3c62ede68802
+//! LZ: sys/sys/systm.rs@3c62ede68802
 //!
-//! **Before registration** (early boot, the host tests that register none): there is no
-//! network stack, so nobody holds the lock; taking and releasing it do nothing.
+//! [`NETLOCK`] is the one lock object, `hal`'s since N6.0 (it was `sys/net/if_.rs`'s, reached
+//! by the kernel crate through a bridge). New code takes it through its witnesses
+//! (`NETLOCK.write()`, `NETLOCK.read()`), whose `Guarded` cells key to it
+//! (`Guarded::new_static(&NETLOCK, ..)`, N6.2's socket members). The C's call style, a lock
+//! taken in one function and released in another (`NET_LOCK()` in `soo_ioctl`,
+//! `NET_UNLOCK()` deep in `ifioctl`; the vnode pager letting go of the lock a faulting
+//! process holds), is [`lock`]/[`unlock`] and [`lock_shared`]/[`unlock_shared`]: the
+//! witness forgotten when the lock is taken and resumed when it is released
+//! (`RawRwlock::held_write`, `RawRwlock::held_read`), exactly once; a release of a lock this
+//! process does not hold is `panic(9)`, the C's `rw_exit` diagnostic.
+//!
+//! ## Deviations
+//! - The lock carries no `dt(4)` trace index (`rw_init_flags_trace(.., DT_RWLOCK_IDX_NETLOCK)`):
+//!   `dt(4)` is not ported (`sys/dev/dt` is absent; `bsd`'s `rwl_traceidx` is never read).
+//! - `NET_ASSERT_LOCKED()`, `NET_ASSERT_LOCKED_EXCLUSIVE()` and `NET_ASSERT_UNLOCKED()` are not
+//!   here: the C reports a failure through `splassert_fail()` under `splassert_ctl`, both
+//!   `bsd`'s (`kern/subr_prf.rs`), out of `hal`'s reach; `bsd`'s three wrappers
+//!   (`sys/sys/systm.rs`) make the C's tests over [`status`] and report through them. The
+//!   kernel's first caller (N6.2) decides their shape.
 //!
 //! ## Redesign
-//! - Not a port: the C names `netlock` directly; the kernel crate reaches it through one trait
-//!   object until the network stack moves in (docs/ZERO_UNSAFE.md section 0.3.2).
+//! - LZ's `pub static NETLOCK: Rwlock` in `sys/net/if_.rs` (`bsd`'s `rwlock(9)`), reached by
+//!   the kernel crate through the `NetLock` bridge (N3.4c-N5) -> `hal`'s [`RawRwlock`], so
+//!   the kernel's network code (N6.1-N6.7) and `bsd`'s 50 callers share one lock and one
+//!   protocol, and the kernel's cells can key to it; the bridge and its registration are
+//!   gone. `bsd`'s seven `NET_*` wrappers keep their names over this module.
+//! - `rwsleep_nsec(ident, &netlock, ..)` (`sosleep_nsec`) is [`sleep_nsec`]: the holding
+//!   resumed in its mode, slept on, retaken in that mode and forgotten again.
 
-use crate::bridges;
+use core::mem;
 
-/// The network lock, as `bsd` registers it (one call each into `if.c`'s `netlock`).
-pub trait NetLock: Sync {
-    /// `rw_status(&netlock) == RW_WRITE`: the running process holds it for writing.
-    fn write_held(&self) -> bool;
-    /// `NET_UNLOCK()`.
-    fn unlock(&self);
-    /// `NET_LOCK()`.
-    fn lock(&self);
+use crate::assert::hal_panic;
+use crate::rwlock::{RW_WRITE, RawRwlock};
+use crate::sys::errno::Errno;
+
+/// `netlock`: serialize socket operations to ensure no new sleeping points are introduced
+/// in IP output paths.
+pub static NETLOCK: RawRwlock = RawRwlock::new("netlock");
+
+/// `rw_status(&netlock)`: `RW_WRITE` (this process writes), `RW_WRITE_OTHER`, `RW_READ` or 0
+/// (free); the values of `<sys/rwlock.h>`.
+#[inline]
+pub fn status() -> i32 {
+    NETLOCK.status()
 }
 
-/// `rw_status(&netlock) == RW_WRITE` (false before the bridge is registered).
-pub fn net_lock_write_held() -> bool {
-    bridges::net_lock().is_some_and(NetLock::write_held)
+/// `rw_status(&netlock) == RW_WRITE`: the running process holds the net lock for writing.
+#[inline]
+pub fn write_held() -> bool {
+    status() == RW_WRITE
 }
 
-/// `NET_UNLOCK()` (nothing before the bridge is registered).
-pub fn net_unlock() {
-    if let Some(b) = bridges::net_lock() {
-        b.unlock();
+/// `NET_LOCK()`: waits for the net lock and takes it for writing, the witness forgotten
+/// until [`unlock`].
+pub fn lock() {
+    mem::forget(NETLOCK.write());
+}
+
+/// `NET_UNLOCK()`: releases the net lock this process holds for writing (taken by [`lock`]).
+/// `panic(9)` when it does not hold it.
+pub fn unlock() {
+    match NETLOCK.held_write() {
+        Some(w) => drop(w),
+        None => not_held("exit write", status()),
     }
 }
 
-/// `NET_LOCK()` (nothing before the bridge is registered).
-pub fn net_lock() {
-    if let Some(b) = bridges::net_lock() {
-        b.lock();
+/// `NET_LOCK_SHARED()`: waits for the net lock and takes it shared, the witness forgotten
+/// until [`unlock_shared`].
+pub fn lock_shared() {
+    mem::forget(NETLOCK.read());
+}
+
+/// `NET_UNLOCK_SHARED()`: releases one shared holding of the net lock (taken by
+/// [`lock_shared`]). `panic(9)` when no reader holds it.
+pub fn unlock_shared() {
+    match NETLOCK.held_read() {
+        Some(r) => drop(r),
+        None => not_held("exit read", status()),
     }
+}
+
+/// `rwsleep_nsec(ident, &netlock, prio, wmesg, nsecs)`: sleeps on `ident` with the net lock
+/// released, then takes it again in the mode this process held it in (written or shared)
+/// before returning the sleep's result (`EWOULDBLOCK` after `nsecs`; `EINTR`/`ERESTART` on a
+/// signal with `PCATCH`). `panic(9)` when this process holds it in neither mode
+/// (`rw_assert_anylock`).
+pub fn sleep_nsec<I: ?Sized>(
+    ident: *const I,
+    prio: i32,
+    wmesg: &'static str,
+    nsecs: u64,
+) -> Result<(), Errno> {
+    if let Some(mut w) = NETLOCK.held_write() {
+        let r = w.sleep_nsec(ident, prio, wmesg, nsecs);
+        mem::forget(w);
+        r
+    } else if let Some(mut rd) = NETLOCK.held_read() {
+        let r = rd.sleep_nsec(ident, prio, wmesg, nsecs);
+        mem::forget(rd);
+        r
+    } else {
+        not_held("rwsleep", status())
+    }
+}
+
+/// The `panic(9)` of a release or a sleep without the holding it needs.
+#[cold]
+fn not_held(what: &str, status: i32) -> ! {
+    hal_panic(format_args!(
+        "netlock rwlock {:p}: {what} when lock not held (status {status:#x})",
+        &raw const NETLOCK
+    ))
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::thread;
+
     use super::*;
+    use crate::rwlock::{RW_READ, RW_WRITE_OTHER};
+    use crate::sleep::INFSLP;
+    use crate::testutil;
+
+    /// The tests take the one static lock: one at a time.
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
-    fn before_registration_nobody_holds_the_net_lock() {
-        // hal's own tests register no network lock: there is no network stack.
-        assert!(!net_lock_write_held());
-        net_lock();
-        net_unlock();
+    fn the_witness_forms_and_the_status() {
+        testutil::install();
+        let _s = serial();
+        assert_eq!(status(), 0);
+        let w = NETLOCK.write();
+        assert_eq!(status(), RW_WRITE);
+        assert!(write_held());
+        thread::scope(|s| {
+            s.spawn(|| assert_eq!(status(), RW_WRITE_OTHER));
+        });
+        drop(w);
+        let r = NETLOCK.read();
+        // Two readers at once, on two threads.
+        thread::scope(|s| {
+            s.spawn(|| {
+                let r2 = NETLOCK.read();
+                assert_eq!(status(), RW_READ);
+                drop(r2);
+            });
+        });
+        assert_eq!(status(), RW_READ);
+        assert!(!write_held());
+        drop(r);
+        assert_eq!(status(), 0);
+    }
+
+    #[test]
+    fn lock_and_unlock_round_trip() {
+        testutil::install();
+        let _s = serial();
+        lock();
+        assert!(write_held());
+        unlock();
+        assert_eq!(status(), 0);
+        assert!(NETLOCK.held_write().is_none(), "nothing left to resume");
+        lock_shared();
+        lock_shared();
+        assert_eq!(status(), RW_READ);
+        unlock_shared();
+        unlock_shared();
+        assert_eq!(status(), 0);
+    }
+
+    #[test]
+    fn a_second_unlock_panics() {
+        testutil::install();
+        let _s = serial();
+        lock();
+        unlock();
+        let r = std::panic::catch_unwind(unlock);
+        assert!(r.is_err(), "NET_UNLOCK() of a lock not held");
+        assert_eq!(status(), 0);
+    }
+
+    #[test]
+    fn an_unlock_by_another_process_panics() {
+        testutil::install();
+        let _s = serial();
+        lock();
+        let other = thread::scope(|s| s.spawn(|| std::panic::catch_unwind(unlock).is_err()).join());
+        assert!(matches!(other, Ok(true)), "only the holder releases it");
+        assert!(write_held(), "still ours");
+        unlock();
+    }
+
+    #[test]
+    fn a_sleep_keeps_the_mode_it_found() {
+        testutil::install();
+        let _s = serial();
+        let ident = 0u8;
+        lock();
+        assert_eq!(
+            sleep_nsec(&raw const ident, 0, "nettest", 1_000_000),
+            Err(Errno::EWOULDBLOCK)
+        );
+        assert!(write_held(), "taken again for writing");
+        unlock();
+        lock_shared();
+        assert_eq!(
+            sleep_nsec(&raw const ident, 0, "nettest", 1_000_000),
+            Err(Errno::EWOULDBLOCK)
+        );
+        assert_eq!(status(), RW_READ, "taken again shared");
+        unlock_shared();
+        assert_eq!(status(), 0);
+        let r = std::panic::catch_unwind(|| sleep_nsec(&raw const ident, 0, "nettest", INFSLP));
+        assert!(r.is_err(), "a sleep without the lock");
     }
 }
 /* </TESTS> */

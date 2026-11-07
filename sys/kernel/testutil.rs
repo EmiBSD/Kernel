@@ -49,7 +49,6 @@
 //! - `Printf`: every line formatted into one buffer the tests read ([`printf_count`]).
 //! - The kernel lock is `hal::klock`'s own since N4.5c, a per-thread depth on the host (no
 //!   exclusion; the tests that take it hold [`MEMORY`]); [`kernel_lock_depth`] reads it.
-//! - `NetLock`: a per-thread "held for writing" flag ([`net_lock_set`], [`net_lock_held`]).
 //! - The soft interrupts are `hal::softintr`'s own (no bridge since N4.5c).
 //! - The clocks are not a double since N5.0: `kernel::tc`'s readers on its dummy counter (a
 //!   microsecond more per read at its nominal 1 MHz), whose timehands nothing winds up but a
@@ -96,7 +95,6 @@ use hal::intr::IntrHardware;
 use hal::kmbuf::{PageKind, PageMemory};
 use hal::link::Link;
 use hal::malloc::Malloc;
-use hal::netlock::NetLock;
 use hal::pmap::BootstrapParams;
 use hal::pool::{PoolBackend, RawPool};
 use hal::prf::Printf;
@@ -143,7 +141,6 @@ std::thread_local! {
     static POOL_WATCH: Cell<Option<(&'static str, u64)>> = const { Cell::new(None) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
-    static NET_HELD: Cell<bool> = const { Cell::new(false) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 
@@ -495,35 +492,6 @@ pub fn kernel_lock_depth() -> u32 {
     hal::klock::depth()
 }
 
-/// The network lock double.
-struct TestNetLock;
-
-impl NetLock for TestNetLock {
-    fn write_held(&self) -> bool {
-        NET_HELD.with(Cell::get)
-    }
-
-    fn unlock(&self) {
-        NET_HELD.with(|h| h.set(false));
-    }
-
-    fn lock(&self) {
-        NET_HELD.with(|h| h.set(true));
-    }
-}
-
-/// Says whether this thread holds the network lock double for writing.
-pub fn net_lock_set(held: bool) {
-    NET_HELD.with(|h| h.set(held));
-}
-
-/// Whether this thread holds the network lock double for writing.
-pub fn net_lock_held() -> bool {
-    NET_HELD.with(Cell::get)
-}
-
-static TEST_NET_LOCK: TestNetLock = TestNetLock;
-
 /// The kernel thread double: a thread is a host thread that starts holding the kernel lock
 /// double (as a kernel thread starts under the kernel lock); a deferred creation runs at once
 /// in this crate's tests (the install runs `kthread_run_deferred_queue`) and waits, never run,
@@ -730,7 +698,7 @@ impl VnodeOps for MemVnode {
                 .uvn
                 .get()
                 .is_some_and(|u| u.object().lock().status() != 0),
-            net_locked: hal::netlock::net_lock_write_held(),
+            net_locked: hal::netlock::write_held(),
             kernel_locked: kernel_lock_depth() > 0,
             vnode_locked: self.nlocked() > 0,
         });
@@ -873,7 +841,6 @@ pub fn install() {
         let malloc = bridges::register_malloc(&TEST_MALLOC).is_ok();
         let _ = MEMORY_DOUBLES.set(pools && malloc);
         let _ = bridges::register_printf(&TEST_PRINTF);
-        let _ = bridges::register_net_lock(&TEST_NET_LOCK);
         let _ = bridges::register_random(&TEST_RANDOM);
 
         // The clocks are kernel::tc's readers (N5.0): the dummy counter, a microsecond per
