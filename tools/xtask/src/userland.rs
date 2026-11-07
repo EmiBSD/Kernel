@@ -1109,7 +1109,15 @@ impl Job {
             .all(|d| d.as_os_str() == "-" || mtime(d).is_some_and(|m| m <= t))
     }
 
+    /// Runs the commands, after removing a target that is a symbolic link. A job only runs when
+    /// `up_to_date` said no, and that follows the link: a link left by an earlier build (a
+    /// dangling one, into a tree that moved, or one whose rule changed) would make OpenBSD's
+    /// `ln -s src $@` rules, which have no `-f`, fail with "File exists", and would make a
+    /// rule that writes `$@` write through the link into whatever it names.
     fn run(&self) -> std::result::Result<(), String> {
+        if fs::symlink_metadata(&self.target).is_ok_and(|m| m.file_type().is_symlink()) {
+            fs::remove_file(&self.target).map_err(|e| format!("{}: {e}", self.target.display()))?;
+        }
         for (cmd, ignore) in &self.commands {
             let mut sh = Command::new("/bin/sh");
             sh.arg("-c")
@@ -2339,6 +2347,44 @@ mod tests {
         for s in ["_exit", "main", "__start", "__libc_init"] {
             assert!(!is_compiler_builtin(s), "{s}");
         }
+    }
+
+    /// `just comp` over a tree built where the checkout used to be (N5 close): the rule
+    /// `ln -s src $@` runs again over the old, dangling link and must remake it.
+    #[test]
+    fn a_job_remakes_a_stale_symbolic_link() {
+        let dir = std::env::temp_dir().join(format!("emibsd-job-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("src.h"), "x").unwrap();
+        let target = dir.join("link.h");
+        std::os::unix::fs::symlink("/nonexistent/old-root/src.h", &target).unwrap();
+        let job = Job {
+            target: target.clone(),
+            cwd: dir.clone(),
+            commands: vec![(
+                format!("ln -s {} link.h", dir.join("src.h").display()),
+                false,
+            )],
+            deps: vec![dir.join("src.h")],
+            path: None,
+        };
+        assert!(!job.up_to_date());
+        job.run().unwrap();
+        assert_eq!(fs::read_link(&target).unwrap(), dir.join("src.h"));
+        assert!(job.up_to_date());
+        // A regular target is left to its rule, as before.
+        let plain = Job {
+            target: dir.join("plain"),
+            cwd: dir.clone(),
+            commands: vec![("echo y >> plain".to_string(), false)],
+            deps: Vec::new(),
+            path: None,
+        };
+        fs::write(dir.join("plain"), "x\n").unwrap();
+        plain.run().unwrap();
+        assert_eq!(fs::read_to_string(dir.join("plain")).unwrap(), "x\ny\n");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
