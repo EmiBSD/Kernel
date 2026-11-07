@@ -130,6 +130,14 @@
 //!   (N6.1's mbuf pages, their limit and DMA constraint its own), a safe trait over pages as
 //!   values; a backend that cannot take one makes no pool (the default), so a source is never
 //!   ignored. `PoolBox::pool` (crate-private) lets `hal::smr` check an item's pool.
+//! - N6.0: an item `bsd`'s legacy code holds by address for a while (N6.1's mbufs: a chain
+//!   handed to `bsd`'s `ip_output` and freed by `bsd`'s `m_freem`) is *parked*:
+//!   [`PoolBox::park`] gives the one handle up for the item's pointer and marks the item's
+//!   [`ParkWord`]; [`PoolBox::unpark`] makes the handle again from a reference to the item,
+//!   once, by a compare-and-swap of that word ([`Parkable`]: the type's one pool and its word,
+//!   which lies within the item). `park` returns a pointer, never a reference: safe code holds
+//!   none to a parked item, so the only references to it are those `bsd`'s own `unsafe` code
+//!   makes from the pointer (the `Buf` token's parking of N5.1, generalised).
 
 use core::any::TypeId;
 use core::cell::UnsafeCell;
@@ -138,7 +146,7 @@ use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
 use crate::bridges;
@@ -1269,6 +1277,34 @@ impl<T: Send + Sync + 'static> Drop for Last<T> {
     }
 }
 
+/// The parked mark of a [`Parkable`] item: 0 while a [`PoolBox`] owns it, 1 while it is
+/// parked ([`PoolBox::park`]). Valid all zero; written only by `hal`.
+pub struct ParkWord(AtomicU8);
+
+impl ParkWord {
+    /// An owned item's mark.
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+}
+
+impl Default for ParkWord {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An item that crosses into `bsd`'s legacy code by address and comes back
+/// ([`PoolBox::park`], [`PoolBox::unpark`]): its type's one pool, and its [`ParkWord`]
+/// (which must lie within the item: checked).
+pub trait Parkable: Send + Sync + Sized + 'static {
+    /// The pool every item of the type comes from (checked at [`PoolBox::park`]), which the
+    /// handle [`PoolBox::unpark`] makes puts it back into.
+    const POOL: &'static BoxPool<Self>;
+    /// The item's own mark.
+    fn park_word(&self) -> &ParkWord;
+}
+
 /// A pool of `T`s whose items have one owner each (`struct pool` sized for the type): a
 /// `static`, initialised once at boot. Its items are exactly `T`s (no count, no back
 /// pointer), handed out as [`PoolBox<T>`].
@@ -1542,6 +1578,66 @@ impl<T: 'static> PoolBox<T> {
             _owns: PhantomData,
         }
     }
+}
+
+impl<T: Parkable> PoolBox<T> {
+    /// Parks the item: the handle given up for the item's pointer, which `bsd`'s legacy code
+    /// keeps by address (a `struct mbuf *`), the item marked parked so that one
+    /// [`PoolBox::unpark`] can make the handle again. `panic(9)` for an item of another pool
+    /// than `T::POOL`, or whose mark lies outside it.
+    pub fn park(this: Self) -> NonNull<T> {
+        if !ptr::eq(this.pool, T::POOL) {
+            hal_panic(format_args!("PoolBox::park: an item of another pool"));
+        }
+        let w = check_word(&this);
+        if w.0
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            hal_panic(format_args!("PoolBox::park: an owned item marked parked"));
+        }
+        PoolBox::into_raw(this).0
+    }
+
+    /// The handle of a parked item back, from a reference to it (what `bsd` made of the
+    /// pointer [`PoolBox::park`] returned): once per park, by a compare-and-swap of its mark;
+    /// `None` for an item that is not parked (never parked, or unparked already: never a
+    /// second owner). The caller keeps no reference to the item after this (`bsd`'s
+    /// contract: its references come from the parked pointer, by its own `unsafe`).
+    pub fn unpark(parked: &'static T) -> Option<Self> {
+        let w = parked.park_word();
+        let start = ptr::from_ref(parked).addr();
+        let at = ptr::from_ref(w).addr();
+        if at < start || at + size_of::<ParkWord>() > start + size_of::<T>() {
+            hal_panic(format_args!("PoolBox::unpark: a mark outside the item"));
+        }
+        w.0.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        // SAFETY: the mark lies within `parked`'s bytes (checked) and was 1: only `park` stores
+        // 1 (the word's byte is private to `hal`), into the mark of the item it parks (checked
+        // within that item), so `parked` is an item that `park` gave up: its box consumed, its
+        // pointer returned and nothing put back (`into_raw` leaks the item; no handle of it
+        // existed since), an item of `T::POOL` (checked at `park`) whose value stayed
+        // initialised (no one frees or writes an item that is out: `RawPool`'s contract). The
+        // exchange to 0 that this call won is the only one per park, so this rebuilds the
+        // item's one handle exactly once (the pairing of `PoolBox::from_raw`'s contract with
+        // the `into_raw` of `park`). Safe code holds no reference to a parked item (`park`
+        // returns a pointer and consumed the handle, ending its borrows); `parked` itself was
+        // made by `bsd`'s `unsafe` code from that pointer, whose contract is to use no such
+        // reference once the item is unparked, so the handle's `&mut T` meets none.
+        Some(unsafe { PoolBox::from_raw(NonNull::from(parked), T::POOL) })
+    }
+}
+
+/// The mark of a [`Parkable`] item, checked to lie within it.
+fn check_word<T: Parkable>(b: &PoolBox<T>) -> &ParkWord {
+    let w = b.park_word();
+    let start = PoolBox::as_ptr(b).addr();
+    let at = ptr::from_ref(w).addr();
+    if at < start || at + size_of::<ParkWord>() > start + size_of::<T>() {
+        hal_panic(format_args!("PoolBox::park: a mark outside the item"));
+    }
+    w
 }
 
 impl<T: 'static> Deref for PoolBox<T> {
@@ -2722,6 +2818,101 @@ mod tests {
         assert_eq!(SRC.out.load(Ordering::SeqCst), 1);
         drop(h);
         assert_eq!(SRC.out.load(Ordering::SeqCst), 0);
+    }
+
+    /// A parkable item (an mbuf's shape: a byte of its header is its mark).
+    struct Pk {
+        v: u64,
+        mark: ParkWord,
+    }
+
+    static PKS: BoxPool<Pk> = BoxPool::new();
+
+    impl Parkable for Pk {
+        const POOL: &'static BoxPool<Pk> = &PKS;
+        fn park_word(&self) -> &ParkWord {
+            &self.mark
+        }
+    }
+
+    fn pk(v: u64) -> PoolBox<Pk> {
+        let _ = PKS.init(0, PR_WAITOK, "parkpl");
+        PKS.get(PR_WAITOK, || Pk {
+            v,
+            mark: ParkWord::new(),
+        })
+        .expect("an item")
+    }
+
+    #[test]
+    fn a_parked_item_comes_back_once_and_goes_back_to_its_pool() {
+        testutil::install();
+        let b = pk(7);
+        let before = PKS.nout();
+        let addr = PoolBox::as_ptr(&b);
+        let p = PoolBox::park(b);
+        assert_eq!(p.as_ptr().cast_const(), addr);
+        assert_eq!(PKS.nout(), before, "parked, still out of the pool");
+        // A leaked item is never parked: unpark refuses it.
+        let leaked: &'static Pk = PoolBox::leak(pk(8));
+        assert!(PoolBox::unpark(leaked).is_none());
+        // Back: once.
+        let twin: &'static Pk = leak_ref(p);
+        let back = PoolBox::unpark(twin).expect("the parked item");
+        assert_eq!(back.v, 7);
+        assert!(PoolBox::unpark(twin).is_none(), "unparked once");
+        drop(back);
+        assert_eq!(
+            PKS.nout(),
+            before,
+            "put back once (the leaked one stays out)"
+        );
+    }
+
+    /// The `&'static` `bsd`'s legacy code makes of a parked pointer, by its own `unsafe`.
+    fn leak_ref(p: NonNull<Pk>) -> &'static Pk {
+        // SAFETY (test): `p` is the pointer `park` returned for an item of `PKS`, alive (the
+        // pool's double frees only on `put`) and reached by no other reference.
+        unsafe { p.as_ref() }
+    }
+
+    #[test]
+    fn park_refuses_an_item_of_another_pool_and_unpark_a_mark_outside() {
+        testutil::install();
+        static OTHER: BoxPool<Pk> = BoxPool::new();
+        let _ = OTHER.init(0, PR_WAITOK, "otherpl");
+        let b = OTHER
+            .get(PR_WAITOK, || Pk {
+                v: 1,
+                mark: ParkWord::new(),
+            })
+            .expect("an item");
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| PoolBox::park(b))).is_err()
+        );
+        struct Stray {
+            _v: u64,
+        }
+        static STRAY_MARK: ParkWord = ParkWord::new();
+        static STRAYS: BoxPool<Stray> = BoxPool::new();
+        impl Parkable for Stray {
+            const POOL: &'static BoxPool<Stray> = &STRAYS;
+            fn park_word(&self) -> &ParkWord {
+                &STRAY_MARK
+            }
+        }
+        let _ = STRAYS.init(0, PR_WAITOK, "straypl");
+        let s = STRAYS.get(PR_WAITOK, || Stray { _v: 0 }).expect("an item");
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| PoolBox::park(s))).is_err(),
+            "a mark outside the item"
+        );
+        let leaked: &'static Stray =
+            PoolBox::leak(STRAYS.get(PR_WAITOK, || Stray { _v: 1 }).expect("an item"));
+        assert!(
+            std::panic::catch_unwind(|| PoolBox::unpark(leaked).is_some()).is_err(),
+            "unpark checks the mark too"
+        );
     }
 }
 /* </TESTS> */
