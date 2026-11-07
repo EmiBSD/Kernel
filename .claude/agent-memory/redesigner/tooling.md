@@ -263,3 +263,4 @@ metadata:
 - The worktree guard refuses a long python heredoc in one Bash call as "too complex"; write the script to a scratchpad file and run `python3 <abs path>` (N6.0).
 - A git archive extracted over an older one keeps the files the newer commit deleted: empty the tree (but its target/) before extracting, or tests compile a deleted module (N6.0 refresh.py).
 - An API that takes a `&'static T` rebuilt from a raw pointer (PoolBox::unpark) cannot get a row in a kernel bench: kernel and bench code forbid unsafe, so only bsd can make that reference; say so in the commit rather than faking the row (N6.0).
+- A new lz check refusal of hand-written impls of a hal trait (HAL_MACRO_TRAITS, N6.0) must exempt a bsd legacy trait of the same name (sys/sys/queue.rs's SlistAdapter): run lz check on the tree right after adding the rule, before committing.
