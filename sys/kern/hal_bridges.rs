@@ -457,5 +457,32 @@ mod tests {
         assert!(static_pool().is_none());
         assert_eq!(STATIC_POOLS_USED.load(Ordering::Relaxed), NSTATIC_POOLS);
     }
+
+    /// IDIOMS row 210 (20a738e7): an element aligned to `ALIGN(1)` (8) or less reaches
+    /// `pool_init` as 0, which makes it `ALIGN(1)`, so the item size is rounded to 8 whatever
+    /// the smaller alignment; a larger one is passed on and rounds the item to itself.
+    #[test]
+    fn create_passes_zero_for_an_alignment_of_eight_or_less() {
+        // The static pools may be gone (the test above takes them): the heap ones serve.
+        hal_bridges_heap_ready();
+        // (alignment asked, item size asked, item size the pool keeps)
+        let table: [(usize, usize, usize); 8] = [
+            (1, 100, 104),
+            (2, 100, 104),
+            (4, 100, 104),
+            (8, 100, 104),
+            (16, 100, 112),
+            (32, 100, 128),
+            (64, 100, 128),
+            (8, 510, 512),
+        ];
+        for (n, (align, size, want)) in table.into_iter().enumerate() {
+            let wchan = ["al0", "al1", "al2", "al3", "al4", "al5", "al6", "al7"][n];
+            let pool = BSD_POOLS
+                .create(size, align, 0, 0, wchan)
+                .expect("a pool is made");
+            assert_eq!(pool.size(), want, "align {align}, size {size}");
+        }
+    }
 }
 /* </TESTS> */
