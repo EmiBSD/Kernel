@@ -1403,7 +1403,12 @@ mod tests {
     use crate::tty::{TtyDevsw, register_ttydevsw};
     use hal::sys::stat::Stat;
 
-    /// The tests that use the global buffers (`LOG_MTX`) run one at a time.
+    /// The tests that use the global buffers (`LOG_MTX`) or the user memory from [`UMSG`] on
+    /// run one at a time. That memory is one array for the whole process: `kern.msgbuf`'s
+    /// copy writes over all of it, so a `sendsyslog` message laid there by a test running at
+    /// the same time would be overwritten between its `put_user` and the copyin.
+    /// `/dev/klog`'s own state ([`LogDev`]) needs no lock: it lives in the test glue's tables,
+    /// one per test thread.
     static BUFS: Mutex<()> = Mutex::new(());
 
     fn bufs() -> MutexGuard<'static, ()> {
@@ -1888,6 +1893,7 @@ mod tests {
 
     #[test]
     fn sendsyslog_without_syslogd_strips_the_priority_for_the_console_and_stashes() {
+        let _b = bufs();
         let p = setup(7106);
         let console: &'static Console = std::boxed::Box::leak(std::boxed::Box::new(Console {
             tty: true,
@@ -1936,6 +1942,7 @@ mod tests {
 
     #[test]
     fn sendsyslog_flushes_the_stash_to_syslogd_first_and_counts_what_it_dropped() {
+        let _b = bufs();
         let p = setup(7107);
         put_user(UMSG + 0x100, b"<14>m");
         // Fill the stash, then two more: dropped, counted with the first error and the pid.
