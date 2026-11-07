@@ -127,7 +127,9 @@ Always:
   boot is logged `SKIPPED (decision 44)`, counted apart by `smoke-all` and never green; the
   recipes and their amd64 expectations stay as they are for N10 (`EMIBSD_ARCHS=amd64,arm64`).
   Nothing of amd64 is written or fixed before N10; its tree is frozen at N9 and homologated at
-  N10 (docs/ROADMAP.md).
+  N10 (docs/ROADMAP.md). `userland` and `comp` follow `EMIBSD_ARCHS` since the user's decision
+  of 2026-11-07, and so do the smokes' own preconditions (an amd64 file is checked only when
+  amd64 is on).
 - Decision 31 (the user, 2026-10-16) cuts the repetitions: the host checks (`lz check`,
   `unsafe-report --check`, `hal-check`, `abi-check`, fmt, `cargo test -p xtask`) run once per
   branch, by the integrator on `main` after the merge; a branch is merged into `main` once per

@@ -607,7 +607,9 @@ impl<'a> Comp<'a> {
             }
         }
         let makefile = self.ctx.src.join(dir).join("Makefile");
-        let fresh = matches!((mtime(&manifest), mtime(&makefile)), (Some(m), Some(f)) if m >= f);
+        let fresh = matches!((mtime(&manifest), mtime(&makefile)), (Some(m), Some(f)) if m >= f)
+            && fs::read_to_string(&manifest)
+                .is_ok_and(|text| manifest_is_current(&text, &self.ctx.sysroot));
         if !fresh {
             let partial = shims.join("manifest.partial");
             let _ = fs::remove_file(&partial);
@@ -1230,12 +1232,47 @@ fn newest_mtime(dir: &Path) -> Result<Option<SystemTime>> {
     }
     Ok(newest)
 }
+
+/// Whether an `install(1)` record (`install_rule`'s `<target>.manifest`: per line `-d DEST` or
+/// `SRC DEST`) belongs to this build: every destination under `sysroot` and every source
+/// there. A tree built where the checkout used to be (or seeded from another checkout) keeps
+/// records that name the old paths; the rule then runs again and records this build's.
+fn manifest_is_current(text: &str, sysroot: &Path) -> bool {
+    text.lines().all(|line| {
+        line.split_once(' ').is_some_and(|(from, dest)| {
+            Path::new(dest).starts_with(sysroot) && (from == "-d" || Path::new(from).exists())
+        })
+    })
+}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `just comp` over target/comp built under the old checkout root (N5 close): its
+    /// `includes.manifest` named that root's sysroot and sources, and was taken as fresh.
+    #[test]
+    fn a_manifest_of_another_root_is_not_current() {
+        let dir = std::env::temp_dir().join(format!("emibsd-comp-manifest-{}", std::process::id()));
+        let sysroot = dir.join("sysroot");
+        fs::create_dir_all(&sysroot).unwrap();
+        fs::write(dir.join("cxxabi.h"), "x").unwrap();
+        let s = sysroot.display();
+        let src = dir.join("cxxabi.h");
+        let ok = format!(
+            "-d {s}//usr/include/c++/v1\n{} {s}//usr/include/c++/v1/cxxabi.h\n",
+            src.display()
+        );
+        assert!(manifest_is_current(&ok, &sysroot));
+        let old = "-d /old/root/target/comp/amd64/sysroot//usr/include/c++/v1\n";
+        assert!(!manifest_is_current(old, &sysroot));
+        let gone = format!("/old/root/reference/cxxabi.h {s}//usr/include/c++/v1/cxxabi.h\n");
+        assert!(!manifest_is_current(&gone, &sysroot));
+        assert!(!manifest_is_current("garbage\n", &sysroot));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn os_release_reads_sys_mk() {
