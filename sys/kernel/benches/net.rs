@@ -34,6 +34,13 @@
 //!   `NET_UNLOCK_SHARED()`'s work).
 //! - `netlock.paired`: `hal::netlock::lock()` and `unlock()`, the C's `NET_LOCK()` and
 //!   `NET_UNLOCK()` (the witness forgotten, then resumed and dropped).
+//! - `smr.read`: a read section opened and closed (`hal::smr::read()` and its drop: the
+//!   depth's load and store each way).
+//! - `smr.load`: `SmrPtr::load` of a published object inside one read section.
+//! - `smr.defer`: `hal::smr::defer_link` of an idle `'static` link on a CPU that is not idle
+//!   (`smr_call`): claimed and queued on the CPU's list at `splhigh`; between rounds,
+//!   untimed, the links are dispatched, collected, run (a call that does nothing) and made
+//!   idle again (`smr_init`).
 //! - `pool.get_put`: a `BoxPool` item of an mbuf's size (256 bytes) taken and dropped (put
 //!   back), on the recycling backend.
 //! - `pod.copy`: an IPv4 header (20 bytes, an `abi_pod!` image) copied out of a packet's
@@ -55,6 +62,8 @@ use std::vec::Vec;
 use hal::netlock::{self, NETLOCK};
 use hal::owned::{OwnedEntry, OwnedList};
 use hal::pool::{BoxPool, PR_WAITOK, PoolBackend, PoolBox, RawPool};
+use hal::rwlock::RawRwlock;
+use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
 use hal::user::{pod_from_bytes, pod_to_bytes};
 use kernel::testutil;
 
@@ -265,6 +274,42 @@ fn pod_put<T: hal::user::AbiPod>(buf: &mut [u8], off: usize, v: &T) -> bool {
     buf.get_mut(off..).is_some_and(|b| pod_to_bytes(v, b))
 }
 
+/// An object `smr.load` reads.
+struct SmrObj {
+    link: SmrLink,
+    value: u64,
+}
+
+/// The pool of `smr.load`'s object.
+static SMR_OBJS: BoxPool<SmrObj> = BoxPool::new();
+
+impl SmrLinked for SmrObj {
+    const POOL: &'static BoxPool<SmrObj> = &SMR_OBJS;
+    fn smr_link(&self) -> &SmrLink {
+        &self.link
+    }
+}
+
+/// The writers' lock of `smr.load`'s pointer.
+static BENCH_LOCK: RawRwlock = RawRwlock::new("benchsmr");
+
+/// The pointer `smr.load` reads.
+static PUBLISHED: SmrPtr<SmrObj> = SmrPtr::new_static(&BENCH_LOCK);
+
+/// The deferred function of `smr.defer`'s links.
+fn noop(_arg: *mut core::ffi::c_void) {}
+
+/// The bench's grace periods: no CPU but the bench's own.
+struct NoOtherCpu;
+
+impl CpuWalk for NoOtherCpu {
+    fn running(&self, _n: usize) -> bool {
+        false
+    }
+    fn peg(&self, _n: usize) {}
+    fn unpeg(&self) {}
+}
+
 fn need<T>(v: Option<T>, what: &str) -> T {
     v.unwrap_or_else(|| {
         eprintln!("net: {what}");
@@ -284,6 +329,9 @@ fn main() {
         "netlock.write",
         "netlock.read",
         "netlock.paired",
+        "smr.read",
+        "smr.load",
+        "smr.defer",
         "pool.get_put",
         "pod.copy",
         "list.push",
@@ -298,6 +346,7 @@ fn main() {
 
     if MBUFS.init(0, PR_WAITOK, "mbufpl").is_err()
         || LIST_ELEMS.init(0, PR_WAITOK, "benchlst").is_err()
+        || SMR_OBJS.init(0, PR_WAITOK, "benchsmr").is_err()
     {
         eprintln!("net: a pool could not be made");
         std::process::exit(1);
@@ -350,14 +399,79 @@ fn main() {
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                let b = need(MBUFS.get(PR_WAITOK, || [0; MSIZE]), "no mbuf");
-                drop(black_box(b));
+                drop(black_box(smr::read()));
             }
             t.elapsed()
         });
         report(names[3], r);
     }
     if wanted(names[4]) {
+        let mut w = BENCH_LOCK.write();
+        let old = PUBLISHED.store(
+            &mut w,
+            Some(need(
+                SMR_OBJS.get(PR_WAITOK, || SmrObj {
+                    link: SmrLink::new(),
+                    value: 7,
+                }),
+                "no object",
+            )),
+        );
+        drop(w);
+        drop(old);
+        let r = measure(OPS, || {
+            let g = smr::read();
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(PUBLISHED.load(black_box(&g)).map(|o| o.value));
+            }
+            let d = t.elapsed();
+            drop(g);
+            d
+        });
+        report(names[4], r);
+    }
+    if wanted(names[5]) {
+        let links: &'static [SmrLink] = Box::leak(
+            (0..ELEMS)
+                .map(|_| SmrLink::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let rounds = OPS / ELEMS;
+        let r = measure(rounds * ELEMS, || {
+            let mut d = Duration::ZERO;
+            for _ in 0..rounds {
+                let t = Instant::now();
+                for l in links {
+                    smr::defer_link(black_box(l), noop, std::ptr::null_mut());
+                }
+                d += t.elapsed();
+                // Dispatched, collected, run and made idle again, untimed.
+                smr::idle();
+                let b = smr::collect();
+                smr::grace_wait(&NoOtherCpu);
+                let _ = b.run();
+                for l in links {
+                    l.init();
+                }
+            }
+            d
+        });
+        report(names[5], r);
+    }
+    if wanted(names[6]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let b = need(MBUFS.get(PR_WAITOK, || [0; MSIZE]), "no mbuf");
+                drop(black_box(b));
+            }
+            t.elapsed()
+        });
+        report(names[6], r);
+    }
+    if wanted(names[7]) {
         let mut pkt = vec![0u8; 128];
         let r = measure(OPS, || {
             let t = Instant::now();
@@ -372,9 +486,9 @@ fn main() {
             }
             t.elapsed()
         });
-        report(names[4], r);
+        report(names[7], r);
     }
-    if wanted(names[5]) {
+    if wanted(names[8]) {
         let mut boxes: Vec<PoolBox<ListElem>> = (0..ELEMS)
             .map(|_| {
                 need(
@@ -402,7 +516,7 @@ fn main() {
             }
             d
         });
-        report(names[5], r);
+        report(names[8], r);
     }
 }
 /* </CODE> */

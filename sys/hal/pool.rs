@@ -1412,6 +1412,12 @@ impl<T: 'static> PoolBox<T> {
         unsafe { Pin::new_unchecked(&**self) }
     }
 
+    /// The pool the item goes back to (a container that knows its type's one pool checks it:
+    /// `hal::smr`).
+    pub(crate) fn pool(this: &Self) -> &'static BoxPool<T> {
+        this.pool
+    }
+
     /// Gives the handle up for the item's pointer (with the item's whole provenance) and its
     /// pool: whoever keeps them owns the item from now on and gives it back as a handle by
     /// [`PoolBox::from_raw`]. The item is not freed here; dropped, the pair leaks it. The

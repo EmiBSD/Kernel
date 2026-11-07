@@ -157,6 +157,7 @@ pub mod seqlock;
 pub mod sig;
 pub mod sleep;
 pub mod slot;
+pub mod smr;
 #[forbid(unsafe_code)]
 pub mod softintr;
 #[cfg(test)]
