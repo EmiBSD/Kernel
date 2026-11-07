@@ -213,14 +213,14 @@ pub fn sys_pipe2(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(
 /// `bsd`'s (`refreshcreds`, the pinned syscalls' check, pledge, the kernel lock rule) runs
 /// exactly as on the `Legacy` path, then the row's [`sys_pipe`] or [`sys_pipe2`], which call
 /// the kernel crate. The two paths cannot diverge. A number that is neither is `ENOSYS`.
-pub fn native_pipe2(nr: Register, fdp: usize, flags: Register) -> Result<(), i32> {
+pub fn native_pipe2(nr: Register, fdp: usize, flags: i32) -> Result<(), i32> {
     let Some(p) = curproc() else {
         panic(format_args!("pipe2: no curproc"));
     };
     if nr != SYS_pipe as Register && nr != SYS_pipe2 as Register {
         return Err(Errno::ENOSYS.as_i32());
     }
-    let args: SysArgs = [fdp as Register, flags, 0, 0, 0, 0];
+    let args: SysArgs = [fdp as Register, flags as Register, 0, 0, 0, 0];
     let mut rval: [Register; 2] = [0, 0];
     mi_syscall(p, nr, &SYSENT[nr as usize], &args, &mut rval).map_err(Errno::as_i32)
 }

@@ -47,8 +47,11 @@
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
-//! function, no state.
+//! function, no state. Every argument is read out of its register as the C's `SCARG` reads
+//! `syscalls.master`'s type, through the function of [`crate::scarg`] named after its family
+//! (`int`, `u_int`, `ptr`, `size_t`, `off_t`, `u_long`; N5 close, the abi casts).
 
+use crate::scarg::{int, off_t, ptr, size_t, u_int, u_long};
 use hal::api::KernelApi;
 use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
 
@@ -101,6 +104,10 @@ pub enum Sysent {
 pub const NATIVE: u32 = 170;
 
 /// What the ABI says about itself when it registers ([`crate::abi_init`]).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "SYS_MAXSYSCALL is 331; the compile-time check at the end of the code holds it within u32"
+)]
 pub const INFO: HandlerInfo = HandlerInfo {
     syscalls: SYS_MAXSYSCALL as u32,
     native: NATIVE,
@@ -309,17 +316,17 @@ pub fn dispatch(
 
 /// 101 = `pipe2(int *fdp, int flags)`: the kernel's pipe(2) with the flags.
 fn sys_pipe2(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.pipe2)(SYS_pipe2 as Register, args[0] as usize, args[1])
+    (api.pipe2)(SYS_pipe2 as Register, ptr(args[0]), int(args[1]))
 }
 
 /// 263 = `pipe(int *fdp)`: the kernel's pipe(2), no flags.
 fn sys_pipe(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.pipe2)(SYS_pipe as Register, args[0] as usize, 0)
+    (api.pipe2)(SYS_pipe as Register, ptr(args[0]), 0)
 }
 
 /// 17 = `break(char *nsize)`.
 pub fn sys_obreak(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.obreak)(SYS_break as Register, args[0] as usize)
+    (api.vm.obreak)(SYS_break as Register, ptr(args[0]))
 }
 
 /// 49 = `mmap(void *addr, size_t len, int prot, int flags, int fd, off_t pos)`: the
@@ -327,16 +334,16 @@ pub fn sys_obreak(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> 
 pub fn sys_mmap(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     let r = (api.vm.mmap)(
         SYS_mmap as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i32,
-        args[4] as i32,
-        args[5] as i64,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
+        int(args[3]),
+        int(args[4]),
+        off_t(args[5]),
     );
     match r {
         Ok(addr) => {
-            rval[0] = addr as Register;
+            rval[0] = addr.cast_signed();
             Ok(())
         }
         Err(e) => Err(e),
@@ -345,16 +352,16 @@ pub fn sys_mmap(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 
 /// 73 = `munmap(void *addr, size_t len)`.
 pub fn sys_munmap(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.munmap)(SYS_munmap as Register, args[0] as usize, args[1] as usize)
+    (api.vm.munmap)(SYS_munmap as Register, ptr(args[0]), size_t(args[1]))
 }
 
 /// 74 = `mprotect(void *addr, size_t len, int prot)`.
 pub fn sys_mprotect(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.mprotect)(
         SYS_mprotect as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
     )
 }
 
@@ -362,9 +369,9 @@ pub fn sys_mprotect(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -
 pub fn sys_madvise(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.madvise)(
         SYS_madvise as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
     )
 }
 
@@ -373,16 +380,16 @@ pub fn sys_madvise(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) ->
 pub fn sys_mquery(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     let r = (api.vm.mquery)(
         SYS_mquery as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i32,
-        args[4] as i32,
-        args[5] as i64,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
+        int(args[3]),
+        int(args[4]),
+        off_t(args[5]),
     );
     match r {
         Ok(addr) => {
-            rval[0] = addr as Register;
+            rval[0] = addr.cast_signed();
             Ok(())
         }
         Err(e) => Err(e),
@@ -393,9 +400,9 @@ pub fn sys_mquery(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 pub fn sys_kbind(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.kbind)(
         SYS_kbind as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as u64,
+        ptr(args[0]),
+        size_t(args[1]),
+        u_long(args[2]),
     )
 }
 
@@ -403,39 +410,35 @@ pub fn sys_kbind(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> S
 pub fn sys_pinsyscalls(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.pinsyscalls)(
         SYS_pinsyscalls as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        ptr(args[2]),
+        int(args[3]),
     )
 }
 
 /// 159 = `mimmutable(void *addr, size_t len)`.
 pub fn sys_mimmutable(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.mimmutable)(
-        SYS_mimmutable as Register,
-        args[0] as usize,
-        args[1] as usize,
-    )
+    (api.vm.mimmutable)(SYS_mimmutable as Register, ptr(args[0]), size_t(args[1]))
 }
 
 /// 203 = `mlock(const void *addr, size_t len)`.
 pub fn sys_mlock(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.mlock)(SYS_mlock as Register, args[0] as usize, args[1] as usize)
+    (api.vm.mlock)(SYS_mlock as Register, ptr(args[0]), size_t(args[1]))
 }
 
 /// 204 = `munlock(const void *addr, size_t len)`.
 pub fn sys_munlock(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.munlock)(SYS_munlock as Register, args[0] as usize, args[1] as usize)
+    (api.vm.munlock)(SYS_munlock as Register, ptr(args[0]), size_t(args[1]))
 }
 
 /// 250 = `minherit(void *addr, size_t len, int inherit)`.
 pub fn sys_minherit(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.minherit)(
         SYS_minherit as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
     )
 }
 
@@ -443,15 +446,15 @@ pub fn sys_minherit(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -
 pub fn sys_msync(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
     (api.vm.msync)(
         SYS_msync as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
     )
 }
 
 /// 271 = `mlockall(int flags)`.
 pub fn sys_mlockall(api: &'static KernelApi, args: &SysArgs, _rval: &mut Rval) -> SysResult {
-    (api.vm.mlockall)(SYS_mlockall as Register, args[0] as i32)
+    (api.vm.mlockall)(SYS_mlockall as Register, int(args[0]))
 }
 
 /// 272 = `munlockall(void)`.
@@ -463,9 +466,9 @@ pub fn sys_munlockall(api: &'static KernelApi, _args: &SysArgs, _rval: &mut Rval
 pub fn sys_read(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.read)(
         SYS_read as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
@@ -474,16 +477,16 @@ pub fn sys_read(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 pub fn sys_write(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.write)(
         SYS_write as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
 
 /// 6 = `close(int fd)`.
 pub fn sys_close(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.close)(SYS_close as Register, args[0] as i32, rval)
+    (api.fd.close)(SYS_close as Register, int(args[0]), rval)
 }
 
 /// 18 = `getdtablecount(void)`.
@@ -493,42 +496,37 @@ pub fn sys_getdtablecount(api: &'static KernelApi, _args: &SysArgs, rval: &mut R
 
 /// 41 = `dup(int fd)`.
 pub fn sys_dup(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.dup)(SYS_dup as Register, args[0] as i32, rval)
+    (api.fd.dup)(SYS_dup as Register, int(args[0]), rval)
 }
 
 /// 53 = `fstat(int fd, struct stat *sb)`.
 pub fn sys_fstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.fstat)(
-        SYS_fstat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.fd.fstat)(SYS_fstat as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 54 = `ioctl(int fd, u_long com, void *data)`.
 pub fn sys_ioctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.ioctl)(
         SYS_ioctl as Register,
-        args[0] as i32,
-        args[1] as u64,
-        args[2] as usize,
+        int(args[0]),
+        u_long(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
 
 /// 90 = `dup2(int from, int to)`.
 pub fn sys_dup2(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.dup2)(SYS_dup2 as Register, args[0] as i32, args[1] as i32, rval)
+    (api.fd.dup2)(SYS_dup2 as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 92 = `fcntl(int fd, int cmd, void *arg)`.
 pub fn sys_fcntl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.fcntl)(
         SYS_fcntl as Register,
-        args[0] as i32,
-        args[1] as i32,
-        args[2] as usize,
+        int(args[0]),
+        int(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
@@ -537,9 +535,9 @@ pub fn sys_fcntl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 pub fn sys_dup3(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.dup3)(
         SYS_dup3 as Register,
-        args[0] as i32,
-        args[1] as i32,
-        args[2] as i32,
+        int(args[0]),
+        int(args[1]),
+        int(args[2]),
         rval,
     )
 }
@@ -548,9 +546,9 @@ pub fn sys_dup3(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 pub fn sys_readv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.readv)(
         SYS_readv as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
         rval,
     )
 }
@@ -559,26 +557,26 @@ pub fn sys_readv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 pub fn sys_writev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.writev)(
         SYS_writev as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
         rval,
     )
 }
 
 /// 131 = `flock(int fd, int how)`.
 pub fn sys_flock(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.flock)(SYS_flock as Register, args[0] as i32, args[1] as i32, rval)
+    (api.fd.flock)(SYS_flock as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 169 = `pread(int fd, void *buf, size_t nbyte, off_t offset)`.
 pub fn sys_pread(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.pread)(
         SYS_pread as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as i64,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
+        off_t(args[3]),
         rval,
     )
 }
@@ -587,10 +585,10 @@ pub fn sys_pread(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 pub fn sys_pwrite(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.pwrite)(
         SYS_pwrite as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as i64,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
+        off_t(args[3]),
         rval,
     )
 }
@@ -599,10 +597,10 @@ pub fn sys_pwrite(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 pub fn sys_preadv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.preadv)(
         SYS_preadv as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i64,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        off_t(args[3]),
         rval,
     )
 }
@@ -611,47 +609,42 @@ pub fn sys_preadv(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 pub fn sys_pwritev(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.pwritev)(
         SYS_pwritev as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i64,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        off_t(args[3]),
         rval,
     )
 }
 
 /// 192 = `fpathconf(int fd, int name)`.
 pub fn sys_fpathconf(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.fpathconf)(
-        SYS_fpathconf as Register,
-        args[0] as i32,
-        args[1] as i32,
-        rval,
-    )
+    (api.fd.fpathconf)(SYS_fpathconf as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// 209 = `utrace(const char *label, const void *addr, size_t len)`.
 pub fn sys_utrace(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.fd.utrace)(
         SYS_utrace as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
 
 /// 287 = `closefrom(int fd)`.
 pub fn sys_closefrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.fd.closefrom)(SYS_closefrom as Register, args[0] as i32, rval)
+    (api.fd.closefrom)(SYS_closefrom as Register, int(args[0]), rval)
 }
 
 /// 71 = `select(int nd, fd_set *in, fd_set *ou, fd_set *ex, struct timeval *tv)`.
 pub fn sys_select(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.event.select)(
         SYS_select as Register,
-        args[0] as i32,
-        [args[1] as usize, args[2] as usize, args[3] as usize],
-        args[4] as usize,
+        int(args[0]),
+        [ptr(args[1]), ptr(args[2]), ptr(args[3])],
+        ptr(args[4]),
         rval,
     )
 }
@@ -661,10 +654,10 @@ pub fn sys_select(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 pub fn sys_kevent(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.event.kevent)(
         SYS_kevent as Register,
-        args[0] as i32,
-        (args[1] as usize, args[2] as i32),
-        (args[3] as usize, args[4] as i32),
-        args[5] as usize,
+        int(args[0]),
+        (ptr(args[1]), int(args[2])),
+        (ptr(args[3]), int(args[4])),
+        ptr(args[5]),
         rval,
     )
 }
@@ -674,10 +667,10 @@ pub fn sys_kevent(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 pub fn sys_ppoll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.event.ppoll)(
         SYS_ppoll as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as usize,
-        args[3] as usize,
+        ptr(args[0]),
+        u_int(args[1]),
+        ptr(args[2]),
+        ptr(args[3]),
         rval,
     )
 }
@@ -687,10 +680,10 @@ pub fn sys_ppoll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 pub fn sys_pselect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.event.pselect)(
         SYS_pselect as Register,
-        args[0] as i32,
-        [args[1] as usize, args[2] as usize, args[3] as usize],
-        args[4] as usize,
-        args[5] as usize,
+        int(args[0]),
+        [ptr(args[1]), ptr(args[2]), ptr(args[3])],
+        ptr(args[4]),
+        ptr(args[5]),
         rval,
     )
 }
@@ -699,9 +692,9 @@ pub fn sys_pselect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> 
 pub fn sys_poll(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.event.poll)(
         SYS_poll as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as i32,
+        ptr(args[0]),
+        u_int(args[1]),
+        int(args[2]),
         rval,
     )
 }
@@ -713,16 +706,16 @@ pub fn sys_kqueue(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> 
 
 /// 270 = `kqueue1(int flags)`.
 pub fn sys_kqueue1(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.event.kqueue1)(SYS_kqueue1 as Register, args[0] as i32, rval)
+    (api.event.kqueue1)(SYS_kqueue1 as Register, int(args[0]), rval)
 }
 
 /// 112 = `sendsyslog(const char *buf, size_t nbyte, int flags)`.
 pub fn sys_sendsyslog(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.sendsyslog)(
         SYS_sendsyslog as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
         rval,
     )
 }
@@ -732,19 +725,19 @@ pub fn sys_sendsyslog(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) 
 pub fn sys_sysctl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.sysctl)(
         SYS_sysctl as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as usize,
-        args[3] as usize,
-        args[4] as usize,
-        args[5] as usize,
+        ptr(args[0]),
+        u_int(args[1]),
+        ptr(args[2]),
+        ptr(args[3]),
+        ptr(args[4]),
+        size_t(args[5]),
         rval,
     )
 }
 
 /// 103 = `sigreturn(struct sigcontext *sigcntxp)`: `EJUSTRETURN` once the context is restored.
 pub fn sys_sigreturn(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.sigreturn)(SYS_sigreturn as Register, args[0] as usize, rval)
+    (api.sigreturn)(SYS_sigreturn as Register, ptr(args[0]), rval)
 }
 
 /// 83 = `futex(uint32_t *f, int op, int val, const struct timespec *timeout, uint32_t *g)`:
@@ -752,11 +745,11 @@ pub fn sys_sigreturn(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -
 pub fn sys_futex(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.futex)(
         SYS_futex as Register,
-        args[0] as usize,
-        args[1] as i32,
-        args[2] as i32,
-        args[3] as usize,
-        args[4] as usize,
+        ptr(args[0]),
+        int(args[1]),
+        int(args[2]),
+        ptr(args[3]),
+        ptr(args[4]),
         rval,
     )
 }
@@ -780,32 +773,27 @@ fn sys_vfork(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysRe
 
 /// `__tfork(const struct __tfork *param, size_t psize)`.
 fn sys_tfork(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.tfork)(
-        SYS___tfork as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.tfork)(SYS___tfork as Register, ptr(args[0]), size_t(args[1]), rval)
 }
 
 /// `exit(int rval)`.
 fn sys_exit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.exit)(SYS_exit as Register, args[0] as i32, rval)
+    (api.proc.exit)(SYS_exit as Register, int(args[0]), rval)
 }
 
 /// `__threxit(pid_t *notdead)`.
 fn sys_threxit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.threxit)(SYS___threxit as Register, args[0] as usize, rval)
+    (api.proc.threxit)(SYS___threxit as Register, ptr(args[0]), rval)
 }
 
 /// `wait4(pid_t pid, int *status, int options, struct rusage *rusage)`.
 fn sys_wait4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.wait4)(
         SYS_wait4 as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        ptr(args[3]),
         rval,
     )
 }
@@ -814,50 +802,35 @@ fn sys_wait4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysRes
 fn sys_waitid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.waitid)(
         SYS_waitid as Register,
-        args[0] as i32,
-        args[1] as u32,
-        args[2] as usize,
-        args[3] as i32,
+        int(args[0]),
+        u_int(args[1]),
+        ptr(args[2]),
+        int(args[3]),
         rval,
     )
 }
 
 /// `getrusage(int who, struct rusage *rusage)`.
 fn sys_getrusage(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getrusage)(
-        SYS_getrusage as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.getrusage)(SYS_getrusage as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getrlimit(int which, struct rlimit *rlp)`.
 fn sys_getrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getrlimit)(
-        SYS_getrlimit as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.getrlimit)(SYS_getrlimit as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `setrlimit(int which, const struct rlimit *rlp)`.
 fn sys_setrlimit(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setrlimit)(
-        SYS_setrlimit as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.setrlimit)(SYS_setrlimit as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getpriority(int which, id_t who)`.
 fn sys_getpriority(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.getpriority)(
         SYS_getpriority as Register,
-        args[0] as i32,
-        args[1] as u32,
+        int(args[0]),
+        u_int(args[1]),
         rval,
     )
 }
@@ -866,16 +839,16 @@ fn sys_getpriority(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> 
 fn sys_setpriority(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setpriority)(
         SYS_setpriority as Register,
-        args[0] as i32,
-        args[1] as u32,
-        args[2] as i32,
+        int(args[0]),
+        u_int(args[1]),
+        int(args[2]),
         rval,
     )
 }
 
 /// `acct(const char *path)`.
 fn sys_acct(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.acct)(SYS_acct as Register, args[0] as usize, rval)
+    (api.proc.acct)(SYS_acct as Register, ptr(args[0]), rval)
 }
 
 /// `getpid(void)`.
@@ -910,22 +883,12 @@ fn sys_getegid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> Sys
 
 /// `getgroups(int gidsetsize, gid_t *gidset)`.
 fn sys_getgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getgroups)(
-        SYS_getgroups as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.getgroups)(SYS_getgroups as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `setgroups(int gidsetsize, const gid_t *gidset)`.
 fn sys_setgroups(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setgroups)(
-        SYS_setgroups as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.setgroups)(SYS_setgroups as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getpgrp(void)`.
@@ -935,22 +898,17 @@ fn sys_getpgrp(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> Sys
 
 /// `getpgid(pid_t pid)`.
 fn sys_getpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getpgid)(SYS_getpgid as Register, args[0] as i32, rval)
+    (api.proc.getpgid)(SYS_getpgid as Register, int(args[0]), rval)
 }
 
 /// `getsid(pid_t pid)`.
 fn sys_getsid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.getsid)(SYS_getsid as Register, args[0] as i32, rval)
+    (api.proc.getsid)(SYS_getsid as Register, int(args[0]), rval)
 }
 
 /// `setpgid(pid_t pid, pid_t pgid)`.
 fn sys_setpgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setpgid)(
-        SYS_setpgid as Register,
-        args[0] as i32,
-        args[1] as i32,
-        rval,
-    )
+    (api.proc.setpgid)(SYS_setpgid as Register, int(args[0]), int(args[1]), rval)
 }
 
 /// `setsid(void)`.
@@ -960,30 +918,30 @@ fn sys_setsid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysR
 
 /// `setuid(uid_t uid)`.
 fn sys_setuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setuid)(SYS_setuid as Register, args[0] as u32, rval)
+    (api.proc.setuid)(SYS_setuid as Register, u_int(args[0]), rval)
 }
 
 /// `seteuid(uid_t euid)`.
 fn sys_seteuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.seteuid)(SYS_seteuid as Register, args[0] as u32, rval)
+    (api.proc.seteuid)(SYS_seteuid as Register, u_int(args[0]), rval)
 }
 
 /// `setgid(gid_t gid)`.
 fn sys_setgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setgid)(SYS_setgid as Register, args[0] as u32, rval)
+    (api.proc.setgid)(SYS_setgid as Register, u_int(args[0]), rval)
 }
 
 /// `setegid(gid_t egid)`.
 fn sys_setegid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setegid)(SYS_setegid as Register, args[0] as u32, rval)
+    (api.proc.setegid)(SYS_setegid as Register, u_int(args[0]), rval)
 }
 
 /// `setreuid(uid_t ruid, uid_t euid)`.
 fn sys_setreuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setreuid)(
         SYS_setreuid as Register,
-        args[0] as u32,
-        args[1] as u32,
+        u_int(args[0]),
+        u_int(args[1]),
         rval,
     )
 }
@@ -992,8 +950,8 @@ fn sys_setreuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_setregid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setregid)(
         SYS_setregid as Register,
-        args[0] as u32,
-        args[1] as u32,
+        u_int(args[0]),
+        u_int(args[1]),
         rval,
     )
 }
@@ -1002,9 +960,9 @@ fn sys_setregid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_setresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setresuid)(
         SYS_setresuid as Register,
-        args[0] as u32,
-        args[1] as u32,
-        args[2] as u32,
+        u_int(args[0]),
+        u_int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
@@ -1013,9 +971,9 @@ fn sys_setresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_setresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.setresgid)(
         SYS_setresgid as Register,
-        args[0] as u32,
-        args[1] as u32,
-        args[2] as u32,
+        u_int(args[0]),
+        u_int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
@@ -1024,9 +982,9 @@ fn sys_setresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_getresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.getresuid)(
         SYS_getresuid as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
@@ -1035,9 +993,9 @@ fn sys_getresuid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_getresgid(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.getresgid)(
         SYS_getresgid as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
@@ -1051,20 +1009,20 @@ fn sys_issetugid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> S
 fn sys_getlogin_r(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.getlogin_r)(
         SYS_getlogin_r as Register,
-        args[0] as usize,
-        args[1] as usize,
+        ptr(args[0]),
+        size_t(args[1]),
         rval,
     )
 }
 
 /// `setlogin(const char *namebuf)`.
 fn sys_setlogin(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setlogin)(SYS_setlogin as Register, args[0] as usize, rval)
+    (api.proc.setlogin)(SYS_setlogin as Register, ptr(args[0]), rval)
 }
 
 /// `__set_tcb(void *tcb)`.
 fn sys_set_tcb(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.set_tcb)(SYS___set_tcb as Register, args[0] as usize, rval)
+    (api.proc.set_tcb)(SYS___set_tcb as Register, ptr(args[0]), rval)
 }
 
 /// `__get_tcb(void)`.
@@ -1081,21 +1039,16 @@ fn sys_getthrid(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_getthrname(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.proc.getthrname)(
         SYS_getthrname as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
 
 /// `setthrname(pid_t tid, const char *name)`.
 fn sys_setthrname(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setthrname)(
-        SYS_setthrname as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.proc.setthrname)(SYS_setthrname as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// `getrtable(void)`.
@@ -1105,15 +1058,15 @@ fn sys_getrtable(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> S
 
 /// `setrtable(int rtableid)`.
 fn sys_setrtable(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.proc.setrtable)(SYS_setrtable as Register, args[0] as i32, rval)
+    (api.proc.setrtable)(SYS_setrtable as Register, int(args[0]), rval)
 }
 
 /// 87 = `clock_gettime(clockid_t clock_id, struct timespec *tp)`.
 fn sys_clock_gettime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.clock_gettime)(
         SYS_clock_gettime as Register,
-        args[0] as i32,
-        args[1] as usize,
+        int(args[0]),
+        ptr(args[1]),
         rval,
     )
 }
@@ -1122,8 +1075,8 @@ fn sys_clock_gettime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -
 fn sys_clock_settime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.clock_settime)(
         SYS_clock_settime as Register,
-        args[0] as i32,
-        args[1] as usize,
+        int(args[0]),
+        ptr(args[1]),
         rval,
     )
 }
@@ -1132,28 +1085,23 @@ fn sys_clock_settime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -
 fn sys_clock_getres(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.clock_getres)(
         SYS_clock_getres as Register,
-        args[0] as i32,
-        args[1] as usize,
+        int(args[0]),
+        ptr(args[1]),
         rval,
     )
 }
 
 /// 91 = `nanosleep(const struct timespec *rqtp, struct timespec *rmtp)`.
 fn sys_nanosleep(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.nanosleep)(
-        SYS_nanosleep as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.time.nanosleep)(SYS_nanosleep as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 67 = `gettimeofday(struct timeval *tp, struct timezone *tzp)`.
 fn sys_gettimeofday(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.gettimeofday)(
         SYS_gettimeofday as Register,
-        args[0] as usize,
-        args[1] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
         rval,
     )
 }
@@ -1162,122 +1110,97 @@ fn sys_gettimeofday(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) ->
 fn sys_settimeofday(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.settimeofday)(
         SYS_settimeofday as Register,
-        args[0] as usize,
-        args[1] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
         rval,
     )
 }
 
 /// 305 = `adjfreq(const int64_t *freq, int64_t *oldfreq)`.
 fn sys_adjfreq(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.adjfreq)(
-        SYS_adjfreq as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.time.adjfreq)(SYS_adjfreq as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 140 = `adjtime(const struct timeval *delta, struct timeval *olddelta)`.
 fn sys_adjtime(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.adjtime)(
-        SYS_adjtime as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.time.adjtime)(SYS_adjtime as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 70 = `getitimer(int which, struct itimerval *itv)`.
 fn sys_getitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.getitimer)(
-        SYS_getitimer as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.time.getitimer)(SYS_getitimer as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 69 = `setitimer(int which, const struct itimerval *itv, struct itimerval *oitv)`.
 fn sys_setitimer(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.time.setitimer)(
         SYS_setitimer as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
 
 /// 55 = `reboot(int opt)`.
 fn sys_reboot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.time.reboot)(SYS_reboot as Register, args[0] as i32, rval)
+    (api.time.reboot)(SYS_reboot as Register, int(args[0]), rval)
 }
 
 /// 5 = `int open(const char *path, int flags, mode_t mode)`.
 fn sys_open(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.open)(
         SYS_open as Register,
-        args[0] as usize,
-        args[1] as i32,
-        args[2] as u32,
+        ptr(args[0]),
+        int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
 
 /// 9 = `int link(const char *path, const char *link)`.
 fn sys_link(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.link)(
-        SYS_link as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.link)(SYS_link as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 10 = `int unlink(const char *path)`.
 fn sys_unlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.unlink)(SYS_unlink as Register, args[0] as usize, rval)
+    (api.vfs.unlink)(SYS_unlink as Register, ptr(args[0]), rval)
 }
 
 /// 12 = `int chdir(const char *path)`.
 fn sys_chdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.chdir)(SYS_chdir as Register, args[0] as usize, rval)
+    (api.vfs.chdir)(SYS_chdir as Register, ptr(args[0]), rval)
 }
 
 /// 13 = `int fchdir(int fd)`.
 fn sys_fchdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fchdir)(SYS_fchdir as Register, args[0] as i32, rval)
+    (api.vfs.fchdir)(SYS_fchdir as Register, int(args[0]), rval)
 }
 
 /// 14 = `int mknod(const char *path, mode_t mode, dev_t dev)`.
 fn sys_mknod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.mknod)(
         SYS_mknod as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as i32,
+        ptr(args[0]),
+        u_int(args[1]),
+        int(args[2]),
         rval,
     )
 }
 
 /// 15 = `int chmod(const char *path, mode_t mode)`.
 fn sys_chmod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.chmod)(
-        SYS_chmod as Register,
-        args[0] as usize,
-        args[1] as u32,
-        rval,
-    )
+    (api.vfs.chmod)(SYS_chmod as Register, ptr(args[0]), u_int(args[1]), rval)
 }
 
 /// 16 = `int chown(const char *path, uid_t uid, gid_t gid)`.
 fn sys_chown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.chown)(
         SYS_chown as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as u32,
+        ptr(args[0]),
+        u_int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
@@ -1286,52 +1209,32 @@ fn sys_chown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysRes
 fn sys_mount(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.mount)(
         SYS_mount as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        ptr(args[3]),
         rval,
     )
 }
 
 /// 22 = `int unmount(const char *path, int flags)`.
 fn sys_unmount(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.unmount)(
-        SYS_unmount as Register,
-        args[0] as usize,
-        args[1] as i32,
-        rval,
-    )
+    (api.vfs.unmount)(SYS_unmount as Register, ptr(args[0]), int(args[1]), rval)
 }
 
 /// 33 = `int access(const char *path, int amode)`.
 fn sys_access(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.access)(
-        SYS_access as Register,
-        args[0] as usize,
-        args[1] as i32,
-        rval,
-    )
+    (api.vfs.access)(SYS_access as Register, ptr(args[0]), int(args[1]), rval)
 }
 
 /// 34 = `int chflags(const char *path, u_int flags)`.
 fn sys_chflags(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.chflags)(
-        SYS_chflags as Register,
-        args[0] as usize,
-        args[1] as u32,
-        rval,
-    )
+    (api.vfs.chflags)(SYS_chflags as Register, ptr(args[0]), u_int(args[1]), rval)
 }
 
 /// 35 = `int fchflags(int fd, u_int flags)`.
 fn sys_fchflags(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fchflags)(
-        SYS_fchflags as Register,
-        args[0] as i32,
-        args[1] as u32,
-        rval,
-    )
+    (api.vfs.fchflags)(SYS_fchflags as Register, int(args[0]), u_int(args[1]), rval)
 }
 
 /// 36 = `void sync(void)`.
@@ -1341,167 +1244,122 @@ fn sys_sync(api: &'static KernelApi, _args: &SysArgs, rval: &mut Rval) -> SysRes
 
 /// 38 = `int stat(const char *path, struct stat *ub)`.
 fn sys_stat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.stat)(
-        SYS_stat as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.stat)(SYS_stat as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 40 = `int lstat(const char *path, struct stat *ub)`.
 fn sys_lstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.lstat)(
-        SYS_lstat as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.lstat)(SYS_lstat as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 42 = `int fstatat(int fd, const char *path, struct stat *buf, int flag)`.
 fn sys_fstatat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.fstatat)(
         SYS_fstatat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        int(args[3]),
         rval,
     )
 }
 
 /// 56 = `int revoke(const char *path)`.
 fn sys_revoke(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.revoke)(SYS_revoke as Register, args[0] as usize, rval)
+    (api.vfs.revoke)(SYS_revoke as Register, ptr(args[0]), rval)
 }
 
 /// 57 = `int symlink(const char *path, const char *link)`.
 fn sys_symlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.symlink)(
-        SYS_symlink as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.symlink)(SYS_symlink as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 58 = `ssize_t readlink(const char *path, char *buf, size_t count)`.
 fn sys_readlink(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.readlink)(
         SYS_readlink as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as usize,
+        ptr(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
 
 /// 60 = `mode_t umask(mode_t newmask)`.
 fn sys_umask(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.umask)(SYS_umask as Register, args[0] as u32, rval)
+    (api.vfs.umask)(SYS_umask as Register, u_int(args[0]), rval)
 }
 
 /// 61 = `int chroot(const char *path)`.
 fn sys_chroot(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.chroot)(SYS_chroot as Register, args[0] as usize, rval)
+    (api.vfs.chroot)(SYS_chroot as Register, ptr(args[0]), rval)
 }
 
 /// 62 = `int getfsstat(struct statfs *buf, size_t bufsize, int flags)`.
 fn sys_getfsstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.getfsstat)(
         SYS_getfsstat as Register,
-        args[0] as usize,
-        args[1] as usize,
-        args[2] as i32,
+        ptr(args[0]),
+        size_t(args[1]),
+        int(args[2]),
         rval,
     )
 }
 
 /// 63 = `int statfs(const char *path, struct statfs *buf)`.
 fn sys_statfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.statfs)(
-        SYS_statfs as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.statfs)(SYS_statfs as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 64 = `int fstatfs(int fd, struct statfs *buf)`.
 fn sys_fstatfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fstatfs)(
-        SYS_fstatfs as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.fstatfs)(SYS_fstatfs as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 65 = `int fhstatfs(const fhandle_t *fhp, struct statfs *buf)`.
 fn sys_fhstatfs(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fhstatfs)(
-        SYS_fhstatfs as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.fhstatfs)(SYS_fhstatfs as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 76 = `int utimes(const char *path, const struct timeval *tptr)`.
 fn sys_utimes(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.utimes)(
-        SYS_utimes as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.utimes)(SYS_utimes as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 77 = `int futimes(int fd, const struct timeval *tptr)`.
 fn sys_futimes(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.futimes)(
-        SYS_futimes as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.futimes)(SYS_futimes as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 84 = `int utimensat(int fd, const char *path, const struct timespec *times, int flag)`.
 fn sys_utimensat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.utimensat)(
         SYS_utimensat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        int(args[3]),
         rval,
     )
 }
 
 /// 85 = `int futimens(int fd, const struct timespec *times)`.
 fn sys_futimens(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.futimens)(
-        SYS_futimens as Register,
-        args[0] as i32,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.futimens)(SYS_futimens as Register, int(args[0]), ptr(args[1]), rval)
 }
 
 /// 95 = `int fsync(int fd)`.
 fn sys_fsync(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fsync)(SYS_fsync as Register, args[0] as i32, rval)
+    (api.vfs.fsync)(SYS_fsync as Register, int(args[0]), rval)
 }
 
 /// 99 = `int getdents(int fd, void *buf, size_t buflen)`.
 fn sys_getdents(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.getdents)(
         SYS_getdents as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
         rval,
     )
 }
@@ -1510,145 +1368,110 @@ fn sys_getdents(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_chflagsat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.chflagsat)(
         SYS_chflagsat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        int(args[3]),
         rval,
     )
 }
 
 /// 114 = `int unveil(const char *path, const char *permissions)`.
 fn sys_unveil(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.unveil)(
-        SYS_unveil as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.unveil)(SYS_unveil as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 115 = `int __realpath(const char *pathname, char *resolved)`.
 fn sys_realpath(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.realpath)(
-        SYS___realpath as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.realpath)(SYS___realpath as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 123 = `int fchown(int fd, uid_t uid, gid_t gid)`.
 fn sys_fchown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.fchown)(
         SYS_fchown as Register,
-        args[0] as i32,
-        args[1] as u32,
-        args[2] as u32,
+        int(args[0]),
+        u_int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
 
 /// 124 = `int fchmod(int fd, mode_t mode)`.
 fn sys_fchmod(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fchmod)(SYS_fchmod as Register, args[0] as i32, args[1] as u32, rval)
+    (api.vfs.fchmod)(SYS_fchmod as Register, int(args[0]), u_int(args[1]), rval)
 }
 
 /// 125 = `int __pledge_open(const char *path, int flags, mode_t mode)`.
 fn sys_pledge_open(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.pledge_open)(
         SYS___pledge_open as Register,
-        args[0] as usize,
-        args[1] as i32,
-        args[2] as u32,
+        ptr(args[0]),
+        int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
 
 /// 128 = `int rename(const char *from, const char *to)`.
 fn sys_rename(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.rename)(
-        SYS_rename as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.rename)(SYS_rename as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 132 = `int mkfifo(const char *path, mode_t mode)`.
 fn sys_mkfifo(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.mkfifo)(
-        SYS_mkfifo as Register,
-        args[0] as usize,
-        args[1] as u32,
-        rval,
-    )
+    (api.vfs.mkfifo)(SYS_mkfifo as Register, ptr(args[0]), u_int(args[1]), rval)
 }
 
 /// 136 = `int mkdir(const char *path, mode_t mode)`.
 fn sys_mkdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.mkdir)(
-        SYS_mkdir as Register,
-        args[0] as usize,
-        args[1] as u32,
-        rval,
-    )
+    (api.vfs.mkdir)(SYS_mkdir as Register, ptr(args[0]), u_int(args[1]), rval)
 }
 
 /// 137 = `int rmdir(const char *path)`.
 fn sys_rmdir(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.rmdir)(SYS_rmdir as Register, args[0] as usize, rval)
+    (api.vfs.rmdir)(SYS_rmdir as Register, ptr(args[0]), rval)
 }
 
 /// 148 = `int quotactl(const char *path, int cmd, int uid, char *arg)`.
 fn sys_quotactl(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.quotactl)(
         SYS_quotactl as Register,
-        args[0] as usize,
-        args[1] as i32,
-        args[2] as i32,
-        args[3] as usize,
+        ptr(args[0]),
+        int(args[1]),
+        int(args[2]),
+        ptr(args[3]),
         rval,
     )
 }
 
 /// 161 = `int getfh(const char *fname, fhandle_t *fhp)`.
 fn sys_getfh(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.getfh)(
-        SYS_getfh as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.getfh)(SYS_getfh as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 166 = `off_t lseek(int fd, off_t offset, int whence)`.
 fn sys_lseek(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.lseek)(
         SYS_lseek as Register,
-        args[0] as i32,
-        args[1] as i64,
-        args[2] as i32,
+        int(args[0]),
+        off_t(args[1]),
+        int(args[2]),
         rval,
     )
 }
 
 /// 167 = `int truncate(const char *path, off_t length)`.
 fn sys_truncate(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.truncate)(
-        SYS_truncate as Register,
-        args[0] as usize,
-        args[1] as i64,
-        rval,
-    )
+    (api.vfs.truncate)(SYS_truncate as Register, ptr(args[0]), off_t(args[1]), rval)
 }
 
 /// 168 = `int ftruncate(int fd, off_t length)`.
 fn sys_ftruncate(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.ftruncate)(
         SYS_ftruncate as Register,
-        args[0] as i32,
-        args[1] as i64,
+        int(args[0]),
+        off_t(args[1]),
         rval,
     )
 }
@@ -1657,61 +1480,46 @@ fn sys_ftruncate(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_pathconfat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.pathconfat)(
         SYS_pathconfat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        int(args[3]),
         rval,
     )
 }
 
 /// 191 = `long pathconf(const char *path, int name)`.
 fn sys_pathconf(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.pathconf)(
-        SYS_pathconf as Register,
-        args[0] as usize,
-        args[1] as i32,
-        rval,
-    )
+    (api.vfs.pathconf)(SYS_pathconf as Register, ptr(args[0]), int(args[1]), rval)
 }
 
 /// 254 = `int lchown(const char *path, uid_t uid, gid_t gid)`.
 fn sys_lchown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.lchown)(
         SYS_lchown as Register,
-        args[0] as usize,
-        args[1] as u32,
-        args[2] as u32,
+        ptr(args[0]),
+        u_int(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
 
 /// 264 = `int fhopen(const fhandle_t *fhp, int flags)`.
 fn sys_fhopen(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fhopen)(
-        SYS_fhopen as Register,
-        args[0] as usize,
-        args[1] as i32,
-        rval,
-    )
+    (api.vfs.fhopen)(SYS_fhopen as Register, ptr(args[0]), int(args[1]), rval)
 }
 
 /// 294 = `int fhstat(const fhandle_t *fhp, struct stat *sb)`.
 fn sys_fhstat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
-    (api.vfs.fhstat)(
-        SYS_fhstat as Register,
-        args[0] as usize,
-        args[1] as usize,
-        rval,
-    )
+    (api.vfs.fhstat)(SYS_fhstat as Register, ptr(args[0]), ptr(args[1]), rval)
 }
 
 /// 304 = `int __getcwd(char *buf, size_t len)`.
 fn sys_getcwd(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.getcwd)(
         SYS___getcwd as Register,
-        args[0] as usize,
-        args[1] as usize,
+        ptr(args[0]),
+        size_t(args[1]),
         rval,
     )
 }
@@ -1720,10 +1528,10 @@ fn sys_getcwd(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysRe
 fn sys_faccessat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.faccessat)(
         SYS_faccessat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        int(args[3]),
         rval,
     )
 }
@@ -1732,10 +1540,10 @@ fn sys_faccessat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_fchmodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.fchmodat)(
         SYS_fchmodat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        int(args[3]),
         rval,
     )
 }
@@ -1744,11 +1552,11 @@ fn sys_fchmodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_fchownat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.fchownat)(
         SYS_fchownat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
-        args[3] as u32,
-        args[4] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        u_int(args[3]),
+        int(args[4]),
         rval,
     )
 }
@@ -1757,11 +1565,11 @@ fn sys_fchownat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_linkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.linkat)(
         SYS_linkat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as usize,
-        args[4] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        ptr(args[3]),
+        int(args[4]),
         rval,
     )
 }
@@ -1770,9 +1578,9 @@ fn sys_linkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysRe
 fn sys_mkdirat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.mkdirat)(
         SYS_mkdirat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
@@ -1781,9 +1589,9 @@ fn sys_mkdirat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysR
 fn sys_mkfifoat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.mkfifoat)(
         SYS_mkfifoat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
         rval,
     )
 }
@@ -1792,10 +1600,10 @@ fn sys_mkfifoat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_mknodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.mknodat)(
         SYS_mknodat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as u32,
-        args[3] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        int(args[3]),
         rval,
     )
 }
@@ -1804,10 +1612,10 @@ fn sys_mknodat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysR
 fn sys_openat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.openat)(
         SYS_openat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as u32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        u_int(args[3]),
         rval,
     )
 }
@@ -1816,10 +1624,10 @@ fn sys_openat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysRe
 fn sys_readlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.readlinkat)(
         SYS_readlinkat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as usize,
-        args[3] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        size_t(args[3]),
         rval,
     )
 }
@@ -1828,10 +1636,10 @@ fn sys_readlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> S
 fn sys_renameat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.renameat)(
         SYS_renameat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
-        args[3] as usize,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        ptr(args[3]),
         rval,
     )
 }
@@ -1840,9 +1648,9 @@ fn sys_renameat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
 fn sys_symlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.symlinkat)(
         SYS_symlinkat as Register,
-        args[0] as usize,
-        args[1] as i32,
-        args[2] as usize,
+        ptr(args[0]),
+        int(args[1]),
+        ptr(args[2]),
         rval,
     )
 }
@@ -1851,16 +1659,25 @@ fn sys_symlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sy
 fn sys_unlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
     (api.vfs.unlinkat)(
         SYS_unlinkat as Register,
-        args[0] as i32,
-        args[1] as usize,
-        args[2] as i32,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
         rval,
     )
 }
+
+// `INFO` narrows the table's size to `HandlerInfo::syscalls`'s `u32`: it fits.
+const _: () = assert!(SYS_MAXSYSCALL <= u32::MAX as usize);
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "the digit stubs fold the number and the arguments into one i32"
+)]
 mod tests {
     use super::*;
 
@@ -1876,8 +1693,8 @@ mod tests {
     fn register(_: &'static KernelApi, _: hal::api::SyscallHandler, _: HandlerInfo) {}
 
     /// The kernel's pipe entry of the test table: says what reached it.
-    fn pipe2(nr: Register, fdp: usize, flags: Register) -> SysResult {
-        Err(nr as i32 * 1000 + fdp as i32 + flags as i32)
+    fn pipe2(nr: Register, fdp: usize, flags: i32) -> SysResult {
+        Err(nr as i32 * 1000 + fdp as i32 + flags)
     }
 
     // The vm entries of the test table say what reached them: the number, then each
@@ -3081,6 +2898,20 @@ mod tests {
             syscall(&API, SYS_pipe2 as Register, &[5, 3, 9, 9, 9, 9], &mut rval),
             Err(101 * 1000 + 5 + 3)
         );
+        // pipe2's flags are the C's `int`: the register's high word never reaches the kernel.
+        assert_eq!(
+            syscall(
+                &API,
+                SYS_pipe2 as Register,
+                &[5, 0x1_0000_0003, 9, 9, 9, 9],
+                &mut rval
+            ),
+            Err(101 * 1000 + 5 + 3)
+        );
+        assert_eq!(
+            syscall(&API, SYS_pipe2 as Register, &[5, -1, 9, 9, 9, 9], &mut rval),
+            Err(101 * 1000 + 5 - 1)
+        );
         // pipe(fdp = 5): no flags, whatever the second register holds.
         assert_eq!(
             syscall(&API, SYS_pipe as Register, &[5, 3, 9, 9, 9, 9], &mut rval),
@@ -3196,6 +3027,39 @@ mod tests {
             assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
             assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
         }
+    }
+
+    /// An argument is read as the C's `SCARG` reads its type: close(2)'s `int fd` and
+    /// umask(2)'s `mode_t numask` are the register's low 32 bits, whatever its high word
+    /// holds, the first with its sign, the second unsigned (umask's stub folds its `u32`
+    /// through `i64` into the `i32` it answers, so `0xffff_ffff` reads back as -1).
+    ///
+    /// The high-word cases test the reading; they cannot tell `int` from `u_int`, nor can
+    /// umask's `-1`, which the stub's fold answers as -1 either way. The family is enforced
+    /// by the `KernelApi` entry's parameter type (`umask` takes a `u32`, `close` an `i32`: the
+    /// other helper does not compile there), and `u_int(-1)` is checked directly below.
+    #[test]
+    fn the_arguments_are_read_as_scarg_reads_their_c_type() {
+        let cases: [(NativeFn, i32, Register, i32); 4] = [
+            (sys_close, SYS_close, 0x1_0000_0003, 3),
+            (sys_close, SYS_close, -1, -1),
+            (sys_umask, SYS_umask, 0x1_0000_0005, 5),
+            (sys_umask, SYS_umask, -1, -1),
+        ];
+        for (f, nr, reg, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(
+                f(&API, &[reg, 9, 9, 9, 9, 9], &mut rval),
+                Err(want),
+                "SYS {nr} with {reg:#x}"
+            );
+            assert_eq!(rval[0], nr as Register);
+        }
+        assert_eq!(
+            u_int(-1),
+            0xffff_ffff,
+            "umask(2)'s -1 is the C's (mode_t)-1"
+        );
     }
 
     #[test]

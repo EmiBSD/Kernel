@@ -35,8 +35,10 @@
 #![no_std]
 #![forbid(unsafe_code)]
 // `clippy::pedantic` is on in this crate (the user's decision of 2026-10-29, measured first:
-// docs/JOURNAL.md). What it asks and this crate declines, each with its reason; the three cast
-// lints are allowed until N11 types their sites one by one (docs/ROADMAP.md, N11).
+// docs/JOURNAL.md). What it asks and this crate declines, each with its reason. The three cast
+// lints are not among them: every system call argument is read through `scarg`, the C's
+// `SCARG` per type family, whose two narrowings carry the crate's `#[expect]`s (the abi casts,
+// the N5 close; kernel's and hal's casts are typed at N11, docs/ROADMAP.md).
 #![warn(clippy::pedantic)]
 #![allow(
     clippy::unreadable_literal,
@@ -68,16 +70,11 @@
     clippy::pub_underscore_fields,
     reason = "the C's `_IOR`/`_IOW` names and the `_pad` fields of `#[repr(C)]` layouts, kept as the C spells them"
 )]
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    reason = "typed one by one, 1,348 sites: abi's 235 (sysent.rs, the syscall arguments) in a slice of their own at the N5 close or the N6 start, the user's decision of 2026-10-29; kernel's 1,061 and hal's 52 at N11"
-)]
 
 #[cfg(test)]
 extern crate std;
 
+pub mod scarg;
 pub mod sysent;
 
 use hal::api::KernelApi;
