@@ -86,7 +86,7 @@ Two provenance rules:
 | `just check-drift` | `cargo xtask lz drift --strict`: no LZ commit after the pin without a record |
 | `just check-unsafe` | `cargo xtask unsafe-report --check`: no subsystem over its budget |
 | `just check-hal` | `cargo xtask hal-check`: no `pub unsafe fn`, a `// SAFETY:` on every block, no `static mut`, `hal` under `hal_ceiling` |
-| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) |
+| `just check-abi` | `cargo xtask abi-check`: `sys/abi/` holds no logic (decision 25) and names `hal` only through `hal::api`, `hal::syscall`, `hal::sys` (R6, decision 47) |
 | `just check` | build (arm64), clippy, fmt, `lz check`, `unsafe-report --check`, `just test`: no QEMU; runs at the milestone close, not per commit (the user's decision of 2026-10-16: develop first, compile later) |
 | `just ci` | all of the above plus the smokes, drift and `diff-openbsd`; run at the milestone close, not per slice (the user's decision of 2026-10-16) |
 | `just ci-full` | `ci` with every smoke on `-smp 4` (not 2), then the installer end to end on the archs of `EMIBSD_ARCHS` (`smoke-install-*`, needs `just comp`; amd64's recipes at N10); green before a milestone is met, except N2, whose close runs without it; N3's close runs it for both (decision 24) |

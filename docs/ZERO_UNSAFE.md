@@ -90,7 +90,8 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
 - `abi` holds no logic: `cargo xtask abi-check` fails `just check` on a function of `abi` that
   branches on anything but the syscall number, its own conversion's `Ok`/`Err` and the byte
   layout, that calls more than one `kernel` entry point, or that exceeds the per-syscall line
-  limit (decision 21).
+  limit (decision 21), and on a path into `hal` outside `hal::api`, `hal::syscall` and `hal::sys::*` (R6, decision
+  47: linked into the image, `abi` shares `hal`'s statics).
 
 ### 0.3 The migration mechanism
 
@@ -853,7 +854,7 @@ every design that kept `unsafe` inside the kernel:
     `just ci` and one `just diff-openbsd`, both rc=0, mark N2 closed and push. `ci-full` is
     recorded as pending in `docs/STATUS.md` and runs once at the N3 close for both milestones.
 
-25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here.
+25. **`abi-check`'s mechanical criteria** (the launching session, 2026-10-16, under the user's standing authority of that day, fixing the numbers decision 21 left open): in `sys/abi/`, kernel code: no `loop`/`while`/`for`; an `if`/`match` only on the identifier `nr` (the syscall number) or on `Ok`/`Err`/`Some`/`None` arms (the conversion's own result); at most one call per function into `kernel::` or through the `&KernelApi` parameter; at most 40 lines per function body; no `static` with interior mutability. A violation fails `just check`. The limits are the planning session's and change only by a decision here. Decision 47 adds R6: `sys/abi/` names `hal` only through `hal::api`, `hal::syscall` and `hal::sys::*` (linked into the image, `abi` shares `hal`'s statics).
 
 Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 survey
 (scratchpad n2/hwmove/INVENTORY.md and PLAN.md: the hardware is 1,627 `unsafe` in 198 files,
@@ -1259,9 +1260,14 @@ recommended, under the user's standing order):
     lógica (`abi-check` igual), y lo que el userland ve no cambia (ABI de syscalls
     idéntica)."). It replaces decision 22's loadable module and decision 29, and the window
     half of 37 and 38. What 22 kept: `abi` a crate of its own, `#![forbid(unsafe_code)]` at
-    its root, no logic (`abi-check` R1-R5 unchanged, decision 25), `KernelApi` its only face
-    of the kernel (Cargo enforces it: `abi` depends on `hal` alone), the `Native | Legacy`
-    table; the kernel does not name the ABI and the ABI does not name `bsd`. What it lost:
+    its root, no logic (`abi-check` R1-R5 unchanged, decision 25), the `Native | Legacy`
+    table, `KernelApi` its only face of the kernel; the kernel does not name the ABI and the
+    ABI does not name `bsd`. Cargo keeps `abi` away from `kernel` and `bsd`, but linked in,
+    `abi` shares `hal`'s statics and `hal`'s public API acts on the kernel's own state
+    (`hal::cpu::set_panicking`, the kcopy tokens, the first-wins registrations, whose "only
+    these callers" premises the module's private copy of `hal` kept out of its reach for
+    free): so `abi-check` gains R6 (review 1 of the slice; the user's answer of 2026-11-06,
+    "Sí, añadir la lista (Recomendado)"), `sys/abi/` names `hal` only through `hal::api`, `hal::syscall` and `hal::sys::*`. What it lost:
     one image instead of two files (22's "una biblioteca dinámica"); "nothing names `abi`"
     (the image crate does: `bsd`'s boot glue until N9, docs/SCAFFOLDING.md); a second ABI
     swapped at boot (it would be a second crate linked in); the boot-time refusal of a module
@@ -1289,11 +1295,12 @@ recommended, under the user's standing order):
     `abi: 331 syscalls, 170 native` (D1, the user's answer: the module's line named a file
     that no longer exists; it moved earlier in dmesg). The kcopy tokens' take-once argument
     (D5) is rewritten, not weakened: `abi` runs no function before `abi_init`, which comes
-    after both takes; a later take gets `None`; `abi-check` R5 refuses `abi` a static of
-    interior mutability that could keep one. Rejected: the module's line kept verbatim (a
+    after both takes; a later take gets `None`; `abi-check` R6 refuses `abi` any path into
+    `hal::user`, so it cannot name the tokens, and R5 a static of interior mutability that
+    could keep one. Rejected: the module's line kept verbatim (a
     false line in every dmesg), no line (the smokes would lose the handler's check), `abi`
     calling `kernel` directly (every `Native` entry is still a `bsd` wrapper: possible when
     the system-call hop leaves `bsd`, that slice's decision), an `abi-check` rule naming
-    `KcopyToken` (the user: `abi-check` stays the same). amd64 (decision 44): the frozen tree
+    `KcopyToken` alone (R6's list covers the tokens and the rest of `hal`'s state). amd64 (decision 44): the frozen tree
     keeps orphans N10's compile-and-fix pass deletes (docs/ROADMAP.md, N10). Commits
     27b15faa, 505bd530, 041accc9, aaef6e78 and the `docs:` commit that wrote this.

@@ -32,6 +32,13 @@
 //! * **R4** at most 40 lines per function body (the line of `{` to the line of `}`).
 //! * **R5** no `static` whose type names `Cell`, `RefCell`, `Atomic*`, `OnceStatic`,
 //!   `Mutexed`, `Rwlocked` or `UnsafeCell`: no state in `abi`; plain tables are fine.
+//! * **R6** `hal` named only through `hal::api`, `hal::syscall` or `hal::sys::*` (decision 47,
+//!   the user's answer of 2026-11-06): in a path, a `use` or a `{..}` group, never a glob of
+//!   `hal`'s root nor `hal` alone (`use hal as h`, `extern crate hal`), which would carry the
+//!   crate past the list. Linked into the kernel image, `abi` shares `hal`'s statics, and the
+//!   rest of `hal`'s public API acts on the kernel's own state (`hal::cpu::set_panicking`,
+//!   the kcopy tokens, the first-wins registrations); the loadable module's private copy of
+//!   `hal` gave that isolation for free.
 //!
 //! A nested `fn` is judged on its own and its tokens are not the outer function's. Each
 //! finding prints as `path:line: message`; the command exits non-zero when there is one.
@@ -45,6 +52,9 @@ use crate::halcheck::Finding;
 use crate::unsafereport::{Tok, lex_pos, matching, scan};
 
 const ABI_DIR: &str = "sys/abi";
+/// The modules of `hal` that `abi` may name (R6): the table it calls the kernel through, the
+/// system call's types, the constant headers of the ABI edge.
+const HAL_PATHS: [&str; 3] = ["api", "syscall", "sys"];
 /// The most lines of a `fn` body (decision 25).
 pub(crate) const MAX_BODY_LINES: usize = 40;
 
@@ -76,7 +86,7 @@ pub(crate) fn abi_check(root: &Path) -> Result<()> {
         return Err(format!("abi-check: {} finding(s)", findings.len()).into());
     }
     println!(
-        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state",
+        "abi-check: {} files; no loop, branches only on nr or Ok/Err/Some/None, at most one kernel call and {MAX_BODY_LINES} lines per fn, no state, hal only through hal::api, hal::syscall and hal::sys",
         files.len()
     );
     Ok(())
@@ -497,8 +507,79 @@ pub(crate) fn check_source(rel: &str, src: &str) -> Vec<Finding> {
             }
         }
     }
+    // R6.
+    for i in 0..toks.len() {
+        if !id(&toks[i], "hal") || mask[i] {
+            continue;
+        }
+        // A field (`.hal`) or another crate's module (`x::hal`) is not the crate; `::hal` is.
+        let after_sep = i >= 2 && toks[i - 1] == Tok::Punct(':') && toks[i - 2] == Tok::Punct(':');
+        if (i >= 1 && toks[i - 1] == Tok::Punct('.'))
+            || (after_sep && i >= 3 && matches!(toks[i - 3], Tok::Ident(_)))
+        {
+            continue;
+        }
+        for (at, m) in hal_findings(toks, i) {
+            add(at, m);
+        }
+    }
     out.sort_by_key(|f| f.line);
     out
+}
+
+/// R6 at the `hal` token `i` that starts a path: what it names outside [`HAL_PATHS`].
+fn hal_findings(toks: &[Tok], i: usize) -> Vec<(usize, String)> {
+    if toks.get(i + 1) != Some(&Tok::Punct(':')) || toks.get(i + 2) != Some(&Tok::Punct(':')) {
+        return vec![(
+            i,
+            "R6: `hal` named alone (a rename or a re-export carries it past hal::api, hal::syscall and hal::sys)"
+                .to_string(),
+        )];
+    }
+    let k = i + 3;
+    if toks.get(k) != Some(&Tok::Punct('{')) {
+        return hal_item(toks.get(k), k).into_iter().collect();
+    }
+    // `hal::{a::X, b::{Y, Z}}`: the first token of each item at the group's own depth.
+    let mut out = Vec::new();
+    let Some(close) = matching(toks, k) else {
+        return out;
+    };
+    let (mut j, mut start) = (k + 1, true);
+    while j < close {
+        match &toks[j] {
+            Tok::Punct('{' | '(' | '[') => {
+                j = matching(toks, j).map_or(close, |e| e + 1);
+                start = false;
+                continue;
+            }
+            Tok::Punct(',') => start = true,
+            t if start => {
+                out.extend(hal_item(Some(t), j));
+                start = false;
+            }
+            _ => {}
+        }
+        j += 1;
+    }
+    out
+}
+
+/// R6 for the token after `hal::` (or an item of a `hal::{..}` group): one of [`HAL_PATHS`],
+/// or a finding.
+fn hal_item(t: Option<&Tok>, at: usize) -> Option<(usize, String)> {
+    match t {
+        Some(Tok::Ident(m)) if HAL_PATHS.contains(&m.as_str()) => None,
+        Some(Tok::Ident(m)) => Some((
+            at,
+            format!("R6: `hal::{m}` is outside the hal paths abi may name (hal::api, hal::syscall, hal::sys)"),
+        )),
+        _ => Some((
+            at,
+            "R6: a glob or a group of hal's root (abi names only hal::api, hal::syscall and hal::sys)"
+                .to_string(),
+        )),
+    }
 }
 
 fn is_state_type(w: &str) -> bool {
@@ -618,6 +699,40 @@ mod tests {
         clean("static TABLE: [u8; 3] = [1, 2, 3];\n");
         clean("static NAMES: &[&str] = &[\"a\"];\nconst C: Cell = x;\n");
         clean("fn f(x: &'static str) {}\n");
+    }
+
+    #[test]
+    fn r6_hal_only_through_api_syscall_and_sys() {
+        // What the crate names today, and the forms of the same paths.
+        clean("use hal::api::KernelApi;\nuse hal::syscall::{HandlerInfo, Register};\n");
+        clean("use hal::sys::syscall::{SYS_exit, SYS_read};\nuse hal::sys::errno::*;\n");
+        clean("use hal::{api::KernelApi, syscall::SysArgs, sys::syscall::{SYS_exit, SYS_read}};\n");
+        clean("fn f(a: &hal::api::KernelApi) -> i32 { hal::sys::errno::Errno::ENOSYS.as_i32() }\n");
+        clean("use ::hal::api::KernelApi;\n");
+        // Another crate's module, a field and a comment of that name are not the crate.
+        clean("use other::hal::cpu;\nfn f(s: S) { s.hal.cpu(); }\n");
+        clean("//! See `hal::cpu`.\n/// `hal::user::UserPtr`.\nfn f() {}\n");
+        // A path outside the list: a `use`, a qualified call, a leading `::`, in a group.
+        one("use hal::cpu::set_panicking;\n", "R6");
+        one("fn f() { hal::cpu::set_panicking(); }\n", "R6");
+        one(
+            "fn f() { let t = ::hal::user::KcopyToken::take(); }\n",
+            "R6",
+        );
+        one("use hal::{api::KernelApi, user::KcopyToken};\n", "R6");
+        one(
+            "use hal::{api::KernelApi, sys::{errno::Errno}, bridges};\n",
+            "R6",
+        );
+        // A glob of the root, `self` in a group, `hal` alone.
+        one("use hal::*;\n", "R6");
+        one("use hal::{api::KernelApi, *};\n", "R6");
+        one("use hal::{self, api::KernelApi};\n", "R6");
+        one("use hal as h;\n", "R6");
+        one("extern crate hal;\n", "R6");
+        assert_eq!(msgs("use hal::{cpu, user::X};\n"), ["1:R6", "1:R6"]);
+        // Test code is not checked.
+        clean("#[cfg(test)]\nmod tests {\n    use hal::cpu::x;\n}\n");
     }
 
     #[test]

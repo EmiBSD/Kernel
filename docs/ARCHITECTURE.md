@@ -277,7 +277,9 @@ missing; decision 47 records what went with it. The pieces now:
   registration, the `Legacy` path and one typed entry per `Native` system call in groups
   (`VmEntries`, `FdEntries`, `EventEntries`, `ProcEntries`, `TimeEntries`, `VfsEntries`, ...).
   It lives in `hal`, below both sides, so `abi` names it with no dependency on `kernel`
-  (Cargo: `abi`'s only dependency is `hal`); `kernel::api::table` fills it with the kernel's
+  (Cargo keeps `abi` away from `kernel` and `bsd`; `hal`'s public API acts on the kernel's
+  own state, so `abi-check` R6 confines `abi` to `hal::api`, `hal::syscall` and `hal::sys::*`); `kernel::api::table`
+  fills it with the kernel's
   registration and `bsd` with the functions that answer (`sys/kern/abi_module.rs`); `abi`
   receives it in `abi_init` and in every call, and keeps no state.
 - **The registration.** `stand::start_kernel` calls `bsd`'s `abi_module::abi_boot` right after
@@ -285,7 +287,8 @@ missing; decision 47 records what went with it. The pieces now:
   (`kernel::api` keeps it with its table and registers its trampoline in `hal::syscall`, once),
   and the glue prints one line from what the handler said about itself (`HandlerInfo`), or
   panics when nothing registered. The kcopy tokens are taken before it (`hal_bridges_register`'s
-  first steps), and `abi` runs nothing before `abi_init`, so it cannot hold one (decision 47).
+  first steps), `abi-check` R6 keeps `abi` out of `hal::user`, and `abi` runs nothing before
+  `abi_init`, so it can neither name nor hold one (decision 47).
 - **The dispatch.** arm64's trap calls `hal::syscall::dispatch` (amd64's, frozen,
   `kern::abi_module::syscall`, which calls it), and the dispatch calls the registered handler;
   with none it answers `ENOSYS`, which the boot glue's panic makes unreachable. Errnos cross

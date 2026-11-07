@@ -3465,7 +3465,8 @@ check-hal:
     cargo xtask hal-check
 
 # sys/abi/ holds no logic: no loop, branches only on nr or Ok/Err/Some/None, at most one kernel
-# call and 40 lines per fn, no state (decision 25; cargo xtask abi-check)
+# call and 40 lines per fn, no state (decision 25), and names hal only through hal::api,
+# hal::syscall and hal::sys (R6, decision 47; cargo xtask abi-check)
 check-abi:
     cargo xtask abi-check
 
