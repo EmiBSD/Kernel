@@ -2503,6 +2503,8 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         uvm_page_test_reset();
+        // hal::smr's queues may name links in the memory replaced here: forgotten.
+        hal::smr::smr_test_reset();
         UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
         uvm_setpagesize();
 

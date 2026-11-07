@@ -1169,6 +1169,7 @@ pub fn pages_reset() -> MutexGuard<'static, ()> {
     let guard = lock(&MEMORY);
     let _ = pmap_boot();
     uvm_page_test_reset();
+    hal::smr::smr_test_reset();
     UVMEXP.pagesize.store(TEST_PAGE as i32, Ordering::Relaxed);
     uvm_setpagesize();
     guard

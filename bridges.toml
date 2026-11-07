@@ -365,6 +365,7 @@ paid_by = "N7"
 # vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9). N5.4: the system calls'
 # hooks joined it (kernel::fs::syscalls): pledge_chown, unveil_add, unveil_removevnode and
 # unveil_set_done (kern_pledge and kern_unveil, N8, required as the other pledge hooks).
+# N6.0: smr_idle left it (hal::smr::idle, called by the scheduler itself).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

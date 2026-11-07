@@ -91,26 +91,23 @@
 //! members of `struct schedstate_percpu` the clock interrupts use: the four clockintr
 //! handles, `spc_cp_time` with its lock, `spc_schedticks`, `spc_spinning`, `spc_runtime`;
 //! M11a the SMR members (`spc_deferred`, `spc_ndeferred`, `spc_smrdepth`, `spc_smrexpedite`,
-//! `spc_smrgp`, used by `kern/kern_smr.rs`) and `cpu_is_idle`. N4.5a: the scheduler's members
+//! `spc_smrgp`; `hal::smr`'s per-CPU state since N6.0) and `cpu_is_idle`. N4.5a: the scheduler's members
 //! (`spc_qs`, `spc_whichqs`, `spc_nrun`, `spc_idleproc`, `spc_deadproc`, `spc_schedflags`,
 //! `spc_curpriority`) are `kernel::sched::SchedCpu`'s, reached by the CPU's number; the
 //! functions it declares are `kernel::sched`'s, under their names in `kern/kern_sched.rs` and
 //! `kern/sched_bsd.rs`.
 //!
 //! ## Deviations
-//! - `spc_spinning` (`volatile`) is an `AtomicU32`, `spc_smrgp` (read by other CPUs,
-//!   `READ_ONCE` in C) an `AtomicU8`.
+//! - `spc_spinning` (`volatile`) is an `AtomicU32`.
 //! - `spc_cp_time` (written by the CPU's `statclock`, read by sysctl under the `pc_lock`
 //!   generation protocol) holds `AtomicU64`s; relaxed accesses compile to the C's plain loads
 //!   and stores.
 
 use core::cell::Cell;
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicU32, AtomicU64};
 
 use crate::sys::pclock::PcLock;
 use crate::sys::proc::Proc;
-use crate::sys::queue::SimpleqHead;
-use crate::sys::smr::SmrEntryList;
 use crate::sys::time::Timespec;
 
 /*
@@ -168,23 +165,13 @@ pub struct SchedstatePercpu {
     // `kernel::clockintr`'s queue (`Clockintr::of(cpu, Slot::...)`, N4.8a).
     /// `spc_spinning` (volatile): this cpu is currently spinning.
     pub spc_spinning: AtomicU32,
-
-    /// \[o\] `spc_deferred`: deferred smr calls, changed at `splhigh`.
-    pub spc_deferred: SimpleqHead<SmrEntryList>,
-    /// \[o\] `spc_ndeferred`: number of deferred smr calls.
-    pub spc_ndeferred: Cell<u32>,
-    /// \[o\] `spc_smrdepth`: level of smr nesting (`DIAGNOSTIC`).
-    pub spc_smrdepth: Cell<u32>,
-    /// \[o\] `spc_smrexpedite`: if set, dispatch smr entries without delay.
-    pub spc_smrexpedite: Cell<u8>,
-    /// `spc_smrgp`: this CPU's view of grace period (read by `smr_grace_wait` elsewhere).
-    pub spc_smrgp: AtomicU8,
+    // `spc_deferred`, `spc_ndeferred`, `spc_smrdepth`, `spc_smrexpedite`, `spc_smrgp`: the
+    // CPU's state in `hal::smr` (N6.0).
 }
 
-// SAFETY: one CPU's clock and SMR state. The `Cell` members are owned by that CPU ([o]: the
-// clock handles under their queue's mutex, `spc_runtime` and `spc_schedticks` by its own
-// clock and switch, the SMR queue at splhigh). Everything other CPUs read without a lock is
-// atomic.
+// SAFETY: one CPU's clock state. The `Cell` members are owned by that CPU ([o]: the clock
+// handles under their queue's mutex, `spc_runtime` and `spc_schedticks` by its own clock and
+// switch). Everything other CPUs read without a lock is atomic.
 unsafe impl Sync for SchedstatePercpu {}
 
 impl SchedstatePercpu {
@@ -197,11 +184,6 @@ impl SchedstatePercpu {
             spc_cp_time: [const { AtomicU64::new(0) }; CPUSTATES],
 
             spc_spinning: AtomicU32::new(0),
-            spc_deferred: SimpleqHead::new(),
-            spc_ndeferred: Cell::new(0),
-            spc_smrdepth: Cell::new(0),
-            spc_smrexpedite: Cell::new(0),
-            spc_smrgp: AtomicU8::new(0),
         }
     }
 }

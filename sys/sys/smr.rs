@@ -74,8 +74,13 @@
 //! Status: `wip` (M11a): `struct smr_entry`, `struct smr_entry_list`, `smr_init`, `smr_call`,
 //! `smr_barrier`, `smr_flush`, `SMR_ASSERT_CRITICAL`, `SMR_ASSERT_NONCRITICAL`,
 //! `SMR_PTR_GET`, `SMR_PTR_GET_LOCKED` and `SMR_PTR_SET_LOCKED` (as [`SmrPtr`]); M11e the
-//! singly-linked lists (`SMR_SLIST_*`, [`SmrSlistHead`]), for `bpf.c` and `if_pflow.c`. The
-//! functions are in `kern/kern_smr.rs`.
+//! singly-linked lists (`SMR_SLIST_*`, [`SmrSlistHead`]), for `bpf.c` and `if_pflow.c`. Since
+//! N6.0 the protocol is `hal::smr`'s and the SMR thread `kernel::smr`'s (`kern/kern_smr.rs` is
+//! gone): `struct smr_entry` is `hal::smr::SmrLink`, and `smr_init`, `smr_call`,
+//! `smr_barrier`, `smr_flush`, `smr_read_enter`, `smr_read_leave` and the two assertions are
+//! one-line adapters over `hal::smr`, keeping their names for this tree's callers (the
+//! `crate::kern::kern_smr` path of the read sections is an alias of this module,
+//! `kern/mod.rs`).
 //!
 //! ## Deviations
 //! - `SMR_LIST_*` and `SMR_TAILQ_*` are not ported: their C users (`if_pppoe.c`,
@@ -85,57 +90,23 @@
 //!   with `Acquire` by the readers (`first`, `next`, `iter`) and by the writer
 //!   (`first_locked`, ...), and published with `Release` (the C's `membar_producer`).
 //!   A removed element keeps its link, as in C, so a reader standing on it goes on.
-//! - `smr_call` (and `smr_call_impl`, `kern_smr.rs`) take a `&'static SmrEntry`: the entry
-//!   must outlive the deferral (`smr_barrier_impl` lends its stack entry as `'static`
-//!   while it waits for the call).
+//! - `smr_call` takes a `&'static SmrEntry`: the entry must outlive the deferral; a queued
+//!   entry is never queued again (`hal::smr::SmrLink`'s state word, `panic(9)` in every
+//!   kernel, where the C's `KASSERT` is `DIAGNOSTIC`'s).
 //! - `SMR_PTR_GET` is an `Acquire` load where the C's `READ_ONCE` relies on the hardware's
 //!   dependency ordering, which Rust's memory model does not offer; `SMR_PTR_SET_LOCKED` is a
 //!   `Release` store (the C's `membar_producer` then `WRITE_ONCE`).
 
-use core::cell::Cell;
 use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use crate::queue_adapter;
-use crate::sys::queue::{Adapter, SimpleqEntry};
+use crate::sys::queue::Adapter;
 
-/// `struct smr_entry`: a deferred call, embedded in the object it destroys.
-pub struct SmrEntry {
-    /// `smr_list`: the CPU's or the system-wide queue of deferred calls.
-    pub smr_list: SimpleqEntry<SmrEntry>,
-    /// `smr_func`: the deferred function, `None` while the entry is idle.
-    pub smr_func: Cell<Option<fn(*mut c_void)>>,
-    /// `smr_arg`: its argument.
-    pub smr_arg: Cell<*mut c_void>,
-}
-
-impl SmrEntry {
-    /// An idle entry (what `smr_init` leaves, and the zero the C's allocators give).
-    pub const fn new() -> Self {
-        Self {
-            smr_list: SimpleqEntry::new(),
-            smr_func: Cell::new(None),
-            smr_arg: Cell::new(ptr::null_mut()),
-        }
-    }
-}
-
-impl Default for SmrEntry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// SAFETY: an entry is written by the CPU that queues it (at splhigh, on its own queue), then
-// moved between queues under `smr_lock` and read by the SMR thread once it owns it.
-unsafe impl Sync for SmrEntry {}
-
-queue_adapter!(
-    /// `SIMPLEQ_HEAD(smr_entry_list, smr_entry)`.
-    pub SmrEntryList: SmrEntry, smr_list => SimpleqEntry<SmrEntry>
-);
+/// `struct smr_entry`: a deferred call, embedded in the object it destroys; `hal::smr`'s
+/// link since N6.0 (`SmrEntry::new()` is an idle entry, the zero the C's allocators give).
+pub type SmrEntry = hal::smr::SmrLink;
 
 /// `SMR_PTR_GET`/`SMR_PTR_GET_LOCKED`/`SMR_PTR_SET_LOCKED` over one SMR-protected pointer:
 /// readers load it inside a read section, the writer stores it under its lock.
@@ -317,76 +288,76 @@ impl<'a, A: SmrSlistAdapter> Iterator for SmrSlistIter<'a, A> {
 pub trait SmrSlistAdapter: Adapter<Entry = SmrSlistEntry<<Self as Adapter>::Elem>> {}
 impl<A: Adapter<Entry = SmrSlistEntry<<A as Adapter>::Elem>>> SmrSlistAdapter for A {}
 
-/// `smr_init(smr)`: an idle entry.
+/// `smr_init(smr)`: an idle entry (a run one made idle again).
 #[inline]
 pub fn smr_init(smr: &SmrEntry) {
-    smr.smr_func.set(None);
-    smr.smr_arg.set(ptr::null_mut());
+    smr.init();
 }
 
 /// `smr_call(entry, func, arg)`: `func(arg)` once every CPU has left its read sections.
 #[inline]
 pub fn smr_call(entry: &'static SmrEntry, func: fn(*mut c_void), arg: *mut c_void) {
-    crate::kern::kern_smr::smr_call_impl(entry, func, arg, false);
+    hal::smr::defer_link(entry, func, arg);
 }
 
 /// `smr_barrier()`: waits until every read section that started before it has ended.
 #[inline]
 pub fn smr_barrier() {
-    crate::kern::kern_smr::smr_barrier_impl(false);
+    hal::smr::barrier(false);
 }
 
 /// `smr_flush()`: `smr_barrier` without the pause between rounds.
 #[inline]
 pub fn smr_flush() {
-    crate::kern::kern_smr::smr_barrier_impl(true);
+    hal::smr::barrier(true);
+}
+
+/// `smr_read_enter()` (`kern_smr.c`): starts a read section.
+#[inline]
+pub fn smr_read_enter() {
+    hal::smr::read_enter();
+}
+
+/// `smr_read_leave()` (`kern_smr.c`): ends a read section.
+#[inline]
+pub fn smr_read_leave() {
+    hal::smr::read_leave();
 }
 
 /// `SMR_ASSERT_CRITICAL()` (`DIAGNOSTIC`): inside a read section.
 #[inline]
 pub fn smr_assert_critical() {
-    #[cfg(feature = "diagnostic")]
-    if !crate::kern::subr_prf::panicstr()
-        && !crate::kern::init_main::DB_ACTIVE.load(Ordering::Relaxed)
-    {
-        crate::kassert!(smr_depth() > 0);
-    }
+    hal::smr::assert_critical();
 }
 
 /// `SMR_ASSERT_NONCRITICAL()` (`DIAGNOSTIC`): outside every read section.
 #[inline]
 pub fn smr_assert_noncritical() {
-    #[cfg(feature = "diagnostic")]
-    if !crate::kern::subr_prf::panicstr()
-        && !crate::kern::init_main::DB_ACTIVE.load(Ordering::Relaxed)
-    {
-        crate::kassert!(smr_depth() == 0);
-    }
-}
-
-/// `curcpu()->ci_schedstate.spc_smrdepth`.
-#[cfg(feature = "diagnostic")]
-fn smr_depth() -> u32 {
-    use crate::machine::Machine;
-    use crate::machine::cpu::{Cpu, curcpu};
-    Machine::ci_schedstate(curcpu()).spc_smrdepth.get()
+    hal::smr::assert_noncritical();
 }
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use std::boxed::Box;
+
     use super::*;
+    use crate::queue_adapter;
 
     #[test]
-    fn entries_start_idle() {
-        let e = SmrEntry::new();
-        assert!(e.smr_func.get().is_none());
-        e.smr_func.set(Some(|_| {}));
-        e.smr_arg.set(ptr::from_ref(&e).cast_mut().cast());
-        smr_init(&e);
-        assert!(e.smr_func.get().is_none());
-        assert!(e.smr_arg.get().is_null());
+    fn entries_start_idle_and_are_queued_once() {
+        let e: &'static SmrEntry = Box::leak(Box::new(SmrEntry::new()));
+        smr_init(e);
+        smr_init(e);
+        smr_call(e, |_| {}, ptr::null_mut());
+        let again = core::panic::AssertUnwindSafe(|| smr_call(e, |_| {}, ptr::null_mut()));
+        assert!(std::panic::catch_unwind(again).is_err(), "a queued entry");
+        // A read section through the adapters.
+        smr_read_enter();
+        smr_assert_critical();
+        smr_read_leave();
+        smr_assert_noncritical();
     }
 
     #[test]

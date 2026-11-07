@@ -70,7 +70,8 @@
 //! `rtable_init` and `domaininit` (the IPv4 and routing domains); the socket layer adds
 //! `soinit` and the UNIX domain. M11a: the kernel lock (`KERNEL_LOCK_INIT`, `KERNEL_LOCK`
 //! on behalf of proc0, `start_init`'s `KERNEL_UNLOCK` before init's first return to user
-//! mode), `cpu_boot_secondary_processors`, `smr_startup` and `smr_startup_thread`.
+//! mode), `cpu_boot_secondary_processors`, `smr_startup` and `smr_startup_thread` (since
+//! N6.0 `kernel::smr::start`; `smr_startup` has nothing left to do).
 //!
 //! ## Deviations
 //! - With `MULTIPROCESSOR` and `qemu`, `selftest=kthread` starts the secondary processors
@@ -113,7 +114,6 @@ use crate::kern::kern_kthread::{kthread_create, kthread_run_deferred_queue};
 use crate::kern::kern_resource::lim_startup;
 use crate::kern::kern_sched::{sched_init, sched_init_cpu};
 use crate::kern::kern_sig::{siginit, signal_init};
-use crate::kern::kern_smr::{smr_startup, smr_startup_thread};
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_task::taskq_init;
 use crate::kern::kern_timeout::{timeout_proc_init, timeout_startup};
@@ -324,8 +324,8 @@ pub fn main() -> ! {
     // Initialize SRP subsystem.
     let _ = unported!("srp_startup");
 
-    // Initialize SMR subsystem.
-    smr_startup();
+    // Initialize SMR subsystem: `smr_startup` (the C's queue head and wakeup timeout) has
+    // nothing left to do, `hal::smr`'s queues being statics (N6.0).
 
     // Initialize process and pgrp structures.
     procinit();
@@ -685,7 +685,7 @@ pub fn main() -> ! {
     crate::kern::selftest::ping_gateway();
 
     // Now that all CPUs partake in scheduling, start SMR thread.
-    smr_startup_thread();
+    kernel::smr::start::<crate::kern::proc_glue::BsdProcGlue>();
 
     config_process_deferred_mountroot();
 

@@ -35,7 +35,7 @@
 //! - `smr.read`: `smr_read_enter()` and `smr_read_leave()` (nothing without `DIAGNOSTIC`).
 //! - `smr.defer`: `smr_call(entry, func, arg)` of an idle entry (`smr_init`) on a CPU that is
 //!   not idle: the entry queued on the CPU's list at `splhigh`; the list emptied between
-//!   rounds, untimed.
+//!   rounds, untimed (since N6.0, the entries run through `hal::smr` and made idle again).
 
 #![forbid(unsafe_code)]
 
@@ -73,8 +73,19 @@ fn measure(ops: usize, mut f: impl FnMut() -> Duration) -> (f64, f64, f64) {
     (v[0], v[v.len() / 2], v[v.len() - 1])
 }
 
-/// The deferred function of `smr.defer`'s entries (never run: no SMR thread on the host).
+/// The deferred function of `smr.defer`'s entries.
 fn noop(_arg: *mut core::ffi::c_void) {}
+
+/// The bench's grace periods: no CPU but the bench's own.
+struct NoOtherCpu;
+
+impl hal::smr::CpuWalk for NoOtherCpu {
+    fn running(&self, _n: usize) -> bool {
+        false
+    }
+    fn peg(&self, _n: usize) {}
+    fn unpeg(&self) {}
+}
 
 fn main() {
     let args: Vec<String> = std::env::args()
@@ -155,7 +166,6 @@ fn main() {
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         );
-        let spc = Machine::ci_schedstate(ci);
         let rounds = OPS / ENTRIES;
         let r = measure(rounds * ENTRIES, || {
             let mut d = Duration::ZERO;
@@ -168,9 +178,12 @@ fn main() {
                     smr_call(black_box(e), noop, ptr::null_mut());
                 }
                 d += t.elapsed();
-                // The CPU's list emptied, untimed (no SMR thread runs on the host).
-                spc.spc_deferred.init();
-                spc.spc_ndeferred.set(0);
+                // The entries dispatched, run and made idle again, untimed (no SMR thread runs
+                // on the host; since N6.0 the queues are hal::smr's).
+                hal::smr::idle();
+                let b = hal::smr::collect();
+                hal::smr::grace_wait(&NoOtherCpu);
+                let _ = b.run();
             }
             d
         });

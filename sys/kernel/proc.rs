@@ -831,8 +831,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     fn clocks_start(_itimer: bool, _profclock: bool) {}
     /// `assertwaitok()` (`subr_xxx.c`).
     fn assertwaitok() {}
-    /// `smr_idle()` (`kern_smr.c`): this CPU passes a quiescent state.
-    fn smr_idle() {}
     /// `spl0()`.
     fn spl0() {}
     /// `exit2`'s accounting of a dead thread (`tuagg_add_process` under `ps_mtx`).

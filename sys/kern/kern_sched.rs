@@ -154,8 +154,8 @@ pub fn sched_init() {
 
 /// `sched_init_cpu`: called from `main()` for the boot cpu, then it's the responsibility
 /// of the MD code (`cpu_attach`) to call it for all other cpus: the CPU's scheduler state,
-/// its four clock interrupts, its SMR queue, and its idle thread through the deferred kthread
-/// queue (at once once that queue has run).
+/// its four clock interrupts and its idle thread through the deferred kthread queue (at once
+/// once that queue has run); its SMR queue is `hal::smr`'s, a static (N6.0).
 pub fn sched_init_cpu(ci: &'static CpuInfo) {
     let n = cpu_number_of(ci);
     if CPU_INFOS[n].set(ci).is_err() {
@@ -163,15 +163,12 @@ pub fn sched_init_cpu(ci: &'static CpuInfo) {
     }
     kernel::sched::sched_init_cpu::<G>(n);
 
-    let spc = Machine::ci_schedstate(ci);
     clockintr_bind(Clockintr::of(n, Slot::Itimer), itimer_update);
     clockintr_bind(Clockintr::of(n, Slot::Profclock), profclock);
     clockintr_bind(Clockintr::of(n, Slot::Roundrobin), roundrobin);
     clockintr_bind(Clockintr::of(n, Slot::Statclock), statclock);
 
     kthread_create_deferred(sched_kthreads_create, idle_arg(n));
-
-    spc.spc_deferred.init();
 }
 
 /// `sched_kthreads_create`: creates the CPU's idle thread; its argument is the CPU's word
