@@ -117,7 +117,7 @@
 use hal::sys::endian::letoh32;
 use hal::user::{AbiPod, pod_to_bytes, zeroed};
 
-use crate::fs::pod::{pod_at, pod_view};
+use crate::fs::pod::pod_view;
 
 /// `struct vrs_desc`: volume recognition sequence (ECMA 167 rev. 3 16.1).
 #[repr(C, packed)]
@@ -1863,7 +1863,7 @@ pub fn geticblen<T: IcbLen>(icb: &T) -> u32 {
 /// The member `T` of a C union held as its bytes, read at the union's start (`T` is never
 /// longer than the bytes: asserted below for each union): a copy out.
 fn member<T: AbiPod>(bytes: &[u8]) -> T {
-    pod_at(bytes, 0).unwrap_or_else(zeroed)
+    hal::pod::at(bytes, 0).unwrap_or_else(zeroed)
 }
 
 // The C's sizes (the fixed parts, see the module's deviations) and the offsets the code

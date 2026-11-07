@@ -123,6 +123,21 @@
 //!   [`PoolArc::count`] as the C's `f_count` counts it, adopted once into a handle again. The
 //!   word `Inner::refs` holds both: the references (handles and parked ones) in its low half,
 //!   the parked ones among them in its high half, so an item never grows.
+//! - N6.0: `pool_init(pp, .., palloc)` with a `struct pool_allocator` of the caller's (the
+//!   C's `m_pool_allocator`, `mbinit`) is [`TypedPool::init_with_source`] and
+//!   [`BoxPool::init_with_source`] over [`PoolBackend::create_with`]: the page half of the
+//!   allocator (`pa_alloc`, `pa_free`, `pa_pagesz`) is a [`PageSource`] the kernel implements
+//!   (N6.1's mbuf pages, their limit and DMA constraint its own), a safe trait over pages as
+//!   values; a backend that cannot take one makes no pool (the default), so a source is never
+//!   ignored. `PoolBox::pool` (crate-private) lets `hal::smr` check an item's pool.
+//! - N6.0: an item `bsd`'s legacy code holds by address for a while (N6.1's mbufs: a chain
+//!   handed to `bsd`'s `ip_output` and freed by `bsd`'s `m_freem`) is *parked*:
+//!   [`PoolBox::park`] gives the one handle up for the item's pointer and marks the item's
+//!   [`ParkWord`]; [`PoolBox::unpark`] makes the handle again from a reference to the item,
+//!   once, by a compare-and-swap of that word ([`Parkable`]: the type's one pool and its word,
+//!   which lies within the item). `park` returns a pointer, never a reference: safe code holds
+//!   none to a parked item, so the only references to it are those `bsd`'s own `unsafe` code
+//!   makes from the pointer (the `Buf` token's parking of N5.1, generalised).
 
 use core::any::TypeId;
 use core::cell::UnsafeCell;
@@ -131,7 +146,7 @@ use core::mem::{ManuallyDrop, MaybeUninit, offset_of};
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::assert::hal_panic;
 use crate::bridges;
@@ -227,6 +242,24 @@ pub trait RawPool: Sync {
     fn cache_init(&self);
 }
 
+/// Where a pool's pages come from when not from `pool(9)`'s own allocator: the page half of
+/// `struct pool_allocator` (`pa_alloc`, `pa_free`, `pa_pagesz`), implemented by the kernel
+/// (N6.1's mbuf clusters, `m_pool_allocator`: the pages charged against `nmbclust` and taken
+/// under the pool's DMA constraint, which are the source's own business) and handed to
+/// [`PoolBackend::create_with`]. A page is a value here: the pool writes its items into it
+/// (`RawPool`'s registration contract, `sys/hal/trust.rs`).
+pub trait PageSource: Sync {
+    /// `pa_alloc(pp, flags, &slowdown)`: a page of `len` bytes, aligned to `len` when
+    /// `aligned` (the pool keeps its page header inside the page), waiting for memory when
+    /// `wait` (`PR_WAITOK`); `None` when none can be had.
+    fn alloc(&self, len: usize, aligned: bool, wait: bool) -> Option<NonNull<u8>>;
+    /// `pa_free(pp, v)`: a page [`PageSource::alloc`] gave, of the same `len` and `aligned`.
+    fn free(&self, page: NonNull<u8>, len: usize, aligned: bool);
+    /// `pa_pagesz`: the page sizes the source can give, `POOL_ALLOC_SIZES`'s encoding (each
+    /// size's bit, and bit 0 when the pages can be aligned to their size).
+    fn sizes(&self) -> usize;
+}
+
 /// `bsd`'s `pool(9)`, as it registers it (`sys/kern/subr_pool.rs`).
 ///
 /// The registration contract: `create` returns `None` or a pool, alive for the rest of the
@@ -242,6 +275,54 @@ pub trait PoolBackend: Sync {
         flags: i32,
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool>;
+
+    /// `pool_init(pp, size, align, ipl, flags, wchan, palloc)` of a new pool whose pages come
+    /// from `source` (`palloc`'s `pa_alloc` and `pa_free`), as [`PoolBackend::create`]
+    /// otherwise. `None` from a backend that cannot take a source (the default), or for a
+    /// source whose page sizes it cannot use: never a pool that would ignore the source.
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        let _ = (size, align, ipl, flags, wchan, source);
+        None
+    }
+}
+
+/// `pa_alloc` of a pool's page source, for the backend that makes the pool: the page checked
+/// at the trust boundary (`sys/hal/trust.rs`: not null, `len` bytes, aligned to `len` when
+/// `aligned`, to a word otherwise) before `pool(9)` writes into it.
+pub fn source_page(
+    source: &dyn PageSource,
+    len: usize,
+    aligned: bool,
+    wait: bool,
+) -> Option<NonNull<u8>> {
+    let page = source.alloc(len, aligned, wait)?;
+    let align = if aligned { len } else { align_of::<usize>() };
+    check_block("PageSource", page, len, len, align);
+    Some(page)
+}
+
+/// `create` or `create_with` of the registered backend, as `source` asks.
+fn make_pool(
+    size: usize,
+    align: usize,
+    ipl: i32,
+    flags: i32,
+    wchan: &'static str,
+    source: Option<&'static dyn PageSource>,
+) -> Option<&'static dyn RawPool> {
+    let backend = bridges::pool_backend()?;
+    match source {
+        None => backend.create(size, align, ipl, flags, wchan),
+        Some(src) => backend.create_with(size, align, ipl, flags, wchan, src),
+    }
 }
 
 /// A pool of `T`s (`struct pool` sized for the type): a `static`, initialised once at boot.
@@ -271,7 +352,20 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// (the wait message and the name `vmstat -m` shows). `ENOMEM` when the pool cannot be
     /// made (or before the bridge is registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, false)
+        self.init_with(ipl, flags, wchan, false, None)
+    }
+
+    /// [`TypedPool::init`] of a pool whose pages come from `source` (`pool_init` with a
+    /// `struct pool_allocator`: the mbuf clusters'). `ENOMEM` too when the backend cannot take
+    /// the source.
+    pub fn init_with_source(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Result<(), Errno> {
+        self.init_with(ipl, flags, wchan, false, Some(source))
     }
 
     /// [`TypedPool::init`] for a pool whose values records reach by address and give back
@@ -285,7 +379,7 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         flags: i32,
         wchan: &'static str,
     ) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, true)
+        self.init_with(ipl, flags, wchan, true, None)
     }
 
     fn init_with(
@@ -294,20 +388,20 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         flags: i32,
         wchan: &'static str,
         recorded: bool,
+        source: Option<&'static dyn PageSource>,
     ) -> Result<(), Errno> {
         if self.made.is_set() {
             return Err(Errno::EBUSY);
         }
-        let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
-        let raw = backend
-            .create(
-                size_of::<Inner<T>>(),
-                align_of::<Inner<T>>(),
-                ipl,
-                flags,
-                wchan,
-            )
-            .ok_or(Errno::ENOMEM)?;
+        let raw = make_pool(
+            size_of::<Inner<T>>(),
+            align_of::<Inner<T>>(),
+            ipl,
+            flags,
+            wchan,
+            source,
+        )
+        .ok_or(Errno::ENOMEM)?;
         self.made
             .set(Made { raw, recorded })
             .map_err(|_| Errno::EBUSY)
@@ -1198,6 +1292,34 @@ impl<T: Send + Sync + 'static> Drop for Last<T> {
     }
 }
 
+/// The parked mark of a [`Parkable`] item: 0 while a [`PoolBox`] owns it, 1 while it is
+/// parked ([`PoolBox::park`]). Valid all zero; written only by `hal`.
+pub struct ParkWord(AtomicU8);
+
+impl ParkWord {
+    /// An owned item's mark.
+    pub const fn new() -> Self {
+        Self(AtomicU8::new(0))
+    }
+}
+
+impl Default for ParkWord {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An item that crosses into `bsd`'s legacy code by address and comes back
+/// ([`PoolBox::park`], [`PoolBox::unpark`]): its type's one pool, and its [`ParkWord`]
+/// (which must lie within the item: checked).
+pub trait Parkable: Send + Sync + Sized + 'static {
+    /// The pool every item of the type comes from (checked at [`PoolBox::park`]), which the
+    /// handle [`PoolBox::unpark`] makes puts it back into.
+    const POOL: &'static BoxPool<Self>;
+    /// The item's own mark.
+    fn park_word(&self) -> &ParkWord;
+}
+
 /// A pool of `T`s whose items have one owner each (`struct pool` sized for the type): a
 /// `static`, initialised once at boot. Its items are exactly `T`s (no count, no back
 /// pointer), handed out as [`PoolBox<T>`].
@@ -1239,13 +1361,41 @@ impl<T: 'static> BoxPool<T> {
     /// `vmstat -m` shows). `ENOMEM` when the pool cannot be made (or before the bridge is
     /// registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
+        self.init_from(ipl, flags, wchan, None)
+    }
+
+    /// [`BoxPool::init`] of a pool whose pages come from `source` (`pool_init` with a
+    /// `struct pool_allocator`: the mbufs'). `ENOMEM` too when the backend cannot take the
+    /// source.
+    pub fn init_with_source(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Result<(), Errno> {
+        self.init_from(ipl, flags, wchan, Some(source))
+    }
+
+    fn init_from(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: Option<&'static dyn PageSource>,
+    ) -> Result<(), Errno> {
         if self.raw.is_set() {
             return Err(Errno::EBUSY);
         }
-        let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
-        let raw = backend
-            .create(size_of::<T>().max(1), align_of::<T>(), ipl, flags, wchan)
-            .ok_or(Errno::ENOMEM)?;
+        let raw = make_pool(
+            size_of::<T>().max(1),
+            align_of::<T>(),
+            ipl,
+            flags,
+            wchan,
+            source,
+        )
+        .ok_or(Errno::ENOMEM)?;
         self.raw.set(raw).map_err(|_| Errno::EBUSY)
     }
 
@@ -1412,6 +1562,12 @@ impl<T: 'static> PoolBox<T> {
         unsafe { Pin::new_unchecked(&**self) }
     }
 
+    /// The pool the item goes back to (a container that knows its type's one pool checks it:
+    /// `hal::smr`).
+    pub(crate) fn pool(this: &Self) -> &'static BoxPool<T> {
+        this.pool
+    }
+
     /// Gives the handle up for the item's pointer (with the item's whole provenance) and its
     /// pool: whoever keeps them owns the item from now on and gives it back as a handle by
     /// [`PoolBox::from_raw`]. The item is not freed here; dropped, the pair leaks it. The
@@ -1437,6 +1593,66 @@ impl<T: 'static> PoolBox<T> {
             _owns: PhantomData,
         }
     }
+}
+
+impl<T: Parkable> PoolBox<T> {
+    /// Parks the item: the handle given up for the item's pointer, which `bsd`'s legacy code
+    /// keeps by address (a `struct mbuf *`), the item marked parked so that one
+    /// [`PoolBox::unpark`] can make the handle again. `panic(9)` for an item of another pool
+    /// than `T::POOL`, or whose mark lies outside it.
+    pub fn park(this: Self) -> NonNull<T> {
+        if !ptr::eq(this.pool, T::POOL) {
+            hal_panic(format_args!("PoolBox::park: an item of another pool"));
+        }
+        let w = check_word(&this);
+        if w.0
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            hal_panic(format_args!("PoolBox::park: an owned item marked parked"));
+        }
+        PoolBox::into_raw(this).0
+    }
+
+    /// The handle of a parked item back, from a reference to it (what `bsd` made of the
+    /// pointer [`PoolBox::park`] returned): once per park, by a compare-and-swap of its mark;
+    /// `None` for an item that is not parked (never parked, or unparked already: never a
+    /// second owner). The caller keeps no reference to the item after this (`bsd`'s
+    /// contract: its references come from the parked pointer, by its own `unsafe`).
+    pub fn unpark(parked: &'static T) -> Option<Self> {
+        let w = parked.park_word();
+        let start = ptr::from_ref(parked).addr();
+        let at = ptr::from_ref(w).addr();
+        if at < start || at + size_of::<ParkWord>() > start + size_of::<T>() {
+            hal_panic(format_args!("PoolBox::unpark: a mark outside the item"));
+        }
+        w.0.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        // SAFETY: the mark lies within `parked`'s bytes (checked) and was 1: only `park` stores
+        // 1 (the word's byte is private to `hal`), into the mark of the item it parks (checked
+        // within that item), so `parked` is an item that `park` gave up: its box consumed, its
+        // pointer returned and nothing put back (`into_raw` leaks the item; no handle of it
+        // existed since), an item of `T::POOL` (checked at `park`) whose value stayed
+        // initialised (no one frees or writes an item that is out: `RawPool`'s contract). The
+        // exchange to 0 that this call won is the only one per park, so this rebuilds the
+        // item's one handle exactly once (the pairing of `PoolBox::from_raw`'s contract with
+        // the `into_raw` of `park`). Safe code holds no reference to a parked item (`park`
+        // returns a pointer and consumed the handle, ending its borrows); `parked` itself was
+        // made by `bsd`'s `unsafe` code from that pointer, whose contract is to use no such
+        // reference once the item is unparked, so the handle's `&mut T` meets none.
+        Some(unsafe { PoolBox::from_raw(NonNull::from(parked), T::POOL) })
+    }
+}
+
+/// The mark of a [`Parkable`] item, checked to lie within it.
+fn check_word<T: Parkable>(b: &PoolBox<T>) -> &ParkWord {
+    let w = b.park_word();
+    let start = PoolBox::as_ptr(b).addr();
+    let at = ptr::from_ref(w).addr();
+    if at < start || at + size_of::<ParkWord>() > start + size_of::<T>() {
+        hal_panic(format_args!("PoolBox::park: a mark outside the item"));
+    }
+    w
 }
 
 impl<T: 'static> Deref for PoolBox<T> {
@@ -2549,6 +2765,198 @@ mod tests {
         );
         assert_eq!(pool.nout(), 0);
     }
-}
 
+    /// A page source that counts its pages and remembers what it was asked.
+    struct CountingSource {
+        out: AtomicU32,
+        asked: std::sync::Mutex<Vec<(usize, bool, bool)>>,
+    }
+
+    impl PageSource for CountingSource {
+        fn alloc(&self, len: usize, aligned: bool, wait: bool) -> Option<NonNull<u8>> {
+            self.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((len, aligned, wait));
+            let layout = std::alloc::Layout::from_size_align(len, len).ok()?;
+            // SAFETY: `len` is not 0 (the double asks for a power of two of the item's size).
+            let p = NonNull::new(unsafe { std::alloc::alloc_zeroed(layout) })?;
+            self.out.fetch_add(1, Ordering::SeqCst);
+            Some(p)
+        }
+
+        fn free(&self, page: NonNull<u8>, len: usize, aligned: bool) {
+            assert!(aligned);
+            let layout = std::alloc::Layout::from_size_align(len, len).expect("the layout");
+            // SAFETY: `page` came from `alloc` with this layout, once (the pool's contract).
+            unsafe { std::alloc::dealloc(page.as_ptr(), layout) };
+            self.out.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn sizes(&self) -> usize {
+            4096 | 1
+        }
+    }
+
+    #[test]
+    fn a_sourced_pool_takes_its_pages_from_the_source_and_gives_them_back() {
+        testutil::install();
+        static SRC: CountingSource = CountingSource {
+            out: AtomicU32::new(0),
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        static P: BoxPool<[u64; 30]> = BoxPool::new();
+        P.init_with_source(0, PR_WAITOK, "srcpl", &SRC)
+            .expect("made");
+        assert_eq!(
+            P.init_with_source(0, PR_WAITOK, "srcpl", &SRC),
+            Err(Errno::EBUSY)
+        );
+        let a = P.get(PR_WAITOK, || [1; 30]).expect("an item");
+        let b = P.get(PR_NOWAIT, || [2; 30]).expect("another");
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *SRC.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [(256, true, true), (256, true, false)],
+            "the page's length, alignment and wait as the pool asked"
+        );
+        assert_eq!((a[0], b[29]), (1, 2));
+        drop(a);
+        drop(b);
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 0, "every page back");
+        static T: TypedPool<u64> = TypedPool::new();
+        T.init_with_source(0, PR_WAITOK, "srctpl", &SRC)
+            .expect("made");
+        let h = T.get_shared(PR_WAITOK, || 9).expect("an item");
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 1);
+        drop(h);
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 0);
+    }
+
+    /// A source that hands out a page at an address no page has.
+    struct Misaligned;
+
+    impl PageSource for Misaligned {
+        fn alloc(&self, _len: usize, _aligned: bool, _wait: bool) -> Option<NonNull<u8>> {
+            Some(NonNull::dangling())
+        }
+        fn free(&self, _page: NonNull<u8>, _len: usize, _aligned: bool) {}
+        fn sizes(&self) -> usize {
+            4096 | 1
+        }
+    }
+
+    #[test]
+    fn a_source_page_is_checked_at_the_trust_boundary() {
+        testutil::install();
+        let good = CountingSource {
+            out: AtomicU32::new(0),
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        let p = source_page(&good, 4096, true, true).expect("a page");
+        assert!(p.as_ptr().addr().is_multiple_of(4096));
+        good.free(p, 4096, true);
+        assert!(
+            std::panic::catch_unwind(|| source_page(&Misaligned, 4096, true, false)).is_err(),
+            "a page not aligned to its length"
+        );
+    }
+
+    /// A parkable item (an mbuf's shape: a byte of its header is its mark).
+    struct Pk {
+        v: u64,
+        mark: ParkWord,
+    }
+
+    static PKS: BoxPool<Pk> = BoxPool::new();
+
+    impl Parkable for Pk {
+        const POOL: &'static BoxPool<Pk> = &PKS;
+        fn park_word(&self) -> &ParkWord {
+            &self.mark
+        }
+    }
+
+    fn pk(v: u64) -> PoolBox<Pk> {
+        let _ = PKS.init(0, PR_WAITOK, "parkpl");
+        PKS.get(PR_WAITOK, || Pk {
+            v,
+            mark: ParkWord::new(),
+        })
+        .expect("an item")
+    }
+
+    #[test]
+    fn a_parked_item_comes_back_once_and_goes_back_to_its_pool() {
+        testutil::install();
+        let b = pk(7);
+        let before = PKS.nout();
+        let addr = PoolBox::as_ptr(&b);
+        let p = PoolBox::park(b);
+        assert_eq!(p.as_ptr().cast_const(), addr);
+        assert_eq!(PKS.nout(), before, "parked, still out of the pool");
+        // A leaked item is never parked: unpark refuses it.
+        let leaked: &'static Pk = PoolBox::leak(pk(8));
+        assert!(PoolBox::unpark(leaked).is_none());
+        // Back: once.
+        let twin: &'static Pk = leak_ref(p);
+        let back = PoolBox::unpark(twin).expect("the parked item");
+        assert_eq!(back.v, 7);
+        assert!(PoolBox::unpark(twin).is_none(), "unparked once");
+        drop(back);
+        assert_eq!(
+            PKS.nout(),
+            before,
+            "put back once (the leaked one stays out)"
+        );
+    }
+
+    /// The `&'static` `bsd`'s legacy code makes of a parked pointer, by its own `unsafe`.
+    fn leak_ref(p: NonNull<Pk>) -> &'static Pk {
+        // SAFETY: (test) `p` is the pointer `park` returned for an item of `PKS`, alive (the
+        // pool's double frees only on `put`) and reached by no other reference.
+        unsafe { p.as_ref() }
+    }
+
+    #[test]
+    fn park_refuses_an_item_of_another_pool_and_unpark_a_mark_outside() {
+        testutil::install();
+        static OTHER: BoxPool<Pk> = BoxPool::new();
+        let _ = OTHER.init(0, PR_WAITOK, "otherpl");
+        let b = OTHER
+            .get(PR_WAITOK, || Pk {
+                v: 1,
+                mark: ParkWord::new(),
+            })
+            .expect("an item");
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| PoolBox::park(b))).is_err()
+        );
+        struct Stray {
+            _v: u64,
+        }
+        static STRAY_MARK: ParkWord = ParkWord::new();
+        static STRAYS: BoxPool<Stray> = BoxPool::new();
+        impl Parkable for Stray {
+            const POOL: &'static BoxPool<Stray> = &STRAYS;
+            fn park_word(&self) -> &ParkWord {
+                &STRAY_MARK
+            }
+        }
+        let _ = STRAYS.init(0, PR_WAITOK, "straypl");
+        let s = STRAYS.get(PR_WAITOK, || Stray { _v: 0 }).expect("an item");
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| PoolBox::park(s))).is_err(),
+            "a mark outside the item"
+        );
+        let leaked: &'static Stray =
+            PoolBox::leak(STRAYS.get(PR_WAITOK, || Stray { _v: 1 }).expect("an item"));
+        assert!(
+            std::panic::catch_unwind(|| PoolBox::unpark(leaked).is_some()).is_err(),
+            "unpark checks the mark too"
+        );
+    }
+}
 /* </TESTS> */

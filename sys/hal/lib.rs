@@ -136,6 +136,8 @@ pub mod pinlist;
 #[forbid(unsafe_code)]
 pub mod pmap;
 
+pub mod pod;
+
 pub mod pool;
 #[forbid(unsafe_code)]
 pub mod prf;
@@ -157,6 +159,7 @@ pub mod seqlock;
 pub mod sig;
 pub mod sleep;
 pub mod slot;
+pub mod smr;
 #[forbid(unsafe_code)]
 pub mod softintr;
 #[cfg(test)]

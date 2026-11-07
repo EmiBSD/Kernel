@@ -5022,7 +5022,7 @@ adapted_by = ["sys/kernel/vm/object.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd
 rust = "sys/kern/init_main.rs"
 lz = ["sys/kern/init_main.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs"]
+adapted_by = ["sys/hal/syscall.rs", "sys/kernel/pipe.rs", "sys/hal/rwlock.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/init.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/pdaemon.rs", "sys/kernel/vm/types.rs", "sys/hal/list.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/clockintr.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/sync.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/smr.rs"]
 notes = "M2: main() skeleton in the C's order (consinit, copyright, then every step reports itself unported until its subsystem lands), copyright, boothowto, db_active, ncpus, ncpusfound; main takes no framep and never returns; proc0/process0, start_init, check_console, kthreads are M5; M5-a: timeout_startup, SCHED_LOCK_INIT, sched_init, clockqueue_init, sched_init_cpu and timeout_proc_init are called; initclocks runs (the LAPIC timer on amd64, agtimer on arm64) and selftest=clock checks it; M5-b1: proc0/process0/pgrp0/session0 are statics here; main sets curproc first, calls procinit, builds process 0 as the C does (process_initialize, the lists and hashes, PS_SYSTEM/P_SYSTEM, SONPROC, nice, the name), p_addr = proc0paddr, chgproccnt(0, 1), ci_randseed; crget, the p_sleep_to timeout (endtsleep, M5-b2), signal_init/siginit, fdinit, lim_startup and uvmspace_init stay reported; M5-b2: proc0 p_sleep_to (endtsleep), sleep_queue_init, scheduler_start, kthread_run_deferred_queue (idle and softclock threads), the proc0 tsleep loop (without feature qemu) and selftest=kthread; M6-b: initprocess (null until start_init), the reaper kthread, the boot modules printed (init as a Limine module); the kthread selftest runs after the reaper exists; M6-b2: vmspace0 (uvmspace_init over pmap_kernel, process0/proc0 point at it), fork1 of init (FORK_FORK, start_init) sets initprocess, start_init_exec with its wakeup, start_init (waits for main, check_console reported, execs the init module through exec_image and returns to user mode; 'init: not found' panics as in C), set_init_module from stand; proc0 sleeps in its tsleep loop under qemu too (init's exit ends the run); the kthread selftest still exits early; M7a: rw_obj_init runs; M7a-3b: limit0 with lim_startup and uvm_init_limits; M7b: taskq_init runs (systq and systqmp threads from kthread_run_deferred_queue), selftest=taskq after the reaper exists; kern_prot.c: proc0's credentials (crget, cr_ngroups = 1) are real; M7b: mbinit runs (followed by selftest mbufs under feature qemu), mbcpuinit runs; M7b: config_init, the config_pending wait (tsleep on config_pending) and config_process_deferred_mountroot run (subr_autoconf.c); kern_descrip.c: filedesc_init runs, process 0 gets fdinit() as ps_fd/p_fd, start_init installs the console stand-in (dev/consfile.rs) at descriptors 0, 1 and 2 before the exec, where init(8) would open /dev/console; kern_sig.c: sigacts0, signal_init, siginit(&sigacts0), process 0's ps_sigacts; start_init clears init's ps_sigflags; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot; M8: pty, NPTY 16), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: tty_init runs (tty.c); M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; ffs: rootvp and swapdev_vp (AtomicPtr with rootvp()/set_rootvp() and swapdev_vp()/set_swapdev_vp()), set by ffs_mountroot; M8: disk_init runs (subr_disk.c), rd(4) attaches from pdevinit and selftest rd_check (feature qemu) opens rd0a through bdevsw and reads the ffs superblock right after; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M7b: ifinit, softnet_init and softnet_percpu run (net/if.c), the pseudo-devices attach from machine::autoconf::pdevinit() (the ioconf.rs tables: loop, so lo0 attaches at boot), pdevinit_done is an atomic flag; vfs stage 1: vfsinit runs; mountroot (systm.h's MOUNTROOT, NULL: setroot is subr_disk.c) is checked where the C does: with none, main prints 'cannot mount root: no root file system' instead of panicking and goes on without rootvnode (init still execs its boot module); with one, MNT_ROOTFS, VFS_ROOT into rootvnode and the current directories of process 0 and init as in C; check_console looks /dev/console up with namei and warns ('warning: /dev/console does not exist' in smoke); M7b IPv4: rtable_init before the pseudo-devices and domaininit after them (inetdomain, routedomain); selftest ping (feature qemu) after the taskq selftest; vfs stage 2: lf_init; the cleaner (buf_daemon) and update (syncer_thread) kthreads, recorded in cleanerproc/syncerproc; aiodoned and zerothread reported; sys_pipe.c: pipe_init runs; M8: start_init is the C's (the argument page at USRSTACK - PAGE_SIZE, the boot flags and path copied out, sys_execve of each initpaths[] entry), then exec_image of the init boot module with the same arguments while no root file system exists; init_exec is not needed (exec_maxhdrsz is a const fn); uvmpd_tune where the page daemon would start; M8: futex_init; M8: start_periodic_resettodr; M8: diskconf runs (machine::autoconf::diskconf, setroot); with a ramdisk the root is mounted from rd0a and start_init execs OpenBSD's /sbin/init from it, without one main still says it cannot mount root and execs the init boot module; sockets: soinit runs; domaininit initialises unixdomain too; kern_event.c: kqueue_init and kqueue_init_percpu are called; M9b: CRYPTO (GENERIC's option) is configured: crypto_init and swcr_init run after the pseudo-devices, wg attaches from pdevinit; M9d: NSTOEPLITZ: stoeplitz_init runs before the pseudo-devices; pf and pflog attach from pdevinit; M10e: main calls nfs_init (nfs_subs.rs) before vfsinit under nfsserver or nfsclient, as the C; M11a: KERNEL_LOCK_INIT and KERNEL_LOCK (sys::systm functions, nothing without MULTIPROCESSOR) and cpu_boot_secondary_processors (MULTIPROCESSOR) in their places; M11a: smr_startup, smr_startup_thread, start_init's KERNEL_UNLOCK before init's first return to user mode; with MULTIPROCESSOR and qemu `selftest: N cpus running` after cpu_boot_secondary_processors (selftest=kthread boots the APs itself first); pool_gc_pages (MULTIPROCESSOR) reported until the per-CPU pool caches; M13 (vmx): the qemu network self-test (selftest::ping_gateway) runs after cpu_boot_secondary_processors and the per-CPU checks, so intr_barrier reaches queue interrupts on the APs; M16d: random_start(boothowto & RB_GOODRANDOM) is called (was an unported! report); __guard_local is GUARD_LOCAL (export_name __guard_local) in .openbsd.randomdata, read by random_start; N3.5 S2: LZ's static VMSPACE0 (vmspace0) is gone: process 0's vmspace is an item of vmsppl made by kernel::vm::map::uvmspace_alloc_kernel (the C's uvmspace_init(&vmspace0, pmap_kernel(), ..)), held by PROCESS0's ps_vmspace"
 
 [[module]]
@@ -5457,12 +5457,6 @@ status = "redesigned"
 notes = "N4.5b: bsd's edge of kernel::sig and kernel::sigio: the sysent rows (sys_sigaction .. sys___thrsigdivert, sys_nosys, sys_sigreturn), coredump (the file systems), and the LZ signatures over bsd's Proc (psignal, ptsignal, trapsignal, userret, sigabort pin the thread; pgsigio and sigio_setown/getown over kernel::sigio), 0 unsafe (LZ 17), forbid on its mod line; N4.8b: native_sigreturn, KernelApi::sigreturn's entry through the prologue and the sysent row, whose arm64 body is the kernel's"
 
 [[module]]
-rust = "sys/kern/kern_smr.rs"
-lz = ["sys/kern/kern_smr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/sched.rs"]
-
-[[module]]
 rust = "sys/kern/kern_softintr.rs"
 lz = ["sys/kern/kern_softintr.rs"]
 status = "redesigned"
@@ -5604,7 +5598,7 @@ status = "inherited"
 rust = "sys/kern/subr_pool.rs"
 lz = ["sys/kern/subr_pool.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs"]
+adapted_by = ["sys/kernel/vm/km.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/sigio.rs", "sys/kernel/log.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/bio.rs", "sys/hal/smr.rs"]
 notes = "pool_init/destroy/get/put with do_get/do_put, the page management, the request queue, pool_prime, watermarks/limits/constraints, pool_reclaim(_all), the page allocators and the lock ops; getnsecuptime is kern_tc.c's; poison_* (subr_poison.c) reported; ddb printers (pool_printit, db_show_all_pools) and pool_chk not here; M7a: pool_lock (the rwlock over the pool list) is real; diagnostic tools stage 2: sysctl_dopool and the non-MULTIPROCESSOR pool_cache_pool_info/pool_cache_info/pool_cache_cpus_info; M10e: pool_walk (DDB: func(item, full, pr) for every item in use of the full and the partial pages; PoolWalkPr/PoolWalkFn types), used by the NFS client printers (nfs_debug.c); host test; M11a: the lock ops are the real mutex (mtx_init_flags at pr_ipl, mtx_enter/_try/leave, MUTEX_ASSERT_*, msleep_nsec) and rwlock (rw_init_flags, rw_enter_write, RW_WRITE|RW_NOSLEEP, rw_assert_wrlock, rwsleep_nsec), with or without MULTIPROCESSOR; pool_get asserts waitok and with PR_WAITOK and no memory queues a pool_request on its stack and sleeps in pl_sleep until pool_runqueue serves it (deviation: while cold or on proc0 it fails, where the C panics under DIAGNOSTIC); the slowdown/pool_debug yield; pr_refcnt taken by sysctl_dopool and finalized by pool_destroy; splvm in pool_multi_alloc/free, KERNEL_LOCK in pool_multi_alloc_ni/free_ni; pool_gc_sched (timeout) and pool_gc_pages (systqmp task, splvm, one idle page per pool after POOL_WAIT_GC, re-armed every second; started by init_main under MULTIPROCESSOR); the MULTIPROCESSOR per-CPU caches: struct pool_cache_item/pool_cache, POOL_CACHE_* , pool_cache_init (pool_caches 'plcache' via cpumem_get), pool_cache_item_magic(_check) over the ci_nextl words, pool_list_enter/leave (contention count), pool_cache_list_alloc/free/put, pool_cache_enter/leave (pc_gen generation at pr_ipl), pool_cache_get/put, pool_cache_destroy, pool_cache_gc (list length tuning), pool_cache_pool_info, pool_cache_info and pool_cache_cpus_info (kern.pool.cache/cache_cpus); counters other CPUs read are relaxed atomics with release/acquire on pc_gen; selftest=mpstress (selftest.rs) is the MP stress; N5.1, an exception to adapted (the user reviews it): adapted plus pool_get_idle, the RawPool::get_idle bridge method kernel's BoxPool needs (buf_get's try under the cache's lock: an item the pool holds, no growth, no sleep, no pr_nfail); moves with subr_pool's redesign"
 
 [[module]]
@@ -5810,7 +5804,8 @@ adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_syscalls.rs"
@@ -6292,7 +6287,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -7540,7 +7535,7 @@ status = "inherited"
 rust = "sys/sys/sched.rs"
 lz = ["sys/sys/sched.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/list.rs", "sys/kernel/sched.rs", "sys/kernel/clockintr.rs"]
+adapted_by = ["sys/hal/list.rs", "sys/kernel/sched.rs", "sys/kernel/clockintr.rs", "sys/hal/smr.rs"]
 notes = "N4.8a: spc_itimer/profclock/roundrobin/statclock are the CPU's slots of kernel::clockintr"
 
 [[module]]
@@ -7608,7 +7603,8 @@ notes = "N4.5b: signalvar.h is sys/kernel/sig.rs's (Sigacts with its [m] members
 [[module]]
 rust = "sys/sys/smr.rs"
 lz = ["sys/sys/smr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/smr.rs"]
 notes = "M11a: struct smr_entry, smr_entry_list, smr_init, smr_call, smr_barrier, smr_flush, SMR_ASSERT_CRITICAL/NONCRITICAL, SMR_PTR_GET (Acquire load)/SMR_PTR_GET_LOCKED/SMR_PTR_SET_LOCKED (Release store) as SmrPtr<T>; M11e: SMR_SLIST_* (SmrSlistEntry/SmrSlistHead over queue_adapter!, Acquire/Release links, a removed element keeps its link) for bpf.c and if_pflow.c, with a host test; not ported: SMR_LIST/SMR_TAILQ (users not configured: if_pppoe.c, if_etherbridge.c, carp)"
 
 [[module]]
@@ -11107,7 +11103,8 @@ notes = "N4.7a: the adapter of kernel::log's <sys/syslog.h> (every constant and 
 [[module]]
 rust = "sys/sys/systm.rs"
 lz = ["sys/sys/systm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/netlock.rs"]
 notes = "physmem only (defined here, filled by the machdeps; the C defines it per arch); the hostname/boottime globals, copyin/copyout, tsleep/wakeup and the other prototypes come with their files; M5-b2: cold and safepri (defined here like physmem), INFSLP, MAXTSLP; M6-a: struct sysent (Sysent::new for the generated table), sy_call_t (Result plus the retval registers), SY_NOLOCK, SCARG as sysargs; M6-b: sy_call_t takes &SysArgs (the six registers) and sysargs::<T> is safe; M7b: NET_LOCK/NET_UNLOCK/NET_LOCK_SHARED/NET_UNLOCK_SHARED and the NET_ASSERT_* (DIAGNOSTIC, splassert_ctl) as functions over netlock (defined in net/if_.rs), the assertions taking the caller's name for __func__; vfs stage 1: mountroot (MOUNTROOT, a StaticCell<Option<MountrootFn>> defined here like cold; NULL until setroot exists); ffs: rootdev as the ROOTDEV atomic (NODEV until setroot sets it); swapdev comes from the arch conf.c (machine::conf::swapdev); M11a: KERNEL_LOCK_INIT/KERNEL_LOCK/KERNEL_UNLOCK/KERNEL_ASSERT_LOCKED/KERNEL_ASSERT_UNLOCKED as kernel_lock_init()..kernel_assert_unlocked(), nothing without MULTIPROCESSOR; M11a: cond_signal"
 
 [[module]]
@@ -11551,7 +11548,7 @@ rust = "sys/hal/owned.rs"
 crate = "hal"
 lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs", "sys/sys/queue.rs"]
 status = "redesigned"
-notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there. N5.1: SecondaryList<S>, queue.h's TAILQ/LIST/SIMPLEQ over a SecondaryEntry (push_head, push_tail, insert_before_first for bufq_simple_nscan, pop_head, remove, the walks), whose links are Member<A> values moved in and out with their count: counted for an owned element (Member::counted) or uncounted for a &'static one (Member::of_static, refused for an owned element; the entry records which), the buffer cache's queues and a disk's bufq"
+notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there. N5.1: SecondaryList<S>, queue.h's TAILQ/LIST/SIMPLEQ over a SecondaryEntry (push_head, push_tail, insert_before_first for bufq_simple_nscan, pop_head, remove, the walks), whose links are Member<A> values moved in and out with their count: counted for an owned element (Member::counted) or uncounted for a &'static one (Member::of_static, refused for an owned element; the entry records which), the buffer cache's queues and a disk's bufq; N6.0: OwnedSlist<A> over SlistLink (an element's link owns the next element: m_next, m_nextpkt, sb_mb) with the O(1) tail (ml_tail, sb_mbtail), push_head/push_tail/pop_head/concat, iter, and a cursor with split_after (m_split) and remove_next; slist_adapter!; the drop pops one at a time"
 
 [[module]]
 rust = "sys/hal/pinlist.rs"
@@ -11637,9 +11634,9 @@ crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
 
 [[extra]]
-rust = "sys/hal/netlock.rs"
+rust = "sys/hal/pod.rs"
 crate = "hal"
-reason = "hal runtime, written new: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager (N3.4c); paid by N6"
+reason = "hal runtime, written new (N6.0): the views of an AbiPod structure over a byte buffer, at and put (the copy forms, moved from kernel::fs::pod's pod_at and pod_put) and view and view_mut (in place, None when the bytes are short or misaligned: the C's mtod(m, struct ip *) read and written in place, for the network stack's headers)"
 
 [[extra]]
 rust = "sys/hal/slot.rs"
@@ -11885,6 +11882,128 @@ status = "redesigned"
 notes = "N3.5 S1: arc4random(9) over the existing Random bridge (bsd's rnd.c generator; panic before registration) and arc4random_uniform(9) re-expressed over it with rnd.c's rejection of the low 2**32 % bound words; for the kernel's map and address selectors; sys/dev/rnd.rs keeps every LZ item for its legacy callers"
 
 [[module]]
+rust = "sys/hal/smr.rs"
+crate = "hal"
+lz = ["sys/kern/kern_smr.rs", "sys/sys/smr.rs"]
+status = "redesigned"
+notes = "N6.0: kern_smr.c's protocol and <sys/smr.h>'s entry and pointer, written new: SmrLink (struct smr_entry, a state word that refuses a second queueing in every kernel), the per-CPU queues and counts (schedstate_percpu's five SMR members, PerCpu<SmrCpu>) and the system's (smr_lock, smr_deferred, smr_ndeferred, smr_expedite: Mutexed<Deferred> at IPL_HIGH), the read sections (read/SmrRead and the C-style read_enter/read_leave, two per-CPU counts so a C-style leave cannot end a guard's section; both counted always, idle inside either is panic(9)), idle (smr_idle), defer_link (smr_call), barrier (smr_barrier_impl, its link on its frame), grace_wait (private, serialised, run by Batch::run before any call, its peg check always on) over a CpuWalk the caller passes (decision 39; running() a trust boundary of sys/hal/trust.rs), wait and collect (smr_thread's sleeps and SIMPLEQ_CONCAT; the thread itself is sys/kernel/smr.rs), SmrPtr<T: SmrLinked> (SMR_PTR_GET/_LOCKED/SET_LOCKED over a pool item, keyed to the writer's lock) and SmrRetired (the old target, released only by its deferral); smr_wakeup and its timeout dropped (a dispatch to an empty queue wakes the thread, which pauses SMR_PAUSE unless expedited)"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_PAUSE"
+native = ["SMR_PAUSE_NSEC"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SmrDeferred"
+native = ["Deferred"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_LOCK"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_DEFERRED"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_WAKEUP_TMO"
+native = []
+kind = "dropped"
+reason = "smr_wakeup_tmo armed smr_wakeup 100 ms after a dispatch to an empty queue; hal has no timeout: dispatch wakes the SMR thread at once and wait() pauses SMR_PAUSE unless expedited, the same 100 ms batching; nothing userland sees"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_EXPEDITE"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_NDEFERRED"
+native = ["DEFERRED"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::SMR_GRACE_PERIOD"
+native = ["GRACE_PERIOD"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_cpu_is_idle"
+native = ["cpu_is_idle"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_startup"
+native = []
+kind = "dropped"
+reason = "SIMPLEQ_INIT of smr_deferred and timeout_set of smr_wakeup_tmo: hal::smr's queues are statics and the timeout is gone (SMR_WAKEUP_TMO's row); init_main calls nothing"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_grace_wait"
+native = ["grace_wait"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_wakeup"
+native = []
+kind = "dropped"
+reason = "the timeout's wakeup of the SMR thread: dispatch wakes it directly (wakeup on the thread's channel), the pause in wait() keeps the 100 ms batching"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_read_enter"
+native = ["read_enter", "read"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_read_leave"
+native = ["read_leave", "SmrRead::drop"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_dispatch"
+native = ["dispatch"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_idle"
+native = ["idle"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_call_impl"
+native = ["defer_link", "call", "SmrLink::claim"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_barrier_impl"
+native = ["barrier"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/smr.rs::SmrEntry::new"
+native = ["SmrLink::new"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/smr.rs::SmrEntry::default"
+native = ["SmrLink::default"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/smr.rs::smr_depth"
+native = ["SmrCpu"]
+kind = "merged"
+
+[[module]]
+rust = "sys/hal/netlock.rs"
+crate = "hal"
+lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
+status = "redesigned"
+notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported)"
+
+[[module]]
 rust = "sys/hal/rwlock.rs"
 crate = "hal"
 lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs", "sys/kern/kern_synch.rs"]
@@ -11906,7 +12025,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages; N6.0: PageSource (pool_allocator's pa_alloc/pa_free/pa_pagesz as a safe trait the kernel implements) and PoolBackend::create_with (no default pool: a backend that cannot take a source makes none), TypedPool::init_with_source and BoxPool::init_with_source; PoolBox::pool (crate-private) for hal::smr's pool check; N6.0: Parkable (const POOL and a ParkWord mark within the item), PoolBox::park (the handle given up for the item's pointer, never a reference) and PoolBox::unpark (the handle back once, by a compare-and-swap of the mark)"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -11937,7 +12056,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages); N6.0: the NetLock bridge gone (BsdNetLock, hal_bridges_register_vm: the net lock is hal's static); BsdPools::create_with, a pool_init over subr_pool.rs's POOL_ALLOCATOR_SOURCE with the source in the pool's pr_source (a source whose sizes are not the allocator's is refused)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -12460,6 +12579,11 @@ crate = "kernel"
 reason = "decision 43, N5.2: host microbenchmarks of the vnode layer on the kernel's shape, the op names of sys/benches/fs.rs (vref/vrele, vget/vput without a lock and over an rrwlock, vn_lock, vhold/vdrop, one VOP dispatch, getnewvnode's recycle, vfinddev, vnode_mtx and the free lists' lock) over the doubles and kernel::fs::testfs (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source; N5.3: the rows of names, files and record locks (namei of cached and uncached paths, a name cache hit and an entry that recycles the LRU head, lf_advlock set and clear, getcwd through the reverse cache, vn_open and vn_close, the name cache's lock) over a bench file system of its own, and proc.rs's recycling pool backend; N5.4: the system calls' rows (open.close, fstat, lseek, stat.3), the op names of sys/benches/fs.rs, over kernel::fs::syscalls with their paths in the double's user memory and a descriptor limit of 512"
 
 [[extra]]
+rust = "sys/kernel/benches/net.rs"
+crate = "kernel"
+reason = "decision 43 with U10, N6.0: host microbenchmarks of the network stack's runtime in hal (the net lock, smr(9)'s read section, load and deferral, pool items with and without a page source, park/unpark, a header copied or viewed in place, OwnedSlist against OwnedList), the op names of sys/benches/net.rs, over the doubles and a recycling pool backend (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
+
+[[extra]]
 rust = "sys/kernel/benches/bio.rs"
 crate = "kernel"
 reason = "decision 43, N5.1: host microbenchmarks of the buffer cache and the disk queues on the kernel's shape, the op names of sys/benches/bio.rs (getblk and bread hits, brelse, getblk's allocation, the 2Q queues' take and release under the cache's lock, a bufq trip through nscan and fifo with a driver's tokens, splbio and the cache's lock) over the doubles and testutil's BufTestVnode (feature doubles), a harness = false bench target, never a kernel image; no OpenBSD or LZ source"
@@ -12849,6 +12973,23 @@ reason = "as Sigio::new: no empty sigio exists"
 lz = "sys/sys/sigio.rs::Sigiolst"
 native = ["SIGIO_LOCK"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/smr.rs"
+crate = "kernel"
+lz = ["sys/kern/kern_smr.rs"]
+status = "redesigned"
+notes = "N6.0: kern_smr.c's smr_thread (wait, collect, Batch::run with its grace period over the scheduler, the slow-round report under ratecheck) and smr_startup_thread (start: kthread_create of Start::Smr), and SchedCpus, the hal::smr::CpuWalk over the scheduler (CPU_IS_RUNNING as ProcGlue::cpu_is_running, sched_peg_curproc/sched_unpeg_curproc); the protocol is sys/hal/smr.rs's; sys/kern/kern_smr.rs (bsd) deleted, the user's decision of 2026-11-07 (D-N6.0-U1)"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_startup_thread"
+native = ["start"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/kern_smr.rs::smr_thread"
+native = ["thread", "round"]
+kind = "split"
 
 [[module]]
 rust = "sys/kernel/sched.rs"
@@ -13968,7 +14109,7 @@ reason = "N5.7c3: the kernel msdosfs's test fixtures (host tests and benches onl
 [[extra]]
 rust = "sys/kernel/fs/pod.rs"
 crate = "kernel"
-reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures over a buffer's bytes (pod_view!: SIZE, at, put over hal::user's pod_from_bytes/pod_to_bytes; pod_at, pod_put), lifted from fs::msdosfs::bpb (N5.7c1) for its second and third users, cd9660 and udf; native items with no LZ source (LZ's byte_view! and from_bytes_impl! were unsafe casts, rows renamed and merged)"
+reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures over a buffer's bytes (pod_view!: SIZE, at, put over hal::user's pod_from_bytes/pod_to_bytes; pod_at, pod_put), lifted from fs::msdosfs::bpb (N5.7c1) for its second and third users, cd9660 and udf; native items with no LZ source (LZ's byte_view! and from_bytes_impl! were unsafe casts, rows renamed and merged); N6.0: pod_at and pod_put moved to hal::pod::{at, put}, the macro over them"
 
 [[extra]]
 rust = "sys/kernel/fs/isofs/udf/testudf.rs"
@@ -14003,7 +14144,7 @@ reason = "N5.2: the kernel VFS core's test file system and glue (TestGlue, TestF
 [[extra]]
 rust = "sys/kernel/testutil.rs"
 crate = "kernel"
-reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock; N5.9f2: the pool double's npages (whole pages per item out)"
+reason = "N2.6: the kernel crate's host test doubles of hal's bridges (cfg(test), safe code: the crate forbids unsafe, its tests included); hal's own doubles are crate-private; N5.3: the test glues' FileGlue members of namei (Componentname, Nameidata, UnveilMatch, vnode_of) and the ProcGlue hooks of namei (pledge_namei, the unveil hooks), answered by set_namei_pledge and set_unveil_final, recorded while file_log_on; N5.4: the test glues' vnode_file and the ProcGlue hooks of the system calls (pledge_chown, unveil_add, unveil_removevnode, unveil_set_done, unveil_state), answered by set_pledge_chown, set_unveil_add, set_unveil_paths_pid and the unveil_done flag; pledge_flock answered by set_pledge_flock; N5.9f2: the pool double's npages (whole pages per item out); N6.0: the NetLock double gone (the vnode test takes hal::netlock's real lock); the pool double takes a PageSource (create_with: an item a page of it); pages_reset forgets hal::smr's queues (smr_test_reset)"
 
 [[extra]]
 rust = "sys/kernel/benches/vm.rs"

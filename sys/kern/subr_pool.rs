@@ -374,6 +374,16 @@ pub static POOL_ALLOCATOR_MULTI: PoolAllocator = PoolAllocator {
     pa_pagesz: pool_alloc_sizes(PAGE_SIZE, 1 << 31, POOL_ALLOC_ALIGNED),
 };
 
+/// The allocator of a pool whose pages come from the kernel's `hal::pool::PageSource`
+/// (`hal::pool::PoolBackend::create_with`, N6.0): `pa_alloc` and `pa_free` ask the pool's
+/// `pr_source`, `pa_pagesz` is `pool_allocator_multi`'s (the mbuf clusters' encoding, which
+/// `BsdPools::create_with` requires of the source).
+pub static POOL_ALLOCATOR_SOURCE: PoolAllocator = PoolAllocator {
+    pa_alloc: pool_source_alloc,
+    pa_free: pool_source_free,
+    pa_pagesz: pool_alloc_sizes(PAGE_SIZE, 1 << 31, POOL_ALLOC_ALIGNED),
+};
+
 /// `pool_allocator_multi_ni`: as `pool_allocator_multi`, not interrupt safe (may sleep).
 pub static POOL_ALLOCATOR_MULTI_NI: PoolAllocator = PoolAllocator {
     pa_alloc: pool_multi_alloc_ni,
@@ -1764,6 +1774,28 @@ pub fn pool_multi_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<No
     v
 }
 
+/// [`POOL_ALLOCATOR_SOURCE`]'s `pa_alloc`: a page of the pool's size from its source,
+/// aligned to it when the pool keeps its page header inside (`pool_multi_alloc`'s
+/// `kv_align`), waiting with `PR_WAITOK`.
+pub fn pool_source_alloc(pp: &Pool, flags: i32, _slowdown: &mut i32) -> Option<NonNull<u8>> {
+    let src = pp.pr_source.get()?;
+    // hal checks the page at its trust boundary (sys/hal/trust.rs) before the pool writes
+    // its page header into it.
+    hal::pool::source_page(
+        src,
+        pp.pr_pgsize.get() as usize,
+        pool_inpghdr(pp),
+        flags & PR_WAITOK != 0,
+    )
+}
+
+/// [`POOL_ALLOCATOR_SOURCE`]'s `pa_free`: the page back to the pool's source.
+pub fn pool_source_free(pp: &Pool, v: NonNull<u8>) {
+    if let Some(src) = pp.pr_source.get() {
+        src.free(v, pp.pr_pgsize.get() as usize, pool_inpghdr(pp));
+    }
+}
+
 /// `pool_multi_free`.
 pub fn pool_multi_free(pp: &Pool, v: NonNull<u8>) {
     let mut kv: KmemVaMode = KV_INTRSAFE;
@@ -2503,6 +2535,8 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         uvm_page_test_reset();
+        // hal::smr's queues may name links in the memory replaced here: forgotten.
+        hal::smr::smr_test_reset();
         UVMEXP.pagesize.store(PAGE_SIZE as i32, Ordering::Relaxed);
         uvm_setpagesize();
 

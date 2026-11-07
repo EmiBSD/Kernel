@@ -188,7 +188,6 @@ use crate::fs::isofs::udf::udf_vnops::{udf_allocv, udf_hashins, udf_hashlookup};
 use crate::fs::lookup::{namei, ndinit};
 use crate::fs::mount::{Mount, Vfsconf};
 use crate::fs::namei::{FOLLOW, LOOKUP, NiDirp};
-use crate::fs::pod::pod_at;
 use crate::fs::spec::devsw;
 use crate::fs::subr::{
     checkalias, copy_statfs_info, hashinit, siphash_key, vcount, vflush, vfs, vfs_mountedon, vgone,
@@ -376,7 +375,7 @@ fn checktag_at(b: &[u8], id: u16) -> Result<(), Errno> {
 /// The `T` member at `off` of the descriptor `b` (zero when `b` ends first, which a block of
 /// `um_bsize` bytes holding one of these descriptors never does).
 fn member<T: hal::user::AbiPod>(b: &[u8], off: usize) -> T {
-    pod_at(b, off).unwrap_or_else(zeroed)
+    hal::pod::at(b, off).unwrap_or_else(zeroed)
 }
 
 /// `udf_mountfs`: read the volume's structures from `devvp` and set up its umount, hung from
@@ -932,7 +931,7 @@ pub fn udf_get_spartmap<G: ProcGlue>(
     ump.um_psecs
         .set(i32::from(letoh16(pms.packet_len)) / ump.um_bsize.get());
 
-    let Some(loc0) = pod_at::<u32>(st_loc, 0) else {
+    let Some(loc0) = hal::pod::at::<u32>(st_loc, 0) else {
         return Err(Errno::EINVAL);
     };
     // Failed to read sparing table: the buffer released, the table freed.

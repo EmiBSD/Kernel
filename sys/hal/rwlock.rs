@@ -245,6 +245,13 @@
 //!   state: the process lists and links); the lock is held by the running CPU while one
 //!   lives and the per-CPU count of `hal::klock` keeps the writer and the readers apart on it
 //!   (that module's notes).
+//! - N6.0: a `static` lock the C takes in one function and releases in another while other
+//!   code keys data to it (the net lock: `NET_LOCK()` in the socket layer, `NET_UNLOCK()`
+//!   in the interface layer, `[N]` members guarded by it): `hal::netlock` takes and releases
+//!   it without a witness through the crate-private raw paths (`write_wait`, `exit_write`,
+//!   `read_wait`, `exit_read`, `sleep_released`, `rw_self`) and marks those holdings as its
+//!   own, so its release never touches a holding a witness owns; no witness is ever rebuilt
+//!   from the lock word.
 //! - N5.2: a lock the C enters in one function and leaves in another without a witness in
 //!   between (`vfs_busy`/`vfs_unbusy` on `mnt_lock`, a file system's `VOP_LOCK`/`VOP_UNLOCK`
 //!   on its node's `rrwlock`) is [`SplitRwlock`] (`rw_enter`/`rw_exit`) or [`RecursiveRwlock`]
@@ -511,7 +518,7 @@ impl RawRwlock {
     }
 
     /// `rw_enter_write` without flags, which cannot fail.
-    fn write_wait(&self) -> usize {
+    pub(crate) fn write_wait(&self) -> usize {
         match self.enter_write(0) {
             Ok(me) => me,
             Err(e) => self.panic(format_args!("uninterruptible enter failed ({e:?})")),
@@ -548,14 +555,14 @@ impl RawRwlock {
     }
 
     /// `rw_enter_read` without flags, which cannot fail.
-    fn read_wait(&self) {
+    pub(crate) fn read_wait(&self) {
         if let Err(e) = self.enter_read(0) {
             self.panic(format_args!("uninterruptible enter failed ({e:?})"));
         }
     }
 
     /// `rw_exit_read`: one reader fewer; the one that leaves the word free wakes the next.
-    fn exit_read(&self) {
+    pub(crate) fn exit_read(&self) {
         let mut seen = RWLOCK_READ_INCR;
         loop {
             if seen & RWLOCK_WRLOCK != 0 {
@@ -578,7 +585,7 @@ impl RawRwlock {
     }
 
     /// `rw_exit_write`, for the writer that stored `me`.
-    fn exit_write(&self, me: usize) {
+    pub(crate) fn exit_write(&self, me: usize) {
         let found = self.cas(me, 0);
         if found != me {
             self.panic(format_args!(
@@ -655,7 +662,7 @@ impl RawRwlock {
     /// cannot be missed), released by `exit` before sleeping (so a stop signal taken while
     /// asleep does not hold it), asleep; the sleep's result. With no sleep queues yet there is
     /// no one to wait for: released, the CPU let breathe (the C's `tsleep` while `cold`), `Ok`.
-    fn sleep_released<I: ?Sized>(
+    pub(crate) fn sleep_released<I: ?Sized>(
         &self,
         ident: *const I,
         prio: i32,
@@ -1970,7 +1977,7 @@ pub fn init_shared() -> Result<(), Errno> {
 }
 
 /// `rw_self`: the running process as a writer word, `WRLOCK` set, so never 0.
-fn rw_self() -> usize {
+pub(crate) fn rw_self() -> usize {
     (sleep::curproc_word() & !RWLOCK_MASK) | RWLOCK_WRLOCK
 }
 

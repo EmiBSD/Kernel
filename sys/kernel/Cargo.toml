@@ -132,5 +132,15 @@ path = "benches/bio.rs"
 harness = false
 required-features = ["doubles"]
 
+# Host microbenchmarks of the network stack's runtime in hal (N6.0, decision 43 with U10;
+# benches/net.rs): the net lock, smr(9), the pool items, the header views and the owned lists
+# over the doubles, never a kernel image:
+# `cargo bench -p kernel --features doubles --bench net [--profile dev]`.
+[[bench]]
+name = "net"
+path = "benches/net.rs"
+harness = false
+required-features = ["doubles"]
+
 [lints]
 workspace = true

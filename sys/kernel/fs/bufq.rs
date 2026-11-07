@@ -456,14 +456,14 @@ pub fn bufq_drain(bq: &Bufq) {
 
 /// `assertwaitok()` (`subr_xxx.c`): the caller may sleep: at no interrupt level
 /// (`splassert(IPL_NONE)`) and, under `diagnostic`, holding no mutex; nothing is checked
-/// after a panic or inside ddb (`hal::cpu::past_caring`, the C's `panicstr || db_active`).
-/// The C's `SMR_ASSERT_NONCRITICAL()` is not made: the SMR depth is `bsd`'s (`kern_smr`),
-/// out of the kernel crate's reach until SMR moves (a diagnostic check only).
+/// after a panic or inside ddb (`hal::cpu::past_caring`, the C's `panicstr || db_active`),
+/// and `SMR_ASSERT_NONCRITICAL()` (`hal::smr`'s depth, since N6.0).
 fn assertwaitok() {
     if hal::cpu::past_caring() {
         return;
     }
     splassert(IPL_NONE, "assertwaitok");
+    hal::smr::assert_noncritical(); // SMR_ASSERT_NONCRITICAL()
     #[cfg(feature = "diagnostic")]
     {
         let level = hal::cpu::curcpu().mutex_level();

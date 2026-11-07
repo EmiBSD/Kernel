@@ -82,10 +82,6 @@
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize};
 
-use crate::kern::kern_rwlock::{
-    rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write, rw_status,
-};
-use crate::net::if_::NETLOCK;
 use crate::sys::errno::Errno;
 use crate::sys::proc::Proc;
 use crate::sys::types::Register;
@@ -212,12 +208,12 @@ pub fn kernel_assert_unlocked() {
 /// `NET_LOCK()`: network stack data structures are, unless stated otherwise, protected by the
 /// net lock. It's a single non-recursive lock for the whole subsystem.
 pub fn net_lock() {
-    rw_enter_write(&NETLOCK);
+    hal::netlock::lock();
 }
 
 /// `NET_UNLOCK()`.
 pub fn net_unlock() {
-    rw_exit_write(&NETLOCK);
+    hal::netlock::unlock();
 }
 
 /// `NET_LOCK_SHARED()`: reader version of `NET_LOCK()`. The "softnet" thread should be the
@@ -227,19 +223,19 @@ pub fn net_unlock() {
 /// system call can use shared netlock if it has additional locks to protect socket and pcb
 /// data structures.
 pub fn net_lock_shared() {
-    rw_enter_read(&NETLOCK);
+    hal::netlock::lock_shared();
 }
 
 /// `NET_UNLOCK_SHARED()`.
 pub fn net_unlock_shared() {
-    rw_exit_read(&NETLOCK);
+    hal::netlock::unlock_shared();
 }
 
 /// `NET_ASSERT_UNLOCKED()` (`DIAGNOSTIC`): this thread does not hold the net lock exclusively.
 pub fn net_assert_unlocked(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
-        let s = rw_status(&NETLOCK);
+        let s = hal::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s == crate::sys::rwlock::RW_WRITE
         {
@@ -247,7 +243,7 @@ pub fn net_assert_unlocked(func: &str) {
         }
     }
     #[cfg(not(feature = "diagnostic"))]
-    let _ = (func, rw_status);
+    let _ = func;
 }
 
 /// `NET_ASSERT_LOCKED()` (`DIAGNOSTIC`): the net lock is held, shared or exclusive.
@@ -255,7 +251,7 @@ pub fn net_assert_locked(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
         use crate::sys::rwlock::{RW_READ, RW_WRITE};
-        let s = rw_status(&NETLOCK);
+        let s = hal::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s != RW_WRITE
             && s != RW_READ
@@ -272,7 +268,7 @@ pub fn net_assert_locked_exclusive(func: &str) {
     #[cfg(feature = "diagnostic")]
     {
         use crate::sys::rwlock::RW_WRITE;
-        let s = rw_status(&NETLOCK);
+        let s = hal::netlock::status();
         if crate::kern::subr_prf::SPLASSERT_CTL.load(core::sync::atomic::Ordering::Relaxed) > 0
             && s != RW_WRITE
         {

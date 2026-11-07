@@ -941,10 +941,6 @@ pub fn uvm_init() {
 
     // averunnable.fscale = FSCALE: M5.
 
-    // The kernel's objects and vnode pager reach the kernel lock, the net lock, the clock
-    // and the shutdown state through bridges (N3.4e); the map, the system calls and the
-    // sysctls reach curproc and the sysctl helpers (N3.5): registered before the first use.
-    crate::kern::hal_bridges::hal_bridges_register_vm();
     // The u-areas `fork1` gives its threads (hal::thread's E4 provider).
     let _ = hal::thread::register_uarea_memory(&kernel::vm::glue::UAREAS);
     kernel::vm::init::uvm_machine_init(&VM_MACHINE);

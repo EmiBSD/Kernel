@@ -45,6 +45,8 @@ paid_by = "N7"
 # fusefs_pool_pages), pool_sethiwat and pool_cache_init (RawPool's
 # set_hiwat/cache_init, N3.4a: uvm_anon_init, amap_init) of sys/kern/subr_pool.rs, one pool per
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
+# N6.0: create_with with a PageSource, the pa_alloc/pa_free half of pool_allocator as a safe
+# trait the kernel implements (N6.1's MbufPages), over subr_pool.rs's POOL_ALLOCATOR_SOURCE.
 # hal::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"
@@ -218,16 +220,6 @@ trait = "Intrclock"
 for = ["sys/kernel/clockintr.rs"]
 paid_by = "N7"
 
-# bsd: NET_LOCK, NET_UNLOCK and rw_status(&netlock) == RW_WRITE (sys/net/if.rs), for the vnode
-# pager's uvn_io, which lets go of the net lock a faulting process holds around the VOP (N3.4c);
-# implemented by sys/kern/hal_bridges.rs (BsdNetLock) and registered by bsd's uvm_init (N3.4e);
-# nobody holds it before registration. N6, with the network stack.
-# hal::netlock::NetLock
-[[bridge]]
-trait = "NetLock"
-for = ["sys/hal/netlock.rs", "sys/kernel/vm/vnode.rs"]
-paid_by = "N6"
-
 # bsd: struct vops, the operations table of each bsd file system (nfs,
 # ntfs and their special-file tables: statics of
 # Option<fn(&mut VopXxxArgs)> slots), implemented on bsd's Vops by sys/kern/vfs_vops.rs (each
@@ -375,6 +367,7 @@ paid_by = "N7"
 # vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9). N5.4: the system calls'
 # hooks joined it (kernel::fs::syscalls): pledge_chown, unveil_add, unveil_removevnode and
 # unveil_set_done (kern_pledge and kern_unveil, N8, required as the other pledge hooks).
+# N6.0: smr_idle left it (hal::smr::idle, called by the scheduler itself).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"

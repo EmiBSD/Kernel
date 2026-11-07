@@ -291,7 +291,7 @@ use crate::sys::proc::Proc;
 use crate::sys::protosw;
 use crate::sys::queue::{ListHead, TailqEntry, TailqHead};
 use crate::sys::refcnt::Refcnt;
-use crate::sys::rwlock::{DT_RWLOCK_IDX_NETLOCK, Rwlock};
+use crate::sys::rwlock::Rwlock;
 use crate::sys::sched::SPCF_SHOULDYIELD;
 use crate::sys::smr::{SmrEntry, smr_assert_critical, smr_barrier, smr_call, smr_init};
 use crate::sys::socket::{
@@ -1287,10 +1287,6 @@ static SOFTNETS: [Softnet; NET_TASKQ] = [const { Softnet::new() }; NET_TASKQ];
 
 /// `if_input_task_locked`: `if_netisr`, which `schednetisr` queues.
 pub static IF_INPUT_TASK_LOCKED: Task = Task::new(if_netisr, ptr::null_mut());
-
-/// `netlock`: serialize socket operations to ensure no new sleeping points are introduced in
-/// IP output paths.
-pub static NETLOCK: Rwlock = Rwlock::new_trace("netlock", DT_RWLOCK_IDX_NETLOCK);
 
 /// `if_idxmap`.
 static IF_IDXMAP: IfIdxmap = IfIdxmap {

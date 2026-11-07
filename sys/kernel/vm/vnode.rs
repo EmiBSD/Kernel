@@ -114,6 +114,11 @@
 //! - `uvm_vnp_sync(NULL)` is `uvm_vnp_sync(None)`, a mount named by its identity
 //!   ([`VnodeOps::mount_id`]); `uvm_vnp_uncache` returns `bool`.
 //! - `UVM_PAGE_OWN` is not configured; the `DEBUG` printfs are compiled out as in C.
+//! - `uvn_io` lets go of the net lock only when `NET_LOCK()` took it (a detached holding,
+//!   `hal::netlock::held_detached`): one held through a witness cannot be released behind its
+//!   owner, so it is `panic(9)` until N6.2 gives kernel code that holds the lock across a user
+//!   copy its own answer (the witness's `unlocked`); the C releases the lock whatever holds it.
+//!   Every holder today is `bsd`'s `NET_LOCK()`, which the pager releases as the C does.
 //!
 //! ## Redesign
 //! - The vnode (`struct vnode *u_vnode`, `vp->v_uvm`, and the `VOP_*`, `vget`, `vref`,
@@ -123,7 +128,8 @@
 //!   `VOP_READ`/`VOP_WRITE` take the pager window's bytes as a slice and the offset (a
 //!   `UIO_SYSSPACE` uio over them with `curproc`'s credentials). The sequence of `uvn_io` (the net lock let go, the kernel lock, `vn_lock`,
 //!   the VOP, the unlocks) is composed here from those one-call methods, the kernel lock
-//!   (`hal::klock`, `hal`'s own since N4.5c) and the `NetLock` bridge (`hal::netlock`).
+//!   (`hal::klock`, `hal`'s own since N4.5c) and the net lock (`hal::netlock`, `hal`'s own
+//!   static since N6.0: the `NetLock` bridge is gone).
 //!   `ratecheck`'s clock is `kernel::tc`'s `getmicrouptime`, and `rebooting` and its wait
 //!   channel `&rebooting` are `kernel::reboot`'s (N5.0: the `SysInfo` bridge that read them
 //!   through `bsd` is gone; the channel is the same static's address it gave).
@@ -163,7 +169,6 @@ use hal::intr::{IPL_HIGH, IPL_NONE};
 use hal::klock::{kernel_assert_locked, kernel_lock, kernel_unlock};
 use hal::list::{List, ListEntry};
 use hal::mutex::Mutexed;
-use hal::netlock::{net_lock, net_lock_write_held, net_unlock};
 use hal::pool::{PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::{RW_NOSLEEP, RW_WRITE, Rwlocked, Witness, WriteWitness};
 use hal::sleep::{INFSLP, PVM, tsleep_nsec, wakeup};
@@ -1291,10 +1296,18 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         }
 
         // This process may already have the NET_LOCK(), if we faulted in copyin() or
-        // copyout() in the network stack.
-        let netunlocked = net_lock_write_held();
+        // copyout() in the network stack (a detached holding: `NET_LOCK()`'s, which
+        // `NET_UNLOCK()` may release; a witness's is never let go behind it).
+        let netunlocked = hal::netlock::held_detached();
         if netunlocked {
-            net_unlock();
+            hal::netlock::unlock();
+        } else if hal::netlock::write_held() {
+            // Held through a witness, which cannot be let go behind its owner: until N6.2
+            // gives such a holder its own answer, a panic rather than a silent deadlock with
+            // the vnode lock (the C releases it whatever holds it).
+            kpanic(format_args!(
+                "uvn_io: the net lock held through a witness across a page fault"
+            ));
         }
 
         // do the I/O! (XXX: curproc?)
@@ -1330,7 +1343,7 @@ fn uvn_io(uvn: &Uvn, w: &mut WriteWitness<'_>, pps: &[PageSlot], flags: i32, rw:
         kernel_unlock();
 
         if netunlocked {
-            net_lock();
+            hal::netlock::lock();
         }
 
         // NOTE: vnode now unlocked (unless vnislocked)
@@ -1726,7 +1739,7 @@ mod tests {
     fn a_read_lets_go_of_the_object_and_net_locks_and_holds_the_kernel_lock() {
         let (_g, vp) = setup(10);
         let uobj = uvn_attach(vp, PROT_READ).expect("attached");
-        testutil::net_lock_set(true);
+        hal::netlock::lock(); // the net lock (hal's one static), held by this thread
         let pg = get(&uobj, 0);
         let seen = vp.last_read().expect("a VOP_READ");
         assert!(
@@ -1735,13 +1748,13 @@ mod tests {
         );
         assert!(!seen.net_locked, "the net lock is let go for the VOP");
         assert!(seen.kernel_locked && seen.vnode_locked);
-        assert!(testutil::net_lock_held(), "and taken again");
+        assert!(hal::netlock::write_held(), "and taken again");
         assert_eq!(vp.nlocked(), 0, "the vnode is unlocked after");
         let b = bytes(pg);
         assert_eq!(b[..10], [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert!(b[10..].iter().all(|&x| x == 0), "the tail is zeroed");
         assert_eq!(uvn(&uobj).nio(), 0);
-        testutil::net_lock_set(false);
+        hal::netlock::unlock();
         let w = uobj.lock().write();
         super::super::page::uvm_page_unbusy(&[Some(pg)], Owner::Object(&*uobj));
         drop(w);

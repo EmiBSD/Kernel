@@ -288,8 +288,10 @@
 //!
 //! What is still `bsd`'s reaches the scheduler through the process glue (`ProcGlue`'s
 //! scheduler hooks: the signal checks of a sleep, the clock interrupts and the CPU time
-//! accounting, the machine's idle cycle and inter-processor kicks, `smr(9)`), until each moves
-//! (N4.5b-c, N4.8).
+//! accounting, the machine's idle cycle and inter-processor kicks), until each moves
+//! (N4.5b-c, N4.8). `smr_idle` is `hal::smr::idle` since N6.0, called directly (the glue's
+//! `smr_idle` hook is gone), and the idle thread each CPU gets is named to `hal::smr` for
+//! `smr_cpu_is_idle` (`hal::smr::set_idle_thread`).
 //!
 //! ## Deviations
 //! - The `cold || panicstr` early return of `tsleep_nsec` is the glue's (`cold`, `cold_yield`),
@@ -799,6 +801,7 @@ pub fn set_idleproc<G: ProcGlue>(n: usize, p: Pin<&Thread<G>>) {
     }
     c.idleq.insert_tail(&mut h, p);
     c.idle_addr.store(addr_of(p.get_ref()), Ordering::Relaxed);
+    hal::smr::set_idle_thread(n, addr_of(p.get_ref())); // smr_cpu_is_idle's spc_idleproc
     drop(h);
     set_thread_cpu(p.get_ref(), n);
 }
@@ -864,7 +867,7 @@ pub fn sched_idle<G: ProcGlue>(n: usize) -> ! {
 
             hal::intr::splassert(hal::intr::IPL_NONE, "sched_idle");
 
-            G::smr_idle();
+            hal::smr::idle();
 
             t.idle_cpus.add(n);
             G::idle_enter();
@@ -1847,7 +1850,7 @@ pub fn mi_switch<G: ProcGlue>(p: Pin<&Thread<G>>, mut h: SchedHold) {
     sched_assert_unlocked();
 
     G::assertwaitok();
-    G::smr_idle();
+    hal::smr::idle();
 
     // We're running again; record our new start time. We might be running on a new CPU
     // now, so refetch the schedstate_percpu pointer.
@@ -1877,7 +1880,7 @@ pub fn trampoline_mi<G: ProcGlue>(h: SchedHold) {
     sched_assert_unlocked();
     kassert!(!hal::klock::kernel_lock_held()); // KERNEL_ASSERT_UNLOCKED()
     G::assertwaitok();
-    G::smr_idle();
+    hal::smr::idle();
 
     // Start any optional clock interrupts needed by the thread.
     with_curproc::<G, _>(|p| start_clocks(spc, p.get_ref()));

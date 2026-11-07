@@ -49,7 +49,6 @@ paths = [
     "sys/sys/percpu.rs",
     "sys/kern/subr_percpu.rs",
     "sys/sys/smr.rs",
-    "sys/kern/kern_smr.rs",
     # Allocators.
     "sys/sys/pool.rs",
     "sys/kern/subr_pool.rs",

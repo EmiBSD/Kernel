@@ -543,7 +543,7 @@ adds an operation the C's switch lacks.
 | C table | `reference/openbsd-src/sys/` | Trait | Milestone | State |
 |---|---|---|---|---|
 | `struct fileops` | `sys/file.h` | `FileOps<G>` | N4.3 | done, `sys/kernel/file.rs` |
-| `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool` | N2 | done, `hal` |
+| `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool`; N6.0: `PageSource`, the `pa_alloc`/`pa_free`/`pa_pagesz` half a pool of the kernel's takes (`PoolBackend::create_with`) | N2 | done, `hal` |
 | `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
 | `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the table `abi` calls the kernel through | N2 | done, `abi` |

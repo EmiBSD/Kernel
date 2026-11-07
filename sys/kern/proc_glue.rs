@@ -478,10 +478,6 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::subr_xxx::assertwaitok();
     }
 
-    fn smr_idle() {
-        crate::kern::kern_smr::smr_idle();
-    }
-
     fn spl0() {
         crate::machine::intr::spl0();
     }
