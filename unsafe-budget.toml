@@ -11,8 +11,8 @@
 # /progress measures its pace from them. Written once by hand; `--write` keeps them.
 
 [ratchet]
-forbid_floor = 425
-legacy_ceiling = 7916
+forbid_floor = 528
+legacy_ceiling = 7261
 legacy_baseline = 8748
 hal_ceiling = 600
 baseline_date = "2026-10-10"
@@ -31,7 +31,7 @@ total = 773
 
 [[subsystem]]
 name = "arch/arm64"
-total = 786
+total = 783
 
 [[subsystem]]
 name = "arch/host"
@@ -55,7 +55,7 @@ total = 13
 
 [[subsystem]]
 name = "dev"
-total = 451
+total = 449
 
 [[subsystem]]
 name = "dev/acpi"
@@ -146,12 +146,8 @@ name = "init"
 total = 11
 
 [[subsystem]]
-name = "isofs"
-total = 88
-
-[[subsystem]]
 name = "kern"
-total = 635
+total = 452
 
 [[subsystem]]
 name = "lib/libkern"
@@ -170,14 +166,6 @@ name = "machine"
 total = 77
 
 [[subsystem]]
-name = "miscfs"
-total = 36
-
-[[subsystem]]
-name = "msdosfs"
-total = 60
-
-[[subsystem]]
 name = "net"
 total = 1573
 
@@ -191,11 +179,11 @@ total = 355
 
 [[subsystem]]
 name = "nfs"
-total = 140
+total = 131
 
 [[subsystem]]
 name = "ntfs"
-total = 54
+total = 52
 
 [[subsystem]]
 name = "scsi"
@@ -207,12 +195,8 @@ total = 235
 
 [[subsystem]]
 name = "sys"
-total = 235
-
-[[subsystem]]
-name = "tmpfs"
-total = 24
+total = 210
 
 [[subsystem]]
 name = "ufs"
-total = 226
+total = 0

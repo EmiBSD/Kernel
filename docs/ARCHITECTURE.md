@@ -1561,60 +1561,43 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
   (`ttkqfilter`, `ptckqfilter`, the `klist` of `struct selinfo`) is reported or left out, and
   `PTMGET`/`TIOCCONS` look their `/dev` nodes up with `namei`, which fails with `ENOENT` until
   there is a root file system.
-- The VFS core (M7+, stage 1): `vfs_init.c`, `vfs_subr.c`, `vfs_vops.c`, `vfs_default.c`,
-  `vfs_cache.c`, `vfs_lookup.c`, `vfs_vnops.c`, `vfs_getcwd.c`, `vfs_syscalls.c`,
-  `spec_vnops.c`, `miscfs/deadfs/dead_vnops.c` and their headers (`vnode.h`, `mount.h`,
-  `namei.h`, `specdev.h`, `dirent.h`, `lock.h`, `pledge.h`) are OpenBSD's, with no file
-  system, no buffer cache and no vnode pager yet. A vnode is a `vnode_pool` item that is
-  never freed (`&'static Vnode`, recycled through the free lists); a mount is `malloc`ed
-  and reference counted (`&'static Mount`). A file system plugs in with a `static Vfsops`,
-  a `static Vops` (one `Option<fn(&mut VopXArgs)>` per operation, `None` answering
-  `EOPNOTSUPP`; `docs/C_TO_RUST.md`), its node behind `v_data` (`*mut c_void`, read back with
-  `Vnode::data::<T>`) and a `Vfsconf::new(...)` line in `vfsconflist[]` (`vfs_init.rs`; ffs is
-  the first) behind a cargo feature named after its `option(4)`. `mountroot` (`sys/systm.rs`)
-  is NULL until `setroot` (`subr_disk.c`) and a disk driver exist, so where OpenBSD panics
-  "cannot mount root" `main` prints `cannot mount root: no root file system` and goes on
-  without a `rootvnode`: every `namei` then fails with `ENOENT` (the C never runs one before
-  root is mounted), `check_console` warns that `/dev/console` does not exist, and init is
-  still exec'd from its boot module. The stand-in `init` checks that the path system calls
-  reach `namei` and fail that way (`init: vfs ok (no root file system)` in `smoke`). What
-  stage 2 must bring is reported where the C calls it: the first file system. The device
-  switch arrived in M8 ("The device switch" above), so `spec_open`, the character-device
-  paths of `spec_vnops.c` and `spec_strategy` call the drivers.
-  `pledge` and `unveil` (`kern_pledge.c`, `kern_unveil.c`) are reported for a pledged
-  process or an unveiled vnode, which none can be yet; the unveil hooks of `namei` return
-  at their `ps_uvpaths == NULL` test. The host tests mount `testfs`
-  (the TESTS zone of `kern/vfs_subr.rs`), a fixed in-memory tree with a real lock discipline, to drive
-  `namei`, the name cache, `getcwd` and the vnode life cycle.
-- VFS stage 2 (M7+): the buffer cache (`vfs_bio.c`, `vfs_biomem.c`, `kern_bufq.c`,
-  `<sys/buf.h>`), the syncer (`vfs_sync.c`) and advisory record locks (`vfs_lockf.c`,
-  `<sys/lockf.h>`) are OpenBSD's. Each `cpu_startup` calls `bufinit`, which reserves the
-  buffer arena (`bufkvm`, a tenth of the kernel's space capped at `bufpages` pages) in
-  `kernel_map`; `main` starts the `cleaner` (`buf_daemon`) and `update` (`syncer_thread`)
-  threads; a vnode carries its buffer tree and clean/dirty lists, and `getblk`, `bread`,
-  `bwrite`/`bawrite`/`bdwrite` and `brelse` are what a disk file system calls (its
-  `VOP_STRATEGY` maps `b_lblkno` and hands the buffer to its device vnode's
-  `spec_strategy`). A buffer is a `bufpool` item passed as `&'static Buf` (`docs/C_TO_RUST.md`).
-  `spec_strategy` hands the buffer to `bdevsw[].d_strategy` (the device switch, M8), but no
-  block device is configured yet; the `DIOCGPART` block size of `spec_read`/`spec_write` is
-  reported (`<sys/disklabel.h>`; they use `BLKDEV_IOSIZE`), and no disk driver uses
-  `bufq(9)` yet. On the host double (no MMU) the arena is only counted and a buffer's pages
-  are one physical segment reached through the direct map. A boot self-test writes and
-  reads back anonymous buffers (`selftest: buffer cache ok` in `smoke`).
-  The vnode pager (`uvm_vnode.c`, `<uvm/uvm_vnode.h>`) and the vnode half of `uvm_pager.c`
-  (the pager map `uvm_pseg_*`/`uvm_pagermapin`, `uvm_mk_pcluster`, `uvm_pager_put`) are
-  OpenBSD's: `uvn_attach(vp, prot)` gives the object a mapping uses, pages come in one at a
-  time through `VOP_READ` and go out in clusters through `VOP_WRITE`, and an unmapped object
-  persists with its pages until `vclean` calls `uvm_vnp_terminate`. `pmap_is_modified` and
-  `pmap_clear_reference` joined the `machine::pmap` contract for it (and for
-  `uvm_pagedeactivate`). `exec` maps executables through it since M8. Still missing for
-  `mmap(2)` of files: `uvm_mmapfile` and the device pager (`uvm_device.c`); the async swap
-  pageout of `uvm_pager.c` waits for the swap pager. A boot self-test maps a three-page cluster through the pager map (`selftest: pager
-  map ok`).
-  A device vnode keeps its `struct lockf_state *` in `specinfo` (`si_lockf`, a
-  `LockfStateSlot`), so `spec_advlock` and `vgonel`'s purge are the C's; a file system's
-  inode will keep one the same way. `pool_get(PR_WAITOK)` cannot sleep yet, so a lock
-  allocation can fail with `ENOLCK` where the C would wait.
+- The VFS (N5): `kernel::fs` (`sys/kernel/fs/`, `#![forbid(unsafe_code)]`) holds the VFS core and
+  the file systems that left `bsd`. Module map: the buffer header and its owner's token
+  (`buf`, `BufRef`), the buffer cache and its memory (`bio`, `biomem`), disk queues (`bufq`,
+  `BufqDiscipline`) and `physio`; the vnode, the mount and the operation tables (`vnode`,
+  `mount`, `vops`), `subr` (the vnode table, `getnewvnode`, the free and hold lists, the
+  export check), `default`, `init` (`vfsinit`, `vfsconflist`), `sync` (the syncer), `spec`
+  (device vnodes) and `miscfs/deadfs`; names (`namei`, `lookup`, `cache`, `getcwd`), the
+  vnode file operations (`vnops`), `lockf`, the VFS system calls (`syscalls`); the words of
+  in-core structures (`word`) and the views of on-disk ones (`pod`); `testfs`, the tests'
+  file system. The file systems are subdirectories behind cargo features: `ufs/{ufs,ffs,mfs,ext2fs}`,
+  `msdosfs`, `isofs/{cd9660,udf}`, `tmpfs` and `fuse`.
+- A file system is an implementation of two traits of `vops` (`struct vops` is `Vnops<G>`, one
+  method per operation with a default answering `EOPNOTSUPP`, as a NULL slot does; `struct
+  vfsops` is `Vfs<G>`), and a `Vfsconf` line in `vfsconflist`. Every file system above is native;
+  `sys/nfs/` (N6) and `sys/ntfs/` (N10) stay in `bsd` with their `static` tables of
+  `Option<fn(&mut VopXArgs)>`, and `bsd`'s `Vops` and `Vfsops` (`sys/kern/vfs_vops.rs`)
+  implement the traits over those tables, so the kernel dispatches to them as to any other.
+  The bridge rows `Vnops` and `Vfs` stay open until ntfs moves (`bridges.toml`).
+- A vnode is a never-freed pool item recycled through the free lists and reached by a counted
+  handle; its lock is the node's own (`RecursiveRwlock`), and `vn_lock` returns the core's
+  guard. A mount is reference counted; the file system's node hangs on the vnode and its
+  state on the mount's typed slot (ffs, msdosfs, cd9660, udf, tmpfs and fuse; `Vnode::data`
+  and `Mount::data` remain for nfs and ntfs). `mountroot`, `setroot` and the first mount follow
+  the C: the root file system is the one `rootdev` names, and `cpu_startup` calls `bufinit`,
+  which reserves the buffer arena in `kernel_map`; `main` starts the `cleaner` and `update`
+  threads.
+- The buffer cache is OpenBSD's (`getblk`, `bread`, `bwrite`/`bawrite`/`bdwrite`, `brelse`).
+  A busy buffer is a [`BufRef`]: the `B_BUSY` owner's token, consumed by `brelse`, `bwrite` or
+  `biodone`, holding the view of the buffer's mapped bytes while it is mapped; a buffer `bsd`
+  drivers hold is lent with its token parked in it. `spec_strategy` hands a buffer to
+  `bdevsw[].d_strategy` through the `Devsw` bridge (N7).
+- The vnode pager (`kernel::vm::vnode`) reads pages through `VOP_READ` and writes clusters
+  through `VOP_WRITE`; `exec` maps executables through it. `pledge` and `unveil` are reported
+  for a pledged process or an unveiled vnode.
+- The host tests mount `testfs` (`kernel::fs::testfs`) to drive `namei`, the name cache,
+  `getcwd` and the vnode life cycle, and each file system has its own double (`testffs`,
+  `testext2fs`, `testmsdosfs`, `testcd9660`, `testudf`, `testtmpfs`, `testfuse`).
 - The fast file system (M8): `sys/ufs/ufs` (the UFS layer: `ufs_bmap.c`, `ufs_ihash.c`,
   `ufs_inode.c`, `ufs_lookup.c`, `ufs_vfsops.c`, `ufs_vnops.c` and `dinode.h`, `dir.h`,
   `inode.h`, `quota.h`, `ufsmount.h`, `ufs_extern.h`) and `sys/ufs/ffs` (`ffs_alloc.c`,
