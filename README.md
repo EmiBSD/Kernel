@@ -45,7 +45,7 @@
 
   | Layer | What it is | `unsafe` |
   |---|---|---|
-  | `abi` | Application Binary Interface: the bytes userland and the kernel agree on (syscall numbers, `#[repr(C)]` structs, ioctls, errno), as the module `abi_openbsd.ko`; translation only | 0 |
+  | `abi` | Application Binary Interface: the bytes userland and the kernel agree on (syscall numbers, `#[repr(C)]` structs, ioctls, errno), linked into the kernel image; translation only | 0 |
   | `kernel` | every decision of the operating system, its own types | 0 |
   | `hal` | Hardware Abstraction Layer: the hardware and the runtime (locks, pools, owned memory, the user copy), with a safe API | the only one |
   | `lib` | `libkern` and `libz`, the leaves below `hal` | 10 |
@@ -58,7 +58,7 @@ flowchart LR
     obsd["OpenBSD-src (mirror)"] -- "the specification, read-only" --> k["Kernel"]
     lz["LandingZone"] -- "the tree at lz-origin,<br/>then every commit as lz-sync" --> k
     dev["DevTools"] -- "upstream LLVM and Rust,<br/>once the system builds itself" --> k
-    k -- "the kernel image, boot(8) and efiboot,<br/>abi_openbsd.ko, bsd.rd" --> os["OS"]
+    k -- "the kernel image (the ABI linked in),<br/>boot(8) and efiboot, bsd.rd" --> os["OS"]
     k -. "the ABI headers, once abi exports them" .-> ul["Userland"]
 ```
 
@@ -79,16 +79,16 @@ N4 and homologated at N10.
 flowchart TB
     U["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
 
-    subgraph ABI["1 · abi · sys/abi/ · abi_openbsd.ko · forbid(unsafe) · no logic"]
+    subgraph ABI["1 · abi · sys/abi/ · linked into the kernel image · forbid(unsafe) · no logic"]
         direction LR
         A1["sysent: the syscall table, every entry Native"]
         A2["bytes ⇄ the kernel's types · errno from Result"]
-        A3["ko/: the loadable module (a second .ko = a second userland)"]
+        A3["abi_init: the one call the image makes, at boot, with KernelApi"]
     end
 
     subgraph K["2 · kernel · sys/kernel/ · forbid(unsafe) at the root · every decision of the OS"]
         direction TB
-        KA["api: KernelApi, the vtable the module calls"]
+        KA["api: KernelApi, the table abi calls"]
         subgraph K3["N3 · memory"]
             VM["vm: map · fault · amap · anon · object · aobj · page · pmemrange · km · pager · vnode · swap · pdaemon · mmap"]
         end
@@ -135,7 +135,7 @@ flowchart TB
             R3["owned structures: owned (list, tree) · pinlist · link"]
             R4["once · percpu · refcnt · sleep"]
             R5["user: UserPtr, the typed copy from userland"]
-            R6["module: the ELF loader of the .ko · bridges: only KernelApi left"]
+            R6["syscall: the dispatch point · bridges: only KernelApi left"]
             R7["random · trust · sys/ shared types (errno, syscall, limits, pledge …)"]
         end
     end
@@ -149,7 +149,7 @@ flowchart TB
     K -->|"safe API"| HAL
     HAL --> M
     HAL -.-> LEAF
-    STAND -.->|"loads the kernel and the .ko"| HAL
+    STAND -.->|"loads the kernel"| HAL
 ```
 
 What goes up (the syscall handler, `KernelApi`) is a registration in `hal` at boot, never a
@@ -187,9 +187,10 @@ are LandingZone's; this history holds them up to `f5985f1d055a`.
 ## What works today
 
 Everything the port had at `lz-origin`; every smoke here is also LZ's, and a redesign may not
-change what they see. Two are this repository's own: `smoke-abi` (N2) boots with the loadable
-module `abi_openbsd.ko` (`abi_openbsd.ko: 331 syscalls, 17 native` since N3, as `smoke-efiboot`
-checks under boot(8)) and runs a pipeline through it (`abi-pipe-43`); `smoke-mmap` (N3) races
+change what they see. Two are this repository's own: `smoke-abi` (N2; the ABI linked into the
+kernel image since the N5 close, decision 47) checks the line its registration prints
+(`abi: 331 syscalls, 170 native`, as `smoke-efiboot` checks under boot(8)) and runs a pipeline
+through it (`abi-pipe-43`); `smoke-mmap` (N3) races
 msync(2) against madvise(2) on a shared file mapping, on tmpfs and on FFS, 1,000 rounds each
 (`mmapstress: ok /tmp/m rounds=1000`).
 

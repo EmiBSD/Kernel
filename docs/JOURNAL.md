@@ -726,6 +726,40 @@ Met 2026-10-24 (under way since 2026-10-19). Boundary: from `docs: close N3` (54
   blocked every `mkdir` taker and excluded nothing; DevTools moved to the directory protocol the
   same day (its 777d9bd, D-0007).
 
+### The ABI linked into the kernel image (2026-11-06)
+
+- The user's decision, the N5 close's first slice (decision 47, docs/ZERO_UNSAFE.md section
+  10): `abi` stops being the loadable module `abi_openbsd.ko` and is linked into the kernel
+  image, staying a crate of its own, `forbid`, with no logic; the syscall ABI is identical.
+  The one line userland sees changed is dmesg's: `abi: 331 syscalls, 170 native` (the user
+  chose the reword over keeping a line that names a file no longer there, or dropping it).
+- Five commits (`git log --oneline de6586ee..` on the branch): 27b15faa links it (34 files,
+  +260 -3,488: `hal::module`, `sys/abi/ko`, arm64's module window, the `ModulePlatform`
+  bridge, `KernelApi`'s version, header and `#[repr(C)]`, decision 29's fallback, the
+  justfile's `build-abi-*`), 505bd530 drops `hal`'s `module-rt` (15 files, +39 -170; the
+  arm64 kernel's `.text` byte-identical before and after), 041accc9 the boot loaders' read
+  of the file (8 files, +8 -154; four modules back to `inherited`), aaef6e78 the media
+  (8 files, +18 -103), and the `docs:` commit. In all about 3,900 lines deleted and 330
+  added.
+- Numbers (`cargo xtask unsafe-report`): `hal` 199 -> 196 (the loader's three), 148 -> 143
+  files; `kernel` 0, `abi` 0 (4 -> 2 files), `bsd` 8,832, `boot` 621 unchanged; bridges
+  25 -> 24. Host tests: `hal` 469 -> 444, `kernel` 1,376 -> 1,375, the rest unchanged.
+- What it measured that decision 22 had estimated: the loader held 3 `unsafe`, not about 30;
+  the costs it named (a loader, a vtable, two files on every medium, a smoke for the load)
+  were 2,175 + 291 + 199 lines, 32 KiB of `.bss` page tables, a `cfg` feature with 62 gates
+  in 13 `hal` files, and ~8 KiB of efiboot's 1 MiB heap held across `loadfile`.
+- Went well: the boot path's order made the registration simpler, not riskier: the handler is
+  registered from the boot glue before `main()`, with no memory and no mapping, one step
+  where there were two. Took care: the kcopy tokens' take-once argument rested on "the
+  module is not loaded yet"; it is restated on `abi_init`'s place in the boot order and on
+  `abi-check` R5, with no new rule. amd64 (decision 44) keeps orphans that N10 deletes; the
+  list is in docs/ROADMAP.md's N10 row.
+- Decision 43's pair (the host benches `vm` and `syscall`, base against tip, dev and release):
+  every row within 6.6 % on AC power. The first rounds were measured on battery after the
+  charger came off (macOS's battery profile runs in Low Power Mode): every release row of both
+  trees rose about 40 % at once, so they were discarded and the pair run again on AC; the
+  lesson is in the redesigner's memory (log `pmset -g batt` before each run).
+
 ### /insight calls of N5 (ledger.tsv)
 
 - 2026-10-28, design fork of N5.2 (the vnode handle and its lock), Gemini 4 Argon (at effort

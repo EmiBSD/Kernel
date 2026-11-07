@@ -116,7 +116,7 @@
 //! - `BsdDiskExport` is the `DiskExport` bridge (`bridges.toml`): the disk list walked
 //!   under its lock, each disk's name, DUID and `struct diskstats` handed to the kernel's
 //!   `sysctl_diskinit` as bytes.
-//! - `native_sysctl` is `sysctl(2)`'s entry in the `KernelApi` table (`abi_openbsd.ko`):
+//! - `native_sysctl` is `sysctl(2)`'s entry in the `KernelApi` table (the ABI's):
 //!   the kernel's `sys_sysctl` over `bsd`'s glue.
 //! - `sysctl_vslock` returns the kernel's `VsLock` guard (its drop is `sysctl_vsunlock`);
 //!   `sysctl_lock` is the kernel's `SYSCTL_LOCK`, the one lock of both halves.

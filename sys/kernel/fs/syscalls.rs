@@ -142,7 +142,7 @@
 //!   step), `dounmount_leaf`'s unveil walk `Mount::vnodes` (`TAILQ_FOREACH_SAFE`, O(1) a
 //!   step), `checkdirs` the process list under the kernel lock's reader (the `vrele`s after
 //!   it). No element is found again by key anywhere.
-//! - The hop: a `Native` entry of the ABI module reaches these functions through `bsd`'s
+//! - The hop: a `Native` entry of the ABI's table reaches these functions through `bsd`'s
 //!   `kern_descrip::native` (`mi_syscall` on `bsd`'s `sysent[]` row: the prologue, the
 //!   pinned syscalls, pledge and the row's `NOLOCK`) and `bsd`'s adapter; the kernel owns the
 //!   rows' flags at N9.1 (D-N5.4-1).

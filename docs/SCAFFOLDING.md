@@ -90,6 +90,7 @@ Locations are on `main` at the commit that last edited this file.
 | What | Where | Why | Removed by |
 |---|---|---|---|
 | A `Native` entry's path: `abi` -> a `hal::api::KernelApi` group -> a `bsd` `native_*` wrapper -> `kern_descrip::native()` -> `mi_syscall` on `bsd`'s `SYSENT[nr]` row -> the row's `sys_*` adapter -> the kernel's function | `sys/kern/kern_descrip.rs:495` (`native()`); the wrappers in `sys/kern/vfs_syscalls.rs` (65), `proc_glue.rs` (46), `kern_descrip.rs` (20), `kern_time.rs` (10), `vm_bsd.rs` (10) and six more files | The prologue (pledge, the pinned system calls, the kernel lock) reads `curproc` and the row's flags (`SY_NOLOCK`, the argument count), which are `bsd`'s `init_sysent.rs` | N9: the kernel owns the table of flags and dispatches its entries itself (DECISIONS-N5.4 D-N5.4-1 calls it N9.1) |
+| The image's call `abi::abi_init(&KERNEL_API)` and the `KernelApi` table it hands over, filled with `bsd`'s `Legacy` path and `native_*` wrappers, printed as `abi: N syscalls, M native` | `sys/kern/abi_module.rs:97` (`abi_boot`; the table at `:58`), called by `sys/stand/mod.rs:254` (`start_kernel`) | The ABI is linked into the image (decision 47) and `bsd` is the image crate until N9: the one crate that may name `abi` and the `bsd` wrappers the table's entries point at; `kernel` never names `abi`, `abi` names nothing but `hal` | N9: the `kernel` + `abi` + `hal` binary makes the call and fills the table |
 
 ## Arriving
 

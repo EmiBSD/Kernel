@@ -22,49 +22,51 @@ kernel at N9", 2026-10-21); it follows this section and 0.8, never the reverse.
 ```mermaid
 flowchart TB
     L0["0 · USERLAND of OpenBSD<br/>binaries unchanged · ABI byte-identical"]
-    L1["1 · abi · sys/abi/ · the loadable module abi_openbsd.ko<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
-    L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the vtable the module calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
-    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the ELF loader of the module, the syscall trap"]
+    L1["1 · abi · sys/abi/ · linked into the kernel image (decision 47)<br/>#![forbid(unsafe_code)] · 0 unsafe · translation only, no logic<br/>syscall table (Native | Legacy) · bytes ⇄ the kernel's types · errno from Result"]
+    L2["2 · kernel · sys/kernel/<br/>#![forbid(unsafe_code)] at the root · 0 unsafe, the compiler refuses one<br/>every decision of the OS · exports KernelApi (the table abi calls)<br/>bridge traits for what has not moved yet (bridges.toml → 0 at N9)"]
+    L3["3 · hal · sys/hal/ · the ONLY unsafe · hal_ceiling lowered to the count at each close (35 at N2, 100 at N3), raised only by the user<br/>hardware moved from LZ by owner: the pmaps behind hal::Pmap (N3.1), then arch/amd64, arch/arm64, machine, arch/host<br/>runtime written new: Mutexed, Rwlocked, SharedRwlock + Guarded, TypedPool/PoolArc/PoolBox, MBox, MArray, KmBuf, MappedBytes, OnceStatic, List/Tree and their owned forms, UserPtr + abi_pod!, PerCpu, Refcnt, Smr, Mmio, DmaBuf<br/>the registry, the syscall trap"]
     L4["4 · hardware · QEMU amd64 / arm64, real machines"]
     L0 -->|"syscall"| L1
     L1 -->|"KernelApi, one entry per syscall"| L2
     L2 -->|"safe API"| L3
     L3 --> L4
-    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the Legacy syscall fallback, the bridge impls"]
+    B["bsd · sys/ · the LZ tree, legacy · 10,196 unsafe at the N3 close → the crate is deleted at N9<br/>boots and passes every smoke throughout · calls kernel and hal, never the reverse<br/>registers in hal at boot: the bridge impls · hands KernelApi to abi_init (decision 47)"]
     B -->|"calls down"| L2
     B -->|"calls down"| L3
 ```
 
-The arrows go down only. What goes up (the module's syscall handler, `KernelApi`, the bridge
-implementations, the `Legacy` fallback) is never a dependency: it is a registration in `hal`'s
-registry at boot, and this is the whole of it:
+The arrows go down only. What goes up (the ABI's syscall handler, `KernelApi`, the bridge
+implementations) is never a dependency: it is a registration in `hal`'s registry at boot, and
+this is the whole of it:
 
 ```mermaid
 sequenceDiagram
     participant HAL as hal
     participant K as kernel
-    participant M as abi_openbsd.ko
+    participant A as abi (linked in)
     participant B as bsd (until N9)
     HAL->>HAL: init hardware
-    K->>HAL: register KernelApi
-    B->>HAL: register the Legacy syscall fallback and the bridge impls (dyn Trait in OnceStatic)
-    HAL->>M: load the .ko (ELF loader), call abi_init(KernelApi)
-    M->>HAL: register the syscall handler
-    Note over HAL: from here every syscall trap → the handler → Native (KernelApi) or Legacy (the fallback)
+    B->>HAL: register the bridge impls (dyn Trait in OnceStatic)
+    B->>A: abi_init(KernelApi), before main()
+    A->>K: register the syscall handler (KernelApi)
+    K->>HAL: register its trampoline (hal::syscall::set_handler)
+    Note over HAL: from here every syscall trap → the handler → Native (KernelApi) or Legacy (bsd's sysent[], through KernelApi)
 ```
 
 
-Dependencies, one direction: `bsd → kernel → hal`; `abi → hal` and `abi → KernelApi` (the
-vtable `hal` hands the module at load). Nothing names `abi`; `kernel` and `abi` never name
-`bsd`. Arrows up (the syscall handler, `KernelApi`, the bridge implementations, the `Legacy`
-fallback) exist only as registrations in `hal`'s registry, made by `bsd`'s `main()` at boot.
+Dependencies, one direction: `bsd → kernel → hal` and `bsd → abi → hal`; `abi` reaches the
+kernel only through `KernelApi` (the table the image's boot glue hands `abi_init`, decision
+47). Only the image crate names `abi` (`bsd` until N9, then the `kernel` + `abi` + `hal`
+binary); `kernel` never names `abi`, and `kernel` and `abi` never name `bsd`. Arrows up (the
+syscall handler, `KernelApi`, the bridge implementations) exist only as registrations in
+`hal`'s registry, made by `bsd`'s boot glue before `main()`.
 
 
 | Crate | Path | `unsafe` | Holds |
 |---|---|---|---|
 | `hal` | `sys/hal/` | the only `unsafe` of the system, every site with a soundness proof, Miri on its host tests | the hardware primitives (page tables, traps, context switch, the interrupt level, ports and MMIO, caches, `bus_dma`'s hardware side, early boot: moved in from `sys/arch` and `sys/machine` with the kernel owner of each boundary, decision 26; the drivers of `sys/arch` go to `kernel::dev`, decision 28), the host test double (`sys/arch/host`), the constant headers of `sys/sys/` (decision 27: 18 at N2, `types.rs` at N3.1), the pmaps behind `hal::Pmap` (N3.1), and the runtime written new: `Mutexed<T>`, `Rwlocked<T>`, `SharedRwlock` with `Guarded` cells and witnesses (locks that own their data), `TypedPool<T>`/`PoolArc<T>`/`PoolBox<T>`, `MBox<T>`, `MArray<T>`, `KmBuf` (owned memory), `MappedBytes` (a byte view of busy frames, N3.4), `OnceStatic<T>` (the init-once static that replaces `StaticCell`), `List`/`Tree` over `'static` elements (N3.3) and the owned intrusive trees and lists (N3.5), written new for `kernel::vm` (`queue.rs`, `tree.rs`, `subr_tree.rs` stay in `bsd` for their legacy users), `PerCpu<T>`, `Smr`, `Refcnt`, `UserPtr<T>` with `abi_pod!` (typed copyin/copyout), `Mmio<Regs>`, `DmaBuf`, the interrupt-level guard, the console primitive, the bridge registry |
 | `kernel` | `sys/kernel/` | **0**, `#![forbid(unsafe_code)]` at the root: the compiler refuses any | every decision the operating system makes: memory (vm), processes, scheduler, signals, descriptors, kqueue, pipes, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first, no C shape |
-| `abi` | `sys/abi/`, built as the loadable module `abi_openbsd.ko` (decision 22) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
+| `abi` | `sys/abi/`, linked into the kernel image (decision 47; the loadable module of decision 22 until the N5 close) | **0**, `#![forbid(unsafe_code)]` (the user allowed `unsafe` here; none is needed: `UserPtr` is safe) | OpenBSD's userland interface, byte-identical: the syscall table, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`, ...), ioctl and sysctl encodings, errno (the constant headers through `hal`, decision 27). Translation only (decision 21): bytes to the kernel's types, one kernel entry point per syscall, the `Result` to an errno; no check on what a value means, no state |
 | `bsd` | `sys/` (the LZ tree, today's crate) | 10,196 in 1,069 files at the N3 close (`unsafe-report`, 2026-10-18; 10,583 in 1,103 at the N2 close, 10,604 in 1,161 before N2): 1,538 of them the hardware, the host double and the lists and trees that have not moved yet, the other 8,658 legacy (8,501 outside `unsafe-core.toml`) (a file counts as `hal` only once it compiles there), **0 files at N9** | what gets replaced. It keeps booting, running every smoke and `diff-openbsd` throughout; it links the three crates and calls down into them; the kernel crate never calls it except through a registered bridge (0.3) |
 
 The boot loaders (`sys/stand`, `sys/lib/libsa`, `sys/arch/*/stand`: 621 `unsafe`) are separate
@@ -72,8 +74,9 @@ binaries that run before the kernel; they are outside the four crates and unchan
 and `libz` stay crates of their own, leaves below `hal`; `StaticCell` stays in `libkern` (`hal`
 depends on it, so it cannot move up) and `hal::OnceStatic` replaces its uses one by one.
 
-Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> hal` (for `UserPtr`) and `abi -> KernelApi` (the vtable `hal` hands it at load, decision 22); nothing names `abi`, plus `libkern`/`libz` under
-`kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
+Dependencies, one direction: `bsd -> kernel -> hal`; `abi -> hal` (for `UserPtr` and the
+`KernelApi` type, which the image's boot glue fills and hands to `abi_init`, decision 47); only
+the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends on nothing of ours but `libkern`. No cycle: a kernel-to-legacy call is a bridge.
 
 ### 0.2 What the compiler guarantees
 
@@ -151,7 +154,7 @@ active days have moved 100 `unsafe`.
 | **N7 Devices** | `sys/dev/` and `sys/scsi/` → `kernel::dev`, one bus at a time, over `hal::Mmio<Regs>` and `hal::DmaBuf`; `sys/dev/rnd.rs` last; the bus, autoconf and ACPI/FDT glue of `sys/arch` (74 files) into `hal`, its 19 drivers into `kernel::dev` (decisions 26, 28) | 383 + 74 | 4,101 (+ 675 moved; 4,124 with `softraid_crypto`, N8's) | `sys/dev/` and `sys/scsi/` gone from `bsd` but `softraid_crypto.rs` (N8) | 44 d |
 | **N8 Security subsystems** | `pf*`, `if_wg`/`wg_*`, IPsec, `softraid_crypto`, `pledge`, `unveil`, `exec_*`, the crypto framework → `kernel`, each with `Security-Review:` and the area's smokes before every commit | 36 | 849 | those files gone from `bsd`; `lz drift --security` empty | 8 d |
 | **N9 Close** | what is left: `sys/ddb/`, `sys/conf/`, `init/`, the old runtime files (`subr_pool`, `kern_lock`, `kern_rwlock`, `kern_malloc`, `smr`, `percpu`: deleted with their last user), `sys/sys/` emptied into `abi`/`kernel`; the `bsd` crate deleted; the binary is `kernel` + `abi` + `hal`; `bridges.toml` empty; `hal`'s floor recorded with its proof list; Miri green on `hal` | 14 + the old runtime 19 + the ddb glue and configuration tables of `sys/arch` (15) | 28 + 159 (+ ~60 moved) | `sys/` holds `hal/`, `kernel/`, `abi/`, `stand/`, `lib/`; `unsafe-report`: `bsd` does not exist, `kernel` 0, `abi` 0, `hal` = its floor | 5 d |
-| **N10 amd64 homologation** (decision 44; after N9) | the compile-and-fix pass of the frozen amd64 tree against `hal`'s and `kernel`'s APIs at N9; the amd64 halves N4 and N7 deferred (cpu, clock, trap, syscall entry, copy; bus, autoconf, the ACPI glue; the amd64 drivers of `sys/arch` into `kernel::dev`); the module window of decision 37; the open amd64 performance of decision 42 (`pagefault` +49 %, the pmap side of the fault, `fileread`); the `deferred-to-N10` LZ records applied | the amd64 tree | its count at N9 | `EMIBSD_ARCHS=amd64,arm64 just ci` rc=0 with the recipes' amd64 expectations unchanged; `ci-full` with the amd64 installer recipes and `cd80.iso`; `diff-openbsd` amd64 0 unexpected; `bench` amd64 at or under its value before N3 per measurement, or a written reason; `frozen` 0 files; no `deferred-to-N10` record open | n/a |
+| **N10 amd64 homologation** (decision 44; after N9) | the compile-and-fix pass of the frozen amd64 tree against `hal`'s and `kernel`'s APIs at N9; the amd64 halves N4 and N7 deferred (cpu, clock, trap, syscall entry, copy; bus, autoconf, the ACPI glue; the amd64 drivers of `sys/arch` into `kernel::dev`); the orphans of decision 47 (the module window, `BootInfo::abi_module`, `BOOTARG_ABIMODULE`, the efiboot's module room; docs/ROADMAP.md, N10); the open amd64 performance of decision 42 (`pagefault` +49 %, the pmap side of the fault, `fileread`); the `deferred-to-N10` LZ records applied | the amd64 tree | its count at N9 | `EMIBSD_ARCHS=amd64,arm64 just ci` rc=0 with the recipes' amd64 expectations unchanged; `ci-full` with the amd64 installer recipes and `cd80.iso`; `diff-openbsd` amd64 0 unexpected; `bench` amd64 at or under its value before N3 per measurement, or a written reason; `frozen` 0 files; no `deferred-to-N10` record open | n/a |
 | **N11 Verification** | the gaps deferred on 2026-10-17 after the TRACTOR comparison: the semantic count of unsafe operations beside the syntactic one; the six-dimension idiomaticity rubric as the reviewer's scorecard; an organic and hidden battery (OpenBSD's `regress` through `diff-openbsd`; the clone's widening is the user's); decision 8's renames; `-accel hvf` for arm64 tried once and recorded | 0 | 0 | `unsafe-report` prints operations and keywords; every module redesigned from N11 carries its six scores; the `regress` battery runs with its own `expected.toml`, 0 unexpected; the hvf result recorded | n/a |
 | **N12 Performance** | what decision 42 left open, on both archs: the QEMU profile of the fault and of fork (the pmaps in `hal`, the page system's locks under TCG, the trap, the TLB shootdowns), the lookups beyond the C listed for `sys/kernel/vm/map.rs`, `zero_page`/`copy_page` over typed pages | 0 | 0 | `just bench` on both archs: every ratio at or under its value before N3 (`docs/bench/n3-before-<arch>.toml`) or a written reason per measurement; `Bench:` on every commit (decision 43); no new `unsafe`, no check relaxed | n/a |
 
@@ -541,7 +544,7 @@ adds an operation the C's switch lacks.
 | `struct pool_allocator` | `sys/pool.h` | `PoolBackend`, `RawPool` | N2 | done, `hal` |
 | `struct uvm_pagerops` | `uvm/uvm_pager.h` | `PageObject`, `FaultObject`; the vnode pager behind `VnodeOps` until N5 | N3 | done |
 | `struct consdev` | `dev/cons.h` | `Console` | N2 | done, `hal` |
-| `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the module's vtable | N2 | done, `abi` |
+| `struct sysent`, `KernelApi` | `sys/systm.h` | the `Native`/`Legacy` table, the table `abi` calls the kernel through | N2 | done, `abi` |
 | `struct filterops` | `sys/event.h:234` | `Filter<G>`; `Filterops<G>` stays as the erased table for `bsd`'s 41 statics (44 at N4.4b; the pipe's three are `kernel::pipe`'s impls since N5.0) | N4.4b | **corrective slice** (below) |
 | `struct arm_intr_func` (`raise`, `lower`, `x`, `setipl`, the wakeup hooks) | `arch/arm64/include/intr.h` | `hal::intr::IntrHardware` (default methods: the `arm_dflt_*`); `bsd`'s `ArmIntrHardware` over the table the GIC drivers fill, registered by `initarm` | N4.5c | done, `hal` (the bridge is paid N7) |
 | `struct interrupt_controller` (`ic_establish`, `ic_disestablish`, `ic_route`, `ic_barrier`, ...) | `arch/arm64/include/intr.h` | none yet: the GIC drivers' own table, kept in `bsd` until they move | N7.2 | kept, reason: its implementers (agintc, ampintc) and every caller are drivers that move together at N7 |
@@ -708,7 +711,8 @@ with the last one. No behaviour changes; `sys/kernel/benches/event.rs` runs befo
 Status under v2 (2026-10-16), so no one applies a superseded one: **in force**: 1 (the goal,
 restated by 20), 4, 6, 8 (the names), 10 (no `&'static` from a pool), 11, 12, 13 (the pipe's
 shape, now in `kernel`), 17, 18, 19 (`abi_pod!`, typed `kn_kq`, `MBox`: `hal` designs), 20, 21,
-22, 23, 24, 25-41 (30 extended at N3). **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
+22 (but for the module: 47), 23, 24, 25-41 (30 extended at N3; 29, 37's window half and 38
+superseded by 47). **Superseded**: 2 (the core list: the crate boundary replaces it), 3 (pipe is still
 the first subsystem, in `kernel`, after the foundations), 5 (closed by 20: the core is a crate),
 7 (the safe `Adapter` stays, in `hal`), 9 (seams: replaced by bridges in `hal`, `bridges.toml`),
 14, 15, 16 (the typed slots inside `bsd`: not merged; their shapes are reused when descriptors
@@ -819,7 +823,9 @@ every design that kept `unsafe` inside the kernel:
     kernel entry point; its size stays under a fixed line count per syscall. A violation fails
     `just check`.
 
-22. **The ABI is a loadable module, from N2 on** (the user, 2026-10-16: the compatibility layer
+22. *Superseded by 47 for the module (2026-11-06): the ABI is linked into the kernel image;
+    the separate crate, `forbid`, no logic and `KernelApi` stay.* **The ABI is a loadable
+    module, from N2 on** (the user, 2026-10-16: the compatibility layer
     out of the kernel, "una biblioteca dinámica"). `abi_openbsd.ko` is a separate ELF file on the
     boot medium: the boot loader reads it, `hal`'s loader relocates it before `init(8)` and the
     module registers its syscall handler in `hal`'s registry and receives `KernelApi`, the vtable
@@ -898,7 +904,8 @@ Taken by the user on 2026-10-16, later, on the planner's options after the N2.2 
 Taken by the redesigner of N2.4a on 2026-10-16 under the user's standing authority of that
 day ("yap puedes seguir solo? hasta acabar?"):
 
-29. **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi_openbsd.ko").
+29. *Superseded by 47 (2026-11-06): there is no module to miss, and the fallback is gone.*
+    **A kernel without its ABI module still boots** (docs/ARCHITECTURE.md, "abi_openbsd.ko").
     When the boot loader hands over no `/abi_openbsd.ko`, or the loader refuses it (another
     machine, another `KernelApi`, a malformed file), the kernel prints one line,
     `abi_openbsd.ko: not loaded, <why>; every system call takes the legacy path`, and every
@@ -1001,7 +1008,9 @@ day (numbered R1-R5 on its branch so that other slices' entries did not collide;
 
 Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
 
-37. **On amd64 the ABI module executes from a window of the kernel's slot.** The close's `just
+37. *Superseded by 47 for the window (2026-11-06): with no module, both windows go (amd64's
+    is an N10 orphan); `kernel_map`'s NX/PXN and the kernel pmap's `PROT_EXEC` refusal stay.*
+    **On amd64 the ABI module executes from a window of the kernel's slot.** The close's `just
     ci` panicked every amd64 boot on the jump into `abi_openbsd.ko`: the relocated RX copy sat
     in `kernel_map`, whose directory entries carry `pg_nx` as OpenBSD's `pmap_alloc_level`
     sets them (OpenBSD never executes from `kernel_map`); arm64 has no PXN on its tables and
@@ -1023,7 +1032,8 @@ Taken by the user on 2026-10-16, at the N2 close ("(C) Ventana del kernel"):
     2ff6d854 travels with the `docs: close N2` commit, because the commits were already on the
     candidate when the review came, as for the loader (bad16b2a) and pipe (7fc65c78).
 
-38. **The ABI module is `abi_openbsd.ko`** (the main session, 2026-10-16, under the user's
+38. *Superseded by 47 (2026-11-06): no file carries the ABI any more.* **The ABI module is
+    `abi_openbsd.ko`** (the main session, 2026-10-16, under the user's
     standing authority of that night, "acepta las recomendaciones que ofrezcas"; the option it
     recommended): an ISO 9660 name, so cd80.iso carries the module without touching libsa's
     cd9660 or the image format (`iso_name` keeps `A-Z`, `0-9`, `_`; libsa compares the
@@ -1239,3 +1249,51 @@ Taken by the user on 2026-10-18:
     that a redesigner should not shape on the fly. The corrective slice for N4.4 is N4.4b
     (0.11). Rejected: retrofitting every table now (the traits are written with their first
     `kernel` user, like the runtime's pieces, decision 20's rule).
+
+Taken by the user on 2026-11-06 (the N5 close's first slice; the main session took D2-D9 as
+recommended, under the user's standing order):
+
+47. **The ABI is linked into the kernel image** (the user, 2026-11-06: "abi deja de ser un
+    módulo cargable. El crate `abi` se enlaza dentro de la imagen del kernel; no existe más
+    `abi_openbsd.ko`. Se mantiene: crate separado, `#![forbid(unsafe_code)]` en su raíz, sin
+    lógica (`abi-check` igual), y lo que el userland ve no cambia (ABI de syscalls
+    idéntica)."). It replaces decision 22's loadable module and decision 29, and the window
+    half of 37 and 38. What 22 kept: `abi` a crate of its own, `#![forbid(unsafe_code)]` at
+    its root, no logic (`abi-check` R1-R5 unchanged, decision 25), `KernelApi` its only face
+    of the kernel (Cargo enforces it: `abi` depends on `hal` alone), the `Native | Legacy`
+    table; the kernel does not name the ABI and the ABI does not name `bsd`. What it lost:
+    one image instead of two files (22's "una biblioteca dinámica"); "nothing names `abi`"
+    (the image crate does: `bsd`'s boot glue until N9, docs/SCAFFOLDING.md); a second ABI
+    swapped at boot (it would be a second crate linked in); the boot-time refusal of a module
+    built against another table (`ApiPrefix`, `AbiModuleHeader`: the compiler's type check is
+    that check, and `KernelApi` is a plain Rust struct, no version, no `#[repr(C)]`). The
+    measured costs that went with it: `hal::module` (2,175 lines, 20 host tests, the
+    loader's 3 `unsafe`: `hal` 199 -> 196; decision 22 had estimated about 30), the module's
+    binary `sys/abi/ko` (199 lines), arm64's module window (`pmap/window.rs`, 291 lines, 32 KiB
+    of `.bss` tables) and `hal::pmap`'s `module_window`/`module_enter`, the `ModulePlatform`
+    bridge (`bridges.toml` 25 -> 24), `kernel::vm::km`'s `ModuleMemory`, `KernelApi`'s
+    `copyin`/`copyout` (no caller but a test), `hal`'s `module-rt` feature (62 `cfg` lines),
+    the second file on every medium (boot(8) and arm64's efiboot reading it, Limine's
+    `module_path:`, `efiboot-disk`, install80, cd80, the base set, the release tarball) and
+    the ~8 KiB of efiboot's 1 MiB heap boot(8) held across `loadfile`; about 3,900 lines in
+    all. Decision 29's fallback goes: nothing is loaded, so nothing can be missing;
+    `hal::syscall` keeps one registration and answers `ENOSYS` with none, which the boot glue
+    makes impossible (it panics when `abi_init` registered nothing). A panic in `abi` now
+    reaches `panic(9)` (the module's runtime parked the CPU silently); `abi`'s text is the
+    kernel image's, so decision 37's window is moot, while `kernel_map`'s NX (amd64) and PXN
+    (arm64) and the kernel pmap's `PROT_EXEC` refusal stay.
+    The shape (D2): `bsd`'s boot glue (`sys/kern/abi_module.rs`'s `abi_boot`, from
+    `stand::start_kernel` right after `hal_bridges_register`) calls
+    `abi::abi_init(&KERNEL_API)` before `main()`, so the handler is registered before the
+    first system call with no memory and no mapping, and prints
+    `abi: 331 syscalls, 170 native` (D1, the user's answer: the module's line named a file
+    that no longer exists; it moved earlier in dmesg). The kcopy tokens' take-once argument
+    (D5) is rewritten, not weakened: `abi` runs no function before `abi_init`, which comes
+    after both takes; a later take gets `None`; `abi-check` R5 refuses `abi` a static of
+    interior mutability that could keep one. Rejected: the module's line kept verbatim (a
+    false line in every dmesg), no line (the smokes would lose the handler's check), `abi`
+    calling `kernel` directly (every `Native` entry is still a `bsd` wrapper: possible when
+    the system-call hop leaves `bsd`, that slice's decision), an `abi-check` rule naming
+    `KcopyToken` (the user: `abi-check` stays the same). amd64 (decision 44): the frozen tree
+    keeps orphans N10's compile-and-fix pass deletes (docs/ROADMAP.md, N10). Commits
+    27b15faa, 505bd530, 041accc9, aaef6e78 and the `docs:` commit that wrote this.

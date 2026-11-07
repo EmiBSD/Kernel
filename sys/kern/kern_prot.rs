@@ -63,7 +63,7 @@
 //! with typed arguments, `sugid_change`, `proc_cansugid`, `dorefreshcreds`) or
 //! `kernel::cred`'s (`crget`, `crhold`, `crfree`, `crset`, `crcopy`, `crdup`,
 //! `crfromxucred`, `groupmember`, `suser_ucred`); this file decodes `sys_*`'s arguments for
-//! `bsd`'s `sysent[]` rows (and the ABI module's `Native` entries, which run those rows),
+//! `bsd`'s `sysent[]` rows (and the ABI's `Native` entries, which run those rows),
 //! and keeps the names its callers import.
 //!
 //! ## Redesign

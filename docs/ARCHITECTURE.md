@@ -20,11 +20,11 @@ draws them.
 | Layer | Name | Expansion | Path | `unsafe` | What it is |
 |---|---|---|---|---|---|
 | 0 | userland | | outside this repository | | OpenBSD's own programs, binaries unchanged; what they see never changes |
-| 1 | `abi` | Application Binary Interface | `sys/abi/`, built as the loadable module `abi_openbsd.ko` | 0, `#![forbid(unsafe_code)]` | the contract in bytes between the kernel and the binaries of userland: the syscall numbers, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`), the ioctl and sysctl encodings, errno. Translation only, no logic (decision 21): bytes to the kernel's types, one `KernelApi` entry per syscall, an errno from its `Result`. Byte-identical to OpenBSD's, so its userland runs unchanged |
+| 1 | `abi` | Application Binary Interface | `sys/abi/`, linked into the kernel image (decision 47) | 0, `#![forbid(unsafe_code)]` | the contract in bytes between the kernel and the binaries of userland: the syscall numbers, the `#[repr(C)]` structs (`stat`, `kevent`, `sockaddr`, `kinfo_*`), the ioctl and sysctl encodings, errno. Translation only, no logic (decision 21): bytes to the kernel's types, one `KernelApi` entry per syscall, an errno from its `Result`. Byte-identical to OpenBSD's, so its userland runs unchanged |
 | 2 | `kernel` | | `sys/kernel/` | 0, `#![forbid(unsafe_code)]` at the root; the compiler refuses one | every decision the operating system makes: memory, processes, the scheduler, signals, descriptors, kqueue, VFS and the file systems, the network stack, the drivers' logic, crypto, pf, pledge, unveil, exec. Its own types, ownership first. Reaches what has not moved out of `bsd` only through a bridge trait registered in `hal` (`bridges.toml`, 0 rows at N9) |
-| 3 | `hal` | Hardware Abstraction Layer | `sys/hal/` | the only `unsafe` of the system, under `hal_ceiling`, every site with a soundness proof, Miri on its host tests | the hardware (page tables and the pmaps, traps, the syscall entry, the context switch, the interrupt level, MMIO, caches, early boot) and the runtime written new (locks that own their data, typed pools, owned memory, `OnceStatic`, the typed user copy, per-CPU data, the bridge registry, the module loader). Its API towards `kernel` is safe: `cargo xtask hal-check` refuses a `pub unsafe fn` |
+| 3 | `hal` | Hardware Abstraction Layer | `sys/hal/` | the only `unsafe` of the system, under `hal_ceiling`, every site with a soundness proof, Miri on its host tests | the hardware (page tables and the pmaps, traps, the syscall entry, the context switch, the interrupt level, MMIO, caches, early boot) and the runtime written new (locks that own their data, typed pools, owned memory, `OnceStatic`, the typed user copy, per-CPU data, the bridge registry, the system call dispatch point). Its API towards `kernel` is safe: `cargo xtask hal-check` refuses a `pub unsafe fn` |
 | 3' | `lib` | | `sys/lib/libkern/`, `sys/lib/libz/` | 10 and 0 (N1) | the leaf crates below `hal`: `libkern`, what the C kernel takes from libc (string and memory routines, `strlcpy`, `crc32`, `StaticCell`), and `libz`, what the kernel compiles of zlib (crc32, adler32, deflate, inflate). Both depend on nothing of ours; `hal` depends on `libkern` |
-| legacy | `bsd` | | `sys/` itself, named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the `Legacy` syscall fallback and the bridge implementations in `hal` at boot |
+| legacy | `bsd` | | `sys/` itself, named after OpenBSD's kernel image `/bsd` | 9,490 at the N4 close, 0 files at N9 | the LandingZone tree: OpenBSD's kernel ported file by file, the kernel that boots and passes every smoke while its subsystems move into `kernel` and `hal`. Calls down into the three crates, never the reverse; registers the bridge implementations in `hal` at boot and hands `KernelApi` to `abi::abi_init` |
 | 4 | hardware | | | | QEMU amd64 and arm64, real machines |
 
 Beside the layers, outside the four crates and unchanged: the boot loaders (`sys/stand/`,
@@ -38,11 +38,12 @@ ACPI, bridge, slice, ratchet, zones, ...) is one row of `docs/GLOSSARY.md`.
 `sys/` holds four Cargo packages (docs/ZERO_UNSAFE.md section 0, the one diagram): `sys/hal/`,
 the hardware and the runtime, the only crate where `unsafe` may live; `sys/kernel/`, every
 decision of the operating system, `#![forbid(unsafe_code)]` at its root; `sys/abi/`, OpenBSD's
-userland interface as the loadable module `abi_openbsd.ko`, `forbid`, translation only; and
+userland interface, linked into the kernel image (decision 47), `forbid`, translation only; and
 `bsd` at `sys/` itself (OpenBSD's kernel image is `/bsd`), the LZ tree with its subsystems as
 modules (`kern`, `uvm`, `dev`, `ddb`, `sys`, `machine`, `arch`), replaced subsystem by subsystem
-and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal`, `abi -> hal` and `abi ->
-KernelApi`; `hal` depends on nothing of ours but `libkern`.
+and deleted at N9. Dependencies go one way: `bsd -> kernel -> hal` and `bsd -> abi -> hal`
+(only the image crate names `abi`, which reaches the kernel through `KernelApi` alone); `hal`
+depends on nothing of ours but `libkern`.
 
 The cycles OpenBSD resolves at link time (`trap → uvm_fault → pmap → tsleep → sched`) were the
 reason `bsd` was one crate until 2026-10-16 (v1: a module could become a crate only if it used
@@ -69,7 +70,7 @@ write guard sleeps with `rwsleep` and runs a closure unlocked), `hal::percpu::Pe
 `hal::bridges`, a registry of safe traits `bsd` fills at boot (`sys/kern/hal_bridges.rs`,
 called by `stand::start_kernel` before `main`) and checked on every answer
 (`sys/hal/trust.rs`). At the N3 close, 21: `IntrLevel`, `CpuId`, `Sleep`, `UserCopy`,
-`ModulePlatform` (the boot entry), `TlbCpus`, `KernelLock`, `SysInfo`, `VmProc`, `VmSysctl` and
+`ModulePlatform` (the boot entry; gone with the module at the N5 close, decision 47), `TlbCpus`, `KernelLock`, `SysInfo`, `VmProc`, `VmSysctl` and
 pipe's `PipeGlue`, `UioMove`, `PipeFiles` (paid by N4); `BufCacheStats`, `VnodeOps` (N5);
 `NetLock` (N6); `Console`, `Random` (N7); `PoolBackend`, `Malloc`, `Printf` (N9). N3 paid
 `PageMemory`, `PhysPages`'s row, `KmMaps`, `KmPages` and `FaultMap` with the kernel modules that
@@ -255,78 +256,46 @@ Per-target rustflags in `.cargo/config.toml`: `relocation-model=static` (non-PIE
 and `force-frame-pointers=yes` (backtraces in `panic`). No `[build] target`, so host builds stay
 the default and `cargo test` just works.
 
-`abi_openbsd.ko` (N2.4, `sys/abi/ko`, `just build-abi-<arch>`) is linked as efiboot is:
-`RUSTFLAGS="-C relocation-model=pie"` (replacing the kernel's `static`), its own target
-directory (`target/abi`), `CARGO_PROFILE_DEV_STRIP=debuginfo` (boot(8) reads the whole file
-into efiboot's 1 MiB heap), and `sys/abi/ko/abi.ld`: a static PIE at 0 with `-pie
---no-dynamic-linker -z notext -Bsymbolic --pack-dyn-relocs=none -z norelro`, three
-page-aligned `PT_LOAD`s (text R X; rodata R with the module header first at the ELF entry,
-the GOT and `.data.rel.ro`, relocated by the loader before it is mapped; data R W) and no
-import (section "abi_openbsd.ko").
+The ABI (`sys/abi/`) has no build of its own: it is a dependency of the image crate (`bsd`
+until N9), linked into the kernel (decision 47).
 
-## abi_openbsd.ko (N2.4)
+## The ABI (N2.4; linked in at the N5 close)
 
-The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The pieces:
+The ABI crate is linked into the kernel image (decision 47, docs/ZERO_UNSAFE.md 0.1). From N2.4
+to the N5 close it was the loadable module of decision 22: a separate ELF on every boot medium,
+read by boot(8) or handed over by Limine, placed, relocated and mapped by `hal`'s loader in a
+window beside the image (decision 37), with the `Legacy` fallback of decision 29 when it was
+missing; decision 47 records what went with it. The pieces now:
 
 - **The table.** `sys/abi/sysent.rs`: one `Native(fn) | Legacy` entry per number of
-  `<sys/syscall.h>` (`hal::sys::syscall`), every one `Legacy` at N2.4 but pipe and pipe2,
-  `Native` since N2.6 (through `KernelApi::pipe2`, which runs the same `sysent[]` row and
-  calls `kernel::pipe`, so the `Legacy` path gives the same answer); `abi_init` registers
-  the dispatcher through `KernelApi`. The binary is `sys/abi/ko` (package `abi_openbsd`):
-  the header `hal::api::AbiModuleHeader` (magic `EMIABIKO`, `KernelApi` version and size,
-  entry point) as a `#[used]` static that `abi.ld` puts first in the read-only segment and
-  names as the ELF entry. It links no kernel code and no `hal` state; its panic handler is
-  `hal::module::rt` (feature `module-rt`), which parks the CPU.
-- **The vtable.** `hal::api::KernelApi`, `#[repr(C)]`, version and size first (`ApiPrefix`), Rust-ABI
-  `fn` pointers (one toolchain builds both sides): the handler's registration, the `Legacy`
-  path, `copyin`/`copyout`. `bsd` fills it (`sys/kern/abi_module.rs`); the module receives it
-  in every call and keeps no state.
-- **The dispatch.** Both arch traps call `kern::abi_module::syscall` where they chose the
-  `sysent[]` entry; it calls `hal::syscall::dispatch`, which calls the registered handler
-  (the module's, through `kernel::api`'s trampoline) or the `Legacy` fallback (`bsd`'s
-  `sysent[]` and `mi_syscall`), both registered once at boot. Errnos cross `hal` as `i32`.
-- **The hand-over.** Limine: a `module_path:` of `limine.conf`, found by name in
-  `BootInfo::modules`. boot(8) (both efiboots, `sys/stand/boot/boot.rs`): `/abi_openbsd.ko`
-  from the kernel's device, read straight onto the page after the kernel's image
-  inside the room the program reserved (`BootMd::abi_module_room`) with `marks[MARK_END]`
-  raised over it, so amd64's move and arm64's cache clean carry it and `esym` keeps it out
-  of free memory; amd64 passes `BOOTARG_ABIMODULE` (`BiosAbiModule`, type 0x100), arm64
-  `/chosen`'s `emibsd,abi-module` (two big-endian 64-bit cells); `getbootinfo` turns either
-  into `BootInfo::abi_module`, and `sys/stand/mod.rs` `abi_module_handover` keeps the record
-  only when one `KernelAndModules` region of the memory map covers it (else one line, and the
-  kernel boots without the module). The open descriptor across `loadfile` holds about 8 KiB
-  of libsa's 1 MiB heap, bounded by the file system's block size, not by the file. The boot
-  glue registers the `Legacy` fallback before `main`.
-- **The loader.** `hal::module` (`elf.rs`, `load.rs`), called from `main` just before
-  `init(8)` may exec: parses the ELF64 in safe code (a static PIE of the running machine,
-  page-aligned W^X loads, `RELATIVE` relocations only), copies it into wired memory, applies
-  the relocations for the range it will run at, checks the header, maps each page with its
-  segment's protection (text R X, rodata R, data R W) and calls the entry point. The
-  hand-over comes through `ModulePlatform` (`image` only, the bridge of `bridges.toml`), the
-  writable copy's memory from `kernel::vm::km::module_memory()` (a `ModuleMemory` passed to
-  `load` as a value, N3.2), and the mapping is `hal`'s own (`hal::pmap::module_window`,
-  `module_enter`). Three `unsafe` there, each resting on that platform premise (`load.rs`'s
-  module doc). The module runs from a 16 MiB window outside every uvm map on both machines,
-  linked once by `pmap_bootstrap`: on amd64 in the kernel's L4 slot after the image, since
-  `kernel_map`'s directory entries carry NX as OpenBSD's do (`sys/hal/arch/amd64/pmap/
-  window.rs`); on arm64 after the boot loader's last L2 entry of the image's gigabyte, with
-  PXN on `kernel_map`'s tables (`sys/hal/arch/arm64/pmap/window.rs`; docs/ZERO_UNSAFE.md
-  decision 37).
-- **The boot line.** `abi_openbsd.ko: 331 syscalls, 105 native` at the N4 close (2 until N3.5, 17 until
-  N4.3, 37 until N4.4, 44 until N4.7a), or `abi_openbsd.ko: not loaded, <why>; every system call takes the legacy path`
-  (decision 29: a medium without the file still boots). `just smoke-abi` and `smoke-efiboot` (both archs) check the first;
-  `smoke-abi` refuses the second and runs a pipeline through the module (`abi-pipe-43`).
-- **The media.** `cargo xtask image`, efiboot-disk, base80.tgz (`./abi_openbsd.ko`) and
-  install80.img and cd80.iso carry the file the build made (`xtask::boot::default_abi_module`);
-  the name is one ISO 9660 keeps, so libsa's cd9660 opens it (decision 38).
-  So `/abi_openbsd.ko` is a new file of an installed system's `/`, from the base set, outside
-  OpenBSD's set lists; its boot(8) reads it there.
-- **Since the review of N2.4a.** The vtable's type is `hal::api::KernelApi` (with
-  `ApiPrefix` and `AbiModuleHeader`), so `abi` depends on `hal` alone and the `.ko` links no
-  kernel code; `kernel::api::table` fills it. `hal::module::load` takes `&'static KernelApi`,
-  checks its prefix, runs once, and releases the writable copy (`ModulePlatform::release`)
-  before the entry point runs, so no writable alias of the module is left but the direct map.
-  boot(8) reads the file straight into the room after the kernel, never into its heap.
+  `<sys/syscall.h>` (`hal::sys::syscall`), 170 of 331 `Native` (`NATIVE`; pipe and pipe2 the
+  first, at N2.6). A `Native` entry calls its `KernelApi` entry, whose `bsd` wrapper runs the
+  same `sysent[]` row through the system call prologue (the hop, docs/SCAFFOLDING.md), so the
+  `Legacy` path, `KernelApi::syscall_legacy` (`bsd`'s `sysent[]` and `mi_syscall`), gives the
+  same answer; a `Legacy` entry and a number outside the table take that path.
+- **The kernel's table.** `hal::api::KernelApi`: Rust `fn` pointers, the handler's
+  registration, the `Legacy` path and one typed entry per `Native` system call in groups
+  (`VmEntries`, `FdEntries`, `EventEntries`, `ProcEntries`, `TimeEntries`, `VfsEntries`, ...).
+  It lives in `hal`, below both sides, so `abi` names it with no dependency on `kernel`
+  (Cargo: `abi`'s only dependency is `hal`); `kernel::api::table` fills it with the kernel's
+  registration and `bsd` with the functions that answer (`sys/kern/abi_module.rs`); `abi`
+  receives it in `abi_init` and in every call, and keeps no state.
+- **The registration.** `stand::start_kernel` calls `bsd`'s `abi_module::abi_boot` right after
+  `hal_bridges_register`, before `main()`: `abi::abi_init(&KERNEL_API)` registers the handler
+  (`kernel::api` keeps it with its table and registers its trampoline in `hal::syscall`, once),
+  and the glue prints one line from what the handler said about itself (`HandlerInfo`), or
+  panics when nothing registered. The kcopy tokens are taken before it (`hal_bridges_register`'s
+  first steps), and `abi` runs nothing before `abi_init`, so it cannot hold one (decision 47).
+- **The dispatch.** arm64's trap calls `hal::syscall::dispatch` (amd64's, frozen,
+  `kern::abi_module::syscall`, which calls it), and the dispatch calls the registered handler;
+  with none it answers `ENOSYS`, which the boot glue's panic makes unreachable. Errnos cross
+  `hal` as `i32`.
+- **The boot line.** `abi: 331 syscalls, 170 native` (the module's line, which named its file,
+  until the N5 close; the count has followed every `Native` flip: 2, 17, 37, 44, 94, 105,
+  170). `just smoke-abi`, `smoke-efiboot` (both archs) and `dist-arm64`'s boot check expect it;
+  `smoke-abi` also runs a pipeline through the handler (`abi-pipe-43`).
+- **The media.** Nothing but the kernel: the boot loaders, the images, install80, cd80, the
+  base set and the release tarball carry no ABI file (decision 47).
 
 ## Cargo features ↔ `option(4)`
 
@@ -341,7 +310,7 @@ The ABI crate is a loadable module (decision 22, docs/ZERO_UNSAFE.md 0.1). The p
 | `ffs2` | `option FFS2` | FFS2 (UFS2 dinodes, the 64 KB super-block) in ffs; default |
 | `qemu` | — | QEMU-only exits (`isa-debug-exit`, semihosting), the boot self-tests, the TSC under TCG and the `uptime went backwards` check |
 | `inet6` | `option INET6` | IPv6: the `#ifdef INET6` sites outside `sys/netinet6` and `inet6domain` in `domains[]`; default, as in GENERIC. `sys/netinet6` itself (and the IPv6 tables and usrreqs it names, `route6_cache`, `tcp6_usrreqs`, ...) always compiles, like a library nothing reaches without the option, so the tree builds both ways |
-| `multiprocessor` | `option MULTIPROCESSOR` | a default since decision 40 (the user, 2026-10-17): the MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke, `abi_openbsd.ko` and host test; `hal`, `kernel` and `abi` have no such option, their code is MULTIPROCESSOR only), and `bsd`'s `lib.rs` refuses a build without it. Until then it was off by default and `smoke-up` booted a kernel built without it; now `smoke-up` boots this one with `-smp 1`. The uniprocessor branches still in `bsd`'s inherited and adapted modules are unbuilt and go when N4 redesigns those files. Since M11e every `just smoke` recipe boots it, since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
+| `multiprocessor` | `option MULTIPROCESSOR` | a default since decision 40 (the user, 2026-10-17): the MULTIPROCESSOR kernel is the only one built (every recipe, image, smoke and host test; `hal`, `kernel` and `abi` have no such option, their code is MULTIPROCESSOR only), and `bsd`'s `lib.rs` refuses a build without it. Until then it was off by default and `smoke-up` booted a kernel built without it; now `smoke-up` boots this one with `-smp 1`. The uniprocessor branches still in `bsd`'s inherited and adapted modules are unbuilt and go when N4 redesigns those files. Since M11e every `just smoke` recipe boots it, since 2026-10-07 with `-smp 2` but for the `smp4` group ("Parallel smokes"). M11a: `MAXCPUS` 255/256, the kernel lock and the spinning mutex (`kern_lock.c`), the Limine MP request and the application processors' start (see "Deviations"); `just smoke-mp` boots it with `-smp 4`. M11d: `NET_TASKQ` 8 softnet queues, `softnet_percpu` keeps one per CPU; `just smoke-net-mp` runs both VMs of the two-VM smokes on it |
 | `ntfs` | `option NTFS` | the read-only NTFS file system (`sys/ntfs`) and its `vfsconflist[]` entry; default, but compiled only where the architecture's GENERIC has it (amd64): see below |
 | `fuse` | `option FUSE` | FUSE (`sys/miscfs/fuse`), its `vfsconflist[]` entry, `cdevsw[]` 92 (`/dev/fuse0`) and `fuseattach` in `pdevinit[]`; default, as in GENERIC |
 | `viocon` | amd64 GENERIC's commented-out `#viocon* at virtio?` | viocon(4) (M16d) in neither GENERIC: the feature stands for uncommenting the line, so amd64's `ioconf.rs` gets the `viocon* at virtio?` entry and `cdevsw[]` 94 its entry points (`NVIOCON` 1, 0 without the feature as `config(8)` counts it: `ENXIO`); arm64's GENERIC has no such line, so nothing changes there. `dev/pv/viocon.rs` compiles on every build, so `just clippy` and the host tests cover it either way; off by default |
@@ -2413,7 +2382,7 @@ trailers (`git-commits.md`), printed by `cargo xtask bench compare BEFORE AFTER`
 - **The release diagnostic** (decision 42, the user's of 2026-10-18). `just bench-release`
   (`cargo xtask bench --profile release`) builds the kernel alone in Cargo.toml's
   `[profile.release]` (LTO, one codegen unit, symbols kept, `panic = "abort"`) and boots
-  `target/<triple>/release/bsd` in place of the debug kernel; init, `abi_openbsd.ko` and the
+  `target/<triple>/release/bsd` in place of the debug kernel (the ABI linked in); init and the
   ramdisk are the files `just bench` boots (debug), so only the kernel's profile differs. The
   method is the same (ten runs, the worst left out, the 15 % limit, the warm-up, the host
   diagnostic); `report.toml` records `profile = "release"` (a report without the key is a
