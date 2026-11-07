@@ -123,6 +123,13 @@
 //!   [`PoolArc::count`] as the C's `f_count` counts it, adopted once into a handle again. The
 //!   word `Inner::refs` holds both: the references (handles and parked ones) in its low half,
 //!   the parked ones among them in its high half, so an item never grows.
+//! - N6.0: `pool_init(pp, .., palloc)` with a `struct pool_allocator` of the caller's (the
+//!   C's `m_pool_allocator`, `mbinit`) is [`TypedPool::init_with_source`] and
+//!   [`BoxPool::init_with_source`] over [`PoolBackend::create_with`]: the page half of the
+//!   allocator (`pa_alloc`, `pa_free`, `pa_pagesz`) is a [`PageSource`] the kernel implements
+//!   (N6.1's mbuf pages, their limit and DMA constraint its own), a safe trait over pages as
+//!   values; a backend that cannot take one makes no pool (the default), so a source is never
+//!   ignored. `PoolBox::pool` (crate-private) lets `hal::smr` check an item's pool.
 
 use core::any::TypeId;
 use core::cell::UnsafeCell;
@@ -227,6 +234,24 @@ pub trait RawPool: Sync {
     fn cache_init(&self);
 }
 
+/// Where a pool's pages come from when not from `pool(9)`'s own allocator: the page half of
+/// `struct pool_allocator` (`pa_alloc`, `pa_free`, `pa_pagesz`), implemented by the kernel
+/// (N6.1's mbuf clusters, `m_pool_allocator`: the pages charged against `nmbclust` and taken
+/// under the pool's DMA constraint, which are the source's own business) and handed to
+/// [`PoolBackend::create_with`]. A page is a value here: the pool writes its items into it
+/// (`RawPool`'s registration contract, `sys/hal/trust.rs`).
+pub trait PageSource: Sync {
+    /// `pa_alloc(pp, flags, &slowdown)`: a page of `len` bytes, aligned to `len` when
+    /// `aligned` (the pool keeps its page header inside the page), waiting for memory when
+    /// `wait` (`PR_WAITOK`); `None` when none can be had.
+    fn alloc(&self, len: usize, aligned: bool, wait: bool) -> Option<NonNull<u8>>;
+    /// `pa_free(pp, v)`: a page [`PageSource::alloc`] gave, of the same `len` and `aligned`.
+    fn free(&self, page: NonNull<u8>, len: usize, aligned: bool);
+    /// `pa_pagesz`: the page sizes the source can give, `POOL_ALLOC_SIZES`'s encoding (each
+    /// size's bit, and bit 0 when the pages can be aligned to their size).
+    fn sizes(&self) -> usize;
+}
+
 /// `bsd`'s `pool(9)`, as it registers it (`sys/kern/subr_pool.rs`).
 ///
 /// The registration contract: `create` returns `None` or a pool, alive for the rest of the
@@ -242,6 +267,39 @@ pub trait PoolBackend: Sync {
         flags: i32,
         wchan: &'static str,
     ) -> Option<&'static dyn RawPool>;
+
+    /// `pool_init(pp, size, align, ipl, flags, wchan, palloc)` of a new pool whose pages come
+    /// from `source` (`palloc`'s `pa_alloc` and `pa_free`), as [`PoolBackend::create`]
+    /// otherwise. `None` from a backend that cannot take a source (the default), or for a
+    /// source whose page sizes it cannot use: never a pool that would ignore the source.
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        let _ = (size, align, ipl, flags, wchan, source);
+        None
+    }
+}
+
+/// `create` or `create_with` of the registered backend, as `source` asks.
+fn make_pool(
+    size: usize,
+    align: usize,
+    ipl: i32,
+    flags: i32,
+    wchan: &'static str,
+    source: Option<&'static dyn PageSource>,
+) -> Option<&'static dyn RawPool> {
+    let backend = bridges::pool_backend()?;
+    match source {
+        None => backend.create(size, align, ipl, flags, wchan),
+        Some(src) => backend.create_with(size, align, ipl, flags, wchan, src),
+    }
 }
 
 /// A pool of `T`s (`struct pool` sized for the type): a `static`, initialised once at boot.
@@ -271,7 +329,20 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// (the wait message and the name `vmstat -m` shows). `ENOMEM` when the pool cannot be
     /// made (or before the bridge is registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, false)
+        self.init_with(ipl, flags, wchan, false, None)
+    }
+
+    /// [`TypedPool::init`] of a pool whose pages come from `source` (`pool_init` with a
+    /// `struct pool_allocator`: the mbuf clusters'). `ENOMEM` too when the backend cannot take
+    /// the source.
+    pub fn init_with_source(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Result<(), Errno> {
+        self.init_with(ipl, flags, wchan, false, Some(source))
     }
 
     /// [`TypedPool::init`] for a pool whose values records reach by address and give back
@@ -285,7 +356,7 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         flags: i32,
         wchan: &'static str,
     ) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, true)
+        self.init_with(ipl, flags, wchan, true, None)
     }
 
     fn init_with(
@@ -294,20 +365,20 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         flags: i32,
         wchan: &'static str,
         recorded: bool,
+        source: Option<&'static dyn PageSource>,
     ) -> Result<(), Errno> {
         if self.made.is_set() {
             return Err(Errno::EBUSY);
         }
-        let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
-        let raw = backend
-            .create(
-                size_of::<Inner<T>>(),
-                align_of::<Inner<T>>(),
-                ipl,
-                flags,
-                wchan,
-            )
-            .ok_or(Errno::ENOMEM)?;
+        let raw = make_pool(
+            size_of::<Inner<T>>(),
+            align_of::<Inner<T>>(),
+            ipl,
+            flags,
+            wchan,
+            source,
+        )
+        .ok_or(Errno::ENOMEM)?;
         self.made
             .set(Made { raw, recorded })
             .map_err(|_| Errno::EBUSY)
@@ -1239,13 +1310,41 @@ impl<T: 'static> BoxPool<T> {
     /// `vmstat -m` shows). `ENOMEM` when the pool cannot be made (or before the bridge is
     /// registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
+        self.init_from(ipl, flags, wchan, None)
+    }
+
+    /// [`BoxPool::init`] of a pool whose pages come from `source` (`pool_init` with a
+    /// `struct pool_allocator`: the mbufs'). `ENOMEM` too when the backend cannot take the
+    /// source.
+    pub fn init_with_source(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Result<(), Errno> {
+        self.init_from(ipl, flags, wchan, Some(source))
+    }
+
+    fn init_from(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: Option<&'static dyn PageSource>,
+    ) -> Result<(), Errno> {
         if self.raw.is_set() {
             return Err(Errno::EBUSY);
         }
-        let backend = bridges::pool_backend().ok_or(Errno::ENOMEM)?;
-        let raw = backend
-            .create(size_of::<T>().max(1), align_of::<T>(), ipl, flags, wchan)
-            .ok_or(Errno::ENOMEM)?;
+        let raw = make_pool(
+            size_of::<T>().max(1),
+            align_of::<T>(),
+            ipl,
+            flags,
+            wchan,
+            source,
+        )
+        .ok_or(Errno::ENOMEM)?;
         self.raw.set(raw).map_err(|_| Errno::EBUSY)
     }
 
@@ -2555,6 +2654,74 @@ mod tests {
         );
         assert_eq!(pool.nout(), 0);
     }
-}
 
+    /// A page source that counts its pages and remembers what it was asked.
+    struct CountingSource {
+        out: AtomicU32,
+        asked: std::sync::Mutex<Vec<(usize, bool, bool)>>,
+    }
+
+    impl PageSource for CountingSource {
+        fn alloc(&self, len: usize, aligned: bool, wait: bool) -> Option<NonNull<u8>> {
+            self.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((len, aligned, wait));
+            let layout = std::alloc::Layout::from_size_align(len, len).ok()?;
+            // SAFETY: `len` is not 0 (the double asks for a power of two of the item's size).
+            let p = NonNull::new(unsafe { std::alloc::alloc_zeroed(layout) })?;
+            self.out.fetch_add(1, Ordering::SeqCst);
+            Some(p)
+        }
+
+        fn free(&self, page: NonNull<u8>, len: usize, aligned: bool) {
+            assert!(aligned);
+            let layout = std::alloc::Layout::from_size_align(len, len).expect("the layout");
+            // SAFETY: `page` came from `alloc` with this layout, once (the pool's contract).
+            unsafe { std::alloc::dealloc(page.as_ptr(), layout) };
+            self.out.fetch_sub(1, Ordering::SeqCst);
+        }
+
+        fn sizes(&self) -> usize {
+            4096 | 1
+        }
+    }
+
+    #[test]
+    fn a_sourced_pool_takes_its_pages_from_the_source_and_gives_them_back() {
+        testutil::install();
+        static SRC: CountingSource = CountingSource {
+            out: AtomicU32::new(0),
+            asked: std::sync::Mutex::new(Vec::new()),
+        };
+        static P: BoxPool<[u64; 30]> = BoxPool::new();
+        P.init_with_source(0, PR_WAITOK, "srcpl", &SRC)
+            .expect("made");
+        assert_eq!(
+            P.init_with_source(0, PR_WAITOK, "srcpl", &SRC),
+            Err(Errno::EBUSY)
+        );
+        let a = P.get(PR_WAITOK, || [1; 30]).expect("an item");
+        let b = P.get(PR_NOWAIT, || [2; 30]).expect("another");
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *SRC.asked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            [(256, true, true), (256, true, false)],
+            "the page's length, alignment and wait as the pool asked"
+        );
+        assert_eq!((a[0], b[29]), (1, 2));
+        drop(a);
+        drop(b);
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 0, "every page back");
+        static T: TypedPool<u64> = TypedPool::new();
+        T.init_with_source(0, PR_WAITOK, "srctpl", &SRC)
+            .expect("made");
+        let h = T.get_shared(PR_WAITOK, || 9).expect("an item");
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 1);
+        drop(h);
+        assert_eq!(SRC.out.load(Ordering::SeqCst), 0);
+    }
+}
 /* </TESTS> */

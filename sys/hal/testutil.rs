@@ -63,7 +63,7 @@ use crate::intr::IntrHardware;
 use crate::kmbuf::{PageKind, PageMemory};
 use crate::malloc::{MALLOC_ALIGN, Malloc};
 use crate::pmap::{BootstrapParams, Bootstrapped, PageMd, PhysPages};
-use crate::pool::{PoolBackend, RawPool};
+use crate::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use crate::prf::Printf;
 use crate::sleep::{INFSLP, Sleep};
 
@@ -272,22 +272,41 @@ struct TestPool {
     nout: AtomicU64,
     /// The pool's name, the key of [`POOL_KNOBS`].
     wchan: &'static str,
+    /// The source of a pool made by `create_with`: each item its own page from it, of the
+    /// item's size and alignment rounded up to a power of two, aligned to it.
+    source: Option<&'static dyn PageSource>,
+}
+
+impl TestPool {
+    /// The page of an item of a sourced pool.
+    fn page_len(&self) -> usize {
+        self.layout
+            .size()
+            .max(self.layout.align())
+            .next_power_of_two()
+    }
 }
 
 // The registration contract: the host allocator's block of the pool's layout (the size and
 // alignment it was created with), owned by the caller until `put` gives it back.
 impl RawPool for TestPool {
-    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
-        // SAFETY: the layout's size is not 0 (`create` makes it at least 1).
-        let p = NonNull::new(unsafe { alloc(self.layout) })?;
+    fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let p = match self.source {
+            Some(src) => src.alloc(self.page_len(), true, flags & PR_WAITOK != 0)?,
+            // SAFETY: the layout's size is not 0 (`create` makes it at least 1).
+            None => NonNull::new(unsafe { alloc(self.layout) })?,
+        };
         self.nout.fetch_add(1, Ordering::Relaxed);
         Some((p, self.layout.size()))
     }
 
     fn put(&self, item: NonNull<u8>) {
-        // SAFETY: `item` came from `get` with this pool's layout (the trait's contract on the
-        // caller, `PoolArc`), once.
-        unsafe { dealloc(item.as_ptr(), self.layout) };
+        match self.source {
+            Some(src) => src.free(item, self.page_len(), true),
+            // SAFETY: `item` came from `get` with this pool's layout (the trait's contract on
+            // the caller, `PoolArc`), once.
+            None => unsafe { dealloc(item.as_ptr(), self.layout) },
+        }
         self.nout.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -330,6 +349,26 @@ impl PoolBackend for TestPools {
             layout,
             nout: AtomicU64::new(0),
             wchan,
+            source: None,
+        })))
+    }
+
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        let layout = Layout::from_size_align(size.max(1), align).ok()?;
+        lock(&POOL_KNOBS).entry(wchan).or_insert((0, false));
+        Some(Box::leak(Box::new(TestPool {
+            layout,
+            nout: AtomicU64::new(0),
+            wchan,
+            source: Some(source),
         })))
     }
 }

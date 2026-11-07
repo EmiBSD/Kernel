@@ -96,7 +96,7 @@ use hal::kmbuf::{PageKind, PageMemory};
 use hal::link::Link;
 use hal::malloc::Malloc;
 use hal::pmap::BootstrapParams;
-use hal::pool::{PoolBackend, RawPool};
+use hal::pool::{PR_WAITOK, PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
 use hal::sleep::{INFSLP, Sleep};
 use hal::sys::errno::Errno;
@@ -341,6 +341,17 @@ struct TestPool {
     free: Mutex<Vec<usize>>,
     /// The size rounded up to the item's alignment (at least 16).
     stride: usize,
+    /// The source of a pool made by `create_with` (N6.0): each item its own page from it, of
+    /// the item's stride rounded up to a power of two, aligned to it (the C carves several
+    /// items from one page; one a page keeps the source's count equal to the items out).
+    source: Option<&'static dyn PageSource>,
+}
+
+impl TestPool {
+    /// The page of an item of a sourced pool.
+    fn page_len(&self) -> usize {
+        self.stride.next_power_of_two()
+    }
 }
 
 /// Whether the pools recycle their items ([`set_pool_recycle`]).
@@ -352,9 +363,15 @@ static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTree
 // The registration contract: a fresh block of the pool's size, page-aligned (which covers any
 // item alignment up to a page; `create` refuses more), the caller's alone.
 impl RawPool for TestPool {
-    fn get(&self, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+    fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
         if pool_fails(self.wchan) {
             return None;
+        }
+        if let Some(src) = self.source {
+            let p = src.alloc(self.page_len(), true, flags & PR_WAITOK != 0)?;
+            self.nout.fetch_add(1, Ordering::Relaxed);
+            count_pool_request(self.wchan);
+            return Some((p, self.size));
         }
         if POOL_RECYCLE.load(Ordering::Relaxed) {
             let mut free = self
@@ -401,6 +418,10 @@ impl RawPool for TestPool {
 
     fn put(&self, item: NonNull<u8>) {
         self.nout.fetch_sub(1, Ordering::Relaxed);
+        if let Some(src) = self.source {
+            src.free(item, self.page_len(), true);
+            return;
+        }
         if POOL_RECYCLE.load(Ordering::Relaxed) {
             self.free
                 .lock()
@@ -482,6 +503,32 @@ impl PoolBackend for TestPools {
             wchan,
             free: Mutex::new(Vec::new()),
             stride: size.max(1).next_multiple_of(align.max(16)),
+            source: None,
+        })))
+    }
+
+    /// A pool whose items are pages of `source`, one an item (`m_pool_allocator`'s pools on
+    /// the host: N6.1 tests the source's accounting through it).
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        if align > TEST_PAGE {
+            return None;
+        }
+        lock(&POOL_KNOBS).entry(wchan).or_insert((0, false));
+        Some(Box::leak(Box::new(TestPool {
+            size: size.max(1),
+            nout: AtomicU64::new(0),
+            wchan,
+            free: Mutex::new(Vec::new()),
+            stride: size.max(1).next_multiple_of(align.max(16)),
+            source: Some(source),
         })))
     }
 }

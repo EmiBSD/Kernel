@@ -47,7 +47,7 @@ use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use hal::cons::Console;
 use hal::malloc::Malloc;
-use hal::pool::{PoolBackend, RawPool};
+use hal::pool::{PageSource, PoolBackend, RawPool};
 use hal::prf::Printf;
 
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
@@ -169,6 +169,48 @@ impl PoolBackend for BsdPools {
             )),
         };
         pool_init(pp, size, align, ipl, flags, wchan, None);
+        Some(pp)
+    }
+
+    /// As [`BsdPools::create`], the pool's pages from `source` through
+    /// `POOL_ALLOCATOR_SOURCE` (its `pr_source`), never through `pool_set_constraints`: the
+    /// constraint is the source's. `None` for a source whose page sizes are not
+    /// `POOL_ALLOCATOR_SOURCE`'s (`pool_init` sizes the pool's pages from them).
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        use crate::kern::subr_pool::POOL_ALLOCATOR_SOURCE;
+        if source.sizes() != POOL_ALLOCATOR_SOURCE.pa_pagesz {
+            return None;
+        }
+        let align = if align <= crate::sys::param::align(1) {
+            0
+        } else {
+            u32::try_from(align).ok()?
+        };
+        let pp = match static_pool() {
+            Some(pp) => pp,
+            None if HEAP_POOLS_READY.load(Ordering::Acquire) => heap_pool()?,
+            None => crate::kern::subr_prf::panic(format_args!(
+                "pool_init {wchan}: more than NSTATIC_POOLS ({NSTATIC_POOLS}) pools before kmeminit"
+            )),
+        };
+        pp.pr_source.set(Some(source));
+        pool_init(
+            pp,
+            size,
+            align,
+            ipl,
+            flags,
+            wchan,
+            Some(&POOL_ALLOCATOR_SOURCE),
+        );
         Some(pp)
     }
 }

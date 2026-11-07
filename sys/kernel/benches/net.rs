@@ -43,6 +43,9 @@
 //!   idle again (`smr_init`).
 //! - `pool.get_put`: a `BoxPool` item of an mbuf's size (256 bytes) taken and dropped (put
 //!   back), on the recycling backend.
+//! - `pool.get_put.sourced`: the same, from a pool made with a page source
+//!   (`BoxPool::init_with_source`, the mbuf clusters' shape): the source is asked only when
+//!   the pool grows, so an op costs what `pool.get_put` does.
 //! - `pod.copy`: an IPv4 header (20 bytes, an `abi_pod!` image) copied out of a packet's
 //!   bytes at offset 16, one field changed, written back: the C's `m_copydata` and
 //!   `m_copyback` of a header.
@@ -61,7 +64,7 @@ use std::vec::Vec;
 
 use hal::netlock::{self, NETLOCK};
 use hal::owned::{OwnedEntry, OwnedList};
-use hal::pool::{BoxPool, PR_WAITOK, PoolBackend, PoolBox, RawPool};
+use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
 use hal::user::{pod_from_bytes, pod_to_bytes};
@@ -98,13 +101,17 @@ const PAGE: usize = 4096;
 struct FreeList {
     stride: usize,
     free: Mutex<Vec<usize>>,
+    /// Where the slabs come from: the host (`fresh`), or a pool's page source (a page of
+    /// `PAGE` bytes at a time).
+    source: Option<&'static dyn PageSource>,
 }
 
 impl FreeList {
-    const fn new(stride: usize) -> Self {
+    const fn new(stride: usize, source: Option<&'static dyn PageSource>) -> Self {
         Self {
             stride,
             free: Mutex::new(Vec::new()),
+            source,
         }
     }
 
@@ -118,6 +125,13 @@ impl FreeList {
     fn get(&self) -> Option<NonNull<u8>> {
         let mut free = self.lock();
         if free.is_empty() {
+            if let Some(src) = self.source {
+                let page = src.alloc(PAGE, true, true)?.as_ptr();
+                for i in 0..(PAGE / self.stride).max(1) {
+                    free.push(page.wrapping_add(i * self.stride).expose_provenance());
+                }
+                return NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(free.pop()?));
+            }
             let per = (64 * 1024 / self.stride).max(1);
             let mut rest: &'static mut [u8] = fresh(per * self.stride);
             while rest.len() >= self.stride {
@@ -200,12 +214,59 @@ impl PoolBackend for BenchPools {
         let size = size.max(1);
         let stride = size.next_multiple_of(align.max(16));
         Some(Box::leak(Box::new(BenchPool {
-            items: FreeList::new(stride),
+            items: FreeList::new(stride, None),
+            size,
+            nout: AtomicU64::new(0),
+        })))
+    }
+
+    /// A pool carving its items from `source`'s pages (`pool_init` with an allocator).
+    fn create_with(
+        &self,
+        size: usize,
+        align: usize,
+        _ipl: i32,
+        _flags: i32,
+        _wchan: &'static str,
+        source: &'static dyn PageSource,
+    ) -> Option<&'static dyn RawPool> {
+        if align > PAGE {
+            return None;
+        }
+        let size = size.max(1);
+        let stride = size.next_multiple_of(align.max(16));
+        Some(Box::leak(Box::new(BenchPool {
+            items: FreeList::new(stride, Some(source)),
             size,
             nout: AtomicU64::new(0),
         })))
     }
 }
+
+/// The page source of `pool.get_put.sourced`: host pages, counted (the mbuf clusters'
+/// `m_pool_allocator` charges each against its limit).
+struct BenchSource {
+    pages: AtomicU64,
+}
+
+impl PageSource for BenchSource {
+    fn alloc(&self, len: usize, _aligned: bool, _wait: bool) -> Option<NonNull<u8>> {
+        self.pages.fetch_add(1, Ordering::Relaxed);
+        Some(NonNull::from(fresh(len)).cast::<u8>())
+    }
+
+    fn free(&self, _page: NonNull<u8>, _len: usize, _aligned: bool) {
+        self.pages.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn sizes(&self) -> usize {
+        PAGE | 1
+    }
+}
+
+static BENCH_SOURCE: BenchSource = BenchSource {
+    pages: AtomicU64::new(0),
+};
 
 static BENCH_POOLS: BenchPools = BenchPools;
 
@@ -217,6 +278,9 @@ const MSIZE: usize = 256;
 
 /// The pool of `pool.get_put`: items of an mbuf's size.
 static MBUFS: BoxPool<[u8; MSIZE]> = BoxPool::new();
+
+/// The pool of `pool.get_put.sourced`: the same items, their pages from a source.
+static SOURCED: BoxPool<[u8; MSIZE]> = BoxPool::new();
 
 /// `struct ip` (netinet/ip.h): 20 bytes, its two 4-bit fields as one byte.
 #[derive(Clone, Copy)]
@@ -333,6 +397,7 @@ fn main() {
         "smr.load",
         "smr.defer",
         "pool.get_put",
+        "pool.get_put.sourced",
         "pod.copy",
         "list.push",
     ];
@@ -347,6 +412,9 @@ fn main() {
     if MBUFS.init(0, PR_WAITOK, "mbufpl").is_err()
         || LIST_ELEMS.init(0, PR_WAITOK, "benchlst").is_err()
         || SMR_OBJS.init(0, PR_WAITOK, "benchsmr").is_err()
+        || SOURCED
+            .init_with_source(0, PR_WAITOK, "mclpl", &BENCH_SOURCE)
+            .is_err()
     {
         eprintln!("net: a pool could not be made");
         std::process::exit(1);
@@ -472,6 +540,17 @@ fn main() {
         report(names[6], r);
     }
     if wanted(names[7]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let b = need(SOURCED.get(PR_WAITOK, || [0; MSIZE]), "no sourced item");
+                drop(black_box(b));
+            }
+            t.elapsed()
+        });
+        report(names[7], r);
+    }
+    if wanted(names[8]) {
         let mut pkt = vec![0u8; 128];
         let r = measure(OPS, || {
             let t = Instant::now();
@@ -486,9 +565,9 @@ fn main() {
             }
             t.elapsed()
         });
-        report(names[7], r);
+        report(names[8], r);
     }
-    if wanted(names[8]) {
+    if wanted(names[9]) {
         let mut boxes: Vec<PoolBox<ListElem>> = (0..ELEMS)
             .map(|_| {
                 need(
@@ -516,7 +595,7 @@ fn main() {
             }
             d
         });
-        report(names[8], r);
+        report(names[9], r);
     }
 }
 /* </CODE> */
