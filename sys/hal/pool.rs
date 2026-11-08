@@ -362,7 +362,24 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
     /// (the wait message and the name `vmstat -m` shows). `ENOMEM` when the pool cannot be
     /// made (or before the bridge is registered); `EBUSY` when it was already.
     pub fn init(&'static self, ipl: i32, flags: i32, wchan: &'static str) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, false, None)
+        self.init_with(ipl, flags, wchan, false, None, 0)
+    }
+
+    /// [`TypedPool::init`] with the items aligned to `align` bytes (`pool_init`'s `align`: the
+    /// C's `mextrefs` at `CACHELINESIZE`), or to the item's own alignment when that is
+    /// larger; the item size rounds up to it, as `pool_init`'s does. `EINVAL` when `align`
+    /// is not a power of two.
+    pub fn init_aligned(
+        &'static self,
+        ipl: i32,
+        flags: i32,
+        wchan: &'static str,
+        align: usize,
+    ) -> Result<(), Errno> {
+        if !align.is_power_of_two() {
+            return Err(Errno::EINVAL);
+        }
+        self.init_with(ipl, flags, wchan, false, None, align)
     }
 
     /// [`TypedPool::init`] of a pool whose pages come from `source` (`pool_init` with a
@@ -375,7 +392,7 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         wchan: &'static str,
         source: &'static dyn PageSource,
     ) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, false, Some(source))
+        self.init_with(ipl, flags, wchan, false, Some(source), 0)
     }
 
     /// [`TypedPool::init`] for a pool whose values records reach by address and give back
@@ -389,9 +406,10 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         flags: i32,
         wchan: &'static str,
     ) -> Result<(), Errno> {
-        self.init_with(ipl, flags, wchan, true, None)
+        self.init_with(ipl, flags, wchan, true, None, 0)
     }
 
+    /// The pool made: `align` 0 for the item's own alignment.
     fn init_with(
         &'static self,
         ipl: i32,
@@ -399,13 +417,15 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         wchan: &'static str,
         recorded: bool,
         source: Option<&'static dyn PageSource>,
+        align: usize,
     ) -> Result<(), Errno> {
         if self.made.is_set() {
             return Err(Errno::EBUSY);
         }
+        let align = align_of::<Inner<T>>().max(align);
         let raw = make_pool(
-            size_of::<Inner<T>>(),
-            align_of::<Inner<T>>(),
+            size_of::<Inner<T>>().next_multiple_of(align),
+            align,
             ipl,
             flags,
             wchan,
@@ -1524,20 +1544,17 @@ impl<const N: usize> BoxPool<crate::overlay::Bytes<N>> {
             size_of::<crate::overlay::Bytes<N>>(),
             align_of::<crate::overlay::Bytes<N>>(),
         );
-        // `PoolBox`'s invariant, an initialised `T` in an item of `self` that only the handle
-        // references: a `Bytes<N>` is `N` bytes in an `UnsafeCell` (no padding, no niche, every
-        // pattern valid) and the item is RAM granted by the pool, aligned and long enough
-        // (`check_block` above), whose every byte is a valid `u8`: the bytes a previous owner
+        // SAFETY: `from_raw`'s second case. The item is the one `raw.get` of this pool's
+        // `RawPool` granted just now, aligned and long enough for a `Bytes<N>`
+        // (`check_block` above), and no one else references it until `put` takes it back:
+        // `RawPool`'s registration contract (`sys/hal/trust.rs`), as for `boxed`. It holds a
+        // valid `Bytes<N>` without a write: the type is `N` bytes in an `UnsafeCell` (no
+        // niche, every pattern of its bytes valid; its padding to the alignment needs no
+        // value) and the item is RAM whose every byte is a `u8`: what a previous owner
         // wrote, the pool's own free-list words, or a page as its source gave it
-        // (`hal::mapped::MappedBytes::as_slice` lends such RAM on the same ground). That no
-        // one else references the item until `put` takes it back is `RawPool`'s registration
-        // contract (`sys/hal/trust.rs`). Nothing is written, so no `unsafe` is needed: the
-        // handle is built over the item as it is.
-        Some(PoolBox {
-            item: block.cast::<crate::overlay::Bytes<N>>(),
-            pool: self,
-            _owns: PhantomData,
-        })
+        // (`hal::mapped::MappedBytes::as_slice` lends such RAM on the same ground). No
+        // reference to the item exists before this handle.
+        Some(unsafe { PoolBox::from_raw(block.cast::<crate::overlay::Bytes<N>>(), self) })
     }
 }
 
@@ -1637,14 +1654,18 @@ impl<T: 'static> PoolBox<T> {
         (this.item, this.pool)
     }
 
-    /// The handle back from what [`PoolBox::into_raw`] returned.
+    /// The handle back from what [`PoolBox::into_raw`] returned, or the first handle to an
+    /// item `pool` has just granted.
     ///
     /// # Safety
     ///
-    /// `raw` and `pool` were returned together by `into_raw`, and no handle was rebuilt from
-    /// them since (each `into_raw` is answered by at most one `from_raw`, so the item has one
-    /// owner again and is put back once); no reference to the value made while the pointer
-    /// was kept is alive or used after this call (the handle may give `&mut T`).
+    /// The handle's invariant: `raw` names an initialised `T` in an item of `pool` that no
+    /// other handle owns and that will be put back once, by this handle. Either `raw` and
+    /// `pool` were returned together by `into_raw`, and no handle was rebuilt from them since
+    /// (each `into_raw` is answered by at most one `from_raw`); or `raw` is an item `pool`'s
+    /// `RawPool::get` granted just now, aligned and long enough for `T`, holding a valid `T`
+    /// already, given to no one else. No reference to the value made while the pointer was
+    /// kept is alive or used after this call (the handle may give `&mut T`).
     pub(crate) unsafe fn from_raw(raw: NonNull<T>, pool: &'static BoxPool<T>) -> Self {
         PoolBox {
             item: raw,
@@ -2325,6 +2346,27 @@ mod tests {
         assert_eq!(one.a, 3);
         drop(one);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn an_aligned_pool_aligns_its_items_and_rounds_their_size() {
+        static P: TypedPool<u64> = TypedPool::new();
+        static BAD: TypedPool<u64> = TypedPool::new();
+        testutil::install();
+        assert_eq!(
+            BAD.init_aligned(0, PR_WAITOK, "testalignbad", 48),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(P.init_aligned(0, PR_WAITOK, "testalign", 64), Ok(()));
+        // The item (count, pool, value: 24 bytes) rounds up to the alignment, as pool_init's.
+        assert_eq!(P.item_size(), Some(64));
+        let items: Vec<PoolArc<u64>> = (0..4)
+            .map(|i| P.get_shared(PR_WAITOK, || i).unwrap())
+            .collect();
+        for it in &items {
+            let at = ptr::from_ref::<u64>(it).addr() - core::mem::offset_of!(Inner<u64>, value);
+            assert_eq!(at % 64, 0, "the item at a 64-byte boundary");
+        }
     }
 
     #[test]

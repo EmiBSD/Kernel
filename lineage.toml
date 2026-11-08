@@ -14083,11 +14083,6 @@ native = []
 kind = "dropped"
 reason = "option DEBUG's cluster reference trace (MCLINITREFERENCE): nothing to record without it; the shared count starts in ExtRefs"
 
-[[module.fn]]
-lz = "sys/kern/uipc_mbuf.rs::CACHELINESIZE"
-native = []
-kind = "dropped"
-reason = "the mextrefs item is ExtRefs padded to the C's 64 bytes (asserted), not a 24-byte item aligned to a cache line"
 
 [[module.fn]]
 lz = "sys/kern/uipc_mbuf.rs::MExtRefs"

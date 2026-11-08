@@ -449,6 +449,9 @@ pub const PACKET_TAG_MAXSIZE: usize = 80;
 /// `IFQ_DEFPRIO` (`<net/if.h>`, not moved yet): the default packet priority.
 const IFQ_DEFPRIO: u8 = 3;
 
+/// `CACHELINESIZE` (`<sys/percpu.h>`, not moved yet): the `mextrefs` items' alignment.
+const CACHELINESIZE: usize = 64;
+
 /// `mclsizes[MCLPOOLS]`: the mbuf cluster pools' sizes.
 pub const MCLSIZES: [u32; 8] = [
     MCLBYTES as u32,     // must be at slot 0
@@ -1356,7 +1359,9 @@ pub fn mbinit(nmbclust: &'static AtomicI64) {
     // compile-time checks at the end of this file.
     let made = m_pool_init(&MBUFPL, "mbufpl")
         && MTAGPL.init(IPL_NET, 0, "mtagpl").is_ok()
-        && MEXTREFS.init(IPL_NET, 0, "mextrefs").is_ok()
+        && MEXTREFS
+            .init_aligned(IPL_NET, 0, "mextrefs", CACHELINESIZE)
+            .is_ok()
         && m_pool_init(&MCL2K, MCLNAMES[0])
         && m_pool_init(&MCL2K2, MCLNAMES[1])
         && m_pool_init(&MCL4K, MCLNAMES[2])
