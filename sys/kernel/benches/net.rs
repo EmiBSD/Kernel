@@ -1125,16 +1125,28 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
     }
     if wanted(SOCKET_ROWS[2]) {
         let out = vec![7u8; 4096];
-        let mut inb = vec![0u8; 4096];
+        // The destination 8-aligned (u64 words), as the "before" row's.
+        let mut words = vec![0u64; 512];
+        let inb = hal::user::bytes_of_mut(&mut words[..]);
         ksend(&a, &out);
+        {
+            let g = b.so_rcv.lock();
+            let first = g.data().first().map(|m| m.data().as_ptr().addr() % 64);
+            println!(
+                "# the 4 KiB record: {} mbufs, data at {:?} mod 64, destination at {} mod 64",
+                g.data().mbufs().count(),
+                first,
+                inb.as_ptr().addr() % 64
+            );
+        }
         let r = measure(OPS / 16, || {
             let t = Instant::now();
             for _ in 0..OPS / 16 {
-                krecv_flags(&b, black_box(&mut inb), hal::sys::socket::MSG_PEEK);
+                krecv_flags(&b, black_box(&mut *inb), hal::sys::socket::MSG_PEEK);
             }
             t.elapsed()
         });
-        krecv(&b, &mut inb);
+        krecv(&b, &mut *inb);
         report(SOCKET_ROWS[2], r);
     }
     if wanted(SOCKET_ROWS[6]) || wanted(SOCKET_ROWS[7]) {

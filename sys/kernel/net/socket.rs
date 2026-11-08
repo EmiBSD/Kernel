@@ -206,14 +206,13 @@
 //!   last reference purges the receive buffer through its `&mut` (the C's unlocked
 //!   `m_purge`), and `so_timeo_wakeup` takes `cq` for a listener only: a UNIX socket's
 //!   `socket(2)` and `close(2)` take the C's mutex and rwlock sections, no more (N6.2a's
-//!   decision-43 rows, `benches/net.rs`). A `MSG_PEEK` of 4 KiB costs 12 ns more than LZ's
-//!   in release (77.2 -> 89.6 ns, the rows of 2026-11-08): 3.6 ns of the fixed work around
-//!   the copy (`soreceive.peek.1`: the record taken out of the buffer and put back,
-//!   10.7 ns with its mutex section in `sockbuf.record.out.in`, where the C walks the
-//!   buffer in place; its `M_EOR` scan and the cursor are one step each on that one-mbuf
-//!   record) and 8.8 ns in the copy (`peek.4k` less `peek.1`), which the bench makes through
-//!   the test glue's `uiomove_out` (`testutil`), not `bsd`'s `kcopy` path the kernel runs
-//!   on; N12's row.
+//!   decision-43 rows, `benches/net.rs`). A `MSG_PEEK` of 4 KiB costs 17 ns more than LZ's
+//!   in release (72.3 -> 89.3 ns, the rows of 2026-11-08 15:44), not attributed: the work
+//!   around the copy is LZ's (`soreceive.peek.1` 36.8 -> 36.9 ns; `sockbuf.record.out.in`,
+//!   the record taken out and put back with its mutex section, 10.8 ns), both trees copy
+//!   one mbuf, its data at 0 mod 64, into a destination at 0 mod 64 (one LZ run at 48)
+//!   through the same `machine::kcopy_out`, and still the length-dependent part differs;
+//!   a decision-43 item for the user, N12's row.
 
 use core::mem;
 use core::sync::atomic::{
