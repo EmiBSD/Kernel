@@ -81,6 +81,14 @@
 //!   `struct sockaddr_in` and `struct sockaddr_in6`, where their port is, `IPPORT_RESERVED`,
 //!   `IPPROTO_IP`, `IP_PORTRANGE`, `IP_PORTRANGE_LOW`) are constants here until N6.4 moves the
 //!   headers into `hal::sys` (`bsd`'s glue tests check them against `bsd`'s copies).
+//! - `ypconnect(2)` can fail where the C cannot, both times closed: the low port of a root
+//!   caller is set through the protocol's option (`ypconnect_lowport`, below), whose mbuf can
+//!   be refused (`ENOBUFS`, `mbuf_args`) and whose protocol answers an error of its own, where
+//!   the C's `sotoinpcb(so)->inp_flags |= INP_LOWPORT` (uipc_syscalls.c:1642-1643) is an
+//!   assignment; and the binding file's name is a `namei_pool` buffer, `ENOMEM` when the pool
+//!   is not made (`pathbuf_get`; the C's `pool_get(PR_WAITOK)` sleeps, LZ built the name on its
+//!   stack). Either error is the call's: the socket is closed before it could connect, so a
+//!   root `ypconnect(2)` never connects from a port that is not reserved.
 //!
 //! ## Redesign
 //! - LZ's calls were `bsd`'s `sysent[]` rows over `&'static` sockets and mbufs (`fp_socket`,

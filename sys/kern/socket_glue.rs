@@ -857,7 +857,9 @@ pub fn soo_close(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
 #[cfg(test)]
 mod tests {
     //! The glue's own checks: the `<netinet/in.h>` items the kernel's socket calls keep as
-    //! constants until N6.4 are `bsd`'s, and a `Native` entry refuses another call's number.
+    //! constants until N6.4 are `bsd`'s, `ypconnect(2)`'s low port through the internet
+    //! protocols' own option sets the C's flag, and a `Native` entry refuses another call's
+    //! number.
 
     use core::mem::offset_of;
 
@@ -881,6 +883,55 @@ mod tests {
             assert_eq!(ks::SOCKADDR_IN6_SIZE, size_of::<SockaddrIn6>());
             assert_eq!(ks::SIN_PORT_OFFSET, offset_of!(SockaddrIn6, sin6_port));
         }
+    }
+
+    /// `ypconnect(2)`'s `sotoinpcb(so)->inp_flags |= INP_LOWPORT` is, in the kernel, the call
+    /// `ypconnect_lowport` makes: the protocol's `ctloutput(PRCO_SETOPT, IPPROTO_IP,
+    /// IP_PORTRANGE)` with a 4-byte `IP_PORTRANGE_LOW`, under `solock`. On a fresh stream and
+    /// datagram socket of `bsd`'s internet protocols (tcp_ctloutput, ip_ctloutput) it leaves
+    /// the flags the C's assignment leaves: `INP_LOWPORT` added, `INP_HIGHPORT` clear, nothing
+    /// else changed.
+    #[test]
+    fn ypconnects_low_port_option_leaves_the_cs_inp_flags() {
+        use kernel::net::mbuf::{M_WAIT, MT_SOOPTS, m_get};
+        use kernel::net::proto::PRCO_SETOPT;
+
+        use crate::netinet::in_pcb::{INP_HIGHPORT, INP_LOWPORT, sotoinpcb};
+        use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_STREAM};
+
+        let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
+        crate::netinet::tcp_subr::tcp_init();
+        crate::netinet::udp_usrreq::udp_init();
+        for ty in [SOCK_STREAM, SOCK_DGRAM] {
+            let so = crate::kern::uipc_socket::socreate(i32::from(AF_INET), ty, 0)
+                .expect("an internet socket");
+            let inp = sotoinpcb(so).expect("attached");
+            let before = inp.inp_flags.get();
+            assert_eq!(before & (INP_LOWPORT | INP_HIGHPORT), 0, "type {ty}: fresh");
+
+            let mut m = m_get(M_WAIT, MT_SOOPTS).expect("an mbuf");
+            m.m_len().set(4);
+            m.data_mut()
+                .expect("writable")
+                .copy_from_slice(&ks::IP_PORTRANGE_LOW.to_ne_bytes());
+            let mut w = kernel::net::socket::solock(so);
+            let r = so.proto().ctloutput(
+                PRCO_SETOPT,
+                so,
+                &mut w,
+                ks::IPPROTO_IP,
+                ks::IP_PORTRANGE,
+                Some(&mut m),
+            );
+            drop(w);
+            drop(m);
+            assert_eq!(r, Ok(()), "type {ty}");
+            assert_eq!(inp.inp_flags.get(), before | INP_LOWPORT, "type {ty}");
+            assert!(!inp.has_flags(INP_HIGHPORT), "type {ty}");
+
+            let _ = crate::kern::uipc_socket::soclose(so, 0);
+        }
+        crate::netinet::in_pcb::tests::teardown();
     }
 
     #[test]
