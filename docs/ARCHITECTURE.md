@@ -298,6 +298,7 @@ missing; decision 47 records what went with it. The pieces now:
   `smoke-abi` also runs a pipeline through the handler (`abi-pipe-43`).
 - **The media.** Nothing but the kernel: the boot loaders, the images, install80, cd80, the
   base set and the release tarball carry no ABI file (decision 47).
+- **The release tarball's interface files.** Besides the kernels and the loader, `dist-arm64` packs `MANUAL.toml` (`cargo xtask manual`: drivers, system calls native, legacy and absent, and the pages not true here, generated from the tree and from the release kernel's own boot log) and `include/` (`cargo xtask include`: the C headers OpenBSD's `include/Makefile` installs from `sys/`, the pin's text until N9.0 generates them); both are covered by the tarball's `SHA256`.
 
 ## Cargo features ↔ `option(4)`
 
