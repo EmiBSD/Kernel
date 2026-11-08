@@ -2844,30 +2844,30 @@ impl<T: Pooled> SlistLink<T> {
     /// meanwhile, wg's serial queue), O(1). `panic(9)` when the link holds an element (the
     /// tail's premise broken) or `b` is of another pool than `T::POOL`.
     ///
-    /// A compare-exchange of null for `b`'s pointer: the invariant holds after it (the word
-    /// names an item whose box was given up for it, `into_raw` right after the exchange
-    /// succeeded, and whose one owner is the link), and no reference made through the link
-    /// is affected (none exists while the word is null: `get` answered `None`, and `get_mut`
-    /// and `take` need `&mut self`). `Relaxed`, as every other word of a list: the list's
-    /// readers of this link are its owner under the `&mut` borrow it changes the list by,
-    /// or code ordered after the change by the lock that guards the list (the `bsd`
-    /// adapters' `ml_*` under the list's mutex), whose release and acquire publish the
-    /// element with the pointer; the exchange's atomicity only makes the emptiness test and
-    /// the store one step.
+    /// An atomic load of the word, a null test, then an atomic store of `b`'s pointer: no
+    /// read-modify-write is needed, since nothing else writes the word between the two. The
+    /// callers (`OwnedSlist::push_tail` and `concat`, this module's only ones) hold the
+    /// list mutably, which excludes every other writer of its elements' links, and the code
+    /// that names the element by address meanwhile (`bsd`'s crypt CPU) never writes
+    /// `m_nextpkt`. The invariant holds after the store (the word names an item whose box is
+    /// given up for it, `into_raw` right after the store, and whose one owner is the link),
+    /// and no reference made through the link is affected (none exists while the word is
+    /// null: `get` answered `None`, and `get_mut` and `take` need `&mut self`). `Relaxed`, as
+    /// every other word of a list: the list's readers of this link are its owner under the
+    /// `&mut` borrow it changes the list by, or code ordered after the change by the lock
+    /// that guards the list (the `bsd` adapters' `ml_*` under the list's mutex), whose
+    /// release and acquire publish the element with the pointer.
     fn fill(&self, b: PoolBox<T>) {
         if !ptr::eq(PoolBox::pool(&b), T::POOL) {
             hal_panic(format_args!("SlistLink::fill: an item of another pool"));
         }
-        let p = PoolBox::as_ptr(&b).cast_mut();
-        if self
-            .word
-            .compare_exchange(ptr::null_mut(), p, Mem::Relaxed, Mem::Relaxed)
-            .is_err()
-        {
+        if !self.word.load(Mem::Relaxed).is_null() {
             hal_panic(format_args!(
                 "SlistLink::fill: a link that holds an element"
             ));
         }
+        self.word
+            .store(PoolBox::as_ptr(&b).cast_mut(), Mem::Relaxed);
         // The link owns the item now: the box is given up without its drop.
         let _ = PoolBox::into_raw(b);
     }

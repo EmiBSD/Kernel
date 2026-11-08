@@ -189,63 +189,64 @@
 //!   `mtod`: the two tag tests and one bounds check per access (the `mbuf.mtod` bench row;
 //!   N12's).
 //! - Cost against LZ (decision 43: `sys/kernel/benches/net.rs`'s mbuf rows against LZ's
-//!   functions in a scratch test, ns an op, the median of rounds 2-4, on AC). Four runs, each
+//!   functions in a scratch test, ns an op, the median of rounds 2-4, on AC). Five runs, each
 //!   number from one of them: (a) all rows after review 1's fixes, 2026-11-08 00:14; (b)
 //!   `copym.share`, `copym.share.deep` and the controls `get.free`, `gethdr.cluster.free`
 //!   beside the builder's fix, 07:14; (c) `mtod`, `header.view`, `header.copy`, `tag.find` and
 //!   the control `get.free` beside review C1's atomic flags word, 07:42; (d) `mtod`,
 //!   `header.view`, `header.copy`, `slist.push_tail`, `slist.concat` and the control `get.free`
-//!   beside the list's tail filled through a shared borrow, 08:03. Release. Faster: `get.free`
-//!   29.8 -> 23.1 (a; 29.8 -> 23.1 in b, 30.1 -> 23.4 in c, 30.2 -> 23.7 in d) and
-//!   `gethdr.cluster.free` 53.3 -> 39.0 (a; 53.9 -> 39.0 in b): one typed item, the header
-//!   built in place. Within 10 %: `copydata.1500` 17.0 -> 18.4 (a), `pullup.40` 8.5 -> 9.3 (a),
-//!   `copym.share` 34.8 -> 35.7 and `copym.share.deep` 32.4 -> 32.5 (b, with
-//!   `MChainBuilder::into_head` leaving the builder's `Drop`, an unfinished chain's, unrun on a
-//!   finished copy; 40.4 and 36.5 without it, same run). Slower, each a fixed cost per call,
-//!   never a walk the C does not make: `mtod` 0.3 -> 0.5 (c, d; `data_raw`: the overlay's
-//!   `M_EXT` tag test, then the cached cluster address or the storage's start, plus the offset,
-//!   about ten instructions where LZ loads one field); `header.view` 0.5 -> 1.1 (c; 1.0 in d;
-//!   the kernel row views 20 bytes through `data()`'s tag test and bounds check and
-//!   `hal::pod::view`'s length and alignment checks; LZ's reads one byte through a raw pointer,
-//!   unchecked); `header.copy` 4.4 -> 6.6 (c; 6.2 before C1 in the same run, 6.3 in d:
-//!   `m_copydata` of 20 bytes at offset 14 on both sides, the kernel's a call that builds the
-//!   `data()` slice, its tag tests and bounds check, and copies with a checked
-//!   `copy_from_slice`, where LZ's inlines into a `memcpy`; since C1 the flags word is an
-//!   atomic, whose `Relaxed` loads the compiler does not merge, so `Mbuf::data` reads it three
-//!   times where it read it once, 44 -> 52 instructions in the release bench, `storage_len`
-//!   twice where once); `adj` 1.8 -> 3.9 (a; LZ's row is bimodal, 2.9 in every round of the
-//!   first A/B and 1.7-1.8 in (a), the kernel's 3.8-3.9 at every commit of the review; the row
-//!   includes the bench's restore, `adj.restore` 0.3 -> 0.5 (a): `set_data_off`'s bounds check,
-//!   the overlay's tag tests for the storage size and the header, through cells; the rest, the
-//!   C's loop over the same cells, is not attributed to one instruction; the user accepted this
-//!   partial reason on 2026-11-08, and the rest is an N12 row); `tag.find` 0.8 -> 1.0 (c; 0.9
-//!   before C1 in the same run, with `m_tag_find`'s code unchanged: 0.1-0.2 ns, the measure's
-//!   resolution). Kernel only: `park.unpark` 2.9 (a; `bsd`'s `unpark` and `park` of one mbuf: a
-//!   compare-and-swap of the park mark each way, paid at every crossing of the `bsd` boundary),
-//!   `data` 0.9 (a; the bounds-checked slice), and the packet list's `slist.push_tail` 1.6 ->
-//!   1.9 and `slist.concat` 1.6 -> 2.4 (d, the kernel before and after the second review; no LZ
-//!   row: `ml_enqueue`'s and `ml_enlist`'s tail insert): the tail's link is filled by a
-//!   compare-exchange of its null word (`SlistLink::fill`, one `cas` in `push_tail`, 100 -> 107
-//!   instructions in the release bench) where a store through a `&mut` to the tail was, so that
-//!   no `&mut` names a tail `bsd` may hold by address on another CPU (wg's serial queue).
+//!   beside the list's tail filled through a shared borrow by a compare-exchange, 08:03; (e)
+//!   `slist.push_tail`, `slist.concat` and the control `get.free` with that fill an atomic load
+//!   and store, 08:10. Release. Faster: `get.free` 29.8 -> 23.1 (a; 29.8 -> 23.1 in b, 30.1 ->
+//!   23.4 in c, 30.2 -> 23.7 in d) and `gethdr.cluster.free` 53.3 -> 39.0 (a; 53.9 -> 39.0 in
+//!   b): one typed item, the header built in place. Within 10 %: `copydata.1500` 17.0 -> 18.4
+//!   (a), `pullup.40` 8.5 -> 9.3 (a), `copym.share` 34.8 -> 35.7 and `copym.share.deep` 32.4 ->
+//!   32.5 (b, with `MChainBuilder::into_head` leaving the builder's `Drop`, an unfinished
+//!   chain's, unrun on a finished copy; 40.4 and 36.5 without it, same run). Slower, each a
+//!   fixed cost per call, never a walk the C does not make: `mtod` 0.3 -> 0.5 (c, d;
+//!   `data_raw`: the overlay's `M_EXT` tag test, then the cached cluster address or the
+//!   storage's start, plus the offset, about ten instructions where LZ loads one field);
+//!   `header.view` 0.5 -> 1.1 (c; 1.0 in d; the kernel row views 20 bytes through `data()`'s
+//!   tag test and bounds check and `hal::pod::view`'s length and alignment checks; LZ's reads
+//!   one byte through a raw pointer, unchecked); `header.copy` 4.4 -> 6.6 (c; 6.2 before C1 in
+//!   the same run, 6.3 in d: `m_copydata` of 20 bytes at offset 14 on both sides, the kernel's
+//!   a call that builds the `data()` slice, its tag tests and bounds check, and copies with a
+//!   checked `copy_from_slice`, where LZ's inlines into a `memcpy`; since C1 the flags word is
+//!   an atomic, whose `Relaxed` loads the compiler does not merge, so `Mbuf::data` reads it
+//!   three times where it read it once, 44 -> 52 instructions in the release bench,
+//!   `storage_len` twice where once); `adj` 1.8 -> 3.9 (a; LZ's row is bimodal, 2.9 in every
+//!   round of the first A/B and 1.7-1.8 in (a), the kernel's 3.8-3.9 at every commit of the
+//!   review; the row includes the bench's restore, `adj.restore` 0.3 -> 0.5 (a):
+//!   `set_data_off`'s bounds check, the overlay's tag tests for the storage size and the
+//!   header, through cells; the rest, the C's loop over the same cells, is not attributed to
+//!   one instruction; the user accepted this partial reason on 2026-11-08, and the rest is an
+//!   N12 row); `tag.find` 0.8 -> 1.0 (c; 0.9 before C1 in the same run, with `m_tag_find`'s
+//!   code unchanged: 0.1-0.2 ns, the measure's resolution). Kernel only: `park.unpark` 2.9 (a;
+//!   `bsd`'s `unpark` and `park` of one mbuf: a compare-and-swap of the park mark each way,
+//!   paid at every crossing of the `bsd` boundary), `data` 0.9 (a; the bounds-checked slice),
+//!   and the packet list's `slist.push_tail` 1.6 -> 1.6 and `slist.concat` 1.6 -> 1.6 (e, the
+//!   kernel at 0ba8cb25 and with the tail's link filled through a shared borrow, an atomic
+//!   load, a null test and an atomic store, `SlistLink::fill`, so that no `&mut` names a tail
+//!   `bsd` may hold by address on another CPU, wg's serial queue; no LZ row: `ml_enqueue`'s and
+//!   `ml_enlist`'s tail insert; the compare-exchange form of (d) cost 1.9 and 2.4).
 //!   Dev (`opt-level = 1`, no LTO): `mtod` 0.4 -> 1.4, `header.view` 0.5 -> 2.4 (1.6 before C1:
 //!   the dev row inlined `Mbuf::data` before C1 and calls it since, an out-of-line body of 183
 //!   instructions with nine loads of the flags word, whose atomic loads `opt-level = 1` does
 //!   not merge and which no longer fits its inlining budget), `header.copy` 5.2 -> 7.5,
 //!   `tag.find` 0.8 -> 2.2, `get.free` 39.1 -> 32.0 (c; d: `mtod` 1.3, `header.view` 2.4,
-//!   `header.copy` 7.4, `get.free` 31.7, `slist.push_tail` 2.0 -> 2.2, `slist.concat` 1.8 ->
-//!   2.8); `adj` 2.9 -> 6.1 (`adj.restore` 0.3 -> 3.7), `pullup.40` 12.2 -> 16.1,
-//!   `copydata.1500` 18.1 -> 18.6, `park.unpark` 6.3 (a); `copym.share` 45.7 -> 53.3,
-//!   `copym.share.deep` 44.1 -> 45.1, `gethdr.cluster.free` 66.9 -> 55.9 (b): at `opt-level =
-//!   1` `hal`'s `PoolBox::deref` (no `#[inline]`) and `Ext::bytes` (`ClusterBox`'s eight-way
-//!   match) stay calls inside the rows' loops (the dev bench's disassembly: `bl
-//!   PoolBox<Mbuf>::deref` and `bl Ext::bytes` per iteration; the release loop has none), where
-//!   LZ's `Cell` getters on a `&'static` inline. N12 takes these: `#[inline]` on `PoolBox`'s
-//!   and `PoolArc`'s `Deref`/`DerefMut` and on the cluster byte accessors (or `Ext` caching the
-//!   cluster's length beside its address), the flags word read once per access (one load
-//!   answering which values are live, which also keeps `Mbuf::data` inlined in dev), one typed
-//!   view per operation instead of a tag test per access, the bounds checks hoisted out of the
-//!   walks.
+//!   `header.copy` 7.4, `get.free` 31.7, and in e `slist.push_tail` 2.0 -> 1.9, `slist.concat`
+//!   1.9 -> 2.3, `get.free` 40.0 -> 32.1); `adj` 2.9 -> 6.1 (`adj.restore` 0.3 -> 3.7),
+//!   `pullup.40` 12.2 -> 16.1, `copydata.1500` 18.1 -> 18.6, `park.unpark` 6.3 (a);
+//!   `copym.share` 45.7 -> 53.3, `copym.share.deep` 44.1 -> 45.1, `gethdr.cluster.free` 66.9 ->
+//!   55.9 (b): at `opt-level = 1` `hal`'s `PoolBox::deref` (no `#[inline]`) and `Ext::bytes`
+//!   (`ClusterBox`'s eight-way match) stay calls inside the rows' loops (the dev bench's
+//!   disassembly: `bl PoolBox<Mbuf>::deref` and `bl Ext::bytes` per iteration; the release loop
+//!   has none), where LZ's `Cell` getters on a `&'static` inline. N12 takes these: `#[inline]`
+//!   on `PoolBox`'s and `PoolArc`'s `Deref`/`DerefMut` and on the cluster byte accessors (or
+//!   `Ext` caching the cluster's length beside its address), the flags word read once per
+//!   access (one load answering which values are live, which also keeps `Mbuf::data` inlined in
+//!   dev), one typed view per operation instead of a tag test per access, the bounds checks
+//!   hoisted out of the walks.
 //! - A cluster is a `PoolBox<Bytes<N>>` of its pool ([`ClusterBox`], one variant per size),
 //!   handed out unwritten as the C's (`BoxPool::get_bytes`); a shared cluster is a
 //!   `PoolArc<ExtRefs>` of `mextrefs`, made on the first share as the C makes its

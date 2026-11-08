@@ -138,7 +138,7 @@ fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
     // header's `ph_tagsset` and the tag list (`ph_tags` and each tag's `m_tag_link`, atomic
     // words, and each tag's `m_tag_id`, written once before the packet was queued); the
     // enqueue writes the tail's `m_nextpkt` (`OwnedSlist::push_tail` through a shared
-    // borrow: a compare-exchange of the null word, `SlistLink::fill`, no `&mut` to the
+    // borrow: an atomic load and store under `&self`, `SlistLink::fill`, no `&mut` to the
     // tail). The other CPU writes the flags (atomically), `m_off`, `m_len`, other cells of
     // the header and the tag's data, never `ph_tagsset`, the tag list or `m_nextpkt`, so the
     // two touch no non-atomic memory in common, but for the tag's `t_done`/`t_mbuf` cells,
