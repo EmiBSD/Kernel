@@ -2839,6 +2839,39 @@ impl<T: Pooled> SlistLink<T> {
         old
     }
 
+    /// Links `b` into this empty link through a shared borrow (the tail element of an
+    /// [`OwnedSlist`], which no `&mut` must name: `bsd` may hold it by address on another CPU
+    /// meanwhile, wg's serial queue), O(1). `panic(9)` when the link holds an element (the
+    /// tail's premise broken) or `b` is of another pool than `T::POOL`.
+    ///
+    /// A compare-exchange of null for `b`'s pointer: the invariant holds after it (the word
+    /// names an item whose box was given up for it, `into_raw` right after the exchange
+    /// succeeded, and whose one owner is the link), and no reference made through the link
+    /// is affected (none exists while the word is null: `get` answered `None`, and `get_mut`
+    /// and `take` need `&mut self`). `Relaxed`, as every other word of a list: the list's
+    /// readers of this link are its owner under the `&mut` borrow it changes the list by,
+    /// or code ordered after the change by the lock that guards the list (the `bsd`
+    /// adapters' `ml_*` under the list's mutex), whose release and acquire publish the
+    /// element with the pointer; the exchange's atomicity only makes the emptiness test and
+    /// the store one step.
+    fn fill(&self, b: PoolBox<T>) {
+        if !ptr::eq(PoolBox::pool(&b), T::POOL) {
+            hal_panic(format_args!("SlistLink::fill: an item of another pool"));
+        }
+        let p = PoolBox::as_ptr(&b).cast_mut();
+        if self
+            .word
+            .compare_exchange(ptr::null_mut(), p, Mem::Relaxed, Mem::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!(
+                "SlistLink::fill: a link that holds an element"
+            ));
+        }
+        // The link owns the item now: the box is given up without its drop.
+        let _ = PoolBox::into_raw(b);
+    }
+
     /// The linked item's pointer (the box's own, with its provenance), for a list's tail.
     fn raw(&self) -> *mut T {
         self.word.load(Mem::Relaxed)
@@ -2962,18 +2995,6 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         unsafe { t.as_ref() }
     }
 
-    /// The last element, to link a new one after it (the list's own), O(1).
-    fn last_mut(&mut self) -> Option<&mut A::Elem> {
-        let t = self.tail.load(Mem::Relaxed);
-        // SAFETY: as for `last`; the reference borrows `self` mutably, the only path to the
-        // element (the list owns it through the chain and lends its elements only shared,
-        // from `&self` or a cursor), so it is the only reference to it while it lives. `tail`
-        // is the element's box's own pointer (`PoolBox::as_ptr`, or the word of the link
-        // holding it, which is that pointer), never one derived from a reference that has
-        // ended.
-        unsafe { t.as_mut() }
-    }
-
     /// The tail's word for the box `b` that becomes the last element.
     fn tail_of(b: &PoolBox<A::Elem>) -> *mut A::Elem {
         PoolBox::as_ptr(b).cast_mut()
@@ -3007,8 +3028,10 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     pub fn push_tail(&mut self, b: PoolBox<A::Elem>) {
         Self::check_alone(&b);
         let t = Self::tail_of(&b);
-        match self.last_mut() {
-            Some(last) => drop(A::link_mut(last).set(b)),
+        // The last element's link is filled through a shared borrow: no `&mut` to the
+        // element, which `bsd` may hold by address on another CPU (`SlistLink::fill`).
+        match self.last() {
+            Some(last) => A::link(last).fill(b),
             None => drop(self.head.set(b)),
         }
         self.tail.store(t, Mem::Relaxed);
@@ -3034,8 +3057,9 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         };
         let t = other.tail.swap(ptr::null_mut(), Mem::Relaxed);
         let n = core::mem::take(&mut other.len);
-        match self.last_mut() {
-            Some(last) => drop(A::link_mut(last).set(h)),
+        // As in `push_tail`: the last element's link filled through a shared borrow.
+        match self.last() {
+            Some(last) => A::link(last).fill(h),
             None => drop(self.head.set(h)),
         }
         self.tail.store(t, Mem::Relaxed);
@@ -4246,6 +4270,50 @@ mod tests {
 
     fn values(l: &OwnedSlist<SlChain>) -> Vec<u32> {
         l.iter().map(|e| e.v).collect()
+    }
+
+    #[test]
+    fn a_tail_named_by_address_meanwhile_is_linked_through_a_shared_borrow() {
+        // The closest a host test comes to wg's serial queue: the tail's address is kept (as
+        // `bsd` keeps a `&'static` on another CPU) across the push that links after it, and
+        // read again afterwards; the push reaches the tail only through `last()` and the
+        // link's `fill`, so the kept address names the same, unmoved element.
+        let mut l = OwnedSlist::<SlChain>::new();
+        l.push_tail(sl(1));
+        l.push_tail(sl(2));
+        let kept: *const Sl = ptr::from_ref(l.last().expect("a tail"));
+        l.push_tail(sl(3));
+        let mut other = OwnedSlist::<SlChain>::new();
+        other.push_tail(sl(4));
+        l.concat(&mut other);
+        // SAFETY: `kept` names the element of value 2, which `l` still owns and frees only
+        // with its drop below; nothing holds a `&mut` to it here (`l` is not borrowed).
+        let e = unsafe { &*kept };
+        assert_eq!(e.v, 2);
+        assert_eq!(SlChain::link(e).get().map(|n| n.v), Some(3));
+        assert_eq!(values(&l), [1, 2, 3, 4]);
+        assert_eq!((l.len(), l.last().map(|e| e.v)), (4, Some(4)));
+    }
+
+    #[test]
+    #[should_panic(expected = "a link that holds an element")]
+    fn a_tail_whose_link_holds_an_element_refuses_a_push() {
+        // Not dropped: the list is left broken on purpose (its tail's premise), and its drop
+        // would count the elements wrong while the panic unwinds; the two items leak, in
+        // `slpl`, which no test counts.
+        let mut l = core::mem::ManuallyDrop::new(OwnedSlist::<SlChain>::new());
+        l.push_tail(sl(1));
+        // The tail's premise broken behind the list's back: its link filled directly.
+        SlChain::link(l.last().expect("a tail")).fill(sl(2));
+        l.push_tail(sl(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "a link that holds an element")]
+    fn a_link_that_holds_an_element_refuses_a_fill() {
+        let link = SlistLink::<Sl>::new();
+        link.fill(sl(1));
+        link.fill(sl(2));
     }
 
     #[test]

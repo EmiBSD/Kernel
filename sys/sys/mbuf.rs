@@ -130,17 +130,21 @@ fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
     // whose release and acquire order every access of the giver before the taker's
     // (`mq_mtx`, `sb_mtx`, the interface queues' mutexes, the softnet task's queue). One
     // place does more, as the C does: wg's serial queue (`wg_queue_dequeue`, under
-    // `q_mtx`) peeks at its head while another CPU decrypts that same packet (`wg_decap`,
-    // which writes its flags, its header's lengths and the WireGuard tag's
-    // `t_done`/`t_mbuf`) or encrypts it (`wg_encap`, which writes the tag's). The peek
+    // `q_mtx`) peeks at its head, and the next `wg_queue_in`/`wg_queue_out` links a packet
+    // after its tail, while another CPU decrypts one of those packets (`wg_decap`, which
+    // writes its flags, its `m_off` and `m_len`, its header's lengths and the WireGuard
+    // tag's `t_done`/`t_mbuf`) or encrypts it (`wg_encap`, which writes the tag's). The peek
     // reads the flags word (`hal::overlay::Body`'s, an `AtomicU16` since review C1), the
     // header's `ph_tagsset` and the tag list (`ph_tags` and each tag's `m_tag_link`, atomic
     // words, and each tag's `m_tag_id`, written once before the packet was queued); the
-    // other CPU writes the flags (atomically), other cells of the header and the tag's
-    // data, never `ph_tagsset` or the tag list, so the two touch no non-atomic memory in
-    // common, but for the tag's `t_done`/`t_mbuf` cells, an inherited race the C has too (a
-    // plain int, if_wg.c), N8's (if_wg.rs's Deviations). The reference is shared;
-    // `mut_of`'s `&mut` is the convention's other half.
+    // enqueue writes the tail's `m_nextpkt` (`OwnedSlist::push_tail` through a shared
+    // borrow: a compare-exchange of the null word, `SlistLink::fill`, no `&mut` to the
+    // tail). The other CPU writes the flags (atomically), `m_off`, `m_len`, other cells of
+    // the header and the tag's data, never `ph_tagsset`, the tag list or `m_nextpkt`, so the
+    // two touch no non-atomic memory in common, but for the tag's `t_done`/`t_mbuf` cells,
+    // an inherited race the C has too (a plain int, if_wg.c), N8's (if_wg.rs's
+    // Deviations). The reference is shared; `mut_of`'s `&mut` is the convention's other
+    // half.
     unsafe { p.as_ref() }
 }
 
@@ -152,14 +156,17 @@ pub(crate) fn mut_of(m: &Mbuf) -> &'static mut Mbuf {
     // only code that uses `m` while the `&mut` lives (one adapter call, never kept), and no
     // other reference to `m` is read or written by the kernel during it. `m` may be inside a
     // packet an `MbufList` holds (`tcp_softlro_concat` appends to the last mbuf of a packet
-    // still on its list, as the C's `tcp_softlro_concat` does): the list holds its element
-    // by the element's `m_nextpkt` link alone (and a raw word for its tail), and no write
-    // through `mut_of` touches the `m_nextpkt` of a list's element: the in-place operations
-    // change data, lengths, offsets, the header and `m_next` chains, and the `m_nextpkt`
-    // writers (`m_set_nextpkt`, `m_take_nextpkt`, the adapters' `m_free`, `m_cat` and
-    // `ml_enqueue`) act on parked packets and on the socket buffers' and nfs's records,
-    // which no `MbufList` holds. So the list's head, tail, length and `m_nextpkt` chain never
-    // change behind it. The item is alive (as for `of_parked`).
+    // still on its list, as the C's `tcp_softlro_concat` does): the list's chain is the
+    // elements' `m_nextpkt` links, plus its `head` and `tail`, and no write through
+    // `mut_of` touches the `m_nextpkt` of a list's element: the in-place operations change
+    // data, lengths, offsets, the header and `m_next` chains, and the `m_nextpkt` writers
+    // that go through `mut_of` (`m_set_nextpkt` and `m_take_nextpkt`, which the adapters'
+    // `m_cat` calls too) act on parked packets and on the socket buffers' and nfs's records,
+    // which no `MbufList` holds. The adapters' `m_free` and `ml_enqueue` write the packet's
+    // own link through its box, and `ml_enqueue` the tail element's through `change()` (the
+    // list's own `push_tail`), not through `mut_of`. So the list's head, tail, length and
+    // `m_nextpkt` chain change only through the list. The item is alive (as for
+    // `of_parked`).
     unsafe { &mut *NonNull::from(m).as_ptr() }
 }
 
