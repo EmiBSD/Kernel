@@ -270,3 +270,5 @@ metadata:
 - The pre-commit hook's lz check reads the STAGED lineage.toml against the WORKING TREE's .rs files: to commit a tested tree as a series, save the tip files, write the later commits' files back as HEAD has them, stage each commit's lineage groups, commit, then put the next commit's files back (N6.1).
 - A PreToolUse refusal blocks the whole Bash command, the commands before the refused part included (a `cp` before `git commit` did not run): never assume a prefix of a refused command took effect (N6.1).
 - zsh: `echo ===` fails (`=cmd` expansion of `==`); quote it (N6.1).
+- The pre-commit hook blocks the whole Bash command: a `cargo fmt` chained before `git commit` in one call does not run when the hook refuses the commit; run fmt as its own call first (N6.1 review).
+- A test helper script that waits for the machine lock must be used for every test run, the single-crate ones too: a kernel test run slipped in under another session's lock (N6.1 review; kt.sh now waits).
