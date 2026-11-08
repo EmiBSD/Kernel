@@ -135,6 +135,35 @@ pub fn soo_stat(fp: &File, ub: &mut Stat, p: &Proc) -> Result<(), Errno> {
 pub fn soo_close(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
     OPS.close(fp, p)
 }
+/// The bytes `ifioctl` works on for `cmd`: the structure the command names
+/// (`IOCPARM_LEN(cmd)`, up to `IOCPARM_MAX`, which `sys_ioctl` copied whole) and at least the
+/// `struct ifreq` every interface request starts with (its name is read first).
+fn ifioctl_need(cmd: u64) -> usize {
+    (hal::sys::ioccom::iocparm_len(cmd) as usize).max(size_of::<crate::net::if_::Ifreq>())
+}
+
+/// Where `ifioctl` works on `data` for `cmd`: `None` for `data` itself, when it holds
+/// [`ifioctl_need`] bytes aligned for `u64` (the kernel's stack buffer and its heap ones of
+/// the right length); else a zeroed heap copy of `data` at least that long, `u64`-aligned,
+/// whose first `data.len()` bytes go back to `data` after the call. Never a shorter one.
+fn ifioctl_buffer(data: &[u8], cmd: u64) -> Result<Option<hal::malloc::MArray<u64>>, Errno> {
+    let need = ifioctl_need(cmd);
+    if data.len() >= need && data.as_ptr().align_offset(align_of::<u64>()) == 0 {
+        return Ok(None);
+    }
+    let words = need.max(data.len()).div_ceil(size_of::<u64>());
+    let Some(mut c) = hal::malloc::MArray::new(
+        crate::sys::malloc::M_IOCTLOPS,
+        crate::sys::malloc::M_WAITOK,
+        words,
+        |_| 0u64,
+    ) else {
+        return Err(Errno::ENOMEM);
+    };
+    hal::user::bytes_of_mut(&mut c[..])[..data.len()].copy_from_slice(data);
+    Ok(Some(c))
+}
+
 /// The interface layer's legs of the kernel's socket layer (the `IfLegacy` row of
 /// `bridges.toml`): `if.c`'s `ifioctl` and `net_tq`, `bsd`'s until N6.3a.
 pub struct BsdIfLegacy;
@@ -143,21 +172,27 @@ pub struct BsdIfLegacy;
 pub static IFLEGACY: BsdIfLegacy = BsdIfLegacy;
 
 impl kernel::net::domain::IfLegacy<BsdProcGlue> for BsdIfLegacy {
-    /// `ifioctl(so, cmd, data, p)` over an aligned copy of the request (`sys_ioctl`'s
-    /// buffer, at most `STK_PARAMS` bytes; `ifioctl` reads the structure the command names).
+    /// `ifioctl(so, cmd, data, p)` on `sys_ioctl`'s copy of the request, in place when it is
+    /// as long as `ifioctl` works on and aligned for it (the kernel's stack buffer is), else
+    /// through a heap copy of that length ([`ifioctl_buffer`]).
     fn ifioctl(&self, so: &Socket, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {
-        let mut aligned = [0u64; 16];
-        let len = data.len().min(size_of_val(&aligned));
-        hal::user::bytes_of_mut(&mut aligned[..])[..len].copy_from_slice(&data[..len]);
-        let bytes = hal::user::bytes_of_mut(&mut aligned[..]).as_mut_ptr();
-        // SAFETY: `bytes` names `aligned`'s 128 bytes, a local buffer aligned for any
-        // interface request and as long as `sys_ioctl`'s, holding the request's `len` bytes;
-        // `ifioctl` reads and writes at most the size the command names (`IOCPARM_LEN(cmd)`,
-        // which `sys_ioctl` bounded by the buffer it copied) and keeps no pointer past the
-        // call; `so` is the caller's socket, alive across the call.
+        let mut copy = ifioctl_buffer(data, cmd)?;
+        let bytes = match copy.as_mut() {
+            Some(c) => hal::user::bytes_of_mut(&mut c[..]).as_mut_ptr(),
+            None => data.as_mut_ptr(),
+        };
+        // SAFETY: `bytes` points at `ifioctl_need(cmd)` or more bytes aligned for `u64`
+        // (`ifioctl_buffer`'s promise: `data` itself, checked for both, or the heap copy it
+        // made that long), so the request structure `ifioctl` casts it to (`IOCPARM_LEN(cmd)`
+        // bytes, at least the `struct ifreq` every interface request starts with) is in
+        // bounds and aligned, and nothing else uses the bytes during the call (`data` is
+        // ours exclusively, the copy local); `ifioctl` keeps no pointer past the call; `so`
+        // is the caller's socket, alive across it.
         let error =
             unsafe { crate::net::if_::ifioctl(core::ptr::from_ref(so).cast(), cmd, bytes, p) };
-        data[..len].copy_from_slice(&hal::user::bytes_of(&aligned[..])[..len]);
+        if let Some(c) = &copy {
+            data.copy_from_slice(&hal::user::bytes_of(&c[..])[..data.len()]);
+        }
         error
     }
 
@@ -170,3 +205,56 @@ impl kernel::net::domain::IfLegacy<BsdProcGlue> for BsdIfLegacy {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::vec::Vec;
+    use std::{assert, assert_eq};
+
+    use super::*;
+    use crate::sys::sockio::SIOCGLIFPHYADDR;
+
+    #[test]
+    fn ifioctl_works_on_the_whole_request() {
+        let (_g, _t, p) = crate::netinet::in_pcb::tests::setup();
+        // A request longer than STK_PARAMS (536 bytes): sys_ioctl's heap buffer.
+        let need = ifioctl_need(SIOCGLIFPHYADDR);
+        assert!(need > 128, "{need}");
+        let mut words: Vec<u64> = std::vec![0; need.div_ceil(8) + 1];
+        let bytes = hal::user::bytes_of_mut(&mut words[..]);
+        // Aligned and long enough: worked on in place.
+        assert!(
+            ifioctl_buffer(&bytes[..need], SIOCGLIFPHYADDR)
+                .unwrap()
+                .is_none()
+        );
+        // Misaligned: a copy, never shorter than the request.
+        let c = ifioctl_buffer(&bytes[1..1 + need], SIOCGLIFPHYADDR)
+            .unwrap()
+            .expect("a copy");
+        assert!(c.len() * 8 >= need);
+        // A void command's 8 bytes: a copy as long as a struct ifreq.
+        let c = ifioctl_buffer(&bytes[..8], 0x2000_6900)
+            .unwrap()
+            .expect("a copy");
+        assert!(c.len() * 8 >= size_of::<crate::net::if_::Ifreq>());
+
+        // Through the bridge, both ways, on an interface that is not there.
+        let so = crate::kern::uipc_socket::soalloc(
+            &crate::netinet::in_proto::INETSW[1],
+            crate::sys::socket::SOCK_DGRAM,
+            crate::sys::mbuf::M_WAIT,
+        )
+        .unwrap();
+        for at in [0usize, 1] {
+            let data = &mut bytes[at..at + need];
+            data[..8].copy_from_slice(b"nosuch0\0");
+            let r = kernel::net::domain::IfLegacy::ifioctl(&IFLEGACY, so, SIOCGLIFPHYADDR, data, p);
+            assert_eq!(r, Err(Errno::ENXIO), "at {at}");
+            assert_eq!(&data[..8], b"nosuch0\0");
+        }
+        crate::netinet::in_pcb::tests::teardown();
+    }
+}
+/* </TESTS> */
