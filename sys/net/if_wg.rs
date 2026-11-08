@@ -93,7 +93,12 @@
 //! - The wire structures are `#[repr(C)]` without padding; they are read out of the mbuf with
 //!   an unaligned copy and written from their bytes. The packet type and indices keep the C's
 //!   byte order (`htole32` constants, indices copied raw); the data nonce is little-endian.
-//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s (`t_done` a `bool`).
+//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s (`t_done` a `bool`). Inherited race,
+//!   N8's: `wg_queue_dequeue` reads the head's `t_done` (and then `t_mbuf`) under `q_mtx`
+//!   while the parallel queue's `wg_encap`/`wg_decap` sets them on another CPU without it;
+//!   the C does the same with a plain `int` and no barrier (if_wg.c's `t->t_done = 1` and
+//!   `wg_queue_dequeue`). The rest of that peek reads only the packet's flags word and its
+//!   tag list, which the mbuf keeps atomic (`sys/sys/mbuf.rs`'s `of_parked`, review C1).
 //! - `sockaddr_ntop` (`netinet/inet_ntop.c`) is not ported: the log lines format the address
 //!   with [`SaNtop`], which prints what it would (`a.b.c.d`, an IPv6 address through
 //!   `In6Ntop`, or the family and the bytes).

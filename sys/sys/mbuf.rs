@@ -125,12 +125,22 @@ fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
     // made the same promise on: `bsd`'s code uses a reference only while it owns the packet
     // (or the chain or list holding it), and a free is the owner's last use of every
     // reference into it, so no `&'static` is used after its item's free. Threads: `Mbuf` is
-    // `Send` but not `Sync` (its cells), and a `&Mbuf` is shared across CPUs only as the C
-    // hands a packet over: one CPU uses a packet at a time, and the handover is a lock or a
-    // queue whose release and acquire order every access of the giver before the taker's
-    // (`mq_mtx`, `sb_mtx`, the interface queues' mutexes, the softnet task's queue), so no
-    // two CPUs touch one item's cells at once. The reference is shared; `mut_of`'s `&mut`
-    // is the convention's other half.
+    // `Send` but not `Sync` (its cells), and a `&Mbuf` is shared across CPUs as the C hands
+    // a packet over: one CPU uses a packet at a time, and the handover is a lock or a queue
+    // whose release and acquire order every access of the giver before the taker's
+    // (`mq_mtx`, `sb_mtx`, the interface queues' mutexes, the softnet task's queue). One
+    // place does more, as the C does: wg's serial queue (`wg_queue_dequeue`, under
+    // `q_mtx`) peeks at its head while another CPU decrypts that same packet (`wg_decap`,
+    // which writes its flags, its header's lengths and the WireGuard tag's
+    // `t_done`/`t_mbuf`) or encrypts it (`wg_encap`, which writes the tag's). The peek
+    // reads the flags word (`hal::overlay::Body`'s, an `AtomicU16` since review C1), the
+    // header's `ph_tagsset` and the tag list (`ph_tags` and each tag's `m_tag_link`, atomic
+    // words, and each tag's `m_tag_id`, written once before the packet was queued); the
+    // other CPU writes the flags (atomically), other cells of the header and the tag's
+    // data, never `ph_tagsset` or the tag list, so the two touch no non-atomic memory in
+    // common, but for the tag's `t_done`/`t_mbuf` cells, an inherited race the C has too (a
+    // plain int, if_wg.c), N8's (if_wg.rs's Deviations). The reference is shared;
+    // `mut_of`'s `&mut` is the convention's other half.
     unsafe { p.as_ref() }
 }
 

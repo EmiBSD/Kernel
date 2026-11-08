@@ -40,10 +40,17 @@
 //!
 //! Both are written for the mbuf and have no second user: the C's equivalent is the union and
 //! the cluster pool item themselves.
+//!
+//! The flags word is an `AtomicU16` read and written `Relaxed` (`ldrh`/`strh` on arm64, the
+//! C's plain `m_flags` accesses): `bsd`'s code shares an mbuf's `&'static` between CPUs where
+//! the C reads a packet another CPU writes (wg's serial queue peeks at the head's tag while
+//! the decap side sets the packet's flags), and the overlay's own tag tests (`p`, `e`,
+//! `inline`) read the word on every access, so a `Cell` there would be a data race.
 
-use core::cell::{Cell, UnsafeCell};
+use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::slice;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 /// `n` rounded up to a multiple of `a` (a power of two).
 const fn round_up(n: usize, a: usize) -> usize {
@@ -77,7 +84,9 @@ pub struct Body<
     const EBIT: u16,
     const N: usize,
 > {
-    flags: Cell<u16>,
+    /// The flags word: the owner's bits and the two tags. Read and written `Relaxed`; the tag
+    /// bits change only under `&mut self` (`put`, `out`).
+    flags: AtomicU16,
     x: X,
     storage: UnsafeCell<Storage<N>>,
     /// The values the storage may hold: the overlay owns them (its drop drops them, its auto
@@ -125,7 +134,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     pub const fn new(x: X, flags: u16) -> Self {
         let () = Self::CHECK;
         Self {
-            flags: Cell::new(flags & !Self::TAGS),
+            flags: AtomicU16::new(flags & !Self::TAGS),
             x,
             storage: UnsafeCell::new(Storage([0; N])),
             _holds: PhantomData,
@@ -135,15 +144,23 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// The flags word, the tag bits included.
     #[inline]
     pub fn flags(&self) -> u16 {
-        self.flags.get()
+        self.flags.load(Ordering::Relaxed)
     }
 
     /// The flags word set to `v` but for the tag bits, which stay as they are: a caller cannot
     /// say a value is live that is not, nor drop one by forgetting its bit.
+    ///
+    /// A load, a mask and a store (not a read-modify-write): the tag bits cannot change
+    /// between the two, since only `put` and `out` write them and both need `&mut self`,
+    /// which this `&self` excludes, so the store always writes back the true tags whoever
+    /// else stores meanwhile. Two concurrent callers would lose one's other bits, as two
+    /// unlocked `m->m_flags |= x` do in the C; the owner's convention (one writer of a
+    /// packet's flags at a time, the C's) rules that out, and it can never break the tags.
     #[inline]
     pub fn set_flags(&self, v: u16) {
+        let tags = self.flags.load(Ordering::Relaxed) & Self::TAGS;
         self.flags
-            .set((v & !Self::TAGS) | (self.flags.get() & Self::TAGS));
+            .store((v & !Self::TAGS) | tags, Ordering::Relaxed);
     }
 
     /// The owner's bytes beside the flags.
@@ -211,7 +228,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// live ([`Body::INLINE_P`]), 0 otherwise.
     #[inline]
     pub fn inline_start(&self) -> usize {
-        if self.flags.get() & PBIT != 0 {
+        if self.flags() & PBIT != 0 {
             Self::INLINE_P
         } else {
             0
@@ -222,7 +239,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// while an `E` is live (the C uses no inline data beside `M_EXT`).
     #[inline]
     pub fn inline(&self) -> Option<&[u8]> {
-        if self.flags.get() & EBIT != 0 {
+        if self.flags() & EBIT != 0 {
             return None;
         }
         let start = self.inline_start();
@@ -243,7 +260,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// The bytes of [`Body::inline`], to write them.
     #[inline]
     pub fn inline_mut(&mut self) -> Option<&mut [u8]> {
-        if self.flags.get() & EBIT != 0 {
+        if *self.flags.get_mut() & EBIT != 0 {
             return None;
         }
         let start = self.inline_start();
@@ -254,7 +271,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// `(PBIT, 0)` for `P` and `(EBIT, OFF_E)` for `E`.
     #[inline]
     fn typed<T>(&self, bit: u16, off: usize) -> Option<&T> {
-        if self.flags.get() & bit == 0 {
+        if self.flags() & bit == 0 {
             return None;
         }
         // SAFETY: the two callers pass the pairs `(P, PBIT, 0)` and `(E, EBIT, OFF_E)`: the bit
@@ -270,7 +287,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// [`Body::typed`]'s value, to change it.
     #[inline]
     fn typed_mut<T>(&mut self, bit: u16, off: usize) -> Option<&mut T> {
-        if self.flags.get() & bit == 0 {
+        if *self.flags.get_mut() & bit == 0 {
             return None;
         }
         let at = self
@@ -304,7 +321,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
         // initialises the region; the bit set right after records it, so the invariant holds
         // again before any reference can be made.
         unsafe { at.write(v) };
-        self.flags.set(self.flags.get() | bit);
+        *self.flags.get_mut() |= bit;
         old
     }
 
@@ -312,7 +329,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
     /// is not set. Called only with `(PBIT, 0)` and `(EBIT, OFF_E)`.
     #[inline]
     fn out<T>(&mut self, bit: u16, off: usize) -> Option<T> {
-        if self.flags.get() & bit == 0 {
+        if *self.flags.get_mut() & bit == 0 {
             return None;
         }
         let at = self
@@ -327,7 +344,7 @@ impl<P: 'static, E: 'static, X: 'static, const PBIT: u16, const EBIT: u16, const
         // to it. The read moves the value out, and clearing the bit at once makes the region
         // dead before anything can read it as a `T` again, so the value is not dropped twice.
         let v = unsafe { at.read() };
-        self.flags.set(self.flags.get() & !bit);
+        *self.flags.get_mut() &= !bit;
         if let Some(region) = self.storage.get_mut().0.get_mut(off..off + size_of::<T>()) {
             region.fill(0);
         }
@@ -391,6 +408,7 @@ unsafe impl<const N: usize> Sync for Bytes<N> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
     use std::rc::Rc;
     use std::vec::Vec;
 
