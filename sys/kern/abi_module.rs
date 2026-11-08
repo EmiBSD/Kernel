@@ -52,9 +52,10 @@ use crate::sys::types::Register;
 /// futex(2) (`KernelApi::futex`, `sys/kern/sys_futex.rs`), the process system calls
 /// (`KernelApi::proc`, `sys/kern/proc_glue.rs`), sysctl(2) (`KernelApi::sysctl`,
 /// `sys/kern/kern_sysctl.rs`), the time system calls with reboot(2) (`KernelApi::time`,
-/// `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`, `sys/kern/kern_sig.rs`) and
-/// the VFS system calls (`KernelApi::vfs`, `sys/kern/vfs_syscalls.rs`) are the kernel crate's,
-/// entered through `bsd`'s system call prologue.
+/// `sys/kern/kern_time.rs`), sigreturn(2) (`KernelApi::sigreturn`, `sys/kern/kern_sig.rs`), the
+/// VFS system calls (`KernelApi::vfs`, `sys/kern/vfs_syscalls.rs`) and the socket system calls
+/// (`KernelApi::socket`, `sys/kern/socket_glue.rs`) are the kernel crate's, entered through
+/// `bsd`'s system call prologue.
 static KERNEL_API: KernelApi = kernel::api::table(
     legacy_syscall,
     crate::kern::pipe_glue::native_pipe2,
@@ -68,6 +69,7 @@ static KERNEL_API: KernelApi = kernel::api::table(
     crate::kern::kern_time::TIME_ENTRIES,
     crate::kern::kern_sig::native_sigreturn,
     crate::kern::vfs_syscalls::VFS_ENTRIES,
+    crate::kern::socket_glue::SOCKET_ENTRIES,
 );
 
 /// The system call path amd64's trap calls where it chose the `sysent[]` entry: `hal`'s

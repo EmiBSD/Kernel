@@ -68,18 +68,18 @@ use crate::kern::pipe_glue::{sys_pipe, sys_pipe2};
 use crate::kern::proc_glue::{
     sys___tfork, sys___threxit, sys_acct, sys_exit, sys_fork, sys_vfork, sys_wait4, sys_waitid,
 };
+use crate::kern::socket_glue::{
+    sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getrtable,
+    sys_getsockname, sys_getsockopt, sys_listen, sys_recvfrom, sys_recvmmsg, sys_recvmsg,
+    sys_sendmmsg, sys_sendmsg, sys_sendto, sys_setrtable, sys_setsockopt, sys_shutdown, sys_socket,
+    sys_socketpair, sys_ypconnect,
+};
 use crate::kern::subr_log::sys_sendsyslog;
 use crate::kern::subr_prof::sys_profil;
 use crate::kern::sys_futex::sys_futex;
 use crate::kern::sys_generic::{
     sys_ioctl, sys_poll, sys_ppoll, sys_pselect, sys_read, sys_readv, sys_select, sys_utrace,
     sys_write, sys_writev,
-};
-use crate::kern::uipc_syscalls::{
-    sys_accept, sys_accept4, sys_bind, sys_connect, sys_getpeername, sys_getrtable,
-    sys_getsockname, sys_getsockopt, sys_listen, sys_recvfrom, sys_recvmmsg, sys_recvmsg,
-    sys_sendmmsg, sys_sendmsg, sys_sendto, sys_setrtable, sys_setsockopt, sys_shutdown, sys_socket,
-    sys_socketpair, sys_ypconnect,
 };
 use crate::kern::vfs_syscalls::{
     sys___getcwd, sys___pledge_open, sys___realpath, sys_access, sys_chdir, sys_chflags,

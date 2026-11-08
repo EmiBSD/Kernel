@@ -101,7 +101,6 @@ use crate::kern::kern_time::inittodr;
 use crate::kern::kern_timeout::{timeout_add, timeout_del, timeout_set_proc};
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::uipc_mbuf::{m_freem, m_get};
-use crate::kern::uipc_syscalls::sockargs;
 use crate::kern::vfs_vops::{VOP_FSYNC, VOP_GETATTR, VOP_ISLOCKED, VOP_UNLOCK};
 use crate::machine::conf::swapdev;
 use crate::machine::copy::{copyin, copyinstr, copyout};
@@ -722,7 +721,11 @@ pub fn nfs_mount(
     let mut hst = [0u8; MNAMELEN];
     copyinstr(args.hostname, &mut hst[..MNAMELEN - 1])?;
     // sockargs() call must be after above copyin() calls.
-    let nam = sockargs(args.addr, args.addrlen as usize, MT_SONAME)?;
+    let nam = crate::sys::mbuf::park(kernel::net::syscalls::sockargs(
+        hal::user::UserPtr::new(args.addr),
+        args.addrlen as usize,
+        MT_SONAME,
+    )?);
     mountnfs(&args, mp, nam, path, &hst, &nfh[..fhsize], p)?;
     Ok(())
 }

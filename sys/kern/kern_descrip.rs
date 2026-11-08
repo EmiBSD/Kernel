@@ -345,7 +345,10 @@ impl FileGlue for BsdFileGlue {
     fn socket_file(
         so: kernel::net::socket::SocketRef<crate::kern::proc_glue::BsdProcGlue>,
     ) -> (&'static Self::Ops, Self::Data) {
-        (&crate::kern::sys_socket::SOCKETOPS, BsdFileData::Socket(so))
+        (
+            &crate::kern::socket_glue::SOCKETOPS,
+            BsdFileData::Socket(so),
+        )
     }
     /// `uiomove` of a receive buffer's bytes: a user uio through `hal`'s checked copy, a
     /// kernel one (nfs's `UIO_SYSSPACE`) through `bsd`'s copy (`kcopy`), which reads only.
@@ -916,10 +919,13 @@ mod tests {
         // socreate's reference, parked by the adapter, becomes the file's.
         let so = hal::pool::PoolArc::adopt(so).unwrap();
         let fp = fnew(p).unwrap();
-        crate::kern::sys_socket::fp_install(&fp, so);
+        crate::kern::socket_glue::fp_install(&fp, so);
         let data = fp.data().unwrap();
         let s = <BsdFileGlue as kernel::file::FileGlue>::socket_of(data).unwrap();
-        assert!(core::ptr::eq(&**s, crate::kern::sys_socket::fp_socket(&fp)));
+        assert!(core::ptr::eq(
+            &**s,
+            crate::kern::socket_glue::fp_socket(&fp)
+        ));
         assert!(!BsdFileGlue::dns_socket(data));
         assert_eq!(fp.f_type(), crate::sys::file::DTYPE_SOCKET);
         // The last reference closes the socket (no protocol attached: soclose's discard).

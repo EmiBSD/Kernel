@@ -97,6 +97,8 @@ pub mod rust_alloc;
 pub mod sched_bsd;
 #[cfg(feature = "qemu")]
 pub mod selftest;
+#[forbid(unsafe_code)]
+pub mod socket_glue;
 pub mod subr_autoconf;
 pub mod subr_disk;
 pub mod subr_evcount;
@@ -118,7 +120,6 @@ pub mod subr_xxx;
 pub mod sys_futex;
 #[forbid(unsafe_code)]
 pub mod sys_generic;
-pub mod sys_socket;
 #[forbid(unsafe_code)]
 pub mod syscalls;
 #[forbid(unsafe_code)]
@@ -137,7 +138,6 @@ pub mod uipc_mbuf2;
 pub mod uipc_socket;
 #[forbid(unsafe_code)]
 pub mod uipc_socket2;
-pub mod uipc_syscalls;
 #[forbid(unsafe_code)]
 pub mod unported;
 pub mod vfs_init;

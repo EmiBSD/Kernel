@@ -407,7 +407,8 @@ paid_by = "N8"
 
 # bsd: the interface layer's legs the socket layer calls (if.c's ifioctl for soo_ioctl's 'i'
 # group, net_tq for sosplice's task queue), implemented by bsd's BsdIfLegacy
-# (sys/kern/sys_socket.rs, over sys/net/if_.rs's ifioctl and net_tq) and registered in the
+# (sys/net/if_.rs since N6.2b, beside its ifioctl and net_tq; sys/kern/sys_socket.rs went)
+# and registered in the
 # glue's NetTables (generic over the glue, so not a hal::bridges slot) by bsd's domaininit
 # (N6.2a). Paid by N6.3a, when the interface core moves (N6's row).
 # kernel::net::domain::IfLegacy

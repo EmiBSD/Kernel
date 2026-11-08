@@ -61,7 +61,7 @@
 //! registration of `bsd`'s nodes with the kernel's dispatcher
 //! ([`sysctl_register_legacy`]): the `net`, `vfs`, `machdep` and `ddb` trees, the `kern` and
 //! `hw` leaves and directories whose state is `bsd`'s (`kern.ostype`, `kern.clockrate`,
-//! `kern.mbstat`, `kern.cp_time`, `kern.tty`, `kern.timecounter`, `hw.sensors`,
+//! `kern.cp_time`, `kern.tty`, `kern.timecounter`, `hw.sensors`,
 //! `hw.machine`, ...), their bounded integers, the disk list's export and `physmem`.
 //!
 //! Upstream: sys/kern/kern_sysctl.c @ 3ce1f3f79392
@@ -126,7 +126,7 @@ use kernel::fs::vops::Cred;
 
 use libkern::{strlcpy, strnlen};
 
-use crate::conf::param::{FSCALE, MAXFILES, MAXPROCESS, MAXTHREAD, NMBCLUST, UTC_OFFSET};
+use crate::conf::param::{FSCALE, MAXFILES, MAXPROCESS, MAXTHREAD, UTC_OFFSET};
 use crate::conf::vers::{OSRELEASE, OSTYPE, OSVERSION, VERSION};
 use crate::dev::audio::{AUDIO_KBDCONTROL_ENABLE, AUDIO_RECORD_ENABLE};
 use crate::dev::cons::cn_tab;
@@ -145,14 +145,12 @@ use crate::kern::kern_tc::{microboottime, nanotime, tc_setrealtimeclock};
 use crate::kern::kern_watchdog::sysctl_wdog;
 use crate::kern::pipe_glue::pipe_kinfo;
 use crate::kern::proc_glue::{BsdProcGlue, proc_tables, process_ref};
+use crate::kern::socket_glue::fp_socket;
 use crate::kern::subr_autoconf::AUTOCONF_SERIAL;
 use crate::kern::subr_disk::{DISK_CHANGE, DISK_COUNT, DISKLIST, duid_format, duid_iszero};
 use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
-use crate::kern::sys_socket::fp_socket;
-use crate::kern::uipc_mbuf::{mbstat_read, nmbclust_update};
-use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::soassertlocked;
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::Machine;
@@ -175,7 +173,6 @@ use crate::sys::fcntl::{FREAD, FWRITE};
 use crate::sys::file::FileExt;
 use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File, FileRef, frele};
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
-use crate::sys::limits::SHRT_MAX;
 use crate::sys::lockf::MAXLOCKSPERUID;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
@@ -222,7 +219,7 @@ static RAW_PART: AtomicI32 = AtomicI32::new(RAW_PART_C);
 
 /// `kern_vars[]`, the entries whose variables are `bsd`'s (the kernel has the others):
 /// registered with the kernel's dispatcher, which searches its own entries first.
-static KERN_VARS: [SysctlBoundedArgs; 15] = [
+static KERN_VARS: [SysctlBoundedArgs; 13] = [
     SysctlBoundedArgs::readonly(KERN_OSREV, &OPENBSD),
     SysctlBoundedArgs::new(
         KERN_MAXVNODES,
@@ -236,8 +233,6 @@ static KERN_VARS: [SysctlBoundedArgs; 15] = [
     SysctlBoundedArgs::readonly(KERN_MAXPARTITIONS, &MAXPARTITIONS),
     SysctlBoundedArgs::readonly(KERN_RAWPARTITION, &RAW_PART),
     SysctlBoundedArgs::new(KERN_MAXTHREAD, &MAXTHREAD, 0, i32::MAX),
-    SysctlBoundedArgs::new(KERN_SOMAXCONN, &somaxconn, 0, SHRT_MAX as i32),
-    SysctlBoundedArgs::new(KERN_SOMINCONN, &sominconn, 0, SHRT_MAX as i32),
     SysctlBoundedArgs::new(KERN_NOSUIDCOREDUMP, &NOSUIDCOREDUMP, 0, 3),
     SysctlBoundedArgs::readonly(KERN_FSCALE, &FSCALE),
     SysctlBoundedArgs::new(KERN_SPLASSERT, &SPLASSERT_CTL, 0, 3),
@@ -1327,28 +1322,6 @@ fn kern_boottime(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, bt.as_bytes())
 }
 
-/// `kern.maxclusters`: a change is `nmbclust_update`'s, under `sysctl_lock`.
-fn kern_maxclusters(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    let oldval = NMBCLUST.load(Ordering::Relaxed) as i32;
-    let newval = AtomicI32::new(oldval);
-    let mut error = sysctl_int(req.oldp, req.oldlenp, req.newp, req.newlen, &newval);
-    let newval = newval.into_inner();
-
-    if error.is_ok() && oldval != newval {
-        let _w = SYSCTL_LOCK.write();
-        error = nmbclust_update(i64::from(newval));
-    }
-
-    error
-}
-
-/// `kern.mbstat`.
-fn kern_mbstat(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    // counters_read(mbstat) and the copy into struct mbstat: the kernel's (N6.1).
-    let mbs = mbstat_read();
-    sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, mbs.as_bytes())
-}
-
 /// `kern.cp_time`: the online CPUs' `spc_cp_time`, averaged.
 fn kern_cptime(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     let mut cp_time = [0i64; CPUSTATES];
@@ -1498,7 +1471,7 @@ static VERSION_NODE: RdString = RdString(VERSION.as_bytes());
 static MACHINE_NODE: RdString = RdString(<Machine as MachineInfo>::MACHINE.as_bytes());
 
 /// The `kern` nodes of `bsd`'s subsystems, by id.
-static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
+static KERN_NODES: [(i32, &dyn SysctlNode); 27] = [
     (KERN_OSTYPE, &OSTYPE_NODE),
     (KERN_OSRELEASE, &OSRELEASE_NODE),
     (KERN_OSVERSION, &OSVERSION_NODE),
@@ -1511,8 +1484,6 @@ static KERN_NODES: [(i32, &dyn SysctlNode); 29] = [
         &kernel::fs::subr::NumvnodesNode::<BsdProcGlue>::NODE,
     ),
     (KERN_BOOTTIME, &Node(kern_boottime)),
-    (KERN_MAXCLUSTERS, &Node(kern_maxclusters)),
-    (KERN_MBSTAT, &Node(kern_mbstat)),
     (KERN_CPTIME, &Node(kern_cptime)),
     (KERN_POOL_DEBUG, &Node(kern_pool_debug)),
     // `kern.nchstats`: the kernel's node (N5.3), over this glue's name cache.
