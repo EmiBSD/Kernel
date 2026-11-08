@@ -112,16 +112,25 @@ use crate::kern::uipc_mbuf::{m_clget, m_freem};
 use crate::sys::mutex::Mutex;
 
 /// The `&'static T` of an item `bsd` holds by address: a parked mbuf or tag
-/// (`PoolBox::park`'s pointer), or one inside a chain or a list whose owner `bsd`'s caller
-/// keeps (LZ's `&'static Mbuf`, valid until `m_free`).
+/// (`PoolBox::park`'s pointer), or one inside a chain, a packet list or a tag list whose
+/// owner `bsd`'s caller keeps ([`lend`]: LZ's `&'static Mbuf`, valid until `m_free`).
 fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
-    // SAFETY: `p` names an initialised item of `T::POOL` (a parked item: `park` gave the box
-    // up and nothing put it back; or one a link of a parked chain owns), which stays
-    // allocated until a free takes it back through `unpark` or its owner's drop. The C's
-    // one-owner convention, which LZ's `&'static Mbuf` made the same promise on: `bsd`'s
-    // code uses a reference only while it owns the packet (or the chain holding it), and a
-    // free is the owner's last use of every reference to it. The reference is shared;
-    // `mut_of`'s `&mut` is the convention's other half.
+    // SAFETY: `p` names an initialised item of `T::POOL` in one of three places: parked
+    // (`park` gave the box up and nothing put it back), or owned by a link of a chain or a
+    // packet list (`m_next`, `m_nextpkt`, an `MbufList`, a header's tag list) whose head
+    // `bsd`'s caller holds. Each stays allocated until a free takes it back: `unpark` for a
+    // parked item (which refuses a linked one), the owner's drop for a linked one, and a
+    // linked item is freed only with or after its owner, which `bsd` frees through the
+    // adapters only. Lifetime: the C's one-owner convention, which LZ's `&'static Mbuf`
+    // made the same promise on: `bsd`'s code uses a reference only while it owns the packet
+    // (or the chain or list holding it), and a free is the owner's last use of every
+    // reference into it, so no `&'static` is used after its item's free. Threads: `Mbuf` is
+    // `Send` but not `Sync` (its cells), and a `&Mbuf` is shared across CPUs only as the C
+    // hands a packet over: one CPU uses a packet at a time, and the handover is a lock or a
+    // queue whose release and acquire order every access of the giver before the taker's
+    // (`mq_mtx`, `sb_mtx`, the interface queues' mutexes, the softnet task's queue), so no
+    // two CPUs touch one item's cells at once. The reference is shared; `mut_of`'s `&mut`
+    // is the convention's other half.
     unsafe { p.as_ref() }
 }
 
@@ -244,29 +253,63 @@ pub fn m_take_nextpkt(m: &Mbuf) -> Option<&'static Mbuf> {
 
 /// `struct mbuf_list`: packets linked through `m_nextpkt`, the kernel's list
 /// (`OwnedSlist<MPkt>`) in a cell `bsd`'s callers change through `&MbufList` under the
-/// list's lock, as the C changes its `struct mbuf_list` through a pointer.
-pub struct MbufList(UnsafeCell<kernel::net::mbuf::MbufList>);
+/// list's lock, as the C changes its `struct mbuf_list` through a pointer; its length
+/// mirrored in an atomic for the readers that take no lock (`ifiq_len`'s and `mq_len`'s
+/// `READ_ONCE`, LZ's `ml_len: AtomicU32`).
+pub struct MbufList {
+    /// The list. Reached only through [`MbufList::change`], under the list's lock.
+    list: UnsafeCell<kernel::net::mbuf::MbufList>,
+    /// `ml_len`: the list's length, stored by every change, read without the lock.
+    len: AtomicU32,
+}
 
-// SAFETY: the list is reached only through `inner`, whose callers are the `ml_*` and `mq_*`
-// functions of `kern/uipc_mbuf.rs`: each one call, under the lock the C names for the list
-// (`mq_mtx`, `sb_mtx`, the softnet task's or the interface queue's own), so no two CPUs reach
-// one list at once. The elements are `Send` (the kernel's `Mbuf`), so a list handed between
-// CPUs under that lock is sound.
+// SAFETY: the only access to `list` is `change`, which builds the one `&mut` to it for one
+// closure and drops it before returning. Its callers are this file's `mbuf_list_first` and
+// `kern/uipc_mbuf.rs`'s `ml_*` and `mq_*` (`pub(crate)`: nothing else of `bsd` reaches it),
+// and those are called as the C calls them: under the lock the C names for the list
+// (`mq_mtx` inside the `mq_*`, `sb_mtx`, `ifq_mtx` and `ifiq_mtx` for the interface queues
+// and their disciplines, wg's `q_mtx`, a pf queue's `ifq_mtx`), or on a list the caller
+// owns alone (a local `MbufList` on its stack: `if_input_process`'s, `tcp_softlro`'s,
+// `mq_purge`'s). So no two CPUs, and no two calls, hold a `&mut` to one list at once; the
+// readers that take no lock (`ml_len`, `ml_empty`, `mq_len`, `ifiq_len`) read `len`, an
+// atomic, never `list`. The elements are `Send` (the kernel's `Mbuf`), so a list handed
+// between CPUs under its lock is sound.
 unsafe impl Sync for MbufList {}
 
 impl MbufList {
     /// `MBUF_LIST_INITIALIZER()`.
     pub const fn new() -> Self {
-        Self(UnsafeCell::new(kernel::net::mbuf::MbufList::new()))
+        Self {
+            list: UnsafeCell::new(kernel::net::mbuf::MbufList::new()),
+            len: AtomicU32::new(0),
+        }
     }
 
-    /// The kernel's list, to change it: one `ml_*`/`mq_*` call, never kept.
-    #[allow(clippy::mut_from_ref)] // the C's `struct mbuf_list *`, changed under its lock
-    pub(crate) fn inner(&self) -> &mut kernel::net::mbuf::MbufList {
-        // SAFETY: `Sync`'s argument above: the callers hold the list's lock (or own the list
-        // alone, a local `MbufList`), make one call and keep no reference past it, so no
-        // other reference to the list is alive while this one is.
-        unsafe { &mut *self.0.get() }
+    /// One change (or locked read) of the kernel's list, `f` given the list for the call
+    /// alone; the length mirrored after it. Callers hold the list's lock or own the list.
+    pub(crate) fn change<R>(&self, f: impl FnOnce(&mut kernel::net::mbuf::MbufList) -> R) -> R {
+        // SAFETY: `Sync`'s argument above: the caller holds the list's lock or owns the list
+        // alone, and this `&mut` is the only reference to `list` while it lives: it is made
+        // here, lent to `f` for the call, used once more for the length and dropped before
+        // the return (`f` cannot keep it: its lifetime is the call's). `f` runs no `ml_*` of
+        // this same list (the adapters' closures are the kernel's list operations; `ml_enlist`
+        // refuses one list as both arguments before nesting two calls).
+        let list = unsafe { &mut *self.list.get() };
+        let r = f(list);
+        self.len.store(list.len() as u32, Ordering::Relaxed);
+        r
+    }
+
+    /// `ml_len`, as `READ_ONCE` reads it: no lock.
+    #[inline]
+    pub fn len(&self) -> u32 {
+        self.len.load(Ordering::Relaxed)
+    }
+
+    /// `ml_empty`.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// `MBUF_LIST_FOREACH(ml, m)`.
@@ -309,8 +352,6 @@ pub struct MbufQueue {
     pub mq_maxlen: AtomicU32,
     /// `mq_drops`. Written under `mq_mtx`, read with `READ_ONCE`.
     pub mq_drops: AtomicU32,
-    /// The list's length, written under `mq_mtx`, for `mq_len`'s `READ_ONCE`.
-    mq_len: AtomicU32,
 }
 
 impl MbufQueue {
@@ -321,14 +362,7 @@ impl MbufQueue {
             mq_list: MbufList::new(),
             mq_maxlen: AtomicU32::new(maxlen),
             mq_drops: AtomicU32::new(0),
-            mq_len: AtomicU32::new(0),
         }
-    }
-
-    /// The length mirrored after a change of `mq_list` (under `mq_mtx`).
-    pub(crate) fn sync_len(&self) {
-        self.mq_len
-            .store(self.mq_list.inner().len() as u32, Ordering::Relaxed);
     }
 }
 
@@ -382,22 +416,22 @@ pub fn m_freemp(mp: &mut Option<&'static Mbuf>) -> Option<&'static Mbuf> {
     m_freem(m)
 }
 
-/// `ml_len(ml)`.
+/// `ml_len(ml)`: the mirrored length, without the list's lock (`READ_ONCE`).
 #[inline]
 pub fn ml_len(ml: &MbufList) -> u32 {
-    ml.inner().len() as u32
+    ml.len()
 }
 
 /// `ml_empty(ml)`.
 #[inline]
 pub fn ml_empty(ml: &MbufList) -> bool {
-    ml_len(ml) == 0
+    ml.is_empty()
 }
 
-/// `MBUF_LIST_FIRST(ml)`.
+/// `MBUF_LIST_FIRST(ml)`, under the list's lock (or on a list the caller owns).
 #[inline]
 pub fn mbuf_list_first(ml: &MbufList) -> Option<&'static Mbuf> {
-    ml.inner().first().map(lend)
+    ml.change(|l| l.first().map(lend))
 }
 
 /// `MBUF_LIST_NEXT(m)`.
@@ -406,10 +440,10 @@ pub fn mbuf_list_next(m: &Mbuf) -> Option<&'static Mbuf> {
     m.m_nextpkt().get().map(lend)
 }
 
-/// `mq_len(mq)`.
+/// `mq_len(mq)`: the list's mirrored length, without `mq_mtx` (`READ_ONCE`).
 #[inline]
 pub fn mq_len(mq: &MbufQueue) -> u32 {
-    mq.mq_len.load(Ordering::Relaxed)
+    mq.mq_list.len()
 }
 
 /// `mq_empty(mq)`.

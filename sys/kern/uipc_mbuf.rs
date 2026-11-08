@@ -341,10 +341,11 @@ pub fn m_print_packet(v: Option<&Mbuf>, deep: bool, pr: PrFn) {
 /// `ml_init`: an empty list; the packets it held stay where `bsd` holds them (parked), as the
 /// C forgets them.
 pub fn ml_init(ml: &MbufList) {
-    let l = ml.inner();
-    while let Some(m) = l.pop_head() {
-        let _ = park(m);
-    }
+    ml.change(|l| {
+        while let Some(m) = l.pop_head() {
+            let _ = park(m);
+        }
+    });
 }
 
 /// `ml_enqueue`: appends the packet `m`. A packet `m->m_nextpkt` held is parked (the C's
@@ -354,32 +355,36 @@ pub fn ml_enqueue(ml: &MbufList, m: &'static Mbuf) {
     if let Some(p) = b.m_nextpkt.take() {
         let _ = park(p);
     }
-    ml.inner().push_tail(b);
+    ml.change(|l| l.push_tail(b));
 }
 
-/// `ml_enlist`: appends all of `mlb` to `mla` and empties `mlb`.
+/// `ml_enlist`: appends all of `mlb` to `mla` and empties `mlb`. One list as both is
+/// `panic(9)` (the C would loop the list on itself; here two `&mut` to one list).
 pub fn ml_enlist(mla: &MbufList, mlb: &MbufList) {
-    mla.inner().concat(mlb.inner());
+    if core::ptr::eq(mla, mlb) {
+        crate::kern::subr_prf::panic(format_args!("ml_enlist: a list onto itself"));
+    }
+    mla.change(|a| mlb.change(|b| a.concat(b)));
 }
 
 /// `ml_dequeue`: takes the first packet.
 pub fn ml_dequeue(ml: &MbufList) -> Option<&'static Mbuf> {
-    ml.inner().pop_head().map(park)
+    ml.change(|l| l.pop_head()).map(park)
 }
 
 /// `ml_dechain`: takes all packets, still linked through `m_nextpkt` (the first one parked).
 pub fn ml_dechain(ml: &MbufList) -> Option<&'static Mbuf> {
-    core::mem::take(ml.inner()).into_head().map(park)
+    ml.change(core::mem::take).into_head().map(park)
 }
 
 /// `ml_purge`: frees every packet; returns how many there were.
 pub fn ml_purge(ml: &MbufList) -> u32 {
-    k::ml_purge(ml.inner())
+    ml.change(k::ml_purge)
 }
 
 /// `ml_hdatalen`: the length of the first packet.
 pub fn ml_hdatalen(ml: &MbufList) -> u32 {
-    k::ml_hdatalen(ml.inner())
+    ml.change(|l| k::ml_hdatalen(l))
 }
 
 // mbuf queues
@@ -389,7 +394,6 @@ pub fn mq_init(mq: &MbufQueue, maxlen: u32, ipl: i32) {
     mtx_init(&mq.mq_mtx, ipl);
     ml_init(&mq.mq_list);
     mq.mq_maxlen.store(maxlen, Ordering::Relaxed);
-    mq.sync_len();
 }
 
 /// `mq_push`: enqueues `m`, dropping the oldest packet when full; `true` when one was dropped.
@@ -399,10 +403,9 @@ pub fn mq_push(mq: &MbufQueue, m: &'static Mbuf) -> bool {
     mtx_enter(&mq.mq_mtx);
     if mq_len(mq) >= mq.mq_maxlen.load(Ordering::Relaxed) {
         mq.mq_drops.fetch_add(1, Ordering::Relaxed);
-        dropped = mq.mq_list.inner().pop_head();
+        dropped = mq.mq_list.change(|l| l.pop_head());
     }
     ml_enqueue(&mq.mq_list, m);
-    mq.sync_len();
     mtx_leave(&mq.mq_mtx);
 
     let any = dropped.is_some();
@@ -417,7 +420,6 @@ pub fn mq_enqueue(mq: &MbufQueue, m: &'static Mbuf) -> bool {
     mtx_enter(&mq.mq_mtx);
     if mq_len(mq) < mq.mq_maxlen.load(Ordering::Relaxed) {
         ml_enqueue(&mq.mq_list, m);
-        mq.sync_len();
     } else {
         mq.mq_drops.fetch_add(1, Ordering::Relaxed);
         dropped = true;
@@ -434,8 +436,7 @@ pub fn mq_enqueue(mq: &MbufQueue, m: &'static Mbuf) -> bool {
 /// `mq_dequeue`.
 pub fn mq_dequeue(mq: &MbufQueue) -> Option<&'static Mbuf> {
     mtx_enter(&mq.mq_mtx);
-    let m = mq.mq_list.inner().pop_head();
-    mq.sync_len();
+    let m = mq.mq_list.change(|l| l.pop_head());
     mtx_leave(&mq.mq_mtx);
 
     m.map(park)
@@ -449,7 +450,6 @@ pub fn mq_enlist(mq: &MbufQueue, ml: &MbufList) -> u32 {
     mtx_enter(&mq.mq_mtx);
     if mq_len(mq) < mq.mq_maxlen.load(Ordering::Relaxed) {
         ml_enlist(&mq.mq_list, ml);
-        mq.sync_len();
     } else {
         dropped = ml_len(ml);
         mq.mq_drops.fetch_add(dropped, Ordering::Relaxed);
@@ -467,7 +467,6 @@ pub fn mq_enlist(mq: &MbufQueue, ml: &MbufList) -> u32 {
 pub fn mq_delist(mq: &MbufQueue, ml: &MbufList) {
     mtx_enter(&mq.mq_mtx);
     ml_enlist(ml, &mq.mq_list);
-    mq.sync_len();
     mtx_leave(&mq.mq_mtx);
 }
 
@@ -550,7 +549,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::kern::subr_pool::tests::setup_real_memory;
-    use crate::sys::mbuf::{M_DONTWAIT, MT_DATA, m_set_nextpkt};
+    use crate::sys::mbuf::{M_DONTWAIT, MT_DATA, m_set_nextpkt, mbuf_list_first, ml_empty};
 
     /// Real memory, the console (so that a kernel panic in a test says why) and `mbinit`.
     pub(crate) fn setup() -> MutexGuard<'static, ()> {
@@ -598,9 +597,19 @@ pub(crate) mod tests {
             ml_enqueue(&ml, m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf"));
         }
         assert_eq!(ml_len(&ml), 3);
+        // The unlocked length (the mirror) follows every change.
+        let other = MbufList::new();
+        ml_enqueue(&other, m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf"));
+        ml_enlist(&ml, &other);
+        assert_eq!((ml_len(&ml), ml_len(&other)), (4, 0));
+        assert!(ml_empty(&other) && !ml_empty(&ml));
+        assert_eq!(ml_hdatalen(&ml), 0);
+        assert!(mbuf_list_first(&ml).is_some());
         let first = ml_dequeue(&ml).expect("a packet");
+        assert_eq!(ml_len(&ml), 3);
         let chain = ml_dechain(&ml).expect("the rest");
         assert_eq!(ml_len(&ml), 0);
+        assert!(ml_empty(&ml));
         assert!(chain.m_nextpkt().get().is_some(), "still linked");
         m_purge(chain);
         m_freem(first);
