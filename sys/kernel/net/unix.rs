@@ -2765,7 +2765,7 @@ pub(crate) mod tests {
     use crate::net::domain::{domaininit, soinit};
     use crate::net::mbuf::{MT_SONAME, MT_SOOPTS, m_get, mbinit, nmbclust_update};
     use crate::net::socket::{
-        soaccept, soaccept_wait, sobind, soconnect, soconnect2, socreate, sogetopt, solisten,
+        soaccept, soaccept_take, sobind, soconnect, soconnect2, socreate, sogetopt, solisten,
         solock_shared, soreceive, sosend, soshutdown,
     };
     use crate::testutil::{self, TestFileData, USER_BASE, user_bytes};
@@ -3133,12 +3133,11 @@ pub(crate) mod tests {
         assert!(c.has_state(SS_ISCONNECTED));
 
         // accept(2): off the queue, the peer's name (the client is unbound: sun_noname).
-        let mut wl = solock_shared(&l);
-        let so3 = soaccept_wait(&l, &mut wl, true).expect("a connection");
-        drop(wl);
-        let mut w3 = solock_shared(&so3);
-        assert_eq!(soaccept(&so3, &mut w3, &mut nam), Ok(()));
-        drop(w3);
+        let (so3, r) = soaccept_take(&l, solock_shared(&l), true, |so, w| {
+            soaccept(so, w, &mut nam)
+        })
+        .expect("a connection");
+        assert_eq!(r, Ok(()));
         assert_eq!(nam.data(), &SUN_NONAME[..]);
         let f3 = file(p, DTYPE_SOCKET, Some(so3.clone()));
         // The client's peer is named after the listener.

@@ -501,7 +501,7 @@ pub fn doaccept(
     let nam = m_get(M_WAIT, MT_SONAME);
 
     let head = fp_socket(&headfp);
-    let mut wh = ksocket::solock_shared(head);
+    let mut wh = Some(ksocket::solock_shared(head));
 
     let error: Result<(), Errno> = 'out: {
         let error: Result<(), Errno> = 'out_unlock: {
@@ -519,14 +519,6 @@ pub fn doaccept(
                     break 'out_unlock Err(Errno::EWOULDBLOCK);
                 }
             }
-            // The wait while the queue is empty, `so_error`, and the connection off the
-            // queue (`TAILQ_FIRST(&head->so_q)`, `soqremque(so, 1)`), counted: the queue's
-            // reference, which becomes the file's.
-            let so = match ksocket::soaccept_wait(head, &mut wh, nonblock) {
-                Ok(so) => so,
-                Err(e) => break 'out_unlock Err(e),
-            };
-
             // Figure out whether the new socket should be non-blocking.
             let nflag = if flags & SOCK_NONBLOCK_INHERIT != 0 {
                 headfp.flag() & FNONBLOCK
@@ -535,19 +527,21 @@ pub fn doaccept(
             } else {
                 0
             };
-
-            // connection has been removed from the listen queue
-            head.so_rcv.knote(0);
-
-            // solock_nonet(so) .. sounlock_nonet(head): the net lock goes over to `so`.
-            let mut ws = ksocket::solock_handover(wh, &so);
-
             fp.f_flag
                 .store((FREAD | FWRITE | nflag) as u32, Ordering::SeqCst);
 
-            let error = ksocket::soaccept(&so, &mut ws, mut_of(nam));
-
-            drop(ws);
+            // The wait, the connection locked and taken off the queue, the knote, the
+            // listener unlocked, then soaccept(so, nam) under the connection's lock: the
+            // C's sequence; the queue's reference becomes the file's.
+            let Some(w) = wh.take() else {
+                break 'out_unlock Err(Errno::EINVAL);
+            };
+            let (so, error) = match ksocket::soaccept_take(head, w, nonblock, |so, ws| {
+                ksocket::soaccept(so, ws, mut_of(nam))
+            }) {
+                Ok(r) => r,
+                Err(e) => break 'out_unlock Err(e),
+            };
             // `fp->f_data = so`: the file is nobody else's until `fdinsert`, so it takes the
             // socket once `so` is unlocked; a failed accept closes it with the file.
             fp_install(&fp, so);

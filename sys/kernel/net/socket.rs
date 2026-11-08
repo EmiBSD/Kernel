@@ -1040,21 +1040,6 @@ pub fn solock_nonet<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     SoLocked::take(so, NetHold::None)
 }
 
-/// `solock_nonet(so); .. sounlock_nonet(head)`: `doaccept`'s hand-over from the listener to
-/// the connection it took off its queue. `so`'s lock is taken while `head`'s is held (the
-/// order listener, then connection), then `head`'s `so_lock` let go; the net lock `head`'s
-/// witness held (`solock_shared(head)`) stays held, now `so`'s, and goes with the returned
-/// witness (the C's closing `sounlock_shared(so)`).
-pub fn solock_handover<'b, G: ProcGlue>(mut head: SoLocked<'_>, so: &'b Socket<G>) -> SoLocked<'b> {
-    let net = mem::replace(&mut head.net, NetHold::None);
-    if so.is_inet() {
-        kassert!(hal::netlock::status() != 0);
-    }
-    let w = SoLocked::take(so, net);
-    drop(head);
-    w
-}
-
 /// `solock_persocket(so)`: whether `so` has a lock of its own (it is not an internet one).
 #[inline]
 pub fn solock_persocket<G: ProcGlue>(so: &Socket<G>) -> bool {
@@ -1322,7 +1307,7 @@ pub fn soisdisconnected<G: ProcGlue>(so: &Socket<G>) {
 
 /// `wakeup(&so->so_timeo)`, for `bsd`'s `tcp_close` too; the caller holds `so`'s lock. The
 /// channel's sleepers are `connect`'s and `soclose`'s lingering, under the socket's lock,
-/// which the waker holds, and a listener's `accept` (`soaccept_wait`), whose interlock is
+/// which the waker holds, and a listener's `accept` (`soaccept_take`), whose interlock is
 /// the queue's mutex: only a listener's wakeup takes `cq` (the C's interlock is the
 /// socket's lock for all three, so the C takes no other).
 pub fn so_timeo_wakeup<G: ProcGlue>(so: &Socket<G>) {
@@ -1820,19 +1805,25 @@ pub fn sodisconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result
     so.usrreqs().disconnect(so, w)
 }
 
-/// `doaccept`'s wait for a connection on the listener `head` and its removal from the queue
-/// (`uipc_syscalls.c`'s loop, the socket locked by `solock_shared(head)`): the connection
-/// taken off `so_q`, counted, its `so_lock` held (the C's `solock_nonet(so)`), or the C's
-/// errors: `ECONNABORTED` once the listener can receive no more and its queue is empty,
-/// `EWOULDBLOCK` for `nonblock`, the sleep's error. Every waker writes what this test reads
-/// before it takes the listener's `cq`, under which the check and the sleep are one section,
-/// so no wakeup is lost; a connection another accepter or a close took meanwhile is looked
-/// for again (the C's `panic("accept")`).
-pub fn soaccept_wait<G: ProcGlue>(
-    head: &Socket<G>,
-    w: &mut SoLocked<'_>,
+/// `doaccept`'s take of a connection from the listener `head`, locked by `wh`
+/// (`solock_shared(head)`), in the C's order: the wait while the queue is empty and
+/// `so_error` (`ECONNABORTED` once the listener can receive no more and its queue is empty,
+/// `EWOULDBLOCK` for `nonblock`, the sleep's error); `so = TAILQ_FIRST(&head->so_q)`, counted
+/// under the listener's `cq`; `solock_nonet(so)` while `head`'s lock is held (the order
+/// listener, then connection); `soqremque(so, 1)` (a connection another took meanwhile is
+/// looked for again, where the C's `panic("accept")`); `knote(&head->so_rcv.sb_klist, 0)`;
+/// `sounlock_nonet(head)`, the net lock going over to the connection; then `f` with the
+/// connection's witness (the C's `soaccept(so, nam)`), and `sounlock_shared(so)` after it.
+/// Returns the connection, counted by the queue's reference (which becomes the file's), and
+/// what `f` returned; `head`'s lock is let go on every return. Every waker writes what the
+/// wait reads before it takes the listener's `cq`, under which the check and the sleep are
+/// one section, so no wakeup is lost.
+pub fn soaccept_take<'h, G: ProcGlue, R>(
+    head: &'h Socket<G>,
+    mut wh: SoLocked<'h>,
     nonblock: bool,
-) -> Result<SocketRef<G>, Errno> {
+    f: impl FnOnce(&Socket<G>, &mut SoLocked<'_>) -> R,
+) -> Result<(SocketRef<G>, R), Errno> {
     loop {
         let so = {
             let mut hg = cq(head);
@@ -1845,7 +1836,7 @@ pub fn soaccept_wait<G: ProcGlue>(
                     // The socket's locks released for the sleep, as `sosleep_nsec` releases
                     // them; the queue's mutex is the channel's interlock, let go by the
                     // sleep and before the socket's locks are taken again.
-                    w.unlocked(move || {
+                    wh.unlocked(move || {
                         let r = hg.sleep_nsec(
                             head.timeo_chan(),
                             crate::net::sockbuf::PSOCK | PCATCH,
@@ -1867,11 +1858,26 @@ pub fn soaccept_wait<G: ProcGlue>(
                 None => continue,
             }
         };
-        // Taken by another accepter or a close meanwhile: look again.
-        if let Some(queued) = soqremque(&so, Onq::Q) {
-            drop(so);
-            return Ok(queued);
+        // Do not sleep after we have taken the socket out of the queue.
+        if so.is_inet() {
+            kassert!(hal::netlock::status() != 0);
         }
+        let mut ws = SoLocked::take(&so, NetHold::None);
+        let Some(queued) = soqremque(&so, Onq::Q) else {
+            // Taken by another accepter or a close meanwhile: look again.
+            drop(ws);
+            continue;
+        };
+        // connection has been removed from the listen queue
+        head.so_rcv.knote(0);
+        // sounlock_nonet(head): the listener's so_lock let go, its net lock now the
+        // connection's.
+        ws.net = mem::replace(&mut wh.net, NetHold::None);
+        drop(wh);
+        let r = f(&so, &mut ws);
+        drop(ws);
+        drop(so);
+        return Ok((queued, r));
     }
 }
 
@@ -4093,9 +4099,8 @@ mod tests {
         assert_eq!(PoolArc::count(&child), 3);
 
         // Nothing to accept yet: a non-blocking accept would block.
-        let mut w = solock_shared(&head);
         assert_eq!(
-            soaccept_wait(&head, &mut w, true).err(),
+            soaccept_take(&head, solock_shared(&head), true, |_, _| ()).err(),
             Some(Errno::EWOULDBLOCK)
         );
 
@@ -4104,14 +4109,22 @@ mod tests {
         assert_eq!(head.qlen(), 1);
         assert!(child.has_state(SS_ISCONNECTED));
 
-        let got = soaccept_wait(&head, &mut w, true).expect("the connection");
+        // The connection handed to the accepter locked (its witness), already off the queue.
+        let (got, locked) = soaccept_take(&head, solock_shared(&head), true, |so, w| {
+            (
+                w.so_lock().is_some(),
+                so.has_state(SS_ISCONNECTED),
+                head.qlens(),
+            )
+        })
+        .expect("the connection");
+        assert_eq!(locked, (true, true, (0, 0)));
         assert!(PoolArc::ptr_eq(&got, &child));
         assert_eq!(head.qlens(), (0, 0));
         // The queue's reference went to the accepter; the queue holds none any more.
         assert!(soqremque(&child, Onq::Q).is_none());
         drop(got);
         assert_eq!(PoolArc::count(&child), 2);
-        drop(w);
 
         child.st_set(SS_NOFDREF);
         drop(sofree(&child, solock(&child), false));
@@ -4165,13 +4178,11 @@ mod tests {
         let _g = net_setup();
         let head = socket(0);
         head.so_rcv.lock().set_state(SS_CANTRCVMORE);
-        let mut w = solock_shared(&head);
         assert_eq!(
-            soaccept_wait(&head, &mut w, false).err(),
+            soaccept_take(&head, solock_shared(&head), false, |_, _| ()).err(),
             Some(Errno::ECONNABORTED)
         );
         assert!(head.error().is_none());
-        drop(w);
         head.st_set(SS_NOFDREF);
         drop(sofree(&head, solock(&head), false));
     }
