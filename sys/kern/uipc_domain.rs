@@ -161,6 +161,17 @@ pub fn domaininit() {
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
 }
 
+/// The kernel's domain table and `bsd`'s legs of the socket layer registered without the
+/// protocols' initialisations, which `bsd`'s protocol tests run themselves over each test's
+/// fresh memory (`domaininit` once per process would leave them in the first test's).
+#[cfg(test)]
+pub(crate) fn net_tables_for_tests() {
+    kernel::net::domain::register_iflegacy::<G>(&crate::kern::sys_socket::IFLEGACY);
+    #[cfg(feature = "nfsserver")]
+    kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
+    kernel::net::domain::domains_set::<G>(NET_DOMAINS);
+}
+
 /// An entry the C calls without a NULL test: `panic(9)` for a NULL one, as the C's call.
 fn need<T>(f: Option<T>, what: &str) -> T {
     match f {

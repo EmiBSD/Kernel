@@ -3881,6 +3881,7 @@ mod tests {
         crate::net::if_::IFG_HEAD.0.init();
         procinit();
         soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
         rn_test_reset();
         spd_reset();
         ipsp_reset();

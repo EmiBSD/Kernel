@@ -2842,6 +2842,7 @@ mod tests {
         crate::net::if_::IFG_HEAD.0.init();
         procinit();
         soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
         route_prinit();
         RTPTABLE.rtp_count.store(0, Ordering::Relaxed);
 

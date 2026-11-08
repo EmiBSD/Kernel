@@ -302,6 +302,13 @@ pub fn domaininit<G: ProcGlue>(domains: &'static [&'static dyn Domain<G>]) {
     pin_static(&t.pfslow).add(1);
 }
 
+/// The domain table set without `domaininit`'s initialisations, the first call for the
+/// process (`bsd`'s protocol tests, whose setups run each protocol's init over each test's
+/// fresh memory themselves).
+pub fn domains_set<G: ProcGlue>(domains: &'static [&'static dyn Domain<G>]) {
+    let _ = net::<G>().domains.set(domains);
+}
+
 /// `pffinddomain(family)`: the domain of address family `family`.
 pub fn pffinddomain<G: ProcGlue>(family: i32) -> Option<&'static dyn Domain<G>> {
     net::<G>()

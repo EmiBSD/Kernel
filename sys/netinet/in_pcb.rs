@@ -2317,6 +2317,7 @@ pub(crate) mod tests {
         let p = crate::kern::proc_glue::test_proc(1, crget());
         Machine::set_curproc(Machine::curcpu(), Some(p));
         soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
         in_init();
         (g, t, p)
     }
