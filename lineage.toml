@@ -7413,6 +7413,13 @@ lz = ["sys/sys/mbuf.rs"]
 status = "inherited"
 
 [[module]]
+rust = "sys/hal/sys/mbuf.rs"
+crate = "hal"
+lz = ["sys/sys/mbuf.rs"]
+status = "redesigned"
+notes = "N6.1: mbuf.h's userland part moved into hal so kernel::net::mbuf, kernel::sysctl and bsd share one copy: MT_* and MT_NTYPES, struct mbstat AbiPod through hal::abi_pod! (kern.mbstat's bytes)"
+
+[[module]]
 rust = "sys/hal/sys/mman.rs"
 crate = "hal"
 lz = ["sys/sys/mman.rs"]
@@ -11772,7 +11779,7 @@ rust = "sys/hal/intr.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "redesigned"
-notes = "N2: the interrupt-level guard (SplGuard). N4.5c: spl(9)'s generic half from arm64's intr.c: ci_cpl/ci_ipending in the core (hal::cpu), the arm_dflt_* defaults, arm_smask as a table of atomics (init_smask), softintr(), arm_do_pending_intr over hal::cpu's interrupt guard; struct arm_intr_func is the IntrHardware trait (decision 46), registered by the machine (arm64's initarm over the table arm_set_intr_handler fills); the IntrLevel bridge removed; amd64's spl is N10's"
+notes = "N2: the interrupt-level guard (SplGuard). N4.5c: spl(9)'s generic half from arm64's intr.c: ci_cpl/ci_ipending in the core (hal::cpu), the arm_dflt_* defaults, arm_smask as a table of atomics (init_smask), softintr(), arm_do_pending_intr over hal::cpu's interrupt guard; struct arm_intr_func is the IntrHardware trait (decision 46), registered by the machine (arm64's initarm over the table arm_set_intr_handler fills); the IntrLevel bridge removed; amd64's spl is N10's; N6.1: IPL_NET (the mbuf pools and queues; amd64's value from intrdefs.h, the boundary designed for both)"
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/intr.rs::ARM_SMASK"
 native = ["SMASK"]
@@ -13949,6 +13956,25 @@ crate = "kernel"
 lz = ["sys/sys/syscall_mi.rs"]
 status = "redesigned"
 notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
+
+[[module]]
+rust = "sys/kernel/net/mbuf.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]
+status = "redesigned"
+notes = "N6.1: struct mbuf as an owned pool item (MbufBox = PoolBox<Mbuf> of mbufpl, 256 bytes, align 64): m_next/m_nextpkt owned SlistLinks, m_data an offset (m_off) into the data storage (data()/data_mut() bounds-checked slices, data_raw() for bsd's mtod), the two unions a hal::overlay::Body (Pkthdr live by M_PKTHDR, Ext by M_EXT; MFlags keeps the tag bits); clusters BoxPool<Bytes<N>> x8 (mcl2k..mcl64k, the C's names and item sizes) as ClusterBox, shared through PoolArc<ExtRefs> of mextrefs (64-byte item) made on the first share; the drop is m_free's (mbstat at splnet, M_ZEROIZE carried, the chain and the packet list freed one at a time); MbufPages the PageSource of m_pool_allocator (the memory limit, kp_dma_contig until m_pool_noconstraints); mbstat a hal::percpu::Counters from boot (mbstat_read for kern.mbstat); MbufList = OwnedSlist<MPkt>, MbufQueue a Mutexed list with the length mirrored for mq_len; the pf legs through the Pf bridge; m_copyback into a shared cluster takes a copy of its own (Deviations); MEXTADD of a driver's own storage not implemented (no user: D-N6.1-2)"
+
+[[module]]
+rust = "sys/kernel/net/mbuf2.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_mbuf2.rs"]
+status = "redesigned"
+notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_tags chain (a bare SlistLink), m_tag_delete by address with SLIST_REMOVE's walk, m_tag_copy_chain appending through a cursor; m_pulldown over the head's box, returning the position of the mbuf holding the range as its index in the chain and the offset"
+
+[[extra]]
+rust = "sys/kernel/net/pf_hooks.rs"
+crate = "kernel"
+reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), its OnceStatic slot and register_pf"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

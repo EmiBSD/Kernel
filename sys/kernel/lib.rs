@@ -93,6 +93,7 @@ pub mod fork;
 pub mod fs;
 pub mod futex;
 pub mod log;
+pub mod net;
 pub mod pipe;
 pub mod prf;
 pub mod proc;
