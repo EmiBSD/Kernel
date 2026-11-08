@@ -151,7 +151,7 @@ use crate::kern::subr_evcount::evcount_sysctl;
 use crate::kern::subr_pool::{POOL_DEBUG, pool_reclaim_all, sysctl_dopool};
 use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
-use crate::kern::uipc_mbuf::{MBS_NCOUNTERS, mbstat, nmbclust_update};
+use crate::kern::uipc_mbuf::{mbstat_read, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
 use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
 use crate::kern::vfs_vops::VOP_GETATTR;
@@ -177,7 +177,7 @@ use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
 use crate::sys::lockf::MAXLOCKSPERUID;
-use crate::sys::mbuf::{MT_NTYPES, Mbstat, MbstatCounters, mtod};
+use crate::sys::mbuf::mtod;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
 use crate::sys::queue::SlistHead;
@@ -1348,19 +1348,8 @@ fn kern_maxclusters(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno>
 
 /// `kern.mbstat`.
 fn kern_mbstat(_name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
-    let mut counters = [0u64; MBS_NCOUNTERS];
-    crate::kern::subr_percpu::counters_read(mbstat(), &mut counters, MBS_NCOUNTERS, None);
-    let mut mbs = Mbstat::default();
-    mbs.m_mtypes.copy_from_slice(&counters[..MT_NTYPES]);
-    mbs.m_drops = counters[MbstatCounters::MbsDrops as usize];
-    mbs.m_wait = counters[MbstatCounters::MbsWait as usize];
-    mbs.m_drain = counters[MbstatCounters::MbsDrain as usize];
-    mbs.m_defrag_alloc = counters[MbstatCounters::MbsDefragAlloc as usize];
-    mbs.m_prepend_alloc = counters[MbstatCounters::MbsPrependAlloc as usize];
-    mbs.m_pullup_alloc = counters[MbstatCounters::MbsPullupAlloc as usize];
-    mbs.m_pullup_copy = counters[MbstatCounters::MbsPullupCopy as usize];
-    mbs.m_pulldown_alloc = counters[MbstatCounters::MbsPulldownAlloc as usize];
-    mbs.m_pulldown_copy = counters[MbstatCounters::MbsPulldownCopy as usize];
+    // counters_read(mbstat) and the copy into struct mbstat: the kernel's (N6.1).
+    let mbs = mbstat_read();
     sysctl_rdstruct(req.oldp, req.oldlenp, req.newp, mbs.as_bytes())
 }
 

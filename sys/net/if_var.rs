@@ -736,12 +736,14 @@ pub fn sysctl_niq(
 /// the protocol input function `if_input_proto` stored in the packet's `ph_cookie`.
 pub fn if_input_process_proto(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>) {
     let cookie = m.m_pkthdr().ph_cookie.get();
-    if cookie.is_null() {
+    if cookie == 0 {
         panic(format_args!("if_input_process_proto: no input function"));
     }
+    let cookie = core::ptr::with_exposed_provenance_mut::<()>(cookie);
     // SAFETY: `if_input_proto`, the only writer of `ph_cookie` on the `ns_proto` path, stored
-    // an `IfInputFn` there; a function pointer and `*mut ()` have the same size, and this
-    // transmute is the inverse of that cast.
+    // an `IfInputFn`'s address there (`as usize`, which exposes its provenance); a function
+    // pointer and `*mut ()` have the same size, and this transmute is the inverse of that
+    // cast.
     let input = unsafe { core::mem::transmute::<*mut (), IfInputFn>(cookie) };
     input(ifp, m, ns);
 }

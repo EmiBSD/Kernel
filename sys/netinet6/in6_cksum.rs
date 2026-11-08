@@ -179,6 +179,7 @@ mod tests {
     use super::*;
     use crate::kern::uipc_mbuf::{m_cat, m_freem, m_get, m_gethdr};
     use crate::sys::mbuf::{M_DONTWAIT, MLEN, MT_DATA};
+    use crate::sys::mbuf::{m_data_add, mtod};
 
     fn setup() -> MutexGuard<'static, ()> {
         crate::kern::uipc_mbuf::tests::setup()
@@ -220,10 +221,10 @@ mod tests {
                 m_get(M_DONTWAIT, MT_DATA).expect("mbuf")
             };
             if i != 0 {
-                m.m_data().set(m.m_data().get().wrapping_add(1));
+                m_data_add(m, 1);
             }
             // SAFETY: the mbuf has room for `p` (checked above) at its data pointer.
-            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), m.m_data().get(), p.len()) };
+            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), mtod::<u8>(m), p.len()) };
             m.m_len().set(p.len() as u32);
             if i != 0 {
                 m_cat(head, Some(m));

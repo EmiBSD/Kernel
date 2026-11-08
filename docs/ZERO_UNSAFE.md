@@ -558,6 +558,8 @@ adds an operation the C's switch lacks.
 | `struct inode_vtbl` (ffs and ext2fs's inode operations) | `ufs/ufs/inode.h` | `InodeOps` | N5.5a | done, then removed with bsd's ffs (N5.5b2) |
 | `struct bufq_impl` | `sys/buf.h`, `kern/kern_bufq.c` | `BufqDiscipline` | N5.1 | done, `kernel::fs::bufq` |
 | `struct protosw`, `struct pr_usrreqs`, `struct domain` | `sys/protosw.h`, `sys/domain.h` | `Protocol`, `Usrreqs`, `Domain` | N6.4 | to name |
+| `mextfree_fns[]` (the external storage free functions `MEXTADD` names by index) | `kern/uipc_mbuf.c` | `ExtFree`, deferred to N7 with its first driver | N6.1 | not a trait: no user at the pin (only the mbuf files register one); a cluster's and a shared cluster's frees are `ClusterBox`'s and `ExtRefs`'s drops (D-N6.1-2) |
+| the `pf_mbuf_*` hooks of `uipc_mbuf.c` (`NPF > 0`) | `net/pfvar.h` | `Pf` (`kernel::net::pf_hooks`), a bridge row paid by N8 | N6.1 | done: the four mbuf legs; N6.3c adds the stack's |
 | `if_output`/`if_ll_output` of `struct ifnet` | `net/if_var.h:212` | `LinkLayer` (the driver side is decision 45's `NetDevice`) | N6.1 | to name |
 | `struct cfattach`, `cdevsw`/`bdevsw`, the driver side of `ifnet` | `sys/device.h`, `sys/conf.h` | `Driver`, `Bus`, `NetDevice`, `BlockDevice`, `CharDevice`, `Console` | N7.2 | decision 45 |
 | `wsdisplay_accessops`, `wsdisplay_emulops`, `wskbd_accessops`, `wsmouse_accessops` | `dev/wscons/*var.h` | `WsDisplay`, `WsEmul`, `WsKbd`, `WsMouse` | N7.3 | to name |

@@ -135,6 +135,7 @@ use crate::sys::mbuf::{
     MAXMCLBYTES, MCLBYTES, MHLEN, MINCLSIZE, MLEN, MT_CONTROL, MT_DATA, MT_HEADER, MT_OOBDATA,
     MT_SONAME, Mbuf, mclgetl, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_ext_size, m_set_next, m_set_nextpkt, m_take_nextpkt};
 use crate::sys::param::{PCATCH, PSOCK};
 use crate::sys::pool::{PR_NOWAIT, PR_WAITOK, PR_ZERO, Pool};
 use crate::sys::protosw::{
@@ -202,7 +203,9 @@ impl<'a> MbufTail<'a> {
     /// `*mp = m`.
     fn set(&mut self, m: Option<&'static Mbuf>) {
         match self.last {
-            Some(last) => last.m_next().set(m),
+            Some(last) => {
+                let _ = m_set_next(last, m);
+            }
             None => *self.head = m,
         }
     }
@@ -966,7 +969,9 @@ pub fn m_getuio(atomic: bool, space: i64, uio: &mut Uio<'_>) -> Result<&'static 
         };
         // chain mbuf together
         match last {
-            Some(last) => last.m_next().set(Some(m)),
+            Some(last) => {
+                let _ = m_set_next(last, Some(m));
+            }
             None => top = Some(m),
         }
         last = Some(m);
@@ -982,12 +987,11 @@ pub fn m_getuio(atomic: bool, space: i64, uio: &mut Uio<'_>) -> Result<&'static 
             }
             if m.m_flags().get() & M_EXT != 0 {
                 nopages = false;
-                mlen = u64::from(m.m_ext().ext_size.get());
+                mlen = u64::from(m_ext_size(m));
                 len = mlen.min(resid);
                 // For datagram protocols, leave room for protocol headers in first mbuf.
                 if atomic && ptr::eq(m, head) && len < mlen.wrapping_sub(max_hdr) {
-                    m.m_data()
-                        .set(m.m_data().get().wrapping_add(max_hdr as usize));
+                    m_data_add(m, max_hdr as isize);
                 }
             }
         }
@@ -1033,7 +1037,9 @@ pub fn m_getuio(atomic: bool, space: i64, uio: &mut Uio<'_>) -> Result<&'static 
 pub fn sbsync(sb: &Sockbuf, nextrecord: Option<&'static Mbuf>) {
     // First, update for the new value of nextrecord. If necessary, make it the first record.
     match sb.sb_mb.get() {
-        Some(mb) => mb.m_nextpkt().set(nextrecord),
+        Some(mb) => {
+            let _ = m_set_nextpkt(mb, nextrecord);
+        }
         None => sb.sb_mb.set(nextrecord),
     }
 
@@ -1235,11 +1241,14 @@ pub fn soreceive(
                     }
                     m = first.m_next().get();
                 } else {
+                    // The name leaves the buffer: the next record comes off its link (the C
+                    // leaves a stale `m_nextpkt` on it; an owned link cannot).
+                    nextrecord = m_take_nextpkt(first);
                     sbfree(&so.so_rcv, first);
                     if let Some(paddr) = paddr.as_deref_mut() {
                         *paddr = Some(first);
                         so.so_rcv.sb_mb.set(first.m_next().get());
-                        first.m_next().set(None);
+                        let _ = m_set_next(first, None);
                         m = so.so_rcv.sb_mb.get();
                     } else {
                         so.so_rcv.sb_mb.set(m_free(first));
@@ -1264,8 +1273,8 @@ pub fn soreceive(
                 } else {
                     sbfree(&so.so_rcv, mm);
                     so.so_rcv.sb_mb.set(mm.m_next().get());
-                    mm.m_nextpkt().set(None);
-                    mm.m_next().set(None);
+                    let _ = m_set_nextpkt(mm, None);
+                    let _ = m_set_next(mm, None);
                     let cm = mm;
                     m = so.so_rcv.sb_mb.get();
                     sbsync(&so.so_rcv, nextrecord);
@@ -1380,7 +1389,9 @@ pub fn soreceive(
                         moff = 0;
                         orig_resid = 0;
                     } else {
-                        nextrecord = mm.m_nextpkt().get();
+                        // The record's head leaves the buffer: the next record comes off its
+                        // link (parked until `m_set_nextpkt` or `sb_mb` takes it again).
+                        nextrecord = m_take_nextpkt(mm);
                         sbfree(&so.so_rcv, mm);
                         if let Some(mp) = mp.as_mut() {
                             mp.set(Some(mm));
@@ -1400,7 +1411,7 @@ pub fn soreceive(
                         });
                         match m {
                             Some(mm) => {
-                                mm.m_nextpkt().set(nextrecord);
+                                let _ = m_set_nextpkt(mm, nextrecord);
                                 if nextrecord.is_none() {
                                     so.so_rcv.sb_lastrecord.set(Some(mm));
                                 }
@@ -1420,8 +1431,7 @@ pub fn soreceive(
                         mp.set(m_copym(mm, 0, len as i32, M_WAIT));
                         mtx_enter(&so.so_rcv.sb_mtx);
                     }
-                    mm.m_data()
-                        .set(mm.m_data().get().wrapping_add(len as usize));
+                    m_data_add(mm, len as isize);
                     mm.m_len().set(mm.m_len().get() - len as u32);
                     so.so_rcv.sb_cc.set(so.so_rcv.sb_cc.get() - len);
                     so.so_rcv.sb_datacc.set(so.so_rcv.sb_datacc.get() - len);
@@ -1977,7 +1987,9 @@ pub fn somove(so: &'static Socket, wait: i32) -> bool {
         let setlink = |at: Option<&'static Mbuf>,
                        head: &mut Option<&'static Mbuf>,
                        v: Option<&'static Mbuf>| match at {
-            Some(a) => a.m_next().set(v),
+            Some(a) => {
+                let _ = m_set_next(a, v);
+            }
             None => *head = v,
         };
         let mut off: u64 = 0;
@@ -2024,8 +2036,7 @@ pub fn somove(so: &'static Socket, wait: i32) -> bool {
                     break;
                 };
                 if let Some(mb) = so.so_rcv.sb_mb.get() {
-                    mb.m_data()
-                        .set(mb.m_data().get().wrapping_add(size as usize));
+                    m_data_add(mb, size as isize);
                     mb.m_len().set(mb.m_len().get() - size as u32);
                 }
                 so.so_rcv.sb_cc.set(so.so_rcv.sb_cc.get() - size);
@@ -2038,6 +2049,9 @@ pub fn somove(so: &'static Socket, wait: i32) -> bool {
                 setlink(at, &mut head, Some(mb));
                 sbfree(&so.so_rcv, mb);
                 so.so_rcv.sb_mb.set(mb.m_next().get());
+                // The buffer's head leaves it: the next record comes off its link before
+                // `sbsync` links it after the new head (the C clears it after the loop).
+                let _ = m_take_nextpkt(mb);
                 sbsync(&so.so_rcv, nextrecord);
                 mb
             };
@@ -2049,7 +2063,7 @@ pub fn somove(so: &'static Socket, wait: i32) -> bool {
         let Some(mut m) = head else {
             break 'release;
         };
-        m.m_nextpkt().set(None);
+        let _ = m_set_nextpkt(m, None);
         if m.m_flags().get() & M_PKTHDR != 0 {
             m_resethdr(m);
             m.m_pkthdr().len.set(len as i32);

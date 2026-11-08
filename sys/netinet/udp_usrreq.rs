@@ -203,6 +203,7 @@ use crate::netinet6::{
     udp6_output::udp6_output,
 };
 use crate::sys::errno::Errno;
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
     M_BCAST, M_COPYALL, M_DONTWAIT, M_MCAST, M_UDP_CSUM_IN_BAD, M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT,
     Mbuf, PACKET_TAG_IPSEC_IN_DONE, PF_TAG_DIVERTED, m_freemp, mtod,
@@ -794,7 +795,7 @@ fn opts_append(opts: &mut Option<&'static Mbuf>, n: Option<&'static Mbuf>) {
             while let Some(next) = t.m_next().get() {
                 t = next;
             }
-            t.m_next().set(n);
+            let _ = m_set_next(t, n);
         }
     }
 }
@@ -1565,6 +1566,7 @@ mod tests {
         ADDR, GATEWAY, OURS, PEER, bytes, configure, frame, sent, sin, test_ether,
     };
     use crate::netinet::ip_output::ip_ctloutput;
+    use crate::sys::mbuf::m_data_add;
     use crate::sys::mbuf::{MT_DATA, MT_SONAME, MT_SOOPTS};
     use crate::sys::protosw::{PRC_UNREACH_PORT, PRCO_GETOPT, PRCO_SETOPT};
     use crate::sys::socket::SOCK_DGRAM;
@@ -1747,7 +1749,7 @@ mod tests {
         // sendto(10.0.2.2:53) from an unbound socket.
         let payload = b"query";
         let m = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
-        m.m_data().set(m.m_data().get().wrapping_add(64));
+        m_data_add(m, 64);
         m.m_len().set(payload.len() as u32);
         m.m_pkthdr().len.set(payload.len() as i32);
         // SAFETY: the mbuf holds `MHLEN - 64` bytes from its data pointer.

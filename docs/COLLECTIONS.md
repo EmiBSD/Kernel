@@ -150,10 +150,21 @@ step is not.
 | `push_tail(box)` | `ml_enqueue`, `sbappend`'s tail | O(1) |
 | `pop_head()` | `ml_dequeue` | O(1) |
 | `concat(&mut other)` | `ml_enlist`, `m_cat`'s chain | O(1) |
+| `into_head()` | a chain built at its tail handed over whole (`m_copym`'s `np = &n->m_next`), the first element owning the rest | O(1) |
 | `cursor_mut()`, `move_next`, `current` | a walk that changes the list where it stands (elements lent shared only) | O(1) a step |
 | `split_after()` (cursor) | `m_split`, `sbdrop`'s record cut | O(1) |
 | `remove_next()` (cursor) | `m->m_next = n->m_next` | O(1) |
 | drop | `m_freem`, `ml_purge` | O(n), one element at a time (no recursion down the links) |
+
+A bare `hal::owned::SlistLink` outside any list (an mbuf's `m_next`, a packet header's
+`ph_tags`) is a chain its owner walks and changes itself:
+
+| Method | C | Order |
+|---|---|---|
+| `get`, `get_mut`, `is_some` | `m->m_next`, `m->m_next != NULL` | O(1) |
+| `set(box)` | `m->m_next = n` (the box linked before given back) | O(1) |
+| `take()` | `n = m->m_next; m->m_next = NULL` | O(1) |
+| drop | the element linked freed with the link (its owner empties a long chain first, one element at a time) | O(1) |
 
 ## `hal::owned::SecondaryTree` (a second RBT over owned elements; the free-space trees)
 

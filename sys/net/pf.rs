@@ -134,6 +134,7 @@ use crate::sys::mbuf::{
     PF_TAG_GENERATED, PF_TAG_PROCESSED, PF_TAG_REFRAGMENTED, PF_TAG_REROUTE,
     PF_TAG_TRANSLATE_LOCALHOST,
 };
+use crate::sys::mbuf::{PkthdrPf, m_data_add, mtod};
 use crate::sys::pool::{PR_NOWAIT, Pool};
 use crate::sys::queue::{SlistHead, TailqHead};
 use crate::sys::socket::{AF_INET, AF_INET6};
@@ -3809,16 +3810,16 @@ pub fn pf_build_tcp(
             pf.qid.set(r.qid);
         }
     }
-    let linkhdr = crate::kern::uipc_mbuf::MAX_LINKHDR.load(AtomicOrdering::Relaxed) as usize;
-    // SAFETY: a fresh packet header mbuf has room for max_linkhdr plus the headers (MHLEN).
-    m.m_data().set(unsafe { m.m_data().get().add(linkhdr) });
+    let linkhdr = crate::kern::uipc_mbuf::MAX_LINKHDR.load(AtomicOrdering::Relaxed) as isize;
+    // A fresh packet header mbuf has room for max_linkhdr plus the headers (MHLEN).
+    m_data_add(m, linkhdr);
     m.m_pkthdr().len.set(len as i32);
     m.m_len().set(len as u32);
     m.m_pkthdr().ph_ifidx.set(0);
     let cf = &m.m_pkthdr().csum_flags;
     cf.set(cf.get() | M_TCP_CSUM_OUT);
     // SAFETY: `len` bytes from m_data are within the fresh mbuf (above).
-    unsafe { ptr::write_bytes(m.m_data().get(), 0, len) };
+    unsafe { ptr::write_bytes(mtod::<u8>(m), 0, len) };
     let thoff = match af {
         AF_INET => {
             let mut h = Ip {
@@ -3891,7 +3892,7 @@ pub fn pf_build_tcp(
     }
     // SAFETY: the segment's `tlen` bytes follow the network header within `len`.
     unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), m.m_data().get().add(thoff), tlen);
+        ptr::copy_nonoverlapping(bytes.as_ptr(), mtod::<u8>(m).add(thoff), tlen);
     }
 
     Some(m)
@@ -10090,71 +10091,117 @@ pub fn pf_state_key_isvalid(sk: Option<&PfStateKey>) -> bool {
     sk.is_some_and(|s| s.sk_removed.get() == 0)
 }
 
+/// The state key a packet header's pf part names (`pkthdr_pf.statekey`).
+fn pf_statekey_of(pf: &PkthdrPf) -> Option<&'static PfStateKey> {
+    let p = ptr::with_exposed_provenance::<PfStateKey>(pf.statekey.get());
+    // SAFETY: only `pf_link_state_key` stores into the word (here and through the kernel's
+    // `Pf` legs, `BsdPf`): the exposed address of a referenced key, which stays allocated
+    // until `pf_unlink_state_key` drops the reference (uipc_mbuf.c copies and unlinks it with
+    // the packet header, and `M_MOVE_HDR` moves the word whole); 0 is NULL.
+    unsafe { p.as_ref() }
+}
+
+/// The pcb a packet header's pf part names (`pkthdr_pf.inp`).
+fn pf_inp_of(pf: &PkthdrPf) -> Option<&'static Inpcb> {
+    let p = ptr::with_exposed_provenance::<Inpcb>(pf.inp.get());
+    // SAFETY: only `pf_link_inpcb` stores into the word: the exposed address of a referenced
+    // control block, which stays allocated until `pf_unlink_inpcb` drops the reference; 0 is
+    // NULL.
+    unsafe { p.as_ref() }
+}
+
 /// The packet's `m_pkthdr.pf.statekey`.
 pub fn pf_mbuf_statekey(m: &Mbuf) -> Option<&'static PfStateKey> {
-    // SAFETY: only `pf_mbuf_link_state_key` stores into it, a referenced key that stays
-    // allocated until `pf_mbuf_unlink_state_key` drops the reference (uipc_mbuf.c copies
-    // and unlinks it with the packet header).
-    unsafe {
-        m.m_pkthdr()
-            .pf
-            .statekey
-            .get()
-            .cast::<PfStateKey>()
-            .cast_const()
-            .as_ref()
-    }
+    pf_statekey_of(&m.m_pkthdr().pf)
 }
 
 /// The packet's `m_pkthdr.pf.inp`.
 pub fn pf_mbuf_inp(m: &Mbuf) -> Option<&'static Inpcb> {
-    // SAFETY: only `pf_mbuf_link_inpcb` stores into it, a referenced control block that
-    // stays allocated until `pf_mbuf_unlink_inpcb` drops the reference.
-    unsafe {
-        m.m_pkthdr()
-            .pf
-            .inp
-            .get()
-            .cast::<Inpcb>()
-            .cast_const()
-            .as_ref()
-    }
+    pf_inp_of(&m.m_pkthdr().pf)
+}
+
+/// `pf_mbuf_link_state_key` over a header's pf part.
+fn pf_link_state_key(pf: &PkthdrPf, sk: &'static PfStateKey) {
+    kassert!(pf.statekey.get() == 0);
+    pf.statekey
+        .set(ptr::from_ref(pf_state_key_ref(sk)).expose_provenance());
 }
 
 /// `pf_mbuf_link_state_key`.
 pub fn pf_mbuf_link_state_key(m: &Mbuf, sk: &'static PfStateKey) {
-    kassert!(m.m_pkthdr().pf.statekey.get().is_null());
-    m.m_pkthdr()
-        .pf
-        .statekey
-        .set(ptr::from_ref(pf_state_key_ref(sk)).cast_mut().cast());
+    pf_link_state_key(&m.m_pkthdr().pf, sk);
 }
 
-/// `pf_mbuf_unlink_state_key`.
-pub fn pf_mbuf_unlink_state_key(m: &Mbuf) {
-    if let Some(sk) = pf_mbuf_statekey(m) {
-        m.m_pkthdr().pf.statekey.set(ptr::null_mut());
+/// `pf_mbuf_unlink_state_key` over a header's pf part.
+fn pf_unlink_state_key(pf: &PkthdrPf) {
+    if let Some(sk) = pf_statekey_of(pf) {
+        pf.statekey.set(0);
         pf_state_key_unref(Some(sk));
     }
 }
 
+/// `pf_mbuf_unlink_state_key`.
+pub fn pf_mbuf_unlink_state_key(m: &Mbuf) {
+    pf_unlink_state_key(&m.m_pkthdr().pf);
+}
+
+/// `pf_mbuf_link_inpcb` over a header's pf part.
+fn pf_link_inpcb(pf: &PkthdrPf, inp: Option<&'static Inpcb>) {
+    kassert!(pf.inp.get() == 0);
+    let r = crate::netinet::in_pcb::in_pcbref(inp);
+    pf.inp
+        .set(r.map_or(0, |i| ptr::from_ref(i).expose_provenance()));
+}
+
 /// `pf_mbuf_link_inpcb`.
 pub fn pf_mbuf_link_inpcb(m: &Mbuf, inp: Option<&'static Inpcb>) {
-    kassert!(m.m_pkthdr().pf.inp.get().is_null());
-    let r = crate::netinet::in_pcb::in_pcbref(inp);
-    m.m_pkthdr()
-        .pf
-        .inp
-        .set(r.map_or(ptr::null_mut(), |i| ptr::from_ref(i).cast_mut().cast()));
+    pf_link_inpcb(&m.m_pkthdr().pf, inp);
+}
+
+/// `pf_mbuf_unlink_inpcb` over a header's pf part.
+fn pf_unlink_inpcb(pf: &PkthdrPf) {
+    if let Some(inp) = pf_inp_of(pf) {
+        pf.inp.set(0);
+        crate::netinet::in_pcb::in_pcbunref(Some(inp));
+    }
 }
 
 /// `pf_mbuf_unlink_inpcb`.
 pub fn pf_mbuf_unlink_inpcb(m: &Mbuf) {
-    if let Some(inp) = pf_mbuf_inp(m) {
-        m.m_pkthdr().pf.inp.set(ptr::null_mut());
-        crate::netinet::in_pcb::in_pcbunref(Some(inp));
+    pf_unlink_inpcb(&m.m_pkthdr().pf);
+}
+
+/// pf's legs of the kernel's mbuf (`kernel::net::pf_hooks::Pf`, bridges.toml, paid by N8):
+/// uipc_mbuf.c's `NPF > 0` calls, over the functions above.
+pub struct BsdPf;
+
+impl kernel::net::pf_hooks::Pf for BsdPf {
+    /// `m_dup_pkthdr`'s `pf_mbuf_link_state_key(to, from->m_pkthdr.pf.statekey)`: a reference
+    /// for the copy, if the packet has a key.
+    fn mbuf_link_state_key(&self, to: &PkthdrPf, from: &PkthdrPf) {
+        if let Some(sk) = pf_statekey_of(from) {
+            pf_link_state_key(to, sk);
+        }
+    }
+
+    /// `m_dup_pkthdr`'s `pf_mbuf_link_inpcb(to, from->m_pkthdr.pf.inp)`.
+    fn mbuf_link_inpcb(&self, to: &PkthdrPf, from: &PkthdrPf) {
+        pf_link_inpcb(to, pf_inp_of(from));
+    }
+
+    /// `m_free`'s and `m_clearhdr`'s `pf_mbuf_unlink_state_key(m)`.
+    fn mbuf_unlink_state_key(&self, pf: &PkthdrPf) {
+        pf_unlink_state_key(pf);
+    }
+
+    /// `m_free`'s and `m_clearhdr`'s `pf_mbuf_unlink_inpcb(m)`.
+    fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf) {
+        pf_unlink_inpcb(pf);
     }
 }
+
+/// The `Pf` legs `mbinit` registers.
+pub static BSD_PF: BsdPf = BsdPf;
 
 /// The socket's `inp_pf_sk`.
 fn inpcb_pf_sk(inp: &Inpcb) -> Option<&'static PfStateKey> {

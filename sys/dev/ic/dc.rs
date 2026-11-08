@@ -155,6 +155,7 @@ use crate::netinet::if_ether::{
 use crate::sys::device::{Cfdriver, DV_IFNET, DVACT_RESUME, DVACT_SUSPEND, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
+use crate::sys::mbuf::m_set_data_off;
 use crate::sys::mbuf::{M_DONTWAIT, MCLBYTES, Mbuf, MbufList, mtod};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::sockio::{SIOCGIFMEDIA, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMEDIA};
@@ -1803,7 +1804,7 @@ pub fn dc_newbuf(sc: &'static DcSoftc, i: usize, m: Option<&'static Mbuf>) -> Re
             // lengths to default values.
             m_new.m_len().set(MCLBYTES as u32);
             m_new.m_pkthdr().len.set(MCLBYTES as i32);
-            m_new.m_data().set(m_new.m_ext().ext_buf.get());
+            m_set_data_off(m_new, 0);
             m_new
         }
     };

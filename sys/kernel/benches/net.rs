@@ -74,6 +74,11 @@ use hal::owned::{OwnedEntry, OwnedList, OwnedSlist, SlistLink};
 use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
+use kernel::net::mbuf::{
+    M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj, m_copydata,
+    m_copym, m_get, m_gethdr, m_pullup, mbinit, mclget, mclgetl,
+};
+use kernel::net::mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
 use kernel::testutil;
 
 /// Ops per repetition.
@@ -348,6 +353,10 @@ hal::slist_adapter!(
 /// The pool of the `slist.*` benches' elements.
 static SL_ELEMS: BoxPool<SlElem> = BoxPool::new();
 
+impl hal::pool::Pooled for SlElem {
+    const POOL: &'static BoxPool<Self> = &SL_ELEMS;
+}
+
 /// A fresh `slist.*` element.
 fn slelem() -> PoolBox<SlElem> {
     need(
@@ -425,6 +434,7 @@ fn main() {
         "slist.concat",
         "list.push",
     ];
+    let names: Vec<&str> = names.iter().chain(MBUF_ROWS.iter()).copied().collect();
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
             println!("{n}");
@@ -685,5 +695,271 @@ fn main() {
         });
         report(names[12], r);
     }
+    mbuf_rows(&wanted, &report);
+}
+
+/// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
+const MBUF_ROWS: [&str; 13] = [
+    "mbuf.get.free",
+    "mbuf.gethdr.cluster.free",
+    "mbuf.copym.share",
+    "mbuf.copydata.1500",
+    "mbuf.adj",
+    "mbuf.mtod",
+    "mbuf.header.view",
+    "mbuf.header.copy",
+    "mbuf.pullup.40",
+    "mbuf.tag.find",
+    "mbuf.data",
+    "mbuf.copym.share.deep",
+    "mbuf.adj.restore",
+];
+
+/// The bench's `nmbclust`.
+static BENCH_NMBCLUST: core::sync::atomic::AtomicI64 =
+    core::sync::atomic::AtomicI64::new(256 * 1024);
+
+/// A 1500-byte packet in one cluster, its data `off` bytes in.
+fn cluster_packet(off: usize) -> MbufBox {
+    let mut m = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+    if !mclgetl(&mut m, M_DONTWAIT, 1500 + off as u32) {
+        eprintln!("net: no cluster");
+        std::process::exit(1);
+    }
+    m.set_data_off(off);
+    m.m_len().set(1500);
+    m.m_pkthdr().len.set(1500);
+    if let Some(d) = m.data_mut() {
+        for (i, b) in d.iter_mut().enumerate() {
+            *b = (i * 7 + 3) as u8;
+        }
+    }
+    m
+}
+
+fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    if !MBUF_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The pools' pages are the kernel's (MbufPages over km_alloc): the page system and the
+    // kernel maps of the tests, held for the run.
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+
+    if wanted(MBUF_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let m = need(m_get(M_DONTWAIT, MT_DATA), "no mbuf");
+                drop(black_box(m));
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[0], r);
+    }
+    if wanted(MBUF_ROWS[1]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let mut m = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+                mclget(&mut m, M_DONTWAIT);
+                drop(black_box(m));
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[1], r);
+    }
+    let mut p = cluster_packet(0);
+    if wanted(MBUF_ROWS[2]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let c = need(
+                    m_copym(black_box(&mut p), 0, M_COPYALL, M_DONTWAIT),
+                    "no copy",
+                );
+                drop(c);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[2], r);
+    }
+    if wanted(MBUF_ROWS[3]) {
+        let mut buf = vec![0u8; 1500];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                m_copydata(black_box(&p), 0, &mut buf);
+                black_box(&buf);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[3], r);
+    }
+    if wanted(MBUF_ROWS[4]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                m_adj(black_box(&p), 14);
+                p.set_data_off(p.data_off() - 14);
+                p.m_len().set(p.m_len().get() + 14);
+                p.m_pkthdr().len.set(p.m_pkthdr().len.get() + 14);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[4], r);
+    }
+    if wanted(MBUF_ROWS[5]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(black_box(&p).data_raw());
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[5], r);
+    }
+    // ETHER_ALIGN: the IP header 16 bytes into the cluster, aligned for the view.
+    let h = cluster_packet(2);
+    if wanted(MBUF_ROWS[6]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let ip = need(hal::pod::view::<Ip>(black_box(&h).data(), 14), "misaligned");
+                black_box(ip.ip_ttl);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[6], r);
+    }
+    if wanted(MBUF_ROWS[7]) {
+        let mut hdr = [0u8; 20];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                m_copydata(black_box(&h), 14, &mut hdr);
+                black_box(&hdr);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[7], r);
+    }
+    if wanted(MBUF_ROWS[8]) {
+        // A 14-byte header mbuf and a 1486-byte cluster mbuf: m_pullup(40) copies 26 bytes
+        // into the first; the offsets put back by hand.
+        let mut hd = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+        hd.m_len().set(14);
+        let mut c = need(m_get(M_DONTWAIT, MT_DATA), "no mbuf");
+        mclget(&mut c, M_DONTWAIT);
+        c.m_len().set(1486);
+        drop(hd.m_next.set(c));
+        hd.m_pkthdr().len.set(1500);
+        let mut hd = Some(hd);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let m = need(m_pullup(need(hd.take(), "the packet"), 40), "pulled up");
+                m.m_len().set(14);
+                if let Some(c) = m.m_next.get() {
+                    c.set_data_off(c.data_off() - 26);
+                    c.m_len().set(1486);
+                }
+                hd = Some(black_box(m));
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[8], r);
+    }
+    if wanted(MBUF_ROWS[9]) {
+        let mut tp = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+        m_tag_prepend(
+            &mut tp,
+            need(m_tag_get(PACKET_TAG_GRE, 4, M_DONTWAIT), "no tag"),
+        );
+        m_tag_prepend(
+            &mut tp,
+            need(m_tag_get(PACKET_TAG_DLT, 4, M_DONTWAIT), "no tag"),
+        );
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(m_tag_find(black_box(&tp), PACKET_TAG_GRE, None));
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[9], r);
+    }
+    if wanted(MBUF_ROWS[10]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(black_box(&p).data());
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[10], r);
+    }
+    if wanted(MBUF_ROWS[11]) {
+        // Three 500-byte cluster mbufs; 100 bytes copied from offset 1100, in the third: the
+        // walk to the offset is what tcp_output's per-segment copy pays.
+        let mut deep = cluster_chain(&[500, 500, 500]);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let c = need(
+                    m_copym(black_box(&mut deep), 1100, 100, M_DONTWAIT),
+                    "no copy",
+                );
+                drop(c);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[11], r);
+    }
+    if wanted(MBUF_ROWS[12]) {
+        // `mbuf.adj`'s restore alone: what that row adds to `m_adj` itself.
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = black_box(&p);
+                q.set_data_off(q.data_off());
+                q.m_len().set(q.m_len().get());
+                q.m_pkthdr().len.set(q.m_pkthdr().len.get());
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[12], r);
+    }
+}
+
+/// A packet of cluster mbufs of `lens` bytes each, the first with the header (the before
+/// rows' `packet` on LZ's shape).
+fn cluster_chain(lens: &[u32]) -> MbufBox {
+    let mut chain: Vec<MbufBox> = Vec::new();
+    for (i, &len) in lens.iter().enumerate() {
+        let m = if i == 0 {
+            m_gethdr(M_DONTWAIT, MT_DATA)
+        } else {
+            m_get(M_DONTWAIT, MT_DATA)
+        };
+        let mut m = need(m, "no mbuf");
+        if !mclgetl(&mut m, M_DONTWAIT, len) {
+            eprintln!("net: no cluster");
+            std::process::exit(1);
+        }
+        m.m_len().set(len);
+        chain.push(m);
+    }
+    let mut next: Option<MbufBox> = None;
+    while let Some(mut m) = chain.pop() {
+        if let Some(n) = next.take() {
+            drop(m.m_next.set(n));
+        }
+        next = Some(m);
+    }
+    let h = need(next, "an mbuf");
+    h.m_pkthdr().len.set(lens.iter().sum::<u32>() as i32);
+    h
 }
 /* </CODE> */

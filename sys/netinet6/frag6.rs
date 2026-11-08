@@ -106,6 +106,7 @@ use crate::netinet6::ip6_var::{
 use crate::sys::endian::{htonl, htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{M_DONTWAIT, Mbuf, m_freemp, mtod};
+use crate::sys::mbuf::{m_set_data, m_set_next};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::pool::{PR_NOWAIT, PR_ZERO, Pool};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
@@ -531,7 +532,7 @@ pub fn frag6_input(
                     t = n;
                 }
                 let n = af6.ip6af_m.get();
-                t.m_next().set(n);
+                let _ = m_set_next(t, n);
                 if let Some(n) = n {
                     m_adj(n, af6.ip6af_offset.get());
                     m_removehdr(n);
@@ -626,7 +627,7 @@ pub fn frag6_deletefraghdr(m: &'static Mbuf, offset: i32) -> Result<(), Errno> {
         // SAFETY: the first mbuf holds the `offset` bytes of headers and the fragment
         // header after them (checked above); `copy` handles the overlap as `memmove`.
         unsafe { ptr::copy(data, data.add(flen), offset as usize) };
-        m.m_data().set(data.wrapping_add(flen));
+        m_set_data(m, data.wrapping_add(flen));
         m.m_len().set(m.m_len().get() - flen as u32);
     } else {
         // this comes with no copy if the boundary is on cluster

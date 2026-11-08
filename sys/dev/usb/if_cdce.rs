@@ -137,6 +137,7 @@ use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_is_oactive, i
 use crate::netinet::if_ether::{ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN};
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device};
 use crate::sys::errno::Errno;
+use crate::sys::mbuf::m_set_data_off;
 use crate::sys::mbuf::{M_DONTWAIT, MCLBYTES, Mbuf, MbufList, mtod};
 use crate::sys::sockio::{SIOCSIFADDR, SIOCSIFFLAGS};
 
@@ -931,7 +932,7 @@ pub fn cdce_newbuf(sc: &CdceSoftc, c: &CdceChain, m: Option<&'static Mbuf>) -> R
         Some(m) => {
             m.m_len().set(MCLBYTES as u32);
             m.m_pkthdr().len.set(MCLBYTES as i32);
-            m.m_data().set(m.m_ext().ext_buf.get());
+            m_set_data_off(m, 0);
             m
         }
     };

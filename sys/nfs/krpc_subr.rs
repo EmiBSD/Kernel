@@ -118,6 +118,7 @@ use crate::netinet::in_::{
 use crate::nfs::rpcv2::{RPC_REPLY, RPCAUTH_MAXSIZ, RPCAUTH_UNIX};
 use crate::nfs::xdr_subs::{fxdr_unsigned, txdr_unsigned, xdr_bytes};
 use crate::sys::errno::Errno;
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
     M_COPYALL, M_EXT, M_PKTHDR, M_WAIT, MCLBYTES, MLEN, MT_DATA, MT_SONAME, MT_SOOPTS, Mbuf,
     mclget, mtod,
@@ -332,7 +333,7 @@ pub fn krpc_call(
     let mut from: Option<&'static Mbuf> = None;
     let mhead = match m_gethdr(M_WAIT, MT_DATA) {
         Some(m) => {
-            m.m_next().set(body);
+            let _ = m_set_next(m, body);
             Some(m)
         }
         None => {
@@ -792,13 +793,21 @@ pub(crate) mod tests {
                 m_get(M_DONTWAIT, MT_DATA)
             }
             .expect("an mbuf");
-            m.m_len().set(p.len() as u32);
+            // `m_copyback` fills the empty mbuf and extends it with mbufs of its own past
+            // its storage (a part longer than `MHLEN` in a header mbuf: the length set first,
+            // as before, wrote past the storage, which the bounds-checked copy refuses).
             m_copyback(m, 0, p, M_DONTWAIT).expect("copyback");
             match tail {
-                Some(t) => t.m_next().set(Some(m)),
+                Some(t) => {
+                    let _ = m_set_next(t, Some(m));
+                }
                 None => head = Some(m),
             }
-            tail = Some(m);
+            let mut last = m;
+            while let Some(n) = last.m_next().get() {
+                last = n;
+            }
+            tail = Some(last);
         }
         let head = head.expect("at least one part");
         m_calchdrlen(head);

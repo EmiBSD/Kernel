@@ -199,6 +199,7 @@ use crate::sys::endian::{htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::limits::INT_MAX;
 use crate::sys::malloc::M_NOWAIT;
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
     M_BCAST, M_DONTWAIT, M_EXT, M_LOOP, M_MCAST, M_PKTHDR, MLEN, MT_DATA, Mbuf, MbufList,
     MbufQueue, PACKET_TAG_IP6_OFFNXT, PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp,
@@ -391,8 +392,7 @@ pub fn ip6intr() {
             off = ion.ion_off;
             nxt = ion.ion_nxt;
 
-            // SAFETY: the tag is on this packet's list.
-            unsafe { m_tag_delete(m, mtag) };
+            m_tag_delete(m, mtag);
         } else {
             let ip6 = mtod_ip6(m);
             off = IP6_HDR_LEN;
@@ -1144,7 +1144,9 @@ pub fn ip6_savecontrol(inp: &Inpcb, m: &Mbuf, mp: &mut Option<&'static Mbuf>) {
     let mut put = |n: Option<&'static Mbuf>| {
         match tail {
             None => *mp = n,
-            Some(t) => t.m_next().set(n),
+            Some(t) => {
+                let _ = m_set_next(t, n);
+            }
         }
         if n.is_some() {
             tail = n;

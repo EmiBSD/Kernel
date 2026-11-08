@@ -121,6 +121,7 @@ pub mod mutex;
 #[forbid(unsafe_code)]
 pub mod netlock;
 pub mod once;
+pub mod overlay;
 pub mod owned;
 pub mod percpu;
 pub mod pin;

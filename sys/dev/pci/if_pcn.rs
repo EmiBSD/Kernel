@@ -155,6 +155,7 @@ use crate::netinet::if_ether::{
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{M_DONTWAIT, MCLBYTES, MT_DATA, Mbuf, MbufList};
+use crate::sys::mbuf::{m_data_add, m_ext_buf, m_ext_size, m_set_data_off, mtod};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::sockio::{SIOCGIFMEDIA, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMEDIA};
 
@@ -1519,11 +1520,11 @@ pub fn pcn_rxintr(sc: &'static PcnSoftc) -> bool {
             let Some(old) = rxs.rxs_mbuf.get() else {
                 panic(format_args!("{}: no rx mbuf", sc.devname()));
             };
-            m.m_data().set(m.m_data().get().wrapping_add(2));
+            m_data_add(m, 2);
             // SAFETY: both mbufs hold at least `len` bytes at their data pointers (`len` fits
             // a header mbuf less the 2 bytes of alignment; the receive cluster holds the
             // frame the chip stored).
-            unsafe { ptr::copy_nonoverlapping(old.m_data().get(), m.m_data().get(), len as usize) };
+            unsafe { ptr::copy_nonoverlapping(mtod::<u8>(old), mtod::<u8>(m), len as usize) };
             pcn_init_rxdesc(sc, i);
             bus_dmamap_sync(dmat, map, 0, map.dm_mapsize.get(), BUS_DMASYNC_PREREAD);
             m
@@ -1874,8 +1875,8 @@ pub fn pcn_add_rxbuf(sc: &PcnSoftc, idx: usize) -> Result<(), Errno> {
         bus_dmamap_load(
             dmat,
             map,
-            m.m_ext().ext_buf.get(),
-            m.m_ext().ext_size.get() as BusSize,
+            m_ext_buf(m),
+            m_ext_size(m) as BusSize,
             None,
             BUS_DMA_READ | BUS_DMA_NOWAIT,
         )
@@ -1910,7 +1911,7 @@ fn pcn_init_rxdesc(sc: &PcnSoftc, x: usize) {
 
     // Note: We scoot the packet forward 2 bytes in the buffer so that the payload after the
     // Ethernet header is aligned to a 4-byte boundary.
-    m.m_data().set(m.m_ext().ext_buf.get().wrapping_add(2));
+    m_set_data_off(m, 2);
 
     let addr = (map.dm_segs()[0].get().ds_addr as u32)
         .wrapping_add(2)

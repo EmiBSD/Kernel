@@ -42,6 +42,8 @@ pub mod kernel;
 #[forbid(unsafe_code)]
 pub mod limits;
 #[forbid(unsafe_code)]
+pub mod mbuf;
+#[forbid(unsafe_code)]
 pub mod mman;
 #[forbid(unsafe_code)]
 pub mod mount;

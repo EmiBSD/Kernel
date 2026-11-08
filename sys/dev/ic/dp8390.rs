@@ -97,6 +97,7 @@ use crate::sys::errno::Errno;
 use crate::sys::mbuf::{
     M_DONTWAIT, M_EXT, M_PKTHDR, MCLBYTES, MHLEN, MINCLSIZE, MLEN, MT_DATA, Mbuf, MbufList,
 };
+use crate::sys::mbuf::{m_set_data, m_set_next, mtod};
 use crate::sys::param::align;
 use crate::sys::sockio::{SIOCGIFMEDIA, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMEDIA};
 use crate::sys::syslog::LOG_ERR;
@@ -898,9 +899,9 @@ pub fn dp8390_get(
 
         // Make sure the data after the Ethernet header is aligned.
         if core::ptr::eq(m, m0) {
-            let data = m.m_data().get();
+            let data = mtod::<u8>(m);
             let off = align(data as usize + ETHER_HDR_LEN) - ETHER_HDR_LEN - data as usize;
-            m.m_data().set(data.wrapping_add(off));
+            m_set_data(m, data.wrapping_add(off));
             len -= off;
         }
 
@@ -908,7 +909,7 @@ pub fn dp8390_get(
         m.m_len().set(len as u32);
         // SAFETY: `m` has `len` bytes of room at its data pointer (a header mbuf's MHLEN or a
         // cluster's MCLBYTES, less the alignment offset taken from `len` above).
-        let dst = unsafe { slice::from_raw_parts_mut(m.m_data().get(), len) };
+        let dst = unsafe { slice::from_raw_parts_mut(mtod::<u8>(m), len) };
         src = match sc.ring_copy.get() {
             Some(ring_copy) => ring_copy(sc, src, dst),
             None => dp8390_ring_copy(sc, src, dst),
@@ -921,7 +922,7 @@ pub fn dp8390_get(
                 return None;
             };
             len = MLEN;
-            m.m_next().set(Some(newm));
+            let _ = m_set_next(m, Some(newm));
             m = newm;
         }
     }
@@ -1007,7 +1008,7 @@ fn dp8390_write_mbuf(sc: &'static Dp8390Softc, m: &Mbuf, buf: i32) -> i32 {
         let len = m.m_len().get() as usize;
         if len > 0 {
             // SAFETY: an mbuf's data pointer addresses `m_len` valid bytes.
-            let data = unsafe { slice::from_raw_parts(m.m_data().get(), len) };
+            let data = unsafe { slice::from_raw_parts(mtod::<u8>(m), len) };
             for (i, b) in data.iter().enumerate() {
                 bus_space_write_1(buft, bufh, buf + i, *b);
             }

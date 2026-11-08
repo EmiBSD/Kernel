@@ -171,6 +171,7 @@ use crate::netinet6::mld6_var::{
     MLD_IREPORTEDLAST, MLD_OTHERLISTENER, Mld6Pktinfo, mld_random_delay,
 };
 use crate::sys::endian::{htons, ntohs};
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
     M_DONTWAIT, M_ICMP_CSUM_OUT, M_LOOP, MHLEN, MT_DATA, MT_HEADER, Mbuf, mtod,
 };
@@ -656,7 +657,7 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo) {
         if_put(ifp);
         return;
     };
-    mh.m_next().set(Some(md));
+    let _ = m_set_next(mh, Some(md));
 
     mh.m_pkthdr().ph_rtableid.set(pkt.mpi_rdomain);
     mh.m_pkthdr()

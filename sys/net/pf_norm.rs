@@ -113,6 +113,7 @@ use crate::netinet::tcp_seq::{seq_geq, seq_gt, seq_lt};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::Mbuf;
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mutex::Mutex;
 use crate::sys::pool::{PR_NOWAIT, PR_ZERO, Pool};
 use crate::sys::queue::{TailqEntry, TailqHead};
@@ -979,7 +980,7 @@ fn pf_join_fragment(frag: &'static PfFragment) -> &'static Mbuf {
     }
     // Magic from ip_input
     let m2 = m.m_next().get();
-    m.m_next().set(None);
+    let _ = m_set_next(m, None);
     m_cat(m, m2);
     pf_pool_put(&PF_FRENT_PL, frent);
     fragments_dec();
@@ -1264,8 +1265,7 @@ pub fn pf_refragment6(
     let hdrlen = ftag.ft_hdrlen;
     let extoff = ftag.ft_extoff;
     let maxlen = ftag.ft_maxlen;
-    // SAFETY: the tag was found on `m`'s list and is not used after this.
-    unsafe { m_tag_delete(m, mtag) };
+    m_tag_delete(m, mtag);
 
     // Checksum must be calculated for the whole packet
     in6_proto_cksum_out(m, None);

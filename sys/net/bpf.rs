@@ -190,6 +190,7 @@ use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
 use crate::sys::ioccom::{_io, _ior, _iow, _iowr};
 use crate::sys::ioctl::{ioctl_arg, ioctl_ret};
 use crate::sys::malloc::{M_CANFAIL, M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO, MALLOC_MAX};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::{
     M_EXT, M_FLOWID, M_PKTHDR, M_WAIT, MAXMCLBYTES, MHLEN, MT_DATA, Mbuf, PACKET_TAG_DLT, mclgetl,
     mtod,
@@ -893,7 +894,7 @@ fn bpf_movein(
     }
 
     m_align(m, alen as i32); // Align the payload.
-    m.m_data().set(m.m_data().get().wrapping_sub(hlen as usize));
+    m_data_add(m, -(hlen as isize));
 
     m.m_pkthdr().ph_ifidx.set(0);
     m.m_pkthdr().len.set(len as i32);
@@ -940,7 +941,7 @@ fn bpf_movein(
 
         m.m_pkthdr().len.set(m.m_pkthdr().len.get() - hlen as i32);
         m.m_len().set(m.m_len().get() - hlen);
-        m.m_data().set(m.m_data().get().wrapping_add(hlen as usize));
+        m_data_add(m, hlen as isize);
     }
 
     // Prepend the data link type as a mbuf tag.
@@ -2498,6 +2499,7 @@ mod tests {
     use crate::net::if_::tests::{setup_net, test_ifnet, test_packet};
     use crate::reftest::{assert_complete, assert_defines};
     use crate::sys::mbuf::M_DONTWAIT;
+    use crate::sys::mbuf::m_set_next;
     use crate::sys::types::makedev;
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
 
@@ -2507,9 +2509,9 @@ mod tests {
         let n = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
         let rest = &bytes[split..];
         // SAFETY: a fresh mbuf has MLEN bytes at m_data; the test data is shorter.
-        unsafe { ptr::copy_nonoverlapping(rest.as_ptr(), n.m_data().get(), rest.len()) };
+        unsafe { ptr::copy_nonoverlapping(rest.as_ptr(), mtod::<u8>(n), rest.len()) };
         n.m_len().set(rest.len() as u32);
-        m.m_next().set(Some(n));
+        let _ = m_set_next(m, Some(n));
         m.m_pkthdr().len.set(bytes.len() as i32);
         m
     }

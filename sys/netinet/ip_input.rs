@@ -196,6 +196,7 @@ use crate::sys::mbuf::{
     PACKET_TAG_SRCROUTE, PF_TAG_DIVERTED, PF_TAG_GENERATED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp,
     ml_empty, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::mutex::Mutex;
 use crate::sys::pool::{PR_NOWAIT, Pool};
 use crate::sys::protosw::{PR_MPINPUT, PRC_NCMDS, Protosw};
@@ -490,8 +491,7 @@ pub fn ipintr() {
             off = ion.ion_off;
             nxt = ion.ion_nxt;
 
-            // SAFETY: the tag is on this packet's list.
-            unsafe { m_tag_delete(m, mtag) };
+            m_tag_delete(m, mtag);
         } else {
             let ip = mtod_ip(m);
             off = i32::from(ip.ip_hl()) << 2;
@@ -1076,7 +1076,7 @@ pub fn ip_reass(
     crate::sys::mutex::mutex_assert_locked(&IPQ_MUTEX, "ip_reass");
 
     // Presence of header sizes in mbufs would confuse code below.
-    m.m_data().set(m.m_data().get().wrapping_add(hlen as usize));
+    m_data_add(m, hlen as isize);
     m.m_len().set(m.m_len().get() - hlen);
 
     let dropfrag = |m: &'static Mbuf| -> Option<&'static Mbuf> {
@@ -1246,7 +1246,7 @@ fn ip_reass_insert(
         panic(format_args!("ip_reass: fragment without packet"));
     };
     let t = m.m_next().get();
-    m.m_next().set(None);
+    let _ = m_set_next(m, None);
     m_cat(m, t);
     let mut nq = ListHead::<crate::netinet::ip_var::Ipqehead>::next(q).map(|e| e as *const Ipqent);
     ipqent_put(q);
@@ -1276,7 +1276,7 @@ fn ip_reass_insert(
     pool_put(&IPQ_POOL, ptr::NonNull::from(fp).cast());
     let hl = u32::from(ip.ip_hl()) << 2;
     m.m_len().set(m.m_len().get() + hl);
-    m.m_data().set(m.m_data().get().wrapping_sub(hl as usize));
+    m_data_add(m, -(hl as isize));
     m_calchdrlen(m);
     Some(m)
 }
@@ -1701,8 +1701,7 @@ pub fn ip_srcroute(m0: &Mbuf) -> Option<&'static Mbuf> {
     out[q..q + 4].copy_from_slice(&isr.isr_dst.s_addr.to_ne_bytes());
     // SAFETY: a fresh mbuf has MLEN bytes at its data pointer, more than `len`.
     unsafe { ptr::copy_nonoverlapping(out.as_ptr(), mtod::<u8>(m), len) };
-    // SAFETY: the tag is on `m0`'s list.
-    unsafe { m_tag_delete(m0, mtag) };
+    m_tag_delete(m0, mtag);
     Some(m)
 }
 
@@ -1874,7 +1873,7 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
         let pf = &mcopy.m_pkthdr().pf.flags;
         pf.set(pf.get() | (pfflags & PF_TAG_GENERATED));
         // SAFETY: a fresh packet header mbuf has MHLEN (more than 68) bytes at its data.
-        unsafe { ptr::copy_nonoverlapping(icmp_buf.as_ptr(), mcopy.m_data().get(), icmp_len) };
+        unsafe { ptr::copy_nonoverlapping(icmp_buf.as_ptr(), mtod::<u8>(mcopy), icmp_len) };
         icmp_error(mcopy, type_, code, dest, destmtu);
     }
     // done:
@@ -2005,7 +2004,9 @@ pub fn ip_savecontrol(inp: &Inpcb, mp: &mut Option<&'static Mbuf>, ip: &Ip, m: &
     let mut put = |n: Option<&'static Mbuf>| {
         match tail {
             None => *mp = n,
-            Some(t) => t.m_next().set(n),
+            Some(t) => {
+                let _ = m_set_next(t, n);
+            }
         }
         if n.is_some() {
             tail = n;
@@ -2101,8 +2102,7 @@ fn ip_send_do_dispatch(xmq: *mut c_void, flags: i32) {
         if let Some(mtag) = m_tag_find(m, crate::sys::mbuf::PACKET_TAG_IPSEC_FLOWINFO, None) {
             // SAFETY: an IPsec flowinfo tag carries a `uint32_t`.
             ipsecflowinfo = unsafe { ptr::read_unaligned(mtag.data().cast::<u32>()) };
-            // SAFETY: the tag is on this packet's list.
-            unsafe { m_tag_delete(m, mtag) };
+            m_tag_delete(m, mtag);
         }
         let _ = ip_output(m, None, None, flags, None, None, ipsecflowinfo);
     }
@@ -2422,8 +2422,7 @@ pub(crate) mod tests {
         // ping: the request is held while ARP asks for the gateway.
         let m = m_gethdr(M_DONTWAIT, crate::sys::mbuf::MT_DATA).expect("mbuf");
         let len = 20 + 8 + 16;
-        m.m_data()
-            .set(m.m_data().get().wrapping_add((MHLEN - len) & !7));
+        m_data_add(m, ((MHLEN - len) & !7) as isize);
         m.m_len().set(len as u32);
         m.m_pkthdr().len.set(len as i32);
         let ip = Ip {

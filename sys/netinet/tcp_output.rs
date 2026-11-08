@@ -194,6 +194,7 @@ use crate::sys::mbuf::{
     M_DONTWAIT, M_EXT, M_FLOWID, M_PKTHDR, M_TCP_CSUM_OUT, M_TCP_TSO, MAXMCLBYTES, MHLEN,
     MT_HEADER, Mbuf, MbufList, mclget, ml_len, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::socket::{AF_INET, PF_INET, SO_DEBUG, Sockaddr};
 use crate::sys::socketvar::{Socket, sbspace_locked, soissending};
 #[cfg(feature = "inet6")]
@@ -330,8 +331,7 @@ fn tcp_output_gethdr(max_linkhdr: u32, hdrlen: u32) -> Option<&'static Mbuf> {
             return None;
         }
     }
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(max_linkhdr as usize));
+    m_data_add(m, max_linkhdr as isize);
     m.m_len().set(hdrlen);
     Some(m)
 }
@@ -812,7 +812,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                     m.m_len().set(m.m_len().get() + len as u32);
                 } else {
                     let next = m_copym(sb_mb, off, len as i32, M_NOWAIT);
-                    m.m_next().set(next);
+                    let _ = m_set_next(m, next);
                     if next.is_none() {
                         let _ = m_free(m);
                         break 'out Err(Errno::ENOBUFS);
@@ -1396,7 +1396,7 @@ pub fn tcp_softtso_chop(
             // add mbuf chain with payload
             m.m_pkthdr().len.set(hlen + len);
             let next = m_copym(m0, off, len, M_DONTWAIT);
-            m.m_next().set(next);
+            let _ = m_set_next(m, next);
             if next.is_none() {
                 break 'bad Errno::ENOBUFS;
             }

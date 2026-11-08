@@ -128,7 +128,7 @@ use crate::nfs::rpcv2::{RPCMNT_MOUNT, RPCPROG_MNT};
 use crate::nfs::xdr_subs::{fxdr_unsigned, txdr_unsigned};
 use crate::sys::errno::Errno;
 #[cfg(feature = "nfsclient")]
-use crate::sys::mbuf::{M_WAIT, MT_DATA, Mbuf, mtod};
+use crate::sys::mbuf::{M_WAIT, MT_DATA, Mbuf, m_set_next, mtod};
 #[cfg(feature = "nfsclient")]
 use crate::sys::mount::{MNAMELEN, NFSMNT_NFSV3, NfsArgs};
 #[cfg(feature = "nfsclient")]
@@ -421,7 +421,7 @@ fn bp_whoami(bpsin: &mut SockaddrIn, my_ip: &InAddr) -> Result<InAddr, Errno> {
     // SAFETY: a fresh mbuf's data area holds `MLEN >= 16` bytes.
     unsafe { ptr::copy_nonoverlapping(call.as_ptr().cast::<u8>(), mtod::<u8>(m), 16) };
     m.m_len().set(16);
-    m.m_next().set(Some(arg));
+    let _ = m_set_next(m, Some(arg));
 
     // RPC: portmap/callit
     bpsin.sin_port = PMAPPORT.to_be();
@@ -541,7 +541,7 @@ fn bp_getfile(
         m_freem(m);
         return Err(Errno::ENOMEM);
     };
-    m.m_next().set(Some(k));
+    let _ = m_set_next(m, Some(k));
 
     // RPC: bootparam/getfile
     let mut data = Some(m);

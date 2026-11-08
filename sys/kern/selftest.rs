@@ -68,8 +68,8 @@ use crate::kern::subr_pool::{
 };
 use crate::kern::subr_prf::Str;
 use crate::kern::uipc_mbuf::{
-    MBPOOL, MBUF_MEM_ALLOC, MBUF_MEM_LIMIT, MCLPOOLS, MTAGPOOL, m_adj, m_copyback, m_copydata,
-    m_copym, m_dup_pkt, m_freem, m_gethdr, m_pullup, m_split,
+    MBUF_MEM_ALLOC, MBUF_MEM_LIMIT, MBUFPL, MTAGPL, m_adj, m_copyback, m_copydata, m_copym,
+    m_dup_pkt, m_freem, m_gethdr, m_pullup, m_split, mcl_nout,
 };
 use crate::kern::uipc_mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
 use crate::kern::vm_bsd::uvm_pagealloc;
@@ -103,6 +103,7 @@ use crate::sys::device::Device;
 use crate::sys::errno::Errno;
 use crate::sys::fcntl::{FNONBLOCK, FREAD, FWRITE};
 use crate::sys::malloc::{M_NOWAIT, M_TEMP, M_ZERO};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::mtod;
 use crate::sys::mbuf::{M_COPYALL, M_DONTWAIT, MT_DATA, PACKET_TAG_GRE};
 use crate::sys::mman::{MADV_NORMAL, MAP_INHERIT_COPY, PROT_READ, PROT_WRITE};
@@ -747,9 +748,7 @@ pub fn mbuf_chains() {
         None => ok = false,
     }
 
-    let out = MBPOOL.pr_nout.get()
-        + MTAGPOOL.pr_nout.get()
-        + MCLPOOLS.iter().map(|pp| pp.pr_nout.get()).sum::<u32>();
+    let out = MBUFPL.nout() + MTAGPL.nout() + mcl_nout();
     if ok && out == 0 {
         kprintf!(
             "selftest: mbufs ok ({} KiB of mbuf memory in use, limit {} KiB)\n",
@@ -1642,7 +1641,7 @@ pub fn ping_gateway() {
     let len = hlen + 8 + PING_DATALEN;
     // Leave room in front for the link header, as a socket's send would.
     let lead = MHLEN - len;
-    m.m_data().set(m.m_data().get().wrapping_add(lead & !7));
+    m_data_add(m, (lead & !7) as isize);
     m.m_len().set(len as u32);
     m.m_pkthdr().len.set(len as i32);
     m.m_pkthdr().ph_rtableid.set(0);

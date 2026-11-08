@@ -162,6 +162,7 @@ use crate::nfs::xdr_subs::{fxdr_unsigned, txdr_nfsv3time, txdr_unsigned};
 use crate::sys::buf::{B_BUSY, B_DELWRI, B_NEEDCOMMIT, Buf};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{M_WAIT, MHLEN, MLEN, MT_DATA, Mbuf, mclget, mtod};
+use crate::sys::mbuf::{m_data_add, m_set_next, m_take_next};
 use crate::sys::mount::Mount;
 use crate::sys::mount::NFSMNT_NFSV3;
 #[cfg(feature = "nfsclient")]
@@ -904,7 +905,7 @@ pub fn nfsm_uiotombuf(mp: &mut &'static Mbuf, uiop: &mut Uio<'_>, mut len: usize
                 mclget(mb2, M_WAIT);
             }
             mb2.m_len().set(0);
-            mb.m_next().set(Some(mb2));
+            let _ = m_set_next(mb, Some(mb2));
             mb = mb2;
         }
     }
@@ -913,7 +914,7 @@ pub fn nfsm_uiotombuf(mp: &mut &'static Mbuf, uiop: &mut Uio<'_>, mut len: usize
         if pad > m_trailingspace(mb) as usize {
             let mb2 = nfsm_mget();
             mb2.m_len().set(0);
-            mb.m_next().set(Some(mb2));
+            let _ = m_set_next(mb, Some(mb2));
             mb = mb2;
         }
         // SAFETY: the `pad` bytes after `mb`'s data are its trailing space (checked above, or
@@ -1014,8 +1015,10 @@ pub fn nfsm_disct<'a>(
     let Some(mp2) = m_get(M_WAIT, MT_DATA) else {
         return Err(Errno::ENOBUFS);
     };
-    mp2.m_next().set(mp.m_next().get());
-    mp.m_next().set(Some(mp2));
+    // mp2->m_next = mp->m_next; mp->m_next = mp2 (the rest taken off its link first).
+    let rest = m_take_next(mp);
+    let _ = m_set_next(mp2, rest);
+    let _ = m_set_next(mp, Some(mp2));
     mp.m_len().set(mp.m_len().get() - left as u32);
     let mp = mp2;
     let cp2 = mtod::<u8>(mp);
@@ -1037,7 +1040,7 @@ pub fn nfsm_disct<'a>(
             // SAFETY: `xfer` bytes at `m2`'s data are its data; `p + xfer <= siz` bytes of
             // the fresh mbuf's data area (checked above); distinct mbufs.
             unsafe { ptr::copy_nonoverlapping(mtod::<u8>(m2), cp2.add(p), xfer) };
-            m2.m_data().set(m2.m_data().get().wrapping_add(xfer));
+            m_data_add(m2, xfer as isize);
             m2.m_len().set(m2.m_len().get() - xfer as u32);
             p += xfer;
             siz2 -= xfer;
@@ -1654,7 +1657,7 @@ pub fn nfsm_build<'a>(mp: &'a mut &'static Mbuf, len: usize) -> XdrOut<'a> {
         if len > MLEN {
             panic(format_args!("build > MLEN"));
         }
-        mb.m_next().set(Some(mb2));
+        let _ = m_set_next(mb, Some(mb2));
         mb = mb2;
         mb.m_len().set(0);
         bpos = mtod::<u8>(mb);
@@ -1747,7 +1750,9 @@ pub(crate) mod tests {
             m.m_len().set(p.len() as u32);
             m_copyback(m, 0, p, M_WAIT).expect("copyback");
             match tail {
-                Some(t) => t.m_next().set(Some(m)),
+                Some(t) => {
+                    let _ = m_set_next(t, Some(m));
+                }
                 None => head = Some(m),
             }
             tail = Some(m);

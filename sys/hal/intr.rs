@@ -102,6 +102,8 @@ mod levels {
     pub const IPL_SOFTNET: i32 = 0x2;
     /// `IPL_BIO`.
     pub const IPL_BIO: i32 = 0x3;
+    /// `IPL_NET` (N6.1: the mbuf pools and queues).
+    pub const IPL_NET: i32 = 0x4;
     /// `IPL_SOFTTTY`.
     pub const IPL_SOFTTTY: i32 = 0x8;
     /// `IPL_TTY`.
@@ -129,6 +131,8 @@ mod levels {
     pub const IPL_SOFTTTY: i32 = 4;
     /// `IPL_BIO`.
     pub const IPL_BIO: i32 = 5;
+    /// `IPL_NET` (N6.1: the mbuf pools and queues).
+    pub const IPL_NET: i32 = 6;
     /// `IPL_TTY`.
     pub const IPL_TTY: i32 = 7;
     /// `IPL_VM`.
@@ -152,6 +156,8 @@ mod levels {
     pub const IPL_SOFTNET: i32 = 0x2;
     /// `IPL_BIO`.
     pub const IPL_BIO: i32 = 0x3;
+    /// `IPL_NET` (`<machine/intrdefs.h>`'s value; the boundary designed for both, decision 44).
+    pub const IPL_NET: i32 = 0x4;
     /// `IPL_SOFTTTY`.
     pub const IPL_SOFTTTY: i32 = 0x8;
     /// `IPL_TTY`.
@@ -169,8 +175,8 @@ mod levels {
 }
 
 pub use levels::{
-    IPL_BIO, IPL_HIGH, IPL_MPFLOOR, IPL_SCHED, IPL_SOFTCLOCK, IPL_SOFTNET, IPL_SOFTTTY, IPL_TTY,
-    IPL_VM, NIPL,
+    IPL_BIO, IPL_HIGH, IPL_MPFLOOR, IPL_NET, IPL_SCHED, IPL_SOFTCLOCK, IPL_SOFTNET, IPL_SOFTTTY,
+    IPL_TTY, IPL_VM, NIPL,
 };
 
 /// `IPL_CLOCK`: the clock interrupt's level, `IPL_SCHED` on both machines (`<machine/intr.h>`).

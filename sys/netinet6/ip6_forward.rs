@@ -103,6 +103,7 @@ use crate::netinet6::ip6_var::{
 use crate::netinet6::nd6::nd6_is_addr_neighbor;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
+use crate::sys::mbuf::mtod;
 use crate::sys::mbuf::{
     M_BCAST, M_COPYFLAGS, M_DONTWAIT, M_MCAST, MHLEN, MT_DATA, Mbuf, PACKET_TAG_IPSEC_IN_DONE,
     PF_TAG_GENERATED, PF_TAG_REROUTE,
@@ -214,7 +215,7 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
             pf.set(pf.get() | (pfflags & PF_TAG_GENERATED));
             // SAFETY: a fresh packet header mbuf has MHLEN bytes at its data, and `icmp_len`
             // is at most MHLEN here.
-            unsafe { ptr::copy_nonoverlapping(icmp_buf.as_ptr(), mc.m_data().get(), icmp_len) };
+            unsafe { ptr::copy_nonoverlapping(icmp_buf.as_ptr(), mtod::<u8>(mc), icmp_len) };
             Some(mc)
         };
 

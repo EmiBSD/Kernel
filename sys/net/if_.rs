@@ -2318,7 +2318,7 @@ pub fn if_input_proto(
     };
 
     m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-    m.m_pkthdr().ph_cookie.set(input as *mut ());
+    m.m_pkthdr().ph_cookie.set(input as usize);
     ml_enqueue(&ns.ns_proto, m);
 }
 
@@ -5235,6 +5235,7 @@ const _: () = {
 pub(crate) mod tests {
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
+    use crate::sys::mbuf::mtod;
 
     #[test]
     fn ifreq_union_accessors() {
@@ -5392,7 +5393,7 @@ pub(crate) mod tests {
         let m = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
         assert!(bytes.len() <= crate::sys::mbuf::MHLEN);
         // SAFETY: a fresh packet header mbuf has MHLEN bytes at m_data.
-        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), m.m_data().get(), bytes.len()) };
+        unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), mtod::<u8>(m), bytes.len()) };
         m.m_len().set(bytes.len() as u32);
         m.m_pkthdr().len.set(bytes.len() as i32);
         m

@@ -732,6 +732,7 @@ mod tests {
     use std::{assert, assert_eq, vec};
 
     use super::*;
+    use crate::sys::mbuf::m_data_add;
 
     use crate::kern::uipc_mbuf::{m_copydata, m_gethdr};
     use crate::kern::uipc_socket::{soclose, socreate};
@@ -792,7 +793,7 @@ mod tests {
         // sendto(s, echo, 16, 0, 10.0.2.2): the payload is the ICMP message.
         let len = 8 + 8;
         let m = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
-        m.m_data().set(m.m_data().get().wrapping_add(64));
+        m_data_add(m, 64);
         m.m_len().set(len as u32);
         m.m_pkthdr().len.set(len as i32);
         let icp = IcmpPkt::of(m, 0);

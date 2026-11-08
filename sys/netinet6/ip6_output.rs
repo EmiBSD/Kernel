@@ -215,6 +215,7 @@ use crate::sys::mbuf::{
     PACKET_TAG_IPSEC_IN_DONE, PACKET_TAG_IPSEC_OUT_DONE, PF_TAG_GENERATED, PF_TAG_REROUTE,
     m_move_pkthdr, mclget, ml_len, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next, m_take_next};
 use crate::sys::mutex::Mutex;
 use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
 use crate::sys::queue::ListHead;
@@ -431,8 +432,11 @@ pub fn ip6_output(
                         if !hdrsplit {
                             panic(format_args!("ip6_output: assumption failed: hdr not split"));
                         }
-                        d2.m_next().set(mm.m_next().get());
-                        mm.m_next().set(Some(d2));
+                        // d2->m_next = mm->m_next; mm->m_next = d2 (the rest taken off its
+                        // link first: an mbuf is in one link or parked).
+                        let rest = m_take_next(mm);
+                        let _ = m_set_next(d2, rest);
+                        let _ = m_set_next(mm, Some(d2));
                         set_mtod_byte(d2, ip6.ip6_nxt);
                         ip6.ip6_nxt = IPPROTO_DSTOPTS as u8;
                     }
@@ -461,8 +465,9 @@ pub fn ip6_output(
                             }
                         }
                         nexthdrp = Some(eh);
-                        eh.m_next().set(mprev.m_next().get());
-                        mprev.m_next().set(Some(eh));
+                        let rest = m_take_next(mprev);
+                        let _ = m_set_next(eh, rest);
+                        let _ = m_set_next(mprev, Some(eh));
                         mprev = eh;
                     }
                 }
@@ -904,11 +909,7 @@ pub fn ip6_fragment(
             if let Err(e) = m_dup_pkthdr(m, m0, M_DONTWAIT) {
                 break 'bad e;
             }
-            m.m_data().set(
-                m.m_data()
-                    .get()
-                    .wrapping_add(MAX_LINKHDR.load(Ordering::Relaxed) as usize),
-            );
+            m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
             let mut mhip6 = ip6;
             m.m_len().set(size_of::<Ip6Hdr>() as u32);
             mtod_ip6_store(m, &mhip6);
@@ -936,7 +937,7 @@ pub fn ip6_fragment(
             let Some(n) = m_copym(m0, off, len, M_DONTWAIT) else {
                 break 'bad Errno::ENOBUFS;
             };
-            mlast.m_next().set(Some(n));
+            let _ = m_set_next(mlast, Some(n));
 
             let frag = Ip6Frag {
                 ip6f_nxt: nextproto,
@@ -1097,7 +1098,7 @@ fn ip6_insertfraghdr(m0: &Mbuf, m: &'static Mbuf, hlen: i32) -> Result<*mut u8, 
         ) else {
             return Err(Errno::ENOBUFS);
         };
-        m.m_next().set(Some(n));
+        let _ = m_set_next(m, Some(n));
         n
     } else {
         m
@@ -1126,7 +1127,7 @@ fn ip6_insertfraghdr(m0: &Mbuf, m: &'static Mbuf, hlen: i32) -> Result<*mut u8, 
             return Err(Errno::ENOBUFS);
         };
         mfrg.m_len().set(size_of::<Ip6Frag>() as u32);
-        mlast.m_next().set(Some(mfrg));
+        let _ = m_set_next(mlast, Some(mfrg));
         Ok(mtod::<u8>(mfrg))
     }
 }
@@ -2456,9 +2457,8 @@ fn ip6_splithdr(m: &'static Mbuf, exthdrs: &mut Ip6Exthdrs) -> Result<(), Errno>
         m_move_pkthdr(mh, m);
         m_align(mh, size_of::<Ip6Hdr>() as i32);
         m.m_len().set(m.m_len().get() - size_of::<Ip6Hdr>() as u32);
-        m.m_data()
-            .set(m.m_data().get().wrapping_add(size_of::<Ip6Hdr>()));
-        mh.m_next().set(Some(m));
+        m_data_add(m, size_of::<Ip6Hdr>() as isize);
+        let _ = m_set_next(mh, Some(m));
         m = mh;
         m.m_len().set(size_of::<Ip6Hdr>() as u32);
         mtod_ip6_store(m, &ip6);

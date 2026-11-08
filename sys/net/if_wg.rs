@@ -93,7 +93,12 @@
 //! - The wire structures are `#[repr(C)]` without padding; they are read out of the mbuf with
 //!   an unaligned copy and written from their bytes. The packet type and indices keep the C's
 //!   byte order (`htole32` constants, indices copied raw); the data nonce is little-endian.
-//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s (`t_done` a `bool`).
+//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s (`t_done` a `bool`). Inherited race,
+//!   N8's: `wg_queue_dequeue` reads the head's `t_done` (and then `t_mbuf`) under `q_mtx`
+//!   while the parallel queue's `wg_encap`/`wg_decap` sets them on another CPU without it;
+//!   the C does the same with a plain `int` and no barrier (if_wg.c's `t->t_done = 1` and
+//!   `wg_queue_dequeue`). The rest of that peek reads only the packet's flags word and its
+//!   tag list, which the mbuf keeps atomic (`sys/sys/mbuf.rs`'s `of_parked`, review C1).
 //! - `sockaddr_ntop` (`netinet/inet_ntop.c`) is not ported: the log lines format the address
 //!   with [`SaNtop`], which prints what it would (`a.b.c.d`, an IPv6 address through
 //!   `In6Ntop`, or the family and the bytes).
@@ -205,8 +210,8 @@ use crate::sys::ioccom::_iowr;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_RTABLE, M_ZERO};
 use crate::sys::mbuf::{
     M_BCAST, M_DONTWAIT, M_EXT, M_MAXLOOP, M_MCAST, M_WAIT, MHLEN, MT_DATA, MT_SONAME, MT_SOOPTS,
-    MTag, Mbuf, MbufList, MbufQueue, PACKET_TAG_MAXSIZE, PACKET_TAG_WIREGUARD, mq_empty, mq_len,
-    mtod,
+    MTag, Mbuf, MbufList, MbufQueue, PACKET_TAG_MAXSIZE, PACKET_TAG_WIREGUARD, mbuf_list_first,
+    ml_len, mq_empty, mq_len, mtod,
 };
 use crate::sys::mutex::Mutex;
 use crate::sys::param::PWAIT;
@@ -2977,7 +2982,7 @@ pub fn wg_queue_in(sc: &WgSoftc, peer: &WgPeer, m: &'static Mbuf) -> Result<(), 
     let serial = &peer.p_decap_queue;
 
     mtx_enter(&serial.q_mtx);
-    if serial.q_list.ml_len.load(Ordering::Relaxed) < MAX_QUEUED_PKT {
+    if ml_len(&serial.q_list) < MAX_QUEUED_PKT {
         ml_enqueue(&serial.q_list, m);
         mtx_leave(&serial.q_mtx);
     } else {
@@ -3012,7 +3017,7 @@ pub fn wg_queue_out(sc: &WgSoftc, peer: &WgPeer) {
 
     while let Some(m) = ml_dequeue(&ml) {
         mtx_enter(&serial.q_mtx);
-        if serial.q_list.ml_len.load(Ordering::Relaxed) < MAX_QUEUED_PKT {
+        if ml_len(&serial.q_list) < MAX_QUEUED_PKT {
             ml_enqueue(&serial.q_list, m);
             mtx_leave(&serial.q_mtx);
         } else {
@@ -3051,7 +3056,7 @@ pub fn wg_ring_dequeue(r: &WgRing) -> Option<&'static Mbuf> {
 pub fn wg_queue_dequeue(q: &WgQueue) -> Option<(&'static Mbuf, &'static WgTag)> {
     mtx_enter(&q.q_mtx);
     let mut ret = None;
-    if let Some(m) = q.q_list.ml_head.get()
+    if let Some(m) = mbuf_list_first(&q.q_list)
         && let Some(t) = wg_tag_get(m)
         && t.t_done.get()
     {

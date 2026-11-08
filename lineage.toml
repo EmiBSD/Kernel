@@ -1623,7 +1623,7 @@ notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in
 rust = "sys/arch/arm64/arm64/bus_dma.rs"
 lz = ["sys/arch/arm64/arm64/bus_dma.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/bus_space.rs"
@@ -2431,7 +2431,7 @@ status = "inherited"
 rust = "sys/crypto/cryptosoft.rs"
 lz = ["sys/crypto/cryptosoft.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/aes.rs"]
+adapted_by = ["sys/crypto/aes.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/crypto/curve25519.rs"
@@ -3262,7 +3262,8 @@ adapted_by = ["sys/hal/softintr.rs"]
 [[module]]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3274,7 +3275,8 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 [[module]]
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3295,7 +3297,8 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 [[module]]
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3384,7 +3387,8 @@ notes = "M16a: the whole header: struct mpi_dmamem (malloc'ed, &'static), mpi_cc
 [[module]]
 rust = "sys/dev/ic/ne2000.rs"
 lz = ["sys/dev/ic/ne2000.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "BSD plus the Hannum/Greenman notice"
 notes = "license: BSD plus the Hannum/Greenman notice, kept whole; M16c: the NE2000 core (PIO through the ASIC data port). GWETHER (never defined) is not ported; readmem drops the byte the C reads past an odd destination; bus_space_{read,write}_multi_1 and _raw_multi_2 added to machine/bus.rs"
 
@@ -3477,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3920,7 +3924,8 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 [[module]]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3952,7 +3957,8 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 [[module]]
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3963,7 +3969,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4288,7 +4295,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -4555,7 +4563,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/if_cdce.rs"
 lz = ["sys/dev/usb/if_cdce.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "BSD-4"
 
 [[module]]
@@ -5505,7 +5514,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5783,12 +5792,13 @@ adapted_by = ["sys/kernel/sysctl.rs"]
 rust = "sys/kern/uipc_mbuf.rs"
 lz = ["sys/kern/uipc_mbuf.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf2.rs"
 lz = ["sys/kern/uipc_mbuf2.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf2.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_proto.rs"
@@ -5799,13 +5809,13 @@ status = "inherited"
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/netlock.rs"]
+adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_syscalls.rs"
@@ -6256,7 +6266,7 @@ status = "inherited"
 rust = "sys/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/bpf_filter.rs"
@@ -6287,7 +6297,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6308,7 +6318,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/if_loop.rs"
@@ -6343,18 +6354,20 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
 lz = ["sys/net/ifq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/netisr.rs"
@@ -6365,7 +6378,7 @@ status = "inherited"
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6387,7 +6400,8 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 [[module]]
 rust = "sys/net/pf_norm.rs"
 lz = ["sys/net/pf_norm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/pf_osfp.rs"
@@ -6495,7 +6509,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6516,7 +6531,8 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 [[module]]
 rust = "sys/netinet/in_cksum.rs"
 lz = ["sys/netinet/in_cksum.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/in_pcb.rs"
@@ -6572,7 +6588,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
@@ -6589,7 +6606,7 @@ status = "inherited"
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6610,7 +6627,8 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 [[module]]
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -6636,7 +6654,7 @@ status = "inherited"
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6656,13 +6674,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6673,7 +6692,7 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
@@ -6699,7 +6718,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6714,13 +6734,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/frag6.rs"
 lz = ["sys/netinet6/frag6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
@@ -6730,7 +6751,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/in6_cksum.rs"
 lz = ["sys/netinet6/in6_cksum.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_ifattach.rs"
@@ -6766,7 +6788,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/ip6_forward.rs"
 lz = ["sys/netinet6/ip6_forward.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_id.rs"
@@ -6777,13 +6800,13 @@ status = "inherited"
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6798,7 +6821,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/mld6_var.rs"
@@ -6840,7 +6864,7 @@ status = "inherited"
 rust = "sys/nfs/krpc_subr.rs"
 lz = ["sys/nfs/krpc_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs.rs"
@@ -6858,7 +6882,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -6881,13 +6905,13 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/nam
 rust = "sys/nfs/nfs_serv.rs"
 lz = ["sys/nfs/nfs_serv.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_socket.rs"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
@@ -6905,7 +6929,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mou
 rust = "sys/nfs/nfs_subs.rs"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
@@ -7410,7 +7434,15 @@ notes = "M_* flags and types with INITKMEMNAMES, MINBUCKET/MINALLOCSIZE/MAXALLOC
 [[module]]
 rust = "sys/sys/mbuf.rs"
 lz = ["sys/sys/mbuf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
+
+[[module]]
+rust = "sys/hal/sys/mbuf.rs"
+crate = "hal"
+lz = ["sys/sys/mbuf.rs"]
+status = "redesigned"
+notes = "N6.1: mbuf.h's userland part moved into hal so kernel::net::mbuf, kernel::sysctl and bsd share one copy: MT_* and MT_NTYPES, struct mbstat AbiPod through hal::abi_pod! (kern.mbstat's bytes)"
 
 [[module]]
 rust = "sys/hal/sys/mman.rs"
@@ -7616,7 +7648,8 @@ notes = "M7b: every constant (AF_*/PF_* as sa_family_t, the rest i32), linger, s
 [[module]]
 rust = "sys/sys/socketvar.rs"
 lz = ["sys/sys/socketvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/sys/sockio.rs"
@@ -7672,7 +7705,7 @@ license = "none"
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
 status = "redesigned"
-notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats, cpustats and mbstat AbiPod through hal::abi_pod! here; 0 unsafe (LZ 17), forbid on its mod line"
+notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats and cpustats AbiPod through hal::abi_pod! here (mbstat in hal::sys::mbuf since N6.1); 0 unsafe (LZ 17), forbid on its mod line"
 
 [[module]]
 rust = "sys/hal/sys/sysctl.rs"
@@ -11548,7 +11581,7 @@ rust = "sys/hal/owned.rs"
 crate = "hal"
 lz = ["sys/kern/subr_tree.rs", "sys/sys/tree.rs", "sys/sys/queue.rs"]
 status = "redesigned"
-notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there. N5.1: SecondaryList<S>, queue.h's TAILQ/LIST/SIMPLEQ over a SecondaryEntry (push_head, push_tail, insert_before_first for bufq_simple_nscan, pop_head, remove, the walks), whose links are Member<A> values moved in and out with their count: counted for an owned element (Member::counted) or uncounted for a &'static one (Member::of_static, refused for an owned element; the entry records which), the buffer cache's queues and a disk's bufq; N6.0: OwnedSlist<A> over SlistLink (an element's link owns the next element: m_next, m_nextpkt, sb_mb) with the O(1) tail (ml_tail, sb_mbtail), push_head/push_tail/pop_head/concat, iter, and a cursor with split_after (m_split) and remove_next; slist_adapter!; the drop pops one at a time"
+notes = "N3.5 S0: OwnedTree<A>/OwnedList<A>, the RBT tree of subr_tree.c with RBT_GENERATE_AUGMENT (the augment at each of the C's call sites, walked up while it changes, as uvm_map_addr_augment) and the TAILQ of queue.h, owning their elements as PoolBox (insert/push consume the box, take_by/pop/drop give it back, drain_into for uvm_map_teardown); SecondaryTree<S>/SecondaryRef<A>, links to owned elements counted in the owner entry, which refuses to give back a counted element; container identities, the entry-within-element check and poisoning make every adapter safe; uvm's map entries (N3.5); sys/sys/tree.rs, sys/kern/subr_tree.rs and sys/sys/queue.rs stay for the legacy tree, so every LZ item keeps its name there. N5.1: SecondaryList<S>, queue.h's TAILQ/LIST/SIMPLEQ over a SecondaryEntry (push_head, push_tail, insert_before_first for bufq_simple_nscan, pop_head, remove, the walks), whose links are Member<A> values moved in and out with their count: counted for an owned element (Member::counted) or uncounted for a &'static one (Member::of_static, refused for an owned element; the entry records which), the buffer cache's queues and a disk's bufq; N6.0: OwnedSlist<A> over SlistLink (an element's link owns the next element: m_next, m_nextpkt, sb_mb) with the O(1) tail (ml_tail, sb_mbtail), push_head/push_tail/pop_head/concat, iter, and a cursor with split_after (m_split) and remove_next; slist_adapter!; the drop pops one at a time; N6.1: SlistLink by address (the item's pointer alone, 8 bytes, the box rebuilt with Pooled::POOL; get, get_mut, set, take for a bare chain: m_next, ph_tags) and OwnedSlist::into_head (a chain built at its tail handed over whole)"
 
 [[module]]
 rust = "sys/hal/pinlist.rs"
@@ -11632,6 +11665,11 @@ reason = "hal runtime, written new: OnceStatic<T>, the init-once static that rep
 rust = "sys/hal/bridges.rs"
 crate = "hal"
 reason = "hal runtime, written new: the bridge registry (one OnceStatic per trait, bridges.toml); docs/ZERO_UNSAFE.md 0.1"
+
+[[extra]]
+rust = "sys/hal/overlay.rs"
+crate = "hal"
+reason = "hal runtime, written new (N6.1): Body, a pool item's tagged overlay (the C's struct mbuf unions, the tag bits M_PKTHDR and M_EXT in the flags word only its own methods set: the packet header and the cluster description lent while live, the bytes around them otherwise), and Bytes<N>, a cluster's bytes in an UnsafeCell, lent by borrow and by address to bsd's mtod (BoxPool::get_bytes hands one out unwritten, as pool_get does)"
 
 [[extra]]
 rust = "sys/hal/pod.rs"
@@ -11767,7 +11805,7 @@ rust = "sys/hal/intr.rs"
 crate = "hal"
 lz = ["sys/arch/arm64/arm64/intr.rs"]
 status = "redesigned"
-notes = "N2: the interrupt-level guard (SplGuard). N4.5c: spl(9)'s generic half from arm64's intr.c: ci_cpl/ci_ipending in the core (hal::cpu), the arm_dflt_* defaults, arm_smask as a table of atomics (init_smask), softintr(), arm_do_pending_intr over hal::cpu's interrupt guard; struct arm_intr_func is the IntrHardware trait (decision 46), registered by the machine (arm64's initarm over the table arm_set_intr_handler fills); the IntrLevel bridge removed; amd64's spl is N10's"
+notes = "N2: the interrupt-level guard (SplGuard). N4.5c: spl(9)'s generic half from arm64's intr.c: ci_cpl/ci_ipending in the core (hal::cpu), the arm_dflt_* defaults, arm_smask as a table of atomics (init_smask), softintr(), arm_do_pending_intr over hal::cpu's interrupt guard; struct arm_intr_func is the IntrHardware trait (decision 46), registered by the machine (arm64's initarm over the table arm_set_intr_handler fills); the IntrLevel bridge removed; amd64's spl is N10's; N6.1: IPL_NET (the mbuf pools and queues; amd64's value from intrdefs.h, the boundary designed for both)"
 [[module.fn]]
 lz = "sys/arch/arm64/arm64/intr.rs::ARM_SMASK"
 native = ["SMASK"]
@@ -12025,7 +12063,7 @@ reason = "hal runtime, written new: KmBuf, an owned run of kernel pages (km_allo
 [[extra]]
 rust = "sys/hal/pool.rs"
 crate = "hal"
-reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages; N6.0: PageSource (pool_allocator's pa_alloc/pa_free/pa_pagesz as a safe trait the kernel implements) and PoolBackend::create_with (no default pool: a backend that cannot take a source makes none), TypedPool::init_with_source and BoxPool::init_with_source; PoolBox::pool (crate-private) for hal::smr's pool check; N6.0: Parkable (const POOL and a ParkWord mark within the item), PoolBox::park (the handle given up for the item's pointer, never a reference) and PoolBox::unpark (the handle back once, by a compare-and-swap of the mark)"
+reason = "hal runtime, written new: TypedPool<T> and PoolArc<T>, pool(9) items as owned counted handles over the PoolBackend bridge; BoxPool<T> and PoolBox<T> (N3.1, D18), the uncounted owned item, exactly a T, for the pmaps' pv entries and pteds, and SharedBox<T> (BoxPool::get_linked, its raw form into_raw/from_raw for arm64's level-3 slots); N3.4a: PoolArc::get_mut and leak, TypedPool::init_recorded (from_value's pools), set_hiwat/cache_init over RawPool (pool_sethiwat, pool_cache_init); N3.5 S0: PoolBox::into_raw/from_raw (crate-private, the owning containers of owned.rs), StaticArena<T, N> behind BoxPool::init_arena (N static slots and leaked pages carved into slots, never freed, no pool(9) row: uvm_map.c's kernel_map_entry[MAX_KMAPENT], uvm.kentry_free and the kmapent pages); docs/ZERO_UNSAFE.md 0.1, decision 10; N5.1: RawPool::get_idle and BoxPool::get_idle, a get from the items the pool holds that never grows it, sleeps or counts a failure (buf_get's try under the cache's lock), the item's one write shared with get (boxed), and PoolYield with RawPool::yield_now (pool_get's kern.pool_debug 2 yield, made by the caller once it holds no lock); N5.3: PR_RWLOCK (lockf's pools); N5.5b0: AnyArc erases an MArc too (its vtable gives the offsets of the count and the value and the kind of handle); N5.9f2: RawPool::npages and TypedPool::npages (pr_npages, 0 unsafe; the default 0 for a backend with no pages of its own), for vfs.fuse.fusefs_pool_pages; N6.0: PageSource (pool_allocator's pa_alloc/pa_free/pa_pagesz as a safe trait the kernel implements) and PoolBackend::create_with (no default pool: a backend that cannot take a source makes none), TypedPool::init_with_source and BoxPool::init_with_source; PoolBox::pool (crate-private) for hal::smr's pool check; N6.0: Parkable (const POOL and a ParkWord mark within the item), PoolBox::park (the handle given up for the item's pointer, never a reference) and PoolBox::unpark (the handle back once, by a compare-and-swap of the mark); N6.1: Pooled (a type's one pool, split out of Parkable, Send only), RawPool::wakeup (pool_wakeup, a default method) and BoxPool::wakeup; BoxPool<Bytes<N>>::get_bytes, a cluster's item unwritten (a 64 KiB value cannot be built on the stack first)"
 
 [[extra]]
 rust = "sys/hal/malloc.rs"
@@ -12056,7 +12094,7 @@ reason = "hal runtime, written new: the trust boundary of the memory bridges (al
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages); N6.0: the NetLock bridge gone (BsdNetLock, hal_bridges_register_vm: the net lock is hal's static); BsdPools::create_with, a pool_init over subr_pool.rs's POOL_ALLOCATOR_SOURCE with the source in the pool's pr_source (a source whose sizes are not the allocator's is refused)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages); N6.0: the NetLock bridge gone (BsdNetLock, hal_bridges_register_vm: the net lock is hal's static); BsdPools::create_with, a pool_init over subr_pool.rs's POOL_ALLOCATOR_SOURCE with the source in the pool's pr_source (a source whose sizes are not the allocator's is refused); N6.1: RawPool::wakeup over subr_pool's pool_wakeup (nmbclust_update's, D-N6.1-3)"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -13944,6 +13982,265 @@ crate = "kernel"
 lz = ["sys/sys/syscall_mi.rs"]
 status = "redesigned"
 notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
+
+[[module]]
+rust = "sys/kernel/net/mbuf.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]
+status = "redesigned"
+notes = "N6.1: struct mbuf as an owned pool item (MbufBox = PoolBox<Mbuf> of mbufpl, 256 bytes, align 64): m_next/m_nextpkt owned SlistLinks, m_data an offset (m_off) into the data storage (data()/data_mut() bounds-checked slices, data_raw() for bsd's mtod), the two unions a hal::overlay::Body (Pkthdr live by M_PKTHDR, Ext by M_EXT; MFlags keeps the tag bits); clusters BoxPool<Bytes<N>> x8 (mcl2k..mcl64k, the C's names and item sizes) as ClusterBox, shared through PoolArc<ExtRefs> of mextrefs (64-byte item) made on the first share; the drop is m_free's (mbstat at splnet, M_ZEROIZE carried, the chain and the packet list freed one at a time); MbufPages the PageSource of m_pool_allocator (the memory limit, kp_dma_contig until m_pool_noconstraints); mbstat a hal::percpu::Counters from boot (mbstat_read for kern.mbstat); MbufList = OwnedSlist<MPkt> (struct mbuf_queue, the mq_* and sysctl_mq stay bsd's until N6.3a, review S4); the pf legs through the Pf bridge; m_copyback into a shared cluster takes a copy of its own (Deviations); MEXTADD of a driver's own storage not implemented (no user: D-N6.1-2)"
+
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MEXTFREE_POOL"
+native = []
+kind = "dropped"
+reason = "a cluster held alone is ExtKind::Pool; no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr"
+native = ["Mbuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr::new"
+native = ["Mbuf::fresh"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr::default"
+native = []
+kind = "dropped"
+reason = "Mbuf::fresh builds the whole header of a new mbuf"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MbufExt"
+native = ["Ext"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MextFreeFn"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MDat"
+native = ["sys/hal/overlay.rs::Body"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_data"
+native = ["Mbuf::data_off", "Mbuf::set_data_off", "Mbuf::data_raw"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_ext"
+native = ["Mbuf::ext"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pktdat"
+native = ["Mbuf::storage_raw"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_dat"
+native = ["Mbuf::storage_raw"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pkthdr_assign"
+native = ["Pkthdr::copy_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pkthdr_zero"
+native = ["Pkthdr::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_ext_assign"
+native = []
+kind = "dropped"
+reason = "m_defrag moves the cluster's description whole (the overlay's take_e/set_e): no byte copy"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclrefdebugn"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace: the shared count is the PoolArc's, which has no file and line; no userland-visible behaviour"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclrefdebugo"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace: the shared count is the PoolArc's, which has no file and line; no userland-visible behaviour"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclinitreference"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace (MCLINITREFERENCE): nothing to record without it; the shared count starts in ExtRefs"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MExtRefs"
+native = ["ExtRefs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MBSTAT_BOOT"
+native = ["MBSTAT"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MBPOOL"
+native = ["MBUFPL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MTAGPOOL"
+native = ["MTAGPL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MCLPOOLS"
+native = ["MCL2K", "MCL2K2", "MCL4K", "MCL8K", "MCL9K128", "MCL12K", "MCL16K", "MCL64K"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_EXT_REFS_POOL"
+native = ["MEXTREFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_EXTFREE_REFS_FN"
+native = []
+kind = "dropped"
+reason = "a shared cluster is ExtKind::Shared, its free ExtRefs's drop; no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_POOL_ALLOCATOR"
+native = ["MBUF_PAGES"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MEXTFREE_FNS"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::NUM_EXTFREE_FNS"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::put_decimal"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mclnames"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mclname"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_databuf"
+native = ["Mbuf::storage_raw"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_size"
+native = ["Mbuf::storage_len"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_data_adj"
+native = ["Mbuf::data_add"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::PACKET_TAG_POOL_ITEM"
+native = []
+kind = "dropped"
+reason = "mtagpl's item is MTag itself, its data inside (PACKET_TAG_MAXSIZE + 16 bytes, asserted)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mbstat"
+native = ["mbstat_read"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mbuf_from_item"
+native = ["Mbuf::fresh"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_clearhdr"
+native = ["Pkthdr::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree_pool"
+native = []
+kind = "dropped"
+reason = "a cluster held alone goes back to its pool with its PoolBox's drop"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_ext_refs_shared"
+native = ["Ext::is_shared"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree_refs"
+native = ["ExtRefs::drop"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mextfree_fn"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mextfree_register"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree"
+native = []
+kind = "dropped"
+reason = "the cluster's description drops with the overlay (m_free's drop, m_defrag's take_e): ClusterBox's and ExtRefs's drops give the cluster back"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_pool_alloc"
+native = ["MbufPages::alloc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_pool_free"
+native = ["MbufPages::free"]
+kind = "renamed"
+[[module]]
+rust = "sys/kernel/net/mbuf2.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_mbuf2.rs"]
+status = "redesigned"
+notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_tags chain (a bare SlistLink), m_tag_delete by address with SLIST_REMOVE's walk, m_tag_copy_chain appending through a cursor; m_pulldown over the head's box, returning the position of the mbuf holding the range as its index in the chain and the offset"
+
+[[extra]]
+rust = "sys/kernel/net/pf_hooks.rs"
+crate = "kernel"
+reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), its OnceStatic slot and register_pf"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"
