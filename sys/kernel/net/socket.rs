@@ -3990,6 +3990,7 @@ mod tests {
     //! test glue's only one.
 
     use std::sync::atomic::AtomicBool;
+    use std::vec::Vec;
     use std::{assert, assert_eq};
 
     use super::*;
@@ -4243,6 +4244,121 @@ mod tests {
         assert_eq!(head.qlens(), (0, 0));
         drop(head);
         assert_eq!(nout(), before);
+    }
+
+    /// A listener of the test protocol, `listen`ed with room for `n` connections.
+    fn listener(n: i32) -> SocketRef<Procs> {
+        let head = socket(0);
+        let mut w = solock(&head);
+        solisten(&head, &mut w, n).expect("listen");
+        drop(w);
+        head
+    }
+
+    /// `soaccept_take` with the C's `soaccept` in its closure (the connection gets its file
+    /// reference: `SS_NOFDREF` cleared; the test protocol has no `pru_accept`, so its answer
+    /// is the C's EOPNOTSUPP), the connection or the error.
+    fn accept(head: &Socket<Procs>, nonblock: bool) -> Result<SocketRef<Procs>, Errno> {
+        let mut nam = crate::net::mbuf::m_get(crate::net::mbuf::M_WAIT, 3).expect("an mbuf");
+        soaccept_take(head, solock_shared(head), nonblock, |so, w| {
+            soaccept(so, w, &mut nam)
+        })
+        .map(|(so, r)| {
+            assert_eq!(r, Err(Errno::EOPNOTSUPP));
+            assert!(!so.has_state(SS_NOFDREF));
+            so
+        })
+    }
+
+    /// A complete connection on `head`'s queue (sonewconn, then promoted).
+    fn connection(head: &Socket<Procs>) -> SocketRef<Procs> {
+        let c = sonewconn(head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+        sounlock_detached(&c);
+        soisconnected(&c);
+        c
+    }
+
+    #[test]
+    fn two_accepters_take_one_connection_once() {
+        // 200 rounds of two threads accepting the one connection queued, each round from
+        // the same start: exactly one gets it, the other answers EWOULDBLOCK; nothing leaks.
+        let _g = net_setup();
+        let before = nout();
+        let head = listener(5);
+        for round in 0..200 {
+            let c = connection(&head);
+            let got: Vec<Result<SocketRef<Procs>, Errno>> = std::thread::scope(|sc| {
+                let t: Vec<_> = (0..2).map(|_| sc.spawn(|| accept(&head, true))).collect();
+                t.into_iter()
+                    .map(|j| j.join().expect("an accepter"))
+                    .collect()
+            });
+            let (ok, err): (Vec<_>, Vec<_>) = got.into_iter().partition(Result::is_ok);
+            assert_eq!((ok.len(), err.len()), (1, 1), "round {round}");
+            assert_eq!(err[0].as_ref().err(), Some(&Errno::EWOULDBLOCK));
+            let so = ok
+                .into_iter()
+                .next()
+                .and_then(Result::ok)
+                .expect("the connection");
+            assert!(PoolArc::ptr_eq(&so, &c));
+            assert_eq!(head.qlens(), (0, 0));
+            drop(c);
+            soclose(&so, 0).expect("close");
+        }
+        soclose(&head, 0).expect("close");
+        drop(head);
+        assert_eq!(nout(), before);
+    }
+
+    #[test]
+    fn a_sleeping_accept_is_woken_by_a_connection() {
+        // 50 rounds: an accepter blocks on the empty queue (the main thread waits 0, 1 or 2
+        // ms first, so the connection comes before, around and after its sleep), then a
+        // connection is queued and promoted: the accepter always takes it, no wakeup lost.
+        let _g = net_setup();
+        let before = nout();
+        let head = listener(5);
+        for round in 0..50u64 {
+            let so = std::thread::scope(|sc| {
+                let t = sc.spawn(|| accept(&head, false));
+                std::thread::sleep(std::time::Duration::from_millis(round % 3));
+                let c = connection(&head);
+                let so = t.join().expect("the accepter").expect("the connection");
+                assert!(PoolArc::ptr_eq(&so, &c), "round {round}");
+                so
+            });
+            assert_eq!(head.qlens(), (0, 0));
+            soclose(&so, 0).expect("close");
+        }
+        soclose(&head, 0).expect("close");
+        drop(head);
+        assert_eq!(nout(), before);
+    }
+
+    #[test]
+    fn a_listener_closed_during_a_promotion_frees_everything() {
+        // 200 rounds: one thread promotes a partial connection (soisconnected: q0 to q)
+        // while the main thread closes the listener (soclose aborts both queues): whichever
+        // queue the connection is on when the close takes it, it is aborted once and every
+        // socket goes back to the pool.
+        let _g = net_setup();
+        let before = nout();
+        for round in 0..200 {
+            let head = listener(5);
+            let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+            sounlock_detached(&c);
+            std::thread::scope(|sc| {
+                let t = sc.spawn(|| soisconnected(&c));
+                soclose(&head, 0).expect("close");
+                t.join().expect("the promoter");
+            });
+            assert_eq!(head.qlens(), (0, 0), "round {round}");
+            assert!(c.has_state(SS_ISDISCONNECTED) || c.has_state(SS_ISCONNECTED));
+            drop(c);
+            drop(head);
+            assert_eq!(nout(), before, "round {round}");
+        }
     }
 
     #[test]
