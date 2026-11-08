@@ -23,4 +23,5 @@
 pub mod mbuf;
 pub mod mbuf2;
 pub mod pf_hooks;
+pub mod sockbuf;
 /* </CODE> */

@@ -14005,6 +14005,13 @@ status = "redesigned"
 notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
 
 [[module]]
+rust = "sys/kernel/net/sockbuf.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
+status = "redesigned"
+notes = "N6.2a: struct sockbuf as the kernel's (Sockbuf<G>): sb_lock a hal RawRwlock (sblock gives SbLocked), sb_mtx a Mutexed owning the records (SbData: records an MbufList by m_nextpkt, the last record as an OwnedSlist<MNext> plus its final mbuf (sb_mbtail) held outside the list, so sbcompress writes it through the guard with no hal last_mut), the counters, limits, flags and state atomics written only through the guard (SbGuard) and read without it by the filters and kern.file; sbappend/sbappendstream/sbappendrecord/sbappendaddr/sbappendcontrol/sbcompress/sbdrop/sbdroprecord/sbflush/sbreserve/sbrelease/sbcreatecontrol/sbwait/sowakeup's locked half over it; a reader's first record taken out for a copy with the mutex released (take_first_record/put_back_record, the continuation kept aside when a sender closes the record meanwhile); SOCKBUF_DEBUG's sblastrecordchk/sblastmbufchk gone with the fields they checked, sbcheck kept for the tests"
+
+[[module]]
 rust = "sys/kernel/net/mbuf.rs"
 crate = "kernel"
 lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]

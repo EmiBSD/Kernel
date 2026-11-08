@@ -1274,6 +1274,12 @@ hal::slist_adapter!(
     pub MPkt: Mbuf, m_nextpkt
 );
 
+hal::slist_adapter!(
+    /// `m_next`'s list: the mbufs of one record by their chain (a socket buffer's last
+    /// record, `kernel::net::sockbuf`).
+    pub MNext: Mbuf, m_next
+);
+
 /// `struct mbuf_list`: packets linked through `m_nextpkt`, with the C's head, tail and
 /// length (24 bytes).
 pub type MbufList = OwnedSlist<MPkt>;
