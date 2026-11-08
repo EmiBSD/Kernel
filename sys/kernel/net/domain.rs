@@ -190,6 +190,9 @@ pub struct NetTables<G: ProcGlue> {
     /// The interface layer's legs (`bsd`'s `if.c` until N6.3a, the `IfLegacy` row of
     /// `bridges.toml`).
     pub(crate) iflegacy: OnceStatic<&'static dyn IfLegacy<G>>,
+    /// The UNIX domain's globals (`uipc_usrreq.c`'s: the control blocks' pool, `unp_head`,
+    /// the files in flight, the collector).
+    pub(crate) unix: crate::net::unix::UnixTables<G>,
 }
 
 /// What the socket layer needs of the interface layer, `bsd`'s `sys/net/if_.rs` until it
@@ -235,6 +238,7 @@ impl<G: ProcGlue> NetTables<G> {
             ),
             upcall: OnceStatic::new(),
             iflegacy: OnceStatic::new(),
+            unix: crate::net::unix::UnixTables::new(),
         }
     }
 

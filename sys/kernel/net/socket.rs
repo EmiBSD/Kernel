@@ -648,6 +648,14 @@ impl<G: ProcGlue> Socket<G> {
         self.pcb.read().clone()
     }
 
+    /// The kernel's protocol control block, borrowed while the returned reference lives
+    /// (`sotounpcb(so)`, and `fptounp`'s read of `so_pcb` without the socket lock): one
+    /// reader of the slot counted, no reference to the block taken. The holder must not sleep
+    /// meanwhile (the slot's writer, `set_pcb`, would wait for it).
+    pub fn pcb_read(&self) -> hal::slot::ReadMostlyRef<'_, Option<AnyArc>> {
+        self.pcb.read()
+    }
+
     /// `so->so_pcb = pcb` of a kernel protocol, the socket locked; the old one given back.
     pub fn set_pcb(&self, _w: &SoLocked<'_>, pcb: Option<AnyArc>) -> Option<AnyArc> {
         self.pcb.replace(pcb)
@@ -761,6 +769,12 @@ impl<'a> SoLocked<'a> {
     #[inline]
     pub fn so_lock(&mut self) -> Option<&mut WriteWitness<'a>> {
         self.so.as_mut()
+    }
+
+    /// [`SoLocked::so_lock`], shared: to read the cells keyed to `so_lock`.
+    #[inline]
+    pub fn so_lock_ref(&self) -> Option<&WriteWitness<'a>> {
+        self.so.as_ref()
     }
 
     /// Runs `f` with the socket unlocked (`sounlock(so)` .. `solock(so)` around namei and

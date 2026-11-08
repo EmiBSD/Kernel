@@ -671,6 +671,14 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_adjtime(p, delta)
     }
 
+    fn pledge_recvfd(p: &Proc, fp: &crate::sys::file::File) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_recvfd(p, fp)
+    }
+
+    fn pledge_sendfd(p: &Proc, fp: &crate::sys::file::File) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_sendfd(p, fp)
+    }
+
     fn pledge_protexec(p: &Proc, prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
         crate::kern::kern_pledge::pledge_protexec(p, prot)
     }

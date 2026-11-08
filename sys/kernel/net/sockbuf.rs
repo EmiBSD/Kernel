@@ -653,6 +653,14 @@ impl<G: ProcGlue> Sockbuf<G> {
         self.lock().space()
     }
 
+    /// `sb->sb_cc = cc; sb->sb_mbcnt = mbcnt` under the socket's lock alone, without
+    /// `sb_mtx`: `unp_disconnect`'s plain stores into the send buffers of a UNIX domain
+    /// stream pair, which hold no data (their counts mirror the peer's receive buffer).
+    pub(crate) fn set_cc_mbcnt_unlocked(&self, cc: u64, mbcnt: u64) {
+        self.cc.store(cc, Ordering::Relaxed);
+        self.mbcnt.store(mbcnt, Ordering::Relaxed);
+    }
+
     /// `sb_notify(sb)`: do we need to notify the other side when I/O is possible?
     pub fn sb_notify(&self) -> bool {
         let _g = self.lock();

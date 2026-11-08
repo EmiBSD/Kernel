@@ -1019,6 +1019,18 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     /// `mprotect(2)` only with `prot_exec` (`EPERM` through `pledge_fail`). Required: a glue
     /// cannot drop pledge by forgetting it.
     fn pledge_protexec(p: &Thread<Self>, prot: crate::vm::types::VmProt) -> Result<(), Errno>;
+    /// `pledge_recvfd(p, fp)` (`kern_pledge.c`, N8): whether the pledged thread `p` may
+    /// receive the file `fp` in an `SCM_RIGHTS` message (`unp_externalize`): `EPERM` through
+    /// `pledge_fail` without `recvfd`, `EPERM` for a file that is not safe to pass. Required:
+    /// a glue cannot drop pledge by forgetting it.
+    fn pledge_recvfd(p: &Thread<Self>, fp: &crate::file::File<Self::FileGlue>)
+    -> Result<(), Errno>;
+    /// `pledge_sendfd(p, fp)` (`kern_pledge.c`, N8): whether the pledged thread `p` may send
+    /// the file `fp` in an `SCM_RIGHTS` message (`unp_internalize`): `EPERM` through
+    /// `pledge_fail` without `sendfd`, `EINVAL` through it for a file that is not safe to
+    /// pass. Required, as `pledge_recvfd`.
+    fn pledge_sendfd(p: &Thread<Self>, fp: &crate::file::File<Self::FileGlue>)
+    -> Result<(), Errno>;
     /// `unveil_destroy(pr)` (`kern_unveil.c`, N8).
     fn unveil_destroy(_pr: &Process<Self>) {}
     /// `pledge_namei(p, ni, path)` (`kern_pledge.c`, N8): whether the pledged thread `p` may
@@ -3121,6 +3133,18 @@ mod tests {
             Ok(())
         }
         fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
+        fn pledge_recvfd(
+            _p: &Thread<Self>,
+            _fp: &crate::file::File<Self::FileGlue>,
+        ) -> Result<(), hal::sys::errno::Errno> {
+            Ok(())
+        }
+        fn pledge_sendfd(
+            _p: &Thread<Self>,
+            _fp: &crate::file::File<Self::FileGlue>,
+        ) -> Result<(), hal::sys::errno::Errno> {
             Ok(())
         }
         fn pledge_protexec(

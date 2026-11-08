@@ -785,8 +785,8 @@ impl Vnops<TestGlue> for TestVops {
         super::bio::biodone(t);
         Ok(())
     }
-    /// `ufs_create`: a regular file named `cnp`'s name in `dvp`; the new vnode locked, `dvp`
-    /// left as it came.
+    /// `ufs_create`: a regular file (or a socket, for `uipc_bind`'s `VSOCK`) named `cnp`'s
+    /// name in `dvp`; the new vnode locked, `dvp` left as it came.
     fn create(
         &self,
         dvp: &'static Vnode<TestGlue>,
@@ -798,7 +798,12 @@ impl Vnops<TestGlue> for TestVops {
             return Err(e);
         }
         LAST_CREATE.with(|c| c.set(Some(*vap)));
-        *vpp = Some(make_node(dvp, cnp.name(), Kind::Reg, None)?);
+        let kind = if vap.va_type == super::vnode::VSOCK {
+            Kind::Sock
+        } else {
+            Kind::Reg
+        };
+        *vpp = Some(make_node(dvp, cnp.name(), kind, None)?);
         Ok(())
     }
     /// `ufs_mknod`: a node of `vap`'s type, the attributes recorded ([`last_mknod`]); no

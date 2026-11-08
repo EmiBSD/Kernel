@@ -27,4 +27,5 @@ pub mod pf_hooks;
 pub mod proto;
 pub mod sockbuf;
 pub mod socket;
+pub mod unix;
 /* </CODE> */

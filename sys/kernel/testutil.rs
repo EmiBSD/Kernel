@@ -142,6 +142,8 @@ std::thread_local! {
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32, u32)>> = const { Cell::new(None) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
+    /// The error the test glues' `pledge_recvfd` and `pledge_sendfd` answer.
+    static PLEDGE_FD: Cell<Option<Errno>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -1516,6 +1518,21 @@ pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
     PLEDGE_REFUSE.with(|c| c.set(r));
 }
 
+/// What this thread's test glues' `pledge_recvfd` and `pledge_sendfd` answer: the error
+/// [`set_pledge_fd`] armed, `Ok` otherwise.
+pub fn pledge_fd_answer() -> Result<(), Errno> {
+    match PLEDGE_FD.with(Cell::get) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Makes this thread's test glues refuse every descriptor passed in a message with `error`
+/// (`None`: refuse nothing).
+pub fn set_pledge_fd(error: Option<Errno>) {
+    PLEDGE_FD.with(|c| c.set(error));
+}
+
 /// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
 /// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
 /// its first `kbind(2)`), `Ok` otherwise.
@@ -1977,6 +1994,18 @@ macro_rules! test_proc_glue {
                 _delta: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn pledge_recvfd(
+                _p: &$crate::proc::Thread<Self>,
+                _fp: &$crate::file::File<Self::FileGlue>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_fd_answer()
+            }
+            fn pledge_sendfd(
+                _p: &$crate::proc::Thread<Self>,
+                _fp: &$crate::file::File<Self::FileGlue>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_fd_answer()
             }
             fn pledge_protexec(
                 _p: &$crate::proc::Thread<Self>,
