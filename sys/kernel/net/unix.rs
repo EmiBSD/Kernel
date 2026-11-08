@@ -161,7 +161,12 @@
 //!   kernel; `hal::malloc` before its bridge) is `panic(9)`, as LZ's `unp_discard` panicked
 //!   for its deferral: the files in flight cannot be kept without it.
 //! - `unpcb`'s item is the control block's Rust layout (376 bytes, where the C's `struct
-//!   unpcb` is 144 on LP64), as every kernel pool's since N3: `vmstat -m` shows that size.
+//!   unpcb` is 144 on LP64), as every kernel pool's since N3: `vmstat -m` shows that size
+//!   under the C's pool name, the row kept (the coordinator's decision of 2026-11-08, item
+//!   16: pool item sizes are a diagnostic-only detail). What makes it larger: the counted
+//!   item's header, the socket held counted, the cells keyed to `so_lock` and `unp_gc_lock`
+//!   with their keys, the pinned list of the references and its entry, the address held by
+//!   value (a `sockaddr_un`, 106 bytes, where the C holds an mbuf pointer).
 //!
 //! ## Redesign
 //! - LZ's `struct unpcb` was a pool item of `Cell`s and raw `&'static` links (`unp_conn`,
@@ -736,6 +741,12 @@ impl<G: ProcGlue> Domain<G> for Unix<G> {
             Some(p) => unp_externalize(m, controllen, flags, p),
             None => kpanic(format_args!("unp_externalize: no curproc")),
         })
+    }
+    fn has_externalize(&self) -> bool {
+        true
+    }
+    fn has_dispose(&self) -> bool {
+        true
     }
     fn dispose(&self, m: &mut Mbuf) {
         unp_dispose::<G>(m);
@@ -1762,7 +1773,7 @@ pub fn unp_file_refs<G: ProcGlue>(fp: &File<G::FileGlue>) -> u32 {
         unp.file
             .get(&g)
             .as_ref()
-            .is_some_and(|f| ptr::eq::<File<G::FileGlue>>(&**f, fp)),
+            .is_some_and(|f| ptr::eq(ptr::from_ref::<File<G::FileGlue>>(f), ptr::from_ref(fp))),
     );
     drop(g);
     n
@@ -1857,8 +1868,10 @@ fn set_int_at(m: &mut Mbuf, i: usize, v: i32) {
 }
 
 /// The in-flight table locked with `n` free slots at least (`n` at most what `unp_rights`
-/// reserved: the table grows by doubling, its new array made with the mutex released and
-/// swapped in under it, the old one freed after), and `f` run on it.
+/// reserved, which the C bounds by `maxfiles / 10`: the table grows by doubling, from 64
+/// slots, up to that bound and never past what the reservation needs beyond it; its new
+/// array made with the mutex released and swapped in under it, the old one freed after),
+/// and `f` run on it.
 fn with_room<G: ProcGlue, R>(
     t: &UnixTables<G>,
     n: usize,
@@ -1872,7 +1885,8 @@ fn with_room<G: ProcGlue, R>(
         let len = g.len();
         drop(g);
 
-        let want = (len * 2).max(len + n).max(64);
+        let cap = (<G::FileGlue as FileGlue>::maxfiles() / 10).max(0) as usize;
+        let want = (len * 2).max(64).min(cap).max(len + n);
         let Some(new) = MArray::new(M_TEMP, M_WAITOK, want, |i| InflightSlot {
             fp: FileSlot::new(),
             next: if i + 1 < want { (i + 1) as u32 } else { NONE },
@@ -2018,11 +2032,16 @@ fn externalize_files<G: ProcGlue>(
         // root.
         if let Some(rdir) = fdp.rdir()
             && fp.f_type() == DTYPE_VNODE
-            && let Some(vp) = fp.data().and_then(<G::FileGlue as FileGlue>::vnode_of)
-            && (vp.vtype() == VBLK || (vp.vtype() == VDIR && !vn_isunder(vp, rdir, p)))
         {
-            error = Err(Errno::EPERM);
-            break;
+            let Some(vp) = fp.data().and_then(<G::FileGlue as FileGlue>::vnode_of) else {
+                kpanic(format_args!(
+                    "unp_externalize: vnode file {fp:p} without its vnode"
+                ));
+            };
+            if vp.vtype() == VBLK || (vp.vtype() == VDIR && !vn_isunder(vp, rdir, p)) {
+                error = Err(Errno::EPERM);
+                break;
+            }
         }
     }
     hal::klock::kernel_unlock();

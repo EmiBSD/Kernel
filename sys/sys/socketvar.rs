@@ -85,7 +85,7 @@ pub type Sosplice = kernel::net::socket::Sosplice<crate::kern::proc_glue::BsdPro
 /// `so` as the `&'static Socket` LZ's code keeps (`Inpcb::inp_socket`, the protocols'
 /// arguments): the reference of the holder that lent `so` keeps the socket for as long as
 /// `bsd` uses it.
-pub fn as_static(so: &Socket) -> &'static Socket {
+pub(crate) fn as_static(so: &Socket) -> &'static Socket {
     // SAFETY: `so` is a socket of `sockpl` (a `PoolArc` item, which stays allocated, its
     // value in place, until its last handle's drop). Every `&Socket` `bsd` holds was lent by
     // a holder of one of its counted references, under the C's convention every `bsd`

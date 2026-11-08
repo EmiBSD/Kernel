@@ -159,6 +159,12 @@
 //! - `accept(2)` finding its socket gone from the queue it peeked retries where the C's
 //!   `soqremque` failure is `panic("accept")` (the queue's mutex is not the socket lock the
 //!   C's peek held).
+//! - `sockpl`'s item is the socket's Rust layout (984 bytes with the pool's header, larger
+//!   than the C's `struct socket`): the counted item's header, the two
+//!   buffers' owned records and atomics, the queue's mutex and pinned lists. `vmstat -m`
+//!   shows that size under the C's pool name; the row and the name stay (the coordinator's
+//!   decision of 2026-11-08, item 16: pool item sizes are a diagnostic-only detail; the
+//!   N12 performance work keeps the layout as small as the shape allows).
 //!
 //! ## Redesign
 //! - LZ's `struct socket` was `Cell`s and raw pointers in a `socket_pool` item handed
@@ -1243,6 +1249,15 @@ pub fn soisconnected<G: ProcGlue>(so: &Socket<G>) {
     so.st_clear(SS_ISCONNECTING | SS_ISDISCONNECTING);
     so.st_set(SS_ISCONNECTED);
 
+    // A socket on no queue (the mirror, stable under the socket's lock the caller holds:
+    // queued once by sonewconn, taken off under it): the C's `head == NULL` branch, its own
+    // channel woken as `so_timeo_wakeup` wakes it, no `cq`.
+    if !so.queued.load(Ordering::Acquire) {
+        so_timeo_wakeup(so);
+        sorwakeup(so);
+        sowwakeup(so);
+        return;
+    }
     let sg = cq(so);
     let head = if sg.onq == Onq::Q0 {
         sg.head.clone()
@@ -1614,10 +1629,15 @@ pub fn sofree_legacy<G: ProcGlue>(so: &Socket<G>) {
     if so.has_pcb() || !so.has_state(SS_NOFDREF) {
         return;
     }
-    if cq(so).onq == Onq::Q {
-        return;
-    }
-    let queued = soqremque(so, Onq::Q0);
+    // `cq` only for a queued socket, as `sofree_kept`.
+    let queued = if so.queued.load(Ordering::Acquire) {
+        if cq(so).onq == Onq::Q {
+            return;
+        }
+        soqremque(so, Onq::Q0)
+    } else {
+        None
+    };
     if so.freed.swap(true, Ordering::AcqRel) {
         drop(queued);
         return;
@@ -2461,16 +2481,20 @@ pub fn soreceive<G: ProcGlue>(
                 };
                 g.sbfree(&cm);
                 if want_control {
-                    drop(g);
-                    error = pr.domain().externalize(&mut cm, controllen, flags);
-                    g = so.so_rcv.lock();
+                    if pr.domain().has_externalize() {
+                        drop(g);
+                        error = pr.domain().externalize(&mut cm, controllen, flags);
+                        g = so.so_rcv.lock();
+                    }
                     controls.push_tail(cm);
                 } else {
                     // Dispose of any SCM_RIGHTS message that went through the read path
                     // rather than recv.
-                    drop(g);
-                    pr.domain().dispose(&mut cm);
-                    g = so.so_rcv.lock();
+                    if pr.domain().has_dispose() {
+                        drop(g);
+                        pr.domain().dispose(&mut cm);
+                        g = so.so_rcv.lock();
+                    }
                     drop(cm);
                 }
             }

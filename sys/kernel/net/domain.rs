@@ -146,6 +146,16 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
     /// `dom_dispose(m)`: dispose of internalized rights in the records `m` (records by
     /// `m_nextpkt`, each a chain by `m_next`); nothing for a domain without the entry.
     fn dispose(&self, _m: &mut Mbuf) {}
+    /// `dom_externalize != NULL` (`soreceive` lets the receive buffer's mutex go around the
+    /// entry only then).
+    fn has_externalize(&self) -> bool {
+        false
+    }
+    /// `dom_dispose != NULL` (the same for `soreceive`'s dispose of a message read without
+    /// a control buffer).
+    fn has_dispose(&self) -> bool {
+        false
+    }
     /// `dom_protosw` .. `dom_protoswNPROTOSW`: the protocols.
     fn protocols(&self) -> &'static [&'static dyn Protocol<G>];
     /// `SO_PEERCRED`'s answer for a socket of this domain, the socket locked
@@ -158,7 +168,7 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
     ) -> Option<hal::sys::socket::Sockpeercred> {
         None
     }
-    /// Whether the domain's protocols are `bsd`'s (its `LegacyDomain`): their requests
+    /// Whether the domain's protocols are `bsd`'s (its `struct domain`'s impl): their requests
     /// release and take the socket lock again C-style (`route_attach`, `route_output`,
     /// `pfkeyv2_send`), so the kernel holds a socket of the domain by a detached holding of
     /// `so_lock`, never a witness.
@@ -405,3 +415,94 @@ pub(crate) fn dispose_and_purge<G: ProcGlue>(pr: &dyn Protocol<G>, m: Option<Mbu
     crate::net::mbuf::m_purge(Some(m));
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::{assert, assert_eq};
+
+    use super::*;
+    use crate::net::proto::Usrreqs;
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// The tests' family.
+    const FAMILY: i32 = 9;
+
+    struct TestDom;
+    struct TestProto {
+        ty: i16,
+        protocol: i16,
+    }
+
+    static DGRAM: TestProto = TestProto { ty: 2, protocol: 0 };
+    static STREAM: TestProto = TestProto { ty: 1, protocol: 6 };
+    static RAW: TestProto = TestProto { ty: 3, protocol: 0 };
+    static PROTOS: [&dyn Protocol<Procs>; 3] = [&DGRAM, &STREAM, &RAW];
+    static DOMS: [&dyn Domain<Procs>; 1] = [&TestDom];
+
+    impl Domain<Procs> for TestDom {
+        fn family(&self) -> i32 {
+            FAMILY
+        }
+        fn name(&self) -> &'static str {
+            "testdom"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<Procs>] {
+            &PROTOS
+        }
+    }
+
+    impl Protocol<Procs> for TestProto {
+        fn domain(&self) -> &'static dyn Domain<Procs> {
+            &TestDom
+        }
+        fn ty(&self) -> i16 {
+            self.ty
+        }
+        fn protocol(&self) -> i16 {
+            self.protocol
+        }
+        fn flags(&self) -> i16 {
+            0
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<Procs>> {
+            None
+        }
+    }
+
+    /// The protocol's address, to compare the trait objects found.
+    fn addr(p: &dyn Protocol<Procs>) -> *const () {
+        core::ptr::from_ref(p).cast()
+    }
+
+    #[test]
+    fn the_finders_walk_the_domain_table_as_the_c_does() {
+        domains_set::<Procs>(&DOMS);
+        // A second table set is refused: the first stays (domaininit's once).
+        domains_set::<Procs>(&[]);
+        assert_eq!(
+            pffinddomain::<Procs>(FAMILY).map(|d| d.name()),
+            Some("testdom")
+        );
+        assert!(pffinddomain::<Procs>(FAMILY + 1).is_none());
+
+        // pffindtype: the first protocol of the type.
+        let st = pffindtype::<Procs>(FAMILY, 1).expect("the stream protocol");
+        assert_eq!(addr(st), addr(&STREAM));
+        assert!(pffindtype::<Procs>(FAMILY, 5).is_none());
+
+        // pffindproto: protocol and type; for SOCK_RAW the domain's raw wildcard.
+        let tcp = pffindproto::<Procs>(FAMILY, 6, 1).expect("protocol 6");
+        assert_eq!(addr(tcp), addr(&STREAM));
+        let raw = pffindproto::<Procs>(FAMILY, 17, 3).expect("the raw wildcard");
+        assert_eq!(addr(raw), addr(&RAW));
+        assert!(pffindproto::<Procs>(FAMILY, 17, 2).is_none());
+        assert!(pffindproto::<Procs>(i32::from(PF_UNSPEC), 6, 1).is_none());
+
+        // A domain without the optional entries: the C's NULLs.
+        assert!(!TestDom.has_externalize() && !TestDom.has_dispose() && !TestDom.legacy());
+    }
+}
+/* </TESTS> */

@@ -87,8 +87,9 @@
 //!   `soo_ioctl` calls `pru_control` unlocked); the mbufs are owned
 //!   ([`MbufBox`]) where the protocol disposes of them and borrowed where the caller keeps
 //!   them (the address of `connect`, `bind`, `send`).
-//! - `bsd`'s protocols implement the traits over their old tables (`bsd`'s
-//!   `LegacyProtocol`/`LegacyUsrreqs`, the `Protocol` row of `bridges.toml`) until each
+//! - `bsd`'s protocols implement the traits over their old tables (`bsd`'s `protosw` and
+//!   `pr_usrreqs` themselves, in `sys/kern/uipc_domain.rs`; the `Protocol` row of
+//!   `bridges.toml`) until each
 //!   moves: inet at N6.4-N6.6, route at N6.3b, pfkey with IPsec at N8.
 
 use hal::sys::errno::Errno;
@@ -335,3 +336,72 @@ pub trait Usrreqs<G: ProcGlue>: Sync + 'static {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::{assert, assert_eq};
+
+    use super::*;
+    use crate::net::domain::Domain;
+
+    crate::test_file_glue!(Files, Procs);
+    crate::test_proc_glue!(Procs, Files);
+
+    /// The tests' family.
+    const FAMILY: i32 = 9;
+
+    struct TestDom;
+    struct TestProto {
+        ty: i16,
+        protocol: i16,
+    }
+
+    static DGRAM: TestProto = TestProto { ty: 2, protocol: 0 };
+    static STREAM: TestProto = TestProto { ty: 1, protocol: 6 };
+    static RAW: TestProto = TestProto { ty: 3, protocol: 0 };
+    static PROTOS: [&dyn Protocol<Procs>; 3] = [&DGRAM, &STREAM, &RAW];
+
+    impl Domain<Procs> for TestDom {
+        fn family(&self) -> i32 {
+            FAMILY
+        }
+        fn name(&self) -> &'static str {
+            "testdom"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<Procs>] {
+            &PROTOS
+        }
+    }
+
+    impl Protocol<Procs> for TestProto {
+        fn domain(&self) -> &'static dyn Domain<Procs> {
+            &TestDom
+        }
+        fn ty(&self) -> i16 {
+            self.ty
+        }
+        fn protocol(&self) -> i16 {
+            self.protocol
+        }
+        fn flags(&self) -> i16 {
+            0
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<Procs>> {
+            None
+        }
+    }
+
+    #[test]
+    fn a_protocol_s_absent_entries_answer_as_the_c_s_null_ones() {
+        // pr_ctloutput NULL: no ctloutput; the timers and ctlinput do nothing.
+        assert!(!STREAM.has_ctloutput());
+        STREAM.init();
+        STREAM.fasttimo();
+        STREAM.slowtimo();
+        assert_eq!(STREAM.domain().family(), FAMILY);
+        assert!(STREAM.usrreqs().is_none());
+        assert_eq!((DGRAM.ty(), RAW.ty(), STREAM.protocol()), (2, 3, 6));
+    }
+}
+/* </TESTS> */
