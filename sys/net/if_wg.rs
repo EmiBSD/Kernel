@@ -93,12 +93,14 @@
 //! - The wire structures are `#[repr(C)]` without padding; they are read out of the mbuf with
 //!   an unaligned copy and written from their bytes. The packet type and indices keep the C's
 //!   byte order (`htole32` constants, indices copied raw); the data nonce is little-endian.
-//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s (`t_done` a `bool`). Inherited race,
-//!   N8's: `wg_queue_dequeue` reads the head's `t_done` (and then `t_mbuf`) under `q_mtx`
-//!   while the parallel queue's `wg_encap`/`wg_decap` sets them on another CPU without it;
-//!   the C does the same with a plain `int` and no barrier (if_wg.c's `t->t_done = 1` and
-//!   `wg_queue_dequeue`). The rest of that peek reads only the packet's flags word and its
-//!   tag list, which the mbuf keeps atomic (`sys/sys/mbuf.rs`'s `of_parked`, review C1).
+//! - `wg_tag` lives in the `m_tag`'s data as `Cell`s, `t_done` an `AtomicBool`. The C sets
+//!   `t->t_done = 1` on the parallel queue's CPU with a plain `int` and no barrier while
+//!   `wg_queue_dequeue` reads it (and then `t_mbuf` and the packet) under `q_mtx` on another,
+//!   which the writer never takes: a weakly ordered CPU may see `t_done` before `t_mbuf`.
+//!   Here `t_done` is stored `Release` after `t_mbuf` and loaded `Acquire` by the peek (the
+//!   user's decision of 2026-11-08, the race closed ahead of N8; the C's slip goes to the
+//!   user). The rest of that peek reads only the packet's flags word and its tag list,
+//!   which the mbuf keeps atomic (`sys/sys/mbuf.rs`'s `of_parked`, review C1).
 //! - `sockaddr_ntop` (`netinet/inet_ntop.c`) is not ported: the log lines format the address
 //!   with [`SaNtop`], which prints what it would (`a.b.c.d`, an IPv6 address through
 //!   `In6Ntop`, or the family and the bytes).
@@ -125,7 +127,7 @@ use core::fmt;
 use core::mem::offset_of;
 use core::ptr::{self, NonNull};
 use core::slice;
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 use libkern::{explicit_bzero, strlcpy, timingsafe_bcmp};
 
@@ -765,8 +767,12 @@ pub struct WgTag {
     pub t_peer: Cell<Option<&'static WgPeer>>,
     /// `t_mbuf`: the encrypted (or decrypted) packet; NULL when that failed.
     pub t_mbuf: Cell<Option<&'static Mbuf>>,
-    /// `t_done`: the parallel queue is done with the packet.
-    pub t_done: Cell<bool>,
+    /// `t_done`: the parallel queue is done with the packet. Set with `Release` after
+    /// `t_mbuf` and the packet are written, read with `Acquire` by the serial queue's peek
+    /// (`wg_queue_dequeue`), so the deliver task sees both; cleared `Relaxed` before the
+    /// packet is queued (the serial queue's `q_mtx`, which the peek takes, publishes it).
+    /// The C's plain `int` has no barrier.
+    pub t_done: AtomicBool,
     /// `t_mtu`.
     pub t_mtu: Cell<i32>,
 }
@@ -2328,7 +2334,7 @@ pub fn wg_send_keepalive(arg: *mut c_void) {
 
         t.t_peer.set(Some(peer));
         t.t_mbuf.set(None);
-        t.t_done.set(false);
+        t.t_done.store(false, Ordering::Relaxed);
         t.t_mtu.set(0); // MTU == 0 OK for keepalive
 
         let _ = mq_push(&peer.p_stage_queue, m);
@@ -2682,7 +2688,9 @@ pub fn wg_encap(sc: &WgSoftc, m: &'static Mbuf) {
         t.t_mbuf.set(Some(mc));
     }
     // error:
-    t.t_done.set(true);
+    // The packet is the deliver task's from this store on: neither `t` nor `m` is touched
+    // after it.
+    t.t_done.store(true, Ordering::Release);
     if let Some(tq) = net_tq(sc.sc_if.if_index.get()) {
         task_add(tq, &peer.p_deliver_out);
     }
@@ -2823,7 +2831,9 @@ pub fn wg_decap(sc: &WgSoftc, m: &'static Mbuf) {
         t.t_mbuf.set(Some(m));
     }
     // error:
-    t.t_done.set(true);
+    // The packet is the deliver task's from this store on: neither `t` nor `m` is touched
+    // after it.
+    t.t_done.store(true, Ordering::Release);
     if let Some(tq) = net_tq(sc.sc_if.if_index.get()) {
         task_add(tq, &peer.p_deliver_in);
     }
@@ -2993,7 +3003,7 @@ pub fn wg_queue_in(sc: &WgSoftc, peer: &WgPeer, m: &'static Mbuf) -> Result<(), 
 
     if !wg_ring_enqueue(parallel, m) {
         if let Some(t) = wg_tag_get(m) {
-            t.t_done.set(true);
+            t.t_done.store(true, Ordering::Release);
         }
         return Err(Errno::ENOBUFS);
     }
@@ -3029,7 +3039,7 @@ pub fn wg_queue_out(sc: &WgSoftc, peer: &WgPeer) {
         if !wg_ring_enqueue(parallel, m)
             && let Some(t) = wg_tag_get(m)
         {
-            t.t_done.set(true);
+            t.t_done.store(true, Ordering::Release);
         }
     }
 
@@ -3058,7 +3068,7 @@ pub fn wg_queue_dequeue(q: &WgQueue) -> Option<(&'static Mbuf, &'static WgTag)> 
     let mut ret = None;
     if let Some(m) = mbuf_list_first(&q.q_list)
         && let Some(t) = wg_tag_get(m)
-        && t.t_done.get()
+        && t.t_done.load(Ordering::Acquire)
     {
         let _ = ml_dequeue(&q.q_list);
         ret = Some((m, t));
@@ -3250,7 +3260,7 @@ pub unsafe fn wg_input(
             let peer = WgPeer::of_remote(remote);
             t.t_peer.set(Some(peer));
             t.t_mbuf.set(None);
-            t.t_done.set(false);
+            t.t_done.store(false, Ordering::Relaxed);
 
             if wg_queue_in(sc, peer, m).is_err() {
                 ifp_counters_inc(&sc.sc_if, IfCounters::IfcIqdrops);
@@ -3452,7 +3462,7 @@ pub unsafe fn wg_output(
 
         t.t_peer.set(Some(peer));
         t.t_mbuf.set(None);
-        t.t_done.set(false);
+        t.t_done.store(false, Ordering::Relaxed);
         t.t_mtu.set(ifp.if_mtu.get() as i32);
 
         // We still have an issue with ifq that will count a packet that gets dropped in
@@ -5056,6 +5066,8 @@ mod tests {
         net_unlock();
         assert_eq!(r, Ok(()));
         wg_qstart(&sc0.sc_if.if_snd);
+        // Queued but not yet encrypted: t_done holds it back from the deliver task.
+        assert!(wg_queue_dequeue(&bob0.p_encap_queue).is_none());
         wg_encap_worker(ptr::from_ref(sc0).cast_mut().cast());
         let (m, t) = wg_queue_dequeue(&bob0.p_encap_queue).expect("encrypted");
         let wire = bytes(t.t_mbuf.get().expect("data message"));
@@ -5068,6 +5080,8 @@ mod tests {
         // Bob receives it: the index finds Alice, the decap worker decrypts it, confirms the
         // session and checks the inner source against Alice's allowed IPs.
         deliver(sc1, a, 51820, b, &wire);
+        // Queued but not yet decrypted: t_done holds it back from the deliver task.
+        assert!(wg_queue_dequeue(&alice1.p_decap_queue).is_none());
         wg_decap_worker(ptr::from_ref(sc1).cast_mut().cast());
         let (m, t) = wg_queue_dequeue(&alice1.p_decap_queue).expect("decrypted");
         assert!(ptr::eq(t.t_mbuf.get().expect("inner packet"), m));

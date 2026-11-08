@@ -6345,6 +6345,7 @@ rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
 adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs"]
+notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
 rust = "sys/net/ifq.rs"
