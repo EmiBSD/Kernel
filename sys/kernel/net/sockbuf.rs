@@ -481,6 +481,12 @@ impl SbRecord {
         self.tail.is_none()
     }
 
+    /// The first mbuf taken off the record when it is not the last one, which stays (a
+    /// `MSG_PEEK` reader's step past an mbuf, `m = m->m_next`, O(1)).
+    pub fn pop_first_not_last(&mut self) -> Option<MbufBox> {
+        self.list.pop_head()
+    }
+
     /// The first mbuf taken off the record (alone: its `m_next` empty).
     pub fn pop_first(&mut self) -> Option<MbufBox> {
         self.list.pop_head().or_else(|| self.tail.take())

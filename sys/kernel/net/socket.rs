@@ -2192,18 +2192,77 @@ pub fn m_getuio<G: ProcGlue>(
 /// The record of the receive buffer `soreceive` reads, out of the buffer while it copies
 /// (the C's `m` walking `sb_mb`'s record), and where its walk stands.
 struct RcvRecord {
+    /// What the read has not passed: the C's `m` is its first mbuf.
     rec: crate::net::sockbuf::SbRecord,
-    /// `MSG_PEEK`'s walk: how many of the record's mbufs the read has passed (nothing is
-    /// taken off).
-    peeked: usize,
+    /// `MSG_PEEK`'s walk: the mbufs the read has passed, in order, nothing freed or counted
+    /// out (they go back in front of `rec` with [`RcvRecord::into_record`]).
+    passed: hal::owned::OwnedSlist<crate::net::mbuf::MNext>,
+    /// `MSG_PEEK` has passed the record's last mbuf too (`m == NULL`); that mbuf stays in
+    /// `rec`, the record's last, where the senders' continuation joins it.
+    past_last: bool,
 }
 
 impl RcvRecord {
-    /// The C's `m`: the mbuf the read stands on.
+    /// A record a reader took out, nothing passed yet.
+    fn new(rec: crate::net::sockbuf::SbRecord) -> Self {
+        Self {
+            rec,
+            passed: hal::owned::OwnedSlist::new(),
+            past_last: false,
+        }
+    }
+
+    /// The C's `m`: the mbuf the read stands on, O(1).
     fn m(&self) -> Option<&Mbuf> {
-        self.rec.iter().nth(self.peeked)
+        if self.past_last {
+            None
+        } else {
+            self.rec.first()
+        }
+    }
+
+    /// `MSG_PEEK`'s `m = m->m_next`: the mbuf the read stands on passed, O(1).
+    fn pass(&mut self) {
+        if self.past_last {
+            return;
+        }
+        match self.rec.pop_first_not_last() {
+            Some(b) => self.passed.push_tail(b),
+            None => self.past_last = true,
+        }
+    }
+
+    /// `m_copym(m, 0, m->m_len, M_DONTWAIT)` of the mbuf the read stands on (`MSG_PEEK`'s
+    /// copy of an address or a control message).
+    fn copy_current(&mut self) -> Option<MbufBox> {
+        if self.past_last {
+            return None;
+        }
+        rcv_copy_front(&mut self.rec, M_COPYALL_FIRST, crate::net::mbuf::M_DONTWAIT)
+    }
+
+    /// What the senders appended to the record while it was out moved to its end
+    /// ([`crate::net::sockbuf::SbGuard::refill_record`]); a read past the record's last
+    /// mbuf stands on the first one appended.
+    fn refill(&mut self, g: &mut crate::net::sockbuf::SbGuard<'_, impl ProcGlue>) {
+        g.refill_record(&mut self.rec);
+        if self.past_last
+            && let Some(b) = self.rec.pop_first_not_last()
+        {
+            self.passed.push_tail(b);
+            self.past_last = false;
+        }
+    }
+
+    /// The record whole again, the passed mbufs back in front, O(1).
+    fn into_record(mut self) -> crate::net::sockbuf::SbRecord {
+        self.rec.prepend(core::mem::take(&mut self.passed));
+        self.rec
     }
 }
+
+/// `rcv_copy_front`'s length for the whole first mbuf.
+const M_COPYALL_FIRST: i32 = -1;
 
 /// `soreceive(so, paddr, uio, mp0, controlp, flagsp, controllen)`: implement receive
 /// operations on a socket. We depend on the way that records are added to the sockbuf by
@@ -2354,7 +2413,7 @@ pub fn soreceive<G: ProcGlue>(
         let Some(rec) = g.take_first_record() else {
             kpanic(format_args!("soreceive: no record"));
         };
-        let mut r = RcvRecord { rec, peeked: 0 };
+        let mut r = RcvRecord::new(rec);
         let mut error: Result<(), Errno> = Ok(());
 
         if pr.flags() & PR_ADDR != 0 {
@@ -2370,9 +2429,9 @@ pub fn soreceive<G: ProcGlue>(
             orig_resid = 0;
             if flags & MSG_PEEK != 0 {
                 if let Some(p) = paddr.as_deref_mut() {
-                    *p = rcv_copy_nth(&mut r.rec, 0);
+                    *p = r.copy_current();
                 }
-                r.peeked += 1;
+                r.pass();
             } else if let Some(a) = r.rec.pop_first() {
                 g.sbfree(&a);
                 match paddr.as_deref_mut() {
@@ -2392,10 +2451,10 @@ pub fn soreceive<G: ProcGlue>(
                 if cmtype == SCM_RIGHTS {
                     // don't leak internalized SCM_RIGHTS msgs
                     skip = true;
-                } else if want_control && let Some(c) = rcv_copy_nth(&mut r.rec, r.peeked) {
+                } else if want_control && let Some(c) = r.copy_current() {
                     controls.push_tail(c);
                 }
-                r.peeked += 1;
+                r.pass();
             } else {
                 let Some(mut cm) = r.rec.pop_first() else {
                     break;
@@ -2439,7 +2498,7 @@ pub fn soreceive<G: ProcGlue>(
         loop {
             if r.m().is_none() {
                 // The record ran out: what a sender appended to it meanwhile continues it.
-                g.refill_record(&mut r.rec);
+                r.refill(&mut g);
             }
             let Some(m) = r.m() else {
                 break;
@@ -2495,7 +2554,7 @@ pub fn soreceive<G: ProcGlue>(
                     flags |= MSG_EOR;
                 }
                 if flags & MSG_PEEK != 0 {
-                    r.peeked += 1;
+                    r.pass();
                     moff = 0;
                     orig_resid = 0;
                 } else if let Some(b) = r.rec.pop_first() {
@@ -2553,7 +2612,7 @@ pub fn soreceive<G: ProcGlue>(
                 && !sosendallatonce(so)
                 && !g.next_record_exists()
             {
-                g.refill_record(&mut r.rec);
+                r.refill(&mut g);
                 if r.m().is_some() {
                     break;
                 }
@@ -2561,7 +2620,7 @@ pub fn soreceive<G: ProcGlue>(
                     break;
                 }
                 if g.sbwait().is_err() {
-                    g.put_back_record(r.rec);
+                    g.put_back_record(r.into_record());
                     drop(g);
                     drop(sbl);
                     soreceive_out(mp0, mpchain, controlp, controls);
@@ -2571,7 +2630,7 @@ pub fn soreceive<G: ProcGlue>(
         }
 
         let data_left = r.m().is_some();
-        g.put_back_record(r.rec);
+        g.put_back_record(r.into_record());
         if data_left && pr.flags() & PR_ATOMIC != 0 {
             flags |= MSG_TRUNC;
             if flags & MSG_PEEK == 0 {
@@ -2626,28 +2685,17 @@ fn soreceive_out(
     }
 }
 
-/// `m_copym(m, 0, m->m_len, M_DONTWAIT)` of the record's `n`-th mbuf (`MSG_PEEK`'s copy of an
-/// address or a control message), the record left as it was: the mbufs before it taken off
-/// and put back in order (O(n), the C's walk to it).
-fn rcv_copy_nth(rec: &mut crate::net::sockbuf::SbRecord, n: usize) -> Option<MbufBox> {
-    let mut before = hal::owned::OwnedSlist::<crate::net::mbuf::MNext>::new();
-    for _ in 0..n {
-        before.push_tail(rec.pop_first()?);
-    }
-    let copy = rec.pop_first().and_then(|mut m| {
-        let len = m.m_len().get() as i32;
-        let c = crate::net::mbuf::m_copym(&mut m, 0, len, crate::net::mbuf::M_DONTWAIT);
-        rec.push_first(m);
-        c
-    });
-    rec.prepend(before);
-    copy
-}
-
 /// `*mp = m_copym(m, 0, len, wait)` of the record's first mbuf (`soreceive`'s partial
-/// mbuf passed back as a chain), the mbuf left at the record's front.
+/// mbuf passed back as a chain; [`M_COPYALL_FIRST`], the whole mbuf, `MSG_PEEK`'s copy of an
+/// address or a control message), the mbuf left at the record's front.
 fn rcv_copy_front(rec: &mut crate::net::sockbuf::SbRecord, len: i32, wait: i32) -> Option<MbufBox> {
     let mut m = rec.pop_first()?;
+    // M_COPYALL_FIRST: the whole mbuf, `m->m_len`.
+    let len = if len == M_COPYALL_FIRST {
+        m.m_len().get() as i32
+    } else {
+        len
+    };
     let c = crate::net::mbuf::m_copym(&mut m, 0, len, wait);
     rec.push_first(m);
     c

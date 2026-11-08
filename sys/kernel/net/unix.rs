@@ -3100,6 +3100,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn msg_peek_reads_without_taking() {
+        use hal::sys::socket::MSG_PEEK;
+        let (_g, p) = setup();
+        // A stream of several mbufs (clusters): a peek walks them all, a second peek sees
+        // the same bytes, the read takes them.
+        let ((a, fa), (b, fb)) = pair(p, SOCK_STREAM);
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        assert_eq!(send(p, &a, &data, 0), Ok(5000));
+        assert_eq!(recv(p, &b, 5000, MSG_PEEK), Ok((data.clone(), MSG_PEEK)));
+        assert_eq!(
+            recv(p, &b, 100, MSG_PEEK),
+            Ok((data[..100].to_vec(), MSG_PEEK))
+        );
+        assert_eq!(b.so_rcv.cc(), 5000);
+        assert_eq!(recv(p, &b, 5000, 0), Ok((data.clone(), 0)));
+        assert_eq!(recv(p, &b, 16, MSG_DONTWAIT), Err(Errno::EWOULDBLOCK));
+
+        // A datagram: the peek copies its address and data, the record stays whole.
+        let ((c, fc), (d, fd)) = pair(p, SOCK_DGRAM);
+        assert_eq!(send(p, &c, b"first", 0), Ok(5));
+        let (bytes, _, _, from) = recvc(p, &d, 16, MSG_PEEK, 0).expect("a peek");
+        assert_eq!(bytes, b"first");
+        assert_eq!(from.as_deref().map(Mbuf::data), Some(&SUN_NONAME[..]));
+        let (bytes, _, _, from) = recvc(p, &d, 16, 0, 0).expect("the datagram");
+        assert_eq!(bytes, b"first");
+        assert_eq!(from.as_deref().map(Mbuf::data), Some(&SUN_NONAME[..]));
+        assert_eq!(recv(p, &d, 16, MSG_DONTWAIT), Err(Errno::EWOULDBLOCK));
+        drop((a, b, c, d));
+        for f in [fa, fb, fc, fd] {
+            assert_eq!(sys_close(p, f), Ok(()));
+        }
+        teardown();
+    }
+
+    #[test]
     fn seqpacket_keeps_records() {
         let (_g, p) = setup();
         let ((a, fa), (b, fb)) = pair(p, SOCK_SEQPACKET);

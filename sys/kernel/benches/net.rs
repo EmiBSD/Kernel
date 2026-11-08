@@ -67,6 +67,8 @@
 //!     mutex section): the TCP input and ack paths' buffer work.
 //!   - `soreceive.4k`: `soreceive` of 4 KiB from a UNIX stream socket whose peer sent them
 //!     (the send untimed).
+//!   - `soreceive.peek.4k`: `soreceive` with `MSG_PEEK` of the 4 KiB a UNIX stream socket
+//!     holds (sent once, untimed; a peek takes nothing): the walk down the record.
 //!   - `unix.socketpair.send.recv.64`: `sosend` of 64 bytes on one end of a UNIX stream
 //!     pair and `soreceive` of them on the other.
 //!   - `solock.unlock.unix`: `solock` and its drop on a UNIX socket (`so_lock`'s write
@@ -988,9 +990,10 @@ fn cluster_chain(lens: &[u32]) -> MbufBox {
 }
 
 /// The socket layer's rows (N6.2a).
-const SOCKET_ROWS: [&str; 5] = [
+const SOCKET_ROWS: [&str; 6] = [
     "sockbuf.append.drop",
     "soreceive.4k",
+    "soreceive.peek.4k",
     "unix.socketpair.send.recv.64",
     "solock.unlock.unix",
     "socket.create.close.unix",
@@ -1031,12 +1034,17 @@ fn ksend(so: &kernel::net::socket::Socket<G>, buf: &[u8]) {
 
 /// `soreceive` of `buf.len()` bytes from `so`.
 fn krecv(so: &kernel::net::socket::Socket<G>, buf: &mut [u8]) {
+    krecv_flags(so, buf, 0);
+}
+
+/// `soreceive` of `buf.len()` bytes from `so` with `flags`.
+fn krecv_flags(so: &kernel::net::socket::Socket<G>, buf: &mut [u8], flags: i32) {
     let mut iov = [Iovec {
         iov_base: buf.as_mut_ptr().cast(),
         iov_len: buf.len(),
     }];
     let mut u = kuio(&mut iov, UioRw::UIO_READ);
-    let mut flags = 0;
+    let mut flags = flags;
     if kernel::net::socket::soreceive(so, None, &mut u, None, None, Some(&mut flags), 0).is_err()
         || u.uio_resid != 0
     {
@@ -1106,6 +1114,20 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
         report(SOCKET_ROWS[1], r);
     }
     if wanted(SOCKET_ROWS[2]) {
+        let out = vec![7u8; 4096];
+        let mut inb = vec![0u8; 4096];
+        ksend(&a, &out);
+        let r = measure(OPS / 16, || {
+            let t = Instant::now();
+            for _ in 0..OPS / 16 {
+                krecv_flags(&b, black_box(&mut inb), hal::sys::socket::MSG_PEEK);
+            }
+            t.elapsed()
+        });
+        krecv(&b, &mut inb);
+        report(SOCKET_ROWS[2], r);
+    }
+    if wanted(SOCKET_ROWS[3]) {
         let out = [5u8; 64];
         let mut inb = [0u8; 64];
         let r = measure(OPS, || {
@@ -1116,9 +1138,9 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
             }
             t.elapsed()
         });
-        report(SOCKET_ROWS[2], r);
+        report(SOCKET_ROWS[3], r);
     }
-    if wanted(SOCKET_ROWS[3]) {
+    if wanted(SOCKET_ROWS[4]) {
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
@@ -1126,11 +1148,11 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
             }
             t.elapsed()
         });
-        report(SOCKET_ROWS[3], r);
+        report(SOCKET_ROWS[4], r);
     }
     let _ = soclose(&a, 0);
     let _ = soclose(&b, 0);
-    if wanted(SOCKET_ROWS[4]) {
+    if wanted(SOCKET_ROWS[5]) {
         let n = OPS / 16;
         let r = measure(n, || {
             let t = Instant::now();
@@ -1140,7 +1162,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
             }
             t.elapsed()
         });
-        report(SOCKET_ROWS[4], r);
+        report(SOCKET_ROWS[5], r);
     }
 }
 /* </CODE> */
