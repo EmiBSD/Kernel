@@ -111,6 +111,7 @@ use crate::sys::mbuf::{
     M_DONTWAIT, M_EOR, M_EXT, M_PKTHDR, MAXMCLBYTES, MCLBYTES, MLEN, MSIZE, MT_CONTROL, MT_SONAME,
     Mbuf, mclget, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_ext_size, m_set_next, m_set_nextpkt};
 use crate::sys::mutex::mutex_assert_locked;
 use crate::sys::param::{PCATCH, PSOCK};
 use crate::sys::protosw::pru_attach;
@@ -811,7 +812,9 @@ pub fn sblastmbufchk(sb: &Sockbuf, where_: &str) {
 /// `SBLINKRECORD(sb, m0)`: links the record `m0` after the last one.
 fn sblinkrecord(sb: &Sockbuf, m0: &'static Mbuf) {
     match sb.sb_lastrecord.get() {
-        Some(last) => last.m_nextpkt().set(Some(m0)),
+        Some(last) => {
+            let _ = m_set_nextpkt(last, Some(m0));
+        }
         None => sb.sb_mb.set(Some(m0)),
     }
     sb.sb_lastrecord.set(Some(m0));
@@ -874,7 +877,7 @@ pub fn sbcheck(_so: &Socket, sb: &Sockbuf) {
             len += u64::from(nn.m_len().get());
             mbcnt += MSIZE as u64;
             if nn.m_flags().get() & M_EXT != 0 {
-                mbcnt += u64::from(nn.m_ext().ext_size.get());
+                mbcnt += u64::from(m_ext_size(nn));
             }
             if !ptr::eq(mm, nn) && nn.m_nextpkt().get().is_some() {
                 panic(format_args!("sbcheck nextpkt"));
@@ -907,7 +910,7 @@ pub fn sbappendrecord(sb: &Sockbuf, m0: Option<&'static Mbuf>) {
     sballoc(sb, m0);
     sblinkrecord(sb, m0);
     let m = m0.m_next().get();
-    m0.m_next().set(None);
+    let _ = m_set_next(m0, None);
     if let Some(m) = m
         && m0.m_flags().get() & M_EOR != 0
     {
@@ -964,12 +967,12 @@ pub fn sbappendaddr(
     unsafe { ptr::copy_nonoverlapping(addr.as_ptr(), mtod::<u8>(m), sa_len) };
     let control = match n {
         Some(n) => {
-            n.m_next().set(m0); // concatenate data to control
+            let _ = m_set_next(n, m0); // concatenate data to control
             control
         }
         None => m0,
     };
-    m.m_next().set(control);
+    let _ = m_set_next(m, control);
 
     let mut n = m;
     while let Some(next) = n.m_next().get() {
@@ -1018,7 +1021,7 @@ pub fn sbappendcontrol(sb: &Sockbuf, m0: Option<&'static Mbuf>, control: &'stati
     if space > sbspace_locked(sb) {
         return false;
     }
-    n.m_next().set(m0); // concatenate data to control
+    let _ = m_set_next(n, m0); // concatenate data to control
 
     let mut m = control;
     while let Some(next) = m.m_next().get() {
@@ -1062,7 +1065,7 @@ pub fn sbcompress(sb: &Sockbuf, m: Option<&'static Mbuf>, n: Option<&'static Mbu
             // m_trailingspace() checks buffer writeability
             && mm.m_len().get()
                 <= (if nn.m_flags().get() & M_EXT != 0 {
-                    nn.m_ext().ext_size.get()
+                    m_ext_size(nn)
                 } else {
                     MCLBYTES as u32
                 }) / 4 // XXX Don't copy too much
@@ -1088,7 +1091,9 @@ pub fn sbcompress(sb: &Sockbuf, m: Option<&'static Mbuf>, n: Option<&'static Mbu
             continue;
         }
         match n {
-            Some(nn) => nn.m_next().set(Some(mm)),
+            Some(nn) => {
+                let _ = m_set_next(nn, Some(mm));
+            }
             None => sb.sb_mb.set(Some(mm)),
         }
         sb.sb_mbtail.set(Some(mm));
@@ -1096,7 +1101,7 @@ pub fn sbcompress(sb: &Sockbuf, m: Option<&'static Mbuf>, n: Option<&'static Mbu
         n = Some(mm);
         mm.m_flags().set(mm.m_flags().get() & !M_EOR);
         m = mm.m_next().get();
-        mm.m_next().set(None);
+        let _ = m_set_next(mm, None);
     }
     if eor != 0 {
         match n {
@@ -1142,8 +1147,7 @@ pub fn sbdrop(sb: &Sockbuf, len: i32) {
         };
         if mm.m_len().get() as i32 > len {
             mm.m_len().set(mm.m_len().get() - len as u32);
-            mm.m_data()
-                .set(mm.m_data().get().wrapping_add(len as usize));
+            m_data_add(mm, len as isize);
             sb.sb_cc.set(sb.sb_cc.get() - len as u64);
             if is_data(mm) {
                 sb.sb_datacc.set(sb.sb_datacc.get() - len as u64);
@@ -1163,7 +1167,7 @@ pub fn sbdrop(sb: &Sockbuf, len: i32) {
     match m {
         Some(mm) => {
             sb.sb_mb.set(Some(mm));
-            mm.m_nextpkt().set(next);
+            let _ = m_set_nextpkt(mm, next);
         }
         None => sb.sb_mb.set(next),
     }

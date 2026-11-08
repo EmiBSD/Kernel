@@ -5800,13 +5800,13 @@ status = "inherited"
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/netlock.rs"]
+adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_syscalls.rs"
@@ -6855,7 +6855,7 @@ status = "inherited"
 rust = "sys/nfs/krpc_subr.rs"
 lz = ["sys/nfs/krpc_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs.rs"
@@ -6873,7 +6873,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -6896,13 +6896,13 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/nam
 rust = "sys/nfs/nfs_serv.rs"
 lz = ["sys/nfs/nfs_serv.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_socket.rs"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
@@ -6920,7 +6920,7 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mou
 rust = "sys/nfs/nfs_subs.rs"
 lz = ["sys/nfs/nfs_subs.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_syscalls.rs"
@@ -7639,7 +7639,8 @@ notes = "M7b: every constant (AF_*/PF_* as sa_family_t, the rest i32), linger, s
 [[module]]
 rust = "sys/sys/socketvar.rs"
 lz = ["sys/sys/socketvar.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/sys/sockio.rs"

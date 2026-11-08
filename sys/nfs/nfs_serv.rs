@@ -176,6 +176,7 @@ use crate::sys::dirent::Dirent;
 use crate::sys::errno::Errno;
 use crate::sys::lock::{LK_EXCLUSIVE, LK_RETRY};
 use crate::sys::mbuf::{M_EXT, M_WAIT, MINCLSIZE, MT_DATA, Mbuf, mclget, mtod};
+use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::mount::{
     Fhandle, MNT_RDONLY, MNT_WAIT, Mount, Statfs, VFS_STATFS, VFS_VGET, VFS_VPTOFH,
 };
@@ -864,7 +865,7 @@ pub fn nfsrv_readlink(
         }
     }
     nfsm_build(&mut mb, NFSX_UNSIGNED).set(0, txdr_unsigned(len as u32));
-    mb.m_next().set(mp);
+    let _ = m_set_next(mb, mp);
     Ok(())
 }
 
@@ -999,7 +1000,7 @@ pub fn nfsrv_read(
                     mclget(n, M_WAIT);
                 }
                 n.m_len().set(0);
-                m.m_next().set(Some(n));
+                let _ = m_set_next(m, Some(n));
                 m = n;
             }
         }
@@ -1155,7 +1156,7 @@ pub fn nfsrv_write(
                 let adjust = mlen - nfsm_avail(m, nfsd.nd_dpos);
                 m.m_len().set((mlen - adjust) as u32);
                 if m.m_len().get() > 0 && adjust > 0 {
-                    m.m_data().set(m.m_data().get().wrapping_add(adjust));
+                    m_data_add(m, adjust as isize);
                 }
             }
             if zeroing {

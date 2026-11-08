@@ -176,6 +176,7 @@ use crate::sys::mbuf::{
     M_COPYALL, M_DONTWAIT, M_WAIT, MHLEN, MINCLSIZE, MT_DATA, MT_SONAME, MT_SOOPTS, Mbuf, mclget,
     mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next, m_set_nextpkt, m_take_next};
 #[cfg(feature = "nfsclient")]
 use crate::sys::mount::NFSMNT_NFSV3;
 use crate::sys::mount::{
@@ -1070,7 +1071,7 @@ pub fn nfs_request(
         pool_put(&NFSREQPL, item);
         return Err(Errno::ENOBUFS);
     };
-    head.m_next().set(infop.nmi_mreq);
+    let _ = m_set_next(head, infop.nmi_mreq);
     head.m_len().set(0);
     m_calchdrlen(head);
     rep.r_mreq.set(Some(head));
@@ -1291,8 +1292,7 @@ pub fn nfs_rephead(
     if siz as i64 >= MHLEN as i64 - i64::from(max_hdr) {
         mclget(mreq, M_WAIT);
     } else {
-        mreq.m_data()
-            .set(mreq.m_data().get().wrapping_add(max_hdr as usize));
+        m_data_add(mreq, max_hdr as isize);
     }
     mreq.m_len().set(0);
 
@@ -1645,7 +1645,7 @@ fn realign(pm: &mut Option<&'static Mbuf>, aligned: fn(usize) -> bool) {
 
     NFS_REALIGN_TEST.fetch_add(1, Relaxed);
     while let Some(m) = cur {
-        if !aligned(m.m_data().get().addr()) || !aligned(m.m_len().get() as usize) {
+        if !aligned(mtod::<u8>(m).addr()) || !aligned(m.m_len().get() as usize) {
             let Some(nm) = m_get(M_WAIT, MT_DATA) else {
                 return;
             };
@@ -1687,8 +1687,8 @@ fn realign(pm: &mut Option<&'static Mbuf>, aligned: fn(usize) -> bool) {
             *pm = Some(n);
         }
         Some(prev) => {
-            m_freem(prev.m_next().take());
-            prev.m_next().set(Some(n));
+            m_freem(m_take_next(prev));
+            let _ = m_set_next(prev, Some(n));
         }
     }
 }
@@ -1892,7 +1892,7 @@ pub fn nfsrv_rcv(so: &'static Socket, arg: *mut c_void, waitflag: i32) {
             };
             let received = (1_000_000_000 - auio.uio_resid) as i32;
             if let Some(rawend) = slp.ns_rawend.get() {
-                rawend.m_next().set(Some(m));
+                let _ = m_set_next(rawend, Some(m));
                 slp.ns_cc.set(slp.ns_cc.get() + received);
             } else {
                 slp.ns_raw.set(Some(m));
@@ -1937,18 +1937,18 @@ pub fn nfsrv_rcv(so: &'static Socket, arg: *mut c_void, waitflag: i32) {
                 if let Some(data) = mp {
                     let m = match nam {
                         Some(nam) => {
-                            nam.m_next().set(Some(data));
+                            let _ = m_set_next(nam, Some(data));
                             nam
                         }
                         None => data,
                     };
                     if let Some(recend) = slp.ns_recend.get() {
-                        recend.m_nextpkt().set(Some(m));
+                        let _ = m_set_nextpkt(recend, Some(m));
                     } else {
                         slp.ns_rec.set(Some(m));
                     }
                     slp.ns_recend.set(Some(m));
-                    m.m_nextpkt().set(None);
+                    let _ = m_set_nextpkt(m, None);
                 } else {
                     m_freem(nam);
                 }
@@ -2008,7 +2008,7 @@ pub fn nfsrv_getstream(slp: &NfssvcSock, waitflag: i32) -> Result<(), Errno> {
                 unsafe {
                     ptr::copy_nonoverlapping(mtod::<u8>(m), recmark.as_mut_ptr(), NFSX_UNSIGNED)
                 };
-                m.m_data().set(m.m_data().get().wrapping_add(NFSX_UNSIGNED));
+                m_data_add(m, NFSX_UNSIGNED as isize);
                 m.m_len().set(m.m_len().get() - NFSX_UNSIGNED as u32);
             } else {
                 for b in &mut recmark {
@@ -2020,7 +2020,7 @@ pub fn nfsrv_getstream(slp: &NfssvcSock, waitflag: i32) -> Result<(), Errno> {
                     }
                     // SAFETY: `m` has at least one byte of data (the loop above).
                     *b = unsafe { mtod::<u8>(m).read() };
-                    m.m_data().set(m.m_data().get().wrapping_add(1));
+                    m_data_add(m, 1);
                     m.m_len().set(m.m_len().get() - 1);
                 }
             }
@@ -2061,13 +2061,12 @@ pub fn nfsrv_getstream(slp: &NfssvcSock, waitflag: i32) -> Result<(), Errno> {
                         return done(Err(Errno::EWOULDBLOCK));
                     };
                     if let Some(om) = om {
-                        om.m_next().set(Some(m2));
+                        let _ = m_set_next(om, Some(m2));
                         recm = slp.ns_raw.get();
                     } else {
                         recm = Some(m2);
                     }
-                    mm.m_data()
-                        .set(mm.m_data().get().wrapping_add((reclen - len) as usize));
+                    m_data_add(mm, ((reclen - len) as usize) as isize);
                     mm.m_len().set((mlen - (reclen - len)) as u32);
                     len = reclen;
                 } else if len + mlen == reclen {
@@ -2075,7 +2074,7 @@ pub fn nfsrv_getstream(slp: &NfssvcSock, waitflag: i32) -> Result<(), Errno> {
                     len += mlen;
                     m = mm.m_next().get();
                     recm = slp.ns_raw.get();
-                    mm.m_next().set(None);
+                    let _ = m_set_next(mm, None);
                 } else {
                     om = Some(mm);
                     len += mlen;
@@ -2097,12 +2096,12 @@ pub fn nfsrv_getstream(slp: &NfssvcSock, waitflag: i32) -> Result<(), Errno> {
                 while let Some(next) = last.m_next().get() {
                     last = next;
                 }
-                last.m_next().set(recm);
+                let _ = m_set_next(last, recm);
             }
         }
         if slp.ns_flag.get() & SLP_LASTFRAG != 0 {
             if let Some(recend) = slp.ns_recend.get() {
-                recend.m_nextpkt().set(slp.ns_frag.get());
+                let _ = m_set_nextpkt(recend, slp.ns_frag.get());
             } else {
                 slp.ns_rec.set(slp.ns_frag.get());
             }
@@ -2125,12 +2124,12 @@ pub fn nfsrv_dorec(slp: &NfssvcSock, nfsd: &Nfsd) -> Result<NonNull<NfsrvDescrip
     };
     slp.ns_rec.set(m.m_nextpkt().get());
     if slp.ns_rec.get().is_some() {
-        m.m_nextpkt().set(None);
+        let _ = m_set_nextpkt(m, None);
     } else {
         slp.ns_recend.set(None);
     }
     let (nam, m) = if i32::from(m.m_type().get()) == MT_SONAME {
-        (Some(m), m.m_next().take())
+        (Some(m), m_take_next(m))
     } else {
         (None, Some(m))
     };

@@ -95,6 +95,7 @@ use crate::machine::intr::IPL_MPFLOOR;
 use crate::queue_adapter;
 use crate::sys::errno::Errno;
 use crate::sys::event::{Klist, klist_empty};
+use crate::sys::mbuf::m_ext_size;
 use crate::sys::mbuf::{M_EXT, MSIZE, MT_CONTROL, MT_SONAME, Mbuf};
 use crate::sys::mutex::Mutex;
 use crate::sys::protosw::{PR_ATOMIC, PR_CONNREQUIRED, Protosw};
@@ -589,7 +590,7 @@ fn is_data(m: &Mbuf) -> bool {
 fn mbcnt(m: &Mbuf) -> u64 {
     let mut n = MSIZE as u64;
     if m.m_flags().get() & M_EXT != 0 {
-        n += u64::from(m.m_ext().ext_size.get());
+        n += u64::from(m_ext_size(m));
     }
     n
 }
