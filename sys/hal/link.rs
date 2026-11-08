@@ -47,15 +47,30 @@
 //! legacy code under its own `unsafe` (`ps_fd`, `ps_sigacts`, `p_kq` while those subsystems
 //! are `bsd`'s): a word, so the struct that holds it may be `Send` and `Sync`.
 //!
+//! [`SaLink`] (N6.3a) is a `PtrWord` the kernel does follow, under a premise registered in
+//! `sys/hal/trust.rs`: the address of a socket address (`struct sockaddr *`) that legacy
+//! storage holds and lends whole, `ifa_addr`, `ifa_dstaddr`, `ifa_netmask` and `ifma_addr` of
+//! an interface address `bsd`'s internet protocols own (`struct in_ifaddr`'s `ia_addr`,
+//! `in6_ifaddr`'s, `in_multi`'s `inm_sin`). The kernel's interface layer compares and copies
+//! those addresses (`ifa_ifwithaddr`, `ifaof_ifpforaddr`, `ifconf`), so it reads their
+//! `sa_len` bytes through [`SaLink::view`].
+//!
 //! ## Redesign
 //! - `Cell<*const T>` with "valid while linked" -> `Link<T>` over `'static` targets: the
 //!   validity is the type's, so it is checked by the compiler at `set`, not promised at every
 //!   read. `Sync` by composition (an atomic pointer and a `PhantomData<&'static T>`), so a
 //!   link may be shared exactly when `T` may.
+//! - N6.3a: LZ's `Cell<*mut Sockaddr>` members of `struct ifaddr` and `struct ifmaddr`, read
+//!   through an `unsafe` deref at each of `if.c`'s readers ("the address lives while the
+//!   address is linked") -> [`SaLink`]: the word `bsd` sets, and one view of its `sa_len`
+//!   bytes whose premise is written once, in `sys/hal/trust.rs`; it goes when `in_ifaddr` and
+//!   `in6_ifaddr` are the kernel's and the interface address embeds its storage (N6.4, N6.5).
 
 use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
+
+use crate::sys::socket::Sockaddr;
 
 /// A reference to a `T` that lives for ever, or none (`NULL`), settable through `&self`.
 ///
@@ -314,6 +329,83 @@ impl<T> core::fmt::Debug for PtrWord<T> {
         write!(f, "PtrWord({:p})", self.0.load(Ordering::Relaxed))
     }
 }
+/// `struct sockaddr *` of an interface address whose storage legacy code owns and lends
+/// whole (`ifa_addr`, `ifa_dstaddr`, `ifa_netmask`, `ifma_addr`): the word `bsd` sets
+/// ([`SaLink::set`], LZ's `Cell::set` of the member) and reads back ([`SaLink::get`], for its
+/// own derefs), and the kernel's view of the address's `sa_len` bytes ([`SaLink::view`]).
+///
+/// The view rests on the premise `sys/hal/trust.rs` registers (the "socket address lent by
+/// an interface address" paragraph): a word that is not null is the address of a socket
+/// address whose storage holds at least its two header bytes and its `sa_len` bytes, made
+/// with that storage's provenance (`Cell::as_ptr` of the member that holds it), which lives
+/// while the interface address that holds the word lives, and whose bytes are written only
+/// by a holder of the net lock in its exclusive mode, while the kernel reads them only under
+/// the net lock (the C's `[N]`). Nothing here can check it; it goes when the storage is the
+/// kernel's (N6.4, N6.5).
+#[repr(transparent)]
+pub struct SaLink(AtomicPtr<Sockaddr>);
+
+impl SaLink {
+    /// `NULL`.
+    pub const fn new() -> Self {
+        Self(AtomicPtr::new(ptr::null_mut()))
+    }
+
+    /// Stores `sa` (`ifa->ifa_addr = sintosa(&ia->ia_addr)`): null, or a socket address
+    /// whose storage keeps the premise of the type's docs.
+    #[inline]
+    pub fn set(&self, sa: *const Sockaddr) {
+        self.0.store(sa.cast_mut(), Ordering::Release);
+    }
+
+    /// The address, for a legacy reader that dereferences it in its own `unsafe` block, as
+    /// LZ's sites do (relaxed: the word changes under the net lock its readers hold).
+    #[inline]
+    pub fn get(&self) -> *mut Sockaddr {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    /// Whether the word is null.
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        self.0.load(Ordering::Relaxed).is_null()
+    }
+
+    /// The socket address's `sa_len` bytes (its header's first byte), borrowed for as long as
+    /// the link is: `None` when the word is null. For a holder of the net lock (the C's
+    /// readers of `ifa_addr`).
+    #[inline]
+    pub fn view(&self) -> Option<&[u8]> {
+        let p = self.0.load(Ordering::Acquire).cast::<u8>().cast_const();
+        if p.is_null() {
+            return None;
+        }
+        // SAFETY: by the premise this type documents and `sys/hal/trust.rs` registers, a word
+        // that is not null is the address, with its storage's provenance, of a socket address
+        // whose storage holds at least its two header bytes and its `sa_len` bytes: reading
+        // the first byte (`sa_len`), then a slice of `sa_len` bytes from the start, stays
+        // inside one allocation of initialised bytes, at an alignment of 1. The storage lives
+        // while the interface address holding this link does, and this link is borrowed for
+        // the slice's life, so the bytes outlive the slice. They are written only by a holder
+        // of the net lock in its exclusive mode and the caller holds the net lock, so no write
+        // happens while the slice lives, and the shared slice aliases no `&mut`. The `Acquire`
+        // load pairs with `set`'s `Release`, so the bytes written before the word was
+        // published are seen.
+        Some(unsafe { core::slice::from_raw_parts(p, usize::from(p.read())) })
+    }
+}
+
+impl Default for SaLink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl core::fmt::Debug for SaLink {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "SaLink({:p})", self.0.load(Ordering::Relaxed))
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -412,6 +504,89 @@ mod tests {
         assert!(ptr::eq(w.get_mut().cast_const(), &raw const B));
         fn shared<T: Send + Sync>() {}
         shared::<PtrWord<core::cell::Cell<u8>>>();
+    }
+
+    #[test]
+    fn an_all_zero_link_and_word_are_null() {
+        // A zeroed object that embeds links (an interface in an `M_ZERO` softc) holds empty
+        // ones.
+        // SAFETY: a `Link` is an `AtomicPtr` (zero is null, which `get` answers `None`) and a
+        // `PhantomData`: all zero bytes are a valid, empty link.
+        let l: Link<u32> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(l.is_none() && l.get().is_none());
+        l.set(Some(&A));
+        assert_eq!(l.get(), Some(&7));
+        // SAFETY: a `PtrWord` is an `AtomicPtr`: zero is null.
+        let w: PtrWord<u32> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(w.get().is_null());
+        // SAFETY: a `SaLink` is an `AtomicPtr`: zero is null.
+        let s: SaLink = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(s.is_none() && s.view().is_none());
+    }
+
+    /// The embed idiom's proof (docs/IDIOMS.md) for `crate::list` (a `forbid(unsafe_code)`
+    /// module, so its zeroed values are built here): a head and an entry in a zeroed legacy
+    /// object (an interface's address list in an `M_ZERO` softc) are an empty list and an
+    /// unlinked entry.
+    #[test]
+    fn an_all_zero_list_is_empty_and_an_all_zero_entry_unlinked() {
+        use crate::list::{List, ListEntry};
+
+        struct Item {
+            q: ListEntry<Item>,
+        }
+        crate::list_adapter!(Q: Item, q);
+
+        // SAFETY: a `List` is two `Link`s (`AtomicPtr`s: zero is null) and a `PhantomData`; a
+        // `ListEntry` two `Link`s and an `AtomicBool` (zero is `false`): all zero bytes are an
+        // empty head and an entry on no list.
+        let l: List<Q> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(l.is_empty() && l.first().is_none() && l.last().is_none());
+        // SAFETY: as above.
+        let q: ListEntry<Item> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        let a: &'static Item = Box::leak(Box::new(Item { q }));
+        assert!(!List::<Q>::is_linked(a));
+        l.insert_tail(a);
+        assert!(List::<Q>::is_linked(a) && l.first().is_some());
+        l.remove(a);
+        assert!(l.is_empty() && !List::<Q>::is_linked(a));
+    }
+
+    #[test]
+    fn a_sockaddr_is_viewed_as_its_sa_len_bytes() {
+        // An in_ifaddr's ia_addr (16 bytes) and an in6_ifaddr's (28): the storage lends its
+        // own provenance, as bsd's `Cell::as_ptr` does.
+        let sin = Box::leak(Box::new(core::cell::Cell::new([0u8; 16])));
+        let mut b = [0u8; 16];
+        b[0] = 16;
+        b[1] = 2;
+        b[4..8].copy_from_slice(&[10, 0, 2, 15]);
+        sin.set(b);
+        let sin6 = Box::leak(Box::new(core::cell::Cell::new([0u8; 28])));
+        let mut b6 = [0u8; 28];
+        b6[0] = 28;
+        b6[1] = 24;
+        b6[27] = 0xee;
+        sin6.set(b6);
+
+        let l = SaLink::new();
+        assert!(l.view().is_none());
+        l.set(sin.as_ptr().cast());
+        assert_eq!(l.view(), Some(&b[..]));
+        assert!(ptr::eq(l.get().cast_const(), sin.as_ptr().cast()));
+        l.set(sin6.as_ptr().cast());
+        let v = l.view().unwrap();
+        assert_eq!((v.len(), v[1], v[27]), (28, 24, 0xee));
+        // A shorter sa_len views only its bytes (a netmask's).
+        let mut short = [0u8; 16];
+        short[0] = 5;
+        sin.set(short);
+        l.set(sin.as_ptr().cast());
+        assert_eq!(l.view().map(<[u8]>::len), Some(5));
+        l.set(ptr::null());
+        assert!(l.is_none());
+        fn shared<T: Send + Sync>() {}
+        shared::<SaLink>();
     }
 
     #[test]
