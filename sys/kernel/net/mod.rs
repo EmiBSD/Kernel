@@ -22,8 +22,12 @@
 
 pub mod domain;
 pub mod file;
+pub mod if_;
+pub mod if_var;
+pub mod ifq;
 pub mod mbuf;
 pub mod mbuf2;
+pub mod netisr;
 pub mod pf_hooks;
 pub mod proto;
 pub mod sockbuf;

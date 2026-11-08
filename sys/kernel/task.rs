@@ -90,7 +90,15 @@
 //!   `hal::pool::AnyArc`): the task holds the handle until it is set again or cleared
 //!   ([`Task::clear`]), a worker clones it with the copy it takes, and the function gets its
 //!   object back by naming its type.
+//! - N6.3a: a task whose argument is an object that lives for ever (an interface's send and
+//!   receive queues, `ifq_init`'s `task_set(&ifq->ifq_start, ifq_start_task, ifq)`) takes it
+//!   as a `&'static` reference, erased ([`Task::set_ref`]): the function gets its object back
+//!   by naming its type, with no count and no cast. The tasks an owner links on lists of its
+//!   own and runs itself (`if.c`'s hooks, `ifq.c`'s serializer: the C's `TAILQ_INSERT_TAIL(..,
+//!   t, t_entry)` and `(*work.t_func)(work.t_arg)`) use the task's one entry through
+//!   [`TaskChain`] and the copy [`Task::work`] takes, as a worker does.
 
+use core::any::Any;
 use core::ffi::c_void;
 use core::ops::Deref;
 use core::pin::Pin;
@@ -116,6 +124,10 @@ pub type TaskFn = fn(*mut c_void);
 /// task holds, lent for the call.
 pub type SharedTaskFn = fn(&AnyArc);
 
+/// The function of a task set by [`Task::set_ref`]: its argument is the object that lives for
+/// ever the task was set with.
+pub type RefTaskFn = fn(&'static (dyn Any + Send + Sync));
+
 /// `TASK_ONQUEUE`: the task is on a queue's worklist (`t_flags`, as legacy callers spell
 /// it; here the task's entry is linked).
 pub const TASK_ONQUEUE: u32 = 1;
@@ -130,6 +142,8 @@ enum Func {
     Raw(TaskFn),
     /// A function of the handle in [`Body::shared`].
     Shared(SharedTaskFn),
+    /// A function of the object in [`Body::target`].
+    Ref(RefTaskFn),
 }
 
 /// `t_func` and `t_arg`.
@@ -141,6 +155,8 @@ struct Body {
     /// The argument of a [`Func::Shared`] function, held until the task is set again or
     /// cleared.
     shared: Option<AnyArc>,
+    /// The argument of a [`Func::Ref`] function.
+    target: Option<&'static (dyn Any + Send + Sync)>,
 }
 
 /// `struct task`. Not `Unpin`: it is linked through `Pin<&Task>` and must stay where it is
@@ -158,6 +174,29 @@ hal::pin_adapter!(
     /// A queue's worklist, through `Task::entry`.
     TaskList: Task, entry
 );
+
+hal::pin_adapter!(
+    /// A list of tasks their owner runs itself (`if.c`'s hooks, `ifq.c`'s serializer), through
+    /// the task's one entry: a task is on one list at a time, a worklist or such a list, as
+    /// the C's `t_entry` is.
+    pub TaskChain: Task, entry
+);
+
+/// A task's function and argument as [`Task::work`] copied them, for its caller to run
+/// (`(*work.t_func)(work.t_arg)`) once it has let go of the list's lock.
+pub struct TaskWork(Work);
+
+impl TaskWork {
+    /// Runs the copy.
+    pub fn run(self) {
+        match self.0 {
+            Work::Run(func, arg) => func(arg),
+            Work::RunShared(func, arg) => func(&arg),
+            Work::RunRef(func, target) => func(target),
+            Work::Barrier => {}
+        }
+    }
+}
 
 impl Task {
     /// `TASK_INITIALIZER(func, arg)`.
@@ -179,6 +218,7 @@ impl Task {
                     func,
                     arg: AtomicPtr::new(arg),
                     shared: None,
+                    target: None,
                 },
             ),
             barrier,
@@ -202,6 +242,33 @@ impl Task {
         drop(old);
     }
 
+    /// `task_set(t, fn, arg)` of an argument that lives for ever (the module's redesign):
+    /// `func` is called with `target`, which it downcasts to its own type.
+    pub fn set_ref(&self, func: RefTaskFn, target: &'static (dyn Any + Send + Sync)) {
+        let old = {
+            let mut b = self.body.lock();
+            b.func = Some(Func::Ref(func));
+            b.arg.store(ptr::null_mut(), Ordering::Relaxed);
+            b.target = Some(target);
+            b.shared.take()
+        };
+        drop(old);
+    }
+
+    /// `work = *t`: the task's function and argument, copied under the task's mutex for a
+    /// caller that runs the task itself (a list of its own, `ifq_serialize`, `if_hooks_run`),
+    /// as a worker copies what it takes; `None` for a task `task_set` never named.
+    pub fn work(&self) -> Option<TaskWork> {
+        let b = self.body.lock();
+        let w = match (b.func, &b.shared, b.target) {
+            (Some(Func::Raw(func)), _, _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
+            (Some(Func::Shared(func)), Some(arg), _) => Work::RunShared(func, arg.clone()),
+            (Some(Func::Ref(func)), _, Some(target)) => Work::RunRef(func, target),
+            _ => return None,
+        };
+        Some(TaskWork(w))
+    }
+
     /// `task_set(t, NULL, NULL)` of a task set by [`Task::set_shared`]: its argument given
     /// back (dropped after the task's mutex), its function gone. For its owner once the task
     /// is neither pending nor running (`taskq_del_barrier`).
@@ -209,6 +276,7 @@ impl Task {
         let old = {
             let mut b = self.body.lock();
             b.func = None;
+            b.target = None;
             b.shared.take()
         };
         drop(old);
@@ -225,6 +293,7 @@ impl Task {
         let mut b = self.body.lock();
         b.func = func;
         b.arg.store(arg, Ordering::Relaxed);
+        b.target = None;
         core::mem::replace(&mut b.shared, shared)
     }
 
@@ -608,6 +677,8 @@ enum Work {
     Run(TaskFn, *mut c_void),
     /// A task's shared function and a clone of its argument.
     RunShared(SharedTaskFn, AnyArc),
+    /// A task's function of an object that lives for ever, and the object.
+    RunRef(RefTaskFn, &'static (dyn Any + Send + Sync)),
     /// A barrier's task.
     Barrier,
 }
@@ -635,9 +706,10 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
         } else {
             // *work = *next: copy to caller to avoid races
             let b = next.body.lock();
-            match (b.func, &b.shared) {
-                (Some(Func::Raw(func)), _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
-                (Some(Func::Shared(func)), Some(arg)) => Work::RunShared(func, arg.clone()),
+            match (b.func, &b.shared, b.target) {
+                (Some(Func::Raw(func)), _, _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
+                (Some(Func::Shared(func)), Some(arg), _) => Work::RunShared(func, arg.clone()),
+                (Some(Func::Ref(func)), _, Some(target)) => Work::RunRef(func, target),
                 _ => kpanic(format_args!(
                     "taskq_thread: {}: a task without a function",
                     Str(tq.name)
@@ -701,6 +773,7 @@ fn taskq_worker(tq: &Taskq) -> Option<*const u32> {
         match work {
             Work::Run(func, arg) => func(arg),
             Work::RunShared(func, arg) => func(&arg),
+            Work::RunRef(func, target) => func(target),
             Work::Barrier => taskq_barrier_task(tq),
         }
         // WITNESS_UNLOCK; NKCOV > 0: kcov_remote_leave.
@@ -740,6 +813,7 @@ pub fn run_next_by_hand(tq: &Taskq) {
     match taskq_next_work(tq) {
         Some(Work::Run(func, arg)) => func(arg),
         Some(Work::RunShared(func, arg)) => func(&arg),
+        Some(Work::RunRef(func, target)) => func(target),
         Some(Work::Barrier) => taskq_barrier_task(tq),
         None => {}
     }
@@ -789,8 +863,36 @@ mod tests {
         match w {
             Work::Run(_, a) => a.addr(),
             Work::RunShared(_, a) => a.downcast_ref::<usize>().map_or(0, |n| *n),
+            Work::RunRef(_, t) => t.downcast_ref::<usize>().map_or(0, |n| *n),
             Work::Barrier => usize::MAX,
         }
+    }
+
+    static REF_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+    fn ref_task(t: &'static (dyn Any + Send + Sync)) {
+        if let Some(n) = t.downcast_ref::<usize>() {
+            REF_RUNS.fetch_add(*n, Ordering::Relaxed);
+        }
+    }
+
+    /// N6.3a: a task set with an object that lives for ever runs with it, through a worker's
+    /// copy and through the copy its owner takes to run it by hand; a later `set` forgets it.
+    #[test]
+    fn a_task_set_with_a_static_object_runs_with_it() {
+        static SEVEN: usize = 7;
+        let t = Task::unset();
+        assert!(t.work().is_none());
+        t.set_ref(ref_task, &SEVEN);
+        let w = t.work().unwrap();
+        assert_eq!(arg_of(Work::RunRef(ref_task, &SEVEN)), 7);
+        let before = REF_RUNS.load(Ordering::Relaxed);
+        w.run();
+        assert_eq!(REF_RUNS.load(Ordering::Relaxed), before + 7);
+        t.set(nothing, ptr::null_mut());
+        assert!(t.body.lock().target.is_none());
+        t.clear();
+        assert!(t.work().is_none());
     }
 
     /// Waits up to ten seconds for `f`.

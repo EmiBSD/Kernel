@@ -416,3 +416,59 @@ paid_by = "N8"
 trait = "IfLegacy"
 for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
 paid_by = "N6"
+
+# bsd: an interface's driver (if_var.h's procedure handles: if_input, if_output, if_ll_output,
+# if_enqueue, if_start, if_qstart, if_ioctl, if_watchdog, if_wol, if_bpf_mtap), N6.3a: the
+# kernel's interface core (kernel::net::if_, ifq) calls it through the driver registered in
+# Ifnet::if_driver before if_attach; bsd's LegacyNetDriver (sys/net/if_var.rs, N6.3a1's
+# adapter commit) over each softc's table implements it, one object per interface. Until that
+# commit no bsd interface is attached by the kernel (bsd's if_attach is LZ's). Paid when the
+# drivers move (N7: NetDevice, decision 45).
+# kernel::net::if_var::NetDriver
+[[bridge]]
+trait = "NetDriver"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.rs"]
+paid_by = "N7"
+
+# bsd: what if.c asks of the internet protocols (netinet, netinet6): arpintr, ipintr and
+# ip6intr for if_netisr, tcp_input_mlist for if_input_process (N6.3a); the attach and detach
+# legs follow with if_attach/if_detach. Registered by bsd's boot before the first interface
+# (N6.3a1's adapter commit); before that every leg does nothing, the C without INET/INET6.
+# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
+# kernel::net::if_::Inet
+[[bridge]]
+trait = "Inet"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs"]
+paid_by = "N6"
+
+# bsd: what if.c asks of the routing code (route.c, rtable.c, rtsock.c): rtm_ifannounce, and the
+# legs if_attach, if_detach, if_up, if_down and the link state task add (rt_if_track,
+# rtm_ifchg, rtable_*, ifaref/ifafree). Registered by bsd's boot (N6.3a1's adapter commit);
+# nothing before. Paid when routing moves (N6.3b, N6's row).
+# kernel::net::if_::Routing
+[[bridge]]
+trait = "Routing"
+for = ["sys/kernel/net/if_.rs"]
+paid_by = "N6"
+
+# bsd: what if.c and ifq.c ask of the link layers (bpf(4), if_ethersubr.c): bpf_mtap_ether
+# (NetDriver::bpf_mtap's default, if_attach_common's default if_bpf_mtap) and the per-queue
+# tap word ifiq_input reads; bpfdetach and the rest follow with if_detach. Registered by bsd's
+# boot (N6.3a1's adapter commit); before that nothing is tapped, the C without NBPFILTER. Paid
+# when bpf and the Ethernet layer move (N6.3c, N6's row).
+# kernel::net::if_::Link
+[[bridge]]
+trait = "Link"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.rs"]
+paid_by = "N6"
+
+# bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
+# implemented by bsd's LegacyQueueDiscipline (sys/net/ifq.rs, N6.3a1's adapter commit) and
+# attached by pf_ioctl's if_attach_ifq; the kernel's priq is native (kernel::net::ifq::Priq).
+# A value the kernel receives (ifq_attach's argument), a row while bsd implements it
+# (decision 39). Paid when pf moves (N8).
+# kernel::net::ifq::QueueDiscipline
+[[bridge]]
+trait = "QueueDiscipline"
+for = ["sys/kernel/net/ifq.rs"]
+paid_by = "N8"

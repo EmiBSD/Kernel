@@ -7449,6 +7449,34 @@ status = "redesigned"
 notes = "N6.2a: un.h moved into hal with the UNIX domain's redesign; struct sockaddr_un AbiPod through hal::abi_pod!"
 
 [[module]]
+rust = "sys/kernel/net/if_var.rs"
+crate = "kernel"
+lz = ["sys/net/if_var.rs"]
+status = "redesigned"
+notes = "N6.3a1: struct ifnet embedded zero-valid in bsd's softcs (atomics with LZ's get/set, links, lists, set-once cells; what is not valid at zero built by if_attach_common into IfRt), the nine hooks as the NetDriver trait (bsd's LegacyNetDriver), struct ifaddr/ifmaddr over hal::link::SaLink, Netstack lent &mut, Cloner; niqueue stays bsd's (its mbuf_queue); if_counters an inline atomic array (hal's per-CPU Counters is 32 KiB an interface)"
+
+[[module]]
+rust = "sys/kernel/net/ifq.rs"
+crate = "kernel"
+lz = ["sys/net/ifq.rs"]
+status = "redesigned"
+notes = "N6.3a1: the send and receive queues' state inside Mutexed (ifq_mtx, ifq_task_mtx, ifiq_mtx), ifq_len/oactive atomics, the serializer a PinList of tasks, priq native (an MBox of M_DEVBUF), pf's conditioners through the QueueDiscipline trait over their word; ifq_deq_begin/commit/rollback as one call (ifq_deq_with), ifq_barrier over a barrier task in the queue"
+
+[[module]]
+rust = "sys/kernel/net/if_.rs"
+crate = "kernel"
+lz = ["sys/net/if_.rs"]
+status = "redesigned"
+notes = "N6.3a1 part 1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach_common and the extra queues; the Inet, Routing and Link legs. if_attach/if_detach, groups, cloners, link state, addresses (part 2) and the ioctls (N6.3a2) are bsd's sys/net/if_.rs until their commits"
+
+[[module]]
+rust = "sys/kernel/net/netisr.rs"
+crate = "kernel"
+lz = ["sys/net/netisr.rs"]
+status = "redesigned"
+notes = "N6.3a1: netisr.h's bits, the netisr word and if_netisr (the glue's task: its yield is the scheduler's) under the net lock's write witness"
+
+[[module]]
 rust = "sys/hal/sys/net_if.rs"
 crate = "hal"
 lz = ["sys/net/if_.rs", "sys/net/if_types.rs", "sys/net/if_dl.rs"]
