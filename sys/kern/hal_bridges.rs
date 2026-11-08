@@ -53,7 +53,7 @@ use hal::prf::Printf;
 use crate::dev::cons::{cngetc, cnpollc, cnputc};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_pool::{
-    pool_cache_init, pool_get, pool_get_idle, pool_init, pool_put, pool_sethiwat,
+    pool_cache_init, pool_get, pool_get_idle, pool_init, pool_put, pool_sethiwat, pool_wakeup,
 };
 use crate::kern::subr_prf::printf;
 use crate::sys::pool::Pool;
@@ -94,6 +94,12 @@ impl RawPool for Pool {
 
     fn cache_init(&self) {
         pool_cache_init(self);
+    }
+
+    /// `pool_wakeup(9)`: the requests queued for an item run again (`nmbclust_update` after
+    /// the mbuf memory limit moved).
+    fn wakeup(&self) {
+        pool_wakeup(self);
     }
 }
 
