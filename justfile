@@ -3668,7 +3668,14 @@ ci-full:
 #   `rd_root_size` = `miniroot_sectors` sectors), which `cargo xtask rdsetroot` fills with a
 #   miniroot to make `bsd.rd`; both carry the ABI, linked in (decision 47);
 # - `BOOTAA64.EFI`, as `just build` makes it;
-# - `BUILDINFO`: the commit, the dates, the toolchain, the profiles, the ramdisk's size.
+# - `MANUAL.toml`: the kernel's interface inventory for Userland's manual pages, generated
+#   by `cargo xtask manual` from the tree and from the serial log of the boot check below
+#   (drivers configured and attached on QEMU's virt, syscalls native, legacy and absent, the
+#   pages whose text is not true here);
+# - `include/`: the C headers of the ABI, as OpenBSD's include/Makefile installs them from
+#   sys/ (`cargo xtask include`: the pin's text, `arm64/` with `machine` linked to it);
+# - `BUILDINFO`: the commit, the OpenBSD pin, the dates, the toolchain, the profiles, the
+#   ramdisk's size, and what MANUAL.toml and include/ are.
 # Built from a commit, never a working tree (`dist-clean-tree`); the release kernel boots once
 # before anything is packed (the user-mode lines of `smoke-boot` up to init's last check,
 # then init's death panic, which is what a kernel without `qemu` answers to the test init's
@@ -3680,11 +3687,14 @@ ci-full:
 dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     #!/usr/bin/env zsh
     set -eu
+    setopt pipefail
     EMIBSD_MINIROOTSIZE={{miniroot_sectors}} cargo build -p bsd --release --target {{arm64}} --features miniroot --target-dir target/bsdrd
+    rm -rf target/smoke/dist
+    mkdir -p target/smoke/dist
     EMIBSD_RUN_DIR=target/smoke/dist {{xtask}} smoke {{reject}} {{smp}} --arch arm64 --kernel target/{{arm64}}/release/bsd --ramdisk none --expect-ramdisk --until-seen \
         --expect "bsd: booted on arm64" --expect "abi: 331 syscalls, 170 native" --expect "EmiBSD 8.0 (GENERIC) #" \
         --expect "init: hello from user mode" --expect "init: EmiBSD 8.0" --expect "init: processes ok" \
-        --expect "init: unveil ok" --expect "panic: init died (signal 0, exit "
+        --expect "init: unveil ok" --expect "panic: init died (signal 0, exit " | tee target/smoke/dist/boot.log
     rdsize=$({{xtask}} rdsetroot -s target/bsdrd/{{arm64}}/release/bsd)
     [[ "$rdsize" == "$(( {{miniroot_sectors}} * 512 ))" ]] || { echo "dist: rd_root_size is $rdsize, not {{miniroot_sectors}} sectors" >&2; exit 1; }
     commit=$(git rev-parse HEAD)
@@ -3697,6 +3707,8 @@ dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     cp target/{{arm64}}/release/bsd "$out/$name/bsd.mp"
     cp target/bsdrd/{{arm64}}/release/bsd "$out/$name/bsd.RAMDISK"
     cp target/efiboot/arm64/BOOTAA64.EFI "$out/$name/BOOTAA64.EFI"
+    {{xtask}} manual --arch arm64 --boot-log target/smoke/dist/boot.log --out "$out/$name/MANUAL.toml"
+    {{xtask}} include --arch arm64 --out "$out/$name/include"
     {
         print "EmiBSD kernel $tag arm64"
         print "Commit: $commit"
@@ -3705,17 +3717,27 @@ dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
         print "Build number: $EMIBSD_BUILD"
         print "Toolchain: $(rustc -V)"
         print "LandingZone: $(sed -n 's/^Commit: //p' lz/PINNED.md)"
+        print "OpenBSD: $(sed -n 's/^Commit: //p' reference/PINNED.md)"
         print "bsd.mp: release profile (LTO, symbols kept), features default (no qemu), the ABI (crate abi) linked in"
         print "bsd.RAMDISK: release profile, features default + miniroot (no qemu), rd_root_size $rdsize ($(( rdsize / 512 )) sectors), empty: cargo xtask rdsetroot fills it"
         print "BOOTAA64.EFI: dev profile, as just build makes it"
+        print "MANUAL.toml: the interface inventory (drivers, syscalls, pages), cargo xtask manual, from the tree and the boot check's serial log"
+        print "include/: the OpenBSD pin's C headers as include/Makefile installs them from sys/ (arm64/ and machine -> arm64), cargo xtask include; _KERNEL sections kept"
     } > "$out/$name/BUILDINFO"
     stamp=$(TZ=UTC date -r $SOURCE_DATE_EPOCH +%Y%m%d%H%M.%S)
-    (cd "$out/$name" && shasum -a 256 --tag BOOTAA64.EFI BUILDINFO bsd.RAMDISK bsd.mp > SHA256 \
-        && chmod 644 BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp \
-        && TZ=UTC touch -t $stamp . BOOTAA64.EFI BUILDINFO SHA256 bsd.RAMDISK bsd.mp)
+    (cd "$out/$name" && { shasum -a 256 --tag BOOTAA64.EFI BUILDINFO MANUAL.toml bsd.RAMDISK bsd.mp; \
+            find include -type f | LC_ALL=C sort | xargs shasum -a 256 --tag; } > SHA256 \
+        && chmod 644 BOOTAA64.EFI BUILDINFO MANUAL.toml SHA256 bsd.RAMDISK bsd.mp \
+        && find include -type d -exec chmod 755 '{}' + && find include -type f -exec chmod 644 '{}' + \
+        && TZ=UTC touch -t $stamp . BOOTAA64.EFI BUILDINFO MANUAL.toml SHA256 bsd.RAMDISK bsd.mp \
+        && find include -exec touch -h -t $stamp '{}' +)
+    members="$out/$name.members"
+    { print -l "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/MANUAL.toml" "$name/bsd.RAMDISK" "$name/bsd.mp"; \
+        (cd "$out" && find "$name/include" | LC_ALL=C sort); } > "$members"
     (cd "$out" && COPYFILE_DISABLE=1 tar -n --format ustar --uid 0 --gid 0 --uname root --gname wheel --no-xattrs --no-mac-metadata \
-        -cf - "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/bsd.RAMDISK" "$name/bsd.mp" \
+        -cf - -T "$name.members" \
         | zstd -19 -q -o "$name.tar.zst" && shasum -a 256 "$name.tar.zst" > "$name.tar.zst.sha256")
+    rm -f "$members"
     rm -rf target/smoke/dist
     echo "dist: $out/$name.tar.zst"
     cat "$out/$name.tar.zst.sha256"
