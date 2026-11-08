@@ -157,6 +157,15 @@
 //!                                          check the ext2 file system on partition a of
 //!                                          the persistent disk with e2fsprogs' e2fsck -fn;
 //!                                          debugfs must cat PATH and print TEXT (e2fs.rs)
+//! cargo xtask manual --arch arm64 --boot-log LOG --out FILE
+//!                                          MANUAL.toml: the kernel's drivers (configured,
+//!                                          attached in LOG), syscalls (native, legacy,
+//!                                          absent) and the manual pages that are not true
+//!                                          here, generated from the tree (manual.rs)
+//! cargo xtask include --arch arm64 --out DIR
+//!                                          the C headers of the ABI as OpenBSD's
+//!                                          include/Makefile installs them from sys/ (the
+//!                                          pin's text), for the release tarball (manual.rs)
 //! cargo xtask fsck-msdos --arch A          check the USB smokes' stick's FAT32 file system
 //!                                          with macOS's fsck_msdos -n (devices.rs)
 //! ```
@@ -190,6 +199,7 @@ mod install;
 mod iso9660;
 mod layout;
 mod lz;
+mod manual;
 mod ntfsgen;
 mod rdsetroot;
 mod smokeall;
@@ -217,6 +227,7 @@ const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz dri
                      bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
                      symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
+                     manual --arch arm64 --boot-log LOG --out FILE | include --arch arm64 --out DIR | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
 
 fn main() -> ExitCode {
@@ -363,6 +374,8 @@ fn run(args: &[String]) -> Result<()> {
         }
         ["diff-openbsd", rest @ ..] => diffopenbsd::diff_openbsd(&root, rest),
         ["bench", rest @ ..] => bench::bench(&root, rest),
+        ["manual", rest @ ..] => manual::manual(&root, rest),
+        ["include", rest @ ..] => manual::include(&root, rest),
         ["hal-check"] => halcheck::hal_check(&root),
         ["abi-check"] => abicheck::abi_check(&root),
         ["unsafe-report", flags @ ..] => unsafereport::unsafe_report(
