@@ -699,7 +699,7 @@ fn main() {
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
-const MBUF_ROWS: [&str; 11] = [
+const MBUF_ROWS: [&str; 13] = [
     "mbuf.get.free",
     "mbuf.gethdr.cluster.free",
     "mbuf.copym.share",
@@ -711,6 +711,8 @@ const MBUF_ROWS: [&str; 11] = [
     "mbuf.pullup.40",
     "mbuf.tag.find",
     "mbuf.data",
+    "mbuf.copym.share.deep",
+    "mbuf.adj.restore",
 ];
 
 /// The bench's `nmbclust`.
@@ -898,5 +900,66 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         });
         report(MBUF_ROWS[10], r);
     }
+    if wanted(MBUF_ROWS[11]) {
+        // Three 500-byte cluster mbufs; 100 bytes copied from offset 1100, in the third: the
+        // walk to the offset is what tcp_output's per-segment copy pays.
+        let mut deep = cluster_chain(&[500, 500, 500]);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let c = need(
+                    m_copym(black_box(&mut deep), 1100, 100, M_DONTWAIT),
+                    "no copy",
+                );
+                drop(c);
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[11], r);
+    }
+    if wanted(MBUF_ROWS[12]) {
+        // `mbuf.adj`'s restore alone: what that row adds to `m_adj` itself.
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = black_box(&p);
+                q.set_data_off(q.data_off());
+                q.m_len().set(q.m_len().get());
+                q.m_pkthdr().len.set(q.m_pkthdr().len.get());
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[12], r);
+    }
+}
+
+/// A packet of cluster mbufs of `lens` bytes each, the first with the header (the before
+/// rows' `packet` on LZ's shape).
+fn cluster_chain(lens: &[u32]) -> MbufBox {
+    let mut chain: Vec<MbufBox> = Vec::new();
+    for (i, &len) in lens.iter().enumerate() {
+        let m = if i == 0 {
+            m_gethdr(M_DONTWAIT, MT_DATA)
+        } else {
+            m_get(M_DONTWAIT, MT_DATA)
+        };
+        let mut m = need(m, "no mbuf");
+        if !mclgetl(&mut m, M_DONTWAIT, len) {
+            eprintln!("net: no cluster");
+            std::process::exit(1);
+        }
+        m.m_len().set(len);
+        chain.push(m);
+    }
+    let mut next: Option<MbufBox> = None;
+    while let Some(mut m) = chain.pop() {
+        if let Some(n) = next.take() {
+            drop(m.m_next.set(n));
+        }
+        next = Some(m);
+    }
+    let h = need(next, "an mbuf");
+    h.m_pkthdr().len.set(lens.iter().sum::<u32>() as i32);
+    h
 }
 /* </CODE> */

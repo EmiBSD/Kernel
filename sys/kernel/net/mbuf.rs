@@ -1717,15 +1717,17 @@ pub fn m_copym(m0: &mut Mbuf, off: i32, len: i32, wait: i32) -> Option<MbufBox> 
         kpanic(format_args!("m_copym0: off {off}, len {len}"));
     }
     let copyhdr = off == 0 && m0.pkthdr().is_some();
-    let Some((first, _)) = m_getptr(m0, off) else {
-        kpanic(format_args!("m_copym0: short mbuf chain"));
-    };
-    let first_type = i32::from(first.m_type().get());
 
-    // The header copy is made first, before the walk lends the source's mbufs mutably.
+    // The header copy is made first, before the walk lends the source's mbufs mutably. Only
+    // at `off` 0, where the mbuf the walk finds is the first with data (`m0` itself, unless
+    // it is empty), whose type the copy's first mbuf takes as the C's `MGET(n, wait,
+    // m->m_type)`; every other copy walks the chain once, as the C.
     let mut hdr = None;
     if copyhdr {
-        let mut n = m_get(wait, first_type)?;
+        let Some((first, _)) = m_getptr(m0, 0) else {
+            kpanic(format_args!("m_copym0: short mbuf chain"));
+        };
+        let mut n = m_get(wait, i32::from(first.m_type().get()))?;
         m_dup_pkthdr(&mut n, m0, wait).ok()?;
         if len != M_COPYALL {
             n.m_pkthdr().len.set(len);
@@ -1733,7 +1735,9 @@ pub fn m_copym(m0: &mut Mbuf, off: i32, len: i32, wait: i32) -> Option<MbufBox> 
         hdr = Some(n);
     }
 
-    let (src, off) = m_getptr_mut(m0, off)?;
+    let Some((src, off)) = m_getptr_mut(m0, off) else {
+        kpanic(format_args!("m_copym0: short mbuf chain"));
+    };
     let mut m: Option<&mut Mbuf> = Some(src);
     let mut off = off;
     let mut len = len;
@@ -3629,6 +3633,32 @@ pub(crate) mod tests {
         drop(part);
         assert_eq!(cluster_nout()[0], 1);
         drop(copy);
+        all_back();
+    }
+
+    #[test]
+    fn copym_from_deep_in_the_chain() {
+        let _g = setup();
+
+        // One walk to offset 1100, in the third mbuf; no header copy away from offset 0.
+        let mut m = packet(&[500, 500, 500]);
+        let c = m_copym(&mut m, 1100, 100, M_DONTWAIT).expect("a copy");
+        assert!(c.pkthdr().is_none());
+        assert!(
+            c.m_next.get().is_none(),
+            "one mbuf: the copy fits the third's cluster"
+        );
+        let mut got = vec![0u8; 100];
+        m_copydata(&c, 0, &mut got);
+        assert_eq!(got, pattern(1500)[1100..1200].to_vec());
+        // Across the second and the third.
+        let c2 = m_copym(&mut m, 900, 200, M_DONTWAIT).expect("a copy");
+        let mut got = vec![0u8; 200];
+        m_copydata(&c2, 0, &mut got);
+        assert_eq!(got, pattern(1500)[900..1100].to_vec());
+        drop(c);
+        drop(c2);
+        drop(m);
         all_back();
     }
 
