@@ -272,3 +272,6 @@ metadata:
 - zsh: `echo ===` fails (`=cmd` expansion of `==`); quote it (N6.1).
 - The pre-commit hook blocks the whole Bash command: a `cargo fmt` chained before `git commit` in one call does not run when the hook refuses the commit; run fmt as its own call first (N6.1 review).
 - A test helper script that waits for the machine lock must be used for every test run, the single-crate ones too: a kernel test run slipped in under another session's lock (N6.1 review; kt.sh now waits).
+- The worktree guard refuses commands whose paths are `$VAR`s; a short symlink `/tmp/<name>` to the session scratchpad keeps literal paths short in every command (N6.2a).
+- A value dropped in one branch and re-assigned later in the same branch only (`if wait { drop(g); ..; g = lock() }`) cannot be split across two `if`s: the compiler sees a conditional move; put the drop, the work and the relock in one branch with an `else` doing the work locked (N6.2a's somove).
+- Clippy pedantic `len_without_is_empty` fires on a `pub fn len` of a struct that is no container (Sosplice's ssp_len): name it after what it counts (`spliced_len`) (N6.2a).
