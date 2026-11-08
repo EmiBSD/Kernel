@@ -476,17 +476,18 @@ pub const MCLNAMES: [&str; 8] = [
 ];
 
 /// The item size of each cluster pool (`pr_size`, `roundup(mclsizes[i], 64)`): what
-/// `m_clpool` compares a length with, and every cluster's `ext_size`.
-const MCL_ITEM: [u32; 8] = [
-    size_of::<Bytes<2048>>() as u32,
-    size_of::<Bytes<2050>>() as u32,
-    size_of::<Bytes<4096>>() as u32,
-    size_of::<Bytes<8192>>() as u32,
-    size_of::<Bytes<9344>>() as u32,
-    size_of::<Bytes<12288>>() as u32,
-    size_of::<Bytes<16384>>() as u32,
-    size_of::<Bytes<65536>>() as u32,
-];
+/// `m_clpool` compares a length with, and every cluster's `ext_size`. Each pool's item is a
+/// `Bytes` of exactly this length, so a cluster lends all of it (`mcl2k2`'s 2050 bytes are a
+/// 2112-byte item, as the C's `ext_size` is its `pr_size`; checked at compile time below).
+const MCL_ITEM: [u32; 8] = {
+    let mut item = [0u32; 8];
+    let mut i = 0;
+    while i < item.len() {
+        item[i] = MCLSIZES[i].next_multiple_of(64);
+        i += 1;
+    }
+    item
+};
 
 /// `m_types`: the ddb names of the `MT_*` types.
 pub static M_TYPES: [&str; MT_NTYPES] = ["fre", "dat", "hdr", "nam", "opt", "ftb", "ctl", "oob"];
@@ -735,8 +736,8 @@ impl Drop for Pkthdr {
 pub enum ClusterBox {
     /// `mcl2k`.
     K2(PoolBox<Bytes<2048>>),
-    /// `mcl2k2`.
-    K2a(PoolBox<Bytes<2050>>),
+    /// `mcl2k2` (2050 bytes asked, the 2112 of its item lent).
+    K2a(PoolBox<Bytes<2112>>),
     /// `mcl4k`.
     K4(PoolBox<Bytes<4096>>),
     /// `mcl8k`.
@@ -1264,8 +1265,8 @@ pub static MBUFPL: BoxPool<Mbuf> = BoxPool::new();
 pub static MTAGPL: BoxPool<MTag> = BoxPool::new();
 /// `mclpools[0]`, `mcl2k`.
 static MCL2K: BoxPool<Bytes<2048>> = BoxPool::new();
-/// `mclpools[1]`, `mcl2k2`.
-static MCL2K2: BoxPool<Bytes<2050>> = BoxPool::new();
+/// `mclpools[1]`, `mcl2k2`: `MCLBYTES + 2` asked, its 64-aligned item lent whole.
+static MCL2K2: BoxPool<Bytes<2112>> = BoxPool::new();
 /// `mclpools[2]`, `mcl4k`.
 static MCL4K: BoxPool<Bytes<4096>> = BoxPool::new();
 /// `mclpools[3]`, `mcl8k`.
@@ -3266,6 +3267,16 @@ const _: () = {
     // mclsizes[0] must be MCLBYTES and the last MAXMCLBYTES (mbinit's DIAGNOSTIC checks).
     assert!(MCLSIZES[0] == MCLBYTES as u32);
     assert!(MCLSIZES[MCLSIZES.len() - 1] == MAXMCLBYTES as u32);
+    // Every cluster pool's item is its `Bytes` whole: the storage a cluster lends is the
+    // `ext_size` `m_trailingspace` and `M_SIZE` count (`MCL_ITEM`).
+    assert!(size_of::<Bytes<2048>>() == MCL_ITEM[0] as usize);
+    assert!(size_of::<Bytes<2112>>() == MCL_ITEM[1] as usize);
+    assert!(size_of::<Bytes<4096>>() == MCL_ITEM[2] as usize);
+    assert!(size_of::<Bytes<8192>>() == MCL_ITEM[3] as usize);
+    assert!(size_of::<Bytes<9344>>() == MCL_ITEM[4] as usize);
+    assert!(size_of::<Bytes<12288>>() == MCL_ITEM[5] as usize);
+    assert!(size_of::<Bytes<16384>>() == MCL_ITEM[6] as usize);
+    assert!(size_of::<Bytes<65536>>() == MCL_ITEM[7] as usize);
     // The mextrefs item is the C's 64 bytes (the count and the pool beside these 48).
     assert!(size_of::<ExtRefs>() == 48);
     // The mtagpl item: PACKET_TAG_MAXSIZE + sizeof(struct m_tag).
@@ -3444,6 +3455,51 @@ pub(crate) mod tests {
         assert_eq!(contents(&c), vec![0u8; MLEN]);
         assert!(c.data_mut().is_some());
         drop(c);
+        all_back();
+    }
+
+    #[test]
+    fn every_cluster_lends_its_whole_item() {
+        let _g = setup();
+
+        for (i, &size) in MCLSIZES.iter().enumerate() {
+            let mut m = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+            assert!(
+                m_clget(&mut m, M_DONTWAIT, size),
+                "a cluster of {}",
+                MCLNAMES[i]
+            );
+            assert_eq!(m.ext().map(|e| e.cluster().index()), Some(i));
+            assert_eq!(m.storage_len(), MCL_ITEM[i] as usize, "{}", MCLNAMES[i]);
+            assert_eq!(m.storage().len(), m.storage_len(), "{}", MCLNAMES[i]);
+            assert_eq!(m.storage_mut().map(|s| s.len()), Some(m.storage_len()));
+            drop(m);
+        }
+        all_back();
+    }
+
+    #[test]
+    fn cat_fills_a_mcl2k2_cluster_to_its_last_byte() {
+        let _g = setup();
+
+        // em(4)'s EM_MCLBYTES receive cluster, then a fragment of 10 bytes joined to it:
+        // m_cat copies into the cluster's trailing space, the item's last 10 bytes.
+        let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        assert!(m_clget(&mut m, M_DONTWAIT, MCLSIZES[1]));
+        assert_eq!(m.ext().map(|e| e.cluster().index()), Some(1));
+        let room = m.storage_len();
+        assert_eq!(room, 2112);
+        m.m_len.set((room - 10) as u32);
+        let mut n = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        n.m_len.set(10);
+        n.data_mut().expect("writable").fill(0xa5);
+        assert_eq!(m_trailingspace(&m), 10);
+        m_cat(&mut m, Some(n));
+        assert_eq!(m.m_len.get() as usize, room);
+        assert!(m.m_next.get().is_none(), "copied, not linked");
+        assert_eq!(&m.data()[room - 10..], &[0xa5; 10]);
+        assert_eq!(m_trailingspace(&m), 0);
+        drop(m);
         all_back();
     }
 
