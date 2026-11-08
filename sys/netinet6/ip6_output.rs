@@ -1233,8 +1233,8 @@ pub fn ip6_ctloutput(
     };
     let mut error = Ok(());
 
-    let privileged = so.so_state.get() & SS_PRIV != 0;
-    let uproto = i32::from(so.so_proto.pr_protocol);
+    let privileged = so.state() & SS_PRIV != 0;
+    let uproto = i32::from(so.proto().protocol());
 
     if level != IPPROTO_IPV6 {
         return Err(Errno::EINVAL);
@@ -1485,7 +1485,7 @@ pub fn ip6_ctloutput(
                 IPV6_PATHMTU => {
                     let mut pmtu: u64 = 0;
 
-                    if so.so_state.get() & SS_ISCONNECTED == 0 {
+                    if so.state() & SS_ISCONNECTED == 0 {
                         return Err(Errno::ENOTCONN);
                     }
 
@@ -1603,7 +1603,7 @@ pub fn ip6_raw_ctloutput(
                         // The API assumes non-negative even offset values or -1 as a special
                         // value.
                         error = Err(Errno::EINVAL);
-                    } else if i32::from(so.so_proto.pr_protocol) == IPPROTO_ICMPV6 {
+                    } else if i32::from(so.proto().protocol()) == IPPROTO_ICMPV6 {
                         if optval != icmp6off {
                             error = Err(Errno::EINVAL);
                         }
@@ -1616,7 +1616,7 @@ pub fn ip6_raw_ctloutput(
                     let Some(m) = m else {
                         return Err(Errno::EINVAL);
                     };
-                    let optval = if i32::from(so.so_proto.pr_protocol) == IPPROTO_ICMPV6 {
+                    let optval = if i32::from(so.proto().protocol()) == IPPROTO_ICMPV6 {
                         icmp6off
                     } else {
                         inp.inp_cksum6.get()

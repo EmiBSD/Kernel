@@ -118,6 +118,18 @@ pub fn sorele(so: &Socket) {
     }
 }
 
+/// `so->so_pcb` of a socket of one of `bsd`'s domains, the C's pointer (the word
+/// [`set_so_pcb`] stored; NULL for none).
+pub fn so_pcb(so: &Socket) -> *mut core::ffi::c_void {
+    core::ptr::with_exposed_provenance_mut(so.legacy_pcb())
+}
+
+/// `so->so_pcb = pcb` of a socket of one of `bsd`'s domains (its address exposed, so
+/// [`so_pcb`] gives the pointer back).
+pub fn set_so_pcb(so: &Socket, pcb: *mut core::ffi::c_void) {
+    so.set_legacy_pcb(pcb.expose_provenance());
+}
+
 /// `sb_notify(sb)`: do we need to notify the other side when I/O is possible?
 pub fn sb_notify(sb: &Sockbuf) -> bool {
     sb.sb_notify()

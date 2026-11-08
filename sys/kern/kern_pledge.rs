@@ -1917,6 +1917,8 @@ mod tests {
         assert_eq!(pledge_sysctl(unp, &kproc, 1), Ok(()));
     }
 
+    use crate::sys::protosw::Protosw;
+
     /// A protocol of `domain` (`pr_protocol` = `proto`), as `pledge_sockopt` sees it.
     fn proto_of(domain: &'static crate::sys::domain::Domain, proto: i32) -> &'static Protosw {
         Box::leak(Box::new(Protosw {
@@ -2008,7 +2010,8 @@ mod tests {
         fp.install(
             DTYPE_SOCKET,
             &crate::kern::sys_socket::SOCKETOPS,
-            crate::kern::kern_descrip::BsdFileData::Socket(hal::link::PtrWord::new()),
+            // pledge_ioctl reads the file's type alone.
+            crate::kern::kern_descrip::BsdFileData::None,
         );
         let sock: &File = &fp;
         for com in [

@@ -6286,7 +6286,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6367,7 +6367,7 @@ status = "inherited"
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6416,7 +6416,7 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6461,7 +6461,7 @@ status = "inherited"
 rust = "sys/net/rtsock.rs"
 lz = ["sys/net/rtsock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/net/toeplitz.rs"
@@ -6527,7 +6527,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs"]
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6567,7 +6567,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_divert.rs"
 lz = ["sys/netinet/ip_divert.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ecn.rs"
@@ -6643,7 +6644,7 @@ status = "inherited"
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6664,13 +6665,13 @@ status = "inherited"
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6686,13 +6687,14 @@ adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kern
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
 lz = ["sys/netinet/tcp_timer.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
@@ -6708,7 +6710,7 @@ status = "inherited"
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6752,7 +6754,7 @@ status = "inherited"
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -6772,7 +6774,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/ip6_divert.rs"
 lz = ["sys/netinet6/ip6_divert.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_forward.rs"
@@ -6795,7 +6798,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6837,7 +6840,7 @@ status = "inherited"
 rust = "sys/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/route6.rs"
@@ -6847,7 +6850,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/udp6_output.rs"
 lz = ["sys/netinet6/udp6_output.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/krpc_subr.rs"
@@ -6894,13 +6898,13 @@ adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/nam
 rust = "sys/nfs/nfs_serv.rs"
 lz = ["sys/nfs/nfs_serv.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_socket.rs"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
@@ -6912,7 +6916,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 rust = "sys/nfs/nfs_srvsubs.rs"
 lz = ["sys/nfs/nfs_srvsubs.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_subs.rs"
@@ -6924,7 +6928,7 @@ adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.
 rust = "sys/nfs/nfs_syscalls.rs"
 lz = ["sys/nfs/nfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_var.rs"

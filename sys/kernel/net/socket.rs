@@ -627,6 +627,13 @@ impl<G: ProcGlue> Socket<G> {
         (g.q0len, g.qlen)
     }
 
+    /// `TAILQ_FIRST(&so->so_q)`: the first complete connection still on the listener's
+    /// queue, counted (`bsd`'s protocol tests look at it before an `accept`).
+    pub fn queued_first(&self) -> Option<SocketRef<G>> {
+        let g = self.cq.lock();
+        self.q.first(&g).map(soref)
+    }
+
     /// `READ_ONCE(so->so_error)`.
     #[inline]
     pub fn error(&self) -> Option<Errno> {

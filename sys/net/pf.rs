@@ -4375,9 +4375,9 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
         _ => unhandled_af(i32::from(pd.af)),
     };
     if let Some(so) = inp.inp_socket {
-        pd.lookup.uid = so.so_euid.get();
-        pd.lookup.gid = so.so_egid.get();
-        pd.lookup.pid = so.so_cpid.get();
+        pd.lookup.uid = so.creds().0;
+        pd.lookup.gid = so.creds().2;
+        pd.lookup.pid = so.creds().4;
     }
     in_pcbunref(Some(inp));
     true

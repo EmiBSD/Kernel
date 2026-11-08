@@ -133,7 +133,6 @@ use core::slice;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_rwlock::{
@@ -204,7 +203,7 @@ use crate::sys::socket::{
     NET_RT_IFNAMES, NET_RT_SOURCE, NET_RT_STATS, NET_RT_TABLE, PF_KEY, PF_ROUTE, SO_USELOOPBACK,
     SOCK_RAW, Sockaddr, SockaddrStorage,
 };
-use crate::sys::socketvar::{SS_CANTRCVMORE, SS_ISCONNECTED, SS_NOFDREF, Socket, sbspace_locked};
+use crate::sys::socketvar::{SS_CANTRCVMORE, SS_ISCONNECTED, SS_NOFDREF, Socket};
 use crate::sys::sysctl::SysctlPlain;
 use crate::sys::systm::{
     net_assert_locked, net_lock, net_lock_shared, net_unlock, net_unlock_shared,
@@ -443,7 +442,7 @@ const fn roundup_long(a: usize) -> usize {
 fn sotortpcb(so: &Socket) -> Option<&'static Rtpcb> {
     // SAFETY: a routing socket's `so_pcb` is NULL or the `rtpcb_pool` item `route_attach`
     // wrote, which stays allocated until `route_detach` clears the pointer.
-    unsafe { so.so_pcb.get().cast::<Rtpcb>().as_ref() }
+    unsafe { crate::sys::socketvar::so_pcb(so).cast::<Rtpcb>().as_ref() }
 }
 
 /// `sotortpcb(so)` where the C dereferences it without a check.
@@ -540,7 +539,7 @@ pub fn route_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Er
     unsafe { raw.write(Rtpcb::new(so, proto as u16)) };
     // SAFETY: as above; the item stays allocated until `route_detach` gives it back.
     let rop: &'static Rtpcb = unsafe { &*raw };
-    so.so_pcb.set(raw.cast());
+    crate::sys::socketvar::set_so_pcb(so, raw.cast());
     // Init the timeout structure
     timeout_set_flags(
         &rop.rop_timeout,
@@ -555,7 +554,7 @@ pub fn route_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Er
         .set(p.process().ps_rtableid.load(Ordering::Relaxed));
 
     soisconnected(so);
-    so.so_options.set(so.so_options.get() | SO_USELOOPBACK);
+    so.set_options_legacy(SO_USELOOPBACK, true);
 
     // Give up solock before taking rtp_lk for the lock ordering.
     sounlock(so);
@@ -594,7 +593,7 @@ pub fn route_detach(so: &'static Socket) -> Result<(), Errno> {
 
     solock(so);
 
-    so.so_pcb.set(ptr::null_mut());
+    crate::sys::socketvar::set_so_pcb(so, ptr::null_mut());
     kassert!(!so.has_state(SS_NOFDREF));
     pool_put(&RTPCB_POOL, NonNull::from(rop).cast());
 
@@ -622,13 +621,11 @@ pub fn route_rcvd(so: &'static Socket) {
 
     // If we are in a FLUSH state, check if the buffer is empty so that we can clear the flag.
 
-    mtx_enter(&so.so_rcv.sb_mtx);
-    if rop.rop_flags.get() & ROUTECB_FLAG_FLUSH != 0
-        && sbspace_locked(&so.so_rcv) == so.so_rcv.sb_hiwat.get() as i64
-    {
+    let g_rcv = so.so_rcv.lock();
+    if rop.rop_flags.get() & ROUTECB_FLAG_FLUSH != 0 && g_rcv.space() == so.so_rcv.hiwat() as i64 {
         rop.rop_flags.set(rop.rop_flags.get() & !ROUTECB_FLAG_FLUSH);
     }
-    mtx_leave(&so.so_rcv.sb_mtx);
+    drop(g_rcv);
 }
 
 /// `route_send(so, m, nam, control)`: a message written to the socket.
@@ -785,9 +782,9 @@ pub fn rtm_senddesync(so: &'static Socket) {
     // If we fail to alloc memory or if sbappendaddr() fails, re-add timeout and try again.
     // SAFETY: no addresses.
     if let Some(desync_mbuf) = unsafe { rtm_msg1(RTM_DESYNC, None) } {
-        mtx_enter(&so.so_rcv.sb_mtx);
-        let ret = sbappendaddr(&so.so_rcv, route_src(), Some(desync_mbuf), None);
-        mtx_leave(&so.so_rcv.sb_mtx);
+        let mut g_rcv = so.so_rcv.lock();
+        let ret = sbappendaddr(&mut g_rcv, route_src(), Some(desync_mbuf), None);
+        drop(g_rcv);
 
         if ret {
             rop.rop_flags
@@ -915,10 +912,10 @@ pub fn rtm_sendup(so: &'static Socket, m0: &'static Mbuf) -> Result<(), Errno> {
         return Err(Errno::ENOMEM);
     };
 
-    mtx_enter(&so.so_rcv.sb_mtx);
-    let send_desync = sbspace_locked(&so.so_rcv) < (2 * MSIZE) as i64
-        || !sbappendaddr(&so.so_rcv, route_src(), Some(m), None);
-    mtx_leave(&so.so_rcv.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
+    let send_desync =
+        g_rcv.space() < (2 * MSIZE) as i64 || !sbappendaddr(&mut g_rcv, route_src(), Some(m), None);
+    drop(g_rcv);
 
     if send_desync {
         // Flag socket as desync'ed and flush required

@@ -94,6 +94,36 @@ pub fn soinit() {
     kernel::net::domain::soinit::<G>();
 }
 
+/// `soalloc(prp, wait)` of `bsd`'s protocol tests: a socket of `prp` of type `so_type` (the
+/// kernel's sets the type at allocation, which LZ's tests wrote after), its existence
+/// reference parked as [`socreate`]'s.
+#[cfg(test)]
+pub(crate) fn soalloc(
+    prp: &'static crate::sys::protosw::Protosw,
+    so_type: i32,
+    wait: i32,
+) -> Option<&'static Socket> {
+    let so = kernel::net::socket::soalloc(
+        prp,
+        wait,
+        kernel::net::socket::SoInit {
+            so_type,
+            state: 0,
+            options: 0,
+            linger: 0,
+            timeo: 0,
+            euid: 0,
+            ruid: 0,
+            egid: 0,
+            rgid: 0,
+            cpid: 0,
+        },
+    )?;
+    let r = as_static(&so);
+    hal::pool::PoolArc::forget(so);
+    Some(r)
+}
+
 /// `socreate(dom, aso, type, proto)` for `curproc`: the socket, its reference parked on it
 /// for [`soclose`].
 pub fn socreate(dom: i32, type_: i32, proto: i32) -> Result<&'static Socket, Errno> {

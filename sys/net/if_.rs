@@ -288,7 +288,6 @@ use crate::sys::mbuf::{
 use crate::sys::mutex::Mutex;
 use crate::sys::param::{clrbit, howmany, isclr, isset, setbit};
 use crate::sys::proc::Proc;
-use crate::sys::protosw;
 use crate::sys::queue::{ListHead, TailqEntry, TailqHead};
 use crate::sys::refcnt::Refcnt;
 use crate::sys::rwlock::Rwlock;
@@ -3413,7 +3412,15 @@ unsafe fn pru_control(
     // SAFETY: `data` is the kernel copy of the request, as long as `cmd` encodes (the
     // caller's contract), exclusively ours for the call.
     let data = unsafe { slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize) };
-    protosw::pru_control(so, cmd, data, Some(ifp))
+    // The bsd table's pru_control, which takes the interface (the kernel's Usrreqs::control
+    // does not until N6.3a); a socket of the kernel's UNIX domain has none, as the C's.
+    match crate::kern::uipc_domain::so_protosw(so)
+        .and_then(|pr| pr.pr_usrreqs)
+        .and_then(|u| u.pru_control)
+    {
+        Some(control) => control(so, cmd, data, Some(ifp)),
+        None => Err(Errno::EOPNOTSUPP),
+    }
 }
 
 /// `ifioctl`: interface ioctls (`SIOC*` on a socket).

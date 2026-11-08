@@ -214,7 +214,7 @@ use crate::sys::socket::{
 use crate::sys::socket::{AF_INET6, PF_INET6};
 use crate::sys::socketvar::{
     SS_CANTSENDMORE, SS_CONNECTOUT, SS_ISCONNECTED, SS_ISCONNECTING, SS_NOFDREF, SS_RCVATMARK,
-    Socket, sbspace, sbspace_locked,
+    Socket, sbspace,
 };
 use crate::sys::stat::Stat;
 use crate::sys::sysctl::SysctlBoundedArgs;
@@ -429,18 +429,18 @@ fn tcp_fill_info(tp: &Tcpcb, so: &Socket, m: &'static Mbuf) -> Result<(), Errno>
         ti.tcpi_rfbuf_cnt = tp.rfbuf_cnt.get();
         ti.tcpi_rfbuf_ts = msec(tp.rfbuf_ts.get());
 
-        mtx_enter(&so.so_rcv.sb_mtx);
-        ti.tcpi_so_rcv_sb_cc = so.so_rcv.sb_cc.get() as u32;
-        ti.tcpi_so_rcv_sb_hiwat = so.so_rcv.sb_hiwat.get() as u32;
-        ti.tcpi_so_rcv_sb_lowat = so.so_rcv.sb_lowat.get() as u32;
-        ti.tcpi_so_rcv_sb_wat = so.so_rcv.sb_wat.get() as u32;
-        mtx_leave(&so.so_rcv.sb_mtx);
-        mtx_enter(&so.so_snd.sb_mtx);
-        ti.tcpi_so_snd_sb_cc = so.so_snd.sb_cc.get() as u32;
-        ti.tcpi_so_snd_sb_hiwat = so.so_snd.sb_hiwat.get() as u32;
-        ti.tcpi_so_snd_sb_lowat = so.so_snd.sb_lowat.get() as u32;
-        ti.tcpi_so_snd_sb_wat = so.so_snd.sb_wat.get() as u32;
-        mtx_leave(&so.so_snd.sb_mtx);
+        let g_rcv = so.so_rcv.lock();
+        ti.tcpi_so_rcv_sb_cc = so.so_rcv.cc() as u32;
+        ti.tcpi_so_rcv_sb_hiwat = so.so_rcv.hiwat() as u32;
+        ti.tcpi_so_rcv_sb_lowat = so.so_rcv.lowat() as u32;
+        ti.tcpi_so_rcv_sb_wat = so.so_rcv.wat() as u32;
+        drop(g_rcv);
+        let g_snd = so.so_snd.lock();
+        ti.tcpi_so_snd_sb_cc = so.so_snd.cc() as u32;
+        ti.tcpi_so_snd_sb_hiwat = so.so_snd.hiwat() as u32;
+        ti.tcpi_so_snd_sb_lowat = so.so_snd.lowat() as u32;
+        ti.tcpi_so_snd_sb_wat = so.so_snd.wat() as u32;
+        drop(g_snd);
     }
 
     m.m_len().set(size_of::<TcpInfo>() as u32);
@@ -604,13 +604,13 @@ pub fn tcp_ctloutput(
 /// `tcp_attach`: attach TCP protocol to socket, allocating internet protocol control block,
 /// tcp control block, buffer space, and entering LISTEN state to accept connections.
 pub fn tcp_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Errno> {
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         return Err(Errno::EISCONN);
     }
-    if so.so_snd.sb_hiwat.get() == 0
-        || so.so_rcv.sb_hiwat.get() == 0
-        || sbcheckreserve(so.so_snd.sb_wat.get(), u64::from(tcp_sendspace)).is_err()
-        || sbcheckreserve(so.so_rcv.sb_wat.get(), u64::from(tcp_recvspace)).is_err()
+    if so.so_snd.hiwat() == 0
+        || so.so_rcv.hiwat() == 0
+        || sbcheckreserve(so.so_snd.wat(), u64::from(tcp_sendspace)).is_err()
+        || sbcheckreserve(so.so_rcv.wat(), u64::from(tcp_recvspace)).is_err()
     {
         soreserve(so, u64::from(tcp_sendspace), u64::from(tcp_recvspace))?;
     }
@@ -628,11 +628,11 @@ pub fn tcp_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Err
         panic(format_args!("tcp_attach: no inpcb after in_pcballoc"));
     };
     let Some(tp) = tcp_newtcpcb(inp, wait) else {
-        let nofd = so.so_state.get() & SS_NOFDREF; // XXX
+        let nofd = so.state() & SS_NOFDREF; // XXX
 
-        so.clear_state(SS_NOFDREF); // don't free the socket yet
+        so.clear_state_legacy(SS_NOFDREF); // don't free the socket yet
         in_pcbdetach(inp);
-        so.set_state(nofd);
+        so.set_state_legacy(nofd);
         return Err(Errno::ENOBUFS);
     };
     tp.t_state.set(TCPS_CLOSED);
@@ -644,8 +644,8 @@ pub fn tcp_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Err
     }
     #[cfg(not(feature = "inet6"))]
     tp.pf.set(i32::from(PF_INET));
-    if so.has_options(SO_LINGER) && so.so_linger.get() == 0 {
-        so.so_linger.set(TCP_LINGERTIME);
+    if so.has_options(SO_LINGER) && so.linger() == 0 {
+        so.set_linger_legacy(TCP_LINGERTIME);
     }
 
     if so.has_options(SO_DEBUG) {
@@ -753,7 +753,7 @@ pub fn tcp_connect(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno>
             return Err(Errno::ENOBUFS);
         }
 
-        so.set_state(SS_CONNECTOUT);
+        so.set_state_legacy(SS_CONNECTOUT);
 
         // Compute window scaling to request.
         tcp_rscale(tp, SB_MAX_VAR.load(Ordering::Relaxed));
@@ -839,7 +839,7 @@ pub fn tcp_rcvd(so: &'static Socket) {
     // soreceive() calls this function when a user receives ancillary data on a listening
     // socket. We don't call tcp_output in such a case, since there is no header template
     // for a listening socket and hence the kernel will panic.
-    if so.so_state.get() & (SS_ISCONNECTED | SS_ISCONNECTING) != 0 {
+    if so.state() & (SS_ISCONNECTED | SS_ISCONNECTING) != 0 {
         let _ = tcp_output(tp);
     }
 
@@ -868,9 +868,9 @@ pub fn tcp_send(
         let ostate = tp.t_state.get();
 
         if let Some(data) = m.take() {
-            mtx_enter(&so.so_snd.sb_mtx);
-            sbappendstream(&so.so_snd, data);
-            mtx_leave(&so.so_snd.sb_mtx);
+            let mut g_snd = so.so_snd.lock();
+            sbappendstream(&mut g_snd, data);
+            drop(g_snd);
         }
 
         let error = tcp_output(tp);
@@ -907,9 +907,9 @@ pub fn tcp_sense(so: &'static Socket, ub: &mut Stat) -> Result<(), Errno> {
 
     let (_inp, tp) = tcp_sogetpcb(so)?;
 
-    mtx_enter(&so.so_snd.sb_mtx);
-    ub.st_blksize = so.so_snd.sb_hiwat.get() as _;
-    mtx_leave(&so.so_snd.sb_mtx);
+    let g_snd = so.so_snd.lock();
+    ub.st_blksize = so.so_snd.hiwat() as _;
+    drop(g_snd);
 
     if so.has_options(SO_DEBUG) {
         tcp_trace(TA_USER, tp.t_state.get(), Some(tp), tp, None, PRU_SENSE, 0);
@@ -923,7 +923,7 @@ pub fn tcp_rcvoob(so: &'static Socket, m: &'static Mbuf, flags: i32) -> Result<(
 
     let (_inp, tp) = tcp_sogetpcb(so)?;
 
-    let error = if (so.so_oobmark.get() == 0 && !so.so_rcv.has_state(SS_RCVATMARK))
+    let error = if (so.oobmark() == 0 && !so.so_rcv.has_state(SS_RCVATMARK))
         || so.has_options(SO_OOBINLINE)
         || tp.t_oobflags.get() & TCPOOB_HADDATA != 0
     {
@@ -971,13 +971,13 @@ pub fn tcp_sendoob(
             // octet of urgent data. We continue, however, to consider it to indicate the
             // first octet of data past the urgent section. Otherwise, snd_up should be one
             // lower.
-            mtx_enter(&so.so_snd.sb_mtx);
+            let mut g_snd = so.so_snd.lock();
             if let Some(data) = m.take() {
-                sbappendstream(&so.so_snd, data);
+                sbappendstream(&mut g_snd, data);
             }
-            mtx_leave(&so.so_snd.sb_mtx);
+            drop(g_snd);
             tp.snd_up
-                .set(tp.snd_una.get().wrapping_add(so.so_snd.sb_cc.get() as u32));
+                .set(tp.snd_una.get().wrapping_add(so.so_snd.cc() as u32));
             tp.t_force.set(true);
             let error = tcp_output(tp);
             tp.t_force.set(false);
@@ -1049,13 +1049,13 @@ pub fn tcp_dodisconnect(tp: &'static Tcpcb) -> Option<&'static Tcpcb> {
 
     if !tcps_haveestablished(tp.t_state.get()) {
         tcp_close(tp)
-    } else if so.has_options(SO_LINGER) && so.so_linger.get() == 0 {
+    } else if so.has_options(SO_LINGER) && so.linger() == 0 {
         tcp_drop(tp, None)
     } else {
         soisdisconnecting(so);
-        mtx_enter(&so.so_rcv.sb_mtx);
-        sbflush(&so.so_rcv);
-        mtx_leave(&so.so_rcv.sb_mtx);
+        let mut g_rcv = so.so_rcv.lock();
+        sbflush(&mut g_rcv);
+        drop(g_rcv);
         let tp = tcp_usrclosed(tp);
         if let Some(tp) = tp {
             let _ = tcp_output(tp);
@@ -1266,8 +1266,8 @@ fn tcp_ident(
 
     match so {
         Some(so) if so.has_state(SS_CONNECTOUT) => {
-            tir.ruid = so.so_ruid.get() as i32;
-            tir.euid = so.so_euid.get() as i32;
+            tir.ruid = so.creds().1 as i32;
+            tir.euid = so.creds().0 as i32;
         }
         _ => {
             tir.ruid = -1;
@@ -1597,48 +1597,47 @@ pub fn tcp_update_sndspace(tp: &Tcpcb) {
     let so = tp.socket();
     let sb = &so.so_snd;
 
-    mtx_enter(&sb.sb_mtx);
+    let mut g_sb = sb.lock();
 
-    let mut nmax = sb.sb_hiwat.get();
+    let mut nmax = sb.hiwat();
 
     if sbchecklowmem() {
         // low on memory try to get rid of some
         if u64::from(tcp_sendspace) < nmax {
             nmax = u64::from(tcp_sendspace);
         }
-    } else if sb.sb_wat.get() != u64::from(tcp_sendspace) {
+    } else if sb.wat() != u64::from(tcp_sendspace) {
         // user requested buffer size, auto-scaling disabled
-        nmax = sb.sb_wat.get();
+        nmax = sb.wat();
     } else {
         // automatic buffer scaling
         nmax = SB_MAX_VAR.load(Ordering::Relaxed).min(
-            sb.sb_wat
-                .get()
+            sb.wat()
                 .wrapping_add(u64::from(tp.snd_max.get().wrapping_sub(tp.snd_una.get()))),
         );
     }
 
     // a writable socket must be preserved because of poll(2) semantics
-    if sbspace_locked(sb) >= sb.sb_lowat.get() {
-        let lowat = sb.sb_lowat.get() as u64;
-        if nmax < sb.sb_cc.get() + lowat {
-            nmax = sb.sb_cc.get() + lowat;
+    if g_sb.space() >= sb.lowat() {
+        let lowat = sb.lowat() as u64;
+        if nmax < sb.cc() + lowat {
+            nmax = sb.cc() + lowat;
         }
         // keep in sync with sbreserve() calculation
-        if nmax * 8 < sb.sb_mbcnt.get() + lowat {
-            nmax = (sb.sb_mbcnt.get() + lowat).div_ceil(8);
+        if nmax * 8 < sb.mbcnt() + lowat {
+            nmax = (sb.mbcnt() + lowat).div_ceil(8);
         }
     }
 
     // round to MSS boundary
     nmax = nmax.next_multiple_of(u64::from(tp.t_maxseg.get()));
 
-    if nmax != sb.sb_hiwat.get() {
+    if nmax != sb.hiwat() {
         // The C ignores the result: a refused size leaves the buffer as it was.
-        let _ = sbreserve(sb, nmax);
+        let _ = sbreserve(&mut g_sb, nmax);
     }
 
-    mtx_leave(&sb.sb_mtx);
+    drop(g_sb);
 }
 
 /// `tcp_update_rcvspace`: scale the recv buffer by looking at how much data was transferred
@@ -1649,42 +1648,42 @@ pub fn tcp_update_rcvspace(tp: &Tcpcb) {
     let so = tp.socket();
     let sb = &so.so_rcv;
 
-    mtx_enter(&sb.sb_mtx);
+    let mut g_sb = sb.lock();
 
-    let mut nmax = sb.sb_hiwat.get();
+    let mut nmax = sb.hiwat();
 
     if sbchecklowmem() {
         // low on memory try to get rid of some
         if u64::from(tcp_recvspace) < nmax {
             nmax = u64::from(tcp_recvspace);
         }
-    } else if sb.sb_wat.get() != u64::from(tcp_recvspace) {
+    } else if sb.wat() != u64::from(tcp_recvspace) {
         // user requested buffer size, auto-scaling disabled
-        nmax = sb.sb_wat.get();
+        nmax = sb.wat();
     } else {
         // automatic buffer scaling
-        if u64::from(tp.rfbuf_cnt.get()) > sb.sb_hiwat.get() / 8 * 7 {
+        if u64::from(tp.rfbuf_cnt.get()) > sb.hiwat() / 8 * 7 {
             nmax = SB_MAX_VAR
                 .load(Ordering::Relaxed)
-                .min(sb.sb_hiwat.get() + u64::from(TCP_AUTORCVBUF_INC));
+                .min(sb.hiwat() + u64::from(TCP_AUTORCVBUF_INC));
         }
     }
 
     // a readable socket must be preserved because of poll(2) semantics
-    mtx_enter(&so.so_snd.sb_mtx);
-    if sb.sb_cc.get() as i64 >= sb.sb_lowat.get() && (nmax as i64) < so.so_snd.sb_lowat.get() {
-        nmax = so.so_snd.sb_lowat.get() as u64;
+    let g_snd = so.so_snd.lock();
+    if sb.cc() as i64 >= sb.lowat() && (nmax as i64) < so.so_snd.lowat() {
+        nmax = so.so_snd.lowat() as u64;
     }
-    mtx_leave(&so.so_snd.sb_mtx);
+    drop(g_snd);
 
-    if nmax != sb.sb_hiwat.get() {
+    if nmax != sb.hiwat() {
         // round to MSS boundary
         nmax = nmax.next_multiple_of(u64::from(tp.t_maxseg.get()));
         // The C ignores the result, as above.
-        let _ = sbreserve(sb, nmax);
+        let _ = sbreserve(&mut g_sb, nmax);
     }
 
-    mtx_leave(&sb.sb_mtx);
+    drop(g_sb);
 }
 /* </CODE> */
 
@@ -1873,20 +1872,11 @@ mod tests {
 
     /// The bytes queued in `so`'s receive buffer.
     fn received(so: &Socket) -> Vec<u8> {
-        let mut v = Vec::new();
-        let mut m = so.so_rcv.sb_mb.get();
-        while let Some(mm) = m {
-            let mut d = Some(mm);
-            while let Some(x) = d {
-                // SAFETY: an mbuf holds `m_len` bytes at its data pointer.
-                v.extend_from_slice(unsafe {
-                    core::slice::from_raw_parts(mtod::<u8>(x), x.m_len().get() as usize)
-                });
-                d = x.m_next().get();
-            }
-            m = mm.m_nextpkt().get();
-        }
-        v
+        let g = so.so_rcv.lock();
+        g.data()
+            .mbufs()
+            .flat_map(|m| m.data().iter().copied())
+            .collect()
     }
 
     /// The counter of `c`.
@@ -2038,7 +2028,7 @@ mod tests {
         assert_eq!(synack.flags(), TH_SYN | TH_ACK);
         assert_eq!(synack.ack(), peer_iss.wrapping_add(1));
         assert_eq!(synack.sport(), 8080);
-        assert_eq!(l.so_qlen.get(), 0, "embryonic: in the syn cache only");
+        assert_eq!(l.qlen(), 0, "embryonic: in the syn cache only");
 
         receive(
             ifp,
@@ -2052,8 +2042,8 @@ mod tests {
                 b"hi",
             ),
         );
-        assert_eq!(l.so_qlen.get(), 1, "a connection to accept");
-        let so = l.so_q.first().expect("the new socket");
+        assert_eq!(l.qlen(), 1, "a connection to accept");
+        let so = crate::sys::socketvar::as_static(&l.queued_first().expect("the new socket"));
         let tp = sototcpcb(so).expect("its tcpcb");
         assert_eq!(tp.t_state.get(), TCPS_ESTABLISHED);
         assert_eq!(received(so), b"hi");
@@ -2214,7 +2204,7 @@ mod tests {
         assert_eq!(synack.flags(), TH_SYN | TH_ACK);
         assert_eq!(synack.ack(), peer_iss.wrapping_add(1));
         assert_eq!((synack.sport(), synack.dport()), (8080, 40000));
-        assert_eq!(l.so_qlen.get(), 0, "embryonic: in the syn cache only");
+        assert_eq!(l.qlen(), 0, "embryonic: in the syn cache only");
 
         // ACK with data: syn_cache_get makes the connection (in6_pcbset_addr).
         let ack = tcp6_payload(
@@ -2227,8 +2217,8 @@ mod tests {
             b"hi",
         );
         input6(packet6(ifp, IPPROTO_TCP as u8, &ack, Some(16)));
-        assert_eq!(l.so_qlen.get(), 1, "a connection to accept");
-        let so = l.so_q.first().expect("the new socket");
+        assert_eq!(l.qlen(), 1, "a connection to accept");
+        let so = crate::sys::socketvar::as_static(&l.queued_first().expect("the new socket"));
         let tp = sototcpcb(so).expect("its tcpcb");
         assert_eq!(tp.t_state.get(), TCPS_ESTABLISHED);
         assert_eq!(tp.pf.get(), i32::from(AF_INET6));

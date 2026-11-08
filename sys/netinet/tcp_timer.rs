@@ -495,7 +495,7 @@ pub fn tcp_timer_rexmt(arg: *mut c_void) {
     {
         'leave: {
             // No data to send means path mtu is not a problem
-            if so.so_snd.sb_cc.get() == 0 {
+            if so.so_snd.cc() == 0 {
                 break 'leave;
             }
 

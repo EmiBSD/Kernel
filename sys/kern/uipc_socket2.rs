@@ -319,20 +319,20 @@ pub fn sbappendrecord(g: &mut SbGuard<'_>, m0: Option<&'static Mbuf>) {
     g.sbappendrecord(m0.map(unpark));
 }
 
-/// `sbappendaddr(sb, asa, m0, control)` (its mutex held): 1, or 0 with the data and the
-/// control left to the caller (parked again).
+/// `sbappendaddr(sb, asa, m0, control)` (its mutex held): whether it was appended; the
+/// data and the control left to the caller (parked again) when not.
 pub fn sbappendaddr(
     g: &mut SbGuard<'_>,
     asa: &[u8],
     m0: Option<&'static Mbuf>,
     control: Option<&'static Mbuf>,
-) -> i32 {
+) -> bool {
     match g.sbappendaddr(asa, m0.map(unpark), control.map(unpark)) {
-        Ok(()) => 1,
+        Ok(()) => true,
         Err((m0, control)) => {
             repark(m0);
             repark(control);
-            0
+            false
         }
     }
 }

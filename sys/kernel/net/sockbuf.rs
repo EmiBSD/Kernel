@@ -171,6 +171,14 @@
 //!   per step for which part of the list the front is in; `sbappend`'s walk of the last
 //!   record for `M_EOR` is the C's (its "XXX"). Every operation takes the buffer's mutex as
 //!   often as the C takes `sb_mtx`.
+//! - `tcp_output` copies its segment out of the send buffer under the socket's lock alone
+//!   in the C (`m_copym(so->so_snd.sb_mb, off, len)`: every writer of the buffer holds that
+//!   lock too); here the records are the mutex's, so the copy is a guard's method
+//!   ([`SbGuard::copym_first`], [`SbGuard::copydata_first`]): the first record's mbufs up to
+//!   `off + len` taken off as one chain for `m_copym` (which shares their clusters through
+//!   `&mut`) and put back, O(k) for the C's walk of k mbufs. `tcp_output` reads
+//!   `SS_ISSENDING` as the atomic it is instead of the C's `sb_mtx` section for it, so it
+//!   takes the mutex once per data segment, as the C takes it once per call (N6.2a).
 
 use core::mem;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU64, Ordering};
@@ -1298,6 +1306,93 @@ impl<'a, G: ProcGlue> SbGuard<'a, G> {
         }
     }
 
+    /// `m_copym(sb->sb_mb, off, len, wait)`: a copy of `len` bytes (or `M_COPYALL`) of the
+    /// buffer's first record from `off`, its clusters shared as the C's (`tcp_output`'s
+    /// segment out of a stream socket's send buffer); `None` when an mbuf cannot be had.
+    /// The first record's mbufs up to `off + len` are taken off as one chain for the copy
+    /// and put back in order: O(k) for the k mbufs the C's walk reaches. No reader's record
+    /// may be out (a send buffer's readers are its protocol's, under the socket's lock).
+    pub fn copym_first(&mut self, off: i32, len: i32, wait: i32) -> Option<MbufBox> {
+        kassert!(matches!(self.g.out, Out::None));
+        let d = &mut *self.g;
+        if let Some(mut h) = d.records.pop_head() {
+            // A closed record: its mbufs are one chain by `m_next`.
+            let c = crate::net::mbuf::m_copym(&mut h, off, len, wait);
+            d.records.push_head(h);
+            return c;
+        }
+        // The last record: the mbufs of `last` the copy reaches, and its final one when the
+        // copy goes that far, linked into one chain.
+        let want = if len == crate::net::mbuf::M_COPYALL {
+            u64::MAX
+        } else {
+            u64::from(off.unsigned_abs()) + u64::from(len.unsigned_abs())
+        };
+        let mut taken = OwnedSlist::<MNext>::new();
+        let mut have = 0u64;
+        while have < want {
+            let Some(b) = d.last.pop_head() else {
+                break;
+            };
+            have += u64::from(b.m_len().get());
+            taken.push_tail(b);
+        }
+        let took_tail = have < want;
+        if took_tail && let Some(t) = d.tail.take() {
+            taken.push_tail(t);
+        }
+        let mut head = taken.into_head()?;
+        let c = crate::net::mbuf::m_copym(&mut head, off, len, wait);
+        // Back in order: the chain split mbuf by mbuf again (O(k)), before what is left of
+        // `last`, or as the whole record when its final mbuf was taken too.
+        let mut rec = SbRecord::from_chain(Some(head));
+        if took_tail {
+            kassert!(d.last.is_empty());
+            d.last = mem::take(&mut rec.list);
+            d.tail = rec.tail.take();
+        } else {
+            if let Some(t) = rec.tail.take() {
+                rec.list.push_tail(t);
+            }
+            rec.list.concat(&mut d.last);
+            d.last = mem::take(&mut rec.list);
+        }
+        c
+    }
+
+    /// `m_copydata(sb->sb_mb, off, len, p)`: `p.len()` bytes of the buffer's first record
+    /// from `off` copied into `p` (`tcp_output`'s segment that fits its header mbuf), O(k)
+    /// for the k mbufs the C's walk reaches. `panic(9)` for a record shorter than that, as
+    /// the C's.
+    pub fn copydata_first(&self, off: i32, p: &mut [u8]) {
+        if let Some(h) = self.g.records.first() {
+            crate::net::mbuf::m_copydata(h, off, p);
+            return;
+        }
+        if off < 0 {
+            kpanic(format_args!("m_copydata: off {off} < 0"));
+        }
+        let mut off = off.unsigned_abs() as usize;
+        let mut at = 0;
+        for m in self.g.last.iter().chain(self.g.tail.as_deref()) {
+            if at == p.len() {
+                break;
+            }
+            let data = m.data();
+            if off >= data.len() {
+                off -= data.len();
+                continue;
+            }
+            let n = (data.len() - off).min(p.len() - at);
+            p[at..at + n].copy_from_slice(&data[off..off + n]);
+            at += n;
+            off = 0;
+        }
+        if at < p.len() {
+            kpanic(format_args!("m_copydata: short mbuf chain"));
+        }
+    }
+
     /// The buffer's first record taken out for a reader's copy with the mutex released
     /// (`soreceive`, `somove` under `sblock`); `None` when the buffer is empty. The counts
     /// stay; [`SbGuard::put_back_record`] gives back what is left.
@@ -1509,7 +1604,7 @@ mod tests {
 
     use super::*;
     use crate::net::mbuf::tests::setup;
-    use crate::net::mbuf::{M_WAIT, MT_DATA, m_gethdr};
+    use crate::net::mbuf::{M_COPYALL, M_WAIT, MT_DATA, m_gethdr};
 
     crate::test_file_glue!(Files, Procs);
     crate::test_proc_glue!(Procs, Files);
@@ -1826,6 +1921,74 @@ mod tests {
                 b"four".to_vec()
             ]
         );
+    }
+
+    /// The bytes of a chain.
+    fn bytes_of(c: &Mbuf) -> Vec<u8> {
+        chain(Some(c))
+            .flat_map(|m| m.data().iter().copied())
+            .collect()
+    }
+
+    #[test]
+    fn copies_out_of_the_first_record_leave_it_whole() {
+        let _g = setup();
+        let sb = sockbuf(65536);
+        // Four mbufs of 200 bytes, none fitting in the one before (tcp_output's send buffer).
+        {
+            let mut g = sb.lock();
+            for i in 0..4u8 {
+                g.sbappendstream(data(&[i; 200], false));
+            }
+            sbcheck(&g);
+        }
+        assert_eq!(nmbufs(&sb), 4);
+        let whole = records(&sb);
+        let want = |off: usize, len: usize| -> Vec<u8> {
+            (off..off + len).map(|i| (i / 200) as u8).collect()
+        };
+
+        // m_copydata across three mbufs of the record's list.
+        let mut buf = [0u8; 300];
+        sb.lock().copydata_first(150, &mut buf);
+        assert_eq!(buf.to_vec(), want(150, 300));
+
+        // m_copym from the list into the final mbuf, then of the final mbuf alone, then all.
+        for (off, len) in [(150, 300), (500, 300), (700, 100), (0, 200)] {
+            let c = sb.lock().copym_first(off, len, M_WAIT).expect("a copy");
+            assert_eq!(
+                bytes_of(&c),
+                want(off as usize, len as usize),
+                "{off} {len}"
+            );
+            let g = sb.lock();
+            sbcheck(&g);
+        }
+        let all = sb.lock().copym_first(0, M_COPYALL, M_WAIT).expect("a copy");
+        assert_eq!(bytes_of(&all), want(0, 800));
+        drop(all);
+        // The record as it was, its final mbuf still the one sbcompress fills.
+        assert_eq!(records(&sb), whole);
+        assert_eq!(nmbufs(&sb), 4);
+        sb.lock().sbappendstream(data(b"0123456789", false));
+        assert_eq!(nmbufs(&sb), 4);
+        assert_eq!(sb.cc(), 810);
+        sb.lock().sbflush();
+
+        // A closed record first: the copy is of it alone.
+        {
+            let mut g = sb.lock();
+            g.sbappendrecord(Some(data(b"abc", true)));
+            g.sbappendrecord(Some(data(b"def", true)));
+            sbcheck(&g);
+        }
+        let c = sb.lock().copym_first(1, 2, M_WAIT).expect("a copy");
+        assert_eq!(bytes_of(&c), b"bc");
+        let mut buf = [0u8; 3];
+        sb.lock().copydata_first(0, &mut buf);
+        assert_eq!(&buf, b"abc");
+        assert_eq!(records(&sb).len(), 2);
+        sb.lock().sbflush();
     }
 }
 /* </TESTS> */

@@ -900,21 +900,30 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_file_s_object_is_its_socket_s_word() {
-        use crate::kern::uipc_usrreq::tests::{close, setup as unix_setup, socketpair, teardown};
-        let (_g, p) = unix_setup();
-        let [a, b] = socketpair(p);
-        let fp = fd_getfile(p.fd(), a).unwrap();
-        let Some(BsdFileData::Socket(word)) = fp.data() else {
-            panic!("a socket's object");
-        };
-        let so = crate::kern::sys_socket::socket_of(word).unwrap();
-        assert!(core::ptr::eq(so, crate::kern::sys_socket::fp_socket(&fp)));
-        assert!(!BsdFileGlue::dns_socket(fp.data().unwrap()));
-        drop(fp);
-        close(p, a);
-        close(p, b);
-        teardown();
+    fn a_socket_file_s_object_is_its_socket() {
+        use crate::sys::mbuf::M_WAIT;
+        use crate::sys::socket::SOCK_DGRAM;
+        let _g = setup();
+        crate::kern::uipc_mbuf::tests::mbinit_again();
+        crate::kern::uipc_socket::soinit();
+        let p = thread();
+        let so = crate::kern::uipc_socket::soalloc(
+            &crate::netinet::in_proto::INETSW[1],
+            SOCK_DGRAM,
+            M_WAIT,
+        )
+        .unwrap();
+        // socreate's reference, parked by the adapter, becomes the file's.
+        let so = hal::pool::PoolArc::adopt(so).unwrap();
+        let fp = fnew(p).unwrap();
+        crate::kern::sys_socket::fp_install(&fp, so);
+        let data = fp.data().unwrap();
+        let s = <BsdFileGlue as kernel::file::FileGlue>::socket_of(data).unwrap();
+        assert!(core::ptr::eq(&**s, crate::kern::sys_socket::fp_socket(&fp)));
+        assert!(!BsdFileGlue::dns_socket(data));
+        assert_eq!(fp.f_type(), crate::sys::file::DTYPE_SOCKET);
+        // The last reference closes the socket (no protocol attached: soclose's discard).
+        let _ = closef(fp, Some(p));
     }
 }
 /* </TESTS> */
