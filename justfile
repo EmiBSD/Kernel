@@ -3730,7 +3730,7 @@ dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
         && chmod 644 BOOTAA64.EFI BUILDINFO MANUAL.toml SHA256 bsd.RAMDISK bsd.mp \
         && find include -type d -exec chmod 755 '{}' + && find include -type f -exec chmod 644 '{}' + \
         && TZ=UTC touch -t $stamp . BOOTAA64.EFI BUILDINFO MANUAL.toml SHA256 bsd.RAMDISK bsd.mp \
-        && find include -exec touch -h -t $stamp '{}' +)
+        && TZ=UTC find include -exec touch -h -t $stamp '{}' +)
     members="$out/$name.members"
     { print -l "$name" "$name/SHA256" "$name/BUILDINFO" "$name/BOOTAA64.EFI" "$name/MANUAL.toml" "$name/bsd.RAMDISK" "$name/bsd.mp"; \
         (cd "$out" && find "$name/include" | LC_ALL=C sort); } > "$members"
