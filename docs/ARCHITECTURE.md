@@ -292,9 +292,9 @@ missing; decision 47 records what went with it. The pieces now:
   `kern::abi_module::syscall`, which calls it), and the dispatch calls the registered handler;
   with none it answers `ENOSYS`, which the boot glue's panic makes unreachable. Errnos cross
   `hal` as `i32`.
-- **The boot line.** `abi: 331 syscalls, 170 native` (the module's line, which named its file,
+- **The boot line.** `abi: 331 syscalls, 189 native` (the module's line, which named its file,
   until the N5 close; the count has followed every `Native` flip: 2, 17, 37, 44, 94, 105,
-  170). `just smoke-abi`, `smoke-efiboot` (both archs) and `dist-arm64`'s boot check expect it;
+  170, 189 with the socket calls at N6.2b). `just smoke-abi`, `smoke-efiboot` (both archs) and `dist-arm64`'s boot check expect it;
   `smoke-abi` also runs a pipeline through the handler (`abi-pipe-43`).
 - **The media.** Nothing but the kernel: the boot loaders, the images, install80, cd80, the
   base set and the release tarball carry no ABI file (decision 47).

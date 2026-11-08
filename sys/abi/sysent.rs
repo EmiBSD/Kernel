@@ -43,7 +43,9 @@
 //! `hal::sig`'s frame). N5.4: the VFS system calls' sixty-five (`KernelApi::vfs`,
 //! `sys/kernel/fs/syscalls.rs` and `getcwd.rs`: the sixty-four of `vfs_syscalls.c`, `open(2)`,
 //! `stat(2)`, `mount(2)`, `unveil(2)`, ..., and `__getcwd(2)`), which write the return
-//! registers themselves.
+//! registers themselves. N6.2b: the socket system calls' nineteen (`KernelApi::socket`,
+//! `sys/kernel/net/syscalls.rs`: `socket(2)`, `bind(2)`, `accept(2)`, `sendmsg(2)`,
+//! `recvmmsg(2)`, ..., `ypconnect(2)`; `setrtable(2)` and `getrtable(2)` are `KernelApi::proc`'s).
 //!
 //! Translation only (decision 21; `cargo xtask abi-check`, decision 25): no loop, a
 //! `match` only on the number's conversion and on `Some`/`None`, one kernel call per
@@ -84,6 +86,11 @@ use hal::sys::syscall::{
     SYS_utimensat, SYS_utimes,
 };
 use hal::sys::syscall::{
+    SYS_accept, SYS_accept4, SYS_bind, SYS_connect, SYS_getpeername, SYS_getsockname,
+    SYS_getsockopt, SYS_listen, SYS_recvfrom, SYS_recvmmsg, SYS_recvmsg, SYS_sendmmsg, SYS_sendmsg,
+    SYS_sendto, SYS_setsockopt, SYS_shutdown, SYS_socket, SYS_socketpair, SYS_ypconnect,
+};
+use hal::sys::syscall::{
     SYS_adjfreq, SYS_adjtime, SYS_clock_getres, SYS_clock_gettime, SYS_clock_settime,
     SYS_getitimer, SYS_gettimeofday, SYS_nanosleep, SYS_reboot, SYS_setitimer, SYS_settimeofday,
 };
@@ -101,7 +108,7 @@ pub enum Sysent {
 }
 
 /// How many entries of [`SYSENT`] are `Native` (a test counts them).
-pub const NATIVE: u32 = 170;
+pub const NATIVE: u32 = 189;
 
 /// What the ABI says about itself when it registers ([`crate::abi_init`]).
 #[expect(
@@ -286,6 +293,25 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = {
     table[SYS_renameat as usize] = Sysent::Native(sys_renameat);
     table[SYS_symlinkat as usize] = Sysent::Native(sys_symlinkat);
     table[SYS_unlinkat as usize] = Sysent::Native(sys_unlinkat);
+    table[SYS_recvmsg as usize] = Sysent::Native(sys_recvmsg);
+    table[SYS_sendmsg as usize] = Sysent::Native(sys_sendmsg);
+    table[SYS_recvfrom as usize] = Sysent::Native(sys_recvfrom);
+    table[SYS_accept as usize] = Sysent::Native(sys_accept);
+    table[SYS_getpeername as usize] = Sysent::Native(sys_getpeername);
+    table[SYS_getsockname as usize] = Sysent::Native(sys_getsockname);
+    table[SYS_accept4 as usize] = Sysent::Native(sys_accept4);
+    table[SYS_socket as usize] = Sysent::Native(sys_socket);
+    table[SYS_connect as usize] = Sysent::Native(sys_connect);
+    table[SYS_bind as usize] = Sysent::Native(sys_bind);
+    table[SYS_setsockopt as usize] = Sysent::Native(sys_setsockopt);
+    table[SYS_listen as usize] = Sysent::Native(sys_listen);
+    table[SYS_recvmmsg as usize] = Sysent::Native(sys_recvmmsg);
+    table[SYS_sendmmsg as usize] = Sysent::Native(sys_sendmmsg);
+    table[SYS_getsockopt as usize] = Sysent::Native(sys_getsockopt);
+    table[SYS_sendto as usize] = Sysent::Native(sys_sendto);
+    table[SYS_shutdown as usize] = Sysent::Native(sys_shutdown);
+    table[SYS_socketpair as usize] = Sysent::Native(sys_socketpair);
+    table[SYS_ypconnect as usize] = Sysent::Native(sys_ypconnect);
     table
 };
 
@@ -1666,6 +1692,211 @@ fn sys_unlinkat(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> Sys
     )
 }
 
+/// 27 = `ssize_t recvmsg(int s, struct msghdr *msg, int flags)`.
+fn sys_recvmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.recvmsg)(
+        SYS_recvmsg as Register,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        rval,
+    )
+}
+
+/// 28 = `ssize_t sendmsg(int s, const struct msghdr *msg, int flags)`.
+fn sys_sendmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.sendmsg)(
+        SYS_sendmsg as Register,
+        int(args[0]),
+        ptr(args[1]),
+        int(args[2]),
+        rval,
+    )
+}
+
+/// 29 = `ssize_t recvfrom(int s, void *buf, size_t len, int flags, struct sockaddr *from, socklen_t *fromlenaddr)`.
+fn sys_recvfrom(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.recvfrom)(
+        SYS_recvfrom as Register,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
+        int(args[3]),
+        ptr(args[4]),
+        ptr(args[5]),
+        rval,
+    )
+}
+
+/// 30 = `int accept(int s, struct sockaddr *name, socklen_t *anamelen)`.
+fn sys_accept(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.accept)(
+        SYS_accept as Register,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        rval,
+    )
+}
+
+/// 31 = `int getpeername(int fdes, struct sockaddr *asa, socklen_t *alen)`.
+fn sys_getpeername(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.getpeername)(
+        SYS_getpeername as Register,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        rval,
+    )
+}
+
+/// 32 = `int getsockname(int fdes, struct sockaddr *asa, socklen_t *alen)`.
+fn sys_getsockname(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.getsockname)(
+        SYS_getsockname as Register,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        rval,
+    )
+}
+
+/// 93 = `int accept4(int s, struct sockaddr *name, socklen_t *anamelen, int flags)`.
+fn sys_accept4(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.accept4)(
+        SYS_accept4 as Register,
+        int(args[0]),
+        ptr(args[1]),
+        ptr(args[2]),
+        int(args[3]),
+        rval,
+    )
+}
+
+/// 97 = `int socket(int domain, int type, int protocol)`.
+fn sys_socket(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.socket)(
+        SYS_socket as Register,
+        int(args[0]),
+        int(args[1]),
+        int(args[2]),
+        rval,
+    )
+}
+
+/// 98 = `int connect(int s, const struct sockaddr *name, socklen_t namelen)`.
+fn sys_connect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.connect)(
+        SYS_connect as Register,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        rval,
+    )
+}
+
+/// 104 = `int bind(int s, const struct sockaddr *name, socklen_t namelen)`.
+fn sys_bind(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.bind)(
+        SYS_bind as Register,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        rval,
+    )
+}
+
+/// 105 = `int setsockopt(int s, int level, int name, const void *val, socklen_t valsize)`.
+fn sys_setsockopt(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.setsockopt)(
+        SYS_setsockopt as Register,
+        int(args[0]),
+        int(args[1]),
+        int(args[2]),
+        ptr(args[3]),
+        u_int(args[4]),
+        rval,
+    )
+}
+
+/// 106 = `int listen(int s, int backlog)`.
+fn sys_listen(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.listen)(SYS_listen as Register, int(args[0]), int(args[1]), rval)
+}
+
+/// 116 = `int recvmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags, struct timespec *timeout)`.
+fn sys_recvmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.recvmmsg)(
+        SYS_recvmmsg as Register,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        int(args[3]),
+        ptr(args[4]),
+        rval,
+    )
+}
+
+/// 117 = `int sendmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags)`.
+fn sys_sendmmsg(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.sendmmsg)(
+        SYS_sendmmsg as Register,
+        int(args[0]),
+        ptr(args[1]),
+        u_int(args[2]),
+        int(args[3]),
+        rval,
+    )
+}
+
+/// 118 = `int getsockopt(int s, int level, int name, void *val, socklen_t *avalsize)`.
+fn sys_getsockopt(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.getsockopt)(
+        SYS_getsockopt as Register,
+        int(args[0]),
+        int(args[1]),
+        int(args[2]),
+        ptr(args[3]),
+        ptr(args[4]),
+        rval,
+    )
+}
+
+/// 133 = `ssize_t sendto(int s, const void *buf, size_t len, int flags, const struct sockaddr *to, socklen_t tolen)`.
+fn sys_sendto(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.sendto)(
+        SYS_sendto as Register,
+        int(args[0]),
+        ptr(args[1]),
+        size_t(args[2]),
+        int(args[3]),
+        ptr(args[4]),
+        u_int(args[5]),
+        rval,
+    )
+}
+
+/// 134 = `int shutdown(int s, int how)`.
+fn sys_shutdown(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.shutdown)(SYS_shutdown as Register, int(args[0]), int(args[1]), rval)
+}
+
+/// 135 = `int socketpair(int domain, int type, int protocol, int *rsv)`.
+fn sys_socketpair(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.socketpair)(
+        SYS_socketpair as Register,
+        int(args[0]),
+        int(args[1]),
+        int(args[2]),
+        ptr(args[3]),
+        rval,
+    )
+}
+
+/// 150 = `int ypconnect(int type)`.
+fn sys_ypconnect(api: &'static KernelApi, args: &SysArgs, rval: &mut Rval) -> SysResult {
+    (api.socket.ypconnect)(SYS_ypconnect as Register, int(args[0]), rval)
+}
 // `INFO` narrows the table's size to `HandlerInfo::syscalls`'s `u32`: it fits.
 const _: () = assert!(SYS_MAXSYSCALL <= u32::MAX as usize);
 /* </CODE> */
@@ -2566,9 +2797,148 @@ mod tests {
         unlinkat: vfs31,
     };
 
+    // The socket entries of the test table (N6.2b): the number in rval[0], the arguments
+    // as decimal digits in the error.
+    fn so0(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so1(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so2(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so3(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so4(nr: Register, a0: i32, a1: i32, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so5(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so6(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so7(nr: Register, a0: i32, a1: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn so8(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: u32,
+        a3: i32,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so9(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so10(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so11(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so12(nr: Register, a0: i32, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so13(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    const SOCKET: hal::api::SocketEntries = hal::api::SocketEntries {
+        recvmsg: so0,
+        sendmsg: so0,
+        recvfrom: so1,
+        accept: so2,
+        getpeername: so2,
+        getsockname: so2,
+        accept4: so3,
+        socket: so4,
+        connect: so5,
+        bind: so5,
+        setsockopt: so6,
+        listen: so7,
+        recvmmsg: so8,
+        sendmmsg: so9,
+        getsockopt: so10,
+        sendto: so11,
+        shutdown: so7,
+        socketpair: so12,
+        ypconnect: so13,
+    };
     static API: KernelApi = KernelApi::new(
         register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
-        VFS,
+        VFS, SOCKET,
     );
 
     /// The event system calls N4.4 made `Native` (`KernelApi::event`).
@@ -2672,7 +3042,7 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_sigreturn_and_vfs_is_legacy()
+    fn every_entry_but_pipe_vm_fd_event_sendsyslog_futex_proc_sysctl_time_sigreturn_vfs_and_socket_is_legacy()
      {
         for nr in 0..SYS_MAXSYSCALL as Register {
             if nr == SYS_pipe as Register
@@ -2687,6 +3057,7 @@ mod tests {
                 || PROC_CALLS.iter().any(|&v| v as Register == nr)
                 || TIME_CALLS.iter().any(|&v| v as Register == nr)
                 || VFS_CALLS.iter().any(|&v| v as Register == nr)
+                || SOCKET_CALLS.iter().any(|&v| v as Register == nr)
             {
                 continue;
             }
@@ -2890,6 +3261,72 @@ mod tests {
         }
     }
 
+    /// The socket system calls (N6.2b), in `syscalls.master`'s order.
+    const SOCKET_CALLS: [i32; 19] = [
+        SYS_recvmsg,
+        SYS_sendmsg,
+        SYS_recvfrom,
+        SYS_accept,
+        SYS_getpeername,
+        SYS_getsockname,
+        SYS_accept4,
+        SYS_socket,
+        SYS_connect,
+        SYS_bind,
+        SYS_setsockopt,
+        SYS_listen,
+        SYS_recvmmsg,
+        SYS_sendmmsg,
+        SYS_getsockopt,
+        SYS_sendto,
+        SYS_shutdown,
+        SYS_socketpair,
+        SYS_ypconnect,
+    ];
+
+    /// Each socket translation (N6.2b) calls its own entry with its own number, the
+    /// arguments in `<sys/syscallargs.h>`'s order as the entry types them (a pointer or a
+    /// `size_t` a `usize`, an `int` an `i32`, a `socklen_t` or an `unsigned int` a `u32`) and
+    /// the trap's return registers, through the table as well.
+    #[test]
+    fn the_socket_calls_are_native_and_pass_their_number_arguments_and_rval() {
+        for nr in SOCKET_CALLS {
+            assert!(
+                matches!(SYSENT[nr as usize], Sysent::Native(_)),
+                "SYS {nr} is Native"
+            );
+        }
+        let a: SysArgs = [1, 2, 3, 4, 5, 6];
+        let cases: [(NativeFn, i32, i32); 19] = [
+            (sys_recvmsg, SYS_recvmsg, 123),
+            (sys_sendmsg, SYS_sendmsg, 123),
+            (sys_recvfrom, SYS_recvfrom, 123456),
+            (sys_accept, SYS_accept, 123),
+            (sys_getpeername, SYS_getpeername, 123),
+            (sys_getsockname, SYS_getsockname, 123),
+            (sys_accept4, SYS_accept4, 1234),
+            (sys_socket, SYS_socket, 123),
+            (sys_connect, SYS_connect, 123),
+            (sys_bind, SYS_bind, 123),
+            (sys_setsockopt, SYS_setsockopt, 12345),
+            (sys_listen, SYS_listen, 12),
+            (sys_recvmmsg, SYS_recvmmsg, 12345),
+            (sys_sendmmsg, SYS_sendmmsg, 1234),
+            (sys_getsockopt, SYS_getsockopt, 12345),
+            (sys_sendto, SYS_sendto, 123456),
+            (sys_shutdown, SYS_shutdown, 12),
+            (sys_socketpair, SYS_socketpair, 1234),
+            (sys_ypconnect, SYS_ypconnect, 1),
+        ];
+        for (f, nr, want) in cases {
+            let mut rval = [-7; 2];
+            assert_eq!(f(&API, &a, &mut rval), Err(want), "SYS {nr}");
+            assert_eq!(rval, [nr as Register, -7], "SYS {nr} wrote rval[0] only");
+            let mut rval = [-7; 2];
+            assert_eq!(syscall(&API, nr as Register, &a, &mut rval), Err(want));
+            assert_eq!(rval[0], nr as Register, "SYS {nr} reached its socket entry");
+        }
+    }
     #[test]
     fn pipe_and_pipe2_reach_the_kernel_with_their_number_and_arguments() {
         let mut rval = [-7; 2];
@@ -3170,9 +3607,9 @@ mod tests {
             Err(4242)
         );
         assert_eq!(
-            NATIVE, 170,
+            NATIVE, 189,
             "93 through sysctl(2), 11 more with the time calls, 1 with sigreturn(2), 65 with the \
-             VFS calls (N5.4)"
+             VFS calls (N5.4), 19 with the socket calls (N6.2b)"
         );
     }
 
