@@ -137,24 +137,12 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
     fn name(&self) -> &'static str;
     /// `dom_init`: initialize domain data structures.
     fn init(&self) {}
-    /// `dom_externalize(m, controllen, flags)`: externalize access rights of the control
-    /// message `m` for the receiving process; nothing for a domain without the entry
-    /// (`soreceive` then hands the message over as it is).
-    fn externalize(&self, _m: &mut Mbuf, _controllen: u32, _flags: i32) -> Result<(), Errno> {
-        Ok(())
-    }
-    /// `dom_dispose(m)`: dispose of internalized rights in the records `m` (records by
-    /// `m_nextpkt`, each a chain by `m_next`); nothing for a domain without the entry.
-    fn dispose(&self, _m: &mut Mbuf) {}
-    /// `dom_externalize != NULL` (`soreceive` lets the receive buffer's mutex go around the
-    /// entry only then).
-    fn has_externalize(&self) -> bool {
-        false
-    }
-    /// `dom_dispose != NULL` (the same for `soreceive`'s dispose of a message read without
-    /// a control buffer).
-    fn has_dispose(&self) -> bool {
-        false
+    /// `dom_externalize` and `dom_dispose`, the domain's access rights in control messages:
+    /// both or neither, `None` for a domain without them (the C's NULL entries: `soreceive`
+    /// then hands the message over as it is, lets no mutex go around them, and disposes of
+    /// nothing).
+    fn rights(&self) -> Option<&'static dyn DomRights> {
+        None
     }
     /// `dom_protosw` .. `dom_protoswNPROTOSW`: the protocols.
     fn protocols(&self) -> &'static [&'static dyn Protocol<G>];
@@ -308,8 +296,15 @@ pub fn domaininit<G: ProcGlue>(domains: &'static [&'static dyn Domain<G>]) {
         MAX_LINKHDR.load(Ordering::Relaxed) + MAX_PROTOHDR.load(Ordering::Relaxed),
         Ordering::Relaxed,
     );
-    pin_static(&t.pffast).add(1);
-    pin_static(&t.pfslow).add(1);
+    // The kernel's own host tests share one process-wide timeout wheel, which other tests
+    // tick (event.rs's timers) and whose counters others compare (timeout.rs): the protocol
+    // timeouts, which re-add themselves, are not armed there (testing.md's isolation rule;
+    // no test of the kernel's domains has work for them).
+    #[cfg(not(test))]
+    {
+        pin_static(&t.pffast).add(1);
+        pin_static(&t.pfslow).add(1);
+    }
 }
 
 /// The domain table set without `domaininit`'s initialisations, the first call for the
@@ -403,14 +398,26 @@ fn pffasttimo<G: ProcGlue>(_arg: *mut core::ffi::c_void) {
     pin_static(&t.pffast).add_msec(200);
 }
 
+/// A domain's access rights in control messages ([`Domain::rights`]).
+pub trait DomRights: Sync {
+    /// `dom_externalize(m, controllen, flags)`: externalize access rights of the control
+    /// message `m` for the receiving process.
+    fn externalize(&self, m: &mut Mbuf, controllen: u32, flags: i32) -> Result<(), Errno>;
+    /// `dom_dispose(m)`: dispose of internalized rights in the records `m` (records by
+    /// `m_nextpkt`, each a chain by `m_next`).
+    fn dispose(&self, m: &mut Mbuf);
+}
+
 /// `dom_dispose` of a domain, then the records freed (`sorele`'s and `sorflush`'s
 /// `if (pr->pr_flags & PR_RIGHTS && dom_dispose) (*dom_dispose)(m); m_purge(m)`).
 pub(crate) fn dispose_and_purge<G: ProcGlue>(pr: &dyn Protocol<G>, m: Option<MbufBox>) {
     let Some(mut m) = m else {
         return;
     };
-    if pr.flags() & crate::net::proto::PR_RIGHTS != 0 {
-        pr.domain().dispose(&mut m);
+    if pr.flags() & crate::net::proto::PR_RIGHTS != 0
+        && let Some(rights) = pr.domain().rights()
+    {
+        rights.dispose(&mut m);
     }
     crate::net::mbuf::m_purge(Some(m));
 }
@@ -502,7 +509,7 @@ mod tests {
         assert!(pffindproto::<Procs>(i32::from(PF_UNSPEC), 6, 1).is_none());
 
         // A domain without the optional entries: the C's NULLs.
-        assert!(!TestDom.has_externalize() && !TestDom.has_dispose() && !TestDom.legacy());
+        assert!(TestDom.rights().is_none() && !TestDom.legacy());
     }
 }
 /* </TESTS> */

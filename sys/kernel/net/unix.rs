@@ -736,20 +736,8 @@ impl<G: ProcGlue> Domain<G> for Unix<G> {
     fn init(&self) {
         unp_init::<G>();
     }
-    fn externalize(&self, m: &mut Mbuf, controllen: u32, flags: i32) -> Result<(), Errno> {
-        G::with_curproc(|p| match p {
-            Some(p) => unp_externalize(m, controllen, flags, p),
-            None => kpanic(format_args!("unp_externalize: no curproc")),
-        })
-    }
-    fn has_externalize(&self) -> bool {
-        true
-    }
-    fn has_dispose(&self) -> bool {
-        true
-    }
-    fn dispose(&self, m: &mut Mbuf) {
-        unp_dispose::<G>(m);
+    fn rights(&self) -> Option<&'static dyn crate::net::domain::DomRights> {
+        Some(&Self::NEW)
     }
     fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
         Self::PROTOSW
@@ -758,6 +746,18 @@ impl<G: ProcGlue> Domain<G> for Unix<G> {
         let unp = unp_of(so);
         let s = unp.state(w);
         (s.flags & UNP_FEIDS != 0).then_some(s.connid)
+    }
+}
+
+impl<G: ProcGlue> crate::net::domain::DomRights for Unix<G> {
+    fn externalize(&self, m: &mut Mbuf, controllen: u32, flags: i32) -> Result<(), Errno> {
+        G::with_curproc(|p| match p {
+            Some(p) => unp_externalize(m, controllen, flags, p),
+            None => kpanic(format_args!("unp_externalize: no curproc")),
+        })
+    }
+    fn dispose(&self, m: &mut Mbuf) {
+        unp_dispose::<G>(m);
     }
 }
 

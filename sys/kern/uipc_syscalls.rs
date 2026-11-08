@@ -519,17 +519,6 @@ pub fn doaccept(
                     break 'out_unlock Err(Errno::EWOULDBLOCK);
                 }
             }
-            // Figure out whether the new socket should be non-blocking.
-            let nflag = if flags & SOCK_NONBLOCK_INHERIT != 0 {
-                headfp.flag() & FNONBLOCK
-            } else if flags & SOCK_NONBLOCK != 0 {
-                FNONBLOCK
-            } else {
-                0
-            };
-            fp.f_flag
-                .store((FREAD | FWRITE | nflag) as u32, Ordering::SeqCst);
-
             // The wait, the connection locked and taken off the queue, the knote, the
             // listener unlocked, then soaccept(so, nam) under the connection's lock: the
             // C's sequence; the queue's reference becomes the file's.
@@ -537,6 +526,18 @@ pub fn doaccept(
                 break 'out_unlock Err(Errno::EINVAL);
             };
             let (so, error) = match ksocket::soaccept_take(head, w, nonblock, |so, ws| {
+                // Figure out whether the new socket should be non-blocking: the
+                // listener's flag as it is now, after the wait (the C reads it after
+                // soqremque; an fcntl during the wait counts).
+                let nflag = if flags & SOCK_NONBLOCK_INHERIT != 0 {
+                    headfp.flag() & FNONBLOCK
+                } else if flags & SOCK_NONBLOCK != 0 {
+                    FNONBLOCK
+                } else {
+                    0
+                };
+                fp.f_flag
+                    .store((FREAD | FWRITE | nflag) as u32, Ordering::SeqCst);
                 ksocket::soaccept(so, ws, mut_of(nam))
             }) {
                 Ok(r) => r,

@@ -2265,7 +2265,8 @@ impl RcvRecord {
         if self.past_last {
             return None;
         }
-        rcv_copy_front(&mut self.rec, M_COPYALL_FIRST, crate::net::mbuf::M_DONTWAIT)
+        let len = self.rec.first()?.m_len().get() as i32;
+        rcv_copy_front(&mut self.rec, len, crate::net::mbuf::M_DONTWAIT)
     }
 
     /// What the senders appended to the record while it was out moved to its end
@@ -2287,9 +2288,6 @@ impl RcvRecord {
         self.rec
     }
 }
-
-/// `rcv_copy_front`'s length for the whole first mbuf.
-const M_COPYALL_FIRST: i32 = -1;
 
 /// `soreceive(so, paddr, uio, mp0, controlp, flagsp, controllen)`: implement receive
 /// operations on a socket. We depend on the way that records are added to the sockbuf by
@@ -2487,19 +2485,20 @@ pub fn soreceive<G: ProcGlue>(
                     break;
                 };
                 g.sbfree(&cm);
+                let rights = pr.domain().rights();
                 if want_control {
-                    if pr.domain().has_externalize() {
+                    if let Some(rights) = rights {
                         drop(g);
-                        error = pr.domain().externalize(&mut cm, controllen, flags);
+                        error = rights.externalize(&mut cm, controllen, flags);
                         g = so.so_rcv.lock();
                     }
                     controls.push_tail(cm);
                 } else {
                     // Dispose of any SCM_RIGHTS message that went through the read path
                     // rather than recv.
-                    if pr.domain().has_dispose() {
+                    if let Some(rights) = rights {
                         drop(g);
-                        pr.domain().dispose(&mut cm);
+                        rights.dispose(&mut cm);
                         g = so.so_rcv.lock();
                     }
                     drop(cm);
@@ -2657,6 +2656,16 @@ pub fn soreceive<G: ProcGlue>(
                     soreceive_out(mp0, mpchain, controlp, controls);
                     return Ok(());
                 }
+                if flags & MSG_PEEK != 0 {
+                    // `m = so->so_rcv.sb_mb`: after the wait the C reads again from the
+                    // buffer's start, so a peek copies what it peeked once more.
+                    g.put_back_record(r.into_record());
+                    let Some(rec) = g.take_first_record() else {
+                        kpanic(format_args!("soreceive: the peeked record is gone"));
+                    };
+                    r = RcvRecord::new(rec);
+                    moff = 0;
+                }
             }
         }
 
@@ -2717,16 +2726,10 @@ fn soreceive_out(
 }
 
 /// `*mp = m_copym(m, 0, len, wait)` of the record's first mbuf (`soreceive`'s partial
-/// mbuf passed back as a chain; [`M_COPYALL_FIRST`], the whole mbuf, `MSG_PEEK`'s copy of an
-/// address or a control message), the mbuf left at the record's front.
+/// mbuf passed back as a chain; its whole length, `MSG_PEEK`'s copy of an address or a
+/// control message), the mbuf left at the record's front.
 fn rcv_copy_front(rec: &mut crate::net::sockbuf::SbRecord, len: i32, wait: i32) -> Option<MbufBox> {
     let mut m = rec.pop_first()?;
-    // M_COPYALL_FIRST: the whole mbuf, `m->m_len`.
-    let len = if len == M_COPYALL_FIRST {
-        m.m_len().get() as i32
-    } else {
-        len
-    };
     let c = crate::net::mbuf::m_copym(&mut m, 0, len, wait);
     rec.push_first(m);
     c
@@ -4289,6 +4292,12 @@ mod tests {
     fn two_accepters_take_one_connection_once() {
         // 200 rounds of two threads accepting the one connection queued, each round from
         // the same start: exactly one gets it, the other answers EWOULDBLOCK; nothing leaks.
+        // The accepters are serialised by the listener's lock, as the C's are, so the
+        // window between soaccept_take's peek under `cq` and its soqremque is not contended
+        // here, nor anywhere: everything that takes a socket off `so_q` holds the listener's
+        // lock (accept, and soclose of the listener); sofree takes partial connections off
+        // `so_q0` alone and leaves a complete one queued. The retry on `None` is the C's
+        // panic("accept") made safe, unreachable by the same argument.
         let _g = net_setup();
         let before = nout();
         let head = listener(5);
@@ -4326,12 +4335,36 @@ mod tests {
         let _g = net_setup();
         let before = nout();
         let head = listener(5);
+        // A value the main thread changes before the connection comes, read by the
+        // accepter's closure: what accept(2) reads there (the listener's FNONBLOCK, the C's
+        // read after soqremque) is read after the wait.
+        let changed = AtomicBool::new(false);
         for round in 0..50u64 {
+            changed.store(false, Ordering::Relaxed);
             let so = std::thread::scope(|sc| {
-                let t = sc.spawn(|| accept(&head, false));
+                let t = sc.spawn(|| {
+                    let mut nam =
+                        crate::net::mbuf::m_get(crate::net::mbuf::M_WAIT, 3).expect("an mbuf");
+                    soaccept_take(&head, solock_shared(&head), false, |so, w| {
+                        let seen = changed.load(Ordering::Relaxed);
+                        let _ = soaccept(so, w, &mut nam);
+                        seen
+                    })
+                });
                 std::thread::sleep(std::time::Duration::from_millis(round % 3));
+                changed.store(true, Ordering::Relaxed);
                 let c = connection(&head);
-                let so = t.join().expect("the accepter").expect("the connection");
+                // Bounded: a lost wakeup fails the test instead of hanging the binary.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while !t.is_finished() {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "round {round}: no wakeup"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                let (so, seen) = t.join().expect("the accepter").expect("the connection");
+                assert!(seen, "round {round}: the closure ran before the wait ended");
                 assert!(PoolArc::ptr_eq(&so, &c), "round {round}");
                 so
             });
@@ -4355,8 +4388,14 @@ mod tests {
             let head = listener(5);
             let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
             sounlock_detached(&c);
+            // Both sides start together.
+            let start = std::sync::Barrier::new(2);
             std::thread::scope(|sc| {
-                let t = sc.spawn(|| soisconnected(&c));
+                let t = sc.spawn(|| {
+                    start.wait();
+                    soisconnected(&c);
+                });
+                start.wait();
                 soclose(&head, 0).expect("close");
                 t.join().expect("the promoter");
             });
@@ -4366,6 +4405,87 @@ mod tests {
             drop(head);
             assert_eq!(nout(), before, "round {round}");
         }
+    }
+
+    #[test]
+    fn a_waitall_peek_reads_again_from_the_start_after_its_wait() {
+        // MSG_PEEK | MSG_WAITALL of more than sb_hiwat bytes (so soreceive does not wait
+        // first) on a buffer holding "A": the peek copies "A" and waits; "B" comes; the C
+        // reads again from sb_mb, the buffer's start, so the read goes on with "AB" and waits
+        // again; the receive side shut wakes it, it reads "AB" from the start once more and
+        // stops: "AABAB", a short count (uipc_socket.c's sbwait under MSG_WAITALL).
+        use crate::uio::{Iovec, Uio, UioRw, UioSeg};
+        use hal::sys::socket::{MSG_PEEK, MSG_WAITALL};
+        let _g = net_setup();
+        let so = socket(0);
+        so.st_set(SS_ISCONNECTED);
+        let len = so.so_rcv.hiwat() as usize + 1;
+        // socreate's untimed waits (the test socket is soalloc's, its timeouts 0).
+        so.so_rcv.lock().set_timeo_nsecs(INFSLP);
+        let byte = |c: u8| {
+            let mut m = crate::net::mbuf::m_get(crate::net::mbuf::M_WAIT, 1).expect("an mbuf");
+            m.m_len().set(1);
+            m.data_mut().expect("writable")[0] = c;
+            m
+        };
+        so.so_rcv.lock().sbappendstream(byte(b'A'));
+        let got = std::thread::scope(|sc| {
+            let t = sc.spawn(|| {
+                crate::testutil::set_copy_kernel(true);
+                let mut buf = std::vec![0u8; len];
+                let mut iov = [Iovec {
+                    iov_base: buf.as_mut_ptr().cast(),
+                    iov_len: len,
+                }];
+                let mut u = Uio::<Procs> {
+                    uio_resid: len,
+                    uio_iov: &mut iov,
+                    uio_offset: 0,
+                    uio_segflg: UioSeg::UIO_SYSSPACE,
+                    uio_rw: UioRw::UIO_READ,
+                    uio_procp: None,
+                };
+                let mut fl = MSG_PEEK | MSG_WAITALL;
+                let r = soreceive(&so, None, &mut u, None, None, Some(&mut fl), 0);
+                (r, buf, u.uio_resid)
+            });
+            // The reader asleep in sbwait (SB_WAIT set under the buffer's mutex before it
+            // sleeps), bounded.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !so.so_rcv.has_flags(crate::net::sockbuf::SB_WAIT) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the reader never waited"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            so.so_rcv.lock().sbappendstream(byte(b'B'));
+            sorwakeup(&so);
+            // Its second wait (after "AB"), then the receive side shut: a short count.
+            while !(so.so_rcv.has_flags(crate::net::sockbuf::SB_WAIT) && so.so_rcv.cc() == 2)
+                && !t.is_finished()
+            {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the reader never waited again"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            socantrcvmore(&so);
+            while !t.is_finished() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the reader never woke"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            t.join().expect("the reader")
+        });
+        assert_eq!(got.0, Ok(()));
+        assert_eq!(&got.1[..5], b"AABAB");
+        assert_eq!(got.2, len - 5);
+        // A peek: the buffer still holds both bytes.
+        assert_eq!(so.so_rcv.cc(), 2);
     }
 
     #[test]
