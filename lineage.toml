@@ -7438,6 +7438,27 @@ status = "adapted"
 adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
+rust = "sys/hal/sys/socket.rs"
+crate = "hal"
+lz = ["sys/sys/socket.rs"]
+status = "redesigned"
+notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; msghdr, mmsghdr and the pointer CMSG_* stay bsd's until N6.2b, struct splice is kernel::net::socket's (its timeval is kernel::clock's)"
+
+[[module]]
+rust = "sys/hal/sys/sockio.rs"
+crate = "hal"
+lz = ["sys/sys/sockio.rs"]
+status = "redesigned"
+notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; the interface commands are sized by net/if.h's structures and stay in bsd's sys/sys/sockio.rs until N6.3a"
+
+[[module]]
+rust = "sys/hal/sys/un.rs"
+crate = "hal"
+lz = ["sys/sys/un.rs"]
+status = "redesigned"
+notes = "N6.2a: un.h moved into hal with the UNIX domain's redesign; struct sockaddr_un AbiPod through hal::abi_pod!"
+
+[[module]]
 rust = "sys/hal/sys/mbuf.rs"
 crate = "hal"
 lz = ["sys/sys/mbuf.rs"]
