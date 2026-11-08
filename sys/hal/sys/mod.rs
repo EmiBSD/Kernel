@@ -67,6 +67,10 @@ pub mod siginfo;
 #[forbid(unsafe_code)]
 pub mod signal;
 #[forbid(unsafe_code)]
+pub mod socket;
+#[forbid(unsafe_code)]
+pub mod sockio;
+#[forbid(unsafe_code)]
 pub mod softintr;
 #[forbid(unsafe_code)]
 pub mod stat;
@@ -80,6 +84,8 @@ pub mod syslimits;
 pub mod timetc;
 #[forbid(unsafe_code)]
 pub mod types;
+#[forbid(unsafe_code)]
+pub mod un;
 #[forbid(unsafe_code)]
 pub mod unistd;
 #[forbid(unsafe_code)]

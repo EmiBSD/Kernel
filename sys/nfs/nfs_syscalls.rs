@@ -102,7 +102,6 @@ use crate::sys::types::Register;
 #[cfg(feature = "nfsserver")]
 use crate::kern::kern_descrip::closef;
 #[cfg(feature = "nfsserver")]
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 #[cfg(feature = "nfsserver")]
 use crate::kern::kern_malloc::{free, malloc};
 #[cfg(feature = "nfsserver")]
@@ -379,7 +378,7 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
     let mut tslp: Option<&'static NfssvcSock> = None;
 
     // Add it to the list, as required.
-    if i32::from(so.so_proto.pr_protocol) == IPPROTO_UDP {
+    if i32::from(so.proto().protocol()) == IPPROTO_UDP {
         let udp = nfs_udpsock();
         if udp.ns_flag.get() & SLP_VALID != 0 {
             m_freem(mynam);
@@ -388,7 +387,7 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
         tslp = Some(udp);
     }
     // Allow only IPv4 UDP and TCP sockets.
-    let sotype = so.so_type.get();
+    let sotype = so.so_type();
     if (sotype != SOCK_STREAM && sotype != SOCK_DGRAM) || so.dom_family() != i32::from(AF_INET) {
         m_freem(mynam);
         return Err(Errno::EINVAL);
@@ -418,7 +417,7 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
         let _ = sosetopt(so, SOL_SOCKET, SO_KEEPALIVE, Some(m));
         m_freem(Some(m));
     }
-    if so.dom_family() == i32::from(AF_INET) && i32::from(so.so_proto.pr_protocol) == IPPROTO_TCP {
+    if so.dom_family() == i32::from(AF_INET) && i32::from(so.proto().protocol()) == IPPROTO_TCP {
         let Some(m) = m_get(M_WAIT, MT_SOOPTS) else {
             m_freem(mynam);
             return Err(Errno::ENOBUFS);
@@ -428,18 +427,14 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
         m_freem(Some(m));
     }
     solock_shared(so);
-    mtx_enter(&so.so_rcv.sb_mtx);
-    so.so_rcv
-        .sb_flags
-        .set(so.so_rcv.sb_flags.get() & !SB_NOINTR);
-    so.so_rcv.sb_timeo_nsecs.set(INFSLP);
-    mtx_leave(&so.so_rcv.sb_mtx);
-    mtx_enter(&so.so_snd.sb_mtx);
-    so.so_snd
-        .sb_flags
-        .set(so.so_snd.sb_flags.get() & !SB_NOINTR);
-    so.so_snd.sb_timeo_nsecs.set(INFSLP);
-    mtx_leave(&so.so_snd.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
+    g_rcv.clear_flags(SB_NOINTR);
+    g_rcv.set_timeo_nsecs(INFSLP);
+    drop(g_rcv);
+    let mut g_snd = so.so_snd.lock();
+    g_snd.clear_flags(SB_NOINTR);
+    g_snd.set_timeo_nsecs(INFSLP);
+    drop(g_snd);
     sounlock_shared(so);
 
     let slp = match tslp {
@@ -458,9 +453,9 @@ pub fn nfssvc_addsock(fp: &FileRef, mynam: Option<&'static Mbuf>) -> Result<(), 
     slp.ns_so.set(Some(so));
     slp.ns_nam.set(mynam);
     slp.ns_fp.set(FileSlot::with(Some(fref(fp))));
-    so.so_upcallarg
-        .set(core::ptr::from_ref(slp).cast_mut().cast::<c_void>());
-    so.so_upcall.set(Some(nfsrv_rcv));
+    // so_upcallarg = slp, so_upcall = nfsrv_rcv (the function the glue registered,
+    // nfs_socket's nfsrv_rcv_upcall): the address exposed for the upcall to take back.
+    so.set_upcall_legacy(Some(core::ptr::from_ref(slp).expose_provenance()));
     slp.ns_flag.set(SLP_VALID | SLP_NEEDQ);
     nfsrv_wakenfsd(slp);
     Ok(())
@@ -598,8 +593,8 @@ fn nfssvc_nfsd(nfsd: &'static Nfsd) -> Result<(), Errno> {
         let Some(so) = slp.ns_so.get() else {
             panic(format_args!("nfssvc_nfsd: a valid socket without a socket"));
         };
-        let sotype = so.so_type.get();
-        let solockp = if so.so_proto.pr_flags & PR_CONNREQUIRED != 0 {
+        let sotype = so.so_type();
+        let solockp = if so.proto().flags() & PR_CONNREQUIRED != 0 {
             Some(&slp.ns_solock)
         } else {
             None
@@ -775,7 +770,7 @@ pub fn nfsrv_zapsock(slp: &NfssvcSock) {
     // FREF(fp); slp->ns_fp = NULL: the slot's reference, which `closef` gives back.
     if let Some(fp) = slp.ns_fp.take().take() {
         if let Some(so) = slp.ns_so.get() {
-            so.so_upcall.set(None);
+            so.set_upcall_legacy(None);
             let _ = soshutdown(so, SHUT_RDWR);
         }
         let _ = closef(fp, None::<&Proc>);

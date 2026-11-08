@@ -477,11 +477,11 @@ pub fn rip6_sbappend(inp: &Inpcb, m: &'static Mbuf, hlen: i32, rip6src: &Sockadd
     // strip intermediate headers
     m_adj(m, hlen);
 
-    mtx_enter(&so.so_rcv.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
     if !so.so_rcv.has_state(SS_CANTRCVMORE) {
-        ret = sbappendaddr(&so.so_rcv, sin6_bytes(rip6src), Some(m), opts);
+        ret = sbappendaddr(&mut g_rcv, sin6_bytes(rip6src), Some(m), opts);
     }
-    mtx_leave(&so.so_rcv.sb_mtx);
+    drop(g_rcv);
 
     if !ret {
         m_freem(m);
@@ -599,7 +599,7 @@ pub fn rip6_output(
     let inp = inpcb_of(so);
     let plen = m.m_pkthdr().len.get() as u32;
     let mut opt = Ip6Pktopts::default();
-    let proto = i32::from(so.so_proto.pr_protocol);
+    let proto = i32::from(so.proto().protocol());
     let mut m: Option<&'static Mbuf> = Some(m);
 
     let priv_ = so.has_state(SS_PRIV);
@@ -771,7 +771,7 @@ pub fn rip6_ctloutput(
 /// `rip6_attach`: a control block for a privileged raw IPv6 socket of protocol `proto`,
 /// without checksum offset and with an ICMPv6 filter that passes everything.
 pub fn rip6_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Errno> {
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         panic(format_args!("rip6_attach"));
     }
     if !so.has_state(SS_PRIV) {
@@ -1048,13 +1048,13 @@ mod tests {
 
     /// The datagram of the first record of `so`'s receive buffer, and the source address.
     fn received(so: &Socket) -> (SockaddrIn6, std::vec::Vec<u8>) {
-        let rec = so.so_rcv.sb_mb.get().expect("a record");
-        assert_eq!(i32::from(rec.m_type().get()), MT_SONAME);
+        let g = so.so_rcv.lock();
+        let mut rec = g.data().first_record();
+        let addr = rec.next().expect("a record");
+        assert_eq!(i32::from(addr.m_type().get()), MT_SONAME);
         // SAFETY: an `MT_SONAME` mbuf of a raw inet6 socket holds a `sockaddr_in6`.
-        let from = unsafe { mtod::<SockaddrIn6>(rec).read_unaligned() };
-        let data = rec.m_next().get().expect("the datagram");
-        let mut got = vec![0u8; data.m_pkthdr().len.get() as usize];
-        m_copydata(data, 0, &mut got);
+        let from = unsafe { mtod::<SockaddrIn6>(addr).read_unaligned() };
+        let got = rec.flat_map(|m| m.data().iter().copied()).collect();
         (from, got)
     }
 
@@ -1073,7 +1073,7 @@ mod tests {
         let inp = inpcb_of(ping);
         assert_eq!(i32::from(inp.inp_ipv6.get().ip6_nxt), IPPROTO_ICMPV6);
         assert_eq!(inp.inp_cksum6.get(), -1);
-        assert_eq!(ping.so_rcv.sb_hiwat.get(), RIP6_RECVSPACE);
+        assert_eq!(ping.so_rcv.hiwat(), RIP6_RECVSPACE);
         let mut f = Icmp6Filter::default();
         f.setblockall();
         f.setpass(ICMP6_ECHO_REPLY);
@@ -1103,7 +1103,7 @@ mod tests {
             8,
         ];
         deliver(packet(IPPROTO_ICMPV6 as u8, &reply), IPPROTO_ICMPV6);
-        assert_eq!(other.so_rcv.sb_cc.get(), 0);
+        assert_eq!(other.so_rcv.cc(), 0);
         let (from, got) = received(ping);
         assert_eq!(got, reply);
         assert_eq!(from.sin6_family, AF_INET6);
@@ -1112,18 +1112,18 @@ mod tests {
 
         // An echo request: to the other socket only.
         let request = [ICMP6_ECHO_REQUEST, 0, 0, 0, 0, 9, 0, 1];
-        let cc = ping.so_rcv.sb_cc.get();
+        let cc = ping.so_rcv.cc();
         deliver(packet(IPPROTO_ICMPV6 as u8, &request), IPPROTO_ICMPV6);
-        assert_eq!(ping.so_rcv.sb_cc.get(), cc);
+        assert_eq!(ping.so_rcv.cc(), cc);
         assert_eq!(received(other).1, request);
 
         // A socket bound to another address does not see it; ICMPv6 is not counted as raw
         // input.
         inpcb_of(other).inp_laddr6.set(a6("fd00:77::9"));
         let before = rip6stat(Rip6statCounters::Rip6sIpackets);
-        let cc = other.so_rcv.sb_cc.get();
+        let cc = other.so_rcv.cc();
         deliver(packet(IPPROTO_ICMPV6 as u8, &request), IPPROTO_ICMPV6);
-        assert_eq!(other.so_rcv.sb_cc.get(), cc);
+        assert_eq!(other.so_rcv.cc(), cc);
         assert_eq!(rip6stat(Rip6statCounters::Rip6sIpackets), before);
 
         soclose(ping, 0).expect("close");
@@ -1184,12 +1184,12 @@ mod tests {
         assert_eq!(rip6stat(Rip6statCounters::Rip6sBadsum), bad);
 
         // A wrong checksum, and a payload too short for the offset, are not.
-        let cc = so.so_rcv.sb_cc.get();
+        let cc = so.so_rcv.cc();
         let mut wrong = sent.clone();
         wrong[8] ^= 0xff;
         deliver(packet(89, &wrong), 89);
         deliver(packet(89, &[3, 1, 0]), 89);
-        assert_eq!(so.so_rcv.sb_cc.get(), cc);
+        assert_eq!(so.so_rcv.cc(), cc);
         assert_eq!(rip6stat(Rip6statCounters::Rip6sBadsum), bad + 2);
         assert_eq!(rip6stat(Rip6statCounters::Rip6sIsum), isum + 3);
 
@@ -1198,7 +1198,7 @@ mod tests {
         rip6_ctloutput(PRCO_SETOPT, so, IPPROTO_IPV6, IPV6_CHECKSUM, Some(m)).expect("setsockopt");
         m_freem(m);
         deliver(packet(89, &wrong), 89);
-        assert!(so.so_rcv.sb_cc.get() > cc);
+        assert!(so.so_rcv.cc() > cc);
         assert_eq!(rip6stat(Rip6statCounters::Rip6sIsum), isum + 3);
 
         soclose(so, 0).expect("close");

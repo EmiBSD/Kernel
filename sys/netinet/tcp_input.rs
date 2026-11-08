@@ -741,9 +741,9 @@ fn tcp_flush_queue(tp: &'static Tcpcb) -> u8 {
         if so.so_rcv.has_state(SS_CANTRCVMORE) {
             m_freem(e.tcpqe_m.get());
         } else if let Some(m) = e.tcpqe_m.get() {
-            mtx_enter(&so.so_rcv.sb_mtx);
-            sbappendstream(&so.so_rcv, m);
-            mtx_leave(&so.so_rcv.sb_mtx);
+            let mut g_rcv = so.so_rcv.lock();
+            sbappendstream(&mut g_rcv, m);
+            drop(g_rcv);
         }
         tcpqe_put(e);
         q = nq;
@@ -1356,7 +1356,7 @@ fn tcp_input_body(
 
                         // SYN looks ok; create compressed TCP state for it.
                         let optp = have_optp.then_some(&optbuf[..optlen]);
-                        if so.so_qlen.get() > so.so_qlimit.get()
+                        if so.qlen() > so.qlimit()
                             || !syn_cache_add(
                                 &src, &dst, &st.th, iphlen, so, m, optp, &mut opti, reuse, now,
                                 do_ecn,
@@ -1467,9 +1467,9 @@ fn tcp_input_body(
                     );
                     tp.t_rcvacktime.set(now);
 
-                    mtx_enter(&so.so_snd.sb_mtx);
-                    sbdrop(&so.so_snd, acked);
-                    mtx_leave(&so.so_snd.sb_mtx);
+                    let mut g_snd = so.so_snd.lock();
+                    sbdrop(&mut g_snd, acked);
+                    drop(g_snd);
 
                     // If we had a pending ICMP message that refers to data that have just
                     // been acknowledged, disregard the recorded ICMP message.
@@ -1508,7 +1508,7 @@ fn tcp_input_body(
                     if sb_notify(&so.so_snd) {
                         sowwakeup(so);
                     }
-                    if so.so_snd.sb_cc.get() != 0 || tp.has_flags(TF_NEEDOUTPUT) {
+                    if so.so_snd.cc() != 0 || tp.has_flags(TF_NEEDOUTPUT) {
                         let _ = tcp_output(tp);
                     }
                     return Done;
@@ -1556,9 +1556,9 @@ fn tcp_input_body(
                             .set(tp.rfbuf_cnt.get().wrapping_add(st.tlen as u32));
                     }
                     m_adj(m, iphlen + off);
-                    mtx_enter(&so.so_rcv.sb_mtx);
-                    sbappendstream(&so.so_rcv, m);
-                    mtx_leave(&so.so_rcv.sb_mtx);
+                    let mut g_rcv = so.so_rcv.lock();
+                    sbappendstream(&mut g_rcv, m);
+                    drop(g_rcv);
                 }
                 st.m = None;
                 sorwakeup(so);
@@ -2179,21 +2179,21 @@ fn tcp_input_body(
                     ));
                 }
             }
-            let sb_cc = so.so_snd.sb_cc.get();
+            let sb_cc = so.so_snd.cc();
             let ourfinisacked = if acked as u64 > sb_cc {
                 if tp.snd_wnd.get() > sb_cc {
                     tp.snd_wnd.set(tp.snd_wnd.get() - sb_cc);
                 } else {
                     tp.snd_wnd.set(0);
                 }
-                mtx_enter(&so.so_snd.sb_mtx);
-                sbdrop(&so.so_snd, so.so_snd.sb_cc.get() as i32);
-                mtx_leave(&so.so_snd.sb_mtx);
+                let mut g_snd = so.so_snd.lock();
+                sbdrop(&mut g_snd, so.so_snd.cc() as i32);
+                drop(g_snd);
                 true
             } else {
-                mtx_enter(&so.so_snd.sb_mtx);
-                sbdrop(&so.so_snd, acked);
-                mtx_leave(&so.so_snd.sb_mtx);
+                let mut g_snd = so.so_snd.lock();
+                sbdrop(&mut g_snd, acked);
+                drop(g_snd);
                 if tp.snd_wnd.get() > acked as u64 {
                     tp.snd_wnd.set(tp.snd_wnd.get() - acked as u64);
                 } else {
@@ -2305,9 +2305,9 @@ fn tcp_input_body(
             // This is a kludge, but if we receive and accept random urgent pointers, we'll
             // crash in soreceive. It's hard to imagine someone actually wanting to send this
             // much urgent data.
-            mtx_enter(&so.so_rcv.sb_mtx);
-            let urgent = u64::from(st.th.th_urp) + so.so_rcv.sb_cc.get();
-            mtx_leave(&so.so_rcv.sb_mtx);
+            let g_rcv = so.so_rcv.lock();
+            let urgent = u64::from(st.th.th_urp) + so.so_rcv.cc();
+            drop(g_rcv);
 
             if urgent > SB_MAX_VAR.load(Ordering::Relaxed) {
                 st.th.th_urp = 0; // XXX
@@ -2326,18 +2326,17 @@ fn tcp_input_body(
             let urp_seq = st.th.th_seq.wrapping_add(u32::from(st.th.th_urp));
             if seq_gt(urp_seq, tp.rcv_up.get()) {
                 tp.rcv_up.set(urp_seq);
-                mtx_enter(&so.so_rcv.sb_mtx);
-                so.so_oobmark.set(
+                let mut g_rcv = so.so_rcv.lock();
+                so.set_oobmark(
                     so.so_rcv
-                        .sb_cc
-                        .get()
+                        .cc()
                         .wrapping_add(u64::from(tp.rcv_up.get().wrapping_sub(tp.rcv_nxt.get())))
                         .wrapping_sub(1),
                 );
-                if so.so_oobmark.get() == 0 {
-                    so.so_rcv.set_state(SS_RCVATMARK);
+                if so.oobmark() == 0 {
+                    g_rcv.set_state(SS_RCVATMARK);
                 }
-                mtx_leave(&so.so_rcv.sb_mtx);
+                drop(g_rcv);
                 sohasoutofband(so);
                 tp.t_oobflags
                     .set(tp.t_oobflags.get() & !(TCPOOB_HAVEDATA | TCPOOB_HADDATA));
@@ -2383,9 +2382,9 @@ fn tcp_input_body(
                 m_freem(m);
             } else {
                 m_adj(m, hdroptlen);
-                mtx_enter(&so.so_rcv.sb_mtx);
-                sbappendstream(&so.so_rcv, m);
-                mtx_leave(&so.so_rcv.sb_mtx);
+                let mut g_rcv = so.so_rcv.lock();
+                sbappendstream(&mut g_rcv, m);
+                drop(g_rcv);
             }
             sorwakeup(so);
         } else {
@@ -3239,10 +3238,10 @@ pub fn tcp_mss_update(tp: &'static Tcpcb) {
         return;
     }
 
-    mtx_enter(&so.so_snd.sb_mtx);
-    let mut bufsize = so.so_snd.sb_hiwat.get();
+    let mut g_snd = so.so_snd.lock();
+    let mut bufsize = so.so_snd.hiwat();
     if bufsize < mss {
-        mtx_leave(&so.so_snd.sb_mtx);
+        drop(g_snd);
         mss = bufsize;
         // Update t_maxseg and t_maxopd
         tcp_mss(tp, mss as i32);
@@ -3251,20 +3250,20 @@ pub fn tcp_mss_update(tp: &'static Tcpcb) {
         if bufsize > sb_max {
             bufsize = sb_max;
         }
-        let _ = sbreserve(&so.so_snd, bufsize);
-        mtx_leave(&so.so_snd.sb_mtx);
+        let _ = sbreserve(&mut g_snd, bufsize);
+        drop(g_snd);
     }
 
-    mtx_enter(&so.so_rcv.sb_mtx);
-    let mut bufsize = so.so_rcv.sb_hiwat.get();
+    let mut g_rcv = so.so_rcv.lock();
+    let mut bufsize = so.so_rcv.hiwat();
     if bufsize > mss {
         bufsize = bufsize.div_ceil(mss) * mss;
         if bufsize > sb_max {
             bufsize = sb_max;
         }
-        let _ = sbreserve(&so.so_rcv, bufsize);
+        let _ = sbreserve(&mut g_rcv, bufsize);
     }
-    mtx_leave(&so.so_rcv.sb_mtx);
+    drop(g_rcv);
 }
 
 /// `tcp_newreno_partialack`: when a partial ack arrives, force the retransmission of the next
@@ -5361,9 +5360,9 @@ mod tests {
         assert_eq!(tcp_reass(tp, &mut h, segment(10, 1), &mut len), Ok(TH_FIN));
         assert_eq!(tp.rcv_nxt.get(), 1040);
         assert!(tp.t_segq.is_empty());
-        assert_eq!(so.so_rcv.sb_cc.get(), 40);
+        assert_eq!(so.so_rcv.cc(), 40);
         let mut data = [0u8; 40];
-        m_copydata(so.so_rcv.sb_mb.get().expect("data"), 0, &mut data);
+        so.so_rcv.lock().copydata_first(0, &mut data);
         assert_eq!(data[..10], [1; 10]);
         assert_eq!(data[10..20], [2; 10]);
         assert_eq!(data[20..35], [3; 15]);
@@ -5397,7 +5396,7 @@ mod tests {
         tp.t_state.set(TCPS_ESTABLISHED);
         assert_eq!(tcp_flush_queue(tp), 0);
         assert_eq!(tp.rcv_nxt.get(), 508);
-        assert_eq!(so.so_rcv.sb_cc.get(), 8);
+        assert_eq!(so.so_rcv.cc(), 8);
 
         sounlock(so);
         soclose(so, 0).expect("close");

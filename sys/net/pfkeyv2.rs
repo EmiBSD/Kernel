@@ -1149,7 +1149,7 @@ static NPROMISC: AtomicI32 = AtomicI32::new(0);
 fn sotokeycb(so: &Socket) -> Option<&'static Pkpcb> {
     // SAFETY: a pfkey socket's `so_pcb` is NULL or the `pkpcb_pool` item `pfkeyv2_attach`
     // wrote, which stays allocated until `pfkeyv2_detach` clears the pointer.
-    unsafe { so.so_pcb.get().cast::<Pkpcb>().as_ref() }
+    unsafe { crate::sys::socketvar::so_pcb(so).cast::<Pkpcb>().as_ref() }
 }
 
 /// `keylock(kp)`.
@@ -1279,9 +1279,9 @@ pub fn pfkeyv2_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(),
     };
     // SAFETY: as above.
     let kp: &'static Pkpcb = unsafe { &*raw };
-    so.so_pcb.set(raw.cast());
+    crate::sys::socketvar::set_so_pcb(so, raw.cast());
 
-    so.so_options.set(so.so_options.get() | SO_USELOOPBACK);
+    so.set_options_legacy(SO_USELOOPBACK, true);
     soisconnected(so);
 
     rw_enter_write(&PKPTABLE.pkp_lk);
@@ -1318,7 +1318,7 @@ pub fn pfkeyv2_detach(so: &'static Socket) -> Result<(), Errno> {
     unsafe { PKPTABLE.pkp_list.remove(kp) };
     rw_exit_write(&PKPTABLE.pkp_lk);
 
-    so.so_pcb.set(ptr::null_mut());
+    crate::sys::socketvar::set_so_pcb(so, ptr::null_mut());
     kassert!(!so.has_state(SS_NOFDREF));
     pool_put(&PKPCB_POOL, NonNull::from(kp).cast());
 
@@ -1428,9 +1428,9 @@ fn pfkey_sendup(kp: &Pkpcb, m0: &'static Mbuf, more: bool) -> Result<(), Errno> 
         m0
     };
 
-    mtx_enter(&so.so_rcv.sb_mtx);
-    let ret = sbappendaddr(&so.so_rcv, &PFKEY_ADDR, Some(m), None);
-    mtx_leave(&so.so_rcv.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
+    let ret = sbappendaddr(&mut g_rcv, &PFKEY_ADDR, Some(m), None);
+    drop(g_rcv);
 
     if !ret {
         m_freem(m);
@@ -3881,6 +3881,7 @@ mod tests {
         crate::net::if_::IFG_HEAD.0.init();
         procinit();
         soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
         rn_test_reset();
         spd_reset();
         ipsp_reset();

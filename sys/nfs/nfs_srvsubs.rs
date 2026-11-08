@@ -426,7 +426,7 @@ pub fn nfsrv_fhtovp(
         let stream = slp
             .ns_so
             .get()
-            .is_some_and(|so| so.so_type.get() == SOCK_STREAM);
+            .is_some_and(|so| so.so_type() == SOCK_STREAM);
         if saddr.sin_family == AF_INET
             && (i32::from(port) >= IPPORT_RESERVED || (stream && port == 20))
         {

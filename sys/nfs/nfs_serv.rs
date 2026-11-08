@@ -3302,11 +3302,7 @@ pub fn nfsrv_fsinfo(
 
     // XXX
     // There should be file system VFS OP(s) to get this information. For now, assume ufs.
-    let pref = if slp
-        .ns_so
-        .get()
-        .is_some_and(|so| so.so_type.get() == SOCK_DGRAM)
-    {
+    let pref = if slp.ns_so.get().is_some_and(|so| so.so_type() == SOCK_DGRAM) {
         NFS_MAXDGRAMDATA
     } else {
         NFS_MAXDATA

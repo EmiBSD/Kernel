@@ -343,8 +343,7 @@ mod tests {
     fn pcb6() -> &'static Inpcb {
         let t: &'static Inpcbtable = Box::leak(Box::new(Inpcbtable::new()));
         in_pcbinit(t, 1);
-        let so = soalloc(&INET6SW[1], M_WAIT).expect("socket");
-        so.so_type.set(SOCK_DGRAM);
+        let so = soalloc(&INET6SW[1], SOCK_DGRAM, M_WAIT).expect("socket");
         in_pcballoc(so, t, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         inp.set_flags(crate::netinet::in_pcb::INP_IPV6);
@@ -358,7 +357,7 @@ mod tests {
         let so = inp.socket();
         let _ = soref(Some(so));
         solock(so);
-        so.set_state(SS_NOFDREF);
+        so.set_state_legacy(SS_NOFDREF);
         in_pcbdetach(inp);
         sounlock(so);
         crate::kern::uipc_socket::sorele(so);

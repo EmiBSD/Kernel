@@ -683,6 +683,106 @@ impl RawRwlock {
     }
 }
 
+/// A [`RawRwlock`] whose write holding may also be **detached**: taken by one function and
+/// given back by another, as legacy C code takes a socket's `so_lock` (`in_pcbsolock` ..
+/// `in_pcbsounlock`, the new socket `sonewconn` returns locked). A detached holding gives no
+/// witness, so no [`Guarded`] cell keyed to the lock opens through it: it only excludes the
+/// witnesses' holders and the other detached ones, as the lock itself does. The witnesses
+/// are the inner lock's ([`DetachableRwlock::lock`]).
+///
+/// Invariant: `detached` is 0, or the writer word of the process that holds the lock by a
+/// detached holding (set right after that process took it, cleared before it lets it go),
+/// so it is never another process's word while the lock is held, and a witness's holding is
+/// never counted as detached.
+pub struct DetachableRwlock {
+    lock: RawRwlock,
+    detached: AtomicUsize,
+}
+
+impl DetachableRwlock {
+    /// A free lock whose sleeps say `name`.
+    pub const fn new(name: &'static str) -> Self {
+        Self {
+            lock: RawRwlock::new(name),
+            detached: AtomicUsize::new(0),
+        }
+    }
+
+    /// The lock, for its witnesses and the cells keyed to it.
+    #[inline]
+    pub fn lock(&self) -> &RawRwlock {
+        &self.lock
+    }
+
+    /// `rw_enter_write(9)`, detached: waits (uninterruptibly) for the lock and takes it for
+    /// writing until [`DetachableRwlock::exit_write_detached`].
+    pub fn enter_write_detached(&self) {
+        let me = self.lock.write_wait();
+        self.detached.store(me, Ordering::Release);
+    }
+
+    /// `rw_exit_write(9)` of the running process's detached holding. `panic(9)` when it has
+    /// none (not held, held by another, or held through a witness).
+    pub fn exit_write_detached(&self) {
+        let me = rw_self();
+        if self
+            .detached
+            .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.lock.panic(format_args!(
+                "exit write when not held detached by this process"
+            ));
+        }
+        self.lock.exit_write(me);
+    }
+
+    /// The running process holds the lock by a detached holding.
+    #[inline]
+    pub fn held_detached(&self) -> bool {
+        self.detached.load(Ordering::Acquire) == rw_self() && self.lock.status() == RW_WRITE
+    }
+
+    /// The witness `w` of this lock given up for a detached holding: the lock stays held,
+    /// by the running process, until [`DetachableRwlock::exit_write_detached`] (`sonewconn`'s
+    /// socket, returned locked to a caller that unlocks it elsewhere). `panic(9)` for a
+    /// witness of another lock.
+    pub fn detach(&self, w: WriteWitness<'_>) {
+        if !ptr::eq(w.lock, ptr::from_ref(&self.lock)) {
+            self.lock
+                .panic(format_args!("detach: a witness of another lock"));
+        }
+        let w = ManuallyDrop::new(w);
+        self.detached.store(w.me, Ordering::Release);
+    }
+
+    /// `rwsleep_nsec(ident, lock, prio, wmesg, nsecs)` of the running process's detached
+    /// holding: queued on `ident`, released, asleep, then taken again detached before the
+    /// sleep's result is returned. `panic(9)` without such a holding.
+    pub fn sleep_detached<I: ?Sized>(
+        &self,
+        ident: *const I,
+        prio: i32,
+        wmesg: &'static str,
+        nsecs: u64,
+    ) -> Result<(), Errno> {
+        let me = rw_self();
+        if self
+            .detached
+            .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.lock
+                .panic(format_args!("sleep when not held detached by this process"));
+        }
+        let r = self
+            .lock
+            .sleep_released(ident, prio, wmesg, nsecs, || self.lock.exit_write(me));
+        self.enter_write_detached();
+        r
+    }
+}
+
 /// A reader-writer lock that owns the `T` it protects (`struct rwlock` with its data).
 ///
 /// Invariant: `data` is reached only through the guards; a [`WriteGuard`] exists only while
@@ -2907,6 +3007,41 @@ mod tests {
             });
         });
         l.exit();
+    }
+    #[test]
+    fn a_detached_holding_excludes_witnesses_and_ends_where_it_is_released() {
+        let l = DetachableRwlock::new("split");
+        assert!(!l.held_detached());
+        l.enter_write_detached();
+        assert!(l.held_detached());
+        assert_eq!(l.lock().status(), RW_WRITE);
+        std::thread::scope(|s| {
+            s.spawn(|| assert!(l.lock().try_write().is_none()));
+        });
+        l.exit_write_detached();
+        assert!(!l.held_detached());
+        assert_eq!(l.lock().status(), 0);
+        let w = l.lock().write();
+        drop(w);
+    }
+
+    #[test]
+    fn a_witness_detached_is_released_by_the_detached_exit() {
+        let l = DetachableRwlock::new("split");
+        let w = l.lock().write();
+        l.detach(w);
+        assert!(l.held_detached());
+        l.exit_write_detached();
+        assert_eq!(l.lock().status(), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not held detached")]
+    fn a_witness_holding_is_not_released_as_detached() {
+        let l = DetachableRwlock::new("split");
+        let w = l.lock().write();
+        let _w = std::mem::ManuallyDrop::new(w);
+        l.exit_write_detached();
     }
 }
 /* </TESTS> */

@@ -153,7 +153,7 @@ use crate::kern::subr_prf::{SPLASSERT_CTL, panic};
 use crate::kern::sys_socket::fp_socket;
 use crate::kern::uipc_mbuf::{mbstat_read, nmbclust_update};
 use crate::kern::uipc_socket::{somaxconn, sominconn};
-use crate::kern::uipc_socket2::{soassertlocked, solock_shared, sounlock_shared};
+use crate::kern::uipc_socket2::soassertlocked;
 use crate::kern::vfs_vops::VOP_GETATTR;
 use crate::machine::Machine;
 use crate::machine::copy::{copyin, copyout};
@@ -177,10 +177,8 @@ use crate::sys::file::{DTYPE_KQUEUE, DTYPE_PIPE, DTYPE_SOCKET, DTYPE_VNODE, File
 use crate::sys::filedesc::{Filedesc, fdplock, fdpunlock};
 use crate::sys::limits::SHRT_MAX;
 use crate::sys::lockf::MAXLOCKSPERUID;
-use crate::sys::mbuf::mtod;
 use crate::sys::param::{NODEV, OpenBSD};
 use crate::sys::proc::{PS_EMBRYO, PS_EXITING, PS_SYSTEM, Proc, Process, ProcessRef};
-use crate::sys::queue::SlistHead;
 use crate::sys::sched::{CPUSTATES, CPUSTATS_ONLINE, Cpustats};
 use crate::sys::sensors::{Sensor, SensorType, Sensordev};
 use crate::sys::socket::{AF_INET, AF_INET6, AF_UNIX, SOCK_RAW};
@@ -192,7 +190,6 @@ use crate::sys::systm::{
 };
 use crate::sys::types::Register;
 use crate::sys::un::SockaddrUn;
-use crate::sys::unpcb::{UnpRefs, sotounpcb};
 use crate::sys::vnode::{Vattr, Vnode, makeimode};
 use crate::unported;
 #[cfg(feature = "inet6")]
@@ -619,16 +616,10 @@ pub fn sysctl_rdstruct(
     Ok(())
 }
 
-/// `PTRTOINT64(vp->v_un.vu_socket)`: whatever pointer the vnode's union holds.
+/// `PTRTOINT64(vp->v_un.vu_socket)`: whatever pointer the vnode's union holds (the mount,
+/// the specinfo or the bound socket), read, never followed.
 fn vnode_un_ptr(vp: &Vnode) -> u64 {
-    // `v_socket` is bsd's member of the vnode (`VnodeG`), the other members the kernel's
-    // `v_un`: one of them is set, as the C's union. The socket's address is read, never
-    // followed (`Link::addr`): `unp_detach` clears the link under the vnode's lock alone,
-    // and this reader holds none, as the C's.
-    match vp.g.v_socket.addr() {
-        0 => vp.un_addr() as u64,
-        so => so as u64,
-    }
+    vp.un_addr() as u64
 }
 
 /// The `memcpy(kf->unp_path, un->sun_path, un->sun_len - offsetof(...))` of `fill_file`:
@@ -677,7 +668,10 @@ pub fn fill_file(
         kf.f_flag = fp.f_flag.load(Ordering::Relaxed);
         kf.f_iflags = fp.f_iflags.load(Ordering::Relaxed);
         kf.f_type = fp.f_type() as u32;
-        kf.f_count = fp.count();
+        // The C's count: the kernel's UNIX control block counts its socket's file while it
+        // is in flight (`unp_file`), the C's does not.
+        kf.f_count = fp.count()
+            - kernel::net::unix::unp_file_refs::<crate::kern::proc_glue::BsdProcGlue>(fp);
         if show_pointers {
             kf.f_ucred = ptrtoint64(fp.f_cred_ptr());
         }
@@ -728,21 +722,19 @@ pub fn fill_file(
             }
         }
         (DTYPE_SOCKET, _) => {
-            // if so is passed as parameter it is already locked
-            let (so, locked) = match (so, fp) {
-                (Some(so), _) => (Some(so), false),
+            // if so is passed as parameter it is already locked (an internet socket, by the
+            // caller's C-style in_pcbsolock: lent)
+            match (so, fp) {
+                (Some(so), _) => {
+                    let mut w = kernel::net::socket::solocked_legacy(so);
+                    fill_file_socket(kf, so, &mut w, show_pointers);
+                }
                 (None, Some(fp)) => {
                     let so = fp_socket(fp);
-                    solock_shared(so);
-                    (Some(so), true)
+                    let mut w = kernel::net::socket::solock_shared(so);
+                    fill_file_socket(kf, so, &mut w, show_pointers);
                 }
-                (None, None) => (None, false),
-            };
-            if let Some(so) = so {
-                fill_file_socket(kf, so, show_pointers);
-                if locked {
-                    sounlock_shared(so);
-                }
+                (None, None) => {}
             }
         }
         (DTYPE_PIPE, Some(fp)) => {
@@ -782,7 +774,7 @@ pub fn fill_file(
 fn file_data_addr(fp: &File) -> u64 {
     match fp.data() {
         Some(BsdFileData::Vnode(v)) => v.get().map_or(0, |vp| ptrtoint64(vp)),
-        Some(BsdFileData::Socket(word)) => ptrtoint64(word.get()),
+        Some(BsdFileData::Socket(so)) => hal::pool::PoolArc::as_ptr(so).addr() as u64,
         Some(BsdFileData::Kqueue(kq)) => kq.addr() as u64,
         _ => 0,
     }
@@ -819,29 +811,34 @@ fn fill_file_vnode(kf: &mut KinfoFile, vp: &'static Vnode, p: &Proc, show_pointe
 }
 
 /// The `DTYPE_SOCKET` case of `fill_file`, the socket locked.
-fn fill_file_socket(kf: &mut KinfoFile, so: &Socket, show_pointers: bool) {
-    kf.so_type = so.so_type.get() as u32;
-    kf.so_state = so.so_state.get() | so.so_snd.sb_state.get() | so.so_rcv.sb_state.get();
+fn fill_file_socket(
+    kf: &mut KinfoFile,
+    so: &Socket,
+    w: &mut kernel::net::socket::SoLocked<'_>,
+    show_pointers: bool,
+) {
+    kf.so_type = so.so_type() as u32;
+    kf.so_state = so.state() | so.so_snd.state() | so.so_rcv.state();
     kf.so_pcb = if show_pointers {
-        ptrtoint64(so.so_pcb.get())
+        so.legacy_pcb() as u64
     } else {
         -1i64 as u64
     };
-    kf.so_protocol = so.so_proto.pr_protocol as u32;
+    kf.so_protocol = so.proto().protocol() as u32;
     kf.so_family = so.dom_family() as u32;
-    kf.so_rcv_cc = so.so_rcv.sb_cc.get();
-    kf.so_snd_cc = so.so_snd.sb_cc.get();
+    kf.so_rcv_cc = so.so_rcv.cc();
+    kf.so_snd_cc = so.so_snd.cc();
     if isspliced(so) {
-        if let Some(sp) = so.so_sp.get() {
+        if let Some(sp) = so.splice() {
             if show_pointers {
-                kf.so_splice = sp.ssp_socket.get().map_or(0, |s| ptrtoint64(s));
+                kf.so_splice = so.splice_drain_addr() as u64;
             }
-            kf.so_splicelen = sp.ssp_len.get();
+            kf.so_splicelen = sp.spliced_len();
         }
     } else if issplicedback(so) {
         kf.so_splicelen = -1;
     }
-    if so.so_pcb.get().is_null() {
+    if !so.has_pcb() {
         return;
     }
     let family = so.dom_family();
@@ -858,10 +855,10 @@ fn fill_file_socket(kf: &mut KinfoFile, so: &Socket, show_pointers: bool) {
         kf.inp_fport = u32::from(inpcb.inp_fport.get());
         kf.inp_faddru[0] = inpcb.inp_faddr.get().s_addr;
         kf.inp_rtableid = inpcb.inp_rtableid.get();
-        if so.so_type.get() == SOCK_RAW {
+        if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ip.get().ip_p);
         }
-        if i32::from(so.so_proto.pr_protocol) == IPPROTO_TCP {
+        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
             fill_file_tcpcb(kf, inpcb);
         }
     } else if family == i32::from(AF_INET6) {
@@ -883,31 +880,30 @@ fn fill_file_socket(kf: &mut KinfoFile, so: &Socket, show_pointers: bool) {
             *w = faddr6.s6_addr32(i);
         }
         kf.inp_rtableid = inpcb.inp_rtableid.get();
-        if so.so_type.get() == SOCK_RAW {
+        if so.so_type() == SOCK_RAW {
             kf.inp_proto = u32::from(inpcb.inp_ipv6.get().ip6_nxt);
         }
-        if i32::from(so.so_proto.pr_protocol) == IPPROTO_TCP {
+        if i32::from(so.proto().protocol()) == IPPROTO_TCP {
             fill_file_tcpcb(kf, inpcb);
         }
     } else if family == i32::from(AF_UNIX) {
-        let Some(unpcb) = sotounpcb(so) else {
+        let Some(k) = kernel::net::unix::unp_kinfo(so, w) else {
             return;
         };
-        kf.f_msgcount = unpcb.unp_msgcount.get() as u32;
+        kf.f_msgcount = k.msgcount as u32;
         if show_pointers {
-            kf.unp_conn = unpcb.unp_conn.get().map_or(0, |u| ptrtoint64(u));
-            kf.unp_refs = unpcb.unp_refs.first().map_or(0, |u| ptrtoint64(u));
-            kf.unp_nextref = SlistHead::<UnpRefs>::next(unpcb).map_or(0, |u| ptrtoint64(u));
-            kf.v_un = unpcb.unp_vnode.get().map_or(0, |v| ptrtoint64(v));
-            kf.unp_addr = unpcb.unp_addr.get().map_or(0, |m| ptrtoint64(m));
+            kf.so_pcb = k.pcb as u64;
+            kf.unp_conn = k.conn as u64;
+            kf.unp_refs = k.refs as u64;
+            kf.unp_nextref = k.nextref as u64;
+            kf.v_un = k.vnode as u64;
+            kf.unp_addr = k.addr as u64;
         }
-        if let Some(m) = unpcb.unp_addr.get() {
-            // SAFETY: a bound address mbuf holds `m_len` bytes of `struct sockaddr_un` and
-            // lives while the control block is bound; the caller holds the socket lock.
-            let addr = unsafe {
-                core::slice::from_raw_parts(mtod::<u8>(m).cast_const(), m.m_len().get() as usize)
-            };
-            unp_path_copy(&mut kf.unp_path, addr);
+        if let Some(sun) = k.sun {
+            unp_path_copy(
+                &mut kf.unp_path,
+                hal::user::bytes_of(core::slice::from_ref(&sun)),
+            );
         }
     }
 }
@@ -2491,21 +2487,6 @@ mod tests {
         assert!(e.is_some_and(|e| e.start() == at && e.end() == at + PAGE_SIZE));
         drop(g);
         drop(pr.set_vmspace(None));
-    }
-
-    /// `kern.file`'s `v_un` of a vnode (`PTRTOINT64(vp->v_un.vu_socket)`): the bound socket's
-    /// address while the vnode has one (read, never followed), else the kernel's member of
-    /// the union, 0 for none.
-    #[test]
-    fn a_vnode_s_v_un_is_its_socket_s_address_or_the_union_s() {
-        let vp: &'static Vnode = Box::leak(Box::new(Vnode::new_unpooled()));
-        assert_eq!(vnode_un_ptr(vp), 0);
-        let so: &'static Socket =
-            Box::leak(Box::new(Socket::new(&crate::kern::uipc_proto::UNIXSW[0])));
-        vp.g.v_socket.set(Some(so));
-        assert_eq!(vnode_un_ptr(vp), core::ptr::from_ref(so).addr() as u64);
-        vp.g.v_socket.set(None);
-        assert_eq!(vnode_un_ptr(vp), 0);
     }
 }
 /* </TESTS> */

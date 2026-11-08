@@ -142,6 +142,8 @@ std::thread_local! {
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
     static FAIL_POOL: Cell<Option<(&'static str, u32, u32)>> = const { Cell::new(None) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
+    /// The error the test glues' `pledge_recvfd` and `pledge_sendfd` answer.
+    static PLEDGE_FD: Cell<Option<Errno>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -830,6 +832,48 @@ pub fn memory_is_the_doubles() -> Option<bool> {
     MEMORY_DOUBLES.get().copied()
 }
 
+/// `uiomove` of a read out of `buf` for the test glues: a read (`UIO_READ`) copies from
+/// `buf` itself as [`test_uiomove`] does (user iovecs through the user-copy double, kernel
+/// ones through hal's kcopy under [`set_copy_kernel`], else accounted only), no copy of the
+/// source made; a write (never asked of a read out of a buffer) through [`test_uiomove`]
+/// over a copy.
+pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
+    buf: &[u8],
+    uio: &mut crate::uio::Uio<'_, G>,
+) -> Result<(), hal::sys::errno::Errno> {
+    use crate::uio::{UioRw, UioSeg};
+    if uio.uio_rw != UioRw::UIO_READ {
+        let mut copy = buf.to_vec();
+        return test_uiomove(&mut copy, uio);
+    }
+    let mut done = 0;
+    while done < buf.len() && uio.uio_resid > 0 {
+        let Some(iov) = uio.uio_iov.first_mut() else {
+            break;
+        };
+        if iov.iov_len == 0 {
+            let iovs = core::mem::take(&mut uio.uio_iov);
+            uio.uio_iov = &mut iovs[1..];
+            continue;
+        }
+        let cnt = iov.iov_len.min(buf.len() - done);
+        let addr = iov.iov_base.addr();
+        if uio.uio_segflg == UioSeg::UIO_USERSPACE {
+            hal::user::UserPtr::<u8>::new(addr).copyout_slice(&buf[done..done + cnt])?;
+        } else if COPY_KERNEL.with(Cell::get)
+            && let Some(t) = kcopy_token()
+        {
+            t.kcopy_out(&buf[done..done + cnt], addr)?;
+        }
+        iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
+        iov.iov_len -= cnt;
+        uio.uio_resid -= cnt;
+        uio.uio_offset += cnt as hal::sys::types::Off;
+        done += cnt;
+    }
+    Ok(())
+}
+
 /// The test glues' `uiomove`: moves `buf` through the uio's iovecs, user addresses through
 /// the user-copy double (`hal::user`), kernel ones accounted only (a test cannot reach a
 /// `UIO_SYSSPACE` iovec's bytes without `bsd`'s `kcopy`); the offset, the residual count and
@@ -1289,6 +1333,8 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
     pub pipe: Option<crate::pipe::PipeEnd<P>>,
+    /// A socket file's socket (`socket_of`), dropped with the file's item.
+    pub socket: Option<crate::net::socket::SocketRef<P>>,
 }
 
 impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
@@ -1300,6 +1346,7 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             vnode: None,
             kvnode: None,
             pipe: None,
+            socket: None,
         }
     }
 }
@@ -1501,6 +1548,21 @@ pub fn pledge_refusal(code: i32) -> Result<(), (Errno, u64)> {
 /// `tval` (`None`: refuse nothing).
 pub fn set_pledge_refusal(r: Option<(i32, Errno, u64)>) {
     PLEDGE_REFUSE.with(|c| c.set(r));
+}
+
+/// What this thread's test glues' `pledge_recvfd` and `pledge_sendfd` answer: the error
+/// [`set_pledge_fd`] armed, `Ok` otherwise.
+pub fn pledge_fd_answer() -> Result<(), Errno> {
+    match PLEDGE_FD.with(Cell::get) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Makes this thread's test glues refuse every descriptor passed in a message with `error`
+/// (`None`: refuse nothing).
+pub fn set_pledge_fd(error: Option<Errno>) {
+    PLEDGE_FD.with(|c| c.set(error));
 }
 
 /// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
@@ -1768,7 +1830,6 @@ macro_rules! test_file_glue {
             type Ops = dyn $crate::file::FileOps<$name>;
             type Data = $crate::testutil::TestFileData<$proc>;
             type FileList = FileListLink;
-            type VnodeG = ();
             type UnveilMatch = $crate::testutil::UnveilCount;
             type MountG = ();
             type InodeHash = InodeHashLink;
@@ -1866,7 +1927,34 @@ macro_rules! test_file_glue {
             fn vfs() -> &'static $crate::fs::subr::VfsTables<$proc> {
                 VFS_TABLES.with(|t| *t)
             }
-            fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
+            fn net() -> &'static $crate::net::domain::NetTables<$proc> {
+                static NET_TABLES: $crate::net::domain::NetTables<$proc> =
+                    $crate::net::domain::NetTables::new();
+                &NET_TABLES
+            }
+            fn socket_of(d: &Self::Data) -> Option<&$crate::net::socket::SocketRef<$proc>> {
+                d.socket.as_ref()
+            }
+            fn socket_file(
+                so: $crate::net::socket::SocketRef<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
+                static SOCKET_OPS: $crate::net::file::SocketFileOps<$proc> =
+                    $crate::net::file::SocketFileOps::NEW;
+                (
+                    &SOCKET_OPS,
+                    $crate::testutil::TestFileData {
+                        id: core::ptr::from_ref::<$crate::net::socket::Socket<$proc>>(&so).addr(),
+                        socket: Some(so),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
+            }
+            fn uiomove_out(
+                buf: &[u8],
+                uio: &mut $crate::uio::Uio<'_, $proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::test_uiomove_out(buf, uio)
+            }
         }
     };
 }
@@ -1950,6 +2038,18 @@ macro_rules! test_proc_glue {
                 _delta: usize,
             ) -> Result<(), hal::sys::errno::Errno> {
                 Ok(())
+            }
+            fn pledge_recvfd(
+                _p: &$crate::proc::Thread<Self>,
+                _fp: &$crate::file::File<Self::FileGlue>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_fd_answer()
+            }
+            fn pledge_sendfd(
+                _p: &$crate::proc::Thread<Self>,
+                _fp: &$crate::file::File<Self::FileGlue>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_fd_answer()
             }
             fn pledge_protexec(
                 _p: &$crate::proc::Thread<Self>,

@@ -145,7 +145,6 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::subr_prf::{Str, panic};
 use crate::kern::uipc_mbuf::{
     MAX_LINKHDR, m_adj, m_align, m_copydata, m_copym, m_dup_pkthdr, m_free, m_freem, m_gethdr,
@@ -194,9 +193,9 @@ use crate::sys::mbuf::{
     M_DONTWAIT, M_EXT, M_FLOWID, M_PKTHDR, M_TCP_CSUM_OUT, M_TCP_TSO, MAXMCLBYTES, MHLEN,
     MT_HEADER, Mbuf, MbufList, mclget, ml_len, mtod,
 };
-use crate::sys::mbuf::{m_data_add, m_set_next};
+use crate::sys::mbuf::{m_data_add, m_set_next, park};
 use crate::sys::socket::{AF_INET, PF_INET, SO_DEBUG, Sockaddr};
-use crate::sys::socketvar::{Socket, sbspace_locked, soissending};
+use crate::sys::socketvar::soissending;
 #[cfg(feature = "inet6")]
 use crate::{
     net::if_::IFCAP_TSOv6,
@@ -336,14 +335,6 @@ fn tcp_output_gethdr(max_linkhdr: u32, hdrlen: u32) -> Option<&'static Mbuf> {
     Some(m)
 }
 
-/// `so->so_snd.sb_mb`, which is not NULL while there is data to send.
-fn sb_mb(so: &Socket) -> &'static Mbuf {
-    match so.so_snd.sb_mb.get() {
-        Some(m) => m,
-        None => panic(format_args!("tcp_output: no data in the send buffer")),
-    }
-}
-
 /// `tcp_output`: TCP output routine: figure out what should be sent and send it.
 pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
     let so = tp.socket();
@@ -363,9 +354,11 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
 
     let now = tcp_now();
 
-    mtx_enter(&so.so_snd.sb_mtx);
+    // The C reads `SS_ISSENDING` under `sb_mtx`; the kernel's buffer state is an atomic its
+    // guard writes, read here without the mutex, which this function takes once, for the
+    // segment's copy out of the send buffer below (the C copies under the socket's lock
+    // alone; the kernel's records are the mutex's).
     let doing_sosend = soissending(so);
-    mtx_leave(&so.so_snd.sb_mtx);
 
     // Determine length of data that should be transmitted, and flags that will be used. If
     // there is some data or critical controls (SYN, RST) to send, then transmit; otherwise,
@@ -434,7 +427,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 //
                 // We can't just blindly clear the FIN bit, because if we don't have any more
                 // data to send then the probe will be the FIN itself.
-                if (off as u64) < so.so_snd.sb_cc.get() {
+                if (off as u64) < so.so_snd.cc() {
                     flags &= !TH_FIN;
                 }
                 win = 1;
@@ -445,7 +438,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
         }
 
         if sack_rxmit.is_none() {
-            len = min(so.so_snd.sb_cc.get(), win as u64).wrapping_sub(off as u64) as i64;
+            len = min(so.so_snd.cc(), win as u64).wrapping_sub(off as u64) as i64;
         }
 
         if len < 0 {
@@ -468,7 +461,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
         // Never send more than half a buffer full. This insures that we can always keep 2
         // packets on the wire, no matter what SO_SNDBUF is, and therefore acks will never be
         // delayed unless we run out of data to transmit.
-        let txmaxseg = min(so.so_snd.sb_hiwat.get() / 2, u64::from(tp.t_maxseg.get())) as i64;
+        let txmaxseg = min(so.so_snd.hiwat() / 2, u64::from(tp.t_maxseg.get())) as i64;
 
         if len > txmaxseg {
             let maxseg = i64::from(tp.t_maxseg.get());
@@ -492,14 +485,14 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 sendalot = true;
             }
         }
-        if ((i64::from(off) + len) as u64) < so.so_snd.sb_cc.get() {
+        if ((i64::from(off) + len) as u64) < so.so_snd.cc() {
             flags &= !TH_FIN;
         }
 
-        mtx_enter(&so.so_rcv.sb_mtx);
-        win = sbspace_locked(&so.so_rcv);
-        let rcv_hiwat = so.so_rcv.sb_hiwat.get() as i64;
-        mtx_leave(&so.so_rcv.sb_mtx);
+        let g_rcv = so.so_rcv.lock();
+        win = g_rcv.space();
+        let rcv_hiwat = so.so_rcv.hiwat() as i64;
+        drop(g_rcv);
 
         'send: {
             // Sender silly window avoidance. If connection is idle and can send all data, a
@@ -512,7 +505,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                     break 'send;
                 }
                 if (idle || tp.has_flags(TF_NODELAY))
-                    && ((len + i64::from(off)) as u64) >= so.so_snd.sb_cc.get()
+                    && ((len + i64::from(off)) as u64) >= so.so_snd.cc()
                     && !doing_sosend
                     && !tp.has_flags(TF_NOPUSH)
                 {
@@ -597,7 +590,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             // persist is pending, then go to persist state. If nothing happens soon, send
             // when timer expires: if window is nonzero, transmit what we can, otherwise force
             // out a byte.
-            if so.so_snd.sb_cc.get() != 0
+            if so.so_snd.cc() != 0
                 && !tcp_timer_isarmed(tp, TCPT_REXMT)
                 && !tcp_timer_isarmed(tp, TCPT_PERSIST)
             {
@@ -801,32 +794,40 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 let Some(m) = tcp_output_gethdr(max_linkhdr, hdrlen) else {
                     break 'out Err(Errno::ENOBUFS);
                 };
-                let sb_mb = sb_mb(so);
+                // so->so_snd.sb_mb, under the buffer's mutex for the copy.
+                let mut g_snd = so.so_snd.lock();
+                let loopcnt = match g_snd.data().first() {
+                    Some(sb_mb) if sb_mb.m_flags().get() & M_PKTHDR != 0 => {
+                        Some(sb_mb.m_pkthdr().ph_loopcnt.get())
+                    }
+                    Some(_) => None,
+                    None => panic(format_args!("tcp_output: no data in the send buffer")),
+                };
                 if len <= i64::from(m_trailingspace(m)) {
                     // SAFETY: `m_trailingspace` bytes follow the `hdrlen` bytes of data in
                     // the first mbuf, and `len` fits in them.
                     let dst = unsafe {
                         slice::from_raw_parts_mut(mtod::<u8>(m).add(hdrlen as usize), len as usize)
                     };
-                    m_copydata(sb_mb, off, dst);
+                    g_snd.copydata_first(off, dst);
+                    drop(g_snd);
                     m.m_len().set(m.m_len().get() + len as u32);
                 } else {
-                    let next = m_copym(sb_mb, off, len as i32, M_NOWAIT);
+                    let next = g_snd.copym_first(off, len as i32, M_NOWAIT).map(park);
+                    drop(g_snd);
                     let _ = m_set_next(m, next);
                     if next.is_none() {
                         let _ = m_free(m);
                         break 'out Err(Errno::ENOBUFS);
                     }
                 }
-                if sb_mb.m_flags().get() & M_PKTHDR != 0 {
-                    m.m_pkthdr()
-                        .ph_loopcnt
-                        .set(sb_mb.m_pkthdr().ph_loopcnt.get());
+                if let Some(loopcnt) = loopcnt {
+                    m.m_pkthdr().ph_loopcnt.set(loopcnt);
                 }
                 // If we're sending everything we've got, set PUSH. (This will keep happy those
                 // implementations which only give data to the user when a buffer fills or a
                 // PUSH comes in.)
-                if (i64::from(off) + len) as u64 == so.so_snd.sb_cc.get() && !doing_sosend {
+                if (i64::from(off) + len) as u64 == so.so_snd.cc() && !doing_sosend {
                     flags |= TH_PUSH;
                 }
                 tp.t_sndtime.set(now);
@@ -1093,7 +1094,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 }
 
                 if len == 0
-                    && so.so_snd.sb_cc.get() != 0
+                    && so.so_snd.cc() != 0
                     && !tcp_timer_isarmed(tp, TCPT_REXMT)
                     && !tcp_timer_isarmed(tp, TCPT_PERSIST)
                 {
@@ -1121,7 +1122,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             tcp_update_sndspace(tp);
 
             // Trace.
-            if so.so_options.get() & SO_DEBUG != 0 {
+            if so.options() & SO_DEBUG != 0 {
                 // SAFETY: the first mbuf holds the `hdrlen` bytes of the IP and TCP headers
                 // (its `m_len` is at least that).
                 let headers = unsafe { slice::from_raw_parts(mtod::<u8>(m), hdrlen as usize) };
@@ -1554,6 +1555,7 @@ mod tests {
     use crate::netinet::tcp_timer::TCPT_NTIMERS;
     use crate::netinet::tcp_var::{TF_TMR_PERSIST, TF_TMR_REXMT};
     use crate::sys::mbuf::{M_WAIT, MCLBYTES, MT_DATA};
+    use crate::sys::socketvar::Socket;
 
     /// A timer callout that is never expected to run.
     fn no_callout(_: *mut core::ffi::c_void) {}
@@ -1701,7 +1703,7 @@ mod tests {
 
     /// An established connection on a socket with empty buffers.
     fn established() -> &'static Tcpcb {
-        let so = soalloc(&INETSW[1], M_WAIT).expect("socket");
+        let so = soalloc(&INETSW[1], 0, M_WAIT).expect("socket");
         let tp = tcb(Some(so));
         tp.t_state.set(TCPS_ESTABLISHED);
         tp.t_maxseg.set(512);

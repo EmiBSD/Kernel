@@ -172,6 +172,18 @@ impl ProcGlue for BenchGlue {
     fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
         Ok(())
     }
+    fn pledge_recvfd(
+        _p: &Thread<Self>,
+        _fp: &kernel::file::File<Self::FileGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn pledge_sendfd(
+        _p: &Thread<Self>,
+        _fp: &kernel::file::File<Self::FileGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
     fn pledge_protexec(_p: &Thread<Self>, _prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
         Ok(())
     }

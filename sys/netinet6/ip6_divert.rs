@@ -324,13 +324,13 @@ pub fn divert6_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
         }
 
         let so = inp.socket();
-        mtx_enter(&so.so_rcv.sb_mtx);
-        if !sbappendaddr(&so.so_rcv, sin6_bytes(&sin6), Some(mm), None) {
-            mtx_leave(&so.so_rcv.sb_mtx);
+        let mut g_rcv = so.so_rcv.lock();
+        if !sbappendaddr(&mut g_rcv, sin6_bytes(&sin6), Some(mm), None) {
+            drop(g_rcv);
             divstat_inc(DivstatCounters::DivsFullsock);
             break 'bad;
         }
-        mtx_leave(&so.so_rcv.sb_mtx);
+        drop(g_rcv);
         sorwakeup(so);
 
         in_pcbunref(Some(inp));
@@ -344,7 +344,7 @@ pub fn divert6_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
 /// `divert6_attach`: a control block for a privileged IPv6 divert socket.
 pub fn divert6_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Errno> {
     let _ = proto;
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         return Err(Errno::EINVAL);
     }
     if !so.has_state(SS_PRIV) {

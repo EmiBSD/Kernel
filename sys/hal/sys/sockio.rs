@@ -15,8 +15,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-/*
- * Copyright (c) 1982, 1986, 1993
+/*-
+ * Copyright (c) 1982, 1986, 1990, 1993, 1994
  *	The Regents of the University of California.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -43,43 +43,46 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	@(#)un.h	8.1 (Berkeley) 6/2/93
+ *	@(#)sockio.h	8.1 (Berkeley) 3/28/94
  */
 /* </LICENSES> */
 
 /* <CODE> */
-//! Definitions for UNIX IPC domain: `<sys/un.h>`.
+//! `<sys/sockio.h>`'s socket group: the `ioctl(2)` commands a socket answers itself
+//! (`soo_ioctl`), `'s'`.
 //!
-//! Upstream: sys/sys/un.h @ 3ce1f3f79392
+//! Upstream: sys/sys/sockio.h @ 3ce1f3f79392
+//! LZ: sys/sys/sockio.rs@3c62ede68802
 //!
-//! ## Deviations
-//! - `SUN_LEN(su)` is userland only (`#ifndef _KERNEL`) and not ported.
-//! - `sa_family_t` is `crate::sys::types::SaFamily`.
+//! Each command encodes its direction, group, number and the size of its argument
+//! (`ioccom.h`).
+//!
+//! ## Redesign
+//! - N6.2a: the three `'s'` commands moved from `bsd`'s `sys/sys/sockio.rs` with the socket
+//!   file (`kernel::net::file`). The interface commands (`'i'`) are sized by `<net/if.h>`'s
+//!   structures (`struct ifreq`, `ifaliasreq`, ...), `bsd`'s until the interface layer moves
+//!   (N6.3a), and stay in `bsd`'s file until then.
 
-use crate::sys::types::SaFamily;
+use crate::sys::ioccom::{_ior, _iow};
 
-/// The size of `sun_path`.
-pub const SUN_PATH_LEN: usize = 104;
-
-/// `struct sockaddr_un`: definitions for UNIX IPC domain.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SockaddrUn {
-    /// `sun_len`: sockaddr len excluding NUL.
-    pub sun_len: u8,
-    /// `sun_family`: `AF_UNIX`.
-    pub sun_family: SaFamily,
-    /// `sun_path`: path name (gag).
-    pub sun_path: [u8; SUN_PATH_LEN],
-}
-
-impl SockaddrUn {
-    /// `offsetof(struct sockaddr_un, sun_path)`.
-    pub const PATH_OFFSET: usize = core::mem::offset_of!(SockaddrUn, sun_path);
-}
-
-const _: () = {
-    assert!(size_of::<SockaddrUn>() == 106);
-    assert!(SockaddrUn::PATH_OFFSET == 2);
-};
+/// At oob mark?.
+pub const SIOCATMARK: u64 = _ior::<i32>(b's', 7);
+/// Set process group.
+pub const SIOCSPGRP: u64 = _iow::<i32>(b's', 8);
+/// Get process group.
+pub const SIOCGPGRP: u64 = _ior::<i32>(b's', 9);
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_socket_group_is_the_cs() {
+        assert_eq!(SIOCATMARK, 0x4004_7307);
+        assert_eq!(SIOCSPGRP, 0x8004_7308);
+        assert_eq!(SIOCGPGRP, 0x4004_7309);
+    }
+}
+/* </TESTS> */

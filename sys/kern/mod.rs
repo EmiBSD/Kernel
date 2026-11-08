@@ -134,11 +134,10 @@ pub mod uipc_domain;
 pub mod uipc_mbuf;
 pub mod uipc_mbuf2;
 #[forbid(unsafe_code)]
-pub mod uipc_proto;
 pub mod uipc_socket;
+#[forbid(unsafe_code)]
 pub mod uipc_socket2;
 pub mod uipc_syscalls;
-pub mod uipc_usrreq;
 #[forbid(unsafe_code)]
 pub mod unported;
 pub mod vfs_init;

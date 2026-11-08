@@ -15,7 +15,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-/*-
+/*
  * Copyright (c) 1982, 1986, 1993
  *	The Regents of the University of California.  All rights reserved.
  *
@@ -43,65 +43,76 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	@(#)uipc_proto.c	8.1 (Berkeley) 6/10/93
+ *	@(#)un.h	8.1 (Berkeley) 6/2/93
  */
 /* </LICENSES> */
 
 /* <CODE> */
-//! Definitions of protocols supported in the UNIX domain: `kern/uipc_proto.c`.
+//! Definitions for UNIX IPC domain: `<sys/un.h>`.
 //!
-//! Upstream: sys/kern/uipc_proto.c @ 3ce1f3f79392
-//!
-//! `unixsw[]` holds the three local socket types (stream, sequenced packet and datagram),
-//! all of them passing rights (`PR_RIGHTS`); `unixdomain` is `AF_UNIX`, initialised by
-//! `unp_init` and externalizing and disposing of rights with `unp_externalize` and
-//! `unp_dispose` (`uipc_usrreq.rs`).
+//! Upstream: sys/sys/un.h @ 3ce1f3f79392
+//! LZ: sys/sys/un.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `dom_protoswNPROTOSW` is the end of the `dom_protosw` slice (`sys/domain.rs`).
+//! - `SUN_LEN(su)` is userland only (`#ifndef _KERNEL`) and not ported.
+//!
+//! ## Redesign
+//! - N6.2a: moved from `bsd`'s `sys/sys/un.rs` with the UNIX domain's redesign
+//!   (`kernel::net::unix`); `struct sockaddr_un` is [`AbiPod`](crate::user::AbiPod) through
+//!   [`crate::abi_pod!`], so the kernel reads it in an address mbuf's bytes with no `unsafe`.
 
-use crate::kern::uipc_usrreq::{
-    UIPC_DGRAM_USRREQS, UIPC_USRREQS, unp_dispose, unp_externalize, unp_init,
-};
-use crate::sys::domain::Domain;
-use crate::sys::protosw::{PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_RIGHTS, PR_WANTRCVD, Protosw};
-use crate::sys::socket::{AF_UNIX, PF_UNIX, SOCK_DGRAM, SOCK_SEQPACKET, SOCK_STREAM};
+use crate::sys::types::SaFamily;
 
-/// `unixsw[]`: the protocols of the UNIX domain.
-pub static UNIXSW: [Protosw; 3] = [
-    Protosw {
-        pr_type: SOCK_STREAM as i16,
-        pr_protocol: PF_UNIX as i16,
-        pr_flags: PR_CONNREQUIRED | PR_WANTRCVD | PR_RIGHTS,
-        pr_usrreqs: Some(&UIPC_USRREQS),
-        ..Protosw::new(&UNIXDOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_SEQPACKET as i16,
-        pr_protocol: PF_UNIX as i16,
-        pr_flags: PR_ATOMIC | PR_CONNREQUIRED | PR_WANTRCVD | PR_RIGHTS,
-        pr_usrreqs: Some(&UIPC_USRREQS),
-        ..Protosw::new(&UNIXDOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_DGRAM as i16,
-        pr_protocol: PF_UNIX as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_RIGHTS,
-        pr_usrreqs: Some(&UIPC_DGRAM_USRREQS),
-        ..Protosw::new(&UNIXDOMAIN)
-    },
-];
+/// The size of `sun_path`.
+pub const SUN_PATH_LEN: usize = 104;
 
-/// `unixdomain`.
-pub static UNIXDOMAIN: Domain = Domain {
-    dom_family: AF_UNIX as i32,
-    dom_name: b"unix",
-    dom_init: Some(unp_init),
-    dom_externalize: Some(unp_externalize),
-    dom_dispose: Some(unp_dispose),
-    dom_protosw: &UNIXSW,
-    dom_sasize: 0,
-    dom_rtoffset: 0,
-    dom_maxplen: 0,
+/// `struct sockaddr_un`: definitions for UNIX IPC domain.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SockaddrUn {
+    /// `sun_len`: sockaddr len excluding NUL.
+    pub sun_len: u8,
+    /// `sun_family`: `AF_UNIX`.
+    pub sun_family: SaFamily,
+    /// `sun_path`: path name (gag).
+    pub sun_path: [u8; SUN_PATH_LEN],
+}
+
+crate::abi_pod!(SockaddrUn {
+    sun_len: u8,
+    sun_family: SaFamily,
+    sun_path: [u8; SUN_PATH_LEN],
+});
+
+impl SockaddrUn {
+    /// `offsetof(struct sockaddr_un, sun_path)`.
+    pub const PATH_OFFSET: usize = core::mem::offset_of!(SockaddrUn, sun_path);
+}
+
+const _: () = {
+    assert!(size_of::<SockaddrUn>() == 106);
+    assert!(SockaddrUn::PATH_OFFSET == 2);
 };
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user::{bytes_of, pod_from_bytes};
+
+    #[test]
+    fn a_sockaddr_un_round_trips_through_its_bytes() {
+        let mut su = SockaddrUn {
+            sun_len: 9,
+            sun_family: 1,
+            sun_path: [0; SUN_PATH_LEN],
+        };
+        su.sun_path[..6].copy_from_slice(b"/tmp/s");
+        let b = bytes_of(core::slice::from_ref(&su));
+        assert_eq!(&b[..8], &[9, 1, b'/', b't', b'm', b'p', b'/', b's']);
+        assert_eq!(pod_from_bytes::<SockaddrUn>(b), Some(su));
+        assert_eq!(pod_from_bytes::<SockaddrUn>(&b[..105]), None);
+    }
+}
+/* </TESTS> */

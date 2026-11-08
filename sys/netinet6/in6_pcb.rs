@@ -257,7 +257,7 @@ pub fn in6_pcbaddrisavail_lock(
     let so = inp.socket();
     let table = inp.table();
     let lport = sin6.sin6_port;
-    let mut reuseport = so.so_options.get() & SO_REUSEPORT;
+    let mut reuseport = so.options() & SO_REUSEPORT;
     let wild = wild | INPLOOKUP_IPV6;
     let _ = p;
 
@@ -313,7 +313,7 @@ pub fn in6_pcbaddrisavail_lock(
         }
     }
     if lport != 0 {
-        if so.so_euid.get() != 0 && !in6_is_addr_multicast(&sin6.sin6_addr) {
+        if so.creds().0 != 0 && !in6_is_addr_multicast(&sin6.sin6_addr) {
             let t = in_pcblookup_local_lock(
                 table,
                 &Inpaddru::from_addr6(sin6.sin6_addr),
@@ -322,7 +322,7 @@ pub fn in6_pcbaddrisavail_lock(
                 inp.inp_rtableid.get(),
                 lock,
             );
-            let error = t.is_some_and(|t| so.so_euid.get() != t.socket().so_euid.get());
+            let error = t.is_some_and(|t| so.creds().0 != t.socket().creds().0);
             if lock == IN_PCBLOCK_GRAB {
                 in_pcbunref(t);
             }
@@ -338,7 +338,7 @@ pub fn in6_pcbaddrisavail_lock(
             inp.inp_rtableid.get(),
             lock,
         );
-        let error = t.is_some_and(|t| reuseport & t.socket().so_options.get() == 0);
+        let error = t.is_some_and(|t| reuseport & t.socket().options() == 0);
         if lock == IN_PCBLOCK_GRAB {
             in_pcbunref(t);
         }
@@ -901,8 +901,7 @@ pub(crate) mod tests {
 
     /// An `INP_IPV6` control block of a raw IPv6 socket in `table`.
     fn pcb6(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INET6SW[3], M_WAIT).expect("socket");
-        so.so_type.set(SOCK_RAW);
+        let so = soalloc(&INET6SW[3], SOCK_RAW, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         assert!(inp.has_flags(INP_IPV6), "in_pcballoc marks PF_INET6 pcbs");
@@ -914,7 +913,11 @@ pub(crate) mod tests {
     pub(crate) fn pcb_of(so: &Socket) -> &'static Inpcb {
         // SAFETY: `in_pcballoc` set `so_pcb` to its `inpcb_pool` item, which stays allocated
         // until the last `in_pcbunref` after `in_pcbdetach`.
-        unsafe { &*so.so_pcb.get().cast::<Inpcb>().cast_const() }
+        unsafe {
+            &*crate::sys::socketvar::so_pcb(so)
+                .cast::<Inpcb>()
+                .cast_const()
+        }
     }
 
     /// Gives `inp` the quadruple `laddr.lport <-> faddr.fport` (host order ports) and moves it
@@ -948,7 +951,7 @@ pub(crate) mod tests {
         let so = inp.socket();
         let _ = soref(Some(so));
         solock(so);
-        so.set_state(SS_NOFDREF);
+        so.set_state_legacy(SS_NOFDREF);
         in_pcbdetach(inp);
         sounlock(so);
         sorele(so);
@@ -1206,7 +1209,7 @@ pub(crate) mod tests {
             in6_pcbaddrisavail(inp, &mut s, 0, p),
             Err(Errno::EADDRNOTAVAIL)
         );
-        inp.socket().so_options.set(SO_BINDANY);
+        inp.socket().set_options_legacy(SO_BINDANY, true);
         let mut s = sin6(a6("2001:db8::1"), 0);
         assert_eq!(in6_pcbaddrisavail(inp, &mut s, 0, p), Ok(()));
         // A multicast group is available too, the scope id cleared.

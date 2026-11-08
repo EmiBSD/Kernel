@@ -329,6 +329,18 @@ impl ProcGlue for BenchGlue {
     fn pledge_adjtime(_p: &Thread<Self>, _delta: usize) -> Result<(), Errno> {
         Ok(())
     }
+    fn pledge_recvfd(
+        _p: &Thread<Self>,
+        _fp: &kernel::file::File<Self::FileGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    fn pledge_sendfd(
+        _p: &Thread<Self>,
+        _fp: &kernel::file::File<Self::FileGlue>,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
     fn pledge_protexec(_p: &Thread<Self>, _prot: kernel::vm::types::VmProt) -> Result<(), Errno> {
         Ok(())
     }
@@ -359,7 +371,13 @@ pub enum BenchData {
     Kqueue(KqRef<BenchGlue>),
     /// A vnode file's vnode (`FileGlue::vnode_file`; no row opens one).
     Vnode(&'static kernel::fs::vnode::Vnode<BenchGlue>),
+    /// A socket file's socket (`FileGlue::socket_file`; no row opens one).
+    Socket(kernel::net::socket::SocketRef<BenchGlue>),
 }
+
+/// A socket file's operations: the kernel's socketops.
+static BENCH_SOCKET_OPS: kernel::net::file::SocketFileOps<BenchGlue> =
+    kernel::net::file::SocketFileOps::NEW;
 
 /// A vnode file's operations: the kernel's `vnops`.
 static BENCH_VNODE_OPS: kernel::fs::vnops::VnodeFileOps = kernel::fs::vnops::VnodeFileOps;
@@ -429,7 +447,6 @@ impl FileGlue for BenchFiles {
     type Ops = dyn FileOps<BenchFiles>;
     type Data = BenchData;
     type FileList = FileListLink;
-    type VnodeG = ();
     type UnveilMatch = ();
     type MountG = ();
     type InodeHash = InodeHashLink;
@@ -452,13 +469,13 @@ impl FileGlue for BenchFiles {
     fn kqueue_of(d: &Self::Data) -> Option<&KqRef<BenchGlue>> {
         match d {
             BenchData::Kqueue(kq) => Some(kq),
-            BenchData::Pipe(_) | BenchData::Vnode(_) => None,
+            BenchData::Pipe(_) | BenchData::Vnode(_) | BenchData::Socket(_) => None,
         }
     }
     fn pipe_of(d: &Self::Data) -> Option<&PipeEnd<BenchGlue>> {
         match d {
             BenchData::Pipe(end) => Some(end),
-            BenchData::Kqueue(_) | BenchData::Vnode(_) => None,
+            BenchData::Kqueue(_) | BenchData::Vnode(_) | BenchData::Socket(_) => None,
         }
     }
     fn vnode_file(
@@ -485,13 +502,28 @@ impl FileGlue for BenchFiles {
     fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
         &VFS_TABLES
     }
+    fn net() -> &'static kernel::net::domain::NetTables<BenchGlue> {
+        static NET_TABLES: kernel::net::domain::NetTables<BenchGlue> =
+            kernel::net::domain::NetTables::new();
+        &NET_TABLES
+    }
+    fn socket_of(d: &Self::Data) -> Option<&kernel::net::socket::SocketRef<BenchGlue>> {
+        match d {
+            BenchData::Socket(so) => Some(so),
+            BenchData::Pipe(_) | BenchData::Kqueue(_) | BenchData::Vnode(_) => None,
+        }
+    }
+    fn socket_file(
+        so: kernel::net::socket::SocketRef<BenchGlue>,
+    ) -> (&'static Self::Ops, Self::Data) {
+        (&BENCH_SOCKET_OPS, BenchData::Socket(so))
+    }
     fn vnode_of(d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
         match d {
             BenchData::Vnode(vp) => Some(vp),
-            BenchData::Pipe(_) | BenchData::Kqueue(_) => None,
+            BenchData::Pipe(_) | BenchData::Kqueue(_) | BenchData::Socket(_) => None,
         }
     }
-    fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
 }
 
 /// The VFS tables of the bench's processes (unused: no file system here).

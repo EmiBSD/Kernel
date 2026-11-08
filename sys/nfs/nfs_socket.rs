@@ -102,7 +102,6 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 use crate::kern::init_main::PROC0;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 #[cfg(feature = "nfsserver")]
 use crate::kern::kern_synch::wakeup_one;
 use crate::kern::kern_synch::{nowake, tsleep_nsec, wakeup};
@@ -188,7 +187,7 @@ use crate::sys::namei::cache_purge;
 use crate::sys::param::{PCATCH, PSOCK, PZERO, align, aligned_pointer};
 use crate::sys::pool::PR_WAITOK;
 use crate::sys::proc::Proc;
-use crate::sys::protosw::{PR_CONNREQUIRED, pru_send};
+use crate::sys::protosw::PR_CONNREQUIRED;
 use crate::sys::signalvar::sigpending;
 #[cfg(feature = "nfsserver")]
 use crate::sys::socket::MSG_DONTWAIT;
@@ -433,7 +432,7 @@ fn nfs_connect_so(
     mopt: Option<&'static Mbuf>,
     nam: Option<&'static Mbuf>,
 ) -> Result<(), Errno> {
-    nmp.nm_soflags.set(i32::from(so.so_proto.pr_flags));
+    nmp.nm_soflags.set(i32::from(so.proto().flags()));
 
     // Some servers require that the client port be a reserved port number. We always
     // allocate a reserved port, as this prevents filehandle disclosure through UDP port
@@ -479,16 +478,16 @@ fn nfs_connect_so(
 
     // Always set receive timeout to detect server crash and reconnect. Otherwise, we can get
     // stuck in soreceive forever.
-    mtx_enter(&so.so_rcv.sb_mtx);
-    so.so_rcv.sb_timeo_nsecs.set(sec_to_nsec(5));
-    mtx_leave(&so.so_rcv.sb_mtx);
-    mtx_enter(&so.so_snd.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
+    g_rcv.set_timeo_nsecs(sec_to_nsec(5));
+    drop(g_rcv);
+    let mut g_snd = so.so_snd.lock();
     if nmp.nm_flag.get() & (NFSMNT_SOFT | NFSMNT_INT) != 0 {
-        so.so_snd.sb_timeo_nsecs.set(sec_to_nsec(5));
+        g_snd.set_timeo_nsecs(sec_to_nsec(5));
     } else {
-        so.so_snd.sb_timeo_nsecs.set(INFSLP);
+        g_snd.set_timeo_nsecs(INFSLP);
     }
-    mtx_leave(&so.so_snd.sb_mtx);
+    drop(g_snd);
 
     let (sndreserve, rcvreserve) = match nmp.nm_sotype.get() {
         SOCK_DGRAM => {
@@ -499,11 +498,11 @@ fn nfs_connect_so(
         }
         SOCK_STREAM => {
             if let Some(mopt) = mopt {
-                if so.so_proto.pr_flags & PR_CONNREQUIRED != 0 {
+                if so.proto().flags() & PR_CONNREQUIRED != 0 {
                     set_mtod_int(mopt, 1);
                     let _ = sosetopt(so, SOL_SOCKET, SO_KEEPALIVE, Some(mopt));
                 }
-                if i32::from(so.so_proto.pr_protocol) == IPPROTO_TCP {
+                if i32::from(so.proto().protocol()) == IPPROTO_TCP {
                     set_mtod_int(mopt, 1);
                     let _ = sosetopt(so, IPPROTO_TCP, TCP_NODELAY, Some(mopt));
                 }
@@ -517,12 +516,12 @@ fn nfs_connect_so(
     solock_shared(so);
     let error = soreserve(so, sndreserve as u64, rcvreserve as u64);
     if error.is_ok() {
-        mtx_enter(&so.so_rcv.sb_mtx);
-        so.so_rcv.sb_flags.set(so.so_rcv.sb_flags.get() | SB_NOINTR);
-        mtx_leave(&so.so_rcv.sb_mtx);
-        mtx_enter(&so.so_snd.sb_mtx);
-        so.so_snd.sb_flags.set(so.so_snd.sb_flags.get() | SB_NOINTR);
-        mtx_leave(&so.so_snd.sb_mtx);
+        let mut g_rcv = so.so_rcv.lock();
+        g_rcv.set_flags(SB_NOINTR);
+        drop(g_rcv);
+        let mut g_snd = so.so_snd.lock();
+        g_snd.set_flags(SB_NOINTR);
+        drop(g_snd);
     }
     sounlock_shared(so);
     error
@@ -542,13 +541,13 @@ fn nfs_connect_wait(
     soconnect(so, srv)?;
 
     while so.has_state(SS_ISCONNECTING) && so.error().is_none() {
-        let _ = sosleep_nsec(so, so.timeo_chan(), PSOCK, "nfscon", sec_to_nsec(2));
+        let _ = sosleep_nsec(so, so.timeo_chan().cast(), PSOCK, "nfscon", sec_to_nsec(2));
         if so.has_state(SS_ISCONNECTING)
             && so.error().is_none()
             && let Some(rep) = rep
             && let Err(error) = nfs_sigintr(nmp, Some(rep), r_procp(rep))
         {
-            so.so_state.set(so.so_state.get() & !SS_ISCONNECTING);
+            so.clear_state_legacy(SS_ISCONNECTING);
             return Err(error);
         }
     }
@@ -625,7 +624,7 @@ pub fn nfs_send(
             rep.r_flags.set(rep.r_flags.get() & !R_MUSTRESEND);
             (so, nmp.nm_soflags.get())
         }
-        None => (so, i32::from(so.so_proto.pr_flags)),
+        None => (so, i32::from(so.proto().flags())),
     };
     let sendnam = if soflags & i32::from(PR_CONNREQUIRED) != 0 || so.has_state(SS_ISCONNECTED) {
         None
@@ -1429,11 +1428,17 @@ pub fn nfs_timer(arg: *mut c_void) {
                 || nmp.nm_sent.get() < nmp.nm_cwnd.get())
             && let Some(m) = m_copym(mreq, 0, M_COPYALL, M_DONTWAIT)
         {
-            let error = if nmp.nm_flag.get() & NFSMNT_NOCONN == 0 {
-                pru_send(so, Some(m), None, None)
+            // pru_send(so, m, nam, NULL) under the net lock nfs_timer holds (lent).
+            let nam = if nmp.nm_flag.get() & NFSMNT_NOCONN == 0 {
+                None
             } else {
-                pru_send(so, Some(m), nmp.nm_nam.get(), None)
+                nmp.nm_nam.get()
             };
+            let mut w = kernel::net::socket::solocked_legacy(so);
+            let error = so
+                .usrreqs()
+                .send(so, &mut w, Some(crate::sys::mbuf::unpark(m)), nam, None);
+            drop(w);
             if let Err(error) = error {
                 if nfsignore_soerror(nmp.nm_soflags.get(), error) {
                     so.set_error(None);
@@ -1833,6 +1838,18 @@ pub fn nfs_msg(rep: &NfsReq, msg: &str) {
     tprintf_close(tpr);
 }
 
+/// [`nfsrv_rcv`] as the socket layer's registered upcall (`so->so_upcall`, set by
+/// `nfssvc_addsock`): `arg` is the `nfssvc_sock`'s address it stored in `so_upcallarg`,
+/// exposed there.
+#[cfg(feature = "nfsserver")]
+pub fn nfsrv_rcv_upcall(so: &Socket, arg: usize, waitflag: i32) {
+    nfsrv_rcv(
+        crate::sys::socketvar::as_static(so),
+        core::ptr::with_exposed_provenance_mut(arg),
+        waitflag,
+    );
+}
+
 /// `nfsrv_rcv(so, arg, waitflag)`: socket upcall routine for the nfsd sockets. The `arg` is
 /// a pointer to the `struct nfssvc_sock`. Essentially do as much as possible non-blocking,
 /// else punt and it will be called with `M_WAIT` from an nfsd.
@@ -1857,7 +1874,7 @@ pub fn nfsrv_rcv(so: &'static Socket, arg: *mut c_void, waitflag: i32) {
             break 'dorecs;
         }
 
-        if so.so_type.get() == SOCK_STREAM {
+        if so.so_type() == SOCK_STREAM {
             // Do soreceive().
             let mut auio = Uio {
                 uio_iov: &mut [],
@@ -1953,7 +1970,7 @@ pub fn nfsrv_rcv(so: &'static Socket, arg: *mut c_void, waitflag: i32) {
                     m_freem(nam);
                 }
                 if let Err(error) = error
-                    && so.so_proto.pr_flags & PR_CONNREQUIRED != 0
+                    && so.proto().flags() & PR_CONNREQUIRED != 0
                     && error != Errno::EWOULDBLOCK
                 {
                     slp.ns_flag.set(slp.ns_flag.get() | SLP_DISCONN);

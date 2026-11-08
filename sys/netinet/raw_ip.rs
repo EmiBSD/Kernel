@@ -342,11 +342,11 @@ pub fn rip_sbappend(inp: &Inpcb, m: &'static Mbuf, ip: &Ip, ripsrc: &SockaddrIn)
         ip_savecontrol(inp, &mut opts, ip, m);
     }
 
-    mtx_enter(&so.so_rcv.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
     if !so.so_rcv.has_state(SS_CANTRCVMORE) {
-        ret = sbappendaddr(&so.so_rcv, sin_bytes(ripsrc), Some(m), opts);
+        ret = sbappendaddr(&mut g_rcv, sin_bytes(ripsrc), Some(m), opts);
     }
-    mtx_leave(&so.so_rcv.sb_mtx);
+    drop(g_rcv);
 
     if !ret {
         m_freem(m);
@@ -564,7 +564,7 @@ pub fn rip_ctloutput(
 
 /// `rip_attach`: a control block for a privileged raw socket of protocol `proto`.
 pub fn rip_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Errno> {
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         panic(format_args!("rip_attach"));
     }
     if !so.has_state(SS_PRIV) {
@@ -729,12 +729,12 @@ mod tests {
     // `rip_input` and the socket's receive buffer with the sender's address), `IP_HDRINCL`, the
     // filters of `rip_input`, and the privilege `rip_attach` requires.
 
-    use std::{assert, assert_eq, vec};
+    use std::{assert, assert_eq, vec::Vec};
 
     use super::*;
     use crate::sys::mbuf::m_data_add;
 
-    use crate::kern::uipc_mbuf::{m_copydata, m_gethdr};
+    use crate::kern::uipc_mbuf::m_gethdr;
     use crate::kern::uipc_socket::{soclose, socreate};
     use crate::kern::uipc_socket2::{solock, sounlock};
     use crate::net::ethertypes::{ETHERTYPE_ARP, ETHERTYPE_IP};
@@ -781,7 +781,7 @@ mod tests {
         let so = icmp_socket();
         let inp = sotoinpcb(so).expect("attached");
         assert_eq!(inp.inp_ip.get().ip_p, IPPROTO_ICMP as u8);
-        assert_eq!(so.so_rcv.sb_hiwat.get(), RIP_RECVSPACE);
+        assert_eq!(so.so_rcv.hiwat(), RIP_RECVSPACE);
 
         // IP_HDRINCL is off, as ping leaves it.
         let m = intopt(7);
@@ -867,15 +867,17 @@ mod tests {
         ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, &r), None);
         ipintr();
 
-        let rec = so.so_rcv.sb_mb.get().expect("a record");
-        assert_eq!(i32::from(rec.m_type().get()), MT_SONAME);
-        // SAFETY: an `MT_SONAME` mbuf of a raw inet socket holds a `sockaddr_in`.
-        let from = unsafe { mtod::<SockaddrIn>(rec).read_unaligned() };
-        assert_eq!(from.sin_addr, sin(GATEWAY).sin_addr);
-        let data = rec.m_next().get().expect("the datagram");
-        let mut got = vec![0u8; r.len()];
-        m_copydata(data, 0, &mut got);
-        assert_eq!(got, r, "the whole datagram, IP header included");
+        {
+            let g = so.so_rcv.lock();
+            let mut rec = g.data().first_record();
+            let addr = rec.next().expect("a record");
+            assert_eq!(i32::from(addr.m_type().get()), MT_SONAME);
+            // SAFETY: an `MT_SONAME` mbuf of a raw inet socket holds a `sockaddr_in`.
+            let from = unsafe { mtod::<SockaddrIn>(addr).read_unaligned() };
+            assert_eq!(from.sin_addr, sin(GATEWAY).sin_addr);
+            let got: Vec<u8> = rec.flat_map(|m| m.data().iter().copied()).collect();
+            assert_eq!(got, r, "the whole datagram, IP header included");
+        }
 
         soclose(so, 0).expect("close");
         teardown();
@@ -909,12 +911,12 @@ mod tests {
             rip_input(&mut mp, &mut off, 0, i32::from(AF_INET), None);
         };
         deliver(packet(1, ADDR));
-        assert_eq!(udp.so_rcv.sb_cc.get(), 0);
-        assert!(any.so_rcv.sb_cc.get() > 0);
+        assert_eq!(udp.so_rcv.cc(), 0);
+        assert!(any.so_rcv.cc() > 0);
         deliver(packet(17, [10, 0, 2, 99]));
-        assert_eq!(udp.so_rcv.sb_cc.get(), 0);
+        assert_eq!(udp.so_rcv.cc(), 0);
         deliver(packet(17, ADDR));
-        assert!(udp.so_rcv.sb_cc.get() > 0);
+        assert!(udp.so_rcv.cc() > 0);
         soclose(udp, 0).expect("close");
         soclose(any, 0).expect("close");
 

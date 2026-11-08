@@ -602,9 +602,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Data: Send + Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
     type FileList: PinAdapter<Elem = File<Self>>;
-    /// The members of `struct vnode` of `bsd`'s types: `v_socket` (N6); `Default` is a new
-    /// vnode's (`kernel::fs::vnode`).
-    type VnodeG: Default + Sync + 'static;
     /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
@@ -670,10 +667,27 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// moves `buf` (at most `uio_resid` bytes of it) in the uio's direction, a special file's
     /// block-device read or write through the buffer cache.
     fn uiomove(buf: &mut [u8], uio: &mut Uio<'_, Self::Proc>) -> Result<(), Errno>;
+    /// `uiomove(buf, len, uio)` of a read out of bytes no one writes meanwhile (a socket's
+    /// receive buffer, whose clusters may be shared, so no `&mut` to them exists): a user
+    /// uio through `hal`'s checked `copyout` (`kernel::uio::uiomove_user_out`), a kernel one
+    /// (`UIO_SYSSPACE`, nfs's) through `bsd`'s copy until N7, which overrides this.
+    fn uiomove_out(buf: &[u8], uio: &mut Uio<'_, Self::Proc>) -> Result<(), Errno> {
+        crate::uio::uiomove_user_out(buf, uio)
+    }
+    /// The network's tables of this glue's processes: the domains, the socket pools, the
+    /// protocol timeouts (one `static` of `bsd`'s; D-N6.2-7).
+    fn net() -> &'static crate::net::domain::NetTables<Self::Proc>;
+    /// The socket a `DTYPE_SOCKET` file's object holds (`fp->f_data`); `None` for another
+    /// object.
+    fn socket_of(d: &Self::Data) -> Option<&crate::net::socket::SocketRef<Self::Proc>>;
+    /// `socketops` and the object of a new socket file (`socket(2)`'s, `accept(2)`'s,
+    /// `socketpair(2)`'s `f_ops` and `f_data`): the object holds `so`, the file's socket,
+    /// whose last reference goes with the file's (after `soo_close`'s `soclose`).
+    fn socket_file(
+        so: crate::net::socket::SocketRef<Self::Proc>,
+    ) -> (&'static Self::Ops, Self::Data);
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
-    /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
-    fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
 
     /// `vfs_export(mp, &ump->um_export, argp)` of a UFS mount (`ffs_mount`'s export update,
     /// `mount -u` without a device name): the NFS server's export list is the mount's glue

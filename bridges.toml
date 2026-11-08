@@ -386,3 +386,28 @@ paid_by = "N8"
 trait = "Pf"
 for = ["sys/kernel/net/mbuf.rs"]
 paid_by = "N8"
+
+# bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
+# directly on bsd's struct domain, protosw and pr_usrreqs (Domain, Protocol and Usrreqs impls
+# in sys/kern/uipc_domain.rs, the tables as they are) and handed to
+# kernel::net::domain::domaininit in the C's domains[] order, the UNIX domain among them, by
+# bsd's domaininit (the socket layer's switch, N6.2a), for the
+# kernel's socket layer (socreate's pffindproto, every pru_* request, sosetopt's
+# pr_ctloutput, pfctlinput). Paid when pfkeyv2's domain and inetsw[]'s AH/ESP/IPCOMP/IPIP
+# entries, its last legacy implementers, move (N8); inet's flip at N6.4/N6.6, route's at N6.3b.
+# kernel::net::proto::Protocol
+[[bridge]]
+trait = "Protocol"
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
+paid_by = "N8"
+
+# bsd: the interface layer's legs the socket layer calls (if.c's ifioctl for soo_ioctl's 'i'
+# group, net_tq for sosplice's task queue), implemented by bsd's BsdIfLegacy
+# (sys/kern/sys_socket.rs, over sys/net/if_.rs's ifioctl and net_tq) and registered in the
+# glue's NetTables (generic over the glue, so not a hal::bridges slot) by bsd's domaininit
+# (N6.2a). Paid by N6.3a, when the interface core moves (N6's row).
+# kernel::net::domain::IfLegacy
+[[bridge]]
+trait = "IfLegacy"
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
+paid_by = "N6"

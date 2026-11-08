@@ -114,7 +114,6 @@ pub use hal::sys::signal;
 pub mod signalvar;
 pub mod smr;
 pub mod socket;
-#[forbid(unsafe_code)]
 pub mod socketvar;
 #[forbid(unsafe_code)]
 pub mod sockio;
@@ -157,10 +156,8 @@ pub mod ucred;
 
 #[forbid(unsafe_code)]
 pub mod uio;
-#[forbid(unsafe_code)]
-pub mod un;
+pub use hal::sys::un;
 pub use hal::sys::unistd;
-pub mod unpcb;
 #[forbid(unsafe_code)]
 pub mod user;
 pub use hal::sys::uuid;

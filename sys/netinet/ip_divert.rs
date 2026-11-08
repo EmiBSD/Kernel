@@ -382,13 +382,13 @@ pub fn divert_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
         }
 
         let so = inp.socket();
-        mtx_enter(&so.so_rcv.sb_mtx);
-        if !sbappendaddr(&so.so_rcv, sin_bytes(&sin), Some(mm), None) {
-            mtx_leave(&so.so_rcv.sb_mtx);
+        let mut g_rcv = so.so_rcv.lock();
+        if !sbappendaddr(&mut g_rcv, sin_bytes(&sin), Some(mm), None) {
+            drop(g_rcv);
             divstat_inc(DivstatCounters::DivsFullsock);
             break 'bad;
         }
-        mtx_leave(&so.so_rcv.sb_mtx);
+        drop(g_rcv);
         sorwakeup(so);
 
         in_pcbunref(Some(inp));
@@ -401,7 +401,7 @@ pub fn divert_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
 
 /// `divert_attach`: a control block for a privileged divert socket.
 pub fn divert_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Errno> {
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         return Err(Errno::EINVAL);
     }
     if !so.has_state(SS_PRIV) {
@@ -562,7 +562,7 @@ mod tests {
         let so = socreate(i32::from(AF_INET), SOCK_RAW, IPPROTO_DIVERT).expect("divert socket");
         let inp = sotoinpcb(so).expect("attached");
         assert!(inp.has_flags(INP_HDRINCL));
-        assert_eq!(so.so_rcv.sb_hiwat.get(), DIVERT_RECVSPACE as u64);
+        assert_eq!(so.so_rcv.hiwat(), DIVERT_RECVSPACE as u64);
         solock(so);
         divert_bind(so, nam(sin([0; 4], 700)), p).expect("bind");
         sounlock(so);
@@ -573,18 +573,22 @@ mod tests {
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
         divert_packet(m, PF_IN, htons(700));
         assert_eq!(count(DivstatCounters::DivsIpackets), ipackets + 1);
-        let rec = so.so_rcv.sb_mb.get().expect("a record");
-        assert_eq!(i32::from(rec.m_type().get()), MT_SONAME);
-        // SAFETY: the record's address is a `sockaddr_in`.
-        let from = unsafe { mtod::<SockaddrIn>(rec).read_unaligned() };
-        assert_eq!(from.sin_addr.s_addr, u32::from_ne_bytes(ADDR));
-        let data = rec.m_next().get().expect("the packet");
-        assert_eq!(data.m_pkthdr().len.get(), 32);
-        let cc = so.so_rcv.sb_cc.get();
+        let cc = {
+            let g = so.so_rcv.lock();
+            let mut rec = g.data().first_record();
+            let addr = rec.next().expect("a record");
+            assert_eq!(i32::from(addr.m_type().get()), MT_SONAME);
+            // SAFETY: the record's address is a `sockaddr_in`.
+            let from = unsafe { mtod::<SockaddrIn>(addr).read_unaligned() };
+            assert_eq!(from.sin_addr.s_addr, u32::from_ne_bytes(ADDR));
+            let data = rec.next().expect("the packet");
+            assert_eq!(data.m_pkthdr().len.get(), 32);
+            so.so_rcv.cc()
+        };
 
         // Outbound: the wildcard address, and the checksums computed for the reader.
         divert_packet(datagram([10, 0, 2, 2]), PF_OUT, htons(700));
-        assert!(so.so_rcv.sb_cc.get() > cc);
+        assert!(so.so_rcv.cc() > cc);
 
         // No socket on port 701: counted and dropped.
         let noport = count(DivstatCounters::DivsNoport);

@@ -868,15 +868,15 @@ pub fn udp_sbappend(
     }
     m_adj(m, hlen);
 
-    mtx_enter(&so.so_rcv.sb_mtx);
-    if !sbappendaddr(&so.so_rcv, srcaddr, Some(m), opts) {
-        mtx_leave(&so.so_rcv.sb_mtx);
+    let mut g_rcv = so.so_rcv.lock();
+    if !sbappendaddr(&mut g_rcv, srcaddr, Some(m), opts) {
+        drop(g_rcv);
         udpstat_inc(UdpstatCounters::UdpsFullsock);
         m_freem(m);
         m_freem(opts);
         return;
     }
-    mtx_leave(&so.so_rcv.sb_mtx);
+    drop(g_rcv);
 
     sorwakeup(so);
 }
@@ -1312,7 +1312,7 @@ pub fn udp_output(
         m,
         inp.inp_options.get(),
         Some(&inp.inp_route),
-        inp.socket().so_options.get() & SO_BROADCAST,
+        inp.socket().options() & SO_BROADCAST,
         inp.moptions(),
         Some(&inp.inp_seclevel.get()),
         ipsecflowinfo,
@@ -1333,7 +1333,7 @@ fn inpcb_of(so: &Socket) -> &'static Inpcb {
 
 /// `udp_attach`: a control block in `udbtable`, the default TTL, the buffer sizes.
 pub fn udp_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Errno> {
-    if !so.so_pcb.get().is_null() {
+    if !crate::sys::socketvar::so_pcb(so).is_null() {
         return Err(Errno::EINVAL);
     }
 
@@ -1428,7 +1428,7 @@ pub fn udp_disconnect(so: &'static Socket) -> Result<(), Errno> {
     }
     in_pcbunset_laddr(inp);
     in_pcbdisconnect(inp);
-    so.clear_state(SS_ISCONNECTED); // XXX
+    so.clear_state_legacy(SS_ISCONNECTED); // XXX
 
     Ok(())
 }
@@ -1548,7 +1548,7 @@ mod tests {
     use std::{assert, assert_eq, vec, vec::Vec};
 
     use super::*;
-    use crate::kern::uipc_mbuf::{m_copydata, m_gethdr};
+    use crate::kern::uipc_mbuf::m_gethdr;
     use crate::kern::uipc_socket::{soclose, socreate};
     use crate::kern::uipc_socket2::{solock, sounlock};
     use crate::net::ethertypes::{ETHERTYPE_ARP, ETHERTYPE_IP};
@@ -1683,22 +1683,24 @@ mod tests {
         sounlock(so);
 
         receive(ifp, &udp_datagram(1234, ADDR, 5353, b"hello", false));
-        let rec = so.so_rcv.sb_mb.get().expect("a record");
-        assert_eq!(i32::from(rec.m_type().get()), MT_SONAME);
-        // SAFETY: the record's address is a `sockaddr_in`.
-        let from = unsafe { mtod::<SockaddrIn>(rec).read_unaligned() };
-        assert_eq!(from, sinp(GATEWAY, 1234));
-        let data = rec.m_next().get().expect("data");
-        let mut got = vec![0u8; 5];
-        m_copydata(data, 0, &mut got);
-        assert_eq!(got, b"hello", "the payload alone");
-        assert_eq!(so.so_rcv.sb_datacc.get(), 5);
+        {
+            let g = so.so_rcv.lock();
+            let mut rec = g.data().first_record();
+            let addr = rec.next().expect("a record");
+            assert_eq!(i32::from(addr.m_type().get()), MT_SONAME);
+            // SAFETY: the record's address is a `sockaddr_in`.
+            let from = unsafe { mtod::<SockaddrIn>(addr).read_unaligned() };
+            assert_eq!(from, sinp(GATEWAY, 1234));
+            let got: Vec<u8> = rec.flat_map(|m| m.data().iter().copied()).collect();
+            assert_eq!(got, b"hello", "the payload alone");
+        }
+        assert_eq!(so.so_rcv.datacc(), 5);
 
         // A bad checksum is dropped.
         let badsum = udpstat(UdpstatCounters::UdpsBadsum);
         receive(ifp, &udp_datagram(1234, ADDR, 5353, b"hello", true));
         assert_eq!(udpstat(UdpstatCounters::UdpsBadsum), badsum + 1);
-        assert_eq!(so.so_rcv.sb_datacc.get(), 5);
+        assert_eq!(so.so_rcv.datacc(), 5);
 
         // A closed port gets a port unreachable (queued for ip_send) quoting the datagram.
         let _ = sent(|_, _| {});
@@ -1924,17 +1926,19 @@ mod tests {
             &udp6_payload(1234, 5353, b"hello"),
             Some(6),
         ));
-        let rec = so.so_rcv.sb_mb.get().expect("a record");
-        assert_eq!(i32::from(rec.m_type().get()), MT_SONAME);
-        // SAFETY: the record's address of an inet6 socket is a `sockaddr_in6`.
-        let from = unsafe { mtod::<SockaddrIn6>(rec).read_unaligned() };
-        assert_eq!(from.sin6_family, AF_INET6);
-        assert_eq!(from.sin6_port, 1234u16.to_be());
-        assert_eq!(from.sin6_addr, a6("fd00:77::2"));
-        let data = rec.m_next().get().expect("the datagram");
-        let mut got = vec![0u8; data.m_pkthdr().len.get() as usize];
-        m_copydata(data, 0, &mut got);
-        assert_eq!(got, b"hello");
+        {
+            let g = so.so_rcv.lock();
+            let mut rec = g.data().first_record();
+            let addr = rec.next().expect("a record");
+            assert_eq!(i32::from(addr.m_type().get()), MT_SONAME);
+            // SAFETY: the record's address of an inet6 socket is a `sockaddr_in6`.
+            let from = unsafe { mtod::<SockaddrIn6>(addr).read_unaligned() };
+            assert_eq!(from.sin6_family, AF_INET6);
+            assert_eq!(from.sin6_port, 1234u16.to_be());
+            assert_eq!(from.sin6_addr, a6("fd00:77::2"));
+            let got: Vec<u8> = rec.flat_map(|m| m.data().iter().copied()).collect();
+            assert_eq!(got, b"hello");
+        }
 
         // In IPv6 the UDP checksum is always used: a datagram without one is dropped.
         let nosum = udpstat(UdpstatCounters::UdpsNosum);
@@ -1945,7 +1949,7 @@ mod tests {
             None,
         ));
         assert_eq!(udpstat(UdpstatCounters::UdpsNosum), nosum + 1);
-        assert!(rec.m_nextpkt().get().is_none(), "not appended");
+        assert!(!so.so_rcv.lock().data().has_next_record(), "not appended");
 
         // A closed port: an ICMPv6 port unreachable is reflected to the sender (queued for
         // ip6_send, whose queue is ip6_input.rs's own).

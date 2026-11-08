@@ -48,48 +48,34 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The file operations of sockets: `kern/sys_socket.c`.
+//! The file operations of sockets: `kern/sys_socket.c`, the kernel's
+//! (`kernel::net::file::SocketFileOps`) in `bsd`'s `struct fileops` table.
 //!
 //! Upstream: sys/kern/sys_socket.c @ 3ce1f3f79392
 //!
-//! A `DTYPE_SOCKET` file points its `f_data` at its socket; `socketops` turns `read(2)`,
-//! `write(2)`, `ioctl(2)`, `fstat(2)` and the last `close(2)` into `soreceive`, `sosend`,
-//! the socket ioctls (or the interface's and the protocol's), a socket `stat` and
-//! `soclose`.
+//! A `DTYPE_SOCKET` file's object is its counted socket (`BsdFileData::Socket`);
+//! `socketops` turns `read(2)`, `write(2)`, `ioctl(2)`, `kevent(2)`, `fstat(2)` and the
+//! last `close(2)` into the kernel's socket file operations.
 //!
 //! ## Deviations
-//! - `fo_ioctl`'s `data` is the kernel copy of the argument (`sys_ioctl`); the `int`
-//!   arguments are read and written in native byte order. `ifioctl` wants its request
-//!   aligned for the structure the command names: a request in `sys_ioctl`'s byte buffer on
-//!   the stack (at most `STK_PARAMS`, 128 bytes) is copied through an aligned buffer here.
-//! - [`fp_socket`] is `fp->f_data` cast to the socket, checking the type as the C assumes.
+//! - [`fp_socket`] is `fp->f_data` of a socket file as the `&'static Socket` LZ's callers
+//!   keep (the file's reference keeps the socket).
 
-use core::ffi::c_void;
-use core::ptr;
-use core::sync::atomic::Ordering;
+use kernel::file::FileOps;
+use kernel::net::file::SocketFileOps;
 
-use hal::link::PtrWord;
-
-use crate::kern::kern_descrip::BsdFileData;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_sig::{sigio_getown, sigio_setown};
+use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_socket::{soclose, soo_kqfilter, soreceive, sosend};
-use crate::kern::uipc_socket2::{solock_shared, sounlock_shared};
-use crate::net::if_::ifioctl;
 use crate::sys::errno::Errno;
-use crate::sys::fcntl::FNONBLOCK;
+use crate::sys::event::Knote;
 use crate::sys::file::{DTYPE_SOCKET, File, Fileops};
-use crate::sys::filio::{FIOASYNC, FIOGETOWN, FIONREAD, FIOSETOWN};
-use crate::sys::ioccom::iocgroup;
 use crate::sys::proc::Proc;
-use crate::sys::protosw::{pru_control, pru_sense};
-use crate::sys::socket::MSG_DONTWAIT;
-use crate::sys::socketvar::{SB_ASYNC, SS_CANTRCVMORE, SS_CANTSENDMORE, SS_RCVATMARK, Socket};
-use crate::sys::sockio::{SIOCATMARK, SIOCGPGRP, SIOCSPGRP};
-use crate::sys::stat::{S_IFSOCK, S_IRGRP, S_IROTH, S_IRUSR, S_IWGRP, S_IWOTH, S_IWUSR, Stat};
-use crate::sys::ttycom::{TIOCGPGRP, TIOCSPGRP};
+use crate::sys::socketvar::{Socket, as_static};
+use crate::sys::stat::Stat;
 use crate::sys::uio::Uio;
+
+/// The kernel's operations of a socket file.
+static OPS: SocketFileOps<BsdProcGlue> = SocketFileOps::NEW;
 
 /// `socketops`.
 pub static SOCKETOPS: Fileops = Fileops {
@@ -102,174 +88,173 @@ pub static SOCKETOPS: Fileops = Fileops {
     fo_seek: None,
 };
 
+/// `fp->f_type = DTYPE_SOCKET; fp->f_ops = &socketops; fp->f_data = so`: `so`'s reference
+/// becomes the file's (its last close is the socket's `soclose`).
+pub fn fp_install(fp: &File, so: crate::sys::socketvar::SocketRef) {
+    let (ops, data) =
+        <crate::kern::kern_descrip::BsdFileGlue as kernel::file::FileGlue>::socket_file(so);
+    fp.install(DTYPE_SOCKET, ops, data);
+}
+
 /// `(struct socket *)fp->f_data` of a socket file.
 pub fn fp_socket(fp: &File) -> &'static Socket {
-    let word = match fp.data() {
-        Some(BsdFileData::Socket(word)) if fp.f_type() == DTYPE_SOCKET => word,
+    match fp.data() {
+        Some(crate::kern::kern_descrip::BsdFileData::Socket(so)) if fp.f_type() == DTYPE_SOCKET => {
+            as_static(so)
+        }
         _ => panic(format_args!("file {:#x}: not a socket", fp.addr())),
-    };
-    match socket_of(word) {
-        Some(so) => so,
-        None => panic(format_args!("file {:#x}: socket already closed", fp.addr())),
     }
 }
 
-/// The socket a socket file's `f_data` word names, `None` once `soo_close` cleared it.
-pub fn socket_of(word: &PtrWord<Socket>) -> Option<&'static Socket> {
-    // SAFETY: every `DTYPE_SOCKET` file's `f_data` is set to a live socket before the file
-    // is inserted in a table; the file holds the socket's file reference until `soo_close`
-    // (which clears the word) runs on its last reference, after every user of the file.
-    unsafe { word.get().as_ref() }
+/// `soo_read(fp, uio, fflags)`.
+pub fn soo_read(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
+    OPS.read(fp, uio, fflags)
 }
 
-/// The `int` an `ioctl` argument holds.
-fn int_arg(data: &[u8]) -> i32 {
-    data.first_chunk::<4>()
-        .map_or(0, |b| i32::from_ne_bytes(*b))
+/// `soo_write(fp, uio, fflags)`.
+pub fn soo_write(fp: &File, uio: &mut Uio<'_>, fflags: i32) -> Result<(), Errno> {
+    OPS.write(fp, uio, fflags)
 }
 
-/// Stores an `int` into an `ioctl` argument.
-fn set_int_arg(data: &mut [u8], v: i32) {
-    if let Some(b) = data.first_chunk_mut::<4>() {
-        *b = v.to_ne_bytes();
-    }
-}
-
-/// `soo_read(fp, uio, fflags)`: `read(2)` on a socket.
-pub fn soo_read(fp: &File, uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
-    let so = fp_socket(fp);
-    let mut flags = 0;
-
-    if fp.flag() & FNONBLOCK != 0 {
-        flags |= MSG_DONTWAIT;
-    }
-
-    soreceive(so, None, uio, None, None, Some(&mut flags), 0)
-}
-
-/// `soo_write(fp, uio, fflags)`: `write(2)` on a socket.
-pub fn soo_write(fp: &File, uio: &mut Uio<'_>, _fflags: i32) -> Result<(), Errno> {
-    let so = fp_socket(fp);
-    let mut flags = 0;
-
-    if fp.flag() & FNONBLOCK != 0 {
-        flags |= MSG_DONTWAIT;
-    }
-
-    sosend(so, None, Some(uio), None, None, flags)
-}
-
-/// `ifioctl` over `data`, through an aligned copy when `data` is not aligned for the
-/// interface request (see the module's deviations).
-fn soo_ifioctl(so: &Socket, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {
-    let so = ptr::from_ref(so).cast::<c_void>();
-    if data.as_ptr().align_offset(align_of::<u64>()) == 0 {
-        // SAFETY: `data` is the kernel copy of the request, as long as the command says
-        // (`sys_ioctl`) and aligned (checked).
-        return unsafe { ifioctl(so, cmd, data.as_mut_ptr(), p) };
-    }
-    // sys_ioctl's on-stack buffer: at most STK_PARAMS bytes.
-    let mut aligned = [0u64; 16];
-    let len = data.len().min(size_of_val(&aligned));
-    let bytes = aligned.as_mut_ptr().cast::<u8>();
-    // SAFETY: both buffers hold `len` bytes and do not overlap.
-    unsafe { ptr::copy_nonoverlapping(data.as_ptr(), bytes, len) };
-    // SAFETY: an aligned copy of the request, as long as `data` (at most 128 bytes).
-    let error = unsafe { ifioctl(so, cmd, bytes, p) };
-    // SAFETY: as above, back into the caller's buffer.
-    unsafe { ptr::copy_nonoverlapping(bytes, data.as_mut_ptr(), len) };
-    error
-}
-
-/// `soo_ioctl(fp, cmd, data, p)`: the socket ioctls; the interface ones go to `ifioctl`,
-/// the protocol ones to `pru_control`.
+/// `soo_ioctl(fp, cmd, data, p)`.
 pub fn soo_ioctl(fp: &File, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {
-    let so = fp_socket(fp);
-
-    match cmd {
-        FIOASYNC => {
-            mtx_enter(&so.so_rcv.sb_mtx);
-            mtx_enter(&so.so_snd.sb_mtx);
-            if int_arg(data) != 0 {
-                so.so_rcv.set_flags(SB_ASYNC);
-                so.so_snd.set_flags(SB_ASYNC);
-            } else {
-                so.so_rcv.clear_flags(SB_ASYNC);
-                so.so_snd.clear_flags(SB_ASYNC);
-            }
-            mtx_leave(&so.so_snd.sb_mtx);
-            mtx_leave(&so.so_rcv.sb_mtx);
-        }
-
-        FIONREAD => set_int_arg(data, so.so_rcv.sb_datacc.get() as i32),
-
-        FIOSETOWN | SIOCSPGRP | TIOCSPGRP => {
-            return sigio_setown(&so.so_sigio, cmd, &int_arg(data));
-        }
-
-        FIOGETOWN | SIOCGPGRP | TIOCGPGRP => {
-            let mut pgid = 0;
-            sigio_getown(&so.so_sigio, cmd, &mut pgid);
-            set_int_arg(data, pgid);
-        }
-
-        SIOCATMARK => set_int_arg(data, i32::from(so.so_rcv.has_state(SS_RCVATMARK))),
-
-        _ => {
-            // Interface/routing/protocol specific ioctls: interface and routing ioctls
-            // should have a different entry since a socket's unnecessary
-            if iocgroup(cmd) == u64::from(b'i') {
-                return soo_ifioctl(so, cmd, data, p);
-            }
-            if iocgroup(cmd) == u64::from(b'r') {
-                return Err(Errno::EOPNOTSUPP);
-            }
-            return pru_control(so, cmd, data, None);
-        }
-    }
-
-    Ok(())
+    OPS.ioctl(fp, cmd, data, p)
 }
 
-/// `soo_stat(fp, ub, p)`: `fstat(2)` on a socket.
-pub fn soo_stat(fp: &File, ub: &mut Stat, _p: &Proc) -> Result<(), Errno> {
-    let so = fp_socket(fp);
-
-    *ub = Stat::default();
-    ub.st_mode = S_IFSOCK;
-    solock_shared(so);
-    mtx_enter(&so.so_rcv.sb_mtx);
-    if !so.so_rcv.has_state(SS_CANTRCVMORE) || so.so_rcv.sb_cc.get() != 0 {
-        ub.st_mode |= S_IRUSR | S_IRGRP | S_IROTH;
-    }
-    mtx_leave(&so.so_rcv.sb_mtx);
-    mtx_enter(&so.so_snd.sb_mtx);
-    if !so.so_snd.has_state(SS_CANTSENDMORE) {
-        ub.st_mode |= S_IWUSR | S_IWGRP | S_IWOTH;
-    }
-    mtx_leave(&so.so_snd.sb_mtx);
-    ub.st_uid = so.so_euid.get();
-    ub.st_gid = so.so_egid.get();
-    let _ = pru_sense(so, ub);
-    sounlock_shared(so);
-    Ok(())
+/// `soo_kqfilter(fp, kn)`.
+pub fn soo_kqfilter(fp: &File, kn: &Knote) -> Result<(), Errno> {
+    OPS.kqfilter(fp, kn)
 }
 
-/// `soo_close(fp, p)`: the last reference to a socket file is gone: close the socket.
-pub fn soo_close(fp: &File, _p: Option<&Proc>) -> Result<(), Errno> {
-    let mut error = Ok(());
+/// `soo_stat(fp, ub, p)`.
+pub fn soo_stat(fp: &File, ub: &mut Stat, p: &Proc) -> Result<(), Errno> {
+    OPS.stat(fp, ub, p)
+}
 
-    if let Some(BsdFileData::Socket(word)) = fp.data() {
-        if let Some(so) = socket_of(word) {
-            let flags = if fp.f_flag.load(Ordering::Relaxed) & FNONBLOCK as u32 != 0 {
-                MSG_DONTWAIT
-            } else {
-                0
-            };
-            error = soclose(so, flags);
-        }
-        word.set(ptr::null());
+/// `soo_close(fp, p)`.
+pub fn soo_close(fp: &File, p: Option<&Proc>) -> Result<(), Errno> {
+    OPS.close(fp, p)
+}
+/// The bytes `ifioctl` works on for `cmd`: the structure the command names
+/// (`IOCPARM_LEN(cmd)`, up to `IOCPARM_MAX`, which `sys_ioctl` copied whole) and at least the
+/// `struct ifreq` every interface request starts with (its name is read first).
+fn ifioctl_need(cmd: u64) -> usize {
+    (hal::sys::ioccom::iocparm_len(cmd) as usize).max(size_of::<crate::net::if_::Ifreq>())
+}
+
+/// Where `ifioctl` works on `data` for `cmd`: `None` for `data` itself, when it holds
+/// [`ifioctl_need`] bytes aligned for `u64` (the kernel's stack buffer and its heap ones of
+/// the right length); else a zeroed heap copy of `data` at least that long, `u64`-aligned,
+/// whose first `data.len()` bytes go back to `data` after the call. Never a shorter one.
+fn ifioctl_buffer(data: &[u8], cmd: u64) -> Result<Option<hal::malloc::MArray<u64>>, Errno> {
+    let need = ifioctl_need(cmd);
+    if data.len() >= need && data.as_ptr().align_offset(align_of::<u64>()) == 0 {
+        return Ok(None);
     }
-    error
+    let words = need.max(data.len()).div_ceil(size_of::<u64>());
+    let Some(mut c) = hal::malloc::MArray::new(
+        crate::sys::malloc::M_IOCTLOPS,
+        crate::sys::malloc::M_WAITOK,
+        words,
+        |_| 0u64,
+    ) else {
+        return Err(Errno::ENOMEM);
+    };
+    hal::user::bytes_of_mut(&mut c[..])[..data.len()].copy_from_slice(data);
+    Ok(Some(c))
+}
+
+/// The interface layer's legs of the kernel's socket layer (the `IfLegacy` row of
+/// `bridges.toml`): `if.c`'s `ifioctl` and `net_tq`, `bsd`'s until N6.3a.
+pub struct BsdIfLegacy;
+
+/// The one [`BsdIfLegacy`], registered by `domaininit`.
+pub static IFLEGACY: BsdIfLegacy = BsdIfLegacy;
+
+impl kernel::net::domain::IfLegacy<BsdProcGlue> for BsdIfLegacy {
+    /// `ifioctl(so, cmd, data, p)` on `sys_ioctl`'s copy of the request, in place when it is
+    /// as long as `ifioctl` works on and aligned for it (the kernel's stack buffer is), else
+    /// through a heap copy of that length ([`ifioctl_buffer`]).
+    fn ifioctl(&self, so: &Socket, cmd: u64, data: &mut [u8], p: &Proc) -> Result<(), Errno> {
+        let mut copy = ifioctl_buffer(data, cmd)?;
+        let bytes = match copy.as_mut() {
+            Some(c) => hal::user::bytes_of_mut(&mut c[..]).as_mut_ptr(),
+            None => data.as_mut_ptr(),
+        };
+        // SAFETY: `bytes` points at `ifioctl_need(cmd)` or more bytes aligned for `u64`
+        // (`ifioctl_buffer`'s promise: `data` itself, checked for both, or the heap copy it
+        // made that long), so the request structure `ifioctl` casts it to (`IOCPARM_LEN(cmd)`
+        // bytes, at least the `struct ifreq` every interface request starts with) is in
+        // bounds and aligned, and nothing else uses the bytes during the call (`data` is
+        // ours exclusively, the copy local); `ifioctl` keeps no pointer past the call; `so`
+        // is the caller's socket, alive across it.
+        let error =
+            unsafe { crate::net::if_::ifioctl(core::ptr::from_ref(so).cast(), cmd, bytes, p) };
+        if let Some(c) = &copy {
+            data.copy_from_slice(&hal::user::bytes_of(&c[..])[..data.len()]);
+        }
+        error
+    }
+
+    /// `net_tq(flowid)`.
+    fn net_tq(&self, flowid: u32) -> &'static kernel::task::Taskq {
+        match crate::net::if_::net_tq(flowid) {
+            Some(tq) => tq,
+            None => panic(format_args!("net_tq: no softnet queue")),
+        }
+    }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use std::vec::Vec;
+    use std::{assert, assert_eq};
+
+    use super::*;
+    use crate::sys::sockio::SIOCGLIFPHYADDR;
+
+    #[test]
+    fn ifioctl_works_on_the_whole_request() {
+        let (_g, _t, p) = crate::netinet::in_pcb::tests::setup();
+        // A request longer than STK_PARAMS (536 bytes): sys_ioctl's heap buffer.
+        let need = ifioctl_need(SIOCGLIFPHYADDR);
+        assert!(need > 128, "{need}");
+        let mut words: Vec<u64> = std::vec![0; need.div_ceil(8) + 1];
+        let bytes = hal::user::bytes_of_mut(&mut words[..]);
+        // Aligned and long enough: worked on in place.
+        assert!(
+            ifioctl_buffer(&bytes[..need], SIOCGLIFPHYADDR)
+                .unwrap()
+                .is_none()
+        );
+        // Misaligned: a copy, never shorter than the request.
+        let c = ifioctl_buffer(&bytes[1..1 + need], SIOCGLIFPHYADDR)
+            .unwrap()
+            .expect("a copy");
+        assert!(c.len() * 8 >= need);
+        // A void command's 8 bytes: a copy as long as a struct ifreq.
+        let c = ifioctl_buffer(&bytes[..8], 0x2000_6900)
+            .unwrap()
+            .expect("a copy");
+        assert!(c.len() * 8 >= size_of::<crate::net::if_::Ifreq>());
+
+        // Through the bridge, both ways, on an interface that is not there.
+        let so = crate::kern::uipc_socket::soalloc(
+            &crate::netinet::in_proto::INETSW[1],
+            crate::sys::socket::SOCK_DGRAM,
+            crate::sys::mbuf::M_WAIT,
+        )
+        .unwrap();
+        for at in [0usize, 1] {
+            let data = &mut bytes[at..at + need];
+            data[..8].copy_from_slice(b"nosuch0\0");
+            let r = kernel::net::domain::IfLegacy::ifioctl(&IFLEGACY, so, SIOCGLIFPHYADDR, data, p);
+            assert_eq!(r, Err(Errno::ENXIO), "at {at}");
+            assert_eq!(&data[..8], b"nosuch0\0");
+        }
+        crate::netinet::in_pcb::tests::teardown();
+    }
+}
+/* </TESTS> */

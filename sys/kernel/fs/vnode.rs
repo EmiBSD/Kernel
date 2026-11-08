@@ -103,9 +103,8 @@
 //! ## Deviations
 //! - `v_un` (the union of `v_mountedhere`, `v_socket`, `v_specinfo`, `v_fifoinfo`) is the
 //!   enum [`VnodeUn`], with accessors named after the C's shorthand macros; a reader of the
-//!   wrong member gets `None`, where the C would reinterpret the pointer. `v_socket` is
-//!   `bsd`'s member (the socket is `bsd`'s, [`FileGlue::VnodeG`]); `v_fifoinfo` is set by
-//!   nothing (fifofs keeps its node in `v_data`, as LZ's port of it does).
+//!   wrong member gets `None`, where the C would reinterpret the pointer. `v_fifoinfo` is set
+//!   by nothing (fifofs keeps its node in `v_data`, as LZ's port of it does).
 //! - `si_specnext`, the link of the special-device alias chains, is the vnode's own
 //!   `specnext` (LZ's deviation, kept): a list's link lives in its element.
 //!
@@ -129,8 +128,8 @@
 //!   pointer with none.
 //! - `v_data` is the word [`Vnode::data`] (an `AtomicPtr`: the file system's node, read back
 //!   with the file system's own cast, `bsd`'s `data<T>`); the members of `bsd`'s types (the
-//!   name cache's heads, `v_socket`, the device's lock list) are the glue's
-//!   [`FileGlue::VnodeG`], as `Process<G>` keeps its `bsd` members.
+//!   name cache's heads, `v_socket`, the device's lock list) were the glue's `VnodeG` until
+//!   each moved (the last, `v_socket`, at N6.2a).
 //! - N5.5a (D-N5.5a-6): a kernel file system's node is [`Vnode::node`]'s, a typed slot beside
 //!   the word: a pool item's counted handle with its type erased (`hal::pool::AnyArc`), set by
 //!   the file system's `vget` ([`Vnode::set_node`]), lent to who names its type
@@ -143,6 +142,11 @@
 //!   kernel drops the leftover handle, and a still-hashed inode stops the kernel there (its
 //!   `PinEntry`'s drop panics while linked) instead of being left dangling. No second check
 //!   is added: the first is the C's.
+//! - N6.2a: `v_socket` is the kernel's ([`VnodeUn::Socket`], the socket counted), set by
+//!   the UNIX domain's `uipc_bind` and cleared by its `unp_detach` under the vnode lock, read
+//!   by `unp_connect` after `namei` locked the vnode (`kernel::net::unix`); `getnewvnode`'s
+//!   `vp->v_socket = NULL` is the clearing of `v_un`, and the glue's `VnodeG` member and
+//!   `vnode_recycle` leg went.
 //! - `vn_lock` keeps the C's `Result` and protocol (the `v_lockcount` count under
 //!   `vnode_mtx`, the unlock and `ENOENT` when `VXLOCK` appeared, `LK_RETRY`); [`Locked`] is
 //!   the guard of a lock the caller leaves in the same function (its drop is `VOP_UNLOCK`).
@@ -168,7 +172,6 @@ use super::vops::Vnops;
 use crate::assert::kpanic;
 use crate::clock::Timespec;
 use crate::event::Klist;
-use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 use crate::vm::vnode::Uvn;
 
@@ -622,6 +625,9 @@ pub enum VnodeUn<G: ProcGlue> {
     Mountedhere(&'static Mount<G>),
     /// `vu_specinfo`: device (`VCHR`, `VBLK`), owned by the vnode until `vgonel` frees it.
     Specinfo(MBox<Specinfo<G>>),
+    /// `vu_socket`: unix ipc (`VSOCK`), counted: set by `uipc_bind` and cleared by
+    /// `unp_detach`, the vnode locked.
+    Socket(crate::net::socket::SocketRef<G>),
 }
 
 /// `struct vnode`.
@@ -691,8 +697,6 @@ pub struct Vnode<G: ProcGlue> {
     /// rather than in its `ReadMostly` specinfo, whose readers may not sleep as `lf_setlock`
     /// does.
     pub speclockf: super::lockf::LockfSlot,
-    /// The members of `bsd`'s types (`v_socket`, until the sockets move, N6).
-    pub g: <G::FileGlue as FileGlue>::VnodeG,
 }
 
 impl<G: ProcGlue> Vnode<G> {
@@ -731,7 +735,6 @@ impl<G: ProcGlue> Vnode<G> {
             klist: Klist::new(),
             nc: super::cache::NcHeads::cell(),
             speclockf: super::lockf::LockfSlot::new(),
-            g: Default::default(),
         }
     }
 
@@ -979,6 +982,29 @@ impl<G: ProcGlue> Vnode<G> {
         }
     }
 
+    /// `vp->v_socket`: the socket a `VSOCK` vnode is bound to, counted (`unp_connect` reads
+    /// it with the vnode locked).
+    pub fn socket(&self) -> Option<crate::net::socket::SocketRef<G>> {
+        match &*self.un.read() {
+            VnodeUn::Socket(so) => Some(so.clone()),
+            _ => None,
+        }
+    }
+
+    /// `vp->v_socket = so` of a `VSOCK` vnode, whose `v_un` holds nothing else, the vnode
+    /// locked (`uipc_bind`, `unp_detach`); the old socket given back, for the caller to drop
+    /// outside the cell.
+    pub fn set_socket(
+        &self,
+        so: Option<crate::net::socket::SocketRef<G>>,
+    ) -> Option<crate::net::socket::SocketRef<G>> {
+        match self.un.replace(so.map_or(VnodeUn::None, VnodeUn::Socket)) {
+            VnodeUn::None => None,
+            VnodeUn::Socket(old) => Some(old),
+            _ => kpanic(format_args!("vnode {self:p}: v_socket over another v_un")),
+        }
+    }
+
     /// Whether the vnode has a `v_specinfo` (a device vnode `checkalias` gave one).
     pub fn has_specinfo(&self) -> bool {
         matches!(&*self.un.read(), VnodeUn::Specinfo(_))
@@ -1040,13 +1066,14 @@ impl<G: ProcGlue> Vnode<G> {
         self.with_specinfo(Specinfo::parent).flatten()
     }
 
-    /// The address `kinfo_file`'s `v_un` reports: the mount or the specinfo (the socket is
-    /// `bsd`'s member), 0 for none.
+    /// The address `kinfo_file`'s `v_un` reports: the mount, the specinfo or the socket, 0
+    /// for none.
     pub fn un_addr(&self) -> usize {
         match &*self.un.read() {
             VnodeUn::None => 0,
             VnodeUn::Mountedhere(mp) => ptr::from_ref(*mp).addr(),
             VnodeUn::Specinfo(si) => ptr::from_ref::<Specinfo<G>>(si).addr(),
+            VnodeUn::Socket(so) => ptr::from_ref::<crate::net::socket::Socket<G>>(so).addr(),
         }
     }
 

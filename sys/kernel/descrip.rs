@@ -2141,7 +2141,9 @@ pub fn sys_ioctl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
 ) -> Result<(), Errno> {
     let fdp = p.fd();
     let fp = fd_getfile_mode(p, fd, FREAD | FWRITE).ok_or(Errno::EBADF)?;
-    let mut stkbuf = [0u8; STK_PARAMS];
+    // `u_long stkbuf[STK_PARAMS / sizeof(u_long)]`: aligned for any request structure, so
+    // the interface layer can work in it in place.
+    let mut stkbuf = [0u64; STK_PARAMS / size_of::<u64>()];
     let mut heap: Option<MArray<u8>> = None;
 
     let error = 'out: {
@@ -2180,7 +2182,7 @@ pub fn sys_ioctl<P: ProcGlue<FileGlue = G>, G: FileGlue<Proc = P>>(
                 None => break 'out Err(Errno::ENOMEM),
             }
         } else {
-            &mut stkbuf[..size.max(size_of::<usize>())]
+            &mut hal::user::bytes_of_mut(&mut stkbuf[..])[..size.max(size_of::<usize>())]
         };
         let udata_bytes = udata.to_ne_bytes();
         if com & IOC_IN != 0 {

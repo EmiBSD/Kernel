@@ -228,7 +228,6 @@ use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_prot::suser;
-use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write};
 use crate::kern::kern_subr::{hashfree, hashinit};
 use crate::kern::kern_synch::{refcnt_init, refcnt_rele, refcnt_take};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
@@ -839,7 +838,12 @@ pub fn sotoinpcb(so: &Socket) -> Option<&'static Inpcb> {
     }
     // SAFETY: an `inetdomain` or `inet6domain` socket's `so_pcb` is NULL or the `inpcb_pool` item
     // `in_pcballoc` set; `in_pcbdetach` clears it before the item can go back to the pool.
-    unsafe { so.so_pcb.get().cast::<Inpcb>().cast_const().as_ref() }
+    unsafe {
+        crate::sys::socketvar::so_pcb(so)
+            .cast::<Inpcb>()
+            .cast_const()
+            .as_ref()
+    }
 }
 
 /// `DP_SET(m, p)`.
@@ -1023,7 +1027,7 @@ pub fn in_pcballoc(
     in_pcbhash_insert(inp);
     mtx_leave(&table.inpt_mtx);
 
-    so.so_pcb.set(raw.cast());
+    crate::sys::socketvar::set_so_pcb(so, raw.cast());
 
     Ok(())
 }
@@ -1115,8 +1119,7 @@ pub fn in_pcbbind_locked(
 
     if lport == 0 {
         in_pcbpickport(&mut lport, &laddr, wild, inp, p)?;
-    } else if in_rootonly(u16::from_be(lport), so.so_proto.pr_protocol as u16) && suser(p).is_err()
-    {
+    } else if in_rootonly(u16::from_be(lport), so.proto().protocol() as u16) && suser(p).is_err() {
         return Err(Errno::EACCES);
     }
     if nam.is_some() {
@@ -1157,7 +1160,7 @@ pub fn in_pcbaddrisavail_lock(
     let so = inp.socket();
     let table = inp.table();
     let lport = sin.sin_port;
-    let mut reuseport = so.so_options.get() & SO_REUSEPORT;
+    let mut reuseport = so.options() & SO_REUSEPORT;
 
     if in_multicast(sin.sin_addr.s_addr) {
         // Treat SO_REUSEADDR as SO_REUSEPORT for multicast; allow complete duplication of
@@ -1172,9 +1175,8 @@ pub fn in_pcbaddrisavail_lock(
         // - we are binding a UDP socket to 255.255.255.255 or
         // - we are binding a UDP socket to one of our broadcast addresses
         if !so.has_options(SO_BINDANY)
-            && !(so.so_type.get() == SOCK_DGRAM && sin.sin_addr.s_addr == INADDR_BROADCAST)
-            && !(so.so_type.get() == SOCK_DGRAM
-                && in_broadcast(sin.sin_addr, inp.inp_rtableid.get()))
+            && !(so.so_type() == SOCK_DGRAM && sin.sin_addr.s_addr == INADDR_BROADCAST)
+            && !(so.so_type() == SOCK_DGRAM && in_broadcast(sin.sin_addr, inp.inp_rtableid.get()))
         {
             sin.sin_port = 0;
             sin.sin_zero = [0; 8];
@@ -1190,7 +1192,7 @@ pub fn in_pcbaddrisavail_lock(
     if lport != 0 {
         let mut error = Ok(());
 
-        if so.so_euid.get() != 0 && !in_multicast(sin.sin_addr.s_addr) {
+        if so.creds().0 != 0 && !in_multicast(sin.sin_addr.s_addr) {
             let t = in_pcblookup_local_lock(
                 table,
                 &Inpaddru::from_addr(sin.sin_addr),
@@ -1199,7 +1201,7 @@ pub fn in_pcbaddrisavail_lock(
                 inp.inp_rtableid.get(),
                 lock,
             );
-            if t.is_some_and(|t| so.so_euid.get() != t.socket().so_euid.get()) {
+            if t.is_some_and(|t| so.creds().0 != t.socket().creds().0) {
                 error = Err(Errno::EADDRINUSE);
             }
             if lock == IN_PCBLOCK_GRAB {
@@ -1215,7 +1217,7 @@ pub fn in_pcbaddrisavail_lock(
             inp.inp_rtableid.get(),
             lock,
         );
-        if t.is_some_and(|t| reuseport & t.socket().so_options.get() == 0) {
+        if t.is_some_and(|t| reuseport & t.socket().options() == 0) {
             error = Err(Errno::EADDRINUSE);
         }
         if lock == IN_PCBLOCK_GRAB {
@@ -1289,7 +1291,7 @@ pub fn in_pcbpickport(
                 candidate = lower;
             }
             let localport = htons(candidate);
-            if !in_baddynamic(candidate, so.so_proto.pr_protocol as u16) {
+            if !in_baddynamic(candidate, so.proto().protocol() as u16) {
                 break localport;
             }
         };
@@ -1407,7 +1409,7 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
 
     soassertlocked(so);
 
-    so.so_pcb.set(ptr::null_mut());
+    crate::sys::socketvar::set_so_pcb(so, ptr::null_mut());
     sofree(so, true);
     if let Some(rt) = inp.inp_route.ro_rt.take() {
         rtfree(Some(rt));
@@ -1455,9 +1457,9 @@ pub fn in_pcbsolock(inp: &Inpcb) -> Option<&'static Socket> {
     net_assert_locked("in_pcbsolock");
 
     let so = so?;
-    rw_enter_write(&so.so_lock);
-    if so.so_pcb.get().is_null() {
-        rw_exit_write(&so.so_lock);
+    so.so_lock_legacy().enter_write_detached();
+    if crate::sys::socketvar::so_pcb(so).is_null() {
+        so.so_lock_legacy().exit_write_detached();
         return None;
     }
     kassert!(sotoinpcb(so).is_some_and(|i| ptr::eq(i, inp)));
@@ -1470,14 +1472,17 @@ pub fn in_pcbsounlock(inp: Option<&Inpcb>, so: Option<&Socket>) {
         return;
     };
     if let Some(inp) = inp
-        && !so.so_pcb.get().is_null()
+        && !crate::sys::socketvar::so_pcb(so).is_null()
     {
         kassert!(
             inp.inp_socket.is_some_and(|s| ptr::eq(s, so))
-                && ptr::eq(so.so_pcb.get().cast_const(), ptr::from_ref(inp).cast())
+                && ptr::eq(
+                    crate::sys::socketvar::so_pcb(so).cast_const(),
+                    ptr::from_ref(inp).cast()
+                )
         );
     }
-    rw_exit_write(&so.so_lock);
+    so.so_lock_legacy().exit_write_detached();
 }
 
 /// `in_pcbref`: takes a reference to `inp`.
@@ -2312,6 +2317,7 @@ pub(crate) mod tests {
         let p = crate::kern::proc_glue::test_proc(1, crget());
         Machine::set_curproc(Machine::curcpu(), Some(p));
         soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
         in_init();
         (g, t, p)
     }
@@ -2345,8 +2351,7 @@ pub(crate) mod tests {
 
     /// A UDP socket with a control block in `table`.
     fn pcb(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INETSW[1], M_WAIT).expect("socket");
-        so.so_type.set(SOCK_DGRAM);
+        let so = soalloc(&INETSW[1], SOCK_DGRAM, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         sotoinpcb(so).expect("attached")
     }
@@ -2357,7 +2362,7 @@ pub(crate) mod tests {
         let so = inp.socket();
         let _ = soref(Some(so));
         solock(so);
-        so.set_state(SS_NOFDREF);
+        so.set_state_legacy(SS_NOFDREF);
         in_pcbdetach(inp);
         sounlock(so);
         sorele(so);
@@ -2419,8 +2424,8 @@ pub(crate) mod tests {
         assert!(t.inpt_size.get() > 1, "resized");
         assert_eq!(in_pcbbind(b, Some(n), p), Err(Errno::EADDRINUSE));
         // ... unless both sockets allow it.
-        a.socket().so_options.set(SO_REUSEPORT);
-        b.socket().so_options.set(SO_REUSEPORT);
+        a.socket().set_options_legacy(SO_REUSEPORT, true);
+        b.socket().set_options_legacy(SO_REUSEPORT, true);
         in_pcbbind(b, Some(n), p).expect("SO_REUSEPORT bind");
         // An address that is not ours.
         let c = pcb(t);
