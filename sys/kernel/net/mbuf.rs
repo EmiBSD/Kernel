@@ -184,6 +184,17 @@
 //!   `bsd`'s `mtod` needs is [`Mbuf::data_raw`], never dereferenced here. Cost against
 //!   `mtod`: the two tag tests and one bounds check per access (the `mbuf.mtod` bench row;
 //!   N12's).
+//! - Cost against LZ (decision 43: `sys/kernel/benches/net.rs`'s mbuf rows against LZ's
+//!   functions, release, ns an op, the median of rounds 2-4). Faster: `get.free` 31.2 -> 24.0
+//!   and `gethdr.cluster.free` 55.1 -> 39.8 (one typed item, the header built in place),
+//!   `mq.enq.deq` 11.1 -> 8.7. Slower, each a constant per access and never a walk the C does
+//!   not make: `mtod` 0.3 -> 0.5 and `header.view` 0.5 -> 1.2 (the overlay's tag test where
+//!   the C loads a field), `header.copy` 4.4 -> 6.2 (the header copied cell by cell and the
+//!   `Pf` bridge's load, where the C assigns the struct), `adj` 2.9 -> 3.9 and `pullup.40`
+//!   8.8 -> 10.0 (the offset's and the length's cells, a bounds check per step),
+//!   `copydata.1500` 17.5 -> 19.5 (a bounds-checked slice per mbuf; +8 % in another run),
+//!   `tag.find` 0.8 -> 0.9. N12 takes them: one typed view per operation instead of a tag
+//!   test per access, the bounds checks hoisted out of the walks.
 //! - A cluster is a `PoolBox<Bytes<N>>` of its pool ([`ClusterBox`], one variant per size),
 //!   handed out unwritten as the C's (`BoxPool::get_bytes`); a shared cluster is a
 //!   `PoolArc<ExtRefs>` of `mextrefs`, made on the first share as the C makes its
@@ -849,9 +860,22 @@ pub struct Ext {
     kind: ExtKind,
     /// `ext_size`: the cluster's size, its pool's item size.
     size: u32,
+    /// `ext_buf`: the cluster's address, its provenance exposed when the description was made
+    /// (`bsd`'s `mtod` reads it on every packet; the cluster's own needs the size's match).
+    buf: usize,
 }
 
 impl Ext {
+    /// The description of `kind`'s cluster, `size` bytes (`MEXTADD`'s `ext_buf`/`ext_size`).
+    fn new(kind: ExtKind, size: u32) -> Self {
+        let buf = match &kind {
+            ExtKind::Pool(c) => c.as_raw(),
+            ExtKind::Shared(r) => r.cluster.as_raw(),
+        }
+        .expose_provenance();
+        Self { kind, size, buf }
+    }
+
     /// The cluster.
     fn cluster(&self) -> &ClusterBox {
         match &self.kind {
@@ -867,7 +891,7 @@ impl Ext {
 
     /// `ext_buf`'s address (`bsd`'s `mtod`, a driver's DMA load); never dereferenced here.
     pub fn ext_buf(&self) -> *mut u8 {
-        self.cluster().as_raw()
+        core::ptr::with_exposed_provenance_mut::<u8>(self.buf)
     }
 
     /// The cluster's bytes.
@@ -1515,14 +1539,7 @@ pub fn m_clget(m: &mut Mbuf, how: i32, pktlen: u32) -> bool {
     let Some(cl) = ClusterBox::get(i, pr_flags(how)) else {
         return false;
     };
-    mextadd(
-        m,
-        Ext {
-            kind: ExtKind::Pool(cl),
-            size: MCL_ITEM[i],
-        },
-        M_EXTWR,
-    );
+    mextadd(m, Ext::new(ExtKind::Pool(cl), MCL_ITEM[i]), M_EXTWR);
     true
 }
 
@@ -1583,6 +1600,7 @@ fn m_extref(m: &mut Mbuf, n: &mut Mbuf, how: i32) -> Result<(), Errno> {
         Some(Ext {
             kind: ExtKind::Pool(_),
             size,
+            ..
         }) => {
             let size = *size;
             let Some(Ext {
@@ -1606,31 +1624,18 @@ fn m_extref(m: &mut Mbuf, n: &mut Mbuf, how: i32) -> Result<(), Errno> {
             });
             let Some(r) = made else {
                 if let Some(cl) = slot.take() {
-                    drop(m.body.set_e(Ext {
-                        kind: ExtKind::Pool(cl),
-                        size,
-                    }));
+                    drop(m.body.set_e(Ext::new(ExtKind::Pool(cl), size)));
                 }
                 return Err(Errno::ENOMEM);
             };
-            drop(m.body.set_e(Ext {
-                kind: ExtKind::Shared(r.clone()),
-                size,
-            }));
+            drop(m.body.set_e(Ext::new(ExtKind::Shared(r.clone()), size)));
             r
         }
         None => kpanic(format_args!("m_extref: an mbuf without M_EXT")),
     };
     let size = m.body.e().map_or(0, |e| e.size);
 
-    mextadd(
-        n,
-        Ext {
-            kind: ExtKind::Shared(shared),
-            size,
-        },
-        extwr,
-    );
+    mextadd(n, Ext::new(ExtKind::Shared(shared), size), extwr);
 
     Ok(())
 }
@@ -1871,11 +1876,7 @@ fn storage_writable(m: &mut Mbuf, wait: i32) -> Option<&mut [u8]> {
         if let Some(e) = m.body.e() {
             cl.bytes_mut().copy_from_slice(e.bytes());
         }
-        let ext = Ext {
-            kind: ExtKind::Pool(cl),
-            size: MCL_ITEM[i],
-        };
-        drop(m.body.set_e(ext));
+        drop(m.body.set_e(Ext::new(ExtKind::Pool(cl), MCL_ITEM[i])));
         m.set_bits(M_EXTWR);
     }
     m.storage_mut()
@@ -2015,18 +2016,20 @@ pub fn m_adj(mp: &Mbuf, req_len: i32) {
     let mut len = req_len;
     if len >= 0 {
         // Trim from head.
+        // The offset moves within the data the length covers: no bound to check.
         let mut m = Some(mp);
         while let Some(mm) = m
             && len > 0
         {
-            if mm.m_len.get() as i32 <= len {
-                len -= mm.m_len.get() as i32;
-                mm.data_add(mm.m_len.get() as isize);
+            let mlen = mm.m_len.get();
+            if mlen as i32 <= len {
+                len -= mlen as i32;
+                mm.m_off.set(mm.m_off.get() + mlen);
                 mm.m_len.set(0);
                 m = mm.m_next.get();
             } else {
-                mm.data_add(len as isize);
-                mm.m_len.set(mm.m_len.get() - len as u32);
+                mm.m_off.set(mm.m_off.get() + len as u32);
+                mm.m_len.set(mlen - len as u32);
                 len = 0;
             }
         }
@@ -2176,7 +2179,8 @@ pub fn m_pullup(m0: MbufBox, len: i32) -> Option<MbufBox> {
         m.m_len.set(m.m_len.get() - space);
 
         let next = if m.m_len.get() > 0 {
-            m.data_add(space as isize);
+            // within the data the length covered
+            m.m_off.set(m.m_off.get() + space);
             Some(m)
         } else {
             m_free(m)
@@ -2764,6 +2768,19 @@ fn m_pool_init<T: 'static>(pp: &'static BoxPool<T>, wmesg: &'static str) -> bool
 /// constraint, [`MbufPages`]'s, for every pool at once).
 pub fn m_pool_noconstraints() {
     NOCONSTRAINTS.store(true, Ordering::Relaxed);
+}
+
+/// The clusters out of the eight cluster pools (`mclpools[i].pr_nout` summed: the boot
+/// self-test's count).
+pub fn mcl_nout() -> u64 {
+    MCL2K.nout()
+        + MCL2K2.nout()
+        + MCL4K.nout()
+        + MCL8K.nout()
+        + MCL9K128.nout()
+        + MCL12K.nout()
+        + MCL16K.nout()
+        + MCL64K.nout()
 }
 
 /// `m_pool_used`: the mbuf memory in use, in percent of the limit.
@@ -3388,7 +3405,7 @@ pub(crate) mod tests {
         assert_eq!(size_of::<Pkthdr>(), 80);
         assert_eq!(MINCLSIZE, 369);
         assert_eq!(size_of::<MTag>(), 96);
-        assert_eq!(size_of::<Ext>(), 32);
+        assert_eq!(size_of::<Ext>(), 40);
         assert_eq!(size_of::<ExtRefs>(), 48);
         assert_eq!(core::mem::offset_of!(Mbuf, m_nextpkt), 8);
         assert_eq!(core::mem::offset_of!(Mbuf, m_len), 20);

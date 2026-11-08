@@ -700,7 +700,7 @@ fn main() {
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
-const MBUF_ROWS: [&str; 11] = [
+const MBUF_ROWS: [&str; 12] = [
     "mbuf.get.free",
     "mbuf.gethdr.cluster.free",
     "mbuf.copym.share",
@@ -712,6 +712,7 @@ const MBUF_ROWS: [&str; 11] = [
     "mbuf.pullup.40",
     "mq.enq.deq",
     "mbuf.tag.find",
+    "mbuf.data",
 ];
 
 /// The bench's `nmbclust`.
@@ -813,7 +814,7 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                black_box(black_box(&p).data());
+                black_box(black_box(&p).data_raw());
             }
             t.elapsed()
         });
@@ -901,6 +902,16 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
             t.elapsed()
         });
         report(MBUF_ROWS[10], r);
+    }
+    if wanted(MBUF_ROWS[11]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(black_box(&p).data());
+            }
+            t.elapsed()
+        });
+        report(MBUF_ROWS[11], r);
     }
 }
 /* </CODE> */
