@@ -117,7 +117,9 @@ use crate::kern::kern_lock::{mtx_enter, mtx_init, mtx_leave};
 use crate::kern::subr_prf::printf;
 use crate::machine::db_machdep::PrFn;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, MbufList, MbufQueue, lend, ml_len, mq_len, mut_of, park, unpark};
+use crate::sys::mbuf::{
+    Mbuf, MbufList, MbufQueue, lend, m_take_nextpkt, ml_len, mq_len, mut_of, park, unpark,
+};
 use crate::sys::time::Timeval;
 
 pub use kernel::net::mbuf::{
@@ -242,9 +244,17 @@ pub fn m_adj<'a>(mp: impl Into<Option<&'a Mbuf>>, req_len: i32) {
     }
 }
 
-/// `m_cat`: concatenate mbuf chain `n` to `m`.
+/// `m_cat`: concatenate mbuf chain `n` to `m`. A packet `n->m_nextpkt` held is parked first:
+/// the C forgets it (its caller still names it), and the kernel's `m_cat` would free it with
+/// `n` or keep it linked inside `m`'s chain.
 pub fn m_cat(m: &Mbuf, n: Option<&'static Mbuf>) {
-    k::m_cat(mut_of(m), n.map(unpark));
+    k::m_cat(
+        mut_of(m),
+        n.map(|n| {
+            let _ = m_take_nextpkt(n);
+            unpark(n)
+        }),
+    );
 }
 
 /// `m_pullup`: `len` bytes made contiguous at the head; the chain freed on failure.
@@ -584,6 +594,27 @@ pub(crate) mod tests {
         let next = m_freem(m).expect("the next packet");
         assert!(core::ptr::eq(next, n));
         assert!(m_freem(next).is_none());
+        assert_eq!(MBUFPL.nout(), out);
+    }
+
+    #[test]
+    fn cat_forgets_the_next_packet_as_the_c() {
+        let _g = setup();
+        let out = MBUFPL.nout();
+
+        // `n` carries a next packet; m_cat copies `n` into `m` and frees it, and the packet
+        // stays its caller's (parked), as the C forgets n->m_nextpkt.
+        let m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        let n = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        let p = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        assert!(m_set_nextpkt(n, Some(p)).is_none());
+        m_cat(m, Some(n));
+        assert!(m.m_next().get().is_none(), "copied, not linked");
+        assert!(
+            m_free(p).is_none(),
+            "the packet is parked, its owner frees it"
+        );
+        assert!(m_freem(m).is_none());
         assert_eq!(MBUFPL.nout(), out);
     }
 
