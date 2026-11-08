@@ -13993,7 +13993,7 @@ rust = "sys/kernel/net/domain.rs"
 crate = "kernel"
 lz = ["sys/kern/uipc_domain.rs", "sys/sys/domain.rs"]
 status = "redesigned"
-notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose NULL as default methods, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch"
+notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose as one optional DomRights entry, Domain::rights(), None by default, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch"
 
 
 [[module.fn]]
