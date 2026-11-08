@@ -245,6 +245,14 @@
 //!   every change re-derives. Its walk is `next(e)` (the link's box), O(1) a step; a cursor
 //!   cuts the chain after an element (`m_split`, `sbdrop`'s record) or takes out the next one,
 //!   O(1) each.
+//! - N6.1: the link by address. N6.0's `SlistLink` held an `Option<PoolBox<T>>`, two words (the
+//!   item and its pool): two of them would have put the mbuf's header at 48 bytes and `MLEN` at
+//!   208 where the C's are 32 and 224. An element's type now names its one pool
+//!   ([`Pooled`]), so [`SlistLink`] keeps the item's pointer alone and a `take` rebuilds the
+//!   box with `T::POOL` (a `set` refuses a box of another pool). A link outside any list (an
+//!   mbuf's `m_next`, a packet header's tag chain) is a chain its owner walks and changes
+//!   itself: [`SlistLink::get`], [`SlistLink::get_mut`], [`SlistLink::set`] and
+//!   [`SlistLink::take`], O(1) each, the C's `m->m_next` read and written.
 
 use core::cmp::Ordering;
 use core::marker::PhantomData;
@@ -256,7 +264,7 @@ use core::sync::atomic::{
 
 use crate::assert::hal_panic;
 use crate::link::Link;
-use crate::pool::{BoxPool, PoolBox};
+use crate::pool::{BoxPool, PoolBox, Pooled};
 
 /// `RB_BLACK`.
 const BLACK: u8 = 0;
@@ -2746,20 +2754,109 @@ fn rb_remove_color<R: Rb>(t: &R, parent: Option<NonNull<R::T>>, x: Option<NonNul
     }
 }
 
-/// The link an element of an [`OwnedSlist`] embeds (`m_next`, `m_nextpkt`): the element
-/// after it, owned. Empty (`None`) while the element is in no list; only the list fills it.
-pub struct SlistLink<T: 'static>(Option<PoolBox<T>>);
+/// The link an element embeds (`m_next`, `m_nextpkt`, `ph_tags`): the element after it, owned,
+/// held by its address alone (8 bytes, the C's pointer; a [`PoolBox`] is two words). Empty
+/// while it links nothing. An [`OwnedSlist`] fills and empties the links of its elements; a
+/// link outside any list (an mbuf's `m_next`, a packet header's tag chain) is a chain its
+/// owner walks with [`SlistLink::get`] and [`SlistLink::get_mut`] and changes with
+/// [`SlistLink::set`] and [`SlistLink::take`].
+///
+/// Invariant: the word is null, or the item pointer of a box of `T::POOL` that
+/// [`SlistLink::set`] gave up for it (`PoolBox::into_raw`), whose only owner is this link
+/// from then on: no handle to the item exists and none is made but by [`SlistLink::take`],
+/// which empties the word as it rebuilds the box. The auto traits are a box's
+/// (`PhantomData<PoolBox<T>>`): the link owns what a box owns.
+pub struct SlistLink<T: Pooled> {
+    word: AtomicPtr<T>,
+    _owns: PhantomData<PoolBox<T>>,
+}
 
-impl<T: 'static> SlistLink<T> {
+impl<T: Pooled> SlistLink<T> {
     /// An empty link.
     pub const fn new() -> Self {
-        Self(None)
+        Self {
+            word: AtomicPtr::new(ptr::null_mut()),
+            _owns: PhantomData,
+        }
+    }
+
+    /// Whether the link holds an element (`m->m_next != NULL`).
+    #[inline]
+    pub fn is_some(&self) -> bool {
+        !self.word.load(Mem::Relaxed).is_null()
+    }
+
+    /// The element linked, shared (`m->m_next`), O(1).
+    #[inline]
+    pub fn get(&self) -> Option<&T> {
+        let p = NonNull::new(self.word.load(Mem::Relaxed))?;
+        // SAFETY: a non-null word is the pointer of an item of `T::POOL` whose one owner is this
+        // link (the invariant: only `set` stores one, from a box it consumes, and only `take`
+        // clears it, rebuilding that one box), so the item holds an initialised `T` that no
+        // handle reaches and that is not put back while the word names it. The reference
+        // borrows `self`, so neither `take` nor `set` nor `get_mut` (all `&mut self`) can run
+        // while it lives: no `&mut T` exists beside it and the item outlives it.
+        Some(unsafe { p.as_ref() })
+    }
+
+    /// The element linked, to change it (`m->m_next->m_len = ...`), O(1).
+    #[inline]
+    pub fn get_mut(&mut self) -> Option<&mut T>
+    where
+        T: Unpin,
+    {
+        let mut p = NonNull::new(*self.word.get_mut())?;
+        // SAFETY: as for `get`: the item is initialised, owned by this link alone and not put
+        // back while the word names it; the reference borrows `self` mutably, the only path to
+        // the item (no handle exists, and every other reference through the link needs a
+        // borrow of it), so it is the only reference to the `T` while it lives. `T: Unpin`:
+        // a `&mut T` can move nothing pinning promised to keep (a box's `DerefMut` asks the
+        // same).
+        Some(unsafe { p.as_mut() })
+    }
+
+    /// The element's box, the link emptied (`n = m->m_next; m->m_next = NULL`), O(1).
+    #[inline]
+    pub fn take(&mut self) -> Option<PoolBox<T>> {
+        let p = NonNull::new(core::mem::replace(self.word.get_mut(), ptr::null_mut()))?;
+        // SAFETY: `PoolBox::from_raw`'s contract: a non-null word is the pointer `set` took from
+        // `PoolBox::into_raw` of a box of `T::POOL` (checked there), and the word is cleared
+        // here, before the box exists, so this `into_raw` is answered by this one `from_raw`
+        // (no other path rebuilds a box from the word). No reference made through the link is
+        // alive: they borrow `self`, which this call borrows mutably.
+        Some(unsafe { PoolBox::from_raw(p, T::POOL) })
+    }
+
+    /// Links `b`, returning the box the link held (`m->m_next = n`), O(1). `panic(9)` for a
+    /// box of another pool than `T::POOL` (the one a `take` rebuilds it with).
+    #[inline]
+    pub fn set(&mut self, b: PoolBox<T>) -> Option<PoolBox<T>> {
+        if !ptr::eq(PoolBox::pool(&b), T::POOL) {
+            hal_panic(format_args!("SlistLink::set: an item of another pool"));
+        }
+        let old = self.take();
+        *self.word.get_mut() = PoolBox::into_raw(b).0.as_ptr();
+        old
+    }
+
+    /// The linked item's pointer (the box's own, with its provenance), for a list's tail.
+    fn raw(&self) -> *mut T {
+        self.word.load(Mem::Relaxed)
     }
 }
 
-impl<T: 'static> Default for SlistLink<T> {
+impl<T: Pooled> Default for SlistLink<T> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<T: Pooled> Drop for SlistLink<T> {
+    /// The element linked is freed with the link. A chain long enough to matter is emptied
+    /// one element at a time by its owner first ([`OwnedSlist`]'s drop, an mbuf's), so this
+    /// drop recurses only into an element whose own link is already empty.
+    fn drop(&mut self) {
+        drop(self.take());
     }
 }
 
@@ -2768,8 +2865,9 @@ impl<T: 'static> Default for SlistLink<T> {
 /// check` refuses a hand-written impl): the list's raw tail rests on `link` and `link_mut`
 /// naming the same field of the element.
 pub trait SlistAdapter: 'static {
-    /// The element: a pool item changed through its box (`Unpin`).
-    type Elem: Unpin + 'static;
+    /// The element: a pool item of its type's one pool ([`Pooled`]), changed through its box
+    /// (`Unpin`).
+    type Elem: Pooled + Unpin;
     /// The element's link.
     fn link(e: &Self::Elem) -> &SlistLink<Self::Elem>;
     /// The element's link, to change it.
@@ -2806,12 +2904,12 @@ macro_rules! slist_adapter {
 ///
 /// Invariant: `tail` is null when `head` is empty, and otherwise names the last element
 /// reachable from `head` by the links (the one whose link is empty); `len` counts those
-/// elements. Every element is owned through the chain (its box in `head` or in its
-/// predecessor's link), so `&mut self` is the only path to any of them. The list lends its
-/// elements shared only (`first`, `last`, `iter`, a cursor's `current`): a `&mut` to one would
-/// let its owner `mem::swap` two elements' links behind the list's back and break the
-/// invariant; a field of an element that changes while it is listed is a `Cell` or an
-/// atomic, or the element is taken off (`pop_head`, `remove_next`) and pushed again.
+/// elements. Every element is owned through the chain (`head` or its predecessor's link), so
+/// `&mut self` is the only path to any of them. The list lends its elements shared only
+/// (`first`, `last`, `iter`, a cursor's `current`): a `&mut` to one would let its owner
+/// `mem::swap` two elements' links behind the list's back and break the invariant; a field of
+/// an element that changes while it is listed is a `Cell` or an atomic, or the element is
+/// taken off (`pop_head`, `remove_next`) and pushed again.
 pub struct OwnedSlist<A: SlistAdapter> {
     head: SlistLink<A::Elem>,
     /// The last element (its box's pointer), null when the list is empty.
@@ -2831,7 +2929,7 @@ impl<A: SlistAdapter> OwnedSlist<A> {
 
     /// `ml_empty`.
     pub fn is_empty(&self) -> bool {
-        self.head.0.is_none()
+        !self.head.is_some()
     }
 
     /// `ml_len`: the elements on the list.
@@ -2841,12 +2939,12 @@ impl<A: SlistAdapter> OwnedSlist<A> {
 
     /// `ml_first`, `m` itself as a chain's head.
     pub fn first(&self) -> Option<&A::Elem> {
-        self.head.0.as_deref()
+        self.head.get()
     }
 
     /// The element after `e` (`m->m_next`, `m->m_nextpkt`).
     pub fn next(e: &A::Elem) -> Option<&A::Elem> {
-        A::link(e).0.as_deref()
+        A::link(e).get()
     }
 
     /// The last element (`ml_tail`, `sb_mbtail`), O(1).
@@ -2857,11 +2955,10 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         // module keeps it: the links are read and written through the adapter `slist_adapter!`
         // alone writes (`link` and `link_mut` name the same field), and an element enters a
         // list only with its link empty (`push_head`/`push_tail` check it, `panic(9)` in every
-        // kernel: a box outside any list holds no chain, since only a list fills a link and
-        // every way out of one empties it), so the element `tail` names is the one whose link
-        // is empty. The shared reference borrows `self`, so no change of the list (all need
-        // `&mut self`) and no `&mut` to the element can happen while it lives, and it reads
-        // only.
+        // kernel: a box outside any list holds no chain unless its owner linked one, which
+        // `check_alone` refuses), so the element `tail` names is the one whose link is empty.
+        // The shared reference borrows `self`, so no change of the list (all need `&mut
+        // self`) and no `&mut` to the element can happen while it lives, and it reads only.
         unsafe { t.as_ref() }
     }
 
@@ -2871,8 +2968,9 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         // SAFETY: as for `last`; the reference borrows `self` mutably, the only path to the
         // element (the list owns it through the chain and lends its elements only shared,
         // from `&self` or a cursor), so it is the only reference to it while it lives. `tail`
-        // is the element's box's own pointer (`PoolBox::as_ptr`), never one derived from a
-        // reference that has ended.
+        // is the element's box's own pointer (`PoolBox::as_ptr`, or the word of the link
+        // holding it, which is that pointer), never one derived from a reference that has
+        // ended.
         unsafe { t.as_mut() }
     }
 
@@ -2884,7 +2982,7 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     /// `panic(9)` unless `b`'s link is empty: an element enters a list alone (the tail's
     /// premise, `last`'s SAFETY), in every kernel.
     fn check_alone(b: &PoolBox<A::Elem>) {
-        if A::link(b).0.is_some() {
+        if A::link(b).is_some() {
             hal_panic(format_args!(
                 "OwnedSlist: an element pushed with its link holding a chain"
             ));
@@ -2895,11 +2993,12 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     /// is not empty.
     pub fn push_head(&mut self, mut b: PoolBox<A::Elem>) {
         Self::check_alone(&b);
-        if self.head.0.is_none() {
+        if let Some(h) = self.head.take() {
+            A::link_mut(&mut b).set(h);
+        } else {
             self.tail.store(Self::tail_of(&b), Mem::Relaxed);
         }
-        A::link_mut(&mut b).0 = self.head.0.take();
-        self.head.0 = Some(b);
+        self.head.set(b);
         self.len += 1;
     }
 
@@ -2909,8 +3008,8 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         Self::check_alone(&b);
         let t = Self::tail_of(&b);
         match self.last_mut() {
-            Some(last) => A::link_mut(last).0 = Some(b),
-            None => self.head.0 = Some(b),
+            Some(last) => drop(A::link_mut(last).set(b)),
+            None => drop(self.head.set(b)),
         }
         self.tail.store(t, Mem::Relaxed);
         self.len += 1;
@@ -2918,10 +3017,10 @@ impl<A: SlistAdapter> OwnedSlist<A> {
 
     /// `ml_dequeue`: the first element's box, unlinked, O(1).
     pub fn pop_head(&mut self) -> Option<PoolBox<A::Elem>> {
-        let mut b = self.head.0.take()?;
-        self.head.0 = A::link_mut(&mut b).0.take();
-        if self.head.0.is_none() {
-            self.tail.store(ptr::null_mut(), Mem::Relaxed);
+        let mut b = self.head.take()?;
+        match A::link_mut(&mut b).take() {
+            Some(n) => drop(self.head.set(n)),
+            None => self.tail.store(ptr::null_mut(), Mem::Relaxed),
         }
         self.len -= 1;
         Some(b)
@@ -2930,17 +3029,25 @@ impl<A: SlistAdapter> OwnedSlist<A> {
     /// `ml_enlist`, `m_cat`'s chain: every element of `other` after this list's, `other`
     /// left empty, O(1).
     pub fn concat(&mut self, other: &mut Self) {
-        let Some(h) = other.head.0.take() else {
+        let Some(h) = other.head.take() else {
             return;
         };
         let t = other.tail.swap(ptr::null_mut(), Mem::Relaxed);
         let n = core::mem::take(&mut other.len);
         match self.last_mut() {
-            Some(last) => A::link_mut(last).0 = Some(h),
-            None => self.head.0 = Some(h),
+            Some(last) => drop(A::link_mut(last).set(h)),
+            None => drop(self.head.set(h)),
         }
         self.tail.store(t, Mem::Relaxed);
         self.len += n;
+    }
+
+    /// The first element's box, owning the others through the links (a chain built at its
+    /// tail handed over whole: `m_copym`'s `np = &n->m_next`), the list consumed, O(1).
+    pub fn into_head(mut self) -> Option<PoolBox<A::Elem>> {
+        self.tail.store(ptr::null_mut(), Mem::Relaxed);
+        self.len = 0;
+        self.head.take()
     }
 
     /// `for (m = first; m != NULL; m = m->m_next)`: the elements in order, O(1) a step.
@@ -2993,7 +3100,7 @@ impl<'a, A: SlistAdapter> Iterator for SlistIter<'a, A> {
 
     fn next(&mut self) -> Option<&'a A::Elem> {
         let e = self.cur?;
-        self.cur = A::link(e).0.as_deref();
+        self.cur = A::link(e).get();
         Some(e)
     }
 }
@@ -3014,7 +3121,7 @@ pub struct SlistCursor<'a, A: SlistAdapter> {
 impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
     /// The current element, `None` past the last.
     pub fn current(&self) -> Option<&A::Elem> {
-        self.slot.as_ref()?.0.as_deref()
+        self.slot.as_ref()?.get()
     }
 
     /// One element on (`m = m->m_next`); `false`, not moving, when past the last.
@@ -3022,17 +3129,16 @@ impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
         let Some(slot) = self.slot.take() else {
             return false;
         };
-        if slot.0.is_none() {
+        if !slot.is_some() {
             self.slot = Some(slot);
             return false;
         }
-        if let SlistLink(Some(b)) = slot {
-            let e: &'a mut A::Elem = b;
-            self.slot = Some(A::link_mut(e));
-            self.pos += 1;
-            return true;
-        }
-        false
+        let Some(e) = slot.get_mut() else {
+            return false;
+        };
+        self.slot = Some(A::link_mut(e));
+        self.pos += 1;
+        true
     }
 
     /// `m_split` and `sbdrop`'s cut: the elements after the current one taken off as a list
@@ -3041,18 +3147,21 @@ impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
     pub fn split_after(&mut self) -> OwnedSlist<A> {
         let tail = self.tail;
         let mut rest = OwnedSlist::new();
-        let Some(cur) = self.slot.as_mut().and_then(|s| s.0.as_mut()) else {
+        let Some(slot) = self.slot.as_mut() else {
             return rest;
         };
-        let Some(h) = A::link_mut(cur).0.take() else {
+        // The current element's own pointer (its link's word), for the tail.
+        let cur_ptr = slot.raw();
+        let Some(cur) = slot.get_mut() else {
+            return rest;
+        };
+        let Some(h) = A::link_mut(cur).take() else {
             return rest;
         };
         let kept = self.pos + 1;
-        rest.head.0 = Some(h);
-        rest.tail.store(
-            tail.swap(PoolBox::as_ptr(cur).cast_mut(), Mem::Relaxed),
-            Mem::Relaxed,
-        );
+        drop(rest.head.set(h));
+        rest.tail
+            .store(tail.swap(cur_ptr, Mem::Relaxed), Mem::Relaxed);
         rest.len = *self.len - kept;
         *self.len = kept;
         rest
@@ -3062,13 +3171,13 @@ impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
     /// when there is none.
     pub fn remove_next(&mut self) -> Option<PoolBox<A::Elem>> {
         let tail = self.tail;
-        let cur = self.slot.as_mut()?.0.as_mut()?;
-        let mut next = A::link_mut(cur).0.take()?;
-        let after = A::link_mut(&mut next).0.take();
-        let last = after.is_none();
-        A::link_mut(cur).0 = after;
-        if last {
-            tail.store(PoolBox::as_ptr(cur).cast_mut(), Mem::Relaxed);
+        let slot = self.slot.as_mut()?;
+        let cur_ptr = slot.raw();
+        let cur = slot.get_mut()?;
+        let mut next = A::link_mut(cur).take()?;
+        match A::link_mut(&mut next).take() {
+            Some(after) => drop(A::link_mut(cur).set(after)),
+            None => tail.store(cur_ptr, Mem::Relaxed),
         }
         *self.len -= 1;
         Some(next)
@@ -4093,19 +4202,47 @@ mod tests {
 
     static SLS: BoxPool<Sl> = BoxPool::new();
 
-    fn sl(v: u32) -> PoolBox<Sl> {
-        sl_of(&SLS, v)
+    impl crate::pool::Pooled for Sl {
+        const POOL: &'static BoxPool<Self> = &SLS;
     }
 
-    fn sl_of(pool: &'static BoxPool<Sl>, v: u32) -> PoolBox<Sl> {
+    fn sl(v: u32) -> PoolBox<Sl> {
         crate::testutil::install();
-        let _ = pool.init(0, crate::pool::PR_WAITOK, "slpl");
-        pool.get(crate::pool::PR_WAITOK, || Sl {
+        let _ = SLS.init(0, crate::pool::PR_WAITOK, "slpl");
+        SLS.get(crate::pool::PR_WAITOK, || Sl {
             next: SlistLink::new(),
             v,
         })
         .expect("an item")
     }
+
+    /// The long chain's elements, of a pool of their own: the other tests' items do not move
+    /// its count.
+    struct SlLong {
+        next: SlistLink<SlLong>,
+        v: u32,
+    }
+
+    crate::slist_adapter!(SlLongChain: SlLong, next);
+
+    static LONG: BoxPool<SlLong> = BoxPool::new();
+
+    impl crate::pool::Pooled for SlLong {
+        const POOL: &'static BoxPool<Self> = &LONG;
+    }
+
+    fn sl_long(v: u32) -> PoolBox<SlLong> {
+        crate::testutil::install();
+        let _ = LONG.init(0, crate::pool::PR_WAITOK, "sllongpl");
+        LONG.get(crate::pool::PR_WAITOK, || SlLong {
+            next: SlistLink::new(),
+            v,
+        })
+        .expect("an item")
+    }
+
+    /// A box of another pool than its type's is refused by `set`.
+    static OTHER: BoxPool<Sl> = BoxPool::new();
 
     fn values(l: &OwnedSlist<SlChain>) -> Vec<u32> {
         l.iter().map(|e| e.v).collect()
@@ -4128,7 +4265,7 @@ mod tests {
         );
         while l.len() > 0 {
             let b = l.pop_head().expect("an element");
-            assert!(b.next.0.is_none(), "popped unlinked");
+            assert!(!b.next.is_some(), "popped unlinked");
         }
         assert!(
             l.is_empty() && l.last().is_none(),
@@ -4204,25 +4341,23 @@ mod tests {
     fn an_element_carrying_a_chain_is_refused() {
         let mut l = OwnedSlist::<SlChain>::new();
         let mut a = sl(1);
-        // Only a list fills a link; the test reaches the private field to make the case.
-        a.next.0 = Some(sl(2));
+        // A box whose own chain was linked by hand is refused by a list.
+        assert!(a.next.set(sl(2)).is_none());
         assert!(
             std::panic::catch_unwind(AssertUnwindSafe(|| l.push_tail(a))).is_err(),
             "push_tail of a box whose link holds a chain"
         );
         let mut b = sl(3);
-        b.next.0 = Some(sl(4));
+        assert!(b.next.set(sl(4)).is_none());
         assert!(std::panic::catch_unwind(AssertUnwindSafe(|| l.push_head(b))).is_err());
         assert!(l.is_empty() && l.last().is_none(), "nothing linked");
     }
 
     #[test]
     fn a_long_chain_drops_without_recursion() {
-        // A pool of its own: the other tests' items do not move its count.
-        static LONG: BoxPool<Sl> = BoxPool::new();
-        let mut l = OwnedSlist::<SlChain>::new();
+        let mut l = OwnedSlist::<SlLongChain>::new();
         for v in 0..10_000 {
-            l.push_tail(sl_of(&LONG, v));
+            l.push_tail(sl_long(v));
         }
         assert_eq!(l.len(), 10_000);
         assert_eq!(LONG.nout(), 10_000);
@@ -4239,6 +4374,82 @@ mod tests {
         drop(l);
         drop(cut);
         assert_eq!(LONG.nout(), 0, "every element back");
+    }
+
+    #[test]
+    fn a_list_hands_its_chain_over_whole() {
+        let mut l = OwnedSlist::<SlChain>::new();
+        assert!(OwnedSlist::<SlChain>::new().into_head().is_none());
+        for v in 1..=3 {
+            l.push_tail(sl(v));
+        }
+        let head = l.into_head().expect("the first element");
+        assert_eq!(head.v, 1);
+        assert_eq!(head.next.get().map(|e| e.v), Some(2));
+        assert_eq!(
+            head.next.get().and_then(|e| e.next.get()).map(|e| e.v),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn a_link_is_one_word_and_round_trips_its_box() {
+        assert_eq!(size_of::<SlistLink<Sl>>(), size_of::<usize>());
+        let mut a = sl(1);
+        assert!(!a.next.is_some() && a.next.get().is_none());
+        assert!(a.next.set(sl(2)).is_none());
+        assert_eq!(a.next.get().map(|e| e.v), Some(2));
+        if let Some(e) = a.next.get_mut() {
+            e.v = 20;
+        }
+        let old = a.next.set(sl(3)).expect("the box linked before");
+        assert_eq!(old.v, 20);
+        let b = a.next.take().expect("the box linked");
+        assert_eq!(b.v, 3);
+        assert!(!a.next.is_some() && a.next.take().is_none());
+    }
+
+    /// The elements of the one test that counts its pool's items (the tests run in
+    /// parallel).
+    struct SlOwn {
+        next: SlistLink<SlOwn>,
+    }
+
+    static OWN: BoxPool<SlOwn> = BoxPool::new();
+
+    impl crate::pool::Pooled for SlOwn {
+        const POOL: &'static BoxPool<Self> = &OWN;
+    }
+
+    fn sl_own() -> PoolBox<SlOwn> {
+        crate::testutil::install();
+        let _ = OWN.init(0, crate::pool::PR_WAITOK, "slownpl");
+        OWN.get(crate::pool::PR_WAITOK, || SlOwn {
+            next: SlistLink::new(),
+        })
+        .expect("an item")
+    }
+
+    #[test]
+    fn a_link_frees_its_element_and_refuses_another_pool() {
+        {
+            let mut a = sl_own();
+            assert!(a.next.set(sl_own()).is_none());
+            assert_eq!(OWN.nout(), 2);
+        }
+        assert_eq!(OWN.nout(), 0, "the link's element went with it");
+        let _ = OTHER.init(0, crate::pool::PR_WAITOK, "slother");
+        let foreign = OTHER
+            .get(crate::pool::PR_WAITOK, || Sl {
+                next: SlistLink::new(),
+                v: 9,
+            })
+            .expect("an item");
+        let mut a = sl(1);
+        assert!(
+            std::panic::catch_unwind(AssertUnwindSafe(|| a.next.set(foreign))).is_err(),
+            "a box of another pool"
+        );
     }
 }
 /* </TESTS> */

@@ -138,6 +138,12 @@
 //!   which lies within the item). `park` returns a pointer, never a reference: safe code holds
 //!   none to a parked item, so the only references to it are those `bsd`'s own `unsafe` code
 //!   makes from the pointer (the `Buf` token's parking of N5.1, generalised).
+//! - N6.1: [`Pooled`], a type's one pool, split out of [`Parkable`] (which now extends it):
+//!   `hal::owned::SlistLink` keeps an element by its pointer alone and rebuilds the box with
+//!   `T::POOL`. Neither asks `Sync`: an mbuf is changed through `Cell`s by its one owner, as
+//!   the C's is, and crosses CPUs whole (`Send`). [`RawPool::wakeup`] is `pool_wakeup(9)`
+//!   (`nmbclust_update` after the limit moves), a default method that does nothing, which
+//!   `bsd`'s backend overrides; [`BoxPool::wakeup`] forwards to it.
 
 use core::any::TypeId;
 use core::cell::UnsafeCell;
@@ -240,6 +246,10 @@ pub trait RawPool: Sync {
     /// `pool_cache_init(pp)`: `pool_get` and `pool_put` go through a cache per CPU from now
     /// on.
     fn cache_init(&self);
+    /// `pool_wakeup(pp)`: the threads sleeping for an item of the pool try again (its limit
+    /// or its page source's moved: `nmbclust_update`). The default does nothing: a backend
+    /// whose `get` never sleeps for an item.
+    fn wakeup(&self) {}
 }
 
 /// Where a pool's pages come from when not from `pool(9)`'s own allocator: the page half of
@@ -1309,13 +1319,20 @@ impl Default for ParkWord {
     }
 }
 
-/// An item that crosses into `bsd`'s legacy code by address and comes back
-/// ([`PoolBox::park`], [`PoolBox::unpark`]): its type's one pool, and its [`ParkWord`]
-/// (which must lie within the item: checked).
-pub trait Parkable: Send + Sync + Sized + 'static {
-    /// The pool every item of the type comes from (checked at [`PoolBox::park`]), which the
-    /// handle [`PoolBox::unpark`] makes puts it back into.
+/// A type whose items all come from one pool, `POOL`: a container that holds an item by its
+/// pointer alone (`hal::owned::SlistLink`, 8 bytes where a [`PoolBox`] is 16) rebuilds the
+/// box with it, and checks every box it is given against it. `Send`: the items cross CPUs
+/// whole, as their boxes do.
+pub trait Pooled: Send + Sized + 'static {
+    /// The pool every item of the type comes from.
     const POOL: &'static BoxPool<Self>;
+}
+
+/// An item that crosses into `bsd`'s legacy code by address and comes back
+/// ([`PoolBox::park`], [`PoolBox::unpark`]): its type's one pool ([`Pooled::POOL`], checked at
+/// [`PoolBox::park`], which the handle [`PoolBox::unpark`] makes puts it back into), and its
+/// [`ParkWord`] (which must lie within the item: checked).
+pub trait Parkable: Pooled {
     /// The item's own mark.
     fn park_word(&self) -> &ParkWord;
 }
@@ -1478,6 +1495,14 @@ impl<T: 'static> BoxPool<T> {
     pub fn cache_init(&self) {
         if let Some(raw) = self.raw.get() {
             raw.cache_init();
+        }
+    }
+
+    /// `pool_wakeup(9)`: whoever sleeps for an item tries again (`nmbclust_update`). Nothing
+    /// before `init`.
+    pub fn wakeup(&self) {
+        if let Some(raw) = self.raw.get() {
+            raw.wakeup();
         }
     }
 }
@@ -2872,8 +2897,11 @@ mod tests {
 
     static PKS: BoxPool<Pk> = BoxPool::new();
 
-    impl Parkable for Pk {
+    impl Pooled for Pk {
         const POOL: &'static BoxPool<Pk> = &PKS;
+    }
+
+    impl Parkable for Pk {
         fn park_word(&self) -> &ParkWord {
             &self.mark
         }
@@ -2939,8 +2967,10 @@ mod tests {
         }
         static STRAY_MARK: ParkWord = ParkWord::new();
         static STRAYS: BoxPool<Stray> = BoxPool::new();
-        impl Parkable for Stray {
+        impl Pooled for Stray {
             const POOL: &'static BoxPool<Stray> = &STRAYS;
+        }
+        impl Parkable for Stray {
             fn park_word(&self) -> &ParkWord {
                 &STRAY_MARK
             }

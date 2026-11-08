@@ -348,6 +348,10 @@ hal::slist_adapter!(
 /// The pool of the `slist.*` benches' elements.
 static SL_ELEMS: BoxPool<SlElem> = BoxPool::new();
 
+impl hal::pool::Pooled for SlElem {
+    const POOL: &'static BoxPool<Self> = &SL_ELEMS;
+}
+
 /// A fresh `slist.*` element.
 fn slelem() -> PoolBox<SlElem> {
     need(
