@@ -838,11 +838,19 @@ pub struct ExtRefs {
     _pad: [u64; 2],
 }
 
-impl Drop for ExtRefs {
-    fn drop(&mut self) {
+impl ExtRefs {
+    /// `m_extfree_refs`'s `if (mrefs->zero) explicit_bzero(...)`: the cluster's bytes zeroed
+    /// when `m_zero` asked, before the cluster goes back to its pool.
+    fn zero_if_asked(&mut self) {
         if self.zero.load(Ordering::Relaxed) {
             explicit_bzero(self.cluster.bytes_mut());
         }
+    }
+}
+
+impl Drop for ExtRefs {
+    fn drop(&mut self) {
+        self.zero_if_asked();
     }
 }
 
@@ -1815,9 +1823,18 @@ pub fn m_copym(m0: &mut Mbuf, off: i32, len: i32, wait: i32) -> Option<MbufBox> 
     top.into_head()
 }
 
-/// A chain built mbuf by mbuf at its tail (the C's `np = &n->m_next`), O(1) a step.
+/// A chain built mbuf by mbuf at its tail (the C's `np = &n->m_next`), O(1) a step. A chain
+/// left unfinished (`m_copym`'s `nospace`, `m_devget`'s failure) is freed as the C's
+/// `m_freem(top)` frees it: from its head, so the head's `M_ZEROIZE` reaches every mbuf
+/// (pfkey's secrets), never mbuf by mbuf as the list's own drop would.
 struct MChainBuilder {
     chain: OwnedSlist<MChain>,
+}
+
+impl Drop for MChainBuilder {
+    fn drop(&mut self) {
+        drop(core::mem::replace(&mut self.chain, OwnedSlist::new()).into_head());
+    }
 }
 
 hal::slist_adapter!(
@@ -1838,8 +1855,8 @@ impl MChainBuilder {
     }
 
     /// The chain's first mbuf, owning the rest.
-    fn into_head(self) -> Option<MbufBox> {
-        self.chain.into_head()
+    fn into_head(mut self) -> Option<MbufBox> {
+        core::mem::replace(&mut self.chain, OwnedSlist::new()).into_head()
     }
 }
 
@@ -2490,8 +2507,9 @@ pub fn m_devget(buf: &[u8], off: i32) -> Option<MbufBox> {
     top.into_head()
 }
 
-/// `m_zero`: zeroes the mbuf's storage, or marks a shared cluster to be zeroed when its last
-/// reference goes.
+/// `m_zero`: zeroes the mbuf's storage (`M_DATABUF`, `M_SIZE` bytes: a cluster of its own
+/// whether `M_EXTWR` is set or not, as the C), or marks a shared cluster to be zeroed when
+/// its last reference goes.
 pub fn m_zero(m: &mut Mbuf) {
     if let Some(Ext {
         kind: ExtKind::Shared(r),
@@ -2504,8 +2522,14 @@ pub fn m_zero(m: &mut Mbuf) {
         return;
     }
 
-    if let Some(s) = m.storage_mut() {
-        explicit_bzero(s);
+    if m.body.e().is_none() {
+        if let Some(s) = m.body.inline_mut() {
+            explicit_bzero(s);
+        }
+        return;
+    }
+    if let Some(b) = m.body.e_mut().and_then(Ext::bytes_mut) {
+        explicit_bzero(b);
     }
 }
 
@@ -4308,11 +4332,74 @@ pub(crate) mod tests {
 
         // a shared cluster is zeroed when its last reference goes
         let mut m = packet(&[1000]);
-        let c = m_copym(&mut m, 0, M_COPYALL, M_DONTWAIT).expect("a copy");
+        let mut c = m_copym(&mut m, 0, M_COPYALL, M_DONTWAIT).expect("a copy");
         m_zero(&mut m);
+        assert!(shared_zero(&m), "the zeroing asked of the shared cluster");
         assert_eq!(contents(&c), pattern(1000), "not yet: the copy holds it");
         drop(m);
+        // `c` holds the last reference: its release (the `ExtRefs` drop's) zeroes the bytes.
+        match c.body.e_mut() {
+            Some(Ext {
+                kind: ExtKind::Shared(r),
+                ..
+            }) => PoolArc::get_mut(r)
+                .expect("the last reference")
+                .zero_if_asked(),
+            _ => panic!("a shared cluster"),
+        }
+        assert_eq!(
+            contents(&c),
+            vec![0u8; 1000],
+            "zeroed at the last reference"
+        );
         drop(c);
+
+        // a cluster of its own without M_EXTWR is zeroed all the same (the C's M_DATABUF)
+        let mut m = packet(&[1000]);
+        m.clear_bits(M_EXTWR);
+        assert!(m.data_mut().is_none(), "read-only");
+        m_zero(&mut m);
+        assert_eq!(contents(&m), vec![0u8; 1000]);
+        drop(m);
+        all_back();
+    }
+
+    /// Whether `m`'s shared cluster was asked to be zeroed (`mrefs->zero`).
+    fn shared_zero(m: &Mbuf) -> bool {
+        match m.ext() {
+            Some(Ext {
+                kind: ExtKind::Shared(r),
+                ..
+            }) => r.zero.load(Ordering::Relaxed),
+            _ => panic!("a shared cluster"),
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_zeroes_every_mbuf_it_made() {
+        let _g = setup();
+
+        // Three clusters, shared once (the copy below shares them without a mextrefs
+        // allocation), then the packet marked M_ZEROIZE (pfkey's), which its copies inherit
+        // (M_COPYFLAGS).
+        let mut src = packet(&[1000, 1000, 1000]);
+        let first = m_copym(&mut src, 0, M_COPYALL, M_DONTWAIT).expect("a first copy");
+        src.set_bits(M_ZEROIZE);
+        // The copy's header and its second mbuf are made, the third refused: m_copym's
+        // nospace frees the two from the head (the C's m_freem(top)).
+        testutil::fail_pool_after("mbufpl", 2, 1);
+        assert!(m_copym(&mut src, 0, M_COPYALL, M_DONTWAIT).is_none());
+        testutil::fail_pool("mbufpl", 0);
+        let m2 = src.m_next.get().expect("a second mbuf");
+        let m3 = m2.m_next.get().expect("a third mbuf");
+        assert!(shared_zero(&src), "the copy's header zeroed its cluster");
+        assert!(
+            shared_zero(m2),
+            "M_ZEROIZE carried to the copy's second mbuf"
+        );
+        assert!(!shared_zero(m3), "the third cluster was never in the copy");
+        drop(first);
+        drop(src);
         all_back();
     }
 }

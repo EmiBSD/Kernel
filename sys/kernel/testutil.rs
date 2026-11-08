@@ -140,7 +140,7 @@ std::thread_local! {
     static MALLOC_REQS: RefCell<BTreeMap<i32, (u64, usize)>> = const { RefCell::new(BTreeMap::new()) };
     static POOL_WATCH: Cell<Option<(&'static str, u64)>> = const { Cell::new(None) };
     static FAIL_PAGES: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
-    static FAIL_POOL: Cell<Option<(&'static str, u32)>> = const { Cell::new(None) };
+    static FAIL_POOL: Cell<Option<(&'static str, u32, u32)>> = const { Cell::new(None) };
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 
@@ -957,15 +957,25 @@ pub fn fail_pages(skip: u32, n: u32) {
 /// left does (`fail_pool(wchan, 0)` clears it): N3.4d's fault handler, `amap_add` without a
 /// chunk.
 pub fn fail_pool(wchan: &'static str, n: u32) {
-    FAIL_POOL.with(|f| f.set((n != 0).then_some((wchan, n))));
+    fail_pool_after(wchan, 0, n);
+}
+
+/// As [`fail_pool`], after `skip` more items of the pool named `wchan` that succeed: a pool
+/// that runs out in the middle of a chain (N6.1's `m_copym` without its third mbuf).
+pub fn fail_pool_after(wchan: &'static str, skip: u32, n: u32) {
+    FAIL_POOL.with(|f| f.set((n != 0).then_some((wchan, skip, n))));
 }
 
 /// Whether this item of the pool named `wchan` is one [`fail_pool`] asked to fail (and count
 /// it).
 fn pool_fails(wchan: &str) -> bool {
     FAIL_POOL.with(|f| match f.get() {
-        Some((name, n)) if name == wchan => {
-            f.set((n > 1).then_some((name, n - 1)));
+        Some((name, skip, n)) if name == wchan && skip > 0 => {
+            f.set(Some((name, skip - 1, n)));
+            false
+        }
+        Some((name, _, n)) if name == wchan => {
+            f.set((n > 1).then_some((name, 0, n - 1)));
             true
         }
         _ => false,
