@@ -832,14 +832,46 @@ pub fn memory_is_the_doubles() -> Option<bool> {
     MEMORY_DOUBLES.get().copied()
 }
 
-/// `uiomove` of a read out of `buf` for the test glues: [`test_uiomove`] over a copy of the
-/// bytes (the test glues' kernel and user copies take a mutable source).
+/// `uiomove` of a read out of `buf` for the test glues: a read (`UIO_READ`) copies from
+/// `buf` itself as [`test_uiomove`] does (user iovecs through the user-copy double, kernel
+/// ones through hal's kcopy under [`set_copy_kernel`], else accounted only), no copy of the
+/// source made; a write (never asked of a read out of a buffer) through [`test_uiomove`]
+/// over a copy.
 pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
     buf: &[u8],
     uio: &mut crate::uio::Uio<'_, G>,
 ) -> Result<(), hal::sys::errno::Errno> {
-    let mut copy = buf.to_vec();
-    test_uiomove(&mut copy, uio)
+    use crate::uio::{UioRw, UioSeg};
+    if uio.uio_rw != UioRw::UIO_READ {
+        let mut copy = buf.to_vec();
+        return test_uiomove(&mut copy, uio);
+    }
+    let mut done = 0;
+    while done < buf.len() && uio.uio_resid > 0 {
+        let Some(iov) = uio.uio_iov.first_mut() else {
+            break;
+        };
+        if iov.iov_len == 0 {
+            let iovs = core::mem::take(&mut uio.uio_iov);
+            uio.uio_iov = &mut iovs[1..];
+            continue;
+        }
+        let cnt = iov.iov_len.min(buf.len() - done);
+        let addr = iov.iov_base.addr();
+        if uio.uio_segflg == UioSeg::UIO_USERSPACE {
+            hal::user::UserPtr::<u8>::new(addr).copyout_slice(&buf[done..done + cnt])?;
+        } else if COPY_KERNEL.with(Cell::get)
+            && let Some(t) = kcopy_token()
+        {
+            t.kcopy_out(&buf[done..done + cnt], addr)?;
+        }
+        iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
+        iov.iov_len -= cnt;
+        uio.uio_resid -= cnt;
+        uio.uio_offset += cnt as hal::sys::types::Off;
+        done += cnt;
+    }
+    Ok(())
 }
 
 /// The test glues' `uiomove`: moves `buf` through the uio's iovecs, user addresses through

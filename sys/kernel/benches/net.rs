@@ -60,8 +60,8 @@
 //!   list drained between rounds, untimed.
 //! - The socket layer's rows (N6.2a, decision 43 with U10), over the doubles' thread (its
 //!   descriptor table, user memory and credentials), the mbufs and the UNIX domain, the
-//!   data copied from and to kernel buffers (`UIO_SYSSPACE`, as bsd's tests the "before"
-//!   rows ran on):
+//!   data copied from and to kernel buffers (`UIO_SYSSPACE` through hal's kcopy,
+//!   `testutil::set_copy_kernel`, as bsd's uiomove copies them in the "before" rows):
 //!   - `sockbuf.append.drop`: a 100-byte mbuf got, appended to a stream buffer
 //!     (`sbappendstream` under the buffer's mutex) and dropped from it (`sbdrop`, a second
 //!     mutex section): the TCP input and ack paths' buffer work.
@@ -69,6 +69,11 @@
 //!     (the send untimed).
 //!   - `soreceive.peek.4k`: `soreceive` with `MSG_PEEK` of the 4 KiB a UNIX stream socket
 //!     holds (sent once, untimed; a peek takes nothing): the walk down the record.
+//!   - `soreceive.peek.1`: the same peek of one byte: `soreceive`'s work around the copy
+//!     (`sblock`, the mutex sections, the record taken out and put back, the cursor),
+//!     the 4 KiB copy left out.
+//!   - `sockbuf.record.out.in`: the receive buffer's first record (those 4 KiB) taken out
+//!     and put back under one mutex section (`take_first_record`, `put_back_record`).
 //!   - `unix.socketpair.send.recv.64`: `sosend` of 64 bytes on one end of a UNIX stream
 //!     pair and `soreceive` of them on the other.
 //!   - `solock.unlock.unix`: `solock` and its drop on a UNIX socket (`so_lock`'s write
@@ -990,13 +995,15 @@ fn cluster_chain(lens: &[u32]) -> MbufBox {
 }
 
 /// The socket layer's rows (N6.2a).
-const SOCKET_ROWS: [&str; 6] = [
+const SOCKET_ROWS: [&str; 8] = [
     "sockbuf.append.drop",
     "soreceive.4k",
     "soreceive.peek.4k",
     "unix.socketpair.send.recv.64",
     "solock.unlock.unix",
     "socket.create.close.unix",
+    "soreceive.peek.1",
+    "sockbuf.record.out.in",
 ];
 
 /// The glue of the socket rows: the doubles' process and file glues.
@@ -1067,6 +1074,9 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
     kernel::net::domain::soinit::<G>();
     kernel::net::domain::domaininit::<G>(&DOMS);
     kernel::net::unix::unp_init::<G>();
+    // The data really copied to and from the rows' kernel buffers (hal's kcopy, as bsd's
+    // uiomove copies a UIO_SYSSPACE iovec in the "before" rows), not only accounted.
+    testutil::set_copy_kernel(true);
     let sock = || {
         need(
             socreate(p, i32::from(AF_UNIX), SOCK_STREAM, 0).ok(),
@@ -1126,6 +1136,39 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
         });
         krecv(&b, &mut inb);
         report(SOCKET_ROWS[2], r);
+    }
+    if wanted(SOCKET_ROWS[6]) || wanted(SOCKET_ROWS[7]) {
+        let out = vec![7u8; 4096];
+        ksend(&a, &out);
+        println!(
+            "# the 4 KiB record: {} mbufs",
+            b.so_rcv.lock().data().mbufs().count()
+        );
+        if wanted(SOCKET_ROWS[6]) {
+            let mut one = [0u8; 1];
+            let r = measure(OPS / 16, || {
+                let t = Instant::now();
+                for _ in 0..OPS / 16 {
+                    krecv_flags(&b, black_box(&mut one), hal::sys::socket::MSG_PEEK);
+                }
+                t.elapsed()
+            });
+            report(SOCKET_ROWS[6], r);
+        }
+        if wanted(SOCKET_ROWS[7]) {
+            let r = measure(OPS, || {
+                let t = Instant::now();
+                for _ in 0..OPS {
+                    let mut g = b.so_rcv.lock();
+                    let rec = need(g.take_first_record(), "a record");
+                    g.put_back_record(black_box(rec));
+                }
+                t.elapsed()
+            });
+            report(SOCKET_ROWS[7], r);
+        }
+        let mut inb = vec![0u8; 4096];
+        krecv(&b, &mut inb);
     }
     if wanted(SOCKET_ROWS[3]) {
         let out = [5u8; 64];
