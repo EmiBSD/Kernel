@@ -7435,7 +7435,7 @@ rust = "sys/hal/sys/socket.rs"
 crate = "hal"
 lz = ["sys/sys/socket.rs"]
 status = "redesigned"
-notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; msghdr, mmsghdr and the pointer CMSG_* stay bsd's until N6.2b, struct splice is kernel::net::socket's (its timeval is kernel::clock's)"
+notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; N6.2b: msghdr and mmsghdr as the system calls copy them (Msghdr, Mmsghdr: the user addresses as usize, the C's holes named _pad0/_pad1/_pad, so AbiPod and copied out whole as the C's copyout); the pointer CMSG_FIRSTHDR/NXTHDR/DATA stay in bsd's inherited sys/sys/socket.rs (bsd's internet protocols), struct splice is kernel::net::socket's (its timeval is kernel::clock's)"
 
 [[module]]
 rust = "sys/hal/sys/sockio.rs"
@@ -12138,7 +12138,7 @@ reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9)
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags"
+reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags; N6.2b: SocketEntries (KernelApi::socket), the nineteen socket system calls' typed entries"
 
 [[module]]
 rust = "sys/kernel/clock.rs"

@@ -64,10 +64,10 @@
 //!
 //! ## Deviations
 //! - `CTL_NET_NAMES` and the other `struct ctlname` tables come with `<sys/sysctl.h>`'s.
-//! - `struct msghdr`, `struct mmsghdr` and `CMSG_FIRSTHDR`/`CMSG_NXTHDR`/`CMSG_DATA`, which
-//!   work on user pointers, are `bsd`'s `sys/sys/socket.rs` until the system calls move
-//!   (N6.2b); `struct splice` holds a `struct timeval` (`kernel::clock`'s) and is
-//!   `kernel::net::socket`'s.
+//! - `CMSG_FIRSTHDR`/`CMSG_NXTHDR`/`CMSG_DATA`, which walk a `msg_control` buffer by
+//!   pointer, are `bsd`'s `sys/sys/socket.rs` (LZ's, for `bsd`'s internet protocols); the
+//!   kernel reads a control message by its offset ([`CMSG_DATA_OFFSET`]). `struct splice`
+//!   holds a `struct timeval` (`kernel::clock`'s) and is `kernel::net::socket`'s.
 //!
 //! ## Redesign
 //! - N6.2a: moved from `bsd`'s `sys/sys/socket.rs` with the socket layer's redesign
@@ -75,6 +75,12 @@
 //!   `CMSG_ALIGN` is the C's `_ALIGN`, `(p + _ALIGNBYTES) & ~_ALIGNBYTES` with
 //!   `_ALIGNBYTES` = `sizeof(long) - 1` (both machines' `<machine/_types.h>`), so `hal`
 //!   needs no machine parameter; `bsd`'s `sys::param::ALIGNBYTES` test pins it.
+//! - N6.2b: `struct msghdr` and `struct mmsghdr` as the system calls copy them ([`Msghdr`],
+//!   [`Mmsghdr`]): their user addresses (`msg_name`, `msg_iov`, `msg_control`) as `usize`,
+//!   which the kernel only hands to `UserPtr`, and the holes the C compiler leaves named
+//!   (`_pad0`, `_pad1`, `_pad`), so the images are `AbiPod` and a `recvmsg(2)` copies the
+//!   structure back out whole, the user's padding bytes with it, as the C's `copyout(&msg)`
+//!   of the structure it copied in (LZ copied field by field and zeroed the holes).
 
 use core::ffi::c_long;
 
@@ -614,6 +620,63 @@ crate::abi_pod!(Cmsghdr {
     cmsg_type: i32,
 });
 
+/// `struct msghdr`: message header for recvmsg and sendmsg calls. Used value-result for
+/// recvmsg, value only for sendmsg. The user addresses are plain `usize`s (the kernel reads
+/// and writes through them only with `UserPtr`); the two holes of the C's LP64 layout are
+/// named.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Msghdr {
+    /// Optional address (`void *msg_name`).
+    pub msg_name: usize,
+    /// Size of address.
+    pub msg_namelen: Socklen,
+    /// The hole before `msg_iov`.
+    pub _pad0: u32,
+    /// Scatter/gather array (`struct iovec *msg_iov`).
+    pub msg_iov: usize,
+    /// # elements in `msg_iov`.
+    pub msg_iovlen: u32,
+    /// The hole before `msg_control`.
+    pub _pad1: u32,
+    /// Ancillary data, see below (`void *msg_control`).
+    pub msg_control: usize,
+    /// Ancillary data buffer len.
+    pub msg_controllen: Socklen,
+    /// Flags on received message.
+    pub msg_flags: i32,
+}
+
+crate::abi_pod!(Msghdr {
+    msg_name: usize,
+    msg_namelen: Socklen,
+    _pad0: u32,
+    msg_iov: usize,
+    msg_iovlen: u32,
+    _pad1: u32,
+    msg_control: usize,
+    msg_controllen: Socklen,
+    msg_flags: i32,
+});
+
+/// `struct mmsghdr`: one message of `recvmmsg`/`sendmmsg`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mmsghdr {
+    /// The message.
+    pub msg_hdr: Msghdr,
+    /// Bytes transferred.
+    pub msg_len: u32,
+    /// The hole at the end (the structure is aligned to its pointers).
+    pub _pad: u32,
+}
+
+crate::abi_pod!(Mmsghdr {
+    msg_hdr: Msghdr,
+    msg_len: u32,
+    _pad: u32,
+});
+
 /// `_ALIGNBYTES`: `sizeof(long) - 1` on both machines (`<machine/_types.h>`).
 const ALIGNBYTES: usize = size_of::<c_long>() - 1;
 
@@ -650,6 +713,15 @@ const _: () = {
     assert!(size_of::<Sockproto>() == 4);
     assert!(size_of::<Sockpeercred>() == 12);
     assert!(size_of::<Cmsghdr>() == 12);
+    assert!(size_of::<Msghdr>() == 48);
+    assert!(core::mem::offset_of!(Msghdr, msg_namelen) == 8);
+    assert!(core::mem::offset_of!(Msghdr, msg_iov) == 16);
+    assert!(core::mem::offset_of!(Msghdr, msg_iovlen) == 24);
+    assert!(core::mem::offset_of!(Msghdr, msg_control) == 32);
+    assert!(core::mem::offset_of!(Msghdr, msg_controllen) == 40);
+    assert!(core::mem::offset_of!(Msghdr, msg_flags) == 44);
+    assert!(size_of::<Mmsghdr>() == 56);
+    assert!(core::mem::offset_of!(Mmsghdr, msg_len) == 48);
     assert!(ALIGNBYTES == 7);
     assert!(CMSG_DATA_OFFSET == 16);
 };
@@ -709,6 +781,33 @@ mod tests {
             pod_from_bytes::<Sockpeercred>(bytes_of(core::slice::from_ref(&cred))),
             Some(cred)
         );
+    }
+
+    #[test]
+    fn a_msghdr_keeps_its_holes_through_its_bytes() {
+        // The C's LP64 layout: a pointer, a socklen_t and its hole, a pointer, an unsigned
+        // int and its hole, a pointer, a socklen_t and an int.
+        let mut b = [0u8; 56];
+        for (i, x) in b.iter_mut().enumerate() {
+            *x = i as u8;
+        }
+        let m = pod_from_bytes::<Mmsghdr>(&b).expect("56 bytes");
+        assert_eq!(
+            m.msg_hdr.msg_name,
+            usize::from_ne_bytes(*b[..8].first_chunk().unwrap())
+        );
+        assert_eq!(m.msg_hdr.msg_namelen, u32::from_ne_bytes([8, 9, 10, 11]));
+        assert_eq!(m.msg_hdr._pad0, u32::from_ne_bytes([12, 13, 14, 15]));
+        assert_eq!(m.msg_hdr.msg_iovlen, u32::from_ne_bytes([24, 25, 26, 27]));
+        assert_eq!(
+            m.msg_hdr.msg_controllen,
+            u32::from_ne_bytes([40, 41, 42, 43])
+        );
+        assert_eq!(m.msg_hdr.msg_flags, i32::from_ne_bytes([44, 45, 46, 47]));
+        assert_eq!(m.msg_len, u32::from_ne_bytes([48, 49, 50, 51]));
+        // Back to the same bytes, the holes included.
+        assert_eq!(bytes_of(core::slice::from_ref(&m)), &b[..]);
+        assert_eq!(pod_from_bytes::<Msghdr>(&b[..48]), Some(m.msg_hdr));
     }
 }
 /* </TESTS> */
