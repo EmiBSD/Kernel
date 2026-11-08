@@ -4243,6 +4243,12 @@ mod tests {
         IFNETLIST.0.init();
         IFG_HEAD.0.init();
         procinit();
+        // The kernel's domain table, as LZ's static domains[] always was: wg_bind's
+        // socreate finds udp whichever test ran first.
+        crate::kern::uipc_socket::soinit();
+        crate::kern::uipc_domain::net_tables_for_tests();
+        crate::netinet::in_pcb::in_init();
+        crate::netinet::udp_usrreq::udp_init();
 
         pool_init(
             &WG_AIP_POOL,
@@ -4846,12 +4852,13 @@ mod tests {
         assert_eq!(r, Ok(()));
         assert_eq!(data.wgd_size, size_of::<WgInterfaceIo>());
 
-        // Up needs the UDP socket, which this tree cannot make yet: the interface stays down.
+        // Up binds the UDP socket (the kernel's socket layer makes it, the domain table
+        // and udp's tables set up above): the interface runs, as the C's.
         ifp.if_flags.set(ifp.if_flags.get() | IFF_UP);
         // SAFETY: as above, for SIOCSIFFLAGS.
         let r = unsafe { wg_ioctl(ifp, SIOCSIFFLAGS, ptr::from_mut(&mut ifr).cast()) };
-        assert!(r.is_err());
-        assert_eq!(ifp.if_flags.get() & IFF_RUNNING, 0);
+        assert_eq!(r, Ok(()));
+        assert_ne!(ifp.if_flags.get() & IFF_RUNNING, 0);
         net_unlock();
         teardown();
     }
