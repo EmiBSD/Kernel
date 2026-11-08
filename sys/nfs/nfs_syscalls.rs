@@ -105,17 +105,15 @@ use crate::kern::kern_descrip::closef;
 #[cfg(feature = "nfsserver")]
 use crate::kern::kern_malloc::{free, malloc};
 #[cfg(feature = "nfsserver")]
-use crate::kern::subr_pool::{pool_init, pool_put};
+use crate::kern::socket_glue::fp_socket;
 #[cfg(feature = "nfsserver")]
-use crate::kern::sys_socket::fp_socket;
+use crate::kern::subr_pool::{pool_init, pool_put};
 #[cfg(feature = "nfsserver")]
 use crate::kern::uipc_mbuf::{m_free, m_freem, m_get, m_prepend};
 #[cfg(feature = "nfsserver")]
 use crate::kern::uipc_socket::{sosetopt, soshutdown};
 #[cfg(feature = "nfsserver")]
 use crate::kern::uipc_socket2::{solock_shared, soreserve, sounlock_shared};
-#[cfg(feature = "nfsserver")]
-use crate::kern::uipc_syscalls::{getsock, sockargs};
 #[cfg(feature = "nfsserver")]
 use crate::machine::copy::{copyin, copyin_obj};
 #[cfg(feature = "nfsserver")]
@@ -352,14 +350,18 @@ pub fn sys_nfssvc(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
 fn nfssvc_addsock_args(p: &Proc, argp: usize) -> Result<(), Errno> {
     let nfsdarg: NfsdArgs = copyin_obj(argp)?;
 
-    let fp = getsock(p, nfsdarg.sock)?;
+    let fp = kernel::net::syscalls::getsock(p, nfsdarg.sock)?;
 
     // Get the client address for connected sockets.
     let nam = if nfsdarg.name == 0 || nfsdarg.namelen == 0 {
         None
     } else {
-        match sockargs(nfsdarg.name, nfsdarg.namelen as usize, MT_SONAME) {
-            Ok(nam) => Some(nam),
+        match kernel::net::syscalls::sockargs(
+            hal::user::UserPtr::new(nfsdarg.name),
+            nfsdarg.namelen as usize,
+            MT_SONAME,
+        ) {
+            Ok(nam) => Some(crate::sys::mbuf::park(nam)),
             Err(e) => {
                 let _ = frele(fp, p);
                 return Err(e);

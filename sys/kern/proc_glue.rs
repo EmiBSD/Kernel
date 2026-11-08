@@ -733,6 +733,24 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::kern_pledge::pledge_chown(p, uid, gid)
     }
 
+    fn pledge_socket(p: &Proc, domain: i32, state: u32) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_socket(p, domain, state)
+    }
+
+    fn pledge_sendit(p: &Proc, to: usize) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_sendit(p, core::ptr::without_provenance(to))
+    }
+
+    fn pledge_sockopt(
+        p: &Proc,
+        set: bool,
+        pr: &'static dyn kernel::net::proto::Protocol<Self>,
+        level: i32,
+        optname: i32,
+    ) -> Result<(), Errno> {
+        crate::kern::kern_pledge::pledge_sockopt(p, set, pr, level, optname)
+    }
+
     fn unveil_add(
         p: &Proc,
         ni: &crate::sys::namei::Nameidata<'_>,

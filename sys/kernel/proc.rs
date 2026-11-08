@@ -1101,6 +1101,35 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
     ) -> Result<(), Errno> {
         kpanic(format_args!("pledge_chown: the glue has no pledge hooks"))
     }
+    /// `pledge_socket(p, domain, state)` (`kern_pledge.c`, N8): whether the pledged thread
+    /// `p` may make (`socket(2)`) or name (`bind(2)`, `connect(2)`) a socket of `domain` in
+    /// the state `state` (`SS_DNS`: one made with `SOCK_DNS`): `EPERM` through `pledge_fail`
+    /// without `dns`, `inet` or `unix` as the domain and the state ask. The default is
+    /// `panic(9)`, as `pledge_namei`'s: a glue cannot drop pledge by forgetting it.
+    fn pledge_socket(_p: &Thread<Self>, _domain: i32, _state: u32) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_socket: the glue has no pledge hooks"))
+    }
+    /// `pledge_sendit(p, to)` (`kern_pledge.c`, N8): whether the pledged thread `p` may send
+    /// a message naming the address at the user address `to` (0: none, a send that behaves
+    /// as `write(2)`): `EPERM` through `pledge_fail` for an address without `dns`, `inet` or
+    /// `unix`. The default is `panic(9)`, as `pledge_socket`'s.
+    fn pledge_sendit(_p: &Thread<Self>, _to: usize) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_sendit: the glue has no pledge hooks"))
+    }
+    /// `pledge_sockopt(p, set, pr, level, optname)` (`kern_pledge.c`, N8): whether the
+    /// pledged thread `p` may set (`set`) or get the option `optname` of `level` on a socket
+    /// of the protocol `pr` (the C's `pr->pr_domain->dom_family` and `pr->pr_protocol` scope
+    /// the option's meaning): `EPERM` through `pledge_fail` for one its promises do not
+    /// cover. The default is `panic(9)`, as `pledge_socket`'s.
+    fn pledge_sockopt(
+        _p: &Thread<Self>,
+        _set: bool,
+        _pr: &'static dyn crate::net::proto::Protocol<Self>,
+        _level: i32,
+        _optname: i32,
+    ) -> Result<(), Errno> {
+        kpanic(format_args!("pledge_sockopt: the glue has no pledge hooks"))
+    }
     /// `unveil_add(p, ndp, permissions)` (`kern_unveil.c`, N8): adds the path `ni` looked up
     /// (`ni_vp`, or `ni_dvp` and the last component) to the thread's process's unveil table
     /// with `permissions` (`unveil(2)`'s string, at most four letters). The default is

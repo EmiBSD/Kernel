@@ -56,7 +56,7 @@
 //! System calls related to processes and protection (`kern/kern_prot.c`): the process,
 //! group and session ids, the user and group ids, the login name, the thread control block,
 //! the thread names, the routing table (`getrtable`/`setrtable`, only those two of
-//! `uipc_syscalls.c`, whose LZ file stays `bsd`'s), and
+//! `uipc_syscalls.c`, whose other calls are `kernel::net::syscalls`'s since N6.2b), and
 //! the checks over credentials (`suser`, `proc_cansugid`, `dorefreshcreds`). The credentials
 //! themselves are `kernel::cred`'s (`crget`, `crset`, `groupmember`, ...).
 //!

@@ -377,6 +377,48 @@ impl IovBuf {
             big: None,
         }
     }
+
+    /// Room for `n` iovecs: the array this buffer made before when it holds them, else the
+    /// stack part when they fit, else a new `mallocarray(n, M_IOV)` array (the one made
+    /// before freed first): the C's `iov = aiov` or `mallocarray`, and `sendmmsg(2)`'s and
+    /// `recvmmsg(2)`'s growth of the one array they keep across their messages. `ENOMEM` when
+    /// the array cannot be had.
+    fn room(&mut self, n: usize) -> Result<&mut [Iovec], Errno> {
+        let have = self.big.as_ref().map_or(0, |b| b.len());
+        if have < n && (have > 0 || n > UIO_SMALLIOV) {
+            self.big = None;
+            let Some(array) = MArray::new(M_IOV, M_WAITOK, n, |_| Iovec::new()) else {
+                return Err(Errno::ENOMEM);
+            };
+            self.big = Some(array);
+        }
+        // No array: none was needed, so the `n` fit in the stack part.
+        Ok(match self.big.as_mut() {
+            Some(b) => &mut b[..n],
+            None => &mut self.small[..n],
+        })
+    }
+
+    /// `copyin(uiov, iov, n * sizeof(struct iovec))` of the `n` iovecs at `uiov` into
+    /// [`IovBuf::room`] (none copied for `n` = 0): `sendmsg(2)`'s and `recvmsg(2)`'s copy of a
+    /// message's array, which checks neither the count (the caller's `IOV_MAX`) nor the
+    /// lengths (`sendit`'s and `recvit`'s, after their descriptor's). `EFAULT` when the array
+    /// is not user memory.
+    pub fn copyin(&mut self, uiov: UserPtr<Iovec>, n: usize) -> Result<&mut [Iovec], Errno> {
+        let iov = self.room(n)?;
+        // The C's one copyin of the whole array, a chunk of user words at a time.
+        let mut at = UserPtr::<[u8; Iovec::SIZE]>::new(uiov.addr());
+        for chunk in iov.chunks_mut(UIO_SMALLIOV) {
+            let mut words = [[0u8; Iovec::SIZE]; UIO_SMALLIOV];
+            let words = &mut words[..chunk.len()];
+            at.copyin_slice(words)?;
+            for (slot, word) in chunk.iter_mut().zip(words.iter()) {
+                *slot = Iovec::from_bytes(word);
+            }
+            at = at.checked_add(chunk.len()).ok_or(Errno::EFAULT)?;
+        }
+        Ok(iov)
+    }
 }
 
 impl Default for IovBuf {
@@ -417,37 +459,22 @@ pub fn iovec_copyin(
     iovcnt: u32,
 ) -> Result<(&mut [Iovec], usize), Errno> {
     let n = iovcnt as usize;
-    let iov: &mut [Iovec] = if n > UIO_SMALLIOV {
-        if n > IOV_MAX {
-            return Err(Errno::EINVAL);
-        }
-        let Some(array) = MArray::new(M_IOV, M_WAITOK, n, |_| Iovec::new()) else {
-            return Err(Errno::ENOMEM);
-        };
-        buf.big.insert(array)
-    } else if n > 0 {
-        &mut buf.small[..n]
-    } else {
+    if n > IOV_MAX || n == 0 {
         return Err(Errno::EINVAL);
-    };
-
-    // The C's one copyin of the whole array, a chunk of user words at a time.
-    let mut at = UserPtr::<[u8; Iovec::SIZE]>::new(uiov.addr());
-    for chunk in iov.chunks_mut(UIO_SMALLIOV) {
-        let mut words = [[0u8; Iovec::SIZE]; UIO_SMALLIOV];
-        let words = &mut words[..chunk.len()];
-        at.copyin_slice(words)?;
-        for (slot, word) in chunk.iter_mut().zip(words.iter()) {
-            *slot = Iovec::from_bytes(word);
-        }
-        at = at.checked_add(chunk.len()).ok_or(Errno::EFAULT)?;
     }
+    let iov = buf.copyin(uiov, n)?;
+    let resid = iovec_resid(iov)?;
+    Ok((iov, resid))
+}
 
-    // A read or a write returns an ssize_t (-1 on error), so a length and the total are
-    // bounded by SSIZE_MAX; the sum cannot wrap, since SSIZE_MAX * 2 < SIZE_MAX.
+/// The total length of the iovecs `iov`, `EINVAL` for a length or a total past `SSIZE_MAX`:
+/// a read or a write returns an `ssize_t` (-1 on error), so neither may pass it
+/// (`iovec_copyin`'s, `sendit`'s and `recvit`'s "Don't allow sum > SSIZE_MAX"). The sum
+/// cannot wrap, since `SSIZE_MAX * 2 < SIZE_MAX`.
+pub fn iovec_resid(iov: &[Iovec]) -> Result<usize, Errno> {
     let max = SSIZE_MAX.unsigned_abs();
     let mut resid: usize = 0;
-    for v in iov.iter() {
+    for v in iov {
         if v.iov_len > max {
             return Err(Errno::EINVAL);
         }
@@ -456,7 +483,7 @@ pub fn iovec_copyin(
             return Err(Errno::EINVAL);
         }
     }
-    Ok((iov, resid))
+    Ok(resid)
 }
 
 /// `hal`'s one `WindowKcopyToken`, the window leg's `UIO_SYSSPACE` copies' (review 1's B2):
@@ -690,6 +717,29 @@ mod tests {
             testutil::malloc_out(M_IOV),
             before + (20 * Iovec::SIZE) as i64
         );
+        drop(buf);
+        assert_eq!(testutil::malloc_out(M_IOV), before);
+    }
+
+    #[test]
+    fn a_message_buffer_grows_its_array_once_and_keeps_it() {
+        testutil::install();
+        let before = testutil::malloc_out(M_IOV);
+        let size = |n: usize| (n * Iovec::SIZE) as i64;
+        let mut buf = IovBuf::new();
+        // No iovec: nothing read (a NULL array), the stack part.
+        assert_eq!(buf.copyin(UserPtr::new(0), 0).map(|v| v.len()), Ok(0));
+        assert_eq!(buf.room(UIO_SMALLIOV).map(|v| v.len()), Ok(UIO_SMALLIOV));
+        assert!(buf.big.is_none());
+        // Past the stack part: an array of that many.
+        assert_eq!(buf.room(9).map(|v| v.len()), Ok(9));
+        assert_eq!(testutil::malloc_out(M_IOV), before + size(9));
+        // Fewer, even a few: the array kept (sendmmsg's and recvmmsg's `iov` after a growth).
+        assert_eq!(buf.room(2).map(|v| v.len()), Ok(2));
+        assert_eq!(buf.big.as_ref().map(|b| b.len()), Some(9));
+        // More: the old array freed, a new one of the count.
+        assert_eq!(buf.room(20).map(|v| v.len()), Ok(20));
+        assert_eq!(testutil::malloc_out(M_IOV), before + size(20));
         drop(buf);
         assert_eq!(testutil::malloc_out(M_IOV), before);
     }

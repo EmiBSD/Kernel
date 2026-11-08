@@ -2009,7 +2009,7 @@ mod tests {
         let fp = crate::kern::kern_descrip::fnew(route).unwrap();
         fp.install(
             DTYPE_SOCKET,
-            &crate::kern::sys_socket::SOCKETOPS,
+            &crate::kern::socket_glue::SOCKETOPS,
             // pledge_ioctl reads the file's type alone.
             crate::kern::kern_descrip::BsdFileData::None,
         );

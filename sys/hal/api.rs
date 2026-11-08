@@ -36,8 +36,9 @@
 //! routing table, N4.6a); `sysctl`, sysctl(2)'s ([`SysctlEntry`], N4.6b); [`TimeEntries`], the
 //! ten time system calls of kern_time.c and `reboot(2)` (N4.8); `sigreturn`, sigreturn(2)'s
 //! ([`SigreturnEntry`], N4.8b); [`VfsEntries`], the sixty-five of the VFS (`open(2)`,
-//! `stat(2)`, `mount(2)`, `rename(2)`, `getdents(2)`, ..., `__getcwd(2)`, N5.4), one typed
-//! entry each.
+//! `stat(2)`, `mount(2)`, `rename(2)`, `getdents(2)`, ..., `__getcwd(2)`, N5.4);
+//! [`SocketEntries`], the nineteen of the sockets (`socket(2)`, `sendmsg(2)`, `accept(2)`, ...,
+//! N6.2b), one typed entry each.
 //!
 //! Until the N5 close the table crossed a binary boundary (the ABI was the loadable module of
 //! decision 22) and was `#[repr(C)]`, versioned and checked by the loader against the
@@ -487,6 +488,56 @@ pub struct VfsEntries {
     pub unlinkat: fn(Register, i32, usize, i32, &mut Rval) -> SysResult,
 }
 
+/// The socket system calls' entries (N6.2b): the nineteen of `uipc_syscalls.c` that
+/// `setrtable(2)` and `getrtable(2)` (`ProcEntries`) leave, in `syscalls.master`'s order, one
+/// typed entry each: the system call's number first (the prologue still `bsd`'s checks it:
+/// pledge, the pinned syscalls; every row is `NOLOCK`), then the arguments as the registers
+/// carry them (an address as `usize`, `int` as `i32`, `socklen_t` and `unsigned int` as
+/// `u32`, `size_t` as `usize`), and last the trap's return registers, which the call writes
+/// as the C's `retval` (the descriptor of `socket(2)`, the byte count of `sendto(2)`, the
+/// count of `recvmmsg(2)`, ...).
+#[derive(Clone, Copy)]
+pub struct SocketEntries {
+    /// 27 = `ssize_t recvmsg(int s, struct msghdr *msg, int flags)` (`NOLOCK`).
+    pub recvmsg: fn(Register, i32, usize, i32, &mut Rval) -> SysResult,
+    /// 28 = `ssize_t sendmsg(int s, const struct msghdr *msg, int flags)` (`NOLOCK`).
+    pub sendmsg: fn(Register, i32, usize, i32, &mut Rval) -> SysResult,
+    /// 29 = `ssize_t recvfrom(int s, void *buf, size_t len, int flags, struct sockaddr *from, socklen_t *fromlenaddr)` (`NOLOCK`).
+    pub recvfrom: fn(Register, i32, usize, usize, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 30 = `int accept(int s, struct sockaddr *name, socklen_t *anamelen)` (`NOLOCK`).
+    pub accept: fn(Register, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 31 = `int getpeername(int fdes, struct sockaddr *asa, socklen_t *alen)` (`NOLOCK`).
+    pub getpeername: fn(Register, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 32 = `int getsockname(int fdes, struct sockaddr *asa, socklen_t *alen)` (`NOLOCK`).
+    pub getsockname: fn(Register, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 93 = `int accept4(int s, struct sockaddr *name, socklen_t *anamelen, int flags)` (`NOLOCK`).
+    pub accept4: fn(Register, i32, usize, usize, i32, &mut Rval) -> SysResult,
+    /// 97 = `int socket(int domain, int type, int protocol)` (`NOLOCK`).
+    pub socket: fn(Register, i32, i32, i32, &mut Rval) -> SysResult,
+    /// 98 = `int connect(int s, const struct sockaddr *name, socklen_t namelen)` (`NOLOCK`).
+    pub connect: fn(Register, i32, usize, u32, &mut Rval) -> SysResult,
+    /// 104 = `int bind(int s, const struct sockaddr *name, socklen_t namelen)` (`NOLOCK`).
+    pub bind: fn(Register, i32, usize, u32, &mut Rval) -> SysResult,
+    /// 105 = `int setsockopt(int s, int level, int name, const void *val, socklen_t valsize)` (`NOLOCK`).
+    pub setsockopt: fn(Register, i32, i32, i32, usize, u32, &mut Rval) -> SysResult,
+    /// 106 = `int listen(int s, int backlog)` (`NOLOCK`).
+    pub listen: fn(Register, i32, i32, &mut Rval) -> SysResult,
+    /// 116 = `int recvmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags, struct timespec *timeout)` (`NOLOCK`).
+    pub recvmmsg: fn(Register, i32, usize, u32, i32, usize, &mut Rval) -> SysResult,
+    /// 117 = `int sendmmsg(int s, struct mmsghdr *mmsg, unsigned int vlen, int flags)` (`NOLOCK`).
+    pub sendmmsg: fn(Register, i32, usize, u32, i32, &mut Rval) -> SysResult,
+    /// 118 = `int getsockopt(int s, int level, int name, void *val, socklen_t *avalsize)` (`NOLOCK`).
+    pub getsockopt: fn(Register, i32, i32, i32, usize, usize, &mut Rval) -> SysResult,
+    /// 133 = `ssize_t sendto(int s, const void *buf, size_t len, int flags, const struct sockaddr *to, socklen_t tolen)` (`NOLOCK`).
+    pub sendto: fn(Register, i32, usize, usize, i32, usize, u32, &mut Rval) -> SysResult,
+    /// 134 = `int shutdown(int s, int how)` (`NOLOCK`).
+    pub shutdown: fn(Register, i32, i32, &mut Rval) -> SysResult,
+    /// 135 = `int socketpair(int domain, int type, int protocol, int *rsv)` (`NOLOCK`).
+    pub socketpair: fn(Register, i32, i32, i32, usize, &mut Rval) -> SysResult,
+    /// 150 = `int ypconnect(int type)` (`NOLOCK`).
+    pub ypconnect: fn(Register, i32, &mut Rval) -> SysResult,
+}
+
 /// The table handed to the ABI.
 pub struct KernelApi {
     /// Registers the ABI's system call handler and what it says about itself: from here on
@@ -521,6 +572,8 @@ pub struct KernelApi {
     pub sigreturn: SigreturnEntry,
     /// The VFS system calls (N5.4).
     pub vfs: VfsEntries,
+    /// The socket system calls (N6.2b).
+    pub socket: SocketEntries,
 }
 
 impl KernelApi {
@@ -543,6 +596,7 @@ impl KernelApi {
         time: TimeEntries,
         sigreturn: SigreturnEntry,
         vfs: VfsEntries,
+        socket: SocketEntries,
     ) -> Self {
         Self {
             register_syscall_handler,
@@ -558,6 +612,7 @@ impl KernelApi {
             time,
             sigreturn,
             vfs,
+            socket,
         }
     }
 }
@@ -1368,9 +1423,149 @@ mod tests {
         unlinkat: vfs31,
     };
 
+    // The socket entries of the test table: the number in rval[0], the arguments' digits
+    // (each argument its own digit: 1, 2, 3, ...) in the error.
+    fn so0(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so1(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so2(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so3(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so4(nr: Register, a0: i32, a1: i32, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so5(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so6(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so7(nr: Register, a0: i32, a1: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn so8(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: u32,
+        a3: i32,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so9(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so10(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so11(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so12(nr: Register, a0: i32, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so13(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    const SOCKET: SocketEntries = SocketEntries {
+        recvmsg: so0,
+        sendmsg: so0,
+        recvfrom: so1,
+        accept: so2,
+        getpeername: so2,
+        getsockname: so2,
+        accept4: so3,
+        socket: so4,
+        connect: so5,
+        bind: so5,
+        setsockopt: so6,
+        listen: so7,
+        recvmmsg: so8,
+        sendmmsg: so9,
+        getsockopt: so10,
+        sendto: so11,
+        shutdown: so7,
+        socketpair: so12,
+        ypconnect: so13,
+    };
+
     static API: KernelApi = KernelApi::new(
         register, legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn,
-        VFS,
+        VFS, SOCKET,
     );
 
     #[test]
@@ -1405,6 +1600,67 @@ mod tests {
         assert_eq!((API.vfs.getcwd)(304, 1, 2, &mut rval), Err(12));
         assert_eq!((API.vfs.unlinkat)(325, 1, 2, 3, &mut rval), Err(123));
         assert_eq!(rval, [325, 0]);
+    }
+
+    #[test]
+    fn the_socket_entries_are_the_callers_and_write_the_return_registers() {
+        let mut rval = [0; 2];
+        assert_eq!((API.socket.recvmsg)(27, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [27, 0]);
+        assert_eq!((API.socket.sendmsg)(28, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [28, 0]);
+        assert_eq!(
+            (API.socket.recvfrom)(29, 1, 2, 3, 4, 5, 6, &mut rval),
+            Err(123456)
+        );
+        assert_eq!(rval, [29, 0]);
+        assert_eq!((API.socket.accept)(30, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [30, 0]);
+        assert_eq!((API.socket.getpeername)(31, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [31, 0]);
+        assert_eq!((API.socket.getsockname)(32, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [32, 0]);
+        assert_eq!((API.socket.accept4)(93, 1, 2, 3, 4, &mut rval), Err(1234));
+        assert_eq!(rval, [93, 0]);
+        assert_eq!((API.socket.socket)(97, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [97, 0]);
+        assert_eq!((API.socket.connect)(98, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [98, 0]);
+        assert_eq!((API.socket.bind)(104, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(rval, [104, 0]);
+        assert_eq!(
+            (API.socket.setsockopt)(105, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!(rval, [105, 0]);
+        assert_eq!((API.socket.listen)(106, 1, 2, &mut rval), Err(12));
+        assert_eq!(rval, [106, 0]);
+        assert_eq!(
+            (API.socket.recvmmsg)(116, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!(rval, [116, 0]);
+        assert_eq!((API.socket.sendmmsg)(117, 1, 2, 3, 4, &mut rval), Err(1234));
+        assert_eq!(rval, [117, 0]);
+        assert_eq!(
+            (API.socket.getsockopt)(118, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!(rval, [118, 0]);
+        assert_eq!(
+            (API.socket.sendto)(133, 1, 2, 3, 4, 5, 6, &mut rval),
+            Err(123456)
+        );
+        assert_eq!(rval, [133, 0]);
+        assert_eq!((API.socket.shutdown)(134, 1, 2, &mut rval), Err(12));
+        assert_eq!(rval, [134, 0]);
+        assert_eq!(
+            (API.socket.socketpair)(135, 1, 2, 3, 4, &mut rval),
+            Err(1234)
+        );
+        assert_eq!(rval, [135, 0]);
+        assert_eq!((API.socket.ypconnect)(150, 1, &mut rval), Err(1));
+        assert_eq!(rval, [150, 0]);
     }
 
     #[test]

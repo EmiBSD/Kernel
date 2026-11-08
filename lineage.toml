@@ -5038,7 +5038,7 @@ notes = "M2: main() skeleton in the C's order (consinit, copyright, then every s
 rust = "sys/kern/init_sysent.rs"
 lz = ["sys/kern/init_sysent.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/getcwd.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/kern/vm_bsd.rs", "sys/kernel/fs/getcwd.rs", "sys/kernel/net/syscalls.rs"]
 license = "none"
 
 [[module]]
@@ -5101,7 +5101,13 @@ notes = "malloc/free/mallocarray/kmeminit_nkmempages/kmeminit with BUCKETINDX; K
 rust = "sys/kern/kern_pledge.rs"
 lz = ["sys/kern/kern_pledge.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
+
+[[module]]
+rust = "sys/kern/socket_glue.rs"
+lz = ["sys/kern/uipc_syscalls.rs", "sys/kern/sys_socket.rs"]
+status = "redesigned"
+notes = "N6.2b: the 0-logic call-site adapter of sys/kernel/net/syscalls.rs and sys/kernel/net/file.rs (the pipe_glue precedent), bsd's uipc_syscalls.rs and sys_socket.rs gone: the sysent[] rows of the nineteen socket calls (struct sys_*_args unpacked into the kernel's typed arguments, retval[0] set) and of setrtable/getrtable over kernel::prot, SOCKET_ENTRIES (KernelApi::socket, mi_syscall on the same rows through kern_descrip::native), socketops over SocketFileOps with fp_install and fp_socket for kern_descrip, kern_sysctl and nfs; forbid (0 unsafe): BsdIfLegacy, sys_socket.rs's other item, is sys/net/if_.rs's (the interface layer's legs, beside ifioctl and net_tq)"
 
 [[module]]
 rust = "sys/kern/proc_glue.rs"
@@ -5514,7 +5520,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5741,12 +5747,6 @@ status = "redesigned"
 notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd's only file of the subsystem (forbid, 0 unsafe): BsdVmProc (VmProc over curproc) and BsdVmSysctl (VmSysctl: sysctl_rdint/int/rdstruct/string, struct uvmexp as UvmexpCopy::to_ne_bytes, nkmempages, averunnable, allproc), registered by uvm_init; the fifteen sysent adapters (sysargs -> kernel::vm::mmap/unix) and their Native entries (VM_ENTRIES = KernelApi::vm, mi_syscall on the same row); uvm_init in the C's order around kernel::vm::init's two steps; uvm_purge, uvm_exit, uvm_init_limits, uvmspace_exec's install of a new vmspace, fork1's share-or-copy, the u-area with the legacy pointer, uvm_sysctl with sysctl(2)'s arguments, VmUio (a uio as UioMove for uvm_io); from sys/uvm/uvm_page.rs: the segment policy and uvm_page_physload's lines, uvm_page_init with BsdBufCacheStats, uvm_pagealloc with (obj, anon), uvm_pagealloc_multi, uvm_shutdown, paddr_is_dma_reachable, uvm_page_physdump, uvm_pmr_print; from sys/uvm/uvm_vnode.rs: impl VnodeOps for Vnode, BsdSysInfo (gone at N5.0: the pager reads kernel::tc and kernel::reboot), uvn_attach and the uvm_vnp_* wrappers; from sys/uvm/uvm_km.rs: kp_dma*, km_alloc/km_free with the legacy pointer, vm_min_kernel_address; host tests: the km wrappers, a pinsyscalls table honoured by pin_check, CTL_VM through the kernel; N5.0: BsdVmProc gone (the adapters pass the thread to kernel::vm), the three bsd calls on BsdProcGlue (pledge_protexec, textvp_wxallowed) and BsdFileGlue (vnode_ops); N5.3: textvp_wxallowed went (uvm_wxcheck reads the kernel's Process::textvp)"
 
 [[module]]
-rust = "sys/kern/sys_socket.rs"
-lz = ["sys/kern/sys_socket.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/net/file.rs", "sys/kernel/net/domain.rs"]
-
-[[module]]
 rust = "sys/kern/syscalls.rs"
 lz = ["sys/kern/syscalls.rs"]
 status = "inherited"
@@ -5786,7 +5786,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -5811,12 +5811,6 @@ rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
-
-[[module]]
-rust = "sys/kern/uipc_syscalls.rs"
-lz = ["sys/kern/uipc_syscalls.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/file.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_init.rs"
@@ -6286,7 +6280,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6928,7 +6922,7 @@ adapted_by = ["sys/crypto/idgen.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/types.
 rust = "sys/nfs/nfs_syscalls.rs"
 lz = ["sys/nfs/nfs_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/buf.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_var.rs"
@@ -6939,7 +6933,7 @@ status = "inherited"
 rust = "sys/nfs/nfs_vfsops.rs"
 lz = ["sys/nfs/nfs_vfsops.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/vnops.rs", "sys/hal/sys/mount.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/syscalls.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_vnops.rs"
@@ -7435,7 +7429,7 @@ rust = "sys/hal/sys/socket.rs"
 crate = "hal"
 lz = ["sys/sys/socket.rs"]
 status = "redesigned"
-notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; msghdr, mmsghdr and the pointer CMSG_* stay bsd's until N6.2b, struct splice is kernel::net::socket's (its timeval is kernel::clock's)"
+notes = "N6.2a: socket.h's shared part moved into hal so kernel::net and bsd name one copy: the 170 constants, struct linger, sockaddr, sockaddr_storage, sockproto, sockpeercred and cmsghdr AbiPod through hal::abi_pod!, CMSG_ALIGN/LEN/SPACE over sizeof(long) - 1; N6.2b: msghdr and mmsghdr as the system calls copy them (Msghdr, Mmsghdr: the user addresses as usize, the C's holes named _pad0/_pad1/_pad, so AbiPod and copied out whole as the C's copyout); the pointer CMSG_FIRSTHDR/NXTHDR/DATA stay in bsd's inherited sys/sys/socket.rs (bsd's internet protocols), struct splice is kernel::net::socket's (its timeval is kernel::clock's)"
 
 [[module]]
 rust = "sys/hal/sys/sockio.rs"
@@ -12124,7 +12118,7 @@ reason = "N2.4a (decision 22): the kernel side of KernelApi (the type is hal::ap
 [[extra]]
 rust = "sys/abi/sysent.rs"
 crate = "abi"
-reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone"
+reason = "N2.4a (decisions 21, 22): the ABI's system call table, one Native | Legacy entry per number of sys/sys/syscall.rs (every entry Legacy at N2.4; pipe and pipe2 Native at N2.6, through KernelApi::pipe2), and the dispatcher KernelApi's registration hands to hal; bsd's sys/kern/init_sysent.rs stays the Legacy path until every entry is Native; N3.5 S1: the translations of the fifteen vm system calls (sys_obreak, sys_mmap, ... sys_munlockall over KernelApi::vm, mmap/mquery's address in rval[0]), out of the table until the flip (S2) makes them Native; N4.8b: sigreturn(2) Native through KernelApi::sigreturn (NATIVE 94); N5.4: the VFS system calls' sixty-five (the sixty-four of vfs_syscalls.c and __getcwd) Native through KernelApi::vfs, each translation one call with the arguments as the entries type them (NATIVE 170); N5 close (decision 47): linked into the image, its handler registered by abi_init, which bsd's boot glue calls before main(); N5 close (the abi casts): pipe2's flags read as the C's int and handed to KernelApi::pipe2 as i32, no argument reaches the kernel untyped; N5 close (the abi casts): every argument read through scarg, the C's SCARG per type family, the crate-wide allow of the cast lints gone; N6.2b: the nineteen socket system calls Native through KernelApi::socket (NATIVE 170 -> 189)"
 
 [[extra]]
 rust = "sys/abi/scarg.rs"
@@ -12138,7 +12132,7 @@ reason = "N2.4a: bsd's side of the ABI until its subsystems move (deleted at N9)
 [[extra]]
 rust = "sys/hal/api.rs"
 crate = "hal"
-reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags"
+reason = "N2.4a (decision 22): the KernelApi type, below both the kernel (which fills and registers the table, kernel::api) and the ABI (which names it without depending on the kernel crate); N3.5 S1: VmEntries (KernelApi::vm), the fifteen vm system calls' typed entries; N4.8b: sigreturn (SigreturnEntry) after sysctl; N5.4: VfsEntries (KernelApi::vfs), the sixty-five VFS system calls' typed entries; N5 close (decision 47): the ABI is linked into the image, so what only the module loader read is gone (the ApiPrefix of version and size, AbiModuleHeader and its offsets, the layout asserts, the #[repr(C)]s), and the copyin and copyout entries (no caller: abi copies through hal::UserPtr); N5 close (the abi casts): KernelApi::pipe2's flags typed i32, the C's int flags; N6.2b: SocketEntries (KernelApi::socket), the nineteen socket system calls' typed entries"
 
 [[module]]
 rust = "sys/kernel/clock.rs"
@@ -14640,8 +14634,100 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/sys_socket.rs::soo_ifioctl"
-native = ["sys/kern/sys_socket.rs::BsdIfLegacy::ifioctl"]
+native = ["sys/net/if_.rs::BsdIfLegacy::ifioctl"]
 kind = "moved"
+
+[[module]]
+rust = "sys/kernel/net/syscalls.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_syscalls.rs"]
+status = "redesigned"
+notes = "N6.2b: the nineteen socket system calls of uipc_syscalls.c (socket, bind, listen, accept/accept4 through doaccept over soaccept_take, connect, socketpair, sendto/sendmsg/sendmmsg through sendit, recvfrom/recvmsg/recvmmsg through recvit, shutdown, setsockopt, getsockopt, getsockname/getpeername, ypconnect) over kernel::net::socket and kernel::descrip, typed arguments (UserPtr) and returned values; struct msghdr and mmsghdr copied whole as hal::sys::socket's images (the holes kept, as the C's copyout of what it copied in); the iovecs in a kernel::uio::IovBuf grown across the mmsg calls' messages (IovBuf::copyin), the lengths summed by uio::iovec_resid after the descriptor and pledge, as the C; sockargs/ypsockargs over one body (mbuf_args), the mbufs owned (MbufBox); getsock shared with kernel::log (LIOCSFD); dns_portcheck's test split out (dns_port53); ypconnect's INP_LOWPORT as the protocol's own IP_PORTRANGE_LOW (no reference to bsd's inpcb), its binding file's name a namei_pool buffer; the pledge checks through ProcGlue::pledge_socket, pledge_sendit, pledge_sockopt at the C's points"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::MSGHDR_SIZE"
+native = []
+kind = "dropped"
+reason = "size_of::<struct msghdr>: hal::sys::socket::Msghdr is the image (AbiPod), which UserPtr<Msghdr> copies in and out whole"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::MMSGHDR_SIZE"
+native = []
+kind = "dropped"
+reason = "size_of::<struct mmsghdr>: hal::sys::socket::Mmsghdr is the image, UserPtr<Mmsghdr> copies it and steps to &mmsgp[i] (checked_add)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::Ypbinding"
+native = ["YPB_IN", "YPB_UDP_PORT", "YPB_TCP_PORT"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::Ypbinding::SIZE"
+native = ["YPBINDING_SIZE"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::Ypbinding::from_bytes"
+native = []
+kind = "dropped"
+reason = "sys_ypconnect reads the binding's packed bytes at the C's offsets (YPB_IN, YPB_UDP_PORT, YPB_TCP_PORT): only the server's address and the two ports are read"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::msghdr_from_bytes"
+native = []
+kind = "dropped"
+reason = "UserPtr<Msghdr>::copyin reads hal::sys::socket's image whole (its holes named), no field-by-field decoding"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::msghdr_to_bytes"
+native = []
+kind = "dropped"
+reason = "UserPtr<Msghdr>::copyout writes the image whole, the user's holes kept as the C's copyout of what it copied in (LZ zeroed them)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::msghdr_copyin"
+native = []
+kind = "dropped"
+reason = "UserPtr<Msghdr>::copyin (hal::user) in sys_sendmsg and sys_recvmsg"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::mmsghdr_copyin"
+native = ["sendmmsg_one", "recvmmsg_one"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::mmsghdr_copyout"
+native = ["sendmmsg_one", "recvmmsg_one"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::iovs_alloc"
+native = ["sys/kernel/uio.rs::IovBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::iovs_free"
+native = []
+kind = "dropped"
+reason = "kernel::uio::IovBuf's drop frees its M_IOV array on every path"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::iovs_copyin"
+native = ["sys/kernel/uio.rs::IovBuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::mbuf_bytes"
+native = []
+kind = "dropped"
+reason = "kernel::net::mbuf's Mbuf::data, the m_len bytes at m_data as a slice (no unsafe)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::panic_accept"
+native = []
+kind = "dropped"
+reason = "doaccept's panic(\"accept\") when soqremque finds the connection gone: the queue is under its own mutex since N6.2a (D-N6.2-1), so kernel::net::socket::soaccept_take looks again for a connection another accepter or a close took meanwhile"
+
 [[module]]
 rust = "sys/kernel/net/mbuf.rs"
 crate = "kernel"
