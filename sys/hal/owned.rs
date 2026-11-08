@@ -3118,7 +3118,7 @@ pub struct SlistCursor<'a, A: SlistAdapter> {
     pos: usize,
 }
 
-impl<'a, A: SlistAdapter> SlistCursor<'a, A> {
+impl<A: SlistAdapter> SlistCursor<'_, A> {
     /// The current element, `None` past the last.
     pub fn current(&self) -> Option<&A::Elem> {
         self.slot.as_ref()?.get()

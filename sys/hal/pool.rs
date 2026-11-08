@@ -1507,6 +1507,40 @@ impl<T: 'static> BoxPool<T> {
     }
 }
 
+impl<const N: usize> BoxPool<crate::overlay::Bytes<N>> {
+    /// `pool_get(9)` of a byte buffer (an mbuf cluster, `m_clget`): the one handle to a new
+    /// item, its bytes as the pool hands them, unwritten, as the C's `pool_get` leaves a
+    /// cluster. `None` when `pool_get` fails or the pool was never made. A buffer of 64 KiB
+    /// cannot be the value [`BoxPool::get`] builds before writing it (it would sit on the
+    /// kernel stack first), and writing every byte would cost each cluster what the C never
+    /// pays.
+    pub fn get_bytes(&'static self, flags: i32) -> Option<PoolBox<crate::overlay::Bytes<N>>> {
+        let raw = *self.raw.get()?;
+        let (block, granted) = raw.get(flags)?;
+        check_block(
+            "RawPool",
+            block,
+            granted,
+            size_of::<crate::overlay::Bytes<N>>(),
+            align_of::<crate::overlay::Bytes<N>>(),
+        );
+        // `PoolBox`'s invariant, an initialised `T` in an item of `self` that only the handle
+        // references: a `Bytes<N>` is `N` bytes in an `UnsafeCell` (no padding, no niche, every
+        // pattern valid) and the item is RAM granted by the pool, aligned and long enough
+        // (`check_block` above), whose every byte is a valid `u8`: the bytes a previous owner
+        // wrote, the pool's own free-list words, or a page as its source gave it
+        // (`hal::mapped::MappedBytes::as_slice` lends such RAM on the same ground). That no
+        // one else references the item until `put` takes it back is `RawPool`'s registration
+        // contract (`sys/hal/trust.rs`). Nothing is written, so no `unsafe` is needed: the
+        // handle is built over the item as it is.
+        Some(PoolBox {
+            item: block.cast::<crate::overlay::Bytes<N>>(),
+            pool: self,
+            _owns: PhantomData,
+        })
+    }
+}
+
 impl<T: 'static> Default for BoxPool<T> {
     fn default() -> Self {
         Self::new()
