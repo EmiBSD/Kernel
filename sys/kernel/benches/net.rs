@@ -75,9 +75,8 @@ use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
 use kernel::net::mbuf::{
-    M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, MbufQueue, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj,
-    m_copydata, m_copym, m_get, m_gethdr, m_pullup, mbinit, mclget, mclgetl, mq_dequeue,
-    mq_enqueue,
+    M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj, m_copydata,
+    m_copym, m_get, m_gethdr, m_pullup, mbinit, mclget, mclgetl,
 };
 use kernel::net::mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
 use kernel::testutil;
@@ -700,7 +699,7 @@ fn main() {
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
-const MBUF_ROWS: [&str; 12] = [
+const MBUF_ROWS: [&str; 11] = [
     "mbuf.get.free",
     "mbuf.gethdr.cluster.free",
     "mbuf.copym.share",
@@ -710,7 +709,6 @@ const MBUF_ROWS: [&str; 12] = [
     "mbuf.header.view",
     "mbuf.header.copy",
     "mbuf.pullup.40",
-    "mq.enq.deq",
     "mbuf.tag.find",
     "mbuf.data",
 ];
@@ -872,19 +870,6 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         report(MBUF_ROWS[8], r);
     }
     if wanted(MBUF_ROWS[9]) {
-        static MQ: MbufQueue = MbufQueue::new(256, hal::intr::IPL_NET);
-        let mut q = Some(need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf"));
-        let r = measure(OPS, || {
-            let t = Instant::now();
-            for _ in 0..OPS {
-                mq_enqueue(&MQ, need(q.take(), "the packet"));
-                q = black_box(mq_dequeue(&MQ));
-            }
-            t.elapsed()
-        });
-        report(MBUF_ROWS[9], r);
-    }
-    if wanted(MBUF_ROWS[10]) {
         let mut tp = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
         m_tag_prepend(
             &mut tp,
@@ -901,9 +886,9 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
             }
             t.elapsed()
         });
-        report(MBUF_ROWS[10], r);
+        report(MBUF_ROWS[9], r);
     }
-    if wanted(MBUF_ROWS[11]) {
+    if wanted(MBUF_ROWS[10]) {
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
@@ -911,7 +896,7 @@ fn mbuf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
             }
             t.elapsed()
         });
-        report(MBUF_ROWS[11], r);
+        report(MBUF_ROWS[10], r);
     }
 }
 /* </CODE> */
