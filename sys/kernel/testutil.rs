@@ -144,6 +144,7 @@ std::thread_local! {
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     /// The error the test glues' `pledge_recvfd` and `pledge_sendfd` answer.
     static PLEDGE_FD: Cell<Option<Errno>> = const { Cell::new(None) };
+    /// The error the test glues' `pledge_socket`, `pledge_sendit` and `pledge_sockopt` answer.
     static PLEDGE_NET: Cell<Option<Errno>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 

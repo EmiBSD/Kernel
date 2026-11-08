@@ -14636,6 +14636,7 @@ kind = "renamed"
 lz = "sys/kern/sys_socket.rs::soo_ifioctl"
 native = ["sys/net/if_.rs::BsdIfLegacy::ifioctl"]
 kind = "moved"
+
 [[module]]
 rust = "sys/kernel/net/syscalls.rs"
 crate = "kernel"
@@ -14720,6 +14721,7 @@ lz = "sys/kern/uipc_syscalls.rs::mbuf_bytes"
 native = []
 kind = "dropped"
 reason = "kernel::net::mbuf's Mbuf::data, the m_len bytes at m_data as a slice (no unsafe)"
+
 [[module.fn]]
 lz = "sys/kern/uipc_syscalls.rs::panic_accept"
 native = []
