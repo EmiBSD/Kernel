@@ -6257,7 +6257,7 @@ status = "inherited"
 rust = "sys/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs"]
+adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/bpf_filter.rs"
@@ -6288,7 +6288,7 @@ status = "inherited"
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6309,7 +6309,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/if_loop.rs"
@@ -6344,18 +6345,20 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/ifq.rs"
 lz = ["sys/net/ifq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/netisr.rs"
@@ -6366,7 +6369,7 @@ status = "inherited"
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6388,7 +6391,8 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 [[module]]
 rust = "sys/net/pf_norm.rs"
 lz = ["sys/net/pf_norm.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/net/pf_osfp.rs"
@@ -6496,7 +6500,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6517,7 +6522,8 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 [[module]]
 rust = "sys/netinet/in_cksum.rs"
 lz = ["sys/netinet/in_cksum.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/in_pcb.rs"
@@ -6573,7 +6579,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
@@ -6590,7 +6597,7 @@ status = "inherited"
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6611,7 +6618,8 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 [[module]]
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -6637,7 +6645,7 @@ status = "inherited"
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6657,13 +6665,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6674,7 +6683,7 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
@@ -6700,7 +6709,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6715,13 +6725,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/frag6.rs"
 lz = ["sys/netinet6/frag6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
@@ -6731,7 +6742,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/in6_cksum.rs"
 lz = ["sys/netinet6/in6_cksum.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_ifattach.rs"
@@ -6767,7 +6779,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/ip6_forward.rs"
 lz = ["sys/netinet6/ip6_forward.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_id.rs"
@@ -6778,13 +6791,13 @@ status = "inherited"
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6799,7 +6812,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet6/mld6_var.rs"

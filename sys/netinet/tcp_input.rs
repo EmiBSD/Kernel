@@ -186,6 +186,7 @@ use crate::kern::kern_time::ppsratecheck_shared;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set_flags};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
+use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{
     MAX_LINKHDR, m_adj, m_copydata, m_free, m_freem, m_gethdr, ml_dequeue, ml_enqueue,
 };
@@ -268,6 +269,7 @@ use crate::sys::mbuf::{
     M_TCP_CSUM_IN_BAD, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_VLANTAG, MHLEN, MT_DATA,
     Mbuf, MbufList, PACKET_TAG_IPSEC_IN_DONE, PF_TAG_DIVERTED, m_freemp, mclget, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next, mbuf_list_first};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::pool::{PR_NOWAIT, PR_ZERO, Pool};
 use crate::sys::queue::ListHead;
@@ -769,9 +771,7 @@ pub fn tcp_input(
     let Some(m) = *mp else {
         return IPPROTO_DONE;
     };
-    m.m_pkthdr()
-        .ph_cookie
-        .set(ptr::without_provenance_mut(*offp as usize));
+    m.m_pkthdr().ph_cookie.set(*offp as usize);
     match af {
         AF_INET_I32 => ml_enqueue(&ns.ns_tcp_ml, m),
         #[cfg(feature = "inet6")]
@@ -790,8 +790,8 @@ pub fn tcp_input_mlist(ml: &MbufList, af: i32) {
     let mut so: Option<&'static Socket> = None;
 
     while let Some(m) = ml_dequeue(ml) {
-        let mut off = m.m_pkthdr().ph_cookie.get().addr() as i32;
-        m.m_pkthdr().ph_cookie.set(ptr::null_mut());
+        let mut off = m.m_pkthdr().ph_cookie.get() as i32;
+        m.m_pkthdr().ph_cookie.set(0);
         let mut mp = Some(m);
         let nxt = tcp_input_solocked(&mut mp, &mut off, IPPROTO_TCP, af, Some(&mut so));
         kassert!(nxt == IPPROTO_DONE);
@@ -4262,7 +4262,7 @@ fn syn_cache_respond(
     };
 
     // Fixup the mbuf.
-    m.m_data().set(m.m_data().get().wrapping_add(max_linkhdr));
+    m_data_add(m, max_linkhdr as isize);
     m.m_len().set(tlen as u32);
     m.m_pkthdr().len.set(tlen as i32);
     m.m_pkthdr().ph_ifidx.set(0);
@@ -4734,14 +4734,14 @@ fn tcp_softlro_concat(
 
     // Skip protocol headers in tail.
     m_adj(mtail, hdrlen as i32);
-    mtail.m_flags().set(mtail.m_flags().get() & !M_PKTHDR);
+    m_removehdr(mtail);
 
     // Concatenate
     let mut m = mhead;
     while let Some(n) = m.m_next().get() {
         m = n;
     }
-    m.m_next().set(Some(mtail));
+    let _ = m_set_next(m, Some(mtail));
     mhead
         .m_pkthdr()
         .len
@@ -4809,7 +4809,7 @@ pub fn tcp_softlro_glue(ml: &MbufList, mtail: &'static Mbuf, ifp: &Ifnet) {
 
         mtail.m_pkthdr().ph_mss.set(tail.paylen as u16);
 
-        let mut mhead = ml.ml_head.get();
+        let mut mhead = mbuf_list_first(ml);
         while let Some(h) = mhead {
             mhead = h.m_nextpkt().get();
             let hph = h.m_pkthdr();

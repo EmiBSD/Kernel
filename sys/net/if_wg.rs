@@ -205,8 +205,8 @@ use crate::sys::ioccom::_iowr;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_RTABLE, M_ZERO};
 use crate::sys::mbuf::{
     M_BCAST, M_DONTWAIT, M_EXT, M_MAXLOOP, M_MCAST, M_WAIT, MHLEN, MT_DATA, MT_SONAME, MT_SOOPTS,
-    MTag, Mbuf, MbufList, MbufQueue, PACKET_TAG_MAXSIZE, PACKET_TAG_WIREGUARD, mq_empty, mq_len,
-    mtod,
+    MTag, Mbuf, MbufList, MbufQueue, PACKET_TAG_MAXSIZE, PACKET_TAG_WIREGUARD, mbuf_list_first,
+    ml_len, mq_empty, mq_len, mtod,
 };
 use crate::sys::mutex::Mutex;
 use crate::sys::param::PWAIT;
@@ -2977,7 +2977,7 @@ pub fn wg_queue_in(sc: &WgSoftc, peer: &WgPeer, m: &'static Mbuf) -> Result<(), 
     let serial = &peer.p_decap_queue;
 
     mtx_enter(&serial.q_mtx);
-    if serial.q_list.ml_len.load(Ordering::Relaxed) < MAX_QUEUED_PKT {
+    if ml_len(&serial.q_list) < MAX_QUEUED_PKT {
         ml_enqueue(&serial.q_list, m);
         mtx_leave(&serial.q_mtx);
     } else {
@@ -3012,7 +3012,7 @@ pub fn wg_queue_out(sc: &WgSoftc, peer: &WgPeer) {
 
     while let Some(m) = ml_dequeue(&ml) {
         mtx_enter(&serial.q_mtx);
-        if serial.q_list.ml_len.load(Ordering::Relaxed) < MAX_QUEUED_PKT {
+        if ml_len(&serial.q_list) < MAX_QUEUED_PKT {
             ml_enqueue(&serial.q_list, m);
             mtx_leave(&serial.q_mtx);
         } else {
@@ -3051,7 +3051,7 @@ pub fn wg_ring_dequeue(r: &WgRing) -> Option<&'static Mbuf> {
 pub fn wg_queue_dequeue(q: &WgQueue) -> Option<(&'static Mbuf, &'static WgTag)> {
     mtx_enter(&q.q_mtx);
     let mut ret = None;
-    if let Some(m) = q.q_list.ml_head.get()
+    if let Some(m) = mbuf_list_first(&q.q_list)
         && let Some(t) = wg_tag_get(m)
         && t.t_done.get()
     {

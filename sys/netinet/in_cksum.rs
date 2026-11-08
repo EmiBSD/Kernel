@@ -149,6 +149,7 @@ mod tests {
     use super::*;
     use crate::kern::uipc_mbuf::{m_cat, m_freem, m_get, m_gethdr};
     use crate::netinet::in4_cksum::in4_cksum;
+    use crate::sys::mbuf::m_data_add;
     use crate::sys::mbuf::{M_DONTWAIT, MLEN, MT_DATA};
 
     fn setup() -> MutexGuard<'static, ()> {
@@ -178,10 +179,10 @@ mod tests {
             };
             if !first {
                 // Start the data at an odd address to exercise the C's "force to even boundary".
-                m.m_data().set(m.m_data().get().wrapping_add(1));
+                m_data_add(m, 1);
             }
             // SAFETY: the mbuf has room for `p` (checked above) at its data pointer.
-            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), m.m_data().get(), p.len()) };
+            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), mtod::<u8>(m), p.len()) };
             m.m_len().set(p.len() as u32);
             if !first {
                 m_cat(head, Some(m));

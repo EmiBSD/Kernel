@@ -201,6 +201,7 @@ use crate::netinet6::ip6protosw::Ip6ctlparam;
 use crate::sys::endian::{htonl, htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_XDATA};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::{M_DONTWAIT, M_TCP_CSUM_OUT, M_WAIT, MT_HEADER, Mbuf, m_freemp, mtod};
 use crate::sys::mutex::Mutex;
 use crate::sys::param::NMBCLUSTERS;
@@ -506,11 +507,7 @@ pub fn tcp_respond(
     let Some(m) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
         return;
     };
-    m.m_data().set(
-        m.m_data()
-            .get()
-            .wrapping_add(MAX_LINKHDR.load(Ordering::Relaxed) as usize),
-    );
+    m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
 
     let (nh, mut th, mut tlen, thoff) = match af {
         #[cfg(feature = "inet6")]

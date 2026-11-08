@@ -193,6 +193,7 @@ use crate::netinet6::nd6::{nd6_resolve, nd6_rtrequest};
 use crate::sys::endian::{htons, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_IFMADDR, M_NOWAIT};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::{
     M_BCAST, M_COPYALL, M_DONTWAIT, M_IPV4_CSUM_OUT, M_MCAST, M_PKTHDR, M_TCP_CSUM_OUT,
     M_UDP_CSUM_OUT, M_VLANTAG, Mbuf, mtod,
@@ -1242,7 +1243,7 @@ pub fn ether_offload_ifcap(ifp: &Ifnet, m: &'static Mbuf) -> Option<&'static Mbu
         }
 
         // hide ethernet header
-        m.m_data().set(m.m_data().get().wrapping_add(ethlen));
+        m_data_add(m, ethlen as isize);
         m.m_len().set(m.m_len().get() - ethlen as u32);
         m.m_pkthdr().len.set(m.m_pkthdr().len.get() - ethlen as i32);
 
@@ -1255,7 +1256,7 @@ pub fn ether_offload_ifcap(ifp: &Ifnet, m: &'static Mbuf) -> Option<&'static Mbu
         }
 
         // show ethernet header again
-        m.m_data().set(m.m_data().get().wrapping_sub(ethlen));
+        m_data_add(m, -(ethlen as isize));
         m.m_len().set(m.m_len().get() + ethlen as u32);
         m.m_pkthdr().len.set(m.m_pkthdr().len.get() + ethlen as i32);
     }
@@ -1285,7 +1286,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::uipc_mbuf::MBPOOL;
+    use crate::kern::uipc_mbuf::MBUFPL;
     use crate::net::ethertypes::ETHERTYPE_IPV6;
     use crate::net::if_::tests::{setup_net, test_ioctl, test_packet, zeroed_static};
     use crate::net::if_::{IFF_BROADCAST, IFNAMSIZ};
@@ -1441,7 +1442,7 @@ mod tests {
         let _g = setup_net();
         let ac = test_arpcom();
         let ifp = &ac.ac_if;
-        let before = MBPOOL.pr_nout.get();
+        let before = MBUFPL.nout();
         let input = |bytes: &[u8]| ether_input(ifp, test_packet(bytes), None);
 
         // Too short for an Ethernet header.
@@ -1471,7 +1472,7 @@ mod tests {
         input(&frame(ETHERBROADCASTADDR, PEER, ETHERTYPE_ARP));
         assert_eq!(ifp.if_imcasts().get(), 3);
 
-        assert_eq!(MBPOOL.pr_nout.get(), before, "every frame was freed");
+        assert_eq!(MBUFPL.nout(), before, "every frame was freed");
     }
 
     /// A request whose address is `sa` (16 bytes).
@@ -1533,7 +1534,7 @@ mod tests {
         let _g = setup_net();
         let ac = test_arpcom();
         let ifp = &ac.ac_if;
-        let before = MBPOOL.pr_nout.get();
+        let before = MBUFPL.nout();
 
         // AF_UNSPEC: destination and type from the sockaddr, source from the interface.
         let mut header = Vec::new();
@@ -1579,7 +1580,7 @@ mod tests {
             unsafe { ether_resolve(ifp, m, dst, None, &mut eh) },
             Err(Errno::ENETDOWN)
         );
-        assert_eq!(MBPOOL.pr_nout.get(), before);
+        assert_eq!(MBUFPL.nout(), before);
     }
 
     #[test]

@@ -164,6 +164,7 @@ use crate::sys::mbuf::{
     PACKET_TAG_IPSEC_IN_DONE, PACKET_TAG_IPSEC_OUT_DONE, PF_TAG_GENERATED, PF_TAG_REROUTE,
     m_move_hdr, ml_len, mtod,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
 use crate::sys::socket::{AF_INET, SO_RTABLE};
 use crate::sys::socketvar::Socket;
@@ -805,11 +806,7 @@ pub fn ip_fragment(m0: &'static Mbuf, ml: &MbufList, ifp: &Ifnet, mtu: u64) -> R
             if let Err(e) = m_dup_pkthdr(m, m0, M_DONTWAIT) {
                 break 'bad e;
             }
-            m.m_data().set(
-                m.m_data()
-                    .get()
-                    .wrapping_add(MAX_LINKHDR.load(Ordering::Relaxed) as usize),
-            );
+            m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
             let mut mhip = ip;
             let mhlen = if hlen > size_of::<Ip>() as i32 {
                 // The options of the fragment, after its fixed header.
@@ -841,7 +838,7 @@ pub fn ip_fragment(m0: &'static Mbuf, ml: &MbufList, ifp: &Ifnet, mtu: u64) -> R
             let Some(n) = m_copym(m0, off, len, M_NOWAIT) else {
                 break 'bad Errno::ENOBUFS;
             };
-            m.m_next().set(Some(n));
+            let _ = m_set_next(m, Some(n));
 
             in_hdr_cksum_out(m, Some(ifp));
             off += len;
@@ -891,7 +888,7 @@ pub fn ip_insertoptions(m: &'static Mbuf, opt: &Mbuf, phlen: &mut i32) -> &'stat
     if p.ipopt_dst.s_addr != 0 {
         ip.ip_dst = p.ipopt_dst;
     }
-    let pktdat_room = (m.m_data().get() as usize).wrapping_sub(m.m_pktdat() as usize);
+    let pktdat_room = m.data_off();
     if m.m_flags().get() & M_EXT != 0 || pktdat_room < optlen {
         let Some(n) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
             return m;
@@ -899,18 +896,13 @@ pub fn ip_insertoptions(m: &'static Mbuf, opt: &Mbuf, phlen: &mut i32) -> &'stat
         m_move_hdr(n, m);
         n.m_pkthdr().len.set(n.m_pkthdr().len.get() + optlen as i32);
         m.m_len().set(m.m_len().get() - size_of::<Ip>() as u32);
-        m.m_data()
-            .set(m.m_data().get().wrapping_add(size_of::<Ip>()));
-        n.m_next().set(Some(m));
+        m_data_add(m, size_of::<Ip>() as isize);
+        let _ = m_set_next(n, Some(m));
         m = n;
         m.m_len().set((optlen + size_of::<Ip>()) as u32);
-        m.m_data().set(
-            m.m_data()
-                .get()
-                .wrapping_add(MAX_LINKHDR.load(Ordering::Relaxed) as usize),
-        );
+        m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
     } else {
-        m.m_data().set(m.m_data().get().wrapping_sub(optlen));
+        m_data_add(m, -(optlen as isize));
         m.m_len().set(m.m_len().get() + optlen as u32);
         m.m_pkthdr().len.set(m.m_pkthdr().len.get() + optlen as i32);
     }

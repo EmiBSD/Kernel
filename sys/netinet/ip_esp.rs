@@ -170,6 +170,7 @@ use crate::sys::endian::{htonl, ntohl};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::malloc::{M_WAITOK, M_XDATA};
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{M_AUTH, M_CONF, M_DONTWAIT, Mbuf, m_freemp, m_readonly, mtod};
 use crate::sys::mutex::mutex_assert_locked;
 use crate::sys::socket::AF_INET;
@@ -874,7 +875,7 @@ pub(crate) fn esp_strip_header(m: &'static Mbuf, m1: &'static Mbuf, roff: i32, h
 
         // Now, let's unlink the mbuf chain for a second...
         let mo = m1.m_next().get();
-        m1.m_next().set(None);
+        let _ = m_set_next(m1, None);
 
         // ...and trim the end of the first part of the chain...sick
         let adjlen = m1.m_len().get() as i32 - roff;
@@ -886,7 +887,7 @@ pub(crate) fn esp_strip_header(m: &'static Mbuf, m1: &'static Mbuf, roff: i32, h
         }
 
         // Finally, let's relink
-        m1.m_next().set(mo);
+        let _ = m_set_next(m1, mo);
     } else {
         // The ESP header lies in the "middle" of the mbuf...do an overlapping copy of the
         // remainder of the mbuf over the ESP header.

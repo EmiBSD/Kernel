@@ -704,7 +704,7 @@ pub fn ifq_deq_begin(ifq: &Ifqueue) -> Option<&'static Mbuf> {
         return None;
     };
 
-    m.m_pkthdr().ph_cookie.set(cookie.cast());
+    m.m_pkthdr().ph_cookie.set(cookie.expose_provenance());
 
     Some(m)
 }
@@ -712,7 +712,7 @@ pub fn ifq_deq_begin(ifq: &Ifqueue) -> Option<&'static Mbuf> {
 /// `ifq_deq_commit`: takes the packet `ifq_deq_begin` returned off the queue and releases
 /// `ifq_mtx`.
 pub fn ifq_deq_commit(ifq: &Ifqueue, m: &'static Mbuf) {
-    let cookie = m.m_pkthdr().ph_cookie.get().cast::<c_void>();
+    let cookie = core::ptr::with_exposed_provenance_mut::<c_void>(m.m_pkthdr().ph_cookie.get());
 
     // SAFETY: `ifq_deq_begin` returned `m` and `cookie` and left `ifq_mtx` held.
     unsafe { (ifq_ops(ifq).ifqop_deq_commit)(ifq, m, cookie) };
@@ -1274,9 +1274,8 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::uipc_mbuf::MBPOOL;
+    use crate::kern::uipc_mbuf::MBUFPL;
     use crate::net::if_::tests::{setup_net, test_ifnet, test_packet};
-    use crate::sys::pool::Pool;
 
     /// A packet of `len` bytes at priority `prio`, tagged with `id` in its flow id.
     fn packet(len: usize, prio: u8, id: u16) -> &'static Mbuf {
@@ -1295,8 +1294,8 @@ mod tests {
         &ifp.if_snd
     }
 
-    fn outstanding(pp: &Pool) -> u32 {
-        pp.pr_nout.get()
+    fn outstanding(pp: &hal::pool::BoxPool<Mbuf>) -> u64 {
+        pp.nout()
     }
 
     #[test]
@@ -1336,7 +1335,7 @@ mod tests {
     fn a_full_priq_drops_lower_priorities_or_refuses() {
         let _g = setup_net();
         let ifq = queue(2);
-        let before = outstanding(&MBPOOL);
+        let before = outstanding(&MBUFPL);
 
         assert_eq!(ifq_enqueue(ifq, packet(8, 0, 1)), Ok(()));
         assert_eq!(ifq_enqueue(ifq, packet(8, 0, 2)), Ok(()));
@@ -1360,7 +1359,7 @@ mod tests {
         assert_eq!(second.m_pkthdr().ph_flowid.get(), 2);
         m_freem(second);
         assert_eq!(
-            outstanding(&MBPOOL),
+            outstanding(&MBUFPL),
             before,
             "every dropped packet was freed"
         );
@@ -1394,7 +1393,7 @@ mod tests {
     fn purge_and_attach_keep_the_books() {
         let _g = setup_net();
         let ifq = queue(IFQ_MAXLEN);
-        let before = outstanding(&MBPOOL);
+        let before = outstanding(&MBUFPL);
         for id in 0..4 {
             assert_eq!(ifq_enqueue(ifq, packet(4, (id % 8) as u8, id)), Ok(()));
         }
@@ -1416,7 +1415,7 @@ mod tests {
         assert_eq!(ifq_purge(ifq), 4);
         assert!(ifq_empty(ifq));
         assert_eq!(ifq.ifq_qdrops.get(), 4);
-        assert_eq!(outstanding(&MBPOOL), before);
+        assert_eq!(outstanding(&MBUFPL), before);
     }
 
     #[test]

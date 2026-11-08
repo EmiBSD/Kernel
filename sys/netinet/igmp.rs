@@ -181,6 +181,7 @@ use crate::netinet::raw_ip::rip_input;
 use crate::sys::endian::{htons, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_MRTABLE, M_NOWAIT, M_WAITOK};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::{M_DONTWAIT, M_EXT, M_WAIT, MT_DATA, MT_HEADER, Mbuf, m_freemp, mtod};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::protosw::PR_FASTHZ;
@@ -528,8 +529,7 @@ pub fn igmp_input_if(
     }
 
     // Validate checksum
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(iphlen as usize));
+    m_data_add(m, iphlen as isize);
     m.m_len().set(m.m_len().get() - iphlen as u32);
     let igmp = igmp_hdr(m, 0);
     if in_cksum(m, igmplen) != 0 {
@@ -538,8 +538,7 @@ pub fn igmp_input_if(
         *mp = None;
         return IPPROTO_DONE;
     }
-    m.m_data()
-        .set(m.m_data().get().wrapping_sub(iphlen as usize));
+    m_data_add(m, -(iphlen as isize));
     m.m_len().set(m.m_len().get() + iphlen as u32);
     ip = mtod_ip(m);
 
@@ -889,7 +888,7 @@ pub fn igmp_sendpkt(pkt: &IgmpPktinfo) {
     // Assume max_linkhdr + sizeof(struct ip) + IGMP_MINLEN is smaller than mbuf size
     // returned by MGETHDR.
     let max_linkhdr = MAX_LINKHDR.load(Ordering::Relaxed) as usize;
-    m.m_data().set(m.m_data().get().wrapping_add(max_linkhdr));
+    m_data_add(m, max_linkhdr as isize);
     m.m_len().set((size_of::<Ip>() + IGMP_MINLEN) as u32);
     m.m_pkthdr().len.set((size_of::<Ip>() + IGMP_MINLEN) as i32);
 
@@ -904,8 +903,7 @@ pub fn igmp_sendpkt(pkt: &IgmpPktinfo) {
     };
     mtod_ip_store(m, &ip);
 
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(size_of::<Ip>()));
+    m_data_add(m, size_of::<Ip>() as isize);
     m.m_len().set(m.m_len().get() - size_of::<Ip>() as u32);
     let mut igmp = Igmp {
         igmp_type: pkt.ipi_type as u8,
@@ -918,8 +916,7 @@ pub fn igmp_sendpkt(pkt: &IgmpPktinfo) {
     igmp.igmp_cksum = in_cksum(m, IGMP_MINLEN as i32);
     // SAFETY: as above.
     unsafe { mtod::<Igmp>(m).write_unaligned(igmp) };
-    m.m_data()
-        .set(m.m_data().get().wrapping_sub(size_of::<Ip>()));
+    m_data_add(m, -(size_of::<Ip>() as isize));
     m.m_len().set(m.m_len().get() + size_of::<Ip>() as u32);
 
     m.m_pkthdr().ph_rtableid.set(pkt.ipi_rdomain);

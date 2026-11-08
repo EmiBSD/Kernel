@@ -198,6 +198,7 @@ use crate::netinet6::raw_ip6::rip6_input;
 use crate::sys::endian::{htonl, htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::limits::INT_MAX;
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
     M_BCAST, M_COPYALL, M_DONTWAIT, M_EXT, M_ICMP_CSUM_OUT, M_MAXLOOP, M_MCAST, MCLBYTES, MHLEN,
     MT_HEADER, Mbuf, PF_TAG_DIVERTED, PF_TAG_GENERATED, m_freemp, m_move_pkthdr, mclget, mtod,
@@ -826,7 +827,7 @@ fn icmp6_echo_reply(m: &'static Mbuf, off: i32, icmp6: Icmp6Hdr) -> (Option<&'st
         let len = nn.m_pkthdr().len.get() + MAXLEN as i32 - (off + size_of::<Icmp6Hdr>() as i32);
         nn.m_pkthdr().len.set(len);
         m_adj(n0, off + size_of::<Icmp6Hdr>() as i32);
-        nn.m_next().set(Some(n0));
+        let _ = m_set_next(nn, Some(n0));
 
         n = Some(nn);
         nicmp6 = Some(hdr);
@@ -2144,9 +2145,9 @@ mod tests {
         for p in &parts[1..] {
             let m = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
             // SAFETY: a fresh mbuf has MLEN bytes at m_data; the parts are small.
-            unsafe { ptr::copy_nonoverlapping(p.as_ptr(), m.m_data().get(), p.len()) };
+            unsafe { ptr::copy_nonoverlapping(p.as_ptr(), mtod::<u8>(m), p.len()) };
             m.m_len().set(p.len() as u32);
-            last.m_next().set(Some(m));
+            let _ = m_set_next(last, Some(m));
             last = m;
         }
         head.m_pkthdr().len.set(total as i32);
@@ -2475,7 +2476,7 @@ mod tests {
         let mut b = ip6_bytes(PEER6, OURS6, IPPROTO_UDP, 64, 1460);
         b.extend_from_slice(&[0x33; 1460]);
         // SAFETY: the cluster holds 2048 bytes.
-        unsafe { ptr::copy_nonoverlapping(b.as_ptr(), m.m_data().get(), b.len()) };
+        unsafe { ptr::copy_nonoverlapping(b.as_ptr(), mtod::<u8>(m), b.len()) };
         m.m_len().set(b.len() as u32);
         m.m_pkthdr().len.set(b.len() as i32);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
