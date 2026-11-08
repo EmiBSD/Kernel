@@ -1723,7 +1723,10 @@ fn unp_disconnect<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>, unp: &Unpcb
 }
 
 /// `fptounp(fp)`: `f` on the control block of a UNIX socket file, `None` for any other file
-/// (the socket's slot read as the C reads `so_pcb`, without the socket lock).
+/// (the socket's slot read as the C reads `so_pcb`, without the socket lock). `f` runs
+/// inside the slot's read section, so it must not sleep nor take a lock that may
+/// (`hal::slot`'s rule): the collector's scan, atomics alone. A caller that takes
+/// `unp_gc_lock` uses [`fptounp`].
 fn with_fptounp<G: ProcGlue, R>(
     fp: &File<G::FileGlue>,
     f: impl FnOnce(&Unpcb<G>) -> R,
@@ -1740,18 +1743,27 @@ fn with_fptounp<G: ProcGlue, R>(
     Some(f(unp))
 }
 
+/// `fptounp(fp)` counted: the control block of a UNIX socket file, its slot's read section
+/// over before the caller sleeps or locks (`unp_msgcount_inc`, `unp_msgcount_dec`).
+fn fptounp<G: ProcGlue>(fp: &File<G::FileGlue>) -> Option<UnpRef<G>> {
+    with_fptounp::<G, _>(fp, |unp| unp_ref(unp))
+}
+
 /// `unp_msgcount++` (and `unp_file = fp`) of a UNIX socket file going in flight, under
 /// `unp_gc_lock`.
 fn unp_msgcount_inc<G: ProcGlue>(fp: &Fp<G>) {
     let t = tables::<G>();
-    let _ = with_fptounp::<G, _>(fp, |unp| {
-        let mut g = t.unp_gc_lock.write();
-        unp.msgcount.fetch_add(1, Ordering::Relaxed);
-        let file = unp.file.get_mut(&mut g);
-        if file.is_none() {
-            *file = Some(fp.clone());
-        }
-    });
+    let Some(unp) = fptounp::<G>(fp) else {
+        return;
+    };
+    let mut g = t.unp_gc_lock.write();
+    unp.msgcount.fetch_add(1, Ordering::Relaxed);
+    let file = unp.file.get_mut(&mut g);
+    if file.is_none() {
+        *file = Some(fp.clone());
+    }
+    drop(g);
+    drop(unp);
 }
 
 /// `unp_msgcount--` of a UNIX socket file leaving flight, under `unp_gc_lock`: the control
@@ -1759,15 +1771,16 @@ fn unp_msgcount_inc<G: ProcGlue>(fp: &Fp<G>) {
 /// with no lock held.
 fn unp_msgcount_dec<G: ProcGlue>(fp: &File<G::FileGlue>) -> Option<Fp<G>> {
     let t = tables::<G>();
-    with_fptounp::<G, _>(fp, |unp| {
-        let mut g = t.unp_gc_lock.write();
-        if unp.msgcount.fetch_sub(1, Ordering::Relaxed) == 1 {
-            unp.file.get_mut(&mut g).take()
-        } else {
-            None
-        }
-    })
-    .flatten()
+    let unp = fptounp::<G>(fp)?;
+    let mut g = t.unp_gc_lock.write();
+    let last = if unp.msgcount.fetch_sub(1, Ordering::Relaxed) == 1 {
+        unp.file.get_mut(&mut g).take()
+    } else {
+        None
+    };
+    drop(g);
+    drop(unp);
+    last
 }
 
 /// The control message's header (`mtod(m, struct cmsghdr *)`), `None` for an mbuf too short
