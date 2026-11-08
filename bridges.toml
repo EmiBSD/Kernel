@@ -376,7 +376,8 @@ paid_by = "N8"
 
 # bsd: pf(4)'s mbuf legs (net/pf.c's pf_mbuf_link_state_key, pf_mbuf_link_inpcb,
 # pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), implemented by sys/net/pf.rs (BsdPf) over the
-# two words of pkthdr_pf and registered by sys/kern/hal_bridges.rs, for kernel::net::mbuf's
+# two words of pkthdr_pf and registered by sys/kern/uipc_mbuf.rs's mbinit (bsd's adapter, the
+# first mbuf code to run; a second call keeps the first), for kernel::net::mbuf's
 # m_free, m_clearhdr (the header's drop) and m_dup_pkthdr (N6.1); no-ops before registration (the
 # C with NPF == 0). N6.3c adds the stack's other legs (the N6 plan's section 5). Paid when pf
 # moves (N8).
