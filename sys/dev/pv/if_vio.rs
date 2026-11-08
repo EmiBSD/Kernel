@@ -110,6 +110,7 @@ use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_synch::{tsleep_nsec, wakeup};
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
+use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{m_adj, m_clget, m_defrag, m_freem, ml_enqueue};
 use crate::machine::bus::{
     BUS_DMA_64BIT, BUS_DMA_ALLOCNOW, BUS_DMA_NOWAIT, BUS_DMA_READ, BUS_DMA_WRITE, BUS_DMA_ZERO,
@@ -149,9 +150,10 @@ use crate::sys::device::{CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_IFNET, Devic
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{
-    M_DONTWAIT, M_FLOWID, M_PKTHDR, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_UDP_CSUM_IN_OK,
+    M_DONTWAIT, M_FLOWID, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_UDP_CSUM_IN_OK,
     M_UDP_CSUM_OUT, MAXMCLBYTES, MCLBYTES, Mbuf, MbufList, mtod,
 };
+use crate::sys::mbuf::{m_ext_size, m_set_next};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::param::{PRIBIO, howmany};
 use crate::sys::sockio::{
@@ -2241,7 +2243,7 @@ pub fn vio_add_rx_mbuf(sc: &VioSoftc, vioq: &VioQueue, i: usize) -> Result<(), E
         return Err(Errno::ENOBUFS);
     };
     vioq.rxmbuf(i).set(Some(m));
-    let size = m.m_ext().ext_size.get();
+    let size = m_ext_size(m);
     m.m_len().set(size);
     m.m_pkthdr().len.set(size as i32);
     m_adj(m, sc.sc_rx_mbuf_offset.get());
@@ -2427,12 +2429,12 @@ pub fn vio_rxeof(vioq: &VioQueue) -> i32 {
         m.m_pkthdr().csum_flags.set(0);
         match (m0, mlast) {
             (Some(first), Some(last)) => {
-                m.m_flags().set(m.m_flags().get() & !M_PKTHDR);
+                m_removehdr(m);
                 first
                     .m_pkthdr()
                     .len
                     .set(first.m_pkthdr().len.get() + m.m_len().get() as i32);
-                last.m_next().set(Some(m));
+                let _ = m_set_next(last, Some(m));
                 mlast = Some(m);
                 bufs_left -= 1;
             }

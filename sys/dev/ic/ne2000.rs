@@ -107,6 +107,7 @@ use crate::machine::cpu::delay;
 use crate::netinet::if_ether::ETHER_ADDR_LEN;
 use crate::sys::device::{Cfdriver, DV_IFNET};
 use crate::sys::mbuf::Mbuf;
+use crate::sys::mbuf::mtod;
 use crate::sys::syslog::LOG_WARNING;
 
 /// `ASIC_BARRIER(asict, asich)`.
@@ -407,7 +408,7 @@ pub fn ne2000_write_mbuf(sc: &'static Dp8390Softc, m: &Mbuf, buf: i32) -> i32 {
             let len = m.m_len().get() as usize;
             if len != 0 {
                 // SAFETY: an mbuf's data pointer addresses `m_len` valid bytes.
-                let data = unsafe { slice::from_raw_parts(m.m_data().get(), len) };
+                let data = unsafe { slice::from_raw_parts(mtod::<u8>(m), len) };
                 bus_space_write_multi_1(asict, asich, NE2000_ASIC_DATA, data);
             }
             cur = m.m_next().get();
@@ -427,7 +428,7 @@ pub fn ne2000_write_mbuf(sc: &'static Dp8390Softc, m: &Mbuf, buf: i32) -> i32 {
                 continue;
             }
             // SAFETY: an mbuf's data pointer addresses `m_len` valid bytes.
-            let mut data = unsafe { slice::from_raw_parts(m.m_data().get(), l) };
+            let mut data = unsafe { slice::from_raw_parts(mtod::<u8>(m), l) };
             while !data.is_empty() {
                 if leftover {
                     // Data left over (from mbuf or realignment). Buffer the next byte, and

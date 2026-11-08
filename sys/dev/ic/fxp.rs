@@ -134,7 +134,10 @@ use crate::netinet::if_ether::{
 use crate::sys::device::{Cfdriver, DV_IFNET, DVACT_SUSPEND, DVACT_WAKEUP, Device};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_DEVBUF;
-use crate::sys::mbuf::{M_DONTWAIT, M_EXT, MCLBYTES, MT_DATA, Mbuf, MbufList};
+use crate::sys::mbuf::{
+    M_DONTWAIT, M_EXT, MCLBYTES, MT_DATA, Mbuf, MbufList, m_data_add, m_ext_buf, m_ext_size,
+    m_set_data_off, m_set_next, m_take_next,
+};
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::sockio::{SIOCGIFMEDIA, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMEDIA};
 use crate::sys::syslog::LOG_ERR;
@@ -246,7 +249,7 @@ fn fxp_lwcopy(v: u32, rfa: &Dma, off: usize) {
 
 /// The RFA of the cluster of `m`, `RFA_ALIGNMENT_FUDGE` bytes in.
 fn fxp_rfa(m: &Mbuf) -> Dma {
-    let buf = m.m_ext().ext_buf.get();
+    let buf = m_ext_buf(m);
     // SAFETY: `m` is a cluster mbuf of the receive list (`fxp_add_rfabuf`), whose cluster is
     // MCLBYTES long; the RFA is the 16 bytes at the fudge offset, inside it, and is the
     // chip's as well as ours (volatile accesses).
@@ -256,7 +259,7 @@ fn fxp_rfa(m: &Mbuf) -> Dma {
 /// `*((bus_dmamap_t *)m->m_ext.ext_buf)`: the DMA map `fxp_add_rfabuf` left at the start of
 /// the cluster.
 fn fxp_rxmap_of(m: &Mbuf) -> &'static BusDmamap {
-    let buf = m.m_ext().ext_buf.get();
+    let buf = m_ext_buf(m);
     // SAFETY: every cluster in the receive list has a `&'static BusDmamap` stored by
     // `fxp_rxmap_store` in its first bytes (the cluster is at least a pointer long and
     // aligned); the map lives as long as the softc.
@@ -265,7 +268,7 @@ fn fxp_rxmap_of(m: &Mbuf) -> &'static BusDmamap {
 
 /// `*((bus_dmamap_t *)m->m_ext.ext_buf) = rxmap`.
 fn fxp_rxmap_store(m: &Mbuf, rxmap: &'static BusDmamap) {
-    let buf = m.m_ext().ext_buf.get();
+    let buf = m_ext_buf(m);
     // SAFETY: `m` has a cluster (`M_EXT`) of MCLBYTES bytes, aligned for a pointer, which
     // nothing else uses at its start (the RFA is past the fudge).
     unsafe { buf.cast::<*const BusDmamap>().write(ptr::from_ref(rxmap)) }
@@ -274,15 +277,14 @@ fn fxp_rxmap_store(m: &Mbuf, rxmap: &'static BusDmamap) {
 /// Loads the cluster of `m` into `rxmap` (`bus_dmamap_load(sc->sc_dmat, rxmap,
 /// m->m_ext.ext_buf, m->m_ext.ext_size, NULL, BUS_DMA_NOWAIT)`); the C does not check it.
 fn fxp_rxmap_load(sc: &FxpSoftc, rxmap: &BusDmamap, m: &Mbuf) {
-    let ext = m.m_ext();
     // SAFETY: the cluster stays this map's until fxp_intr, fxp_stop or fxp_init unload the
     // map before handing the mbuf on or freeing it.
     let _ = unsafe {
         bus_dmamap_load(
             sc.dmat(),
             rxmap,
-            ext.ext_buf.get(),
-            ext.ext_size.get() as BusSize,
+            m_ext_buf(m),
+            m_ext_size(m) as BusSize,
             None,
             BUS_DMA_NOWAIT,
         )
@@ -971,8 +973,7 @@ pub fn fxp_intr(arg: *mut c_void) -> i32 {
                 }
 
                 // Remove first packet from the chain.
-                sc.rfa_headm.set(m.m_next().get());
-                m.m_next().set(None);
+                sc.rfa_headm.set(m_take_next(m));
 
                 // Add a new buffer to the receive chain. If this fails, the old buffer is
                 // recycled instead.
@@ -1496,7 +1497,7 @@ pub fn fxp_add_rfabuf(sc: &FxpSoftc, oldm: Option<&'static Mbuf>) -> Result<(), 
     let (m, rxmap) = match (newm, oldm) {
         (None, None) => return Err(Errno::ENOBUFS),
         (None, Some(old)) => {
-            old.m_data().set(old.m_ext().ext_buf.get());
+            m_set_data_off(old, 0);
             (old, fxp_rxmap_of(old))
         }
         (Some(m), None) => {
@@ -1515,13 +1516,11 @@ pub fn fxp_add_rfabuf(sc: &FxpSoftc, oldm: Option<&'static Mbuf>) -> Result<(), 
     };
 
     // Move the data pointer up so that the incoming data packet will be 32-bit aligned.
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(RFA_ALIGNMENT_FUDGE));
+    m_data_add(m, RFA_ALIGNMENT_FUDGE as isize);
 
     // Get a pointer to the base of the mbuf cluster and move data start past it.
     let rfa = fxp_rfa(m);
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(size_of::<FxpRfa>()));
+    m_data_add(m, size_of::<FxpRfa>() as isize);
     rfa.wr16(
         FXP_RFA_OFF_SIZE,
         ((MCLBYTES - size_of::<FxpRfa>() - RFA_ALIGNMENT_FUDGE) as u16).to_le(),
@@ -1547,7 +1546,7 @@ pub fn fxp_add_rfabuf(sc: &FxpSoftc, oldm: Option<&'static Mbuf>) -> Result<(), 
     // If there are other buffers already on the list, attach this one to the end by fixing
     // up the tail to point to this one.
     if let Some(tail) = sc.rfa_headm.get().and(sc.rfa_tailm.get()) {
-        tail.m_next().set(Some(m));
+        let _ = m_set_next(tail, Some(m));
         let v = ((rxmap.dm_segs()[0].get().ds_addr + RFA_ALIGNMENT_FUDGE) as u32).to_le();
         let trfa = fxp_rfa(tail);
         fxp_lwcopy(v, &trfa, FXP_RFA_OFF_LINK_ADDR);

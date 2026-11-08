@@ -1231,7 +1231,7 @@ mod tests {
     use crate::crypto::testutil::hex;
     use crate::kern::uipc_mbuf::tests::setup as mbuf_setup;
     use crate::kern::uipc_mbuf::{m_copydata as mbuf_copydata, m_get, m_gethdr};
-    use crate::sys::mbuf::{M_DONTWAIT, MT_DATA, Mbuf, mclgetl};
+    use crate::sys::mbuf::{M_DONTWAIT, MT_DATA, Mbuf, m_set_next, mclgetl};
     use crate::sys::uio::{Iovec, UioRw, UioSeg};
 
     /// The framework's state is global: one test at a time, each from an empty driver table with
@@ -1332,7 +1332,9 @@ mod tests {
             off += c;
             match last {
                 None => top = Some(m),
-                Some(l) => l.m_next().set(Some(m)),
+                Some(l) => {
+                    let _ = m_set_next(l, Some(m));
+                }
             }
             last = Some(m);
         }

@@ -159,6 +159,7 @@ use crate::kern::kern_rwlock::{rw_enter, rw_exit, rw_init};
 use crate::kern::kern_timeout::{timeout_add, timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_autoconf::config_defer;
 use crate::kern::subr_prf::{Str, panic, printf};
+use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{m_adj, m_clget, m_defrag, m_freem, ml_enqueue};
 use crate::machine::bus::{
     BUS_DMA_64BIT, BUS_DMA_ALLOCNOW, BUS_DMA_COHERENT, BUS_DMA_NOWAIT, BUS_DMA_WAITOK,
@@ -208,9 +209,10 @@ use crate::sys::device::{
 };
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
-    M_DONTWAIT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_PKTHDR, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT,
-    M_TCP_TSO, M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT, M_VLANTAG, MCLBYTES, Mbuf, MbufList, mtod,
+    M_DONTWAIT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO,
+    M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT, M_VLANTAG, MCLBYTES, Mbuf, MbufList, mtod,
 };
 use crate::sys::param::PAGE_SIZE;
 use crate::sys::rwlock::{RW_INTR, RW_WRITE, Rwlock};
@@ -4035,7 +4037,7 @@ pub fn em_rxeof(que: &EmQueue) -> bool {
             match (que.rx.fmp.get(), que.rx.lmp.get()) {
                 (Some(fmp), Some(lmp)) => {
                     // Chain mbuf's together
-                    m.m_flags().set(m.m_flags().get() & !M_PKTHDR);
+                    m_removehdr(m);
                     // Adjust length of previous mbuf in chain if we received less than 4
                     // bytes in the last descriptor.
                     if prev_len_adj > 0 {
@@ -4045,7 +4047,7 @@ pub fn em_rxeof(que: &EmQueue) -> bool {
                             .len
                             .set(fmp.m_pkthdr().len.get() - i32::from(prev_len_adj));
                     }
-                    lmp.m_next().set(Some(m));
+                    let _ = m_set_next(lmp, Some(m));
                     que.rx.lmp.set(Some(m));
                     fmp.m_pkthdr()
                         .len

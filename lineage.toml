@@ -1623,7 +1623,7 @@ notes = "M4/M5: cpu_configure as far as the interrupts go; M7b: cpu_configure in
 rust = "sys/arch/arm64/arm64/bus_dma.rs"
 lz = ["sys/arch/arm64/arm64/bus_dma.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
+adapted_by = ["sys/hal/pmap.rs", "sys/hal/arch/arm64/pmap/layout.rs", "sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/types.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/arch/arm64/arm64/bus_space.rs"
@@ -2431,7 +2431,7 @@ status = "inherited"
 rust = "sys/crypto/cryptosoft.rs"
 lz = ["sys/crypto/cryptosoft.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/aes.rs"]
+adapted_by = ["sys/crypto/aes.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/crypto/curve25519.rs"
@@ -3262,7 +3262,8 @@ adapted_by = ["sys/hal/softintr.rs"]
 [[module]]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3274,7 +3275,8 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 [[module]]
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3295,7 +3297,8 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 [[module]]
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3384,7 +3387,8 @@ notes = "M16a: the whole header: struct mpi_dmamem (malloc'ed, &'static), mpi_cc
 [[module]]
 rust = "sys/dev/ic/ne2000.rs"
 lz = ["sys/dev/ic/ne2000.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "BSD plus the Hannum/Greenman notice"
 notes = "license: BSD plus the Hannum/Greenman notice, kept whole; M16c: the NE2000 core (PIO through the ASIC data port). GWETHER (never defined) is not ported; readmem drops the byte the C reads past an odd destination; bus_space_{read,write}_multi_1 and _raw_multi_2 added to machine/bus.rs"
 
@@ -3477,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3920,7 +3924,8 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 [[module]]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3952,7 +3957,8 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 [[module]]
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3963,7 +3969,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4288,7 +4295,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -4555,7 +4563,8 @@ status = "inherited"
 [[module]]
 rust = "sys/dev/usb/if_cdce.rs"
 lz = ["sys/dev/usb/if_cdce.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 license = "BSD-4"
 
 [[module]]

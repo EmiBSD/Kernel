@@ -143,6 +143,7 @@ use crate::kern::kern_sysctl::{hw_prod, hw_vendor};
 use crate::kern::kern_task::task_set;
 use crate::kern::kern_timeout::{timeout_add_sec, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf};
+use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{m_clget, m_copyback, m_copydata, m_defrag, m_freem, ml_enqueue};
 use crate::machine::bus::{
     BUS_DMA_64BIT, BUS_DMA_COHERENT, BUS_DMA_NOWAIT, BUS_DMA_READ, BUS_DMA_WRITE, BUS_DMA_ZERO,
@@ -184,9 +185,10 @@ use crate::sys::endian::swap32;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::{
-    M_DONTWAIT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_PKTHDR, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT,
+    M_DONTWAIT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT,
     M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT, M_VLANTAG, Mbuf, MbufList,
 };
+use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::sockio::{SIOCGIFMEDIA, SIOCGIFRXR, SIOCSIFADDR, SIOCSIFFLAGS, SIOCSIFMEDIA};
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 
@@ -1358,8 +1360,7 @@ pub fn re_newbuf(sc: &'static RlSoftc) -> Result<(), Errno> {
     // longword aligned on strict alignment archs.
     m.m_len().set(framelen as u32);
     m.m_pkthdr().len.set(framelen);
-    m.m_data()
-        .set(m.m_data().get().wrapping_add(RE_ETHER_ALIGN as usize));
+    m_data_add(m, RE_ETHER_ALIGN as isize);
 
     let idx = ld.rl_rx_prodidx.get() as u32;
     let rxs = ld.rxsoft(idx);
@@ -1523,8 +1524,8 @@ pub fn re_rxeof(sc: &'static RlSoftc) -> bool {
                     sc.rl_tail.set(Some(m));
                 }
                 Some(tail) => {
-                    m.m_flags().set(m.m_flags().get() & !M_PKTHDR);
-                    tail.m_next().set(Some(m));
+                    m_removehdr(m);
+                    let _ = m_set_next(tail, Some(m));
                     sc.rl_tail.set(Some(m));
                 }
             }
@@ -1579,8 +1580,8 @@ pub fn re_rxeof(sc: &'static RlSoftc) -> bool {
                 m_freem(m);
             } else {
                 m.m_len().set(len as u32 - ETHER_CRC_LEN as u32);
-                m.m_flags().set(m.m_flags().get() & !M_PKTHDR);
-                tail.m_next().set(Some(m));
+                m_removehdr(m);
+                let _ = m_set_next(tail, Some(m));
             }
             sc.rl_head.set(None);
             sc.rl_tail.set(None);

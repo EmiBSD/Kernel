@@ -122,6 +122,7 @@ use crate::machine::pmap::{pmap_extract, pmap_kenter_pa, pmap_kernel, pmap_updat
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::Mbuf;
+use crate::sys::mbuf::mtod;
 use crate::sys::mman::{PROT_READ, PROT_WRITE};
 use crate::sys::param::{NBPG, PAGE_MASK, PAGE_SIZE, PGOFSET, PGSHIFT};
 use crate::sys::proc::Proc;
@@ -432,7 +433,7 @@ pub unsafe fn _dmamap_load_mbuf(
             (t._dmamap_load_buffer)(
                 t,
                 map,
-                mb.m_data().get() as usize,
+                mtod::<u8>(mb) as usize,
                 mb.m_len().get() as BusSize,
                 None,
                 flags,

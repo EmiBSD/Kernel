@@ -119,6 +119,7 @@ use crate::kern::kern_lock::{mtx_enter, mtx_enter_try, mtx_init, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_timeout::{timeout_add, timeout_del, timeout_set};
 use crate::kern::subr_prf::{Str, panic, printf, snprintf};
+use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{m_adj, m_clget, m_defrag, m_freem, m_pullup, ml_enqueue};
 use crate::machine::bus::{
     BUS_DMA_64BIT, BUS_DMA_ALLOCNOW, BUS_DMA_NOWAIT, BUS_DMA_STREAMING, BUS_DMA_WAITOK,
@@ -161,8 +162,9 @@ use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_add, tcpstat_inc};
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_CANFAIL, M_DEVBUF, M_NOWAIT, M_TEMP, M_WAITOK, M_ZERO};
+use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
-    M_DONTWAIT, M_FLOWID, M_IPV4_CSUM_IN_OK, M_PKTHDR, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO,
+    M_DONTWAIT, M_FLOWID, M_IPV4_CSUM_IN_OK, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO,
     M_UDP_CSUM_IN_OK, M_UDP_CSUM_OUT, M_VLANTAG, MAXMCLBYTES, MHLEN, Mbuf, MbufList, mtod,
 };
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
@@ -1912,8 +1914,8 @@ pub fn vmxnet3_rxintr(sc: &'static Vmxnet3Softc, rq: &Vmxnet3Rxqueue) {
 
         let sendmp = match (comp_ring.sendmp.get(), comp_ring.lastmp.get()) {
             (Some(sendmp), Some(lastmp)) => {
-                m.m_flags().set(m.m_flags().get() & !M_PKTHDR);
-                lastmp.m_next().set(Some(m));
+                m_removehdr(m);
+                let _ = m_set_next(lastmp, Some(m));
                 comp_ring.lastmp.set(Some(m));
                 sendmp
             }
