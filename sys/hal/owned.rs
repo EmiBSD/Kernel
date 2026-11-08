@@ -2762,9 +2762,10 @@ fn rb_remove_color<R: Rb>(t: &R, parent: Option<NonNull<R::T>>, x: Option<NonNul
 /// [`SlistLink::set`] and [`SlistLink::take`].
 ///
 /// Invariant: the word is null, or the item pointer of a box of `T::POOL` that
-/// [`SlistLink::set`] gave up for it (`PoolBox::into_raw`), whose only owner is this link
-/// from then on: no handle to the item exists and none is made but by [`SlistLink::take`],
-/// which empties the word as it rebuilds the box. The auto traits are a box's
+/// [`SlistLink::set`] or `fill` (an [`OwnedSlist`]'s tail, on a null word only) gave up for
+/// it (`PoolBox::into_raw`), whose only owner is this link from then on: no handle to the
+/// item exists and none is made but by [`SlistLink::take`], which empties the word as it
+/// rebuilds the box. The auto traits are a box's
 /// (`PhantomData<PoolBox<T>>`): the link owns what a box owns.
 pub struct SlistLink<T: Pooled> {
     word: AtomicPtr<T>,
@@ -2791,11 +2792,13 @@ impl<T: Pooled> SlistLink<T> {
     pub fn get(&self) -> Option<&T> {
         let p = NonNull::new(self.word.load(Mem::Relaxed))?;
         // SAFETY: a non-null word is the pointer of an item of `T::POOL` whose one owner is this
-        // link (the invariant: only `set` stores one, from a box it consumes, and only `take`
-        // clears it, rebuilding that one box), so the item holds an initialised `T` that no
-        // handle reaches and that is not put back while the word names it. The reference
-        // borrows `self`, so neither `take` nor `set` nor `get_mut` (all `&mut self`) can run
-        // while it lives: no `&mut T` exists beside it and the item outlives it.
+        // link (the invariant: only `set` and `fill` store one, each from a box it consumes,
+        // and only `take` clears it, rebuilding that one box), so the item holds an initialised
+        // `T` that no handle reaches and that is not put back while the word names it. The
+        // reference borrows `self`, so neither `take` nor `set` nor `get_mut` (all `&mut
+        // self`) can run while it lives; `fill` can, under `&self`, but only on a null word
+        // (it panics otherwise), and while the word is null no reference made through `get`
+        // exists. So no `&mut T` exists beside this one and the item outlives it.
         Some(unsafe { p.as_ref() })
     }
 
@@ -2819,11 +2822,11 @@ impl<T: Pooled> SlistLink<T> {
     #[inline]
     pub fn take(&mut self) -> Option<PoolBox<T>> {
         let p = NonNull::new(core::mem::replace(self.word.get_mut(), ptr::null_mut()))?;
-        // SAFETY: `PoolBox::from_raw`'s contract: a non-null word is the pointer `set` took from
-        // `PoolBox::into_raw` of a box of `T::POOL` (checked there), and the word is cleared
-        // here, before the box exists, so this `into_raw` is answered by this one `from_raw`
-        // (no other path rebuilds a box from the word). No reference made through the link is
-        // alive: they borrow `self`, which this call borrows mutably.
+        // SAFETY: `PoolBox::from_raw`'s contract: a non-null word is the pointer `set` or `fill`
+        // took from `PoolBox::into_raw` of a box of `T::POOL` (both check the pool), and the
+        // word is cleared here, before the box exists, so this `into_raw` is answered by this
+        // one `from_raw` (no other path rebuilds a box from the word). No reference made
+        // through the link is alive: they borrow `self`, which this call borrows mutably.
         Some(unsafe { PoolBox::from_raw(p, T::POOL) })
     }
 
@@ -2857,6 +2860,7 @@ impl<T: Pooled> SlistLink<T> {
     /// `&mut` borrow it changes the list by, or code ordered after the change by the lock
     /// that guards the list (the `bsd` adapters' `ml_*` under the list's mutex), whose
     /// release and acquire publish the element with the pointer.
+    #[inline]
     fn fill(&self, b: PoolBox<T>) {
         if !ptr::eq(PoolBox::pool(&b), T::POOL) {
             hal_panic(format_args!("SlistLink::fill: an item of another pool"));
@@ -2991,7 +2995,9 @@ impl<A: SlistAdapter> OwnedSlist<A> {
         // kernel: a box outside any list holds no chain unless its owner linked one, which
         // `check_alone` refuses), so the element `tail` names is the one whose link is empty.
         // The shared reference borrows `self`, so no change of the list (all need `&mut
-        // self`) and no `&mut` to the element can happen while it lives, and it reads only.
+        // self`) and no `&mut` to the element can happen while it lives. It reads, or, inside
+        // the caller's own `&mut self` (`push_tail`, `concat`), fills the empty link's atomic
+        // word through itself (`SlistLink::fill`), which names no `&mut` either.
         unsafe { t.as_ref() }
     }
 
@@ -4274,10 +4280,11 @@ mod tests {
 
     #[test]
     fn a_tail_named_by_address_meanwhile_is_linked_through_a_shared_borrow() {
-        // The closest a host test comes to wg's serial queue: the tail's address is kept (as
-        // `bsd` keeps a `&'static` on another CPU) across the push that links after it, and
-        // read again afterwards; the push reaches the tail only through `last()` and the
-        // link's `fill`, so the kept address names the same, unmoved element.
+        // Behaviour only: the order, the tail, the length and the kept element's link after a
+        // `push_tail` and a `concat` that link after a tail whose address is kept meanwhile
+        // (as `bsd` keeps a `&'static` on another CPU). It passes with the former `last_mut`
+        // too: the aliasing fix (no `&mut` to the tail) is not something a test on the stable
+        // toolchain can see (no Miri here).
         let mut l = OwnedSlist::<SlChain>::new();
         l.push_tail(sl(1));
         l.push_tail(sl(2));
@@ -4306,6 +4313,18 @@ mod tests {
         // The tail's premise broken behind the list's back: its link filled directly.
         SlChain::link(l.last().expect("a tail")).fill(sl(2));
         l.push_tail(sl(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "a link that holds an element")]
+    fn a_tail_whose_link_holds_an_element_refuses_a_concat() {
+        // As for `push_tail`: not dropped, the list is left broken on purpose.
+        let mut l = core::mem::ManuallyDrop::new(OwnedSlist::<SlChain>::new());
+        l.push_tail(sl(1));
+        SlChain::link(l.last().expect("a tail")).fill(sl(2));
+        let mut other = core::mem::ManuallyDrop::new(OwnedSlist::<SlChain>::new());
+        other.push_tail(sl(3));
+        l.concat(&mut other);
     }
 
     #[test]
