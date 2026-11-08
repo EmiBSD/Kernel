@@ -485,6 +485,14 @@ impl FileGlue for BenchFiles {
     fn vfs() -> &'static kernel::fs::subr::VfsTables<BenchGlue> {
         &VFS_TABLES
     }
+    fn net() -> &'static kernel::net::domain::NetTables<BenchGlue> {
+        static NET_TABLES: kernel::net::domain::NetTables<BenchGlue> =
+            kernel::net::domain::NetTables::new();
+        &NET_TABLES
+    }
+    fn socket_of(_d: &Self::Data) -> Option<&kernel::net::socket::SocketRef<BenchGlue>> {
+        None
+    }
     fn vnode_of(d: &Self::Data) -> Option<&'static kernel::fs::vnode::Vnode<BenchGlue>> {
         match d {
             BenchData::Vnode(vp) => Some(vp),

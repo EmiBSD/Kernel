@@ -14005,6 +14005,27 @@ status = "redesigned"
 notes = "N4.8b: syscall_mi.h generic over ProcGlue: pin_check (a pure pin_verdict and the die path), mi_syscall (refreshcreds, SYSCALL_DEBUG through the glue, the MAP_STACK check made: gap 1, the user's decision 5, EPERM after uvm_map_inentry's SIGSEGV, a glue naming no address space fails it; pledge through ProcGlue::pledge_syscall/pledge_fail; the kernel lock around the body unless lock is false), syscall_lock over a row's sy_flags, SY_NOLOCK_DEFERRED, mi_syscall_return, mi_child_return, mi_ast (ADDUPROF unported!), and KernelTrap<G>: hal::trap::TrapHandler (the fault on the chosen map with pmap_fault_fixup, uvm_fault, uvm_grow; trapsignal, sigexit, refreshcreds, userret and the three above); N4.8b b3: PROC_PC and PROC_STACK from hal::trap (the glue's proc_pc and proc_stack are gone)"
 
 [[module]]
+rust = "sys/kernel/net/domain.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_domain.rs", "sys/sys/domain.rs"]
+status = "redesigned"
+notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose NULL as default methods, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch"
+
+[[module]]
+rust = "sys/kernel/net/proto.rs"
+crate = "kernel"
+lz = ["sys/sys/protosw.rs"]
+status = "redesigned"
+notes = "N6.2a: struct protosw and struct pr_usrreqs as the traits Protocol<G> and Usrreqs<G> (decision 46): the NULL entries default methods answering what the C's pru_* wrappers answer, every request taking the socket and its lock's witness (SoLocked), owned mbufs where the protocol disposes of them; pr_input and pru_control's ifp wait for N6.3a/N6.4's types (D-N6.2-4); SockaddrView over an address's bytes; PR_* and PRCO_* constants"
+
+[[module]]
+rust = "sys/kernel/net/socket.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_socket.rs", "sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
+status = "redesigned"
+notes = "N6.2a: struct socket as a counted sockpl item (SocketRef = PoolArc, soref = from_ref, sorele = drop, sorele's body the Drop; the existence reference parked by soalloc and adopted once by sofree); solock as SoLocked (net lock exclusive or shared with so_lock, or so_lock: hal DetachableRwlock, detached holdings for bsd's C-style sites and sonewconn's returned-locked socket); the [s] members atomics, so_pcb a ReadMostly<Option<AnyArc>> for the kernel's protocols beside bsd's legacy_pcb word; the connection queues under one per-socket leaf mutex cq (also so_timeo's interlock), the queue's reference parked per queued child (D-N6.2-1, D-N6.2-U1 shape B); socreate..soclose, sosend/m_getuio, soreceive over the receive buffer's first record taken out for its copies, the splice (sosplice/sounsplice/somove/soidle/sotask, the task and idle timeout counted and cleared by soclose), sosetopt/sogetopt, the wakeups, so_upcall as two atomics and one registered function (D-N6.2-3), so_print/sobuf_print; doaccept's queue loop as soaccept_wait"
+
+[[module]]
 rust = "sys/kernel/net/sockbuf.rs"
 crate = "kernel"
 lz = ["sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]

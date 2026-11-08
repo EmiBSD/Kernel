@@ -461,6 +461,17 @@ impl SbRecord {
         }
     }
 
+    /// The mbufs of `l` (each alone) before the record's first, in their order. The record
+    /// must not be empty (its last mbuf stays its last).
+    pub fn prepend(&mut self, mut l: OwnedSlist<MNext>) {
+        if l.is_empty() {
+            return;
+        }
+        kassert!(self.tail.is_some());
+        l.concat(&mut self.list);
+        self.list = l;
+    }
+
     /// The record as one chain from its first mbuf (owning the others by `m_next`).
     fn into_chain(mut self) -> Option<MbufBox> {
         if let Some(t) = self.tail.take() {
@@ -524,6 +535,12 @@ impl<G: ProcGlue> Sockbuf<G> {
             spliced: AtomicBool::new(false),
             klist: Klist::owner(),
         }
+    }
+
+    /// `sb_mtx`, for the cells keyed to it (the splice peers, `Guarded::new_mutexed`).
+    #[inline]
+    pub(crate) fn mutex(&self) -> &Mutexed<SbData> {
+        &self.mtx
     }
 
     /// `mtx_enter(&sb->sb_mtx)`.
@@ -703,6 +720,12 @@ impl<'a, G: ProcGlue> SbGuard<'a, G> {
     #[inline]
     pub fn witness(&mut self) -> &mut MutexedGuard<'a, SbData> {
         &mut self.g
+    }
+
+    /// The mutex's witness, shared (a cell keyed to the mutex read).
+    #[inline]
+    pub fn witness_ref(&self) -> &MutexedGuard<'a, SbData> {
+        &self.g
     }
 
     /// `sb->sb_cc = v`.
@@ -1281,6 +1304,55 @@ impl<'a, G: ProcGlue> SbGuard<'a, G> {
             list: mem::take(&mut d.last),
             tail: Some(tail),
         })
+    }
+
+    /// What the senders appended to the reader's record while it was out (its continuation),
+    /// moved to the record's end, so the reader goes on through it as the C's reader goes on
+    /// down `m_next` into mbufs appended meanwhile; a record closed meanwhile is no longer
+    /// the last one from then on. Nothing for a record that was not the last.
+    pub fn refill_record(&mut self, rec: &mut SbRecord) {
+        let d = &mut *self.g;
+        let (list, tail, closed) = match &mut d.out {
+            Out::Last { pending: None, eor } => {
+                if d.tail.is_none() {
+                    return;
+                }
+                let tail = d.tail.take();
+                *eor |= d
+                    .last
+                    .iter()
+                    .chain(tail.as_deref())
+                    .any(|m| m.flags() & M_EOR != 0);
+                (mem::take(&mut d.last), tail, false)
+            }
+            Out::Last {
+                pending: Some((l, t)),
+                ..
+            } => (mem::take(l), t.take(), true),
+            Out::Rec | Out::None => return,
+        };
+        if closed {
+            d.out = Out::Rec;
+        }
+        let mut more = SbRecord { list, tail };
+        if more.is_empty() {
+            return;
+        }
+        if let Some(t) = rec.tail.take() {
+            rec.list.push_tail(t);
+        }
+        rec.list.concat(&mut more.list);
+        rec.tail = more.tail.take();
+    }
+
+    /// Whether a record follows the one a reader holds out, or (none out) the buffer's
+    /// first (`nextrecord != NULL`).
+    pub fn next_record_exists(&self) -> bool {
+        match &self.g.out {
+            Out::None => self.g.has_next_record(),
+            Out::Rec => !self.g.is_empty(),
+            Out::Last { pending, .. } => pending.is_some(),
+        }
     }
 
     /// What is left of the record [`SbGuard::take_first_record`] took out, back at the

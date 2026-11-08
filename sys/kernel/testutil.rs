@@ -830,6 +830,16 @@ pub fn memory_is_the_doubles() -> Option<bool> {
     MEMORY_DOUBLES.get().copied()
 }
 
+/// `uiomove` of a read out of `buf` for the test glues: [`test_uiomove`] over a copy of the
+/// bytes (the test glues' kernel and user copies take a mutable source).
+pub fn test_uiomove_out<G: crate::proc::ProcGlue>(
+    buf: &[u8],
+    uio: &mut crate::uio::Uio<'_, G>,
+) -> Result<(), hal::sys::errno::Errno> {
+    let mut copy = buf.to_vec();
+    test_uiomove(&mut copy, uio)
+}
+
 /// The test glues' `uiomove`: moves `buf` through the uio's iovecs, user addresses through
 /// the user-copy double (`hal::user`), kernel ones accounted only (a test cannot reach a
 /// `UIO_SYSSPACE` iovec's bytes without `bsd`'s `kcopy`); the offset, the residual count and
@@ -1289,6 +1299,8 @@ pub struct TestFileData<P: crate::proc::ProcGlue> {
     pub kvnode: Option<&'static crate::fs::vnode::Vnode<P>>,
     /// A pipe file's pipe (`pipe_of`), dropped with the file's item (`pipe_destroy`).
     pub pipe: Option<crate::pipe::PipeEnd<P>>,
+    /// A socket file's socket (`socket_of`), dropped with the file's item.
+    pub socket: Option<crate::net::socket::SocketRef<P>>,
 }
 
 impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
@@ -1300,6 +1312,7 @@ impl<P: crate::proc::ProcGlue> Default for TestFileData<P> {
             vnode: None,
             kvnode: None,
             pipe: None,
+            socket: None,
         }
     }
 }
@@ -1865,6 +1878,20 @@ macro_rules! test_file_glue {
             }
             fn vfs() -> &'static $crate::fs::subr::VfsTables<$proc> {
                 VFS_TABLES.with(|t| *t)
+            }
+            fn net() -> &'static $crate::net::domain::NetTables<$proc> {
+                static NET_TABLES: $crate::net::domain::NetTables<$proc> =
+                    $crate::net::domain::NetTables::new();
+                &NET_TABLES
+            }
+            fn socket_of(d: &Self::Data) -> Option<&$crate::net::socket::SocketRef<$proc>> {
+                d.socket.as_ref()
+            }
+            fn uiomove_out(
+                buf: &[u8],
+                uio: &mut $crate::uio::Uio<'_, $proc>,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::test_uiomove_out(buf, uio)
             }
             fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
         }

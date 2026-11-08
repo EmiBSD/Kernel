@@ -211,6 +211,10 @@ pub fn file_tables() -> &'static FileTables<BsdFileGlue> {
     }
 }
 
+/// The network's tables of `bsd`'s processes (`FileGlue::net`).
+static NET_TABLES: kernel::net::domain::NetTables<crate::kern::proc_glue::BsdProcGlue> =
+    kernel::net::domain::NetTables::new();
+
 impl FileGlue for BsdFileGlue {
     type Proc = crate::kern::proc_glue::BsdProcGlue;
     type Ops = Fileops;
@@ -334,6 +338,17 @@ impl FileGlue for BsdFileGlue {
 
     fn vfs() -> &'static kernel::fs::subr::VfsTables<crate::kern::proc_glue::BsdProcGlue> {
         &VFS_TABLES
+    }
+    /// The network's tables (`kernel::net`): the socket layer's pools and domains.
+    fn net() -> &'static kernel::net::domain::NetTables<crate::kern::proc_glue::BsdProcGlue> {
+        &NET_TABLES
+    }
+    /// A socket file's kernel socket: none yet (`bsd`'s socket files hold its own sockets
+    /// until the socket layer's switch).
+    fn socket_of(
+        _d: &Self::Data,
+    ) -> Option<&kernel::net::socket::SocketRef<crate::kern::proc_glue::BsdProcGlue>> {
+        None
     }
     fn vnode_recycle(vp: &'static Vnode) {
         vp.g.v_socket.set(None);

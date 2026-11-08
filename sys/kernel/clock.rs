@@ -328,6 +328,34 @@ impl Timeval {
     pub const fn is_valid(&self) -> bool {
         self.tv_usec >= 0 && self.tv_usec < 1_000_000
     }
+
+    /// `TIMEVAL_TO_NSEC(tv)`: saturates at `UINT64_MAX`.
+    pub const fn to_nsec(&self) -> u64 {
+        if self.tv_sec as u64 > u64::MAX / 1_000_000_000 {
+            return u64::MAX;
+        }
+        let nsecs = (self.tv_sec as u64).wrapping_mul(1_000_000_000);
+        if (self.tv_usec as u64).wrapping_mul(1000) > u64::MAX - nsecs {
+            return u64::MAX;
+        }
+        nsecs + (self.tv_usec as u64).wrapping_mul(1000)
+    }
+
+    /// `NSEC_TO_TIMEVAL(ns, tv)`.
+    pub const fn from_nsec(ns: u64) -> Self {
+        Self {
+            tv_sec: (ns / 1_000_000_000) as i64,
+            tv_usec: ((ns % 1_000_000_000) / 1000) as i64,
+        }
+    }
+}
+
+/// `SEC_TO_NSEC(seconds)`: saturates at `UINT64_MAX`.
+pub const fn sec_to_nsec(seconds: u64) -> u64 {
+    if seconds > u64::MAX / 1_000_000_000 {
+        return u64::MAX;
+    }
+    seconds * 1_000_000_000
 }
 
 hal::abi_pod!(Timeval {

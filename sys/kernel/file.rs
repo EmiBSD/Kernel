@@ -670,6 +670,19 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// moves `buf` (at most `uio_resid` bytes of it) in the uio's direction, a special file's
     /// block-device read or write through the buffer cache.
     fn uiomove(buf: &mut [u8], uio: &mut Uio<'_, Self::Proc>) -> Result<(), Errno>;
+    /// `uiomove(buf, len, uio)` of a read out of bytes no one writes meanwhile (a socket's
+    /// receive buffer, whose clusters may be shared, so no `&mut` to them exists): a user
+    /// uio through `hal`'s checked `copyout` (`kernel::uio::uiomove_user_out`), a kernel one
+    /// (`UIO_SYSSPACE`, nfs's) through `bsd`'s copy until N7, which overrides this.
+    fn uiomove_out(buf: &[u8], uio: &mut Uio<'_, Self::Proc>) -> Result<(), Errno> {
+        crate::uio::uiomove_user_out(buf, uio)
+    }
+    /// The network's tables of this glue's processes: the domains, the socket pools, the
+    /// protocol timeouts (one `static` of `bsd`'s; D-N6.2-7).
+    fn net() -> &'static crate::net::domain::NetTables<Self::Proc>;
+    /// The socket a `DTYPE_SOCKET` file's object holds (`fp->f_data`); `None` for another
+    /// object.
+    fn socket_of(d: &Self::Data) -> Option<&crate::net::socket::SocketRef<Self::Proc>>;
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
