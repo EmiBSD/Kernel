@@ -367,11 +367,15 @@ paid_by = "N7"
 # vrele and uvm_wxcheck's MNT_WXALLOWED read the member, D-N5.2-9). N5.4: the system calls'
 # hooks joined it (kernel::fs::syscalls): pledge_chown, unveil_add, unveil_removevnode and
 # unveil_set_done (kern_pledge and kern_unveil, N8, required as the other pledge hooks).
-# N6.0: smr_idle left it (hal::smr::idle, called by the scheduler itself).
+# N6.0: smr_idle left it (hal::smr::idle, called by the scheduler itself). N6.2a: the UNIX
+# domain's descriptor passing joined it (kernel::net::unix): pledge_recvfd and pledge_sendfd
+# (kern_pledge, N8). N6.2b: the socket system calls' hooks joined it (kernel::net::syscalls):
+# pledge_socket, pledge_sendit and pledge_sockopt (kern_pledge, N8, at the C's points; a glue
+# without them panics, as pledge_namei's).
 # kernel::proc::ProcGlue
 [[bridge]]
 trait = "ProcGlue"
-for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs"]
+for = ["sys/kernel/proc.rs", "sys/kernel/event.rs", "sys/kernel/sched.rs", "sys/kernel/sig.rs", "sys/kernel/fork.rs", "sys/kernel/exit.rs", "sys/kernel/acct.rs", "sys/kernel/prot.rs", "sys/kernel/resource.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/syscalls.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
 paid_by = "N8"
 
 # bsd: pf(4)'s mbuf legs (net/pf.c's pf_mbuf_link_state_key, pf_mbuf_link_inpcb,

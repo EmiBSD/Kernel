@@ -1449,6 +1449,12 @@ pub fn mbcpuinit() {
     MCL64K.cache_init();
 }
 
+/// `atomic_load_long(&nmbclust)`: the cluster limit (`kern.maxclusters`), 0 before
+/// `mbinit` gave its variable.
+pub fn nmbclust() -> i64 {
+    NMBCLUST.get().map_or(0, |v| v.load(Ordering::Relaxed))
+}
+
 /// `nmbclust_update`: sets the cluster limit and the memory limit derived from it.
 pub fn nmbclust_update(newval: i64) -> Result<(), Errno> {
     if newval <= 0 || newval > i64::MAX / MCLBYTES as i64 {

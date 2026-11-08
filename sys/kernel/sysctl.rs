@@ -155,6 +155,7 @@ use hal::once::OnceStatic;
 use hal::rwlock::{RW_INTR, RawRwlock, Rwlocked, WriteWitness};
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
+use hal::sys::limits::SHRT_MAX;
 use hal::sys::mman::{PROT_READ, PROT_WRITE};
 use hal::sys::pledge::PLEDGE_UNVEIL;
 use hal::sys::sysctl::{
@@ -672,7 +673,7 @@ static BYTE_ORDER: AtomicI32 = AtomicI32::new(BYTE_ORDER_C);
 /// variable is the kernel's. The others (`maxvnodes`, `maxproc`, `maxfiles`, `nfiles`,
 /// `ttycount`, ...) are their subsystems' table ([`register_kern_vars`]), searched after this
 /// one: the C's one array in two pieces, the same lookup.
-static KERN_VARS: [SysctlBoundedArgs; 14] = [
+static KERN_VARS: [SysctlBoundedArgs; 16] = [
     SysctlBoundedArgs::readonly(KERN_ARGMAX, &ARG_MAX_VAR),
     SysctlBoundedArgs::readonly(KERN_POSIX1, &POSIX_VERSION),
     SysctlBoundedArgs::readonly(KERN_NGROUPS, &NGROUPS_MAX_VAR),
@@ -689,6 +690,19 @@ static KERN_VARS: [SysctlBoundedArgs; 14] = [
     SysctlBoundedArgs::new(KERN_WXABORT, &crate::vm::mmap::UVM_WXABORT, 0, 1),
     SysctlBoundedArgs::readonly(KERN_NETLIVELOCKS, &INT_ZERO),
     // KERN_GLOBAL_PTRACE: PTRACE is not configured.
+    // `somaxconn` and `sominconn`: the socket layer's (`kernel::net::socket`, N6.2b).
+    SysctlBoundedArgs::new(
+        KERN_SOMAXCONN,
+        &crate::net::socket::SOMAXCONN_VAR,
+        0,
+        SHRT_MAX as i32,
+    ),
+    SysctlBoundedArgs::new(
+        KERN_SOMINCONN,
+        &crate::net::socket::SOMINCONN_VAR,
+        0,
+        SHRT_MAX as i32,
+    ),
 ];
 
 /// `hw_vars[]`, the kernel's entries; `ncpu`, `ncpufound` and `diskcount` are `bsd`'s table
@@ -1076,7 +1090,7 @@ fn top_sysctl<G: ProcGlue>(
 
 /// The `kern` leaves `kern_sysctl` serves without the vslock whose subsystem registers them
 /// (the C's first `switch`; the kernel's own are matched by [`kern_sysctl`] itself).
-const KERN_LEAVES_UNLOCKED: [i32; 11] = [
+const KERN_LEAVES_UNLOCKED: [i32; 9] = [
     KERN_OSTYPE,
     KERN_OSRELEASE,
     KERN_OSVERSION,
@@ -1084,8 +1098,6 @@ const KERN_LEAVES_UNLOCKED: [i32; 11] = [
     KERN_CLOCKRATE,
     KERN_NUMVNODES,
     KERN_BOOTTIME,
-    KERN_MAXCLUSTERS,
-    KERN_MBSTAT,
     KERN_CPTIME,
     KERN_POOL_DEBUG,
 ];
@@ -1263,6 +1275,8 @@ fn kern_leaf_unlocked<G: ProcGlue>(
         KERN_HOSTID => int(req, &HOSTID),
         KERN_ALLOWKMEM => securelevel_int(req, &ALLOWKMEM),
         KERN_TIMEOUT_STATS => timeout_stats(req),
+        KERN_MAXCLUSTERS => maxclusters(req),
+        KERN_MBSTAT => mbstat(req),
         KERN_TTYCOUNT => {
             // `kern_vars[]`'s read-only `tty_count`, the kernel's terminals' count
             // (`kernel::tty`, N4.7b): the entry served over a copy of it.
@@ -1283,6 +1297,29 @@ fn timeout_stats(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
         *b = v.to_ne_bytes();
     }
     rdstruct(req, status.as_flattened())
+}
+
+/// `kern.maxclusters`: `nmbclust`, the mbuf clusters' limit; a change is `nmbclust_update`'s,
+/// under `sysctl_lock` (`kernel::net::mbuf`, N6.2b).
+fn maxclusters(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let oldval = crate::net::mbuf::nmbclust() as i32;
+    let newval = AtomicI32::new(oldval);
+    let error = int(req, &newval);
+    let newval = newval.into_inner();
+
+    if error.is_ok() && oldval != newval {
+        let _w = SYSCTL_LOCK.write();
+        return crate::net::mbuf::nmbclust_update(i64::from(newval));
+    }
+
+    error
+}
+
+/// `kern.mbstat`: `struct mbstat`, the mbuf counters summed over the CPUs
+/// (`counters_read(mbstat)`, `kernel::net::mbuf`, N6.2b).
+fn mbstat(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+    let mbs = crate::net::mbuf::mbstat_read();
+    rdstruct(req, bytes_of(core::slice::from_ref(&mbs)))
 }
 
 /// `kern_sysctl_locked`: the `kern` leaves served under `sysctl_lock`.
@@ -3355,6 +3392,39 @@ mod tests {
         );
         let back = len.map(|_| UserPtr::<usize>::new(lenp).copyin().unwrap());
         (r, back)
+    }
+
+    #[test]
+    fn the_socket_and_mbuf_leaves_are_the_kernels() {
+        // The page system's guard, as the registry's test: its range of the user memory.
+        let _mem = testutil::pages_reset();
+        registered();
+        let (_pr, p) = caller(4802, 0);
+        let at = testutil::USER_BASE + 0x5800;
+        let old = at + 0x100;
+
+        // kern.somaxconn and kern.sominconn: the socket layer's variables, kern_vars[]'s
+        // entries served without the vslock.
+        for (id, var) in [
+            (KERN_SOMAXCONN, &crate::net::socket::SOMAXCONN_VAR),
+            (KERN_SOMINCONN, &crate::net::socket::SOMINCONN_VAR),
+        ] {
+            let (r, len) = sysctl(&p, at, &[CTL_KERN, id], old, Some(4), 0, 0);
+            assert_eq!((r, len), (Ok(()), Some(4)), "kern {id}");
+            assert_eq!(get_int(old), var.load(Ordering::Relaxed), "kern {id}");
+        }
+        // kern.mbstat: struct mbstat; kern.maxclusters: nmbclust, both the mbuf's.
+        assert_eq!(
+            sysctl(&p, at, &[CTL_KERN, KERN_MBSTAT], 0, Some(0), 0, 0),
+            (Ok(()), Some(size_of::<hal::sys::mbuf::Mbstat>()))
+        );
+        let (r, len) = sysctl(&p, at, &[CTL_KERN, KERN_MAXCLUSTERS], old, Some(4), 0, 0);
+        assert_eq!((r, len), (Ok(()), Some(4)));
+        assert_eq!(get_int(old), crate::net::mbuf::nmbclust() as i32);
+        // No subsystem registers them any more.
+        static NODE: RdString = RdString(b"x");
+        assert!(register_kern(KERN_MBSTAT, &NODE).is_err());
+        assert!(register_kern(KERN_MAXCLUSTERS, &NODE).is_err());
     }
 
     #[test]

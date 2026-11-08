@@ -28,8 +28,9 @@
 //! the event system calls' seven (`EventEntries`, N4.4), `sendsyslog(2)` (N4.7a),
 //! futex(2) (`FutexEntry`, N4.6c), the process system calls' forty-six (`ProcEntries`,
 //! N4.6a), sysctl(2) (`SysctlEntry`, N4.6b), the time system calls with reboot(2)
-//! (`TimeEntries`, N4.8), sigreturn(2) (`SigreturnEntry`, N4.8b) and the VFS system calls'
-//! sixty-five (`VfsEntries`, N5.4), which run the system
+//! (`TimeEntries`, N4.8), sigreturn(2) (`SigreturnEntry`, N4.8b), the VFS system calls'
+//! sixty-five (`VfsEntries`, N5.4) and the socket system calls' nineteen (`SocketEntries`,
+//! N6.2b: `kernel::net::syscalls`, `sys/kern/socket_glue.rs`), which run the system
 //! call prologue still in `bsd` (pledge, the pinned syscalls) before `kernel::pipe`,
 //! `kernel::vm`, `kernel::descrip`, `kernel::event`, `kernel::select`, `kernel::log`,
 //! `kernel::futex`, the process modules, `kernel::sysctl`, `kernel::time`,
@@ -41,8 +42,8 @@
 //! table alone.
 
 pub use hal::api::{
-    EventEntries, FdEntries, FutexEntry, KernelApi, ProcEntries, SigreturnEntry, SyscallHandler,
-    SysctlEntry, TimeEntries, VfsEntries, VmEntries,
+    EventEntries, FdEntries, FutexEntry, KernelApi, ProcEntries, SigreturnEntry, SocketEntries,
+    SyscallHandler, SysctlEntry, TimeEntries, VfsEntries, VmEntries,
 };
 use hal::once::OnceStatic;
 pub use hal::syscall::{HandlerInfo, Register, Rval, SysArgs, SysResult};
@@ -74,6 +75,7 @@ pub const fn table(
     time: TimeEntries,
     sigreturn: SigreturnEntry,
     vfs: VfsEntries,
+    socket: SocketEntries,
 ) -> KernelApi {
     KernelApi::new(
         register_syscall_handler,
@@ -89,6 +91,7 @@ pub const fn table(
         time,
         sigreturn,
         vfs,
+        socket,
     )
 }
 
@@ -747,8 +750,148 @@ mod tests {
         unlinkat: vfs31,
     };
 
+    // The socket entries of the test table: the number in rval[0], the arguments as
+    // decimal digits in the error.
+    fn so0(nr: Register, a0: i32, a1: usize, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so1(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so2(nr: Register, a0: i32, a1: usize, a2: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so3(nr: Register, a0: i32, a1: usize, a2: usize, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so4(nr: Register, a0: i32, a1: i32, a2: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so5(nr: Register, a0: i32, a1: usize, a2: u32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64]))
+    }
+    fn so6(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so7(nr: Register, a0: i32, a1: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64]))
+    }
+    fn so8(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: u32,
+        a3: i32,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    fn so9(nr: Register, a0: i32, a1: usize, a2: u32, a3: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so10(
+        nr: Register,
+        a0: i32,
+        a1: i32,
+        a2: i32,
+        a3: usize,
+        a4: usize,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64,
+        ]))
+    }
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the entry's shape: the number, six arguments, the return registers"
+    )]
+    fn so11(
+        nr: Register,
+        a0: i32,
+        a1: usize,
+        a2: usize,
+        a3: i32,
+        a4: usize,
+        a5: u32,
+        rval: &mut Rval,
+    ) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[
+            a0 as i64, a1 as i64, a2 as i64, a3 as i64, a4 as i64, a5 as i64,
+        ]))
+    }
+    fn so12(nr: Register, a0: i32, a1: i32, a2: i32, a3: usize, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64, a1 as i64, a2 as i64, a3 as i64]))
+    }
+    fn so13(nr: Register, a0: i32, rval: &mut Rval) -> SysResult {
+        rval[0] = nr;
+        Err(vfs_digits(&[a0 as i64]))
+    }
+    const SOCKET: SocketEntries = SocketEntries {
+        recvmsg: so0,
+        sendmsg: so0,
+        recvfrom: so1,
+        accept: so2,
+        getpeername: so2,
+        getsockname: so2,
+        accept4: so3,
+        socket: so4,
+        connect: so5,
+        bind: so5,
+        setsockopt: so6,
+        listen: so7,
+        recvmmsg: so8,
+        sendmmsg: so9,
+        getsockopt: so10,
+        sendto: so11,
+        shutdown: so7,
+        socketpair: so12,
+        ypconnect: so13,
+    };
+
     static API: KernelApi = table(
-        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS,
+        legacy, pipe2, VM, FD, EVENT, sendsyslog, futex, PROC, sysctl, TIME, sigreturn, VFS, SOCKET,
     );
 
     #[test]
@@ -783,6 +926,44 @@ mod tests {
         assert_eq!((API.sigreturn)(103, 0, &mut rval), Err(103));
         assert_eq!((API.vfs.open)(5, 1, 2, 3, &mut rval), Err(123));
         assert_eq!((API.vfs.unlinkat)(325, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.recvmsg)(27, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.sendmsg)(28, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(
+            (API.socket.recvfrom)(29, 1, 2, 3, 4, 5, 6, &mut rval),
+            Err(123456)
+        );
+        assert_eq!((API.socket.accept)(30, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.getpeername)(31, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.getsockname)(32, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.accept4)(93, 1, 2, 3, 4, &mut rval), Err(1234));
+        assert_eq!((API.socket.socket)(97, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.connect)(98, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!((API.socket.bind)(104, 1, 2, 3, &mut rval), Err(123));
+        assert_eq!(
+            (API.socket.setsockopt)(105, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!((API.socket.listen)(106, 1, 2, &mut rval), Err(12));
+        assert_eq!(
+            (API.socket.recvmmsg)(116, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!((API.socket.sendmmsg)(117, 1, 2, 3, 4, &mut rval), Err(1234));
+        assert_eq!(
+            (API.socket.getsockopt)(118, 1, 2, 3, 4, 5, &mut rval),
+            Err(12345)
+        );
+        assert_eq!(
+            (API.socket.sendto)(133, 1, 2, 3, 4, 5, 6, &mut rval),
+            Err(123456)
+        );
+        assert_eq!((API.socket.shutdown)(134, 1, 2, &mut rval), Err(12));
+        assert_eq!(
+            (API.socket.socketpair)(135, 1, 2, 3, 4, &mut rval),
+            Err(1234)
+        );
+        assert_eq!((API.socket.ypconnect)(150, 1, &mut rval), Err(1));
+        assert_eq!(rval[0], 150);
     }
 }
 /* </TESTS> */

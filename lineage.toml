@@ -14643,6 +14643,19 @@ lz = "sys/kern/sys_socket.rs::soo_ifioctl"
 native = ["sys/kern/sys_socket.rs::BsdIfLegacy::ifioctl"]
 kind = "moved"
 [[module]]
+rust = "sys/kernel/net/syscalls.rs"
+crate = "kernel"
+lz = ["sys/kern/uipc_syscalls.rs"]
+status = "redesigned"
+notes = "N6.2b: the nineteen socket system calls of uipc_syscalls.c (socket, bind, listen, accept/accept4 through doaccept over soaccept_take, connect, socketpair, sendto/sendmsg/sendmmsg through sendit, recvfrom/recvmsg/recvmmsg through recvit, shutdown, setsockopt, getsockopt, getsockname/getpeername, ypconnect) over kernel::net::socket and kernel::descrip, typed arguments (UserPtr) and returned values; struct msghdr and mmsghdr copied whole as hal::sys::socket's images (the holes kept, as the C's copyout of what it copied in); the iovecs in a kernel::uio::IovBuf grown across the mmsg calls' messages (IovBuf::copyin), the lengths summed by uio::iovec_resid after the descriptor and pledge, as the C; sockargs/ypsockargs over one body (mbuf_args), the mbufs owned (MbufBox); getsock shared with kernel::log (LIOCSFD); dns_portcheck's test split out (dns_port53); ypconnect's INP_LOWPORT as the protocol's own IP_PORTRANGE_LOW (no reference to bsd's inpcb), its binding file's name a namei_pool buffer; the pledge checks through ProcGlue::pledge_socket, pledge_sendit, pledge_sockopt at the C's points"
+
+[[module.fn]]
+lz = "sys/kern/uipc_syscalls.rs::panic_accept"
+native = []
+kind = "dropped"
+reason = "doaccept's panic(\"accept\") when soqremque finds the connection gone: the queue is under its own mutex since N6.2a (D-N6.2-1), so kernel::net::socket::soaccept_take looks again for a connection another accepter or a close took meanwhile"
+
+[[module]]
 rust = "sys/kernel/net/mbuf.rs"
 crate = "kernel"
 lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]

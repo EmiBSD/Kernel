@@ -144,6 +144,7 @@ std::thread_local! {
     static PLEDGE_REFUSE: Cell<Option<(i32, Errno, u64)>> = const { Cell::new(None) };
     /// The error the test glues' `pledge_recvfd` and `pledge_sendfd` answer.
     static PLEDGE_FD: Cell<Option<Errno>> = const { Cell::new(None) };
+    static PLEDGE_NET: Cell<Option<Errno>> = const { Cell::new(None) };
     static PLEDGE_PROTEXEC_DENIED: Cell<bool> = const { Cell::new(false) };
 
     static KM_MAP_CALLS: Cell<u32> = const { Cell::new(0) };
@@ -1565,6 +1566,23 @@ pub fn set_pledge_fd(error: Option<Errno>) {
     PLEDGE_FD.with(|c| c.set(error));
 }
 
+/// What this thread's test glues' socket pledge checks (`pledge_socket`, `pledge_sendit`,
+/// `pledge_sockopt`) answer: the call, with its arguments, pushed on the file log
+/// ([`file_log`]), then the error [`set_pledge_net`] set (`None`: allowed).
+pub fn pledge_net_answer(call: String) -> Result<(), Errno> {
+    file_log_push(call);
+    match PLEDGE_NET.with(Cell::get) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Makes this thread's test glues refuse every socket pledge check with `error` (`None`:
+/// refuse nothing).
+pub fn set_pledge_net(error: Option<Errno>) {
+    PLEDGE_NET.with(|c| c.set(error));
+}
+
 /// What this thread's test glues' `pledge_protexec` answers: `EPERM` for a `PROT_EXEC`
 /// request once [`set_pledge_protexec`] made the thread pledged without `prot_exec` (and past
 /// its first `kbind(2)`), `Ok` otherwise.
@@ -2050,6 +2068,34 @@ macro_rules! test_proc_glue {
                 _fp: &$crate::file::File<Self::FileGlue>,
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::pledge_fd_answer()
+            }
+            fn pledge_socket(
+                _p: &$crate::proc::Thread<Self>,
+                domain: i32,
+                state: u32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_net_answer(std::format!(
+                    "pledge_socket {domain} {state:#x}"
+                ))
+            }
+            fn pledge_sendit(
+                _p: &$crate::proc::Thread<Self>,
+                to: usize,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_net_answer(std::format!("pledge_sendit {to:#x}"))
+            }
+            fn pledge_sockopt(
+                _p: &$crate::proc::Thread<Self>,
+                set: bool,
+                pr: &'static dyn $crate::net::proto::Protocol<Self>,
+                level: i32,
+                optname: i32,
+            ) -> Result<(), hal::sys::errno::Errno> {
+                $crate::testutil::pledge_net_answer(std::format!(
+                    "pledge_sockopt {set} {} {} {level} {optname}",
+                    pr.domain().family(),
+                    pr.protocol()
+                ))
             }
             fn pledge_protexec(
                 _p: &$crate::proc::Thread<Self>,

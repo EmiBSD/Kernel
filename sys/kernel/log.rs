@@ -206,7 +206,7 @@ use crate::event::{
     EVFILT_READ, FILTEROP_ISFD, FILTEROP_MPSAFE, Filter, Filterops, Kevent, Klist, Knote,
     knote_modify, knote_process,
 };
-use crate::file::{DTYPE_SOCKET, FileOps, FileRef, FileSlot};
+use crate::file::{FileOps, FileRef, FileSlot};
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::sched::PZERO;
 use crate::sigio::{SigioRef, TIOCGPGRP, TIOCSPGRP, pgsigio, sigio_free, sigio_getown, sigio_init};
@@ -1073,7 +1073,7 @@ pub fn logioctl<G: ProcGlue>(com: u64, data: &mut [u8], p: &Thread<G>) -> Result
         FIOGETOWN | TIOCGPGRP => int_ret(data, sigio_getown(&log.sigio, com)),
         LIOCSFD => {
             suser(p)?;
-            let newfp = getsock(p, int_arg(data)?)?;
+            let newfp = crate::net::syscalls::getsock(p, int_arg(data)?)?;
             let fp = log.syslogf.write().set(Some(newfp));
             if let Some(fp) = fp {
                 let _ = fp.frele(Some(p));
@@ -1082,19 +1082,6 @@ pub fn logioctl<G: ProcGlue>(com: u64, data: &mut [u8], p: &Thread<G>) -> Result
         }
         _ => Err(Errno::ENOTTY),
     }
-}
-
-/// `getsock(p, fdes, &fp)` (`uipc_syscalls.c`): the socket open at `fdes`, a reference of
-/// the caller's; `EBADF` for no file, `ENOTSOCK` for a file of another type.
-fn getsock<G: ProcGlue>(p: &Thread<G>, fdes: i32) -> Result<FileRef<G::FileGlue>, Errno> {
-    let Some(fp) = crate::descrip::fd_getfile(p.fd(), fdes) else {
-        return Err(Errno::EBADF);
-    };
-    if fp.f_type() != DTYPE_SOCKET {
-        let _ = fp.frele(Some(p));
-        return Err(Errno::ENOTSOCK);
-    }
-    Ok(fp)
 }
 
 /// `logstash_full`.
@@ -1398,6 +1385,7 @@ mod tests {
     use crate::descrip::{falloc, fdinsert, fdplock};
     use crate::event::tests::{Kf, Kg, T, new_kqueue, setup};
     use crate::event::{EVFILT_WRITE, test_knote, test_knote_drop};
+    use crate::file::DTYPE_SOCKET;
     use crate::file::{File, FileOps};
     use crate::testutil::{self, TestFileData, USER_BASE};
     use crate::tty::{TtyDevsw, register_ttydevsw};
