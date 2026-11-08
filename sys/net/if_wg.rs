@@ -4859,8 +4859,51 @@ mod tests {
         let r = unsafe { wg_ioctl(ifp, SIOCSIFFLAGS, ptr::from_mut(&mut ifr).cast()) };
         assert_eq!(r, Ok(()));
         assert_ne!(ifp.if_flags.get() & IFF_RUNNING, 0);
+        // Down closes the sockets after wg_down's taskq_barrier on the handshake queue,
+        // whose two workers bsd's host tests never make (no deferred kthread creation runs
+        // here): two host threads serve it by hand for the barrier, as the workers would.
+        ifp.if_flags.set(ifp.if_flags.get() & !IFF_UP);
+        let r = handshake_workers_by_hand(|| {
+            // SAFETY: as above.
+            unsafe { wg_ioctl(ifp, SIOCSIFFLAGS, ptr::from_mut(&mut ifr).cast()) }
+        });
+        assert_eq!(r, Ok(()));
+        assert_eq!(ifp.if_flags.get() & IFF_RUNNING, 0);
+        assert!(sc.sc_so4.get().is_none());
         net_unlock();
         teardown();
+    }
+
+    /// `f` run while two host threads serve the handshake queue as its two workers would
+    /// (`taskq_next_work` and the call, by hand), until `f` returns: a `taskq_barrier` on
+    /// the queue that `f` makes completes (each thread runs one of its barrier tasks and
+    /// waits in it until the barrier is done, as a worker does).
+    fn handshake_workers_by_hand<R>(f: impl FnOnce() -> R) -> R {
+        use std::sync::atomic::AtomicBool;
+        let tq = wg_handshake_taskq();
+        kernel::task::run_by_hand(tq);
+        let done = AtomicBool::new(false);
+        std::thread::scope(|sc| {
+            for _ in 0..2 {
+                sc.spawn(|| {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                    while !done.load(Ordering::Acquire) {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the barrier never came"
+                        );
+                        if kernel::task::worklist_is_empty(tq) {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        } else {
+                            kernel::task::run_next_by_hand(tq);
+                        }
+                    }
+                });
+            }
+            let r = f();
+            done.store(true, Ordering::Release);
+            r
+        })
     }
 
     /// A packet header mbuf holding `bytes`.
