@@ -6291,7 +6291,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_dl.rs"
 lz = ["sys/net/if_dl.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/net_if.rs"]
 
 [[module]]
 rust = "sys/net/if_enc.rs"
@@ -6332,7 +6333,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_types.rs"
 lz = ["sys/net/if_types.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/net_if.rs"]
 
 [[module]]
 rust = "sys/net/if_var.rs"
@@ -7437,7 +7439,7 @@ rust = "sys/hal/sys/sockio.rs"
 crate = "hal"
 lz = ["sys/sys/sockio.rs"]
 status = "redesigned"
-notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; the interface commands are sized by net/if.h's structures and stay in bsd's sys/sys/sockio.rs until N6.3a"
+notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; N6.3a: the interface group ('i') followed, sized by hal::sys::net_if's images; bsd's sys/sys/sockio.rs re-exports it"
 
 [[module]]
 rust = "sys/hal/sys/un.rs"
@@ -7445,6 +7447,20 @@ crate = "hal"
 lz = ["sys/sys/un.rs"]
 status = "redesigned"
 notes = "N6.2a: un.h moved into hal with the UNIX domain's redesign; struct sockaddr_un AbiPod through hal::abi_pod!"
+
+[[module]]
+rust = "sys/hal/sys/net_if.rs"
+crate = "hal"
+lz = ["sys/net/if_.rs", "sys/net/if_types.rs", "sys/net/if_dl.rs"]
+status = "redesigned"
+notes = "N6.3a: net/if.h's constants and request images (AbiPod, the unions as byte arrays, the pointers as u64 words), if_types.h's IFT_* and if_dl.h's sockaddr_dl moved into hal for kernel::net and bsd; bsd's if_types.rs and if_dl.rs re-export them, bsd's if_.rs keeps LZ's structures for its ifioctl until N6.3a2"
+
+[[module]]
+rust = "sys/hal/sys/net_if_media.rs"
+crate = "hal"
+lz = ["sys/net/if_media.rs"]
+status = "redesigned"
+notes = "N6.3a: net/if_media.h's IFM_* words, the media word macros and IFM_BAUDRATE_DESCRIPTIONS moved into hal; struct ifmedia and if_media.c stay in bsd's sys/net/if_media.rs until N6.3a2"
 
 [[module]]
 rust = "sys/hal/sys/mbuf.rs"
@@ -7664,7 +7680,8 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/
 [[module]]
 rust = "sys/sys/sockio.rs"
 lz = ["sys/sys/sockio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/sockio.rs"]
 notes = "M7b: the 106 socket and interface ioctls whose argument structures are ported (ifreq, ifconf, ifaliasreq, ifmediareq, if_sffpage, if_laddrreq, if_clonereq, ifgroupreq, ifkalivereq, if_afreq, if_parent, int); SIOCBRDG* wait for net/if_bridge.h, SIOCGETVIFCNT/SIOCGETSGCNT for netinet/ip_mroute.h"
 
 [[module]]

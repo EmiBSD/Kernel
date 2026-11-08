@@ -47,6 +47,10 @@ pub mod mbuf;
 pub mod mman;
 #[forbid(unsafe_code)]
 pub mod mount;
+#[forbid(unsafe_code)]
+pub mod net_if;
+#[forbid(unsafe_code)]
+pub mod net_if_media;
 /// `<sys/param.h>`'s page size for the headers moved here (`ioccom.h`'s `IOCPARM_MAX`): the
 /// machine's (`<machine/param.h>`), so `crate::sys::param::PAGE_SIZE` names the same constant in
 /// both crates.
