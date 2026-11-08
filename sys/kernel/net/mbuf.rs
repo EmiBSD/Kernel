@@ -3193,7 +3193,7 @@ pub(crate) mod tests {
     const BYTES: usize = 64 << 20;
 
     /// The tests' `nmbclust`.
-    static TEST_NMBCLUST: AtomicI64 = AtomicI64::new(NMBCLUSTERS_TEST);
+    pub(crate) static TEST_NMBCLUST: AtomicI64 = AtomicI64::new(NMBCLUSTERS_TEST);
 
     /// The host's limit, amd64's `NMBCLUSTERS`.
     const NMBCLUSTERS_TEST: i64 = 256 * 1024;

@@ -21,6 +21,7 @@
 //! the routing and the protocols as they move from `bsd`.
 
 pub mod domain;
+pub mod file;
 pub mod mbuf;
 pub mod mbuf2;
 pub mod pf_hooks;

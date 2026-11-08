@@ -683,6 +683,12 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     /// The socket a `DTYPE_SOCKET` file's object holds (`fp->f_data`); `None` for another
     /// object.
     fn socket_of(d: &Self::Data) -> Option<&crate::net::socket::SocketRef<Self::Proc>>;
+    /// `socketops` and the object of a new socket file (`socket(2)`'s, `accept(2)`'s,
+    /// `socketpair(2)`'s `f_ops` and `f_data`): the object holds `so`, the file's socket,
+    /// whose last reference goes with the file's (after `soo_close`'s `soclose`).
+    fn socket_file(
+        so: crate::net::socket::SocketRef<Self::Proc>,
+    ) -> (&'static Self::Ops, Self::Data);
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
     /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).

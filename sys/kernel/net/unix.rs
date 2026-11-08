@@ -2686,7 +2686,7 @@ const _: () = {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! The UNIX domain over the test file system's glue (`TestGlue`: `namei` on its tree, a
     //! test thread with a descriptor table): stream, datagram and sequenced packet pairs, the
     //! accept queue through `bind`/`listen`/`connect`, `SCM_RIGHTS` with its checks and
@@ -2694,7 +2694,6 @@ mod tests {
     //! cycle, `unp_nam2sun`'s vectors, `net.unix`, the pool and the `struct fdpass` size.
 
     use core::ffi::c_void;
-    use core::sync::atomic::AtomicI64;
     use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
@@ -2704,25 +2703,21 @@ mod tests {
 
     use super::*;
     use crate::descrip::{falloc, fd_getfile, fdinsert, sys_close};
-    use crate::file::FileOps;
     use crate::fs::testfs::{TestFiles, TestGlue, test_thread_cached};
     use crate::net::domain::{domaininit, soinit};
     use crate::net::mbuf::{MT_SONAME, MT_SOOPTS, m_get, mbinit, nmbclust_update};
     use crate::net::socket::{
-        soaccept, soaccept_wait, sobind, soclose, soconnect, soconnect2, socreate, sogetopt,
-        solisten, solock_shared, soreceive, sosend, soshutdown,
+        soaccept, soaccept_wait, sobind, soconnect, soconnect2, socreate, sogetopt, solisten,
+        solock_shared, soreceive, sosend, soshutdown,
     };
     use crate::testutil::{self, TestFileData, USER_BASE, user_bytes};
     use crate::uio::{Iovec, Uio, UioRw, UioSeg};
 
-    type G = TestGlue;
-    type So = SocketRef<G>;
+    pub(crate) type G = TestGlue;
+    pub(crate) type So = SocketRef<G>;
 
     /// The tests' domains: the UNIX domain alone.
     static DOMS: [&dyn Domain<G>; 1] = [&Unix::<G>::NEW];
-
-    /// The tests' `nmbclust`.
-    static NMBCLUST: AtomicI64 = AtomicI64::new(256 * 1024);
 
     /// Where the tests' sends copy from and receives copy to, in the user-copy double.
     const USEND: usize = USER_BASE + 0x2_0000;
@@ -2731,10 +2726,10 @@ mod tests {
 
     /// The test thread with its descriptor table and root, the mbufs, the socket pools and
     /// the UNIX domain.
-    fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
+    pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
         let (g, p) = test_thread_cached(64 << 20, 64);
         testutil::kernel_maps_install();
-        mbinit(&NMBCLUST);
+        mbinit(&crate::net::mbuf::tests::TEST_NMBCLUST);
         nmbclust_update(256 * 1024).expect("the limit");
         soinit::<G>();
         domaininit::<G>(&DOMS);
@@ -2745,7 +2740,7 @@ mod tests {
 
     /// Every UNIX socket gone, nothing in flight: the tests leave the glue's tables as they
     /// found them.
-    fn teardown() {
+    pub(crate) fn teardown() {
         let t = tables::<G>();
         let g = t.unp_gc_lock.write();
         assert!(t.unp_head.is_empty(&g));
@@ -2757,7 +2752,7 @@ mod tests {
     /// The collector run until the deferred files are closed and `want` rights are left in
     /// flight: by hand, or by `systqmp`'s worker where another test of the binary started it
     /// (the task `unp_discard` queues runs there then, at any time).
-    fn collect(want: i32) {
+    pub(crate) fn collect(want: i32) {
         let t = tables::<G>();
         for _ in 0..100_000 {
             unp_gc::<G>();
@@ -2772,66 +2767,24 @@ mod tests {
         std::panic!("unp_gc: {} rights in flight, {want} wanted", t.rights());
     }
 
-    /// The operations of the tests' socket files: the close is `soo_close`'s `soclose`.
-    struct SockOps;
+    /// The socket file's operations, for a stand-in file of another type.
+    static SOCKET_OPS: crate::net::file::SocketFileOps<G> = crate::net::file::SocketFileOps::NEW;
 
-    impl FileOps<TestFiles> for SockOps {
-        fn read(
-            &self,
-            _fp: &File<TestFiles>,
-            _uio: &mut Uio<'_, G>,
-            _fflags: i32,
-        ) -> Result<(), Errno> {
-            Err(Errno::ENODEV)
-        }
-        fn write(
-            &self,
-            _fp: &File<TestFiles>,
-            _uio: &mut Uio<'_, G>,
-            _fflags: i32,
-        ) -> Result<(), Errno> {
-            Err(Errno::ENODEV)
-        }
-        fn ioctl(
-            &self,
-            _fp: &File<TestFiles>,
-            _com: u64,
-            _data: &mut [u8],
-            _p: &Thread<G>,
-        ) -> Result<(), Errno> {
-            Err(Errno::ENOTTY)
-        }
-        fn kqfilter(
-            &self,
-            _fp: &File<TestFiles>,
-            _kn: &crate::event::Knote<G>,
-        ) -> Result<(), Errno> {
-            Err(Errno::EINVAL)
-        }
-        fn stat(&self, _fp: &File<TestFiles>, _st: &mut Stat, _p: &Thread<G>) -> Result<(), Errno> {
-            Ok(())
-        }
-        fn close(&self, fp: &File<TestFiles>, _p: Option<&Thread<G>>) -> Result<(), Errno> {
-            match fp.data().and_then(|d| d.socket.as_ref()) {
-                Some(so) => soclose(so, 0),
-                None => Ok(()),
-            }
-        }
-    }
-
-    static SOCK_OPS: SockOps = SockOps;
-
-    /// A file of type `ty` holding `so` (or nothing) at a new descriptor of `p`.
-    fn file(p: &Thread<G>, ty: i32, so: Option<So>) -> i32 {
+    /// A file at a new descriptor of `p`: a socket file of `so` (the glue's `socket_file`),
+    /// or, without one, a file of type `ty` holding nothing.
+    pub(crate) fn file(p: &Thread<G>, ty: i32, so: Option<So>) -> i32 {
         let mut g = crate::descrip::fdplock(p.fd());
         let (fp, fd) = falloc(p, &mut g).expect("falloc");
-        fp.install(
-            ty,
-            &SOCK_OPS,
-            TestFileData {
-                socket: so,
-                ..TestFileData::default()
-            },
+        match so {
+            Some(so) => {
+                let (ops, data) = TestFiles::socket_file(so);
+                fp.install(ty, ops, data);
+            }
+            None => fp.install(ty, &SOCKET_OPS, TestFileData::default()),
+        }
+        fp.f_flag.store(
+            (hal::sys::fcntl::FREAD | hal::sys::fcntl::FWRITE) as u32,
+            Ordering::Relaxed,
         );
         fdinsert(&mut g, fd, 0, &fp);
         drop(g);
@@ -2839,14 +2792,14 @@ mod tests {
     }
 
     /// A UNIX socket of `type_` and its descriptor.
-    fn sock(p: &Thread<G>, type_: i32) -> (So, i32) {
+    pub(crate) fn sock(p: &Thread<G>, type_: i32) -> (So, i32) {
         let so = socreate(p, i32::from(AF_UNIX), type_, 0).expect("socreate");
         let fd = file(p, DTYPE_SOCKET, Some(so.clone()));
         (so, fd)
     }
 
     /// `socketpair(2)`: two connected sockets and their descriptors.
-    fn pair(p: &Thread<G>, type_: i32) -> ((So, i32), (So, i32)) {
+    pub(crate) fn pair(p: &Thread<G>, type_: i32) -> ((So, i32), (So, i32)) {
         let a = sock(p, type_);
         let b = sock(p, type_);
         soconnect2(&a.0, &b.0).expect("connect2");
@@ -2857,7 +2810,7 @@ mod tests {
     }
 
     /// A user uio of `len` bytes at `at`, of thread `p`.
-    fn uio<'a>(p: &'a Thread<G>, iov: &'a mut [Iovec; 1], rw: UioRw) -> Uio<'a, G> {
+    pub(crate) fn uio<'a>(p: &'a Thread<G>, iov: &'a mut [Iovec; 1], rw: UioRw) -> Uio<'a, G> {
         Uio {
             uio_resid: iov[0].iov_len,
             uio_iov: iov,
@@ -2869,7 +2822,7 @@ mod tests {
     }
 
     /// `send(2)` of `data` with `control`: the bytes sent.
-    fn sendc(
+    pub(crate) fn sendc(
         p: &Thread<G>,
         so: &So,
         data: &[u8],
@@ -2889,13 +2842,13 @@ mod tests {
     }
 
     /// `send(2)` of `data`.
-    fn send(p: &Thread<G>, so: &So, data: &[u8], flags: i32) -> Result<usize, Errno> {
+    pub(crate) fn send(p: &Thread<G>, so: &So, data: &[u8], flags: i32) -> Result<usize, Errno> {
         sendc(p, so, data, None, flags)
     }
 
     /// `recvmsg(2)` into `len` bytes: the bytes, the flags, the control and the address.
     #[allow(clippy::type_complexity, reason = "a test's tuple")]
-    fn recvc(
+    pub(crate) fn recvc(
         p: &Thread<G>,
         so: &So,
         len: usize,
@@ -2926,12 +2879,17 @@ mod tests {
     }
 
     /// `recv(2)` into `len` bytes: the bytes and the flags.
-    fn recv(p: &Thread<G>, so: &So, len: usize, flags: i32) -> Result<(Vec<u8>, i32), Errno> {
+    pub(crate) fn recv(
+        p: &Thread<G>,
+        so: &So,
+        len: usize,
+        flags: i32,
+    ) -> Result<(Vec<u8>, i32), Errno> {
         recvc(p, so, len, flags, 0).map(|(b, f, _, _)| (b, f))
     }
 
     /// An `SCM_RIGHTS` message of the descriptors `fds` (in a cluster past `MLEN`).
-    fn rights(fds: &[i32]) -> MbufBox {
+    pub(crate) fn rights(fds: &[i32]) -> MbufBox {
         let mut m = m_get(M_WAIT, MT_CONTROL).expect("an mbuf");
         let len = cmsg_len(fds.len() * 4);
         if len > MLEN {
@@ -2949,14 +2907,14 @@ mod tests {
     }
 
     /// The descriptors of a received `SCM_RIGHTS` message.
-    fn fds_of(m: &Mbuf) -> Vec<i32> {
+    pub(crate) fn fds_of(m: &Mbuf) -> Vec<i32> {
         let cm = cmsghdr_of(m).expect("a header");
         let n = (cm.cmsg_len as usize - HDR) / 4;
         (0..n).map(|i| int_at(m, i)).collect()
     }
 
     /// An address mbuf of the path `path` (`sun_len` the whole address's).
-    fn sun(path: &[u8]) -> MbufBox {
+    pub(crate) fn sun(path: &[u8]) -> MbufBox {
         let mut m = m_get(M_WAIT, MT_SONAME).expect("an mbuf");
         let len = 2 + path.len() + 1;
         m.m_len().set(len as u32);

@@ -1904,6 +1904,20 @@ macro_rules! test_file_glue {
             fn socket_of(d: &Self::Data) -> Option<&$crate::net::socket::SocketRef<$proc>> {
                 d.socket.as_ref()
             }
+            fn socket_file(
+                so: $crate::net::socket::SocketRef<$proc>,
+            ) -> (&'static Self::Ops, Self::Data) {
+                static SOCKET_OPS: $crate::net::file::SocketFileOps<$proc> =
+                    $crate::net::file::SocketFileOps::NEW;
+                (
+                    &SOCKET_OPS,
+                    $crate::testutil::TestFileData {
+                        id: core::ptr::from_ref::<$crate::net::socket::Socket<$proc>>(&so).addr(),
+                        socket: Some(so),
+                        ..$crate::testutil::TestFileData::default()
+                    },
+                )
+            }
             fn uiomove_out(
                 buf: &[u8],
                 uio: &mut $crate::uio::Uio<'_, $proc>,

@@ -82,8 +82,9 @@
 //!   `connect`, `accept`, `disconnect`, `control`, `rcvoob` and `connect2`, 0 for `sense`,
 //!   the data and control freed and `EOPNOTSUPP` for `sendoob`); the entries the wrappers
 //!   call unchecked (`attach`, `detach`, `shutdown`, `rcvd`, `send`, `abort`, `sockaddr`,
-//!   `peeraddr`, `flowid`) have no default. Every request takes the socket and the witness
-//!   of its lock ([`SoLocked`]: the C's "called with the socket locked"); the mbufs are owned
+//!   `peeraddr`, `flowid`) have no default. Every request but `control` takes the socket and
+//!   the witness of its lock ([`SoLocked`]: the C's "called with the socket locked";
+//!   `soo_ioctl` calls `pru_control` unlocked); the mbufs are owned
 //!   ([`MbufBox`]) where the protocol disposes of them and borrowed where the caller keeps
 //!   them (the address of `connect`, `bind`, `send`).
 //! - `bsd`'s protocols implement the traits over their old tables (`bsd`'s
@@ -277,14 +278,9 @@ pub trait Usrreqs<G: ProcGlue>: Sync + 'static {
         0
     }
     /// `pru_control(so, cmd, data, NULL)`: a protocol `ioctl`; `data` is the kernel copy of
-    /// the argument.
-    fn control(
-        &self,
-        _so: &Socket<G>,
-        _w: &mut SoLocked<'_>,
-        _cmd: u64,
-        _data: &mut [u8],
-    ) -> Result<(), Errno> {
+    /// the argument. Called without the socket's lock, as `soo_ioctl` calls it (`in_control`
+    /// takes the net lock itself).
+    fn control(&self, _so: &Socket<G>, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     /// `pru_sense(so, ub)`.

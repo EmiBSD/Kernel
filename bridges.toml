@@ -407,5 +407,5 @@ paid_by = "N8"
 # kernel::net::domain::IfLegacy
 [[bridge]]
 trait = "IfLegacy"
-for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs"]
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
 paid_by = "N6"
