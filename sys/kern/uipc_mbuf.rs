@@ -368,9 +368,13 @@ pub fn ml_enqueue(ml: &MbufList, m: &'static Mbuf) {
     ml.change(|l| l.push_tail(b));
 }
 
-/// `ml_enlist`: appends all of `mlb` to `mla` and empties `mlb`. One list as both is
-/// `panic(9)` (the C would loop the list on itself; here two `&mut` to one list).
+/// `ml_enlist`: appends all of `mlb` to `mla` and empties `mlb`; nothing for an empty
+/// `mlb`, as the C. One non-empty list as both is `panic(9)` (the C would loop the list on
+/// itself; here two `&mut` to one list).
 pub fn ml_enlist(mla: &MbufList, mlb: &MbufList) {
+    if ml_len(mlb) == 0 {
+        return;
+    }
     if core::ptr::eq(mla, mlb) {
         crate::kern::subr_prf::panic(format_args!("ml_enlist: a list onto itself"));
     }
@@ -634,6 +638,10 @@ pub(crate) mod tests {
         ml_enlist(&ml, &other);
         assert_eq!((ml_len(&ml), ml_len(&other)), (4, 0));
         assert!(ml_empty(&other) && !ml_empty(&ml));
+        // An empty list onto any list, itself included, does nothing (the C's test first).
+        ml_enlist(&ml, &other);
+        ml_enlist(&other, &other);
+        assert_eq!((ml_len(&ml), ml_len(&other)), (4, 0));
         assert_eq!(ml_hdatalen(&ml), 0);
         assert!(mbuf_list_first(&ml).is_some());
         let first = ml_dequeue(&ml).expect("a packet");

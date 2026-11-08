@@ -150,10 +150,16 @@ pub(crate) fn mut_of(m: &Mbuf) -> &'static mut Mbuf {
     // SAFETY: the C's one-owner convention (LZ's `Cell` writes through `&'static`): `bsd`'s
     // caller owns the packet `m` belongs to for the call, the kernel function it calls is the
     // only code that uses `m` while the `&mut` lives (one adapter call, never kept), and no
-    // other reference to `m` is read or written by the kernel during it; `m` is not an
-    // element an `OwnedSlist` holds (`bsd`'s lists are `MbufList`s, whose elements leave the
-    // list before an in-place operation names them, as in the C, which takes a packet off its
-    // queue to change it). The item is alive (as for `of_parked`).
+    // other reference to `m` is read or written by the kernel during it. `m` may be inside a
+    // packet an `MbufList` holds (`tcp_softlro_concat` appends to the last mbuf of a packet
+    // still on its list, as the C's `tcp_softlro_concat` does): the list holds its element
+    // by the element's `m_nextpkt` link alone (and a raw word for its tail), and no write
+    // through `mut_of` touches the `m_nextpkt` of a list's element: the in-place operations
+    // change data, lengths, offsets, the header and `m_next` chains, and the `m_nextpkt`
+    // writers (`m_set_nextpkt`, `m_take_nextpkt`, the adapters' `m_free`, `m_cat` and
+    // `ml_enqueue`) act on parked packets and on the socket buffers' and nfs's records,
+    // which no `MbufList` holds. So the list's head, tail, length and `m_nextpkt` chain never
+    // change behind it. The item is alive (as for `of_parked`).
     unsafe { &mut *NonNull::from(m).as_ptr() }
 }
 
@@ -275,7 +281,7 @@ pub struct MbufList {
 
 // SAFETY: the only access to `list` is `change`, which builds the one `&mut` to it for one
 // closure and drops it before returning. Its callers are this file's `mbuf_list_first` and
-// `kern/uipc_mbuf.rs`'s `ml_*` and `mq_*` (`pub(crate)`: nothing else of `bsd` reaches it),
+// `kern/uipc_mbuf.rs`'s `ml_*` and `mq_*` (no other caller exists today),
 // and those are called as the C calls them: under the lock the C names for the list
 // (`mq_mtx` inside the `mq_*`, `sb_mtx`, `ifq_mtx` and `ifiq_mtx` for the interface queues
 // and their disciplines, wg's `q_mtx`, a pf queue's `ifq_mtx`), or on a list the caller
