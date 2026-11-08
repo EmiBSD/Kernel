@@ -283,3 +283,4 @@ metadata:
 - Moving sysent rows to another file under sys/kern/: `cargo xtask gen-syscalls` finds `pub fn sys_<name>(` there and rewrites init_sysent.rs's `use` lines only; never edit the generated file by hand (N6.2b).
 - A test's deleted file may hold the only copy of a test: when a bsd file goes, read its `<TESTS>` zone too (`git show HEAD:<path>`), not just `<CODE>`, and move the test with the code (N6.2b's sys_socket.rs ifioctl test).
 - The guard refuses Monitor commands with `$(stat ..)` arithmetic inline; a watcher script file run as `/bin/zsh <path> <log>` passes (N6.2b).
+- The meaningful per-slice clippy of the kernel is the justfile's host line `cargo clippy -p hal -p kernel -p abi -- -D warnings` (no `--tests`: the tree's test code has hundreds of pedantic findings); it caught a doc list item and `len_without_is_empty` (N6.3a).
