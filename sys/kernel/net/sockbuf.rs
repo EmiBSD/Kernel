@@ -309,6 +309,32 @@ pub struct SbData {
 }
 
 impl SbData {
+    /// [`SbGuard::take_all`]'s work on the records.
+    fn take_all(&mut self) -> Option<MbufBox> {
+        // No reader can hold a record out here: the callers own the buffer (the last
+        // reference's `sbrelease`) or take `sblock` (`sorflush`), or empty a socket no
+        // process has open (`unp_gc`'s dead ones).
+        kassert!(matches!(self.out, Out::None));
+        self.close_last();
+        mem::take(&mut self.records).into_head()
+    }
+
+    /// [`SbGuard::close_last`]'s work on the records.
+    fn close_last(&mut self) {
+        if let Out::Last { pending, .. } = &mut self.out
+            && pending.is_none()
+        {
+            *pending = Some((mem::take(&mut self.last), self.tail.take()));
+            return;
+        }
+        if let Some(t) = self.tail.take() {
+            self.last.push_tail(t);
+            if let Some(h) = mem::take(&mut self.last).into_head() {
+                self.records.push_tail(h);
+            }
+        }
+    }
+
     /// An empty buffer.
     const fn new() -> Self {
         Self {
@@ -549,6 +575,23 @@ impl<G: ProcGlue> Sockbuf<G> {
     #[inline]
     pub(crate) fn mutex(&self) -> &Mutexed<SbData> {
         &self.mtx
+    }
+
+    /// The watermarks and the timeout of a buffer whose socket nobody else reaches yet
+    /// (`socreate`'s `sb_timeo_nsecs = INFSLP`, `sonewconn`'s copy of its listener's), stored
+    /// without the mutex as the C stores them: no reader or writer can see the buffer before
+    /// the socket is handed out, which publishes these stores with it.
+    pub(crate) fn init_fresh(&self, wat: u64, lowat: i64, timeo_nsecs: u64) {
+        self.wat.store(wat, Ordering::Relaxed);
+        self.lowat.store(lowat, Ordering::Relaxed);
+        self.timeo_nsecs.store(timeo_nsecs, Ordering::Relaxed);
+    }
+
+    /// The records of a buffer nobody else can reach (its socket's last reference going:
+    /// `sofree`'s unlocked `m_purge(so->so_rcv.sb_mb)`), taken whole without the mutex, the
+    /// `&mut` the proof.
+    pub(crate) fn take_all_unshared(&mut self) -> Option<MbufBox> {
+        self.mtx.get_mut().take_all()
     }
 
     /// `mtx_enter(&sb->sb_mtx)`.
@@ -959,31 +1002,14 @@ impl<'a, G: ProcGlue> SbGuard<'a, G> {
     /// Every record taken off as one chain of records (the first record's first mbuf, the
     /// records linked by `m_nextpkt`, each record's mbufs by `m_next`), the counts left.
     fn take_all(&mut self) -> Option<MbufBox> {
-        // No reader can hold a record out here: the callers own the buffer (the last
-        // reference's `sbrelease`) or take `sblock` (`sorflush`), or empty a socket no
-        // process has open (`unp_gc`'s dead ones).
-        kassert!(matches!(self.g.out, Out::None));
-        self.close_last();
-        mem::take(&mut self.g.records).into_head()
+        self.g.take_all()
     }
 
     /// The last record closed into `records` (`SBLINKRECORD`'s first half: the next record
     /// starts after it). With the reader's last record out, the first close keeps the
     /// continuation aside instead.
     fn close_last(&mut self) {
-        let d = &mut *self.g;
-        if let Out::Last { pending, .. } = &mut d.out
-            && pending.is_none()
-        {
-            *pending = Some((mem::take(&mut d.last), d.tail.take()));
-            return;
-        }
-        if let Some(t) = d.tail.take() {
-            d.last.push_tail(t);
-            if let Some(h) = mem::take(&mut d.last).into_head() {
-                d.records.push_tail(h);
-            }
-        }
+        self.g.close_last();
     }
 
     /// `b` (alone) as the last record's new last mbuf (`n->m_next = m` or `sb->sb_mb = m`,

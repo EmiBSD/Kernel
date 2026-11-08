@@ -58,6 +58,21 @@
 //!   `m_cat`'s chain), 1,000 in a row; the lists made again between rounds, untimed.
 //! - `list.push`: one element pushed at the tail of an `OwnedList` (`TAILQ_INSERT_TAIL`); the
 //!   list drained between rounds, untimed.
+//! - The socket layer's rows (N6.2a, decision 43 with U10), over the doubles' thread (its
+//!   descriptor table, user memory and credentials), the mbufs and the UNIX domain, the
+//!   data copied from and to kernel buffers (`UIO_SYSSPACE`, as bsd's tests the "before"
+//!   rows ran on):
+//!   - `sockbuf.append.drop`: a 100-byte mbuf got, appended to a stream buffer
+//!     (`sbappendstream` under the buffer's mutex) and dropped from it (`sbdrop`, a second
+//!     mutex section): the TCP input and ack paths' buffer work.
+//!   - `soreceive.4k`: `soreceive` of 4 KiB from a UNIX stream socket whose peer sent them
+//!     (the send untimed).
+//!   - `unix.socketpair.send.recv.64`: `sosend` of 64 bytes on one end of a UNIX stream
+//!     pair and `soreceive` of them on the other.
+//!   - `solock.unlock.unix`: `solock` and its drop on a UNIX socket (`so_lock`'s write
+//!     witness).
+//!   - `socket.create.close.unix`: `socreate` of a UNIX stream socket and `soclose` (the
+//!     socket and its control block taken from and given back to their pools).
 
 #![forbid(unsafe_code)]
 
@@ -74,12 +89,15 @@ use hal::owned::{OwnedEntry, OwnedList, OwnedSlist, SlistLink};
 use hal::pool::{BoxPool, PR_WAITOK, PageSource, PoolBackend, PoolBox, RawPool};
 use hal::rwlock::RawRwlock;
 use hal::smr::{self, CpuWalk, SmrLink, SmrLinked, SmrPtr};
+use kernel::net::domain::Domain;
 use kernel::net::mbuf::{
     M_COPYALL, M_DONTWAIT, MT_DATA, MbufBox, PACKET_TAG_DLT, PACKET_TAG_GRE, m_adj, m_copydata,
     m_copym, m_get, m_gethdr, m_pullup, mbinit, mclget, mclgetl,
 };
 use kernel::net::mbuf2::{m_tag_find, m_tag_get, m_tag_prepend};
+use kernel::net::unix::Unix;
 use kernel::testutil;
+use kernel::uio::{Iovec, Uio, UioRw, UioSeg};
 
 /// Ops per repetition.
 const OPS: usize = 100_000;
@@ -434,7 +452,12 @@ fn main() {
         "slist.concat",
         "list.push",
     ];
-    let names: Vec<&str> = names.iter().chain(MBUF_ROWS.iter()).copied().collect();
+    let names: Vec<&str> = names
+        .iter()
+        .chain(MBUF_ROWS.iter())
+        .chain(SOCKET_ROWS.iter())
+        .copied()
+        .collect();
     if args.first().map(String::as_str) == Some("list") {
         for n in names {
             println!("{n}");
@@ -696,6 +719,7 @@ fn main() {
         report(names[12], r);
     }
     mbuf_rows(&wanted, &report);
+    socket_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -961,5 +985,162 @@ fn cluster_chain(lens: &[u32]) -> MbufBox {
     let h = need(next, "an mbuf");
     h.m_pkthdr().len.set(lens.iter().sum::<u32>() as i32);
     h
+}
+
+/// The socket layer's rows (N6.2a).
+const SOCKET_ROWS: [&str; 5] = [
+    "sockbuf.append.drop",
+    "soreceive.4k",
+    "unix.socketpair.send.recv.64",
+    "solock.unlock.unix",
+    "socket.create.close.unix",
+];
+
+/// The glue of the socket rows: the doubles' process and file glues.
+type G = kernel::fs::testfs::TestGlue;
+
+/// The socket rows' domains: the UNIX domain alone.
+static DOMS: [&dyn Domain<G>; 1] = [&Unix::<G>::NEW];
+
+/// A kernel-space uio over `buf` (`UIO_SYSSPACE`).
+fn kuio(iov: &mut [Iovec; 1], rw: UioRw) -> Uio<'_, G> {
+    Uio {
+        uio_resid: iov[0].iov_len,
+        uio_iov: iov,
+        uio_offset: 0,
+        uio_segflg: UioSeg::UIO_SYSSPACE,
+        uio_rw: rw,
+        uio_procp: None,
+    }
+}
+
+/// `sosend` of `buf` on `so`.
+fn ksend(so: &kernel::net::socket::Socket<G>, buf: &[u8]) {
+    let mut iov = [Iovec {
+        iov_base: buf.as_ptr().cast_mut().cast(),
+        iov_len: buf.len(),
+    }];
+    let mut u = kuio(&mut iov, UioRw::UIO_WRITE);
+    if kernel::net::socket::sosend(so, None, Some(&mut u), None, None, 0).is_err()
+        || u.uio_resid != 0
+    {
+        eprintln!("net: sosend");
+        std::process::exit(1);
+    }
+}
+
+/// `soreceive` of `buf.len()` bytes from `so`.
+fn krecv(so: &kernel::net::socket::Socket<G>, buf: &mut [u8]) {
+    let mut iov = [Iovec {
+        iov_base: buf.as_mut_ptr().cast(),
+        iov_len: buf.len(),
+    }];
+    let mut u = kuio(&mut iov, UioRw::UIO_READ);
+    let mut flags = 0;
+    if kernel::net::socket::soreceive(so, None, &mut u, None, None, Some(&mut flags), 0).is_err()
+        || u.uio_resid != 0
+    {
+        eprintln!("net: soreceive");
+        std::process::exit(1);
+    }
+}
+
+fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::socket::{AF_UNIX, SOCK_STREAM};
+    use kernel::net::socket::{soclose, soconnect2, socreate, solock};
+    if !SOCKET_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The doubles' thread over the page system and the kernel maps of the tests, the
+    // mbufs, the socket pools and the UNIX domain, held for the run.
+    let (_g, p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    kernel::net::domain::soinit::<G>();
+    kernel::net::domain::domaininit::<G>(&DOMS);
+    kernel::net::unix::unp_init::<G>();
+    let sock = || {
+        need(
+            socreate(p, i32::from(AF_UNIX), SOCK_STREAM, 0).ok(),
+            "socreate",
+        )
+    };
+
+    if wanted(SOCKET_ROWS[0]) {
+        let sb = kernel::net::sockbuf::Sockbuf::<G>::new();
+        if sb.lock().sbreserve(65536).is_err() {
+            eprintln!("net: sbreserve");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let m = need(m_get(M_DONTWAIT, MT_DATA), "no mbuf");
+                m.m_len().set(100);
+                sb.lock().sbappendstream(black_box(m));
+                sb.lock().sbdrop(100);
+            }
+            t.elapsed()
+        });
+        report(SOCKET_ROWS[0], r);
+    }
+    let (a, b) = (sock(), sock());
+    if soconnect2(&a, &b).is_err() {
+        eprintln!("net: soconnect2");
+        std::process::exit(1);
+    }
+    if wanted(SOCKET_ROWS[1]) {
+        let out = vec![7u8; 4096];
+        let mut inb = vec![0u8; 4096];
+        let n = OPS / 16;
+        let r = measure(n, || {
+            let mut d = Duration::ZERO;
+            for _ in 0..n {
+                ksend(&a, &out);
+                let t = Instant::now();
+                krecv(&b, black_box(&mut inb));
+                d += t.elapsed();
+            }
+            d
+        });
+        report(SOCKET_ROWS[1], r);
+    }
+    if wanted(SOCKET_ROWS[2]) {
+        let out = [5u8; 64];
+        let mut inb = [0u8; 64];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                ksend(&a, black_box(&out));
+                krecv(&b, black_box(&mut inb));
+            }
+            t.elapsed()
+        });
+        report(SOCKET_ROWS[2], r);
+    }
+    if wanted(SOCKET_ROWS[3]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(solock(&a)));
+            }
+            t.elapsed()
+        });
+        report(SOCKET_ROWS[3], r);
+    }
+    let _ = soclose(&a, 0);
+    let _ = soclose(&b, 0);
+    if wanted(SOCKET_ROWS[4]) {
+        let n = OPS / 16;
+        let r = measure(n, || {
+            let t = Instant::now();
+            for _ in 0..n {
+                let so = sock();
+                let _ = soclose(black_box(&so), 0);
+            }
+            t.elapsed()
+        });
+        report(SOCKET_ROWS[4], r);
+    }
 }
 /* </CODE> */

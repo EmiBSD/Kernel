@@ -180,8 +180,9 @@
 //!   leaf mutex per socket, `cq` (D-N6.2-1): the listener's `q0`/`q` (pinned lists of the
 //!   children, keyed to the listener's `cq`), the child's `head` (counted: the C's raw
 //!   `so_head`) and `onq`. Lock order: a socket lock, then the listener's `cq`, then the
-//!   child's; nothing sleeps under a `cq`; `cq` is also the interlock of the `so_timeo` wait
-//!   channel (every `wakeup(&so->so_timeo)` is made under it). The C's re-lock dances
+//!   child's; nothing sleeps under a `cq`; `cq` is also the interlock of a listener's
+//!   `so_timeo` wait channel (`accept`'s; every wakeup of a listener's channel is made under
+//!   it, a connection's under its socket lock alone, as the C's). The C's re-lock dances
 //!   (`soref(head); sounlock(so); solock(head); solock(so)` in `soisconnected` and
 //!   `sofree`) become one or two mutex sections, and `bsd`'s callbacks need no witness of
 //!   the listener. A queued child holds one parked reference for the queue
@@ -193,7 +194,13 @@
 //!   of a queued socket take 1-2 mutex sections where the C takes 3 rwlock operations and
 //!   2 reference counts. The lock and `spl` transitions of `sosend`, `soreceive` and the
 //!   buffer routines are the C's, step by step (`sb_mtx` sections, `solock_shared` around
-//!   `pru_send`/`pru_rcvd`).
+//!   `pru_send`/`pru_rcvd`). `socreate` and `sonewconn` store a fresh socket's buffer
+//!   timeouts and watermarks without its buffers' mutexes (the C's plain stores: nobody else
+//!   reaches it yet), `sofree` takes `cq` only for a queued socket (the `queued` mirror), the
+//!   last reference purges the receive buffer through its `&mut` (the C's unlocked
+//!   `m_purge`), and `so_timeo_wakeup` takes `cq` for a listener only: a UNIX socket's
+//!   `socket(2)` and `close(2)` take the C's mutex and rwlock sections, no more (N6.2a's
+//!   decision-43 rows, `benches/net.rs`).
 
 use core::mem;
 use core::sync::atomic::{
@@ -384,6 +391,12 @@ pub struct Socket<G: ProcGlue> {
     legacy_pcb: AtomicUsize,
     /// Whether `sofree` has decommissioned the socket (adopted the existence reference).
     freed: AtomicBool,
+    /// Whether the socket is on a listener's queue (`so_onq != NULL`), written with
+    /// `ConnQueue::onq` under `cq` and read without it by `sofree`, which takes `cq` only for
+    /// a queued socket (the C reads `so_head` under the socket's lock alone): a socket is
+    /// queued once, by `sonewconn` before anyone else reaches it, and moved from `so_q0` to
+    /// `so_q` under its own lock, which `sofree`'s caller holds.
+    queued: AtomicBool,
     /// \[s br\] `so_sp`: splice state, allocated only when needed.
     sp: OnceStatic<PoolBox<Sosplice<G>>>,
     /// \[s\] `so_upcall`'s kind: 0 none, 1 the glue's registered function.
@@ -463,6 +476,7 @@ impl<G: ProcGlue> Socket<G> {
             pcb: ReadMostly::new(None),
             legacy_pcb: AtomicUsize::new(0),
             freed: AtomicBool::new(false),
+            queued: AtomicBool::new(false),
             sp: OnceStatic::new(),
             upcall_kind: AtomicU8::new(0),
             upcall_arg: AtomicUsize::new(0),
@@ -782,7 +796,8 @@ impl<G: ProcGlue> Drop for Socket<G> {
 
         self.so_snd.lock().sbrelease();
 
-        let m = self.so_rcv.lock().take_all_zeroed();
+        // Unlocked dispose and cleanup, as the C's: the socket is unlinked from everywhere.
+        let m = self.so_rcv.take_all_unshared();
         crate::net::domain::dispose_and_purge(self.proto, m);
     }
 }
@@ -1161,6 +1176,7 @@ pub fn soqinsque<G: ProcGlue>(head: &Socket<G>, so: &Socket<G>, q: Onq) {
         kassert!(sg.onq == Onq::None);
         sg.head = Some(soref(head));
         sg.onq = q;
+        so.queued.store(true, Ordering::Release);
     }
     match q {
         Onq::Q0 => {
@@ -1209,6 +1225,7 @@ pub fn soqremque<G: ProcGlue>(so: &Socket<G>, q: Onq) -> Option<SocketRef<G>> {
             Onq::None => return None,
         }
         sg.onq = Onq::None;
+        so.queued.store(false, Ordering::Release);
         old_head = sg.head.take();
     }
     // The listener's reference goes after the queues' mutexes.
@@ -1303,11 +1320,18 @@ pub fn soisdisconnected<G: ProcGlue>(so: &Socket<G>) {
     sorwakeup(so);
 }
 
-/// `wakeup(&so->so_timeo)` under `so`'s queue mutex (the channel's interlock), for
-/// `bsd`'s `tcp_close` too.
+/// `wakeup(&so->so_timeo)`, for `bsd`'s `tcp_close` too; the caller holds `so`'s lock. The
+/// channel's sleepers are `connect`'s and `soclose`'s lingering, under the socket's lock,
+/// which the waker holds, and a listener's `accept` (`soaccept_wait`), whose interlock is
+/// the queue's mutex: only a listener's wakeup takes `cq` (the C's interlock is the
+/// socket's lock for all three, so the C takes no other).
 pub fn so_timeo_wakeup<G: ProcGlue>(so: &Socket<G>) {
-    let _g = cq(so);
-    wakeup(so.timeo_chan());
+    if so.has_options(SO_ACCEPTCONN) {
+        let _g = cq(so);
+        wakeup(so.timeo_chan());
+    } else {
+        wakeup(so.timeo_chan());
+    }
 }
 
 /// `sonewconn(head, connstatus, wait)`: when an attempt at a new connection is noted on a
@@ -1357,15 +1381,11 @@ pub fn sonewconn<G: ProcGlue>(
         if soreserve(&so, head.so_snd.hiwat(), head.so_rcv.hiwat()).is_err() {
             break 'fail false;
         }
+        // The listener's values under its buffers' mutexes; the new socket is nobody
+        // else's yet (not on the queue), so its fields are stored as the C stores them.
         for (h, s) in [(&head.so_snd, &so.so_snd), (&head.so_rcv, &so.so_rcv)] {
-            let (wat, lowat, timeo) = {
-                let _hg = h.lock();
-                (h.wat(), h.lowat(), h.timeo_nsecs())
-            };
-            let mut sg = s.lock();
-            sg.set_wat(wat);
-            sg.set_lowat(lowat);
-            sg.set_timeo_nsecs(timeo);
+            let _hg = h.lock();
+            s.init_fresh(h.wat(), h.lowat(), h.timeo_nsecs());
         }
 
         sigio_copy(&so.sigio, &head.sigio);
@@ -1487,8 +1507,9 @@ pub fn socreate<G: ProcGlue>(
     ) else {
         return Err(Errno::ENOBUFS);
     };
-    so.so_snd.lock().set_timeo_nsecs(INFSLP);
-    so.so_rcv.lock().set_timeo_nsecs(INFSLP);
+    // A fresh socket, nobody else's yet: the C's stores without the buffers' mutexes.
+    so.so_snd.init_fresh(0, 0, INFSLP);
+    so.so_rcv.init_fresh(0, 0, INFSLP);
 
     let mut w = solock_shared(&so);
     if let Err(error) = so
@@ -1576,16 +1597,23 @@ pub fn sofree_kept<G: ProcGlue>(so: &Socket<G>, _w: &mut SoLocked<'_>) {
     if so.has_pcb() || !so.has_state(SS_NOFDREF) {
         return;
     }
-    {
-        let sg = cq(so);
-        // We must not decommission a socket that's on the accept(2) queue. If we do, then
-        // accept(2) may hang after select(2) indicated that the listening socket was ready.
-        if sg.onq == Onq::Q {
-            return;
+    // A socket on no queue (the mirror read without `cq`, which only a queued one takes):
+    // nothing to look at, as the C's `so_head == NULL`.
+    let queued = if so.queued.load(Ordering::Acquire) {
+        {
+            let sg = cq(so);
+            // We must not decommission a socket that's on the accept(2) queue. If we do,
+            // then accept(2) may hang after select(2) indicated that the listening socket
+            // was ready.
+            if sg.onq == Onq::Q {
+                return;
+            }
         }
-    }
-    // A partial connection leaves its listener's queue (with the queue's reference).
-    let queued = soqremque(so, Onq::Q0);
+        // A partial connection leaves its listener's queue (with the queue's reference).
+        soqremque(so, Onq::Q0)
+    } else {
+        None
+    };
     if so.freed.swap(true, Ordering::AcqRel) {
         drop(queued);
         return;
