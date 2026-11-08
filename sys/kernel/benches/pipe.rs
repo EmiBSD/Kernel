@@ -441,7 +441,6 @@ impl FileGlue for BenchFiles {
     type Ops = dyn FileOps<BenchFiles>;
     type Data = BenchData;
     type FileList = FileListLink;
-    type VnodeG = ();
     type UnveilMatch = ();
     type MountG = ();
     type InodeHash = InodeHashLink;
@@ -511,7 +510,6 @@ impl FileGlue for BenchFiles {
             BenchData::Pipe(_) | BenchData::Kqueue(_) => None,
         }
     }
-    fn vnode_recycle(_vp: &'static kernel::fs::vnode::Vnode<BenchGlue>) {}
 }
 
 /// The VFS tables of the bench's processes (unused: no file system here).

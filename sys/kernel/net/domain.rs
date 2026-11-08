@@ -158,6 +158,13 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
     ) -> Option<hal::sys::socket::Sockpeercred> {
         None
     }
+    /// Whether the domain's protocols are `bsd`'s (its `LegacyDomain`): their requests
+    /// release and take the socket lock again C-style (`route_attach`, `route_output`,
+    /// `pfkeyv2_send`), so the kernel holds a socket of the domain by a detached holding of
+    /// `so_lock`, never a witness.
+    fn legacy(&self) -> bool {
+        false
+    }
     /// `dom_sasize`: size of sockaddr structure.
     fn sasize(&self) -> u32 {
         0

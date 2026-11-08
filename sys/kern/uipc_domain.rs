@@ -48,122 +48,371 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The communication domains: `domains[]`, `domaininit`, the protocol lookups and the
-//! `net.*` sysctl tree.
+//! The communication domains: `domains[]` of `bsd`'s tables, the kernel's traits over them,
+//! the protocol lookups `bsd`'s input paths make and the `net.*` sysctl tree.
 //!
 //! Upstream: sys/kern/uipc_domain.c @ 3ce1f3f79392
 //!
-//! `domaininit` runs every domain's `dom_init` and every protocol's `pr_init`, sizes the link
-//! and protocol headers the mbuf code reserves (`max_linkhdr`, `max_hdr`) and starts the
-//! protocols' fast (200 ms) and slow (500 ms) timeouts.
-//!
-//! Status: `ported` (M7b).
+//! The kernel's socket layer (`kernel::net`) reaches `bsd`'s protocols through its traits:
+//! `struct domain`, `struct protosw` and `struct pr_usrreqs` of `bsd`'s tables implement
+//! `kernel::net::domain::Domain`, `kernel::net::proto::Protocol` and
+//! `kernel::net::proto::Usrreqs` here (the `Protocol` row of `bridges.toml`), each method
+//! calling the table's entry with the C's arguments; a NULL entry answers what the C's
+//! `pru_*` wrapper answers (`EOPNOTSUPP`, 0), and an entry the C calls unchecked is
+//! `panic(9)` when NULL, as the C's call through NULL. [`NET_DOMAINS`] is the kernel's
+//! `domains[]` (the UNIX domain is the kernel's own), which [`domaininit`] hands over.
 //!
 //! ## Deviations
 //! - `domains[]` is a slice without the C's NULL terminator. It holds `inetdomain`
-//!   (`netinet/in_proto.rs`), `unixdomain` (`kern/uipc_proto.rs`, local sockets) and
-//!   `routedomain` (`net/rtsock.rs`), with `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and
-//!   `inet6domain` (`netinet6/in6_proto.rs`, `INET6`: the `inet6` feature) before `inetdomain`.
-//!   `MPLS` and `NAF_FRAME` are not configured; their entries are comments, and so are the
-//!   `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW` goes to
-//!   `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
-//! - The two timeouts are statics initialised in `domaininit` with their own address as the
-//!   argument, as the C's function-local statics are.
-//! - `pffinddomain`, `pffindtype` and `pffindproto` return `Option`s for the C's NULL;
-//!   `pfctlinput` is an `unsafe fn` over a raw socket address, as `pr_ctlinput` is.
+//!   (`netinet/in_proto.rs`), `unixdomain` (the kernel's) and `routedomain`
+//!   (`net/rtsock.rs`), with `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and
+//!   `inet6domain` (`netinet6/in6_proto.rs`, `INET6`: the `inet6` feature) before
+//!   `inetdomain`. `MPLS` and `NAF_FRAME` are not configured; their entries are comments,
+//!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
+//!   goes to `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
+//! - `pffinddomain`, `pffindtype` and `pffindproto` over `bsd`'s tables return `Option`s for
+//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is an
+//!   `unsafe fn` over a raw socket address, as `pr_ctlinput` is (N6.4 types it); the
+//!   kernel's `pr_ctlinput` of these tables is `panic(9)`: nothing in the kernel calls it
+//!   before N6.4.
 //! - `net_sysctl` follows `kern_sysctl.rs`'s calling convention (`docs/C_TO_RUST.md`);
 //!   `sysctl_vslock` wraps the protocol handlers that are not `PR_MPSYSCTL`, as in C.
 
-use core::ffi::c_void;
 use core::ptr;
-use core::sync::atomic::Ordering;
+
+use kernel::net::domain::Domain as KDomain;
+use kernel::net::mbuf::MbufBox;
+use kernel::net::proto::{Protocol, SockaddrView, Usrreqs};
+use kernel::net::socket::SoLocked;
 
 use crate::kern::kern_sysctl::sysctl_vslock;
-use crate::kern::kern_timeout::{timeout_add, timeout_add_msec, timeout_set_flags};
-use crate::kern::uipc_mbuf::{MAX_HDR, MAX_LINKHDR, MAX_PROTOHDR};
-use crate::kern::uipc_proto::UNIXDOMAIN;
-use crate::kern::uipc_usrreq::uipc_sysctl;
+use crate::kern::proc_glue::BsdProcGlue as G;
+use crate::kern::subr_prf::panic;
 use crate::net::bpf::bpf_sysctl;
 use crate::net::ifq::net_ifiq_sysctl;
-use crate::net::pfkeyv2::PFKEYDOMAIN;
-use crate::net::rtsock::ROUTEDOMAIN;
-use crate::netinet::in_proto::INETDOMAIN;
+use crate::net::pfkeyv2::{PFKEYDOMAIN, PFKEYSW};
+use crate::net::rtsock::{ROUTEDOMAIN, ROUTESW};
+use crate::netinet::in_proto::{INETDOMAIN, INETSW};
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6_proto::INET6DOMAIN;
+use crate::netinet6::in6_proto::{INET6DOMAIN, INET6SW};
 use crate::sys::domain::Domain;
 use crate::sys::errno::Errno;
+use crate::sys::mbuf::{Mbuf, lend, park};
 use crate::sys::proc::Proc;
-use crate::sys::protosw::{PR_MPSYSCTL, Protosw};
+use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
     NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
 };
+use crate::sys::socketvar::{Socket, as_static};
+use crate::sys::stat::Stat;
 use crate::sys::systm::net_assert_locked;
-use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 
-/// `domains[]`: the configured communication domains.
+/// `domains[]` of `bsd`'s tables: the configured communication domains whose protocols are
+/// still `bsd`'s.
 pub static DOMAINS: &[&Domain] = &[
     // MPLS: &mplsdomain, not configured.
     &PFKEYDOMAIN,
     #[cfg(feature = "inet6")]
     &INET6DOMAIN,
     &INETDOMAIN,
-    &UNIXDOMAIN,
     &ROUTEDOMAIN,
     // NAF_FRAME: &framedomain, not configured.
 ];
 
-/// `pffast_timeout`: the 200 ms protocol timeout.
-static PFFAST_TIMEOUT: Timeout = Timeout::new(pffasttimo, ptr::null_mut());
-/// `pfslow_timeout`: the 500 ms protocol timeout.
-static PFSLOW_TIMEOUT: Timeout = Timeout::new(pfslowtimo, ptr::null_mut());
+/// `domains[]` as the kernel's socket layer sees it, in the C's order: `bsd`'s tables
+/// through the traits, and the kernel's UNIX domain.
+pub static NET_DOMAINS: &[&dyn KDomain<G>] = &[
+    // MPLS: &mplsdomain, not configured.
+    &PFKEYDOMAIN,
+    #[cfg(feature = "inet6")]
+    &INET6DOMAIN,
+    &INETDOMAIN,
+    &kernel::net::unix::Unix::<G>::NEW,
+    &ROUTEDOMAIN,
+    // NAF_FRAME: &framedomain, not configured.
+];
 
-/// `domaininit`: initialises the domains and their protocols.
+/// The entries of a protocol table, as the kernel's protocols.
+macro_rules! protocols {
+    ($sw:ident; $($i:literal)*) => { [$(&$sw[$i] as &dyn Protocol<G>),*] };
+}
+
+/// `inetsw[]` as the kernel's protocols.
+#[cfg(not(feature = "inet6"))]
+static INET_PROTOS: [&dyn Protocol<G>; 13] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12);
+/// `inetsw[]` as the kernel's protocols.
+#[cfg(feature = "inet6")]
+static INET_PROTOS: [&dyn Protocol<G>; 14] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13);
+/// `inet6sw[]` as the kernel's protocols.
+#[cfg(feature = "inet6")]
+static INET6_PROTOS: [&dyn Protocol<G>; 15] =
+    protocols!(INET6SW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+/// `routesw[]` as the kernel's protocols.
+static ROUTE_PROTOS: [&dyn Protocol<G>; 1] = protocols!(ROUTESW; 0);
+/// `pfkeysw[]` as the kernel's protocols.
+static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
+
+/// `domaininit`: the kernel's domains (`bsd`'s tables and the UNIX domain) and their
+/// protocols initialised, the protocol timeouts started (`kernel::net::domain`).
 pub fn domaininit() {
-    for dp in DOMAINS {
-        if let Some(init) = dp.dom_init {
+    kernel::net::domain::register_iflegacy::<G>(&crate::kern::sys_socket::IFLEGACY);
+    #[cfg(feature = "nfsserver")]
+    kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
+    kernel::net::domain::domaininit::<G>(NET_DOMAINS);
+}
+
+/// An entry the C calls without a NULL test: `panic(9)` for a NULL one, as the C's call.
+fn need<T>(f: Option<T>, what: &str) -> T {
+    match f {
+        Some(f) => f,
+        None => panic(format_args!("{what}: a NULL request")),
+    }
+}
+
+impl KDomain<G> for Domain {
+    fn family(&self) -> i32 {
+        self.dom_family
+    }
+    fn name(&self) -> &'static str {
+        core::str::from_utf8(self.dom_name).unwrap_or("domain")
+    }
+    fn init(&self) {
+        if let Some(init) = self.dom_init {
             init();
         }
-        for pr in dp.dom_protosw {
-            if let Some(init) = pr.pr_init {
-                init();
+    }
+    fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
+        if ptr::eq(self, &INETDOMAIN) {
+            return &INET_PROTOS;
+        }
+        #[cfg(feature = "inet6")]
+        if ptr::eq(self, &INET6DOMAIN) {
+            return &INET6_PROTOS;
+        }
+        if ptr::eq(self, &ROUTEDOMAIN) {
+            return &ROUTE_PROTOS;
+        }
+        if ptr::eq(self, &PFKEYDOMAIN) {
+            return &PFKEY_PROTOS;
+        }
+        &[]
+    }
+    fn legacy(&self) -> bool {
+        true
+    }
+    fn sasize(&self) -> u32 {
+        self.dom_sasize
+    }
+    fn rtoffset(&self) -> u32 {
+        self.dom_rtoffset
+    }
+    fn maxplen(&self) -> u32 {
+        self.dom_maxplen
+    }
+}
+
+impl Protocol<G> for Protosw {
+    fn domain(&self) -> &'static dyn KDomain<G> {
+        self.pr_domain
+    }
+    fn ty(&self) -> i16 {
+        self.pr_type
+    }
+    fn protocol(&self) -> i16 {
+        self.pr_protocol
+    }
+    fn flags(&self) -> i16 {
+        self.pr_flags
+    }
+    fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+        self.pr_usrreqs.map(|u| u as &'static dyn Usrreqs<G>)
+    }
+    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32) {
+        // bsd's pfctlinput dispatches its own tables (N6.4 types the argument).
+        panic(format_args!(
+            "pr_ctlinput of a bsd protocol through the kernel"
+        ));
+    }
+    fn has_ctloutput(&self) -> bool {
+        self.pr_ctloutput.is_some()
+    }
+    fn ctloutput(
+        &self,
+        op: i32,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        level: i32,
+        optname: i32,
+        m: Option<&mut Mbuf>,
+    ) -> Result<(), Errno> {
+        match self.pr_ctloutput {
+            Some(f) => f(op, as_static(so), level, optname, m.map(|m| lend(&*m))),
+            None => Err(Errno::ENOPROTOOPT),
+        }
+    }
+    fn init(&self) {
+        if let Some(init) = self.pr_init {
+            init();
+        }
+    }
+    fn fasttimo(&self) {
+        if let Some(f) = self.pr_fasttimo {
+            f();
+        }
+    }
+    fn slowtimo(&self) {
+        if let Some(f) = self.pr_slowtimo {
+            f();
+        }
+    }
+}
+
+impl Usrreqs<G> for PrUsrreqs {
+    fn attach(
+        &self,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        proto: i32,
+        wait: i32,
+    ) -> Result<(), Errno> {
+        need(self.pru_attach, "pru_attach")(as_static(so), proto, wait)
+    }
+    fn detach(&self, so: &Socket, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        need(self.pru_detach, "pru_detach")(as_static(so))
+    }
+    fn bind(&self, so: &Socket, _w: &mut SoLocked<'_>, nam: &Mbuf, p: &Proc) -> Result<(), Errno> {
+        match self.pru_bind {
+            Some(f) => f(as_static(so), lend(nam), p),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn listen(&self, so: &Socket, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        match self.pru_listen {
+            Some(f) => f(as_static(so)),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn connect(&self, so: &Socket, _w: &mut SoLocked<'_>, nam: &Mbuf) -> Result<(), Errno> {
+        match self.pru_connect {
+            Some(f) => f(as_static(so), lend(nam)),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn accept(&self, so: &Socket, _w: &mut SoLocked<'_>, nam: &mut Mbuf) -> Result<(), Errno> {
+        match self.pru_accept {
+            Some(f) => f(as_static(so), lend(&*nam)),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn disconnect(&self, so: &Socket, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        match self.pru_disconnect {
+            Some(f) => f(as_static(so)),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn shutdown(&self, so: &Socket, _w: &mut SoLocked<'_>) -> Result<(), Errno> {
+        need(self.pru_shutdown, "pru_shutdown")(as_static(so))
+    }
+    fn rcvd(&self, so: &Socket, _w: &mut SoLocked<'_>) {
+        need(self.pru_rcvd, "pru_rcvd")(as_static(so));
+    }
+    fn send(
+        &self,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        top: Option<MbufBox>,
+        addr: Option<&Mbuf>,
+        control: Option<MbufBox>,
+    ) -> Result<(), Errno> {
+        need(self.pru_send, "pru_send")(
+            as_static(so),
+            top.map(park),
+            addr.map(lend),
+            control.map(park),
+        )
+    }
+    fn abort(&self, so: &Socket, _w: &mut SoLocked<'_>) {
+        need(self.pru_abort, "pru_abort")(as_static(so));
+    }
+    fn send_id(&self) -> usize {
+        self.pru_send.map_or(0, |f| f as usize)
+    }
+    fn control(&self, so: &Socket, cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
+        match self.pru_control {
+            Some(f) => f(as_static(so), cmd, data, None),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn sense(&self, so: &Socket, _w: &mut SoLocked<'_>, ub: &mut Stat) -> Result<(), Errno> {
+        match self.pru_sense {
+            Some(f) => f(as_static(so), ub),
+            None => Ok(()),
+        }
+    }
+    fn rcvoob(
+        &self,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        m: &mut Mbuf,
+        flags: i32,
+    ) -> Result<(), Errno> {
+        match self.pru_rcvoob {
+            Some(f) => f(as_static(so), lend(&*m), flags),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
+    fn sendoob(
+        &self,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        top: Option<MbufBox>,
+        addr: Option<&Mbuf>,
+        control: Option<MbufBox>,
+    ) -> Result<(), Errno> {
+        match self.pru_sendoob {
+            Some(f) => f(
+                as_static(so),
+                top.map(park),
+                addr.map(lend),
+                control.map(park),
+            ),
+            None => {
+                drop(top);
+                drop(control);
+                Err(Errno::EOPNOTSUPP)
             }
         }
     }
-
-    // max_linkhdr of 64 was chosen to encompass tunnelling traffic in IP payloads, eg, by
-    // etherip(4) or gif(4), without needing to prepend an mbuf to fit those headers.
-    if MAX_LINKHDR.load(Ordering::Relaxed) < 64 {
-        MAX_LINKHDR.store(64, Ordering::Relaxed);
+    fn sockaddr(&self, so: &Socket, _w: &mut SoLocked<'_>, nam: &mut Mbuf) -> Result<(), Errno> {
+        need(self.pru_sockaddr, "pru_sockaddr")(as_static(so), lend(&*nam))
     }
-
-    MAX_HDR.store(
-        MAX_LINKHDR.load(Ordering::Relaxed) + MAX_PROTOHDR.load(Ordering::Relaxed),
-        Ordering::Relaxed,
-    );
-    timeout_set_flags(
-        &PFFAST_TIMEOUT,
-        pffasttimo,
-        ptr::from_ref(&PFFAST_TIMEOUT).cast_mut().cast(),
-        KCLOCK_NONE,
-        TIMEOUT_PROC | TIMEOUT_MPSAFE,
-    );
-    timeout_set_flags(
-        &PFSLOW_TIMEOUT,
-        pfslowtimo,
-        ptr::from_ref(&PFSLOW_TIMEOUT).cast_mut().cast(),
-        KCLOCK_NONE,
-        TIMEOUT_PROC | TIMEOUT_MPSAFE,
-    );
-    timeout_add(&PFFAST_TIMEOUT, 1);
-    timeout_add(&PFSLOW_TIMEOUT, 1);
+    fn peeraddr(&self, so: &Socket, _w: &mut SoLocked<'_>, nam: &mut Mbuf) -> Result<(), Errno> {
+        need(self.pru_peeraddr, "pru_peeraddr")(as_static(so), lend(&*nam))
+    }
+    fn flowid(&self, so: &Socket, _w: &mut SoLocked<'_>) -> i32 {
+        need(self.pru_flowid, "pru_flowid")(as_static(so))
+    }
+    fn connect2(
+        &self,
+        so: &Socket,
+        _w: &mut SoLocked<'_>,
+        so2: &Socket,
+        _w2: Option<&mut SoLocked<'_>>,
+    ) -> Result<(), Errno> {
+        match self.pru_connect2 {
+            Some(f) => f(as_static(so), as_static(so2)),
+            None => Err(Errno::EOPNOTSUPP),
+        }
+    }
 }
 
-/// `pffinddomain`: the domain of address family `family`.
+/// `pffinddomain`: the domain of address family `family` among `bsd`'s tables.
 pub fn pffinddomain(family: i32) -> Option<&'static Domain> {
     DOMAINS.iter().copied().find(|dp| dp.dom_family == family)
 }
 
-/// `pffindtype`: the first protocol of `family` with socket type `type_`.
+/// `pffindtype`: the first protocol of `family` with socket type `type_`, among `bsd`'s
+/// tables.
 pub fn pffindtype(family: i32, type_: i32) -> Option<&'static Protosw> {
     let dp = pffinddomain(family)?;
 
@@ -172,8 +421,8 @@ pub fn pffindtype(family: i32, type_: i32) -> Option<&'static Protosw> {
         .find(|pr| pr.pr_type != 0 && i32::from(pr.pr_type) == type_)
 }
 
-/// `pffindproto`: the protocol `protocol` of `family` with socket type `type_`; for raw
-/// sockets, the domain's raw wildcard when no protocol matches.
+/// `pffindproto`: the protocol `protocol` of `family` with socket type `type_`, among
+/// `bsd`'s tables; for raw sockets, the domain's raw wildcard when no protocol matches.
 pub fn pffindproto(family: i32, protocol: i32, type_: i32) -> Option<&'static Protosw> {
     let mut maybe = None;
 
@@ -242,7 +491,13 @@ pub fn net_sysctl(
         return net_link_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
     if family == i32::from(PF_UNIX) {
-        return uipc_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
+        let mut req = kernel::sysctl::SysctlReq {
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+        };
+        return kernel::net::unix::uipc_sysctl::<G>(&name[1..], &mut req);
     }
     if family == i32::from(PF_BPF) {
         return bpf_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
@@ -297,36 +552,6 @@ pub unsafe fn pfctlinput(cmd: i32, sa: *const Sockaddr) {
         }
     }
 }
-
-/// `pfslowtimo`: the 500 ms protocol timeout; `arg` is its own timeout.
-pub fn pfslowtimo(arg: *mut c_void) {
-    // SAFETY: `domaininit` armed the timeout with its own address as the argument.
-    let to = unsafe { &*arg.cast::<Timeout>() };
-
-    for dp in DOMAINS {
-        for pr in dp.dom_protosw {
-            if let Some(slowtimo) = pr.pr_slowtimo {
-                slowtimo();
-            }
-        }
-    }
-    timeout_add_msec(to, 500);
-}
-
-/// `pffasttimo`: the 200 ms protocol timeout; `arg` is its own timeout.
-pub fn pffasttimo(arg: *mut c_void) {
-    // SAFETY: as in `pfslowtimo`.
-    let to = unsafe { &*arg.cast::<Timeout>() };
-
-    for dp in DOMAINS {
-        for pr in dp.dom_protosw {
-            if let Some(fasttimo) = pr.pr_fasttimo {
-                fasttimo();
-            }
-        }
-    }
-    timeout_add_msec(to, 200);
-}
 /* </CODE> */
 
 /* <TESTS> */
@@ -334,14 +559,14 @@ pub fn pffasttimo(arg: *mut c_void) {
 mod tests {
     use super::*;
     use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_UDP};
-    use crate::sys::socket::{AF_INET, AF_ROUTE, AF_UNIX, SOCK_DGRAM, SOCK_SEQPACKET};
+    use crate::sys::socket::{AF_INET, AF_ROUTE, AF_UNIX, SOCK_DGRAM};
 
     #[test]
     fn the_inet_protocols_are_found_by_number_and_type() {
         assert!(pffinddomain(i32::from(AF_INET)).is_some());
         assert!(pffinddomain(i32::from(AF_ROUTE)).is_some());
-        let unix = pffindtype(i32::from(AF_UNIX), SOCK_SEQPACKET).expect("seqpacket");
-        assert!(core::ptr::eq(unix.pr_domain, &UNIXDOMAIN));
+        // The UNIX domain is the kernel's: not among bsd's tables.
+        assert!(pffinddomain(i32::from(AF_UNIX)).is_none());
         assert!(pffinddomain(i32::from(PF_UNSPEC)).is_none());
 
         let icmp = pffindproto(i32::from(AF_INET), IPPROTO_ICMP, SOCK_RAW).expect("icmp");

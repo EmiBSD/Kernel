@@ -602,9 +602,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     type Data: Send + Sync + 'static;
     /// `f_list`: `filehead`'s adapter ([`file_glue_links!`](crate::file_glue_links)).
     type FileList: PinAdapter<Elem = File<Self>>;
-    /// The members of `struct vnode` of `bsd`'s types: `v_socket` (N6); `Default` is a new
-    /// vnode's (`kernel::fs::vnode`).
-    type VnodeG: Default + Sync + 'static;
     /// `ni_unveil_match`: the last matching unveil component (`bsd`'s unveil table until N8);
     /// `Default` is NULL.
     type UnveilMatch: Copy + Default;
@@ -691,8 +688,6 @@ pub trait FileGlue: Send + Sync + Sized + 'static {
     ) -> (&'static Self::Ops, Self::Data);
     /// The vnode and mount tables of this glue's processes (one `static` of `bsd`'s).
     fn vfs() -> &'static crate::fs::subr::VfsTables<Self::Proc>;
-    /// A recycled vnode's `bsd` members cleared (`getnewvnode`'s `vp->v_socket = NULL`).
-    fn vnode_recycle(vp: &'static crate::fs::vnode::Vnode<Self::Proc>);
 
     /// `vfs_export(mp, &ump->um_export, argp)` of a UFS mount (`ffs_mount`'s export update,
     /// `mount -u` without a device name): the NFS server's export list is the mount's glue

@@ -158,6 +158,49 @@ pub fn uiomove(cp: &mut [u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
     Ok(())
 }
 
+/// `uiomove(cp, n, uio)` of a read out of `cp`, bytes no one writes meanwhile (a socket's
+/// receive buffer, whose clusters may be shared): a user uio through the kernel's checked
+/// copy (`kernel::uio::uiomove_user_out`), a kernel one (nfs's `UIO_SYSSPACE`) through the
+/// token's `kcopy_out`, as [`uiomove`] moves them.
+pub fn uiomove_out(cp: &[u8], uio: &mut Uio<'_>) -> Result<(), Errno> {
+    if uio.uio_rw != UioRw::UIO_READ {
+        panic(format_args!("uiomove_out: not a read"));
+    }
+    if uio.uio_segflg == UioSeg::UIO_USERSPACE {
+        return kernel::uio::uiomove_user_out(cp, uio);
+    }
+    let mut n = cp.len().min(uio.uio_resid);
+    let mut done = 0;
+    while n > 0 {
+        if uio.uio_iov.is_empty() {
+            panic(format_args!(
+                "uiomove: resid {} past the iovecs",
+                uio.uio_resid
+            ));
+        }
+        let mut cnt = uio.uio_iov[0].iov_len;
+        if cnt == 0 {
+            kassert!(uio.uio_iovcnt() > 0);
+            uio_next_iov(uio);
+            continue;
+        }
+        if cnt > n {
+            cnt = n;
+        }
+        let iov = &mut uio.uio_iov[0];
+        // A UIO_SYSSPACE iovec is a kernel buffer of at least `iov_len` bytes its builder
+        // vouches for (`struct uio`'s contract): the token's.
+        kcopy_token().kcopy_out(&cp[done..done + cnt], iov.iov_base.expose_provenance())?;
+        iov.iov_base = iov.iov_base.wrapping_byte_add(cnt);
+        iov.iov_len -= cnt;
+        uio.uio_resid -= cnt;
+        uio.uio_offset += cnt as Off;
+        done += cnt;
+        n -= cnt;
+    }
+    Ok(())
+}
+
 /// The one `hal::user::KcopyToken`, `uiomove`'s for its `UIO_SYSSPACE` leg (N4.8b).
 static KCOPY: OnceStatic<&'static KcopyToken> = OnceStatic::new();
 

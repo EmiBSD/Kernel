@@ -1833,6 +1833,18 @@ pub fn nfs_msg(rep: &NfsReq, msg: &str) {
     tprintf_close(tpr);
 }
 
+/// [`nfsrv_rcv`] as the socket layer's registered upcall (`so->so_upcall`, set by
+/// `nfssvc_addsock`): `arg` is the `nfssvc_sock`'s address it stored in `so_upcallarg`,
+/// exposed there.
+#[cfg(feature = "nfsserver")]
+pub fn nfsrv_rcv_upcall(so: &Socket, arg: usize, waitflag: i32) {
+    nfsrv_rcv(
+        crate::sys::socketvar::as_static(so),
+        core::ptr::with_exposed_provenance_mut(arg),
+        waitflag,
+    );
+}
+
 /// `nfsrv_rcv(so, arg, waitflag)`: socket upcall routine for the nfsd sockets. The `arg` is
 /// a pointer to the `struct nfssvc_sock`. Essentially do as much as possible non-blocking,
 /// else punt and it will be called with `M_WAIT` from an nfsd.

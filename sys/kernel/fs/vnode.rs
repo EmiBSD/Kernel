@@ -128,8 +128,8 @@
 //!   pointer with none.
 //! - `v_data` is the word [`Vnode::data`] (an `AtomicPtr`: the file system's node, read back
 //!   with the file system's own cast, `bsd`'s `data<T>`); the members of `bsd`'s types (the
-//!   name cache's heads, `v_socket`, the device's lock list) are the glue's
-//!   [`FileGlue::VnodeG`], as `Process<G>` keeps its `bsd` members.
+//!   name cache's heads, `v_socket`, the device's lock list) were the glue's `VnodeG` until
+//!   each moved (the last, `v_socket`, at N6.2a).
 //! - N5.5a (D-N5.5a-6): a kernel file system's node is [`Vnode::node`]'s, a typed slot beside
 //!   the word: a pool item's counted handle with its type erased (`hal::pool::AnyArc`), set by
 //!   the file system's `vget` ([`Vnode::set_node`]), lent to who names its type
@@ -144,9 +144,9 @@
 //!   is added: the first is the C's.
 //! - N6.2a: `v_socket` is the kernel's ([`VnodeUn::Socket`], the socket counted), set by
 //!   the UNIX domain's `uipc_bind` and cleared by its `unp_detach` under the vnode lock, read
-//!   by `unp_connect` after `namei` locked the vnode (`kernel::net::unix`); `bsd`'s member
-//!   of [`FileGlue::VnodeG`] stays for `bsd`'s own UNIX domain until the socket layer's
-//!   switch.
+//!   by `unp_connect` after `namei` locked the vnode (`kernel::net::unix`); `getnewvnode`'s
+//!   `vp->v_socket = NULL` is the clearing of `v_un`, and the glue's `VnodeG` member and
+//!   `vnode_recycle` leg went.
 //! - `vn_lock` keeps the C's `Result` and protocol (the `v_lockcount` count under
 //!   `vnode_mtx`, the unlock and `ENOENT` when `VXLOCK` appeared, `LK_RETRY`); [`Locked`] is
 //!   the guard of a lock the caller leaves in the same function (its drop is `VOP_UNLOCK`).
@@ -172,7 +172,6 @@ use super::vops::Vnops;
 use crate::assert::kpanic;
 use crate::clock::Timespec;
 use crate::event::Klist;
-use crate::file::FileGlue;
 use crate::proc::ProcGlue;
 use crate::vm::vnode::Uvn;
 
@@ -698,8 +697,6 @@ pub struct Vnode<G: ProcGlue> {
     /// rather than in its `ReadMostly` specinfo, whose readers may not sleep as `lf_setlock`
     /// does.
     pub speclockf: super::lockf::LockfSlot,
-    /// The members of `bsd`'s types (`v_socket`, until the sockets move, N6).
-    pub g: <G::FileGlue as FileGlue>::VnodeG,
 }
 
 impl<G: ProcGlue> Vnode<G> {
@@ -738,7 +735,6 @@ impl<G: ProcGlue> Vnode<G> {
             klist: Klist::new(),
             nc: super::cache::NcHeads::cell(),
             speclockf: super::lockf::LockfSlot::new(),
-            g: Default::default(),
         }
     }
 

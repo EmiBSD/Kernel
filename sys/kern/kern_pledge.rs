@@ -125,7 +125,6 @@ use crate::sys::pledge::*;
 use crate::sys::proc::{
     PS_COREDUMP, PS_EXECPLEDGE, PS_PLEDGE, Proc, SINGLE_DEEP, SINGLE_UNWIND, p_hassibling,
 };
-use crate::sys::protosw::Protosw;
 use crate::sys::socket::{
     AF_INET, AF_INET6, AF_UNIX, NET_RT_DUMP, NET_RT_FLAGS, NET_RT_IFLIST, NET_RT_IFNAMES,
     NET_RT_SOURCE, NET_RT_TABLE, PF_INET6, PF_ROUTE, SO_ERROR, SO_RCVBUF, SO_RTABLE, SO_TIMESTAMP,
@@ -1313,7 +1312,7 @@ pub fn pledge_ioctl(p: &Proc, com: u64, fp: &File) -> Result<(), Errno> {
 pub fn pledge_sockopt(
     p: &Proc,
     set: bool,
-    pr: &Protosw,
+    pr: &dyn kernel::net::proto::Protocol<crate::kern::proc_glue::BsdProcGlue>,
     level: i32,
     optname: i32,
 ) -> Result<(), Errno> {
@@ -1334,8 +1333,8 @@ pub fn pledge_sockopt(
     // some protocols are implemented in multiple address families. eg, the IPPROTO_TCP
     // protocol and it's associated IPPROTO_TCP level operates under both the AF_INET and
     // AF_INET6 address families, and should be handled for both.
-    let af = pr.pr_domain.dom_family;
-    let proto = i32::from(pr.pr_protocol);
+    let af = pr.domain().family();
+    let proto = i32::from(pr.protocol());
     // AF_INET or AF_INET6, 0 for the other families.
     let af_inet = if af == AF_INET as i32 || af == AF_INET6 as i32 {
         af

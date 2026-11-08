@@ -719,8 +719,8 @@ pub fn getnewvnode_id<G: ProcGlue>(
             }
         }
         vp.set_flag(0);
+        // `v_un` (`v_socket` with it) cleared.
         drop(vp.take_un());
-        <G::FileGlue as FileGlue>::vnode_recycle(vp);
         vp
     };
     super::cache::cache_purge(vp);

@@ -79,24 +79,15 @@ use core::sync::atomic::Ordering;
 use kernel::file::LockOwner;
 use kernel::fs::vops::Cred;
 
-use crate::kern::kern_descrip::{BsdFileData, closef, falloc, fd_getfile, fdinsert, fdremove};
-use crate::kern::kern_event::knote_locked;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
+use crate::kern::kern_descrip::{closef, falloc, fd_getfile, fdinsert, fdremove};
 use crate::kern::kern_malloc::{free, mallocarray};
 use crate::kern::kern_pledge::{pledge_fail, pledge_sendit, pledge_socket, pledge_sockopt};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_sig::ptsignal;
 use crate::kern::kern_tc::getnanotime;
-use crate::kern::sys_socket::{SOCKETOPS, fp_socket};
+use crate::kern::sys_socket::{fp_install, fp_socket};
 use crate::kern::uipc_mbuf::{m_free, m_freem, m_get, m_getclr};
-use crate::kern::uipc_socket::{
-    sobind, soclose, soconnect, soconnect2, socreate, sogetopt, solisten, soreceive, sosend,
-    sosetopt, soshutdown,
-};
-use crate::kern::uipc_socket2::{
-    solock, solock_nonet, solock_shared, soqremque, sosleep_nsec, sounlock, sounlock_nonet,
-    sounlock_shared,
-};
+use crate::kern::uipc_socket::{sogetopt, soreceive, sosend, sosetopt, soshutdown};
 use crate::kern::vfs_vops::{VOP_ADVLOCK, VOP_GETATTR, VOP_READ};
 use crate::machine::copy::{copyin, copyin_obj, copyout};
 use crate::netinet::in_::{IPPORT_RESERVED, InAddr, SockaddrIn};
@@ -107,6 +98,7 @@ use crate::sys::file::{DTYPE_SOCKET, FileRef, frele};
 use crate::sys::filedesc::{UF_EXCLOSE, UF_FORKCLOSE, fdplock, fdpunlock};
 use crate::sys::limits::{SSIZE_MAX, UCHAR_MAX};
 use crate::sys::malloc::{M_IOV, M_WAITOK};
+use crate::sys::mbuf::mut_of;
 use crate::sys::mbuf::{
     M_EXT, M_WAIT, MCLBYTES, MLEN, MT_CONTROL, MT_SONAME, MT_SOOPTS, Mbuf, mclget, mtod,
 };
@@ -115,7 +107,6 @@ use crate::sys::namei::{namei, ndinit};
 use crate::sys::param::{MAXPATHLEN, PCATCH, PSOCK, align};
 use crate::sys::pledge::{PLEDGE_DNS, PLEDGE_RPATH};
 use crate::sys::proc::{PS_CHROOT, PS_PLEDGE, Proc};
-use crate::sys::protosw::{pru_peeraddr, pru_sockaddr};
 use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
 use crate::sys::socket::{
@@ -124,7 +115,7 @@ use crate::sys::socket::{
     SOCK_NONBLOCK_INHERIT, SOCK_STREAM, SOCK_TYPE_MASK, Sockaddr, cmsg_align,
 };
 use crate::sys::socketvar::{
-    SS_CANTRCVMORE, SS_DNS, SS_ISCONNECTED, SS_ISCONNECTING, SS_YP, Socket,
+    SS_CANTRCVMORE, SS_DNS, SS_ISCONNECTED, SS_ISCONNECTING, SS_YP, Socket, SocketRef,
 };
 use crate::sys::syscallargs::{
     SysAccept4Args, SysAcceptArgs, SysBindArgs, SysConnectArgs, SysGetpeernameArgs,
@@ -140,6 +131,7 @@ use crate::sys::uio::{Iovec, UIO_SMALLIOV, Uio, UioRw, UioSeg};
 use crate::sys::unistd::SEEK_SET;
 use crate::sys::vnode::vput;
 use crate::sys::vnode::{VREG, Vattr};
+use kernel::net::socket as ksocket;
 use kernel::sysctl::{DOMAINNAMELEN, MAXHOSTNAMELEN, with_domainname};
 
 /// The size of `struct msghdr` in user space.
@@ -325,19 +317,19 @@ pub fn sys_socket(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Result<(
     let nonblock = uap.r#type.get() & SOCK_NONBLOCK != 0;
     let fflag = FREAD | FWRITE | if nonblock { FNONBLOCK } else { 0 };
 
-    let so = socreate(domain, type_, uap.protocol.get())?;
+    let so = ksocket::socreate(p, domain, type_, uap.protocol.get())?;
 
     let mut g = fdplock(fdp);
     match falloc(p, &mut g) {
         Err(error) => {
             fdpunlock(g);
-            let _ = soclose(so, MSG_DONTWAIT);
+            let _ = ksocket::soclose(&so, MSG_DONTWAIT);
             Err(error)
         }
         Ok((fp, fd)) => {
             fp.f_flag.store(fflag as u32, Ordering::SeqCst);
-            so.set_state(ss);
-            fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
+            so.set_state_legacy(ss);
+            fp_install(&fp, so);
             fdinsert(&mut g, fd, fdflags, &fp);
             fdpunlock(g);
             let _ = frele(fp, p);
@@ -396,7 +388,7 @@ pub fn sys_bind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
         if so.has_state(SS_YP) {
             break 'out Err(Errno::ENOTSOCK);
         }
-        if let Err(e) = pledge_socket(p, so.dom_family(), so.so_state.get()) {
+        if let Err(e) = pledge_socket(p, so.dom_family(), so.state()) {
             break 'out Err(e);
         }
         let nam = match sockargs(
@@ -408,9 +400,9 @@ pub fn sys_bind(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<()
             Err(e) => break 'out Err(e),
         };
         // KTRACE: not configured.
-        solock_shared(so);
-        let error = sobind(so, nam, p);
-        sounlock_shared(so);
+        let mut w = ksocket::solock_shared(so);
+        let error = ksocket::sobind(so, &mut w, nam, p);
+        drop(w);
         m_freem(nam);
         error
     };
@@ -427,10 +419,8 @@ pub fn sys_listen(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<
     let error = if so.has_state(SS_YP) {
         Err(Errno::ENOTSOCK)
     } else {
-        solock_shared(so);
-        let error = solisten(so, uap.backlog.get());
-        sounlock_shared(so);
-        error
+        let mut w = ksocket::solock_shared(so);
+        ksocket::solisten(so, &mut w, uap.backlog.get())
     };
     let _ = frele(fp, p);
     error
@@ -511,7 +501,7 @@ pub fn doaccept(
     let nam = m_get(M_WAIT, MT_SONAME);
 
     let head = fp_socket(&headfp);
-    solock_shared(head);
+    let mut wh = ksocket::solock_shared(head);
 
     let error: Result<(), Errno> = 'out: {
         let error: Result<(), Errno> = 'out_unlock: {
@@ -521,42 +511,21 @@ pub fn doaccept(
             if isdnssocket(head) || !head.has_options(crate::sys::socket::SO_ACCEPTCONN) {
                 break 'out_unlock Err(Errno::EINVAL);
             }
-            if headfp.flag() & FNONBLOCK != 0 && head.so_qlen.get() == 0 {
+            let nonblock = headfp.flag() & FNONBLOCK != 0;
+            if nonblock && head.qlen() == 0 {
                 if head.so_rcv.has_state(SS_CANTRCVMORE) {
                     break 'out_unlock Err(Errno::ECONNABORTED);
                 } else {
                     break 'out_unlock Err(Errno::EWOULDBLOCK);
                 }
             }
-            while head.so_qlen.get() == 0 && head.error().is_none() {
-                if head.so_rcv.has_state(SS_CANTRCVMORE) {
-                    head.set_error(Some(Errno::ECONNABORTED));
-                    break;
-                }
-                if let Err(e) =
-                    sosleep_nsec(head, head.timeo_chan(), PSOCK | PCATCH, "netacc", INFSLP)
-                {
-                    break 'out_unlock Err(e);
-                }
-            }
-            if let Some(e) = head.error() {
-                head.set_error(None);
-                break 'out_unlock Err(e);
-            }
-
-            // Do not sleep after we have taken the socket out of the queue.
-            let Some(so) = head.so_q.first() else {
-                panic_accept();
+            // The wait while the queue is empty, `so_error`, and the connection off the
+            // queue (`TAILQ_FIRST(&head->so_q)`, `soqremque(so, 1)`), counted: the queue's
+            // reference, which becomes the file's.
+            let so = match ksocket::soaccept_wait(head, &mut wh, nonblock) {
+                Ok(so) => so,
+                Err(e) => break 'out_unlock Err(e),
             };
-            // SAFETY: a socket on the accept queue is a live `socket_pool` item; the
-            // listener's lock is held.
-            let so: &'static Socket = unsafe { &*core::ptr::from_ref(so) };
-
-            solock_nonet(so);
-
-            if !soqremque(so, 1) {
-                panic_accept();
-            }
 
             // Figure out whether the new socket should be non-blocking.
             let nflag = if flags & SOCK_NONBLOCK_INHERIT != 0 {
@@ -567,21 +536,21 @@ pub fn doaccept(
                 0
             };
 
-            // connection has been removed from the listen queue (knote(): the klist's
-            // lock is sb_mtx)
-            mtx_enter(&head.so_rcv.sb_mtx);
-            knote_locked(&head.so_rcv.sb_klist, 0);
-            mtx_leave(&head.so_rcv.sb_mtx);
+            // connection has been removed from the listen queue
+            head.so_rcv.knote(0);
 
-            sounlock_nonet(head);
+            // solock_nonet(so) .. sounlock_nonet(head): the net lock goes over to `so`.
+            let mut ws = ksocket::solock_handover(wh, &so);
 
             fp.f_flag
                 .store((FREAD | FWRITE | nflag) as u32, Ordering::SeqCst);
-            fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
 
-            let error = crate::kern::uipc_socket::soaccept(so, nam);
+            let error = ksocket::soaccept(&so, &mut ws, mut_of(nam));
 
-            sounlock_shared(so);
+            drop(ws);
+            // `fp->f_data = so`: the file is nobody else's until `fdinsert`, so it takes the
+            // socket once `so` is unlocked; a failed accept closes it with the file.
+            fp_install(&fp, so);
 
             if let Err(e) = error {
                 break 'out Err(e);
@@ -605,7 +574,7 @@ pub fn doaccept(
             return Ok(());
         };
         // out_unlock:
-        sounlock_shared(head);
+        drop(wh);
         error
     };
     // out: the descriptor (no slot holds the file) and the file.
@@ -620,11 +589,6 @@ pub fn doaccept(
     error
 }
 
-/// `panic("accept")`: the queue the listener counted is empty.
-fn panic_accept() -> ! {
-    crate::kern::subr_prf::panic(format_args!("accept"))
-}
-
 /// `connect(2)`.
 pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result<(), Errno> {
     let uap: &SysConnectArgs = sysargs(v);
@@ -636,7 +600,7 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
         if so.has_state(SS_YP) {
             break 'out Err(Errno::ENOTSOCK);
         }
-        if let Err(e) = pledge_socket(p, so.dom_family(), so.so_state.get()) {
+        if let Err(e) = pledge_socket(p, so.dom_family(), so.state()) {
             break 'out Err(e);
         }
         let nam = match sockargs(
@@ -648,7 +612,7 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
             Err(e) => break 'out Err(e),
         };
         // KTRACE: not configured.
-        solock_shared(so);
+        let mut w = ksocket::solock_shared(so);
         let error: Result<(), Errno> = 'unlock: {
             if isdnssocket(so)
                 && let Err(e) = dns_portcheck(p, so, mbuf_bytes(nam), nam.m_len().get() as usize)
@@ -658,7 +622,7 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
             if so.has_state(SS_ISCONNECTING) {
                 break 'unlock Err(Errno::EALREADY);
             }
-            let mut error = soconnect(so, nam);
+            let mut error = ksocket::soconnect(so, &mut w, nam);
             'bad: {
                 if error.is_err() {
                     break 'bad;
@@ -667,9 +631,13 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
                     break 'unlock Err(Errno::EINPROGRESS);
                 }
                 while so.has_state(SS_ISCONNECTING) && so.error().is_none() {
-                    if let Err(e) =
-                        sosleep_nsec(so, so.timeo_chan(), PSOCK | PCATCH, "netcon", INFSLP)
-                    {
+                    if let Err(e) = ksocket::sosleep_nsec(
+                        &mut w,
+                        so.timeo_chan(),
+                        PSOCK | PCATCH,
+                        "netcon",
+                        INFSLP,
+                    ) {
                         if e == Errno::EINTR || e == Errno::ERESTART {
                             interrupted = true;
                         }
@@ -686,12 +654,12 @@ pub fn sys_connect(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Result
             }
             // bad:
             if !interrupted {
-                so.clear_state(SS_ISCONNECTING);
+                so.clear_state_legacy(SS_ISCONNECTING);
             }
             error
         };
         // unlock:
-        sounlock_shared(so);
+        drop(w);
         m_freem(nam);
         error
     };
@@ -722,29 +690,30 @@ pub fn sys_socketpair(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let nonblock = utype & SOCK_NONBLOCK != 0;
     let fflag = (FREAD | FWRITE | if nonblock { FNONBLOCK } else { 0 }) as u32;
 
-    let so1 = socreate(uap.domain.get(), type_, uap.protocol.get())?;
-    let so2 = match socreate(uap.domain.get(), type_, uap.protocol.get()) {
+    let so1 = ksocket::socreate(p, uap.domain.get(), type_, uap.protocol.get())?;
+    let so2 = match ksocket::socreate(p, uap.domain.get(), type_, uap.protocol.get()) {
         Ok(so2) => so2,
         Err(error) => {
             // free1:
-            let _ = soclose(so1, 0);
+            let _ = ksocket::soclose(&so1, 0);
             return Err(error);
         }
     };
-    let mut so1 = Some(so1);
-    let mut so2 = Some(so2);
+    // The sockets not yet given to a file (closef closes those that were).
+    let mut so1: Option<SocketRef> = Some(so1);
+    let mut so2: Option<SocketRef> = Some(so2);
 
     let error: Result<(), Errno> = 'free2: {
-        let (Some(s1), Some(s2)) = (so1, so2) else {
+        let (Some(s1), Some(s2)) = (so1.as_deref(), so2.as_deref()) else {
             break 'free2 Err(Errno::EINVAL);
         };
-        if let Err(e) = soconnect2(s1, s2) {
+        if let Err(e) = ksocket::soconnect2(s1, s2) {
             break 'free2 Err(e);
         }
 
         if utype & SOCK_TYPE_MASK == SOCK_DGRAM {
             // Datagram socket connection is asymmetric.
-            if let Err(e) = soconnect2(s2, s1) {
+            if let Err(e) = ksocket::soconnect2(s2, s1) {
                 break 'free2 Err(e);
             }
         }
@@ -757,7 +726,9 @@ pub fn sys_socketpair(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
                 Err(e) => break 'free3 Err(e),
             };
             f1.f_flag.store(fflag, Ordering::SeqCst);
-            f1.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(s1));
+            if let Some(s1) = so1.take() {
+                fp_install(&f1, s1);
+            }
             let f1 = fp1.insert(f1);
             let (f2, sv1) = match falloc(p, &mut g) {
                 Ok(r) => r,
@@ -768,7 +739,9 @@ pub fn sys_socketpair(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
                 }
             };
             f2.f_flag.store(fflag, Ordering::SeqCst);
-            f2.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(s2));
+            if let Some(s2) = so2.take() {
+                fp_install(&f2, s2);
+            }
             let f2 = fp2.insert(f2);
             let mut sv = [0u8; 2 * size_of::<i32>()];
             sv[..4].copy_from_slice(&sv0.to_ne_bytes());
@@ -800,21 +773,19 @@ pub fn sys_socketpair(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
 
         if let Some(f2) = fp2 {
             let _ = closef(f2, p);
-            so2 = None;
         }
         if let Some(f1) = fp1 {
             let _ = closef(f1, p);
-            so1 = None;
         }
         error
     };
     // free2:
     if let Some(so2) = so2 {
-        let _ = soclose(so2, 0);
+        let _ = ksocket::soclose(&so2, 0);
     }
     // free1:
     if let Some(so1) = so1 {
-        let _ = soclose(so1, 0);
+        let _ = ksocket::soclose(&so1, 0);
     }
     error
 }
@@ -1428,7 +1399,7 @@ pub fn sys_setsockopt(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let fp = getsock(p, uap.s.get())?;
     let so = fp_socket(&fp);
     let error = 'bad: {
-        if let Err(e) = pledge_sockopt(p, true, so.so_proto, uap.level.get(), uap.name.get()) {
+        if let Err(e) = pledge_sockopt(p, true, so.proto(), uap.level.get(), uap.name.get()) {
             break 'bad Err(e);
         }
         let valsize = uap.valsize.get() as usize;
@@ -1469,7 +1440,7 @@ pub fn sys_getsockopt(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Res
     let fp = getsock(p, uap.s.get())?;
     let so = fp_socket(&fp);
     let error = 'out: {
-        if let Err(e) = pledge_sockopt(p, false, so.so_proto, uap.level.get(), uap.name.get()) {
+        if let Err(e) = pledge_sockopt(p, false, so.proto(), uap.level.get(), uap.name.get()) {
             break 'out Err(e);
         }
         let val = uap.val.get() as usize;
@@ -1522,9 +1493,9 @@ pub fn sys_getsockname(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
             break 'out Err(Errno::ENOBUFS);
         };
         m = Some(mm);
-        solock_shared(so);
-        let error = pru_sockaddr(so, mm);
-        sounlock_shared(so);
+        let mut w = ksocket::solock_shared(so);
+        let error = so.usrreqs().sockaddr(so, &mut w, mut_of(mm));
+        drop(w);
         if let Err(e) = error {
             break 'out Err(e);
         }
@@ -1559,9 +1530,9 @@ pub fn sys_getpeername(p: &Proc, v: &SysArgs, _retval: &mut [Register; 2]) -> Re
             break 'bad Err(Errno::ENOBUFS);
         };
         m = Some(mm);
-        solock_shared(so);
-        let error = pru_peeraddr(so, mm);
-        sounlock_shared(so);
+        let mut w = ksocket::solock_shared(so);
+        let error = so.usrreqs().peeraddr(so, &mut w, mut_of(mm));
+        drop(w);
         if let Err(e) = error {
             break 'bad Err(e);
         }
@@ -1813,7 +1784,7 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     }
     ypsin.sin_addr = InAddr { s_addr: data.r#in };
 
-    let so = socreate(i32::from(AF_INET), type_, 0)?;
+    let so = ksocket::socreate(p, i32::from(AF_INET), type_, 0)?;
 
     // SAFETY: `SockaddrIn` is `#[repr(C)]` without padding: its bytes are initialised.
     let sin_bytes = unsafe {
@@ -1825,33 +1796,33 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
     let nam = match ypsockargs(sin_bytes, MT_SONAME) {
         Ok(nam) => nam,
         Err(error) => {
-            let _ = soclose(so, MSG_DONTWAIT);
+            let _ = ksocket::soclose(&so, MSG_DONTWAIT);
             return Err(error);
         }
     };
 
     // KTRACE: not configured.
-    solock(so);
+    let mut w = ksocket::solock(&so);
 
     // Secure YP maps require reserved ports
     if suser(p).is_ok()
-        && let Some(inp) = sotoinpcb(so)
+        && let Some(inp) = sotoinpcb(&so)
     {
         inp.set_flags(INP_LOWPORT);
     }
 
-    let mut error = soconnect(so, nam);
+    let mut error = ksocket::soconnect(&so, &mut w, nam);
     while so.has_state(SS_ISCONNECTING) && so.error().is_none() {
-        error = sosleep_nsec(so, so.timeo_chan(), PSOCK | PCATCH, "ypcon", INFSLP);
+        error = ksocket::sosleep_nsec(&mut w, so.timeo_chan(), PSOCK | PCATCH, "ypcon", INFSLP);
         if error.is_err() {
             break;
         }
     }
     m_freem(nam);
-    so.set_state(SS_YP); // impose some restrictions
-    sounlock(so);
+    so.set_state_legacy(SS_YP); // impose some restrictions
+    drop(w);
     if let Err(error) = error {
-        let _ = soclose(so, MSG_DONTWAIT);
+        let _ = ksocket::soclose(&so, MSG_DONTWAIT);
         return Err(error);
     }
 
@@ -1860,14 +1831,14 @@ pub fn sys_ypconnect(p: &Proc, v: &SysArgs, retval: &mut [Register; 2]) -> Resul
         Ok(r) => r,
         Err(error) => {
             fdpunlock(g);
-            let _ = soclose(so, MSG_DONTWAIT);
+            let _ = ksocket::soclose(&so, MSG_DONTWAIT);
             return Err(error);
         }
     };
 
     fp.f_flag
         .store((FREAD | FWRITE | FNONBLOCK) as u32, Ordering::SeqCst);
-    fp.install(DTYPE_SOCKET, &SOCKETOPS, BsdFileData::socket(so));
+    fp_install(&fp, so);
     fdinsert(&mut g, fd, UF_EXCLOSE, &fp);
     fdpunlock(g);
     let _ = frele(fp, p);

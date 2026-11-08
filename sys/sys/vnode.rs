@@ -52,7 +52,7 @@
 //! `struct vattr`, the operations and the vnode table are the kernel crate's
 //! (`kernel::fs::vnode`, `kernel::fs::vops`, `kernel::fs::subr`); this module is their face for
 //! the `bsd` file systems until each moves (N5.5 to N5.9, nfs N6, ntfs N10): the alias
-//! [`Vnode`], the vnode's `bsd` members ([`VnodeG`]), the `struct vop_*_args` the file
+//! [`Vnode`], the `struct vop_*_args` the file
 //! systems' operations receive and `struct vops` of `Option<fn>` slots (which
 //! `kern/vfs_vops.rs` implements as the kernel's `Vnops`), and `vfs_subr.c`'s names over the
 //! kernel's functions.
@@ -80,8 +80,6 @@
 //!   C's pointer) is the safe `Cred::ucred`.
 //! - `struct buf *` (`a_bp`) is a `&'static Buf` (`sys/buf.rs`): a busy buffer lent with its
 //!   token parked in it.
-//! - `v_socket` is the member [`VnodeG::v_socket`] (the socket is `bsd`'s), not a variant of
-//!   the kernel's `v_un`; `kinfo_file`'s `v_un` reads it first.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicI64};
@@ -97,10 +95,8 @@ use crate::sys::file::Fileops;
 use crate::sys::mount::Mount;
 use crate::sys::namei::Componentname;
 use crate::sys::proc::{Proc, ProcExt};
-use crate::sys::socketvar::Socket;
 use crate::sys::types::{Daddr, Dev, Register};
 use crate::sys::uio::Uio;
-use hal::link::Link;
 use kernel::fs::subr;
 use kernel::fs::vops::Cred;
 
@@ -116,30 +112,8 @@ pub use kernel::fs::vnode::{
     Vtagtype, Vtype, WRITECLOSE, iftovt, makeimode, vttoif,
 };
 
-/// `struct vnode`: the kernel's, with `bsd`'s members ([`VnodeG`]).
+/// `struct vnode`: the kernel's (`v_socket` its `v_un`'s since N6.2a).
 pub type Vnode = kernel::fs::vnode::Vnode<BsdProcGlue>;
-
-/// The members of `struct vnode` of `bsd`'s types (the kernel's `FileGlue::VnodeG`): the socket
-/// bound to a `VSOCK` vnode's name (`uipc_usrreq.rs`, N6). The name cache's heads and a
-/// device's record locks are the kernel vnode's own since N5.3 (`Vnode::nc`,
-/// `Vnode::speclockf`).
-#[derive(Default)]
-pub struct VnodeG {
-    /// `v_socket` (`v_un.vu_socket`): unix ipc, the socket bound to the name. An atomic
-    /// word: `unp_detach` clears it under the vnode's lock alone and `sysctl_file` reads it
-    /// with no lock, as the C does (`uipc_usrreq.c:787`).
-    pub v_socket: Link<Socket>,
-}
-
-// SAFETY: LZ's argument for `struct vnode` (sys/sys/vnode.rs:280 at the pin), moved with the
-// members it covered (D-N5.2-1, decision 2: the same site, not a new one), narrowed at N5.3 to
-// the one member left: `v_socket` is an atomic word (`Link`), whose loads and stores never
-// race; it is not `Sync` by itself only because `Socket` is not (its fields are `Cell`s under
-// the socket's lock), and the reference it hands another CPU is opened as every socket
-// reference of `bsd` is: `unp_connect` reads `so_type` (`[I]`, set once by `socreate`) and
-// takes `solock` before the rest, `sysctl_file` takes only the address. Paid at N6 (the
-// sockets).
-unsafe impl Sync for VnodeG {}
 
 /// `prtactive`: 1 => print out reclaim of active vnodes (the kernel's word).
 pub static PRTACTIVE: &AtomicI32 = &crate::kern::kern_descrip::VFS_TABLES.prtactive;

@@ -1364,6 +1364,64 @@ fn uipc_connect2<G: ProcGlue>(
     Ok(())
 }
 
+/// What `kern.file` reports of a UNIX socket's control block (`fill_file`'s `AF_UNIX` case).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnpKinfo {
+    /// The control block's address (`so_pcb`).
+    pub pcb: usize,
+    /// `unp_msgcount`.
+    pub msgcount: i64,
+    /// `unp_conn`'s address (0 for none).
+    pub conn: usize,
+    /// `SLIST_FIRST(&unp_refs)`'s address.
+    pub refs: usize,
+    /// `SLIST_NEXT(unp, unp_nextref)`'s address (on the list of the socket it is connected
+    /// to).
+    pub nextref: usize,
+    /// `unp_vnode`'s address.
+    pub vnode: usize,
+    /// `unp_addr`'s address (0 for an unbound socket).
+    pub addr: usize,
+    /// The bound address.
+    pub sun: Option<SockaddrUn>,
+}
+
+/// `fill_file`'s `AF_UNIX` case: the control block of `so` (locked: `w`) as `kern.file`
+/// reports it, `None` without one. The peer is locked too for `unp_nextref`, the link of
+/// `so` on its peer's list, which the C reads without the peer's lock.
+pub fn unp_kinfo<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Option<UnpKinfo> {
+    let unp = sotounpcb(so)?;
+    let addr_of = |x: &Unpcb<G>| core::ptr::from_ref(x).addr();
+    let mut k = {
+        let s = unp.state(w);
+        UnpKinfo {
+            pcb: addr_of(&unp),
+            msgcount: unp.msgcount(),
+            conn: s.conn.as_deref().map_or(0, addr_of),
+            refs: 0,
+            nextref: 0,
+            vnode: s.vnode.map_or(0, |v| core::ptr::from_ref(v).addr()),
+            addr: s.addr.as_ref().map_or(0, |a| core::ptr::from_ref(a).addr()),
+            sun: s.addr,
+        }
+    };
+    k.refs = unp.refs.first(wit_ref(w)).map_or(0, addr_of);
+    if so.so_type() == SOCK_DGRAM {
+        k.nextref = unp_solock_peer(so, &unp, w, |peer, w| match peer {
+            Some(Peer {
+                unp: unp2,
+                w: Some(w2),
+                ..
+            }) => unp2.refs.next(wit_ref(w2), &unp).map_or(0, addr_of),
+            Some(Peer {
+                unp: unp2, w: None, ..
+            }) => unp2.refs.next(wit_ref(w), &unp).map_or(0, addr_of),
+            None => 0,
+        });
+    }
+    Some(k)
+}
+
 /// `uipc_sysctl(name, ..)`: `net.unix`: the buffer sizes per type, the descriptors in flight
 /// and the deferred ones. All sysctl names at this level are terminal.
 pub fn uipc_sysctl<G: ProcGlue>(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {

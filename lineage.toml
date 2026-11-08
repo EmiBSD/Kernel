@@ -5101,7 +5101,7 @@ notes = "malloc/free/mallocarray/kmeminit_nkmempages/kmeminit with BUCKETINDX; K
 rust = "sys/kern/kern_pledge.rs"
 lz = ["sys/kern/kern_pledge.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs"]
+adapted_by = ["sys/hal/vm/uvmexp.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs"]
 
 [[module]]
 rust = "sys/kern/proc_glue.rs"
@@ -5473,7 +5473,7 @@ notes = "N4.5c: bsd's names over hal::softintr (softintr_init checks the queues,
 
 [[module]]
 rust = "sys/kern/kern_subr.rs"
-adapted_by = ["sys/hal/arch/arm64/copy.rs"]
+adapted_by = ["sys/hal/arch/arm64/copy.rs", "sys/kernel/file.rs"]
 lz = ["sys/kern/kern_subr.rs"]
 status = "adapted"
 notes = "M5: hashinit (returns the table as a slice) and hashfree; the hooks (hook_establish/disestablish, dohooks) wait for their first user; M7b (kern_descrip.c): uiomove (the kernel buffer as a slice; UIO_SYSSPACE through kcopy) and ureadc; PMAP_CHECK_COPYIN not configured; host tests; N4.8b review: kcopy_take, called first by hal_bridges_register before any kernel or ABI code runs, holds hal's one KcopyToken in KCOPY (panic when another took it); kcopy_token reads it"
@@ -5514,7 +5514,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5744,7 +5744,7 @@ notes = "N3.5 S1 wrote it dead; N3.5 S2 (the flip, sys/uvm/ deleted) made it bsd
 rust = "sys/kern/sys_socket.rs"
 lz = ["sys/kern/sys_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs"]
+adapted_by = ["sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/net/file.rs", "sys/kernel/net/domain.rs"]
 
 [[module]]
 rust = "sys/kern/syscalls.rs"
@@ -5786,7 +5786,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -5801,33 +5801,22 @@ status = "adapted"
 adapted_by = ["sys/kernel/net/mbuf2.rs"]
 
 [[module]]
-rust = "sys/kern/uipc_proto.rs"
-lz = ["sys/kern/uipc_proto.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/kern/uipc_socket.rs"
 lz = ["sys/kern/uipc_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/mutex.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sigio.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_socket2.rs"
 lz = ["sys/kern/uipc_socket2.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_syscalls.rs"
 lz = ["sys/kern/uipc_syscalls.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
-
-[[module]]
-rust = "sys/kern/uipc_usrreq.rs"
-lz = ["sys/kern/uipc_usrreq.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/hal/thread.rs", "sys/kernel/fs/vnode.rs", "sys/hal/sys/stat.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sysctl.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/lookup.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/file.rs"]
 
 [[module]]
 rust = "sys/kern/vfs_init.rs"
@@ -6911,7 +6900,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/vnode.r
 rust = "sys/nfs/nfs_socket.rs"
 lz = ["sys/nfs/nfs_socket.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/sig.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/mount.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_srvcache.rs"
@@ -7547,7 +7536,8 @@ notes = "M5-b1: session, pgrp, tusage, process and proc (the members the schedul
 [[module]]
 rust = "sys/sys/protosw.rs"
 lz = ["sys/sys/protosw.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/proto.rs"]
 
 [[module]]
 rust = "sys/sys/queue.rs"
@@ -7670,7 +7660,7 @@ notes = "M7b: every constant (AF_*/PF_* as sa_family_t, the rest i32), linger, s
 rust = "sys/sys/socketvar.rs"
 lz = ["sys/sys/socketvar.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 
 [[module]]
 rust = "sys/sys/sockio.rs"
@@ -10712,11 +10702,11 @@ native = ["Vnode::set_mountedhere"]
 kind = "renamed"
 [[module.fn]]
 lz = "sys/sys/vnode.rs::Vnode::v_socket"
-native = ["sys/sys/vnode.rs::VnodeG"]
+native = ["Vnode::socket"]
 kind = "moved"
 [[module.fn]]
 lz = "sys/sys/vnode.rs::Vnode::set_v_socket"
-native = ["sys/sys/vnode.rs::VnodeG"]
+native = ["Vnode::set_socket"]
 kind = "moved"
 [[module.fn]]
 lz = "sys/sys/vnode.rs::Vnode::v_specinfo"
@@ -11247,19 +11237,9 @@ status = "redesigned"
 notes = "N4.3: the adapter of kernel::uio: re-exports Iovec, UioRw, UioSeg, UIO_SMALLIOV, UIO_MAXIOV and names Uio<'a> = kernel::uio::Uio<'a, BsdProcGlue>, so its users (the 5 frozen amd64 files among them) compile unchanged"
 
 [[module]]
-rust = "sys/sys/un.rs"
-lz = ["sys/sys/un.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/hal/sys/unistd.rs"
 crate = "hal"
 lz = ["sys/sys/unistd.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/sys/unpcb.rs"
-lz = ["sys/sys/unpcb.rs"]
 status = "inherited"
 
 [[module]]
@@ -14011,6 +13991,16 @@ lz = ["sys/kern/uipc_domain.rs", "sys/sys/domain.rs"]
 status = "redesigned"
 notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose NULL as default methods, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch"
 
+
+[[module.fn]]
+lz = "sys/kern/uipc_domain.rs::PFFAST_TIMEOUT"
+native = ["NetTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_domain.rs::PFSLOW_TIMEOUT"
+native = ["NetTables"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/net/proto.rs"
 crate = "kernel"
@@ -14018,6 +14008,111 @@ lz = ["sys/sys/protosw.rs"]
 status = "redesigned"
 notes = "N6.2a: struct protosw and struct pr_usrreqs as the traits Protocol<G> and Usrreqs<G> (decision 46): the NULL entries default methods answering what the C's pru_* wrappers answer, every request taking the socket and its lock's witness (SoLocked), owned mbufs where the protocol disposes of them; pr_input and pru_control's ifp wait for N6.3a/N6.4's types (D-N6.2-4); SockaddrView over an address's bytes; PR_* and PRCO_* constants"
 
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::usrreqs"
+native = ["sys/kernel/net/socket.rs::Socket::usrreqs"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::hook"
+native = ["sys/kern/uipc_domain.rs::need"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_attach"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_detach"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_bind"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_listen"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_connect"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_accept"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_disconnect"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_shutdown"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_rcvd"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_send"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_abort"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_control"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_sense"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_rcvoob"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_sendoob"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_sockaddr"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_peeraddr"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_flowid"
+native = ["Usrreqs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/protosw.rs::pru_connect2"
+native = ["Usrreqs"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/net/socket.rs"
 crate = "kernel"
@@ -14025,6 +14120,133 @@ lz = ["sys/kern/uipc_socket.rs", "sys/kern/uipc_socket2.rs", "sys/sys/socketvar.
 status = "redesigned"
 notes = "N6.2a: struct socket as a counted sockpl item (SocketRef = PoolArc, soref = from_ref, sorele = drop, sorele's body the Drop; the existence reference parked by soalloc and adopted once by sofree); solock as SoLocked (net lock exclusive or shared with so_lock, or so_lock: hal DetachableRwlock, detached holdings for bsd's C-style sites and sonewconn's returned-locked socket); the [s] members atomics, so_pcb a ReadMostly<Option<AnyArc>> for the kernel's protocols beside bsd's legacy_pcb word; the connection queues under one per-socket leaf mutex cq (also so_timeo's interlock), the queue's reference parked per queued child (D-N6.2-1, D-N6.2-U1 shape B); socreate..soclose, sosend/m_getuio, soreceive over the receive buffer's first record taken out for its copies, the splice (sosplice/sounsplice/somove/soidle/sotask, the task and idle timeout counted and cleared by soclose), sosetopt/sogetopt, the wakeups, so_upcall as two atomics and one registered function (D-N6.2-3), so_print/sobuf_print; doaccept's queue loop as soaccept_wait"
 
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::MbufTail"
+native = []
+kind = "dropped"
+reason = "the `struct mbuf **mp` walker of m_getuio and soreceive: the kernel's chains are owned MbufBox chains linked by their owner, so no tail pointer is kept; the same data reaches userland"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::MbufTail::new"
+native = []
+kind = "dropped"
+reason = "with MbufTail"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::MbufTail::get"
+native = []
+kind = "dropped"
+reason = "with MbufTail"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::MbufTail::set"
+native = []
+kind = "dropped"
+reason = "with MbufTail"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::MbufTail::advance"
+native = []
+kind = "dropped"
+reason = "with MbufTail"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::somaxconn"
+native = ["SOMAXCONN_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::sominconn"
+native = ["SOMINCONN_VAR"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::SOCKET_POOL"
+native = ["sys/kernel/net/domain.rs::NetTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::SOSPLICE_POOL"
+native = ["sys/kernel/net/domain.rs::NetTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::so_sp"
+native = ["Socket::splice"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::mdata"
+native = []
+kind = "dropped"
+reason = "a raw view of an mbuf's bytes: the kernel's Mbuf gives bounds-checked slices (data, data_mut)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::mtod_int"
+native = ["opt_int"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::set_mtod_int"
+native = ["set_opt_int"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::sorele"
+native = ["Socket::drop", "sys/sys/socketvar.rs::sorele"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::sbsync"
+native = ["sys/kernel/net/sockbuf.rs::SbGuard::take_first_record", "sys/kernel/net/sockbuf.rs::SbGuard::put_back_record"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::mptr"
+native = []
+kind = "dropped"
+reason = "so_print and sobuf_print print the mbufs' addresses with {:p}"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::head_of"
+native = ["ConnQueue"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::SoqHead"
+native = ["Socket", "ConnQueue"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::SoUpcall"
+native = ["UpcallFn"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Socket::set_state"
+native = ["Socket::st_set", "Socket::set_state_legacy"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Socket::clear_state"
+native = ["Socket::st_clear", "Socket::clear_state_legacy"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Socket::onq_is"
+native = ["Onq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sosplice::new"
+native = ["sosplice"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sosplice::default"
+native = ["sosplice"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/net/sockbuf.rs"
 crate = "kernel"
@@ -14032,6 +14254,95 @@ lz = ["sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
 status = "redesigned"
 notes = "N6.2a: struct sockbuf as the kernel's (Sockbuf<G>): sb_lock a hal RawRwlock (sblock gives SbLocked), sb_mtx a Mutexed owning the records (SbData: records an MbufList by m_nextpkt, the last record as an OwnedSlist<MNext> plus its final mbuf (sb_mbtail) held outside the list, so sbcompress writes it through the guard with no hal last_mut), the counters, limits, flags and state atomics written only through the guard (SbGuard) and read without it by the filters and kern.file; sbappend/sbappendstream/sbappendrecord/sbappendaddr/sbappendcontrol/sbcompress/sbdrop/sbdroprecord/sbflush/sbreserve/sbrelease/sbcreatecontrol/sbwait/sowakeup's locked half over it; a reader's first record taken out for a copy with the mutex released (take_first_record/put_back_record, the continuation kept aside when a sender closes the record meanwhile); SOCKBUF_DEBUG's sblastrecordchk/sblastmbufchk gone with the fields they checked, sbcheck kept for the tests"
 
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sbmtxassertlocked"
+native = ["SbGuard"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sblock"
+native = ["Sockbuf::sblock"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sbunlock"
+native = ["SbLocked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::same"
+native = []
+kind = "dropped"
+reason = "an identity test of two optional mbufs over the raw links: the records are owned by SbData, whose last record and tail are fields, not pointers to compare"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sblastrecordchk"
+native = []
+kind = "dropped"
+reason = "SOCKBUF_DEBUG's check of sb_lastrecord, a field SbData's owned records replace (sbcheck kept for the tests)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sblastmbufchk"
+native = []
+kind = "dropped"
+reason = "SOCKBUF_DEBUG's check of sb_mbtail, a field SbData's owned records replace (sbcheck kept for the tests)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sblinkrecord"
+native = ["SbGuard::close_last", "SbGuard::link_tail"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket2.rs::sbcompress"
+native = ["SbGuard::sbcompress"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sockbuf::zero_counts"
+native = ["SbGuard::take_all_zeroed"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sockbuf::set_state"
+native = ["SbGuard::set_state"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sockbuf::clear_state"
+native = ["SbGuard::clear_state"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sockbuf::set_flags"
+native = ["SbGuard::set_flags"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::Sockbuf::clear_flags"
+native = ["SbGuard::clear_flags"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::sballoc"
+native = ["SbGuard::sballoc"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::sbfree"
+native = ["SbGuard::sbfree"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::sbassertlocked"
+native = ["SbLocked"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/socketvar.rs::sb_empty_fixup"
+native = []
+kind = "dropped"
+reason = "SB_EMPTY_FIXUP clears sb_mbtail and sb_lastrecord of an empty chain: SbData owns its records, so an empty one has no tail by construction"
 [[module]]
 rust = "sys/kernel/net/unix.rs"
 crate = "kernel"
@@ -14039,6 +14350,222 @@ lz = ["sys/kern/uipc_usrreq.rs", "sys/kern/uipc_proto.rs", "sys/sys/unpcb.rs"]
 status = "redesigned"
 notes = "N6.2a: the UNIX domain: Unix<G> (struct domain, unixdomain) with its three UnixProto entries (unixsw[]) and the two request tables (UipcUsrreqs, UipcDgramUsrreqs: uipc_usrreqs, uipc_dgram_usrreqs) as Domain/Protocol/Usrreqs impls; struct unpcb as a counted item of the glue's unpcb pool (UnpRef = PoolArc: unp_ref/unp_rele are a handle's clone and drop, unp_detach's refcnt_finalize the count itself), held erased in the socket's read-mostly so_pcb slot and holding its socket counted, the cycle cut by unp_detach; the [s] members one cell keyed to so_lock (UnpState), unp_refs a pinned list keyed to it, the [G] counters atomics written under unp_gc_lock and unp_file a counted reference keyed to it while the file is in flight (gc's f_count == unp_msgcount + 1); unp_addr the sockaddr_un's bytes; struct fdpass kept 16 bytes in the control mbuf, its fp the slot (+1) of the glue's in-flight table (D-N6.2-2), which owns the references, links its free and deferred (unp_deferred) slots, grows by doubling, and replaces unp_df_lock; unp_rights an atomic reserved by a CAS loop (unp_rights_mtx); every check of unp_internalize/unp_externalize kept (EMFILE at maxfiles/10, E2BIG, ENOBUFS, EBADF, EDEADLK at FDUP_MAX_COUNT, UF_PLEDGEOPEN EPERM, pledge_sendfd/pledge_recvfd through ProcGlue, DTYPE_KQUEUE/DTYPE_VMM EINVAL, fd_rdir VBLK/VDIR EPERM, EMSGSIZE, the back-outs); unp_gc as a Task on SYSTQMP over unp_head; the vnode bind through kernel::fs (namei, VOP_CREATE, VnodeUn::Socket); uipc_sysctl over kernel::sysctl's SysctlReq; NKCOV 0"
 
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::SUN_NONAME_LEN"
+native = ["SUN_NONAME"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpDeferral"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpDeferral::fps"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpDeferral::size"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpHeadList"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpDeferredList"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_DF_LOCK"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_GC_LOCK"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_RIGHTS_MTX"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_INO_MTX"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNPCB_POOL"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_GC_TASK"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_HEAD"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_DEFERRED"
+native = ["Inflight"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_INO"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_RIGHTS"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_DEFER"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UNP_GCING"
+native = ["UnixTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UIPC_USRREQS"
+native = ["UipcUsrreqs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UIPC_DGRAM_USRREQS"
+native = ["UipcDgramUsrreqs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::UnpScanOp"
+native = ["unp_scan_record", "unp_scan_mut"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unpcb_of"
+native = ["unp_of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::curproc_or_panic"
+native = ["sys/kern/uipc_socket.rs::curproc_or_panic"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::same_unp"
+native = []
+kind = "dropped"
+reason = "control blocks are compared with core::ptr::eq where the C compares pointers"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::set_cmsghdr"
+native = ["set_cmsg_len"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::cmsg_data_of"
+native = ["fdpass_at", "set_fdpass_at", "int_at", "set_int_at"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::cmsg_len_of"
+native = ["cmsghdr_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unp_rele"
+native = ["UnpRef"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::uipc_accept"
+native = ["uipc_peeraddr", "UipcUsrreqs::accept"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::uipc_disconnect"
+native = ["UipcUsrreqs::disconnect", "UipcDgramUsrreqs::disconnect"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::uipc_dgram_shutdown"
+native = ["UipcDgramUsrreqs::shutdown"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unp_from"
+native = ["uipc_dgram_send"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::uipc_sockaddr"
+native = ["UipcUsrreqs::sockaddr", "UipcDgramUsrreqs::sockaddr"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::fptounp"
+native = ["with_fptounp"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::fdpass_file"
+native = ["Inflight::get"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unp_scan"
+native = ["unp_scan_record", "unp_scan_mut"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unp_remove_gcrefs"
+native = ["unp_scan_gcrefs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_usrreq.rs::unp_restore_gcrefs"
+native = ["unp_scan_gcrefs"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_proto.rs::UNIXSW"
+native = ["Unix::PROTOSW"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_proto.rs::UNIXDOMAIN"
+native = ["Unix::DOMAIN"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/unpcb.rs::Unpcb::has_flags"
+native = ["UnpState::flags"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/unpcb.rs::Unpcb::set_flags"
+native = ["UnpState::flags"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/unpcb.rs::Unpcb::clear_flags"
+native = ["UnpState::flags"]
+kind = "merged"
 [[module]]
 rust = "sys/kernel/net/file.rs"
 crate = "kernel"
@@ -14046,6 +14573,71 @@ lz = ["sys/kern/sys_socket.rs", "sys/kern/uipc_socket.rs"]
 status = "redesigned"
 notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
 
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::SOREAD_FILTOPS"
+native = ["SocketFileOps::SOREAD_FILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::SOWRITE_FILTOPS"
+native = ["SocketFileOps::SOWRITE_FILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::SOEXCEPT_FILTOPS"
+native = ["SocketFileOps::SOEXCEPT_FILTOPS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::soo_kqfilter"
+native = ["SocketFileOps::kqfilter"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sordetach"
+native = ["filt_sodetach", "SoRead::detach"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sowdetach"
+native = ["filt_sodetach", "SoWrite::detach"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sormodify"
+native = ["SoRead::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sorprocess"
+native = ["SoRead::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sowmodify"
+native = ["SoWrite::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_sowprocess"
+native = ["SoWrite::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_soemodify"
+native = ["SoExcept::modify"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_socket.rs::filt_soeprocess"
+native = ["SoExcept::process"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/sys_socket.rs::soo_ifioctl"
+native = ["sys/kern/sys_socket.rs::BsdIfLegacy::ifioctl"]
+kind = "moved"
 [[module]]
 rust = "sys/kernel/net/mbuf.rs"
 crate = "kernel"

@@ -1798,7 +1798,6 @@ macro_rules! test_file_glue {
             type Ops = dyn $crate::file::FileOps<$name>;
             type Data = $crate::testutil::TestFileData<$proc>;
             type FileList = FileListLink;
-            type VnodeG = ();
             type UnveilMatch = $crate::testutil::UnveilCount;
             type MountG = ();
             type InodeHash = InodeHashLink;
@@ -1924,7 +1923,6 @@ macro_rules! test_file_glue {
             ) -> Result<(), hal::sys::errno::Errno> {
                 $crate::testutil::test_uiomove_out(buf, uio)
             }
-            fn vnode_recycle(_vp: &'static $crate::fs::vnode::Vnode<$proc>) {}
         }
     };
 }

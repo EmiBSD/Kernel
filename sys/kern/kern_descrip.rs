@@ -108,7 +108,7 @@
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::link::{Link, PtrWord};
+use hal::link::Link;
 use kernel::api::{FdEntries, SysResult};
 use kernel::file::{FileGlue, FileTables};
 
@@ -133,7 +133,7 @@ use crate::sys::filedesc::FdGuard;
 use crate::sys::proc::Proc;
 use crate::sys::signal::SIGPIPE;
 use crate::sys::signalvar::SignalType;
-use crate::sys::socketvar::{SS_DNS, Socket};
+use crate::sys::socketvar::SS_DNS;
 use crate::sys::syscall::{
     SYS_close, SYS_closefrom, SYS_dup, SYS_dup2, SYS_dup3, SYS_fcntl, SYS_flock, SYS_fpathconf,
     SYS_fstat, SYS_getdtablecount, SYS_ioctl, SYS_pread, SYS_preadv, SYS_pwrite, SYS_pwritev,
@@ -152,9 +152,8 @@ use crate::sys::vnode::Vnode;
 pub enum BsdFileData {
     /// `DTYPE_VNODE`: the vnode the file holds a use count on.
     Vnode(Link<Vnode>),
-    /// `DTYPE_SOCKET`: the socket, as an address (`Socket` is not `Sync`; `fp_socket` keeps
-    /// its deref until the sockets move, N6), cleared by `soo_close`.
-    Socket(PtrWord<Socket>),
+    /// `DTYPE_SOCKET`: the socket, counted (its last reference goes with the file's).
+    Socket(crate::sys::socketvar::SocketRef),
     /// `DTYPE_PIPE`: the pipe this file reads (and whose peer it writes).
     Pipe(kernel::pipe::PipeEnd<crate::kern::proc_glue::BsdProcGlue>),
     /// `DTYPE_KQUEUE`: the kqueue, a counted reference the file drops with its last
@@ -168,13 +167,6 @@ impl BsdFileData {
     /// A vnode file's object.
     pub fn vnode(vp: &'static Vnode) -> Self {
         Self::Vnode(Link::to(vp))
-    }
-
-    /// A socket file's object.
-    pub fn socket(so: &Socket) -> Self {
-        let word = PtrWord::new();
-        word.set(core::ptr::from_ref(so));
-        Self::Socket(word)
     }
 }
 
@@ -220,7 +212,6 @@ impl FileGlue for BsdFileGlue {
     type Ops = Fileops;
     type Data = BsdFileData;
     type FileList = FileListLink;
-    type VnodeG = crate::sys::vnode::VnodeG;
     /// `ni_unveil_match`: a slot of the looking-up process's unveil table (`kern_unveil.rs`).
     type UnveilMatch = crate::kern::kern_unveil::UnveilMatch;
     type MountG = crate::sys::mount::BsdMountG;
@@ -242,9 +233,7 @@ impl FileGlue for BsdFileGlue {
 
     fn dns_socket(d: &BsdFileData) -> bool {
         match d {
-            BsdFileData::Socket(so) => {
-                crate::kern::sys_socket::socket_of(so).is_some_and(|so| so.has_state(SS_DNS))
-            }
+            BsdFileData::Socket(so) => so.has_state(SS_DNS),
             _ => false,
         }
     }
@@ -343,15 +332,25 @@ impl FileGlue for BsdFileGlue {
     fn net() -> &'static kernel::net::domain::NetTables<crate::kern::proc_glue::BsdProcGlue> {
         &NET_TABLES
     }
-    /// A socket file's kernel socket: none yet (`bsd`'s socket files hold its own sockets
-    /// until the socket layer's switch).
+    /// A socket file's socket (`fp->f_data`).
     fn socket_of(
-        _d: &Self::Data,
+        d: &Self::Data,
     ) -> Option<&kernel::net::socket::SocketRef<crate::kern::proc_glue::BsdProcGlue>> {
-        None
+        match d {
+            BsdFileData::Socket(so) => Some(so),
+            _ => None,
+        }
     }
-    fn vnode_recycle(vp: &'static Vnode) {
-        vp.g.v_socket.set(None);
+    /// `socketops` (`bsd`'s table over the kernel's `SocketFileOps`) and the socket.
+    fn socket_file(
+        so: kernel::net::socket::SocketRef<crate::kern::proc_glue::BsdProcGlue>,
+    ) -> (&'static Self::Ops, Self::Data) {
+        (&crate::kern::sys_socket::SOCKETOPS, BsdFileData::Socket(so))
+    }
+    /// `uiomove` of a receive buffer's bytes: a user uio through `hal`'s checked copy, a
+    /// kernel one (nfs's `UIO_SYSSPACE`) through `bsd`'s copy (`kcopy`), which reads only.
+    fn uiomove_out(buf: &[u8], uio: &mut crate::sys::uio::Uio<'_>) -> Result<(), Errno> {
+        crate::kern::kern_subr::uiomove_out(buf, uio)
     }
 }
 

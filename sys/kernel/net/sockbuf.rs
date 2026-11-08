@@ -667,6 +667,13 @@ impl<G: ProcGlue> Sockbuf<G> {
         self.has_flags(SB_WAIT | SB_ASYNC | SB_SPLICE) || !self.klist.is_empty()
     }
 
+    /// `knote(&sb->sb_klist, hint)`: the buffer's knotes activated, under its mutex (the
+    /// klist's lock).
+    pub fn knote(&self, hint: i64) {
+        let g = self.lock();
+        self.klist.knote_locked(g.witness_ref(), hint);
+    }
+
     /// `sblock(sb, flags)`: serialises the readers (or writers) of the buffer;
     /// `EWOULDBLOCK` without `SBL_WAIT` when another holds it, the sleep's error when a
     /// signal ends the wait (`SBL_NOINTR` or `SB_NOINTR` make it uninterruptible).
