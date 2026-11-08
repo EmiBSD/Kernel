@@ -73,13 +73,12 @@
 //!   blanket impl), its byte views `hal::user::bytes_of` and `bytes_of_mut`: the `unsafe
 //!   trait`, its two `unsafe` byte views and its 12 `unsafe impl`s (LZ) are gone, and the
 //!   structures this side copies out (`struct timeval`, `struct clockinfo`, `struct
-//!   diskstats`, `struct cpustats`, `struct mbstat`) are `AbiPod` through `hal::abi_pod!`
-//!   here, which checks at compile time that their members tile them (the C's padding
-//!   holes are members, `ds_pad0`).
+//!   diskstats`, `struct cpustats`) are `AbiPod` through `hal::abi_pod!` here, which checks
+//!   at compile time that their members tile them (the C's padding holes are members,
+//!   `ds_pad0`); `struct mbstat` is `AbiPod` in `hal::sys::mbuf` since N6.1.
 
 use crate::sys::disk::Diskstats;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::Mbstat;
 use crate::sys::proc::Proc;
 use crate::sys::sched::Cpustats;
 use crate::sys::time::{Clockinfo, Timeval};
@@ -133,19 +132,7 @@ hal::abi_pod!(Cpustats {
     cs_flags: u64,
 });
 
-// `struct mbstat`: `u_long`s only.
-hal::abi_pod!(Mbstat {
-    m_drops: u64,
-    m_wait: u64,
-    m_drain: u64,
-    m_mtypes: [u64; crate::sys::mbuf::MT_NTYPES],
-    m_defrag_alloc: u64,
-    m_prepend_alloc: u64,
-    m_pullup_alloc: u64,
-    m_pullup_copy: u64,
-    m_pulldown_alloc: u64,
-    m_pulldown_copy: u64,
-});
+// `struct mbstat`: `AbiPod` in `hal::sys::mbuf` (N6.1), where it moved with the mbuf.
 
 const _: () = {
     use core::mem::{offset_of, size_of};

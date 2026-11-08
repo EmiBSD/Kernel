@@ -5505,7 +5505,7 @@ kind = "moved"
 rust = "sys/kern/kern_sysctl.rs"
 lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs"]
+adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
 
 
@@ -5783,12 +5783,13 @@ adapted_by = ["sys/kernel/sysctl.rs"]
 rust = "sys/kern/uipc_mbuf.rs"
 lz = ["sys/kern/uipc_mbuf.rs"]
 status = "adapted"
-adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs"]
+adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf2.rs"
 lz = ["sys/kern/uipc_mbuf2.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf2.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_proto.rs"
@@ -7410,7 +7411,8 @@ notes = "M_* flags and types with INITKMEMNAMES, MINBUCKET/MINALLOCSIZE/MAXALLOC
 [[module]]
 rust = "sys/sys/mbuf.rs"
 lz = ["sys/sys/mbuf.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/hal/sys/mbuf.rs"
@@ -7679,7 +7681,7 @@ license = "none"
 rust = "sys/sys/sysctl.rs"
 lz = ["sys/sys/sysctl.rs"]
 status = "redesigned"
-notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats, cpustats and mbstat AbiPod through hal::abi_pod! here; 0 unsafe (LZ 17), forbid on its mod line"
+notes = "N4.6b: an adapter over hal::sys::sysctl (the header re-exported), the sysctlfn prototype of the nodes still in bsd, and SysctlPlain as a safe blanket over hal::user::AbiPod (LZ: an unsafe trait, two unsafe byte views and 12 unsafe impls); struct timeval, clockinfo, diskstats and cpustats AbiPod through hal::abi_pod! here (mbstat in hal::sys::mbuf since N6.1); 0 unsafe (LZ 17), forbid on its mod line"
 
 [[module]]
 rust = "sys/hal/sys/sysctl.rs"
@@ -13964,6 +13966,252 @@ lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]
 status = "redesigned"
 notes = "N6.1: struct mbuf as an owned pool item (MbufBox = PoolBox<Mbuf> of mbufpl, 256 bytes, align 64): m_next/m_nextpkt owned SlistLinks, m_data an offset (m_off) into the data storage (data()/data_mut() bounds-checked slices, data_raw() for bsd's mtod), the two unions a hal::overlay::Body (Pkthdr live by M_PKTHDR, Ext by M_EXT; MFlags keeps the tag bits); clusters BoxPool<Bytes<N>> x8 (mcl2k..mcl64k, the C's names and item sizes) as ClusterBox, shared through PoolArc<ExtRefs> of mextrefs (64-byte item) made on the first share; the drop is m_free's (mbstat at splnet, M_ZEROIZE carried, the chain and the packet list freed one at a time); MbufPages the PageSource of m_pool_allocator (the memory limit, kp_dma_contig until m_pool_noconstraints); mbstat a hal::percpu::Counters from boot (mbstat_read for kern.mbstat); MbufList = OwnedSlist<MPkt>, MbufQueue a Mutexed list with the length mirrored for mq_len; the pf legs through the Pf bridge; m_copyback into a shared cluster takes a copy of its own (Deviations); MEXTADD of a driver's own storage not implemented (no user: D-N6.1-2)"
 
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MEXTFREE_POOL"
+native = []
+kind = "dropped"
+reason = "a cluster held alone is ExtKind::Pool; no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr"
+native = ["Mbuf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr::new"
+native = ["Mbuf::fresh"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MHdr::default"
+native = []
+kind = "dropped"
+reason = "Mbuf::fresh builds the whole header of a new mbuf"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MbufExt"
+native = ["Ext"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MextFreeFn"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::MDat"
+native = ["sys/hal/overlay.rs::Body"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_data"
+native = ["Mbuf::data_off", "Mbuf::set_data_off", "Mbuf::data_raw"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_ext"
+native = ["Mbuf::ext"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pktdat"
+native = ["Mbuf::storage_raw"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_dat"
+native = ["Mbuf::storage_raw"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pkthdr_assign"
+native = ["Pkthdr::copy_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_pkthdr_zero"
+native = ["Pkthdr::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::Mbuf::m_ext_assign"
+native = []
+kind = "dropped"
+reason = "m_defrag moves the cluster's description whole (the overlay's take_e/set_e): no byte copy"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclrefdebugn"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace: the shared count is the PoolArc's, which has no file and line; no userland-visible behaviour"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclrefdebugo"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace: the shared count is the PoolArc's, which has no file and line; no userland-visible behaviour"
+
+[[module.fn]]
+lz = "sys/sys/mbuf.rs::mclinitreference"
+native = []
+kind = "dropped"
+reason = "option DEBUG's cluster reference trace (MCLINITREFERENCE): nothing to record without it; the shared count starts in ExtRefs"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::CACHELINESIZE"
+native = []
+kind = "dropped"
+reason = "the mextrefs item is ExtRefs padded to the C's 64 bytes (asserted), not a 24-byte item aligned to a cache line"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MExtRefs"
+native = ["ExtRefs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MBSTAT_BOOT"
+native = ["MBSTAT"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MBPOOL"
+native = ["MBUFPL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MTAGPOOL"
+native = ["MTAGPL"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MCLPOOLS"
+native = ["MCL2K", "MCL2K2", "MCL4K", "MCL8K", "MCL9K128", "MCL12K", "MCL16K", "MCL64K"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_EXT_REFS_POOL"
+native = ["MEXTREFS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_EXTFREE_REFS_FN"
+native = []
+kind = "dropped"
+reason = "a shared cluster is ExtKind::Shared, its free ExtRefs's drop; no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::M_POOL_ALLOCATOR"
+native = ["MBUF_PAGES"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::MEXTFREE_FNS"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::NUM_EXTFREE_FNS"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::put_decimal"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mclnames"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mclname"
+native = ["MCLNAMES"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_databuf"
+native = ["Mbuf::storage_raw"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_size"
+native = ["Mbuf::storage_len"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_data_adj"
+native = ["Mbuf::data_add"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::PACKET_TAG_POOL_ITEM"
+native = []
+kind = "dropped"
+reason = "mtagpl's item is MTag itself, its data inside (PACKET_TAG_MAXSIZE + 16 bytes, asserted)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mbstat"
+native = ["mbstat_read"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mbuf_from_item"
+native = ["Mbuf::fresh"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_clearhdr"
+native = ["Pkthdr::drop"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree_pool"
+native = []
+kind = "dropped"
+reason = "a cluster held alone goes back to its pool with its PoolBox's drop"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_ext_refs_shared"
+native = ["Ext::is_shared"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree_refs"
+native = ["ExtRefs::drop"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mextfree_fn"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::mextfree_register"
+native = []
+kind = "dropped"
+reason = "no driver of the tree registers external storage (only the mbuf files did); a cluster's free is its ClusterBox's drop, a shared one's ExtRefs's (D-N6.1-2; N7 adds ExtFree with its first driver)"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_extfree"
+native = []
+kind = "dropped"
+reason = "the cluster's description drops with the overlay (m_free's drop, m_defrag's take_e): ClusterBox's and ExtRefs's drops give the cluster back"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_pool_alloc"
+native = ["MbufPages::alloc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/kern/uipc_mbuf.rs::m_pool_free"
+native = ["MbufPages::free"]
+kind = "renamed"
 [[module]]
 rust = "sys/kernel/net/mbuf2.rs"
 crate = "kernel"
