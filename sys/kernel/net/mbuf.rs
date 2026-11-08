@@ -192,7 +192,11 @@
 //!   functions in a scratch test, ns an op, the median of rounds 2-4, on AC, after review
 //!   1's fixes). Release. Faster: `get.free` 29.8 -> 23.1 and `gethdr.cluster.free`
 //!   53.3 -> 39.0 (one typed item, the header built in place). Within 10 %:
-//!   `copydata.1500` 17.0 -> 18.4, `pullup.40` 8.5 -> 9.3. Slower, each a fixed cost per
+//!   `copydata.1500` 17.0 -> 18.4, `pullup.40` 8.5 -> 9.3, and `copym.share` 34.8 -> 35.7
+//!   and `copym.share.deep` 32.4 -> 32.5 since `MChainBuilder::into_head` skips the
+//!   builder's `Drop` (an unfinished chain's) on a finished copy (they were 40.4 and 36.5
+//!   with it, measured again beside the fix; the controls `get.free` 23.1 and
+//!   `gethdr.cluster.free` 39.0 unchanged). Slower, each a fixed cost per
 //!   call, never a walk the C does not make: `mtod` 0.3 -> 0.5 (`data_raw`: the overlay's
 //!   `M_EXT` tag test, then the cached cluster address or the storage's start, plus the
 //!   offset, about ten instructions where LZ loads one field); `header.view` 0.5 -> 1.1
@@ -201,22 +205,21 @@
 //!   pointer, unchecked); `header.copy` 4.4 -> 6.0 (`m_copydata` of 20 bytes at offset 14 on
 //!   both sides: the kernel's is a call that builds the `data()` slice, its tag test and
 //!   bounds check, and copies with a checked `copy_from_slice`, where LZ's inlines into a
-//!   `memcpy`); `copym.share` 34.7 -> 40.3 and `copym.share.deep` 32.5 -> 36.3 (35.8 at
-//!   9fd3cdab, 35.2 after B1, 40.0 after B2: `MChainBuilder`'s `Drop`, which B2 needs for
-//!   an unfinished chain, also runs on every finished one, an emptied list taken, turned
-//!   into no head and dropped; skipping it on the success path is N12's); `adj` 1.8 -> 3.9
+//!   `memcpy`); `adj` 1.8 -> 3.9
 //!   (LZ's row is bimodal, 2.9 in every round of the first A/B and 1.7-1.8 here, the kernel's
 //!   3.8-3.9 at every commit of the review; the row includes the bench's restore,
 //!   `adj.restore` 0.3 -> 0.5: `set_data_off`'s bounds check, the overlay's tag tests for
 //!   the storage size and the header, through cells; the rest, the C's loop over the same
-//!   cells, is not attributed to one instruction); `tag.find` 0.8 -> 0.9 (0.1 ns, the
+//!   cells, is not attributed to one instruction; the user accepted this partial reason on
+//!   2026-11-08, and the rest is an N12 row); `tag.find` 0.8 -> 0.9 (0.1 ns, the
 //!   measure's resolution). Kernel only: `park.unpark` 2.9 (`bsd`'s `unpark` and `park` of
 //!   one mbuf: a compare-and-swap of the park mark each way, paid at every crossing of the
 //!   `bsd` boundary), `data` 0.9 (the bounds-checked slice).
 //!   Dev (`opt-level = 1`, no LTO): `mtod` 0.3 -> 1.3, `header.view` 0.5 -> 1.6,
 //!   `tag.find` 0.8 -> 2.1, `adj` 2.9 -> 6.1 (`adj.restore` 0.3 -> 3.7), `header.copy`
-//!   5.2 -> 7.1, `pullup.40` 12.2 -> 16.1, `copym.share` 45.5 -> 57.3, `copym.share.deep`
-//!   43.3 -> 48.0, `copydata.1500` 18.1 -> 18.6, `park.unpark` 6.3, and faster `get.free`
+//!   5.2 -> 7.1, `pullup.40` 12.2 -> 16.1, `copym.share` 45.7 -> 53.3, `copym.share.deep`
+//!   44.1 -> 45.1 (with the builder's fix), `copydata.1500` 18.1 -> 18.6, `park.unpark`
+//!   6.3, and faster `get.free`
 //!   38.7 -> 31.0, `gethdr.cluster.free` 65.8 -> 57.1: at `opt-level = 1` `hal`'s
 //!   `PoolBox::deref` (no `#[inline]`) and `Ext::bytes` (`ClusterBox`'s eight-way match)
 //!   stay calls inside the rows' loops (the dev bench's disassembly: `bl
@@ -1853,9 +1856,12 @@ impl MChainBuilder {
         self.chain.push_tail(n);
     }
 
-    /// The chain's first mbuf, owning the rest.
-    fn into_head(mut self) -> Option<MbufBox> {
-        core::mem::take(&mut self.chain).into_head()
+    /// The chain's first mbuf, owning the rest: the finished chain moves out and the
+    /// builder's `Drop` (an unfinished chain's) does not run on it (`ManuallyDrop`: the list
+    /// left behind is empty, so nothing is forgotten).
+    fn into_head(self) -> Option<MbufBox> {
+        let mut this = core::mem::ManuallyDrop::new(self);
+        core::mem::take(&mut this.chain).into_head()
     }
 }
 
