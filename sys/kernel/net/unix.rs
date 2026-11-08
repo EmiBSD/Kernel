@@ -1749,6 +1749,25 @@ fn fptounp<G: ProcGlue>(fp: &File<G::FileGlue>) -> Option<UnpRef<G>> {
     with_fptounp::<G, _>(fp, |unp| unp_ref(unp))
 }
 
+/// How many of `fp`'s references are its UNIX socket's control block's own: 1 while the
+/// block holds `fp` as its `unp_file` (the socket's file in flight), else 0. The C's
+/// `unp_file` is not counted, so `kern.file` reports `f_count` less this, the C's count.
+pub fn unp_file_refs<G: ProcGlue>(fp: &File<G::FileGlue>) -> u32 {
+    let Some(unp) = fptounp::<G>(fp) else {
+        return 0;
+    };
+    let t = tables::<G>();
+    let g = t.unp_gc_lock.read();
+    let n = u32::from(
+        unp.file
+            .get(&g)
+            .as_ref()
+            .is_some_and(|f| ptr::eq::<File<G::FileGlue>>(&**f, fp)),
+    );
+    drop(g);
+    n
+}
+
 /// `unp_msgcount++` (and `unp_file = fp`) of a UNIX socket file going in flight, under
 /// `unp_gc_lock`.
 fn unp_msgcount_inc<G: ProcGlue>(fp: &Fp<G>) {
@@ -3268,6 +3287,10 @@ pub(crate) mod tests {
         assert_eq!(tables::<G>().rights(), 1);
         assert_eq!(xfile.count(), count + 2);
         assert_eq!(unp_of(&x).msgcount(), 1);
+        // kern.file's f_count is the C's: the message's reference, not the block's.
+        assert_eq!(unp_file_refs::<G>(&xfile), 1);
+        assert_eq!(xfile.count() - unp_file_refs::<G>(&xfile), count + 1);
+        assert_eq!(unp_file_refs::<G>(&fd_getfile(p.fd(), fa).expect("a")), 0);
 
         // Received: a new descriptor of the same file; nothing in flight.
         let (bytes, _, ctl, _) = recvc(p, &b, 8, 0, cmsg_space(4) as u32).expect("the message");
@@ -3282,6 +3305,7 @@ pub(crate) mod tests {
         assert_eq!(tables::<G>().rights(), 0);
         assert_eq!(unp_of(&x).msgcount(), 0);
         assert_eq!(xfile.count(), count + 1);
+        assert_eq!(unp_file_refs::<G>(&xfile), 0);
         drop((ctl, xfile));
 
         drop((a, b, x));

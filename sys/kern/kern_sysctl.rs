@@ -668,7 +668,10 @@ pub fn fill_file(
         kf.f_flag = fp.f_flag.load(Ordering::Relaxed);
         kf.f_iflags = fp.f_iflags.load(Ordering::Relaxed);
         kf.f_type = fp.f_type() as u32;
-        kf.f_count = fp.count();
+        // The C's count: the kernel's UNIX control block counts its socket's file while it
+        // is in flight (`unp_file`), the C's does not.
+        kf.f_count = fp.count()
+            - kernel::net::unix::unp_file_refs::<crate::kern::proc_glue::BsdProcGlue>(fp);
         if show_pointers {
             kf.f_ucred = ptrtoint64(fp.f_cred_ptr());
         }
