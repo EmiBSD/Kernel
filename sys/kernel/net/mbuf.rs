@@ -189,16 +189,33 @@
 //!   `mtod`: the two tag tests and one bounds check per access (the `mbuf.mtod` bench row;
 //!   N12's).
 //! - Cost against LZ (decision 43: `sys/kernel/benches/net.rs`'s mbuf rows against LZ's
-//!   functions, release, ns an op, the median of rounds 2-4). Faster: `get.free` 31.2 -> 24.0
-//!   and `gethdr.cluster.free` 55.1 -> 39.8 (one typed item, the header built in place),
-//!   `mq.enq.deq` 11.1 -> 8.7. Slower, each a constant per access and never a walk the C does
-//!   not make: `mtod` 0.3 -> 0.5 and `header.view` 0.5 -> 1.2 (the overlay's tag test where
-//!   the C loads a field), `header.copy` 4.4 -> 6.2 (the header copied cell by cell and the
-//!   `Pf` bridge's load, where the C assigns the struct), `adj` 2.9 -> 3.9 and `pullup.40`
-//!   8.8 -> 10.0 (the offset's and the length's cells, a bounds check per step),
-//!   `copydata.1500` 17.5 -> 19.5 (a bounds-checked slice per mbuf; +8 % in another run),
-//!   `tag.find` 0.8 -> 0.9. N12 takes them: one typed view per operation instead of a tag
-//!   test per access, the bounds checks hoisted out of the walks.
+//!   functions, ns an op, the median of rounds 2-4, measured on AC before review 1's fixes,
+//!   which change none of these rows' paths). Release. Faster: `get.free` 31.2 -> 24.0 and
+//!   `gethdr.cluster.free` 55.1 -> 39.8 (one typed item, the header built in place). Equal:
+//!   `copym.share` 35.5 -> 36.1. Slower, each a fixed cost per call and never a walk the C
+//!   does not make: `mtod` 0.3 -> 0.5 (`data_raw`: the overlay's `M_EXT` tag test, then the
+//!   cached cluster address or the storage's start, plus the offset, where LZ loads one
+//!   field); `header.view` 0.5 -> 1.2 (the kernel row views 20 bytes through `data()`'s tag
+//!   test and bounds check and `hal::pod::view`'s length and alignment checks; LZ's reads
+//!   one byte through a raw pointer, unchecked); `header.copy` 4.4 -> 6.2 (`m_copydata` of
+//!   20 bytes at offset 14 on both sides: per call the kernel builds the `data()` slice, its
+//!   tag test and bounds check, and copies with a checked `copy_from_slice`, where LZ
+//!   `memcpy`s from `m_data`); `copydata.1500` 17.5 -> 19.5 (the same per mbuf; +8 % in the
+//!   other run); `adj` 2.9 -> 3.9 (the row includes its restore, `set_data_off`'s bounds
+//!   check and the cells, against LZ's raw pointer store; `m_adj` itself moves `m_off`
+//!   unchecked: the `mbuf.adj.restore` row splits the two); `pullup.40` 8.8 -> 10.0 (the
+//!   same restore, and the `m_next` link taken and set as boxes); `tag.find` 0.8 -> 0.9.
+//!   Dev (`opt-level = 1`, no LTO): `mtod` 0.3 -> 1.3, `header.view` 0.5 -> 1.6,
+//!   `tag.find` 0.8 -> 2.1, `adj` 2.9 -> 6.3, `header.copy` 5.2 -> 8.1, `pullup.40`
+//!   12.3 -> 16.1, `copym.share` 46.3 -> 53.3, `copydata.1500` 18.7 -> 18.7, and faster
+//!   `get.free` 38.9 -> 31.2, `gethdr.cluster.free` 67.0 -> 57.3: at `opt-level = 1`
+//!   `hal`'s `PoolBox::deref` (no `#[inline]`) and `Ext::bytes` (`ClusterBox`'s eight-way
+//!   match) stay calls inside the rows' loops (the dev bench's disassembly: `bl
+//!   PoolBox<Mbuf>::deref` and `bl Ext::bytes` per iteration; the release loop has none),
+//!   where LZ's `Cell` getters on a `&'static` inline. N12 takes both: `#[inline]` on
+//!   `PoolBox`'s and `PoolArc`'s `Deref`/`DerefMut` and on the cluster byte accessors (or
+//!   `Ext` caching the cluster's length beside its address), one typed view per operation
+//!   instead of a tag test per access, the bounds checks hoisted out of the walks.
 //! - A cluster is a `PoolBox<Bytes<N>>` of its pool ([`ClusterBox`], one variant per size),
 //!   handed out unwritten as the C's (`BoxPool::get_bytes`); a shared cluster is a
 //!   `PoolArc<ExtRefs>` of `mextrefs`, made on the first share as the C makes its
