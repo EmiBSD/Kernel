@@ -35,7 +35,11 @@
 //!   `partial` list is written, because no reliable mechanical mapping from a handler to
 //!   the `unported!` sites under it exists.
 //!   A slot with no name in `syscalls.master` has the empty name; an `obsolete` one keeps the
-//!   master file's words (`4.2 sigreturn`), so a name is never another call's.
+//!   master file's words (`4.2 sigreturn`), so a name is never another call's. An `absent`
+//!   slot whose row has no name takes the name the shipped `sys/syscall.h` defines for its
+//!   number (the pin's text, which names the `#ifdef` branch of `SYSVSEM`, `SYSVSHM` and
+//!   `SYSVMSG` where `init_sysent.rs` has the `#else` one: `__semctl` 295, `shmctl` 296,
+//!   `msgctl` 297), so every `SYS_` name of that header is in a list by name and number.
 //! - `[[pages]]`: manual pages whose text is not true for this kernel, reviewed data in
 //!   [`PAGES`], not generated.
 //!
@@ -203,6 +207,43 @@ fn parse_syscall_consts(src: &str) -> Result<(BTreeMap<String, usize>, usize)> {
     }
     let max = max.ok_or("syscall.rs: no SYS_MAXSYSCALL")?;
     Ok((map, max))
+}
+
+/// The number -> name of every `#define SYS_<name> <number>` of the C `sys/syscall.h`, but
+/// `SYS_MAXSYSCALL`.
+fn parse_syscall_h(src: &str) -> BTreeMap<usize, String> {
+    let mut map = BTreeMap::new();
+    for line in src.lines() {
+        let mut w = line.split_whitespace();
+        if w.next() != Some("#define") {
+            continue;
+        }
+        let (Some(sym), Some(num)) = (w.next(), w.next()) else {
+            continue;
+        };
+        let Some(name) = sym.strip_prefix("SYS_") else {
+            continue;
+        };
+        if name == "MAXSYSCALL" {
+            continue;
+        }
+        if let Ok(n) = num.parse::<usize>() {
+            map.insert(n, name.to_string());
+        }
+    }
+    map
+}
+
+/// Names the `absent` slots whose row has no name after the C header's `SYS_` name of
+/// their number, when it has one.
+fn name_absent_from_header(calls: &mut Syscalls, header: &BTreeMap<usize, String>) {
+    for (name, num) in &mut calls.absent {
+        if name.is_empty()
+            && let Some(h) = header.get(num)
+        {
+            name.clone_from(h);
+        }
+    }
 }
 
 /// The `x` of every `table[SYS_x as usize] = Sysent::Native(...)` of `sysent.rs`.
@@ -446,7 +487,11 @@ pub fn manual(root: &Path, args: &[&str]) -> Result<()> {
     let (consts, max) = parse_syscall_consts(&read(&root.join("sys/hal/sys/syscall.rs"))?)?;
     let native = parse_native(&read(&root.join("sys/abi/sysent.rs"))?);
     let rows = parse_init_sysent(&read(&root.join("sys/kern/init_sysent.rs"))?)?;
-    let syscalls = classify(&rows, &native, &consts, max)?;
+    let mut syscalls = classify(&rows, &native, &consts, max)?;
+    let header = parse_syscall_h(&read(
+        &root.join("reference/openbsd-src/sys/sys/syscall.h"),
+    )?);
+    name_absent_from_header(&mut syscalls, &header);
     let kernel = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -676,6 +721,30 @@ pub static SYSENT: [Sysent; SYS_MAXSYSCALL] = [
         assert_eq!(numbers(&c.legacy), [5]);
         assert_eq!(numbers(&c.absent), [0, 2, 3]);
         assert_eq!(c.native.len() + c.legacy.len() + c.absent.len(), 6);
+    }
+
+    #[test]
+    fn an_unnamed_absent_slot_takes_the_headers_name() {
+        let h = "#define\tSYS_fhstat\t294\n#define\tSYS___semctl\t295\n\
+                 #define\tSYS_msgctl\t297\n#define\tSYS_MAXSYSCALL\t331\n";
+        let header = parse_syscall_h(h);
+        assert_eq!(header.len(), 3);
+        let mut c = Syscalls {
+            absent: vec![
+                (String::new(), 295),
+                (String::new(), 296),
+                ("4.2 sigreturn".into(), 297),
+            ],
+            ..Syscalls::default()
+        };
+        name_absent_from_header(&mut c, &header);
+        assert_eq!(c.absent[0], ("__semctl".to_string(), 295));
+        assert_eq!(
+            c.absent[1],
+            (String::new(), 296),
+            "no SYS_ name: stays empty"
+        );
+        assert_eq!(c.absent[2].0, "4.2 sigreturn", "a named row keeps its name");
     }
 
     #[test]
