@@ -2498,15 +2498,18 @@ pub fn ifaof_ifpforaddr(held: &NetHeld<'_>, addr: &[u8], ifp: &Ifnet) -> Option<
 /// `if_downall()`: every interface that is up marked down and told so (`SIOCSIFFLAGS`), at
 /// shutdown. The net lock is the detached holding, as `ifioctl`'s: wg(4)'s `wg_down`,
 /// pflow(4)'s `pflowioctl` and pfsync(4)'s `pfsync_down` let it go and take it back
-/// (N6.3a2 review's S1).
+/// (N6.3a2 review's S1). The next interface is read after the body, as the C's
+/// `TAILQ_FOREACH` reads `tqe_next`: one detached while a handler let the lock go is not
+/// visited (an iterator would have read it before).
 pub fn if_downall() {
     net_locked(|| {
-        for ifp in &IFNETLIST {
-            if ifp.if_flags.get() & IFF_UP == 0 {
-                continue;
+        let mut next = IFNETLIST.first();
+        while let Some(ifp) = next {
+            if ifp.if_flags.get() & IFF_UP != 0 {
+                if_down(ifp);
+                let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
             }
-            if_down(ifp);
-            let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
+            next = List::<IfnetList>::next(ifp);
         }
     });
 }
@@ -5133,12 +5136,21 @@ pub(crate) mod tests {
     }
 
     /// A driver whose requests let the net lock go and take it back, as wg(4)'s `wg_down`,
-    /// pflow(4)'s `pflowioctl` and pfsync(4)'s `pfsync_down` do.
-    struct DropsNetLock;
+    /// pflow(4)'s `pflowioctl` and pfsync(4)'s `pfsync_down` do; while it has let it go, it
+    /// takes the interface after it off `ifnetlist` when asked (another thread's detach).
+    struct DropsNetLock {
+        detach_next: core::sync::atomic::AtomicBool,
+    }
 
     impl NetDriver for DropsNetLock {
-        fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+        fn ioctl(&self, ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
             hal::netlock::unlock();
+            if self.detach_next.swap(false, Ordering::Relaxed)
+                && let Some(next) = List::<IfnetList>::next(ifp)
+            {
+                let _net = NETLOCK.write();
+                IFNETLIST.remove(next);
+            }
             hal::netlock::lock();
             Ok(())
         }
@@ -5146,17 +5158,29 @@ pub(crate) mod tests {
 
     #[test]
     fn a_driver_that_lets_the_net_lock_go_runs_under_ifioctl_and_if_downall() {
-        static D: DropsNetLock = DropsNetLock;
+        static D: DropsNetLock = DropsNetLock {
+            detach_next: core::sync::atomic::AtomicBool::new(false),
+        };
         let (_g, p) = ioctl_setup();
         let ifp = test_ifnet_fresh(b"tdl0", &D);
         if_attach(ifp);
+        let (gone, _) = listed_ifnet(b"tdl1");
+        let (last, _) = listed_ifnet(b"tdl2");
+        for i in [ifp, gone, last] {
+            i.if_flags.set(IFF_UP);
+        }
         let mut ifr: Ifreq = named(b"tdl0");
         ifr.set_ifr_flags(IFF_UP as i16);
         assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
         assert_ne!(ifp.if_flags.get() & IFF_UP, 0);
-        // Shutdown: the interface marked down and told, the lock its handler let go free.
+        // Shutdown: each interface marked down and told, the lock its handler let go free;
+        // tdl1, taken off the list while tdl0's handler had let the lock go, is not visited
+        // and the walk goes on to tdl2 (the C reads the next one after the body).
+        D.detach_next.store(true, Ordering::Relaxed);
         if_downall();
         assert_eq!(ifp.if_flags.get() & IFF_UP, 0);
+        assert_ne!(gone.if_flags.get() & IFF_UP, 0);
+        assert_eq!(last.if_flags.get() & IFF_UP, 0);
         assert_eq!(hal::netlock::status(), 0);
     }
 
