@@ -290,13 +290,38 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         if data.len() < iocparm_len(cmd) as usize {
             return Err(Errno::EINVAL);
         }
-        match self.if_ioctl.get() {
-            // SAFETY: `data` is at least `IOCPARM_LEN(cmd)` bytes (checked above), readable and
-            // writable, borrowed exclusively for the call: the command's structure the
-            // handler's contract asks for.
-            Some(ioctl) => unsafe { ioctl(ifp, cmd, data.as_mut_ptr()) },
-            None => Err(Errno::ENOTTY),
+        let Some(ioctl) = self.if_ioctl.get() else {
+            return Err(Errno::ENOTTY);
+        };
+        // The handlers view the request as its structure (an `Ifreq` is aligned to 8) and some
+        // read past it (`ether_multiaddr` takes a `sockaddr_in6` out of a 32-byte `ifreq`, as
+        // the C's handlers read `in6_ifreq`s through `struct ifreq *`): a request of up to 64
+        // bytes runs on an aligned, zeroed copy of 64, copied back after; a longer one must be
+        // aligned already (sys_ioctl's buffers are), or it is refused (review 2's B5-r).
+        let mut copy = [0u64; 8];
+        let small = data.len() <= size_of_val(&copy);
+        let req = if small {
+            let bytes = hal::user::bytes_of_mut(&mut copy[..]);
+            bytes[..data.len()].copy_from_slice(data);
+            bytes.as_mut_ptr()
+        } else if data.as_ptr().addr().is_multiple_of(align_of::<u64>()) {
+            data.as_mut_ptr()
+        } else {
+            return Err(Errno::EINVAL);
+        };
+        // SAFETY: `req` is aligned to 8 (a `[u64; 8]`, or `data` checked above) and names at
+        // least `IOCPARM_LEN(cmd)` readable and writable bytes (`data`'s length is checked
+        // above; the copy is 64 bytes, zero past `data`'s), followed, for a request of up to 64
+        // bytes, by zeroed bytes up to 64, so a handler's view of the command's structure, or
+        // of the longer address an `ifreq`'s union carries, stays inside it. Nothing else reads
+        // or writes those bytes during the call (`copy` is this frame's, `data` is borrowed
+        // exclusively). That is the handlers' contract (`IfIoctlFn`).
+        let r = unsafe { ioctl(ifp, cmd, req) };
+        if small {
+            let n = data.len();
+            data.copy_from_slice(&hal::user::bytes_of(&copy[..])[..n]);
         }
+        r
     }
 
     fn has_watchdog(&self) -> bool {
@@ -2633,6 +2658,93 @@ pub(crate) mod tests {
         let other = test_ifnet(b"tml1");
         if_attach(other);
         assert_eq!(other.if_snd().ifq_maxlen.get(), crate::net::ifq::IFQ_MAXLEN);
+    }
+
+    static ALIGNED_SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// A handler that checks the request it is given is aligned for its `ifreq`, counts the
+    /// calls that were, and answers `SIOCGIFFLAGS` with flags 0x1234.
+    ///
+    /// # Safety
+    ///
+    /// `IfIoctlFn`'s contract.
+    unsafe fn aligned_ioctl(_ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<(), Errno> {
+        if !data.addr().is_multiple_of(8) {
+            return Err(Errno::EFAULT);
+        }
+        ALIGNED_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if cmd == SIOCGIFFLAGS {
+            // SAFETY: the caller's contract: an aligned `ifreq`.
+            unsafe { (*data.cast::<Ifreq>()).set_ifr_flags(0x1234) };
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_handler_gets_an_aligned_request_whatever_the_caller_s() {
+        // Review 2's B5-r: a request the kernel's `if_ioctl` is given at any address reaches
+        // the handler aligned for its structure, and the handler's answer comes back.
+        let _g = setup_net();
+        let ifp = test_ifnet(b"tal0");
+        ifp.if_ioctl().set(Some(aligned_ioctl));
+        if_attach(ifp);
+        let mut buf = [0u64; 5];
+        let bytes = hal::user::bytes_of_mut(&mut buf[..]);
+        let before = ALIGNED_SEEN.load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            kernel::net::if_::if_ioctl(ifp, SIOCGIFFLAGS, &mut bytes[1..33]),
+            Ok(())
+        );
+        let ifr: Ifreq = hal::pod::at(&bytes[1..33], 0).expect("an ifreq");
+        assert_eq!(ifr.ifr_flags(), 0x1234);
+        // A request longer than the copy must be aligned already: refused at byte 1, taken
+        // at byte 0 (SIOCGLIFPHYADDR's `if_laddrreq`, 536 bytes).
+        let mut long = [0u64; 68];
+        let long = hal::user::bytes_of_mut(&mut long[..]);
+        assert_eq!(
+            kernel::net::if_::if_ioctl(ifp, SIOCGLIFPHYADDR, &mut long[1..537]),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            kernel::net::if_::if_ioctl(ifp, SIOCGLIFPHYADDR, &mut long[..536]),
+            Ok(())
+        );
+        assert_eq!(
+            ALIGNED_SEEN.load(std::sync::atomic::Ordering::Relaxed),
+            before + 2
+        );
+    }
+
+    #[test]
+    fn an_inet6_multicast_request_on_ethernet_reads_no_byte_past_it() {
+        // Review 2's B5-r (b): `ether_multiaddr` takes the `sockaddr_in6` of SIOCADDMULTI out
+        // of a 32-byte `ifreq`, bytes 24..40. Through the kernel's `if_ioctl` the handler reads
+        // the zeroed copy past the request: ff02:0:0:0 in the request and zeros after it is
+        // the group ff02::, Ethernet 33:33:00:00:00:00.
+        let _g = setup_net();
+        let ifp = crate::netinet::ip_input::tests::test_ether();
+        let ac = crate::netinet::if_ether::arpcom_of(ifp);
+        let mut ifr = Ifreq::zeroed();
+        ifr.ifr_name[..5].copy_from_slice(b"tvio0");
+        let sa = ifr.ifr_addr_mut();
+        sa.sa_len = 28;
+        sa.sa_family = AF_INET6;
+        // sin6_port (2) and sin6_flowinfo (4), then the first 8 bytes of sin6_addr.
+        sa.sa_data[6..8].copy_from_slice(&[0xff, 0x02]);
+        let r = kernel::net::if_::if_ioctl(
+            ifp,
+            SIOCADDMULTI,
+            hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr)),
+        );
+        assert!(matches!(r, Ok(()) | Err(Errno::ENETRESET)), "{r:?}");
+        assert_eq!(ac.ac_multicnt.get(), 1);
+        let r = kernel::net::if_::if_ioctl(
+            ifp,
+            SIOCDELMULTI,
+            hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr)),
+        );
+        assert!(matches!(r, Ok(()) | Err(Errno::ENETRESET)), "{r:?}");
+        assert_eq!(ac.ac_multicnt.get(), 0);
     }
 
     #[test]
