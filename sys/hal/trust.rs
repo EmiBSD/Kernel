@@ -119,18 +119,20 @@
 //! `bsd`'s boot (`hal_bridges_register`'s first steps, before any code of the kernel or ABI
 //! crates runs; a later take is `None`, and `bsd`'s own take panics the boot if someone took
 //! it first, so no `forbid` crate can publish a storage); the storage's address and size
-//! change and are read as one pair (a sequence); the copy checks that the net lock is
-//! written by the running process or read (`panic(9)` otherwise); and a `Cell` is not `Sync`,
-//! so no thread but the one that made a cell reaches it through safe code. The token
-//! holder's contract, the C's own invariant: the bytes of a storage it published are written
-//! only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`), and the
-//! storage behind its `&'static` lives while the interface address naming it lives (it is
-//! freed only after `ifa_del` has unlinked the address and its last reference is gone,
-//! `ifafree`: `bsd`'s `'static`, a lie of the family its `&'static Ifnet` belongs to). The
-//! reader's part: for a shared holding, `rw_status` cannot say whose it is (the C's
-//! `NET_ASSERT_LOCKED()` cannot either), so a reader that finds the lock read is one of its
-//! readers, as every C reader of `ifa_addr` is. The `// SAFETY:` of `SaLink::read` rests on
-//! these; the boundary goes when `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's
+//! change and are read as one pair (a sequence); and the copy takes a proof that the net lock
+//! is held (`hal::netlock::NetHeld`, review 2's S-a): kernel code makes it from a witness of
+//! the lock (`NetHeld::of`, exact), and only the token holder can make it from a check of
+//! `rw_status` (`SaToken::net_held`), for its own holdings, which no witness exists of. The
+//! token holder's contract, the C's own invariant: the bytes of a storage it published are
+//! written only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`;
+//! `bsd`'s `in_ifaddr`, `in_multi` and `in6_ifaddr` are `Sync` by `bsd`'s own `unsafe impl`,
+//! so this, not the cells' type, keeps writers out); the storage behind its `&'static` lives
+//! while the interface address naming it lives (it is freed only after `ifa_del` has unlinked
+//! the address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the
+//! family its `&'static Ifnet` belongs to); and it asks for a proof by check only while it
+//! holds the lock itself: for a shared holding `rw_status` cannot say whose it is (the C's
+//! `NET_ASSERT_LOCKED()` cannot either), so a read holding it finds is its own, as every C
+//! reader of `ifa_addr` holds one. The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's
 //! and the interface address embeds its storage (N6.4, N6.5).
 //!
 //! ## Redesign

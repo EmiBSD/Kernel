@@ -53,7 +53,8 @@
 //! of an interface address (`struct in_ifaddr`'s `ia_addr`, `in6_ifaddr`'s, `in_multi`'s
 //! `inm_sin`). The kernel's interface layer compares and copies those addresses
 //! (`ifa_ifwithaddr`, `ifaof_ifpforaddr`, `ifconf`), so it reads their `sa_len` bytes
-//! through [`SaLink::read`]: a copy, made under the net lock (checked), of a storage that
+//! through [`SaLink::read`]: a copy, made under the net lock (a `NetHeld` proves it), of a
+//! storage that
 //! only the holder of the one [`SaToken`] (`bsd`'s boot takes it) can publish, typed
 //! (`&'static Cell<T>` of an `AbiPod` image) so the copy never passes its end.
 //!
@@ -81,6 +82,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering, fence};
 
 use crate::assert::hal_panic;
+use crate::netlock::NetHeld;
 use crate::rwlock::{RW_READ, RW_WRITE};
 use crate::sys::socket::Sockaddr;
 use crate::user::AbiPod;
@@ -367,6 +369,17 @@ impl SaToken {
             Some(&SA_TOKEN)
         }
     }
+
+    /// The proof that the net lock is held, for the token holder's walks under a holding of
+    /// its own that no witness exists of (`bsd`'s detached `NET_LOCK()` and
+    /// `NET_LOCK_SHARED()`): `None` unless the lock is written by the running process or
+    /// read (the C's `NET_ASSERT_LOCKED()`). That a read holding is the caller's, `rw_status`
+    /// cannot say: the holder's contract (`sys/hal/trust.rs`). Kernel code holds a witness
+    /// and takes [`NetHeld::of`] instead.
+    pub fn net_held(&self) -> Option<NetHeld<'_>> {
+        let held = crate::netlock::status();
+        (held == RW_WRITE || held == RW_READ).then(NetHeld::new)
+    }
 }
 
 /// A copy of the socket address an [`SaLink`] names, read under the net lock: its `sa_len`
@@ -465,9 +478,13 @@ impl SaLink {
 
     /// A socket address's word that is never read through the link (`enc(4)`'s
     /// link-level address on its private `ifaddr`, which no interface lists): `bsd`'s own
-    /// derefs of [`SaLink::get`] alone follow it; [`SaLink::read`] of it is `panic(9)`.
+    /// derefs of [`SaLink::get`] alone follow it; [`SaLink::read`] of it is `panic(9)`. For
+    /// the [`SaToken`]'s holder: `bsd` dereferences what `get` gives, so no other code may
+    /// plant a word (review 2's nit; the `PtrWord` precedent). N6.3b: a kernel `rtsock` that
+    /// reads `rt_ifa->ifa_addr` of enc's routes would reach this word and stop; enc's address
+    /// must be published as a storage (or the reader take `get`) by then.
     #[inline]
-    pub fn set_word(&self, sa: *const Sockaddr) {
+    pub fn set_word(&self, _token: &SaToken, sa: *const Sockaddr) {
         self.publish(sa.cast::<u8>().cast_mut(), 0);
     }
 
@@ -531,10 +548,10 @@ impl SaLink {
     }
 
     /// A copy of the socket address (`None` when the link is empty), for a holder of the net
-    /// lock (the C's readers of `ifa_addr`, `NET_ASSERT_LOCKED()`): `panic(9)` when the net
-    /// lock is neither written by the running process nor read, or when the link holds a
-    /// word [`SaLink::set_word`] stored.
-    pub fn read(&self) -> Option<SaBytes> {
+    /// lock (the C's readers of `ifa_addr`, `NET_ASSERT_LOCKED()`), which `_held` proves (a
+    /// witness's, or the token holder's check, made once per walk): `panic(9)` when the link
+    /// holds a word [`SaLink::set_word`] stored.
+    pub fn read(&self, _held: &NetHeld<'_>) -> Option<SaBytes> {
         let (p, cap) = self.load_pair();
         if p.is_null() {
             return None;
@@ -542,12 +559,6 @@ impl SaLink {
         if cap == 0 {
             hal_panic(format_args!(
                 "SaLink: a word that is never read was read ({p:p})"
-            ));
-        }
-        let held = crate::netlock::status();
-        if held != RW_WRITE && held != RW_READ {
-            hal_panic(format_args!(
-                "SaLink: an interface address read without the net lock (status {held:#x})"
             ));
         }
         let cap = usize::from(cap).min(SA_READ_MAX);
@@ -567,12 +578,12 @@ impl SaLink {
         // write races with the copy: only the `SaToken`'s holder can make a link name a cell
         // (taken by `bsd`'s boot before any `forbid` crate runs), and its contract
         // (`sys/hal/trust.rs`) is that the cell's bytes are written only while it holds the
-        // net lock exclusively; the check above found the lock written by this process (so
-        // no other writes) or read (the C's `NET_ASSERT_LOCKED()`: this caller is one of the
-        // readers, which `rw_status` cannot name, so no exclusive holder exists until it
-        // leaves); a `Cell` is not `Sync`, so no thread reaches a cell through safe code but
-        // the one that made it. The copy makes no reference to the storage, so a write after
-        // it touches nothing the caller holds.
+        // net lock exclusively, and `_held` proves the caller holds the lock while it copies:
+        // a witness of it (`NetHeld::of`: kernel code, exact, so no exclusive holder exists
+        // until the caller lets go), or the token holder's own check of a holding of its own
+        // (`SaToken::net_held`, under the holder's contract that a read holding it finds is
+        // its own). The copy makes no reference to the storage, so a write after it touches
+        // nothing the caller holds.
         out.len = unsafe {
             let len = usize::from(p.read()).min(cap);
             ptr::copy_nonoverlapping(p, out.buf.as_mut_ptr(), len.max(2));
@@ -715,7 +726,9 @@ mod tests {
         // SAFETY: a `SaLink` is an `AtomicPtr` (zero is null), an `AtomicU8` and an
         // `AtomicU32`: all zero bytes are an empty link whose sequence is even.
         let s: SaLink = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
-        assert!(s.is_none() && s.read().is_none() && s.get().is_null());
+        assert!(
+            s.is_none() && s.read(&crate::netlock::NetHeld::new()).is_none() && s.get().is_null()
+        );
     }
 
     /// The embed idiom's proof (docs/IDIOMS.md) for `crate::list` (a `forbid(unsafe_code)`
@@ -765,32 +778,33 @@ mod tests {
     fn a_socket_address_is_read_as_its_sa_len_bytes_cut_at_its_storage() {
         crate::testutil::install();
         let _s = crate::netlock::tests::serial();
-        let _net = crate::netlock::NETLOCK.write();
+        let net = crate::netlock::NETLOCK.write();
+        let held = crate::netlock::NetHeld::of(&net).expect("the net lock's witness");
 
         // An in_ifaddr's ia_addr (16 bytes) and an in6_ifaddr's (28).
         let sin = image::<16>(16, 2, &[0, 0, 10, 0, 2, 15]);
         let sin6 = image::<28>(28, 24, &[0; 26]);
         let l = SaLink::new();
-        assert!(l.read().is_none());
+        assert!(l.read(&held).is_none());
         l.set(token(), Some(sin));
-        let r = l.read().expect("an address");
+        let r = l.read(&held).expect("an address");
         assert_eq!((r.family(), r.as_bytes()), (2, &sin.get()[..]));
         assert!(ptr::eq(l.get().cast_const().cast(), sin.as_ptr()));
         l.set(token(), Some(sin6));
-        let r = l.read().expect("an address");
+        let r = l.read(&held).expect("an address");
         assert_eq!((r.len(), r[1]), (28, 24));
 
         // A shorter sa_len reads only its bytes (a netmask's), the header whatever it says.
         let mask = image::<16>(5, 2, &[0, 0, 255]);
         l.set(token(), Some(mask));
-        assert_eq!(l.read().map(|r| (r.len(), r.family())), Some((5, 2)));
+        assert_eq!(l.read(&held).map(|r| (r.len(), r.family())), Some((5, 2)));
         let zero = image::<16>(0, 2, &[]);
         l.set(token(), Some(zero));
-        assert_eq!(l.read().map(|r| (r.len(), r.family())), Some((0, 2)));
+        assert_eq!(l.read(&held).map(|r| (r.len(), r.family())), Some((0, 2)));
         // A longer sa_len than its storage stops at the storage (review 1's B2).
         let long = image::<16>(200, 2, &[1; 14]);
         l.set(token(), Some(long));
-        let r = l.read().expect("an address");
+        let r = l.read(&held).expect("an address");
         assert_eq!(r.as_bytes(), &long.get()[..]);
 
         // The copy is the caller's: the storage written afterwards changes nothing in it.
@@ -801,34 +815,43 @@ mod tests {
         );
 
         l.clear();
-        assert!(l.is_none() && l.read().is_none());
+        assert!(l.is_none() && l.read(&held).is_none());
         fn shared<T: Send + Sync>() {}
         shared::<SaLink>();
     }
 
     #[test]
-    fn a_read_needs_the_net_lock_and_a_word_is_never_read() {
+    fn a_read_needs_a_proof_of_the_net_lock_and_a_word_is_never_read() {
         crate::testutil::install();
         let _s = crate::netlock::tests::serial();
         let l: &'static SaLink = Box::leak(Box::new(SaLink::new()));
         l.set(token(), Some(image::<16>(16, 2, &[])));
-        // Neither written by this thread nor read: refused.
-        assert!(std::panic::catch_unwind(|| l.read()).is_err());
-        // Read, or written by this thread: read.
+        // Neither written by this thread nor read: the token holder gets no proof.
+        assert!(token().net_held().is_none());
+        // Read: the witness's proof, and the token holder's check.
         let r = crate::netlock::NETLOCK.read();
-        assert_eq!(l.read().map(|r| r.len()), Some(16));
+        let held = crate::netlock::NetHeld::of(&r).expect("the net lock's witness");
+        assert_eq!(l.read(&held).map(|r| r.len()), Some(16));
+        assert!(token().net_held().is_some());
         drop(r);
+        // Another lock's witness proves nothing.
+        static OTHER: crate::rwlock::RawRwlock = crate::rwlock::RawRwlock::new("other");
+        let o = OTHER.read();
+        assert!(crate::netlock::NetHeld::of(&o).is_none());
+        drop(o);
         let w = crate::netlock::NETLOCK.write();
-        assert_eq!(l.read().map(|r| r.len()), Some(16));
-        // Written by another thread: refused.
+        let held = crate::netlock::NetHeld::of(&w).expect("the net lock's witness");
+        assert_eq!(l.read(&held).map(|r| r.len()), Some(16));
+        // Written by another thread: the token holder gets no proof there.
         thread::scope(|s| {
-            s.spawn(|| assert!(std::panic::catch_unwind(|| l.read()).is_err()));
+            s.spawn(|| assert!(token().net_held().is_none()));
         });
         // enc(4)'s word: kept for bsd, never read.
         let sa = image::<16>(16, 18, &[]);
-        l.set_word(sa.as_ptr().cast());
+        l.set_word(token(), sa.as_ptr().cast());
         assert!(ptr::eq(l.get().cast_const().cast(), sa.as_ptr()));
-        assert!(std::panic::catch_unwind(|| l.read()).is_err());
+        assert!(std::panic::catch_unwind(|| l.read(&crate::netlock::NetHeld::new())).is_err());
+        drop(held);
         drop(w);
     }
 
@@ -858,9 +881,10 @@ mod tests {
             }
             for _ in 0..2 {
                 s.spawn(|| {
-                    let _r = crate::netlock::NETLOCK.read();
+                    let r = crate::netlock::NETLOCK.read();
+                    let held = crate::netlock::NetHeld::of(&r).expect("the net lock's witness");
                     for _ in 0..20_000 {
-                        let b = l.read().expect("an address");
+                        let b = l.read(&held).expect("an address");
                         assert_eq!(usize::from(b.family()), b.len());
                         assert!(b.iter().skip(2).all(|&x| x == b.family()));
                     }

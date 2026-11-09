@@ -1248,7 +1248,7 @@ mod tests {
         ifp.set_arpcom();
         assert!(ifp.is_arpcom());
         let ifa = Ifaddr::new();
-        assert!(ifa.ifa_addr.read().is_none() && ifa.ifa_broadaddr().is_none());
+        assert!(ifa.ifa_addr.is_none() && ifa.ifa_broadaddr().is_none());
         assert!(ifa.ifa_ifp.get().is_none());
     }
 

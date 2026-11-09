@@ -1188,6 +1188,15 @@ pub(crate) mod tests {
         teardown();
     }
 
+    /// `f` with the net lock held, as the socket layer's `solock` calls the pcb functions
+    /// (their address checks read the interfaces' addresses under it).
+    fn net_locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     #[test]
     fn in6_pcbaddrisavail_checks_the_address() {
         let (_g, _t, p) = setup();
@@ -1196,26 +1205,26 @@ pub(crate) mod tests {
 
         // The wildcard without a port is always available.
         let mut s = sin6(IN6ADDR_ANY, 0);
-        assert_eq!(in6_pcbaddrisavail(inp, &mut s, 0, p), Ok(()));
+        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
         // No IPv4-mapped addresses.
         let mut s = sin6(a6("::ffff:a00:20f"), 0);
         assert_eq!(
-            in6_pcbaddrisavail(inp, &mut s, 0, p),
+            net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)),
             Err(Errno::EADDRNOTAVAIL)
         );
         // Not an address of ours, unless SO_BINDANY.
         let mut s = sin6(a6("2001:db8::1"), 0);
         assert_eq!(
-            in6_pcbaddrisavail(inp, &mut s, 0, p),
+            net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)),
             Err(Errno::EADDRNOTAVAIL)
         );
         inp.socket().set_options_legacy(SO_BINDANY, true);
         let mut s = sin6(a6("2001:db8::1"), 0);
-        assert_eq!(in6_pcbaddrisavail(inp, &mut s, 0, p), Ok(()));
+        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
         // A multicast group is available too, the scope id cleared.
         let mut s = sin6(a6("ff02::1"), 0);
         s.sin6_scope_id = 0;
-        assert_eq!(in6_pcbaddrisavail(inp, &mut s, 0, p), Ok(()));
+        assert_eq!(net_locked(|| in6_pcbaddrisavail(inp, &mut s, 0, p)), Ok(()));
         assert_eq!(s.sin6_scope_id, 0);
         release(inp);
         teardown();

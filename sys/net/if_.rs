@@ -792,6 +792,16 @@ unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
     unsafe { slice::from_raw_parts(sa.cast::<u8>(), usize::from((*sa).sa_len).max(2)) }
 }
 
+/// The proof that `bsd`'s caller holds the net lock (detached), for one walk of the kernel's
+/// address lookups: `hal`'s check through the `SaToken` (the C's `NET_ASSERT_LOCKED()`);
+/// `panic(9)` without it, where the C's splassert would only print.
+fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
+    match crate::net::if_var::sa_token().net_held() {
+        Some(h) => h,
+        None => panic(format_args!("{what}: the net lock is not held")),
+    }
+}
+
 /// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.
 ///
 /// # Safety
@@ -799,7 +809,11 @@ unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
 /// `addr` points at a readable socket address of `sa_len` bytes.
 pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifa_ifwithaddr(unsafe { sa_bytes(addr) }, rtableid)
+    kernel::net::if_::ifa_ifwithaddr(
+        &net_held("ifa_ifwithaddr"),
+        unsafe { sa_bytes(addr) },
+        rtableid,
+    )
 }
 
 /// `ifa_ifwithdstaddr(addr, rdomain)`: the point-to-point interface with a given
@@ -810,7 +824,11 @@ pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<&'s
 /// As for [`ifa_ifwithaddr`].
 pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifa_ifwithdstaddr(unsafe { sa_bytes(addr) }, rdomain)
+    kernel::net::if_::ifa_ifwithdstaddr(
+        &net_held("ifa_ifwithdstaddr"),
+        unsafe { sa_bytes(addr) },
+        rdomain,
+    )
 }
 
 /// `ifaof_ifpforaddr(addr, ifp)`: the address of `ifp` that best matches `addr`.
@@ -820,7 +838,11 @@ pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<&
 /// As for [`ifa_ifwithaddr`].
 pub unsafe fn ifaof_ifpforaddr(addr: *const Sockaddr, ifp: &Ifnet) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifaof_ifpforaddr(unsafe { sa_bytes(addr) }, ifp)
+    kernel::net::if_::ifaof_ifpforaddr(
+        &net_held("ifaof_ifpforaddr"),
+        unsafe { sa_bytes(addr) },
+        ifp,
+    )
 }
 
 /// `if_group_routechange(dst, mask)`: the egress group built again after a default route

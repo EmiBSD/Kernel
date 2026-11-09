@@ -2414,7 +2414,7 @@ pub(crate) mod tests {
         // An explicit port on the wildcard address.
         let a = pcb(t);
         let n = nam(sin([0; 4], 5000));
-        in_pcbbind(a, Some(n), p).expect("bind");
+        locked(|| in_pcbbind(a, Some(n), p)).expect("bind");
         assert_eq!(a.inp_lport.get(), htons(5000));
         let found = in_pcblookup_local_lock(t, &ZEROIN46_ADDR, htons(5000), 0, 0, IN_PCBLOCK_GRAB);
         assert!(found.is_some_and(|f| ptr::eq(f, a)));
@@ -2426,22 +2426,25 @@ pub(crate) mod tests {
         assert!(wild.is_some_and(|f| ptr::eq(f, a)));
         in_pcbunref(wild);
         // Bound already.
-        assert_eq!(in_pcbbind(a, Some(n), p), Err(Errno::EINVAL));
+        assert_eq!(locked(|| in_pcbbind(a, Some(n), p)), Err(Errno::EINVAL));
 
         // The same port again (a second socket grows the table past its load factor).
         let b = pcb(t);
         assert!(t.inpt_size.get() > 1, "resized");
-        assert_eq!(in_pcbbind(b, Some(n), p), Err(Errno::EADDRINUSE));
+        assert_eq!(locked(|| in_pcbbind(b, Some(n), p)), Err(Errno::EADDRINUSE));
         // ... unless both sockets allow it.
         a.socket().set_options_legacy(SO_REUSEPORT, true);
         b.socket().set_options_legacy(SO_REUSEPORT, true);
-        in_pcbbind(b, Some(n), p).expect("SO_REUSEPORT bind");
+        locked(|| in_pcbbind(b, Some(n), p)).expect("SO_REUSEPORT bind");
         // An address that is not ours.
         let c = pcb(t);
         let other = nam(sin([192, 0, 2, 1], 5001));
-        assert_eq!(in_pcbbind(c, Some(other), p), Err(Errno::EADDRNOTAVAIL));
+        assert_eq!(
+            locked(|| in_pcbbind(c, Some(other), p)),
+            Err(Errno::EADDRNOTAVAIL)
+        );
         // A picked port, from the default range.
-        in_pcbbind(c, None, p).expect("anonymous bind");
+        locked(|| in_pcbbind(c, None, p)).expect("anonymous bind");
         let port = i32::from(u16::from_be(c.inp_lport.get()));
         assert!(
             (IPPORT_RESERVED..=IPPORT_USERRESERVED).contains(&port),

@@ -225,9 +225,10 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     sc.sc_ifa.ifa_ifp.set(Some(ifp));
     // A word bsd's routing code follows itself (`rt_ifa`'s copies), never read through the
     // link: this ifa is on no interface's list (hal::link::SaLink::set_word).
-    sc.sc_ifa
-        .ifa_addr
-        .set_word(sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()));
+    sc.sc_ifa.ifa_addr.set_word(
+        crate::net::if_var::sa_token(),
+        sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
+    );
     sc.sc_ifa.ifa_netmask.clear();
 
     bpfattach(&ifp.if_bpf, ifp, DLT_ENC, ENC_HDRLEN as u32);

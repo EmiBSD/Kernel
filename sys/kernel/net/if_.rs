@@ -251,7 +251,7 @@ use hal::link::Link as HalLink;
 use hal::list::List;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::Mutexed;
-use hal::netlock::NETLOCK;
+use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pool::BoxPool;
 use hal::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock};
@@ -2114,11 +2114,10 @@ fn sa_family(sa: &[u8]) -> Option<SaFamily> {
 }
 
 /// `ifa_ifwithaddr(addr, rtableid)`: the address `addr` (a socket address's bytes) of an
-/// interface of `rtableid`'s domain. Under the net lock: the walk over `ifnetlist` and the
-/// address lists, the C's.
-pub fn ifa_ifwithaddr(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
-    net_assert_locked();
-
+/// interface of `rtableid`'s domain. Under the net lock, which `held` proves (the C's
+/// `NET_ASSERT_LOCKED()`, once per walk): the walk over `ifnetlist` and the address lists,
+/// the C's.
+pub fn ifa_ifwithaddr(held: &NetHeld<'_>, addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
     let family = sa_family(addr)?;
     let rdomain = rtable_l2(rtableid);
     for ifp in &IFNETLIST {
@@ -2127,7 +2126,7 @@ pub fn ifa_ifwithaddr(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
         }
 
         for ifa in &ifp.if_addrlist {
-            let Some(ifa_addr) = ifa.ifa_addr.read() else {
+            let Some(ifa_addr) = ifa.ifa_addr.read(held) else {
                 continue;
             };
             if ifa_addr.family() != family {
@@ -2143,10 +2142,8 @@ pub fn ifa_ifwithaddr(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
 }
 
 /// `ifa_ifwithdstaddr(addr, rdomain)`: the point-to-point interface address whose
-/// destination is `addr`.
-pub fn ifa_ifwithdstaddr(addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
-    net_assert_locked();
-
+/// destination is `addr`, under the net lock `held` proves.
+pub fn ifa_ifwithdstaddr(held: &NetHeld<'_>, addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
     let family = sa_family(addr)?;
     let rdomain = rtable_l2(rdomain);
     for ifp in &IFNETLIST {
@@ -2155,13 +2152,17 @@ pub fn ifa_ifwithdstaddr(addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
         }
         if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
             for ifa in &ifp.if_addrlist {
-                let fam = ifa.ifa_addr.read().map(|a| a.family());
-                let Some(dstaddr) = ifa.ifa_dstaddr.read() else {
-                    continue;
-                };
-                if fam != Some(family) {
+                // An address without a destination is skipped before any copy (review 2's
+                // S-b: the C tests the pointer, not the bytes).
+                if ifa.ifa_dstaddr.is_none() {
                     continue;
                 }
+                if ifa.ifa_addr.read(held).map(|a| a.family()) != Some(family) {
+                    continue;
+                }
+                let Some(dstaddr) = ifa.ifa_dstaddr.read(held) else {
+                    continue;
+                };
                 if sa_equal(addr, &dstaddr) {
                     return Some(ifa);
                 }
@@ -2173,7 +2174,8 @@ pub fn ifa_ifwithdstaddr(addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
 
 /// `ifaof_ifpforaddr(addr, ifp)`: the address of `ifp` that best matches `addr`: equal (or
 /// its destination equal, point-to-point), or in its subnet; else the first of the family.
-pub fn ifaof_ifpforaddr(addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
+/// Under the net lock `held` proves (the C's callers hold it).
+pub fn ifaof_ifpforaddr(held: &NetHeld<'_>, addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
     let mut ifa_maybe = None;
     let af = sa_family(addr)?;
 
@@ -2181,7 +2183,7 @@ pub fn ifaof_ifpforaddr(addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
         return None;
     }
     for ifa in &ifp.if_addrlist {
-        let Some(ifa_addr) = ifa.ifa_addr.read() else {
+        let Some(ifa_addr) = ifa.ifa_addr.read(held) else {
             continue;
         };
         if ifa_addr.family() != af {
@@ -2190,11 +2192,14 @@ pub fn ifaof_ifpforaddr(addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
         if ifa_maybe.is_none() {
             ifa_maybe = Some(ifa);
         }
-        let netmask = match ifa.ifa_netmask.read() {
+        let netmask = match ifa.ifa_netmask.read(held) {
             Some(nm) if ifp.if_flags.get() & IFF_POINTOPOINT == 0 => nm,
             _ => {
                 if sa_equal(addr, &ifa_addr)
-                    || ifa.ifa_dstaddr.read().is_some_and(|d| sa_equal(addr, &d))
+                    || ifa
+                        .ifa_dstaddr
+                        .read(held)
+                        .is_some_and(|d| sa_equal(addr, &d))
                 {
                     return Some(ifa);
                 }
@@ -3529,7 +3534,8 @@ pub(crate) mod tests {
             if_attach(ifp);
             ifps.push(ifp);
         }
-        let _net = NETLOCK.write();
+        let net = NETLOCK.write();
+        let held = &NetHeld::of(&net).expect("the net lock's witness");
         for (i, &ifp) in ifps.iter().enumerate() {
             let i = i as u8;
             addrs.push(address(ifp, [10, i, 0, 1], Some([255, 255, 255, 0]), None));
@@ -3538,16 +3544,16 @@ pub(crate) mod tests {
         ifps[7].if_flags.set(IFF_POINTOPOINT);
         let p2p = address(ifps[7], [192, 168, 0, 1], None, Some([192, 168, 0, 2]));
 
-        let found = |a: [u8; 4]| ifa_ifwithaddr(&bytes(sin(a)), 0);
+        let found = |a: [u8; 4]| ifa_ifwithaddr(held, &bytes(sin(a)), 0);
         assert!(found([10, 5, 0, 1]).is_some_and(|f| core::ptr::eq(f, addrs[10])));
         assert!(found([172, 16, 3, 1]).is_some_and(|f| core::ptr::eq(f, addrs[7])));
         assert!(found([10, 5, 0, 2]).is_none());
-        let dst = ifa_ifwithdstaddr(&bytes(sin([192, 168, 0, 2])), 0);
+        let dst = ifa_ifwithdstaddr(held, &bytes(sin([192, 168, 0, 2])), 0);
         assert!(dst.is_some_and(|f| core::ptr::eq(f, p2p)));
-        assert!(ifa_ifwithdstaddr(&bytes(sin([10, 5, 0, 1])), 0).is_none());
+        assert!(ifa_ifwithdstaddr(held, &bytes(sin([10, 5, 0, 1])), 0).is_none());
 
         // ifp 2: 10.2.0.0/24 and 172.16.0.0/16; the first of the family otherwise.
-        let best = |a: [u8; 4]| ifaof_ifpforaddr(&bytes(sin(a)), ifps[2]);
+        let best = |a: [u8; 4]| ifaof_ifpforaddr(held, &bytes(sin(a)), ifps[2]);
         assert!(best([10, 2, 0, 77]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
         assert!(best([172, 16, 200, 9]).is_some_and(|f| core::ptr::eq(f, addrs[5])));
         assert!(best([8, 8, 8, 8]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
