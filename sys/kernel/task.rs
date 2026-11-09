@@ -265,16 +265,14 @@ impl Task {
     /// `panic(9)`.
     pub fn set_ref(&self, func: RefTaskFn, target: &'static (dyn Any + Send + Sync)) {
         let same = |w: &RefWork| ptr::fn_addr_eq(w.func, func) && ptr::addr_eq(w.target, target);
-        let fixed = match self.fixed.get() {
-            Some(w) => same(w),
-            None => {
-                // The body names nothing once the pair is fixed: what an earlier `set` left
-                // goes first.
-                let old = self.set_func(None, ptr::null_mut(), None);
-                drop(old);
-                self.fixed.set(RefWork { func, target }).is_ok()
-                    || self.fixed.get().is_some_and(same)
-            }
+        let fixed = if let Some(w) = self.fixed.get() {
+            same(w)
+        } else {
+            // The body names nothing once the pair is fixed: what an earlier `set` left goes
+            // first.
+            let old = self.set_func(None, ptr::null_mut(), None);
+            drop(old);
+            self.fixed.set(RefWork { func, target }).is_ok() || self.fixed.get().is_some_and(same)
         };
         if !fixed {
             kpanic(format_args!(
