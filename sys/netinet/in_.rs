@@ -155,6 +155,8 @@
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
+use hal::user::bytes_of_mut;
+
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::subr_prf::panic;
 use crate::net::if_::{
@@ -1603,11 +1605,20 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMult
         sin_addr: *addr,
         ..SockaddrIn::default()
     };
-    // SAFETY: `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-    unsafe { ptr::write_unaligned(satosin(ifr.ifr_addr_mut()), sin) };
+    // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
+    let _ = hal::pod::put(
+        bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
+        0,
+        &sin,
+    );
     kernel_lock();
-    // SAFETY: `ifr` is a `struct ifreq`, what SIOCADDMULTI takes.
-    if unsafe { ifp_ioctl(ifp, SIOCADDMULTI, ptr::from_mut(&mut ifr).cast()) }.is_err() {
+    if kernel::net::if_::if_ioctl(
+        ifp,
+        SIOCADDMULTI,
+        bytes_of_mut(core::slice::from_mut(&mut ifr)),
+    )
+    .is_err()
+    {
         kernel_unlock();
         free(mem, M_IPMADDR, size_of::<InMulti>());
         return None;
@@ -1671,11 +1682,18 @@ pub fn in_delmulti(inm: &'static InMulti) {
             sin_addr: inm.inm_addr(),
             ..SockaddrIn::default()
         };
-        // SAFETY: `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-        unsafe { ptr::write_unaligned(satosin(ifr.ifr_addr_mut()), sin) };
+        // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
+        let _ = hal::pod::put(
+            bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
+            0,
+            &sin,
+        );
         kernel_lock();
-        // SAFETY: `ifr` is a `struct ifreq`, what SIOCDELMULTI takes.
-        let _ = unsafe { ifp_ioctl(ifp, SIOCDELMULTI, ptr::from_mut(&mut ifr).cast()) };
+        let _ = kernel::net::if_::if_ioctl(
+            ifp,
+            SIOCDELMULTI,
+            bytes_of_mut(core::slice::from_mut(&mut ifr)),
+        );
         kernel_unlock();
 
         if_put(ifp);

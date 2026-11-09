@@ -1080,8 +1080,8 @@ unsafe fn pru_control(
     // SAFETY: a non-NULL `so` is the live socket of the request, which the caller's file
     // reference keeps for the call (the `fp_socket` idiom).
     let so: &'static Socket = unsafe { &*so.cast::<Socket>() };
-    // SAFETY: `data` is the kernel copy of the request, as long as `cmd` encodes (the
-    // caller's contract), exclusively ours for the call.
+    // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long as
+    // `cmd` encodes, exclusively ours for the call.
     let data = unsafe { slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize) };
     // The bsd table's pru_control, which takes the interface (the kernel's Usrreqs::control
     // does not until N6.3a); a socket of the kernel's UNIX domain has none, as the C's.
@@ -1288,8 +1288,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
                 break 'out;
             }
             net_lock();
-            // SAFETY: the caller's contract is the hook's.
-            error = unsafe { ifp_ioctl(ifp, cmd, data) };
+            // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+            // as `cmd` encodes, ours for the call.
+            error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+            });
             net_unlock();
             if error.is_ok() {
                 rtm_ifchg(ifp);
@@ -1359,8 +1362,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
             net_lock();
             error = if_addgroup(ifp, ifgr.ifgr_group());
             if error.is_ok() {
-                // SAFETY: the caller's contract is the hook's.
-                error = unsafe { ifp_ioctl(ifp, cmd, data) };
+                // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+                // as `cmd` encodes, ours for the call.
+                error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                    slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+                });
                 if error == Err(Errno::ENOTTY) {
                     error = Ok(());
                 }
@@ -1376,8 +1382,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
             // SAFETY: the caller's contract: an `ifgroupreq`.
             let ifgr = unsafe { &*data.cast::<Ifgroupreq>() };
             net_lock();
-            // SAFETY: the caller's contract is the hook's.
-            error = unsafe { ifp_ioctl(ifp, cmd, data) };
+            // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+            // as `cmd` encodes, ours for the call.
+            error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+            });
             if error == Err(Errno::ENOTTY) {
                 error = Ok(());
             }
@@ -1405,8 +1414,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
             net_lock();
             match ifp.if_type.get() {
                 IFT_ETHER | IFT_CARP | IFT_XETHER | IFT_ISO88025 => {
-                    // SAFETY: the caller's contract is the hook's.
-                    error = unsafe { ifp_ioctl(ifp, cmd, data) };
+                    // SAFETY: the caller's contract: `data` is the kernel copy of the request,
+                    // as long as `cmd` encodes, ours for the call.
+                    error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                        slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+                    });
                     if error == Err(Errno::ENOTTY) {
                         error = Ok(());
                     }
@@ -1454,8 +1466,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
             }
 
             // don't take NET_LOCK because i2c reads take a long time
-            // SAFETY: the caller's contract is the hook's.
-            error = unsafe { ifp_ioctl(ifp, cmd, data) };
+            // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+            // as `cmd` encodes, ours for the call.
+            error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+            });
         }
 
         SIOCSIFMEDIA | SIOCGIFMEDIA => 'out: {
@@ -1466,8 +1481,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
                 break 'out;
             }
             // net lock is not needed
-            // SAFETY: the caller's contract is the hook's.
-            error = unsafe { ifp_ioctl(ifp, cmd, data) };
+            // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+            // as `cmd` encodes, ours for the call.
+            error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+            });
         }
 
         _ => 'out: {
@@ -1520,8 +1538,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
                 break 'out;
             }
             net_lock();
-            // SAFETY: the caller's contract is the hook's.
-            error = unsafe { ifp_ioctl(ifp, cmd, data) };
+            // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
+            // as `cmd` encodes, ours for the call.
+            error = kernel::net::if_::if_ioctl(ifp, cmd, unsafe {
+                slice::from_raw_parts_mut(data, iocparm_len(cmd) as usize)
+            });
             net_unlock();
         }
     }
@@ -1532,8 +1553,11 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
         let rflags = i32::from(ifr.ifr_flags()) & 0xffff;
         ifp.if_flags
             .set((ifp.if_flags.get() & IFF_CANTCHANGE) | (rflags & !IFF_CANTCHANGE));
-        // SAFETY: the caller's contract: `data` is the `ifreq`.
-        error = unsafe { ifp_ioctl(ifp, SIOCSIFFLAGS, data) };
+        // SAFETY: the caller's contract: `data` is the kernel copy of the `ifreq`, as long as
+        // `SIOCSIFFLAGS` encodes (SIOCSIFXFLAGS's too), ours for the call.
+        error = kernel::net::if_::if_ioctl(ifp, SIOCSIFFLAGS, unsafe {
+            slice::from_raw_parts_mut(data, iocparm_len(SIOCSIFFLAGS) as usize)
+        });
         if error.is_err() {
             ifp.if_flags.set(oif_flags);
             if cmd == SIOCSIFXFLAGS {
@@ -2039,9 +2063,11 @@ unsafe fn if_setgroupattribs(data: *mut u8) -> Result<(), Errno> {
 
     let members = ifg.members().snapshot();
     for ifp in members.iter() {
-        // SAFETY: `data` is the `ifgroupreq` of `SIOCSIFGATTR` (the caller's contract), what
-        // the driver's handler reads for it.
-        let _ = unsafe { ifp_ioctl(ifp, SIOCSIFGATTR, data) };
+        // SAFETY: `data` is the `ifgroupreq` of `SIOCSIFGATTR` (the caller's contract), as
+        // long as the command encodes, ours for the call (no reference to it lives here).
+        let _ = kernel::net::if_::if_ioctl(ifp, SIOCSIFGATTR, unsafe {
+            slice::from_raw_parts_mut(data, iocparm_len(SIOCSIFGATTR) as usize)
+        });
     }
 
     Ok(())
