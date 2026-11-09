@@ -600,6 +600,9 @@ pub fn ifinit() {
 /// `if_attach_common`'s defaults for `bsd`'s own table (`if_rtrequest_dummy`) and its check
 /// of `if_start`/`if_qstart` against `IFXF_MPSAFE`, before the kernel attaches.
 fn if_attach_legacy(ifp: &'static Ifnet) {
+    // KASSERT(ifp->if_ioctl != NULL): every driver answers requests (review nit: a missing
+    // handler answered ENOTTY where the C stops the attach).
+    kassert!(ifp.if_ioctl().get().is_some());
     if ifp.if_rtrequest().get().is_none() {
         ifp.if_rtrequest().set(Some(if_rtrequest_dummy));
     }
@@ -752,12 +755,16 @@ pub fn ifr_addr_ptr(ifr: &Ifreq) -> *const Sockaddr {
 
 /// A socket address's `sa_len` bytes.
 ///
+/// Its two header bytes at least, whatever `sa_len` says: the C reads `sa_family` of an
+/// address of `sa_len` 0 or 1 too, and `equal()` then compares no byte (review nit).
+///
 /// # Safety
 ///
-/// `sa` points at a readable socket address of its `sa_len` bytes, which live for `'a`.
+/// `sa` points at a readable socket address of its two header bytes and its `sa_len`
+/// bytes, which live for `'a`.
 unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
     // SAFETY: the caller's contract.
-    unsafe { slice::from_raw_parts(sa.cast::<u8>(), usize::from((*sa).sa_len)) }
+    unsafe { slice::from_raw_parts(sa.cast::<u8>(), usize::from((*sa).sa_len).max(2)) }
 }
 
 /// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.

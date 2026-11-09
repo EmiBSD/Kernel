@@ -3324,9 +3324,7 @@ unsafe fn wg_input_ip6(_t: &WgTag, _ip6: *const c_void, _uh: *const c_void) -> b
 /// `wg_qstart`: the interface's `if_qstart`: stages the packets of the send queue on their
 /// peers, then queues them for encryption (or asks for a handshake).
 pub fn wg_qstart(ifq: &'static Ifqueue) {
-    let Some(ifp) = Some(ifq.ifq_if()) else {
-        return;
-    };
+    let ifp = ifq.ifq_if();
     let sc = WgSoftc::of_ifp(ifp);
     let start_list: SlistHead<WgPeerStart> = SlistHead::new();
 

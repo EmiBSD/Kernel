@@ -207,14 +207,6 @@ pub trait AtomicWord: sealed::Sealed + Copy + 'static {
     fn load(a: &Self::Atom) -> Self;
     /// A relaxed store.
     fn store(a: &Self::Atom, v: Self);
-    /// A relaxed `fetch_or`.
-    fn fetch_or(a: &Self::Atom, v: Self) -> Self;
-    /// A relaxed `fetch_and`.
-    fn fetch_and(a: &Self::Atom, v: Self) -> Self;
-    /// A relaxed wrapping `fetch_add`.
-    fn fetch_add(a: &Self::Atom, v: Self) -> Self;
-    /// A relaxed wrapping `fetch_sub`.
-    fn fetch_sub(a: &Self::Atom, v: Self) -> Self;
 }
 
 /// Implements [`AtomicWord`] for `$t` over `$a`.
@@ -233,22 +225,6 @@ macro_rules! atomic_word {
                 #[inline]
                 fn store(a: &$a, v: $t) {
                     a.store(v, Ordering::Relaxed);
-                }
-                #[inline]
-                fn fetch_or(a: &$a, v: $t) -> $t {
-                    a.fetch_or(v, Ordering::Relaxed)
-                }
-                #[inline]
-                fn fetch_and(a: &$a, v: $t) -> $t {
-                    a.fetch_and(v, Ordering::Relaxed)
-                }
-                #[inline]
-                fn fetch_add(a: &$a, v: $t) -> $t {
-                    a.fetch_add(v, Ordering::Relaxed)
-                }
-                #[inline]
-                fn fetch_sub(a: &$a, v: $t) -> $t {
-                    a.fetch_sub(v, Ordering::Relaxed)
                 }
             }
         )*
@@ -287,30 +263,6 @@ impl<T: AtomicWord> AtomicCell<T> {
     #[inline]
     pub fn set(&self, v: T) {
         T::store(&self.0, v);
-    }
-
-    /// `|= v` as one atomic step; the old value.
-    #[inline]
-    pub fn fetch_or(&self, v: T) -> T {
-        T::fetch_or(&self.0, v)
-    }
-
-    /// `&= v` as one atomic step; the old value.
-    #[inline]
-    pub fn fetch_and(&self, v: T) -> T {
-        T::fetch_and(&self.0, v)
-    }
-
-    /// `+= v` (wrapping) as one atomic step; the old value.
-    #[inline]
-    pub fn fetch_add(&self, v: T) -> T {
-        T::fetch_add(&self.0, v)
-    }
-
-    /// `-= v` (wrapping) as one atomic step; the old value.
-    #[inline]
-    pub fn fetch_sub(&self, v: T) -> T {
-        T::fetch_sub(&self.0, v)
     }
 }
 
@@ -1229,14 +1181,9 @@ mod tests {
         let c = AtomicCell::<i32>::new();
         assert_eq!(c.get(), 0);
         c.set(0x43);
-        assert_eq!(c.fetch_or(0x100), 0x43);
-        assert_eq!(c.fetch_and(!0x40), 0x143);
-        assert_eq!(c.get(), 0x103);
+        assert_eq!(c.get(), 0x43);
         let u = AtomicCell::<u8>::new();
-        assert_eq!(u.fetch_add(255), 0);
-        assert_eq!(u.fetch_add(2), 255);
-        assert_eq!(u.get(), 1);
-        assert_eq!(u.fetch_sub(2), 1);
+        u.set(255);
         assert_eq!(u.get(), 255);
         fn shared<T: Send + Sync>() {}
         shared::<AtomicCell<u64>>();

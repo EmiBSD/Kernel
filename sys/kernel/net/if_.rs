@@ -173,6 +173,12 @@
 //!   "ifgroup" row counts one array per change where the C counts one `ifg_list` and one
 //!   `ifg_member` per membership; the removal allocates its smaller array `M_WAITOK` (so
 //!   `if_detach` ends its `splnet` section before the groups, review 1's S2).
+//! - `if_attach_queues`/`if_attach_iqueues` publish the extra queues (the set-once array in
+//!   `IfRt`) and then set their tasks (`ifq_init_tasks`, `ifiq_init_tasks`: a task's object
+//!   must be `'static`, which a queue is once in the array), where the C's `ifq_init` sets
+//!   them before the array is stored. The drivers call them at attach, before the interface
+//!   is up, so no packet reaches an extra queue meanwhile; a task reached without its
+//!   function would be `panic(9)`, never a stale call (review nit, kept).
 //! - The cloners are at most 16 (a table filled at boot; `if_clone_attach` `panic(9)`s past
 //!   it); the C's list has no bound.
 //! - `if_slowtimo`'s first run follows `if_idxmap_insert` in `if_attachsetup` (the C runs it

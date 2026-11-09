@@ -1391,9 +1391,7 @@ pub fn em_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
 /// packets to transmit and transmit resources are available; otherwise the send queue is
 /// marked active and the packet waits there.
 pub fn em_start(ifq: &'static Ifqueue) {
-    let Some(ifp) = Some(ifq.ifq_if()) else {
-        return;
-    };
+    let ifp = ifq.ifq_if();
     let sc = em_softc(ifp);
     let que = sc.que(0); // Use only first queue.
     let regs = sc.regs();

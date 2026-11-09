@@ -68,7 +68,11 @@
 //!   C's `ifp->if_ioctl = ..`): they live in the interface's [`LegacyNetDriver`], made at the
 //!   first set and registered as the interface's driver (`Ifnet::if_driver`), which the
 //!   kernel's `if_attach` takes; the box is never freed (one per attach, `M_DEVBUF`,
-//!   D-N6.3a-8; docs/SCAFFOLDING.md).
+//!   D-N6.3a-8; docs/SCAFFOLDING.md). So `vmstat -m`'s `devbuf` grows by one table per
+//!   interface ever made, a cloned one included (`ifconfig lo3 create`/`destroy` in a loop
+//!   leaks one each, the C frees nothing of the kind), while `counters` shows less (the
+//!   counters are inline in the interface): N7's `NetDevice` owns the table and frees it at
+//!   detach (review nit, kept).
 //! - `struct netstack`'s `ns_route` is not kept here: the softnet's route cache needs a
 //!   `bsd` `struct route` the kernel's netstack cannot hold, and a static of one would need a
 //!   new `unsafe impl Sync`; the protocols look a received packet's route up as the C does
