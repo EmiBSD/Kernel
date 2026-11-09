@@ -174,9 +174,11 @@
 //! - A `struct ifmedia` is initialised once: a second `ifmedia_init` of the same one is
 //!   `panic(9)` (the C initialises it again and leaks its entries). Every driver initialises
 //!   its media once per attach, on a zeroed softc.
-//! - Before `ifmedia_init`, `ifmedia_add`, `ifmedia_set` and `ifmedia_ioctl` are `panic(9)`
-//!   (the C follows the zeroed list's NULL tail or a NULL callback); `ifmedia_match` and
-//!   `ifmedia_delete_instance` find an empty list, as the C's walk of a zeroed `TAILQ` does.
+//! - Before `ifmedia_init`, `ifmedia_add`, `ifmedia_set` and `SIOCGIFMEDIA` (past its
+//!   negative-count check) are `panic(9)`: the C follows the zeroed list's NULL tail or the
+//!   NULL status callback. `ifmedia_match`, `ifmedia_delete_instance` and `SIOCSIFMEDIA` find
+//!   an empty list, as the C's walk of a zeroed `TAILQ` does (`SIOCSIFMEDIA`: no match,
+//!   `EINVAL`).
 //! - The C's `NULL` checks of `ifmedia_ioctl`'s pointers are the references' types; a request
 //!   shorter than its structure (`struct ifreq` for `SIOCSIFMEDIA`, `struct ifmediareq` for
 //!   `SIOCGIFMEDIA`) or misaligned for it is `EINVAL`, which no caller reaches.
@@ -500,7 +502,10 @@ pub fn ifmedia_ioctl(
             let newmedia = hal::pod::view_mut::<Ifreq>(data, 0)
                 .ok_or(Errno::EINVAL)?
                 .ifr_media();
-            let rt = ifm.rt("ifmedia_ioctl");
+            // Before ifmedia_init the list is empty: no media matches.
+            let Some(rt) = ifm.rt.get() else {
+                return Err(Errno::EINVAL);
+            };
 
             let mut g = rt.list.lock();
             let Some(found) = ifmedia_get(&g, newmedia, ifm.ifm_mask.get()) else {
@@ -543,11 +548,12 @@ pub fn ifmedia_ioctl(
         // Get list of available media and current media on interface.
         SIOCGIFMEDIA => {
             let ifmr = hal::pod::view_mut::<Ifmediareq>(data, 0).ok_or(Errno::EINVAL)?;
-            let rt = ifm.rt("ifmedia_ioctl");
 
             if ifmr.ifm_count < 0 {
                 return Err(Errno::EINVAL);
             }
+
+            let rt = ifm.rt("ifmedia_ioctl");
 
             {
                 let g = rt.list.lock();
@@ -830,6 +836,19 @@ mod tests {
         assert!(!ifmedia_match(&ifm, IFM_ETHER | IFM_AUTO, 0));
         ifmedia_delete_instance(&ifm, IFM_INST_ANY);
         assert!(ifm.ifm_cur().is_none());
+        // SIOCSIFMEDIA matches nothing in it: EINVAL; SIOCGIFMEDIA's negative count is
+        // refused before the status callback the C would call through NULL.
+        let ifp: &'static Ifnet = Box::leak(Box::new(Ifnet::new()));
+        let mut ifr = Ifreq::zeroed();
+        ifr.set_ifr_media(IFM_ETHER | IFM_AUTO);
+        assert_eq!(ioctl(ifp, &ifm, SIOCSIFMEDIA, &mut ifr), Err(Errno::EINVAL));
+        let mut ifmr: Ifmediareq = hal::user::zeroed();
+        ifmr.ifm_count = -1;
+        assert_eq!(
+            ioctl(ifp, &ifm, SIOCGIFMEDIA, &mut ifmr),
+            Err(Errno::EINVAL)
+        );
+        assert!(ifm.ifm_cur().is_none() && ifm.ifm_media.get() == 0);
     }
 
     #[test]
