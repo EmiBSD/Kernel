@@ -174,6 +174,9 @@
 //! - A `struct ifmedia` is initialised once: a second `ifmedia_init` of the same one is
 //!   `panic(9)` (the C initialises it again and leaks its entries). Every driver initialises
 //!   its media once per attach, on a zeroed softc.
+//! - Before `ifmedia_init`, `ifmedia_add`, `ifmedia_set` and `ifmedia_ioctl` are `panic(9)`
+//!   (the C follows the zeroed list's NULL tail or a NULL callback); `ifmedia_match` and
+//!   `ifmedia_delete_instance` find an empty list, as the C's walk of a zeroed `TAILQ` does.
 //! - The C's `NULL` checks of `ifmedia_ioctl`'s pointers are the references' types; a request
 //!   shorter than its structure (`struct ifreq` for `SIOCSIFMEDIA`, `struct ifmediareq` for
 //!   `SIOCGIFMEDIA`) or misaligned for it is `EINVAL`, which no caller reaches.
@@ -622,9 +625,12 @@ fn ifmedia_copywords(
     error
 }
 
-/// `ifmedia_match`: find media entry matching a given ifm word; true if found.
+/// `ifmedia_match`: find media entry matching a given ifm word; true if found (never before
+/// `ifmedia_init`: an empty list, as the C's zeroed one).
 pub fn ifmedia_match(ifm: &Ifmedia, target: u64, mask: u64) -> bool {
-    let rt = ifm.rt("ifmedia_match");
+    let Some(rt) = ifm.rt.get() else {
+        return false;
+    };
     let g = rt.list.lock();
     ifmedia_get(&g, target, mask).is_some()
 }
@@ -670,9 +676,12 @@ fn ifmedia_find(list: &IfmList, id: u32) -> Option<(u32, IfmediaEntry)> {
 }
 
 /// `ifmedia_delete_instance`: delete all media for a given instance (`IFM_INST_ANY` for
-/// all); none is selected after. The entries are freed after the mutex is let go.
+/// all); none is selected after. The entries are freed after the mutex is let go. Before
+/// `ifmedia_init` there is nothing to delete and nothing selected (the C's zeroed list).
 pub fn ifmedia_delete_instance(ifm: &Ifmedia, inst: u64) {
-    let rt = ifm.rt("ifmedia_delete_instance");
+    let Some(rt) = ifm.rt.get() else {
+        return;
+    };
     let mut freed = None;
 
     {
@@ -753,8 +762,9 @@ mod tests {
     use crate::net::if_::test_ifnet;
     use crate::net::if_::tests::setup;
 
-    /// The user's memory for the media words.
-    const UWORDS: usize = crate::testutil::USER_BASE + 0x3_9000;
+    /// The user's memory for the media words (the arguments' range of the host's user memory
+    /// double, which the tests holding the memory lock share in turn).
+    const UWORDS: usize = crate::testutil::USER_BASE + 0xc800;
 
     /// Callbacks that count the changes (refusing them with `EIO` when `fail`) and report a
     /// full-duplex link.
@@ -814,6 +824,10 @@ mod tests {
             (ifm.ifm_nwords(), ifm.ifm_media.get(), ifm.ifm_mask.get()),
             (0, 0, 0)
         );
+        // An empty list for the walks, as the C's zeroed TAILQ.
+        assert!(!ifmedia_match(&ifm, IFM_ETHER | IFM_AUTO, 0));
+        ifmedia_delete_instance(&ifm, IFM_INST_ANY);
+        assert!(ifm.ifm_cur().is_none());
     }
 
     #[test]
