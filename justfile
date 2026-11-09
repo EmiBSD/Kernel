@@ -3240,12 +3240,12 @@ userland:
 # clang). A directory already unpacked is left as it is. Needs `gh` (logged in) and `zstd`
 # (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
-devtools_llvm := "llvm-23.1.4+emibsd.3"
-devtools_rust := "rust-1.99.1+emibsd.1"
-devtools_llvm_sha256_arm64 := "5d8c3e2839bf31d8e802893d8628f671299336acd347b07a60526034db61534b"
-devtools_rust_sha256_arm64 := "b229378962fa5e3638f4a0ca8d28661f0fe18ba137895d24317a8b2802e0e417"
-devtools_llvm_sha256_amd64 := "38456300bb74a2bdf025e96034c9e07e583715921a03155d1ecb49a24b5d0938"
-devtools_rust_sha256_amd64 := "8cc842e4b99837f805128c9be7f34ac6020168ec3f020e11c8bcd1f8eca92ecd"
+devtools_llvm := "llvm-23.1.4+emibsd.4"
+devtools_rust := "rust-1.99.1+emibsd.2"
+devtools_llvm_sha256_arm64 := "75b1398851b340ad0c1c5555ae91b0764359ad67f6987e93c0f7c2f6346bd18b"
+devtools_rust_sha256_arm64 := "7d228ab5266edf8894d923dfe36646cf2bf9c9d4007a680acb8569677bde019e"
+devtools_llvm_sha256_amd64 := "2b9b2f4c708b419ffa09c0a5d904f69bc22480b2bfafb501b70f200b3728d3f0"
+devtools_rust_sha256_amd64 := "acba18cbf55bbc785a99683bcdbc218832c199d8db5424275d6d0a63e24b3e0b"
 
 toolchain:
     #!/bin/zsh

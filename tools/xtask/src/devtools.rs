@@ -37,8 +37,9 @@
 //! build theirs, into `<run dir>/devtools/<arch>/` (`boot::run_dir`):
 //!
 //! - `hello-c`: C, `-static` (a static PIE over `rcrt0.o`), `strlcpy` of its first argument;
-//! - `hello-cxx`: C++, `-static`, over libc++, libc++abi and libunwind: an exception thrown
-//!   and caught, its message through iostreams;
+//! - `hello-cxx`: C++, `-static`, over libc++ and libc++abi (the unwinder inside it, no
+//!   libunwind since llvm +emibsd.4): an exception thrown and caught, its message through
+//!   iostreams;
 //! - `hello-rust`: Rust, `+crt-static`, linked by the clang named after the triple: its
 //!   arguments, a panic caught (the unwinder) and a locked `stdout`;
 //! - `hello-c-dyn`: the C one linked dynamically, run by the ramdisk's `/usr/libexec/ld.so`
@@ -77,7 +78,7 @@ main(int argc, char **argv)
 }
 "#;
 
-/// The C++ hello: an exception thrown and caught (libc++abi, libunwind), its message through
+/// The C++ hello: an exception thrown and caught (libc++abi, its unwinder inside), its message through
 /// iostreams and `std::string` (libc++), as DevTools' `x.cpp`.
 const HELLO_CXX: &str = r#"#include <iostream>
 #include <stdexcept>
