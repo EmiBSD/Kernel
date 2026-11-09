@@ -7813,6 +7813,13 @@ kind = "dropped"
 reason = "`struct if_nameindex` is if_nameindex(3)'s (libc builds it from the routing socket's messages); the kernel never makes one"
 
 [[module]]
+rust = "sys/hal/sys/net_route.rs"
+crate = "hal"
+lz = ["sys/net/route.rs"]
+status = "redesigned"
+notes = "N6.3b: net/route.h's ABI moved into hal for kernel::net's routing and bsd's callers: the RTF_/RTP_/RTM_/RTV_/RTA_/RTAX_/ROUTE_ constants, RTM_VERSION, RTM_MAXSIZE, RTABLE_ANY, the RTLABEL/RTDNS/RTSTATIC/RTSEARCH lengths, route_filter (ROUTE_FILTER), and the AbiPod images rt_metrics (56), rtstat (20), rt_tableinfo (4), rt_msghdr (96), sockaddr_rtlabel (34) and sockaddr_rtdns/rtstatic/rtsearch (130), their LP64 sizes const-asserted; bsd's sys/net/route.rs keeps its own copies until N6.3b2 re-exports these"
+
+[[module]]
 rust = "sys/hal/sys/net_if_media.rs"
 crate = "hal"
 lz = ["sys/net/if_media.rs"]
