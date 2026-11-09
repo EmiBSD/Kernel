@@ -762,9 +762,11 @@ mod tests {
     use crate::net::if_::test_ifnet;
     use crate::net::if_::tests::setup;
 
-    /// The user's memory for the media words (the arguments' range of the host's user memory
-    /// double, which the tests holding the memory lock share in turn).
-    const UWORDS: usize = crate::testutil::USER_BASE + 0xc800;
+    /// The user's memory for the media words: a slot of the arguments' range of the host's
+    /// user memory double that no other kernel test uses (sysctl's runs from 0xc800, tc's,
+    /// clockintr's and time's after it, without the memory lock; ffs's and mfs's buffer over
+    /// 0xb400..0xd000 holds it, so it takes turns with these tests).
+    const UWORDS: usize = crate::testutil::USER_BASE + 0xc400;
 
     /// Callbacks that count the changes (refusing them with `EIO` when `fail`) and report a
     /// full-duplex link.
