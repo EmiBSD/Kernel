@@ -474,12 +474,16 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         rti_delete(ifp);
     }
 
-    fn in_ifdetach(&self, ifp: &'static Ifnet) {
+    fn revarp_ifdetach(&self, ifp: &'static Ifnet) {
         // NETHER > 0 && NFSCLIENT: revarp_ifidx is cleared.
         #[cfg(feature = "nfsclient")]
         if ifp.if_index.get() == crate::netinet::if_ether::REVARP_IFIDX.load(Ordering::Relaxed) {
             crate::netinet::if_ether::REVARP_IFIDX.store(0, Ordering::Relaxed);
         }
+        let _ = ifp;
+    }
+
+    fn in_ifdetach(&self, ifp: &'static Ifnet) {
         in_ifdetach(ifp);
     }
 
@@ -489,11 +493,24 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = ifp;
     }
 
-    fn in6_ifattach(&self, ifp: &'static Ifnet) {
-        // The C ignores the result.
+    fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno> {
         #[cfg(feature = "inet6")]
-        let _ = in6_ifattach(ifp);
-        let _ = ifp;
+        return in6_ifattach(ifp);
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = ifp;
+            Err(Errno::EAFNOSUPPORT)
+        }
+    }
+
+    fn in_ioctl(
+        &self,
+        cmd: u64,
+        data: &mut [u8],
+        ifp: &'static Ifnet,
+        privileged: bool,
+    ) -> Result<(), Errno> {
+        crate::netinet::in_::in_control_req(cmd, data, Some(ifp), privileged)
     }
 
     fn ip6_forwarding(&self) -> bool {
@@ -554,6 +571,18 @@ impl kernel::net::if_::Routing for BsdNetLegs {
 
     fn ifafree(&self, ifa: &'static Ifaddr) {
         ifafree(ifa);
+    }
+
+    fn rtlabel_id2name(&self, id: u16, buf: &mut [u8]) -> bool {
+        rtlabel_id2name(id, buf).is_some()
+    }
+
+    fn rtlabel_name2id(&self, name: &[u8]) -> u16 {
+        rtlabel_name2id(name)
+    }
+
+    fn rtlabel_unref(&self, id: u16) {
+        rtlabel_unref(id);
     }
 
     fn default_routes(&self, af: SaFamily, f: &mut dyn FnMut(u32)) {

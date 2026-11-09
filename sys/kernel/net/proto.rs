@@ -69,8 +69,6 @@
 //!   dispatches through its own tables (D-N6.2-4). `pr_ctlinput`'s family argument (`struct
 //!   ip *`, `ip6ctlparam`) arrives with its callers at N6.4 too: the one kernel use,
 //!   `pfctlinput`, passes NULL.
-//! - `pru_control`'s `struct ifnet *` is always NULL from `soo_ioctl` and the type is
-//!   N6.3a's: the parameter comes with it.
 //! - The `prurequests`/`prcrequests`/`prcorequests` name tables (behind `PRUREQUESTS`, ...)
 //!   are not compiled, as in GENERIC.
 //!
@@ -97,6 +95,7 @@ use hal::sys::stat::Stat;
 
 use crate::assert::kpanic;
 use crate::net::domain::Domain;
+use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::socket::{SoLocked, Socket};
 use crate::proc::{ProcGlue, Thread};
@@ -278,10 +277,17 @@ pub trait Usrreqs<G: ProcGlue>: Sync + 'static {
     fn send_id(&self) -> usize {
         0
     }
-    /// `pru_control(so, cmd, data, NULL)`: a protocol `ioctl`; `data` is the kernel copy of
-    /// the argument. Called without the socket's lock, as `soo_ioctl` calls it (`in_control`
-    /// takes the net lock itself).
-    fn control(&self, _so: &Socket<G>, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+    /// `pru_control(so, cmd, data, ifp)`: a protocol `ioctl`; `data` is the kernel copy of
+    /// the argument, `ifp` the interface of an interface request (`ifioctl`'s; `None` from
+    /// `soo_ioctl`). Called without the socket's lock, as `soo_ioctl` and `ifioctl` call it
+    /// (`in_control` takes the net lock itself).
+    fn control(
+        &self,
+        _so: &Socket<G>,
+        _cmd: u64,
+        _data: &mut [u8],
+        _ifp: Option<&'static Ifnet>,
+    ) -> Result<(), Errno> {
         Err(Errno::EOPNOTSUPP)
     }
     /// `pru_sense(so, ub)`.

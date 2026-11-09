@@ -348,9 +348,15 @@ impl Usrreqs<G> for PrUsrreqs {
     fn send_id(&self) -> usize {
         self.pru_send.map_or(0, |f| f as usize)
     }
-    fn control(&self, so: &Socket, cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
+    fn control(
+        &self,
+        so: &Socket,
+        cmd: u64,
+        data: &mut [u8],
+        ifp: Option<&'static crate::net::if_var::Ifnet>,
+    ) -> Result<(), Errno> {
         match self.pru_control {
-            Some(f) => f(as_static(so), cmd, data, None),
+            Some(f) => f(as_static(so), cmd, data, ifp),
             None => Err(Errno::EOPNOTSUPP),
         }
     }

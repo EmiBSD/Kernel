@@ -437,9 +437,10 @@ paid_by = "N7"
 # bsd: what if.c asks of the internet protocols (netinet, netinet6): arpintr, ipintr and
 # ip6intr for if_netisr, tcp_input_mlist for if_input_process, ipv4_input/ipv6_input and
 # tcpstat's LRO counters for if_input_local, nd6_ifattach for if_attachsetup, rti_delete,
-# in_ifdetach (with NFSCLIENT's reverse ARP reset), in6_ifdetach and nd6_ifdetach for
-# if_detach and if_setrdomain, in6_ifattach for if_up, ip6_forwarding and the link-local purge
-# for ifnewlladdr (N6.3a). Registered by bsd's boot before the first interface
+# NFSCLIENT's reverse ARP reset, in_ifdetach, in6_ifdetach and nd6_ifdetach for if_detach and
+# if_setrdomain, in6_ifattach for if_up, ip6_forwarding and the link-local purge for
+# ifnewlladdr (N6.3a); in_ifdetach, in6_ifattach/_ifdetach and in_ioctl (a request with no
+# socket) for ifioctl (N6.3a2). Registered by bsd's boot before the first interface
 # (N6.3a1's adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
 # kernel::net::if_::Inet
@@ -451,7 +452,8 @@ paid_by = "N6"
 # bsd: what if.c asks of the routing code (route.c, rtable.c, rtsock.c): rtm_ifannounce,
 # rtm_ifchg and rt_if_track (the link state), rtable_l2/_loindex/_exists/_add/_empty/_l2set (the
 # domains: if_up, if_setrdomain, if_createrdomain, ifa_ifwith*), ifafree (if_detach's leftover
-# addresses) and the walk of the default routes (if_group_egress_build). Registered by bsd's boot (N6.3a1's adapter commit);
+# addresses and ifconf's references) and the walk of the default routes
+# (if_group_egress_build); rtlabel_id2name/_name2id/_unref for ifioctl's route labels (N6.3a2). Registered by bsd's boot (N6.3a1's adapter commit);
 # nothing before. Paid when routing moves (N6.3b, N6's row).
 # kernel::net::if_::Routing
 [[bridge]]

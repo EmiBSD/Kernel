@@ -266,7 +266,7 @@ impl<G: ProcGlue> FileOps<G::FileGlue> for SocketFileOps<G> {
                 if iocgroup(cmd) == u64::from(b'r') {
                     return Err(Errno::EOPNOTSUPP);
                 }
-                return so.usrreqs().control(so, cmd, data);
+                return so.usrreqs().control(so, cmd, data, None);
             }
         }
         Ok(())

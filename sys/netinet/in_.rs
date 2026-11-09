@@ -843,8 +843,18 @@ pub fn in_control(
     data: &mut [u8],
     ifp: Option<&'static Ifnet>,
 ) -> Result<(), Errno> {
-    let privileged = so.has_state(SS_PRIV);
+    in_control_req(cmd, data, ifp, so.has_state(SS_PRIV))
+}
 
+/// [`in_control`]'s request, privileged or not as the caller says: the socket's `SS_PRIV`,
+/// or the kernel's own request with no socket (the kernel's `ifioctl` through the `Inet`
+/// leg `in_ioctl`).
+pub fn in_control_req(
+    cmd: u64,
+    data: &mut [u8],
+    ifp: Option<&'static Ifnet>,
+    privileged: bool,
+) -> Result<(), Errno> {
     // MROUTING: SIOCGETVIFCNT, SIOCGETSGCNT through mrt_ioctl; not configured.
     let len = iocparm_len(cmd) as usize;
     if data.len() < len {

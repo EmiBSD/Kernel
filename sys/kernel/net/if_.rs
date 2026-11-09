@@ -110,7 +110,9 @@
 /* <CODE> */
 //! Network interfaces: `net/if.c`, the interface index map, the softnet task queues and
 //! their barriers, the protocol software interrupt (`if_netisr`), the softnet input path
-//! (`if_input_process`) and the dispatch to an interface's driver.
+//! (`if_input_process`), the dispatch to an interface's driver, and the interface requests
+//! (`ifioctl`: the `'i'` group of `ioctl(2)` on a socket, `ifconf`, the groups' and the
+//! cloners' lists).
 //!
 //! Upstream: sys/net/if.h @ 3ce1f3f79392
 //! Upstream: sys/net/if.c @ 3ce1f3f79392
@@ -150,6 +152,11 @@
 //! | `if_addgroup`/`if_delgroup` (:3068-3167) | none (the caller's `NET_LOCK`) | none: each changed list is one `ReadMostly` claim (a compare-and-swap) |
 //! | `if_clone_create`/`_destroy` (:1408-1475) | `if_cloners_lock`, then `NET_LOCK` inside | the same |
 //! | `ifpromisc`, `ifsetlro`, `ifnewlladdr` (:3478-3650) | the caller's locks, `splnet` in `ifsetlro` | the same |
+//! | `ifioctl(SIOCSIFFLAGS)` (:2193-2208, :2318-2340) | `KERNEL_LOCK`, then `NET_LOCK` around the flags, the driver's `if_ioctl` and `if_up`/`if_down` (`splnet` there) | the same: the kernel lock, then the net lock as a detached holding (`hal::netlock::lock`), one `splnet` pair when `IFF_UP` changes |
+//! | `ifioctl`'s other requests (:2136-2597) | `KERNEL_LOCK` around the per-interface requests, `NET_LOCK` inside where each takes it; none for `SIOCGIFSFFPAGE`, `SIOCSIFMEDIA`, `SIOCGIFMEDIA`; `SIOCIFCREATE`/`DESTROY` the kernel lock alone, `SIOCSIFGATTR` both | the same, request by request |
+//! | `ifioctl_get` (:2599-2712) | `KERNEL_LOCK` around `if_unit`; `NET_LOCK_SHARED` then `KERNEL_LOCK` for `if_getdata`; `NET_LOCK_SHARED` for `SIOCGIFGATTR` | the same (`NETLOCK.read()`) |
+//! | `ifconf` (:2799-2930) | `if_tmplist_lock`, one `NET_LOCK_SHARED` for the interfaces, one per interface for its addresses | the same for an interface of up to 8 addresses; one more shared hold per further 8 (the redesign's `ifconf` paragraph) |
+//! | the group requests (:3169-3380) | `if_tmplist_lock` and `NET_LOCK_SHARED` around the temporary lists | `NET_LOCK_SHARED` around the snapshot; no `if_tmplist_lock` (a snapshot is no shared list) |
 //!
 //! ## Deviations
 //! - Without `MULTIPROCESSOR` `NET_TASKQ` is 1; the kernel is always `MULTIPROCESSOR`
@@ -185,7 +192,18 @@
 //!   just before): the timer finds the interface by its index (D-N6.3a-7). Its first run
 //!   arms it one second later in both orders.
 //! - Before routing registers (the `Routing` leg) there is one routing domain, 0:
-//!   `if_createrdomain` answers `EINVAL` and `if_setrdomain` `ESRCH` for any other.
+//!   `if_createrdomain` answers `EINVAL` and `if_setrdomain` `ESRCH` for any other; a route
+//!   label is none (`SIOCSIFRTLABEL` sets nothing, `SIOCGIFRTLABEL` answers `ENOENT`).
+//! - `INET6` is the `Inet` bridge's: configured once it is registered (GENERIC's option,
+//!   `bsd`'s default feature). Before that `SIOCIFAFATTACH`/`DETACH` of `AF_INET6` answer
+//!   `EAFNOSUPPORT` and `SIOCSIFXFLAGS` skips the IPv6 flags, as the C without `INET6`.
+//! - `ifioctl`'s request of the kernel itself comes with no socket and goes to `in_ioctl` as a
+//!   privileged one (the boot self-test configures an interface that way; LZ's): the C's
+//!   `pru_control` follows the socket.
+//! - `SIOCSIFXFLAGS`'s wake on LAN with a driver that has no `if_wol` answers `ENOTSUP` (the
+//!   C calls the handle unchecked once `IFCAP_WOL` is set; LZ's).
+//! - `ifconf` copies an address's `sa_len` bytes cut at its storage (`hal::link::SaLink`'s
+//!   copy), which every interface address fills; the row's length is its `sa_len`, as the C's.
 //!
 //! ## Redesign
 //! - LZ's `struct if_idxmap` of `Cell`s and raw arrays (slot 0 holding the length, the old
@@ -236,6 +254,34 @@
 //! - `if_detach`'s swap of `if_qstart` and `if_ioctl` for the detached stubs is two bits of
 //!   the interface; `if_watchdog = NULL` is not needed: the watchdog's timeout and task find
 //!   the interface by its index, which `if_remove` freed before it.
+//! - `ifioctl(so, cmd, data, p)` (`caddr_t data`, cast to each request's structure) works on
+//!   `&mut [u8]`, the request viewed as its `abi_pod!` image (`hal::pod::view_mut`): in place
+//!   when it is aligned and at least an `ifreq` long (`sys_ioctl`'s buffers are), else on an
+//!   aligned zeroed copy (64 bytes on the stack, an `M_IOCTLOPS` block past that) copied back
+//!   after, so no request is read past its end or misaligned (N6.2a review's B1, `bsd`'s
+//!   `ifioctl_buffer`, which goes). A request is reread after each driver call, as the C reads
+//!   `ifr` after it (`SIOCDIFGROUP`'s group, `SIOCSIFLLADDR`'s address). The user's
+//!   memory is reached through `hal::user::UserPtr` only (`SIOCGIFDATA`, `SIOCSIFDESCR`, the
+//!   rows of `ifconf`, of the groups and of the cloners, `if_rxr_info_ioctl`).
+//! - `ifioctl` takes the net lock as a detached holding (`hal::netlock::lock`/`unlock`, the
+//!   C's `NET_LOCK()`), not a witness: the drivers it calls through `if_ioctl` let it go and
+//!   take it back (wg(4)'s `wg_up`/`wg_down`, pflow(4)'s `pflowioctl`), which only a detached
+//!   holding allows. Its read-only paths take witnesses (`NETLOCK.read()`), which they hold
+//!   across no driver call.
+//! - `SIOCSIFXFLAGS`'s `goto forceup` into `SIOCSIFFLAGS` is a call of the one `forceup`
+//!   function from both, inside the same net lock section.
+//! - `ifconf` keeps the C's temporary lists (`if_tmplist`, `ifa_tmplist`, references taken)
+//!   under `if_tmplist_lock`; an address's bytes are a copy that needs the net lock
+//!   (`SaLink::read`), so each interface's shared hold that lists its addresses also copies
+//!   the first eight of them, and an interface with more takes the lock again per further
+//!   eight before it copies them out with the lock let go: the C's count of lock sections up
+//!   to eight addresses, one more per eight after (N6.4/N6.5, when the address embeds its
+//!   storage, reads it under the reference alone). As the C, `ifc_len` is an `int` compared
+//!   with a `size_t` for the `sockaddr`-sized rows (a negative length bounds none of them)
+//!   and with an `int` for the longer ones.
+//! - The group requests copy out of a snapshot (`IfgSet::snapshot`, the members' with a
+//!   reference to each interface) taken under the shared net lock: no `if_tmplist_lock`, no
+//!   temporary references to the groups.
 //! - `net_tq_barriers`' stack tasks with a `struct refcnt` on the stack -> one barrier task per
 //!   softnet in the softnet, its count the barrier's own; the callers are serialised by the
 //!   barrier's lock (the C's `net_tq_barriers` callers hold the net lock or nothing, and wait
@@ -248,6 +294,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use hal::intr::IPL_NET;
 use hal::link::Link as HalLink;
+use hal::link::SaBytes;
 use hal::list::List;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::Mutexed;
@@ -258,22 +305,42 @@ use hal::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock};
 use hal::slot::ReadMostly;
 use hal::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
 use hal::sys::errno::Errno;
+use hal::sys::ioccom::{_ioc, IOC_IN, iocparm_len};
 use hal::sys::kernel::HZ;
 use hal::sys::net_if::{
-    IFAN_ARRIVAL, IFAN_DEPARTURE, IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFF_LOOPBACK,
-    IFF_POINTOPOINT, IFF_PROMISC, IFF_UP, IFG_ALL, IFG_EGRESS, IFNAMSIZ, IFQ_DEFPRIO, IFT_ETHER,
-    IFXF_CLONED, IFXF_LRO, IFXF_MONITOR, IFXF_MPSAFE, IfData, IfRxring, IfTimeval, Ifreq,
-    SDL_DATA_OFFSET, SockaddrDl,
+    IF_HDRPRIO_MAX, IF_HDRPRIO_MIN, IF_HDRPRIO_OUTER, IF_HDRPRIO_PACKET, IF_HDRPRIO_PAYLOAD,
+    IFAN_ARRIVAL, IFAN_DEPARTURE, IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFCAP_WOL, IFDESCRSIZE,
+    IFF_CANTCHANGE, IFF_LOOPBACK, IFF_OACTIVE, IFF_POINTOPOINT, IFF_PROMISC, IFF_UP, IFG_ALL,
+    IFG_EGRESS, IFNAMSIZ, IFQ_DEFPRIO, IFQ_MAXPRIO, IFQ_MINPRIO, IFSFF_ADDR_DDM, IFSFF_ADDR_EEPROM,
+    IFT_CARP, IFT_ETHER, IFT_ISO88025, IFT_XETHER, IFXF_AUTOCONF4, IFXF_AUTOCONF6,
+    IFXF_AUTOCONF6TEMP, IFXF_CANTCHANGE, IFXF_CLONED, IFXF_INET6_NOSOII, IFXF_LRO, IFXF_MONITOR,
+    IFXF_MPSAFE, IFXF_WOL, IfAfreq, IfClonereq, IfData, IfRxrinfo, IfRxring, IfRxringInfo,
+    IfSffpage, IfTimeval, Ifconf, IfgAttrib, IfgReq, Ifgroupreq, Ifreq, SDL_DATA_OFFSET,
+    SockaddrDl,
 };
-use hal::sys::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, RT_TABLEID_MAX};
-use hal::sys::sockio::{SIOCSIFFLAGS, SIOCSIFRDOMAIN, SIOCSIFXFLAGS};
+use hal::sys::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, RT_TABLEID_MAX, Sockaddr};
+use hal::sys::sockio::{
+    SIOCADDMULTI, SIOCAIFADDR, SIOCAIFGROUP, SIOCDELLABEL, SIOCDELMULTI, SIOCDIFADDR, SIOCDIFGROUP,
+    SIOCDIFPARENT, SIOCDIFPHYADDR, SIOCDPWE3NEIGHBOR, SIOCDVNETID, SIOCGIFCONF, SIOCGIFDATA,
+    SIOCGIFDESCR, SIOCGIFFLAGS, SIOCGIFGATTR, SIOCGIFGLIST, SIOCGIFGMEMB, SIOCGIFGROUP,
+    SIOCGIFHARDMTU, SIOCGIFLLPRIO, SIOCGIFMEDIA, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFPRIORITY,
+    SIOCGIFRDOMAIN, SIOCGIFRTLABEL, SIOCGIFSFFPAGE, SIOCGIFXFLAGS, SIOCIFAFATTACH, SIOCIFAFDETACH,
+    SIOCIFCREATE, SIOCIFDESTROY, SIOCIFGCLONERS, SIOCSETKALIVE, SIOCSETLABEL, SIOCSETMPWCFG,
+    SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDESCR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SIOCSIFGATTR,
+    SIOCSIFLLADDR, SIOCSIFLLPRIO, SIOCSIFMEDIA, SIOCSIFMETRIC, SIOCSIFMTU, SIOCSIFNETMASK,
+    SIOCSIFPAIR, SIOCSIFPARENT, SIOCSIFPRIORITY, SIOCSIFRDOMAIN, SIOCSIFRTLABEL, SIOCSIFXFLAGS,
+    SIOCSLIFPHYADDR, SIOCSLIFPHYDF, SIOCSLIFPHYECN, SIOCSLIFPHYRTABLE, SIOCSLIFPHYTTL,
+    SIOCSPWE3CTRLWORD, SIOCSPWE3FAT, SIOCSPWE3NEIGHBOR, SIOCSRXHPRIO, SIOCSTXHPRIO,
+    SIOCSVNETFLOWID, SIOCSVNETID,
+};
 use hal::sys::types::SaFamily;
+use hal::user::UserPtr;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
-    IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, Ifaddr, IfgGroup, IfgMembers, IfgRef, IfgSet,
-    Ifnet, IfnetList, NetDriver, Netstack, counters_pkt,
+    IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaTmplist, Ifaddr, IfgGroup,
+    IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, counters_pkt,
 };
 use crate::net::ifq::{
     Ifiqueue, Ifqueue, QueueDiscipline, ifiq_add_data, ifiq_destroy, ifiq_enqueue,
@@ -286,7 +353,9 @@ use crate::net::mbuf::{
     M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
 };
 use crate::net::pf_hooks::pf;
+use crate::net::socket::Socket;
 use crate::prf::{Str, printf};
+use crate::proc::{ProcGlue, Thread, suser};
 use crate::task::TaskChain;
 use crate::task::{Task, Taskq, TaskqRef, task_add, task_del, taskq_create, taskq_destroy_leaked};
 use hal::pinlist::PinList;
@@ -311,6 +380,17 @@ const M_IFGROUP: i32 = 10;
 
 /// `ETHER_ADDR_LEN` (`<netinet/if_ether.h>`, `bsd`'s; a copy).
 pub const ETHER_ADDR_LEN: usize = 6;
+
+/// `RTLABEL_LEN` (`<net/route.h>`, `bsd`'s): a route label's bytes, its NUL included.
+const RTLABEL_LEN: usize = 32;
+
+/// `SIOCDIFADDR_IN6` (`<netinet6/in6_var.h>`, `bsd`'s): `_IOW('i', 25, struct in6_ifreq)`,
+/// a 288-byte request (`ifioctl`'s superuser check).
+pub const SIOCDIFADDR_IN6: u64 = _ioc(IOC_IN, b'i', 25, 288);
+
+/// `SIOCAIFADDR_IN6` (`<netinet6/in6_var.h>`, `bsd`'s): `_IOW('i', 26, struct
+/// in6_aliasreq)`, a 128-byte request.
+pub const SIOCAIFADDR_IN6: u64 = _ioc(IOC_IN, b'i', 26, 128);
 
 /// The offset of `sa_data` in a `struct sockaddr` (after `sa_len` and `sa_family`).
 const SA_DATA_OFFSET: usize = 2;
@@ -351,13 +431,26 @@ pub trait Inet: Sync + 'static {
     fn nd6_ifdetach(&self, ifp: &'static Ifnet);
     /// `rti_delete(ifp)`: igmp's router info.
     fn rti_delete(&self, ifp: &'static Ifnet);
-    /// `in_ifdetach(ifp)`, after `if_detach`'s `NETHER > 0 && NFSCLIENT` block (the reverse
-    /// ARP interface forgotten).
+    /// `if_detach`'s `NETHER > 0 && NFSCLIENT` block: the reverse ARP interface forgotten
+    /// (`revarp_ifidx = 0`) when it is `ifp`.
+    fn revarp_ifdetach(&self, ifp: &'static Ifnet);
+    /// `in_ifdetach(ifp)`: the interface's IPv4 addresses and memberships gone.
     fn in_ifdetach(&self, ifp: &'static Ifnet);
     /// `in6_ifdetach(ifp)`.
     fn in6_ifdetach(&self, ifp: &'static Ifnet);
-    /// `in6_ifattach(ifp)` (its result ignored, as by the C's callers here).
-    fn in6_ifattach(&self, ifp: &'static Ifnet);
+    /// `in6_ifattach(ifp)`: IPv6 on the interface; `ifioctl`'s `SIOCIFAFATTACH` and
+    /// `SIOCSIFXFLAGS` answer its error, `if_up` and `ifnewlladdr` ignore it (the C's).
+    fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno>;
+    /// `in_ioctl(cmd, data, ifp, privileged)`: an IPv4 address request of the kernel itself,
+    /// which has no socket for `pru_control` (`ifioctl` with no socket: the boot self-test's
+    /// `SIOCAIFADDR`); `data` the request's image, `IOCPARM_LEN(cmd)` bytes.
+    fn in_ioctl(
+        &self,
+        cmd: u64,
+        data: &mut [u8],
+        ifp: &'static Ifnet,
+        privileged: bool,
+    ) -> Result<(), Errno>;
     /// `ip6_forwarding != 0`.
     fn ip6_forwarding(&self) -> bool;
     /// `ifnewlladdr`'s first IPv6 step: the link-local address purged
@@ -393,6 +486,14 @@ pub trait Routing: Sync + 'static {
     /// in table 0 (`rtable_lookup(0, any, any, NULL, RTP_ANY)`, then `rtable_iterate`) that
     /// is neither `RTF_REJECT` nor `RTF_BLACKHOLE`, in the table's order.
     fn default_routes(&self, af: SaFamily, f: &mut dyn FnMut(u32));
+    /// `rtlabel_id2name(id, buf, len)`: the route label `id` names, `strlcpy`d into `buf`;
+    /// `false` for none.
+    fn rtlabel_id2name(&self, id: u16, buf: &mut [u8]) -> bool;
+    /// `rtlabel_name2id(name)`: the id of the label `name` (NUL-terminated), a reference to
+    /// it taken (0: no label).
+    fn rtlabel_name2id(&self, name: &[u8]) -> u16;
+    /// `rtlabel_unref(id)`: a reference to the label `id` dropped (0 is none).
+    fn rtlabel_unref(&self, id: u16);
 }
 
 /// What the kernel's interface layer asks of the link layers (bpf(4) and `if_ethersubr.c`,
@@ -505,6 +606,10 @@ static NET_TQ_BARRIER_LOCK: RawRwlock = RawRwlock::new("netbarlk");
 /// `ifnetlist`: all attached interfaces, changed with the net lock (and the kernel lock in
 /// `ifioctl`'s paths) held, read with either.
 pub static IFNETLIST: List<IfnetList> = List::new();
+
+/// `if_tmplist_lock`: serialises the users of the interfaces' and the addresses' temporary
+/// lists (`if_tmplist`, `ifa_tmplist`: `ifconf`, and `bsd`'s `sysctl_ifnames`).
+pub static IF_TMPLIST_LOCK: RawRwlock = RawRwlock::new("iftmplk");
 
 /// `ifinit`: the index map (8 is a nice power of 2 for malloc) and its pool.
 pub fn ifinit() {
@@ -1627,9 +1732,15 @@ fn name_eq(a: &[u8], b: &[u8]) -> bool {
 
 /// `strlcpy` of a name into an `IFNAMSIZ` array: at most `IFNAMSIZ - 1` bytes and a NUL.
 fn name_array(name: &[u8]) -> [u8; IFNAMSIZ] {
+    name_array_of::<IFNAMSIZ>(name)
+}
+
+/// `strlcpy` of a NUL-terminated string into a zeroed `N`-byte array: at most `N - 1` bytes,
+/// then NULs.
+fn name_array_of<const N: usize>(name: &[u8]) -> [u8; N] {
     let name = cstr(name);
-    let mut n = [0u8; IFNAMSIZ];
-    let len = name.len().min(IFNAMSIZ - 1);
+    let mut n = [0u8; N];
+    let len = name.len().min(N.saturating_sub(1));
     n[..len].copy_from_slice(&name[..len]);
     n
 }
@@ -1986,7 +2097,8 @@ pub fn if_detach(ifp: &'static Ifnet) {
 
         if let Some(i) = inet() {
             i.rti_delete(ifp);
-            // NETHER > 0 && NFSCLIENT: the reverse ARP interface is forgotten, in the leg.
+            // NETHER > 0 && NFSCLIENT
+            i.revarp_ifdetach(ifp);
             // MROUTING: vif_delete(ifp); not configured.
             i.in_ifdetach(ifp);
             i.in6_ifdetach(ifp);
@@ -2210,6 +2322,37 @@ pub fn if_clone_attach(ifc: &'static dyn Cloner) {
     }
 }
 
+/// `if_clone_list(ifcr)`: provide list of interface cloners to userspace (`SIOCIFGCLONERS`):
+/// their count in `ifcr_total` and, with a buffer, as many names as `ifcr_count` asks for,
+/// `IFNAMSIZ` bytes each, NUL-padded (`EINVAL` for a negative count).
+fn if_clone_list(ifcr: &mut IfClonereq) -> Result<(), Errno> {
+    let total = if_clone_count();
+    if ifcr.ifcr_buffer == 0 {
+        // Just asking how many there are.
+        ifcr.ifcr_total = total;
+        return Ok(());
+    }
+
+    if ifcr.ifcr_count < 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    ifcr.ifcr_total = total;
+    let mut count = total.min(ifcr.ifcr_count);
+    let mut dst = ifcr.ifcr_buffer as usize;
+
+    for ifc in if_cloners() {
+        if count == 0 {
+            break;
+        }
+        UserPtr::<u8>::new(dst).copyout_slice(&name_array(ifc.name()))?;
+        count -= 1;
+        dst += IFNAMSIZ;
+    }
+
+    Ok(())
+}
+
 /// `ifq_congestion`: the tick a queue was last congested.
 pub static IFQ_CONGESTION: AtomicI32 = AtomicI32::new(0);
 
@@ -2402,7 +2545,7 @@ pub fn if_up(ifp: &'static Ifnet) {
     if ifp.if_index.get() == rtable_loindex(ifp.if_rdomain.get())
         && let Some(i) = inet()
     {
-        i.in6_ifattach(ifp);
+        let _ = i.in6_ifattach(ifp);
     }
 
     if_linkstate(ifp);
@@ -2579,6 +2722,911 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
     }
 
     Ok(())
+}
+
+/// The bytes `ifioctl` works on for `cmd`: the structure the command names
+/// (`IOCPARM_LEN(cmd)`, which `sys_ioctl` copied whole) and at least the `struct ifreq` every
+/// interface request is first read as (its name, `if_unit`'s key).
+fn ifioctl_need(cmd: u64) -> usize {
+    (iocparm_len(cmd) as usize).max(size_of::<Ifreq>())
+}
+
+/// The `u64` words of a request copy `ifioctl` keeps on its stack: every interface request
+/// but the long ones (`if_laddrreq`'s 536 bytes, `in6_ifreq`'s 288, `if_sffpage`'s 274).
+const IFIOCTL_STACK_WORDS: usize = 8;
+
+/// `f` on the request `data` in place when it is `need` bytes or more and aligned for any
+/// request structure (`sys_ioctl`'s stack buffer and its `M_IOCTLOPS` copy of a long request
+/// are), else on a zeroed copy aligned for them and at least `need` bytes long (on the stack
+/// up to 64 bytes, else an `M_IOCTLOPS` block), whose first `data.len()` bytes go back to
+/// `data` after the call: never on a shorter buffer (N6.2a review's B1; the C reads an
+/// `ifreq` out of `sys_ioctl`'s 128-byte stack buffer whatever the command's length).
+fn with_request<R>(
+    data: &mut [u8],
+    need: usize,
+    f: impl FnOnce(&mut [u8]) -> Result<R, Errno>,
+) -> Result<R, Errno> {
+    if data.len() >= need && data.as_ptr().addr().is_multiple_of(align_of::<u64>()) {
+        return f(data);
+    }
+    let len = need.max(data.len());
+    let words = len.div_ceil(size_of::<u64>());
+    let mut stack = [0u64; IFIOCTL_STACK_WORDS];
+    let mut heap: MArray<u64>;
+    let buf: &mut [u64] = if words <= IFIOCTL_STACK_WORDS {
+        &mut stack[..words]
+    } else {
+        heap =
+            MArray::new(crate::descrip::M_IOCTLOPS, M_WAITOK, words, |_| 0).ok_or(Errno::ENOMEM)?;
+        &mut heap[..]
+    };
+    let bytes = &mut hal::user::bytes_of_mut(buf)[..len];
+    let n = data.len();
+    bytes[..n].copy_from_slice(data);
+    let r = f(bytes);
+    data.copy_from_slice(&bytes[..n]);
+    r
+}
+
+/// The request's structure `T` at its start ([`with_request`] made it aligned and at least
+/// [`ifioctl_need`] long, so this fails only for a command whose length is shorter than its
+/// structure, which no `SIOC*` is: `EINVAL` then, never a short view).
+fn req_view<T: hal::user::AbiPod>(req: &mut [u8]) -> Result<&mut T, Errno> {
+    hal::pod::view_mut::<T>(req, 0).ok_or(Errno::EINVAL)
+}
+
+/// `ifr->ifr_name`: the interface name every per-interface request starts with.
+fn req_name(req: &[u8]) -> [u8; IFNAMSIZ] {
+    let mut name = [0u8; IFNAMSIZ];
+    let n = req.len().min(IFNAMSIZ);
+    name[..n].copy_from_slice(&req[..n]);
+    name
+}
+
+/// The request as the driver's `if_ioctl` and the protocol's `pru_control` get it: the
+/// command's `IOCPARM_LEN(cmd)` bytes.
+fn req_arg(req: &mut [u8], cmd: u64) -> &mut [u8] {
+    let n = (iocparm_len(cmd) as usize).min(req.len());
+    &mut req[..n]
+}
+
+/// `NET_LOCK()` around `f`, as the detached holding `hal::netlock::lock` takes: the drivers
+/// `f` reaches through `if_ioctl` may let it go and take it back (wg(4)'s `wg_up` and
+/// `wg_down`, pflow(4)'s `pflowioctl`), which a witness would refuse (the module's redesign).
+fn net_locked<R>(f: impl FnOnce() -> R) -> R {
+    hal::netlock::lock();
+    let r = f();
+    hal::netlock::unlock();
+    r
+}
+
+/// `rtm_ifchg(ifp)`: the routing socket told the interface changed (nothing before routing
+/// registers).
+fn rtm_ifchg(ifp: &'static Ifnet) {
+    if let Some(r) = routing() {
+        r.rtm_ifchg(ifp);
+    }
+}
+
+/// `ETHER_IS_MULTICAST(addr)` (`<netinet/if_ether.h>`, `bsd`'s): the group bit of the first
+/// byte.
+fn ether_is_multicast(addr: [u8; ETHER_ADDR_LEN]) -> bool {
+    addr[0] & 0x01 != 0
+}
+
+/// `ifp->if_wol(ifp, on)`: wake on LAN through the driver; `ENOTSUP` for a driver without
+/// one (the C calls it unchecked once `IFCAP_WOL` is set; LZ's answer).
+fn if_wol(ifp: &'static Ifnet, on: bool) -> Result<(), Errno> {
+    ifp.driver().wol(ifp, on).unwrap_or(Err(Errno::ENOTSUP))
+}
+
+/// The requests that need the superuser before they go to the protocol and the driver
+/// (`NBRIDGE > 0` adds the `SIOCBRDG*` ones: bridge(4) is not configured).
+fn ifioctl_privileged(cmd: u64) -> bool {
+    matches!(
+        cmd,
+        SIOCSETKALIVE
+            | SIOCDIFPHYADDR
+            | SIOCSLIFPHYADDR
+            | SIOCSLIFPHYRTABLE
+            | SIOCSLIFPHYTTL
+            | SIOCSLIFPHYDF
+            | SIOCSLIFPHYECN
+            | SIOCADDMULTI
+            | SIOCDELMULTI
+            | SIOCSVNETID
+            | SIOCDVNETID
+            | SIOCSVNETFLOWID
+            | SIOCSTXHPRIO
+            | SIOCSRXHPRIO
+            | SIOCSIFPAIR
+            | SIOCSIFPARENT
+            | SIOCDIFPARENT
+            | SIOCSETMPWCFG
+            | SIOCSETLABEL
+            | SIOCDELLABEL
+            | SIOCSPWE3CTRLWORD
+            | SIOCSPWE3FAT
+            | SIOCSPWE3NEIGHBOR
+            | SIOCDPWE3NEIGHBOR
+    )
+}
+
+/// The address requests no protocol answered, which need the superuser before they go to
+/// the driver (`INET6`'s two among them).
+fn ifioctl_address(cmd: u64) -> bool {
+    matches!(
+        cmd,
+        SIOCAIFADDR
+            | SIOCDIFADDR
+            | SIOCSIFADDR
+            | SIOCSIFNETMASK
+            | SIOCSIFDSTADDR
+            | SIOCSIFBRDADDR
+            | SIOCAIFADDR_IN6
+            | SIOCDIFADDR_IN6
+    )
+}
+
+/// `pru_control(so, cmd, data, ifp)` (`<sys/protosw.h>`): the socket's protocol's request on
+/// the interface (`EOPNOTSUPP` for a protocol without one); a request of the kernel itself
+/// (no socket) goes to `in_ioctl` as a privileged one (the module's deviations).
+fn pru_control<G: ProcGlue>(
+    so: Option<&Socket<G>>,
+    cmd: u64,
+    data: &mut [u8],
+    ifp: &'static Ifnet,
+) -> Result<(), Errno> {
+    match so {
+        Some(so) => so.usrreqs().control(so, cmd, data, Some(ifp)),
+        None => match inet() {
+            Some(i) => i.in_ioctl(cmd, data, ifp, true),
+            None => Err(Errno::EOPNOTSUPP),
+        },
+    }
+}
+
+/// `ifioctl(so, cmd, data, p)`: an interface request (the `'i'` group) on socket `so`
+/// (`None` for a request of the kernel itself, the boot self-test's), `data` the kernel's
+/// copy of its argument (`sys_ioctl`'s), `p` the caller. Every check the C makes is made at
+/// its point: `suser` before each request that changes something, the interface found by
+/// name (`ENXIO`), and each request's own (`EINVAL`, `ENODEV`, `EAFNOSUPPORT`, ...). The
+/// kernel lock around the requests on one interface, the net lock inside it where the C
+/// takes it (if.c:2136-2597).
+pub fn ifioctl<G: ProcGlue>(
+    so: Option<&Socket<G>>,
+    cmd: u64,
+    data: &mut [u8],
+    p: &Thread<G>,
+) -> Result<(), Errno> {
+    with_request(data, ifioctl_need(cmd), |req| ifioctl_req(so, cmd, req, p))
+}
+
+/// [`ifioctl`] on `req`, the request aligned for its structure and at least an `ifreq` long.
+fn ifioctl_req<G: ProcGlue>(
+    so: Option<&Socket<G>>,
+    cmd: u64,
+    req: &mut [u8],
+    p: &Thread<G>,
+) -> Result<(), Errno> {
+    match cmd {
+        SIOCIFCREATE | SIOCIFDESTROY => {
+            suser(p)?;
+            let name = req_name(req);
+            hal::klock::kernel_lock();
+            let error = if cmd == SIOCIFCREATE {
+                if_clone_create(&name, 0)
+            } else {
+                if_clone_destroy(&name)
+            };
+            hal::klock::kernel_unlock();
+            return error;
+        }
+        SIOCSIFGATTR => {
+            suser(p)?;
+            hal::klock::kernel_lock();
+            let error = net_locked(|| if_setgroupattribs(req));
+            hal::klock::kernel_unlock();
+            return error;
+        }
+        SIOCGIFCONF | SIOCIFGCLONERS | SIOCGIFGMEMB | SIOCGIFGATTR | SIOCGIFGLIST
+        | SIOCGIFFLAGS | SIOCGIFXFLAGS | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHARDMTU
+        | SIOCGIFDATA | SIOCGIFDESCR | SIOCGIFRTLABEL | SIOCGIFPRIORITY | SIOCGIFRDOMAIN
+        | SIOCGIFGROUP | SIOCGIFLLPRIO => return ifioctl_get(cmd, req),
+        _ => {}
+    }
+
+    hal::klock::kernel_lock();
+
+    let Some(ifp) = if_unit(&req_name(req)) else {
+        hal::klock::kernel_unlock();
+        return Err(Errno::ENXIO);
+    };
+    let oif_flags = ifp.if_flags.get();
+    let oif_xflags = ifp.if_xflags.get();
+
+    let error = ifioctl_ifp(so, cmd, req, p, ifp, (oif_flags, oif_xflags));
+
+    let flags = ifp.if_flags.get();
+    // if_up() and if_down() already sent an update, skip here
+    if (oif_flags != flags || oif_xflags != ifp.if_xflags.get())
+        && (oif_flags ^ flags) & IFF_UP == 0
+    {
+        rtm_ifchg(ifp);
+    }
+
+    if (oif_flags ^ flags) & IFF_UP != 0 {
+        let now = crate::tc::getmicrotime();
+        ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
+    }
+
+    hal::klock::kernel_unlock();
+
+    if_put(Some(ifp));
+
+    error
+}
+
+/// [`ifioctl`]'s requests on the interface `ifp` (`if_unit`'s, under the kernel lock), whose
+/// flags and extra flags were `old` before.
+fn ifioctl_ifp<G: ProcGlue>(
+    so: Option<&Socket<G>>,
+    cmd: u64,
+    req: &mut [u8],
+    p: &Thread<G>,
+    ifp: &'static Ifnet,
+    old: (i32, i32),
+) -> Result<(), Errno> {
+    match cmd {
+        SIOCIFAFATTACH | SIOCIFAFDETACH => {
+            suser(p)?;
+            let af = req_view::<IfAfreq>(req)?.ifar_af;
+            net_locked(|| match (af, inet()) {
+                (AF_INET, i) => {
+                    // attach is a noop for AF_INET
+                    if cmd == SIOCIFAFDETACH
+                        && let Some(i) = i
+                    {
+                        i.in_ifdetach(ifp);
+                    }
+                    Ok(())
+                }
+                (AF_INET6, Some(i)) => {
+                    if cmd == SIOCIFAFATTACH {
+                        i.in6_ifattach(ifp)
+                    } else {
+                        i.in6_ifdetach(ifp);
+                        Ok(())
+                    }
+                }
+                _ => Err(Errno::EAFNOSUPPORT),
+            })
+        }
+
+        SIOCSIFXFLAGS => {
+            suser(p)?;
+            net_locked(|| if_setxflags(req, ifp, old))
+        }
+
+        SIOCSIFFLAGS => {
+            suser(p)?;
+            net_locked(|| if_setflags(SIOCSIFFLAGS, req, ifp, old))
+        }
+
+        SIOCSIFMETRIC => {
+            suser(p)?;
+            let metric = req_view::<Ifreq>(req)?.ifr_metric();
+            net_locked(|| ifp.if_metric.set(metric as u32));
+            Ok(())
+        }
+
+        SIOCSIFMTU => {
+            suser(p)?;
+            let error = net_locked(|| if_ioctl(ifp, cmd, req_arg(req, cmd)));
+            if error.is_ok() {
+                rtm_ifchg(ifp);
+            }
+            error
+        }
+
+        SIOCSIFDESCR => {
+            suser(p)?;
+            let mut ifdescrbuf = [0u8; IFDESCRSIZE];
+            let uaddr = req_view::<Ifreq>(req)?.ifr_data() as usize;
+            UserPtr::<u8>::new(uaddr).copyinstr(&mut ifdescrbuf)?;
+            // memset(if_description, 0) and strlcpy: the string and zeros after it.
+            ifp.if_description
+                .set(name_array_of::<IFDESCRSIZE>(&ifdescrbuf));
+            Ok(())
+        }
+
+        SIOCSIFRTLABEL => {
+            suser(p)?;
+            let mut ifrtlabelbuf = [0u8; RTLABEL_LEN];
+            let uaddr = req_view::<Ifreq>(req)?.ifr_data() as usize;
+            UserPtr::<u8>::new(uaddr).copyinstr(&mut ifrtlabelbuf)?;
+            if let Some(r) = routing() {
+                r.rtlabel_unref(ifp.if_rtlabelid.get());
+                ifp.if_rtlabelid.set(r.rtlabel_name2id(&ifrtlabelbuf));
+            }
+            Ok(())
+        }
+
+        SIOCSIFPRIORITY => {
+            suser(p)?;
+            let metric = req_view::<Ifreq>(req)?.ifr_metric();
+            if !(0..=15).contains(&metric) {
+                return Err(Errno::EINVAL);
+            }
+            ifp.if_priority.set(metric as u8);
+            Ok(())
+        }
+
+        SIOCSIFRDOMAIN => {
+            suser(p)?;
+            let rdomain = req_view::<Ifreq>(req)?.ifr_rdomainid();
+            match if_createrdomain(rdomain, ifp) {
+                Ok(()) | Err(Errno::EEXIST) => net_locked(|| if_setrdomain(ifp, rdomain)),
+                error => error,
+            }
+        }
+
+        SIOCAIFGROUP => {
+            suser(p)?;
+            net_locked(|| {
+                let group = *req_view::<Ifgroupreq>(req)?.ifgr_group();
+                if_addgroup(ifp, &group)?;
+                match if_ioctl(ifp, cmd, req_arg(req, cmd)) {
+                    Err(Errno::ENOTTY) => Ok(()),
+                    error => error,
+                }
+            })
+        }
+
+        SIOCDIFGROUP => {
+            suser(p)?;
+            net_locked(|| {
+                match if_ioctl(ifp, cmd, req_arg(req, cmd)) {
+                    Ok(()) | Err(Errno::ENOTTY) => {}
+                    error => return error,
+                }
+                // The group's name read after the driver's call, as the C reads it.
+                let group = *req_view::<Ifgroupreq>(req)?.ifgr_group();
+                if_delgroup(ifp, &group)
+            })
+        }
+
+        SIOCSIFLLADDR => {
+            suser(p)?;
+            let sa = req_view::<Ifreq>(req)?.ifr_addr();
+            let first = sa_lladdr(&sa);
+            if ifp.sadl().is_none()
+                || usize::from(sa.sa_len) != ETHER_ADDR_LEN
+                || ether_is_multicast(first)
+            {
+                return Err(Errno::EINVAL);
+            }
+            let error = net_locked(|| {
+                let error = match ifp.if_type.get() {
+                    IFT_ETHER | IFT_CARP | IFT_XETHER | IFT_ISO88025 => {
+                        match if_ioctl(ifp, cmd, req_arg(req, cmd)) {
+                            Ok(()) | Err(Errno::ENOTTY) => {
+                                // The address read after the driver's call, as the C does.
+                                let sa = req_view::<Ifreq>(req)?.ifr_addr();
+                                if_setlladdr(ifp, &sa_lladdr(&sa))
+                            }
+                            error => error,
+                        }
+                    }
+                    _ => Err(Errno::ENODEV),
+                };
+
+                if error.is_ok() {
+                    ifnewlladdr(ifp);
+                }
+                error
+            });
+            if error.is_ok() {
+                rtm_ifchg(ifp);
+            }
+            error
+        }
+
+        SIOCSIFLLPRIO => {
+            suser(p)?;
+            let llprio = req_view::<Ifreq>(req)?.ifr_llprio();
+            if llprio < IFQ_MINPRIO as i32 || llprio > IFQ_MAXPRIO as i32 {
+                return Err(Errno::EINVAL);
+            }
+            net_locked(|| ifp.if_llprio.set(llprio as u8));
+            Ok(())
+        }
+
+        SIOCGIFSFFPAGE => {
+            suser(p)?;
+            if_sffpage_check(req)?;
+            // don't take NET_LOCK because i2c reads take a long time
+            if_ioctl(ifp, cmd, req_arg(req, cmd))
+        }
+
+        SIOCSIFMEDIA | SIOCGIFMEDIA => {
+            if cmd == SIOCSIFMEDIA {
+                suser(p)?;
+            }
+            // net lock is not needed
+            if_ioctl(ifp, cmd, req_arg(req, cmd))
+        }
+
+        _ => {
+            if ifioctl_privileged(cmd) {
+                suser(p)?;
+            }
+            match pru_control(so, cmd, req_arg(req, cmd), ifp) {
+                Err(Errno::EOPNOTSUPP) => {}
+                error => return error,
+            }
+            if ifioctl_address(cmd) {
+                suser(p)?;
+            }
+            net_locked(|| if_ioctl(ifp, cmd, req_arg(req, cmd)))
+        }
+    }
+}
+
+/// The first `ETHER_ADDR_LEN` bytes of a socket address's `sa_data` (`SIOCSIFLLADDR`'s
+/// link-level address).
+fn sa_lladdr(sa: &Sockaddr) -> [u8; ETHER_ADDR_LEN] {
+    let mut a = [0u8; ETHER_ADDR_LEN];
+    a.copy_from_slice(&sa.sa_data[..ETHER_ADDR_LEN]);
+    a
+}
+
+/// `SIOCSIFXFLAGS` (under the net lock): IPv6's automatic configuration and its stable
+/// addresses (`INET6`), wake on LAN, LRO, then the flags a user may change set; an interface
+/// that turned automatic configuration on while down is brought up (`forceup`).
+fn if_setxflags(req: &mut [u8], ifp: &'static Ifnet, old: (i32, i32)) -> Result<(), Errno> {
+    let mut error = Ok(());
+    let rflags = i32::from(req_view::<Ifreq>(req)?.ifr_flags());
+
+    // INET6: the protocol's legs answer when it is configured (registered).
+    if let Some(i) = inet() {
+        let autoconf6 = IFXF_AUTOCONF6 | IFXF_AUTOCONF6TEMP;
+        if rflags & autoconf6 != 0 && ifp.if_xflags.get() & autoconf6 == 0 {
+            i.in6_ifattach(ifp)?;
+        }
+
+        if rflags & IFXF_INET6_NOSOII != 0 && ifp.if_xflags.get() & IFXF_INET6_NOSOII == 0 {
+            ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_INET6_NOSOII);
+        }
+
+        if rflags & IFXF_INET6_NOSOII == 0 && ifp.if_xflags.get() & IFXF_INET6_NOSOII != 0 {
+            ifp.if_xflags.set(ifp.if_xflags.get() & !IFXF_INET6_NOSOII);
+        }
+    }
+
+    // MPLS: IFXF_MPLS swaps if_output with mpls_output; MPLS is not configured.
+
+    // !SMALL_KERNEL
+    if ifp.if_capabilities.get() & IFCAP_WOL != 0 {
+        if rflags & IFXF_WOL != 0 && ifp.if_xflags.get() & IFXF_WOL == 0 {
+            let s = hal::intr::splraise(IPL_NET);
+            ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_WOL);
+            error = if_wol(ifp, true);
+            drop(s);
+        }
+        if ifp.if_xflags.get() & IFXF_WOL != 0 && rflags & IFXF_WOL == 0 {
+            let s = hal::intr::splraise(IPL_NET);
+            ifp.if_xflags.set(ifp.if_xflags.get() & !IFXF_WOL);
+            error = if_wol(ifp, false);
+            drop(s);
+        }
+    } else if rflags & IFXF_WOL != 0 {
+        req_view::<Ifreq>(req)?.set_ifr_flags((rflags & !IFXF_WOL) as i16);
+        error = Err(Errno::ENOTSUP);
+    }
+
+    // The request's flags again: the line above may have cleared IFXF_WOL in them.
+    let rflags = i32::from(req_view::<Ifreq>(req)?.ifr_flags());
+    if (rflags & IFXF_LRO != 0) != (ifp.if_xflags.get() & IFXF_LRO != 0) {
+        error = ifsetlro(ifp, rflags & IFXF_LRO != 0);
+    }
+
+    if error.is_ok() {
+        ifp.if_xflags
+            .set((ifp.if_xflags.get() & IFXF_CANTCHANGE) | (rflags & !IFXF_CANTCHANGE));
+    }
+
+    let (_, oif_xflags) = old;
+    let newly = |bit: i32| oif_xflags & bit == 0 && ifp.if_xflags.get() & bit != 0;
+    if ifp.if_flags.get() & IFF_UP == 0
+        && (newly(IFXF_AUTOCONF4) || newly(IFXF_AUTOCONF6) || newly(IFXF_AUTOCONF6TEMP))
+    {
+        req_view::<Ifreq>(req)?.set_ifr_flags((ifp.if_flags.get() | IFF_UP) as i16);
+        return if_setflags(SIOCSIFXFLAGS, req, ifp, old);
+    }
+
+    error
+}
+
+/// `forceup` (under the net lock): `SIOCSIFFLAGS`, and `SIOCSIFXFLAGS` bringing an interface
+/// with automatic configuration up. The flags a user may change are set from the request
+/// and the driver told; when it refuses, the old flags (and, for `SIOCSIFXFLAGS`, the old
+/// extra flags) come back, else `IFF_UP` changing brings the interface up or down.
+fn if_setflags(
+    cmd: u64,
+    req: &mut [u8],
+    ifp: &'static Ifnet,
+    old: (i32, i32),
+) -> Result<(), Errno> {
+    let (oif_flags, oif_xflags) = old;
+    // `if_flags` is an `unsigned short` in C, `ifr_flags` a `short`: the assignment keeps the
+    // low sixteen bits of the sign-extended request.
+    let rflags = i32::from(req_view::<Ifreq>(req)?.ifr_flags());
+    ifp.if_flags.set(
+        ((ifp.if_flags.get() & IFF_CANTCHANGE) | (rflags & !IFF_CANTCHANGE)) & USHRT_MAX as i32,
+    );
+    let error = if_ioctl(ifp, SIOCSIFFLAGS, req_arg(req, SIOCSIFFLAGS));
+    if error.is_err() {
+        ifp.if_flags.set(oif_flags);
+        if cmd == SIOCSIFXFLAGS {
+            ifp.if_xflags.set(oif_xflags);
+        }
+    } else if (oif_flags ^ ifp.if_flags.get()) & IFF_UP != 0 {
+        let s = hal::intr::splraise(IPL_NET);
+        if ifp.if_flags.get() & IFF_UP != 0 {
+            if_up(ifp);
+        } else {
+            if_down(ifp);
+        }
+        drop(s);
+    }
+    error
+}
+
+/// `ifioctl_get(cmd, data)`: the requests that only read (no privilege); an interface's
+/// under a reference, its `if_data` under the shared net lock and the kernel lock.
+fn ifioctl_get(cmd: u64, req: &mut [u8]) -> Result<(), Errno> {
+    match cmd {
+        SIOCGIFCONF => return ifconf(req),
+        SIOCIFGCLONERS => return if_clone_list(req_view::<IfClonereq>(req)?),
+        SIOCGIFGMEMB => return if_getgroupmembers(req),
+        SIOCGIFGATTR => {
+            let _net = NETLOCK.read();
+            return if_getgroupattribs(req);
+        }
+        SIOCGIFGLIST => return if_getgrouplist(req),
+        _ => {}
+    }
+
+    hal::klock::kernel_lock();
+    let ifp = if_unit(&req_name(req));
+    hal::klock::kernel_unlock();
+
+    let Some(ifp) = ifp.map(IfRef) else {
+        return Err(Errno::ENXIO);
+    };
+
+    if cmd == SIOCGIFGROUP {
+        return if_getgroup(req, &ifp);
+    }
+
+    let ifr = req_view::<Ifreq>(req)?;
+    match cmd {
+        SIOCGIFFLAGS => {
+            let mut flags = ifp.if_flags.get();
+            if crate::net::ifq::ifq_is_oactive(ifp.if_snd()) {
+                flags |= IFF_OACTIVE;
+            }
+            ifr.set_ifr_flags(flags as i16);
+        }
+
+        SIOCGIFXFLAGS => {
+            ifr.set_ifr_flags((ifp.if_xflags.get() & !(IFXF_MPSAFE | IFXF_CLONED)) as i16);
+        }
+
+        SIOCGIFMETRIC => ifr.set_ifr_metric(ifp.if_metric.get() as i32),
+
+        SIOCGIFMTU => ifr.set_ifr_mtu(ifp.if_mtu.get() as i32),
+
+        SIOCGIFHARDMTU => ifr.set_ifr_hardmtu(ifp.if_hardmtu.get() as i32),
+
+        SIOCGIFDATA => {
+            let mut ifdata: IfData = hal::user::zeroed();
+            {
+                let _net = NETLOCK.read();
+                hal::klock::kernel_lock();
+                if_getdata(&ifp, &mut ifdata);
+                hal::klock::kernel_unlock();
+            }
+            return UserPtr::<IfData>::new(ifr.ifr_data() as usize).copyout(&ifdata);
+        }
+
+        SIOCGIFDESCR => {
+            hal::klock::kernel_lock();
+            let ifdescrbuf = name_array_of::<IFDESCRSIZE>(&ifp.if_description.get());
+            hal::klock::kernel_unlock();
+
+            return UserPtr::<u8>::new(ifr.ifr_data() as usize)
+                .copyoutstr(&ifdescrbuf)
+                .map(|_| ());
+        }
+
+        SIOCGIFRTLABEL => {
+            let rtlabelid = ifp.if_rtlabelid.get();
+            let mut ifrtlabelbuf = [0u8; RTLABEL_LEN];
+            if rtlabelid != 0
+                && routing().is_some_and(|r| r.rtlabel_id2name(rtlabelid, &mut ifrtlabelbuf))
+            {
+                return UserPtr::<u8>::new(ifr.ifr_data() as usize)
+                    .copyoutstr(&ifrtlabelbuf)
+                    .map(|_| ());
+            }
+            return Err(Errno::ENOENT);
+        }
+
+        SIOCGIFPRIORITY => ifr.set_ifr_metric(i32::from(ifp.if_priority.get())),
+
+        SIOCGIFRDOMAIN => ifr.set_ifr_rdomainid(ifp.if_rdomain.get() as i32),
+
+        SIOCGIFLLPRIO => ifr.set_ifr_llprio(i32::from(ifp.if_llprio.get())),
+
+        _ => kpanic(format_args!("invalid ioctl {cmd}")),
+    }
+
+    Ok(())
+}
+
+/// `if_sffpage_check(data)`: a transceiver page request names the EEPROM or the diagnostics
+/// (`EINVAL` otherwise).
+fn if_sffpage_check(req: &mut [u8]) -> Result<(), Errno> {
+    match req_view::<IfSffpage>(req)?.sff_addr {
+        IFSFF_ADDR_EEPROM | IFSFF_ADDR_DDM => Ok(()),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `if_txhprio_l2_check(hdrprio)`: a valid layer 2 transmit header priority setting.
+pub fn if_txhprio_l2_check(hdrprio: i32) -> Result<(), Errno> {
+    match hdrprio {
+        IF_HDRPRIO_PACKET => Ok(()),
+        _ if (IF_HDRPRIO_MIN..=IF_HDRPRIO_MAX).contains(&hdrprio) => Ok(()),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `if_txhprio_l3_check(hdrprio)`: a valid layer 3 transmit header priority setting.
+pub fn if_txhprio_l3_check(hdrprio: i32) -> Result<(), Errno> {
+    match hdrprio {
+        IF_HDRPRIO_PACKET | IF_HDRPRIO_PAYLOAD => Ok(()),
+        _ if (IF_HDRPRIO_MIN..=IF_HDRPRIO_MAX).contains(&hdrprio) => Ok(()),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `if_rxhprio_l2_check(hdrprio)`: a valid layer 2 receive header priority setting.
+pub fn if_rxhprio_l2_check(hdrprio: i32) -> Result<(), Errno> {
+    match hdrprio {
+        IF_HDRPRIO_PACKET | IF_HDRPRIO_OUTER => Ok(()),
+        _ if (IF_HDRPRIO_MIN..=IF_HDRPRIO_MAX).contains(&hdrprio) => Ok(()),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// `if_rxhprio_l3_check(hdrprio)`: a valid layer 3 receive header priority setting.
+pub fn if_rxhprio_l3_check(hdrprio: i32) -> Result<(), Errno> {
+    match hdrprio {
+        IF_HDRPRIO_PACKET | IF_HDRPRIO_PAYLOAD | IF_HDRPRIO_OUTER => Ok(()),
+        _ if (IF_HDRPRIO_MIN..=IF_HDRPRIO_MAX).contains(&hdrprio) => Ok(()),
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// The addresses of one interface `ifconf` copies under one shared hold of the net lock
+/// before it lets the lock go to copy them out: an interface with more takes the lock again
+/// for each further batch (the module's redesign).
+const IFCONF_BATCH: usize = 8;
+
+/// `ifconf(data)`: return interface configuration of system. List may be used in later
+/// ioctl's (above) to get other information. One `struct ifreq` per interface address (an
+/// address longer than a `sockaddr` written whole after the name, its row that much longer;
+/// an interface without one gets a row of an empty address) into the user's `ifc_req` array
+/// of `ifc_len` bytes; `ifc_len` ends as the bytes written. `ifc_len` 0 asks for the length
+/// needed. As the C, which compares the `int` `ifc_len` with a `size_t`, a negative `ifc_len`
+/// bounds no `sockaddr`-sized row, and bounds the longer rows (an `int` comparison).
+fn ifconf(req: &mut [u8]) -> Result<(), Errno> {
+    let ifc = req_view::<Ifconf>(req)?;
+    let mut space = ifc.ifc_len;
+
+    // If ifc->ifc_len is 0, fill it in with the needed size and return.
+    if space == 0 {
+        let net = NETLOCK.read();
+        let held = net_held(&net);
+        for ifp in &IFNETLIST {
+            if ifp.if_addrlist.is_empty() {
+                space = space.wrapping_add(IFREQ_SIZE as i32);
+            } else {
+                for ifa in &ifp.if_addrlist {
+                    let sa_len = ifa.ifa_addr.read(&held).map_or(0, |sa| usize::from(sa[0]));
+                    if sa_len > SOCKADDR_SIZE {
+                        space = space.wrapping_add((sa_len - SOCKADDR_SIZE) as i32);
+                    }
+                    space = space.wrapping_add(IFREQ_SIZE as i32);
+                }
+            }
+        }
+        drop(net);
+        ifc.ifc_len = space;
+        return Ok(());
+    }
+
+    let mut ifrp = ifc.ifc_req() as usize;
+
+    let tmp = IF_TMPLIST_LOCK.write();
+    let if_tmplist: List<IfTmplist> = List::new();
+    {
+        let _net = NETLOCK.read();
+        for ifp in &IFNETLIST {
+            if_tmplist.insert_tail(if_ref(ifp));
+        }
+    }
+
+    let error = ifconf_rows(&if_tmplist, &mut ifrp, &mut space);
+
+    // free:
+    while let Some(ifp) = if_tmplist.pop_head() {
+        if_put(Some(ifp));
+    }
+    drop(tmp);
+
+    if error.is_ok() {
+        ifc.ifc_len = ifc.ifc_len.wrapping_sub(space);
+    }
+    error
+}
+
+/// The proof the running code holds the net lock, from its witness `w`.
+fn net_held<W: hal::rwlock::Witness>(w: &W) -> NetHeld<'_> {
+    match NetHeld::of(w) {
+        Some(h) => h,
+        None => kpanic(format_args!("not a witness of the net lock")),
+    }
+}
+
+/// The `sizeof(struct ifreq)` rows `ifconf` writes.
+const IFREQ_SIZE: usize = size_of::<Ifreq>();
+
+/// `sizeof(struct sockaddr)`.
+const SOCKADDR_SIZE: usize = size_of::<Sockaddr>();
+
+/// `space < sizeof(ifr)`, the C's comparison of an `int` with a `size_t` (the `int`
+/// converted: a negative `space` is never short).
+fn ifconf_short(space: i32) -> bool {
+    (space as isize as usize) < IFREQ_SIZE
+}
+
+/// `ifconf`'s rows of the interfaces of `if_tmplist` (each referenced, the temporary list
+/// `IF_TMPLIST_LOCK` keeps), from the user address `ifrp` on, while `space` lasts: the
+/// interface's addresses referenced on a temporary list under the shared net lock (`ifaref`,
+/// as the C), the first [`IFCONF_BATCH`] of them copied in that same hold and the others a
+/// batch per hold after it, then copied out with the lock let go, then their references
+/// dropped (`ifafree`).
+fn ifconf_rows(
+    if_tmplist: &List<IfTmplist>,
+    ifrp: &mut usize,
+    space: &mut i32,
+) -> Result<(), Errno> {
+    let addr_tmplist: List<IfaTmplist> = List::new();
+    let mut ifr = Ifreq::zeroed();
+    let mut error = Ok(());
+
+    'free: for ifp in if_tmplist {
+        if ifconf_short(*space) {
+            break 'free;
+        }
+        ifr.ifr_name = ifp.if_xname.get();
+
+        let mut batch: [Option<SaBytes>; IFCONF_BATCH] = [const { None }; IFCONF_BATCH];
+        {
+            let net = NETLOCK.read();
+            let held = net_held(&net);
+            for (i, ifa) in ifp.if_addrlist.iter().enumerate() {
+                ifa.ifa_refcnt.take(); // ifaref
+                addr_tmplist.insert_tail(ifa);
+                if let Some(slot) = batch.get_mut(i) {
+                    *slot = ifa.ifa_addr.read(&held);
+                }
+            }
+        }
+
+        if addr_tmplist.is_empty() {
+            ifr.ifr_ifru = [0; SOCKADDR_SIZE];
+            error = UserPtr::<Ifreq>::new(*ifrp).copyout(&ifr);
+            if error.is_err() {
+                break 'free;
+            }
+
+            *space = space.wrapping_sub(IFREQ_SIZE as i32);
+            *ifrp = ifrp.wrapping_add(IFREQ_SIZE);
+        } else {
+            let mut next = addr_tmplist.first();
+            let mut i = 0;
+            while let Some(ifa) = next {
+                if i == IFCONF_BATCH {
+                    // The next batch, from this address on, in another hold of the lock.
+                    let net = NETLOCK.read();
+                    let held = net_held(&net);
+                    let mut at = Some(ifa);
+                    for slot in &mut batch {
+                        *slot = at.and_then(|a| a.ifa_addr.read(&held));
+                        at = at.and_then(List::<IfaTmplist>::next);
+                    }
+                    i = 0;
+                }
+                let sa = batch[i].take();
+                i += 1;
+                next = List::<IfaTmplist>::next(ifa);
+
+                if ifconf_short(*space) {
+                    break 'free;
+                }
+                // The address's bytes (`sa_len` of them, cut at its storage by the copy) and
+                // its `sa_len`, the row's length.
+                let bytes: &[u8] = sa.as_deref().unwrap_or(&[]);
+                let sa_len = bytes.first().map_or(0, |&l| usize::from(l));
+                if sa_len <= SOCKADDR_SIZE {
+                    // memset(&ifr.ifr_addr, 0) and the address's bytes over it
+                    ifr.ifr_ifru = [0; SOCKADDR_SIZE];
+                    let n = bytes.len().min(SOCKADDR_SIZE);
+                    ifr.ifr_ifru[..n].copy_from_slice(&bytes[..n]);
+                    error = UserPtr::<Ifreq>::new(*ifrp).copyout(&ifr);
+                    if error.is_err() {
+                        break 'free;
+                    }
+
+                    *space = space.wrapping_sub(IFREQ_SIZE as i32);
+                    *ifrp = ifrp.wrapping_add(IFREQ_SIZE);
+                } else {
+                    let total = (IFNAMSIZ + sa_len) as i32;
+
+                    if *space < total {
+                        break 'free;
+                    }
+                    error = UserPtr::<u8>::new(*ifrp).copyout_slice(&ifr.ifr_name);
+                    if error.is_err() {
+                        break 'free;
+                    }
+                    error = UserPtr::<u8>::new(ifrp.wrapping_add(IFNAMSIZ)).copyout_slice(bytes);
+                    if error.is_err() {
+                        break 'free;
+                    }
+
+                    *space = space.wrapping_sub(total);
+                    *ifrp = ifrp.wrapping_add(total as usize);
+                }
+            }
+        }
+
+        while let Some(ifa) = addr_tmplist.pop_head() {
+            ifafree(ifa);
+        }
+    }
+
+    // free:
+    while let Some(ifa) = addr_tmplist.pop_head() {
+        ifafree(ifa);
+    }
+    error
+}
+
+/// `ifafree(ifa)`: a reference to an address dropped (the `Routing` leg, which frees it with
+/// the last; before routing registers, only the count).
+fn ifafree(ifa: &'static Ifaddr) {
+    match routing() {
+        Some(r) => r.ifafree(ifa),
+        None => {
+            let _ = ifa.ifa_refcnt.rele();
+        }
+    }
 }
 
 /// `if_getdata(ifp, data)`: the interface's `struct if_data` (`SIOCGIFDATA`, the routing
@@ -2819,6 +3867,158 @@ pub fn if_delgroup(ifp: &Ifnet, groupname: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// `sizeof(struct ifg_req)`: one row of a group request's user array.
+const IFG_REQ_SIZE: usize = size_of::<IfgReq>();
+
+/// One `ifg_req` naming `name` (a group's or a member's: one union, zeroed, the name
+/// `strlcpy`d) copied out to the user's array at `ifgp`.
+fn ifgrq_copyout(name: &[u8], ifgp: usize) -> Result<(), Errno> {
+    let ifgrq = IfgReq {
+        ifgrq_ifgrqu: name_array(name),
+    };
+    UserPtr::<IfgReq>::new(ifgp).copyout(&ifgrq)
+}
+
+/// The rows of a group request (`SIOCGIFGROUP`, `SIOCGIFGMEMB`, `SIOCGIFGLIST`): each of
+/// `names` copied out to the user's array `ifgr_groups` while `ifgr_len` bytes last; `EINVAL`
+/// at the first that does not fit (the rows written before it stay, as the C's).
+fn ifgrq_rows(ifgr: &Ifgroupreq, names: impl Iterator<Item = [u8; IFNAMSIZ]>) -> Result<(), Errno> {
+    let mut len = ifgr.ifgr_len as usize;
+    let mut ifgp = ifgr.ifgr_groups() as usize;
+
+    for name in names {
+        if len < IFG_REQ_SIZE {
+            return Err(Errno::EINVAL);
+        }
+        ifgrq_copyout(&name, ifgp)?;
+        len -= IFG_REQ_SIZE;
+        ifgp += IFG_REQ_SIZE;
+    }
+
+    Ok(())
+}
+
+/// `if_getgroup(data, ifp)`: stores all groups from an interface in memory pointed to by
+/// `data` (`ifgr_len` 0: the length they need). The groups are a snapshot taken under the
+/// shared net lock and copied out without it, where the C keeps a temporary list of counted
+/// groups under `if_tmplist_lock` (the snapshot holds them).
+fn if_getgroup(req: &mut [u8], ifp: &Ifnet) -> Result<(), Errno> {
+    let ifgr = req_view::<Ifgroupreq>(req)?;
+
+    if ifgr.ifgr_len == 0 {
+        let _net = NETLOCK.read();
+        let n = ifp.groups().len();
+        ifgr.ifgr_len = ifgr.ifgr_len.wrapping_add((n * IFG_REQ_SIZE) as u32);
+        return Ok(());
+    }
+
+    let groups = {
+        let _net = NETLOCK.read();
+        ifp.groups().snapshot()
+    };
+
+    ifgrq_rows(ifgr, groups.iter().map(|g| g.ifg_group))
+}
+
+/// `if_getgroupmembers(data)`: stores all members of a group in memory pointed to by `data`
+/// (`ENOENT` for no such group; `ifgr_len` 0: the length they need), from a snapshot of the
+/// members taken with a reference to each under the shared net lock, as the C's `if_tmplist`.
+fn if_getgroupmembers(req: &mut [u8]) -> Result<(), Errno> {
+    let ifgr = req_view::<Ifgroupreq>(req)?;
+
+    let members = {
+        let _net = NETLOCK.read();
+
+        let Some(ifg) = ifg_find(&ifgr.ifgr_name) else {
+            return Err(Errno::ENOENT);
+        };
+
+        if ifgr.ifgr_len == 0 {
+            let n = ifg.members().as_slice().len();
+            ifgr.ifgr_len = ifgr.ifgr_len.wrapping_add((n * IFG_REQ_SIZE) as u32);
+            return Ok(());
+        }
+
+        let members = ifg.members().snapshot();
+        for ifp in members.iter() {
+            let _ = if_ref(ifp);
+        }
+        members
+    };
+
+    let error = ifgrq_rows(ifgr, members.iter().map(|ifp| ifp.if_xname.get()));
+
+    for ifp in members.iter() {
+        if_put(Some(ifp));
+    }
+
+    error
+}
+
+/// `if_getgroupattribs(data)`: the group's attributes (`carp(4)`'s demotion counter);
+/// `ENOENT` for no such group. Under the shared net lock.
+fn if_getgroupattribs(req: &mut [u8]) -> Result<(), Errno> {
+    let ifgr = req_view::<Ifgroupreq>(req)?;
+
+    let Some(ifg) = ifg_find(&ifgr.ifgr_name) else {
+        return Err(Errno::ENOENT);
+    };
+
+    ifgr.set_ifgr_attrib(IfgAttrib {
+        ifg_carp_demoted: ifg.ifg_carp_demoted.get(),
+    });
+
+    Ok(())
+}
+
+/// `if_setgroupattribs(data)`: the group's demotion counter moved by the request's
+/// (`EINVAL` outside 0..255, `ENOENT` for no such group), each member's driver told
+/// (`SIOCSIFGATTR`). Under the net lock.
+fn if_setgroupattribs(req: &mut [u8]) -> Result<(), Errno> {
+    let (name, demote) = {
+        let ifgr = req_view::<Ifgroupreq>(req)?;
+        (ifgr.ifgr_name, ifgr.ifgr_attrib().ifg_carp_demoted)
+    };
+
+    let Some(ifg) = ifg_find(&name) else {
+        return Err(Errno::ENOENT);
+    };
+
+    let sum = demote.wrapping_add(ifg.ifg_carp_demoted.get());
+    if !(0..=0xff).contains(&sum) {
+        return Err(Errno::EINVAL);
+    }
+
+    ifg.ifg_carp_demoted.set(sum);
+
+    let members = ifg.members().snapshot();
+    for ifp in members.iter() {
+        let _ = if_ioctl(ifp, SIOCSIFGATTR, req_arg(req, SIOCSIFGATTR));
+    }
+
+    Ok(())
+}
+
+/// `if_getgrouplist(data)`: stores all groups in memory pointed to by `data` (`ifgr_len` 0:
+/// the length they need), from a snapshot of `ifg_head` (the C's `ifg_tmplist`).
+fn if_getgrouplist(req: &mut [u8]) -> Result<(), Errno> {
+    let ifgr = req_view::<Ifgroupreq>(req)?;
+
+    if ifgr.ifgr_len == 0 {
+        let _net = NETLOCK.read();
+        let n = ifg_head().len();
+        ifgr.ifgr_len = ifgr.ifgr_len.wrapping_add((n * IFG_REQ_SIZE) as u32);
+        return Ok(());
+    }
+
+    let groups = {
+        let _net = NETLOCK.read();
+        ifg_head().snapshot()
+    };
+
+    ifgrq_rows(ifgr, groups.iter().map(|g| g.ifg_group))
+}
+
 /// `if_group_routechange(dst, mask)`: a route changed: the egress group is built again when
 /// it is a default route (`0.0.0.0/0` or `::/0`; `mask` `None` or of length 0 counts).
 pub fn if_group_routechange(dst: &[u8], mask: Option<&[u8]>) {
@@ -2987,7 +4187,7 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
         && i.in6_purge_linklocal(ifp)
     {
         if_hooks_run(ifp, &ifp.rt().if_addrhooks);
-        i.in6_ifattach(ifp);
+        let _ = i.in6_ifattach(ifp);
     }
 
     if !up {
@@ -3047,6 +4247,42 @@ pub fn if_rxr_get(rxr: &mut IfRxring, max: u32) -> u32 {
     rxr.rxr_alive += diff;
 
     diff
+}
+
+/// `if_rxr_info_ioctl(uifri, t, e)`: `SIOCGIFRXR`'s answer: the user's `struct if_rxrinfo`
+/// at `uifri` (`ifr_data`) told the `t` rings, and as many of `e` as it has room for (its
+/// `ifri_total`) copied to its `ifri_entries`. `e` holds the `t` rings (a shorter slice
+/// bounds the copy where the C trusts its caller).
+pub fn if_rxr_info_ioctl(uifri: usize, t: u32, e: &[IfRxringInfo]) -> Result<(), Errno> {
+    let uifri = UserPtr::<IfRxrinfo>::new(uifri);
+    let mut kifri = uifri.copyin()?;
+
+    let n = t.min(kifri.ifri_total) as usize;
+    kifri.ifri_total = t;
+
+    if n > 0 {
+        let rings = &e[..n.min(e.len())];
+        UserPtr::<IfRxringInfo>::new(kifri.ifri_entries as usize).copyout_slice(rings)?;
+    }
+
+    uifri.copyout(&kifri)
+}
+
+/// `if_rxr_ioctl(ifri, name, size, rxr)`: `SIOCGIFRXR` for a driver with one ring, named
+/// `name` (none: an empty name), of packets of `size` bytes.
+pub fn if_rxr_ioctl(
+    ifri: usize,
+    name: Option<&[u8]>,
+    size: u32,
+    rxr: &IfRxring,
+) -> Result<(), Errno> {
+    let ifr = IfRxringInfo {
+        ifr_name: name.map_or([0; IFNAMSIZ], name_array),
+        ifr_size: size,
+        ifr_info: *rxr,
+    };
+
+    if_rxr_info_ioctl(ifri, 1, core::slice::from_ref(&ifr))
 }
 
 /// `unhandled_af(af)`: `panic(9)` on an address family the caller cannot handle.
@@ -3719,6 +4955,681 @@ pub(crate) mod tests {
         let sdl = sdl.as_ref().expect("a link name");
         let bytes = hal::user::bytes_of(core::slice::from_ref(&**sdl));
         assert_eq!(SockaddrDl::lladdr(bytes), Some(&[7u8, 6, 5, 4, 3, 2][..]));
+    }
+
+    // The interface requests (`ifioctl`), over the UNIX domain's test glue: a root thread
+    // (`unix::tests::setup`), the interface layer reset as `setup` does, interfaces with a
+    // `TestDriver` attached by name, the user's memory the host double's.
+
+    use hal::sys::net_if::{IFF_RUNNING, IfLaddrreq, IfParent, Ifaliasreq, Ifmediareq};
+    use hal::sys::socket::{AF_UNIX, SOCK_DGRAM};
+    use hal::sys::sockio::{SIOCGIFPARENT, SIOCGLIFPHYADDR};
+
+    use crate::fs::testfs::TestGlue;
+
+    /// The process glue of the request tests.
+    type Tg = TestGlue;
+
+    /// Where the request tests' user buffers are, in the host's user memory double.
+    const UBUF: usize = crate::testutil::USER_BASE + 0x3_8000;
+
+    /// The request tests' fixture: a root thread, the mbufs and the socket pools (the UNIX
+    /// domain's), and an empty interface layer.
+    fn ioctl_setup() -> (MutexGuard<'static, ()>, &'static Thread<Tg>) {
+        let (g, p) = crate::net::unix::tests::setup();
+        softnet_test_install();
+        if_idxmap_test_reset();
+        ifnet_test_reset();
+        (g, p)
+    }
+
+    /// `f` with `p` as a user that is not the superuser, then `p` root again.
+    fn as_user<R>(p: &Thread<Tg>, f: impl FnOnce() -> R) -> R {
+        let mut ids = crate::cred::Ucred::new();
+        ids.cr_uid.set(1000);
+        ids.cr_ruid.set(1000);
+        let root = p.set_cred(crate::cred::CredRef::new(ids));
+        let r = f();
+        if let Some(root) = root {
+            drop(p.set_cred(root));
+        }
+        r
+    }
+
+    /// An attached interface `name` with a counting driver, on `ifnetlist`.
+    fn listed_ifnet(name: &[u8]) -> (&'static Ifnet, &'static TestDriver) {
+        let (ifp, d) = fresh_ifnet(name);
+        if_attach(ifp);
+        (ifp, d)
+    }
+
+    /// A request structure `T` whose first bytes are the interface name `name`.
+    fn named<T: hal::user::AbiPod>(name: &[u8]) -> T {
+        let mut r: T = hal::user::zeroed();
+        hal::user::bytes_of_mut(core::slice::from_mut(&mut r))[..name.len()].copy_from_slice(name);
+        r
+    }
+
+    /// `ifioctl(NULL, cmd, req, p)` on the request structure `req` (the kernel's own request,
+    /// no socket).
+    fn ioctl<T: hal::user::AbiPod>(p: &Thread<Tg>, cmd: u64, req: &mut T) -> Result<(), Errno> {
+        assert_eq!(iocparm_len(cmd) as usize, size_of::<T>(), "{cmd:#x}");
+        ifioctl::<Tg>(
+            None,
+            cmd,
+            hal::user::bytes_of_mut(core::slice::from_mut(req)),
+            p,
+        )
+    }
+
+    /// `b` copied to the user's memory at `at`.
+    fn put_user(at: usize, b: &[u8]) {
+        UserPtr::<u8>::new(at)
+            .copyout_slice(b)
+            .expect("user memory");
+    }
+
+    /// `n` bytes of the user's memory at `at`.
+    fn get_user(at: usize, n: usize) -> Vec<u8> {
+        let mut b = std::vec![0u8; n];
+        UserPtr::<u8>::new(at)
+            .copyin_slice(&mut b)
+            .expect("user memory");
+        b
+    }
+
+    #[test]
+    fn every_request_that_changes_an_interface_asks_for_the_superuser() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, d) = listed_ifnet(b"tsu0");
+        test_cloner();
+        let flags = ifp.if_flags.get();
+        let set_requests = [
+            SIOCSIFXFLAGS,
+            SIOCSIFFLAGS,
+            SIOCSIFMETRIC,
+            SIOCSIFMTU,
+            SIOCSIFDESCR,
+            SIOCSIFRTLABEL,
+            SIOCSIFPRIORITY,
+            SIOCSIFRDOMAIN,
+            SIOCAIFGROUP,
+            SIOCDIFGROUP,
+            SIOCSIFLLADDR,
+            SIOCSIFLLPRIO,
+            SIOCSIFMEDIA,
+            // Before the protocol: the privileged list.
+            SIOCADDMULTI,
+            SIOCDELMULTI,
+            SIOCSVNETID,
+            SIOCSTXHPRIO,
+            // After the protocol answered EOPNOTSUPP: the address requests.
+            SIOCSIFADDR,
+            SIOCSIFNETMASK,
+            SIOCSIFDSTADDR,
+            SIOCSIFBRDADDR,
+        ];
+        as_user(p, || {
+            for cmd in set_requests {
+                // The command's own length (an `ifreq`, an `ifgroupreq`): the name, then the
+                // flags of an `ifreq`'s union.
+                let mut words = [0u64; 8];
+                let req = hal::user::bytes_of_mut(&mut words[..]);
+                req[..4].copy_from_slice(b"tsu0");
+                req[16..18].copy_from_slice(&(IFF_UP as i16).to_ne_bytes());
+                let req = &mut req[..iocparm_len(cmd) as usize];
+                assert_eq!(
+                    ifioctl::<Tg>(None, cmd, req, p),
+                    Err(Errno::EPERM),
+                    "{cmd:#x}"
+                );
+            }
+            let mut ifar: IfAfreq = named(b"tsu0");
+            ifar.ifar_af = AF_INET;
+            assert_eq!(ioctl(p, SIOCIFAFDETACH, &mut ifar), Err(Errno::EPERM));
+            let mut ifra: Ifaliasreq = named(b"tsu0");
+            assert_eq!(ioctl(p, SIOCAIFADDR, &mut ifra), Err(Errno::EPERM));
+            let mut sff: IfSffpage = named(b"tsu0");
+            sff.sff_addr = IFSFF_ADDR_EEPROM;
+            assert_eq!(ioctl(p, SIOCGIFSFFPAGE, &mut sff), Err(Errno::EPERM));
+            let mut ifgr: Ifgroupreq = named(b"all");
+            assert_eq!(ioctl(p, SIOCSIFGATTR, &mut ifgr), Err(Errno::EPERM));
+            // The cloner's requests check before they look for anything.
+            let mut ifr: Ifreq = named(b"tcl5");
+            assert_eq!(ioctl(p, SIOCIFCREATE, &mut ifr), Err(Errno::EPERM));
+            let mut ifr: Ifreq = named(b"nosuch5");
+            assert_eq!(ioctl(p, SIOCIFDESTROY, &mut ifr), Err(Errno::EPERM));
+            // A per-interface request finds the interface first: ENXIO before EPERM.
+            let mut ifr: Ifreq = named(b"nosuch0");
+            assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Err(Errno::ENXIO));
+            // The reads and the unprivileged requests need nothing.
+            let mut ifr: Ifreq = named(b"tsu0");
+            assert_eq!(ioctl(p, SIOCGIFFLAGS, &mut ifr), Ok(()));
+            let mut ifmr: Ifmediareq = named(b"tsu0");
+            assert_eq!(ioctl(p, SIOCGIFMEDIA, &mut ifmr), Ok(()));
+            let mut parent: IfParent = named(b"tsu0");
+            assert_eq!(ioctl(p, SIOCGIFPARENT, &mut parent), Ok(()));
+        });
+        // Nothing changed, and the driver saw only the two unprivileged requests.
+        assert_eq!(ifp.if_flags.get(), flags);
+        assert_eq!(d.ioctls.load(Ordering::Relaxed), 2);
+        assert!(if_unit_test(b"tcl5").is_none());
+    }
+
+    /// `if_unit(name)` under the kernel lock, its reference dropped.
+    fn if_unit_test(name: &[u8]) -> Option<&'static Ifnet> {
+        hal::klock::kernel_lock();
+        let ifp = if_unit(name);
+        hal::klock::kernel_unlock();
+        if_put(ifp);
+        ifp
+    }
+
+    #[test]
+    fn the_reads_answer_the_interface_s_values() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, _) = listed_ifnet(b"trd0");
+        ifp.if_flags.set(IFF_UP | IFF_LOOPBACK);
+        ifp.if_xflags
+            .set(IFXF_MPSAFE | IFXF_CLONED | IFXF_AUTOCONF4);
+        ifp.if_metric.set(7);
+        ifp.if_mtu.set(1500);
+        ifp.if_hardmtu.set(9000);
+        ifp.if_priority.set(3);
+        ifp.if_llprio.set(5);
+        let get = |cmd| {
+            let mut ifr: Ifreq = named(b"trd0");
+            assert_eq!(ioctl(p, cmd, &mut ifr), Ok(()), "{cmd:#x}");
+            ifr
+        };
+        assert_eq!(
+            i32::from(get(SIOCGIFFLAGS).ifr_flags()),
+            IFF_UP | IFF_LOOPBACK
+        );
+        // IFXF_MPSAFE and IFXF_CLONED are the kernel's.
+        assert_eq!(i32::from(get(SIOCGIFXFLAGS).ifr_flags()), IFXF_AUTOCONF4);
+        assert_eq!(get(SIOCGIFMETRIC).ifr_metric(), 7);
+        assert_eq!(get(SIOCGIFMTU).ifr_mtu(), 1500);
+        assert_eq!(get(SIOCGIFHARDMTU).ifr_hardmtu(), 9000);
+        assert_eq!(get(SIOCGIFPRIORITY).ifr_metric(), 3);
+        assert_eq!(get(SIOCGIFRDOMAIN).ifr_rdomainid(), 0);
+        assert_eq!(get(SIOCGIFLLPRIO).ifr_llprio(), 5);
+        // The send queue's oactive shows in the flags.
+        crate::net::ifq::ifq_set_oactive(ifp.if_snd());
+        assert_eq!(
+            i32::from(get(SIOCGIFFLAGS).ifr_flags()),
+            IFF_UP | IFF_LOOPBACK | IFF_OACTIVE
+        );
+        crate::net::ifq::ifq_clr_oactive(ifp.if_snd());
+
+        // if_data, copied out whole.
+        let mut ifr: Ifreq = named(b"trd0");
+        ifr.set_ifr_data(UBUF as u64);
+        assert_eq!(ioctl(p, SIOCGIFDATA, &mut ifr), Ok(()));
+        let data: IfData = UserPtr::<IfData>::new(UBUF).copyin().expect("if_data");
+        assert_eq!((data.ifi_mtu, data.ifi_metric), (1500, 7));
+
+        // A description round trip; a label without routing is none.
+        put_user(UBUF, b"uplink\0");
+        let mut ifr: Ifreq = named(b"trd0");
+        ifr.set_ifr_data(UBUF as u64);
+        assert_eq!(ioctl(p, SIOCSIFDESCR, &mut ifr), Ok(()));
+        ifr.set_ifr_data((UBUF + 0x100) as u64);
+        assert_eq!(ioctl(p, SIOCGIFDESCR, &mut ifr), Ok(()));
+        assert_eq!(get_user(UBUF + 0x100, 7), b"uplink\0");
+        assert_eq!(ioctl(p, SIOCGIFRTLABEL, &mut ifr), Err(Errno::ENOENT));
+
+        let mut ifr: Ifreq = named(b"nosuch0");
+        assert_eq!(ioctl(p, SIOCGIFFLAGS, &mut ifr), Err(Errno::ENXIO));
+    }
+
+    #[test]
+    fn flags_are_set_through_the_driver_and_put_back_when_it_refuses() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, d) = listed_ifnet(b"tfl0");
+        ifp.if_flags.set(IFF_RUNNING);
+
+        // IFF_RUNNING is the driver's; the request's IFF_UP is set and brings it up.
+        let mut ifr: Ifreq = named(b"tfl0");
+        ifr.set_ifr_flags((IFF_UP | IFF_PROMISC) as i16);
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_flags.get(), IFF_UP | IFF_PROMISC | IFF_RUNNING);
+        assert_eq!(
+            d.last_flags.load(Ordering::Relaxed) as i32,
+            IFF_UP | IFF_PROMISC
+        );
+
+        // A short with its sign bit set: the flags keep their low sixteen bits.
+        let mut ifr: Ifreq = named(b"tfl0");
+        ifr.set_ifr_flags(-1);
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_flags.get() & !0xffff, 0);
+
+        // The driver refuses: the old flags come back.
+        let before = ifp.if_flags.get();
+        d.fail.store(true, Ordering::Relaxed);
+        let mut ifr: Ifreq = named(b"tfl0");
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Err(Errno::EIO));
+        assert_eq!(ifp.if_flags.get(), before);
+        d.fail.store(false, Ordering::Relaxed);
+
+        // Down; then the extra flags: IFXF_MPSAFE is the kernel's, wake on LAN without the
+        // capability is refused and taken out of the request.
+        let mut ifr: Ifreq = named(b"tfl0");
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_flags.get() & IFF_UP, 0);
+        let mut ifr: Ifreq = named(b"tfl0");
+        ifr.set_ifr_flags(IFXF_WOL as i16);
+        assert_eq!(ioctl(p, SIOCSIFXFLAGS, &mut ifr), Err(Errno::ENOTSUP));
+        assert_eq!(i32::from(ifr.ifr_flags()), 0);
+        assert_eq!(ifp.if_xflags.get(), IFXF_MPSAFE);
+
+        // Automatic configuration turned on while down: forced up through SIOCSIFFLAGS.
+        let mut ifr: Ifreq = named(b"tfl0");
+        ifr.set_ifr_flags(IFXF_AUTOCONF4 as i16);
+        assert_eq!(ioctl(p, SIOCSIFXFLAGS, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_xflags.get(), IFXF_MPSAFE | IFXF_AUTOCONF4);
+        assert_ne!(ifp.if_flags.get() & IFF_UP, 0);
+        assert_ne!(d.last_flags.load(Ordering::Relaxed) as i32 & IFF_UP, 0);
+
+        // Down again; a refused forceup puts both the flags and the extra flags back.
+        let mut ifr: Ifreq = named(b"tfl0");
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
+        let mut ifr: Ifreq = named(b"tfl0");
+        assert_eq!(ioctl(p, SIOCSIFXFLAGS, &mut ifr), Ok(()));
+        let old = (ifp.if_flags.get(), ifp.if_xflags.get());
+        d.fail.store(true, Ordering::Relaxed);
+        let mut ifr: Ifreq = named(b"tfl0");
+        ifr.set_ifr_flags(IFXF_AUTOCONF4 as i16);
+        assert_eq!(ioctl(p, SIOCSIFXFLAGS, &mut ifr), Err(Errno::EIO));
+        assert_eq!((ifp.if_flags.get(), ifp.if_xflags.get()), old);
+        d.fail.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn each_set_request_checks_its_value_as_the_c_does() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, d) = listed_ifnet(b"tva0");
+
+        let mut ifr: Ifreq = named(b"tva0");
+        ifr.set_ifr_metric(16);
+        assert_eq!(ioctl(p, SIOCSIFPRIORITY, &mut ifr), Err(Errno::EINVAL));
+        ifr.set_ifr_metric(15);
+        assert_eq!(ioctl(p, SIOCSIFPRIORITY, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_priority.get(), 15);
+        ifr.set_ifr_metric(-1);
+        assert_eq!(ioctl(p, SIOCSIFPRIORITY, &mut ifr), Err(Errno::EINVAL));
+
+        let mut ifr: Ifreq = named(b"tva0");
+        ifr.set_ifr_llprio(IFQ_MAXPRIO as i32 + 1);
+        assert_eq!(ioctl(p, SIOCSIFLLPRIO, &mut ifr), Err(Errno::EINVAL));
+        ifr.set_ifr_llprio(IFQ_MAXPRIO as i32);
+        assert_eq!(ioctl(p, SIOCSIFLLPRIO, &mut ifr), Ok(()));
+        assert_eq!(u32::from(ifp.if_llprio.get()), IFQ_MAXPRIO);
+
+        let mut ifr: Ifreq = named(b"tva0");
+        ifr.set_ifr_metric(9);
+        assert_eq!(ioctl(p, SIOCSIFMETRIC, &mut ifr), Ok(()));
+        assert_eq!(ifp.if_metric.get(), 9);
+
+        // A link-level address: none without a link name, a multicast one or one of another
+        // length refused, an interface that is no Ethernet ENODEV.
+        let lladdr = |a: [u8; 6], len: u8| {
+            let mut ifr: Ifreq = named(b"tva0");
+            let mut sa: Sockaddr = hal::user::zeroed();
+            sa.sa_len = len;
+            sa.sa_family = AF_LINK;
+            sa.sa_data[..6].copy_from_slice(&a);
+            ifr.set_ifr_addr(&sa);
+            ioctl(p, SIOCSIFLLADDR, &mut ifr)
+        };
+        assert_eq!(lladdr([2, 0, 0, 0, 0, 1], 6), Err(Errno::EINVAL));
+        ifp.if_addrlen.set(ETHER_ADDR_LEN as u8);
+        if_alloc_sadl(ifp);
+        assert_eq!(lladdr([3, 0, 0, 0, 0, 1], 6), Err(Errno::EINVAL));
+        assert_eq!(lladdr([2, 0, 0, 0, 0, 1], 5), Err(Errno::EINVAL));
+        assert_eq!(lladdr([2, 0, 0, 0, 0, 1], 6), Err(Errno::ENODEV));
+        ifp.if_type.set(IFT_ETHER);
+        assert_eq!(lladdr([2, 0, 0, 0, 0, 1], 6), Ok(()));
+        {
+            let sdl = ifp.sadl();
+            let sdl = sdl.as_ref().expect("a link name");
+            let bytes = hal::user::bytes_of(core::slice::from_ref(&**sdl));
+            assert_eq!(SockaddrDl::lladdr(bytes), Some(&[2u8, 0, 0, 0, 0, 1][..]));
+        }
+
+        // A transceiver page names the EEPROM or the diagnostics.
+        let mut sff: IfSffpage = named(b"tva0");
+        sff.sff_addr = 0x50;
+        assert_eq!(ioctl(p, SIOCGIFSFFPAGE, &mut sff), Err(Errno::EINVAL));
+        sff.sff_addr = IFSFF_ADDR_DDM;
+        let asked = d.ioctls.load(Ordering::Relaxed);
+        assert_eq!(ioctl(p, SIOCGIFSFFPAGE, &mut sff), Ok(()));
+        assert_eq!(d.ioctls.load(Ordering::Relaxed), asked + 1);
+
+        // A family: AF_INET's attach is nothing; no IPv6 without the protocol; others none.
+        let af = |cmd, af| {
+            let mut ifar: IfAfreq = named(b"tva0");
+            ifar.ifar_af = af;
+            ioctl(p, cmd, &mut ifar)
+        };
+        assert_eq!(af(SIOCIFAFATTACH, AF_INET), Ok(()));
+        assert_eq!(af(SIOCIFAFDETACH, AF_INET), Ok(()));
+        assert_eq!(af(SIOCIFAFATTACH, AF_INET6), Err(Errno::EAFNOSUPPORT));
+        assert_eq!(af(SIOCIFAFATTACH, AF_LINK), Err(Errno::EAFNOSUPPORT));
+
+        // No routing: one domain, 0, which cannot be made.
+        let mut ifr: Ifreq = named(b"tva0");
+        ifr.set_ifr_rdomainid(1);
+        assert_eq!(ioctl(p, SIOCSIFRDOMAIN, &mut ifr), Err(Errno::EINVAL));
+
+        // A request no protocol answers goes to the driver (the UNIX domain's socket has no
+        // `pru_control`; the kernel's own request has no socket).
+        let so =
+            crate::net::socket::socreate(p, i32::from(AF_UNIX), SOCK_DGRAM, 0).expect("socreate");
+        let asked = d.ioctls.load(Ordering::Relaxed);
+        let mut ifr: Ifreq = named(b"tva0");
+        let data = hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr));
+        assert_eq!(ifioctl::<Tg>(Some(&so), SIOCSIFADDR, data, p), Ok(()));
+        assert_eq!(d.ioctls.load(Ordering::Relaxed), asked + 1);
+        assert_eq!(crate::net::socket::soclose(&so, 0), Ok(()));
+    }
+
+    #[test]
+    fn the_group_requests_add_list_count_and_remove() {
+        let (_g, p) = ioctl_setup();
+        let (a, da) = listed_ifnet(b"tgr0");
+        let (b, _) = listed_ifnet(b"tgr1");
+
+        let group = |cmd, name: &[u8], g: &[u8]| {
+            let mut ifgr: Ifgroupreq = named(name);
+            ifgr.ifgr_group_mut()[..g.len()].copy_from_slice(g);
+            ioctl(p, cmd, &mut ifgr)
+        };
+        assert_eq!(group(SIOCAIFGROUP, b"tgr0", b"lan"), Ok(()));
+        assert_eq!(group(SIOCAIFGROUP, b"tgr1", b"lan"), Ok(()));
+        assert_eq!(group(SIOCAIFGROUP, b"tgr0", b"lan"), Err(Errno::EEXIST));
+        assert_eq!(groups_of(a), [b"all".to_vec(), b"lan".to_vec()]);
+
+        // The rows: `ifgr_len` 0 asks for the length, a short buffer is EINVAL after the
+        // rows that fit.
+        let rows = |cmd, name: &[u8], len: u32| {
+            let mut ifgr: Ifgroupreq = named(name);
+            ifgr.ifgr_len = len;
+            ifgr.ifgr_ifgru[..8].copy_from_slice(&(UBUF as u64).to_ne_bytes());
+            put_user(UBUF, &[0xaa; 64]);
+            let r = ioctl(p, cmd, &mut ifgr);
+            (r, ifgr.ifgr_len, get_user(UBUF, 64))
+        };
+        let (r, len, _) = rows(SIOCGIFGROUP, b"tgr0", 0);
+        assert_eq!((r, len), (Ok(()), 2 * IFG_REQ_SIZE as u32));
+        let (r, _, user) = rows(SIOCGIFGROUP, b"tgr0", 32);
+        assert_eq!(r, Ok(()));
+        assert_eq!(&user[..16], b"all\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        assert_eq!(&user[16..20], b"lan\0");
+        let (r, _, user) = rows(SIOCGIFGROUP, b"tgr0", 20);
+        assert_eq!(r, Err(Errno::EINVAL));
+        assert_eq!((&user[..3], user[16]), (&b"all"[..], 0xaa));
+        let (r, len, _) = rows(SIOCGIFGMEMB, b"lan", 0);
+        assert_eq!((r, len), (Ok(()), 2 * IFG_REQ_SIZE as u32));
+        let (r, _, user) = rows(SIOCGIFGMEMB, b"lan", 32);
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            (&user[..5], &user[16..21]),
+            (&b"tgr0\0"[..], &b"tgr1\0"[..])
+        );
+        assert_eq!(rows(SIOCGIFGMEMB, b"none", 32).0, Err(Errno::ENOENT));
+        let (r, len, _) = rows(SIOCGIFGLIST, b"", 0);
+        assert_eq!((r, len), (Ok(()), 2 * IFG_REQ_SIZE as u32));
+        let (r, _, user) = rows(SIOCGIFGLIST, b"", 32);
+        assert_eq!(
+            (r, &user[..3], &user[16..19]),
+            (Ok(()), &b"all"[..], &b"lan"[..])
+        );
+
+        // The demotion counter: read, moved, bounded, each member's driver told.
+        let attrib = |cmd, demote: i32| {
+            let mut ifgr: Ifgroupreq = named(b"lan");
+            ifgr.set_ifgr_attrib(IfgAttrib {
+                ifg_carp_demoted: demote,
+            });
+            let r = ioctl(p, cmd, &mut ifgr);
+            (r, ifgr.ifgr_attrib().ifg_carp_demoted)
+        };
+        let told = da.ioctls.load(Ordering::Relaxed);
+        assert_eq!(attrib(SIOCSIFGATTR, 5).0, Ok(()));
+        assert_eq!(da.ioctls.load(Ordering::Relaxed), told + 1);
+        assert_eq!(attrib(SIOCGIFGATTR, 0), (Ok(()), 5));
+        assert_eq!(attrib(SIOCSIFGATTR, 251).0, Err(Errno::EINVAL));
+        assert_eq!(attrib(SIOCSIFGATTR, -6).0, Err(Errno::EINVAL));
+        assert_eq!(attrib(SIOCSIFGATTR, -5).0, Ok(()));
+        let mut ifgr: Ifgroupreq = named(b"none");
+        assert_eq!(ioctl(p, SIOCGIFGATTR, &mut ifgr), Err(Errno::ENOENT));
+
+        assert_eq!(group(SIOCDIFGROUP, b"tgr0", b"lan"), Ok(()));
+        assert_eq!(group(SIOCDIFGROUP, b"tgr0", b"lan"), Err(Errno::ENOENT));
+        assert_eq!(groups_of(b), [b"all".to_vec(), b"lan".to_vec()]);
+        assert_eq!(group(SIOCDIFGROUP, b"tgr1", b"lan"), Ok(()));
+        assert!(ifg_find(b"lan").is_none());
+    }
+
+    /// An address of `ifp` whose storage is the `N` bytes `sa` (an `in_ifaddr`'s or an
+    /// `in6_ifaddr`'s, as `bsd` publishes it).
+    fn address_of<const N: usize>(ifp: &'static Ifnet, sa: [u8; N]) -> &'static Ifaddr {
+        let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
+        let storage: &'static core::cell::Cell<[u8; N]> =
+            Box::leak(Box::new(core::cell::Cell::new(sa)));
+        ifa.ifa_addr
+            .set(crate::net::if_var::sa_test_token(), Some(storage));
+        ifa.ifa_ifp.set(Some(ifp));
+        let _net = NETLOCK.write();
+        ifa_add(ifp, ifa);
+        ifa
+    }
+
+    /// `ifconf` of `len` bytes into the user's buffer: its result, the `ifc_len` it leaves and
+    /// the buffer's first 200 bytes.
+    fn ifconf_of(p: &Thread<Tg>, len: i32) -> (Result<(), Errno>, i32, Vec<u8>) {
+        put_user(UBUF, &[0xaa; 200]);
+        let mut ifc = Ifconf {
+            ifc_len: len,
+            _pad0: 0,
+            ifc_ifcu: UBUF as u64,
+        };
+        let r = ioctl(p, SIOCGIFCONF, &mut ifc);
+        (r, ifc.ifc_len, get_user(UBUF, 200))
+    }
+
+    #[test]
+    fn ifconf_answers_rows_of_every_address_whatever_the_buffer() {
+        let (_g, p) = ioctl_setup();
+        let (a, _) = listed_ifnet(b"tcf0");
+        let (b, _) = listed_ifnet(b"tcf1");
+        let mut sin = [0u8; 16];
+        sin[..2].copy_from_slice(&[16, AF_INET]);
+        sin[4..8].copy_from_slice(&[10, 0, 0, 1]);
+        address_of(b, sin);
+        let mut sin6 = [0u8; 28];
+        sin6[..2].copy_from_slice(&[28, AF_INET6]);
+        sin6[8] = 0xfe;
+        address_of(b, sin6);
+
+        // The rows: tcf0 without an address (32), tcf1's two (32, and 16 + 28).
+        let need = 32 + 32 + 16 + 28;
+        assert_eq!(ifconf_of(p, 0).1, need);
+        let (r, len, user) = ifconf_of(p, 200);
+        assert_eq!((r, len), (Ok(()), need));
+        assert_eq!(&user[..5], b"tcf0\0");
+        assert_eq!(&user[16..32], &[0; 16]);
+        assert_eq!(&user[32..37], b"tcf1\0");
+        assert_eq!(&user[48..56], &sin[..8]);
+        assert_eq!(&user[64..69], b"tcf1\0");
+        assert_eq!(&user[80..108], &sin6[..]);
+        assert_eq!(user[108], 0xaa);
+
+        // A short buffer: whole rows only, `ifc_len` the bytes written.
+        let (r, len, user) = ifconf_of(p, 40);
+        assert_eq!((r, len), (Ok(()), 32));
+        assert_eq!(user[32], 0xaa);
+        // The long row needs its whole length (an `int` comparison).
+        let (r, len, user) = ifconf_of(p, 64 + 43);
+        assert_eq!((r, len), (Ok(()), 64));
+        assert_eq!(user[64], 0xaa);
+        // A negative length bounds no `sockaddr`-sized row (the C's `size_t` comparison) but
+        // bounds the long ones (an `int`).
+        let (r, len, user) = ifconf_of(p, -1);
+        assert_eq!((r, len), (Ok(()), 64));
+        assert_eq!(&user[32..37], b"tcf1\0");
+        assert_eq!(user[64], 0xaa);
+        let _ = a;
+    }
+
+    #[test]
+    fn ifconf_copies_an_interface_s_addresses_past_one_batch() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, _) = listed_ifnet(b"tcb0");
+        let n = IFCONF_BATCH + 3;
+        for i in 0..n {
+            let mut sin = [0u8; 16];
+            sin[..2].copy_from_slice(&[16, AF_INET]);
+            sin[4..8].copy_from_slice(&[10, 0, 0, i as u8]);
+            address_of(ifp, sin);
+        }
+        put_user(UBUF, &[0xaa; 0x200]);
+        let mut ifc = Ifconf {
+            ifc_len: 0x200,
+            _pad0: 0,
+            ifc_ifcu: UBUF as u64,
+        };
+        assert_eq!(ioctl(p, SIOCGIFCONF, &mut ifc), Ok(()));
+        assert_eq!(ifc.ifc_len as usize, n * IFREQ_SIZE);
+        let user = get_user(UBUF, n * IFREQ_SIZE);
+        for i in 0..n {
+            let row = &user[i * IFREQ_SIZE..][..IFREQ_SIZE];
+            assert_eq!(&row[..5], b"tcb0\0", "row {i}");
+            assert_eq!(&row[20..24], &[10, 0, 0, i as u8], "row {i}");
+        }
+        // Every reference ifconf took is dropped again.
+        assert!(ifp.if_addrlist.iter().all(|ifa| ifa.ifa_refcnt.read() == 1));
+    }
+
+    #[test]
+    fn the_cloners_are_listed_by_name() {
+        let (_g, p) = ioctl_setup();
+        test_cloner();
+        let total = if_clone_count();
+        let mut ifcr = IfClonereq::default();
+        assert_eq!(ioctl(p, SIOCIFGCLONERS, &mut ifcr), Ok(()));
+        assert_eq!(ifcr.ifcr_total, total);
+        ifcr.ifcr_buffer = UBUF as u64;
+        ifcr.ifcr_count = -1;
+        assert_eq!(ioctl(p, SIOCIFGCLONERS, &mut ifcr), Err(Errno::EINVAL));
+        put_user(UBUF, &[0xaa; 64]);
+        ifcr.ifcr_count = 1;
+        assert_eq!(ioctl(p, SIOCIFGCLONERS, &mut ifcr), Ok(()));
+        let user = get_user(UBUF, 32);
+        let first = if_cloners().next().expect("a cloner").name();
+        assert_eq!(&user[..first.len()], first);
+        assert!(user[first.len()..16].iter().all(|&c| c == 0));
+        assert_eq!(user[16], 0xaa);
+    }
+
+    #[test]
+    fn a_request_is_worked_on_whole_however_the_caller_lays_it_out() {
+        let (_g, p) = ioctl_setup();
+        // A request longer than STK_PARAMS (536 bytes, sys_ioctl's heap buffer), aligned and
+        // not, and a short one: each found the interface missing by its whole name.
+        let need = ifioctl_need(SIOCGLIFPHYADDR);
+        assert_eq!(need, size_of::<IfLaddrreq>());
+        let mut words = std::vec![0u64; need.div_ceil(8) + 1];
+        let bytes = hal::user::bytes_of_mut(&mut words[..]);
+        for at in [0usize, 1] {
+            let data = &mut bytes[at..at + need];
+            data[..8].copy_from_slice(b"nosuch0\0");
+            data[need - 1] = 0x5a;
+            assert_eq!(
+                ifioctl::<Tg>(None, SIOCGLIFPHYADDR, data, p),
+                Err(Errno::ENXIO),
+                "at {at}"
+            );
+            assert_eq!((&data[..8], data[need - 1]), (&b"nosuch0\0"[..], 0x5a));
+        }
+        // A void command's 8 bytes: read as an ifreq of a zeroed copy (no name: none found).
+        let mut word = [0u8; 8];
+        let void = hal::sys::ioccom::_io(b'i', 200);
+        assert_eq!(ifioctl::<Tg>(None, void, &mut word, p), Err(Errno::ENXIO));
+        // A short, misaligned request in place of an if_afreq still reaches its interface.
+        let (_ifp, _) = listed_ifnet(b"twh0");
+        let mut b = [0u8; 18];
+        b[1..5].copy_from_slice(b"twh0");
+        b[1 + 16] = AF_INET;
+        assert_eq!(ifioctl::<Tg>(None, SIOCIFAFATTACH, &mut b[1..], p), Ok(()));
+        assert!(
+            with_request(&mut b[1..], 64, |r| {
+                assert!(r.len() >= 64 && r.as_ptr().addr().is_multiple_of(8));
+                Ok(())
+            })
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn header_priority_checks() {
+        assert_eq!(if_txhprio_l2_check(IF_HDRPRIO_PACKET), Ok(()));
+        assert_eq!(if_txhprio_l2_check(IF_HDRPRIO_PAYLOAD), Err(Errno::EINVAL));
+        assert_eq!(if_txhprio_l3_check(IF_HDRPRIO_PAYLOAD), Ok(()));
+        assert_eq!(if_rxhprio_l2_check(IF_HDRPRIO_OUTER), Ok(()));
+        assert_eq!(if_rxhprio_l3_check(IF_HDRPRIO_OUTER), Ok(()));
+        assert_eq!(if_txhprio_l3_check(IF_HDRPRIO_OUTER), Err(Errno::EINVAL));
+        for prio in IF_HDRPRIO_MIN..=IF_HDRPRIO_MAX {
+            assert_eq!(if_rxhprio_l3_check(prio), Ok(()));
+        }
+        assert_eq!(if_txhprio_l2_check(IF_HDRPRIO_MAX + 1), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn a_receive_ring_s_info_is_copied_out_up_to_the_user_s_room() {
+        let (_g, _p) = ioctl_setup();
+        let mut rxr: IfRxring = hal::user::zeroed();
+        if_rxr_init(&mut rxr, 2, 8);
+        let info = UBUF + 0x100;
+        let ifri = |total: u32| IfRxrinfo {
+            ifri_total: total,
+            _pad0: 0,
+            ifri_entries: info as u64,
+        };
+        put_user(info, &[0xaa; 2 * size_of::<IfRxringInfo>()]);
+        UserPtr::<IfRxrinfo>::new(UBUF)
+            .copyout(&ifri(4))
+            .expect("user");
+        assert_eq!(if_rxr_ioctl(UBUF, Some(b"rx"), 2048, &rxr), Ok(()));
+        let k = UserPtr::<IfRxrinfo>::new(UBUF).copyin().expect("user");
+        assert_eq!(k.ifri_total, 1);
+        let e = UserPtr::<IfRxringInfo>::new(info).copyin().expect("user");
+        assert_eq!(
+            (&e.ifr_name[..3], e.ifr_size, e.ifr_info),
+            (&b"rx\0"[..], 2048, rxr)
+        );
+        // No room: the total only.
+        put_user(info, &[0xaa; size_of::<IfRxringInfo>()]);
+        UserPtr::<IfRxrinfo>::new(UBUF)
+            .copyout(&ifri(0))
+            .expect("user");
+        assert_eq!(if_rxr_ioctl(UBUF, None, 2048, &rxr), Ok(()));
+        assert_eq!(get_user(info, 1), [0xaa]);
+        assert_eq!(
+            UserPtr::<IfRxrinfo>::new(UBUF)
+                .copyin()
+                .expect("user")
+                .ifri_total,
+            1
+        );
+    }
+
+    #[test]
+    fn the_inet6_request_constants_are_the_header_s() {
+        assert_eq!(SIOCAIFADDR_IN6, 0x8080_691a);
+        assert_eq!(SIOCDIFADDR_IN6, 0x8120_6919);
     }
 }
 /* </TESTS> */
