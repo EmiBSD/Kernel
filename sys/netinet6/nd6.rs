@@ -1005,7 +1005,7 @@ pub fn nd6_lookup(
             info.rti_ifa = Some(ifa);
             info.rti_flags = RTF_HOST | RTF_LLINFO;
             info.rti_info[RTAX_DST] = sin6tosa_const(&sin6);
-            info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+            info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
             let mut nrt = None;
             // SAFETY: the destination is a local `sockaddr_in6` and the gateway the
             // interface's `sockaddr_dl`, both readable for their lengths.

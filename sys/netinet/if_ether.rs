@@ -1351,7 +1351,7 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: &'static Mbuf) {
         // name.
         let ours = unsafe {
             core::slice::from_raw_parts(
-                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
                 ETHER_ADDR_LEN,
             )
         };
@@ -1637,7 +1637,7 @@ pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
     let found = unsafe {
         core::slice::from_raw_parts(lladdr(sdl), ETHER_ADDR_LEN)
             == core::slice::from_raw_parts(
-                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
                 ETHER_ADDR_LEN,
             )
     };
@@ -1702,7 +1702,7 @@ fn revarp_reply(ifp: &'static Ifnet, m: &'static Mbuf, ar: &EtherArp) {
         // name.
         let ours = unsafe {
             core::slice::from_raw_parts(
-                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
                 ETHER_ADDR_LEN,
             )
         };

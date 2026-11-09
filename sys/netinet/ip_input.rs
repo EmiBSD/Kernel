@@ -2028,7 +2028,9 @@ pub fn ip_savecontrol(inp: &Inpcb, mp: &mut Option<&'static Mbuf>, ip: &Ip, m: &
     // (ip_srcroute doesn't do what we want here); compiled out in C too.
     if inp.has_flags(INP_RECVIF) {
         let ifp = if_get(m.m_pkthdr().ph_ifidx.get());
-        let sadl = ifp.map_or(ptr::null_mut(), crate::net::if_var::if_sadl_ptr);
+        let sadl = ifp.map_or(ptr::null_mut(), |i| {
+            crate::net::if_var::if_sadl_ptr(i).cast_mut()
+        });
         if sadl.is_null() {
             let sdl = SockaddrDl {
                 sdl_len: offset_of!(SockaddrDl, sdl_data) as u8,

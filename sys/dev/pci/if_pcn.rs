@@ -1687,7 +1687,7 @@ pub fn pcn_init(ifp: &'static Ifnet) -> Result<(), Errno> {
     // the address of the link-level address, `ETHER_ADDR_LEN` bytes long, which follows the
     // name in the `sockaddr_dl` allocation.
     let enaddr: [u8; ETHER_ADDR_LEN] = unsafe {
-        let p = crate::net::if_dl::lladdr(crate::net::if_var::if_sadl_ptr(ifp));
+        let p = crate::net::if_dl::lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         core::array::from_fn(|i| *p.add(i))
     };
     initblock.init_padr[0] = u32::from(enaddr[0])

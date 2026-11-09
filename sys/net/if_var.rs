@@ -408,12 +408,13 @@ impl IfnetLegacy for Ifnet {
 
 /// `ifp->if_sadl` as the C's pointer (NULL before `if_alloc_sadl`), for the routing socket's
 /// messages and the protocols that read the link name under the net lock, which its writers
-/// (`if_alloc_sadl`, `if_setlladdr`, `if_free_sadl`) hold too: the C's protocol for the raw
-/// pointer, which this function does not dereference.
-pub fn if_sadl_ptr(ifp: &Ifnet) -> *mut SockaddrDl {
+/// (`if_alloc_sadl`, `if_setlladdr`, `if_sadl_set_lladdr`, `if_free_sadl`) hold too: the C's
+/// protocol for the raw pointer, which this function does not dereference. Read-only: the
+/// writes go through the kernel's `ReadMostly` cell.
+pub fn if_sadl_ptr(ifp: &Ifnet) -> *const SockaddrDl {
     ifp.sadl()
         .as_deref()
-        .map_or(core::ptr::null_mut(), |s| core::ptr::from_ref(s).cast_mut())
+        .map_or(core::ptr::null(), core::ptr::from_ref)
 }
 
 /// A test's link name for `ifp` (what `if_alloc_sadl` would make), in the test's memory.

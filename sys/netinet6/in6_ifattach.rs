@@ -167,7 +167,7 @@ pub fn in6_get_hw_ifid(ifp: &Ifnet, in6: &mut In6Addr) -> bool {
     const ALLZERO: [u8; 8] = [0; 8];
     const ALLONE: [u8; 8] = [0xff; 8];
 
-    let sdl = crate::net::if_var::if_sadl_ptr(ifp);
+    let sdl = crate::net::if_var::if_sadl_ptr(ifp).cast_mut();
     // SAFETY: a non-NULL `if_sadl` is the interface's link-level address.
     if sdl.is_null() || unsafe { (*sdl).sdl_alen } == 0 {
         return false;

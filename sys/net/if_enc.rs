@@ -225,7 +225,7 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     sc.sc_ifa.ifa_ifp.set(Some(ifp));
     sc.sc_ifa
         .ifa_addr
-        .set(sdltosa(crate::net::if_var::if_sadl_ptr(ifp)));
+        .set(sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()));
     sc.sc_ifa.ifa_netmask.set(ptr::null_mut());
 
     bpfattach(&ifp.if_bpf, ifp, DLT_ENC, ENC_HDRLEN as u32);

@@ -2281,6 +2281,21 @@ pub fn if_setlladdr(ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]) -> Resul
     Ok(())
 }
 
+/// `memcpy(LLADDR(ifp->if_sadl), lladdr, ifp->if_addrlen)`: the link address written into the
+/// link-level name `if_alloc_sadl` made (`ether_ifattach`), its `sdl_alen` bytes at most;
+/// nothing before `if_alloc_sadl`.
+pub fn if_sadl_set_lladdr(ifp: &Ifnet, lladdr: &[u8]) {
+    ifp.if_sadl.update(|sdl| {
+        if let Some(sdl) = sdl {
+            let bytes = hal::user::bytes_of_mut(core::slice::from_mut(&mut **sdl));
+            if let Some(a) = SockaddrDl::lladdr_mut(bytes) {
+                let n = a.len().min(lladdr.len());
+                a[..n].copy_from_slice(&lladdr[..n]);
+            }
+        }
+    });
+}
+
 /// `if_createrdomain(rdomain, ifp)`: routing domain `rdomain` with its loopback
 /// `lo<rdomain>` (`ifp` itself when that is the interface being moved); `EEXIST` for a
 /// table that has routes.
@@ -3697,6 +3712,20 @@ pub(crate) mod tests {
             crate::reftest::int(&defs, "IFQ_MAXLEN"),
             Some(i64::from(crate::net::ifq::IFQ_MAXLEN))
         );
+    }
+
+    #[test]
+    fn ether_ifattach_writes_its_address_into_the_link_name() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"vio1");
+        ifp.if_addrlen.set(ETHER_ADDR_LEN as u8);
+        if_sadl_set_lladdr(ifp, &[1; 6]); // nothing before if_alloc_sadl
+        if_alloc_sadl(ifp);
+        if_sadl_set_lladdr(ifp, &[7, 6, 5, 4, 3, 2]);
+        let sdl = ifp.sadl();
+        let sdl = sdl.as_ref().expect("a link name");
+        let bytes = hal::user::bytes_of(core::slice::from_ref(&**sdl));
+        assert_eq!(SockaddrDl::lladdr(bytes), Some(&[7u8, 6, 5, 4, 3, 2][..]));
     }
 }
 /* </TESTS> */

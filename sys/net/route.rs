@@ -1847,7 +1847,7 @@ pub fn rtdeletemsg(rt: &'static Rtentry, ifp: &Ifnet, tableid: u32) -> Result<()
     }
     info.rti_info[RTAX_LABEL] = rtlabel_id2sa(rt.rt_labelid.get(), &mut sa_rl);
     info.rti_flags = rt.rt_flags.get();
-    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     info.rti_info[RTAX_IFA] = rt.ifa().ifa_addr.get();
     kernel_lock();
     let mut nrt = Some(rt);
@@ -2400,7 +2400,7 @@ pub unsafe fn rt_ifa_add(
     info.rti_flags = flags;
     info.rti_info[RTAX_DST] = dst;
     if flags & RTF_LLINFO != 0 {
-        info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+        info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     } else {
         info.rti_info[RTAX_GATEWAY] = ifa.ifa_addr.get();
     }

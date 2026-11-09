@@ -946,7 +946,7 @@ fn rtm_report(rt: &'static Rtentry, type_: u8, seq: i32, tableid: u32) -> RtmBuf
     // MPLS: RTAX_SRC (the route's label) and rti_mpls, not configured.
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(tableid, family);
@@ -2085,7 +2085,7 @@ pub fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
     info.rti_info[RTAX_LABEL] = rtlabel_id2sa(rt.rt_labelid.get(), &mut sa_rl);
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(rtableid, family);
@@ -2155,7 +2155,7 @@ pub fn rtm_ifchg(ifp: &Ifnet) {
     if RTPTABLE.rtp_count.load(Ordering::Relaxed) == 0 {
         return;
     }
-    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     // SAFETY: the interface's link address is readable.
     let Some(m) = (unsafe { rtm_msg1(RTM_IFINFO, Some(&mut info)) }) else {
         return;
@@ -2185,7 +2185,7 @@ pub fn rtm_addr(cmd: u8, ifa: &Ifaddr) {
     }
 
     info.rti_info[RTAX_IFA] = ifa.ifa_addr.get();
-    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     info.rti_info[RTAX_NETMASK] = ifa.ifa_netmask.get();
     info.rti_info[RTAX_BRD] = ifa.ifa_dstaddr.get();
     // SAFETY: the address's and the interface's socket addresses are readable.
@@ -2323,7 +2323,7 @@ fn sysctl_dumpentry(rt: &Rtentry, w: &mut Walkarg, id: u32) -> Result<(), Errno>
     info.rti_info[RTAX_NETMASK] = rt_plen2mask(rt, &mut sa_mask);
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(id, family);
@@ -2388,7 +2388,7 @@ fn sysctl_iflist(af: u8, w: &mut Walkarg) -> Result<(), Errno> {
             continue;
         }
         // Copy the link-layer address first
-        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: the interface's link address, alive for the call.
         let len = unsafe { rtm_msg2(RTM_IFINFO, RTM_VERSION, &mut info, None, Some(&mut *w)) };
         if w.w_where != 0

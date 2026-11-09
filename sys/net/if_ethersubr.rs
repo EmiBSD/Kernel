@@ -162,7 +162,6 @@ use crate::net::if_::{
     IFF_MULTICAST, IFF_NOARP, IFF_RUNNING, IFF_SIMPLEX, Ifreq, if_alloc_sadl, if_deactivate,
     if_enqueue, if_input_local, if_input_proto,
 };
-use crate::net::if_dl::lladdr;
 use crate::net::if_types::IFT_ETHER;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, Netstack};
@@ -769,14 +768,10 @@ pub fn ether_ifattach(ac: &'static Arpcom) {
     }
 
     if_alloc_sadl(ifp);
-    // SAFETY: `if_alloc_sadl` made room for `if_addrlen` bytes after the name.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            ac.ac_enaddr.get().as_ptr(),
-            lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
-            usize::from(ifp.if_addrlen.get()),
-        );
-    }
+    // memcpy(LLADDR(ifp->if_sadl), ac->ac_enaddr, ifp->if_addrlen)
+    let enaddr = ac.ac_enaddr.get();
+    let alen = usize::from(ifp.if_addrlen.get()).min(enaddr.len());
+    kernel::net::if_::if_sadl_set_lladdr(ifp, &enaddr[..alen]);
     ac.ac_multiaddrs.init();
     bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
 }
@@ -1418,14 +1413,17 @@ mod tests {
         assert_eq!(ifp.if_mtu.get() as usize, ETHERMTU);
         assert_eq!(ifp.if_hardmtu.get() as usize, ETHERMTU);
         assert!(ifp.if_input().get().is_some() && ifp.if_output().get().is_some());
-        let sdl = crate::net::if_var::if_sadl_ptr(ifp);
+        let sdl = crate::net::if_var::if_sadl_ptr(ifp).cast_mut();
         // SAFETY: if_alloc_sadl's allocation, with the name and then the address.
         unsafe {
             assert_eq!((*sdl).sdl_family, crate::sys::socket::AF_LINK);
             assert_eq!((*sdl).sdl_nlen, 5);
             let data = (*sdl).sdl_data;
             assert_eq!(&data[..5], b"teth0");
-            assert_eq!(core::slice::from_raw_parts(lladdr(sdl), 6), &OURS);
+            assert_eq!(
+                core::slice::from_raw_parts(crate::net::if_dl::lladdr(sdl), 6),
+                &OURS
+            );
         }
 
         // A multicast hardware address is replaced by a locally administered one.
