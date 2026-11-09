@@ -284,10 +284,16 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
     }
 
     fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
+        // The handler reads and writes the command's structure, `IOCPARM_LEN(cmd)` bytes: a
+        // shorter request is refused before the call (the C's callers always pass the
+        // command's whole structure).
+        if data.len() < iocparm_len(cmd) as usize {
+            return Err(Errno::EINVAL);
+        }
         match self.if_ioctl.get() {
-            // SAFETY: `data` is the request's image of the command (the kernel's callers lend
-            // an `Ifreq`, `ifioctl` the whole of `sys_ioctl`'s copy, `IOCPARM_LEN(cmd)` bytes
-            // or more), readable and writable for the call: the handler's contract.
+            // SAFETY: `data` is at least `IOCPARM_LEN(cmd)` bytes (checked above), readable and
+            // writable, borrowed exclusively for the call: the command's structure the
+            // handler's contract asks for.
             Some(ioctl) => unsafe { ioctl(ifp, cmd, data.as_mut_ptr()) },
             None => Err(Errno::ENOTTY),
         }
@@ -2594,6 +2600,24 @@ pub(crate) mod tests {
         let other = test_ifnet(b"tml1");
         if_attach(other);
         assert_eq!(other.if_snd().ifq_maxlen.get(), crate::net::ifq::IFQ_MAXLEN);
+    }
+
+    #[test]
+    fn a_short_request_never_reaches_the_driver() {
+        let _g = setup_net();
+        let ifp = test_ifnet(b"tio0");
+        if_attach(ifp);
+        // SIOCGIFFLAGS takes a 32-byte struct ifreq: 4 bytes are refused before the driver.
+        let mut short = [0u8; 4];
+        assert_eq!(
+            kernel::net::if_::if_ioctl(ifp, SIOCGIFFLAGS, &mut short),
+            Err(Errno::EINVAL)
+        );
+        let mut ifr = [0u8; 32];
+        assert_eq!(
+            kernel::net::if_::if_ioctl(ifp, SIOCGIFFLAGS, &mut ifr),
+            Err(Errno::ENOTTY)
+        );
     }
 }
 /* </TESTS> */
