@@ -86,7 +86,12 @@
 //!   `QueueDiscipline` row). `ifqop_deq_begin`'s `void **cookiep` is a returned word.
 //! - The C's `ifq_deq_begin` returns with `ifq_mtx` held until `ifq_deq_commit` or
 //!   `ifq_deq_rollback`: one call here, [`ifq_deq_with`], whose closure sees the packet with
-//!   the mutex held and answers commit or rollback.
+//!   the mutex held and answers commit or rollback. The conditioner's two operations are one
+//!   too ([`QueueDiscipline::deq`]): its begin and its commit of the same packet run inside
+//!   one call around the kernel's answer, so the packet and the cookie the begin returned are
+//!   the ones the commit takes (the C passes them back through the caller's `m` and
+//!   `ph_cookie`; a begin is not idempotent: fq_codel charges the flow's deficit and may
+//!   drop through CoDel, hfsc reads the clock).
 //! - `ifq_barrier`'s condition variable and task on the caller's stack -> one barrier task in
 //!   the queue: each caller records a generation under `ifq_task_mtx`, the task (linked at the
 //!   serializer's tail) marks the generation it was linked at done and links itself again
@@ -137,10 +142,18 @@ pub trait QueueDiscipline: Sync + 'static {
     /// `ifqop_enq`: keeps `m` and returns `None`, or returns the packet to drop (`m`
     /// itself, or one it evicts).
     fn enq(&self, q: usize, st: &mut IfqLocked<'_>, m: MbufBox) -> Option<MbufBox>;
-    /// `ifqop_deq_begin`: the next packet and its cookie, left queued.
-    fn deq_begin<'a>(&self, q: usize, st: &'a mut IfqLocked<'_>) -> Option<(&'a Mbuf, usize)>;
-    /// `ifqop_deq_commit`: takes the packet `deq_begin` returned with `cookie` off.
-    fn deq_commit(&self, q: usize, st: &mut IfqLocked<'_>, cookie: usize) -> MbufBox;
+    /// `ifqop_deq_begin`, then `ifqop_deq_commit` of the packet it returned when `commit`
+    /// answers `true` for it, under the one hold of `ifq_mtx` that `st` is: the packet taken
+    /// off; `None` when the conditioner has none to send, or when `commit` answered `false`
+    /// (`ifq_deq_rollback`: the packet stays queued). `commit` is called at most once. The
+    /// begun packet and its cookie never leave the conditioner, so the commit takes off the
+    /// packet the begin chose (the C's `m` and `ph_cookie` handed back by the caller).
+    fn deq(
+        &self,
+        q: usize,
+        st: &mut IfqLocked<'_>,
+        commit: &mut dyn FnMut(&Mbuf) -> bool,
+    ) -> Option<MbufBox>;
     /// `ifqop_purge`: moves every packet to `ml`.
     fn purge(&self, q: usize, st: &mut IfqLocked<'_>, ml: &mut MbufList);
 }
@@ -665,19 +678,19 @@ pub fn ifq_deq_with(ifq: &Ifqueue, f: impl FnOnce(&Mbuf) -> IfqDeq) -> Option<Mb
         st.leave();
         return None;
     }
-    let seen = disc_deq_begin(&mut st).map(|(m, cookie)| (f(m), cookie));
-    let m = match seen {
-        Some((IfqDeq::Commit, cookie)) => {
-            let m = disc_deq_commit(&mut st, cookie);
-            ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
-            Some(m)
+    let mut f = Some(f);
+    let mut answer = IfqDeq::Rollback;
+    let m = disc_deq(&mut st, |m| {
+        if let Some(f) = f.take() {
+            answer = f(m);
         }
-        Some((IfqDeq::RollbackOactive, _)) => {
-            st.set_oactive();
-            None
-        }
-        Some((IfqDeq::Rollback, _)) | None => None,
-    };
+        answer == IfqDeq::Commit
+    });
+    if m.is_some() {
+        ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
+    } else if answer == IfqDeq::RollbackOactive {
+        st.set_oactive();
+    }
     st.leave();
     m
 }
@@ -702,8 +715,7 @@ pub fn ifq_deq_sleep(
         Err(Errno::EWOULDBLOCK)
     } else {
         loop {
-            if let Some((_, cookie)) = disc_deq_begin(&mut st) {
-                let m = disc_deq_commit(&mut st, cookie);
+            if let Some(m) = disc_deq(&mut st, |_| true) {
                 ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
                 break Ok(m);
             }
@@ -848,14 +860,6 @@ pub fn ifq_stats(ifq: &Ifqueue) -> (u64, u64, u64, u64, u64, u32) {
     (g.packets, g.bytes, g.qdrops, g.errors, g.mcasts, g.oactives)
 }
 
-/// The queue's conditioner, `panic(9)` after `ifq_destroy` (the C uses freed memory).
-fn disc_of<'a>(st: &'a IfqLocked<'_>) -> &'a Discipline {
-    match &st.g.disc {
-        Some(d) => d,
-        None => kpanic(format_args!("ifqueue used after ifq_destroy")),
-    }
-}
-
 /// `ifq->ifq_ops->ifqop_enq(ifq, m)`.
 fn disc_enq(st: &mut IfqLocked<'_>, m: MbufBox) -> Option<MbufBox> {
     let len = st.ifq_len();
@@ -870,28 +874,14 @@ fn disc_enq(st: &mut IfqLocked<'_>, m: MbufBox) -> Option<MbufBox> {
     }
 }
 
-/// `ifq->ifq_ops->ifqop_deq_begin(ifq, &cookie)`.
-fn disc_deq_begin<'a>(st: &'a mut IfqLocked<'_>) -> Option<(&'a Mbuf, usize)> {
-    let ops = match disc_of(st) {
-        Discipline::Ops(ops, q) => Some((*ops, *q)),
-        Discipline::Priq(_) => None,
-    };
-    match ops {
-        Some((ops, q)) => ops.deq_begin(q, st),
-        None => match disc_of(st) {
-            Discipline::Priq(pq) => priq_deq_begin(pq),
-            Discipline::Ops(..) => None,
-        },
-    }
-}
-
-/// `ifq->ifq_ops->ifqop_deq_commit(ifq, m, cookie)`: the packet taken off.
-fn disc_deq_commit(st: &mut IfqLocked<'_>, cookie: usize) -> MbufBox {
+/// `ifq->ifq_ops->ifqop_deq_begin(ifq, &cookie)`, then `ifqop_deq_commit(ifq, m, cookie)`
+/// of the same packet when `commit` answers `true` for it: the packet taken off.
+fn disc_deq(st: &mut IfqLocked<'_>, mut commit: impl FnMut(&Mbuf) -> bool) -> Option<MbufBox> {
     match &mut st.g.disc {
-        Some(Discipline::Priq(pq)) => priq_deq_commit(pq, cookie),
+        Some(Discipline::Priq(pq)) => priq_deq(pq, commit),
         Some(Discipline::Ops(ops, q)) => {
             let (ops, q) = (*ops, *q);
-            ops.deq_commit(q, st, cookie)
+            ops.deq(q, st, &mut commit)
         }
         None => kpanic(format_args!("ifqueue used after ifq_destroy")),
     }
@@ -1278,20 +1268,14 @@ fn priq_enq(pq: &mut Priq, len: u32, maxlen: u32, m: MbufBox) -> Option<MbufBox>
     n
 }
 
-/// `priq_deq_begin`: the first packet of the highest priority, with its list as the cookie.
-fn priq_deq_begin(pq: &Priq) -> Option<(&Mbuf, usize)> {
-    pq.pq_lists
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(i, pl)| pl.first().map(|m| (m, i)))
-}
-
-/// `priq_deq_commit`: the first packet of the list `cookie` names, taken off.
-fn priq_deq_commit(pq: &mut Priq, cookie: usize) -> MbufBox {
-    match pq.pq_lists.get_mut(cookie).and_then(ml_dequeue) {
-        Some(m) => m,
-        None => kpanic(format_args!("priq_deq_commit: an empty list")),
+/// `priq_deq_begin`, then `priq_deq_commit` when `commit` answers `true`: the first packet
+/// of the highest priority (its list is the C's cookie), taken off.
+fn priq_deq(pq: &mut Priq, mut commit: impl FnMut(&Mbuf) -> bool) -> Option<MbufBox> {
+    let pl = pq.pq_lists.iter_mut().rev().find(|pl| !ml_empty(pl))?;
+    if commit(pl.first()?) {
+        ml_dequeue(pl)
+    } else {
+        None
     }
 }
 

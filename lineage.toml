@@ -7598,6 +7598,16 @@ native = ["Priq::new"]
 kind = "renamed"
 
 [[module.fn]]
+lz = "sys/net/ifq.rs::priq_deq_begin"
+native = ["priq_deq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_deq_commit"
+native = ["priq_deq"]
+kind = "merged"
+
+[[module.fn]]
 lz = "sys/net/ifq.rs::priq_free"
 native = []
 kind = "dropped"

@@ -1445,6 +1445,66 @@ mod tests {
     }
 
     #[test]
+    fn two_flows_leave_the_send_queue_in_the_order_they_were_begun() {
+        // The interface's send queue under FQ-CoDel (pf's `ifq_attach`): every `ifq_dequeue`
+        // runs the conditioner's begin once and commits the packet that begin chose. A second
+        // begin would charge the flow's deficit again and, at the turn, return the other flow's
+        // head while the cookie still named the first (`codel_commit`'s assertion, or the
+        // wrong packet taken off).
+        use crate::net::if_::if_attach;
+        use crate::net::ifq::{
+            ifq_attach, ifq_attach_priq, ifq_dequeue, ifq_enqueue, ifq_hdatalen, ifq_len,
+        };
+
+        let _g = setup_net();
+        let fqc = fqcodel(4, 300, 0);
+        // SAFETY: made by `fqcodel_pf_alloc`.
+        let st = unsafe { fqc_of(fqc) };
+        let ifp = crate::net::if_::tests::test_ifnet(b"tfqc1");
+        if_attach(ifp);
+        let ifq = ifp.if_snd();
+        ifq_attach(ifq, IFQ_FQCODEL_OPS, fqc);
+
+        for _ in 0..6 {
+            for flow in [0, 1] {
+                assert_eq!(ifq_enqueue(ifq, packet(100, flow)), Ok(()));
+            }
+        }
+        assert_eq!(ifq_len(ifq), 12);
+
+        let mut order = Vec::new();
+        while let Some(m) = ifq_dequeue(ifq) {
+            order.push(m.m_pkthdr().ph_flowid.get());
+            m_freem(m);
+        }
+        // A quantum of 300 bytes is three 100-byte packets per turn, as through pf's own ops.
+        assert_eq!(order, [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(ifq_len(ifq), 0);
+        assert_eq!((PFQ_FQCODEL_OPS.pfq_qlength)(fqc), 0);
+        assert_eq!(
+            st.xmit_cnt.get(),
+            FqcodelPktcntr {
+                packets: 12,
+                bytes: 1200
+            }
+        );
+        assert_eq!(st.drop_cnt.get(), FqcodelPktcntr::default());
+        assert_eq!(kernel::net::ifq::ifq_stats(ifq).0, 12);
+
+        // A rollback (`ifq_hdatalen`) leaves the packet queued: the next dequeue takes it.
+        assert_eq!(ifq_enqueue(ifq, packet(60, 2)), Ok(()));
+        assert_eq!(ifq_hdatalen(ifq), 60);
+        assert_eq!(ifq_len(ifq), 1);
+        let m = ifq_dequeue(ifq).expect("the packet rolled back");
+        assert_eq!(m.m_pkthdr().ph_flowid.get(), 2);
+        m_freem(m);
+        assert!(ifq_dequeue(ifq).is_none());
+
+        // The default conditioner back frees FQ-CoDel's state (`ifqop_free`).
+        ifq_attach_priq(ifq);
+    }
+
+    #[test]
     fn stats_have_the_c_layout() {
         assert_eq!(size_of::<FqcodelStats>(), 72);
         assert_eq!(core::mem::offset_of!(FqcodelStats, qlength), 32);

@@ -47,9 +47,10 @@
 //!   it is given was made by the same table's `ifqop_alloc` and that `ifq_mtx` is held (LZ's
 //!   contract). The kernel keeps the word beside the table and lends the locked queue
 //!   (`IfqLocked`) where the C's operations read `ifq->ifq_q` themselves.
-//! - `ifqop_deq_commit` is given the packet `ifqop_deq_begin` returned: the kernel's commit
-//!   names it by its cookie alone, so the table's `ifqop_deq_begin` runs once more under the
-//!   same hold to find it (pf's conditioners only, N8's).
+//! - `ifqop_deq_begin` and `ifqop_deq_commit` run inside one call of the kernel's
+//!   `QueueDiscipline::deq`, around the kernel's answer: the packet and the cookie the begin
+//!   returned are kept here, never handed to the kernel and back, and the commit is given
+//!   them (the C's caller holds `m` and `ph_cookie` between its two calls).
 //! - `ifq_priq_ops` is the kernel's own conditioner (`ifq_attach_priq`), not a table.
 //! - `kstat(4)` is not ported (LZ's).
 
@@ -159,23 +160,23 @@ impl QueueDiscipline for IfqOps {
         unsafe { (self.ifqop_enq)(word(q), st, park(m)) }.map(unpark)
     }
 
-    fn deq_begin<'a>(&self, q: usize, st: &'a mut IfqLocked<'_>) -> Option<(&'a Mbuf, usize)> {
+    fn deq(
+        &self,
+        q: usize,
+        st: &mut IfqLocked<'_>,
+        commit: &mut dyn FnMut(&Mbuf) -> bool,
+    ) -> Option<MbufBox> {
         // SAFETY: as in `enq`.
-        unsafe { (self.ifqop_deq_begin)(word(q), st) }
-            .map(|(m, cookie)| (m, cookie.expose_provenance()))
-    }
-
-    fn deq_commit(&self, q: usize, st: &mut IfqLocked<'_>, cookie: usize) -> MbufBox {
-        // SAFETY: as in `enq`; the packet is `deq_begin`'s again, under the same hold of
-        // `ifq_mtx` as the kernel's begin that gave `cookie` (the module's deviations), so
-        // the pair is the one `ifqop_deq_commit` takes.
-        let begun = unsafe { (self.ifqop_deq_begin)(word(q), st) };
-        let Some((m, _)) = begun else {
-            crate::kern::subr_prf::panic(format_args!("ifqop_deq_commit: no packet"));
-        };
-        // SAFETY: as above.
-        unsafe { (self.ifqop_deq_commit)(word(q), st, m, word(cookie)) };
-        unpark(m)
+        let (m, cookie) = unsafe { (self.ifqop_deq_begin)(word(q), st) }?;
+        if !commit(m) {
+            // `ifq_deq_rollback`: the conditioner keeps the packet.
+            return None;
+        }
+        // SAFETY: as in `enq`; `m` and `cookie` are what `ifqop_deq_begin` returned just
+        // above, under the same hold of `ifq_mtx` (`st`, which `commit` cannot reach: it sees
+        // the packet alone), so they are the pair `ifqop_deq_commit` takes.
+        unsafe { (self.ifqop_deq_commit)(word(q), st, m, cookie) };
+        Some(unpark(m))
     }
 
     fn purge(&self, q: usize, st: &mut IfqLocked<'_>, ml: &mut kernel::net::mbuf::MbufList) {
