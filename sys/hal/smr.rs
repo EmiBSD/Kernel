@@ -142,6 +142,18 @@
 //!   checks it only at best, by relaxed loads of a skipped CPU's counts, and panics when it
 //!   happens to see one inside a section), and a `peg` that does not make the CPU pass
 //!   [`idle`] is `panic(9)` (checked after every peg, in every kernel).
+//! - S4, counted words: a non-null [`SmrArcWord`] (or [`SmrTaggedWord`]) holds one counted
+//!   reference to its target, a [`PoolArc`]'s given up by `PoolArc::into_raw`, so the target
+//!   lives while the word names it. A reference leaves a word in two ways only: into an
+//!   [`SmrRetiredArc`], whose one way out is its retirement (its drop: the reference parked on
+//!   the item's [`SmrArcLink`] and dropped by the SMR thread after a grace period announced
+//!   after the retirement, S3 keeping every section open then waiting), or moved whole into
+//!   another word ([`SmrArcWord::restore`]), which goes on counting it; a word's own drop
+//!   retires its reference the same way. So a reference a reader loaded stays counted until
+//!   every section open when it left the last word that held it has ended, and a reader's
+//!   [`SmrRef`] borrows its section. The release drops exactly the references queued with it
+//!   (the link's state word counts them), so an item retired by many words, or again while
+//!   a release of it is queued, is released once per reference, never early.
 //!
 //! ## Deviations
 //! - `WITNESS` and `dt(4)` are not configured (the C's `smr_lock_obj` and `TRACEPOINT`s).
@@ -183,20 +195,35 @@
 //!   object can be neither freed early nor leaked by accident. `bsd`'s `SmrPtr`,
 //!   `SmrSlistHead` and `SmrSlistEntry` (`sys/sys/smr.rs`) stay for their users until those
 //!   move (N6.3, N8).
+//! - N6.3b: `SMR_PTR_GET`/`SMR_PTR_SET_LOCKED` over a pointer to a *counted* object that
+//!   several words name at once (`rt_next` and `an_value` of the routing table's `rtentry`,
+//!   whose `rt_refcnt` the table holds; the ART's heap entries, one node named by every
+//!   fringe word it is allotted to) -> [`SmrArcWord`] and its tagged twin [`SmrTaggedWord`]
+//!   (the C's `art_heap_entry`, whose low bit tells a node from a heap): each word counts a
+//!   reference of its own, so a reader's [`SmrRef`] is sound by SMR alone, where the C's
+//!   `rtable_delete` relied on the net lock ("an and the rt ref could still be alive on other
+//!   cpus", rtable.c). A store gives the old reference back as an [`SmrRetiredArc`]; the
+//!   retirement parks it on the item's [`SmrArcLink`] (the `struct smr_entry` the item
+//!   embeds), whose one deferred call drops every reference parked before it was queued and
+//!   queues itself again for those parked after: the C's per-object `smr_call` needs one
+//!   entry per retirement, and an ART node is retired by hundreds of fringe words in one
+//!   `art_allot`, and again by the next insert under the same prefix. `SmrPtr::new_kernel`
+//!   keys a pointer to the kernel lock (`rtmap_grow`'s `KERNEL_ASSERT_LOCKED`).
 
 use core::cell::Cell;
 use core::ffi::c_void;
 use core::marker::PhantomData;
-use core::mem;
+use core::mem::{self, ManuallyDrop};
+use core::ops::Deref;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence};
 
 use crate::assert::{hal_panic, kassert};
 use crate::cpu;
 use crate::intr::{IPL_HIGH, splhigh};
 use crate::mutex::Mutexed;
 use crate::percpu::{PerCpu, PerCpuInit};
-use crate::pool::{BoxPool, PoolBox};
+use crate::pool::{BoxPool, PoolArc, PoolBox};
 use crate::rwlock::{Exclusive, Guarded, RawRwlock, Witness};
 use crate::sleep::{self, INFSLP, PVM};
 
@@ -209,6 +236,18 @@ const TAIL: *mut SmrLink = ptr::without_provenance_mut(1);
 
 /// A link's state word once the SMR thread took it off its batch to run its call.
 const RAN: *mut SmrLink = ptr::without_provenance_mut(2);
+
+/// [`SmrArcLink`]'s state: a release is queued.
+const ARC_QUEUED: u64 = 1;
+
+/// [`SmrArcLink`]'s state: one reference waiting for the next release (bits 1..32).
+const ARC_PENDING_ONE: u64 = 1 << 1;
+
+/// [`SmrArcLink`]'s state: the references waiting for the next release.
+const ARC_PENDING_MASK: u64 = ((1 << 31) - 1) << 1;
+
+/// [`SmrArcLink`]'s state: where the references the queued release drops start.
+const ARC_FLIGHT_SHIFT: u32 = 32;
 
 /// `struct smr_entry`: a deferred call, embedded in the object it releases. Idle as made
 /// (all zero, as the C's `M_ZERO` memory and `smr_init` leave it).
@@ -415,6 +454,15 @@ impl<T: SmrLinked> SmrPtr<T> {
         }
     }
 
+    /// A null pointer whose writers hold the kernel lock (`rtmap_grow`'s
+    /// `KERNEL_ASSERT_LOCKED`): its witness is `hal::klock::witness`.
+    pub const fn new_kernel() -> Self {
+        Self {
+            word: AtomicPtr::new(ptr::null_mut()),
+            owner: Guarded::new_kernel(None),
+        }
+    }
+
     /// A null pointer whose writers hold `lock` (a lock embedded beside it).
     pub fn new_keyed(lock: &RawRwlock) -> Self {
         Self {
@@ -509,6 +557,338 @@ impl<T: SmrLinked> Drop for SmrRetired<T> {
         if let Some(b) = self.item.take() {
             defer_box(b);
         }
+    }
+}
+
+/// The deferred release of the references an item's words gave up (`struct smr_entry`
+/// embedded in a counted object, the C's `smr_call` of its `refcnt_rele`): one per item,
+/// inside it ([`SmrCounted::smr_link`]). A reference a word retires is parked here: the
+/// references parked while no release is queued queue one, those parked while one is queued
+/// wait for the next, which the running release queues before it drops its own (S4). Idle as
+/// made.
+pub struct SmrArcLink {
+    /// The deferred call ([`release_arcs`]), its argument this link.
+    link: SmrLink,
+    /// [`ARC_QUEUED`] while a release is queued; the references waiting for the next release
+    /// in bits 1..32; those the queued release drops in bits 32..64. 0 while idle.
+    state: AtomicU64,
+    /// The item's value (the `PoolArc::into_raw` pointer of its references), written by the
+    /// retirement that queues a release, before its link is queued.
+    item: AtomicPtr<c_void>,
+}
+
+impl SmrArcLink {
+    /// An idle link: nothing parked, no release queued.
+    pub const fn new() -> Self {
+        Self {
+            link: SmrLink::new(),
+            state: AtomicU64::new(0),
+            item: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+}
+
+impl Default for SmrArcLink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A counted object [`SmrArcWord`]s publish: a [`TypedPool`](crate::pool::TypedPool) item
+/// (every reference a word holds is a [`PoolArc`]'s), carrying the [`SmrArcLink`] its
+/// retired references wait on (the C's `rtentry`, an ART node, table or heap).
+pub trait SmrCounted: Send + Sync + Sized + 'static {
+    /// The item's own retirement link (checked to lie within the item at every retirement).
+    fn smr_link(&self) -> &SmrArcLink;
+}
+
+/// A reference an [`SmrArcWord`] (or [`SmrTaggedWord`]) lends a reader: the target, for the
+/// read section `'g` it was loaded in. `Deref` gives the value; [`SmrRef::arc`] one more
+/// counted handle to it (the C's `rtref` inside the section). Neither `Send` nor `Sync`: it
+/// belongs to its section's CPU.
+pub struct SmrRef<'g, T: SmrCounted> {
+    /// The word's pointer: a counted reference's (S4), with the whole item's provenance.
+    item: NonNull<T>,
+    _section: PhantomData<&'g T>,
+}
+
+impl<'g, T: SmrCounted> SmrRef<'g, T> {
+    /// The value, for the whole section.
+    #[inline]
+    pub fn get(self) -> &'g T {
+        counted_ref(self.item)
+    }
+
+    /// One more counted handle to the value (`refcnt_take`), which outlives the section: a
+    /// clone of the reference the word counts, so it is never taken from a count of 0.
+    pub fn arc(self) -> PoolArc<T> {
+        // SAFETY: `PoolArc::from_raw`'s contract in its view form: `self.item` is the
+        // `into_raw` pointer of a reference a word counted when this `SmrRef` was loaded, and
+        // that reference stays counted while the `SmrRef`'s section lives (S4: it left that
+        // word only into a retirement released after a grace period that cannot pass while
+        // the section is open, or moved into another word); the view is kept in a
+        // `ManuallyDrop` that is never dropped and only cloned, here, inside that time, so it
+        // takes no reference of its own and the clone adds one to a count of at least 1.
+        let view = ManuallyDrop::new(unsafe { PoolArc::from_raw(self.item) });
+        PoolArc::clone(&view)
+    }
+
+    /// Whether two references name the same item.
+    #[inline]
+    pub fn ptr_eq(a: Self, b: Self) -> bool {
+        a.item == b.item
+    }
+}
+
+impl<T: SmrCounted> Clone for SmrRef<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: SmrCounted> Copy for SmrRef<'_, T> {}
+
+impl<T: SmrCounted> Deref for SmrRef<'_, T> {
+    type Target = T;
+
+    #[inline]
+    fn deref(&self) -> &T {
+        counted_ref(self.item)
+    }
+}
+
+/// `SMR_PTR_GET`/`SMR_PTR_SET_LOCKED` over a pointer to a counted object: the word holds one
+/// reference of its target (S4). Readers load it inside a read section ([`SmrArcWord::load`]);
+/// a writer stores a new handle (or none) and gets the old reference back retired. The C's
+/// writers hold a lock ([`Exclusive`] documents it); soundness does not rest on it: the store
+/// is an atomic swap, so two writers lose no reference.
+pub struct SmrArcWord<T: SmrCounted> {
+    /// The target's `PoolArc::into_raw` pointer, null for none.
+    word: AtomicPtr<T>,
+    _owns: PhantomData<PoolArc<T>>,
+}
+
+impl<T: SmrCounted> SmrArcWord<T> {
+    /// A null word.
+    pub const fn new() -> Self {
+        Self {
+            word: AtomicPtr::new(ptr::null_mut()),
+            _owns: PhantomData,
+        }
+    }
+
+    /// A word that names `h`'s item from its making (the item that holds it not published
+    /// yet), `h`'s reference its own.
+    pub fn with(h: PoolArc<T>) -> Self {
+        Self {
+            word: AtomicPtr::new(PoolArc::into_raw(h).as_ptr()),
+            _owns: PhantomData,
+        }
+    }
+
+    /// `SMR_PTR_GET(pptr)`: the target, for the read section `g`.
+    #[inline]
+    pub fn load<'g>(&'g self, _g: &'g SmrRead) -> Option<SmrRef<'g, T>> {
+        NonNull::new(self.word.load(Ordering::Acquire)).map(|item| SmrRef {
+            item,
+            _section: PhantomData,
+        })
+    }
+
+    /// Whether the word names something now (a snapshot; for writers, under their lock).
+    #[inline]
+    pub fn is_set(&self) -> bool {
+        !self.word.load(Ordering::Relaxed).is_null()
+    }
+
+    /// `SMR_PTR_SET_LOCKED(pptr, val)`: publishes `new`'s reference (or nothing) once
+    /// everything it holds is written (`Release`); the old reference, if any, comes back
+    /// retired.
+    pub fn store<W: Exclusive + ?Sized>(
+        &self,
+        _w: &W,
+        new: Option<PoolArc<T>>,
+    ) -> Option<SmrRetiredArc<T>> {
+        let p = new.map_or(ptr::null_mut(), |h| PoolArc::into_raw(h).as_ptr());
+        self.swap(p)
+    }
+
+    /// `SMR_PTR_SET_LOCKED(pptr, NULL)`: the reference unpublished, retired.
+    pub fn take<W: Exclusive + ?Sized>(&self, w: &W) -> Option<SmrRetiredArc<T>> {
+        self.store(w, None)
+    }
+
+    /// Publishes a reference just unpublished from another word (or none) without its
+    /// retirement: the reference moves, counted all along, so the readers that loaded it
+    /// from the other word stay covered (S4). The C's `SMR_PTR_SET_LOCKED(prt, rt->rt_next)`
+    /// that moves an item along a list. The old reference comes back retired.
+    pub fn restore<W: Exclusive + ?Sized>(
+        &self,
+        _w: &W,
+        moved: Option<SmrRetiredArc<T>>,
+    ) -> Option<SmrRetiredArc<T>> {
+        let p = moved.map_or(ptr::null_mut(), |r| ManuallyDrop::new(r).item.as_ptr());
+        self.swap(p)
+    }
+
+    /// The word set to `p` (a reference given to it, or null), the old one retired.
+    fn swap(&self, p: *mut T) -> Option<SmrRetiredArc<T>> {
+        NonNull::new(self.word.swap(p, Ordering::AcqRel)).map(|item| SmrRetiredArc { item })
+    }
+}
+
+impl<T: SmrCounted> Default for SmrArcWord<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: SmrCounted> Drop for SmrArcWord<T> {
+    fn drop(&mut self) {
+        // The reference may have been moved here from a word a reader still borrows
+        // (`restore`), so it goes the deferred way all the same (S4).
+        if let Some(item) = NonNull::new(*self.word.get_mut()) {
+            drop(SmrRetiredArc { item });
+        }
+    }
+}
+
+/// A reference unpublished by a word's store, which readers may still be looking at: its one
+/// way out is its retirement (its drop, the reference released after the next grace period),
+/// or a move into another word ([`SmrArcWord::restore`]). Neither the reference nor the
+/// value can be reached through it.
+#[must_use = "a retired reference is released by its retirement (dropping it retires it)"]
+pub struct SmrRetiredArc<T: SmrCounted> {
+    /// The reference's `PoolArc::into_raw` pointer.
+    item: NonNull<T>,
+}
+
+impl<T: SmrCounted> SmrRetiredArc<T> {
+    /// Whether this is a reference to `x`'s item.
+    pub fn is(&self, x: &T) -> bool {
+        ptr::eq(self.item.as_ptr().cast_const(), x)
+    }
+}
+
+impl<T: SmrCounted> Drop for SmrRetiredArc<T> {
+    fn drop(&mut self) {
+        retire_arc(self.item);
+    }
+}
+
+/// One of the two kinds an [`SmrTaggedWord`] publishes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag<A, B> {
+    /// The untagged kind (the ART's node).
+    A(A),
+    /// The tagged kind (the ART's heap).
+    B(B),
+}
+
+/// [`SmrArcWord`] over two kinds of counted objects told apart by the word's low bit (the
+/// C's `art_heap_entry`: a node's pointer as is, a heap's with bit 0 set): one reference of
+/// whichever it names (S4). Both kinds are aligned to at least 2 (checked at compile time),
+/// so bit 0 of an item's address is free.
+pub struct SmrTaggedWord<A: SmrCounted, B: SmrCounted> {
+    /// The target's `PoolArc::into_raw` pointer, bit 0 set for a `B`; null for none.
+    word: AtomicPtr<u8>,
+    _owns: PhantomData<(PoolArc<A>, PoolArc<B>)>,
+}
+
+impl<A: SmrCounted, B: SmrCounted> SmrTaggedWord<A, B> {
+    /// A null word.
+    pub const fn new() -> Self {
+        Self {
+            word: AtomicPtr::new(ptr::null_mut()),
+            _owns: PhantomData,
+        }
+    }
+
+    /// `SMR_PTR_GET(pptr)`: the target, of its kind, for the read section `g`.
+    #[inline]
+    pub fn load<'g>(&'g self, _g: &'g SmrRead) -> Option<Tag<SmrRef<'g, A>, SmrRef<'g, B>>> {
+        let w = self.word.load(Ordering::Acquire);
+        if w.is_null() {
+            return None;
+        }
+        Some(if w.addr() & 1 == 0 {
+            Tag::A(SmrRef {
+                item: NonNull::new(w.cast::<A>())?,
+                _section: PhantomData,
+            })
+        } else {
+            Tag::B(SmrRef {
+                item: NonNull::new(w.map_addr(|a| a & !1).cast::<B>())?,
+                _section: PhantomData,
+            })
+        })
+    }
+
+    /// Whether the word names something now (a snapshot; for writers, under their lock).
+    #[inline]
+    pub fn is_set(&self) -> bool {
+        !self.word.load(Ordering::Relaxed).is_null()
+    }
+
+    /// `SMR_PTR_SET_LOCKED(pptr, val)`: publishes `new`'s reference (or nothing), the old
+    /// reference retired, of its kind.
+    pub fn store<W: Exclusive + ?Sized>(
+        &self,
+        _w: &W,
+        new: Option<Tag<PoolArc<A>, PoolArc<B>>>,
+    ) -> Option<Tag<SmrRetiredArc<A>, SmrRetiredArc<B>>> {
+        const {
+            assert!(
+                align_of::<A>() >= 2 && align_of::<B>() >= 2,
+                "a tagged word's kinds leave bit 0 of their address free"
+            );
+        }
+        let p = match new {
+            None => ptr::null_mut(),
+            Some(Tag::A(h)) => PoolArc::into_raw(h).as_ptr().cast::<u8>(),
+            Some(Tag::B(h)) => PoolArc::into_raw(h)
+                .as_ptr()
+                .cast::<u8>()
+                .map_addr(|a| a | 1),
+        };
+        Self::retired(self.word.swap(p, Ordering::AcqRel))
+    }
+
+    /// `SMR_PTR_SET_LOCKED(pptr, 0)`: the reference unpublished, retired.
+    pub fn take<W: Exclusive + ?Sized>(
+        &self,
+        w: &W,
+    ) -> Option<Tag<SmrRetiredArc<A>, SmrRetiredArc<B>>> {
+        self.store(w, None)
+    }
+
+    /// The reference a word's value `w` held, retired, of its kind.
+    fn retired(w: *mut u8) -> Option<Tag<SmrRetiredArc<A>, SmrRetiredArc<B>>> {
+        if w.is_null() {
+            return None;
+        }
+        Some(if w.addr() & 1 == 0 {
+            Tag::A(SmrRetiredArc {
+                item: NonNull::new(w.cast::<A>())?,
+            })
+        } else {
+            Tag::B(SmrRetiredArc {
+                item: NonNull::new(w.map_addr(|a| a & !1).cast::<B>())?,
+            })
+        })
+    }
+}
+
+impl<A: SmrCounted, B: SmrCounted> Default for SmrTaggedWord<A, B> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<A: SmrCounted, B: SmrCounted> Drop for SmrTaggedWord<A, B> {
+    fn drop(&mut self) {
+        // As `SmrArcWord`'s drop: the reference retired.
+        drop(Self::retired(*self.word.get_mut()));
     }
 }
 
@@ -782,6 +1162,122 @@ fn defer_box<T: SmrLinked>(b: PoolBox<T>) {
     call(l, false);
 }
 
+/// The value a counted reference names, borrowed for `'a`. Every caller passes the
+/// `PoolArc::into_raw` pointer of a reference that stays counted for all of `'a`: an
+/// [`SmrRef`]'s (`'a` its read section, S4), or a reference the caller owns and has not given
+/// up yet ([`retire_arc`] before it hands the reference to the link).
+#[inline]
+fn counted_ref<'a, T: SmrCounted>(p: NonNull<T>) -> &'a T {
+    // SAFETY: `p` is the value pointer of a `TypedPool` item (`PoolArc::into_raw`'s, with the
+    // item's provenance) holding an initialised `T`, and the reference it stands for is
+    // counted for all of `'a` (this function's callers, above), so the item is not put back
+    // and the value not dropped while the borrow lives (`PoolArc`'s invariant: an item goes
+    // back only when its count reaches 0). Only shared references are made to a counted
+    // value while handles or words count it, `PoolArc::get_mut`'s `&mut` excepted, which
+    // needs the count at exactly 1 and a handle borrowed mutably: a word's or a retired
+    // reference's count is a second one while that handle exists, so no `&mut` is alive.
+    unsafe { p.as_ref() }
+}
+
+/// The retirement of one counted reference a word gave up ([`SmrRetiredArc`]'s drop): parked
+/// on the item's [`SmrArcLink`], released by the SMR thread after a grace period announced
+/// after this call (S4). The link is asked for once and checked to lie within the item.
+fn retire_arc<T: SmrCounted>(p: NonNull<T>) {
+    let l = counted_ref(p).smr_link();
+    let at = ptr::from_ref(l).addr();
+    if at < p.addr().get() || at + size_of::<SmrArcLink>() > p.addr().get() + size_of::<T>() {
+        hal_panic(format_args!("smr: an item's link outside the item"));
+    }
+    let mut cur = l.state.load(Ordering::Relaxed);
+    let queue = loop {
+        let (new, queue) = if cur & ARC_QUEUED != 0 {
+            if cur & ARC_PENDING_MASK == ARC_PENDING_MASK {
+                hal_panic(format_args!("smr: too many retired references"));
+            }
+            (cur + ARC_PENDING_ONE, false)
+        } else {
+            (ARC_QUEUED | (1 << ARC_FLIGHT_SHIFT), true)
+        };
+        // AcqRel: what the retiring CPU wrote happens before the release that drops the
+        // reference, and a release that cleared the state happened before this one.
+        match l
+            .state
+            .compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Relaxed)
+        {
+            Ok(_) => break queue,
+            Err(c) => cur = c,
+        }
+    };
+    if queue {
+        // This retirement queues the release: no other can until the release has run, and
+        // the release cannot run before the link is on a queue, so the item (counted by the
+        // reference just parked) and its link stay put until `call` returns.
+        l.item.store(p.as_ptr().cast(), Ordering::Relaxed);
+        l.link
+            .claim(release_arcs::<T>, ptr::from_ref(l).cast_mut().cast());
+        call(NonNull::from(&l.link), false);
+    }
+}
+
+/// The SMR thread's release of the references parked on an item's [`SmrArcLink`] (`arg`):
+/// those queued with it dropped, after the next release is queued for the ones parked since
+/// (S4). The drops may free the item, the link with it: nothing touches the link after them.
+fn release_arcs<T: SmrCounted>(arg: *mut c_void) {
+    let Some(at) = NonNull::new(arg.cast::<SmrArcLink>()) else {
+        hal_panic(format_args!("smr: a release without its link"));
+    };
+    // SAFETY: `arg` is the address of the `SmrArcLink` inside an item of `T`'s pool (checked
+    // at its retirement to lie within the item), queued by `retire_arc::<T>` (or by this
+    // function, below) with this function as its call when its state turned queued with
+    // `n >= 1` references parked on it in its upper half. Those references are counted until
+    // the drops at the end, which this run alone makes (a link is run once per queueing,
+    // `Batch::run`'s mark, and a queued link cannot be queued again), so the item and its
+    // link are alive while `l` is used, and only shared references reach them
+    // (`counted_ref`'s argument). `l` is not used after the drops.
+    let l: &SmrArcLink = unsafe { at.as_ref() };
+    let Some(item) = NonNull::new(l.item.load(Ordering::Relaxed).cast::<T>()) else {
+        hal_panic(format_args!("smr: a release without its item"));
+    };
+    // The thread marked the link run before this call: idle again before another release may
+    // be queued on it (the state still says queued, so no retirement can queue one yet).
+    l.link.init();
+    let mut cur = l.state.load(Ordering::Acquire);
+    let (n, requeue) = loop {
+        let n = cur >> ARC_FLIGHT_SHIFT;
+        let waiting = (cur & ARC_PENDING_MASK) >> 1;
+        let new = if waiting > 0 {
+            ARC_QUEUED | (waiting << ARC_FLIGHT_SHIFT)
+        } else {
+            0
+        };
+        // AcqRel: the retirements that parked these references happen before their drops; a
+        // retirement after a clear sees it.
+        match l
+            .state
+            .compare_exchange_weak(cur, new, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break (n, waiting > 0),
+            Err(c) => cur = c,
+        }
+    };
+    if requeue {
+        // The references parked since this release was queued wait for a grace period that
+        // begins after them: the next run of this link. They keep the item alive meanwhile.
+        l.link.claim(release_arcs::<T>, arg);
+        call(NonNull::from(&l.link), false);
+    }
+    for _ in 0..n {
+        // SAFETY: `PoolArc::from_raw`'s contract: these are the `n` references this release
+        // was queued with (its state's upper half when it was queued), each given up by
+        // `PoolArc::into_raw` of a `PoolArc<T>` whose value is at `item` (the item's value,
+        // written by the retirement that queued this link, before queueing it) and handed to
+        // the link by a retirement, never taken back since: each is taken back once, here.
+        // The grace period `Batch::run` waited for before this call was announced after each
+        // was parked, so no read section that could have loaded it is still open (S3, S4).
+        drop(unsafe { PoolArc::from_raw(item) });
+    }
+}
+
 /// `smr_grace_wait()`: the next grace period announced, and every running CPU whose view is
 /// behind made to pass [`idle`] (the calling thread pegged to it), so every read section
 /// open at the announcement has ended when it returns. One caller at a time ([`GRACE`]),
@@ -911,7 +1407,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::pool::PR_WAITOK;
+    use crate::pool::{PR_WAITOK, TypedPool};
     use crate::testutil;
 
     /// The SMR state is the system's: its tests run one at a time, each on fresh queues.
@@ -1300,6 +1796,302 @@ mod tests {
         }));
         assert!(r.is_err(), "an item of another pool");
         drop(w);
+    }
+
+    /// A counted object: its release counted.
+    struct Counted {
+        link: SmrArcLink,
+        value: u64,
+        freed: AtomicBool,
+    }
+
+    impl Drop for Counted {
+        fn drop(&mut self) {
+            self.freed.store(true, Ordering::SeqCst);
+            COUNTED_FREED.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl SmrCounted for Counted {
+        fn smr_link(&self) -> &SmrArcLink {
+            &self.link
+        }
+    }
+
+    static COUNTED: TypedPool<Counted> = TypedPool::new();
+    static COUNTED_FREED: AtomicUsize = AtomicUsize::new(0);
+
+    fn counted(value: u64) -> PoolArc<Counted> {
+        let _ = COUNTED.init(0, PR_WAITOK, "smrarc");
+        COUNTED
+            .get_shared(PR_WAITOK, || Counted {
+                link: SmrArcLink::new(),
+                value,
+                freed: AtomicBool::new(false),
+            })
+            .expect("an item")
+    }
+
+    /// The releases queued on this CPU, run after a grace period: how many ran.
+    fn grace() -> u64 {
+        idle();
+        collect().run(&Alone)
+    }
+
+    #[test]
+    fn a_counted_word_holds_a_reference_and_releases_it_after_a_grace_period() {
+        let _s = serial();
+        let freed = COUNTED_FREED.load(Ordering::SeqCst);
+        let a = counted(1);
+        let word: SmrArcWord<Counted> = SmrArcWord::new();
+        let w = WRITERS.write();
+        assert!(word.store(&w, Some(a.clone())).is_none());
+        assert_eq!(PoolArc::count(&a), 2, "the handle and the word");
+        let g = read();
+        let r = word.load(&g).expect("published");
+        assert_eq!(r.value, 1);
+        let more = r.arc();
+        assert_eq!(PoolArc::count(&a), 3, "a reader's handle is one more");
+        drop(more);
+        drop(g);
+        let old = word
+            .store(&w, Some(counted(2)))
+            .expect("the first reference back");
+        assert!(old.is(&a));
+        drop(old); // retired
+        drop(w);
+        drop(a);
+        assert_eq!(
+            COUNTED_FREED.load(Ordering::SeqCst),
+            freed,
+            "the retired reference keeps it until a grace period"
+        );
+        assert_eq!(grace(), 1);
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 1);
+        // The word's own drop retires its reference too.
+        drop(word);
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 1);
+        assert_eq!(grace(), 1);
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 2);
+    }
+
+    #[test]
+    fn references_retired_while_a_release_is_queued_wait_for_the_next() {
+        let _s = serial();
+        let freed = COUNTED_FREED.load(Ordering::SeqCst);
+        let x = counted(7);
+        let words: [SmrArcWord<Counted>; 3] = core::array::from_fn(|_| SmrArcWord::with(x.clone()));
+        assert_eq!(PoolArc::count(&x), 4);
+        drop(x);
+        let w = WRITERS.write();
+        // Two retirements before the first release ran: one queued release, one waiting.
+        drop(words[0].take(&w));
+        drop(words[1].take(&w));
+        assert_eq!(grace(), 1, "one release for the two");
+        // The first release dropped the reference it was queued with and queued itself
+        // again for the second, which needs a grace period of its own.
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed);
+        // A third retirement while that release is queued: parked after it was queued, it
+        // waits for the one after.
+        drop(words[2].take(&w));
+        drop(w);
+        assert_eq!(grace(), 1);
+        assert_eq!(
+            COUNTED_FREED.load(Ordering::SeqCst),
+            freed,
+            "one reference left"
+        );
+        assert_eq!(grace(), 1);
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 1);
+        assert_eq!(grace(), 0, "nothing queued any more");
+    }
+
+    #[test]
+    fn a_reference_moves_between_words_without_a_retirement() {
+        let _s = serial();
+        let freed = COUNTED_FREED.load(Ordering::SeqCst);
+        let x = counted(3);
+        let from: SmrArcWord<Counted> = SmrArcWord::with(x.clone());
+        let to: SmrArcWord<Counted> = SmrArcWord::new();
+        let w = WRITERS.write();
+        assert!(to.restore(&w, from.take(&w)).is_none());
+        assert!(!from.is_set() && to.is_set());
+        assert_eq!(PoolArc::count(&x), 2, "moved, not cloned");
+        assert_eq!(grace(), 0, "nothing retired");
+        let g = read();
+        assert_eq!(to.load(&g).map(|r| r.value), Some(3));
+        drop(g);
+        drop(to.take(&w));
+        drop(w);
+        drop(x);
+        assert_eq!(grace(), 1);
+        assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 1);
+    }
+
+    /// The tagged word's second kind.
+    struct Other {
+        link: SmrArcLink,
+        name: u32,
+    }
+
+    impl SmrCounted for Other {
+        fn smr_link(&self) -> &SmrArcLink {
+            &self.link
+        }
+    }
+
+    static OTHERS: TypedPool<Other> = TypedPool::new();
+
+    fn other(name: u32) -> PoolArc<Other> {
+        let _ = OTHERS.init(0, PR_WAITOK, "smrother");
+        OTHERS
+            .get_shared(PR_WAITOK, || Other {
+                link: SmrArcLink::new(),
+                name,
+            })
+            .expect("an item")
+    }
+
+    #[test]
+    fn a_tagged_word_keeps_its_two_kinds_apart() {
+        let _s = serial();
+        let word: SmrTaggedWord<Counted, Other> = SmrTaggedWord::new();
+        let a = counted(11);
+        let b = other(22);
+        let w = WRITERS.write();
+        assert!(word.store(&w, Some(Tag::A(a.clone()))).is_none());
+        let g = read();
+        match word.load(&g) {
+            Some(Tag::A(r)) => assert_eq!(r.value, 11),
+            _ => panic!("the node kind"),
+        }
+        drop(g);
+        let old = word.store(&w, Some(Tag::B(b.clone())));
+        assert!(matches!(&old, Some(Tag::A(r)) if r.is(&a)));
+        drop(old);
+        let g = read();
+        match word.load(&g) {
+            Some(Tag::B(r)) => {
+                assert_eq!(r.name, 22);
+                assert!(ptr::eq(r.get(), &*b), "the tag is masked off");
+            }
+            _ => panic!("the heap kind"),
+        }
+        drop(g);
+        assert!(matches!(word.take(&w), Some(Tag::B(_))));
+        assert!(!word.is_set());
+        drop(w);
+        assert_eq!(grace(), 2, "one release per item");
+        assert_eq!(PoolArc::count(&a), 1);
+        assert_eq!(PoolArc::count(&b), 1);
+    }
+
+    /// An item whose link is not its own.
+    struct Astray {
+        _v: u64,
+    }
+
+    static ASTRAY_LINK: SmrArcLink = SmrArcLink::new();
+
+    impl SmrCounted for Astray {
+        fn smr_link(&self) -> &SmrArcLink {
+            &ASTRAY_LINK
+        }
+    }
+
+    static ASTRAYS: TypedPool<Astray> = TypedPool::new();
+
+    #[test]
+    fn a_link_outside_its_item_is_refused() {
+        let _s = serial();
+        let _ = ASTRAYS.init(0, PR_WAITOK, "smrastray");
+        let x = ASTRAYS
+            .get_shared(PR_WAITOK, || Astray { _v: 0 })
+            .expect("an item");
+        let word: SmrArcWord<Astray> = SmrArcWord::with(x);
+        let w = WRITERS.write();
+        let r = word.take(&w).expect("the reference");
+        drop(w);
+        assert!(
+            std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| drop(r))).is_err(),
+            "a link outside the item"
+        );
+        assert_eq!(
+            ASTRAY_LINK.state.load(Ordering::SeqCst),
+            0,
+            "nothing parked"
+        );
+    }
+
+    #[test]
+    fn a_reader_never_sees_a_released_counted_item() {
+        const READERS: usize = 4;
+        const ROUNDS: u64 = 200;
+        let _s = serial();
+        static WORDS: [SmrArcWord<Counted>; 2] = [SmrArcWord::new(), SmrArcWord::new()];
+        let walk = Readers {
+            cpus: (0..READERS).map(|_| AtomicUsize::new(usize::MAX)).collect(),
+            asked: (0..READERS).map(|_| AtomicBool::new(false)).collect(),
+        };
+        let started = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let seen = AtomicU64::new(0);
+        let freed = COUNTED_FREED.load(Ordering::SeqCst);
+        thread::scope(|s| {
+            for i in 0..READERS {
+                let (walk, started, stop, seen) = (&walk, &started, &stop, &seen);
+                s.spawn(move || {
+                    walk.cpus[i].store(cpu::cpu_number(), Ordering::SeqCst);
+                    started.fetch_add(1, Ordering::SeqCst);
+                    while !stop.load(Ordering::SeqCst) {
+                        let g = read();
+                        for word in &WORDS {
+                            if let Some(o) = word.load(&g) {
+                                for _ in 0..64 {
+                                    core::hint::spin_loop();
+                                }
+                                assert!(!o.freed.load(Ordering::SeqCst), "a released item");
+                                seen.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        drop(g);
+                        if walk.asked[i].load(Ordering::SeqCst) {
+                            idle();
+                            walk.asked[i].store(false, Ordering::SeqCst);
+                        }
+                    }
+                });
+            }
+            while started.load(Ordering::SeqCst) < READERS {
+                thread::yield_now();
+            }
+            for r in 0..ROUNDS {
+                // One item in both words; then the first word moves to the second's place
+                // and the second gets a new one (a list's unlink and a replacement).
+                let x = counted(r);
+                let w = WRITERS.write();
+                drop(WORDS[0].store(&w, Some(x.clone())));
+                drop(WORDS[1].store(&w, Some(x)));
+                drop(WORDS[1].restore(&w, WORDS[0].take(&w)));
+                drop(WORDS[0].store(&w, Some(counted(r + ROUNDS))));
+                drop(w);
+                idle();
+                let _ = collect().run(&walk);
+            }
+            stop.store(true, Ordering::SeqCst);
+        });
+        let w = WRITERS.write();
+        for word in &WORDS {
+            drop(word.take(&w));
+        }
+        drop(w);
+        while grace() != 0 {}
+        assert_eq!(
+            COUNTED_FREED.load(Ordering::SeqCst),
+            freed + 2 * ROUNDS as usize,
+            "every item released once"
+        );
+        assert!(seen.load(Ordering::SeqCst) > 0, "the readers saw items");
     }
 }
 /* </TESTS> */
