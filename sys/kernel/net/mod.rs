@@ -23,6 +23,7 @@
 pub mod domain;
 pub mod file;
 pub mod if_;
+pub mod if_media;
 pub mod if_var;
 pub mod ifq;
 pub mod mbuf;

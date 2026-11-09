@@ -7741,6 +7741,13 @@ native = ["net_tq_barrier_task"]
 kind = "renamed"
 
 [[module]]
+rust = "sys/kernel/net/if_media.rs"
+crate = "kernel"
+lz = ["sys/net/if_media.rs"]
+status = "redesigned"
+notes = "N6.3a2: net/if_media.c: struct ifmedia valid all zero (the mask and media words AtomicCells, the selected entry's words mirrored in atomics for the unlocked readers, the list and the callbacks a set-once half ifmedia_init builds); the entries a newest-first chain of M_IFADDR MBoxes under the media's own IPL_NET mutex, named by number; the callbacks a MediaCallbacks object (D-N6.3a-11); ifmedia_ioctl over the request's bytes, the media words copied out through UserPtr"
+
+[[module]]
 rust = "sys/kernel/net/netisr.rs"
 crate = "kernel"
 lz = ["sys/net/netisr.rs"]
