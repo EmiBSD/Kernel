@@ -517,7 +517,12 @@ pub fn ifq_barrier(ifq: &'static Ifqueue) {
 
     g.bar_asked += 1;
     let mine = g.bar_asked;
-    if !ifq.ifq_bartask.pending() {
+    // Linked only when no barrier is outstanding (none linked, none running): one the
+    // serialiser has taken off but whose body has not run yet must not be linked again
+    // before the work queued meanwhile, or it would report this caller's barrier done
+    // early; its body links it again for every barrier asked meanwhile. The C gives each
+    // caller a task of its own (ifq.c:186-199).
+    if g.bar_done == g.bar_linked {
         g.bar_linked = mine;
         let _ = ifq
             .ser_list
