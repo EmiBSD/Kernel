@@ -263,11 +263,12 @@
 //!   `ifr` after it (`SIOCDIFGROUP`'s group, `SIOCSIFLLADDR`'s address). The user's
 //!   memory is reached through `hal::user::UserPtr` only (`SIOCGIFDATA`, `SIOCSIFDESCR`, the
 //!   rows of `ifconf`, of the groups and of the cloners, `if_rxr_info_ioctl`).
-//! - `ifioctl` takes the net lock as a detached holding (`hal::netlock::lock`/`unlock`, the
-//!   C's `NET_LOCK()`), not a witness: the drivers it calls through `if_ioctl` let it go and
-//!   take it back (wg(4)'s `wg_up`/`wg_down`, pflow(4)'s `pflowioctl`), which only a detached
-//!   holding allows. Its read-only paths take witnesses (`NETLOCK.read()`), which they hold
-//!   across no driver call.
+//! - `ifioctl` and `if_downall` take the net lock as a detached holding
+//!   (`hal::netlock::lock`/`unlock`, the C's `NET_LOCK()`), not a witness: the drivers they
+//!   call through `if_ioctl` let it go and take it back (wg(4)'s `wg_up`/`wg_down`,
+//!   pflow(4)'s `pflowioctl`, pfsync(4)'s `pfsync_up`/`pfsync_down`), which only a detached
+//!   holding allows. `ifioctl`'s read-only paths take witnesses (`NETLOCK.read()`), which
+//!   they hold across no driver call.
 //! - `SIOCSIFXFLAGS`'s `goto forceup` into `SIOCSIFFLAGS` is a call of the one `forceup`
 //!   function from both, inside the same net lock section.
 //! - `ifconf` keeps the C's temporary lists (`if_tmplist`, `ifa_tmplist`, references taken)
@@ -2495,16 +2496,19 @@ pub fn ifaof_ifpforaddr(held: &NetHeld<'_>, addr: &[u8], ifp: &Ifnet) -> Option<
 }
 
 /// `if_downall()`: every interface that is up marked down and told so (`SIOCSIFFLAGS`), at
-/// shutdown.
+/// shutdown. The net lock is the detached holding, as `ifioctl`'s: wg(4)'s `wg_down`,
+/// pflow(4)'s `pflowioctl` and pfsync(4)'s `pfsync_down` let it go and take it back
+/// (N6.3a2 review's S1).
 pub fn if_downall() {
-    let _net = NETLOCK.write();
-    for ifp in &IFNETLIST {
-        if ifp.if_flags.get() & IFF_UP == 0 {
-            continue;
+    net_locked(|| {
+        for ifp in &IFNETLIST {
+            if ifp.if_flags.get() & IFF_UP == 0 {
+                continue;
+            }
+            if_down(ifp);
+            let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
         }
-        if_down(ifp);
-        let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
-    }
+    });
 }
 
 /// The driver's `if_ioctl(ifp, cmd, &ifr)` of a `struct ifreq` whose only member set is
@@ -5123,6 +5127,34 @@ pub(crate) mod tests {
         hal::klock::kernel_unlock();
         if_put(ifp);
         ifp
+    }
+
+    /// A driver whose requests let the net lock go and take it back, as wg(4)'s `wg_down`,
+    /// pflow(4)'s `pflowioctl` and pfsync(4)'s `pfsync_down` do.
+    struct DropsNetLock;
+
+    impl NetDriver for DropsNetLock {
+        fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+            hal::netlock::unlock();
+            hal::netlock::lock();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_driver_that_lets_the_net_lock_go_runs_under_ifioctl_and_if_downall() {
+        static D: DropsNetLock = DropsNetLock;
+        let (_g, p) = ioctl_setup();
+        let ifp = test_ifnet_fresh(b"tdl0", &D);
+        if_attach(ifp);
+        let mut ifr: Ifreq = named(b"tdl0");
+        ifr.set_ifr_flags(IFF_UP as i16);
+        assert_eq!(ioctl(p, SIOCSIFFLAGS, &mut ifr), Ok(()));
+        assert_ne!(ifp.if_flags.get() & IFF_UP, 0);
+        // Shutdown: the interface marked down and told, the lock its handler let go free.
+        if_downall();
+        assert_eq!(ifp.if_flags.get() & IFF_UP, 0);
+        assert_eq!(hal::netlock::status(), 0);
     }
 
     #[test]
