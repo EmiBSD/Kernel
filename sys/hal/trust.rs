@@ -109,21 +109,29 @@
 //!
 //! A socket address lent by an interface address (`hal::link::SaLink`, N6.3a) is a fifth
 //! boundary: `struct ifaddr`'s `ifa_addr`, `ifa_dstaddr`, `ifa_netmask` and `struct ifmaddr`'s
-//! `ifma_addr` point into storage `bsd`'s internet protocols own (`struct in_ifaddr`'s
-//! `ia_addr`, `ia_dstaddr`, `ia_sockmask`, `struct in6_ifaddr`'s, `in_multi`'s `inm_sin`,
-//! `in6_multi`'s, `enc(4)`'s link-level address), and the kernel's interface layer reads
-//! their bytes (`ifa_ifwithaddr`, `ifaof_ifpforaddr`, `ifconf`). Its holders' contract, the
-//! C's own invariant that every reader of `ifa_addr` relies on: the word `bsd` sets is null
-//! or the address of a socket address made with the provenance of the storage that holds it
-//! (`Cell::as_ptr` of the member, never a reference to a smaller type), whose storage holds
-//! its two header bytes and at least its `sa_len` bytes; that storage lives while the
-//! interface address holding the word lives (it is freed only after `ifa_del` has unlinked
-//! the address and its last reference is gone, `ifafree`); and its bytes are written only by
-//! a holder of the net lock in its exclusive mode (`in_ifinit`, `in6_update_ifa`), while the
-//! kernel views them only under the net lock (`NET_ASSERT_LOCKED()` in the C's readers). `hal`
-//! checks nothing of it: the `// SAFETY:` of `SaLink::view` rests on it, and it goes when
-//! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address embeds
-//! its storage (N6.4, N6.5).
+//! `ifma_addr` name storage `bsd`'s internet protocols own (`struct in_ifaddr`'s `ia_addr`,
+//! `ia_dstaddr`, `ia_sockmask`, `struct in6_ifaddr`'s, `in_multi`'s `inm_sin`, `in6_multi`'s),
+//! and the kernel's interface layer copies their bytes (`ifa_ifwithaddr`,
+//! `ifaof_ifpforaddr`, `ifconf`) through `SaLink::read`. What the types give: a link names a
+//! storage only through `SaLink::set`, which takes a `&'static Cell<T>` of an `AbiPod` image
+//! (so the storage is `size_of::<T>()` initialised bytes that live for ever, and the copy is
+//! cut at that size whatever `sa_len` says) and the `hal::link::SaToken`, taken once by
+//! `bsd`'s boot (`hal_bridges_register`'s first steps, before any code of the kernel or ABI
+//! crates runs; a later take is `None`, and `bsd`'s own take panics the boot if someone took
+//! it first, so no `forbid` crate can publish a storage); the storage's address and size
+//! change and are read as one pair (a sequence); the copy checks that the net lock is
+//! written by the running process or read (`panic(9)` otherwise); and a `Cell` is not `Sync`,
+//! so no thread but the one that made a cell reaches it through safe code. The token
+//! holder's contract, the C's own invariant: the bytes of a storage it published are written
+//! only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`), and the
+//! storage behind its `&'static` lives while the interface address naming it lives (it is
+//! freed only after `ifa_del` has unlinked the address and its last reference is gone,
+//! `ifafree`: `bsd`'s `'static`, a lie of the family its `&'static Ifnet` belongs to). The
+//! reader's part: for a shared holding, `rw_status` cannot say whose it is (the C's
+//! `NET_ASSERT_LOCKED()` cannot either), so a reader that finds the lock read is one of its
+//! readers, as every C reader of `ifa_addr` is. The `// SAFETY:` of `SaLink::read` rests on
+//! these; the boundary goes when `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's
+//! and the interface address embeds its storage (N6.4, N6.5).
 //!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is

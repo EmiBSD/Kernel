@@ -2681,9 +2681,11 @@ mod tests {
         info.rti_info[RTAX_NETMASK] = sin6tosa(&mut mask);
         info.rti_info[RTAX_GATEWAY] = sin6tosa(&mut gate);
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
+        // route(8)'s rtm_getifa and rtrequest, both under the net lock (ifaof_ifpforaddr reads
+        // the interface's addresses).
+        net_lock();
         // SAFETY: a local `sockaddr_in6`.
         info.rti_ifa = unsafe { ifaof_ifpforaddr(sin6tosa(&mut gate), ifp) };
-        net_lock();
         let mut rt = None;
         // SAFETY: the addresses are locals.
         unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) }.expect("default route");

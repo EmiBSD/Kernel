@@ -75,7 +75,7 @@
 //!   without a netstack (`ip_input`'s local `iproute`) until `struct route` is the kernel's
 //!   (N6.3b).
 
-use hal::link::Link;
+use hal::link::{Link, SaToken};
 use hal::malloc::{M_WAITOK, MBox};
 use hal::once::OnceStatic;
 
@@ -415,6 +415,53 @@ pub fn if_sadl_ptr(ifp: &Ifnet) -> *const SockaddrDl {
     ifp.sadl()
         .as_deref()
         .map_or(core::ptr::null(), core::ptr::from_ref)
+}
+
+/// `hal`'s one `SaToken` (`hal::link::SaLink::set`'s), for the internet protocols that publish
+/// their interface addresses' storage (`ifa->ifa_addr = sintosa(&ia->ia_addr)`, N6.3a).
+static SA_TOKEN: OnceStatic<&'static SaToken> = OnceStatic::new();
+
+/// How long [`sa_token_take`] waits for a concurrent first taker's store before it calls the
+/// token stolen.
+const SA_TOKEN_TAKE_SPINS: u32 = 1 << 20;
+
+/// Takes `hal`'s one `SaToken` for `bsd`'s internet protocols. `hal_bridges_register` calls it
+/// in the boot, before any code of the kernel or ABI crates runs, so none of them can make an
+/// interface address name a storage (the token's contract, `sys/hal/trust.rs`); another call
+/// keeps what is held. `panic(9)` when the token is gone and was not stored here: someone
+/// else took it.
+pub fn sa_token_take() {
+    if SA_TOKEN.get().is_some() {
+        return;
+    }
+    if let Some(t) = SaToken::take() {
+        let _ = SA_TOKEN.set(t);
+        return;
+    }
+    // Taken already: by a first caller about to store it (two host test threads at once), or
+    // by someone else.
+    for _ in 0..SA_TOKEN_TAKE_SPINS {
+        if SA_TOKEN.get().is_some() {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+    panic(format_args!(
+        "SaLink: hal's token was taken outside bsd's boot"
+    ));
+}
+
+/// The token [`sa_token_take`] stored at boot (the host tests, which have no boot, take it
+/// here).
+pub fn sa_token() -> &'static SaToken {
+    if let Some(t) = SA_TOKEN.get() {
+        return t;
+    }
+    sa_token_take();
+    match SA_TOKEN.get() {
+        Some(t) => t,
+        None => panic(format_args!("SaLink: no token")),
+    }
 }
 
 /// A test's link name for `ifp` (what `if_alloc_sadl` would make), in the test's memory.

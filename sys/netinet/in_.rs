@@ -572,6 +572,7 @@ pub struct InAddr {
     /// The address (`in_addr_t`), network order.
     pub s_addr: u32,
 }
+hal::abi_pod!(InAddr { s_addr: u32 });
 
 /// `struct sockaddr_in`: IP Version 4 socket address.
 #[repr(C)]
@@ -588,6 +589,13 @@ pub struct SockaddrIn {
     /// Zero.
     pub sin_zero: [i8; 8],
 }
+hal::abi_pod!(SockaddrIn {
+    sin_len: u8,
+    sin_family: SaFamily,
+    sin_port: InPort,
+    sin_addr: InAddr,
+    sin_zero: [i8; 8],
+});
 
 /// `struct ip_opts`: structure used to describe IP options. Used to store options internally,
 /// to pass them to a process, or to restore options retrieved earlier. The `ip_dst` is used
@@ -1030,9 +1038,10 @@ fn in_ifaddr_alloc(ifp: &'static Ifnet) -> &'static InIfaddr {
     addr.sin_family = AF_INET;
     addr.sin_len = size_of::<SockaddrIn>() as u8;
     ia.ia_addr.set(addr);
-    ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
-    ia.ia_ifa.ifa_dstaddr.set(ia.ia_dstaddr.as_ptr().cast());
-    ia.ia_ifa.ifa_netmask.set(ia.ia_sockmask.as_ptr().cast());
+    let token = crate::net::if_var::sa_token();
+    ia.ia_ifa.ifa_addr.set(token, Some(&ia.ia_addr));
+    ia.ia_ifa.ifa_dstaddr.set(token, Some(&ia.ia_dstaddr));
+    ia.ia_ifa.ifa_netmask.set(token, Some(&ia.ia_sockmask));
     let mut sm = ia.ia_sockmask.get();
     sm.sin_len = 8;
     ia.ia_sockmask.set(sm);
@@ -1617,7 +1626,9 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMult
     inm.inm_sin.set(sin);
     inm.inm_refcnt().init();
     inm.inm_ifidx().set(ifp.if_index.get());
-    inm.inm_ifma.ifma_addr.set(inm.inm_sin.as_ptr().cast());
+    inm.inm_ifma
+        .ifma_addr
+        .set(crate::net::if_var::sa_token(), Some(&inm.inm_sin));
 
     // Let IGMP know that we have joined a new IP multicast group.
     ifp.if_maddrlist.insert_head(&inm.inm_ifma);

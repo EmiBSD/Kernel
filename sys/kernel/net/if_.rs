@@ -217,8 +217,12 @@
 //!   `if_output` with `bsd`'s route and socket address, and stay `bsd`'s with routing until
 //!   N6.3b (D-N6.3a-9); `if_output_local` is.
 //! - `ifa_ifwithaddr`, `ifa_ifwithdstaddr`, `ifaof_ifpforaddr` compare the addresses' bytes
-//!   (`SaLink::view`, `sa_len` long) where the C compares through pointers; an address shorter
-//!   than the other's length never matches (the C reads past it).
+//!   where the C compares through pointers: each interface address is a copy
+//!   (`hal::link::SaLink::read`, under the net lock it checks: `sa_len` bytes cut at the
+//!   storage, and the family whatever `sa_len` says); an address shorter than the other's
+//!   length never matches (the C reads past it). The copy and the lock check are one per
+//!   address walked, beyond the C's loads (review 1's B2; the decision-43 row
+//!   `ifa_ifwithaddr.8x2`).
 //! - `if_detach`'s swap of `if_qstart` and `if_ioctl` for the detached stubs is two bits of
 //!   the interface; `if_watchdog = NULL` is not needed: the watchdog's timeout and task find
 //!   the interface by its index, which `if_remove` freed before it.
@@ -2103,14 +2107,14 @@ pub fn ifa_ifwithaddr(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
         }
 
         for ifa in &ifp.if_addrlist {
-            let Some(ifa_addr) = ifa.ifa_addr.view() else {
+            let Some(ifa_addr) = ifa.ifa_addr.read() else {
                 continue;
             };
-            if sa_family(ifa_addr) != Some(family) {
+            if ifa_addr.family() != family {
                 continue;
             }
 
-            if sa_equal(addr, ifa_addr) {
+            if sa_equal(addr, &ifa_addr) {
                 return Some(ifa);
             }
         }
@@ -2131,14 +2135,14 @@ pub fn ifa_ifwithdstaddr(addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
         }
         if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
             for ifa in &ifp.if_addrlist {
-                let fam = ifa.ifa_addr.view().and_then(sa_family);
-                let Some(dstaddr) = ifa.ifa_dstaddr.view() else {
+                let fam = ifa.ifa_addr.read().map(|a| a.family());
+                let Some(dstaddr) = ifa.ifa_dstaddr.read() else {
                     continue;
                 };
                 if fam != Some(family) {
                     continue;
                 }
-                if sa_equal(addr, dstaddr) {
+                if sa_equal(addr, &dstaddr) {
                     return Some(ifa);
                 }
             }
@@ -2157,20 +2161,21 @@ pub fn ifaof_ifpforaddr(addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
         return None;
     }
     for ifa in &ifp.if_addrlist {
-        let Some(ifa_addr) = ifa.ifa_addr.view() else {
+        let Some(ifa_addr) = ifa.ifa_addr.read() else {
             continue;
         };
-        if sa_family(ifa_addr) != Some(af) {
+        if ifa_addr.family() != af {
             continue;
         }
         if ifa_maybe.is_none() {
             ifa_maybe = Some(ifa);
         }
-        let netmask = match ifa.ifa_netmask.view() {
+        let netmask = match ifa.ifa_netmask.read() {
             Some(nm) if ifp.if_flags.get() & IFF_POINTOPOINT == 0 => nm,
             _ => {
-                let dst = ifa.ifa_dstaddr.view();
-                if sa_equal(addr, ifa_addr) || dst.is_some_and(|d| sa_equal(addr, d)) {
+                if sa_equal(addr, &ifa_addr)
+                    || ifa.ifa_dstaddr.read().is_some_and(|d| sa_equal(addr, &d))
+                {
                     return Some(ifa);
                 }
                 continue;
@@ -2179,9 +2184,9 @@ pub fn ifaof_ifpforaddr(addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
         // The bytes after sa_len and sa_family (sa_data) compared under the netmask, up to the
         // netmask's length.
         let byte = |sa: &[u8], i: usize| sa.get(i).copied().unwrap_or(0);
-        let masklen = usize::from(byte(netmask, 0));
+        let masklen = usize::from(byte(&netmask, 0));
         let matches = (SA_DATA_OFFSET..masklen)
-            .all(|i| (byte(addr, i) ^ byte(ifa_addr, i)) & byte(netmask, i) == 0);
+            .all(|i| (byte(addr, i) ^ byte(&ifa_addr, i)) & byte(&netmask, i) == 0);
         if matches {
             return Some(ifa);
         }
@@ -3483,18 +3488,19 @@ pub(crate) mod tests {
         assert!(ifp.sadl().is_none());
     }
 
-    /// A `sockaddr_in` of `a.b.c.d`, leaked (an address's storage lives while it is linked).
-    fn sin(a: [u8; 4]) -> &'static hal::sys::socket::Sockaddr {
+    /// A `sockaddr_in` of `a.b.c.d`, leaked (an address's storage lives while it is linked):
+    /// an `in_ifaddr`'s `ia_addr`, as `bsd` publishes it.
+    fn sin(a: [u8; 4]) -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
         let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
         sa.sa_len = 16;
         sa.sa_family = AF_INET;
         sa.sa_data[2..6].copy_from_slice(&a);
-        Box::leak(Box::new(sa))
+        Box::leak(Box::new(core::cell::Cell::new(sa)))
     }
 
-    /// The bytes of a leaked socket address.
-    fn bytes(sa: &'static hal::sys::socket::Sockaddr) -> &'static [u8] {
-        hal::user::bytes_of(core::slice::from_ref(sa))
+    /// The bytes of a socket address.
+    fn bytes(sa: &core::cell::Cell<hal::sys::socket::Sockaddr>) -> std::vec::Vec<u8> {
+        hal::user::bytes_of(core::slice::from_ref(&sa.get())).to_vec()
     }
 
     /// An address `addr` with netmask `mask` (and destination `dst`) added to `ifp`.
@@ -3505,12 +3511,13 @@ pub(crate) mod tests {
         dst: Option<[u8; 4]>,
     ) -> &'static Ifaddr {
         let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-        ifa.ifa_addr.set(sin(addr));
+        let token = crate::net::if_var::sa_test_token();
+        ifa.ifa_addr.set(token, Some(sin(addr)));
         if let Some(m) = mask {
-            ifa.ifa_netmask.set(sin(m));
+            ifa.ifa_netmask.set(token, Some(sin(m)));
         }
         if let Some(d) = dst {
-            ifa.ifa_dstaddr.set(sin(d));
+            ifa.ifa_dstaddr.set(token, Some(sin(d)));
         }
         ifa.ifa_ifp.set(Some(ifp));
         ifa_add(ifp, ifa);
@@ -3536,16 +3543,16 @@ pub(crate) mod tests {
         ifps[7].if_flags.set(IFF_POINTOPOINT);
         let p2p = address(ifps[7], [192, 168, 0, 1], None, Some([192, 168, 0, 2]));
 
-        let found = |a: [u8; 4]| ifa_ifwithaddr(bytes(sin(a)), 0);
+        let found = |a: [u8; 4]| ifa_ifwithaddr(&bytes(sin(a)), 0);
         assert!(found([10, 5, 0, 1]).is_some_and(|f| core::ptr::eq(f, addrs[10])));
         assert!(found([172, 16, 3, 1]).is_some_and(|f| core::ptr::eq(f, addrs[7])));
         assert!(found([10, 5, 0, 2]).is_none());
-        let dst = ifa_ifwithdstaddr(bytes(sin([192, 168, 0, 2])), 0);
+        let dst = ifa_ifwithdstaddr(&bytes(sin([192, 168, 0, 2])), 0);
         assert!(dst.is_some_and(|f| core::ptr::eq(f, p2p)));
-        assert!(ifa_ifwithdstaddr(bytes(sin([10, 5, 0, 1])), 0).is_none());
+        assert!(ifa_ifwithdstaddr(&bytes(sin([10, 5, 0, 1])), 0).is_none());
 
         // ifp 2: 10.2.0.0/24 and 172.16.0.0/16; the first of the family otherwise.
-        let best = |a: [u8; 4]| ifaof_ifpforaddr(bytes(sin(a)), ifps[2]);
+        let best = |a: [u8; 4]| ifaof_ifpforaddr(&bytes(sin(a)), ifps[2]);
         assert!(best([10, 2, 0, 77]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
         assert!(best([172, 16, 200, 9]).is_some_and(|f| core::ptr::eq(f, addrs[5])));
         assert!(best([8, 8, 8, 8]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
@@ -3640,10 +3647,13 @@ pub(crate) mod tests {
         let _net = NETLOCK.write();
         assert_eq!(if_addgroup(ifp, IFG_EGRESS), Ok(()));
         // Not a default route: nothing changes.
-        if_group_routechange(bytes(sin([10, 0, 0, 0])), Some(bytes(sin([255, 0, 0, 0]))));
+        if_group_routechange(
+            &bytes(sin([10, 0, 0, 0])),
+            Some(&bytes(sin([255, 0, 0, 0]))),
+        );
         assert!(group(IFG_EGRESS).is_some());
         // 0.0.0.0/0: built again, from no route (no routing registered).
-        if_group_routechange(bytes(sin([0; 4])), Some(&[0u8][..]));
+        if_group_routechange(&bytes(sin([0; 4])), Some(&[0u8][..]));
         assert_eq!(group(IFG_EGRESS), None);
         assert_eq!(groups_of(ifp), [b"all".to_vec()]);
     }

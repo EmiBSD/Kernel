@@ -318,7 +318,7 @@ fn not_held(what: &str, status: i32) -> ! {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::thread;
 
     use super::*;
@@ -326,10 +326,10 @@ mod tests {
     use crate::sleep::INFSLP;
     use crate::testutil;
 
-    /// The tests take the one static lock: one at a time.
+    /// The tests take the one static lock: one at a time (`hal::link`'s too).
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
         SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

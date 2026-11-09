@@ -132,8 +132,10 @@
 //!   writes it alone (D-N6.3a-4; one compare-and-swap per read on the ARP/ND and routing
 //!   socket paths, never per data packet, N12's row).
 //! - `struct ifaddr`'s three addresses and `ifma_addr` are `hal::link::SaLink`s: `bsd`'s
-//!   storage lent whole, viewed by the kernel as `sa_len` bytes under `sys/hal/trust.rs`'s
-//!   premise (D-N6.3a-3), until N6.4/N6.5 embed the storage.
+//!   storage, published by its internet protocols alone (the one `SaToken`) as a typed
+//!   `&'static Cell<T>`, read by the kernel as a copy of its `sa_len` bytes cut at the
+//!   storage, under the net lock `SaLink::read` checks (D-N6.3a-3, review 1's B2;
+//!   `sys/hal/trust.rs`'s premise), until N6.4/N6.5 embed the storage.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` stays `bsd`'s
 //!   (`route.c`'s `struct route`) beside it until N6.3b (D-N6.3a-10).
@@ -1202,6 +1204,17 @@ pub fn if_rxr_inuse(r: &IfRxring) -> u32 {
 pub fn if_rxr_cwm(r: &IfRxring) -> u32 {
     r.rxr_cwm
 }
+
+/// `hal`'s one `SaToken`, for the kernel's tests (whose binary has no `bsd` to take it at
+/// boot): they publish their interface addresses as `bsd`'s protocols do.
+#[cfg(test)]
+pub(crate) fn sa_test_token() -> &'static hal::link::SaToken {
+    static TOKEN: std::sync::OnceLock<&'static hal::link::SaToken> = std::sync::OnceLock::new();
+    TOKEN.get_or_init(|| match hal::link::SaToken::take() {
+        Some(t) => t,
+        None => panic!("the SaToken was taken outside sa_test_token"),
+    })
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -1286,7 +1299,7 @@ mod tests {
         ifp.set_arpcom();
         assert!(ifp.is_arpcom());
         let ifa = Ifaddr::new();
-        assert!(ifa.ifa_addr.view().is_none() && ifa.ifa_broadaddr().is_none());
+        assert!(ifa.ifa_addr.read().is_none() && ifa.ifa_broadaddr().is_none());
         assert!(ifa.ifa_ifp.get().is_none());
     }
 

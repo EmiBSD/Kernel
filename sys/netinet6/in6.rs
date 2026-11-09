@@ -528,6 +528,7 @@ pub struct In6Addr {
     /// `s6_addr`: the 128-bit address.
     pub s6_addr: [u8; 16],
 }
+hal::abi_pod!(In6Addr { s6_addr: [u8; 16] });
 
 impl In6Addr {
     /// The address of the 16 bytes `b`.
@@ -596,6 +597,14 @@ pub struct SockaddrIn6 {
     /// Interface scope id.
     pub sin6_scope_id: u32,
 }
+hal::abi_pod!(SockaddrIn6 {
+    sin6_len: u8,
+    sin6_family: SaFamily,
+    sin6_port: InPort,
+    sin6_flowinfo: u32,
+    sin6_addr: In6Addr,
+    sin6_scope_id: u32,
+});
 
 impl SockaddrIn6 {
     /// An all-zero socket address, usable in `const` contexts.
@@ -1482,7 +1491,9 @@ pub fn in6_update_ifa(
             ia6.ia_ifa.ifa_refcnt.init();
             ia6.ia6_memberships.init();
             // Initialize the address and masks, and put time stamp
-            ia6.ia_ifa.ifa_addr.set(ia6.ia_addr.as_ptr().cast());
+            ia6.ia_ifa
+                .ifa_addr
+                .set(crate::net::if_var::sa_token(), Some(&ia6.ia_addr));
             let mut a = ia6.ia_addr.get();
             a.sin6_family = AF_INET6;
             a.sin6_len = size_of::<SockaddrIn6>() as u8;
@@ -1491,13 +1502,15 @@ pub fn in6_update_ifa(
             if ifp.if_flags.get() & (IFF_POINTOPOINT | IFF_LOOPBACK) != 0 {
                 // XXX: some functions expect that ifa_dstaddr is not NULL for p2p
                 // interfaces.
-                ia6.ia_ifa.ifa_dstaddr.set(ia6.ia_dstaddr.as_ptr().cast());
+                ia6.ia_ifa
+                    .ifa_dstaddr
+                    .set(crate::net::if_var::sa_token(), Some(&ia6.ia_dstaddr));
             } else {
-                ia6.ia_ifa.ifa_dstaddr.set(ptr::null_mut());
+                ia6.ia_ifa.ifa_dstaddr.clear();
             }
             ia6.ia_ifa
                 .ifa_netmask
-                .set(ia6.ia_prefixmask.as_ptr().cast());
+                .set(crate::net::if_var::sa_token(), Some(&ia6.ia_prefixmask));
 
             ia6.ia_ifp().set(Some(ifp));
             ia6.ia_addr.set(*ifra.ifra_addr());
@@ -1866,7 +1879,9 @@ pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6M
     in6m.in6m_sin.set(sin);
     in6m.in6m_refcnt().init();
     in6m.in6m_ifidx().set(ifp.if_index.get());
-    in6m.in6m_ifma.ifma_addr.set(in6m.in6m_sin.as_ptr().cast());
+    in6m.in6m_ifma
+        .ifma_addr
+        .set(crate::net::if_var::sa_token(), Some(&in6m.in6m_sin));
 
     // Let MLD6 know that we have joined a new IP6 multicast group.
     ifp.if_maddrlist.insert_head(&in6m.in6m_ifma);
@@ -2525,8 +2540,12 @@ pub(crate) mod tests {
         // SAFETY: the all-zero `In6Ifaddr` is valid (`netinet6/in6_var.rs`).
         let ia: &'static In6Ifaddr = unsafe { zeroed_static() };
         ia.ia6_memberships.init();
-        ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
-        ia.ia_ifa.ifa_netmask.set(ia.ia_prefixmask.as_ptr().cast());
+        ia.ia_ifa
+            .ifa_addr
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_addr));
+        ia.ia_ifa
+            .ifa_netmask
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_prefixmask));
         let mut sin6 = SockaddrIn6::with_addr(a);
         sin6.sin6_len = size_of::<SockaddrIn6>() as u8;
         ia.ia_addr.set(sin6);

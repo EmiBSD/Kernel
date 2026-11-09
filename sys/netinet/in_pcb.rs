@@ -2397,6 +2397,15 @@ pub(crate) mod tests {
         teardown();
     }
 
+    /// `f` with the net lock held, as the socket layer's `solock` calls `in_pcbbind` (its
+    /// address check reads the interfaces' addresses under it).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     #[test]
     fn bind_lookups_and_the_iterator() {
         let (_g, _t, p) = setup();
@@ -2518,7 +2527,7 @@ pub(crate) mod tests {
         use core::ptr;
         use core::sync::atomic::Ordering;
 
-        use super::{setup, teardown};
+        use super::{locked, setup, teardown};
         use crate::kern::uipc_mbuf::{m_freem, m_get};
         use crate::kern::uipc_socket::{soclose, socreate};
         use crate::kern::uipc_socket2::{solock, sounlock};
@@ -2684,7 +2693,7 @@ pub(crate) mod tests {
             let t = inp.table();
 
             // An explicit port on our address, then the local port lookups.
-            in_pcbbind(inp, Some(nam6(sin6(ours, 5000))), p).expect("bind");
+            locked(|| in_pcbbind(inp, Some(nam6(sin6(ours, 5000))), p)).expect("bind");
             assert_eq!(inp.inp_laddr6.get(), ours);
             assert_eq!(inp.inp_lport.get(), htons(5000));
             let found = in_pcblookup_local_lock(
@@ -2707,7 +2716,7 @@ pub(crate) mod tests {
             assert!(!lookup(INPLOOKUP_IPV6), "an exact match only");
             assert!(lookup(INPLOOKUP_IPV6 | INPLOOKUP_WILDCARD));
             assert_eq!(
-                in_pcbbind(inp, Some(nam6(sin6(ours, 5001))), p),
+                locked(|| in_pcbbind(inp, Some(nam6(sin6(ours, 5001))), p)),
                 Err(Errno::EINVAL),
                 "bound already"
             );
@@ -2716,15 +2725,15 @@ pub(crate) mod tests {
             let so2 = socreate(i32::from(AF_INET6), SOCK_DGRAM, 0).expect("socket");
             let inp2 = sotoinpcb(so2).expect("attached");
             assert_eq!(
-                in_pcbbind(inp2, Some(nam6(sin6(ours, 5000))), p),
+                locked(|| in_pcbbind(inp2, Some(nam6(sin6(ours, 5000))), p)),
                 Err(Errno::EADDRINUSE)
             );
             assert_eq!(
-                in_pcbbind(inp2, Some(nam6(sin6(a6("fd00:77::9"), 5000))), p),
+                locked(|| in_pcbbind(inp2, Some(nam6(sin6(a6("fd00:77::9"), 5000))), p)),
                 Err(Errno::EADDRNOTAVAIL)
             );
             // A picked port from the default range, on the unspecified address.
-            in_pcbbind(inp2, None, p).expect("anonymous bind");
+            locked(|| in_pcbbind(inp2, None, p)).expect("anonymous bind");
             let port = i32::from(u16::from_be(inp2.inp_lport.get()));
             assert!(
                 (IPPORT_FIRSTAUTO.load(Ordering::Relaxed)

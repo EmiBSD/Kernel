@@ -4527,12 +4527,16 @@ mod tests {
         info.rti_info[RTAX_NETMASK] = sintosa(&mut mask);
         info.rti_info[RTAX_GATEWAY] = sintosa(&mut gw);
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
+        // route(8)'s rtm_getifa and rtrequest, both under the net lock (ifaof_ifpforaddr reads
+        // the interface's addresses).
+        net_lock();
         // SAFETY: a local `sockaddr_in`.
         info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
         let mut rt = None;
         // SAFETY: the addresses are locals.
         unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) }.expect("default route");
         rtfree(rt);
+        net_unlock();
         let so =
             socreate(i32::from(PF_KEY), SOCK_RAW, i32::from(PF_KEY_V2)).expect("socket(PF_KEY)");
 

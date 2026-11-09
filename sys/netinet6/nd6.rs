@@ -1902,7 +1902,9 @@ pub(crate) mod tests {
         // SAFETY: the all-zero `In6Ifaddr` is valid (`malloc(M_ZERO)` in C).
         let ia: &'static In6Ifaddr = unsafe { zeroed_static() };
         ia.ia_addr.set(SockaddrIn6::with_addr(addr));
-        ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
+        ia.ia_ifa
+            .ifa_addr
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_addr));
         ia.ia_ifa.ifa_ifp.set(Some(ifp));
         ia.ia_ifa.ifa_refcnt.init();
         ia
