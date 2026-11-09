@@ -2452,7 +2452,7 @@ fn sysctl_ifnames(w: &mut Walkarg) -> Result<(), Errno> {
     let if_tmplist: hal::list::List<kernel::net::if_var::IfTmplist> = hal::list::List::new();
     let mut error = Ok(());
 
-    rw_enter_write(&IF_TMPLIST_LOCK);
+    let tmp = IF_TMPLIST_LOCK.write();
     net_lock_shared();
     // XXX ignore tableid for now
     for ifp in IFNETLIST.0.iter() {
@@ -2488,7 +2488,7 @@ fn sysctl_ifnames(w: &mut Walkarg) -> Result<(), Errno> {
     while let Some(ifp) = if_tmplist.pop_head() {
         if_put(ifp);
     }
-    rw_exit_write(&IF_TMPLIST_LOCK);
+    drop(tmp);
 
     error
 }

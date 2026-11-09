@@ -522,7 +522,7 @@ pub trait NetDriver: Sync + 'static {
     fn watchdog(&self, _ifp: &'static Ifnet) {}
 
     /// `if_wol`: wake on LAN on or off; `None` when the driver has none (NULL, which
-    /// `ifioctl` refuses with `EOPNOTSUPP`).
+    /// `ifioctl` refuses with `ENOTSUP`).
     fn wol(&self, _ifp: &'static Ifnet, _on: bool) -> Option<Result<(), Errno>> {
         None
     }

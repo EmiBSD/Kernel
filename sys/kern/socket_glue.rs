@@ -112,10 +112,10 @@
 //!   `fp_socket` and `socketops` keep theirs for `bsd`'s other users (`kern_descrip`,
 //!   `kern_sysctl`, nfs). nfs's `sockargs` and `getsock` are the kernel's (`park` makes the
 //!   address mbuf the `&'static` nfs keeps).
-//! - `BsdIfLegacy`, the interface layer's legs of the socket file (the `IfLegacy` row of
-//!   `bridges.toml`) that `sys_socket.rs` held with `ifioctl`'s one `unsafe` call, is the
-//!   interface layer's own since N6.2b (`sys/net/if_.rs`, beside `ifioctl` and `net_tq`, the
-//!   `BsdPf` precedent of `sys/net/pf.rs`), so this file is `forbid`; it goes with N6.3a.
+//! - The interface layer's legs of the socket file (`BsdIfLegacy`, the `IfLegacy` row of
+//!   `bridges.toml`), which `sys_socket.rs` held with `ifioctl`'s one `unsafe` call and N6.2b
+//!   moved to `sys/net/if_.rs`, are gone (N6.3a2): the kernel's socket file calls the
+//!   kernel's `ifioctl` and `net_tq` directly.
 
 use hal::api::SocketEntries;
 use hal::syscall::SysResult;

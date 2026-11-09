@@ -154,6 +154,7 @@ use crate::netinet::if_ether::{
 };
 use crate::sys::device::{Cfdriver, DV_IFNET, DVACT_RESUME, DVACT_SUSPEND, Device};
 use crate::sys::errno::Errno;
+use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::mbuf::m_set_data_off;
 use crate::sys::mbuf::{M_DONTWAIT, MCLBYTES, Mbuf, MbufList, mtod};
@@ -2773,9 +2774,12 @@ pub unsafe fn dc_ioctl(ifp: &'static Ifnet, command: u64, data: *mut u8) -> Resu
             }
         }
         SIOCGIFMEDIA | SIOCSIFMEDIA => {
-            // SAFETY: SIOCSIFMEDIA carries a `struct ifreq` and SIOCGIFMEDIA a `struct
-            // ifmediareq` (this function's contract).
-            error = unsafe { ifmedia_ioctl(ifp, data, &sc.sc_mii.mii_media, command) };
+            let n = iocparm_len(command) as usize;
+            // SAFETY: this function's contract: `data` names the request's `IOCPARM_LEN(cmd)`
+            // bytes (a `struct ifreq` for SIOCSIFMEDIA, a `struct ifmediareq` for
+            // SIOCGIFMEDIA), readable and writable, lent to the handler alone for the call.
+            let req = unsafe { core::slice::from_raw_parts_mut(data, n) };
+            error = ifmedia_ioctl(ifp, req, &sc.sc_mii.mii_media, command);
         }
         _ => {
             // SAFETY: this function's contract, forwarded.

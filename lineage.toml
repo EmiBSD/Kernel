@@ -3263,7 +3263,7 @@ adapted_by = ["sys/hal/softintr.rs"]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3276,7 +3276,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3298,7 +3298,7 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3481,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3926,7 +3926,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3959,7 +3959,7 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3971,7 +3971,7 @@ status = "inherited"
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4297,7 +4297,7 @@ status = "inherited"
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -5787,7 +5787,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6319,7 +6319,9 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 [[module]]
 rust = "sys/net/if_media.rs"
 lz = ["sys/net/if_media.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_media.rs"]
+notes = "N6.3a2: an adapter: the media words re-exported from hal::sys::net_if_media, struct ifmedia and its functions from kernel::net::if_media; LZ's ifmedia_init (the driver's two fn callbacks wrapped in a LegacyMedia, one leaked M_DEVBUF box per media) and ifmedia_add (void *aux as the driver's word) kept as forwards"
 
 [[module]]
 rust = "sys/net/if_pflog.rs"
@@ -7624,7 +7626,13 @@ rust = "sys/kernel/net/if_.rs"
 crate = "kernel"
 lz = ["sys/net/if_.rs"]
 status = "redesigned"
-notes = "N6.3a1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach/if_attach_common/if_attachsetup and the extra queues, if_remove/if_detach, the hooks, link state, slowtimo and watchdog, groups (snapshot arrays in ReadMostly cells), cloners, the address lookups over SaLink copies, if_up/if_down, promiscuity and LRO through if_ioctl; the Inet, Routing, Link and Pf legs. The ioctls (ifioctl, ifconf, the group and rxr requests) and if_media are bsd's sys/net/if_.rs and if_media.rs until N6.3a2"
+notes = "N6.3a1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach/if_attach_common/if_attachsetup and the extra queues, if_remove/if_detach, the hooks, link state, slowtimo and watchdog, groups (snapshot arrays in ReadMostly cells), cloners, the address lookups over SaLink copies, if_up/if_down, promiscuity and LRO through if_ioctl; the Inet, Routing, Link and Pf legs. N6.3a2: the interface requests: ifioctl<G> over the request's bytes (in place when aligned and an ifreq long, else an aligned zeroed copy), the suser checks at the C's points, the net lock a detached holding around the driver calls (wg, pflow let it go), ifioctl_get, ifconf over the C's temporary lists with the addresses copied in batches of eight per shared hold, if_clone_list, the group requests over snapshots, if_rxr_info_ioctl/if_rxr_ioctl, the hprio checks; pru_control through Usrreqs::control's ifp, a request with no socket to the Inet leg in_ioctl"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::bytes_of"
+native = []
+kind = "dropped"
+reason = "the requests and the rows ifioctl, ifconf, the group and rxr requests copy out are abi_pod! images, copied through hal::user::UserPtr (or viewed by hal::pod); no raw byte view of a value is left"
 
 [[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
@@ -7739,6 +7747,25 @@ reason = "a group is an `MArc`, freed with its last reference (the snapshots' in
 lz = "sys/net/if_.rs::net_tq_barrier_rele"
 native = ["net_tq_barrier_task"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/net/if_media.rs"
+crate = "kernel"
+lz = ["sys/net/if_media.rs"]
+status = "redesigned"
+notes = "N6.3a2: net/if_media.c: struct ifmedia valid all zero (the mask and media words AtomicCells, the selected entry's words mirrored in atomics for the unlocked readers, the list and the callbacks a set-once half ifmedia_init builds); the entries a newest-first chain of M_IFADDR MBoxes under the media's own IPL_NET mutex, named by number; the callbacks a MediaCallbacks object (D-N6.3a-11); ifmedia_ioctl over the request's bytes, the media words copied out through UserPtr"
+
+[[module.fn]]
+lz = "sys/net/if_media.rs::Ifmedia::for_each"
+native = []
+kind = "dropped"
+reason = "no caller outside LZ's own tests: the kernel's ordered walks (SIOCGIFMEDIA's words, ifmedia_get) are kernel::net::if_media's own, under the media's mutex"
+
+[[module.fn]]
+lz = "sys/net/if_media.rs::IFMEDIA_MTX"
+native = []
+kind = "dropped"
+reason = "each struct ifmedia's own IPL_NET mutex (kernel::net::if_media, IfmRt's list): the C's one global ifmedia_mtx keeps per-media lists at the same level and no other path takes it"
 
 [[module]]
 rust = "sys/kernel/net/netisr.rs"
@@ -14918,7 +14945,7 @@ rust = "sys/kernel/net/file.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_socket.rs", "sys/kern/uipc_socket.rs"]
 status = "redesigned"
-notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
+notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy until N6.3a2, the kernel's ifioctl since, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
 
 
 [[module.fn]]
@@ -14983,7 +15010,7 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/sys_socket.rs::soo_ifioctl"
-native = ["sys/net/if_.rs::BsdIfLegacy::ifioctl"]
+native = ["sys/kernel/net/if_.rs::ifioctl"]
 kind = "moved"
 
 [[module]]

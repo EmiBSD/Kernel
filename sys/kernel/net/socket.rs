@@ -2958,7 +2958,7 @@ pub fn sosplice<G: ProcGlue>(
             *sosp_sp.soback.get_mut(gs.witness()) = Some(soref(so));
             gs.set_spliced(true);
             sp.queue
-                .set(Some(net_tq::<G>(so.usrreqs().flowid(so, &mut w1) as u32)));
+                .set(Some(net_tq(so.usrreqs().flowid(so, &mut w1) as u32)));
         }
 
         drop(w2);
@@ -2983,11 +2983,11 @@ pub fn sosplice<G: ProcGlue>(
     error
 }
 
-/// `net_tq(flowid)`: the softnet task queue of a flow (`if.c`'s, `bsd`'s until N6.3a,
-/// through the glue's `IfLegacy`); the system's own queue without one.
-fn net_tq<G: ProcGlue>(flowid: u32) -> &'static crate::task::Taskq {
-    match net::<G>().iflegacy.get() {
-        Some(i) => i.net_tq(flowid),
+/// `net_tq(flowid)`: the softnet task queue of a flow (`kernel::net::if_`'s); the system's
+/// own queue before `softnet_init` made them (the host tests' sockets).
+fn net_tq(flowid: u32) -> &'static crate::task::Taskq {
+    match crate::net::if_::net_tq(flowid) {
+        Some(tq) => tq,
         None => &crate::task::SYSTQMP,
     }
 }

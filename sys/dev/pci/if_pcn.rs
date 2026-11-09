@@ -153,6 +153,7 @@ use crate::netinet::if_ether::{
 };
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
 use crate::sys::errno::Errno;
+use crate::sys::ioccom::iocparm_len;
 use crate::sys::mbuf::{M_DONTWAIT, MCLBYTES, MT_DATA, Mbuf, MbufList};
 use crate::sys::mbuf::{m_data_add, m_ext_buf, m_ext_size, m_set_data_off, mtod};
 use crate::sys::param::PAGE_SIZE;
@@ -1204,9 +1205,12 @@ pub unsafe fn pcn_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<
             }
         }
         SIOCSIFMEDIA | SIOCGIFMEDIA => {
-            // SAFETY: SIOCSIFMEDIA carries a `struct ifreq` and SIOCGIFMEDIA a `struct
-            // ifmediareq` (this function's contract).
-            error = unsafe { ifmedia_ioctl(ifp, data, &sc.sc_mii.mii_media, cmd) };
+            let n = iocparm_len(cmd) as usize;
+            // SAFETY: this function's contract: `data` names the request's `IOCPARM_LEN(cmd)`
+            // bytes (a `struct ifreq` for SIOCSIFMEDIA, a `struct ifmediareq` for
+            // SIOCGIFMEDIA), readable and writable, lent to the handler alone for the call.
+            let req = unsafe { core::slice::from_raw_parts_mut(data, n) };
+            error = ifmedia_ioctl(ifp, req, &sc.sc_mii.mii_media, cmd);
         }
         _ => {
             // SAFETY: this function's contract, forwarded.
@@ -1768,8 +1772,8 @@ pub fn pcn_init(ifp: &'static Ifnet) -> Result<(), Errno> {
     }
 
     // Set the media.
-    if let Some(cb) = sc.sc_mii.mii_media.ifm_change_cb.get() {
-        let _ = cb(ifp);
+    if let Some(cb) = sc.sc_mii.mii_media.callbacks() {
+        let _ = cb.change(ifp);
     }
 
     // Enable interrupts and external activity (and ACK IDON).

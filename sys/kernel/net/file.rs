@@ -110,10 +110,9 @@
 //!   tty's shape), so a filter reaches the socket with no lock and no reference taken, as
 //!   the C's `kn->kn_fp->f_data`; the buffers' klists are their mutex's (`klist_insert` of
 //!   a mutex klist: the insert and the removal under `sb_mtx`).
-//! - `soo_ioctl`'s interface group (`'i'`) goes to the interface layer still in `bsd`
-//!   through the glue's `IfLegacy` ([`crate::net::domain::IfLegacy`], the `IfLegacy` row of
-//!   `bridges.toml`); a protocol's `pru_control` is called without the socket's lock, as the
-//!   C's.
+//! - `soo_ioctl`'s interface group (`'i'`) goes to the kernel's `ifioctl`
+//!   ([`crate::net::if_::ifioctl`], N6.3a2; through the `IfLegacy` bridge to `bsd`'s before);
+//!   a protocol's `pru_control` is called without the socket's lock, as the C's.
 
 use core::marker::PhantomData;
 
@@ -133,7 +132,6 @@ use crate::event::{
     knote_modify, knote_process,
 };
 use crate::file::{File, FileGlue, FileOps};
-use crate::net::domain::net;
 use crate::net::proto::PR_WANTRCVD;
 use crate::net::sockbuf::{
     SB_ASYNC, SS_CANTRCVMORE, SS_CANTSENDMORE, SS_ISCONNECTED, SS_ISDISCONNECTED, SS_RCVATMARK,
@@ -258,15 +256,12 @@ impl<G: ProcGlue> FileOps<G::FileGlue> for SocketFileOps<G> {
                 // Interface/routing/protocol specific ioctls: interface and routing ioctls
                 // should have a different entry since a socket's unnecessary
                 if iocgroup(cmd) == u64::from(b'i') {
-                    return match net::<G>().iflegacy.get() {
-                        Some(i) => i.ifioctl(so, cmd, data, p),
-                        None => kpanic(format_args!("soo_ioctl: no interface layer")),
-                    };
+                    return crate::net::if_::ifioctl::<G>(Some(so), cmd, data, p);
                 }
                 if iocgroup(cmd) == u64::from(b'r') {
                     return Err(Errno::EOPNOTSUPP);
                 }
-                return so.usrreqs().control(so, cmd, data);
+                return so.usrreqs().control(so, cmd, data, None);
             }
         }
         Ok(())

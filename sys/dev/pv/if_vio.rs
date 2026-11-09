@@ -149,6 +149,7 @@ use crate::netinet::if_ether::{
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_add, tcpstat_inc};
 use crate::sys::device::{CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
 use crate::sys::errno::Errno;
+use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{
     M_DONTWAIT, M_FLOWID, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_UDP_CSUM_IN_OK,
@@ -2211,9 +2212,12 @@ pub unsafe fn vio_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<
             }
         }
         SIOCGIFMEDIA | SIOCSIFMEDIA => {
-            // SAFETY: SIOCSIFMEDIA carries a `struct ifreq` and SIOCGIFMEDIA a `struct
-            // ifmediareq` (this function's contract).
-            r = unsafe { ifmedia_ioctl(ifp, data, &sc.sc_media, cmd) };
+            let n = iocparm_len(cmd) as usize;
+            // SAFETY: this function's contract: `data` names the request's `IOCPARM_LEN(cmd)`
+            // bytes (a `struct ifreq` for SIOCSIFMEDIA, a `struct ifmediareq` for
+            // SIOCGIFMEDIA), readable and writable, lent to the handler alone for the call.
+            let req = unsafe { core::slice::from_raw_parts_mut(data, n) };
+            r = ifmedia_ioctl(ifp, req, &sc.sc_media, cmd);
         }
         SIOCGIFRXR => {
             r = vio_rxr_info(sc, ifr.ifr_data() as usize);

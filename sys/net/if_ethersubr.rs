@@ -938,6 +938,16 @@ pub unsafe fn ether_multiaddr(
     }
 }
 
+/// `&ifr->ifr_addr` as the C's pointer into the caller's request: a protocol's request may
+/// carry a socket address longer than the union (`struct in6_ifreq`'s `sockaddr_in6`), which
+/// [`ether_multiaddr`] reads through it (never dereferenced here).
+fn ifr_addr_ptr(ifr: &Ifreq) -> *const Sockaddr {
+    ptr::from_ref(ifr)
+        .cast::<u8>()
+        .wrapping_add(core::mem::offset_of!(Ifreq, ifr_ifru))
+        .cast::<Sockaddr>()
+}
+
 /// `ether_addmulti`: add an Ethernet multicast address or range of addresses to the list for
 /// a given interface. `Err(ENETRESET)` tells the driver that the list has changed and its
 /// reception filter should be adjusted accordingly.
@@ -945,7 +955,7 @@ pub fn ether_addmulti(ifr: &Ifreq, ac: &Arpcom) -> Result<(), Errno> {
     let s = splnet();
 
     // SAFETY: `ifr_addr` is a `struct sockaddr` inside the request.
-    let (addrlo, addrhi) = match unsafe { ether_multiaddr(crate::net::if_::ifr_addr_ptr(ifr)) } {
+    let (addrlo, addrhi) = match unsafe { ether_multiaddr(ifr_addr_ptr(ifr)) } {
         Ok(range) => range,
         Err(e) => {
             splx(s);
@@ -1001,7 +1011,7 @@ pub fn ether_delmulti(ifr: &Ifreq, ac: &Arpcom) -> Result<(), Errno> {
     let s = splnet();
 
     // SAFETY: `ifr_addr` is a `struct sockaddr` inside the request.
-    let (addrlo, addrhi) = match unsafe { ether_multiaddr(crate::net::if_::ifr_addr_ptr(ifr)) } {
+    let (addrlo, addrhi) = match unsafe { ether_multiaddr(ifr_addr_ptr(ifr)) } {
         Ok(range) => range,
         Err(e) => {
             splx(s);
@@ -1541,7 +1551,7 @@ mod tests {
         header.extend_from_slice(&[0; 6]);
         header.extend_from_slice(&ETHERTYPE_ARP.to_be_bytes());
         let ifr = ifreq_with(AF_UNSPEC, &header);
-        let dst: *const Sockaddr = crate::net::if_::ifr_addr_ptr(&ifr);
+        let dst: *const Sockaddr = ifr_addr_ptr(&ifr);
 
         let m = test_packet(&[0xaa; 28]);
         // SAFETY: `dst` is a 16-byte sockaddr.
@@ -1565,15 +1575,7 @@ mod tests {
         let m = test_packet(&[0; 4]);
         // SAFETY: as above.
         assert_eq!(
-            unsafe {
-                ether_resolve(
-                    ifp,
-                    m,
-                    crate::net::if_::ifr_addr_ptr(&hdrcmplt),
-                    None,
-                    &mut eh,
-                )
-            },
+            unsafe { ether_resolve(ifp, m, ifr_addr_ptr(&hdrcmplt), None, &mut eh,) },
             Ok(())
         );
         assert_eq!(eh.ether_shost, [1, 2, 3, 4, 5, 6]);

@@ -184,6 +184,7 @@ use crate::netinet::in4_cksum::in4_cksum;
 use crate::sys::device::{Cfdriver, DV_IFNET, Device};
 use crate::sys::endian::swap32;
 use crate::sys::errno::Errno;
+use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::{
     M_DONTWAIT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT,
@@ -2249,9 +2250,12 @@ pub unsafe fn re_ioctl(ifp: &'static Ifnet, command: u64, data: *mut u8) -> Resu
             }
         }
         SIOCGIFMEDIA | SIOCSIFMEDIA => {
-            // SAFETY: SIOCSIFMEDIA carries a `struct ifreq` and SIOCGIFMEDIA a `struct
-            // ifmediareq` (this function's contract).
-            error = unsafe { ifmedia_ioctl(ifp, data, &sc.sc_mii.mii_media, command) };
+            let n = iocparm_len(command) as usize;
+            // SAFETY: this function's contract: `data` names the request's `IOCPARM_LEN(cmd)`
+            // bytes (a `struct ifreq` for SIOCSIFMEDIA, a `struct ifmediareq` for
+            // SIOCGIFMEDIA), readable and writable, lent to the handler alone for the call.
+            let req = unsafe { core::slice::from_raw_parts_mut(data, n) };
+            error = ifmedia_ioctl(ifp, req, &sc.sc_mii.mii_media, command);
         }
         SIOCGIFRXR => {
             // SAFETY: SIOCGIFRXR carries a `struct ifreq` (this function's contract).
