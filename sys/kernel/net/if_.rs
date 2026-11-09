@@ -2926,10 +2926,6 @@ pub(crate) mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::net::ifq::{
-        IfqDeq, ifq_barrier, ifq_deq_with, ifq_dequeue, ifq_hdatalen, ifq_is_oactive, ifq_len,
-        ifq_purge, ifq_serialize, ifq_stats,
-    };
     use crate::net::mbuf::{M_DONTWAIT, m_gethdr};
 
     /// A driver that counts what it is asked; its input sends a packet round once through
@@ -3030,7 +3026,8 @@ pub(crate) mod tests {
         (ifp, d)
     }
 
-    fn packet(prio: u8, len: i32) -> MbufBox {
+    /// A packet header mbuf of priority `prio` and length `len` (no data).
+    pub(crate) fn packet(prio: u8, len: i32) -> MbufBox {
         let m = m_gethdr(M_DONTWAIT, hal::sys::mbuf::MT_DATA).expect("an mbuf");
         m.m_pkthdr().pf.prio.set(prio);
         m.m_pkthdr().len.set(len);
@@ -3072,107 +3069,6 @@ pub(crate) mod tests {
             assert_eq!(r.if_index.get(), 4);
             assert!(core::ptr::eq(r.ifp(), ifps[3]));
         }
-    }
-
-    #[test]
-    fn priq_keeps_priorities_and_drops_the_lowest_when_full() {
-        let _g = setup();
-        let (ifp, _) = test_ifnet(b"tst0");
-        let ifq = ifp.if_snd();
-        crate::net::ifq::ifq_init_maxlen(ifq, 3);
-        // if_txmit 1: ifq_start runs the start at once (no softnet in the test).
-        ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(0, 10)).expect("queued");
-        ifq_enqueue(ifq, packet(1, 11)).expect("queued");
-        ifq_enqueue(ifq, packet(2, 12)).expect("queued");
-        assert_eq!(ifq_len(ifq), 3);
-        // Full: a packet of priority 3 evicts the head of the lowest non-empty list (0).
-        ifq_enqueue(ifq, packet(3, 13)).expect("queued");
-        assert_eq!(ifq_len(ifq), 3);
-        // Full, nothing lower than 0: refused.
-        assert_eq!(ifq_enqueue(ifq, packet(0, 14)), Err(Errno::ENOBUFS));
-        let (packets, bytes, qdrops, _, _, _) = ifq_stats(ifq);
-        assert_eq!((packets, bytes, qdrops), (4, 46, 2));
-        assert_eq!(ifq_hdatalen(ifq), 13);
-        let lens: Vec<i32> = core::iter::from_fn(|| ifq_dequeue(ifq))
-            .map(|m| m.m_pkthdr().len.get())
-            .collect();
-        assert_eq!(lens, [13, 12, 11]);
-        assert!(ifq_dequeue(ifq).is_none() && ifq_hdatalen(ifq) == 0);
-    }
-
-    #[test]
-    fn a_dequeue_commits_rolls_back_or_marks_the_ring_full() {
-        let _g = setup();
-        let (ifp, _) = test_ifnet(b"tst0");
-        let ifq = ifp.if_snd();
-        ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(3, 100)).expect("queued");
-        ifq_enqueue(ifq, packet(3, 200)).expect("queued");
-        assert!(
-            ifq_deq_with(ifq, |m| {
-                assert_eq!(m.m_pkthdr().len.get(), 100);
-                IfqDeq::Rollback
-            })
-            .is_none()
-        );
-        assert_eq!(ifq_len(ifq), 2);
-        assert!(!ifq_is_oactive(ifq));
-        assert!(ifq_deq_with(ifq, |_| IfqDeq::RollbackOactive).is_none());
-        assert!(ifq_is_oactive(ifq));
-        crate::net::ifq::ifq_clr_oactive(ifq);
-        let m = ifq_deq_with(ifq, |_| IfqDeq::Commit).expect("the head");
-        assert_eq!(m.m_pkthdr().len.get(), 100);
-        assert_eq!(ifq_purge(ifq), 1);
-        assert_eq!(ifq_len(ifq), 0);
-        let (_, _, qdrops, _, _, oactives) = ifq_stats(ifq);
-        assert_eq!((qdrops, oactives), (1, 1));
-    }
-
-    static SERIAL_RUNS: AtomicU32 = AtomicU32::new(0);
-
-    fn serial_task(t: &'static (dyn Any + Send + Sync)) {
-        let ifq = t.downcast_ref::<Ifqueue>().expect("the queue");
-        SERIAL_RUNS.fetch_add(1, Ordering::Relaxed);
-        // From inside the serializer: queued, run after this one by the same CPU.
-        if SERIAL_RUNS.load(Ordering::Relaxed) == 1 {
-            ifq_serialize(ifq, Pin::static_ref(second_task()));
-        }
-    }
-
-    fn second_task() -> &'static Task {
-        static T: OnceStatic<&'static Task> = OnceStatic::new();
-        T.get().copied().unwrap_or_else(|| {
-            let t: &'static Task = Box::leak(Box::new(Task::unset()));
-            let _ = T.set(t);
-            T.get().copied().expect("set")
-        })
-    }
-
-    #[test]
-    fn the_serializer_runs_its_work_in_order_on_one_cpu() {
-        let _g = setup();
-        let (ifp, d) = test_ifnet(b"tst0");
-        let ifq = ifp.if_snd();
-        SERIAL_RUNS.store(0, Ordering::Relaxed);
-        let first: &'static Task = Box::leak(Box::new(Task::unset()));
-        first.set_ref(serial_task, ifq);
-        second_task().set_ref(serial_task, ifq);
-        ifq_serialize(ifq, Pin::static_ref(first));
-        assert_eq!(SERIAL_RUNS.load(Ordering::Relaxed), 2);
-        assert!(!first.pending() && !second_task().pending());
-        // The start task through the serializer, to the driver's qstart (IFF_RUNNING set and
-        // a packet queued).
-        ifp.if_flags.set(hal::sys::net_if::IFF_RUNNING);
-        ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(1, 1)).expect("queued");
-        ifq_start(ifq);
-        assert_eq!(d.qstarts.load(Ordering::Relaxed), 1);
-        // No serializer at work: the barrier returns at once.
-        ifq_barrier(ifq);
-        // The test driver's qstart sends nothing: the packet is still queued (and the mbuf
-        // tests count every mbuf back).
-        assert_eq!(ifq_purge(ifq), 1);
     }
 
     #[test]
@@ -3236,6 +3132,85 @@ pub(crate) mod tests {
         ifp.detached
             .fetch_or(crate::net::if_var::DETACHED_IOCTL, Ordering::Release);
         assert_eq!(if_ioctl(ifp, 0, &mut []), Err(Errno::ENODEV));
+    }
+
+    static HOOK_C: OnceStatic<&'static Task> = OnceStatic::new();
+    static HOOK_D: OnceStatic<&'static Task> = OnceStatic::new();
+
+    /// A hook that adds another hook (at the tail) as it runs.
+    fn hook_c(t: &'static (dyn Any + Send + Sync)) {
+        let ifp = t.downcast_ref::<Ifnet>().expect("the interface");
+        HOOK_RUNS.fetch_add(1, Ordering::Relaxed);
+        if let Some(&d) = HOOK_D.get()
+            && !d.pending()
+        {
+            if_addrhook_add(ifp, Pin::static_ref(d));
+        }
+    }
+
+    /// The hook `hook_c` adds.
+    fn hook_d(_t: &'static (dyn Any + Send + Sync)) {
+        HOOK_RUNS.fetch_add(100, Ordering::Relaxed);
+    }
+
+    /// Review 1's S6: a hook that adds a hook. The one added at the tail runs in the same walk
+    /// (the cursor follows the running hook, the C's `if_hooks_run`), once.
+    #[test]
+    fn a_hook_added_by_a_hook_runs_in_the_same_walk() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tst0");
+        HOOK_RUNS.store(0, Ordering::Relaxed);
+        let leak = || -> &'static Task { Box::leak(Box::new(Task::unset())) };
+        let c = leak();
+        let d = leak();
+        assert!(HOOK_C.set(c).is_ok() && HOOK_D.set(d).is_ok());
+        c.set_ref(hook_c, ifp);
+        d.set_ref(hook_d, ifp);
+        if_addrhook_add(ifp, Pin::static_ref(c));
+        if_addrhooks_run(ifp);
+        assert_eq!(HOOK_RUNS.load(Ordering::Relaxed), 101);
+        assert!(c.pending() && d.pending());
+        // Both stay: the next walk runs each once (d already linked, not added again).
+        if_addrhooks_run(ifp);
+        assert_eq!(HOOK_RUNS.load(Ordering::Relaxed), 202);
+        if_addrhook_del(ifp, c);
+        if_addrhook_del(ifp, d);
+    }
+
+    /// Review 1's S6: `if_get` across a detach. A counted reference taken before the detach
+    /// holds `if_remove`'s `refcnt_finalize("ifrm")` off until it is put; the index is gone
+    /// from the map meanwhile.
+    #[test]
+    fn a_counted_reference_holds_the_detach_until_it_is_put() {
+        static DETACHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tget0");
+        if_attach(ifp);
+        let idx = ifp.if_index.get();
+        let held = if_get(idx).expect("attached");
+        DETACHED.store(false, Ordering::SeqCst);
+        with_smr_thread(|| {
+            let d = std::thread::spawn(move || {
+                if_detach(ifp);
+                DETACHED.store(true, Ordering::SeqCst);
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while if_get(idx).inspect(|i| if_put(Some(i))).is_some() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never removed from the map"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(
+                !DETACHED.load(Ordering::SeqCst),
+                "the detach waits for the reference"
+            );
+            if_put(Some(held));
+            d.join().expect("the detach");
+            assert!(DETACHED.load(Ordering::SeqCst));
+        });
     }
 
     #[test]
@@ -3686,56 +3661,6 @@ pub(crate) mod tests {
         assert!(if_congested());
         assert_eq!(&lo_name(12)[..5], b"lo12\0");
         assert_eq!(&lo_name(0)[..3], b"lo0");
-    }
-
-    #[test]
-    fn purge_and_attach_keep_the_books() {
-        let _g = setup();
-        let (ifp, _) = test_ifnet(b"tifq0");
-        let ifq = ifp.if_snd();
-        for id in 0..4u8 {
-            assert_eq!(ifq_enqueue(ifq, packet(id % 8, 4)), Ok(()));
-        }
-
-        // Reattaching the conditioner moves the packets to the new state.
-        crate::net::ifq::ifq_attach_priq(ifq);
-        assert_eq!(ifq_len(ifq), 4);
-        assert_eq!(ifq_stats(ifq).2, 0);
-
-        let mut data: IfData = hal::user::zeroed();
-        crate::net::ifq::ifq_add_data(ifq, &mut data);
-        assert_eq!((data.ifi_opackets, data.ifi_obytes), (4, 16));
-
-        assert_eq!(ifq_purge(ifq), 4);
-        assert!(crate::net::ifq::ifq_empty(ifq));
-        assert_eq!(ifq_stats(ifq).2, 4);
-    }
-
-    #[test]
-    fn priq_idx_spreads_by_flow_id() {
-        let _g = setup();
-        let (ifp, _) = test_ifnet(b"tifq0");
-        let m = packet(0, 4);
-        m.m_pkthdr().ph_flowid.set(13);
-        assert_eq!(
-            crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m),
-            0,
-            "no M_FLOWID: queue 0"
-        );
-        m.m_pkthdr()
-            .csum_flags
-            .set(m.m_pkthdr().csum_flags.get() | M_FLOWID);
-        assert_eq!(crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m), 13 % 4);
-    }
-
-    #[test]
-    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
-    fn ifq_maxlen_matches_the_c_header() {
-        let defs = crate::reftest::defines("sys/net/ifq.h");
-        assert_eq!(
-            crate::reftest::int(&defs, "IFQ_MAXLEN"),
-            Some(i64::from(crate::net::ifq::IFQ_MAXLEN))
-        );
     }
 
     #[test]

@@ -1300,3 +1300,301 @@ fn priq_purge(pq: &mut Priq, ml: &mut MbufList) {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the send and receive queues over `if_`'s fixture (`setup`, `test_ifnet`,
+    // `packet`: real memory, interfaces attached by `if_attach_common`). Review 1's S6: they
+    // lived in `if_`'s tests.
+
+    use std::boxed::Box;
+    use std::vec::Vec;
+
+    use core::sync::atomic::{AtomicBool, AtomicU32};
+
+    use hal::once::OnceStatic;
+
+    use super::*;
+    use crate::net::if_::tests::{packet, setup, test_ifnet};
+    use crate::task::TaskWork;
+
+    #[test]
+    fn priq_keeps_priorities_and_drops_the_lowest_when_full() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tst0");
+        let ifq = ifp.if_snd();
+        crate::net::ifq::ifq_init_maxlen(ifq, 3);
+        // if_txmit 1: ifq_start runs the start at once (no softnet in the test).
+        ifp.if_txmit.set(1);
+        ifq_enqueue(ifq, packet(0, 10)).expect("queued");
+        ifq_enqueue(ifq, packet(1, 11)).expect("queued");
+        ifq_enqueue(ifq, packet(2, 12)).expect("queued");
+        assert_eq!(ifq_len(ifq), 3);
+        // Full: a packet of priority 3 evicts the head of the lowest non-empty list (0).
+        ifq_enqueue(ifq, packet(3, 13)).expect("queued");
+        assert_eq!(ifq_len(ifq), 3);
+        // Full, nothing lower than 0: refused.
+        assert_eq!(ifq_enqueue(ifq, packet(0, 14)), Err(Errno::ENOBUFS));
+        let (packets, bytes, qdrops, _, _, _) = ifq_stats(ifq);
+        assert_eq!((packets, bytes, qdrops), (4, 46, 2));
+        assert_eq!(ifq_hdatalen(ifq), 13);
+        let lens: Vec<i32> = core::iter::from_fn(|| ifq_dequeue(ifq))
+            .map(|m| m.m_pkthdr().len.get())
+            .collect();
+        assert_eq!(lens, [13, 12, 11]);
+        assert!(ifq_dequeue(ifq).is_none() && ifq_hdatalen(ifq) == 0);
+    }
+
+    #[test]
+    fn a_dequeue_commits_rolls_back_or_marks_the_ring_full() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tst0");
+        let ifq = ifp.if_snd();
+        ifp.if_txmit.set(1);
+        ifq_enqueue(ifq, packet(3, 100)).expect("queued");
+        ifq_enqueue(ifq, packet(3, 200)).expect("queued");
+        assert!(
+            ifq_deq_with(ifq, |m| {
+                assert_eq!(m.m_pkthdr().len.get(), 100);
+                IfqDeq::Rollback
+            })
+            .is_none()
+        );
+        assert_eq!(ifq_len(ifq), 2);
+        assert!(!ifq_is_oactive(ifq));
+        assert!(ifq_deq_with(ifq, |_| IfqDeq::RollbackOactive).is_none());
+        assert!(ifq_is_oactive(ifq));
+        crate::net::ifq::ifq_clr_oactive(ifq);
+        let m = ifq_deq_with(ifq, |_| IfqDeq::Commit).expect("the head");
+        assert_eq!(m.m_pkthdr().len.get(), 100);
+        assert_eq!(ifq_purge(ifq), 1);
+        assert_eq!(ifq_len(ifq), 0);
+        let (_, _, qdrops, _, _, oactives) = ifq_stats(ifq);
+        assert_eq!((qdrops, oactives), (1, 1));
+    }
+
+    static SERIAL_RUNS: AtomicU32 = AtomicU32::new(0);
+
+    fn serial_task(t: &'static (dyn Any + Send + Sync)) {
+        let ifq = t.downcast_ref::<Ifqueue>().expect("the queue");
+        SERIAL_RUNS.fetch_add(1, Ordering::Relaxed);
+        // From inside the serializer: queued, run after this one by the same CPU.
+        if SERIAL_RUNS.load(Ordering::Relaxed) == 1 {
+            ifq_serialize(ifq, Pin::static_ref(second_task()));
+        }
+    }
+
+    fn second_task() -> &'static Task {
+        static T: OnceStatic<&'static Task> = OnceStatic::new();
+        T.get().copied().unwrap_or_else(|| {
+            let t: &'static Task = Box::leak(Box::new(Task::unset()));
+            let _ = T.set(t);
+            T.get().copied().expect("set")
+        })
+    }
+
+    #[test]
+    fn the_serializer_runs_its_work_in_order_on_one_cpu() {
+        let _g = setup();
+        let (ifp, d) = test_ifnet(b"tst0");
+        let ifq = ifp.if_snd();
+        SERIAL_RUNS.store(0, Ordering::Relaxed);
+        let first: &'static Task = Box::leak(Box::new(Task::unset()));
+        first.set_ref(serial_task, ifq);
+        second_task().set_ref(serial_task, ifq);
+        ifq_serialize(ifq, Pin::static_ref(first));
+        assert_eq!(SERIAL_RUNS.load(Ordering::Relaxed), 2);
+        assert!(!first.pending() && !second_task().pending());
+        // The start task through the serializer, to the driver's qstart (IFF_RUNNING set and
+        // a packet queued).
+        ifp.if_flags.set(hal::sys::net_if::IFF_RUNNING);
+        ifp.if_txmit.set(1);
+        ifq_enqueue(ifq, packet(1, 1)).expect("queued");
+        ifq_start(ifq);
+        assert_eq!(d.qstarts.load(Ordering::Relaxed), 1);
+        // No serializer at work: the barrier returns at once.
+        ifq_barrier(ifq);
+        // The test driver's qstart sends nothing: the packet is still queued (and the mbuf
+        // tests count every mbuf back).
+        assert_eq!(ifq_purge(ifq), 1);
+    }
+
+    #[test]
+    fn purge_and_attach_keep_the_books() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tifq0");
+        let ifq = ifp.if_snd();
+        for id in 0..4u8 {
+            assert_eq!(ifq_enqueue(ifq, packet(id % 8, 4)), Ok(()));
+        }
+
+        // Reattaching the conditioner moves the packets to the new state.
+        crate::net::ifq::ifq_attach_priq(ifq);
+        assert_eq!(ifq_len(ifq), 4);
+        assert_eq!(ifq_stats(ifq).2, 0);
+
+        let mut data: IfData = hal::user::zeroed();
+        crate::net::ifq::ifq_add_data(ifq, &mut data);
+        assert_eq!((data.ifi_opackets, data.ifi_obytes), (4, 16));
+
+        assert_eq!(ifq_purge(ifq), 4);
+        assert!(crate::net::ifq::ifq_empty(ifq));
+        assert_eq!(ifq_stats(ifq).2, 4);
+    }
+
+    #[test]
+    fn priq_idx_spreads_by_flow_id() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tifq0");
+        let m = packet(0, 4);
+        m.m_pkthdr().ph_flowid.set(13);
+        assert_eq!(
+            crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m),
+            0,
+            "no M_FLOWID: queue 0"
+        );
+        m.m_pkthdr()
+            .csum_flags
+            .set(m.m_pkthdr().csum_flags.get() | M_FLOWID);
+        assert_eq!(crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m), 13 % 4);
+    }
+
+    #[test]
+    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
+    fn ifq_maxlen_matches_the_c_header() {
+        let defs = crate::reftest::defines("sys/net/ifq.h");
+        assert_eq!(
+            crate::reftest::int(&defs, "IFQ_MAXLEN"),
+            Some(i64::from(crate::net::ifq::IFQ_MAXLEN))
+        );
+    }
+
+    /// Waits up to ten seconds for `f`.
+    fn eventually(f: impl Fn() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !f() {
+            if std::time::Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        true
+    }
+
+    static BAR_STARTS: AtomicU32 = AtomicU32::new(0);
+
+    fn bar_start(_t: &'static (dyn Any + Send + Sync)) {
+        BAR_STARTS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The first task on the serializer's list taken off, as the serializer does before it
+    /// runs it with the mutex released.
+    fn take_first(ifq: &Ifqueue) -> (usize, TaskWork) {
+        let mut g = ifq.ser.lock();
+        let first = ifq.ser_list.first(&g).expect("a task waits");
+        let addr = core::ptr::from_ref(first).addr();
+        let work = first.work().expect("a function");
+        ifq.ser_list.remove_first(&mut g);
+        (addr, work)
+    }
+
+    /// Review 1's B4: two `ifq_barrier` callers with a start queued between them. The
+    /// serializer (the test plays it, on "another CPU") has taken the first caller's barrier
+    /// task off but not run it when a start is queued and the second caller asks: the first
+    /// caller waits for its barrier alone, the second for the start too (the C gives each
+    /// caller its own task, ifq.c:186-199).
+    #[test]
+    fn a_second_barrier_waits_for_the_work_queued_before_it() {
+        static DONE_A: AtomicBool = AtomicBool::new(false);
+        static DONE_B: AtomicBool = AtomicBool::new(false);
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tbar0");
+        let ifq: &'static Ifqueue = ifp.if_snd();
+        BAR_STARTS.store(0, Ordering::Relaxed);
+        DONE_A.store(false, Ordering::Relaxed);
+        DONE_B.store(false, Ordering::Relaxed);
+        ifq.ser.lock().cpu = Some(usize::MAX);
+
+        let a = std::thread::spawn(move || {
+            ifq_barrier(ifq);
+            DONE_A.store(true, Ordering::Release);
+        });
+        assert!(eventually(|| ifq.ifq_bartask.pending()));
+        let (first, barrier) = take_first(ifq);
+        assert_eq!(first, core::ptr::from_ref(&ifq.ifq_bartask).addr());
+
+        // A start, queued behind the work in progress.
+        let start: &'static Task = Box::leak(Box::new(Task::unset()));
+        start.set_ref(bar_start, ifq);
+        ifq_serialize(ifq, Pin::static_ref(start));
+        let b = std::thread::spawn(move || {
+            ifq_barrier(ifq);
+            DONE_B.store(true, Ordering::Release);
+        });
+        assert!(eventually(|| ifq.ser.lock().bar_asked == 2));
+        // The second caller did not link the barrier task ahead of the start.
+        assert!(!ifq.ifq_bartask.pending());
+
+        // The first barrier's body: its caller returns; it links the task again, behind the
+        // start, for the second.
+        barrier.run();
+        a.join().expect("the first caller");
+        assert!(DONE_A.load(Ordering::Acquire));
+        assert!(!DONE_B.load(Ordering::Acquire));
+        let (next, work) = take_first(ifq);
+        assert_eq!(next, core::ptr::from_ref(start).addr());
+        work.run();
+        assert_eq!(BAR_STARTS.load(Ordering::Relaxed), 1);
+        assert!(!DONE_B.load(Ordering::Acquire));
+        let (last, barrier) = take_first(ifq);
+        assert_eq!(last, core::ptr::from_ref(&ifq.ifq_bartask).addr());
+        barrier.run();
+        b.join().expect("the second caller");
+        assert!(DONE_B.load(Ordering::Acquire));
+        assert!(ifq.ser_list.is_empty(&ifq.ser.lock()));
+        ifq.ser.lock().cpu = None;
+    }
+
+    /// `ifiq_input` above `ifiq_maxlen_drop` packets waiting drops what it is given (counted
+    /// as `qdrops`), and above `ifiq_maxlen_return` tells the driver it is under pressure.
+    #[test]
+    fn an_input_queue_under_pressure_drops_and_says_so() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tiq0");
+        let ifiq: &'static Ifiqueue = ifp.ifiq(0);
+        let (drop0, ret0) = (
+            IFIQ_MAXLEN_DROP.load(Ordering::Relaxed),
+            IFIQ_MAXLEN_RETURN.load(Ordering::Relaxed),
+        );
+        IFIQ_MAXLEN_DROP.store(2, Ordering::Relaxed);
+        IFIQ_MAXLEN_RETURN.store(1, Ordering::Relaxed);
+
+        let three = || {
+            let mut ml = MbufList::new();
+            for _ in 0..3 {
+                ml_enqueue(&mut ml, packet(0, 60));
+            }
+            ml
+        };
+        // Nothing waiting: queued for the softnet, no pressure yet (0 waited).
+        let mut ml = three();
+        assert!(!ifiq_input(ifiq, &mut ml));
+        assert!(ml_empty(&ml) && ifiq_len(ifiq) == 3 && ifiq.ifiq_task.pending());
+        // Three waiting, above the drop mark: dropped, and the driver told.
+        let mut ml = three();
+        assert!(ifiq_input(ifiq, &mut ml));
+        assert!(ml_empty(&ml));
+        assert_eq!(ifiq_len(ifiq), 3);
+        let mut data: IfData = hal::user::zeroed();
+        ifiq_add_data(ifiq, &mut data);
+        assert_eq!((data.ifi_ipackets, data.ifi_iqdrops), (6, 3));
+
+        IFIQ_MAXLEN_DROP.store(drop0, Ordering::Relaxed);
+        IFIQ_MAXLEN_RETURN.store(ret0, Ordering::Relaxed);
+        let _ = task_del(ifiq.softnet(), &ifiq.ifiq_task);
+        let mut taken = ifiq_test_take(ifiq);
+        assert_eq!(ml_purge(&mut taken), 3);
+    }
+}
+/* </TESTS> */
