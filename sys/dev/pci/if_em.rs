@@ -196,8 +196,8 @@ use crate::net::if_media::{
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_needrefill, if_rxr_put};
 use crate::net::ifq::{
-    Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
-    ifq_is_oactive, ifq_purge, ifq_restart, ifq_set_oactive,
+    Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_purge,
+    ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MAX_LEN, ETHER_MIN_LEN,
@@ -2847,7 +2847,8 @@ pub fn em_setup_interface(sc: &'static EmSoftc) {
     };
     ifp.if_hardmtu
         .set(max_frame_size - ETHER_HDR_LEN as u32 - ETHER_CRC_LEN as u32);
-    ifq_init_maxlen(ifp.if_snd(), sc.sc_tx_slots.get() - 1);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set(sc.sc_tx_slots.get() - 1);
 
     let mut caps = IFCAP_VLAN_MTU;
 

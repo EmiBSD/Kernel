@@ -2581,5 +2581,19 @@ pub(crate) mod tests {
         }
         crate::netinet::in_pcb::tests::teardown();
     }
+
+    #[test]
+    fn a_driver_sets_its_send_queue_length_before_attach() {
+        // vio, em, vmx, re, dc, fxp and pcn: `ifq_init_maxlen(&ifp->if_snd, n)` before
+        // `if_attach`, which makes the queue with it.
+        let _g = setup_net();
+        let ifp = test_ifnet(b"tml0");
+        ifp.if_snd_maxlen.set(7);
+        if_attach(ifp);
+        assert_eq!(ifp.if_snd().ifq_maxlen.get(), 7);
+        let other = test_ifnet(b"tml1");
+        if_attach(other);
+        assert_eq!(other.if_snd().ifq_maxlen.get(), crate::net::ifq::IFQ_MAXLEN);
+    }
 }
 /* </TESTS> */

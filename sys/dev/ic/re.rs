@@ -172,8 +172,8 @@ use crate::net::if_media::{
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_put};
 use crate::net::ifq::{
-    Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
-    ifq_is_oactive, ifq_purge, ifq_restart, ifq_serialize, ifq_set_oactive,
+    Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_purge,
+    ifq_restart, ifq_serialize, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_VLAN_ENCAP_LEN, EtherMultistep,
@@ -986,7 +986,8 @@ pub fn re_attach(sc: &'static RlSoftc, intrstr: &[u8]) -> Result<(), Errno> {
     ifp.if_qstart().set(Some(re_start));
     ifp.if_watchdog().set(Some(re_watchdog));
     ifp.if_hardmtu.set(sc.rl_max_mtu.get() as u32);
-    ifq_init_maxlen(ifp.if_snd(), ld.rl_tx_desc_cnt.get() as u32);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set(ld.rl_tx_desc_cnt.get() as u32);
 
     let mut caps = IFCAP_VLAN_MTU | IFCAP_CSUM_TCPv4 | IFCAP_CSUM_UDPv4;
 

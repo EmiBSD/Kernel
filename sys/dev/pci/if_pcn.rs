@@ -147,9 +147,7 @@ use crate::net::if_media::{
 };
 use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
-use crate::net::ifq::{
-    ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen, ifq_is_oactive, ifq_restart, ifq_set_oactive,
-};
+use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_restart, ifq_set_oactive};
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_CRC_LEN, EtherMultistep, ether_first_multi, ether_next_multi,
 };
@@ -1015,7 +1013,8 @@ pub fn pcn_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     ifp.if_ioctl().set(Some(pcn_ioctl));
     ifp.if_start().set(Some(pcn_start));
     ifp.if_watchdog().set(Some(pcn_watchdog));
-    ifq_init_maxlen(ifp.if_snd(), (PCN_NTXDESC - 1) as u32);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set((PCN_NTXDESC - 1) as u32);
 
     // Attach the interface.
     if_attach(ifp);

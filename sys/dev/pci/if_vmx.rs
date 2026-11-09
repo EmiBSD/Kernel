@@ -151,8 +151,8 @@ use crate::net::if_media::{
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_put};
 use crate::net::ifq::{
-    Ifiqueue, Ifqueue, ifiq_input, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen, ifq_is_oactive,
-    ifq_purge, ifq_restart, ifq_set_oactive,
+    Ifiqueue, Ifqueue, ifiq_input, ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_purge,
+    ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, EtherExtracted, EtherMultistep,
@@ -1065,7 +1065,9 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
     }
     ifp.if_capabilities.set(caps);
 
-    ifq_init_maxlen(ifp.if_snd(), NTXDESC);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+
+    ifp.if_snd_maxlen.set(NTXDESC);
 
     ifmedia_init(
         &sc.sc_media,

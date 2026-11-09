@@ -146,8 +146,7 @@ use crate::net::if_media::{
 use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{
-    IfqDeq, ifq_clr_oactive, ifq_deq_with, ifq_empty, ifq_init_maxlen, ifq_is_oactive, ifq_len,
-    ifq_set_oactive,
+    IfqDeq, ifq_clr_oactive, ifq_deq_with, ifq_empty, ifq_is_oactive, ifq_len, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_MAX_DIX_LEN, EtherMultistep,
@@ -1626,7 +1625,8 @@ pub fn dc_attach(sc: &'static DcSoftc) {
     ifp.if_ioctl().set(Some(dc_ioctl));
     ifp.if_start().set(Some(dc_start));
     ifp.if_watchdog().set(Some(dc_watchdog));
-    ifq_init_maxlen(ifp.if_snd(), DC_TX_LIST_CNT as u32 - 1);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set(DC_TX_LIST_CNT as u32 - 1);
     let mut xname = [0u8; IFNAMSIZ];
     let name = sc.sc_dev.dv_xname.get();
     let n = name.len().min(IFNAMSIZ);

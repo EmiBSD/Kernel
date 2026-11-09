@@ -126,9 +126,7 @@ use crate::net::if_media::{
 };
 use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
-use crate::net::ifq::{
-    ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_init_maxlen, ifq_is_oactive, ifq_set_oactive,
-};
+use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_is_oactive, ifq_set_oactive};
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_HDR_LEN, EtherMultistep, ether_first_multi, ether_next_multi,
 };
@@ -573,7 +571,8 @@ pub fn fxp_attach(sc: &'static FxpSoftc, intrstr: &[u8]) -> Result<(), Errno> {
     ifp.if_ioctl().set(Some(fxp_ioctl));
     ifp.if_start().set(Some(fxp_start));
     ifp.if_watchdog().set(Some(fxp_watchdog));
-    ifq_init_maxlen(ifp.if_snd(), FXP_NTXCB as u32 - 1);
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set(FXP_NTXCB as u32 - 1);
 
     ifp.if_capabilities.set(IFCAP_VLAN_MTU);
 

@@ -139,8 +139,8 @@ use crate::net::if_media::{
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_put};
 use crate::net::ifq::{
-    Ifiqueue, Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
-    ifq_is_oactive, ifq_purge, ifq_restart, ifq_set_oactive,
+    Ifiqueue, Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_is_oactive,
+    ifq_purge, ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, ETHER_MAX_HARDMTU_LEN, EtherExtracted,
@@ -1644,7 +1644,8 @@ pub fn vio_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         ifp.if_qstart().set(Some(vio_start));
         ifp.if_ioctl().set(Some(vio_ioctl));
 
-        ifq_init_maxlen(ifp.if_snd(), vsc.vq(1).vq_num.get() - 1);
+        // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+        ifp.if_snd_maxlen.set(vsc.vq(1).vq_num.get() - 1);
         ifmedia_init(&sc.sc_media, 0, vio_media_change, vio_media_status);
         ifmedia_add(&sc.sc_media, IFM_ETHER | IFM_AUTO, 0, ptr::null_mut());
         ifmedia_set(&sc.sc_media, IFM_ETHER | IFM_AUTO);

@@ -2283,7 +2283,6 @@ pub fn in_pcbunset_laddr(inp: &'static Inpcb) {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::net::if_var::IfnetLegacy;
     // Host tests for the Internet control blocks: the port bitmaps, binding (explicit ports,
     // picked ports, `EADDRINUSE` and `SO_REUSEPORT`), the local port, connection and listen
     // lookups, a table that grows past its load factor, the iterator and detaching.
@@ -2592,8 +2591,8 @@ pub(crate) mod tests {
         /// duplicate address detection skipped), whose output lands in [`SENT6`].
         pub(crate) fn test_if6(name: &[u8]) -> &'static Ifnet {
             let ifp = test_ifnet(name);
-            ifp.if_ioctl().set(Some(accepting_ioctl));
-            ifp.if_output().set(Some(capturing_output));
+            crate::net::if_var::IfnetLegacy::if_ioctl(ifp).set(Some(accepting_ioctl));
+            crate::net::if_var::IfnetLegacy::if_output(ifp).set(Some(capturing_output));
             ifp.if_type.set(crate::net::if_types::IFT_ETHER);
             ifp.if_flags.set(crate::net::if_::IFF_MULTICAST);
             ifp.if_mtu.set(1500);
