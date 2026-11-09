@@ -1305,7 +1305,7 @@ fn priq_purge(pq: &mut Priq, ml: &mut MbufList) {
 #[cfg(test)]
 mod tests {
     // Host tests of the send and receive queues over `if_`'s fixture (`setup`, `test_ifnet`,
-    // `packet`: real memory, interfaces attached by `if_attach_common`). Review 1's S6: they
+    // `test_packet`: real memory, interfaces attached by `if_attach_common`). Review 1's S6: they
     // lived in `if_`'s tests.
 
     use std::boxed::Box;
@@ -1316,7 +1316,8 @@ mod tests {
     use hal::once::OnceStatic;
 
     use super::*;
-    use crate::net::if_::tests::{packet, setup, test_ifnet};
+    use crate::net::if_::tests::setup;
+    use crate::net::if_::{test_ifnet, test_packet};
     use crate::task::TaskWork;
 
     #[test]
@@ -1327,15 +1328,15 @@ mod tests {
         crate::net::ifq::ifq_init_maxlen(ifq, 3);
         // if_txmit 1: ifq_start runs the start at once (no softnet in the test).
         ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(0, 10)).expect("queued");
-        ifq_enqueue(ifq, packet(1, 11)).expect("queued");
-        ifq_enqueue(ifq, packet(2, 12)).expect("queued");
+        ifq_enqueue(ifq, test_packet(0, 10)).expect("queued");
+        ifq_enqueue(ifq, test_packet(1, 11)).expect("queued");
+        ifq_enqueue(ifq, test_packet(2, 12)).expect("queued");
         assert_eq!(ifq_len(ifq), 3);
         // Full: a packet of priority 3 evicts the head of the lowest non-empty list (0).
-        ifq_enqueue(ifq, packet(3, 13)).expect("queued");
+        ifq_enqueue(ifq, test_packet(3, 13)).expect("queued");
         assert_eq!(ifq_len(ifq), 3);
         // Full, nothing lower than 0: refused.
-        assert_eq!(ifq_enqueue(ifq, packet(0, 14)), Err(Errno::ENOBUFS));
+        assert_eq!(ifq_enqueue(ifq, test_packet(0, 14)), Err(Errno::ENOBUFS));
         let (packets, bytes, qdrops, _, _, _) = ifq_stats(ifq);
         assert_eq!((packets, bytes, qdrops), (4, 46, 2));
         assert_eq!(ifq_hdatalen(ifq), 13);
@@ -1352,8 +1353,8 @@ mod tests {
         let (ifp, _) = test_ifnet(b"tst0");
         let ifq = ifp.if_snd();
         ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(3, 100)).expect("queued");
-        ifq_enqueue(ifq, packet(3, 200)).expect("queued");
+        ifq_enqueue(ifq, test_packet(3, 100)).expect("queued");
+        ifq_enqueue(ifq, test_packet(3, 200)).expect("queued");
         assert!(
             ifq_deq_with(ifq, |m| {
                 assert_eq!(m.m_pkthdr().len.get(), 100);
@@ -1410,7 +1411,7 @@ mod tests {
         // a packet queued).
         ifp.if_flags.set(hal::sys::net_if::IFF_RUNNING);
         ifp.if_txmit.set(1);
-        ifq_enqueue(ifq, packet(1, 1)).expect("queued");
+        ifq_enqueue(ifq, test_packet(1, 1)).expect("queued");
         ifq_start(ifq);
         assert_eq!(d.qstarts.load(Ordering::Relaxed), 1);
         // No serializer at work: the barrier returns at once.
@@ -1426,7 +1427,7 @@ mod tests {
         let (ifp, _) = test_ifnet(b"tifq0");
         let ifq = ifp.if_snd();
         for id in 0..4u8 {
-            assert_eq!(ifq_enqueue(ifq, packet(id % 8, 4)), Ok(()));
+            assert_eq!(ifq_enqueue(ifq, test_packet(id % 8, 4)), Ok(()));
         }
 
         // Reattaching the conditioner moves the packets to the new state.
@@ -1447,7 +1448,7 @@ mod tests {
     fn priq_idx_spreads_by_flow_id() {
         let _g = setup();
         let (ifp, _) = test_ifnet(b"tifq0");
-        let m = packet(0, 4);
+        let m = test_packet(0, 4);
         m.m_pkthdr().ph_flowid.set(13);
         assert_eq!(
             crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m),
@@ -1573,7 +1574,7 @@ mod tests {
         let three = || {
             let mut ml = MbufList::new();
             for _ in 0..3 {
-                ml_enqueue(&mut ml, packet(0, 60));
+                ml_enqueue(&mut ml, test_packet(0, 60));
             }
             ml
         };

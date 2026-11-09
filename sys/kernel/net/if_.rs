@@ -1254,6 +1254,138 @@ pub fn if_test_reset() {
     ifnet_test_reset();
 }
 
+/// A driver that counts what it is asked, for the host tests and the benches (`bsd`'s
+/// zeroed `test_ifnet` with its `test_ioctl`, in the kernel's shape); its input sends a packet
+/// round once through `ns_input` and then to a protocol that counts and frees it.
+#[cfg(any(test, feature = "doubles"))]
+pub struct TestDriver {
+    /// `if_input` calls.
+    pub inputs: AtomicU32,
+    /// `if_qstart` calls.
+    pub qstarts: AtomicU32,
+    /// `if_ioctl` calls (`SIOCSIFFLAGS` and the others).
+    pub ioctls: AtomicU32,
+    /// The last request's `ifr_flags` (an `Ifreq`'s first 16 bits after its name).
+    pub last_flags: AtomicU32,
+    /// `if_ioctl` answers `EIO` while set.
+    pub fail: core::sync::atomic::AtomicBool,
+}
+
+#[cfg(any(test, feature = "doubles"))]
+impl TestDriver {
+    /// A driver that has seen nothing.
+    pub const fn new() -> Self {
+        Self {
+            inputs: AtomicU32::new(0),
+            qstarts: AtomicU32::new(0),
+            ioctls: AtomicU32::new(0),
+            last_flags: AtomicU32::new(0),
+            fail: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "doubles"))]
+impl Default for TestDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "doubles"))]
+impl NetDriver for TestDriver {
+    fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
+        self.ioctls.fetch_add(1, Ordering::Relaxed);
+        if let Some(ifr) = hal::pod::at::<Ifreq>(data, 0) {
+            self.last_flags
+                .store(u32::from(ifr.ifr_flags() as u16), Ordering::Relaxed);
+        }
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(Errno::EIO);
+        }
+        Ok(())
+    }
+
+    fn qstart(&self, _ifq: &'static Ifqueue) {
+        self.qstarts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn input(&self, ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
+        self.inputs.fetch_add(1, Ordering::Relaxed);
+        let Some(ns) = ns else {
+            drop(m);
+            return;
+        };
+        if m.m_pkthdr().ph_loopcnt.get() == 0 {
+            // if_vinput: once more through the interface's input.
+            m.m_pkthdr().ph_loopcnt.set(1);
+            m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
+            ml_enqueue(&mut ns.ns_input, m);
+        } else {
+            if_input_proto(ifp, m, test_proto_count, Some(ns));
+        }
+    }
+}
+
+/// The packets [`TestDriver`]'s protocol has seen ([`test_proto_count`]).
+#[cfg(any(test, feature = "doubles"))]
+pub static TEST_PROTO_INPUTS: AtomicU32 = AtomicU32::new(0);
+
+/// [`TestDriver`]'s protocol: counts the packet in [`TEST_PROTO_INPUTS`] and frees it; a
+/// softnet's packet always comes with its netstack.
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_proto_count(_ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
+    let Some(_ns) = ns else {
+        kpanic(format_args!("test_proto_count: no netstack"));
+    };
+    TEST_PROTO_INPUTS.fetch_add(1, Ordering::Relaxed);
+    drop(m);
+}
+
+/// A fresh interface named `name` driven by `driver` (`IFXF_MPSAFE`), not attached, its
+/// softc leaked as a driver's lives for ever: what [`if_attach`] takes.
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_ifnet_fresh(name: &[u8], driver: &'static dyn NetDriver) -> &'static Ifnet {
+    let ifp: &'static Ifnet = std::boxed::Box::leak(std::boxed::Box::new(Ifnet::new()));
+    let mut n = [0u8; IFNAMSIZ];
+    n[..name.len()].copy_from_slice(name);
+    ifp.if_xname.set(n);
+    if ifp.if_driver.set(driver).is_err() {
+        kpanic(format_args!("test_ifnet_fresh: a driver already"));
+    }
+    ifp.if_xflags.set(IFXF_MPSAFE);
+    ifp
+}
+
+/// A [`test_ifnet_fresh`] attached (`if_attach_common` and the index map's slot; not
+/// listed).
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_ifnet_with(name: &[u8], driver: &'static dyn NetDriver) -> &'static Ifnet {
+    let ifp = test_ifnet_fresh(name, driver);
+    if_attach_common(ifp);
+    if_idxmap_insert(ifp);
+    ifp
+}
+
+/// An interface named `name` with a [`TestDriver`], attached as [`test_ifnet_with`] does.
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_ifnet(name: &[u8]) -> (&'static Ifnet, &'static TestDriver) {
+    let d: &'static TestDriver = std::boxed::Box::leak(std::boxed::Box::new(TestDriver::new()));
+    (test_ifnet_with(name, d), d)
+}
+
+/// A packet header mbuf of priority `prio` and length `len` (no data).
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_packet(prio: u8, len: i32) -> MbufBox {
+    let Some(m) = crate::net::mbuf::m_gethdr(crate::net::mbuf::M_DONTWAIT, hal::sys::mbuf::MT_DATA)
+    else {
+        kpanic(format_args!("test_packet: no mbuf"));
+    };
+    m.m_pkthdr().pf.prio.set(prio);
+    m.m_pkthdr().len.set(len);
+    m
+}
+
 /// `if_ioctl(ifp, cmd, data)`: the driver's `if_ioctl`, or the detached stub after
 /// `if_detach`'s swap (`if_detached_ioctl`: `ENODEV`).
 pub fn if_ioctl(ifp: &'static Ifnet, cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
@@ -2937,77 +3069,6 @@ pub(crate) mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::net::mbuf::{M_DONTWAIT, m_gethdr};
-
-    /// A driver that counts what it is asked; its input sends a packet round once through
-    /// `ns_input` and then to [`proto_count`].
-    pub(crate) struct TestDriver {
-        /// `if_input` calls.
-        pub(crate) inputs: AtomicU32,
-        /// `if_qstart` calls.
-        pub(crate) qstarts: AtomicU32,
-        /// `if_ioctl` calls (`SIOCSIFFLAGS` and the others).
-        pub(crate) ioctls: AtomicU32,
-        /// The last request's `ifr_flags` (an `Ifreq`'s first 16 bits after its name).
-        pub(crate) last_flags: AtomicU32,
-        /// `if_ioctl` answers `EIO` while set.
-        pub(crate) fail: std::sync::atomic::AtomicBool,
-    }
-
-    impl TestDriver {
-        /// A driver that has seen nothing.
-        pub(crate) const fn new() -> Self {
-            Self {
-                inputs: AtomicU32::new(0),
-                qstarts: AtomicU32::new(0),
-                ioctls: AtomicU32::new(0),
-                last_flags: AtomicU32::new(0),
-                fail: std::sync::atomic::AtomicBool::new(false),
-            }
-        }
-    }
-
-    impl NetDriver for TestDriver {
-        fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, data: &mut [u8]) -> Result<(), Errno> {
-            self.ioctls.fetch_add(1, Ordering::Relaxed);
-            if let Some(ifr) = hal::pod::at::<Ifreq>(data, 0) {
-                self.last_flags
-                    .store(u32::from(ifr.ifr_flags() as u16), Ordering::Relaxed);
-            }
-            if self.fail.load(Ordering::Relaxed) {
-                return Err(Errno::EIO);
-            }
-            Ok(())
-        }
-
-        fn qstart(&self, _ifq: &'static Ifqueue) {
-            self.qstarts.fetch_add(1, Ordering::Relaxed);
-        }
-
-        fn input(&self, ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
-            self.inputs.fetch_add(1, Ordering::Relaxed);
-            let Some(ns) = ns else {
-                drop(m);
-                return;
-            };
-            if m.m_pkthdr().ph_loopcnt.get() == 0 {
-                // if_vinput: once more through the interface's input.
-                m.m_pkthdr().ph_loopcnt.set(1);
-                m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-                ml_enqueue(&mut ns.ns_input, m);
-            } else {
-                if_input_proto(ifp, m, proto_count, Some(ns));
-            }
-        }
-    }
-
-    static PROTO_INPUTS: AtomicU32 = AtomicU32::new(0);
-
-    fn proto_count(_ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
-        assert!(ns.is_some());
-        PROTO_INPUTS.fetch_add(1, Ordering::Relaxed);
-        drop(m);
-    }
 
     fn proto_other(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
         drop(m);
@@ -3020,29 +3081,6 @@ pub(crate) mod tests {
         if_idxmap_test_reset();
         ifnet_test_reset();
         g
-    }
-
-    /// An interface named `name` with a [`TestDriver`], attached (`if_attach_common` and the
-    /// index map's slot; not listed).
-    pub(crate) fn test_ifnet(name: &[u8]) -> (&'static Ifnet, &'static TestDriver) {
-        let ifp: &'static Ifnet = Box::leak(Box::new(Ifnet::new()));
-        let mut n = [0u8; IFNAMSIZ];
-        n[..name.len()].copy_from_slice(name);
-        ifp.if_xname.set(n);
-        let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
-        assert!(ifp.if_driver.set(d).is_ok());
-        ifp.if_xflags.set(IFXF_MPSAFE);
-        if_attach_common(ifp);
-        if_idxmap_insert(ifp);
-        (ifp, d)
-    }
-
-    /// A packet header mbuf of priority `prio` and length `len` (no data).
-    pub(crate) fn packet(prio: u8, len: i32) -> MbufBox {
-        let m = m_gethdr(M_DONTWAIT, hal::sys::mbuf::MT_DATA).expect("an mbuf");
-        m.m_pkthdr().pf.prio.set(prio);
-        m.m_pkthdr().len.set(len);
-        m
     }
 
     fn map_limit() -> u32 {
@@ -3086,14 +3124,14 @@ pub(crate) mod tests {
     fn the_softnet_input_path_reaches_the_driver_and_the_protocol() {
         let _g = setup();
         let (ifp, d) = test_ifnet(b"tst0");
-        PROTO_INPUTS.store(0, Ordering::Relaxed);
+        TEST_PROTO_INPUTS.store(0, Ordering::Relaxed);
         let mut ml = MbufList::new();
-        ml_enqueue(&mut ml, packet(0, 60));
-        ml_enqueue(&mut ml, packet(0, 60));
+        ml_enqueue(&mut ml, test_packet(0, 60));
+        ml_enqueue(&mut ml, test_packet(0, 60));
         if_input_process(ifp, &mut ml, 0);
         // Each packet: the driver, the driver again (ns_input), then the protocol.
         assert_eq!(d.inputs.load(Ordering::Relaxed), 4);
-        assert_eq!(PROTO_INPUTS.load(Ordering::Relaxed), 2);
+        assert_eq!(TEST_PROTO_INPUTS.load(Ordering::Relaxed), 2);
         assert!(ml_empty(&ml));
     }
 
@@ -3226,12 +3264,12 @@ pub(crate) mod tests {
 
     #[test]
     fn a_protocol_function_keeps_its_cookie() {
-        let a = proto_fn_id(proto_count);
+        let a = proto_fn_id(test_proto_count);
         let b = proto_fn_id(proto_other);
         assert_ne!(a, 0);
         assert_ne!(a, b);
-        assert_eq!(proto_fn_id(proto_count), a);
-        assert!(proto_fn(a).is_some_and(|f| core::ptr::fn_addr_eq(f, proto_count as ProtoFn)));
+        assert_eq!(proto_fn_id(test_proto_count), a);
+        assert!(proto_fn(a).is_some_and(|f| core::ptr::fn_addr_eq(f, test_proto_count as ProtoFn)));
         assert!(proto_fn(0).is_none());
     }
 
@@ -3312,14 +3350,8 @@ pub(crate) mod tests {
 
     /// A fresh interface named `name` with a [`TestDriver`], not attached, its softc leaked.
     fn fresh_ifnet(name: &[u8]) -> (&'static Ifnet, &'static TestDriver) {
-        let ifp: &'static Ifnet = Box::leak(Box::new(Ifnet::new()));
-        let mut n = [0u8; IFNAMSIZ];
-        n[..name.len()].copy_from_slice(name);
-        ifp.if_xname.set(n);
         let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
-        assert!(ifp.if_driver.set(d).is_ok());
-        ifp.if_xflags.set(IFXF_MPSAFE);
-        (ifp, d)
+        (test_ifnet_fresh(name, d), d)
     }
 
     /// The groups of `ifp`, by name.
@@ -3627,14 +3659,14 @@ pub(crate) mod tests {
         if_counters_alloc(ifp);
         ifp.if_flags.set(IFF_LOOPBACK);
         assert_eq!(
-            if_input_local(ifp, packet(0, 64), AF_INET, None),
+            if_input_local(ifp, test_packet(0, 64), AF_INET, None),
             Err(Errno::EAFNOSUPPORT)
         );
         assert_eq!(
             ifp_counters(ifp)[IfCounters::IfcOpackets as usize].load(Ordering::Relaxed),
             1
         );
-        assert_eq!(if_output_local(ifp, packet(0, 64), AF_INET), Ok(()));
+        assert_eq!(if_output_local(ifp, test_packet(0, 64), AF_INET), Ok(()));
         assert_eq!(crate::net::ifq::ifiq_len(ifp.if_rcv()), 1);
         with_smr_thread(|| crate::net::ifq::ifiq_destroy(ifp.if_rcv()));
         if_counters_free(ifp);
