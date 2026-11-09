@@ -288,3 +288,6 @@ metadata:
 - The worktree guard refuses `xargs git add` (arguments from stdin); `git add -u -- sys docs lineage.toml` stages the tracked changes without the reference symlinks (N6.3a part 2).
 - A many-file python edit script that asserts in the middle has already written the files before the failing one: split per-file edits into separate scripts, or re-run only the remainder (N6.3a part 2).
 - macOS `sample <pid> 1 -file <out>` on a hung host test binary gives its stacks; grep the mangled `6kernel`/`3hal` frames to find the sleep (smr::barrier, net_tq_barriers) (N6.3a part 2).
+- rustfmt splits a long `let x: T = unsafe { .. };` over two lines, and hal-check then wants the `// SAFETY:` directly above the `unsafe` line: shorten with a local `type` alias so the statement fits one line (N6.3a review S1).
+- To commit one finding while another's doc edits sit in the same files: save the files, write back HEAD's text for the other finding's blocks (python with `git show HEAD:<path>` through subprocess), commit, restore the saves (N6.3a review B2).
+- A `let x = match opt { Some(w) => .., None => { .. } }` trips `clippy::single_match_else` in kernel code under the host `cargo clippy -p hal -p kernel -p abi -- -D warnings`: write an `if let .. else` (N6.3a review B7).
