@@ -3648,5 +3648,55 @@ pub(crate) mod tests {
         assert_eq!(&lo_name(12)[..5], b"lo12\0");
         assert_eq!(&lo_name(0)[..3], b"lo0");
     }
+
+    #[test]
+    fn purge_and_attach_keep_the_books() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tifq0");
+        let ifq = ifp.if_snd();
+        for id in 0..4u8 {
+            assert_eq!(ifq_enqueue(ifq, packet(id % 8, 4)), Ok(()));
+        }
+
+        // Reattaching the conditioner moves the packets to the new state.
+        crate::net::ifq::ifq_attach_priq(ifq);
+        assert_eq!(ifq_len(ifq), 4);
+        assert_eq!(ifq_stats(ifq).2, 0);
+
+        let mut data: IfData = hal::user::zeroed();
+        crate::net::ifq::ifq_add_data(ifq, &mut data);
+        assert_eq!((data.ifi_opackets, data.ifi_obytes), (4, 16));
+
+        assert_eq!(ifq_purge(ifq), 4);
+        assert!(crate::net::ifq::ifq_empty(ifq));
+        assert_eq!(ifq_stats(ifq).2, 4);
+    }
+
+    #[test]
+    fn priq_idx_spreads_by_flow_id() {
+        let _g = setup();
+        let (ifp, _) = test_ifnet(b"tifq0");
+        let m = packet(0, 4);
+        m.m_pkthdr().ph_flowid.set(13);
+        assert_eq!(
+            crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m),
+            0,
+            "no M_FLOWID: queue 0"
+        );
+        m.m_pkthdr()
+            .csum_flags
+            .set(m.m_pkthdr().csum_flags.get() | M_FLOWID);
+        assert_eq!(crate::net::ifq::ifq_idx(ifp.if_snd(), 4, &m), 13 % 4);
+    }
+
+    #[test]
+    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
+    fn ifq_maxlen_matches_the_c_header() {
+        let defs = crate::reftest::defines("sys/net/ifq.h");
+        assert_eq!(
+            crate::reftest::int(&defs, "IFQ_MAXLEN"),
+            Some(i64::from(crate::net::ifq::IFQ_MAXLEN))
+        );
+    }
 }
 /* </TESTS> */
