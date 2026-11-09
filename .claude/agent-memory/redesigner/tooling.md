@@ -284,3 +284,7 @@ metadata:
 - A test's deleted file may hold the only copy of a test: when a bsd file goes, read its `<TESTS>` zone too (`git show HEAD:<path>`), not just `<CODE>`, and move the test with the code (N6.2b's sys_socket.rs ifioctl test).
 - The guard refuses Monitor commands with `$(stat ..)` arithmetic inline; a watcher script file run as `/bin/zsh <path> <log>` passes (N6.2b).
 - The meaningful per-slice clippy of the kernel is the justfile's host line `cargo clippy -p hal -p kernel -p abi -- -D warnings` (no `--tests`: the tree's test code has hundreds of pedantic findings); it caught a doc list item and `len_without_is_empty` (N6.3a).
+- `cargo fix --lib --tests` removes a `use` the lib build does not need even when the test build does (an extension trait only tests call): move such imports into the tests module; `cargo check --tests` hides lib-only unused imports, `just clippy` (lib) shows them (N6.3a part 2).
+- The worktree guard refuses `xargs git add` (arguments from stdin); `git add -u -- sys docs lineage.toml` stages the tracked changes without the reference symlinks (N6.3a part 2).
+- A many-file python edit script that asserts in the middle has already written the files before the failing one: split per-file edits into separate scripts, or re-run only the remainder (N6.3a part 2).
+- macOS `sample <pid> 1 -file <out>` on a hung host test binary gives its stacks; grep the mangled `6kernel`/`3hal` frames to find the sleep (smr::barrier, net_tq_barriers) (N6.3a part 2).
