@@ -15031,7 +15031,7 @@ notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_t
 [[extra]]
 rust = "sys/kernel/net/pf_hooks.rs"
 crate = "kernel"
-reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), its OnceStatic slot and register_pf"
+reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb) and if.c's (pf_delay_pkt, pf_pkt_addr_changed, pfi_attach_ifnet, pfi_detach_ifnet, the groups' pfi_* legs, N6.3a), its OnceStatic slot and register_pf"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

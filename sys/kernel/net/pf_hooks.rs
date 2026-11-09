@@ -25,11 +25,19 @@
 //! links and unlinks. `bsd`'s pf registers its implementation at boot ([`register_pf`],
 //! bridges.toml's `Pf` row, paid by N8 when pf moves); before that every leg is a no-op, the
 //! C compiled with `NPF == 0`. N6.3c adds the stack's other legs to the same trait.
+//!
+//! `if.c`'s legs (N6.3a, the `NPF > 0` blocks of `if_enqueue`, `if_vinput`, `if_attachsetup`,
+//! `if_detach` and the groups' functions) are default methods doing what the C without pf
+//! does, so that `bsd`'s implementation overrides them one by one.
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 
-use crate::net::mbuf::PkthdrPf;
+use hal::sys::errno::Errno;
+
+use crate::assert::kpanic;
+use crate::net::if_var::{IfgGroup, Ifnet};
+use crate::net::mbuf::{Mbuf, MbufBox, PkthdrPf};
 
 /// The legs of pf the mbuf calls (`net/pf.c`'s `pf_mbuf_*`), over the header's pf part.
 pub trait Pf: Sync {
@@ -43,6 +51,28 @@ pub trait Pf: Sync {
     fn mbuf_unlink_state_key(&self, pf: &PkthdrPf);
     /// `pf_mbuf_unlink_inpcb(m)`: the header's pcb reference dropped, its word 0.
     fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf);
+
+    /// `pf_delay_pkt(m, ifidx)`: a packet whose header asks for a delay (`pf.delay > 0`,
+    /// which only pf's rules set) held back by pf before it is sent on. Without pf no packet
+    /// asks for one: the default is `panic(9)`.
+    fn delay_pkt(&self, m: MbufBox, ifidx: u32) -> Result<(), Errno> {
+        drop(m);
+        kpanic(format_args!("pf_delay_pkt({ifidx}): no pf"))
+    }
+    /// `pf_pkt_addr_changed(m)`: the packet's addresses changed (its state key forgotten).
+    fn pkt_addr_changed(&self, _m: &Mbuf) {}
+    /// `pfi_attach_ifnet(ifp)`.
+    fn attach_ifnet(&self, _ifp: &'static Ifnet) {}
+    /// `pfi_detach_ifnet(ifp)`.
+    fn detach_ifnet(&self, _ifp: &'static Ifnet) {}
+    /// `pfi_attach_ifgroup(ifg)`: pf's kif of a new group (`ifg_pf_kif`).
+    fn attach_ifgroup(&self, _ifg: &IfgGroup) {}
+    /// `pfi_detach_ifgroup(ifg)`: the group's kif let go, before the group goes.
+    fn detach_ifgroup(&self, _ifg: &IfgGroup) {}
+    /// `pfi_group_addmember(name)`: an interface joined the group `name`.
+    fn group_addmember(&self, _name: &[u8]) {}
+    /// `pfi_group_delmember(name)`: an interface left the group `name`.
+    fn group_delmember(&self, _name: &[u8]) {}
 }
 
 /// pf's legs, once registered.

@@ -120,8 +120,9 @@
 //!   ...) and `if_rtrequest` -> [`NetDriver`], the interface's driver: one object per
 //!   interface, `bsd`'s `LegacyNetDriver` over the table its drivers keep filling (registered
 //!   before attach in [`Ifnet::if_driver`], D-N6.3a-8), the C's NULL defaults as the trait's
-//!   default methods. The route of `if_output` is [`RtRef`], `bsd`'s `Rtentry` erased, until
-//!   routing moves (N6.3b; D-N6.3a-9).
+//!   default methods. `if_output` and `if_ll_output` stay in `bsd`'s table, out of the trait,
+//!   with their callers, until routing moves (N6.3b; D-N6.3a-9): their arguments are `bsd`'s
+//!   route and socket address, and the kernel calls neither.
 //! - `if_ifqs`/`if_iqs` (a pointer to an array of pointers, the first slot the embedded
 //!   queue's own one-element map) -> the queues in [`IfRt`]: `if_snd`/`if_rcv` and the
 //!   `MBox`ed rest that `if_attach_queues`/`if_attach_iqueues` add, so [`Ifnet::ifq`] is one
@@ -499,11 +500,6 @@ pub fn counters_pkt(c: &IfCounterArray, pc: IfCounters, bc: IfCounters, v: u64) 
     c[bc as usize].fetch_add(v, Ordering::Relaxed);
 }
 
-/// `struct rtentry *` of an output (`if_output`'s `rt`): `bsd`'s route, erased, which only
-/// `bsd`'s drivers and protocols read back (by naming its type), until routing is the
-/// kernel's (N6.3b; docs/SCAFFOLDING.md).
-pub type RtRef = Option<&'static (dyn Any + Sync)>;
-
 /// `struct netstack`: the packet lists a softnet thread works through (`if_input_process`).
 /// Owned by its softnet thread, lent `&mut` to the input functions it calls (the module's
 /// redesign); `ns_route`, `route.c`'s `struct route`, is `bsd`'s beside it, by [`ns_idx`].
@@ -540,7 +536,10 @@ impl Netstack {
 /// `if_wol`, `if_qstart`), one object per interface, registered before `if_attach`
 /// ([`Ifnet::if_driver`]). Each default method is what the C does with a NULL handle (or the
 /// default `if_attach_common` installs). `if_rtrequest` is not one: the kernel never calls
-/// it (`route.c`'s, N6.3b). Decision 46: at N7 a native driver implements this trait (or
+/// it (`route.c`'s, N6.3b); nor are `if_output` and `if_ll_output` yet: their callers
+/// (`if_output_ml`, `if_output_tso`, `if_output_mq`, the protocols' outputs) pass `bsd`'s
+/// route and socket address and stay `bsd`'s with routing until N6.3b (D-N6.3a-9), so the
+/// kernel calls neither in N6.3a. Decision 46: at N7 a native driver implements this trait (or
 /// `NetDevice` absorbs it); until then `bsd`'s `LegacyNetDriver` does, over its drivers'
 /// tables (bridges.toml's `NetDriver` row).
 pub trait NetDriver: Sync + 'static {
@@ -586,33 +585,6 @@ pub trait NetDriver: Sync + 'static {
             .with_str(|n| kpanic(format_args!("{}: no if_input", Str(n))));
     }
 
-    /// `if_output`: send `m` to `dst` (a socket address's bytes) by route `rt`. Default:
-    /// `panic(9)` (the C calls through NULL).
-    fn output(
-        &self,
-        ifp: &'static Ifnet,
-        m: MbufBox,
-        _dst: &[u8],
-        _rt: RtRef,
-    ) -> Result<(), Errno> {
-        drop(m);
-        ifp.if_xname
-            .with_str(|n| kpanic(format_args!("{}: no if_output", Str(n))))
-    }
-
-    /// `if_ll_output`: the link level's output. Default: `panic(9)`.
-    fn ll_output(
-        &self,
-        ifp: &'static Ifnet,
-        m: MbufBox,
-        _dst: &[u8],
-        _rt: RtRef,
-    ) -> Result<(), Errno> {
-        drop(m);
-        ifp.if_xname
-            .with_str(|n| kpanic(format_args!("{}: no if_ll_output", Str(n))))
-    }
-
     /// `if_bpf_mtap`: tap `m` to the interface's bpf(4) word `if_bpf`; `true` drops it.
     /// Default: `bpf_mtap_ether` (the `Link` leg, what `if_attach_common` installs).
     fn bpf_mtap(&self, if_bpf: *const u8, m: &Mbuf, dir: u32) -> bool {
@@ -635,9 +607,13 @@ pub trait Cloner: Sync + 'static {
     /// `ifc_create`: creates unit `unit`.
     fn create(&self, unit: i32) -> Result<(), Errno>;
 
-    /// `ifc_destroy`: destroys the cloned interface `ifp`; `None` when the cloner's interfaces
-    /// cannot be destroyed (NULL, `EOPNOTSUPP` for `if_clone_destroy`).
-    fn destroy(&self, ifp: &'static Ifnet) -> Option<Result<(), Errno>>;
+    /// Whether the cloner has an `ifc_destroy` (the C's `ifc->ifc_destroy != NULL`;
+    /// `if_clone_destroy` answers `EOPNOTSUPP` without one, before it looks the interface up).
+    fn has_destroy(&self) -> bool;
+
+    /// `ifc_destroy`: destroys the cloned interface `ifp` (only called when
+    /// [`Cloner::has_destroy`]).
+    fn destroy(&self, ifp: &'static Ifnet) -> Result<(), Errno>;
 }
 
 /// The bits of [`Ifnet::detached`]: `if_detach` swapped the C's `if_qstart` and `if_ioctl` for
@@ -767,6 +743,9 @@ pub struct Ifnet {
     pub if_sadl: ReadMostly<Option<MBox<SockaddrDl>>>,
     /// \[I\] `if_nd`: IPv6 Neighbor Discovery info (`struct nd_ifinfo *`, nd6's word).
     pub if_nd: PtrWord<core::ffi::c_void>,
+    /// \[N\] `if_groups`: the groups the interface is a member of (a snapshot replaced whole
+    /// by `if_addgroup` and `if_delgroup`; readers through [`Ifnet::groups`]).
+    pub(crate) if_groups: ReadMostly<IfgSet>,
     /// The driver, registered before `if_attach` (`bsd`'s table, D-N6.3a-8).
     pub if_driver: OnceStatic<&'static dyn NetDriver>,
     /// What `if_attach_common` builds.
@@ -833,6 +812,7 @@ impl Ifnet {
             if_snd_maxlen: AtomicCell::new(),
             if_sadl: ReadMostly::new(None),
             if_nd: PtrWord::new(),
+            if_groups: ReadMostly::new(IfgSet::new()),
             if_driver: OnceStatic::new(),
             rt: OnceStatic::new(),
             detached: AtomicU8::new(0),
@@ -947,6 +927,17 @@ impl Ifnet {
     /// rule): `None` before `if_alloc_sadl`.
     pub fn sadl(&self) -> hal::slot::ReadMostlyRef<'_, Option<MBox<SockaddrDl>>> {
         self.if_sadl.read()
+    }
+
+    /// `ifp->if_groups`, borrowed for a reader (the rule of [`IfgGroup::members`]).
+    pub fn groups(&self) -> hal::slot::ReadMostlyRef<'_, IfgSet> {
+        self.if_groups.read()
+    }
+
+    /// Whether `if_detach` swapped the C's `if_ioctl` for `if_detached_ioctl` (a request then
+    /// answers `ENODEV`): `bsd`'s legacy request path asks it before calling the driver.
+    pub fn if_ioctl_detached(&self) -> bool {
+        self.is_detached(DETACHED_IOCTL)
     }
 
     /// Whether `ether_ifattach` made this interface the `ac_if` of a `struct arpcom`.
@@ -1078,6 +1069,103 @@ hal::list_adapter!(
     /// `TAILQ_HEAD(, ifmaddr) if_maddrlist`.
     pub IfMaddrlist: Ifmaddr, ifma_list
 );
+
+/// `struct ifg_group`: an interface group (`ifconfig em0 group foo`), with its member
+/// interfaces. Held by counted references ([`IfgRef`]) from the groups' list (`ifg_head`) and
+/// from each member's `if_groups`; freed with the last one (the C's `ifgroup_icrele` and its
+/// temporary references, which the snapshots make unnecessary).
+pub struct IfgGroup {
+    /// `ifg_group`: the group's name, NUL-padded.
+    pub ifg_group: [u8; IFNAMSIZ],
+    /// \[N\] `ifg_refcnt`: the members, the creator's one counted until the first joins.
+    pub(crate) ifg_refcnt: AtomicU32,
+    /// `ifg_pf_kif`: pf's kif of the group (pf's word).
+    pub ifg_pf_kif: PtrWord<u8>,
+    /// `ifg_carp_demoted`.
+    pub ifg_carp_demoted: AtomicCell<i32>,
+    /// \[N\] `ifg_members`: the member interfaces, a snapshot replaced whole by each change.
+    pub(crate) ifg_members: ReadMostly<IfgMembers>,
+}
+
+impl IfgGroup {
+    /// The group's name without its NUL padding.
+    pub fn name(&self) -> &[u8] {
+        let n = self
+            .ifg_group
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(IFNAMSIZ);
+        &self.ifg_group[..n]
+    }
+
+    /// `ifg_members`, borrowed for a reader. A reader that sleeps with it holds the net lock,
+    /// which every writer holds exclusively (the C's protocol), so no writer waits for it.
+    pub fn members(&self) -> hal::slot::ReadMostlyRef<'_, IfgMembers> {
+        self.ifg_members.read()
+    }
+
+    /// `ifg_refcnt`.
+    pub fn refcnt(&self) -> u32 {
+        self.ifg_refcnt.load(Ordering::Relaxed)
+    }
+}
+
+/// A counted reference to a group (`struct ifg_list`'s `ifgl_group`, `ifg_head`'s links).
+pub type IfgRef = hal::malloc::MArc<IfgGroup>;
+
+/// A list of groups (`TAILQ_HEAD(, ifg_list) if_groups`, `ifg_head`), as one array replaced
+/// whole by each change (the module's redesign), empty as `None`.
+#[derive(Default)]
+pub struct IfgSet(pub(crate) Option<MArray<IfgRef>>);
+
+impl IfgSet {
+    /// The empty list.
+    pub const fn new() -> Self {
+        Self(None)
+    }
+
+    /// The groups, in the order they were added (the C's `TAILQ_INSERT_TAIL`).
+    pub fn iter(&self) -> impl Iterator<Item = &IfgGroup> {
+        self.refs().iter().map(|g| &**g)
+    }
+
+    /// The counted references, in order.
+    pub fn refs(&self) -> &[IfgRef] {
+        self.0.as_deref().unwrap_or(&[])
+    }
+
+    /// The number of groups.
+    pub fn len(&self) -> usize {
+        self.refs().len()
+    }
+
+    /// No group.
+    pub fn is_empty(&self) -> bool {
+        self.refs().is_empty()
+    }
+}
+
+/// `TAILQ_HEAD(, ifg_member) ifg_members`: a group's members, in the order they joined, as one
+/// array replaced whole by each change, empty as `None`.
+#[derive(Default)]
+pub struct IfgMembers(pub(crate) Option<MArray<&'static Ifnet>>);
+
+impl IfgMembers {
+    /// The empty list.
+    pub const fn new() -> Self {
+        Self(None)
+    }
+
+    /// The members, in order.
+    pub fn iter(&self) -> impl Iterator<Item = &'static Ifnet> + '_ {
+        self.as_slice().iter().copied()
+    }
+
+    /// The members as a slice.
+    pub fn as_slice(&self) -> &[&'static Ifnet] {
+        self.0.as_deref().unwrap_or(&[])
+    }
+}
 
 /// `if_rxr_put(r, c)`: `c` slots of the ring were consumed.
 pub fn if_rxr_put(r: &mut IfRxring, c: u32) {
