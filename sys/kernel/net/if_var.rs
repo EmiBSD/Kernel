@@ -137,8 +137,10 @@
 //!   storage, under the net lock `SaLink::read` checks (D-N6.3a-3, review 1's B2;
 //!   `sys/hal/trust.rs`'s premise), until N6.4/N6.5 embed the storage.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
-//!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` stays `bsd`'s
-//!   (`route.c`'s `struct route`) beside it until N6.3b (D-N6.3a-10).
+//!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
+//!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
+//!   use a route of the call (D-N6.3a-10's `SOFTNET_ROUTES` dropped: `bsd`'s `Route` is not
+//!   `Sync`).
 //! - `struct if_clone` with its two function pointers -> [`Cloner`].
 
 use core::any::Any;
@@ -503,9 +505,8 @@ pub fn counters_pkt(c: &IfCounterArray, pc: IfCounters, bc: IfCounters, v: u64) 
 
 /// `struct netstack`: the packet lists a softnet thread works through (`if_input_process`).
 /// Owned by its softnet thread, lent `&mut` to the input functions it calls (the module's
-/// redesign); `ns_route`, `route.c`'s `struct route`, is `bsd`'s beside it, by [`ns_idx`].
-///
-/// [`ns_idx`]: Netstack::ns_idx
+/// redesign); `ns_route`, `route.c`'s `struct route`, has no per-softnet home until N6.3b
+/// (the module's redesign).
 pub struct Netstack {
     /// `ns_input`: packets to give to an interface's `if_input` again (`if_vinput`).
     pub ns_input: MbufList,
@@ -515,7 +516,7 @@ pub struct Netstack {
     pub ns_tcp_ml: MbufList,
     /// `ns_tcp6_ml`: the same for IPv6.
     pub ns_tcp6_ml: MbufList,
-    /// The softnet this stack is (`bsd`'s `SOFTNET_ROUTES[ns_idx]` is its `ns_route`).
+    /// The softnet this stack is.
     pub ns_idx: u32,
 }
 

@@ -424,10 +424,10 @@ paid_by = "N6"
 # if_qstart, if_ioctl, if_watchdog, if_wol, if_bpf_mtap; if_output and if_ll_output stay in bsd's
 # table with their callers, if_output_ml/_tso/_mq, until routing moves, N6.3b), N6.3a: the
 # kernel's interface core (kernel::net::if_, ifq) calls it through the driver registered in
-# Ifnet::if_driver before if_attach; bsd's LegacyNetDriver (sys/net/if_var.rs, N6.3a1's
-# adapter commit) over each softc's table implements it, one object per interface. Until that
-# commit no bsd interface is attached by the kernel (bsd's if_attach is LZ's). Paid when the
-# drivers move (N7: NetDevice, decision 45).
+# Ifnet::if_driver before if_attach; bsd's LegacyNetDriver (sys/net/if_var.rs) over each
+# softc's table implements it, one object per interface, for every bsd interface the kernel
+# attaches (bsd's if_attach forwards to the kernel's since N6.3a1). Paid when the drivers move
+# (N7: NetDevice, decision 45).
 # kernel::net::if_var::NetDriver
 [[bridge]]
 trait = "NetDriver"
@@ -472,8 +472,9 @@ for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.
 paid_by = "N6"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
-# implemented by bsd's LegacyQueueDiscipline (sys/net/ifq.rs, N6.3a1's adapter commit) and
-# attached by pf_ioctl's if_attach_ifq; the kernel's priq is native (kernel::net::ifq::Priq).
+# implemented by bsd's IfqOps tables themselves (sys/net/ifq.rs: impl QueueDiscipline for
+# IfqOps, its deq the table's begin and commit of one packet) and attached by pf_ioctl's
+# if_attach_ifq; the kernel's priq is native (kernel::net::ifq::Priq).
 # A value the kernel receives (ifq_attach's argument), a row while bsd implements it
 # (decision 39). Paid when pf moves (N8).
 # kernel::net::ifq::QueueDiscipline

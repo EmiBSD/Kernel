@@ -143,8 +143,8 @@
 //! | operation | the C | here |
 //! |---|---|---|
 //! | `if_attach` (:588-610) | `NET_LOCK` around the list insert and `if_attachsetup`; `idxmaplk` in `if_idxmap_alloc` and `_insert` | the same (`NETLOCK.write()`, the map's lock twice) |
-//! | `if_remove` (:1213-1228) | `NET_LOCK` around the list removal, `idxmaplk`, `smr_barrier`, the softnet barriers, `refcnt_finalize` | the same |
-//! | `if_detach` (:1265-1375) | `NET_LOCK` + `splnet` around the protocols' detach | the same, `if_deactivate`'s `NET_LOCK` before it |
+//! | `if_remove` (:1213-1228) | `NET_LOCK` around the list removal, `idxmaplk`, `smr_barrier`, the softnet barriers, `refcnt_finalize` | the same, but for the softnet barriers (`net_tq_barriers`, if.c:3823-3835: stack tasks and a stack `struct refcnt`, no lock): the `netbarlk` rwlock around the call, which serialises its callers over the softnets' own barrier tasks, and the barrier count's `IPL_NET` mutex once per softnet and once per wait (detach and the protocols' teardown only, never per packet) |
+//! | `if_detach` (:1265-1375) | `NET_LOCK` + `splnet` around the protocols' detach, the groups, the link name and the left addresses | the same, `if_deactivate`'s `NET_LOCK` before it; `splnet` ends before the groups (review 1's S2: removing a member allocates the group's smaller array `M_WAITOK`, which needs `IPL_NONE`; no interrupt handler reads the groups, the link name or the address list), so one `splnet` pair as the C's |
 //! | `if_get`/`if_put` (:1984-2024) | one SMR read section, two loads, a count each way | the same |
 //! | `if_input_process` (:1031-1093) | `NET_LOCK_SHARED` around the batch | the same |
 //! | `if_addgroup`/`if_delgroup` (:3068-3167) | none (the caller's `NET_LOCK`) | none: each changed list is one `ReadMostly` claim (a compare-and-swap) |
@@ -171,7 +171,8 @@
 //!   multi-queue driver here detaches (vio, vmx); N7's `NetDevice` owns them.
 //! - The groups' lists are arrays replaced whole (the module's redesign): `vmstat -m`'s
 //!   "ifgroup" row counts one array per change where the C counts one `ifg_list` and one
-//!   `ifg_member` per membership; the removal allocates its smaller array `M_WAITOK`.
+//!   `ifg_member` per membership; the removal allocates its smaller array `M_WAITOK` (so
+//!   `if_detach` ends its `splnet` section before the groups, review 1's S2).
 //! - The cloners are at most 16 (a table filled at boot; `if_clone_attach` `panic(9)`s past
 //!   it); the C's list has no bound.
 //! - `if_slowtimo`'s first run follows `if_idxmap_insert` in `if_attachsetup` (the C runs it
@@ -195,7 +196,10 @@
 //!   callers), and [`IfRef`] is the guard kernel code uses, which puts it when dropped.
 //! - `struct netstack` is a value on `if_input_process`'s stack, lent `&mut` to each input
 //!   function: the C reinitialises the softnet's own at each call, so its lists carry nothing
-//!   between calls (D-N6.3a-10); `ns_route` is `bsd`'s per softnet.
+//!   between calls (D-N6.3a-10). The C's `ns_route` (`struct route`, `route.c`'s) has no
+//!   home yet: `bsd`'s `ip_input`/`ip6_input` use a route of the call, one route lookup per
+//!   received packet more than the C, until N6.3b (`bsd`'s `Route` of `Cell`s cannot be a
+//!   shared static without a new `unsafe impl Sync`; docs/SCAFFOLDING.md).
 //! - `if_input_proto` keeps the protocol's input function in the packet's `ph_cookie`, as the
 //!   C, as an index into a table of the functions seen ([`proto_fn_id`]): a function pointer
 //!   is not made back from a word without `unsafe`.
@@ -940,13 +944,20 @@ pub fn if_detached_qstart(ifq: &Ifqueue) {
 /// `if_enqueue_ifq`: the default `if_enqueue`, onto the send queue the conditioner picks (of
 /// `if_nifqs`), then the ring started.
 pub fn if_enqueue_ifq(ifp: &'static Ifnet, m: MbufBox) -> Result<(), Errno> {
-    let mut ifq: &'static Ifqueue = ifp.if_snd();
+    // The queues looked up once (review 1's S3: the C reads `if_snd`, `if_nifqs` and
+    // `if_ifqs` from the interface it holds).
+    let rt = ifp.rt();
+    let mut ifq: &'static Ifqueue = &rt.if_snd;
 
-    let n = ifp.if_nifqs();
-    if n > 1 {
+    if let Some(more) = rt.ifqs.get() {
         // use the operations on the first ifq to pick which of the array gets this mbuf.
-        let idx = ifq_idx(ifq, n, &m);
-        ifq = ifp.ifq(idx);
+        let idx = ifq_idx(ifq, more.len() as u32 + 1, &m);
+        if idx != 0 {
+            ifq = match more.get(idx as usize - 1) {
+                Some(q) => q,
+                None => kpanic(format_args!("interface queue {idx} past the array")),
+            };
+        }
     }
 
     ifq_enqueue(ifq, m)?;
@@ -1845,6 +1856,10 @@ pub fn if_detach(ifp: &'static Ifnet) {
         if let Some(pf) = pf() {
             pf.detach_ifnet(ifp);
         }
+        // splnet ends here (the C's ends with the block): removing a member allocates the
+        // group's smaller array `M_WAITOK`, which needs IPL_NONE, and no interrupt handler
+        // reads the groups, the link name or the address list (review 1's S2).
+        drop(s);
 
         loop {
             // The name copied out of the snapshot first: if_delgroup replaces it.
@@ -1873,7 +1888,6 @@ pub fn if_detach(ifp: &'static Ifnet) {
                 }
             }
         }
-        drop(s);
     }
 
     {

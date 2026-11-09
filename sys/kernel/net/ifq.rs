@@ -264,7 +264,7 @@ impl IfqLocked<'_> {
     /// `ifq_mfreem`: a conditioner drops `m` while `ifq_mtx` is held; it is freed once the
     /// mutex is released.
     pub fn mfreem(&mut self, m: MbufBox) {
-        self.ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
+        self.len_sub(1);
         self.g.qdrops += 1;
         ml_enqueue(&mut self.g.free, m);
     }
@@ -272,7 +272,7 @@ impl IfqLocked<'_> {
     /// `ifq_mfreeml`: as `mfreem`, for a list.
     pub fn mfreeml(&mut self, ml: &mut MbufList) {
         let n = ml_len(ml);
-        self.ifq.ifq_len.fetch_sub(n, Ordering::Relaxed);
+        self.len_sub(n);
         self.g.qdrops += u64::from(n);
         ml_enlist(&mut self.g.free, ml);
     }
@@ -283,6 +283,20 @@ impl IfqLocked<'_> {
             self.ifq.ifq_oactive.store(1, Ordering::Relaxed);
             self.g.oactives += 1;
         }
+    }
+
+    /// `ifq->ifq_len += n` with `ifq_mtx` held: the counter's writers all hold it, so a load
+    /// and a store (the C's `ifq_len++`), where its readers without the mutex see either
+    /// value; no read-modify-write is needed (review 1's S3).
+    fn len_add(&self, n: u32) {
+        let l = &self.ifq.ifq_len;
+        l.store(l.load(Ordering::Relaxed).wrapping_add(n), Ordering::Relaxed);
+    }
+
+    /// `ifq->ifq_len -= n` with `ifq_mtx` held (as [`IfqLocked::len_add`]).
+    fn len_sub(&self, n: u32) {
+        let l = &self.ifq.ifq_len;
+        l.store(l.load(Ordering::Relaxed).wrapping_sub(n), Ordering::Relaxed);
     }
 
     /// `ifq_len`, as the conditioner sees it under the mutex.
@@ -581,7 +595,7 @@ fn ifq_attach_disc(ifq: &Ifqueue, new: Discipline) {
                 ml_enqueue(&mut free_ml, m);
             }
             None => {
-                ifq.ifq_len.fetch_add(1, Ordering::Relaxed);
+                st.len_add(1);
             }
         }
     }
@@ -643,7 +657,7 @@ pub fn ifq_enqueue(ifq: &Ifqueue, m: MbufBox) -> Result<(), Errno> {
     }
 
     if dm.is_none() {
-        ifq.ifq_len.fetch_add(1, Ordering::Relaxed);
+        st.len_add(1);
     } else {
         st.g.qdrops += 1;
     }
@@ -687,7 +701,7 @@ pub fn ifq_deq_with(ifq: &Ifqueue, f: impl FnOnce(&Mbuf) -> IfqDeq) -> Option<Mb
         answer == IfqDeq::Commit
     });
     if m.is_some() {
-        ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
+        st.len_sub(1);
     } else if answer == IfqDeq::RollbackOactive {
         st.set_oactive();
     }
@@ -716,7 +730,7 @@ pub fn ifq_deq_sleep(
     } else {
         loop {
             if let Some(m) = disc_deq(&mut st, |_| true) {
-                ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
+                st.len_sub(1);
                 break Ok(m);
             }
 

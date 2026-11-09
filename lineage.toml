@@ -7624,7 +7624,7 @@ rust = "sys/kernel/net/if_.rs"
 crate = "kernel"
 lz = ["sys/net/if_.rs"]
 status = "redesigned"
-notes = "N6.3a1 part 1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach_common and the extra queues; the Inet, Routing and Link legs. if_attach/if_detach, groups, cloners, link state, addresses (part 2) and the ioctls (N6.3a2) are bsd's sys/net/if_.rs until their commits"
+notes = "N6.3a1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach/if_attach_common/if_attachsetup and the extra queues, if_remove/if_detach, the hooks, link state, slowtimo and watchdog, groups (snapshot arrays in ReadMostly cells), cloners, the address lookups over SaLink copies, if_up/if_down, promiscuity and LRO through if_ioctl; the Inet, Routing, Link and Pf legs. The ioctls (ifioctl, ifconf, the group and rxr requests) and if_media are bsd's sys/net/if_.rs and if_media.rs until N6.3a2"
 
 [[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
