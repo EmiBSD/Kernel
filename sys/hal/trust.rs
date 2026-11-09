@@ -130,10 +130,13 @@
 //! while the interface address naming it lives (it is freed only after `ifa_del` has unlinked
 //! the address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the
 //! family its `&'static Ifnet` belongs to); and it asks for a proof by check only while it
-//! holds the lock itself: for a shared holding `rw_status` cannot say whose it is (the C's
-//! `NET_ASSERT_LOCKED()` cannot either), so a read holding it finds is its own, as every C
-//! reader of `ifa_addr` holds one. The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's
-//! and the interface address embeds its storage (N6.4, N6.5).
+//! holds the lock itself, and drops the proof before it lets that holding go (the `NetHeld`
+//! of a `&'static SaToken` is `NetHeld<'static>`, so no borrow ends it for the holder): for a
+//! shared holding `rw_status` cannot say whose it is (the C's `NET_ASSERT_LOCKED()` cannot
+//! either), so a read holding it finds is its own, as every C reader of `ifa_addr` holds one.
+//! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
+//! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
+//! embeds its storage (N6.4, N6.5).
 //!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is

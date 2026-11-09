@@ -137,6 +137,11 @@
 //!   `ifa_ifwithdstaddr`, `ifaof_ifpforaddr`, `if_group_routechange`, `ifa_update_broadaddr`)
 //!   keep LZ's `unsafe fn` signatures over `*const Sockaddr` for their callers: each views the
 //!   address's `sa_len` bytes and forwards (the kernel compares bytes).
+//! - The three lookups among them (`ifa_ifwithaddr`, `ifa_ifwithdstaddr`, `ifaof_ifpforaddr`)
+//!   `panic(9)` at the start of their walk when the net lock is not held, where the C's
+//!   `NET_ASSERT_LOCKED()` (a splassert) only prints and goes on: the kernel's copy of an
+//!   address needs the proof (`hal::netlock::NetHeld`, N6.3a1 review 1 B2, review 2 S-a);
+//!   every caller the C has holds the lock.
 //! - Calls into files that are not ported report themselves with `unported!` and go on as
 //!   the C would with an empty subsystem: `inet_ntop` for `AF_INET` (`ifa_print_all`;
 //!   `AF_INET6` prints with nd6's `In6Ntop`).
@@ -255,8 +260,11 @@ unsafe fn bytes_of<T>(v: &T) -> &[u8] {
 ///
 /// # Safety
 ///
-/// `data` points at the request's structure for `cmd` (`IOCPARM_LEN(cmd)` bytes, readable
-/// and writable), as [`IfIoctlFn`](crate::net::if_var::IfIoctlFn)'s.
+/// `data` points at the request's structure for `cmd`, aligned for it, readable and writable
+/// for `IOCPARM_LEN(cmd)` bytes and readable through the largest union member a handler may
+/// read (an `in6_ifreq` read through an `ifreq`), as
+/// [`IfIoctlFn`](crate::net::if_var::IfIoctlFn)'s contract says. The raw callers pass whole,
+/// real structures (`in_.rs`'s `ifaddr`s, `in6.rs`'s `in6_ifreq`s), which satisfy it.
 pub unsafe fn ifp_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<(), Errno> {
     if ifp.if_ioctl_detached() {
         return Err(Errno::ENODEV);
@@ -2744,7 +2752,8 @@ pub(crate) mod tests {
         // Review 2's B5-r (b): `ether_multiaddr` takes the `sockaddr_in6` of SIOCADDMULTI out
         // of a 32-byte `ifreq`, bytes 24..40. Through the kernel's `if_ioctl` the handler reads
         // the zeroed copy past the request: ff02:0:0:0 in the request and zeros after it is
-        // the group ff02::, Ethernet 33:33:00:00:00:00.
+        // the group ff02::, Ethernet 33:33:00:00:00:00. The caller's buffer goes on with 0xaa
+        // bytes past the request, which a handler run in place would read (review 3).
         let _g = setup_net();
         let ifp = crate::netinet::ip_input::tests::test_ether();
         let ac = crate::netinet::if_ether::arpcom_of(ifp);
@@ -2755,18 +2764,22 @@ pub(crate) mod tests {
         sa.sa_family = AF_INET6;
         // sin6_port (2) and sin6_flowinfo (4), then the first 8 bytes of sin6_addr.
         sa.sa_data[6..8].copy_from_slice(&[0xff, 0x02]);
-        let r = kernel::net::if_::if_ioctl(
-            ifp,
-            SIOCADDMULTI,
-            hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr)),
-        );
+        let mut buf = [u64::from_ne_bytes([0xaa; 8]); 6];
+        let bytes = hal::user::bytes_of_mut(&mut buf[..]);
+        bytes[..size_of::<Ifreq>()]
+            .copy_from_slice(hal::user::bytes_of(core::slice::from_ref(&ifr)));
+        let req = &mut bytes[..size_of::<Ifreq>()];
+        let r = kernel::net::if_::if_ioctl(ifp, SIOCADDMULTI, req);
         assert!(matches!(r, Ok(()) | Err(Errno::ENETRESET)), "{r:?}");
         assert_eq!(ac.ac_multicnt.get(), 1);
-        let r = kernel::net::if_::if_ioctl(
-            ifp,
-            SIOCDELMULTI,
-            hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr)),
-        );
+        // The group's low 32 bits (sin6_addr bytes 12..16, request bytes 36..40) are past the
+        // 32-byte request: the entry 33:33:00:00:00:00 proves they were read as the copy's
+        // zeros, not as the caller's 0xaa bytes that follow the request.
+        let mut step = crate::netinet::if_ether::EtherMultistep { e_enm: None };
+        let enm = crate::netinet::if_ether::ether_first_multi(&mut step, ac).expect("added");
+        assert_eq!(enm.enm_addrlo, [0x33, 0x33, 0, 0, 0, 0]);
+        assert_eq!(enm.enm_addrhi, enm.enm_addrlo);
+        let r = kernel::net::if_::if_ioctl(ifp, SIOCDELMULTI, req);
         assert!(matches!(r, Ok(()) | Err(Errno::ENETRESET)), "{r:?}");
         assert_eq!(ac.ac_multicnt.get(), 0);
     }

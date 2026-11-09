@@ -374,8 +374,10 @@ impl SaToken {
     /// its own that no witness exists of (`bsd`'s detached `NET_LOCK()` and
     /// `NET_LOCK_SHARED()`): `None` unless the lock is written by the running process or
     /// read (the C's `NET_ASSERT_LOCKED()`). That a read holding is the caller's, `rw_status`
-    /// cannot say: the holder's contract (`sys/hal/trust.rs`). Kernel code holds a witness
-    /// and takes [`NetHeld::of`] instead.
+    /// cannot say: the holder's contract (`sys/hal/trust.rs`), which also asks it to drop the
+    /// proof before it lets the holding go (the proof of a `&'static` token is
+    /// `NetHeld<'static>`: no borrow ends it). Kernel code holds a witness and takes
+    /// [`NetHeld::of`] instead.
     pub fn net_held(&self) -> Option<NetHeld<'_>> {
         let held = crate::netlock::status();
         (held == RW_WRITE || held == RW_READ).then(NetHeld::new)

@@ -184,8 +184,11 @@ pub type IfStartFn = fn(&'static Ifnet);
 ///
 /// # Safety
 ///
-/// `data` points at the request's structure for the command (`IOCPARM_LEN(cmd)` bytes,
-/// readable and writable).
+/// `data` points at the request's structure for the command: aligned for that structure (8
+/// bytes for an `ifreq`), readable and writable for `IOCPARM_LEN(cmd)` bytes, and readable
+/// through the largest union member a handler may read there (the C's handlers read an
+/// `in6_ifreq` through `struct ifreq *`: `ether_multiaddr` takes a `sockaddr_in6`, bytes
+/// 24..40, out of a 32-byte `ifreq`). Nothing else reads or writes those bytes during the call.
 pub type IfIoctlFn = unsafe fn(&'static Ifnet, u64, *mut u8) -> Result<(), Errno>;
 /// `void (*if_watchdog)(struct ifnet *)`.
 pub type IfWatchdogFn = fn(&'static Ifnet);
