@@ -1434,6 +1434,15 @@ crate::abi_pod!(Ifreq {
     ifr_ifru: [u8; 16],
 });
 
+/// A union's first 16 bytes as the `sockaddr` its address members are (a `sockaddr` is 16
+/// bytes of alignment 1, so the view always fits).
+fn sockaddr_mut(u: &mut [u8]) -> &mut Sockaddr {
+    match crate::pod::view_mut::<Sockaddr>(u, 0) {
+        Some(sa) => sa,
+        None => crate::assert::hal_panic(format_args!("a union shorter than a sockaddr")),
+    }
+}
+
 impl Ifreq {
     /// An all-zero request.
     pub const fn zeroed() -> Self {
@@ -1471,6 +1480,21 @@ impl Ifreq {
     /// Sets `ifr_broadaddr`.
     pub fn set_ifr_broadaddr(&mut self, sa: &Sockaddr) {
         put_sockaddr(&mut self.ifr_ifru, sa);
+    }
+
+    /// `&ifr->ifr_addr`, to write in place (the union's 16 bytes viewed as a `sockaddr`).
+    pub fn ifr_addr_mut(&mut self) -> &mut Sockaddr {
+        sockaddr_mut(&mut self.ifr_ifru)
+    }
+
+    /// `&ifr->ifr_dstaddr`, to write in place.
+    pub fn ifr_dstaddr_mut(&mut self) -> &mut Sockaddr {
+        sockaddr_mut(&mut self.ifr_ifru)
+    }
+
+    /// `&ifr->ifr_broadaddr`, to write in place.
+    pub fn ifr_broadaddr_mut(&mut self) -> &mut Sockaddr {
+        sockaddr_mut(&mut self.ifr_ifru)
     }
 
     ifr_accessor! {
@@ -1536,6 +1560,11 @@ impl Ifaliasreq {
     /// Sets `ifra_addr`.
     pub fn set_ifra_addr(&mut self, sa: &Sockaddr) {
         put_sockaddr(&mut self.ifra_ifrau, sa);
+    }
+
+    /// `&ifra->ifra_addr`, to write in place.
+    pub fn ifra_addr_mut(&mut self) -> &mut Sockaddr {
+        sockaddr_mut(&mut self.ifra_ifrau)
     }
 
     /// `ifra_broadaddr`: the `ifra_dstaddr` member.

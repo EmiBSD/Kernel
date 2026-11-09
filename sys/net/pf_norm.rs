@@ -84,6 +84,7 @@ use crate::kern::subr_prf::{addlog, log, panic};
 use crate::kern::uipc_mbuf::{m_adj, m_calchdrlen, m_cat, m_copyback, m_freem, m_removehdr};
 use crate::machine::intr::IPL_SOFTNET;
 use crate::net::if_::unhandled_af;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::pf::{
     PF_HI, PF_LO, PF_STATUS, pf_addr_compare, pf_algnmnt, pf_cksum_fixup, pf_find_tcpopt, pf_inc,
     pf_patch_8, pf_patch_16, pf_patch_16_unaligned, pf_patch_32_unaligned, pf_print_flags,
@@ -1327,7 +1328,7 @@ pub fn pf_refragment6(
                     Some(d) => sin6tosa_const(d),
                     None => ptr::null(),
                 };
-                if let Some(output) = ifp.if_output.get() {
+                if let Some(output) = ifp.if_output().get() {
                     // SAFETY: `dst` is the caller's sockaddr_in6 (pf_route6's local), `rt`
                     // its route; the hook takes the packet.
                     let _ = unsafe { output(ifp, m, dst, rt) };

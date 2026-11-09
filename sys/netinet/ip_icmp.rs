@@ -1032,7 +1032,7 @@ pub fn icmp_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(m) = *mp else {
         return IPPROTO_DONE;
@@ -1054,7 +1054,7 @@ pub fn icmp_input_if(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(mut m) = *mp else {
         return IPPROTO_DONE;

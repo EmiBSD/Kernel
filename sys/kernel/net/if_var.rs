@@ -152,7 +152,6 @@ use hal::mutex::Mutexed;
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
 use hal::refcnt::Refcnt;
-use hal::rwlock::RawRwlock;
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
@@ -604,8 +603,9 @@ pub trait Cloner: Sync + 'static {
     /// `ifc_name`: the name of the device, e.g. `gif` (no NUL).
     fn name(&self) -> &'static [u8];
 
-    /// `ifc_create`: creates unit `unit`.
-    fn create(&self, unit: i32) -> Result<(), Errno>;
+    /// `ifc_create(ifc, unit)`: creates unit `unit` (the cloner itself is the C's first
+    /// argument, a `'static`).
+    fn create(&'static self, unit: i32) -> Result<(), Errno>;
 
     /// Whether the cloner has an `ifc_destroy` (the C's `ifc->ifc_destroy != NULL`;
     /// `if_clone_destroy` answers `EOPNOTSUPP` without one, before it looks the interface up).
@@ -636,8 +636,9 @@ pub struct IfRt {
     pub(crate) ifqs: OnceStatic<MArray<MBox<Ifqueue>>>,
     /// \[I\] `if_iqs[1..]`: the other input queues, set by `if_attach_iqueues`.
     pub(crate) iqs: OnceStatic<MArray<MBox<Ifiqueue>>>,
-    /// `if_maddrlock`: keeps `if_maddrlist`.
-    pub if_maddrlock: RawRwlock,
+    /// `if_maddrlock`: keeps `if_maddrlist`, taken C-style (`rw_enter_write` ..
+    /// `rw_exit_write`) by `bsd`'s multicast code, its only user until N6.4/N6.5.
+    pub if_maddrlock: hal::rwlock::SplitRwlock,
     /// \[I\] `if_slowtimo`: watchdog timeout (its argument the interface's index).
     pub(crate) if_slowtimo: Timeout,
     /// \[I\] `if_watchdogtask`: watchdog task (its argument the interface's index).
@@ -1113,15 +1114,24 @@ impl IfgGroup {
 /// A counted reference to a group (`struct ifg_list`'s `ifgl_group`, `ifg_head`'s links).
 pub type IfgRef = hal::malloc::MArc<IfgGroup>;
 
-/// A list of groups (`TAILQ_HEAD(, ifg_list) if_groups`, `ifg_head`), as one array replaced
-/// whole by each change (the module's redesign), empty as `None`.
+/// A list of groups (`TAILQ_HEAD(, ifg_list) if_groups`, `ifg_head`), as one counted array
+/// replaced whole by each change (the module's redesign), empty as `None`. A reader that
+/// copies out (and may sleep) keeps a [`IfgSet::snapshot`] in place of the C's temporary
+/// list and references (`ifg_tmplist`, `ifgroup_icref`).
 #[derive(Default)]
-pub struct IfgSet(pub(crate) Option<MArray<IfgRef>>);
+pub struct IfgSet(pub(crate) Option<hal::malloc::MArc<MArray<IfgRef>>>);
 
 impl IfgSet {
     /// The empty list.
     pub const fn new() -> Self {
         Self(None)
+    }
+
+    /// The same array, one more reference to it (no copy): it stays as it is while the
+    /// cell it came from is replaced.
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        Self(self.0.clone())
     }
 
     /// The groups, in the order they were added (the C's `TAILQ_INSERT_TAIL`).
@@ -1131,7 +1141,7 @@ impl IfgSet {
 
     /// The counted references, in order.
     pub fn refs(&self) -> &[IfgRef] {
-        self.0.as_deref().unwrap_or(&[])
+        self.0.as_deref().map_or(&[], |a| a)
     }
 
     /// The number of groups.
@@ -1148,12 +1158,18 @@ impl IfgSet {
 /// `TAILQ_HEAD(, ifg_member) ifg_members`: a group's members, in the order they joined, as one
 /// array replaced whole by each change, empty as `None`.
 #[derive(Default)]
-pub struct IfgMembers(pub(crate) Option<MArray<&'static Ifnet>>);
+pub struct IfgMembers(pub(crate) Option<hal::malloc::MArc<MArray<&'static Ifnet>>>);
 
 impl IfgMembers {
     /// The empty list.
     pub const fn new() -> Self {
         Self(None)
+    }
+
+    /// The same array, one more reference to it (as [`IfgSet::snapshot`]).
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        Self(self.0.clone())
     }
 
     /// The members, in order.
@@ -1163,7 +1179,7 @@ impl IfgMembers {
 
     /// The members as a slice.
     pub fn as_slice(&self) -> &[&'static Ifnet] {
-        self.0.as_deref().unwrap_or(&[])
+        self.0.as_deref().map_or(&[], |a| a)
     }
 }
 

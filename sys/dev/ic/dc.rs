@@ -144,9 +144,10 @@ use crate::net::if_media::{
     IFM_NONE, ifm_subtype, ifmedia_add, ifmedia_init, ifmedia_ioctl, ifmedia_set,
 };
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{
-    ifq_clr_oactive, ifq_deq_begin, ifq_deq_commit, ifq_deq_rollback, ifq_empty, ifq_init_maxlen,
-    ifq_is_oactive, ifq_len, ifq_set_oactive,
+    IfqDeq, ifq_clr_oactive, ifq_deq_with, ifq_empty, ifq_init_maxlen, ifq_is_oactive, ifq_len,
+    ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_MAX_DIX_LEN, EtherMultistep,
@@ -183,7 +184,7 @@ pub static DC_CD: Cfdriver = Cfdriver::new(b"dc", DV_IFNET, 0);
 
 /// `(struct dc_softc *)ifp->if_softc`.
 pub fn dc_softc(ifp: &Ifnet) -> &'static DcSoftc {
-    let p = ifp.if_softc.get().cast::<DcSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<DcSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("dc: interface without its softc"));
     }
@@ -1622,10 +1623,10 @@ pub fn dc_attach(sc: &'static DcSoftc) {
     ifp.if_softc.set(dc_ptr(sc));
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
-    ifp.if_ioctl.set(Some(dc_ioctl));
-    ifp.if_start.set(Some(dc_start));
-    ifp.if_watchdog.set(Some(dc_watchdog));
-    ifq_init_maxlen(&ifp.if_snd, DC_TX_LIST_CNT as u32 - 1);
+    ifp.if_ioctl().set(Some(dc_ioctl));
+    ifp.if_start().set(Some(dc_start));
+    ifp.if_watchdog().set(Some(dc_watchdog));
+    ifq_init_maxlen(ifp.if_snd(), DC_TX_LIST_CNT as u32 - 1);
     let mut xname = [0u8; IFNAMSIZ];
     let name = sc.sc_dev.dv_xname.get();
     let n = name.len().min(IFNAMSIZ);
@@ -2177,7 +2178,7 @@ pub fn dc_txeof(sc: &'static DcSoftc) {
     cd.dc_tx_cons.set(idx);
 
     if DC_TX_LIST_CNT - cd.dc_tx_cnt.get() > 5 {
-        ifq_clr_oactive(&ifp.if_snd);
+        ifq_clr_oactive(ifp.if_snd());
     }
     if cd.dc_tx_cnt.get() == 0 {
         ifp.if_timer.set(0);
@@ -2242,7 +2243,7 @@ pub fn dc_tick(xsc: *mut c_void) {
         && ifm_subtype(mii.mii_media_active.get()) != IFM_NONE
     {
         sc.dc_link.set(sc.dc_link.get() + 1);
-        if !ifq_empty(&ifp.if_snd) {
+        if !ifq_empty(ifp.if_snd()) {
             dc_start(ifp);
         }
     }
@@ -2375,7 +2376,7 @@ pub fn dc_intr(arg: *mut c_void) -> i32 {
     // Re-enable interrupts.
     sc.csr_write_4(DC_IMR, DC_INTRS);
 
-    if !ifq_empty(&ifp.if_snd) {
+    if !ifq_empty(ifp.if_snd()) {
         dc_start(ifp);
     }
 
@@ -2467,11 +2468,11 @@ pub fn dc_start(ifp: &'static Ifnet) {
     let sc = dc_softc(ifp);
     let dmat = sc.dmat();
 
-    if sc.dc_link.get() == 0 && ifq_len(&ifp.if_snd) < 10 {
+    if sc.dc_link.get() == 0 && ifq_len(ifp.if_snd()) < 10 {
         return;
     }
 
-    if ifq_is_oactive(&ifp.if_snd) {
+    if ifq_is_oactive(ifp.if_snd()) {
         return;
     }
 
@@ -2489,34 +2490,43 @@ pub fn dc_start(ifp: &'static Ifnet) {
         BUS_DMASYNC_POSTREAD | BUS_DMASYNC_POSTWRITE,
     );
 
-    while let Some(m) = ifq_deq_begin(&ifp.if_snd) {
+    loop {
         let map = sc.tx_sparemap();
-        // SAFETY: the mbuf stays the slot's (`sd_mbuf`) until dc_txeof or dc_stop unload the
-        // map and free it.
-        let load = |m: &Mbuf| unsafe {
-            bus_dmamap_load_mbuf(dmat, map, m, BUS_DMA_NOWAIT | BUS_DMA_OVERRUN)
-        };
-        let loaded = match load(m) {
-            Ok(()) => true,
-            Err(Errno::EFBIG) => m_defrag(m, M_DONTWAIT).is_ok() && load(m).is_ok(),
-            Err(_) => false,
+        // ifq_deq_begin, then ifq_deq_commit or ifq_deq_rollback: the packet seen under
+        // ifq_mtx, mapped (defragmented if it must be) while it is still queued, as the C's.
+        let mut loaded = true;
+        let taken = ifq_deq_with(ifp.if_snd(), |m| {
+            let m = crate::sys::mbuf::lend(m);
+            // SAFETY: the mbuf stays the slot's (`sd_mbuf`) until dc_txeof or dc_stop unload
+            // the map and free it.
+            let load = |m: &Mbuf| unsafe {
+                bus_dmamap_load_mbuf(dmat, map, m, BUS_DMA_NOWAIT | BUS_DMA_OVERRUN)
+            };
+            loaded = match load(m) {
+                Ok(()) => true,
+                Err(Errno::EFBIG) => m_defrag(m, M_DONTWAIT).is_ok() && load(m).is_ok(),
+                Err(_) => false,
+            };
+            if !loaded {
+                return IfqDeq::Commit;
+            }
+
+            if !dc_fits(sc, idx, map) {
+                bus_dmamap_unload(dmat, map);
+                return IfqDeq::RollbackOactive;
+            }
+
+            // now we are committed to transmit the packet
+            IfqDeq::Commit
+        });
+        let Some(m) = taken else {
+            break;
         };
         if !loaded {
-            ifq_deq_commit(&ifp.if_snd, m);
             m_freem(m);
             ifp.if_oerrors().set(ifp.if_oerrors().get() + 1);
             continue;
         }
-
-        if !dc_fits(sc, idx, map) {
-            bus_dmamap_unload(dmat, map);
-            ifq_deq_rollback(&ifp.if_snd, m);
-            ifq_set_oactive(&ifp.if_snd);
-            break;
-        }
-
-        // now we are committed to transmit the packet
-        ifq_deq_commit(&ifp.if_snd, m);
 
         if dc_encap(sc, map, m, &mut idx).is_err() {
             m_freem(m);
@@ -2525,13 +2535,13 @@ pub fn dc_start(ifp: &'static Ifnet) {
         }
 
         // If there's a BPF listener, bounce a copy of this frame to him.
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap(bpf, m, BPF_DIRECTION_OUT);
         }
 
         if sc.has_flags(DC_TX_ONE) {
-            ifq_set_oactive(&ifp.if_snd);
+            ifq_set_oactive(ifp.if_snd());
             break;
         }
     }
@@ -2684,7 +2694,7 @@ pub fn dc_init(sc: &'static DcSoftc) {
     dc_setcfg(sc, sc.dc_if_media.get());
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     splx(s);
 
@@ -2793,7 +2803,7 @@ pub fn dc_watchdog(ifp: &'static Ifnet) {
 
     dc_init(sc);
 
-    if !ifq_empty(&ifp.if_snd) {
+    if !ifq_empty(ifp.if_snd()) {
         dc_start(ifp);
     }
 }
@@ -2810,7 +2820,7 @@ pub fn dc_stop(sc: &'static DcSoftc, softonly: bool) {
     timeout_del(&sc.dc_tick_tmo);
 
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     if !softonly {
         sc.dc_clrbit(DC_NETCFG, DC_NETCFG_RX_ON | DC_NETCFG_TX_ON);

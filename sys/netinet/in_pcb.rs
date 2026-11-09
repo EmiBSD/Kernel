@@ -446,7 +446,7 @@ pub type InpUpcallFn = unsafe fn(
     *const c_void,
     *const c_void,
     i32,
-    Option<&Netstack>,
+    Option<&mut Netstack>,
 ) -> Option<&'static Mbuf>;
 
 /// The per-pcb hook of `in_pcbnotifyall` and the protocols' `ctlinput`s (`udp_notify`,
@@ -2283,6 +2283,7 @@ pub fn in_pcbunset_laddr(inp: &'static Inpcb) {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for the Internet control blocks: the port bitmaps, binding (explicit ports,
     // picked ports, `EADDRINUSE` and `SO_REUSEPORT`), the local port, connection and listen
     // lookups, a table that grows past its load factor, the iterator and detaching.
@@ -2591,8 +2592,8 @@ pub(crate) mod tests {
         /// duplicate address detection skipped), whose output lands in [`SENT6`].
         pub(crate) fn test_if6(name: &[u8]) -> &'static Ifnet {
             let ifp = test_ifnet(name);
-            ifp.if_ioctl.set(Some(accepting_ioctl));
-            ifp.if_output.set(Some(capturing_output));
+            ifp.if_ioctl().set(Some(accepting_ioctl));
+            ifp.if_output().set(Some(capturing_output));
             ifp.if_type.set(crate::net::if_types::IFT_ETHER);
             ifp.if_flags.set(crate::net::if_::IFF_MULTICAST);
             ifp.if_mtu.set(1500);
@@ -2601,8 +2602,7 @@ pub(crate) mod tests {
                 ..Default::default()
             };
             sdl.sdl_data[..6].copy_from_slice(&crate::netinet::ip_input::tests::OURS);
-            ifp.if_sadl
-                .set(std::boxed::Box::leak(std::boxed::Box::new(sdl)));
+            crate::net::if_var::if_sadl_test_set(ifp, sdl);
             crate::net::if_::if_attach(ifp);
 
             let mut ifra = In6Aliasreq::zeroed();

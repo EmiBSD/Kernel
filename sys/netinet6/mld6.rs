@@ -141,9 +141,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use libkern::StaticCell;
 
-use crate::kern::kern_rwlock::{
-    rw_assert_anylock, rw_assert_wrlock, rw_enter_write, rw_exit_write,
-};
 use crate::kern::uipc_mbuf::{m_align, m_free, m_freem, m_get, m_gethdr};
 use crate::net::if_::{IFF_LOOPBACK, IFNETLIST, if_get, if_put};
 use crate::net::if_var::Ifnet;
@@ -352,7 +349,7 @@ pub fn mld6_start_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo)
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
     let mut running = false;
 
-    rw_assert_wrlock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_wrlock(ifp);
 
     // RFC2710 page 10:
     // The node never sends a Report or Done for the link-scope all-nodes address.
@@ -387,7 +384,7 @@ pub fn mld6_stop_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo) 
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
     let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
 
-    rw_assert_anylock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_anylock(ifp);
 
     all_nodes.set_s6_addr16(1, htons(in6m.in6m_ifidx().get() as u16));
     // XXX: necessary when mrouting
@@ -486,7 +483,7 @@ pub fn mld6_input(m: &'static Mbuf, off: i32) {
             all_nodes.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
 
             let mut pktlist: Vec<Mld6Pktinfo> = Vec::new();
-            rw_enter_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_enter_write(ifp);
             for in6m in inet6_memberships(ifp) {
                 if in6_are_addr_equal(&in6m.in6m_addr(), &all_nodes)
                     || __ipv6_addr_mc_scope(&in6m.in6m_addr()) < __IPV6_ADDR_SCOPE_LINKLOCAL
@@ -515,7 +512,7 @@ pub fn mld6_input(m: &'static Mbuf, off: i32) {
                     }
                 }
             }
-            rw_exit_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_exit_write(ifp);
 
             for pkt in &pktlist {
                 mld6_sendpkt(pkt);
@@ -540,12 +537,12 @@ pub fn mld6_input(m: &'static Mbuf, off: i32) {
                 mld_addr.set_s6_addr16(1, htons(ifp.if_index.get() as u16)); // XXX
             }
             // If we belong to the group being reported, stop our timer for that group.
-            rw_enter_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_enter_write(ifp);
             if let Some(in6m) = in6_lookupmulti(&mld_addr, ifp) {
                 in6m.in6m_state.set(MLD_OTHERLISTENER); // clear flag
                 in6m.in6m_timer.set(0); // transit to idle state
             }
-            rw_exit_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_exit_write(ifp);
         }
         // this is impossible: icmp6_input() only passes queries and reports.
         _ => {}
@@ -598,7 +595,7 @@ pub fn mld6_fasttimo() {
 pub fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Vec<Mld6Pktinfo>) -> bool {
     let mut running = false;
 
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     for in6m in inet6_memberships(ifp) {
         if in6m.in6m_timer.get() == 0 {
             // do nothing
@@ -617,7 +614,7 @@ pub fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Vec<Mld6Pktinfo>) -> bool {
             }
         }
     }
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     running
 }
@@ -732,6 +729,7 @@ const _: () = {
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for MLD: the message field macros, and the listener's timer arithmetic and state
     // transitions on a crafted query, a report and the fast timeout.
 
@@ -790,7 +788,7 @@ mod tests {
         nd6_init();
         icmp6_init();
         let ifp = test_if(b"tml0");
-        ifp.if_ioctl.set(Some(accepting_ioctl));
+        ifp.if_ioctl().set(Some(accepting_ioctl));
         nd6_ifattach(ifp);
         test_ia6(ifp, ll(ifp), 0);
         ifp.if_mtu.set(0);
@@ -908,7 +906,7 @@ mod tests {
         let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
         all_routers.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
 
-        rw_enter_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_enter_write(ifp);
         // We reported last: a Done message to the all-routers group.
         let mut pkt = Mld6Pktinfo::default();
         mld6_stop_listening(in6m, ifp, &mut pkt);
@@ -933,7 +931,7 @@ mod tests {
         let mut pkt = Mld6Pktinfo::default();
         mld6_stop_listening(all, ifp, &mut pkt);
         assert_eq!(pkt, Mld6Pktinfo::default());
-        rw_exit_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
     }
 
     #[test]

@@ -75,7 +75,6 @@ use core::mem::size_of;
 use core::ptr::{self, NonNull};
 
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_synch::{refcnt_init_trace, refcnt_rele};
 use crate::kern::subr_prf::{panic, snprintf};
 use crate::kern::uipc_mbuf::m_freem;
 use crate::net::bpf::{DLT_ENC, bpfattach};
@@ -85,12 +84,12 @@ use crate::net::if_::{
 };
 use crate::net::if_dl::sdltosa;
 use crate::net::if_types::IFT_ENC;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, Ifaddr, Ifnet};
 use crate::net::route::Rtentry;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::mbuf::Mbuf;
-use crate::sys::refcnt::DT_REFCNT_IDX_IFADDR;
 use crate::sys::socket::{RT_TABLEID_MAX, Sockaddr};
 use crate::sys::sockio::{SIOCSIFADDR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SIOCSIFRDOMAIN};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
@@ -170,8 +169,7 @@ pub fn encattach(_count: i32) {
     // Create enc0 by default
     let _ = enc_clone_create(&ENC_CLONER, 0);
 
-    // SAFETY: `encattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&ENC_CLONER) };
+    if_clone_attach(&ENC_CLONER);
 }
 
 /// The softc of an `enc(4)` interface (`ifp->if_softc`).
@@ -182,7 +180,7 @@ pub fn enc_softc(ifp: &Ifnet) -> &'static EncSoftc {
     // SAFETY: an `IFT_ENC` interface is the first member of the `EncSoftc` that
     // `enc_clone_create` allocated and pointed `if_softc` at; it lives until
     // `enc_clone_destroy`.
-    unsafe { &*ifp.if_softc.get().cast::<EncSoftc>() }
+    unsafe { &*ifp.if_softc.get_mut().cast::<EncSoftc>() }
 }
 
 /// `enc_clone_create`: creates `enc<unit>`.
@@ -205,8 +203,8 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     ifp.if_softc.set(mem.as_ptr().cast());
     ifp.if_type.set(IFT_ENC);
     ifp.if_xflags.set(IFXF_CLONED);
-    ifp.if_output.set(Some(enc_output));
-    ifp.if_ioctl.set(Some(enc_ioctl));
+    ifp.if_output().set(Some(enc_output));
+    ifp.if_ioctl().set(Some(enc_ioctl));
     ifp.if_hdrlen.set(ENC_HDRLEN as u8);
 
     let mut xname = [0u8; 16];
@@ -223,9 +221,11 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     // enc(4) does not have a link-layer address but rtrequest() wants an ifa for every route
     // entry. So let's setup a fake and empty ifa of type AF_LINK for this purpose.
     if_alloc_sadl(ifp);
-    refcnt_init_trace(&sc.sc_ifa.ifa_refcnt, DT_REFCNT_IDX_IFADDR);
+    sc.sc_ifa.ifa_refcnt.init();
     sc.sc_ifa.ifa_ifp.set(Some(ifp));
-    sc.sc_ifa.ifa_addr.set(sdltosa(ifp.if_sadl.get()));
+    sc.sc_ifa
+        .ifa_addr
+        .set(sdltosa(crate::net::if_var::if_sadl_ptr(ifp)));
     sc.sc_ifa.ifa_netmask.set(ptr::null_mut());
 
     bpfattach(&ifp.if_bpf, ifp, DLT_ENC, ENC_HDRLEN as u32);
@@ -267,13 +267,10 @@ pub fn enc_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
     net_unlock();
 
     if_detach(ifp);
-    if !refcnt_rele(&sc.sc_ifa.ifa_refcnt) {
+    if !sc.sc_ifa.ifa_refcnt.rele() {
         panic(format_args!(
             "enc_clone_destroy: ifa refcnt has {} refs",
-            sc.sc_ifa
-                .ifa_refcnt
-                .r_refs
-                .load(core::sync::atomic::Ordering::Relaxed)
+            sc.sc_ifa.ifa_refcnt.read()
         ));
     }
     free(NonNull::from(sc).cast(), M_DEVBUF, size_of::<EncSoftc>());

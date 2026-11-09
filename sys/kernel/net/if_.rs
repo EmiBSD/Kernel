@@ -287,7 +287,7 @@ pub const BPF_DIRECTION_OUT: u32 = 1 << 1;
 
 /// `M_IFADDR`: the `malloc(9)` type of the index map's arrays (`<sys/malloc.h>`, `bsd`'s; a
 /// copy).
-pub(crate) const M_IFADDR: i32 = 9;
+pub const M_IFADDR: i32 = 9;
 
 /// `M_DEVBUF`: the `malloc(9)` type of `if_attach_queues`' queues (a copy).
 const M_DEVBUF: i32 = 2;
@@ -1100,7 +1100,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         if_rcv: Ifiqueue::new(ifp, 0, net_tq(0)),
         ifqs: OnceStatic::new(),
         iqs: OnceStatic::new(),
-        if_maddrlock: RawRwlock::new("maddr"),
+        if_maddrlock: hal::rwlock::SplitRwlock::new("maddr"),
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),
@@ -1191,8 +1191,8 @@ pub fn if_counters_free(ifp: &Ifnet) {
 /// Forgets the index map of an earlier test (its arrays and pool item live in that test's
 /// memory, so nothing may be freed into it) and starts a fresh one of 8 slots, the pool made
 /// if it is not: `kernel::testutil`'s rule for a global holding kernel memory.
-#[cfg(test)]
-pub(crate) fn if_idxmap_test_reset() {
+#[cfg(any(test, feature = "doubles"))]
+pub fn if_idxmap_test_reset() {
     let _ = IF_MAP_POOL.init(IPL_NET, 0, "ifmappl");
     {
         let mut w = IF_IDXMAP_LOCK.write();
@@ -1204,8 +1204,8 @@ pub(crate) fn if_idxmap_test_reset() {
 
 /// The host tests' softnets: task queues no thread serves (`kernel::task`'s
 /// `taskq_unthreaded`), made once and run by hand, in place of `softnet_init`'s.
-#[cfg(test)]
-pub(crate) fn softnet_test_install() {
+#[cfg(any(test, feature = "doubles"))]
+pub fn softnet_test_install() {
     for sn in &SOFTNETS {
         if sn.taskq.is_none() {
             let tq: &'static Taskq =
@@ -1219,10 +1219,18 @@ pub(crate) fn softnet_test_install() {
 
 /// Forgets the interfaces and the groups of an earlier test (`ifnetlist` emptied, the groups'
 /// array forgotten, not freed: it lives in that test's memory).
-#[cfg(test)]
-pub(crate) fn ifnet_test_reset() {
+#[cfg(any(test, feature = "doubles"))]
+pub fn ifnet_test_reset() {
     while IFNETLIST.pop_head().is_some() {}
     core::mem::forget(IFG_HEAD.replace(IfgSet::new()));
+}
+
+/// The interface layer of a fresh test's memory (the three resets above), for `bsd`'s tests.
+#[cfg(any(test, feature = "doubles"))]
+pub fn if_test_reset() {
+    softnet_test_install();
+    if_idxmap_test_reset();
+    ifnet_test_reset();
 }
 
 /// `if_ioctl(ifp, cmd, data)`: the driver's `if_ioctl`, or the detached stub after
@@ -2457,7 +2465,7 @@ fn ifg_set_with(set: &IfgSet, g: &IfgRef, flags: i32) -> Option<IfgSet> {
     let a = MArray::new(M_IFGROUP, flags, old.len() + 1, |i| {
         old.get(i).map_or_else(|| g.clone(), Clone::clone)
     })?;
-    Some(IfgSet(Some(a)))
+    Some(IfgSet(Some(hal::malloc::MArc::new(M_IFGROUP, flags, a)?)))
 }
 
 /// `set` without `g` (a new array, the order kept; empty as `None`).
@@ -2473,7 +2481,7 @@ fn ifg_set_without(set: &IfgSet, g: &IfgGroup) -> IfgSet {
             .cloned()
             .unwrap_or_else(|| kpanic(format_args!("ifg_set_without: count")))
     });
-    match a {
+    match a.and_then(|a| hal::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
         Some(a) => IfgSet(Some(a)),
         None => kpanic(format_args!("if_delgroup: out of memory")),
     }
@@ -2485,7 +2493,9 @@ fn ifg_members_with(m: &IfgMembers, ifp: &'static Ifnet) -> Option<IfgMembers> {
     let a = MArray::new(M_IFGROUP, M_NOWAIT, old.len() + 1, |i| {
         old.get(i).copied().unwrap_or(ifp)
     })?;
-    Some(IfgMembers(Some(a)))
+    Some(IfgMembers(Some(hal::malloc::MArc::new(
+        M_IFGROUP, M_NOWAIT, a,
+    )?)))
 }
 
 /// `members` without `ifp` (the order kept; empty as `None`).
@@ -2501,7 +2511,7 @@ fn ifg_members_without(m: &IfgMembers, ifp: &Ifnet) -> IfgMembers {
             .copied()
             .unwrap_or_else(|| kpanic(format_args!("ifg_members_without: count")))
     });
-    match a {
+    match a.and_then(|a| hal::malloc::MArc::new(M_IFGROUP, M_WAITOK, a)) {
         Some(a) => IfgMembers(Some(a)),
         None => kpanic(format_args!("if_delgroup: out of memory")),
     }
@@ -3366,7 +3376,7 @@ pub(crate) mod tests {
             b"tcl"
         }
 
-        fn create(&self, unit: i32) -> Result<(), Errno> {
+        fn create(&'static self, unit: i32) -> Result<(), Errno> {
             if unit == 99 {
                 return Err(Errno::ENOMEM);
             }

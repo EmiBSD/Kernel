@@ -76,7 +76,7 @@ pub fn route6_input(
     offp: &mut i32,
     _proto: i32,
     _af: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     let off = *offp;
 

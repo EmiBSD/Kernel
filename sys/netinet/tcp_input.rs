@@ -763,7 +763,7 @@ pub fn tcp_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(ns) = ns else {
         return tcp_input_solocked(mp, offp, proto, af, None);
@@ -773,9 +773,13 @@ pub fn tcp_input(
     };
     m.m_pkthdr().ph_cookie.set(*offp as usize);
     match af {
-        AF_INET_I32 => ml_enqueue(&ns.ns_tcp_ml, m),
+        AF_INET_I32 => {
+            kernel::net::mbuf::ml_enqueue(&mut ns.ns_tcp_ml, crate::sys::mbuf::unpark(m))
+        }
         #[cfg(feature = "inet6")]
-        AF_INET6_I32 => ml_enqueue(&ns.ns_tcp6_ml, m),
+        AF_INET6_I32 => {
+            kernel::net::mbuf::ml_enqueue(&mut ns.ns_tcp6_ml, crate::sys::mbuf::unpark(m))
+        }
         _ => {
             m_freemp(mp);
         }

@@ -192,6 +192,7 @@ use crate::net::if_::{
     net_tq_barriers, unhandled_af,
 };
 use crate::net::if_types::IFT_PFSYNC;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, IfCounters, Ifnet, Netstack};
 use crate::net::ifq::{Ifqueue, ifq_purge};
 use crate::net::pf::{
@@ -883,7 +884,7 @@ impl PfsyncSoftc {
     fn of_ifp(ifp: &Ifnet) -> &'static Self {
         // SAFETY: `if_softc` of a `pfsync` interface is its softc (`pfsync_clone_create`),
         // which lives until `pfsync_clone_destroy`.
-        unsafe { &*ifp.if_softc.get().cast::<Self>().cast_const() }
+        unsafe { &*ifp.if_softc.get_mut().cast::<Self>().cast_const() }
     }
 
     /// The softc as a timeout or task argument.
@@ -1181,8 +1182,7 @@ fn ifp_counters_inc(ifp: &Ifnet, c: IfCounters) {
 pub fn pfsyncattach(_npfsync: i32) {
     // pfsynccounters = counters_alloc(pfsyncs_ncounters): a static (see the deviations).
 
-    // SAFETY: `pfsyncattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&PFSYNC_CLONER) };
+    if_clone_attach(&PFSYNC_CLONER);
 }
 
 /// `pfsync_clone_create`: creates `pfsync0`, the only unit.
@@ -1240,9 +1240,9 @@ pub fn pfsync_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errn
     let _ = snprintf(&mut xname, format_args!("pfsync{unit}"));
     ifp.if_xname.set(xname);
     ifp.if_softc.set(sc.arg());
-    ifp.if_ioctl.set(Some(pfsync_ioctl));
-    ifp.if_output.set(Some(pfsync_output));
-    ifp.if_qstart.set(Some(pfsync_start));
+    ifp.if_ioctl().set(Some(pfsync_ioctl));
+    ifp.if_output().set(Some(pfsync_output));
+    ifp.if_qstart().set(Some(pfsync_start));
     ifp.if_type.set(IFT_PFSYNC);
     ifp.if_hdrlen.set(size_of::<PfsyncHeader>() as u8);
     ifp.if_mtu.set(ETHERMTU as u32);
@@ -1623,13 +1623,11 @@ fn pfsync_up(sc: &'static PfsyncSoftc) -> Result<(), Errno> {
         // NCARP > 0: sc_sync_if_down = 1; carp_group_demote_adj(&sc->sc_if, 1, "pfsync up");
         // carp(4) is not configured.
 
-        // SAFETY: the tasks are part of the softc, on no list (`pfsync_down` takes them off),
-        // and the softc outlives the hooks: `pfsync_down` runs before it is freed, and the
-        // detach hook runs (and so ends) before the sync interface goes.
-        unsafe {
-            if_linkstatehook_add(ifp0, &sc.sc_ltask);
-            if_detachhook_add(ifp0, &sc.sc_dtask);
-        }
+        // The tasks are part of the softc, on no list (`pfsync_down` takes them off), and the
+        // softc outlives the hooks: `pfsync_down` runs before it is freed, and the detach hook
+        // runs (and so ends) before the sync interface goes.
+        if_linkstatehook_add(ifp0, &sc.sc_ltask);
+        if_detachhook_add(ifp0, &sc.sc_dtask);
 
         sc.sc_inm.set(inm);
         ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
@@ -1925,12 +1923,10 @@ fn pfsync_down(sc: &'static PfsyncSoftc) -> Result<(), Errno> {
 
     let ifp0 = if_get(sc.sc_sync_ifidx.get());
     if let Some(ifp0) = ifp0 {
-        // SAFETY: `pfsync_up` added both tasks to this interface (the sync interface cannot
-        // change while running: `pfsync_set_parent` and `pfsync_set_ioc` refuse).
-        unsafe {
-            if_linkstatehook_del(ifp0, &sc.sc_ltask);
-            if_detachhook_del(ifp0, &sc.sc_dtask);
-        }
+        // `pfsync_up` added both tasks to this interface (the sync interface cannot change
+        // while running: `pfsync_set_parent` and `pfsync_set_ioc` refuse).
+        if_linkstatehook_del(ifp0, &sc.sc_ltask);
+        if_detachhook_del(ifp0, &sc.sc_dtask);
     }
     if_put(ifp0);
 
@@ -2313,7 +2309,7 @@ fn pfsync_slice_write(s: &PfsyncSlice) -> Option<&'static Mbuf> {
 /// `pfsync_sendout`: sends a frame to the sync peer out of the sync interface.
 fn pfsync_sendout(sc: &PfsyncSoftc, m: &'static Mbuf) {
     let len = m.m_pkthdr().len.get() as u64;
-    let if_bpf = sc.sc_if.if_bpf.get();
+    let if_bpf = sc.sc_if.if_bpf.get_mut();
     if !if_bpf.is_null() {
         let _ = bpf_mtap(if_bpf, m, BPF_DIRECTION_OUT);
     }
@@ -3981,7 +3977,7 @@ pub fn pfsync_input4(
     _offp: &mut i32,
     _proto: i32,
     _af: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(m) = mp.take() else {
         return IPPROTO_DONE;

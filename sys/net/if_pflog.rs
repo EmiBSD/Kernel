@@ -107,6 +107,7 @@ use crate::net::if_::{
     if_detach,
 };
 use crate::net::if_types::IFT_PFLOG;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, Ifnet};
 use crate::net::pf::{pf_addr_compare, pf_addrcpy, pf_socket_lookup};
 use crate::net::pfvar::{PF_DROP, PF_LOG_USER, PFRES_MATCH, PfAddr, PfRule, PfRuleset};
@@ -210,8 +211,7 @@ pub static PFLOG_IFS: PfGlobal<ListHead<PflogIfs>> = PfGlobal(ListHead::new());
 
 /// `pflogattach`: the pseudo-device attach function: registers the cloner.
 pub fn pflogattach(_npflog: i32) {
-    // SAFETY: `pflogattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&PFLOG_CLONER) };
+    if_clone_attach(&PFLOG_CLONER);
 }
 
 /// `pflog_clone_create`: creates `pflog<unit>`.
@@ -230,8 +230,8 @@ pub fn pflog_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno
     ifp.if_xname.set(xname);
     ifp.if_softc.set(ptr::from_ref(pflogif).cast_mut().cast());
     ifp.if_mtu.set(PFLOGMTU);
-    ifp.if_ioctl.set(Some(pflogioctl));
-    ifp.if_output.set(Some(pflogoutput));
+    ifp.if_ioctl().set(Some(pflogioctl));
+    ifp.if_output().set(Some(pflogoutput));
     ifp.if_xflags.set(IFXF_CLONED);
     ifp.if_type.set(IFT_PFLOG);
     ifp.if_hdrlen.set(PFLOG_HDRLEN as u8);
@@ -254,7 +254,7 @@ pub fn pflog_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
     // SAFETY: `if_softc` of a `pflog` interface is its softc (`pflog_clone_create`), which
     // embeds the interface and lives until the `free` below.
     let pflogif: &'static PflogSoftc =
-        unsafe { &*ifp.if_softc.get().cast::<PflogSoftc>().cast_const() };
+        unsafe { &*ifp.if_softc.get_mut().cast::<PflogSoftc>().cast_const() };
 
     net_lock();
     // SAFETY: `pflog_clone_create` put the softc on `pflog_ifs`.
@@ -331,7 +331,7 @@ pub fn pflog_packet(
         return true;
     };
     let ifn = &pflogif.sc_if;
-    let if_bpf = ifn.if_bpf.get();
+    let if_bpf = ifn.if_bpf.get_mut();
     if if_bpf.is_null() {
         return true;
     }

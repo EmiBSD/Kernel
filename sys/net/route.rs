@@ -243,6 +243,7 @@ use crate::net::if_::{
     link_state_is_up,
 };
 use crate::net::if_dl::{SockaddrDl, sdltosa};
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifaddr, Ifnet};
 use crate::net::rtable::{
     RTMAP_LIMIT, rt_key, rt_plen, rt_root, rtable_clearsource, rtable_delete, rtable_exists,
@@ -1667,13 +1668,13 @@ fn rt_free_sa(sa: *mut Sockaddr, gateway: bool) {
 
 /// `ifaref`: takes a reference to an interface address (a route's `rt_ifa`).
 pub fn ifaref(ifa: &Ifaddr) -> &Ifaddr {
-    refcnt_take(&ifa.ifa_refcnt);
+    ifa.ifa_refcnt.take();
     ifa
 }
 
 /// `ifafree`: drops a reference to an interface address, freeing it with the last one.
 pub fn ifafree(ifa: &Ifaddr) {
-    if !refcnt_rele(&ifa.ifa_refcnt) {
+    if !ifa.ifa_refcnt.rele() {
         return;
     }
     free(NonNull::from(ifa).cast(), M_IFADDR, 0);
@@ -1846,7 +1847,7 @@ pub fn rtdeletemsg(rt: &'static Rtentry, ifp: &Ifnet, tableid: u32) -> Result<()
     }
     info.rti_info[RTAX_LABEL] = rtlabel_id2sa(rt.rt_labelid.get(), &mut sa_rl);
     info.rti_flags = rt.rt_flags.get();
-    info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
     info.rti_info[RTAX_IFA] = rt.ifa().ifa_addr.get();
     kernel_lock();
     let mut nrt = Some(rt);
@@ -2027,7 +2028,7 @@ pub unsafe fn rtrequest_delete(
     rt.rt_flags.set(rt.rt_flags.get() & !RTF_UP);
 
     kassert!(ifp.if_index.get() == rt.rt_ifidx.get());
-    if let Some(rtrequest) = ifp.if_rtrequest.get() {
+    if let Some(rtrequest) = ifp.if_rtrequest().get() {
         // SAFETY: an attached interface lives until `if_detach`, which purges its routes
         // first; its `if_rtrequest` takes it as `&'static`.
         rtrequest(
@@ -2210,7 +2211,7 @@ pub unsafe fn rtrequest(
         rtrequest_unwind(rt, ifa, ndst, ndst_len);
         return Err(Errno::EEXIST);
     }
-    if let Some(rtrequest) = ifp.if_rtrequest.get() {
+    if let Some(rtrequest) = ifp.if_rtrequest().get() {
         rtrequest(ifp, i32::from(req), Some(rt));
     }
 
@@ -2399,7 +2400,7 @@ pub unsafe fn rt_ifa_add(
     info.rti_flags = flags;
     info.rti_info[RTAX_DST] = dst;
     if flags & RTF_LLINFO != 0 {
-        info.rti_info[RTAX_GATEWAY] = sdltosa(ifp.if_sadl.get());
+        info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp));
     } else {
         info.rti_info[RTAX_GATEWAY] = ifa.ifa_addr.get();
     }
@@ -3227,7 +3228,7 @@ pub fn db_print_ifa(ifa: Option<&Ifaddr>) {
     db_printf!(
         "  flags=0x{:x}, refcnt={}, metric={}\n",
         ifa.ifa_flags.get(),
-        ifa.ifa_refcnt.r_refs.load(Ordering::Relaxed),
+        ifa.ifa_refcnt.read(),
         ifa.ifa_metric.get()
     );
 }

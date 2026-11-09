@@ -169,6 +169,7 @@ use crate::net::if_media::{
     IFM_INST_ANY, IFM_NONE, ifm_subtype, ifmedia_add, ifmedia_delete_instance, ifmedia_init,
     ifmedia_ioctl, ifmedia_set,
 };
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_put};
 use crate::net::ifq::{
     Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
@@ -268,7 +269,7 @@ const fn rev(re_chipid: u32, re_name: &'static str) -> ReRevision {
 
 /// `(struct rl_softc *)ifp->if_softc`.
 pub fn re_softc(ifp: &Ifnet) -> &'static RlSoftc {
-    let p = ifp.if_softc.get().cast::<RlSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<RlSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("re: interface without its softc"));
     }
@@ -981,11 +982,11 @@ pub fn re_attach(sc: &'static RlSoftc, intrstr: &[u8]) -> Result<(), Errno> {
     if bus_dma64 != 0 {
         ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_MBUF_64BIT);
     }
-    ifp.if_ioctl.set(Some(re_ioctl));
-    ifp.if_qstart.set(Some(re_start));
-    ifp.if_watchdog.set(Some(re_watchdog));
+    ifp.if_ioctl().set(Some(re_ioctl));
+    ifp.if_qstart().set(Some(re_start));
+    ifp.if_watchdog().set(Some(re_watchdog));
     ifp.if_hardmtu.set(sc.rl_max_mtu.get() as u32);
-    ifq_init_maxlen(&ifp.if_snd, ld.rl_tx_desc_cnt.get() as u32);
+    ifq_init_maxlen(ifp.if_snd(), ld.rl_tx_desc_cnt.get() as u32);
 
     let mut caps = IFCAP_VLAN_MTU | IFCAP_CSUM_TCPv4 | IFCAP_CSUM_UDPv4;
 
@@ -1003,7 +1004,7 @@ pub fn re_attach(sc: &'static RlSoftc, intrstr: &[u8]) -> Result<(), Errno> {
     // SMALL_KERNEL is not defined.
     caps |= IFCAP_WOL;
     ifp.if_capabilities.set(caps);
-    ifp.if_wol.set(Some(re_wol));
+    ifp.if_wol().set(Some(re_wol));
     let _ = re_wol(ifp, false);
 
     timeout_set(&sc.timer_handle, re_tick, arg);
@@ -1634,7 +1635,7 @@ pub fn re_rxeof(sc: &'static RlSoftc) -> bool {
         i = next;
     }
 
-    if ifiq_input(&ifp.if_rcv, &ml) {
+    if ifiq_input(ifp.if_rcv(), &ml) {
         ld.with_rx_ring(if_rxr_livelocked);
     }
 
@@ -1694,10 +1695,10 @@ pub fn re_txeof(sc: &'static RlSoftc) -> bool {
     // progress. If the transmitter goes idle but there are still packets waiting to be sent,
     // we need to restart the channel here to flush them out. This only seems to be required
     // with the PCIe devices.
-    if ifq_is_oactive(&ifp.if_snd) {
-        ifq_restart(&ifp.if_snd);
+    if ifq_is_oactive(ifp.if_snd()) {
+        ifq_restart(ifp.if_snd());
     } else if free == 2 {
-        ifq_serialize(&ifp.if_snd, &sc.rl_start);
+        ifq_serialize(ifp.if_snd(), &sc.rl_start);
     } else {
         ifp.if_timer.set(0);
     }
@@ -2010,7 +2011,7 @@ pub fn re_txstart(xsc: *mut c_void) {
 
 /// `re_start`: main transmit routine for C+ and gigE NICs.
 pub fn re_start(ifq: &'static Ifqueue) {
-    let Some(ifp) = ifq.ifq_if.get() else {
+    let Some(ifp) = Some(ifq.ifq_if()) else {
         return;
     };
     let sc = re_softc(ifp);
@@ -2046,7 +2047,7 @@ pub fn re_start(ifq: &'static Ifqueue) {
             continue;
         }
 
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap_ether(bpf, m, BPF_DIRECTION_OUT);
         }
@@ -2188,7 +2189,7 @@ pub fn re_init(ifp: &'static Ifnet) -> Result<(), Errno> {
     );
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     splx(s);
 
@@ -2352,9 +2353,9 @@ pub fn re_stop(ifp: &'static Ifnet) {
     if let Some(ih) = NonNull::new(sc.sc_ih.get()) {
         intr_barrier(ih);
     }
-    ifq_barrier(&ifp.if_snd);
+    ifq_barrier(ifp.if_snd());
 
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
     mii_down(&sc.sc_mii);
 
     if let Some(head) = sc.rl_head.take() {

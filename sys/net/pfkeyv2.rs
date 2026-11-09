@@ -3877,8 +3877,7 @@ mod tests {
         let s = crate::crypto::testutil::serial();
         crypto_reset();
         swcr_init();
-        crate::net::if_::IFNETLIST.0.init();
-        crate::net::if_::IFG_HEAD.0.init();
+        kernel::net::if_::ifnet_test_reset();
         procinit();
         soinit();
         crate::kern::uipc_domain::net_tables_for_tests();
@@ -4577,7 +4576,8 @@ mod tests {
             )
             .expect("encrypted");
             let ml = crate::sys::mbuf::MbufList::new();
-            crate::kern::uipc_mbuf::ml_enlist(&ml, &lo.ifiq(0).ifiq_ml);
+            let mut taken = kernel::net::ifq::ifiq_test_take(lo.ifiq(0));
+            ml.change(|l| kernel::net::mbuf::ml_enlist(l, &mut taken));
             let m = crate::kern::uipc_mbuf::ml_dequeue(&ml).expect("the ESP packet");
             let mut esp = crate::netinet::ip_input::tests::bytes(m);
             m_freem(m);

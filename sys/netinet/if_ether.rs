@@ -180,8 +180,8 @@ use crate::net::if_arp::ARPOP_REVREQUEST;
 use crate::net::if_arp::{ARPHRD_ETHER, ARPOP_REPLY, ARPOP_REQUEST, ARPOP_REVREPLY, Arphdr};
 use crate::net::if_dl::{SockaddrDl, lladdr, satosdl};
 use crate::net::if_ethersubr::{ETHERBROADCASTADDR, ether_sprintf};
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_delist};
-use crate::net::netisr::NETISR_ARP;
 use crate::net::route::{
     RT_RESOLVE, RTF_ANNOUNCE, RTF_BROADCAST, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_LLINFO,
     RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_PROTO1, RTF_PROTO3, RTF_REJECT, RTF_STATIC, RTM_ADD,
@@ -213,6 +213,7 @@ use crate::sys::systm::{
 #[cfg(feature = "nfsclient")]
 use crate::sys::time::msec_to_nsec;
 use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
+use kernel::net::netisr::NETISR_ARP;
 
 /// Ethernet address length.
 pub const ETHER_ADDR_LEN: usize = 6;
@@ -383,8 +384,13 @@ pub struct SockaddrInarp {
 
 /// `struct mbuf *(*ep_input)(struct ifnet *, struct mbuf *, uint64_t, void *, struct netstack
 /// *)`: a port's input; returns the packet when the port does not take it.
-pub type EpInputFn =
-    fn(&'static Ifnet, &'static Mbuf, u64, *mut c_void, Option<&Netstack>) -> Option<&'static Mbuf>;
+pub type EpInputFn = fn(
+    &'static Ifnet,
+    &'static Mbuf,
+    u64,
+    *mut c_void,
+    Option<&mut Netstack>,
+) -> Option<&'static Mbuf>;
 
 /// `struct ether_port`: an aggregation (`ac_trport`) or bridge (`ac_brport`) port on an
 /// Ethernet interface.
@@ -1014,7 +1020,7 @@ unsafe fn ifp_output(
     m: &'static Mbuf,
     sa: *const Sockaddr,
 ) -> Result<(), Errno> {
-    match ifp.if_output.get() {
+    match ifp.if_output().get() {
         // SAFETY: the caller's contract.
         Some(output) => unsafe { output(ifp, m, sa, None) },
         None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
@@ -1278,7 +1284,7 @@ fn arppullup(m: &'static Mbuf) -> Option<&'static Mbuf> {
 
 /// `arpinput`: common length and type checks are done here, then the packet is queued for
 /// the protocol-specific routine.
-pub fn arpinput(_ifp: &'static Ifnet, m: &'static Mbuf, _ns: Option<&Netstack>) {
+pub fn arpinput(_ifp: &'static Ifnet, m: &'static Mbuf, _ns: Option<&mut Netstack>) {
     let Some(m) = arppullup(m) else {
         return;
     };
@@ -1343,8 +1349,12 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: &'static Mbuf) {
 
         // SAFETY: an attached interface's link address has its hardware address after the
         // name.
-        let ours =
-            unsafe { core::slice::from_raw_parts(lladdr(ifp.if_sadl.get()), ETHER_ADDR_LEN) };
+        let ours = unsafe {
+            core::slice::from_raw_parts(
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                ETHER_ADDR_LEN,
+            )
+        };
         if ea.arp_sha[..] == *ours {
             break 'out; // it's from me, ignore it.
         }
@@ -1626,7 +1636,10 @@ pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
     // SAFETY: both link addresses hold `ETHER_ADDR_LEN` bytes after their names.
     let found = unsafe {
         core::slice::from_raw_parts(lladdr(sdl), ETHER_ADDR_LEN)
-            == core::slice::from_raw_parts(lladdr(ifp.if_sadl.get()), ETHER_ADDR_LEN)
+            == core::slice::from_raw_parts(
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                ETHER_ADDR_LEN,
+            )
     };
 
     if_put(Some(ifp));
@@ -1637,7 +1650,7 @@ pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
 /// `revarpinput`: called from Ethernet interrupt handlers when ether packet type
 /// `ETHERTYPE_REVARP` is received. Common length and type checks are done here, then the
 /// protocol-specific routine is called.
-pub fn revarpinput(ifp: &'static Ifnet, m: &'static Mbuf, _ns: Option<&Netstack>) {
+pub fn revarpinput(ifp: &'static Ifnet, m: &'static Mbuf, _ns: Option<&mut Netstack>) {
     let Some(m) = arppullup(m) else {
         return;
     };
@@ -1687,8 +1700,12 @@ fn revarp_reply(ifp: &'static Ifnet, m: &'static Mbuf, ar: &EtherArp) {
     if !REVARP_FINISHED.load(Ordering::Relaxed) {
         // SAFETY: an attached interface's link address has its hardware address after the
         // name.
-        let ours =
-            unsafe { core::slice::from_raw_parts(lladdr(ifp.if_sadl.get()), ETHER_ADDR_LEN) };
+        let ours = unsafe {
+            core::slice::from_raw_parts(
+                lladdr(crate::net::if_var::if_sadl_ptr(ifp)),
+                ETHER_ADDR_LEN,
+            )
+        };
         if ar.arp_tha[..] != *ours {
             return;
         }
@@ -1900,7 +1917,7 @@ mod tests {
         let _g = setup();
         let ifp = test_ether();
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 
@@ -1916,7 +1933,7 @@ mod tests {
             None,
         );
         arpintr();
-        let reply = ifq_dequeue(&ifp.if_snd).expect("ARP reply");
+        let reply = ifq_dequeue(ifp.if_snd()).expect("ARP reply");
         let b = bytes(reply);
         m_freem(reply);
         assert_eq!(&b[0..6], &PEER, "to the asker");
@@ -1960,7 +1977,7 @@ mod tests {
         assert_ne!(flags & RTF_CLONING, 0);
 
         unconfigure(ifp, ADDR);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
     }
@@ -1983,7 +2000,7 @@ mod tests {
         let _g = setup();
         let ifp = test_ether();
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
         REVARP_IFIDX.store(0, Ordering::Relaxed);
@@ -1993,7 +2010,7 @@ mod tests {
 
         // The request: broadcast, from us, asking for the address of our own hardware address.
         revarprequest(ifp);
-        let req = ifq_dequeue(&ifp.if_snd).expect("RARP request");
+        let req = ifq_dequeue(ifp.if_snd()).expect("RARP request");
         let b = bytes(req);
         m_freem(req);
         assert_eq!(&b[0..6], &[0xff; 6], "to everyone");
@@ -2056,7 +2073,7 @@ mod tests {
         REVARP_MYIP.store(0, Ordering::Relaxed);
         REVARP_SRVIP.store(0, Ordering::Relaxed);
         unconfigure(ifp, ADDR);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
     }

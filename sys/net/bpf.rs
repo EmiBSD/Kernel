@@ -179,6 +179,7 @@ use crate::net::bpf_filter::{_bpf_lfilter, bpf_validate};
 use crate::net::bpfdesc::{BpfD, BpfDList, BpfIf, BpfIfList, BpfProgramSmr};
 use crate::net::if_::{IFF_UP, IFNAMSIZ, Ifreq, ifpromisc};
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::netinet::if_ether::ETHER_HDR_LEN;
 use crate::sys::conf::DevTypeOpen;
 use crate::sys::errno::Errno;
@@ -1327,7 +1328,7 @@ pub fn bpfwrite(dev: Dev, uio: &mut Uio<'_>, _ioflag: i32) -> Result<(), Errno> 
         }
 
         net_lock();
-        let error = match ifp.if_output.get() {
+        let error = match ifp.if_output().get() {
             // SAFETY: `dst` is a `sockaddr_storage` on this stack, valid for the call.
             Some(output) => unsafe { output(ifp, m, sstosa(&mut dst).cast_const(), None) },
             None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
@@ -2218,7 +2219,7 @@ fn bpf_put(bd: &'static BpfD) {
 /// `bpfsattach`: attaches a tap named `name` (at most `IFNAMSIZ` bytes) whose listeners
 /// `*bpfp` will point at, for the link type `dlt` with `hdrlen` bytes of link header.
 pub fn bpfsattach(
-    bpfp: &'static Cell<*mut u8>,
+    bpfp: &'static hal::link::PtrWord<u8>,
     name: &[u8],
     dlt: u32,
     hdrlen: u32,
@@ -2264,7 +2265,7 @@ pub fn bpfsattach(
 
 /// `bpfxattach`: `bpfsattach` for the interface `ifp`.
 pub fn bpfxattach(
-    driverp: &'static Cell<*mut u8>,
+    driverp: &'static hal::link::PtrWord<u8>,
     name: &[u8],
     ifp: &'static Ifnet,
     dlt: u32,
@@ -2278,7 +2279,12 @@ pub fn bpfxattach(
 
 /// `bpfattach`: attaches the interface `ifp` to bpf under its own name; `driverp` is its
 /// `if_bpf` (or another tap pointer of the driver's).
-pub fn bpfattach(driverp: &'static Cell<*mut u8>, ifp: &'static Ifnet, dlt: u32, hdrlen: u32) {
+pub fn bpfattach(
+    driverp: &'static hal::link::PtrWord<u8>,
+    ifp: &'static Ifnet,
+    dlt: u32,
+    hdrlen: u32,
+) {
     let _ = bpfxattach(driverp, &ifp.if_xname.get(), ifp, dlt, hdrlen);
 }
 
@@ -2594,7 +2600,7 @@ mod tests {
         let _g = setup_net();
         let ifp = test_ifnet(b"bpftest0");
         bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
-        assert!(ifp.if_bpf.get().is_null(), "no listener yet");
+        assert!(ifp.if_bpf.get_mut().is_null(), "no listener yet");
 
         let dev = makedev(23, 7 << CLONE_SHIFT);
         assert_eq!(bpfopen(makedev(23, 1), 0, 0, &PROC0), Err(Errno::ENXIO));
@@ -2604,7 +2610,7 @@ mod tests {
         name[..8].copy_from_slice(b"bpftest0");
         assert_eq!(bpfioctl(dev, BIOCSETIF, &mut name, 0, &PROC0), Ok(()));
         assert!(
-            !ifp.if_bpf.get().is_null(),
+            !ifp.if_bpf.get_mut().is_null(),
             "the listener points the driver at the tap"
         );
         let mut one = 1i32;
@@ -2620,7 +2626,7 @@ mod tests {
         let frame: Vec<u8> = (0u8..60).collect();
         let m = test_packet(&frame);
         m.m_pkthdr().ph_ifidx.set(3);
-        assert!(!bpf_mtap_ether(ifp.if_bpf.get(), m, BPF_DIRECTION_IN));
+        assert!(!bpf_mtap_ether(ifp.if_bpf.get_mut(), m, BPF_DIRECTION_IN));
         let mut n = 0i32;
         ioctl(dev, FIONREAD, &mut n).expect("FIONREAD");
         assert_eq!(n, 30 + 60);
@@ -2644,14 +2650,14 @@ mod tests {
             bf_insns: keep4.as_ptr() as usize,
         };
         ioctl(dev, BIOCSETF, &mut prog).expect("BIOCSETF");
-        assert!(!bpf_mtap_ether(ifp.if_bpf.get(), m, BPF_DIRECTION_IN));
+        assert!(!bpf_mtap_ether(ifp.if_bpf.get_mut(), m, BPF_DIRECTION_IN));
         let (_, buf) = read(dev, blen as usize);
         let bh: BpfHdr = ioctl_arg(&buf);
         assert_eq!((bh.bh_caplen, bh.bh_datalen), (4, 60));
         let reject = [bpf_stmt(BPF_RET | BPF_K, 0)];
         prog.bf_insns = reject.as_ptr() as usize;
         ioctl(dev, BIOCSETFNR, &mut prog).expect("BIOCSETFNR");
-        assert!(!bpf_mtap_ether(ifp.if_bpf.get(), m, BPF_DIRECTION_IN));
+        assert!(!bpf_mtap_ether(ifp.if_bpf.get_mut(), m, BPF_DIRECTION_IN));
         let mut st = BpfStat::default();
         ioctl(dev, BIOCGSTATS, &mut st).expect("BIOCGSTATS");
         assert_eq!(
@@ -2671,11 +2677,11 @@ mod tests {
         ioctl(dev, BIOCSETF, &mut none).expect("BIOCSETF NULL");
         let mut drop = u32::from(BPF_FILDROP_DROP);
         ioctl(dev, BIOCSFILDROP, &mut drop).expect("BIOCSFILDROP");
-        assert!(bpf_mtap_ether(ifp.if_bpf.get(), m, BPF_DIRECTION_IN));
+        assert!(bpf_mtap_ether(ifp.if_bpf.get_mut(), m, BPF_DIRECTION_IN));
         // The direction filter skips outgoing packets.
         let mut out = BPF_DIRECTION_OUT;
         ioctl(dev, BIOCSDIRFILT, &mut out).expect("BIOCSDIRFILT");
-        assert!(!bpf_mtap_ether(ifp.if_bpf.get(), m, BPF_DIRECTION_OUT));
+        assert!(!bpf_mtap_ether(ifp.if_bpf.get_mut(), m, BPF_DIRECTION_OUT));
         m_freem(m);
 
         // Locked: only the read-only ioctls remain.
@@ -2686,7 +2692,7 @@ mod tests {
         assert_eq!((v.bv_major, v.bv_minor), (1, 1));
 
         bpfclose(dev, 0, 0, None).expect("bpfclose");
-        assert!(ifp.if_bpf.get().is_null(), "the last listener is gone");
+        assert!(ifp.if_bpf.get_mut().is_null(), "the last listener is gone");
         assert!(bpfilter_lookup(7 << CLONE_SHIFT).is_none());
         bpfdetach(ifp);
         assert!(

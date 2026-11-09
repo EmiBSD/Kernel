@@ -115,9 +115,7 @@ use crate::kern::uipc_mbuf::{ml_dequeue, ml_enlist, ml_enqueue, ml_init};
 use crate::machine::copy::{AbiPod, copyout_obj};
 use crate::machine::intr::{IPL_NONE, splnet, splx};
 use crate::net::if_var::Ifnet;
-use crate::net::ifq::{
-    IfqOps, Ifqueue, ifq_empty, ifq_mfreeml, ifq_q_enter, ifq_q_leave, ifq_start,
-};
+use crate::net::ifq::{IfqLocked, IfqOps, Ifqueue, ifq_empty, ifq_mfreeml, ifq_q_with, ifq_start};
 use crate::net::pf_ioctl::pf_queue_manager;
 use crate::net::pfvar::{PfPoolItem, PfQueuespec, PfqOps, pf_pool_get, pf_pool_init, pf_pool_put};
 use crate::sys::errno::Errno;
@@ -546,9 +544,8 @@ pub static PFQ_HFSC_OPS: &PfqOps = &HFSC_PF_OPS;
 
 /// `HFSC_ENABLED(ifq)`: whether the send queue runs HFSC.
 pub fn hfsc_enabled(ifq: &Ifqueue) -> bool {
-    ifq.ifq_ops
-        .get()
-        .is_some_and(|ops| ptr::eq(ops, IFQ_HFSC_OPS))
+    // The C reads `ifq_ops` without the mutex; the kernel keeps it under `ifq_mtx`.
+    ifq_q_with(ifq, IFQ_HFSC_OPS, |_, _| ()).is_some()
 }
 
 /// The softc behind an opaque discipline pointer.
@@ -559,16 +556,6 @@ pub fn hfsc_enabled(ifq: &Ifqueue) -> bool {
 unsafe fn hif_of(p: *mut c_void) -> &'static HfscIf {
     // SAFETY: the caller's contract; the softc stays allocated until `hfsc_free`.
     unsafe { &*p.cast::<HfscIf>() }
-}
-
-/// The softc of an HFSC send queue.
-///
-/// # Safety
-///
-/// `ifq_q` belongs to `IFQ_HFSC_OPS` (`ifq_attach` installed it with the softc).
-unsafe fn ifq_hif(ifq: &Ifqueue) -> &'static HfscIf {
-    // SAFETY: the caller's contract.
-    unsafe { hif_of(ifq.ifq_q.get()) }
 }
 
 /// The class queue behind an opaque per-class pointer.
@@ -833,19 +820,21 @@ fn hfsc_pf_qstats(q: &'static PfQueuespec, ubuf: usize, nbytes: &mut i32) -> Res
         return Err(Errno::EINVAL);
     }
 
-    let Some(qp) = ifq_q_enter(&ifp.if_snd, IFQ_HFSC_OPS) else {
-        return Err(Errno::EBADF);
-    };
-    // SAFETY: `ifq_q_enter` returned the state of the HFSC conditioner, under `ifq_mtx`.
-    let hif = unsafe { hif_of(qp.as_ptr()) };
+    let found = ifq_q_with(ifp.if_snd(), IFQ_HFSC_OPS, |qp, _st| {
+        // SAFETY: `ifq_q_with` lent the state of the HFSC conditioner, under `ifq_mtx`.
+        let hif = unsafe { hif_of(qp) };
 
-    let Some(cl) = hfsc_clh2cph(hif, q.qid) else {
-        ifq_q_leave(&ifp.if_snd, qp);
-        return Err(Errno::EINVAL);
-    };
+        let Some(cl) = hfsc_clh2cph(hif, q.qid) else {
+            return Err(Errno::EINVAL);
+        };
 
-    hfsc_getclstats(&mut stats, cl);
-    ifq_q_leave(&ifp.if_snd, qp);
+        hfsc_getclstats(&mut stats, cl);
+        Ok(())
+    });
+    match found {
+        None => return Err(Errno::EBADF),
+        Some(r) => r?,
+    }
 
     copyout_obj(&stats, ubuf)?;
 
@@ -962,9 +951,9 @@ unsafe fn hfsc_free(idx: u32, q: *mut c_void) {
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopPurgeFn`].
-unsafe fn hfsc_purge(ifq: &Ifqueue, ml: &MbufList) {
+unsafe fn hfsc_purge(q: *mut c_void, _st: &mut IfqLocked<'_>, ml: &MbufList) {
     // SAFETY: the caller's contract: the queue's conditioner is HFSC.
-    let hif = unsafe { ifq_hif(ifq) };
+    let hif = unsafe { hif_of(q) };
 
     let mut cl = hif.hif_rootclass.get();
     while let Some(c) = cl {
@@ -1208,9 +1197,13 @@ fn hfsc_nextclass(cl: &'static HfscClass) -> Option<&'static HfscClass> {
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopEnqFn`].
-unsafe fn hfsc_enq(ifq: &Ifqueue, m: &'static Mbuf) -> Option<&'static Mbuf> {
+unsafe fn hfsc_enq(
+    q: *mut c_void,
+    _st: &mut IfqLocked<'_>,
+    m: &'static Mbuf,
+) -> Option<&'static Mbuf> {
     // SAFETY: the caller's contract: the queue's conditioner is HFSC.
-    let hif = unsafe { ifq_hif(ifq) };
+    let hif = unsafe { hif_of(q) };
 
     let cl = match hfsc_clh2cph(hif, m.m_pkthdr().pf.qid.get()) {
         Some(cl) if cl.cl_children.get().is_none() => cl,
@@ -1245,10 +1238,13 @@ unsafe fn hfsc_enq(ifq: &Ifqueue, m: &'static Mbuf) -> Option<&'static Mbuf> {
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopDeqBeginFn`].
-unsafe fn hfsc_deq_begin(ifq: &Ifqueue) -> Option<(&'static Mbuf, *mut c_void)> {
+unsafe fn hfsc_deq_begin(
+    q: *mut c_void,
+    st: &mut IfqLocked<'_>,
+) -> Option<(&'static Mbuf, *mut c_void)> {
     let free_ml = MbufList::new();
     // SAFETY: the caller's contract: the queue's conditioner is HFSC.
-    let hif = unsafe { ifq_hif(ifq) };
+    let hif = unsafe { hif_of(q) };
 
     let cur_time = nsecuptime();
 
@@ -1284,7 +1280,7 @@ unsafe fn hfsc_deq_begin(ifq: &Ifqueue) -> Option<(&'static Mbuf, *mut c_void)> 
     };
 
     let m = hfsc_class_deq_begin(cl, &free_ml);
-    ifq_mfreeml(ifq, &free_ml);
+    ifq_mfreeml(st, &free_ml);
     let Some(m) = m else {
         hfsc_update_sc(hif, cl, 0);
         return None;
@@ -1300,9 +1296,14 @@ unsafe fn hfsc_deq_begin(ifq: &Ifqueue) -> Option<(&'static Mbuf, *mut c_void)> 
 ///
 /// As for [`crate::net::ifq::IfqopDeqCommitFn`]: `cookie` is the class `hfsc_deq_begin`
 /// returned.
-unsafe fn hfsc_deq_commit(ifq: &Ifqueue, m: &'static Mbuf, cookie: *mut c_void) {
+unsafe fn hfsc_deq_commit(
+    q: *mut c_void,
+    _st: &mut IfqLocked<'_>,
+    m: &'static Mbuf,
+    cookie: *mut c_void,
+) {
     // SAFETY: the caller's contract: the queue's conditioner is HFSC.
-    let hif = unsafe { ifq_hif(ifq) };
+    let hif = unsafe { hif_of(q) };
     // SAFETY: the cookie is a class of this softc (`hfsc_deq_begin`), alive under the mutex
     // the caller holds.
     let cl: &'static HfscClass = unsafe { &*cookie.cast::<HfscClass>() };
@@ -1355,7 +1356,7 @@ fn hfsc_deferred(arg: *mut c_void) {
     // SAFETY: `hfsc_pf_alloc` set the timeout with the interface, which outlives the softc
     // (`hfsc_free` deletes the timeout).
     let ifp: &'static Ifnet = unsafe { &*arg.cast::<Ifnet>() };
-    let ifq = &ifp.if_snd;
+    let ifq = ifp.if_snd();
 
     if !hfsc_enabled(ifq) {
         return;
@@ -1365,14 +1366,12 @@ fn hfsc_deferred(arg: *mut c_void) {
         ifq_start(ifq);
     }
 
-    let Some(qp) = ifq_q_enter(&ifp.if_snd, IFQ_HFSC_OPS) else {
-        return;
-    };
-    // SAFETY: `ifq_q_enter` returned the state of the HFSC conditioner, under `ifq_mtx`.
-    let hif = unsafe { hif_of(qp.as_ptr()) };
-    // XXX HRTIMER nearest virtual/fit time is likely less than 1/HZ.
-    let _ = timeout_add(&hif.hif_defer, 1);
-    ifq_q_leave(&ifp.if_snd, qp);
+    let _ = ifq_q_with(ifp.if_snd(), IFQ_HFSC_OPS, |qp, _st| {
+        // SAFETY: `ifq_q_with` lent the state of the HFSC conditioner, under `ifq_mtx`.
+        let hif = unsafe { hif_of(qp) };
+        // XXX HRTIMER nearest virtual/fit time is likely less than 1/HZ.
+        let _ = timeout_add(&hif.hif_defer, 1);
+    });
 }
 
 /// `hfsc_cl_purge`: moves a class's packets to `ml`; the class goes passive.
@@ -2152,7 +2151,7 @@ mod tests {
     use super::*;
     use crate::kern::uipc_mbuf::m_freem;
     use crate::net::if_::tests::{setup_net, test_ifnet, test_packet, zeroed_static};
-    use crate::net::ifq::{IFQ_PRIQ_OPS, ifq_attach, ifq_dequeue, ifq_enqueue, ifq_init, ifq_len};
+    use crate::net::ifq::{ifq_attach, ifq_attach_priq, ifq_dequeue, ifq_enqueue, ifq_len};
     use crate::net::pfvar::{PFQS_DEFAULT, PfiKif, pf_abi_zeroed};
 
     #[test]
@@ -2287,7 +2286,8 @@ mod tests {
     fn hfsc_interface() -> (&'static Ifnet, &'static HfscIf) {
         hfsc_initialize();
         let ifp = test_ifnet(b"thfsc0");
-        ifq_init(&ifp.if_snd, ifp, 0);
+        // ifq_init: the interface's queues, made by the kernel's attach.
+        crate::net::if_::if_attach(ifp);
         // SAFETY: the all-zero kif is valid (`PfAbi`).
         let kif: &'static PfiKif = unsafe { zeroed_static() };
         kif.set_pfik_ifp(Some(ifp));
@@ -2316,8 +2316,8 @@ mod tests {
             Err(Errno::EINVAL)
         );
 
-        ifq_attach(&ifp.if_snd, IFQ_HFSC_OPS, disc);
-        assert!(hfsc_enabled(&ifp.if_snd));
+        ifq_attach(ifp.if_snd(), IFQ_HFSC_OPS, disc);
+        assert!(hfsc_enabled(ifp.if_snd()));
         // SAFETY: the softc `hfsc_pf_alloc` made, attached to the queue.
         (ifp, unsafe { hif_of(disc) })
     }
@@ -2326,7 +2326,7 @@ mod tests {
     fn link_share_divides_the_link_by_the_curves() {
         let _g = setup();
         let (ifp, hif) = hfsc_interface();
-        let ifq = &ifp.if_snd;
+        let ifq = ifp.if_snd();
 
         let root = hif.hif_rootclass.get().expect("root");
         assert_eq!(root.cl_handle.get(), HFSC_ROOT_CLASS | 1);
@@ -2380,7 +2380,7 @@ mod tests {
 
         // Back to priq: the softc goes, the waiting packets move over.
         let left = ifq_len(ifq);
-        ifq_attach(ifq, IFQ_PRIQ_OPS, ptr::null_mut());
+        ifq_attach_priq(ifq);
         assert!(!hfsc_enabled(ifq));
         assert_eq!(ifq_len(ifq), left);
         while let Some(m) = ifq_dequeue(ifq) {
@@ -2392,7 +2392,7 @@ mod tests {
     fn a_full_class_drops_and_counts() {
         let _g = setup();
         let (ifp, hif) = hfsc_interface();
-        let ifq = &ifp.if_snd;
+        let ifq = ifp.if_snd();
         let a = hfsc_clh2cph(hif, 2).expect("class 2");
 
         let limit = HFSC_DEFAULT_QLIMIT as usize;
@@ -2407,14 +2407,14 @@ mod tests {
                 bytes: 100
             }
         );
-        assert_eq!(ifq.ifq_qdrops.get(), 1);
+        assert_eq!(kernel::net::ifq::ifq_stats(ifq).2, 1);
 
         // Purging (as ifq_purge does) makes the class passive again.
         assert_eq!(crate::net::ifq::ifq_purge(ifq), limit as u32);
         assert_eq!(hfsc_class_qlength(a), 0);
         assert!(hif.hif_rootclass.get().expect("root").cl_actc.is_empty());
 
-        ifq_attach(ifq, IFQ_PRIQ_OPS, ptr::null_mut());
+        ifq_attach_priq(ifq);
     }
 }
 /* </TESTS> */

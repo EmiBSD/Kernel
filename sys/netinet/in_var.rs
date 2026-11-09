@@ -80,7 +80,6 @@ use crate::net::if_var::{Ifaddr, Ifmaddr, Ifnet};
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::queue_adapter;
 use crate::sys::queue::TailqEntry;
-use crate::sys::refcnt::Refcnt;
 use crate::sys::socket::AF_INET;
 
 /// `struct in_ifaddr`: interface address, Internet version.
@@ -109,12 +108,12 @@ unsafe impl Sync for InIfaddr {}
 
 impl InIfaddr {
     /// `ia_ifp` (`ia_ifa.ifa_ifp`).
-    pub fn ia_ifp(&self) -> &Cell<Option<&'static Ifnet>> {
+    pub fn ia_ifp(&self) -> &hal::link::Link<Ifnet> {
         &self.ia_ifa.ifa_ifp
     }
 
     /// `ia_flags` (`ia_ifa.ifa_flags`).
-    pub fn ia_flags(&self) -> &Cell<u32> {
+    pub fn ia_flags(&self) -> &crate::net::if_var::AtomicCell<u32> {
         &self.ia_ifa.ifa_flags
     }
 
@@ -214,12 +213,12 @@ unsafe impl Sync for InMulti {}
 
 impl InMulti {
     /// `inm_refcnt` (`inm_ifma.ifma_refcnt`).
-    pub fn inm_refcnt(&self) -> &Refcnt {
+    pub fn inm_refcnt(&self) -> &hal::refcnt::Refcnt {
         &self.inm_ifma.ifma_refcnt
     }
 
     /// `inm_ifidx` (`inm_ifma.ifma_ifidx`).
-    pub fn inm_ifidx(&self) -> &Cell<u32> {
+    pub fn inm_ifidx(&self) -> &crate::net::if_var::AtomicCell<u32> {
         &self.inm_ifma.ifma_ifidx
     }
 

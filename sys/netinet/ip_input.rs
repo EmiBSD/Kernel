@@ -122,7 +122,6 @@ use crate::net::if_::{
 use crate::net::if_dl::SockaddrDl;
 use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue, sysctl_niq};
-use crate::net::netisr::NETISR_IP;
 use crate::net::pf::{pf_find_divert, pf_ouraddr, pf_test};
 use crate::net::pfvar::{PF_IN, PF_PASS};
 use crate::net::route::{
@@ -212,6 +211,7 @@ use crate::sys::systm::{
     net_unlock_shared,
 };
 use crate::sys::task::Task;
+use kernel::net::netisr::NETISR_IP;
 
 /// `struct ip_srcrt`: the IP options of an incoming packet saved in case a protocol wants to
 /// respond to it over the same route if it got here using IP source routing. This allows
@@ -424,7 +424,7 @@ pub fn ip_ours(
     offp: &mut i32,
     _nxt: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     // The caller's next header is recomputed from the (reassembled) packet.
     let nxt = ip_fragcheck(mp, offp);
@@ -507,7 +507,7 @@ pub fn ipintr() {
 
 /// `ipv4_input`: IPv4 input routine. Checksum and byte swap header. Process options. Forward
 /// or deliver.
-pub fn ipv4_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>) {
+pub fn ipv4_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
     let mut off = 0;
     let mut mp = Some(m);
     let nxt = ip_input_if(
@@ -623,7 +623,7 @@ pub fn ip_input_if(
     nxt: i32,
     af: i32,
     ifp: &'static Ifnet,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let iproute = Route::new();
     let mut flags = 0;
@@ -632,10 +632,9 @@ pub fn ip_input_if(
     kassert!(*offp == 0);
 
     ipstat_inc(IpstatCounters::IpsTotal);
-    let ro: &Route = match ns {
-        None => &iproute,
-        Some(ns) => &ns.ns_route,
-    };
+    // The netstack's route cache (`ns_route`) is not kept (net/if_var.rs's deviations):
+    // the C's path without a netstack, a route of this call's.
+    let ro: &Route = &iproute;
     'out: {
         'bad: {
             let Some(m0) = *mp else {
@@ -892,7 +891,7 @@ pub fn ip_deliver(
     nxt: i32,
     af: i32,
     shared: bool,
-    ns: Option<&Netstack>,
+    mut ns: Option<&mut Netstack>,
 ) -> i32 {
     let mut nxt = nxt;
     let mut af = af;
@@ -970,7 +969,7 @@ pub fn ip_deliver(
         let Some(input) = psw.pr_input else {
             panic(format_args!("ip_deliver: protocol {nxt} without input"));
         };
-        nxt = input(mp, offp, nxt, af, ns);
+        nxt = input(mp, offp, nxt, af, ns.as_deref_mut());
         af = naf;
     }
     nxt
@@ -2029,7 +2028,7 @@ pub fn ip_savecontrol(inp: &Inpcb, mp: &mut Option<&'static Mbuf>, ip: &Ip, m: &
     // (ip_srcroute doesn't do what we want here); compiled out in C too.
     if inp.has_flags(INP_RECVIF) {
         let ifp = if_get(m.m_pkthdr().ph_ifidx.get());
-        let sadl = ifp.map_or(ptr::null_mut(), |ifp| ifp.if_sadl.get());
+        let sadl = ifp.map_or(ptr::null_mut(), crate::net::if_var::if_sadl_ptr);
         if sadl.is_null() {
             let sdl = SockaddrDl {
                 sdl_len: offset_of!(SockaddrDl, sdl_data) as u8,
@@ -2139,6 +2138,7 @@ pub fn ip_send_raw(m: &'static Mbuf) {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for IPv4: header validation in `ipv4_input` on crafted packets, and the whole
     // path of a ping over a test Ethernet interface: an address through `in_ioctl`, the
     // routes it makes, a default route, ARP resolution with the held packet sent once the reply
@@ -2231,7 +2231,7 @@ pub(crate) mod tests {
         let mut xname = [0u8; IFNAMSIZ];
         xname[..5].copy_from_slice(b"tvio0");
         ac.ac_if.if_xname.set(xname);
-        ac.ac_if.if_ioctl.set(Some(test_ether_ioctl));
+        ac.ac_if.if_ioctl().set(Some(test_ether_ioctl));
         ac.ac_if
             .if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
@@ -2388,13 +2388,13 @@ pub(crate) mod tests {
         );
         assert_ne!(route_flags([10, 0, 2, 255]) & RTF_BROADCAST, 0);
         // The address was announced (a gratuitous ARP request for itself).
-        let m = ifq_dequeue(&ifp.if_snd).expect("announcement");
+        let m = ifq_dequeue(ifp.if_snd()).expect("announcement");
         let b = bytes(m);
         assert_eq!(&b[12..14], &ETHERTYPE_ARP.to_be_bytes());
         assert_eq!(&b[28..32], &ADDR);
         assert_eq!(&b[38..42], &ADDR);
         m_freem(m);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 
@@ -2442,7 +2442,7 @@ pub(crate) mod tests {
         m.m_pkthdr().csum_flags.set(M_ICMP_CSUM_OUT);
         ip_output(m, None, None, 0, None, None, 0).expect("held by ARP");
 
-        let req = ifq_dequeue(&ifp.if_snd).expect("ARP request");
+        let req = ifq_dequeue(ifp.if_snd()).expect("ARP request");
         let b = bytes(req);
         m_freem(req);
         assert_eq!(&b[0..6], &[0xff; 6]);
@@ -2451,7 +2451,7 @@ pub(crate) mod tests {
         assert_eq!(&b[28..32], &ADDR, "from our address");
         assert_eq!(&b[38..42], &GATEWAY, "for the gateway");
         assert!(
-            ifq_dequeue(&ifp.if_snd).is_none(),
+            ifq_dequeue(ifp.if_snd()).is_none(),
             "the echo request is held"
         );
 
@@ -2476,7 +2476,7 @@ pub(crate) mod tests {
         ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
         arpintr();
 
-        let echo = ifq_dequeue(&ifp.if_snd).expect("the echo request");
+        let echo = ifq_dequeue(ifp.if_snd()).expect("the echo request");
         let b = bytes(echo);
         assert_eq!(&b[0..6], &PEER, "to the gateway's hardware address");
         assert_eq!(&b[6..12], &OURS);
@@ -2530,7 +2530,7 @@ pub(crate) mod tests {
         // SAFETY: a local `sockaddr_in`.
         let rt = unsafe { rtalloc(sintosa(&mut s), 0, 0) };
         assert!(rt.is_none(), "no route to the gateway is left");
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
     }

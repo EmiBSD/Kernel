@@ -193,6 +193,7 @@ use crate::net::if_media::{
     IFM_HDX, IFM_IMASK, IFM_NONE, Ifmedia, ifm_subtype, ifm_type, ifmedia_add, ifmedia_init,
     ifmedia_ioctl, ifmedia_set,
 };
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_needrefill, if_rxr_put};
 use crate::net::ifq::{
     Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
@@ -1085,7 +1086,7 @@ impl Drop for EmHwGuard<'_> {
 
 /// `(struct em_softc *)ifp->if_softc`.
 pub fn em_softc(ifp: &Ifnet) -> &'static EmSoftc {
-    let p = ifp.if_softc.get().cast::<EmSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<EmSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("em: interface without its softc"));
     }
@@ -1390,7 +1391,7 @@ pub fn em_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
 /// packets to transmit and transmit resources are available; otherwise the send queue is
 /// marked active and the packet waits there.
 pub fn em_start(ifq: &'static Ifqueue) {
-    let Some(ifp) = ifq.ifq_if.get() else {
+    let Some(ifp) = Some(ifq.ifq_if()) else {
         return;
     };
     let sc = em_softc(ifp);
@@ -1445,7 +1446,7 @@ pub fn em_start(ifq: &'static Ifqueue) {
         free -= used;
 
         // Send a copy of the frame to the BPF listener
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap_ether(bpf, m, BPF_DIRECTION_OUT);
         }
@@ -1732,7 +1733,7 @@ pub fn em_init(sc: &'static EmSoftc) {
     em_iff(sc);
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     timeout_add_sec(&sc.timer_handle, 1);
     em_clear_hw_cntrs(&mut sc.em_hw());
@@ -2369,11 +2370,11 @@ pub fn em_stop(sc: &'static EmSoftc, softonly: bool) {
     if let Some(ih) = NonNull::new(sc.sc_intrhand.get()) {
         intr_barrier(ih);
     }
-    ifq_barrier(&ifp.if_snd);
+    ifq_barrier(ifp.if_snd());
 
     kassert!(ifp.if_flags.get() & IFF_RUNNING == 0);
 
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
     ifp.if_timer.set(0);
 
     em_free_transmit_structures(sc);
@@ -2837,16 +2838,16 @@ pub fn em_setup_interface(sc: &'static EmSoftc) {
     if sc.sc_dmaflags.get() & BUS_DMA_64BIT != 0 {
         ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_MBUF_64BIT);
     }
-    ifp.if_ioctl.set(Some(em_ioctl));
-    ifp.if_qstart.set(Some(em_start));
-    ifp.if_watchdog.set(Some(em_watchdog));
+    ifp.if_ioctl().set(Some(em_ioctl));
+    ifp.if_qstart().set(Some(em_start));
+    ifp.if_watchdog().set(Some(em_watchdog));
     let (max_frame_size, media_type, mac_type, phy_type) = {
         let hw = sc.em_hw();
         (hw.max_frame_size, hw.media_type, hw.mac_type, hw.phy_type)
     };
     ifp.if_hardmtu
         .set(max_frame_size - ETHER_HDR_LEN as u32 - ETHER_CRC_LEN as u32);
-    ifq_init_maxlen(&ifp.if_snd, sc.sc_tx_slots.get() - 1);
+    ifq_init_maxlen(ifp.if_snd(), sc.sc_tx_slots.get() - 1);
 
     let mut caps = IFCAP_VLAN_MTU;
 
@@ -3581,8 +3582,8 @@ pub fn em_txeof(que: &EmQueue) {
 
     que.tx.sc_tx_desc_tail.store(tail, Ordering::Release);
 
-    if ifq_is_oactive(&ifp.if_snd) {
-        ifq_restart(&ifp.if_snd);
+    if ifq_is_oactive(ifp.if_snd()) {
+        ifq_restart(ifp.if_snd());
     } else if tail == head {
         ifp.if_timer.set(0);
     }
@@ -4095,7 +4096,7 @@ pub fn em_rxeof(que: &EmQueue) -> bool {
 
     que.rx.sc_rx_desc_tail.set(i);
 
-    if ifiq_input(&ifp.if_rcv, &ml) {
+    if ifiq_input(ifp.if_rcv(), &ml) {
         que.with_rx_ring(if_rxr_livelocked);
     }
 

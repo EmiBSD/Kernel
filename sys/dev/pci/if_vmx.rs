@@ -148,6 +148,7 @@ use crate::net::if_media::{
     IFM_10G_T, IFM_1000_T, IFM_ACTIVE, IFM_AUTO, IFM_AVALID, IFM_ETHER, IFM_FDX, IFM_IMASK,
     Ifmedia, ifmedia_add, ifmedia_init, ifmedia_ioctl, ifmedia_set,
 };
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_inuse, if_rxr_put};
 use crate::net::ifq::{
     Ifiqueue, Ifqueue, ifiq_input, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen, ifq_is_oactive,
@@ -598,7 +599,7 @@ pub struct Vmxnet3Queue {
     /// `intr`: the queue's interrupt index (0 without its own vector).
     pub intr: Cell<i32>,
     /// `bpf`: the queue's `bpf(4)` tap.
-    pub bpf: Cell<*mut u8>,
+    pub bpf: hal::link::PtrWord<u8>,
 }
 
 impl Vmxnet3Queue {
@@ -821,7 +822,7 @@ pub static VMX_CD: Cfdriver = Cfdriver::new(b"vmx", DV_IFNET, 0);
 
 /// `(struct vmxnet3_softc *)ifp->if_softc`.
 pub fn vmxnet3_softc(ifp: &Ifnet) -> &'static Vmxnet3Softc {
-    let p = ifp.if_softc.get().cast::<Vmxnet3Softc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<Vmxnet3Softc>().cast_const();
     if p.is_null() {
         panic(format_args!("vmx: interface without its softc"));
     }
@@ -1041,9 +1042,9 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_MULTICAST | IFF_SIMPLEX);
     ifp.if_xflags.set(IFXF_MPSAFE | IFXF_MBUF_64BIT);
-    ifp.if_ioctl.set(Some(vmxnet3_ioctl));
-    ifp.if_qstart.set(Some(vmxnet3_start));
-    ifp.if_watchdog.set(Some(vmxnet3_watchdog));
+    ifp.if_ioctl().set(Some(vmxnet3_ioctl));
+    ifp.if_qstart().set(Some(vmxnet3_start));
+    ifp.if_watchdog().set(Some(vmxnet3_watchdog));
     ifp.if_hardmtu.set(VMXNET3_MAX_MTU);
     let mut caps = IFCAP_VLAN_MTU;
 
@@ -1064,7 +1065,7 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
     }
     ifp.if_capabilities.set(caps);
 
-    ifq_init_maxlen(&ifp.if_snd, NTXDESC);
+    ifq_init_maxlen(ifp.if_snd(), NTXDESC);
 
     ifmedia_init(
         &sc.sc_media,
@@ -1118,9 +1119,11 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
                 ETHER_HDR_LEN as u32,
             );
 
-            ifiq.ifiq_bpfp.set(q.bpf.as_ptr());
+            ifiq.ifiq_bpfp
+                .set(core::ptr::from_ref(&q.bpf).cast::<*mut u8>());
         }
-        q.tx.bpfp.set(q.bpf.as_ptr());
+        q.tx.bpfp
+            .set(core::ptr::from_ref(&q.bpf).cast::<*mut u8>().cast_mut());
 
         // NKSTAT > 0: vmx_kstat_txstats(sc, &sc->sc_q[i].tx, i) and
         // vmx_kstat_rxstats(sc, &sc->sc_q[i].rx, i); kstat(4) is not configured.
@@ -2401,11 +2404,15 @@ pub fn vmxnet3_tx_offload(sop: &mut Vmxnet3Txdesc, m: &Mbuf) {
 
 /// `vmxnet3_start`: transmit what the send queue holds.
 pub fn vmxnet3_start(ifq: &'static Ifqueue) {
-    let Some(ifp) = ifq.ifq_if.get() else {
+    let Some(ifp) = Some(ifq.ifq_if()) else {
         return;
     };
     let sc = vmxnet3_softc(ifp);
-    let tq_ptr = ifq.ifq_softc.get().cast::<Vmxnet3Txqueue>().cast_const();
+    let tq_ptr = ifq
+        .ifq_softc
+        .get_mut()
+        .cast::<Vmxnet3Txqueue>()
+        .cast_const();
     if tq_ptr.is_null() {
         panic(format_args!("vmx: send queue without its tx queue"));
     }
@@ -2456,7 +2463,7 @@ pub fn vmxnet3_start(ifq: &'static Ifqueue) {
             match m_pullup(m, hdrlen) {
                 Some(n) => m = n,
                 None => {
-                    ifq.ifq_errors.set(ifq.ifq_errors.get() + 1);
+                    crate::net::ifq::ifq_inc_errors(ifq);
                     continue;
                 }
             }
@@ -2465,13 +2472,13 @@ pub fn vmxnet3_start(ifq: &'static Ifqueue) {
         let map = ring.map(prod);
 
         if vmx_load_mbuf(dmat, map, m).is_err() {
-            ifq.ifq_errors.set(ifq.ifq_errors.get() + 1);
+            crate::net::ifq::ifq_inc_errors(ifq);
             m_freem(m);
             continue;
         }
 
         // NBPFILTER > 0
-        let if_bpf = ifp.if_bpf.get();
+        let if_bpf = ifp.if_bpf.get_mut();
         if !if_bpf.is_null() {
             let _ = bpf_mtap_ether(if_bpf, m, BPF_DIRECTION_OUT);
         }
@@ -2482,7 +2489,7 @@ pub fn vmxnet3_start(ifq: &'static Ifqueue) {
         } else {
             // SAFETY: vmxnet3_attach points `bpfp` at the queue's `bpf` cookie, which lives
             // as long as the queue.
-            unsafe { bpfp.read() }
+            unsafe { (*bpfp.cast::<hal::link::PtrWord<u8>>()).get_mut() }
         };
         if !if_bpf.is_null() {
             let _ = bpf_mtap_ether(if_bpf, m, BPF_DIRECTION_OUT);

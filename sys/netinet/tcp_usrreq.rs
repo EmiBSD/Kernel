@@ -1736,7 +1736,7 @@ mod tests {
 
     /// Drops whatever the interface was asked to send.
     fn drain(ifp: &Ifnet) {
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
     }
@@ -1791,7 +1791,7 @@ mod tests {
 
     /// The next segment on the interface's send queue, its checksums verified.
     fn next_seg(ifp: &Ifnet) -> Option<Seg> {
-        let out = ifq_dequeue(&ifp.if_snd)?;
+        let out = ifq_dequeue(ifp.if_snd())?;
         let b = bytes(out);
         m_freem(out);
         let ipb = b[size_of::<EtherHeader>()..].to_vec();

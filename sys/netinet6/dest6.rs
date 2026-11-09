@@ -75,7 +75,7 @@ pub fn dest6_input(
     offp: &mut i32,
     _proto: i32,
     _af: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     const HDRLEN: i32 = size_of::<Ip6Dest>() as i32;
     let mut off = *offp;

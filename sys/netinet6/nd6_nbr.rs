@@ -1625,11 +1625,7 @@ mod tests {
         assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending + 1);
         assert_eq!(dp.dad_count.get(), IP6_DAD_COUNT.load(Ordering::Relaxed));
         assert_eq!((dp.dad_ns_tcount.get(), dp.dad_ns_ocount.get()), (1, 1));
-        assert_eq!(
-            ia.ia_ifa.ifa_refcnt.r_refs.load(Ordering::Relaxed),
-            2,
-            "dadq's reference"
-        );
+        assert_eq!(ia.ia_ifa.ifa_refcnt.read(), 2, "dadq's reference");
 
         // A second start for the same address does nothing.
         net_lock();
@@ -1645,7 +1641,7 @@ mod tests {
         assert!(nd6_dad_find(&ia.ia_ifa).is_none());
         assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending);
         reap(dp);
-        assert_eq!(ia.ia_ifa.ifa_refcnt.r_refs.load(Ordering::Relaxed), 1);
+        assert_eq!(ia.ia_ifa.ifa_refcnt.read(), 1);
     }
 
     #[test]

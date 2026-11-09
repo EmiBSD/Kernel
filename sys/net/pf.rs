@@ -4119,7 +4119,13 @@ pub fn pf_match_rcvif(m: &Mbuf, r: &'static PfRule) -> bool {
         // NCARP > 0: a carp interface's parent's kif; not configured.
         // SAFETY: `if_pf_kif` is null or the kif `pfi_attach_ifnet` set, which lives until
         // `pfi_detach_ifnet`.
-        unsafe { ifp.if_pf_kif.get().cast::<PfiKif>().cast_const().as_ref() }
+        unsafe {
+            ifp.if_pf_kif
+                .get_mut()
+                .cast::<PfiKif>()
+                .cast_const()
+                .as_ref()
+        }
     });
     smr_read_leave();
 
@@ -9334,7 +9340,13 @@ pub fn pf_test(af: SaFamily, fwdir: u8, ifp: &'static Ifnet, m0: &mut Option<&'s
     // NCARP > 0: a carp interface uses its parent's kif; not configured.
     // SAFETY: `if_pf_kif` is null or the kif `pfi_attach_ifnet` set, which lives until
     // `pfi_detach_ifnet`.
-    let kif = unsafe { ifp.if_pf_kif.get().cast::<PfiKif>().cast_const().as_ref() };
+    let kif = unsafe {
+        ifp.if_pf_kif
+            .get_mut()
+            .cast::<PfiKif>()
+            .cast_const()
+            .as_ref()
+    };
 
     let Some(kif) = kif else {
         crate::dpfprintf!(
@@ -10197,6 +10209,46 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
     /// `m_free`'s and `m_clearhdr`'s `pf_mbuf_unlink_inpcb(m)`.
     fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf) {
         pf_unlink_inpcb(pf);
+    }
+
+    /// `if_enqueue`'s `pf_delay_pkt(m, ifidx)`.
+    fn delay_pkt(&self, m: kernel::net::mbuf::MbufBox, ifidx: u32) -> Result<(), Errno> {
+        pf_delay_pkt(crate::sys::mbuf::park(m), ifidx)
+    }
+
+    /// `if_enqueue`'s and `if_vinput`'s `pf_pkt_addr_changed(m)`.
+    fn pkt_addr_changed(&self, m: &Mbuf) {
+        pf_pkt_addr_changed(m);
+    }
+
+    /// `if_attachsetup`'s `pfi_attach_ifnet(ifp)`.
+    fn attach_ifnet(&self, ifp: &'static crate::net::if_var::Ifnet) {
+        crate::net::pf_if::pfi_attach_ifnet(ifp);
+    }
+
+    /// `if_detach`'s `pfi_detach_ifnet(ifp)`.
+    fn detach_ifnet(&self, ifp: &'static crate::net::if_var::Ifnet) {
+        crate::net::pf_if::pfi_detach_ifnet(ifp);
+    }
+
+    /// `if_creategroup`'s `pfi_attach_ifgroup(ifg)`.
+    fn attach_ifgroup(&self, ifg: &crate::net::if_var::IfgGroup) {
+        crate::net::pf_if::pfi_attach_ifgroup(ifg);
+    }
+
+    /// `if_delgroup`'s `pfi_detach_ifgroup(ifg)`.
+    fn detach_ifgroup(&self, ifg: &crate::net::if_var::IfgGroup) {
+        crate::net::pf_if::pfi_detach_ifgroup(ifg);
+    }
+
+    /// `if_addgroup`'s `pfi_group_addmember(name)`.
+    fn group_addmember(&self, name: &[u8]) {
+        crate::net::pf_if::pfi_group_addmember(name);
+    }
+
+    /// `if_delgroup`'s `pfi_group_delmember(name)`.
+    fn group_delmember(&self, name: &[u8]) {
+        crate::net::pf_if::pfi_group_delmember(name);
     }
 }
 

@@ -288,7 +288,7 @@ pub struct BpfIf {
     /// `bif_dlist`: descriptor list, SMR-protected.
     pub bif_dlist: SmrSlistHead<BpfDlist>,
     /// `bif_driverp`: the driver's `if_bpf` (pointer into softc).
-    pub bif_driverp: &'static Cell<*mut u8>,
+    pub bif_driverp: &'static hal::link::PtrWord<u8>,
     /// `bif_dlt`: link layer type.
     pub bif_dlt: u32,
     /// `bif_hdrlen`: length of header (with padding).

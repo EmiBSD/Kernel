@@ -316,7 +316,7 @@ pub struct UsbdBus {
     /// `bpfif`: the bpf tap (`usb_attach`).
     pub bpfif: Cell<Option<&'static BpfIf>>,
     /// `bpf`: the listeners' pointer the bpf code keeps up to date (`caddr_t bpf`).
-    pub bpf: Cell<*mut u8>,
+    pub bpf: hal::link::PtrWord<u8>,
     /// `pipe_size`: size of a pipe struct.
     pub pipe_size: Cell<u32>,
     /// The host controller's pipe type ([`usbd_bus_set_hc_types`]).

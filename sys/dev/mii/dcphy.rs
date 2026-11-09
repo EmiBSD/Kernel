@@ -130,7 +130,7 @@ pub static DCPHY_FUNCS: MiiPhyFuncs = MiiPhyFuncs {
 
 /// `mii->mii_ifp->if_softc`: the dc(4) softc this PHY belongs to.
 fn dcphy_dc_sc(mii: &MiiData) -> &'static DcSoftc {
-    let p = mii.ifp().if_softc.get().cast::<DcSoftc>().cast_const();
+    let p = mii.ifp().if_softc.get_mut().cast::<DcSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("dcphy: interface without its softc"));
     }

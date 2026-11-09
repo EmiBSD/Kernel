@@ -790,7 +790,7 @@ pub fn ah_input(
     tdb: &'static Tdb,
     skip: i32,
     protoff: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(ahx) = tdb.tdb_authalgxform.get() else {
         m_freemp(mp);
@@ -1029,7 +1029,7 @@ pub fn ah_output(
             .if_obytes()
             .set(encif.if_obytes().get() + m.m_pkthdr().len.get() as u64);
 
-        let if_bpf = encif.if_bpf.get();
+        let if_bpf = encif.if_bpf.get_mut();
         if !if_bpf.is_null() {
             let hdr = Enchdr {
                 af: u32::from(tdb.tdb_dst.get().sa_family()).to_be(),

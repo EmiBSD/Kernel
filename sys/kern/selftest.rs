@@ -1765,7 +1765,7 @@ pub fn vio_check() {
     // From here on only the receive interrupt can call vio_rxeof.
     timeout_del(&sc.sc_rxtick);
     let ifiq = ifp.ifiq(0);
-    let rx_before = ifiq.ifiq_packets.get();
+    let rx_before = kernel::net::ifq::ifiq_stats(ifiq).0;
 
     let frame = vio_arp_request(&sc.sc_ac.ac_enaddr.get());
     let Some(m) = m_gethdr(M_DONTWAIT, MT_DATA) else {
@@ -1785,13 +1785,13 @@ pub fn vio_check() {
 
     // Wait up to two seconds, in 10 ms sleeps, for a frame.
     for _ in 0..200 {
-        if ifiq.ifiq_packets.get() != rx_before {
+        if kernel::net::ifq::ifiq_stats(ifiq).0 != rx_before {
             break;
         }
         let _ = tsleep_nsec(ptr::addr_of!(VIO_REQUESTED), PWAIT, "viotest", 10_000_000);
     }
-    let frames = ifiq.ifiq_packets.get() - rx_before;
-    let sent = ifp.if_snd.ifq_packets.get();
+    let frames = kernel::net::ifq::ifiq_stats(ifiq).0 - rx_before;
+    let sent = kernel::net::ifq::ifq_stats(ifp.if_snd()).0;
     if frames > 0 {
         kprintf!(
             "selftest: vio rx ok: sent {} frame, received {} through the rx interrupt\n",

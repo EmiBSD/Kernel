@@ -138,7 +138,7 @@ pub trait QueueDiscipline: Sync + 'static {
     /// itself, or one it evicts).
     fn enq(&self, q: usize, st: &mut IfqLocked<'_>, m: MbufBox) -> Option<MbufBox>;
     /// `ifqop_deq_begin`: the next packet and its cookie, left queued.
-    fn deq_begin<'a>(&self, q: usize, st: &'a IfqLocked<'_>) -> Option<(&'a Mbuf, usize)>;
+    fn deq_begin<'a>(&self, q: usize, st: &'a mut IfqLocked<'_>) -> Option<(&'a Mbuf, usize)>;
     /// `ifqop_deq_commit`: takes the packet `deq_begin` returned with `cookie` off.
     fn deq_commit(&self, q: usize, st: &mut IfqLocked<'_>, cookie: usize) -> MbufBox;
     /// `ifqop_purge`: moves every packet to `ml`.
@@ -531,19 +531,33 @@ pub fn ifq_barrier(ifq: &'static Ifqueue) {
 /// `ifq_attach`: replaces the queue's conditioner with `newops` (its state made with `arg`);
 /// the pending packets move to the new one (and are dropped if it refuses them).
 pub fn ifq_attach(ifq: &Ifqueue, newops: &'static dyn QueueDiscipline, arg: usize) {
+    let newq = newops.alloc(ifq.ifq_idx, arg);
+    ifq_attach_disc(ifq, Discipline::Ops(newops, newq));
+}
+
+/// `ifq_attach(ifq, ifq_priq_ops, NULL)`: the default conditioner back (pf's queues removed),
+/// a fresh `struct priq` (`priq_alloc`).
+pub fn ifq_attach_priq(ifq: &Ifqueue) {
+    let Some(pq) = MBox::new(M_DEVBUF, M_WAITOK, Priq::new()) else {
+        kpanic(format_args!("priq_alloc: out of memory"));
+    };
+    ifq_attach_disc(ifq, Discipline::Priq(pq));
+}
+
+/// `ifq_attach`'s body: the packets moved from the old conditioner to `new`, which replaces
+/// it; the old one's state freed after the mutex.
+fn ifq_attach_disc(ifq: &Ifqueue, new: Discipline) {
     let mut ml = MbufList::new();
     let mut free_ml = MbufList::new();
-
-    let newq = newops.alloc(ifq.ifq_idx, arg);
 
     let mut st = ifq.enter();
     disc_purge(&mut st, &mut ml);
     ifq.ifq_len.store(0, Ordering::Relaxed);
 
-    let old = st.g.disc.replace(Discipline::Ops(newops, newq));
+    let old = st.g.disc.replace(new);
 
     while let Some(m) = ml_dequeue(&mut ml) {
-        match newops.enq(newq, &mut st, m) {
+        match disc_enq(&mut st, m) {
             Some(m) => {
                 st.g.qdrops += 1;
                 ml_enqueue(&mut free_ml, m);
@@ -646,7 +660,7 @@ pub fn ifq_deq_with(ifq: &Ifqueue, f: impl FnOnce(&Mbuf) -> IfqDeq) -> Option<Mb
         st.leave();
         return None;
     }
-    let seen = disc_deq_begin(&st).map(|(m, cookie)| (f(m), cookie));
+    let seen = disc_deq_begin(&mut st).map(|(m, cookie)| (f(m), cookie));
     let m = match seen {
         Some((IfqDeq::Commit, cookie)) => {
             let m = disc_deq_commit(&mut st, cookie);
@@ -683,7 +697,7 @@ pub fn ifq_deq_sleep(
         Err(Errno::EWOULDBLOCK)
     } else {
         loop {
-            if let Some((_, cookie)) = disc_deq_begin(&st) {
+            if let Some((_, cookie)) = disc_deq_begin(&mut st) {
                 let m = disc_deq_commit(&mut st, cookie);
                 ifq.ifq_len.fetch_sub(1, Ordering::Relaxed);
                 break Ok(m);
@@ -769,6 +783,20 @@ fn same_ops(a: &dyn QueueDiscipline, b: &dyn QueueDiscipline) -> bool {
     core::ptr::addr_eq(a, b)
 }
 
+/// `ifq->ifq_errors++`: a driver's output error on the queue (under `ifq_mtx` here, where
+/// the C's drivers increment the counter with no lock: the error path only).
+pub fn ifq_inc_errors(ifq: &Ifqueue) {
+    ifq.st.lock().errors += 1;
+}
+
+/// The packets an input queue holds, taken off (a host test's look at what was queued).
+#[cfg(any(test, feature = "doubles"))]
+pub fn ifiq_test_take(ifiq: &Ifiqueue) -> MbufList {
+    let ml = core::mem::take(&mut ifiq.st.lock().ml);
+    ifiq.ml_len.store(0, Ordering::Relaxed);
+    ml
+}
+
 /// `ifq_len(ifq)`: packets queued, read without the mutex.
 pub fn ifq_len(ifq: &Ifqueue) -> u32 {
     ifq.ifq_len.load(Ordering::Relaxed)
@@ -838,10 +866,17 @@ fn disc_enq(st: &mut IfqLocked<'_>, m: MbufBox) -> Option<MbufBox> {
 }
 
 /// `ifq->ifq_ops->ifqop_deq_begin(ifq, &cookie)`.
-fn disc_deq_begin<'a>(st: &'a IfqLocked<'_>) -> Option<(&'a Mbuf, usize)> {
-    match disc_of(st) {
-        Discipline::Priq(pq) => priq_deq_begin(pq),
-        Discipline::Ops(ops, q) => ops.deq_begin(*q, st),
+fn disc_deq_begin<'a>(st: &'a mut IfqLocked<'_>) -> Option<(&'a Mbuf, usize)> {
+    let ops = match disc_of(st) {
+        Discipline::Ops(ops, q) => Some((*ops, *q)),
+        Discipline::Priq(_) => None,
+    };
+    match ops {
+        Some((ops, q)) => ops.deq_begin(q, st),
+        None => match disc_of(st) {
+            Discipline::Priq(pq) => priq_deq_begin(pq),
+            Discipline::Ops(..) => None,
+        },
     }
 }
 

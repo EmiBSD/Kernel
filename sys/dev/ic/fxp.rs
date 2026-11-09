@@ -125,6 +125,7 @@ use crate::net::if_media::{
     ifmedia_init, ifmedia_ioctl, ifmedia_match, ifmedia_set,
 };
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{
     ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_init_maxlen, ifq_is_oactive, ifq_set_oactive,
 };
@@ -203,7 +204,7 @@ pub static FXP_CD: Cfdriver = Cfdriver::new(b"fxp", DV_IFNET, 0);
 
 /// `(struct fxp_softc *)ifp->if_softc`.
 pub fn fxp_softc(ifp: &Ifnet) -> &'static FxpSoftc {
-    let p = ifp.if_softc.get().cast::<FxpSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<FxpSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("fxp: interface without its softc"));
     }
@@ -569,10 +570,10 @@ pub fn fxp_attach(sc: &'static FxpSoftc, intrstr: &[u8]) -> Result<(), Errno> {
     ifp.if_softc.set(arg);
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
-    ifp.if_ioctl.set(Some(fxp_ioctl));
-    ifp.if_start.set(Some(fxp_start));
-    ifp.if_watchdog.set(Some(fxp_watchdog));
-    ifq_init_maxlen(&ifp.if_snd, FXP_NTXCB as u32 - 1);
+    ifp.if_ioctl().set(Some(fxp_ioctl));
+    ifp.if_start().set(Some(fxp_start));
+    ifp.if_watchdog().set(Some(fxp_watchdog));
+    ifq_init_maxlen(ifp.if_snd(), FXP_NTXCB as u32 - 1);
 
     ifp.if_capabilities.set(IFCAP_VLAN_MTU);
 
@@ -780,7 +781,7 @@ pub fn fxp_start(ifp: &'static Ifnet) {
     let mut txs = sc.sc_cbt_prod.get();
     let mut cnt = sc.sc_cbt_cnt.get();
 
-    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(&ifp.if_snd) {
+    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(ifp.if_snd()) {
         return;
     }
 
@@ -789,13 +790,13 @@ pub fn fxp_start(ifp: &'static Ifnet) {
 
     loop {
         if cnt >= (FXP_NTXCB as i32 - 2) {
-            ifq_set_oactive(&ifp.if_snd);
+            ifq_set_oactive(ifp.if_snd());
             break;
         }
 
         txs = fxp_txs_next(txs);
 
-        let Some(m0) = ifq_dequeue(&ifp.if_snd) else {
+        let Some(m0) = ifq_dequeue(ifp.if_snd()) else {
             break;
         };
 
@@ -818,7 +819,7 @@ pub fn fxp_start(ifp: &'static Ifnet) {
 
         sc.txs[txs].tx_mbuf.set(Some(m0));
 
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap(bpf, m0, BPF_DIRECTION_OUT);
         }
@@ -938,13 +939,13 @@ pub fn fxp_intr(arg: *mut c_void) -> i32 {
             sc.sc_cbt_cnt.set(txcnt);
             // Did we transmit any packets?
             if sc.sc_cbt_cons.get() != txs {
-                ifq_clr_oactive(&ifp.if_snd);
+                ifq_clr_oactive(ifp.if_snd());
             }
             ifp.if_timer
                 .set(if sc.sc_cbt_cnt.get() != 0 { 5 } else { 0 });
             sc.sc_cbt_cons.set(txs);
 
-            if !ifq_empty(&ifp.if_snd) {
+            if !ifq_empty(ifp.if_snd()) {
                 // Try to start more packets transmitting.
                 fxp_start(ifp);
             }
@@ -1127,7 +1128,7 @@ pub fn fxp_stop(sc: &'static FxpSoftc, drain: bool, softonly: bool) {
     // watchdog timer)
     ifp.if_timer.set(0);
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     if !softonly {
         mii_down(&sc.sc_mii);
@@ -1437,7 +1438,7 @@ pub fn fxp_init(sc: &'static FxpSoftc) {
     let _ = mii_mediachg(&sc.sc_mii);
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     // Request a software generated interrupt that will be used to (re)start the RU
     // processing. If we direct the chip to start receiving from the start of queue now,

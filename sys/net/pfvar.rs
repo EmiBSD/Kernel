@@ -2625,7 +2625,7 @@ impl PfiKif {
     }
 
     /// `pfik_group = g`.
-    pub fn set_pfik_group(&self, g: Option<&'static IfgGroup>) {
+    pub fn set_pfik_group(&self, g: Option<&IfgGroup>) {
         self.pfik_group.set(g.map_or(ptr::null(), ptr::from_ref));
     }
 }

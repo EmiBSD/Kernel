@@ -2567,7 +2567,7 @@ pub fn usb_tap(bus: &UsbdBus, xfer: &UsbdXfer, dir: u8) {
     if NBPFILTER == 0 {
         return;
     }
-    let bpf = bus.bpf.get();
+    let bpf = bus.bpf.get_mut();
     if bpf.is_null() {
         return;
     }

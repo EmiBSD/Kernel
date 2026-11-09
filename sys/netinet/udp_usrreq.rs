@@ -333,7 +333,7 @@ pub fn udp_input(
     offp: &mut i32,
     _proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    mut ns: Option<&mut Netstack>,
 ) -> i32 {
     let iphlen = *offp;
     let mut inp: Option<&'static Inpcb> = None;
@@ -592,7 +592,7 @@ pub fn udp_input(
                             &hdr,
                             srcsa.sa_bytes(),
                             0,
-                            ns,
+                            ns.as_deref_mut(),
                         );
                     }
                     in_pcbunref(Some(l));
@@ -813,7 +813,7 @@ pub fn udp_sbappend(
     uh: &Udphdr,
     srcaddr: &[u8],
     ipsecflowinfo: u32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) {
     let so = inp.socket();
     let mut opts: Option<&'static Mbuf> = None;
@@ -1583,7 +1583,7 @@ mod tests {
 
     /// Drops whatever the interface was asked to send.
     fn drain(ifp: &Ifnet) {
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
     }
@@ -1763,7 +1763,7 @@ mod tests {
         assert!(lport >= 1024, "a port was picked: {lport}");
         drain(ifp);
         answer_arp(ifp);
-        let out = ifq_dequeue(&ifp.if_snd).expect("the datagram");
+        let out = ifq_dequeue(ifp.if_snd()).expect("the datagram");
         let b = bytes(out);
         m_freem(out);
         let ipb = &b[size_of::<EtherHeader>()..];
