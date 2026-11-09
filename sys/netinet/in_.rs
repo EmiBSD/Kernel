@@ -1606,11 +1606,15 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMult
         ..SockaddrIn::default()
     };
     // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-    let _ = hal::pod::put(
+    if !hal::pod::put(
         bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
         0,
         &sin,
-    );
+    ) {
+        panic(format_args!(
+            "in_addmulti: a sockaddr_in past an ifreq's address"
+        ));
+    }
     kernel_lock();
     if kernel::net::if_::if_ioctl(
         ifp,
@@ -1683,11 +1687,15 @@ pub fn in_delmulti(inm: &'static InMulti) {
             ..SockaddrIn::default()
         };
         // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-        let _ = hal::pod::put(
+        if !hal::pod::put(
             bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
             0,
             &sin,
-        );
+        ) {
+            panic(format_args!(
+                "in_delmulti: a sockaddr_in past an ifreq's address"
+            ));
+        }
         kernel_lock();
         let _ = kernel::net::if_::if_ioctl(
             ifp,

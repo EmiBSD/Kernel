@@ -1433,8 +1433,10 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
                 error = Err(e);
                 break 'out;
             }
+            // The group's name copied out first: the driver's request below borrows the same
+            // bytes mutably (review 2's nit).
             // SAFETY: the caller's contract: an `ifgroupreq`.
-            let ifgr = unsafe { &*data.cast::<Ifgroupreq>() };
+            let group = *unsafe { &*data.cast::<Ifgroupreq>() }.ifgr_group();
             net_lock();
             // SAFETY: the caller's contract: `data` is the kernel copy of the request, as long
             // as `cmd` encodes, ours for the call.
@@ -1445,7 +1447,7 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
                 error = Ok(());
             }
             if error.is_ok() {
-                error = if_delgroup(ifp, ifgr.ifgr_group());
+                error = if_delgroup(ifp, &group);
             }
             net_unlock();
         }

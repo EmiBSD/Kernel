@@ -588,6 +588,15 @@ unsafe impl<T: Send> Send for MArray<T> {}
 
 // SAFETY: `&MArray<T>` gives only `&[T]`, so sharing it is sharing `&T`s.
 unsafe impl<T: Sync> Sync for MArray<T> {}
+
+// `None` of a box or a counted handle is a niche of its pointer, no tag (review 2's nit): so
+// zero bytes, a null pointer, are `None`, which `hal::slot`'s
+// `an_all_zero_cell_of_no_box_or_handle_holds_none` relies on for the interface's cells in
+// zeroed softcs.
+const _: () = {
+    assert!(size_of::<Option<MBox<u64>>>() == size_of::<MBox<u64>>());
+    assert!(size_of::<Option<MArc<u64>>>() == size_of::<MArc<u64>>());
+};
 /* </CODE> */
 
 /* <TESTS> */

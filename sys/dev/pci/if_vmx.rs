@@ -1066,7 +1066,6 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
     ifp.if_capabilities.set(caps);
 
     // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
-
     ifp.if_snd_maxlen.set(NTXDESC);
 
     ifmedia_init(

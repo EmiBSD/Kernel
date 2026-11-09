@@ -206,8 +206,9 @@ mod tests {
         // `UnsafeCell<T>`. An `Option` of `MBox` (a `NonNull`, an `i32`, a `&'static dyn`) or
         // of `MArc` (a `NonNull`) is `None` when the field its niche lives in is null (the
         // non-null pointers are its only niches), or, laid out with a tag, when the tag is 0
-        // (`None` is the first variant): zero bytes are `None` either way, which the
-        // assertions check for this compiler.
+        // (`None` is the first variant): zero bytes are `None` either way; `hal::malloc`'s
+        // compile-time check proves the niche form (no tag), and the assertions check it
+        // here.
         let b: B = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         assert!(b.read().is_none());
         // SAFETY: as above, for `MArc`.
