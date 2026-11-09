@@ -472,3 +472,26 @@ paid_by = "N6"
 trait = "QueueDiscipline"
 for = ["sys/kernel/net/ifq.rs"]
 paid_by = "N8"
+
+# bsd: a cloning interface (struct if_clone: ifc_name, ifc_create, ifc_destroy), implemented by
+# bsd's IfClone tables themselves (sys/net/if_var.rs: impl Cloner for IfClone over their two
+# functions; lo, wg, pflog, pfsync, pflow, enc) and handed to the kernel by their
+# if_clone_attach at boot. A value the kernel receives (if_clone_attach's argument), a row
+# while bsd implements it (decision 39). lo leaves at N6.3c; wg, pflog, pfsync, pflow and enc
+# stay with pf and IPsec, so paid by N8.
+# kernel::net::if_var::Cloner
+[[bridge]]
+trait = "Cloner"
+for = ["sys/kernel/net/if_.rs"]
+paid_by = "N8"
+
+# bsd: a driver's two media callbacks (ifm_change_cb, ifm_stat_cb), implemented by bsd's
+# LegacyMedia (sys/net/if_media.rs: one leaked M_DEVBUF box per ifmedia_init over the driver's
+# two functions: vio, em, vmx, pcn, dc, dp8390/rtl80x9, fxp, re) and handed to the kernel by
+# ifmedia_init (N6.3a2, D-N6.3a-11). A value the kernel receives, a row while bsd implements
+# it (decision 39). Paid when the drivers move (N7: their NetDevice answers both).
+# kernel::net::if_media::MediaCallbacks
+[[bridge]]
+trait = "MediaCallbacks"
+for = ["sys/kernel/net/if_media.rs"]
+paid_by = "N7"
