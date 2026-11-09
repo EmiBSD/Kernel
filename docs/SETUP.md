@@ -171,8 +171,10 @@ uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 ## DevTools toolchain (T3)
 
 `just toolchain` installs the EmiBSD toolchains that DevTools releases
-(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.2` (since
-2026-11-07: its lld also maps `.emibsd.*` sections to the `PT_OPENBSD_*` segments) and
+(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.3` (since
+2026-11-07 its lld also maps `.emibsd.*` sections to the `PT_OPENBSD_*` segments; since
+2026-11-08 every link through `<triple>-clang` passes `--undefined-version` and
+`--ignore-function-address-equality`, as the system's libraries are linked) and
 `rust-1.99.1+emibsd.1`, pinned by tag and sha256 in the justfile, fetched with `gh release
 download` (never "latest"), checked before unpacking, and unpacked unmodified into
 `~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). Since DevTools' D-0008
