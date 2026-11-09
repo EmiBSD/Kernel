@@ -192,37 +192,12 @@ pub struct NetTables<G: ProcGlue> {
     pfslow: Timeout,
     /// The registered `so_upcall` function (nfs's, `bsd`'s until N6.7b).
     pub(crate) upcall: OnceStatic<crate::net::socket::UpcallFn<G>>,
-    /// The interface layer's legs (`bsd`'s `if.c` until N6.3a, the `IfLegacy` row of
-    /// `bridges.toml`).
-    pub(crate) iflegacy: OnceStatic<&'static dyn IfLegacy<G>>,
     /// The UNIX domain's globals (`uipc_usrreq.c`'s: the control blocks' pool, `unp_head`,
     /// the files in flight, the collector).
     pub(crate) unix: crate::net::unix::UnixTables<G>,
     /// `if_input_task_locked`: `if_netisr`, the protocols' software interrupt (N6.3a: here,
     /// since its yield is the glue's scheduler's).
     pub(crate) if_input_task_locked: crate::task::Task,
-}
-
-/// What the socket layer needs of the interface layer, `bsd`'s `sys/net/if_.rs` until it
-/// moves (N6.3a): a bridge (`bridges.toml`'s `IfLegacy`), generic over the glue, so its slot
-/// is the glue's [`NetTables`].
-pub trait IfLegacy<G: ProcGlue>: Sync + 'static {
-    /// `ifioctl(so, cmd, data, p)`: an interface `ioctl` (`'i'` group) on a socket; `data`
-    /// is the kernel copy of the argument.
-    fn ifioctl(
-        &self,
-        so: &Socket<G>,
-        cmd: u64,
-        data: &mut [u8],
-        p: &crate::proc::Thread<G>,
-    ) -> Result<(), Errno>;
-    /// `net_tq(flowid)`: the softnet task queue of a flow (`sosplice`'s `ssp_queue`).
-    fn net_tq(&self, flowid: u32) -> &'static crate::task::Taskq;
-}
-
-/// The glue's interface layer, once (`bsd`'s boot glue).
-pub fn register_iflegacy<G: ProcGlue>(i: &'static dyn IfLegacy<G>) {
-    let _ = net::<G>().iflegacy.set(i);
 }
 
 impl<G: ProcGlue> NetTables<G> {
@@ -245,7 +220,6 @@ impl<G: ProcGlue> NetTables<G> {
                 TIMEOUT_PROC | TIMEOUT_MPSAFE,
             ),
             upcall: OnceStatic::new(),
-            iflegacy: OnceStatic::new(),
             unix: crate::net::unix::UnixTables::new(),
             if_input_task_locked: crate::task::Task::new(
                 crate::net::netisr::if_netisr::<G>,

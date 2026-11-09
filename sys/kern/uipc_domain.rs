@@ -155,7 +155,6 @@ static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
 /// `domaininit`: the kernel's domains (`bsd`'s tables and the UNIX domain) and their
 /// protocols initialised, the protocol timeouts started (`kernel::net::domain`).
 pub fn domaininit() {
-    kernel::net::domain::register_iflegacy::<G>(&crate::net::if_::IFLEGACY);
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
@@ -166,7 +165,6 @@ pub fn domaininit() {
 /// fresh memory (`domaininit` once per process would leave them in the first test's).
 #[cfg(test)]
 pub(crate) fn net_tables_for_tests() {
-    kernel::net::domain::register_iflegacy::<G>(&crate::net::if_::IFLEGACY);
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domains_set::<G>(NET_DOMAINS);
@@ -549,18 +547,6 @@ pub fn net_sysctl(
         }
     }
     Err(Errno::ENOPROTOOPT)
-}
-
-/// `so->so_proto` as `bsd`'s table entry (`ifioctl`'s `pru_control`, which passes the
-/// interface the kernel's `Usrreqs::control` does not carry until N6.3a): the entry of
-/// `bsd`'s domains whose address the socket's protocol has, `None` for the kernel's UNIX
-/// domain. A search of the tables (pffindproto's walk), on the interface ioctls alone.
-pub fn so_protosw(so: &Socket) -> Option<&'static Protosw> {
-    let want = ptr::from_ref(so.proto()).cast::<()>();
-    DOMAINS
-        .iter()
-        .flat_map(|dp| dp.dom_protosw.iter())
-        .find(|pr| ptr::eq(ptr::from_ref(*pr).cast::<()>(), want))
 }
 
 /// `pfctlinput`: hands control input `cmd` about `sa` to every protocol that takes it.

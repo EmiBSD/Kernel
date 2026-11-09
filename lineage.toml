@@ -3263,7 +3263,7 @@ adapted_by = ["sys/hal/softintr.rs"]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3276,7 +3276,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3298,7 +3298,7 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3481,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3926,7 +3926,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3959,7 +3959,7 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3971,7 +3971,7 @@ status = "inherited"
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4297,7 +4297,7 @@ status = "inherited"
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -5459,7 +5459,6 @@ lz = "sys/kern/kern_sched.rs::cpuset_cardinality"
 native = ["sys/kernel/sched.rs::Cpuset::cardinality"]
 kind = "renamed"
 
-
 [[module]]
 rust = "sys/kern/kern_sensors.rs"
 lz = ["sys/kern/kern_sensors.rs"]
@@ -5523,7 +5522,6 @@ lz = ["sys/kern/kern_sysctl.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/pipe.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/glue.rs", "sys/kernel/vm/io.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/vm/mmap.rs", "sys/kernel/vm/page.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/resource.rs", "sys/kernel/file.rs", "sys/kernel/descrip.rs", "sys/kernel/event.rs", "sys/kernel/sig.rs", "sys/kernel/log.rs", "sys/kernel/tty.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/kernel/tc.rs", "sys/kernel/fs/bio.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/fs/subr.rs", "sys/kernel/fs/namei.rs", "sys/kernel/fs/cache.rs", "sys/kernel/fs/vnops.rs", "sys/kernel/fs/lockf.rs", "sys/kernel/fs/vops.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
 notes = "N4.6b: the bsd half of sysctl(2): kern.file, the helpers over bsd copyin/copyout for the nodes still in bsd, and sysctl_register_legacy (Node/ProcNode adapters, the CTL_* trees, the kern/hw leaves, directories and kern_vars/hw_vars entries whose state is bsd's, hw.machine, physmem), BsdDiskExport (the DiskExport bridge), native_sysctl (the KernelApi entry); the dispatcher, the vslock and kern.proc moved into sys/kernel/sysctl.rs; adapted, not redesigned, until kern.file moves (N5/N6): its three unsafe blocks (the bound address mbuf viewed as a slice, in_pcb_iterator and its abort) keep the file from the forbid a redesigned bsd module needs (lz check, ZERO_UNSAFE section 5); N4.8a: kern.clockintr and kern.timecounter are the kernel's ClockintrNode and TcNode in KERN_NODES (LZ's kern.clockintr unported! closed)"
-
 
 [[module]]
 rust = "sys/kern/kern_tc.rs"
@@ -5787,7 +5785,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6319,7 +6317,9 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 [[module]]
 rust = "sys/net/if_media.rs"
 lz = ["sys/net/if_media.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_media.rs"]
+notes = "N6.3a2: an adapter: the media words re-exported from hal::sys::net_if_media, struct ifmedia and its functions from kernel::net::if_media; LZ's ifmedia_init (the driver's two fn callbacks wrapped in a LegacyMedia, one leaked M_DEVBUF box per media) and ifmedia_add (void *aux as the driver's word) kept as forwards"
 
 [[module]]
 rust = "sys/net/if_pflog.rs"
@@ -7627,6 +7627,12 @@ status = "redesigned"
 notes = "N6.3a1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach/if_attach_common/if_attachsetup and the extra queues, if_remove/if_detach, the hooks, link state, slowtimo and watchdog, groups (snapshot arrays in ReadMostly cells), cloners, the address lookups over SaLink copies, if_up/if_down, promiscuity and LRO through if_ioctl; the Inet, Routing, Link and Pf legs. N6.3a2: the interface requests: ifioctl<G> over the request's bytes (in place when aligned and an ifreq long, else an aligned zeroed copy), the suser checks at the C's points, the net lock a detached holding around the driver calls (wg, pflow let it go), ifioctl_get, ifconf over the C's temporary lists with the addresses copied in batches of eight per shared hold, if_clone_list, the group requests over snapshots, if_rxr_info_ioctl/if_rxr_ioctl, the hprio checks; pru_control through Usrreqs::control's ifp, a request with no socket to the Inet leg in_ioctl"
 
 [[module.fn]]
+lz = "sys/net/if_.rs::bytes_of"
+native = []
+kind = "dropped"
+reason = "the requests and the rows ifioctl, ifconf, the group and rxr requests copy out are abi_pod! images, copied through hal::user::UserPtr (or viewed by hal::pod); no raw byte view of a value is left"
+
+[[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
 native = ["IfMap", "IdxmapState"]
 kind = "split"
@@ -7746,6 +7752,18 @@ crate = "kernel"
 lz = ["sys/net/if_media.rs"]
 status = "redesigned"
 notes = "N6.3a2: net/if_media.c: struct ifmedia valid all zero (the mask and media words AtomicCells, the selected entry's words mirrored in atomics for the unlocked readers, the list and the callbacks a set-once half ifmedia_init builds); the entries a newest-first chain of M_IFADDR MBoxes under the media's own IPL_NET mutex, named by number; the callbacks a MediaCallbacks object (D-N6.3a-11); ifmedia_ioctl over the request's bytes, the media words copied out through UserPtr"
+
+[[module.fn]]
+lz = "sys/net/if_media.rs::Ifmedia::for_each"
+native = []
+kind = "dropped"
+reason = "no caller outside LZ's own tests: the kernel's ordered walks (SIOCGIFMEDIA's words, ifmedia_get) are kernel::net::if_media's own, under the media's mutex"
+
+[[module.fn]]
+lz = "sys/net/if_media.rs::IFMEDIA_MTX"
+native = []
+kind = "dropped"
+reason = "each struct ifmedia's own IPL_NET mutex (kernel::net::if_media, IfmRt's list): the C's one global ifmedia_mtx keeps per-media lists at the same level and no other path takes it"
 
 [[module]]
 rust = "sys/kernel/net/netisr.rs"
@@ -12091,7 +12109,6 @@ status = "redesigned"
 license = "none"
 notes = "N4.8b: exception.S (Andrew Turner's licence in the .S) and trampoline.S (Mark Kettenis's ISC notice in the .S, a C source LZ had not ported: gap 3, the user's decision 7) pulled in by one global_asm; the handlers reached by sym operands; ci_trampoline_vectors is the CpuCore's word (CORE_TRAMPOLINE_VECTORS), set by set_bhb_mitigation (cpu_mitigate_spectre_bhb's table) or attached (none); N4.8d: the switch is the C's (tramp_return to pmap_tramp's root and the odd ASID, every EL0 vector back to the kernel's), pmap_tramp in pmap/backend.rs, the offset a const operand from pmap/layout.rs (TRAMP_ROOT_OFFSET)"
 
-
 [[module]]
 rust = "sys/hal/arch/arm64/trap.rs"
 crate = "hal"
@@ -12964,7 +12981,6 @@ reason = "decision 43: host microbenchmarks of the legacy timeout(9) adapter's p
 [[extra]]
 rust = "sys/benches/legacy_sched.rs"
 reason = "decision 43: host microbenchmarks of bsd's run and sleep queues (setrunqueue, remrunqueue, a sleep_setup and unsleep trip) over the host machine double and the kernel crate's doubles, a harness = false bench target of bsd, never a kernel image; no OpenBSD or LZ source"
-
 
 [[extra]]
 rust = "sys/kernel/benches/fs.rs"
@@ -14345,7 +14361,6 @@ lz = ["sys/kern/uipc_domain.rs", "sys/sys/domain.rs"]
 status = "redesigned"
 notes = "N6.2a: struct domain as the trait Domain<G> (dom_externalize/dom_dispose as one optional DomRights entry, Domain::rights(), None by default, the protocols &'static dyn Protocol, SO_PEERCRED's peercred); domains[], sockpl/sosppl, the 200/500 ms protocol timeouts (armed through pin_static of the glue's tables), the upcall and IfLegacy slots in NetTables<G> (FileGlue::net, D-N6.2-7); domaininit, soinit, pffinddomain/pffindtype/pffindproto, pfctlinput, pfslowtimo/pffasttimo; net_sysctl stays bsd's until the socket layer's switch"
 
-
 [[module.fn]]
 lz = "sys/kern/uipc_domain.rs::PFFAST_TIMEOUT"
 native = ["NetTables"]
@@ -14361,7 +14376,6 @@ crate = "kernel"
 lz = ["sys/sys/protosw.rs"]
 status = "redesigned"
 notes = "N6.2a: struct protosw and struct pr_usrreqs as the traits Protocol<G> and Usrreqs<G> (decision 46): the NULL entries default methods answering what the C's pru_* wrappers answer, every request taking the socket and its lock's witness (SoLocked), owned mbufs where the protocol disposes of them; pr_input and pru_control's ifp wait for N6.3a/N6.4's types (D-N6.2-4); SockaddrView over an address's bytes; PR_* and PRCO_* constants"
-
 
 [[module.fn]]
 lz = "sys/sys/protosw.rs::usrreqs"
@@ -14473,7 +14487,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_socket.rs", "sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
 status = "redesigned"
 notes = "N6.2a: struct socket as a counted sockpl item (SocketRef = PoolArc, soref = from_ref, sorele = drop, sorele's body the Drop; the existence reference parked by soalloc and adopted once by sofree); solock as SoLocked (net lock exclusive or shared with so_lock, or so_lock: hal DetachableRwlock, detached holdings for bsd's C-style sites and sonewconn's returned-locked socket); the [s] members atomics, so_pcb a ReadMostly<Option<AnyArc>> for the kernel's protocols beside bsd's legacy_pcb word; the connection queues under one per-socket leaf mutex cq (also so_timeo's interlock), the queue's reference parked per queued child (D-N6.2-1, D-N6.2-U1 shape B); socreate..soclose, sosend/m_getuio, soreceive over the receive buffer's first record taken out for its copies, the splice (sosplice/sounsplice/somove/soidle/sotask, the task and idle timeout counted and cleared by soclose), sosetopt/sogetopt, the wakeups, so_upcall as two atomics and one registered function (D-N6.2-3), so_print/sobuf_print; doaccept's queue loop, lock and hand-over as soaccept_take"
-
 
 [[module.fn]]
 lz = "sys/kern/uipc_socket.rs::MbufTail"
@@ -14608,7 +14621,6 @@ lz = ["sys/kern/uipc_socket2.rs", "sys/sys/socketvar.rs"]
 status = "redesigned"
 notes = "N6.2a: struct sockbuf as the kernel's (Sockbuf<G>): sb_lock a hal RawRwlock (sblock gives SbLocked), sb_mtx a Mutexed owning the records (SbData: records an MbufList by m_nextpkt, the last record as an OwnedSlist<MNext> plus its final mbuf (sb_mbtail) held outside the list, so sbcompress writes it through the guard with no hal last_mut), the counters, limits, flags and state atomics written only through the guard (SbGuard) and read without it by the filters and kern.file; sbappend/sbappendstream/sbappendrecord/sbappendaddr/sbappendcontrol/sbcompress/sbdrop/sbdroprecord/sbflush/sbreserve/sbrelease/sbcreatecontrol/sbwait/sowakeup's locked half over it; a reader's first record taken out for a copy with the mutex released (take_first_record/put_back_record, the continuation kept aside when a sender closes the record meanwhile); SOCKBUF_DEBUG's sblastrecordchk/sblastmbufchk gone with the fields they checked, sbcheck kept for the tests"
 
-
 [[module.fn]]
 lz = "sys/kern/uipc_socket2.rs::sbmtxassertlocked"
 native = ["SbGuard"]
@@ -14703,7 +14715,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_usrreq.rs", "sys/kern/uipc_proto.rs", "sys/sys/unpcb.rs"]
 status = "redesigned"
 notes = "N6.2a: the UNIX domain: Unix<G> (struct domain, unixdomain) with its three UnixProto entries (unixsw[]) and the two request tables (UipcUsrreqs, UipcDgramUsrreqs: uipc_usrreqs, uipc_dgram_usrreqs) as Domain/Protocol/Usrreqs impls; struct unpcb as a counted item of the glue's unpcb pool (UnpRef = PoolArc: unp_ref/unp_rele are a handle's clone and drop, unp_detach's refcnt_finalize the count itself), held erased in the socket's read-mostly so_pcb slot and holding its socket counted, the cycle cut by unp_detach; the [s] members one cell keyed to so_lock (UnpState), unp_refs a pinned list keyed to it, the [G] counters atomics written under unp_gc_lock and unp_file a counted reference keyed to it while the file is in flight (gc's f_count == unp_msgcount + 1); unp_addr the sockaddr_un's bytes; struct fdpass kept 16 bytes in the control mbuf, its fp the slot (+1) of the glue's in-flight table (D-N6.2-2), which owns the references, links its free and deferred (unp_deferred) slots, grows by doubling, and replaces unp_df_lock; unp_rights an atomic reserved by a CAS loop (unp_rights_mtx); every check of unp_internalize/unp_externalize kept (EMFILE at maxfiles/10, E2BIG, ENOBUFS, EBADF, EDEADLK at FDUP_MAX_COUNT, UF_PLEDGEOPEN EPERM, pledge_sendfd/pledge_recvfd through ProcGlue, DTYPE_KQUEUE/DTYPE_VMM EINVAL, fd_rdir VBLK/VDIR EPERM, EMSGSIZE, the back-outs); unp_gc as a Task on SYSTQMP over unp_head; the vnode bind through kernel::fs (namei, VOP_CREATE, VnodeUn::Socket); uipc_sysctl over kernel::sysctl's SysctlReq; NKCOV 0"
-
 
 [[module.fn]]
 lz = "sys/kern/uipc_usrreq.rs::SUN_NONAME_LEN"
@@ -14925,8 +14936,7 @@ rust = "sys/kernel/net/file.rs"
 crate = "kernel"
 lz = ["sys/kern/sys_socket.rs", "sys/kern/uipc_socket.rs"]
 status = "redesigned"
-notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
-
+notes = "N6.2a: socketops as SocketFileOps<G> (FileOps over the glue's counted socket of the file, FileGlue::socket_of/socket_file): soo_read, soo_write, soo_ioctl (FIOASYNC, FIONREAD, the owner, SIOCATMARK; the 'i' group through the glue's IfLegacy until N6.3a2, the kernel's ifioctl since, 'r' EOPNOTSUPP, else pru_control unlocked), soo_kqfilter, soo_stat, soo_close; the three socket filters (soread/sowrite/soexcept_filtops) as the Filter impls SoRead, SoWrite, SoExcept over Filterops::of, the knote holding a counted handle of its socket in its hook (the tty's shape) and the buffers' klists under sb_mtx"
 
 [[module.fn]]
 lz = "sys/kern/uipc_socket.rs::SOREAD_FILTOPS"
@@ -14990,7 +15000,7 @@ kind = "renamed"
 
 [[module.fn]]
 lz = "sys/kern/sys_socket.rs::soo_ifioctl"
-native = ["sys/net/if_.rs::BsdIfLegacy::ifioctl"]
+native = ["sys/kernel/net/if_.rs::ifioctl"]
 kind = "moved"
 
 [[module]]
@@ -15090,7 +15100,6 @@ crate = "kernel"
 lz = ["sys/kern/uipc_mbuf.rs", "sys/sys/mbuf.rs"]
 status = "redesigned"
 notes = "N6.1: struct mbuf as an owned pool item (MbufBox = PoolBox<Mbuf> of mbufpl, 256 bytes, align 64): m_next/m_nextpkt owned SlistLinks, m_data an offset (m_off) into the data storage (data()/data_mut() bounds-checked slices, data_raw() for bsd's mtod), the two unions a hal::overlay::Body (Pkthdr live by M_PKTHDR, Ext by M_EXT; MFlags keeps the tag bits); clusters BoxPool<Bytes<N>> x8 (mcl2k..mcl64k, the C's names and item sizes) as ClusterBox, shared through PoolArc<ExtRefs> of mextrefs (64-byte item) made on the first share; the drop is m_free's (mbstat at splnet, M_ZEROIZE carried, the chain and the packet list freed one at a time); MbufPages the PageSource of m_pool_allocator (the memory limit, kp_dma_contig until m_pool_noconstraints); mbstat a hal::percpu::Counters from boot (mbstat_read for kern.mbstat); MbufList = OwnedSlist<MPkt> (struct mbuf_queue, the mq_* and sysctl_mq stay bsd's until N6.3a, review S4); the pf legs through the Pf bridge; m_copyback into a shared cluster takes a copy of its own (Deviations); MEXTADD of a driver's own storage not implemented (no user: D-N6.1-2)"
-
 
 [[module.fn]]
 lz = "sys/sys/mbuf.rs::MEXTFREE_POOL"
@@ -15513,7 +15522,6 @@ reason = "N5.8c1 (D-N5.8-4): the views of the file systems' on-disk structures o
 rust = "sys/kernel/fs/isofs/udf/testudf.rs"
 crate = "kernel"
 reason = "N5.8u1-u2: the kernel udf's test fixtures (host tests and benches only, cfg(any(test, feature = doubles))): mkudf, LZ's in-memory UDF builder (udf_vnops.rs's tests: tags, time stamps, file entries, allocation and file identifier descriptors, the anchor, the volume descriptor sequence, the test volume M10C) with the variants named tests need (a VAT, sparing tables, a metadata partition, a block size and a root ICB length to patch); TEST_UDF_CONF and the mounts through udf_mountfs over testffs's device (try_mount, mount_root, unmount, root); a mount structure over testffs's device (test_ump), unodes of it (test_node, fentry_copy) with vnodes of udf's own table (N5.8u1's TestUdfVops gone); no OpenBSD or LZ source"
-
 
 [[extra]]
 rust = "sys/kernel/fs/tmpfs/testtmpfs.rs"

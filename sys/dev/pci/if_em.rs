@@ -209,6 +209,7 @@ use crate::sys::device::{
     CfMatch, Cfattach, Cfdriver, DV_IFNET, DVACT_RESUME, DVACT_SUSPEND, Device, Softc,
 };
 use crate::sys::errno::Errno;
+use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
 use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
@@ -1531,9 +1532,12 @@ pub unsafe fn em_ioctl(ifp: &'static Ifnet, command: u64, data: *mut u8) -> Resu
                     sc.devname()
                 ));
             } else {
-                // SAFETY: SIOCSIFMEDIA carries a `struct ifreq` and SIOCGIFMEDIA a `struct
-                // ifmediareq` (this function's contract).
-                error = unsafe { ifmedia_ioctl(ifp, data, &sc.media, command) };
+                let n = iocparm_len(command) as usize;
+                // SAFETY: this function's contract: `data` names the request's `IOCPARM_LEN(cmd)`
+                // bytes (a `struct ifreq` for SIOCSIFMEDIA, a `struct ifmediareq` for
+                // SIOCGIFMEDIA), readable and writable, lent to the handler alone for the call.
+                let req = unsafe { core::slice::from_raw_parts_mut(data, n) };
+                error = ifmedia_ioctl(ifp, req, &sc.media, command);
             }
         }
         SIOCGIFRXR => {
