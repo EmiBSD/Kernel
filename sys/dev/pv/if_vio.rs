@@ -136,10 +136,11 @@ use crate::net::if_media::{
     IFM_ACTIVE, IFM_AUTO, IFM_AVALID, IFM_ETHER, IFM_FDX, Ifmedia, ifmedia_add, ifmedia_init,
     ifmedia_ioctl, ifmedia_set,
 };
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, if_rxr_put};
 use crate::net::ifq::{
-    Ifiqueue, Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen,
-    ifq_is_oactive, ifq_purge, ifq_restart, ifq_set_oactive,
+    Ifiqueue, Ifqueue, ifiq_input, ifq_barrier, ifq_clr_oactive, ifq_dequeue, ifq_is_oactive,
+    ifq_purge, ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, ETHER_MAX_HARDMTU_LEN, EtherExtracted,
@@ -933,7 +934,7 @@ pub fn vio_softc(ifp: &Ifnet) -> &'static VioSoftc {
     // its own interface; softcs outlive their interfaces.
     unsafe {
         nonnull(
-            ifp.if_softc.get().cast::<VioSoftc>().cast_const(),
+            ifp.if_softc.get_mut().cast::<VioSoftc>().cast_const(),
             "if_softc",
         )
     }
@@ -1416,10 +1417,7 @@ pub fn vio_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         if virtio_has_feature(vsc, VIRTIO_NET_F_MAC) {
             vio_get_lladdr(&sc.sc_ac, vsc);
         } else {
-            // SAFETY: `ifp` is the `ac_if` of this softc's arpcom, which lives as long as
-            // the interface; ether_fakeaddr reaches the arpcom through it before
-            // ether_ifattach marks it.
-            unsafe { ifp.set_arpcom() };
+            ifp.set_arpcom();
             ether_fakeaddr(ifp);
         }
         printf(format_args!(
@@ -1643,10 +1641,11 @@ pub fn vio_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         xname[IFNAMSIZ - 1] = 0;
         ifp.if_xname.set(xname);
         ifp.if_softc.set(ptr::from_ref(sc).cast_mut().cast());
-        ifp.if_qstart.set(Some(vio_start));
-        ifp.if_ioctl.set(Some(vio_ioctl));
+        ifp.if_qstart().set(Some(vio_start));
+        ifp.if_ioctl().set(Some(vio_ioctl));
 
-        ifq_init_maxlen(&ifp.if_snd, vsc.vq(1).vq_num.get() - 1);
+        // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+        ifp.if_snd_maxlen.set(vsc.vq(1).vq_num.get() - 1);
         ifmedia_init(&sc.sc_media, 0, vio_media_change, vio_media_status);
         ifmedia_add(&sc.sc_media, IFM_ETHER | IFM_AUTO, 0, ptr::null_mut());
         ifmedia_set(&sc.sc_media, IFM_ETHER | IFM_AUTO);
@@ -1970,13 +1969,13 @@ pub fn vio_tx_offload(hdr: &mut VirtioNetHdr, m: &Mbuf) {
 
 /// `vio_start`: transmit what the send queue holds.
 pub fn vio_start(viq_ifq: &'static Ifqueue) {
-    let Some(ifp) = viq_ifq.ifq_if.get() else {
+    let Some(ifp) = Some(viq_ifq.ifq_if()) else {
         return;
     };
     // SAFETY: vio_attach sets each send queue's `ifq_softc` to its `vio_queue`.
     let vioq = unsafe {
         nonnull(
-            viq_ifq.ifq_softc.get().cast::<VioQueue>().cast_const(),
+            viq_ifq.ifq_softc.get_mut().cast::<VioQueue>().cast_const(),
             "ifq_softc",
         )
     };
@@ -2011,7 +2010,7 @@ pub fn vio_start(viq_ifq: &'static Ifqueue) {
                 Err(Errno::EAGAIN) => {
                     printf(format_args!("vio_start: virtio_enqueue_prep failed?\n"));
                     m_freem(m);
-                    viq_ifq.ifq_errors.set(viq_ifq.ifq_errors.get() + 1);
+                    crate::net::ifq::ifq_inc_errors(viq_ifq);
                     break;
                 }
                 Err(r) => panic(format_args!(
@@ -2032,14 +2031,14 @@ pub fn vio_start(viq_ifq: &'static Ifqueue) {
             if vio_encap(vioq, slot, m).is_err() {
                 virtio_enqueue_abort(vq, slot);
                 m_freem(m);
-                viq_ifq.ifq_errors.set(viq_ifq.ifq_errors.get() + 1);
+                crate::net::ifq::ifq_inc_errors(viq_ifq);
                 continue;
             }
             let txmap = vioq.txdmamap(slot as usize);
             if virtio_enqueue_reserve(vq, slot, txmap.dm_nsegs.get() + 1).is_err() {
                 printf(format_args!("vio_start: virtio_enqueue_reserve failed?\n"));
                 m_freem(m);
-                viq_ifq.ifq_errors.set(viq_ifq.ifq_errors.get() + 1);
+                crate::net::ifq::ifq_inc_errors(viq_ifq);
                 bus_dmamap_unload(vsc.dmat(), txmap);
                 vioq.txmbuf(slot as usize).set(None);
                 break;
@@ -2061,7 +2060,7 @@ pub fn vio_start(viq_ifq: &'static Ifqueue) {
             virtio_enqueue(vq, slot, txmap, true);
             virtio_enqueue_commit(vsc, vq, slot, false);
             queued += 1;
-            let if_bpf = ifp.if_bpf.get();
+            let if_bpf = ifp.if_bpf.get_mut();
             if !if_bpf.is_null() {
                 let _ = bpf_mtap(if_bpf, m, BPF_DIRECTION_OUT);
             }
@@ -2449,9 +2448,7 @@ pub fn vio_rxeof(vioq: &VioQueue) -> i32 {
                 m0 = Some(m);
                 mlast = Some(m);
                 if virtio_has_feature(vsc, VIRTIO_NET_F_MQ) {
-                    m.m_pkthdr()
-                        .ph_flowid
-                        .set(vioq.ifiq().ifiq_idx.get() as u16);
+                    m.m_pkthdr().ph_flowid.set(vioq.ifiq().idx() as u16);
                     m.m_pkthdr()
                         .csum_flags
                         .set(m.m_pkthdr().csum_flags.get() | M_FLOWID);

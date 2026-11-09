@@ -274,7 +274,7 @@ pub fn ipip_input(
     offp: &mut i32,
     nxt: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let ipip_allow_local = IPIP_ALLOW.load(Ordering::Relaxed);
     let Some(m) = *mp else {
@@ -310,7 +310,7 @@ pub fn ipip_input_if(
     oaf: i32,
     allow: i32,
     ifp: &'static Ifnet,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(mut m) = *mp else {
         return IPPROTO_DONE;
@@ -753,7 +753,7 @@ pub fn ipe4_input(
     _tdb: &'static Tdb,
     _hlen: i32,
     _proto: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     // This is a rather serious mistake, so no conditional printing.
     crate::kprintf!("ipe4_input: should never be called\n");

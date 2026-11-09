@@ -80,6 +80,29 @@
 //!     witness).
 //!   - `socket.create.close.unix`: `socreate` of a UNIX stream socket and `soclose` (the
 //!     socket and its control block taken from and given back to their pools).
+//! - The interface layer's rows (N6.3a, decision 43 with U10), over an interface attached by
+//!   `if_attach` (a `kernel::net::if_::test_ifnet_fresh`: listed, its index, its queues) whose
+//!   driver hands every packet it is given back to the rows (a thread-local stash: no
+//!   packet is allocated or freed inside an op), `IFXF_CLONED` set (no `enqueue_randomness`,
+//!   whose host doubles differ between the shapes), `IFF_RUNNING` and `if_txmit` 1 (the start
+//!   at once, not deferred to a softnet task no thread serves); every run prints where the
+//!   interface and the packets lie (`# placement`):
+//!   - `if_get.put`: `if_get` of the interface's index and `if_put` (the SMR read section,
+//!     the map's two loads, the reference taken and released).
+//!   - `if_get_smr`: an SMR read section opened, `if_get_smr`, closed.
+//!   - `ifq.enq.deq`: one packet `ifq_enqueue`d on the send queue (priq) and `ifq_dequeue`d.
+//!   - `ifiq.input.8`: `ifiq_input` of a list of 8 packets (the input queue's mutex, the
+//!     counters, the list joined, the softnet task added), the list taken back under the
+//!     mutex (`ifiq_test_take`) into the stash; an op is the 8 packets.
+//!   - `if_input_process.8`: `if_input_process` of 8 packets: the shared net lock, the
+//!     driver's input per packet, the netstack's lists walked empty.
+//!   - `ifq.serialize`: `ifq_serialize` of a task that does nothing on an idle queue (the
+//!     serializer's mutex twice, the task linked, unlinked and run).
+//!   - `if_counters.pkt`: `counters_pkt` of a 60-byte packet on the interface's counters.
+//!   - `ifa_ifwithaddr.8x2`: `ifa_ifwithaddr` of the last of 16 addresses (8 listed
+//!     interfaces of 2 `AF_INET` addresses each), under the net lock's write witness.
+//!   - `if_enqueue_ifq.mq`: `if_enqueue_ifq` on an interface of 4 send queues, the flow id
+//!     picking the third, whose start the driver runs and empties at once.
 
 #![forbid(unsafe_code)]
 
@@ -463,6 +486,7 @@ fn main() {
         .iter()
         .chain(MBUF_ROWS.iter())
         .chain(SOCKET_ROWS.iter())
+        .chain(IF_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -727,6 +751,7 @@ fn main() {
     }
     mbuf_rows(&wanted, &report);
     socket_rows(&wanted, &report);
+    if_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -1219,5 +1244,308 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
         });
         report(SOCKET_ROWS[5], r);
     }
+}
+/// The interface layer's rows (N6.3a, decision 43 with U10), the same ops as the "before"
+/// rows on LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over `setup_net`'s
+/// zeroed `test_ifnet`).
+const IF_ROWS: [&str; 9] = [
+    "if_get.put",
+    "if_get_smr",
+    "ifq.enq.deq",
+    "ifiq.input.8",
+    "if_input_process.8",
+    "ifq.serialize",
+    "if_counters.pkt",
+    "ifa_ifwithaddr.8x2",
+    "if_enqueue_ifq.mq",
+];
+
+std::thread_local! {
+    /// The packets [`BenchDriver`] was given, handed out again by the rows: no packet is
+    /// freed or allocated inside a timed op.
+    static STASH: std::cell::RefCell<Vec<MbufBox>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A packet back into the stash.
+fn stash(m: MbufBox) {
+    STASH.with(|s| s.borrow_mut().push(m));
+}
+
+/// A packet out of the stash.
+fn unstash() -> MbufBox {
+    need(STASH.with(|s| s.borrow_mut().pop()), "an empty stash")
+}
+
+/// The rows' driver: its start takes every packet off the queue it is given and its input
+/// takes the packet, both into the stash (a driver's ring and a protocol, at no cost of
+/// their own beyond a thread-local push).
+struct BenchDriver;
+
+impl kernel::net::if_var::NetDriver for BenchDriver {
+    fn ioctl(
+        &self,
+        _ifp: &'static kernel::net::if_var::Ifnet,
+        _cmd: u64,
+        _data: &mut [u8],
+    ) -> Result<(), hal::sys::errno::Errno> {
+        Ok(())
+    }
+
+    fn qstart(&self, ifq: &'static kernel::net::ifq::Ifqueue) {
+        while let Some(m) = kernel::net::ifq::ifq_dequeue(ifq) {
+            stash(m);
+        }
+    }
+
+    fn input(
+        &self,
+        _ifp: &'static kernel::net::if_var::Ifnet,
+        m: MbufBox,
+        _ns: Option<&mut kernel::net::if_var::Netstack>,
+    ) {
+        stash(m);
+    }
+}
+
+static BENCH_DRIVER: BenchDriver = BenchDriver;
+
+/// `ifq_serialize`'s work for `ifq.serialize`: nothing.
+fn serial_noop(_t: &'static (dyn core::any::Any + Send + Sync)) {}
+
+/// The target of `ifq.serialize`'s task.
+static SERIAL_TARGET: () = ();
+
+/// Where `what` lies: its address, and its offset in its page (the rows' placement, printed
+/// with every run, decision items 23-24).
+fn placement<T>(what: &str, p: &T) {
+    let a = core::ptr::from_ref(p).addr();
+    println!("# placement {what} {a:#x} page+{:#x}", a % PAGE);
+}
+
+fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::net_if::{IFF_RUNNING, IFXF_CLONED};
+    use kernel::net::if_::{
+        if_attach, if_attach_queues, if_counters_alloc, if_enqueue_ifq, if_get, if_get_smr,
+        if_input_process, if_put, if_test_reset, ifa_add, ifa_del, ifa_ifwithaddr,
+        test_ifnet_fresh, test_packet,
+    };
+    use kernel::net::if_var::{IfCounters, Ifaddr, counters_pkt};
+    use kernel::net::ifq::{ifiq_input, ifiq_test_take, ifq_dequeue, ifq_enqueue, ifq_serialize};
+    use kernel::net::mbuf::{M_FLOWID, MbufList, ml_dequeue, ml_enqueue};
+    use kernel::task::Task;
+
+    if !IF_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The pools' pages are the kernel's: the page system and the kernel maps of the tests,
+    // held for the run; the mbufs, a fresh index map, no interface listed.
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+
+    // Listed, as the "before" rows' (`if_attach`): the address walk passes it.
+    let ifp = test_ifnet_fresh(b"bnch0", &BENCH_DRIVER);
+    if_attach(ifp);
+    // No `enqueue_randomness` in `if_input_process` (the host doubles of the two shapes'
+    // entropy pools differ; the "before" rows set it too).
+    ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_CLONED);
+    ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
+    // The start runs at once (no transmit mitigation to the softnet task, which no thread
+    // serves here).
+    ifp.if_txmit.set(1);
+    let idx = ifp.if_index.get();
+    placement("ifnet", ifp);
+    for _ in 0..64 {
+        stash(test_packet(3, 60));
+    }
+
+    if wanted(IF_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                if_put(black_box(if_get(black_box(idx))));
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[0], r);
+    }
+    if wanted(IF_ROWS[1]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let g = smr::read();
+                black_box(if_get_smr(black_box(idx), &g));
+                drop(g);
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[1], r);
+    }
+    if wanted(IF_ROWS[2]) {
+        let ifq = ifp.if_snd();
+        let mut m = Some(unstash());
+        if let Some(p) = &m {
+            placement("ifq.enq.deq mbuf", &**p);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the packet");
+                if ifq_enqueue(ifq, black_box(p)).is_err() {
+                    eprintln!("net: ifq_enqueue refused the packet");
+                    std::process::exit(1);
+                }
+                m = ifq_dequeue(ifq);
+            }
+            t.elapsed()
+        });
+        stash(need(m, "the packet"));
+        report(IF_ROWS[2], r);
+    }
+    if wanted(IF_ROWS[3]) {
+        let ifiq = ifp.ifiq(0);
+        let n = OPS / 8;
+        let r = measure(n, || {
+            let t = Instant::now();
+            for _ in 0..n {
+                let mut ml = MbufList::new();
+                for _ in 0..8 {
+                    ml_enqueue(&mut ml, unstash());
+                }
+                black_box(ifiq_input(ifiq, &mut ml));
+                let mut back = ifiq_test_take(ifiq);
+                while let Some(m) = ml_dequeue(&mut back) {
+                    stash(m);
+                }
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[3], r);
+    }
+    if wanted(IF_ROWS[4]) {
+        let n = OPS / 8;
+        let r = measure(n, || {
+            let t = Instant::now();
+            for _ in 0..n {
+                let mut ml = MbufList::new();
+                for _ in 0..8 {
+                    ml_enqueue(&mut ml, unstash());
+                }
+                if_input_process(ifp, &mut ml, 0);
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[4], r);
+    }
+    if wanted(IF_ROWS[5]) {
+        let ifq = ifp.if_snd();
+        let task: &'static Task = Box::leak(Box::new(Task::unset()));
+        task.set_ref(serial_noop, &SERIAL_TARGET);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                ifq_serialize(ifq, core::pin::Pin::static_ref(black_box(task)));
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[5], r);
+    }
+    if wanted(IF_ROWS[6]) {
+        if_counters_alloc(ifp);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                if let Some(c) = black_box(ifp).if_counters.get() {
+                    counters_pkt(c, IfCounters::IfcIpackets, IfCounters::IfcIbytes, 60);
+                }
+            }
+            t.elapsed()
+        });
+        report(IF_ROWS[6], r);
+    }
+    if wanted(IF_ROWS[7]) {
+        // Eight listed interfaces of two addresses each, 10.i.0.1 and 172.16.i.1; the
+        // address looked for is the last one walked (the C's two nested TAILQ walks whole).
+        let token = need(hal::link::SaToken::take(), "the SaToken");
+        let sin = |a: [u8; 4]| -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
+            let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
+            sa.sa_len = 16;
+            sa.sa_family = hal::sys::socket::AF_INET;
+            sa.sa_data[2..6].copy_from_slice(&a);
+            Box::leak(Box::new(core::cell::Cell::new(sa)))
+        };
+        let mut addrs: Vec<(&'static kernel::net::if_var::Ifnet, &'static Ifaddr)> = Vec::new();
+        for i in 0..8u8 {
+            let lifp = test_ifnet_fresh(b"bnch1", &BENCH_DRIVER);
+            if_attach(lifp);
+            for a in [[10, i, 0, 1], [172, 16, i, 1]] {
+                let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
+                ifa.ifa_addr.set(token, Some(sin(a)));
+                ifa.ifa_ifp.set(Some(lifp));
+                ifa_add(lifp, ifa);
+                addrs.push((lifp, ifa));
+            }
+        }
+        let want = sin([172, 16, 7, 1]).get();
+        let want = hal::user::bytes_of(core::slice::from_ref(&want)).to_vec();
+        let net = NETLOCK.write();
+        let held = need(NetHeld::of(&net), "the net lock's witness");
+        if let Some((_, last)) = addrs.last() {
+            placement("ifa_ifwithaddr last address", *last);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(ifa_ifwithaddr(&held, black_box(&want), 0));
+            }
+            t.elapsed()
+        });
+        if ifa_ifwithaddr(&held, &want, 0)
+            .is_none_or(|f| addrs.last().is_none_or(|l| !core::ptr::eq(f, l.1)))
+        {
+            eprintln!("net: ifa_ifwithaddr found another address");
+            std::process::exit(1);
+        }
+        for (lifp, ifa) in &addrs {
+            ifa_del(lifp, ifa);
+        }
+        drop(net);
+        report(IF_ROWS[7], r);
+    }
+    if wanted(IF_ROWS[8]) {
+        // Four send queues; the packet's flow id picks the third (priq_idx), whose start the
+        // driver runs at once and empties.
+        let mq = test_ifnet_fresh(b"bnch2", &BENCH_DRIVER);
+        if_attach(mq);
+        mq.if_flags.set(mq.if_flags.get() | IFF_RUNNING);
+        mq.if_txmit.set(1);
+        if_attach_queues(mq, 4);
+        placement("if_enqueue_ifq ifnet", mq);
+        let m = unstash();
+        m.m_pkthdr().ph_flowid.set(2);
+        m.m_pkthdr()
+            .csum_flags
+            .set(m.m_pkthdr().csum_flags.get() | M_FLOWID);
+        stash(m);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                if if_enqueue_ifq(mq, unstash()).is_err() {
+                    eprintln!("net: if_enqueue_ifq refused the packet");
+                    std::process::exit(1);
+                }
+            }
+            t.elapsed()
+        });
+        if !kernel::net::ifq::ifq_empty(mq.ifq(2)) {
+            eprintln!("net: if_enqueue_ifq left the packet queued");
+            std::process::exit(1);
+        }
+        report(IF_ROWS[8], r);
+    }
+    // The packets back to their pool while its pages are still installed.
+    STASH.with(|s| s.borrow_mut().clear());
 }
 /* </CODE> */

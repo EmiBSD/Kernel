@@ -157,9 +157,6 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU64, Ordering};
 
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_rwlock::{
-    rw_assert_anylock, rw_assert_wrlock, rw_enter_write, rw_exit_write,
-};
 use crate::kern::kern_sysctl::sysctl_rdstruct;
 use crate::kern::uipc_mbuf::{MAX_LINKHDR, m_freem, m_get, m_gethdr, m_pullup};
 use crate::machine::intr::IPL_SOFTNET;
@@ -466,7 +463,7 @@ pub fn igmp_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     igmpstat_inc(IgmpstatCounters::IgpsRcvTotal);
 
@@ -500,7 +497,7 @@ pub fn igmp_input_if(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(mut m) = *mp else {
         return IPPROTO_DONE;
@@ -567,7 +564,7 @@ pub fn igmp_input_if(
                 // Start the timers in all of our membership records for the interface on
                 // which the query arrived, except those that are already running and those
                 // that belong to a "local" group (224.0.0.X).
-                rw_enter_write(&ifp.if_maddrlock);
+                crate::net::if_var::if_maddrlock_enter_write(ifp);
                 for inm in inet_memberships(ifp) {
                     if inm.inm_timer.get() == 0 && !in_local_group(inm.inm_addr().s_addr) {
                         inm.inm_state.set(IGMP_DELAYING_MEMBER);
@@ -577,7 +574,7 @@ pub fn igmp_input_if(
                         running = true;
                     }
                 }
-                rw_exit_write(&ifp.if_maddrlock);
+                crate::net::if_var::if_maddrlock_exit_write(ifp);
             } else {
                 if !in_multicast(ip.ip_dst.s_addr) {
                     igmpstat_inc(IgmpstatCounters::IgpsRcvBadqueries);
@@ -595,7 +592,7 @@ pub fn igmp_input_if(
                 // which the query arrived, except those that are already running and those
                 // that belong to a "local" group (224.0.0.X). For timers already running,
                 // check if they need to be reset.
-                rw_enter_write(&ifp.if_maddrlock);
+                crate::net::if_var::if_maddrlock_enter_write(ifp);
                 for inm in inet_memberships(ifp) {
                     if !in_local_group(inm.inm_addr().s_addr)
                         && (ip.ip_dst.s_addr == INADDR_ALLHOSTS_GROUP
@@ -618,7 +615,7 @@ pub fn igmp_input_if(
                         }
                     }
                 }
-                rw_exit_write(&ifp.if_maddrlock);
+                crate::net::if_var::if_maddrlock_exit_write(ifp);
             }
         }
 
@@ -649,7 +646,7 @@ pub fn igmp_input_if(
             }
 
             // If we belong to the group being reported, stop our timer for that group.
-            rw_enter_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_enter_write(ifp);
             if let Some(inm) = in_lookupmulti(&igmp.igmp_group, ifp) {
                 inm.inm_timer.set(0);
                 igmpstat_inc(IgmpstatCounters::IgpsRcvOurreports);
@@ -669,7 +666,7 @@ pub fn igmp_input_if(
                     _ => {}
                 }
             }
-            rw_exit_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_exit_write(ifp);
         }
 
         t if t == IGMP_v2_HOST_MEMBERSHIP_REPORT => 'report: {
@@ -698,7 +695,7 @@ pub fn igmp_input_if(
             }
 
             // If we belong to the group being reported, stop our timer for that group.
-            rw_enter_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_enter_write(ifp);
             if let Some(inm) = in_lookupmulti(&igmp.igmp_group, ifp) {
                 inm.inm_timer.set(0);
                 igmpstat_inc(IgmpstatCounters::IgpsRcvOurreports);
@@ -710,7 +707,7 @@ pub fn igmp_input_if(
                     _ => {}
                 }
             }
-            rw_exit_write(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_exit_write(ifp);
         }
 
         _ => {}
@@ -740,7 +737,7 @@ fn inet_memberships(ifp: &Ifnet) -> impl Iterator<Item = &InMulti> {
 pub fn igmp_joingroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
     let mut running = false;
 
-    rw_assert_wrlock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_wrlock(ifp);
 
     inm.inm_state.set(IGMP_IDLE_MEMBER);
 
@@ -767,7 +764,7 @@ pub fn igmp_joingroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
 /// (in `pkt`) when we may have been the last reporter and the router speaks v2. Called
 /// holding `if_maddrlock`.
 pub fn igmp_leavegroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
-    rw_assert_anylock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_anylock(ifp);
 
     match inm.inm_state.get() {
         IGMP_DELAYING_MEMBER | IGMP_IDLE_MEMBER
@@ -826,7 +823,7 @@ pub fn igmp_checktimer(ifp: &Ifnet, pktlist: &mut Vec<IgmpPktinfo>) -> bool {
     let mut running = false;
     let mut type_ = 0;
 
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     for inm in inet_memberships(ifp) {
         if inm.inm_timer.get() == 0 {
             // do nothing
@@ -854,7 +851,7 @@ pub fn igmp_checktimer(ifp: &Ifnet, pktlist: &mut Vec<IgmpPktinfo>) -> bool {
             }
         }
     }
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     running
 }
@@ -981,6 +978,7 @@ const _: () = assert!(size_of::<Igmp>() == IGMP_MINLEN);
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for IGMP over the test Ethernet interface: the all-hosts group `in_ifinit`
     // joins is never reported; joining another group sends a v2 report with the Router Alert
     // option and TTL 1 at once and again when its timer runs out; a query restarts the timer
@@ -990,7 +988,7 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_rwlock::{rw_enter_write, rw_exit_write};
+
     use crate::net::if_::tests::test_packet;
     use crate::net::if_ethersubr::ether_ioctl;
     use crate::net::ifq::ifq_dequeue;
@@ -1046,7 +1044,7 @@ mod tests {
     /// checked for the Router Alert option, TTL 1 and its checksum.
     fn sent(ifp: &Ifnet) -> Vec<([u8; 4], u8, [u8; 4])> {
         let mut v = Vec::new();
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             let f = bytes(m);
             m_freem(m);
             assert_eq!(&f[12..14], &[0x08, 0x00], "IPv4");
@@ -1094,10 +1092,10 @@ mod tests {
 
     /// The state and timer of our membership of `g` on `ifp`.
     fn membership(ifp: &Ifnet, g: [u8; 4]) -> (u32, u32) {
-        rw_enter_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_enter_write(ifp);
         let inm = in_lookupmulti(&addr(g), ifp).expect("a member");
         let r = (inm.inm_state.get(), inm.inm_timer.get());
-        rw_exit_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
         r
     }
 
@@ -1113,9 +1111,9 @@ mod tests {
         let (_g, _t) = setup();
         igmp_init();
         let ifp = test_ether();
-        ifp.if_ioctl.set(Some(mcast_ioctl));
+        ifp.if_ioctl().set(Some(mcast_ioctl));
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 
@@ -1210,10 +1208,10 @@ mod tests {
         let (_g, _t) = setup();
         igmp_init();
         let ifp = test_ether();
-        ifp.if_ioctl.set(Some(mcast_ioctl));
+        ifp.if_ioctl().set(Some(mcast_ioctl));
         configure(ifp, ADDR, [255, 255, 255, 0]);
         let inm = in_addmulti(&addr([239, 4, 4, 4]), ifp).expect("joined");
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 
@@ -1269,7 +1267,7 @@ mod tests {
         assert_eq!(rti_type(ifp.if_index.get()), IGMP_v2_ROUTER);
 
         in_delmulti(inm);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 

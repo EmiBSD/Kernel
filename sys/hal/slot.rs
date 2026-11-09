@@ -192,6 +192,33 @@ mod tests {
 
     use super::*;
 
+    /// The embed idiom's proof (docs/IDIOMS.md) for a cell of an optional box or counted
+    /// handle in zeroed legacy memory (`Ifnet::if_sadl`, `ReadMostly<Option<MBox<..>>>`, and
+    /// `Ifnet::if_groups`, `ReadMostly<Option<MArc<..>>>`, in an `M_ZERO` softc; review 1's
+    /// S1): all zero bytes are a cell with no reader and no writer holding `None`.
+    #[test]
+    fn an_all_zero_cell_of_no_box_or_handle_holds_none() {
+        use crate::malloc::{MArc, MBox};
+        type B = ReadMostly<Option<MBox<u64>>>;
+        type A = ReadMostly<Option<MArc<u64>>>;
+
+        // SAFETY: a `ReadMostly` is an `AtomicU32` (0: no reader, no writer) and an
+        // `UnsafeCell<T>`. An `Option` of `MBox` (a `NonNull`, an `i32`, a `&'static dyn`) or
+        // of `MArc` (a `NonNull`) is `None` when the field its niche lives in is null (the
+        // non-null pointers are its only niches), or, laid out with a tag, when the tag is 0
+        // (`None` is the first variant): zero bytes are `None` either way; `hal::malloc`'s
+        // compile-time check proves the niche form (no tag), and the assertions check it
+        // here.
+        let b: B = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(b.read().is_none());
+        // SAFETY: as above, for `MArc`.
+        let a: A = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(a.read().is_none());
+        // The writer path works on them as on cells built empty.
+        assert!(b.replace(None).is_none());
+        assert!(a.replace(None).is_none());
+    }
+
     #[test]
     fn readers_borrow_and_a_replacement_hands_the_old_value_back() {
         let c = ReadMostly::new(Vec::from([1u32, 2, 3]));

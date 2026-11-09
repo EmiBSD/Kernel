@@ -371,7 +371,7 @@ pub fn ipsec_common_input(
     af: i32,
     sproto: i32,
     udpencap: bool,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(m) = *mp else {
         return IPPROTO_DONE;
@@ -608,7 +608,7 @@ pub fn ipsec_common_input_cb(
     tdbp: &'static Tdb,
     skip: i32,
     protoff: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(mut m) = *mp else {
         return IPPROTO_DONE;
@@ -856,7 +856,7 @@ pub fn ipsec_common_input_cb(
                 // XXX This conflicts with the scoped nature of IPv6
                 m.m_pkthdr().ph_ifidx.set(encif.if_index.get());
             }
-            let if_bpf = encif.if_bpf.get();
+            let if_bpf = encif.if_bpf.get_mut();
             if !if_bpf.is_null() {
                 let hdr = Enchdr {
                     af: u32::from(af).to_be(),
@@ -1063,7 +1063,7 @@ pub fn ipsec_input_disabled(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     match af {
         x if x == i32::from(AF_INET) => rip_input(mp, offp, proto, af, ns),
@@ -1084,7 +1084,7 @@ pub fn ah46_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     if pf_diverted(mp) || AH_ENABLE.load(Ordering::Relaxed) == 0 {
         return ipsec_input_disabled(mp, offp, proto, af, ns);
@@ -1128,7 +1128,7 @@ pub fn esp46_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     if pf_diverted(mp) || ESP_ENABLE.load(Ordering::Relaxed) == 0 {
         return ipsec_input_disabled(mp, offp, proto, af, ns);
@@ -1154,7 +1154,7 @@ pub fn ipcomp46_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     if pf_diverted(mp) || IPCOMP_ENABLE.load(Ordering::Relaxed) == 0 {
         return ipsec_input_disabled(mp, offp, proto, af, ns);

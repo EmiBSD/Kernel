@@ -482,9 +482,7 @@ pub fn if_nd(ifp: &Ifnet) -> Option<&'static Cell<NdIfinfo>> {
     // SAFETY: `if_nd` is `nd6_ifattach`'s allocation, freed only by `nd6_ifdetach` when the
     // interface goes away; a `Cell<T>` has the layout of `T`, and the net lock serializes
     // the writers, as in C.
-    ifp.if_nd
-        .get()
-        .map(|nd| unsafe { &*nd.as_ptr().cast::<Cell<NdIfinfo>>() })
+    NonNull::new(ifp.if_nd.get_mut()).map(|nd| unsafe { &*nd.as_ptr().cast::<Cell<NdIfinfo>>() })
 }
 
 /// `(struct llinfo_nd6 *)rt->rt_llinfo`: the neighbor cache entry of a route, `None` when
@@ -557,12 +555,12 @@ pub fn nd6_ifattach(ifp: &Ifnet) {
         })
     };
 
-    ifp.if_nd.set(Some(nd));
+    ifp.if_nd.set(nd.as_ptr().cast());
 }
 
 /// `nd6_ifdetach`: frees the Neighbor Discovery information of `ifp`.
 pub fn nd6_ifdetach(ifp: &Ifnet) {
-    if let Some(nd) = ifp.if_nd.take() {
+    if let Some(nd) = NonNull::new(ifp.if_nd.replace(core::ptr::null()).cast_mut()) {
         free(nd.cast(), M_IP6NDP, size_of::<NdIfinfo>());
     }
 }
@@ -1007,7 +1005,7 @@ pub fn nd6_lookup(
             info.rti_ifa = Some(ifa);
             info.rti_flags = RTF_HOST | RTF_LLINFO;
             info.rti_info[RTAX_DST] = sin6tosa_const(&sin6);
-            info.rti_info[RTAX_GATEWAY] = sdltosa(ifp.if_sadl.get());
+            info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
             let mut nrt = None;
             // SAFETY: the destination is a local `sockaddr_in6` and the gateway the
             // interface's `sockaddr_dl`, both readable for their lengths.
@@ -1813,6 +1811,7 @@ const _: () = {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for the neighbor cache: option parsing, the address printer, and the
     // reachability state machine of one entry driven by `nd6_resolve`, an advertisement
     // (`nd6_na_cache`) and `nd6_timer`. The entry is a host route built by hand: the inet6
@@ -1889,7 +1888,7 @@ pub(crate) mod tests {
         let ifp = test_ether();
         ifp.if_flags.set(ifp.if_flags.get() | IFF_UP | IFF_RUNNING);
         nd6_ifattach(ifp);
-        ifp.if_output.set(Some(capture_output));
+        ifp.if_output().set(Some(capture_output));
         // `ip6_output` drops (EMSGSIZE) a packet for an MTU below IPV6_MMTU: the solicitations
         // the tests trigger stop there, because `if_output_tso` has no AF_INET6 case yet
         // (phase 2 of the INET6 port) and would panic.
@@ -1903,9 +1902,11 @@ pub(crate) mod tests {
         // SAFETY: the all-zero `In6Ifaddr` is valid (`malloc(M_ZERO)` in C).
         let ia: &'static In6Ifaddr = unsafe { zeroed_static() };
         ia.ia_addr.set(SockaddrIn6::with_addr(addr));
-        ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
+        ia.ia_ifa
+            .ifa_addr
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_addr));
         ia.ia_ifa.ifa_ifp.set(Some(ifp));
-        refcnt_init(&ia.ia_ifa.ifa_refcnt);
+        ia.ia_ifa.ifa_refcnt.init();
         ia
     }
 

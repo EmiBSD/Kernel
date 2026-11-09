@@ -133,7 +133,7 @@ use crate::net::fq_codel::{IFQ_FQCODEL_OPS, PFQ_FQCODEL_OPS};
 use crate::net::hfsc::{IFQ_HFSC_OPS, PFQ_HFSC_OPS, hfsc_initialize};
 use crate::net::if_::{IFNAMSIZ, IFQ_MAXPRIO};
 use crate::net::if_var::Ifnet;
-use crate::net::ifq::{IFQ_PRIQ_OPS, IfqOps, ifq_attach};
+use crate::net::ifq::{IfqOps, ifq_attach, ifq_attach_priq};
 use crate::net::pf::*;
 use crate::net::pf_if::{
     pfi_all, pfi_clear_flags, pfi_dynaddr_copyout, pfi_dynaddr_remove, pfi_dynaddr_setup,
@@ -801,7 +801,7 @@ pub fn pf_remove_queues() {
             continue;
         };
 
-        ifq_attach(&ifp.if_snd, IFQ_PRIQ_OPS, ptr::null_mut());
+        ifq_attach_priq(ifp.if_snd());
     }
 }
 
@@ -881,12 +881,12 @@ pub fn pf_create_queues() -> Result<(), Errno> {
             continue;
         }
 
-        ifq_attach(&ifp.if_snd, IFQ_PRIQ_OPS, ptr::null_mut());
+        ifq_attach_priq(ifp.if_snd());
     }
 
     // commit the new queues
     while let Some(qif) = list.pop() {
-        ifq_attach(&qif.ifp.if_snd, qif.ifqops, qif.disc);
+        ifq_attach(qif.ifp.if_snd(), qif.ifqops, qif.disc);
     }
 
     Ok(())

@@ -143,7 +143,6 @@ use crate::machine::intr::IPL_SOFTNET;
 use crate::net::if_::{IFF_LOOPBACK, net_tq, niq_enqueue};
 use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue, sysctl_niq};
-use crate::net::netisr::NETISR_IPV6;
 use crate::net::pf::{pf_ouraddr, pf_test};
 use crate::net::pfvar::{PF_IN, PF_PASS};
 use crate::net::route::{
@@ -212,6 +211,7 @@ use crate::sys::socket::{
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 use crate::sys::task::Task;
+use kernel::net::netisr::NETISR_IPV6;
 
 /// The size of the IPv6 header, as the C's `sizeof(struct ip6_hdr)` in offset arithmetic.
 const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
@@ -317,7 +317,7 @@ fn ip6_ours(
     nxt: i32,
     af: i32,
     flags: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let mut nxt = nxt;
 
@@ -407,7 +407,7 @@ pub fn ip6intr() {
 }
 
 /// `ipv6_input`: an IPv6 packet from `ifp` (`ether_input`, `if_input_local`).
-pub fn ipv6_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>) {
+pub fn ipv6_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
     let mut off = 0;
     let mut mp = Some(m);
     let nxt = ip6_input_if(
@@ -507,7 +507,7 @@ pub fn ip6_input_if(
     nxt: i32,
     af: i32,
     ifp: &'static Ifnet,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let iproute = Route::new();
     let mut nxt = nxt;
@@ -628,10 +628,9 @@ pub fn ip6_input_if(
             }
 
             // Unicast check
-            let ro: &Route = match ns {
-                None => &iproute,
-                Some(ns) => &ns.ns_route,
-            };
+            // The netstack's route cache (`ns_route`) is not kept (net/if_var.rs's deviations):
+            // the C's path without a netstack, a route of this call's.
+            let ro: &Route = &iproute;
             let rt = route6_mpath(
                 ro,
                 &ip6.ip6_dst,

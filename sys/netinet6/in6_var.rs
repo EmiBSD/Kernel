@@ -121,7 +121,6 @@ use crate::netinet6::nd6::{In6Nbrinfo, In6Ndireq};
 use crate::queue_adapter;
 use crate::sys::ioccom::{_ioc, _iow, _iowr, IOC_INOUT};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry};
-use crate::sys::refcnt::Refcnt;
 use crate::sys::socket::{AF_INET6, Sockaddr};
 use crate::sys::types::Time;
 
@@ -169,12 +168,12 @@ unsafe impl Sync for In6Ifaddr {}
 
 impl In6Ifaddr {
     /// `ia_ifp` (`ia_ifa.ifa_ifp`).
-    pub fn ia_ifp(&self) -> &Cell<Option<&'static Ifnet>> {
+    pub fn ia_ifp(&self) -> &hal::link::Link<Ifnet> {
         &self.ia_ifa.ifa_ifp
     }
 
     /// `ia_flags` (`ia_ifa.ifa_flags`).
-    pub fn ia_flags(&self) -> &Cell<u32> {
+    pub fn ia_flags(&self) -> &crate::net::if_var::AtomicCell<u32> {
         &self.ia_ifa.ifa_flags
     }
 }
@@ -567,12 +566,12 @@ unsafe impl Sync for In6Multi {}
 
 impl In6Multi {
     /// `in6m_refcnt` (`in6m_ifma.ifma_refcnt`).
-    pub fn in6m_refcnt(&self) -> &Refcnt {
+    pub fn in6m_refcnt(&self) -> &hal::refcnt::Refcnt {
         &self.in6m_ifma.ifma_refcnt
     }
 
     /// `in6m_ifidx` (`in6m_ifma.ifma_ifidx`).
-    pub fn in6m_ifidx(&self) -> &Cell<u32> {
+    pub fn in6m_ifidx(&self) -> &crate::net::if_var::AtomicCell<u32> {
         &self.in6m_ifma.ifma_ifidx
     }
 

@@ -155,11 +155,9 @@
 use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
+use hal::user::bytes_of_mut;
+
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_rwlock::{
-    rw_assert_anylock, rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write,
-};
-use crate::kern::kern_synch::{refcnt_init_trace, refcnt_rele, refcnt_take};
 use crate::kern::subr_prf::panic;
 use crate::net::if_::{
     IFF_BROADCAST, IFF_LOOPBACK, IFF_MULTICAST, IFF_POINTOPOINT, IFNETLIST, IFXF_AUTOCONF4, Ifreq,
@@ -179,7 +177,6 @@ use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_IFADDR, M_IPMADDR, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{Mbuf, mtod};
-use crate::sys::refcnt::{DT_REFCNT_IDX_IFADDR, DT_REFCNT_IDX_IFMADDR};
 use crate::sys::socket::{AF_INET, Sockaddr};
 use crate::sys::socketvar::{SS_PRIV, Socket};
 use crate::sys::sockio::{
@@ -577,6 +574,7 @@ pub struct InAddr {
     /// The address (`in_addr_t`), network order.
     pub s_addr: u32,
 }
+hal::abi_pod!(InAddr { s_addr: u32 });
 
 /// `struct sockaddr_in`: IP Version 4 socket address.
 #[repr(C)]
@@ -593,6 +591,13 @@ pub struct SockaddrIn {
     /// Zero.
     pub sin_zero: [i8; 8],
 }
+hal::abi_pod!(SockaddrIn {
+    sin_len: u8,
+    sin_family: SaFamily,
+    sin_port: InPort,
+    sin_addr: InAddr,
+    sin_zero: [i8; 8],
+});
 
 /// `struct ip_opts`: structure used to describe IP options. Used to store options internally,
 /// to pass them to a process, or to restore options retrieved earlier. The `ip_dst` is used
@@ -1030,14 +1035,15 @@ fn in_ifaddr_alloc(ifp: &'static Ifnet) -> &'static InIfaddr {
     // SAFETY: a zeroed block of `size_of::<InIfaddr>()` bytes; all-zero is a valid `InIfaddr`
     // (cells, links, a reference count). It lives until the last `ifafree`.
     let ia: &'static InIfaddr = unsafe { &*mem.as_ptr().cast::<InIfaddr>() };
-    refcnt_init_trace(&ia.ia_ifa.ifa_refcnt, DT_REFCNT_IDX_IFADDR);
+    ia.ia_ifa.ifa_refcnt.init();
     let mut addr = ia.ia_addr.get();
     addr.sin_family = AF_INET;
     addr.sin_len = size_of::<SockaddrIn>() as u8;
     ia.ia_addr.set(addr);
-    ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
-    ia.ia_ifa.ifa_dstaddr.set(ia.ia_dstaddr.as_ptr().cast());
-    ia.ia_ifa.ifa_netmask.set(ia.ia_sockmask.as_ptr().cast());
+    let token = crate::net::if_var::sa_token();
+    ia.ia_ifa.ifa_addr.set(token, Some(&ia.ia_addr));
+    ia.ia_ifa.ifa_dstaddr.set(token, Some(&ia.ia_dstaddr));
+    ia.ia_ifa.ifa_netmask.set(token, Some(&ia.ia_sockmask));
     let mut sm = ia.ia_sockmask.get();
     sm.sin_len = 8;
     ia.ia_sockmask.set(sm);
@@ -1376,9 +1382,7 @@ pub fn in_ifinit(
     'out: {
         // Add the address to the local list and the global tree. If an error occurred, put
         // back the original address.
-        // SAFETY: the address lives until its last `ifafree`; its socket addresses are its
-        // own members.
-        unsafe { ifa_add(ifp, &ia.ia_ifa) };
+        ifa_add(ifp, &ia.ia_ifa);
         let rterror = rt_ifa_addlocal(&ia.ia_ifa);
 
         if let Err(e) = rterror {
@@ -1558,7 +1562,7 @@ pub fn in_broadcast(in_: InAddr, rtableid: u32) -> bool {
 
 /// `in_lookupmulti`: the multicast record of `addr` on `ifp`, if joined.
 pub fn in_lookupmulti(addr: &InAddr, ifp: &Ifnet) -> Option<&'static InMulti> {
-    rw_assert_anylock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_anylock(ifp);
 
     for ifma in ifp.if_maddrlist.iter() {
         // SAFETY: a record's address is readable (its protocol set it).
@@ -1576,13 +1580,13 @@ pub fn in_lookupmulti(addr: &InAddr, ifp: &Ifnet) -> Option<&'static InMulti> {
 /// on the record if it is there); `None` when the driver refuses.
 pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMulti> {
     // See if address already in list.
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     if let Some(inm) = in_lookupmulti(addr, ifp) {
-        refcnt_take(inm.inm_refcnt());
-        rw_exit_write(&ifp.if_maddrlock);
+        inm.inm_refcnt().take();
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
         return Some(inm);
     }
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     // New address; allocate a new multicast record and link it into the interface's multicast
     // list.
@@ -1601,37 +1605,51 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMult
         sin_addr: *addr,
         ..SockaddrIn::default()
     };
-    // SAFETY: `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-    unsafe { ptr::write_unaligned(satosin(ifr.ifr_addr_mut()), sin) };
+    // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
+    if !hal::pod::put(
+        bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
+        0,
+        &sin,
+    ) {
+        panic(format_args!(
+            "in_addmulti: a sockaddr_in past an ifreq's address"
+        ));
+    }
     kernel_lock();
-    // SAFETY: `ifr` is a `struct ifreq`, what SIOCADDMULTI takes.
-    if unsafe { ifp_ioctl(ifp, SIOCADDMULTI, ptr::from_mut(&mut ifr).cast()) }.is_err() {
+    if kernel::net::if_::if_ioctl(
+        ifp,
+        SIOCADDMULTI,
+        bytes_of_mut(core::slice::from_mut(&mut ifr)),
+    )
+    .is_err()
+    {
         kernel_unlock();
         free(mem, M_IPMADDR, size_of::<InMulti>());
         return None;
     }
     kernel_unlock();
 
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     // check again after unlock and lock
     if let Some(inm) = in_lookupmulti(addr, ifp) {
-        refcnt_take(inm.inm_refcnt());
-        rw_exit_write(&ifp.if_maddrlock);
+        inm.inm_refcnt().take();
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
         free(mem, M_IPMADDR, size_of::<InMulti>());
         return Some(inm);
     }
     let inm = new_inm;
     inm.inm_sin.set(sin);
-    refcnt_init_trace(inm.inm_refcnt(), DT_REFCNT_IDX_IFMADDR);
+    inm.inm_refcnt().init();
     inm.inm_ifidx().set(ifp.if_index.get());
-    inm.inm_ifma.ifma_addr.set(inm.inm_sin.as_ptr().cast());
+    inm.inm_ifma
+        .ifma_addr
+        .set(crate::net::if_var::sa_token(), Some(&inm.inm_sin));
 
     // Let IGMP know that we have joined a new IP multicast group.
-    // SAFETY: the record lives until `in_delmulti`, which unlinks it first.
-    unsafe { ifp.if_maddrlist.insert_head(&inm.inm_ifma) };
+    ifp.if_maddrlist.insert_head(&inm.inm_ifma);
     let mut pkt = IgmpPktinfo::default(); // pkt.ipi_ifidx = 0
     igmp_joingroup(inm, ifp, &mut pkt);
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     if pkt.ipi_ifidx != 0 {
         igmp_sendpkt(&pkt);
@@ -1642,20 +1660,19 @@ pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet) -> Option<&'static InMult
 
 /// `in_delmulti`: drops a reference on a multicast record, deleting it with the last one.
 pub fn in_delmulti(inm: &'static InMulti) {
-    if !refcnt_rele(inm.inm_refcnt()) {
+    if !inm.inm_refcnt().rele() {
         return;
     }
 
     let ifp = if_get(inm.inm_ifidx().get());
     if let Some(ifp) = ifp {
-        rw_enter_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_enter_write(ifp);
         // No remaining claims to this record; let IGMP know that we are leaving the multicast
         // group.
         let mut pkt = IgmpPktinfo::default(); // pkt.ipi_ifidx = 0
         igmp_leavegroup(inm, ifp, &mut pkt);
-        // SAFETY: the record is on this interface's list (`in_addmulti`).
-        unsafe { ifp.if_maddrlist.remove(&inm.inm_ifma) };
-        rw_exit_write(&ifp.if_maddrlock);
+        ifp.if_maddrlist.remove(&inm.inm_ifma);
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
 
         if pkt.ipi_ifidx != 0 {
             igmp_sendpkt(&pkt);
@@ -1669,11 +1686,22 @@ pub fn in_delmulti(inm: &'static InMulti) {
             sin_addr: inm.inm_addr(),
             ..SockaddrIn::default()
         };
-        // SAFETY: `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
-        unsafe { ptr::write_unaligned(satosin(ifr.ifr_addr_mut()), sin) };
+        // `ifr_addr` is 16 bytes, a `sockaddr_in`'s size.
+        if !hal::pod::put(
+            bytes_of_mut(core::slice::from_mut(ifr.ifr_addr_mut())),
+            0,
+            &sin,
+        ) {
+            panic(format_args!(
+                "in_delmulti: a sockaddr_in past an ifreq's address"
+            ));
+        }
         kernel_lock();
-        // SAFETY: `ifr` is a `struct ifreq`, what SIOCDELMULTI takes.
-        let _ = unsafe { ifp_ioctl(ifp, SIOCDELMULTI, ptr::from_mut(&mut ifr).cast()) };
+        let _ = kernel::net::if_::if_ioctl(
+            ifp,
+            SIOCDELMULTI,
+            bytes_of_mut(core::slice::from_mut(&mut ifr)),
+        );
         kernel_unlock();
 
         if_put(ifp);
@@ -1684,9 +1712,9 @@ pub fn in_delmulti(inm: &'static InMulti) {
 
 /// `in_hasmulti`: whether `ifp` joined the multicast group `addr`.
 pub fn in_hasmulti(addr: &InAddr, ifp: &Ifnet) -> bool {
-    rw_enter_read(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_read(ifp);
     let joined = in_lookupmulti(addr, ifp).is_some();
-    rw_exit_read(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_read(ifp);
 
     joined
 }

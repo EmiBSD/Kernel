@@ -146,9 +146,8 @@ use crate::net::if_media::{
     ifmedia_add, ifmedia_init, ifmedia_ioctl, ifmedia_set,
 };
 use crate::net::if_var::Ifnet;
-use crate::net::ifq::{
-    ifq_clr_oactive, ifq_dequeue, ifq_init_maxlen, ifq_is_oactive, ifq_restart, ifq_set_oactive,
-};
+use crate::net::if_var::IfnetLegacy;
+use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_restart, ifq_set_oactive};
 use crate::netinet::if_ether::{
     ETHER_ADDR_LEN, ETHER_CRC_LEN, EtherMultistep, ether_first_multi, ether_next_multi,
 };
@@ -563,7 +562,7 @@ impl PcnSoftc {
 
 /// `(struct pcn_softc *)ifp->if_softc`.
 fn pcn_softc(ifp: &Ifnet) -> &'static PcnSoftc {
-    let p = ifp.if_softc.get().cast::<PcnSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<PcnSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("pcn: interface without its softc"));
     }
@@ -1011,10 +1010,11 @@ pub fn pcn_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     ifp.if_softc.set(arg);
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
-    ifp.if_ioctl.set(Some(pcn_ioctl));
-    ifp.if_start.set(Some(pcn_start));
-    ifp.if_watchdog.set(Some(pcn_watchdog));
-    ifq_init_maxlen(&ifp.if_snd, (PCN_NTXDESC - 1) as u32);
+    ifp.if_ioctl().set(Some(pcn_ioctl));
+    ifp.if_start().set(Some(pcn_start));
+    ifp.if_watchdog().set(Some(pcn_watchdog));
+    // ifq_init_maxlen(&ifp->if_snd, ..) before if_attach: the queue is made by it.
+    ifp.if_snd_maxlen.set((PCN_NTXDESC - 1) as u32);
 
     // Attach the interface.
     if_attach(ifp);
@@ -1025,7 +1025,7 @@ pub fn pcn_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
 pub fn pcn_start(ifp: &'static Ifnet) {
     let sc = pcn_softc(ifp);
 
-    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(&ifp.if_snd) {
+    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(ifp.if_snd()) {
         return;
     }
 
@@ -1037,12 +1037,12 @@ pub fn pcn_start(ifp: &'static Ifnet) {
     // or use up all available transmit descriptors.
     loop {
         if sc.sc_txsfree.get() == 0 || sc.sc_txfree.get() < PCN_NTXSEGS + 1 {
-            ifq_set_oactive(&ifp.if_snd);
+            ifq_set_oactive(ifp.if_snd());
             break;
         }
 
         // Grab a packet off the queue.
-        let Some(m0) = ifq_dequeue(&ifp.if_snd) else {
+        let Some(m0) = ifq_dequeue(ifp.if_snd()) else {
             break;
         };
 
@@ -1137,7 +1137,7 @@ pub fn pcn_start(ifp: &'static Ifnet) {
         sc.sc_txsnext.set(pcn_nexttxs(sc.sc_txsnext.get()));
 
         // Pass the packet to any BPF listeners.
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap(bpf, m0, BPF_DIRECTION_OUT);
         }
@@ -1426,8 +1426,8 @@ pub fn pcn_txintr(sc: &'static PcnSoftc) {
         ifp.if_timer.set(0);
     }
 
-    if ifq_is_oactive(&ifp.if_snd) {
-        ifq_restart(&ifp.if_snd);
+    if ifq_is_oactive(ifp.if_snd()) {
+        ifq_restart(ifp.if_snd());
     }
 }
 
@@ -1687,7 +1687,7 @@ pub fn pcn_init(ifp: &'static Ifnet) -> Result<(), Errno> {
     // the address of the link-level address, `ETHER_ADDR_LEN` bytes long, which follows the
     // name in the `sockaddr_dl` allocation.
     let enaddr: [u8; ETHER_ADDR_LEN] = unsafe {
-        let p = crate::net::if_dl::lladdr(ifp.if_sadl.get());
+        let p = crate::net::if_dl::lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         core::array::from_fn(|i| *p.add(i))
     };
     initblock.init_padr[0] = u32::from(enaddr[0])
@@ -1782,7 +1782,7 @@ pub fn pcn_init(ifp: &'static Ifnet) -> Result<(), Errno> {
 
     // ...all done!
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     pcn_init_out(sc, Ok(()))
 }
@@ -1824,7 +1824,7 @@ pub fn pcn_stop(ifp: &'static Ifnet, disable: i32) {
 
     // Mark the interface as down and cancel the watchdog timer.
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
     ifp.if_timer.set(0);
 
     // Stop the chip.

@@ -88,6 +88,7 @@ use crate::net::if_media::{
     ifmedia_init, ifmedia_ioctl, ifmedia_set,
 };
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_set_oactive};
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MIN_LEN, EtherMultistep,
@@ -104,7 +105,7 @@ use crate::sys::syslog::LOG_ERR;
 
 /// `(struct dp8390_softc *)ifp->if_softc`.
 fn dp8390_softc(ifp: &Ifnet) -> &'static Dp8390Softc {
-    let p = ifp.if_softc.get().cast::<Dp8390Softc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<Dp8390Softc>().cast_const();
     if p.is_null() {
         panic(format_args!("dp8390: interface without its softc"));
     }
@@ -182,10 +183,10 @@ pub fn dp8390_config(sc: &'static Dp8390Softc) -> i32 {
     xname[..n].copy_from_slice(&name[..n]);
     ifp.if_xname.set(xname);
     ifp.if_softc.set(core::ptr::from_ref(sc).cast_mut().cast());
-    ifp.if_start.set(Some(dp8390_start));
-    ifp.if_ioctl.set(Some(dp8390_ioctl));
-    if ifp.if_watchdog.get().is_none() {
-        ifp.if_watchdog.set(Some(dp8390_watchdog));
+    ifp.if_start().set(Some(dp8390_start));
+    ifp.if_ioctl().set(Some(dp8390_ioctl));
+    if ifp.if_watchdog().get().is_none() {
+        ifp.if_watchdog().set(Some(dp8390_watchdog));
     }
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
@@ -389,7 +390,7 @@ pub fn dp8390_init(sc: &'static Dp8390Softc) {
 
     // Set 'running' flag, and clear output active flag.
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     // ...and attempt to start output.
     dp8390_start(ifp);
@@ -456,7 +457,7 @@ fn dp8390_xmit(sc: &'static Dp8390Softc) {
 pub fn dp8390_start(ifp: &'static Ifnet) {
     let sc = dp8390_softc(ifp);
 
-    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(&ifp.if_snd) {
+    if ifp.if_flags.get() & IFF_RUNNING == 0 || ifq_is_oactive(ifp.if_snd()) {
         return;
     }
 
@@ -464,10 +465,10 @@ pub fn dp8390_start(ifp: &'static Ifnet) {
         // See if there is room to put another packet in the buffer.
         if sc.txb_inuse.get() == sc.txb_cnt.get() {
             // No room. Indicate this to the outside world and exit.
-            ifq_set_oactive(&ifp.if_snd);
+            ifq_set_oactive(ifp.if_snd());
             return;
         }
-        let Some(m0) = ifq_dequeue(&ifp.if_snd) else {
+        let Some(m0) = ifq_dequeue(ifp.if_snd()) else {
             return;
         };
 
@@ -477,7 +478,7 @@ pub fn dp8390_start(ifp: &'static Ifnet) {
         }
 
         // Tap off here if there is a BPF listener.
-        let bpf = ifp.if_bpf.get();
+        let bpf = ifp.if_bpf.get_mut();
         if !bpf.is_null() {
             let _ = bpf_mtap(bpf, m0, BPF_DIRECTION_OUT);
         }
@@ -707,7 +708,7 @@ pub fn dp8390_intr(arg: *mut c_void) -> i32 {
 
             // Clear watchdog timer.
             ifp.if_timer.set(0);
-            ifq_clr_oactive(&ifp.if_snd);
+            ifq_clr_oactive(ifp.if_snd());
 
             // Add in total number of collisions on last transmission.
             ifp.if_collisions()

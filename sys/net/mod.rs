@@ -48,8 +48,6 @@ pub mod if_types;
 pub mod if_var;
 pub mod if_wg;
 pub mod ifq;
-#[forbid(unsafe_code)]
-pub mod netisr;
 pub mod pf;
 pub mod pf_if;
 pub mod pf_ioctl;

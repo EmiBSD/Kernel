@@ -2620,12 +2620,15 @@ impl PfiKif {
 
     /// `pfik_group` of a kernel kif.
     pub fn pfik_group(&'static self) -> Option<&'static IfgGroup> {
-        // SAFETY: set by `pfi_attach_ifgroup`, cleared by `pfi_detach_ifgroup`.
+        // SAFETY: set by `pfi_attach_ifgroup`, cleared by `pfi_detach_ifgroup`, which the
+        // kernel's `if_delgroup` calls while it still holds the group's counted handle (the
+        // `Pf` leg runs before the last reference goes, sys/kernel/net/if_.rs): a word that is
+        // set names a group that lives, as the C's detach before `free`.
         unsafe { self.pfik_group.get().as_ref() }
     }
 
     /// `pfik_group = g`.
-    pub fn set_pfik_group(&self, g: Option<&'static IfgGroup>) {
+    pub fn set_pfik_group(&self, g: Option<&IfgGroup>) {
         self.pfik_group.set(g.map_or(ptr::null(), ptr::from_ref));
     }
 }

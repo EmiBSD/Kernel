@@ -1291,7 +1291,7 @@ pub fn tcp_signature_tdb_input(
     _tdbp: &'static Tdb,
     _skip: i32,
     _protoff: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     m_freemp(mp);
     IPPROTO_DONE

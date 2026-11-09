@@ -161,7 +161,8 @@ use crate::net::if_::{
     if_group_routechange, if_put, if_ref, ifa_ifwithaddr, ifa_ifwithdstaddr, ifaof_ifpforaddr,
 };
 use crate::net::if_dl::{satosdl_const, sdltosa};
-use crate::net::if_var::{IfTmplist, Ifaddr, Ifnet};
+use crate::net::if_var::IfnetLegacy;
+use crate::net::if_var::{Ifaddr, Ifnet};
 use crate::net::route::{
     ROUTE_FLAGFILTER, ROUTE_MSGFILTER, ROUTE_PRIOFILTER, ROUTE_TABLEFILTER, RT_RESOLVE, RTA_DNS,
     RTA_IFA, RTA_NETMASK, RTA_SEARCH, RTA_STATIC, RTABLE_ANY, RTAX_BRD, RTAX_DNS, RTAX_DST,
@@ -475,7 +476,7 @@ fn route_src() -> &'static [u8] {
 
 /// `ifp->if_rtrequest(ifp, req, rt)`.
 fn if_rtrequest(ifp: &'static Ifnet, req: u8, rt: Option<&'static Rtentry>) {
-    if let Some(rtrequest) = ifp.if_rtrequest.get() {
+    if let Some(rtrequest) = ifp.if_rtrequest().get() {
         rtrequest(ifp, i32::from(req), rt);
     }
 }
@@ -945,7 +946,7 @@ fn rtm_report(rt: &'static Rtentry, type_: u8, seq: i32, tableid: u32) -> RtmBuf
     // MPLS: RTAX_SRC (the route's label) and rti_mpls, not configured.
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(tableid, family);
@@ -2084,7 +2085,7 @@ pub fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
     info.rti_info[RTAX_LABEL] = rtlabel_id2sa(rt.rt_labelid.get(), &mut sa_rl);
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(rtableid, family);
@@ -2154,7 +2155,7 @@ pub fn rtm_ifchg(ifp: &Ifnet) {
     if RTPTABLE.rtp_count.load(Ordering::Relaxed) == 0 {
         return;
     }
-    info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     // SAFETY: the interface's link address is readable.
     let Some(m) = (unsafe { rtm_msg1(RTM_IFINFO, Some(&mut info)) }) else {
         return;
@@ -2184,7 +2185,7 @@ pub fn rtm_addr(cmd: u8, ifa: &Ifaddr) {
     }
 
     info.rti_info[RTAX_IFA] = ifa.ifa_addr.get();
-    info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+    info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
     info.rti_info[RTAX_NETMASK] = ifa.ifa_netmask.get();
     info.rti_info[RTAX_BRD] = ifa.ifa_dstaddr.get();
     // SAFETY: the address's and the interface's socket addresses are readable.
@@ -2322,7 +2323,7 @@ fn sysctl_dumpentry(rt: &Rtentry, w: &mut Walkarg, id: u32) -> Result<(), Errno>
     info.rti_info[RTAX_NETMASK] = rt_plen2mask(rt, &mut sa_mask);
     let ifp = if_get(rt.rt_ifidx.get());
     if let Some(ifp) = ifp {
-        info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: a route's key is readable.
         let family = unsafe { sa_family(info.rti_info[RTAX_DST]) };
         info.rti_info[RTAX_IFA] = rtable_getsource(id, family);
@@ -2387,7 +2388,7 @@ fn sysctl_iflist(af: u8, w: &mut Walkarg) -> Result<(), Errno> {
             continue;
         }
         // Copy the link-layer address first
-        info.rti_info[RTAX_IFP] = sdltosa(ifp.if_sadl.get());
+        info.rti_info[RTAX_IFP] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
         // SAFETY: the interface's link address, alive for the call.
         let len = unsafe { rtm_msg2(RTM_IFINFO, RTM_VERSION, &mut info, None, Some(&mut *w)) };
         if w.w_where != 0
@@ -2448,7 +2449,7 @@ fn sysctl_iflist(af: u8, w: &mut Walkarg) -> Result<(), Errno> {
 /// `sysctl_ifnames(w)`: a `struct if_nameindex_msg` per interface (only interface `w_arg`
 /// when it is not 0).
 fn sysctl_ifnames(w: &mut Walkarg) -> Result<(), Errno> {
-    let if_tmplist: TailqHead<IfTmplist> = TailqHead::new();
+    let if_tmplist: hal::list::List<kernel::net::if_var::IfTmplist> = hal::list::List::new();
     let mut error = Ok(());
 
     rw_enter_write(&IF_TMPLIST_LOCK);
@@ -2461,7 +2462,7 @@ fn sysctl_ifnames(w: &mut Walkarg) -> Result<(), Errno> {
         let _ = if_ref(ifp);
         // SAFETY: `if_tmplist` is free under `IF_TMPLIST_LOCK`; the reference keeps the
         // interface alive until it is taken off below.
-        unsafe { if_tmplist.insert_tail(ifp) };
+        if_tmplist.insert_tail(ifp);
     }
     net_unlock_shared();
 
@@ -2484,9 +2485,7 @@ fn sysctl_ifnames(w: &mut Walkarg) -> Result<(), Errno> {
         }
     }
 
-    while let Some(ifp) = if_tmplist.first() {
-        // SAFETY: the first element of the temporary list.
-        unsafe { if_tmplist.remove(ifp) };
+    while let Some(ifp) = if_tmplist.pop_head() {
         if_put(ifp);
     }
     rw_exit_write(&IF_TMPLIST_LOCK);
@@ -2838,8 +2837,7 @@ mod tests {
     fn setup() -> Guards {
         let g = crate::netinet::ip_input::tests::setup();
         // Interfaces and interface groups of earlier tests live in the memory just reset.
-        IFNETLIST.0.init();
-        crate::net::if_::IFG_HEAD.0.init();
+        kernel::net::if_::ifnet_test_reset();
         procinit();
         soinit();
         crate::kern::uipc_domain::net_tables_for_tests();
@@ -3326,8 +3324,7 @@ mod tests {
         crate::net::if_::if_group_egress_build().expect("egress");
         net_unlock();
         assert!(
-            crate::net::if_::IFG_HEAD
-                .0
+            crate::net::if_::ifg_head()
                 .iter()
                 .all(|g| !g.ifg_group.starts_with(b"egress"))
         );

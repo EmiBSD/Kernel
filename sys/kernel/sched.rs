@@ -1756,6 +1756,15 @@ pub fn preempt<G: ProcGlue>() {
     });
 }
 
+/// Whether the running CPU's scheduler asks its thread to give the CPU up
+/// (`curcpu()->ci_schedstate.spc_schedflags & SPCF_SHOULDYIELD`, `if_netisr`'s test).
+pub fn should_yield<G: ProcGlue>() -> bool {
+    let n = hal::cpu::cpu_number();
+    tables::<G>()
+        .cpu(n)
+        .is_some_and(|c| c.schedflags() & SPCF_SHOULDYIELD != 0)
+}
+
 /// `sched_pause(yield)`: [`r#yield`] when the running CPU's scheduler asks its thread to
 /// give the CPU up (`SPCF_SHOULDYIELD`).
 pub fn sched_pause<G: ProcGlue>() {

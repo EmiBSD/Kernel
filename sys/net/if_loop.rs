@@ -149,6 +149,7 @@ use crate::net::if_::{
     if_output_local, if_up, softnet_count,
 };
 use crate::net::if_types::IFT_LOOP;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, IfCounters, Ifnet, Netstack};
 use crate::net::route::{RTF_BLACKHOLE, RTF_HOST, RTF_REJECT, Rtentry};
 use crate::net::rtable::{rtable_l2set, rtable_loindex};
@@ -170,8 +171,7 @@ pub fn loopattach(_n: i32) {
         panic(format_args!("unable to create lo0"));
     }
 
-    // SAFETY: `loopattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&LOOP_CLONER) };
+    if_clone_attach(&LOOP_CLONER);
 }
 
 /// `loop_clone_create`: creates `lo<unit>`.
@@ -200,11 +200,11 @@ pub fn loop_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> 
             | IFCAP_TSOv4
             | IFCAP_TSOv6,
     );
-    ifp.if_bpf_mtap.set(Some(lo_bpf_mtap));
-    ifp.if_rtrequest.set(Some(lortrequest));
-    ifp.if_ioctl.set(Some(loioctl));
-    ifp.if_input.set(Some(loinput));
-    ifp.if_output.set(Some(looutput));
+    ifp.if_bpf_mtap().set(Some(lo_bpf_mtap));
+    ifp.if_rtrequest().set(Some(lortrequest));
+    ifp.if_ioctl().set(Some(loioctl));
+    ifp.if_input().set(Some(loinput));
+    ifp.if_output().set(Some(looutput));
     ifp.if_type.set(IFT_LOOP);
     ifp.if_hdrlen.set(size_of::<u32>() as u8);
     if_counters_alloc(ifp);
@@ -261,7 +261,7 @@ pub fn lo_bpf_mtap(_if_bpf: *mut u8, _m: &Mbuf, _dir: u32) -> bool {
 }
 
 /// `loinput`: a looped packet, from the input queue, to its protocol.
-pub fn loinput(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>) {
+pub fn loinput(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
     if m.m_flags().get() & M_PKTHDR == 0 {
         panic(format_args!("loinput: no header mbuf"));
     }

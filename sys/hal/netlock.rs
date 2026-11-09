@@ -193,11 +193,39 @@
 //! - `rwsleep_nsec(ident, &netlock, ..)` (`sosleep_nsec`) is [`sleep_nsec`]: the detached
 //!   holding released for the sleep and taken again in its mode.
 
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::hal_panic;
-use crate::rwlock::{RW_WRITE, RawRwlock, rw_self};
+use crate::rwlock::{RW_WRITE, RawRwlock, Witness, rw_self};
 use crate::sys::errno::Errno;
+
+/// The proof that the running code holds the net lock, for a reader of what it guards that
+/// is not a `Guarded` cell (`hal::link::SaLink::read`, review 2's S-a): made from a witness of
+/// [`NETLOCK`] ([`NetHeld::of`]: exact, borrowing the witness), or by the holder of
+/// `hal::link::SaToken` after a check of [`status`], for the holdings of `bsd`'s, which no
+/// witness exists of (`SaToken::net_held`: the token holder's contract, `sys/hal/trust.rs`).
+/// One per walk, where the C asserts once (`NET_ASSERT_LOCKED()`). Not `Send`.
+pub struct NetHeld<'a> {
+    _held: PhantomData<&'a ()>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'a> NetHeld<'a> {
+    /// The proof from `w`, a witness of the net lock (`NETLOCK.read()`, `NETLOCK.write()`, or
+    /// a part of one): `None` for another lock's.
+    pub fn of<W: Witness>(w: &'a W) -> Option<Self> {
+        (w.lock_id() == NETLOCK.id()).then(Self::new)
+    }
+
+    /// The proof, for `hal` code that has established the holding itself.
+    pub(crate) fn new() -> Self {
+        Self {
+            _held: PhantomData,
+            _not_send: PhantomData,
+        }
+    }
+}
 
 /// `netlock`: serialize socket operations to ensure no new sleeping points are introduced
 /// in IP output paths.
@@ -318,7 +346,7 @@ fn not_held(what: &str, status: i32) -> ! {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::thread;
 
     use super::*;
@@ -326,10 +354,10 @@ mod tests {
     use crate::sleep::INFSLP;
     use crate::testutil;
 
-    /// The tests take the one static lock: one at a time.
+    /// The tests take the one static lock: one at a time (`hal::link`'s too).
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    fn serial() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
         SERIAL
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

@@ -167,7 +167,7 @@ pub fn in6_get_hw_ifid(ifp: &Ifnet, in6: &mut In6Addr) -> bool {
     const ALLZERO: [u8; 8] = [0; 8];
     const ALLONE: [u8; 8] = [0xff; 8];
 
-    let sdl = ifp.if_sadl.get();
+    let sdl = crate::net::if_var::if_sadl_ptr(ifp).cast_mut();
     // SAFETY: a non-NULL `if_sadl` is the interface's link-level address.
     if sdl.is_null() || unsafe { (*sdl).sdl_alen } == 0 {
         return false;
@@ -502,7 +502,7 @@ mod tests {
     use crate::sys::systm::{net_lock, net_unlock};
 
     /// A leaked link-level address: `name`, then `lladdr`.
-    fn leak_sdl(name: &[u8], lladdr: &[u8]) -> *mut SockaddrDl {
+    fn leak_sdl(name: &[u8], lladdr: &[u8]) -> SockaddrDl {
         let mut sdl = SockaddrDl {
             sdl_nlen: name.len() as u8,
             sdl_alen: lladdr.len() as u8,
@@ -510,14 +510,14 @@ mod tests {
         };
         sdl.sdl_data[..name.len()].copy_from_slice(name);
         sdl.sdl_data[name.len()..name.len() + lladdr.len()].copy_from_slice(lladdr);
-        std::boxed::Box::leak(std::boxed::Box::new(sdl))
+        sdl
     }
 
     /// An interface of type `ty` with the link-level address `lladdr` (after a 4 byte name).
     fn if_with_lladdr(name: &[u8], ty: u8, lladdr: &[u8]) -> &'static Ifnet {
         let ifp = test_ifnet(name);
         ifp.if_type.set(ty);
-        ifp.if_sadl.set(leak_sdl(b"tsdl", lladdr));
+        crate::net::if_var::if_sadl_test_set(ifp, leak_sdl(b"tsdl", lladdr));
         ifp
     }
 
@@ -645,7 +645,7 @@ mod tests {
         let b = test_if(b"tb1");
         b.if_type.set(IFT_ETHER);
         let mac = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
-        b.if_sadl.set(leak_sdl(b"", &mac));
+        crate::net::if_var::if_sadl_test_set(b, leak_sdl(b"", &mac));
 
         net_lock();
         let mut id = a6("fe80::");

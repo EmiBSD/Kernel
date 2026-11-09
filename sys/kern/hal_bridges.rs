@@ -412,6 +412,10 @@ pub fn hal_bridges_register() {
     // And the kernel's window leg of uiomove its own token (hal::user::WindowKcopyToken,
     // N5.9t1), taken by kernel::uio here for the same reason.
     kernel::uio::window_kcopy_take();
+    // And the publisher of the interface addresses' storage (hal::link::SaToken, N6.3a): the
+    // kernel's interface layer copies what a link names, so only bsd's internet protocols,
+    // which own that storage, may make one name it; taken here for the same reason.
+    crate::net::if_var::sa_token_take();
     let _ = hal::bridges::register_sleep(&KERNEL_SLEEP);
     let _ = hal::bridges::register_pool_backend(&BSD_POOLS);
     let _ = hal::bridges::register_malloc(&BSD_MALLOC);

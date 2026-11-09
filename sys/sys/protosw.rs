@@ -231,7 +231,8 @@ pub const PRCO_NCMDS: i32 = 2;
 /// (from below). Takes the packet, the offset of the protocol's header, the protocol number
 /// and the address family; returns the next protocol (`IPPROTO_DONE` when the packet is
 /// consumed, and then `*mp` is `None`).
-pub type PrInputFn = fn(&mut Option<&'static Mbuf>, &mut i32, i32, i32, Option<&Netstack>) -> i32;
+pub type PrInputFn =
+    fn(&mut Option<&'static Mbuf>, &mut i32, i32, i32, Option<&mut Netstack>) -> i32;
 
 /// `void (*pr_ctlinput)(int, struct sockaddr *, u_int, void *)`: control input (from below).
 ///

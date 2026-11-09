@@ -237,7 +237,7 @@ pub fn rip_input(
     _offp: &mut i32,
     _proto: i32,
     af: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> i32 {
     let Some(m) = mp.take() else {
         return IPPROTO_DONE;
@@ -774,7 +774,7 @@ mod tests {
         rip_init();
         let ifp = test_ether();
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
 
@@ -807,7 +807,7 @@ mod tests {
         solock(so);
         rip_send(so, Some(m), Some(nam(sin(GATEWAY))), None).expect("held by ARP");
         sounlock(so);
-        let req = ifq_dequeue(&ifp.if_snd).expect("ARP request");
+        let req = ifq_dequeue(ifp.if_snd()).expect("ARP request");
         let b = bytes(req);
         m_freem(req);
         assert_eq!(&b[12..14], &ETHERTYPE_ARP.to_be_bytes());
@@ -835,7 +835,7 @@ mod tests {
         };
         ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
         arpintr();
-        let echo = ifq_dequeue(&ifp.if_snd).expect("the echo request");
+        let echo = ifq_dequeue(ifp.if_snd()).expect("the echo request");
         let b = bytes(echo);
         m_freem(echo);
         let ipb = &b[size_of::<EtherHeader>()..];

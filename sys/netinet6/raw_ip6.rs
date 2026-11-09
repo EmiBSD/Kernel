@@ -325,7 +325,7 @@ pub fn rip6_input(
     offp: &mut i32,
     proto: i32,
     af: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let _ = ns;
     let iter = InpcbIterator::new();
@@ -977,6 +977,7 @@ const _: () = assert!(size_of::<Rip6stat>() == RIP6S_NCOUNTERS * size_of::<u64>(
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
+    use crate::net::if_var::IfnetLegacy;
     // Host tests for raw IPv6 sockets: what ping6 opens (a `SOCK_RAW`, `IPPROTO_ICMPV6` socket
     // with an `ICMP6_FILTER`) seeing or not seeing ICMPv6 messages through `rip6_input`, the
     // `IPV6_CHECKSUM` offset of another protocol's raw socket checked on input, the
@@ -1257,8 +1258,8 @@ mod tests {
         use crate::netinet6::nd6::ND6_INFINITE_LIFETIME;
 
         let ifp = crate::net::if_::tests::test_ifnet(b"tp6v0");
-        ifp.if_ioctl.set(Some(accepting_ioctl));
-        ifp.if_output.set(Some(capturing_output));
+        ifp.if_ioctl().set(Some(accepting_ioctl));
+        ifp.if_output().set(Some(capturing_output));
         ifp.if_type.set(crate::net::if_types::IFT_ETHER);
         ifp.if_flags.set(crate::net::if_::IFF_MULTICAST);
         ifp.if_mtu.set(1500);
@@ -1267,8 +1268,7 @@ mod tests {
             ..Default::default()
         };
         sdl.sdl_data[..6].copy_from_slice(&crate::netinet::ip_input::tests::OURS);
-        ifp.if_sadl
-            .set(std::boxed::Box::leak(std::boxed::Box::new(sdl)));
+        crate::net::if_var::if_sadl_test_set(ifp, sdl);
         crate::net::if_::if_attach(ifp);
 
         let mut ifra = In6Aliasreq::zeroed();

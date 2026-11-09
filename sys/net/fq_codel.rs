@@ -94,7 +94,7 @@ use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{MAX_LINKHDR, ml_dequeue, ml_enlist, ml_enqueue, ml_init, ml_purge};
 use crate::machine::copy::{AbiPod, copyout_obj};
 use crate::net::if_var::Ifnet;
-use crate::net::ifq::{IfqOps, Ifqueue, ifq_len, ifq_mfreeml, ifq_q_enter, ifq_q_leave};
+use crate::net::ifq::{IfqLocked, IfqOps, ifq_len, ifq_mfreeml, ifq_q_with};
 use crate::net::pfvar::{PfQueuespec, PfqOps};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_WAITOK, M_ZERO};
@@ -929,9 +929,13 @@ fn fqcodel_purge(fqc: &'static Fqcodel, ml: &MbufList) {
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopEnqFn`].
-unsafe fn fqcodel_if_enq(ifq: &Ifqueue, m: &'static Mbuf) -> Option<&'static Mbuf> {
-    // SAFETY: the caller's contract: `ifq_q` is the FQ-CoDel state `ifq_attach` installed.
-    fqcodel_enq(unsafe { fqc_of(ifq.ifq_q.get()) }, m)
+unsafe fn fqcodel_if_enq(
+    q: *mut c_void,
+    _st: &mut IfqLocked<'_>,
+    m: &'static Mbuf,
+) -> Option<&'static Mbuf> {
+    // SAFETY: the caller's contract: `q` is the FQ-CoDel state `ifq_attach` installed.
+    fqcodel_enq(unsafe { fqc_of(q) }, m)
 }
 
 /// `fqcodel_if_deq_begin`: frees what CoDel dropped once the queue's mutex is released.
@@ -939,13 +943,16 @@ unsafe fn fqcodel_if_enq(ifq: &Ifqueue, m: &'static Mbuf) -> Option<&'static Mbu
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopDeqBeginFn`].
-unsafe fn fqcodel_if_deq_begin(ifq: &Ifqueue) -> Option<(&'static Mbuf, *mut c_void)> {
+unsafe fn fqcodel_if_deq_begin(
+    q: *mut c_void,
+    st: &mut IfqLocked<'_>,
+) -> Option<(&'static Mbuf, *mut c_void)> {
     let free_ml = MbufList::new();
     let mut cookie = ptr::null_mut();
 
-    // SAFETY: the caller's contract: `ifq_q` is the FQ-CoDel state `ifq_attach` installed.
-    let m = fqcodel_deq_begin(unsafe { fqc_of(ifq.ifq_q.get()) }, &mut cookie, &free_ml);
-    ifq_mfreeml(ifq, &free_ml);
+    // SAFETY: the caller's contract: `q` is the FQ-CoDel state `ifq_attach` installed.
+    let m = fqcodel_deq_begin(unsafe { fqc_of(q) }, &mut cookie, &free_ml);
+    ifq_mfreeml(st, &free_ml);
     m.map(|m| (m, cookie))
 }
 
@@ -954,9 +961,14 @@ unsafe fn fqcodel_if_deq_begin(ifq: &Ifqueue) -> Option<(&'static Mbuf, *mut c_v
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopDeqCommitFn`].
-unsafe fn fqcodel_if_deq_commit(ifq: &Ifqueue, m: &'static Mbuf, cookie: *mut c_void) {
-    // SAFETY: the caller's contract: `ifq_q` is the FQ-CoDel state `ifq_attach` installed.
-    fqcodel_deq_commit(unsafe { fqc_of(ifq.ifq_q.get()) }, m, cookie);
+unsafe fn fqcodel_if_deq_commit(
+    q: *mut c_void,
+    _st: &mut IfqLocked<'_>,
+    m: &'static Mbuf,
+    cookie: *mut c_void,
+) {
+    // SAFETY: the caller's contract: `q` is the FQ-CoDel state `ifq_attach` installed.
+    fqcodel_deq_commit(unsafe { fqc_of(q) }, m, cookie);
 }
 
 /// `fqcodel_if_purge`.
@@ -964,9 +976,9 @@ unsafe fn fqcodel_if_deq_commit(ifq: &Ifqueue, m: &'static Mbuf, cookie: *mut c_
 /// # Safety
 ///
 /// As for [`crate::net::ifq::IfqopPurgeFn`].
-unsafe fn fqcodel_if_purge(ifq: &Ifqueue, ml: &MbufList) {
-    // SAFETY: the caller's contract: `ifq_q` is the FQ-CoDel state `ifq_attach` installed.
-    fqcodel_purge(unsafe { fqc_of(ifq.ifq_q.get()) }, ml);
+unsafe fn fqcodel_if_purge(q: *mut c_void, _st: &mut IfqLocked<'_>, ml: &MbufList) {
+    // SAFETY: the caller's contract: `q` is the FQ-CoDel state `ifq_attach` installed.
+    fqcodel_purge(unsafe { fqc_of(q) }, ml);
 }
 
 /// `fqcodel_pf_alloc`: a new, empty state.
@@ -1095,36 +1107,36 @@ fn fqcodel_pf_qstats(qs: &'static PfQueuespec, ubuf: usize, nbytes: &mut i32) ->
     let mut stats = FqcodelStats::default();
 
     // XXX: multi-q?
-    let Some(qp) = ifq_q_enter(&ifp.if_snd, IFQ_FQCODEL_OPS) else {
-        return Err(Errno::EBADF);
-    };
-    // SAFETY: `ifq_q_enter` returned the state of the FQ-CoDel conditioner, under `ifq_mtx`.
-    let fqc = unsafe { fqc_of(qp.as_ptr()) };
+    let entered = ifq_q_with(ifp.if_snd(), IFQ_FQCODEL_OPS, |qp, _st| {
+        // SAFETY: `ifq_q_with` lent the state of the FQ-CoDel conditioner, under `ifq_mtx`.
+        let fqc = unsafe { fqc_of(qp) };
 
-    stats.xmit_cnt = fqc.xmit_cnt.get();
-    stats.drop_cnt = fqc.drop_cnt.get();
+        stats.xmit_cnt = fqc.xmit_cnt.get();
+        stats.drop_cnt = fqc.drop_cnt.get();
 
-    stats.qlength = ifq_len(&ifp.if_snd);
-    stats.qlimit = fqc.qlimit.get();
+        stats.qlength = ifq_len(ifp.if_snd());
+        stats.qlimit = fqc.qlimit.get();
 
-    stats.flows = 0;
-    stats.delaysum = 0;
-    stats.delaysumsq = 0;
+        stats.flows = 0;
+        stats.delaysum = 0;
+        stats.delaysumsq = 0;
 
-    for flow in fqc.flows() {
-        if codel_qlength(&flow.cd) == 0 {
-            continue;
+        for flow in fqc.flows() {
+            if codel_qlength(&flow.cd) == 0 {
+                continue;
+            }
+            // Scale down to microseconds to avoid overflows
+            let delay = codel_delay(&flow.cd) / 1000;
+            stats.delaysum = stats.delaysum.wrapping_add(delay as u64);
+            stats.delaysumsq = stats
+                .delaysumsq
+                .wrapping_add(delay.wrapping_mul(delay) as u64);
+            stats.flows += 1;
         }
-        // Scale down to microseconds to avoid overflows
-        let delay = codel_delay(&flow.cd) / 1000;
-        stats.delaysum = stats.delaysum.wrapping_add(delay as u64);
-        stats.delaysumsq = stats
-            .delaysumsq
-            .wrapping_add(delay.wrapping_mul(delay) as u64);
-        stats.flows += 1;
+    });
+    if entered.is_none() {
+        return Err(Errno::EBADF);
     }
-
-    ifq_q_leave(&ifp.if_snd, qp);
 
     copyout_obj(&stats, ubuf)?;
 
@@ -1430,6 +1442,66 @@ mod tests {
         let _ = ml_purge(&ml);
 
         (PFQ_FQCODEL_OPS.pfq_free)(fqc);
+    }
+
+    #[test]
+    fn two_flows_leave_the_send_queue_in_the_order_they_were_begun() {
+        // The interface's send queue under FQ-CoDel (pf's `ifq_attach`): every `ifq_dequeue`
+        // runs the conditioner's begin once and commits the packet that begin chose. A second
+        // begin would charge the flow's deficit again and, at the turn, return the other flow's
+        // head while the cookie still named the first (`codel_commit`'s assertion, or the
+        // wrong packet taken off).
+        use crate::net::if_::if_attach;
+        use crate::net::ifq::{
+            ifq_attach, ifq_attach_priq, ifq_dequeue, ifq_enqueue, ifq_hdatalen, ifq_len,
+        };
+
+        let _g = setup_net();
+        let fqc = fqcodel(4, 300, 0);
+        // SAFETY: made by `fqcodel_pf_alloc`.
+        let st = unsafe { fqc_of(fqc) };
+        let ifp = crate::net::if_::tests::test_ifnet(b"tfqc1");
+        if_attach(ifp);
+        let ifq = ifp.if_snd();
+        ifq_attach(ifq, IFQ_FQCODEL_OPS, fqc);
+
+        for _ in 0..6 {
+            for flow in [0, 1] {
+                assert_eq!(ifq_enqueue(ifq, packet(100, flow)), Ok(()));
+            }
+        }
+        assert_eq!(ifq_len(ifq), 12);
+
+        let mut order = Vec::new();
+        while let Some(m) = ifq_dequeue(ifq) {
+            order.push(m.m_pkthdr().ph_flowid.get());
+            m_freem(m);
+        }
+        // A quantum of 300 bytes is three 100-byte packets per turn, as through pf's own ops.
+        assert_eq!(order, [0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1]);
+        assert_eq!(ifq_len(ifq), 0);
+        assert_eq!((PFQ_FQCODEL_OPS.pfq_qlength)(fqc), 0);
+        assert_eq!(
+            st.xmit_cnt.get(),
+            FqcodelPktcntr {
+                packets: 12,
+                bytes: 1200
+            }
+        );
+        assert_eq!(st.drop_cnt.get(), FqcodelPktcntr::default());
+        assert_eq!(kernel::net::ifq::ifq_stats(ifq).0, 12);
+
+        // A rollback (`ifq_hdatalen`) leaves the packet queued: the next dequeue takes it.
+        assert_eq!(ifq_enqueue(ifq, packet(60, 2)), Ok(()));
+        assert_eq!(ifq_hdatalen(ifq), 60);
+        assert_eq!(ifq_len(ifq), 1);
+        let m = ifq_dequeue(ifq).expect("the packet rolled back");
+        assert_eq!(m.m_pkthdr().ph_flowid.get(), 2);
+        m_freem(m);
+        assert!(ifq_dequeue(ifq).is_none());
+
+        // The default conditioner back frees FQ-CoDel's state (`ifqop_free`).
+        ifq_attach_priq(ifq);
     }
 
     #[test]

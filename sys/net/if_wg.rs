@@ -171,6 +171,7 @@ use crate::net::if_::{
     if_attach, if_clone_attach, if_counters_alloc, if_detach, if_enqueue, net_tq, p2p_rtrequest,
 };
 use crate::net::if_types::IFT_WIREGUARD;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, IfCounterArray, IfCounters, Ifnet, Netstack};
 use crate::net::ifq::{Ifqueue, ifq_dequeue, ifq_empty, ifq_purge};
 use crate::net::pf::pf_pkt_addr_changed;
@@ -1072,7 +1073,7 @@ impl WgSoftc {
         // SAFETY: `wg_clone_create` points `if_softc` at the softc that embeds the interface;
         // only `wg` interfaces get these functions as their hooks, and the softc lives until
         // `wg_clone_destroy`, after `if_detach`.
-        unsafe { &*ifp.if_softc.get().cast::<WgSoftc>() }
+        unsafe { &*ifp.if_softc.get_mut().cast::<WgSoftc>() }
     }
 
     /// `sc->sc_aip4`, made by `wg_clone_create`.
@@ -1334,10 +1335,10 @@ pub fn wg_peer_destroy(peer: &'static WgPeer) {
     noise_remote_clear(&peer.p_remote);
 
     net_lock();
-    while !ifq_empty(&sc.sc_if.if_snd) {
+    while !ifq_empty(sc.sc_if.if_snd()) {
         // XXX: `if_snd' of stopped interface could still contain packets
         if sc.sc_if.if_flags.get() & IFF_RUNNING == 0 {
-            ifq_purge(&sc.sc_if.if_snd);
+            ifq_purge(sc.sc_if.if_snd());
             continue;
         }
         net_unlock();
@@ -2950,7 +2951,7 @@ pub fn wg_deliver_in(arg: *mut c_void) {
             continue;
         }
 
-        let if_bpf = sc.sc_if.if_bpf.get();
+        let if_bpf = sc.sc_if.if_bpf.get_mut();
         if !if_bpf.is_null() {
             let _ = bpf_mtap_af(
                 if_bpf,
@@ -3191,7 +3192,7 @@ pub unsafe fn wg_input(
     ip6: *const c_void,
     uh: *const c_void,
     hlen: i32,
-    _ns: Option<&Netstack>,
+    _ns: Option<&mut Netstack>,
 ) -> Option<&'static Mbuf> {
     let sc = sc_of(arg);
 
@@ -3323,9 +3324,7 @@ unsafe fn wg_input_ip6(_t: &WgTag, _ip6: *const c_void, _uh: *const c_void) -> b
 /// `wg_qstart`: the interface's `if_qstart`: stages the packets of the send queue on their
 /// peers, then queues them for encryption (or asks for a handshake).
 pub fn wg_qstart(ifq: &'static Ifqueue) {
-    let Some(ifp) = ifq.ifq_if.get() else {
-        return;
-    };
+    let ifp = ifq.ifq_if();
     let sc = WgSoftc::of_ifp(ifp);
     let start_list: SlistHead<WgPeerStart> = SlistHead::new();
 
@@ -3337,7 +3336,7 @@ pub fn wg_qstart(ifq: &'static Ifqueue) {
             continue;
         };
 
-        let if_bpf = sc.sc_if.if_bpf.get();
+        let if_bpf = sc.sc_if.if_bpf.get_mut();
         if !if_bpf.is_null() {
             let _ = bpf_mtap_af(
                 if_bpf,
@@ -4051,12 +4050,12 @@ pub fn wg_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
                 ifp.if_xflags.set(IFXF_CLONED | IFXF_MPSAFE);
                 ifp.if_txmit.set(64); // Keep our workers active for longer.
 
-                ifp.if_ioctl.set(Some(wg_ioctl));
-                ifp.if_qstart.set(Some(wg_qstart));
-                ifp.if_output.set(Some(wg_output));
+                ifp.if_ioctl().set(Some(wg_ioctl));
+                ifp.if_qstart().set(Some(wg_qstart));
+                ifp.if_output().set(Some(wg_output));
 
                 ifp.if_type.set(IFT_WIREGUARD);
-                ifp.if_rtrequest.set(Some(p2p_rtrequest));
+                ifp.if_rtrequest().set(Some(p2p_rtrequest));
 
                 if_counters_alloc(ifp);
                 if_attach(ifp);
@@ -4138,8 +4137,7 @@ pub fn wg_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
 pub fn wgattach(_nwg: i32) {
     // WGTEST: cookie_test() and noise_test() are the host test modules.
 
-    // SAFETY: `wgattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&WG_CLONER) };
+    if_clone_attach(&WG_CLONER);
 
     pool_init(
         &WG_AIP_POOL,
@@ -4224,7 +4222,7 @@ mod tests {
     use crate::kern::proc_glue::procinit;
     use crate::machine::Machine;
     use crate::machine::cpu::Cpu;
-    use crate::net::if_::{IFG_HEAD, IFNETLIST, if_unit};
+    use crate::net::if_::if_unit;
     use crate::net::wg_noise::tests::{advance_uptime, hex, uptime_past_reject_interval};
     use crate::sys::mbuf::M_DONTWAIT;
 
@@ -4250,8 +4248,7 @@ mod tests {
     fn setup() -> Guards {
         let tc = uptime_past_reject_interval();
         let (m, t) = crate::netinet::ip_input::tests::setup();
-        IFNETLIST.0.init();
-        IFG_HEAD.0.init();
+        kernel::net::if_::ifnet_test_reset();
         procinit();
         // The kernel's domain table, as LZ's static domains[] always was: wg_bind's
         // socreate finds udp whichever test ran first.
@@ -5065,7 +5062,7 @@ mod tests {
         let r = unsafe { wg_output(&sc0.sc_if, m, ptr::from_ref(&dst).cast(), None) };
         net_unlock();
         assert_eq!(r, Ok(()));
-        wg_qstart(&sc0.sc_if.if_snd);
+        wg_qstart(sc0.sc_if.if_snd());
         // Queued but not yet encrypted: t_done holds it back from the deliver task.
         assert!(wg_queue_dequeue(&bob0.p_encap_queue).is_none());
         wg_encap_worker(ptr::from_ref(sc0).cast_mut().cast());
@@ -5307,7 +5304,7 @@ mod tests {
         let r = unsafe { wg_output(&sc0.sc_if, m, ptr::from_ref(&dst).cast(), None) };
         net_unlock();
         assert_eq!(r, Ok(()));
-        wg_qstart(&sc0.sc_if.if_snd);
+        wg_qstart(sc0.sc_if.if_snd());
         wg_encap_worker(ptr::from_ref(sc0).cast_mut().cast());
         let (m, t) = wg_queue_dequeue(&bob0.p_encap_queue).expect("encrypted");
         let wire = bytes(t.t_mbuf.get().expect("data message"));

@@ -162,9 +162,9 @@ use crate::net::if_::{
     IFF_MULTICAST, IFF_NOARP, IFF_RUNNING, IFF_SIMPLEX, Ifreq, if_alloc_sadl, if_deactivate,
     if_enqueue, if_input_local, if_input_proto,
 };
-use crate::net::if_dl::lladdr;
 use crate::net::if_types::IFT_ETHER;
-use crate::net::if_var::{IfInputFn, Ifnet, Netstack};
+use crate::net::if_var::IfnetLegacy;
+use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Rtentry;
 use crate::net::rtable::rt_key;
 #[cfg(feature = "inet6")]
@@ -175,17 +175,14 @@ use crate::netinet::if_ether::{
     eth64_is_broadcast, eth64_is_multicast, ether_is_multicast, ether_lookup_multi,
     ether_map_ip_multicast,
 };
-use crate::netinet::if_ether::{arp_rtrequest, arpinput, arpresolve, revarpinput};
+use crate::netinet::if_ether::{arp_rtrequest, arpresolve};
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn};
 use crate::netinet::ip::{IP_MF, IP_OFFMASK, Ip};
-use crate::netinet::ip_input::ipv4_input;
 use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out};
 #[cfg(feature = "inet6")]
 use crate::netinet::ip6::Ip6Hdr;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6::{in6_is_addr_unspecified, satosin6_const};
-#[cfg(feature = "inet6")]
-use crate::netinet6::ip6_input::ipv6_input;
 #[cfg(feature = "inet6")]
 use crate::netinet6::ip6_output::in6_proto_cksum_out;
 #[cfg(feature = "inet6")]
@@ -482,7 +479,7 @@ fn ether_port_input(
     m: &'static Mbuf,
     dst: u64,
     epp: &AtomicPtr<EtherPort>,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> Option<&'static Mbuf> {
     smr_read_enter();
     let ep = epp.load(Ordering::Acquire);
@@ -509,7 +506,7 @@ fn ether_header(m: &Mbuf) -> EtherHeader {
 /// `ether_input`: process a received Ethernet packet. Ethernet input has several "phases" of
 /// filtering packets to support virtual/pseudo interfaces before actual layer 3 protocol
 /// handling.
-pub fn ether_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>) {
+pub fn ether_input(ifp: &'static Ifnet, m: &'static Mbuf, mut ns: Option<&mut Netstack>) {
     let ac = arpcom_of(ifp);
     let mut sdelim = false;
     let mut m = m;
@@ -527,7 +524,7 @@ pub fn ether_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>)
         //
         // The first phase supports drivers that aggregate multiple Ethernet ports into a
         // single logical interface, ie, aggr(4) and trunk(4).
-        m = match ether_port_input(ifp, m, dst, &ac.ac_trport, ns) {
+        m = match ether_port_input(ifp, m, dst, &ac.ac_trport, ns.as_deref_mut()) {
             Some(m) => m,
             None => return,
         };
@@ -551,12 +548,12 @@ pub fn ether_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>)
         // Give the packet to a bridge interface, ie, bridge(4), veb(4), or tpmr(4), if it is
         // configured. A bridge may take the packet and forward it to another port, or it may
         // return it here to ether_input() to support local delivery to this port.
-        m = match ether_port_input(ifp, m, dst, &ac.ac_brport, ns) {
+        m = match ether_port_input(ifp, m, dst, &ac.ac_brport, ns.as_deref_mut()) {
             Some(m) => m,
             None => return,
         };
 
-        let input: Option<IfInputFn> = 'drop: {
+        let input: Option<kernel::net::if_::ProtoFn> = 'drop: {
             // Fourth phase: drop service delimited packets.
             //
             // If the packet has a tag, and a bridge didn't want it, it's not for this port.
@@ -606,25 +603,29 @@ pub fn ether_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&Netstack>)
             let etype = ntohs(eh.ether_type);
 
             match etype {
-                ETHERTYPE_IP => Some(ipv4_input as IfInputFn),
+                ETHERTYPE_IP => {
+                    Some(crate::net::if_::ipv4_input_proto as kernel::net::if_::ProtoFn)
+                }
 
                 ETHERTYPE_ARP => {
                     if ifp.if_flags.get() & IFF_NOARP != 0 {
                         break 'drop None;
                     }
-                    Some(arpinput as IfInputFn)
+                    Some(crate::net::if_::arpinput_proto as kernel::net::if_::ProtoFn)
                 }
 
                 ETHERTYPE_REVARP => {
                     if ifp.if_flags.get() & IFF_NOARP != 0 {
                         break 'drop None;
                     }
-                    Some(revarpinput as IfInputFn)
+                    Some(crate::net::if_::revarpinput_proto as kernel::net::if_::ProtoFn)
                 }
 
                 // Schedule IPv6 software interrupt for incoming IPv6 packet.
                 #[cfg(feature = "inet6")]
-                ETHERTYPE_IPV6 => Some(ipv6_input as IfInputFn),
+                ETHERTYPE_IPV6 => {
+                    Some(crate::net::if_::ipv6_input_proto as kernel::net::if_::ProtoFn)
+                }
                 // NPPPOE > 0 || PIPEX: ETHERTYPE_PPPOEDISC/ETHERTYPE_PPPOE go to the pppoe
                 // queues or a pipex session; not configured.
                 // MPLS: ETHERTYPE_MPLS(_MCAST) go to mpls_input; not configured.
@@ -744,8 +745,7 @@ pub fn ether_fakeaddr(ifp: &Ifnet) {
 /// type, lengths and MTU, `ether_input`/`ether_output`, the link address.
 pub fn ether_ifattach(ac: &'static Arpcom) {
     let ifp = &ac.ac_if;
-    // SAFETY: `ifp` is the `ac_if` of `ac`, which is `'static`.
-    unsafe { ifp.set_arpcom() };
+    ifp.set_arpcom();
 
     // Any interface which provides a MAC address which is obviously invalid gets whacked, so
     // that users will notice.
@@ -757,25 +757,21 @@ pub fn ether_ifattach(ac: &'static Arpcom) {
     ifp.if_addrlen.set(ETHER_ADDR_LEN as u8);
     ifp.if_hdrlen.set(ETHER_HDR_LEN as u8);
     ifp.if_mtu.set(ETHERMTU as u32);
-    ifp.if_input.set(Some(ether_input));
-    if ifp.if_output.get().is_none() {
-        ifp.if_output.set(Some(ether_output));
+    ifp.if_input().set(Some(ether_input));
+    if ifp.if_output().get().is_none() {
+        ifp.if_output().set(Some(ether_output));
     }
-    ifp.if_rtrequest.set(Some(ether_rtrequest));
+    ifp.if_rtrequest().set(Some(ether_rtrequest));
 
     if ifp.if_hardmtu.get() == 0 {
         ifp.if_hardmtu.set(ETHERMTU as u32);
     }
 
     if_alloc_sadl(ifp);
-    // SAFETY: `if_alloc_sadl` made room for `if_addrlen` bytes after the name.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            ac.ac_enaddr.get().as_ptr(),
-            lladdr(ifp.if_sadl.get()),
-            usize::from(ifp.if_addrlen.get()),
-        );
-    }
+    // memcpy(LLADDR(ifp->if_sadl), ac->ac_enaddr, ifp->if_addrlen)
+    let enaddr = ac.ac_enaddr.get();
+    let alen = usize::from(ifp.if_addrlen.get()).min(enaddr.len());
+    kernel::net::if_::if_sadl_set_lladdr(ifp, &enaddr[..alen]);
     ac.ac_multiaddrs.init();
     bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
 }
@@ -949,7 +945,7 @@ pub fn ether_addmulti(ifr: &Ifreq, ac: &Arpcom) -> Result<(), Errno> {
     let s = splnet();
 
     // SAFETY: `ifr_addr` is a `struct sockaddr` inside the request.
-    let (addrlo, addrhi) = match unsafe { ether_multiaddr(ifr.ifr_addr()) } {
+    let (addrlo, addrhi) = match unsafe { ether_multiaddr(crate::net::if_::ifr_addr_ptr(ifr)) } {
         Ok(range) => range,
         Err(e) => {
             splx(s);
@@ -1005,7 +1001,7 @@ pub fn ether_delmulti(ifr: &Ifreq, ac: &Arpcom) -> Result<(), Errno> {
     let s = splnet();
 
     // SAFETY: `ifr_addr` is a `struct sockaddr` inside the request.
-    let (addrlo, addrhi) = match unsafe { ether_multiaddr(ifr.ifr_addr()) } {
+    let (addrlo, addrhi) = match unsafe { ether_multiaddr(crate::net::if_::ifr_addr_ptr(ifr)) } {
         Ok(range) => range,
         Err(e) => {
             splx(s);
@@ -1304,7 +1300,7 @@ mod tests {
         let mut xname = [0u8; IFNAMSIZ];
         xname[..5].copy_from_slice(b"teth0");
         ac.ac_if.if_xname.set(xname);
-        ac.ac_if.if_ioctl.set(Some(test_ioctl));
+        ac.ac_if.if_ioctl().set(Some(test_ioctl));
         ac.ac_if
             .if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
@@ -1416,15 +1412,18 @@ mod tests {
         assert_eq!(usize::from(ifp.if_hdrlen.get()), ETHER_HDR_LEN);
         assert_eq!(ifp.if_mtu.get() as usize, ETHERMTU);
         assert_eq!(ifp.if_hardmtu.get() as usize, ETHERMTU);
-        assert!(ifp.if_input.get().is_some() && ifp.if_output.get().is_some());
-        let sdl = ifp.if_sadl.get();
+        assert!(ifp.if_input().get().is_some() && ifp.if_output().get().is_some());
+        let sdl = crate::net::if_var::if_sadl_ptr(ifp).cast_mut();
         // SAFETY: if_alloc_sadl's allocation, with the name and then the address.
         unsafe {
             assert_eq!((*sdl).sdl_family, crate::sys::socket::AF_LINK);
             assert_eq!((*sdl).sdl_nlen, 5);
             let data = (*sdl).sdl_data;
             assert_eq!(&data[..5], b"teth0");
-            assert_eq!(core::slice::from_raw_parts(lladdr(sdl), 6), &OURS);
+            assert_eq!(
+                core::slice::from_raw_parts(crate::net::if_dl::lladdr(sdl), 6),
+                &OURS
+            );
         }
 
         // A multicast hardware address is replaced by a locally administered one.
@@ -1542,7 +1541,7 @@ mod tests {
         header.extend_from_slice(&[0; 6]);
         header.extend_from_slice(&ETHERTYPE_ARP.to_be_bytes());
         let ifr = ifreq_with(AF_UNSPEC, &header);
-        let dst: *const Sockaddr = ifr.ifr_addr();
+        let dst: *const Sockaddr = crate::net::if_::ifr_addr_ptr(&ifr);
 
         let m = test_packet(&[0xaa; 28]);
         // SAFETY: `dst` is a 16-byte sockaddr.
@@ -1566,7 +1565,15 @@ mod tests {
         let m = test_packet(&[0; 4]);
         // SAFETY: as above.
         assert_eq!(
-            unsafe { ether_resolve(ifp, m, hdrcmplt.ifr_addr(), None, &mut eh) },
+            unsafe {
+                ether_resolve(
+                    ifp,
+                    m,
+                    crate::net::if_::ifr_addr_ptr(&hdrcmplt),
+                    None,
+                    &mut eh,
+                )
+            },
             Ok(())
         );
         assert_eq!(eh.ether_shost, [1, 2, 3, 4, 5, 6]);

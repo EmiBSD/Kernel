@@ -446,7 +446,7 @@ pub type InpUpcallFn = unsafe fn(
     *const c_void,
     *const c_void,
     i32,
-    Option<&Netstack>,
+    Option<&mut Netstack>,
 ) -> Option<&'static Mbuf>;
 
 /// The per-pcb hook of `in_pcbnotifyall` and the protocols' `ctlinput`s (`udp_notify`,
@@ -2397,6 +2397,15 @@ pub(crate) mod tests {
         teardown();
     }
 
+    /// `f` with the net lock held, as the socket layer's `solock` calls `in_pcbbind` (its
+    /// address check reads the interfaces' addresses under it).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     #[test]
     fn bind_lookups_and_the_iterator() {
         let (_g, _t, p) = setup();
@@ -2405,7 +2414,7 @@ pub(crate) mod tests {
         // An explicit port on the wildcard address.
         let a = pcb(t);
         let n = nam(sin([0; 4], 5000));
-        in_pcbbind(a, Some(n), p).expect("bind");
+        locked(|| in_pcbbind(a, Some(n), p)).expect("bind");
         assert_eq!(a.inp_lport.get(), htons(5000));
         let found = in_pcblookup_local_lock(t, &ZEROIN46_ADDR, htons(5000), 0, 0, IN_PCBLOCK_GRAB);
         assert!(found.is_some_and(|f| ptr::eq(f, a)));
@@ -2417,22 +2426,25 @@ pub(crate) mod tests {
         assert!(wild.is_some_and(|f| ptr::eq(f, a)));
         in_pcbunref(wild);
         // Bound already.
-        assert_eq!(in_pcbbind(a, Some(n), p), Err(Errno::EINVAL));
+        assert_eq!(locked(|| in_pcbbind(a, Some(n), p)), Err(Errno::EINVAL));
 
         // The same port again (a second socket grows the table past its load factor).
         let b = pcb(t);
         assert!(t.inpt_size.get() > 1, "resized");
-        assert_eq!(in_pcbbind(b, Some(n), p), Err(Errno::EADDRINUSE));
+        assert_eq!(locked(|| in_pcbbind(b, Some(n), p)), Err(Errno::EADDRINUSE));
         // ... unless both sockets allow it.
         a.socket().set_options_legacy(SO_REUSEPORT, true);
         b.socket().set_options_legacy(SO_REUSEPORT, true);
-        in_pcbbind(b, Some(n), p).expect("SO_REUSEPORT bind");
+        locked(|| in_pcbbind(b, Some(n), p)).expect("SO_REUSEPORT bind");
         // An address that is not ours.
         let c = pcb(t);
         let other = nam(sin([192, 0, 2, 1], 5001));
-        assert_eq!(in_pcbbind(c, Some(other), p), Err(Errno::EADDRNOTAVAIL));
+        assert_eq!(
+            locked(|| in_pcbbind(c, Some(other), p)),
+            Err(Errno::EADDRNOTAVAIL)
+        );
         // A picked port, from the default range.
-        in_pcbbind(c, None, p).expect("anonymous bind");
+        locked(|| in_pcbbind(c, None, p)).expect("anonymous bind");
         let port = i32::from(u16::from_be(c.inp_lport.get()));
         assert!(
             (IPPORT_RESERVED..=IPPORT_USERRESERVED).contains(&port),
@@ -2518,7 +2530,7 @@ pub(crate) mod tests {
         use core::ptr;
         use core::sync::atomic::Ordering;
 
-        use super::{setup, teardown};
+        use super::{locked, setup, teardown};
         use crate::kern::uipc_mbuf::{m_freem, m_get};
         use crate::kern::uipc_socket::{soclose, socreate};
         use crate::kern::uipc_socket2::{solock, sounlock};
@@ -2591,8 +2603,8 @@ pub(crate) mod tests {
         /// duplicate address detection skipped), whose output lands in [`SENT6`].
         pub(crate) fn test_if6(name: &[u8]) -> &'static Ifnet {
             let ifp = test_ifnet(name);
-            ifp.if_ioctl.set(Some(accepting_ioctl));
-            ifp.if_output.set(Some(capturing_output));
+            crate::net::if_var::IfnetLegacy::if_ioctl(ifp).set(Some(accepting_ioctl));
+            crate::net::if_var::IfnetLegacy::if_output(ifp).set(Some(capturing_output));
             ifp.if_type.set(crate::net::if_types::IFT_ETHER);
             ifp.if_flags.set(crate::net::if_::IFF_MULTICAST);
             ifp.if_mtu.set(1500);
@@ -2601,8 +2613,7 @@ pub(crate) mod tests {
                 ..Default::default()
             };
             sdl.sdl_data[..6].copy_from_slice(&crate::netinet::ip_input::tests::OURS);
-            ifp.if_sadl
-                .set(std::boxed::Box::leak(std::boxed::Box::new(sdl)));
+            crate::net::if_var::if_sadl_test_set(ifp, sdl);
             crate::net::if_::if_attach(ifp);
 
             let mut ifra = In6Aliasreq::zeroed();
@@ -2685,7 +2696,7 @@ pub(crate) mod tests {
             let t = inp.table();
 
             // An explicit port on our address, then the local port lookups.
-            in_pcbbind(inp, Some(nam6(sin6(ours, 5000))), p).expect("bind");
+            locked(|| in_pcbbind(inp, Some(nam6(sin6(ours, 5000))), p)).expect("bind");
             assert_eq!(inp.inp_laddr6.get(), ours);
             assert_eq!(inp.inp_lport.get(), htons(5000));
             let found = in_pcblookup_local_lock(
@@ -2708,7 +2719,7 @@ pub(crate) mod tests {
             assert!(!lookup(INPLOOKUP_IPV6), "an exact match only");
             assert!(lookup(INPLOOKUP_IPV6 | INPLOOKUP_WILDCARD));
             assert_eq!(
-                in_pcbbind(inp, Some(nam6(sin6(ours, 5001))), p),
+                locked(|| in_pcbbind(inp, Some(nam6(sin6(ours, 5001))), p)),
                 Err(Errno::EINVAL),
                 "bound already"
             );
@@ -2717,15 +2728,15 @@ pub(crate) mod tests {
             let so2 = socreate(i32::from(AF_INET6), SOCK_DGRAM, 0).expect("socket");
             let inp2 = sotoinpcb(so2).expect("attached");
             assert_eq!(
-                in_pcbbind(inp2, Some(nam6(sin6(ours, 5000))), p),
+                locked(|| in_pcbbind(inp2, Some(nam6(sin6(ours, 5000))), p)),
                 Err(Errno::EADDRINUSE)
             );
             assert_eq!(
-                in_pcbbind(inp2, Some(nam6(sin6(a6("fd00:77::9"), 5000))), p),
+                locked(|| in_pcbbind(inp2, Some(nam6(sin6(a6("fd00:77::9"), 5000))), p)),
                 Err(Errno::EADDRNOTAVAIL)
             );
             // A picked port from the default range, on the unspecified address.
-            in_pcbbind(inp2, None, p).expect("anonymous bind");
+            locked(|| in_pcbbind(inp2, None, p)).expect("anonymous bind");
             let port = i32::from(u16::from_be(inp2.inp_lport.get()));
             assert!(
                 (IPPORT_FIRSTAUTO.load(Ordering::Relaxed)

@@ -3263,7 +3263,7 @@ adapted_by = ["sys/hal/softintr.rs"]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3276,7 +3276,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3298,7 +3298,7 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3481,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3734,7 +3734,8 @@ notes = "M16d: MIDI_RATE, MIDIBUF_SIZE/MASK, struct midi_buffer with the MIDIBUF
 [[module]]
 rust = "sys/dev/mii/dcphy.rs"
 lz = ["sys/dev/mii/dcphy.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dcphy_ca/dcphy_cd, dcphy_funcs, MIIF_AUTOTIMEOUT, COMPAQ_PRESARIO_ID, dcphy_match (the xxDEC/xxDC id dc makes up at MII address 31), dcphy_attach, dcphy_service (Result), dcphy_status (link-partner choice in the pure dcphy_anlpar_media, host-tested), dcphy_mii_phy_auto (Result: EJUSTRETURN/EIO as Err), dcphy_reset; the C's local DC_SETBIT/DC_CLRBIT are DcSoftc's; dcphy* at mii? on amd64; QEMU's tulip has a real MII PHY, so dcphy does not attach there"
 
 [[module]]
@@ -3925,7 +3926,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3958,7 +3959,7 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3970,7 +3971,7 @@ status = "inherited"
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4296,7 +4297,7 @@ status = "inherited"
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -4564,7 +4565,7 @@ status = "inherited"
 rust = "sys/dev/usb/if_cdce.rs"
 lz = ["sys/dev/usb/if_cdce.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 license = "BSD-4"
 
 [[module]]
@@ -4703,7 +4704,7 @@ status = "inherited"
 rust = "sys/dev/usb/usb.rs"
 lz = ["sys/dev/usb/usb.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4753,7 +4754,7 @@ license = "NetBSD Foundation BSD-2 notice"
 rust = "sys/dev/usb/usbdivar.rs"
 lz = ["sys/dev/usb/usbdivar.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -6249,7 +6250,7 @@ status = "inherited"
 rust = "sys/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/bpf_filter.rs"
@@ -6259,7 +6260,8 @@ status = "inherited"
 [[module]]
 rust = "sys/net/bpfdesc.rs"
 lz = ["sys/net/bpfdesc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/ethertypes.rs"
@@ -6269,18 +6271,20 @@ status = "inherited"
 [[module]]
 rust = "sys/net/fq_codel.rs"
 lz = ["sys/net/fq_codel.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/hfsc.rs"
 lz = ["sys/net/hfsc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6291,23 +6295,26 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_dl.rs"
 lz = ["sys/net/if_dl.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/net_if.rs"]
 
 [[module]]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_loop.rs"
 lz = ["sys/net/if_loop.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_media.rs"
@@ -6317,63 +6324,63 @@ status = "inherited"
 [[module]]
 rust = "sys/net/if_pflog.rs"
 lz = ["sys/net/if_pflog.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_pflow.rs"
 lz = ["sys/net/if_pflow.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_pfsync.rs"
 lz = ["sys/net/if_pfsync.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/if_types.rs"
 lz = ["sys/net/if_types.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/net_if.rs"]
 
 [[module]]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
 rust = "sys/net/ifq.rs"
 lz = ["sys/net/ifq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
-
-[[module]]
-rust = "sys/net/netisr.rs"
-lz = ["sys/net/netisr.rs"]
-status = "inherited"
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
 lz = ["sys/net/pf_if.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/pf_ioctl.rs"
 lz = ["sys/net/pf_ioctl.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/hal/vm/param.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/pf_lb.rs"
@@ -6385,7 +6392,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 rust = "sys/net/pf_norm.rs"
 lz = ["sys/net/pf_norm.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/pf_osfp.rs"
@@ -6411,7 +6418,7 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6428,7 +6435,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs"]
 rust = "sys/net/pfvar.rs"
 lz = ["sys/net/pfvar.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/tree.rs"]
+adapted_by = ["sys/sys/tree.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/pfvar_priv.rs"
@@ -6444,7 +6451,7 @@ status = "inherited"
 rust = "sys/net/route.rs"
 lz = ["sys/net/route.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/sysctl.rs"]
+adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 notes = "M7b: every constant (RTF_* u32, RTM_* u8, RTA_* i32, RTAX_* usize, RTP_* u8, RTV_* u32), rt_kmetrics (Cells, rmx_mtu atomic, assign for the structure copy), rt_metrics, rtstat, rt_tableinfo, rt_msghdr, sockaddr_rtlabel/rtdns/rtstatic/rtsearch, enum rtstat_counters, ROUTE_FILTER, srtdnstosa; struct rtentry (&'static pool item, Cells and atomics, all-zero valid; rt_use/rt_expire/rt_locks/rt_mtu methods, ifa() panics without an address), rt_addrinfo (rti_flags u32), struct route (Cells; ro_dstsin6/ro_srcin6 are byte arrays until netinet6/in6.h, so wip), rttimer_queue, rttimer (private to route.c in C, here with its queue), rt_label, rtstat_inc (one atomic array: percpu.h not ported); MPLS/BFD/INET6 parts not configured; M9+: ro_dstsin6/ro_srcin6 are SockaddrIn6/In6Addr"
 
 [[module]]
@@ -6456,7 +6463,7 @@ status = "inherited"
 rust = "sys/net/rtsock.rs"
 lz = ["sys/net/rtsock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/net/toeplitz.rs"
@@ -6488,13 +6495,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6509,7 +6517,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
 
 [[module]]
@@ -6522,7 +6531,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs"]
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6537,7 +6546,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/in_var.rs"
 lz = ["sys/netinet/in_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/inet_nat64.rs"
@@ -6557,7 +6567,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_ah.rs"
 lz = ["sys/netinet/ip_ah.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_divert.rs"
@@ -6574,13 +6585,13 @@ status = "inherited"
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_id.rs"
@@ -6591,23 +6602,25 @@ status = "inherited"
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
 lz = ["sys/netinet/ip_ipcomp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipip.rs"
 lz = ["sys/netinet/ip_ipip.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_output.rs"
@@ -6628,7 +6641,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ipsec_input.rs"
 lz = ["sys/netinet/ipsec_input.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/ipsec_output.rs"
@@ -6639,7 +6653,7 @@ status = "inherited"
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6660,13 +6674,13 @@ status = "inherited"
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6677,7 +6691,7 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
@@ -6689,7 +6703,7 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
@@ -6705,7 +6719,7 @@ status = "inherited"
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6715,24 +6729,26 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/dest6.rs"
 lz = ["sys/netinet6/dest6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/frag6.rs"
 lz = ["sys/netinet6/frag6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_cksum.rs"
@@ -6743,7 +6759,8 @@ adapted_by = ["sys/kernel/net/mbuf.rs"]
 [[module]]
 rust = "sys/netinet6/in6_ifattach.rs"
 lz = ["sys/netinet6/in6_ifattach.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
@@ -6764,7 +6781,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/in6_var.rs"
 lz = ["sys/netinet6/in6_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_divert.rs"
@@ -6787,7 +6805,7 @@ status = "inherited"
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
@@ -6809,7 +6827,7 @@ status = "inherited"
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/mld6_var.rs"
@@ -6819,12 +6837,14 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/nd6.rs"
 lz = ["sys/netinet6/nd6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_nbr.rs"
 lz = ["sys/netinet6/nd6_nbr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_rtr.rs"
@@ -6835,12 +6855,13 @@ status = "inherited"
 rust = "sys/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/route6.rs"
 lz = ["sys/netinet6/route6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/netinet6/udp6_output.rs"
@@ -7437,7 +7458,7 @@ rust = "sys/hal/sys/sockio.rs"
 crate = "hal"
 lz = ["sys/sys/sockio.rs"]
 status = "redesigned"
-notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; the interface commands are sized by net/if.h's structures and stay in bsd's sys/sys/sockio.rs until N6.3a"
+notes = "N6.2a: sockio.h's socket group (SIOCATMARK, SIOCSPGRP, SIOCGPGRP) moved into hal for kernel::net::file; N6.3a: the interface group ('i') followed, sized by hal::sys::net_if's images; bsd's sys/sys/sockio.rs re-exports it"
 
 [[module]]
 rust = "sys/hal/sys/un.rs"
@@ -7445,6 +7466,331 @@ crate = "hal"
 lz = ["sys/sys/un.rs"]
 status = "redesigned"
 notes = "N6.2a: un.h moved into hal with the UNIX domain's redesign; struct sockaddr_un AbiPod through hal::abi_pod!"
+
+[[module]]
+rust = "sys/kernel/net/if_var.rs"
+crate = "kernel"
+lz = ["sys/net/if_var.rs"]
+status = "redesigned"
+notes = "N6.3a1: struct ifnet embedded zero-valid in bsd's softcs (atomics with LZ's get/set, links, lists, set-once cells; what is not valid at zero built by if_attach_common into IfRt), the nine hooks as the NetDriver trait (bsd's LegacyNetDriver), struct ifaddr/ifmaddr over hal::link::SaLink, Netstack lent &mut, Cloner; niqueue stays bsd's (its mbuf_queue); if_counters an inline atomic array (hal's per-CPU Counters is 32 KiB an interface)"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::Netstack::default"
+native = []
+kind = "dropped"
+reason = "a netstack is made per softnet batch by `Netstack::new(idx)` (`if_input_process`); nothing builds a default one"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::IfgMember"
+native = ["IfgMembers"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::IfgList"
+native = ["IfgSet", "IfgRef"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::assert_index"
+native = ["Ifnet::ifq", "Ifnet::ifiq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::if_input_process_proto"
+native = ["sys/kernel/net/if_.rs::if_input_process_proto"]
+kind = "moved"
+
+[[module]]
+rust = "sys/kernel/net/ifq.rs"
+crate = "kernel"
+lz = ["sys/net/ifq.rs"]
+status = "redesigned"
+notes = "N6.3a1: the send and receive queues' state inside Mutexed (ifq_mtx, ifq_task_mtx, ifiq_mtx), ifq_len/oactive atomics, the serializer a PinList of tasks, priq native (an MBox of M_DEVBUF), pf's conditioners through the QueueDiscipline trait over their word; ifq_deq_begin/commit/rollback as one call (ifq_deq_with), ifq_barrier over a barrier task in the queue"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::PRIQ_OPS"
+native = ["Discipline", "Priq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::IFQ_PRIQ_OPS"
+native = ["ifq_attach_priq", "Discipline"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_ifp"
+native = ["Ifqueue::ifq_if"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_ops"
+native = ["Discipline"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifiq_ifp"
+native = ["Ifiqueue::ifiq_if"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::softnet"
+native = ["Ifqueue::softnet", "Ifiqueue::softnet"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_serialize_task"
+native = ["ifq_serialize"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_set_oactive"
+native = ["IfqDeq", "IfqLocked::set_oactive"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_init"
+native = ["Ifqueue::new", "ifq_init_tasks"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_enter"
+native = ["Ifqueue::enter"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_leave"
+native = ["IfqLocked::leave"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_begin"
+native = ["ifq_deq_with"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_commit"
+native = ["ifq_deq_with"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_deq_rollback"
+native = ["ifq_deq_with"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_q_enter"
+native = ["ifq_q_with"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifq_q_leave"
+native = ["ifq_q_with"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::ifiq_init"
+native = ["Ifiqueue::new", "ifiq_init_tasks"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_alloc"
+native = ["Priq::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_deq_begin"
+native = ["priq_deq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_deq_commit"
+native = ["priq_deq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_free"
+native = []
+kind = "dropped"
+reason = "the conditioner is a `Discipline::Priq` box, freed by its drop (`disc_free`)"
+
+[[module.fn]]
+lz = "sys/net/ifq.rs::priq_of"
+native = []
+kind = "dropped"
+reason = "the `struct priq` is the typed box `Discipline::Priq` holds, no opaque word to cast back"
+
+[[module]]
+rust = "sys/kernel/net/if_.rs"
+crate = "kernel"
+lz = ["sys/net/if_.rs"]
+status = "redesigned"
+notes = "N6.3a1: the index map (an SmrPtr-published ifmappl item, the C's malloc(M_IFADDR) arrays), if_get/if_put/IfRef, the softnets and net_tq_barriers, if_input_process over a stack Netstack, if_input_proto's cookie as an index, if_qstart/if_qstart_compat/if_enqueue_ifq, if_attach/if_attach_common/if_attachsetup and the extra queues, if_remove/if_detach, the hooks, link state, slowtimo and watchdog, groups (snapshot arrays in ReadMostly cells), cloners, the address lookups over SaLink copies, if_up/if_down, promiscuity and LRO through if_ioctl; the Inet, Routing, Link and Pf legs. The ioctls (ifioctl, ifconf, the group and rxr requests) and if_media are bsd's sys/net/if_.rs and if_media.rs until N6.3a2"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfIdxmap"
+native = ["IfMap", "IdxmapState"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfIdxmapDtor"
+native = []
+kind = "dropped"
+reason = "the old map is an `SmrPtr`-published pool item retired by `SmrRetired::defer`, its references put by `IfMap`'s drop: no destructor record in the old bitmap"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfgHeadList"
+native = ["IFG_HEAD", "sys/kernel/net/if_var.rs::IfgSet"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfClonersList"
+native = ["IF_CLONERS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IF_HOOKS_MTX"
+native = ["sys/kernel/net/if_var.rs::IfRt"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::NETISR"
+native = ["sys/kernel/net/netisr.rs::NETISR"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IF_INPUT_TASK_LOCKED"
+native = ["sys/kernel/net/domain.rs::NetTables"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifp_input"
+native = ["if_input_process", "sys/net/if_var.rs::LegacyNetDriver"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::counters_inc"
+native = ["sys/kernel/net/if_var.rs::counters_inc"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::counters_pkt"
+native = ["sys/kernel/net/if_var.rs::counters_pkt"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_idxmap_limit"
+native = ["IfMap::limit"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_idxmap_usedidx"
+native = ["usedidx"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_idxmap_newmap"
+native = ["IfMap::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_idxmap_free"
+native = ["IfMap::drop"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_attach_check"
+native = ["if_attach_common"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_netisr"
+native = ["sys/kernel/net/netisr.rs::if_netisr"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::equal"
+native = ["sa_equal"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifa_static"
+native = []
+kind = "dropped"
+reason = "the address lists are `hal::list::List`s of `&'static Ifaddr`: their walks yield the lifetime the cast made"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::lladdr_of"
+native = ["if_setlladdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifgroup_icref"
+native = []
+kind = "dropped"
+reason = "a copy-out keeps a counted snapshot of the group list (`IfgSet::snapshot`), so no temporary reference on each group is taken"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifgroup_icrele"
+native = []
+kind = "dropped"
+reason = "a group is an `MArc`, freed with its last reference (the snapshots' included)"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::net_tq_barrier_rele"
+native = ["net_tq_barrier_task"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/net/netisr.rs"
+crate = "kernel"
+lz = ["sys/net/netisr.rs"]
+status = "redesigned"
+notes = "N6.3a1: netisr.h's bits, the netisr word and if_netisr (the glue's task: its yield is the scheduler's) under the net lock's write witness"
+
+[[module]]
+rust = "sys/hal/sys/net_if.rs"
+crate = "hal"
+lz = ["sys/net/if_.rs", "sys/net/if_types.rs", "sys/net/if_dl.rs"]
+status = "redesigned"
+notes = "N6.3a: net/if.h's constants and request images (AbiPod, the unions as byte arrays, the pointers as u64 words), if_types.h's IFT_* and if_dl.h's sockaddr_dl moved into hal for kernel::net and bsd; bsd's if_types.rs and if_dl.rs re-export them, bsd's if_.rs keeps LZ's structures for its ifioctl until N6.3a2"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfgrqIfgrqu"
+native = ["IfgReq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfgrIfgru"
+native = ["Ifgroupreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfrIfru"
+native = ["Ifreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfraIfrau"
+native = ["Ifaliasreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfcIfcu"
+native = ["Ifconf"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::IfNameindex"
+native = []
+kind = "dropped"
+reason = "`struct if_nameindex` is if_nameindex(3)'s (libc builds it from the routing socket's messages); the kernel never makes one"
+
+[[module]]
+rust = "sys/hal/sys/net_if_media.rs"
+crate = "hal"
+lz = ["sys/net/if_media.rs"]
+status = "redesigned"
+notes = "N6.3a: net/if_media.h's IFM_* words, the media word macros and IFM_BAUDRATE_DESCRIPTIONS moved into hal; struct ifmedia and if_media.c stay in bsd's sys/net/if_media.rs until N6.3a2"
 
 [[module]]
 rust = "sys/hal/sys/mbuf.rs"
@@ -7536,7 +7882,7 @@ notes = "M5-b1: session, pgrp, tusage, process and proc (the members the schedul
 rust = "sys/sys/protosw.rs"
 lz = ["sys/sys/protosw.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/proto.rs"]
+adapted_by = ["sys/kernel/net/proto.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 
 [[module]]
 rust = "sys/sys/queue.rs"
@@ -7652,7 +7998,8 @@ notes = "M11a: struct smr_entry, smr_entry_list, smr_init, smr_call, smr_barrier
 [[module]]
 rust = "sys/sys/socket.rs"
 lz = ["sys/sys/socket.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/socket.rs"]
 notes = "M7b: every constant (AF_*/PF_* as sa_family_t, the rest i32), linger, splice, sockaddr, sockaddr_storage, sockproto, sockpeercred, msghdr (msg_iov a *mut c_void until sys/uio.h), mmsghdr, cmsghdr, CMSG_ALIGN/LEN/SPACE as const fns, CMSG_DATA/FIRSTHDR (address only) and CMSG_NXTHDR (unsafe, reads cmsg_len) over raw pointers, sstosa a pointer cast; the CTL_NET_*_NAMES sysctl tables wait for sys/sysctl.h"
 
 [[module]]
@@ -7664,7 +8011,8 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/
 [[module]]
 rust = "sys/sys/sockio.rs"
 lz = ["sys/sys/sockio.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/sockio.rs"]
 notes = "M7b: the 106 socket and interface ioctls whose argument structures are ported (ifreq, ifconf, ifaliasreq, ifmediareq, if_sffpage, if_laddrreq, if_clonereq, ifgroupreq, ifkalivereq, if_afreq, if_parent, int); SIOCBRDG* wait for net/if_bridge.h, SIOCGETVIFCNT/SIOCGETSGCNT for netinet/ip_mroute.h"
 
 [[module]]
@@ -11560,7 +11908,7 @@ reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that n
 [[extra]]
 rust = "sys/hal/link.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp)"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5)"
 
 [[module]]
 rust = "sys/hal/list.rs"
@@ -12039,7 +12387,7 @@ rust = "sys/hal/netlock.rs"
 crate = "hal"
 lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
 status = "redesigned"
-notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported)"
+notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported); N6.3a review 2: NetHeld, the proof of the net lock for readers that are not Guarded cells (from a witness of NETLOCK, or by hal::link::SaToken::net_held)"
 
 [[module]]
 rust = "sys/hal/rwlock.rs"
@@ -12090,11 +12438,11 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/trust.rs"
 crate = "hal"
-reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2)"
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"
-reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages); N6.0: the NetLock bridge gone (BsdNetLock, hal_bridges_register_vm: the net lock is hal's static); BsdPools::create_with, a pool_init over subr_pool.rs's POOL_ALLOCATOR_SOURCE with the source in the pool's pr_source (a source whose sizes are not the allocator's is refused); N6.1: RawPool::wakeup over subr_pool's pool_wakeup (nmbclust_update's, D-N6.1-3)"
+reason = "project glue, 0 unsafe: bsd's implementations of the hal runtime's bridges over its legacy functions, registered by stand::start_kernel before main(); N3.5 S0: UserCopy::kcopy_in/kcopy_out through uiomove's UIO_SYSSPACE path (kcopy with pcb_onfault); N3.5 S1: Sleep::sched_pause over sys/sys/sched.rs's sched_pause(yield); N4.1: SoftIntr over kern_softintr (a slot per kernel handler, the slot's number as the C's argument) and the kernel crate's Uptime (kern_tc's nanouptime; gone at N5.0, the kernel reads kernel::tc) and Kthread (kern_kthread, sched_peg_curproc; the kernel's ticket as the C's argument); N4.2: KernelLock::held (_kernel_lock_held); docs/ZERO_UNSAFE.md 0.3.2, decision 30; goes as each bridge's subsystem moves (bridges.toml); N4.8b: hal::trap::TrapHandler (BsdTrap: udata_abort/kdata_abort's fault on the chosen map with the MAP_STACK check, trapsignal, sigexit, refreshcreds, userret, mi_syscall_return, mi_ast, mi_child_return), until kernel::syscall answers; N4.8b b2: the UserCopy bridge is gone (BsdUser and its sysspace_move: hal copies itself, uiomove's UIO_SYSSPACE leg holds hal::user::KcopyToken); N4.8b b4: BsdTrap gone, kernel::syscall::KernelTrap<BsdProcGlue> registered instead; N5.1: RawPool::get_idle over subr_pool's pool_get_idle; N5.3: hal_bridges_register_pools, bsd's pool(9) alone as hal's pool backend, for the host bench of names, files and record locks (sys/benches/fs.rs), gone with that bench at N5.3's end; N5.4: back for the host bench of the VFS system calls (sys/benches/fs.rs again), gone with it at N5.4's end (8dbb8d42 to this slice's last bench commit); N5.8u2 (review 1): BsdPools::create gives pool_init the C's alignment 0 (ALIGN(1)) for an element aligned to 8 or less, the alignment itself only above 8 (a smaller one misaligned the free-item headers of udftrpl's 510-byte items); N5.9t1 (review 1): hal_bridges_register lets kernel::uio take hal::user::WindowKcopyToken right after kcopy_take (the kernel's window leg of uiomove, no other taker); N5.9f2: RawPool::npages over the pool's pr_npages (vfs.fuse.fusefs_pool_pages); N6.0: the NetLock bridge gone (BsdNetLock, hal_bridges_register_vm: the net lock is hal's static); BsdPools::create_with, a pool_init over subr_pool.rs's POOL_ALLOCATOR_SOURCE with the source in the pool's pr_source (a source whose sizes are not the allocator's is refused); N6.1: RawPool::wakeup over subr_pool's pool_wakeup (nmbclust_update's, D-N6.1-3); N6.3a (review 1): hal_bridges_register takes hal::link::SaToken for bsd's internet protocols (sys/net/if_var.rs's sa_token_take), so no forbid crate can publish an interface address's storage"
 
 [[extra]]
 rust = "sys/hal/reftest.rs"
@@ -14986,7 +15334,7 @@ notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_t
 [[extra]]
 rust = "sys/kernel/net/pf_hooks.rs"
 crate = "kernel"
-reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), its OnceStatic slot and register_pf"
+reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb) and if.c's (pf_delay_pkt, pf_pkt_addr_changed, pfi_attach_ifnet, pfi_detach_ifnet, the groups' pfi_* legs, N6.3a), its OnceStatic slot and register_pf"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

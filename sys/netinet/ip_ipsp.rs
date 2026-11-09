@@ -1542,7 +1542,7 @@ pub const IPSEC_ZEROES_SIZE: usize = 256;
 
 /// `xf_input`: `(mp, tdb, skip, protoff, ns)`; the next protocol or `IPPROTO_DONE`.
 pub type XfInputFn =
-    fn(&mut Option<&'static Mbuf>, &'static Tdb, i32, i32, Option<&Netstack>) -> i32;
+    fn(&mut Option<&'static Mbuf>, &'static Tdb, i32, i32, Option<&mut Netstack>) -> i32;
 /// `xf_output`: `(m, tdb, skip, protoff)`; consumes the packet.
 pub type XfOutputFn = fn(&'static Mbuf, &'static Tdb, i32, i32) -> Result<(), Errno>;
 /// `xf_init`: `(tdb, xsp, ii)`.

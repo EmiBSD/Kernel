@@ -213,10 +213,6 @@ use core::mem::{offset_of, size_of};
 use core::ptr::{self, NonNull};
 
 use crate::kern::kern_malloc::{free, malloc};
-use crate::kern::kern_rwlock::{
-    rw_assert_anylock, rw_enter_read, rw_enter_write, rw_exit_read, rw_exit_write,
-};
-use crate::kern::kern_synch::{refcnt_init_trace, refcnt_rele, refcnt_take};
 use crate::kern::kern_tc::{gettime, getuptime};
 use crate::kern::subr_prf::{log, panic};
 use crate::net::if_::{
@@ -253,7 +249,6 @@ use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_IFADDR, M_IPMADDR, M_NOWAIT, M_WAITOK, M_ZERO};
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::queue::{ListEntry, ListHead};
-use crate::sys::refcnt::{DT_REFCNT_IDX_IFADDR, DT_REFCNT_IDX_IFMADDR};
 use crate::sys::socket::{AF_INET6, AF_UNSPEC, Sockaddr};
 use crate::sys::socketvar::{SS_PRIV, Socket};
 use crate::sys::sockio::{
@@ -533,6 +528,7 @@ pub struct In6Addr {
     /// `s6_addr`: the 128-bit address.
     pub s6_addr: [u8; 16],
 }
+hal::abi_pod!(In6Addr { s6_addr: [u8; 16] });
 
 impl In6Addr {
     /// The address of the 16 bytes `b`.
@@ -601,6 +597,14 @@ pub struct SockaddrIn6 {
     /// Interface scope id.
     pub sin6_scope_id: u32,
 }
+hal::abi_pod!(SockaddrIn6 {
+    sin6_len: u8,
+    sin6_family: SaFamily,
+    sin6_port: InPort,
+    sin6_flowinfo: u32,
+    sin6_addr: In6Addr,
+    sin6_scope_id: u32,
+});
 
 impl SockaddrIn6 {
     /// An all-zero socket address, usable in `const` contexts.
@@ -1484,10 +1488,12 @@ pub fn in6_update_ifa(
             // `In6Ifaddr` (cells, links, a reference count). It lives until the last
             // `ifafree`.
             let ia6: &'static In6Ifaddr = unsafe { &*mem.as_ptr().cast::<In6Ifaddr>() };
-            refcnt_init_trace(&ia6.ia_ifa.ifa_refcnt, DT_REFCNT_IDX_IFADDR);
+            ia6.ia_ifa.ifa_refcnt.init();
             ia6.ia6_memberships.init();
             // Initialize the address and masks, and put time stamp
-            ia6.ia_ifa.ifa_addr.set(ia6.ia_addr.as_ptr().cast());
+            ia6.ia_ifa
+                .ifa_addr
+                .set(crate::net::if_var::sa_token(), Some(&ia6.ia_addr));
             let mut a = ia6.ia_addr.get();
             a.sin6_family = AF_INET6;
             a.sin6_len = size_of::<SockaddrIn6>() as u8;
@@ -1496,19 +1502,19 @@ pub fn in6_update_ifa(
             if ifp.if_flags.get() & (IFF_POINTOPOINT | IFF_LOOPBACK) != 0 {
                 // XXX: some functions expect that ifa_dstaddr is not NULL for p2p
                 // interfaces.
-                ia6.ia_ifa.ifa_dstaddr.set(ia6.ia_dstaddr.as_ptr().cast());
+                ia6.ia_ifa
+                    .ifa_dstaddr
+                    .set(crate::net::if_var::sa_token(), Some(&ia6.ia_dstaddr));
             } else {
-                ia6.ia_ifa.ifa_dstaddr.set(ptr::null_mut());
+                ia6.ia_ifa.ifa_dstaddr.clear();
             }
             ia6.ia_ifa
                 .ifa_netmask
-                .set(ia6.ia_prefixmask.as_ptr().cast());
+                .set(crate::net::if_var::sa_token(), Some(&ia6.ia_prefixmask));
 
             ia6.ia_ifp().set(Some(ifp));
             ia6.ia_addr.set(*ifra.ifra_addr());
-            // SAFETY: the address lives until its last `ifafree`; its socket addresses are
-            // its own members.
-            unsafe { ifa_add(ifp, &ia6.ia_ifa) };
+            ifa_add(ifp, &ia6.ia_ifa);
             ia6
         }
     };
@@ -1804,7 +1810,7 @@ fn in6_ifinit(ifp: &'static Ifnet, ia6: &'static In6Ifaddr, newhost: bool) -> Re
 /// `in6_lookupmulti`: looks up the `in6_multi` record for a given IP6 multicast address on a
 /// given interface; the matching record if found.
 pub fn in6_lookupmulti(addr: &In6Addr, ifp: &Ifnet) -> Option<&'static In6Multi> {
-    rw_assert_anylock(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_assert_anylock(ifp);
 
     for ifma in ifp.if_maddrlist.iter() {
         // SAFETY: a record's address is readable (its protocol set it).
@@ -1823,13 +1829,13 @@ pub fn in6_lookupmulti(addr: &In6Addr, ifp: &Ifnet) -> Option<&'static In6Multi>
 /// `Err`.
 pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6Multi, Errno> {
     // See if address already in list.
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     if let Some(in6m) = in6_lookupmulti(addr, ifp) {
-        refcnt_take(in6m.in6m_refcnt());
-        rw_exit_write(&ifp.if_maddrlock);
+        in6m.in6m_refcnt().take();
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
         return Ok(in6m);
     }
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     // New address; allocate a new multicast record and link it into the interface's
     // multicast list.
@@ -1857,11 +1863,11 @@ pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6M
         return Err(e);
     }
 
-    rw_enter_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_write(ifp);
     // check again after unlock and lock
     if let Some(in6m) = in6_lookupmulti(addr, ifp) {
-        refcnt_take(in6m.in6m_refcnt());
-        rw_exit_write(&ifp.if_maddrlock);
+        in6m.in6m_refcnt().take();
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
         free(mem, M_IPMADDR, size_of::<In6Multi>());
         return Ok(in6m);
     }
@@ -1871,16 +1877,17 @@ pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6M
     sin.sin6_family = AF_INET6;
     sin.sin6_addr = *addr;
     in6m.in6m_sin.set(sin);
-    refcnt_init_trace(in6m.in6m_refcnt(), DT_REFCNT_IDX_IFMADDR);
+    in6m.in6m_refcnt().init();
     in6m.in6m_ifidx().set(ifp.if_index.get());
-    in6m.in6m_ifma.ifma_addr.set(in6m.in6m_sin.as_ptr().cast());
+    in6m.in6m_ifma
+        .ifma_addr
+        .set(crate::net::if_var::sa_token(), Some(&in6m.in6m_sin));
 
     // Let MLD6 know that we have joined a new IP6 multicast group.
-    // SAFETY: the record lives until `in6_delmulti`, which unlinks it first.
-    unsafe { ifp.if_maddrlist.insert_head(&in6m.in6m_ifma) };
+    ifp.if_maddrlist.insert_head(&in6m.in6m_ifma);
     let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
     mld6_start_listening(in6m, ifp, &mut pkt);
-    rw_exit_write(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_write(ifp);
 
     if pkt.mpi_ifidx != 0 {
         mld6_sendpkt(&pkt);
@@ -1892,20 +1899,19 @@ pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6M
 /// `in6_delmulti`: deletes a multicast address record: drops a reference, leaving the group
 /// with the last one.
 pub fn in6_delmulti(in6m: &'static In6Multi) {
-    if !refcnt_rele(in6m.in6m_refcnt()) {
+    if !in6m.in6m_refcnt().rele() {
         return;
     }
 
     let ifp = if_get(in6m.in6m_ifidx().get());
     if let Some(ifp) = ifp {
-        rw_enter_write(&ifp.if_maddrlock);
+        crate::net::if_var::if_maddrlock_enter_write(ifp);
         // No remaining claims to this record; let MLD6 know that we are leaving the multicast
         // group.
         let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
         mld6_stop_listening(in6m, ifp, &mut pkt);
-        // SAFETY: the record is on this interface's list (`in6_addmulti`).
-        unsafe { ifp.if_maddrlist.remove(&in6m.in6m_ifma) };
-        rw_exit_write(&ifp.if_maddrlock);
+        ifp.if_maddrlist.remove(&in6m.in6m_ifma);
+        crate::net::if_var::if_maddrlock_exit_write(ifp);
 
         if pkt.mpi_ifidx != 0 {
             mld6_sendpkt(&pkt);
@@ -1931,9 +1937,9 @@ pub fn in6_delmulti(in6m: &'static In6Multi) {
 
 /// `in6_hasmulti`: whether the multicast group `addr` has been joined by interface `ifp`.
 pub fn in6_hasmulti(addr: &In6Addr, ifp: &Ifnet) -> bool {
-    rw_enter_read(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_enter_read(ifp);
     let joined = in6_lookupmulti(addr, ifp).is_some();
-    rw_exit_read(&ifp.if_maddrlock);
+    crate::net::if_var::if_maddrlock_exit_read(ifp);
 
     joined
 }
@@ -2361,6 +2367,7 @@ const _: () = {
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::net::if_var::IfnetLegacy;
     use core::mem::offset_of;
 
     use super::*;
@@ -2533,8 +2540,12 @@ pub(crate) mod tests {
         // SAFETY: the all-zero `In6Ifaddr` is valid (`netinet6/in6_var.rs`).
         let ia: &'static In6Ifaddr = unsafe { zeroed_static() };
         ia.ia6_memberships.init();
-        ia.ia_ifa.ifa_addr.set(ia.ia_addr.as_ptr().cast());
-        ia.ia_ifa.ifa_netmask.set(ia.ia_prefixmask.as_ptr().cast());
+        ia.ia_ifa
+            .ifa_addr
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_addr));
+        ia.ia_ifa
+            .ifa_netmask
+            .set(crate::net::if_var::sa_token(), Some(&ia.ia_prefixmask));
         let mut sin6 = SockaddrIn6::with_addr(a);
         sin6.sin6_len = size_of::<SockaddrIn6>() as u8;
         ia.ia_addr.set(sin6);
@@ -2549,8 +2560,9 @@ pub(crate) mod tests {
             ..In6Addrlifetime::default()
         });
         net_lock();
-        // SAFETY: the address is leaked (lives for the test run), on no list yet.
-        unsafe { ifa_add(ifp, &ia.ia_ifa) };
+        // in6_update_ifa: refcnt_init(&ia6->ia_ifa.ifa_refcnt).
+        ia.ia_ifa.ifa_refcnt.init();
+        ifa_add(ifp, &ia.ia_ifa);
         net_unlock();
         ia
     }
@@ -2915,8 +2927,8 @@ pub(crate) mod tests {
     /// accepts what the IPv6 address code asks of it.
     fn test_driver_if(name: &[u8], mac: [u8; 6]) -> &'static Ifnet {
         let ifp = test_ifnet(name);
-        ifp.if_ioctl.set(Some(accepting_ioctl));
-        ifp.if_output.set(Some(discard_output));
+        ifp.if_ioctl().set(Some(accepting_ioctl));
+        ifp.if_output().set(Some(discard_output));
         ifp.if_type.set(crate::net::if_types::IFT_ETHER);
         ifp.if_flags.set(IFF_MULTICAST);
         ifp.if_mtu.set(1500);
@@ -2925,8 +2937,7 @@ pub(crate) mod tests {
             ..Default::default()
         };
         sdl.sdl_data[..6].copy_from_slice(&mac);
-        ifp.if_sadl
-            .set(std::boxed::Box::leak(std::boxed::Box::new(sdl)));
+        crate::net::if_var::if_sadl_test_set(ifp, sdl);
         if_attach(ifp);
         ifp
     }
@@ -2977,9 +2988,9 @@ pub(crate) mod tests {
         // interface-local.
         net_lock();
         let joined = |g: In6Addr| {
-            crate::kern::kern_rwlock::rw_enter_read(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_enter_read(ifp);
             let r = in6_lookupmulti(&g, ifp).is_some();
-            crate::kern::kern_rwlock::rw_exit_read(&ifp.if_maddrlock);
+            crate::net::if_var::if_maddrlock_exit_read(ifp);
             r
         };
         let mut snm = a6("ff02::1:ff00:1");

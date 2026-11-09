@@ -383,12 +383,15 @@ paid_by = "N8"
 # two words of pkthdr_pf and registered by sys/kern/uipc_mbuf.rs's mbinit (bsd's adapter, the
 # first mbuf code to run; a second call keeps the first), for kernel::net::mbuf's
 # m_free, m_clearhdr (the header's drop) and m_dup_pkthdr (N6.1); no-ops before registration (the
-# C with NPF == 0). N6.3c adds the stack's other legs (the N6 plan's section 5). Paid when pf
-# moves (N8).
+# C with NPF == 0). N6.3a adds if.c's legs (pf_delay_pkt and pf_pkt_addr_changed for if_enqueue
+# and if_vinput, pfi_attach_ifnet/pfi_detach_ifnet for if_attachsetup/if_detach, and the
+# groups' pfi_attach_ifgroup, pfi_detach_ifgroup, pfi_group_addmember, pfi_group_delmember),
+# default methods doing what the C without pf does until BsdPf overrides them (N6.3a1's adapter
+# commit). N6.3c adds the stack's other legs (the N6 plan's section 5). Paid when pf moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
@@ -416,3 +419,66 @@ paid_by = "N8"
 trait = "IfLegacy"
 for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
 paid_by = "N6"
+
+# bsd: an interface's driver (if_var.h's procedure handles: if_input, if_enqueue, if_start,
+# if_qstart, if_ioctl, if_watchdog, if_wol, if_bpf_mtap; if_output and if_ll_output stay in bsd's
+# table with their callers, if_output_ml/_tso/_mq, until routing moves, N6.3b), N6.3a: the
+# kernel's interface core (kernel::net::if_, ifq) calls it through the driver registered in
+# Ifnet::if_driver before if_attach; bsd's LegacyNetDriver (sys/net/if_var.rs) over each
+# softc's table implements it, one object per interface, for every bsd interface the kernel
+# attaches (bsd's if_attach forwards to the kernel's since N6.3a1). Paid when the drivers move
+# (N7: NetDevice, decision 45).
+# kernel::net::if_var::NetDriver
+[[bridge]]
+trait = "NetDriver"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.rs"]
+paid_by = "N7"
+
+# bsd: what if.c asks of the internet protocols (netinet, netinet6): arpintr, ipintr and
+# ip6intr for if_netisr, tcp_input_mlist for if_input_process, ipv4_input/ipv6_input and
+# tcpstat's LRO counters for if_input_local, nd6_ifattach for if_attachsetup, rti_delete,
+# in_ifdetach (with NFSCLIENT's reverse ARP reset), in6_ifdetach and nd6_ifdetach for
+# if_detach and if_setrdomain, in6_ifattach for if_up, ip6_forwarding and the link-local purge
+# for ifnewlladdr (N6.3a). Registered by bsd's boot before the first interface
+# (N6.3a1's adapter commit); before that every leg does nothing, the C without INET/INET6.
+# N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
+# kernel::net::if_::Inet
+[[bridge]]
+trait = "Inet"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs"]
+paid_by = "N6"
+
+# bsd: what if.c asks of the routing code (route.c, rtable.c, rtsock.c): rtm_ifannounce,
+# rtm_ifchg and rt_if_track (the link state), rtable_l2/_loindex/_exists/_add/_empty/_l2set (the
+# domains: if_up, if_setrdomain, if_createrdomain, ifa_ifwith*), ifafree (if_detach's leftover
+# addresses) and the walk of the default routes (if_group_egress_build). Registered by bsd's boot (N6.3a1's adapter commit);
+# nothing before. Paid when routing moves (N6.3b, N6's row).
+# kernel::net::if_::Routing
+[[bridge]]
+trait = "Routing"
+for = ["sys/kernel/net/if_.rs"]
+paid_by = "N6"
+
+# bsd: what if.c and ifq.c ask of the link layers (bpf(4), if_ethersubr.c): bpf_mtap_ether
+# (NetDriver::bpf_mtap's default, if_attach_common's default if_bpf_mtap) and the per-queue
+# tap word ifiq_input reads, bpf_mtap_af (if_input_local), bpfdetach (if_detach),
+# ether_brport_isset (ifsetlro) and the arpcom's ac_enaddr (if_setlladdr). Registered by bsd's
+# boot (N6.3a1's adapter commit); before that nothing is tapped, the C without NBPFILTER. Paid
+# when bpf and the Ethernet layer move (N6.3c, N6's row).
+# kernel::net::if_::Link
+[[bridge]]
+trait = "Link"
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.rs"]
+paid_by = "N6"
+
+# bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
+# implemented by bsd's IfqOps tables themselves (sys/net/ifq.rs: impl QueueDiscipline for
+# IfqOps, its deq the table's begin and commit of one packet) and attached by pf_ioctl's
+# if_attach_ifq; the kernel's priq is native (kernel::net::ifq::Priq).
+# A value the kernel receives (ifq_attach's argument), a row while bsd implements it
+# (decision 39). Paid when pf moves (N8).
+# kernel::net::ifq::QueueDiscipline
+[[bridge]]
+trait = "QueueDiscipline"
+for = ["sys/kernel/net/ifq.rs"]
+paid_by = "N8"

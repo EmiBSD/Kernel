@@ -127,6 +127,7 @@ use crate::net::if_::{
     if_clone_attach, if_counters_alloc, if_detach, net_tq, unhandled_af,
 };
 use crate::net::if_types::IFT_PFLOW;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, IfCounters, Ifnet};
 use crate::net::pfvar::{PF_IN, PF_OUT, PF_SK_STACK, PF_SK_WIRE};
 use crate::net::pfvar_priv::{PfGlobal, PfState, PfStateKey};
@@ -770,7 +771,7 @@ impl PflowSoftc {
     fn of_ifp(ifp: &Ifnet) -> &'static Self {
         // SAFETY: `if_softc` of a `pflow` interface is its softc (`pflow_clone_create`),
         // which lives until `pflow_clone_destroy`.
-        unsafe { &*ifp.if_softc.get().cast::<Self>().cast_const() }
+        unsafe { &*ifp.if_softc.get_mut().cast::<Self>().cast_const() }
     }
 
     /// The softc as a timeout or task argument.
@@ -850,8 +851,7 @@ pub fn pflowattach(_npflow: i32) {
     // SMR_SLIST_INIT(&pflowif_list): the static is empty.
     // pflow_counters = counters_alloc(pflow_ncounters): a static (see the deviations).
 
-    // SAFETY: `pflowattach` runs once, from `main`'s pseudo-device attach.
-    unsafe { if_clone_attach(&PFLOW_CLONER) };
+    if_clone_attach(&PFLOW_CLONER);
 }
 
 /// `pflow_output`: drops the packet.
@@ -989,9 +989,9 @@ pub fn pflow_clone_create(_ifc: &'static IfClone, unit: i32) -> Result<(), Errno
     let _ = snprintf(&mut xname, format_args!("pflow{unit}"));
     ifp.if_xname.set(xname);
     ifp.if_softc.set(pflowif.arg());
-    ifp.if_ioctl.set(Some(pflowioctl));
-    ifp.if_output.set(Some(pflow_output));
-    ifp.if_start.set(None);
+    ifp.if_ioctl().set(Some(pflowioctl));
+    ifp.if_output().set(Some(pflow_output));
+    ifp.if_start().set(None);
     ifp.if_xflags.set(IFXF_CLONED);
     ifp.if_type.set(IFT_PFLOW);
     ifp.if_hdrlen.set(PFLOW_HDRLEN as u8);

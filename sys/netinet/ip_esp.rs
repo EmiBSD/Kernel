@@ -590,7 +590,7 @@ pub fn esp_input(
     tdb: &'static Tdb,
     skip: i32,
     protoff: i32,
-    ns: Option<&Netstack>,
+    ns: Option<&mut Netstack>,
 ) -> i32 {
     let esph = tdb.tdb_authalgxform.get();
     let espx = tdb.tdb_encalgxform.get();
@@ -918,7 +918,7 @@ pub fn esp_output(
             .if_obytes()
             .set(encif.if_obytes().get() + m.m_pkthdr().len.get() as u64);
 
-        let if_bpf = encif.if_bpf.get();
+        let if_bpf = encif.if_bpf.get_mut();
         if !if_bpf.is_null() {
             let mut hdr = Enchdr {
                 af: u32::from(tdb.tdb_dst.get().sa_family()).to_be(),
@@ -1449,7 +1449,7 @@ mod tests {
         ESP_ENABLE.store(1, core::sync::atomic::Ordering::Relaxed);
         let ifp = test_ether();
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        while let Some(m) = ifq_dequeue(&ifp.if_snd) {
+        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
         (g, s, ifp)
@@ -1534,7 +1534,7 @@ mod tests {
     /// What `ip_output` sent on `ifp`: the IP packet of the frame, answering the gateway's ARP
     /// request first if the packet waits for it.
     fn sent(ifp: &'static crate::net::if_var::Ifnet) -> Vec<u8> {
-        let m = ifq_dequeue(&ifp.if_snd).expect("a frame");
+        let m = ifq_dequeue(ifp.if_snd()).expect("a frame");
         let b = bytes(m);
         m_freem(m);
         if b[12..14] == ETHERTYPE_ARP.to_be_bytes() {

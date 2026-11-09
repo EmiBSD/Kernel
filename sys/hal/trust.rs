@@ -107,6 +107,37 @@
 //! `panic(9)`; a skipped CPU that enters a section after the check is what the contract
 //! covers. The `// SAFETY:` of `hal::smr::SmrPtr::load` rests on it.
 //!
+//! A socket address lent by an interface address (`hal::link::SaLink`, N6.3a) is a fifth
+//! boundary: `struct ifaddr`'s `ifa_addr`, `ifa_dstaddr`, `ifa_netmask` and `struct ifmaddr`'s
+//! `ifma_addr` name storage `bsd`'s internet protocols own (`struct in_ifaddr`'s `ia_addr`,
+//! `ia_dstaddr`, `ia_sockmask`, `struct in6_ifaddr`'s, `in_multi`'s `inm_sin`, `in6_multi`'s),
+//! and the kernel's interface layer copies their bytes (`ifa_ifwithaddr`,
+//! `ifaof_ifpforaddr`, `ifconf`) through `SaLink::read`. What the types give: a link names a
+//! storage only through `SaLink::set`, which takes a `&'static Cell<T>` of an `AbiPod` image
+//! (so the storage is `size_of::<T>()` initialised bytes that live for ever, and the copy is
+//! cut at that size whatever `sa_len` says) and the `hal::link::SaToken`, taken once by
+//! `bsd`'s boot (`hal_bridges_register`'s first steps, before any code of the kernel or ABI
+//! crates runs; a later take is `None`, and `bsd`'s own take panics the boot if someone took
+//! it first, so no `forbid` crate can publish a storage); the storage's address and size
+//! change and are read as one pair (a sequence); and the copy takes a proof that the net lock
+//! is held (`hal::netlock::NetHeld`, review 2's S-a): kernel code makes it from a witness of
+//! the lock (`NetHeld::of`, exact), and only the token holder can make it from a check of
+//! `rw_status` (`SaToken::net_held`), for its own holdings, which no witness exists of. The
+//! token holder's contract, the C's own invariant: the bytes of a storage it published are
+//! written only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`;
+//! `bsd`'s `in_ifaddr`, `in_multi` and `in6_ifaddr` are `Sync` by `bsd`'s own `unsafe impl`,
+//! so this, not the cells' type, keeps writers out); the storage behind its `&'static` lives
+//! while the interface address naming it lives (it is freed only after `ifa_del` has unlinked
+//! the address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the
+//! family its `&'static Ifnet` belongs to); and it asks for a proof by check only while it
+//! holds the lock itself, and drops the proof before it lets that holding go (the `NetHeld`
+//! of a `&'static SaToken` is `NetHeld<'static>`, so no borrow ends it for the holder): for a
+//! shared holding `rw_status` cannot say whose it is (the C's `NET_ASSERT_LOCKED()` cannot
+//! either), so a read holding it finds is its own, as every C reader of `ifa_addr` holds one.
+//! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
+//! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
+//! embeds its storage (N6.4, N6.5).
+//!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
 //!   one function every memory piece calls, so it is audited in one place.

@@ -152,6 +152,7 @@ use crate::kern::uipc_mbuf::{
 };
 use crate::net::if_::{IFCAP_TSOv4, if_output_ml};
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::pf::pf_mbuf_link_inpcb;
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
@@ -1499,7 +1500,7 @@ pub unsafe fn tcp_if_output_tso(
             if ifcap & IFCAP_TSOv6 != 0 {
                 in6_proto_cksum_out(m, Some(ifp));
             }
-            let error = match ifp.if_output.get() {
+            let error = match ifp.if_output().get() {
                 // SAFETY: the caller's contract is the hook's.
                 Some(output) => unsafe { output(ifp, m, dst, rt) },
                 None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
@@ -1956,7 +1957,7 @@ mod tests {
     fn if_output_tso_chooses_the_way_out() {
         let (_g, _t) = crate::netinet::ip_input::tests::setup();
         let ifp = test_ifnet(b"ttso2");
-        ifp.if_output.set(Some(record_output));
+        ifp.if_output().set(Some(record_output));
 
         // Not a TSO packet: left to the caller.
         let m = tso_packet(1000, 500, 5, 0);

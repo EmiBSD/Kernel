@@ -62,7 +62,8 @@
 //! a matter of convention between the device driver and its consumers; however, all drivers
 //! for an interface of a given `if_type` are expected to agree.
 //!
-//! Status: `ported`.
+//! Status: `ported`; `struct sockaddr_dl` is `hal`'s since N6.3a (`hal::sys::net_if`),
+//! re-exported here, beside LZ's raw-pointer helpers for `bsd`'s users.
 //!
 //! ## Deviations
 //! - `LLADDR(s)` is the `unsafe fn` [`lladdr`] over a raw pointer: a `sockaddr_dl` may be
@@ -74,30 +75,9 @@
 use core::mem::size_of;
 use core::ptr::addr_of_mut;
 
-use crate::sys::socket::Sockaddr;
+pub use hal::sys::net_if::SockaddrDl;
 
-/// `struct sockaddr_dl`: structure of a link-level sockaddr.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SockaddrDl {
-    /// Total length of sockaddr.
-    pub sdl_len: u8,
-    /// `AF_LINK`.
-    pub sdl_family: u8,
-    /// If != 0, system given index for interface.
-    pub sdl_index: u16,
-    /// Interface type.
-    pub sdl_type: u8,
-    /// Interface name length, no trailing 0 reqd.
-    pub sdl_nlen: u8,
-    /// Link level address length.
-    pub sdl_alen: u8,
-    /// Link layer selector length, mostly 0.
-    pub sdl_slen: u8,
-    /// Minimum work area, can be larger; contains both if name and ll address; big enough for
-    /// `IFNAMSIZ` plus 8byte ll addr.
-    pub sdl_data: [u8; 24],
-}
+use crate::sys::socket::Sockaddr;
 
 /// `LLADDR(s)`: the link-level address, which follows the interface name in `sdl_data`.
 ///

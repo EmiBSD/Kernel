@@ -410,7 +410,7 @@ pub fn pfi_kif_match(
 
     if let Some(group) = rule_kif.pfik_group()
         && let Some(ifp) = packet_ifp
-        && ifp.if_groups.iter().any(|p| ptr::eq(p.ifgl_group, group))
+        && ifp.groups().iter().any(|g| ptr::eq(g, group))
     {
         return true;
     }
@@ -451,9 +451,7 @@ pub fn pfi_attach_ifnet(ifp: &'static Ifnet) {
         ));
         &*t
     };
-    // SAFETY: the task is new, on no list, and stays allocated until `pfi_detach_ifnet`
-    // removes it from the hooks.
-    unsafe { if_addrhook_add(ifp, t) };
+    if_addrhook_add(ifp, t);
     kif.pfik_ah_cookie.set(ptr::from_ref(t).cast_mut().cast());
 
     pfi_kif_update(kif);
@@ -463,7 +461,7 @@ pub fn pfi_attach_ifnet(ifp: &'static Ifnet) {
 /// `pfi_detach_ifnet`: removes the address hook and unlinks the interface from its kif,
 /// which goes away unless something refers to it.
 pub fn pfi_detach_ifnet(ifp: &'static Ifnet) {
-    let Some(kif) = kif_of(ifp.if_pf_kif.get()) else {
+    let Some(kif) = kif_of(ifp.if_pf_kif.get_mut()) else {
         return;
     };
 
@@ -487,7 +485,7 @@ pub fn pfi_detach_ifnet(ifp: &'static Ifnet) {
 }
 
 /// `pfi_attach_ifgroup`: the group's kif, linked both ways.
-pub fn pfi_attach_ifgroup(ifg: &'static IfgGroup) {
+pub fn pfi_attach_ifgroup(ifg: &IfgGroup) {
     pf_lock();
     pfi_initialize();
     pfi_update_inc();
@@ -501,8 +499,8 @@ pub fn pfi_attach_ifgroup(ifg: &'static IfgGroup) {
 }
 
 /// `pfi_detach_ifgroup`.
-pub fn pfi_detach_ifgroup(ifg: &'static IfgGroup) {
-    let Some(kif) = kif_of(ifg.ifg_pf_kif.get()) else {
+pub fn pfi_detach_ifgroup(ifg: &IfgGroup) {
+    let Some(kif) = kif_of(ifg.ifg_pf_kif.get_mut()) else {
         return;
     };
 
@@ -677,8 +675,8 @@ pub fn pfi_kif_update(kif: &'static PfiKif) {
 
     // again for all groups kif is member of
     if let Some(ifp) = kif.pfik_ifp() {
-        for ifgl in ifp.if_groups.iter() {
-            if let Some(gkif) = kif_of(ifgl.ifgl_group.ifg_pf_kif.get()) {
+        for g in ifp.groups().iter() {
+            if let Some(gkif) = kif_of(g.ifg_pf_kif.get_mut()) {
                 pfi_kif_update(gkif);
             }
         }
@@ -715,8 +713,8 @@ pub fn pfi_table_update(kt: &'static PfrKtable, kif: &'static PfiKif, net: u8, f
     if let Some(ifp) = kif.pfik_ifp() {
         pfi_instance_add(Some(ifp), net, flags);
     } else if let Some(group) = kif.pfik_group() {
-        for ifgm in group.ifg_members.iter() {
-            pfi_instance_add(Some(ifgm.ifgm_ifp), net, flags);
+        for ifp in group.members().iter() {
+            pfi_instance_add(Some(ifp), net, flags);
         }
     }
 
@@ -1024,7 +1022,7 @@ pub fn pfi_update_status(name: &[u8], pfs: Option<&mut PfStatus>) {
     }
 
     let visit = |ifp: &'static Ifnet| {
-        let Some(p) = kif_of(ifp.if_pf_kif.get()) else {
+        let Some(p) = kif_of(ifp.if_pf_kif.get_mut()) else {
             return;
         };
 
@@ -1045,8 +1043,8 @@ pub fn pfi_update_status(name: &[u8], pfs: Option<&mut PfStatus>) {
         }
     };
     if let Some(group) = p.pfik_group() {
-        for ifgm in group.ifg_members.iter() {
-            visit(ifgm.ifgm_ifp);
+        for ifp in group.members().iter() {
+            visit(ifp);
         }
     } else if let Some(ifp) = p.pfik_ifp() {
         // build a temporary list for p only
@@ -1111,10 +1109,7 @@ pub fn pfi_skip_if(filter: &[u8], p: &'static PfiKif) -> bool {
         return true; // group names may not end in a digit
     }
     if let Some(ifp) = p.pfik_ifp()
-        && ifp
-            .if_groups
-            .iter()
-            .any(|i| pf_cstr(&i.ifgl_group.ifg_group) == filter)
+        && ifp.groups().iter().any(|g| pf_cstr(&g.ifg_group) == filter)
     {
         return false; // iface is in group "filter"
     }
@@ -1220,8 +1215,8 @@ pub fn pfi_xcommit() {
         // passes: the first to commit group changes the second to commit flag changes for
         // interfaces.
         if let Some(ifp) = p.pfik_ifp() {
-            for g in ifp.if_groups.iter() {
-                let gkif = kif_of(g.ifgl_group.ifg_pf_kif.get());
+            for g in ifp.groups().iter() {
+                let gkif = kif_of(g.ifg_pf_kif.get_mut());
                 kassert!(gkif.is_some());
                 if let Some(gkif) = gkif {
                     p.pfik_flags
@@ -1269,7 +1264,7 @@ mod tests {
 
     use super::*;
     use crate::net::if_::tests::{setup_net, test_ifnet};
-    use crate::net::if_::{IFG_HEAD, if_addgroup, if_attach};
+    use crate::net::if_::{if_addgroup, if_attach};
     use crate::netinet::in_::InAddr;
 
     /// The network test lock (`pfi_ifs` and the interfaces are global), with pf initialised and
@@ -1292,11 +1287,12 @@ mod tests {
     }
 
     /// The group named `name`, created by `if_addgroup`.
-    fn group(name: &[u8]) -> &'static IfgGroup {
-        IFG_HEAD
-            .0
+    fn group(name: &[u8]) -> kernel::net::if_var::IfgRef {
+        crate::net::if_::ifg_head()
+            .refs()
             .iter()
             .find(|g| pf_cstr(&g.ifg_group) == name)
+            .cloned()
             .expect("group")
     }
 
@@ -1401,13 +1397,16 @@ mod tests {
         assert_eq!(if_addgroup(other, b"tmother"), Ok(()));
         pf_lock();
 
-        let kif = kif_of(ifp.if_pf_kif.get()).expect("attached");
-        let okif = kif_of(other.if_pf_kif.get()).expect("attached");
-        let lokif = kif_of(lo.if_pf_kif.get()).expect("attached");
+        let kif = kif_of(ifp.if_pf_kif.get_mut()).expect("attached");
+        let okif = kif_of(other.if_pf_kif.get_mut()).expect("attached");
+        let lokif = kif_of(lo.if_pf_kif.get_mut()).expect("attached");
         assert!(ptr::eq(kif.pfik_ifp().expect("ifp"), ifp));
         assert!(!kif.pfik_ah_cookie.get().is_null());
         let gkif = pfi_kif_find(b"tmgrp").expect("group kif");
-        assert!(ptr::eq(gkif.pfik_group().expect("group"), group(b"tmgrp")));
+        assert!(ptr::eq(
+            gkif.pfik_group().expect("group"),
+            &*group(b"tmgrp")
+        ));
 
         assert!(pfi_kif_match(None, Some(kif)), "no interface: any packet");
         assert!(pfi_kif_match(Some(kif), Some(kif)));
@@ -1453,7 +1452,7 @@ mod tests {
         pf_unlock();
         pfi_detach_ifnet(ifp);
         pf_lock();
-        assert!(ifp.if_pf_kif.get().is_null());
+        assert!(ifp.if_pf_kif.get_mut().is_null());
         assert!(kif.pfik_ifp().is_none());
         assert!(ptr::eq(pfi_kif_find(b"tmatch0").expect("referenced"), kif));
         pfi_kif_unref(Some(kif), PFI_KIF_REF_RULE);

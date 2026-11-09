@@ -48,29 +48,38 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Network software interrupt bits: `<net/netisr.h>`.
+//! Network software interrupt bits: `<net/netisr.h>`, and `if.c`'s `netisr` word and its
+//! task (`if_netisr`).
 //!
 //! Upstream: sys/net/netisr.h @ 3ce1f3f79392
+//! LZ: sys/net/netisr.rs@3c62ede68802
 //!
 //! Each "pup-level-1" input queue has a bit in a "netisr" status word which is used to
 //! de-multiplex a single software interrupt used for scheduling the network code to calls on
 //! the lowest level routine of each protocol. The constants are bit numbers.
 //!
-//! Status: `ported` (M7b).
-//!
 //! ## Deviations
-//! - `netisr` (the status word) and `if_input_task_locked` are defined in `net/if_.rs`, where
-//!   `net/if.c` defines them, and re-exported here; `schednetisr(anisr)` is a function. The
-//!   `*intr()` prototypes come with their `.c` files (`arpintr`, `ipintr` are not ported).
-//! - `schednetisr` before `softnet_init` (no softnet task queue yet) sets the bit only; the C
-//!   would dereference the NULL queue.
+//! - `schednetisr(anisr)` before `softnet_init` (no softnet task queue yet) sets the bit
+//!   only; the C would dereference the NULL queue (LZ's).
+//! - `NPPP`, `NBRIDGE` and `NPPPOE` are not configured: their bits are never served (LZ's).
+//!
+//! ## Redesign
+//! - `netisr` and `if_input_task_locked` were `net/if.c`'s statics: the word is
+//!   [`NETISR`] here, the task the glue's (`NetTables::if_input_task_locked`), since
+//!   `if_netisr`'s yield is the scheduler's, generic over the process glue. `if_netisr` holds
+//!   the net lock's write witness and lets it go only around a yield the scheduler asks for
+//!   (`WriteWitness::unlocked`), as the C's `NET_UNLOCK(); yield(); NET_LOCK()`.
 
-use core::sync::atomic::Ordering;
+use core::ffi::c_void;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicI32, Ordering};
 
-use crate::kern::kern_task::task_add;
-use crate::net::if_::net_tq;
+use hal::netlock::NETLOCK;
 
-pub use crate::net::if_::{IF_INPUT_TASK_LOCKED, NETISR};
+use crate::net::domain::net;
+use crate::net::if_::{inet, net_tq};
+use crate::proc::ProcGlue;
+use crate::task::task_add;
 
 /// Same as `AF_INET`.
 pub const NETISR_IP: i32 = 2;
@@ -85,12 +94,52 @@ pub const NETISR_BRIDGE: i32 = 29;
 /// For pppoe processing.
 pub const NETISR_PPPOE: i32 = 30;
 
+/// `netisr`: the protocols' pending bits.
+pub static NETISR: AtomicI32 = AtomicI32::new(0);
+
 /// `schednetisr(anisr)`: marks protocol queue `anisr` (`NETISR_*`) for `if_netisr` and
 /// queues that task on the first softnet task queue.
-pub fn schednetisr(anisr: i32) {
+pub fn schednetisr<G: ProcGlue>(anisr: i32) {
     NETISR.fetch_or(1 << anisr, Ordering::Relaxed);
     if let Some(tq) = net_tq(0) {
-        let _ = task_add(tq, &IF_INPUT_TASK_LOCKED);
+        let _ = task_add(tq, Pin::static_ref(&net::<G>().if_input_task_locked));
+    }
+}
+
+/// `if_netisr`: the protocols' queues whose bits are set, served under the exclusive net
+/// lock, yielding between rounds when the scheduler asks.
+pub(crate) fn if_netisr<G: ProcGlue>(_unused: *mut c_void) {
+    let mut w = NETLOCK.write();
+
+    loop {
+        let n = NETISR.load(Ordering::Relaxed);
+        if n == 0 {
+            break;
+        }
+
+        // Like sched_pause() but with a rwlock dance.
+        if crate::sched::should_yield::<G>() {
+            w.unlocked(crate::sched::r#yield::<G>);
+        }
+
+        NETISR.fetch_and(!n, Ordering::Relaxed);
+
+        if let Some(inet) = inet() {
+            // NETHER > 0
+            if n & (1 << NETISR_ARP) != 0 {
+                inet.arpintr();
+            }
+            if n & (1 << NETISR_IP) != 0 {
+                inet.ipintr();
+            }
+            if n & (1 << NETISR_IPV6) != 0 {
+                inet.ip6intr();
+            }
+        }
+        // NPPP > 0: NETISR_PPP runs pppintr() under the kernel lock; ppp(4) is not configured.
+        // NBRIDGE > 0: NETISR_BRIDGE runs bridgeintr(); bridge(4) is not configured.
+        // NPPPOE > 0: NETISR_PPPOE runs pppoeintr(); pppoe(4) is not configured.
+        // (t |= n: the C accumulates the bits it ran and never reads them.)
     }
 }
 /* </CODE> */

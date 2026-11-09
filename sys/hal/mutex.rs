@@ -1005,6 +1005,37 @@ mod tests {
         assert_eq!(testutil::spl_level(), base);
     }
 
+    /// The embed idiom's proof (docs/IDIOMS.md): a `Mutexed` in a zeroed legacy object (an
+    /// interface's queue in an `M_ZERO` softc) is a free mutex whose level is 0, which
+    /// `__MUTEX_IPL` lifts to the floor; so it raises exactly as one made at any level below
+    /// the floor, `IPL_NET` among them, and its zeroed data is the value it holds.
+    #[test]
+    fn an_all_zero_mutexed_locks_at_the_floor() {
+        testutil::install();
+        // SAFETY: a `Mutexed<u64>` is an `AtomicUsize` owner word (0: free), an `i32` level
+        // (0: `IPL_NONE`) and an `UnsafeCell<u64>`: all zero bytes are a free mutex at level
+        // 0 holding 0.
+        let m: Mutexed<u64> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(!m.is_locked() && m.wantipl == IPL_NONE);
+        let at_net = Mutexed::new(crate::intr::IPL_NET, 0u64);
+        assert!(crate::intr::IPL_NET <= IPL_MPFLOOR);
+        assert_eq!(
+            m.wantipl.max(intr::mpfloor()),
+            at_net.wantipl.max(intr::mpfloor())
+        );
+        let base = testutil::spl_level();
+        {
+            let mut g = m.lock();
+            assert_eq!(*g, 0);
+            *g = 7;
+            assert!(m.owned());
+            assert!(testutil::spl_level() >= base.max(intr::mpfloor()));
+        }
+        assert!(!m.is_locked());
+        assert_eq!(testutil::spl_level(), base);
+        assert_eq!(*m.lock(), 7);
+    }
+
     #[test]
     fn try_lock_fails_while_another_cpu_holds_it() {
         testutil::install();

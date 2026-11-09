@@ -133,6 +133,7 @@ use crate::net::if_ethersubr::{
     ether_crc32_le, ether_fakeaddr, ether_ifattach, ether_ifdetach, ether_ioctl, ether_sprintf,
 };
 use crate::net::if_var::Ifnet;
+use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_is_oactive, ifq_set_oactive};
 use crate::netinet::if_ether::{ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN};
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device};
@@ -256,7 +257,7 @@ fn cdce_softc(self_: &Device) -> &'static CdceSoftc {
 
 /// `(struct cdce_softc *)ifp->if_softc`.
 fn cdce_ifp_softc(ifp: &Ifnet) -> &'static CdceSoftc {
-    let p = ifp.if_softc.get().cast::<CdceSoftc>().cast_const();
+    let p = ifp.if_softc.get_mut().cast::<CdceSoftc>().cast_const();
     if p.is_null() {
         panic(format_args!("cdce: interface without its softc"));
     }
@@ -550,9 +551,9 @@ pub fn cdce_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
     ifp.if_softc.set(ptr::from_ref(sc).cast_mut().cast());
     ifp.if_flags
         .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
-    ifp.if_ioctl.set(Some(cdce_ioctl));
-    ifp.if_start.set(Some(cdce_start));
-    ifp.if_watchdog.set(Some(cdce_watchdog));
+    ifp.if_ioctl().set(Some(cdce_ioctl));
+    ifp.if_start().set(Some(cdce_start));
+    ifp.if_watchdog().set(Some(cdce_watchdog));
     let mut xname = [0u8; IFNAMSIZ];
     let name = sc.cdce_dev.xname().as_bytes();
     let n = name.len().min(IFNAMSIZ - 1);
@@ -581,7 +582,7 @@ pub fn cdce_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
         cdce_stop(sc);
     }
 
-    if !ifp.if_softc.get().is_null() {
+    if !ifp.if_softc.get_mut().is_null() {
         ether_ifdetach(ifp);
         if_detach(ifp);
     }
@@ -596,26 +597,26 @@ pub fn cdce_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
 pub fn cdce_start(ifp: &'static Ifnet) {
     let sc = cdce_ifp_softc(ifp);
 
-    if usbd_is_dying(cdce_udev(sc)) || ifq_is_oactive(&ifp.if_snd) {
+    if usbd_is_dying(cdce_udev(sc)) || ifq_is_oactive(ifp.if_snd()) {
         return;
     }
 
-    let Some(m_head) = ifq_dequeue(&ifp.if_snd) else {
+    let Some(m_head) = ifq_dequeue(ifp.if_snd()) else {
         return;
     };
 
     if cdce_encap(sc, m_head, 0).is_err() {
         m_freem(m_head);
-        ifq_set_oactive(&ifp.if_snd);
+        ifq_set_oactive(ifp.if_snd());
         return;
     }
 
-    let bpf = ifp.if_bpf.get();
+    let bpf = ifp.if_bpf.get_mut();
     if !bpf.is_null() {
         let _ = bpf_mtap(bpf, m_head, BPF_DIRECTION_OUT);
     }
 
-    ifq_set_oactive(&ifp.if_snd);
+    ifq_set_oactive(ifp.if_snd());
 
     ifp.if_timer.set(6);
 }
@@ -691,7 +692,7 @@ pub fn cdce_stop(sc: &'static CdceSoftc) {
 
     ifp.if_timer.set(0);
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     if let Some(p) = sc.cdce_bulkin_pipe.take() {
         cdce_close_pipe(sc, p, "rx");
@@ -886,7 +887,7 @@ pub fn cdce_init(sc: &'static CdceSoftc) {
     }
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_RUNNING);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     splx(s);
 }
@@ -1086,7 +1087,7 @@ pub fn cdce_txeof(xfer: &'static UsbdXfer, priv_: *mut c_void, status: UsbdStatu
     let s = splnet();
 
     ifp.if_timer.set(0);
-    ifq_clr_oactive(&ifp.if_snd);
+    ifq_clr_oactive(ifp.if_snd());
 
     if status != USBD_NORMAL_COMPLETION {
         if status == USBD_NOT_STARTED || status == USBD_CANCELLED {
@@ -1119,7 +1120,7 @@ pub fn cdce_txeof(xfer: &'static UsbdXfer, priv_: *mut c_void, status: UsbdStatu
         ifp.if_oerrors().set(ifp.if_oerrors().get() + 1);
     }
 
-    if !ifq_empty(&ifp.if_snd) {
+    if !ifq_empty(ifp.if_snd()) {
         cdce_start(ifp);
     }
 
