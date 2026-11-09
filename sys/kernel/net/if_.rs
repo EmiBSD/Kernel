@@ -4974,8 +4974,11 @@ pub(crate) mod tests {
     /// The process glue of the request tests.
     type Tg = TestGlue;
 
-    /// Where the request tests' user buffers are, in the host's user memory double.
-    const UBUF: usize = crate::testutil::USER_BASE + 0x3_8000;
+    /// Where the request tests' user buffers are, in the host's user memory double: the
+    /// arguments' range, which the tests holding the memory lock share in turn (the end
+    /// range is `kern.msgbuf`'s copy's, whose tests run beside these:
+    /// `hal::arch::host::copy`'s docs).
+    const UBUF: usize = crate::testutil::USER_BASE + 0xc000;
 
     /// The request tests' fixture: a root thread, the mbufs and the socket pools (the UNIX
     /// domain's), and an empty interface layer.
@@ -5210,6 +5213,12 @@ pub(crate) mod tests {
         assert_eq!(ioctl(p, SIOCGIFDESCR, &mut ifr), Ok(()));
         assert_eq!(get_user(UBUF + 0x100, 7), b"uplink\0");
         assert_eq!(ioctl(p, SIOCGIFRTLABEL, &mut ifr), Err(Errno::ENOENT));
+        // A description of 64 bytes or more without its NUL: ENAMETOOLONG, the old one kept.
+        put_user(UBUF, &[b'x'; 70]);
+        let mut ifr: Ifreq = named(b"trd0");
+        ifr.set_ifr_data(UBUF as u64);
+        assert_eq!(ioctl(p, SIOCSIFDESCR, &mut ifr), Err(Errno::ENAMETOOLONG));
+        assert_eq!(&ifp.if_description.get()[..7], b"uplink\0");
 
         let mut ifr: Ifreq = named(b"nosuch0");
         assert_eq!(ioctl(p, SIOCGIFFLAGS, &mut ifr), Err(Errno::ENXIO));
@@ -5514,6 +5523,39 @@ pub(crate) mod tests {
         assert_eq!(&user[32..37], b"tcf1\0");
         assert_eq!(user[64], 0xaa);
         let _ = a;
+    }
+
+    #[test]
+    fn ifconf_stops_at_a_fault_and_drops_every_reference() {
+        let (_g, p) = ioctl_setup();
+        let (ifp, _) = listed_ifnet(b"tcx0");
+        let addrs: Vec<&'static Ifaddr> = (0..3u8)
+            .map(|i| {
+                let mut sin = [0u8; 16];
+                sin[..2].copy_from_slice(&[16, AF_INET]);
+                sin[4..8].copy_from_slice(&[10, 0, 0, i]);
+                address_of(ifp, sin)
+            })
+            .collect();
+        let if_refs = ifp.rt().if_refcnt.read();
+        // The interface's first row fits just before the end of the user's memory and its
+        // second crosses it: that copy is refused whole (EFAULT), partway through the
+        // interface's addresses. The first row lands in the end slots, whose tests read back
+        // nothing that depends on them (`hal::arch::host::copy`'s docs: uio's array faults
+        // whatever it holds).
+        let at = crate::testutil::USER_BASE + crate::testutil::USER_LEN - 48;
+        let mut ifc = Ifconf {
+            ifc_len: 0x100,
+            _pad0: 0,
+            ifc_ifcu: at as u64,
+        };
+        assert_eq!(ioctl(p, SIOCGIFCONF, &mut ifc), Err(Errno::EFAULT));
+        // `ifc_len` stays the caller's on an error, as the C's.
+        assert_eq!(ifc.ifc_len, 0x100);
+        // Every reference `ifconf` took is dropped on its way out: the addresses' and the
+        // interface's.
+        assert!(addrs.iter().all(|a| a.ifa_refcnt.read() == 1));
+        assert_eq!(ifp.rt().if_refcnt.read(), if_refs);
     }
 
     #[test]
