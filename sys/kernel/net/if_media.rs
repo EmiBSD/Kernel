@@ -561,51 +561,65 @@ pub fn ifmedia_ioctl(
 
             rt.callbacks.status(ifp, ifmr);
 
-            let mut nwords = rt.list.lock().nwords;
+            let nwords = rt.list.lock().nwords;
 
             if ifmr.ifm_count == 0 {
                 ifmr.ifm_count = nwords as i32;
                 return Ok(());
             }
 
-            let error = loop {
-                let Some(mut kptr) = MArray::new(M_TEMP, M_WAITOK, nwords, |_| 0u64) else {
-                    kpanic(format_args!("ifmedia_ioctl: no memory"));
-                };
-
-                let g = rt.list.lock();
-                // Media list might grow during malloc().
-                if nwords < g.nwords {
-                    nwords = g.nwords;
-                    drop(g);
-                    drop(kptr);
-                    continue;
-                }
-                // Request memory too small, set error and ifm_count.
-                if (ifmr.ifm_count as usize) < g.nwords {
-                    nwords = g.nwords;
-                    drop(g);
-                    drop(kptr);
-                    break Err(Errno::E2BIG);
-                }
-                // Get the media words from the interface's list (the chain runs newest
-                // first: filled from the end).
-                nwords = g.nwords;
-                for (i, n) in g.iter().enumerate() {
-                    kptr[nwords - 1 - i] = n.entry.ifm_media;
-                }
-                drop(g);
-
-                let error = UserPtr::<u64>::new(ifmr.ifm_ulist as usize).copyout_slice(&kptr[..]);
-                drop(kptr);
-                break error;
-            };
-            ifmr.ifm_count = nwords as i32;
-            error
+            ifmedia_copywords(&rt.list, ifmr, nwords)
         }
 
         _ => Err(Errno::ENOTTY),
     }
+}
+
+/// `SIOCGIFMEDIA`'s copy of the media words to the user's `ifm_ulist` (`ifm_count` of them
+/// at most), `nwords` the count read before, without the mutex: a buffer of that many words,
+/// made again while the list grew meanwhile; `E2BIG` when the user's array is shorter than
+/// the list; the words copied are the list's under the mutex, never the buffer's length (a
+/// list that shrank meanwhile copies fewer: N6.3a2 review's B1, the C's `nwords * sizeof`).
+/// `ifm_count` ends as the list's length.
+fn ifmedia_copywords(
+    list: &Mutexed<IfmList>,
+    ifmr: &mut Ifmediareq,
+    mut nwords: usize,
+) -> Result<(), Errno> {
+    let error = loop {
+        let Some(mut kptr) = MArray::new(M_TEMP, M_WAITOK, nwords, |_| 0u64) else {
+            kpanic(format_args!("ifmedia_ioctl: no memory"));
+        };
+
+        let g = list.lock();
+        // Media list might grow during malloc().
+        if nwords < g.nwords {
+            nwords = g.nwords;
+            drop(g);
+            drop(kptr);
+            continue;
+        }
+        // Request memory too small, set error and ifm_count.
+        if (ifmr.ifm_count as usize) < g.nwords {
+            nwords = g.nwords;
+            drop(g);
+            drop(kptr);
+            break Err(Errno::E2BIG);
+        }
+        // Get the media words from the interface's list (the chain runs newest first:
+        // filled from the end of the list's own count).
+        nwords = g.nwords;
+        for (i, n) in g.iter().enumerate() {
+            kptr[nwords - 1 - i] = n.entry.ifm_media;
+        }
+        drop(g);
+
+        let error = UserPtr::<u64>::new(ifmr.ifm_ulist as usize).copyout_slice(&kptr[..nwords]);
+        drop(kptr);
+        break error;
+    };
+    ifmr.ifm_count = nwords as i32;
+    error
 }
 
 /// `ifmedia_match`: find media entry matching a given ifm word; true if found.
@@ -922,6 +936,46 @@ mod tests {
         assert_eq!(ioctl(ifp, ifm, SIOCGIFMEDIA, &mut ifmr), Err(Errno::EINVAL));
 
         assert_eq!(ioctl(ifp, ifm, SIOCSIFADDR, &mut ifmr), Err(Errno::ENOTTY));
+    }
+
+    #[test]
+    fn a_list_that_shrank_since_it_was_counted_copies_only_its_words() {
+        let _g = setup();
+        let (ifm, _) = copper(false);
+        let rt = ifm.rt("test");
+        let mut ifmr: Ifmediareq = hal::user::zeroed();
+        ifmr.ifm_count = 3;
+        ifmr.ifm_ulist = UWORDS as u64;
+        UserPtr::<u64>::new(UWORDS)
+            .copyout_slice(&[0xaaaa; 4])
+            .expect("user memory");
+
+        // Counted at 4 without the mutex (an entry deleted since): a 4-word buffer, the
+        // list's 3 words copied, the user's fourth word untouched.
+        assert_eq!(ifmedia_copywords(&rt.list, &mut ifmr, 4), Ok(()));
+        assert_eq!(ifmr.ifm_count, 3);
+        let mut words = [0u64; 4];
+        UserPtr::<u64>::new(UWORDS)
+            .copyin_slice(&mut words)
+            .expect("user memory");
+        assert_eq!(
+            words,
+            [
+                IFM_ETHER | IFM_10_T,
+                IFM_ETHER | IFM_100_TX | IFM_FDX,
+                IFM_ETHER | IFM_AUTO,
+                0xaaaa
+            ]
+        );
+
+        // Counted at 2 (an entry added since): the buffer made again at the list's 3.
+        ifmr.ifm_count = 3;
+        assert_eq!(ifmedia_copywords(&rt.list, &mut ifmr, 2), Ok(()));
+        assert_eq!(ifmr.ifm_count, 3);
+        // A user's array shorter than the list: E2BIG and the list's length.
+        ifmr.ifm_count = 2;
+        assert_eq!(ifmedia_copywords(&rt.list, &mut ifmr, 3), Err(Errno::E2BIG));
+        assert_eq!(ifmr.ifm_count, 3);
     }
 
     #[test]
