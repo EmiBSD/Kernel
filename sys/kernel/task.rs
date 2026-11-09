@@ -96,7 +96,11 @@
 //!   by naming its type, with no count and no cast. The tasks an owner links on lists of its
 //!   own and runs itself (`if.c`'s hooks, `ifq.c`'s serializer: the C's `TAILQ_INSERT_TAIL(..,
 //!   t, t_entry)` and `(*work.t_func)(work.t_arg)`) use the task's one entry through
-//!   [`TaskChain`] and the copy [`Task::work`] takes, as a worker does.
+//!   [`TaskChain`] and the copy [`Task::work`] takes, as a worker does. Review 1's B7: such a
+//!   pair is fixed once (a set-once cell beside the body), so the serializer's and the
+//!   workers' copy of it is one load, without the body's `IPL_HIGH` mutex, whose lock and
+//!   `spl` pair per `ifq_start` the C does not have (`work = *t`, ifq.c:105); re-setting a
+//!   fixed task is `panic(9)` (its owners set it once).
 
 use core::any::Any;
 use core::ffi::c_void;
@@ -107,6 +111,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use hal::intr::{IPL_HIGH, IPL_NONE};
 use hal::mutex::Mutexed;
+use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{AnyArc, PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::Rwlocked;
@@ -142,8 +147,15 @@ enum Func {
     Raw(TaskFn),
     /// A function of the handle in [`Body::shared`].
     Shared(SharedTaskFn),
-    /// A function of the object in [`Body::target`].
-    Ref(RefTaskFn),
+}
+
+/// The function and the object of a task [`Task::set_ref`] fixed.
+#[derive(Clone, Copy)]
+struct RefWork {
+    /// The function.
+    func: RefTaskFn,
+    /// Its object.
+    target: &'static (dyn Any + Send + Sync),
 }
 
 /// `t_func` and `t_arg`.
@@ -155,8 +167,6 @@ struct Body {
     /// The argument of a [`Func::Shared`] function, held until the task is set again or
     /// cleared.
     shared: Option<AnyArc>,
-    /// The argument of a [`Func::Ref`] function.
-    target: Option<&'static (dyn Any + Send + Sync)>,
 }
 
 /// `struct task`. Not `Unpin`: it is linked through `Pin<&Task>` and must stay where it is
@@ -166,6 +176,9 @@ pub struct Task {
     entry: PinEntry<Task>,
     /// `t_func`, `t_arg`: set by the owner while not pending, copied by a worker.
     body: Mutexed<Body>,
+    /// `t_func` and `t_arg` of a task [`Task::set_ref`] set: fixed once, read without the
+    /// body's mutex (the C's `work = *t`).
+    fixed: OnceStatic<RefWork>,
     /// A barrier's own task: the worker that takes it runs `taskq_barrier_task` on its queue.
     barrier: bool,
 }
@@ -218,9 +231,9 @@ impl Task {
                     func,
                     arg: AtomicPtr::new(arg),
                     shared: None,
-                    target: None,
                 },
             ),
+            fixed: OnceStatic::new(),
             barrier,
         }
     }
@@ -229,6 +242,7 @@ impl Task {
     /// C's contract, which the C does not check: a worker that copies the task meanwhile
     /// gets the old pair or the new one, never a mix).
     pub fn set(&self, func: TaskFn, arg: *mut c_void) {
+        self.not_fixed("task_set");
         let old = self.set_func(Some(Func::Raw(func)), arg, None);
         drop(old);
     }
@@ -238,45 +252,74 @@ impl Task {
     /// [cleared](Task::clear). A task that holds a handle to the object that holds it is a
     /// cycle its owner breaks with `clear` (after `taskq_del_barrier`).
     pub fn set_shared(&self, func: SharedTaskFn, arg: AnyArc) {
+        self.not_fixed("task_set");
         let old = self.set_func(Some(Func::Shared(func)), ptr::null_mut(), Some(arg));
         drop(old);
     }
 
     /// `task_set(t, fn, arg)` of an argument that lives for ever (the module's redesign):
-    /// `func` is called with `target`, which it downcasts to its own type.
+    /// `func` is called with `target`, which it downcasts to its own type. The pair is fixed
+    /// for the task's life (its owners set it once, `ifq_init`, `softnet_init`), so its runners
+    /// copy it without the task's mutex, as the C's `work = *t`; setting it again to the same
+    /// pair does nothing, to another one (or `set`, `set_shared`, `clear` afterwards) is
+    /// `panic(9)`.
     pub fn set_ref(&self, func: RefTaskFn, target: &'static (dyn Any + Send + Sync)) {
-        let old = {
-            let mut b = self.body.lock();
-            b.func = Some(Func::Ref(func));
-            b.arg.store(ptr::null_mut(), Ordering::Relaxed);
-            b.target = Some(target);
-            b.shared.take()
+        let same = |w: &RefWork| ptr::fn_addr_eq(w.func, func) && ptr::addr_eq(w.target, target);
+        let fixed = match self.fixed.get() {
+            Some(w) => same(w),
+            None => {
+                // The body names nothing once the pair is fixed: what an earlier `set` left
+                // goes first.
+                let old = self.set_func(None, ptr::null_mut(), None);
+                drop(old);
+                self.fixed.set(RefWork { func, target }).is_ok()
+                    || self.fixed.get().is_some_and(same)
+            }
         };
-        drop(old);
+        if !fixed {
+            kpanic(format_args!(
+                "task_set: a task set_ref fixed set again to another pair"
+            ));
+        }
     }
 
-    /// `work = *t`: the task's function and argument, copied under the task's mutex for a
-    /// caller that runs the task itself (a list of its own, `ifq_serialize`, `if_hooks_run`),
-    /// as a worker copies what it takes; `None` for a task `task_set` never named.
-    pub fn work(&self) -> Option<TaskWork> {
+    /// `panic(9)` for a task [`Task::set_ref`] fixed: its pair is read without the mutex.
+    fn not_fixed(&self, what: &str) {
+        if self.fixed.is_set() {
+            kpanic(format_args!("{what}: a task set_ref fixed set again"));
+        }
+    }
+
+    /// `*work = *t`: the function and the argument, copied (a fixed pair with one load, the
+    /// others under the task's mutex); `None` for a task `task_set` never named.
+    fn copy(&self) -> Option<Work> {
+        if let Some(w) = self.fixed.get() {
+            return Some(Work::RunRef(w.func, w.target));
+        }
         let b = self.body.lock();
-        let w = match (b.func, &b.shared, b.target) {
-            (Some(Func::Raw(func)), _, _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
-            (Some(Func::Shared(func)), Some(arg), _) => Work::RunShared(func, arg.clone()),
-            (Some(Func::Ref(func)), _, Some(target)) => Work::RunRef(func, target),
-            _ => return None,
-        };
-        Some(TaskWork(w))
+        match (b.func, &b.shared) {
+            (Some(Func::Raw(func)), _) => Some(Work::Run(func, b.arg.load(Ordering::Relaxed))),
+            (Some(Func::Shared(func)), Some(arg)) => Some(Work::RunShared(func, arg.clone())),
+            _ => None,
+        }
+    }
+
+    /// `work = *t`: the task's function and argument, copied for a caller that runs the task
+    /// itself (a list of its own, `ifq_serialize`, `if_hooks_run`), as a worker copies what
+    /// it takes: a pair [`Task::set_ref`] fixed with one load, as the C's (ifq.c:105), the
+    /// others under the task's mutex; `None` for a task `task_set` never named.
+    pub fn work(&self) -> Option<TaskWork> {
+        self.copy().map(TaskWork)
     }
 
     /// `task_set(t, NULL, NULL)` of a task set by [`Task::set_shared`]: its argument given
     /// back (dropped after the task's mutex), its function gone. For its owner once the task
     /// is neither pending nor running (`taskq_del_barrier`).
     pub fn clear(&self) {
+        self.not_fixed("task_set(NULL)");
         let old = {
             let mut b = self.body.lock();
             b.func = None;
-            b.target = None;
             b.shared.take()
         };
         drop(old);
@@ -293,7 +336,6 @@ impl Task {
         let mut b = self.body.lock();
         b.func = func;
         b.arg.store(arg, Ordering::Relaxed);
-        b.target = None;
         core::mem::replace(&mut b.shared, shared)
     }
 
@@ -705,12 +747,9 @@ fn taskq_next_work(tq: &Taskq) -> Option<Work> {
             Work::Barrier
         } else {
             // *work = *next: copy to caller to avoid races
-            let b = next.body.lock();
-            match (b.func, &b.shared, b.target) {
-                (Some(Func::Raw(func)), _, _) => Work::Run(func, b.arg.load(Ordering::Relaxed)),
-                (Some(Func::Shared(func)), Some(arg), _) => Work::RunShared(func, arg.clone()),
-                (Some(Func::Ref(func)), _, Some(target)) => Work::RunRef(func, target),
-                _ => kpanic(format_args!(
+            match next.copy() {
+                Some(w) => w,
+                None => kpanic(format_args!(
                     "taskq_thread: {}: a task without a function",
                     Str(tq.name)
                 )),
@@ -877,22 +916,31 @@ mod tests {
     }
 
     /// N6.3a: a task set with an object that lives for ever runs with it, through a worker's
-    /// copy and through the copy its owner takes to run it by hand; a later `set` forgets it.
+    /// copy and through the copy its owner takes to run it by hand; the pair is fixed (review
+    /// 1's B7: read without the body's mutex): the same pair again is nothing, another one or
+    /// a `set` afterwards is refused.
     #[test]
     fn a_task_set_with_a_static_object_runs_with_it() {
         static SEVEN: usize = 7;
-        let t = Task::unset();
+        static EIGHT: usize = 8;
+        let t: &'static Task = std::boxed::Box::leak(std::boxed::Box::new(Task::unset()));
         assert!(t.work().is_none());
+        t.set(nothing, ptr::null_mut());
         t.set_ref(ref_task, &SEVEN);
+        // What the earlier set left is gone from the body: the fixed pair is the task's.
+        assert!(t.body.lock().func.is_none());
         let w = t.work().unwrap();
         assert_eq!(arg_of(Work::RunRef(ref_task, &SEVEN)), 7);
         let before = REF_RUNS.load(Ordering::Relaxed);
         w.run();
         assert_eq!(REF_RUNS.load(Ordering::Relaxed), before + 7);
-        t.set(nothing, ptr::null_mut());
-        assert!(t.body.lock().target.is_none());
-        t.clear();
-        assert!(t.work().is_none());
+        t.set_ref(ref_task, &SEVEN);
+        let refused =
+            |f: &dyn Fn()| std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err();
+        assert!(refused(&|| t.set_ref(ref_task, &EIGHT)));
+        assert!(refused(&|| t.set(nothing, ptr::null_mut())));
+        assert!(refused(&|| t.clear()));
+        assert!(t.work().is_some());
     }
 
     /// Waits up to ten seconds for `f`.
