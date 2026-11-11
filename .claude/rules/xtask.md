@@ -18,7 +18,11 @@ paths:
   files, which `sys/dev/microcode/fxp/build.c` writes, made from `rcvbundl.h` by
   `userland/firmware.rs`; a worktree's first build, and its first `comp`, is seeded from the
   main checkout's by an APFS clone with the paths rebased, `userland/seed.rs`), `comp` (M14: OpenBSD's clang, lld and libc++ from
-  `gnu/llvm` by its build glue, `userland/comp.rs`; outside `ci`, `just comp`).
+  `gnu/llvm` by its build glue, `userland/comp.rs`; outside `ci`, `just comp`), `devtools-native`
+  (2026-11-11: `smoke-devtools-native`'s disk, `comp`'s staging root without its libc++ headers
+  and clang resource directory, DevTools' native LLVM and Rust trees laid over it from tarballs
+  checked against their pins in the justfile; `userland/comp.rs`). `--memory SIZE` (qemu, smoke;
+  256M..4G) replaces `boot::VM_MEMORY` (512M) for one run.
 - External tools (`qemu-system-*`, Limine binaries, EDK2 firmware) are located at runtime via
   `brew --prefix <formula>` or `$PATH`, with an error that names the missing formula and points to
   `docs/SETUP.md`. Never hardcode `/opt/homebrew` or `/usr/local`. Exception: `userland`'s

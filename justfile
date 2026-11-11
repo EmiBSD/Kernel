@@ -3324,6 +3324,70 @@ devtools_steps := "--reject 'panic:' " + \
     "--expect 'devtools: Rust hello on emibsd (2 args, panic caught: true)' --expect 'rust-rc-0' " + \
     "--expect 'devtools: C hello, argv[1]=dynamic' --expect 'dyn-rc-0'"
 
+# T3b: DevTools' native toolchains (clang, lld, ar, rustc, built FOR EmiBSD) proved under the
+# kernel, as DevTools asked on 2026-11-09 (the user's OK of 2026-11-11). `cargo xtask
+# devtools-native` checks each tarball against its pin below, lays its usr/ over a copy of
+# `comp`'s staging root (the base: libc, crt, ld.so, the headers), LLVM's then Rust's, and
+# makes `target/devtools-native/arm64/native.ffs`; the smoke boots it as sd0 (the disk set
+# `native`), mounts it on /mnt, gives it /dev/null, /dev/zero and /dev/urandom, and in a
+# chroot(8) into it compiles and runs a C hello (cc), a C++ one with an exception thrown and
+# caught through iostreams (c++), archives an object (ar rc, ar t) and compiles and runs a
+# Rust hello (rustc). arm64 only (decision 44). Not in `smokes`: it needs `just comp` and
+# DevTools' tarballs (local snapshots in `devtools_native_dist` before their release, which
+# this proof gates). 2 GiB of guest memory for rustc, and ten times the usual time limits:
+# the compilers run under TCG. Every console line stays under arm64's 128-byte limit.
+devtools_native_dist := env_var_or_default("DEVTOOLS_DIST", env_var("HOME") + "/devel/emibsd/DevTools/dist")
+devtools_native_llvm := "llvm-23.1.4+emibsd.5-aarch64-emibsd-emibsd8.0-arm64.tar.zst"
+devtools_native_llvm_sha256 := "230aaf433783a3263347538759217ed08ac2b5e8b985deca809cf1d8b606ef95"
+devtools_native_rust := "rust-1.99.1+emibsd.3-aarch64-emibsd-emibsd-arm64.tar.zst"
+devtools_native_rust_sha256 := "18a12f38bd50960c676b275e528121932f1d06dd99acf4636adf637311a12c3f"
+
+smoke-devtools-native: (build-arm64 "--features qemu")
+    @test {{ramdisks}} || \
+        { echo "smoke-devtools-native: no ramdisk image; run just userland first"; exit 1; }
+    @test -d target/comp/arm64/root/usr/lib || \
+        { echo "smoke-devtools-native: no comp root; run just comp first"; exit 1; }
+    {{xtask}} devtools-native --arch arm64 \
+        --llvm "{{devtools_native_dist}}/{{devtools_native_llvm}}" --llvm-sha256 {{devtools_native_llvm_sha256}} \
+        --rust "{{devtools_native_dist}}/{{devtools_native_rust}}" --rust-sha256 {{devtools_native_rust_sha256}}
+    mkdir -p "${EMIBSD_RUN_DIR:-target}" && rm -f "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img" && \
+        cp -c target/devtools-native/arm64/native.ffs "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img"
+    EMIBSD_TIMEOUT_SCALE=10 {{xtask}} smoke {{reject}} {{smp}} --memory 2G --arch arm64 --kernel target/{{arm64}}/debug/bsd \
+        --expect-ramdisk --until-seen --disk-set native {{native_script}}
+
+# `smoke-devtools-native`'s session: each step's marker is printed by the guest (`$?`,
+# `$((40+2))`, `$x`), never typed, so an echoed command line cannot satisfy an expectation.
+# The first two steps print the chroot's `cc --version` and `rustc --version`: DevTools'
+# clang 23.1.4 and Rust 1.99.1, never the comp set's OpenBSD clang 22.1.6 (rejected).
+# A step whose status is not 0 ends the run at once (`-rc-<digit>` rejected), instead of
+# waiting out the time limit for a marker that cannot come.
+native_script := disk_login + " --reject 'panic:' --reject 'clang version 22.1.6' " + \
+    "--reject '-rc-1' --reject '-rc-2' --reject '-rc-3' --reject '-rc-4' --reject '-rc-5' " + \
+    "--reject '-rc-6' --reject '-rc-7' --reject '-rc-8' --reject '-rc-9' " + \
+    "--send-after '# ' --send 'mount /dev/sd0a /mnt && echo nat-mnt-$((40+2))\\n' " + \
+    "--send-after 'nat-mnt-42' --send 'mkdir -p /mnt/dev && cp -Rp /dev/null /dev/zero /dev/urandom /mnt/dev/ && echo nat-dev-$((40+2))\\n' " + \
+    "--send-after 'nat-dev-42' --send '/usr/sbin/chroot /mnt /usr/bin/cc --version; echo ccv-rc-$?\\n' " + \
+    "--send-after 'ccv-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/rustc --version; echo rsv-rc-$?\\n' " + \
+    "--send-after 'rsv-rc-0' --send 'print -r \"#include <stdio.h>\" >/mnt/tmp/h.c\\n' " + \
+    "--send-after '# ' --send 'print -r \"int main(void){char s[]={104,45,111,107,0};puts(s);return 0;}\" >>/mnt/tmp/h.c\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/cc -o /tmp/h /tmp/h.c; echo cc-rc-$?\\n' " + \
+    "--send-after 'cc-rc-0' --send '/usr/sbin/chroot /mnt /tmp/h\\n' " + \
+    "--send-after 'h-ok' --send 'print -r \"#include <iostream>\" >/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"#include <stdexcept>\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"using namespace std;int main(){try{throw runtime_error(string(1,char(120)));}\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"catch(exception&e){cout<<e.what()<<char(45)<<char(111)<<char(107)<<endl;}}\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/c++ -o /tmp/x /tmp/x.cpp; echo cxx-rc-$?\\n' " + \
+    "--send-after 'cxx-rc-0' --send '/usr/sbin/chroot /mnt /tmp/x\\n' " + \
+    "--send-after 'x-ok' --send '/usr/sbin/chroot /mnt /usr/bin/cc -c -o /tmp/h.o /tmp/h.c; echo obj-rc-$?\\n' " + \
+    "--send-after 'obj-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/ar rc /tmp/a.a /tmp/h.o; echo ar-rc-$?\\n' " + \
+    "--send-after 'ar-rc-0' --send 'x=$(/usr/sbin/chroot /mnt /usr/bin/ar t /tmp/a.a); echo ar-t-$x\\n' " + \
+    "--send-after 'ar-t-h.o' --send 'print -r \"use std::io::Write;fn main(){std::io::stdout().write_all(&[114,45,111,107,10]).unwrap();}\" >/mnt/tmp/r.rs\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/rustc -o /tmp/r /tmp/r.rs; echo rs-rc-$?\\n' " + \
+    "--send-after 'rs-rc-0' --send '/usr/sbin/chroot /mnt /tmp/r\\n' " + \
+    "--expect 'nat-mnt-42' --expect 'nat-dev-42' --expect 'clang version 23.1.4' --expect 'ccv-rc-0' " + \
+    "--expect 'rustc 1.99.1' --expect 'rsv-rc-0' --expect 'cc-rc-0' --expect 'h-ok' --expect 'cxx-rc-0' --expect 'x-ok' " + \
+    "--expect 'obj-rc-0' --expect 'ar-rc-0' --expect 'ar-t-h.o' --expect 'rs-rc-0' --expect 'r-ok'"
+
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected
 # differences are in tools/xtask/diff-openbsd/). The first run downloads the OpenBSD snapshot

@@ -279,6 +279,20 @@ pub(crate) const MAX_SMP: u32 = 8;
 /// `--smp N` for every VM this run starts (set once by `main`, read by [`qemu_command`]).
 static SMP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
+static MEMORY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Records `--memory SIZE` (QEMU's `-m`); `None` leaves [`VM_MEMORY`].
+pub(crate) fn set_memory(size: Option<String>) {
+    if let Some(s) = size {
+        let _ = MEMORY.set(s);
+    }
+}
+
+/// The guest memory of this run: `--memory SIZE`, else [`VM_MEMORY`].
+pub(crate) fn memory() -> &'static str {
+    MEMORY.get().map_or(VM_MEMORY, String::as_str)
+}
+
 /// Records `--smp N`; `None` leaves QEMU's default of one processor.
 pub(crate) fn set_smp(n: Option<u32>) {
     if let Some(n) = n {
@@ -752,7 +766,7 @@ pub(crate) fn qemu_command(
 
     let mut cmd = Command::new(arch.qemu());
     // M13 (hwopts.rs): `--screenshot-after` and `--sendkey-after` put the monitor on a socket.
-    cmd.args(["-m", VM_MEMORY, "-display", "none", "-monitor"]);
+    cmd.args(["-m", memory(), "-display", "none", "-monitor"]);
     cmd.arg(crate::hwopts::monitor_arg());
     // M13 (hwopts.rs): `--reboot` lets a guest reset restart the machine.
     if !crate::hwopts::reboot() {
