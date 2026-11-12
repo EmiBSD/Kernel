@@ -75,9 +75,9 @@ Reviews and fixes (the user's decision, 2026-10-22, to spend fewer tokens; a ful
 cycle measured about 2.9 M subagent tokens at N4.3, a review about 0.25-0.45 M): every slice
 gets one `reviewer` run before its merge. Its findings go back to the **same** redesigner
 with `SendMessage` (its context intact, no re-reading), never to a fresh agent. A second,
-closing review runs only when the first found something blocking, or when the fixes change a
-`hal` `unsafe` site or its `// SAFETY:` argument, or the slice is a `security-review.md` area
-(N4.8b's syscall entry and copy, N8): those keep both reviews. Otherwise the main session
+closing review runs only when the first found something blocking (decision 50, the user,
+2026-11-12: whatever the area; before it, a fix to a `hal` `unsafe` site or its `// SAFETY:`
+argument, or a `security-review.md` area, also kept both reviews). Otherwise the main session
 checks each fix against the review's finding itself (the diff, the cited lines, the tests
 the redesigner ran) and writes that check in the merge message. The reviewer's
 `Security-Review:` text is required as before.

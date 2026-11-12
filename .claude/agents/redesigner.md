@@ -101,8 +101,12 @@ the loop), and `docs/IDIOMS.md`. Then merge the branch your prompt names.
 
 ## Checks before each commit
 
-`just build` (both archs), `just clippy`, `just fmt`, `just test`, `just check-lineage`,
-`just check-unsafe`, your smokes and one or two regressions (`just smoke-boot` and the nearest
+Decision 50 (the user, 2026-11-12): at the end of your slice, `just build` and `just cargo
+check -p bsd --tests` (plus `cargo check -p kernel --benches --features doubles` when you
+touched the benches) with the hook's fmt and `lz check`; no `just test`, `just clippy` or
+decision-43 bench run (they are once per milestone, at its close). What follows is the
+older list, for a run whose prompt asks for it: `just build`, `just clippy`, `just fmt`,
+`just test`, `just check-lineage`, `just check-unsafe`, your smokes and one or two regressions (`just smoke-boot` and the nearest
 neighbours), one QEMU at a time, never while the machine lock is someone else's. Never
 `just ci`, `just smoke` (all) or `just ci-full`. Never weaken a failing test.
 

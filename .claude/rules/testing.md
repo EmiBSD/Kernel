@@ -120,7 +120,13 @@ Always:
   (`--profile dev`) and release, before its commit, and the commit carries the result as
   `Bench:` lines (before -> after). An op that rises more than 10 % without a reason written
   in the commit body stops the agent, who asks the user. Host only: no QEMU per slice; the
-  QEMU `just bench` stays at the close.
+  QEMU `just bench` stays at the close. Since decision 50 (the user, 2026-11-12) the host
+  benches run once per milestone, at its close, against the milestone's start (all its
+  slices together), not per slice and not after a review's fixes; a rise is bisected over
+  the slices' commits, and a slice that changes a hot path says "measured at the close".
+- Decision 50: a slice ends with `just build` and `cargo check -p bsd --tests` (plus `cargo
+  check -p kernel --benches --features doubles` when it touches the benches); `just test`
+  and `just clippy` run once per milestone, in the close's compile-and-fix pass.
 - Decision 44 (the user, 2026-10-18): from N4 to N9 only arm64 is built, booted and measured.
   xtask's `smoke`, `smoke2`, `smoke-all`, `diff-openbsd` and `bench` and the justfile's `build`,
   `clippy` and `ci-full` read `EMIBSD_ARCHS` (default `arm64`; N4.0 lands the switch); an amd64

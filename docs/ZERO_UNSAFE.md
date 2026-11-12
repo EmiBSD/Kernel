@@ -1365,3 +1365,22 @@ recommended, under the user's standing order):
     userland's compiler (Apple clang with LLD 17, the user's OK of 2026-10-03) was a separate
     switch, made on 2026-11-12: `just userland` and `just comp` build with DevTools' clang and
     lld (`EMIBSD_LLVM_BIN`). `rust-analyzer` ships in DevTools' Rust since +emibsd.5.
+
+50. **Fewer runs per slice: benches and the full checks once per milestone, the closing
+    review only after a blocking finding** (the user, 2026-11-12: "y no podemos escribir todo
+    el codigo probar menos veces?", choosing three of four options). A slice cycle was taking
+    3 to 4 hours (N6.3c1, N6.4a), most of it in measuring and checking, not in writing.
+    - Decision 43's host benches run once per milestone, at its close (all its slices
+      together, base = the milestone's start), not per slice and not again after a review's
+      fixes; a row over +10 % without a measured cause is still a stop, found then by bisecting
+      the slices' commits. A slice that changes a hot path says so in its body ("measured at
+      the N<x> close").
+    - A slice ends with `just build` and `cargo check -p bsd --tests` (plus `cargo check -p
+      kernel --benches --features doubles` when it touches the benches) and the hook's fmt and
+      `lz check`; `just test` and `just clippy` run once per milestone, in its compile-and-fix
+      pass (decision 23), and at the merge only when the merge itself needs them.
+    - Every slice keeps its first review. The closing review runs only when the first found
+      something blocking, whatever the area; a `security-review.md` area keeps its
+      `Security-Review:` text from the first review, and the main session checks each fix
+      against its finding and writes that check in the merge message.
+    The fourth option (write a whole milestone and review it once) was not taken.

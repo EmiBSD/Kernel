@@ -59,7 +59,8 @@ starting point, and what userland sees never changes.
   redesign with an LZ sync (`lz-sync.md`). A commit on a hot path runs the host
   microbenchmarks again, debug and release, and carries `Bench:` lines, before -> after, one
   pair per line; an op more than 10 % slower without a reason in the body is a stop: ask the
-  user (decision 43). When no reason can be found, `/insight` (`.claude/skills/insight/`) may
+  user (decision 43). Since decision 50 (2026-11-12) that run is once per milestone, at its
+  close, over all its slices; a slice's own commit says "measured at the close". When no reason can be found, `/insight` (`.claude/skills/insight/`) may
   be asked first, so the stop reaches the user with hypotheses already verified against the
   code; its opinion is never applied unverified. No QEMU per commit.
 - Before ending a session, update `docs/STATUS.md` (milestone, done, next, blockers) and run
