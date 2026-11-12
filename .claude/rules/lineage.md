@@ -55,9 +55,11 @@ reason = "absorbed by sys/kern/sched/runqueue.rs"
 - A `redesigned` module keeps the whole licence blocks and the
   `//! Upstream:` lines of every file in its `lz` list, and has one `//! LZ: <path>@<12-hex>`
   line per entry (`rust-kernel.md`, file layout). Since v2 (`docs/ZERO_UNSAFE.md` section 0,
-  decision 20) a redesigned module lives in `sys/kernel/` (or `sys/abi/`, `sys/hal/`), its LZ
-  file in `bsd` becomes `[[dropped]]` with `absorbed by sys/kernel/...`, and `lineage.toml`
-  gains `crate`; the crate root's `#![forbid(unsafe_code)]` replaces the per-`mod` attribute of
+  decision 20) a redesigned module lives in `sys/kernel/` (or `sys/abi/`, `sys/hal/`); the
+  `[[module]]` row of its copy in `bsd` is deleted, and the LZ file stays covered by the `lz`
+  list of the kernel module that absorbs it (with that module's `[[module.fn]]` rows).
+  `[[dropped]]` is only for an LZ file that no native module lists, and stays the user's
+  decision. `lineage.toml` gains `crate`; the crate root's `#![forbid(unsafe_code)]` replaces the per-`mod` attribute of
   v1 (the paragraph that follows is v1 and applies to the modules redesigned inside `bsd`
   before 2026-10-16). v1: outside the core of `unsafe-core.toml` it is
   also `forbid`: its `mod` declaration (or an ancestor's) carries `#[forbid(unsafe_code)]`

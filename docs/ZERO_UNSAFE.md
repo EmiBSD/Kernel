@@ -114,9 +114,11 @@ the image crate names `abi`; plus `libkern`/`libz` under `kernel`. `hal` depends
    `kernel`) or `Legacy` (the fallback `bsd` registers at boot). A migrated syscall flips its
    entry; `diff-openbsd` and the smokes see no difference, which is the test.
 4. **Lineage keeps every provenance rule.** A kernel module is `redesigned` with its `lz` list
-   and `//! LZ:` lines; the LZ file it replaces becomes `[[dropped]]` with `absorbed by
-   sys/kernel/...`; `lineage.toml` gains `crate`. An LZ change to a dropped file is
-   `covered-by-redesign` or `reimplemented` in `kernel` (`lz-sync.md`).
+   and `//! LZ:` lines; the `[[module]]` row of its copy in `bsd` is deleted, and the LZ
+   file stays covered by the `lz` list of the kernel module that absorbs it (with that
+   module's `[[module.fn]]` rows). `[[dropped]]` is only for an LZ file that no native module
+   lists, and stays the user's decision. `lineage.toml` gains `crate`. An LZ change to an
+   absorbed file is `covered-by-redesign` or `reimplemented` in `kernel` (`lz-sync.md`).
 5. **Tests.** `kernel`'s host tests run on `hal`'s host backend; `just check` (build on both
    archs, clippy, fmt, `lz check`, `hal-check`, `abi-check`, `unsafe-report --check`, host
    tests) gates every commit; the smokes, `just ci`, `ci-full` and `diff-openbsd` run at the

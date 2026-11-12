@@ -39,8 +39,8 @@ arm64, the amd64 tree frozen), N10 (amd64), N11 (verification) and N12 (performa
 Every exit also requires:
 
 - each file of the scope has left `bsd`: redesigned into `sys/kernel/` (or moved into `sys/abi/`
-  or `sys/hal/` where the row says so) and `[[dropped]]` in `lineage.toml` with `absorbed by
-  ...`, or a 0-`unsafe` call-site adapter listed as such (docs/ZERO_UNSAFE.md 0.3, 0.4);
+  or `sys/hal/` where the row says so), its `bsd` copy's `[[module]]` row deleted and the LZ
+  file covered by the absorbing module's `lz` list, or a 0-`unsafe` call-site adapter listed as such (docs/ZERO_UNSAFE.md 0.3, 0.4);
 - `just check`, one `just ci` and `just diff-openbsd` equal, with the same expected list;
   `just ci-full` at every close but N2's (decision 24: N3's close runs it for both); on arm64
   only from N4 to N9 (decision 44), on both archs from N10 on;
