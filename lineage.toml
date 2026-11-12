@@ -8411,6 +8411,13 @@ crate = "kernel"
 reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through, today rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), its OnceStatic slot and register_ipsec"
 
 [[module]]
+rust = "sys/kernel/net/bpf_filter.rs"
+crate = "kernel"
+lz = ["sys/net/bpf_filter.rs"]
+status = "redesigned"
+notes = "N6.3c1: bpf_filter.c's kernel half moved into the kernel with LZ's shape: _bpf_lfilter over a packet type implementing BpfOps (struct bpf_ops as a trait: the loads called directly), bpf_validate with the net.bpf.maxbufsize bound passed by its caller (bpf_setf reads the atomic once), every bound of the C kept (short loads, scratch words, jumps out of the program, division by 0, shifts of 32, unknown opcodes, the last instruction a return); bsd's inherited copy goes with the device (commit 4)"
+
+[[module]]
 rust = "sys/kernel/net/netisr.rs"
 crate = "kernel"
 lz = ["sys/net/netisr.rs"]

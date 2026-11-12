@@ -21,6 +21,7 @@
 //! the routing and the protocols as they move from `bsd`.
 
 pub mod art;
+pub mod bpf_filter;
 pub mod domain;
 pub mod file;
 pub mod if_;
