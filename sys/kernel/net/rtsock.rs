@@ -121,7 +121,12 @@
 //!   argument (`timeout_set_flags`'s `so`, here the control block: the cycle the detach
 //!   breaks with `Timeout::clear`); `sotortpcb` is a borrow of the slot, never a clone per
 //!   request. Its \[s\] members are one `Guarded` keyed to the socket's lock, opened with the
-//!   socket lock's witness (`SoLocked`); `rop_socket` a counted handle of the socket.
+//!   socket lock's witness (`SoLocked`); `rop_socket` a counted handle of the socket. The
+//!   pool's item is 232 bytes (the block of 216 and the counted item's header), where LZ's
+//!   `rtpcb_pool` item was 80 (`size_of::<Rtpcb>()`, measured at b2177858): the `Size`
+//!   column of `vmstat -m`'s `rtpcb` row changes (the pool items' class of D-N6.3b-3,
+//!   flagged for the user; review 1's S6, decision 67): the `Timeout` with its shared
+//!   argument, the `Guarded` cell keyed to the socket's lock and the pinned list entry.
 //! - `struct rtptable` is [`RtsockTables`] of the glue (`NetTables`, as the UNIX domain's
 //!   tables): `rtp_lk` a `RawRwlock`, `rtp_list` a `PinList` under its witness; `rtp_count` is
 //!   the static [`RTP_COUNT`], which the announcements read without the lock (the C's).
