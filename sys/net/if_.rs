@@ -1349,6 +1349,11 @@ pub(crate) mod tests {
         // Nor enc(4) interfaces or bpf(4) taps of interfaces that are gone.
         crate::net::if_enc::enc_reset();
         crate::net::bpf::bpf_test_reset();
+        // Nor the kernel's free address and membership records, nor IGMP's router records
+        // (N6.4a): a later test that detaches the same index would free an earlier test's
+        // record (`rti_delete`) into this test's memory.
+        kernel::netinet::in_var::in_var_test_reset();
+        kernel::netinet::igmp::igmp_test_reset();
         guard
     }
 
