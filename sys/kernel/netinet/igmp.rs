@@ -984,8 +984,10 @@ mod tests {
         igmp_fasttimo();
         assert_eq!(data(), before + 1);
         assert!(ROUTER_ALERT_MBUF.lock().is_some(), "still held");
-        // The test gives it back into its own memory: no later test counts it.
-        drop(ROUTER_ALERT_MBUF.lock().take());
+        // The test gives it back into its own memory (freed after the mutex): no later test
+        // counts it.
+        let ra = ROUTER_ALERT_MBUF.lock().take();
+        drop(ra);
         assert_eq!(data(), before);
     }
 

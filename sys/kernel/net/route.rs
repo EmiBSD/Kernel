@@ -211,6 +211,7 @@
 //!   | (none: `rtt_rt` is a bare pointer) | a timer's `rtt_rt`, subtracted by [`rt_refcnt`] |
 //!   | (none: an unlinked route's `rt_next` is a bare pointer) | the `rt_next` an unlinked route keeps, subtracted by [`rt_refcnt`] (`rt_backrefs`) |
 //!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::smr::retired_count`) |
+//!   | (none: `la_rt` is a bare pointer) | the `la_rt` of the ARP record the route's `rt_llinfo` owns, subtracted by [`rt_refcnt`] (`TaggedLink::is_typed`; N6.4b) |
 //!
 //!   A timer holds a counted handle of its route (R11 of N6.3b1): kernel code cannot follow
 //!   the C's bare back pointer. So a route's timers are removed when it leaves its table
@@ -2868,6 +2869,7 @@ pub fn rt_refcnt(rt: &Rtentry) -> usize {
         .saturating_sub(rt.rt_ntimers.load(Ordering::Relaxed) as usize)
         .saturating_sub(rt.rt_backrefs.load(Ordering::Relaxed) as usize)
         .saturating_sub(hal::smr::retired_count(rt))
+        .saturating_sub(usize::from(rt.rt_llinfo.is_typed()))
 }
 
 /// `db_print_sa(sa)`: a socket address's bytes, `[NULL]` for none.

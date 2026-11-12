@@ -114,7 +114,10 @@
 //! - LZ's `struct llinfo_arp` (`Cell`s and a `ListEntry`, a `pool_get`'s raw item written in an
 //!   `unsafe` block, freed by `pool_put` at its last `la_refcnt`) hung on `rt_llinfo` as a raw
 //!   word, cast back at every reader (`rt_la`'s `unsafe`) -> a [`LlinfoArp`] of the "arp"
-//!   [`BoxPool`] owned by the route's word, `hal::link::TaggedLink<LlinfoArp>` (D-4): the word
+//!   [`BoxPool`] (112 bytes; LZ's 104, the C's 96: the kernel's `MbufQueue` is 56 with its
+//!   unlocked length beside the list) owned by the route's word,
+//!   `hal::link::TaggedLink<LlinfoArp>` (D-4; not `Parkable`: no lent record can be made a box
+//!   by the park protocol, review 1's B1): the word
 //!   lends the record only to a guard of [`ARP_MTX`] (the C's "rt_llinfo and RTF_LLINFO are
 //!   protected by arp_mtx", now a type: `LlinfoArp`'s `Tagged::LOCK`), and gives the box back
 //!   only to the whole guard borrowed mutably (`RTM_DELETE`). Its one owner is the word, so
@@ -127,7 +130,9 @@
 //!   `None` only for the iterator's marker): `arptimer` clones it under the mutex where the C
 //!   `rtref`s it, and the route and its record keep each other until `RTM_DELETE` takes the
 //!   record out of the route (every route deletion runs it: `rtrequest_delete`'s
-//!   `if_rtrequest`), so the route outlives its record as the C assumes.
+//!   `if_rtrequest`), so the route outlives its record as the C assumes. The C's pointer
+//!   counts nothing, so `rt_refcnt` (`rmx_refcnt`, which `route(8)` and `netstat -r` print)
+//!   subtracts this handle while the route's word owns the record (review 1's B2).
 //! - `arpiterator` (a `struct llinfo_arp_iterator` marker on `arptimer`'s stack, the current
 //!   record held by `la_refcnt` while the mutex is released) -> `arptimer` walks with a whole
 //!   [`LlinfoArp`] marker pinned on its stack (`la_rt` `None`, the C's `la_rt == NULL` test of
@@ -171,7 +176,7 @@
 //! exclusive net lock keeps).
 //!
 //! **Holders** (`refcnt_take`/`rele` of the C against the handles here): `la_refcnt`'s list
-//! reference = the route word's box (parked by `TaggedLink::set` in `arp_rtrequest`, taken
+//! reference = the route word's box (given to it by `TaggedLink::set` in `arp_rtrequest`, taken
 //! back by `TaggedLink::take` in `RTM_DELETE` and dropped there); the iterator's reference = none
 //! (the walk holds the route, `la_rt`'s clone, across the mutex's release: the C's `rtref`);
 //! `la_rt` = one route handle per record, dropped with it.
@@ -189,7 +194,7 @@ use hal::netlock::{NETLOCK, NetHeld};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pod;
-use hal::pool::{BoxPool, PR_NOWAIT, ParkWord, Parkable, PoolArc, Pooled};
+use hal::pool::{BoxPool, PR_NOWAIT, PoolArc, Pooled};
 use hal::rwlock::RW_WRITE;
 use hal::sys::errno::Errno;
 #[cfg(feature = "nfsclient")]
@@ -267,8 +272,6 @@ pub struct LlinfoArp {
     la_refreshed: AtomicCell<i64>,
     /// \[m\] `la_asked`: number of queries sent.
     la_asked: AtomicCell<i32>,
-    /// The mark of the record while the route's word owns it (`PoolBox::park`).
-    la_park: ParkWord,
 }
 
 impl LlinfoArp {
@@ -281,7 +284,6 @@ impl LlinfoArp {
             la_mq: MbufQueue::new(LA_HOLD_QUEUE, IPL_SOFTNET),
             la_refreshed: AtomicCell::new(),
             la_asked: AtomicCell::new(),
-            la_park: ParkWord::new(),
         }
     }
 
@@ -298,12 +300,6 @@ impl LlinfoArp {
 
 impl Pooled for LlinfoArp {
     const POOL: &'static BoxPool<LlinfoArp> = &ARP_POOL;
-}
-
-impl Parkable for LlinfoArp {
-    fn park_word(&self) -> &ParkWord {
-        &self.la_park
-    }
 }
 
 impl Tagged for LlinfoArp {
@@ -586,8 +582,10 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
             gw_set_type_index(rt, ifp);
             // Case 2: This route may come from cloning, or a manual route add with a LL
             // address.
+            // The record's counted handle of its route (`la_rt`); a route the routing table
+            // gave is always an item of its recorded pool, so this answers; a value outside
+            // it (none exists) would get no record, quietly, as the C has no such case.
             let Some(handle) = PoolArc::from_ref(rt) else {
-                log(LOG_DEBUG, format_args!("arp_rtrequest: pool get failed\n"));
                 return;
             };
             let Some(la) = ARP_POOL.get(PR_NOWAIT, || LlinfoArp::new(Some(handle))) else {
@@ -1461,6 +1459,7 @@ pub fn revarp_ifdetach(ifp: &Ifnet) {
 /// the records on `arp_list` unlinked (their memory, owned by routes of an earlier test's
 /// tables, never freed), the queued packets and the hold total forgotten, the revarp state
 /// cleared.
+#[cfg(any(test, feature = "doubles"))]
 pub fn arp_test_reset() {
     {
         let mut g = ARP_MTX.lock();
@@ -1533,6 +1532,11 @@ mod tests {
     /// its frames queued), up and running, with `ADDR`/24 (its local route's announcement
     /// taken off the queue and returned).
     fn ether(name: &[u8]) -> (&'static Ifnet, Vec<Vec<u8>>) {
+        ether_at(name, ADDR)
+    }
+
+    /// [`ether`] with `addr`/24.
+    fn ether_at(name: &[u8], addr: [u8; 4]) -> (&'static Ifnet, Vec<Vec<u8>>) {
         let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
         let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
         let ifp: &'static Ifnet = &ac.ac_if;
@@ -1552,7 +1556,7 @@ mod tests {
         // ifconfig <name> inet 10.0.2.15/24
         let mut req = [0u8; 64];
         req[16..18].copy_from_slice(&[16, AF_INET]);
-        req[20..24].copy_from_slice(&ADDR);
+        req[20..24].copy_from_slice(&addr);
         req[48..50].copy_from_slice(&[16, AF_INET]);
         req[52..56].copy_from_slice(&[255, 255, 255, 0]);
         crate::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(ifp), true).expect("the address");
@@ -1893,6 +1897,135 @@ mod tests {
         la_hold_total.store(0, Ordering::Relaxed);
     }
 
+    /// The dump's `rmx_refcnt` of a route the test holds one handle of (`sysctl_dumpentry`'s
+    /// `rtable_read_refcnt(rt) - 1`, the test's handle standing for the walk's).
+    fn dumped_refcnt(rt: &Rtentry) -> usize {
+        crate::net::rtable::rtable_read_refcnt(rt) - 1
+    }
+
+    #[test]
+    fn an_arp_entry_held_by_the_table_alone_dumps_refcnt_0() {
+        let _g = setup();
+        let (ifp, _) = ether(b"art6");
+        // A resolved neighbour (UHLc) and our local route (UHLl): each owns a record whose
+        // la_rt counts its route, as the C's bare pointer does not.
+        receive(ifp, &arp_bytes(ARPOP_REPLY, PEER, GATEWAY, OURS, ADDR));
+        let _ = sent(ifp);
+        for a in [GATEWAY, ADDR] {
+            let rt = route(a, false).expect("the entry");
+            assert!(rt.rt_flags.isset(RTF_LLINFO) && rt.rt_llinfo.is_typed());
+            assert_eq!(dumped_refcnt(&rt), 0, "route(8) shows Refs 0 for {a:?}");
+        }
+        // A second holder is counted, as netstat -r shows it.
+        let rt = route(GATEWAY, false).expect("the entry");
+        let held = rt.clone();
+        assert_eq!(dumped_refcnt(&rt), 1);
+        drop(held);
+    }
+
+    #[test]
+    fn requests_from_a_broadcast_address_or_from_ourselves_are_ignored() {
+        let _g = setup();
+        let (ifp, _) = ether(b"art7");
+        const HOST: [u8; 4] = [10, 0, 2, 40];
+        // A broadcast sender address: logged and dropped, nothing learned, no answer.
+        receive(
+            ifp,
+            &arp_bytes(ARPOP_REQUEST, [0xff; 6], HOST, [0; 6], ADDR),
+        );
+        assert!(sent(ifp).is_empty());
+        assert!(!route(HOST, false).is_some_and(|r| r.rt_flags.isset(RTF_LLINFO)));
+        // Our own hardware address: our echo, ignored.
+        receive(ifp, &arp_bytes(ARPOP_REQUEST, OURS, HOST, [0; 6], ADDR));
+        assert!(sent(ifp).is_empty());
+        assert!(!route(HOST, false).is_some_and(|r| r.rt_flags.isset(RTF_LLINFO)));
+    }
+
+    #[test]
+    fn a_station_claiming_our_address_is_logged_and_answered() {
+        let _g = setup();
+        let (ifp, _) = ether(b"art8");
+        // Another station asks for our address with it as its own: the duplicate is logged,
+        // our local entry is not overwritten, and we answer for the address.
+        receive(ifp, &arp_bytes(ARPOP_REQUEST, PEER, ADDR, [0; 6], ADDR));
+        let reply = sent(ifp);
+        assert_eq!(reply.len(), 1);
+        let b = &reply[0];
+        assert_eq!(&b[0..6], &PEER);
+        assert_eq!(&b[20..22], &ARPOP_REPLY.to_be_bytes());
+        assert_eq!(&b[22..28], &OURS);
+        assert_eq!(&b[28..32], &ADDR, "our address, from our hardware address");
+        let local = route(ADDR, false).expect("the local route");
+        assert!(local.rt_flags.isset(RTF_LOCAL));
+        assert_eq!(gw_lladdr(&local), OURS, "not overwritten");
+    }
+
+    #[test]
+    fn a_permanent_entry_is_not_overwritten() {
+        let _g = setup();
+        let (ifp, _) = ether(b"art9");
+        const PERM: [u8; 4] = [10, 0, 2, 60];
+        const PERM_MAC: [u8; 6] = [0x52, 0x54, 0x00, 0x00, 0x00, 0x60];
+        // arp -s 10.0.2.60 <mac> permanent
+        let dst = sin(PERM);
+        let mut gw = [0u8; 32];
+        gw[0] = 32;
+        gw[1] = AF_LINK;
+        gw[2..4].copy_from_slice(&(ifp.if_index.get() as u16).to_ne_bytes());
+        gw[4] = ifp.if_type.get();
+        gw[6] = 6;
+        gw[8..14].copy_from_slice(&PERM_MAC);
+        let mut info = RtAddrinfo::new();
+        info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
+        info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
+        info.rti_flags = RTF_HOST | RTF_LLINFO | RTF_STATIC | RTF_PERMANENT_ARP | RTF_UP;
+        info.rti_ifa = route(ADDR, false).and_then(|r| r.ifa());
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the entry");
+        }
+        let _ = sent(ifp);
+        // Another station's reply for it: refused (the warning), the packet dropped.
+        receive(ifp, &arp_bytes(ARPOP_REPLY, PEER, PERM, OURS, ADDR));
+        let rt = route(PERM, false).expect("the entry");
+        assert_eq!(gw_lladdr(&rt), PERM_MAC, "not overwritten");
+        assert!(sent(ifp).is_empty());
+    }
+
+    #[test]
+    fn another_interface_may_neither_overwrite_nor_add_an_entry() {
+        let _g = setup();
+        let (ifp, _) = ether(b"arta");
+        let (other, _) = ether_at(b"artb", [10, 0, 3, 15]);
+        const HOST: [u8; 4] = [10, 0, 2, 70];
+        // A resolved entry on the first interface: a reply on the other one, from another
+        // hardware address, does not overwrite it.
+        receive(ifp, &arp_bytes(ARPOP_REPLY, PEER, GATEWAY, OURS, ADDR));
+        let _ = sent(ifp);
+        let peer2 = [0x52, 0x54, 0x00, 0x00, 0x00, 0x02];
+        receive(
+            other,
+            &arp_bytes(ARPOP_REPLY, peer2, GATEWAY, OURS, [10, 0, 3, 15]),
+        );
+        let rt = route(GATEWAY, false).expect("the entry");
+        assert_eq!(gw_lladdr(&rt), PEER, "still the first interface's answer");
+        // An entry being asked for on the first interface (no address yet): a reply that
+        // comes in on the other, unconnected interface does not fill it.
+        let asked = route(HOST, true).expect("a cloned entry");
+        assert_eq!(gw_alen_family(&asked).0, 0);
+        receive(
+            other,
+            &arp_bytes(ARPOP_REPLY, peer2, HOST, OURS, [10, 0, 3, 15]),
+        );
+        assert_eq!(
+            gw_alen_family(&asked).0,
+            0,
+            "not added from an unconnected interface"
+        );
+        assert!(sent(ifp).is_empty() && sent(other).is_empty());
+    }
+
     /// The RARP client (`NFSCLIENT`): `revarprequest` broadcasts an RFC 903 request, and
     /// `in_revarpinput` takes the reply only while a `revarpwhoarewe` is out on that interface
     /// and only for our hardware address.
@@ -1976,9 +2109,11 @@ mod tests {
             "short"
         );
         // The pool item (vmstat -m's "arp"): the C's struct llinfo_arp is 96 bytes on LP64,
-        // LZ's LlinfoArp 104; this one is recorded in the module's notes.
+        // LZ's LlinfoArp 104, this one 112 (its 56-byte MbufQueue; the park mark review 1's B1
+        // removed sat in padding) (docs/SCAFFOLDING.md's pool sizes row).
         std::println!("arp item: {} bytes", size_of::<LlinfoArp>());
         assert_eq!(size_of::<LlinfoArp>(), 112);
+        assert_eq!(size_of::<MbufQueue>(), 56);
     }
 }
 /* </TESTS> */
