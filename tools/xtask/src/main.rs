@@ -48,7 +48,7 @@
 //!                                          target/disk-A-NAME[-sdK].img instead;
 //!                                          --smp N (1..=8; qemu, smoke, smoke2) gives
 //!                                          every VM N processors;
-//!                                          --memory SIZE (256M..4G; qemu, smoke) the guest's
+//!                                          --memory SIZE (256M..16G; qemu, smoke) the guest's
 //!                                          memory instead of boot::VM_MEMORY (512M);
 //!                                          --usb, --audio hda|ac97|usb and --expect-tone (qemu,
 //!                                          smoke) add M12's devices: a qemu-xhci with a
@@ -560,7 +560,7 @@ fn smp_flag(args: &[&str]) -> Result<Option<u32>> {
 }
 
 /// `--memory SIZE` (qemu, smoke): QEMU's `-m`, a number of mebibytes (`768M`) or gibibytes
-/// (`2G`), from 256M to 4G; absent, `boot::VM_MEMORY`. For the boots that need more than the
+/// (`2G`), from 256M to 16G; absent, `boot::VM_MEMORY`. For the boots that need more than the
 /// default, as `smoke-devtools-native`'s rustc.
 fn memory_flag(args: &[&str]) -> Result<Option<String>> {
     let Some(s) = optional_flag(args, "--memory") else {
@@ -572,8 +572,8 @@ fn memory_flag(args: &[&str]) -> Result<Option<String>> {
         _ => None,
     };
     match mib {
-        Some(m) if (256..=4096).contains(&m) => Ok(Some(s.to_string())),
-        _ => Err(format!("--memory {s}: expected 256M to 4G (a number then M or G)").into()),
+        Some(m) if (256..=16384).contains(&m) => Ok(Some(s.to_string())),
+        _ => Err(format!("--memory {s}: expected 256M to 16G (a number then M or G)").into()),
     }
 }
 
@@ -674,7 +674,7 @@ mod tests {
             memory_flag(&["--memory", "768M"]).unwrap().as_deref(),
             Some("768M")
         );
-        for bad in ["128M", "5G", "2", "G", "2T", "-1G"] {
+        for bad in ["128M", "17G", "2", "G", "2T", "-1G"] {
             assert!(memory_flag(&["--memory", bad]).is_err(), "{bad}");
         }
     }
