@@ -192,6 +192,9 @@
 //!   gone. `bsd`'s seven `NET_*` wrappers keep their names over this module.
 //! - `rwsleep_nsec(ident, &netlock, ..)` (`sosleep_nsec`) is [`sleep_nsec`]: the detached
 //!   holding released for the sleep and taken again in its mode.
+//! - Kernel code that holds the lock detached (across a `bsd` driver request that may let it
+//!   go) and then reads what it guards borrows a [`NetHeld`] from [`lend_detached`] (N6.3b2):
+//!   the proof is lent for a closure, and the holding cannot be let go until it returns.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -204,8 +207,10 @@ use crate::sys::errno::Errno;
 /// is not a `Guarded` cell (`hal::link::SaLink::read`, review 2's S-a): made from a witness of
 /// [`NETLOCK`] ([`NetHeld::of`]: exact, borrowing the witness), or by the holder of
 /// `hal::link::SaToken` after a check of [`status`], for the holdings of `bsd`'s, which no
-/// witness exists of (`SaToken::net_held`: the token holder's contract, `sys/hal/trust.rs`).
-/// One per walk, where the C asserts once (`NET_ASSERT_LOCKED()`). Not `Send`.
+/// witness exists of (`SaToken::net_held`: the token holder's contract, `sys/hal/trust.rs`),
+/// or lent to a closure by [`lend_detached`] for the running process's detached write holding
+/// (exact, and the holding kept until the closure returns). One per walk, where the C asserts
+/// once (`NET_ASSERT_LOCKED()`). Not `Send`.
 pub struct NetHeld<'a> {
     _held: PhantomData<&'a ()>,
     _not_send: PhantomData<*const ()>,
@@ -241,6 +246,12 @@ static DETACHED_WRITER: AtomicUsize = AtomicUsize::new(0);
 /// owns and the readers' count on the lock word is never below the witnesses'.
 static DETACHED_READERS: AtomicU32 = AtomicU32::new(0);
 
+/// How many proofs of the detached write holding are lent ([`lend_detached`]). While one is,
+/// the holding cannot be let go: [`unlock`] and [`sleep_nsec`] refuse it, so no proof
+/// outlives the holding it proves. Only the holding's process lends (the holding is
+/// exclusive), and a lend ends before its closure returns.
+static DETACHED_LENT: AtomicU32 = AtomicU32::new(0);
+
 /// `rw_status(&netlock)`: `RW_WRITE` (this process writes), `RW_WRITE_OTHER`, `RW_READ` or 0
 /// (free); the values of `<sys/rwlock.h>`.
 #[inline]
@@ -269,9 +280,44 @@ pub fn lock() {
     DETACHED_WRITER.store(me, Ordering::Release);
 }
 
+/// The proof of the running process's detached write holding ([`lock`]), lent to `f`: for
+/// kernel code under the C's `NET_LOCK()` taken detached (kept across `bsd`'s driver requests,
+/// which may let it go and take it again: wg(4)'s `wg_up`) that reads what the net lock
+/// guards outside those requests. `panic(9)` unless the running process holds the lock
+/// detached; while `f` runs the holding cannot be let go ([`unlock`] and [`sleep_nsec`] of it
+/// are `panic(9)`), so the proof, which `f` only borrows, lives no longer than the holding.
+pub fn lend_detached<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
+    /// The lend's end, on the closure's return or its unwinding (a host test's panic).
+    struct Lend;
+    impl Drop for Lend {
+        fn drop(&mut self) {
+            DETACHED_LENT.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    if !held_detached() {
+        not_held("lend", status());
+    }
+    DETACHED_LENT.fetch_add(1, Ordering::AcqRel);
+    let _lend = Lend;
+    f(&NetHeld::new())
+}
+
+/// [`unlock`]'s and [`sleep_nsec`]'s refusal while a proof of the holding is lent.
+#[inline]
+fn not_lent(what: &str) {
+    if DETACHED_LENT.load(Ordering::Acquire) != 0 {
+        hal_panic(format_args!(
+            "netlock: {what} while its holding is lent to a proof"
+        ));
+    }
+}
+
 /// `NET_UNLOCK()`: releases the running process's detached write holding (taken by [`lock`]).
-/// `panic(9)` when it has none (not held, held by another, or held through a witness).
+/// `panic(9)` when it has none (not held, held by another, or held through a witness), or
+/// while it is lent ([`lend_detached`]).
 pub fn unlock() {
+    not_lent("exit write");
     let me = rw_self();
     if DETACHED_WRITER
         .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
@@ -310,7 +356,7 @@ fn take_reader() -> Result<u32, u32> {
 /// process's detached write holding if it has one, else one of the detached read holdings,
 /// whoever took it (the readers are counted, not owned, as the C's `rw_exit_read` cannot tell
 /// them apart; a witness's reading is never in the count). `panic(9)` when there is neither
-/// (`rw_assert_anylock`).
+/// (`rw_assert_anylock`), and for a write holding lent to a proof ([`lend_detached`]).
 pub fn sleep_nsec<I: ?Sized>(
     ident: *const I,
     prio: i32,
@@ -318,6 +364,9 @@ pub fn sleep_nsec<I: ?Sized>(
     nsecs: u64,
 ) -> Result<(), Errno> {
     let me = rw_self();
+    if DETACHED_WRITER.load(Ordering::Acquire) == me {
+        not_lent("rwsleep");
+    }
     if DETACHED_WRITER
         .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
@@ -485,6 +534,26 @@ pub(crate) mod tests {
         assert_eq!(status(), 0);
         let r = std::panic::catch_unwind(|| sleep_nsec(&raw const ident, 0, "nettest", INFSLP));
         assert!(r.is_err(), "a sleep without the lock");
+    }
+
+    #[test]
+    fn a_detached_holding_lends_a_proof_and_cannot_be_let_go_meanwhile() {
+        let _s = serial();
+        // Not held: no lend.
+        assert!(std::panic::catch_unwind(|| lend_detached(|_| ())).is_err());
+
+        lock();
+        assert_eq!(lend_detached(|_net| 7), 7);
+        // The release refused while lent; the lend ended by the unwinding.
+        assert!(std::panic::catch_unwind(|| lend_detached(|_net| unlock())).is_err());
+        assert!(held_detached());
+        assert_eq!(DETACHED_LENT.load(Ordering::Relaxed), 0);
+        unlock();
+
+        // A witness's holding is not lent.
+        let w = NETLOCK.write();
+        assert!(std::panic::catch_unwind(|| lend_detached(|_| ())).is_err());
+        drop(w);
     }
 }
 /* </TESTS> */
