@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6306,7 +6306,8 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/if_loop.rs"
 lz = ["sys/net/if_loop.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/if_loop.rs"]
+notes = "N6.3c2: a re-export of kernel::net::if_loop (LOMTU, LOOP_CLONER, loop_clone_create, loopattach) for the configurations' pdevinit tables and bsd's tests"
 
 [[module]]
 rust = "sys/net/if_media.rs"
@@ -6343,7 +6344,7 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
@@ -6386,7 +6387,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 rust = "sys/net/pf_norm.rs"
 lz = ["sys/net/pf_norm.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/net/pf_osfp.rs"
@@ -6676,7 +6677,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -7744,6 +7745,13 @@ reason = "a group is an `MArc`, freed with its last reference (the snapshots' in
 lz = "sys/net/if_.rs::net_tq_barrier_rele"
 native = ["net_tq_barrier_task"]
 kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/net/if_loop.rs"
+crate = "kernel"
+lz = ["sys/net/if_loop.rs"]
+status = "redesigned"
+notes = "N6.3c2: lo(4) written into the kernel: LoopCloner (the first native Cloner) and Loop, the loopback's NetDriver (loioctl, lo_bpf_mtap) and LinkLayer (looutput, loinput, lortrequest) in the interface's if_driver and if_link; the Ifnet an MBox of M_DEVBUF leaked on destroy until N7 (D-N6.3c-18, a deviation); loop_clone_destroy's walk under NETLOCK.read()"
 
 [[module]]
 rust = "sys/kernel/net/if_media.rs"

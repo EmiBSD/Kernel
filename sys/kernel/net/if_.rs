@@ -371,8 +371,9 @@ pub const NET_TASKQ: usize = 8;
 /// copy).
 pub const M_IFADDR: i32 = 9;
 
-/// `M_DEVBUF`: the `malloc(9)` type of `if_attach_queues`' queues (a copy).
-const M_DEVBUF: i32 = 2;
+/// `M_DEVBUF`: the `malloc(9)` type of `if_attach_queues`' queues and of the loopback's
+/// interface (a copy).
+pub(crate) const M_DEVBUF: i32 = 2;
 
 /// `M_IFGROUP`: the `malloc(9)` type of the interface groups (a copy).
 const M_IFGROUP: i32 = 10;
@@ -2645,8 +2646,9 @@ pub fn if_createrdomain(rdomain: i32, ifp: &Ifnet) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `snprintf(loifname, sizeof(loifname), "lo%u", rdomain)`.
-fn lo_name(rdomain: u32) -> [u8; IFNAMSIZ] {
+/// `snprintf(loifname, sizeof(loifname), "lo%u", rdomain)` (`loop_clone_create`'s
+/// `"lo%d"` of its unit, which is never negative).
+pub(crate) fn lo_name(rdomain: u32) -> [u8; IFNAMSIZ] {
     let mut n = [0u8; IFNAMSIZ];
     n[..2].copy_from_slice(b"lo");
     let mut digits = [0u8; 10];
@@ -4547,7 +4549,7 @@ pub(crate) mod tests {
     /// `f` with an SMR thread and the softnets' workers running beside it (`if_remove`'s
     /// `smr_barrier` and `net_tq_barriers` wait for them), stopped after: a last empty SMR
     /// call wakes the first.
-    fn with_smr_thread<R>(f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_smr_thread<R>(f: impl FnOnce() -> R) -> R {
         static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         STOP.store(false, Ordering::SeqCst);
         let th = std::thread::spawn(|| {

@@ -479,10 +479,11 @@ paid_by = "N8"
 
 # bsd: a cloning interface (struct if_clone: ifc_name, ifc_create, ifc_destroy), implemented by
 # bsd's IfClone tables themselves (sys/net/if_var.rs: impl Cloner for IfClone over their two
-# functions; lo, wg, pflog, pfsync, pflow, enc) and handed to the kernel by their
+# functions; wg, pflog, pfsync, pflow, enc) and handed to the kernel by their
 # if_clone_attach at boot. A value the kernel receives (if_clone_attach's argument), a row
-# while bsd implements it (decision 39). lo leaves at N6.3c; wg, pflog, pfsync, pflow and enc
-# stay with pf and IPsec, so paid by N8.
+# while bsd implements it (decision 39). lo left at N6.3c2 (kernel::net::if_loop's
+# LoopCloner, the first native implementer); wg, pflog, pfsync, pflow and enc stay with pf
+# and IPsec, so paid by N8.
 # kernel::net::if_var::Cloner
 [[bridge]]
 trait = "Cloner"

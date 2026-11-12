@@ -110,7 +110,7 @@
 //!   | `if_addrlist`, `if_maddrlist` | `hal::list::List` | empty (the same test) |
 //!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
 //!   | `if_groups` | `ReadMostly<IfgSet>` (an `Option<MArc<MArray<..>>>`) | no reader, no group (the same test) |
-//!   | `if_driver`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
+//!   | `if_driver`, `if_link`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
 //!   | `is_arpcom`, `detached` | atomics | `false`, attached |
 //!
 //! - The members `bsd` reads or writes under its detached net lock (the drivers' `*_start`
@@ -144,6 +144,14 @@
 //!   use a route of the call (D-N6.3a-10's `SOFTNET_ROUTES` dropped: `bsd`'s `Route` is not
 //!   `Sync`).
 //! - `struct if_clone` with its two function pointers -> [`Cloner`].
+//! - The C's one `if_output`/`if_input`/`if_rtrequest` slot, which `ether_ifattach` fills
+//!   when the driver left it NULL (if_ethersubr.c:716-719) and the loopback fills itself
+//!   (if_loop.c:164-168) -> [`LinkLayer`] in [`Ifnet::if_link`], behind [`NetDriver`]'s
+//!   default `output`, `input` and `rtrequest` ([`link_output`], [`link_input`],
+//!   [`link_rtrequest`], N6.3c2, D-N6.3c-5): a driver's own handler still wins, the link
+//!   layer's is the default, one slot as in the C; a call costs one `OnceStatic` load and one
+//!   `&dyn` call more than the C's pointer call. `if_ll_output` is dropped (D-N6.3c-6: only
+//!   `#ifdef MPLS` writes it, nothing reads it).
 
 use core::any::Any;
 use core::sync::atomic::{
@@ -537,11 +545,11 @@ pub trait NetDriver: Sync + 'static {
     }
 
     /// `if_input`: a received packet, with the softnet's stack (`None`: the caller holds the
-    /// net lock and wants it handled at once). Default: `panic(9)` (the C calls through NULL).
-    fn input(&self, ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
-        drop(m);
-        ifp.if_xname
-            .with_str(|n| kpanic(format_args!("{}: no if_input", Str(n))));
+    /// net lock and wants it handled at once). Default: the interface's link layer's
+    /// ([`link_input`]: `ether_input` as `ether_ifattach` fills the C's slot), `panic(9)`
+    /// without one (the C calls through NULL).
+    fn input(&self, ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
+        link_input(ifp, m, ns);
     }
 
     /// `if_bpf_mtap`: tap `m` to the tap the interface's bpf(4) word `if_bpf` names; `true`
@@ -559,29 +567,31 @@ pub trait NetDriver: Sync + 'static {
     /// `if_rtrequest(ifp, req, rt)`: the interface's link layer told that route `rt` of the
     /// interface was added (`RTM_ADD`), cloned (`RTM_RESOLVE`) or deleted (`RTM_DELETE`),
     /// under the net lock (`net`) (N6.3b, D-N6.3b-11: `ether_rtrequest`, `lortrequest`,
-    /// `p2p_rtrequest`). Default: nothing, the C's `if_rtrequest_dummy`.
+    /// `p2p_rtrequest`). Default: the interface's link layer's ([`link_rtrequest`]:
+    /// `ether_rtrequest`), nothing without one (the C's `if_rtrequest_dummy`).
     fn rtrequest(
         &self,
-        _ifp: &'static Ifnet,
-        _req: u8,
-        _rt: Option<&crate::net::route::Rtentry>,
-        _net: &hal::netlock::NetHeld<'_>,
+        ifp: &'static Ifnet,
+        req: u8,
+        rt: Option<&crate::net::route::Rtentry>,
+        net: &hal::netlock::NetHeld<'_>,
     ) {
+        link_rtrequest(ifp, req, rt, net);
     }
 
     /// `if_output(ifp, m, dst, rt)`: `m` sent toward `dst` through route `rt` (N6.3b,
     /// D-N6.3b-11: `ether_output`, `looutput`, the tunnels' outputs; `bsd`'s through
-    /// `LegacyNetDriver` from N6.3b2). Default: `panic(9)` (the C calls through NULL).
+    /// `LegacyNetDriver` from N6.3b2). Default: the interface's link layer's
+    /// ([`link_output`]: `ether_output`, which `ether_ifattach` installs when the driver set
+    /// none), `panic(9)` without one (the C calls through NULL).
     fn output(
         &self,
         ifp: &'static Ifnet,
         m: MbufBox,
-        _dst: crate::net::proto::SockaddrView<'_>,
-        _rt: Option<&crate::net::route::Rtentry>,
+        dst: crate::net::proto::SockaddrView<'_>,
+        rt: Option<&crate::net::route::Rtentry>,
     ) -> Result<(), Errno> {
-        drop(m);
-        ifp.if_xname
-            .with_str(|n| kpanic(format_args!("{}: no if_output", Str(n))))
+        link_output(ifp, m, dst, rt)
     }
 }
 
@@ -602,6 +612,77 @@ pub trait Cloner: Sync + 'static {
     /// `ifc_destroy`: destroys the cloned interface `ifp` (only called when
     /// [`Cloner::has_destroy`]).
     fn destroy(&self, ifp: &'static Ifnet) -> Result<(), Errno>;
+}
+
+/// An interface's link layer (decision 46): the `if_output`, `if_input` and `if_rtrequest`
+/// that `ether_ifattach` installs for every Ethernet driver (`ether_output`, keeping a
+/// driver's own `if_output`; `ether_input`; `ether_rtrequest`) and the loopback sets for
+/// itself (`looutput`, `loinput`, `lortrequest`). Set once, before the interface is used, in
+/// [`Ifnet::if_link`]; [`NetDriver`]'s default `output`, `input` and `rtrequest` call it, so
+/// a driver's own handler wins and the link layer's is the C's filled slot. The C's
+/// `if_ll_output` has no method: only `#ifdef MPLS` code writes it, and nothing reads it.
+pub trait LinkLayer: Sync + 'static {
+    /// `if_output(ifp, m, dst, rt)` of the link layer: encapsulate `m` for `dst` and send it.
+    fn output(
+        &self,
+        ifp: &'static Ifnet,
+        m: MbufBox,
+        dst: crate::net::proto::SockaddrView<'_>,
+        rt: Option<&crate::net::route::Rtentry>,
+    ) -> Result<(), Errno>;
+
+    /// `if_input(ifp, m, ns)` of the link layer: a received frame to its protocol.
+    fn input(&self, ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>);
+
+    /// `if_rtrequest(ifp, req, rt)` of the link layer, under the net lock (`net`).
+    fn rtrequest(
+        &self,
+        ifp: &'static Ifnet,
+        req: u8,
+        rt: Option<&crate::net::route::Rtentry>,
+        net: &hal::netlock::NetHeld<'_>,
+    );
+}
+
+/// [`NetDriver::output`]'s default: the interface's link layer's `output`, `panic(9)` for an
+/// interface without one (the C's call through a NULL `if_output`).
+pub fn link_output(
+    ifp: &'static Ifnet,
+    m: MbufBox,
+    dst: crate::net::proto::SockaddrView<'_>,
+    rt: Option<&crate::net::route::Rtentry>,
+) -> Result<(), Errno> {
+    if let Some(&l) = ifp.if_link.get() {
+        return l.output(ifp, m, dst, rt);
+    }
+    drop(m);
+    ifp.if_xname
+        .with_str(|n| kpanic(format_args!("{}: no if_output", Str(n))))
+}
+
+/// [`NetDriver::input`]'s default: the interface's link layer's `input`, `panic(9)` without
+/// one (the C's call through a NULL `if_input`).
+pub fn link_input(ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
+    if let Some(&l) = ifp.if_link.get() {
+        l.input(ifp, m, ns);
+        return;
+    }
+    drop(m);
+    ifp.if_xname
+        .with_str(|n| kpanic(format_args!("{}: no if_input", Str(n))));
+}
+
+/// [`NetDriver::rtrequest`]'s default: the interface's link layer's `rtrequest`, nothing
+/// without one (`if_rtrequest_dummy`).
+pub fn link_rtrequest(
+    ifp: &'static Ifnet,
+    req: u8,
+    rt: Option<&crate::net::route::Rtentry>,
+    net: &hal::netlock::NetHeld<'_>,
+) {
+    if let Some(&l) = ifp.if_link.get() {
+        l.rtrequest(ifp, req, rt, net);
+    }
 }
 
 /// The bits of [`Ifnet::detached`]: `if_detach` swapped the C's `if_qstart` and `if_ioctl` for
@@ -737,6 +818,9 @@ pub struct Ifnet {
     pub(crate) if_groups: ReadMostly<IfgSet>,
     /// The driver, registered before `if_attach` (`bsd`'s table, D-N6.3a-8).
     pub if_driver: OnceStatic<&'static dyn NetDriver>,
+    /// The link layer (`ether_ifattach`'s, the loopback's): the C's `if_output`, `if_input`
+    /// and `if_rtrequest` as the link layer fills them, which [`NetDriver`]'s defaults call.
+    pub if_link: OnceStatic<&'static dyn LinkLayer>,
     /// What `if_attach_common` builds.
     pub rt: OnceStatic<IfRt>,
     /// [`DETACHED_QSTART`], [`DETACHED_IOCTL`]: what `if_detach` swapped.
@@ -803,6 +887,7 @@ impl Ifnet {
             if_nd: PtrWord::new(),
             if_groups: ReadMostly::new(IfgSet::new()),
             if_driver: OnceStatic::new(),
+            if_link: OnceStatic::new(),
             rt: OnceStatic::new(),
             detached: AtomicU8::new(0),
             is_arpcom: AtomicBool::new(false),

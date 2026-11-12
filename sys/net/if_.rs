@@ -209,7 +209,9 @@ pub static IFNETLIST: IfnetHead = IfnetHead(&kernel::net::if_::IFNETLIST);
 pub use kernel::net::if_::IF_TMPLIST_LOCK;
 
 /// `(*ifp->if_ioctl)(ifp, cmd, data)`: the driver's request handler (`ENODEV` once the
-/// interface is detached, the C's `if_detached_ioctl`).
+/// interface is detached, the C's `if_detached_ioctl`). A kernel driver (the loopback's,
+/// N6.3c2) gets a zeroed image of the command's `IOCPARM_LEN(cmd)` bytes instead of `data`
+/// (see [`kernel_driver_ioctl`]).
 ///
 /// # Safety
 ///
@@ -222,11 +224,30 @@ pub unsafe fn ifp_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<
     if ifp.if_ioctl_detached() {
         return Err(Errno::ENODEV);
     }
-    match ifp.if_ioctl().get() {
+    let Some(l) = ifp.legacy_opt() else {
+        return kernel_driver_ioctl(ifp, cmd);
+    };
+    match l.if_ioctl.get() {
         // SAFETY: the caller's contract is the handler's.
         Some(ioctl) => unsafe { ioctl(ifp, cmd, data) },
         None => Err(Errno::ENOTTY),
     }
+}
+
+/// [`ifp_ioctl`] for an interface whose driver is the kernel's: the four requests the raw
+/// callers make (`in_.rs`'s and `in6.rs`'s `SIOCSIFADDR` and `SIOCSIFDSTADDR`, whose `data` is
+/// the protocol's `struct ifaddr`, not a request image; `in6.rs`'s `SIOCADDMULTI` and
+/// `SIOCDELMULTI`, an `in6_ifreq`) reach the driver with a zeroed image of `IOCPARM_LEN(cmd)`
+/// bytes, since the kernel's `NetDriver::ioctl` takes the request's bytes and `data` cannot be
+/// read without `unsafe`. The one kernel driver they reach is the loopback's, which reads no
+/// data for any of the four (if_loop.c:276-306); the image goes with `in_.rs` and `in6.rs`
+/// (N6.4, N6.5: docs/SCAFFOLDING.md), which pass their own requests to the kernel's
+/// `if_ioctl` then.
+fn kernel_driver_ioctl(ifp: &'static Ifnet, cmd: u64) -> Result<(), Errno> {
+    let mut image = [0u64; 8];
+    let bytes = hal::user::bytes_of_mut(&mut image[..]);
+    let n = (iocparm_len(cmd) as usize).min(bytes.len());
+    kernel::net::if_::if_ioctl(ifp, cmd, &mut bytes[..n])
 }
 
 impl kernel::net::if_var::NetDriver for LegacyNetDriver {
@@ -854,22 +875,32 @@ pub unsafe fn if_output_ml(
     error
 }
 
-/// `(*ifp->if_output)(ifp, m, dst, rt)`.
+/// `(*ifp->if_output)(ifp, m, dst, rt)`: through the interface's driver (`bsd`'s table, a
+/// kernel driver, or the link layer behind either: the loopback's, N6.3c2), the packet given
+/// to the kernel.
 ///
 /// # Safety
 ///
-/// As for [`IfOutputFn`].
-unsafe fn ifp_output(
+/// As for [`IfOutputFn`]: `dst` points at a readable socket address of its `sa_len` bytes.
+pub(crate) unsafe fn ifp_output(
     ifp: &'static Ifnet,
     m: &'static Mbuf,
     dst: *const Sockaddr,
     rt: Option<&'static Rtentry>,
 ) -> Result<(), Errno> {
-    match ifp.if_output().get() {
-        // SAFETY: the caller's contract is the hook's.
-        Some(output) => unsafe { output(ifp, m, dst, rt) },
-        None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
-    }
+    // SAFETY: the caller's contract: `dst` is readable for its `sa_len` bytes (at least the
+    // two of its header), borrowed for the call.
+    let sa = unsafe { sa_bytes(dst) };
+    let Some(dst) = kernel::net::proto::SockaddrView::new(sa) else {
+        panic(format_args!(
+            "{}: if_output to no address",
+            Str(&ifp.if_xname.get())
+        ));
+    };
+    let Some(&d) = ifp.if_driver.get() else {
+        panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get())));
+    };
+    d.output(ifp, unpark(m), dst, rt.map(|r| r as &_))
 }
 
 /// `if_output_tso`: sends a TCP packet with TSO, or chops it, or sends it whole when it fits
