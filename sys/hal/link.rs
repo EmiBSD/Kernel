@@ -465,9 +465,12 @@ impl SaLink {
                 "SaLink::set: not a socket address the link can read"
             );
         }
-        let p = sa.map_or(ptr::null_mut(), |c| c.as_ptr().cast::<u8>());
-        // `size_of::<T>()` fits: at most SA_READ_MAX, checked above.
-        self.publish(p, size_of::<T>() as u8);
+        match sa {
+            // `size_of::<T>()` fits: at most SA_READ_MAX, checked above.
+            Some(c) => self.publish(c.as_ptr().cast::<u8>(), size_of::<T>() as u8),
+            // An empty link is null with `cap` 0 (the type's invariant), as `clear` leaves it.
+            None => self.publish(ptr::null_mut(), 0),
+        }
     }
 
     /// The link empties (`ifa->ifa_dstaddr = NULL`). Needs no token: an empty link lends
