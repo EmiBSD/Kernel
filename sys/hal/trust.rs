@@ -144,6 +144,9 @@
 //! that dereference `SaLink::get` (now the words' address for an IPv4 address) keep their
 //! own premise in their own `unsafe`: the kernel's `in_` writes those words only under the
 //! exclusive net lock (`in_ifinit`, as the C), and a reader under the net lock sees no write.
+//! The address carries the provenance of the whole `SaWords` (`SA_READ_MAX`, 32 bytes, all
+//! inside `AtomicU64`s), so a reader of a whole `sockaddr_in` (16 bytes) through it stays in
+//! bounds.
 //!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is

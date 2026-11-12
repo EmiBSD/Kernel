@@ -513,9 +513,14 @@ impl SaWords {
         b
     }
 
-    /// The storage's address, which [`SaLink::get`] gives `bsd`'s legacy readers.
+    /// The storage's address, which [`SaLink::get`] gives `bsd`'s legacy readers, with the
+    /// provenance of the whole array ([`SA_READ_MAX`] bytes, every one inside an
+    /// `AtomicU64`'s `UnsafeCell`): a reader of a whole `sockaddr_in` through it
+    /// (`ip_divert`'s `satosin_const(sa).read_unaligned()`, 16 bytes) stays inside the
+    /// pointer's provenance, which a pointer taken from the first word alone (8 bytes) would
+    /// not give.
     fn as_ptr(&self) -> *mut u8 {
-        self.0[0].as_ptr().cast::<u8>()
+        self.0.as_ptr().cast::<u8>().cast_mut()
     }
 }
 
@@ -542,14 +547,15 @@ impl core::fmt::Debug for SaWords {
 /// Invariant: `ptr` is null (with `cap` 0 and `words` empty); or `set` stored it with `cap`
 /// = `size_of::<T>()` from a `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most
 /// [`SA_READ_MAX`] bytes, by `set`'s compile-time check), with `words` empty; or `set_words`
-/// stored the address of an `&'static SaWords` with `cap` = `size_of::<T>()` (the same
-/// bounds) and `words` naming that `SaWords`. The three change only together, inside `seq`'s
-/// odd window, so a reader that sees `seq` even and unchanged around its loads has a triple
-/// one writer stored. All zero is a valid, empty link (null, 0, empty, 0): an interface
+/// stored the address of an `&'static SaWords`, with the provenance of its whole array
+/// ([`SA_READ_MAX`] bytes, so at least `cap`: `SaWords::as_ptr`), with `cap` =
+/// `size_of::<T>()` (the same bounds) and `words` naming that `SaWords`. The three change
+/// only together, inside `seq`'s odd window, so a reader that sees `seq` even and unchanged
+/// around its loads has a triple one writer stored. All zero is a valid, empty link (null, 0, empty, 0): an interface
 /// address in a zeroed softc or `M_ZERO` allocation.
 pub struct SaLink {
-    /// The storage's address with its provenance (`Cell::as_ptr`, `AtomicU64::as_ptr`),
-    /// null for none.
+    /// The storage's address with its provenance over the whole storage (`Cell::as_ptr`, the
+    /// `SaWords` array's `as_ptr`), null for none.
     ptr: AtomicPtr<u8>,
     /// The storage's size; 0 when the link is empty.
     cap: AtomicU8,
@@ -665,7 +671,11 @@ impl SaLink {
     }
 
     /// The address, for a legacy reader that dereferences it in its own `unsafe` block, as
-    /// LZ's sites do (relaxed: the word changes under the net lock its readers hold).
+    /// LZ's sites do (relaxed: the word changes under the net lock its readers hold). Its
+    /// provenance covers the whole storage (the type's invariant): a `Cell<T>`'s
+    /// `size_of::<T>()` bytes, or a kernel-owned [`SaWords`]' [`SA_READ_MAX`], so a reader
+    /// of the family's whole socket address (a `sockaddr_in`'s 16 bytes, `ip_divert`'s
+    /// `read_unaligned`) stays inside it.
     #[inline]
     pub fn get(&self) -> *mut Sockaddr {
         self.ptr.load(Ordering::Relaxed).cast::<Sockaddr>()
@@ -1064,8 +1074,11 @@ mod tests {
             w.as_ptr().cast_const()
         ));
         // SAFETY: the test owns `w` (leaked, alive for ever) and nothing writes it while this
-        // reads its first byte through the legacy address, as `bsd`'s readers do.
-        assert_eq!(unsafe { l.get().cast::<u8>().read() }, 16);
+        // reads a whole `sockaddr_in` (16 of the storage's 32 bytes, unaligned) through the
+        // legacy address, as `bsd`'s `ip_divert` does; the address carries the provenance of
+        // the whole array (`SaWords::as_ptr`), and a `SockaddrIn` is plain data.
+        let legacy = unsafe { l.get().cast::<SockaddrIn>().read_unaligned() };
+        assert_eq!(legacy, sin);
 
         // A shorter sa_len reads only its bytes (a netmask), a longer one stops at the image.
         let mut mask = sin;
