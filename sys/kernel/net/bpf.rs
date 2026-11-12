@@ -852,10 +852,11 @@ fn bpf_attachd(d: &BpfDRef, bp: &BpfIfRef, s: &mut MutexedGuard<'_, BpfSlots>) {
     // The driver's word names this tap, whichever of the word's taps it named before (the
     // C stores it every time: a listener on a second tap of the word moves the driver to
     // it); a word that names it already is left, not stored again.
+    let tap: &BpfIf = bp;
     let names_bp = bp
         .bif_driverp
         .load(&r)
-        .is_some_and(|cur| ptr::eq(cur.get(), &**bp));
+        .is_some_and(|cur| ptr::eq(cur.get(), tap));
     drop(r);
     if !names_bp {
         drop(bp.bif_driverp.store(&w, Some(bp.clone())));
