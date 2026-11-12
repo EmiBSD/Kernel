@@ -98,6 +98,10 @@
 //!   `rtable_insert`, `rtable_delete` and `rtable_mpath_reprio` take `r_lock` once and a read
 //!   section inside it (one per-CPU count pair, no spl, where the C's writers read without
 //!   one); `rtable_walk` takes `r_lock` once per node and a read section per step, as the C's.
+//!   `rtable_read` holds `r_lock` throughout, as the C's, and a read section per step, never
+//!   across its callback (which may sleep: `sysctl_dumpentry`'s copyout): each route is lent
+//!   through a counted handle, one atomic pair per route the C does not pay (a dump, a
+//!   control path).
 //! - Costs against the C: the lookups are the C's loads; a chain edit pays one atomic per
 //!   word it publishes (the reference it holds); `rtable_lookup` with a gateway compares it
 //!   through the route's read-mostly cell (one compare-and-swap per entry looked at, the
@@ -1018,8 +1022,10 @@ pub fn rtable_walk(
 }
 
 /// `rtable_read(rtableid, af, func)`: `func(rt, rtableid)` on every route of the table, in
-/// the tree's order, the table's lock held throughout; the first `Err` stops the walk and is
-/// answered. `EAFNOSUPPORT` without a table.
+/// the tree's order, the table's lock held throughout (the callback may sleep, as
+/// `sysctl_dumpentry`'s copyout does: each route is lent through a counted handle taken in a
+/// read section of its own step, none held across the call); the first `Err` stops the walk
+/// and is answered. `EAFNOSUPPORT` without a table.
 pub fn rtable_read(
     rtableid: u32,
     af: SaFamily,
@@ -1027,19 +1033,33 @@ pub fn rtable_read(
 ) -> Result<(), Errno> {
     let tbl = rtable_get(rtableid, af).ok_or(Errno::EAFNOSUPPORT)?;
     let mut ai = ArtIter::new();
+    let mut opened = false;
     let w = tbl.r_lock.write();
-    let g = smr::read();
-    let mut an = tbl.r_art.art_iter_open(&mut ai, &w, &g);
-    while let Some(n) = an {
-        let mut rt = n.get().an_value.load(&g);
+    loop {
+        let mut rt = {
+            let g = smr::read();
+            let an = if opened {
+                tbl.r_art.art_iter_next(&mut ai, &w, &g)
+            } else {
+                opened = true;
+                tbl.r_art.art_iter_open(&mut ai, &w, &g)
+            };
+            match an {
+                None => break,
+                Some(an) => an.get().an_value.load(&g).map(SmrRef::arc),
+            }
+        };
         while let Some(r) = rt {
             if let Err(e) = func(&r, rtableid) {
+                let g = smr::read();
                 tbl.r_art.art_iter_close(&mut ai, &w, &g);
                 return Err(e);
             }
-            rt = r.get().rt_next.load(&g);
+            rt = {
+                let g = smr::read();
+                r.rt_next.load(&g).map(SmrRef::arc)
+            };
         }
-        an = tbl.r_art.art_iter_next(&mut ai, &w, &g);
     }
     Ok(())
 }
@@ -1446,6 +1466,16 @@ mod tests {
             Err(Errno::EEXIST)
         );
         assert_eq!(n, 1);
+        // Its callback runs outside every read section (it may sleep: `smr::idle` panics
+        // inside one).
+        let mut n = 0;
+        rtable_read(0, AF_INET, |_, _| {
+            smr::idle();
+            n += 1;
+            Ok(())
+        })
+        .expect("read");
+        assert_eq!(n, 3);
         // rtable_walk gives the route it stopped at.
         let mut at = None;
         assert_eq!(
