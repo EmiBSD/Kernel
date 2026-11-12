@@ -96,10 +96,13 @@
 //! - The result is a `u16`.
 //!
 //! ## Redesign
-//! - LZ's `read_unaligned` of the header at `mtod(m)` -> `hal::pod::at::<Ip>` over the
-//!   kernel's `Mbuf::data()` (a 20-byte copy of the header, as LZ's, with no `unsafe`; the
-//!   check that the first mbuf holds one is the copy's). `#[inline]`: a per-packet helper
-//!   of `bsd`'s transports across the crate boundary (N6.3c1's R12).
+//! - LZ's `read_unaligned` of the header at `mtod(m)` and its 12-byte pseudo header array
+//!   -> the protocol and length words added directly and `ip_src`/`ip_dst` read in place
+//!   from the kernel's `Mbuf::data()` as the four 16-bit words they sum to, with no `unsafe`
+//!   and no copy (a whole-header `hal::pod::at::<Ip>` was a memmove call in the dev profile,
+//!   +34 % on N6.4a's `in4.cksum.40`); the check that the first mbuf holds a header is the
+//!   slice's bound (`m_len < sizeof(struct ip)`, the C's panic). `#[inline]`: a per-packet
+//!   helper of `bsd`'s transports across the crate boundary (N6.3c1's R12).
 
 use core::mem::size_of;
 
@@ -111,6 +114,9 @@ use crate::assert::kpanic;
 use crate::net::mbuf::Mbuf;
 use crate::netinet::in_cksum::{cksum_add, cksum_fold};
 use crate::prf::printf;
+
+/// `offsetof(struct ip, ip_src)`: the source, then the destination.
+const IP_SRC: usize = core::mem::offset_of!(Ip, ip_src);
 
 /// `in4_cksum`: the checksum of `len` bytes of `m` from `off`, over the pseudo header of
 /// protocol `nxt` when it is not 0.
@@ -124,17 +130,16 @@ pub fn in4_cksum(m: &Mbuf, nxt: u8, off: i32, len: i32) -> u16 {
         if (off as usize) < size_of::<Ipovly>() {
             kpanic(format_args!("in4_cksum: offset too short"));
         }
-        let Some(ip) = hal::pod::at::<Ip>(m.data(), 0) else {
+        // `ip_src` and `ip_dst`, read in place as the four 16-bit words they sum to (no copy
+        // of the whole header: a call to memmove in the dev profile, N6.4a's bench).
+        let Some(addrs) = m.data().get(IP_SRC..IP_SRC + 8) else {
             kpanic(format_args!("in4_cksum: bad mbuf chain"));
         };
         // ih_x1[8] = 0, ih_pr = nxt, ih_len, ih_src, ih_dst: the words 4..9 of the overlay,
         // whose first 8 bytes are zeroes.
-        let mut u = [0u8; 12];
-        u[1] = nxt;
-        u[2..4].copy_from_slice(&htons(len as u16).to_ne_bytes());
-        u[4..8].copy_from_slice(&ip.ip_src.s_addr.to_ne_bytes());
-        u[8..12].copy_from_slice(&ip.ip_dst.s_addr.to_ne_bytes());
-        let (words, _) = u.as_chunks::<2>();
+        sum += u64::from(u16::from_ne_bytes([0, nxt]));
+        sum += u64::from(htons(len as u16));
+        let (words, _) = addrs.as_chunks::<2>();
         for w in words {
             sum += u64::from(u16::from_ne_bytes(*w));
         }

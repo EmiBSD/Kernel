@@ -16309,7 +16309,7 @@ rust = "sys/kernel/netinet/in4_cksum.rs"
 crate = "kernel"
 lz = ["sys/netinet/in4_cksum.rs"]
 status = "redesigned"
-notes = "N6.4a: in4_cksum.c in the kernel over the kernel's Mbuf: the header read by hal::pod::at (LZ's read_unaligned, its one unsafe, gone), the pseudo header's words summed as LZ's, #[inline] (a per-packet helper of bsd's transports across the crate boundary, N6.3c1 R12); bsd reaches it under LZ's path through sys/netinet/mod.rs's re-export"
+notes = "N6.4a: in4_cksum.c in the kernel over the kernel's Mbuf: ip_src and ip_dst read in place as 16-bit words (LZ's read_unaligned of the header, its one unsafe, gone; no copy of the header), the pseudo header's words summed as LZ's, #[inline] (a per-packet helper of bsd's transports across the crate boundary, N6.3c1 R12); bsd reaches it under LZ's path through sys/netinet/mod.rs's re-export"
 
 [[module]]
 rust = "sys/kernel/netinet/in_cksum.rs"
