@@ -156,12 +156,9 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge};
 use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
-use crate::net::if_ethersubr::ether_brport_isset;
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::if_ether::{
-    arp_rtrequest, arpcom_of, arpinput, arpintr, arpresolve, revarpinput,
-};
+use crate::netinet::if_ether::{arp_rtrequest, arpinput, arpintr, arpresolve, revarpinput};
 use crate::netinet::igmp::rti_delete;
 use crate::netinet::in_::in_ifdetach;
 use crate::netinet::ip_input::{ipintr, ipv4_input};
@@ -383,8 +380,9 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
     }
 }
 
-/// The legs of the subsystems `if.c` calls that are still `bsd`'s: the internet protocols
-/// (`Inet`) and the link layers (`Link`), registered by [`ifinit`].
+/// The legs of the subsystems `if.c` and `if_ethersubr.c` call that are still `bsd`'s: the
+/// internet protocols (`Inet`), registered by [`ifinit`] (the link layers are the kernel's
+/// since N6.3c2).
 pub struct BsdNetLegs;
 
 /// The one [`BsdNetLegs`].
@@ -676,22 +674,11 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     }
 }
 
-impl kernel::net::if_::Link for BsdNetLegs {
-    fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool {
-        ether_brport_isset(ifp).is_err()
-    }
-
-    fn arpcom_set_enaddr(&self, ifp: &'static Ifnet, lladdr: &[u8; IF_ETHER_ADDR_LEN]) {
-        arpcom_of(ifp).ac_enaddr.set(*lladdr);
-    }
-}
-
 /// `ifinit`: the kernel's interface layer made (its index map) and the legs of `bsd`'s
 /// subsystems registered (a second call, a test's, keeps the first).
 pub fn ifinit() {
     let _ = kernel::net::if_::register_inet(&BSD_NET_LEGS);
     let _ = kernel::net::ipsec_hooks::register_ipsec(&crate::net::if_enc::BSD_IPSEC);
-    let _ = kernel::net::if_::register_link(&BSD_NET_LEGS);
     kernel::net::if_::ifinit();
 }
 

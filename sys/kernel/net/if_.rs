@@ -524,16 +524,6 @@ pub trait Inet: Sync + 'static {
     fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
 }
 
-/// What the kernel's interface layer asks of the Ethernet layer (`if_ethersubr.c`, `bsd`'s
-/// until N6.3c2; bpf(4) is the kernel's since N6.3c1): a bridge (bridges.toml's `Link` row).
-/// Before registration every leg does nothing.
-pub trait Link: Sync + 'static {
-    /// `ether_brport_isset(ifp)`: the Ethernet interface is a bridge port.
-    fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool;
-    /// `if_setlladdr`'s `memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN)`.
-    fn arpcom_set_enaddr(&self, ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]);
-}
-
 /// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
 /// drops it.
 fn proto_drop(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
@@ -542,8 +532,6 @@ fn proto_drop(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
 
 /// The internet protocols' legs, once registered.
 static INET: OnceStatic<&'static dyn Inet> = OnceStatic::new();
-/// The link layers' legs, once registered.
-static LINK: OnceStatic<&'static dyn Link> = OnceStatic::new();
 
 /// Registers the internet protocols' legs, once (`bsd`'s boot, before the first interface).
 pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::AlreadyRegistered> {
@@ -551,22 +539,10 @@ pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::Already
         .map_err(|_| hal::bridges::AlreadyRegistered("Inet"))
 }
 
-/// Registers the link layers' legs, once.
-pub fn register_link(imp: &'static dyn Link) -> Result<(), hal::bridges::AlreadyRegistered> {
-    LINK.set(imp)
-        .map_err(|_| hal::bridges::AlreadyRegistered("Link"))
-}
-
 /// The internet protocols' legs, `None` before registration.
 #[inline]
 pub(crate) fn inet() -> Option<&'static dyn Inet> {
     INET.get().copied()
-}
-
-/// The link layers' legs, `None` before registration.
-#[inline]
-pub(crate) fn link() -> Option<&'static dyn Link> {
-    LINK.get().copied()
 }
 
 /// `struct softnet`: a softnet task queue and its barrier.
@@ -2639,8 +2615,10 @@ pub fn if_setlladdr(ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]) -> Resul
         return Err(Errno::EINVAL);
     }
 
-    if let Some(l) = link() {
-        l.arpcom_set_enaddr(ifp, lladdr);
+    // memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN): an Ethernet
+    // interface's (the C's callers are; another has no arpcom to write).
+    if let Some(ac) = ifp.if_arpcom.get() {
+        ac.ac_enaddr.set(*lladdr);
     }
     ifp.if_sadl.update(|sdl| {
         if let Some(sdl) = sdl {
@@ -4184,7 +4162,10 @@ pub fn ifsetlro(ifp: &'static Ifnet, on: bool) -> Result<(), Errno> {
 
         if on && ifp.if_xflags.get() & IFXF_LRO == 0 {
             // NETHER > 0
-            if ifp.if_type.get() == IFT_ETHER && link().is_some_and(|l| l.ether_brport_isset(ifp)) {
+            if ifp.if_type.get() == IFT_ETHER
+                && ifp.if_arpcom.get().is_some()
+                && crate::net::if_ethersubr::ether_brport_isset(ifp).is_err()
+            {
                 break 'out Err(Errno::EBUSY);
             }
             ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_LRO);

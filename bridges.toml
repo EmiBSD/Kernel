@@ -387,7 +387,8 @@ paid_by = "N8"
 # and if_vinput, pfi_attach_ifnet/pfi_detach_ifnet for if_attachsetup/if_detach, and the
 # groups' pfi_attach_ifgroup, pfi_detach_ifgroup, pfi_group_addmember, pfi_group_delmember),
 # default methods doing what the C without pf does until BsdPf overrides them (N6.3a1's adapter
-# commit). N6.3c adds the stack's other legs (the N6 plan's section 5). Paid when pf moves (N8).
+# commit). N6.4 adds ip_input.c's legs (the N6 plan's section 5; N6.3c's bpf, Ethernet and
+# loopback call none). Paid when pf moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
@@ -435,7 +436,10 @@ paid_by = "N7"
 # socket) for ifioctl (N6.3a2); route.c's ifa_free (ifafree's free(ifa, M_IFADDR, 0)),
 # ip_multipath and ip6_multipath (rt_hash, the route caches) and ipstat_rtcache/ip6stat_rtcache
 # (route_cache, route6_cache) for kernel::net::route (N6.3b1; bsd's BsdInet answers them
-# since the routing switch, N6.3b2). Registered by bsd's boot before the
+# since the routing switch, N6.3b2); arpinput, revarpinput, arpresolve, nd6_resolve,
+# arp_rtrequest, nd6_rtrequest and the three checksums (in_hdr_cksum_out, in_proto_cksum_out,
+# in6_proto_cksum_out) for kernel::net::if_ethersubr's ether_input, ether_resolve,
+# ether_rtrequest and ether_offload_ifcap (N6.3c2). Registered by bsd's boot before the
 # first interface (N6.3a1's adapter commit); before that every leg does nothing, the C
 # without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
@@ -453,17 +457,6 @@ paid_by = "N6"
 trait = "Ipsec"
 for = ["sys/kernel/net/rtsock.rs"]
 paid_by = "N8"
-
-# bsd: what if.c asks of the Ethernet layer (if_ethersubr.c): ether_brport_isset (ifsetlro)
-# and the arpcom's ac_enaddr (if_setlladdr). Registered by bsd's boot (N6.3a1's adapter
-# commit). bpf(4)'s four legs (bpf_mtap_ether, the per-queue tap word, bpf_mtap_af,
-# bpfdetach) went with bpf into the kernel (N6.3c1: direct calls of kernel::net::bpf). Paid
-# when the Ethernet layer moves (N6.3c2, N6's row).
-# kernel::net::if_::Link
-[[bridge]]
-trait = "Link"
-for = ["sys/kernel/net/if_.rs"]
-paid_by = "N6"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),
 # implemented by bsd's IfqOps tables themselves (sys/net/ifq.rs: impl QueueDiscipline for
