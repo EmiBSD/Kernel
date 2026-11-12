@@ -357,6 +357,19 @@ pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<&'static Ifaddr> {
     Some(&enc_softc(ifp).sc_ifa)
 }
 
+/// The kernel's `Ipsec` bridge over enc(4) (bridges.toml's `Ipsec` row, paid by N8):
+/// `rtm_getifa`'s `enc_getifa` for a route to a `PF_KEY` destination.
+pub struct BsdIpsec;
+
+/// The one [`BsdIpsec`], registered by `bsd`'s `ifinit`.
+pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
+
+impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
+    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<&'static Ifaddr> {
+        enc_getifa(rtableid, unit)
+    }
+}
+
 /// `enc_setif`: makes `ifp` the default enc interface of `rdomain` if it has none.
 pub fn enc_setif(ifp: &'static Ifnet, rdomain: u32) -> Result<(), Errno> {
     net_assert_locked("enc_setif");

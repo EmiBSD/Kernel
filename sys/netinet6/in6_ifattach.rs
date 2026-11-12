@@ -121,7 +121,7 @@ use crate::netinet::ip6::IPV6_MMTU;
 use crate::netinet6::in6::{
     IN6ADDR_INTFACELOCAL_ALLNODES, IN6ADDR_LINKLOCAL_ALLNODES, IN6ADDR_LOOPBACK, IN6MASK64,
     IN6MASK128, In6Addr, SockaddrIn6, in6_purgeaddr, in6_update_ifa, in6if_do_dad,
-    in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr, sin6tosa,
+    in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr,
 };
 use crate::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq};
 use crate::netinet6::nd6::{ND6_INFINITE_LIFETIME, nd6_need_cache, nd6_purge};
@@ -341,15 +341,13 @@ pub fn in6_ifattach_linklocal(ifp: &'static Ifnet, ifid: Option<&In6Addr>) -> Re
         flags |= RTF_CLONING;
     }
 
-    // SAFETY: the address's own socket address.
-    let error = unsafe {
-        rt_ifa_add(
-            &ia6.ia_ifa,
-            flags,
-            ia6.ia_ifa.ifa_addr.get(),
-            ifp.if_rdomain.get(),
-        )
-    };
+    // The address's own socket address (ia_addr), copied.
+    let error = rt_ifa_add(
+        &ia6.ia_ifa,
+        flags,
+        crate::net::route::sa_of(&ia6.ia_addr.get()),
+        ifp.if_rdomain.get(),
+    );
     if let Err(e) = error {
         in6_purgeaddr(&ia6.ia_ifa);
         return Err(e);
@@ -444,8 +442,7 @@ fn in6_ifdetach_route(ifp: &'static Ifnet, allnodes: &In6Addr) {
     sin6.sin6_addr = *allnodes;
     sin6.sin6_addr
         .set_s6_addr16(1, htons(ifp.if_index.get() as u16));
-    // SAFETY: `sin6` is a socket address of its `sin6_len` bytes, live for the call.
-    let rt = unsafe { rtalloc(sin6tosa(&mut sin6), 0, ifp.if_rdomain.get()) };
+    let rt = rtalloc(crate::net::route::sa_of(&sin6), 0, ifp.if_rdomain.get());
     if let Some(rt) = rt
         && rt.rt_ifidx.get() == ifp.if_index.get()
     {

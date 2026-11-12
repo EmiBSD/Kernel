@@ -67,8 +67,8 @@
 //! Each system call is a function of the thread and its typed arguments (`UserPtr<T>` for a
 //! user pointer), returning what the C puts in `retval[0]`; `bsd`'s `sysent[]` rows and the
 //! `abi` module's `Native` entries call them. The machine's TCB (`TCB_SET`, `TCB_GET`,
-//! `TCB_INVALID`, N4.8) and the routing tables (`rtable_exists`, N6) are reached through the
-//! process glue.
+//! `TCB_INVALID`, N4.8) is reached through the process glue; the routing tables are the
+//! kernel's (`kernel::net::rtable::rtable_exists`, N6.3b).
 //!
 //! ## Deviations
 //! - Credentials are `CredRef`s (N4.2): a shared credential is never written. The set*id
@@ -939,7 +939,7 @@ pub fn sys_setrtable<G: ProcGlue>(p: &Thread<G>, rtableid: i32) -> Result<(), Er
     if ps_rtableid != 0 {
         suser(p)?;
     }
-    if rtableid < 0 || !G::rtable_exists(rtableid as u32) {
+    if rtableid < 0 || !crate::net::rtable::rtable_exists(rtableid as u32) {
         return Err(Errno::EINVAL);
     }
 

@@ -5787,7 +5787,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6284,7 +6284,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6302,13 +6302,13 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/net/if_loop.rs"
@@ -6370,7 +6370,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6420,12 +6420,13 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
 lz = ["sys/net/pfkeyv2_convert.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_parsemessage.rs"
@@ -6453,19 +6454,20 @@ status = "inherited"
 rust = "sys/net/route.rs"
 lz = ["sys/net/route.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
-notes = "M7b: every constant (RTF_* u32, RTM_* u8, RTA_* i32, RTAX_* usize, RTP_* u8, RTV_* u32), rt_kmetrics (Cells, rmx_mtu atomic, assign for the structure copy), rt_metrics, rtstat, rt_tableinfo, rt_msghdr, sockaddr_rtlabel/rtdns/rtstatic/rtsearch, enum rtstat_counters, ROUTE_FILTER, srtdnstosa; struct rtentry (&'static pool item, Cells and atomics, all-zero valid; rt_use/rt_expire/rt_locks/rt_mtu methods, ifa() panics without an address), rt_addrinfo (rti_flags u32), struct route (Cells; ro_dstsin6/ro_srcin6 are byte arrays until netinet6/in6.h, so wip), rttimer_queue, rttimer (private to route.c in C, here with its queue), rt_label, rtstat_inc (one atomic array: percpu.h not ported); MPLS/BFD/INET6 parts not configured; M9+: ro_dstsin6/ro_srcin6 are SockaddrIn6/In6Addr"
+adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+notes = "N6.3b2: the adapter, of no logic, of bsd callers over kernel::net::{route, rtable, rtsock}: a lent or parked route as the &'static Rtentry LZ code keeps (as_static, the one unsafe, D-N6.3b-19; park/unpark of PoolArc::forget/adopt for rtalloc/rtref/rtfree), the socket addresses as byte slices (sa_of, sa_view), the net lock's proof made through the SaToken (net_held, a panic without the lock); route.h's constants and structures re-exported from hal::sys::net_route; M7b's notes (Cells, the zeroed rtentry) superseded"
 
 [[module]]
 rust = "sys/net/rtable.rs"
 lz = ["sys/net/rtable.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/rtable.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/net/rtsock.rs"
 lz = ["sys/net/rtsock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/net/toeplitz.rs"
@@ -6498,13 +6500,13 @@ status = "inherited"
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6520,7 +6522,7 @@ status = "inherited"
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
 
 [[module]]
@@ -6533,7 +6535,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs"]
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6576,7 +6578,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 rust = "sys/netinet/ip_divert.rs"
 lz = ["sys/netinet/ip_divert.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ecn.rs"
@@ -6587,13 +6589,13 @@ status = "inherited"
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_id.rs"
@@ -6604,7 +6606,7 @@ status = "inherited"
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6616,7 +6618,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 rust = "sys/netinet/ip_ipip.rs"
 lz = ["sys/netinet/ip_ipip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipsp.rs"
@@ -6628,7 +6630,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/ker
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -6655,7 +6657,7 @@ status = "inherited"
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6676,13 +6678,13 @@ status = "inherited"
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6693,7 +6695,7 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
@@ -6705,12 +6707,13 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
 lz = ["sys/netinet/tcp_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet/udp.rs"
@@ -6721,7 +6724,7 @@ status = "inherited"
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6732,7 +6735,7 @@ status = "inherited"
 rust = "sys/netinet6/dest6.rs"
 lz = ["sys/netinet6/dest6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet6/frag6.rs"
@@ -6744,13 +6747,13 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_cksum.rs"
@@ -6762,13 +6765,13 @@ adapted_by = ["sys/kernel/net/mbuf.rs"]
 rust = "sys/netinet6/in6_ifattach.rs"
 lz = ["sys/netinet6/in6_ifattach.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -6778,7 +6781,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet6/in6_src.rs"
 lz = ["sys/netinet6/in6_src.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_var.rs"
@@ -6790,13 +6794,13 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 rust = "sys/netinet6/ip6_divert.rs"
 lz = ["sys/netinet6/ip6_divert.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_forward.rs"
 lz = ["sys/netinet6/ip6_forward.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_id.rs"
@@ -6807,13 +6811,13 @@ status = "inherited"
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6840,36 +6844,37 @@ status = "inherited"
 rust = "sys/netinet6/nd6.rs"
 lz = ["sys/netinet6/nd6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_nbr.rs"
 lz = ["sys/netinet6/nd6_nbr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_rtr.rs"
 lz = ["sys/netinet6/nd6_rtr.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
 rust = "sys/netinet6/route6.rs"
 lz = ["sys/netinet6/route6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/netinet6/udp6_output.rs"
 lz = ["sys/netinet6/udp6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
 rust = "sys/nfs/krpc_subr.rs"
@@ -8017,6 +8022,67 @@ lz = ["sys/net/rtable.rs"]
 status = "redesigned"
 notes = "N6.3b1: rtable.h and rtable.c over the kernel's Art<RtNode>: RtNode (pool art_node) whose an_value and every route's rt_next are counted hal::smr words holding the table's reference (rtref), lookups answering SmrRef::arc handles; chain edits move references (SmrArcWord::restore) so rmx_refcnt stays the C's; afmap a static array of SmrPtr<Rtmap> keyed to the kernel lock, a map an item of the new pool rtmappl (D-N6.3b-12) whose arrays are the C's mallocarray(M_RTABLE); a table embeds its ART and is leaked (never freed, as the C's); r_source a copy (D-N6.3b-13); the routing domains' parameters read from domains[] once by rtable_init<G> (the rest not generic); rtable_walk lets r_lock go around the callback (WriteWitness::unlocked) with one handle per route; rtable_satoplen Err(EINVAL) for -1"
 
+[[module.fn]]
+lz = "sys/net/rtable.rs::Rtmap::slot"
+native = ["Rtmap::table", "Rtmap::value"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::rt_root"
+native = []
+kind = "dropped"
+reason = "RT_ROOT(rt) is (0) in rtable.h, so route.c's KASSERT(!RT_ROOT(rt)) cannot fire; the kernel keeps neither"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::afmap"
+native = ["afmap_load"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::afmap_get"
+native = ["afmap_load"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::rtmap_dtor"
+native = []
+kind = "dropped"
+reason = "a replaced map's handle is released by SMR after a grace period (the map an SmrLinked item of the pool rtmappl, D-N6.3b-12): the SmrPtr store's retirement does what smr_call(rtmap_dtor) did"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::an_rt"
+native = ["RtNode::first"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::RtLink"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::RtLink::get"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::RtLink::set"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::rtable_match_smr"
+native = ["rtable_match"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::satoaddr"
+native = ["with_key"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtable.rs::sa_equal"
+native = ["sys/kernel/net/route.rs::Rtentry::gateway_is"]
+kind = "moved"
 [[module]]
 rust = "sys/kernel/net/route.rs"
 crate = "kernel"
@@ -8024,6 +8090,155 @@ lz = ["sys/net/route.rs"]
 status = "redesigned"
 notes = "N6.3b1: route.c and the kernel half of route.h: Rtentry a recorded TypedPool item (rtentry) handled through PoolArc, the count rt_refcnt (rtref a clone, rtfree a drop, the last rtfree the entry's Drop; the reference table in its Redesign), members by the C's legend (rt_gateway/rt_gwroute/rt_parent ReadMostly cells, rt_flags an atomic word with set/clear, the rest relaxed atomics, rt_ifa a Link, rt_llinfo a word, rt_cachecnt in rt_mtx's Mutexed); Route owned with &mut methods (cache4/mpath4, cache6/mpath6); RtAddrinfo of SockaddrViews; the timers (pool rttmr, two PinLists under RTTIMER_MTX, a parked membership reference, the timeout's argument a handle; a timer holds a counted handle of its route, removed when the route leaves its table, rt_refcnt not counting it: R11); the labels a Mutexed chain of M_RTABLE boxes; rtcounters a Counters; the routing socket's senders kernel::net::rtsock's (N6.3b2); in_broadcast read over the interface list until N6.4; MPLS/BFD not configured"
 
+[[module.fn]]
+lz = "sys/net/route.rs::roundup_long"
+native = ["roundup_sa"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtNext"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtNext::new"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtNext::get"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtNext::set"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtNext::default"
+native = ["sys/hal/smr.rs::SmrArcWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtstatCounters"
+native = ["RTS_BADREDIRECT", "RTS_DYNAMIC", "RTS_NEWGATEWAY", "RTS_UNREACH", "RTS_WILDCARD", "RTS_NCOUNTERS"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RouteDst"
+native = ["Route"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RouteSrc"
+native = ["Route"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_dstsa"
+native = ["Route::dst"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_dstsin"
+native = ["Route::dst"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_dst_family"
+native = ["Route::dst"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_srcin"
+native = ["Route"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_dstsin6"
+native = ["sys/netinet6/ip6_output.rs::ro_sin6"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Route::ro_srcin6"
+native = ["Route"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtqFn"
+native = ["RtqFunc"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/route.rs::Rttimer::queue"
+native = ["Rttimer"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RtLabelHead"
+native = ["RT_LABELS"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RttimerList"
+native = ["rt_timer_queue_flush", "rt_timer_remove_all"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::RTLABEL_MTX"
+native = ["RT_LABELS"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::srtdnstosa"
+native = []
+kind = "dropped"
+reason = "a pointer cast the kernel needs none of: struct sockaddr_rtdns is an AbiPod image of hal::sys::net_route whose bytes rtm_xaddrs and rtm_proposal read as views"
+
+[[module.fn]]
+lz = "sys/net/route.rs::rtgeneration_bump"
+native = ["RTGENERATION"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::rt_free_sa"
+native = []
+kind = "dropped"
+reason = "a route's key and gateway are owned M_RTABLE buffers of the Rtentry, freed by their drop with the route (or when rt_setgate replaces the gateway)"
+
+[[module.fn]]
+lz = "sys/net/route.rs::equal"
+native = []
+kind = "dropped"
+reason = "a slice equality of the two addresses' sa_len bytes at its sites (rtredirect, rt_setgate), over SockaddrViews bounded by their buffers"
+
+[[module.fn]]
+lz = "sys/net/route.rs::opt_ptr_eq"
+native = []
+kind = "dropped"
+reason = "core::ptr::eq over the PoolArc handles and references at its sites (rtredirect's gateway route, rt_ifa_del's address)"
+
+[[module.fn]]
+lz = "sys/net/route.rs::rtrequest_unwind"
+native = ["rtrequest_add"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::free_sa"
+native = []
+kind = "dropped"
+reason = "the M_RTABLE buffers are owned values (MArray) freed by their drop"
+
+[[module.fn]]
+lz = "sys/net/route.rs::rt_ifa_localflags"
+native = ["is_any_addr", "rt_ifa_addlocal", "rt_ifa_dellocal"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/route.rs::rtlabel_id2name_locked"
+native = ["rtlabel_find"]
+kind = "renamed"
 [[module]]
 rust = "sys/kernel/net/rtsock.rs"
 crate = "kernel"
@@ -8031,6 +8246,163 @@ lz = ["sys/net/rtsock.rs"]
 status = "redesigned"
 notes = "N6.3b2: rtsock.c in the kernel: Rtpcb an item of the recorded pool rtpcb hung in the socket's protocol slot (a borrow per request) and held by its desync timeout's argument, its [s] members one Guarded keyed to the socket's lock, rtptable the glue's RtsockTables (rtp_lk a RawRwlock, rtp_list a PinList) with rtp_count a static atomic; the route domain native (RouteDomain, RouteProto, RouteUsrreqs, decision 46), its sockets locked with a witness and let go by SoLocked::unlocked where the C calls sounlock; the messages byte buffers (rtm_msg1 one mbuf or cluster, rtm_msg2 a slice or the walk's MArray, the headers AbiPod images edited as copies), the addresses SockaddrViews (rtm_xaddrs bounded by sa_len and the message), a route's gateway copied whole and the interface addresses read under the net lock; sysctl_rtable's copy-outs the prefix rtm_msg2 just built, rmx_refcnt rtable_read_refcnt - 1; the announcements non-generic, reaching the glue's listeners through the walk route_prinit registers (ROUTE_INPUT, SCAFFOLDING); enc_getifa through the Ipsec bridge; BFD/MPLS not configured"
 
+[[module.fn]]
+lz = "sys/net/rtsock.rs::SIZEOF_SOCKADDR_IN6"
+native = ["SIN6_LEN"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::SIZEOF_SOCKLEN_T"
+native = ["SOCKLEN"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::Rtpcb::new"
+native = ["route_attach"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::Rtptable"
+native = ["RtsockTables"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf"
+native = ["route_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::alloc"
+native = ["route_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::bytes"
+native = ["route_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::bytes_mut"
+native = ["route_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::hdr"
+native = ["hdr_edit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::set_hdr"
+native = ["hdr_edit"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmBuf::drop"
+native = ["route_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RtmPeek"
+native = ["InputHdr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::rtm_peek"
+native = ["InputHdr::of"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RTPCB_POOL"
+native = ["RtsockTables"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::RTPTABLE"
+native = ["RtsockTables", "RTP_COUNT"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::ROUTE_USRREQS"
+native = ["RouteUsrreqs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::ROUTESW"
+native = ["RouteProto"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::ROUTEDOMAIN"
+native = ["RouteDomain"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::sotortpcb"
+native = ["rtpcb_ref"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::rtpcb_of"
+native = ["rtpcb_ref"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::curproc_or_panic"
+native = ["curpid", "currtable"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::route_src"
+native = ["ROUTE_SRC"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::if_rtrequest"
+native = ["sys/kernel/net/route.rs::if_rtrequest"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::sa_family"
+native = ["sys/kernel/net/proto.rs::SockaddrView"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::sa_len"
+native = ["sys/kernel/net/proto.rs::SockaddrView"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::route_disconnect"
+native = ["RouteUsrreqs::disconnect"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::route_shutdown"
+native = ["RouteUsrreqs::shutdown"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::route_sockaddr"
+native = ["RouteUsrreqs::sockaddr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::sa_bytes_equal"
+native = []
+kind = "dropped"
+reason = "a slice equality of the addresses' bytes (SockaddrView::bytes) at its sites, the views bounded by the message"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::tmem_hdr"
+native = []
+kind = "dropped"
+reason = "the walk's buffer is an MArray<u8> (Walkarg::w_tmem) whose header is read and edited as an AbiPod copy (hal::pod) by rtm_msg2 and sysctl_dumpentry"
+
+[[module.fn]]
+lz = "sys/net/rtsock.rs::tmem_bytes"
+native = []
+kind = "dropped"
+reason = "the walk's buffer is an MArray<u8> (Walkarg::w_tmem), lent as a slice of the length rtm_msg2 built for the copy-out"
 [[extra]]
 rust = "sys/kernel/net/ipsec_hooks.rs"
 crate = "kernel"

@@ -148,8 +148,8 @@ use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{
-    RT_RESOLVE, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU, Route, Rtentry, route6_cache, rtalloc,
-    rtfree, rtisvalid,
+    RT_RESOLVE, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU, Route, Rtentry, as_static, route6_cache,
+    rtalloc, rtfree, rtisvalid, sa_of,
 };
 use crate::net::rtable::{rtable_l2, rtable_loindex};
 use crate::netinet::icmp6::Icmp6Hdr;
@@ -193,7 +193,7 @@ use crate::netinet6::in6::{
     IPV6_UNICAST_HOPS, IPV6_USE_MIN_MTU, IPV6_V6ONLY, In6Addr, In6Pktinfo, Ip6Mtuinfo, Ipv6Mreq,
     SockaddrIn6, in6_addr2scopeid, in6_are_addr_equal, in6_hasmulti, in6_is_addr_mc_intfacelocal,
     in6_is_addr_mc_linklocal, in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
-    in6_joingroup, in6_leavegroup, satosin6, sin6tosa_const,
+    in6_joingroup, in6_leavegroup, sin6tosa_const,
 };
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_pcb::in6_pcbrtentry;
@@ -279,6 +279,11 @@ unsafe fn make_exthdr(
     ip6_copyexthdr(mp, Some(hdr), hlen)
 }
 
+/// `ro->ro_dstsin6`: a route cache's destination, as the `sockaddr_in6` `route6_cache` wrote.
+pub fn ro_sin6(ro: &Route) -> SockaddrIn6 {
+    hal::pod::at::<SockaddrIn6>(&ro.ro_dst, 0).unwrap_or_default()
+}
+
 /// `ip6_output`: IP6 output. The packet in mbuf chain `m` contains a skeletal IP6 header
 /// (with pri, len, nxt, hlim, src, dst). This function may modify ver and hlim only. The
 /// mbuf chain containing the packet will be freed. The options `opt`, if present, will not
@@ -286,7 +291,7 @@ unsafe fn make_exthdr(
 pub fn ip6_output(
     m0: &'static Mbuf,
     opt: Option<&Ip6Pktopts>,
-    ro: Option<&Route>,
+    ro: Option<&mut Route>,
     flags: i32,
     im6o: Option<&Ip6Moptions>,
     seclevel: Option<&IpsecLevel>,
@@ -296,9 +301,8 @@ pub fn ip6_output(
     let mut mm: &'static Mbuf = m0;
     let mut ifp: Option<&'static Ifnet> = None;
     let ml = MbufList::new();
-    let iproute = Route::new();
-    let mut ro: Option<&Route> = ro;
-    let mut ro_pmtu: Option<&Route> = None;
+    let mut iproute = Route::new();
+    let mut ro_arg: Option<&mut Route> = ro;
     let mut rt: Option<&'static Rtentry> = None;
     let mut src_scope: u16 = 0;
     let mut dst_scope: u16 = 0;
@@ -491,18 +495,14 @@ pub fn ip6_output(
                 let orig_rtableid = mm.m_pkthdr().ph_rtableid.get();
                 // reroute: pf(4) asks for a new route lookup after it changed the packet.
                 'reroute: loop {
-                    // initialize cached route
-                    let r: &Route = match ro {
+                    // initialize cached route: the caller's, or ours (ro_pmtu is the same)
+                    let r: &mut Route = match ro_arg.as_deref_mut() {
                         Some(r) => r,
                         None => {
-                            iproute.ro_rt.set(None);
-                            &iproute
+                            iproute.ro_rt = None;
+                            &mut iproute
                         }
                     };
-                    ro = Some(r);
-                    ro_pmtu = Some(r);
-                    let mut dst: *const SockaddrIn6 = r.ro_dstsa().cast();
-
                     // If specified, try to fill in the traffic class field. Do not override if
                     // a non-zero value is already set. We check the diffserv field and the ecn
                     // field separately.
@@ -537,7 +537,13 @@ pub fn ip6_output(
                     if let Some(t) = tdb {
                         // XXX what should we do if ip6_hlim == 0 and the packet gets
                         // tunneled? Callee frees mbuf.
-                        break 'done ip6_output_ipsec_send(t, mm, Some(r), orig_rtableid, false);
+                        break 'done ip6_output_ipsec_send(
+                            t,
+                            mm,
+                            Some(&mut *r),
+                            orig_rtableid,
+                            false,
+                        );
                     }
 
                     if in6_is_addr_multicast(&ip6.ip6_dst) {
@@ -583,11 +589,16 @@ pub fn ip6_output(
                         i
                     };
 
+                    // The C's `dst = &ro->ro_dstsin6`, a pointer into the route cache that
+                    // `route6_cache` (or `in6_selectroute`'s) just filled: read it now.
+                    let mut dst: SockaddrIn6 = ro_sin6(r);
                     if let Some(rte) = rt
                         && rte.rt_flags.get() & RTF_GATEWAY != 0
                         && !in6_is_addr_multicast(&ip6.ip6_dst)
+                        && let Some(g) = rte.gateway_copy()
+                        && let Some(g) = hal::pod::at::<SockaddrIn6>(g.bytes(), 0)
                     {
-                        dst = satosin6(rte.rt_gateway.get()).cast_const();
+                        dst = g;
                     }
 
                     if !in6_is_addr_multicast(&ip6.ip6_dst) {
@@ -610,10 +621,7 @@ pub fn ip6_output(
                             // interface, and the caller did not forbid loopback, loop back a
                             // copy. Can't defer TCP/UDP checksumming, do the computation now.
                             in6_proto_cksum_out(mm, None);
-                            // SAFETY: `dst` is the route's destination `sockaddr_in6`, read
-                            // as a copy.
-                            let d = unsafe { ptr::read_unaligned(dst) };
-                            ip6_mloopback(i, mm, &d);
+                            ip6_mloopback(i, mm, &dst);
                         }
                         // MROUTING: else, when acting as a multicast router (ip6_mforwarding,
                         // ip6_mrouter_active, not IPV6_FORWARDING), ip6_mforward() under
@@ -650,7 +658,7 @@ pub fn ip6_output(
 
                     // Determine path MTU.
                     let mut mtu: u64 = 0;
-                    let pmtu_rt = ro_pmtu.and_then(|r| r.ro_rt.get());
+                    let pmtu_rt = r.rt().map(as_static);
                     if let Err(e) = ip6_getpmtu(pmtu_rt, i, &mut mtu) {
                         break 'bad Err(e);
                     }
@@ -722,10 +730,10 @@ pub fn ip6_output(
                         // tag as generated to skip over pf_test on rerun
                         pf.flags.set(pf.flags.get() | PF_TAG_GENERATED);
                         finaldst = ip6.ip6_dst;
-                        if ptr::eq(r, &iproute) {
-                            rtfree(r.ro_rt.get());
-                        }
-                        ro = None;
+                        // ro = NULL: iproute's route given back (rtfree), the caller's left to
+                        // the caller.
+                        ro_arg = None;
+                        iproute.ro_rt = None;
                         if_put(ifp); // drop reference since destination changed
                         ifp = None;
                         continue 'reroute;
@@ -787,14 +795,14 @@ pub fn ip6_output(
                     // transmit packet without fragmentation
                     if dontfrag || u64::from(tlen) <= mtu {
                         // case 1-a and 2-a
-                        // SAFETY: `dst` is the route's destination or gateway `sockaddr_in6`,
-                        // readable for the call.
+                        // SAFETY: `dst` is a local `sockaddr_in6` (the route's destination or
+                        // gateway), readable for the call.
                         let error = unsafe {
                             if_output_tso(
                                 i,
                                 &mut m,
-                                sin6tosa_const(dst),
-                                r.ro_rt.get(),
+                                sin6tosa_const(&dst),
+                                r.rt().map(as_static),
                                 i.if_mtu.get(),
                             )
                         };
@@ -846,7 +854,9 @@ pub fn ip6_output(
                         break 'done Err(e);
                     }
                     // SAFETY: as for `if_output_tso`.
-                    let sent = unsafe { if_output_ml(i, &ml, sin6tosa_const(dst), r.ro_rt.get()) };
+                    let sent = unsafe {
+                        if_output_ml(i, &ml, sin6tosa_const(&dst), r.rt().map(as_static))
+                    };
                     if let Err(e) = sent {
                         break 'done Err(e);
                     }
@@ -864,10 +874,8 @@ pub fn ip6_output(
         m_freem(m);
         bad
     };
-    // done:
-    if ro.is_some_and(|r| ptr::eq(r, &iproute)) || ro_pmtu.is_some_and(|r| ptr::eq(r, &iproute)) {
-        rtfree(iproute.ro_rt.get());
-    }
+    // done: iproute's route given back with it (rtfree).
+    drop(iproute);
     if_put(ifp);
     tdb_unref(tdb);
     let _ = finaldst; // the C keeps the final destination; nothing reads it
@@ -1966,9 +1974,7 @@ fn ip6_setmoptions(
                 // according to the given multicast address.
                 let ifp = if mreq.ipv6mr_interface == 0 {
                     let dst = SockaddrIn6::with_addr(mreq.ipv6mr_multiaddr);
-                    // SAFETY: `dst` is a complete `sockaddr_in6` on the stack, readable for
-                    // the call.
-                    let rt = unsafe { rtalloc(sin6tosa_const(&dst), RT_RESOLVE, rtableid) };
+                    let rt = rtalloc(sa_of(&dst), RT_RESOLVE, rtableid);
                     let Some(rt) = rt else {
                         error = Err(Errno::EADDRNOTAVAIL);
                         break 'out;
@@ -2672,7 +2678,7 @@ pub fn ip6_output_ipsec_lookup(
 /// mode SAs.
 fn ip6_output_ipsec_pmtu_update(
     tdb: &Tdb,
-    ro: Option<&Route>,
+    ro: Option<&mut Route>,
     dst: &mut In6Addr,
     ifidx: u32,
     rtableid: u32,
@@ -2681,7 +2687,7 @@ fn ip6_output_ipsec_pmtu_update(
     let mut rt_mtucloned = false;
 
     // Find a host route to store the mtu in
-    let mut rt = ro.and_then(|ro| ro.ro_rt.get());
+    let mut rt = ro.as_deref().and_then(Route::rt).map(as_static);
     // but don't add a PMTU route for transport mode SAs
     if transportmode {
         rt = None;
@@ -2704,13 +2710,16 @@ fn ip6_output_ipsec_pmtu_update(
     if let Some(r) = rt {
         r.rt_mtu().store(tdb.tdb_mtu.get(), Ordering::Relaxed);
         if let Some(ro) = ro
-            && ro.ro_rt.get().is_some()
+            && ro.rt().is_some()
         {
-            rtfree(ro.ro_rt.get());
-            ro.ro_tableid.set(u64::from(rtableid));
-            // SAFETY: `ro_dstsa` is the route's destination socket address.
-            ro.ro_rt
-                .set(unsafe { rtalloc(ro.ro_dstsa(), RT_RESOLVE, rtableid) });
+            ro.ro_rt = None;
+            ro.ro_tableid = rtableid;
+            ro.ro_rt = kernel::net::route::rtalloc(
+                ro.dst(),
+                RT_RESOLVE,
+                rtableid,
+                &crate::net::if_::net_held("ip6_output_ipsec_pmtu_update"),
+            );
         }
         if rt_mtucloned {
             rtfree(Some(r));
@@ -2725,7 +2734,7 @@ fn ip6_output_ipsec_pmtu_update(
 pub fn ip6_output_ipsec_send(
     tdb: &'static Tdb,
     m: &'static Mbuf,
-    ro: Option<&Route>,
+    ro: Option<&mut Route>,
     rtableid: u32,
     fwd: bool,
 ) -> Result<(), Errno> {

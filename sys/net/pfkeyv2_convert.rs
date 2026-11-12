@@ -172,7 +172,7 @@ use crate::net::pfkeyv2::{
     padup, sadb_get, sadb_put,
 };
 use crate::net::pfvar::PF_TAG_NAME_SIZE;
-use crate::net::route::rt_maskedcopy;
+use crate::net::route::{rt_maskedcopy, sa_of as sa_bytes};
 use crate::netinet::in_::{IPPROTO_IPCOMP, SockaddrIn};
 #[cfg(feature = "inet6")]
 use crate::netinet::ip_ipsp::SENT_IP6;
@@ -193,6 +193,7 @@ use crate::sys::malloc::{M_CREDENTIALS, M_WAITOK};
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
 use crate::sys::socket::{AF_INET, PF_KEY, Sockaddr};
+use hal::user::bytes_of_mut;
 
 /// `import_sa`: (partly) initialize a TDB based on an `SADB_SA` payload. Other parts of the
 /// TDB will be initialized by other import routines, and `tdb_init()`.
@@ -509,16 +510,8 @@ pub unsafe fn import_flow(
 
     if family(src) == AF_INET {
         {
-            // netmask handling
-            // SAFETY: the addresses are `sockaddr_in`s inside their extensions; masking a
-            // socket address onto itself is what the C does.
-            unsafe {
-                rt_maskedcopy(src, src, srcmask);
-                rt_maskedcopy(dst, dst, dstmask);
-            }
-
             // SAFETY: `sockaddr_in`s, checked by `pfkeyv2_parsemessage`.
-            let (s, d, sm, dm): (SockaddrIn, SockaddrIn, SockaddrIn, SockaddrIn) = unsafe {
+            let (s0, d0, sm, dm): (SockaddrIn, SockaddrIn, SockaddrIn, SockaddrIn) = unsafe {
                 (
                     sadb_get(src.cast()),
                     sadb_get(dst.cast()),
@@ -526,6 +519,23 @@ pub unsafe fn import_flow(
                     sadb_get(dstmask.cast()),
                 )
             };
+            // netmask handling: each address masked in place in its extension, as the C.
+            let (mut s, mut d) = (s0, d0);
+            rt_maskedcopy(
+                sa_bytes(&s0),
+                bytes_of_mut(core::slice::from_mut(&mut s)),
+                sa_bytes(&sm),
+            );
+            rt_maskedcopy(
+                sa_bytes(&d0),
+                bytes_of_mut(core::slice::from_mut(&mut d)),
+                sa_bytes(&dm),
+            );
+            // SAFETY: as above; the masked copies written back where they were read.
+            unsafe {
+                sadb_put(src.cast(), s);
+                sadb_put(dst.cast(), d);
+            }
 
             flow.set_sen_type(SENT_IP4);
             flow.set_sen_direction(ftype.map_or(0, |f| f.sadb_protocol_direction));
@@ -562,17 +572,22 @@ pub unsafe fn import_flow(
         let _ = in6_embedscope(&mut s.sin6_addr, &sin6, None, None);
         let din6 = d;
         let _ = in6_embedscope(&mut d.sin6_addr, &din6, None, None);
+        // netmask handling: the embedded addresses masked, then written back, as the C.
+        let (s0, d0) = (s, d);
+        rt_maskedcopy(
+            sa_bytes(&s0),
+            bytes_of_mut(core::slice::from_mut(&mut s)),
+            sa_bytes(&sm),
+        );
+        rt_maskedcopy(
+            sa_bytes(&d0),
+            bytes_of_mut(core::slice::from_mut(&mut d)),
+            sa_bytes(&dm),
+        );
         // SAFETY: as above.
         unsafe {
             sadb_put(src.cast(), s);
             sadb_put(dst.cast(), d);
-
-            // netmask handling
-            rt_maskedcopy(src, src, srcmask);
-            rt_maskedcopy(dst, dst, dstmask);
-
-            s = sadb_get(src.cast());
-            d = sadb_get(dst.cast());
         }
 
         flow.set_sen_type(SENT_IP6);

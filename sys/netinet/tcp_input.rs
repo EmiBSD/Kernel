@@ -201,7 +201,7 @@ use crate::net::if_::{IFF_LOOPBACK, IFXF_LRO, if_get, if_put, unhandled_af};
 use crate::net::if_ethersubr::ether_extract_headers;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::pf::{pf_find_divert, pf_inp_link, pf_inp_lookup, pf_inp_unlink};
-use crate::net::route::{Rtentry, route_mpath, rtfree};
+use crate::net::route::{Rtentry, route_mpath};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::if_ether::{
     EtherExtracted, EtherHeader, EtherVlanHeader, evl_prioftag, evl_vlanoftag,
@@ -3401,7 +3401,8 @@ fn syn_cache_put(sc: &SynCache) {
 
     // Dealing with last reference, no lock needed.
     m_free(sc.sc_ipopts.get());
-    rtfree(sc.sc_route.ro_rt.get());
+    // rtfree(sc->sc_route.ro_rt)
+    drop(sc.sc_route.take());
 
     pool_put(&SYN_CACHE_POOL, NonNull::from(sc).cast());
 }
@@ -3816,13 +3817,8 @@ fn syn_cache_get(
         }
 
         // Give the new socket our cached route reference.
-        let ro = &ninp.inp_route; // struct assignment
-        ro.ro_rt.set(sc.sc_route.ro_rt.get());
-        ro.ro_generation.set(sc.sc_route.ro_generation.get());
-        ro.ro_tableid.set(sc.sc_route.ro_tableid.get());
-        ro.ro_dst.set(sc.sc_route.ro_dst.get());
-        ro.ro_src.set(sc.sc_route.ro_src.get());
-        sc.sc_route.ro_rt.set(None);
+        // The struct assignment, the cache's ro_rt then cleared: the route moved over.
+        ninp.inp_route.set(sc.sc_route.take());
 
         let listenflags = intotcpcb(listeninp).map_or(0, |l| l.t_flags.get());
         ntp.t_flags.set(listenflags & (TF_NOPUSH | TF_NODELAY));
@@ -4108,7 +4104,7 @@ fn syn_cache_add(
         let src_addr = s.sin_addr();
         if src_addr.s_addr != INADDR_ANY {
             rt = route_mpath(
-                &sc.sc_route,
+                &mut sc.sc_route.loan(),
                 &src_addr,
                 Some(&d.sin_addr()),
                 sc.sc_rtableid.get(),
@@ -4120,7 +4116,7 @@ fn syn_cache_add(
         let src6 = sa_sin6(&s).sin6_addr;
         if !in6_is_addr_unspecified(&src6) {
             rt = route6_mpath(
-                &sc.sc_route,
+                &mut sc.sc_route.loan(),
                 &src6,
                 Some(&sa_sin6(&d).sin6_addr),
                 sc.sc_rtableid.get(),
@@ -4441,7 +4437,7 @@ fn syn_cache_respond(
             ip6_output(
                 m,
                 None, /* XXX */
-                Some(&sc.sc_route),
+                Some(&mut *sc.sc_route.loan()),
                 0,
                 None,
                 seclevel.as_ref(),
@@ -4462,7 +4458,7 @@ fn syn_cache_respond(
             ip_output(
                 m,
                 sc.sc_ipopts.get(),
-                Some(&sc.sc_route),
+                Some(&mut *sc.sc_route.loan()),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC
                 } else {

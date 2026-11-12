@@ -1700,7 +1700,7 @@ pub fn rtm_setmetrics(which: u32, in_: &RtMetrics, out: &RtKmetrics) {
             expire += crate::tc::getuptime();
         }
 
-        out.rmx_expire.store(expire, Ordering::Relaxed);
+        out.rmx_expire.set(expire);
     }
 }
 
@@ -1709,7 +1709,7 @@ pub fn rtm_setmetrics(which: u32, in_: &RtMetrics, out: &RtKmetrics) {
 pub fn rtm_getmetrics(rt: &Rtentry, out: &mut RtMetrics) {
     let in_ = &rt.rt_rmx;
 
-    let mut expire = in_.rmx_expire.load(Ordering::Relaxed);
+    let mut expire = in_.rmx_expire.get();
     if expire == 0 {
         expire = rt_timer_get_expire(rt);
     }

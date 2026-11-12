@@ -65,7 +65,6 @@
 //!   `EEXIST` is the walk's error.
 
 use core::mem::size_of;
-use core::ptr;
 use core::sync::atomic::Ordering;
 
 use crate::kassert;
@@ -76,21 +75,21 @@ use crate::net::route::{
     RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_HOST, RTF_STATIC, RTP_ANY, RtAddrinfo, Rtentry,
     rt_plen2mask, rtfree, rtrequest_delete,
 };
-use crate::net::rtable::{rt_key, rtable_walk};
+use crate::net::rtable::rtable_walk;
 use crate::netinet::icmp6::{
     Icmp6statCounters, ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT, NdRouterAdvert, NdRouterSolicit,
     icmp6stat_inc,
 };
 use crate::netinet::ip6::ip6_exthdr_get;
 use crate::netinet6::in6::{
-    In6Addr, in6_are_addr_equal, in6_is_addr_linklocal, in6_is_addr_unspecified, satosin6_const,
+    In6Addr, SockaddrIn6, in6_are_addr_equal, in6_is_addr_linklocal, in6_is_addr_unspecified,
 };
 use crate::netinet6::in6_proto::IP6_FORWARDING;
 use crate::netinet6::ip6_var::mtod_ip6;
 use crate::netinet6::nd6::{NdOpts, nd6_cache_lladdr, nd6_opt_lladdr, nd6_options};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::Mbuf;
-use crate::sys::socket::{AF_INET6, SockaddrStorage};
+use crate::sys::socket::AF_INET6;
 use crate::sys::systm::{kernel_lock, kernel_unlock, net_assert_locked};
 
 /// `nd6_rtr_cache`: process Source Link-layer Address Options from Router Solicitation /
@@ -194,7 +193,7 @@ pub fn nd6_rtr_cache(m: &'static Mbuf, off: i32, icmp6len: i32, icmp6_type: u8) 
 /// XXX: this function causes search through all entries of routing table, so it shouldn't
 /// be called when acting as a router. The gateway must already contain KAME's hack for
 /// link-local scope.
-pub fn rt6_flush(gateway: &In6Addr, ifp: &Ifnet) -> Result<(), Errno> {
+pub fn rt6_flush(gateway: &In6Addr, ifp: &'static Ifnet) -> Result<(), Errno> {
     net_assert_locked("rt6_flush");
 
     // We'll care only link-local addresses
@@ -213,16 +212,14 @@ pub fn rt6_flush(gateway: &In6Addr, ifp: &Ifnet) -> Result<(), Errno> {
             && error == Err(Errno::EEXIST)
         {
             let mut info = RtAddrinfo::new();
-            let mut sa_mask = SockaddrStorage::zeroed();
+            let mut sa_mask = crate::net::route::SaCopy::zeroed();
+            let gw = r.gateway_copy();
             info.rti_flags = r.rt_flags.get();
-            info.rti_info[RTAX_DST] = rt_key(r);
-            info.rti_info[RTAX_GATEWAY] = r.rt_gateway.get();
+            info.rti_info[RTAX_DST] = Some(r.dest_view());
+            info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(crate::net::route::SaCopy::view);
             info.rti_info[RTAX_NETMASK] = rt_plen2mask(r, &mut sa_mask);
             kernel_lock();
-            // SAFETY: the route's key, gateway and the local netmask are readable socket
-            // addresses.
-            error =
-                unsafe { rtrequest_delete(&mut info, RTP_ANY, ifp, None, ifp.if_rdomain.get()) };
+            error = rtrequest_delete(&mut info, RTP_ANY, ifp, None, ifp.if_rdomain.get());
             kernel_unlock();
             if error.is_ok() {
                 error = Err(Errno::EAGAIN);
@@ -238,14 +235,17 @@ pub fn rt6_flush(gateway: &In6Addr, ifp: &Ifnet) -> Result<(), Errno> {
 /// `rt6_deleteroute`: whether `rt` is a host route through `gate` that `rt6_flush` should
 /// delete (`Err(EEXIST)` stops the walk at it).
 fn rt6_deleteroute(rt: &Rtentry, gate: &In6Addr, _id: u32) -> Result<(), Errno> {
-    let g = rt.rt_gateway.get();
-    // SAFETY: a route's gateway is NULL or a readable socket address.
-    if g.is_null() || unsafe { (*g).sa_family } != AF_INET6 {
+    let Some(g) = rt.gateway_copy() else {
+        return Ok(());
+    };
+    if g.view().family() != AF_INET6 {
         return Ok(());
     }
 
-    // SAFETY: an `AF_INET6` gateway is a `sockaddr_in6`, at any alignment.
-    let ga = unsafe { ptr::read_unaligned(satosin6_const(g)) }.sin6_addr;
+    // An `AF_INET6` gateway is a `sockaddr_in6`.
+    let ga = hal::pod::at::<SockaddrIn6>(g.bytes(), 0)
+        .unwrap_or_default()
+        .sin6_addr;
     if !in6_are_addr_equal(gate, &ga) {
         return Ok(());
     }

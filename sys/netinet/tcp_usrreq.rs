@@ -1725,6 +1725,14 @@ mod tests {
     use crate::sys::socket::SOCK_STREAM;
     use crate::sys::socketvar::SS_CANTRCVMORE;
 
+    /// `f` under the net lock, as the C runs the stack's input (`if_input_process`, `if_netisr`): the route lookups want the lock's proof.
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// The interface with our address, its queue drained; TCP set up.
     fn net() -> &'static Ifnet {
         tcp_init();
@@ -1760,8 +1768,8 @@ mod tests {
         let arp = unsafe {
             core::slice::from_raw_parts(ptr::from_ref(&reply).cast::<u8>(), size_of::<EtherArp>())
         };
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
-        arpintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None));
+        locked(|| arpintr());
     }
 
     /// A segment the interface sent: its IP and TCP bytes.
@@ -1849,8 +1857,8 @@ mod tests {
 
     /// Hands `datagram` to the interface as the gateway's and runs the IP input queue.
     fn receive(ifp: &'static Ifnet, datagram: &[u8]) {
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, datagram), None);
-        ipintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, datagram), None));
+        locked(|| ipintr());
     }
 
     /// `addr:port`.
@@ -2131,13 +2139,13 @@ mod tests {
         let mut mp = Some(m);
         let mut off = 40;
         assert_eq!(
-            crate::netinet::tcp_input::tcp_input(
+            locked(|| crate::netinet::tcp_input::tcp_input(
                 &mut mp,
                 &mut off,
                 IPPROTO_TCP,
                 i32::from(crate::sys::socket::AF_INET6),
                 None
-            ),
+            )),
             crate::netinet::in_::IPPROTO_DONE
         );
     }

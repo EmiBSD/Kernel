@@ -440,7 +440,7 @@ pub fn rip_output(
     ip_output(
         m,
         inp.inp_options.get(),
-        Some(&inp.inp_route),
+        Some(&mut *inp.inp_route.loan()),
         flags,
         inp.moptions(),
         Some(&inp.inp_seclevel.get()),
@@ -754,6 +754,14 @@ mod tests {
     use crate::sys::protosw::PRCO_GETOPT;
     use crate::sys::socket::SOCK_RAW;
 
+    /// `f` under the net lock, as the C runs a raw socket's send and input (the route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// A raw ICMP socket, as ping(8) opens it.
     fn icmp_socket() -> &'static Socket {
         socreate(i32::from(AF_INET), SOCK_RAW, IPPROTO_ICMP).expect("socket")
@@ -833,8 +841,8 @@ mod tests {
                 size_of::<EtherArp>(),
             )
         };
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
-        arpintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None));
+        locked(|| arpintr());
         let echo = ifq_dequeue(ifp.if_snd()).expect("the echo request");
         let b = bytes(echo);
         m_freem(echo);
@@ -864,8 +872,8 @@ mod tests {
         IcmpPkt::of(m3, 20).set_icmp_cksum(sum);
         let r = bytes(m3);
         m_freem(m3);
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, &r), None);
-        ipintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, &r), None));
+        locked(|| ipintr());
 
         {
             let g = so.so_rcv.lock();
@@ -908,7 +916,7 @@ mod tests {
         let deliver = |m: &'static Mbuf| {
             let mut mp = Some(m);
             let mut off = 20;
-            rip_input(&mut mp, &mut off, 0, i32::from(AF_INET), None);
+            locked(|| rip_input(&mut mp, &mut off, 0, i32::from(AF_INET), None));
         };
         deliver(packet(1, ADDR));
         assert_eq!(udp.so_rcv.cc(), 0);

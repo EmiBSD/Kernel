@@ -1157,10 +1157,6 @@ pub trait ProcGlue: Sized + Send + Sync + 'static {
             "unveil_set_done: the glue has no unveil hooks"
         ))
     }
-    /// `rtable_exists(id)` (`net/rtable.c`, N6: `setrtable(2)`).
-    fn rtable_exists(id: u32) -> bool {
-        id == 0
-    }
     /// A counted reference to the group `pg` (process 0's `static`, or a `pgrppl` item), for
     /// a holder that keeps a group found under a witness past it (`setpgid(2)`).
     fn pgrp_ref(pg: &Pgrp<Self>) -> PgrpRef<Self> {

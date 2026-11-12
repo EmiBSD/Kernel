@@ -615,12 +615,14 @@ pub fn in6_pcbnotify(
         // icmp6_mtudisc_update(), may be a good idea.)
         let do_notify = ((prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD)
             && in6_is_addr_unspecified(&i.inp_laddr6.get())
-            && i
-                .inp_route
-                .ro_rt
-                .get()
-                .is_some_and(|rt| rt.rt_flags.get() & RTF_HOST == 0)
-            && in6_are_addr_equal(&i.inp_route.ro_dstsin6().sin6_addr, &dst.sin6_addr))
+            && {
+                let ro = i.inp_route.loan();
+                ro.rt().is_some_and(|rt| rt.rt_flags.get() & RTF_HOST == 0)
+                    && in6_are_addr_equal(
+                        &crate::netinet6::ip6_output::ro_sin6(&ro).sin6_addr,
+                        &dst.sin6_addr,
+                    )
+            })
             // Detect if we should notify the error. If no source and destination ports are
             // specified, but non-zero flowinfo and local address match, notify the error.
             // This is the case when the error is delivered with an encrypted buffer by ESP.
@@ -659,7 +661,12 @@ pub fn in6_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     }
     let faddr = inp.inp_faddr6.get();
     let laddr = inp.inp_laddr6.get();
-    route6_mpath(&inp.inp_route, &faddr, Some(&laddr), inp.inp_rtableid.get())
+    route6_mpath(
+        &mut inp.inp_route.loan(),
+        &faddr,
+        Some(&laddr),
+        inp.inp_rtableid.get(),
+    )
 }
 
 /// `in6_pcbhash_lookup`: the control block of `table` with exactly these addresses in hash

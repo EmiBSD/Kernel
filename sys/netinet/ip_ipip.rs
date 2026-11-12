@@ -156,9 +156,9 @@ use crate::sys::endian::htonl;
 use crate::sys::endian::{htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{M_AUTH, M_CONF, M_DONTWAIT, Mbuf, m_freemp};
+use crate::sys::socket::AF_INET;
 #[cfg(feature = "inet6")]
 use crate::sys::socket::AF_INET6;
-use crate::sys::socket::{AF_INET, Sockaddr, SockaddrStorage};
 
 /// The source address of the inner header of a decapsulated packet (the C's `ip`/`ip6`
 /// pointers, one of them non-NULL).
@@ -427,7 +427,8 @@ pub fn ipip_input_if(
 
         // Check for local address spoofing.
         if ifp.if_flags.get() & IFF_LOOPBACK == 0 && allow != 2 {
-            let mut ss = SockaddrStorage::default();
+            // The inner source as a socket address (a `sockaddr_storage`'s first bytes).
+            let mut ss = [0u8; 28];
             match inner {
                 InnerSrc::V4(src) => {
                     let sin = SockaddrIn {
@@ -436,14 +437,7 @@ pub fn ipip_input_if(
                         sin_addr: src,
                         ..SockaddrIn::default()
                     };
-                    // SAFETY: a `sockaddr_storage` holds any socket address; `SockaddrIn`
-                    // has no padding.
-                    unsafe {
-                        core::ptr::write_unaligned(
-                            core::ptr::from_mut(&mut ss).cast::<SockaddrIn>(),
-                            sin,
-                        )
-                    };
+                    hal::pod::put(&mut ss, 0, &sin);
                 }
                 #[cfg(feature = "inet6")]
                 InnerSrc::V6(src) => {
@@ -453,23 +447,10 @@ pub fn ipip_input_if(
                         sin6_addr: src,
                         ..SockaddrIn6::default()
                     };
-                    // SAFETY: as above; `SockaddrIn6` has no padding either.
-                    unsafe {
-                        core::ptr::write_unaligned(
-                            core::ptr::from_mut(&mut ss).cast::<SockaddrIn6>(),
-                            sin6,
-                        )
-                    };
+                    hal::pod::put(&mut ss, 0, &sin6);
                 }
             }
-            // SAFETY: `ss` holds the `sockaddr_in` or `sockaddr_in6` just written.
-            let rt = unsafe {
-                rtalloc(
-                    core::ptr::from_ref(&ss).cast::<Sockaddr>(),
-                    0,
-                    m.m_pkthdr().ph_rtableid.get(),
-                )
-            };
+            let rt = rtalloc(&ss, 0, m.m_pkthdr().ph_rtableid.get());
             if let Some(r) = rt
                 && r.rt_flags.get() & RTF_LOCAL != 0
             {
@@ -814,6 +795,14 @@ mod tests {
     use crate::netinet6::ip6_var::Ip6statCounters;
     use crate::sys::mbuf::M_AUTH;
 
+    /// `f` under the net lock, as `ip_output` runs the tunnel's output (the route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     fn setup() -> (MutexGuard<'static, ()>, MutexGuard<'static, ()>) {
         crate::netinet::ip_input::tests::setup()
     }
@@ -900,7 +889,7 @@ mod tests {
         for (itos, otos) in [(0xb8u8, 0xb8u8), (0xbb, 0xba), (0, 0)] {
             let inner = ip4_packet(itos);
             let mut mp = Some(test_packet(&inner));
-            ipip_output(&mut mp, &t).expect("encapsulated");
+            locked(|| ipip_output(&mut mp, &t)).expect("encapsulated");
             let out = bytes(mp.expect("the packet"));
             assert_eq!(out.len(), 40 + inner.len());
             assert_eq!(out[0] >> 4, 6, "version");
@@ -935,7 +924,7 @@ mod tests {
         let idst = a6([0xfe80, 1, 0, 0, 0, 0, 0, 6]);
         let inner = ip6_packet(0xb8, isrc, idst);
         let mut mp = Some(test_packet(&inner));
-        ipip_output(&mut mp, &t).expect("encapsulated");
+        locked(|| ipip_output(&mut mp, &t)).expect("encapsulated");
         let out = bytes(mp.expect("the packet"));
         assert_eq!(out.len(), 88);
         assert_eq!(out[6], IPPROTO_IPV6 as u8);
@@ -966,7 +955,7 @@ mod tests {
             a6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]),
         );
         let mut mp = Some(test_packet(&inner));
-        ipip_output(&mut mp, &t).expect("encapsulated");
+        locked(|| ipip_output(&mut mp, &t)).expect("encapsulated");
         let out = bytes(mp.expect("the packet"));
         assert_eq!(out.len(), 20 + inner.len());
         assert_eq!(out[0], 0x45);
@@ -997,7 +986,7 @@ mod tests {
         ] {
             let before = counter(IpipstatCounters::IpipsUnspec);
             let mut mp = Some(test_packet(&inner));
-            assert_eq!(ipip_output(&mut mp, &t), Err(Errno::EINVAL));
+            assert_eq!(locked(|| ipip_output(&mut mp, &t)), Err(Errno::EINVAL));
             assert!(mp.is_none(), "the packet is freed");
             assert_eq!(counter(IpipstatCounters::IpipsUnspec), before + 1);
         }
@@ -1006,7 +995,10 @@ mod tests {
         let t = tdb(su6(src), su6(dst));
         let before = counter(IpipstatCounters::IpipsFamily);
         let mut mp = Some(test_packet(&[0x10; 40]));
-        assert_eq!(ipip_output(&mut mp, &t), Err(Errno::EAFNOSUPPORT));
+        assert_eq!(
+            locked(|| ipip_output(&mut mp, &t)),
+            Err(Errno::EAFNOSUPPORT)
+        );
         assert!(mp.is_none());
         assert_eq!(counter(IpipstatCounters::IpipsFamily), before + 1);
     }
@@ -1057,15 +1049,17 @@ mod tests {
         let mut mp = Some(m);
         let mut off = 20;
         // `allow` 2 skips the spoofing check, which needs a routing table.
-        let r = ipip_input_if(
-            &mut mp,
-            &mut off,
-            IPPROTO_IPV6,
-            i32::from(AF_INET),
-            2,
-            ifp,
-            None,
-        );
+        let r = locked(|| {
+            ipip_input_if(
+                &mut mp,
+                &mut off,
+                IPPROTO_IPV6,
+                i32::from(AF_INET),
+                2,
+                ifp,
+                None,
+            )
+        });
         assert_eq!(r, IPPROTO_DONE);
         assert_eq!(off, 0);
         assert_eq!(
@@ -1091,15 +1085,17 @@ mod tests {
         let total_before = ip6_total();
         let mut mp = Some(m);
         let mut off = 40;
-        let r = ipip_input_if(
-            &mut mp,
-            &mut off,
-            IPPROTO_IPV6,
-            i32::from(AF_INET6),
-            2,
-            ifp,
-            None,
-        );
+        let r = locked(|| {
+            ipip_input_if(
+                &mut mp,
+                &mut off,
+                IPPROTO_IPV6,
+                i32::from(AF_INET6),
+                2,
+                ifp,
+                None,
+            )
+        });
         assert_eq!(r, IPPROTO_DONE);
         assert_eq!(ip6_total(), total_before + 1);
 
@@ -1112,15 +1108,17 @@ mod tests {
         let before = counter(IpipstatCounters::IpipsHdrops);
         let mut mp = Some(m);
         let mut off = 40;
-        let r = ipip_input_if(
-            &mut mp,
-            &mut off,
-            IPPROTO_IPV6,
-            i32::from(AF_INET6),
-            2,
-            ifp,
-            None,
-        );
+        let r = locked(|| {
+            ipip_input_if(
+                &mut mp,
+                &mut off,
+                IPPROTO_IPV6,
+                i32::from(AF_INET6),
+                2,
+                ifp,
+                None,
+            )
+        });
         assert_eq!(r, IPPROTO_DONE);
         assert!(mp.is_none());
         assert_eq!(counter(IpipstatCounters::IpipsHdrops), before + 1);
@@ -1132,7 +1130,7 @@ mod tests {
         let before = counter(IpipstatCounters::IpipsFamily);
         let mut mp = Some(m);
         let mut off = 40;
-        let r = ipip_input_if(&mut mp, &mut off, 99, i32::from(AF_INET6), 2, ifp, None);
+        let r = locked(|| ipip_input_if(&mut mp, &mut off, 99, i32::from(AF_INET6), 2, ifp, None));
         assert_eq!(r, IPPROTO_DONE);
         assert_eq!(counter(IpipstatCounters::IpipsFamily), before + 1);
     }

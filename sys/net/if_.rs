@@ -146,7 +146,6 @@
 //!   `AF_INET6` prints with nd6's `In6Ntop`).
 
 use core::ffi::c_void;
-use core::mem::size_of;
 use core::pin::Pin;
 use core::ptr;
 use core::slice;
@@ -159,25 +158,17 @@ use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge}
 use crate::net::bpf::{bpf_mtap_af, bpf_mtap_ether, bpfdetach};
 use crate::net::if_ethersubr::ether_brport_isset;
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
-use crate::net::route::{
-    RTF_BLACKHOLE, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTP_ANY, Rtentry, ifafree,
-    rt_if_track, rtlabel_id2name, rtlabel_name2id, rtlabel_unref,
-};
-use crate::net::rtable::{
-    rtable_add, rtable_empty, rtable_exists, rtable_iterate, rtable_l2, rtable_l2set,
-    rtable_loindex, rtable_lookup,
-};
-use crate::net::rtsock::{rtm_ifannounce, rtm_ifchg};
+use crate::net::route::{Rtentry, as_static};
 use crate::netinet::if_ether::{arpcom_of, arpinput, arpintr, revarpinput};
 use crate::netinet::igmp::rti_delete;
-use crate::netinet::in_::{SockaddrIn, in_ifdetach, sintosa};
+use crate::netinet::in_::in_ifdetach;
 use crate::netinet::ip_input::{ipintr, ipv4_input};
 use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6::{in6_purgeaddr, in6ifa_ifpforlinklocal, satosin6_const, sin6tosa};
+use crate::netinet6::in6::{in6_purgeaddr, in6ifa_ifpforlinklocal, satosin6_const};
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_ifattach::{in6_ifattach, in6_ifdetach};
 #[cfg(feature = "inet6")]
@@ -203,13 +194,12 @@ pub use kernel::net::if_::{
     ETHER_ADDR_LEN as IF_ETHER_ADDR_LEN, IFQ_CONGESTION, NET_TASKQ, Softnet, if_addgroup,
     if_alloc_sadl, if_attach_iqueues, if_attach_queues, if_clone_create, if_clone_destroy,
     if_congested, if_congestion, if_counters_alloc, if_counters_free, if_creategroup,
-    if_createrdomain, if_deactivate, if_delgroup, if_detach, if_down, if_downall, if_free_sadl,
-    if_get, if_getdata, if_group_egress_build, if_isconnected, if_link_state_change, if_linkstate,
-    if_ref, if_rxhprio_l2_check, if_rxhprio_l3_check, if_rxr_get, if_rxr_info_ioctl, if_rxr_init,
+    if_createrdomain, if_deactivate, if_delgroup, if_detach, if_downall, if_free_sadl, if_get,
+    if_getdata, if_group_egress_build, if_isconnected, if_link_state_change, if_ref,
+    if_rxhprio_l2_check, if_rxhprio_l3_check, if_rxr_get, if_rxr_info_ioctl, if_rxr_init,
     if_rxr_ioctl, if_rxr_livelocked, if_setlladdr, if_setrdomain, if_txhprio_l2_check,
-    if_txhprio_l3_check, if_unit, if_up, ifa_add, ifa_del, ifg_head, ifnewlladdr, ifpromisc,
-    ifsetlro, net_sn, net_tq, net_tq_barriers, softnet_count, softnet_init, softnet_percpu,
-    unhandled_af,
+    if_txhprio_l3_check, if_unit, ifa_add, ifa_del, ifg_head, ifnewlladdr, ifpromisc, ifsetlro,
+    net_sn, net_tq, net_tq_barriers, softnet_count, softnet_init, softnet_percpu, unhandled_af,
 };
 pub use kernel::net::if_var::{counters_inc, counters_pkt};
 
@@ -333,13 +323,45 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         }
     }
 
+    fn rtrequest(
+        &self,
+        ifp: &'static Ifnet,
+        req: u8,
+        rt: Option<&kernel::net::route::Rtentry>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) {
+        // if_attach_legacy's default is if_rtrequest_dummy: nothing without a handler.
+        if let Some(rtrequest) = self.if_rtrequest.get() {
+            rtrequest(ifp, i32::from(req), rt.map(as_static));
+        }
+    }
+
+    fn output(
+        &self,
+        ifp: &'static Ifnet,
+        m: kernel::net::mbuf::MbufBox,
+        dst: kernel::net::proto::SockaddrView<'_>,
+        rt: Option<&kernel::net::route::Rtentry>,
+    ) -> Result<(), Errno> {
+        let Some(output) = self.if_output.get() else {
+            drop(m);
+            panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get())));
+        };
+        let dst = dst.bytes();
+        // SAFETY: `dst` is a `SockaddrView`'s bytes, at least its `sa_len` of them (the
+        // view's invariant) and borrowed for the call, so the handler reads a socket address
+        // valid for its `sa_len` bytes, `IfOutputFn`'s contract; the packet is parked for it
+        // (`bsd`'s handlers take a `&'static Mbuf` they free or queue).
+        unsafe { output(ifp, park(m), dst.as_ptr().cast(), rt.map(as_static)) }
+    }
+
     fn as_any(&self) -> Option<&(dyn core::any::Any + Send + Sync)> {
         Some(self)
     }
 }
 
 /// The legs of the subsystems `if.c` calls that are still `bsd`'s: the internet protocols
-/// (`Inet`), routing (`Routing`) and the link layers (`Link`), registered by [`ifinit`].
+/// (`Inet`) and the link layers (`Link`), registered by [`ifinit`].
 pub struct BsdNetLegs;
 
 /// The one [`BsdNetLegs`].
@@ -483,6 +505,48 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         false
     }
 
+    fn ifa_free(&self, ifa: &'static Ifaddr) {
+        // free(ifa, M_IFADDR, 0): the protocol's in_ifaddr/in6_ifaddr whose ifaddr this is.
+        crate::kern::kern_malloc::free(
+            core::ptr::NonNull::from(ifa).cast(),
+            crate::sys::malloc::M_IFADDR,
+            0,
+        );
+    }
+
+    fn ip_multipath(&self) -> bool {
+        crate::netinet::ip_input::IPMULTIPATH.load(Ordering::Relaxed) != 0
+    }
+
+    fn ip6_multipath(&self) -> bool {
+        #[cfg(feature = "inet6")]
+        return crate::netinet6::in6_proto::IP6_MULTIPATH.load(Ordering::Relaxed) != 0;
+        #[cfg(not(feature = "inet6"))]
+        false
+    }
+
+    fn ipstat_rtcache(&self, hit: bool) {
+        use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
+        ipstat_inc(if hit {
+            IpstatCounters::IpsRtcachehit
+        } else {
+            IpstatCounters::IpsRtcachemiss
+        });
+    }
+
+    fn ip6stat_rtcache(&self, hit: bool) {
+        #[cfg(feature = "inet6")]
+        {
+            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_inc};
+            ip6stat_inc(if hit {
+                Ip6statCounters::Ip6sRtcachehit
+            } else {
+                Ip6statCounters::Ip6sRtcachemiss
+            });
+        }
+        let _ = hit;
+    }
+
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
         #[cfg(feature = "inet6")]
         if let Some(ia6) = in6ifa_ifpforlinklocal(ifp, 0) {
@@ -491,91 +555,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         }
         let _ = ifp;
         false
-    }
-}
-
-impl kernel::net::if_::Routing for BsdNetLegs {
-    fn rtm_ifannounce(&self, ifp: &'static Ifnet, what: u16) {
-        rtm_ifannounce(ifp, what);
-    }
-
-    fn rtm_ifchg(&self, ifp: &'static Ifnet) {
-        rtm_ifchg(ifp);
-    }
-
-    fn rt_if_track(&self, ifp: &'static Ifnet) {
-        // The C ignores rt_if_track's result in if_linkstate.
-        let _ = rt_if_track(ifp);
-    }
-
-    fn rtable_l2(&self, rtableid: u32) -> u32 {
-        rtable_l2(rtableid)
-    }
-
-    fn rtable_loindex(&self, rdomain: u32) -> u32 {
-        rtable_loindex(rdomain)
-    }
-
-    fn rtable_exists(&self, rtableid: u32) -> bool {
-        rtable_exists(rtableid)
-    }
-
-    fn rtable_add(&self, id: u32) -> Result<(), Errno> {
-        rtable_add(id)
-    }
-
-    fn rtable_empty(&self, id: u32) -> bool {
-        rtable_empty(id)
-    }
-
-    fn rtable_l2set(&self, rtableid: u32, rdomain: u32, loifidx: u32) {
-        rtable_l2set(rtableid, rdomain, loifidx);
-    }
-
-    fn ifafree(&self, ifa: &'static Ifaddr) {
-        ifafree(ifa);
-    }
-
-    fn rtlabel_id2name(&self, id: u16, buf: &mut [u8]) -> bool {
-        rtlabel_id2name(id, buf).is_some()
-    }
-
-    fn rtlabel_name2id(&self, name: &[u8]) -> u16 {
-        rtlabel_name2id(name)
-    }
-
-    fn rtlabel_unref(&self, id: u16) {
-        rtlabel_unref(id);
-    }
-
-    fn default_routes(&self, af: SaFamily, f: &mut dyn FnMut(u32)) {
-        let mut walk = |dst: *mut Sockaddr| {
-            // SAFETY: `dst` is a local socket address of the family, the destination and the
-            // mask (`0.0.0.0/0`, `::/0`).
-            let mut rt = unsafe { rtable_lookup(0, dst, dst, ptr::null(), RTP_ANY) };
-            while let Some(r) = rt {
-                if r.rt_flags.get() & (RTF_REJECT | RTF_BLACKHOLE) == 0 {
-                    f(r.rt_ifidx.get());
-                }
-                rt = rtable_iterate(r);
-            }
-        };
-        match af {
-            AF_INET => {
-                let mut sa_in = SockaddrIn {
-                    sin_len: size_of::<SockaddrIn>() as u8,
-                    sin_family: AF_INET,
-                    ..SockaddrIn::default()
-                };
-                walk(sintosa(&mut sa_in));
-            }
-            #[cfg(feature = "inet6")]
-            AF_INET6 => {
-                let mut sa_in6 = crate::netinet6::in6::SA6_ANY;
-                walk(sin6tosa(&raw mut sa_in6));
-            }
-            _ => {}
-        }
     }
 }
 
@@ -617,7 +596,7 @@ impl kernel::net::if_::Link for BsdNetLegs {
 /// subsystems registered (a second call, a test's, keeps the first).
 pub fn ifinit() {
     let _ = kernel::net::if_::register_inet(&BSD_NET_LEGS);
-    let _ = kernel::net::if_::register_routing(&BSD_NET_LEGS);
+    let _ = kernel::net::ipsec_hooks::register_ipsec(&crate::net::if_enc::BSD_IPSEC);
     let _ = kernel::net::if_::register_link(&BSD_NET_LEGS);
     kernel::net::if_::ifinit();
 }
@@ -785,11 +764,17 @@ unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
 /// The proof that `bsd`'s caller holds the net lock (detached), for one walk of the kernel's
 /// address lookups: `hal`'s check through the `SaToken` (the C's `NET_ASSERT_LOCKED()`);
 /// `panic(9)` without it, where the C's splassert would only print.
-fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
+pub(crate) fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
     match crate::net::if_var::sa_token().net_held() {
         Some(h) => h,
         None => panic(format_args!("{what}: the net lock is not held")),
     }
+}
+
+/// `ifa_ifwithaddr(addr, rtableid)` of a socket address's bytes (a routing table's preferred
+/// source, a copy): the kernel's, under `bsd`'s net lock.
+pub fn ifa_ifwithaddr_sa(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
+    kernel::net::if_::ifa_ifwithaddr(&net_held("ifa_ifwithaddr"), addr, rtableid)
 }
 
 /// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.
@@ -998,54 +983,26 @@ pub unsafe fn if_output_mq(
 pub fn if_rtrequest_dummy(_ifp: &'static Ifnet, _req: i32, _rt: Option<&'static Rtentry>) {}
 
 /// `p2p_rtrequest`: default action when installing a local route on a point-to-point
-/// interface.
+/// interface (the kernel's, under `bsd`'s net lock).
 pub fn p2p_rtrequest(ifp: &'static Ifnet, req: i32, rt: Option<&'static Rtentry>) {
-    let Some(rt) = rt else {
-        return;
-    };
-    if i32::from(RTM_ADD) != req {
-        // RTM_DELETE, RTM_RESOLVE, default: nothing.
-        return;
+    if let Some(rt) = rt {
+        kernel::net::if_::p2p_rtrequest(ifp, req as u8, rt, &net_held("p2p_rtrequest"));
     }
-    if rt.rt_flags.get() & RTF_LOCAL == 0 {
-        return;
-    }
+}
 
-    let key = crate::net::rtable::rt_key(rt);
-    let Some(ifa) = ifp.if_addrlist.iter().find(|ifa| {
-        // SAFETY: a route's key and an interface's addresses are valid sockaddrs.
-        unsafe {
-            let len = usize::from((*key).sa_len);
-            slice::from_raw_parts(key.cast::<u8>(), len)
-                == slice::from_raw_parts(ifa.ifa_addr.get().cast::<u8>(), len)
-        }
-    }) else {
-        return;
-    };
+/// `if_up(ifp)` under `bsd`'s net lock (the kernel's, the proof made through the token).
+pub fn if_up(ifp: &'static Ifnet) {
+    kernel::net::if_::if_up(ifp, &net_held("if_up"));
+}
 
-    kassert!(rt.rt_ifa.get().is_some_and(|rifa| ptr::eq(rifa, ifa)));
+/// `if_down(ifp)` under `bsd`'s net lock.
+pub fn if_down(ifp: &'static Ifnet) {
+    kernel::net::if_::if_down(ifp, &net_held("if_down"));
+}
 
-    let lo0ifp = if_get(rtable_loindex(ifp.if_rdomain.get()));
-    kassert!(lo0ifp.is_some());
-    let family = {
-        // SAFETY: as above.
-        unsafe { (*ifa.ifa_addr.get()).sa_family }
-    };
-    let lo0ifa = lo0ifp.and_then(|lo0ifp| {
-        lo0ifp
-            .if_addrlist
-            .iter()
-            // SAFETY: as above.
-            .find(|lo0ifa| unsafe { (*lo0ifa.ifa_addr.get()).sa_family } == family)
-            .map(ptr::from_ref)
-    });
-    if_put(lo0ifp);
-
-    if lo0ifa.is_none() {
-        return;
-    }
-
-    rt.rt_flags.set(rt.rt_flags.get() & !RTF_LLINFO);
+/// `if_linkstate(ifp)` under `bsd`'s net lock.
+pub fn if_linkstate(ifp: &'static Ifnet) {
+    kernel::net::if_::if_linkstate(ifp, &net_held("if_linkstate"));
 }
 
 /// `p2p_bpf_mtap`: a point-to-point interface's tap, by the packet's address family.
@@ -1384,6 +1341,7 @@ pub(crate) mod tests {
     #[cfg(feature = "inet6")]
     fn if_up_gives_the_default_loopback_its_ipv6_addresses() {
         use crate::net::if_loop::{LOOP_CLONER, loop_clone_create};
+        use crate::net::rtable::rtable_loindex;
         use crate::netinet6::in6::{IN6ADDR_LOOPBACK, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr};
 
         let _g = crate::netinet::ip_input::tests::setup();

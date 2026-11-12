@@ -86,7 +86,6 @@ use crate::netinet::tcp::Tcphdr;
 use crate::netinet::udp::Udphdr;
 use crate::netinet6::in6::{
     IN6ADDR_ANY, SockaddrIn6, in6_control, in6_is_addr_unspecified, in6_nam2sin6, satosin6_const,
-    sin6tosa_const,
 };
 use crate::netinet6::in6_pcb::{in6_peeraddr, in6_sockaddr};
 use crate::netinet6::ip6_input::{ip6_lasthdr, ipv6_input};
@@ -208,8 +207,7 @@ fn divert6_output(
         ph.pf.flags.set(ph.pf.flags.get() | PF_TAG_DIVERTED_PACKET);
 
         let result = if dir == PF_IN {
-            // SAFETY: a local `sockaddr_in6`, read for the call.
-            let rt = unsafe { rtalloc(sin6tosa_const(&sin6), 0, inp.inp_rtableid.get()) };
+            let rt = rtalloc(crate::net::route::sa_of(&sin6), 0, inp.inp_rtableid.get());
             if !rtisvalid(rt) || rt.is_none_or(|rt| rt.rt_flags.get() & RTF_LOCAL == 0) {
                 rtfree(rt);
                 break 'fail Some(Errno::EADDRNOTAVAIL);
@@ -235,7 +233,7 @@ fn divert6_output(
             ip6_output(
                 m,
                 None,
-                Some(&inp.inp_route),
+                Some(&mut *inp.inp_route.loan()),
                 IP_ALLOWBROADCAST | IP_RAWOUTPUT,
                 None,
                 None,

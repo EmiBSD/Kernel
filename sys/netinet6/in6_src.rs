@@ -111,7 +111,7 @@ use crate::netinet6::in6::In6Addr;
 use crate::netinet6::in6::{
     In6Pktinfo, SockaddrIn6, ifatoia6, in6_ifawithscope, in6_is_addr_linklocal,
     in6_is_addr_mc_intfacelocal, in6_is_addr_mc_linklocal, in6_is_addr_multicast,
-    in6_is_addr_unspecified, in6_is_scope_embed, satosin6_const, sin6tosa_const,
+    in6_is_addr_unspecified, in6_is_scope_embed, sin6tosa_const,
 };
 use crate::netinet6::in6_proto::IP6_DEFHLIM;
 use crate::netinet6::in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE, ia6_in6};
@@ -152,7 +152,7 @@ pub fn in6_pcbselsrc(
         && !in6_is_addr_unspecified(unsafe { &(*pi.as_ptr()).ipi6_addr })
     {
         // get the outgoing interface
-        let ifp = in6_selectif(dst, opts, mopts, &inp.inp_route, rtableid)?;
+        let ifp = in6_selectif(dst, opts, mopts, &mut inp.inp_route.loan(), rtableid)?;
 
         let mut sa6 = SockaddrIn6::zeroed();
         sa6.sin6_family = AF_INET6;
@@ -221,7 +221,7 @@ pub fn in6_pcbselsrc(
 
     // If route is known or can be allocated now, our src addr is taken from the i/f, else
     // punt.
-    let rt = route6_mpath(&inp.inp_route, dst, None, rtableid);
+    let rt = route6_mpath(&mut inp.inp_route.loan(), dst, None, rtableid);
 
     // in_pcbconnect() checks out IFF_LOOPBACK to skip using the address. But we don't know
     // why it does so. It is necessary to ensure the scope even for lo0 so doesn't check out
@@ -251,22 +251,20 @@ pub fn in6_pcbselsrc(
     // - output interface is UP
     if let Some(rt) = rt
         && rt.rt_flags.get() & RTF_GATEWAY != 0
+        && let Some(ip6_source) = rtable_getsource(rtableid, AF_INET6)
     {
-        let ip6_source = rtable_getsource(rtableid, AF_INET6);
-        if !ip6_source.is_null() {
-            // SAFETY: a table's preferred source is a readable socket address.
-            let ifa = unsafe { ifa_ifwithaddr(ip6_source, rtableid) };
-            if let Some(ifa) = ifa
-                && ifa
-                    .ifa_ifp
-                    .get()
-                    .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
-            {
-                // SAFETY: an `AF_INET6` source is a `sockaddr_in6`; read unaligned because
-                // the generic structure has a smaller alignment.
-                *in6src = unsafe { ptr::read_unaligned(satosin6_const(ip6_source)) }.sin6_addr;
-                return Ok(());
-            }
+        let ifa = crate::net::if_::ifa_ifwithaddr_sa(ip6_source.bytes(), rtableid);
+        if let Some(ifa) = ifa
+            && ifa
+                .ifa_ifp
+                .get()
+                .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
+        {
+            // An `AF_INET6` source is a `sockaddr_in6`.
+            *in6src = hal::pod::at::<SockaddrIn6>(ip6_source.bytes(), 0)
+                .unwrap_or_default()
+                .sin6_addr;
+            return Ok(());
         }
     }
 
@@ -347,7 +345,7 @@ pub fn in6_selectsrc(
 pub fn in6_selectroute(
     dst: &In6Addr,
     opts: Option<&Ip6Pktopts>,
-    ro: &Route,
+    ro: &mut Route,
     rtableid: u32,
 ) -> Option<&'static Rtentry> {
     // Use a cached route if it exists and is valid, else try to allocate a new one.
@@ -379,7 +377,7 @@ fn in6_selectif(
     dst: &In6Addr,
     opts: Option<&Ip6Pktopts>,
     mopts: Option<&Ip6Moptions>,
-    ro: &Route,
+    ro: &mut Route,
     rtableid: u32,
 ) -> Result<Option<&'static Ifnet>, Errno> {
     // If the caller specify the outgoing interface explicitly, use it.

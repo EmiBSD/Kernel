@@ -225,7 +225,7 @@ use crate::net::route::{
     RTAX_DST, RTAX_GATEWAY, RTAX_IFA, RTAX_NETMASK, RTF_CLONING, RTF_CONNECTED, RTF_HOST,
     RTF_MPATH, RTF_MULTICAST, RTM_ADD, RTM_CHGADDRATTR, RTP_CONNECTED, RtAddrinfo, Rtentry,
     ifafree, rt_ifa_add, rt_ifa_addlocal, rt_ifa_del, rt_ifa_dellocal, rt_ifa_purge, rtalloc,
-    rtfree, rtrequest,
+    rtfree, rtrequest, sa_of, sa_view,
 };
 use crate::net::rtable::rt_key;
 use crate::net::rtsock::rtm_addr;
@@ -1179,15 +1179,13 @@ unsafe fn in6_ioctl_change_ifaddr(
                     break 'err Ok(()); // No need to install a connected route.
                 }
 
-                // SAFETY: the address's own socket address.
-                let error = unsafe {
-                    rt_ifa_add(
-                        &ia6.ia_ifa,
-                        RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
-                        ia6.ia_ifa.ifa_addr.get(),
-                        ifp.if_rdomain.get(),
-                    )
-                };
+                // The address's own socket address (`ifa_addr` is `ia_addr`), copied.
+                let error = rt_ifa_add(
+                    &ia6.ia_ifa,
+                    RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
+                    sa_of(&ia6.ia_addr.get()),
+                    ifp.if_rdomain.get(),
+                );
                 if let Err(e) = error {
                     in6_purgeaddr(&ia6.ia_ifa);
                     break 'err Err(e);
@@ -1344,46 +1342,33 @@ fn in6_add_mcast_route(
     mltaddr: &SockaddrIn6,
     mltmask: &SockaddrIn6,
 ) -> Result<(), Errno> {
-    // SAFETY: `mltaddr` is a socket address of its `sin6_len` bytes.
-    let mut rt = unsafe { rtalloc(sin6tosa_const(mltaddr), 0, ifp.if_rdomain.get()) };
+    let mut rt = rtalloc(sa_of(mltaddr), 0, ifp.if_rdomain.get());
     if let Some(r) = rt {
-        // 32bit came from "mltmask"
-        // SAFETY: a route's key is a readable socket address, a `sockaddr_in6` here.
-        let key = unsafe {
-            ptr::read_unaligned(
-                rt_key(r)
-                    .cast::<u8>()
-                    .add(offset_of!(SockaddrIn6, sin6_addr))
-                    .cast::<[u8; 4]>(),
-            )
-        };
-        if mltaddr.sin6_addr.s6_addr[..4] != key {
+        // 32bit came from "mltmask": the key's `sin6_addr`, a `sockaddr_in6` here.
+        let at = offset_of!(SockaddrIn6, sin6_addr);
+        let key = rt_key(r).get(at..at + 4);
+        if Some(&mltaddr.sin6_addr.s6_addr[..4]) != key {
             rtfree(Some(r));
             rt = None;
         }
     }
     match rt {
         None => {
-            let mut ia_addr = ia6.ia_addr.get();
-            let mut mltaddr = *mltaddr;
-            let mut mltmask = *mltmask;
+            let ia_addr = ia6.ia_addr.get();
             let mut info = RtAddrinfo::new();
             info.rti_ifa = Some(&ia6.ia_ifa);
-            info.rti_info[RTAX_DST] = sin6tosa(&mut mltaddr);
-            info.rti_info[RTAX_GATEWAY] = sin6tosa(&mut ia_addr);
-            info.rti_info[RTAX_NETMASK] = sin6tosa(&mut mltmask);
-            info.rti_info[RTAX_IFA] = sin6tosa(&mut ia_addr);
+            info.rti_info[RTAX_DST] = Some(sa_view(sa_of(mltaddr)));
+            info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&ia_addr)));
+            info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(mltmask)));
+            info.rti_info[RTAX_IFA] = Some(sa_view(sa_of(&ia_addr)));
             info.rti_flags = RTF_MULTICAST;
-            // SAFETY: the addresses are local `sockaddr_in6`s that outlive the call.
-            unsafe {
-                rtrequest(
-                    RTM_ADD,
-                    &mut info,
-                    RTP_CONNECTED,
-                    None,
-                    ifp.if_rdomain.get(),
-                )
-            }
+            rtrequest(
+                RTM_ADD,
+                &mut info,
+                RTP_CONNECTED,
+                None,
+                ifp.if_rdomain.get(),
+            )
         }
         Some(r) => {
             rtfree(Some(r));
@@ -1548,9 +1533,13 @@ pub fn in6_update_ifa(
         let ifa = &ia6.ia_ifa;
 
         if ia6.ia_flags().get() & IFA_ROUTE != 0 {
-            // SAFETY: the address's own destination address.
-            let r =
-                unsafe { rt_ifa_del(ifa, RTF_HOST, ifa.ifa_dstaddr.get(), ifp.if_rdomain.get()) };
+            // The address's own destination address (`ifa_dstaddr` is `ia_dstaddr`).
+            let r = rt_ifa_del(
+                ifa,
+                RTF_HOST,
+                sa_of(&ia6.ia_dstaddr.get()),
+                ifp.if_rdomain.get(),
+            );
             if r.is_ok() {
                 ia6.ia_flags().set(ia6.ia_flags().get() & !IFA_ROUTE);
             }
@@ -1703,8 +1692,13 @@ pub fn in6_purgeaddr(ifa: &'static Ifaddr) {
         && ia6.ia_flags().get() & IFA_ROUTE != 0
         && ia6.ia_dstaddr.get().sin6_len != 0
     {
-        // SAFETY: the address's own destination address.
-        let r = unsafe { rt_ifa_del(ifa, RTF_HOST, ifa.ifa_dstaddr.get(), ifp.if_rdomain.get()) };
+        // The address's own destination address (`ifa_dstaddr` is `ia_dstaddr`).
+        let r = rt_ifa_del(
+            ifa,
+            RTF_HOST,
+            sa_of(&ia6.ia_dstaddr.get()),
+            ifp.if_rdomain.get(),
+        );
         if r.is_ok() {
             ia6.ia_flags().set(ia6.ia_flags().get() & !IFA_ROUTE);
         }
@@ -1734,15 +1728,13 @@ fn in6_unlink_ifa(ia6: &'static In6Ifaddr, ifp: &'static Ifnet) {
     // Release the reference to the base prefix.
     let plen = in6_mask2len(&ia6_maskin6(ia6), None);
     if ifp.if_flags.get() & IFF_LOOPBACK == 0 && plen != 128 {
-        // SAFETY: the address's own socket address.
-        let _ = unsafe {
-            rt_ifa_del(
-                ifa,
-                RTF_CLONING | RTF_CONNECTED,
-                ifa.ifa_addr.get(),
-                ifp.if_rdomain.get(),
-            )
-        };
+        // The address's own socket address (`ifa_addr` is `ia_addr`).
+        let _ = rt_ifa_del(
+            ifa,
+            RTF_CLONING | RTF_CONNECTED,
+            sa_of(&ia6.ia_addr.get()),
+            ifp.if_rdomain.get(),
+        );
     }
 
     rt_ifa_purge(ifa);
@@ -1788,15 +1780,13 @@ fn in6_ifinit(ifp: &'static Ifnet, ia6: &'static In6Ifaddr, newhost: bool) -> Re
         && ia6.ia_dstaddr.get().sin6_family == AF_INET6
     {
         let ifa = &ia6.ia_ifa;
-        // SAFETY: the address's own destination address.
-        unsafe {
-            rt_ifa_add(
-                ifa,
-                RTF_HOST | RTF_MPATH,
-                ifa.ifa_dstaddr.get(),
-                ifp.if_rdomain.get(),
-            )
-        }?;
+        // The address's own destination address (`ifa_dstaddr` is `ia_dstaddr`).
+        rt_ifa_add(
+            ifa,
+            RTF_HOST | RTF_MPATH,
+            sa_of(&ia6.ia_dstaddr.get()),
+            ifp.if_rdomain.get(),
+        )?;
         ia6.ia_flags().set(ia6.ia_flags().get() | IFA_ROUTE);
     }
 
@@ -2135,14 +2125,12 @@ pub fn in6_ifawithscope(
     let mut ia6_best: Option<&'static In6Ifaddr> = None;
     let mut gw6: Option<In6Addr> = None;
 
-    if let Some(rt) = rt {
-        let gw = rt.rt_gateway.get();
-        // SAFETY: a route's gateway, if any, is a readable socket address.
-        if !gw.is_null() && unsafe { (*gw).sa_family } == AF_INET6 {
-            // SAFETY: an `AF_INET6` gateway is a `sockaddr_in6`; read unaligned because the
-            // generic structure has a smaller alignment.
-            gw6 = Some(unsafe { ptr::read_unaligned(satosin6_const(gw)) }.sin6_addr);
-        }
+    if let Some(rt) = rt
+        && let Some(gw) = rt.gateway_copy()
+        && gw.view().family() == AF_INET6
+    {
+        // An `AF_INET6` gateway is a `sockaddr_in6`.
+        gw6 = hal::pod::at::<SockaddrIn6>(gw.bytes(), 0).map(|s| s.sin6_addr);
     }
 
     net_assert_locked("in6_ifawithscope");

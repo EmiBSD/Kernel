@@ -4519,13 +4519,17 @@ mod tests {
         let lo = crate::net::if_::if_get(crate::net::rtable::rtable_loindex(0)).expect("lo0");
         configure(lo, [10, 77, 2, 1], [255, 255, 255, 255]);
         // route add default 10.0.2.2
-        let mut dst = sin([0; 4]);
-        let mut mask = sin([0; 4]);
+        let dst = sin([0; 4]);
+        let mask = sin([0; 4]);
         let mut gw = sin(GATEWAY);
+        let gw_copy = gw;
         let mut info = RtAddrinfo::new();
-        info.rti_info[RTAX_DST] = sintosa(&mut dst);
-        info.rti_info[RTAX_NETMASK] = sintosa(&mut mask);
-        info.rti_info[RTAX_GATEWAY] = sintosa(&mut gw);
+        info.rti_info[RTAX_DST] = Some(crate::net::route::sa_view(crate::net::route::sa_of(&dst)));
+        info.rti_info[RTAX_NETMASK] =
+            Some(crate::net::route::sa_view(crate::net::route::sa_of(&mask)));
+        info.rti_info[RTAX_GATEWAY] = Some(crate::net::route::sa_view(crate::net::route::sa_of(
+            &gw_copy,
+        )));
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
         // route(8)'s rtm_getifa and rtrequest, both under the net lock (ifaof_ifpforaddr reads
         // the interface's addresses).
@@ -4533,8 +4537,7 @@ mod tests {
         // SAFETY: a local `sockaddr_in`.
         info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
         let mut rt = None;
-        // SAFETY: the addresses are locals.
-        unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) }.expect("default route");
+        rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
         rtfree(rt);
         net_unlock();
         let so =
@@ -4571,6 +4574,9 @@ mod tests {
             p[28..].copy_from_slice(b"through the tun!");
             let s = cksum(&p[20..]);
             p[22..24].copy_from_slice(&s.to_be_bytes());
+            // Under the net lock, as ip_output calls it (ipsp_process_packet's
+            // NET_ASSERT_LOCKED, the route lookups' proof).
+            net_lock();
             ipsp_process_packet(
                 crate::net::if_::tests::test_packet(&p),
                 ta,
@@ -4579,6 +4585,7 @@ mod tests {
                 IPSP_DF_INHERIT,
             )
             .expect("encrypted");
+            net_unlock();
             let ml = crate::sys::mbuf::MbufList::new();
             let mut taken = kernel::net::ifq::ifiq_test_take(lo.ifiq(0));
             ml.change(|l| kernel::net::mbuf::ml_enlist(l, &mut taken));
@@ -4596,8 +4603,12 @@ mod tests {
                 crate::net::ethertypes::ETHERTYPE_IP,
                 &esp,
             );
+            // ether_input and ipintr under the net lock, as if_input_process and if_netisr run
+            // them.
+            net_lock();
             crate::net::if_ethersubr::ether_input(ifp, f, None);
             crate::netinet::ip_input::ipintr();
+            net_unlock();
         };
         let c = |t: &Tdb, k: TdbCounters| t.tdb_counters[k as usize].load(Ordering::Relaxed);
         let wrongif = || IPCOUNTERS[IpstatCounters::IpsWrongif as usize].load(Ordering::Relaxed);

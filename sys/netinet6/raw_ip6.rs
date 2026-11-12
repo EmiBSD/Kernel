@@ -717,7 +717,7 @@ pub fn rip6_output(
             let error = ip6_output(
                 mm,
                 optp,
-                Some(&inp.inp_route),
+                Some(&mut *inp.inp_route.loan()),
                 flags,
                 inp_moptions6(inp),
                 Some(&inp.inp_seclevel.get()),
@@ -997,6 +997,14 @@ mod tests {
     use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
     use crate::sys::socket::SOCK_RAW;
 
+    /// `f` under the net lock, as `ip6_deliver` runs a raw socket's input (its errors' route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// A raw IPv6 socket of protocol `proto`, as ping6 opens one for `IPPROTO_ICMPV6`.
     fn raw6_socket(proto: i32) -> &'static Socket {
         let so = socreate(i32::from(AF_INET6), SOCK_RAW, proto).expect("socket");
@@ -1042,7 +1050,7 @@ mod tests {
         let mut mp = Some(m);
         let mut off = size_of::<Ip6Hdr>() as i32;
         assert_eq!(
-            rip6_input(&mut mp, &mut off, proto, i32::from(AF_INET6), None),
+            locked(|| rip6_input(&mut mp, &mut off, proto, i32::from(AF_INET6), None)),
             IPPROTO_DONE
         );
     }

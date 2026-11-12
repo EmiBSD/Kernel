@@ -166,7 +166,7 @@ use crate::net::if_::{
 use crate::net::if_var::{Ifaddr, Ifnet};
 use crate::net::route::{
     RTF_BROADCAST, RTF_CLONING, RTF_CONNECTED, RTF_HOST, RTF_MPATH, ifafree, rt_ifa_add,
-    rt_ifa_addlocal, rt_ifa_del, rt_ifa_dellocal, rt_ifa_purge,
+    rt_ifa_addlocal, rt_ifa_del, rt_ifa_dellocal, rt_ifa_purge, sa_of,
 };
 use crate::net::rtable::rtable_l2;
 use crate::netinet::igmp::{igmp_joingroup, igmp_leavegroup, igmp_sendpkt};
@@ -989,9 +989,8 @@ pub unsafe fn in_ioctl(
                     ia.ia_dstaddr.set(oldaddr);
                     break 'err error;
                 }
-                let mut old = oldaddr;
-                let _ = in_scrubhost(ia, &mut old);
-                let _ = in_addhost(ia, ia.ia_dstaddr.as_ptr());
+                let _ = in_scrubhost(ia, &oldaddr);
+                let _ = in_addhost(ia, &ia.ia_dstaddr.get());
                 Ok(())
             }
 
@@ -1339,7 +1338,7 @@ unsafe fn in_ioctl_get(cmd: u64, data: *mut u8, ifp: &'static Ifnet) -> Result<(
 /// `in_ifscrub`: deletes any existing route for an interface.
 pub fn in_ifscrub(ifp: &Ifnet, ia: &'static InIfaddr) {
     if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
-        let _ = in_scrubhost(ia, ia.ia_dstaddr.as_ptr());
+        let _ = in_scrubhost(ia, &ia.ia_dstaddr.get());
     } else if ifp.if_flags.get() & IFF_LOOPBACK == 0 {
         in_remove_prefix(ia);
     }
@@ -1429,7 +1428,7 @@ pub fn in_ifinit(
             if ia.ia_dstaddr.get().sin_family != AF_INET {
                 break 'out;
             }
-            error = in_addhost(ia, ia.ia_dstaddr.as_ptr());
+            error = in_addhost(ia, &ia.ia_dstaddr.get());
         } else if ifp.if_flags.get() & IFF_LOOPBACK == 0 {
             error = in_insert_prefix(ia);
         }
@@ -1477,17 +1476,15 @@ pub fn in_purgeaddr(ifa: &'static Ifaddr) {
 }
 
 /// `in_addhost`: the host route of `dst` through `ia`.
-fn in_addhost(ia: &'static InIfaddr, dst: *mut SockaddrIn) -> Result<(), Errno> {
+fn in_addhost(ia: &'static InIfaddr, dst: &SockaddrIn) -> Result<(), Errno> {
     let rdomain = ia.ia_ifp().get().map_or(0, |ifp| ifp.if_rdomain.get());
-    // SAFETY: `dst` is one of the address's own `sockaddr_in`s.
-    unsafe { rt_ifa_add(&ia.ia_ifa, RTF_HOST | RTF_MPATH, sintosa(dst), rdomain) }
+    rt_ifa_add(&ia.ia_ifa, RTF_HOST | RTF_MPATH, sa_of(dst), rdomain)
 }
 
 /// `in_scrubhost`: removes the host route of `dst` through `ia`.
-fn in_scrubhost(ia: &'static InIfaddr, dst: *mut SockaddrIn) -> Result<(), Errno> {
+fn in_scrubhost(ia: &'static InIfaddr, dst: &SockaddrIn) -> Result<(), Errno> {
     let rdomain = ia.ia_ifp().get().map_or(0, |ifp| ifp.if_rdomain.get());
-    // SAFETY: `dst` is one of the address's own `sockaddr_in`s or a local copy.
-    unsafe { rt_ifa_del(&ia.ia_ifa, RTF_HOST, sintosa(dst), rdomain) }
+    rt_ifa_del(&ia.ia_ifa, RTF_HOST, sa_of(dst), rdomain)
 }
 
 /// `in_insert_prefix`: inserts the cloning and broadcast routes for this subnet.
@@ -1495,23 +1492,22 @@ fn in_insert_prefix(ia: &'static InIfaddr) -> Result<(), Errno> {
     let ifa = &ia.ia_ifa;
     let rdomain = ifa.ifa_ifp.get().map_or(0, |ifp| ifp.if_rdomain.get());
 
-    // SAFETY: the address's own socket addresses.
-    unsafe {
-        rt_ifa_add(
-            ifa,
-            RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
-            ifa.ifa_addr.get(),
-            rdomain,
-        )?;
+    // ifa->ifa_addr and ifa->ifa_broadaddr: the address's own storage (ia_addr,
+    // ia_broadaddr), copied.
+    rt_ifa_add(
+        ifa,
+        RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
+        sa_of(&ia.ia_addr.get()),
+        rdomain,
+    )?;
 
-        if ia.ia_broadaddr().get().sin_addr.s_addr != 0 {
-            return rt_ifa_add(
-                ifa,
-                RTF_HOST | RTF_BROADCAST | RTF_MPATH,
-                ifa.ifa_broadaddr().get(),
-                rdomain,
-            );
-        }
+    if ia.ia_broadaddr().get().sin_addr.s_addr != 0 {
+        return rt_ifa_add(
+            ifa,
+            RTF_HOST | RTF_BROADCAST | RTF_MPATH,
+            sa_of(&ia.ia_broadaddr().get()),
+            rdomain,
+        );
     }
 
     Ok(())
@@ -1522,23 +1518,20 @@ fn in_remove_prefix(ia: &'static InIfaddr) {
     let ifa = &ia.ia_ifa;
     let rdomain = ifa.ifa_ifp.get().map_or(0, |ifp| ifp.if_rdomain.get());
 
-    // SAFETY: the address's own socket addresses.
-    unsafe {
+    let _ = rt_ifa_del(
+        ifa,
+        RTF_CLONING | RTF_CONNECTED,
+        sa_of(&ia.ia_addr.get()),
+        rdomain,
+    );
+
+    if ia.ia_broadaddr().get().sin_addr.s_addr != 0 {
         let _ = rt_ifa_del(
             ifa,
-            RTF_CLONING | RTF_CONNECTED,
-            ifa.ifa_addr.get(),
+            RTF_HOST | RTF_BROADCAST,
+            sa_of(&ia.ia_broadaddr().get()),
             rdomain,
         );
-
-        if ia.ia_broadaddr().get().sin_addr.s_addr != 0 {
-            let _ = rt_ifa_del(
-                ifa,
-                RTF_HOST | RTF_BROADCAST,
-                ifa.ifa_broadaddr().get(),
-                rdomain,
-            );
-        }
     }
 }
 

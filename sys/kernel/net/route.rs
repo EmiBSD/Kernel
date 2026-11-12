@@ -188,6 +188,11 @@
 //!   label in its own copy of the request: the C writes pointers to its own frame into the
 //!   caller's `info`, which `rt_clone` reads after the return for its `RTM_MISS`; `rt_clone`
 //!   builds that message with the same two addresses itself.
+//! - `rtalloc` and `rtalloc_mpath` take the net lock's proof (`NetHeld`, R17 of N6.3b1) where
+//!   the C's `rt_match` asserts nothing without `RT_RESOLVE` (only `rt_clone`'s `rtrequest`
+//!   does): every caller at the pin holds the net lock, shared or exclusive (the protocols'
+//!   input and output, the sockets' requests, the timers), and `bsd`'s adapters
+//!   (`sys/net/route.rs`) `panic(9)` for one that does not, where the C would go on.
 //!
 //! ## Redesign
 //! - `struct rtentry` is an item of the pool `"rtentry"` handled through
@@ -231,6 +236,13 @@
 //!   (`Timeout::set_shared`, the C's `timeout_set_proc`); `rt_timer_unlink`'s
 //!   `timeout_del() == 0` branch is kept. The labels: one `Mutexed` chain of `M_RTABLE`
 //!   boxes in the C's order, scanned linearly as the C's `TAILQ`.
+//!   `rt_timer_timer` runs a queue's function under the exclusive net lock it took, the
+//!   C's, and the functions at the pin never let it go (checked at N6.3b2):
+//!   `icmp_mtudisc_timeout` (`rtdeletemsg`, then `tcp_ctlinput(PRC_MTUINC)`, whose
+//!   `in_pcbnotifyall` takes the sockets' locks only) and `icmp6_mtudisc_timeout`
+//!   (`rtdeletemsg`); the redirect queues of both have none (a dynamic host route deleted
+//!   here), and nd6 keeps its own timers. `bsd`'s functions make their proof of the lock
+//!   with `SaToken::net_held` (`sys/net/route.rs`).
 //! - `rtcounters` is a `Counters` of `rts_ncounters`; `rttrash` and `rtgeneration` atomics
 //!   (`rtgeneration` bumped with `Release`, read with `Acquire`: the C's `membar_producer`
 //!   and `membar_consumer`).
@@ -250,7 +262,7 @@
 //!   compare-and-swap, the `ReadMostly` row of N12); `Route::cache4`'s hit is the C's loads.
 
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::{IPL_MPFLOOR, IPL_NET, IPL_SOFTNET};
 use hal::klock;
@@ -381,7 +393,7 @@ pub struct RtKmetrics {
     /// `rmx_pksent`: packets sent using this route.
     pub rmx_pksent: AtomicU64,
     /// `rmx_expire`: lifetime for route.
-    pub rmx_expire: AtomicI64,
+    pub rmx_expire: AtomicCell<i64>,
     /// `rmx_locks`: kernel must leave these values.
     pub rmx_locks: AtomicCell<u32>,
     /// `rmx_mtu`: MTU for this path.
@@ -393,7 +405,7 @@ impl RtKmetrics {
     pub const fn new() -> Self {
         Self {
             rmx_pksent: AtomicU64::new(0),
-            rmx_expire: AtomicI64::new(0),
+            rmx_expire: AtomicCell::new(),
             rmx_locks: AtomicCell::new(),
             rmx_mtu: AtomicU32::new(0),
         }
@@ -403,8 +415,7 @@ impl RtKmetrics {
     pub fn assign(&self, from: &RtKmetrics) {
         self.rmx_pksent
             .store(from.rmx_pksent.load(Ordering::Relaxed), Ordering::Relaxed);
-        self.rmx_expire
-            .store(from.rmx_expire.load(Ordering::Relaxed), Ordering::Relaxed);
+        self.rmx_expire.set(from.rmx_expire.get());
         self.rmx_locks.set(from.rmx_locks.get());
         self.rmx_mtu
             .store(from.rmx_mtu.load(Ordering::Relaxed), Ordering::Relaxed);
@@ -535,6 +546,15 @@ impl Rtentry {
         }))
     }
 
+    /// `f` of the gateway's storage (its `ROUNDUP(sa_len)` bytes), changed in place: ARP's
+    /// and ND's link-level address in a link-layer route's `sockaddr_dl` (`arpcache`,
+    /// `arpinvalidate`, `nd6_cache_lladdr`), which the C writes through `rt_gateway` under
+    /// their own lock (\[L\]). The cell keeps every reader out meanwhile, so `f` must not read
+    /// the gateway.
+    pub fn update_gateway<R>(&self, f: impl FnOnce(Option<&mut [u8]>) -> R) -> R {
+        self.rt_gateway.update(|g| f(g.as_deref_mut()))
+    }
+
     /// A copy of the gateway address (`None` without one or when longer than
     /// [`SA_COPY_MAX`]).
     pub fn gateway_copy(&self) -> Option<SaCopy> {
@@ -556,7 +576,7 @@ impl Rtentry {
     }
 
     /// `rt_expire`.
-    pub fn rt_expire(&self) -> &AtomicI64 {
+    pub fn rt_expire(&self) -> &AtomicCell<i64> {
         &self.rt_rmx.rmx_expire
     }
 
@@ -2913,7 +2933,7 @@ pub fn db_show_rtentry(w: &mut dyn fmt::Write, rt: &Rtentry, net: &NetHeld<'_>) 
         rt.rt_flags.get(),
         rt_refcnt(rt),
         rt.rt_use().load(Ordering::Relaxed),
-        rt.rt_expire().load(Ordering::Relaxed)
+        rt.rt_expire().get()
     )?;
 
     write!(w, " key=")?;

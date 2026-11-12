@@ -122,6 +122,7 @@ use core::mem::size_of;
 use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
+use hal::pool::PoolArc;
 use libkern::StaticCell;
 
 use crate::kern::kern_sysctl::{
@@ -133,16 +134,15 @@ use crate::kern::uipc_mbuf::{
     m_adj, m_cat, m_copydata, m_copym, m_free, m_freem, m_gethdr, m_prepend, m_pullup, m_resethdr,
     m_trailingspace,
 };
-use crate::net::if_::{IFF_UP, IFXF_AUTOCONF6, if_get, if_put, ifa_ifwithaddr};
-use crate::net::if_dl::{lladdr, satosdl};
+use crate::net::if_::{IFF_UP, IFXF_AUTOCONF6, if_get, if_put, ifa_ifwithaddr_sa};
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::pf::pf_pkt_addr_changed;
 use crate::net::route::{
     RT_RESOLVE, RTAX_DST, RTAX_GATEWAY, RTAX_LABEL, RTF_BLACKHOLE, RTF_DYNAMIC, RTF_GATEWAY,
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, RtAddrinfo, Rtentry,
-    RttimerQueue, SockaddrRtlabel, rt_timer_add, rt_timer_queue_change, rt_timer_queue_count,
-    rt_timer_queue_init, rtalloc, rtdeletemsg, rtfree, rtisvalid, rtlabel_id2sa, rtredirect,
-    rtrequest,
+    RttimerQueue, SaCopy, SockaddrRtlabel, rt_timer_add, rt_timer_queue_change,
+    rt_timer_queue_count, rt_timer_queue_init, rtalloc, rtdeletemsg, rtfree, rtisvalid,
+    rtlabel_id2sa, rtredirect, rtrequest, sa_of, sa_view,
 };
 use crate::net::rtable::rtable_getsource;
 use crate::net::rtsock::rtm_send;
@@ -163,6 +163,7 @@ use crate::netinet::icmp6::{
     NdNeighborAdvert, NdNeighborSolicit, NdOptHdr, NdOptRdHdr, NdRedirect, NdRouterAdvert,
     NdRouterSolicit, icmp6stat_inc, icmp6stat_inc_hist,
 };
+use crate::netinet::if_ether::gw_alen_family;
 use crate::netinet::in_::{IPPROTO_AH, IPPROTO_DSTOPTS, IPPROTO_HOPOPTS, IPPROTO_ROUTING};
 use crate::netinet::in_::{IPPROTO_DONE, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6};
 use crate::netinet::in_pcb::sotoinpcb;
@@ -1190,7 +1191,7 @@ pub fn icmp6_reflect(
         sa6_dst.sin6_addr = t;
 
         let mut src: Option<In6Addr> = None;
-        let mut key = match sa {
+        let key = match sa {
             Some(sa) => *sa,
             None => sa6_src,
         };
@@ -1199,14 +1200,15 @@ pub fn icmp6_reflect(
             // the src for the reply. The IN6_IFF_TENTATIVE|IN6_IFF_DUPLICATED case would be
             // VERY rare, but is possible (for example) when we encounter an error while
             // forwarding procedure destined to a duplicated address of ours.
-            // SAFETY: a local `sockaddr_in6`.
-            let rt = unsafe { rtalloc(sin6tosa(&mut sa6_dst), 0, rtableid) };
+            let rt = rtalloc(sa_of(&sa6_dst), 0, rtableid);
             if let Some(r) = rt
                 && rtisvalid(Some(r))
                 && r.rt_flags.get() & RTF_LOCAL != 0
-                && ifatoia6(r.ifa()).ia6_flags.get()
-                    & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
-                    == 0
+                && r.ifa().is_some_and(|a| {
+                    ifatoia6(a).ia6_flags.get()
+                        & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
+                        == 0
+                })
             {
                 src = Some(t);
             }
@@ -1217,37 +1219,40 @@ pub fn icmp6_reflect(
         if src.is_none() {
             // This case matches to multicasts, our anycast, or unicasts that we do not own.
             // Select a source address based on the source address of the erroneous packet.
-            // SAFETY: `key` is a local `sockaddr_in6`.
-            rt = unsafe { rtalloc(sin6tosa(&mut key), RT_RESOLVE, rtableid) };
+            rt = rtalloc(sa_of(&key), RT_RESOLVE, rtableid);
             let Some(r) = rt.filter(|r| rtisvalid(Some(r))) else {
                 rtfree(rt);
                 break 'bad;
             };
-            let ia6 = r
-                .ifa()
+            // A valid route has its address (`rt_ifa`).
+            let Some(rifa) = r.ifa() else {
+                rtfree(rt);
+                break 'bad;
+            };
+            let ia6 = rifa
                 .ifa_ifp
                 .get()
                 .and_then(|ifp| in6_ifawithscope(ifp, &t, rtableid, Some(r)));
             let mut s = match ia6 {
                 Some(ia6) => ia6_in6(ia6),
-                None => ia6_in6(ifatoia6(r.ifa())),
+                None => ia6_in6(ifatoia6(rifa)),
             };
 
             // route sourceaddr may override src address selection
-            if r.rt_flags.get() & RTF_GATEWAY != 0 {
-                let sourceaddr = rtable_getsource(rtableid, AF_INET6);
-                if !sourceaddr.is_null() {
-                    // SAFETY: a preferred source is an interface address, readable.
-                    let ifa = unsafe { ifa_ifwithaddr(sourceaddr, rtableid) };
-                    if let Some(ifa) = ifa
-                        && ifa
-                            .ifa_ifp
-                            .get()
-                            .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
-                    {
-                        // SAFETY: an `AF_INET6` source is a `sockaddr_in6`.
-                        s = unsafe { read_at::<SockaddrIn6>(sourceaddr.cast::<u8>()) }.sin6_addr;
-                    }
+            if r.rt_flags.get() & RTF_GATEWAY != 0
+                && let Some(sourceaddr) = rtable_getsource(rtableid, AF_INET6)
+            {
+                let ifa = ifa_ifwithaddr_sa(sourceaddr.bytes(), rtableid);
+                if let Some(ifa) = ifa
+                    && ifa
+                        .ifa_ifp
+                        .get()
+                        .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
+                {
+                    // An `AF_INET6` source is a `sockaddr_in6`.
+                    s = hal::pod::at::<SockaddrIn6>(sourceaddr.bytes(), 0)
+                        .unwrap_or_default()
+                        .sin6_addr;
                 }
             }
             src = Some(s);
@@ -1342,22 +1347,19 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
             sin6.sin6_family = AF_INET6;
             sin6.sin6_len = size_of::<SockaddrIn6>() as u8;
             sin6.sin6_addr = reddst6;
-            // SAFETY: a local `sockaddr_in6`.
-            let Some(rt) =
-                (unsafe { rtalloc(sin6tosa(&mut sin6), 0, m.m_pkthdr().ph_rtableid.get()) })
-            else {
+            let Some(rt) = rtalloc(sa_of(&sin6), 0, m.m_pkthdr().ph_rtableid.get()) else {
                 break 'out true;
             };
 
-            let gw = rt.rt_gateway.get();
-            // SAFETY: a route's gateway is NULL or a readable sockaddr.
-            if gw.is_null() || unsafe { (*gw).sa_family } != AF_INET6 {
+            let Some(gw) = rt.gateway_copy().filter(|g| g.view().family() == AF_INET6) else {
                 rtfree(Some(rt));
                 break 'out true;
-            }
+            };
 
-            // SAFETY: an `AF_INET6` gateway is a `sockaddr_in6`.
-            let gw6 = unsafe { read_at::<SockaddrIn6>(gw.cast::<u8>()) }.sin6_addr;
+            // An `AF_INET6` gateway is a `sockaddr_in6`.
+            let gw6 = hal::pod::at::<SockaddrIn6>(gw.bytes(), 0)
+                .unwrap_or_default()
+                .sin6_addr;
             if src6 != gw6 {
                 rtfree(Some(rt));
                 break 'out true;
@@ -1438,16 +1440,13 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
             sdst.sin6_addr = reddst6;
             ssrc.sin6_addr = src6;
             let mut newrt = None;
-            // SAFETY: three local `sockaddr_in6`s.
-            unsafe {
-                rtredirect(
-                    sin6tosa(&mut sdst),
-                    sin6tosa(&mut sgw),
-                    sin6tosa(&mut ssrc),
-                    Some(&mut newrt),
-                    m.m_pkthdr().ph_rtableid.get(),
-                )
-            };
+            rtredirect(
+                sa_of(&sdst),
+                sa_of(&sgw),
+                sa_of(&ssrc),
+                Some(&mut newrt),
+                m.m_pkthdr().ph_rtableid.get(),
+            );
             if let Some(nrt) = newrt
                 && ICMP6_REDIRTIMEOUT.load(Ordering::Relaxed) > 0
             {
@@ -1563,11 +1562,13 @@ pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
 
         // get ip6 linklocal address for the router.
         let mut gateway_ll6: Option<In6Addr> = None;
-        let gw = rt.rt_gateway.get();
-        if !gw.is_null() && rt.rt_flags.get() & RTF_GATEWAY != 0 {
-            // SAFETY: a route's gateway is a readable sockaddr; an inet6 gateway route's is a
-            // `sockaddr_in6`.
-            let a = unsafe { read_at::<SockaddrIn6>(gw.cast::<u8>()) }.sin6_addr;
+        if rt.rt_flags.get() & RTF_GATEWAY != 0
+            && let Some(gw) = rt.gateway_copy()
+        {
+            // An inet6 gateway route's gateway is a `sockaddr_in6`.
+            let a = hal::pod::at::<SockaddrIn6>(gw.bytes(), 0)
+                .unwrap_or_default()
+                .sin6_addr;
             if in6_is_addr_linklocal(&a) {
                 gateway_ll6 = Some(a);
             }
@@ -1622,22 +1623,27 @@ pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
             let nrt = nd6_lookup(&nexthop, false, Some(ifp), ifp.if_rdomain.get());
             if let Some(nrt) = nrt
                 && nrt.rt_flags.get() & (RTF_GATEWAY | RTF_LLINFO) == RTF_LLINFO
-                && !nrt.rt_gateway.get().is_null()
+                && nrt.with_gateway(|g| g.is_some())
             {
-                let sdl = satosdl(nrt.rt_gateway.get());
-                // SAFETY: a route's gateway is a readable sockaddr; a link-layer one is a
-                // `sockaddr_dl`.
-                let (family, alen) = unsafe { ((*sdl).sdl_family, (*sdl).sdl_alen) };
+                // A link-layer gateway is a `sockaddr_dl`.
+                let (alen, family) = gw_alen_family(nrt);
                 if family == AF_LINK && alen != 0 {
                     let hdr = NdOptHdr {
                         nd_opt_type: ND_OPT_TARGET_LINKADDR,
                         nd_opt_len: (len >> 3) as u8,
                     };
                     put(&mut buf, p, &hdr);
-                    // SAFETY: LLADDR(sdl) holds the link-layer address, `if_addrlen` bytes.
-                    let src = unsafe { core::slice::from_raw_parts(lladdr(sdl), addrlen) };
+                    // LLADDR(sdl), `if_addrlen` bytes (zeros past a short gateway).
                     let at = p + size_of::<NdOptHdr>();
-                    buf[at..at + addrlen].copy_from_slice(src);
+                    nrt.with_gateway(|g| {
+                        if let Some(g) = g {
+                            let start = hal::sys::net_if::SDL_DATA_OFFSET
+                                + usize::from(g.get(5).copied().unwrap_or(0));
+                            let src = g.get(start..).unwrap_or(&[]);
+                            let n = src.len().min(addrlen);
+                            buf[at..at + n].copy_from_slice(&src[..n]);
+                        }
+                    });
                     p += len;
                 }
             }
@@ -1826,9 +1832,8 @@ pub fn icmp6_mtudisc_clone(
     rtableid: u32,
     ipsec: bool,
 ) -> Option<&'static Rtentry> {
-    let mut dst = *dst;
-    // SAFETY: a local `sockaddr_in6`.
-    let mut rt = unsafe { rtalloc(sin6tosa(&mut dst), RT_RESOLVE, rtableid) };
+    let dst = *dst;
+    let mut rt = rtalloc(sa_of(&dst), RT_RESOLVE, rtableid);
 
     let ok = 'bad: {
         // Check if the route is actually usable
@@ -1853,24 +1858,22 @@ pub fn icmp6_mtudisc_clone(
         if r.rt_flags.get() & RTF_HOST == 0 {
             let mut info = RtAddrinfo::new();
             let mut sa_rl = SockaddrRtlabel::default();
+            let gw = r.gateway_copy();
 
             info.rti_ifa = r.rt_ifa.get();
             info.rti_flags = RTF_GATEWAY | RTF_HOST | RTF_DYNAMIC;
-            info.rti_info[RTAX_DST] = sin6tosa(&mut dst);
-            info.rti_info[RTAX_GATEWAY] = r.rt_gateway.get();
+            info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&dst)));
+            info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(SaCopy::view);
             info.rti_info[RTAX_LABEL] = rtlabel_id2sa(r.rt_labelid.get(), &mut sa_rl);
 
             let mut nrt = None;
-            // SAFETY: a local `sockaddr_in6`, the route's gateway and a local label.
-            if unsafe {
-                rtrequest(
-                    RTM_ADD,
-                    &mut info,
-                    r.rt_priority.get(),
-                    Some(&mut nrt),
-                    rtableid,
-                )
-            }
+            if rtrequest(
+                RTM_ADD,
+                &mut info,
+                r.rt_priority.get(),
+                Some(&mut nrt),
+                rtableid,
+            )
             .is_err()
             {
                 break 'bad false;
@@ -1900,8 +1903,9 @@ pub fn icmp6_mtudisc_clone(
 
 /// `icmp6_mtudisc_timeout`: a path MTU timer fired: delete the dynamic host route or forget
 /// the learned MTU.
-pub fn icmp6_mtudisc_timeout(rt: &'static Rtentry, rtableid: u32) {
+pub fn icmp6_mtudisc_timeout(rt: &PoolArc<Rtentry>, rtableid: u32) {
     net_assert_locked("icmp6_mtudisc_timeout");
+    let rt: &Rtentry = rt;
 
     let Some(ifp) = if_get(rt.rt_ifidx.get()) else {
         return;
@@ -2003,6 +2007,15 @@ mod tests {
 
     const IPPROTO_UDP: u8 = 17;
 
+    /// `f` under the net lock, as the C runs ICMPv6's input, errors and reflections (from
+    /// `ip6_input` and `ip6_forward`): the route lookups on their way want its proof.
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        net_lock();
+        let r = f();
+        net_unlock();
+        r
+    }
+
     /// The ICMPv6 and ND state, and an interface with `OURS6`/64, its connected route, and a
     /// link-local address; no duplicate address detection runs: the addresses are usable.
     ///
@@ -2024,15 +2037,13 @@ mod tests {
         test_ia6(ifp, ll, 0);
         // `in6_update_ifa` installs the connected route of the prefix.
         net_lock();
-        // SAFETY: the address's own socket address; the address is leaked.
-        unsafe {
-            rt_ifa_add(
-                &ia.ia_ifa,
-                RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
-                ia.ia_ifa.ifa_addr.get(),
-                0,
-            )
-        }
+        // The address's own socket address; the address is leaked.
+        rt_ifa_add(
+            &ia.ia_ifa,
+            RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
+            sa_of(&ia.ia_addr.get()),
+            0,
+        )
         .expect("connected route");
         net_unlock();
         ifp.if_mtu.set(0);
@@ -2161,7 +2172,7 @@ mod tests {
         let req = bytes(m);
         let hdr = header_at_40(&req);
 
-        let (reply, local) = icmp6_echo_reply(m, 40, hdr);
+        let (reply, local) = locked(|| icmp6_echo_reply(m, 40, hdr));
         assert!(local, "the request is kept for the raw sockets");
         let reply = reply.expect("a reply");
         let r = bytes(reply);
@@ -2202,7 +2213,7 @@ mod tests {
         // is built in a fresh mbuf in front of the data.
         let m = chain(&[&req[..40], &req[40..]]);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        let (reply, local) = icmp6_echo_reply(m, 40, header_at_40(&req));
+        let (reply, local) = locked(|| icmp6_echo_reply(m, 40, header_at_40(&req)));
         assert!(local);
         let reply = reply.expect("a reply");
         let r = bytes(reply);
@@ -2225,7 +2236,7 @@ mod tests {
         // The peer is on a prefix nobody routes: no reply, the packet is dropped.
         let m = echo_request(ifp, a6("2001:db8::5"), OURS6);
         let req = bytes(m);
-        let (reply, local) = icmp6_echo_reply(m, 40, header_at_40(&req));
+        let (reply, local) = locked(|| icmp6_echo_reply(m, 40, header_at_40(&req)));
         assert!(reply.is_none());
         assert!(local);
         m_freem(m);
@@ -2240,7 +2251,7 @@ mod tests {
 
         let mut mp = Some(echo_request(ifp, PEER6, OURS6));
         let mut off = 40;
-        let r = icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None);
+        let r = locked(|| icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None));
         let _ = r;
         assert_eq!(
             hist(Icmp6statCounters::Icp6sInhist, ICMP6_ECHO_REQUEST),
@@ -2259,7 +2270,7 @@ mod tests {
         let case = |m: &'static Mbuf| {
             let mut mp = Some(m);
             let mut off = 40;
-            let r = icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None);
+            let r = locked(|| icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None));
             (r, mp.is_none())
         };
 
@@ -2306,7 +2317,7 @@ mod tests {
             );
             let mut mp = Some(m);
             let mut off = 40;
-            let _ = icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None);
+            let _ = locked(|| icmp6_input(&mut mp, &mut off, IPPROTO_ICMPV6, 10, None));
             assert_eq!(icmp6stat(counter), before + 1, "type {ty} code {code}");
         }
     }
@@ -2326,8 +2337,8 @@ mod tests {
         let noport = icmp6stat(Icmp6statCounters::Icp6sOdstUnreachNoport);
         let out = hist(Icmp6statCounters::Icp6sOuthist, ICMP6_DST_UNREACH);
 
-        let e =
-            icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0).expect("an error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0))
+            .expect("an error");
         let b = bytes(e);
         assert_eq!(b.len(), 40 + 8 + orig.len());
         let ip6 = ip6_of(&b);
@@ -2354,7 +2365,7 @@ mod tests {
 
         // The reflected error goes back to the sender, from us.
         let mut mp = Some(e);
-        icmp6_reflect(&mut mp, 40, None).expect("reflect");
+        locked(|| icmp6_reflect(&mut mp, 40, None)).expect("reflect");
         let b = bytes(mp.expect("packet"));
         let ip6 = ip6_of(&b);
         assert_eq!((ip6.ip6_src, ip6.ip6_dst), (OURS6, PEER6));
@@ -2365,14 +2376,15 @@ mod tests {
     fn error_message_carries_the_pointer_or_mtu() {
         let (_g, ifp) = net6();
         let (m, _) = udp_packet(ifp, PEER6, OURS6);
-        let e = icmp6_do_error(m, ICMP6_PACKET_TOO_BIG, 0, 1400).expect("an error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_PACKET_TOO_BIG, 0, 1400)).expect("an error");
         let b = bytes(e);
         assert_eq!(b[44..48], 1400u32.to_be_bytes());
         assert_eq!(header_at_40(&b).icmp6_mtu(), htonl(1400));
         m_freem(e);
 
         let (m, _) = udp_packet(ifp, PEER6, OURS6);
-        let e = icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, 6).expect("an error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, 6))
+            .expect("an error");
         assert_eq!(bytes(e)[44..48], 6u32.to_be_bytes());
         m_freem(e);
     }
@@ -2398,7 +2410,7 @@ mod tests {
                 false,
             );
             assert!(
-                icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0).is_none(),
+                locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)).is_none(),
                 "type {ty}"
             );
         }
@@ -2406,7 +2418,8 @@ mod tests {
 
         // An echo request is informational: it gets its error.
         let m = echo_request(ifp, PEER6, OURS6);
-        let e = icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, 0).expect("an error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, 0))
+            .expect("an error");
         m_freem(e);
     }
 
@@ -2417,28 +2430,34 @@ mod tests {
         // To a multicast destination: no error, except Packet Too Big and a Parameter Problem
         // about an option.
         let (m, _) = udp_packet(ifp, PEER6, mcast);
-        assert!(icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0).is_none());
+        assert!(
+            locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0)).is_none()
+        );
         let (m, _) = udp_packet(ifp, PEER6, mcast);
-        assert!(icmp6_do_error(m, ICMP6_TIME_EXCEEDED, 0, 0).is_none());
+        assert!(locked(|| icmp6_do_error(m, ICMP6_TIME_EXCEEDED, 0, 0)).is_none());
         let (m, _) = udp_packet(ifp, PEER6, mcast);
-        let e = icmp6_do_error(m, ICMP6_PACKET_TOO_BIG, 0, 1280).expect("too big is sent");
+        let e =
+            locked(|| icmp6_do_error(m, ICMP6_PACKET_TOO_BIG, 0, 1280)).expect("too big is sent");
         m_freem(e);
         let (m, _) = udp_packet(ifp, PEER6, mcast);
-        let e = icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, 40).expect("option");
+        let e = locked(|| icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, 40))
+            .expect("option");
         m_freem(e);
         let (m, _) = udp_packet(ifp, PEER6, mcast);
-        assert!(icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, 40).is_none());
+        assert!(
+            locked(|| icmp6_do_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, 40)).is_none()
+        );
 
         // Link-layer multicast or broadcast.
         let (m, _) = udp_packet(ifp, PEER6, OURS6);
         m.m_flags().set(m.m_flags().get() | M_MCAST);
-        assert!(icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0).is_none());
+        assert!(locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)).is_none());
 
         // The sender is the unspecified address or a multicast group: nobody to tell.
         let (m, _) = udp_packet(ifp, IN6ADDR_ANY, OURS6);
-        assert!(icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0).is_none());
+        assert!(locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)).is_none());
         let (m, _) = udp_packet(ifp, mcast, OURS6);
-        assert!(icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0).is_none());
+        assert!(locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)).is_none());
     }
 
     #[test]
@@ -2450,7 +2469,7 @@ mod tests {
         let mut sent = 0;
         for _ in 0..5 {
             let (m, _) = udp_packet(ifp, PEER6, OURS6);
-            if let Some(e) = icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0) {
+            if let Some(e) = locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)) {
                 sent += 1;
                 m_freem(e);
             }
@@ -2463,7 +2482,7 @@ mod tests {
         ICMP6ERRPPSLIM.store(-1, Ordering::Relaxed);
         for _ in 0..5 {
             let (m, _) = udp_packet(ifp, PEER6, OURS6);
-            m_freem(icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0).expect("unlimited"));
+            m_freem(locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, 0, 0)).expect("unlimited"));
         }
         reset_ratelimit();
     }
@@ -2481,8 +2500,8 @@ mod tests {
         m.m_pkthdr().len.set(b.len() as i32);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
 
-        let e =
-            icmp6_do_error(m, ICMP6_TIME_EXCEEDED, ICMP6_TIME_EXCEED_TRANSIT, 0).expect("error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_TIME_EXCEEDED, ICMP6_TIME_EXCEED_TRANSIT, 0))
+            .expect("error");
         assert_eq!(e.m_pkthdr().len.get() as usize, IPV6_MMTU as usize);
         assert_eq!(ICMPV6_PLD_MAXLEN + 48, IPV6_MMTU as usize);
         m_freem(e);
@@ -2494,7 +2513,8 @@ mod tests {
         let mut src = a6("fe80::5054:ff:fe00:1");
         src.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
         let (m, _) = udp_packet(ifp, src, OURS6);
-        let e = icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0).expect("error");
+        let e = locked(|| icmp6_do_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_NOPORT, 0))
+            .expect("error");
         let b = bytes(e);
         // The new header keeps the zone (it routes the reply); the quoted one has it cleared.
         assert_eq!(ip6_of(&b).ip6_dst, OURS6);
@@ -2513,20 +2533,29 @@ mod tests {
         // Too short to hold an IPv6 header before the ICMPv6 one.
         let m = echo_request(ifp, PEER6, OURS6);
         let mut mp = Some(m);
-        assert_eq!(icmp6_reflect(&mut mp, 20, None), Err(Errno::EHOSTUNREACH));
+        assert_eq!(
+            locked(|| icmp6_reflect(&mut mp, 20, None)),
+            Err(Errno::EHOSTUNREACH)
+        );
         assert!(mp.is_none());
 
         // A packet that has been looping.
         let m = echo_request(ifp, PEER6, OURS6);
         m.m_pkthdr().ph_loopcnt.set(M_MAXLOOP);
         let mut mp = Some(m);
-        assert_eq!(icmp6_reflect(&mut mp, 40, None), Err(Errno::ELOOP));
+        assert_eq!(
+            locked(|| icmp6_reflect(&mut mp, 40, None)),
+            Err(Errno::ELOOP)
+        );
         assert!(mp.is_none());
 
         // No route back to the sender.
         let m = echo_request(ifp, a6("2001:db8::5"), OURS6);
         let mut mp = Some(m);
-        assert_eq!(icmp6_reflect(&mut mp, 40, None), Err(Errno::EHOSTUNREACH));
+        assert_eq!(
+            locked(|| icmp6_reflect(&mut mp, 40, None)),
+            Err(Errno::EHOSTUNREACH)
+        );
         assert!(mp.is_none());
     }
 
@@ -2544,7 +2573,7 @@ mod tests {
         let m = received(ifp, &with_ext);
 
         let mut mp = Some(m);
-        icmp6_reflect(&mut mp, 48, None).expect("reflect");
+        locked(|| icmp6_reflect(&mut mp, 48, None)).expect("reflect");
         let r = bytes(mp.expect("packet"));
         assert_eq!(r.len(), b.len(), "the extension header is gone");
         let ip6 = ip6_of(&r);
@@ -2558,7 +2587,7 @@ mod tests {
         // answer goes to the sender.
         let m = echo_request(ifp, PEER6, IN6ADDR_LINKLOCAL_ALLNODES);
         let mut mp = Some(m);
-        icmp6_reflect(&mut mp, 40, None).expect("reflect");
+        locked(|| icmp6_reflect(&mut mp, 40, None)).expect("reflect");
         let r = bytes(mp.expect("packet"));
         let ip6 = ip6_of(&r);
         assert_eq!(ip6.ip6_dst, PEER6);
@@ -2572,7 +2601,7 @@ mod tests {
         let m = echo_request(ifp, PEER6, OURS6);
         let sa = SockaddrIn6::with_addr(PEER6);
         let mut mp = Some(m);
-        icmp6_reflect(&mut mp, 40, Some(&sa)).expect("reflect with sa");
+        locked(|| icmp6_reflect(&mut mp, 40, Some(&sa))).expect("reflect with sa");
         m_freem(mp.expect("packet"));
     }
 
@@ -2610,7 +2639,7 @@ mod tests {
 
         // The interface does not take redirects (no autoconf): ignored without a count.
         let before = bad();
-        icmp6_redirect_input(redirect(ll(1), 255, ll(1), dst), 40);
+        locked(|| icmp6_redirect_input(redirect(ll(1), 255, ll(1), dst), 40));
         assert_eq!(bad(), before);
 
         // Taking them: each rule is checked.
@@ -2636,14 +2665,14 @@ mod tests {
         ];
         for (what, src, hlim, target, redirected) in cases {
             let before = bad();
-            icmp6_redirect_input(redirect(src, hlim, target, redirected), 40);
+            locked(|| icmp6_redirect_input(redirect(src, hlim, target, redirected), 40));
             assert_eq!(bad(), before + 1, "{what}");
         }
 
         // A router takes no redirects.
         IP6_FORWARDING.store(1, Ordering::Relaxed);
         let before = bad();
-        icmp6_redirect_input(redirect(PEER6, 255, ll(1), dst), 40);
+        locked(|| icmp6_redirect_input(redirect(PEER6, 255, ll(1), dst), 40));
         IP6_FORWARDING.store(0, Ordering::Relaxed);
         assert_eq!(bad(), before);
         ifp.if_xflags.set(ifp.if_xflags.get() & !IFXF_AUTOCONF6);
@@ -2655,13 +2684,13 @@ mod tests {
         let errors = hist(Icmp6statCounters::Icp6sOuthist, ND_REDIRECT);
         let count = icmp6stat(Icmp6statCounters::Icp6sOredirect);
         let (m, _) = udp_packet(ifp, PEER6, a6("fd00:77::99"));
-        // SAFETY: a local `sockaddr_in6`.
-        let rt = unsafe {
-            let mut dst = SockaddrIn6::with_addr(a6("fd00:77::99"));
-            rtalloc(sin6tosa(&mut dst), RT_RESOLVE, 0)
-        };
+        let dst = SockaddrIn6::with_addr(a6("fd00:77::99"));
+        // Under the net lock, as ip6_forward calls it.
+        net_lock();
+        let rt = rtalloc(sa_of(&dst), RT_RESOLVE, 0);
         let rt = rt.expect("the connected route");
         icmp6_redirect_output(m, rt);
+        net_unlock();
         // Counted as an attempt, not sent.
         assert_eq!(icmp6stat(Icmp6statCounters::Icp6sOredirect), count + 1);
         assert_eq!(hist(Icmp6statCounters::Icp6sOuthist, ND_REDIRECT), errors);
@@ -2676,10 +2705,11 @@ mod tests {
         for s in [&mut dst, &mut mask, &mut gate] {
             s.sin6_len = size_of::<SockaddrIn6>() as u8;
         }
+        let gate_copy = gate;
         let mut info = RtAddrinfo::new();
-        info.rti_info[RTAX_DST] = sin6tosa(&mut dst);
-        info.rti_info[RTAX_NETMASK] = sin6tosa(&mut mask);
-        info.rti_info[RTAX_GATEWAY] = sin6tosa(&mut gate);
+        info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&dst)));
+        info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(&mask)));
+        info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gate_copy)));
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
         // route(8)'s rtm_getifa and rtrequest, both under the net lock (ifaof_ifpforaddr reads
         // the interface's addresses).
@@ -2687,8 +2717,7 @@ mod tests {
         // SAFETY: a local `sockaddr_in6`.
         info.rti_ifa = unsafe { ifaof_ifpforaddr(sin6tosa(&mut gate), ifp) };
         let mut rt = None;
-        // SAFETY: the addresses are locals.
-        unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) }.expect("default route");
+        rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
         rtfree(rt);
         net_unlock();
     }
@@ -2778,7 +2807,7 @@ mod tests {
         assert_eq!(rt.rt_mtu().load(Ordering::Relaxed), 1300);
 
         // The timer fires: the dynamic host route goes away.
-        icmp6_mtudisc_timeout(rt, 0);
+        icmp6_mtudisc_timeout(&crate::net::route::handle(rt), 0);
         rtfree(Some(rt));
         let again = icmp6_mtudisc_clone(&sin6, 0, false).expect("cloned afresh");
         assert_eq!(again.rt_mtu().load(Ordering::Relaxed), 0);
