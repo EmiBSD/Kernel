@@ -158,6 +158,19 @@
 //!   | `rtm_output(RTM_CHANGE)` (:1020-1187) | `NET_LOCK` around `rtm_getifa`, `rt_setgate` and the flags | the same |
 //!   | `sysctl_rtable(NET_RT_DUMP)` (:2228-2242) | `NET_LOCK_SHARED`; `rtable_read`'s `r_lock` | the same |
 //!   | `sysctl_ifnames` (:2114-2154) | `if_tmplist_lock` write, `NET_LOCK_SHARED` for the list | the same |
+//! - The reference counts against the C (rtsock.c's `rtref`/`rtfree`/`ifaref`/`ifafree`
+//!   sites): every route a lookup answers is a counted handle, `Option<PoolArc<Rtentry>>`,
+//!   and the C's `rtfree(rt); rt = NULL` is that handle dropped (`rt = None`):
+//!
+//!   | rtsock.c | the C | here |
+//!   |---|---|---|
+//!   | `route_output` :874 | `rtfree(rt)` of the route `rtm_output` left in `*prt` | `drop(rt)` of the handle `rtm_output` left |
+//!   | `rtm_output` `RTM_ADD` :926, :939, :948 | the matched route freed on a conflict, on a cached route without its interface, and before `rtrequest` makes its own | `rt = None` at each |
+//!   | `rtm_output` `RTM_DELETE` :983, :1013 | freed without an interface, and before `rtrequest_delete` answers the deleted one | `rt = None` at each |
+//!   | `rtm_output` `RTM_CHANGE` :1030, :1043, :1064 | freed when a multipath route is named without its gateway (both lookups) and without an interface | `rt = None` at each |
+//!   | `rtm_output` `RTM_CHANGE` :1105, :1107 | `ifafree(rt->rt_ifa)`, `rt->rt_ifa = ifaref(ifa)` | `ifafree(o)`, `rt_ifa.set(Some(ifaref(ifa)))`: the kernel's, on `ifa_refcnt` |
+//!   | `ifa_ifwithroute` :1245 | `rtfree` of `rtalloc`'s answer once its `rt_ifa` is read | `drop(rt)`; the address is `&'static` (`bsd`'s storage, N6.4/N6.5) |
+//!   | `sysctl_dumpentry` :2018 | `rmx_refcnt = refcnt_read(&rt->rt_refcnt) - 1` | `rtable_read_refcnt(rt) - 1`: `rtable_read_refcnt` is the C's `refcnt_read` (the walk's own handle, which the C's walk does not take, left out), the `- 1` the C's (N6.3b1's R22) |
 
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -511,8 +524,8 @@ fn route_attach<G: ProcGlue>(
 ) -> Result<(), Errno> {
     soreserve(so, ROUTESNDQ, ROUTERCVQ)?;
 
-    // Use the rawcb but allocate a rtpcb, this code does not care about the additional
-    // fields and works directly on the raw socket.
+    // The control block is a routing one of its own (the C's raw socket fields are not
+    // needed): this code works on the socket itself.
     let t = tables::<G>();
     let flags = if wait == crate::net::mbuf::M_WAIT {
         PR_WAITOK
@@ -550,7 +563,7 @@ fn route_attach<G: ProcGlue>(
     soisconnected(so);
     so.set_options(w, SO_USELOOPBACK, true);
 
-    // Give up solock before taking rtp_lk for the lock ordering.
+    // `rtp_lk` comes before the socket's lock: let the socket go while the list is changed.
     w.unlocked(|| {
         let mut g = t.rtp_lk.write();
         t.rtp_list.insert_tail(&mut g, rop.as_pin());
@@ -576,14 +589,14 @@ fn route_detach<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) -> Result<(),
     };
     let t = tables::<G>();
 
-    // Give up solock before taking rtp_lk for the lock ordering.
+    // As in the attach: the socket let go, the list's lock taken, the order the C keeps.
     w.unlocked(|| {
         let mut g = t.rtp_lk.write();
         RTP_COUNT.fetch_sub(1, Ordering::Relaxed);
         t.rtp_list.remove(&mut g, &rop);
         drop(g);
 
-        // wait for all references to drop
+        // No desync retry may still run (nor be armed) once the block goes.
         rop.rop_timeout.del_barrier();
         rop.rop_timeout.clear();
     });
@@ -602,8 +615,7 @@ fn route_rcvd<G: ProcGlue>(so: &Socket<G>, w: &mut SoLocked<'_>) {
         kpanic(format_args!("route_rcvd: no control block"));
     };
 
-    // If we are in a FLUSH state, check if the buffer is empty so that we can clear the
-    // flag.
+    // A flushing socket takes messages again once its receive buffer has drained.
     let rg = so.so_rcv.lock();
     let st = rop.state_mut(w);
     if st.rop_flags & ROUTECB_FLAG_FLUSH != 0 && rg.space() == so.so_rcv.hiwat() as i64 {
@@ -742,19 +754,18 @@ fn rtm_senddesync_timer<G: ProcGlue>(arg: &AnyArc) {
 /// `rtm_senddesync(so)`: a desynchronised socket told so (`RTM_DESYNC`), or the retry armed
 /// again when the message cannot be queued.
 fn rtm_senddesync<G: ProcGlue>(so: &Socket<G>, rop: Pin<&Rtpcb<G>>, w: &mut SoLocked<'_>) {
-    // Dying socket is disconnected by upper layer and there is no reason to send packet.
-    // Also we shouldn't reschedule timeout(9), otherwise timeout_del_barrier(9) can't help
-    // us.
+    // A socket being closed is disconnected already: nothing to tell it, and no retry to
+    // arm, which the detach's barrier could not wait for.
     if !so.has_state(SS_ISCONNECTED) || so.so_rcv.has_state(SS_CANTRCVMORE) {
         return;
     }
 
-    // If we are in a DESYNC state, try to send a RTM_DESYNC packet.
+    // Only a desynchronised socket is told.
     if rop.state(w).rop_flags & ROUTECB_FLAG_DESYNC == 0 {
         return;
     }
 
-    // If we fail to alloc memory or if sbappendaddr() fails, re-add timeout and try again.
+    // Without memory for the message, or without room for it, the timeout tries later.
     if let Some(desync) = rtm_msg1(RTM_DESYNC, None) {
         let mut rg = so.so_rcv.lock();
         let appended = rg.sbappendaddr(&ROUTE_SRC, Some(desync), None).is_ok();
@@ -766,7 +777,7 @@ fn rtm_senddesync<G: ProcGlue>(so: &Socket<G>, rop: Pin<&Rtpcb<G>>, w: &mut SoLo
             return;
         }
     }
-    // Re-add timeout to try sending msg again.
+    // Try again in ROUTE_DESYNC_RESEND_TIMEOUT milliseconds.
     hal::pin::project(rop, |r| &r.rop_timeout).add_msec(ROUTE_DESYNC_RESEND_TIMEOUT);
 }
 
@@ -826,7 +837,7 @@ fn listeners() -> bool {
 /// wants it (its address family, its filters, its table), `so0` (the writer) excluded unless
 /// it loops its messages back.
 fn route_input<G: ProcGlue>(mut m: MbufBox, so0: Option<&Socket<G>>, sa_family: SaFamily) {
-    // Ensure that we can access the rtm_type via mtod().
+    // A message too short to hold its type goes nowhere.
     if (m.m_len().get() as usize) < 4 {
         return;
     }
@@ -835,8 +846,8 @@ fn route_input<G: ProcGlue>(mut m: MbufBox, so0: Option<&Socket<G>>, sa_family: 
     let t = tables::<G>();
     let g = t.rtp_lk.read();
     for rop in t.rtp_list.iter_pinned(&g) {
-        // If route socket is bound to an address family only send messages that match the
-        // address family. Address family agnostic messages are always sent.
+        // A socket made for one address family gets that family's messages and those of
+        // no family.
         if sa_family != AF_UNSPEC
             && rop.rop_proto != u16::from(AF_UNSPEC)
             && rop.rop_proto != u16::from(sa_family)
@@ -847,7 +858,8 @@ fn route_input<G: ProcGlue>(mut m: MbufBox, so0: Option<&Socket<G>>, sa_family: 
         let so = &*rop.rop_socket;
         let mut w = solock(so);
 
-        // Check to see if we don't want our own messages and if we can receive anything.
+        // Not the writer's own message unless it asked for them, and only to a socket that
+        // can still receive.
         if (so0.is_some_and(|s0| core::ptr::eq(s0, so)) && !so.has_options(SO_USELOOPBACK))
             || !so.has_state(SS_ISCONNECTED)
             || so.so_rcv.has_state(SS_CANTRCVMORE)
@@ -856,8 +868,7 @@ fn route_input<G: ProcGlue>(mut m: MbufBox, so0: Option<&Socket<G>>, sa_family: 
         }
 
         let st = rop.state(&w);
-        // Filter messages that the process does not want, but RTM_DESYNC can't be
-        // filtered.
+        // The socket's message and flag filters; RTM_DESYNC passes both.
         if hdr.ty != RTM_DESYNC {
             if st.rop_msgfilter != 0
                 && st.rop_msgfilter & 1u32.checked_shl(u32::from(hdr.ty)).unwrap_or(0) == 0
@@ -891,8 +902,7 @@ fn route_input<G: ProcGlue>(mut m: MbufBox, so0: Option<&Socket<G>>, sa_family: 
             }
         }
 
-        // Check to see if the flush flag is set. If so, don't queue any more messages until
-        // the flag is cleared.
+        // A flushing socket queues nothing until it has drained (route_rcvd).
         if st.rop_flags & ROUTECB_FLAG_FLUSH != 0 {
             continue;
         }
@@ -924,7 +934,7 @@ fn rtm_sendup<G: ProcGlue>(
     drop(rg);
 
     if send_desync {
-        // Flag socket as desync'ed and flush required.
+        // The message is lost: the socket is desynchronised and must drain.
         rop.state_mut(w).rop_flags |= ROUTECB_FLAG_DESYNC | ROUTECB_FLAG_FLUSH;
         rtm_senddesync(so, rop, w);
         return Err(Errno::ENOBUFS);
@@ -1064,8 +1074,7 @@ fn route_output<G: ProcGlue>(
 
     let useloopback = so.has_options(SO_USELOOPBACK);
 
-    // The socket can't be closed concurrently because the file descriptor reference is
-    // still held.
+    // The writer's descriptor keeps the socket open while its lock is let go.
     w.unlocked(|| route_output_unlocked::<G>(m, so, useloopback))
 }
 
@@ -1104,13 +1113,13 @@ fn route_output_unlocked<G: ProcGlue>(
         kpanic(format_args!("route_output: a short message"));
     };
 
-    // Verify that the caller is sending an appropriate message early.
+    // Only the requests a process may make, refused before anything else.
     match hdr.rtm_type {
         RTM_ADD | RTM_DELETE | RTM_GET | RTM_CHANGE | RTM_PROPOSAL | RTM_SOURCE => {}
         _ => return Err(Errno::EOPNOTSUPP),
     }
-    // Verify that the header length is valid. All messages from userland start with a
-    // struct rt_msghdr.
+    // A process's message starts with a whole struct rt_msghdr (an old one sets no header
+    // length).
     if hdr.rtm_hdrlen == 0 {
         // old client
         hdr.rtm_hdrlen = RT_MSGHDR as u16;
@@ -1123,8 +1132,7 @@ fn route_output_unlocked<G: ProcGlue>(
     let pid = curpid::<G>();
     hdr.rtm_pid = pid;
 
-    // Verify that the caller has the appropriate privilege; RTM_GET is the only operation
-    // the non-superuser is allowed.
+    // Every request but RTM_GET is the superuser's.
     if hdr.rtm_type != RTM_GET && G::with_curproc(|p| p.is_none_or(|p| suser(p).is_err())) {
         return Err(Errno::EACCES);
     }
@@ -1137,12 +1145,12 @@ fn route_output_unlocked<G: ProcGlue>(
         }
     }
 
-    // Do not let userland play with kernel-only flags.
+    // RTF_LOCAL and RTF_BROADCAST routes are the kernel's own.
     if hdr.rtm_flags as u32 & (RTF_LOCAL | RTF_BROADCAST) != 0 {
         return Err(Errno::EINVAL);
     }
 
-    // make sure that kernel-only bits are not set
+    // The bits only the kernel sets are cleared.
     hdr.rtm_priority &= RTP_MASK;
     hdr.rtm_flags &= !((RTF_DONE | RTF_CLONED | RTF_CACHED) as i32);
     hdr.rtm_fmask &= RTF_FMASK as i32;
@@ -1191,13 +1199,12 @@ fn route_output_unlocked<G: ProcGlue>(
         }
 
         if hdr.rtm_type == RTM_PROPOSAL {
-            // Validate RTM_PROPOSAL and pass it along or error out.
+            // A proposal is checked, then handed to the listeners.
             if rtm_validate_proposal(&info).is_err() {
                 return Err(Errno::EINVAL);
             }
-            // If this is a solicitation proposal forward request to all interfaces. Most
-            // handlers will ignore it but at least umb(4) will send a response to this
-            // event.
+            // A solicitation goes to every interface's handler as well (umb(4) answers it;
+            // most ignore it).
             if hdr.rtm_priority == RTP_PROPOSAL_SOLICIT {
                 let nw = NETLOCK.write();
                 let net = net_held(&nw);
@@ -1251,9 +1258,9 @@ fn route_output_unlocked<G: ProcGlue>(
         Ok(()) => hdr_edit::<RtMsghdr>(&mut rtm, |h| h.rtm_flags |= RTF_DONE as i32),
     }
 
-    // Check to see if we don't want our own messages.
+    // The answer is handed on unless nobody would read it.
     if !useloopback && RTP_COUNT.load(Ordering::Relaxed) == 0 {
-        // no other listener and no loopback of messages
+        // neither another listener nor the writer's own loopback
         return error;
     }
     let m = if m_copyback(&mut m, 0, &rtm[..len], M_NOWAIT).is_err() {
@@ -1303,8 +1310,8 @@ fn rtm_output(
                     break 'req Err(e);
                 }
 
-                // We cannot go through a delete/create/insert cycle for cached route because
-                // this can lead to races in the receive path. Instead we update the L2 cache.
+                // A cached (ARP) route is changed in place: removing and inserting it again
+                // would race with the input path that uses it.
                 if let Some(r) = rt.as_deref()
                     && r.rt_flags.isset(RTF_CACHED)
                 {
@@ -1344,8 +1351,7 @@ fn rtm_output(
                     break 'req Err(Errno::ESRCH);
                 };
 
-                // If we got multipath routes, we require users to specify a matching
-                // gateway.
+                // One path of a multipath route is named by its gateway.
                 if r.rt_flags.isset(RTF_MPATH) && info.rti_info[RTAX_GATEWAY].is_none() {
                     break 'req Err(Errno::ESRCH);
                 }
@@ -1356,15 +1362,15 @@ fn rtm_output(
                     break 'req Err(Errno::ESRCH);
                 };
 
-                // Invalidate the cache of automagically created and referenced L2 entries to
-                // make sure that ``rt_gwroute'' pointer stays valid for other CPUs.
+                // A cached link-layer entry the kernel made is invalidated, not deleted: other
+                // CPUs' routes may name it as their `rt_gwroute`.
                 if r.rt_flags.isset(RTF_CACHED) {
                     let nw = NETLOCK.write();
                     let net = net_held(&nw);
                     if let Some(d) = i.if_driver.get() {
                         d.rtrequest(i, RTM_INVALIDATE, Some(r), &net);
                     }
-                    // Reset the MTU of the gateway route.
+                    // The routes through it forget the MTU they learnt.
                     let _ = rtable_walk(tableid, r.dest_view().family(), None, |x, id| {
                         route_cleargateway(x, r, id);
                         Ok(())
@@ -1373,7 +1379,7 @@ fn rtm_output(
                     break 'req Ok(());
                 }
 
-                // Make sure that local routes are only modified by the kernel.
+                // Local and broadcast routes are the kernel's own.
                 if r.rt_flags.isset(RTF_LOCAL | RTF_BROADCAST) {
                     break 'req Err(Errno::EINVAL);
                 }
@@ -1394,19 +1400,17 @@ fn rtm_output(
                     info.rti_info[RTAX_GATEWAY],
                     prio,
                 );
-                // If we got multipath routes, we require users to specify a matching
-                // gateway.
+                // As for RTM_DELETE: one path of a multipath route is named by its gateway.
                 if rt.as_deref().is_some_and(|r| r.rt_flags.isset(RTF_MPATH))
                     && info.rti_info[RTAX_GATEWAY].is_none()
                 {
                     rt = None;
                 }
 
-                // If RTAX_GATEWAY is the argument we're trying to change, try to find a
-                // compatible route.
+                // The gateway given may be the new one: look the route up without it.
                 if rt.is_none() && info.rti_info[RTAX_GATEWAY].is_some() {
                     rt = rtable_lookup(tableid, dst, info.rti_info[RTAX_NETMASK], None, prio);
-                    // Ensure we don't pick a multipath one.
+                    // Never one path of a multipath route.
                     if rt.as_deref().is_some_and(|r| r.rt_flags.isset(RTF_MPATH)) {
                         rt = None;
                     }
@@ -1416,7 +1420,7 @@ fn rtm_output(
                     break 'req Err(Errno::ESRCH);
                 };
 
-                // Make sure that local routes are only modified by the kernel.
+                // Local and broadcast routes are the kernel's own.
                 if r.rt_flags.isset(RTF_LOCAL | RTF_BROADCAST) {
                     break 'req Err(Errno::EINVAL);
                 }
@@ -1427,16 +1431,16 @@ fn rtm_output(
                     break 'req Err(Errno::ESRCH);
                 };
 
-                // RTM_CHANGE needs a perfect match.
+                // The prefix length must be the route's exactly.
                 let plen = rtable_satoplen(dst.family(), info.rti_info[RTAX_NETMASK]);
                 if plen != Ok(r.rt_plen()) {
                     break 'req Err(Errno::ESRCH);
                 }
 
                 let newgate = info.rti_info[RTAX_GATEWAY].is_some_and(|g| !r.gateway_is(g.bytes()));
-                // Check reachable gateway before changing the route. New gateway could
-                // require new ifaddr, ifp; flags may also be different; ifp may be specified
-                // by ll sockaddr when protocol address is ambiguous.
+                // A new gateway, interface or address is resolved before anything changes:
+                // it may need another interface address and interface (an interface may be
+                // named by its link-level address when the protocol address is ambiguous).
                 if newgate || info.rti_info[RTAX_IFP].is_some() || info.rti_info[RTAX_IFA].is_some()
                 {
                     let nw = NETLOCK.write();
@@ -1457,7 +1461,7 @@ fn rtm_output(
                         r.rt_ifa.set(Some(ifaref(ifa)));
                         if let Some(ifp) = ifa.ifa_ifp.get() {
                             r.rt_ifidx.set(ifp.if_index.get());
-                            // recheck link state after ifp change
+                            // the new interface's link state decides RTF_UP again
                             let _ = rt_if_linkstate_change(r, ifp, tableid);
                         }
                     }
@@ -1499,7 +1503,7 @@ fn rtm_output_change(
     newgate: bool,
 ) -> Result<(), Errno> {
     if let Some(gw) = info.rti_info[RTAX_GATEWAY] {
-        // When updating the gateway, make sure it is valid.
+        // A gateway given again unchanged must keep its family.
         if !newgate && rt.with_gateway(|g| g.map(|g| g[1])) != Some(gw.family()) {
             return Err(Errno::EINVAL);
         }
@@ -1515,9 +1519,9 @@ fn rtm_output_change(
 
     let nw = NETLOCK.write();
     let net = net_held(&nw);
-    // Hack to allow some flags to be toggled.
+    // The flags `rtm_fmask` names take their values from `rtm_flags`.
     if rtm.rtm_fmask != 0 {
-        // MPLS flag it is set by rt_mpls_set()
+        // RTF_MPLS is rt_mpls_set's to set, not the user's
         rtm.rtm_fmask &= !(RTF_MPLS as i32);
         rtm.rtm_flags &= !(RTF_MPLS as i32);
         let fmask = rtm.rtm_fmask as u32;
@@ -1555,9 +1559,8 @@ pub fn ifa_ifwithroute(
     net: &NetHeld<'_>,
 ) -> Option<&'static Ifaddr> {
     let mut ifa = if flags & RTF_GATEWAY == 0 {
-        // If we are adding a route to an interface, and the interface is a pt to pt link we
-        // should search for the destination as our clue to the interface. Otherwise we can
-        // use the local address.
+        // A route to an interface: a host route's destination names a point-to-point
+        // link's far end; otherwise the gateway is the interface's own address.
         let mut ifa = None;
         if flags & RTF_HOST != 0 {
             ifa = ifa_ifwithdstaddr(net, dst.bytes(), rtableid);
@@ -1567,8 +1570,7 @@ pub fn ifa_ifwithroute(
         }
         ifa
     } else {
-        // If we are adding a route to a remote net or host, the gateway may still be on the
-        // other end of a pt to pt link.
+        // A route through a gateway: the gateway may be a point-to-point link's far end.
         ifa_ifwithdstaddr(net, gateway.bytes(), rtableid)
     };
     if ifa.is_none() {
@@ -1601,12 +1603,11 @@ pub fn ifa_ifwithroute(
 /// from its interface, address, gateway or destination; `ENETUNREACH` without one. The
 /// address found lives while the net lock `net` is held.
 fn rtm_getifa(info: &mut RtAddrinfo<'_>, rtid: u32, net: &NetHeld<'_>) -> Result<(), Errno> {
-    // ifp may be specified by sockaddr_dl when protocol address is ambiguous
+    // the interface named by a link-level address, when the protocol address is ambiguous
     let ifp = info.rti_info[RTAX_IFP].and_then(|sdl| if_get(sdl_index(sdl)));
 
-    // IPSEC: if the destination is a PF_KEY address, we'll look for the existence of a
-    // encap interface number or address in the options list of the gateway. By default,
-    // we'll return enc0.
+    // IPSEC: a route to a PF_KEY destination uses an enc(4) interface's address (enc0's
+    // by default).
     if info.rti_info[RTAX_DST].is_some_and(|d| d.family() == PF_KEY)
         && let Some(i) = ipsec()
     {
@@ -1671,18 +1672,18 @@ fn route_arp_conflict(rt: Option<&Rtentry>, info: &mut RtAddrinfo<'_>) -> Result
         return Ok(());
     }
 
-    // If the entry is cached, it can be updated.
+    // A cached entry is updated in place: no conflict.
     if rt.rt_flags.isset(RTF_CACHED) {
         return Ok(());
     }
 
-    // Same destination, not cached and both "priv" or "pub" conflict. If a second entry
-    // exists, it always conflict.
+    // Two entries of the same kind (both published or both private) conflict, and a third
+    // entry always does.
     if rt.rt_flags.isset(RTF_ANNOUNCE) == proxy || rt.rt_flags.isset(RTF_MPATH) {
         return Err(Errno::EEXIST);
     }
 
-    // No conflict but an entry exist so we need to force mpath.
+    // One of each kind may coexist, as two paths of one destination.
     info.rti_flags |= RTF_MPATH;
     Ok(())
 }
@@ -1730,8 +1731,8 @@ pub fn rtm_getmetrics(rt: &Rtentry, out: &mut RtMetrics) {
 /// its kind: a family that suits it (`EAFNOSUPPORT`), a size that fits the family and a
 /// string NUL-terminated within it (`EINVAL`).
 pub fn rtm_xaddrs<'a>(cp: &'a [u8], rtinfo: &mut RtAddrinfo<'a>) -> Result<(), Errno> {
-    // Parse address bits, split address storage in chunks, and set info pointers. Use
-    // sa_len for traversing the memory and check that we stay within in the limit.
+    // First the split: one address per bit of `rti_addrs`, each `sa_len` long (rounded up),
+    // none past the message's end.
     rtinfo.rti_info = [None; RTAX_MAX];
     let mut off = 0usize;
     for i in 0..32 {
@@ -1752,9 +1753,8 @@ pub fn rtm_xaddrs<'a>(cp: &'a [u8], rtinfo: &mut RtAddrinfo<'a>) -> Result<(), E
         off += roundup_long(sa_len);
     }
 
-    // Check that the address family is suitable for the route address type. Check that each
-    // address has a size that fits its family and its length is within the size. Strings
-    // within addresses must be NUL terminated.
+    // Then each address against its kind: a family it may have, a length its family
+    // allows, and a string NUL-terminated within the address.
     for i in 0..RTAX_MAX {
         let Some(sa) = rtinfo.rti_info[i] else {
             continue;
@@ -2577,23 +2577,26 @@ fn rtm_validate_proposal(info: &RtAddrinfo<'_>) -> Result<(), Errno> {
 /// unspecified address goes back to automatic source selection; `EAFNOSUPPORT` for another
 /// family. Under the exclusive net lock `net`.
 fn rt_setsource(rtableid: u32, src: SockaddrView<'_>, net: &NetHeld<'_>) -> Result<(), Errno> {
-    // If source address is 0.0.0.0 or :: use automatic source selection
+    // The unspecified address (0.0.0.0, ::) clears the table's source: automatic selection.
+    // The C answers 0 whatever rtable_setsource says.
     let b = src.bytes();
     match src.family() {
         AF_INET => {
             if b.get(4..8).is_none_or(|a| a == [0; 4]) {
-                return rtable_setsource(rtableid, AF_INET, None, net);
+                let _ = rtable_setsource(rtableid, AF_INET, None, net);
+                return Ok(());
             }
         }
         AF_INET6 => {
             if b.get(8..24).is_none_or(|a| a == [0; 16]) {
-                return rtable_setsource(rtableid, AF_INET6, None, net);
+                let _ = rtable_setsource(rtableid, AF_INET6, None, net);
+                return Ok(());
             }
         }
         _ => return Err(Errno::EAFNOSUPPORT),
     }
 
-    // Check if source address is assigned to an interface in the same rdomain
+    // Any other address must be one of an interface of the table's routing domain.
     let Some(ifa) = ifa_ifwithaddr(net, b, rtableid) else {
         return Err(Errno::EINVAL);
     };
@@ -3281,6 +3284,12 @@ mod tests {
             rt_setsource(0, v(&[2, AF_LINK]), &net),
             Err(Errno::EAFNOSUPPORT)
         );
+        // The unspecified address answers 0 whatever clearing says, as the C's: table 9 has
+        // no source to clear (rtable_setsource's EAFNOSUPPORT), for either family.
+        assert_eq!(rt_setsource(9, v(&sin([0, 0, 0, 0])), &net), Ok(()));
+        let mut any6 = [0u8; SIN6_LEN];
+        any6[..2].copy_from_slice(&[SIN6_LEN as u8, AF_INET6]);
+        assert_eq!(rt_setsource(9, v(&any6), &net), Ok(()));
         drop(w);
         assert_eq!(sysctl(&[0, NET_RT_SOURCE, 0], 0, 0), (Ok(()), 0));
         let _ = ifa;

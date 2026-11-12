@@ -6302,7 +6302,7 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
