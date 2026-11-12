@@ -350,7 +350,7 @@ use crate::net::ifq::{
 use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
-    M_UDP_CSUM_OUT, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
+    M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
     ml_purge,
 };
 use crate::net::pf_hooks::pf;
@@ -371,8 +371,9 @@ pub const NET_TASKQ: usize = 8;
 /// copy).
 pub const M_IFADDR: i32 = 9;
 
-/// `M_DEVBUF`: the `malloc(9)` type of `if_attach_queues`' queues (a copy).
-const M_DEVBUF: i32 = 2;
+/// `M_DEVBUF`: the `malloc(9)` type of `if_attach_queues`' queues and of the loopback's
+/// interface (a copy).
+pub(crate) const M_DEVBUF: i32 = 2;
 
 /// `M_IFGROUP`: the `malloc(9)` type of the interface groups (a copy).
 const M_IFGROUP: i32 = 10;
@@ -473,22 +474,64 @@ pub trait Inet: Sync + 'static {
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
+    /// `arpinput`, as `ether_input` hands an ARP frame to it (`if_input_proto`; N6.3c2).
+    /// Default: a function that frees the frame (no `INET`).
+    fn arpinput(&self) -> ProtoFn {
+        proto_drop
+    }
+    /// `revarpinput`, the same for a reverse ARP frame. Default: as `arpinput`'s.
+    fn revarpinput(&self) -> ProtoFn {
+        proto_drop
+    }
+    /// `arpresolve(ifp, rt, m, dst, desten)`: `desten` filled with the link address of the
+    /// IPv4 destination `dst` (a `sockaddr_in`) and the packet back to be sent;
+    /// `Err(EAGAIN)` when ARP kept the packet for a reply, another error once it is freed
+    /// (`ether_resolve`'s call). Default: the packet freed, `EAFNOSUPPORT` (no `INET`).
+    fn arpresolve(
+        &self,
+        _ifp: &'static Ifnet,
+        _rt: Option<&crate::net::route::Rtentry>,
+        m: MbufBox,
+        _dst: SockaddrView<'_>,
+        _desten: &mut [u8; ETHER_ADDR_LEN],
+    ) -> Result<MbufBox, Errno> {
+        drop(m);
+        Err(Errno::EAFNOSUPPORT)
+    }
+    /// `nd6_resolve(ifp, rt, m, dst, desten)`: the same for an IPv6 destination (a
+    /// `sockaddr_in6`). Default: as `arpresolve`'s.
+    fn nd6_resolve(
+        &self,
+        _ifp: &'static Ifnet,
+        _rt: Option<&crate::net::route::Rtentry>,
+        m: MbufBox,
+        _dst: SockaddrView<'_>,
+        _desten: &mut [u8; ETHER_ADDR_LEN],
+    ) -> Result<MbufBox, Errno> {
+        drop(m);
+        Err(Errno::EAFNOSUPPORT)
+    }
+    /// `arp_rtrequest(ifp, req, rt)`: `ether_rtrequest`'s IPv4 route change. Default: nothing.
+    fn arp_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
+    /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
+    fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
+    /// `in_hdr_cksum_out(m, ifp)`: the IPv4 header's checksum in software when `ifp` cannot
+    /// (`ether_offload_ifcap`; `m`'s data starts at the IP header). Default: nothing.
+    fn in_hdr_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `in_proto_cksum_out(m, ifp)`: the TCP, UDP or ICMP checksum likewise. Default: nothing.
+    fn in_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum likewise. Default: nothing.
+    fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
 }
 
-/// What the kernel's interface layer asks of the Ethernet layer (`if_ethersubr.c`, `bsd`'s
-/// until N6.3c2; bpf(4) is the kernel's since N6.3c1): a bridge (bridges.toml's `Link` row).
-/// Before registration every leg does nothing.
-pub trait Link: Sync + 'static {
-    /// `ether_brport_isset(ifp)`: the Ethernet interface is a bridge port.
-    fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool;
-    /// `if_setlladdr`'s `memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN)`.
-    fn arpcom_set_enaddr(&self, ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]);
+/// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
+/// drops it.
+fn proto_drop(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
+    drop(m);
 }
 
 /// The internet protocols' legs, once registered.
 static INET: OnceStatic<&'static dyn Inet> = OnceStatic::new();
-/// The link layers' legs, once registered.
-static LINK: OnceStatic<&'static dyn Link> = OnceStatic::new();
 
 /// Registers the internet protocols' legs, once (`bsd`'s boot, before the first interface).
 pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::AlreadyRegistered> {
@@ -496,22 +539,10 @@ pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::Already
         .map_err(|_| hal::bridges::AlreadyRegistered("Inet"))
 }
 
-/// Registers the link layers' legs, once.
-pub fn register_link(imp: &'static dyn Link) -> Result<(), hal::bridges::AlreadyRegistered> {
-    LINK.set(imp)
-        .map_err(|_| hal::bridges::AlreadyRegistered("Link"))
-}
-
 /// The internet protocols' legs, `None` before registration.
 #[inline]
 pub(crate) fn inet() -> Option<&'static dyn Inet> {
     INET.get().copied()
-}
-
-/// The link layers' legs, `None` before registration.
-#[inline]
-pub(crate) fn link() -> Option<&'static dyn Link> {
-    LINK.get().copied()
 }
 
 /// `struct softnet`: a softnet task queue and its barrier.
@@ -2584,8 +2615,10 @@ pub fn if_setlladdr(ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]) -> Resul
         return Err(Errno::EINVAL);
     }
 
-    if let Some(l) = link() {
-        l.arpcom_set_enaddr(ifp, lladdr);
+    // memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN): an Ethernet
+    // interface's (the C's callers are; another has no arpcom to write).
+    if let Some(ac) = ifp.if_arpcom.get() {
+        ac.ac_enaddr.set(*lladdr);
     }
     ifp.if_sadl.update(|sdl| {
         if let Some(sdl) = sdl {
@@ -2645,8 +2678,9 @@ pub fn if_createrdomain(rdomain: i32, ifp: &Ifnet) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `snprintf(loifname, sizeof(loifname), "lo%u", rdomain)`.
-fn lo_name(rdomain: u32) -> [u8; IFNAMSIZ] {
+/// `snprintf(loifname, sizeof(loifname), "lo%u", rdomain)` (`loop_clone_create`'s
+/// `"lo%d"` of its unit, which is never negative).
+pub(crate) fn lo_name(rdomain: u32) -> [u8; IFNAMSIZ] {
     let mut n = [0u8; IFNAMSIZ];
     n[..2].copy_from_slice(b"lo");
     let mut digits = [0u8; 10];
@@ -4128,7 +4162,10 @@ pub fn ifsetlro(ifp: &'static Ifnet, on: bool) -> Result<(), Errno> {
 
         if on && ifp.if_xflags.get() & IFXF_LRO == 0 {
             // NETHER > 0
-            if ifp.if_type.get() == IFT_ETHER && link().is_some_and(|l| l.ether_brport_isset(ifp)) {
+            if ifp.if_type.get() == IFT_ETHER
+                && ifp.if_arpcom.get().is_some()
+                && crate::net::if_ethersubr::ether_brport_isset(ifp).is_err()
+            {
                 break 'out Err(Errno::EBUSY);
             }
             ifp.if_xflags.set(ifp.if_xflags.get() | IFXF_LRO);
@@ -4547,7 +4584,7 @@ pub(crate) mod tests {
     /// `f` with an SMR thread and the softnets' workers running beside it (`if_remove`'s
     /// `smr_barrier` and `net_tq_barriers` wait for them), stopped after: a last empty SMR
     /// call wakes the first.
-    fn with_smr_thread<R>(f: impl FnOnce() -> R) -> R {
+    pub(crate) fn with_smr_thread<R>(f: impl FnOnce() -> R) -> R {
         static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         STOP.store(false, Ordering::SeqCst);
         let th = std::thread::spawn(|| {

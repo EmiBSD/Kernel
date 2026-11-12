@@ -148,9 +148,7 @@ use crate::net::if_media::{
 use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_restart, ifq_set_oactive};
-use crate::netinet::if_ether::{
-    ETHER_ADDR_LEN, ETHER_CRC_LEN, EtherMultistep, ether_first_multi, ether_next_multi,
-};
+use crate::netinet::if_ether::{ETHER_ADDR_LEN, ETHER_CRC_LEN};
 use crate::sys::device::{CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -1967,11 +1965,8 @@ pub fn pcn_set_filter(sc: &PcnSoftc) {
         // Set up the multicast address filter by passing all multicast addresses through a
         // CRC generator, and then using the high order 6 bits as an index into the 64-bit
         // logical address filter.
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             pcn_hash_multi(&mut initblock.init_ladrf, &e.enm_addrlo);
-            enm = ether_next_multi(&mut step);
         }
     }
 

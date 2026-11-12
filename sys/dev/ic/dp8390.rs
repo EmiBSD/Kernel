@@ -91,8 +91,7 @@ use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_is_oactive, ifq_set_oactive};
 use crate::netinet::if_ether::{
-    Arpcom, ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MIN_LEN, EtherMultistep,
-    ether_first_multi, ether_next_multi,
+    Arpcom, ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MIN_LEN,
 };
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -868,12 +867,8 @@ pub fn dp8390_getmcaf(ac: &Arpcom, af: &mut [u8; 8]) {
         return;
     }
     *af = [0; 8];
-    let mut step = EtherMultistep { e_enm: None };
-    let mut enm = ether_first_multi(&mut step, ac);
-    while let Some(e) = enm {
+    for e in ac.multiaddrs().iter() {
         dp8390_mcaf_bit(af, ether_crc32_be(&e.enm_addrlo[..ETHER_ADDR_LEN]));
-
-        enm = ether_next_multi(&mut step);
     }
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_ALLMULTI);
 }

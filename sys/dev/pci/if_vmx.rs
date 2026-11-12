@@ -155,8 +155,7 @@ use crate::net::ifq::{
     ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
-    Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, EtherExtracted, EtherMultistep,
-    ether_first_multi, ether_next_multi,
+    Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, EtherExtracted,
 };
 use crate::netinet::ip::Ip;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_add, tcpstat_inc};
@@ -2018,9 +2017,7 @@ pub fn vmxnet3_iff(sc: &'static Vmxnet3Softc) {
             panic(format_args!("{}: no multicast table", sc.devname()));
         }
         let mut p = 0usize;
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             if p + ETHER_ADDR_LEN > VMX_MCAST_LEN {
                 break;
             }
@@ -2031,8 +2028,6 @@ pub fn vmxnet3_iff(sc: &'static Vmxnet3Softc) {
             }
 
             p += ETHER_ADDR_LEN;
-
-            enm = ether_next_multi(&mut step);
         }
 
         if ac.ac_multicnt.get() > 0 {

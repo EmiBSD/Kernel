@@ -58,7 +58,19 @@ pub mod net_if_media;
 #[forbid(unsafe_code)]
 pub mod net_route;
 #[forbid(unsafe_code)]
+pub mod netinet6_in6;
+#[forbid(unsafe_code)]
 pub mod netinet_if_ether;
+#[forbid(unsafe_code)]
+pub mod netinet_in;
+#[forbid(unsafe_code)]
+pub mod netinet_ip;
+#[forbid(unsafe_code)]
+pub mod netinet_ip6;
+#[forbid(unsafe_code)]
+pub mod netinet_tcp;
+#[forbid(unsafe_code)]
+pub mod netinet_udp;
 /// `<sys/param.h>`'s page size for the headers moved here (`ioccom.h`'s `IOCPARM_MAX`): the
 /// machine's (`<machine/param.h>`), so `crate::sys::param::PAGE_SIZE` names the same constant in
 /// both crates.

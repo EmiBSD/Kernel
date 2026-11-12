@@ -26,6 +26,8 @@ pub mod bpf_filter;
 pub mod domain;
 pub mod file;
 pub mod if_;
+pub mod if_ethersubr;
+pub mod if_loop;
 pub mod if_media;
 pub mod if_var;
 pub mod ifq;

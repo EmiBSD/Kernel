@@ -144,7 +144,6 @@ use crate::net::ifq::{
 };
 use crate::netinet::if_ether::{
     Arpcom, ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_HDR_LEN, ETHER_MAX_HARDMTU_LEN, EtherExtracted,
-    EtherMultistep, ether_first_multi, ether_next_multi,
 };
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_add, tcpstat_inc};
 use crate::sys::device::{CD_COCOVM, CfMatch, Cfattach, Cfdriver, DV_IFNET, Device, Softc};
@@ -1418,7 +1417,8 @@ pub fn vio_attach(parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
         if virtio_has_feature(vsc, VIRTIO_NET_F_MAC) {
             vio_get_lladdr(&sc.sc_ac, vsc);
         } else {
-            ifp.set_arpcom();
+            // (struct arpcom *)ifp before ether_ifattach: the interface named its arpcom.
+            ifp.if_arpcom.set(Some(&sc.sc_ac));
             ether_fakeaddr(ifp);
         }
         printf(format_args!(
@@ -3119,13 +3119,9 @@ pub fn vio_iff(sc: &'static VioSoftc) {
     } else {
         rxfilter = true;
 
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             set_mac_tbl_entry(mc, VIRTIO_NET_CTRL_MAC_MC_ENTRIES, nentries, &e.enm_addrlo);
             nentries += 1;
-
-            enm = ether_next_multi(&mut step);
         }
     }
 

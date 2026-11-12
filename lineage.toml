@@ -3263,7 +3263,7 @@ adapted_by = ["sys/hal/softintr.rs"]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3276,7 +3276,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3298,7 +3298,7 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3481,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3926,7 +3926,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3959,7 +3959,7 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3971,7 +3971,7 @@ status = "inherited"
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4297,7 +4297,7 @@ status = "inherited"
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6300,13 +6300,15 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
+notes = "N6.3c2: a re-export of kernel::net::if_ethersubr with three adapters: the drivers' raw ether_ioctl (its one unsafe, the request's bytes the kernel reads), the parked-mbuf ether_input of the tests, ether_extract_headers into bsd's pointer view of struct ether_extracted"
 
 [[module]]
 rust = "sys/net/if_loop.rs"
 lz = ["sys/net/if_loop.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/if_loop.rs"]
+notes = "N6.3c2: a re-export of kernel::net::if_loop (LOMTU, LOOP_CLONER, loop_clone_create, loopattach) for the configurations' pdevinit tables and bsd's tests"
 
 [[module]]
 rust = "sys/net/if_media.rs"
@@ -6343,7 +6345,7 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
@@ -6386,7 +6388,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs"]
 rust = "sys/net/pf_norm.rs"
 lz = ["sys/net/pf_norm.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/net/pf_osfp.rs"
@@ -6492,7 +6494,7 @@ status = "inherited"
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
@@ -6676,7 +6678,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/if_loop.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
@@ -6842,7 +6844,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/nd6_nbr.rs"
 lz = ["sys/netinet6/nd6_nbr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_rtr.rs"
@@ -7499,6 +7501,16 @@ lz = "sys/net/if_var.rs::if_input_process_proto"
 native = ["sys/kernel/net/if_.rs::if_input_process_proto"]
 kind = "moved"
 
+[[module.fn]]
+lz = "sys/net/if_var.rs::Ifnet::is_arpcom"
+native = ["sys/kernel/net/if_ethersubr.rs::arpcom_of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_var.rs::Ifnet::set_arpcom"
+native = ["sys/kernel/net/if_ethersubr.rs::ether_ifattach"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/net/ifq.rs"
 crate = "kernel"
@@ -7744,6 +7756,76 @@ reason = "a group is an `MArc`, freed with its last reference (the snapshots' in
 lz = "sys/net/if_.rs::net_tq_barrier_rele"
 native = ["net_tq_barrier_task"]
 kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::if_rtrequest_dummy"
+native = []
+kind = "dropped"
+reason = "the empty if_rtrequest slot's answer: LegacyNetDriver::rtrequest falls to NetDriver's default (kernel::net::if_var::link_rtrequest), which does nothing without a link layer, as if_rtrequest_dummy (N6.3c2)"
+
+[[module]]
+rust = "sys/kernel/net/if_ethersubr.rs"
+crate = "kernel"
+lz = ["sys/net/if_ethersubr.rs", "sys/netinet/if_ether.rs"]
+status = "redesigned"
+notes = "N6.3c2: if_ethersubr.c and if_ether.h's kernel part written into the kernel: Arpcom (ac_if first, valid all zero, named by Ifnet::if_arpcom instead of a checked cast), ac_enaddr an e64 word (EtherAddrCell, D-N6.3c-15), the multicast list an MBox chain of M_IFMADDR newest first in a OnceStatic<Mutexed> at IPL_NET (D-N6.3c-16) walked by Arpcom::multiaddrs().iter() (ETHER_FIRST/NEXT_MULTI and ether_multistep gone), EtherPort a trait behind Link<EtherPortSlot> (D-N6.3c-17), EtherExtracted offsets read through hal::sys's Ip/Ip6Hdr/Tcphdr/Udphdr images (D-N6.3c-21), ETHER the interfaces' LinkLayer, ARP/ND/checksums through nine Inet legs (D-N6.3c-14)"
+[[module.fn]]
+lz = "sys/net/if_ethersubr.rs::copy_header"
+native = ["sa_data_header"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/if_ethersubr.rs::ether_header"
+native = []
+kind = "dropped"
+reason = "the frame's header copy is hal::pod::at::<EtherHeader> at each caller (ether_input, ether_extract_headers)"
+
+[[module.fn]]
+lz = "sys/net/if_ethersubr.rs::TCPHDR_LEN"
+native = ["sys/hal/sys/netinet_tcp.rs::Tcphdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_ethersubr.rs::TCPHDR_OFF_BYTE"
+native = ["sys/hal/sys/netinet_tcp.rs::Tcphdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/if_ethersubr.rs::UDPHDR_LEN"
+native = ["sys/hal/sys/netinet_udp.rs::Udphdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::EpInputFn"
+native = ["EtherPort"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::EtherMultistep"
+native = ["EtherMultiIter"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ether_first_multi"
+native = ["Arpcom::multiaddrs", "EtherMultis::iter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ether_next_multi"
+native = ["EtherMultiIter::next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ether_lookup_multi"
+native = ["EtherMultis::lookup_mut"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/net/if_loop.rs"
+crate = "kernel"
+lz = ["sys/net/if_loop.rs"]
+status = "redesigned"
+notes = "N6.3c2: lo(4) written into the kernel: LoopCloner (the first native Cloner) and Loop, the loopback's NetDriver (loioctl, lo_bpf_mtap) and LinkLayer (looutput, loinput, lortrequest) in the interface's if_driver and if_link; the Ifnet an MBox of M_DEVBUF leaked on destroy until N7 (D-N6.3c-18, a deviation); loop_clone_destroy's walk under NETLOCK.read()"
 
 [[module]]
 rust = "sys/kernel/net/if_media.rs"
@@ -8621,6 +8703,48 @@ crate = "hal"
 lz = ["sys/net/ethertypes.rs"]
 status = "redesigned"
 notes = "N6.3c1: LZ's net/ethertypes.h constants moved whole into hal (with the reference-backed test), for kernel::net and, through bsd's re-export, bsd's importers"
+
+[[module]]
+rust = "sys/hal/sys/netinet_in.rs"
+crate = "hal"
+lz = ["sys/netinet/in_.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in_addr (4), struct sockaddr_in (16), INADDR_ANY, IPPROTO_TCP, IPPROTO_UDP, IN_MULTICAST; bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_in6.rs"
+crate = "hal"
+lz = ["sys/netinet6/in6.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED; bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip.rs"
+crate = "hal"
+lz = ["sys/netinet/ip.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip (20) with ip_hl/ip_v, IP_MF, IP_OFFMASK; bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip6.rs"
+crate = "hal"
+lz = ["sys/netinet/ip6.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet_tcp.rs"
+crate = "hal"
+lz = ["sys/netinet/tcp.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct tcphdr (20) with th_off; bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet_udp.rs"
+crate = "hal"
+lz = ["sys/netinet/udp.rs"]
+status = "redesigned"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct udphdr (8); bsd keeps its copy until the protocol moves"
 
 [[module]]
 rust = "sys/hal/sys/netinet_if_ether.rs"

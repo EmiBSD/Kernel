@@ -344,6 +344,11 @@ pub trait IfnetLegacy {
     /// `panic(9)` for an interface whose driver is not `bsd`'s.
     fn legacy(&self) -> &'static LegacyNetDriver;
 
+    /// The interface's handle table when its driver is `bsd`'s; `None` for an interface
+    /// whose driver is the kernel's (the loopback, N6.3c2) or that has none yet, which
+    /// [`IfnetLegacy::legacy`] would give a table.
+    fn legacy_opt(&self) -> Option<&'static LegacyNetDriver>;
+
     /// `ifp->if_input`.
     fn if_input(&self) -> &'static InputSlot {
         &self.legacy().if_input
@@ -391,6 +396,11 @@ pub trait IfnetLegacy {
 }
 
 impl IfnetLegacy for Ifnet {
+    fn legacy_opt(&self) -> Option<&'static LegacyNetDriver> {
+        let &d = self.if_driver.get()?;
+        d.as_any().and_then(|a| a.downcast_ref::<LegacyNetDriver>())
+    }
+
     fn legacy(&self) -> &'static LegacyNetDriver {
         if let Some(&d) = self.if_driver.get() {
             return match d.as_any().and_then(|a| a.downcast_ref::<LegacyNetDriver>()) {

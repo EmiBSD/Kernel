@@ -145,14 +145,13 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::Ordering;
 
-use crate::kern::subr_prf::{Str, panic};
+use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{
     MAX_LINKHDR, m_adj, m_align, m_copydata, m_copym, m_dup_pkthdr, m_free, m_freem, m_gethdr,
     m_pullup, m_trailingspace, ml_dequeue, ml_enqueue, ml_init, ml_purge,
 };
 use crate::net::if_::{IFCAP_TSOv4, if_output_ml};
 use crate::net::if_var::Ifnet;
-use crate::net::if_var::IfnetLegacy;
 use crate::net::pf::pf_mbuf_link_inpcb;
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
@@ -1500,11 +1499,8 @@ pub unsafe fn tcp_if_output_tso(
             if ifcap & IFCAP_TSOv6 != 0 {
                 in6_proto_cksum_out(m, Some(ifp));
             }
-            let error = match ifp.if_output().get() {
-                // SAFETY: the caller's contract is the hook's.
-                Some(output) => unsafe { output(ifp, m, dst, rt) },
-                None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
-            };
+            // SAFETY: the caller's contract is the output's.
+            let error = unsafe { crate::net::if_::ifp_output(ifp, m, dst, rt) };
             if error.is_ok() {
                 tcpstat_inc(TcpstatCounters::TcpsOuthwtso);
             }
@@ -1550,6 +1546,7 @@ mod tests {
     use crate::kern::kern_timeout::timeout_set;
     use crate::kern::uipc_socket::soalloc;
     use crate::net::if_::tests::test_ifnet;
+    use crate::net::if_var::IfnetLegacy;
     use crate::netinet::in_pcb::Inpcb;
     use crate::netinet::in_proto::INETSW;
     use crate::netinet::tcp_fsm::TCPS_ESTABLISHED;

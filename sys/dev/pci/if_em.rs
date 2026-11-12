@@ -200,8 +200,7 @@ use crate::net::ifq::{
     ifq_restart, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
-    Arpcom, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MAX_LEN, ETHER_MIN_LEN,
-    EtherExtracted, EtherMultistep, ether_first_multi, ether_next_multi,
+    Arpcom, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_MAX_LEN, ETHER_MIN_LEN, EtherExtracted,
 };
 use crate::netinet::ip::Ip;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_add, tcpstat_inc};
@@ -2239,16 +2238,12 @@ pub fn em_iff(sc: &'static EmSoftc) {
             reg_rctl |= E1000_RCTL_UPE;
         }
     } else {
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let Some(slot) = mta.get_mut(i..i + ETH_LENGTH_OF_ADDRESS) else {
                 break;
             };
             slot.copy_from_slice(&e.enm_addrlo);
             i += ETH_LENGTH_OF_ADDRESS;
-
-            enm = ether_next_multi(&mut step);
         }
 
         em_mc_addr_list_update(&mut sc.em_hw(), &mta[..i], ac.ac_multicnt.get() as u32, 0);

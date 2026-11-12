@@ -127,9 +127,7 @@ use crate::net::if_media::{
 use crate::net::if_var::Ifnet;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{ifq_clr_oactive, ifq_dequeue, ifq_empty, ifq_is_oactive, ifq_set_oactive};
-use crate::netinet::if_ether::{
-    ETHER_ADDR_LEN, ETHER_HDR_LEN, EtherMultistep, ether_first_multi, ether_next_multi,
-};
+use crate::netinet::if_ether::{ETHER_ADDR_LEN, ETHER_HDR_LEN};
 use crate::sys::device::{Cfdriver, DV_IFNET, DVACT_SUSPEND, DVACT_WAKEUP, Device};
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -1719,9 +1717,7 @@ pub fn fxp_mc_setup(sc: &FxpSoftc, doit: bool) {
     {
         ifp.if_flags.set(ifp.if_flags.get() | IFF_ALLMULTI);
     } else {
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let mut a = [0u8; 6];
             a.copy_from_slice(&e.enm_addrlo[..ETHER_ADDR_LEN]);
             ctrl.write(
@@ -1730,8 +1726,6 @@ pub fn fxp_mc_setup(sc: &FxpSoftc, doit: bool) {
             );
 
             nmcasts += 1;
-
-            enm = ether_next_multi(&mut step);
         }
     }
 
