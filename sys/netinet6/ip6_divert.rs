@@ -233,7 +233,7 @@ fn divert6_output(
             ip6_output(
                 m,
                 None,
-                Some(&mut *inp.inp_route.loan()),
+                Some(&mut *inp.route()),
                 IP_ALLOWBROADCAST | IP_RAWOUTPUT,
                 None,
                 None,

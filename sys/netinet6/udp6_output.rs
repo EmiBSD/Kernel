@@ -252,7 +252,7 @@ pub fn udp6_output(
             break 'releaseopt ip6_output(
                 m,
                 optp,
-                Some(&mut *inp.inp_route.loan()),
+                Some(&mut *inp.route()),
                 flags,
                 inp_moptions6(inp),
                 Some(&inp.inp_seclevel.get()),

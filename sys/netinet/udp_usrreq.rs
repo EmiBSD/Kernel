@@ -1311,7 +1311,7 @@ pub fn udp_output(
     let error = ip_output(
         m,
         inp.inp_options.get(),
-        Some(&mut *inp.inp_route.loan()),
+        Some(&mut *inp.route()),
         inp.socket().options() & SO_BROADCAST,
         inp.moptions(),
         Some(&inp.inp_seclevel.get()),

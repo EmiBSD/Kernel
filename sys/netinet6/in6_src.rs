@@ -152,7 +152,7 @@ pub fn in6_pcbselsrc(
         && !in6_is_addr_unspecified(unsafe { &(*pi.as_ptr()).ipi6_addr })
     {
         // get the outgoing interface
-        let ifp = in6_selectif(dst, opts, mopts, &mut inp.inp_route.loan(), rtableid)?;
+        let ifp = in6_selectif(dst, opts, mopts, &mut inp.route(), rtableid)?;
 
         let mut sa6 = SockaddrIn6::zeroed();
         sa6.sin6_family = AF_INET6;
@@ -221,7 +221,7 @@ pub fn in6_pcbselsrc(
 
     // If route is known or can be allocated now, our src addr is taken from the i/f, else
     // punt.
-    let rt = route6_mpath(&mut inp.inp_route.loan(), dst, None, rtableid);
+    let rt = route6_mpath(&mut inp.route(), dst, None, rtableid);
 
     // in_pcbconnect() checks out IFF_LOOPBACK to skip using the address. But we don't know
     // why it does so. It is necessary to ensure the scope even for lo0 so doesn't check out

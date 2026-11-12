@@ -717,7 +717,7 @@ pub fn rip6_output(
             let error = ip6_output(
                 mm,
                 optp,
-                Some(&mut *inp.inp_route.loan()),
+                Some(&mut *inp.route()),
                 flags,
                 inp_moptions6(inp),
                 Some(&inp.inp_seclevel.get()),

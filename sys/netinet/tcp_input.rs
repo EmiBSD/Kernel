@@ -3818,7 +3818,7 @@ fn syn_cache_get(
 
         // Give the new socket our cached route reference.
         // The struct assignment, the cache's ro_rt then cleared: the route moved over.
-        ninp.inp_route.set(sc.sc_route.take());
+        ninp.set_route(sc.sc_route.take());
 
         let listenflags = intotcpcb(listeninp).map_or(0, |l| l.t_flags.get());
         ntp.t_flags.set(listenflags & (TF_NOPUSH | TF_NODELAY));

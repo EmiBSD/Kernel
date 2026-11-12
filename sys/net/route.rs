@@ -462,10 +462,16 @@ pub fn route6_mpath(
     .map(as_static)
 }
 
-/// A protocol control block's route cache (`Inpcb::inp_route`): the kernel's owned [`Route`]
-/// in a cell of the pcb, which `bsd` reaches through `&` under the pcb's lock (the inpcb's
-/// `Sync`). [`RouteCell::loan`] takes the route out for a call and puts it back when the loan
-/// ends (docs/SCAFFOLDING.md, D-N6.3b-7).
+/// A protocol control block's route cache (`Inpcb::inp_route`, `SynCache::sc_route`): the
+/// kernel's owned [`Route`] in a cell of the pcb, which `bsd` reaches through `&`.
+/// [`RouteCell::loan`] takes the route out for a call and puts it back when the loan ends
+/// (docs/SCAFFOLDING.md, D-N6.3b-7).
+///
+/// Every method moves the route (a loan out and back, `take`, `set`): each is a write, so
+/// the caller holds the lock of the cache's owner, the `[s]` of the C (the socket lock of
+/// the pcb; for a syn cache entry the listening socket's, or the last reference), and never
+/// reads another owner's cache under a lock of its own: two threads' moves of one cell race.
+/// `Inpcb::route` and `Inpcb::set_route` check the pcb's socket lock before they call these.
 pub struct RouteCell(core::cell::Cell<Option<Route>>);
 
 impl RouteCell {

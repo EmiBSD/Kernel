@@ -1184,7 +1184,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 break 'out ip6_output(
                     m,
                     opts,
-                    Some(&mut *inp.inp_route.loan()),
+                    Some(&mut *inp.route()),
                     0,
                     None,
                     Some(&inp.inp_seclevel.get()),
@@ -1203,7 +1203,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             ip_output(
                 m,
                 inp.inp_options.get(),
-                Some(&mut *inp.inp_route.loan()),
+                Some(&mut *inp.route()),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC
                 } else {

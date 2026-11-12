@@ -440,7 +440,7 @@ pub fn rip_output(
     ip_output(
         m,
         inp.inp_options.get(),
-        Some(&mut *inp.inp_route.loan()),
+        Some(&mut *inp.route()),
         flags,
         inp.moptions(),
         Some(&inp.inp_seclevel.get()),
