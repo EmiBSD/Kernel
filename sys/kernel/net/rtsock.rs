@@ -2788,8 +2788,8 @@ mod tests {
     // `net.route` sysctl over a table of the routes' test interface: the dump with the C's
     // `rmx_refcnt`, its filters and size estimate, a short room, a copy-out fault, the
     // argument checks, the interface lists and names, the table information, the statistics
-    // and the preferred sources. The user copies go to `USER_BASE + 0x3_8000`, 32 KiB no
-    // other test names (D-N6.3b-20).
+    // and the preferred sources. The user copies go to `USER_BASE + 0x7000..0x8000`, 4 KiB
+    // no other kernel test writes (D-N6.3b-20; the user-copy double's map, hal's copy.rs).
 
     use std::vec;
     use std::vec::Vec;
@@ -2805,10 +2805,10 @@ mod tests {
     use crate::net::route::{rt_ifa_add, rt_ifa_addlocal, rt_ifa_purge};
     use crate::testutil::{USER_BASE, USER_LEN, user_bytes};
 
-    /// Where the sysctl answers go in the user-copy double.
-    const UDUMP: usize = USER_BASE + 0x3_8000;
+    /// Where the sysctl answers go in the user-copy double: a range of this module's own.
+    const UDUMP: usize = USER_BASE + 0x7000;
     /// Its room.
-    const UDUMP_LEN: usize = 0x8000;
+    const UDUMP_LEN: usize = 0x1000;
 
     fn v(b: &[u8]) -> SockaddrView<'_> {
         SockaddrView::new(b).expect("a view")
