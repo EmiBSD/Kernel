@@ -155,7 +155,7 @@ use crate::kern::init_main::PDEVINIT_DONE;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{Str, panic, printf};
 use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge};
-use crate::net::bpf::{bpf_mtap_af, bpf_mtap_ether, bpfdetach};
+use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_ethersubr::ether_brport_isset;
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
@@ -316,10 +316,10 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         }
     }
 
-    fn bpf_mtap(&self, if_bpf: *const u8, m: &Mbuf, dir: u32) -> bool {
+    fn bpf_mtap(&self, if_bpf: &BpfTap, m: &Mbuf, dir: u32) -> bool {
         match self.if_bpf_mtap.get() {
-            Some(mtap) => mtap(if_bpf.cast_mut(), m, dir),
-            None => bpf_mtap_ether(if_bpf.cast_mut(), m, dir),
+            Some(mtap) => mtap(if_bpf, m, dir),
+            None => bpf_mtap_ether(if_bpf, m, dir),
         }
     }
 
@@ -559,30 +559,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
 }
 
 impl kernel::net::if_::Link for BsdNetLegs {
-    fn bpf_mtap_ether(&self, if_bpf: *const u8, m: &Mbuf, dir: u32) -> bool {
-        bpf_mtap_ether(if_bpf.cast_mut(), m, dir)
-    }
-
-    fn bpf_queue_tap(&self, bpfp: &hal::link::PtrWord<*mut u8>) -> *const u8 {
-        let p = bpfp.get();
-        if p.is_null() {
-            return ptr::null();
-        }
-        // SAFETY: a queue's `ifiq_bpfp` is NULL or points at its driver's per-queue tap word
-        // (vmx's ring's `bpf`, a `PtrWord<u8>`, set before the ring runs), which lives as long
-        // as the queue (LZ's `ifiq_input` read, moved here with the word); read atomically, as
-        // bpf(4) writes it.
-        unsafe { (*p.cast::<hal::link::PtrWord<u8>>()).get_mut() }
-    }
-
-    fn bpf_mtap_af(&self, if_bpf: *const u8, af: u32, m: &Mbuf, dir: u32) -> bool {
-        bpf_mtap_af(if_bpf.cast_mut(), af, m, dir)
-    }
-
-    fn bpfdetach(&self, ifp: &'static Ifnet) {
-        bpfdetach(ifp);
-    }
-
     fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool {
         ether_brport_isset(ifp).is_err()
     }
@@ -1006,7 +982,7 @@ pub fn if_linkstate(ifp: &'static Ifnet) {
 }
 
 /// `p2p_bpf_mtap`: a point-to-point interface's tap, by the packet's address family.
-pub fn p2p_bpf_mtap(if_bpf: *mut u8, m: &Mbuf, dir: u32) -> bool {
+pub fn p2p_bpf_mtap(if_bpf: &BpfTap, m: &Mbuf, dir: u32) -> bool {
     bpf_mtap_af(if_bpf, u32::from(m.m_pkthdr().ph_family.get()), m, dir)
 }
 

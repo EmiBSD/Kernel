@@ -479,8 +479,8 @@ pub fn dp8390_start(ifp: &'static Ifnet) {
         }
 
         // Tap off here if there is a BPF listener.
-        let bpf = ifp.if_bpf.get_mut();
-        if !bpf.is_null() {
+        let bpf = &ifp.if_bpf;
+        if bpf.is_set() {
             let _ = bpf_mtap(bpf, m0, BPF_DIRECTION_OUT);
         }
 

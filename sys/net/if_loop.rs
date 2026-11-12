@@ -256,7 +256,7 @@ pub fn loop_clone_destroy(ifp: &'static Ifnet) -> Result<(), Errno> {
 }
 
 /// `lo_bpf_mtap`: loopback dumps on output, disable input bpf.
-pub fn lo_bpf_mtap(_if_bpf: *mut u8, _m: &Mbuf, _dir: u32) -> bool {
+pub fn lo_bpf_mtap(_if_bpf: &crate::net::bpf::BpfTap, _m: &Mbuf, _dir: u32) -> bool {
     false
 }
 

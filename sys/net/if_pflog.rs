@@ -331,8 +331,8 @@ pub fn pflog_packet(
         return true;
     };
     let ifn = &pflogif.sc_if;
-    let if_bpf = ifn.if_bpf.get_mut();
-    if if_bpf.is_null() {
+    let if_bpf = &ifn.if_bpf;
+    if !if_bpf.is_set() {
         return true;
     }
 

@@ -2951,8 +2951,8 @@ pub fn wg_deliver_in(arg: *mut c_void) {
             continue;
         }
 
-        let if_bpf = sc.sc_if.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &sc.sc_if.if_bpf;
+        if if_bpf.is_set() {
             let _ = bpf_mtap_af(
                 if_bpf,
                 u32::from(m.m_pkthdr().ph_family.get()),
@@ -3336,8 +3336,8 @@ pub fn wg_qstart(ifq: &'static Ifqueue) {
             continue;
         };
 
-        let if_bpf = sc.sc_if.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &sc.sc_if.if_bpf;
+        if if_bpf.is_set() {
             let _ = bpf_mtap_af(
                 if_bpf,
                 u32::from(m.m_pkthdr().ph_family.get()),

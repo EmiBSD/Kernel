@@ -416,8 +416,8 @@ pub fn ipcomp_output(
             .if_obytes()
             .set(encif.if_obytes().get() + m.m_pkthdr().len.get() as u64);
 
-        let if_bpf = encif.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &encif.if_bpf;
+        if if_bpf.is_set() {
             let hdr = Enchdr {
                 af: u32::from(tdb.tdb_dst.get().sa_family()).to_be(),
                 spi: tdb.tdb_spi.get(),

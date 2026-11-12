@@ -33,7 +33,9 @@
 //!     fixture, N5.5b3), 128 KiB at most, written and zeroed by the fixture alone. An image
 //!     smaller than 64 KiB cannot mount (the super-block search's first slot, 64 KiB in,
 //!     lies past its end and that read faults, as the C's copy of a negative length does);
-//!     one of 64 KiB or more mounts from FFS1's slot at 8 KiB.
+//!     one of 64 KiB or more mounts from FFS1's slot at 8 KiB. `0x2_8000..0x2_c000` is also
+//!     bpf(4)'s tests' (`kernel::net::bpf`: a program, a read or write buffer, a word), which
+//!     hold the memory lock as the fixture does, so the two never run at once.
 //!   - `0x3_0000..0x4_0000`: the end of the memory, for the copies that must fault past it:
 //!     `kern.msgbuf`'s copy (`kernel::log`'s tests: the 40-byte header and 256-byte chunks
 //!     from `0x3_0000`, so its last whole chunk ends 216 bytes before the end and the next

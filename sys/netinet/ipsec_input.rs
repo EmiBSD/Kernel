@@ -856,8 +856,8 @@ pub fn ipsec_common_input_cb(
                 // XXX This conflicts with the scoped nature of IPv6
                 m.m_pkthdr().ph_ifidx.set(encif.if_index.get());
             }
-            let if_bpf = encif.if_bpf.get_mut();
-            if !if_bpf.is_null() {
+            let if_bpf = &encif.if_bpf;
+            if if_bpf.is_set() {
                 let hdr = Enchdr {
                     af: u32::from(af).to_be(),
                     spi: tdbp.tdb_spi.get(),

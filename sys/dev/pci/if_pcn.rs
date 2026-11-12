@@ -1138,8 +1138,8 @@ pub fn pcn_start(ifp: &'static Ifnet) {
         sc.sc_txsnext.set(pcn_nexttxs(sc.sc_txsnext.get()));
 
         // Pass the packet to any BPF listeners.
-        let bpf = ifp.if_bpf.get_mut();
-        if !bpf.is_null() {
+        let bpf = &ifp.if_bpf;
+        if bpf.is_set() {
             let _ = bpf_mtap(bpf, m0, BPF_DIRECTION_OUT);
         }
     }

@@ -89,8 +89,8 @@
 //!   structure whose allocation size a member records).
 //! - `usbd_xfer.done` (`volatile char`) is an atomic; `busy_free` exists only under feature
 //!   `diagnostic`, as under `DIAGNOSTIC`.
-//! - `usbd_bus.bpfif` is the tap `bpfsattach` returned; `bpf` is the `Cell` the bpf code
-//!   points at its listeners (`NBPFILTER` is always on here).
+//! - `usbd_bus.bpfif` is the tap `bpfsattach` returned, a counted handle; `bpf` is the word
+//!   bpf(4) points at the tap while it has listeners (`NBPFILTER` is always on here).
 //! - `usbd_dump_iface` & co. are `USB_DEBUG`-only in `usbdi.c`; `USB_DEBUG` is not in GENERIC,
 //!   so they are not ported (see `usbdi.rs`).
 
@@ -112,7 +112,7 @@ use crate::dev::usb::usbdi::{UsbTask, UsbdCallback, UsbdStatus};
 use crate::kern::kern_softintr::SoftHandle;
 use crate::kern::subr_prf::panic;
 use crate::machine::bus::BusDmaTag;
-use crate::net::bpfdesc::BpfIf;
+use crate::net::bpf::{BpfIfRef, BpfTap};
 use crate::queue_adapter;
 use crate::sys::device::Device;
 use crate::sys::errno::Errno;
@@ -314,9 +314,9 @@ pub struct UsbdBus {
     /// `methods`.
     pub methods: Cell<Option<&'static UsbdBusMethods>>,
     /// `bpfif`: the bpf tap (`usb_attach`).
-    pub bpfif: Cell<Option<&'static BpfIf>>,
-    /// `bpf`: the listeners' pointer the bpf code keeps up to date (`caddr_t bpf`).
-    pub bpf: hal::link::PtrWord<u8>,
+    pub bpfif: Cell<Option<BpfIfRef>>,
+    /// `bpf`: the word the bpf code keeps up to date (`caddr_t bpf`).
+    pub bpf: BpfTap,
     /// `pipe_size`: size of a pipe struct.
     pub pipe_size: Cell<u32>,
     /// The host controller's pipe type ([`usbd_bus_set_hc_types`]).
@@ -382,9 +382,10 @@ impl UsbdBus {
 }
 
 // SAFETY: `#[repr(C)]` with the device first; every other member is a `Cell` of an
-// `Option` of a reference, `NonNull` or `fn` (None is zero), a raw pointer, an integer, a
-// structure of integers or a `bus_dma_tag_t` option, or an atomic integer: all valid as zero
-// bits.
+// `Option` of a reference, `NonNull`, `fn` or counted handle (`MArc`, a `NonNull` inside: None
+// is zero), a raw pointer, an integer, a structure of integers or a `bus_dma_tag_t` option,
+// an atomic integer, or the bpf word (`hal::smr::SmrArcWord`, an atomic pointer and a marker:
+// zero is no tap, hal's `an_all_zero_counted_word_is_null`): all valid as zero bits.
 unsafe impl crate::sys::device::Softc for UsbdBus {}
 
 /// A `usbd_bus` flag a host controller's `IPL_MPSAFE` interrupt handler reads or writes

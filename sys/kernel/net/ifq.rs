@@ -112,6 +112,7 @@ use hal::mutex::{Mutexed, MutexedGuard};
 use hal::pinlist::PinList;
 use hal::sleep::INFSLP;
 use hal::sys::errno::Errno;
+use hal::sys::net_bpf::BPF_DIRECTION_IN;
 use hal::sys::net_if::{IFF_RUNNING, IFQ_MAXPRIO, IFQ_NQUEUES, IFXF_MONITOR, IfData};
 
 use crate::assert::{kassert, kpanic};
@@ -967,9 +968,9 @@ struct IfiqState {
 pub struct Ifiqueue {
     /// `ifiq_if`: the interface.
     ifiq_if: Link<Ifnet>,
-    /// `ifiq_bpfp`: a per-queue `bpf(4)` tap (`caddr_t *`, the driver's word, read by the
-    /// `Link` leg).
-    pub ifiq_bpfp: PtrWord<*mut u8>,
+    /// `ifiq_bpfp`: a per-queue `bpf(4)` tap (`caddr_t *`): the driver's word, lent
+    /// `'static` from its softc as the interface is.
+    pub ifiq_bpfp: Link<crate::net::bpf::BpfTap>,
     /// `ifiq_softnet`: the softnet task queue that processes the packets.
     ifiq_softnet: Link<Taskq>,
     /// `ifiq_softc` (`_ifiq_ptr._ifiq_softc`): the driver's word.
@@ -992,7 +993,7 @@ impl Ifiqueue {
         ifiq_softnet.set(softnet);
         Self {
             ifiq_if: Link::to(ifp),
-            ifiq_bpfp: PtrWord::new(),
+            ifiq_bpfp: Link::new(),
             ifiq_softnet,
             ifiq_softc: PtrWord::new(),
             st: Mutexed::new(
@@ -1075,14 +1076,13 @@ pub fn ifiq_input(ifiq: &'static Ifiqueue, ml: &mut MbufList) -> bool {
     }
     let packets = u64::from(ml_len(ml));
 
-    let link = crate::net::if_::link();
-    let ifiq_bpf = link.map_or(core::ptr::null(), |l| l.bpf_queue_tap(&ifiq.ifiq_bpfp));
-    let if_bpf = ifp.if_bpf.get();
-    if !ifiq_bpf.is_null() || !if_bpf.is_null() {
+    let ifiq_bpf = ifiq.ifiq_bpfp.get().filter(|w| w.is_set());
+    let if_bpf = Some(&ifp.if_bpf).filter(|w| w.is_set());
+    if ifiq_bpf.is_some() || if_bpf.is_some() {
         let mut ml0 = core::mem::take(ml);
         let driver = ifp.driver();
-        let mtap = |arg: *const u8, m: &Mbuf| {
-            !arg.is_null() && driver.bpf_mtap(arg, m, crate::net::if_::BPF_DIRECTION_IN)
+        let mtap = |w: Option<&crate::net::bpf::BpfTap>, m: &Mbuf| {
+            w.is_some_and(|w| driver.bpf_mtap(w, m, BPF_DIRECTION_IN))
         };
         while let Some(m) = ml_dequeue(&mut ml0) {
             let mut drop_it = false;
@@ -1154,12 +1154,7 @@ pub fn ifiq_enqueue_qlim(ifiq: &'static Ifiqueue, m: MbufBox, qlim: u32) -> Resu
     m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
     m.m_pkthdr().ph_rtableid.set(ifp.if_rdomain.get());
 
-    let if_bpf = ifp.if_bpf.get();
-    if !if_bpf.is_null()
-        && ifp
-            .driver()
-            .bpf_mtap(if_bpf, &m, crate::net::if_::BPF_DIRECTION_IN)
-    {
+    if ifp.if_bpf.is_set() && ifp.driver().bpf_mtap(&ifp.if_bpf, &m, BPF_DIRECTION_IN) {
         {
             let mut g = ifiq.st.lock();
             g.packets += 1;

@@ -134,7 +134,7 @@ use crate::machine::pci_machdep::{
     PciIntrFn, PciIntrHandle, pci_intr_establish, pci_intr_establish_cpu, pci_intr_map,
     pci_intr_map_msi, pci_intr_map_msix, pci_intr_string,
 };
-use crate::net::bpf::{BPF_DIRECTION_OUT, DLT_EN10MB, bpf_mtap_ether, bpfxattach};
+use crate::net::bpf::{BPF_DIRECTION_OUT, BpfTap, DLT_EN10MB, bpf_mtap_ether, bpfxattach};
 use crate::net::if_::{
     IF_MAX_VECTORS, IFCAP_CSUM_TCPv4, IFCAP_CSUM_TCPv6, IFCAP_CSUM_UDPv4, IFCAP_CSUM_UDPv6,
     IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFCAP_VLAN_HWTAGGING, IFCAP_VLAN_MTU, IFF_ALLMULTI,
@@ -497,8 +497,8 @@ pub struct Vmxnet3Txqueue {
     pub ts: Cell<*mut Vmxnet3TxqShared>,
     /// `ifq`.
     pub ifq: Cell<Option<&'static Ifqueue>>,
-    /// `bpfp`: the queue's `bpf(4)` tap cookie.
-    pub bpfp: Cell<*mut *mut u8>,
+    /// `bpfp`: the queue's `bpf(4)` tap word (the queue's `bpf`).
+    pub bpfp: hal::link::Link<BpfTap>,
     // NKSTAT > 0: txkstat; kstat(4) is not configured.
     /// `queue`.
     pub queue: Cell<u32>,
@@ -599,8 +599,8 @@ pub struct Vmxnet3Queue {
     pub ih: Cell<*mut c_void>,
     /// `intr`: the queue's interrupt index (0 without its own vector).
     pub intr: Cell<i32>,
-    /// `bpf`: the queue's `bpf(4)` tap.
-    pub bpf: hal::link::PtrWord<u8>,
+    /// `bpf`: the queue's `bpf(4)` tap word.
+    pub bpf: BpfTap,
 }
 
 impl Vmxnet3Queue {
@@ -800,7 +800,9 @@ impl Vmxnet3Softc {
 
 // SAFETY: `#[repr(C)]` with the device first; the arpcom and the ifmedia are all-zero valid
 // (`netinet/if_ether.rs`, `net/if_media.rs`), and every other member is a `Cell` of an
-// integer, a pointer or an `Option`.
+// integer, a pointer or an `Option`, a `hal::link::Link` (an atomic pointer: zero is none) or
+// a queue's `BpfTap` (`hal::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap,
+// hal's `an_all_zero_counted_word_is_null`).
 unsafe impl Softc for Vmxnet3Softc {}
 
 /// `vmx_devices[]`.
@@ -1121,11 +1123,9 @@ pub fn vmxnet3_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void
                 ETHER_HDR_LEN as u32,
             );
 
-            ifiq.ifiq_bpfp
-                .set(core::ptr::from_ref(&q.bpf).cast::<*mut u8>());
+            ifiq.ifiq_bpfp.set(Some(&q.bpf));
         }
-        q.tx.bpfp
-            .set(core::ptr::from_ref(&q.bpf).cast::<*mut u8>().cast_mut());
+        q.tx.bpfp.set(Some(&q.bpf));
 
         // NKSTAT > 0: vmx_kstat_txstats(sc, &sc->sc_q[i].tx, i) and
         // vmx_kstat_rxstats(sc, &sc->sc_q[i].rx, i); kstat(4) is not configured.
@@ -2483,20 +2483,12 @@ pub fn vmxnet3_start(ifq: &'static Ifqueue) {
         }
 
         // NBPFILTER > 0
-        let if_bpf = ifp.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &ifp.if_bpf;
+        if if_bpf.is_set() {
             let _ = bpf_mtap_ether(if_bpf, m, BPF_DIRECTION_OUT);
         }
 
-        let bpfp = tq.bpfp.get();
-        let if_bpf = if bpfp.is_null() {
-            ptr::null_mut()
-        } else {
-            // SAFETY: vmxnet3_attach points `bpfp` at the queue's `bpf` cookie, which lives
-            // as long as the queue.
-            unsafe { (*bpfp.cast::<hal::link::PtrWord<u8>>()).get_mut() }
-        };
-        if !if_bpf.is_null() {
+        if let Some(if_bpf) = tq.bpfp.get().filter(|w| w.is_set()) {
             let _ = bpf_mtap_ether(if_bpf, m, BPF_DIRECTION_OUT);
         }
 

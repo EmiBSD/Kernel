@@ -3263,7 +3263,7 @@ adapted_by = ["sys/hal/softintr.rs"]
 rust = "sys/dev/ic/dc.rs"
 lz = ["sys/dev/ic/dc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file (EEPROM and bit-banged MII access, the PNIC/AL981 PHY paths, the 21143/ADMtek/ASIX/Xircom filters, dc_setcfg, SROM leaf parsing, rings, PNIC rx bug workaround, rxeof/txeof/tick/intr/start/init/ioctl/watchdog/stop/activate/detach); not MP-safe as in C (if_start, IPL_NET); deviations: dc_read_eeprom fills a byte slice; mac_offset read into a zeroed word; Conexant address from the SROM (the C's &sc->dc_srom + off reads the softc); ASIX PAR1 word from the last two address bytes and two zeros; SROM reads bounds-checked (0 past the end, dc_apply_fixup stops); dc_pnic_rx_bug_war and dc_rxeof bounded by the PNIC buffer and the cluster; dc_detach unmaps the whole list (the C passes nseg as size); BUS_DMA_OVERRUN 0; pure helpers host-tested (dc_crc_le_bits, dc_eeprom_word_bytes, dc_srom_blocks, dc_leaf_mii_info, dc_fixup_words, dc_sia_media, dc_pnic_salvage); smoke-dc: QEMU's tulip behaves as on OpenBSD 8.0 (attach, lxtphy0, tx idle messages, no frame received)"
 
 [[module]]
@@ -3276,7 +3276,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole header: registe
 rust = "sys/dev/ic/dp8390.rs"
 lz = ["sys/dev/ic/dp8390.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 license = "Hannum/Greenman notice"
 notes = "license: Hannum/Greenman notice, kept whole; M16c: the DP8390 core under ne(4). Default memory accessors (region_1) are loops over bus_space_{read,write}_1; NBPFILTER on; DIAGNOSTIC is the diagnostic feature; DEBUG unset; host tests for the multicast filter bit"
 
@@ -3298,7 +3298,7 @@ notes = "license: Hannum/Greenman notice, kept whole; M16c: dp8390_softc, a Cell
 rust = "sys/dev/ic/fxp.rs"
 lz = ["sys/dev/ic/fxp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 notes = "M16c: the whole driver (SMALL_KERNEL not defined, DEBUG not defined; the microcode is loaded through loadfirmware(9)): fxp_attach, fxp_detach, fxp_activate, fxp_shutdown, fxp_init, fxp_stop, fxp_intr, fxp_rxeof, fxp_start, fxp_ioctl, fxp_mediachange/status, the EEPROM and MDI access, fxp_load_ucode, the RFA/CBL lists; QEMU i82559er (rev 9, i82559S, inphy0); deviations in the file doc: DMA structures through Dma views, Result returns, fxp_load_ucode refuses a file over MAXUCODESIZE; amd64 GENERIC only (fxp* at cardbus? is out of scope)"
 
 [[module]]
@@ -3481,7 +3481,7 @@ adapted_by = ["sys/hal/softintr.rs", "sys/kernel/tty.rs"]
 rust = "sys/dev/ic/re.rs"
 lz = ["sys/dev/ic/re.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/dev/ic/rtl80x9.rs"
@@ -3926,7 +3926,7 @@ notes = "M16c: license: BSD-4 (Bill Paul), kept whole; the whole file: dc_devs[]
 rust = "sys/dev/pci/if_em.rs"
 lz = ["sys/dev/pci/if_em.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_em_hw.rs"
@@ -3959,7 +3959,7 @@ notes = "M16c: ne* at pci?, amd64 GENERIC only; QEMU ne2k_pci (Realtek 8029) pin
 rust = "sys/dev/pci/if_pcn.rs"
 lz = ["sys/dev/pci/if_pcn.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 notes = "M16c: pcn(4), amd64 GENERIC only (pcn* at pci?); not MPSAFE (kernel lock, as C); address from the PROM (PCN_NO_PROM off); pcn_set_filter hash split out as pcn_hash_multi for host tests; smoke-pcn pings 10.0.2.2 on QEMU pcnet (Am79c970A, no PHY); PCI vendor/product names are not printed (the tree has no pcidevs name table), as em/re"
 
 [[module]]
@@ -3971,7 +3971,7 @@ status = "inherited"
 rust = "sys/dev/pci/if_vmx.rs"
 lz = ["sys/dev/pci/if_vmx.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/dev/pci/if_vmxreg.rs"
@@ -4297,7 +4297,7 @@ status = "inherited"
 rust = "sys/dev/pv/if_vio.rs"
 lz = ["sys/dev/pv/if_vio.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_media.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/dev/pv/vioblk.rs"
@@ -4565,7 +4565,7 @@ status = "inherited"
 rust = "sys/dev/usb/if_cdce.rs"
 lz = ["sys/dev/usb/if_cdce.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs"]
 license = "BSD-4"
 
 [[module]]
@@ -4704,7 +4704,7 @@ status = "inherited"
 rust = "sys/dev/usb/usb.rs"
 lz = ["sys/dev/usb/usb.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -4754,7 +4754,7 @@ license = "NetBSD Foundation BSD-2 notice"
 rust = "sys/dev/usb/usbdivar.rs"
 lz = ["sys/dev/usb/usbdivar.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/hal/softintr.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 license = "NetBSD Foundation BSD-2 notice"
 
 [[module]]
@@ -6250,18 +6250,8 @@ status = "inherited"
 rust = "sys/net/bpf.rs"
 lz = ["sys/net/bpf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
-
-[[module]]
-rust = "sys/net/bpf_filter.rs"
-lz = ["sys/net/bpf_filter.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/net/bpfdesc.rs"
-lz = ["sys/net/bpfdesc.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/event.rs", "sys/kernel/fs/vnode.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs", "sys/hal/sys/net_bpf.rs"]
+notes = "N6.3c1: the adapter, of no logic, of bsd's callers over kernel::net::bpf and hal::sys::net_bpf: the ABI and the taps re-exported under LZ's names, the six cdev entry points as plain functions of bsd's glue (cdevsw 23 and pledge(2) compare d_open with bpfopen by address), bpfilterattach's scan of cdevsw for the major, bpf_sysctl over the kernel's SysctlReq"
 
 [[module]]
 rust = "sys/net/ethertypes.rs"
@@ -6286,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6316,7 +6306,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/if_loop.rs"
 lz = ["sys/net/if_loop.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/net/if_media.rs"
@@ -6329,7 +6319,7 @@ notes = "N6.3a2: an adapter: the media words re-exported from hal::sys::net_if_m
 rust = "sys/net/if_pflog.rs"
 lz = ["sys/net/if_pflog.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/net/if_pflow.rs"
@@ -6341,7 +6331,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
 rust = "sys/net/if_pfsync.rs"
 lz = ["sys/net/if_pfsync.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/net/if_types.rs"
@@ -6353,13 +6343,13 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_var.rs"
 lz = ["sys/net/if_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/net/if_wg.rs"
 lz = ["sys/net/if_wg.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/task.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/bpf.rs"]
 notes = "one change of its own besides the call sites: wg_tag's t_done is an AtomicBool stored Release after t_mbuf and loaded Acquire by wg_queue_dequeue, the C's unordered plain int closed on the user's decision of 2026-11-08 ahead of N8's redesign"
 
 [[module]]
@@ -6574,7 +6564,7 @@ status = "inherited"
 rust = "sys/netinet/ip_ah.rs"
 lz = ["sys/netinet/ip_ah.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_divert.rs"
@@ -6591,7 +6581,7 @@ status = "inherited"
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_icmp.rs"
@@ -6614,7 +6604,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/
 rust = "sys/netinet/ip_ipcomp.rs"
 lz = ["sys/netinet/ip_ipcomp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipip.rs"
@@ -6648,7 +6638,7 @@ status = "inherited"
 rust = "sys/netinet/ipsec_input.rs"
 lz = ["sys/netinet/ipsec_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/bpf.rs"]
 
 [[module]]
 rust = "sys/netinet/ipsec_output.rs"
@@ -8409,6 +8399,155 @@ reason = "the walk's buffer is an MArray<u8> (Walkarg::w_tmem), lent as a slice 
 rust = "sys/kernel/net/ipsec_hooks.rs"
 crate = "kernel"
 reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through, today rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), its OnceStatic slot and register_ipsec"
+
+[[module]]
+rust = "sys/kernel/net/bpf.rs"
+crate = "kernel"
+lz = ["sys/net/bpf.rs", "sys/net/bpfdesc.rs"]
+status = "redesigned"
+notes = "N6.3c1: bpf.c's device and taps and bpfdesc.h's structures written into the kernel: BpfD (struct bpf_d) and BpfIf (struct bpf_if) as counted MArc blocks of M_DEVBUF published through counted SMR words (hal::smr::SmrArcWord over MArc: bif_dlist and bd_next for the interface's chain of listeners, the driver's word BpfTap, bd_rfilter/bd_wfilter of BpfProg), the [m] members in Mutexed<BpfSlots> at IPL_NET with the lengths, state and drop count as atomics written under it, BPF_D_LIST and BPF_IFLIST PinLists under the kernel lock, the klist a counted KlistBox<G> erased with two functions set by bpfopen::<G>, the wake task and the wait timeout holding the descriptor through set_shared until bpfclose, the cdev entry points generic over the glue (bsd's sys/net/bpf.rs wraps them), BpfPkt implementing bpf_filter's BpfOps, bpf_sysctl over kernel::sysctl::int_bounded"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfOps"
+native = ["sys/kernel/net/bpf_filter.rs::BpfOps"]
+kind = "moved"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfIflistHead"
+native = []
+kind = "dropped"
+reason = "BPF_IFLIST is a hal PinList under the kernel lock's witness: no wrapper type, no unsafe impl Sync"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfIflistHead::Target"
+native = []
+kind = "dropped"
+reason = "the wrapper went with BpfIflistHead (BPF_IFLIST is a PinList)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfIflistHead::deref"
+native = []
+kind = "dropped"
+reason = "the wrapper went with BpfIflistHead (BPF_IFLIST is a PinList)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfDListHead"
+native = []
+kind = "dropped"
+reason = "BPF_D_LIST is a hal PinList under the kernel lock's witness: no wrapper type, no unsafe impl Sync"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfDListHead::Target"
+native = []
+kind = "dropped"
+reason = "the wrapper went with BpfDListHead (BPF_D_LIST is a PinList)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BpfDListHead::deref"
+native = []
+kind = "dropped"
+reason = "the wrapper went with BpfDListHead (BPF_D_LIST is a PinList)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::BPFREAD_FILTOPS"
+native = ["BpfReadFilter", "BpfFiltops::READ"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_d_arg"
+native = []
+kind = "dropped"
+reason = "the task and the timeout hold a counted handle of the descriptor (set_shared) and their functions downcast it: no void * argument to cast back"
+[[module.fn]]
+lz = "sys/net/bpf.rs::filt_bpfrdetach"
+native = ["BpfReadFilter::detach"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::filt_bpfread"
+native = ["BpfReadFilter::event"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::filt_bpfreadmodify"
+native = ["BpfReadFilter::modify"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::filt_bpfreadprocess"
+native = ["BpfReadFilter::process"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_if_of"
+native = []
+kind = "dropped"
+reason = "the driver's word is a typed counted SMR word (BpfTap): _bpf_mtap loads the tap inside its read section, no caddr_t cast"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_prog_smr"
+native = []
+kind = "dropped"
+reason = "a program is a counted MArc of M_DEVBUF retired by its filter word: the SMR thread drops the last reference a grace period after the store, and the drop frees the instructions' MArray and the block"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_d_smr"
+native = ["BpfD::drop"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_get"
+native = []
+kind = "dropped"
+reason = "bd_refcnt is the MArc's count: a clone is bpf_get (the module's holders' table)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_put"
+native = []
+kind = "dropped"
+reason = "bd_refcnt is the MArc's count: a drop is bpf_put, the last one's free deferred by the chain words' retirement (the module's holders' table)"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_mbuf_ldw"
+native = ["BpfPkt::ldw"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_mbuf_ldh"
+native = ["BpfPkt::ldh"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_mbuf_ldb"
+native = ["BpfPkt::ldb"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpf.rs::bpf_mbuf_ops"
+native = ["BpfPkt::ldw", "BpfPkt::ldh", "BpfPkt::ldb"]
+kind = "merged"
+[[module.fn]]
+lz = "sys/net/bpf.rs::_"
+native = []
+kind = "dropped"
+reason = "the LP64 size asserts of the ABI images are hal::sys::net_bpf's const asserts"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfProgramSmr"
+native = ["BpfProg"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfProgramSmr::insns"
+native = []
+kind = "dropped"
+reason = "the instructions are BpfProg's MArray, lent as a slice by its Deref"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfFilterPtr"
+native = ["ProgWord"]
+kind = "renamed"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfFilterPtr::new"
+native = []
+kind = "dropped"
+reason = "a filter word is hal::smr::SmrArcWord::new"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfFilterPtr::get"
+native = []
+kind = "dropped"
+reason = "a filter word is read by hal::smr::SmrArcWord::load inside the reader's section"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfFilterPtr::replace"
+native = []
+kind = "dropped"
+reason = "a filter word is stored by hal::smr::SmrArcWord::store, the old program retired"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfFilterPtr::default"
+native = []
+kind = "dropped"
+reason = "hal::smr::SmrArcWord implements Default"
+[[module.fn]]
+lz = "sys/net/bpfdesc.rs::BpfD::default"
+native = []
+kind = "dropped"
+reason = "a descriptor is made whole by bpfopen (BpfD::new with its unit, size and klist): no all-empty value"
 
 [[module]]
 rust = "sys/kernel/net/bpf_filter.rs"

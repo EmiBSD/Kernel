@@ -2199,6 +2199,18 @@ mod tests {
         assert!(seen.load(Ordering::SeqCst) > 0, "the readers saw items");
     }
 
+    #[test]
+    fn an_all_zero_counted_word_is_null() {
+        // A zeroed softc that embeds a word (a driver's bpf word, `if_bpf` in an `M_ZERO`
+        // interface) holds an empty one.
+        // SAFETY: an `SmrArcWord` is an `AtomicPtr` (zero is null, which `load` answers `None`
+        // and `is_set` `false`) and a `PhantomData`: all zero bytes are a valid, empty word.
+        let w: MWord = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
+        assert!(!w.is_set());
+        let g = read();
+        assert!(w.load(&g).is_none());
+    }
+
     /// A counted object in a `malloc(9)` block (bpf's descriptor, tap and program): its
     /// release counted.
     struct MCounted {

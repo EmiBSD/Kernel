@@ -712,6 +712,16 @@ mod tests {
             DLT_MPLS, DLT_OPENFLOW,
         );
         crate::reftest::assert_complete(&defs, "DLT_", &ours);
+        let _ = crate::reftest::assert_defines!(defs;
+            BPF_RELEASE, BPF_MAXINSNS, BPF_MAXBUFSIZE, BPF_MINBUFSIZE, BPF_MAJOR_VERSION,
+            BPF_MINOR_VERSION, BPF_DIRECTION_IN, BPF_DIRECTION_OUT, BPF_FILDROP_PASS,
+            BPF_FILDROP_CAPTURE, BPF_FILDROP_DROP, BPF_F_PRI_MASK, BPF_F_FLOWID, BPF_F_DIR_SHIFT,
+            BPF_LD, BPF_LDX, BPF_ST, BPF_STX, BPF_ALU, BPF_JMP, BPF_RET, BPF_MISC, BPF_W, BPF_H,
+            BPF_B, BPF_IMM, BPF_ABS, BPF_IND, BPF_MEM, BPF_LEN, BPF_MSH, BPF_RND, BPF_ADD,
+            BPF_SUB, BPF_MUL, BPF_DIV, BPF_OR, BPF_AND, BPF_LSH, BPF_RSH, BPF_NEG, BPF_MOD,
+            BPF_XOR, BPF_JA, BPF_JEQ, BPF_JGT, BPF_JGE, BPF_JSET, BPF_K, BPF_X, BPF_A, BPF_TAX,
+            BPF_TXA, BPF_MEMWORDS,
+        );
     }
 }
 /* </TESTS> */
