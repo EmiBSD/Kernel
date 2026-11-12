@@ -121,8 +121,10 @@
 //! it first, so no `forbid` crate can publish a storage); the storage's address and size
 //! change and are read as one pair (a sequence); and the copy takes a proof that the net lock
 //! is held (`hal::netlock::NetHeld`, review 2's S-a): kernel code makes it from a witness of
-//! the lock (`NetHeld::of`, exact), and only the token holder can make it from a check of
-//! `rw_status` (`SaToken::net_held`), for its own holdings, which no witness exists of. The
+//! the lock (`NetHeld::of`, exact) or borrows it for a closure from its own detached write
+//! holding (`hal::netlock::lend_detached`, exact, the holding kept until the closure returns:
+//! N6.3b2), and only the token holder can make it from a check of `rw_status`
+//! (`SaToken::net_held`), for its own holdings, which no witness exists of. The
 //! token holder's contract, the C's own invariant: the bytes of a storage it published are
 //! written only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`;
 //! `bsd`'s `in_ifaddr`, `in_multi` and `in6_ifaddr` are `Sync` by `bsd`'s own `unsafe impl`,

@@ -81,7 +81,6 @@ use core::marker::PhantomData;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, Ordering, fence};
 
-use crate::assert::hal_panic;
 use crate::netlock::NetHeld;
 use crate::rwlock::{RW_READ, RW_WRITE};
 use crate::sys::socket::Sockaddr;
@@ -430,16 +429,16 @@ impl core::fmt::Debug for SaBytes {
 /// ([`SaLink::get`]), and a copy of its bytes for the kernel's interface layer
 /// ([`SaLink::read`], under the net lock, which it checks).
 ///
-/// Invariant: `ptr` is null, or `set` stored it with `cap` = `size_of::<T>()` from a
-/// `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most [`SA_READ_MAX`] bytes, by `set`'s
-/// compile-time check), or `set_word` stored it with `cap` 0 (a word never read); the two
-/// change only together, inside `seq`'s odd window, so a reader that sees `seq` even and
-/// unchanged around its two loads has a pair one writer stored. All zero is a valid, empty
+/// Invariant: `ptr` is null (with `cap` 0), or `set` stored it with `cap` =
+/// `size_of::<T>()` from a `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most
+/// [`SA_READ_MAX`] bytes, by `set`'s compile-time check); the two change only together, inside
+/// `seq`'s odd window, so a reader that sees `seq` even and unchanged around its two loads has
+/// a pair one writer stored. All zero is a valid, empty
 /// link (null, 0, 0): an interface address in a zeroed softc or `M_ZERO` allocation.
 pub struct SaLink {
     /// The storage's address with its provenance (`Cell::as_ptr`), null for none.
     ptr: AtomicPtr<u8>,
-    /// The storage's size; 0 for a word [`SaLink::set_word`] stored.
+    /// The storage's size; 0 when the link is empty.
     cap: AtomicU8,
     /// The writers' sequence: odd while one changes `ptr` and `cap`.
     seq: AtomicU32,
@@ -476,18 +475,6 @@ impl SaLink {
     #[inline]
     pub fn clear(&self) {
         self.publish(ptr::null_mut(), 0);
-    }
-
-    /// A socket address's word that is never read through the link (`enc(4)`'s
-    /// link-level address on its private `ifaddr`, which no interface lists): `bsd`'s own
-    /// derefs of [`SaLink::get`] alone follow it; [`SaLink::read`] of it is `panic(9)`. For
-    /// the [`SaToken`]'s holder: `bsd` dereferences what `get` gives, so no other code may
-    /// plant a word (review 2's nit; the `PtrWord` precedent). N6.3b: a kernel `rtsock` that
-    /// reads `rt_ifa->ifa_addr` of enc's routes would reach this word and stop; enc's address
-    /// must be published as a storage (or the reader take `get`) by then.
-    #[inline]
-    pub fn set_word(&self, _token: &SaToken, sa: *const Sockaddr) {
-        self.publish(sa.cast::<u8>().cast_mut(), 0);
     }
 
     /// Stores the pair inside the writers' window: the sequence made odd by one writer at a
@@ -551,17 +538,12 @@ impl SaLink {
 
     /// A copy of the socket address (`None` when the link is empty), for a holder of the net
     /// lock (the C's readers of `ifa_addr`, `NET_ASSERT_LOCKED()`), which `_held` proves (a
-    /// witness's, or the token holder's check, made once per walk): `panic(9)` when the link
-    /// holds a word [`SaLink::set_word`] stored.
+    /// witness's, a lent detached holding's, or the token holder's check, made once per
+    /// walk).
     pub fn read(&self, _held: &NetHeld<'_>) -> Option<SaBytes> {
         let (p, cap) = self.load_pair();
         if p.is_null() {
             return None;
-        }
-        if cap == 0 {
-            hal_panic(format_args!(
-                "SaLink: a word that is never read was read ({p:p})"
-            ));
         }
         let cap = usize::from(cap).min(SA_READ_MAX);
         let mut out = SaBytes {
@@ -571,7 +553,8 @@ impl SaLink {
         // SAFETY: the invariant (`load_pair`'s pair, one writer's): `p` is the address, with
         // its provenance, of the storage of a `&'static Cell<T>` that `set` was given, `T:
         // AbiPod` and `cap = size_of::<T>()` between 2 and SA_READ_MAX (`set`'s compile-time
-        // check; `set_word`'s words have `cap` 0 and were refused above). That storage is
+        // check; `p` is not null, so `set` stored it: no other store makes a non-null
+        // pointer). That storage is
         // `cap` initialised bytes (an `AbiPod` has no padding) that `Cell::as_ptr` lets be read
         // through a shared cell, it lives for ever (`'static`: a later `set` repointing the
         // link leaves it alive), and its alignment is at least 1: reading byte 0, then
@@ -582,10 +565,12 @@ impl SaLink {
         // (`sys/hal/trust.rs`) is that the cell's bytes are written only while it holds the
         // net lock exclusively, and `_held` proves the caller holds the lock while it copies:
         // a witness of it (`NetHeld::of`: kernel code, exact, so no exclusive holder exists
-        // until the caller lets go), or the token holder's own check of a holding of its own
-        // (`SaToken::net_held`, under the holder's contract that a read holding it finds is
-        // its own). The copy makes no reference to the storage, so a write after it touches
-        // nothing the caller holds.
+        // until the caller lets go), the running process's detached write holding lent for a
+        // closure (`hal::netlock::lend_detached`: exact, and the holding cannot be let go
+        // while the proof is lent, so no other exclusive holder exists meanwhile), or the
+        // token holder's own check of a holding of its own (`SaToken::net_held`, under the
+        // holder's contract that a read holding it finds is its own). The copy makes no
+        // reference to the storage, so a write after it touches nothing the caller holds.
         out.len = unsafe {
             let len = usize::from(p.read()).min(cap);
             ptr::copy_nonoverlapping(p, out.buf.as_mut_ptr(), len.max(2));
@@ -848,11 +833,6 @@ mod tests {
         thread::scope(|s| {
             s.spawn(|| assert!(token().net_held().is_none()));
         });
-        // enc(4)'s word: kept for bsd, never read.
-        let sa = image::<16>(16, 18, &[]);
-        l.set_word(token(), sa.as_ptr().cast());
-        assert!(ptr::eq(l.get().cast_const().cast(), sa.as_ptr()));
-        assert!(std::panic::catch_unwind(|| l.read(&crate::netlock::NetHeld::new())).is_err());
         drop(held);
         drop(w);
     }
