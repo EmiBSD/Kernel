@@ -9,7 +9,22 @@ export SOURCE_DATE_EPOCH := `git log -1 --format=%ct 2>/dev/null || echo 0`
 export EMIBSD_BUILD_HOST := `hostname -s 2>/dev/null || echo localhost`
 
 amd64 := "x86_64-unknown-none"
-arm64 := "aarch64-unknown-none-softfloat"
+arm64 := "aarch64-emibsd-none-softfloat"
+# DevTools' Rust for the Mac (the pinned release `devtools_rust`, unpacked by `just toolchain`):
+# every recipe runs its cargo, rustc, clippy and rustfmt straight from `toolchain_dir`, first
+# on PATH and named by RUSTC. rustup and its proxies are not used (decision 49, the user,
+# 2026-11-11); without the directory a recipe fails, it never falls back to another compiler.
+devtools_rust_bin_arm64 := toolchain_dir + "/" + devtools_rust + "-aarch64-apple-darwin-arm64/bin"
+export PATH := devtools_rust_bin_arm64 + ":" + env_var_or_default("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
+export RUSTC := devtools_rust_bin_arm64 + "/rustc"
+# DevTools' LLVM for arm64 (the pinned release `devtools_llvm`, unpacked by `just toolchain`):
+# the kernel's linker (DevTools' Rust has no rust-lld), efiboot's llvm-objcopy, and the
+# userland's and the comp set's compiler, linker and binutils (`EMIBSD_LLVM_BIN`, read by
+# xtask: clang, ld.lld, llvm-ar, ...; the user's decision of 2026-11-11, replacing Apple
+# clang and swiftly's LLD). amd64's userland takes the amd64 release's bin/ at N10.
+devtools_llvm_bin_arm64 := toolchain_dir + "/" + devtools_llvm + "-aarch64-apple-darwin-arm64/bin"
+export CARGO_TARGET_AARCH64_EMIBSD_NONE_SOFTFLOAT_LINKER := devtools_llvm_bin_arm64 + "/ld.lld"
+export EMIBSD_LLVM_BIN := devtools_llvm_bin_arm64
 
 # Decision 44 (2026-10-18): from N4 to N9 only arm64 is built, booted and measured. `archs`
 # (`EMIBSD_ARCHS`, a comma-separated list of `amd64` and `arm64`, `arm64` when unset or empty)
@@ -3222,7 +3237,7 @@ symbolize arch:
 
 # Cross-compile OpenBSD's libc, init(8), ksh(1), cat(1), echo(1), ls(1) and uname(1), unmodified,
 # and makefs(8) for the host, from the reference sources into target/userland/<arch> (with the
-# ffs ramdisk image) with Apple clang and LLD 17 (docs/SETUP.md, "Userland
+# ffs ramdisk image) with DevTools' clang and lld (`EMIBSD_LLVM_BIN`; docs/SETUP.md, "Userland
 # toolchain"). Slow and tool-dependent, so not part of `ci`. For the architectures of `archs`
 # only (the user's decision of 2026-11-07: amd64's waits for N10, as its kernel does).
 userland:
@@ -3235,17 +3250,27 @@ userland:
 # one tarball per target architecture since DevTools' D-0008 (2026-11-02): fetched by tag, never
 # "latest", checked against the pinned sha256 before unpacking, and used in place, unmodified,
 # from `toolchain_dir` (outside every repository, so `cargo clean` never removes it). The arm64
-# Rust is linked as rustup's toolchain `emibsd`, the amd64 one as `emibsd-amd64` (unused until
-# N10, decision 44); each LLVM's bin/ is that arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy,
-# clang). A directory already unpacked is left as it is. Needs `gh` (logged in) and `zstd`
-# (docs/SETUP.md, "DevTools toolchain").
+# Rust's bin/ is what every recipe runs (`devtools_rust_bin_arm64`, top of this file; no rustup
+# link since decision 49), the amd64 one waits for N10 (decision 44); each LLVM's bin/ is that
+# arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy, clang). A directory already unpacked is left
+# as it is. Needs `gh` (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
-devtools_llvm := "llvm-23.1.4+emibsd.4"
-devtools_rust := "rust-1.99.1+emibsd.2"
-devtools_llvm_sha256_arm64 := "75b1398851b340ad0c1c5555ae91b0764359ad67f6987e93c0f7c2f6346bd18b"
-devtools_rust_sha256_arm64 := "7d228ab5266edf8894d923dfe36646cf2bf9c9d4007a680acb8569677bde019e"
-devtools_llvm_sha256_amd64 := "2b9b2f4c708b419ffa09c0a5d904f69bc22480b2bfafb501b70f200b3728d3f0"
-devtools_rust_sha256_amd64 := "acba18cbf55bbc785a99683bcdbc218832c199d8db5424275d6d0a63e24b3e0b"
+devtools_llvm := "llvm-23.1.4+emibsd.6"
+devtools_rust := "rust-1.99.1+emibsd.5"
+devtools_llvm_sha256_arm64 := "921c7992bb47f63adab07a7ee0fa1bca38e415e540ec7bf623d0b9e030452cf8"
+devtools_rust_sha256_arm64 := "9fcf8ba87be979d0aefcc790d604ca3ab7e097893850d2c566c11c7cc7c720c7"
+devtools_llvm_sha256_amd64 := "6f18473f2a960a8ba6df8784d4b5d1595f32c715218bee993d6940338d6feb14"
+devtools_rust_sha256_amd64 := "6f22d3a4fade27779fb27a858e801250adbc0e02f6183652ce5ba890fc9c8fe9"
+
+# A bare cargo with DevTools' toolchain (its PATH, RUSTC and the kernel's linker as every
+# recipe has them): `just cargo check -p bsd --tests`, `just cargo xtask lz check`.
+cargo *args:
+    cargo {{args}}
+
+# The directory of DevTools' cargo and rustc, for a script that needs the path itself
+# (`.claude/hooks/pre-commit-check.sh`, `/progress`).
+rust-bin:
+    @echo {{devtools_rust_bin_arm64}}
 
 toolchain:
     #!/bin/zsh
@@ -3273,10 +3298,9 @@ toolchain:
     fetch "{{devtools_rust}}" arm64 "{{devtools_rust_sha256_arm64}}"
     fetch "{{devtools_llvm}}" amd64 "{{devtools_llvm_sha256_amd64}}"
     fetch "{{devtools_rust}}" amd64 "{{devtools_rust_sha256_amd64}}"
-    command -v rustup >/dev/null || PATH=/opt/homebrew/opt/rustup/bin:$PATH
-    for arch name in arm64 emibsd amd64 emibsd-amd64; do
-        rustup toolchain link "$name" "$dir/{{devtools_rust}}-aarch64-apple-darwin-$arch"
-        echo "toolchain: rustup's $name is $(rustup run "$name" rustc --version)"
+    for arch in arm64 amd64; do
+        rust="$dir/{{devtools_rust}}-aarch64-apple-darwin-$arch/bin"
+        echo "toolchain: $arch rustc is $("$rust/rustc" --version) in $rust"
         llvm="$dir/{{devtools_llvm}}-aarch64-apple-darwin-$arch/bin"
         echo "toolchain: $arch EMIBSD_LLVM_BIN=$llvm ($("$llvm/ld.lld" --version))"
     done
@@ -3323,6 +3347,88 @@ devtools_steps := "--reject 'panic:' " + \
     "--expect 'devtools: C++ hello, thrown and caught' --expect 'cxx-rc-0' " + \
     "--expect 'devtools: Rust hello on emibsd (2 args, panic caught: true)' --expect 'rust-rc-0' " + \
     "--expect 'devtools: C hello, argv[1]=dynamic' --expect 'dyn-rc-0'"
+
+# T3b: DevTools' native toolchains (clang, lld, ar, rustc, built FOR EmiBSD) proved under the
+# kernel, as DevTools asked on 2026-11-09 (the user's OK of 2026-11-11). `cargo xtask
+# devtools-native` checks each tarball against its pin below, lays its usr/ over a copy of
+# `comp`'s staging root (the base: libc, crt, ld.so, the headers), LLVM's then Rust's, and
+# makes `target/devtools-native/arm64/native.ffs`; the smoke boots it as sd0 (the disk set
+# `native`), mounts it on /mnt, gives it /dev/null, /dev/zero and /dev/urandom, and in a
+# chroot(8) into it compiles and runs a C hello (cc), a C++ one with an exception thrown and
+# caught through iostreams (c++), archives an object (ar rc, ar t) and compiles and runs a
+# Rust hello (rustc); then the rest of the Rust toolchain on a crate `cargo new` makes there
+# (DevTools' request of 2026-11-11): `cargo build --offline` and the program run, `cargo
+# clippy`, `cargo fmt -- --check` and `rustdoc` (its index.html must exist). cargo loads the
+# base's libssl.so and libcrypto.so (userland/shlib.rs). arm64 only (decision 44). Not in
+# `smokes`: it needs `just comp` and
+# DevTools' tarballs in `devtools_native_dist` (pinned to the released ones, tags
+# llvm-23.1.4+emibsd.6 and rust-1.99.1+emibsd.5, which the proof of 2026-11-12 ran on; that
+# of 2026-11-11 ran on snapshots of +emibsd.5 and +emibsd.3). 2 GiB of guest memory for rustc, and ten
+# times the usual time limits: the compilers run under TCG. Every console line stays under
+# arm64's 128-byte limit.
+devtools_native_dist := env_var_or_default("DEVTOOLS_DIST", env_var("HOME") + "/devel/emibsd/DevTools/dist")
+devtools_native_llvm := "llvm-23.1.4+emibsd.6-aarch64-emibsd-emibsd8.0-arm64.tar.zst"
+devtools_native_llvm_sha256 := "a778ef6d3dcf281e9a9d71e1565de9315beb7814e1fcf9a1e42c502dc2986aab"
+devtools_native_rust := "rust-1.99.1+emibsd.5-aarch64-emibsd-emibsd-arm64.tar.zst"
+devtools_native_rust_sha256 := "2b7ec9abfd2bfffbb14f7e1d510699899f411d124192882f429a4ea69effc0cc"
+
+smoke-devtools-native: (build-arm64 "--features qemu")
+    @test {{ramdisks}} || \
+        { echo "smoke-devtools-native: no ramdisk image; run just userland first"; exit 1; }
+    @test -d target/comp/arm64/root/usr/lib || \
+        { echo "smoke-devtools-native: no comp root; run just comp first"; exit 1; }
+    {{xtask}} devtools-native --arch arm64 \
+        --llvm "{{devtools_native_dist}}/{{devtools_native_llvm}}" --llvm-sha256 {{devtools_native_llvm_sha256}} \
+        --rust "{{devtools_native_dist}}/{{devtools_native_rust}}" --rust-sha256 {{devtools_native_rust_sha256}}
+    mkdir -p "${EMIBSD_RUN_DIR:-target}" && rm -f "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img" && \
+        cp -c target/devtools-native/arm64/native.ffs "${EMIBSD_RUN_DIR:-target}/disk-arm64-native.img"
+    EMIBSD_TIMEOUT_SCALE=10 {{xtask}} smoke {{reject}} {{smp}} --memory 2G --arch arm64 --kernel target/{{arm64}}/debug/bsd \
+        --expect-ramdisk --until-seen --disk-set native {{native_script}}
+
+# `smoke-devtools-native`'s session: each step's marker is printed by the guest (`$?`,
+# `$((40+2))`, `$x`), never typed, so an echoed command line cannot satisfy an expectation.
+# The first two steps print the chroot's `cc --version` and `rustc --version`: DevTools'
+# clang 23.1.4 and Rust 1.99.1, never the comp set's OpenBSD clang 22.1.6 (rejected).
+# A step whose status is not 0 fails the run (`-rc-<digit>` rejected). xtask judges the
+# rejected lines when the run ends, so such a run still waits out its time limit for the
+# markers that cannot come.
+native_script := disk_login + " --reject 'panic:' --reject 'clang version 22.1.6' " + \
+    "--reject '-rc-1' --reject '-rc-2' --reject '-rc-3' --reject '-rc-4' --reject '-rc-5' " + \
+    "--reject '-rc-6' --reject '-rc-7' --reject '-rc-8' --reject '-rc-9' " + \
+    "--send-after '# ' --send 'mount /dev/sd0a /mnt && echo nat-mnt-$((40+2))\\n' " + \
+    "--send-after 'nat-mnt-42' --send 'mkdir -p /mnt/dev && cp -Rp /dev/null /dev/zero /dev/urandom /mnt/dev/ && echo nat-dev-$((40+2))\\n' " + \
+    "--send-after 'nat-dev-42' --send '/usr/sbin/chroot /mnt /usr/bin/cc --version; echo ccv-rc-$?\\n' " + \
+    "--send-after 'ccv-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/rustc --version; echo rsv-rc-$?\\n' " + \
+    "--send-after 'rsv-rc-0' --send 'print -r \"#include <stdio.h>\" >/mnt/tmp/h.c\\n' " + \
+    "--send-after '# ' --send 'print -r \"int main(void){char s[]={104,45,111,107,0};puts(s);return 0;}\" >>/mnt/tmp/h.c\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/cc -o /tmp/h /tmp/h.c; echo cc-rc-$?\\n' " + \
+    "--send-after 'cc-rc-0' --send '/usr/sbin/chroot /mnt /tmp/h\\n' " + \
+    "--send-after 'h-ok' --send 'print -r \"#include <iostream>\" >/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"#include <stdexcept>\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"using namespace std;int main(){try{throw runtime_error(string(1,char(120)));}\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send 'print -r \"catch(exception&e){cout<<e.what()<<char(45)<<char(111)<<char(107)<<endl;}}\" >>/mnt/tmp/x.cpp\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/c++ -o /tmp/x /tmp/x.cpp; echo cxx-rc-$?\\n' " + \
+    "--send-after 'cxx-rc-0' --send '/usr/sbin/chroot /mnt /tmp/x\\n' " + \
+    "--send-after 'x-ok' --send '/usr/sbin/chroot /mnt /usr/bin/cc -c -o /tmp/h.o /tmp/h.c; echo obj-rc-$?\\n' " + \
+    "--send-after 'obj-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/ar rc /tmp/a.a /tmp/h.o; echo ar-rc-$?\\n' " + \
+    "--send-after 'ar-rc-0' --send 'x=$(/usr/sbin/chroot /mnt /usr/bin/ar t /tmp/a.a); echo ar-t-$x\\n' " + \
+    "--send-after 'ar-t-h.o' --send 'print -r \"use std::io::Write;fn main(){std::io::stdout().write_all(&[114,45,111,107,10]).unwrap();}\" >/mnt/tmp/r.rs\\n' " + \
+    "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/rustc -o /tmp/r /tmp/r.rs; echo rs-rc-$?\\n' " + \
+    "--send-after 'rs-rc-0' --send '/usr/sbin/chroot /mnt /tmp/r\\n' " + \
+    "--send-after 'r-ok' --send 'export HOME=/tmp CARGO_HOME=/tmp/cg; M=--manifest-path=/tmp/c/Cargo.toml; echo nat-env-$((40+2))\\n' " + \
+    "--send-after 'nat-env-42' --send '/usr/sbin/chroot /mnt /usr/bin/cargo --version; echo cgv-rc-$?\\n' " + \
+    "--send-after 'cgv-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo new --offline --vcs none /tmp/c; echo cgn-rc-$?\\n' " + \
+    "--send-after 'cgn-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo build --offline $M; echo cgb-rc-$?\\n' " + \
+    "--send-after 'cgb-rc-0' --send '/usr/sbin/chroot /mnt /tmp/c/target/debug/c; echo cgr-rc-$?\\n' " + \
+    "--send-after 'cgr-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo clippy --offline $M; echo clp-rc-$?\\n' " + \
+    "--send-after 'clp-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo fmt $M -- --check; echo fmt-rc-$?\\n' " + \
+    "--send-after 'fmt-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/rustdoc -o /tmp/doc /tmp/c/src/main.rs; echo doc-rc-$?\\n' " + \
+    "--send-after 'doc-rc-0' --send 'test -f /mnt/tmp/doc/main/index.html && echo doc-html-$((40+2))\\n' " + \
+    "--expect 'nat-mnt-42' --expect 'nat-dev-42' --expect 'clang version 23.1.4' --expect 'ccv-rc-0' " + \
+    "--expect 'rustc 1.99.1' --expect 'rsv-rc-0' --expect 'cc-rc-0' --expect 'h-ok' --expect 'cxx-rc-0' --expect 'x-ok' " + \
+    "--expect 'obj-rc-0' --expect 'ar-rc-0' --expect 'ar-t-h.o' --expect 'rs-rc-0' --expect 'r-ok' " + \
+    "--expect 'nat-env-42' --expect 'cargo 1.99.1' --expect 'cgv-rc-0' --expect 'cgn-rc-0' --expect 'cgb-rc-0' " + \
+    "--expect 'Hello, world!' --expect 'cgr-rc-0' --expect 'clp-rc-0' --expect 'fmt-rc-0' --expect 'doc-rc-0' --expect 'doc-html-42'"
 
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected

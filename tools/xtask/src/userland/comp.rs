@@ -60,7 +60,7 @@
 //! - The programs are static PIE executables like the rest of the userland's: OpenBSD
 //!   links them dynamically (and `libLLVM` is a shared
 //!   library there, `NOLIBSTATIC`); here `libLLVM.a` is linked into each.
-//! - The build tools run on macOS: built with Apple clang against macOS's libc++, from the
+//! - The build tools run on macOS: built with `Tools::host_cxx` against macOS's libc++, from the
 //!   same Makefiles and the same `include/llvm/Config` (OpenBSD's `config.h`), with the
 //!   workarounds of `HOST_FLAGS`.
 //! - macOS's file system ignores case: `fix_case_folding` turns `-I` into `-iquote` or
@@ -956,7 +956,7 @@ impl<'a> Comp<'a> {
         let cmd = if self.is_host() {
             format!(
                 "{} -o {} {} {}",
-                cxx_of(&self.ctx.tools.cc).display(),
+                self.ctx.tools.host_cxx(),
                 exe.display(),
                 objs_s.join(" "),
                 args.join(" ")
@@ -1243,6 +1243,153 @@ fn manifest_is_current(text: &str, sysroot: &Path) -> bool {
             Path::new(dest).starts_with(sysroot) && (from == "-d" || Path::new(from).exists())
         })
     })
+}
+/// One DevTools tarball for [`devtools_native`]: its path and the sha256 it is pinned to.
+pub(crate) struct Pinned<'a> {
+    pub(crate) tarball: &'a Path,
+    pub(crate) sha256: &'a str,
+}
+
+/// `cargo xtask devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR
+/// --rust-sha256 HEX`: the disk `just smoke-devtools-native` boots to prove DevTools'
+/// native toolchains (T3b) under the kernel. A copy of `comp`'s staging root (the base:
+/// libc, crt, ld.so, the headers) with each tarball's `usr/` laid over its own, LLVM's then
+/// Rust's, as an ffs image by the same makefs as `comp.ffs`: `target/devtools-native/<arch>/
+/// native.ffs`. Each tarball is checked against its pin before it is unpacked, holds one top
+/// directory, and is used unmodified; the image is made afresh on every run. The comp set's
+/// libc++ headers and clang resource directory are removed first: DevTools' replace them.
+pub(crate) fn devtools_native(
+    root: &Path,
+    arch: Arch,
+    llvm: Pinned<'_>,
+    rust: Pinned<'_>,
+) -> Result<()> {
+    let comp_root = root.join("target/comp").join(arch.name()).join("root");
+    let comp_owners = root
+        .join("target/comp")
+        .join(arch.name())
+        .join("owners.txt");
+    if !comp_root.join("usr/lib").is_dir() || !comp_owners.is_file() {
+        return Err(format!("{}: missing; run `just comp`", comp_root.display()).into());
+    }
+    let makefs = root
+        .join("target/userland")
+        .join(arch.name())
+        .join("host/bin/makefs");
+    if !makefs.is_file() {
+        return Err(format!("{}: missing; run `just userland`", makefs.display()).into());
+    }
+    let out = root.join("target/devtools-native").join(arch.name());
+    let unpack = out.join("unpack");
+    let rootdir = out.join("root");
+    for d in [&unpack, &rootdir] {
+        if d.exists() {
+            fs::remove_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+    }
+    fs::create_dir_all(&unpack).map_err(|e| format!("{}: {e}", unpack.display()))?;
+    // The base, an APFS clone of comp's root (seconds, no space until written).
+    run(Command::new("cp").arg("-Rc").arg(&comp_root).arg(&rootdir))?;
+    // What DevTools' LLVM replaces as a whole: the comp set's libc++ headers and clang's
+    // resource directory (OpenBSD's 22.1.6). A header the older libc++ has and the newer one
+    // dropped would stay behind and shadow the newer one's (`c++/v1/ctype.h` trips libc++
+    // 23's `<cctype>` check).
+    for stale in ["usr/include/c++", "usr/lib/clang"] {
+        let d = rootdir.join(stale);
+        if d.exists() {
+            fs::remove_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+    }
+    for (what, pin) in [("llvm", &llvm), ("rust", &rust)] {
+        check_sha256(pin.tarball, pin.sha256)?;
+        let dir = unpack.join(what);
+        fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        untar_zst(pin.tarball, &dir)?;
+        let tops: Vec<PathBuf> = fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .collect();
+        let [top] = tops.as_slice() else {
+            return Err(format!(
+                "{}: expected one top directory, found {}",
+                pin.tarball.display(),
+                tops.len()
+            )
+            .into());
+        };
+        let usr = top.join("usr");
+        if !usr.is_dir() {
+            return Err(
+                format!("{}: no usr/ under {}", pin.tarball.display(), top.display()).into(),
+            );
+        }
+        let mut n = 0;
+        mirror(&usr, &rootdir.join("usr"), &mut n)?;
+        println!("  {what}: {} ({n} files laid over usr/)", top.display());
+    }
+    let owners = out.join("owners.txt");
+    fs::copy(&comp_owners, &owners).map_err(|e| format!("{}: {e}", owners.display()))?;
+    const MIB: u64 = 1 << 20;
+    let size = (ramdisk::tree_bytes(&rootdir)? * 5 / 4 + 64 * MIB).div_ceil(MIB) * MIB;
+    let disktab = out.join("disktab");
+    ramdisk::write_if_changed(&disktab, &ramdisk::disktab_entry(size / 512))?;
+    let image = out.join("native.ffs");
+    let _ = fs::remove_file(&image);
+    run(Command::new(&makefs)
+        .args(["-t", "ffs", "-T", &ramdisk::TIMESTAMP.to_string()])
+        .env("EMIBSD_DISKTAB", &disktab)
+        .env("EMIBSD_OWNERS", &owners)
+        .env("EMIBSD_STAGING", &rootdir)
+        .args(["-o", "disklabel=rdroot,minfree=0"])
+        .arg(&image)
+        .arg(&rootdir))?;
+    let bytes = fs::metadata(&image).map(|m| m.len()).unwrap_or(0);
+    println!("  image: {} ({bytes} bytes)", image.display());
+    Ok(())
+}
+
+/// Refuses `file` unless its SHA-256, by the host's `shasum`, is `want` (lowercase hex).
+fn check_sha256(file: &Path, want: &str) -> Result<()> {
+    let out = Command::new("shasum")
+        .args(["-a", "256"])
+        .arg(file)
+        .output()
+        .map_err(|e| format!("shasum: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let got = text.split_whitespace().next().unwrap_or("");
+    if !out.status.success() || got != want {
+        return Err(format!("{}: sha256 {got}, pinned {want}", file.display()).into());
+    }
+    Ok(())
+}
+
+/// Unpacks the `.tar.zst` `file` into `dir`: `zstd -dc` into `tar -x`.
+fn untar_zst(file: &Path, dir: &Path) -> Result<()> {
+    let mut zstd = Command::new("zstd")
+        .args(["-dc", "--"])
+        .arg(file)
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("zstd: {e}"))?;
+    let Some(stdout) = zstd.stdout.take() else {
+        return Err("zstd: no stdout".into());
+    };
+    let status = Command::new("tar")
+        .arg("-xf")
+        .arg("-")
+        .arg("-C")
+        .arg(dir)
+        .stdin(stdout)
+        .status()
+        .map_err(|e| format!("tar: {e}"))?;
+    let zs = zstd.wait().map_err(|e| format!("zstd: {e}"))?;
+    if !status.success() || !zs.success() {
+        return Err(format!(
+            "{}: unpacking failed (zstd {zs}, tar {status})",
+            file.display()
+        )
+        .into());
+    }
+    Ok(())
 }
 /* </CODE> */
 

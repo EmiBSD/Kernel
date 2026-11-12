@@ -222,14 +222,16 @@ Stable Rust, pinned in `rust-toolchain.toml`.
 
 Since 2026-10-31 the pin is 1.99.1, the version DevTools (github.com/EmiBSD/DevTools) builds:
 `just toolchain` installs its releases by tag and sha256 into `~/devel/emibsd/toolchains`
-(`docs/SETUP.md`), the Rust one as rustup's toolchain `emibsd`. Its rustc ships no `rust-lld`
+(`docs/SETUP.md`), and since decision 49 (2026-11-11) the kernel is built with them, run
+straight from that directory (no rustup). Its rustc ships no `rust-lld`
 (the linker is the LLVM release's `ld.lld`) and no `llvm-tools` (`EMIBSD_LLVM_BIN` names its
-`llvm-objcopy`). Until the switch commit names `emibsd`, the kernel builds with rustup's 1.99.1.
+`llvm-objcopy`).
 `just smoke-devtools` is DevTools' T1/T2 proof: C, C++ and Rust hellos linked by its clang and
 rustc against `target/userland/<arch>/sysroot`, run from the ramdisk under the kernel.
 
 - `x86_64-unknown-none`: kernel code model, no SSE/AVX, no red zone.
-- `aarch64-unknown-none-softfloat`: no NEON/FP. The hardfloat variant lets the compiler use `q`
+- `aarch64-emibsd-none-softfloat` (DevTools' name for upstream's
+  `aarch64-unknown-none-softfloat`, decision 49): no NEON/FP. The hardfloat variant lets the compiler use `q`
   registers in `memcpy`; a kernel that does not save FP state on traps must not touch them. This is
   the Rust equivalent of OpenBSD's `-mgeneral-regs-only`.
 
@@ -416,13 +418,14 @@ piped into `FINISH.*`), and so are the generated hash helpers and the `rpcsvc` h
 `share/mk` is not in the reference clone: `sys.mk` and `bsd.own.mk` are stood in for by
 predefined variables (`CFLAGS?= -O2 -pipe ${DEBUG}`, `COMPILE.c`, `YP=yes`, `STATIC=-static`,
 ...), `bsd.prog.mk`/`bsd.lib.mk` by their variable effects (`../Makefile.inc`, `COPTS`) and the
-implicit `.c.o`/`.S.o` rules; `CDIAGFLAGS` (warnings only) is empty. Apple clang's OpenBSD
-target supplies the rest of OpenBSD's defaults by itself: PIE, `-fstack-protector-strong`,
+implicit `.c.o`/`.S.o` rules; `CDIAGFLAGS` (warnings only) is empty. Upstream clang's OpenBSD
+target (DevTools' clang since 2026-11-12, Apple clang before) supplies the rest of OpenBSD's defaults by itself: PIE, `-fstack-protector-strong`,
 IBT (`-fcf-protection=branch`) on amd64, BTI and return-address signing on arm64, emulated TLS.
 
 Workarounds, each printed by the build (flags only; no source is edited):
 
-- `-fret-clean` (amd64 libc) is an OpenBSD-local clang option Apple clang rejects; it is dropped.
+- `-fret-clean` (amd64 libc) is an OpenBSD-local clang option upstream clang does not have; it is
+  dropped.
 - `rpcgen`, `makefs`, `pwd_mkdb` and `yacc` are built for the Mac with `-D'pledge(p,e)=0'`
   (macOS has no `pledge(2)`).
 - `.y` sources (`sbin/pfctl/parse.y`, `sbin/ipsecctl/parse.y`) follow `bsd.sys.mk`'s `.y.c` rule:
@@ -477,7 +480,7 @@ and `lib/libedit` (`LIBRARIES` in `userland.rs`, the code in `userland/libraries
   libcurses's `curses.h` becomes `<ncurses.h>`, as their Makefiles say.
 - LibreSSL's Makefiles add `-Werror`. Where they do, `-Wno-pointer-sign` is added
   (`WERROR_DEFAULTS`): OpenBSD's clang does not warn about mixing `char *` and
-  `unsigned char *` by default, Apple clang does, and libcrypto mixes them.
+  `unsigned char *` by default, upstream clang does, and libcrypto mixes them.
 - `share/mk`'s `bsd.subdir.mk` (recursion into `SUBDIR`, the `man` directories) is stood in
   for by nothing.
 
@@ -712,7 +715,7 @@ after the static libraries, as OpenBSD's Makefiles say:
 - `comp` copies `/usr/libexec` of the sysroot into its root with `/usr/lib`, so `comp.ffs`
   carries `ld.so` and the shared libraries.
 
-Deviations, each written in `shlib.rs`: the host's LLD 17 is given two defaults OpenBSD's lld
+Deviations, each written in `shlib.rs`: the host's lld is given two defaults OpenBSD's lld
 has built in (`--undefined-version`: libc's `Symbols.list` names symbols that only other
 architectures define; `--ignore-function-address-equality`); ld.so is built with
 `STACK_PROTECTOR=` (its `__guard_local` and `__stack_smash_handler` stubs), the branch of
@@ -985,7 +988,7 @@ output `target/efiboot/arm64/BOOTAA64.EFI`, which `installboot` copies from `/us
 - `sys/arch/arm64/stand/efiboot` (package `efiboot-arm64`, binary `bootaa64`): every file of
   OpenBSD's directory, on the same three crates and registration tables as amd64's.
   OpenBSD's arm64 Makefile already makes the PE image with its `.peheader` in `start.S`
-  and `objcopy -O binary`, which is what is done here, for `aarch64-unknown-none-softfloat`.
+  and `objcopy -O binary`, which is what is done here, for `aarch64-emibsd-none-softfloat`.
   `dt_blob.S` (dtc's output of `acpi.dts`, the template efiacpi fills from the ACPI tables
   when the firmware has no device tree) is built by a `const fn` in `dt_blob.rs`; a
   reference-backed test checks its bytes against `dt_blob.S`. efipxe uses libsa's network
@@ -1216,7 +1219,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - Cargo features and `xtask` instead of `config(8)`, Makefiles and `newvers.sh`; the
   autoconfiguration tables `config(8)` generates are written by hand ("Autoconfiguration",
   below).
-- `aarch64-unknown-none-softfloat` target; Intel syntax for amd64 inline assembly.
+- `aarch64-emibsd-none-softfloat` target; Intel syntax for amd64 inline assembly.
 - `Result<T, Errno>` instead of `int` returns; RAII guards for `spl`/mutex.
 - A host test double (`arch/host`), which OpenBSD does not have. It has no MMU: its
   `Pmap::PMAP_NOMMU` makes `km_alloc` and `kmeminit` serve everything through the direct map

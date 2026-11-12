@@ -3,7 +3,7 @@
 # tests are out of this view. No `cargo check` on save (decision 23: develop first,
 # compile later): only the index and rust-analyzer's own diagnostics.
 [cargo]
-target = "aarch64-unknown-none-softfloat"
+target = "aarch64-emibsd-none-softfloat"
 features = ["qemu"]
 allTargets = false
 

@@ -1,7 +1,8 @@
-# Stable, pinned. Bumping is its own commit ("build: bump toolchain to <version>").
-# With rustup installed (docs/SETUP.md) the first `cargo` invocation installs all of this.
+# NOT what builds the kernel. The kernel is built with EmiBSD's own toolchain, DevTools' Rust and
+# LLVM, run straight from ~/devel/emibsd/toolchains: the justfile puts the pinned release's
+# bin/ first on PATH and names its rustc (`devtools_rust_bin_arm64`; decision 49, the user,
+# 2026-11-11). rustup and its proxies are not used, and DevTools' cargo does not read this
+# file. It stays as a tripwire only: a rustup proxy `cargo` run here by mistake resolves the
+# name `emibsd` (a link to that same tree, or an error), never an official toolchain.
 [toolchain]
-channel = "1.99.1"
-profile = "minimal"
-components = ["rustfmt", "clippy", "rust-src", "llvm-tools"]
-targets = ["x86_64-unknown-none", "aarch64-unknown-none-softfloat"]
+channel = "emibsd"

@@ -34,7 +34,9 @@
 //! - a force-included header (`COMPAT_H`): `daddr_t` is 64 bits on OpenBSD and 32 on macOS;
 //!   `st_atim`/`st_mtim`/`st_ctim` are `st_*timespec` on macOS; `MAXBSIZE` is OpenBSD's
 //!   64 KiB, not macOS's 1 MiB; `pledge`, `unveil` and `srandom_deterministic` (used only
-//!   with `-T`) have no macOS counterpart;
+//!   with `-T`) have no macOS counterpart; `__packed` is OpenBSD's `<sys/cdefs.h>` attribute
+//!   (macOS defines none: `} __packed;` in `sys/disklabel.h` then declares a variable, which
+//!   Apple clang's `-fcommon` merged and upstream clang refuses as a duplicate symbol);
 //! - OpenBSD's own headers macOS lacks, from the clone: `ufs/`, `msdosfs/`,
 //!   `sys/disklabel.h`, `machine/disklabel.h` (identical on amd64 and arm64), and
 //!   `sys/uuid.h` with its `uuid_t` renamed (macOS has a different `uuid_t`); `sys/endian.h`
@@ -783,6 +785,9 @@ const COMPAT_H: &str = "\
 #include <stdlib.h>
 #include <time.h>
 #define daddr_t int64_t
+#ifndef __packed	/* OpenBSD's <sys/cdefs.h>; macOS has none, so `} __packed;` named a variable */
+#define __packed __attribute__((__packed__))
+#endif
 #define st_atim st_atimespec
 #define st_mtim st_mtimespec
 #define st_ctim st_ctimespec

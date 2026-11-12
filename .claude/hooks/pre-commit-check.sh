@@ -36,7 +36,14 @@ cwd=$(printf '%s' "$payload" | jq -r '.cwd // empty')
 cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || exit 0
 [ -f lineage.toml ] || exit 0
 if [ -n "$PRE_COMMIT_CHECK_DRY" ]; then printf 'pre-commit-check: would check in %s\n' "$PWD"; exit 0; fi
-export PATH=/opt/homebrew/opt/rustup/bin:$PATH
+# DevTools' cargo, straight from the toolchain directory (decision 49: no rustup). A worktree
+# older than the switch has no `rust-bin` recipe: the main checkout's answers for it.
+rustbin=$(just rust-bin 2>/dev/null) || rustbin=$(just --justfile "${CLAUDE_PROJECT_DIR:-.}/justfile" rust-bin 2>/dev/null) || rustbin=
+if [ -z "$rustbin" ] || [ ! -x "$rustbin/cargo" ]; then
+    printf 'commit blocked by .claude/hooks/pre-commit-check.sh: no DevTools cargo (`just rust-bin`; `just toolchain` installs it)\n' >&2
+    exit 2
+fi
+export PATH=$rustbin:$PATH RUSTC=$rustbin/rustc
 if ! out=$(cargo xtask lz check 2>&1); then
     printf 'commit blocked by .claude/hooks/pre-commit-check.sh: `cargo xtask lz check` failed in %s\n%s\n' "$PWD" "$(printf '%s\n' "$out" | grep -v '^ *\(Compiling\|Finished\|Running\)' | tail -30)" >&2
     exit 2

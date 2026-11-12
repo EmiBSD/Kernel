@@ -9,6 +9,10 @@ xtask = "run -p xtask --"
 rustflags = ["-C", "relocation-model=static", "-C", "force-frame-pointers=yes"]
 runner = ["cargo", "xtask", "qemu", "--arch", "amd64", "--kernel"]
 
-[target.aarch64-unknown-none-softfloat]
+# arm64's kernel target, DevTools' name (its D-0008: vendor `emibsd`), built by DevTools' Rust
+# (decision 49; the justfile runs it straight from the toolchain directory, no rustup).
+# The linker is DevTools' ld.lld, which the justfile names through
+# CARGO_TARGET_AARCH64_EMIBSD_NONE_SOFTFLOAT_LINKER (its path is the pinned release's).
+[target.aarch64-emibsd-none-softfloat]
 rustflags = ["-C", "relocation-model=static", "-C", "force-frame-pointers=yes"]
 runner = ["cargo", "xtask", "qemu", "--arch", "arm64", "--kernel"]

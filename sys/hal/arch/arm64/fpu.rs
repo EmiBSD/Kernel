@@ -40,7 +40,7 @@
 //! LZ: sys/arch/arm64/arm64/fpu.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - The kernel is built for `aarch64-unknown-none-softfloat`: the register moves are
+//! - The kernel is built for `aarch64-emibsd-none-softfloat`: the register moves are
 //!   inline assembly bracketed by `.arch_extension fp`/`nofp`, as the C's `.arch
 //!   armv8-a+fp`, and `fpsr`/`fpcr` are reached by their encodings (`s3_3_c4_c4_1`,
 //!   `s3_3_c4_c4_0`), as the C's `#define`s do.

@@ -3,13 +3,16 @@
 Verified 2026-10-02 on Darwin 25.6 with Homebrew. Linux users: `rustup`, `qemu`, `limine`, `just`
 from your distribution; the rest is identical.
 
-## Why the Homebrew `rust` formula is not enough
+## The compiler is EmiBSD's own (decision 49)
 
-Homebrew's `rust` ships only the host target (`aarch64-apple-darwin`) and no `rust-lld`.
-The bare-metal targets `x86_64-unknown-none` and `aarch64-unknown-none-softfloat` need both.
-`rustup` manages them; in Homebrew it is keg-only because it conflicts with the `rust` formula.
-(An alternative that keeps Homebrew rust, `rustup toolchain link system "$(brew --prefix rust)"`,
-still lacks the bare targets. Not recommended.)
+The kernel is built with the toolchain DevTools releases (github.com/EmiBSD/DevTools): its
+build of stable Rust and its LLVM, never rustup's official toolchain and never Homebrew's
+`rust` formula (the user's decision of 2026-11-11). rustup is not used either: the justfile
+puts the pinned release's `bin/` first on `PATH` and names its `rustc` (`RUSTC`), so every
+recipe runs DevTools' `cargo`, `rustc`, clippy and rustfmt straight from
+`~/devel/emibsd/toolchains`; a bare cargo is `just cargo <args>`. `rust-toolchain.toml` is a
+tripwire only (a rustup proxy run by mistake resolves `emibsd`, never an official toolchain).
+Steps 1 to 4 below are from before the switch and are no longer needed for the kernel.
 
 ## Steps
 
@@ -30,20 +33,19 @@ still lacks the bare targets. Not recommended.)
    ```sh
    rustup default stable
    ```
-5. In the repository, the first `cargo` command installs the pinned toolchain, both bare-metal
-   targets and the components listed in `rust-toolchain.toml` automatically.
+5. In the repository, `just toolchain` fetches DevTools' pinned releases, checks their sha256
+   and unpacks them into `~/devel/emibsd/toolchains` ("DevTools toolchain" below). Until it
+   has run, every recipe fails (no `cargo` there): nothing falls back to another compiler.
 
 ## Verify
 
 ```sh
-which cargo                        # ~/.cargo/bin/cargo or the rustup keg, NOT /opt/homebrew/bin
-cargo --version                    # the version pinned in rust-toolchain.toml
-rustup target list --installed     # x86_64-unknown-none, aarch64-unknown-none-softfloat
+just rust-bin                      # ~/devel/emibsd/toolchains/rust-<pin>-aarch64-apple-darwin-arm64/bin
+just cargo --version               # cargo <version> (EmiBSD DevTools)
 ls "$(brew --prefix qemu)/share/qemu/"edk2-{x86_64,aarch64}-code.fd
 ls "$(brew --prefix limine)/share/limine/"BOOT{X64,AA64}.EFI
-cargo check && cargo test          # host build of bsd + libkern
-cargo check -p bsd --target x86_64-unknown-none
-cargo check -p bsd --target aarch64-unknown-none-softfloat
+just cargo check && just test      # host build of bsd + libkern
+just cargo check -p bsd --target aarch64-emibsd-none-softfloat --features qemu
 just smoke                         # after milestone M0
 ```
 
@@ -51,12 +53,14 @@ just smoke                         # after milestone M0
 
 `rust-analyzer.toml` at the root configures rust-analyzer for the editor and for Claude
 Code's LSP plugin alike (the user's decision of 2026-11-01): the tree is analysed as
-`just build` builds it, arm64 (`aarch64-unknown-none-softfloat`) with `--features qemu`, and
+`just build` builds it, arm64 (`aarch64-emibsd-none-softfloat`) with `--features qemu`, and
 `checkOnSave` is off, so no `cargo check` runs on a save (decision 23: develop first, compile
 later; nothing runs while `/tmp/emibsd/ci.lock` exists). What is left is the index and
 rust-analyzer's own diagnostics; the host side (`sys/arch/host`, the tests) is out of that
-view, and `just clippy` checks every target regardless. The server is the toolchain's
-component (`rustup component add rust-analyzer`, pinned with `rust-toolchain.toml`); Claude
+view, and `just clippy` checks every target regardless. The server was the toolchain's
+component (`rustup component add rust-analyzer`) while the kernel was built with rustup's
+toolchain; DevTools' Rust carries no `rust-analyzer` (asked of DevTools on 2026-11-11, the
+user's decision), so since decision 49 the plugin has no server here until one ships. Claude
 Code reaches it through the `rust-analyzer-lsp` plugin of `claude-plugins-official`
 (`claude plugin install rust-analyzer-lsp@claude-plugins-official`, user scope; a session
 started after the install sees it). Measured on 2026-11-01 with `rust-analyzer analysis-stats`
@@ -84,19 +88,19 @@ OpenBSD's makefs(8) and pwd_mkdb(8), built for the Mac with the same clang, as a
 yacc(1), which `pfctl` and `ipsecctl`'s `parse.y` need, and lex(1) for `.l` sources, whose own
 `scan.l` the Mac's `/usr/bin/lex` makes since the tree has no `initscan.c`), into
 `target/userland/<arch>/`. It is not part of
-`just ci`. The user approved these tools on 2026-10-03; nothing else is installed for it:
+`just ci`. Since 2026-11-12 (the user's decision of 2026-11-11, replacing the Apple clang and
+swiftly LLD 17 approved on 2026-10-03) its tools are DevTools' LLVM, the release `just
+toolchain` installs, and nothing else is installed for it:
 
 | Tool | Default | Override | Use |
 |---|---|---|---|
-| Apple clang 21 (Xcode) | `/usr/bin/clang` | `$EMIBSD_CC` | compiles for `x86_64-unknown-openbsd` and `aarch64-unknown-openbsd` (ELF), and builds `rpcgen` and `yacc` for the Mac |
-| LLD 17 | `~/.swiftly/bin/ld.lld` | `$EMIBSD_LLVM_BIN` (the directory) | links static PIE executables |
-| `llvm-ar`, `llvm-ranlib`, `llvm-objcopy`, `llvm-objdump` | `~/.swiftly/bin/` | `$EMIBSD_LLVM_BIN` | archives, `install -s`, verification |
+| DevTools' clang 23 | `$EMIBSD_LLVM_BIN/clang` | `$EMIBSD_CC` | compiles for `aarch64-unknown-openbsd` (`x86_64-unknown-openbsd` at N10), and, told the Mac's triple and SDK, builds `rpcgen`, `yacc`, `lex`, makefs and the comp set's build tools for the Mac |
+| DevTools' lld 23 | `$EMIBSD_LLVM_BIN/ld.lld` | `$EMIBSD_LLVM_BIN` (the directory; the justfile exports the pinned release's `bin/`) | links static PIE executables and the shared libraries; `ld64.lld` links the Mac's build tools |
+| `llvm-ar`, `llvm-ranlib`, `llvm-objcopy`, `llvm-objdump` | `$EMIBSD_LLVM_BIN/` | `$EMIBSD_LLVM_BIN` | archives, `install -s`, verification |
 
-`~/.swiftly/bin` is the Swift toolchain manager's directory; its LLVM tools are proxies that
-`swiftly` resolves to the selected toolchain. Any LLVM 17 or newer `ld.lld` with OpenBSD
-support (it must emit `PT_OPENBSD_SYSCALLS`) and matching binutils work through
-`$EMIBSD_LLVM_BIN`. `/bin/sh`, `sed` and `/usr/bin/cpp` (Apple clang's, run by `rpcgen`) are the
-system's.
+Without `$EMIBSD_LLVM_BIN` the build stops; it never looks for another compiler. The Mac's
+build tools need the macOS SDK (`xcrun --show-sdk-path`, or `$SDKROOT`): its headers and
+libc++. `/bin/sh`, `sed` and `/usr/bin/cpp` (Apple's, run by `rpcgen`) are still the system's.
 
 The OpenBSD sources come from `$OPENBSD_SRC` if set (absolute, or relative to the repository),
 else `reference/openbsd-src`, else, from a git worktree, the main checkout's
@@ -171,23 +175,31 @@ uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 ## DevTools toolchain (T3)
 
 `just toolchain` installs the EmiBSD toolchains that DevTools releases
-(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.4` (since
+(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.6` (since
 2026-11-07 its lld also maps `.emibsd.*` sections to the `PT_OPENBSD_*` segments; since
 2026-11-08 every link through `<triple>-clang` passes `--undefined-version` and
 `--ignore-function-address-equality`, as the system's libraries are linked; since
 +emibsd.4 the target's libc++.so.13.0 and libc++abi.so.10.0 carry the system's sonames and the
-unwinder lives inside libc++abi, with no libunwind) and `rust-1.99.1+emibsd.2` (its std links
-c++abi alone for the unwinder; it moves with the LLVM), pinned by tag and sha256 in the
+unwinder lives inside libc++abi, with no libunwind) and `rust-1.99.1+emibsd.5` (its std links
+c++abi alone for the unwinder; since +emibsd.4 `std::env::current_exe` no longer panics on
+EmiBSD, which cargo needs to run there; since +emibsd.5 `--version` names the patch level and
+`rust-analyzer` is in `bin/`; it moves with the LLVM),
+pinned by tag and sha256 in the
 justfile, fetched with `gh release download` (never "latest"), checked before unpacking, and unpacked unmodified into
 `~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). Since DevTools' D-0008
 (2026-11-02) each release has one tarball per target architecture, `-arm64` and `-amd64`, and
-the recipe fetches both pairs. The arm64 Rust becomes rustup's toolchain `emibsd`, the amd64 one
-`emibsd-amd64` (`rustup toolchain link`; unused until N10, decision 44); each LLVM's `bin/`
+the recipe fetches both pairs. The arm64 Rust's `bin/` is what the recipes run; the amd64 one
+is unused until N10 (decision 44); each LLVM's `bin/`
 (`ld.lld`, `llvm-objcopy`, clang) is that arch's `EMIBSD_LLVM_BIN`. The kernel targets are
 `aarch64-emibsd-none-softfloat` and `x86_64-emibsd-none-softfloat` (upstream's bare-metal targets
 with the vendor `emibsd`); `aarch64-unknown-none-softfloat` is no longer shipped. Needs `gh`,
-logged in, and `zstd` (Homebrew). The kernel still builds with the `rust-toolchain.toml` pin and
-upstream's target names until the switch commit names `emibsd` and the renamed targets.
+logged in, and `zstd` (Homebrew). Since decision 49 (2026-11-11) the kernel is built with
+them, run straight from that directory with no rustup: the justfile's `arm64` is
+`aarch64-emibsd-none-softfloat`, the linker is the arm64 LLVM's `ld.lld`
+(`CARGO_TARGET_AARCH64_EMIBSD_NONE_SOFTFLOAT_LINKER`, exported by the justfile: DevTools' Rust
+has no `rust-lld`) and efiboot's `llvm-objcopy` is the same LLVM's. A pin bump (`just
+toolchain` fetches the new release) is its own commit. amd64 keeps `x86_64-unknown-none` in its
+frozen recipes until N10 moves it to `emibsd-amd64` and `x86_64-emibsd-none-softfloat`.
 
 `just smoke-devtools` proves the arm64 artifacts (DevTools' T1 and T2): it builds a C, a C++ and
 a static Rust hello (and the C one dynamic) with them against `target/userland/arm64/sysroot`,

@@ -24,8 +24,8 @@
 //!   at 0, with its PE header first: `ldscript.amd64`, `start_amd64.S`), made as arm64's
 //!   efiboot makes its own: `llvm-objcopy -O binary` (OpenBSD's amd64 Makefile uses GNU
 //!   objcopy's `efi-app-x86_64` target, which llvm-objcopy does not have). The default output
-//!   is `target/efiboot/<arch>/BOOTX64.EFI`. llvm-objcopy is the toolchain's (`llvm-tools`,
-//!   `rust-toolchain.toml`), else `$EMIBSD_LLVM_BIN/llvm-objcopy`.
+//!   is `target/efiboot/<arch>/BOOTX64.EFI`. llvm-objcopy is `$EMIBSD_LLVM_BIN`'s (DevTools'
+//!   LLVM, which the justfile names), else the Rust toolchain's own when it has one.
 //! - `cargo xtask efiboot-disk --arch amd64 --efi FILE --kernel FILE`: the boot image of
 //!   `smoke-efiboot`, written where `smoke` without `--kernel` boots from (the run
 //!   directory's `emibsd-<arch>.img`), laid out as OpenBSD installs a disk that boots with
@@ -73,7 +73,8 @@ fn efi_name(arch: Arch) -> &'static str {
     }
 }
 
-/// The toolchain's llvm-objcopy (`llvm-tools`), else `$EMIBSD_LLVM_BIN`'s.
+/// `$EMIBSD_LLVM_BIN`'s llvm-objcopy (DevTools' LLVM), else the Rust toolchain's own
+/// (`llvm-tools`, which DevTools' Rust does not carry).
 fn llvm_objcopy() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("EMIBSD_LLVM_BIN") {
         let p = PathBuf::from(dir).join("llvm-objcopy");
@@ -100,8 +101,8 @@ fn llvm_objcopy() -> Result<PathBuf> {
         }
     }
     Err(
-        "llvm-objcopy not found: install the toolchain's llvm-tools component \
-         (rust-toolchain.toml lists it; docs/SETUP.md) or set EMIBSD_LLVM_BIN"
+        "llvm-objcopy not found: set EMIBSD_LLVM_BIN to the bin/ of DevTools' LLVM (the \
+         justfile does; `just toolchain` installs it, docs/SETUP.md)"
             .into(),
     )
 }

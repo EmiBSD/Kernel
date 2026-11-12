@@ -65,7 +65,7 @@ impl Arch {
     pub fn target(self) -> &'static str {
         match self {
             Arch::Amd64 => "x86_64-unknown-none",
-            Arch::Arm64 => "aarch64-unknown-none-softfloat",
+            Arch::Arm64 => "aarch64-emibsd-none-softfloat",
         }
     }
 
@@ -278,6 +278,20 @@ pub(crate) const MAX_SMP: u32 = 8;
 
 /// `--smp N` for every VM this run starts (set once by `main`, read by [`qemu_command`]).
 static SMP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+static MEMORY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Records `--memory SIZE` (QEMU's `-m`); `None` leaves [`VM_MEMORY`].
+pub(crate) fn set_memory(size: Option<String>) {
+    if let Some(s) = size {
+        let _ = MEMORY.set(s);
+    }
+}
+
+/// The guest memory of this run: `--memory SIZE`, else [`VM_MEMORY`].
+pub(crate) fn memory() -> &'static str {
+    MEMORY.get().map_or(VM_MEMORY, String::as_str)
+}
 
 /// Records `--smp N`; `None` leaves QEMU's default of one processor.
 pub(crate) fn set_smp(n: Option<u32>) {
@@ -752,7 +766,7 @@ pub(crate) fn qemu_command(
 
     let mut cmd = Command::new(arch.qemu());
     // M13 (hwopts.rs): `--screenshot-after` and `--sendkey-after` put the monitor on a socket.
-    cmd.args(["-m", VM_MEMORY, "-display", "none", "-monitor"]);
+    cmd.args(["-m", memory(), "-display", "none", "-monitor"]);
     cmd.arg(crate::hwopts::monitor_arg());
     // M13 (hwopts.rs): `--reboot` lets a guest reset restart the machine.
     if !crate::hwopts::reboot() {
@@ -1006,6 +1020,9 @@ pub struct SmokeOptions<'a> {
     pub expect_ramdisk: bool,
     /// The persistent disks: `--disk-fresh`, `--disks N`, `--disk-set NAME`.
     pub disks: Disks<'a>,
+    /// `--timeout SECS`: the boot's time limit in place of [`SMOKE_TIMEOUT`], for a session
+    /// that runs for longer than any boot (a build inside the guest); scaled as that one is.
+    pub timeout: Option<Duration>,
 }
 
 /// Firmware failures that end a boot before the kernel runs and are not ours: each is the two
@@ -1076,6 +1093,7 @@ fn smoke_once(
         ramdisk,
         expect_ramdisk,
         disks,
+        timeout,
     } = *opts;
     let image = match kernel {
         Some(k) => image(root, arch, k, cmdline, init, ramdisk)?,
@@ -1093,7 +1111,7 @@ fn smoke_once(
         }
     };
     let expected_status = status;
-    let limit = time_limit(SMOKE_TIMEOUT);
+    let limit = time_limit(timeout.unwrap_or(SMOKE_TIMEOUT));
     // M16e (hwopts.rs): `--tpm`'s swtpm, stopped when this returns, after QEMU.
     let _swtpm = crate::hwopts::start_swtpm()?;
     let mut cmd = qemu_command(root, arch, &image, "stdio", None, &disks)?;

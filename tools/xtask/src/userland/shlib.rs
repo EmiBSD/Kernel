@@ -62,18 +62,27 @@ use super::*;
 /// The libraries built shared besides their static archive, in link order of dependence:
 /// libc first (the others' `.so` objects compile against the sysroot it filled). `libpthread`
 /// (`lib/librthread`) is also built static here, as `comp` builds it for the compiler.
-pub(super) const SHARED_LIBRARIES: &[&str] =
-    &["lib/libc", "lib/libutil", "lib/libm", "lib/librthread"];
+/// LibreSSL's `libcrypto` and `libssl` (2026-11-12) are what DevTools' native cargo loads
+/// (`libssl.so.60.2`, `libcrypto.so.57.2`), as OpenBSD's base has them; libssl's `LDADD`
+/// names `-lcrypto`, so libcrypto comes first. The programs here still link `-Bstatic`.
+pub(super) const SHARED_LIBRARIES: &[&str] = &[
+    "lib/libc",
+    "lib/libutil",
+    "lib/libm",
+    "lib/librthread",
+    "lib/libcrypto",
+    "lib/libssl",
+];
 
 /// The run-time link-editor's directory.
 const LDSO_DIR: &str = "libexec/ld.so";
 
 /// Defaults of OpenBSD's lld (`gnu/llvm/lld/ELF/Driver.cpp`, `#ifdef __OpenBSD__`) that the
-/// host's LLD 17 does not have, said explicitly for the shared links: a version script
+/// host's lld is given explicitly for the shared links: a version script
 /// may name symbols the library does not define (libc's `Symbols.list` names `__data_start`
 /// and the `quad` helpers of other architectures), and protected symbols stay preemptible.
-/// (Its execute-only text default is not repeated: LLD 17 refuses `--execute-only` on
-/// amd64, and the static programs are linked without it too.)
+/// (Its execute-only text default is not repeated: LLD 17 refused `--execute-only` on
+/// amd64, not tried again since, and the static programs are linked without it too.)
 const OPENBSD_LLD_DEFAULTS: &[&str] =
     &["--undefined-version", "--ignore-function-address-equality"];
 

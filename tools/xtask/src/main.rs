@@ -48,6 +48,8 @@
 //!                                          target/disk-A-NAME[-sdK].img instead;
 //!                                          --smp N (1..=8; qemu, smoke, smoke2) gives
 //!                                          every VM N processors;
+//!                                          --memory SIZE (256M..16G; qemu, smoke) the guest's
+//!                                          memory instead of boot::VM_MEMORY (512M);
 //!                                          --usb, --audio hda|ac97|usb and --expect-tone (qemu,
 //!                                          smoke) add M12's devices: a qemu-xhci with a
 //!                                          USB stick and keyboard, Intel HDA, AC97 or a
@@ -56,7 +58,7 @@
 //!                                          the stick on a usb-ehci (alone) or a
 //!                                          piix3-usb-uhci instead
 //! cargo xtask smoke --arch A [--kernel K] [--cmdline C] [--status N] [--send-after L --send T]... [--until-seen]
-//!                   [--expect-ramdisk] --expect L...
+//!                   [--expect-ramdisk] [--timeout SECS] --expect L...
 //!                                          boot headless; pass if every L appears and QEMU
 //!                                          exits with status N (default: the kernel's success
 //!                                          status); with K the image is rebuilt first;
@@ -141,6 +143,10 @@
 //!                                          built with DevTools' toolchains in DIR against
 //!                                          target/userland/A/sysroot, and the ramdisk
 //!                                          that carries them (devtools.rs)
+//! cargo xtask devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR --rust-sha256 HEX
+//!                                          smoke-devtools-native's disk: comp's root with
+//!                                          DevTools' native trees (T3b) over it, each
+//!                                          tarball checked against its pin (userland/comp.rs)
 //! cargo xtask comp --arch A [--jobs N]     M14: OpenBSD's compiler (clang, lld, libc++) from
 //!                                          gnu/llvm by its build glue, into target/comp/A
 //!                                          (userland/comp.rs); N jobs, default half the CPUs
@@ -218,14 +224,14 @@ const REFERENCE_DIR: &str = "reference/openbsd-src";
 const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz drift [--fetch] [--security] [--functions] [--strict] | \
                      lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R] | \
                      qemu --arch A [--kernel K] [--init I] [--ramdisk R] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--fb] | gen-syscalls [--check] | \
-                     smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
+                     smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--timeout S] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
                      smoke2 --arch A [--kernel K] [--cmdline C] [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
                      smoke-all [-j N] [--just PATH] RECIPE... | \
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
                      diff-openbsd [--arch A]... [--smp N] [--kernel-dir D] [fetch | install | run | powerbtn] | \
                      diff-openbsd --arch A [--ipmi] [--nic MODEL] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--ukc CMD]... [--sh CMD] probe | \
                      bench [--arch A]... [--smp N] [--reps N] [--no-tcpbench] [--profile debug|release] | bench compare BEFORE AFTER | \
-                     symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
+                     symbolize --arch A [--kernel K] | userland --arch A | devtools-hello --arch A --llvm DIR --rust DIR | devtools-native --arch A --llvm TAR --llvm-sha256 HEX --rust TAR --rust-sha256 HEX | comp --arch A [--jobs N] | ntfs-image OUT [--check] | \
                      e2fsck --arch A [--disk-set NAME] [--cat PATH=TEXT]... | fsck-msdos --arch A | \
                      manual --arch arm64 --boot-log LOG --out FILE | include --arch arm64 --out DIR | \
                      nvme-root --arch A [--duid HEX] [--out FILE] [--root-dev DEV]>";
@@ -245,6 +251,7 @@ fn run(args: &[String]) -> Result<()> {
     let root = workspace_root()?;
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     boot::set_smp(smp_flag(&argv)?);
+    boot::set_memory(memory_flag(&argv)?);
     hwopts::set(&root, &argv)?;
     storage::set(&root, &argv)?;
     devices::set_from_args(&argv)?;
@@ -345,6 +352,13 @@ fn run(args: &[String]) -> Result<()> {
                         count: disks_flag(rest)?,
                         set: optional_flag(rest, "--disk-set"),
                     },
+                    timeout: match optional_flag(rest, "--timeout") {
+                        Some(s) => Some(std::time::Duration::from_secs(
+                            s.parse::<u64>()
+                                .map_err(|e| format!("--timeout {s}: {e}"))?,
+                        )),
+                        None => None,
+                    },
                 },
             )
         }
@@ -412,6 +426,18 @@ fn run(args: &[String]) -> Result<()> {
                 Path::new(flag(rest, "--rust")?),
             )
         }
+        ["devtools-native", rest @ ..] => userland::comp::devtools_native(
+            &root,
+            boot::Arch::parse(flag(rest, "--arch")?)?,
+            userland::comp::Pinned {
+                tarball: Path::new(flag(rest, "--llvm")?),
+                sha256: flag(rest, "--llvm-sha256")?,
+            },
+            userland::comp::Pinned {
+                tarball: Path::new(flag(rest, "--rust")?),
+                sha256: flag(rest, "--rust-sha256")?,
+            },
+        ),
         ["comp", rest @ ..] => {
             let arch = boot::Arch::parse(flag(rest, "--arch")?)?;
             // Half the CPUs by default: other builds may share the machine.
@@ -540,6 +566,24 @@ fn smp_flag(args: &[&str]) -> Result<Option<u32>> {
     }
 }
 
+/// `--memory SIZE` (qemu, smoke): QEMU's `-m`, a number of mebibytes (`768M`) or gibibytes
+/// (`2G`), from 256M to 16G; absent, `boot::VM_MEMORY`. For the boots that need more than the
+/// default, as `smoke-devtools-native`'s rustc.
+fn memory_flag(args: &[&str]) -> Result<Option<String>> {
+    let Some(s) = optional_flag(args, "--memory") else {
+        return Ok(None);
+    };
+    let mib = match s.split_at(s.len().saturating_sub(1)) {
+        (n, "M") => n.parse::<u32>().ok(),
+        (n, "G") => n.parse::<u32>().ok().and_then(|g| g.checked_mul(1024)),
+        _ => None,
+    };
+    match mib {
+        Some(m) if (256..=16384).contains(&m) => Ok(Some(s.to_string())),
+        _ => Err(format!("--memory {s}: expected 256M to 16G (a number then M or G)").into()),
+    }
+}
+
 /// Every value following an occurrence of `name` in `args`.
 fn flags<'a>(args: &[&'a str], name: &str) -> Vec<&'a str> {
     args.windows(2)
@@ -623,6 +667,22 @@ mod tests {
         );
         for bad in ["0", "9", "x"] {
             assert!(smp_flag(&["--smp", bad]).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn memory_flag_takes_mebibytes_or_gibibytes_in_range() {
+        assert_eq!(memory_flag(&[]).unwrap(), None);
+        assert_eq!(
+            memory_flag(&["--memory", "2G"]).unwrap().as_deref(),
+            Some("2G")
+        );
+        assert_eq!(
+            memory_flag(&["--memory", "768M"]).unwrap().as_deref(),
+            Some("768M")
+        );
+        for bad in ["128M", "17G", "2", "G", "2T", "-1G"] {
+            assert!(memory_flag(&["--memory", bad]).is_err(), "{bad}");
         }
     }
 

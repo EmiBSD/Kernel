@@ -195,7 +195,8 @@ pub(super) fn build_host_signify(ctx: &Ctx<'_>) -> Result<PathBuf> {
         return Ok(exe);
     }
     let mut cc = Command::new(&ctx.tools.cc);
-    cc.args(["-O1", "-w", "-U__aarch64__", "-U__amd64__", "-include"])
+    cc.args(&ctx.tools.host)
+        .args(["-O1", "-w", "-U__aarch64__", "-U__amd64__", "-include"])
         .arg(inc.join("emibsd-compat.h"))
         .arg(format!("-I{}", inc.display()))
         .arg(format!("-I{}", real.display()))
