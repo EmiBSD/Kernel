@@ -7768,6 +7768,223 @@ kind = "dropped"
 reason = "each struct ifmedia's own IPL_NET mutex (kernel::net::if_media, IfmRt's list): the C's one global ifmedia_mtx keeps per-media lists at the same level and no other path takes it"
 
 [[module]]
+rust = "sys/kernel/net/art.rs"
+crate = "kernel"
+lz = ["sys/net/art.rs"]
+status = "redesigned"
+notes = "N6.3b1: art.h and art.c, generic over the node (ArtItem: the C's embeddable struct art_node and its void *an_value; routing's RtNode the first implementer, wg(4)'s at N8, D-25, while bsd's art.rs stays inherited for wg until then); every heap word, art_root and heap[0] a counted hal::smr word (SmrTaggedWord: the low-bit tag of art_heap_entry), so lookups are sound by SMR alone; the heaps typed by stride (Heap4 art_heap4, Heap8 art_heap8, a root only); a table owns its heap, heap[0] counts the table, at_parent the parent, the cycles cut at art_table_put; art_allot the double recursion Knuth's gotos expand; the gc lists, mutexes and tasks gone (the deferred release of retired references is the smr_barrier then pool_put); the iterator keeps at_refcnt and a handle of its table, and lends each node for its step's section"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapEntry"
+native = ["HeapWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord"
+native = ["HeapWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord::get"
+native = ["sys/hal/smr.rs::SmrTaggedWord::load"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord::set"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::Art::default"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::GcList"
+native = []
+kind = "dropped"
+reason = "the gc lists are gone: a retired heap word's reference is released by hal::smr's deferred release after a grace period, which is what art_table_gc's and art_gc's smr_barrier then pool_put did"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_LIST"
+native = []
+kind = "dropped"
+reason = "art_table_gc's list: a put table goes back to its pool when its last reference (the retired heap[0] and the parent's slot among them) is released after a grace period"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_MTX"
+native = []
+kind = "dropped"
+reason = "guarded the gone table gc list (art_table_gc)"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_TASK"
+native = []
+kind = "dropped"
+reason = "art_table_gc's systqmp task: the SMR thread runs the deferred release instead"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_LIST"
+native = []
+kind = "dropped"
+reason = "art_gc's list (an_gc): a node goes back to its pool when the last heap word or holder drops its reference, after a grace period for the retired ones"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_MTX"
+native = []
+kind = "dropped"
+reason = "guarded the gone node gc list (art_gc)"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_TASK"
+native = []
+kind = "dropped"
+reason = "art_gc's systqmp task: the SMR thread runs the deferred release instead"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_HEAP_4_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_HEAP_8_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::heap_slot"
+native = ["ArtHeap::words"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_to_table"
+native = ["RootRef::table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_is_node"
+native = ["entry_node", "sys/hal/smr.rs::Tag"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_to_node"
+native = ["entry_node", "sys/hal/smr.rs::Tag"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_to_heap"
+native = ["sys/hal/smr.rs::SmrTaggedWord::load"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_node_to_heap_entry"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_to_heap_entry"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_foreach"
+native = []
+kind = "dropped"
+reason = "ART_FOREACH's expansion: the kernel's walkers (rtable_walk, rtable_read) loop over Art::art_iter_open and Art::art_iter_next themselves, taking and letting go of their lock and section around each step"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_boot"
+native = ["ArtPools::art_boot"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_init"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_alloc"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_match"
+native = ["Art::art_match"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_lookup"
+native = ["Art::art_lookup"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_is_empty"
+native = ["Art::art_is_empty"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_insert"
+native = ["Art::art_insert"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_delete"
+native = ["Art::art_delete"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_free"
+native = ["Art::art_table_free"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_descend"
+native = ["Art::art_iter_descend"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_open"
+native = ["Art::art_iter_open"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_next"
+native = ["Art::art_iter_next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_close"
+native = ["Art::art_iter_close"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_get"
+native = ["Art::art_table_get"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_put"
+native = ["Art::art_table_put"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_gc"
+native = []
+kind = "dropped"
+reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a table and its heap back after a grace period, which is what this task's smr_barrier then pool_put did"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_gc"
+native = []
+kind = "dropped"
+reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a node back after a grace period, which is what this task's smr_barrier then pool_put did"
+
+[[module]]
 rust = "sys/kernel/net/netisr.rs"
 crate = "kernel"
 lz = ["sys/net/netisr.rs"]

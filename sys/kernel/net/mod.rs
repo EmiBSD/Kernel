@@ -20,6 +20,7 @@
 //! The network stack (N6): the mbuf and its tags (N6.1), then the sockets, the interfaces,
 //! the routing and the protocols as they move from `bsd`.
 
+pub mod art;
 pub mod domain;
 pub mod file;
 pub mod if_;
