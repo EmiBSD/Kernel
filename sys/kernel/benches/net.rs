@@ -20,8 +20,10 @@
 //! Host microbenchmarks of the network stack's runtime in `hal` (decision 43 with U10, N6.0):
 //! the net lock, the pool items, the byte views of the protocol headers and the owned lists the network
 //! slices (N6.1-N6.7) build on, over the kernel's host doubles (`kernel::testutil`, feature
-//! `doubles`) and a recycling pool backend (vm.rs's: the doubles' pool hands out a fresh page
-//! per item). `sys/benches/net.rs` (N6.0's first commit to its last) timed the net lock's and
+//! `doubles`), a recycling pool backend (vm.rs's: the doubles' pool hands out a fresh page
+//! per item) and, since N6.3b2, a recycling `malloc(9)` by size class (the doubles' takes
+//! fresh zeroed pages per block: the routing rows' addresses would time the host's
+//! allocator). `sys/benches/net.rs` (N6.0's first commit to its last) timed the net lock's and
 //! `smr(9)`'s rows on LZ's shape by the same names; their numbers are in N6.0's commits. Never part of a kernel image; it measures and changes nothing.
 //!
 //! `cargo bench -p kernel --features doubles --bench net` (release: the `bench` profile) or
@@ -103,6 +105,26 @@
 //!     interfaces of 2 `AF_INET` addresses each), under the net lock's write witness.
 //!   - `if_enqueue_ifq.mq`: `if_enqueue_ifq` on an interface of 4 send queues, the flow id
 //!     picking the third, whose start the driver runs and empties at once.
+//! - The routing rows (N6.3b2, decision 43 with U10), over a table of four IPv4 routes on one
+//!   listed interface (`10.0.2.15/24`): the connected `10.0.2.0/24`, `10.1.0.0/24` and
+//!   `10.2.0.0/24` through `10.0.2.2`, and the default route through `10.0.2.2` (the "before"
+//!   rows build the same table with LZ's functions); every lookup under the read witness of the
+//!   net lock where the C holds it:
+//!   - `rtable.match.4`: `rtable_match` of `10.2.0.77` (no source), the route's handle dropped
+//!     (`rtfree`).
+//!   - `rtable.lookup`: `rtable_lookup` of `10.1.0.0/24` exactly (`RTP_ANY`), its handle dropped.
+//!   - `rtalloc.cached`: `Route::mpath4` of `10.2.0.77` on a cache that holds its route
+//!     (`route_mpath`'s hit: `rtisvalid`, the generation, the destination compared).
+//!   - `rt_hash.mpath`: `rt_hash` of `10.2.0.0/24` (made `RTF_MPATH` for the row) with a source.
+//!   - `rtrequest.add.delete`: `rtrequest(RTM_ADD)` of `10.9.0.0/24` through `10.0.2.2` and
+//!     `rtrequest_delete` of it, under the write witness, beside a `10.9.1.0/24` that stays (so
+//!     a delete frees the node and not the ART's tables, which LZ's side would leave to a gc
+//!     task no thread runs there); the releases the deletes defer run every 64 ops, untimed
+//!     (the grace periods of a CPU alone, as `smr.defer`'s rounds).
+//!   - `route.ref.unref` and `route.isvalid`, the attribution rows of the five: a counted
+//!     handle taken from a lent route and dropped (`PoolArc::try_from_ref`, the C's `rtref`
+//!     and `rtfree`), and `rtisvalid` of the gateway route `10.2.0.0/24` (its next hop read
+//!     through `rt_gwroute`'s cell).
 
 #![forbid(unsafe_code)]
 
@@ -302,6 +324,61 @@ impl PoolBackend for BenchPools {
     }
 }
 
+/// The smallest and the largest size class of [`BenchMalloc`] (`malloc(9)`'s buckets: 16
+/// bytes to 64 KiB, by powers of two).
+const MALLOC_MIN: usize = 16;
+/// See [`MALLOC_MIN`].
+const MALLOC_CLASSES: usize = 13;
+
+/// A `malloc(9)` double that recycles its blocks, by size class (`kmembuckets`): the
+/// doubles' `malloc` takes fresh zeroed pages for every block and never reuses one, which an
+/// op that allocates (the routing rows' addresses) would time instead of the code.
+/// Registered before the doubles; blocks above the largest class are fresh host memory.
+struct BenchMalloc {
+    classes: [FreeList; MALLOC_CLASSES],
+}
+
+/// The size class of a block of `size` bytes, and its size.
+fn malloc_class(size: usize) -> Option<(usize, usize)> {
+    let sz = size.max(MALLOC_MIN).next_power_of_two();
+    let i = (sz.trailing_zeros() - MALLOC_MIN.trailing_zeros()) as usize;
+    (i < MALLOC_CLASSES).then_some((i, sz))
+}
+
+impl hal::malloc::Malloc for BenchMalloc {
+    fn malloc(&self, size: usize, _ty: i32, _flags: i32) -> Option<(NonNull<u8>, usize)> {
+        match malloc_class(size) {
+            Some((i, sz)) => Some((self.classes[i].get()?, sz)),
+            None => Some((NonNull::from(fresh(size)).cast::<u8>(), size)),
+        }
+    }
+
+    fn free(&self, ptr: NonNull<u8>, _ty: i32, size: usize) {
+        if let Some((i, _)) = malloc_class(size) {
+            self.classes[i].put(ptr);
+        }
+    }
+}
+
+/// The one [`BenchMalloc`].
+static BENCH_MALLOC: BenchMalloc = BenchMalloc {
+    classes: [
+        FreeList::new(16, None),
+        FreeList::new(32, None),
+        FreeList::new(64, None),
+        FreeList::new(128, None),
+        FreeList::new(256, None),
+        FreeList::new(512, None),
+        FreeList::new(1024, None),
+        FreeList::new(2048, None),
+        FreeList::new(4096, None),
+        FreeList::new(8192, None),
+        FreeList::new(16384, None),
+        FreeList::new(32768, None),
+        FreeList::new(65536, None),
+    ],
+};
+
 /// The page source of `pool.get_put.sourced`: host pages, counted (the mbuf clusters'
 /// `m_pool_allocator` charges each against its limit).
 struct BenchSource {
@@ -465,6 +542,7 @@ fn main() {
         .filter(|a| a != "--bench")
         .collect();
     let _ = hal::bridges::register_pool_backend(&BENCH_POOLS);
+    let _ = hal::bridges::register_malloc(&BENCH_MALLOC);
     testutil::install();
 
     let names = [
@@ -487,6 +565,7 @@ fn main() {
         .chain(MBUF_ROWS.iter())
         .chain(SOCKET_ROWS.iter())
         .chain(IF_ROWS.iter())
+        .chain(ROUTE_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -752,6 +831,7 @@ fn main() {
     mbuf_rows(&wanted, &report);
     socket_rows(&wanted, &report);
     if_rows(&wanted, &report);
+    route_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -1547,5 +1627,367 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
     }
     // The packets back to their pool while its pages are still installed.
     STASH.with(|s| s.borrow_mut().clear());
+}
+
+/// The routing rows (N6.3b2, decision 43 with U10), the same ops as the "before" rows on
+/// LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over the same table).
+const ROUTE_ROWS: [&str; 7] = [
+    "rtable.match.4",
+    "rtable.lookup",
+    "rtalloc.cached",
+    "rt_hash.mpath",
+    "rtrequest.add.delete",
+    "route.ref.unref",
+    "route.isvalid",
+];
+
+/// The internet protocols of the routing rows: multipath on (the C's `net.inet.ip.multipath`
+/// set, which `rt_hash` reads), the route cache's hits and misses counted (the C's
+/// `ipstat_inc(ips_rtcachehit)`, a counter per op as LZ's).
+struct BenchInet {
+    /// `ips_rtcachehit` and `ips_rtcachemiss`.
+    rtcache: [AtomicU64; 2],
+}
+
+impl kernel::net::if_::Inet for BenchInet {
+    fn arpintr(&self) {}
+    fn ipintr(&self) {}
+    fn ip6intr(&self) {}
+    fn tcp_input_mlist(
+        &self,
+        _ml: &mut kernel::net::mbuf::MbufList,
+        _af: hal::sys::types::SaFamily,
+    ) {
+    }
+    fn ipv4_input(&self) -> kernel::net::if_::ProtoFn {
+        kernel::net::if_::test_proto_count
+    }
+    fn ipv6_input(&self) -> kernel::net::if_::ProtoFn {
+        kernel::net::if_::test_proto_count
+    }
+    fn tcpstat_lro(&self, _hw: bool) {}
+    fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn rti_delete(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn revarp_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn in_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn in6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
+    fn in6_ifattach(
+        &self,
+        _ifp: &'static kernel::net::if_var::Ifnet,
+    ) -> Result<(), hal::sys::errno::Errno> {
+        Ok(())
+    }
+    fn in_ioctl(
+        &self,
+        _cmd: u64,
+        _data: &mut [u8],
+        _ifp: &'static kernel::net::if_var::Ifnet,
+        _privileged: bool,
+    ) -> Result<(), hal::sys::errno::Errno> {
+        Err(hal::sys::errno::Errno::EOPNOTSUPP)
+    }
+    fn ip6_forwarding(&self) -> bool {
+        false
+    }
+    fn in6_purge_linklocal(&self, _ifp: &'static kernel::net::if_var::Ifnet) -> bool {
+        false
+    }
+    fn ip_multipath(&self) -> bool {
+        true
+    }
+    fn ip6_multipath(&self) -> bool {
+        true
+    }
+    fn ipstat_rtcache(&self, hit: bool) {
+        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
+    }
+    fn ip6stat_rtcache(&self, hit: bool) {
+        self.ipstat_rtcache(hit);
+    }
+}
+
+/// The one [`BenchInet`].
+static BENCH_INET: BenchInet = BenchInet {
+    rtcache: [AtomicU64::new(0), AtomicU64::new(0)],
+};
+
+/// A `sockaddr_in` of `a`.
+fn sin(a: [u8; 4]) -> [u8; 16] {
+    let mut s = [0u8; 16];
+    s[0] = 16;
+    s[1] = hal::sys::socket::AF_INET;
+    s[4..8].copy_from_slice(&a);
+    s
+}
+
+/// The view of a socket address the rows built.
+fn sav(b: &[u8]) -> kernel::net::proto::SockaddrView<'_> {
+    need(kernel::net::proto::SockaddrView::new(b), "a socket address")
+}
+
+/// The routing rows' requests: `dst`/`mask` through `gw` on `ifa` (`route add`'s).
+fn route_info<'a>(
+    dst: &'a [u8],
+    mask: &'a [u8],
+    gw: &'a [u8],
+    ifa: &'static kernel::net::if_var::Ifaddr,
+) -> kernel::net::route::RtAddrinfo<'a> {
+    use hal::sys::net_route::{
+        RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP,
+    };
+    let mut info = kernel::net::route::RtAddrinfo::new();
+    info.rti_info[RTAX_DST] = Some(sav(dst));
+    info.rti_info[RTAX_NETMASK] = Some(sav(mask));
+    info.rti_info[RTAX_GATEWAY] = Some(sav(gw));
+    info.rti_ifa = Some(ifa);
+    info.rti_flags = RTF_GATEWAY | RTF_STATIC | RTF_UP;
+    info
+}
+
+fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::net_route::{RTF_CONNECTED, RTF_MPATH, RTM_ADD, RTP_ANY, RTP_STATIC};
+    use kernel::net::if_::{if_alloc_sadl, if_attach, if_test_reset, ifa_add, test_ifnet_fresh};
+    use kernel::net::if_var::Ifaddr;
+    use kernel::net::route::{
+        Route, route_init, rt_hash, rt_ifa_add, rtlabel_test_reset, rtrequest, rtrequest_delete,
+    };
+    use kernel::net::rtable::{
+        RtDom, rtable_init_doms, rtable_lookup, rtable_match, rtable_test_reset,
+    };
+
+    if !ROUTE_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    if kernel::net::if_::register_inet(&BENCH_INET).is_err() {
+        eprintln!("net: the internet protocols were registered already");
+        std::process::exit(1);
+    }
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    if_test_reset();
+    rtable_test_reset();
+    rtlabel_test_reset();
+    route_init();
+    rtable_init_doms(&[
+        RtDom {
+            family: hal::sys::socket::AF_INET,
+            rtoffset: 4,
+            maxplen: 32,
+            sasize: 16,
+        },
+        RtDom {
+            family: hal::sys::socket::AF_INET6,
+            rtoffset: 8,
+            maxplen: 128,
+            sasize: 28,
+        },
+    ]);
+
+    // One listed interface with 10.0.2.15/24, its link-level address (the connected route's
+    // gateway).
+    let ifp = test_ifnet_fresh(b"rtb0", &BENCH_DRIVER);
+    ifp.if_flags
+        .set(ifp.if_flags.get() | hal::sys::net_if::IFF_UP | hal::sys::net_if::IFF_BROADCAST);
+    if_alloc_sadl(ifp);
+    if_attach(ifp);
+    let token = need(hal::link::SaToken::take(), "the SaToken");
+    let cell = |a: [u8; 4]| -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
+        let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
+        sa.sa_len = 16;
+        sa.sa_family = hal::sys::socket::AF_INET;
+        sa.sa_data[2..6].copy_from_slice(&a);
+        Box::leak(Box::new(core::cell::Cell::new(sa)))
+    };
+    let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
+    ifa.ifa_refcnt.init();
+    ifa.ifa_addr.set(token, Some(cell([10, 0, 2, 15])));
+    ifa.ifa_netmask.set(token, Some(cell([255, 255, 255, 0])));
+    ifa.ifa_ifp.set(Some(ifp));
+    ifa_add(ifp, ifa);
+
+    let mask24 = sin([255, 255, 255, 0]);
+    let mask0 = sin([0; 4]);
+    let gw = sin([10, 0, 2, 2]);
+    let net1 = sin([10, 1, 0, 0]);
+    let net2 = sin([10, 2, 0, 0]);
+    let net9 = sin([10, 9, 0, 0]);
+    let any = sin([0; 4]);
+    let host = sin([10, 2, 0, 77]);
+    let host_addr = [10, 2, 0, 77];
+    {
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock's witness");
+        if rt_ifa_add(ifa, RTF_CONNECTED, sav(&sin([10, 0, 2, 0])), 0, &net).is_err() {
+            eprintln!("net: the connected route");
+            std::process::exit(1);
+        }
+        for dst in [&net1, &net2] {
+            let mut info = route_info(dst, &mask24, &gw, ifa);
+            if rtrequest(RTM_ADD, &mut info, 0, None, 0, &net).is_err() {
+                eprintln!("net: a route through 10.0.2.2");
+                std::process::exit(1);
+            }
+        }
+        let mut info = route_info(&any, &mask0, &gw, ifa);
+        if rtrequest(RTM_ADD, &mut info, 0, None, 0, &net).is_err() {
+            eprintln!("net: the default route");
+            std::process::exit(1);
+        }
+    }
+
+    let r_lock = NETLOCK.read();
+    let held = need(NetHeld::of(&r_lock), "the net lock's read witness");
+    let found = need(rtable_match(0, sav(&host), None), "the route of 10.2.0.77");
+    if found.rt_plen() != 24 || !found.dest_view().bytes().starts_with(&net2[..8]) {
+        eprintln!("net: 10.2.0.77 matched another route");
+        std::process::exit(1);
+    }
+    placement("rtentry 10.2.0.0/24", &*found);
+    if wanted(ROUTE_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(rtable_match(0, black_box(sav(&host)), None)));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[0], r);
+    }
+    if wanted(ROUTE_ROWS[1]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(rtable_lookup(
+                    0,
+                    black_box(sav(&net1)),
+                    Some(sav(&mask24)),
+                    None,
+                    RTP_ANY,
+                )));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[1], r);
+    }
+    if wanted(ROUTE_ROWS[2]) {
+        let mut ro = Route::new();
+        if ro.mpath4(host_addr, None, 0, &held).is_none() {
+            eprintln!("net: no route to 10.2.0.77");
+            std::process::exit(1);
+        }
+        let hits = BENCH_INET.rtcache[0].load(Ordering::Relaxed);
+        if ro.mpath4(host_addr, None, 0, &held).is_none()
+            || BENCH_INET.rtcache[0].load(Ordering::Relaxed) != hits + 1
+        {
+            eprintln!("net: the cache missed 10.2.0.77");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(ro.mpath4(black_box(host_addr), None, 0, &held));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[2], r);
+    }
+    if wanted(ROUTE_ROWS[3]) {
+        found.rt_flags.set(found.rt_flags.get() | RTF_MPATH);
+        let src = [u32::from_ne_bytes([10, 0, 2, 15])];
+        if rt_hash(&found, sav(&host), Some(&src)).is_none() {
+            eprintln!("net: rt_hash of a multipath route answered none");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(rt_hash(
+                    &found,
+                    black_box(sav(&host)),
+                    Some(black_box(&src)),
+                ));
+            }
+            t.elapsed()
+        });
+        found.rt_flags.set(found.rt_flags.get() & !RTF_MPATH);
+        report(ROUTE_ROWS[3], r);
+    }
+    if wanted(ROUTE_ROWS[5]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(hal::pool::PoolArc::try_from_ref(black_box(
+                    &*found,
+                ))));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[5], r);
+    }
+    if wanted(ROUTE_ROWS[6]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(kernel::net::route::rtisvalid(Some(black_box(&*found))));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[6], r);
+    }
+    drop(held);
+    drop(r_lock);
+    if wanted(ROUTE_ROWS[4]) {
+        // A sibling that stays: a delete frees the node, never the ART's tables.
+        {
+            let net91 = sin([10, 9, 1, 0]);
+            let w = NETLOCK.write();
+            let net = need(NetHeld::of(&w), "the net lock's witness");
+            let mut info = route_info(&net91, &mask24, &gw, ifa);
+            if rtrequest(RTM_ADD, &mut info, 0, None, 0, &net).is_err() {
+                eprintln!("net: the sibling 10.9.1.0/24");
+                std::process::exit(1);
+            }
+        }
+        // Fewer ops: each one allocates and frees a route, its addresses and its node.
+        const ADD_OPS: usize = 64 * 160;
+        let r = measure(ADD_OPS, || {
+            let mut spent = Duration::ZERO;
+            let mut done = 0;
+            while done < ADD_OPS {
+                let w = NETLOCK.write();
+                let net = need(NetHeld::of(&w), "the net lock's witness");
+                let t = Instant::now();
+                for _ in 0..64 {
+                    let mut info = route_info(&net9, &mask24, &gw, ifa);
+                    if rtrequest(RTM_ADD, &mut info, 0, None, 0, &net).is_err() {
+                        eprintln!("net: RTM_ADD of 10.9.0.0/24");
+                        std::process::exit(1);
+                    }
+                    let mut del = route_info(&net9, &mask24, &gw, ifa);
+                    del.rti_info[hal::sys::net_route::RTAX_GATEWAY] = None;
+                    if rtrequest_delete(&mut del, RTP_STATIC, ifp, None, 0, &net).is_err() {
+                        eprintln!("net: the delete of 10.9.0.0/24");
+                        std::process::exit(1);
+                    }
+                }
+                spent += t.elapsed();
+                drop(net);
+                drop(w);
+                done += 64;
+                // The deferred releases, untimed.
+                loop {
+                    smr::idle();
+                    if smr::collect().run(&NoOtherCpu) == 0 {
+                        break;
+                    }
+                }
+            }
+            spent
+        });
+        report(ROUTE_ROWS[4], r);
+    }
+    drop(found);
 }
 /* </CODE> */

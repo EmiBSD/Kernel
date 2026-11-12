@@ -132,12 +132,12 @@
 //! and `if_put`, one SMR section and two atomics each way (the C's); `if_input_process`, one
 //! shared net lock pair around its batch (the C's).
 //!
-//! What `if.c` asks of the subsystems that have not moved goes through three bridges
+//! What `if.c` asks of the subsystems that have not moved goes through two bridges
 //! (bridges.toml), registered by `bsd` at boot, each answering as the C compiled without the
 //! subsystem before registration: [`Inet`] (netinet, netinet6: the protocols' software
-//! interrupts and `tcp_input_mlist`), [`Routing`] (`route.c`, `rtable.c`, `rtsock.c`) and
-//! [`Link`] (bpf(4) and `if_ethersubr.c`); pf's legs are the `Pf` bridge's
-//! (`kernel::net::pf_hooks`).
+//! interrupts and `tcp_input_mlist`) and [`Link`] (bpf(4) and `if_ethersubr.c`); pf's legs
+//! are the `Pf` bridge's (`kernel::net::pf_hooks`). The routing code is the kernel's
+//! (`kernel::net::{route, rtable, rtsock}`, N6.3b).
 //!
 //! Lock and spl transitions of the operations against the C (if.c's line numbers at the
 //! pin), each the C's count:
@@ -191,9 +191,6 @@
 //! - `if_slowtimo`'s first run follows `if_idxmap_insert` in `if_attachsetup` (the C runs it
 //!   just before): the timer finds the interface by its index (D-N6.3a-7). Its first run
 //!   arms it one second later in both orders.
-//! - Before routing registers (the `Routing` leg) there is one routing domain, 0:
-//!   `if_createrdomain` answers `EINVAL` and `if_setrdomain` `ESRCH` for any other; a route
-//!   label is none (`SIOCSIFRTLABEL` sets nothing, `SIOCGIFRTLABEL` answers `ENOENT`).
 //! - `INET6` is the `Inet` bridge's: configured once it is registered (GENERIC's option,
 //!   `bsd`'s default feature). Before that `SIOCIFAFATTACH`/`DETACH` of `AF_INET6` answer
 //!   `EAFNOSUPPORT` and `SIOCSIFXFLAGS` skips the IPv6 flags, as the C without `INET6`.
@@ -319,6 +316,7 @@ use hal::sys::net_if::{
     IfSffpage, IfTimeval, Ifconf, IfgAttrib, IfgReq, Ifgroupreq, Ifreq, SDL_DATA_OFFSET,
     SockaddrDl,
 };
+use hal::sys::net_route::{RTF_BLACKHOLE, RTF_REJECT, RTP_ANY};
 use hal::sys::socket::{AF_INET, AF_INET6, AF_LINK, AF_MAX, RT_TABLEID_MAX, Sockaddr};
 use hal::sys::sockio::{
     SIOCADDMULTI, SIOCAIFADDR, SIOCAIFGROUP, SIOCDELLABEL, SIOCDELMULTI, SIOCDIFADDR, SIOCDIFGROUP,
@@ -355,7 +353,10 @@ use crate::net::mbuf::{
     ml_purge,
 };
 use crate::net::pf_hooks::pf;
+use crate::net::proto::SockaddrView;
+use crate::net::rtable::{self, rtable_l2, rtable_loindex};
 use crate::net::socket::Socket;
+use crate::net::{route, rtsock};
 use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread, suser};
 use crate::task::TaskChain;
@@ -478,44 +479,6 @@ pub trait Inet: Sync + 'static {
     fn ip6stat_rtcache(&self, _hit: bool) {}
 }
 
-/// What the kernel's interface layer asks of the routing code (`route.c`, `rtable.c`,
-/// `rtsock.c`, `bsd`'s until N6.3b): a bridge (bridges.toml's `Routing` row). Before
-/// registration every leg does nothing.
-pub trait Routing: Sync + 'static {
-    /// `rtm_ifannounce(ifp, what)`: the routing socket's `RTM_IFANNOUNCE`.
-    fn rtm_ifannounce(&self, ifp: &'static Ifnet, what: u16);
-    /// `rtm_ifchg(ifp)`: the routing socket's `RTM_IFINFO`.
-    fn rtm_ifchg(&self, ifp: &'static Ifnet);
-    /// `rt_if_track(ifp)`: the routes over `ifp` follow its link state.
-    fn rt_if_track(&self, ifp: &'static Ifnet);
-    /// `rtable_l2(rtableid)`: the routing domain of a table.
-    fn rtable_l2(&self, rtableid: u32) -> u32;
-    /// `rtable_loindex(rdomain)`: the index of the domain's loopback.
-    fn rtable_loindex(&self, rdomain: u32) -> u32;
-    /// `rtable_exists(rtableid)`.
-    fn rtable_exists(&self, rtableid: u32) -> bool;
-    /// `rtable_add(id)`.
-    fn rtable_add(&self, id: u32) -> Result<(), Errno>;
-    /// `rtable_empty(id)`.
-    fn rtable_empty(&self, id: u32) -> bool;
-    /// `rtable_l2set(rtableid, rdomain, loifidx)`.
-    fn rtable_l2set(&self, rtableid: u32, rdomain: u32, loifidx: u32);
-    /// `ifafree(ifa)`: one reference to an address dropped (freed with the last).
-    fn ifafree(&self, ifa: &'static Ifaddr);
-    /// `if_group_egress_build`'s walk: the interface index of every default route of `af`
-    /// in table 0 (`rtable_lookup(0, any, any, NULL, RTP_ANY)`, then `rtable_iterate`) that
-    /// is neither `RTF_REJECT` nor `RTF_BLACKHOLE`, in the table's order.
-    fn default_routes(&self, af: SaFamily, f: &mut dyn FnMut(u32));
-    /// `rtlabel_id2name(id, buf, len)`: the route label `id` names, `strlcpy`d into `buf`;
-    /// `false` for none.
-    fn rtlabel_id2name(&self, id: u16, buf: &mut [u8]) -> bool;
-    /// `rtlabel_name2id(name)`: the id of the label `name` (NUL-terminated), a reference to
-    /// it taken (0: no label).
-    fn rtlabel_name2id(&self, name: &[u8]) -> u16;
-    /// `rtlabel_unref(id)`: a reference to the label `id` dropped (0 is none).
-    fn rtlabel_unref(&self, id: u16);
-}
-
 /// What the kernel's interface layer asks of the link layers (bpf(4) and `if_ethersubr.c`,
 /// `bsd`'s until N6.3c): a bridge (bridges.toml's `Link` row). Before registration every
 /// leg does nothing: the C without `NBPFILTER`.
@@ -536,8 +499,6 @@ pub trait Link: Sync + 'static {
 
 /// The internet protocols' legs, once registered.
 static INET: OnceStatic<&'static dyn Inet> = OnceStatic::new();
-/// The routing code's legs, once registered.
-static ROUTING: OnceStatic<&'static dyn Routing> = OnceStatic::new();
 /// The link layers' legs, once registered.
 static LINK: OnceStatic<&'static dyn Link> = OnceStatic::new();
 
@@ -545,13 +506,6 @@ static LINK: OnceStatic<&'static dyn Link> = OnceStatic::new();
 pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::AlreadyRegistered> {
     INET.set(imp)
         .map_err(|_| hal::bridges::AlreadyRegistered("Inet"))
-}
-
-/// Registers the routing code's legs, once.
-pub fn register_routing(imp: &'static dyn Routing) -> Result<(), hal::bridges::AlreadyRegistered> {
-    ROUTING
-        .set(imp)
-        .map_err(|_| hal::bridges::AlreadyRegistered("Routing"))
 }
 
 /// Registers the link layers' legs, once.
@@ -564,12 +518,6 @@ pub fn register_link(imp: &'static dyn Link) -> Result<(), hal::bridges::Already
 #[inline]
 pub(crate) fn inet() -> Option<&'static dyn Inet> {
     INET.get().copied()
-}
-
-/// The routing code's legs, `None` before registration.
-#[inline]
-pub(crate) fn routing() -> Option<&'static dyn Routing> {
-    ROUTING.get().copied()
 }
 
 /// The link layers' legs, `None` before registration.
@@ -1587,24 +1535,23 @@ fn if_watchdog_task(arg: *mut core::ffi::c_void) {
 
 /// `if_linkstate_task`: `if_linkstate` under the net and kernel locks.
 fn if_linkstate_task(arg: *mut core::ffi::c_void) {
-    let _net = NETLOCK.write();
+    let net = NETLOCK.write();
     hal::klock::kernel_lock();
 
     if let Some(ifp) = IfRef::get(timer_ifidx(arg)) {
-        if_linkstate(ifp.ifp());
+        if_linkstate(ifp.ifp(), &net_held(&net));
     }
 
     hal::klock::kernel_unlock();
 }
 
 /// `if_linkstate(ifp)`: the routing socket and the routes told of the link state (not after a
-/// panic), then the link state hooks run. The caller holds the net lock.
-pub fn if_linkstate(ifp: &'static Ifnet) {
-    if !hal::cpu::past_caring()
-        && let Some(r) = routing()
-    {
-        r.rtm_ifchg(ifp);
-        r.rt_if_track(ifp);
+/// panic), then the link state hooks run, under the net lock `net`.
+pub fn if_linkstate(ifp: &'static Ifnet, net: &NetHeld<'_>) {
+    if !hal::cpu::past_caring() {
+        rtsock::rtm_ifchg(ifp);
+        // The C ignores rt_if_track's result here.
+        let _ = route::rt_if_track(ifp, net);
     }
 
     if_hooks_run(ifp, &ifp.rt().if_linkstatehooks);
@@ -1729,16 +1676,6 @@ fn net_assert_locked_exclusive() {
     kassert!(hal::netlock::write_held());
 }
 
-/// `rtable_l2(rtableid)`; 0 (the one domain) before routing registers.
-fn rtable_l2(rtableid: u32) -> u32 {
-    routing().map_or(0, |r| r.rtable_l2(rtableid))
-}
-
-/// `rtable_loindex(rdomain)`; 0 (no loopback) before routing registers.
-fn rtable_loindex(rdomain: u32) -> u32 {
-    routing().map_or(0, |r| r.rtable_loindex(rdomain))
-}
-
 /// The bytes of a NUL-terminated name up to its NUL (the C's string), at most all of them.
 fn cstr(s: &[u8]) -> &[u8] {
     let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
@@ -1799,9 +1736,7 @@ fn if_attachsetup(ifp: &'static Ifnet) {
     if_attach_timers(ifp);
 
     // Announce the interface.
-    if let Some(r) = routing() {
-        r.rtm_ifannounce(ifp, IFAN_ARRIVAL);
-    }
+    rtsock::rtm_ifannounce(ifp, IFAN_ARRIVAL);
 }
 
 /// `if_alloc_sadl(ifp)`: the interface's link-level name, made after `if_addrlen` is set
@@ -2231,9 +2166,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
             while let Some(ifa) = ifp.if_addrlist.first() {
                 ifa_del(ifp, ifa);
                 ifa.ifa_ifp.set(None);
-                if let Some(r) = routing() {
-                    r.ifafree(ifa);
-                }
+                route::ifafree(ifa);
             }
         }
     }
@@ -2251,9 +2184,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
     }
 
     // Announce that the interface is gone.
-    if let Some(r) = routing() {
-        r.rtm_ifannounce(ifp, IFAN_DEPARTURE);
-    }
+    rtsock::rtm_ifannounce(ifp, IFAN_DEPARTURE);
 
     if ifp.if_counters.get().is_some() {
         if_counters_free(ifp);
@@ -2326,13 +2257,13 @@ pub fn if_clone_create(name: &[u8], rdomain: i32) -> Result<(), Errno> {
         return Ok(());
     };
 
-    {
-        let _net = NETLOCK.write();
+    // Detached: if_setrdomain calls the driver (SIOCSIFRDOMAIN), which may let the lock go.
+    net_locked(|| {
         let _ = if_addgroup(ifp, ifc.name());
         if rdomain != 0 {
             let _ = if_setrdomain(ifp, rdomain);
         }
-    }
+    });
     if_put(Some(ifp));
 
     Ok(())
@@ -2361,10 +2292,10 @@ pub fn if_clone_destroy(name: &[u8]) -> Result<(), Errno> {
     };
 
     {
-        let _net = NETLOCK.write();
+        let w = NETLOCK.write();
         if ifp.if_flags.get() & IFF_UP != 0 {
             let s = hal::intr::splraise(IPL_NET);
-            if_down(ifp);
+            if_down(ifp, &net_held(&w));
             drop(s);
         }
     }
@@ -2603,7 +2534,7 @@ pub fn if_downall() {
         let mut next = IFNETLIST.first();
         while let Some(ifp) = next {
             if ifp.if_flags.get() & IFF_UP != 0 {
-                if_down(ifp);
+                hal::netlock::lend_detached(|net| if_down(ifp, net));
                 let _ = if_ioctl_flags(ifp, SIOCSIFFLAGS, ifp.if_flags.get());
             }
             next = List::<IfnetList>::next(ifp);
@@ -2623,9 +2554,9 @@ fn if_ioctl_flags(ifp: &'static Ifnet, cmd: u64, flags: i32) -> Result<(), Errno
     )
 }
 
-/// `if_down(ifp)`: an interface marked down, its send queue emptied, the protocols told
-/// (under the net lock).
-pub fn if_down(ifp: &'static Ifnet) {
+/// `if_down(ifp)`: an interface marked down, its send queue emptied, the protocols told,
+/// under the net lock `net`.
+pub fn if_down(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     net_assert_locked();
 
     ifp.if_flags.set(ifp.if_flags.get() & !IFF_UP);
@@ -2633,12 +2564,13 @@ pub fn if_down(ifp: &'static Ifnet) {
     ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
     let _ = ifq_purge(ifp.if_snd());
 
-    if_linkstate(ifp);
+    if_linkstate(ifp, net);
 }
 
-/// `if_up(ifp)`: an interface marked up and the protocols told; the domain's loopback gets
-/// its `::1` (userland expects the kernel to set it on the default lo(4)).
-pub fn if_up(ifp: &'static Ifnet) {
+/// `if_up(ifp)`: an interface marked up and the protocols told, under the net lock `net`; the
+/// domain's loopback gets its `::1` (userland expects the kernel to set it on the default
+/// lo(4)).
+pub fn if_up(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     net_assert_locked();
 
     ifp.if_flags.set(ifp.if_flags.get() | IFF_UP);
@@ -2652,7 +2584,7 @@ pub fn if_up(ifp: &'static Ifnet) {
         let _ = i.in6_ifattach(ifp);
     }
 
-    if_linkstate(ifp);
+    if_linkstate(ifp, net);
 }
 
 /// `if_unit(name)`: the interface named `name`, a reference taken (the caller `if_put`s it).
@@ -2709,11 +2641,8 @@ pub fn if_sadl_set_lladdr(ifp: &Ifnet, lladdr: &[u8]) {
 /// `lo<rdomain>` (`ifp` itself when that is the interface being moved); `EEXIST` for a
 /// table that has routes.
 pub fn if_createrdomain(rdomain: i32, ifp: &Ifnet) -> Result<(), Errno> {
-    let Some(r) = routing() else {
-        return Err(Errno::EINVAL);
-    };
-    r.rtable_add(rdomain as u32)?;
-    if !r.rtable_empty(rdomain as u32) {
+    rtable::rtable_add(rdomain as u32)?;
+    if !rtable::rtable_empty(rdomain as u32) {
         return Err(Errno::EEXIST);
     }
 
@@ -2730,7 +2659,7 @@ pub fn if_createrdomain(rdomain: i32, ifp: &Ifnet) -> Result<(), Errno> {
         return Err(e);
     }
 
-    r.rtable_l2set(rdomain as u32, rdomain as u32, loifp.if_index.get());
+    rtable::rtable_l2set(rdomain as u32, rdomain as u32, loifp.if_index.get());
     loifp.if_rdomain.set(rdomain as u32);
     if_put(Some(loifp));
 
@@ -2776,7 +2705,7 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
         return Err(Errno::EPERM);
     }
 
-    if !routing().map_or(rdomain == 0, |r| r.rtable_exists(rdomain)) {
+    if !rtable::rtable_exists(rdomain) {
         return Err(Errno::ESRCH);
     }
 
@@ -2792,7 +2721,7 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
         // 2. the automagic IPv6 bits are recreated
         if ifp.if_flags.get() & IFF_UP != 0 {
             up = true;
-            if_down(ifp);
+            hal::netlock::lend_detached(|net| if_down(ifp, net));
         }
         if let Some(i) = inet() {
             i.rti_delete(ifp);
@@ -2821,7 +2750,7 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
     // If we took down the IF, bring it back
     if up {
         let s = hal::intr::splraise(IPL_NET);
-        if_up(ifp);
+        hal::netlock::lend_detached(|net| if_up(ifp, net));
         drop(s);
     }
 
@@ -2902,14 +2831,6 @@ fn net_locked<R>(f: impl FnOnce() -> R) -> R {
     let r = f();
     hal::netlock::unlock();
     r
-}
-
-/// `rtm_ifchg(ifp)`: the routing socket told the interface changed (nothing before routing
-/// registers).
-fn rtm_ifchg(ifp: &'static Ifnet) {
-    if let Some(r) = routing() {
-        r.rtm_ifchg(ifp);
-    }
 }
 
 /// `ETHER_IS_MULTICAST(addr)` (`<netinet/if_ether.h>`, `bsd`'s): the group bit of the first
@@ -3056,7 +2977,7 @@ fn ifioctl_req<G: ProcGlue>(
     if (oif_flags != flags || oif_xflags != ifp.if_xflags.get())
         && (oif_flags ^ flags) & IFF_UP == 0
     {
-        rtm_ifchg(ifp);
+        rtsock::rtm_ifchg(ifp);
     }
 
     if (oif_flags ^ flags) & IFF_UP != 0 {
@@ -3128,7 +3049,7 @@ fn ifioctl_ifp<G: ProcGlue>(
             suser(p)?;
             let error = net_locked(|| if_ioctl(ifp, cmd, req_arg(req, cmd)));
             if error.is_ok() {
-                rtm_ifchg(ifp);
+                rtsock::rtm_ifchg(ifp);
             }
             error
         }
@@ -3149,10 +3070,8 @@ fn ifioctl_ifp<G: ProcGlue>(
             let mut ifrtlabelbuf = [0u8; RTLABEL_LEN];
             let uaddr = req_view::<Ifreq>(req)?.ifr_data() as usize;
             UserPtr::<u8>::new(uaddr).copyinstr(&mut ifrtlabelbuf)?;
-            if let Some(r) = routing() {
-                r.rtlabel_unref(ifp.if_rtlabelid.get());
-                ifp.if_rtlabelid.set(r.rtlabel_name2id(&ifrtlabelbuf));
-            }
+            route::rtlabel_unref(ifp.if_rtlabelid.get());
+            ifp.if_rtlabelid.set(route::rtlabel_name2id(&ifrtlabelbuf));
             Ok(())
         }
 
@@ -3231,7 +3150,7 @@ fn ifioctl_ifp<G: ProcGlue>(
                 error
             });
             if error.is_ok() {
-                rtm_ifchg(ifp);
+                rtsock::rtm_ifchg(ifp);
             }
             error
         }
@@ -3377,11 +3296,13 @@ fn if_setflags(
         }
     } else if (oif_flags ^ ifp.if_flags.get()) & IFF_UP != 0 {
         let s = hal::intr::splraise(IPL_NET);
-        if ifp.if_flags.get() & IFF_UP != 0 {
-            if_up(ifp);
-        } else {
-            if_down(ifp);
-        }
+        hal::netlock::lend_detached(|net| {
+            if ifp.if_flags.get() & IFF_UP != 0 {
+                if_up(ifp, net);
+            } else {
+                if_down(ifp, net);
+            }
+        });
         drop(s);
     }
     error
@@ -3458,9 +3379,7 @@ fn ifioctl_get(cmd: u64, req: &mut [u8]) -> Result<(), Errno> {
         SIOCGIFRTLABEL => {
             let rtlabelid = ifp.if_rtlabelid.get();
             let mut ifrtlabelbuf = [0u8; RTLABEL_LEN];
-            if rtlabelid != 0
-                && routing().is_some_and(|r| r.rtlabel_id2name(rtlabelid, &mut ifrtlabelbuf))
-            {
+            if rtlabelid != 0 && route::rtlabel_id2name(rtlabelid, &mut ifrtlabelbuf).is_some() {
                 return UserPtr::<u8>::new(ifr.ifr_data() as usize)
                     .copyoutstr(&ifrtlabelbuf)
                     .map(|_| ());
@@ -3711,26 +3630,15 @@ fn ifconf_rows(
         }
 
         while let Some(ifa) = addr_tmplist.pop_head() {
-            ifafree(ifa);
+            route::ifafree(ifa);
         }
     }
 
     // free:
     while let Some(ifa) = addr_tmplist.pop_head() {
-        ifafree(ifa);
+        route::ifafree(ifa);
     }
     error
-}
-
-/// `ifafree(ifa)`: a reference to an address dropped (the `Routing` leg, which frees it with
-/// the last; before routing registers, only the count).
-fn ifafree(ifa: &'static Ifaddr) {
-    match routing() {
-        Some(r) => r.ifafree(ifa),
-        None => {
-            let _ = ifa.ifa_refcnt.rele();
-        }
-    }
 }
 
 /// `if_getdata(ifp, data)`: the interface's `struct if_data` (`SIOCGIFDATA`, the routing
@@ -4164,13 +4072,22 @@ pub fn if_group_egress_build() -> Result<(), Errno> {
         }
     }
 
-    if let Some(r) = routing() {
-        for af in [AF_INET, AF_INET6] {
-            r.default_routes(af, &mut |ifidx| {
-                if let Some(ifp) = IfRef::get(ifidx) {
-                    let _ = if_addgroup(ifp.ifp(), IFG_EGRESS);
-                }
-            });
+    // The default routes of table 0, IPv4's then IPv6's (a zero address and mask of each).
+    for af in [AF_INET, AF_INET6] {
+        let mut any = [0u8; 28];
+        any[0] = if af == AF_INET { 16 } else { 28 };
+        any[1] = af;
+        let Some(sa) = SockaddrView::new(&any) else {
+            continue;
+        };
+        let mut rt = rtable::rtable_lookup(0, sa, Some(sa), None, RTP_ANY);
+        while let Some(r) = rt {
+            if !r.rt_flags.isset(RTF_REJECT | RTF_BLACKHOLE)
+                && let Some(ifp) = IfRef::get(r.rt_ifidx.get())
+            {
+                let _ = if_addgroup(ifp.ifp(), IFG_EGRESS);
+            }
+            rt = rtable::rtable_iterate(r);
         }
     }
 
@@ -4952,7 +4869,7 @@ pub(crate) mod tests {
             (1, 0)
         );
         assert_eq!(ifpromisc(ifp, false), Ok(()));
-        if_up(ifp);
+        if_up(ifp, &net_held(&_net));
         assert_eq!(ifpromisc(ifp, true), Ok(()));
         assert_eq!(ifpromisc(ifp, true), Ok(()));
         assert_eq!(d.ioctls.load(Ordering::Relaxed), 1);
@@ -4967,7 +4884,7 @@ pub(crate) mod tests {
         assert_eq!(ifp.if_pcount.get(), 1);
         assert_ne!(ifp.if_flags.get() & IFF_PROMISC, 0);
         d.fail.store(false, Ordering::Relaxed);
-        if_down(ifp);
+        if_down(ifp, &net_held(&_net));
         assert_eq!(ifp.if_flags.get() & IFF_UP, 0);
     }
 
@@ -5087,6 +5004,11 @@ pub(crate) mod tests {
         softnet_test_install();
         if_idxmap_test_reset();
         ifnet_test_reset();
+        // The routing tables of table 0 (the requests that make a routing domain).
+        crate::net::rtable::rtable_test_reset();
+        crate::net::route::rtlabel_test_reset();
+        crate::net::route::route_init();
+        crate::net::rtable::rtable_init_doms(&crate::net::route::tests::ROUTE_DOMS);
         (g, p)
     }
 
@@ -5480,10 +5402,12 @@ pub(crate) mod tests {
         assert_eq!(af(SIOCIFAFATTACH, AF_INET6), Err(Errno::EAFNOSUPPORT));
         assert_eq!(af(SIOCIFAFATTACH, AF_LINK), Err(Errno::EAFNOSUPPORT));
 
-        // No routing: one domain, 0, which cannot be made.
+        // Routing domain 1: its table is made, but not its loopback lo1 (no lo(4) cloner
+        // here), so if_createrdomain answers ENXIO, the C's.
         let mut ifr: Ifreq = named(b"tva0");
         ifr.set_ifr_rdomainid(1);
-        assert_eq!(ioctl(p, SIOCSIFRDOMAIN, &mut ifr), Err(Errno::EINVAL));
+        assert_eq!(ioctl(p, SIOCSIFRDOMAIN, &mut ifr), Err(Errno::ENXIO));
+        assert!(crate::net::rtable::rtable_exists(1));
 
         // A request no protocol answers goes to the driver (the UNIX domain's socket has no
         // `pru_control`; the kernel's own request has no socket).

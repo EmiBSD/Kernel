@@ -78,7 +78,7 @@ use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_PASS};
 use crate::net::route::{
-    RTF_DYNAMIC, RTF_GATEWAY, RTF_MODIFIED, Route, Rtentry, route6_mpath, rtfree,
+    RTF_DYNAMIC, RTF_GATEWAY, RTF_MODIFIED, Route, Rtentry, as_static, route6_mpath,
 };
 use crate::netinet::icmp6::{
     ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, ICMP6_DST_UNREACH_BEYONDSCOPE,
@@ -92,10 +92,11 @@ use crate::netinet::tcp::{MAX_TCPOPTLEN, Tcphdr};
 use crate::netinet::udp::Udphdr;
 use crate::netinet6::icmp6::{icmp6_error, icmp6_redirect_output};
 use crate::netinet6::in6::{
-    in6_addr2scopeid, in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed,
+    SockaddrIn6, in6_addr2scopeid, in6_is_addr_multicast, in6_is_addr_unspecified,
+    in6_is_scope_embed, sin6tosa_const,
 };
 use crate::netinet6::in6_proto::IP6_SENDREDIRECTS;
-use crate::netinet6::ip6_output::{ip6_output_ipsec_lookup, ip6_output_ipsec_send};
+use crate::netinet6::ip6_output::{ip6_output_ipsec_lookup, ip6_output_ipsec_send, ro_sin6};
 use crate::netinet6::ip6_var::{
     IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_REDIRECT, Ip6statCounters, ip6stat_inc, mtod_ip6,
     mtod_ip6_store,
@@ -108,7 +109,7 @@ use crate::sys::mbuf::{
     M_BCAST, M_COPYFLAGS, M_DONTWAIT, M_MCAST, MHLEN, MT_DATA, Mbuf, PACKET_TAG_IPSEC_IN_DONE,
     PF_TAG_GENERATED, PF_TAG_REROUTE,
 };
-use crate::sys::socket::{AF_INET6, Sockaddr};
+use crate::sys::socket::AF_INET6;
 
 /// Where `ip6_forward` goes once the packet left its hands: the C's labels.
 enum Exit {
@@ -127,10 +128,10 @@ enum Exit {
 /// If not forwarding, just drop the packet. This could be confusing if ip6_forwarding was
 /// zero but some routing protocol was advancing us as a gateway to somewhere. However, we
 /// must let the routing protocol deal with that. Consumes the packet.
-pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
+pub fn ip6_forward(m: &'static Mbuf, ro: Option<&mut Route>, flags: i32) {
     let mut m = m;
     let mut ip6 = mtod_ip6(m);
-    let iproute = Route::new();
+    let mut iproute = Route::new();
     let mut ro = ro;
     let mut ifp: Option<&'static Ifnet> = None;
     let rtableid = m.m_pkthdr().ph_rtableid.get();
@@ -234,12 +235,12 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
                 }
             }
 
-            let r: &Route = match ro {
+            // The caller's route, or ours (iproute) when it gave none or pf rerouted.
+            let r: &mut Route = match ro.as_deref_mut() {
                 Some(r) => r,
                 None => {
-                    iproute.ro_rt.set(None);
-                    ro = Some(&iproute);
-                    &iproute
+                    iproute.ro_rt = None;
+                    &mut iproute
                 }
             };
             rt = route6_mpath(
@@ -255,7 +256,7 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
                 m_freem(m);
                 break 'reroute Exit::Icmperror;
             };
-            let mut dst: *const Sockaddr = r.ro_dstsa();
+            let mut dst: SockaddrIn6 = ro_sin6(r);
 
             // Scope check: if a packet can't be delivered to its destination for the reason
             // that the destination is beyond the scope of the source address, discard the
@@ -276,16 +277,19 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
             // back to here.
             if let Some(t) = tdb {
                 // Callee frees mbuf
-                error = ip6_output_ipsec_send(t, m, Some(r), orig_rtableid, true);
-                rt = r.ro_rt.get();
+                error = ip6_output_ipsec_send(t, m, Some(&mut *r), orig_rtableid, true);
+                rt = r.rt().map(as_static);
                 if error.is_err() {
                     break 'reroute Exit::Senderr;
                 }
                 break 'reroute Exit::Freecopy;
             }
 
-            if rtv.rt_flags.get() & RTF_GATEWAY != 0 {
-                dst = rtv.rt_gateway.get();
+            if rtv.rt_flags.get() & RTF_GATEWAY != 0
+                && let Some(g) =
+                    rtv.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn6>(g, 0)))
+            {
+                dst = g;
             }
 
             // If we are to forward the packet using the same interface as one we got the
@@ -303,9 +307,7 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
                 && flags & IPV6_REDIRECT == 0
                 && IP6_SENDREDIRECTS.load(Ordering::Relaxed) != 0
             {
-                if i.if_flags.get() & IFF_POINTOPOINT != 0
-                    && nd6_is_addr_neighbor(&r.ro_dstsin6(), i)
-                {
+                if i.if_flags.get() & IFF_POINTOPOINT != 0 && nd6_is_addr_neighbor(&ro_sin6(r), i) {
                     // If the incoming interface is equal to the outgoing one, the link
                     // attached to the interface is point-to-point, and the IPv6 destination
                     // is regarded as on-link on the link, then it will be highly probable
@@ -356,10 +358,8 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
                 // tag as generated to skip over pf_test on rerun
                 pf.set(pf.get() | PF_TAG_GENERATED);
                 flags |= IPV6_REDIRECT;
-                if ptr::eq(r, &iproute) {
-                    rtfree(iproute.ro_rt.get());
-                    iproute.ro_rt.set(None);
-                }
+                // iproute's route given back (rtfree), the caller's left to the caller.
+                iproute.ro_rt = None;
                 ro = None;
                 if_put(ifp);
                 ifp = None;
@@ -377,9 +377,9 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
             }
 
             let mut mp = Some(m);
-            // SAFETY: `dst` is the route's destination `sockaddr_in6` (in `r`, alive for this
-            // call) or its gateway, readable while the route is held.
-            error = unsafe { if_output_tso(i, &mut mp, dst, rt, i.if_mtu.get()) };
+            // SAFETY: `dst` is a local `sockaddr_in6` (the route's destination or its gateway),
+            // readable for the call.
+            error = unsafe { if_output_tso(i, &mut mp, sin6tosa_const(&dst), rt, i.if_mtu.get()) };
             if error.is_err() {
                 ip6stat_inc(Ip6statCounters::Ip6sCantforward);
             } else if mp.is_none() {
@@ -482,10 +482,8 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&Route>, flags: i32) {
             }
         }
     }
-    // done:
-    if ro.is_some_and(|r| ptr::eq(r, &iproute)) {
-        rtfree(iproute.ro_rt.get());
-    }
+    // done: iproute's route given back with it (rtfree).
+    drop(iproute);
     if_put(ifp);
     tdb_unref(tdb);
 }

@@ -244,7 +244,7 @@ use crate::net::if_var::Netstack;
 use crate::net::pf::{pf_find_divert, pf_inp_unlink, pf_remove_divert_state};
 use crate::net::pfvar::{PF_DIVERT_REPLY, PF_DIVERT_TO};
 use crate::net::route::{
-    RTF_DYNAMIC, RTF_GATEWAY, Route, Rtentry, route_mpath, rtdeletemsg, rtfree,
+    RTF_DYNAMIC, RTF_GATEWAY, Route, RouteCell, RouteLoan, Rtentry, route_mpath, rtdeletemsg,
 };
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::toeplitz::stoeplitz_ip4port;
@@ -253,7 +253,7 @@ use crate::netinet::in_::{
     INADDR_ANY, INADDR_BROADCAST, IPPORT_HIFIRSTAUTO, IPPORT_HILASTAUTO, IPPORT_RESERVED,
     IPPORT_USERRESERVED, IPPROTO_TCP, IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT,
     IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
-    InAddr, SockaddrIn, in_broadcast, in_ifp2ia, in_multicast, in_nam2sin, satosin_const, sintosa,
+    InAddr, SockaddrIn, in_broadcast, in_ifp2ia, in_multicast, in_nam2sin, sintosa,
 };
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip::Ip;
@@ -286,6 +286,7 @@ use crate::sys::proc::Proc;
 use crate::sys::protosw::PR_CONNREQUIRED;
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry, TailqHead};
 use crate::sys::refcnt::Refcnt;
+use crate::sys::rwlock::RW_WRITE;
 use crate::sys::socket::{
     AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM,
 };
@@ -515,8 +516,9 @@ pub struct Inpcb {
     pub inp_socket: Option<&'static Socket>,
     /// \[s\] `inp_ppcb`: pointer to per-protocol pcb.
     pub inp_ppcb: Cell<*mut c_void>,
-    /// \[s\] `inp_route`: cached route.
-    pub inp_route: Route,
+    /// \[s\] `inp_route`: cached route, reached only through [`Inpcb::route`] and
+    /// [`Inpcb::set_route`], which check the socket lock.
+    inp_route: RouteCell,
     /// `inp_refcnt`: refcount PCB, delay memory free.
     pub inp_refcnt: Refcnt,
     /// `inp_flags`: generic IP/datagram flags.
@@ -574,7 +576,7 @@ impl Inpcb {
             inp_lport: Cell::new(0),
             inp_socket: so,
             inp_ppcb: Cell::new(ptr::null_mut()),
-            inp_route: Route::new(),
+            inp_route: RouteCell::new(),
             inp_refcnt: Refcnt::new(),
             inp_flags: Cell::new(0),
             inp_ip: Cell::new(Ip {
@@ -626,6 +628,42 @@ impl Inpcb {
         match self.inp_table {
             Some(t) => t,
             None => panic(format_args!("inpcb {:p}: no table", self)),
+        }
+    }
+
+    /// `&inp->inp_route`: the route cache, lent until the loan drops. The cache is `[s]`:
+    /// the caller holds this control block's socket lock as `soassertlocked` defines it (the
+    /// net lock exclusively, or this thread's write hold of `so_lock`), checked here, since
+    /// a loan is a move of the cached route out of its cell and back, and a second thread's
+    /// loan of the same cell would race it (`in6_pcbnotify`'s walk reads other sockets'
+    /// caches only once it holds their locks). Panics without the lock.
+    pub fn route(&self) -> RouteLoan<'_> {
+        self.assert_route_locked("inp_route");
+        self.inp_route.loan()
+    }
+
+    /// `inp->inp_route = *ro` (the struct assignment of `syn_cache_get`), the old route's
+    /// handle given back; checked as [`Inpcb::route`].
+    pub fn set_route(&self, ro: Route) {
+        self.assert_route_locked("inp_route =");
+        self.inp_route.set(ro);
+    }
+
+    /// Whether this thread holds the socket lock that guards `inp_route`: this pcb's
+    /// `so_lock` for writing, or the net lock exclusively (which excludes every other socket
+    /// lock holder of an Internet socket, `soassertlocked`'s two cases).
+    pub(crate) fn route_locked(&self) -> bool {
+        self.socket().so_lock_legacy().lock().status() == RW_WRITE
+            || hal::netlock::status() == RW_WRITE
+    }
+
+    /// Panics unless [`Inpcb::route_locked`].
+    fn assert_route_locked(&self, what: &str) {
+        if !self.route_locked() {
+            panic(format_args!(
+                "{what}: the socket lock of inpcb {:p} is not held",
+                self
+            ));
         }
     }
 
@@ -1411,9 +1449,8 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
 
     crate::sys::socketvar::set_so_pcb(so, ptr::null_mut());
     sofree(so, true);
-    if let Some(rt) = inp.inp_route.ro_rt.take() {
-        rtfree(Some(rt));
-    }
+    // rtfree(inp->inp_route.ro_rt): the cache's handle dropped.
+    drop(inp.route().take_rt());
     #[cfg(feature = "inet6")]
     let inet6 = inp.has_flags(INP_IPV6);
     #[cfg(not(feature = "inet6"))]
@@ -1690,23 +1727,23 @@ pub fn in_pcbnotifyall(
 /// For now, invalidate cached routing information. If the route was created dynamically (by
 /// a redirect), time to try a default gateway again.
 pub fn in_losing(inp: &Inpcb) {
-    let Some(rt) = inp.inp_route.ro_rt.get() else {
+    let Some(rt) = inp.route().take_rt() else {
         return;
     };
-    inp.inp_route.ro_rt.set(None);
 
     if rt.rt_flags.get() & RTF_DYNAMIC != 0 {
         let ifp = if_get(rt.rt_ifidx.get());
         // If the interface is gone, all its attached route entries have been removed from
         // the table, so we're dealing with a stale cache and have nothing to do.
         if let Some(ifp) = ifp {
-            let _ = rtdeletemsg(rt, ifp, inp.inp_rtableid.get());
+            let _ = rtdeletemsg(&rt, ifp, inp.inp_rtableid.get());
         }
         if_put(ifp);
     }
     // A new route can be allocated the next time output is attempted. rtfree() needs to be
-    // called in anycase because the inp is still holding a reference to rt.
-    rtfree(Some(rt));
+    // called in anycase because the inp is still holding a reference to rt: the handle's
+    // drop.
+    drop(rt);
 }
 
 /// `in_pcbrtchange`: after a routing change, flushes the old route; a (hopefully) better one
@@ -1714,9 +1751,7 @@ pub fn in_losing(inp: &Inpcb) {
 pub fn in_pcbrtchange(inp: &'static Inpcb, _errno: Option<Errno>) {
     soassertlocked(inp.socket());
 
-    if let Some(rt) = inp.inp_route.ro_rt.take() {
-        rtfree(Some(rt));
-    }
+    drop(inp.route().take_rt());
 }
 
 /// `in_pcblookup_local_lock`: the control block of `table` bound to local port `lport_arg`
@@ -1822,7 +1857,12 @@ pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     }
     let faddr = inp.inp_faddr.get();
     let laddr = inp.inp_laddr.get();
-    route_mpath(&inp.inp_route, &faddr, Some(&laddr), inp.inp_rtableid.get())
+    route_mpath(
+        &mut inp.route(),
+        &faddr,
+        Some(&laddr),
+        inp.inp_rtableid.get(),
+    )
 }
 
 /// `in_pcbselsrc`: the IPv4 address most appropriate as the source for destination
@@ -1865,11 +1905,11 @@ pub fn in_pcbselsrc(insrc: &mut InAddr, dstsock: &SockaddrIn, inp: &Inpcb) -> Re
 
     // If route is known or can be allocated now, our src addr is taken from the i/f, else
     // punt.
-    let rt = route_mpath(&inp.inp_route, dst, None, rtableid);
+    let rt = route_mpath(&mut inp.route(), dst, None, rtableid);
 
     // If we found a route, use the address corresponding to the outgoing interface.
     if let Some(rt) = rt {
-        ia = Some(ifatoia(rt.ifa()));
+        ia = rt.ifa().map(ifatoia);
     }
 
     // Use preferred source address if :
@@ -1878,22 +1918,22 @@ pub fn in_pcbselsrc(insrc: &mut InAddr, dstsock: &SockaddrIn, inp: &Inpcb) -> Re
     // - output interface is UP
     if let Some(rt) = rt
         && rt.rt_flags.get() & RTF_GATEWAY != 0
+        && let Some(ip4_source) = rtable_getsource(rtableid, AF_INET)
     {
-        let ip4_source = rtable_getsource(rtableid, AF_INET);
-        if !ip4_source.is_null() {
-            // SAFETY: a source address set on the table is a live `sockaddr_in`, read for
-            // the call.
-            let ifa = unsafe { ifa_ifwithaddr(ip4_source, rtableid) };
-            if let Some(ifa) = ifa
-                && ifa
-                    .ifa_ifp
-                    .get()
-                    .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
-            {
-                // SAFETY: as above.
-                *insrc = unsafe { (*satosin_const(ip4_source)).sin_addr };
-                return Ok(());
-            }
+        let ifa = kernel::net::if_::ifa_ifwithaddr(
+            &crate::net::if_::net_held("in_pcbselsrc"),
+            ip4_source.bytes(),
+            rtableid,
+        );
+        if let Some(ifa) = ifa
+            && ifa
+                .ifa_ifp
+                .get()
+                .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
+            && let Some(sin) = hal::pod::at::<SockaddrIn>(ip4_source.bytes(), 0)
+        {
+            *insrc = sin.sin_addr;
+            return Ok(());
         }
     }
 

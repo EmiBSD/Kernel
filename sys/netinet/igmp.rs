@@ -1016,6 +1016,14 @@ mod tests {
         }
     }
 
+    /// `f` under the net lock, as the C joins, leaves and takes IGMP input (`ip_output` and the route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// The value of counter `c`.
     fn count(c: IgmpstatCounters) -> u64 {
         IGMPCOUNTERS[c as usize].load(Ordering::Relaxed)
@@ -1086,7 +1094,7 @@ mod tests {
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
         let mut mp = Some(m);
         let mut off = 20;
-        let _ = igmp_input(&mut mp, &mut off, IPPROTO_IGMP, i32::from(AF_INET), None);
+        let _ = locked(|| igmp_input(&mut mp, &mut off, IPPROTO_IGMP, i32::from(AF_INET), None));
         m_freemp(&mut mp);
     }
 
@@ -1122,7 +1130,7 @@ mod tests {
 
         // Joining 239.1.2.3: a v2 report at once, and the timer for the second one.
         let snd = count(IgmpstatCounters::IgpsSndReports);
-        let inm = in_addmulti(&addr([239, 1, 2, 3]), ifp).expect("joined");
+        let inm = locked(|| in_addmulti(&addr([239, 1, 2, 3]), ifp)).expect("joined");
         assert_eq!(
             sent(ifp),
             [(
@@ -1178,13 +1186,13 @@ mod tests {
         assert!(sent(ifp).is_empty());
 
         // Leaving while lazy: someone else reported last, so no leave message.
-        in_delmulti(inm);
+        locked(|| in_delmulti(inm));
         assert!(sent(ifp).is_empty());
 
         // Leaving a group we reported: a leave message to all routers.
-        let inm = in_addmulti(&addr([239, 9, 9, 9]), ifp).expect("joined");
+        let inm = locked(|| in_addmulti(&addr([239, 9, 9, 9]), ifp)).expect("joined");
         let _ = sent(ifp);
-        in_delmulti(inm);
+        locked(|| in_delmulti(inm));
         assert_eq!(
             sent(ifp),
             [([224, 0, 0, 2], IGMP_HOST_LEAVE_MESSAGE, [224, 0, 0, 2])]
@@ -1210,7 +1218,7 @@ mod tests {
         let ifp = test_ether();
         ifp.if_ioctl().set(Some(mcast_ioctl));
         configure(ifp, ADDR, [255, 255, 255, 0]);
-        let inm = in_addmulti(&addr([239, 4, 4, 4]), ifp).expect("joined");
+        let inm = locked(|| in_addmulti(&addr([239, 4, 4, 4]), ifp)).expect("joined");
         while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }
@@ -1266,7 +1274,7 @@ mod tests {
         rti_delete(ifp);
         assert_eq!(rti_type(ifp.if_index.get()), IGMP_v2_ROUTER);
 
-        in_delmulti(inm);
+        locked(|| in_delmulti(inm));
         while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
         }

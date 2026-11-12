@@ -1359,6 +1359,14 @@ mod tests {
     use crate::sys::endian::htons;
     use crate::sys::socket::AF_INET;
 
+    /// `f` under the net lock, as the C runs IPsec's input and output (the route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// A TDB with replay window `wnd` and `rpl` as its counter, outside the tables.
     fn window(esn: bool, rpl: u64) -> Tdb {
         let t = Tdb::new();
@@ -1558,8 +1566,8 @@ mod tests {
                     size_of::<EtherArp>(),
                 )
             };
-            ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
-            arpintr();
+            locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None));
+            locked(|| arpintr());
             return sent(ifp);
         }
         assert_eq!(&b[12..14], &ETHERTYPE_IP.to_be_bytes());
@@ -1574,7 +1582,8 @@ mod tests {
 
         let out = esp_sa(suite, tunnel);
         let m = test_packet(inner);
-        ipsp_process_packet(m, out, i32::from(AF_INET), false, IPSP_DF_INHERIT).expect("sent");
+        locked(|| ipsp_process_packet(m, out, i32::from(AF_INET), false, IPSP_DF_INHERIT))
+            .expect("sent");
         assert_eq!(
             out.tdb_rpl.get(),
             AH_HMAC_INITIAL_RPL + 1,

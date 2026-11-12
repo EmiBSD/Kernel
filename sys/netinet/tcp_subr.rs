@@ -615,7 +615,7 @@ pub fn tcp_respond(
             let _ = ip6_output(
                 m,
                 opts,
-                tp.map(|tp| &tp.t_inpcb.inp_route),
+                tp.map(|tp| tp.t_inpcb.route()).as_deref_mut(),
                 0,
                 None,
                 seclevel.as_ref(),
@@ -634,7 +634,7 @@ pub fn tcp_respond(
             let _ = ip_output(
                 m,
                 None,
-                tp.map(|tp| &tp.t_inpcb.inp_route),
+                tp.map(|tp| tp.t_inpcb.route()).as_deref_mut(),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC
                 } else {

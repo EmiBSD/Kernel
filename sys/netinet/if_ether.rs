@@ -178,7 +178,7 @@ use crate::net::if_::{
 #[cfg(feature = "nfsclient")]
 use crate::net::if_arp::ARPOP_REVREQUEST;
 use crate::net::if_arp::{ARPHRD_ETHER, ARPOP_REPLY, ARPOP_REQUEST, ARPOP_REVREPLY, Arphdr};
-use crate::net::if_dl::{SockaddrDl, lladdr, satosdl};
+use crate::net::if_dl::{SockaddrDl, lladdr};
 use crate::net::if_ethersubr::{ETHERBROADCASTADDR, ether_sprintf};
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_delist};
@@ -186,11 +186,12 @@ use crate::net::route::{
     RT_RESOLVE, RTF_ANNOUNCE, RTF_BROADCAST, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_LLINFO,
     RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_PROTO1, RTF_PROTO3, RTF_REJECT, RTF_STATIC, RTM_ADD,
     RTM_DELETE, RTM_INVALIDATE, RTM_RESOLVE, Rtentry, rt_getll, rtalloc, rtdeletemsg, rtfree,
-    rtisvalid, rtref,
+    rtisvalid, rtref, sa_of,
 };
 use crate::net::rtable::{rt_key, rtable_iterate, rtable_l2};
 use crate::net::rtsock::rtm_send;
-use crate::netinet::in_::{INADDR_ANY, InAddr, SockaddrIn, satosin_const, sintosa};
+use crate::netinet::in_::{INADDR_ANY, InAddr, SockaddrIn, satosin_const};
+use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip::Ip;
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet6::in6::In6Addr;
@@ -380,6 +381,115 @@ pub struct SockaddrInarp {
     pub sin_tos: u16,
     /// `SIN_PROXY`.
     pub sin_other: u16,
+}
+
+hal::abi_pod!(SockaddrInarp {
+    sin_len: u8,
+    sin_family: u8,
+    sin_port: u16,
+    sin_addr: InAddr,
+    sin_srcaddr: InAddr,
+    sin_tos: u16,
+    sin_other: u16,
+});
+
+/// The offset of `sdl_index` in a `sockaddr_dl`.
+const SDL_INDEX: usize = core::mem::offset_of!(SockaddrDl, sdl_index);
+/// The offset of `sdl_type`.
+const SDL_TYPE: usize = core::mem::offset_of!(SockaddrDl, sdl_type);
+/// The offset of `sdl_alen`.
+pub(crate) const SDL_ALEN: usize = core::mem::offset_of!(SockaddrDl, sdl_alen);
+
+/// `LLADDR(satosdl(rt->rt_gateway))` read for `ETHER_ADDR_LEN` bytes, as the C's callers
+/// read the address an ARP route's link-level gateway holds (zeros past a short gateway).
+pub(crate) fn gw_lladdr(rt: &Rtentry) -> [u8; ETHER_ADDR_LEN] {
+    let mut en = [0u8; ETHER_ADDR_LEN];
+    rt.with_gateway(|g| {
+        if let Some(g) = g {
+            let start =
+                hal::sys::net_if::SDL_DATA_OFFSET + usize::from(g.get(5).copied().unwrap_or(0));
+            if let Some(a) = g.get(start..) {
+                let n = a.len().min(ETHER_ADDR_LEN);
+                en[..n].copy_from_slice(&a[..n]);
+            }
+        }
+    });
+    en
+}
+
+/// `satosdl(rt->rt_gateway)->sdl_alen` and `sdl_family` of an ARP route.
+pub(crate) fn gw_alen_family(rt: &Rtentry) -> (u8, u8) {
+    rt.with_gateway(|g| g.map_or((0, 0), |g| (g.get(SDL_ALEN).copied().unwrap_or(0), g[1])))
+}
+
+/// `rt->rt_gateway->sa_family` and `sa_len` (zeros without a gateway).
+pub(crate) fn gw_family_len(rt: &Rtentry) -> (u8, usize) {
+    rt.with_gateway(|g| g.map_or((0, 0), |g| (g[1], usize::from(g[0]))))
+}
+
+/// `satosdl(rt->rt_gateway)->sdl_index` of a link-level gateway (`None` for another).
+pub(crate) fn gw_sdl_index(rt: &Rtentry) -> Option<u32> {
+    rt.with_gateway(|g| {
+        let g = g?;
+        (g[1] == AF_LINK).then(|| {
+            u32::from(u16::from_ne_bytes([
+                g.get(SDL_INDEX).copied().unwrap_or(0),
+                g.get(SDL_INDEX + 1).copied().unwrap_or(0),
+            ]))
+        })
+    })
+}
+
+/// A link-layer route's `sockaddr_dl` gateway given the interface's type and index
+/// (`arp_rtrequest`'s and `nd6_rtrequest`'s, which checked its size).
+pub(crate) fn gw_set_type_index(rt: &Rtentry, ifp: &Ifnet) {
+    rt.update_gateway(|g| {
+        if let Some(g) = g {
+            g[SDL_TYPE] = ifp.if_type.get();
+            g[SDL_INDEX..SDL_INDEX + 2].copy_from_slice(&(ifp.if_index.get() as u16).to_ne_bytes());
+        }
+    });
+}
+
+/// A link-layer route's `sockaddr_dl` gateway given the address `lladdr` (`sdl_alen` set to
+/// its length first, then `LLADDR(sdl)` written), or forgotten with an empty one.
+pub(crate) fn gw_set_lladdr(rt: &Rtentry, lladdr: &[u8]) {
+    rt.update_gateway(|g| {
+        if let Some(g) = g {
+            g[SDL_ALEN] = lladdr.len() as u8;
+            if let Some(a) = SockaddrDl::lladdr_mut(g) {
+                a.copy_from_slice(lladdr);
+            }
+        }
+    });
+}
+
+/// `*satosdl(rt->rt_gateway)` of a link-level gateway, copied (zeros past a short one;
+/// `None` for another family).
+pub(crate) fn gw_sdl_copy(rt: &Rtentry) -> Option<SockaddrDl> {
+    rt.with_gateway(|g| {
+        let g = g.filter(|g| g[1] == AF_LINK)?;
+        let mut d = [0u8; size_of::<SockaddrDl>()];
+        let n = g.len().min(d.len());
+        d[..n].copy_from_slice(&g[..n]);
+        hal::pod::at::<SockaddrDl>(&d, 0)
+    })
+}
+
+/// The bytes of the interface's link-level address (`sdltosa(ifp->if_sadl)`), copied.
+pub(crate) fn if_sadl_copy(ifp: &Ifnet) -> SockaddrDl {
+    ifp.sadl().as_deref().copied().unwrap_or_default()
+}
+
+/// The `sin_addr` of the `sockaddr_in` `sa`'s bytes hold (0 for a shorter one).
+fn sin_addr_of(sa: &[u8]) -> InAddr {
+    hal::pod::at::<SockaddrIn>(sa, 0).map_or(InAddr { s_addr: 0 }, |s| s.sin_addr)
+}
+
+/// The IPv4 address of a route's interface address (`satosin(rt->rt_ifa->ifa_addr)`).
+fn rt_ifa_sin(rt: &Rtentry) -> u32 {
+    rt.ifa()
+        .map_or(0, |ifa| ifatoia(ifa).ia_addr.get().sin_addr.s_addr)
 }
 
 /// `struct mbuf *(*ep_input)(struct ifnet *, struct mbuf *, uint64_t, void *, struct netstack
@@ -837,8 +947,6 @@ pub fn arpinit() {
 /// `arp_rtrequest`: the ARP side of a route change on an Ethernet interface: an entry for a
 /// new link-layer route, its removal, an invalidation.
 pub fn arp_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
-    let gate = rt.rt_gateway.get();
-
     net_assert_locked("arp_rtrequest");
 
     if rt.rt_flags.get() & (RTF_GATEWAY | RTF_BROADCAST | RTF_MULTICAST | RTF_MPLS) != 0 {
@@ -860,23 +968,15 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
                 // Announce a new entry if requested or warn the user if another station has
                 // this IP address.
                 if rt.rt_flags.get() & (RTF_ANNOUNCE | RTF_LOCAL) != 0 {
-                    // SAFETY: an ARP route's key is a `sockaddr_in` and its gateway a
-                    // `sockaddr_dl` holding the interface's address.
-                    unsafe {
-                        let a = (*satosin_const(rt_key(rt))).sin_addr.s_addr;
-                        let mut en = [0u8; ETHER_ADDR_LEN];
-                        ptr::copy_nonoverlapping(
-                            lladdr(satosdl(gate)),
-                            en.as_mut_ptr(),
-                            ETHER_ADDR_LEN,
-                        );
-                        arprequest(ifp, &a, &a, &en);
-                    }
+                    // An ARP route's key is a `sockaddr_in` and its gateway a `sockaddr_dl`
+                    // holding the interface's address.
+                    let a = sin_addr_of(rt_key(rt)).s_addr;
+                    let en = gw_lladdr(rt);
+                    arprequest(ifp, &a, &a, &en);
                 }
             }
             // FALLTHROUGH (RTM_RESOLVE)
-            // SAFETY: a route's gateway is a readable socket address.
-            let (gfam, glen) = unsafe { ((*gate).sa_family, usize::from((*gate).sa_len)) };
+            let (gfam, glen) = rt.with_gateway(|g| g.map_or((0, 0), |g| (g[1], usize::from(g[0]))));
             if gfam != AF_LINK || glen < size_of::<SockaddrDl>() {
                 log!(
                     LOG_DEBUG,
@@ -885,11 +985,14 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
                 );
                 break 'sw;
             }
-            // SAFETY: an `AF_LINK` gateway of at least a `sockaddr_dl`'s size.
-            unsafe {
-                (*satosdl(gate)).sdl_type = ifp.if_type.get();
-                (*satosdl(gate)).sdl_index = ifp.if_index.get() as u16;
-            }
+            // An `AF_LINK` gateway of at least a `sockaddr_dl`'s size: its type and index.
+            rt.update_gateway(|g| {
+                if let Some(g) = g {
+                    g[SDL_TYPE] = ifp.if_type.get();
+                    g[SDL_INDEX..SDL_INDEX + 2]
+                        .copy_from_slice(&(ifp.if_index.get() as u16).to_ne_bytes());
+                }
+            });
             // Case 2: This route may come from cloning, or a manual route add with a LL
             // address.
             let Some(mem) = pool_get(&ARP_POOL, PR_NOWAIT | PR_ZERO) else {
@@ -1120,8 +1223,8 @@ pub unsafe fn arpresolve(
 
     'bad: {
         if rt.rt_flags.get() & RTF_LLINFO == 0 {
-            // SAFETY: a route's key in the inet table is a `sockaddr_in`.
-            let key = unsafe { (*satosin_const(rt_key(rt))).sin_addr };
+            // A route's key in the inet table is a `sockaddr_in`.
+            let key = sin_addr_of(rt_key(rt));
             log!(
                 LOG_DEBUG,
                 "arpresolve: {}: route contains no arp information\n",
@@ -1130,10 +1233,8 @@ pub unsafe fn arpresolve(
             break 'bad;
         }
 
-        let sdl = satosdl(rt.rt_gateway.get());
-        // SAFETY: an `RTF_LLINFO` route's gateway is a `sockaddr_dl` (`arp_rtrequest`
-        // checked it).
-        let (alen, family) = unsafe { ((*sdl).sdl_alen, (*sdl).sdl_family) };
+        // An `RTF_LLINFO` route's gateway is a `sockaddr_dl` (`arp_rtrequest` checked it).
+        let (alen, family) = gw_alen_family(rt);
         if alen > 0 && usize::from(alen) != ETHER_ADDR_LEN {
             log!(
                 LOG_DEBUG,
@@ -1149,10 +1250,10 @@ pub unsafe fn arpresolve(
             && family == AF_LINK
             && alen != 0
         {
-            // SAFETY: the link address is `alen` (6) bytes after the name.
-            unsafe {
-                ptr::copy_nonoverlapping(lladdr(sdl), desten.as_mut_ptr(), usize::from(alen))
-            };
+            // The link address, `alen` (6) bytes after the name.
+            let en = gw_lladdr(rt);
+            let n = usize::from(alen).min(ETHER_ADDR_LEN);
+            desten[..n].copy_from_slice(&en[..n]);
 
             // refresh ARP entry when timeout gets close
             if rt.rt_expire().get() != 0
@@ -1168,8 +1269,8 @@ pub unsafe fn arpresolve(
                 mtx_leave(&ARP_MTX);
             }
             if refresh {
-                // SAFETY: a route's address is an `AF_INET` interface address.
-                let sip = unsafe { (*satosin_const(rt.ifa().ifa_addr.get())).sin_addr.s_addr };
+                // A route's address is an `AF_INET` interface address.
+                let sip = rt_ifa_sin(rt);
                 arprequest(ifp, &sip, &dstin.s_addr, &ac.ac_enaddr.get());
             }
             return Ok(());
@@ -1239,8 +1340,7 @@ pub unsafe fn arpresolve(
             kernel_unlock();
         }
         if refresh {
-            // SAFETY: as above.
-            let sip = unsafe { (*satosin_const(rt.ifa().ifa_addr.get())).sin_addr.s_addr };
+            let sip = rt_ifa_sin(rt);
             arprequest(ifp, &sip, &dstin.s_addr, &ac.ac_enaddr.get());
         }
         return Err(Errno::EAGAIN);
@@ -1361,8 +1461,7 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: &'static Mbuf) {
 
         // Check target against our interface addresses.
         sin.sin_addr = itaddr;
-        // SAFETY: a local `sockaddr_in`.
-        let r = unsafe { rtalloc(sintosa(&mut sin), 0, rdomain) };
+        let r = rtalloc(sa_of(&sin), 0, rdomain);
         if let Some(x) = r
             && rtisvalid(Some(x))
             && x.rt_flags.get() & RTF_LOCAL != 0
@@ -1411,14 +1510,8 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: &'static Mbuf) {
                 let Some(r) = rt.filter(|r| r.rt_ifidx.get() == ifp.if_index.get()) else {
                     break 'out;
                 };
-                // SAFETY: a proxy ARP route's gateway is a `sockaddr_dl` with an address.
-                unsafe {
-                    ptr::copy_nonoverlapping(
-                        lladdr(satosdl(r.rt_gateway.get())),
-                        eaddr.as_mut_ptr(),
-                        ETHER_ADDR_LEN,
-                    )
-                };
+                // A proxy ARP route's gateway is a `sockaddr_dl` with an address.
+                eaddr = gw_lladdr(r);
             }
             arpreply(ifp, m, &itaddr, &eaddr, rdomain);
             rtfree(rt);
@@ -1433,14 +1526,13 @@ pub fn in_arpinput(ifp: &'static Ifnet, m: &'static Mbuf) {
 /// `arpcache`: records the sender of `ea` in ARP route `rt` and sends the packets held for
 /// it; `false` (the C's -1) when the entry may not be changed (the caller drops the packet).
 pub fn arpcache(ifp: &'static Ifnet, ea: &EtherArp, rt: &'static Rtentry) -> bool {
-    let sdl = satosdl(rt.rt_gateway.get());
     let spa = InAddr {
         s_addr: u32::from_ne_bytes(ea.arp_spa),
     };
     let mut changed = false;
 
     net_assert_locked_exclusive("arpcache");
-    kassert!(!sdl.is_null());
+    kassert!(rt.with_gateway(|g| g.is_some()));
 
     // This can happen if the entry has been deleted by another CPU after we found it.
     let Some(la) = rt_la(rt) else {
@@ -1448,12 +1540,12 @@ pub fn arpcache(ifp: &'static Ifnet, ea: &EtherArp, rt: &'static Rtentry) -> boo
     };
 
     let uptime = getuptime();
-    // SAFETY: an ARP route's gateway is a `sockaddr_dl` with room for an Ethernet address.
-    let alen = unsafe { (*sdl).sdl_alen };
+    // An ARP route's gateway is a `sockaddr_dl` with room for an Ethernet address.
+    let (alen, _) = gw_alen_family(rt);
     if alen > 0 {
-        // SAFETY: as above.
-        let cur = unsafe { core::slice::from_raw_parts(lladdr(sdl), usize::from(alen)) };
-        if ea.arp_sha[..usize::from(alen)] != *cur {
+        let cur = gw_lladdr(rt);
+        let n = usize::from(alen).min(ETHER_ADDR_LEN);
+        if ea.arp_sha[..n] != cur[..n] {
             if rt.rt_flags.get() & (RTF_PERMANENT_ARP | RTF_LOCAL) != 0 {
                 let s = ether_sprintf(&ea.arp_sha);
                 log!(
@@ -1509,11 +1601,15 @@ pub fn arpcache(ifp: &'static Ifnet, ea: &EtherArp, rt: &'static Rtentry) -> boo
         if_put(Some(rifp));
         return false;
     }
-    // SAFETY: as above.
-    unsafe {
-        (*sdl).sdl_alen = ETHER_ADDR_LEN as u8;
-        ptr::copy_nonoverlapping(ea.arp_sha.as_ptr(), lladdr(sdl), ETHER_ADDR_LEN);
-    }
+    // The gateway's address set: its length, then its bytes.
+    rt.update_gateway(|g| {
+        if let Some(g) = g {
+            g[SDL_ALEN] = ETHER_ADDR_LEN as u8;
+            if let Some(a) = SockaddrDl::lladdr_mut(g) {
+                a.copy_from_slice(&ea.arp_sha);
+            }
+        }
+    });
     if rt.rt_expire().get() != 0 {
         rt.rt_expire()
             .set(uptime + i64::from(ARPT_KEEP.load(Ordering::Relaxed)));
@@ -1527,24 +1623,34 @@ pub fn arpcache(ifp: &'static Ifnet, ea: &EtherArp, rt: &'static Rtentry) -> boo
 
     la.la_asked.set(0);
     la.la_refreshed.set(0);
-    // SAFETY: the route's key is a readable `sockaddr_in`.
-    let _ = unsafe { if_output_mq(ifp, &la.la_mq, &la_hold_total, rt_key(rt), Some(rt)) };
+    // SAFETY: the route's key is a readable `sockaddr_in` (its bytes).
+    let _ = unsafe {
+        if_output_mq(
+            ifp,
+            &la.la_mq,
+            &la_hold_total,
+            rt_key(rt).as_ptr().cast(),
+            Some(rt),
+        )
+    };
 
     true
 }
 
 /// `arpinvalidate`: forgets the hardware address of ARP route `rt` and its held packets.
 pub fn arpinvalidate(rt: &Rtentry) {
-    let sdl = satosdl(rt.rt_gateway.get());
-
     mtx_enter(&ARP_MTX);
     let Some(la) = rt_la(rt) else {
         mtx_leave(&ARP_MTX);
         return;
     };
     la_hold_total.fetch_sub(mq_purge(&la.la_mq), Ordering::Relaxed);
-    // SAFETY: an ARP route's gateway is a `sockaddr_dl`.
-    unsafe { (*sdl).sdl_alen = 0 };
+    // An ARP route's gateway is a `sockaddr_dl`: its address forgotten.
+    rt.update_gateway(|g| {
+        if let Some(g) = g {
+            g[SDL_ALEN] = 0;
+        }
+    });
     la.la_asked.set(0);
     mtx_leave(&ARP_MTX);
 }
@@ -1578,7 +1684,7 @@ pub fn arplookup(
     proxy: bool,
     tableid: u32,
 ) -> Option<&'static Rtentry> {
-    let mut sin = SockaddrInarp {
+    let sin = SockaddrInarp {
         sin_len: size_of::<SockaddrInarp>() as u8,
         sin_family: AF_INET,
         sin_addr: *inp,
@@ -1587,14 +1693,13 @@ pub fn arplookup(
     };
     let flags = if create { RT_RESOLVE } else { 0 };
 
-    // SAFETY: a local `sockaddr_inarp`, a `sockaddr_in` with more after the address.
-    let rt = unsafe { rtalloc(ptr::from_mut(&mut sin).cast(), flags, tableid) };
+    // A `sockaddr_inarp`, a `sockaddr_in` with more after the address.
+    let rt = rtalloc(sa_of(&sin), flags, tableid);
     let Some(mut r) = rt.filter(|r| {
         rtisvalid(Some(r))
             && r.rt_flags.get() & RTF_GATEWAY == 0
             && r.rt_flags.get() & RTF_LLINFO != 0
-            // SAFETY: a route's gateway is a readable socket address.
-            && unsafe { (*r.rt_gateway.get()).sa_family } == AF_LINK
+            && r.with_gateway(|g| g.is_some_and(|g| g[1] == AF_LINK))
     }) else {
         rtfree(rt);
         return None;
@@ -1621,9 +1726,7 @@ pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
     };
 
     // Check that arp information are correct.
-    let sdl = satosdl(r.rt_gateway.get());
-    // SAFETY: an ARP route's gateway is a `sockaddr_dl`.
-    if usize::from(unsafe { (*sdl).sdl_alen }) != ETHER_ADDR_LEN {
+    if usize::from(gw_alen_family(r).0) != ETHER_ADDR_LEN {
         rtfree(Some(r));
         return false;
     }
@@ -1633,14 +1736,15 @@ pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
         return false;
     };
 
-    // SAFETY: both link addresses hold `ETHER_ADDR_LEN` bytes after their names.
-    let found = unsafe {
-        core::slice::from_raw_parts(lladdr(sdl), ETHER_ADDR_LEN)
-            == core::slice::from_raw_parts(
+    // SAFETY: an attached interface's link address holds `ETHER_ADDR_LEN` bytes after its
+    // name.
+    let found = gw_lladdr(r)[..]
+        == *unsafe {
+            core::slice::from_raw_parts(
                 lladdr(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
                 ETHER_ADDR_LEN,
             )
-    };
+        };
 
     if_put(Some(ifp));
     rtfree(Some(r));
@@ -1820,6 +1924,14 @@ mod tests {
     use crate::reftest::{assert_complete, assert_defines};
     use crate::sys::endian::{htonl, htons};
 
+    /// `f` under the net lock, as `if_netisr` runs `arpintr` (the route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     #[test]
     fn frame_layout_and_predicates() {
         let eh = EtherHeader {
@@ -1909,7 +2021,7 @@ mod tests {
         use crate::kern::uipc_mbuf::m_freem;
         use crate::net::if_ethersubr::ether_input;
         use crate::net::ifq::ifq_dequeue;
-        use crate::netinet::in_::sintosa;
+
         use crate::netinet::ip_input::tests::{
             ADDR, GATEWAY, OURS, PEER, bytes, configure, frame, setup, sin, test_ether, unconfigure,
         };
@@ -1932,7 +2044,7 @@ mod tests {
             ),
             None,
         );
-        arpintr();
+        locked(|| arpintr());
         let reply = ifq_dequeue(ifp.if_snd()).expect("ARP reply");
         let b = bytes(reply);
         m_freem(reply);
@@ -1944,19 +2056,15 @@ mod tests {
         assert_eq!(&b[38..42], &GATEWAY);
 
         let entry = || {
-            let mut s = sin(GATEWAY);
-            // SAFETY: a local `sockaddr_in`.
-            let rt = unsafe { rtalloc(sintosa(&mut s), 0, 0) }.expect("route");
+            let s = sin(GATEWAY);
+            // rtalloc under the net lock, as its callers (route.c's NET_ASSERT_LOCKED proof).
+            crate::sys::systm::net_lock();
+            let rt = rtalloc(crate::net::route::sa_of(&s), 0, 0).expect("route");
+            crate::sys::systm::net_unlock();
             let flags = rt.rt_flags.get();
-            // SAFETY: an ARP route's gateway is a `sockaddr_dl`.
-            let (alen, hw) = unsafe {
-                let sdl = satosdl(rt.rt_gateway.get());
-                let mut hw = [0u8; 6];
-                if (*sdl).sdl_alen == 6 {
-                    ptr::copy_nonoverlapping(lladdr(sdl), hw.as_mut_ptr(), 6);
-                }
-                ((*sdl).sdl_alen, hw)
-            };
+            // An ARP route's gateway is a `sockaddr_dl`.
+            let alen = gw_alen_family(rt).0;
+            let hw = if alen == 6 { gw_lladdr(rt) } else { [0u8; 6] };
             let expire = rt.rt_expire().get();
             rtfree(Some(rt));
             (flags, alen, hw, expire)

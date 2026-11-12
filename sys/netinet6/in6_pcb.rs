@@ -137,6 +137,13 @@
 //! - `in6_pcbselsrc` returns the address by value, so `in6_pcbconnect` keeps a copy where
 //!   the C keeps a pointer.
 //! - `in6_pcbnotify` takes `cmdarg` as the C does and, as the C does, does not use it.
+//! - `in6_pcbnotify` reads an unconnected pcb's route cache (the redirect clause) once it
+//!   holds that pcb's socket lock, where the C reads it under the table mutex alone: the
+//!   cache is `[s]`, and a read of another socket's cache is a race with its owner. A
+//!   redirect or a dead host thus costs one socket lock pair (and the table mutex let go and
+//!   taken again) per unconnected pcb that neither the cache nor the addresses select (the C
+//!   takes the socket lock only for the pcbs it notifies); N6.4's kernel pcb can keep a
+//!   summary of the cache readable under the table mutex instead.
 //! - `DIAGNOSTIC`'s `in_pcbnotifymiss` messages print the ports and routing domain (the C
 //!   prints no addresses either).
 //! - `NPF` and `NSTOEPLITZ` are configured: the divert keys of `in6_pcblookup_listen` and
@@ -602,53 +609,51 @@ pub fn in6_pcbnotify(
         inp = Some(i);
         kassert!(i.has_flags(INP_IPV6));
 
-        // Under the following condition, notify of redirects to the pcb, without making
-        // address matches against inpcb: a redirect notification arrived, the inpcb is
-        // unconnected, it caches a !RTF_HOST routing entry, and the ICMPv6 notification is
-        // from the gateway cached in the inpcb (the nexthop the inpcb used very recently).
-        // This improves the interaction between the redirect handling code and the inpcb
-        // route cache: without the clause, a !RTF_HOST routing entry (which carries the
-        // gateway used by the inpcb right before the ICMPv6 redirect) would be cached
-        // forever in an unconnected inpcb. (Other systems clone RTF_HOST entries on output
-        // instead, which exposes them to local DoS attacks; RFC 2461's "destination cache"
-        // may imply that behavior. A hiwat/lowat on the number of cloned host routes, see
-        // icmp6_mtudisc_update(), may be a good idea.)
-        let do_notify = ((prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD)
-            && in6_is_addr_unspecified(&i.inp_laddr6.get())
-            && i
-                .inp_route
-                .ro_rt
-                .get()
-                .is_some_and(|rt| rt.rt_flags.get() & RTF_HOST == 0)
-            && in6_are_addr_equal(&i.inp_route.ro_dstsin6().sin6_addr, &dst.sin6_addr))
-            // Detect if we should notify the error. If no source and destination ports are
-            // specified, but non-zero flowinfo and local address match, notify the error.
-            // This is the case when the error is delivered with an encrypted buffer by ESP.
-            // Otherwise, just compare addresses and ports as usual.
-            || (lport == 0
-                && fport == 0
-                && flowinfo != 0
-                && flowinfo == (i.inp_flowinfo() & IPV6_FLOWLABEL_MASK)
-                && in6_are_addr_equal(&i.inp_laddr6.get(), &sa6_src.sin6_addr))
+        // A redirect or a dead host also reaches an unconnected pcb whose cached route is a
+        // network route (not RTF_HOST) towards `dst`, whatever its addresses: the message
+        // then comes from the next hop that pcb used last, and without this rule it would
+        // keep the redirected route for good. (Cloning a host route per destination on
+        // output, as other systems do, would let the redirect update that clone, at the
+        // price of a local denial of service; icmp6_mtudisc_update() caps such clones.)
+        // The cache is `[s]`: it is read once the pcb's socket is locked, below; the C reads
+        // it here, under the table mutex alone, a race with the socket's owner.
+        let by_route = (prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD)
+            && in6_is_addr_unspecified(&i.inp_laddr6.get());
+        // Whether the addresses select the pcb. With no ports given, a non-zero flow label
+        // and an equal local address match (an error about an ESP-encrypted packet); else the
+        // addresses and the ports given are compared.
+        let by_addr = (lport == 0
+            && fport == 0
+            && flowinfo != 0
+            && flowinfo == (i.inp_flowinfo() & IPV6_FLOWLABEL_MASK)
+            && in6_are_addr_equal(&i.inp_laddr6.get(), &sa6_src.sin6_addr))
             || !(!in6_are_addr_equal(&i.inp_faddr6.get(), &dst.sin6_addr)
                 || rtable_l2(i.inp_rtableid.get()) != rdomain
                 || (lport != 0 && i.inp_lport.get() != lport)
                 || (!in6_is_addr_unspecified(&sa6_src.sin6_addr)
                     && !in6_are_addr_equal(&i.inp_laddr6.get(), &sa6_src.sin6_addr))
                 || (fport != 0 && i.inp_fport.get() != fport));
-        if !do_notify {
+        if !by_route && !by_addr {
             continue;
         }
 
         mtx_leave(&table.inpt_mtx);
         let so = in_pcbsolock(i);
-        if so.is_some() {
+        if so.is_some() && (by_addr || cached_route_to(i, &dst.sin6_addr)) {
             notify(i, errno);
         }
         in_pcbsounlock(Some(i), so);
         mtx_enter(&table.inpt_mtx);
     }
     mtx_leave(&table.inpt_mtx);
+}
+
+/// Whether `inp` caches a network (not host) route whose destination is `dst`: the redirect
+/// clause of `in6_pcbnotify`, read under the pcb's socket lock.
+fn cached_route_to(inp: &Inpcb, dst: &In6Addr) -> bool {
+    let ro = inp.route();
+    ro.rt().is_some_and(|rt| rt.rt_flags.get() & RTF_HOST == 0)
+        && in6_are_addr_equal(&crate::netinet6::ip6_output::ro_sin6(&ro).sin6_addr, dst)
 }
 
 /// `in6_pcbrtentry`: the route to the foreign address of `inp`, from its cache (refreshed
@@ -659,7 +664,12 @@ pub fn in6_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     }
     let faddr = inp.inp_faddr6.get();
     let laddr = inp.inp_laddr6.get();
-    route6_mpath(&inp.inp_route, &faddr, Some(&laddr), inp.inp_rtableid.get())
+    route6_mpath(
+        &mut inp.route(),
+        &faddr,
+        Some(&laddr),
+        inp.inp_rtableid.get(),
+    )
 }
 
 /// `in6_pcbhash_lookup`: the control block of `table` with exactly these addresses in hash
@@ -1185,6 +1195,90 @@ pub(crate) mod tests {
         for i in pcbs {
             release(i);
         }
+        teardown();
+    }
+
+    /// `route add -inet6 default <gw>` on `ifp`, as icmp6's tests add it.
+    fn add_default_route(ifp: &'static crate::net::if_var::Ifnet, gw: In6Addr) {
+        use crate::net::route::{
+            RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTM_ADD, RtAddrinfo,
+            rtfree, rtrequest, sa_of, sa_view,
+        };
+        use crate::netinet6::in6::sin6tosa;
+
+        let mut dst = SockaddrIn6::with_addr(IN6ADDR_ANY);
+        let mut mask = SockaddrIn6::with_addr(IN6ADDR_ANY);
+        let mut gate = SockaddrIn6::with_addr(gw);
+        for s in [&mut dst, &mut mask, &mut gate] {
+            s.sin6_len = core::mem::size_of::<SockaddrIn6>() as u8;
+        }
+        let gate_copy = gate;
+        let mut info = RtAddrinfo::new();
+        info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&dst)));
+        info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(&mask)));
+        info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gate_copy)));
+        info.rti_flags = RTF_GATEWAY | RTF_STATIC;
+        crate::sys::systm::net_lock();
+        // SAFETY: a local `sockaddr_in6`.
+        info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sin6tosa(&mut gate), ifp) };
+        let mut rt = None;
+        rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
+        rtfree(rt);
+        crate::sys::systm::net_unlock();
+    }
+
+    /// B1 of N6.3b2's first review: `in6_pcbnotify` runs in the softnet's context (the shared
+    /// net lock, no socket's lock) and reads an unconnected pcb's route cache only under that
+    /// pcb's socket lock. A walk that read it under the table mutex alone would trip
+    /// `Inpcb::route`'s check (the cache is another socket's), so this test fails then.
+    #[test]
+    fn in6_pcbnotify_reads_a_route_cache_under_its_socket_lock() {
+        use crate::kern::uipc_socket::{soclose, socreate};
+        use crate::netinet::in_pcb::tests::inet6::{take_sent6, test_if6};
+        use crate::sys::protosw::PRC_REDIRECT_HOST;
+        use crate::sys::socket::SOCK_DGRAM;
+        use crate::sys::systm::{net_lock_shared, net_unlock_shared};
+
+        let (_g, _t, _p) = setup();
+        crate::netinet::udp_usrreq::udp_init();
+        let ifp = test_if6(b"tnfy6");
+        add_default_route(ifp, a6("fd00:77::fe"));
+
+        // An unconnected UDP socket whose cache holds the default route towards `far`, filled
+        // as udp6_output fills it: under the socket lock.
+        let so = socreate(i32::from(AF_INET6), SOCK_DGRAM, 0).expect("socket");
+        let inp = sotoinpcb(so).expect("attached");
+        let far = a6("2001:db8::5");
+        assert!(!inp.route_locked(), "no lock held: no loan of the cache");
+        solock(so);
+        assert!(inp.route_locked());
+        let rt = route6_mpath(&mut inp.route(), &far, None, 0).expect("the default route");
+        assert_eq!(rt.rt_flags.get() & RTF_HOST, 0, "a network route");
+        sounlock(so);
+
+        // A redirect about another destination keeps the cache; one about `far` reaches the
+        // pcb by its cached route alone (no address of the pcb matches) and flushes it.
+        for (dst, kept) in [(a6("2001:db8::6"), true), (far, false)] {
+            net_lock_shared();
+            in6_pcbnotify(
+                inp.table(),
+                &sin6(dst, 0),
+                0,
+                None,
+                0,
+                0,
+                PRC_REDIRECT_HOST,
+                ptr::null_mut(),
+                Some(record),
+            );
+            net_unlock_shared();
+            solock(so);
+            assert_eq!(inp.route().rt().is_some(), kept, "redirect about {dst:?}");
+            sounlock(so);
+        }
+
+        soclose(so, 0).expect("close");
+        let _ = take_sent6();
         teardown();
     }
 

@@ -165,6 +165,15 @@ mod tests {
 
     const IPPROTO_UDP: u8 = 17;
 
+    /// `f` under the net lock, as `ip6_local` runs the extension headers' input (the route
+    /// lookups of their errors want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// An IPv6 header followed by `ext`.
     fn packet(ext: &[u8]) -> &'static Mbuf {
         packet_to(OURS6, ext)
@@ -204,7 +213,7 @@ mod tests {
         let mut mp = Some(packet(&ext));
         let mut off = 40;
         assert_eq!(
-            dest6_input(&mut mp, &mut off, 60, 10, None),
+            locked(|| dest6_input(&mut mp, &mut off, 60, 10, None)),
             i32::from(IPPROTO_UDP)
         );
         assert_eq!(off, 40 + 16);
@@ -219,7 +228,10 @@ mod tests {
         let ext = [IPPROTO_UDP, 0, 1, 6, 0, 0, 0, 0];
         let mut mp = Some(packet(&ext));
         let mut off = 40;
-        assert_eq!(dest6_input(&mut mp, &mut off, 60, 10, None), IPPROTO_DONE);
+        assert_eq!(
+            locked(|| dest6_input(&mut mp, &mut off, 60, 10, None)),
+            IPPROTO_DONE
+        );
         assert!(mp.is_none());
         assert_eq!(off, 40, "the offset is left alone");
         assert_eq!(toosmall(), before + 1);
@@ -228,7 +240,10 @@ mod tests {
         let before = toosmall();
         let ext = [IPPROTO_UDP, 0, 0, 0, 0, 0, 0, 1];
         let mut mp = Some(packet(&ext));
-        assert_eq!(dest6_input(&mut mp, &mut off, 60, 10, None), IPPROTO_DONE);
+        assert_eq!(
+            locked(|| dest6_input(&mut mp, &mut off, 60, 10, None)),
+            IPPROTO_DONE
+        );
         assert!(mp.is_none());
         assert_eq!(toosmall(), before + 1);
     }
@@ -240,7 +255,10 @@ mod tests {
         let ext = [IPPROTO_UDP, 2, 0, 0, 0, 0, 0, 0];
         let mut mp = Some(packet(&ext));
         let mut off = 40;
-        assert_eq!(dest6_input(&mut mp, &mut off, 60, 10, None), IPPROTO_DONE);
+        assert_eq!(
+            locked(|| dest6_input(&mut mp, &mut off, 60, 10, None)),
+            IPPROTO_DONE
+        );
         assert!(mp.is_none(), "ip6_exthdr_get freed the chain");
     }
 
@@ -258,7 +276,7 @@ mod tests {
         let ext = [IPPROTO_UDP, 0, opt, 4, 0, 0, 0, 0];
         let mut mp = Some(packet_to(dst, &ext));
         let mut off = 40;
-        let r = dest6_input(&mut mp, &mut off, 60, 10, None);
+        let r = locked(|| dest6_input(&mut mp, &mut off, 60, 10, None));
         let kept = mp.is_some();
         if let Some(m) = mp {
             m_freem(m);

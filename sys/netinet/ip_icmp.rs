@@ -179,18 +179,16 @@ use crate::kern::uipc_mbuf::{
     m_align, m_copyback, m_copydata, m_free, m_freem, m_gethdr, m_getptr, m_prepend, m_pullup,
     m_resethdr,
 };
-use crate::net::if_::{
-    IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP, if_get, if_put, ifa_ifwithaddr, ifaof_ifpforaddr,
-};
+use crate::net::if_::{IFF_BROADCAST, IFF_POINTOPOINT, IFF_UP, if_get, if_put, ifaof_ifpforaddr};
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::{
     RT_RESOLVE, RTAX_DST, RTAX_GATEWAY, RTAX_LABEL, RTF_BLACKHOLE, RTF_BROADCAST, RTF_DYNAMIC,
     RTF_GATEWAY, RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_REJECT, RTM_ADD, RTV_MTU, RtAddrinfo,
     Rtentry, RttimerQueue, SockaddrRtlabel, rt_timer_add, rt_timer_queue_change,
     rt_timer_queue_init, rtalloc, rtdeletemsg, rtfree, rtisvalid, rtlabel_id2sa, rtredirect,
-    rtrequest,
+    rtrequest, sa_of, sa_view,
 };
-use crate::net::rtable::{rt_key, rtable_getsource};
+use crate::net::rtable::{SaCopy, rt_key, rtable_getsource};
 use crate::net::rtsock::rtm_send;
 use crate::netinet::icmp_var::{
     ICMPCTL_BMCASTECHO, ICMPCTL_ERRPPSLIMIT, ICMPCTL_MASKREPL, ICMPCTL_REDIRACCEPT,
@@ -201,8 +199,7 @@ use crate::netinet::icmp_var::{
 use crate::netinet::in_::IPPROTO_IPV6;
 use crate::netinet::in_::{
     IN_CLASSA_NET, IN_CLASSA_NSHIFT, IN_LOOPBACKNET, INADDR_ANY, INADDR_BROADCAST, IPPROTO_DONE,
-    IPPROTO_ICMP, IPPROTO_TCP, InAddr, SockaddrIn, in_canforward, in_multicast, satosin_const,
-    sintosa,
+    IPPROTO_ICMP, IPPROTO_TCP, InAddr, SockaddrIn, in_canforward, in_multicast, sintosa,
 };
 use crate::netinet::in_proto::{INETSW, IP_PROTOX};
 use crate::netinet::in_var::{InIfaddr, ifatoia};
@@ -234,6 +231,7 @@ use crate::sys::socket::AF_INET;
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
 use crate::sys::time::Timeval;
+use hal::pool::PoolArc;
 
 use crate::netinet::ip::Ip;
 
@@ -1269,27 +1267,24 @@ pub fn icmp_input_if(
                         sin_addr: icp.icmp_ip().ip_dst,
                         ..blank
                     };
-                    let mut sgw = SockaddrIn {
+                    let sgw = SockaddrIn {
                         sin_addr: icp.icmp_gwaddr(),
                         ..blank
                     };
-                    let mut ssrc = SockaddrIn {
+                    let ssrc = SockaddrIn {
                         sin_addr: ip.ip_src,
                         ..blank
                     };
 
                     // ICMPPRINTFS: not configured. NCARP > 0: carp_lsdrop; not configured.
                     let mut newrt = None;
-                    // SAFETY: local `sockaddr_in`s.
-                    unsafe {
-                        rtredirect(
-                            sintosa(&mut sdst),
-                            sintosa(&mut sgw),
-                            sintosa(&mut ssrc),
-                            Some(&mut newrt),
-                            m.m_pkthdr().ph_rtableid.get(),
-                        )
-                    };
+                    rtredirect(
+                        sa_of(&sdst),
+                        sa_of(&sgw),
+                        sa_of(&ssrc),
+                        Some(&mut newrt),
+                        m.m_pkthdr().ph_rtableid.get(),
+                    );
                     if let Some(nrt) = newrt
                         && ICMP_REDIRTIMEOUT.load(Ordering::Relaxed) > 0
                     {
@@ -1430,22 +1425,23 @@ pub fn icmp_reflect(
     // For broadcast, use the address which corresponds to the incoming interface.
     match ia {
         None => {
-            let mut sin = SockaddrIn {
+            let sin = SockaddrIn {
                 sin_len: size_of::<SockaddrIn>() as u8,
                 sin_family: AF_INET,
                 sin_addr: ip.ip_dst,
                 ..SockaddrIn::default()
             };
 
-            // SAFETY: a local `sockaddr_in`.
-            let rt = unsafe { rtalloc(sintosa(&mut sin), 0, rtableid) };
+            let rt = rtalloc(sa_of(&sin), 0, rtableid);
             if let Some(r) = rt
                 && rtisvalid(Some(r))
             {
                 if r.rt_flags.get() & RTF_LOCAL != 0 {
                     ip_src = ip.ip_dst;
-                } else if r.rt_flags.get() & RTF_BROADCAST != 0 {
-                    ip_src = ifatoia(r.ifa()).ia_addr.get().sin_addr;
+                } else if r.rt_flags.get() & RTF_BROADCAST != 0
+                    && let Some(ifa) = r.ifa()
+                {
+                    ip_src = ifatoia(ifa).ia_addr.get().sin_addr;
                 }
             }
             rtfree(rt);
@@ -1457,7 +1453,7 @@ pub fn icmp_reflect(
     // connected use the closest address, otherwise try to use the sourceaddr from the routing
     // table.
     if ip_src.s_addr == INADDR_ANY {
-        let mut sin = SockaddrIn {
+        let sin = SockaddrIn {
             sin_len: size_of::<SockaddrIn>() as u8,
             sin_family: AF_INET,
             sin_addr: ip.ip_src,
@@ -1465,27 +1461,23 @@ pub fn icmp_reflect(
         };
 
         // keep packet in the original virtual instance
-        // SAFETY: a local `sockaddr_in`.
-        let rt = unsafe { rtalloc(sintosa(&mut sin), RT_RESOLVE, rtableid) };
+        let rt = rtalloc(sa_of(&sin), RT_RESOLVE, rtableid);
         if let Some(r) = rt
             && rtisvalid(Some(r))
             && r.rt_flags.get() & RTF_GATEWAY == 0
+            && let Some(ifa) = r.ifa()
         {
-            ip_src = ifatoia(r.ifa()).ia_addr.get().sin_addr;
-        } else {
-            let sourceaddr = rtable_getsource(rtableid, AF_INET);
-            if !sourceaddr.is_null() {
-                // SAFETY: a preferred source is an interface address, readable.
-                let ifa = unsafe { ifa_ifwithaddr(sourceaddr, rtableid) };
-                if let Some(ifa) = ifa
-                    && ifa
-                        .ifa_ifp
-                        .get()
-                        .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
-                {
-                    // SAFETY: an `AF_INET` source is a `sockaddr_in`.
-                    ip_src = unsafe { (*satosin_const(sourceaddr)).sin_addr };
-                }
+            ip_src = ifatoia(ifa).ia_addr.get().sin_addr;
+        } else if let Some(sourceaddr) = rtable_getsource(rtableid, AF_INET) {
+            let ifa = crate::net::if_::ifa_ifwithaddr_sa(sourceaddr.bytes(), rtableid);
+            if let Some(ifa) = ifa
+                && ifa
+                    .ifa_ifp
+                    .get()
+                    .is_some_and(|ifp| ifp.if_flags.get() & IFF_UP != 0)
+                && let Some(s) = hal::pod::at::<SockaddrIn>(sourceaddr.bytes(), 0)
+            {
+                ip_src = s.sin_addr;
             }
         }
         rtfree(rt);
@@ -1665,15 +1657,14 @@ fn icmp_sysctl_icmpstat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result
 /// `icmp_mtudisc_clone`: a host route to `dst` for path MTU discovery (cloned from the
 /// network route if needed) with a timer on `ip_mtudisc_timeout_q`; referenced.
 pub fn icmp_mtudisc_clone(dst: InAddr, rtableid: u32, ipsec: bool) -> Option<&'static Rtentry> {
-    let mut sin = SockaddrIn {
+    let sin = SockaddrIn {
         sin_family: AF_INET,
         sin_len: size_of::<SockaddrIn>() as u8,
         sin_addr: dst,
         ..SockaddrIn::default()
     };
 
-    // SAFETY: a local `sockaddr_in`.
-    let mut rt = unsafe { rtalloc(sintosa(&mut sin), RT_RESOLVE, rtableid) };
+    let mut rt = rtalloc(sa_of(&sin), RT_RESOLVE, rtableid);
 
     let ok = 'bad: {
         let Some(r) = rt else {
@@ -1701,24 +1692,22 @@ pub fn icmp_mtudisc_clone(dst: InAddr, rtableid: u32, ipsec: bool) -> Option<&'s
         if r.rt_flags.get() & RTF_HOST == 0 {
             let mut info = RtAddrinfo::new();
             let mut sa_rl = SockaddrRtlabel::default();
+            let gw = r.gateway_copy();
 
             info.rti_ifa = r.rt_ifa.get();
             info.rti_flags = RTF_GATEWAY | RTF_HOST | RTF_DYNAMIC;
-            info.rti_info[RTAX_DST] = sintosa(&mut sin);
-            info.rti_info[RTAX_GATEWAY] = r.rt_gateway.get();
+            info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&sin)));
+            info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(SaCopy::view);
             info.rti_info[RTAX_LABEL] = rtlabel_id2sa(r.rt_labelid.get(), &mut sa_rl);
 
             let mut nrt = None;
-            // SAFETY: a local `sockaddr_in`, the route's gateway and a local label.
-            if unsafe {
-                rtrequest(
-                    RTM_ADD,
-                    &mut info,
-                    r.rt_priority.get(),
-                    Some(&mut nrt),
-                    rtableid,
-                )
-            }
+            if rtrequest(
+                RTM_ADD,
+                &mut info,
+                r.rt_priority.get(),
+                Some(&mut nrt),
+                rtableid,
+            )
             .is_err()
             {
                 break 'bad false;
@@ -1808,16 +1797,17 @@ pub fn icmp_mtudisc(icp: &IcmpPkt, rtableid: u32) {
 
 /// `icmp_mtudisc_timeout`: a path MTU timer fired: delete the dynamic host route (telling TCP
 /// the MTU may be larger again) or forget the learned MTU.
-pub fn icmp_mtudisc_timeout(rt: &'static Rtentry, rtableid: u32) {
+pub fn icmp_mtudisc_timeout(rt: &PoolArc<Rtentry>, rtableid: u32) {
     net_assert_locked("icmp_mtudisc_timeout");
+    let rt: &Rtentry = rt;
 
     let Some(ifp) = if_get(rt.rt_ifidx.get()) else {
         return;
     };
 
     if rt.rt_flags.get() & (RTF_DYNAMIC | RTF_HOST) == (RTF_DYNAMIC | RTF_HOST) {
-        // SAFETY: a route's key in the inet table is a `sockaddr_in`.
-        let mut sin = unsafe { ptr::read_unaligned(satosin_const(rt_key(rt))) };
+        // A route's key in the inet table is a `sockaddr_in`.
+        let mut sin = hal::pod::at::<SockaddrIn>(rt_key(rt), 0).unwrap_or_default();
 
         let _ = rtdeletemsg(rt, ifp, rtableid);
 

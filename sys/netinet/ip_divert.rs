@@ -74,7 +74,7 @@ use crate::net::route::{RTF_LOCAL, rtalloc, rtfree, rtisvalid};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{
     INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn, in_control, in_nam2sin,
-    satosin_const, sintosa,
+    satosin_const,
 };
 use crate::netinet::in_pcb::{
     INP_HDRINCL, Inpcb, Inpcbtable, in_pcb_is_iterator, in_pcballoc, in_pcbbind, in_pcbdetach,
@@ -258,9 +258,8 @@ fn divert_output(
         ph.pf.flags.set(ph.pf.flags.get() | PF_TAG_DIVERTED_PACKET);
 
         let result = if dir == PF_IN {
-            let mut dst = sin;
-            // SAFETY: a local `sockaddr_in`, read for the call.
-            let rt = unsafe { rtalloc(sintosa(&mut dst), 0, inp.inp_rtableid.get()) };
+            let dst = sin;
+            let rt = rtalloc(crate::net::route::sa_of(&dst), 0, inp.inp_rtableid.get());
             if !rtisvalid(rt) || rt.is_none_or(|rt| rt.rt_flags.get() & RTF_LOCAL == 0) {
                 rtfree(rt);
                 break 'fail Errno::EADDRNOTAVAIL;
@@ -287,7 +286,7 @@ fn divert_output(
             ip_output(
                 m,
                 None,
-                Some(&inp.inp_route),
+                Some(&mut *inp.route()),
                 IP_ALLOWBROADCAST | IP_RAWOUTPUT,
                 None,
                 None,

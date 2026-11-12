@@ -95,7 +95,7 @@ use crate::log;
 use crate::net::if_::{
     IFF_RUNNING, IFF_UP, IFNAMSIZ, if_get, if_isconnected, if_output_mq, if_put,
 };
-use crate::net::if_dl::{SockaddrDl, lladdr, satosdl};
+use crate::net::if_dl::{SockaddrDl, lladdr};
 use crate::net::if_types::{IFT_CARP, IFT_ETHER, IFT_IEEE1394, IFT_IEEE80211, IFT_PROPVIRTUAL};
 use crate::net::if_var::{Ifaddr, Ifnet};
 use crate::net::route::{
@@ -109,14 +109,14 @@ use crate::netinet::icmp6::{
     ND_NEIGHBOR_ADVERT, ND_NEIGHBOR_SOLICIT, ND_OPT_SOURCE_LINKADDR, ND_OPT_TARGET_LINKADDR,
     NdNeighborAdvert, NdNeighborSolicit, NdOptHdr, icmp6stat_inc, icmp6stat_inc_hist,
 };
-use crate::netinet::if_ether::{ETHER_ADDR_LEN, arpcom_of};
+use crate::netinet::if_ether::{ETHER_ADDR_LEN, arpcom_of, gw_family_len, gw_sdl_copy};
 use crate::netinet::in_::IPPROTO_ICMPV6;
 use crate::netinet::ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr, ip6_exthdr_get};
 use crate::netinet6::in6::{
     __IPV6_ADDR_INT16_MLL, __IPV6_ADDR_INT32_ONE, IN6ADDR_LINKLOCAL_ALLNODES,
     IN6ADDR_LINKLOCAL_ALLROUTERS, In6Addr, SockaddrIn6, ifatoia6, in6_are_addr_equal,
     in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_scope_embed, in6ifa_ifpforlinklocal,
-    in6ifa_ifpwithaddr, sin6tosa_const,
+    in6ifa_ifpwithaddr,
 };
 use crate::netinet6::in6_proto::{IP6_DAD_COUNT, IP6_DAD_PENDING, IP6_FORWARDING};
 use crate::netinet6::in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE, ifa_in6};
@@ -125,8 +125,8 @@ use crate::netinet6::ip6_var::{IPV6_UNSPECSRC, Ip6Moptions, mtod_ip6, mtod_ip6_s
 use crate::netinet6::nd6::{
     In6Ntop, ND6_GCTIMER, ND6_LLINFO_INCOMPLETE, ND6_LLINFO_REACHABLE, ND6_LLINFO_STALE, NdOpts,
     REACHABLE_TIME, RETRANS_TIMER, if_nd, ln_hold_total, nd6_cache_lladdr, nd6_ether_sprintf,
-    nd6_llchanged, nd6_llinfo_permanent, nd6_llinfo_settimer, nd6_llstore, nd6_lookup,
-    nd6_opt_lladdr, nd6_options, rt_ln,
+    nd6_lladdr_alen, nd6_llchanged, nd6_llinfo_permanent, nd6_llinfo_settimer, nd6_llstore,
+    nd6_lookup, nd6_opt_lladdr, nd6_options, rt_ln,
 };
 use crate::netinet6::nd6_rtr::rt6_flush;
 use crate::queue_adapter;
@@ -318,12 +318,14 @@ pub fn nd6_ns_input(m: &'static Mbuf, off: i32, icmp6len: i32) {
         if ifa.is_none() {
             let tsin6 = SockaddrIn6::with_addr(taddr6);
 
-            // SAFETY: a local `sockaddr_in6`.
-            let rt = unsafe { rtalloc(sin6tosa_const(&tsin6), 0, m.m_pkthdr().ph_rtableid.get()) };
+            let rt = rtalloc(
+                crate::net::route::sa_of(&tsin6),
+                0,
+                m.m_pkthdr().ph_rtableid.get(),
+            );
             if let Some(r) = rt
                 && r.rt_flags.get() & RTF_ANNOUNCE != 0
-                // SAFETY: a route's gateway is a readable socket address.
-                && unsafe { (*r.rt_gateway.get()).sa_family } == AF_LINK
+                && gw_family_len(r).0 == AF_LINK
             {
                 // proxy NDP for single entry
                 ifa = in6ifa_ifpforlinklocal(
@@ -333,8 +335,8 @@ pub fn nd6_ns_input(m: &'static Mbuf, off: i32, icmp6len: i32) {
                 .map(|ia| &ia.ia_ifa);
                 if ifa.is_some() {
                     proxy = true;
-                    // SAFETY: an `AF_LINK` gateway is a `sockaddr_dl`.
-                    proxydl = Some(unsafe { *satosdl(r.rt_gateway.get()) });
+                    // An `AF_LINK` gateway is a `sockaddr_dl`.
+                    proxydl = gw_sdl_copy(r);
                     i_am_router = false; // XXX
                 }
             }
@@ -594,21 +596,24 @@ pub fn nd6_ns_output(
             || crate::netinet6::in6::in6_is_addr_linklocal(&src_sa.sin6_addr)
             || in6ifa_ifpwithaddr(ifp, &src_sa.sin6_addr).is_none()
         {
-            // SAFETY: a local `sockaddr_in6`.
-            let rt = unsafe {
-                rtalloc(
-                    sin6tosa_const(&dst_sa),
-                    RT_RESOLVE,
-                    m.m_pkthdr().ph_rtableid.get(),
-                )
-            };
+            let rt = rtalloc(
+                crate::net::route::sa_of(&dst_sa),
+                RT_RESOLVE,
+                m.m_pkthdr().ph_rtableid.get(),
+            );
             let Some(r) = rt.filter(|r| rtisvalid(Some(r))) else {
                 rtfree(rt);
                 // bad:
                 m_freem(m);
                 return;
             };
-            src_sa.sin6_addr = ifatoia6(r.ifa()).ia_addr.get().sin6_addr;
+            // A valid route has its address (`rt_ifa`).
+            let Some(ia6) = r.ifa().map(ifatoia6) else {
+                rtfree(Some(r));
+                m_freem(m);
+                return;
+            };
+            src_sa.sin6_addr = ia6.ia_addr.get().sin6_addr;
             rtfree(Some(r));
         }
     } else {
@@ -795,16 +800,15 @@ pub fn nd6_na_input(m: &'static Mbuf, off: i32, icmp6len: i32) {
             let Some(r) = rt else {
                 break 'out false;
             };
-            let sdl = satosdl(r.rt_gateway.get());
             let (Some(l), Some(ln)) = (lladdr, rt_ln(r)) else {
                 break 'out false;
             };
-            if sdl.is_null() {
+            if !r.with_gateway(|g| g.is_some()) {
                 break 'out false;
             }
-            // SAFETY: the gateway of a neighbor route `nd6_lookup` validated is a
-            // `sockaddr_dl` with room for the interface's address.
-            unsafe { nd6_llstore(l, sdl, ifp) };
+            // The gateway of a neighbor route `nd6_lookup` validated is a `sockaddr_dl`
+            // with room for the interface's address.
+            nd6_llstore(l, r, ifp);
 
             // RFC9131 6.1.1
             //
@@ -860,8 +864,7 @@ pub(crate) fn nd6_na_cache(
     let Some(ln) = rt_ln(rt) else {
         return;
     };
-    let sdl = satosdl(rt.rt_gateway.get());
-    if sdl.is_null() {
+    if !rt.with_gateway(|g| g.is_some()) {
         return;
     }
 
@@ -871,10 +874,10 @@ pub(crate) fn nd6_na_cache(
             return;
         }
 
-        // Record link-layer address, and update the state.
-        // SAFETY: the gateway of a neighbor route is a `sockaddr_dl` with room for the
-        // interface's address (`nd6_lookup` validated it).
-        unsafe { nd6_llstore(lladdr.unwrap_or(&[]), sdl, ifp) };
+        // Record link-layer address, and update the state. The gateway of a neighbor route
+        // is a `sockaddr_dl` with room for the interface's address (`nd6_lookup` validated
+        // it).
+        nd6_llstore(lladdr.unwrap_or(&[]), rt, ifp);
         if is_solicited {
             ln.ln_state.set(ND6_LLINFO_REACHABLE);
             // Notify userland that a new ND entry is reachable.
@@ -898,8 +901,7 @@ pub(crate) fn nd6_na_cache(
         // Check if the link-layer address has changed or not.
         let llchange = match lladdr {
             None => false,
-            // SAFETY: as above.
-            Some(l) => unsafe { (*sdl).sdl_alen == 0 || nd6_llchanged(l, sdl, ifp) },
+            Some(l) => nd6_lladdr_alen(rt) == 0 || nd6_llchanged(l, rt, ifp),
         };
 
         // This is VERY complex.  Look at it with care.
@@ -944,8 +946,7 @@ pub(crate) fn nd6_na_cache(
                 );
             }
             if let Some(l) = lladdr {
-                // SAFETY: as above.
-                unsafe { nd6_llstore(l, sdl, ifp) };
+                nd6_llstore(l, rt, ifp);
             }
 
             // If solicited, make the state REACHABLE. If not solicited and the link-layer
@@ -970,8 +971,17 @@ pub(crate) fn nd6_na_cache(
     }
     rt.rt_flags.set(rt.rt_flags.get() & !RTF_REJECT);
     ln.ln_asked.set(0);
-    // SAFETY: the route's key is its readable `sockaddr_in6`.
-    let _ = unsafe { if_output_mq(ifp, &ln.ln_mq, &ln_hold_total, rt_key(rt), Some(rt)) };
+    // SAFETY: the route's key is its readable `sockaddr_in6` (its bytes, live while the
+    // route is held).
+    let _ = unsafe {
+        if_output_mq(
+            ifp,
+            &ln.ln_mq,
+            &ln_hold_total,
+            rt_key(rt).as_ptr().cast(),
+            Some(rt),
+        )
+    };
 }
 
 /// `nd6_na_output`: neighbor advertisement output handling. Based on RFC 2461.
@@ -1033,15 +1043,24 @@ pub fn nd6_na_output(
     ip6.ip6_dst = dst_sa.sin6_addr;
 
     // Select a source whose scope is the same as that of the dest.
-    // SAFETY: a local `sockaddr_in6`.
-    let rt = unsafe { rtalloc(sin6tosa_const(&dst_sa), RT_RESOLVE, ifp.if_rdomain.get()) };
+    let rt = rtalloc(
+        crate::net::route::sa_of(&dst_sa),
+        RT_RESOLVE,
+        ifp.if_rdomain.get(),
+    );
     let Some(r) = rt.filter(|r| rtisvalid(Some(r))) else {
         rtfree(rt);
         // bad:
         m_freem(m);
         return;
     };
-    ip6.ip6_src = ifatoia6(r.ifa()).ia_addr.get().sin6_addr;
+    // A valid route has its address (`rt_ifa`).
+    let Some(ia6) = r.ifa().map(ifatoia6) else {
+        rtfree(Some(r));
+        m_freem(m);
+        return;
+    };
+    ip6.ip6_src = ia6.ia_addr.get().sin6_addr;
     rtfree(Some(r));
 
     let mut nd_na = NdNeighborAdvert {
@@ -1419,8 +1438,7 @@ fn nd6_isneighbor(ifp: &Ifnet, addr: &In6Addr) -> bool {
     let tableid = ifp.if_rdomain.get();
     let sin6 = SockaddrIn6::with_addr(*addr);
 
-    // SAFETY: a local `sockaddr_in6`.
-    let rt = unsafe { rtalloc(sin6tosa_const(&sin6), 0, tableid) };
+    let rt = rtalloc(crate::net::route::sa_of(&sin6), 0, tableid);
 
     let rv = rt.is_some_and(|r| {
         rtisvalid(Some(r))

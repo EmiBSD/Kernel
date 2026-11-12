@@ -26,7 +26,9 @@
 //!   [`user_bytes`] and `hal::user::UserPtr`. It is one array for the whole test process, so
 //!   tests that run at once keep to ranges of their own (offsets from `USER_BASE`):
 //!   - `0x0_0000..0x1_0000`: the 64 KiB the tests lay their arguments out in (paths, buffers,
-//!     `struct stat`s, the `bsd` tests' `user_buf` at `0x8000`).
+//!     `struct stat`s, the `bsd` tests' `user_buf` at `0x8000`); `0x7000..0x8000` is the
+//!     routing socket's `net.route` answers (`kernel::net::rtsock`'s tests, N6.3b2), which
+//!     no other kernel test writes.
 //!   - `0x1_0000..0x3_0000`: the memory file system's image (`kernel::fs::ufs::mfs`'s host
 //!     fixture, N5.5b3), 128 KiB at most, written and zeroed by the fixture alone. An image
 //!     smaller than 64 KiB cannot mount (the super-block search's first slot, 64 KiB in,

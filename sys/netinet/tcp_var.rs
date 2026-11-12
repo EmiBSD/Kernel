@@ -98,7 +98,7 @@ use core::sync::atomic::Ordering;
 
 use crate::kern::kern_tc::getnsecruntime;
 use crate::machine::copy::AbiPod;
-use crate::net::route::Route;
+use crate::net::route::RouteCell;
 use crate::netinet::in_pcb::{Inpcb, sotoinpcb};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 use crate::netinet::tcp::{MAX_SACK_BLKS, TcpSeq, Tcphdr};
@@ -635,7 +635,7 @@ pub struct SynCache {
     /// Rexmt timer.
     pub sc_timer: Timeout,
     /// \[s\] Cached route.
-    pub sc_route: Route,
+    pub sc_route: RouteCell,
     /// \[I\] Advertised window.
     pub sc_win: Cell<i64>,
     /// \[S\] Our bucket index.
@@ -691,7 +691,7 @@ impl SynCache {
             sc_bucketq: TailqEntry::new(),
             sc_refcnt: Refcnt::new(),
             sc_timer: Timeout::zeroed(),
-            sc_route: Route::new(),
+            sc_route: RouteCell::new(),
             sc_win: Cell::new(0),
             sc_buckethead: Cell::new(ptr::null()),
             sc_set: Cell::new(None),

@@ -64,8 +64,8 @@
 //!
 //! ## Deviations
 //! - `domains[]` is a slice without the C's NULL terminator. It holds `inetdomain`
-//!   (`netinet/in_proto.rs`), `unixdomain` (the kernel's) and `routedomain`
-//!   (`net/rtsock.rs`), with `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and
+//!   (`netinet/in_proto.rs`), `unixdomain` and `routedomain` (the kernel's), with
+//!   `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and
 //!   `inet6domain` (`netinet6/in6_proto.rs`, `INET6`: the `inet6` feature) before
 //!   `inetdomain`. `MPLS` and `NAF_FRAME` are not configured; their entries are comments,
 //!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
@@ -91,7 +91,6 @@ use crate::kern::subr_prf::panic;
 use crate::net::bpf::bpf_sysctl;
 use crate::net::ifq::net_ifiq_sysctl;
 use crate::net::pfkeyv2::{PFKEYDOMAIN, PFKEYSW};
-use crate::net::rtsock::{ROUTEDOMAIN, ROUTESW};
 use crate::netinet::in_proto::{INETDOMAIN, INETSW};
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_proto::{INET6DOMAIN, INET6SW};
@@ -101,7 +100,7 @@ use crate::sys::mbuf::{Mbuf, lend, park};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
-    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
+    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_ROUTE, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
@@ -115,7 +114,7 @@ pub static DOMAINS: &[&Domain] = &[
     #[cfg(feature = "inet6")]
     &INET6DOMAIN,
     &INETDOMAIN,
-    &ROUTEDOMAIN,
+    // routedomain: the kernel's (NET_DOMAINS).
     // NAF_FRAME: &framedomain, not configured.
 ];
 
@@ -128,7 +127,7 @@ pub static NET_DOMAINS: &[&dyn KDomain<G>] = &[
     &INET6DOMAIN,
     &INETDOMAIN,
     &kernel::net::unix::Unix::<G>::NEW,
-    &ROUTEDOMAIN,
+    &kernel::net::rtsock::RouteDomain::<G>::NEW,
     // NAF_FRAME: &framedomain, not configured.
 ];
 
@@ -147,8 +146,6 @@ static INET_PROTOS: [&dyn Protocol<G>; 14] = protocols!(INETSW; 0 1 2 3 4 5 6 7 
 #[cfg(feature = "inet6")]
 static INET6_PROTOS: [&dyn Protocol<G>; 15] =
     protocols!(INET6SW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
-/// `routesw[]` as the kernel's protocols.
-static ROUTE_PROTOS: [&dyn Protocol<G>; 1] = protocols!(ROUTESW; 0);
 /// `pfkeysw[]` as the kernel's protocols.
 static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
 
@@ -197,9 +194,6 @@ impl KDomain<G> for Domain {
         #[cfg(feature = "inet6")]
         if ptr::eq(self, &INET6DOMAIN) {
             return &INET6_PROTOS;
-        }
-        if ptr::eq(self, &ROUTEDOMAIN) {
-            return &ROUTE_PROTOS;
         }
         if ptr::eq(self, &PFKEYDOMAIN) {
             return &PFKEY_PROTOS;
@@ -514,6 +508,28 @@ pub fn net_sysctl(
         };
         return kernel::net::unix::uipc_sysctl::<G>(&name[1..], &mut req);
     }
+    if family == i32::from(PF_ROUTE) {
+        // The route domain is the kernel's: its one protocol (0, routesw[0]) answers
+        // net.route (pr_sysctl = sysctl_rtable), its old value's pages wired as the C's for
+        // a protocol without PR_MPSYSCTL.
+        if name.len() < 3 {
+            return Err(Errno::EISDIR); // overloaded
+        }
+        if name[1] != 0 {
+            return Err(Errno::ENOPROTOOPT);
+        }
+        let savelen = *oldlenp;
+        let vs = sysctl_vslock(oldp, savelen)?;
+        let mut req = kernel::sysctl::SysctlReq {
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+        };
+        let error = kernel::net::rtsock::sysctl_rtable::<G>(&name[2..], &mut req);
+        drop(vs);
+        return error;
+    }
     if family == i32::from(PF_BPF) {
         return bpf_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
@@ -579,8 +595,9 @@ mod tests {
     #[test]
     fn the_inet_protocols_are_found_by_number_and_type() {
         assert!(pffinddomain(i32::from(AF_INET)).is_some());
-        assert!(pffinddomain(i32::from(AF_ROUTE)).is_some());
-        // The UNIX domain is the kernel's: not among bsd's tables.
+        // The UNIX and route domains are the kernel's (N6.2a, N6.3b2): not among bsd's
+        // tables.
+        assert!(pffinddomain(i32::from(AF_ROUTE)).is_none());
         assert!(pffinddomain(i32::from(AF_UNIX)).is_none());
         assert!(pffinddomain(i32::from(PF_UNSPEC)).is_none());
 

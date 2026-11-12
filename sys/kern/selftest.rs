@@ -1538,7 +1538,7 @@ pub fn ping_gateway() {
     use crate::net::if_types::IFT_ETHER;
     use crate::net::route::{
         RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTM_ADD, RtAddrinfo, rtfree,
-        rtrequest,
+        rtrequest, sa_of, sa_view,
     };
     use crate::netinet::icmp_var::IcmpstatCounters;
     use crate::netinet::in_::{IPPROTO_ICMP, sintosa};
@@ -1605,21 +1605,21 @@ pub fn ping_gateway() {
     }
 
     // route add default 10.0.2.2
-    let mut dst = ping_sin([0, 0, 0, 0]);
-    let mut mask = ping_sin([0, 0, 0, 0]);
+    let dst = ping_sin([0, 0, 0, 0]);
+    let mask = ping_sin([0, 0, 0, 0]);
     let mut gw = ping_sin(PING_GATEWAY);
-    let mut info = RtAddrinfo::new();
-    info.rti_info[RTAX_DST] = sintosa(&mut dst);
-    info.rti_info[RTAX_NETMASK] = sintosa(&mut mask);
-    info.rti_info[RTAX_GATEWAY] = sintosa(&mut gw);
-    info.rti_flags = RTF_GATEWAY | RTF_STATIC;
     net_lock();
     // The interface address whose subnet holds the gateway (route(8)'s rtm_getifa).
     // SAFETY: a local `sockaddr_in`.
-    info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
+    let ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
+    let mut info = RtAddrinfo::new();
+    info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&dst)));
+    info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(&mask)));
+    info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gw)));
+    info.rti_flags = RTF_GATEWAY | RTF_STATIC;
+    info.rti_ifa = ifa;
     let mut rt = None;
-    // SAFETY: the addresses are locals that live across the call.
-    let error = unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) };
+    let error = rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0);
     rtfree(rt);
     net_unlock();
     if let Err(e) = error {

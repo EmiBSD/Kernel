@@ -145,9 +145,7 @@ use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue, sysctl_niq};
 use crate::net::pf::{pf_ouraddr, pf_test};
 use crate::net::pfvar::{PF_IN, PF_PASS};
-use crate::net::route::{
-    RTF_LOCAL, RTGENERATION, Route, route6_mpath, rt_timer_queue_change, rtfree,
-};
+use crate::net::route::{RTF_LOCAL, RTGENERATION, Route, route6_mpath, rt_timer_queue_change};
 use crate::netinet::icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
 use crate::netinet::in_::{
     IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS,
@@ -509,7 +507,8 @@ pub fn ip6_input_if(
     ifp: &'static Ifnet,
     ns: Option<&mut Netstack>,
 ) -> i32 {
-    let iproute = Route::new();
+    let mut ns = ns;
+    let mut iproute = Route::new();
     let mut nxt = nxt;
     let mut src_scope: u16 = 0;
     let mut dst_scope: u16 = 0;
@@ -627,10 +626,12 @@ pub fn ip6_input_if(
                 break 'out;
             }
 
-            // Unicast check
-            // The netstack's route cache (`ns_route`) is not kept (net/if_var.rs's deviations):
-            // the C's path without a netstack, a route of this call's.
-            let ro: &Route = &iproute;
+            // Unicast check: the softnet's route cache (`ns->ns_route`), or a route of this
+            // call's without a netstack (`iproute`, given back when the call ends).
+            let ro: &mut Route = match ns.as_deref_mut() {
+                Some(n) => &mut n.ns_route,
+                None => &mut iproute,
+            };
             let rt = route6_mpath(
                 ro,
                 &ip6.ip6_dst,
@@ -642,7 +643,9 @@ pub fn ip6_input_if(
             if let Some(rt) = rt
                 && rt.rt_flags.get() & RTF_LOCAL != 0
             {
-                let ia6 = ifatoia6(rt.ifa());
+                let Some(ia6) = rt.ifa().map(ifatoia6) else {
+                    break 'bad;
+                };
 
                 if flags & IPV6_FORWARDING == 0
                     && rt.rt_ifidx.get() != ifp.if_index.get()
@@ -701,15 +704,13 @@ pub fn ip6_input_if(
 
             ip6_forward(m, Some(ro), flags);
             *mp = None;
-            rtfree(iproute.ro_rt.get());
             return IPPROTO_DONE;
         }
         // bad:
         nxt = IPPROTO_DONE;
         m_freemp(mp);
     }
-    // out: `iproute` is the one route this function may have filled.
-    rtfree(iproute.ro_rt.get());
+    // out: `iproute` is the one route this function may have filled, given back with it.
     nxt
 }
 

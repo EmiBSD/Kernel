@@ -794,10 +794,6 @@ impl ProcGlue for BsdProcGlue {
         crate::kern::init_main::start_init(p);
     }
 
-    fn rtable_exists(id: u32) -> bool {
-        crate::net::rtable::rtable_exists(id)
-    }
-
     fn pgrp_ref(pg: &Pgrp) -> PgrpRef {
         pgrp_ref(pg)
     }

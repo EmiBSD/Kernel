@@ -1311,7 +1311,7 @@ pub fn udp_output(
     let error = ip_output(
         m,
         inp.inp_options.get(),
-        Some(&inp.inp_route),
+        Some(&mut *inp.route()),
         inp.socket().options() & SO_BROADCAST,
         inp.moptions(),
         Some(&inp.inp_seclevel.get()),
@@ -1571,6 +1571,14 @@ mod tests {
     use crate::sys::protosw::{PRC_UNREACH_PORT, PRCO_GETOPT, PRCO_SETOPT};
     use crate::sys::socket::SOCK_DGRAM;
 
+    /// `f` under the net lock, as the C runs the stack's input (`if_input_process`, `if_netisr`): the route lookups want the lock's proof.
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// The interface with our address, its queue drained; UDP and raw IP set up.
     fn net() -> &'static Ifnet {
         udp_init();
@@ -1635,8 +1643,8 @@ mod tests {
 
     /// Hands `datagram` to the interface as the gateway's and runs the IP input queue.
     fn receive(ifp: &'static Ifnet, datagram: &[u8]) {
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, datagram), None);
-        ipintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, datagram), None));
+        locked(|| ipintr());
     }
 
     /// The gateway answers our ARP request.
@@ -1658,8 +1666,8 @@ mod tests {
         let arp = unsafe {
             core::slice::from_raw_parts(ptr::from_ref(&reply).cast::<u8>(), size_of::<EtherArp>())
         };
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
-        arpintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None));
+        locked(|| arpintr());
     }
 
     /// `htons`.
@@ -1884,7 +1892,7 @@ mod tests {
         let mut mp = Some(m);
         let mut off = 40;
         assert_eq!(
-            udp_input(&mut mp, &mut off, IPPROTO_UDP, i32::from(AF_INET6), None),
+            locked(|| udp_input(&mut mp, &mut off, IPPROTO_UDP, i32::from(AF_INET6), None)),
             IPPROTO_DONE
         );
     }

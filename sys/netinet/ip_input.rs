@@ -126,7 +126,7 @@ use crate::net::pf::{pf_find_divert, pf_ouraddr, pf_test};
 use crate::net::pfvar::{PF_IN, PF_PASS};
 use crate::net::route::{
     RT_RESOLVE, RTF_BROADCAST, RTF_DYNAMIC, RTF_GATEWAY, RTF_LOCAL, RTF_MODIFIED, Route,
-    route_mpath, rt_timer_queue_change, rt_timer_queue_flush, rtalloc, rtfree, rtisvalid,
+    route_mpath, rt_timer_queue_change, rt_timer_queue_flush, rtalloc, rtfree, rtisvalid, sa_of,
 };
 use crate::net::rtable::{rt_key, rtable_l2};
 use crate::netinet::if_ether::{ARPINQ, ARPT_DOWN, ARPT_KEEP, arpinit, arpproxy, la_hold_total};
@@ -625,16 +625,20 @@ pub fn ip_input_if(
     ifp: &'static Ifnet,
     ns: Option<&mut Netstack>,
 ) -> i32 {
-    let iproute = Route::new();
+    let mut ns = ns;
+    let mut iproute = Route::new();
     let mut flags = 0;
     let mut nxt = nxt;
 
     kassert!(*offp == 0);
 
     ipstat_inc(IpstatCounters::IpsTotal);
-    // The netstack's route cache (`ns_route`) is not kept (net/if_var.rs's deviations):
-    // the C's path without a netstack, a route of this call's.
-    let ro: &Route = &iproute;
+    // The softnet's route cache (`ns->ns_route`), or a route of this call's without a
+    // netstack (`iproute`, given back when the call ends).
+    let ro: &mut Route = match ns.as_deref_mut() {
+        Some(n) => &mut n.ns_route,
+        None => &mut iproute,
+    };
     'out: {
         'bad: {
             let Some(m0) = *mp else {
@@ -732,19 +736,13 @@ pub fn ip_input_if(
 
             ip_forward(m, ifp, Some(ro), flags);
             *mp = None;
-            if ptr::eq(ro, &iproute) {
-                rtfree(ro.ro_rt.get());
-            }
             return IPPROTO_DONE;
         }
         // bad:
         nxt = IPPROTO_DONE;
         m_freemp(mp);
     }
-    // out:
-    if ptr::eq(ro, &iproute) {
-        rtfree(ro.ro_rt.get());
-    }
+    // out: iproute's route given back with it (rtfree).
     nxt
 }
 
@@ -977,7 +975,7 @@ pub fn ip_deliver(
 
 /// `in_ouraddr`: 1 if the packet is for one of our addresses (or a broadcast we accept), 2
 /// if it was received on the wrong interface, 0 otherwise.
-pub fn in_ouraddr(m: &'static Mbuf, ifp: &Ifnet, ro: &Route, flags: i32) -> i32 {
+pub fn in_ouraddr(m: &'static Mbuf, ifp: &Ifnet, ro: &mut Route, flags: i32) -> i32 {
     let mut match_ = 0;
 
     match pf_ouraddr(m) {
@@ -1436,7 +1434,7 @@ pub fn ip_dooptions(m: &'static Mbuf, ifp: &'static Ifnet, flags: i32) -> bool {
                             // locate outgoing interface
                             let mut a = [0u8; 4];
                             a.copy_from_slice(&opts[cp + off..cp + off + 4]);
-                            let mut ipaddr = SockaddrIn {
+                            let ipaddr = SockaddrIn {
                                 sin_family: AF_INET,
                                 sin_len: size_of::<SockaddrIn>() as u8,
                                 sin_addr: InAddr {
@@ -1445,8 +1443,7 @@ pub fn ip_dooptions(m: &'static Mbuf, ifp: &'static Ifnet, flags: i32) -> bool {
                                 ..SockaddrIn::default()
                             };
                             // keep packet in the virtual instance
-                            // SAFETY: a local `sockaddr_in`.
-                            let rt = unsafe { rtalloc(sintosa(&mut ipaddr), RT_RESOLVE, rtableid) };
+                            let rt = rtalloc(sa_of(&ipaddr), RT_RESOLVE, rtableid);
                             let Some(r) = rt.filter(|r| {
                                 rtisvalid(Some(r))
                                     && !(opt == IPOPT_SSRR && r.rt_flags.get() & RTF_GATEWAY != 0)
@@ -1456,9 +1453,10 @@ pub fn ip_dooptions(m: &'static Mbuf, ifp: &'static Ifnet, flags: i32) -> bool {
                                 rtfree(rt);
                                 break 'bad true;
                             };
-                            let ia = ifatoia(r.ifa());
-                            opts[cp + off..cp + off + 4]
-                                .copy_from_slice(&ia.ia_addr.get().sin_addr.s_addr.to_ne_bytes());
+                            let a = r
+                                .ifa()
+                                .map_or(0, |ifa| ifatoia(ifa).ia_addr.get().sin_addr.s_addr);
+                            opts[cp + off..cp + off + 4].copy_from_slice(&a.to_ne_bytes());
                             rtfree(Some(r));
                             opts[cp + IPOPT_OFFSET] += size_of::<InAddr>() as u8;
                             ip.ip_dst = ipaddr.sin_addr;
@@ -1485,7 +1483,7 @@ pub fn ip_dooptions(m: &'static Mbuf, ifp: &'static Ifnet, flags: i32) -> bool {
                     if off + size_of::<InAddr>() > optlen as usize {
                         break 'rr;
                     }
-                    let mut ipaddr = SockaddrIn {
+                    let ipaddr = SockaddrIn {
                         sin_family: AF_INET,
                         sin_len: size_of::<SockaddrIn>() as u8,
                         sin_addr: ip.ip_dst,
@@ -1494,17 +1492,17 @@ pub fn ip_dooptions(m: &'static Mbuf, ifp: &'static Ifnet, flags: i32) -> bool {
                     // locate outgoing interface; if we're the destination, use the incoming
                     // interface (should be same). Again keep the packet inside the virtual
                     // instance.
-                    // SAFETY: a local `sockaddr_in`.
-                    let rt = unsafe { rtalloc(sintosa(&mut ipaddr), RT_RESOLVE, rtableid) };
+                    let rt = rtalloc(sa_of(&ipaddr), RT_RESOLVE, rtableid);
                     let Some(r) = rt.filter(|r| rtisvalid(Some(r))) else {
                         type_ = ICMP_UNREACH;
                         code = i32::from(ICMP_UNREACH_HOST);
                         rtfree(rt);
                         break 'bad true;
                     };
-                    let ia = ifatoia(r.ifa());
-                    opts[cp + off..cp + off + 4]
-                        .copy_from_slice(&ia.ia_addr.get().sin_addr.s_addr.to_ne_bytes());
+                    let a = r
+                        .ifa()
+                        .map_or(0, |ifa| ifatoia(ifa).ia_addr.get().sin_addr.s_addr);
+                    opts[cp + off..cp + off + 4].copy_from_slice(&a.to_ne_bytes());
                     rtfree(Some(r));
                     opts[cp + IPOPT_OFFSET] += size_of::<InAddr>() as u8;
                 }
@@ -1726,9 +1724,9 @@ pub fn ip_stripoptions(m: &Mbuf) {
 /// enough repertoire of codes and types. If not forwarding, just drop the packet. This could
 /// be confusing if ip_forwarding was zero but some routing protocol was advancing us as a
 /// gateway to somewhere. However, we must let the routing protocol deal with that.
-pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32) {
+pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32) {
     let mut ip = mtod_ip(m);
-    let iproute = Route::new();
+    let mut iproute = Route::new();
     let rtableid = m.m_pkthdr().ph_rtableid.get();
     let loopcnt = m.m_pkthdr().ph_loopcnt.get();
     let mut icmp_buf = [0u8; 68];
@@ -1737,7 +1735,10 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
     let mut destmtu = 0i32;
     let mut dest = 0u32;
 
-    let ro = ro.unwrap_or(&iproute);
+    let ro: &mut Route = match ro {
+        Some(r) => r,
+        None => &mut iproute,
+    };
     'done: {
         if m.m_flags().get() & (M_BCAST | M_MCAST) != 0
             || !in_canforward(ip.ip_dst)
@@ -1775,8 +1776,9 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
         // don't send redirect if forwarding using a default route or a route modified by a
         // redirect. Don't send redirect if we advertise destination's arp address as ours
         // (proxy arp).
-        // SAFETY: a route's key is a readable `sockaddr_in` in the inet table.
-        let key = unsafe { (*crate::netinet::in_::satosin_const(rt_key(rt))).sin_addr };
+        // A route's key is a `sockaddr_in` in the inet table.
+        let key = hal::pod::at::<crate::netinet::in_::SockaddrIn>(rt_key(rt), 0)
+            .map_or(InAddr { s_addr: 0 }, |s| s.sin_addr);
         if rt.rt_ifidx.get() == ifp.if_index.get()
             && rt.rt_flags.get() & (RTF_DYNAMIC | RTF_MODIFIED) == 0
             && key.s_addr != INADDR_ANY
@@ -1785,15 +1787,15 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
             && !arpproxy(key, rtableid)
             && IP_SENDREDIRECTS.load(Ordering::Relaxed) != 0
         {
-            let ia = ifatoia(rt.ifa());
-            if ip.ip_src.s_addr & ia.ia_netmask.get() == ia.ia_net.get() {
+            let ia = rt.ifa().map(ifatoia);
+            if ia.is_some_and(|ia| ip.ip_src.s_addr & ia.ia_netmask.get() == ia.ia_net.get()) {
                 if rt.rt_flags.get() & RTF_GATEWAY != 0 {
-                    // SAFETY: a gateway route's gateway is a `sockaddr_in`.
-                    dest = unsafe {
-                        (*crate::netinet::in_::satosin_const(rt.rt_gateway.get()))
-                            .sin_addr
-                            .s_addr
-                    };
+                    // A gateway route's gateway is a `sockaddr_in`.
+                    dest = rt
+                        .with_gateway(|g| {
+                            g.and_then(|g| hal::pod::at::<crate::netinet::in_::SockaddrIn>(g, 0))
+                        })
+                        .map_or(0, |s| s.sin_addr.s_addr);
                 } else {
                     dest = ip.ip_dst.s_addr;
                 }
@@ -1803,8 +1805,16 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
             }
         }
 
-        let error = ip_output(m, None, Some(ro), flags | IP_FORWARDING, None, None, 0);
-        let rt = ro.ro_rt.get();
+        let error = ip_output(
+            m,
+            None,
+            Some(&mut *ro),
+            flags | IP_FORWARDING,
+            None,
+            None,
+            0,
+        );
+        let rt = ro.rt();
         if error.is_err() {
             ipstat_inc(IpstatCounters::IpsCantforward);
         } else {
@@ -1875,10 +1885,7 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&Route>, flags: i32)
         unsafe { ptr::copy_nonoverlapping(icmp_buf.as_ptr(), mtod::<u8>(mcopy), icmp_len) };
         icmp_error(mcopy, type_, code, dest, destmtu);
     }
-    // done:
-    if ptr::eq(ro, &iproute) {
-        rtfree(ro.ro_rt.get());
-    }
+    // done: iproute's route given back with it (rtfree).
 }
 
 /// `ip_sysctl`: the `net.inet.ip` sysctls.
@@ -2163,7 +2170,7 @@ pub(crate) mod tests {
     use crate::net::route::{
         RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_BROADCAST, RTF_CLONED, RTF_CLONING,
         RTF_CONNECTED, RTF_GATEWAY, RTF_LLINFO, RTF_LOCAL, RTF_STATIC, RTM_ADD, RtAddrinfo,
-        route_init, rtalloc, rtfree, rtrequest,
+        route_init, rtalloc, rtfree, rtrequest, sa_of, sa_view,
     };
     use crate::net::rtable::rtable_init;
     use crate::netinet::icmp_var::IcmpstatCounters;
@@ -2181,6 +2188,14 @@ pub(crate) mod tests {
     pub(crate) const ADDR: [u8; 4] = [10, 0, 2, 15];
     pub(crate) const GATEWAY: [u8; 4] = [10, 0, 2, 2];
 
+    /// `f` under the net lock, as the C runs the stack (`if_input_process`, `if_netisr`, the protocols' output): the route lookups want the lock's proof.
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// The network test setup plus what `rtable_init` and `domaininit` do for the inet and route
     /// domains; with the timeout wheel reset (`arpinit` arms a timeout), under its lock too.
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, MutexGuard<'static, ()>) {
@@ -2193,6 +2208,9 @@ pub(crate) mod tests {
         crate::kern::kern_tc::TIME_UPTIME.store(100, Ordering::Relaxed);
         // The interface queues name their softnet task queue (no thread runs it here).
         crate::net::if_::softnet_init();
+        // The kernel's tables and labels of an earlier test live in the memory just reset.
+        kernel::net::rtable::rtable_test_reset();
+        kernel::net::route::rtlabel_test_reset();
         rtable_init();
         route_init();
         ip_init();
@@ -2317,11 +2335,11 @@ pub(crate) mod tests {
         };
 
         let badvers = ipstat(IpstatCounters::IpsBadvers);
-        ipv4_input(ifp, ip_packet(hdr(0x65, 20), &[], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(hdr(0x65, 20), &[], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsBadvers), badvers + 1);
 
         let badhlen = ipstat(IpstatCounters::IpsBadhlen);
-        ipv4_input(ifp, ip_packet(hdr(0x44, 20), &[], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(hdr(0x44, 20), &[], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsBadhlen), badhlen + 1);
 
         let badsum = ipstat(IpstatCounters::IpsBadsum);
@@ -2329,27 +2347,27 @@ pub(crate) mod tests {
         let mut ip = mtod_ip(m);
         ip.ip_sum = 0x1234;
         mtod_ip_store(m, &ip);
-        ipv4_input(ifp, m, None);
+        locked(|| ipv4_input(ifp, m, None));
         assert_eq!(ipstat(IpstatCounters::IpsBadsum), badsum + 1);
 
         let badlen = ipstat(IpstatCounters::IpsBadlen);
-        ipv4_input(ifp, ip_packet(hdr(0x45, 10), &[], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(hdr(0x45, 10), &[], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsBadlen), badlen + 1);
 
         let tooshort = ipstat(IpstatCounters::IpsTooshort);
-        ipv4_input(ifp, ip_packet(hdr(0x45, 40), &[0; 8], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(hdr(0x45, 40), &[0; 8], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsTooshort), tooshort + 1);
 
         // 127/8 must not appear on the wire.
         let badaddr = ipstat(IpstatCounters::IpsBadaddr);
         let mut h = hdr(0x45, 20);
         h[12] = 127;
-        ipv4_input(ifp, ip_packet(h, &[], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(h, &[], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsBadaddr), badaddr + 1);
 
         // A good header for an address we do not have: not forwarded (ip_forwarding is 0).
         let cantforward = ipstat(IpstatCounters::IpsCantforward);
-        ipv4_input(ifp, ip_packet(hdr(0x45, 28), &[0; 8], false), None);
+        locked(|| ipv4_input(ifp, ip_packet(hdr(0x45, 28), &[0; 8], false), None));
         assert_eq!(ipstat(IpstatCounters::IpsCantforward), cantforward + 1);
     }
 
@@ -2376,9 +2394,11 @@ pub(crate) mod tests {
 
         // The local, cloning and broadcast routes.
         let route_flags = |a: [u8; 4]| {
-            let mut s = sin(a);
-            // SAFETY: a local `sockaddr_in`.
-            let rt = unsafe { rtalloc(sintosa(&mut s), 0, 0) }.expect("route");
+            let s = sin(a);
+            // rtalloc under the net lock, as its callers (route.c's NET_ASSERT_LOCKED proof).
+            crate::sys::systm::net_lock();
+            let rt = rtalloc(sa_of(&s), 0, 0).expect("route");
+            crate::sys::systm::net_unlock();
             let f = rt.rt_flags.get();
             rtfree(Some(rt));
             f
@@ -2401,13 +2421,14 @@ pub(crate) mod tests {
         }
 
         // route add default 10.0.2.2
-        let mut dst = sin([0; 4]);
-        let mut mask = sin([0; 4]);
+        let dst = sin([0; 4]);
+        let mask = sin([0; 4]);
         let mut gw = sin(GATEWAY);
+        let gw_copy = gw;
         let mut info = RtAddrinfo::new();
-        info.rti_info[RTAX_DST] = sintosa(&mut dst);
-        info.rti_info[RTAX_NETMASK] = sintosa(&mut mask);
-        info.rti_info[RTAX_GATEWAY] = sintosa(&mut gw);
+        info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&dst)));
+        info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(&mask)));
+        info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gw_copy)));
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
         // route(8)'s rtm_getifa and rtrequest, both under the net lock (ifaof_ifpforaddr reads
         // the interface's addresses).
@@ -2415,13 +2436,13 @@ pub(crate) mod tests {
         // SAFETY: a local `sockaddr_in`.
         info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
         let mut rt = None;
-        // SAFETY: the addresses are locals.
-        unsafe { rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0) }.expect("default route");
+        rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
         net_unlock();
         let def = rt.expect("route");
-        let nh = def.rt_gwroute.get().expect("next hop cached");
+        let nh = def.gwroute().expect("next hop cached");
         assert_ne!(nh.rt_flags.get() & RTF_LLINFO, 0);
         assert_ne!(nh.rt_flags.get() & RTF_CLONED, 0);
+        drop(nh);
         rtfree(rt);
         assert_ne!(route_flags([8, 8, 8, 8]) & RTF_GATEWAY, 0);
 
@@ -2446,7 +2467,7 @@ pub(crate) mod tests {
         icp.set_icmp_id(htons(7));
         icp.set_icmp_seq(htons(1));
         m.m_pkthdr().csum_flags.set(M_ICMP_CSUM_OUT);
-        ip_output(m, None, None, 0, None, None, 0).expect("held by ARP");
+        locked(|| ip_output(m, None, None, 0, None, None, 0)).expect("held by ARP");
 
         let req = ifq_dequeue(ifp.if_snd()).expect("ARP request");
         let b = bytes(req);
@@ -2479,8 +2500,8 @@ pub(crate) mod tests {
         let arp = unsafe {
             core::slice::from_raw_parts(ptr::from_ref(&reply).cast::<u8>(), size_of::<EtherArp>())
         };
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None);
-        arpintr();
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_ARP, arp), None));
+        locked(|| arpintr());
 
         let echo = ifq_dequeue(ifp.if_snd()).expect("the echo request");
         let b = bytes(echo);
@@ -2520,10 +2541,10 @@ pub(crate) mod tests {
         let counter =
             &ICMPCOUNTERS[IcmpstatCounters::IcpsInhist as usize + usize::from(ICMP_ECHOREPLY)];
         let before = counter.load(Ordering::Relaxed);
-        ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, &r), None);
+        locked(|| ether_input(ifp, frame(ifp, OURS, ETHERTYPE_IP, &r), None));
         // icmp_input needs the exclusive net lock: the packet waits on ipintrq.
         assert_eq!(counter.load(Ordering::Relaxed), before);
-        ipintr();
+        locked(|| ipintr());
         assert_eq!(
             counter.load(Ordering::Relaxed),
             before + 1,
@@ -2532,9 +2553,10 @@ pub(crate) mod tests {
 
         // Deleting the address takes its routes, and the gateway's ARP entry, with it.
         unconfigure(ifp, ADDR);
-        let mut s = sin(GATEWAY);
-        // SAFETY: a local `sockaddr_in`.
-        let rt = unsafe { rtalloc(sintosa(&mut s), 0, 0) };
+        let s = sin(GATEWAY);
+        crate::sys::systm::net_lock();
+        let rt = rtalloc(sa_of(&s), 0, 0);
+        crate::sys::systm::net_unlock();
         assert!(rt.is_none(), "no route to the gateway is left");
         while let Some(m) = ifq_dequeue(ifp.if_snd()) {
             m_freem(m);
@@ -2592,8 +2614,8 @@ pub(crate) mod tests {
         let reflect = ICMPCOUNTERS[IcmpstatCounters::IcpsReflect as usize].load(Ordering::Relaxed);
         let m = icmp_to_us(ICMP_ECHO, &[]);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        ipv4_input(ifp, m, None);
-        ipintr();
+        locked(|| ipv4_input(ifp, m, None));
+        locked(|| ipintr());
         assert_eq!(
             ICMPCOUNTERS[IcmpstatCounters::IcpsReflect as usize].load(Ordering::Relaxed),
             reflect + 1
@@ -2622,7 +2644,7 @@ pub(crate) mod tests {
         let badoptions = ipstat(IpstatCounters::IpsBadoptions);
         let m = icmp_to_us(ICMP_ECHO, &[crate::netinet::ip::IPOPT_RR, 9, 4, 0]);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        ipv4_input(ifp, m, None);
+        locked(|| ipv4_input(ifp, m, None));
         assert_eq!(ipstat(IpstatCounters::IpsBadoptions), badoptions + 1);
 
         let n = sent(|b, _| {

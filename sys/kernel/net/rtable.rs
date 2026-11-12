@@ -452,8 +452,10 @@ fn rtmap_grow(nlimit: u32, af: SaFamily) {
 }
 
 /// `rtable_init()`: the routing domains read from `domains[]` (those with a
-/// `dom_rtoffset`), then [`rtable_init_doms`].
-pub fn rtable_init<G: ProcGlue>() {
+/// `dom_rtoffset`), then [`rtable_init_doms`]. The caller hands the table `domaininit` will
+/// record: the routing tables are made before the domains are initialised (`init_main`'s
+/// order, the C's: the default table exists before lo0 attaches).
+pub fn rtable_init<G: ProcGlue>(domains: &[&'static dyn Domain<G>]) {
     let mut doms = [RtDom {
         family: 0,
         rtoffset: 0,
@@ -461,7 +463,7 @@ pub fn rtable_init<G: ProcGlue>() {
         sasize: 0,
     }; RT_MAXDOMS];
     let mut n = 0;
-    for dp in crate::net::domain::net::<G>().domains() {
+    for dp in domains {
         let dp: &dyn Domain<G> = *dp;
         if dp.rtoffset() == 0 {
             continue;

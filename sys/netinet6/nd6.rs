@@ -154,7 +154,7 @@ use crate::machine::intr::IPL_SOFTNET;
 use crate::net::if_::{
     IFF_MULTICAST, IFNAMSIZ, IFNETLIST, if_get, if_output_mq, if_put, ifaof_ifpforaddr, net_tq,
 };
-use crate::net::if_dl::{SockaddrDl, lladdr, satosdl, sdltosa};
+use crate::net::if_dl::SockaddrDl;
 use crate::net::if_ethersubr::ether_sprintf;
 use crate::net::if_types::{IFT_CARP, IFT_ETHER, IFT_IEEE80211};
 use crate::net::if_var::{Ifaddr, Ifnet};
@@ -162,7 +162,7 @@ use crate::net::route::{
     RT_RESOLVE, RTAX_DST, RTAX_GATEWAY, RTF_ANNOUNCE, RTF_CACHED, RTF_CLONING, RTF_GATEWAY,
     RTF_HOST, RTF_LLINFO, RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_REJECT, RTF_STATIC, RTM_ADD,
     RTM_DELETE, RTM_INVALIDATE, RTM_RESOLVE, RTP_CONNECTED, RtAddrinfo, Rtentry, rt_getll, rtalloc,
-    rtdeletemsg, rtfree, rtref, rtrequest,
+    rtdeletemsg, rtfree, rtref, rtrequest, sa_of, sa_view,
 };
 use crate::net::rtable::rt_key;
 use crate::netinet::icmp6::{
@@ -171,7 +171,10 @@ use crate::netinet::icmp6::{
     ND_OPT_SOURCE_LINKADDR, ND_OPT_TARGET_LINKADDR, ND_REDIRECT, ND_REDIRECT_ROUTER,
     ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT, NdOptHdr, icmp6stat_inc,
 };
-use crate::netinet::if_ether::{ETHER_ADDR_LEN, ether_map_ipv6_multicast};
+use crate::netinet::if_ether::{
+    ETHER_ADDR_LEN, SDL_ALEN, ether_map_ipv6_multicast, gw_alen_family, gw_family_len, gw_lladdr,
+    gw_sdl_index, gw_set_lladdr, gw_set_type_index, if_sadl_copy,
+};
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet6::icmp6::icmp6_error;
 use crate::netinet6::in6::{
@@ -501,9 +504,10 @@ fn ln_put(ln: &LlinfoNd6) {
 
 /// `satosin6(rt_key(rt))->sin6_addr`: the destination of an inet6 route.
 pub(crate) fn rt_key_in6(rt: &Rtentry) -> In6Addr {
-    // SAFETY: the key of a route in an inet6 table is a readable `sockaddr_in6`; it may sit
-    // at any alignment, so it is copied out.
-    unsafe { ptr::read_unaligned(satosin6_const(rt_key(rt))).sin6_addr }
+    // The key of a route in an inet6 table is a `sockaddr_in6`, copied out.
+    hal::pod::at::<SockaddrIn6>(rt_key(rt), 0)
+        .unwrap_or_default()
+        .sin6_addr
 }
 
 /// An interface address on a list, with the lifetime the C's pointers have.
@@ -931,7 +935,7 @@ fn nd6_expire_timer(_unused: *mut c_void) {
 
 /// `nd6_purge`: nuke neighbor cache/prefix/default router management table, right before
 /// `ifp` goes away.
-pub fn nd6_purge(ifp: &Ifnet) {
+pub fn nd6_purge(ifp: &'static Ifnet) {
     let iter = LlinfoNd6::iterator();
     let mut ln = None;
     let i_am_router = IP6_FORWARDING.load(Ordering::Relaxed) != 0;
@@ -946,14 +950,7 @@ pub fn nd6_purge(ifp: &Ifnet) {
         let Some(rt) = l.ln_rt.get() else {
             continue;
         };
-        let gate = rt.rt_gateway.get();
-        // SAFETY: a route's gateway is NULL or a readable socket address; an `AF_LINK` one
-        // is a `sockaddr_dl`.
-        let ours = !gate.is_null()
-            && unsafe {
-                (*gate).sa_family == AF_LINK
-                    && u32::from((*satosdl(gate)).sdl_index) == ifp.if_index.get()
-            };
+        let ours = gw_sdl_index(rt) == Some(ifp.if_index.get());
         if ours {
             rtref(rt);
             mtx_leave(&ND6_MTX);
@@ -976,8 +973,7 @@ pub fn nd6_lookup(
     let sin6 = SockaddrIn6::with_addr(*addr6);
     let flags = if create { RT_RESOLVE } else { 0 };
 
-    // SAFETY: a local `sockaddr_in6`.
-    let mut rt = unsafe { rtalloc(sin6tosa_const(&sin6), flags, rtableid) };
+    let mut rt = rtalloc(sa_of(&sin6), flags, rtableid);
     if let Some(r) = rt
         && r.rt_flags.get() & RTF_LLINFO == 0
     {
@@ -1001,17 +997,14 @@ pub fn nd6_lookup(
 
             // Create a new route. RTF_LLINFO is necessary to create a Neighbor Cache entry
             // for the destination in nd6_rtrequest which will be called in rtrequest.
+            let sdl = if_sadl_copy(ifp);
             let mut info = RtAddrinfo::new();
             info.rti_ifa = Some(ifa);
             info.rti_flags = RTF_HOST | RTF_LLINFO;
-            info.rti_info[RTAX_DST] = sin6tosa_const(&sin6);
-            info.rti_info[RTAX_GATEWAY] = sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut());
+            info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&sin6)));
+            info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&sdl)));
             let mut nrt = None;
-            // SAFETY: the destination is a local `sockaddr_in6` and the gateway the
-            // interface's `sockaddr_dl`, both readable for their lengths.
-            if unsafe { rtrequest(RTM_ADD, &mut info, RTP_CONNECTED, Some(&mut nrt), rtableid) }
-                .is_err()
-            {
+            if rtrequest(RTM_ADD, &mut info, RTP_CONNECTED, Some(&mut nrt), rtableid).is_err() {
                 return None;
             }
             let r = nrt?;
@@ -1027,11 +1020,9 @@ pub fn nd6_lookup(
     // cloned route from a parent route that has the L flag (e.g. the default route to a
     // p2p interface) may have the flag, too, while the destination is not actually a
     // neighbor.
-    let gate = rt.rt_gateway.get();
     if rt.rt_flags.get() & RTF_GATEWAY != 0
         || rt.rt_flags.get() & RTF_LLINFO == 0
-        // SAFETY: a route's gateway is a readable socket address.
-        || unsafe { (*gate).sa_family } != AF_LINK
+        || gw_family_len(rt).0 != AF_LINK
         || rt.rt_llinfo.get().is_null()
         || ifp.is_some_and(|ifp| rt.rt_ifidx.get() != ifp.if_index.get())
     {
@@ -1088,23 +1079,21 @@ pub fn nd6_is_addr_neighbor(addr: &SockaddrIn6, ifp: &Ifnet) -> bool {
 /// `nd6_invalidate`: forgets the link-layer address of neighbor route `rt` and its held
 /// packets; the entry goes back to INCOMPLETE.
 fn nd6_invalidate(rt: &Rtentry) {
-    let sdl = satosdl(rt.rt_gateway.get());
-
     mtx_enter(&ND6_MTX);
     let Some(ln) = rt_ln(rt) else {
         mtx_leave(&ND6_MTX);
         return;
     };
     ln_hold_total.fetch_sub(mq_purge(&ln.ln_mq), Ordering::Relaxed);
-    // SAFETY: a neighbor route's gateway is a `sockaddr_dl` (`nd6_rtrequest` checked it).
-    unsafe { (*sdl).sdl_alen = 0 };
+    // A neighbor route's gateway is a `sockaddr_dl` (`nd6_rtrequest` checked it).
+    gw_set_lladdr(rt, &[]);
     ln.ln_state.set(ND6_LLINFO_INCOMPLETE);
     ln.ln_asked.set(0);
     mtx_leave(&ND6_MTX);
 }
 
 /// `nd6_free`: free an nd6 llinfo entry: forgets the neighbor and deletes its route.
-fn nd6_free(rt: &'static Rtentry, ifp: &Ifnet, i_am_router: bool) {
+fn nd6_free(rt: &'static Rtentry, ifp: &'static Ifnet, i_am_router: bool) {
     let ln = rt_ln(rt);
     let in6 = rt_key_in6(rt);
 
@@ -1141,8 +1130,6 @@ fn nd6_llsol(addr: &In6Addr, ifp: &Ifnet) -> In6Addr {
 /// `nd6_rtrequest`: the `AF_INET6` part of `ether_rtrequest`: sets up and tears down the
 /// neighbor cache entries of routes.
 pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
-    let gate = rt.rt_gateway.get();
-
     if rt.rt_flags.get() & (RTF_GATEWAY | RTF_MULTICAST | RTF_MPLS) != 0 {
         return;
     }
@@ -1181,8 +1168,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
             }
         }
         // FALLTHROUGH (RTM_RESOLVE)
-        // SAFETY: a route's gateway is a readable socket address.
-        let (gfam, glen) = unsafe { ((*gate).sa_family, usize::from((*gate).sa_len)) };
+        let (gfam, glen) = gw_family_len(rt);
         if gfam != AF_LINK || glen < size_of::<SockaddrDl>() {
             log!(
                 LOG_DEBUG,
@@ -1191,11 +1177,8 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
             );
             return;
         }
-        // SAFETY: an `AF_LINK` gateway of at least a `sockaddr_dl`'s size.
-        unsafe {
-            (*satosdl(gate)).sdl_type = ifp.if_type.get();
-            (*satosdl(gate)).sdl_index = ifp.if_index.get() as u16;
-        }
+        // An `AF_LINK` gateway of at least a `sockaddr_dl`'s size.
+        gw_set_type_index(rt, ifp);
         // Case 2: This route may come from cloning, or a manual route add with a LL
         // address.
         let Some(mem) = pool_get(&ND6_POOL, PR_NOWAIT | PR_ZERO) else {
@@ -1409,29 +1392,37 @@ pub(crate) fn nd6_ether_sprintf(lladdr: &[u8]) -> [u8; ETHER_ADDR_LEN * 3] {
 /// Whether `ll` differs from the link-layer address in `sdl` (the C's
 /// `bcmp(lladdr, LLADDR(sdl), ifp->if_addrlen)`).
 ///
-/// # Safety
-///
-/// `sdl` is a readable `sockaddr_dl` with room for `if_addrlen` bytes of address.
-pub(crate) unsafe fn nd6_llchanged(ll: &[u8], sdl: *mut SockaddrDl, ifp: &Ifnet) -> bool {
+/// The route's link-level gateway is a `sockaddr_dl` with room for the interface's
+/// address (`nd6_rtrequest` checked its size); one too short for it compares as changed.
+pub(crate) fn nd6_llchanged(ll: &[u8], rt: &Rtentry, ifp: &Ifnet) -> bool {
     let l = lladdr_bytes(ll, ifp);
-    // SAFETY: the caller's contract.
-    let cur = unsafe { core::slice::from_raw_parts(lladdr(sdl), l.len()) };
-    l != cur
+    rt.with_gateway(|g| {
+        let cur = g.and_then(|g| {
+            let start = hal::sys::net_if::SDL_DATA_OFFSET + usize::from(*g.get(5)?);
+            g.get(start..start + l.len())
+        });
+        cur != Some(l)
+    })
 }
 
-/// Records `ll` in `sdl` (the C's `sdl->sdl_alen = ifp->if_addrlen; bcopy(lladdr,
-/// LLADDR(sdl), ifp->if_addrlen)`).
-///
-/// # Safety
-///
-/// As for [`nd6_llchanged`], and `sdl` is writable.
-pub(crate) unsafe fn nd6_llstore(ll: &[u8], sdl: *mut SockaddrDl, ifp: &Ifnet) {
+/// `satosdl(rt->rt_gateway)->sdl_alen`, 0 without a gateway.
+pub(crate) fn nd6_lladdr_alen(rt: &Rtentry) -> u8 {
+    gw_alen_family(rt).0
+}
+
+/// Records `ll` in the route's link-level gateway (the C's `sdl->sdl_alen =
+/// ifp->if_addrlen; bcopy(lladdr, LLADDR(sdl), ifp->if_addrlen)`).
+pub(crate) fn nd6_llstore(ll: &[u8], rt: &Rtentry, ifp: &Ifnet) {
     let l = lladdr_bytes(ll, ifp);
-    // SAFETY: the caller's contract.
-    unsafe {
-        (*sdl).sdl_alen = ifp.if_addrlen.get();
-        ptr::copy_nonoverlapping(l.as_ptr(), lladdr(sdl), l.len());
-    }
+    rt.update_gateway(|g| {
+        if let Some(g) = g {
+            g[SDL_ALEN] = ifp.if_addrlen.get();
+            if let Some(a) = SockaddrDl::lladdr_mut(g) {
+                let n = a.len().min(l.len());
+                a[..n].copy_from_slice(&l[..n]);
+            }
+        }
+    });
 }
 
 /// `nd6_cache_lladdr`: create neighbor cache entry and cache link-layer address, on
@@ -1477,27 +1468,21 @@ pub fn nd6_cache_lladdr(
     let Some(rt) = rt else {
         return;
     };
-    let gate = rt.rt_gateway.get();
     let ln = rt_ln(rt);
     let ok = rt.rt_flags.get() & (RTF_GATEWAY | RTF_LLINFO) == RTF_LLINFO
         && ln.is_some()
-        && !gate.is_null()
-        // SAFETY: a non-NULL gateway is a readable socket address.
-        && unsafe { (*gate).sa_family } == AF_LINK;
+        && gw_family_len(rt).0 == AF_LINK;
     let Some(ln) = ln.filter(|_| ok) else {
         // fail:
         nd6_free(rt, ifp, i_am_router);
         rtfree(Some(rt));
         return;
     };
-    let sdl = satosdl(gate);
-
-    // SAFETY: an `AF_LINK` gateway of a neighbor route is a `sockaddr_dl` with room for the
+    // An `AF_LINK` gateway of a neighbor route is a `sockaddr_dl` with room for the
     // interface's address (`nd6_rtrequest` checked its size).
-    let olladdr = unsafe { (*sdl).sdl_alen } != 0;
+    let olladdr = nd6_lladdr_alen(rt) != 0;
     let llchange = match lladdr {
-        // SAFETY: as above.
-        Some(l) if olladdr => unsafe { nd6_llchanged(l, sdl, ifp) },
+        Some(l) if olladdr => nd6_llchanged(l, rt, ifp),
         _ => false,
     };
 
@@ -1524,8 +1509,7 @@ pub fn nd6_cache_lladdr(
         // (3-5) and (7)
         // Record source link-layer address
         // XXX is it dependent to ifp->if_type?
-        // SAFETY: as above.
-        unsafe { nd6_llstore(l, sdl, ifp) };
+        nd6_llstore(l, rt, ifp);
     }
 
     let (do_update, newstate) = if !is_newentry {
@@ -1555,8 +1539,16 @@ pub fn nd6_cache_lladdr(
             // and reset the timer, we must set the timer now, although it is actually
             // meaningless.
             nd6_llinfo_settimer(ln, ND6_GCTIMER as u32);
-            // SAFETY: the route's key is its readable `sockaddr_in6`.
-            let _ = unsafe { if_output_mq(ifp, &ln.ln_mq, &ln_hold_total, rt_key(rt), Some(rt)) };
+            // SAFETY: the route's key is its readable `sockaddr_in6` (its bytes).
+            let _ = unsafe {
+                if_output_mq(
+                    ifp,
+                    &ln.ln_mq,
+                    &ln_hold_total,
+                    rt_key(rt).as_ptr().cast(),
+                    Some(rt),
+                )
+            };
         } else if ln.ln_state.get() == ND6_LLINFO_INCOMPLETE {
             // probe right away
             nd6_llinfo_settimer(ln, 0);
@@ -1703,8 +1695,7 @@ pub unsafe fn nd6_resolve(
             break 'bad;
         }
 
-        // SAFETY: a route's gateway is a readable socket address.
-        if unsafe { (*rt.rt_gateway.get()).sa_family } != AF_LINK {
+        if gw_family_len(rt).0 != AF_LINK {
             printf(format_args!("nd6_resolve: something odd happens\n"));
             break 'bad;
         }
@@ -1738,9 +1729,8 @@ pub unsafe fn nd6_resolve(
         if ln.ln_state.get() > ND6_LLINFO_INCOMPLETE {
             mtx_leave(&ND6_MTX);
 
-            let sdl = satosdl(rt.rt_gateway.get());
-            // SAFETY: an `AF_LINK` gateway is a `sockaddr_dl`.
-            let alen = unsafe { (*sdl).sdl_alen };
+            // An `AF_LINK` gateway is a `sockaddr_dl`.
+            let (alen, _) = gw_alen_family(rt);
             if usize::from(alen) != ETHER_ADDR_LEN {
                 log!(
                     LOG_DEBUG,
@@ -1750,8 +1740,8 @@ pub unsafe fn nd6_resolve(
                 break 'bad;
             }
 
-            // SAFETY: the link address is `alen` (6) bytes after the name.
-            unsafe { ptr::copy_nonoverlapping(lladdr(sdl), desten.as_mut_ptr(), ETHER_ADDR_LEN) };
+            // The link address, `alen` (6) bytes after the name.
+            *desten = gw_lladdr(rt);
             return Ok(());
         }
 
@@ -1817,13 +1807,12 @@ pub(crate) mod tests {
     // (`nd6_na_cache`) and `nd6_timer`. The entry is a host route built by hand: the inet6
     // routing table only exists once `inet6domain` is registered.
 
-    use std::boxed::Box;
     use std::string::ToString;
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::kern_synch::refcnt_init;
+
     use crate::kern::kern_tc::TIME_UPTIME;
     use crate::kern::uipc_mbuf::m_freem;
     use crate::net::if_::tests::{test_packet, zeroed_static};
@@ -1910,27 +1899,33 @@ pub(crate) mod tests {
         ia
     }
 
-    /// A host route to `dst` on `ifp` with an empty link-layer gateway, as `rtrequest` clones
-    /// it from an on-link prefix, then given its neighbor cache entry by `nd6_rtrequest`.
-    fn fake_neighbor(ifp: &'static Ifnet, dst: In6Addr) -> &'static Rtentry {
-        // SAFETY: the all-zero `Rtentry` is valid (cells, counters, empty lists).
-        let rt: &'static Rtentry = unsafe { zeroed_static() };
-        let key: &'static mut SockaddrIn6 = Box::leak(Box::new(SockaddrIn6::with_addr(dst)));
-        let gate: &'static mut SockaddrDl = Box::leak(Box::new(SockaddrDl {
+    /// A host route to `dst` on `ifp` with an empty link-layer gateway, added to table 0
+    /// (`nd6_rtrequest` gives it its neighbor cache entry) and left as `rtrequest`'s clone of
+    /// an on-link prefix leaves it (`RTM_RESOLVE`: NOSTATE, no timer; `RTM_ADD`, an
+    /// ndp(8) entry, would be REACHABLE). Its reference is never dropped.
+    pub(crate) fn fake_neighbor(ifp: &'static Ifnet, dst: In6Addr) -> &'static Rtentry {
+        use crate::net::route::{RTAX_DST, RTAX_GATEWAY, RtAddrinfo, rtrequest, sa_of, sa_view};
+
+        let key = SockaddrIn6::with_addr(dst);
+        let gate = SockaddrDl {
             sdl_len: size_of::<SockaddrDl>() as u8,
             sdl_family: AF_LINK,
             ..SockaddrDl::default()
-        }));
-        rt.rt_dest.set(ptr::from_mut(key).cast());
-        rt.rt_gateway.set(ptr::from_mut(gate).cast());
-        rt.rt_flags.set(RTF_HOST);
-        rt.rt_ifidx.set(ifp.if_index.get());
-        rt.rt_ifa.set(Some(&fake_ifa6(ifp, OURS6).ia_ifa));
-        // One reference that is never dropped: the route is not the pool's.
-        refcnt_init(&rt.rt_refcnt);
+        };
+        let mut info = RtAddrinfo::new();
+        info.rti_ifa = Some(&fake_ifa6(ifp, OURS6).ia_ifa);
+        info.rti_flags = RTF_HOST;
+        info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&key)));
+        info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gate)));
+        let mut rt = None;
 
         net_lock();
-        nd6_rtrequest(ifp, i32::from(RTM_RESOLVE), rt);
+        rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), ifp.if_rdomain.get())
+            .expect("the neighbor's route");
+        let rt = rt.expect("route");
+        let ln = rt_ln(rt).expect("nd6_rtrequest's entry");
+        ln.ln_state.set(ND6_LLINFO_NOSTATE);
+        nd6_llinfo_settimer(ln, 0);
         net_unlock();
         assert_ne!(rt.rt_flags.get() & RTF_LLINFO, 0);
         rt
@@ -1938,15 +1933,8 @@ pub(crate) mod tests {
 
     /// The link-layer address the entry holds, if resolved.
     fn entry_lladdr(rt: &Rtentry) -> Option<[u8; 6]> {
-        let sdl = satosdl(rt.rt_gateway.get());
-        // SAFETY: the test's gateway is a `sockaddr_dl`.
-        unsafe {
-            ((*sdl).sdl_alen == 6).then(|| {
-                let mut a = [0u8; 6];
-                ptr::copy_nonoverlapping(lladdr(sdl), a.as_mut_ptr(), 6);
-                a
-            })
-        }
+        (crate::netinet::if_ether::gw_alen_family(rt).0 == 6)
+            .then(|| crate::netinet::if_ether::gw_lladdr(rt))
     }
 
     /// An IPv6 packet from us to the neighbor (header only).

@@ -4490,7 +4490,7 @@ pub fn pf_get_mss(pd: &mut PfPdesc, mssdflt: u16) -> u16 {
 
 /// `pf_calc_mss`: the MSS to offer towards `addr`, from the route's interface MTU.
 pub fn pf_calc_mss(addr: &PfAddr, af: SaFamily, rtableid: i32, offer: u16, mssdflt: u16) -> u16 {
-    use crate::netinet::in_::{SockaddrIn, sintosa};
+    use crate::netinet::in_::SockaddrIn;
     use crate::netinet::ip::Ip;
 
     let mut dst = SockaddrIn::default();
@@ -4499,17 +4499,15 @@ pub fn pf_calc_mss(addr: &PfAddr, af: SaFamily, rtableid: i32, offer: u16, mssdf
             dst.sin_family = AF_INET;
             dst.sin_len = size_of::<SockaddrIn>() as u8;
             dst.sin_addr = addr.v4();
-            // SAFETY: `dst` is a complete local sockaddr_in that outlives the call.
-            let rt = unsafe { crate::net::route::rtalloc(sintosa(&mut dst), 0, rtableid as u32) };
+            let rt = crate::net::route::rtalloc(crate::net::route::sa_of(&dst), 0, rtableid as u32);
             (size_of::<Ip>() as i32, rt)
         }
         #[cfg(feature = "inet6")]
         AF_INET6 => {
-            use crate::netinet6::in6::{SockaddrIn6, sin6tosa_const};
+            use crate::netinet6::in6::SockaddrIn6;
             let dst6 = SockaddrIn6::with_addr(addr.v6());
-            // SAFETY: `dst6` is a complete local sockaddr_in6 that outlives the call.
             let rt =
-                unsafe { crate::net::route::rtalloc(sin6tosa_const(&dst6), 0, rtableid as u32) };
+                crate::net::route::rtalloc(crate::net::route::sa_of(&dst6), 0, rtableid as u32);
             (size_of::<Ip6Hdr>() as i32, rt)
         }
         _ => (0, None),
@@ -7968,7 +7966,7 @@ pub fn pf_routable(
     kif: Option<&'static PfiKif>,
     rtableid: i32,
 ) -> bool {
-    use crate::netinet::in_::{SockaddrIn, sintosa};
+    use crate::netinet::in_::SockaddrIn;
 
     let mut check_mpath = false;
     let mut dst = SockaddrIn::default();
@@ -7993,10 +7991,10 @@ pub fn pf_routable(
             check_mpath = true;
         }
     }
-    let sa: *const crate::sys::socket::Sockaddr = sintosa(&mut dst);
+    let sa: &[u8] = crate::net::route::sa_of(&dst);
     #[cfg(feature = "inet6")]
     let sa = if af == AF_INET6 {
-        crate::netinet6::in6::sin6tosa_const(&dst6)
+        crate::net::route::sa_of(&dst6)
     } else {
         sa
     };
@@ -8009,8 +8007,7 @@ pub fn pf_routable(
         return true;
     }
 
-    // SAFETY: `sa` is a complete local sockaddr_in or sockaddr_in6.
-    let mut rt = unsafe { crate::net::route::rtalloc(sa, 0, rtableid as u32) };
+    let mut rt = crate::net::route::rtalloc(sa, 0, rtableid as u32);
     let ret = match (rt, kif) {
         (None, _) => false,
         // No interface given, this is a no-route check.
@@ -8042,7 +8039,7 @@ pub fn pf_routable(
 
 /// `pf_rtlabel_match`: the route to `addr` carries the operand's route label.
 pub fn pf_rtlabel_match(addr: &PfAddr, af: SaFamily, aw: &PfAddrWrap, rtableid: i32) -> bool {
-    use crate::netinet::in_::{SockaddrIn, sintosa};
+    use crate::netinet::in_::SockaddrIn;
 
     let mut dst = SockaddrIn::default();
     if af == AF_INET {
@@ -8050,20 +8047,18 @@ pub fn pf_rtlabel_match(addr: &PfAddr, af: SaFamily, aw: &PfAddrWrap, rtableid: 
         dst.sin_len = size_of::<SockaddrIn>() as u8;
         dst.sin_addr = addr.v4();
     }
-    let sa: *const crate::sys::socket::Sockaddr = sintosa(&mut dst);
+    let sa: &[u8] = crate::net::route::sa_of(&dst);
     #[cfg(feature = "inet6")]
     let dst6 = crate::netinet6::in6::SockaddrIn6::with_addr(addr.v6());
     #[cfg(feature = "inet6")]
     let sa = if af == AF_INET6 {
-        crate::netinet6::in6::sin6tosa_const(&dst6)
+        crate::net::route::sa_of(&dst6)
     } else {
         sa
     };
 
     let mut ret = false;
-    // SAFETY: `sa` is a complete local sockaddr_in or sockaddr_in6.
-    let rt =
-        unsafe { crate::net::route::rtalloc(sa, crate::net::route::RT_RESOLVE, rtableid as u32) };
+    let rt = crate::net::route::rtalloc(sa, crate::net::route::RT_RESOLVE, rtableid as u32);
     if let Some(r) = rt {
         if u32::from(r.rt_labelid.get()) == aw.v.get().rtlabel() {
             ret = true;
@@ -8181,10 +8176,11 @@ pub fn pf_route(pd: &mut PfPdesc, st: &'static PfState) {
             let rtableid = mm.m_pkthdr().ph_rtableid.get();
 
             let src = [ip.ip_src.s_addr];
-            // SAFETY: `dst` is a complete local sockaddr_in.
-            rt = unsafe {
-                crate::net::route::rtalloc_mpath(sintosa(&mut dst), Some(&src), rtableid)
-            };
+            rt = crate::net::route::rtalloc_mpath(
+                crate::net::route::sa_of(&dst),
+                Some(&src),
+                rtableid,
+            );
             if !crate::net::route::rtisvalid(rt) {
                 if st.rt.get() != PF_DUPTO {
                     pf_send_icmp(
@@ -8363,11 +8359,13 @@ pub fn pf_route6(pd: &mut PfPdesc, st: &'static PfState) {
 
             let rtableid = mm.m_pkthdr().ph_rtableid.get();
 
-            let src = [ip6.ip6_src.s6_addr32(0)];
-            // SAFETY: `dst` is a complete local sockaddr_in6.
-            rt = unsafe {
-                crate::net::route::rtalloc_mpath(sin6tosa_const(&dst), Some(&src), rtableid)
-            };
+            // The C hands rt_hash the address's four words (&ip6_src.s6_addr32[0]).
+            let src: [u32; 4] = core::array::from_fn(|i| ip6.ip6_src.s6_addr32(i));
+            rt = crate::net::route::rtalloc_mpath(
+                crate::net::route::sa_of(&dst),
+                Some(&src),
+                rtableid,
+            );
             if !crate::net::route::rtisvalid(rt) {
                 if st.rt.get() != PF_DUPTO {
                     pf_send_icmp(
@@ -10733,6 +10731,9 @@ mod tests {
         procinit();
         crate::kern::kern_timeout::timeout_startup();
         crate::net::if_::softnet_init();
+        // The kernel's tables and labels of an earlier test live in the memory just reset.
+        kernel::net::rtable::rtable_test_reset();
+        kernel::net::route::rtlabel_test_reset();
         crate::net::rtable::rtable_init();
         crate::net::route::route_init();
         pfattach(1);

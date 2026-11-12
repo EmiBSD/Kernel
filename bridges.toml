@@ -417,8 +417,9 @@ paid_by = "N8"
 # attaches (bsd's if_attach forwards to the kernel's since N6.3a1). N6.3b1 adds rtrequest
 # (if_rtrequest, kernel::net::route's rtrequest and rtrequest_delete; a default body, the C's
 # if_rtrequest_dummy) and output (if_output, the kernel's if_output_ml; a default that panics,
-# the C's NULL), which LegacyNetDriver answers from the table from N6.3b2. Paid when the
-# drivers move (N7: NetDevice, decision 45).
+# the C's NULL), which LegacyNetDriver answers from the table since N6.3b2 (the route lent for
+# the call through sys/net/route.rs's as_static). Paid when the drivers move (N7: NetDevice,
+# decision 45).
 # kernel::net::if_var::NetDriver
 [[bridge]]
 trait = "NetDriver"
@@ -433,8 +434,8 @@ paid_by = "N7"
 # ifnewlladdr (N6.3a); in_ifdetach, in6_ifattach/_ifdetach and in_ioctl (a request with no
 # socket) for ifioctl (N6.3a2); route.c's ifa_free (ifafree's free(ifa, M_IFADDR, 0)),
 # ip_multipath and ip6_multipath (rt_hash, the route caches) and ipstat_rtcache/ip6stat_rtcache
-# (route_cache, route6_cache) for kernel::net::route (N6.3b1: default bodies until bsd's
-# implementation lands with the routing switch, N6.3b2). Registered by bsd's boot before the
+# (route_cache, route6_cache) for kernel::net::route (N6.3b1; bsd's BsdInet answers them
+# since the routing switch, N6.3b2). Registered by bsd's boot before the
 # first interface (N6.3a1's adapter commit); before that every leg does nothing, the C
 # without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
@@ -444,17 +445,14 @@ trait = "Inet"
 for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs"]
 paid_by = "N6"
 
-# bsd: what if.c asks of the routing code (route.c, rtable.c, rtsock.c): rtm_ifannounce,
-# rtm_ifchg and rt_if_track (the link state), rtable_l2/_loindex/_exists/_add/_empty/_l2set (the
-# domains: if_up, if_setrdomain, if_createrdomain, ifa_ifwith*), ifafree (if_detach's leftover
-# addresses and ifconf's references) and the walk of the default routes
-# (if_group_egress_build); rtlabel_id2name/_name2id/_unref for ifioctl's route labels (N6.3a2). Registered by bsd's boot (N6.3a1's adapter commit);
-# nothing before. Paid when routing moves (N6.3b, N6's row).
-# kernel::net::if_::Routing
+# bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
+# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC).
+# Implemented by sys/net/if_enc.rs (BsdIpsec) and registered by bsd's ifinit beside the
+# interface layer's legs; before registration the leg answers None, the C without IPSEC.
 [[bridge]]
-trait = "Routing"
-for = ["sys/kernel/net/if_.rs"]
-paid_by = "N6"
+trait = "Ipsec"
+for = ["sys/kernel/net/rtsock.rs"]
+paid_by = "N8"
 
 # bsd: what if.c and ifq.c ask of the link layers (bpf(4), if_ethersubr.c): bpf_mtap_ether
 # (NetDriver::bpf_mtap's default, if_attach_common's default if_bpf_mtap) and the per-queue

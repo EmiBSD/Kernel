@@ -195,6 +195,8 @@ pub struct NetTables<G: ProcGlue> {
     /// The UNIX domain's globals (`uipc_usrreq.c`'s: the control blocks' pool, `unp_head`,
     /// the files in flight, the collector).
     pub(crate) unix: crate::net::unix::UnixTables<G>,
+    /// The route domain's globals (`rtsock.c`'s: `rtpcb_pool`, `rtptable`).
+    pub(crate) rtsock: crate::net::rtsock::RtsockTables<G>,
     /// `if_input_task_locked`: `if_netisr`, the protocols' software interrupt (N6.3a: here,
     /// since its yield is the glue's scheduler's).
     pub(crate) if_input_task_locked: crate::task::Task,
@@ -221,6 +223,7 @@ impl<G: ProcGlue> NetTables<G> {
             ),
             upcall: OnceStatic::new(),
             unix: crate::net::unix::UnixTables::new(),
+            rtsock: crate::net::rtsock::RtsockTables::new(),
             if_input_task_locked: crate::task::Task::new(
                 crate::net::netisr::if_netisr::<G>,
                 ptr::null_mut(),

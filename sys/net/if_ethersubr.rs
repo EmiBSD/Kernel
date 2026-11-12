@@ -166,7 +166,6 @@ use crate::net::if_types::IFT_ETHER;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Rtentry;
-use crate::net::rtable::rt_key;
 #[cfg(feature = "inet6")]
 use crate::netinet::if_ether::ether_map_ipv6_multicast;
 use crate::netinet::if_ether::{
@@ -287,8 +286,7 @@ pub fn ether_rtrequest(ifp: &'static Ifnet, req: i32, rt: Option<&'static Rtentr
         return;
     };
 
-    // SAFETY: a route's key is a valid sockaddr.
-    match unsafe { (*rt_key(rt)).sa_family } {
+    match rt.dest_view().family() {
         AF_INET => arp_rtrequest(ifp, req, rt),
         #[cfg(feature = "inet6")]
         AF_INET6 => nd6_rtrequest(ifp, req, rt),
@@ -1666,16 +1664,12 @@ mod tests {
     #[test]
     #[cfg(feature = "inet6")]
     fn resolve_an_ipv6_destination_through_the_neighbor_cache() {
-        use std::boxed::Box;
-
-        use crate::kern::kern_synch::refcnt_init;
-        use crate::net::if_dl::{SockaddrDl, satosdl};
-        use crate::net::route::{RTF_HOST, RTF_LLINFO, RTM_RESOLVE};
+        use crate::net::route::RTF_LLINFO;
         use crate::netinet::ip_input::tests::PEER as PEER_MAC;
         use crate::netinet6::in6::{In6Addr, SockaddrIn6, sin6tosa_const};
-        use crate::netinet6::nd6::tests::{OURS6, PEER6, fake_ifa6, nd6_setup};
+        use crate::netinet6::nd6::tests::{PEER6, fake_neighbor, nd6_setup};
         use crate::netinet6::nd6_nbr::nd6_na_cache;
-        use crate::sys::socket::AF_LINK;
+
         use crate::sys::systm::{net_lock, net_unlock};
 
         let (_g, ifp) = nd6_setup();
@@ -1696,23 +1690,7 @@ mod tests {
 
         // A unicast neighbor: a host route given its cache entry by nd6_rtrequest (through
         // ether_rtrequest), as nd6's tests build one.
-        // SAFETY: the all-zero `Rtentry` is valid (cells, counters, empty lists).
-        let rt: &'static Rtentry = unsafe { zeroed_static() };
-        let key: &'static mut SockaddrIn6 = Box::leak(Box::new(SockaddrIn6::with_addr(PEER6)));
-        let gate: &'static mut SockaddrDl = Box::leak(Box::new(SockaddrDl {
-            sdl_len: size_of::<SockaddrDl>() as u8,
-            sdl_family: AF_LINK,
-            ..SockaddrDl::default()
-        }));
-        rt.rt_dest.set(ptr::from_mut(key).cast());
-        rt.rt_gateway.set(ptr::from_mut(gate).cast());
-        rt.rt_flags.set(RTF_HOST);
-        rt.rt_ifidx.set(ifp.if_index.get());
-        rt.rt_ifa.set(Some(&fake_ifa6(ifp, OURS6).ia_ifa));
-        refcnt_init(&rt.rt_refcnt);
-        net_lock();
-        ether_rtrequest(ifp, i32::from(RTM_RESOLVE), Some(rt));
-        net_unlock();
+        let rt = fake_neighbor(ifp, PEER6);
         assert_ne!(rt.rt_flags.get() & RTF_LLINFO, 0, "nd6_rtrequest ran");
 
         // Unresolved: the packet is held (EAGAIN) while the neighbor is solicited.
@@ -1745,8 +1723,7 @@ mod tests {
             &PEER6,
         );
         net_unlock();
-        // SAFETY: the gateway is the test's `sockaddr_dl`.
-        assert_eq!(unsafe { (*satosdl(rt.rt_gateway.get())).sdl_alen }, 6);
+        assert_eq!(crate::netinet::if_ether::gw_alen_family(rt).0, 6);
         let m = test_packet(&[0; 40]);
         net_lock();
         // SAFETY: as above.

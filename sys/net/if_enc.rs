@@ -82,7 +82,7 @@ use crate::net::if_::{
     IFF_RUNNING, IFF_UP, IFXF_CLONED, Ifreq, LINK_STATE_UNKNOWN, LINK_STATE_UP, if_addgroup,
     if_alloc_sadl, if_attach, if_clone_attach, if_detach,
 };
-use crate::net::if_dl::sdltosa;
+use crate::net::if_dl::SockaddrDl;
 use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, Ifaddr, Ifnet};
@@ -132,6 +132,10 @@ pub struct EncSoftc {
     pub sc_unit: Cell<u32>,
     /// `sc_ifa`: needed to attach rtentry.
     pub sc_ifa: Ifaddr,
+    /// The storage of `sc_ifa`'s address: the interface's link-level address, copied (the C
+    /// points `ifa_addr` at `if_sadl`, which enc(4) never changes), so the kernel's routing
+    /// reads it as every interface address's (`SaLink::read`).
+    pub sc_addr: Cell<SockaddrDl>,
 }
 
 // SAFETY: the members change under the net lock, as in C.
@@ -223,12 +227,13 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     if_alloc_sadl(ifp);
     sc.sc_ifa.ifa_refcnt.init();
     sc.sc_ifa.ifa_ifp.set(Some(ifp));
-    // A word bsd's routing code follows itself (`rt_ifa`'s copies), never read through the
-    // link: this ifa is on no interface's list (hal::link::SaLink::set_word).
-    sc.sc_ifa.ifa_addr.set_word(
-        crate::net::if_var::sa_token(),
-        sdltosa(crate::net::if_var::if_sadl_ptr(ifp).cast_mut()),
-    );
+    // ifa_addr = sdltosa(ifp->if_sadl): its bytes, published as the ifa's storage.
+    if let Some(sdl) = ifp.sadl().as_deref() {
+        sc.sc_addr.set(*sdl);
+    }
+    sc.sc_ifa
+        .ifa_addr
+        .set(crate::net::if_var::sa_token(), Some(&sc.sc_addr));
     sc.sc_ifa.ifa_netmask.clear();
 
     bpfattach(&ifp.if_bpf, ifp, DLT_ENC, ENC_HDRLEN as u32);
@@ -350,6 +355,19 @@ pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<&'static Ifaddr> {
     let ifp = enc_getif(rdomain, unit)?;
 
     Some(&enc_softc(ifp).sc_ifa)
+}
+
+/// The kernel's `Ipsec` bridge over enc(4) (bridges.toml's `Ipsec` row, paid by N8):
+/// `rtm_getifa`'s `enc_getifa` for a route to a `PF_KEY` destination.
+pub struct BsdIpsec;
+
+/// The one [`BsdIpsec`], registered by `bsd`'s `ifinit`.
+pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
+
+impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
+    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<&'static Ifaddr> {
+        enc_getifa(rtableid, unit)
+    }
 }
 
 /// `enc_setif`: makes `ifp` the default enc interface of `rdomain` if it has none.

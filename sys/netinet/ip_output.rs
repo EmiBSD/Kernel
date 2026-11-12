@@ -110,8 +110,8 @@ use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{
-    RT_RESOLVE, RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU, Route, route_cache,
-    rtalloc, rtalloc_mpath, rtfree, rtisvalid,
+    RT_RESOLVE, RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU, Route, as_static,
+    route_cache, rtalloc, rtfree, rtisvalid, sa_of, unpark,
 };
 use crate::net::rtable::{rtable_l2, rtable_loindex};
 use crate::netinet::in_::{
@@ -125,7 +125,7 @@ use crate::netinet::in_::{
     IPPROTO_IP, IPPROTO_TCP, IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT,
     IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
     IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_UNIQUE, InAddr, IpMreq, IpMreqn, SockaddrIn, in_addmulti,
-    in_delmulti, in_hasmulti, in_ifp2ia, in_multicast, satosin, sintosa,
+    in_delmulti, in_hasmulti, in_ifp2ia, in_multicast, sintosa,
 };
 use crate::netinet::in_cksum::in_cksum;
 use crate::netinet::in_pcb::{
@@ -175,24 +175,30 @@ const TH_SUM_OFFSET: usize = core::mem::offset_of!(crate::netinet::tcp::Tcphdr, 
 /// `offsetof(struct udphdr, uh_sum)`.
 const UH_SUM_OFFSET: usize = core::mem::offset_of!(Udphdr, uh_sum);
 
+/// `ro->ro_dstsin`: a route cache's destination, as the `sockaddr_in` `route_cache` wrote.
+fn ro_sin(ro: &Route) -> SockaddrIn {
+    hal::pod::at::<SockaddrIn>(&ro.ro_dst, 0).unwrap_or_default()
+}
+
 /// `ip_output`: IP output. The packet in mbuf chain `m` contains a skeletal IP header (with
 /// len, off, ttl, proto, tos, src, dst). The mbuf chain containing the packet will be freed.
 /// The mbuf `opt`, if present, will not be freed.
 pub fn ip_output(
     m: &'static Mbuf,
     opt: Option<&'static Mbuf>,
-    ro: Option<&Route>,
+    ro: Option<&mut Route>,
     flags: i32,
     imo: Option<&IpMoptions>,
     seclevel: Option<&IpsecLevel>,
     ipsecflowinfo: u32,
 ) -> Result<(), Errno> {
+    let mut ro_arg = ro;
     let mut m = m;
     let mut ifp: Option<&'static Ifnet> = None;
     let mut tdb: Option<&'static Tdb> = None;
     let ml = MbufList::new();
     let mut hlen = size_of::<Ip>() as i32;
-    let iproute = Route::new();
+    let mut iproute = Route::new();
     let mut mtu: u64;
 
     net_assert_locked("ip_output");
@@ -219,7 +225,6 @@ pub fn ip_output(
     }
     mtod_ip_store(m, &ip);
 
-    let mut ro = ro.unwrap_or(&iproute);
     let error: Result<(), Errno> = 'done: {
         let bad: Result<(), Errno> = 'bad: {
             // We should not send traffic to 0/8 say both Stevens and RFCs 5735 section 3 and
@@ -231,6 +236,11 @@ pub fn ip_output(
             let orig_rtableid = m.m_pkthdr().ph_rtableid.get();
             // reroute: pf(4) asks for a new route lookup after it changed the packet.
             'reroute: loop {
+                // The caller's route, or ours (iproute) when it gave none or pf rerouted.
+                let ro: &mut Route = match ro_arg.as_deref_mut() {
+                    Some(r) => r,
+                    None => &mut iproute,
+                };
                 // Do a route lookup now in case we need the source address to do an SPD lookup in
                 // IPsec; for most packets, the source address is set at a higher level protocol.
                 // ICMPs and other packets though (e.g., traceroute) have a source address of
@@ -242,7 +252,7 @@ pub fn ip_output(
                     Some(&ip.ip_src),
                     m.m_pkthdr().ph_rtableid.get(),
                 );
-                let mut dst: *const SockaddrIn = ro.ro_dstsa().cast();
+                let mut dst: SockaddrIn = ro_sin(ro);
 
                 let mcast_or_bcast =
                     in_multicast(ip.ip_dst.s_addr) || ip.ip_dst.s_addr == INADDR_BROADCAST;
@@ -260,15 +270,17 @@ pub fn ip_output(
                         mtod_ip_store(m, &ip);
                     }
                 } else {
-                    if ro.ro_rt.get().is_none() {
+                    if ro.rt().is_none() {
                         let words = [ip.ip_src.s_addr];
-                        // SAFETY: `ro_dstsa` is the `sockaddr_in` `route_cache` wrote.
-                        ro.ro_rt.set(unsafe {
-                            rtalloc_mpath(ro.ro_dstsa(), Some(&words), ro.ro_tableid.get() as u32)
-                        });
+                        ro.ro_rt = kernel::net::route::rtalloc_mpath(
+                            ro.dst(),
+                            Some(&words),
+                            ro.ro_tableid,
+                            &crate::net::if_::net_held("ip_output"),
+                        );
                     }
 
-                    let Some(rt) = ro.ro_rt.get() else {
+                    let Some(rt) = ro.rt().map(as_static) else {
                         ipstat_inc(IpstatCounters::IpsNoroute);
                         break 'bad Err(Errno::EHOSTUNREACH);
                     };
@@ -291,8 +303,12 @@ pub fn ip_output(
                         mtu = u64::from(i.if_mtu.get());
                     }
 
-                    if rt.rt_flags.get() & RTF_GATEWAY != 0 {
-                        dst = satosin(rt.rt_gateway.get());
+                    // `dst = satosin(rt->rt_gateway)`: the gateway read once, in place.
+                    if rt.rt_flags.get() & RTF_GATEWAY != 0
+                        && let Some(g) =
+                            rt.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn>(g, 0)))
+                    {
+                        dst = g;
                     }
 
                     // Set the source IP address
@@ -331,7 +347,7 @@ pub fn ip_output(
                     // IP destination address is multicast. Make sure "dst" still points to the
                     // address in "ro". (It may have been changed to point to a gateway address,
                     // above.)
-                    dst = ro.ro_dstsa().cast();
+                    dst = ro_sin(ro);
 
                     // See if the caller provided any multicast options
                     ip.ip_ttl = match imo {
@@ -370,8 +386,7 @@ pub fn ip_output(
                         // interface, and the caller did not forbid loopback, loop back a copy.
                         // Can't defer TCP/UDP checksumming, do the computation now.
                         in_proto_cksum_out(m, None);
-                        // SAFETY: `dst` is the route's destination `sockaddr_in`.
-                        ip_mloopback(i, m, unsafe { &*dst });
+                        ip_mloopback(i, m, &dst);
                     }
                     // MROUTING: ip_mforward when ipmforwarding and ip_mrouter_active; not
                     // configured.
@@ -392,13 +407,11 @@ pub fn ip_output(
 
                 // Look for broadcast address and verify user is allowed to send such a packet; if
                 // the packet is going in an IPsec tunnel, skip this check.
-                // SAFETY: `dst` is the route's destination or gateway `sockaddr_in`.
-                let dst_addr = unsafe { (*dst).sin_addr.s_addr };
+                let dst_addr = dst.sin_addr.s_addr;
                 if tdb.is_none()
                     && (dst_addr == INADDR_BROADCAST
                         || ro
-                            .ro_rt
-                            .get()
+                            .rt()
                             .is_some_and(|rt| rt.rt_flags.get() & RTF_BROADCAST != 0))
                 {
                     if i.if_flags.get() & IFF_BROADCAST == 0 {
@@ -420,10 +433,7 @@ pub fn ip_output(
                 // If we're doing Path MTU discovery, we need to set DF unless the route's MTU is
                 // locked.
                 if flags & IP_MTUDISC != 0
-                    && ro
-                        .ro_rt
-                        .get()
-                        .is_some_and(|rt| rt.rt_locks().get() & RTV_MTU == 0)
+                    && ro.rt().is_some_and(|rt| rt.rt_locks().get() & RTV_MTU == 0)
                 {
                     ip.ip_off |= htons(IP_DF);
                     mtod_ip_store(m, &ip);
@@ -470,12 +480,10 @@ pub fn ip_output(
                 } else if pf.flags.get() & PF_TAG_REROUTE != 0 {
                     // Tag as generated to skip over pf_test on rerun.
                     pf.flags.set(pf.flags.get() | PF_TAG_GENERATED);
-                    if ptr::eq(ro, &iproute) {
-                        rtfree(ro.ro_rt.get());
-                    }
-                    // ro = NULL, then `ro = &iproute; ro->ro_rt = NULL` at reroute.
-                    ro = &iproute;
-                    ro.ro_rt.set(None);
+                    // ro = NULL, then `ro = &iproute; ro->ro_rt = NULL` at reroute: iproute's
+                    // route given back (rtfree), the caller's left to the caller.
+                    ro_arg = None;
+                    iproute.ro_rt = None;
                     if_put(ifp); // drop reference since target changed
                     ifp = None;
                     continue 'reroute;
@@ -490,14 +498,14 @@ pub fn ip_output(
 
                 // If TSO or small enough for interface, can just send directly.
                 let mut mp = Some(m);
-                // SAFETY: `dst` is the route's destination or gateway `sockaddr_in`, readable for
-                // the call.
+                // SAFETY: `dst` is a local `sockaddr_in` (the route's destination or gateway),
+                // readable for the call.
                 let error = unsafe {
                     if_output_tso(
                         i,
                         &mut mp,
-                        sintosa(dst.cast_mut()),
-                        ro.ro_rt.get(),
+                        sintosa(&mut dst),
+                        ro.rt().map(as_static),
                         mtu as u32,
                     )
                 };
@@ -517,21 +525,18 @@ pub fn ip_output(
                         ipsec_adjust_mtu(m, i.if_mtu.get());
                     }
                     // pf changed routing table, use orig rtable for path MTU.
-                    if ro.ro_tableid.get() != u64::from(orig_rtableid) {
-                        rtfree(ro.ro_rt.get());
-                        ro.ro_tableid.set(u64::from(orig_rtableid));
-                        ro.ro_rt.set(icmp_mtudisc_clone(
-                            ro.ro_dstsin().sin_addr,
-                            ro.ro_tableid.get() as u32,
-                            false,
-                        ));
+                    if ro.ro_tableid != orig_rtableid {
+                        ro.ro_rt = None;
+                        ro.ro_tableid = orig_rtableid;
+                        ro.ro_rt = icmp_mtudisc_clone(ro_sin(ro).sin_addr, ro.ro_tableid, false)
+                            .map(unpark);
                     }
 
                     // This case can happen if the user changed the MTU of an interface after
                     // enabling IP on it. Because most netifs don't keep track of routes pointing
                     // to them, there is no way for one to update all its routes when the MTU is
                     // changed.
-                    if let Some(rt) = ro.ro_rt.get()
+                    if let Some(rt) = ro.rt()
                         && rtisvalid(Some(rt))
                         && rt.rt_flags.get() & RTF_HOST != 0
                         && rt.rt_locks().get() & RTV_MTU == 0
@@ -554,7 +559,8 @@ pub fn ip_output(
                     break 'done Err(e);
                 }
                 // SAFETY: as for `if_output_tso`.
-                let sent = unsafe { if_output_ml(i, &ml, sintosa(dst.cast_mut()), ro.ro_rt.get()) };
+                let sent =
+                    unsafe { if_output_ml(i, &ml, sintosa(&mut dst), ro.rt().map(as_static)) };
                 if let Err(e) = sent {
                     break 'done Err(e);
                 }
@@ -566,10 +572,8 @@ pub fn ip_output(
         m_freem(m);
         bad
     };
-    // done:
-    if ptr::eq(ro, &iproute) {
-        rtfree(ro.ro_rt.get());
-    }
+    // done: iproute's route given back with it (rtfree).
+    drop(iproute);
     if_put(ifp);
     tdb_unref(tdb);
     error
@@ -629,13 +633,13 @@ fn ip_output_ipsec_lookup(
 
 /// `ip_output_ipsec_pmtu_update`: stores the SA's MTU in a host route to `dst` (cloned when
 /// needed), but not for transport mode SAs.
-fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&Route>, dst: InAddr, rtableid: u32) {
+fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&mut Route>, dst: InAddr, rtableid: u32) {
     let mut rt_mtucloned = false;
     let tdst = tdb.tdb_dst.get();
     let transportmode = tdst.sa_family() == AF_INET && tdst.sin_addr().s_addr == dst.s_addr;
 
     // Find a host route to store the mtu in
-    let mut rt = ro.and_then(|ro| ro.ro_rt.get());
+    let mut rt = ro.as_deref().and_then(Route::rt).map(as_static);
     // but don't add a PMTU route for transport mode SAs
     if transportmode {
         rt = None;
@@ -654,13 +658,16 @@ fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&Route>, dst: InAddr, rtabl
     if let Some(r) = rt {
         r.rt_mtu().store(tdb.tdb_mtu.get(), Ordering::Relaxed);
         if let Some(ro) = ro
-            && ro.ro_rt.get().is_some()
+            && ro.rt().is_some()
         {
-            rtfree(ro.ro_rt.get());
-            ro.ro_tableid.set(rtableid as _);
-            // SAFETY: `ro_dstsa` is the route's destination `sockaddr_in`.
-            ro.ro_rt
-                .set(unsafe { rtalloc(ro.ro_dstsa(), RT_RESOLVE, rtableid) });
+            ro.ro_rt = None;
+            ro.ro_tableid = rtableid;
+            ro.ro_rt = kernel::net::route::rtalloc(
+                ro.dst(),
+                RT_RESOLVE,
+                rtableid,
+                &crate::net::if_::net_held("ip_output_ipsec_pmtu_update"),
+            );
         }
         if rt_mtucloned {
             rtfree(Some(r));
@@ -673,7 +680,7 @@ fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&Route>, dst: InAddr, rtabl
 fn ip_output_ipsec_send(
     tdb: &'static Tdb,
     m: &'static Mbuf,
-    ro: Option<&Route>,
+    ro: Option<&mut Route>,
     rtableid: u32,
     fwd: bool,
 ) -> Result<(), Errno> {
@@ -1363,14 +1370,13 @@ pub fn ip_multicast_if(mreq: &IpMreqn, rtableid: u32, ifidx: &mut u32) -> Result
         } else {
             (mreq.imr_address, 0)
         };
-        let mut sin = SockaddrIn {
+        let sin = SockaddrIn {
             sin_len: size_of::<SockaddrIn>() as u8,
             sin_family: AF_INET,
             sin_addr: addr,
             ..SockaddrIn::default()
         };
-        // SAFETY: a local `sockaddr_in`, read for the call.
-        let rt = unsafe { rtalloc(sintosa(&mut sin), flags, rtableid) };
+        let rt = rtalloc(sa_of(&sin), flags, rtableid);
         if !rtisvalid(rt) || (flags == 0 && rt.is_some_and(|rt| rt.rt_flags.get() & RTF_LOCAL == 0))
         {
             rtfree(rt);

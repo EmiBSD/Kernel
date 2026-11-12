@@ -128,6 +128,14 @@ mod tests {
     const IPPROTO_UDP: u8 = 17;
     const IPPROTO_ROUTING: u8 = 43;
 
+    /// `f` under the net lock, as `ip6_local` runs the routing header's input (its errors' route lookups want the lock's proof).
+    fn locked<R>(f: impl FnOnce() -> R) -> R {
+        crate::sys::systm::net_lock();
+        let r = f();
+        crate::sys::systm::net_unlock();
+        r
+    }
+
     /// A packet from `PEER6` to `OURS6`, a routing header (`nxt`, `len`, `type`, `segleft`)
     /// padded to its length, and 8 bytes of payload.
     fn packet(ifp: &Ifnet, rh: [u8; 4]) -> &'static Mbuf {
@@ -160,7 +168,7 @@ mod tests {
             let mut mp = Some(packet(ifp, [IPPROTO_UDP, 0, ty, 0]));
             let mut off = 40;
             assert_eq!(
-                route6_input(&mut mp, &mut off, 43, 10, None),
+                locked(|| route6_input(&mut mp, &mut off, 43, 10, None)),
                 i32::from(IPPROTO_UDP)
             );
             assert_eq!(off, 48);
@@ -177,7 +185,10 @@ mod tests {
         let header = icmp6stat(Icmp6statCounters::Icp6sOparamprobHeader);
         let mut mp = Some(packet(ifp, [IPPROTO_UDP, 0, 0, 2]));
         let mut off = 40;
-        assert_eq!(route6_input(&mut mp, &mut off, 43, 10, None), IPPROTO_DONE);
+        assert_eq!(
+            locked(|| route6_input(&mut mp, &mut off, 43, 10, None)),
+            IPPROTO_DONE
+        );
         assert!(mp.is_none(), "icmp6_error consumed the packet");
         assert_eq!(off, 40);
         assert_eq!(ip6stat(Ip6statCounters::Ip6sBadoptions), bad + 1);
