@@ -2013,13 +2013,13 @@ pub fn if_output_ml(
     let mut error = Ok(());
 
     while let Some(m) = ml_dequeue(ml) {
-        // An interface no driver registered with has no `if_output` (the C's NULL).
-        error = if let Some(d) = ifp.if_driver.get() {
-            d.output(ifp, m, dst, rt)
-        } else {
+        // An interface with no driver has no `if_output`: the C calls through NULL, as
+        // `NetDriver::output`'s default does.
+        let Some(d) = ifp.if_driver.get() else {
             drop(m);
-            Err(Errno::ENETDOWN)
+            kpanic(format_args!("if_output_ml: an interface without if_output"));
         };
+        error = d.output(ifp, m, dst, rt);
         if error.is_err() {
             break;
         }

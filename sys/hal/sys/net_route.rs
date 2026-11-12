@@ -290,6 +290,9 @@ pub const RTP_DOWN: u8 = 0x80;
 /// `RTM_VERSION`: up the ante and ignore older versions.
 pub const RTM_VERSION: u8 = 5;
 
+/// `RTM_RTTUNIT`: the units of `rmx_rtt` and `rmx_rttvar`, per second.
+pub const RTM_RTTUNIT: u32 = 1_000_000;
+
 /// `RTM_MAXSIZE`: maximum size of an accepted route message.
 pub const RTM_MAXSIZE: usize = 2048;
 
