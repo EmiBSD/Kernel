@@ -16433,7 +16433,7 @@ rust = "sys/kernel/netinet/igmp.rs"
 crate = "kernel"
 lz = ["sys/netinet/igmp.rs"]
 status = "redesigned"
-notes = "N6.4a: igmp.c: the router records a chain of MBox under igmp_mtx's Mutexed (the labels' shape) with an atomic mirror for slowtimo's unlocked LIST_EMPTY, the Router Alert option a constant image ip_output takes as bytes (R16), igmp_input giving the valid packet back for bsd's rip_input tail call (R8), the queries and reports over the typed records under if_maddrlock, fasttimo's pending reports MBoxes of M_MRTABLE M_NOWAIT; tests: the router records' v1/v2 ageing and net.inet.igmp.stats over a user buffer (bsd's igmp.rs keeps the protocol's wire tests over its Ethernet fixture)"
+notes = "N6.4a: igmp.c: the router records a chain of MBox under igmp_mtx's Mutexed (the labels' shape) with an atomic mirror for slowtimo's unlocked LIST_EMPTY, router_alert an MT_DATA mbuf made at init and held for life as the C's, the reports taking its bytes from a constant image ip_output takes as bytes (R16, review 1), igmp_input giving the valid packet back for bsd's rip_input tail call (R8), the queries and reports over the typed records under if_maddrlock, fasttimo's pending reports MBoxes of M_MRTABLE M_NOWAIT; tests: the router records' v1/v2 ageing and net.inet.igmp.stats over a user buffer (bsd's igmp.rs keeps the protocol's wire tests over its Ethernet fixture)"
 
 [[module.fn]]
 lz = "sys/netinet/igmp.rs::RtiHead"
@@ -16447,8 +16447,8 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/igmp.rs::router_alert"
-native = ["ROUTER_ALERT"]
-kind = "merged"
+native = ["ROUTER_ALERT_MBUF", "ROUTER_ALERT"]
+kind = "split"
 
 [[module.fn]]
 lz = "sys/netinet/igmp.rs::rti_alloc"

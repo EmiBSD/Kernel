@@ -137,9 +137,6 @@
 //! ## Deviations
 //! - `MROUTING` is not configured (the own-report check of v2 reports, `imo_loop` from
 //!   `ip_mrouter_active`).
-//! - `router_alert`, the Router Alert option of the reports `igmp_init` builds once in an
-//!   mbuf, is the constant image of that `struct ipoption` ([`ROUTER_ALERT`]), which
-//!   `ip_output` takes as bytes: one mbuf fewer in use from boot on (N6.4a's R16).
 //! - `igmp_input` gives the valid packet back for the raw IGMP sockets instead of calling
 //!   `rip_input` itself: `bsd`'s `inetsw[]` entry, which calls the raw input, wraps it until
 //!   the protocol table moves (N6.4c2's `Protocol::input`; N6.4a's R8).
@@ -154,6 +151,11 @@
 //! - `igmp_fasttimo`'s `struct igmp_pktlist` of `malloc(M_MRTABLE, M_NOWAIT)`'d records -> a
 //!   chain of `MBox`es of the same type and flags (a report that cannot be allocated is
 //!   skipped, as the C's), built at the head and sent from the oldest.
+//! - `router_alert`, the mbuf `igmp_init` fills with the Router Alert option and keeps for
+//!   life, is made and held as the C's ([`ROUTER_ALERT_MBUF`], so the mbuf counts are the
+//!   C's), but the reports take its bytes from the constant image of that `struct ipoption`
+//!   ([`ROUTER_ALERT`]), which `ip_output` takes as bytes: no lock per report to reach the
+//!   mbuf, which cannot be a shared global (an `Mbuf` is not `Sync`) (N6.4a's R16).
 //! - The IGMP and IP headers are read and written through `hal::pod` at their offsets;
 //!   `igmp_input`'s `KERNEL_LOCK()` is the kernel lock taken C-style around
 //!   `igmp_input_if`, as the C.
@@ -188,10 +190,13 @@ use hal::sys::netinet_in::{
 };
 use hal::sys::netinet_ip::{IPOPT_RA, Ip};
 
-use crate::assert::kassert;
+use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef};
 use crate::net::if_var::Ifnet;
-use crate::net::mbuf::{M_DONTWAIT, M_EXT, MAX_LINKHDR, MT_HEADER, MbufBox, m_gethdr, m_pullup};
+use crate::net::mbuf::{
+    M_DONTWAIT, M_EXT, M_WAIT, MAX_LINKHDR, MT_DATA, MT_HEADER, MbufBox, m_copyback, m_get,
+    m_gethdr, m_pullup,
+};
 use crate::net::proto::PR_FASTHZ;
 use crate::netinet::igmp_var::{
     IGPS_NCOUNTERS, IgmpPktinfo, IgmpstatCounters, igmp_random_delay, igmpstat_inc,
@@ -268,16 +273,37 @@ static RTI_ANY: AtomicBool = AtomicBool::new(false);
 /// `igmpcounters`: the IGMP statistics, per CPU.
 pub static IGMPCOUNTERS: Counters<IGPS_NCOUNTERS> = Counters::new();
 
+/// `router_alert`: the mbuf `igmp_init` allocates and keeps for life, holding the option's
+/// image as the C's does. Only `igmp_init` touches it: the reports take the same bytes from
+/// [`ROUTER_ALERT`] (no lock per report); the mbuf is held so that the mbuf counts
+/// (`netstat -m`, `vmstat -m`'s `mbufpl`) are the C's from boot (N6.4a's R16, review 1).
+static ROUTER_ALERT_MBUF: Mutexed<Option<MbufBox>> = Mutexed::new(IPL_SOFTNET, None);
+
 /// `igmp_init()`: no timer running, no router known (`LIST_INIT`, which forgets whatever the
-/// head held: nothing at boot). The counters and the Router Alert option are static (the
-/// module's redesign and deviations).
+/// head held: nothing at boot), and `router_alert`, one `MT_DATA` mbuf holding the Router
+/// Alert option, made and kept for life. The counters are static (the module's redesign).
 pub fn igmp_init() {
     IGMP_TIMERS_ARE_RUNNING.store(0, Ordering::Relaxed);
-    let mut g = IGMP_MTX.lock();
-    if let Some(old) = g.rti.take() {
-        let _ = MBox::leak(old);
+    {
+        let mut g = IGMP_MTX.lock();
+        if let Some(old) = g.rti.take() {
+            let _ = MBox::leak(old);
+        }
+        RTI_ANY.store(false, Ordering::Relaxed);
     }
-    RTI_ANY.store(false, Ordering::Relaxed);
+
+    // router_alert = m_get(M_WAIT, MT_DATA), the option's image in it, m_len its length.
+    let Some(mut ra) = m_get(M_WAIT, MT_DATA) else {
+        kpanic(format_args!("igmp_init: no mbuf for router_alert"));
+    };
+    if m_copyback(&mut ra, 0, &ROUTER_ALERT, M_WAIT).is_err() {
+        kpanic(format_args!("igmp_init: router_alert's option"));
+    }
+    // A second init (the tests' reset) forgets the earlier mbuf, which an earlier test's
+    // memory holds, without freeing it (testing.md's rule); the boot's has none.
+    if let Some(old) = ROUTER_ALERT_MBUF.lock().replace(ra) {
+        core::mem::forget(old);
+    }
 }
 
 /// The record of `ifidx` in the chain `head`. Called holding `igmp_mtx` (`head` is its data).
@@ -928,6 +954,26 @@ mod tests {
         rti_delete(ifp);
         assert_eq!(rti_type(idx), IGMP_v2_ROUTER);
         assert!(!RTI_ANY.load(Ordering::Relaxed), "the list is empty again");
+    }
+
+    #[test]
+    fn igmp_init_holds_router_alert_for_life() {
+        let _g = crate::net::if_::tests::setup();
+        let data = || crate::net::mbuf::mbstat_read().m_mtypes[MT_DATA as usize];
+        let before = data();
+        igmp_init();
+        // One MT_DATA mbuf more in use (netstat -m's count), held: the C's m_get at init.
+        assert_eq!(data(), before + 1);
+        {
+            let g = ROUTER_ALERT_MBUF.lock();
+            let ra = g.as_ref().expect("router_alert held");
+            assert_eq!(ra.data(), &ROUTER_ALERT[..], "the option's image, m_len 8");
+        }
+        // Nothing gives it back: the count stays up while IGMP runs.
+        igmp_slowtimo();
+        igmp_fasttimo();
+        assert_eq!(data(), before + 1);
+        assert!(ROUTER_ALERT_MBUF.lock().is_some(), "still held");
     }
 
     #[test]
