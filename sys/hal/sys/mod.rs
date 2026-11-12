@@ -62,11 +62,19 @@ pub mod netinet6_in6;
 #[forbid(unsafe_code)]
 pub mod netinet_if_ether;
 #[forbid(unsafe_code)]
+pub mod netinet_igmp;
+#[forbid(unsafe_code)]
+pub mod netinet_igmp_var;
+#[forbid(unsafe_code)]
 pub mod netinet_in;
+#[forbid(unsafe_code)]
+pub mod netinet_in_var;
 #[forbid(unsafe_code)]
 pub mod netinet_ip;
 #[forbid(unsafe_code)]
 pub mod netinet_ip6;
+#[forbid(unsafe_code)]
+pub mod netinet_ip_var;
 #[forbid(unsafe_code)]
 pub mod netinet_tcp;
 #[forbid(unsafe_code)]

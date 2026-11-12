@@ -8709,7 +8709,14 @@ rust = "sys/hal/sys/netinet_in.rs"
 crate = "hal"
 lz = ["sys/netinet/in_.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in_addr (4), struct sockaddr_in (16), INADDR_ANY, IPPROTO_TCP, IPPROTO_UDP, IN_MULTICAST; bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21): struct in_addr, struct sockaddr_in and four constants for the kernel's Ethernet layer. N6.4a: the whole userland part of netinet/in.h as abi_pod! images with const size asserts (in_addr 4, sockaddr_in 16, ip_opts 44, ip_mreq 8, ip_mreqn 12), every IPPROTO_*, IPPORT_*, IN_CLASS*, INADDR_*, IP_* option name and value, IPSEC_LEVEL_*, IPCTL_* and IPCTL_MAXID, the IN_* predicates as const fns, and LZ's two tests (the reference-backed one included); IPPROTO_* are i32 as the C's, IN_MULTICAST takes network order as the C's"
+
+[[module]]
+rust = "sys/hal/sys/netinet_in_var.rs"
+crate = "hal"
+lz = ["sys/netinet/in_var.rs"]
+status = "redesigned"
+notes = "N6.4a: netinet/in_var.h's userland part, struct in_aliasreq (64) as an abi_pod! whose ifra_addr is the union's address member (the union's int only aligns it), with a layout test; the _KERNEL part is kernel::netinet::in_var's"
 
 [[module]]
 rust = "sys/hal/sys/netinet6_in6.rs"
@@ -8723,7 +8730,7 @@ rust = "sys/hal/sys/netinet_ip.rs"
 crate = "hal"
 lz = ["sys/netinet/ip.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip (20) with ip_hl/ip_v, IP_MF, IP_OFFMASK; bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21): struct ip and two constants for the kernel's Ethernet layer. N6.4a: the whole of netinet/ip.h (no _KERNEL part) as abi_pod! images with const size asserts (ip 20, ipt_ta 8, ip_timestamp 12 with its union as two words, ippseudo 12), every IP_*, IPTOS_*, IPOPT_* constant, MAXTTL, IPDEFTTL, IPFRAGTTL, IPTTLDEC, IP_MSS, IPQ_MAXLEN, the IPOPT_* macros as const fns, and LZ's two tests"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip6.rs"
@@ -8731,6 +8738,13 @@ crate = "hal"
 lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip_var.rs"
+crate = "hal"
+lz = ["sys/netinet/ip_var.rs"]
+status = "redesigned"
+notes = "N6.4a: netinet/ip_var.h's userland part as abi_pod! images with const size asserts: MAX_IPOPTLEN, struct ipovly (20), struct ipstat (36 u64, net.inet.ip.stats), struct ipoption (44); LZ's overlay test and a reference-backed one; the _KERNEL part is kernel::netinet::ip_var's and bsd's until their slices"
 
 [[module]]
 rust = "sys/hal/sys/netinet_tcp.rs"
@@ -8752,6 +8766,20 @@ crate = "hal"
 lz = ["sys/netinet/if_ether.rs"]
 status = "redesigned"
 notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then"
+
+[[module]]
+rust = "sys/hal/sys/netinet_igmp.rs"
+crate = "hal"
+lz = ["sys/netinet/igmp.rs"]
+status = "redesigned"
+notes = "N6.4a: netinet/igmp.h as hal's: IGMP_* (message types, delays, member and router states, IGMP_AGE_THRESHOLD) and struct igmp (8) as an abi_pod!, with LZ's reference-backed test; the protocol (igmp.c) is kernel::netinet::igmp's"
+
+[[module]]
+rust = "sys/hal/sys/netinet_igmp_var.rs"
+crate = "hal"
+lz = ["sys/netinet/igmp_var.rs"]
+status = "redesigned"
+notes = "N6.4a: netinet/igmp_var.h's userland part: struct igmpstat (9 u64, net.inet.igmp.stats) as an abi_pod!, IGMPCTL_STATS, IGMPCTL_MAXID, with a reference-backed test; the _KERNEL part is kernel::netinet::igmp_var's"
 
 [[module]]
 rust = "sys/hal/sys/net_if_media.rs"

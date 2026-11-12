@@ -1438,7 +1438,7 @@ pub fn ether_extract_headers(m0: &Mbuf, ext: &mut EtherExtracted) {
     };
 
     let toff = (off + hlen) as u32;
-    match ipproto {
+    match i32::from(ipproto) {
         IPPROTO_TCP => {
             let Some((m, hoff)) = m_getptr(m, (hoff + hlen) as i32) else {
                 return;
