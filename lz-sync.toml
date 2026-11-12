@@ -823,6 +823,24 @@ method = "reimplemented"
 reason = "native's README carries the same wording since 7b044a92"
 
 [[commit]]
+lz = "41374a0e49e1"
+subject = "docs: where the repository sits in the pipeline; the common header's badges"
+modules = []
+status = "applied"
+emibsd = "c8afec971183"
+method = "reimplemented"
+reason = "native's README has its own \"Where it sits\" section since c8afec97 (docs: where the repository sits in the pipeline) and the shields badges, the Rust one read from rust-toolchain.toml, since 88d6e00a; LZ's text describes LZ's place, not native's"
+
+[[commit]]
+lz = "d57bc735da00"
+subject = "docs: Ferffy is a centolla"
+modules = []
+status = "applied"
+emibsd = "f46f0de8d80c"
+method = "reimplemented"
+reason = "native's README names the centolla in its caption, alt text and Mascot section since f46f0de8 (docs: Ferffy is a centolla)"
+
+[[commit]]
 lz = "f7b1fad33bbf"
 subject = "build: switch to DevTools' Rust 1.99.1 and LLVM 23.1.4; freeze amd64"
 modules = [
@@ -864,6 +882,40 @@ modules = [
     "sys/scsi/scsiconf.rs",
 ]
 status = "applied"
-emibsd = "4183152950c7"
+emibsd = "fbbe1c26758e"
 method = "cherry-pick-conflicts"
 reason = "the sys/ half only: clippy 1.99's fixes in test code, taken by the inherited modules as LZ wrote them and by the adapted ones where their tests keep LZ's lines (if_ethersubr's ether_resolve test resolved by hand); the hunks in tests native moved into the kernel crate (rtable, rtsock, dinode, ffs_vfsops, nfs_srvsubs, one of nfs_serv's) and in the redesigned modules (cd9660_rrip, kern_clockintr, tty_subr, uipc_usrreq, strlcat, sys/queue, ffs_subr, uvm_map, uvm_param) are not taken, since native's clippy lints no test target; the extras sys/reftest.rs and sys/crypto/testutil.rs (LZ helpers at the pin, not new files) and sys/machine/mod.rs take LZ's line, and native's copies of the two extras the same line; the build, docs, rules and xtask half is LZ's form of native's decisions 49 (dd1571e9) and 44 (7bfcdfe4) and is not taken; security-review areas touched in test code only (crypto, rnd, if_wg, pf_osfp, if_pfsync), reviewed"
+
+[[commit]]
+lz = "da0e25615ed8"
+subject = "xtask: smoke-all runs its recipes on its own binary, not through cargo"
+modules = []
+status = "applied"
+emibsd = "56c9b8a507aa"
+method = "reimplemented"
+reason = "native's smoke-all runs its recipes on a private copy of xtask, passed as EMIBSD_XTASK and run through the justfile's `xtask` variable, since 56c9b8a5 (xtask: run the recipes of smoke-all on a private copy of xtask); LZ's EXTERNAL_BUGS entry is LZ's"
+
+[[commit]]
+lz = "eadfab1b66c9"
+subject = "rules: the machine lock is the directory /tmp/emibsd/ci.lock"
+modules = []
+status = "applied"
+emibsd = "acf8449ddf26"
+method = "reimplemented"
+reason = "native's subagents.md has the shared lock as the directory /tmp/emibsd/ci.lock, taken with mkdir and removed with rmdir, since acf8449d (rules: define subagent roles, their memory, /redesign and /progress)"
+
+[[commit]]
+lz = "56fecfeeb550"
+subject = "docs: STATUS after the switch to DevTools' toolchain"
+modules = []
+status = "not-applicable"
+reason = "LZ's own docs/STATUS.md; native keeps its own STATUS"
+
+[[commit]]
+lz = "937d22ef0eb4"
+subject = "build: DevTools' per-arch toolchains and the renamed kernel targets (D-0008)"
+modules = []
+status = "applied"
+emibsd = "dd1571e99cc3"
+method = "reimplemented"
+reason = "native builds with DevTools' per-arch releases on the renamed target aarch64-emibsd-none-softfloat since dd1571e9 (decision 49; justfile, .cargo/config.toml, rust-toolchain.toml as a tripwire, the docs), and hal's arm64 fpu.rs, which took the FPU code, carries the renamed target in its Deviations note; bsd's sys/arch/arm64/arm64/fpu.rs (adapted) no longer has that note; amd64 stays frozen by decision 44; LZ's rustup links and hardware-lab rule are LZ's"
