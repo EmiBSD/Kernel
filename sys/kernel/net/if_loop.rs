@@ -192,12 +192,12 @@ const LOHDRLEN: u32 = 4;
 /// `struct if_clone loop_cloner`: the `lo` cloner.
 pub struct LoopCloner;
 
-/// `loop_cloner`.
-pub static LOOP_CLONER: LoopCloner = LoopCloner;
-
 /// The loopback's driver and link layer: `loioctl`, `lo_bpf_mtap`, `looutput`, `loinput` and
 /// `lortrequest`, one object for every loopback (the C's handles carry no state).
 pub struct Loop;
+
+/// `loop_cloner`.
+pub static LOOP_CLONER: LoopCloner = LoopCloner;
 
 /// The one [`Loop`], every loopback's `if_driver` and `if_link`.
 pub static LOOP: Loop = Loop;

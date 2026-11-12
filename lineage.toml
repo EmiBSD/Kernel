@@ -7757,6 +7757,12 @@ lz = "sys/net/if_.rs::net_tq_barrier_rele"
 native = ["net_tq_barrier_task"]
 kind = "renamed"
 
+[[module.fn]]
+lz = "sys/net/if_.rs::if_rtrequest_dummy"
+native = []
+kind = "dropped"
+reason = "the empty if_rtrequest slot's answer: LegacyNetDriver::rtrequest falls to NetDriver's default (kernel::net::if_var::link_rtrequest), which does nothing without a link layer, as if_rtrequest_dummy (N6.3c2)"
+
 [[module]]
 rust = "sys/kernel/net/if_ethersubr.rs"
 crate = "kernel"

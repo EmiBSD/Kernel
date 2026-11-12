@@ -175,8 +175,10 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //! multicast or broadcast (and not our own, unless the interface is simplex); then its type
 //! picks the protocol, which `if_input_proto` calls in the softnet thread.
 //!
-//! **Locks.** The multicast list ([`EtherMultis`]) is inside a leaf `Mutexed` at `IPL_NET`
-//! (the C's `splnet()` sections, D-N6.3c-16), its two counts relaxed atomics written under
+//! **Locks.** The multicast list ([`EtherMultis`]) is inside a `Mutexed` at `IPL_NET` (the
+//! C's `splnet()` sections, D-N6.3c-16), taken before `malloc(9)`'s own lock (a new record's
+//! `MBox::new` and a record's free run under it, as the C's `malloc`/`free` under `splnet`:
+//! the order is the list's mutex, then malloc's), its two counts relaxed atomics written under
 //! it and read by the drivers without it, as the C's; the ports are set under the kernel lock
 //! (`ether_brport_*`) and read per frame with one load; the address `ac_enaddr` is one word
 //! (D-N6.3c-15), read per frame without a lock where the C copies six bytes.
@@ -208,8 +210,9 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   frame), `ether_resolve` converts it back (six shifts where the C copies six bytes).
 //! - `ac_multiaddrs` (a `LIST` of `malloc(M_IFMADDR)` records changed under `splnet()`) ->
 //!   [`EtherMultis`], a chain of `MBox`es of `M_IFMADDR` newest first (the C's
-//!   `LIST_INSERT_HEAD`, one block per record as the C's) inside a leaf `Mutexed` at
-//!   `IPL_NET` (D-N6.3c-16); `enm_refcnt` a count under it. The drivers' `ETHER_FIRST_MULTI`
+//!   `LIST_INSERT_HEAD`, one block per record as the C's) inside a `Mutexed` at
+//!   `IPL_NET`, taken before malloc's lock (D-N6.3c-16); `enm_refcnt` a count under it.
+//!   The drivers' `ETHER_FIRST_MULTI`
 //!   / `ETHER_NEXT_MULTI` walk is `for enm in ac.multiaddrs().iter()`, the guard held for the
 //!   walk (O(1) a step, as the C's): a step object that held the guard and a position into the
 //!   chain it guards cannot be written in safe Rust, so `struct ether_multistep` and the two
@@ -305,20 +308,6 @@ const REV: [u8; 16] = nibble_rev();
 /// multicast requests' address at `ifr_addr`, which `in6_addmulti` makes a `sockaddr_in6`
 /// (the C reads a `struct in6_ifreq` through `struct ifreq *`): `IFNAMSIZ` and 28 bytes.
 pub const ETHER_IOCTL_MULTI_LEN: usize = IFNAMSIZ + size_of::<SockaddrIn6>();
-
-/// `etherbroadcastaddr`.
-pub static ETHERBROADCASTADDR: [u8; ETHER_ADDR_LEN] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
-/// `etheranyaddr`.
-pub static ETHERANYADDR: [u8; ETHER_ADDR_LEN] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-
-/// `ether_ipmulticast_min`: the first Ethernet address of the IP multicast range.
-pub static ETHER_IPMULTICAST_MIN: [u8; ETHER_ADDR_LEN] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x00];
-/// `ether_ipmulticast_max`: the last one.
-pub static ETHER_IPMULTICAST_MAX: [u8; ETHER_ADDR_LEN] = [0x01, 0x00, 0x5e, 0x7f, 0xff, 0xff];
-/// `ether_ip6multicast_min`: the first Ethernet address of the IPv6 multicast range.
-pub static ETHER_IP6MULTICAST_MIN: [u8; ETHER_ADDR_LEN] = [0x33, 0x33, 0x00, 0x00, 0x00, 0x00];
-/// `ether_ip6multicast_max`: the last one.
-pub static ETHER_IP6MULTICAST_MAX: [u8; ETHER_ADDR_LEN] = [0x33, 0x33, 0xff, 0xff, 0xff, 0xff];
 
 /// `ac_enaddr`: an Ethernet address as `ether_addr_to_e64`'s 48-bit word, one atomic (the
 /// module's redesign). All zero is `00:00:00:00:00:00`.
@@ -445,27 +434,6 @@ impl<'a> Iterator for EtherMultiIter<'a> {
     }
 }
 
-/// `struct ether_port`: an aggregation (`ac_trport`: aggr(4), trunk(4)) or bridge
-/// (`ac_brport`: bridge(4), veb(4), tpmr(4)) port on an Ethernet interface (decision 46; no
-/// implementer at the pin).
-pub trait EtherPort: Sync + 'static {
-    /// `ep_input(ifp, m, dst, ep_port, ns)`: the port's look at a received frame addressed to
-    /// `dst` (its e64 form); the frame back when the port does not take it.
-    fn input(
-        &self,
-        ifp: &'static Ifnet,
-        m: MbufBox,
-        dst: u64,
-        ns: Option<&mut Netstack>,
-    ) -> Option<MbufBox>;
-
-    /// `ep_port_take(ep_port)`: a reference to the port for the frame's way through it.
-    fn take(&self);
-
-    /// `ep_port_rele(ref, ep_port)`: the reference [`EtherPort::take`] took, released.
-    fn rele(&self);
-}
-
 /// What an `ac_trport`/`ac_brport` slot names: a port.
 pub struct EtherPortSlot {
     /// The port.
@@ -576,8 +544,43 @@ pub struct Ether;
 /// The Ethernet link layer, every Ethernet interface's `if_link` (`ether_ifattach`).
 pub static ETHER: Ether = Ether;
 
+/// `etherbroadcastaddr`.
+pub static ETHERBROADCASTADDR: [u8; ETHER_ADDR_LEN] = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+/// `etheranyaddr`.
+pub static ETHERANYADDR: [u8; ETHER_ADDR_LEN] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+
+/// `ether_ipmulticast_min`: the first Ethernet address of the IP multicast range.
+pub static ETHER_IPMULTICAST_MIN: [u8; ETHER_ADDR_LEN] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x00];
+/// `ether_ipmulticast_max`: the last one.
+pub static ETHER_IPMULTICAST_MAX: [u8; ETHER_ADDR_LEN] = [0x01, 0x00, 0x5e, 0x7f, 0xff, 0xff];
+/// `ether_ip6multicast_min`: the first Ethernet address of the IPv6 multicast range.
+pub static ETHER_IP6MULTICAST_MIN: [u8; ETHER_ADDR_LEN] = [0x33, 0x33, 0x00, 0x00, 0x00, 0x00];
+/// `ether_ip6multicast_max`: the last one.
+pub static ETHER_IP6MULTICAST_MAX: [u8; ETHER_ADDR_LEN] = [0x33, 0x33, 0xff, 0xff, 0xff, 0xff];
+
 /// `ether_fakeaddr`'s `unit`.
 static FAKEADDR_UNIT: AtomicI32 = AtomicI32::new(0);
+
+/// `struct ether_port`: an aggregation (`ac_trport`: aggr(4), trunk(4)) or bridge
+/// (`ac_brport`: bridge(4), veb(4), tpmr(4)) port on an Ethernet interface (decision 46; no
+/// implementer at the pin).
+pub trait EtherPort: Sync + 'static {
+    /// `ep_input(ifp, m, dst, ep_port, ns)`: the port's look at a received frame addressed to
+    /// `dst` (its e64 form); the frame back when the port does not take it.
+    fn input(
+        &self,
+        ifp: &'static Ifnet,
+        m: MbufBox,
+        dst: u64,
+        ns: Option<&mut Netstack>,
+    ) -> Option<MbufBox>;
+
+    /// `ep_port_take(ep_port)`: a reference to the port for the frame's way through it.
+    fn take(&self);
+
+    /// `ep_port_rele(ref, ep_port)`: the reference [`EtherPort::take`] took, released.
+    fn rele(&self);
+}
 
 impl LinkLayer for Ether {
     fn output(
@@ -912,7 +915,12 @@ pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack
 
     // Fifth phase: destination address check.
     //
-    // Is the packet specifically addressed to this port?
+    // Is the packet specifically addressed to this port? A port may have handed back another
+    // mbuf: the header is read again from the frame as it is now (the C's second mtod), and
+    // the type with it; the destination stays the first read's, as the C's `dst`.
+    let Some(eh) = hal::pod::at::<EtherHeader>(m.data(), 0) else {
+        return;
+    };
     let self_ = ac.ac_enaddr.e64();
     if dst != self_ {
         // NCARP > 0: if it's not for this port, it could be for carp(4) (carp_input on an
@@ -941,6 +949,7 @@ pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack
     //
     // At this point it is known that the packet is destined for layer 3 protocol handling on
     // the local port.
+    let etype = u16::from_be(eh.ether_type);
     let Some(i) = inet() else {
         return;
     };
@@ -2092,6 +2101,64 @@ mod tests {
         let m = frame(OURS, PEER, ETHERTYPE_IPV6, &p);
         ether_extract_headers(&m, &mut ext);
         assert_eq!((ext.ip6, ext.tcp), (Some(14), None));
+    }
+
+    /// A bridge port that takes every frame and hands back another of an unknown type (a
+    /// port that rewrites the frame).
+    struct SwapPort;
+
+    impl EtherPort for SwapPort {
+        fn input(
+            &self,
+            _ifp: &'static Ifnet,
+            m: MbufBox,
+            _dst: u64,
+            _ns: Option<&mut Netstack>,
+        ) -> Option<MbufBox> {
+            drop(m);
+            Some(frame(OURS, PEER, 0x88b5, &[0u8; 46]))
+        }
+
+        fn take(&self) {}
+
+        fn rele(&self) {}
+    }
+
+    static SWAP_PORT: SwapPort = SwapPort;
+    static SWAP_SLOT: EtherPortSlot = EtherPortSlot { port: &SWAP_PORT };
+
+    #[test]
+    fn ether_input_reads_the_header_again_after_a_port_replaced_the_frame() {
+        let _g = setup();
+        let ac = test_arpcom(b"tet5");
+        let ifp = &ac.ac_if;
+        let mut ns = Netstack::new(0);
+        hal::klock::kernel_lock();
+        assert_eq!(ether_brport_isset(ifp), Ok(()));
+        ether_brport_set(ifp, &SWAP_SLOT);
+        assert_eq!(ether_brport_isset(ifp), Err(Errno::EBUSY));
+        assert!(ether_brport_get_locked(ifp).is_some());
+        hal::klock::kernel_unlock();
+        // An IPv4 frame the port replaces by one of an unknown type: dropped, as the C's
+        // second read of the header finds (the first read's type would have queued it).
+        ether_input(
+            ifp,
+            frame(OURS, PEER, ETHERTYPE_IP, &[0u8; 46]),
+            Some(&mut ns),
+        );
+        assert_eq!(ml_len(&ns.ns_proto), 0);
+        hal::klock::kernel_lock();
+        ether_brport_clr(ifp);
+        hal::klock::kernel_unlock();
+        ether_input(
+            ifp,
+            frame(OURS, PEER, ETHERTYPE_IP, &[0u8; 46]),
+            Some(&mut ns),
+        );
+        assert_eq!(ml_len(&ns.ns_proto), 1);
+        while let Some(m) = crate::net::mbuf::ml_dequeue(&mut ns.ns_proto) {
+            drop(m);
+        }
     }
 }
 /* </TESTS> */

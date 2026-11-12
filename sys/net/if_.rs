@@ -223,6 +223,10 @@ pub unsafe fn ifp_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<
     if ifp.if_ioctl_detached() {
         return Err(Errno::ENODEV);
     }
+    if ifp.if_driver.get().is_none() {
+        // No handler at all (before attach): the C's NULL `if_ioctl` slot's answer here.
+        return Err(Errno::ENOTTY);
+    }
     let Some(l) = ifp.legacy_opt() else {
         return kernel_driver_ioctl(ifp, cmd);
     };
@@ -584,20 +588,25 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         dst: kernel::net::proto::SockaddrView<'_>,
         desten: &mut [u8; IF_ETHER_ADDR_LEN],
     ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
-        if dst.bytes().len() < size_of::<crate::netinet::in_::SockaddrIn>() {
+        // The destination as an aligned image of its own: the view's bytes have alignment
+        // 1, and arpresolve reads `sin_addr` through a `*const sockaddr_in` in place.
+        let Some(sin) = hal::pod::at::<hal::sys::netinet_in::SockaddrIn>(dst.bytes(), 0) else {
             drop(m);
             return Err(Errno::EINVAL);
-        }
+        };
         let m = park(m);
-        // SAFETY: `dst`'s bytes, borrowed for the call, hold a whole `sockaddr_in` (checked
-        // above), which is what `arpresolve` reads through the pointer; the packet is parked
-        // for it and comes back only when it answers `Ok` (on an error ARP freed or keeps it).
+        // SAFETY: `sin` is a local `struct sockaddr_in` image, aligned for its type (4) and
+        // whole (16 bytes), which lives across the call; bsd's `SockaddrIn` that `arpresolve`
+        // casts the pointer to has the same `#[repr(C)]` layout (size and alignment asserted
+        // below), so its read of `sin_addr` is in bounds and aligned, and nothing writes
+        // `sin` meanwhile. The packet is parked for the call and comes back only on `Ok` (on
+        // an error ARP freed it or keeps it).
         unsafe {
             arpresolve(
                 ifp,
                 rt.map(as_static),
                 m,
-                dst.bytes().as_ptr().cast(),
+                core::ptr::from_ref(&sin).cast(),
                 desten,
             )
         }?;
@@ -619,7 +628,10 @@ impl kernel::net::if_::Inet for BsdNetLegs {
                 return Err(Errno::EINVAL);
             }
             let m = park(m);
-            // SAFETY: as `arpresolve`'s, for the whole `sockaddr_in6` `nd6_resolve` reads.
+            // SAFETY: `dst`'s bytes, borrowed for the call, hold a whole `sockaddr_in6`
+            // (checked above); `nd6_resolve` reads it once with `read_unaligned`
+            // (`sys/netinet6/nd6.rs`), so the view's alignment of 1 is enough, and nothing
+            // writes the bytes meanwhile. The packet is parked as for `arpresolve`.
             unsafe {
                 nd6_resolve(
                     ifp,
@@ -682,8 +694,8 @@ pub fn ifinit() {
     kernel::net::if_::ifinit();
 }
 
-/// `if_attach_common`'s defaults for `bsd`'s own table (`if_rtrequest_dummy`) and its check
-/// of `if_start`/`if_qstart` against `IFXF_MPSAFE`, before the kernel attaches.
+/// `if_attach_common`'s check of `if_start`/`if_qstart` against `IFXF_MPSAFE`, before the
+/// kernel attaches.
 fn if_attach_legacy(ifp: &'static Ifnet) {
     // KASSERT(ifp->if_ioctl != NULL): every driver answers requests (review nit: a missing
     // handler answered ENOTTY where the C stops the attach).
@@ -1069,8 +1081,6 @@ pub unsafe fn if_output_mq(
 }
 
 // net/if.c, kept (LZ's shape until its slice).
-/// `if_rtrequest_dummy`: the default `if_rtrequest`.
-pub fn if_rtrequest_dummy(_ifp: &'static Ifnet, _req: i32, _rt: Option<&'static Rtentry>) {}
 
 /// `p2p_rtrequest`: default action when installing a local route on a point-to-point
 /// interface (the kernel's, under `bsd`'s net lock).
@@ -1189,6 +1199,21 @@ pub fn ifa_print_all() {
     }
 }
 
+// The two `struct sockaddr_in` images `arpresolve`'s leg passes between (hal's, bsd's).
+const _: () = {
+    assert!(
+        size_of::<hal::sys::netinet_in::SockaddrIn>()
+            == size_of::<crate::netinet::in_::SockaddrIn>()
+    );
+    assert!(
+        align_of::<hal::sys::netinet_in::SockaddrIn>()
+            == align_of::<crate::netinet::in_::SockaddrIn>()
+    );
+    assert!(
+        core::mem::offset_of!(hal::sys::netinet_in::SockaddrIn, sin_addr)
+            == core::mem::offset_of!(crate::netinet::in_::SockaddrIn, sin_addr)
+    );
+};
 /* </CODE> */
 
 /* <TESTS> */
