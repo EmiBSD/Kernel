@@ -1713,7 +1713,7 @@ pub fn rtrequest_delete(
     rt_timer_remove_all(&rt);
 
     kassert!(ifp.if_index.get() == rt.rt_ifidx.get());
-    if_rtrequest(ifp, RTM_DELETE, &rt);
+    if_rtrequest(ifp, RTM_DELETE, &rt, net);
 
     rt.rt_trashed.store(true, Ordering::Relaxed);
     RTTRASH.fetch_add(1, Ordering::Relaxed);
@@ -1729,9 +1729,9 @@ pub fn rtrequest_delete(
 
 /// `ifp->if_rtrequest(ifp, req, rt)`: the interface's link layer told of a route change
 /// (`if_rtrequest_dummy` for an interface without a driver).
-fn if_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry) {
+fn if_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'_>) {
     if let Some(d) = ifp.if_driver.get() {
-        d.rtrequest(ifp, req, Some(rt));
+        d.rtrequest(ifp, req, Some(rt), net);
     }
 }
 
@@ -1912,7 +1912,7 @@ fn rtrequest_add(
         drop(rt.rt_parent.replace(None));
         return fail(rt, Errno::EEXIST);
     }
-    if_rtrequest(ifp, req, &rt);
+    if_rtrequest(ifp, req, &rt, net);
 
     if_group_routechange(dst.bytes(), mask.map(|m| m.bytes()));
 
@@ -3214,13 +3214,22 @@ pub(crate) mod tests {
         adds: AtomicU32,
         resolves: AtomicU32,
         deletes: AtomicU32,
+        /// Packets output; the output fails at this count (0: never).
+        outputs: AtomicU32,
+        fail_at: AtomicU32,
     }
 
     impl NetDriver for RtDriver {
         fn ioctl(&self, _ifp: &'static Ifnet, _cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
             Ok(())
         }
-        fn rtrequest(&self, _ifp: &'static Ifnet, req: u8, rt: Option<&Rtentry>) {
+        fn rtrequest(
+            &self,
+            _ifp: &'static Ifnet,
+            req: u8,
+            rt: Option<&Rtentry>,
+            _net: &NetHeld<'_>,
+        ) {
             assert!(rt.is_some());
             match req {
                 RTM_ADD => &self.adds,
@@ -3228,6 +3237,22 @@ pub(crate) mod tests {
                 _ => &self.deletes,
             }
             .fetch_add(1, Ordering::Relaxed);
+        }
+        fn output(
+            &self,
+            _ifp: &'static Ifnet,
+            m: crate::net::mbuf::MbufBox,
+            dst: SockaddrView<'_>,
+            rt: Option<&Rtentry>,
+        ) -> Result<(), Errno> {
+            assert_eq!(dst.family(), AF_INET);
+            assert!(rt.is_some());
+            drop(m);
+            let n = self.outputs.fetch_add(1, Ordering::Relaxed) + 1;
+            if n == self.fail_at.load(Ordering::Relaxed) {
+                return Err(Errno::ENOBUFS);
+            }
+            Ok(())
         }
     }
 
@@ -3237,6 +3262,8 @@ pub(crate) mod tests {
             adds: AtomicU32::new(0),
             resolves: AtomicU32::new(0),
             deletes: AtomicU32::new(0),
+            outputs: AtomicU32::new(0),
+            fail_at: AtomicU32::new(0),
         }));
         let ifp = crate::net::if_::test_ifnet_with(b"rt0", d);
         ifp.if_flags.set(IFF_UP | IFF_BROADCAST);
@@ -3665,6 +3692,65 @@ pub(crate) mod tests {
         );
         set_multipath(false);
         rt.rt_flags.clear(RTF_UP);
+    }
+
+    #[test]
+    fn if_output_ml_sends_until_the_first_error() {
+        let _g = testroutes_setup();
+        let (ifp, d, _ifa) = iface([10, 0, 2, 15], [255, 255, 255, 0]);
+        let rt = entry(&sin([10, 0, 2, 0]), 24, None, RTF_UP, 8);
+        let dst = sin([10, 0, 2, 2]);
+        let list = |n: usize| {
+            let mut ml = crate::net::mbuf::MbufList::new();
+            for _ in 0..n {
+                crate::net::mbuf::ml_enqueue(&mut ml, crate::net::if_::test_packet(0, 0));
+            }
+            ml
+        };
+        let mut ml = list(3);
+        assert_eq!(
+            crate::net::if_::if_output_ml(ifp, &mut ml, v(&dst), Some(&rt)),
+            Ok(())
+        );
+        assert_eq!(d.outputs.load(Ordering::Relaxed), 3);
+        let mut ml = list(3);
+        d.fail_at.store(5, Ordering::Relaxed);
+        assert_eq!(
+            crate::net::if_::if_output_ml(ifp, &mut ml, v(&dst), Some(&rt)),
+            Err(Errno::ENOBUFS)
+        );
+        assert_eq!(d.outputs.load(Ordering::Relaxed), 5, "stopped at the error");
+        assert_eq!(crate::net::mbuf::ml_len(&ml), 0, "the rest freed");
+        rt.rt_flags.clear(RTF_UP);
+    }
+
+    #[test]
+    fn a_point_to_point_local_route_loses_its_link_layer() {
+        let _g = testroutes_setup();
+        let (ifp, _d, ifa) = iface([10, 9, 9, 1], [255, 255, 255, 255]);
+        let (lo0, _ld, _loa) = iface([127, 0, 0, 1], [255, 0, 0, 0]);
+        klock::kernel_lock();
+        crate::net::rtable::rtable_l2set(0, 0, lo0.if_index.get());
+        klock::kernel_unlock();
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let local = |flags| {
+            let rt = entry(&sin([10, 9, 9, 1]), 32, None, flags, RTP_LOCAL);
+            rt.rt_ifa.set(Some(ifaref(ifa)));
+            rt
+        };
+        let rt = local(RTF_UP | RTF_LOCAL | RTF_LLINFO | RTF_HOST);
+        crate::net::if_::p2p_rtrequest(ifp, RTM_DELETE, &rt, &net);
+        assert!(rt.rt_flags.isset(RTF_LLINFO), "only RTM_ADD");
+        crate::net::if_::p2p_rtrequest(ifp, RTM_ADD, &rt, &net);
+        assert!(!rt.rt_flags.isset(RTF_LLINFO), "lo0 has an IPv4 address");
+        let other = local(RTF_UP | RTF_LLINFO | RTF_HOST);
+        crate::net::if_::p2p_rtrequest(ifp, RTM_ADD, &other, &net);
+        assert!(other.rt_flags.isset(RTF_LLINFO), "not a local route");
+        drop(net);
+        drop(w);
+        rt.rt_flags.clear(RTF_UP);
+        other.rt_flags.clear(RTF_UP);
     }
 
     #[test]

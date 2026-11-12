@@ -416,7 +416,8 @@ paid_by = "N8"
 # softc's table implements it, one object per interface, for every bsd interface the kernel
 # attaches (bsd's if_attach forwards to the kernel's since N6.3a1). N6.3b1 adds rtrequest
 # (if_rtrequest, kernel::net::route's rtrequest and rtrequest_delete; a default body, the C's
-# if_rtrequest_dummy, until LegacyNetDriver answers it from the table, N6.3b2). Paid when the
+# if_rtrequest_dummy) and output (if_output, the kernel's if_output_ml; a default that panics,
+# the C's NULL), which LegacyNetDriver answers from the table from N6.3b2. Paid when the
 # drivers move (N7: NetDevice, decision 45).
 # kernel::net::if_var::NetDriver
 [[bridge]]

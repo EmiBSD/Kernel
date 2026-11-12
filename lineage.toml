@@ -7984,6 +7984,32 @@ native = []
 kind = "dropped"
 reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a node back after a grace period, which is what this task's smr_barrier then pool_put did"
 
+[[module.fn]]
+lz = "sys/net/art.rs::ArtNode"
+native = ["ArtItem", "sys/kernel/net/rtable.rs::RtNode"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AN_POOL"
+native = ["sys/kernel/net/rtable.rs::AN_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_get"
+native = ["sys/kernel/net/rtable.rs::art_get"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_node_init"
+native = ["sys/kernel/net/rtable.rs::art_get"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_put"
+native = []
+kind = "dropped"
+reason = "a node goes back to the pool art_node when its last handle does: the unpublished node's drop (rtable_insert's duplicate) or the release of its retired heap words after a grace period (art_delete), which art_put's gc list then smr_barrier did"
+
 [[module]]
 rust = "sys/kernel/net/rtable.rs"
 crate = "kernel"
