@@ -1745,7 +1745,7 @@ pub fn usb_attach(_parent: Option<&Device>, self_: &Device, aux: *mut c_void) {
             DLT_USBPCAP,
             size_of::<UsbpcapPktHdr>() as u32,
         );
-        bus.bpfif.set(Some(bpfif));
+        drop(bus.bpfif.replace(Some(bpfif)));
     }
 
     let cold = COLD.load(Ordering::Relaxed);
@@ -2490,10 +2490,9 @@ pub fn usb_detach(self_: &Device, _flags: i32) -> Result<(), Errno> {
     }
 
     if NBPFILTER > 0
-        && let Some(bpfif) = bus.bpfif.get()
+        && let Some(bpfif) = bus.bpfif.take()
     {
-        bpfsdetach(bpfif);
-        bus.bpfif.set(None);
+        bpfsdetach(&bpfif);
     }
     Ok(())
 }
@@ -2567,8 +2566,8 @@ pub fn usb_tap(bus: &UsbdBus, xfer: &UsbdXfer, dir: u8) {
     if NBPFILTER == 0 {
         return;
     }
-    let bpf = bus.bpf.get_mut();
-    if bpf.is_null() {
+    let bpf = &bus.bpf;
+    if !bpf.is_set() {
         return;
     }
     let Some(usbctl) = bus.usbctl.get() else {

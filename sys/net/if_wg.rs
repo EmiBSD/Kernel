@@ -2951,8 +2951,8 @@ pub fn wg_deliver_in(arg: *mut c_void) {
             continue;
         }
 
-        let if_bpf = sc.sc_if.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &sc.sc_if.if_bpf;
+        if if_bpf.is_set() {
             let _ = bpf_mtap_af(
                 if_bpf,
                 u32::from(m.m_pkthdr().ph_family.get()),
@@ -3336,8 +3336,8 @@ pub fn wg_qstart(ifq: &'static Ifqueue) {
             continue;
         };
 
-        let if_bpf = sc.sc_if.if_bpf.get_mut();
-        if !if_bpf.is_null() {
+        let if_bpf = &sc.sc_if.if_bpf;
+        if if_bpf.is_set() {
             let _ = bpf_mtap_af(
                 if_bpf,
                 u32::from(m.m_pkthdr().ph_family.get()),
@@ -4303,7 +4303,10 @@ mod tests {
 
     /// `ifconfig wg<unit> create`: the new interface's softc.
     fn create(unit: i32) -> &'static WgSoftc {
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         wg_clone_create(&WG_CLONER, unit).expect("wg_clone_create");
+        hal::klock::kernel_unlock();
         let mut name = [0u8; IFNAMSIZ];
         let _ = snprintf(&mut name, format_args!("wg{unit}"));
         let ifp = if_unit(cstr(&name)).expect("the interface is attached");

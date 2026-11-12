@@ -163,8 +163,9 @@ pub type IfRtrequestFn = fn(&'static Ifnet, i32, Option<&'static Rtentry>);
 /// `void (*if_input)(struct ifnet *, struct mbuf *, struct netstack *)`: the netstack `None`
 /// when the caller holds the net lock and wants the packet handled at once.
 pub type IfInputFn = fn(&'static Ifnet, &'static Mbuf, Option<&mut Netstack>);
-/// `int (*if_bpf_mtap)(caddr_t, const struct mbuf *, u_int)`: `true` drops the packet.
-pub type IfBpfMtapFn = fn(*mut u8, &Mbuf, u32) -> bool;
+/// `int (*if_bpf_mtap)(caddr_t, const struct mbuf *, u_int)`: the interface's bpf word;
+/// `true` drops the packet.
+pub type IfBpfMtapFn = fn(&crate::net::bpf::BpfTap, &Mbuf, u32) -> bool;
 /// `int (*if_output)(struct ifnet *, struct mbuf *, struct sockaddr *, struct rtentry *)`.
 ///
 /// # Safety

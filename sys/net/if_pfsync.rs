@@ -2309,8 +2309,8 @@ fn pfsync_slice_write(s: &PfsyncSlice) -> Option<&'static Mbuf> {
 /// `pfsync_sendout`: sends a frame to the sync peer out of the sync interface.
 fn pfsync_sendout(sc: &PfsyncSoftc, m: &'static Mbuf) {
     let len = m.m_pkthdr().len.get() as u64;
-    let if_bpf = sc.sc_if.if_bpf.get_mut();
-    if !if_bpf.is_null() {
+    let if_bpf = &sc.sc_if.if_bpf;
+    if if_bpf.is_set() {
         let _ = bpf_mtap(if_bpf, m, BPF_DIRECTION_OUT);
     }
 
@@ -4223,7 +4223,10 @@ mod tests {
             Err(Errno::ENXIO),
             "only unit 0"
         );
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         assert_eq!(pfsync_clone_create(&PFSYNC_CLONER, 0), Ok(()));
+        hal::klock::kernel_unlock();
         let ifp = if_unit(b"pfsync0").expect("pfsync0");
         if_put(ifp);
         assert_eq!(ifp.if_type.get(), IFT_PFSYNC);

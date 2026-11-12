@@ -166,6 +166,8 @@ use crate::kmbuf::{KmBuf, PageKind};
 use crate::link::Link;
 use crate::mutex::Mutexed;
 use crate::once::OnceStatic;
+use crate::smr::sealed::CountedSealed;
+use crate::smr::{CountedArc, Seal, SmrCounted};
 use crate::sys::errno::Errno;
 use crate::trust::check_block;
 
@@ -665,6 +667,11 @@ struct Inner<T: 'static> {
 /// it from a non-zero count ([`PoolArc::take`]); they are sound because the caller's borrow of
 /// the value (a `View`'s lifetime) or the lock keeping its record keeps the item's last drop
 /// from finishing, so the item is not put back while a view exists.
+///
+/// `#[repr(transparent)]` over its `NonNull`: Rust then guarantees `Option<PoolArc<T>>` the
+/// `NonNull`'s niche, `None` all zero bits, which the zeroed items and softcs that hold one
+/// rely on (`Process::ps_vmspace`, a zeroed softc's `CredSlot`).
+#[repr(transparent)]
 pub struct PoolArc<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,
@@ -898,49 +905,6 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         }
     }
 
-    /// Gives the handle up for its value's address, the reference it counts kept: the word
-    /// form of `hal::smr`'s counted words ([`crate::smr::SmrArcWord`]), which hold a reference
-    /// as the bare pointer; [`PoolArc::from_raw`] takes it back. The pointer carries the whole
-    /// item's provenance (it is the item's pointer moved to the value, never a reference's),
-    /// so the step back to the count is in bounds.
-    pub(crate) fn into_raw(this: Self) -> NonNull<T> {
-        let this = ManuallyDrop::new(this);
-        let at = this
-            .inner
-            .as_ptr()
-            .cast::<u8>()
-            .wrapping_add(offset_of!(Inner<T>, value))
-            .cast::<T>();
-        match NonNull::new(at) {
-            Some(p) => p,
-            None => hal_panic(format_args!("PoolArc::into_raw: a null value")),
-        }
-    }
-
-    /// The handle [`PoolArc::into_raw`] gave up, back: the reference it counted, now this
-    /// handle's again.
-    ///
-    /// # Safety
-    ///
-    /// `value` was returned by [`PoolArc::into_raw`] of a `PoolArc<T>` (this `T`), and the
-    /// reference that call kept has not been taken back yet: one `from_raw` per `into_raw`, so
-    /// the item is still counted by that reference (alive, the invariant's) and this handle
-    /// becomes the one that counts it.
-    pub(crate) unsafe fn from_raw(value: NonNull<T>) -> Self {
-        let at = value
-            .as_ptr()
-            .cast::<u8>()
-            .wrapping_sub(offset_of!(Inner<T>, value))
-            .cast::<Inner<T>>();
-        match NonNull::new(at) {
-            Some(inner) => PoolArc {
-                inner,
-                _owns: PhantomData,
-            },
-            None => hal_panic(format_args!("PoolArc::from_raw: a null item")),
-        }
-    }
-
     /// One more handle to the item whose value `value` points at, counted as a clone: the C's
     /// `pmap_reference` of a pointer a record keeps (`pve->pv_pmap`), for who must hold the
     /// object after dropping the lock that keeps the record. The item is reached back from
@@ -1062,6 +1026,44 @@ impl<T: Send + Sync + 'static> Drop for PoolArc<T> {
     fn drop(&mut self) {
         // The last reference frees the item (`Last`'s drop); `self` is not used after.
         drop(self.release());
+    }
+}
+
+impl<T: SmrCounted> CountedSealed for PoolArc<T> {}
+
+impl<T: SmrCounted> CountedArc<T> for PoolArc<T> {
+    /// Gives the handle up for its value's address, the reference it counts kept: the word
+    /// form of `hal::smr`'s counted words ([`crate::smr::SmrArcWord`]), which hold a reference
+    /// as the bare pointer; [`CountedArc::from_raw`] takes it back. The pointer carries the
+    /// whole item's provenance (it is the item's pointer moved to the value, never a
+    /// reference's), so the step back to the count is in bounds.
+    fn into_raw(this: Self, _seal: Seal) -> NonNull<T> {
+        let this = ManuallyDrop::new(this);
+        let at = this
+            .inner
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(offset_of!(Inner<T>, value))
+            .cast::<T>();
+        match NonNull::new(at) {
+            Some(p) => p,
+            None => hal_panic(format_args!("PoolArc::into_raw: a null value")),
+        }
+    }
+
+    unsafe fn from_raw(value: NonNull<T>, _seal: Seal) -> Self {
+        let at = value
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_sub(offset_of!(Inner<T>, value))
+            .cast::<Inner<T>>();
+        match NonNull::new(at) {
+            Some(inner) => PoolArc {
+                inner,
+                _owns: PhantomData,
+            },
+            None => hal_panic(format_args!("PoolArc::from_raw: a null item")),
+        }
     }
 }
 

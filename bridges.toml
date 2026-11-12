@@ -454,16 +454,15 @@ trait = "Ipsec"
 for = ["sys/kernel/net/rtsock.rs"]
 paid_by = "N8"
 
-# bsd: what if.c and ifq.c ask of the link layers (bpf(4), if_ethersubr.c): bpf_mtap_ether
-# (NetDriver::bpf_mtap's default, if_attach_common's default if_bpf_mtap) and the per-queue
-# tap word ifiq_input reads, bpf_mtap_af (if_input_local), bpfdetach (if_detach),
-# ether_brport_isset (ifsetlro) and the arpcom's ac_enaddr (if_setlladdr). Registered by bsd's
-# boot (N6.3a1's adapter commit); before that nothing is tapped, the C without NBPFILTER. Paid
-# when bpf and the Ethernet layer move (N6.3c, N6's row).
+# bsd: what if.c asks of the Ethernet layer (if_ethersubr.c): ether_brport_isset (ifsetlro)
+# and the arpcom's ac_enaddr (if_setlladdr). Registered by bsd's boot (N6.3a1's adapter
+# commit). bpf(4)'s four legs (bpf_mtap_ether, the per-queue tap word, bpf_mtap_af,
+# bpfdetach) went with bpf into the kernel (N6.3c1: direct calls of kernel::net::bpf). Paid
+# when the Ethernet layer moves (N6.3c2, N6's row).
 # kernel::net::if_::Link
 [[bridge]]
 trait = "Link"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/if_var.rs"]
+for = ["sys/kernel/net/if_.rs"]
 paid_by = "N6"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),

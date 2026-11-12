@@ -1313,7 +1313,10 @@ mod tests {
             .if_flags
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
         ac.ac_enaddr.set(OURS);
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         ether_ifattach(ac);
+        hal::klock::kernel_unlock();
         ac
     }
 
@@ -1438,7 +1441,10 @@ mod tests {
         // SAFETY: the all-zero `Arpcom` is valid.
         let bad: &'static Arpcom = unsafe { zeroed_static() };
         bad.ac_enaddr.set([0x01, 0, 0, 0, 0, 1]);
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         ether_ifattach(bad);
+        hal::klock::kernel_unlock();
         let fake = bad.ac_enaddr.get();
         assert_eq!(&fake[..3], &[0xfe, 0xe1, 0xba]);
         assert_eq!(fake[3] & 0xf0, 0xd0);

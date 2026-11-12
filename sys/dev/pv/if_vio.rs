@@ -2061,8 +2061,8 @@ pub fn vio_start(viq_ifq: &'static Ifqueue) {
             virtio_enqueue(vq, slot, txmap, true);
             virtio_enqueue_commit(vsc, vq, slot, false);
             queued += 1;
-            let if_bpf = ifp.if_bpf.get_mut();
-            if !if_bpf.is_null() {
+            let if_bpf = &ifp.if_bpf;
+            if if_bpf.is_set() {
                 let _ = bpf_mtap(if_bpf, m, BPF_DIRECTION_OUT);
             }
         }

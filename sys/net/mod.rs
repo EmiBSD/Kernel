@@ -24,10 +24,8 @@
 //! `if_.rs` because `if` is a Rust keyword (`docs/C_TO_RUST.md`).
 
 pub mod art;
-pub mod bpf;
 #[forbid(unsafe_code)]
-pub mod bpf_filter;
-pub mod bpfdesc;
+pub mod bpf;
 #[forbid(unsafe_code)]
 pub mod ethertypes;
 pub mod fq_codel;

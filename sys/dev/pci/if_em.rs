@@ -1445,8 +1445,8 @@ pub fn em_start(ifq: &'static Ifqueue) {
         free -= used;
 
         // Send a copy of the frame to the BPF listener
-        let bpf = ifp.if_bpf.get_mut();
-        if !bpf.is_null() {
+        let bpf = &ifp.if_bpf;
+        if bpf.is_set() {
             let _ = bpf_mtap_ether(bpf, m, BPF_DIRECTION_OUT);
         }
 

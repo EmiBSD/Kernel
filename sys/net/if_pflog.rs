@@ -331,8 +331,8 @@ pub fn pflog_packet(
         return true;
     };
     let ifn = &pflogif.sc_if;
-    let if_bpf = ifn.if_bpf.get_mut();
-    if if_bpf.is_null() {
+    let if_bpf = &ifn.if_bpf;
+    if !if_bpf.is_set() {
         return true;
     }
 
@@ -446,7 +446,10 @@ mod tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| pflogattach(1));
 
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         assert_eq!(pflog_clone_create(&PFLOG_CLONER, 0), Ok(()));
+        hal::klock::kernel_unlock();
         let ifp = if_unit(b"pflog0").expect("pflog0");
         assert_eq!(ifp.if_type.get(), IFT_PFLOG);
         assert_eq!(ifp.if_mtu.get(), PFLOGMTU);
@@ -480,8 +483,11 @@ mod tests {
         assert_eq!(r, Err(Errno::EAFNOSUPPORT));
 
         // The cloner makes more units, by name.
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         assert_eq!(if_clone_create(b"pflog1", 0), Ok(()));
         assert_eq!(if_clone_create(b"pflog1", 0), Err(Errno::EEXIST));
+        hal::klock::kernel_unlock();
         net_lock();
         assert_eq!(pflog_getif(1).map(|sc| sc.sc_unit.get()), Some(1));
         net_unlock();

@@ -2257,7 +2257,10 @@ pub(crate) mod tests {
             .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
         ac.ac_enaddr.set(OURS);
         if_attach(&ac.ac_if);
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         ether_ifattach(ac);
+        hal::klock::kernel_unlock();
         &ac.ac_if
     }
 

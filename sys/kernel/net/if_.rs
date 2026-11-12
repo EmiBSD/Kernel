@@ -305,6 +305,7 @@ use hal::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::{_ioc, IOC_IN, iocparm_len};
 use hal::sys::kernel::HZ;
+use hal::sys::net_bpf::{BPF_DIRECTION_IN, BPF_DIRECTION_OUT};
 use hal::sys::net_if::{
     IF_HDRPRIO_MAX, IF_HDRPRIO_MIN, IF_HDRPRIO_OUTER, IF_HDRPRIO_PACKET, IF_HDRPRIO_PAYLOAD,
     IFAN_ARRIVAL, IFAN_DEPARTURE, IFCAP_LRO, IFCAP_TSOv4, IFCAP_TSOv6, IFCAP_WOL, IFDESCRSIZE,
@@ -349,7 +350,7 @@ use crate::net::ifq::{
 use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
-    M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
+    M_UDP_CSUM_OUT, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
     ml_purge,
 };
 use crate::net::pf_hooks::pf;
@@ -365,11 +366,6 @@ use hal::pinlist::PinList;
 
 /// `NET_TASKQ`: the softnet task queues (`MULTIPROCESSOR`'s, the only kernel built).
 pub const NET_TASKQ: usize = 8;
-
-/// `BPF_DIRECTION_IN` (`<net/bpf.h>`, `bsd`'s; a copy, docs/SCAFFOLDING.md "copies").
-pub const BPF_DIRECTION_IN: u32 = 1;
-/// `BPF_DIRECTION_OUT`.
-pub const BPF_DIRECTION_OUT: u32 = 1 << 1;
 
 /// `M_IFADDR`: the `malloc(9)` type of the index map's arrays (`<sys/malloc.h>`, `bsd`'s; a
 /// copy).
@@ -479,18 +475,10 @@ pub trait Inet: Sync + 'static {
     fn ip6stat_rtcache(&self, _hit: bool) {}
 }
 
-/// What the kernel's interface layer asks of the link layers (bpf(4) and `if_ethersubr.c`,
-/// `bsd`'s until N6.3c): a bridge (bridges.toml's `Link` row). Before registration every
-/// leg does nothing: the C without `NBPFILTER`.
+/// What the kernel's interface layer asks of the Ethernet layer (`if_ethersubr.c`, `bsd`'s
+/// until N6.3c2; bpf(4) is the kernel's since N6.3c1): a bridge (bridges.toml's `Link` row).
+/// Before registration every leg does nothing.
 pub trait Link: Sync + 'static {
-    /// `bpf_mtap_ether(if_bpf, m, dir)`: taps `m` to the tap `if_bpf` names; `true` drops it.
-    fn bpf_mtap_ether(&self, if_bpf: *const u8, m: &Mbuf, dir: u32) -> bool;
-    /// `*ifiq->ifiq_bpfp`: the per-queue tap a driver's word names (NULL for none).
-    fn bpf_queue_tap(&self, bpfp: &hal::link::PtrWord<*mut u8>) -> *const u8;
-    /// `bpf_mtap_af(if_bpf, af, m, dir)`: taps `m` with its address family; `true` drops it.
-    fn bpf_mtap_af(&self, if_bpf: *const u8, af: u32, m: &Mbuf, dir: u32) -> bool;
-    /// `bpfdetach(ifp)`: the interface's taps gone.
-    fn bpfdetach(&self, ifp: &'static Ifnet);
     /// `ether_brport_isset(ifp)`: the Ethernet interface is a bridge port.
     fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool;
     /// `if_setlladdr`'s `memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN)`.
@@ -1839,14 +1827,8 @@ pub fn if_input_local(
     //
     // if_input_local() is also called for SIMPLEX interfaces to duplicate packets for local
     // use. But don't dup them to bpf.
-    if ifp.if_flags.get() & IFF_LOOPBACK != 0 {
-        let if_bpf = ifp.if_bpf.get();
-
-        if !if_bpf.is_null()
-            && let Some(l) = link()
-        {
-            let _ = l.bpf_mtap_af(if_bpf, u32::from(af), &m, BPF_DIRECTION_OUT);
-        }
+    if ifp.if_flags.get() & IFF_LOOPBACK != 0 && ifp.if_bpf.is_set() {
+        let _ = crate::net::bpf::bpf_mtap_af(&ifp.if_bpf, u32::from(af), &m, BPF_DIRECTION_OUT);
     }
 
     let keepflags = m.flags() & (M_BCAST | M_MCAST);
@@ -2052,8 +2034,7 @@ pub fn if_vinput(ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
         m.m_pkthdr().len.get() as u64,
     );
 
-    let if_bpf = ifp.if_bpf.get();
-    if !if_bpf.is_null() && ifp.driver().bpf_mtap(if_bpf, &m, BPF_DIRECTION_IN) {
+    if ifp.if_bpf.is_set() && ifp.driver().bpf_mtap(&ifp.if_bpf, &m, BPF_DIRECTION_IN) {
         drop(m);
         return;
     }
@@ -2106,9 +2087,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
         ifq_clr_oactive(ifq);
     }
 
-    if let Some(l) = link() {
-        l.bpfdetach(ifp);
-    }
+    crate::net::bpf::bpfdetach(ifp);
 
     {
         let _net = NETLOCK.write();
@@ -4497,7 +4476,7 @@ pub(crate) mod tests {
         DETACHED.store(false, Ordering::SeqCst);
         with_smr_thread(|| {
             let d = std::thread::spawn(move || {
-                if_detach(ifp);
+                detach_locked(ifp);
                 DETACHED.store(true, Ordering::SeqCst);
             });
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -4659,7 +4638,7 @@ pub(crate) mod tests {
         assert_eq!(groups_of(ifp), [b"all".to_vec(), b"grp".to_vec()]);
         assert_eq!(group(b"grp"), Some((1, std::vec![ifidx])));
 
-        with_smr_thread(|| if_detach(ifp));
+        with_smr_thread(|| detach_locked(ifp));
         assert!(if_get(ifidx).is_none());
         let listed: Vec<u32> = IFNETLIST.iter().map(|i| i.if_index.get()).collect();
         assert_eq!(listed, [other.if_index.get()]);
@@ -4672,9 +4651,17 @@ pub(crate) mod tests {
         let data = hal::user::bytes_of_mut(core::slice::from_mut(&mut ifr));
         assert_eq!(if_ioctl(ifp, SIOCSIFFLAGS, data), Err(Errno::ENODEV));
         assert!(ifp.if_ioctl_detached());
-        with_smr_thread(|| if_detach(other));
+        with_smr_thread(|| detach_locked(other));
         assert!(IFNETLIST.is_empty());
         assert_eq!(group(IFG_ALL), None);
+    }
+
+    /// `if_detach(ifp)` under the kernel lock, as its callers hold it (a driver's detach,
+    /// `SIOCIFDESTROY`): bpf(4)'s `bpfdetach` asserts it.
+    fn detach_locked(ifp: &'static Ifnet) {
+        hal::klock::kernel_lock();
+        if_detach(ifp);
+        hal::klock::kernel_unlock();
     }
 
     /// A cloner of `tcl<unit>` interfaces over [`fresh_ifnet`].

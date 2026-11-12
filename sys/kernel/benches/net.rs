@@ -125,6 +125,21 @@
 //!     handle taken from a lent route and dropped (`PoolArc::try_from_ref`, the C's `rtref`
 //!     and `rtfree`), and `rtisvalid` of the gateway route `10.2.0.0/24` (its next hop read
 //!     through `rt_gwroute`'s cell).
+//! - bpf(4)'s rows (N6.3c1, decision 73), the same ops as the "before" rows on LZ's shape (a
+//!   scratch `#[ignore]` test of `bsd` at the base): two interfaces attached to bpf on
+//!   Ethernet, one with no listener, one with a descriptor opened by `bpfopen` on the doubles'
+//!   thread, a 2 MiB buffer and its interface set; a 64-byte packet in one mbuf:
+//!   - `bpf.mtap.none`: a driver's tap of the interface no descriptor listens on (the word's
+//!     test, nothing tapped).
+//!   - `bpf.mtap.1`: the tap of the listened interface, the read filter a one-instruction
+//!     program that keeps the whole packet: the record captured into the store buffer; the
+//!     buffer flushed between rounds (`BIOCFLUSH`), untimed, so no packet is dropped.
+//!   - `bpf.mtap.1.reject`: the same tap, the filter a program that rejects.
+//!   - `bpf.filter.dns`: `_bpf_lfilter` of `tcpdump -d 'ip and udp and dst port 53'` over a
+//!     42-byte Ethernet, IPv4 and UDP frame to port 53 in one mbuf (the accepting path,
+//!     ten instructions).
+//!   - `bpf.validate.512`: `bpf_validate` of a 512-instruction program (loads, ALU, forward
+//!     jumps, stores, a return last).
 
 #![forbid(unsafe_code)]
 
@@ -566,6 +581,7 @@ fn main() {
         .chain(SOCKET_ROWS.iter())
         .chain(IF_ROWS.iter())
         .chain(ROUTE_ROWS.iter())
+        .chain(BPF_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -832,6 +848,7 @@ fn main() {
     socket_rows(&wanted, &report);
     if_rows(&wanted, &report);
     route_rows(&wanted, &report);
+    bpf_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -1989,5 +2006,210 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         report(ROUTE_ROWS[4], r);
     }
     drop(found);
+}
+
+/// bpf(4)'s rows (N6.3c1, decision 73).
+const BPF_ROWS: [&str; 5] = [
+    "bpf.mtap.none",
+    "bpf.mtap.1",
+    "bpf.mtap.1.reject",
+    "bpf.filter.dns",
+    "bpf.validate.512",
+];
+
+/// A batch of `bpf.mtap.1`'s captures that a 2 MiB buffer holds (96-byte records).
+const BPF_CAPS: usize = 16_384;
+
+/// `tcpdump -d 'ip and udp and dst port 53'` on Ethernet.
+const BPF_DNS: [hal::sys::net_bpf::BpfInsn; 11] = {
+    use hal::sys::net_bpf::{
+        BPF_ABS, BPF_B, BPF_H, BPF_IND, BPF_JEQ, BPF_JMP, BPF_JSET, BPF_K, BPF_LD, BPF_LDX,
+        BPF_MSH, BPF_RET, bpf_jump, bpf_stmt,
+    };
+    [
+        bpf_stmt(BPF_LD | BPF_H | BPF_ABS, 12),
+        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, 0x800, 0, 8),
+        bpf_stmt(BPF_LD | BPF_B | BPF_ABS, 23),
+        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, 17, 0, 6),
+        bpf_stmt(BPF_LD | BPF_H | BPF_ABS, 20),
+        bpf_jump(BPF_JMP | BPF_JSET | BPF_K, 0x1fff, 4, 0),
+        bpf_stmt(BPF_LDX | BPF_B | BPF_MSH, 14),
+        bpf_stmt(BPF_LD | BPF_H | BPF_IND, 16),
+        bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, 53, 0, 1),
+        bpf_stmt(BPF_RET | BPF_K, 262_144),
+        bpf_stmt(BPF_RET | BPF_K, 0),
+    ]
+};
+
+/// A packet holding `bytes` in one mbuf.
+fn bpf_packet(bytes: &[u8]) -> MbufBox {
+    let mut m = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+    m.m_len().set(bytes.len() as u32);
+    m.m_pkthdr().len.set(bytes.len() as i32);
+    need(m.data_mut(), "a writable mbuf").copy_from_slice(bytes);
+    m
+}
+
+fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::net_bpf::{
+        BIOCFLUSH, BIOCGSTATS, BIOCSBLEN, BIOCSETF, BIOCSETIF, BPF_A, BPF_ABS, BPF_ADD, BPF_ALU,
+        BPF_DIRECTION_IN, BPF_H, BPF_JEQ, BPF_JMP, BPF_K, BPF_LD, BPF_MAXBUFSIZE, BPF_RET, BPF_ST,
+        BpfInsn, BpfProgram, BpfStat, DLT_EN10MB, bpf_jump, bpf_stmt,
+    };
+    use hal::sys::netinet_if_ether::ETHER_HDR_LEN;
+    use hal::sys::types::makedev;
+    use hal::user::UserPtr;
+    use kernel::fs::spec::CLONE_SHIFT;
+    use kernel::net::bpf::{BpfPkt, bpf_mtap, bpfattach, bpfclose, bpfioctl, bpfopen};
+    use kernel::net::bpf_filter::{_bpf_lfilter, bpf_validate};
+    use kernel::net::if_::{if_attach, if_test_reset, test_ifnet_fresh};
+
+    if !BPF_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The doubles' thread (bpfopen's), the mbufs, a fresh index map; the kernel lock, which
+    // the cdev entry points and the attach run under, held for the run.
+    let (_g, p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    hal::klock::kernel_lock();
+
+    let quiet = test_ifnet_fresh(b"bnchq0", &BENCH_DRIVER);
+    if_attach(quiet);
+    bpfattach(&quiet.if_bpf, quiet, DLT_EN10MB, ETHER_HDR_LEN as u32);
+    let frame: Vec<u8> = (0u8..64).collect();
+    let m = bpf_packet(&frame);
+    placement("ifnet", quiet);
+    placement("mbuf", &*m);
+    // A driver's tap site: the word tested, the tap called when it is set.
+    let tap = |ifp: &'static kernel::net::if_var::Ifnet| {
+        let w = &black_box(ifp).if_bpf;
+        if w.is_set() {
+            black_box(bpf_mtap(w, &m, BPF_DIRECTION_IN));
+        }
+    };
+
+    if wanted(BPF_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                tap(quiet);
+            }
+            t.elapsed()
+        });
+        report(BPF_ROWS[0], r);
+    }
+
+    // One listener: a 2 MiB buffer, the interface set, a program at a user address.
+    let ifp = test_ifnet_fresh(b"bnch1", &BENCH_DRIVER);
+    if_attach(ifp);
+    bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
+    let dev = makedev(23, 5 << CLONE_SHIFT);
+    need(bpfopen::<G>(dev, 0, 0, p).ok(), "bpfopen");
+    let ioctl = |cmd: u64, data: &mut [u8]| need(bpfioctl::<G>(dev, cmd, data, 0, p).ok(), "ioctl");
+    let mut size = (BPF_MAXBUFSIZE as u32).to_ne_bytes();
+    ioctl(BIOCSBLEN, &mut size);
+    let mut ifr = [0u8; 32];
+    ifr[..5].copy_from_slice(b"bnch1");
+    ioctl(BIOCSETIF, &mut ifr);
+    let uprog = testutil::USER_BASE + 0x2_8000;
+    let setf = |insn: BpfInsn| {
+        need(
+            UserPtr::<BpfInsn>::new(uprog).copyout_slice(&[insn]).ok(),
+            "the program in user memory",
+        );
+        let prog = BpfProgram {
+            bf_len: 1,
+            _pad0: 0,
+            bf_insns: uprog as u64,
+        };
+        let mut b = hal::user::bytes_of(core::slice::from_ref(&prog)).to_vec();
+        ioctl(BIOCSETF, &mut b);
+    };
+    setf(bpf_stmt(BPF_RET | BPF_K, u32::MAX));
+
+    if wanted(BPF_ROWS[1]) {
+        let r = measure(BPF_CAPS, || {
+            ioctl(BIOCFLUSH, &mut []);
+            let t = Instant::now();
+            for _ in 0..BPF_CAPS {
+                tap(ifp);
+            }
+            t.elapsed()
+        });
+        report(BPF_ROWS[1], r);
+        let mut st = [0u8; core::mem::size_of::<BpfStat>()];
+        ioctl(BIOCGSTATS, &mut st);
+        let st: BpfStat = need(hal::pod::at(&st, 0), "the statistics");
+        if st.bs_drop != 0 {
+            eprintln!("net: bpf.mtap.1 dropped {} packets", st.bs_drop);
+            std::process::exit(1);
+        }
+    }
+    setf(bpf_stmt(BPF_RET | BPF_K, 0));
+    if wanted(BPF_ROWS[2]) {
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                tap(ifp);
+            }
+            t.elapsed()
+        });
+        report(BPF_ROWS[2], r);
+    }
+    need(bpfclose::<G>(dev, 0, 0, None).ok(), "bpfclose");
+
+    if wanted(BPF_ROWS[3]) {
+        let mut dns = vec![0u8; 42];
+        dns[12..14].copy_from_slice(&0x0800u16.to_be_bytes());
+        dns[14] = 0x45;
+        dns[23] = 17;
+        dns[36..38].copy_from_slice(&53u16.to_be_bytes());
+        let dm = bpf_packet(&dns);
+        let len = dns.len() as u32;
+        if _bpf_lfilter(Some(&BPF_DNS), &BpfPkt::mbuf(&dm), len) != 262_144 {
+            eprintln!("net: the DNS program rejects its frame");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(_bpf_lfilter(
+                    Some(black_box(&BPF_DNS[..])),
+                    &BpfPkt::mbuf(&dm),
+                    len,
+                ));
+            }
+            t.elapsed()
+        });
+        report(BPF_ROWS[3], r);
+    }
+
+    if wanted(BPF_ROWS[4]) {
+        let mut p512: Vec<BpfInsn> = (0..511)
+            .map(|i| match i % 4 {
+                0 => bpf_stmt(BPF_LD | BPF_H | BPF_ABS, 12),
+                1 => bpf_stmt(BPF_ALU | BPF_ADD | BPF_K, 1),
+                2 => bpf_jump(BPF_JMP | BPF_JEQ | BPF_K, 7, 0, 0),
+                _ => bpf_stmt(BPF_ST, 3),
+            })
+            .collect();
+        p512.push(bpf_stmt(BPF_RET | BPF_A, 0));
+        let maxbuf = BPF_MAXBUFSIZE as u32;
+        if !bpf_validate(&p512, maxbuf) {
+            eprintln!("net: the 512-instruction program is refused");
+            std::process::exit(1);
+        }
+        let vops = OPS / 10;
+        let r = measure(vops, || {
+            let t = Instant::now();
+            for _ in 0..vops {
+                black_box(bpf_validate(black_box(&p512), maxbuf));
+            }
+            t.elapsed()
+        });
+        report(BPF_ROWS[4], r);
+    }
 }
 /* </CODE> */

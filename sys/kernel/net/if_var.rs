@@ -100,7 +100,8 @@
 //!
 //!   | member | type | all zero is |
 //!   |---|---|---|
-//!   | `if_softc`, `if_bpf`, `if_mcast`, `if_mcast6`, `if_carp`, `if_pf_kif`, `if_nd` | `PtrWord` | NULL (an `AtomicPtr`) |
+//!   | `if_softc`, `if_mcast`, `if_mcast6`, `if_carp`, `if_pf_kif`, `if_nd` | `PtrWord` | NULL (an `AtomicPtr`) |
+//!   | `if_bpf` | [`BpfTap`](crate::net::bpf::BpfTap) (`hal::smr::SmrArcWord`) | no tap (an `AtomicPtr`: `hal::smr`'s `an_all_zero_counted_word_is_null`) |
 //!   | `if_xname`, `if_description` | [`AtomicBytes`] | the empty string |
 //!   | `if_index`, `if_flags`, `if_xflags`, `if_type`, ..., `if_snd_maxlen` | [`AtomicCell`] | 0 |
 //!   | `if_lastchange` | [`IfLastchange`] | `{ 0, 0 }` |
@@ -543,10 +544,10 @@ pub trait NetDriver: Sync + 'static {
             .with_str(|n| kpanic(format_args!("{}: no if_input", Str(n))));
     }
 
-    /// `if_bpf_mtap`: tap `m` to the interface's bpf(4) word `if_bpf`; `true` drops it.
-    /// Default: `bpf_mtap_ether` (the `Link` leg, what `if_attach_common` installs).
-    fn bpf_mtap(&self, if_bpf: *const u8, m: &Mbuf, dir: u32) -> bool {
-        crate::net::if_::link().is_some_and(|l| l.bpf_mtap_ether(if_bpf, m, dir))
+    /// `if_bpf_mtap`: tap `m` to the tap the interface's bpf(4) word `if_bpf` names; `true`
+    /// drops it. Default: `bpf_mtap_ether` (what `if_attach_common` installs).
+    fn bpf_mtap(&self, if_bpf: &crate::net::bpf::BpfTap, m: &Mbuf, dir: u32) -> bool {
+        crate::net::bpf::bpf_mtap_ether(if_bpf, m, dir)
     }
 
     /// The object behind the trait, for `bsd`'s table to find itself again (its own type,
@@ -667,8 +668,8 @@ pub struct Ifnet {
     pub if_pcount: AtomicCell<i32>,
     /// \[K\] `if_bridgeidx`: used by bridge ports.
     pub if_bridgeidx: AtomicCell<u32>,
-    /// `if_bpf`: packet filter structure (bpf(4)'s word).
-    pub if_bpf: PtrWord<u8>,
+    /// `if_bpf`: packet filter structure (bpf(4)'s word: the tap while a descriptor listens).
+    pub if_bpf: crate::net::bpf::BpfTap,
     /// `if_mcast`: used by multicast code (`struct vif *`, not configured).
     pub if_mcast: PtrWord<core::ffi::c_void>,
     /// `if_mcast6`: used by IPv6 multicast code (`struct mif6 *`, not configured).
@@ -769,7 +770,7 @@ impl Ifnet {
             if_xname: AtomicBytes::new(),
             if_pcount: AtomicCell::new(),
             if_bridgeidx: AtomicCell::new(),
-            if_bpf: PtrWord::new(),
+            if_bpf: crate::net::bpf::BpfTap::new(),
             if_mcast: PtrWord::new(),
             if_mcast6: PtrWord::new(),
             if_pf_kif: PtrWord::new(),
