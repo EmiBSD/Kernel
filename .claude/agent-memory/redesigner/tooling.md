@@ -318,3 +318,6 @@ metadata:
 - A fix measured after a first A/B: keep the first run's logs, run base and tip again in the same interleaved rounds, and quote the base's floors of both runs as the control (they drifted 1-4 % at N6.3c1); the before -> after of the fix is the two tips' floors.
 - lz check: a hal or kernel module that lists an LZ file must carry every `//! Upstream:` line of that file (in_.rs has in.h and in.c): the early header images need both (N6.3c2).
 - lz check's item parser sees no trait method declaration (`EtherPort::input`) and no macro-made type (`queue_adapter!`'s `EtherMultiList`): a row's target names the trait; a macro-made LZ type needs no row (N6.3c2).
+- lz check's function coverage runs only over LZ files some redesigned module lists: an item moved out of a still-adapted bsd file (IPCOUNTERS out of ip_input.rs) needs no row until a redesigned module lists that file, and a row placed earlier is refused (not in the module's lz list) (N6.4a).
+- An absorbed bsd module keeps LZ's path for its importers with a module re-export in the parent mod.rs (`pub use kernel::netinet::{in_cksum, ip_id};`, `pub use hal::sys::netinet_ip as ip;`): no importer edited, the mod.rs is outside lineage (N6.4a).
+- zsh treats a word starting with `=` as a command lookup: `echo ====` fails with "=== not found"; quote it or use another separator (N6.4a).
