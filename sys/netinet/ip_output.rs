@@ -167,7 +167,7 @@ pub fn ip_output(
     });
     kernel::netinet::ip_output::ip_output(
         unpark(m),
-        opt.map(|o| o as &Mbuf),
+        opt.map(Mbuf::data),
         ro,
         flags,
         view.as_ref(),
@@ -392,7 +392,7 @@ pub fn ip_fragment(m0: &'static Mbuf, ml: &MbufList, ifp: &Ifnet, mtu: u64) -> R
 pub fn ip_insertoptions(m: &'static Mbuf, opt: &Mbuf, phlen: &mut i32) -> &'static Mbuf {
     park(kernel::netinet::ip_output::ip_insertoptions(
         unpark(m),
-        opt,
+        opt.data(),
         phlen,
     ))
 }

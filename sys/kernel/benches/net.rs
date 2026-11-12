@@ -1704,24 +1704,13 @@ impl kernel::net::if_::Inet for BenchInet {
     fn tcpstat_lro(&self, _hw: bool) {}
     fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn rti_delete(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn revarp_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn in_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifattach(
         &self,
         _ifp: &'static kernel::net::if_var::Ifnet,
     ) -> Result<(), hal::sys::errno::Errno> {
         Ok(())
-    }
-    fn in_ioctl(
-        &self,
-        _cmd: u64,
-        _data: &mut [u8],
-        _ifp: &'static kernel::net::if_var::Ifnet,
-        _privileged: bool,
-    ) -> Result<(), hal::sys::errno::Errno> {
-        Err(hal::sys::errno::Errno::EOPNOTSUPP)
     }
     fn ip6_forwarding(&self) -> bool {
         false

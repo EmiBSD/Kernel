@@ -278,7 +278,7 @@ use hal::rwlock::Guarded;
 use hal::slot::ReadMostly;
 use hal::smr::{SmrArcLink, SmrArcWord, SmrCounted};
 use hal::sys::errno::Errno;
-use hal::sys::net_if::{IFF_BROADCAST, IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
+use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
 use hal::sys::net_route::{
     RTAX_AUTHOR, RTAX_DST, RTAX_GATEWAY, RTAX_IFA, RTAX_IFP, RTAX_LABEL, RTAX_MAX, RTAX_NETMASK,
     RTF_BROADCAST, RTF_CACHED, RTF_CLONED, RTF_CLONING, RTF_CONNECTED, RTF_DYNAMIC, RTF_GATEWAY,
@@ -1345,43 +1345,18 @@ pub fn ifaref(ifa: &'static Ifaddr) -> &'static Ifaddr {
 }
 
 /// `ifafree(ifa)`: one reference of the interface address given back; with the last, the
-/// address is freed (`free(ifa, M_IFADDR, 0)`, its protocol's storage: the `Inet` leg).
+/// address is freed (`free(ifa, M_IFADDR, 0)`): an Internet address back to its records'
+/// free list (`kernel::netinet::in_var`, N6.4a), another family's storage through the `Inet`
+/// leg (IPv6's, `bsd`'s until N6.5).
 pub fn ifafree(ifa: &'static Ifaddr) {
     if !ifa.ifa_refcnt.rele() {
         return;
     }
-    if let Some(i) = if_::inet() {
+    if let Some(ia) = crate::netinet::in_var::InIfaddr::of(ifa) {
+        crate::netinet::in_var::in_ifafree(ia);
+    } else if let Some(i) = if_::inet() {
         i.ifa_free(ifa);
     }
-}
-
-/// `in_broadcast(in, rtableid)` (netinet/in.c, read here over the interface list until
-/// N6.4 moves it): whether `addr` is the broadcast address of an IPv4 address of a
-/// broadcast interface of `rtableid`'s domain, and not that address itself.
-fn in_broadcast(addr: [u8; 4], rtableid: u32, net: &NetHeld<'_>) -> bool {
-    let rdomain = rtable_l2(rtableid);
-    for ifn in &if_::IFNETLIST {
-        if ifn.if_rdomain.get() != rdomain || ifn.if_flags.get() & IFF_BROADCAST == 0 {
-            continue;
-        }
-        for ifa in &ifn.if_addrlist {
-            let Some(a) = ifa.ifa_addr.read(net) else {
-                continue;
-            };
-            if a.family() != AF_INET {
-                continue;
-            }
-            let own = a.get(SIN_ADDR..SIN_ADDR + 4) == Some(&addr[..]);
-            let brd = ifa
-                .ifa_broadaddr()
-                .read(net)
-                .is_some_and(|b| b.get(SIN_ADDR..SIN_ADDR + 4) == Some(&addr[..]));
-            if !own && brd {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// `rtredirect(dst, gateway, src, rtp, rdomain)`: a routing redirect from `src` for `dst`
@@ -1429,7 +1404,14 @@ pub fn rtredirect(
                 && gateway
                     .bytes()
                     .get(SIN_ADDR..SIN_ADDR + 4)
-                    .is_some_and(|a| in_broadcast([a[0], a[1], a[2], a[3]], rdomain, net)))
+                    .is_some_and(|a| {
+                        crate::netinet::in_::in_broadcast(
+                            hal::sys::netinet_in::InAddr {
+                                s_addr: u32::from_ne_bytes([a[0], a[1], a[2], a[3]]),
+                            },
+                            rdomain,
+                        )
+                    }))
         {
             error = Err(Errno::EHOSTUNREACH);
         }
@@ -2999,6 +2981,7 @@ pub(crate) mod tests {
 
     use hal::netlock::NETLOCK;
     use hal::smr;
+    use hal::sys::net_if::IFF_BROADCAST;
     use hal::sys::net_route::{RTM_ADD, RTP_ANY};
 
     use super::*;
@@ -3142,21 +3125,10 @@ pub(crate) mod tests {
         fn tcpstat_lro(&self, _hw: bool) {}
         fn nd6_ifattach(&self, _ifp: &'static Ifnet) {}
         fn nd6_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn rti_delete(&self, _ifp: &'static Ifnet) {}
         fn revarp_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn in_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifattach(&self, _ifp: &'static Ifnet) -> Result<(), Errno> {
             Ok(())
-        }
-        fn in_ioctl(
-            &self,
-            _cmd: u64,
-            _data: &mut [u8],
-            _ifp: &'static Ifnet,
-            _privileged: bool,
-        ) -> Result<(), Errno> {
-            Err(Errno::EOPNOTSUPP)
         }
         fn ip6_forwarding(&self) -> bool {
             false

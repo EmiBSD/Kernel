@@ -2261,9 +2261,9 @@ pub(crate) mod tests {
 
     /// `ifconfig <ifp> inet <addr> netmask <mask>`, from the kernel.
     pub(crate) fn configure(ifp: &'static Ifnet, addr: [u8; 4], mask: [u8; 4]) {
-        let mut ifra = InAliasreq::zeroed();
+        let mut ifra = InAliasreq::default();
         ifra.ifra_name = ifp.if_xname.get();
-        *ifra.ifra_addr_mut() = sin(addr);
+        ifra.ifra_addr = sin(addr);
         ifra.ifra_mask = sin(mask);
         // SAFETY: an `in_aliasreq`, from the kernel itself.
         unsafe {
@@ -2279,9 +2279,9 @@ pub(crate) mod tests {
 
     /// `ifconfig <ifp> inet <addr> delete`.
     pub(crate) fn unconfigure(ifp: &'static Ifnet, addr: [u8; 4]) {
-        let mut ifra = InAliasreq::zeroed();
+        let mut ifra = InAliasreq::default();
         ifra.ifra_name = ifp.if_xname.get();
-        *ifra.ifra_addr_mut() = sin(addr);
+        ifra.ifra_addr = sin(addr);
         // SAFETY: an `in_aliasreq`, from the kernel itself.
         unsafe {
             in_ioctl(

@@ -227,13 +227,15 @@ pub fn nfs_boot_init(nd: &mut NfsDiskless, procp: &Proc) -> Result<(), Errno> {
 
     // Do enough of ifconfig(8) so that the chosen interface can talk to the servers. (just
     // set the address)
-    let mut ifra = InAliasreq::zeroed();
-    ifra.ifra_name = xname;
-    *ifra.ifra_addr_mut() = SockaddrIn {
-        sin_len: size_of::<SockaddrIn>() as u8,
-        sin_family: AF_INET,
-        sin_addr: my_ip,
-        ..SockaddrIn::default()
+    let mut ifra = InAliasreq {
+        ifra_name: xname,
+        ifra_addr: SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: AF_INET,
+            sin_addr: my_ip,
+            ..SockaddrIn::default()
+        },
+        ..InAliasreq::default()
     };
     // SAFETY: `ifra` is a `struct in_aliasreq`, what SIOCAIFADDR takes.
     if let Err(e) = unsafe { ifioctl(sop, SIOCAIFADDR, ptr::from_mut(&mut ifra).cast(), procp) } {

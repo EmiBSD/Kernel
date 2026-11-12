@@ -72,10 +72,6 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - `in_ifp2ia(ifp)->ia_addr.sin_addr` and `in_hasmulti(dst, ifp)` read the interface's
-//!   generic records (`if_addrlist`'s first `AF_INET` address through its `ifa_addr`, the
-//!   `if_maddrlist` walk through `ifma_addr` under `if_maddrlock`) until the IPv4 records
-//!   move (`in_var.h`'s `struct in_ifaddr` and `struct in_multi`, N6.4a's next commit).
 //! - `icmp_mtudisc_clone` (ICMP's, N6.4c2) and the TCP and UDP counters of software
 //!   checksums (`tcps_outswcsum`, `udps_outswcsum`, N6.6) are `Inet` legs.
 //! - `ip_optcopy`'s option without its length byte (one byte left, not `IPOPT_EOL` or
@@ -83,6 +79,11 @@
 //!   kernel panics); a length byte of 0 ends it too (LZ's), where the C would loop.
 //!
 //! ## Redesign
+//! - The options to insert (`struct mbuf *opt`, a `struct ipoption` in one mbuf) are its
+//!   bytes, `opt: Option<&[u8]>` (`mtod(opt)`, `opt->m_len` long): `bsd`'s callers lend their
+//!   option mbuf's data, IGMP its constant Router Alert option (N6.4a's R16).
+//! - The source address (`ifatoia(rt_ifa)->ia_addr`, `in_ifp2ia(ifp)->ia_addr`) is the
+//!   Internet record's own word (`kernel::netinet::in_var::SinWords::addr`), one load.
 //! - LZ's `ip_output(m: &'static Mbuf, ..)` -> [`ip_output`] over the kernel's owned packet
 //!   (`MbufBox`): the C's `goto bad` (free the packet) and `goto done` (it is consumed) are
 //!   the same `return` here, the packet dropped by its owner if it still has one; the
@@ -123,7 +124,6 @@ use core::sync::atomic::Ordering;
 use hal::malloc::M_NOWAIT;
 use hal::netlock::NetHeld;
 use hal::pod;
-use hal::rwlock::RW_READ;
 use hal::sys::endian::{htonl, htons, ntohl, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{
@@ -156,7 +156,9 @@ use crate::net::pf_hooks::{PF_FWD, PF_OUT, PF_PASS, pf};
 use crate::net::proto::SockaddrView;
 use crate::net::route::{Route, rtalloc_mpath, rtisvalid};
 use crate::net::rtable::rtable_loindex;
+use crate::netinet::in_::{in_hasmulti, in_ifp2ia};
 use crate::netinet::in_cksum::in_cksum;
+use crate::netinet::in_var::InIfaddr;
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_id::ip_randomid;
 use crate::netinet::ip_var::{
@@ -228,46 +230,23 @@ fn sin_addr_of(sa: &[u8]) -> InAddr {
     }
 }
 
-/// `in_ifp2ia(ifp)->ia_addr.sin_addr`: the address of the first IPv4 address of `ifp`, in
-/// `if_addrlist`'s order (the generic records, the module's deviations).
-fn ifp_inaddr(ifp: &Ifnet, net: &NetHeld<'_>) -> Option<InAddr> {
-    for ifa in &ifp.if_addrlist {
-        if let Some(a) = ifa.ifa_addr.read(net)
-            && a.family() == AF_INET
-        {
-            return Some(sin_addr_of(&a));
-        }
-    }
-    None
-}
-
-/// `in_hasmulti(addr, ifp)`: whether `ifp` is a member of the IPv4 group `addr`, its
-/// multicast records walked under `if_maddrlock` read (the generic records, the module's
-/// deviations).
-fn ifp_hasmulti(addr: InAddr, ifp: &Ifnet, net: &NetHeld<'_>) -> bool {
-    let lock = &ifp.rt().if_maddrlock;
-    // A read without `RW_NOSLEEP` or `RW_INTR` waits until it has the lock.
-    let _ = lock.enter(RW_READ);
-    let joined = ifp.if_maddrlist.iter().any(|ifma| {
-        ifma.ifma_addr
-            .read(net)
-            .is_some_and(|a| a.family() == AF_INET && sin_addr_of(&a).s_addr == addr.s_addr)
-    });
-    lock.exit();
-    joined
+/// `in_ifp2ia(ifp)->ia_addr.sin_addr`: the address of the first IPv4 address of `ifp`.
+#[inline]
+fn ifp_inaddr(ifp: &Ifnet) -> Option<InAddr> {
+    in_ifp2ia(ifp).map(|ia| ia.ia_addr.addr())
 }
 
 /// `ip_output(m, opt, ro, flags, imo, seclevel, ipsecflowinfo)`: IP output. The packet `m`
 /// holds a skeletal IP header (with len, off, ttl, proto, tos, src, dst); it is consumed. The
-/// options `opt` (a `struct ipoption`), if present, are not. The caller holds the net lock
-/// (`net`).
+/// options `opt` (the bytes of a `struct ipoption`), if present, are not. The caller holds the
+/// net lock (`net`).
 #[allow(
     clippy::too_many_arguments,
     reason = "the C's signature and the net lock's proof"
 )]
 pub fn ip_output(
     m: MbufBox,
-    opt: Option<&Mbuf>,
+    opt: Option<&[u8]>,
     ro: Option<&mut Route>,
     flags: i32,
     imo: Option<&IpMoptions>,
@@ -339,7 +318,7 @@ pub fn ip_output(
         if let Some(i) = imo_ifp {
             mtu = i.if_mtu.get();
             if ip.ip_src.s_addr == INADDR_ANY
-                && let Some(a) = ifp_inaddr(&i, net)
+                && let Some(a) = ifp_inaddr(&i)
             {
                 ip.ip_src = a;
             }
@@ -354,7 +333,8 @@ pub fn ip_output(
                 return Err(Errno::EHOSTUNREACH);
             };
 
-            // `ia = ifatoia(ro->ro_rt->rt_ifa)`: read below only for a source address.
+            // `ia = ifatoia(ro->ro_rt->rt_ifa)`: its record found below, for a source
+            // address only.
             let ia = rt.ifa();
             let idx = if rt.rt_flags.isset(RTF_LOCAL) {
                 rtable_loindex(m.m_pkthdr().ph_rtableid.get())
@@ -382,12 +362,11 @@ pub fn ip_output(
                 });
             }
 
-            // Set the source IP address (`ia->ia_addr.sin_addr`, the C's cast: its bytes 4 to
-            // 8 whatever the family).
+            // Set the source IP address
             if ip.ip_src.s_addr == INADDR_ANY
-                && let Some(a) = ia.and_then(|ia| ia.ifa_addr.read(net))
+                && let Some(ia) = ia.and_then(InIfaddr::of)
             {
-                ip.ip_src = sin_addr_of(&a);
+                ip.ip_src = ia.ia_addr.addr();
             }
             ifp = Some(i);
         }
@@ -444,12 +423,12 @@ pub fn ip_output(
 
             // If source address not specified yet, use address of outgoing interface.
             if ip.ip_src.s_addr == INADDR_ANY
-                && let Some(a) = ifp_inaddr(ifn, net)
+                && let Some(a) = ifp_inaddr(ifn)
             {
                 ip.ip_src = a;
             }
 
-            if imo.is_none_or(|imo| imo.imo_loop != 0) && ifp_hasmulti(ip.ip_dst, ifn, net) {
+            if imo.is_none_or(|imo| imo.imo_loop != 0) && in_hasmulti(&ip.ip_dst, ifn) {
                 // If we belong to the destination multicast group on the outgoing interface,
                 // and the caller did not forbid loopback, loop back a copy. Can't defer
                 // TCP/UDP checksumming, do the computation now.
@@ -718,15 +697,15 @@ pub fn ip_fragment(m0: MbufBox, ml: &mut MbufList, ifp: &Ifnet, mtu: u32) -> Res
     Ok(())
 }
 
-/// `ip_insertoptions(m, opt, phlen)`: the IP options `opt` (a `struct ipoption`: the first
-/// hop, then the list) inserted into the preformed packet `m`. Adjusts the IP destination as
+/// `ip_insertoptions(m, opt, phlen)`: the IP options `opt` (the bytes of a `struct ipoption`:
+/// the first hop, then the list) inserted into the preformed packet `m`. Adjusts the IP destination as
 /// required for IP source routing, as indicated by a non-zero `in_addr` at the start of the
 /// options; `phlen` gets the new header length. The packet is returned unchanged when the
 /// options do not fit (`phlen` untouched: the C's "XXX should fail"), or with the header
 /// alone (`phlen` 20) when they exceed a header.
-pub fn ip_insertoptions(m: MbufBox, opt: &Mbuf, phlen: &mut i32) -> MbufBox {
+pub fn ip_insertoptions(m: MbufBox, opt: &[u8], phlen: &mut i32) -> MbufBox {
     let mut m = m;
-    let p = opt.data();
+    let p = opt;
     // `opt->m_len - sizeof(p->ipopt_dst)` in the C's unsigned arithmetic: a shorter mbuf
     // wraps past `IP_MAXPACKET`.
     let Some(optlen) = p.len().checked_sub(size_of::<InAddr>()) else {
@@ -1001,18 +980,16 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    use hal::link::SaWords;
     use hal::netlock::NETLOCK;
     use hal::sys::net_if::IFF_UP;
-    use hal::sys::net_route::RTF_CONNECTED;
     use hal::sys::netinet_in::SockaddrIn;
     use hal::sys::netinet_ip::{IP_OFFMASK, IPOPT_LSRR, IPOPT_RR};
+    use hal::sys::sockio::SIOCAIFADDR;
 
     use super::*;
-    use crate::net::if_var::{Ifaddr, NetDriver};
+    use crate::net::if_var::NetDriver;
     use crate::net::mbuf::{M_PKTHDR, m_copydata, m_devget, m_pullup, ml_dequeue};
-    use crate::net::route::rt_ifa_add;
-    use crate::net::route::tests::{sin, testroutes_setup};
+    use crate::net::route::tests::testroutes_setup;
     use crate::netinet::ip_var::IPCOUNTERS;
 
     /// A packet of `len` bytes: an IP header of `hlen` (options from `opts`, padded with NOPs)
@@ -1106,20 +1083,10 @@ mod tests {
         }
     }
 
-    /// The `sockaddr_in` image of `a`, in words the address can be linked to.
-    fn words(a: [u8; 4]) -> &'static SaWords {
-        let w: &'static SaWords = Box::leak(Box::new(SaWords::new()));
-        let mut sin = SockaddrIn::default();
-        sin.sin_len = 16;
-        sin.sin_family = AF_INET;
-        sin.sin_addr.s_addr = u32::from_ne_bytes(a);
-        w.set(&sin);
-        w
-    }
-
-    /// An interface up with broadcast, MTU 1500, address 10.0.2.15/24 and its connected
-    /// route, under the net lock the caller holds.
-    fn iface(net: &NetHeld<'_>) -> (&'static Ifnet, &'static CapDriver) {
+    /// An interface up with broadcast, MTU 1500, on the interface list, and address
+    /// 10.0.2.15/24 (`ifconfig ipo0 inet 10.0.2.15/24`: its record and its routes). Called
+    /// without the net lock, which `in_ioctl` takes.
+    fn iface() -> (&'static Ifnet, &'static CapDriver) {
         let d: &'static CapDriver = Box::leak(Box::new(CapDriver {
             sent: Mutex::new(Vec::new()),
         }));
@@ -1127,17 +1094,23 @@ mod tests {
         ifp.if_flags.set(IFF_UP | IFF_BROADCAST | IFF_MULTICAST);
         ifp.if_mtu.set(1500);
         crate::net::if_::if_alloc_sadl(ifp);
-        let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-        ifa.ifa_refcnt.init();
-        ifa.ifa_addr
-            .set_words::<SockaddrIn>(Some(words([10, 0, 2, 15])));
-        ifa.ifa_netmask
-            .set_words::<SockaddrIn>(Some(words([255, 255, 255, 0])));
-        ifa.ifa_ifp.set(Some(ifp));
-        crate::net::if_::ifa_add(ifp, ifa);
-        let dst = sin([10, 0, 2, 0]);
-        let view = SockaddrView::new(&dst).expect("a view");
-        rt_ifa_add(ifa, RTF_CONNECTED, view, 0, net).expect("the connected route");
+        {
+            let _w = NETLOCK.write();
+            crate::net::if_::IFNETLIST.insert_tail(ifp);
+        }
+        let mut r = [0u8; 64];
+        let sa = |b: [u8; 4]| SockaddrIn {
+            sin_len: 16,
+            sin_family: AF_INET,
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes(b),
+            },
+            ..SockaddrIn::default()
+        };
+        let _ = pod::put(&mut r, 16, &sa([10, 0, 2, 15]));
+        let _ = pod::put(&mut r, 48, &sa([255, 255, 255, 0]));
+        crate::netinet::in_::in_ioctl(SIOCAIFADDR, &mut r, Some(ifp), true).expect("an address");
+        d.sent.lock().expect("sent").clear();
         (ifp, d)
     }
 
@@ -1251,23 +1224,14 @@ mod tests {
         assert_eq!(covered, 1200 - 36);
     }
 
-    /// An option mbuf holding `o`.
-    fn optm(o: &[u8]) -> MbufBox {
-        let mut m = crate::net::mbuf::m_get(M_DONTWAIT, hal::sys::mbuf::MT_SOOPTS).expect("mbuf");
-        m.m_len().set(o.len() as u32);
-        m.data_mut().expect("writable").copy_from_slice(o);
-        m
-    }
-
     #[test]
     fn inserted_options_grow_the_header() {
         let _g = setup();
         // struct ipoption: no first hop, then a 4-byte record route; m_devget leaves no room
         // before the header: an mbuf of its own is made for it.
         let o = [0u8, 0, 0, 0, IPOPT_RR, 3, 4, IPOPT_EOL];
-        let opt = optm(&o);
         let mut hlen = 0;
-        let m = ip_insertoptions(packet(60, &[]), &opt, &mut hlen);
+        let m = ip_insertoptions(packet(60, &[]), &o, &mut hlen);
         assert_eq!(hlen, 24);
         assert_eq!(m.m_pkthdr().len.get(), 64);
         let b = bytes(&m);
@@ -1288,7 +1252,7 @@ mod tests {
         n.data_mut().expect("writable").copy_from_slice(&p);
         n.m_pkthdr().len.set(60);
         let o = [10u8, 0, 0, 1, IPOPT_RR, 3, 4, IPOPT_EOL];
-        let m = ip_insertoptions(n, &optm(&o), &mut hlen);
+        let m = ip_insertoptions(n, &o, &mut hlen);
         assert_eq!(hlen, 24);
         assert!(m.m_next.get().is_none(), "no mbuf added");
         let b = bytes(&m);
@@ -1299,7 +1263,7 @@ mod tests {
 
         // Options longer than a header leave the packet alone, its header 20 bytes.
         let big = [0u8; 4 + 44];
-        let m = ip_insertoptions(packet(60, &[]), &optm(&big), &mut hlen);
+        let m = ip_insertoptions(packet(60, &[]), &big, &mut hlen);
         assert_eq!(hlen, 20);
         assert_eq!(m.m_pkthdr().len.get(), 60);
     }
@@ -1355,9 +1319,9 @@ mod tests {
     #[test]
     fn ip_output_completes_the_header_and_sends_it() {
         let _g = setup();
+        let (_ifp, d) = iface();
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
-        let (_ifp, d) = iface(&net);
 
         // No source, no version: the route's address is chosen, the header completed and
         // summed in software (the interface sums nothing).
@@ -1377,7 +1341,20 @@ mod tests {
         assert_eq!(in_cksum(&check, 20), 0, "summed in software");
         assert!(ro.rt().is_some(), "the caller's route cached");
 
-        // The same route again: a cache hit.
+        // The same route again: the first lookup cloned the host route, which moved the
+        // routes' generation past the one the cache noted (a miss, as the C's); then a hit.
+        ip_output(
+            packet(100, &[]),
+            None,
+            Some(&mut ro),
+            0,
+            None,
+            None,
+            0,
+            &net,
+        )
+        .expect("sent");
+        let _ = d.last();
         let hits = ips(IpstatCounters::IpsRtcachehit);
         ip_output(
             packet(100, &[]),
@@ -1406,9 +1383,9 @@ mod tests {
     #[test]
     fn ip_output_refuses_with_the_c_errors() {
         let _g = setup();
+        let (ifp, d) = iface();
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
-        let (ifp, d) = iface(&net);
         let send = |m: MbufBox, flags: i32, imo: Option<&IpMoptions>| {
             ip_output(m, None, None, flags, imo, None, 0, &net)
         };

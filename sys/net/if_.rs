@@ -159,8 +159,6 @@ use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
 use crate::netinet::if_ether::{arp_rtrequest, arpinput, arpintr, arpresolve, revarpinput};
-use crate::netinet::igmp::rti_delete;
-use crate::netinet::in_::in_ifdetach;
 use crate::netinet::ip_input::{ipintr, ipv4_input};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
@@ -479,10 +477,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = ifp;
     }
 
-    fn rti_delete(&self, ifp: &'static Ifnet) {
-        rti_delete(ifp);
-    }
-
     fn revarp_ifdetach(&self, ifp: &'static Ifnet) {
         // NETHER > 0 && NFSCLIENT: revarp_ifidx is cleared.
         #[cfg(feature = "nfsclient")]
@@ -490,10 +484,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             crate::netinet::if_ether::REVARP_IFIDX.store(0, Ordering::Relaxed);
         }
         let _ = ifp;
-    }
-
-    fn in_ifdetach(&self, ifp: &'static Ifnet) {
-        in_ifdetach(ifp);
     }
 
     fn in6_ifdetach(&self, ifp: &'static Ifnet) {
@@ -510,16 +500,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             let _ = ifp;
             Err(Errno::EAFNOSUPPORT)
         }
-    }
-
-    fn in_ioctl(
-        &self,
-        cmd: u64,
-        data: &mut [u8],
-        ifp: &'static Ifnet,
-        privileged: bool,
-    ) -> Result<(), Errno> {
-        crate::netinet::in_::in_control_req(cmd, data, Some(ifp), privileged)
     }
 
     fn ip6_forwarding(&self) -> bool {

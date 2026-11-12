@@ -22,9 +22,13 @@
 //! `ip_input.c`'s counters in `ip_var.rs`); the userland halves of the headers are
 //! `hal::sys::netinet_*`.
 
+pub mod igmp;
+pub mod igmp_var;
 pub mod in4_cksum;
+pub mod in_;
 pub mod in_cksum;
 pub mod in_systm;
+pub mod in_var;
 pub mod inet_nat64;
 pub mod ip_ecn;
 pub mod ip_id;

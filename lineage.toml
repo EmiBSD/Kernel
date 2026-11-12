@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6500,18 +6500,19 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
 lz = ["sys/netinet/igmp_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet/igmp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/hal/sys/netinet_in.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/hal/sys/netinet_in.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
 
 [[module]]
@@ -6529,7 +6530,7 @@ status = "inherited"
 rust = "sys/netinet/in_var.rs"
 lz = ["sys/netinet/in_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/in_var.rs"]
 
 [[module]]
 rust = "sys/netinet/ip6.rs"
@@ -6564,7 +6565,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/ne
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6588,7 +6589,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/ker
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -6858,7 +6859,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/netinet/in_var.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -16358,6 +16359,117 @@ crate = "kernel"
 lz = ["sys/netinet/ip_output.rs"]
 status = "redesigned"
 notes = "N6.4a: ip_output.c's output half (ip_output, ip_fragment, ip_insertoptions, ip_optcopy over slices, ip_mloopback, in_hdr_cksum_out, in_cksum_phdr, in_delayed_cksum, in_proto_cksum_out, in_ifcap_cksum) over the kernel's owned mbuf, routes and interfaces; the IP header through hal::pod (ip_load/ip_store); IPsec's half (ip_output_ipsec_lookup/send/pmtu_update) stays bsd's behind the Ipsec bridge's legs until N8, pf_test is the Pf bridge's test leg; in_ifp2ia and in_hasmulti over the generic Ifaddr/Ifmaddr reads until the IPv4 records move; the socket option half (ip_ctloutput..ip_freemoptions) stays bsd's sys/netinet/ip_output.rs until N6.4c1; tests: fragments, options copied and inserted, the checksums, ip_output's header, source, cache, fragments and refusals over a test interface"
+
+[[module]]
+rust = "sys/kernel/netinet/in_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/in_var.rs"]
+status = "redesigned"
+notes = "N6.4a: in_var.h's kernel half: struct in_ifaddr and struct in_multi reached from their generic part by a back-link (Ifaddr::ifa_in, Ifmaddr::ifma_in) set at creation, ifatoia/ifmatoinm without a cast; their sockaddr_in members SinWords (SaWords linked by SaLink::set_words, N6.4a's R2) with LZ's get/set and a one-word addr; the records never freed but recycled through two free lists (in_ifaddr_alloc, in_ifafree, in_multi_alloc, in_multi_free; the mount's idiom, R1); ia_list dropped; tests: the words read as the C structure"
+
+[[module.fn]]
+lz = "sys/netinet/in_var.rs::InAliasreqIfrau"
+native = ["sys/hal/sys/netinet_in_var.rs::InAliasreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/in_var.rs::InAliasreq::zeroed"
+native = ["sys/hal/sys/netinet_in_var.rs::InAliasreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/in_var.rs::InAliasreq::ifra_addr"
+native = ["sys/hal/sys/netinet_in_var.rs::InAliasreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/in_var.rs::InAliasreq::ifra_addr_mut"
+native = ["sys/hal/sys/netinet_in_var.rs::InAliasreq"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/in_.rs"
+crate = "kernel"
+lz = ["sys/netinet/in_.rs"]
+status = "redesigned"
+notes = "N6.4a: in.c: the address ioctls over the request's bytes (hal::pod at the C's offsets), NET_LOCK detached with the proof lent around the route steps and never across the driver's SIOCSIFADDR/SIOCSIFDSTADDR (a zeroed ifreq image, D-14; wg's wg_up may net_unlock); in_ifinit, in_purgeaddr, the host and prefix routes, in_broadcast (route.rs's copy gone), the multicast records with IGMP's join/leave, in_ifdetach; in_nam2sin/in_sa2sin answer a copy; bsd's sys/netinet/in_.rs keeps LZ's raw shapes as wrappers; tests: the ioctls table (EPERM, ENXIO, EOPNOTSUPP, EINVAL, EADDRNOTAVAIL), the routes and membership an address brings and takes, the record recycled, the memberships counted with the report and the leave message on the wire, the helpers"
+
+[[module.fn]]
+lz = "sys/netinet/in_.rs::in_ifaddr_alloc"
+native = ["sys/kernel/netinet/in_var.rs::in_ifaddr_alloc"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/in_.rs::data_ifreq"
+native = []
+kind = "dropped"
+reason = "the ioctls read and write the request's bytes through hal::pod at the ifreq's offsets; no reference to the raw request is made"
+
+[[module.fn]]
+lz = "sys/netinet/in_.rs::ifa_static"
+native = []
+kind = "dropped"
+reason = "the interface list lends its addresses as &'static (hal::list); no lifetime is extended by hand"
+
+[[module.fn]]
+lz = "sys/netinet/in_.rs::ia_static"
+native = ["sys/kernel/netinet/in_var.rs::InIfaddr::of"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/in_.rs::ifa_family"
+native = ["sys/kernel/netinet/in_var.rs::InIfaddr::of"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/igmp_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/igmp_var.rs"]
+status = "redesigned"
+notes = "N6.4a: igmp_var.h's kernel half: enum igmpstat_counters, struct igmp_pktinfo (without ipi_list: igmp_fasttimo's list node holds it), #[inline] igmpstat_inc over igmp.c's percpu IGMPCOUNTERS, IGMP_RANDOM_DELAY; struct igmpstat and the sysctl names are hal::sys::netinet_igmp_var"
+
+[[module]]
+rust = "sys/kernel/netinet/igmp.rs"
+crate = "kernel"
+lz = ["sys/netinet/igmp.rs"]
+status = "redesigned"
+notes = "N6.4a: igmp.c: the router records a chain of MBox under igmp_mtx's Mutexed (the labels' shape) with an atomic mirror for slowtimo's unlocked LIST_EMPTY, the Router Alert option a constant image ip_output takes as bytes (R16), igmp_input giving the valid packet back for bsd's rip_input tail call (R8), the queries and reports over the typed records under if_maddrlock, fasttimo's pending reports MBoxes of M_MRTABLE M_NOWAIT; tests: the router records' v1/v2 ageing and net.inet.igmp.stats over a user buffer (bsd's igmp.rs keeps the protocol's wire tests over its Ethernet fixture)"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::RtiHead"
+native = ["IgmpState"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::RTI_HEAD"
+native = ["IGMP_MTX"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::router_alert"
+native = ["ROUTER_ALERT"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::rti_alloc"
+native = ["rti_fill", "rti_reset"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::rti_free"
+native = []
+kind = "dropped"
+reason = "a router record is an MBox: its drop is free(rti, M_MRTABLE)"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::igmp_hdr"
+native = ["igmp_input_if"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/igmp.rs::inet_memberships"
+native = ["igmp_query", "igmp_checktimer"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"
