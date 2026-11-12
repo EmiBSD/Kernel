@@ -183,9 +183,9 @@ use crate::net::if_ethersubr::{ETHERBROADCASTADDR, ether_sprintf};
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_delist};
 use crate::net::route::{
     RT_RESOLVE, RTF_ANNOUNCE, RTF_BROADCAST, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_LLINFO,
-    RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_PROTO1, RTF_PROTO3, RTF_REJECT, RTF_STATIC, RTM_ADD,
-    RTM_DELETE, RTM_INVALIDATE, RTM_RESOLVE, Rtentry, rt_getll, rtalloc, rtdeletemsg, rtfree,
-    rtisvalid, rtref, sa_of,
+    RTF_LOCAL, RTF_MPLS, RTF_MULTICAST, RTF_REJECT, RTF_STATIC, RTM_ADD, RTM_DELETE,
+    RTM_INVALIDATE, RTM_RESOLVE, Rtentry, rt_getll, rtalloc, rtdeletemsg, rtfree, rtisvalid, rtref,
+    sa_of,
 };
 use crate::net::rtable::{rt_key, rtable_iterate, rtable_l2};
 use crate::net::rtsock::rtm_send;
@@ -217,89 +217,6 @@ use kernel::net::netisr::NETISR_ARP;
 
 pub use hal::sys::netinet_if_ether::*;
 pub use kernel::net::if_ethersubr::{Arpcom, EtherMulti, EtherPort, arpcom_of};
-
-/// `sockaddr_inarp` flag: proxy entry.
-pub const SIN_PROXY: u16 = 1;
-
-/// Use trailers (IP and ethernet specific routing flag).
-pub const RTF_USETRAILERS: u32 = RTF_PROTO1;
-/// Only manual overwrite of entry.
-pub const RTF_PERMANENT_ARP: u32 = RTF_PROTO3;
-
-/// `struct ether_arp`: Ethernet Address Resolution Protocol. See RFC 826 for protocol
-/// description; this structure is adapted to resolving internet addresses. Field names used
-/// correspond to RFC 826.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EtherArp {
-    /// Fixed-size header.
-    pub ea_hdr: Arphdr,
-    /// Sender hardware address.
-    pub arp_sha: [u8; ETHER_ADDR_LEN],
-    /// Sender protocol address.
-    pub arp_spa: [u8; 4],
-    /// Target hardware address.
-    pub arp_tha: [u8; ETHER_ADDR_LEN],
-    /// Target protocol address.
-    pub arp_tpa: [u8; 4],
-}
-
-impl EtherArp {
-    /// `arp_hrd`: format of hardware address, network order.
-    pub const fn arp_hrd(&self) -> u16 {
-        self.ea_hdr.ar_hrd
-    }
-
-    /// `arp_pro`: format of protocol address, network order.
-    pub const fn arp_pro(&self) -> u16 {
-        self.ea_hdr.ar_pro
-    }
-
-    /// `arp_hln`: length of hardware address.
-    pub const fn arp_hln(&self) -> u8 {
-        self.ea_hdr.ar_hln
-    }
-
-    /// `arp_pln`: length of protocol address.
-    pub const fn arp_pln(&self) -> u8 {
-        self.ea_hdr.ar_pln
-    }
-
-    /// `arp_op`: operation, network order.
-    pub const fn arp_op(&self) -> u16 {
-        self.ea_hdr.ar_op
-    }
-}
-
-/// `struct sockaddr_inarp`: the socket address of an ARP entry.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SockaddrInarp {
-    /// Total length.
-    pub sin_len: u8,
-    /// `AF_INET`.
-    pub sin_family: u8,
-    /// Port.
-    pub sin_port: u16,
-    /// Address.
-    pub sin_addr: InAddr,
-    /// Source address.
-    pub sin_srcaddr: InAddr,
-    /// Type of service.
-    pub sin_tos: u16,
-    /// `SIN_PROXY`.
-    pub sin_other: u16,
-}
-
-hal::abi_pod!(SockaddrInarp {
-    sin_len: u8,
-    sin_family: u8,
-    sin_port: u16,
-    sin_addr: InAddr,
-    sin_srcaddr: InAddr,
-    sin_tos: u16,
-    sin_other: u16,
-});
 
 /// The offset of `sdl_index` in a `sockaddr_dl`.
 const SDL_INDEX: usize = core::mem::offset_of!(SockaddrDl, sdl_index);
@@ -1644,8 +1561,6 @@ const _: () = {
     assert!(size_of::<EtherAddr>() == 6);
     assert!(size_of::<EtherHeader>() == ETHER_HDR_LEN);
     assert!(size_of::<EtherVlanHeader>() == ETHER_HDR_LEN + EVL_ENCAPLEN);
-    assert!(size_of::<EtherArp>() == 28);
-    assert!(size_of::<SockaddrInarp>() == 16);
 };
 /* </CODE> */
 
@@ -1722,9 +1637,7 @@ mod tests {
         assert_complete(&defs, "EVL_", &evl);
         let eth64 = assert_defines!(defs; ETH64_8021_RSVD_PREFIX, ETH64_8021_RSVD_MASK);
         assert_complete(&defs, "ETH64_", &eth64);
-        assert_defines!(defs; ETHERMTU, ETHERMIN, SIN_PROXY);
-        assert_eq!(defs["RTF_USETRAILERS"], "RTF_PROTO1");
-        assert_eq!(defs["RTF_PERMANENT_ARP"], "RTF_PROTO3");
+        assert_defines!(defs; ETHERMTU, ETHERMIN);
     }
 
     /// An ARP packet of `op` from the gateway (`sha`/`spa`) to `tha`/`tpa`, as bytes.

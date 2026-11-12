@@ -6282,7 +6282,9 @@ notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, i
 [[module]]
 rust = "sys/net/if_arp.rs"
 lz = ["sys/net/if_arp.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/net_if_arp.rs"]
+notes = "N6.4b: a re-export of hal::sys::net_if_arp, where LZ's net/if_arp.h constants and struct arphdr moved whole, for bsd's importers"
 
 [[module]]
 rust = "sys/net/if_dl.rs"
@@ -6494,7 +6496,7 @@ status = "inherited"
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/hal/sys/netinet_if_ether.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
@@ -8733,11 +8735,18 @@ status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct udphdr (8); bsd keeps its copy until the protocol moves"
 
 [[module]]
+rust = "sys/hal/sys/net_if_arp.rs"
+crate = "hal"
+lz = ["sys/net/if_arp.rs"]
+status = "redesigned"
+notes = "N6.4b: LZ's net/if_arp.h moved whole into hal (struct arphdr an abi_pod with its const size assert, the ARPHRD_*/ARPOP_* constants, the reference-backed test), for the kernel's ARP and, through bsd's re-export, bsd's importers"
+
+[[module]]
 rust = "sys/hal/sys/netinet_if_ether.rs"
 crate = "hal"
 lz = ["sys/netinet/if_ether.rs"]
 status = "redesigned"
-notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then"
+notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then; N6.4b: the ARP part joins it (struct ether_arp 28 with its arp_hrd.. accessors, struct sockaddr_inarp 16, abi_pods; SIN_PROXY, RTF_USETRAILERS, RTF_PERMANENT_ARP), bsd's copies gone"
 
 [[module]]
 rust = "sys/hal/sys/netinet_igmp.rs"

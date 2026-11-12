@@ -1,0 +1,141 @@
+/* <LICENSES> */
+/*
+ * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
+ * Copyright (c) 1986, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)if_arp.h	8.1 (Berkeley) 6/10/93
+ */
+/* </LICENSES> */
+
+/* <CODE> */
+//! Address Resolution Protocol: `<net/if_arp.h>`, `hal`'s since N6.4b (the kernel's ARP and
+//! `bsd`'s importers, through its re-export, share it).
+//!
+//! Upstream: sys/net/if_arp.h @ 3ce1f3f79392
+//! LZ: sys/net/if_arp.rs@3c62ede68802
+//!
+//! See RFC 826 for protocol description. ARP packets are variable in size; the `arphdr`
+//! structure defines the fixed-length portion. Protocol type values are the same as those for
+//! 10 Mb/s Ethernet. It is followed by the variable-sized fields `ar_sha`, `ar_spa`, `ar_tha`
+//! and `ar_tpa` in that order, according to the lengths specified. Field names used
+//! correspond to RFC 826. The fields are in network order on the wire; the constants are
+//! host-order values to compare after `ntohs`.
+//!
+//! ## Deviations
+//! - The variable-sized fields exist only in a `COMMENT_ONLY` block in the C; there is nothing
+//!   to port. `struct ether_arp` (`hal::sys::netinet_if_ether`) is the Ethernet/IPv4 layout.
+//!
+//! ## Redesign
+//! - LZ's `sys/net/if_arp.rs` moved whole into `hal` (N6.4b, with the kernel's ARP, its first
+//!   user there; N6.4a's R3), `struct arphdr` an `abi_pod!` with its `const` size assert;
+//!   `bsd`'s `sys/net/if_arp.rs` re-exports it for its importers (the `ethertypes.rs`
+//!   precedent). The constants and the reference-backed test are LZ's.
+
+use core::mem::size_of;
+
+/// Ethernet hardware format.
+pub const ARPHRD_ETHER: u16 = 1;
+/// IEEE 802 hardware format.
+pub const ARPHRD_IEEE802: u16 = 6;
+/// Frame relay hardware format.
+pub const ARPHRD_FRELAY: u16 = 15;
+/// IEEE 1394 (FireWire) hardware format.
+pub const ARPHRD_IEEE1394: u16 = 24;
+
+/// Request to resolve address.
+pub const ARPOP_REQUEST: u16 = 1;
+/// Response to previous request.
+pub const ARPOP_REPLY: u16 = 2;
+/// Request protocol address given hardware.
+pub const ARPOP_REVREQUEST: u16 = 3;
+/// Response giving protocol address.
+pub const ARPOP_REVREPLY: u16 = 4;
+/// Request to identify peer.
+pub const ARPOP_INVREQUEST: u16 = 8;
+/// Response identifying peer.
+pub const ARPOP_INVREPLY: u16 = 9;
+
+/// `struct arphdr`: the fixed-length portion of an ARP packet.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Arphdr {
+    /// Format of hardware address (`ARPHRD_*`).
+    pub ar_hrd: u16,
+    /// Format of protocol address.
+    pub ar_pro: u16,
+    /// Length of hardware address.
+    pub ar_hln: u8,
+    /// Length of protocol address.
+    pub ar_pln: u8,
+    /// One of `ARPOP_*`.
+    pub ar_op: u16,
+}
+
+crate::abi_pod!(Arphdr {
+    ar_hrd: u16,
+    ar_pro: u16,
+    ar_hln: u8,
+    ar_pln: u8,
+    ar_op: u16,
+});
+
+// Size of the C structure.
+const _: () = assert!(size_of::<Arphdr>() == 8);
+/* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
+    fn values_match_the_c_header() {
+        let defs = crate::reftest::defines("sys/net/if_arp.h");
+        let ours = crate::reftest::assert_defines!(defs;
+            ARPHRD_ETHER, ARPHRD_IEEE802, ARPHRD_FRELAY, ARPHRD_IEEE1394, ARPOP_REQUEST,
+            ARPOP_REPLY, ARPOP_REVREQUEST, ARPOP_REVREPLY, ARPOP_INVREQUEST, ARPOP_INVREPLY);
+        crate::reftest::assert_complete(&defs, "ARP", &ours);
+    }
+}
+/* </TESTS> */
