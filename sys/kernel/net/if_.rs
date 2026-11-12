@@ -196,9 +196,9 @@
 //!   `EAFNOSUPPORT` and `SIOCSIFXFLAGS` skips the IPv6 flags, as the C without `INET6`.
 //! - `ifioctl`'s request of the kernel itself comes with no socket and goes to
 //!   `kernel::netinet::in_`'s `in_ioctl`, privileged when its process is the superuser, as a
-//!   socket it made would be (`SS_PRIV`; the boot self-test and nfs_boot configure an
-//!   interface that way; LZ's, which made it privileged always): the C's `pru_control` follows
-//!   the socket.
+//!   socket it made would be (`SS_PRIV`; the boot self-test configures an interface that
+//!   way, nfs_boot through a socket of its own, `socreate`; LZ's made it privileged
+//!   always): the C's `pru_control` follows the socket.
 //! - `SIOCSIFXFLAGS`'s wake on LAN with a driver that has no `if_wol` answers `ENOTSUP` (the
 //!   C calls the handle unchecked once `IFCAP_WOL` is set; LZ's).
 //! - `ifconf` copies an address's `sa_len` bytes cut at its storage (`hal::link::SaLink`'s

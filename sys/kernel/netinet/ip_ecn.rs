@@ -1,5 +1,3 @@
-/*	$KAME: ip_ecn.h,v 1.5 2000/03/27 04:58:38 sumikawa Exp $	*/
-/*	$KAME: ip_ecn.c,v 1.9 2000/10/01 12:44:48 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>

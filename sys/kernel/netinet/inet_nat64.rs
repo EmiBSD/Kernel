@@ -1,4 +1,3 @@
-/*	$vantronix: inet_nat64.c,v 1.2 2011/02/28 14:57:58 mike Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>

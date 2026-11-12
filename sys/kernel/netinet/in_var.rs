@@ -307,6 +307,12 @@ hal::list_adapter!(
     InmFreeList: InMulti, inm_free
 );
 
+// The two free lists' mutexes are IPL_SOFTNET: every taker runs at or below the softnet
+// level, never from a hardware interrupt: the allocations (`in_ioctl`'s `SIOCAIFADDR`,
+// `in_addmulti`, process context or the softnet tasks), `in_ifafree` (the last `ifafree`, from
+// `rtfree` and `ifa_del`) and `in_multi_free` (`in_delmulti`'s). A taker above IPL_SOFTNET
+// would need IPL_NET here.
+
 /// The Internet addresses no interface has any more, for [`in_ifaddr_alloc`].
 static IA_FREE: Mutexed<List<IaFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
 
