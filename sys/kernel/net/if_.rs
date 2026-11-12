@@ -352,6 +352,7 @@ use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
     M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
+    ml_purge,
 };
 use crate::net::pf_hooks::pf;
 use crate::net::socket::Socket;
@@ -457,6 +458,24 @@ pub trait Inet: Sync + 'static {
     /// `ifnewlladdr`'s first IPv6 step: the link-local address purged
     /// (`in6ifa_ifpforlinklocal`, `in6_purgeaddr`); whether there was one.
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool;
+    /// `free(ifa, M_IFADDR, 0)` of an interface address whose last reference `ifafree` gave
+    /// back (route.c's; the protocols own the storage until N6.4 and N6.5). Default: nothing
+    /// (N6.3b: `bsd`'s implementation comes with the routing switch, N6.3b2).
+    fn ifa_free(&self, _ifa: &'static Ifaddr) {}
+    /// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`). Default: off.
+    fn ip_multipath(&self) -> bool {
+        false
+    }
+    /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
+    fn ip6_multipath(&self) -> bool {
+        false
+    }
+    /// `ipstat_inc(ips_rtcachehit)` (`hit`) or `ipstat_inc(ips_rtcachemiss)`. Default:
+    /// nothing.
+    fn ipstat_rtcache(&self, _hit: bool) {}
+    /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
+    /// nothing.
+    fn ip6stat_rtcache(&self, _hit: bool) {}
 }
 
 /// What the kernel's interface layer asks of the routing code (`route.c`, `rtable.c`,
@@ -1979,6 +1998,84 @@ pub fn if_input_local(
             Err(Errno::EAFNOSUPPORT)
         }
     }
+}
+
+/// `if_output_ml(ifp, ml, dst, rt)`: every packet of `ml` given to the interface's output
+/// (`if_output`) toward `dst` through route `rt`; the first error stops it, the rest of the
+/// list freed (N6.3b1: the kernel's routes; `if_output_tso` and `if_output_mq` stay `bsd`'s
+/// with their netinet and ARP callers, docs/SCAFFOLDING.md).
+pub fn if_output_ml(
+    ifp: &'static Ifnet,
+    ml: &mut MbufList,
+    dst: crate::net::proto::SockaddrView<'_>,
+    rt: Option<&crate::net::route::Rtentry>,
+) -> Result<(), Errno> {
+    let mut error = Ok(());
+
+    while let Some(m) = ml_dequeue(ml) {
+        // An interface with no driver has no `if_output`: the C calls through NULL, as
+        // `NetDriver::output`'s default does.
+        let Some(d) = ifp.if_driver.get() else {
+            drop(m);
+            kpanic(format_args!("if_output_ml: an interface without if_output"));
+        };
+        error = d.output(ifp, m, dst, rt);
+        if error.is_err() {
+            break;
+        }
+    }
+    if error.is_err() {
+        let _ = ml_purge(ml);
+    }
+
+    error
+}
+
+/// `p2p_rtrequest(ifp, req, rt)`: the default action when a local route is installed on a
+/// point-to-point interface: the route loses `RTF_LLINFO` when the address is the
+/// interface's and the routing domain's loopback has an address of its family. Under the
+/// net lock (`net`). The link layer of the point-to-point drivers (`bsd`'s gif, gre, tun, ...:
+/// their `NetDriver::rtrequest`, N6.3b2).
+pub fn p2p_rtrequest(ifp: &Ifnet, req: u8, rt: &crate::net::route::Rtentry, net: &NetHeld<'_>) {
+    use hal::sys::net_route::{RTF_LLINFO, RTF_LOCAL, RTM_ADD};
+
+    if req != RTM_ADD || !rt.rt_flags.isset(RTF_LOCAL) {
+        return;
+    }
+
+    let key = rt.dest();
+    let n = usize::from(key.first().copied().unwrap_or(0));
+    let mut found = None;
+    for ifa in &ifp.if_addrlist {
+        let Some(a) = ifa.ifa_addr.read(net) else {
+            continue;
+        };
+        if a.get(..n) == key.get(..n) {
+            found = Some((ifa, a.family()));
+            break;
+        }
+    }
+    let Some((ifa, af)) = found else {
+        return;
+    };
+
+    kassert!(rt.rt_ifa.points_to(ifa));
+
+    let lo0ifp = if_get(crate::net::rtable::rtable_loindex(ifp.if_rdomain.get()));
+    kassert!(lo0ifp.is_some());
+    let Some(lo0ifp) = lo0ifp else {
+        return;
+    };
+    let lo0ifa = (&lo0ifp.if_addrlist)
+        .into_iter()
+        .any(|l| l.ifa_addr.read(net).is_some_and(|a| a.family() == af));
+    if_put(Some(lo0ifp));
+
+    if !lo0ifa {
+        return;
+    }
+
+    rt.rt_flags.clear(RTF_LLINFO);
 }
 
 /// `if_output_local(ifp, m, af)`: a packet for local delivery queued on one of `ifp`'s input

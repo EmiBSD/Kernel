@@ -7768,6 +7768,263 @@ kind = "dropped"
 reason = "each struct ifmedia's own IPL_NET mutex (kernel::net::if_media, IfmRt's list): the C's one global ifmedia_mtx keeps per-media lists at the same level and no other path takes it"
 
 [[module]]
+rust = "sys/kernel/net/art.rs"
+crate = "kernel"
+lz = ["sys/net/art.rs"]
+status = "redesigned"
+notes = "N6.3b1: art.h and art.c, generic over the node (ArtItem: the C's embeddable struct art_node and its void *an_value; routing's RtNode the first implementer, wg(4)'s at N8, D-25, while bsd's art.rs stays inherited for wg until then); every heap word, art_root and heap[0] a counted hal::smr word (SmrTaggedWord: the low-bit tag of art_heap_entry), so lookups are sound by SMR alone; the heaps typed by stride (Heap4 art_heap4, Heap8 art_heap8, a root only); a table owns its heap, heap[0] counts the table, at_parent the parent, the cycles cut at art_table_put; art_allot the double recursion Knuth's gotos expand; the gc lists, mutexes and tasks gone (the deferred release of retired references is the smr_barrier then pool_put); the iterator keeps at_refcnt and a handle of its table, and lends each node for its step's section"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapEntry"
+native = ["HeapWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord"
+native = ["HeapWord"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord::get"
+native = ["sys/hal/smr.rs::SmrTaggedWord::load"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtHeapWord::set"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::Art::default"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::GcList"
+native = []
+kind = "dropped"
+reason = "the gc lists are gone: a retired heap word's reference is released by hal::smr's deferred release after a grace period, which is what art_table_gc's and art_gc's smr_barrier then pool_put did"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_LIST"
+native = []
+kind = "dropped"
+reason = "art_table_gc's list: a put table goes back to its pool when its last reference (the retired heap[0] and the parent's slot among them) is released after a grace period"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_MTX"
+native = []
+kind = "dropped"
+reason = "guarded the gone table gc list (art_table_gc)"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_TABLE_GC_TASK"
+native = []
+kind = "dropped"
+reason = "art_table_gc's systqmp task: the SMR thread runs the deferred release instead"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_LIST"
+native = []
+kind = "dropped"
+reason = "art_gc's list (an_gc): a node goes back to its pool when the last heap word or holder drops its reference, after a grace period for the retired ones"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_MTX"
+native = []
+kind = "dropped"
+reason = "guarded the gone node gc list (art_gc)"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ART_NODE_GC_TASK"
+native = []
+kind = "dropped"
+reason = "art_gc's systqmp task: the SMR thread runs the deferred release instead"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_HEAP_4_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AT_HEAP_8_POOL"
+native = ["ArtPools"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::heap_slot"
+native = ["ArtHeap::words"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_to_table"
+native = ["RootRef::table"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_is_node"
+native = ["entry_node", "sys/hal/smr.rs::Tag"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_to_node"
+native = ["entry_node", "sys/hal/smr.rs::Tag"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_entry_to_heap"
+native = ["sys/hal/smr.rs::SmrTaggedWord::load"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_node_to_heap_entry"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_heap_to_heap_entry"
+native = ["sys/hal/smr.rs::SmrTaggedWord::store"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_foreach"
+native = []
+kind = "dropped"
+reason = "ART_FOREACH's expansion: the kernel's walkers (rtable_walk, rtable_read) loop over Art::art_iter_open and Art::art_iter_next themselves, taking and letting go of their lock and section around each step"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_boot"
+native = ["ArtPools::art_boot"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_init"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_alloc"
+native = ["Art::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_match"
+native = ["Art::art_match"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_lookup"
+native = ["Art::art_lookup"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_is_empty"
+native = ["Art::art_is_empty"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_insert"
+native = ["Art::art_insert"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_delete"
+native = ["Art::art_delete"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_free"
+native = ["Art::art_table_free"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_descend"
+native = ["Art::art_iter_descend"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_open"
+native = ["Art::art_iter_open"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_next"
+native = ["Art::art_iter_next"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_iter_close"
+native = ["Art::art_iter_close"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_get"
+native = ["Art::art_table_get"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_put"
+native = ["Art::art_table_put"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_table_gc"
+native = []
+kind = "dropped"
+reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a table and its heap back after a grace period, which is what this task's smr_barrier then pool_put did"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_gc"
+native = []
+kind = "dropped"
+reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a node back after a grace period, which is what this task's smr_barrier then pool_put did"
+
+[[module.fn]]
+lz = "sys/net/art.rs::ArtNode"
+native = ["ArtItem", "sys/kernel/net/rtable.rs::RtNode"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/net/art.rs::AN_POOL"
+native = ["sys/kernel/net/rtable.rs::AN_POOL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_get"
+native = ["sys/kernel/net/rtable.rs::art_get"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_node_init"
+native = ["sys/kernel/net/rtable.rs::art_get"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/net/art.rs::art_put"
+native = []
+kind = "dropped"
+reason = "a node goes back to the pool art_node when its last handle does: the unpublished node's drop (rtable_insert's duplicate) or the release of its retired heap words after a grace period (art_delete), which art_put's gc list then smr_barrier did"
+
+[[module]]
+rust = "sys/kernel/net/rtable.rs"
+crate = "kernel"
+lz = ["sys/net/rtable.rs"]
+status = "redesigned"
+notes = "N6.3b1: rtable.h and rtable.c over the kernel's Art<RtNode>: RtNode (pool art_node) whose an_value and every route's rt_next are counted hal::smr words holding the table's reference (rtref), lookups answering SmrRef::arc handles; chain edits move references (SmrArcWord::restore) so rmx_refcnt stays the C's; afmap a static array of SmrPtr<Rtmap> keyed to the kernel lock, a map an item of the new pool rtmappl (D-N6.3b-12) whose arrays are the C's mallocarray(M_RTABLE); a table embeds its ART and is leaked (never freed, as the C's); r_source a copy (D-N6.3b-13); the routing domains' parameters read from domains[] once by rtable_init<G> (the rest not generic); rtable_walk lets r_lock go around the callback (WriteWitness::unlocked) with one handle per route; rtable_satoplen Err(EINVAL) for -1"
+
+[[module]]
+rust = "sys/kernel/net/route.rs"
+crate = "kernel"
+lz = ["sys/net/route.rs"]
+status = "redesigned"
+notes = "N6.3b1: route.c and the kernel half of route.h: Rtentry a recorded TypedPool item (rtentry) handled through PoolArc, the count rt_refcnt (rtref a clone, rtfree a drop, the last rtfree the entry's Drop; the reference table in its Redesign), members by the C's legend (rt_gateway/rt_gwroute/rt_parent ReadMostly cells, rt_flags an atomic word with set/clear, the rest relaxed atomics, rt_ifa a Link, rt_llinfo a word, rt_cachecnt in rt_mtx's Mutexed); Route owned with &mut methods (cache4/mpath4, cache6/mpath6); RtAddrinfo of SockaddrViews; the timers (pool rttmr, two PinLists under RTTIMER_MTX, a parked membership reference, the timeout's argument a handle; a timer holds a counted handle of its route, removed when the route leaves its table, rt_refcnt not counting it: R11); the labels a Mutexed chain of M_RTABLE boxes; rtcounters a Counters; the routing socket's senders through RtmSink until N6.3b2; in_broadcast read over the interface list until N6.4; MPLS/BFD not configured"
+
+[[module]]
 rust = "sys/kernel/net/netisr.rs"
 crate = "kernel"
 lz = ["sys/net/netisr.rs"]
@@ -7811,6 +8068,13 @@ lz = "sys/net/if_.rs::IfNameindex"
 native = []
 kind = "dropped"
 reason = "`struct if_nameindex` is if_nameindex(3)'s (libc builds it from the routing socket's messages); the kernel never makes one"
+
+[[module]]
+rust = "sys/hal/sys/net_route.rs"
+crate = "hal"
+lz = ["sys/net/route.rs"]
+status = "redesigned"
+notes = "N6.3b: net/route.h's ABI moved into hal for kernel::net's routing and bsd's callers: the RTF_/RTP_/RTM_/RTV_/RTA_/RTAX_/ROUTE_ constants, RTM_VERSION, RTM_MAXSIZE, RTABLE_ANY, the RTLABEL/RTDNS/RTSTATIC/RTSEARCH lengths, route_filter (ROUTE_FILTER), and the AbiPod images rt_metrics (56), rtstat (20), rt_tableinfo (4), rt_msghdr (96), sockaddr_rtlabel (34) and sockaddr_rtdns/rtstatic/rtsearch (130), their LP64 sizes const-asserted; bsd's sys/net/route.rs keeps its own copies until N6.3b2 re-exports these"
 
 [[module]]
 rust = "sys/hal/sys/net_if_media.rs"
@@ -12299,7 +12563,7 @@ rust = "sys/hal/smr.rs"
 crate = "hal"
 lz = ["sys/kern/kern_smr.rs", "sys/sys/smr.rs"]
 status = "redesigned"
-notes = "N6.0: kern_smr.c's protocol and <sys/smr.h>'s entry and pointer, written new: SmrLink (struct smr_entry, a state word that refuses a second queueing in every kernel), the per-CPU queues and counts (schedstate_percpu's five SMR members, PerCpu<SmrCpu>) and the system's (smr_lock, smr_deferred, smr_ndeferred, smr_expedite: Mutexed<Deferred> at IPL_HIGH), the read sections (read/SmrRead and the C-style read_enter/read_leave, two per-CPU counts so a C-style leave cannot end a guard's section; both counted always, idle inside either is panic(9)), idle (smr_idle), defer_link (smr_call), barrier (smr_barrier_impl, its link on its frame), grace_wait (private, serialised, run by Batch::run before any call, its peg check always on) over a CpuWalk the caller passes (decision 39; running() a trust boundary of sys/hal/trust.rs), wait and collect (smr_thread's sleeps and SIMPLEQ_CONCAT; the thread itself is sys/kernel/smr.rs), SmrPtr<T: SmrLinked> (SMR_PTR_GET/_LOCKED/SET_LOCKED over a pool item, keyed to the writer's lock) and SmrRetired (the old target, released only by its deferral); smr_wakeup and its timeout dropped (a dispatch to an empty queue wakes the thread, which pauses SMR_PAUSE unless expedited)"
+notes = "N6.0: kern_smr.c's protocol and <sys/smr.h>'s entry and pointer, written new: SmrLink (struct smr_entry, a state word that refuses a second queueing in every kernel), the per-CPU queues and counts (schedstate_percpu's five SMR members, PerCpu<SmrCpu>) and the system's (smr_lock, smr_deferred, smr_ndeferred, smr_expedite: Mutexed<Deferred> at IPL_HIGH), the read sections (read/SmrRead and the C-style read_enter/read_leave, two per-CPU counts so a C-style leave cannot end a guard's section; both counted always, idle inside either is panic(9)), idle (smr_idle), defer_link (smr_call), barrier (smr_barrier_impl, its link on its frame), grace_wait (private, serialised, run by Batch::run before any call, its peg check always on) over a CpuWalk the caller passes (decision 39; running() a trust boundary of sys/hal/trust.rs), wait and collect (smr_thread's sleeps and SIMPLEQ_CONCAT; the thread itself is sys/kernel/smr.rs), SmrPtr<T: SmrLinked> (SMR_PTR_GET/_LOCKED/SET_LOCKED over a pool item, keyed to the writer's lock) and SmrRetired (the old target, released only by its deferral); smr_wakeup and its timeout dropped (a dispatch to an empty queue wakes the thread, which pauses SMR_PAUSE unless expedited). N6.3b: SmrArcWord/SmrTaggedWord (SMR_PTR over counted objects named by many words: rt_next, an_value, the ART's tagged heap entries), each word one PoolArc reference, SmrRef lending it for the section (arc() the C's rtref inside it), SmrRetiredArc parked on the item's one SmrArcLink whose release requeues itself for references parked after it was queued, restore moving a reference between words without a retirement; SmrPtr::new_kernel"
 
 [[module.fn]]
 lz = "sys/kern/kern_smr.rs::SMR_PAUSE"

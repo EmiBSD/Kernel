@@ -59,7 +59,8 @@
 //!   the first and last byte under `diagnostic`) and panics naming the bridge when one
 //!   fails. It goes with the bridge, at N9.
 //! - No raw form (`into_raw`/`from_raw`) yet: its first user would be a type-erased slot, and
-//!   the kernel's slots hold the handle itself (`FileData`, decision 14).
+//!   the kernel's slots hold the handle itself (`FileData`, decision 14). (N6.3b's counted SMR
+//!   words are the first user, below.)
 //! - N3.1 (D18): [`BoxPool<T>`] and [`PoolBox<T>`], the owned item without a count, for the
 //!   pmaps' per-mapping records (amd64's `pv_entry`, pool `"pvpl"`; arm64's `pte_desc`, pool
 //!   `"pted"`), which the C gets with `pool_get` and frees with `pool_put` from exactly one
@@ -144,6 +145,10 @@
 //!   the C's is, and crosses CPUs whole (`Send`). [`RawPool::wakeup`] is `pool_wakeup(9)`
 //!   (`nmbclust_update` after the limit moves), a default method that does nothing, which
 //!   `bsd`'s backend overrides; [`BoxPool::wakeup`] forwards to it.
+//! - N6.3b: the raw form of a [`PoolArc`], crate-private (`into_raw`/`from_raw`), for
+//!   `hal::smr`'s counted words: a word that publishes a counted item to SMR readers holds
+//!   its reference as the bare value pointer (the C's `SMR_PTR` of a `refcnt`ed object:
+//!   `rt_next`, the ART's heap entries), and gives it back once, to its deferred release.
 
 use core::any::TypeId;
 use core::cell::UnsafeCell;
@@ -890,6 +895,49 @@ impl<T: Send + Sync + 'static> PoolArc<T> {
         AnyArc {
             item: this.inner.cast(),
             vt: &Erased::<T>::VT,
+        }
+    }
+
+    /// Gives the handle up for its value's address, the reference it counts kept: the word
+    /// form of `hal::smr`'s counted words ([`crate::smr::SmrArcWord`]), which hold a reference
+    /// as the bare pointer; [`PoolArc::from_raw`] takes it back. The pointer carries the whole
+    /// item's provenance (it is the item's pointer moved to the value, never a reference's),
+    /// so the step back to the count is in bounds.
+    pub(crate) fn into_raw(this: Self) -> NonNull<T> {
+        let this = ManuallyDrop::new(this);
+        let at = this
+            .inner
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(offset_of!(Inner<T>, value))
+            .cast::<T>();
+        match NonNull::new(at) {
+            Some(p) => p,
+            None => hal_panic(format_args!("PoolArc::into_raw: a null value")),
+        }
+    }
+
+    /// The handle [`PoolArc::into_raw`] gave up, back: the reference it counted, now this
+    /// handle's again.
+    ///
+    /// # Safety
+    ///
+    /// `value` was returned by [`PoolArc::into_raw`] of a `PoolArc<T>` (this `T`), and the
+    /// reference that call kept has not been taken back yet: one `from_raw` per `into_raw`, so
+    /// the item is still counted by that reference (alive, the invariant's) and this handle
+    /// becomes the one that counts it.
+    pub(crate) unsafe fn from_raw(value: NonNull<T>) -> Self {
+        let at = value
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_sub(offset_of!(Inner<T>, value))
+            .cast::<Inner<T>>();
+        match NonNull::new(at) {
+            Some(inner) => PoolArc {
+                inner,
+                _owns: PhantomData,
+            },
+            None => hal_panic(format_args!("PoolArc::from_raw: a null item")),
         }
     }
 

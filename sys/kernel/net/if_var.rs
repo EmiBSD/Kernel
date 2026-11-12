@@ -458,8 +458,8 @@ pub fn counters_pkt(c: &IfCounterArray, pc: IfCounters, bc: IfCounters, v: u64) 
 
 /// `struct netstack`: the packet lists a softnet thread works through (`if_input_process`).
 /// Owned by its softnet thread, lent `&mut` to the input functions it calls (the module's
-/// redesign); `ns_route`, `route.c`'s `struct route`, has no per-softnet home until N6.3b
-/// (the module's redesign).
+/// redesign); `ns_route`, `route.c`'s `struct route`, is the kernel's `Route` since N6.3b1
+/// (`bsd`'s `ip_input`/`ip6_input` use it from N6.3b2).
 pub struct Netstack {
     /// `ns_input`: packets to give to an interface's `if_input` again (`if_vinput`).
     pub ns_input: MbufList,
@@ -471,6 +471,8 @@ pub struct Netstack {
     pub ns_tcp6_ml: MbufList,
     /// The softnet this stack is.
     pub ns_idx: u32,
+    /// `ns_route`: the softnet's route cache (`route.c`'s `struct route`, N6.3b1, D-N6.3b-7).
+    pub ns_route: crate::net::route::Route,
 }
 
 impl Netstack {
@@ -482,6 +484,7 @@ impl Netstack {
             ns_tcp_ml: MbufList::new(),
             ns_tcp6_ml: MbufList::new(),
             ns_idx: idx,
+            ns_route: crate::net::route::Route::new(),
         }
     }
 }
@@ -550,6 +553,34 @@ pub trait NetDriver: Sync + 'static {
     /// named by downcasting); `None` for a native driver (docs/SCAFFOLDING.md, N7).
     fn as_any(&self) -> Option<&(dyn Any + Send + Sync)> {
         None
+    }
+
+    /// `if_rtrequest(ifp, req, rt)`: the interface's link layer told that route `rt` of the
+    /// interface was added (`RTM_ADD`), cloned (`RTM_RESOLVE`) or deleted (`RTM_DELETE`),
+    /// under the net lock (`net`) (N6.3b, D-N6.3b-11: `ether_rtrequest`, `lortrequest`,
+    /// `p2p_rtrequest`). Default: nothing, the C's `if_rtrequest_dummy`.
+    fn rtrequest(
+        &self,
+        _ifp: &'static Ifnet,
+        _req: u8,
+        _rt: Option<&crate::net::route::Rtentry>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) {
+    }
+
+    /// `if_output(ifp, m, dst, rt)`: `m` sent toward `dst` through route `rt` (N6.3b,
+    /// D-N6.3b-11: `ether_output`, `looutput`, the tunnels' outputs; `bsd`'s through
+    /// `LegacyNetDriver` from N6.3b2). Default: `panic(9)` (the C calls through NULL).
+    fn output(
+        &self,
+        ifp: &'static Ifnet,
+        m: MbufBox,
+        _dst: crate::net::proto::SockaddrView<'_>,
+        _rt: Option<&crate::net::route::Rtentry>,
+    ) -> Result<(), Errno> {
+        drop(m);
+        ifp.if_xname
+            .with_str(|n| kpanic(format_args!("{}: no if_output", Str(n))))
     }
 }
 
