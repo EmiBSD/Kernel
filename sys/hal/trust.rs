@@ -138,7 +138,12 @@
 //! either), so a read holding it finds is its own, as every C reader of `ifa_addr` holds one.
 //! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
 //! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
-//! embeds its storage (N6.4, N6.5).
+//! embeds its storage (N6.4, N6.5). Since N6.4a an IPv4 address's storage is the kernel's,
+//! an `hal::link::SaWords` linked by `SaLink::set_words` without the token: `SaLink::read`
+//! copies it by atomic loads, so no premise is left on that side. `bsd`'s legacy readers
+//! that dereference `SaLink::get` (now the words' address for an IPv4 address) keep their
+//! own premise in their own `unsafe`: the kernel's `in_` writes those words only under the
+//! exclusive net lock (`in_ifinit`, as the C), and a reader under the net lock sees no write.
 //!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is
