@@ -1792,8 +1792,9 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&mut Route>, flags: 
                 if rt.rt_flags.get() & RTF_GATEWAY != 0 {
                     // A gateway route's gateway is a `sockaddr_in`.
                     dest = rt
-                        .gateway_copy()
-                        .and_then(|g| hal::pod::at::<crate::netinet::in_::SockaddrIn>(g.bytes(), 0))
+                        .with_gateway(|g| {
+                            g.and_then(|g| hal::pod::at::<crate::netinet::in_::SockaddrIn>(g, 0))
+                        })
                         .map_or(0, |s| s.sin_addr.s_addr);
                 } else {
                     dest = ip.ip_dst.s_addr;

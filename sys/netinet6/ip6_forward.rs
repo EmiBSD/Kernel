@@ -286,8 +286,8 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&mut Route>, flags: i32) {
             }
 
             if rtv.rt_flags.get() & RTF_GATEWAY != 0
-                && let Some(g) = rtv.gateway_copy()
-                && let Some(g) = hal::pod::at::<SockaddrIn6>(g.bytes(), 0)
+                && let Some(g) =
+                    rtv.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn6>(g, 0)))
             {
                 dst = g;
             }

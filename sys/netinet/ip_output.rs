@@ -303,9 +303,10 @@ pub fn ip_output(
                         mtu = u64::from(i.if_mtu.get());
                     }
 
+                    // `dst = satosin(rt->rt_gateway)`: the gateway read once, in place.
                     if rt.rt_flags.get() & RTF_GATEWAY != 0
-                        && let Some(g) = rt.gateway_copy()
-                        && let Some(g) = hal::pod::at::<SockaddrIn>(g.bytes(), 0)
+                        && let Some(g) =
+                            rt.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn>(g, 0)))
                     {
                         dst = g;
                     }

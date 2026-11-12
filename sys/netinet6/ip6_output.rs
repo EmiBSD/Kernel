@@ -595,8 +595,8 @@ pub fn ip6_output(
                     if let Some(rte) = rt
                         && rte.rt_flags.get() & RTF_GATEWAY != 0
                         && !in6_is_addr_multicast(&ip6.ip6_dst)
-                        && let Some(g) = rte.gateway_copy()
-                        && let Some(g) = hal::pod::at::<SockaddrIn6>(g.bytes(), 0)
+                        && let Some(g) =
+                            rte.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn6>(g, 0)))
                     {
                         dst = g;
                     }
