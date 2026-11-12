@@ -3251,12 +3251,12 @@ userland:
 # arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy, clang). A directory already unpacked is left
 # as it is. Needs `gh` (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
-devtools_llvm := "llvm-23.1.4+emibsd.4"
-devtools_rust := "rust-1.99.1+emibsd.2"
-devtools_llvm_sha256_arm64 := "75b1398851b340ad0c1c5555ae91b0764359ad67f6987e93c0f7c2f6346bd18b"
-devtools_rust_sha256_arm64 := "7d228ab5266edf8894d923dfe36646cf2bf9c9d4007a680acb8569677bde019e"
-devtools_llvm_sha256_amd64 := "2b9b2f4c708b419ffa09c0a5d904f69bc22480b2bfafb501b70f200b3728d3f0"
-devtools_rust_sha256_amd64 := "acba18cbf55bbc785a99683bcdbc218832c199d8db5424275d6d0a63e24b3e0b"
+devtools_llvm := "llvm-23.1.4+emibsd.6"
+devtools_rust := "rust-1.99.1+emibsd.5"
+devtools_llvm_sha256_arm64 := "921c7992bb47f63adab07a7ee0fa1bca38e415e540ec7bf623d0b9e030452cf8"
+devtools_rust_sha256_arm64 := "9fcf8ba87be979d0aefcc790d604ca3ab7e097893850d2c566c11c7cc7c720c7"
+devtools_llvm_sha256_amd64 := "6f18473f2a960a8ba6df8784d4b5d1595f32c715218bee993d6940338d6feb14"
+devtools_rust_sha256_amd64 := "6f22d3a4fade27779fb27a858e801250adbc0e02f6183652ce5ba890fc9c8fe9"
 
 # A bare cargo with DevTools' toolchain (its PATH, RUSTC and the kernel's linker as every
 # recipe has them): `just cargo check -p bsd --tests`, `just cargo xtask lz check`.
@@ -3354,15 +3354,15 @@ devtools_steps := "--reject 'panic:' " + \
 # caught through iostreams (c++), archives an object (ar rc, ar t) and compiles and runs a
 # Rust hello (rustc). arm64 only (decision 44). Not in `smokes`: it needs `just comp` and
 # DevTools' tarballs in `devtools_native_dist` (pinned to the released ones, tags
-# llvm-23.1.4+emibsd.5 and rust-1.99.1+emibsd.3; the proof of 2026-11-11 ran on their
-# snapshots, identical but for MANIFEST's tag line). 2 GiB of guest memory for rustc, and ten
+# llvm-23.1.4+emibsd.6 and rust-1.99.1+emibsd.5, which the proof of 2026-11-12 ran on; that
+# of 2026-11-11 ran on snapshots of +emibsd.5 and +emibsd.3). 2 GiB of guest memory for rustc, and ten
 # times the usual time limits: the compilers run under TCG. Every console line stays under
 # arm64's 128-byte limit.
 devtools_native_dist := env_var_or_default("DEVTOOLS_DIST", env_var("HOME") + "/devel/emibsd/DevTools/dist")
-devtools_native_llvm := "llvm-23.1.4+emibsd.5-aarch64-emibsd-emibsd8.0-arm64.tar.zst"
-devtools_native_llvm_sha256 := "ceca733ac6e05444b1effcfde02862532bc8ca6aa47f7c83127cd6f82c8957ab"
-devtools_native_rust := "rust-1.99.1+emibsd.3-aarch64-emibsd-emibsd-arm64.tar.zst"
-devtools_native_rust_sha256 := "5fa7f5b458a0102962928dddef6d31156256d2478b04dbd8bd71c874d64427da"
+devtools_native_llvm := "llvm-23.1.4+emibsd.6-aarch64-emibsd-emibsd8.0-arm64.tar.zst"
+devtools_native_llvm_sha256 := "a778ef6d3dcf281e9a9d71e1565de9315beb7814e1fcf9a1e42c502dc2986aab"
+devtools_native_rust := "rust-1.99.1+emibsd.5-aarch64-emibsd-emibsd-arm64.tar.zst"
+devtools_native_rust_sha256 := "2b7ec9abfd2bfffbb14f7e1d510699899f411d124192882f429a4ea69effc0cc"
 
 smoke-devtools-native: (build-arm64 "--features qemu")
     @test {{ramdisks}} || \

@@ -175,13 +175,16 @@ uses ports 8443 (trusted), 8444 (echo) and 8445 (untrusted); they must be free.
 ## DevTools toolchain (T3)
 
 `just toolchain` installs the EmiBSD toolchains that DevTools releases
-(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.4` (since
+(github.com/EmiBSD/DevTools; the user's decision of 2026-10-31): `llvm-23.1.4+emibsd.6` (since
 2026-11-07 its lld also maps `.emibsd.*` sections to the `PT_OPENBSD_*` segments; since
 2026-11-08 every link through `<triple>-clang` passes `--undefined-version` and
 `--ignore-function-address-equality`, as the system's libraries are linked; since
 +emibsd.4 the target's libc++.so.13.0 and libc++abi.so.10.0 carry the system's sonames and the
-unwinder lives inside libc++abi, with no libunwind) and `rust-1.99.1+emibsd.2` (its std links
-c++abi alone for the unwinder; it moves with the LLVM), pinned by tag and sha256 in the
+unwinder lives inside libc++abi, with no libunwind) and `rust-1.99.1+emibsd.5` (its std links
+c++abi alone for the unwinder; since +emibsd.4 `std::env::current_exe` no longer panics on
+EmiBSD, which cargo needs to run there; since +emibsd.5 `--version` names the patch level and
+`rust-analyzer` is in `bin/`; it moves with the LLVM),
+pinned by tag and sha256 in the
 justfile, fetched with `gh release download` (never "latest"), checked before unpacking, and unpacked unmodified into
 `~/devel/emibsd/toolchains` (`EMIBSD_TOOLCHAINS` overrides it). Since DevTools' D-0008
 (2026-11-02) each release has one tarball per target architecture, `-arm64` and `-amd64`, and
