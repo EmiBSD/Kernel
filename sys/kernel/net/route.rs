@@ -2374,34 +2374,64 @@ fn rttimer_free(r: PoolArc<Rttimer>) {
     drop(r);
 }
 
-/// `rt_timer_queue_flush(rtq)`: every timer of queue `rtq` taken off and its work done now.
-/// Under the net lock.
+/// `rt_timer_queue_flush(rtq)`: every timer of queue `rtq` taken off its route and its work
+/// done now. Under the net lock, as the C's: the timers are first moved, under the timers'
+/// mutex, off their routes onto a list of this call (through their route entries, the C's
+/// local `TAILQ`), each timeout deleted; a timer whose timeout already fired stays on its
+/// queue for `rt_timer_timer`, which the caller's net lock holds back until this call is done
+/// and which then finds it without its route (its work done here). Then each timer's work is
+/// done with the mutex let go, and the ones this call took off their queue are freed.
 pub fn rt_timer_queue_flush(rtq: &'static RttimerQueue, net: &NetHeld<'_>) {
-    loop {
-        let (r, rt) = {
-            let mut g = RTTIMER_MTX.lock();
-            let Some(e) = rtq.rtq_head.first(&g) else {
-                break;
-            };
-            let h = timer_arc(e);
+    let local: PinList<RttLink> = PinList::new();
+    {
+        let mut g = RTTIMER_MTX.lock();
+        let mut cur = rtq.rtq_head.first(&g).map(timer_arc);
+        while let Some(h) = cur.take() {
+            cur = rtq.rtq_head.next(&g, &h).map(timer_arc);
             if let Some(rt) = h.rtt_rt.get(&g).clone() {
                 rt.rt_timer.remove(&mut g, &h);
             }
-            rtq.rtq_head.remove(&mut g, &h);
-            kassert!(rtq.rtq_count.load(Ordering::Relaxed) > 0);
-            rtq.rtq_count.fetch_sub(1, Ordering::Relaxed);
-            let (parked, rt) = rttimer_unlinked(&h, &mut g);
-            drop(parked);
-            (h, rt)
+            if h.rtt_timeout.del() {
+                // Pending: off its queue now (a fired one is rt_timer_timer's to take off).
+                rtq.rtq_head.remove(&mut g, &h);
+                kassert!(rtq.rtq_count.load(Ordering::Relaxed) > 0);
+                rtq.rtq_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            local.insert_tail(&mut g, h.as_pin());
+        }
+    }
+
+    loop {
+        let (h, rt, parked) = {
+            let mut g = RTTIMER_MTX.lock();
+            let Some(e) = local.first(&g) else {
+                break;
+            };
+            let h = timer_arc(e);
+            local.remove(&mut g, &h);
+            let rt = h.rtt_rt.get_mut(&mut g).take();
+            if let Some(rt) = &rt {
+                rt.rt_ntimers.fetch_sub(1, Ordering::Relaxed);
+            }
+            // Off its queue: this call's to free (the membership's reference taken back).
+            let parked = if h.rtt_next.is_linked() {
+                None
+            } else {
+                match PoolArc::adopt(&*h) {
+                    Some(p) => Some(p),
+                    None => kpanic(format_args!("rttimer: no reference parked")),
+                }
+            };
+            (h, rt, parked)
         };
-        // The timeout may be pending: `timeout_del` before the item goes (the C's pool_put
-        // of a timer whose timeout it never deletes is the C's own race, not kept).
-        let _ = r.rtt_timeout.del_barrier();
         if let Some(rt) = &rt {
-            rttimer_callout(&r, rt, net);
+            rttimer_callout(&h, rt, net);
         }
         drop(rt);
-        rttimer_free(r);
+        drop(h);
+        if let Some(p) = parked {
+            rttimer_free(p);
+        }
     }
 }
 
@@ -3606,6 +3636,48 @@ pub(crate) mod tests {
         assert_eq!(rt_timer_queue_count(&TIMEOUTQ), 0);
         assert_eq!(PoolArc::count(&rt), base);
         assert_eq!(rt_timer_get_expire(&rt), 0);
+        rt.rt_flags.clear(RTF_UP);
+    }
+
+    static FIREDQ: RttimerQueue = RttimerQueue::new();
+
+    #[test]
+    fn a_flush_leaves_a_fired_timer_to_its_timeout() {
+        let _g = testroutes_setup();
+        rt_timer_queue_init(&FIREDQ, 30, Some(called));
+        let rt = entry(&sin([10, 0, 9, 8]), 32, None, RTF_UP | RTF_HOST, 8);
+        let base = PoolArc::count(&rt);
+        rt_timer_add(&rt, &FIREDQ, 0).expect("a timer");
+        let timers = RTTIMER_POOL.nout();
+        // The wheel takes the timeout off to run it: a fired timer whose rt_timer_timer is
+        // still to come (held back by the flush's net lock).
+        let t = {
+            let g = RTTIMER_MTX.lock();
+            timer_arc(FIREDQ.rtq_head.first(&g).expect("the timer"))
+        };
+        assert!(t.rtt_timeout.del(), "it was pending");
+
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let before = CALLED.load(Ordering::Relaxed);
+        rt_timer_queue_flush(&FIREDQ, &net);
+        assert_eq!(
+            CALLED.load(Ordering::Relaxed),
+            before + 1,
+            "its work done by the flush"
+        );
+        assert_eq!(rt_timer_queue_count(&FIREDQ), 1, "left on its queue");
+        assert_eq!(PoolArc::count(&rt), base, "its route given back");
+        assert_eq!(rt_timer_get_expire(&rt), 0, "off its route");
+        drop(net);
+        drop(w);
+
+        // Its timeout runs: off its queue, no second callout, the timer freed.
+        rt_timer_timer(&PoolArc::erase(PoolArc::clone(&t)));
+        drop(t);
+        assert_eq!(CALLED.load(Ordering::Relaxed), before + 1);
+        assert_eq!(rt_timer_queue_count(&FIREDQ), 0);
+        assert_eq!(RTTIMER_POOL.nout(), timers - 1, "freed");
         rt.rt_flags.clear(RTF_UP);
     }
 
