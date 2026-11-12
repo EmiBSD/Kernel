@@ -87,6 +87,11 @@
 //!   chain, `hal::pinlist`, while the vnode's typed slot holds it): [`MBox::as_pin`]'s
 //!   argument for a block the last of many handles drops in place, one `unsafe`. No `MArc`
 //!   API moves the value or lends it mutably (no `DerefMut`, `get_mut` or `into_inner`).
+//! - N6.3c: `MArc` is the second counted handle of `hal::smr`'s words
+//!   ([`crate::smr::CountedArc`]): a reference given up as the value's address and taken
+//!   back, so a `malloc(9)` object the C publishes to lock-free readers (bpf's descriptor,
+//!   tap and filter program, `M_DEVBUF`) is published and retired as a pool item is, with no
+//!   pool row. One `unsafe` (the handle rebuilt from the address, `from_raw`'s contract).
 
 use core::any::TypeId;
 use core::marker::PhantomData;
@@ -99,6 +104,8 @@ use core::sync::atomic::{AtomicUsize, Ordering, fence};
 use crate::assert::hal_panic;
 use crate::bridges;
 use crate::pool::{AnyArc, ErasedKind, ErasedVt, MAX_REFS, REFS_MASK};
+use crate::smr::sealed::CountedSealed;
+use crate::smr::{CountedArc, Seal, SmrCounted};
 use crate::trust::check_block;
 
 /// `M_WAITOK`: `malloc` may sleep, and then never fails.
@@ -287,9 +294,11 @@ struct MInner<T> {
 /// Invariant: `inner` is the block of an `MBox<MInner<T>>` that [`MArc::new`] made and gave up
 /// ([`MBox::into_raw`]): an initialised `MInner<T>` in a block of the registered [`Malloc`] of
 /// `size_of::<MInner<T>>()` bytes counted under `inner.ty`, whose `refs` counts (in its low
-/// half) the live handles to it, this one included, and the [`AnyArc`]s erased from them; the
-/// value is dropped and the block freed only when that count reaches 0, so the block outlives
-/// every handle. Only shared references to the block are made while handles live. The value
+/// half) the live handles to it, this one included, the [`AnyArc`]s erased from them and the
+/// references `hal::smr`'s words hold ([`CountedArc::into_raw`]'s, each taken back once by
+/// [`CountedArc::from_raw`]); the value is dropped and the block freed only when that count
+/// reaches 0, so the block outlives every handle. Only shared references to the block are
+/// made while handles live. The value
 /// never leaves its block and is never lent mutably while handles live (`as_pin`); a move-out
 /// or `&mut` API would need `T: Unpin`.
 pub struct MArc<T: Send + Sync + 'static> {
@@ -409,6 +418,43 @@ impl<T: Send + Sync + 'static> Drop for MArc<T> {
         // `MBox::into_raw`'s taker must.
         unsafe { core::ptr::drop_in_place(self.inner.as_ptr()) };
         mem.free(self.inner.cast(), ty, size_of::<MInner<T>>());
+    }
+}
+
+impl<T: SmrCounted> CountedSealed for MArc<T> {}
+
+impl<T: SmrCounted> CountedArc<T> for MArc<T> {
+    /// Gives the handle up for its value's address, the reference it counts kept (an SMR
+    /// word's, [`crate::smr::SmrArcWord`]); [`CountedArc::from_raw`] takes it back. The
+    /// pointer is the block's moved to the value, so it carries the whole block's provenance
+    /// and the step back to the count is in bounds.
+    fn into_raw(this: Self, _seal: Seal) -> NonNull<T> {
+        let this = ManuallyDrop::new(this);
+        let at = this
+            .inner
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_add(offset_of!(MInner<T>, value))
+            .cast::<T>();
+        match NonNull::new(at) {
+            Some(p) => p,
+            None => hal_panic(format_args!("MArc::into_raw: a null value")),
+        }
+    }
+
+    unsafe fn from_raw(value: NonNull<T>, _seal: Seal) -> Self {
+        let at = value
+            .as_ptr()
+            .cast::<u8>()
+            .wrapping_sub(offset_of!(MInner<T>, value))
+            .cast::<MInner<T>>();
+        match NonNull::new(at) {
+            Some(inner) => MArc {
+                inner,
+                _owns: PhantomData,
+            },
+            None => hal_panic(format_args!("MArc::from_raw: a null block")),
+        }
     }
 }
 
