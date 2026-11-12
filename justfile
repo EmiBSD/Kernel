@@ -3356,7 +3356,11 @@ devtools_steps := "--reject 'panic:' " + \
 # `native`), mounts it on /mnt, gives it /dev/null, /dev/zero and /dev/urandom, and in a
 # chroot(8) into it compiles and runs a C hello (cc), a C++ one with an exception thrown and
 # caught through iostreams (c++), archives an object (ar rc, ar t) and compiles and runs a
-# Rust hello (rustc). arm64 only (decision 44). Not in `smokes`: it needs `just comp` and
+# Rust hello (rustc); then the rest of the Rust toolchain on a crate `cargo new` makes there
+# (DevTools' request of 2026-11-11): `cargo build --offline` and the program run, `cargo
+# clippy`, `cargo fmt -- --check` and `rustdoc` (its index.html must exist). cargo loads the
+# base's libssl.so and libcrypto.so (userland/shlib.rs). arm64 only (decision 44). Not in
+# `smokes`: it needs `just comp` and
 # DevTools' tarballs in `devtools_native_dist` (pinned to the released ones, tags
 # llvm-23.1.4+emibsd.6 and rust-1.99.1+emibsd.5, which the proof of 2026-11-12 ran on; that
 # of 2026-11-11 ran on snapshots of +emibsd.5 and +emibsd.3). 2 GiB of guest memory for rustc, and ten
@@ -3411,9 +3415,20 @@ native_script := disk_login + " --reject 'panic:' --reject 'clang version 22.1.6
     "--send-after 'ar-t-h.o' --send 'print -r \"use std::io::Write;fn main(){std::io::stdout().write_all(&[114,45,111,107,10]).unwrap();}\" >/mnt/tmp/r.rs\\n' " + \
     "--send-after '# ' --send '/usr/sbin/chroot /mnt /usr/bin/rustc -o /tmp/r /tmp/r.rs; echo rs-rc-$?\\n' " + \
     "--send-after 'rs-rc-0' --send '/usr/sbin/chroot /mnt /tmp/r\\n' " + \
+    "--send-after 'r-ok' --send 'export HOME=/tmp CARGO_HOME=/tmp/cg; M=--manifest-path=/tmp/c/Cargo.toml; echo nat-env-$((40+2))\\n' " + \
+    "--send-after 'nat-env-42' --send '/usr/sbin/chroot /mnt /usr/bin/cargo --version; echo cgv-rc-$?\\n' " + \
+    "--send-after 'cgv-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo new --offline --vcs none /tmp/c; echo cgn-rc-$?\\n' " + \
+    "--send-after 'cgn-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo build --offline $M; echo cgb-rc-$?\\n' " + \
+    "--send-after 'cgb-rc-0' --send '/usr/sbin/chroot /mnt /tmp/c/target/debug/c; echo cgr-rc-$?\\n' " + \
+    "--send-after 'cgr-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo clippy --offline $M; echo clp-rc-$?\\n' " + \
+    "--send-after 'clp-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/cargo fmt $M -- --check; echo fmt-rc-$?\\n' " + \
+    "--send-after 'fmt-rc-0' --send '/usr/sbin/chroot /mnt /usr/bin/rustdoc -o /tmp/doc /tmp/c/src/main.rs; echo doc-rc-$?\\n' " + \
+    "--send-after 'doc-rc-0' --send 'test -f /mnt/tmp/doc/main/index.html && echo doc-html-$((40+2))\\n' " + \
     "--expect 'nat-mnt-42' --expect 'nat-dev-42' --expect 'clang version 23.1.4' --expect 'ccv-rc-0' " + \
     "--expect 'rustc 1.99.1' --expect 'rsv-rc-0' --expect 'cc-rc-0' --expect 'h-ok' --expect 'cxx-rc-0' --expect 'x-ok' " + \
-    "--expect 'obj-rc-0' --expect 'ar-rc-0' --expect 'ar-t-h.o' --expect 'rs-rc-0' --expect 'r-ok'"
+    "--expect 'obj-rc-0' --expect 'ar-rc-0' --expect 'ar-t-h.o' --expect 'rs-rc-0' --expect 'r-ok' " + \
+    "--expect 'nat-env-42' --expect 'cargo 1.99.1' --expect 'cgv-rc-0' --expect 'cgn-rc-0' --expect 'cgb-rc-0' " + \
+    "--expect 'Hello, world!' --expect 'cgr-rc-0' --expect 'clp-rc-0' --expect 'fmt-rc-0' --expect 'doc-rc-0' --expect 'doc-html-42'"
 
 # M12+: the same scenarios on EmiBSD and on a real OpenBSD VM, compared step by step
 # (`cargo xtask diff-openbsd`, tools/xtask/src/diffopenbsd.rs; the scenarios and the expected
