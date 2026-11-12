@@ -174,17 +174,25 @@ def parse_lineage(root: Path) -> tuple[dict, list[dict], list[dict]]:
 
 # --- unsafe-report ---------------------------------------------------------------
 
-CARGO_DIRS = ("/opt/homebrew/opt/rustup/bin", "/usr/local/opt/rustup/bin",
-              str(Path.home() / ".cargo" / "bin"))
+def devtools_cargo(root: Path) -> str | None:
+    """DevTools' cargo, from the directory `just rust-bin` prints (decision 49: no rustup)."""
+    try:
+        r = subprocess.run(["just", "rust-bin"], cwd=root, capture_output=True, text=True,
+                           timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    cargo = Path(r.stdout.strip()) / "cargo"
+    return str(cargo) if r.returncode == 0 and r.stdout.strip() and cargo.is_file() else None
 
 
 def unsafe_json(root: Path) -> tuple[dict | None, str]:
     """`cargo xtask unsafe-report --json` at the root: (the document, "") or (None, why not)."""
-    cargo = shutil.which("cargo") or shutil.which("cargo", path=os.pathsep.join(CARGO_DIRS))
+    cargo = devtools_cargo(root)
     if not cargo:
-        return None, "cargo not found (PATH, rustup's bin, ~/.cargo/bin)"
+        return None, "DevTools' cargo not found (`just rust-bin`; `just toolchain` installs it)"
     env = dict(os.environ)
     env["PATH"] = os.pathsep.join([str(Path(cargo).parent), env.get("PATH", "")])
+    env["RUSTC"] = str(Path(cargo).parent / "rustc")
     try:
         r = subprocess.run([cargo, "xtask", "unsafe-report", "--json"], cwd=root, env=env,
                            capture_output=True, text=True, timeout=900)

@@ -222,14 +222,16 @@ Stable Rust, pinned in `rust-toolchain.toml`.
 
 Since 2026-10-31 the pin is 1.99.1, the version DevTools (github.com/EmiBSD/DevTools) builds:
 `just toolchain` installs its releases by tag and sha256 into `~/devel/emibsd/toolchains`
-(`docs/SETUP.md`), the Rust one as rustup's toolchain `emibsd`. Its rustc ships no `rust-lld`
+(`docs/SETUP.md`), and since decision 49 (2026-11-11) the kernel is built with them, run
+straight from that directory (no rustup). Its rustc ships no `rust-lld`
 (the linker is the LLVM release's `ld.lld`) and no `llvm-tools` (`EMIBSD_LLVM_BIN` names its
-`llvm-objcopy`). Until the switch commit names `emibsd`, the kernel builds with rustup's 1.99.1.
+`llvm-objcopy`).
 `just smoke-devtools` is DevTools' T1/T2 proof: C, C++ and Rust hellos linked by its clang and
 rustc against `target/userland/<arch>/sysroot`, run from the ramdisk under the kernel.
 
 - `x86_64-unknown-none`: kernel code model, no SSE/AVX, no red zone.
-- `aarch64-unknown-none-softfloat`: no NEON/FP. The hardfloat variant lets the compiler use `q`
+- `aarch64-emibsd-none-softfloat` (DevTools' name for upstream's
+  `aarch64-unknown-none-softfloat`, decision 49): no NEON/FP. The hardfloat variant lets the compiler use `q`
   registers in `memcpy`; a kernel that does not save FP state on traps must not touch them. This is
   the Rust equivalent of OpenBSD's `-mgeneral-regs-only`.
 
@@ -985,7 +987,7 @@ output `target/efiboot/arm64/BOOTAA64.EFI`, which `installboot` copies from `/us
 - `sys/arch/arm64/stand/efiboot` (package `efiboot-arm64`, binary `bootaa64`): every file of
   OpenBSD's directory, on the same three crates and registration tables as amd64's.
   OpenBSD's arm64 Makefile already makes the PE image with its `.peheader` in `start.S`
-  and `objcopy -O binary`, which is what is done here, for `aarch64-unknown-none-softfloat`.
+  and `objcopy -O binary`, which is what is done here, for `aarch64-emibsd-none-softfloat`.
   `dt_blob.S` (dtc's output of `acpi.dts`, the template efiacpi fills from the ACPI tables
   when the firmware has no device tree) is built by a `const fn` in `dt_blob.rs`; a
   reference-backed test checks its bytes against `dt_blob.S`. efipxe uses libsa's network
@@ -1216,7 +1218,7 @@ The same arm64 kernel ELF boots from Limine and from arm64's efiboot.
 - Cargo features and `xtask` instead of `config(8)`, Makefiles and `newvers.sh`; the
   autoconfiguration tables `config(8)` generates are written by hand ("Autoconfiguration",
   below).
-- `aarch64-unknown-none-softfloat` target; Intel syntax for amd64 inline assembly.
+- `aarch64-emibsd-none-softfloat` target; Intel syntax for amd64 inline assembly.
 - `Result<T, Errno>` instead of `int` returns; RAII guards for `spl`/mutex.
 - A host test double (`arch/host`), which OpenBSD does not have. It has no MMU: its
   `Pmap::PMAP_NOMMU` makes `km_alloc` and `kmeminit` serve everything through the direct map

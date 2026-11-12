@@ -9,7 +9,18 @@ export SOURCE_DATE_EPOCH := `git log -1 --format=%ct 2>/dev/null || echo 0`
 export EMIBSD_BUILD_HOST := `hostname -s 2>/dev/null || echo localhost`
 
 amd64 := "x86_64-unknown-none"
-arm64 := "aarch64-unknown-none-softfloat"
+arm64 := "aarch64-emibsd-none-softfloat"
+# DevTools' Rust for the Mac (the pinned release `devtools_rust`, unpacked by `just toolchain`):
+# every recipe runs its cargo, rustc, clippy and rustfmt straight from `toolchain_dir`, first
+# on PATH and named by RUSTC. rustup and its proxies are not used (decision 49, the user,
+# 2026-11-11); without the directory a recipe fails, it never falls back to another compiler.
+devtools_rust_bin_arm64 := toolchain_dir + "/" + devtools_rust + "-aarch64-apple-darwin-arm64/bin"
+export PATH := devtools_rust_bin_arm64 + ":" + env_var_or_default("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
+export RUSTC := devtools_rust_bin_arm64 + "/rustc"
+# DevTools' LLVM for arm64 (the pinned release `devtools_llvm`, unpacked by `just toolchain`):
+# the kernel's linker (DevTools' Rust has no rust-lld) and efiboot's llvm-objcopy.
+devtools_llvm_bin_arm64 := toolchain_dir + "/" + devtools_llvm + "-aarch64-apple-darwin-arm64/bin"
+export CARGO_TARGET_AARCH64_EMIBSD_NONE_SOFTFLOAT_LINKER := devtools_llvm_bin_arm64 + "/ld.lld"
 
 # Decision 44 (2026-10-18): from N4 to N9 only arm64 is built, booted and measured. `archs`
 # (`EMIBSD_ARCHS`, a comma-separated list of `amd64` and `arm64`, `arm64` when unset or empty)
@@ -124,7 +135,7 @@ efiboot-amd64:
 # target/efiboot/arm64/BOOTAA64.EFI, its PE header OpenBSD's own (`.peheader`, start.S).
 efiboot-arm64:
     RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-arm64 --target {{arm64}} --target-dir target/efiboot
-    {{xtask}} efiboot --arch arm64 --elf target/efiboot/{{arm64}}/debug/bootaa64
+    EMIBSD_LLVM_BIN={{devtools_llvm_bin_arm64}} {{xtask}} efiboot --arch arm64 --elf target/efiboot/{{arm64}}/debug/bootaa64
 
 # --- boot images and QEMU ---------------------------------------------------
 
@@ -3235,10 +3246,10 @@ userland:
 # one tarball per target architecture since DevTools' D-0008 (2026-11-02): fetched by tag, never
 # "latest", checked against the pinned sha256 before unpacking, and used in place, unmodified,
 # from `toolchain_dir` (outside every repository, so `cargo clean` never removes it). The arm64
-# Rust is linked as rustup's toolchain `emibsd`, the amd64 one as `emibsd-amd64` (unused until
-# N10, decision 44); each LLVM's bin/ is that arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy,
-# clang). A directory already unpacked is left as it is. Needs `gh` (logged in) and `zstd`
-# (docs/SETUP.md, "DevTools toolchain").
+# Rust's bin/ is what every recipe runs (`devtools_rust_bin_arm64`, top of this file; no rustup
+# link since decision 49), the amd64 one waits for N10 (decision 44); each LLVM's bin/ is that
+# arch's `EMIBSD_LLVM_BIN` (ld.lld, llvm-objcopy, clang). A directory already unpacked is left
+# as it is. Needs `gh` (logged in) and `zstd` (docs/SETUP.md, "DevTools toolchain").
 toolchain_dir := env_var_or_default("EMIBSD_TOOLCHAINS", env_var("HOME") + "/devel/emibsd/toolchains")
 devtools_llvm := "llvm-23.1.4+emibsd.4"
 devtools_rust := "rust-1.99.1+emibsd.2"
@@ -3246,6 +3257,16 @@ devtools_llvm_sha256_arm64 := "75b1398851b340ad0c1c5555ae91b0764359ad67f6987e93c
 devtools_rust_sha256_arm64 := "7d228ab5266edf8894d923dfe36646cf2bf9c9d4007a680acb8569677bde019e"
 devtools_llvm_sha256_amd64 := "2b9b2f4c708b419ffa09c0a5d904f69bc22480b2bfafb501b70f200b3728d3f0"
 devtools_rust_sha256_amd64 := "acba18cbf55bbc785a99683bcdbc218832c199d8db5424275d6d0a63e24b3e0b"
+
+# A bare cargo with DevTools' toolchain (its PATH, RUSTC and the kernel's linker as every
+# recipe has them): `just cargo check -p bsd --tests`, `just cargo xtask lz check`.
+cargo *args:
+    cargo {{args}}
+
+# The directory of DevTools' cargo and rustc, for a script that needs the path itself
+# (`.claude/hooks/pre-commit-check.sh`, `/progress`).
+rust-bin:
+    @echo {{devtools_rust_bin_arm64}}
 
 toolchain:
     #!/bin/zsh
@@ -3273,10 +3294,9 @@ toolchain:
     fetch "{{devtools_rust}}" arm64 "{{devtools_rust_sha256_arm64}}"
     fetch "{{devtools_llvm}}" amd64 "{{devtools_llvm_sha256_amd64}}"
     fetch "{{devtools_rust}}" amd64 "{{devtools_rust_sha256_amd64}}"
-    command -v rustup >/dev/null || PATH=/opt/homebrew/opt/rustup/bin:$PATH
-    for arch name in arm64 emibsd amd64 emibsd-amd64; do
-        rustup toolchain link "$name" "$dir/{{devtools_rust}}-aarch64-apple-darwin-$arch"
-        echo "toolchain: rustup's $name is $(rustup run "$name" rustc --version)"
+    for arch in arm64 amd64; do
+        rust="$dir/{{devtools_rust}}-aarch64-apple-darwin-$arch/bin"
+        echo "toolchain: $arch rustc is $("$rust/rustc" --version) in $rust"
         llvm="$dir/{{devtools_llvm}}-aarch64-apple-darwin-$arch/bin"
         echo "toolchain: $arch EMIBSD_LLVM_BIN=$llvm ($("$llvm/ld.lld" --version))"
     done
@@ -3333,14 +3353,16 @@ devtools_steps := "--reject 'panic:' " + \
 # chroot(8) into it compiles and runs a C hello (cc), a C++ one with an exception thrown and
 # caught through iostreams (c++), archives an object (ar rc, ar t) and compiles and runs a
 # Rust hello (rustc). arm64 only (decision 44). Not in `smokes`: it needs `just comp` and
-# DevTools' tarballs (local snapshots in `devtools_native_dist` before their release, which
-# this proof gates). 2 GiB of guest memory for rustc, and ten times the usual time limits:
-# the compilers run under TCG. Every console line stays under arm64's 128-byte limit.
+# DevTools' tarballs in `devtools_native_dist` (pinned to the released ones, tags
+# llvm-23.1.4+emibsd.5 and rust-1.99.1+emibsd.3; the proof of 2026-11-11 ran on their
+# snapshots, identical but for MANIFEST's tag line). 2 GiB of guest memory for rustc, and ten
+# times the usual time limits: the compilers run under TCG. Every console line stays under
+# arm64's 128-byte limit.
 devtools_native_dist := env_var_or_default("DEVTOOLS_DIST", env_var("HOME") + "/devel/emibsd/DevTools/dist")
 devtools_native_llvm := "llvm-23.1.4+emibsd.5-aarch64-emibsd-emibsd8.0-arm64.tar.zst"
-devtools_native_llvm_sha256 := "230aaf433783a3263347538759217ed08ac2b5e8b985deca809cf1d8b606ef95"
+devtools_native_llvm_sha256 := "ceca733ac6e05444b1effcfde02862532bc8ca6aa47f7c83127cd6f82c8957ab"
 devtools_native_rust := "rust-1.99.1+emibsd.3-aarch64-emibsd-emibsd-arm64.tar.zst"
-devtools_native_rust_sha256 := "18a12f38bd50960c676b275e528121932f1d06dd99acf4636adf637311a12c3f"
+devtools_native_rust_sha256 := "5fa7f5b458a0102962928dddef6d31156256d2478b04dbd8bd71c874d64427da"
 
 smoke-devtools-native: (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
@@ -3359,8 +3381,9 @@ smoke-devtools-native: (build-arm64 "--features qemu")
 # `$((40+2))`, `$x`), never typed, so an echoed command line cannot satisfy an expectation.
 # The first two steps print the chroot's `cc --version` and `rustc --version`: DevTools'
 # clang 23.1.4 and Rust 1.99.1, never the comp set's OpenBSD clang 22.1.6 (rejected).
-# A step whose status is not 0 ends the run at once (`-rc-<digit>` rejected), instead of
-# waiting out the time limit for a marker that cannot come.
+# A step whose status is not 0 fails the run (`-rc-<digit>` rejected). xtask judges the
+# rejected lines when the run ends, so such a run still waits out its time limit for the
+# markers that cannot come.
 native_script := disk_login + " --reject 'panic:' --reject 'clang version 22.1.6' " + \
     "--reject '-rc-1' --reject '-rc-2' --reject '-rc-3' --reject '-rc-4' --reject '-rc-5' " + \
     "--reject '-rc-6' --reject '-rc-7' --reject '-rc-8' --reject '-rc-9' " + \

@@ -40,7 +40,11 @@ Everything in this repository (code, comments, docs, commits) is in English.
   are superseded.
 - No `std` outside `sys/arch/host/`, `sys/hal/arch/host/`, `#[cfg(test)]` code, the host benchmark
   targets under `sys/*/benches/` (`harness = false`, never linked into a kernel image) and `tools/xtask/`.
-- Stable toolchain, pinned in `rust-toolchain.toml`. No nightly features, ever.
+- The toolchain is EmiBSD's own, DevTools' build of stable Rust and LLVM (decision 49, the user,
+  2026-11-11): the justfile pins the releases (`devtools_rust`, `devtools_llvm`; `just
+  toolchain`) and runs their `cargo` and `rustc` straight from `~/devel/emibsd/toolchains`.
+  Never rustup, its proxies or an official toolchain; a bare `cargo` is
+  `just cargo <args>`. No nightly features, ever.
 - A new crate dependency needs the user's OK, a row in `docs/ARCHITECTURE.md` ("Dependencies") and
   the allowlist in `.claude/rules/rust-kernel.md`.
 
@@ -95,7 +99,7 @@ Two provenance rules:
 | `just lz-sync` | fetch LZ, list the commits to triage with the items they touch (`docs/SYNC.md`) |
 | `just diff-openbsd` | the oracle: the same scenarios on EmiBSD and on a real OpenBSD, compared step by step |
 
-Never call `qemu-system-*`, `cargo build --target ...` or `rustup` by hand; use `just`.
+Never call `qemu-system-*` or `cargo build --target ...` by hand; use `just`. `rustup` is not used at all.
 Tool installation lives in `docs/SETUP.md` and needs the user's explicit go-ahead.
 
 ## Re-engineering one module (the loop)

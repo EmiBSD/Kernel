@@ -1346,3 +1346,20 @@ recommended, under the user's standing order):
     difference from OpenBSD" (OpenBSD's kernel refuses an "EmiBSD" note). `exec_elf`
     (`sys/kern/exec_elf.rs`, still `bsd`) keeps `status = "adapted"`: its one change of its
     own is this decision's, written in its `lineage.toml` notes, until exec moves (N8.4).
+49. **The kernel is built with EmiBSD's own toolchain** (the user, 2026-11-11: "deja de usar
+    el rust de brew"). Step 3 of the DevTools adoption the user approved on 2026-10-31
+    (`just toolchain`, the hello smoke, then the switch) had never been made: the kernel was
+    still built with rustup's official 1.99.1 and its `rust-lld`. Now the justfile runs
+    DevTools' pinned Rust (`devtools_rust`) straight from `~/devel/emibsd/toolchains`: its
+    `bin/` first on `PATH`, its `rustc` named by `RUSTC`, and `just cargo <args>` for a bare
+    cargo. rustup and its proxies are not used at all (the user, the same day: "no uses las
+    herramientas rust de brew, usa toolchain"); `rust-toolchain.toml` stays only as a
+    tripwire that names `emibsd`, so a proxy run by mistake never reaches an official
+    toolchain. arm64's target is `aarch64-emibsd-none-softfloat` (DevTools' D-0008 name for upstream's
+    `aarch64-unknown-none-softfloat`: the same target, vendor `emibsd`); the linker and
+    efiboot's `llvm-objcopy` are DevTools' LLVM's (`devtools_llvm`). The compiler is the same upstream commit (58cf8f9c3, 1.99.1), so no
+    source line changed. amd64 keeps `x86_64-unknown-none` in its frozen recipes until N10
+    (decision 44), which moves it to `emibsd-amd64` and `x86_64-emibsd-none-softfloat`. The
+    userland's compiler (Apple clang with LLD 17, the user's OK of 2026-10-03) is a separate
+    switch, not made here. Open: DevTools' Rust carries no `rust-analyzer`, so the LSP
+    plugin has no server until one ships.

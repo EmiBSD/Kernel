@@ -65,7 +65,7 @@ impl Arch {
     pub fn target(self) -> &'static str {
         match self {
             Arch::Amd64 => "x86_64-unknown-none",
-            Arch::Arm64 => "aarch64-unknown-none-softfloat",
+            Arch::Arm64 => "aarch64-emibsd-none-softfloat",
         }
     }
 

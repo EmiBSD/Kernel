@@ -34,7 +34,9 @@ paths:
 - `arch/host/` is a test double: it prints to stdout, has no-op SPL; its fake pmap is `hal`'s host
   backend since N3.1 (`sys/hal/arch/host/pmap.rs`, a `BTreeMap`), the same kind of double.
   It must not grow logic. If a test needs behaviour, the behaviour belongs in generic code.
-- Targets are `x86_64-unknown-none` and `aarch64-unknown-none-softfloat`. No FP/SIMD in kernel code:
+- Targets: arm64 is `aarch64-emibsd-none-softfloat`, DevTools' name for upstream's
+  `aarch64-unknown-none-softfloat` (decision 49); amd64 stays `x86_64-unknown-none` in the
+  frozen tree and becomes `x86_64-emibsd-none-softfloat` at N10. No FP/SIMD in kernel code:
   the softfloat target enforces it on arm64, the `none` target on amd64.
 - Hardware addresses and IRQ numbers come from firmware (ACPI, DTB). A hardcoded address is a
   bootstrap shortcut and carries a `// TODO(Mn):` naming the milestone that removes it.

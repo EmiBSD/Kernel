@@ -135,7 +135,10 @@ A prompt that misses one of these gets a question back, not a guess.
   `ln -s "$MAIN/reference/emibsd-lz" reference/emibsd-lz` if missing (`lz/PINNED.md` is tracked
   and needs nothing). Both are read-only (`reference-readonly.md`). Never commit them, never
   `git add -A` / `git add .`; add paths by name. Unlink both before the worktree is removed.
-- `PATH=/opt/homebrew/opt/rustup/bin:$PATH` before `cargo`/`just`. Install nothing.
+- The compiler is DevTools' Rust, run straight from `~/devel/emibsd/toolchains` (decision 49):
+  the justfile's recipes put it first on `PATH` themselves, and a bare `cargo` is
+  `just cargo <args>` (`just cargo check -p bsd --tests`). Never rustup's proxies (`/opt/homebrew/opt/rustup/bin`) and
+  never another toolchain. Install nothing.
 - `diff-openbsd` needs the snapshot: `cp -Rc "$MAIN/target/openbsd" target/openbsd`. Never
   re-download it, never delete the main checkout's copy.
 - The smokes need the userland (`target/userland/<arch>/ramdisk.ffs`): `cp -Rc
