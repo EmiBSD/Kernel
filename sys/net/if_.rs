@@ -589,14 +589,31 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         desten: &mut [u8; IF_ETHER_ADDR_LEN],
     ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
         // The destination as an aligned image of its own: the view's bytes have alignment
-        // 1, and arpresolve reads `sin_addr` through a `*const sockaddr_in` in place.
-        let Some(sin) = hal::pod::at::<hal::sys::netinet_in::SockaddrIn>(dst.bytes(), 0) else {
+        // 1, and arpresolve reads `sin_addr` through a `*const sockaddr_in` in place. Built
+        // from the view's header and address (arpresolve reads `sin_addr` alone) as words,
+        // not copied whole: a 16-byte copy is a call to memmove in the dev profile, measured
+        // on every IPv4 output (N6.3c2 review 1).
+        let b = dst.bytes();
+        let (Some(&[a0, a1, a2, a3]), true) = (
+            b.get(4..8).and_then(|a| <&[u8; 4]>::try_from(a).ok()),
+            b.len() >= size_of::<hal::sys::netinet_in::SockaddrIn>(),
+        ) else {
             drop(m);
             return Err(Errno::EINVAL);
         };
+        let sin = hal::sys::netinet_in::SockaddrIn {
+            sin_len: b[0],
+            sin_family: b[1],
+            sin_port: 0,
+            sin_addr: hal::sys::netinet_in::InAddr {
+                s_addr: u32::from_ne_bytes([a0, a1, a2, a3]),
+            },
+            sin_zero: [0; 8],
+        };
         let m = park(m);
-        // SAFETY: `sin` is a local `struct sockaddr_in` image, aligned for its type (4) and
-        // whole (16 bytes), which lives across the call; bsd's `SockaddrIn` that `arpresolve`
+        // SAFETY: `sin` is a local `struct sockaddr_in` image (the destination's header and
+        // address, the port and padding zero), aligned for its type (4) and whole (16 bytes),
+        // which lives across the call; bsd's `SockaddrIn` that `arpresolve`
         // casts the pointer to has the same `#[repr(C)]` layout (size and alignment asserted
         // below), so its read of `sin_addr` is in bounds and aligned, and nothing writes
         // `sin` meanwhile. The packet is parked for the call and comes back only on `Ok` (on
