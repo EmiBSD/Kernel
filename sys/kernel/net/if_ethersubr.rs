@@ -230,10 +230,12 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   interface's [`LinkLayer`], behind `NetDriver`'s defaults (D-N6.3c-5); a driver with its
 //!   own `if_output` keeps it.
 //! - The address resolution and the checksums `ether_resolve`, `ether_input` and
-//!   `ether_offload_ifcap` call (`arpresolve`, `nd6_resolve`, `arpinput`, `revarpinput`,
-//!   `arp_rtrequest`, `nd6_rtrequest`, `in6_proto_cksum_out`) are legs of the `Inet` bridge
-//!   until N6.4/N6.5 (D-N6.3c-14); the IPv4 checksums (`in_hdr_cksum_out`,
-//!   `in_proto_cksum_out`) are `kernel::netinet::ip_output`'s since N6.4a.
+//!   `ether_offload_ifcap` call were legs of the `Inet` bridge (D-N6.3c-14): ARP's
+//!   (`arpresolve`, `arp_rtrequest`, and `arpinput`/`revarpinput` through the glue's entries
+//!   `kernel::netinet::if_ether::ARPINPUT`/`REVARPINPUT`) are the kernel's since N6.4b, the
+//!   IPv4 checksums (`in_hdr_cksum_out`, `in_proto_cksum_out`) since N6.4a; IPv6's
+//!   (`nd6_resolve`, `nd6_rtrequest`, `in6_proto_cksum_out`) stay legs until N6.5.
+//!   `ether_rtrequest` takes the net lock's proof its caller (`if_rtrequest`) has.
 //! - The Ethernet header is read and written as a copy (`hal::pod::at`/`put`, 14 bytes,
 //!   D-N6.3c-20): where a frame starts depends on the driver (two bytes past a word with
 //!   `ETHER_ALIGN`), and a copy of 14 bytes per frame is the price of not trusting it (N12).
@@ -251,6 +253,7 @@ use hal::intr::IPL_NET;
 use hal::link::Link;
 use hal::malloc::{M_NOWAIT, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
+use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 use hal::sys::net_bpf::DLT_EN10MB;
@@ -603,9 +606,9 @@ impl LinkLayer for Ether {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&Rtentry>,
-        _net: &hal::netlock::NetHeld<'_>,
+        net: &hal::netlock::NetHeld<'_>,
     ) {
-        ether_rtrequest(ifp, req, rt);
+        ether_rtrequest(ifp, req, rt, net);
     }
 }
 
@@ -681,18 +684,19 @@ pub const fn ether_ioctl_len(cmd: u64) -> usize {
 }
 
 /// `ether_rtrequest(ifp, req, rt)`: an Ethernet interface's route change, to ARP or ND by
-/// the route's family.
-pub fn ether_rtrequest(ifp: &'static Ifnet, req: u8, rt: Option<&Rtentry>) {
+/// the route's family, under the net lock (`net`).
+pub fn ether_rtrequest(ifp: &'static Ifnet, req: u8, rt: Option<&Rtentry>, net: &NetHeld<'_>) {
     let Some(rt) = rt else {
-        return;
-    };
-    let Some(i) = inet() else {
         return;
     };
 
     match rt.dest().get(1).copied() {
-        Some(AF_INET) => i.arp_rtrequest(ifp, req, rt),
-        Some(AF_INET6) => i.nd6_rtrequest(ifp, req, rt),
+        Some(AF_INET) => crate::netinet::if_ether::arp_rtrequest(ifp, req, rt, net),
+        Some(AF_INET6) => {
+            if let Some(i) = inet() {
+                i.nd6_rtrequest(ifp, req, rt);
+            }
+        }
         _ => {}
     }
 }
@@ -729,11 +733,8 @@ pub fn ether_resolve(
 
         match af {
             AF_INET => {
-                let Some(i) = inet() else {
-                    break 'bad Errno::EAFNOSUPPORT;
-                };
                 // arpresolve owns the packet when it fails (or holds it: EAGAIN).
-                m = i.arpresolve(ifp, rt, m, dst, &mut eh.ether_dhost)?;
+                m = crate::netinet::if_ether::arpresolve(ifp, rt, m, dst, &mut eh.ether_dhost)?;
                 eh.ether_type = ETHERTYPE_IP.to_be();
 
                 // If broadcasting on a simplex interface, loopback a copy. The checksum must
@@ -951,28 +952,38 @@ pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack
     // At this point it is known that the packet is destined for layer 3 protocol handling on
     // the local port.
     let etype = u16::from_be(eh.ether_type);
-    let Some(i) = inet() else {
-        return;
-    };
     let input: ProtoFn = match etype {
-        ETHERTYPE_IP => i.ipv4_input(),
+        ETHERTYPE_IP => match inet() {
+            Some(i) => i.ipv4_input(),
+            None => return,
+        },
 
         ETHERTYPE_ARP => {
             if ifp.if_flags.get() & IFF_NOARP != 0 {
                 return;
             }
-            i.arpinput()
+            // `arpinit`'s entry (the glue's `arpinput`); none before it: dropped.
+            match crate::netinet::if_ether::ARPINPUT.get() {
+                Some(&f) => f,
+                None => return,
+            }
         }
 
         ETHERTYPE_REVARP => {
             if ifp.if_flags.get() & IFF_NOARP != 0 {
                 return;
             }
-            i.revarpinput()
+            match crate::netinet::if_ether::REVARPINPUT.get() {
+                Some(&f) => f,
+                None => return,
+            }
         }
 
         // Schedule IPv6 software interrupt for incoming IPv6 packet.
-        ETHERTYPE_IPV6 => i.ipv6_input(),
+        ETHERTYPE_IPV6 => match inet() {
+            Some(i) => i.ipv6_input(),
+            None => return,
+        },
         // NPPPOE > 0 || PIPEX: ETHERTYPE_PPPOEDISC/ETHERTYPE_PPPOE go to the pppoe queues or
         // a pipex session; MPLS: ETHERTYPE_MPLS(_MCAST) to mpls_input; NBPE > 0:
         // ETHERTYPE_PBB to bpe_input; NAF_FRAME > 0: ether_frm_input. None is configured.
@@ -1743,22 +1754,32 @@ mod tests {
         let ac = test_arpcom(b"tet1");
         let ifp = &ac.ac_if;
         let mut ns = Netstack::new(0);
+        // ARP's entries (`ip_init`'s `arpinit`): the kernel's `arpinput`/`revarpinput`.
+        crate::netinet::if_ether::arpinit::<crate::fs::testfs::TestGlue>();
+        let protos = [
+            crate::net::if_::test_proto_count,
+            *crate::netinet::if_ether::ARPINPUT.get().expect("arpinput"),
+            *crate::netinet::if_ether::REVARPINPUT
+                .get()
+                .expect("revarpinput"),
+        ]
+        .map(crate::net::if_::proto_fn_id);
         // A frame for a protocol is queued on the softnet's stack (`if_input_proto`), with
         // the protocol in its cookie.
         let count = |f: MbufBox, ns: &mut Netstack| {
             ether_input(ifp, f, Some(ns));
             let n = ml_len(&ns.ns_proto);
             while let Some(m) = crate::net::mbuf::ml_dequeue(&mut ns.ns_proto) {
-                assert_eq!(
-                    m.m_pkthdr().ph_cookie.get(),
-                    crate::net::if_::proto_fn_id(crate::net::if_::test_proto_count)
+                assert!(
+                    protos.contains(&m.m_pkthdr().ph_cookie.get()),
+                    "a protocol's input"
                 );
                 assert_eq!(m.m_pkthdr().len.get(), 46, "the Ethernet header trimmed");
             }
             n
         };
         let body = [0u8; 46];
-        // IPv4 and ARP to the double's protocols; IPv6 likewise; RARP too.
+        // IPv4 to the double's protocol, ARP and RARP to ARP's entries; IPv6 likewise.
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_IP, &body), &mut ns), 1);
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_ARP, &body), &mut ns), 1);
         assert_eq!(
@@ -1979,24 +2000,34 @@ mod tests {
         assert!(ether_resolve(ifp, pkt(), dst, None, &mut eh).is_ok());
         assert_eq!((eh.ether_dhost, eh.ether_shost), (PEER, PEER));
 
-        // AF_INET through ARP: resolved, held, unreachable.
+        // AF_INET through ARP (`kernel::netinet::if_ether`'s tests have the cache): a
+        // broadcast and a multicast packet need no entry; a unicast one through a route that
+        // carries no ARP information is refused and freed.
         let rt = crate::net::route::tests::entry(&sin([10, 0, 2, 0]), 24, None, 0, 8);
         let a = sin([10, 0, 2, 2]);
         let dst = SockaddrView::new(&a).expect("an address");
+        let bcast = pkt();
+        bcast.m_flags().set(bcast.flags() | M_BCAST);
         let mut eh = EtherHeader::default();
-        assert!(ether_resolve(ifp, pkt(), dst, Some(&rt), &mut eh).is_ok());
+        // (not simplex: no copy looped back to the double's protocol)
+        ifp.if_flags.set(ifp.if_flags.get() & !IFF_SIMPLEX);
+        assert!(ether_resolve(ifp, bcast, dst, Some(&rt), &mut eh).is_ok());
+        ifp.if_flags.set(ifp.if_flags.get() | IFF_SIMPLEX);
         assert_eq!(
             (eh.ether_dhost, eh.ether_shost, u16::from_be(eh.ether_type)),
-            ([2, 0, 0, 0, 0, 2], OURS, ETHERTYPE_IP)
+            (ETHERBROADCASTADDR, OURS, ETHERTYPE_IP)
         );
-        let held = sin([10, 0, 2, 99]);
-        let dst = SockaddrView::new(&held).expect("an address");
-        assert!(matches!(ether_encap(ifp, pkt(), dst, Some(&rt)), Ok(None)));
-        let far = sin([10, 0, 2, 7]);
-        let dst = SockaddrView::new(&far).expect("an address");
+        let group = sin([224, 0, 0, 1]);
+        let dst = SockaddrView::new(&group).expect("an address");
+        let mcast = pkt();
+        mcast.m_flags().set(mcast.flags() | M_MCAST);
+        let mut eh = EtherHeader::default();
+        assert!(ether_resolve(ifp, mcast, dst, None, &mut eh).is_ok());
+        assert_eq!(eh.ether_dhost, [0x01, 0x00, 0x5e, 0, 0, 1]);
+        let dst = SockaddrView::new(&a).expect("an address");
         assert!(matches!(
             ether_encap(ifp, pkt(), dst, Some(&rt)),
-            Err(Errno::EHOSTUNREACH)
+            Err(Errno::EINVAL)
         ));
 
         // Another family, and an interface that is not running.

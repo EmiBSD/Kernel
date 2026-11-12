@@ -211,6 +211,7 @@
 //!   | (none: `rtt_rt` is a bare pointer) | a timer's `rtt_rt`, subtracted by [`rt_refcnt`] |
 //!   | (none: an unlinked route's `rt_next` is a bare pointer) | the `rt_next` an unlinked route keeps, subtracted by [`rt_refcnt`] (`rt_backrefs`) |
 //!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::smr::retired_count`) |
+//!   | (none: `la_rt` is a bare pointer) | the `la_rt` of the ARP record the route's `rt_llinfo` owns, subtracted by [`rt_refcnt`] (`TaggedLink::is_typed`; N6.4b) |
 //!
 //!   A timer holds a counted handle of its route (R11 of N6.3b1): kernel code cannot follow
 //!   the C's bare back pointer. So a route's timers are removed when it leaves its table
@@ -223,7 +224,9 @@
 //!   `ReadMostly` cells (\[X\]/\[N\]: no single witness expresses "exclusive net lock, or shared
 //!   with the kernel lock", and `bsd`'s readers hold the net lock detached); `rt_flags`,
 //!   `rt_ifidx`, `rt_labelid`, `rt_priority` relaxed atomics; `rt_ifa` a `Link` to the address
-//!   (`bsd`'s storage until N6.4, D-N6.3a-3); `rt_llinfo` a word (D-N6.3b-10); `rt_cachecnt`
+//!   (`bsd`'s storage until N6.4, D-N6.3a-3); `rt_llinfo` a word (D-N6.3b-10), since N6.4b a
+//!   `hal::link::TaggedLink` owning ARP's record (lent under `arp_mtx`) or holding ND's
+//!   legacy address (D-4); `rt_cachecnt`
 //!   inside `rt_mtx`'s `Mutexed`; `rt_timer` a `PinList` under `RTTIMER_MTX`'s witness.
 //! - `struct route` is [`Route`], owned and changed through `&mut` (D-N6.3b-7): the C's
 //!   `route_cache`/`route_mpath` are [`Route::cache4`] and [`Route::mpath4`] (`route6_*` the
@@ -266,7 +269,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::{IPL_MPFLOOR, IPL_NET, IPL_SOFTNET};
 use hal::klock;
-use hal::link::{Link, PtrWord};
+use hal::link::{Link, TaggedLink};
 use hal::malloc::{M_NOWAIT, MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::netlock::NetHeld;
@@ -300,6 +303,7 @@ use crate::net::rtable::{
     rtable_mpath_reprio, rtable_satoplen, rtable_walk,
 };
 use crate::net::rtsock;
+use crate::netinet::if_ether::LlinfoArp;
 use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `RT_RESOLVE`: `rtalloc`'s flag to add and resolve the link-layer route of a cloning one.
@@ -440,8 +444,9 @@ pub struct Rtentry {
     rt_gateway: ReadMostly<Option<MArray<u8>>>,
     /// \[N\] `rt_ifa`: the interface address to use.
     pub rt_ifa: Link<Ifaddr>,
-    /// \[L\] `rt_llinfo`: the link-level information (ARP's or ND's).
-    pub rt_llinfo: PtrWord<core::ffi::c_void>,
+    /// \[L\] `rt_llinfo`: the link-level information: ARP's record, owned and lent under
+    /// `arp_mtx` (`kernel::netinet::if_ether`), or ND's legacy address (`bsd` until N6.5).
+    pub rt_llinfo: TaggedLink<LlinfoArp>,
     /// \[X\] `rt_gwroute`: the route of `rt_gateway`.
     rt_gwroute: ReadMostly<Option<PoolArc<Rtentry>>>,
     /// \[N\] `rt_parent`: the cloning route of a cloned one.
@@ -494,7 +499,7 @@ impl Rtentry {
                 rt_next: SmrArcWord::new(),
                 rt_gateway: ReadMostly::new(None),
                 rt_ifa: Link::new(),
-                rt_llinfo: PtrWord::new(),
+                rt_llinfo: TaggedLink::new(),
                 rt_gwroute: ReadMostly::new(None),
                 rt_parent: ReadMostly::new(None),
                 rt_timer: PinList::new(),
@@ -2864,6 +2869,7 @@ pub fn rt_refcnt(rt: &Rtentry) -> usize {
         .saturating_sub(rt.rt_ntimers.load(Ordering::Relaxed) as usize)
         .saturating_sub(rt.rt_backrefs.load(Ordering::Relaxed) as usize)
         .saturating_sub(hal::smr::retired_count(rt))
+        .saturating_sub(usize::from(rt.rt_llinfo.is_typed()))
 }
 
 /// `db_print_sa(sa)`: a socket address's bytes, `[NULL]` for none.
@@ -2940,7 +2946,7 @@ pub fn db_show_rtentry(w: &mut dyn fmt::Write, rt: &Rtentry, net: &NetHeld<'_>) 
         gwroute
             .as_deref()
             .map_or(core::ptr::null(), core::ptr::from_ref),
-        rt.rt_llinfo.get(),
+        core::ptr::without_provenance::<u8>(rt.rt_llinfo.addr()),
         rt.rt_priority.get()
     )
 }
@@ -3112,7 +3118,6 @@ pub(crate) mod tests {
     }
 
     impl if_::Inet for TestInet {
-        fn arpintr(&self) {}
         fn ipintr(&self) {}
         fn ip6intr(&self) {}
         fn tcp_input_mlist(&self, _ml: &mut crate::net::mbuf::MbufList, _af: SaFamily) {}
@@ -3125,7 +3130,6 @@ pub(crate) mod tests {
         fn tcpstat_lro(&self, _hw: bool) {}
         fn nd6_ifattach(&self, _ifp: &'static Ifnet) {}
         fn nd6_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn revarp_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifattach(&self, _ifp: &'static Ifnet) -> Result<(), Errno> {
             Ok(())
@@ -3147,37 +3151,6 @@ pub(crate) mod tests {
                 self.hits.fetch_add(1, Ordering::Relaxed);
             } else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn arpinput(&self) -> crate::net::if_::ProtoFn {
-            crate::net::if_::test_proto_count
-        }
-        fn revarpinput(&self) -> crate::net::if_::ProtoFn {
-            crate::net::if_::test_proto_count
-        }
-        /// 10.0.2.2 is at 02:00:00:00:00:02, 10.0.2.99 is being asked for (the packet held:
-        /// here freed), any other host unreachable.
-        fn arpresolve(
-            &self,
-            _ifp: &'static Ifnet,
-            _rt: Option<&Rtentry>,
-            m: crate::net::mbuf::MbufBox,
-            dst: crate::net::proto::SockaddrView<'_>,
-            desten: &mut [u8; 6],
-        ) -> Result<crate::net::mbuf::MbufBox, Errno> {
-            match dst.bytes().get(4..8) {
-                Some([10, 0, 2, 2]) => {
-                    *desten = [2, 0, 0, 0, 0, 2];
-                    Ok(m)
-                }
-                Some([10, 0, 2, 99]) => {
-                    drop(m);
-                    Err(Errno::EAGAIN)
-                }
-                _ => {
-                    drop(m);
-                    Err(Errno::EHOSTUNREACH)
-                }
             }
         }
     }

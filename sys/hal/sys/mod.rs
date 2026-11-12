@@ -54,6 +54,8 @@ pub mod net_ethertypes;
 #[forbid(unsafe_code)]
 pub mod net_if;
 #[forbid(unsafe_code)]
+pub mod net_if_arp;
+#[forbid(unsafe_code)]
 pub mod net_if_media;
 #[forbid(unsafe_code)]
 pub mod net_route;

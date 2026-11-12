@@ -82,9 +82,9 @@
 //!   `struct arpcom` an Ethernet interface is the first member of, so that the C's `(struct
 //!   arpcom *)ifp` cast is one load (`kernel::net::if_ethersubr::arpcom_of`; N6.3c2, where
 //!   LZ's checked cast and its mark `is_arpcom` went).
-//! - `struct niqueue` and the `niq_*` functions stay `bsd`'s (`sys/net/if_var.rs`): the queue
-//!   is a `struct mbuf_queue`, `bsd`'s `MbufQueue` until the kernel's queue arrives with its
-//!   first users (N6.4's `ipintrq`).
+//! - `struct niqueue` and the `niq_*` macros are the kernel's since N6.4b ([`Niqueue`], over
+//!   `kernel::net::mbuf::MbufQueue`; ARP's `arpinq` first); `bsd` keeps LZ's for its own
+//!   queues (`ipintrq`, `ip6intrq`) until they move (N6.4c2, N6.5).
 //!
 //! ## Redesign
 //! - LZ's `struct ifnet` of `Cell`s behind `unsafe impl Sync`, embedded in `bsd`'s zeroed
@@ -161,6 +161,7 @@ use core::sync::atomic::{
     Ordering,
 };
 
+use hal::intr::IPL_NET;
 use hal::link::{Link, PtrWord, SaLink};
 use hal::list::{List, ListEntry};
 use hal::malloc::{MArray, MBox};
@@ -174,7 +175,9 @@ use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
 
 use crate::assert::kpanic;
 use crate::net::ifq::{Ifiqueue, Ifqueue};
-use crate::net::mbuf::{Mbuf, MbufBox, MbufList};
+use crate::net::mbuf::{
+    Mbuf, MbufBox, MbufList, MbufQueue, mq_delist, mq_dequeue, mq_drops, mq_len,
+};
 use crate::prf::Str;
 use crate::task::{Task, TaskChain};
 use crate::timeout::Timeout;
@@ -498,6 +501,45 @@ impl Netstack {
             ns_route: crate::net::route::Route::new(),
         }
     }
+}
+
+/// `struct niqueue`: a network stack input queue, the packets a protocol's soft interrupt
+/// takes (`if_netisr`'s `NETISR_*` bit `ni_isr`).
+pub struct Niqueue {
+    /// `ni_q`.
+    pub ni_q: MbufQueue,
+    /// `ni_isr`: the `NETISR_*` bit to schedule.
+    pub ni_isr: i32,
+}
+
+impl Niqueue {
+    /// `NIQUEUE_INITIALIZER(len, isr)`.
+    pub const fn new(len: u32, isr: i32) -> Self {
+        Self {
+            ni_q: MbufQueue::new(len, IPL_NET),
+            ni_isr: isr,
+        }
+    }
+}
+
+/// `niq_dequeue(q)`.
+pub fn niq_dequeue(q: &Niqueue) -> Option<MbufBox> {
+    mq_dequeue(&q.ni_q)
+}
+
+/// `niq_delist(q, ml)`: the queue's packets, taken.
+pub fn niq_delist(q: &Niqueue) -> MbufList {
+    mq_delist(&q.ni_q)
+}
+
+/// `niq_len(q)`.
+pub fn niq_len(q: &Niqueue) -> u32 {
+    mq_len(&q.ni_q)
+}
+
+/// `niq_drops(q)`.
+pub fn niq_drops(q: &Niqueue) -> u32 {
+    mq_drops(&q.ni_q)
 }
 
 /// The interface's driver: `if_var.h`'s procedure handles (`if_input`, `if_bpf_mtap`,

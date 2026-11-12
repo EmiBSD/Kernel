@@ -283,14 +283,7 @@ static ROUTER_ALERT_MBUF: Mutexed<Option<MbufBox>> = Mutexed::new(IPL_SOFTNET, N
 /// head held: nothing at boot), and `router_alert`, one `MT_DATA` mbuf holding the Router
 /// Alert option, made and kept for life. The counters are static (the module's redesign).
 pub fn igmp_init() {
-    IGMP_TIMERS_ARE_RUNNING.store(0, Ordering::Relaxed);
-    {
-        let mut g = IGMP_MTX.lock();
-        if let Some(old) = g.rti.take() {
-            let _ = MBox::leak(old);
-        }
-        RTI_ANY.store(false, Ordering::Relaxed);
-    }
+    igmp_init_state();
 
     // router_alert = m_get(M_WAIT, MT_DATA), the option's image in it, m_len its length.
     let Some(mut ra) = m_get(M_WAIT, MT_DATA) else {
@@ -299,11 +292,22 @@ pub fn igmp_init() {
     if m_copyback(&mut ra, 0, &ROUTER_ALERT, M_WAIT).is_err() {
         kpanic(format_args!("igmp_init: router_alert's option"));
     }
-    // A second init (the tests' reset) forgets the earlier mbuf, which an earlier test's
-    // memory holds, without freeing it (testing.md's rule); the boot's has none.
+    // A second init (a test's own) forgets the earlier mbuf, which an earlier test's memory
+    // may hold, without freeing it (testing.md's rule); the boot's has none.
     if let Some(old) = ROUTER_ALERT_MBUF.lock().replace(ra) {
         core::mem::forget(old);
     }
+}
+
+/// `igmp_init`'s state half: no timer running, no router known (`LIST_INIT`, the records an
+/// earlier holder kept forgotten, not freed: at boot there are none).
+fn igmp_init_state() {
+    IGMP_TIMERS_ARE_RUNNING.store(0, Ordering::Relaxed);
+    let mut g = IGMP_MTX.lock();
+    if let Some(old) = g.rti.take() {
+        let _ = MBox::leak(old);
+    }
+    RTI_ANY.store(false, Ordering::Relaxed);
 }
 
 /// The record of `ifidx` in the chain `head`. Called holding `igmp_mtx` (`head` is its data).
@@ -907,11 +911,17 @@ fn igmp_sysctl_igmpstat(req: &mut SysctlReq<'_>) -> Result<(), Errno> {
     rdstruct(req, &bytes)
 }
 
-/// Forgets the router records, which an earlier test's memory holds (testing.md's rule), and
-/// stops the timers.
+/// Forgets the router records and `router_alert`'s mbuf, which an earlier test's memory holds
+/// (testing.md's rule), and stops the timers. It allocates nothing: `router_alert` is made by
+/// `igmp_init` alone (the boot's, or a test's that gives it back), so no test's setup leaves an
+/// mbuf counted out in a later test (the mbuf tests count every one; N6.4a's 8663b168 made one
+/// per setup).
 #[cfg(any(test, feature = "doubles"))]
 pub fn igmp_test_reset() {
-    igmp_init();
+    igmp_init_state();
+    if let Some(old) = ROUTER_ALERT_MBUF.lock().take() {
+        core::mem::forget(old);
+    }
 }
 /* </CODE> */
 
@@ -974,6 +984,11 @@ mod tests {
         igmp_fasttimo();
         assert_eq!(data(), before + 1);
         assert!(ROUTER_ALERT_MBUF.lock().is_some(), "still held");
+        // The test gives it back into its own memory (freed after the mutex): no later test
+        // counts it.
+        let ra = ROUTER_ALERT_MBUF.lock().take();
+        drop(ra);
+        assert_eq!(data(), before);
     }
 
     #[test]

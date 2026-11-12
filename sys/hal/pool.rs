@@ -1749,6 +1749,8 @@ impl<T: Parkable> PoolBox<T> {
     /// `None` for an item that is not parked (never parked, or unparked already: never a
     /// second owner). The caller keeps no reference to the item after this (`bsd`'s
     /// contract: its references come from the parked pointer, by its own `unsafe`).
+    /// `hal::link::TaggedLink` does not park its items (it keeps the box's raw form), so a
+    /// reference it lends is refused here.
     pub fn unpark(parked: &'static T) -> Option<Self> {
         let w = parked.park_word();
         let start = ptr::from_ref(parked).addr();

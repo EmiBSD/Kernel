@@ -103,14 +103,19 @@
 //! ## Redesign
 //! - LZ's `sys/netinet/if_ether.rs` held the header beside if_ether.c's ARP; the userland
 //!   part of the header is here, in `hal` (N6.3c), so `kernel::net`'s bpf and Ethernet layer
-//!   name it; LZ's `#[repr(C)]` images are `abi_pod!`s with `const` size asserts. The ARP
-//!   part (`struct ether_arp`, `struct sockaddr_inarp`, `SIN_PROXY`, `RTF_USETRAILERS`,
-//!   `RTF_PERMANENT_ARP`) and the `#ifdef _KERNEL` part (`struct arpcom`, `struct ether_multi`,
-//!   `ETHER_MAP_IP_MULTICAST`, `etherbroadcastaddr`, ...) are not here: N6.4's ARP and the
-//!   kernel's Ethernet layer take them. `bsd`'s `sys/netinet/if_ether.rs` keeps its own
-//!   copies until the Ethernet layer moves (N6.3c2).
+//!   name it; LZ's `#[repr(C)]` images are `abi_pod!`s with `const` size asserts. The
+//!   `#ifdef _KERNEL` part (`struct arpcom`, `struct ether_multi`, `ETHER_MAP_IP_MULTICAST`,
+//!   `etherbroadcastaddr`, ...) is the kernel's Ethernet layer's (N6.3c2).
+//! - N6.4b: the ARP part joins it with the kernel's ARP, its first user here: `struct
+//!   ether_arp` (28 bytes, `struct arphdr` of `hal::sys::net_if_arp` first, with the C's
+//!   `arp_hrd`.. `#define`s as accessors), `struct sockaddr_inarp` (16), `SIN_PROXY`,
+//!   `RTF_USETRAILERS` and `RTF_PERMANENT_ARP` (`arp(8)` reads them); `bsd`'s copies went.
 
 use core::mem::size_of;
+
+use crate::sys::net_if_arp::Arphdr;
+use crate::sys::net_route::{RTF_PROTO1, RTF_PROTO3};
+use crate::sys::netinet_in::InAddr;
 
 /// `ETHER_ADDR_LEN`: an Ethernet address's length.
 pub const ETHER_ADDR_LEN: usize = 6;
@@ -224,6 +229,97 @@ crate::abi_pod!(EtherVlanHeader {
     evl_proto: u16,
 });
 
+/// `struct ether_arp`: Ethernet Address Resolution Protocol. See RFC 826 for protocol
+/// description; this structure is adapted to resolving internet addresses. Field names used
+/// correspond to RFC 826.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EtherArp {
+    /// Fixed-size header.
+    pub ea_hdr: Arphdr,
+    /// Sender hardware address.
+    pub arp_sha: [u8; ETHER_ADDR_LEN],
+    /// Sender protocol address.
+    pub arp_spa: [u8; 4],
+    /// Target hardware address.
+    pub arp_tha: [u8; ETHER_ADDR_LEN],
+    /// Target protocol address.
+    pub arp_tpa: [u8; 4],
+}
+
+crate::abi_pod!(EtherArp {
+    ea_hdr: Arphdr,
+    arp_sha: [u8; ETHER_ADDR_LEN],
+    arp_spa: [u8; 4],
+    arp_tha: [u8; ETHER_ADDR_LEN],
+    arp_tpa: [u8; 4],
+});
+
+impl EtherArp {
+    /// `arp_hrd`: format of hardware address, network order.
+    pub const fn arp_hrd(&self) -> u16 {
+        self.ea_hdr.ar_hrd
+    }
+
+    /// `arp_pro`: format of protocol address, network order.
+    pub const fn arp_pro(&self) -> u16 {
+        self.ea_hdr.ar_pro
+    }
+
+    /// `arp_hln`: length of hardware address.
+    pub const fn arp_hln(&self) -> u8 {
+        self.ea_hdr.ar_hln
+    }
+
+    /// `arp_pln`: length of protocol address.
+    pub const fn arp_pln(&self) -> u8 {
+        self.ea_hdr.ar_pln
+    }
+
+    /// `arp_op`: operation, network order.
+    pub const fn arp_op(&self) -> u16 {
+        self.ea_hdr.ar_op
+    }
+}
+
+/// `struct sockaddr_inarp`: the socket address of an ARP entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SockaddrInarp {
+    /// Total length.
+    pub sin_len: u8,
+    /// `AF_INET`.
+    pub sin_family: u8,
+    /// Port.
+    pub sin_port: u16,
+    /// Address.
+    pub sin_addr: InAddr,
+    /// Source address.
+    pub sin_srcaddr: InAddr,
+    /// Type of service.
+    pub sin_tos: u16,
+    /// `SIN_PROXY`.
+    pub sin_other: u16,
+}
+
+crate::abi_pod!(SockaddrInarp {
+    sin_len: u8,
+    sin_family: u8,
+    sin_port: u16,
+    sin_addr: InAddr,
+    sin_srcaddr: InAddr,
+    sin_tos: u16,
+    sin_other: u16,
+});
+
+/// `sockaddr_inarp` flag: proxy entry.
+pub const SIN_PROXY: u16 = 1;
+
+/// Use trailers (IP and ethernet specific routing flag).
+pub const RTF_USETRAILERS: u32 = RTF_PROTO1;
+/// Only manual overwrite of entry.
+pub const RTF_PERMANENT_ARP: u32 = RTF_PROTO3;
+
 /// `EVL_VLANOFTAG(tag)`: the VLAN id of a (host-order) tag.
 pub const fn evl_vlanoftag(tag: u16) -> u16 {
     tag & EVL_VLID_MASK
@@ -279,6 +375,9 @@ const _: () = {
     assert!(size_of::<EtherHeader>() == 14);
     assert!(align_of::<EtherHeader>() == 2);
     assert!(size_of::<EtherVlanHeader>() == 18);
+    assert!(size_of::<EtherArp>() == 28);
+    assert!(core::mem::offset_of!(EtherArp, arp_sha) == 8);
+    assert!(size_of::<SockaddrInarp>() == 16);
     assert!(ETHER_HDR_LEN == 14);
     assert!(ETHERMTU == 1500);
     assert!(ETHERMIN == 46);
@@ -320,6 +419,9 @@ mod tests {
             EVL_VLID_MASK, EVL_VLID_NULL, EVL_VLID_MIN, EVL_VLID_MAX, EVL_PRIO_MAX, EVL_PRIO_BITS,
             EVL_ENCAPLEN, ETHER_CRC_POLY_LE, ETHER_CRC_POLY_BE,
         );
+        let _ = crate::reftest::assert_defines!(defs; ETHERMTU, ETHERMIN, SIN_PROXY);
+        assert_eq!(defs["RTF_USETRAILERS"], "RTF_PROTO1");
+        assert_eq!(defs["RTF_PERMANENT_ARP"], "RTF_PROTO3");
     }
 }
 /* </TESTS> */

@@ -64,6 +64,15 @@
 //! can race a read (every access is an atomic load or store) and it lives for ever
 //! (`'static`). [`SaLink::read`] copies it word by word.
 //!
+//! [`TaggedLink<T>`] (N6.4b) is the one word two owners share where the C shares it: a
+//! route's `rt_llinfo`, ARP's `struct llinfo_arp` on an IPv4 route, ND's `struct llinfo_nd6`
+//! on an IPv6 one. Tagged (bit 0 set), the word owns a pool item ([`Tagged`]: a [`Pooled`]
+//! type and the one `static` mutex its slots are written under), which it lends
+//! to a holder of that mutex for the guard's borrow and gives back as its box
+//! ([`TaggedLink::take`], the whole guard borrowed mutably, so no lent reference survives);
+//! untagged, it is a legacy address `bsd` stores and reads (ND's record until N6.5), never
+//! followed here.
+//!
 //! ## Redesign
 //! - `Cell<*const T>` with "valid while linked" -> `Link<T>` over `'static` targets: the
 //!   validity is the type's, so it is checked by the compiler at `set`, not promised at every
@@ -88,14 +97,32 @@
 //!   in the record, linked by [`SaLink::set_words`] beside a typed [`Link`] to it, so
 //!   [`SaLink::read`] copies it by atomic loads with no `unsafe` and no premise; the word
 //!   `SaLink::get` gives `bsd`'s legacy readers is its address, as before.
+//! - N6.4b: LZ's `rt_llinfo` (`Cell<*mut c_void>`, then `PtrWord<c_void>`), cast to
+//!   `*const LlinfoArp` and dereferenced in an `unsafe` block at each ARP reader ("the entry
+//!   lives until its last `la_refcnt` reference, under `arp_mtx`") -> [`TaggedLink`]: the
+//!   word owns the record (its `PoolBox` given up to the word, its pool checked: the box's
+//!   raw form, never the public park, so no lent reference can be unparked),
+//!   lends it only under the mutex its type names in a `const` ([`Tagged::LOCK`], checked
+//!   against the witness), and gives it back only to that mutex's whole guard borrowed
+//!   mutably: the C's rule ("rt_llinfo and RTF_LLINFO are protected by arp_mtx",
+//!   `if_ether.c`) is the type's. Not the brief's `&'static` getter: a `Copy` reference to a
+//!   record that is freed is N6.4a's R1 (`MArc::park`) again. ND's raw word shares it, the
+//!   tag telling the owners apart, as the C's one member does (D-4).
 
 use core::cell::Cell;
+use core::ffi::c_void;
 use core::marker::PhantomData;
-use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering, fence};
+use core::mem::align_of;
+use core::ptr::{self, NonNull};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering, fence,
+};
 
+use crate::assert::hal_panic;
+use crate::mutex::Mutexed;
 use crate::netlock::NetHeld;
-use crate::rwlock::{RW_READ, RW_WRITE};
+use crate::pool::{PoolBox, Pooled};
+use crate::rwlock::{Exclusive, LockId, RW_READ, RW_WRITE, Witness};
 use crate::sys::socket::Sockaddr;
 use crate::user::{AbiPod, pod_from_bytes, pod_to_bytes};
 
@@ -362,6 +389,321 @@ impl<T> core::fmt::Debug for PtrWord<T> {
     }
 }
 
+/// The `static` mutex whose holders write the slots of a [`Tagged`] type and borrow the items
+/// those slots lend ([`TaggedLink`]): its owner word, named in a `const` context only
+/// ([`StaticMutex::of`] of a `&'static Mutexed`), so every slot of the type checks one lock.
+#[derive(Clone, Copy)]
+pub struct StaticMutex(&'static AtomicUsize);
+
+impl StaticMutex {
+    /// The mutex `m`, a `static`.
+    pub const fn of<U>(m: &'static Mutexed<U>) -> Self {
+        Self(m.owner_word())
+    }
+
+    /// Its identity, as its guards report it.
+    #[inline]
+    fn id(self) -> LockId {
+        LockId::of_mutex(self.0)
+    }
+}
+
+/// What a [`TaggedLink`] owns: an item of its type's one pool ([`Pooled`], one owner, its
+/// pool checked at [`TaggedLink::set`]) whose slots are written under, and lend it under, the
+/// one mutex [`Tagged::LOCK`].
+///
+/// The item is held through the box's crate-private raw form, never [`PoolBox::park`]: a
+/// reference [`TaggedLink::get`] lends may be `'static` (a leaked route, a leaked guard), and
+/// [`PoolBox::unpark`] answers only for an item `park` marked, which a link's never is, so no
+/// safe code can make a box of a linked item, even of a type that is also
+/// [`crate::pool::Parkable`]:
+///
+/// ```compile_fail
+/// use hal::link::{StaticMutex, Tagged};
+/// use hal::mutex::Mutexed;
+/// use hal::pool::{BoxPool, PoolBox, Pooled};
+/// struct Rec(u64);
+/// static RECS: BoxPool<Rec> = BoxPool::new();
+/// static MTX: Mutexed<()> = Mutexed::new(0, ());
+/// impl Pooled for Rec {
+///     const POOL: &'static BoxPool<Rec> = &RECS;
+/// }
+/// impl Tagged for Rec {
+///     const LOCK: StaticMutex = StaticMutex::of(&MTX);
+/// }
+/// // A record lent for ever cannot be unparked: a tagged type need not be `Parkable`.
+/// fn free(lent: &'static Rec) -> Option<PoolBox<Rec>> {
+///     PoolBox::unpark(lent)
+/// }
+/// fn main() {}
+/// ```
+///
+/// The same type without the `unpark` compiles:
+///
+/// ```
+/// use hal::link::{StaticMutex, Tagged, TaggedLink};
+/// use hal::mutex::Mutexed;
+/// use hal::pool::{BoxPool, Pooled};
+/// struct Rec(u64);
+/// static RECS: BoxPool<Rec> = BoxPool::new();
+/// static MTX: Mutexed<()> = Mutexed::new(0, ());
+/// impl Pooled for Rec {
+///     const POOL: &'static BoxPool<Rec> = &RECS;
+/// }
+/// impl Tagged for Rec {
+///     const LOCK: StaticMutex = StaticMutex::of(&MTX);
+/// }
+/// static LINK: TaggedLink<Rec> = TaggedLink::new();
+/// fn main() {
+///     assert!(!LINK.is_set());
+/// }
+/// ```
+pub trait Tagged: Pooled + Sync {
+    /// The mutex of every slot of the type (`arp_mtx` for `struct llinfo_arp`): a `const`,
+    /// so it cannot differ from one slot or one call to the next.
+    const LOCK: StaticMutex;
+}
+
+/// The tag of a [`TaggedLink`]'s word: bit 0, set when the word owns a `T`.
+const TAG: usize = 1;
+
+/// One word shared by two owners, as the C's `rt->rt_llinfo` is shared by ARP's `struct
+/// llinfo_arp` and ND's `struct llinfo_nd6`: tagged (bit 0 set), it owns an item of the pool of
+/// `T` (its box given up to the word), lent to the holders of [`Tagged::LOCK`] and given back
+/// as its box ([`TaggedLink::take`]); untagged, it is a legacy address (`bsd`'s ND record
+/// until N6.5) that the type only stores and returns ([`TaggedLink::get_legacy`],
+/// [`TaggedLink::set_legacy`]), never follows.
+///
+/// Invariant: the word is null, a legacy address (bit 0 clear), or, with bit 0 set, the
+/// pointer `PoolBox::into_raw` gave for a box of `T::POOL` (checked at [`TaggedLink::set`]),
+/// whose one owner this link is: the item stays out of its pool, its value alive and never
+/// given mutably, until the one `PoolBox::from_raw` of [`TaggedLink::take`] or of the drop
+/// takes the box back. A tagged word is stored only from null and cleared only by those two,
+/// `take` under `T::LOCK` held whole and borrowed mutably, the drop through `&mut self`; the
+/// legacy setter refuses to replace a tagged word.
+pub struct TaggedLink<T: Tagged> {
+    word: AtomicPtr<u8>,
+    /// The link owns a box: `Send` and `Sync` as the box is (`T: Send`, `T: Sync`).
+    _owns: PhantomData<PoolBox<T>>,
+}
+
+impl<T: Tagged> TaggedLink<T> {
+    /// An empty word (`NULL`).
+    pub const fn new() -> Self {
+        const {
+            assert!(
+                align_of::<T>() >= 2,
+                "a tagged link's items leave bit 0 of their address free"
+            );
+        }
+        Self {
+            word: AtomicPtr::new(ptr::null_mut()),
+            _owns: PhantomData,
+        }
+    }
+
+    /// Whether the word names anything, of either owner (a snapshot: the C's unlocked
+    /// `rt->rt_llinfo == NULL` tests).
+    #[inline]
+    pub fn is_set(&self) -> bool {
+        !self.word.load(Ordering::Relaxed).is_null()
+    }
+
+    /// The address the word names, its tag cleared, 0 when empty: for what prints it (ddb's
+    /// `llinfo=`), never followed.
+    #[inline]
+    pub fn addr(&self) -> usize {
+        self.word.load(Ordering::Relaxed).addr() & !TAG
+    }
+
+    /// The item, for the holder of `w`, a witness of `T::LOCK` (whole, or its part 0); `None`
+    /// when the word owns none (empty, or a legacy address). Another lock's witness, or
+    /// another part, is `panic(9)`. The reference borrows the witness and the link, so it ends
+    /// before the lock is released, before [`TaggedLink::take`] (which needs the whole witness
+    /// mutably) can run, and before the link's drop.
+    #[inline]
+    pub fn get<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> Option<&'a T> {
+        check::<T, W>(w, false);
+        tagged::<T>(self.word.load(Ordering::Acquire)).map(|p| owned(p))
+    }
+
+    /// Whether the word owns a `T` (a snapshot; for a count that must not include the
+    /// record's own references, `rt_refcnt`'s).
+    #[inline]
+    pub fn is_typed(&self) -> bool {
+        self.word.load(Ordering::Relaxed).addr() & TAG != 0
+    }
+
+    /// Gives `b` to the word, for the holder of `w` (as [`TaggedLink::get`]'s): the box given
+    /// up and the word tagged, when the word is empty; `Err(b)` (the box back, nothing
+    /// changed) when it names something (the C's "we lost the race" of `arp_rtrequest`).
+    /// `panic(9)` for an item of another pool than `T::POOL`.
+    pub fn set<W: Witness + ?Sized>(&self, w: &W, b: PoolBox<T>) -> Result<(), PoolBox<T>> {
+        check::<T, W>(w, false);
+        if !ptr::eq(PoolBox::pool(&b), T::POOL) {
+            hal_panic(format_args!("TaggedLink::set: an item of another pool"));
+        }
+        if self.is_set() {
+            return Err(b);
+        }
+        let (p, _) = PoolBox::into_raw(b);
+        let tagged = p.as_ptr().cast::<u8>().map_addr(|a| a | TAG);
+        // Release: the item as it was built before it was linked is seen by the readers that
+        // load the word (`Acquire`).
+        match self.word.compare_exchange(
+            ptr::null_mut(),
+            tagged,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => Ok(()),
+            // A legacy writer stored meanwhile (typed writers hold `T::LOCK`, as this one).
+            Err(_) => Err(reclaimed(p)),
+        }
+    }
+
+    /// The item back as its box, emptying the word, for the holder of `w`, the whole
+    /// exclusive witness of `T::LOCK` borrowed mutably (so no reference [`TaggedLink::get`]
+    /// lent is alive); `None` when the word owns none.
+    pub fn take<W: Exclusive + ?Sized>(&self, w: &mut W) -> Option<PoolBox<T>> {
+        check::<T, W>(w, true);
+        let cur = self.word.load(Ordering::Relaxed);
+        let p = tagged::<T>(cur)?;
+        // Only this call and the drop clear a tagged word, and the legacy setter never
+        // replaces one: the exchange cannot fail but on a broken invariant.
+        if self
+            .word
+            .compare_exchange(cur, ptr::null_mut(), Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            hal_panic(format_args!("TaggedLink::take: a tagged word changed"));
+        }
+        Some(reclaimed(p))
+    }
+
+    /// The legacy address the word holds (`(struct llinfo_nd6 *)rt->rt_llinfo`), null when it
+    /// is empty or owns a `T` (whose address no legacy reader may take for its own).
+    #[inline]
+    pub fn get_legacy(&self) -> *const c_void {
+        let w = self.word.load(Ordering::Relaxed);
+        if w.addr() & TAG != 0 {
+            return ptr::null();
+        }
+        w.cast_const().cast()
+    }
+
+    /// Stores the legacy address `p` (null empties the word), under the legacy owner's lock.
+    /// `panic(9)` when the word owns a `T` (a legacy write over it would leak the item and
+    /// hand its slot away), or for an address with bit 0 set (it would read as a `T`).
+    pub fn set_legacy(&self, p: *const c_void) {
+        if p.addr() & TAG != 0 {
+            hal_panic(format_args!("TaggedLink::set_legacy: an odd address"));
+        }
+        let mut cur = self.word.load(Ordering::Relaxed);
+        loop {
+            if cur.addr() & TAG != 0 {
+                hal_panic(format_args!(
+                    "TaggedLink::set_legacy: the word owns a typed item"
+                ));
+            }
+            match self.word.compare_exchange_weak(
+                cur,
+                p.cast_mut().cast(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(now) => cur = now,
+            }
+        }
+    }
+}
+
+impl<T: Tagged> Default for TaggedLink<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Tagged> Drop for TaggedLink<T> {
+    fn drop(&mut self) {
+        // `&mut self`: no reference `get` lent is alive. The item goes back with its box.
+        if let Some(p) = tagged::<T>(*self.word.get_mut()) {
+            *self.word.get_mut() = ptr::null_mut();
+            drop(reclaimed(p));
+        }
+    }
+}
+
+impl<T: Tagged> core::fmt::Debug for TaggedLink<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "TaggedLink({:#x})",
+            self.word.load(Ordering::Relaxed).addr()
+        )
+    }
+}
+
+/// `panic(9)` unless `w` is a witness of `T::LOCK`, whole (`whole`) or whole or its part 0.
+#[inline]
+fn check<T: Tagged, W: Witness + ?Sized>(w: &W, whole: bool) {
+    if w.lock_id() != T::LOCK.id() {
+        hal_panic(format_args!("TaggedLink: a witness of another lock"));
+    }
+    match w.part() {
+        None => {}
+        Some(0) if !whole => {}
+        Some(p) => hal_panic(format_args!("TaggedLink: a witness of part {p}")),
+    }
+}
+
+/// The item a word's value `w` owns, `None` for an untagged (empty or legacy) word.
+#[inline]
+fn tagged<T: Tagged>(w: *mut u8) -> Option<NonNull<T>> {
+    if w.addr() & TAG == 0 {
+        return None;
+    }
+    NonNull::new(w.map_addr(|a| a & !TAG).cast::<T>())
+}
+
+/// The box of the item at `p`, which its caller has just taken out of a link's word (`take`,
+/// the drop) or never stored (`set`'s failed exchange): the one `from_raw` of its
+/// `into_raw`.
+fn reclaimed<T: Tagged>(p: NonNull<T>) -> PoolBox<T> {
+    // SAFETY: `PoolBox::from_raw`'s contract. `p` is the pointer `PoolBox::into_raw` gave in
+    // `set` for a box of `T::POOL` (checked there before the box was given up), with the
+    // item's whole provenance. Its caller owns that raw form alone: `set` never stored it
+    // (the exchange failed), or `take` (under `T::LOCK` held whole) or the drop has just
+    // cleared the one tagged word that named it, and a tagged word is cleared only there,
+    // once (the type's invariant: the legacy setter refuses a tagged word), so no other
+    // `from_raw` of it happens. The item was never put back (only a box's drop does that,
+    // and the box was given up) and nothing wrote it meanwhile (`RawPool`'s contract,
+    // `sys/hal/trust.rs`). No reference made while the pointer was kept is alive or used
+    // after this: `get`'s borrow the witness that `take` needs whole and mutably, or the
+    // link that the drop has by `&mut`, and `set`'s pointer was never lent.
+    unsafe { PoolBox::from_raw(p, T::POOL) }
+}
+
+/// The item a tagged word owns, for [`TaggedLink::get`], which bounds the reference by the
+/// borrows of the link and of a witness of `T::LOCK`.
+fn owned<'a, T: Tagged>(p: NonNull<T>) -> &'a T {
+    // SAFETY: `p` is the item a link's tagged word owns (the type's invariant): the pointer
+    // `PoolBox::into_raw` gave for a box of `T::POOL`, an initialised `T` out of its pool and
+    // never given mutably while the word owns it (the box is given up; `from_raw` makes it
+    // again only in `reclaimed`). `get`'s caller borrows the link and a witness of `T::LOCK`
+    // (whole, or its part 0) for `'a`. The word lets the item go only in `take`, which needs
+    // the lock's whole exclusive witness borrowed mutably (no other guard of a mutex can
+    // exist while that one lives, a part's whole guard is borrowed mutably by its split, and
+    // a leaked guard is never released, so `take` can never run against it), or in the drop,
+    // which needs the link by `&mut` (a leaked link is never dropped): neither can run while
+    // the reference lives, so the item is not given back, freed or written meanwhile. No safe
+    // code can make a box of it otherwise: `PoolBox::unpark` answers only an item `park`
+    // marked, and this item's mark (if its type has one) is never set. The `Acquire` load
+    // of `get` pairs with the `Release` exchange of `set`, so the value is seen whole.
+    unsafe { p.as_ref() }
+}
+
 /// The capability to make an [`SaLink`] name a socket address's storage ([`SaLink::set`]):
 /// one per kernel, taken by `bsd`'s boot before any code of the kernel or ABI crates runs
 /// (`hal_bridges_register`'s first steps), for the internet protocols that own the storage of
@@ -467,7 +809,7 @@ impl SaWords {
         let b = self.bytes(size_of::<T>());
         match pod_from_bytes(&b[..size_of::<T>()]) {
             Some(v) => v,
-            None => crate::assert::hal_panic(format_args!("SaWords::get: a short image")),
+            None => hal_panic(format_args!("SaWords::get: a short image")),
         }
     }
 
@@ -768,9 +1110,186 @@ mod tests {
     use std::thread;
 
     use super::*;
+    use crate::pool::Parkable;
+    use crate::rwlock::Divisible;
 
     static A: u32 = 7;
     static B: u32 = 9;
+
+    /// A record a [`TaggedLink`] owns: a parkable item of its own pool, under its own
+    /// mutex (the shape of ARP's `struct llinfo_arp` under `arp_mtx`).
+    struct Rec {
+        v: u64,
+        mark: crate::pool::ParkWord,
+    }
+
+    static RECS: crate::pool::BoxPool<Rec> = crate::pool::BoxPool::new();
+    static REC_MTX: Mutexed<()> = Mutexed::new(0, ());
+    static OTHER_MTX: Mutexed<()> = Mutexed::new(0, ());
+
+    impl crate::pool::Pooled for Rec {
+        const POOL: &'static crate::pool::BoxPool<Rec> = &RECS;
+    }
+
+    impl Parkable for Rec {
+        fn park_word(&self) -> &crate::pool::ParkWord {
+            &self.mark
+        }
+    }
+
+    impl Tagged for Rec {
+        const LOCK: StaticMutex = StaticMutex::of(&REC_MTX);
+    }
+
+    fn rec(v: u64) -> PoolBox<Rec> {
+        crate::testutil::install();
+        let _ = RECS.init(0, crate::pool::PR_WAITOK, "taggedpl");
+        RECS.get(crate::pool::PR_WAITOK, || Rec {
+            v,
+            mark: crate::pool::ParkWord::new(),
+        })
+        .expect("an item")
+    }
+
+    #[test]
+    fn a_tagged_link_owns_its_record_lends_it_under_its_mutex_and_gives_it_back() {
+        let l = TaggedLink::<Rec>::new();
+        let b = rec(5);
+        let addr = PoolBox::as_ptr(&b).addr();
+        let mut g = REC_MTX.lock();
+        assert!(l.get(&g).is_none(), "empty");
+        assert!(l.set(&g, b).is_ok());
+        assert!(l.is_set());
+        assert_eq!(l.addr(), addr, "the record's address, its tag cleared");
+        assert_eq!(l.get(&g).map(|r| r.v), Some(5));
+        assert!(
+            l.get_legacy().is_null(),
+            "a typed record is no legacy address"
+        );
+        // A second record: refused, given back.
+        let again = l.set(&g, rec(6)).expect_err("the word is taken");
+        assert_eq!(again.v, 6);
+        drop(again);
+        // Part 0 of a split guard lends it too, beside the other parts.
+        {
+            let [p0, _p1] = g.split::<2>();
+            assert_eq!(l.get(&p0).map(|r| r.v), Some(5));
+        }
+        let back = l.take(&mut g).expect("the record");
+        assert_eq!(back.v, 5);
+        assert!(!l.is_set() && l.take(&mut g).is_none(), "taken once");
+        drop(g);
+        // The box is back whole: it may be given to a word again.
+        let g = REC_MTX.lock();
+        assert!(l.set(&g, back).is_ok(), "linked again");
+        assert!(l.get(&g).is_some());
+    }
+
+    /// A record lent for ever (a leaked link, a leaked guard: both `'static`) cannot be made a
+    /// box by the public park protocol, even when its type is `Parkable`: the link never marks
+    /// its items parked, so `PoolBox::unpark` refuses the lent reference (review 1's B1).
+    #[test]
+    fn a_record_lent_for_ever_is_not_unparked() {
+        struct Lent {
+            v: u64,
+            mark: crate::pool::ParkWord,
+        }
+        static LENTS: crate::pool::BoxPool<Lent> = crate::pool::BoxPool::new();
+        static LENT_MTX: Mutexed<()> = Mutexed::new(0, ());
+        impl crate::pool::Pooled for Lent {
+            const POOL: &'static crate::pool::BoxPool<Lent> = &LENTS;
+        }
+        impl Parkable for Lent {
+            fn park_word(&self) -> &crate::pool::ParkWord {
+                &self.mark
+            }
+        }
+        impl Tagged for Lent {
+            const LOCK: StaticMutex = StaticMutex::of(&LENT_MTX);
+        }
+        crate::testutil::install();
+        let _ = LENTS.init(0, crate::pool::PR_WAITOK, "lentpl");
+        let b = LENTS
+            .get(crate::pool::PR_WAITOK, || Lent {
+                v: 9,
+                mark: crate::pool::ParkWord::new(),
+            })
+            .expect("an item");
+        let l: &'static TaggedLink<Lent> = Box::leak(Box::new(TaggedLink::new()));
+        let g: &'static crate::mutex::MutexedGuard<'static, ()> =
+            Box::leak(Box::new(LENT_MTX.lock()));
+        assert!(l.set(g, b).is_ok());
+        let lent: &'static Lent = l.get(g).expect("the record");
+        assert_eq!(lent.v, 9);
+        assert!(
+            PoolBox::unpark(lent).is_none(),
+            "never parked: no box of it"
+        );
+        assert_eq!(l.get(g).map(|r| r.v), Some(9), "still the link's");
+    }
+
+    #[test]
+    fn a_legacy_address_is_kept_and_never_lent_nor_overwritten_typed() {
+        static WORD: u64 = 0;
+        let l = TaggedLink::<Rec>::new();
+        let p: *const c_void = ptr::from_ref(&WORD).cast();
+        l.set_legacy(p);
+        assert_eq!(l.get_legacy(), p);
+        assert!(l.is_set());
+        let g = REC_MTX.lock();
+        assert!(l.get(&g).is_none(), "a legacy word lends nothing");
+        let refused = l.set(&g, rec(1)).expect_err("the legacy owner holds it");
+        assert_eq!(refused.v, 1);
+        drop(g);
+        l.set_legacy(ptr::null());
+        assert!(!l.is_set());
+        // An odd address would read as a record: refused.
+        let odd = std::panic::catch_unwind(|| {
+            let l = TaggedLink::<Rec>::new();
+            l.set_legacy(ptr::without_provenance(0x1001));
+        });
+        assert!(odd.is_err());
+    }
+
+    #[test]
+    fn a_legacy_write_over_a_record_and_another_lock_s_witness_are_refused() {
+        static WORD: u64 = 0;
+        let l = TaggedLink::<Rec>::new();
+        {
+            let g = REC_MTX.lock();
+            assert!(l.set(&g, rec(2)).is_ok());
+        }
+        let over = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            l.set_legacy(ptr::from_ref(&WORD).cast());
+        }));
+        assert!(over.is_err(), "the record stays the word's");
+        assert_eq!(l.get(&REC_MTX.lock()).map(|r| r.v), Some(2));
+        let other = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let g = OTHER_MTX.lock();
+            let _ = l.get(&g).map(|r| r.v);
+        }));
+        assert!(other.is_err(), "another mutex's guard opens nothing");
+        let part = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut g = REC_MTX.lock();
+            let [_p0, p1] = g.split::<2>();
+            let _ = l.get(&p1).map(|r| r.v);
+        }));
+        assert!(part.is_err(), "nor another part than 0");
+    }
+
+    #[test]
+    fn a_link_dropped_with_its_record_puts_it_back() {
+        let b = rec(3);
+        let mark = PoolBox::as_ptr(&b).addr();
+        {
+            let l = TaggedLink::<Rec>::new();
+            let g = REC_MTX.lock();
+            assert!(l.set(&g, b).is_ok());
+            assert_eq!(l.addr(), mark);
+        }
+        fn shared<T: Send + Sync>() {}
+        shared::<TaggedLink<Rec>>();
+    }
 
     #[test]
     fn empty_then_set_then_emptied() {

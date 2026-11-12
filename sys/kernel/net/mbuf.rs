@@ -145,10 +145,10 @@
 //!   `DIAGNOSTIC`; without it the C dereferences the NULL pool (inherited).
 //! - `IFQ_DEFPRIO` (`<net/if.h>`) and `CACHELINESIZE` (`<sys/percpu.h>`) are private
 //!   constants here until those headers move (N6.3a; inherited).
-//! - `struct mbuf_queue`, the `mq_*` functions and `sysctl_mq` are not here yet: their only
-//!   callers are `bsd`'s, which keeps LZ's shape for them (`sys/sys/mbuf.rs`'s `MbufQueue`,
-//!   a softc's zero-allocated queue whose level `mq_init` sets at run time); N6.3a writes
-//!   the kernel's queue with the interface queues, its first user.
+//! - `mq_init` is not here: the kernel's queues are made whole by [`MbufQueue::new`]
+//!   (`MBUF_QUEUE_INITIALIZER`), their level fixed then (the mutex's); `bsd` keeps LZ's
+//!   `MbufQueue` (`sys/sys/mbuf.rs`) with its run-time `mq_init` for its own queues (a softc's
+//!   zero-allocated one, nd6's) until they move.
 //! - Where the C overruns an mbuf, the kernel stops or splits instead: an offset or a length
 //!   that leaves the data storage is `panic(9)` ([`Mbuf::data`]'s bounds); `m_copym` of a
 //!   packet whose first mbuf is empty into a header mbuf (the C writes up to `MLEN` bytes into
@@ -264,15 +264,23 @@
 //!   ([`super::pf_hooks`], bridges.toml), no-ops before `bsd`'s pf registers.
 //! - `struct mbuf_list` is `OwnedSlist<MPkt>` ([`MbufList`]: head, tail, length);
 //!   `ml_dechain` hands the list itself over.
+//! - N6.4b: `struct mbuf_queue` ([`MbufQueue`]) is the list as its mutex's data
+//!   (`Mutexed<MbufList>`), its length kept beside it in an atomic written under the mutex,
+//!   so `mq_len` stays the C's unlocked `READ_ONCE`; `mq_delist` returns the list taken
+//!   (`*ml = mq->mq_list`); the packets a push, an enqueue, an enlist or a purge drops are
+//!   freed after the mutex, as the C's `m_freem` calls are. First users: ARP's input queue
+//!   (`arpinq`, through `kernel::net::if_var::Niqueue`) and `net.inet.ip.arpq`'s
+//!   `sysctl_mq`. One mutex pair per operation, as the C.
 
 use core::cell::Cell;
 use core::cmp::min;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 use hal::intr::{IPL_NET, IPL_VM, splraise};
 use hal::malloc::{M_NOWAIT, M_WAITOK};
+use hal::mutex::Mutexed;
 use hal::once::OnceStatic;
 use hal::overlay::{Body, Bytes};
 use hal::owned::{OwnedSlist, SlistLink};
@@ -286,6 +294,7 @@ pub use hal::sys::mbuf::{
     MT_CONTROL, MT_DATA, MT_FREE, MT_FTABLE, MT_HEADER, MT_NTYPES, MT_OOBDATA, MT_SONAME,
     MT_SOOPTS, Mbstat,
 };
+use hal::sys::net_if::{IFQCTL_DROPS, IFQCTL_LEN, IFQCTL_MAXLEN};
 use hal::sys::param::PAGE_SIZE;
 use hal::sys::types::Vaddr;
 use libkern::explicit_bzero;
@@ -294,6 +303,7 @@ use crate::assert::{kassert, kdassert, kpanic};
 use crate::clock::Timeval;
 use crate::net::mbuf2::m_tag_copy_chain;
 use crate::net::pf_hooks;
+use crate::sysctl::{SysctlReq, int as sysctl_int, rdint as sysctl_rdint};
 use crate::vm::km::{
     KMEM_DYN_INITIALIZER, KP_MBUF_CONTIG, KV_INTRSAFE, KmemDynMode, KmemPaMode, KmemVaMode,
     km_alloc, km_free, pa_mode,
@@ -3142,6 +3152,179 @@ pub fn ml_len(ml: &MbufList) -> u32 {
 #[inline]
 pub fn ml_empty(ml: &MbufList) -> bool {
     ml.is_empty()
+}
+
+// mbuf queues
+
+/// `struct mbuf_queue`: a list of packets under its own mutex, with a bound (`mq_maxlen`) and
+/// a count of the packets refused at it (`mq_drops`). The list is the mutex's data; its length
+/// is also kept in `mq_len`, written under the mutex with every change, so that `mq_len()` is
+/// the C's unlocked `READ_ONCE(mq->mq_list.ml_len)`.
+pub struct MbufQueue {
+    /// `mq_mtx` and the member it locks, `mq_list`.
+    mq_mtx: Mutexed<MbufList>,
+    /// `mq_list.ml_len`, read without the mutex.
+    mq_len: AtomicU32,
+    /// `mq_maxlen`: written under `mq_mtx`, read with `READ_ONCE`.
+    mq_maxlen: AtomicU32,
+    /// `mq_drops`: written under `mq_mtx`, read with `READ_ONCE`.
+    mq_drops: AtomicU32,
+}
+
+impl MbufQueue {
+    /// `MBUF_QUEUE_INITIALIZER(maxlen, ipl)`.
+    pub const fn new(maxlen: u32, ipl: i32) -> Self {
+        Self {
+            mq_mtx: Mutexed::new(ipl, MbufList::new()),
+            mq_len: AtomicU32::new(0),
+            mq_maxlen: AtomicU32::new(maxlen),
+            mq_drops: AtomicU32::new(0),
+        }
+    }
+
+    /// The list's new length, stored for the unlocked readers, under the mutex.
+    #[inline]
+    fn note_len(&self, ml: &MbufList) {
+        self.mq_len.store(ml_len(ml), Ordering::Relaxed);
+    }
+}
+
+/// `mq_push(mq, m)`: enqueues `m`, dropping the oldest packet when the queue is full; `true`
+/// when one was dropped (freed after the mutex).
+pub fn mq_push(mq: &MbufQueue, m: MbufBox) -> bool {
+    let dropped = {
+        let mut l = mq.mq_mtx.lock();
+        let dropped = if ml_len(&l) >= mq.mq_maxlen.load(Ordering::Relaxed) {
+            mq.mq_drops.fetch_add(1, Ordering::Relaxed);
+            ml_dequeue(&mut l)
+        } else {
+            None
+        };
+        ml_enqueue(&mut l, m);
+        mq.note_len(&l);
+        dropped
+    };
+    dropped.is_some()
+}
+
+/// `mq_enqueue(mq, m)`: enqueues `m`, or drops it (freed after the mutex) when the queue is
+/// full; `true` when it was dropped.
+pub fn mq_enqueue(mq: &MbufQueue, m: MbufBox) -> bool {
+    let refused = {
+        let mut l = mq.mq_mtx.lock();
+        if ml_len(&l) < mq.mq_maxlen.load(Ordering::Relaxed) {
+            ml_enqueue(&mut l, m);
+            mq.note_len(&l);
+            None
+        } else {
+            mq.mq_drops.fetch_add(1, Ordering::Relaxed);
+            Some(m)
+        }
+    };
+    refused.is_some()
+}
+
+/// `mq_dequeue(mq)`: the first packet.
+pub fn mq_dequeue(mq: &MbufQueue) -> Option<MbufBox> {
+    let mut l = mq.mq_mtx.lock();
+    let m = ml_dequeue(&mut l);
+    mq.note_len(&l);
+    m
+}
+
+/// `mq_enlist(mq, ml)`: appends `ml`, or drops all of it (freed after the mutex) when the
+/// queue is full; how many packets were dropped.
+pub fn mq_enlist(mq: &MbufQueue, ml: &mut MbufList) -> u32 {
+    let dropped = {
+        let mut l = mq.mq_mtx.lock();
+        if ml_len(&l) < mq.mq_maxlen.load(Ordering::Relaxed) {
+            ml_enlist(&mut l, ml);
+            mq.note_len(&l);
+            0
+        } else {
+            let n = ml_len(ml);
+            mq.mq_drops.fetch_add(n, Ordering::Relaxed);
+            n
+        }
+    };
+    if dropped != 0 {
+        let _ = ml_purge(ml);
+    }
+    dropped
+}
+
+/// `mq_delist(mq, ml)`: the whole queue, taken (`*ml = mq->mq_list`).
+pub fn mq_delist(mq: &MbufQueue) -> MbufList {
+    let mut l = mq.mq_mtx.lock();
+    let ml = ml_dechain(&mut l);
+    mq.note_len(&l);
+    ml
+}
+
+/// `mq_purge(mq)`: frees every queued packet (after the mutex); how many there were.
+pub fn mq_purge(mq: &MbufQueue) -> u32 {
+    let mut ml = mq_delist(mq);
+    ml_purge(&mut ml)
+}
+
+/// `mq_hdatalen(mq)`: the length of the first queued packet.
+pub fn mq_hdatalen(mq: &MbufQueue) -> u32 {
+    ml_hdatalen(&mq.mq_mtx.lock())
+}
+
+/// `mq_set_maxlen(mq, maxlen)`.
+pub fn mq_set_maxlen(mq: &MbufQueue, maxlen: u32) {
+    let _l = mq.mq_mtx.lock();
+    mq.mq_maxlen.store(maxlen, Ordering::Relaxed);
+}
+
+/// `mq_len(mq)`: the queued packets, read without the mutex (`READ_ONCE`).
+#[inline]
+pub fn mq_len(mq: &MbufQueue) -> u32 {
+    mq.mq_len.load(Ordering::Relaxed)
+}
+
+/// `mq_empty(mq)`.
+#[inline]
+pub fn mq_empty(mq: &MbufQueue) -> bool {
+    mq_len(mq) == 0
+}
+
+/// `mq_full(mq)`.
+#[inline]
+pub fn mq_full(mq: &MbufQueue) -> bool {
+    mq_len(mq) >= mq.mq_maxlen.load(Ordering::Relaxed)
+}
+
+/// `mq_drops(mq)`.
+#[inline]
+pub fn mq_drops(mq: &MbufQueue) -> u32 {
+    mq.mq_drops.load(Ordering::Relaxed)
+}
+
+/// `sysctl_mq(name, namelen, oldp, oldlenp, newp, newlen, mq)` (`!SMALL_KERNEL`): the
+/// `IFQCTL_*` nodes of a queue (`net.inet.ip.arpq`, `net.inet.ip.ifq`, ...).
+pub fn sysctl_mq(name: &[i32], req: &mut SysctlReq<'_>, mq: &MbufQueue) -> Result<(), Errno> {
+    // All sysctl names at this level are terminal.
+    let [mib] = name else {
+        return Err(Errno::ENOTDIR);
+    };
+
+    match *mib {
+        IFQCTL_LEN => sysctl_rdint(req, mq_len(mq) as i32),
+        IFQCTL_MAXLEN => {
+            let oldval = mq.mq_maxlen.load(Ordering::Relaxed);
+            let newval = AtomicI32::new(oldval as i32);
+            let error = sysctl_int(req, &newval);
+            let newval = newval.into_inner() as u32;
+            if error.is_ok() && oldval != newval {
+                mq_set_maxlen(mq, newval);
+            }
+            error
+        }
+        IFQCTL_DROPS => sysctl_rdint(req, mq_drops(mq) as i32),
+        _ => Err(Errno::EOPNOTSUPP),
+    }
 }
 
 const _: () = {
