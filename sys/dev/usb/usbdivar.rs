@@ -382,10 +382,11 @@ impl UsbdBus {
 }
 
 // SAFETY: `#[repr(C)]` with the device first; every other member is a `Cell` of an
-// `Option` of a reference, `NonNull`, `fn` or counted handle (`MArc`, a `NonNull` inside: None
-// is zero), a raw pointer, an integer, a structure of integers or a `bus_dma_tag_t` option,
-// an atomic integer, or the bpf word (`hal::smr::SmrArcWord`, an atomic pointer and a marker:
-// zero is no tap, hal's `an_all_zero_counted_word_is_null`): all valid as zero bits.
+// `Option` of a reference, `NonNull`, `fn` or counted handle (`MArc`, `#[repr(transparent)]`
+// over a `NonNull`, for which Rust guarantees `None` is zero), a raw pointer, an integer, a
+// structure of integers or a `bus_dma_tag_t` option, an atomic integer, or the bpf word
+// (`hal::smr::SmrArcWord`, an atomic pointer and a marker: zero is no tap, hal's
+// `an_all_zero_counted_word_is_null`): all valid as zero bits.
 unsafe impl crate::sys::device::Softc for UsbdBus {}
 
 /// A `usbd_bus` flag a host controller's `IPL_MPSAFE` interrupt handler reads or writes

@@ -667,6 +667,11 @@ struct Inner<T: 'static> {
 /// it from a non-zero count ([`PoolArc::take`]); they are sound because the caller's borrow of
 /// the value (a `View`'s lifetime) or the lock keeping its record keeps the item's last drop
 /// from finishing, so the item is not put back while a view exists.
+///
+/// `#[repr(transparent)]` over its `NonNull`: Rust then guarantees `Option<PoolArc<T>>` the
+/// `NonNull`'s niche, `None` all zero bits, which the zeroed items and softcs that hold one
+/// rely on (`Process::ps_vmspace`, a zeroed softc's `CredSlot`).
+#[repr(transparent)]
 pub struct PoolArc<T: Send + Sync + 'static> {
     inner: NonNull<Inner<T>>,
     _owns: PhantomData<Inner<T>>,

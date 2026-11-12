@@ -129,8 +129,9 @@ impl Default for CredSlot {
 /// (with `export_args`, which embeds it), the hole after `cr_ngroups` named.
 pub use hal::sys::mount::Xucred;
 
-// A `CredRef` is one non-null pointer: `Option<CredRef>` takes its null niche, so an
-// all-zero `CredSlot` (a zeroed softc's) holds `None`.
+// A `CredRef` is one non-null pointer, `#[repr(transparent)]` down to a `NonNull` (through
+// `PoolArc`): Rust guarantees `Option<CredRef>` its null niche, so an all-zero `CredSlot` (a
+// zeroed softc's) holds `None`.
 const _: () = {
     assert!(size_of::<Option<CredRef>>() == size_of::<usize>());
 };

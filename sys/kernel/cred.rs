@@ -369,7 +369,10 @@ pub fn ucred_item_size() -> Option<usize> {
 
 /// A counted reference to placed credentials (`struct ucred *` with its `cr_refcnt`
 /// reference): `Clone` is `crhold`, `Drop` is `crfree`; `Deref<Target = Ucred>`.
+/// `#[repr(transparent)]` over a `PoolArc` (itself transparent over a `NonNull`): `None` of
+/// an `Option<CredRef>` is all zero bits, as a zeroed `CredSlot` needs.
 #[derive(Clone)]
+#[repr(transparent)]
 pub struct CredRef(PoolArc<Ucred>);
 
 impl CredRef {

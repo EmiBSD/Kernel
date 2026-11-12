@@ -301,6 +301,11 @@ struct MInner<T> {
 /// made while handles live. The value
 /// never leaves its block and is never lent mutably while handles live (`as_pin`); a move-out
 /// or `&mut` API would need `T: Unpin`.
+///
+/// `#[repr(transparent)]` over its `NonNull`: Rust then guarantees `Option<MArc<T>>` the
+/// `NonNull`'s niche, `None` all zero bits, which the zeroed softcs that hold one rely on
+/// (`usbd_bus`'s bpf handle).
+#[repr(transparent)]
 pub struct MArc<T: Send + Sync + 'static> {
     inner: NonNull<MInner<T>>,
     _owns: PhantomData<MInner<T>>,
