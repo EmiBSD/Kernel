@@ -1748,7 +1748,9 @@ impl<T: Parkable> PoolBox<T> {
     /// pointer [`PoolBox::park`] returned): once per park, by a compare-and-swap of its mark;
     /// `None` for an item that is not parked (never parked, or unparked already: never a
     /// second owner). The caller keeps no reference to the item after this (`bsd`'s
-    /// contract: its references come from the parked pointer, by its own `unsafe`).
+    /// contract: its references come from the parked pointer, by its own `unsafe`;
+    /// `hal::link::TaggedLink`'s, the other parker, borrow a witness its `take` needs
+    /// mutably).
     pub fn unpark(parked: &'static T) -> Option<Self> {
         let w = parked.park_word();
         let start = ptr::from_ref(parked).addr();
@@ -1767,9 +1769,13 @@ impl<T: Parkable> PoolBox<T> {
         // exchange to 0 that this call won is the only one per park, so this rebuilds the
         // item's one handle exactly once (the pairing of `PoolBox::from_raw`'s contract with
         // the `into_raw` of `park`). Safe code holds no reference to a parked item (`park`
-        // returns a pointer and consumed the handle, ending its borrows); `parked` itself was
-        // made by `bsd`'s `unsafe` code from that pointer, whose contract is to use no such
-        // reference once the item is unparked, so the handle's `&mut T` meets none.
+        // returns a pointer and consumed the handle, ending its borrows) but those
+        // `hal::link::TaggedLink`, the one `hal` owner of parked items, lends, which borrow a
+        // witness of the mutex its unparking caller holds whole and borrows mutably (`take`)
+        // or end with the link (its drop), so none is alive here; `parked` itself was made by
+        // `bsd`'s `unsafe` code from that pointer, whose contract is to use no such reference
+        // once the item is unparked, or by `TaggedLink` for this call alone. The handle's
+        // `&mut T` meets none.
         Some(unsafe { PoolBox::from_raw(NonNull::from(parked), T::POOL) })
     }
 }
