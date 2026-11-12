@@ -1578,10 +1578,8 @@ mod tests {
         };
         let m = test_packet(&[0; 4]);
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { ether_resolve(ifp, m, ifr_addr_ptr(&hdrcmplt), None, &mut eh,) },
-            Ok(())
-        );
+        let r = unsafe { ether_resolve(ifp, m, ifr_addr_ptr(&hdrcmplt), None, &mut eh) };
+        assert_eq!(r, Ok(()));
         assert_eq!(eh.ether_shost, [1, 2, 3, 4, 5, 6]);
         m_freem(m);
 
@@ -1589,10 +1587,8 @@ mod tests {
         ifp.if_flags.set(ifp.if_flags.get() & !IFF_RUNNING);
         let m = test_packet(&[0; 4]);
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { ether_resolve(ifp, m, dst, None, &mut eh) },
-            Err(Errno::ENETDOWN)
-        );
+        let r = unsafe { ether_resolve(ifp, m, dst, None, &mut eh) };
+        assert_eq!(r, Err(Errno::ENETDOWN));
         assert_eq!(MBUFPL.nout(), before);
     }
 

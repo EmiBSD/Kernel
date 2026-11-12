@@ -284,7 +284,7 @@ mod tests {
     fn ring_sizes() {
         assert_eq!(COM_IBUFSIZE, 16 * 1024);
         assert_eq!(COM_IHIGHWATER, 12 * 1024);
-        assert!(COM_IHIGHWATER < COM_IBUFSIZE);
+        const _: () = assert!(COM_IHIGHWATER < COM_IBUFSIZE);
     }
 
     #[test]

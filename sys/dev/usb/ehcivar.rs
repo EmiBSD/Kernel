@@ -530,7 +530,7 @@ mod tests {
         for lev in 1..EHCI_IPOLLRATES {
             for pos in 0..(1u32 << lev) {
                 let i = ehci_iqhidx(lev, pos);
-                let parent = (i + 1) / 2 - 1;
+                let parent = i.div_ceil(2) - 1;
                 assert_eq!(parent, ehci_iqhidx(lev - 1, pos >> 1));
             }
         }

@@ -2644,8 +2644,10 @@ mod tests {
         let inq: ScsiInquiry = xs.cmd_as();
         assert_eq!(_2btol(&inq.length), 36);
 
-        let mut cdb = ScsiInquiry::default();
-        cdb.opcode = 0x55;
+        let cdb = ScsiInquiry {
+            opcode: 0x55,
+            ..Default::default()
+        };
         xs.set_cmd(&cdb);
         assert_eq!(xs.cmd.get().opcode, 0x55);
         // The bytes past the CDB are left alone.

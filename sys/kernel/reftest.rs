@@ -195,7 +195,7 @@ pub(crate) fn parse_int(text: &str) -> Option<i64> {
         Some(rest) => (true, rest.trim()),
         None => (false, t),
     };
-    let t = t.trim_end_matches(|c| matches!(c, 'u' | 'U' | 'l' | 'L'));
+    let t = t.trim_end_matches(['u', 'U', 'l', 'L']);
     let n = if let Some(h) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
         u64::from_str_radix(h, 16).ok()? as i64
     } else if t.len() > 1 && t.starts_with('0') && t.bytes().all(|b| b.is_ascii_digit()) {

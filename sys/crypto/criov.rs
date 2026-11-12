@@ -290,7 +290,6 @@ mod tests {
         let mut iov = Vec::new();
         let uio = cut(&mut buf, &[5, 5, 5, 5], &mut iov);
         cuio_copyback(&uio, 3, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
-        drop(uio);
         let mut want = vec![0u8; 20];
         want[3..14].copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert_eq!(buf, want);

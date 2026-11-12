@@ -2691,9 +2691,11 @@ mod tests {
     }
 
     fn stereo(dev: i32, l: u8, r: u8) -> MixerCtrl {
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = dev;
-        ctl.type_ = AUDIO_MIXER_VALUE;
+        let mut ctl = MixerCtrl {
+            dev,
+            type_: AUDIO_MIXER_VALUE,
+            ..Default::default()
+        };
         ctl.un.value_mut().num_channels = 2;
         ctl.un.value_mut().level[AUDIO_MIXER_LEVEL_LEFT] = l;
         ctl.un.value_mut().level[AUDIO_MIXER_LEVEL_RIGHT] = r;
@@ -2867,9 +2869,11 @@ mod tests {
 
         // A mono control with one channel, and more channels than the control has.
         let mic = (vt.get_portnum_by_name)(cif, Some(AudioCinputs), Some(AudioNmicrophone), None);
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = mic;
-        ctl.type_ = AUDIO_MIXER_VALUE;
+        let mut ctl = MixerCtrl {
+            dev: mic,
+            type_: AUDIO_MIXER_VALUE,
+            ..Default::default()
+        };
         ctl.un.value_mut().num_channels = 1;
         ctl.un.value_mut().level[AUDIO_MIXER_LEVEL_MONO] = 100;
         (vt.mixer_set_port)(cif, &mut ctl).unwrap();
@@ -2884,9 +2888,11 @@ mod tests {
             Some(AudioNmaster),
             Some(AudioNmute),
         );
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = mute;
-        ctl.type_ = AUDIO_MIXER_ENUM;
+        let mut ctl = MixerCtrl {
+            dev: mute,
+            type_: AUDIO_MIXER_ENUM,
+            ..Default::default()
+        };
         ctl.un.set_ord(1);
         (vt.mixer_set_port)(cif, &mut ctl).unwrap();
         assert_eq!(c.reg(AC97_REG_MASTER_VOLUME) & 0x8080, 0x8000);
@@ -2900,16 +2906,20 @@ mod tests {
 
         // Record source: the choice goes into both channels.
         let src = (vt.get_portnum_by_name)(cif, Some(AudioCrecord), Some(AudioNsource), None);
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = src;
-        ctl.type_ = AUDIO_MIXER_ENUM;
+        let mut ctl = MixerCtrl {
+            dev: src,
+            type_: AUDIO_MIXER_ENUM,
+            ..Default::default()
+        };
         ctl.un.set_ord(4);
         (vt.mixer_set_port)(cif, &mut ctl).unwrap();
         assert_eq!(c.reg(AC97_REG_RECORD_SELECT) & 0x0707, 0x0404);
 
         // Bad controls.
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = 99;
+        let mut ctl = MixerCtrl {
+            dev: 99,
+            ..Default::default()
+        };
         assert_eq!((vt.mixer_set_port)(cif, &mut ctl), Err(Errno::EINVAL));
         assert_eq!((vt.mixer_get_port)(cif, &mut ctl), Err(Errno::EINVAL));
         ctl.dev = 0; // a class
@@ -2921,9 +2931,11 @@ mod tests {
 
         // S/PDIF: unlocked until the host's `unlock` brings the counter below zero.
         let spdif = (vt.get_portnum_by_name)(cif, Some(AudioCoutputs), Some(b"spdif"), None);
-        let mut ctl = MixerCtrl::default();
-        ctl.dev = spdif;
-        ctl.type_ = AUDIO_MIXER_ENUM;
+        let mut ctl = MixerCtrl {
+            dev: spdif,
+            type_: AUDIO_MIXER_ENUM,
+            ..Default::default()
+        };
         ctl.un.set_ord(1);
         assert_eq!((vt.mixer_set_port)(cif, &mut ctl), Err(Errno::EBUSY));
         (vt.unlock)(cif);

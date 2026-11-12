@@ -4966,7 +4966,7 @@ mod tests {
 
     /// `PkgLength` of a body of `n` bytes (the length counts its own bytes).
     fn pkglen(n: usize) -> Vec<u8> {
-        if n + 1 <= 0x3F {
+        if n < 0x3F {
             vec![(n + 1) as u8]
         } else if n + 2 <= 0xFFF {
             let t = n + 2;
@@ -5518,7 +5518,7 @@ mod tests {
                     &device(b"COM1", &name(b"_HID", &s("PNP0501"))),
                 ]),
             ),
-            &cat(&[&[0x06, b'\\', 0x2E], b"_SB_PCI0", &[b'\\'], b"PCIA"]),
+            &cat(&[&[0x06, b'\\', 0x2E], b"_SB_PCI0", b"\\", b"PCIA"]),
         ]);
         assert_eq!(load(aml), 0);
 

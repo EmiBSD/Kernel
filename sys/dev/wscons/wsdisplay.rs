@@ -4457,8 +4457,10 @@ mod tests {
         assert_eq!(cstr(&st.name), b"std");
 
         let mut et = [0u8; size_of::<WsdisplayEmultype>()];
-        let mut d = WsdisplayEmultype::default();
-        d.idx = 100;
+        let d = WsdisplayEmultype {
+            idx: 100,
+            ..Default::default()
+        };
         ioctl_ret(&mut et, &d);
         assert_eq!(
             wsdisplay_internal_ioctl(sc, scr, WSDISPLAYIO_GETEMULTYPE, &mut et, 0, None),

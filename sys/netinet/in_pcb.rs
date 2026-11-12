@@ -2718,7 +2718,7 @@ pub(crate) mod tests {
                 v[40 + off..42 + off].copy_from_slice(&sum.to_ne_bytes());
             }
             let m = test_packet(&v);
-            m.m_pkthdr().ph_ifidx.set(u32::from(ifp.if_index.get()));
+            m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
             m
         }
 

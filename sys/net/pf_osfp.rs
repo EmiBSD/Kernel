@@ -844,7 +844,10 @@ mod tests {
 
     /// A fingerprint ioctl for the test SYN with OS `os` named `class version subtype`.
     fn fpioc(os: PfOsfp, class: &[u8], version: &[u8], flags: u16, wsize: u16) -> PfOsfpIoctl {
-        let mut io = PfOsfpIoctl::default();
+        let mut io = PfOsfpIoctl {
+            fp_tcpopts: TCPOPTS,
+            ..Default::default()
+        };
         io.fp_os = PfOsfpIoctlEntry {
             fp_os: os,
             fp_class_nm: name(class),
@@ -852,7 +855,6 @@ mod tests {
             fp_subtype_nm: name(b""),
             ..PfOsfpIoctlEntry::default()
         };
-        io.fp_tcpopts = TCPOPTS;
         io.fp_wsize = wsize;
         io.fp_psize = 60;
         io.fp_mss = 1460;
@@ -986,8 +988,10 @@ mod tests {
         assert_eq!(pf_osfp_add(&fpioc(a, b"A", b"1", PF_OSFP_DF, 100)), Ok(()));
         assert_eq!(pf_osfp_add(&fpioc(b, b"B", b"2", PF_OSFP_DF, 200)), Ok(()));
 
-        let mut io = PfOsfpIoctl::default();
-        io.fp_getnum = 1;
+        let mut io = PfOsfpIoctl {
+            fp_getnum: 1,
+            ..Default::default()
+        };
         assert_eq!(pf_osfp_get(&mut io), Ok(()));
         assert_eq!(io.fp_getnum, 1);
         assert_eq!(io.fp_os.fp_os, b);

@@ -3097,11 +3097,8 @@ mod tests {
         assert!(got.round >= 4);
         assert_eq!(sc.silence.get()[0], 0x80);
         // SAFETY: the test owns the ring, DMA is stopped.
-        assert!(
-            unsafe { sc.play.bytes(0, sc.play.klen.get()) }
-                .iter()
-                .all(|&b| b == 0x80)
-        );
+        let played = unsafe { sc.play.bytes(0, sc.play.klen.get()) };
+        assert!(played.iter().all(|&b| b == 0x80));
         // No change while DMA runs.
         sc.active.set(1);
         assert_eq!(audio_ioctl(sc, AUDIO_SETPAR, &mut data), Err(Errno::EBUSY));

@@ -2011,8 +2011,10 @@ mod tests {
         cmd.pg_num = VMWPVS_CFGPG_CONTROLLER;
         let words: std::vec::Vec<u32> = cmd
             .as_bytes()
-            .chunks_exact(4)
-            .map(|w| u32::from_ne_bytes([w[0], w[1], w[2], w[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|w| u32::from_ne_bytes(*w))
             .collect();
         assert_eq!(words.len(), 6);
         assert_eq!(words[3], VMWPVS_CFGPGADDR_CONTROLLER);

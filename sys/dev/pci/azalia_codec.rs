@@ -3002,7 +3002,7 @@ mod tests {
         azalia_mixer_set(&mut codec, 3, MI_TARGET_OUTAMP, &enum_ctrl(1)).unwrap();
         azalia_mixer_set(&mut codec, 3, MI_TARGET_OUTAMP, &value_ctrl(248, 0)).unwrap();
         assert_eq!(link.0.borrow().amp(3, true, true, 0), 0x80 | 31);
-        assert_eq!(link.0.borrow().amp(3, true, false, 0), 0x80 | 0);
+        assert_eq!(link.0.borrow().amp(3, true, false, 0), 0x80);
 
         // mono request on a stereo widget: only the left channel is written
         azalia_mixer_set(&mut codec, 3, MI_TARGET_OUTAMP, &enum_ctrl(0)).unwrap();

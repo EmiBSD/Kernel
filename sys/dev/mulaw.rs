@@ -262,15 +262,15 @@ mod tests {
         }
         buf.push(0xaa); // a partial group is left alone
         mulaw24_to_slinear24(&mut buf);
-        for (code, q) in buf.chunks_exact(4).enumerate() {
-            let w = i32::from_ne_bytes([q[0], q[1], q[2], q[3]]);
+        for (code, q) in buf.as_chunks::<4>().0.iter().enumerate() {
+            let w = i32::from_ne_bytes(*q);
             let lin = i32::from(mulaw_decode(code as u8));
             assert_eq!(w, lin << 8, "code {code:#x}");
         }
         assert_eq!(buf[1024], 0xaa);
         slinear24_to_mulaw24(&mut buf);
-        for (code, q) in buf.chunks_exact(4).enumerate() {
-            let w = u32::from_ne_bytes([q[0], q[1], q[2], q[3]]);
+        for (code, q) in buf.as_chunks::<4>().0.iter().enumerate() {
+            let w = u32::from_ne_bytes(*q);
             let back = (w >> 16) as u8;
             let mut one = [code as u8];
             mulaw_to_slinear8(&mut one);
@@ -298,8 +298,8 @@ mod tests {
         let src = std::fs::read_to_string(path).expect("mulaw.c");
         let lin16 = c_table(&src, "mulawtolin16[256][2]");
         assert_eq!(lin16.len(), 512);
-        for (i, pair) in lin16.chunks_exact(2).enumerate() {
-            assert_eq!(MULAWTOLIN16[i], [pair[0], pair[1]], "mulawtolin16[{i}]");
+        for (i, pair) in lin16.as_chunks::<2>().0.iter().enumerate() {
+            assert_eq!(MULAWTOLIN16[i], *pair, "mulawtolin16[{i}]");
         }
         let tomu = c_table(&src, "lintomulaw[256]");
         assert_eq!(tomu.len(), 256);

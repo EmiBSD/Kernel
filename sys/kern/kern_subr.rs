@@ -413,7 +413,6 @@ mod tests {
         assert_eq!(uiomove(&mut more, &mut u), Ok(()));
         assert_eq!(u.uio_resid, 0);
         assert_eq!(uiomove(&mut more, &mut u), Ok(()));
-        drop(u);
         assert_eq!(&a, b"abc");
         assert_eq!(&c, b"defgh");
     }
@@ -457,7 +456,6 @@ mod tests {
             assert_eq!(u.uio_offset, 102);
             #[cfg(not(feature = "diagnostic"))]
             assert_eq!(ureadc(i32::from(b'z'), &mut u), Err(Errno::EINVAL));
-            drop(u);
             assert!(b == *b"xy");
             b = [0; 2];
         }

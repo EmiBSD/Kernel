@@ -3893,7 +3893,7 @@ mod tests {
         hdr.to_request(&mut cq);
         assert_eq!({ cq.config_header }.page_number, 1);
         assert_eq!({ cq.config_header }.page_length, 5);
-        assert!(!MpiCfgHdr::EXTENDED);
+        const _: () = assert!(!MpiCfgHdr::EXTENDED);
     }
 
     #[test]
@@ -3911,7 +3911,7 @@ mod tests {
         };
         let ehdr = MpiEcfgHdr::from_reply(&cp);
         assert_eq!(ehdr.page_length(), 9);
-        assert!(MpiEcfgHdr::EXTENDED);
+        const _: () = assert!(MpiEcfgHdr::EXTENDED);
 
         let mut cq = MpiMsgConfigRequest::default();
         ehdr.to_request(&mut cq);

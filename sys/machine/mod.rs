@@ -169,7 +169,7 @@ mod tests {
         assert_eq!(Machine::PAGE_SIZE, 1 << Machine::PAGE_SHIFT);
         assert_eq!(Machine::PAGE_MASK, Machine::PAGE_SIZE - 1);
         assert_eq!(Machine::USPACE, Machine::UPAGES * Machine::PAGE_SIZE);
-        assert!(Machine::MAX_PAGE_SHIFT >= Machine::PAGE_SHIFT);
+        const _: () = assert!(Machine::MAX_PAGE_SHIFT >= Machine::PAGE_SHIFT);
     }
 
     #[test]

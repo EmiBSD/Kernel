@@ -814,7 +814,7 @@ mod tests {
         assert_eq!(Str(b"abc\0def").to_string(), "abc");
         assert_eq!(Str(b"no nul").to_string(), "no nul");
         assert_eq!(Str(b"\xff!").to_string(), "?!");
-        assert_eq!(format!("{}", Str(&[b'x'])), "x");
+        assert_eq!(format!("{}", Str(b"x")), "x");
     }
 
     #[test]

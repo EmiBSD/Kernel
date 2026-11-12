@@ -821,3 +821,49 @@ status = "applied"
 emibsd = "7b044a92fdc6"
 method = "reimplemented"
 reason = "native's README carries the same wording since 7b044a92"
+
+[[commit]]
+lz = "f7b1fad33bbf"
+subject = "build: switch to DevTools' Rust 1.99.1 and LLVM 23.1.4; freeze amd64"
+modules = [
+    "sys/crypto/criov.rs",
+    "sys/dev/acpi/acpi.rs",
+    "sys/dev/acpi/dsdt.rs",
+    "sys/dev/audio.rs",
+    "sys/dev/hid/hidkbd.rs",
+    "sys/dev/ic/ac97.rs",
+    "sys/dev/ic/comvar.rs",
+    "sys/dev/ic/mpi.rs",
+    "sys/dev/ic/mpireg.rs",
+    "sys/dev/mulaw.rs",
+    "sys/dev/ofw/fdt.rs",
+    "sys/dev/pci/azalia_codec.rs",
+    "sys/dev/pci/pucdata.rs",
+    "sys/dev/pci/vmwpvs.rs",
+    "sys/dev/rasops/rasops32.rs",
+    "sys/dev/rnd.rs",
+    "sys/dev/softraid.rs",
+    "sys/dev/softraid_raid1c.rs",
+    "sys/dev/usb/ehci.rs",
+    "sys/dev/usb/ehcivar.rs",
+    "sys/dev/usb/uaudio.rs",
+    "sys/dev/usb/umass.rs",
+    "sys/dev/wscons/wsdisplay.rs",
+    "sys/kern/kern_subr.rs",
+    "sys/kern/subr_prf.rs",
+    "sys/net/if_ethersubr.rs",
+    "sys/net/if_pfsync.rs",
+    "sys/net/if_wg.rs",
+    "sys/net/pf_osfp.rs",
+    "sys/netinet/in_pcb.rs",
+    "sys/netinet/ip_output.rs",
+    "sys/nfs/nfs_serv.rs",
+    "sys/nfs/nfs_socket.rs",
+    "sys/scsi/scsi_base.rs",
+    "sys/scsi/scsi_ioctl.rs",
+    "sys/scsi/scsiconf.rs",
+]
+status = "applied"
+emibsd = "4183152950c7"
+method = "cherry-pick-conflicts"
+reason = "the sys/ half only: clippy 1.99's fixes in test code, taken by the inherited modules as LZ wrote them and by the adapted ones where their tests keep LZ's lines (if_ethersubr's ether_resolve test resolved by hand); the hunks in tests native moved into the kernel crate (rtable, rtsock, dinode, ffs_vfsops, nfs_srvsubs, one of nfs_serv's) and in the redesigned modules (cd9660_rrip, kern_clockintr, tty_subr, uipc_usrreq, strlcat, sys/queue, ffs_subr, uvm_map, uvm_param) are not taken, since native's clippy lints no test target; the extras sys/reftest.rs and sys/crypto/testutil.rs (LZ helpers at the pin, not new files) and sys/machine/mod.rs take LZ's line, and native's copies of the two extras the same line; the build, docs, rules and xtask half is LZ's form of native's decisions 49 (dd1571e9) and 44 (7bfcdfe4) and is not taken; security-review areas touched in test code only (crypto, rnd, if_wg, pf_osfp, if_pfsync), reviewed"

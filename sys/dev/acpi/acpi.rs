@@ -3371,7 +3371,7 @@ mod tests {
         RAN.lock().unwrap().clear();
 
         assert_eq!(acpi_dotask(&sc), 0);
-        acpi_addtask(&sc, record, 1 as *mut c_void, 10);
+        acpi_addtask(&sc, record, ptr::without_provenance_mut(1), 10);
         acpi_addtask(&sc, record, 2 as *mut c_void, 20);
         while acpi_dotask(&sc) != 0 {}
         assert_eq!(*RAN.lock().unwrap(), vec![(1, 10), (2, 20)]);
