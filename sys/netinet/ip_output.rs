@@ -48,26 +48,27 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv4 output: `ip_output`, fragmentation, option insertion, multicast loopback and the
-//! output checksums.
+//! IPv4 output as `bsd`'s callers know it: `ip_output`, fragmentation, option insertion and
+//! the output checksums with LZ's signatures over the kernel's (`kernel::netinet::ip_output`,
+//! N6.4a); IPsec's half of `ip_output` (`ip_output_ipsec_lookup`, `ip_output_ipsec_send`,
+//! `ip_output_ipsec_pmtu_update`), which the kernel reaches through the `Ipsec` bridge's legs
+//! until IPsec moves (N8); and the socket option half.
 //!
 //! Upstream: sys/netinet/ip_output.c @ 3ce1f3f79392
 //!
-//! `ip_output` takes a packet with a skeletal IP header (length, offset, ttl, protocol, tos,
-//! source, destination), completes it, finds the route and the interface (caching the route
-//! in a `struct route`) and hands the packet to `if_output_tso`, fragmenting it with
-//! `ip_fragment` when it is too large for the interface.
-//!
 //! The socket option half (`ip_ctloutput`, the `pr_ctloutput` of UDP and, behind
 //! `rip_ctloutput`, of raw IP) keeps a socket's IP options, header fields and multicast
-//! options in its `inpcb`.
+//! options in its `inpcb`, until the pcb moves (N6.4c1).
 //!
-//! Status: `ported` (M7b output path, M9a socket options).
+//! Status: `ported` (M7b output path, M9a socket options); the output path the kernel's
+//! since N6.4a.
 //!
 //! ## Deviations
 //! - `ip_output`'s `struct route *`, `struct ip_moptions *` and `const struct ipsec_level
 //!   *seclevel` are `Option`s; the error is a `Result`. The packet (and `opt`) are
-//!   `&'static Mbuf`s.
+//!   `&'static Mbuf`s, handed to the kernel's `ip_output` (the packet unparked, consumed),
+//!   with the multicast options' interface, TTL and loopback switch lent as the kernel's
+//!   `IpMoptions`.
 //! - IPsec (M9c): `ip_output_ipsec_lookup` returns the SA (`Ok(None)` for no IPsec) or the
 //!   SPD's verdict (`SpdError::Drop` is the C's `-EINVAL`, a silent drop).
 //! - The IP header is read and written as a copy (`ip_var.rs`'s `mtod_ip`/`mtod_ip_store`),
@@ -76,13 +77,8 @@
 //!   `ip_pcbopts` builds the `struct ipoption` in a local buffer, large enough for what the
 //!   C may write past `ipopt_list` before its final length check, and copies it into the mbuf.
 //!   `ip_setmoptions`'s `malloc(M_WAITOK)` cannot fail in C: here its failure panics.
-//! - `NPF` (pf(4)) is configured: `pf_test` filters the packet before it is sent, and a
-//!   packet pf tagged `PF_TAG_REROUTE` reruns the route lookup (the C's `goto reroute` is a
-//!   labelled loop). `ip_output_ipsec_send` runs `pf_test` on the SA's `enc(4)` interface.
-//! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - `in_cksum_phdr`, `in_delayed_cksum` and `in_proto_cksum_out` write the checksum through
-//!   `m_copyback` or, when it lies in the first mbuf, an unaligned store; `in_ifcap_cksum`
-//!   answers `bool`.
+//! - `NPF` (pf(4)) is configured: `ip_output_ipsec_send` runs `pf_test` on the SA's `enc(4)`
+//!   interface.
 
 use core::cell::Cell;
 use core::mem::size_of;
@@ -94,95 +90,67 @@ use crate::kern::kern_malloc::{free, malloc, mallocarray};
 use crate::kern::kern_prot::suser;
 use crate::kern::kern_tc::gettime;
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_mbuf::{
-    MAX_LINKHDR, m_adj, m_copyback, m_copym, m_dup_pkt, m_dup_pkthdr, m_freem, m_get, m_gethdr,
-    ml_dequeue, ml_enqueue, ml_init, ml_purge,
-};
+use crate::kern::uipc_mbuf::{m_freem, m_get, ml_dequeue, ml_enqueue, ml_init, ml_purge};
 use crate::kern::uipc_mbuf2::{m_tag_first, m_tag_next};
 use crate::machine::cpu::curproc;
-use crate::net::if_::{
-    IFCAP_CSUM_IPv4, IFCAP_CSUM_TCPv4, IFCAP_CSUM_UDPv4, IFCAP_TSOv4, IFF_BROADCAST, IFF_LOOPBACK,
-    IFF_MULTICAST, IFF_SIMPLEX, if_get, if_input_local, if_output_ml, if_output_tso, if_put,
-    ifa_ifwithaddr,
-};
+use crate::net::if_::{IFF_MULTICAST, if_get, if_put, ifa_ifwithaddr};
 use crate::net::if_enc::enc_getif;
 use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{
-    RT_RESOLVE, RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU, Route, as_static,
-    route_cache, rtalloc, rtfree, rtisvalid, sa_of, unpark,
+    RT_RESOLVE, RTF_HOST, RTF_LOCAL, Route, as_static, rtalloc, rtfree, rtisvalid, sa_of,
 };
-use crate::net::rtable::{rtable_l2, rtable_loindex};
+use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{
-    IN_CLASSA_NSHIFT, INADDR_ANY, INADDR_BROADCAST, IP_ADD_MEMBERSHIP, IP_AUTH_LEVEL,
-    IP_DEFAULT_MULTICAST_LOOP, IP_DEFAULT_MULTICAST_TTL, IP_DROP_MEMBERSHIP, IP_ESP_NETWORK_LEVEL,
-    IP_ESP_TRANS_LEVEL, IP_IPCOMP_LEVEL, IP_IPDEFTTL, IP_IPSEC_LOCAL_ID, IP_IPSEC_REMOTE_ID,
-    IP_IPSECFLOWINFO, IP_MAX_MEMBERSHIPS, IP_MIN_MEMBERSHIPS, IP_MINTTL, IP_MULTICAST_IF,
-    IP_MULTICAST_LOOP, IP_MULTICAST_TTL, IP_OPTIONS, IP_PIPEX, IP_PORTRANGE, IP_PORTRANGE_DEFAULT,
-    IP_PORTRANGE_HIGH, IP_PORTRANGE_LOW, IP_RECVDSTADDR, IP_RECVDSTPORT, IP_RECVIF, IP_RECVOPTS,
-    IP_RECVRETOPTS, IP_RECVRTABLE, IP_RECVTTL, IP_RETOPTS, IP_TOS, IP_TTL, IPPROTO_ICMP,
-    IPPROTO_IP, IPPROTO_TCP, IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT,
+    INADDR_ANY, IP_ADD_MEMBERSHIP, IP_AUTH_LEVEL, IP_DEFAULT_MULTICAST_LOOP,
+    IP_DEFAULT_MULTICAST_TTL, IP_DROP_MEMBERSHIP, IP_ESP_NETWORK_LEVEL, IP_ESP_TRANS_LEVEL,
+    IP_IPCOMP_LEVEL, IP_IPDEFTTL, IP_IPSEC_LOCAL_ID, IP_IPSEC_REMOTE_ID, IP_IPSECFLOWINFO,
+    IP_MAX_MEMBERSHIPS, IP_MIN_MEMBERSHIPS, IP_MINTTL, IP_MULTICAST_IF, IP_MULTICAST_LOOP,
+    IP_MULTICAST_TTL, IP_OPTIONS, IP_PIPEX, IP_PORTRANGE, IP_PORTRANGE_DEFAULT, IP_PORTRANGE_HIGH,
+    IP_PORTRANGE_LOW, IP_RECVDSTADDR, IP_RECVDSTPORT, IP_RECVIF, IP_RECVOPTS, IP_RECVRETOPTS,
+    IP_RECVRTABLE, IP_RECVTTL, IP_RETOPTS, IP_TOS, IP_TTL, IPPROTO_IP, IPSEC_AUTH_LEVEL_DEFAULT,
     IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
     IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_UNIQUE, InAddr, IpMreq, IpMreqn, SockaddrIn, in_addmulti,
-    in_delmulti, in_hasmulti, in_ifp2ia, in_multicast, sintosa,
+    in_delmulti, in_ifp2ia, in_multicast, sintosa,
 };
-use crate::netinet::in_cksum::in_cksum;
 use crate::netinet::in_pcb::{
     INP_HIGHPORT, INP_IPSECFLOWINFO, INP_LOWPORT, INP_RECVDSTADDR, INP_RECVDSTPORT, INP_RECVIF,
     INP_RECVOPTS, INP_RECVRETOPTS, INP_RECVRTABLE, INP_RECVTTL, in_pcbset_rtableid, sotoinpcb,
 };
 use crate::netinet::in_var::{InMulti, ifatoia};
-use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip::{
-    IP_DF, IP_MAXPACKET, IP_MF, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP, IPOPT_OFFSET,
-    IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_SSRR, IPVERSION, Ip, MAXTTL, ipopt_copied,
+    IP_DF, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP, IPOPT_OFFSET, IPOPT_OLEN, IPOPT_OPTVAL,
+    IPOPT_SSRR, MAXTTL,
 };
-use crate::netinet::ip_icmp::{ICMP_CKSUM_OFFSET, icmp_mtudisc_clone};
-use crate::netinet::ip_id::ip_randomid;
+use crate::netinet::ip_icmp::icmp_mtudisc_clone;
 use crate::netinet::ip_input::{IP_DEFTTL, ip_mtudisc};
 use crate::netinet::ip_ipsp::{
-    IPSEC_IN_USE, IPSP_DF_INHERIT, IPSP_DIRECTION_OUT, IpsecCounters, IpsecLevel, Tdb, TdbCounters,
-    TdbIdent, ipsecstat_inc, ipsp_ids_free, ipsp_ids_lookup, tdb_unref, tdbstat_inc,
+    IPSP_DF_INHERIT, IPSP_DIRECTION_OUT, IpsecCounters, IpsecLevel, Tdb, TdbCounters, TdbIdent,
+    ipsecstat_inc, ipsp_ids_free, ipsp_ids_lookup, tdb_unref, tdbstat_inc,
 };
 use crate::netinet::ip_spd::{SpdError, ipsp_spd_lookup};
-use crate::netinet::ip_var::{
-    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT, IpMoptions,
-    Ipoption, IpstatCounters, MAX_IPOPTLEN, ipstat_add, ipstat_inc, mtod_ip, mtod_ip_store,
-};
+use crate::netinet::ip_var::{IpMoptions, Ipoption, MAX_IPOPTLEN, mtod_ip};
 use crate::netinet::ipsec_output::{ipsec_adjust_mtu, ipsp_process_packet};
 use crate::netinet::tcp_output::tcp_softtso_chop;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
-use crate::netinet::udp::Udphdr;
-use crate::netinet::udp_var::{UdpstatCounters, udpstat_inc};
-use crate::sys::endian::{htonl, htons, ntohl, ntohs};
+use crate::sys::endian::{htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_IPMOPTS, M_NOWAIT, M_WAITOK, M_ZERO};
+use crate::sys::mbuf::M_BCAST;
 use crate::sys::mbuf::{
-    M_BCAST, M_DONTWAIT, M_EXT, M_ICMP_CSUM_OUT, M_IPV4_CSUM_OUT, M_IPV6_DF_OUT, M_MCAST,
-    M_TCP_CSUM_OUT, M_TCP_TSO, M_UDP_CSUM_OUT, MT_HEADER, MT_SOOPTS, Mbuf, MbufList,
-    PACKET_TAG_IPSEC_IN_DONE, PACKET_TAG_IPSEC_OUT_DONE, PF_TAG_GENERATED, PF_TAG_REROUTE,
-    m_move_hdr, ml_len, mtod,
+    M_IPV6_DF_OUT, M_MCAST, M_TCP_TSO, MT_SOOPTS, Mbuf, MbufList, PACKET_TAG_IPSEC_OUT_DONE, mtod,
+    mut_of, park, unpark,
 };
-use crate::sys::mbuf::{m_data_add, m_set_next};
 use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
 use crate::sys::socket::{AF_INET, SO_RTABLE};
 use crate::sys::socketvar::Socket;
-use crate::sys::systm::{kernel_lock, kernel_unlock, net_assert_locked};
+use crate::sys::systm::{kernel_lock, kernel_unlock};
 
-/// `offsetof(struct tcphdr, th_sum)`.
-const TH_SUM_OFFSET: usize = core::mem::offset_of!(crate::netinet::tcp::Tcphdr, th_sum);
-/// `offsetof(struct udphdr, uh_sum)`.
-const UH_SUM_OFFSET: usize = core::mem::offset_of!(Udphdr, uh_sum);
-
-/// `ro->ro_dstsin`: a route cache's destination, as the `sockaddr_in` `route_cache` wrote.
-fn ro_sin(ro: &Route) -> SockaddrIn {
-    hal::pod::at::<SockaddrIn>(&ro.ro_dst, 0).unwrap_or_default()
-}
-
-/// `ip_output`: IP output. The packet in mbuf chain `m` contains a skeletal IP header (with
-/// len, off, ttl, proto, tos, src, dst). The mbuf chain containing the packet will be freed.
-/// The mbuf `opt`, if present, will not be freed.
+/// `ip_output(m, opt, ro, flags, imo, seclevel, ipsecflowinfo)`: IP output, the kernel's
+/// (`kernel::netinet::ip_output::ip_output`) for `bsd`'s callers: the parked packet `m`
+/// handed over (consumed), the socket's multicast options lent as the kernel's view, the net
+/// lock the caller holds proved through the `SaToken`.
 pub fn ip_output(
     m: &'static Mbuf,
     opt: Option<&'static Mbuf>,
@@ -192,396 +160,26 @@ pub fn ip_output(
     seclevel: Option<&IpsecLevel>,
     ipsecflowinfo: u32,
 ) -> Result<(), Errno> {
-    let mut ro_arg = ro;
-    let mut m = m;
-    let mut ifp: Option<&'static Ifnet> = None;
-    let mut tdb: Option<&'static Tdb> = None;
-    let ml = MbufList::new();
-    let mut hlen = size_of::<Ip>() as i32;
-    let mut iproute = Route::new();
-    let mut mtu: u64;
-
-    net_assert_locked("ip_output");
-
-    #[cfg(feature = "diagnostic")]
-    if m.m_flags().get() & crate::sys::mbuf::M_PKTHDR == 0 {
-        crate::kern::subr_prf::panic(format_args!("ip_output no HDR"));
-    }
-    if let Some(opt) = opt {
-        m = ip_insertoptions(m, opt, &mut hlen);
-    }
-
-    let mut ip = mtod_ip(m);
-
-    // Fill in IP header.
-    if flags & (IP_FORWARDING | IP_RAWOUTPUT) == 0 {
-        ip.set_ip_v(IPVERSION);
-        ip.ip_off &= htons(IP_DF);
-        ip.ip_id = htons(ip_randomid());
-        ip.set_ip_hl((hlen >> 2) as u8);
-        ipstat_inc(IpstatCounters::IpsLocalout);
-    } else {
-        hlen = i32::from(ip.ip_hl()) << 2;
-    }
-    mtod_ip_store(m, &ip);
-
-    let error: Result<(), Errno> = 'done: {
-        let bad: Result<(), Errno> = 'bad: {
-            // We should not send traffic to 0/8 say both Stevens and RFCs 5735 section 3 and
-            // 1122 sections 3.2.1.3 and 3.3.6.
-            if (ntohl(ip.ip_dst.s_addr) >> IN_CLASSA_NSHIFT) == 0 {
-                break 'bad Err(Errno::ENETUNREACH);
-            }
-
-            let orig_rtableid = m.m_pkthdr().ph_rtableid.get();
-            // reroute: pf(4) asks for a new route lookup after it changed the packet.
-            'reroute: loop {
-                // The caller's route, or ours (iproute) when it gave none or pf rerouted.
-                let ro: &mut Route = match ro_arg.as_deref_mut() {
-                    Some(r) => r,
-                    None => &mut iproute,
-                };
-                // Do a route lookup now in case we need the source address to do an SPD lookup in
-                // IPsec; for most packets, the source address is set at a higher level protocol.
-                // ICMPs and other packets though (e.g., traceroute) have a source address of
-                // zeroes. If there is a cached route, check that it is to the same destination and
-                // is still up. If not, free it and try again.
-                let _ = route_cache(
-                    ro,
-                    &ip.ip_dst,
-                    Some(&ip.ip_src),
-                    m.m_pkthdr().ph_rtableid.get(),
-                );
-                let mut dst: SockaddrIn = ro_sin(ro);
-
-                let mcast_or_bcast =
-                    in_multicast(ip.ip_dst.s_addr) || ip.ip_dst.s_addr == INADDR_BROADCAST;
-                let imo_ifp = match imo {
-                    Some(imo) if mcast_or_bcast => if_get(u32::from(imo.imo_ifidx)),
-                    _ => None,
-                };
-                if let Some(i) = imo_ifp {
-                    ifp = Some(i);
-                    mtu = u64::from(i.if_mtu.get());
-                    if ip.ip_src.s_addr == INADDR_ANY
-                        && let Some(ia) = in_ifp2ia(i)
-                    {
-                        ip.ip_src = ia.ia_addr.get().sin_addr;
-                        mtod_ip_store(m, &ip);
-                    }
-                } else {
-                    if ro.rt().is_none() {
-                        let words = [ip.ip_src.s_addr];
-                        ro.ro_rt = kernel::net::route::rtalloc_mpath(
-                            ro.dst(),
-                            Some(&words),
-                            ro.ro_tableid,
-                            &crate::net::if_::net_held("ip_output"),
-                        );
-                    }
-
-                    let Some(rt) = ro.rt().map(as_static) else {
-                        ipstat_inc(IpstatCounters::IpsNoroute);
-                        break 'bad Err(Errno::EHOSTUNREACH);
-                    };
-
-                    let ia = rt.rt_ifa.get().map(ifatoia);
-                    ifp = if rt.rt_flags.get() & RTF_LOCAL != 0 {
-                        if_get(rtable_loindex(m.m_pkthdr().ph_rtableid.get()))
-                    } else {
-                        if_get(rt.rt_ifidx.get())
-                    };
-                    // We aren't using rtisvalid() here because the UP/DOWN state machine is broken
-                    // with some Ethernet drivers like em(4). As a result we might try to use an
-                    // invalid cached route entry while an interface is being detached.
-                    let Some(i) = ifp else {
-                        ipstat_inc(IpstatCounters::IpsNoroute);
-                        break 'bad Err(Errno::EHOSTUNREACH);
-                    };
-                    mtu = u64::from(rt.rt_mtu().load(Ordering::Relaxed));
-                    if mtu == 0 {
-                        mtu = u64::from(i.if_mtu.get());
-                    }
-
-                    // `dst = satosin(rt->rt_gateway)`: the gateway read once, in place.
-                    if rt.rt_flags.get() & RTF_GATEWAY != 0
-                        && let Some(g) =
-                            rt.with_gateway(|g| g.and_then(|g| hal::pod::at::<SockaddrIn>(g, 0)))
-                    {
-                        dst = g;
-                    }
-
-                    // Set the source IP address
-                    if ip.ip_src.s_addr == INADDR_ANY
-                        && let Some(ia) = ia
-                    {
-                        ip.ip_src = ia.ia_addr.get().sin_addr;
-                        mtod_ip_store(m, &ip);
-                    }
-                }
-
-                if IPSEC_IN_USE.load(Ordering::Relaxed) != 0 || seclevel.is_some() {
-                    // Do we have any pending SAs to apply ?
-                    match ip_output_ipsec_lookup(m, hlen, seclevel, ipsecflowinfo) {
-                        // Should silently drop packet
-                        Err(SpdError::Drop) => break 'bad Ok(()),
-                        Err(SpdError::Errno(e)) => break 'bad Err(e),
-                        Ok(t) => tdb = t,
-                    }
-                    if tdb.is_some() {
-                        // If it needs TCP/UDP hardware-checksumming, do the computation now.
-                        in_proto_cksum_out(m, None);
-                    }
-                }
-
-                if in_multicast(ip.ip_dst.s_addr) || ip.ip_dst.s_addr == INADDR_BROADCAST {
-                    m.m_flags().set(
-                        m.m_flags().get()
-                            | if ip.ip_dst.s_addr == INADDR_BROADCAST {
-                                M_BCAST
-                            } else {
-                                M_MCAST
-                            },
-                    );
-
-                    // IP destination address is multicast. Make sure "dst" still points to the
-                    // address in "ro". (It may have been changed to point to a gateway address,
-                    // above.)
-                    dst = ro_sin(ro);
-
-                    // See if the caller provided any multicast options
-                    ip.ip_ttl = match imo {
-                        Some(imo) => imo.imo_ttl,
-                        None => IP_DEFAULT_MULTICAST_TTL,
-                    };
-                    mtod_ip_store(m, &ip);
-
-                    // if we don't know the outgoing ifp yet, we can't generate output
-                    let Some(i) = ifp else {
-                        ipstat_inc(IpstatCounters::IpsNoroute);
-                        break 'bad Err(Errno::EHOSTUNREACH);
-                    };
-
-                    // Confirm that the outgoing interface supports multicast, but only if the
-                    // packet actually is going out on that interface (i.e., no IPsec is applied).
-                    if ((m.m_flags().get() & M_MCAST != 0 && i.if_flags.get() & IFF_MULTICAST == 0)
-                        || (m.m_flags().get() & M_BCAST != 0
-                            && i.if_flags.get() & IFF_BROADCAST == 0))
-                        && tdb.is_none()
-                    {
-                        ipstat_inc(IpstatCounters::IpsNoroute);
-                        break 'bad Err(Errno::ENETUNREACH);
-                    }
-
-                    // If source address not specified yet, use address of outgoing interface.
-                    if ip.ip_src.s_addr == INADDR_ANY
-                        && let Some(ia) = in_ifp2ia(i)
-                    {
-                        ip.ip_src = ia.ia_addr.get().sin_addr;
-                        mtod_ip_store(m, &ip);
-                    }
-
-                    if imo.is_none_or(|imo| imo.imo_loop != 0) && in_hasmulti(&ip.ip_dst, i) {
-                        // If we belong to the destination multicast group on the outgoing
-                        // interface, and the caller did not forbid loopback, loop back a copy.
-                        // Can't defer TCP/UDP checksumming, do the computation now.
-                        in_proto_cksum_out(m, None);
-                        ip_mloopback(i, m, &dst);
-                    }
-                    // MROUTING: ip_mforward when ipmforwarding and ip_mrouter_active; not
-                    // configured.
-
-                    // Multicasts with a time-to-live of zero may be looped-back, above, but must
-                    // not be transmitted on a network. Also, multicasts addressed to the loopback
-                    // interface are not sent -- the above call to ip_mloopback() will loop back a
-                    // copy if this host actually belongs to the destination group on the loopback
-                    // interface.
-                    if ip.ip_ttl == 0 || i.if_flags.get() & IFF_LOOPBACK != 0 {
-                        break 'bad Ok(());
-                    }
-                }
-
-                let Some(i) = ifp else {
-                    break 'bad Err(Errno::EHOSTUNREACH);
-                };
-
-                // Look for broadcast address and verify user is allowed to send such a packet; if
-                // the packet is going in an IPsec tunnel, skip this check.
-                let dst_addr = dst.sin_addr.s_addr;
-                if tdb.is_none()
-                    && (dst_addr == INADDR_BROADCAST
-                        || ro
-                            .rt()
-                            .is_some_and(|rt| rt.rt_flags.get() & RTF_BROADCAST != 0))
-                {
-                    if i.if_flags.get() & IFF_BROADCAST == 0 {
-                        break 'bad Err(Errno::EADDRNOTAVAIL);
-                    }
-                    if flags & IP_ALLOWBROADCAST == 0 {
-                        break 'bad Err(Errno::EACCES);
-                    }
-
-                    // Don't allow broadcast messages to be fragmented
-                    if u32::from(ntohs(ip.ip_len)) > i.if_mtu.get() {
-                        break 'bad Err(Errno::EMSGSIZE);
-                    }
-                    m.m_flags().set(m.m_flags().get() | M_BCAST);
-                } else {
-                    m.m_flags().set(m.m_flags().get() & !M_BCAST);
-                }
-
-                // If we're doing Path MTU discovery, we need to set DF unless the route's MTU is
-                // locked.
-                if flags & IP_MTUDISC != 0
-                    && ro.rt().is_some_and(|rt| rt.rt_locks().get() & RTV_MTU == 0)
-                {
-                    ip.ip_off |= htons(IP_DF);
-                    mtod_ip_store(m, &ip);
-                }
-
-                // Check if the packet needs encapsulation.
-                if let Some(t) = tdb {
-                    // Callee frees mbuf
-                    break 'done ip_output_ipsec_send(
-                        t,
-                        m,
-                        Some(ro),
-                        orig_rtableid,
-                        flags & IP_FORWARDING != 0,
-                    );
-                }
-
-                // Packet filter.
-                let mut mp = Some(m);
-                let dir = if flags & IP_FORWARDING != 0 {
-                    PF_FWD
-                } else {
-                    PF_OUT
-                };
-                if pf_test(AF_INET, dir, i, &mut mp) != PF_PASS {
-                    // `goto bad` frees `m` as pf_test left it: NULL when pf dropped it.
-                    m_freem(mp);
-                    break 'done Err(Errno::EACCES);
-                }
-                let Some(mm) = mp else {
-                    break 'done Ok(());
-                };
-                m = mm;
-                ip = mtod_ip(m);
-                hlen = i32::from(ip.ip_hl()) << 2;
-                let _ = hlen; // the C recomputes it here; nothing reads it below
-                let pf = &m.m_pkthdr().pf;
-                if pf.flags.get() & (PF_TAG_REROUTE | PF_TAG_GENERATED)
-                    == (PF_TAG_REROUTE | PF_TAG_GENERATED)
-                {
-                    // Already rerun the route lookup, go on.
-                    pf.flags
-                        .set(pf.flags.get() & !(PF_TAG_GENERATED | PF_TAG_REROUTE));
-                } else if pf.flags.get() & PF_TAG_REROUTE != 0 {
-                    // Tag as generated to skip over pf_test on rerun.
-                    pf.flags.set(pf.flags.get() | PF_TAG_GENERATED);
-                    // ro = NULL, then `ro = &iproute; ro->ro_rt = NULL` at reroute: iproute's
-                    // route given back (rtfree), the caller's left to the caller.
-                    ro_arg = None;
-                    iproute.ro_rt = None;
-                    if_put(ifp); // drop reference since target changed
-                    ifp = None;
-                    continue 'reroute;
-                }
-
-                if flags & IP_FORWARDING != 0
-                    && flags & IP_FORWARDING_IPSEC != 0
-                    && m.m_pkthdr().ph_tagsset.get() & PACKET_TAG_IPSEC_IN_DONE == 0
-                {
-                    break 'bad Err(Errno::EHOSTUNREACH);
-                }
-
-                // If TSO or small enough for interface, can just send directly.
-                let mut mp = Some(m);
-                // SAFETY: `dst` is a local `sockaddr_in` (the route's destination or gateway),
-                // readable for the call.
-                let error = unsafe {
-                    if_output_tso(
-                        i,
-                        &mut mp,
-                        sintosa(&mut dst),
-                        ro.rt().map(as_static),
-                        mtu as u32,
-                    )
-                };
-                let Some(mm) = mp else {
-                    break 'done error;
-                };
-                if error.is_err() {
-                    break 'done error;
-                }
-                m = mm;
-
-                // Too large for interface; fragment if possible. Must be able to put at least 8
-                // bytes per fragment.
-                let ip = mtod_ip(m);
-                if ip.ip_off & htons(IP_DF) != 0 {
-                    if ip_mtudisc.load(Ordering::Relaxed) != 0 {
-                        ipsec_adjust_mtu(m, i.if_mtu.get());
-                    }
-                    // pf changed routing table, use orig rtable for path MTU.
-                    if ro.ro_tableid != orig_rtableid {
-                        ro.ro_rt = None;
-                        ro.ro_tableid = orig_rtableid;
-                        ro.ro_rt = icmp_mtudisc_clone(ro_sin(ro).sin_addr, ro.ro_tableid, false)
-                            .map(unpark);
-                    }
-
-                    // This case can happen if the user changed the MTU of an interface after
-                    // enabling IP on it. Because most netifs don't keep track of routes pointing
-                    // to them, there is no way for one to update all its routes when the MTU is
-                    // changed.
-                    if let Some(rt) = ro.rt()
-                        && rtisvalid(Some(rt))
-                        && rt.rt_flags.get() & RTF_HOST != 0
-                        && rt.rt_locks().get() & RTV_MTU == 0
-                    {
-                        let rtmtu = rt.rt_mtu().load(Ordering::Relaxed);
-                        if rtmtu > i.if_mtu.get() {
-                            let _ = rt.rt_mtu().compare_exchange(
-                                rtmtu,
-                                i.if_mtu.get(),
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            );
-                        }
-                    }
-                    ipstat_inc(IpstatCounters::IpsCantfrag);
-                    break 'bad Err(Errno::EMSGSIZE);
-                }
-
-                if let Err(e) = ip_fragment(m, &ml, i, mtu) {
-                    break 'done Err(e);
-                }
-                // SAFETY: as for `if_output_tso`.
-                let sent =
-                    unsafe { if_output_ml(i, &ml, sintosa(&mut dst), ro.rt().map(as_static)) };
-                if let Err(e) = sent {
-                    break 'done Err(e);
-                }
-                ipstat_inc(IpstatCounters::IpsFragmented);
-                break 'done Ok(());
-            }
-        };
-        // bad:
-        m_freem(m);
-        bad
-    };
-    // done: iproute's route given back with it (rtfree).
-    drop(iproute);
-    if_put(ifp);
-    tdb_unref(tdb);
-    error
+    let view = imo.map(|imo| kernel::netinet::ip_var::IpMoptions {
+        imo_ifidx: imo.imo_ifidx,
+        imo_ttl: imo.imo_ttl,
+        imo_loop: imo.imo_loop,
+    });
+    kernel::netinet::ip_output::ip_output(
+        unpark(m),
+        opt.map(|o| o as &Mbuf),
+        ro,
+        flags,
+        view.as_ref(),
+        seclevel,
+        ipsecflowinfo,
+        &crate::net::if_::net_held("ip_output"),
+    )
 }
 
 /// `ip_output_ipsec_lookup`: the SA the policy wants applied to `m`, with a reference;
 /// `None` when no IPsec is needed (no SA, or the packet already went through this one).
-fn ip_output_ipsec_lookup(
+pub(crate) fn ip_output_ipsec_lookup(
     m: &Mbuf,
     hlen: i32,
     seclevel: Option<&IpsecLevel>,
@@ -677,7 +275,7 @@ fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&mut Route>, dst: InAddr, r
 
 /// `ip_output_ipsec_send`: hands `m` to the SA `tdb` (after the path MTU check), as many
 /// packets as TSO chopping makes. Consumes the packet.
-fn ip_output_ipsec_send(
+pub(crate) fn ip_output_ipsec_send(
     tdb: &'static Tdb,
     m: &'static Mbuf,
     ro: Option<&mut Route>,
@@ -782,219 +380,21 @@ fn ip_output_ipsec_send(
 }
 
 /// `ip_fragment`: splits `m0` into fragments for `mtu` on `ml`, the first (trimmed) one
-/// first; on failure every fragment is freed.
+/// first; on failure every fragment is freed (the kernel's, over `bsd`'s list).
 pub fn ip_fragment(m0: &'static Mbuf, ml: &MbufList, ifp: &Ifnet, mtu: u64) -> Result<(), Errno> {
-    ml_init(ml);
-    ml_enqueue(ml, m0);
-
-    let mut ip = mtod_ip(m0);
-    let hlen = i32::from(ip.ip_hl()) << 2;
-    let tlen = m0.m_pkthdr().len.get();
-    let mut len = ((mtu as i32) - hlen) & !7;
-
-    let error = 'bad: {
-        if len < 8 {
-            break 'bad Errno::EMSGSIZE;
-        }
-        let firstlen = len;
-
-        // If we are doing fragmentation, we can't defer TCP/UDP checksumming; compute the
-        // checksum and clear the flag.
-        in_proto_cksum_out(m0, None);
-
-        // Loop through length of payload after first fragment, make new header and copy data
-        // of each part and link onto chain.
-        let mut off = hlen + firstlen;
-        while off < tlen {
-            let Some(m) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
-                break 'bad Errno::ENOBUFS;
-            };
-            ml_enqueue(ml, m);
-            if let Err(e) = m_dup_pkthdr(m, m0, M_DONTWAIT) {
-                break 'bad e;
-            }
-            m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
-            let mut mhip = ip;
-            let mhlen = if hlen > size_of::<Ip>() as i32 {
-                // The options of the fragment, after its fixed header.
-                // SAFETY: `m0`'s header with its options is contiguous; the new mbuf has
-                // room for a header and 40 bytes of options after `max_linkhdr`.
-                let n = unsafe { ip_optcopy(mtod::<u8>(m0), hlen as usize, mtod::<u8>(m)) };
-                let mhlen = n as i32 + size_of::<Ip>() as i32;
-                mhip.set_ip_hl((mhlen >> 2) as u8);
-                mhlen
-            } else {
-                size_of::<Ip>() as i32
-            };
-            m.m_len().set(mhlen as u32);
-
-            let mut moff = (((off - hlen) >> 3) as u16) + (ntohs(ip.ip_off) & !IP_MF);
-            if ip.ip_off & htons(IP_MF) != 0 {
-                moff |= IP_MF;
-            }
-            if off + len >= tlen {
-                len = tlen - off;
-            } else {
-                moff |= IP_MF;
-            }
-            mhip.ip_off = htons(moff);
-
-            m.m_pkthdr().len.set(mhlen + len);
-            mhip.ip_len = htons(m.m_pkthdr().len.get() as u16);
-            mtod_ip_store(m, &mhip);
-            let Some(n) = m_copym(m0, off, len, M_NOWAIT) else {
-                break 'bad Errno::ENOBUFS;
-            };
-            let _ = m_set_next(m, Some(n));
-
-            in_hdr_cksum_out(m, Some(ifp));
-            off += len;
-        }
-
-        // Update first fragment by trimming what's been copied out and updating header, then
-        // send each fragment (in order).
-        if hlen + firstlen < tlen {
-            m_adj(m0, hlen + firstlen - tlen);
-            ip.ip_off |= htons(IP_MF);
-        }
-        ip.ip_len = htons(m0.m_pkthdr().len.get() as u16);
-        mtod_ip_store(m0, &ip);
-
-        in_hdr_cksum_out(m0, Some(ifp));
-
-        ipstat_add(IpstatCounters::IpsOfragments, u64::from(ml_len(ml)));
-        return Ok(());
-    };
-    // bad:
-    ipstat_inc(IpstatCounters::IpsOdropped);
-    let _ = ml_purge(ml);
-    Err(error)
+    // `u_long mtu`: the interfaces' and the routes' MTUs are `u_int`s.
+    let mtu = u32::try_from(mtu).unwrap_or(u32::MAX);
+    ml.change(|l| kernel::netinet::ip_output::ip_fragment(unpark(m0), l, ifp, mtu))
 }
 
-/// `ip_insertoptions`: inserts IP options `opt` (a `struct ipoption`) into a preformed packet.
-/// Adjusts the IP destination as required for IP source routing, as indicated by a non-zero
-/// `in_addr` at the start of the options; `phlen` gets the new header length.
+/// `ip_insertoptions`: inserts IP options `opt` (a `struct ipoption`) into a preformed packet
+/// (the kernel's: the parked packet handed over and the result parked).
 pub fn ip_insertoptions(m: &'static Mbuf, opt: &Mbuf, phlen: &mut i32) -> &'static Mbuf {
-    let mut m = m;
-    // SAFETY: an options mbuf holds a `struct ipoption` of `m_len` bytes (its list is
-    // `m_len - sizeof(ipopt_dst)` bytes long).
-    let p: Ipoption = unsafe { ptr::read_unaligned(mtod::<Ipoption>(opt)) };
-    let mut ip = mtod_ip(m);
-
-    let optlen = opt.m_len().get() as usize - size_of::<crate::netinet::in_::InAddr>();
-    if optlen + usize::from(ntohs(ip.ip_len)) > IP_MAXPACKET {
-        return m; // XXX should fail
-    }
-
-    // check if options will fit to IP header
-    if optlen + size_of::<Ip>() > (0x0f << 2) {
-        *phlen = size_of::<Ip>() as i32;
-        return m;
-    }
-
-    if p.ipopt_dst.s_addr != 0 {
-        ip.ip_dst = p.ipopt_dst;
-    }
-    let pktdat_room = m.data_off();
-    if m.m_flags().get() & M_EXT != 0 || pktdat_room < optlen {
-        let Some(n) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
-            return m;
-        };
-        m_move_hdr(n, m);
-        n.m_pkthdr().len.set(n.m_pkthdr().len.get() + optlen as i32);
-        m.m_len().set(m.m_len().get() - size_of::<Ip>() as u32);
-        m_data_add(m, size_of::<Ip>() as isize);
-        let _ = m_set_next(n, Some(m));
-        m = n;
-        m.m_len().set((optlen + size_of::<Ip>()) as u32);
-        m_data_add(m, MAX_LINKHDR.load(Ordering::Relaxed) as isize);
-    } else {
-        m_data_add(m, -(optlen as isize));
-        m.m_len().set(m.m_len().get() + optlen as u32);
-        m.m_pkthdr().len.set(m.m_pkthdr().len.get() + optlen as i32);
-    }
-    // The header moves to the new start (the C's memcpy/memmove of the old header).
-    mtod_ip_store(m, &ip);
-    // SAFETY: the first mbuf now holds the header followed by `optlen` bytes of room; the
-    // options are `optlen` bytes of `p`'s list.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            p.ipopt_list.as_ptr().cast::<u8>(),
-            mtod::<u8>(m).add(size_of::<Ip>()),
-            optlen,
-        )
-    };
-    *phlen = (size_of::<Ip>() + optlen) as i32;
-    ip.ip_len = htons(ntohs(ip.ip_len) + optlen as u16);
-    mtod_ip_store(m, &ip);
-    m
-}
-
-/// `ip_optcopy`: copies the options of the header at `ip` (`hlen` bytes long) to after the
-/// fixed header at `jp`, omitting those not copied during fragmentation, and pads them with
-/// `IPOPT_EOL` to a multiple of 4. Returns the length of the copy.
-///
-/// # Safety
-///
-/// `ip` points at `hlen` readable bytes; `jp` has room for a fixed header and `hlen` bytes
-/// after it, and does not overlap `ip`.
-pub unsafe fn ip_optcopy(ip: *const u8, hlen: usize, jp: *mut u8) -> usize {
-    let hdr = size_of::<Ip>();
-    // SAFETY: the caller's contract.
-    let cp = unsafe { core::slice::from_raw_parts(ip.add(hdr), hlen - hdr) };
-    // SAFETY: the caller's contract.
-    let dp = unsafe { core::slice::from_raw_parts_mut(jp.add(hdr), hlen - hdr) };
-    let mut d = 0;
-    let mut c = 0;
-    let mut cnt = (hlen - hdr) as i32;
-    while cnt > 0 {
-        let opt = cp[c];
-        if opt == IPOPT_EOL {
-            break;
-        }
-        if opt == IPOPT_NOP {
-            // Preserve for IP mcast tunnel's LSRR alignment.
-            dp[d] = IPOPT_NOP;
-            d += 1;
-            cnt -= 1;
-            c += 1;
-            continue;
-        }
-        #[cfg(feature = "diagnostic")]
-        if cnt < (IPOPT_OLEN + 1) as i32 {
-            crate::kern::subr_prf::panic(format_args!(
-                "malformed IPv4 option passed to ip_optcopy"
-            ));
-        }
-        let mut optlen = i32::from(cp[c + IPOPT_OLEN]);
-        #[cfg(feature = "diagnostic")]
-        if optlen < (IPOPT_OLEN + 1) as i32 || optlen > cnt {
-            crate::kern::subr_prf::panic(format_args!(
-                "malformed IPv4 option passed to ip_optcopy"
-            ));
-        }
-        // bogus lengths should have been caught by ip_dooptions
-        if optlen > cnt {
-            optlen = cnt;
-        }
-        if optlen <= 0 {
-            break;
-        }
-        let ol = optlen as usize;
-        if ipopt_copied(opt) != 0 {
-            dp[d..d + ol].copy_from_slice(&cp[c..c + ol]);
-            d += ol;
-        }
-        cnt -= optlen;
-        c += ol;
-    }
-    let mut optlen = d;
-    while optlen & 0x3 != 0 {
-        dp[d] = IPOPT_EOL;
-        d += 1;
-        optlen += 1;
-    }
-    optlen
+    park(kernel::netinet::ip_output::ip_insertoptions(
+        unpark(m),
+        opt,
+        phlen,
+    ))
 }
 
 // ip_ctloutput, ip_pcbopts, ip_multicast_if, ip_setmoptions, ip_getmoptions: the socket
@@ -1767,297 +1167,32 @@ pub unsafe fn ip_freemoptions(imo: Option<NonNull<IpMoptions>>) {
     free(imo.cast(), M_IPMOPTS, size_of::<IpMoptions>());
 }
 
-/// `ip_mloopback`: loops back a copy of an IP multicast packet to the input queue of `ifp`
-/// (called from `ip_output`).
-pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &SockaddrIn) {
-    if let Some(copym) = m_dup_pkt(m, MAX_LINKHDR.load(Ordering::Relaxed) as u32, M_DONTWAIT) {
-        // We don't bother to fragment if the IP length is greater than the interface's MTU.
-        // Can this possibly matter?
-        in_hdr_cksum_out(copym, None);
-        let _ = if_input_local(ifp, copym, dst.sin_family, None);
-    }
-}
-
-/// `in_hdr_cksum_out`: the IP header checksum, by the interface if it can or in software.
+/// `in_hdr_cksum_out`: the IP header checksum, by the interface if it can or in software (the
+/// kernel's, on the packet `bsd`'s caller owns).
 pub fn in_hdr_cksum_out(m: &Mbuf, ifp: Option<&Ifnet>) {
-    let mut ip = mtod_ip(m);
-
-    ip.ip_sum = 0;
-    if in_ifcap_cksum(m, ifp, IFCAP_CSUM_IPv4) {
-        mtod_ip_store(m, &ip);
-        m.m_pkthdr()
-            .csum_flags
-            .set(m.m_pkthdr().csum_flags.get() | M_IPV4_CSUM_OUT);
-    } else {
-        ipstat_inc(IpstatCounters::IpsOutswcsum);
-        mtod_ip_store(m, &ip);
-        ip.ip_sum = in_cksum(m, i32::from(ip.ip_hl()) << 2);
-        mtod_ip_store(m, &ip);
-        m.m_pkthdr()
-            .csum_flags
-            .set(m.m_pkthdr().csum_flags.get() & !M_IPV4_CSUM_OUT);
-    }
+    kernel::netinet::ip_output::in_hdr_cksum_out(mut_of(m), ifp);
 }
 
-/// `in_cksum_phdr`: computes the significant parts of the IPv4 checksum pseudo-header for use
-/// in a delayed TCP/UDP checksum calculation.
-fn in_cksum_phdr(src: u32, dst: u32, lenproto: u32) -> u16 {
-    let mut sum: u32 = lenproto
-        .wrapping_add(u32::from((src >> 16) as u16))
-        .wrapping_add(u32::from(src as u16))
-        .wrapping_add(u32::from((dst >> 16) as u16))
-        .wrapping_add(u32::from(dst as u16));
-
-    sum = u32::from((sum >> 16) as u16) + u32::from(sum as u16);
-
-    if sum > 0xffff {
-        sum -= 0xffff;
-    }
-
-    sum as u16
-}
-
-/// Writes a 16-bit checksum at byte `offset` of the packet.
-fn cksum_store(m: &Mbuf, offset: usize, csum: u16) {
-    if offset + size_of::<u16>() > m.m_len().get() as usize {
-        let _ = m_copyback(m, offset as i32, &csum.to_ne_bytes(), M_NOWAIT);
-    } else {
-        // SAFETY: the first mbuf holds the two bytes at `offset`.
-        unsafe { ptr::write_unaligned(mtod::<u8>(m).add(offset).cast::<u16>(), csum) };
-    }
-}
-
-/// `in_delayed_cksum`: processes a delayed payload checksum calculation.
-pub fn in_delayed_cksum(m: &Mbuf) {
-    let ip = mtod_ip(m);
-    let mut offset = usize::from(ip.ip_hl()) << 2;
-    let mut csum = in4_cksum(m, 0, offset as i32, m.m_pkthdr().len.get() - offset as i32);
-    if csum == 0 && i32::from(ip.ip_p) == IPPROTO_UDP {
-        csum = 0xffff;
-    }
-
-    match i32::from(ip.ip_p) {
-        IPPROTO_TCP => offset += TH_SUM_OFFSET,
-        IPPROTO_UDP => offset += UH_SUM_OFFSET,
-        IPPROTO_ICMP => offset += ICMP_CKSUM_OFFSET,
-        _ => return,
-    }
-
-    cksum_store(m, offset, csum);
-}
-
-/// `in_proto_cksum_out`: the transport checksum of an outgoing packet: the pseudo header for
-/// the hardware, or the whole checksum in software when the interface cannot.
+/// `in_proto_cksum_out`: the transport checksum of an outgoing packet (the kernel's, on the
+/// packet `bsd`'s caller owns).
 pub fn in_proto_cksum_out(m: &Mbuf, ifp: Option<&Ifnet>) {
-    let ip = mtod_ip(m);
-    let flags = m.m_pkthdr().csum_flags.get();
-
-    // some hw and in_delayed_cksum need the pseudo header cksum
-    if flags & (M_TCP_CSUM_OUT | M_UDP_CSUM_OUT | M_ICMP_CSUM_OUT) != 0 {
-        let mut csum: u16 = 0;
-        let mut offset = usize::from(ip.ip_hl()) << 2;
-        if flags & M_TCP_TSO != 0 && in_ifcap_cksum(m, ifp, IFCAP_TSOv4) {
-            csum = in_cksum_phdr(
-                ip.ip_src.s_addr,
-                ip.ip_dst.s_addr,
-                htonl(u32::from(ip.ip_p)),
-            );
-        } else if flags & (M_TCP_CSUM_OUT | M_UDP_CSUM_OUT) != 0 {
-            csum = in_cksum_phdr(
-                ip.ip_src.s_addr,
-                ip.ip_dst.s_addr,
-                htonl(u32::from(ntohs(ip.ip_len)) - offset as u32 + u32::from(ip.ip_p)),
-            );
-        }
-        match i32::from(ip.ip_p) {
-            IPPROTO_TCP => offset += TH_SUM_OFFSET,
-            IPPROTO_UDP => offset += UH_SUM_OFFSET,
-            IPPROTO_ICMP => offset += ICMP_CKSUM_OFFSET,
-            _ => {}
-        }
-        cksum_store(m, offset, csum);
-    }
-
-    let flags = m.m_pkthdr().csum_flags.get();
-    if flags & M_TCP_CSUM_OUT != 0 {
-        if !in_ifcap_cksum(m, ifp, IFCAP_CSUM_TCPv4) || ip.ip_hl() != 5 {
-            tcpstat_inc(TcpstatCounters::TcpsOutswcsum);
-            in_delayed_cksum(m);
-            m.m_pkthdr().csum_flags.set(flags & !M_TCP_CSUM_OUT); // Clear
-        }
-    } else if flags & M_UDP_CSUM_OUT != 0 {
-        if !in_ifcap_cksum(m, ifp, IFCAP_CSUM_UDPv4) || ip.ip_hl() != 5 {
-            udpstat_inc(UdpstatCounters::UdpsOutswcsum);
-            in_delayed_cksum(m);
-            m.m_pkthdr().csum_flags.set(flags & !M_UDP_CSUM_OUT); // Clear
-        }
-    } else if flags & M_ICMP_CSUM_OUT != 0 {
-        in_delayed_cksum(m);
-        m.m_pkthdr().csum_flags.set(flags & !M_ICMP_CSUM_OUT); // Clear
-    }
+    kernel::netinet::ip_output::in_proto_cksum_out(mut_of(m), ifp);
 }
 
 /// `in_ifcap_cksum`: whether `ifp` computes checksum `ifcap` for `m` in hardware.
-pub fn in_ifcap_cksum(m: &Mbuf, ifp: Option<&Ifnet>, ifcap: u32) -> bool {
-    let Some(ifp) = ifp else {
-        return false;
-    };
-    if ifp.if_capabilities.get() & ifcap == 0 || ifp.if_bridgeidx.get() != 0 {
-        return false;
-    }
-    // Simplex interface sends packet back without hardware cksum. Keep this check in sync
-    // with the condition where ether_resolve() calls if_input_local().
-    if m.m_flags().get() & M_BCAST != 0
-        && ifp.if_flags.get() & IFF_SIMPLEX != 0
-        && m.m_pkthdr().pf.routed.get() == 0
-    {
-        return false;
-    }
-    true
-}
+pub use kernel::netinet::ip_output::in_ifcap_cksum;
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
-    // Host tests for IPv4 output: fragmentation (offsets, flags, lengths and checksums of each
-    // fragment), the option copy of the later fragments, and option insertion.
-
-    use std::vec;
-    use std::vec::Vec;
+    // Host tests for the IP socket options (the output half's are the kernel's since N6.4a).
 
     use super::*;
-    use crate::kern::uipc_mbuf::{m_copydata, m_freem, ml_dequeue};
-    use crate::net::if_::tests::{setup_net, zeroed_static};
-    use crate::netinet::ip::{IP_OFFMASK, IPOPT_LSRR, IPOPT_RR};
-
-    /// A packet of `len` bytes: an IP header of `hlen` (options from `opts`, padded with NOPs)
-    /// and a patterned payload, in a chain of clusters.
-    fn packet(len: usize, opts: &[u8]) -> &'static Mbuf {
-        let hlen = 20 + opts.len().div_ceil(4) * 4;
-        let mut p = vec![0u8; len];
-        p[0] = 0x40 | (hlen / 4) as u8;
-        p[2..4].copy_from_slice(&(len as u16).to_be_bytes());
-        p[8] = 64;
-        p[9] = 17;
-        p[12..16].copy_from_slice(&[10, 0, 2, 15]);
-        p[16..20].copy_from_slice(&[10, 0, 2, 2]);
-        p[20..20 + opts.len()].copy_from_slice(opts);
-        for b in &mut p[20 + opts.len()..hlen] {
-            *b = IPOPT_NOP;
-        }
-        for (i, b) in p[hlen..].iter_mut().enumerate() {
-            *b = (i * 13 + 5) as u8;
-        }
-        let m = crate::kern::uipc_mbuf::m_devget(&p, 0).expect("packet");
-        // The header must be in the first mbuf.
-        m_pullup(m, hlen as i32).expect("pullup")
-    }
-
-    fn bytes(m: &Mbuf) -> Vec<u8> {
-        let mut v = vec![0u8; m.m_pkthdr().len.get() as usize];
-        m_copydata(m, 0, &mut v);
-        v
-    }
-
-    use crate::kern::uipc_mbuf::m_pullup;
-
-    #[test]
-    fn fragments_cover_the_payload_with_valid_headers() {
-        let _g = setup_net();
-        // SAFETY: the all-zero `Ifnet` is valid.
-        let ifp: &'static Ifnet = unsafe { zeroed_static() };
-        let len = 3000;
-        let m = packet(len, &[]);
-        let whole = bytes(m);
-        let ml = MbufList::new();
-
-        ip_fragment(m, &ml, ifp, 1500).expect("fragment");
-        assert_eq!(ml_len(&ml), 3);
-
-        let mut payload = Vec::new();
-        let mut expect_off = 0usize;
-        let mut n = 0;
-        while let Some(f) = ml_dequeue(&ml) {
-            let b = bytes(f);
-            let ip = mtod_ip(f);
-            assert_eq!(ip.ip_hl(), 5);
-            assert_eq!(usize::from(ntohs(ip.ip_len)), b.len());
-            assert!(b.len() <= 1500);
-            let off = ntohs(ip.ip_off);
-            assert_eq!(usize::from(off & IP_OFFMASK) * 8, expect_off);
-            let last = expect_off + b.len() - 20 >= len - 20;
-            assert_eq!(off & IP_MF != 0, !last, "MF on every fragment but the last");
-            assert_eq!(in_cksum(f, 20), 0, "fragment {n} header checksum");
-            payload.extend_from_slice(&b[20..]);
-            expect_off += b.len() - 20;
-            n += 1;
-            m_freem(f);
-        }
-        assert_eq!(
-            payload,
-            &whole[20..],
-            "the fragments carry the payload in order"
-        );
-    }
-
-    #[test]
-    fn too_small_an_mtu_is_emsgsize() {
-        let _g = setup_net();
-        // SAFETY: the all-zero `Ifnet` is valid.
-        let ifp: &'static Ifnet = unsafe { zeroed_static() };
-        let m = packet(100, &[]);
-        let ml = MbufList::new();
-        assert_eq!(ip_fragment(m, &ml, ifp, 27), Err(Errno::EMSGSIZE));
-        assert_eq!(ml_len(&ml), 0, "the packet was freed");
-    }
-
-    #[test]
-    fn later_fragments_keep_only_the_copied_options() {
-        // Record route (not copied) then loose source route (copied).
-        let opts = [IPOPT_RR, 7, 4, 0, 0, 0, 0, IPOPT_LSRR, 7, 4, 10, 0, 2, 9];
-        let mut hdr = [0u8; 20 + 16];
-        hdr[0] = 0x49; // 36 bytes of header
-        hdr[20..20 + opts.len()].copy_from_slice(&opts);
-        hdr[34] = IPOPT_NOP;
-        hdr[35] = IPOPT_EOL;
-        let mut out = vec![0xeeu8; 20 + 16];
-        // SAFETY: both buffers hold a 36-byte header.
-        let n = unsafe { ip_optcopy(hdr.as_ptr(), 36, out.as_mut_ptr()) };
-        assert_eq!(
-            n, 8,
-            "the source route and the NOP after it (kept for alignment)"
-        );
-        assert_eq!(&out[20..27], &opts[7..14]);
-        assert_eq!(out[27], IPOPT_NOP);
-    }
-
-    #[test]
-    fn inserted_options_grow_the_header() {
-        let _g = setup_net();
-        let m = packet(60, &[]);
-        let opt =
-            crate::kern::uipc_mbuf::m_get(M_DONTWAIT, crate::sys::mbuf::MT_SOOPTS).expect("mbuf");
-        // struct ipoption: no first hop, then a 4-byte record route.
-        let o = [0u8, 0, 0, 0, IPOPT_RR, 3, 4, IPOPT_EOL];
-        // SAFETY: a fresh mbuf has room for the eight bytes.
-        unsafe { ptr::copy_nonoverlapping(o.as_ptr(), mtod::<u8>(opt), o.len()) };
-        opt.m_len().set(o.len() as u32);
-        let mut hlen = 0;
-        let m = ip_insertoptions(m, opt, &mut hlen);
-        assert_eq!(hlen, 24);
-        assert_eq!(m.m_pkthdr().len.get(), 64);
-        let b = bytes(m);
-        assert_eq!(&b[2..4], &64u16.to_be_bytes(), "ip_len grew");
-        assert_eq!(&b[20..24], &o[4..8]);
-        assert_eq!(
-            &b[16..20],
-            &[10, 0, 2, 2],
-            "the destination stays without a first hop"
-        );
-        m_freem(m);
-        m_freem(opt);
-    }
+    use crate::kern::uipc_mbuf::m_freem;
+    use crate::net::if_::tests::setup_net;
+    use crate::netinet::ip::{IPOPT_LSRR, IPOPT_RR};
+    use crate::sys::mbuf::M_DONTWAIT;
 
     /// An option mbuf holding `opts`.
     fn optm(opts: &[u8]) -> &'static Mbuf {

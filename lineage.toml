@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6294,7 +6294,7 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
@@ -6364,7 +6364,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6582,13 +6582,13 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipsp.rs"
 lz = ["sys/netinet/ip_ipsp.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -8446,7 +8446,7 @@ reason = "the walk's buffer is an MArray<u8> (Walkarg::w_tmem), lent as a slice 
 [[extra]]
 rust = "sys/kernel/net/ipsec_hooks.rs"
 crate = "kernel"
-reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through, today rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), its OnceStatic slot and register_ipsec"
+reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through: rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), and since N6.4a ip_output's #ifdef IPSEC points (ipsec_in_use, ip_output_ipsec_lookup, ip_output_ipsec_send, tdb_unref, ipsec_adjust_mtu) with their types (struct ipsec_level, the SPD's verdict, an opaque SA reference and its holder), its OnceStatic slot and register_ipsec"
 
 [[module]]
 rust = "sys/kernel/net/bpf.rs"
@@ -16301,7 +16301,7 @@ notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_t
 [[extra]]
 rust = "sys/kernel/net/pf_hooks.rs"
 crate = "kernel"
-reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb) and if.c's (pf_delay_pkt, pf_pkt_addr_changed, pfi_attach_ifnet, pfi_detach_ifnet, the groups' pfi_* legs, N6.3a), its OnceStatic slot and register_pf"
+reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb), if.c's (pf_delay_pkt, pf_pkt_addr_changed, pfi_attach_ifnet, pfi_detach_ifnet, the groups' pfi_* legs, N6.3a) and ip_output.c's pf_test (N6.4a, with the PF_IN/PF_OUT/PF_FWD and PF_PASS values), its OnceStatic slot and register_pf"
 
 [[module]]
 rust = "sys/kernel/netinet/in4_cksum.rs"
@@ -16350,7 +16350,14 @@ rust = "sys/kernel/netinet/ip_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/ip_var.rs"]
 status = "redesigned"
-notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; ip_moptions, ipqent, ipq, ipoffnxt and mtod_ip stay bsd's sys/netinet/ip_var.rs until N6.4a's ip_output and N6.4c2; tests: the counters per index and the reference-backed flags"
+notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them); ipqent, ipq, ipoffnxt and mtod_ip stay bsd's sys/netinet/ip_var.rs until N6.4c2; tests: the counters per index and the reference-backed flags"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_output.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_output.rs"]
+status = "redesigned"
+notes = "N6.4a: ip_output.c's output half (ip_output, ip_fragment, ip_insertoptions, ip_optcopy over slices, ip_mloopback, in_hdr_cksum_out, in_cksum_phdr, in_delayed_cksum, in_proto_cksum_out, in_ifcap_cksum) over the kernel's owned mbuf, routes and interfaces; the IP header through hal::pod (ip_load/ip_store); IPsec's half (ip_output_ipsec_lookup/send/pmtu_update) stays bsd's behind the Ipsec bridge's legs until N8, pf_test is the Pf bridge's test leg; in_ifp2ia and in_hasmulti over the generic Ifaddr/Ifmaddr reads until the IPv4 records move; the socket option half (ip_ctloutput..ip_freemoptions) stays bsd's sys/netinet/ip_output.rs until N6.4c1; tests: fragments, options copied and inserted, the checksums, ip_output's header, source, cache, fragments and refusals over a test interface"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"

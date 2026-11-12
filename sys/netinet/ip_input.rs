@@ -243,17 +243,16 @@ unsafe impl Sync for IpqHead {}
 pub static ip_forwarding: AtomicI32 = AtomicI32::new(0);
 /// \[a\] `ipmforwarding`.
 pub static IPMFORWARDING: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ipmultipath`.
-pub static IPMULTIPATH: AtomicI32 = AtomicI32::new(0);
+/// \[a\] `ipmultipath`: the kernel's (`kernel::netinet::ip_var`, N6.4a).
+pub use kernel::netinet::ip_var::IPMULTIPATH;
 /// \[a\] `ip_sendredirects`.
 pub static IP_SENDREDIRECTS: AtomicI32 = AtomicI32::new(1);
 /// \[a\] `ip_dosourceroute`.
 pub static IP_DOSOURCEROUTE: AtomicI32 = AtomicI32::new(0);
 /// \[a\] `ip_defttl`: default IP ttl.
 pub static IP_DEFTTL: AtomicI32 = AtomicI32::new(IPDEFTTL as i32);
-/// \[a\] `ip_mtudisc`: mtu discovery.
-#[allow(non_upper_case_globals)] // the C name; `IP_MTUDISC` is `ip_var.h`'s output flag
-pub static ip_mtudisc: AtomicI32 = AtomicI32::new(1);
+/// \[a\] `ip_mtudisc`: mtu discovery, the kernel's (`kernel::netinet::ip_var`, N6.4a).
+pub use kernel::netinet::ip_var::ip_mtudisc;
 /// \[a\] `ip_mtudisc_timeout`: seconds to timeout mtu discovery.
 pub static IP_MTUDISC_TIMEOUT: AtomicI32 = AtomicI32::new(IPMTUDISCTIMEOUT);
 /// \[a\] `ip_directedbcast`: accept all broadcast packets.

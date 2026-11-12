@@ -28,5 +28,6 @@ pub mod in_systm;
 pub mod inet_nat64;
 pub mod ip_ecn;
 pub mod ip_id;
+pub mod ip_output;
 pub mod ip_var;
 /* </CODE> */

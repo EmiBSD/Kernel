@@ -231,8 +231,9 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   own `if_output` keeps it.
 //! - The address resolution and the checksums `ether_resolve`, `ether_input` and
 //!   `ether_offload_ifcap` call (`arpresolve`, `nd6_resolve`, `arpinput`, `revarpinput`,
-//!   `arp_rtrequest`, `nd6_rtrequest`, `in_hdr_cksum_out`, `in_proto_cksum_out`,
-//!   `in6_proto_cksum_out`) are legs of the `Inet` bridge until N6.4/N6.5 (D-N6.3c-14).
+//!   `arp_rtrequest`, `nd6_rtrequest`, `in6_proto_cksum_out`) are legs of the `Inet` bridge
+//!   until N6.4/N6.5 (D-N6.3c-14); the IPv4 checksums (`in_hdr_cksum_out`,
+//!   `in_proto_cksum_out`) are `kernel::netinet::ip_output`'s since N6.4a.
 //! - The Ethernet header is read and written as a copy (`hal::pod::at`/`put`, 14 bytes,
 //!   D-N6.3c-20): where a frame starts depends on the driver (two bytes past a word with
 //!   `ETHER_ALIGN`), and a copy of 14 bytes per frame is the price of not trusting it (N12).
@@ -1522,13 +1523,13 @@ pub fn ether_offload_ifcap(ifp: &'static Ifnet, m: MbufBox) -> Option<MbufBox> {
         // hide ethernet header
         shift_data(&m, ethlen, true);
 
-        if let Some(i) = inet() {
-            if ext.ip4.is_some() {
-                i.in_hdr_cksum_out(&m, ifp);
-                i.in_proto_cksum_out(&m, ifp);
-            } else if ext.ip6.is_some() {
-                i.in6_proto_cksum_out(&m, ifp);
-            }
+        if ext.ip4.is_some() {
+            crate::netinet::ip_output::in_hdr_cksum_out(&mut m, Some(ifp));
+            crate::netinet::ip_output::in_proto_cksum_out(&mut m, Some(ifp));
+        } else if ext.ip6.is_some()
+            && let Some(i) = inet()
+        {
+            i.in6_proto_cksum_out(&m, ifp);
         }
 
         // show ethernet header again

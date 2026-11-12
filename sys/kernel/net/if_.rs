@@ -460,17 +460,10 @@ pub trait Inet: Sync + 'static {
     /// back (route.c's; the protocols own the storage until N6.4 and N6.5). Default: nothing
     /// (N6.3b: `bsd`'s implementation comes with the routing switch, N6.3b2).
     fn ifa_free(&self, _ifa: &'static Ifaddr) {}
-    /// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`). Default: off.
-    fn ip_multipath(&self) -> bool {
-        false
-    }
     /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
     fn ip6_multipath(&self) -> bool {
         false
     }
-    /// `ipstat_inc(ips_rtcachehit)` (`hit`) or `ipstat_inc(ips_rtcachemiss)`. Default:
-    /// nothing.
-    fn ipstat_rtcache(&self, _hit: bool) {}
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
@@ -515,13 +508,41 @@ pub trait Inet: Sync + 'static {
     fn arp_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
     /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
     fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
-    /// `in_hdr_cksum_out(m, ifp)`: the IPv4 header's checksum in software when `ifp` cannot
-    /// (`ether_offload_ifcap`; `m`'s data starts at the IP header). Default: nothing.
-    fn in_hdr_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
-    /// `in_proto_cksum_out(m, ifp)`: the TCP, UDP or ICMP checksum likewise. Default: nothing.
-    fn in_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
-    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum likewise. Default: nothing.
+    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum in software when `ifp`
+    /// cannot (`ether_offload_ifcap`, `if_output_tso`; `m`'s data starts at the IPv6
+    /// header). Default: nothing.
     fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)`: TCP's segmentation offload of
+    /// `*mp` (by the hardware when `ifp` has `ifcap`, else chopped in software and sent),
+    /// the packet consumed then; left in `*mp` when it did not ask for TSO, or with its TSO
+    /// flag cleared when its segments exceed `mtu` (`if_output_tso`'s first step; N6.4a, until
+    /// TCP moves at N6.6a). Default: the packet left, the C without TCP's offload.
+    fn tcp_if_output_tso(
+        &self,
+        _ifp: &'static Ifnet,
+        _mp: &mut Option<MbufBox>,
+        _dst: SockaddrView<'_>,
+        _rt: Option<&crate::net::route::Rtentry>,
+        _ifcap: u32,
+        _mtu: u32,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// `tcpstat_inc(tcps_outswcsum)` (`tcp`) or `udpstat_inc(udps_outswcsum)`: a transport
+    /// checksum computed in software on output (`in_proto_cksum_out`; N6.4a, until TCP and
+    /// UDP move at N6.6). Default: nothing.
+    fn proto_outswcsum(&self, _tcp: bool) {}
+    /// `icmp_mtudisc_clone(dst, rtableid, ipsec)`: a host route to `dst` in `rtableid` that
+    /// can carry a path MTU, cloned when there is none (`ip_output` after pf moved the packet
+    /// to another table; N6.4a, until ICMP moves at N6.4c2). Default: none.
+    fn icmp_mtudisc_clone(
+        &self,
+        _dst: [u8; 4],
+        _rtableid: u32,
+        _ipsec: bool,
+    ) -> Option<hal::pool::PoolArc<crate::net::route::Rtentry>> {
+        None
+    }
 }
 
 /// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
@@ -1977,6 +1998,60 @@ pub fn if_output_ml(
     }
 
     error
+}
+
+/// `if_output_tso(ifp, mp, dst, rt, mtu)`: the packet `*mp` sent toward `dst` by TCP's
+/// segmentation offload when it asks for it (`Inet::tcp_if_output_tso`), else whole when it
+/// fits `mtu` (its checksums finished for the interface first), the packet consumed then;
+/// `*mp` is left set when the packet still has to be fragmented or dropped (N6.4a: the
+/// kernel's, its TCP half `bsd`'s until N6.6a).
+pub fn if_output_tso(
+    ifp: &'static Ifnet,
+    mp: &mut Option<MbufBox>,
+    dst: SockaddrView<'_>,
+    rt: Option<&crate::net::route::Rtentry>,
+    mtu: u32,
+) -> Result<(), Errno> {
+    use hal::sys::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
+
+    let af = dst.family();
+    let ifcap = match af {
+        AF_INET => IFCAP_TSOv4,
+        AF_INET6 => IFCAP_TSOv6,
+        _ => unhandled_af(i32::from(af)),
+    };
+
+    // Try to send with TSO first. When forwarding LRO may set maximum segment size in mbuf
+    // header. Chop TCP segment even if it would fit interface MTU to preserve maximum path
+    // MTU.
+    if let Some(i) = inet() {
+        i.tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)?;
+    }
+    let Some(mut m) = mp.take() else {
+        return Ok(());
+    };
+
+    // The C compares the `int` length with the `u_int` MTU, as unsigned.
+    if m.m_pkthdr().len.get() as u32 <= mtu {
+        if af == AF_INET {
+            crate::netinet::ip_output::in_hdr_cksum_out(&mut m, Some(ifp));
+            crate::netinet::ip_output::in_proto_cksum_out(&mut m, Some(ifp));
+        } else if let Some(i) = inet() {
+            i.in6_proto_cksum_out(&m, ifp);
+        }
+        // An interface with no driver has no `if_output`: the C calls through NULL.
+        let Some(d) = ifp.if_driver.get() else {
+            drop(m);
+            kpanic(format_args!(
+                "if_output_tso: an interface without if_output"
+            ));
+        };
+        return d.output(ifp, m, dst, rt);
+    }
+
+    // mp still contains mbuf that has to be fragmented or dropped.
+    *mp = Some(m);
+    Ok(())
 }
 
 /// `p2p_rtrequest(ifp, req, rt)`: the default action when a local route is installed on a

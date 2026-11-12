@@ -975,13 +975,10 @@ fn errno_of(r: Result<(), Errno>) -> i32 {
     r.err().map_or(0, |e| e as i32)
 }
 
-/// `atomic_load_int(&ipmultipath)`, the internet protocols' (the `Inet` leg; off before
-/// registration).
+/// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`).
+#[inline]
 fn ip_multipath() -> bool {
-    match if_::inet() {
-        Some(i) => i.ip_multipath(),
-        None => false,
-    }
+    crate::netinet::ip_var::IPMULTIPATH.load(Ordering::Relaxed) != 0
 }
 
 /// `atomic_load_int(&ip6_multipath)`.
@@ -992,11 +989,15 @@ fn ip6_multipath() -> bool {
     }
 }
 
-/// `ipstat_inc(ips_rtcachehit/miss)`, the internet protocols' (the `Inet` leg).
+/// `ipstat_inc(ips_rtcachehit/miss)`.
+#[inline]
 fn inet_rtcache(hit: bool) {
-    if let Some(i) = if_::inet() {
-        i.ipstat_rtcache(hit);
-    }
+    use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
+    ipstat_inc(if hit {
+        IpstatCounters::IpsRtcachehit
+    } else {
+        IpstatCounters::IpsRtcachemiss
+    });
 }
 
 /// `ip6stat_inc(ip6s_rtcachehit/miss)`.
@@ -3028,6 +3029,7 @@ pub(crate) mod tests {
         route_init();
         rtable_init_doms(&ROUTE_DOMS);
         MULTIPATH.store(false, Ordering::Relaxed);
+        crate::netinet::ip_var::IPMULTIPATH.store(0, Ordering::Relaxed);
         let _ = if_::register_inet(&TEST_INET);
         crate::net::rtsock::tap::start();
         g
@@ -3115,9 +3117,11 @@ pub(crate) mod tests {
 
     pub(crate) fn set_multipath(on: bool) {
         MULTIPATH.store(on, Ordering::Relaxed);
+        crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
-    /// The internet protocols of the tests: multipath on demand, the cache counters counted.
+    /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
+    /// counted.
     struct TestInet {
         hits: AtomicU32,
         misses: AtomicU32,
@@ -3163,21 +3167,15 @@ pub(crate) mod tests {
         fn ifa_free(&self, _ifa: &'static Ifaddr) {
             self.freed.fetch_add(1, Ordering::Relaxed);
         }
-        fn ip_multipath(&self) -> bool {
-            MULTIPATH.load(Ordering::Relaxed)
-        }
         fn ip6_multipath(&self) -> bool {
             MULTIPATH.load(Ordering::Relaxed)
         }
-        fn ipstat_rtcache(&self, hit: bool) {
+        fn ip6stat_rtcache(&self, hit: bool) {
             if hit {
                 self.hits.fetch_add(1, Ordering::Relaxed);
             } else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
             }
-        }
-        fn ip6stat_rtcache(&self, hit: bool) {
-            self.ipstat_rtcache(hit);
         }
         fn arpinput(&self) -> crate::net::if_::ProtoFn {
             crate::net::if_::test_proto_count
@@ -3367,9 +3365,14 @@ pub(crate) mod tests {
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         let mut ro = Route::new();
-        let misses = TEST_INET.misses.load(Ordering::Relaxed);
+        // The IPv4 cache counters are `ipstat`'s (`ips_rtcachehit`, `ips_rtcachemiss`).
+        let ips = |c: crate::netinet::ip_var::IpstatCounters| {
+            crate::netinet::ip_var::IPCOUNTERS.read()[c as usize]
+        };
+        use crate::netinet::ip_var::IpstatCounters::{IpsRtcachehit, IpsRtcachemiss};
+        let misses = ips(IpsRtcachemiss);
         assert_eq!(ro.cache4([10, 0, 2, 2], None, 0), Err(Errno::ESRCH));
-        assert_eq!(TEST_INET.misses.load(Ordering::Relaxed), misses + 1);
+        assert_eq!(ips(IpsRtcachemiss), misses + 1);
         assert_eq!(ro.dst().bytes(), &sin([10, 0, 2, 2])[..]);
         // No route to it: still a miss.
         assert!(ro.mpath4([10, 0, 2, 2], None, 0, &net).is_none());
@@ -3392,9 +3395,9 @@ pub(crate) mod tests {
         .expect("insert");
         assert!(ro.mpath4([10, 0, 2, 2], None, 0, &net).is_some());
         assert_eq!(PoolArc::count(&rt), 3, "the table's, the cache's and ours");
-        let hits = TEST_INET.hits.load(Ordering::Relaxed);
+        let hits = ips(IpsRtcachehit);
         assert_eq!(ro.cache4([10, 0, 2, 2], None, 0), Ok(()));
-        assert_eq!(TEST_INET.hits.load(Ordering::Relaxed), hits + 1);
+        assert_eq!(ips(IpsRtcachehit), hits + 1);
         // Another destination, another table, a newer generation: misses, the route given
         // back.
         assert_eq!(ro.cache4([10, 0, 2, 3], None, 0), Err(Errno::ESRCH));
@@ -3408,7 +3411,11 @@ pub(crate) mod tests {
         let mut a = [0u8; 16];
         a[0] = 0x20;
         a[15] = 1;
+        let misses6 = TEST_INET.misses.load(Ordering::Relaxed);
+        let hits6 = TEST_INET.hits.load(Ordering::Relaxed);
         assert_eq!(ro.cache6(&a, None, 0), Err(Errno::ESRCH));
+        assert_eq!(TEST_INET.misses.load(Ordering::Relaxed), misses6 + 1);
+        assert_eq!(TEST_INET.hits.load(Ordering::Relaxed), hits6);
         assert_eq!(ro.dst().bytes(), &sin6(a)[..]);
         assert_eq!(ro.ro_generation, RTGENERATION.load(Ordering::Relaxed));
         drop(net);

@@ -57,9 +57,14 @@
 //! LZ: sys/netinet/ip_var.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `struct ip_moptions`, `struct ipqent`, `struct ipq` and `struct ipoffnxt` are still
-//!   `bsd`'s `sys/netinet/ip_var.rs` (LZ's), until `ip_output` (N6.4a) and the reassembly
-//!   (N6.4c2) move; so are LZ's `mtod_ip`/`mtod_ip_store` (`bsd`'s header copies).
+//! - `struct ip_moptions` is here without its group memberships (`imo_membership`,
+//!   `imo_num_memberships`, `imo_max_memberships`): [`IpMoptions`] is what `ip_output` reads
+//!   (the interface, the TTL, the loopback switch); `bsd`'s `sys/netinet/ip_var.rs` keeps the
+//!   whole C struct for its socket options and lends `ip_output` this part until the pcb and
+//!   `ip_setmoptions` move (N6.4c1), which adds the memberships here.
+//! - `struct ipqent`, `struct ipq` and `struct ipoffnxt` are still `bsd`'s
+//!   `sys/netinet/ip_var.rs` (LZ's), until the reassembly moves (N6.4c2); so are LZ's
+//!   `mtod_ip`/`mtod_ip_store` (`bsd`'s header copies).
 //!
 //! ## Redesign
 //! - LZ's `IPCOUNTERS`, a static array of atomics in `bsd`'s `ip_input.rs` (`<sys/percpu.h>`
@@ -69,6 +74,12 @@
 //!   `ipstat_dec` are `#[inline]`: called per packet from `bsd`'s protocols across the crate
 //!   boundary (N6.3c1's R12). `bsd` reaches all of it under LZ's path through its own
 //!   `sys/netinet/ip_var.rs`, which re-exports it.
+//! - N6.4a: `ip_mtudisc` and `ipmultipath` (`ip_input.c`'s, `extern` here as in the C's
+//!   header), atomics in LZ's `bsd` `ip_input.rs`, are [`ip_mtudisc`] and [`IPMULTIPATH`] here:
+//!   the kernel's `ip_output` and routes read them (the `Inet` leg `ip_multipath` goes), `bsd`'s
+//!   `ip_input.rs` re-exports them for its sysctl and its readers until N6.4c2.
+
+use core::sync::atomic::AtomicI32;
 
 use hal::percpu::Counters;
 use hal::sys::socket::SO_BROADCAST;
@@ -175,8 +186,27 @@ pub enum IpstatCounters {
 /// `ips_ncounters`: the number of IP counters.
 pub const IPS_NCOUNTERS: usize = IpstatCounters::IpsNcounters as usize;
 
+/// `struct ip_moptions`: the multicast options of a socket (`inp_moptions`), as `ip_output`
+/// reads them (the module's deviations: the memberships are `bsd`'s until N6.4c1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IpMoptions {
+    /// `imo_ifidx`: ifp index for outgoing multicasts.
+    pub imo_ifidx: u16,
+    /// `imo_ttl`: TTL for outgoing multicasts.
+    pub imo_ttl: u8,
+    /// `imo_loop`: 1 => hear sends if a member.
+    pub imo_loop: u8,
+}
+
 /// `ipcounters`: the IP statistics, per CPU (`counters_alloc(ips_ncounters)` in `ip_init`).
 pub static IPCOUNTERS: Counters<IPS_NCOUNTERS> = Counters::new();
+
+/// \[a\] `ip_mtudisc`: mtu discovery (`net.inet.ip.mtudisc`, `ip_input.c`'s).
+#[allow(non_upper_case_globals)] // the C name; `IP_MTUDISC` is the output flag above
+pub static ip_mtudisc: AtomicI32 = AtomicI32::new(1);
+
+/// \[a\] `ipmultipath`: enable multipath routing (`net.inet.ip.multipath`, `ip_input.c`'s).
+pub static IPMULTIPATH: AtomicI32 = AtomicI32::new(0);
 
 /// `ipstat_inc(c)`.
 #[inline]

@@ -1660,11 +1660,12 @@ const ROUTE_ROWS: [&str; 7] = [
     "route.isvalid",
 ];
 
-/// The internet protocols of the routing rows: multipath on (the C's `net.inet.ip.multipath`
-/// set, which `rt_hash` reads), the route cache's hits and misses counted (the C's
-/// `ipstat_inc(ips_rtcachehit)`, a counter per op as LZ's).
+/// The internet protocols of the routing rows: IPv6 multipath on and its route cache's hits
+/// and misses counted (the C's `ip6stat_inc(ip6s_rtcachehit)`); IPv4's switch and counters
+/// are the kernel's own since N6.4a (`kernel::netinet::ip_var`'s `IPMULTIPATH` and
+/// `IPCOUNTERS`).
 struct BenchInet {
-    /// `ips_rtcachehit` and `ips_rtcachemiss`.
+    /// `ip6s_rtcachehit` and `ip6s_rtcachemiss`.
     rtcache: [AtomicU64; 2],
 }
 
@@ -1728,17 +1729,11 @@ impl kernel::net::if_::Inet for BenchInet {
     fn in6_purge_linklocal(&self, _ifp: &'static kernel::net::if_var::Ifnet) -> bool {
         false
     }
-    fn ip_multipath(&self) -> bool {
-        true
-    }
     fn ip6_multipath(&self) -> bool {
         true
     }
-    fn ipstat_rtcache(&self, hit: bool) {
-        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
-    }
     fn ip6stat_rtcache(&self, hit: bool) {
-        self.ipstat_rtcache(hit);
+        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1795,6 +1790,8 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     if !ROUTE_ROWS.iter().any(|n| wanted(n)) {
         return;
     }
+    // The C's `net.inet.ip.multipath` set, which `rt_hash` reads.
+    kernel::netinet::ip_var::IPMULTIPATH.store(1, Ordering::Relaxed);
     if kernel::net::if_::register_inet(&BENCH_INET).is_err() {
         eprintln!("net: the internet protocols were registered already");
         std::process::exit(1);
@@ -1912,9 +1909,10 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             eprintln!("net: no route to 10.2.0.77");
             std::process::exit(1);
         }
-        let hits = BENCH_INET.rtcache[0].load(Ordering::Relaxed);
+        let hit = kernel::netinet::ip_var::IpstatCounters::IpsRtcachehit as usize;
+        let hits = kernel::netinet::ip_var::IPCOUNTERS.read()[hit];
         if ro.mpath4(host_addr, None, 0, &held).is_none()
-            || BENCH_INET.rtcache[0].load(Ordering::Relaxed) != hits + 1
+            || kernel::netinet::ip_var::IPCOUNTERS.read()[hit] != hits + 1
         {
             eprintln!("net: the cache missed 10.2.0.77");
             std::process::exit(1);

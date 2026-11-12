@@ -10186,6 +10186,20 @@ pub fn pf_mbuf_unlink_inpcb(m: &Mbuf) {
 pub struct BsdPf;
 
 impl kernel::net::pf_hooks::Pf for BsdPf {
+    /// `pf_test(af, dir, ifp, &m)` for the kernel's `ip_output` (N6.4a): the packet parked
+    /// for pf, and whatever pf left of it given back.
+    fn test(
+        &self,
+        af: SaFamily,
+        dir: u8,
+        ifp: &'static Ifnet,
+        m: kernel::net::mbuf::MbufBox,
+    ) -> (u8, Option<kernel::net::mbuf::MbufBox>) {
+        let mut m0 = Some(crate::sys::mbuf::park(m));
+        let action = pf_test(af, dir, ifp, &mut m0);
+        (action, m0.map(crate::sys::mbuf::unpark))
+    }
+
     /// `m_dup_pkthdr`'s `pf_mbuf_link_state_key(to, from->m_pkthdr.pf.statekey)`: a reference
     /// for the copy, if the packet has a key.
     fn mbuf_link_state_key(&self, to: &PkthdrPf, from: &PkthdrPf) {

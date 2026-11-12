@@ -162,7 +162,6 @@ use crate::netinet::if_ether::{arp_rtrequest, arpinput, arpintr, arpresolve, rev
 use crate::netinet::igmp::rti_delete;
 use crate::netinet::in_::in_ifdetach;
 use crate::netinet::ip_input::{ipintr, ipv4_input};
-use crate::netinet::ip_output::{in_hdr_cksum_out, in_proto_cksum_out};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
@@ -180,7 +179,7 @@ use crate::netinet6::ip6_output::in6_proto_cksum_out;
 use crate::netinet6::nd6::{In6Ntop, nd6_ifattach, nd6_ifdetach, nd6_resolve, nd6_rtrequest};
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
-use crate::sys::mbuf::{Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
+use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, AF_INET6, Sockaddr};
 use crate::sys::socketvar::Socket;
@@ -539,24 +538,11 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         );
     }
 
-    fn ip_multipath(&self) -> bool {
-        crate::netinet::ip_input::IPMULTIPATH.load(Ordering::Relaxed) != 0
-    }
-
     fn ip6_multipath(&self) -> bool {
         #[cfg(feature = "inet6")]
         return crate::netinet6::in6_proto::IP6_MULTIPATH.load(Ordering::Relaxed) != 0;
         #[cfg(not(feature = "inet6"))]
         false
-    }
-
-    fn ipstat_rtcache(&self, hit: bool) {
-        use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
-        ipstat_inc(if hit {
-            IpstatCounters::IpsRtcachehit
-        } else {
-            IpstatCounters::IpsRtcachemiss
-        });
     }
 
     fn ip6stat_rtcache(&self, hit: bool) {
@@ -678,18 +664,68 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = (ifp, req, rt);
     }
 
-    fn in_hdr_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
-        in_hdr_cksum_out(m, Some(ifp));
-    }
-
-    fn in_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
-        in_proto_cksum_out(m, Some(ifp));
-    }
-
     fn in6_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
         #[cfg(feature = "inet6")]
         in6_proto_cksum_out(m, Some(ifp));
         let _ = (m, ifp);
+    }
+
+    fn tcp_if_output_tso(
+        &self,
+        ifp: &'static Ifnet,
+        mp: &mut Option<kernel::net::mbuf::MbufBox>,
+        dst: kernel::net::proto::SockaddrView<'_>,
+        rt: Option<&kernel::net::route::Rtentry>,
+        ifcap: u32,
+        mtu: u32,
+    ) -> Result<(), Errno> {
+        // The C's first test (`caller must fail later or fragment`), made before the packet
+        // is lent to `bsd`: a packet that asked for no TSO stays the kernel's.
+        if mp
+            .as_ref()
+            .is_none_or(|m| m.m_pkthdr().csum_flags.get() & M_TCP_TSO == 0)
+        {
+            return Ok(());
+        }
+        let mut lent = mp.take().map(park);
+        // SAFETY: `dst` is the kernel's view of a socket address, readable for its `sa_len`
+        // bytes (the view's length, at least the two of its header) while the borrow lasts,
+        // which outlives this call: `tcp_if_output_tso`'s contract (`if_output`'s).
+        let error = unsafe {
+            tcp_if_output_tso(
+                ifp,
+                &mut lent,
+                dst.bytes().as_ptr().cast::<Sockaddr>(),
+                rt.map(as_static),
+                ifcap,
+                mtu,
+            )
+        };
+        *mp = lent.map(unpark);
+        error
+    }
+
+    fn proto_outswcsum(&self, tcp: bool) {
+        if tcp {
+            tcpstat_inc(TcpstatCounters::TcpsOutswcsum);
+        } else {
+            crate::netinet::udp_var::udpstat_inc(
+                crate::netinet::udp_var::UdpstatCounters::UdpsOutswcsum,
+            );
+        }
+    }
+
+    fn icmp_mtudisc_clone(
+        &self,
+        dst: [u8; 4],
+        rtableid: u32,
+        ipsec: bool,
+    ) -> Option<hal::pool::PoolArc<kernel::net::route::Rtentry>> {
+        let dst = crate::netinet::in_::InAddr {
+            s_addr: u32::from_ne_bytes(dst),
+        };
+        crate::netinet::ip_icmp::icmp_mtudisc_clone(dst, rtableid, ipsec)
+            .map(crate::net::route::unpark)
     }
 
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
@@ -1015,8 +1051,9 @@ pub(crate) unsafe fn ifp_output(
     d.output(ifp, unpark(m), dst, rt.map(|r| r as &_))
 }
 
-/// `if_output_tso`: sends a TCP packet with TSO, or chops it, or sends it whole when it fits
-/// `mtu`; `*mp` is left set when the packet still has to be fragmented or dropped.
+/// `if_output_tso`: sends a TCP packet with TSO, or chops it, or sends it whole when it
+/// fits `mtu`; `*mp` is left set when the packet still has to be fragmented or dropped (the
+/// kernel's, N6.4a: the parked packet lent to it and parked again if it comes back).
 ///
 /// # Safety
 ///
@@ -1028,42 +1065,19 @@ pub unsafe fn if_output_tso(
     rt: Option<&'static Rtentry>,
     mtu: u32,
 ) -> Result<(), Errno> {
-    // SAFETY: `dst` is readable per the contract.
-    let family = unsafe { (*dst).sa_family };
-    let ifcap: u32 = match family {
-        AF_INET => IFCAP_TSOv4,
-        #[cfg(feature = "inet6")]
-        AF_INET6 => IFCAP_TSOv6,
-        _ => unhandled_af(i32::from(family)),
+    // SAFETY: the caller's contract: `dst` is readable for its `sa_len` bytes (at least the
+    // two of its header), borrowed for the call.
+    let sa = unsafe { sa_bytes(dst) };
+    let Some(dst) = kernel::net::proto::SockaddrView::new(sa) else {
+        panic(format_args!(
+            "{}: if_output to no address",
+            Str(&ifp.if_xname.get())
+        ));
     };
-
-    // Try to send with TSO first. When forwarding LRO may set maximum segment size in mbuf
-    // header. Chop TCP segment even if it would fit interface MTU to preserve maximum path
-    // MTU.
-    // SAFETY: the caller's contract is `if_output`'s, which `tcp_if_output_tso` passes on.
-    unsafe { tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu) }?;
-    let Some(m) = *mp else {
-        return Ok(());
-    };
-
-    if m.m_pkthdr().len.get() as u32 <= mtu {
-        match family {
-            AF_INET => {
-                in_hdr_cksum_out(m, Some(ifp));
-                in_proto_cksum_out(m, Some(ifp));
-            }
-            #[cfg(feature = "inet6")]
-            AF_INET6 => in6_proto_cksum_out(m, Some(ifp)),
-            _ => {}
-        }
-        // SAFETY: the caller's contract is `if_output`'s.
-        let error = unsafe { ifp_output(ifp, m, dst, rt) };
-        *mp = None;
-        return error;
-    }
-
-    // mp still contains mbuf that has to be fragmented or dropped.
-    Ok(())
+    let mut lent = mp.take().map(unpark);
+    let error = kernel::net::if_::if_output_tso(ifp, &mut lent, dst, rt.map(|r| r as &_), mtu);
+    *mp = lent.map(park);
+    error
 }
 
 /// `if_output_mq`: sends the packets of a queue; `total` (the packets accounted to the queue
