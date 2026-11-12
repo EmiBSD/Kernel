@@ -4503,9 +4503,10 @@ mod tests {
             rtfree, rtrequest,
         };
         use crate::netinet::in_::sintosa;
+        use crate::netinet::ip_input::ip_forwarding;
         use crate::netinet::ip_input::tests::{ADDR, GATEWAY, configure, test_ether};
-        use crate::netinet::ip_input::{IPCOUNTERS, ip_forwarding};
         use crate::netinet::ip_ipsp::{IPSP_DF_INHERIT, IPSP_DIRECTION_IN, TdbCounters};
+        use crate::netinet::ip_var::IPCOUNTERS;
         use crate::netinet::ip_var::IpstatCounters;
         use crate::netinet::ipsec_output::ipsp_process_packet;
 
@@ -4617,7 +4618,7 @@ mod tests {
             net_unlock();
         };
         let c = |t: &Tdb, k: TdbCounters| t.tdb_counters[k as usize].load(Ordering::Relaxed);
-        let wrongif = || IPCOUNTERS[IpstatCounters::IpsWrongif as usize].load(Ordering::Relaxed);
+        let wrongif = || IPCOUNTERS.read()[IpstatCounters::IpsWrongif as usize];
 
         // A host: the decapsulated packet comes in on enc0 (NBPFILTER > 0), which is not
         // vio's, so 10.77.2.1 on lo0 is not "the wrong interface"; the host answers, and the

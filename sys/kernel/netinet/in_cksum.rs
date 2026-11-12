@@ -51,13 +51,12 @@
 //! The Internet checksum over an mbuf chain: `in_cksum`.
 //!
 //! Upstream: sys/netinet/in_cksum.c @ 3ce1f3f79392
+//! LZ: sys/netinet/in_cksum.rs@3c62ede68802
 //!
 //! Checksum routine for Internet Protocol family headers (portable version): the one's
 //! complement of the one's complement sum of the data's 16-bit words (RFC 1071). Both amd64
 //! and arm64 build this portable C file (`files.amd64`, `files.arm64`); neither has a
 //! machine-dependent `in_cksum`.
-//!
-//! Status: `ported` (M7b).
 //!
 //! ## Deviations
 //! - The C sums 16-bit words straight from memory and, when a word straddles two mbufs or the
@@ -68,14 +67,23 @@
 //!   64 bits and folded at the end instead of being reduced as it goes.
 //! - `cksum_add` is shared with `netinet/in4_cksum.rs`, whose loop is a copy of this one in C.
 //! - The result is a `u16` (the C's `int` holds `~sum & 0xffff`).
+//!
+//! ## Redesign
+//! - LZ's `from_raw_parts` over `mtod(m)` (one `unsafe` per mbuf) -> the kernel's
+//!   `Mbuf::data()`, the mbuf's `m_len` bytes as a slice: the same bytes, bounds-checked
+//!   once per mbuf. `#[inline]` on the three functions: they are called per packet from
+//!   `bsd`'s transports and drivers across the crate boundary, where a call left out of line
+//!   costs the dev profile its inlining (N6.3c1's R12). `bsd` reaches them under LZ's path
+//!   through `sys/netinet/mod.rs`'s re-export.
 
-use crate::kern::subr_prf::panic;
-use crate::sys::mbuf::{Mbuf, mtod};
+use crate::assert::kpanic;
+use crate::net::mbuf::Mbuf;
 
 /// Adds `len` bytes of the chain `m`, from `off` bytes into its first mbuf, to the
 /// one's-complement accumulator `sum`; `odd` says whether the next byte is the second byte
 /// of a 16-bit word, and is updated. Returns the number of bytes the chain was short of
 /// `len`.
+#[inline]
 pub fn cksum_add(m: Option<&Mbuf>, off: usize, len: usize, sum: &mut u64, odd: &mut bool) -> usize {
     let mut len = len;
     let mut off = off;
@@ -87,10 +95,7 @@ pub fn cksum_add(m: Option<&Mbuf>, off: usize, len: usize, sum: &mut u64, odd: &
         let mlen = mm.m_len().get() as usize;
         if mlen > off {
             let n = (mlen - off).min(len);
-            // SAFETY: an mbuf's data area holds `m_len` bytes at `m_data`, and `off + n` is
-            // within them.
-            let data = unsafe { core::slice::from_raw_parts(mtod::<u8>(mm).add(off), n) };
-            let mut bytes = data;
+            let mut bytes = &mm.data()[off..off + n];
             if *odd && !bytes.is_empty() {
                 *sum += u64::from(u16::from_ne_bytes([0, bytes[0]]));
                 bytes = &bytes[1..];
@@ -115,6 +120,7 @@ pub fn cksum_add(m: Option<&Mbuf>, off: usize, len: usize, sum: &mut u64, odd: &
 }
 
 /// The one's complement of the folded sum.
+#[inline]
 pub fn cksum_fold(sum: u64) -> u16 {
     let mut sum = sum;
     while sum >> 16 != 0 {
@@ -125,13 +131,14 @@ pub fn cksum_fold(sum: u64) -> u16 {
 
 /// `in_cksum`: the Internet checksum of the first `len` bytes of chain `m`. Panics when the
 /// chain is shorter, as the C does.
+#[inline]
 pub fn in_cksum(m: &Mbuf, len: i32) -> u16 {
     let mut sum = 0u64;
     let mut odd = false;
 
     let short = cksum_add(Some(m), 0, len as usize, &mut sum, &mut odd);
     if short != 0 {
-        panic(format_args!("in_cksum: out of data, len {short}"));
+        kpanic(format_args!("in_cksum: out of data, len {short}"));
     }
     cksum_fold(sum)
 }
@@ -147,17 +154,15 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::uipc_mbuf::{m_cat, m_freem, m_get, m_gethdr};
+    use crate::net::mbuf::{M_DONTWAIT, MLEN, MT_DATA, MbufBox, m_cat, m_freem, m_get, m_gethdr};
     use crate::netinet::in4_cksum::in4_cksum;
-    use crate::sys::mbuf::m_data_add;
-    use crate::sys::mbuf::{M_DONTWAIT, MLEN, MT_DATA};
 
     fn setup() -> MutexGuard<'static, ()> {
-        crate::kern::uipc_mbuf::tests::setup()
+        crate::net::mbuf::tests::setup()
     }
 
     /// A chain holding `bytes`, cut into mbufs of the given lengths (the rest in the last one).
-    fn chain(bytes: &[u8], cuts: &[usize]) -> &'static Mbuf {
+    fn chain(bytes: &[u8], cuts: &[usize]) -> MbufBox {
         let mut pieces = Vec::new();
         let mut rest = bytes;
         for &c in cuts {
@@ -167,27 +172,22 @@ mod tests {
         }
         pieces.push(rest);
 
-        let head = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
-        head.m_len().set(0);
+        let mut head = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
         let mut first = true;
         for p in pieces {
             assert!(p.len() <= MLEN - 8);
-            let m = if first {
-                head
-            } else {
-                m_get(M_DONTWAIT, MT_DATA).expect("mbuf")
-            };
-            if !first {
-                // Start the data at an odd address to exercise the C's "force to even boundary".
-                m_data_add(m, 1);
+            if first {
+                head.m_len().set(p.len() as u32);
+                head.data_mut().expect("writable").copy_from_slice(p);
+                first = false;
+                continue;
             }
-            // SAFETY: the mbuf has room for `p` (checked above) at its data pointer.
-            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), mtod::<u8>(m), p.len()) };
+            let mut m = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+            // Start the data at an odd address to exercise the C's "force to even boundary".
+            m.data_add(1);
             m.m_len().set(p.len() as u32);
-            if !first {
-                m_cat(head, Some(m));
-            }
-            first = false;
+            m.data_mut().expect("writable").copy_from_slice(p);
+            m_cat(&mut head, Some(m));
         }
         head.m_pkthdr().len.set(bytes.len() as i32);
         head
@@ -199,8 +199,8 @@ mod tests {
         // RFC 1071 section 3: 0001 f203 f4f5 f6f7 sums to ddf2, whose complement is 220d.
         let data = [0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7];
         let m = chain(&data, &[]);
-        assert_eq!(in_cksum(m, data.len() as i32).to_ne_bytes(), [0x22, 0x0d]);
-        m_freem(m);
+        assert_eq!(in_cksum(&m, data.len() as i32).to_ne_bytes(), [0x22, 0x0d]);
+        let _ = m_freem(m);
     }
 
     #[test]
@@ -212,15 +212,15 @@ mod tests {
             0x00, 0x01, 0xc0, 0xa8, 0x00, 0xc7,
         ];
         let m = chain(&hdr, &[]);
-        assert_eq!(in_cksum(m, 20).to_ne_bytes(), [0xb8, 0x61]);
-        m_freem(m);
+        assert_eq!(in_cksum(&m, 20).to_ne_bytes(), [0xb8, 0x61]);
+        let _ = m_freem(m);
 
         // A header with its checksum verifies to 0.
         hdr[10] = 0xb8;
         hdr[11] = 0x61;
         let m = chain(&hdr, &[]);
-        assert_eq!(in_cksum(m, 20), 0);
-        m_freem(m);
+        assert_eq!(in_cksum(&m, 20), 0);
+        let _ = m_freem(m);
     }
 
     #[test]
@@ -228,17 +228,17 @@ mod tests {
         let _g = setup();
         let data: Vec<u8> = (0..101u32).map(|i| (i * 37 + 11) as u8).collect();
         let whole = chain(&data, &[]);
-        let want = in_cksum(whole, data.len() as i32);
-        m_freem(whole);
+        let want = in_cksum(&whole, data.len() as i32);
+        let _ = m_freem(whole);
 
         for cuts in [&[1usize][..], &[2], &[3, 5], &[7, 7, 7], &[50, 1, 1]] {
             let m = chain(&data, cuts);
-            assert_eq!(in_cksum(m, data.len() as i32), want, "cuts {cuts:?}");
+            assert_eq!(in_cksum(&m, data.len() as i32), want, "cuts {cuts:?}");
             // A prefix of odd length pads its last byte with zero.
             let m2 = chain(&data[..33], &[]);
-            assert_eq!(in_cksum(m, 33), in_cksum(m2, 33), "prefix, cuts {cuts:?}");
+            assert_eq!(in_cksum(&m, 33), in_cksum(&m2, 33), "prefix, cuts {cuts:?}");
             m_freem(m2);
-            m_freem(m);
+            let _ = m_freem(m);
         }
     }
 
@@ -253,8 +253,8 @@ mod tests {
             0xde, 0xad, 0xbe, 0xef,
         ];
         let m = chain(&pkt, &[]);
-        let sum = in4_cksum(m, 17, 20, 12);
-        m_freem(m);
+        let sum = in4_cksum(&m, 17, 20, 12);
+        let _ = m_freem(m);
 
         // The pseudo header plus the UDP datagram, summed by hand as one buffer.
         let mut manual = Vec::new();
@@ -262,14 +262,14 @@ mod tests {
         manual.extend_from_slice(&[0, 17, 0, 12]); // zero, proto, udp length
         manual.extend_from_slice(&pkt[20..]);
         let m = chain(&manual, &[]);
-        assert_eq!(sum, in_cksum(m, manual.len() as i32));
-        m_freem(m);
+        assert_eq!(sum, in_cksum(&m, manual.len() as i32));
+        let _ = m_freem(m);
 
         // With the checksum in place the datagram verifies.
         pkt[26..28].copy_from_slice(&sum.to_ne_bytes());
         let m = chain(&pkt, &[23]);
-        assert_eq!(in4_cksum(m, 17, 20, 12), 0);
-        m_freem(m);
+        assert_eq!(in4_cksum(&m, 17, 20, 12), 0);
+        let _ = m_freem(m);
     }
 }
 /* </TESTS> */

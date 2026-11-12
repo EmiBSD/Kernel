@@ -97,7 +97,7 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr;
 use core::slice;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -172,7 +172,7 @@ use crate::netinet::ip_id::ip_randomid_init;
 use crate::netinet::ip_ipsp::IPSEC_IN_USE;
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{
-    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_RAWOUTPUT, IP_REDIRECT,
+    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_RAWOUTPUT, IP_REDIRECT, IPCOUNTERS,
     IPMTUDISCTIMEOUT, Ipoffnxt, Ipq, IpqList, Ipqent, Ipstat, IpstatCounters, MAX_IPOPTLEN,
     ipstat_dec, ipstat_inc, mtod_ip, mtod_ip_store,
 };
@@ -294,10 +294,6 @@ pub static IPINTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IP);
 pub static IPQENT_POOL: Pool = Pool::new();
 /// `ipq_pool`.
 static IPQ_POOL: Pool = Pool::new();
-
-/// `ipcounters`: the IP statistics (see the module's deviations).
-pub static IPCOUNTERS: [AtomicU64; IpstatCounters::IpsNcounters as usize] =
-    [const { AtomicU64::new(0) }; IpstatCounters::IpsNcounters as usize];
 
 /// `ipsend_mq`.
 static IPSEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
@@ -1988,8 +1984,8 @@ fn ip_sysctl_ipstat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(),
     const N: usize = IpstatCounters::IpsNcounters as usize;
     const _: () = assert!(size_of::<Ipstat>() == N * size_of::<u64>());
     let mut bytes = [0u8; N * size_of::<u64>()];
-    for (i, c) in IPCOUNTERS.iter().enumerate() {
-        bytes[i * 8..i * 8 + 8].copy_from_slice(&c.load(Ordering::Relaxed).to_ne_bytes());
+    for (i, c) in IPCOUNTERS.read().iter().enumerate() {
+        bytes[i * 8..i * 8 + 8].copy_from_slice(&c.to_ne_bytes());
     }
 
     sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
@@ -2323,7 +2319,7 @@ pub(crate) mod tests {
 
     /// The counter of `c`.
     fn ipstat(c: IpstatCounters) -> u64 {
-        IPCOUNTERS[c as usize].load(Ordering::Relaxed)
+        IPCOUNTERS.read()[c as usize]
     }
 
     #[test]

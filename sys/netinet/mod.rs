@@ -21,6 +21,12 @@
 //!
 //! Headers become modules as in `sys/sys` (`ip_icmp.h` → `ip_icmp.rs`). `in.h` is `in_.rs`
 //! because `in` is a Rust keyword (`docs/C_TO_RUST.md`).
+//!
+//! The modules the kernel's `kernel::netinet` and `hal::sys::netinet_*` absorbed (N6.4a) keep
+//! their LZ paths here as re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md).
+
+pub use hal::sys::netinet_ip as ip;
+pub use kernel::netinet::{in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id};
 
 pub mod icmp6;
 #[forbid(unsafe_code)]
@@ -29,27 +35,17 @@ pub mod if_ether;
 pub mod igmp;
 #[forbid(unsafe_code)]
 pub mod igmp_var;
-pub mod in4_cksum;
 pub mod in_;
-pub mod in_cksum;
 pub mod in_pcb;
 #[forbid(unsafe_code)]
 pub mod in_proto;
-#[forbid(unsafe_code)]
-pub mod in_systm;
 pub mod in_var;
-#[forbid(unsafe_code)]
-pub mod inet_nat64;
-pub mod ip;
 #[forbid(unsafe_code)]
 pub mod ip6;
 pub mod ip_ah;
 pub mod ip_divert;
-pub mod ip_ecn;
 pub mod ip_esp;
 pub mod ip_icmp;
-#[forbid(unsafe_code)]
-pub mod ip_id;
 pub mod ip_input;
 pub mod ip_ipcomp;
 pub mod ip_ipip;

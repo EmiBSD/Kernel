@@ -82,31 +82,39 @@
 //! `in4_cksum`.
 //!
 //! Upstream: sys/netinet/in4_cksum.c @ 3ce1f3f79392
+//! LZ: sys/netinet/in4_cksum.rs@3c62ede68802
 //!
 //! Checksum routine for Internet Protocol family headers (portable version), for the IPv4
 //! pseudo header checksum: no need to clear non-pseudo-header fields in the IPv4 header. `len`
 //! is the actual payload size, not including the IPv4 header and skipped header chain (`off
 //! + len` should be equal to the whole packet). With `nxt` 0 there is no pseudo header (ICMP).
 //!
-//! Status: `ported` (M7b).
-//!
 //! ## Deviations
 //! - The word loop is `netinet/in_cksum.rs`'s [`cksum_add`] (the C file carries a copy of
 //!   `in_cksum`'s loop); the pseudo header's words are summed from a byte array laid out as
 //!   `struct ipovly`.
 //! - The result is a `u16`.
+//!
+//! ## Redesign
+//! - LZ's `read_unaligned` of the header at `mtod(m)` -> `hal::pod::at::<Ip>` over the
+//!   kernel's `Mbuf::data()` (a 20-byte copy of the header, as LZ's, with no `unsafe`; the
+//!   check that the first mbuf holds one is the copy's). `#[inline]`: a per-packet helper
+//!   of `bsd`'s transports across the crate boundary (N6.3c1's R12).
 
 use core::mem::size_of;
 
-use crate::kern::subr_prf::{panic, printf};
+use hal::sys::endian::htons;
+use hal::sys::netinet_ip::Ip;
+use hal::sys::netinet_ip_var::Ipovly;
+
+use crate::assert::kpanic;
+use crate::net::mbuf::Mbuf;
 use crate::netinet::in_cksum::{cksum_add, cksum_fold};
-use crate::netinet::ip::Ip;
-use crate::netinet::ip_var::Ipovly;
-use crate::sys::endian::htons;
-use crate::sys::mbuf::{Mbuf, mtod};
+use crate::prf::printf;
 
 /// `in4_cksum`: the checksum of `len` bytes of `m` from `off`, over the pseudo header of
 /// protocol `nxt` when it is not 0.
+#[inline]
 pub fn in4_cksum(m: &Mbuf, nxt: u8, off: i32, len: i32) -> u16 {
     let mut sum = 0u64;
     let mut odd = false;
@@ -114,13 +122,11 @@ pub fn in4_cksum(m: &Mbuf, nxt: u8, off: i32, len: i32) -> u16 {
     if nxt != 0 {
         // pseudo header
         if (off as usize) < size_of::<Ipovly>() {
-            panic(format_args!("in4_cksum: offset too short"));
+            kpanic(format_args!("in4_cksum: offset too short"));
         }
-        if (m.m_len().get() as usize) < size_of::<Ip>() {
-            panic(format_args!("in4_cksum: bad mbuf chain"));
-        }
-        // SAFETY: the first mbuf holds at least an IP header (checked above).
-        let ip = unsafe { core::ptr::read_unaligned(mtod::<Ip>(m)) };
+        let Some(ip) = hal::pod::at::<Ip>(m.data(), 0) else {
+            kpanic(format_args!("in4_cksum: bad mbuf chain"));
+        };
         // ih_x1[8] = 0, ih_pr = nxt, ih_len, ih_src, ih_dst: the words 4..9 of the overlay,
         // whose first 8 bytes are zeroes.
         let mut u = [0u8; 12];

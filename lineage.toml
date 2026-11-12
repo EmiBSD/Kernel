@@ -6414,7 +6414,7 @@ status = "inherited"
 rust = "sys/net/pfkeyv2.rs"
 lz = ["sys/net/pfkeyv2.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
 
 [[module]]
 rust = "sys/net/pfkeyv2_convert.rs"
@@ -6508,22 +6508,11 @@ lz = ["sys/netinet/igmp_var.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/netinet/in4_cksum.rs"
-lz = ["sys/netinet/in4_cksum.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/hal/sys/netinet_in.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
-
-[[module]]
-rust = "sys/netinet/in_cksum.rs"
-lz = ["sys/netinet/in_cksum.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
 
 [[module]]
 rust = "sys/netinet/in_pcb.rs"
@@ -6537,25 +6526,10 @@ lz = ["sys/netinet/in_proto.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/netinet/in_systm.rs"
-lz = ["sys/netinet/in_systm.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet/in_var.rs"
 lz = ["sys/netinet/in_var.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
-
-[[module]]
-rust = "sys/netinet/inet_nat64.rs"
-lz = ["sys/netinet/inet_nat64.rs"]
-status = "inherited"
-
-[[module]]
-rust = "sys/netinet/ip.rs"
-lz = ["sys/netinet/ip.rs"]
-status = "inherited"
 
 [[module]]
 rust = "sys/netinet/ip6.rs"
@@ -6575,11 +6549,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 
 [[module]]
-rust = "sys/netinet/ip_ecn.rs"
-lz = ["sys/netinet/ip_ecn.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet/ip_esp.rs"
 lz = ["sys/netinet/ip_esp.rs"]
 status = "adapted"
@@ -6592,15 +6561,10 @@ status = "adapted"
 adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
-rust = "sys/netinet/ip_id.rs"
-lz = ["sys/netinet/ip_id.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6634,7 +6598,9 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/ip_var.rs"
 lz = ["sys/netinet/ip_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/hal/sys/netinet_ip_var.rs"]
+notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ip_moptions, ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::pod::at) and mtod_ip_store stay until their slices"
 
 [[module]]
 rust = "sys/netinet/ipsec_input.rs"
@@ -8731,6 +8697,11 @@ crate = "hal"
 lz = ["sys/netinet/ip.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21): struct ip and two constants for the kernel's Ethernet layer. N6.4a: the whole of netinet/ip.h (no _KERNEL part) as abi_pod! images with const size asserts (ip 20, ipt_ta 8, ip_timestamp 12 with its union as two words, ippseudo 12), every IP_*, IPTOS_*, IPOPT_* constant, MAXTTL, IPDEFTTL, IPFRAGTTL, IPTTLDEC, IP_MSS, IPQ_MAXLEN, the IPOPT_* macros as const fns, and LZ's two tests"
+
+[[module.fn]]
+lz = "sys/netinet/ip.rs::IptTimestamp"
+native = ["IpTimestamp::ipt_time", "IpTimestamp::ipt_ta"]
+kind = "merged"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip6.rs"
@@ -16331,6 +16302,55 @@ notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_t
 rust = "sys/kernel/net/pf_hooks.rs"
 crate = "kernel"
 reason = "the Pf bridge (bridges.toml, paid by N8): the trait the mbuf calls pf(4) through at uipc_mbuf.c's NPF > 0 points (pf_mbuf_link_state_key, pf_mbuf_link_inpcb, pf_mbuf_unlink_state_key, pf_mbuf_unlink_inpcb) and if.c's (pf_delay_pkt, pf_pkt_addr_changed, pfi_attach_ifnet, pfi_detach_ifnet, the groups' pfi_* legs, N6.3a), its OnceStatic slot and register_pf"
+
+[[module]]
+rust = "sys/kernel/netinet/in4_cksum.rs"
+crate = "kernel"
+lz = ["sys/netinet/in4_cksum.rs"]
+status = "redesigned"
+notes = "N6.4a: in4_cksum.c in the kernel over the kernel's Mbuf: the header read by hal::pod::at (LZ's read_unaligned, its one unsafe, gone), the pseudo header's words summed as LZ's, #[inline] (a per-packet helper of bsd's transports across the crate boundary, N6.3c1 R12); bsd reaches it under LZ's path through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/in_cksum.rs"
+crate = "kernel"
+lz = ["sys/netinet/in_cksum.rs"]
+status = "redesigned"
+notes = "N6.4a: in_cksum.c in the kernel: the chain walked over the kernel's Mbuf::data() slices (LZ's from_raw_parts over mtod, its one unsafe, gone), the byte-position sum and the fold as LZ's, #[inline] on cksum_add, cksum_fold and in_cksum (N6.3c1 R12); LZ's four tests over kernel mbuf chains (odd data offsets included); bsd reaches it through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/in_systm.rs"
+crate = "kernel"
+lz = ["sys/netinet/in_systm.rs"]
+status = "redesigned"
+notes = "N6.4a: netinet/in_systm.h's network types moved whole into the kernel; bsd reaches them through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/inet_nat64.rs"
+crate = "kernel"
+lz = ["sys/netinet/inet_nat64.rs"]
+status = "redesigned"
+notes = "N6.4a: inet_nat64.c moved whole into the kernel over hal::sys's errno and families, with LZ's three tests; pf reaches it through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_ecn.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_ecn.rs"]
+status = "redesigned"
+notes = "N6.4a: ip_ecn.h and ip_ecn.c moved whole into the kernel over hal::sys::netinet_ip's image, with LZ's two tests (the header's bytes through bytes_of, not a transmute); the tunnels reach it through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_id.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_id.rs"]
+status = "redesigned"
+notes = "N6.4a: ip_id.c in the kernel over hal::random: the 65536-entry shuffle of atomics as LZ's, arc4random_buf of two bytes as arc4random's low half; LZ's test; bsd's callers reach it through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_var.rs"]
+status = "redesigned"
+notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; ip_moptions, ipqent, ipq, ipoffnxt and mtod_ip stay bsd's sys/netinet/ip_var.rs until N6.4a's ip_output and N6.4c2; tests: the counters per index and the reference-backed flags"
 
 [[module]]
 rust = "sys/kernel/pipe.rs"
