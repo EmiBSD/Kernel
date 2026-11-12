@@ -1669,6 +1669,22 @@ struct BenchInet {
 }
 
 impl kernel::net::if_::Inet for BenchInet {
+    /// `arpresolve`'s multicast arm (`ether.output.inet`): a group's mapped address, no
+    /// route, the packet back (bsd's leg adds its park and unpark around bsd's arpresolve).
+    fn arpresolve(
+        &self,
+        _ifp: &'static kernel::net::if_var::Ifnet,
+        _rt: Option<&kernel::net::route::Rtentry>,
+        m: MbufBox,
+        dst: kernel::net::proto::SockaddrView<'_>,
+        desten: &mut [u8; 6],
+    ) -> Result<MbufBox, hal::sys::errno::Errno> {
+        let Some(sin) = hal::pod::at::<hal::sys::netinet_in::SockaddrIn>(dst.bytes(), 0) else {
+            return Err(hal::sys::errno::Errno::EINVAL);
+        };
+        *desten = kernel::net::if_ethersubr::ether_map_ip_multicast(&sin.sin_addr);
+        Ok(m)
+    }
     fn arpintr(&self) {}
     fn ipintr(&self) {}
     fn ip6intr(&self) {}
@@ -2216,11 +2232,12 @@ fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
 }
 /// The link layers' rows (N6.3c2, decision 43): Ethernet's input and output and the
 /// loopback's round trip, each through the interface's driver as the stack reaches it.
-const ETHER_ROWS: [&str; 4] = [
+const ETHER_ROWS: [&str; 5] = [
     "ether.input",
     "ether.output.hdrcmplt",
     "ether.output.unspec",
     "lo.output.input",
+    "ether.output.inet",
 ];
 
 /// The Ethernet rows' driver: its output, input and rtrequest are the defaults (the link
@@ -2330,19 +2347,31 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         report(ETHER_ROWS[0], r);
     }
 
-    for (row, family) in [(1, pseudo_AF_HDRCMPLT), (2, AF_UNSPEC)] {
+    for (row, family) in [
+        (1, pseudo_AF_HDRCMPLT),
+        (2, AF_UNSPEC),
+        (4, hal::sys::socket::AF_INET),
+    ] {
         if !wanted(ETHER_ROWS[row]) {
             continue;
         }
-        // The destination's header in sa_data; a 46-byte packet with room for the header.
+        // The destination's header in sa_data, or (AF_INET) a multicast group that
+        // arpresolve maps with no route; a 46-byte packet with room for the header.
         let mut sa = [0u8; 16];
         sa[0] = 16;
         sa[1] = family;
-        sa[2..8].copy_from_slice(&PEER);
-        sa[8..14].copy_from_slice(&OURS);
-        sa[14..16].copy_from_slice(&ETHERTYPE_IP.to_be_bytes());
-        let dst = sav(&sa);
         let mut m = Some(lead_packet(32, 46));
+        if family == hal::sys::socket::AF_INET {
+            sa[4..8].copy_from_slice(&[224, 0, 0, 1]);
+            if let Some(p) = m.as_ref() {
+                p.m_flags().set(p.flags() | kernel::net::mbuf::M_MCAST);
+            }
+        } else {
+            sa[2..8].copy_from_slice(&PEER);
+            sa[8..14].copy_from_slice(&OURS);
+            sa[14..16].copy_from_slice(&ETHERTYPE_IP.to_be_bytes());
+        }
+        let dst = sav(&sa);
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
