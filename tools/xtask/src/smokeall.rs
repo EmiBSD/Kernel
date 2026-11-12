@@ -425,8 +425,8 @@ fn recipe_limit(root: &Path, just_bin: &str, xtask: &Path, recipe: &str, scale: 
 /// (A skipped boot is counted too, since `just --dry-run` cannot know `$EMIBSD_ARCHS` per
 /// line: the limit is larger than needed, which is harmless.)
 ///
-/// The sum of the time limits of the boots in a recipe's commands: `boot::SMOKE_TIMEOUT` for
-/// each `xtask smoke`, its `--timeout` (or the same default) for each `xtask smoke2`, xtask
+/// The sum of the time limits of the boots in a recipe's commands: its `--timeout` (or
+/// `boot::SMOKE_TIMEOUT`) for each `xtask smoke` and each `xtask smoke2`, xtask
 /// being `cargo xtask` or the path of the binary, quoted or not ([`XTASK_ENV`]). `None` when
 /// there is no boot.
 fn boot_limits(commands: &str) -> Option<Duration> {
@@ -434,23 +434,22 @@ fn boot_limits(commands: &str) -> Option<Duration> {
     let mut boots = 0;
     for line in commands.lines() {
         let mut words = line.split_whitespace();
-        let Some(cmd) = words
+        if words
             .by_ref()
             .skip_while(|w| !is_xtask(w))
             .nth(1)
             .filter(|c| *c == "smoke" || *c == "smoke2")
-        else {
+            .is_none()
+        {
             continue;
-        };
+        }
         let mut limit = boot::SMOKE_TIMEOUT;
-        if cmd == "smoke2" {
-            let mut rest = words;
-            while let Some(w) = rest.next() {
-                if w == "--timeout"
-                    && let Some(s) = rest.next().and_then(|v| v.parse::<u64>().ok())
-                {
-                    limit = Duration::from_secs(s);
-                }
+        let mut rest = words;
+        while let Some(w) = rest.next() {
+            if w == "--timeout"
+                && let Some(s) = rest.next().and_then(|v| v.parse::<u64>().ok())
+            {
+                limit = Duration::from_secs(s);
             }
         }
         sum += limit;

@@ -58,7 +58,7 @@
 //!                                          the stick on a usb-ehci (alone) or a
 //!                                          piix3-usb-uhci instead
 //! cargo xtask smoke --arch A [--kernel K] [--cmdline C] [--status N] [--send-after L --send T]... [--until-seen]
-//!                   [--expect-ramdisk] --expect L...
+//!                   [--expect-ramdisk] [--timeout SECS] --expect L...
 //!                                          boot headless; pass if every L appears and QEMU
 //!                                          exits with status N (default: the kernel's success
 //!                                          status); with K the image is rebuilt first;
@@ -224,7 +224,7 @@ const REFERENCE_DIR: &str = "reference/openbsd-src";
 const USAGE: &str = "usage: cargo xtask <lz check | lz status [--write] | lz drift [--fetch] [--security] [--functions] [--strict] | \
                      lz trace <lz path>:<item> | lz trace --rust <path>:<item> | lz trace --c <c path>:<item> | image --arch A --kernel K [--cmdline C] [--init I] [--ramdisk R] | \
                      qemu --arch A [--kernel K] [--init I] [--ramdisk R] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--fb] | gen-syscalls [--check] | \
-                     smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
+                     smoke --arch A [--kernel K] [--cmdline C] [--init I] [--ramdisk R] [--expect-ramdisk] [--disk-fresh] [--disks N] [--disk-set NAME] [--nvme FILE] [--ahci FILE] [--scsi-cd ISO] [--lsi FILE [--lsi-cd ISO]] [--pci-serial FILE] [--pci-bridges] [--machine pc] [--ide|--megasas|--megasas-gen2|--mptsas|--pvscsi|--am53c974|--dc390|--ufs|--sdhci|--floppy FILE]... [--ipmi] [--reboot] [--vio-mq] [--expect-pci-serial T]... [--fb] [--screenshot-after L [--screen-text ROW:COL:TEXT]] [--sendkey-after L --sendkeys K] [--usb] [--usb-hc xhci|ehci|uhci|ohci] [--usb-mouse] [--usb-tablet] [--usb-wacom-tablet] [--usb-ccid] [--usb-net] [--usb-serial FILE [--usb-serial-send-after L --usb-serial-send T]... [--expect-usb-serial T]...] [--audio hda|ac97|usb] [--expect-tone] [--status N] [--send-after L --send T]... [--until-seen] [--timeout S] [--https-server DIR:PORT:MODE]... [--reject L]... --expect L... | \
                      smoke2 --arch A [--kernel K] [--cmdline C] [--timeout S] [--show-transcripts] [--disk-fresh] [--disks N] [--both-|--a-|--b-send-after L --send T]... [--both-|--a-|--b-expect L]... [--reject L]... [--https-server DIR:PORT:MODE]... | \
                      smoke-all [-j N] [--just PATH] RECIPE... | \
                      unsafe-report [--write] [--check] [--shapes] | unsafe-report --json | \
@@ -351,6 +351,13 @@ fn run(args: &[String]) -> Result<()> {
                         fresh: rest.contains(&"--disk-fresh"),
                         count: disks_flag(rest)?,
                         set: optional_flag(rest, "--disk-set"),
+                    },
+                    timeout: match optional_flag(rest, "--timeout") {
+                        Some(s) => Some(std::time::Duration::from_secs(
+                            s.parse::<u64>()
+                                .map_err(|e| format!("--timeout {s}: {e}"))?,
+                        )),
+                        None => None,
                     },
                 },
             )

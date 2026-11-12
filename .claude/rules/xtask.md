@@ -22,7 +22,8 @@ paths:
   (2026-11-11: `smoke-devtools-native`'s disk, `comp`'s staging root without its libc++ headers
   and clang resource directory, DevTools' native LLVM and Rust trees laid over it from tarballs
   checked against their pins in the justfile; `userland/comp.rs`). `--memory SIZE` (qemu, smoke;
-  256M..16G) replaces `boot::VM_MEMORY` (512M) for one run.
+  256M..16G) replaces `boot::VM_MEMORY` (512M) for one run; `--timeout SECS` (smoke, smoke2)
+  replaces `boot::SMOKE_TIMEOUT` (180 s) for a session longer than a boot.
 - External tools (`qemu-system-*`, Limine binaries, EDK2 firmware) are located at runtime via
   `brew --prefix <formula>` or `$PATH`, with an error that names the missing formula and points to
   `docs/SETUP.md`. Never hardcode `/opt/homebrew` or `/usr/local`. Exception: `userland`'s

@@ -1020,6 +1020,9 @@ pub struct SmokeOptions<'a> {
     pub expect_ramdisk: bool,
     /// The persistent disks: `--disk-fresh`, `--disks N`, `--disk-set NAME`.
     pub disks: Disks<'a>,
+    /// `--timeout SECS`: the boot's time limit in place of [`SMOKE_TIMEOUT`], for a session
+    /// that runs for longer than any boot (a build inside the guest); scaled as that one is.
+    pub timeout: Option<Duration>,
 }
 
 /// Firmware failures that end a boot before the kernel runs and are not ours: each is the two
@@ -1090,6 +1093,7 @@ fn smoke_once(
         ramdisk,
         expect_ramdisk,
         disks,
+        timeout,
     } = *opts;
     let image = match kernel {
         Some(k) => image(root, arch, k, cmdline, init, ramdisk)?,
@@ -1107,7 +1111,7 @@ fn smoke_once(
         }
     };
     let expected_status = status;
-    let limit = time_limit(SMOKE_TIMEOUT);
+    let limit = time_limit(timeout.unwrap_or(SMOKE_TIMEOUT));
     // M16e (hwopts.rs): `--tpm`'s swtpm, stopped when this returns, after QEMU.
     let _swtpm = crate::hwopts::start_swtpm()?;
     let mut cmd = qemu_command(root, arch, &image, "stdio", None, &disks)?;
