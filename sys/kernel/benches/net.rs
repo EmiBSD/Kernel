@@ -149,6 +149,19 @@
 //!     configured by `in_ioctl`) through the caller's cached route to lo0's driver, the header
 //!     completed, its sum by the interface (lo's `IFCAP_CSUM_IPv4`), the packet taken back off
 //!     lo0's input queue for the next op.
+//! - The ARP rows (N6.4b; "before" = `bsd`'s `arpresolve` through `BsdNetLegs`'s leg at the
+//!   slice's base, decision 82's block and its park/unpark pair included, in a scratch test;
+//!   measured at the N6.4 close, decision 50): an Ethernet interface with 10.0.2.15/24
+//!   (`in_ioctl`), 10.0.2.2 resolved by its reply (`in_arpinput`), 10.0.2.99 cloned and never
+//!   answered:
+//!   - `arp.resolve.hit`: `arpresolve` of a 46-byte packet to 10.0.2.2 through its entry (the
+//!     route's `rt_expire`, the gateway's `sdl_alen`, family and address read once under its
+//!     cell, the 6-byte copy), the packet back for the next op.
+//!   - `arp.resolve.miss` (control): `arpresolve` of a fresh packet to 10.0.2.99 (`arp_mtx`,
+//!     the record lent by the route's tagged word, the hold queue's push dropping the oldest
+//!     past `LA_HOLD_QUEUE`), the packet's `m_gethdr` included.
+//!   - `ether.output.inet` (N6.3c2's row above) now reaches the kernel's `arpresolve`
+//!     (its multicast arm) with no `Inet` leg and no park/unpark: re-measured at the close.
 
 #![forbid(unsafe_code)]
 
@@ -593,6 +606,7 @@ fn main() {
         .chain(BPF_ROWS.iter())
         .chain(ETHER_ROWS.iter())
         .chain(INET_ROWS.iter())
+        .chain(ARP_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -862,6 +876,7 @@ fn main() {
     bpf_rows(&wanted, &report);
     ether_rows(&wanted, &report);
     inet_rows(&wanted, &report);
+    arp_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -2526,4 +2541,151 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
     }
 }
 
+/// The ARP rows (N6.4b): `arpresolve` of a resolved entry (the C's `rt_expire` test, the
+/// gateway's `sdl_alen` and the 6-byte copy; the kernel's `with_gateway` read), and of one
+/// being asked for (the packet queued on the record's hold queue under `arp_mtx`, the oldest
+/// dropped past `LA_HOLD_QUEUE`: a control row, its packet made per op).
+const ARP_ROWS: [&str; 2] = ["arp.resolve.hit", "arp.resolve.miss"];
+
+fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::net_ethertypes::ETHERTYPE_IP;
+    use hal::sys::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
+        IFXF_MPSAFE,
+    };
+    use hal::sys::net_if_arp::{ARPHRD_ETHER, ARPOP_REPLY, Arphdr};
+    use hal::sys::netinet_if_ether::EtherArp;
+    use hal::sys::sockio::SIOCAIFADDR;
+    use kernel::net::if_::{if_attach, if_test_reset};
+    use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
+    use kernel::net::mbuf::m_devget;
+    use kernel::net::route::{RT_RESOLVE, rtalloc};
+    use kernel::netinet::if_ether::{arpinit, arpresolve, in_arpinput};
+
+    const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x57];
+    const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcd];
+
+    if !ARP_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET,
+        rtoffset: 4,
+        maxplen: 32,
+        sasize: 16,
+    }]);
+    kernel::netinet::ip_id::ip_randomid_init();
+    kernel::netinet::if_ether::arp_test_reset();
+    arpinit::<G>();
+    // A route cloned at uptime 0 reads as a permanent entry.
+    kernel::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
+
+    // An Ethernet interface with 10.0.2.15/24 (the ether rows' driver: frames stay queued).
+    let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
+    let ifp: &'static kernel::net::if_var::Ifnet = &ac.ac_if;
+    let mut name = [0u8; IFNAMSIZ];
+    name[..6].copy_from_slice(b"bncha0");
+    ifp.if_xname.set(name);
+    if ifp.if_driver.set(&ETHER_BENCH_DRIVER).is_err() {
+        eprintln!("net: a fresh interface with a driver");
+        std::process::exit(1);
+    }
+    ifp.if_xflags.set(IFXF_MPSAFE | IFXF_CLONED);
+    ifp.if_flags
+        .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
+    ac.ac_enaddr.set(OURS);
+    hal::klock::kernel_lock();
+    if_attach(ifp);
+    ether_ifattach(ac);
+    hal::klock::kernel_unlock();
+    let mut req = [0u8; 64];
+    req[16..18].copy_from_slice(&[16, hal::sys::socket::AF_INET]);
+    req[20..24].copy_from_slice(&[10, 0, 2, 15]);
+    req[48..50].copy_from_slice(&[16, hal::sys::socket::AF_INET]);
+    req[52..56].copy_from_slice(&[255, 255, 255, 0]);
+    if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(ifp), true).is_err() {
+        eprintln!("net: bncha0 refused 10.0.2.15");
+        std::process::exit(1);
+    }
+
+    // 10.0.2.2 resolved by its reply to us; 10.0.2.99 cloned and never answered.
+    let ea = EtherArp {
+        ea_hdr: Arphdr {
+            ar_hrd: ARPHRD_ETHER.to_be(),
+            ar_pro: ETHERTYPE_IP.to_be(),
+            ar_hln: 6,
+            ar_pln: 4,
+            ar_op: ARPOP_REPLY.to_be(),
+        },
+        arp_sha: PEER,
+        arp_spa: [10, 0, 2, 2],
+        arp_tha: OURS,
+        arp_tpa: [10, 0, 2, 15],
+    };
+    let mut b = [0u8; 28];
+    let _ = hal::pod::put(&mut b, 0, &ea);
+    let gw = sin([10, 0, 2, 2]);
+    let far = sin([10, 0, 2, 99]);
+    let (hit, miss) = {
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        let m = need(m_devget(&b, 0), "a reply");
+        m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
+        in_arpinput(ifp, m, &net);
+        (
+            need(rtalloc(sav(&gw), 0, 0, &net), "the resolved entry"),
+            need(rtalloc(sav(&far), RT_RESOLVE, 0, &net), "the cloned entry"),
+        )
+    };
+
+    if wanted(ARP_ROWS[0]) {
+        let dst = sav(&gw);
+        let mut desten = [0u8; 6];
+        let mut m = Some(lead_packet(32, 46));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the packet");
+                match arpresolve(ifp, Some(&hit), black_box(p), dst, &mut desten) {
+                    Ok(p) => m = Some(p),
+                    Err(_) => {
+                        eprintln!("net: arpresolve missed a resolved entry");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            t.elapsed()
+        });
+        if desten != PEER {
+            eprintln!("net: arpresolve answered another address");
+            std::process::exit(1);
+        }
+        report(ARP_ROWS[0], r);
+    }
+    if wanted(ARP_ROWS[1]) {
+        let dst = sav(&far);
+        let mut desten = [0u8; 6];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = lead_packet(32, 46);
+                if arpresolve(ifp, Some(&miss), black_box(p), dst, &mut desten).is_ok() {
+                    eprintln!("net: arpresolve resolved an unanswered entry");
+                    std::process::exit(1);
+                }
+            }
+            t.elapsed()
+        });
+        report(ARP_ROWS[1], r);
+    }
+}
 /* </CODE> */
