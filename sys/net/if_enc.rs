@@ -94,7 +94,7 @@ use crate::sys::mbuf::{Mbuf, park};
 use crate::sys::socket::{RT_TABLEID_MAX, Sockaddr};
 use crate::sys::sockio::{SIOCSIFADDR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SIOCSIFRDOMAIN};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
-use kernel::net::ipsec_hooks::{SpdError, TdbRef};
+use kernel::net::ipsec_hooks::{SpdError, TdbKey, TdbRef};
 use libkern::staticcell::StaticCell;
 
 /// `ENCMTU`: XXX should be bigger, maybe `LOMTU`.
@@ -367,10 +367,22 @@ pub struct BsdIpsec;
 /// The one [`BsdIpsec`], registered by `bsd`'s `ifinit`.
 pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
 
+/// The key `register_ipsec` gave [`BSD_IPSEC`]'s registration, with which its legs make and
+/// read [`TdbRef`]s.
+pub static BSD_TDB_KEY: hal::once::OnceStatic<&'static TdbKey> = hal::once::OnceStatic::new();
+
+/// The key, which every leg is called after (`ifinit` registered them and kept it).
+fn tdb_key() -> &'static TdbKey {
+    match BSD_TDB_KEY.get() {
+        Some(k) => k,
+        None => panic(format_args!("ipsec: a leg called before its registration")),
+    }
+}
+
 /// The SA a [`TdbRef`] names (`bsd`'s `&'static Tdb` the lookup gave the kernel); `panic(9)`
 /// for any other object, which no leg ever hands out.
-fn tdb_of(t: TdbRef) -> &'static Tdb {
-    let any: &'static dyn core::any::Any = t;
+fn tdb_of(t: &TdbRef) -> &'static Tdb {
+    let any: &'static dyn core::any::Any = t.get(tdb_key());
     match any.downcast_ref::<Tdb>() {
         Some(tdb) => tdb,
         None => panic(format_args!("ipsec: a TdbRef that names no tdb")),
@@ -395,7 +407,7 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
     ) -> Result<Option<TdbRef>, SpdError> {
         use crate::netinet::ip_spd::SpdError as BsdSpdError;
         match crate::netinet::ip_output::ip_output_ipsec_lookup(m, hlen, seclevel, ipsecflowinfo) {
-            Ok(t) => Ok(t.map(|t| t as TdbRef)),
+            Ok(t) => Ok(t.map(|t| TdbRef::new(tdb_key(), t))),
             Err(BsdSpdError::Drop) => Err(SpdError::Drop),
             Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
         }
@@ -403,7 +415,7 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
 
     fn ip_output_send(
         &self,
-        tdb: TdbRef,
+        tdb: &TdbRef,
         m: kernel::net::mbuf::MbufBox,
         ro: &mut kernel::net::route::Route,
         rtableid: u32,
@@ -419,7 +431,7 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
     }
 
     fn tdb_unref(&self, tdb: TdbRef) {
-        crate::netinet::ip_ipsp::tdb_unref(Some(tdb_of(tdb)));
+        crate::netinet::ip_ipsp::tdb_unref(Some(tdb_of(&tdb)));
     }
 
     fn adjust_mtu(&self, m: &Mbuf, mtu: u32) {

@@ -723,7 +723,9 @@ impl kernel::net::if_::Inet for BsdNetLegs {
 /// subsystems registered (a second call, a test's, keeps the first).
 pub fn ifinit() {
     let _ = kernel::net::if_::register_inet(&BSD_NET_LEGS);
-    let _ = kernel::net::ipsec_hooks::register_ipsec(&crate::net::if_enc::BSD_IPSEC);
+    if let Ok(key) = kernel::net::ipsec_hooks::register_ipsec(&crate::net::if_enc::BSD_IPSEC) {
+        let _ = crate::net::if_enc::BSD_TDB_KEY.set(key);
+    }
     kernel::net::if_::ifinit();
 }
 

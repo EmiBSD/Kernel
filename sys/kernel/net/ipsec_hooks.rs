@@ -31,7 +31,11 @@
 //!
 //! An SA (`struct tdb`) crosses as a [`TdbRef`], `bsd`'s `&'static Tdb` seen as an opaque
 //! `dyn Any`: the kernel never reads it, only holds the reference `ip_output_ipsec_lookup`
-//! took ([`TdbHold`], whose drop is the C's `tdb_unref` at `ip_output`'s `done:`).
+//! took ([`TdbHold`], whose drop is the C's `tdb_unref` at `ip_output`'s `done:`). A
+//! `TdbRef` is neither `Copy` nor `Clone` and is given back by value, and only the holder of
+//! the [`TdbKey`] (the legs' registrant, [`register_ipsec`]) makes one or sees the SA behind
+//! it for longer than a borrow: kernel code can neither keep an SA past its `tdb_unref` nor
+//! give one back twice (review 1 of N6.4a).
 
 use core::any::Any;
 
@@ -67,8 +71,36 @@ pub enum SpdError {
     Errno(Errno),
 }
 
-/// `struct tdb *`: an SA of `bsd`'s, with the reference its lookup took; opaque here.
-pub type TdbRef = &'static (dyn Any + Sync);
+/// The capability of IPsec's legs over [`TdbRef`]s: [`register_ipsec`] gives its one value
+/// to the registrant, once; nothing else in the kernel can name or make one (a private field,
+/// a private static).
+pub struct TdbKey(());
+
+/// `struct tdb *`: an SA of `bsd`'s, with the reference its lookup took; opaque here. Neither
+/// `Copy` nor `Clone`: one value per reference taken, made by the legs' lookup
+/// ([`TdbRef::new`], the key's), lent by its [`TdbHold`] (`&TdbRef`, for
+/// [`Ipsec::ip_output_send`]) and consumed by [`Ipsec::tdb_unref`] from the hold's drop.
+pub struct TdbRef(&'static (dyn Any + Sync));
+
+impl TdbRef {
+    /// The SA `tdb` with the reference the lookup took, for the key's holder (the legs).
+    #[inline]
+    pub fn new(_key: &TdbKey, tdb: &'static (dyn Any + Sync)) -> Self {
+        Self(tdb)
+    }
+
+    /// The SA, for the key's holder (the legs' downcast to their own type).
+    #[inline]
+    pub fn get(&self, _key: &TdbKey) -> &'static (dyn Any + Sync) {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for TdbRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("TdbRef")
+    }
+}
 
 /// The legs of IPsec the kernel calls (`net/if_enc.c`'s, `netinet/ip_output.c`'s
 /// `#ifdef IPSEC` code, `netinet/ipsec_output.c`'s).
@@ -90,17 +122,18 @@ pub trait Ipsec: Sync {
         ipsecflowinfo: u32,
     ) -> Result<Option<TdbRef>, SpdError>;
     /// `ip_output_ipsec_send(tdb, m, ro, rtableid, fwd)`: `m` handed to the SA `tdb` (pf on
-    /// the SA's enc(4) interface, the path MTU checks and update, the TSO chop): the packet
-    /// consumed.
+    /// the SA's enc(4) interface, the path MTU checks and update, the TSO chop), lent by its
+    /// [`TdbHold`]: the packet consumed, the reference kept.
     fn ip_output_send(
         &self,
-        tdb: TdbRef,
+        tdb: &TdbRef,
         m: MbufBox,
         ro: &mut Route,
         rtableid: u32,
         fwd: bool,
     ) -> Result<(), Errno>;
-    /// `tdb_unref(tdb)`: the lookup's reference given back.
+    /// `tdb_unref(tdb)`: the lookup's reference given back, consumed (from [`TdbHold`]'s
+    /// drop).
     fn tdb_unref(&self, tdb: TdbRef);
     /// `ipsec_adjust_mtu(m, mtu)`: the path MTU of the SAs `m` went through lowered to
     /// `mtu`, after the packet was too large to send.
@@ -110,10 +143,17 @@ pub trait Ipsec: Sync {
 /// IPsec's legs, once registered.
 static IPSEC: OnceStatic<&'static dyn Ipsec> = OnceStatic::new();
 
-/// Registers IPsec's legs, once (`bsd`'s enc(4), at boot before the first routing request);
-/// a second call keeps the first and names it.
-pub fn register_ipsec(imp: &'static dyn Ipsec) -> Result<(), AlreadyRegistered> {
-    IPSEC.set(imp).map_err(|_| AlreadyRegistered("Ipsec"))
+/// The one [`TdbKey`], given to the legs' registrant.
+static TDB_KEY: TdbKey = TdbKey(());
+
+/// Registers IPsec's legs, once (`bsd`'s enc(4), at boot before the first routing request),
+/// and gives the registrant the [`TdbKey`] its legs make and read [`TdbRef`]s with; a second
+/// call keeps the first, names it and gives no key.
+pub fn register_ipsec(imp: &'static dyn Ipsec) -> Result<&'static TdbKey, AlreadyRegistered> {
+    IPSEC
+        .set(imp)
+        .map(|()| &TDB_KEY)
+        .map_err(|_| AlreadyRegistered("Ipsec"))
 }
 
 /// IPsec's legs, `None` before registration (the C without `IPSEC`).
@@ -136,10 +176,10 @@ impl TdbHold {
         Self { legs, tdb }
     }
 
-    /// The SA, lent for a call.
+    /// The SA, lent for a call (the borrow ends before the hold's drop gives it back).
     #[inline]
-    pub(crate) fn tdb(&self) -> TdbRef {
-        self.tdb
+    pub(crate) fn tdb(&self) -> &TdbRef {
+        &self.tdb
     }
 
     /// The legs that gave it.
@@ -151,7 +191,102 @@ impl TdbHold {
 
 impl Drop for TdbHold {
     fn drop(&mut self) {
-        self.legs.tdb_unref(self.tdb);
+        // The reference moved out for the legs, an inert `()` left in its place that no
+        // leg ever sees (the hold is gone after this).
+        let t = core::mem::replace(&mut self.tdb, TdbRef(&()));
+        self.legs.tdb_unref(t);
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests for the SA's reference across the bridge: a hold lends it and gives it back
+    // once, by value, on its drop; the key reads what the legs' lookup made.
+
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    /// Legs that count the references given back and remember the last one's address.
+    struct CountingLegs {
+        unrefs: AtomicUsize,
+        last: AtomicUsize,
+    }
+
+    impl Ipsec for CountingLegs {
+        fn enc_getifa(&self, _rtableid: u32, _unit: u32) -> Option<&'static Ifaddr> {
+            None
+        }
+
+        fn in_use(&self) -> bool {
+            true
+        }
+
+        fn ip_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _hlen: i32,
+            _seclevel: Option<&IpsecLevel>,
+            _ipsecflowinfo: u32,
+        ) -> Result<Option<TdbRef>, SpdError> {
+            Ok(None)
+        }
+
+        fn ip_output_send(
+            &self,
+            _tdb: &TdbRef,
+            m: MbufBox,
+            _ro: &mut Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            drop(m);
+            Ok(())
+        }
+
+        fn tdb_unref(&self, tdb: TdbRef) {
+            let sa = tdb.get(&TDB_KEY);
+            let addr = core::ptr::from_ref(sa).cast::<u8>() as usize;
+            self.last.store(addr, Ordering::Relaxed);
+            self.unrefs.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn adjust_mtu(&self, _m: &Mbuf, _mtu: u32) {}
+    }
+
+    static LEGS: CountingLegs = CountingLegs {
+        unrefs: AtomicUsize::new(0),
+        last: AtomicUsize::new(0),
+    };
+
+    /// The SA of the test, a `u32` standing for `bsd`'s `Tdb`.
+    static SA: u32 = 7;
+
+    #[test]
+    fn a_hold_lends_its_reference_and_gives_it_back_once_on_drop() {
+        let before = LEGS.unrefs.load(Ordering::Relaxed);
+        let hold = TdbHold::new(&LEGS, TdbRef::new(&TDB_KEY, &SA));
+        // Lent, not given back: the legs' downcast sees the SA the lookup made.
+        let sa: &'static dyn Any = hold.tdb().get(&TDB_KEY);
+        assert_eq!(
+            sa.downcast_ref::<u32>(),
+            Some(&7),
+            "the SA behind the lent reference"
+        );
+        assert!(core::ptr::addr_eq(
+            core::ptr::from_ref(hold.legs()),
+            core::ptr::from_ref(&LEGS)
+        ));
+        assert_eq!(LEGS.unrefs.load(Ordering::Relaxed), before);
+        drop(hold);
+        // Given back once, the SA itself (not the inert value left in the hold).
+        assert_eq!(LEGS.unrefs.load(Ordering::Relaxed), before + 1);
+        assert_eq!(
+            LEGS.last.load(Ordering::Relaxed),
+            core::ptr::from_ref(&SA).cast::<u8>() as usize
+        );
+    }
+}
+/* </TESTS> */
