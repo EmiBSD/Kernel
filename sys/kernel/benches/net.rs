@@ -582,6 +582,7 @@ fn main() {
         .chain(IF_ROWS.iter())
         .chain(ROUTE_ROWS.iter())
         .chain(BPF_ROWS.iter())
+        .chain(ETHER_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -849,6 +850,7 @@ fn main() {
     if_rows(&wanted, &report);
     route_rows(&wanted, &report);
     bpf_rows(&wanted, &report);
+    ether_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -2210,6 +2212,188 @@ fn bpf_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             t.elapsed()
         });
         report(BPF_ROWS[4], r);
+    }
+}
+/// The link layers' rows (N6.3c2, decision 43): Ethernet's input and output and the
+/// loopback's round trip, each through the interface's driver as the stack reaches it.
+const ETHER_ROWS: [&str; 4] = [
+    "ether.input",
+    "ether.output.hdrcmplt",
+    "ether.output.unspec",
+    "lo.output.input",
+];
+
+/// The Ethernet rows' driver: its output, input and rtrequest are the defaults (the link
+/// layer's); its start leaves the packets queued, for the rows to take.
+struct EtherBenchDriver;
+
+impl kernel::net::if_var::NetDriver for EtherBenchDriver {
+    fn ioctl(
+        &self,
+        _ifp: &'static kernel::net::if_var::Ifnet,
+        _cmd: u64,
+        _data: &mut [u8],
+    ) -> Result<(), hal::sys::errno::Errno> {
+        Ok(())
+    }
+
+    fn qstart(&self, _ifq: &'static kernel::net::ifq::Ifqueue) {}
+}
+
+static ETHER_BENCH_DRIVER: EtherBenchDriver = EtherBenchDriver;
+
+/// A packet of `len` bytes starting `lead` bytes into its mbuf (room for a link header).
+fn lead_packet(lead: usize, len: usize) -> MbufBox {
+    let m = need(m_gethdr(M_DONTWAIT, MT_DATA), "no mbuf");
+    m.set_data_off(lead);
+    m.m_len().set(len as u32);
+    m.m_pkthdr().len.set(len as i32);
+    m
+}
+
+/// `m_data -= n` with the lengths, the inverse of `m_adj(m, n)` (a received frame's header
+/// shown again for the next op).
+fn unadj(m: &kernel::net::mbuf::Mbuf, n: usize) {
+    m.set_data_off(m.data_off() - n);
+    m.m_len().set(m.m_len().get() + n as u32);
+    m.m_pkthdr().len.set(m.m_pkthdr().len.get() + n as i32);
+}
+
+fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::net_ethertypes::ETHERTYPE_IP;
+    use hal::sys::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFNAMSIZ, IFXF_CLONED, IFXF_MPSAFE,
+    };
+    use hal::sys::socket::{AF_UNSPEC, pseudo_AF_HDRCMPLT};
+    use kernel::net::if_::{if_attach, if_test_reset};
+    use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::if_var::Netstack;
+    use kernel::net::ifq::{ifiq_test_take, ifq_dequeue};
+    use kernel::net::mbuf::ml_dequeue;
+
+    const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+    const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xaa, 0xbb, 0xcc];
+
+    if !ETHER_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The route rows may have registered it first; the same double either way.
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+
+    let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
+    let ifp: &'static kernel::net::if_var::Ifnet = &ac.ac_if;
+    let mut name = [0u8; IFNAMSIZ];
+    name[..6].copy_from_slice(b"bnche0");
+    ifp.if_xname.set(name);
+    if ifp.if_driver.set(&ETHER_BENCH_DRIVER).is_err() {
+        eprintln!("net: a fresh interface with a driver");
+        std::process::exit(1);
+    }
+    ifp.if_xflags.set(IFXF_MPSAFE | IFXF_CLONED);
+    ifp.if_flags
+        .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING);
+    ac.ac_enaddr.set(OURS);
+    hal::klock::kernel_lock();
+    if_attach(ifp);
+    ether_ifattach(ac);
+    hal::klock::kernel_unlock();
+    let d = need(ifp.if_driver.get().copied(), "the driver");
+    placement("arpcom", ac);
+    let mut ns = Netstack::new(0);
+
+    if wanted(ETHER_ROWS[0]) {
+        // An IPv4 frame to us, 60 bytes, to the protocol's queue of the softnet's stack.
+        let mut m = Some(lead_packet(2, 60));
+        if let Some(p) = m.as_mut() {
+            let data = need(p.data_mut(), "a writable mbuf");
+            data[..6].copy_from_slice(&OURS);
+            data[6..12].copy_from_slice(&PEER);
+            data[12..14].copy_from_slice(&ETHERTYPE_IP.to_be_bytes());
+            data[14] = 0x45;
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the frame");
+                d.input(ifp, black_box(p), Some(&mut ns));
+                let q = need(ml_dequeue(&mut ns.ns_proto), "the queued frame");
+                unadj(&q, 14);
+                m = Some(q);
+            }
+            t.elapsed()
+        });
+        report(ETHER_ROWS[0], r);
+    }
+
+    for (row, family) in [(1, pseudo_AF_HDRCMPLT), (2, AF_UNSPEC)] {
+        if !wanted(ETHER_ROWS[row]) {
+            continue;
+        }
+        // The destination's header in sa_data; a 46-byte packet with room for the header.
+        let mut sa = [0u8; 16];
+        sa[0] = 16;
+        sa[1] = family;
+        sa[2..8].copy_from_slice(&PEER);
+        sa[8..14].copy_from_slice(&OURS);
+        sa[14..16].copy_from_slice(&ETHERTYPE_IP.to_be_bytes());
+        let dst = sav(&sa);
+        let mut m = Some(lead_packet(32, 46));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the packet");
+                if d.output(ifp, black_box(p), dst, None).is_err() {
+                    eprintln!("net: ether_output refused the packet");
+                    std::process::exit(1);
+                }
+                let q = need(ifq_dequeue(ifp.if_snd()), "the queued frame");
+                m_adj(&q, 14);
+                m = Some(q);
+            }
+            t.elapsed()
+        });
+        report(ETHER_ROWS[row], r);
+    }
+
+    if wanted(ETHER_ROWS[3]) {
+        hal::klock::kernel_lock();
+        let made = loop_clone_create(&LOOP_CLONER, 0);
+        hal::klock::kernel_unlock();
+        if made.is_err() {
+            eprintln!("net: no lo0");
+            std::process::exit(1);
+        }
+        let lo = need(
+            kernel::net::if_::IFNETLIST
+                .iter()
+                .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+            "lo0 listed",
+        );
+        let ld = need(lo.if_driver.get().copied(), "lo0's driver");
+        let a = sin([127, 0, 0, 1]);
+        let dst = sav(&a);
+        let mut m = Some(lead_packet(32, 60));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the packet");
+                if ld.output(lo, black_box(p), dst, None).is_err() {
+                    eprintln!("net: looutput refused the packet");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                let q = need(ml_dequeue(&mut ml), "the looped packet");
+                ld.input(lo, q, Some(&mut ns));
+                m = Some(need(ml_dequeue(&mut ns.ns_proto), "the protocol's packet"));
+            }
+            t.elapsed()
+        });
+        report(ETHER_ROWS[3], r);
     }
 }
 /* </CODE> */
