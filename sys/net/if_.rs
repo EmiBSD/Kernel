@@ -1321,8 +1321,11 @@ pub(crate) mod tests {
         use crate::netinet6::in6::{IN6ADDR_LOOPBACK, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr};
 
         let _g = crate::netinet::ip_input::tests::setup();
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         loop_clone_create(&LOOP_CLONER, 0).expect("lo0");
         loop_clone_create(&LOOP_CLONER, 1).expect("lo1");
+        hal::klock::kernel_unlock();
         let lo0 = if_get(rtable_loindex(0)).expect("lo0");
         let lo1 = if_unit(b"lo1").expect("lo1");
         assert!(in6ifa_ifpwithaddr(lo0, &IN6ADDR_LOOPBACK).is_none());

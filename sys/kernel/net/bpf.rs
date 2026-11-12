@@ -184,6 +184,7 @@
 //! | `bpfwrite` (bpf.c:629-685) | the write filter's SMR section, the net lock | the same, and one `bd_mtx` section for the tap (D-N6.3c-23) |
 //! | `BIOCSETF` (bpf.c:1108-1166) | the filter store, `bd_mtx` for `bpf_resetd` | the same, and the witness for the store (+1 spl pair) |
 //! | `BIOCSETIF` (bpf.c:1169-1211, :285-357) | `bd_mtx`, the net lock for a promiscuous detach | the same, and the witness for each chain edit (+1 spl pair each) |
+//! | `BIOCGBLEN`, `BIOCGDLT`, `BIOCGETIF`, `BIOCPROMISC`, `BIOCGDLTLIST` (`bpfioctl`) | none: `bd_bufsize` and `bd_bif` read under the kernel lock alone | one `bd_mtx` section each (+1 spl pair): `bufsize` and the tap (`BpfD::bif`) are `BpfSlots`' (D-N6.3c-23); `BIOCPROMISC` then the net lock, as the C |
 //! | `bpfopen` (bpf.c:371-408) | one `malloc`, the list insert | two `malloc`s (the klist's box), the task's and the timeout's set (one section each), the witness for the insert |
 //! | `bpfclose` (bpf.c:410-425) | `bd_mtx` | the same, the witness for the list and the chain, the timeout's and the task's delete and clear (four sections the C lacks: the cycle broken, below) |
 //!
@@ -846,10 +847,17 @@ fn bpf_attachd(d: &BpfDRef, bp: &BpfIfRef, s: &mut MutexedGuard<'_, BpfSlots>) {
     let w = klock::witness();
     let r = smr::read();
     drop(d.bd_next.store(&w, bp.bif_dlist.load(&r).map(SmrRef::arc)));
-    drop(r);
     drop(bp.bif_dlist.store(&w, Some(d.clone())));
 
-    if !bp.bif_driverp.is_set() {
+    // The driver's word names this tap, whichever of the word's taps it named before (the
+    // C stores it every time: a listener on a second tap of the word moves the driver to
+    // it); a word that names it already is left, not stored again.
+    let names_bp = bp
+        .bif_driverp
+        .load(&r)
+        .is_some_and(|cur| ptr::eq(cur.get(), &**bp));
+    drop(r);
+    if !names_bp {
         drop(bp.bif_driverp.store(&w, Some(bp.clone())));
     }
 }
@@ -1006,11 +1014,17 @@ pub fn bpfclose<G: ProcGlue>(
     drop(d.bd_self.replace(None));
 
     // The wait timeout and the wake task hold the descriptor (the C's `bpf_get` while they
-    // are pending): a pending one does its work now, then both let it go.
+    // are pending): a pending one does its work now, then both let it go (R7: the C leaves
+    // them to run later with their reference; letting go here breaks the cycle through
+    // `set_shared`).
     if d.bd_wait_tmo.del_barrier() {
         bpf_wait(&d);
     }
     d.bd_wait_tmo.clear();
+    // A plain `task_del`, not the barrier the C does not take either: a wake task the worker
+    // has already taken runs on a clone of its argument (`Task::copy`, under the task's
+    // mutex), so clearing the task's own reference frees nothing under it; its SIGIO may land
+    // after the close, as the C's late `bpf_wakeup_cb` does.
     if task_del(&SYSTQ, &d.bd_wake_task) {
         bpf_wakeup_sig::<G>(&d);
     }
@@ -1989,16 +2003,14 @@ fn bpf_ifattach(
     };
     drop(bp.bif_self.replace(Some(bp.clone())));
 
-    // The list is the kernel lock's: the C's attaches hold it (autoconf, a cloner's create),
-    // which it takes again here (`bsd`'s host tests attach without it).
-    klock::kernel_lock();
+    // The list is the kernel lock's, which the C's callers hold (autoconf, `SIOCIFCREATE`'s
+    // cloner create) and `bpfsattach` takes nothing of: the witness asserts it.
     {
         let mut kw = klock::witness();
         BPF_IFLIST.insert_tail(&mut kw, bp.as_pin());
 
         drop(w.take(&kw));
     }
-    klock::kernel_unlock();
 
     bp
 }
@@ -2253,12 +2265,22 @@ pub fn bpf_mfilter(
     }
 }
 
-/// Host tests: the sysctl values back to their defaults (the lists are left: their elements
-/// live in memory no test frees, and every test detaches and closes what it made).
+/// Host tests: the sysctl values back to their defaults, and no tap or descriptor of an
+/// earlier test listed (`testing.md`: their blocks are forgotten, unlinked and never freed,
+/// so nothing frees into or grows from an earlier test's memory; the taps of interfaces that
+/// are gone with it, as LZ's reset).
 #[cfg(any(test, feature = "doubles"))]
 pub fn bpf_test_reset() {
     bpf_bufsize.store(BPF_BUFSIZE, Ordering::Relaxed);
     bpf_maxbufsize.store(BPF_MAXBUFSIZE, Ordering::Relaxed);
+    // The lists are the kernel lock's; `bsd`'s tests reset without it.
+    klock::kernel_lock();
+    {
+        let mut kw = klock::witness();
+        while BPF_IFLIST.remove_first(&mut kw) {}
+        while BPF_D_LIST.remove_first(&mut kw) {}
+    }
+    klock::kernel_unlock();
 }
 
 const _: () = {
@@ -2837,6 +2859,43 @@ mod tests {
         bpfclose::<G>(d, 0, 0, None).expect("bpfclose");
         bpfdetach(ifp);
         assert!(!SECOND.is_set());
+    }
+
+    #[test]
+    fn a_listener_on_a_second_tap_of_the_word_moves_the_driver_to_it() {
+        // Two taps on one driver's word (one interface, two link types); a listener on the
+        // first, then one on the second: the C points the word at the second (bpf.c's
+        // `bpf_attachd`), so a packet goes to it and not to the first. The first's last
+        // listener going empties the word, as the C's `bpf_detachd` does.
+        let (_g, p) = setup();
+        let (ifp, _) = test_ifnet(b"bpftwo0");
+        bpfattach(&ifp.if_bpf, ifp, DLT_EN10MB, ETHER_HDR_LEN as u32);
+        bpfattach(&ifp.if_bpf, ifp, DLT_LOOP, 4);
+        let (a, b) = (dev(20), dev(21));
+        for d in [a, b] {
+            bpfopen::<G>(d, 0, 0, p).expect("bpfopen");
+            setif(d, p, b"bpftwo0").expect("BIOCSETIF");
+        }
+        let mut dlt = DLT_LOOP;
+        ioctl(b, p, BIOCSDLT, &mut dlt).expect("BIOCSDLT");
+
+        let m = packet(&[0x5a; 20]);
+        assert!(ifp.if_bpf.is_set());
+        let _ = bpf_mtap(&ifp.if_bpf, &m, BPF_DIRECTION_IN);
+        let recv = |d| {
+            let mut st = BpfStat::default();
+            ioctl(d, p, BIOCGSTATS, &mut st).expect("BIOCGSTATS");
+            st.bs_recv
+        };
+        assert_eq!((recv(a), recv(b)), (0, 1), "the word names the second tap");
+
+        bpfclose::<G>(a, 0, 0, None).expect("bpfclose");
+        assert!(
+            !ifp.if_bpf.is_set(),
+            "the first tap's last listener empties the word"
+        );
+        bpfclose::<G>(b, 0, 0, None).expect("bpfclose");
+        bpfdetach(ifp);
     }
 
     #[test]

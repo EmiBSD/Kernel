@@ -448,9 +448,12 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
+    use hal::sys::mbuf::MT_DATA;
     use hal::sys::net_bpf::{BPF_MAXBUFSIZE, bpf_jump, bpf_stmt};
 
     use super::*;
+    use crate::net::bpf::BpfPkt;
+    use crate::net::mbuf::{M_DONTWAIT, MbufBox, m_get, m_gethdr};
 
     /// The default bound `bpf_setf` passes (`net.bpf.maxbufsize`).
     const MAXBUF: u32 = BPF_MAXBUFSIZE as u32;
@@ -1246,13 +1249,65 @@ mod tests {
         p
     }
 
+    /// `bytes` in a chain of mbufs cut at random lengths, empty ones among them, a packet
+    /// header first (linked by hand: `m_cat` would merge the small ones).
+    fn chain(r: &mut Rng, bytes: &[u8]) -> MbufBox {
+        let mut segs = Vec::new();
+        let mut at = 0;
+        loop {
+            let n = if r.below(8) == 0 {
+                0
+            } else {
+                1 + r.below(80) as usize
+            };
+            let n = n.min(bytes.len() - at);
+            segs.push(&bytes[at..at + n]);
+            at += n;
+            if at == bytes.len() && r.below(4) != 0 {
+                break;
+            }
+        }
+        let mut next: Option<MbufBox> = None;
+        for (i, seg) in segs.iter().enumerate().rev() {
+            let m = if i == 0 {
+                m_gethdr(M_DONTWAIT, MT_DATA)
+            } else {
+                m_get(M_DONTWAIT, MT_DATA)
+            };
+            let mut m = m.expect("an mbuf");
+            m.m_len().set(seg.len() as u32);
+            m.data_mut().expect("writable").copy_from_slice(seg);
+            if let Some(n) = next.take() {
+                drop(m.m_next.set(n));
+            }
+            next = Some(m);
+        }
+        next.expect("one mbuf at least")
+    }
+
+    /// `prog` over `pkt` as the taps' three packet shapes, each cut at random places: an mbuf
+    /// chain (`bpf_mtap`), a header before a chain (`bpf_mtap_hdr`), a header before a buffer
+    /// (`bpf_tap_hdr`).
+    fn through_bpfpkt(r: &mut Rng, prog: &[BpfInsn], pkt: &[u8]) -> [u32; 3] {
+        let len = pkt.len() as u32;
+        let m = chain(r, pkt);
+        let whole = _bpf_lfilter(Some(prog), &BpfPkt::mbuf(&m), len);
+        let h = r.below(pkt.len() as u64 + 1) as usize;
+        let rest = chain(r, &pkt[h..]);
+        let hdr_chain = _bpf_lfilter(Some(prog), &BpfPkt::hdr_mbuf(&pkt[..h], &rest), len);
+        let hdr_buf = _bpf_lfilter(Some(prog), &BpfPkt::hdr_buf(&pkt[..h], &pkt[h..]), len);
+        [whole, hdr_chain, hdr_buf]
+    }
+
     #[test]
     fn an_accepted_program_runs_without_panic_in_at_most_its_length_in_steps() {
-        crate::testutil::install();
+        // The mbufs of the same packets cut into segments: the kernel's packets give what one
+        // linear buffer gives.
+        let _g = crate::net::mbuf::tests::setup();
         // A small bound too, so packet offsets meet it.
         for maxbuf in [MAXBUF, 200] {
             let mut r = Rng(0x9e37_79b9_7f4a_7c15 ^ u64::from(maxbuf));
-            let (mut accepted, mut ran) = (0u32, 0u32);
+            let (mut accepted, mut ran, mut compared) = (0u32, 0u32, 0u32);
             for _ in 0..40_000 {
                 let prog = random_program(&mut r, maxbuf);
                 let ok = bpf_validate(&prog, maxbuf);
@@ -1264,9 +1319,16 @@ mod tests {
                 for _ in 0..4 {
                     let pkt: Vec<u8> = (0..r.below(257)).map(|_| r.next() as u8).collect();
                     let _ = steps_taken();
-                    let _ = _bpf_lfilter(Some(&prog), &MemPkt(&pkt), pkt.len() as u32);
+                    let want = _bpf_lfilter(Some(&prog), &MemPkt(&pkt), pkt.len() as u32);
                     let steps = steps_taken();
                     assert!(steps <= prog.len() as u64, "{steps} steps of {prog:?}");
+                    // A random load differs from run to run; every other program answers the
+                    // same over any cut of the packet (one run in 16: the mbufs cost).
+                    if ran % 16 == 0 && !prog.iter().any(|i| i.code == BPF_LD | BPF_W | BPF_RND) {
+                        let got = through_bpfpkt(&mut r, &prog, &pkt);
+                        assert_eq!(got, [want; 3], "{prog:?} over {pkt:?}");
+                        compared += 1;
+                    }
                     ran += 1;
                 }
             }
@@ -1275,6 +1337,7 @@ mod tests {
                 "the generator reaches valid programs ({accepted})"
             );
             assert!(ran > 4000);
+            assert!(compared > 250, "the packet shapes compared ({compared})");
         }
     }
 }

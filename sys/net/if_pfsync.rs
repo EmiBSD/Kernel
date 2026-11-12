@@ -4223,7 +4223,10 @@ mod tests {
             Err(Errno::ENXIO),
             "only unit 0"
         );
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         assert_eq!(pfsync_clone_create(&PFSYNC_CLONER, 0), Ok(()));
+        hal::klock::kernel_unlock();
         let ifp = if_unit(b"pfsync0").expect("pfsync0");
         if_put(ifp);
         assert_eq!(ifp.if_type.get(), IFT_PFSYNC);

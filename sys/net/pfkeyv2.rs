@@ -4512,10 +4512,16 @@ mod tests {
         let _g = setup();
         let ifp = test_ether();
         configure(ifp, ADDR, [255, 255, 255, 0]);
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         crate::net::if_loop::loop_clone_create(&crate::net::if_loop::LOOP_CLONER, 0).expect("lo0");
+        hal::klock::kernel_unlock();
         // enc0: ip_output_ipsec_send runs pf_test on it, and drops the packet without it.
         crate::net::if_enc::enc_reset();
+        // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
+        hal::klock::kernel_lock();
         crate::net::if_enc::enc_clone_create(&crate::net::if_enc::ENC_CLONER, 0).expect("enc0");
+        hal::klock::kernel_unlock();
         let lo = crate::net::if_::if_get(crate::net::rtable::rtable_loindex(0)).expect("lo0");
         configure(lo, [10, 77, 2, 1], [255, 255, 255, 255]);
         // route add default 10.0.2.2

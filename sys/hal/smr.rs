@@ -2306,15 +2306,17 @@ mod tests {
 
     #[test]
     fn a_malloc_reference_moves_along_a_chain_without_a_retirement() {
-        // bpf's `bif_dlist` and `bd_next`: the head word's reference moves to the predecessor
-        // word when an element is unlinked (`SMR_SLIST_REMOVE_LOCKED`).
+        // A chain of malloc'd elements in the shape of bpf's `bif_dlist` and `bd_next`, edited
+        // with `restore`: a reference moves from word to word without a retirement. (bpf's own
+        // edits store clones instead, one retirement each: `bpf_attachd`, `bpf_detachd`.)
         let _s = serial();
         let freed = MCOUNTED_FREED.load(Ordering::SeqCst);
         let head = MWord::new();
         let first = mcounted(1);
         let second = mcounted(2);
         let w = WRITERS.write();
-        // Insert at the head, twice: the new element's next word takes the old head.
+        // Insert at the head, twice: the old head's reference taken from the head word and
+        // restored into the new element's next word, then the new element stored at the head.
         drop(head.store(&w, Some(second.clone())));
         let r = head.take(&w);
         assert!(next_of(&first).restore(&w, r).is_none());
