@@ -4676,8 +4676,7 @@ mod tests {
         endpoint: WgPeerEndpoint,
         aips: &[WgAipIo],
     ) {
-        let len =
-            size_of::<WgInterfaceIo>() + size_of::<WgPeerIo>() + aips.len() * size_of::<WgAipIo>();
+        let len = size_of::<WgInterfaceIo>() + size_of::<WgPeerIo>() + size_of_val(aips);
         let mut buf = UserBuf::new(len);
         let iface = WgInterfaceIo {
             i_flags: WG_INTERFACE_HAS_PRIVATE | WG_INTERFACE_HAS_PORT,

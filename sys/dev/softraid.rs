@@ -5686,10 +5686,8 @@ mod tests {
         assert_eq!(wu.swu_io_count.get(), 2);
         assert!(ptr::eq(ccbs[0].wu(), wu));
         // SAFETY: `ccb_buf` is the first member of a ccb.
-        assert!(ptr::eq(
-            unsafe { sr_ccb_from_buf(&ccbs[1].ccb_buf) },
-            ccbs[1]
-        ));
+        let from_buf = unsafe { sr_ccb_from_buf(&ccbs[1].ccb_buf) };
+        assert!(ptr::eq(from_buf, ccbs[1]));
         sr_wu_release_ccbs(wu);
         assert_eq!(wu.swu_io_count.get(), 0);
         assert_eq!(sd.sd_ccb_freeq.iter().count(), 6);

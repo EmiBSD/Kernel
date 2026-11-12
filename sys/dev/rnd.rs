@@ -1162,7 +1162,7 @@ mod tests {
         // From an all-zero pool: the first word goes to the last slot, unrotated, and only
         // the twist touches it; the rotation moves on by 7.
         pool.add_entropy_words([1]);
-        assert_eq!(pool.word(POOLWORDS - 1), (1 >> 3) ^ TWIST_TABLE[1]);
+        assert_eq!(pool.word(POOLWORDS - 1), TWIST_TABLE[1], "1 >> 3 is 0");
         assert_eq!(pool.input_rotate.load(Ordering::Relaxed), 7);
         assert_eq!(pool.add_ptr.load(Ordering::Relaxed), POOLMASK);
 

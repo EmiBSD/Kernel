@@ -2423,9 +2423,9 @@ mod tests {
         // The ports of an entry come first, without holes.
         for d in &PUC_DEVS {
             let n = d.ports.iter().filter(|p| p.type_ != 0).count();
-            assert!(n >= 1 && n <= PUC_MAX_PORTS);
+            assert!((1..=PUC_MAX_PORTS).contains(&n));
             assert!(d.ports[..n].iter().all(|p| p.type_ != 0));
-            assert!(d.ports[..n].iter().all(|p| p.bar >= 0x10 && p.bar <= 0x24));
+            assert!(d.ports[..n].iter().all(|p| (0x10..=0x24).contains(&p.bar)));
         }
     }
 

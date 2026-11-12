@@ -189,9 +189,9 @@ mod tests {
         let w = fb.words();
         let px = |x: usize, y: usize| w[(16 + y) * stride + 16 + x];
         let glyph = ri.glyph(u32::from(b'A') - 32).to_vec();
-        for y in 0..15 {
+        for (y, &row) in glyph.iter().enumerate().take(15) {
             for x in 0..8 {
-                let on = glyph[y] & (0x80 >> x) != 0;
+                let on = row & (0x80 >> x) != 0;
                 assert_eq!(px(x, y), if on { white } else { blue }, "pixel {x},{y}");
             }
         }

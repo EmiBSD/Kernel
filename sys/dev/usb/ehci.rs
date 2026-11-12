@@ -3760,7 +3760,7 @@ mod tests {
         });
         assert_eq!(slots, [127, 191, 159, 223]);
         // Their parents at the 2ms level differ for frames 0 and 1.
-        assert_ne!((slots[0] + 1) / 2 - 1, (slots[1] + 1) / 2 - 1);
+        assert_ne!(slots[0].div_ceil(2) - 1, slots[1].div_ceil(2) - 1);
     }
 
     #[test]

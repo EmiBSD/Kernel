@@ -2316,7 +2316,7 @@ mod tests {
 
     /// Eight-byte alignment, the host's `ALIGNED_POINTER(x, void *)` on the real machines.
     fn strict(x: usize) -> bool {
-        x % 8 == 0
+        x.is_multiple_of(8)
     }
 
     #[test]

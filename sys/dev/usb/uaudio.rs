@@ -4491,6 +4491,9 @@ mod tests {
 
     use super::*;
 
+    /// What a fake device answers: ((request, selector, channel, unit), the bytes).
+    type Replies = Vec<((u8, u32, u32, u32), Vec<u8>)>;
+
     /// A request the fake device saw: type, request, selector, channel, interface, unit,
     /// data.
     type Req = (u8, u8, u32, u32, u32, u32, Vec<u8>);
@@ -4500,12 +4503,12 @@ mod tests {
     struct FakeDev {
         ifnums: Vec<u32>,
         claimed: RefCell<Vec<bool>>,
-        replies: Vec<((u8, u32, u32, u32), Vec<u8>)>,
+        replies: Replies,
         writes: RefCell<Vec<Req>>,
     }
 
     impl FakeDev {
-        fn new(ifnums: &[u32], replies: Vec<((u8, u32, u32, u32), Vec<u8>)>) -> Self {
+        fn new(ifnums: &[u32], replies: Replies) -> Self {
             Self {
                 ifnums: ifnums.to_vec(),
                 claimed: RefCell::new(vec![false; ifnums.len()]),
@@ -4619,7 +4622,7 @@ mod tests {
     }
 
     /// The volume range of [`uac1_speaker`]'s feature unit: -48 dB..0 dB by 1/256 dB.
-    fn uac1_speaker_replies() -> Vec<((u8, u32, u32, u32), Vec<u8>)> {
+    fn uac1_speaker_replies() -> Replies {
         vec![
             ((UAUDIO_V1_REQ_GET_MIN, 2, 0, 2), vec![0x00, 0xd0]),
             ((UAUDIO_V1_REQ_GET_MAX, 2, 0, 2), vec![0x00, 0x00]),
@@ -4993,7 +4996,7 @@ mod tests {
         )
     }
 
-    fn uac1_headset_replies() -> Vec<((u8, u32, u32, u32), Vec<u8>)> {
+    fn uac1_headset_replies() -> Replies {
         let mut r = Vec::new();
         for (chan, id) in [(1, 2), (2, 2), (0, 5)] {
             r.push(((UAUDIO_V1_REQ_GET_MIN, 2, chan, id), vec![0x00, 0xc0]));
@@ -5100,7 +5103,7 @@ mod tests {
         )
     }
 
-    fn uac2_speaker_replies() -> Vec<((u8, u32, u32, u32), Vec<u8>)> {
+    fn uac2_speaker_replies() -> Replies {
         let mut clk = vec![2, 0];
         for rate in [44100u32, 48000] {
             for v in [rate, rate, 0] {

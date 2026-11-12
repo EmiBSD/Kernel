@@ -1339,7 +1339,7 @@ mod tests {
         let n = hidkbd_raw_translate(&[0x49 | PRESS, 0x49 | RELEASE], &mut cbuf);
         assert_eq!(&cbuf[..n], [0xe0, 0x52, 0xe0, 0xd2]);
         // keys without a scancode are skipped
-        let n = hidkbd_raw_translate(&[0x00 | PRESS, 0xa0 | PRESS, 0x05 | PRESS], &mut cbuf);
+        let n = hidkbd_raw_translate(&[PRESS, 0xa0 | PRESS, 0x05 | PRESS], &mut cbuf);
         assert_eq!(&cbuf[..n], [0x30]);
         // the modifiers: left control, left shift, right alt (extended)
         let n = hidkbd_raw_translate(&[0xe0 | PRESS, 0xe1 | PRESS, 0xe6 | PRESS], &mut cbuf);

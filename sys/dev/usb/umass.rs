@@ -1724,8 +1724,10 @@ mod tests {
     #[test]
     fn ufi_trims_the_inquiry_and_pads_the_command() {
         let sc = softc(UMASS_CPROTO_UFI);
-        let mut cbw = UmassBbbCbw::default();
-        cbw.bCDBLength = 6;
+        let mut cbw = UmassBbbCbw {
+            bCDBLength: 6,
+            ..Default::default()
+        };
         cbw.CBWCDB[0] = INQUIRY;
         cbw.CBWCDB[4] = 255;
         sc.cbw.set(cbw);

@@ -460,9 +460,11 @@ mod tests {
         match xs.cmd.get().opcode {
             0x00 => xs.status.set(0),
             0x03 => {
-                let mut sense = ScsiSenseData::default();
-                sense.error_code = SSD_ERRCODE_CURRENT;
-                sense.flags = SKEY_ILLEGAL_REQUEST;
+                let sense = ScsiSenseData {
+                    error_code: SSD_ERRCODE_CURRENT,
+                    flags: SKEY_ILLEGAL_REQUEST,
+                    ..Default::default()
+                };
                 xs.sense.set(sense);
                 xs.error.set(XS_SENSE);
             }
@@ -632,8 +634,11 @@ mod tests {
     fn ata_commands_become_ata_passthrough() {
         let (_g, link) = setup();
         let mut buf = [0u8; size_of::<Atareq>()];
-        let mut atareq = Atareq::default();
-        atareq.command = 0xec; // IDENTIFY DEVICE, no data here
+        // IDENTIFY DEVICE, no data here
+        let mut atareq = Atareq {
+            command: 0xec,
+            ..Default::default()
+        };
         ioctl_ret(&mut buf, &atareq);
         // ATA PASS-THROUGH(12) (0xa1) times out at the fake adapter.
         assert_eq!(scsi_do_ioctl(link, ATAIOCCOMMAND, &mut buf, FWRITE), Ok(()));

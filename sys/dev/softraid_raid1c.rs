@@ -437,10 +437,12 @@ mod tests {
             let c: &'static SrChunk = unsafe { sr_malloc::<SrChunk>(M_WAITOK).unwrap().as_ref() };
             c.src_meta.scm_status.set(BIOC_SDONLINE as u32);
             c.src_dev_mm.set(0x0400 + i as i32);
-            match prev {
-                // SAFETY: new chunks on no other list; `p` is on this one.
-                None => unsafe { sd.sd_vol.sv_chunk_list.insert_head(c) },
-                Some(p) => unsafe { SlistHead::<SrChunkLink>::insert_after(p, c) },
+            // SAFETY: new chunks on no other list; `p` is on this one.
+            unsafe {
+                match prev {
+                    None => sd.sd_vol.sv_chunk_list.insert_head(c),
+                    Some(p) => SlistHead::<SrChunkLink>::insert_after(p, c),
+                }
             }
             prev = Some(c);
             sd.sd_vol.set_sv_chunk(i, Some(c));
@@ -511,12 +513,12 @@ mod tests {
         assert!(core::ptr::eq(sd.sd_vol.sv_chunk(0), first));
         let list: Vec<&SrChunk> = sd.sd_vol.sv_chunk_list.iter().collect();
         assert_eq!(list.len(), 3);
-        for c in 1..3 {
+        for (c, &linked) in list.iter().enumerate().skip(1) {
             let ch = sd.sd_vol.sv_chunk(c);
             assert_eq!(ch.src_meta.scm_status.get(), BIOC_SDOFFLINE as u32);
             assert_eq!(ch.src_dev_mm.get(), NODEV);
             assert!(
-                core::ptr::eq(list[c], ch),
+                core::ptr::eq(linked, ch),
                 "linked in order after the last found"
             );
         }

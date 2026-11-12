@@ -3467,14 +3467,8 @@ mod tests {
 
     #[test]
     fn sas_phy_link_rates() {
-        assert_eq!(
-            mpi_evt_sasphy_link_cur(0x98),
-            MPI_EVT_SASPHY_LINK_3_0GBPS as u8
-        );
-        assert_eq!(
-            mpi_evt_sasphy_link_prev(0x98),
-            MPI_EVT_SASPHY_LINK_1_5GBPS as u8
-        );
+        assert_eq!(mpi_evt_sasphy_link_cur(0x98), MPI_EVT_SASPHY_LINK_3_0GBPS);
+        assert_eq!(mpi_evt_sasphy_link_prev(0x98), MPI_EVT_SASPHY_LINK_1_5GBPS);
         assert_eq!(mpi_cfg_spi_dev_2_data_pipe_select(2), 0x3 << 4);
     }
 

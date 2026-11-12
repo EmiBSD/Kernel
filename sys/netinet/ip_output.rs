@@ -2016,7 +2016,7 @@ mod tests {
     fn later_fragments_keep_only_the_copied_options() {
         // Record route (not copied) then loose source route (copied).
         let opts = [IPOPT_RR, 7, 4, 0, 0, 0, 0, IPOPT_LSRR, 7, 4, 10, 0, 2, 9];
-        let mut hdr = vec![0u8; 20 + 16];
+        let mut hdr = [0u8; 20 + 16];
         hdr[0] = 0x49; // 36 bytes of header
         hdr[20..20 + opts.len()].copy_from_slice(&opts);
         hdr[34] = IPOPT_NOP;

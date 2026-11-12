@@ -3363,12 +3363,15 @@ mod tests {
         Sense(ScsiSenseData),
     }
 
+    /// A command as sent: the CDB, `cmdlen`, `timeout` and the data length.
+    type Sent = (Vec<u8>, i32, i32, i32);
+
     std::thread_local! {
         /// The fake adapter's script, and the opcodes it was given.
         static FAKE: RefCell<(VecDeque<Reply>, Vec<u8>)> =
             const { RefCell::new((VecDeque::new(), Vec::new())) };
         /// The CDB, `cmdlen`, `timeout` and data length of every command sent.
-        static SENT: RefCell<Vec<(Vec<u8>, i32, i32, i32)>> = const { RefCell::new(Vec::new()) };
+        static SENT: RefCell<Vec<Sent>> = const { RefCell::new(Vec::new()) };
         /// The cookies of the I/O handlers that got an opening, in order.
         static SERVED: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     }

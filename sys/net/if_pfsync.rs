@@ -4138,20 +4138,20 @@ mod tests {
     fn init_state_follows_the_flags() {
         let _g = setup();
         let st = state();
-        pfsync_init_state(&st, None, None, PFSYNC_SI_PFSYNC);
+        pfsync_init_state(st, None, None, PFSYNC_SI_PFSYNC);
         assert_eq!(st.sync_state.get(), PFSYNC_S_PFSYNC);
 
         st.state_flags.set(PFSTATE_ACK);
-        pfsync_init_state(&st, None, None, PFSYNC_SI_PFSYNC);
+        pfsync_init_state(st, None, None, PFSYNC_SI_PFSYNC);
         assert_eq!(st.sync_state.get(), PFSYNC_S_SYNC);
         assert_eq!(st.state_flags.get() & PFSTATE_ACK, 0);
 
         st.sync_state.set(PFSYNC_S_NONE);
-        pfsync_init_state(&st, None, None, PFSYNC_SI_IOCTL);
+        pfsync_init_state(st, None, None, PFSYNC_SI_IOCTL);
         assert_eq!(st.sync_state.get(), PFSYNC_S_NONE);
 
         st.state_flags.set(PFSTATE_NOSYNC);
-        pfsync_init_state(&st, None, None, 0);
+        pfsync_init_state(st, None, None, 0);
         assert_eq!(st.sync_state.get(), PFSYNC_S_DEAD);
     }
 
@@ -4160,7 +4160,7 @@ mod tests {
         let _g = setup();
         assert!(!pfsync_is_up());
         let st = state();
-        assert!(!pfsync_state_in_use(&st));
+        assert!(!pfsync_state_in_use(st));
     }
 
     #[test]

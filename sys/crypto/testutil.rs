@@ -37,7 +37,7 @@ pub(crate) fn hex(s: &str) -> Vec<u8> {
             _ => panic!("not a hex digit: {}", b as char),
         })
         .collect();
-    assert!(digits.len() % 2 == 0, "odd number of hex digits");
+    assert!(digits.len().is_multiple_of(2), "odd number of hex digits");
     digits.chunks(2).map(|p| p[0] << 4 | p[1]).collect()
 }
 
