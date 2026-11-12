@@ -776,6 +776,17 @@ impl<T: SmrCounted> Drop for SmrRetiredArc<T> {
     }
 }
 
+/// The references of `x`'s item that words gave up and the SMR thread has not dropped yet
+/// (parked on its [`SmrArcLink`]: queued with its release or waiting for the next), a
+/// snapshot: what the item's count holds beyond its live handles and words until those
+/// releases run (the routes' `rmx_refcnt`, which the C's immediate `rtfree` never includes).
+/// The release lowers it just before it drops the references, so a snapshot taken between
+/// the two counts them twice for that moment.
+pub fn retired_count<T: SmrCounted>(x: &T) -> usize {
+    let s = x.smr_link().state.load(Ordering::Acquire);
+    (((s & ARC_PENDING_MASK) >> 1) + (s >> ARC_FLIGHT_SHIFT)) as usize
+}
+
 /// One of the two kinds an [`SmrTaggedWord`] publishes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tag<A, B> {
@@ -1904,6 +1915,28 @@ mod tests {
         assert_eq!(grace(), 1);
         assert_eq!(COUNTED_FREED.load(Ordering::SeqCst), freed + 1);
         assert_eq!(grace(), 0, "nothing queued any more");
+    }
+
+    #[test]
+    fn retired_references_are_counted_until_their_release() {
+        let _s = serial();
+        let x = counted(9);
+        let a = SmrArcWord::with(x.clone());
+        let b = SmrArcWord::with(x.clone());
+        assert_eq!(retired_count(&*x), 0);
+        let w = WRITERS.write();
+        drop(a.take(&w));
+        drop(b.take(&w));
+        drop(w);
+        assert_eq!(
+            retired_count(&*x),
+            2,
+            "one queued with the release, one waiting"
+        );
+        assert_eq!(PoolArc::count(&x), 3);
+        while grace() > 0 {}
+        assert_eq!(retired_count(&*x), 0);
+        assert_eq!(PoolArc::count(&x), 1);
     }
 
     #[test]

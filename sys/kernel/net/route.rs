@@ -206,6 +206,8 @@
 //!   | `rtalloc`, `rtable_lookup`, `rtable_match`, `*ret_nrt` answers | the `PoolArc` answered |
 //!   | `pool_get`'s first reference | the handle `rtrequest` holds until it answers |
 //!   | (none: `rtt_rt` is a bare pointer) | a timer's `rtt_rt`, subtracted by [`rt_refcnt`] |
+//!   | (none: an unlinked route's `rt_next` is a bare pointer) | the `rt_next` an unlinked route keeps, subtracted by [`rt_refcnt`] (`rt_backrefs`) |
+//!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::smr::retired_count`) |
 //!
 //!   A timer holds a counted handle of its route (R11 of N6.3b1): kernel code cannot follow
 //!   the C's bare back pointer. So a route's timers are removed when it leaves its table
@@ -438,6 +440,12 @@ pub struct Rtentry {
     rt_timer: PinList<RttLink>,
     /// The timers on `rt_timer`, each holding a handle (\[T\]; read by [`rt_refcnt`]).
     rt_ntimers: AtomicU32,
+    /// The routes unlinked from this route's chain whose `rt_next` still names this one (a
+    /// reference each, kept for their readers; read by [`rt_refcnt`]).
+    pub(crate) rt_backrefs: AtomicU32,
+    /// Whether this route left its chain keeping its `rt_next` (counted in the successor's
+    /// `rt_backrefs`).
+    pub(crate) rt_next_kept: AtomicBool,
     /// `rt_mtx` and the member it locks, \[r\] `rt_cachecnt`.
     rt_mtx: Mutexed<u32>,
     /// `rt_rmx`: the metrics.
@@ -481,6 +489,8 @@ impl Rtentry {
                 rt_parent: ReadMostly::new(None),
                 rt_timer: PinList::new(),
                 rt_ntimers: AtomicU32::new(0),
+                rt_backrefs: AtomicU32::new(0),
+                rt_next_kept: AtomicBool::new(false),
                 rt_mtx: Mutexed::new(IPL_SOFTNET, 0),
                 rt_rmx: RtKmetrics::new(),
                 rt_ifidx: AtomicCell::new(),
@@ -595,6 +605,13 @@ impl Drop for Rtentry {
         // does.
         if let Some(o) = self.rt_gwroute.get_mut().take() {
             gwroute_unref(&o);
+        }
+        // The successor this route kept when it left its chain is no longer named by it.
+        if self.rt_next_kept.load(Ordering::Relaxed) {
+            let g = hal::smr::read();
+            if let Some(n) = self.rt_next.load(&g) {
+                n.rt_backrefs.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -2146,7 +2163,7 @@ pub fn rt_ifa_del(
     }
 
     if let Some(a) = addr.as_ref().and_then(|a| SockaddrView::new(a)) {
-        crate::net::rtable::rtable_clearsource(rdomain, a);
+        crate::net::rtable::rtable_clearsource(rdomain, a, net);
     }
     let mut rt = None;
     klock::kernel_lock();
@@ -2883,10 +2900,14 @@ pub fn rt_plen2mask<'a>(rt: &Rtentry, sa_mask: &'a mut SaCopy) -> Option<Sockadd
     rt_plentosa(rt.dest_view().family(), Some(rt.rt_plen()), sa_mask)
 }
 
-/// `refcnt_read(&rt->rt_refcnt)`: the references of route `rt` the C counts (its timers'
-/// handles not among them: the module's redesign).
+/// `refcnt_read(&rt->rt_refcnt)`: the references of route `rt` the C counts. Left out: its
+/// timers' handles, the references the routes unlinked before it keep in their `rt_next`, and
+/// the retired references whose deferred release has not run (the C drops those at once).
 pub fn rt_refcnt(rt: &Rtentry) -> usize {
-    PoolArc::count_of(rt).saturating_sub(rt.rt_ntimers.load(Ordering::Relaxed) as usize)
+    PoolArc::count_of(rt)
+        .saturating_sub(rt.rt_ntimers.load(Ordering::Relaxed) as usize)
+        .saturating_sub(rt.rt_backrefs.load(Ordering::Relaxed) as usize)
+        .saturating_sub(hal::smr::retired_count(rt))
 }
 
 /// `db_print_sa(sa)`: a socket address's bytes, `[NULL]` for none.

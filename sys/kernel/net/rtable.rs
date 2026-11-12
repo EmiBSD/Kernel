@@ -77,15 +77,15 @@
 //!   alone and the C's XXX in `rtable_delete` ("an and the rt ref could still be alive on
 //!   other cpus") is closed by the type, not by the net lock. The lookups answer a counted
 //!   handle taken inside the read section ([`SmrRef::arc`], the C's `rtref`).
-//! - Chain edits move references rather than retire and take them, so `rmx_refcnt` (the
-//!   count less the table's reference) stays the C's: an entry linked takes its
-//!   predecessor's word and gives the old value to its own `rt_next`
-//!   ([`SmrArcWord::restore`]); an entry unlinked gives its `rt_next` to its predecessor's
-//!   word, and its own reference, from that word, retires. The C's order keeps a reader who
-//!   is inside the chain from seeing it cut; here a reader inside the entry being linked or
-//!   unlinked at that moment may end its walk there. The chains' writers hold the net lock
-//!   exclusively or with the kernel lock (route.c's callers), so no reader of the net lock
-//!   is inside then (N6.3b1's R2).
+//! - Chain edits keep the C's order, so a reader inside a chain never sees it cut: a route
+//!   linked names its successor (a reference of its own) before its predecessor's word
+//!   publishes it; a route unlinked keeps its `rt_next` while its predecessor's word takes a
+//!   reference of the successor. The chains change under the net lock held shared with the
+//!   kernel lock too (`rt_clone`'s `rtrequest(RTM_RESOLVE)`, the overwrite of a cloned route
+//!   it may make), while `rtable_match`'s readers hold the net lock shared, so the C's order
+//!   is kept for the readers that run beside them. The references this order adds (the
+//!   retired one the word held, the one an unlinked route keeps) are left out of
+//!   `rmx_refcnt` by route.rs's `rt_refcnt`, so the count userland reads is the C's.
 //! - A deleted route's table reference is released by the SMR thread after a grace period
 //!   (the retired word's, or the deleted node's when its last reference goes), where the C's
 //!   `rtable_delete` drops it at once (D-N6.3b-23): the last `rtfree` of a deleted route
@@ -113,11 +113,13 @@ use hal::intr::{IPL_NONE, IPL_SOFTNET};
 use hal::klock;
 use hal::link::Link;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::netlock::NetHeld;
 use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc, TypedPool};
 use hal::rwlock::{Exclusive, RawRwlock};
 use hal::slot::ReadMostly;
 use hal::smr::{
     self, SmrArcLink, SmrArcWord, SmrCounted, SmrLink, SmrLinked, SmrPtr, SmrRead, SmrRef,
+    SmrRetiredArc,
 };
 use hal::sys::errno::Errno;
 use hal::sys::net_route::{RTF_MPATH, RTP_ANY, RTP_MASK};
@@ -654,31 +656,33 @@ fn rtable_alloc(_rtableid: u32, alen: u32, off: u32) -> Option<&'static Rtable> 
 
 /// `rtable_setsource(rtableid, af, src)`: the source address table `rtableid` of family
 /// `af` prefers (`None` clears it); `EAFNOSUPPORT` without such a table. Under the net lock
-/// held exclusively (the C's assertion, the caller's).
+/// held exclusively (`net`, and the C's `NET_ASSERT_LOCKED_EXCLUSIVE`).
 pub fn rtable_setsource(
     rtableid: u32,
     af: SaFamily,
     src: Option<SockaddrView<'_>>,
+    _net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
+    kassert!(hal::netlock::write_held());
     let tbl = rtable_get(rtableid, af).ok_or(Errno::EAFNOSUPPORT)?;
     let _ = tbl.r_source.replace(src.and_then(SaCopy::of));
     Ok(())
 }
 
 /// `rtable_getsource(rtableid, af)`: a copy of the source address table `rtableid` of
-/// family `af` prefers.
-pub fn rtable_getsource(rtableid: u32, af: SaFamily) -> Option<SaCopy> {
+/// family `af` prefers. Under the net lock (`net`, the C's `NET_ASSERT_LOCKED`).
+pub fn rtable_getsource(rtableid: u32, af: SaFamily, _net: &NetHeld<'_>) -> Option<SaCopy> {
     *rtable_get(rtableid, af)?.r_source.read()
 }
 
 /// `rtable_clearsource(rtableid, src)`: clears the preferred source of `src`'s family when
-/// it is `src`.
-pub fn rtable_clearsource(rtableid: u32, src: SockaddrView<'_>) {
-    if let Some(addr) = rtable_getsource(rtableid, src.family())
+/// it is `src`. Under the net lock held exclusively, as `rtable_setsource`.
+pub fn rtable_clearsource(rtableid: u32, src: SockaddrView<'_>, net: &NetHeld<'_>) {
+    if let Some(addr) = rtable_getsource(rtableid, src.family(), net)
         && addr.bytes().len() == src.bytes().len()
         && addr.bytes() == src.bytes()
     {
-        let _ = rtable_setsource(rtableid, src.family(), None);
+        let _ = rtable_setsource(rtableid, src.family(), None, net);
     }
 }
 
@@ -780,10 +784,9 @@ pub fn rtable_match(
 
             let threshold = (0xffff / npaths) + 1;
 
-            // We have no protection against concurrent modification of the route list
-            // attached to the node, so we won't necessarily have the same number of routes.
-            // For most modifications, we'll pick a route that we wouldn't have if we only saw
-            // the list before or after the change.
+            // The chain may change under this walk (nothing excludes its writers here), so
+            // the paths counted above may not be the ones walked now; a change in between
+            // mostly makes the pick one of the paths of the chain before or after it.
             let mut hash = hash;
             let mut mrt = rt;
             while hash > threshold {
@@ -836,10 +839,11 @@ pub fn rtable_insert(
     let plen = rtable_satoplen(dst.family(), mask)?;
 
     with_key(tbl, dst, |addr| {
+        let an = art_get(addr, plen, PoolArc::clone(rt)).ok_or(Errno::ENOMEM)?;
+
         // Prepare for immediate operation if insert succeeds.
         let rt_flags = rt.rt_flags.get();
         rt.rt_flags.clear(RTF_MPATH);
-        let an = art_get(addr, plen, PoolArc::clone(rt)).ok_or(Errno::ENOMEM)?;
 
         let w = tbl.r_lock.write();
         let g = smr::read();
@@ -883,8 +887,10 @@ pub fn rtable_insert(
 
         // Put the newly inserted entry at the right place: the table's reference moves from
         // the unpublished node `an` (the C's `art_put(an)`) into the chain.
-        let moved = an.an_value.take(&w);
-        rtable_mpath_insert(&w, &g, prev.get(), rt, moved);
+        match an.an_value.take(&w) {
+            Some(moved) => rtable_mpath_insert(&w, &g, prev.get(), rt, ChainRef::Moved(moved)),
+            None => kpanic(format_args!("rtable_insert: a node without its route")),
+        }
         Ok(())
     })
 }
@@ -933,10 +939,8 @@ pub fn rtable_delete(
             while let Some(m) = prt.load(&g) {
                 if core::ptr::eq(m.get(), rt) {
                     found = true;
-                    // The predecessor's word takes `rt`'s successor; `rt`'s own reference,
-                    // the table's, retires from it. The walk goes on from the same word.
-                    let next = rt.rt_next.take(&w);
-                    drop(prt.restore(&w, next));
+                    // `rt` leaves the chain, which goes on from the same word.
+                    rtable_mpath_unlink(&w, &g, prt, rt);
                     continue;
                 }
                 if (m.rt_priority.get() & RTP_MASK) == (rt.rt_priority.get() & RTP_MASK) {
@@ -1115,36 +1119,65 @@ pub fn rtable_mpath_reprio(
         }
 
         let mut prt: &SmrArcWord<Rtentry> = &an.get().an_value;
-        loop {
+        let own = loop {
             match prt.load(&g) {
-                Some(m) if core::ptr::eq(m.get(), rt) => break,
+                Some(m) if core::ptr::eq(m.get(), rt) => break m.arc(),
                 Some(m) => prt = &m.get().rt_next,
                 None => kpanic(format_args!(
                     "rtable_mpath_reprio: the route is not on its chain"
                 )),
             }
-        }
+        };
 
-        // `rt` leaves its place: its successor's reference moves into its predecessor's
-        // word, and its own reference, out of that word, moves to its new place.
-        let next = rt.rt_next.take(&w);
-        let own = prt.restore(&w, next);
+        // `rt` leaves its place (the C's `*prt = rt->rt_next`), then is linked at its new one
+        // with a reference of its own.
+        rtable_mpath_unlink(&w, &g, prt, rt);
         rt.rt_priority.set(prio);
-        rtable_mpath_insert(&w, &g, an.get(), rt, own);
+        rtable_mpath_insert(&w, &g, an.get(), rt, ChainRef::New(own));
         Err(Errno::EAGAIN)
     })
 }
 
+/// The reference of a route a chain word is to publish.
+enum ChainRef {
+    /// One just unpublished from another word, moved without a retirement (an unpublished
+    /// node's `an_value`).
+    Moved(SmrRetiredArc<Rtentry>),
+    /// A new handle.
+    New(PoolArc<Rtentry>),
+}
+
+/// `*prt = rt->rt_next`: route `rt`, which word `prt` names, leaves its chain. The word takes
+/// a reference of `rt`'s successor; `rt`'s own reference, the table's, retires from it. `rt`
+/// keeps its `rt_next` (a reader inside `rt` goes on to the successor, as the C's), counted
+/// in the successor's `rt_backrefs` until `rt` names another or goes (route.rs's
+/// `rt_refcnt` leaves both the kept reference and the retired one out).
+fn rtable_mpath_unlink<W: Exclusive + ?Sized>(
+    w: &W,
+    g: &SmrRead,
+    prt: &SmrArcWord<Rtentry>,
+    rt: &Rtentry,
+) {
+    let next = rt.rt_next.load(g);
+    if let Some(n) = &next
+        && !rt.rt_next_kept.swap(true, Ordering::Relaxed)
+    {
+        n.rt_backrefs.fetch_add(1, Ordering::Relaxed);
+    }
+    drop(prt.store(w, next.map(SmrRef::arc)));
+}
+
 /// `rtable_mpath_insert(an, rt)`: links route `rt` into node `an`'s chain before the first
-/// route of a higher priority value (at the end otherwise), its reference `own` (one just
-/// unpublished from another word, moved without a retirement) published there; the word it
-/// takes the place of gives its value to `rt`'s `rt_next`.
+/// route of a higher priority value (at the end otherwise), in the C's order: `rt` names its
+/// successor first (a reference of its own; a successor it kept from an unlink given back),
+/// then the predecessor's word publishes `rt` (`own`), so a reader inside the chain never
+/// sees it cut. The successor's reference that word held retires.
 fn rtable_mpath_insert<W: Exclusive + ?Sized>(
     w: &W,
     g: &SmrRead,
     an: &RtNode,
     rt: &Rtentry,
-    own: Option<hal::smr::SmrRetiredArc<Rtentry>>,
+    own: ChainRef,
 ) {
     let prio = rt.rt_priority.get();
 
@@ -1157,8 +1190,16 @@ fn rtable_mpath_insert<W: Exclusive + ?Sized>(
         prt = &m.get().rt_next;
     }
 
-    let mrt = prt.restore(w, own);
-    drop(rt.rt_next.restore(w, mrt));
+    if rt.rt_next_kept.swap(false, Ordering::Relaxed)
+        && let Some(o) = rt.rt_next.load(g)
+    {
+        o.rt_backrefs.fetch_sub(1, Ordering::Relaxed);
+    }
+    drop(rt.rt_next.store(w, prt.load(g).map(SmrRef::arc)));
+    drop(match own {
+        ChainRef::Moved(r) => prt.restore(w, Some(r)),
+        ChainRef::New(h) => prt.store(w, Some(h)),
+    });
 }
 
 /// `rtable_satoplen(af, mask)`: the prefix length of `mask` for family `af`: the family's
@@ -1563,14 +1604,22 @@ mod tests {
             Err(Errno::EEXIST)
         );
 
-        // A priority change moves the route: EAGAIN, the chain reordered, no reference
-        // taken or lost on the way.
+        // The C's counts (rmx_refcnt = refcnt_read - 1: 0 for a route only the table holds),
+        // whatever references the chain edits retired and have not released yet.
+        let refs = |rt: &PoolArc<Rtentry>| crate::net::route::rt_refcnt(rt) - 1 - 1;
+        for rt in [&a, &b, &c] {
+            assert_eq!(refs(rt), 0, "the table's and the test's handle only");
+        }
+
+        // A priority change moves the route: EAGAIN, the chain reordered, the counts the C's.
         assert_eq!(rtable_mpath_reprio(0, v(&d), 16, 2, &b), Err(Errno::EAGAIN));
         assert_eq!(
             chain(),
             [vec![10, 0, 0, 2], vec![10, 0, 0, 3], vec![10, 0, 0, 1]]
         );
-        assert_eq!(PoolArc::count(&b), 2);
+        for rt in [&a, &b, &c] {
+            assert_eq!(refs(rt), 0);
+        }
         assert_eq!(
             rtable_mpath_reprio(0, v(&d), 16, 8 | RTP_DOWN, &b),
             Err(Errno::EAGAIN)
@@ -1587,19 +1636,44 @@ mod tests {
         assert!(PoolArc::ptr_eq(&second, &a));
 
         // Unlinking from the middle and the head; the last path of priority 8 loses
-        // RTF_MPATH.
+        // RTF_MPATH. An unlinked route keeps naming its successor (a reader inside it goes
+        // on, as the C's), which the counts leave out.
         rtable_delete(0, v(&d), Some(v(&m16)), &a).expect("delete a");
         assert_eq!(chain(), [vec![10, 0, 0, 3], vec![10, 0, 0, 2]]);
         assert_eq!(b.rt_flags.get() & RTF_MPATH, 0);
+        {
+            let g = smr::read();
+            let next = a.rt_next.load(&g).expect("a keeps its successor");
+            assert!(core::ptr::eq(next.get(), &*b));
+        }
+        for rt in [&b, &c] {
+            assert_eq!(refs(rt), 0);
+        }
+        grace();
+        for rt in [&b, &c] {
+            assert_eq!(refs(rt), 0, "after the releases too");
+        }
         rtable_delete(0, v(&d), Some(v(&m16)), &c).expect("delete c");
         assert_eq!(chain(), [vec![10, 0, 0, 2]]);
         rtable_delete(0, v(&d), Some(v(&m16)), &b).expect("delete b");
         assert!(rtable_empty(0));
         drop(second);
         grace();
-        for rt in [&a, &b, &c, &a2, &lone] {
+        for rt in [&c, &a2, &lone] {
             assert_eq!(PoolArc::count(rt), 1);
         }
+        // a and c left the chain before b and still name it: counted apart.
+        assert_eq!(b.rt_backrefs.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            crate::net::route::rt_refcnt(&b),
+            1,
+            "the test's handle only"
+        );
+        drop(a);
+        drop(c);
+        grace();
+        assert_eq!(b.rt_backrefs.load(Ordering::Relaxed), 0);
+        assert_eq!(PoolArc::count(&b), 1);
     }
 
     #[test]
@@ -1693,21 +1767,27 @@ mod tests {
     #[test]
     fn the_source_address_is_set_read_and_cleared() {
         let _g = testroutes_setup();
-        assert!(rtable_getsource(0, AF_INET).is_none());
+        let w = hal::netlock::NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let net = &net;
+        assert!(rtable_getsource(0, AF_INET, net).is_none());
         let a = sin([10, 0, 2, 15]);
-        rtable_setsource(0, AF_INET, Some(v(&a))).expect("set");
+        rtable_setsource(0, AF_INET, Some(v(&a)), net).expect("set");
         assert_eq!(
-            rtable_getsource(0, AF_INET).map(|s| s.bytes().to_vec()),
+            rtable_getsource(0, AF_INET, net).map(|s| s.bytes().to_vec()),
             Some(a.to_vec())
         );
-        rtable_clearsource(0, v(&sin([10, 0, 2, 16])));
+        rtable_clearsource(0, v(&sin([10, 0, 2, 16])), net);
         assert!(
-            rtable_getsource(0, AF_INET).is_some(),
+            rtable_getsource(0, AF_INET, net).is_some(),
             "another address leaves it"
         );
-        rtable_clearsource(0, v(&a));
-        assert!(rtable_getsource(0, AF_INET).is_none());
-        assert_eq!(rtable_setsource(9, AF_INET, None), Err(Errno::EAFNOSUPPORT));
+        rtable_clearsource(0, v(&a), net);
+        assert!(rtable_getsource(0, AF_INET, net).is_none());
+        assert_eq!(
+            rtable_setsource(9, AF_INET, None, net),
+            Err(Errno::EAFNOSUPPORT)
+        );
     }
 }
 /* </TESTS> */
