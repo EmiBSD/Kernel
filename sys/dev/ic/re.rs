@@ -176,8 +176,7 @@ use crate::net::ifq::{
     ifq_restart, ifq_serialize, ifq_set_oactive,
 };
 use crate::netinet::if_ether::{
-    ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_VLAN_ENCAP_LEN, EtherMultistep,
-    ether_first_multi, ether_next_multi,
+    ETHER_ADDR_LEN, ETHER_CRC_LEN, ETHER_HDR_LEN, ETHER_VLAN_ENCAP_LEN,
 };
 use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP};
 use crate::netinet::in4_cksum::in4_cksum;
@@ -600,9 +599,7 @@ pub fn re_iff(sc: &'static RlSoftc) {
     } else {
         rxfilt |= RL_RXCFG_RX_MULTI;
         // Program new filter.
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let h = ether_crc32_be(&e.enm_addrlo[..ETHER_ADDR_LEN]) >> 26;
 
             if h < 32 {
@@ -610,8 +607,6 @@ pub fn re_iff(sc: &'static RlSoftc) {
             } else {
                 hashes[1] |= 1 << (h - 32);
             }
-
-            enm = ether_next_multi(&mut step);
         }
     }
 

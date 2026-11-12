@@ -159,7 +159,9 @@ use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_ethersubr::ether_brport_isset;
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::if_ether::{arpcom_of, arpinput, arpintr, revarpinput};
+use crate::netinet::if_ether::{
+    arp_rtrequest, arpcom_of, arpinput, arpintr, arpresolve, revarpinput,
+};
 use crate::netinet::igmp::rti_delete;
 use crate::netinet::in_::in_ifdetach;
 use crate::netinet::ip_input::{ipintr, ipv4_input};
@@ -178,7 +180,7 @@ use crate::netinet6::ip6_input::{ip6intr, ipv6_input};
 #[cfg(feature = "inet6")]
 use crate::netinet6::ip6_output::in6_proto_cksum_out;
 #[cfg(feature = "inet6")]
-use crate::netinet6::nd6::{In6Ntop, nd6_ifattach, nd6_ifdetach};
+use crate::netinet6::nd6::{In6Ntop, nd6_ifattach, nd6_ifdetach, nd6_resolve, nd6_rtrequest};
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
 use crate::sys::mbuf::{Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
@@ -330,10 +332,8 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
     fn input(&self, ifp: &'static Ifnet, m: kernel::net::mbuf::MbufBox, ns: Option<&mut Netstack>) {
         match self.if_input.get() {
             Some(input) => input(ifp, park(m), ns),
-            None => {
-                drop(m);
-                panic(format_args!("{}: no if_input", Str(&ifp.if_xname.get())));
-            }
+            // The link layer's (ether_input, set by ether_ifattach), else panic(9).
+            None => kernel::net::if_var::link_input(ifp, m, ns),
         }
     }
 
@@ -349,11 +349,12 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         ifp: &'static Ifnet,
         req: u8,
         rt: Option<&kernel::net::route::Rtentry>,
-        _net: &hal::netlock::NetHeld<'_>,
+        net: &hal::netlock::NetHeld<'_>,
     ) {
-        // if_attach_legacy's default is if_rtrequest_dummy: nothing without a handler.
-        if let Some(rtrequest) = self.if_rtrequest.get() {
-            rtrequest(ifp, i32::from(req), rt.map(as_static));
+        match self.if_rtrequest.get() {
+            Some(rtrequest) => rtrequest(ifp, i32::from(req), rt.map(as_static)),
+            // The link layer's (ether_rtrequest), else nothing: if_rtrequest_dummy.
+            None => kernel::net::if_var::link_rtrequest(ifp, req, rt, net),
         }
     }
 
@@ -365,8 +366,9 @@ impl kernel::net::if_var::NetDriver for LegacyNetDriver {
         rt: Option<&kernel::net::route::Rtentry>,
     ) -> Result<(), Errno> {
         let Some(output) = self.if_output.get() else {
-            drop(m);
-            panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get())));
+            // The link layer's (ether_output, which ether_ifattach installs when the driver
+            // set none), else panic(9).
+            return kernel::net::if_var::link_output(ifp, m, dst, rt);
         };
         let dst = dst.bytes();
         // SAFETY: `dst` is a `SockaddrView`'s bytes, at least its `sa_len` of them (the
@@ -568,6 +570,101 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = hit;
     }
 
+    fn arpinput(&self) -> kernel::net::if_::ProtoFn {
+        arpinput_proto
+    }
+
+    fn revarpinput(&self) -> kernel::net::if_::ProtoFn {
+        revarpinput_proto
+    }
+
+    fn arpresolve(
+        &self,
+        ifp: &'static Ifnet,
+        rt: Option<&kernel::net::route::Rtentry>,
+        m: kernel::net::mbuf::MbufBox,
+        dst: kernel::net::proto::SockaddrView<'_>,
+        desten: &mut [u8; IF_ETHER_ADDR_LEN],
+    ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
+        if dst.bytes().len() < size_of::<crate::netinet::in_::SockaddrIn>() {
+            drop(m);
+            return Err(Errno::EINVAL);
+        }
+        let m = park(m);
+        // SAFETY: `dst`'s bytes, borrowed for the call, hold a whole `sockaddr_in` (checked
+        // above), which is what `arpresolve` reads through the pointer; the packet is parked
+        // for it and comes back only when it answers `Ok` (on an error ARP freed or keeps it).
+        unsafe {
+            arpresolve(
+                ifp,
+                rt.map(as_static),
+                m,
+                dst.bytes().as_ptr().cast(),
+                desten,
+            )
+        }?;
+        Ok(unpark(m))
+    }
+
+    fn nd6_resolve(
+        &self,
+        ifp: &'static Ifnet,
+        rt: Option<&kernel::net::route::Rtentry>,
+        m: kernel::net::mbuf::MbufBox,
+        dst: kernel::net::proto::SockaddrView<'_>,
+        desten: &mut [u8; IF_ETHER_ADDR_LEN],
+    ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
+        #[cfg(feature = "inet6")]
+        {
+            if dst.bytes().len() < size_of::<crate::netinet6::in6::SockaddrIn6>() {
+                drop(m);
+                return Err(Errno::EINVAL);
+            }
+            let m = park(m);
+            // SAFETY: as `arpresolve`'s, for the whole `sockaddr_in6` `nd6_resolve` reads.
+            unsafe {
+                nd6_resolve(
+                    ifp,
+                    rt.map(as_static),
+                    m,
+                    dst.bytes().as_ptr().cast(),
+                    desten,
+                )
+            }?;
+            Ok(unpark(m))
+        }
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = (ifp, rt, dst, desten);
+            drop(m);
+            Err(Errno::EAFNOSUPPORT)
+        }
+    }
+
+    fn arp_rtrequest(&self, ifp: &'static Ifnet, req: u8, rt: &kernel::net::route::Rtentry) {
+        arp_rtrequest(ifp, i32::from(req), as_static(rt));
+    }
+
+    fn nd6_rtrequest(&self, ifp: &'static Ifnet, req: u8, rt: &kernel::net::route::Rtentry) {
+        #[cfg(feature = "inet6")]
+        nd6_rtrequest(ifp, i32::from(req), as_static(rt));
+        let _ = (ifp, req, rt);
+    }
+
+    fn in_hdr_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
+        in_hdr_cksum_out(m, Some(ifp));
+    }
+
+    fn in_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
+        in_proto_cksum_out(m, Some(ifp));
+    }
+
+    fn in6_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
+        #[cfg(feature = "inet6")]
+        in6_proto_cksum_out(m, Some(ifp));
+        let _ = (m, ifp);
+    }
+
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
         #[cfg(feature = "inet6")]
         if let Some(ia6) = in6ifa_ifpforlinklocal(ifp, 0) {
@@ -604,9 +701,8 @@ fn if_attach_legacy(ifp: &'static Ifnet) {
     // KASSERT(ifp->if_ioctl != NULL): every driver answers requests (review nit: a missing
     // handler answered ENOTTY where the C stops the attach).
     kassert!(ifp.if_ioctl().get().is_some());
-    if ifp.if_rtrequest().get().is_none() {
-        ifp.if_rtrequest().set(Some(if_rtrequest_dummy));
-    }
+    // if_rtrequest_dummy is the empty slot's answer (LegacyNetDriver::rtrequest), so the link
+    // layer ether_ifattach sets later still gets the routes (N6.3c2).
     if ifp.if_xflags.get() & IFXF_MPSAFE == 0 {
         // KASSERTMSG: "%s: if_qstart set without MPSAFE set".
         kassert!(ifp.if_qstart().get().is_none());
@@ -1520,10 +1616,12 @@ pub(crate) mod tests {
         // The group's low 32 bits (sin6_addr bytes 12..16, request bytes 36..40) are past the
         // 32-byte request: the entry 33:33:00:00:00:00 proves they were read as the copy's
         // zeros, not as the caller's 0xaa bytes that follow the request.
-        let mut step = crate::netinet::if_ether::EtherMultistep { e_enm: None };
-        let enm = crate::netinet::if_ether::ether_first_multi(&mut step, ac).expect("added");
-        assert_eq!(enm.enm_addrlo, [0x33, 0x33, 0, 0, 0, 0]);
-        assert_eq!(enm.enm_addrhi, enm.enm_addrlo);
+        {
+            let g = ac.multiaddrs();
+            let enm = g.iter().next().expect("added");
+            assert_eq!(enm.enm_addrlo, [0x33, 0x33, 0, 0, 0, 0]);
+            assert_eq!(enm.enm_addrhi, enm.enm_addrlo);
+        }
         let r = kernel::net::if_::if_ioctl(ifp, SIOCDELMULTI, req);
         assert!(matches!(r, Ok(()) | Err(Errno::ENETRESET)), "{r:?}");
         assert_eq!(ac.ac_multicnt.get(), 0);

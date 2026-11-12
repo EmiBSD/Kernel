@@ -78,9 +78,10 @@
 //!   the same.
 //! - `if_carp_ptr`'s union is two members side by side (`if_carp`, the first pointer of
 //!   carp(4)'s list, not configured, and `if_carpdevidx`), LZ's.
-//! - One member the C has not: [`Ifnet::is_arpcom`], set by `ether_ifattach`, so that the
-//!   C's `(struct arpcom *)ifp` cast (`netinet/if_ether.rs`'s `arpcom_of`) is checked instead
-//!   of trusted (LZ's).
+//! - One member the C has not: [`Ifnet::if_arpcom`], set by `ether_ifattach`, which names the
+//!   `struct arpcom` an Ethernet interface is the first member of, so that the C's `(struct
+//!   arpcom *)ifp` cast is one load (`kernel::net::if_ethersubr::arpcom_of`; N6.3c2, where
+//!   LZ's checked cast and its mark `is_arpcom` went).
 //! - `struct niqueue` and the `niq_*` functions stay `bsd`'s (`sys/net/if_var.rs`): the queue
 //!   is a `struct mbuf_queue`, `bsd`'s `MbufQueue` until the kernel's queue arrives with its
 //!   first users (N6.4's `ipintrq`).
@@ -111,7 +112,8 @@
 //!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
 //!   | `if_groups` | `ReadMostly<IfgSet>` (an `Option<MArc<MArray<..>>>`) | no reader, no group (the same test) |
 //!   | `if_driver`, `if_link`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
-//!   | `is_arpcom`, `detached` | atomics | `false`, attached |
+//!   | `if_arpcom` | `hal::link::Link` | no `arpcom` (an `AtomicPtr`) |
+//!   | `detached` | an atomic | attached |
 //!
 //! - The members `bsd` reads or writes under its detached net lock (the drivers' `*_start`
 //!   test `IFF_RUNNING` with no lock at all, as the C's) are atomics with LZ's `get()`/`set()`
@@ -825,9 +827,9 @@ pub struct Ifnet {
     pub rt: OnceStatic<IfRt>,
     /// [`DETACHED_QSTART`], [`DETACHED_IOCTL`]: what `if_detach` swapped.
     pub(crate) detached: AtomicU8,
-    /// Not in the C: set by `ether_ifattach`, the interface is the `ac_if` of a `struct
-    /// arpcom` (the module's deviations).
-    is_arpcom: AtomicBool,
+    /// Not in the C: the `struct arpcom` whose `ac_if` this is, set by `ether_ifattach` (the
+    /// module's deviations); lent `'static` from `bsd`'s softcs as the interface is.
+    pub if_arpcom: Link<crate::net::if_ethersubr::Arpcom>,
 }
 
 /// Defines the `if_ipackets` .. `if_noproto` shorthands for `if_data_counters[ifc_*]`.
@@ -890,7 +892,7 @@ impl Ifnet {
             if_link: OnceStatic::new(),
             rt: OnceStatic::new(),
             detached: AtomicU8::new(0),
-            is_arpcom: AtomicBool::new(false),
+            if_arpcom: Link::new(),
         }
     }
 
@@ -1012,17 +1014,6 @@ impl Ifnet {
     /// answers `ENODEV`): `bsd`'s legacy request path asks it before calling the driver.
     pub fn if_ioctl_detached(&self) -> bool {
         self.is_detached(DETACHED_IOCTL)
-    }
-
-    /// Whether `ether_ifattach` made this interface the `ac_if` of a `struct arpcom`.
-    pub fn is_arpcom(&self) -> bool {
-        self.is_arpcom.load(Ordering::Relaxed)
-    }
-
-    /// Records that this interface is the `ac_if` of a `struct arpcom` (`ether_ifattach`;
-    /// what `netinet/if_ether.rs`'s cast checks).
-    pub fn set_arpcom(&self) {
-        self.is_arpcom.store(true, Ordering::Relaxed);
     }
 }
 
@@ -1360,10 +1351,9 @@ mod tests {
     fn a_new_interface_is_not_attached() {
         let ifp = Ifnet::new();
         assert!(ifp.rt.get().is_none() && ifp.if_driver.get().is_none());
-        assert!(ifp.sadl().is_none() && !ifp.is_arpcom());
+        assert!(ifp.sadl().is_none() && ifp.if_arpcom.get().is_none());
+        assert!(ifp.if_link.get().is_none());
         assert!(ifp.if_addrlist.is_empty() && !List::<IfnetList>::is_linked(&ifp));
-        ifp.set_arpcom();
-        assert!(ifp.is_arpcom());
         let ifa = Ifaddr::new();
         assert!(ifa.ifa_addr.is_none() && ifa.ifa_broadaddr().is_none());
         assert!(ifa.ifa_ifp.get().is_none());

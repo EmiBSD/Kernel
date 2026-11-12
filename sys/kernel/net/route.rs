@@ -3179,6 +3179,37 @@ pub(crate) mod tests {
         fn ip6stat_rtcache(&self, hit: bool) {
             self.ipstat_rtcache(hit);
         }
+        fn arpinput(&self) -> crate::net::if_::ProtoFn {
+            crate::net::if_::test_proto_count
+        }
+        fn revarpinput(&self) -> crate::net::if_::ProtoFn {
+            crate::net::if_::test_proto_count
+        }
+        /// 10.0.2.2 is at 02:00:00:00:00:02, 10.0.2.99 is being asked for (the packet held:
+        /// here freed), any other host unreachable.
+        fn arpresolve(
+            &self,
+            _ifp: &'static Ifnet,
+            _rt: Option<&Rtentry>,
+            m: crate::net::mbuf::MbufBox,
+            dst: crate::net::proto::SockaddrView<'_>,
+            desten: &mut [u8; 6],
+        ) -> Result<crate::net::mbuf::MbufBox, Errno> {
+            match dst.bytes().get(4..8) {
+                Some([10, 0, 2, 2]) => {
+                    *desten = [2, 0, 0, 0, 0, 2];
+                    Ok(m)
+                }
+                Some([10, 0, 2, 99]) => {
+                    drop(m);
+                    Err(Errno::EAGAIN)
+                }
+                _ => {
+                    drop(m);
+                    Err(Errno::EHOSTUNREACH)
+                }
+            }
+        }
     }
 
     static TEST_INET: TestInet = TestInet {

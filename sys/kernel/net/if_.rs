@@ -350,7 +350,7 @@ use crate::net::ifq::{
 use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
-    M_UDP_CSUM_OUT, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
+    M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
     ml_purge,
 };
 use crate::net::pf_hooks::pf;
@@ -474,6 +474,54 @@ pub trait Inet: Sync + 'static {
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
+    /// `arpinput`, as `ether_input` hands an ARP frame to it (`if_input_proto`; N6.3c2).
+    /// Default: a function that frees the frame (no `INET`).
+    fn arpinput(&self) -> ProtoFn {
+        proto_drop
+    }
+    /// `revarpinput`, the same for a reverse ARP frame. Default: as `arpinput`'s.
+    fn revarpinput(&self) -> ProtoFn {
+        proto_drop
+    }
+    /// `arpresolve(ifp, rt, m, dst, desten)`: `desten` filled with the link address of the
+    /// IPv4 destination `dst` (a `sockaddr_in`) and the packet back to be sent;
+    /// `Err(EAGAIN)` when ARP kept the packet for a reply, another error once it is freed
+    /// (`ether_resolve`'s call). Default: the packet freed, `EAFNOSUPPORT` (no `INET`).
+    fn arpresolve(
+        &self,
+        _ifp: &'static Ifnet,
+        _rt: Option<&crate::net::route::Rtentry>,
+        m: MbufBox,
+        _dst: SockaddrView<'_>,
+        _desten: &mut [u8; ETHER_ADDR_LEN],
+    ) -> Result<MbufBox, Errno> {
+        drop(m);
+        Err(Errno::EAFNOSUPPORT)
+    }
+    /// `nd6_resolve(ifp, rt, m, dst, desten)`: the same for an IPv6 destination (a
+    /// `sockaddr_in6`). Default: as `arpresolve`'s.
+    fn nd6_resolve(
+        &self,
+        _ifp: &'static Ifnet,
+        _rt: Option<&crate::net::route::Rtentry>,
+        m: MbufBox,
+        _dst: SockaddrView<'_>,
+        _desten: &mut [u8; ETHER_ADDR_LEN],
+    ) -> Result<MbufBox, Errno> {
+        drop(m);
+        Err(Errno::EAFNOSUPPORT)
+    }
+    /// `arp_rtrequest(ifp, req, rt)`: `ether_rtrequest`'s IPv4 route change. Default: nothing.
+    fn arp_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
+    /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
+    fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
+    /// `in_hdr_cksum_out(m, ifp)`: the IPv4 header's checksum in software when `ifp` cannot
+    /// (`ether_offload_ifcap`; `m`'s data starts at the IP header). Default: nothing.
+    fn in_hdr_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `in_proto_cksum_out(m, ifp)`: the TCP, UDP or ICMP checksum likewise. Default: nothing.
+    fn in_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum likewise. Default: nothing.
+    fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
 }
 
 /// What the kernel's interface layer asks of the Ethernet layer (`if_ethersubr.c`, `bsd`'s
@@ -484,6 +532,12 @@ pub trait Link: Sync + 'static {
     fn ether_brport_isset(&self, ifp: &'static Ifnet) -> bool;
     /// `if_setlladdr`'s `memcpy(((struct arpcom *)ifp)->ac_enaddr, lladdr, ETHER_ADDR_LEN)`.
     fn arpcom_set_enaddr(&self, ifp: &'static Ifnet, lladdr: &[u8; ETHER_ADDR_LEN]);
+}
+
+/// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
+/// drops it.
+fn proto_drop(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
+    drop(m);
 }
 
 /// The internet protocols' legs, once registered.

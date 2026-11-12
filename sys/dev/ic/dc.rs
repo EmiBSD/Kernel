@@ -148,10 +148,7 @@ use crate::net::if_var::IfnetLegacy;
 use crate::net::ifq::{
     IfqDeq, ifq_clr_oactive, ifq_deq_with, ifq_empty, ifq_is_oactive, ifq_len, ifq_set_oactive,
 };
-use crate::netinet::if_ether::{
-    ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_MAX_DIX_LEN, EtherMultistep,
-    ether_first_multi, ether_next_multi,
-};
+use crate::netinet::if_ether::{ETHER_ADDR_LEN, ETHER_ALIGN, ETHER_CRC_LEN, ETHER_MAX_DIX_LEN};
 use crate::sys::device::{Cfdriver, DV_IFNET, DVACT_RESUME, DVACT_SUSPEND, Device};
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -826,14 +823,10 @@ fn dc_setfilt_hash(sc: &DcSoftc) {
             sc.dc_setbit(DC_NETCFG, DC_NETCFG_RX_ALLMULTI);
         }
     } else {
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let h = dc_crc_le(sc, &e.enm_addrlo);
 
             dc_sbuf_sethash(sc, h);
-
-            enm = ether_next_multi(&mut step);
         }
     }
 
@@ -909,9 +902,7 @@ pub fn dc_setfilt_admtek(sc: &DcSoftc) {
         }
     } else {
         // now program new ones
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let h = if sc.dc_is_centaur() {
                 dc_crc_le(sc, &e.enm_addrlo)
             } else {
@@ -923,8 +914,6 @@ pub fn dc_setfilt_admtek(sc: &DcSoftc) {
             } else {
                 hashes[1] |= 1u32.wrapping_shl(h - 32);
             }
-
-            enm = ether_next_multi(&mut step);
         }
     }
 
@@ -964,9 +953,7 @@ pub fn dc_setfilt_asix(sc: &DcSoftc) {
         }
     } else {
         // now program new ones
-        let mut step = EtherMultistep { e_enm: None };
-        let mut enm = ether_first_multi(&mut step, ac);
-        while let Some(e) = enm {
+        for e in ac.multiaddrs().iter() {
             let h = dc_crc_be(&e.enm_addrlo);
 
             if h < 32 {
@@ -974,8 +961,6 @@ pub fn dc_setfilt_asix(sc: &DcSoftc) {
             } else {
                 hashes[1] |= 1 << (h - 32);
             }
-
-            enm = ether_next_multi(&mut step);
         }
     }
 

@@ -153,7 +153,7 @@ use core::mem::size_of;
 use core::ptr;
 #[cfg(feature = "nfsclient")]
 use core::sync::atomic::AtomicBool;
-use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -180,7 +180,6 @@ use crate::net::if_arp::ARPOP_REVREQUEST;
 use crate::net::if_arp::{ARPHRD_ETHER, ARPOP_REPLY, ARPOP_REQUEST, ARPOP_REVREPLY, Arphdr};
 use crate::net::if_dl::{SockaddrDl, lladdr};
 use crate::net::if_ethersubr::{ETHERBROADCASTADDR, ether_sprintf};
-use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_delist};
 use crate::net::route::{
     RT_RESOLVE, RTF_ANNOUNCE, RTF_BROADCAST, RTF_CACHED, RTF_CLONING, RTF_GATEWAY, RTF_LLINFO,
@@ -216,63 +215,8 @@ use crate::sys::time::msec_to_nsec;
 use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, Timeout};
 use kernel::net::netisr::NETISR_ARP;
 
-/// Ethernet address length.
-pub const ETHER_ADDR_LEN: usize = 6;
-/// Ethernet type field length.
-pub const ETHER_TYPE_LEN: usize = 2;
-/// Ethernet CRC length.
-pub const ETHER_CRC_LEN: usize = 4;
-/// Ethernet header length.
-pub const ETHER_HDR_LEN: usize = (ETHER_ADDR_LEN * 2) + ETHER_TYPE_LEN;
-/// Minimum frame length, CRC included.
-pub const ETHER_MIN_LEN: usize = 64;
-/// Maximum frame length, CRC included.
-pub const ETHER_MAX_LEN: usize = 1518;
-/// Maximum DIX frame length.
-pub const ETHER_MAX_DIX_LEN: usize = 1536;
-
-/// Len of 802.1Q VLAN encapsulation.
-pub const ETHER_VLAN_ENCAP_LEN: usize = 4;
-
-/// Mbuf adjust factor to force 32-bit alignment of IP header. Drivers should do
-/// `m_adj(m, ETHER_ALIGN)` when setting up a receive so the upper layers get the IP header
-/// properly aligned past the 14-byte Ethernet header.
-pub const ETHER_ALIGN: usize = 2;
-
-/// The maximum supported Ethernet length and some space for encapsulation.
-pub const ETHER_MAX_HARDMTU_LEN: usize = 65435;
-
-/// VLAN id mask of a tag.
-pub const EVL_VLID_MASK: u16 = 0xFFF;
-/// The null VLAN id (0x000 and 0xfff are reserved).
-pub const EVL_VLID_NULL: u16 = 0x000;
-/// Lowest VLAN id.
-pub const EVL_VLID_MIN: u16 = 0x001;
-/// Highest VLAN id.
-pub const EVL_VLID_MAX: u16 = 0xFFE;
-
-/// Highest priority of a tag.
-pub const EVL_PRIO_MAX: u16 = 7;
-/// Position of the priority in a tag.
-pub const EVL_PRIO_BITS: u16 = 13;
-
-/// Length in octets of encapsulation.
-pub const EVL_ENCAPLEN: usize = 4;
-
-/// `ETH64_8021_RSVD_PREFIX`: the IEEE 802.1 reserved multicast range, as a 48-bit integer.
-pub const ETH64_8021_RSVD_PREFIX: u64 = 0x0180_c200_0000;
-/// `ETH64_8021_RSVD_MASK`.
-pub const ETH64_8021_RSVD_MASK: u64 = 0xffff_ffff_fff0;
-
-/// Ethernet MTU.
-pub const ETHERMTU: usize = ETHER_MAX_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
-/// Ethernet minimum payload.
-pub const ETHERMIN: usize = ETHER_MIN_LEN - ETHER_HDR_LEN - ETHER_CRC_LEN;
-
-/// Ethernet CRC32 polynomial, little-endian version.
-pub const ETHER_CRC_POLY_LE: u32 = 0xedb8_8320;
-/// Ethernet CRC32 polynomial, big-endian version.
-pub const ETHER_CRC_POLY_BE: u32 = 0x04c1_1db6;
+pub use hal::sys::netinet_if_ether::*;
+pub use kernel::net::if_ethersubr::{Arpcom, EtherMulti, EtherPort, arpcom_of};
 
 /// `sockaddr_inarp` flag: proxy entry.
 pub const SIN_PROXY: u16 = 1;
@@ -281,42 +225,6 @@ pub const SIN_PROXY: u16 = 1;
 pub const RTF_USETRAILERS: u32 = RTF_PROTO1;
 /// Only manual overwrite of entry.
 pub const RTF_PERMANENT_ARP: u32 = RTF_PROTO3;
-
-/// `struct ether_addr`: Ethernet address - 6 octets.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub struct EtherAddr {
-    /// The octets.
-    pub ether_addr_octet: [u8; ETHER_ADDR_LEN],
-}
-
-/// `struct ether_header`: the Ethernet header.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EtherHeader {
-    /// Destination address.
-    pub ether_dhost: [u8; ETHER_ADDR_LEN],
-    /// Source address.
-    pub ether_shost: [u8; ETHER_ADDR_LEN],
-    /// Type, network order.
-    pub ether_type: u16,
-}
-
-/// `struct ether_vlan_header`: an 802.1Q tagged Ethernet header.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct EtherVlanHeader {
-    /// Destination address.
-    pub evl_dhost: [u8; ETHER_ADDR_LEN],
-    /// Source address.
-    pub evl_shost: [u8; ETHER_ADDR_LEN],
-    /// `ETHERTYPE_VLAN`, network order.
-    pub evl_encap_proto: u16,
-    /// Priority and VLAN id, network order.
-    pub evl_tag: u16,
-    /// Type of the payload, network order.
-    pub evl_proto: u16,
-}
 
 /// `struct ether_arp`: Ethernet Address Resolution Protocol. See RFC 826 for protocol
 /// description; this structure is adapted to resolving internet addresses. Field names used
@@ -492,87 +400,6 @@ fn rt_ifa_sin(rt: &Rtentry) -> u32 {
         .map_or(0, |ifa| ifatoia(ifa).ia_addr.get().sin_addr.s_addr)
 }
 
-/// `struct mbuf *(*ep_input)(struct ifnet *, struct mbuf *, uint64_t, void *, struct netstack
-/// *)`: a port's input; returns the packet when the port does not take it.
-pub type EpInputFn = fn(
-    &'static Ifnet,
-    &'static Mbuf,
-    u64,
-    *mut c_void,
-    Option<&mut Netstack>,
-) -> Option<&'static Mbuf>;
-
-/// `struct ether_port`: an aggregation (`ac_trport`) or bridge (`ac_brport`) port on an
-/// Ethernet interface.
-pub struct EtherPort {
-    /// `ep_input`.
-    pub ep_input: EpInputFn,
-    /// `ep_port_take`: takes a reference to the port.
-    pub ep_port_take: fn(*mut c_void) -> *mut c_void,
-    /// `ep_port_rele`: releases the reference `ep_port_take` returned.
-    pub ep_port_rele: fn(*mut c_void, *mut c_void),
-    /// `ep_port`: the port.
-    pub ep_port: *mut c_void,
-}
-
-// SAFETY: the port is immutable while installed; the functions synchronise themselves.
-unsafe impl Sync for EtherPort {}
-
-/// `struct arpcom`: structure shared between the ethernet driver modules and the address
-/// resolution code. For example, each `ec_softc` or `il_softc` begins with this structure.
-#[repr(C)]
-pub struct Arpcom {
-    /// `ac_if`: network-visible interface.
-    pub ac_if: Ifnet,
-    /// `ac_enaddr`: ethernet hardware address.
-    pub ac_enaddr: Cell<[u8; ETHER_ADDR_LEN]>,
-    /// `ac__pad`: pad for some machines.
-    pub ac_pad: [u8; 2],
-    /// `ac_multiaddrs`: list of multicast addrs.
-    pub ac_multiaddrs: ListHead<EtherMultiList>,
-    /// `ac_multicnt`: length of `ac_multiaddrs`.
-    pub ac_multicnt: Cell<i32>,
-    /// `ac_multirangecnt`: number of mcast ranges.
-    pub ac_multirangecnt: Cell<i32>,
-
-    /// `ac_trport`: the aggregation port (`aggr(4)`, `trunk(4)`), NULL when none.
-    pub ac_trport: AtomicPtr<EtherPort>,
-    /// `ac_brport`: the bridge port (`bridge(4)`, `veb(4)`, `tpmr(4)`), NULL when none.
-    pub ac_brport: AtomicPtr<EtherPort>,
-}
-
-// SAFETY: the members change under the net lock or with splnet, as in C; the port pointers are
-// atomics.
-unsafe impl Sync for Arpcom {}
-
-/// `struct ether_multi`: Ethernet multicast address structure. There is one of these for each
-/// multicast address or range of multicast addresses that we are supposed to listen to on a
-/// particular interface. They are kept in a linked list, rooted in the interface's arpcom
-/// structure. (This really has nothing to do with ARP, or with the Internet address family,
-/// but this appears to be the minimally-disrupting place to put it.)
-pub struct EtherMulti {
-    /// `enm_addrlo`: low or only address of range.
-    pub enm_addrlo: [u8; ETHER_ADDR_LEN],
-    /// `enm_addrhi`: high or only address of range.
-    pub enm_addrhi: [u8; ETHER_ADDR_LEN],
-    /// `enm_refcnt`: no. claims to this addr/range.
-    pub enm_refcnt: Refcnt,
-    /// `enm_list`.
-    pub enm_list: ListEntry<EtherMulti>,
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(, ether_multi) ac_multiaddrs`.
-    pub EtherMultiList: EtherMulti, enm_list => ListEntry<EtherMulti>
-);
-
-/// `struct ether_multistep`: used by the macros below to remember position when stepping
-/// through all of the `ether_multi` records.
-pub struct EtherMultistep<'a> {
-    /// `e_enm`: the next record.
-    pub e_enm: Option<&'a EtherMulti>,
-}
-
 /// `struct ether_extracted`: a quick view of the TCP/IP headers inside an Ethernet frame
 /// (`ether_extract_headers`); NULL members were not found.
 pub struct EtherExtracted {
@@ -622,59 +449,10 @@ impl Default for EtherExtracted {
     }
 }
 
-/// `EVL_VLANOFTAG(tag)`: the VLAN id of a (host-order) tag.
-pub const fn evl_vlanoftag(tag: u16) -> u16 {
-    tag & EVL_VLID_MASK
-}
-
-/// `EVL_PRIOFTAG(tag)`: the priority of a (host-order) tag.
-pub const fn evl_prioftag(tag: u16) -> u16 {
-    (tag >> EVL_PRIO_BITS) & 7
-}
-
-/// `ETHER_IS_MULTICAST(addr)`: is address mcast/bcast?
-pub const fn ether_is_multicast(addr: &[u8; ETHER_ADDR_LEN]) -> bool {
-    addr[0] & 0x01 != 0
-}
-
-/// `ETHER_IS_BROADCAST(addr)`: is address ff:ff:ff:ff:ff:ff?
-pub const fn ether_is_broadcast(addr: &[u8; ETHER_ADDR_LEN]) -> bool {
-    (addr[0] & addr[1] & addr[2] & addr[3] & addr[4] & addr[5]) == 0xff
-}
-
-/// `ETHER_IS_ANYADDR(addr)`: is address 00:00:00:00:00:00?
-pub const fn ether_is_anyaddr(addr: &[u8; ETHER_ADDR_LEN]) -> bool {
-    (addr[0] | addr[1] | addr[2] | addr[3] | addr[4] | addr[5]) == 0x00
-}
-
-/// `ETHER_IS_EQ(a1, a2)`: are the two addresses equal?
-pub fn ether_is_eq(a1: &[u8; ETHER_ADDR_LEN], a2: &[u8; ETHER_ADDR_LEN]) -> bool {
-    a1 == a2
-}
-
-/// `ETH64_IS_MULTICAST(e64)`: is the address (as a 48-bit integer) mcast/bcast?
-pub const fn eth64_is_multicast(e64: u64) -> bool {
-    e64 & 0x0100_0000_0000 != 0
-}
-
-/// `ETH64_IS_BROADCAST(e64)`.
-pub const fn eth64_is_broadcast(e64: u64) -> bool {
-    e64 == 0xffff_ffff_ffff
-}
-
-/// `ETH64_IS_ANYADDR(e64)`.
-pub const fn eth64_is_anyaddr(e64: u64) -> bool {
-    e64 == 0x0000_0000_0000
-}
-
-/// `ETH64_IS_8021_RSVD(e64)`: is the address in the IEEE 802.1 reserved range?
-pub const fn eth64_is_8021_rsvd(e64: u64) -> bool {
-    (e64 & ETH64_8021_RSVD_MASK) == ETH64_8021_RSVD_PREFIX
-}
-
-/// `ETHER_MAP_IP_MULTICAST(ipaddr, enaddr)`: maps an IP multicast address to an Ethernet
-/// multicast address. The high-order 25 bits of the Ethernet address are statically assigned,
-/// and the low-order 23 bits are taken from the low end of the IP address.
+/// `ETHER_MAP_IP_MULTICAST(ipaddr, enaddr)` over `bsd`'s `struct in_addr` (ARP's; the
+/// kernel's Ethernet layer has its own over `hal`'s): maps an IP multicast address to an
+/// Ethernet multicast address. The high-order 25 bits of the Ethernet address are statically
+/// assigned, and the low-order 23 bits are taken from the low end of the IP address.
 pub const fn ether_map_ip_multicast(ipaddr: &InAddr) -> [u8; ETHER_ADDR_LEN] {
     let ip = ipaddr.s_addr.to_ne_bytes();
     [0x01, 0x00, 0x5e, ip[1] & 0x7f, ip[2], ip[3]]
@@ -686,48 +464,6 @@ pub const fn ether_map_ip_multicast(ipaddr: &InAddr) -> [u8; ETHER_ADDR_LEN] {
 pub const fn ether_map_ipv6_multicast(ip6addr: &In6Addr) -> [u8; ETHER_ADDR_LEN] {
     let a = &ip6addr.s6_addr;
     [0x33, 0x33, a[12], a[13], a[14], a[15]]
-}
-
-/// `(struct arpcom *)ifp`: the `struct arpcom` an Ethernet interface is the first member of.
-/// Panics on an interface that `ether_ifattach` did not attach.
-pub fn arpcom_of(ifp: &Ifnet) -> &Arpcom {
-    if !ifp.is_arpcom() {
-        panic(format_args!("{}: not an arpcom", Str(&ifp.if_xname.get())));
-    }
-    // SAFETY: `ether_ifattach`, given the `Arpcom`, marked the interface: it is the `ac_if`
-    // member, at offset 0 of the `#[repr(C)]` structure, which lives as long as it.
-    unsafe { &*core::ptr::from_ref(ifp).cast::<Arpcom>() }
-}
-
-/// `ETHER_LOOKUP_MULTI(addrlo, addrhi, ac, enm)`: the `ether_multi` record for a given range
-/// of Ethernet multicast addresses connected to a given arpcom structure; `None` if no
-/// matching record is found.
-pub fn ether_lookup_multi<'a>(
-    addrlo: &[u8; ETHER_ADDR_LEN],
-    addrhi: &[u8; ETHER_ADDR_LEN],
-    ac: &'a Arpcom,
-) -> Option<&'a EtherMulti> {
-    ac.ac_multiaddrs
-        .iter()
-        .find(|enm| enm.enm_addrlo == *addrlo && enm.enm_addrhi == *addrhi)
-}
-
-/// `ETHER_NEXT_MULTI(step, enm)`: step through all of the `ether_multi` records, one at a
-/// time; the current position is remembered in `step`. `None` when there are no remaining
-/// records.
-pub fn ether_next_multi<'a>(step: &mut EtherMultistep<'a>) -> Option<&'a EtherMulti> {
-    let enm = step.e_enm?;
-    step.e_enm = ListHead::<EtherMultiList>::next(enm);
-    Some(enm)
-}
-
-/// `ETHER_FIRST_MULTI(step, ac, enm)`: initialises `step` and returns the first record.
-pub fn ether_first_multi<'a>(
-    step: &mut EtherMultistep<'a>,
-    ac: &'a Arpcom,
-) -> Option<&'a EtherMulti> {
-    step.e_enm = ac.ac_multiaddrs.first();
-    ether_next_multi(step)
 }
 
 /// `LA_HOLD_QUEUE`: packets held per unresolved entry.
@@ -1123,11 +859,8 @@ unsafe fn ifp_output(
     m: &'static Mbuf,
     sa: *const Sockaddr,
 ) -> Result<(), Errno> {
-    match ifp.if_output().get() {
-        // SAFETY: the caller's contract.
-        Some(output) => unsafe { output(ifp, m, sa, None) },
-        None => panic(format_args!("{}: no if_output", Str(&ifp.if_xname.get()))),
-    }
+    // SAFETY: the caller's contract.
+    unsafe { crate::net::if_::ifp_output(ifp, m, sa, None) }
 }
 
 /// `arpreply`: turns request `m` into the reply that `sip` is at `eaddr` and sends it.

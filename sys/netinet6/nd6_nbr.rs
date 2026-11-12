@@ -1143,7 +1143,7 @@ pub fn nd6_na_output(
 pub fn nd6_ifptomac(ifp: &Ifnet) -> Option<[u8; ETHER_ADDR_LEN]> {
     match ifp.if_type.get() {
         IFT_ETHER | IFT_IEEE1394 | IFT_PROPVIRTUAL | IFT_CARP | IFT_IEEE80211
-            if ifp.is_arpcom() =>
+            if ifp.if_arpcom.get().is_some() =>
         {
             Some(arpcom_of(ifp).ac_enaddr.get())
         }
