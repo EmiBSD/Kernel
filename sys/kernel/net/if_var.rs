@@ -1058,6 +1058,9 @@ pub struct Ifaddr {
     pub ifa_refcnt: Refcnt,
     /// `ifa_metric`: cost of going out this interface.
     pub ifa_metric: AtomicCell<i32>,
+    /// \[I\] The Internet address this is the generic part of (`ifatoia`'s cast, a link set
+    /// when `kernel::netinet::in_var` makes the record; none for another family's).
+    pub ifa_in: Link<crate::netinet::in_var::InIfaddr>,
 }
 
 impl Ifaddr {
@@ -1073,6 +1076,7 @@ impl Ifaddr {
             ifa_flags: AtomicCell::new(),
             ifa_refcnt: Refcnt::new(),
             ifa_metric: AtomicCell::new(),
+            ifa_in: Link::new(),
         }
     }
 
@@ -1110,6 +1114,9 @@ pub struct Ifmaddr {
     pub ifma_refcnt: Refcnt,
     /// \[I\] `ifma_ifidx`: index of the interface.
     pub ifma_ifidx: AtomicCell<u32>,
+    /// \[I\] The Internet multicast record this is the generic part of (`ifmatoinm`'s cast,
+    /// a link set when `kernel::netinet::in_var` makes the record).
+    pub ifma_in: Link<crate::netinet::in_var::InMulti>,
 }
 
 impl Ifmaddr {
@@ -1120,6 +1127,7 @@ impl Ifmaddr {
             ifma_addr: SaLink::new(),
             ifma_refcnt: Refcnt::new(),
             ifma_ifidx: AtomicCell::new(),
+            ifma_in: Link::new(),
         }
     }
 }

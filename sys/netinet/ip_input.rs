@@ -97,7 +97,7 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr;
 use core::slice;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::kassert;
 use crate::kern::kern_lock::{mtx_enter, mtx_leave};
@@ -172,7 +172,7 @@ use crate::netinet::ip_id::ip_randomid_init;
 use crate::netinet::ip_ipsp::IPSEC_IN_USE;
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{
-    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_RAWOUTPUT, IP_REDIRECT,
+    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_RAWOUTPUT, IP_REDIRECT, IPCOUNTERS,
     IPMTUDISCTIMEOUT, Ipoffnxt, Ipq, IpqList, Ipqent, Ipstat, IpstatCounters, MAX_IPOPTLEN,
     ipstat_dec, ipstat_inc, mtod_ip, mtod_ip_store,
 };
@@ -243,17 +243,16 @@ unsafe impl Sync for IpqHead {}
 pub static ip_forwarding: AtomicI32 = AtomicI32::new(0);
 /// \[a\] `ipmforwarding`.
 pub static IPMFORWARDING: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ipmultipath`.
-pub static IPMULTIPATH: AtomicI32 = AtomicI32::new(0);
+/// \[a\] `ipmultipath`: the kernel's (`kernel::netinet::ip_var`, N6.4a).
+pub use kernel::netinet::ip_var::IPMULTIPATH;
 /// \[a\] `ip_sendredirects`.
 pub static IP_SENDREDIRECTS: AtomicI32 = AtomicI32::new(1);
 /// \[a\] `ip_dosourceroute`.
 pub static IP_DOSOURCEROUTE: AtomicI32 = AtomicI32::new(0);
 /// \[a\] `ip_defttl`: default IP ttl.
 pub static IP_DEFTTL: AtomicI32 = AtomicI32::new(IPDEFTTL as i32);
-/// \[a\] `ip_mtudisc`: mtu discovery.
-#[allow(non_upper_case_globals)] // the C name; `IP_MTUDISC` is `ip_var.h`'s output flag
-pub static ip_mtudisc: AtomicI32 = AtomicI32::new(1);
+/// \[a\] `ip_mtudisc`: mtu discovery, the kernel's (`kernel::netinet::ip_var`, N6.4a).
+pub use kernel::netinet::ip_var::ip_mtudisc;
 /// \[a\] `ip_mtudisc_timeout`: seconds to timeout mtu discovery.
 pub static IP_MTUDISC_TIMEOUT: AtomicI32 = AtomicI32::new(IPMTUDISCTIMEOUT);
 /// \[a\] `ip_directedbcast`: accept all broadcast packets.
@@ -294,10 +293,6 @@ pub static IPINTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IP);
 pub static IPQENT_POOL: Pool = Pool::new();
 /// `ipq_pool`.
 static IPQ_POOL: Pool = Pool::new();
-
-/// `ipcounters`: the IP statistics (see the module's deviations).
-pub static IPCOUNTERS: [AtomicU64; IpstatCounters::IpsNcounters as usize] =
-    [const { AtomicU64::new(0) }; IpstatCounters::IpsNcounters as usize];
 
 /// `ipsend_mq`.
 static IPSEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
@@ -1988,8 +1983,8 @@ fn ip_sysctl_ipstat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(),
     const N: usize = IpstatCounters::IpsNcounters as usize;
     const _: () = assert!(size_of::<Ipstat>() == N * size_of::<u64>());
     let mut bytes = [0u8; N * size_of::<u64>()];
-    for (i, c) in IPCOUNTERS.iter().enumerate() {
-        bytes[i * 8..i * 8 + 8].copy_from_slice(&c.load(Ordering::Relaxed).to_ne_bytes());
+    for (i, c) in IPCOUNTERS.read().iter().enumerate() {
+        bytes[i * 8..i * 8 + 8].copy_from_slice(&c.to_ne_bytes());
     }
 
     sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
@@ -2266,9 +2261,9 @@ pub(crate) mod tests {
 
     /// `ifconfig <ifp> inet <addr> netmask <mask>`, from the kernel.
     pub(crate) fn configure(ifp: &'static Ifnet, addr: [u8; 4], mask: [u8; 4]) {
-        let mut ifra = InAliasreq::zeroed();
+        let mut ifra = InAliasreq::default();
         ifra.ifra_name = ifp.if_xname.get();
-        *ifra.ifra_addr_mut() = sin(addr);
+        ifra.ifra_addr = sin(addr);
         ifra.ifra_mask = sin(mask);
         // SAFETY: an `in_aliasreq`, from the kernel itself.
         unsafe {
@@ -2284,9 +2279,9 @@ pub(crate) mod tests {
 
     /// `ifconfig <ifp> inet <addr> delete`.
     pub(crate) fn unconfigure(ifp: &'static Ifnet, addr: [u8; 4]) {
-        let mut ifra = InAliasreq::zeroed();
+        let mut ifra = InAliasreq::default();
         ifra.ifra_name = ifp.if_xname.get();
-        *ifra.ifra_addr_mut() = sin(addr);
+        ifra.ifra_addr = sin(addr);
         // SAFETY: an `in_aliasreq`, from the kernel itself.
         unsafe {
             in_ioctl(
@@ -2323,7 +2318,7 @@ pub(crate) mod tests {
 
     /// The counter of `c`.
     fn ipstat(c: IpstatCounters) -> u64 {
-        IPCOUNTERS[c as usize].load(Ordering::Relaxed)
+        IPCOUNTERS.read()[c as usize]
     }
 
     #[test]

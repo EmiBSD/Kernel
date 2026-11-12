@@ -29,15 +29,28 @@
 //! `if.c`'s legs (N6.3a, the `NPF > 0` blocks of `if_enqueue`, `if_vinput`, `if_attachsetup`,
 //! `if_detach` and the groups' functions) are default methods doing what the C without pf
 //! does, so that `bsd`'s implementation overrides them one by one.
+//!
+//! N6.4a adds `pf_test` for `ip_output` (`kernel::netinet::ip_output`, ip_output.c's
+//! `NPF > 0` block), a default that passes every packet, the C with `NPF == 0`.
 
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 
 use hal::sys::errno::Errno;
+use hal::sys::types::SaFamily;
 
 use crate::assert::kpanic;
 use crate::net::if_var::{IfgGroup, Ifnet};
 use crate::net::mbuf::{Mbuf, MbufBox, PkthdrPf};
+
+/// `PF_IN`: the packet comes in (`pfvar.h`'s direction).
+pub const PF_IN: u8 = 1;
+/// `PF_OUT`: the packet goes out.
+pub const PF_OUT: u8 = 2;
+/// `PF_FWD`: the packet is forwarded.
+pub const PF_FWD: u8 = 3;
+/// `PF_PASS`: pf's verdict that lets the packet go on (`pfvar.h`'s action).
+pub const PF_PASS: u8 = 0;
 
 /// The legs of pf the mbuf calls (`net/pf.c`'s `pf_mbuf_*`), over the header's pf part.
 pub trait Pf: Sync {
@@ -73,6 +86,20 @@ pub trait Pf: Sync {
     fn group_addmember(&self, _name: &[u8]) {}
     /// `pfi_group_delmember(name)`: an interface left the group `name`.
     fn group_delmember(&self, _name: &[u8]) {}
+
+    /// `pf_test(af, dir, ifp, &m)`: pf's verdict on the packet `m` of family `af` going in
+    /// direction `dir` (`PF_IN`, `PF_OUT`, `PF_FWD`) on `ifp`, and the packet as pf left it:
+    /// `None` when pf took it (dropped, diverted, queued, or a `PF_PASS` it consumed).
+    /// Default: `PF_PASS` and the packet untouched, the C without pf.
+    fn test(
+        &self,
+        _af: SaFamily,
+        _dir: u8,
+        _ifp: &'static Ifnet,
+        m: MbufBox,
+    ) -> (u8, Option<MbufBox>) {
+        (PF_PASS, Some(m))
+    }
 }
 
 /// pf's legs, once registered.

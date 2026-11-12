@@ -704,19 +704,9 @@ pub struct Ipsecstat {
     pub ipsec_exctdb: u64,
 }
 
-/// `struct ipsec_level`: the security levels of a socket.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct IpsecLevel {
-    /// Authentication level.
-    pub sl_auth: u8,
-    /// ESP transport level.
-    pub sl_esp_trans: u8,
-    /// ESP network (encapsulation) level.
-    pub sl_esp_network: u8,
-    /// Compression level.
-    pub sl_ipcomp: u8,
-}
+/// `struct ipsec_level`: the security levels of a socket, the kernel's since N6.4a (the
+/// argument its `ip_output` passes the `Ipsec` bridge, `kernel::net::ipsec_hooks`).
+pub use kernel::net::ipsec_hooks::IpsecLevel;
 
 /// `enum ipsec_counters`: one per field of [`Ipsecstat`], in the same order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

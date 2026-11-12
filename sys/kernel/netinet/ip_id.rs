@@ -39,20 +39,26 @@
 //! Random IP sequence number generator: `ip_randomid`.
 //!
 //! Upstream: sys/netinet/ip_id.c @ 3ce1f3f79392
+//! LZ: sys/netinet/ip_id.rs@3c62ede68802
 //!
 //! Use the system PRNG to shuffle the 65536 entry ID space. We reshuffle the ID we pick out
 //! of the array into the previous 32767 cells, providing a guarantee that an ID will not be
 //! reused for at least 32768 calls.
 //!
-//! Status: `ported` (M7b).
-//!
 //! ## Deviations
 //! - `ip_shuffle` and `isindex` are atomics: the C updates them without a lock from every
 //!   output path; relaxed loads and stores are the same racy updates, without a `static mut`.
+//! - `arc4random_buf(&si, sizeof(si))` is the low 16 bits of `arc4random()` (the same
+//!   uniform draw).
+//!
+//! ## Redesign
+//! - LZ's module moved into the kernel (N6.4a), over `hal::random`; `bsd`'s callers
+//!   (`ip_init`, the transports, pf) reach it under LZ's path through `sys/netinet/mod.rs`'s
+//!   re-export.
 
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
-use crate::dev::rnd::{arc4random_buf, arc4random_uniform};
+use hal::random::{arc4random, arc4random_uniform};
 
 /// `ip_shuffle[]`: a permutation of the ID space.
 static IP_SHUFFLE: [AtomicU16; 65536] = [const { AtomicU16::new(0) }; 65536];
@@ -64,9 +70,8 @@ static ISINDEX: AtomicU32 = AtomicU32::new(0);
 /// but also still be random. 0 is a special IP ID -- don't return it.
 pub fn ip_randomid() -> u16 {
     loop {
-        let mut si = [0u8; 2];
-        arc4random_buf(&mut si);
-        let si = u16::from_ne_bytes(si);
+        // Two bytes of the stream: the low half of a word (`arc4random_buf(&si, 2)`).
+        let si = arc4random() as u16;
         let isindex = ISINDEX.load(Ordering::Relaxed);
         let i = (isindex & 0xffff) as usize;
         let i2 = (isindex.wrapping_sub(u32::from(si & 0x7fff)) & 0xffff) as usize;
@@ -100,7 +105,7 @@ mod tests {
     #[test]
     fn ids_are_a_permutation_and_never_zero() {
         // The network tests that send packets draw ids too: serialise with them.
-        let _g = crate::kern::uipc_mbuf::tests::setup();
+        let _g = crate::net::mbuf::tests::setup();
         ip_randomid_init();
         let mut seen = std::vec![false; 65536];
         for s in &IP_SHUFFLE {

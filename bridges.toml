@@ -387,12 +387,14 @@ paid_by = "N8"
 # and if_vinput, pfi_attach_ifnet/pfi_detach_ifnet for if_attachsetup/if_detach, and the
 # groups' pfi_attach_ifgroup, pfi_detach_ifgroup, pfi_group_addmember, pfi_group_delmember),
 # default methods doing what the C without pf does until BsdPf overrides them (N6.3a1's adapter
-# commit). N6.4 adds ip_input.c's legs (the N6 plan's section 5; N6.3c's bpf, Ethernet and
-# loopback call none). Paid when pf moves (N8).
+# commit). N6.4a adds ip_output.c's pf_test (test: the verdict and the packet as pf left it,
+# BsdPf parking it for pf_test; the default passes it, NPF == 0); N6.4c the input path's and
+# the pcb's legs (the N6 plan's section 5; N6.3c's bpf, Ethernet and loopback call none). Paid
+# when pf moves (N8).
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
@@ -429,33 +431,42 @@ paid_by = "N7"
 
 # bsd: what if.c asks of the internet protocols (netinet, netinet6): arpintr, ipintr and
 # ip6intr for if_netisr, tcp_input_mlist for if_input_process, ipv4_input/ipv6_input and
-# tcpstat's LRO counters for if_input_local, nd6_ifattach for if_attachsetup, rti_delete,
-# NFSCLIENT's reverse ARP reset, in_ifdetach, in6_ifdetach and nd6_ifdetach for if_detach and
+# tcpstat's LRO counters for if_input_local, nd6_ifattach for if_attachsetup,
+# NFSCLIENT's reverse ARP reset, in6_ifdetach and nd6_ifdetach for if_detach and
 # if_setrdomain, in6_ifattach for if_up, ip6_forwarding and the link-local purge for
-# ifnewlladdr (N6.3a); in_ifdetach, in6_ifattach/_ifdetach and in_ioctl (a request with no
-# socket) for ifioctl (N6.3a2); route.c's ifa_free (ifafree's free(ifa, M_IFADDR, 0)),
-# ip_multipath and ip6_multipath (rt_hash, the route caches) and ipstat_rtcache/ip6stat_rtcache
-# (route_cache, route6_cache) for kernel::net::route (N6.3b1; bsd's BsdInet answers them
-# since the routing switch, N6.3b2); arpinput, revarpinput, arpresolve, nd6_resolve,
-# arp_rtrequest, nd6_rtrequest and the three checksums (in_hdr_cksum_out, in_proto_cksum_out,
-# in6_proto_cksum_out) for kernel::net::if_ethersubr's ether_input, ether_resolve,
-# ether_rtrequest and ether_offload_ifcap (N6.3c2). Registered by bsd's boot before the
-# first interface (N6.3a1's adapter commit); before that every leg does nothing, the C
-# without INET/INET6.
+# ifnewlladdr (N6.3a); in6_ifattach/_ifdetach for ifioctl (N6.3a2); route.c's ifa_free
+# (ifafree's free(ifa, M_IFADDR, 0), an IPv6 address's since N6.4a),
+# ip6_multipath (rt_hash, the route caches) and ip6stat_rtcache (route6_cache) for
+# kernel::net::route (N6.3b1; bsd's BsdInet answers them since the routing switch, N6.3b2);
+# arpinput, revarpinput, arpresolve, nd6_resolve, arp_rtrequest, nd6_rtrequest and
+# in6_proto_cksum_out for kernel::net::if_ethersubr's ether_input, ether_resolve,
+# ether_rtrequest and ether_offload_ifcap (N6.3c2). N6.4a (the kernel's ip_output): the IPv4
+# checksums, ip_multipath and ipstat_rtcache left (the kernel's own); TCP's
+# tcp_if_output_tso for the kernel's if_output_tso (until N6.6a), the TCP and UDP counters of
+# software checksums (proto_outswcsum, until N6.6) and ICMP's icmp_mtudisc_clone (until
+# N6.4c2) joined; the addresses and IGMP (kernel::netinet::in_, igmp): rti_delete,
+# in_ifdetach and in_ioctl left. Registered by bsd's boot before the first interface (N6.3a1's adapter
+# commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs"]
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
-# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC).
-# Implemented by sys/net/if_enc.rs (BsdIpsec) and registered by bsd's ifinit beside the
-# interface layer's legs; before registration the leg answers None, the C without IPSEC.
+# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC); N6.4a:
+# ip_output's #ifdef IPSEC points, in_use (ipsec_in_use), ip_output_lookup and
+# ip_output_send (ip_output.c's ip_output_ipsec_lookup and ip_output_ipsec_send with its
+# pmtu update, which stay bsd's sys/netinet/ip_output.rs: they read the SA and call TCP's
+# software TSO and ICMP's route cloning), tdb_unref (the SA as an opaque TdbRef) and
+# adjust_mtu (ipsec_adjust_mtu). Implemented by sys/net/if_enc.rs (BsdIpsec) and registered by
+# bsd's ifinit beside the interface layer's legs; before registration the legs answer as the
+# C without IPSEC.
+# kernel::net::ipsec_hooks::Ipsec
 [[bridge]]
 trait = "Ipsec"
-for = ["sys/kernel/net/rtsock.rs"]
+for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs"]
 paid_by = "N8"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),

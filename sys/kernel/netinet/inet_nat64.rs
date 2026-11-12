@@ -1,4 +1,3 @@
-/*	$vantronix: inet_nat64.c,v 1.2 2011/02/28 14:57:58 mike Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -39,6 +38,7 @@
 //! uses.
 //!
 //! Upstream: sys/netinet/inet_nat64.c @ 3ce1f3f79392
+//! LZ: sys/netinet/inet_nat64.rs@3c62ede68802
 //!
 //! An address is the 16 bytes of `union inet_nat64_addr` (a `struct pf_addr` in pf), an
 //! IPv4 address in the first four. The `u32` words are native-endian readings of the
@@ -47,9 +47,13 @@
 //! ## Deviations
 //! - The `void *` arguments are `[u8; 16]` addresses; the C's -1 is `Err(EINVAL)` or
 //!   `Err(EAFNOSUPPORT)`, the `errno` the userland build sets (the kernel's only -1).
+//!
+//! ## Redesign
+//! - LZ's module moved whole into the kernel (N6.4a); pf (`bsd`, N8) reaches it under
+//!   LZ's path through `sys/netinet/mod.rs`'s re-export.
 
-use crate::sys::errno::Errno;
-use crate::sys::socket::{AF_INET, AF_INET6};
+use hal::sys::errno::Errno;
+use hal::sys::socket::{AF_INET, AF_INET6};
 
 /// `union inet_nat64_addr`'s `u32[i]`.
 fn u32_at(a: &[u8; 16], i: usize) -> u32 {

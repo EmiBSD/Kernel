@@ -194,9 +194,11 @@
 //! - `INET6` is the `Inet` bridge's: configured once it is registered (GENERIC's option,
 //!   `bsd`'s default feature). Before that `SIOCIFAFATTACH`/`DETACH` of `AF_INET6` answer
 //!   `EAFNOSUPPORT` and `SIOCSIFXFLAGS` skips the IPv6 flags, as the C without `INET6`.
-//! - `ifioctl`'s request of the kernel itself comes with no socket and goes to `in_ioctl` as a
-//!   privileged one (the boot self-test configures an interface that way; LZ's): the C's
-//!   `pru_control` follows the socket.
+//! - `ifioctl`'s request of the kernel itself comes with no socket and goes to
+//!   `kernel::netinet::in_`'s `in_ioctl`, privileged when its process is the superuser, as a
+//!   socket it made would be (`SS_PRIV`; the boot self-test configures an interface that
+//!   way, nfs_boot through a socket of its own, `socreate`; LZ's made it privileged
+//!   always): the C's `pru_control` follows the socket.
 //! - `SIOCSIFXFLAGS`'s wake on LAN with a driver that has no `if_wol` answers `ENOTSUP` (the
 //!   C calls the handle unchecked once `IFCAP_WOL` is set; LZ's).
 //! - `ifconf` copies an address's `sa_len` bytes cut at its storage (`hal::link::SaLink`'s
@@ -429,48 +431,28 @@ pub trait Inet: Sync + 'static {
     fn nd6_ifattach(&self, ifp: &'static Ifnet);
     /// `nd6_ifdetach(ifp)`.
     fn nd6_ifdetach(&self, ifp: &'static Ifnet);
-    /// `rti_delete(ifp)`: igmp's router info.
-    fn rti_delete(&self, ifp: &'static Ifnet);
     /// `if_detach`'s `NETHER > 0 && NFSCLIENT` block: the reverse ARP interface forgotten
     /// (`revarp_ifidx = 0`) when it is `ifp`.
     fn revarp_ifdetach(&self, ifp: &'static Ifnet);
-    /// `in_ifdetach(ifp)`: the interface's IPv4 addresses and memberships gone.
-    fn in_ifdetach(&self, ifp: &'static Ifnet);
     /// `in6_ifdetach(ifp)`.
     fn in6_ifdetach(&self, ifp: &'static Ifnet);
     /// `in6_ifattach(ifp)`: IPv6 on the interface; `ifioctl`'s `SIOCIFAFATTACH` and
     /// `SIOCSIFXFLAGS` answer its error, `if_up` and `ifnewlladdr` ignore it (the C's).
     fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno>;
-    /// `in_ioctl(cmd, data, ifp, privileged)`: an IPv4 address request of the kernel itself,
-    /// which has no socket for `pru_control` (`ifioctl` with no socket: the boot self-test's
-    /// `SIOCAIFADDR`); `data` the request's image, `IOCPARM_LEN(cmd)` bytes.
-    fn in_ioctl(
-        &self,
-        cmd: u64,
-        data: &mut [u8],
-        ifp: &'static Ifnet,
-        privileged: bool,
-    ) -> Result<(), Errno>;
     /// `ip6_forwarding != 0`.
     fn ip6_forwarding(&self) -> bool;
     /// `ifnewlladdr`'s first IPv6 step: the link-local address purged
     /// (`in6ifa_ifpforlinklocal`, `in6_purgeaddr`); whether there was one.
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool;
-    /// `free(ifa, M_IFADDR, 0)` of an interface address whose last reference `ifafree` gave
-    /// back (route.c's; the protocols own the storage until N6.4 and N6.5). Default: nothing
-    /// (N6.3b: `bsd`'s implementation comes with the routing switch, N6.3b2).
+    /// `free(ifa, M_IFADDR, 0)` of an IPv6 interface address whose last reference `ifafree`
+    /// gave back (route.c's; IPv6 owns the storage until N6.5, an Internet address goes to
+    /// `kernel::netinet::in_var`'s free list since N6.4a). Default: nothing (N6.3b: `bsd`'s
+    /// implementation comes with the routing switch, N6.3b2).
     fn ifa_free(&self, _ifa: &'static Ifaddr) {}
-    /// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`). Default: off.
-    fn ip_multipath(&self) -> bool {
-        false
-    }
     /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
     fn ip6_multipath(&self) -> bool {
         false
     }
-    /// `ipstat_inc(ips_rtcachehit)` (`hit`) or `ipstat_inc(ips_rtcachemiss)`. Default:
-    /// nothing.
-    fn ipstat_rtcache(&self, _hit: bool) {}
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
@@ -515,13 +497,41 @@ pub trait Inet: Sync + 'static {
     fn arp_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
     /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
     fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
-    /// `in_hdr_cksum_out(m, ifp)`: the IPv4 header's checksum in software when `ifp` cannot
-    /// (`ether_offload_ifcap`; `m`'s data starts at the IP header). Default: nothing.
-    fn in_hdr_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
-    /// `in_proto_cksum_out(m, ifp)`: the TCP, UDP or ICMP checksum likewise. Default: nothing.
-    fn in_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
-    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum likewise. Default: nothing.
+    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum in software when `ifp`
+    /// cannot (`ether_offload_ifcap`, `if_output_tso`; `m`'s data starts at the IPv6
+    /// header). Default: nothing.
     fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
+    /// `tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)`: TCP's segmentation offload of
+    /// `*mp` (by the hardware when `ifp` has `ifcap`, else chopped in software and sent),
+    /// the packet consumed then; left in `*mp` when it did not ask for TSO, or with its TSO
+    /// flag cleared when its segments exceed `mtu` (`if_output_tso`'s first step; N6.4a, until
+    /// TCP moves at N6.6a). Default: the packet left, the C without TCP's offload.
+    fn tcp_if_output_tso(
+        &self,
+        _ifp: &'static Ifnet,
+        _mp: &mut Option<MbufBox>,
+        _dst: SockaddrView<'_>,
+        _rt: Option<&crate::net::route::Rtentry>,
+        _ifcap: u32,
+        _mtu: u32,
+    ) -> Result<(), Errno> {
+        Ok(())
+    }
+    /// `tcpstat_inc(tcps_outswcsum)` (`tcp`) or `udpstat_inc(udps_outswcsum)`: a transport
+    /// checksum computed in software on output (`in_proto_cksum_out`; N6.4a, until TCP and
+    /// UDP move at N6.6). Default: nothing.
+    fn proto_outswcsum(&self, _tcp: bool) {}
+    /// `icmp_mtudisc_clone(dst, rtableid, ipsec)`: a host route to `dst` in `rtableid` that
+    /// can carry a path MTU, cloned when there is none (`ip_output` after pf moved the packet
+    /// to another table; N6.4a, until ICMP moves at N6.4c2). Default: none.
+    fn icmp_mtudisc_clone(
+        &self,
+        _dst: [u8; 4],
+        _rtableid: u32,
+        _ipsec: bool,
+    ) -> Option<hal::pool::PoolArc<crate::net::route::Rtentry>> {
+        None
+    }
 }
 
 /// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
@@ -1979,6 +1989,60 @@ pub fn if_output_ml(
     error
 }
 
+/// `if_output_tso(ifp, mp, dst, rt, mtu)`: the packet `*mp` sent toward `dst` by TCP's
+/// segmentation offload when it asks for it (`Inet::tcp_if_output_tso`), else whole when it
+/// fits `mtu` (its checksums finished for the interface first), the packet consumed then;
+/// `*mp` is left set when the packet still has to be fragmented or dropped (N6.4a: the
+/// kernel's, its TCP half `bsd`'s until N6.6a).
+pub fn if_output_tso(
+    ifp: &'static Ifnet,
+    mp: &mut Option<MbufBox>,
+    dst: SockaddrView<'_>,
+    rt: Option<&crate::net::route::Rtentry>,
+    mtu: u32,
+) -> Result<(), Errno> {
+    use hal::sys::net_if::{IFCAP_TSOv4, IFCAP_TSOv6};
+
+    let af = dst.family();
+    let ifcap = match af {
+        AF_INET => IFCAP_TSOv4,
+        AF_INET6 => IFCAP_TSOv6,
+        _ => unhandled_af(i32::from(af)),
+    };
+
+    // Try to send with TSO first. When forwarding LRO may set maximum segment size in mbuf
+    // header. Chop TCP segment even if it would fit interface MTU to preserve maximum path
+    // MTU.
+    if let Some(i) = inet() {
+        i.tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)?;
+    }
+    let Some(mut m) = mp.take() else {
+        return Ok(());
+    };
+
+    // The C compares the `int` length with the `u_int` MTU, as unsigned.
+    if m.m_pkthdr().len.get() as u32 <= mtu {
+        if af == AF_INET {
+            crate::netinet::ip_output::in_hdr_cksum_out(&mut m, Some(ifp));
+            crate::netinet::ip_output::in_proto_cksum_out(&mut m, Some(ifp));
+        } else if let Some(i) = inet() {
+            i.in6_proto_cksum_out(&m, ifp);
+        }
+        // An interface with no driver has no `if_output`: the C calls through NULL.
+        let Some(d) = ifp.if_driver.get() else {
+            drop(m);
+            kpanic(format_args!(
+                "if_output_tso: an interface without if_output"
+            ));
+        };
+        return d.output(ifp, m, dst, rt);
+    }
+
+    // mp still contains mbuf that has to be fragmented or dropped.
+    *mp = Some(m);
+    Ok(())
+}
+
 /// `p2p_rtrequest(ifp, req, rt)`: the default action when a local route is installed on a
 /// point-to-point interface: the route loses `RTF_LLINFO` when the address is the
 /// interface's and the routing domain's loopback has an address of its family. Under the
@@ -2121,7 +2185,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
     crate::net::bpf::bpfdetach(ifp);
 
     {
-        let _net = NETLOCK.write();
+        let net = NETLOCK.write();
         let s = hal::intr::splraise(IPL_NET);
         // ifp->if_ioctl = if_detached_ioctl; ifp->if_watchdog = NULL: the timeout and the
         // watchdog task find the interface by its index, which if_remove freed, so neither
@@ -2138,12 +2202,14 @@ pub fn if_detach(ifp: &'static Ifnet) {
             let _ = task_del(tq, &rt.if_linkstatetask);
         }
 
+        crate::netinet::igmp::rti_delete(ifp);
         if let Some(i) = inet() {
-            i.rti_delete(ifp);
             // NETHER > 0 && NFSCLIENT
             i.revarp_ifdetach(ifp);
-            // MROUTING: vif_delete(ifp); not configured.
-            i.in_ifdetach(ifp);
+        }
+        // MROUTING: vif_delete(ifp); not configured.
+        crate::netinet::in_::in_ifdetach(ifp, &net_held(&net));
+        if let Some(i) = inet() {
             i.in6_ifdetach(ifp);
         }
         if let Some(pf) = pf() {
@@ -2736,10 +2802,10 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
             up = true;
             hal::netlock::lend_detached(|net| if_down(ifp, net));
         }
+        crate::netinet::igmp::rti_delete(ifp);
+        // MROUTING: vif_delete(ifp); not configured.
+        hal::netlock::lend_detached(|net| crate::netinet::in_::in_ifdetach(ifp, net));
         if let Some(i) = inet() {
-            i.rti_delete(ifp);
-            // MROUTING: vif_delete(ifp); not configured.
-            i.in_ifdetach(ifp);
             i.in6_ifdetach(ifp);
         }
         drop(s);
@@ -2908,19 +2974,18 @@ fn ifioctl_address(cmd: u64) -> bool {
 
 /// `pru_control(so, cmd, data, ifp)` (`<sys/protosw.h>`): the socket's protocol's request on
 /// the interface (`EOPNOTSUPP` for a protocol without one); a request of the kernel itself
-/// (no socket) goes to `in_ioctl` as a privileged one (the module's deviations).
+/// (no socket) goes to `in_ioctl`, privileged when `p` is the superuser, as a socket `p`
+/// made would be (`socreate`'s `SS_PRIV`; the module's deviations).
 fn pru_control<G: ProcGlue>(
     so: Option<&Socket<G>>,
     cmd: u64,
     data: &mut [u8],
     ifp: &'static Ifnet,
+    p: &Thread<G>,
 ) -> Result<(), Errno> {
     match so {
         Some(so) => so.usrreqs().control(so, cmd, data, Some(ifp)),
-        None => match inet() {
-            Some(i) => i.in_ioctl(cmd, data, ifp, true),
-            None => Err(Errno::EOPNOTSUPP),
-        },
+        None => crate::netinet::in_::in_ioctl(cmd, data, Some(ifp), suser(p).is_ok()),
     }
 }
 
@@ -3020,12 +3085,12 @@ fn ifioctl_ifp<G: ProcGlue>(
             suser(p)?;
             let af = req_view::<IfAfreq>(req)?.ifar_af;
             net_locked(|| match (af, inet()) {
-                (AF_INET, i) => {
+                (AF_INET, _) => {
                     // attach is a noop for AF_INET
-                    if cmd == SIOCIFAFDETACH
-                        && let Some(i) = i
-                    {
-                        i.in_ifdetach(ifp);
+                    if cmd == SIOCIFAFDETACH {
+                        hal::netlock::lend_detached(|net| {
+                            crate::netinet::in_::in_ifdetach(ifp, net);
+                        });
                     }
                     Ok(())
                 }
@@ -3197,7 +3262,7 @@ fn ifioctl_ifp<G: ProcGlue>(
             if ifioctl_privileged(cmd) {
                 suser(p)?;
             }
-            match pru_control(so, cmd, req_arg(req, cmd), ifp) {
+            match pru_control(so, cmd, req_arg(req, cmd), ifp, p) {
                 Err(Errno::EOPNOTSUPP) => {}
                 error => return error,
             }
@@ -4353,6 +4418,8 @@ pub(crate) mod tests {
         softnet_test_install();
         if_idxmap_test_reset();
         ifnet_test_reset();
+        crate::netinet::in_var::in_var_test_reset();
+        crate::netinet::igmp::igmp_test_reset();
         g
     }
 

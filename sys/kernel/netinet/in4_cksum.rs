@@ -1,4 +1,3 @@
-/*	$KAME: in4_cksum.c,v 1.10 2001/11/30 10:06:15 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -82,31 +81,45 @@
 //! `in4_cksum`.
 //!
 //! Upstream: sys/netinet/in4_cksum.c @ 3ce1f3f79392
+//! LZ: sys/netinet/in4_cksum.rs@3c62ede68802
 //!
 //! Checksum routine for Internet Protocol family headers (portable version), for the IPv4
 //! pseudo header checksum: no need to clear non-pseudo-header fields in the IPv4 header. `len`
 //! is the actual payload size, not including the IPv4 header and skipped header chain (`off
 //! + len` should be equal to the whole packet). With `nxt` 0 there is no pseudo header (ICMP).
 //!
-//! Status: `ported` (M7b).
-//!
 //! ## Deviations
 //! - The word loop is `netinet/in_cksum.rs`'s [`cksum_add`] (the C file carries a copy of
 //!   `in_cksum`'s loop); the pseudo header's words are summed from a byte array laid out as
 //!   `struct ipovly`.
 //! - The result is a `u16`.
+//!
+//! ## Redesign
+//! - LZ's `read_unaligned` of the header at `mtod(m)` and its 12-byte pseudo header array
+//!   -> the protocol and length words added directly and `ip_src`/`ip_dst` read in place
+//!   from the kernel's `Mbuf::data()` as the four 16-bit words they sum to, with no `unsafe`
+//!   and no copy (a whole-header `hal::pod::at::<Ip>` was a memmove call in the dev profile,
+//!   +34 % on N6.4a's `in4.cksum.40`); the check that the first mbuf holds a header is the
+//!   slice's bound (`m_len < sizeof(struct ip)`, the C's panic). `#[inline]`: a per-packet
+//!   helper of `bsd`'s transports across the crate boundary (N6.3c1's R12).
 
 use core::mem::size_of;
 
-use crate::kern::subr_prf::{panic, printf};
+use hal::sys::endian::htons;
+use hal::sys::netinet_ip::Ip;
+use hal::sys::netinet_ip_var::Ipovly;
+
+use crate::assert::kpanic;
+use crate::net::mbuf::Mbuf;
 use crate::netinet::in_cksum::{cksum_add, cksum_fold};
-use crate::netinet::ip::Ip;
-use crate::netinet::ip_var::Ipovly;
-use crate::sys::endian::htons;
-use crate::sys::mbuf::{Mbuf, mtod};
+use crate::prf::printf;
+
+/// `offsetof(struct ip, ip_src)`: the source, then the destination.
+const IP_SRC: usize = core::mem::offset_of!(Ip, ip_src);
 
 /// `in4_cksum`: the checksum of `len` bytes of `m` from `off`, over the pseudo header of
 /// protocol `nxt` when it is not 0.
+#[inline]
 pub fn in4_cksum(m: &Mbuf, nxt: u8, off: i32, len: i32) -> u16 {
     let mut sum = 0u64;
     let mut odd = false;
@@ -114,21 +127,18 @@ pub fn in4_cksum(m: &Mbuf, nxt: u8, off: i32, len: i32) -> u16 {
     if nxt != 0 {
         // pseudo header
         if (off as usize) < size_of::<Ipovly>() {
-            panic(format_args!("in4_cksum: offset too short"));
+            kpanic(format_args!("in4_cksum: offset too short"));
         }
-        if (m.m_len().get() as usize) < size_of::<Ip>() {
-            panic(format_args!("in4_cksum: bad mbuf chain"));
-        }
-        // SAFETY: the first mbuf holds at least an IP header (checked above).
-        let ip = unsafe { core::ptr::read_unaligned(mtod::<Ip>(m)) };
+        // `ip_src` and `ip_dst`, read in place as the four 16-bit words they sum to (no copy
+        // of the whole header: a call to memmove in the dev profile, N6.4a's bench).
+        let Some(addrs) = m.data().get(IP_SRC..IP_SRC + 8) else {
+            kpanic(format_args!("in4_cksum: bad mbuf chain"));
+        };
         // ih_x1[8] = 0, ih_pr = nxt, ih_len, ih_src, ih_dst: the words 4..9 of the overlay,
         // whose first 8 bytes are zeroes.
-        let mut u = [0u8; 12];
-        u[1] = nxt;
-        u[2..4].copy_from_slice(&htons(len as u16).to_ne_bytes());
-        u[4..8].copy_from_slice(&ip.ip_src.s_addr.to_ne_bytes());
-        u[8..12].copy_from_slice(&ip.ip_dst.s_addr.to_ne_bytes());
-        let (words, _) = u.as_chunks::<2>();
+        sum += u64::from(u16::from_ne_bytes([0, nxt]));
+        sum += u64::from(htons(len as u16));
+        let (words, _) = addrs.as_chunks::<2>();
         for w in words {
             sum += u64::from(u16::from_ne_bytes(*w));
         }

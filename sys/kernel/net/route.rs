@@ -278,7 +278,7 @@ use hal::rwlock::Guarded;
 use hal::slot::ReadMostly;
 use hal::smr::{SmrArcLink, SmrArcWord, SmrCounted};
 use hal::sys::errno::Errno;
-use hal::sys::net_if::{IFF_BROADCAST, IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
+use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT, IFF_UP, link_state_is_up};
 use hal::sys::net_route::{
     RTAX_AUTHOR, RTAX_DST, RTAX_GATEWAY, RTAX_IFA, RTAX_IFP, RTAX_LABEL, RTAX_MAX, RTAX_NETMASK,
     RTF_BROADCAST, RTF_CACHED, RTF_CLONED, RTF_CLONING, RTF_CONNECTED, RTF_DYNAMIC, RTF_GATEWAY,
@@ -975,13 +975,10 @@ fn errno_of(r: Result<(), Errno>) -> i32 {
     r.err().map_or(0, |e| e as i32)
 }
 
-/// `atomic_load_int(&ipmultipath)`, the internet protocols' (the `Inet` leg; off before
-/// registration).
+/// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`).
+#[inline]
 fn ip_multipath() -> bool {
-    match if_::inet() {
-        Some(i) => i.ip_multipath(),
-        None => false,
-    }
+    crate::netinet::ip_var::IPMULTIPATH.load(Ordering::Relaxed) != 0
 }
 
 /// `atomic_load_int(&ip6_multipath)`.
@@ -992,11 +989,15 @@ fn ip6_multipath() -> bool {
     }
 }
 
-/// `ipstat_inc(ips_rtcachehit/miss)`, the internet protocols' (the `Inet` leg).
+/// `ipstat_inc(ips_rtcachehit/miss)`.
+#[inline]
 fn inet_rtcache(hit: bool) {
-    if let Some(i) = if_::inet() {
-        i.ipstat_rtcache(hit);
-    }
+    use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
+    ipstat_inc(if hit {
+        IpstatCounters::IpsRtcachehit
+    } else {
+        IpstatCounters::IpsRtcachemiss
+    });
 }
 
 /// `ip6stat_inc(ip6s_rtcachehit/miss)`.
@@ -1344,43 +1345,18 @@ pub fn ifaref(ifa: &'static Ifaddr) -> &'static Ifaddr {
 }
 
 /// `ifafree(ifa)`: one reference of the interface address given back; with the last, the
-/// address is freed (`free(ifa, M_IFADDR, 0)`, its protocol's storage: the `Inet` leg).
+/// address is freed (`free(ifa, M_IFADDR, 0)`): an Internet address back to its records'
+/// free list (`kernel::netinet::in_var`, N6.4a), another family's storage through the `Inet`
+/// leg (IPv6's, `bsd`'s until N6.5).
 pub fn ifafree(ifa: &'static Ifaddr) {
     if !ifa.ifa_refcnt.rele() {
         return;
     }
-    if let Some(i) = if_::inet() {
+    if let Some(ia) = crate::netinet::in_var::InIfaddr::of(ifa) {
+        crate::netinet::in_var::in_ifafree(ia);
+    } else if let Some(i) = if_::inet() {
         i.ifa_free(ifa);
     }
-}
-
-/// `in_broadcast(in, rtableid)` (netinet/in.c, read here over the interface list until
-/// N6.4 moves it): whether `addr` is the broadcast address of an IPv4 address of a
-/// broadcast interface of `rtableid`'s domain, and not that address itself.
-fn in_broadcast(addr: [u8; 4], rtableid: u32, net: &NetHeld<'_>) -> bool {
-    let rdomain = rtable_l2(rtableid);
-    for ifn in &if_::IFNETLIST {
-        if ifn.if_rdomain.get() != rdomain || ifn.if_flags.get() & IFF_BROADCAST == 0 {
-            continue;
-        }
-        for ifa in &ifn.if_addrlist {
-            let Some(a) = ifa.ifa_addr.read(net) else {
-                continue;
-            };
-            if a.family() != AF_INET {
-                continue;
-            }
-            let own = a.get(SIN_ADDR..SIN_ADDR + 4) == Some(&addr[..]);
-            let brd = ifa
-                .ifa_broadaddr()
-                .read(net)
-                .is_some_and(|b| b.get(SIN_ADDR..SIN_ADDR + 4) == Some(&addr[..]));
-            if !own && brd {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 /// `rtredirect(dst, gateway, src, rtp, rdomain)`: a routing redirect from `src` for `dst`
@@ -1428,7 +1404,14 @@ pub fn rtredirect(
                 && gateway
                     .bytes()
                     .get(SIN_ADDR..SIN_ADDR + 4)
-                    .is_some_and(|a| in_broadcast([a[0], a[1], a[2], a[3]], rdomain, net)))
+                    .is_some_and(|a| {
+                        crate::netinet::in_::in_broadcast(
+                            hal::sys::netinet_in::InAddr {
+                                s_addr: u32::from_ne_bytes([a[0], a[1], a[2], a[3]]),
+                            },
+                            rdomain,
+                        )
+                    }))
         {
             error = Err(Errno::EHOSTUNREACH);
         }
@@ -2998,6 +2981,7 @@ pub(crate) mod tests {
 
     use hal::netlock::NETLOCK;
     use hal::smr;
+    use hal::sys::net_if::IFF_BROADCAST;
     use hal::sys::net_route::{RTM_ADD, RTP_ANY};
 
     use super::*;
@@ -3028,6 +3012,7 @@ pub(crate) mod tests {
         route_init();
         rtable_init_doms(&ROUTE_DOMS);
         MULTIPATH.store(false, Ordering::Relaxed);
+        crate::netinet::ip_var::IPMULTIPATH.store(0, Ordering::Relaxed);
         let _ = if_::register_inet(&TEST_INET);
         crate::net::rtsock::tap::start();
         g
@@ -3115,9 +3100,11 @@ pub(crate) mod tests {
 
     pub(crate) fn set_multipath(on: bool) {
         MULTIPATH.store(on, Ordering::Relaxed);
+        crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
-    /// The internet protocols of the tests: multipath on demand, the cache counters counted.
+    /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
+    /// counted.
     struct TestInet {
         hits: AtomicU32,
         misses: AtomicU32,
@@ -3138,21 +3125,10 @@ pub(crate) mod tests {
         fn tcpstat_lro(&self, _hw: bool) {}
         fn nd6_ifattach(&self, _ifp: &'static Ifnet) {}
         fn nd6_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn rti_delete(&self, _ifp: &'static Ifnet) {}
         fn revarp_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn in_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn in6_ifattach(&self, _ifp: &'static Ifnet) -> Result<(), Errno> {
             Ok(())
-        }
-        fn in_ioctl(
-            &self,
-            _cmd: u64,
-            _data: &mut [u8],
-            _ifp: &'static Ifnet,
-            _privileged: bool,
-        ) -> Result<(), Errno> {
-            Err(Errno::EOPNOTSUPP)
         }
         fn ip6_forwarding(&self) -> bool {
             false
@@ -3163,21 +3139,15 @@ pub(crate) mod tests {
         fn ifa_free(&self, _ifa: &'static Ifaddr) {
             self.freed.fetch_add(1, Ordering::Relaxed);
         }
-        fn ip_multipath(&self) -> bool {
-            MULTIPATH.load(Ordering::Relaxed)
-        }
         fn ip6_multipath(&self) -> bool {
             MULTIPATH.load(Ordering::Relaxed)
         }
-        fn ipstat_rtcache(&self, hit: bool) {
+        fn ip6stat_rtcache(&self, hit: bool) {
             if hit {
                 self.hits.fetch_add(1, Ordering::Relaxed);
             } else {
                 self.misses.fetch_add(1, Ordering::Relaxed);
             }
-        }
-        fn ip6stat_rtcache(&self, hit: bool) {
-            self.ipstat_rtcache(hit);
         }
         fn arpinput(&self) -> crate::net::if_::ProtoFn {
             crate::net::if_::test_proto_count
@@ -3367,9 +3337,14 @@ pub(crate) mod tests {
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         let mut ro = Route::new();
-        let misses = TEST_INET.misses.load(Ordering::Relaxed);
+        // The IPv4 cache counters are `ipstat`'s (`ips_rtcachehit`, `ips_rtcachemiss`).
+        let ips = |c: crate::netinet::ip_var::IpstatCounters| {
+            crate::netinet::ip_var::IPCOUNTERS.read()[c as usize]
+        };
+        use crate::netinet::ip_var::IpstatCounters::{IpsRtcachehit, IpsRtcachemiss};
+        let misses = ips(IpsRtcachemiss);
         assert_eq!(ro.cache4([10, 0, 2, 2], None, 0), Err(Errno::ESRCH));
-        assert_eq!(TEST_INET.misses.load(Ordering::Relaxed), misses + 1);
+        assert_eq!(ips(IpsRtcachemiss), misses + 1);
         assert_eq!(ro.dst().bytes(), &sin([10, 0, 2, 2])[..]);
         // No route to it: still a miss.
         assert!(ro.mpath4([10, 0, 2, 2], None, 0, &net).is_none());
@@ -3392,9 +3367,9 @@ pub(crate) mod tests {
         .expect("insert");
         assert!(ro.mpath4([10, 0, 2, 2], None, 0, &net).is_some());
         assert_eq!(PoolArc::count(&rt), 3, "the table's, the cache's and ours");
-        let hits = TEST_INET.hits.load(Ordering::Relaxed);
+        let hits = ips(IpsRtcachehit);
         assert_eq!(ro.cache4([10, 0, 2, 2], None, 0), Ok(()));
-        assert_eq!(TEST_INET.hits.load(Ordering::Relaxed), hits + 1);
+        assert_eq!(ips(IpsRtcachehit), hits + 1);
         // Another destination, another table, a newer generation: misses, the route given
         // back.
         assert_eq!(ro.cache4([10, 0, 2, 3], None, 0), Err(Errno::ESRCH));
@@ -3408,7 +3383,11 @@ pub(crate) mod tests {
         let mut a = [0u8; 16];
         a[0] = 0x20;
         a[15] = 1;
+        let misses6 = TEST_INET.misses.load(Ordering::Relaxed);
+        let hits6 = TEST_INET.hits.load(Ordering::Relaxed);
         assert_eq!(ro.cache6(&a, None, 0), Err(Errno::ESRCH));
+        assert_eq!(TEST_INET.misses.load(Ordering::Relaxed), misses6 + 1);
+        assert_eq!(TEST_INET.hits.load(Ordering::Relaxed), hits6);
         assert_eq!(ro.dst().bytes(), &sin6(a)[..]);
         assert_eq!(ro.ro_generation, RTGENERATION.load(Ordering::Relaxed));
         drop(net);

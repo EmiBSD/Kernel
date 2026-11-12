@@ -94,6 +94,7 @@ pub mod fs;
 pub mod futex;
 pub mod log;
 pub mod net;
+pub mod netinet;
 pub mod pipe;
 pub mod prf;
 pub mod proc;

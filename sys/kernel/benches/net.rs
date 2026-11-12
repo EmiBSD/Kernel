@@ -140,6 +140,15 @@
 //!     ten instructions).
 //!   - `bpf.validate.512`: `bpf_validate` of a 512-instruction program (loads, ALU, forward
 //!     jumps, stores, a return last).
+//! - The IPv4 rows (N6.4a; the same ops as `bsd`'s through its paths at the slice's base,
+//!   LZ's functions, in a scratch test of the commit's measurement):
+//!   - `in.cksum.1500`: `in_cksum` of a 1500-byte packet in one cluster.
+//!   - `in4.cksum.40`: `in4_cksum` of a 40-byte TCP segment (a 20-byte header after a 20-byte
+//!     IP header), the pseudo header included.
+//!   - `ip.output.lo`: `ip_output` of a 64-byte UDP packet to 127.0.0.1 (lo0's address,
+//!     configured by `in_ioctl`) through the caller's cached route to lo0's driver, the header
+//!     completed, its sum by the interface (lo's `IFCAP_CSUM_IPv4`), the packet taken back off
+//!     lo0's input queue for the next op.
 
 #![forbid(unsafe_code)]
 
@@ -583,6 +592,7 @@ fn main() {
         .chain(ROUTE_ROWS.iter())
         .chain(BPF_ROWS.iter())
         .chain(ETHER_ROWS.iter())
+        .chain(INET_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -851,6 +861,7 @@ fn main() {
     route_rows(&wanted, &report);
     bpf_rows(&wanted, &report);
     ether_rows(&wanted, &report);
+    inet_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -1660,11 +1671,12 @@ const ROUTE_ROWS: [&str; 7] = [
     "route.isvalid",
 ];
 
-/// The internet protocols of the routing rows: multipath on (the C's `net.inet.ip.multipath`
-/// set, which `rt_hash` reads), the route cache's hits and misses counted (the C's
-/// `ipstat_inc(ips_rtcachehit)`, a counter per op as LZ's).
+/// The internet protocols of the routing rows: IPv6 multipath on and its route cache's hits
+/// and misses counted (the C's `ip6stat_inc(ip6s_rtcachehit)`); IPv4's switch and counters
+/// are the kernel's own since N6.4a (`kernel::netinet::ip_var`'s `IPMULTIPATH` and
+/// `IPCOUNTERS`).
 struct BenchInet {
-    /// `ips_rtcachehit` and `ips_rtcachemiss`.
+    /// `ip6s_rtcachehit` and `ip6s_rtcachemiss`.
     rtcache: [AtomicU64; 2],
 }
 
@@ -1703,9 +1715,7 @@ impl kernel::net::if_::Inet for BenchInet {
     fn tcpstat_lro(&self, _hw: bool) {}
     fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn rti_delete(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn revarp_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn in_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifattach(
         &self,
@@ -1713,32 +1723,17 @@ impl kernel::net::if_::Inet for BenchInet {
     ) -> Result<(), hal::sys::errno::Errno> {
         Ok(())
     }
-    fn in_ioctl(
-        &self,
-        _cmd: u64,
-        _data: &mut [u8],
-        _ifp: &'static kernel::net::if_var::Ifnet,
-        _privileged: bool,
-    ) -> Result<(), hal::sys::errno::Errno> {
-        Err(hal::sys::errno::Errno::EOPNOTSUPP)
-    }
     fn ip6_forwarding(&self) -> bool {
         false
     }
     fn in6_purge_linklocal(&self, _ifp: &'static kernel::net::if_var::Ifnet) -> bool {
         false
     }
-    fn ip_multipath(&self) -> bool {
-        true
-    }
     fn ip6_multipath(&self) -> bool {
         true
     }
-    fn ipstat_rtcache(&self, hit: bool) {
-        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
-    }
     fn ip6stat_rtcache(&self, hit: bool) {
-        self.ipstat_rtcache(hit);
+        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1795,6 +1790,8 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     if !ROUTE_ROWS.iter().any(|n| wanted(n)) {
         return;
     }
+    // The C's `net.inet.ip.multipath` set, which `rt_hash` reads.
+    kernel::netinet::ip_var::IPMULTIPATH.store(1, Ordering::Relaxed);
     if kernel::net::if_::register_inet(&BENCH_INET).is_err() {
         eprintln!("net: the internet protocols were registered already");
         std::process::exit(1);
@@ -1912,9 +1909,10 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             eprintln!("net: no route to 10.2.0.77");
             std::process::exit(1);
         }
-        let hits = BENCH_INET.rtcache[0].load(Ordering::Relaxed);
+        let hit = kernel::netinet::ip_var::IpstatCounters::IpsRtcachehit as usize;
+        let hits = kernel::netinet::ip_var::IPCOUNTERS.read()[hit];
         if ro.mpath4(host_addr, None, 0, &held).is_none()
-            || BENCH_INET.rtcache[0].load(Ordering::Relaxed) != hits + 1
+            || kernel::netinet::ip_var::IPCOUNTERS.read()[hit] != hits + 1
         {
             eprintln!("net: the cache missed 10.2.0.77");
             std::process::exit(1);
@@ -2423,6 +2421,126 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             t.elapsed()
         });
         report(ETHER_ROWS[3], r);
+    }
+}
+
+/// The IPv4 rows (N6.4a).
+const INET_ROWS: [&str; 3] = ["in.cksum.1500", "in4.cksum.40", "ip.output.lo"];
+
+fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::sockio::SIOCAIFADDR;
+    use kernel::net::if_::if_test_reset;
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::ifq::ifiq_test_take;
+    use kernel::net::mbuf::{m_devget, ml_dequeue};
+    use kernel::net::route::Route;
+    use kernel::netinet::in_cksum::in_cksum;
+    use kernel::netinet::in4_cksum::in4_cksum;
+    use kernel::netinet::ip_output::ip_output;
+
+    if !INET_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET,
+        rtoffset: 4,
+        maxplen: 32,
+        sasize: 16,
+    }]);
+    kernel::netinet::ip_id::ip_randomid_init();
+
+    if wanted(INET_ROWS[0]) {
+        let bytes: Vec<u8> = (0..1500u32).map(|i| (i * 7 + 3) as u8).collect();
+        let m = need(m_devget(&bytes, 0), "a 1500-byte packet");
+        // The packet borrowed once, `&Mbuf`, as bsd's row passes its `&'static Mbuf`
+        // (`black_box(&m)` of the box would put the handle's load in every op).
+        let mr: &kernel::net::mbuf::Mbuf = &m;
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(in_cksum(black_box(mr), 1500));
+            }
+            t.elapsed()
+        });
+        report(INET_ROWS[0], r);
+    }
+    if wanted(INET_ROWS[1]) {
+        let mut bytes = [0u8; 40];
+        bytes[0] = 0x45;
+        bytes[2..4].copy_from_slice(&40u16.to_be_bytes());
+        bytes[9] = 6;
+        bytes[12..16].copy_from_slice(&[10, 0, 2, 15]);
+        bytes[16..20].copy_from_slice(&[10, 0, 2, 2]);
+        bytes[32] = 0x50;
+        let m = need(m_devget(&bytes, 0), "a 40-byte segment");
+        let mr: &kernel::net::mbuf::Mbuf = &m;
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(in4_cksum(black_box(mr), 6, 20, 20));
+            }
+            t.elapsed()
+        });
+        report(INET_ROWS[1], r);
+    }
+    if wanted(INET_ROWS[2]) {
+        hal::klock::kernel_lock();
+        let made = loop_clone_create(&LOOP_CLONER, 0);
+        hal::klock::kernel_unlock();
+        if made.is_err() {
+            eprintln!("net: no lo0");
+            std::process::exit(1);
+        }
+        let lo = need(
+            kernel::net::if_::IFNETLIST
+                .iter()
+                .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+            "lo0 listed",
+        );
+        // ifconfig lo0 inet 127.0.0.1/8
+        let mut req = [0u8; 64];
+        req[16..18].copy_from_slice(&[16, 2]);
+        req[20..24].copy_from_slice(&[127, 0, 0, 1]);
+        req[48..50].copy_from_slice(&[16, 2]);
+        req[52..56].copy_from_slice(&[255, 0, 0, 0]);
+        if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(lo), true).is_err() {
+            eprintln!("net: lo0 refused 127.0.0.1");
+            std::process::exit(1);
+        }
+        let mut p = [0u8; 64];
+        p[0] = 0x45;
+        p[2..4].copy_from_slice(&64u16.to_be_bytes());
+        p[8] = 64;
+        p[9] = 17;
+        p[12..16].copy_from_slice(&[127, 0, 0, 1]);
+        p[16..20].copy_from_slice(&[127, 0, 0, 1]);
+        let mut m = Some(need(m_devget(&p, 0), "a 64-byte packet"));
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        let mut ro = Route::new();
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = need(m.take(), "the packet");
+                if ip_output(black_box(q), None, Some(&mut ro), 0, None, None, 0, &net).is_err() {
+                    eprintln!("net: ip_output refused the packet");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                m = Some(need(ml_dequeue(&mut ml), "the looped packet"));
+            }
+            t.elapsed()
+        });
+        report(INET_ROWS[2], r);
     }
 }
 /* </CODE> */

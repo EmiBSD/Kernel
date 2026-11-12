@@ -1,5 +1,3 @@
-/*	$KAME: ip_ecn.h,v 1.5 2000/03/27 04:58:38 sumikawa Exp $	*/
-/*	$KAME: ip_ecn.c,v 1.9 2000/10/01 12:44:48 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -85,6 +83,7 @@
 //!
 //! Upstream: sys/netinet/ip_ecn.h @ 3ce1f3f79392
 //! Upstream: sys/netinet/ip_ecn.c @ 3ce1f3f79392
+//! LZ: sys/netinet/ip_ecn.rs@3c62ede68802
 //!
 //! ECN and TOS (or TCLASS) processing rules at tunnel encapsulation and decapsulation from
 //! RFC3168:
@@ -110,17 +109,20 @@
 //!
 //! The drop rule is for backward compatibility and protection against erasure of CE.
 //!
-//! Status: `ported` (M9c).
-//!
 //! ## Deviations
 //! - The `u_int8_t *outer, *inner` arguments are references, so the C's "NULL pointer passed"
 //!   panics cannot happen; `ip_ecn_egress` answers `bool` (`true` for the C's 1, keep the
 //!   packet).
 //! - `ip_tos_patch` takes the IP header as a mutable copy (`ip_var.rs`'s `mtod_ip`), which the
 //!   caller stores back.
+//!
+//! ## Redesign
+//! - LZ's module moved whole into the kernel (N6.4a), over `hal::sys::netinet_ip`'s
+//!   image; `bsd`'s tunnels (gif, etherip, ipip, IPsec: N6.6, N8) reach it under LZ's path
+//!   through `sys/netinet/mod.rs`'s re-export.
 
-use crate::netinet::ip::{IPTOS_ECN_CE, IPTOS_ECN_ECT1, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT, Ip};
-use crate::sys::endian::htons;
+use hal::sys::endian::htons;
+use hal::sys::netinet_ip::{IPTOS_ECN_CE, IPTOS_ECN_ECT1, IPTOS_ECN_MASK, IPTOS_ECN_NOTECT, Ip};
 
 /// `ECN_ALLOWED_IPSEC`: ECN allowed.
 pub const ECN_ALLOWED_IPSEC: i32 = 2;
@@ -199,7 +201,7 @@ pub fn ip_tos_patch(ip: &mut Ip, tos: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netinet::ip::IPTOS_ECN_ECT0;
+    use hal::sys::netinet_ip::IPTOS_ECN_ECT0;
 
     #[test]
     fn ingress_and_egress() {
@@ -221,8 +223,7 @@ mod tests {
 
     /// The Internet checksum of a 20-byte header (0 when its `ip_sum` is right).
     fn in_cksum_buf(ip: &Ip) -> u16 {
-        // SAFETY: `Ip` is 20 bytes of integers in a `#[repr(C)]` structure without padding.
-        let b: [u8; 20] = unsafe { core::mem::transmute(*ip) };
+        let b = hal::user::bytes_of(core::slice::from_ref(ip));
         let mut sum: u32 = b
             .chunks(2)
             .map(|w| u32::from(u16::from_ne_bytes([w[0], w[1]])))

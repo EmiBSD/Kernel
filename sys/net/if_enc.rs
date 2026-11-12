@@ -87,12 +87,14 @@ use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::IfnetLegacy;
 use crate::net::if_var::{IfClone, Ifaddr, Ifnet};
 use crate::net::route::Rtentry;
+use crate::netinet::ip_ipsp::{IpsecLevel, Tdb};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_DEVBUF, M_NOWAIT, M_ZERO};
-use crate::sys::mbuf::Mbuf;
+use crate::sys::mbuf::{Mbuf, park};
 use crate::sys::socket::{RT_TABLEID_MAX, Sockaddr};
 use crate::sys::sockio::{SIOCSIFADDR, SIOCSIFDSTADDR, SIOCSIFFLAGS, SIOCSIFRDOMAIN};
 use crate::sys::systm::{net_assert_locked, net_lock, net_unlock};
+use kernel::net::ipsec_hooks::{SpdError, TdbKey, TdbRef};
 use libkern::staticcell::StaticCell;
 
 /// `ENCMTU`: XXX should be bigger, maybe `LOMTU`.
@@ -357,16 +359,83 @@ pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<&'static Ifaddr> {
     Some(&enc_softc(ifp).sc_ifa)
 }
 
-/// The kernel's `Ipsec` bridge over enc(4) (bridges.toml's `Ipsec` row, paid by N8):
-/// `rtm_getifa`'s `enc_getifa` for a route to a `PF_KEY` destination.
+/// The kernel's `Ipsec` bridge over enc(4) and IPsec (bridges.toml's `Ipsec` row, paid by
+/// N8): `rtm_getifa`'s `enc_getifa` for a route to a `PF_KEY` destination, and the IPsec
+/// points of the kernel's `ip_output` (N6.4a) over `ip_output.rs`'s IPsec half.
 pub struct BsdIpsec;
 
 /// The one [`BsdIpsec`], registered by `bsd`'s `ifinit`.
 pub static BSD_IPSEC: BsdIpsec = BsdIpsec;
 
+/// The key `register_ipsec` gave [`BSD_IPSEC`]'s registration, with which its legs make and
+/// read [`TdbRef`]s.
+pub static BSD_TDB_KEY: hal::once::OnceStatic<&'static TdbKey> = hal::once::OnceStatic::new();
+
+/// The key, which every leg is called after (`ifinit` registered them and kept it).
+fn tdb_key() -> &'static TdbKey {
+    match BSD_TDB_KEY.get() {
+        Some(k) => k,
+        None => panic(format_args!("ipsec: a leg called before its registration")),
+    }
+}
+
+/// The SA a [`TdbRef`] names (`bsd`'s `&'static Tdb` the lookup gave the kernel); `panic(9)`
+/// for any other object, which no leg ever hands out.
+fn tdb_of(t: &TdbRef) -> &'static Tdb {
+    let any: &'static dyn core::any::Any = t.get(tdb_key());
+    match any.downcast_ref::<Tdb>() {
+        Some(tdb) => tdb,
+        None => panic(format_args!("ipsec: a TdbRef that names no tdb")),
+    }
+}
+
 impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
     fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<&'static Ifaddr> {
         enc_getifa(rtableid, unit)
+    }
+
+    fn in_use(&self) -> bool {
+        crate::netinet::ip_ipsp::IPSEC_IN_USE.load(core::sync::atomic::Ordering::Relaxed) != 0
+    }
+
+    fn ip_output_lookup(
+        &self,
+        m: &Mbuf,
+        hlen: i32,
+        seclevel: Option<&IpsecLevel>,
+        ipsecflowinfo: u32,
+    ) -> Result<Option<TdbRef>, SpdError> {
+        use crate::netinet::ip_spd::SpdError as BsdSpdError;
+        match crate::netinet::ip_output::ip_output_ipsec_lookup(m, hlen, seclevel, ipsecflowinfo) {
+            Ok(t) => Ok(t.map(|t| TdbRef::new(tdb_key(), t))),
+            Err(BsdSpdError::Drop) => Err(SpdError::Drop),
+            Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
+        }
+    }
+
+    fn ip_output_send(
+        &self,
+        tdb: &TdbRef,
+        m: kernel::net::mbuf::MbufBox,
+        ro: &mut kernel::net::route::Route,
+        rtableid: u32,
+        fwd: bool,
+    ) -> Result<(), Errno> {
+        crate::netinet::ip_output::ip_output_ipsec_send(
+            tdb_of(tdb),
+            park(m),
+            Some(ro),
+            rtableid,
+            fwd,
+        )
+    }
+
+    fn tdb_unref(&self, tdb: TdbRef) {
+        crate::netinet::ip_ipsp::tdb_unref(Some(tdb_of(&tdb)));
+    }
+
+    fn adjust_mtu(&self, m: &Mbuf, mtu: u32) {
+        crate::netinet::ipsec_output::ipsec_adjust_mtu(m, mtu);
     }
 }
 

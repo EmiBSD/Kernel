@@ -48,42 +48,249 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The IPv4 header, `<netinet/ip.h>`'s `struct ip` and the fragment bits the kernel's
-//! Ethernet layer reads (N6.3c2, D-N6.3c-21). N6.4 completes it.
+//! Definitions for internet protocol version 4, per RFC 791, September 1981:
+//! `<netinet/ip.h>`.
 //!
 //! Upstream: sys/netinet/ip.h @ 3ce1f3f79392
 //! LZ: sys/netinet/ip.rs@3c62ede68802
 //!
+//! [`Ip`] is the header as it is on the wire: multi-byte fields hold network-order values
+//! (`ntohs(ip.ip_len)`), as in C. The constants are host-order values (`IP_DF` is compared with
+//! `ntohs(ip.ip_off) & IP_DF`).
+//!
 //! ## Deviations
-//! - `ip_hl:4` and `ip_v:4` are one byte, `ip_vhl` (the low and high nibbles on the
-//!   little-endian machines), with [`Ip::ip_hl`] and [`Ip::ip_v`] (LZ's).
+//! - The C bit-fields `ip_hl:4, ip_v:4` (and `ipt_flg:4, ipt_oflw:4` in `struct
+//!   ip_timestamp`) are one byte, `ip_vhl` (`ipt_oflwflg`), with accessor methods
+//!   (`ip_hl()`, `set_ip_v()`, ...). The C declares the fields in opposite orders for little-
+//!   and big-endian machines so that the version is always the high nibble of the first byte
+//!   on the wire; the byte with explicit shifts is that layout on every machine.
+//! - The union `ipt_timestamp` (the C's one-element arrays `ipt_time[1]` and `ipt_ta[1]`,
+//!   which only name the first entry of a variable option) is its eight bytes as two words,
+//!   with [`IpTimestamp::ipt_time`] and [`IpTimestamp::ipt_ta`] reading the first entry.
+//! - `IPOPT_COPIED(o)`, `IPOPT_CLASS(o)`, `IPOPT_NUMBER(o)` are `const fn`s.
 //!
 //! ## Redesign
-//! - LZ's image in `bsd`'s `sys/netinet/ip.rs` -> `hal`, where `kernel::net` names it; `bsd`
-//!   keeps its copy until N6.4.
+//! - N6.3c2: `struct ip`, `IP_MF` and `IP_OFFMASK` copied from LZ's `bsd` `sys/netinet/ip.rs`
+//!   for the kernel's Ethernet layer. N6.4a: the whole header, moved from LZ's module into
+//!   `hal` (the header has no `_KERNEL` part), every structure an `abi_pod!` image; `bsd`'s
+//!   importers reach it under LZ's path through `sys/netinet/mod.rs`'s re-export.
 
 use core::mem::size_of;
 
 use crate::sys::netinet_in::InAddr;
 
-/// `IP_MF`: more fragments flag (of `ip_off`, host order).
+/// `IPVERSION`.
+pub const IPVERSION: u8 = 4;
+
+/// Reserved fragment flag.
+pub const IP_RF: u16 = 0x8000;
+/// Dont fragment flag.
+pub const IP_DF: u16 = 0x4000;
+/// More fragments flag.
 pub const IP_MF: u16 = 0x2000;
-/// `IP_OFFMASK`: mask for fragmenting bits.
+/// Mask for fragmenting bits.
 pub const IP_OFFMASK: u16 = 0x1fff;
 
-/// `struct ip`: an internet header, naked of options; multi-byte members in network order.
+/// Maximum packet size.
+pub const IP_MAXPACKET: usize = 65535;
+
+// Definitions for IP type of service (ip_tos)
+
+/// `IPTOS_LOWDELAY`.
+pub const IPTOS_LOWDELAY: u8 = 0x10;
+/// `IPTOS_THROUGHPUT`.
+pub const IPTOS_THROUGHPUT: u8 = 0x08;
+/// `IPTOS_RELIABILITY`.
+pub const IPTOS_RELIABILITY: u8 = 0x04;
+/// Congestion experienced (ECN RFC 3168 obsoletes RFC 2481, and this will be deprecated
+/// soon).
+pub const IPTOS_CE: u8 = 0x01;
+/// ECN-capable transport (deprecated as `IPTOS_CE`).
+pub const IPTOS_ECT: u8 = 0x02;
+
+// Definitions for IP precedence (also in ip_tos) (hopefully unused)
+
+/// `IPTOS_PREC_NETCONTROL`.
+pub const IPTOS_PREC_NETCONTROL: u8 = 0xe0;
+/// `IPTOS_PREC_INTERNETCONTROL`.
+pub const IPTOS_PREC_INTERNETCONTROL: u8 = 0xc0;
+/// `IPTOS_PREC_CRITIC_ECP`.
+pub const IPTOS_PREC_CRITIC_ECP: u8 = 0xa0;
+/// `IPTOS_PREC_FLASHOVERRIDE`.
+pub const IPTOS_PREC_FLASHOVERRIDE: u8 = 0x80;
+/// `IPTOS_PREC_FLASH`.
+pub const IPTOS_PREC_FLASH: u8 = 0x60;
+/// `IPTOS_PREC_IMMEDIATE`.
+pub const IPTOS_PREC_IMMEDIATE: u8 = 0x40;
+/// `IPTOS_PREC_PRIORITY`.
+pub const IPTOS_PREC_PRIORITY: u8 = 0x20;
+/// `IPTOS_PREC_ROUTINE`.
+pub const IPTOS_PREC_ROUTINE: u8 = 0x00;
+
+// Definitions for DiffServ Codepoints as per RFCs 2474, 3246, 4594, 5865, 8622. These are the
+// 6 most significant bits as they appear on the wire, so the two least significant bits must
+// be zero.
+
+/// `IPTOS_DSCP_CS0`.
+pub const IPTOS_DSCP_CS0: u8 = 0x00;
+/// `IPTOS_DSCP_LE`.
+pub const IPTOS_DSCP_LE: u8 = 0x04;
+/// `IPTOS_DSCP_CS1`.
+pub const IPTOS_DSCP_CS1: u8 = 0x20;
+/// `IPTOS_DSCP_AF11`.
+pub const IPTOS_DSCP_AF11: u8 = 0x28;
+/// `IPTOS_DSCP_AF12`.
+pub const IPTOS_DSCP_AF12: u8 = 0x30;
+/// `IPTOS_DSCP_AF13`.
+pub const IPTOS_DSCP_AF13: u8 = 0x38;
+/// `IPTOS_DSCP_CS2`.
+pub const IPTOS_DSCP_CS2: u8 = 0x40;
+/// `IPTOS_DSCP_AF21`.
+pub const IPTOS_DSCP_AF21: u8 = 0x48;
+/// `IPTOS_DSCP_AF22`.
+pub const IPTOS_DSCP_AF22: u8 = 0x50;
+/// `IPTOS_DSCP_AF23`.
+pub const IPTOS_DSCP_AF23: u8 = 0x58;
+/// `IPTOS_DSCP_CS3`.
+pub const IPTOS_DSCP_CS3: u8 = 0x60;
+/// `IPTOS_DSCP_AF31`.
+pub const IPTOS_DSCP_AF31: u8 = 0x68;
+/// `IPTOS_DSCP_AF32`.
+pub const IPTOS_DSCP_AF32: u8 = 0x70;
+/// `IPTOS_DSCP_AF33`.
+pub const IPTOS_DSCP_AF33: u8 = 0x78;
+/// `IPTOS_DSCP_CS4`.
+pub const IPTOS_DSCP_CS4: u8 = 0x80;
+/// `IPTOS_DSCP_AF41`.
+pub const IPTOS_DSCP_AF41: u8 = 0x88;
+/// `IPTOS_DSCP_AF42`.
+pub const IPTOS_DSCP_AF42: u8 = 0x90;
+/// `IPTOS_DSCP_AF43`.
+pub const IPTOS_DSCP_AF43: u8 = 0x98;
+/// `IPTOS_DSCP_CS5`.
+pub const IPTOS_DSCP_CS5: u8 = 0xa0;
+/// `IPTOS_DSCP_VA`.
+pub const IPTOS_DSCP_VA: u8 = 0xb0;
+/// `IPTOS_DSCP_EF`.
+pub const IPTOS_DSCP_EF: u8 = 0xb8;
+/// `IPTOS_DSCP_CS6`.
+pub const IPTOS_DSCP_CS6: u8 = 0xc0;
+/// `IPTOS_DSCP_CS7`.
+pub const IPTOS_DSCP_CS7: u8 = 0xe0;
+
+// ECN (Explicit Congestion Notification) codepoints in RFC 3168 mapped to the lower 2 bits of
+// the TOS field.
+
+/// Not-ECT.
+pub const IPTOS_ECN_NOTECT: u8 = 0x00;
+/// ECN-capable transport (1).
+pub const IPTOS_ECN_ECT1: u8 = 0x01;
+/// ECN-capable transport (0).
+pub const IPTOS_ECN_ECT0: u8 = 0x02;
+/// Congestion experienced.
+pub const IPTOS_ECN_CE: u8 = 0x03;
+/// ECN field mask.
+pub const IPTOS_ECN_MASK: u8 = 0x03;
+
+// Definitions for options.
+
+/// `IPOPT_CONTROL`.
+pub const IPOPT_CONTROL: u8 = 0x00;
+/// `IPOPT_RESERVED1`.
+pub const IPOPT_RESERVED1: u8 = 0x20;
+/// `IPOPT_DEBMEAS`.
+pub const IPOPT_DEBMEAS: u8 = 0x40;
+/// `IPOPT_RESERVED2`.
+pub const IPOPT_RESERVED2: u8 = 0x60;
+
+/// End of option list.
+pub const IPOPT_EOL: u8 = 0;
+/// No operation.
+pub const IPOPT_NOP: u8 = 1;
+
+/// Record packet route.
+pub const IPOPT_RR: u8 = 7;
+/// Timestamp.
+pub const IPOPT_TS: u8 = 68;
+/// Provide s,c,h,tcc.
+pub const IPOPT_SECURITY: u8 = 130;
+/// Loose source route.
+pub const IPOPT_LSRR: u8 = 131;
+/// Satnet id.
+pub const IPOPT_SATID: u8 = 136;
+/// Strict source route.
+pub const IPOPT_SSRR: u8 = 137;
+/// Router alert.
+pub const IPOPT_RA: u8 = 148;
+
+// Offsets to fields in options other than EOL and NOP.
+
+/// Option ID.
+pub const IPOPT_OPTVAL: usize = 0;
+/// Option length.
+pub const IPOPT_OLEN: usize = 1;
+/// Offset within option.
+pub const IPOPT_OFFSET: usize = 2;
+/// Min value of above.
+pub const IPOPT_MINOFF: u8 = 4;
+
+// Flag bits for ipt_flg
+
+/// Timestamps only.
+pub const IPOPT_TS_TSONLY: u8 = 0;
+/// Timestamps and addresses.
+pub const IPOPT_TS_TSANDADDR: u8 = 1;
+/// Specified modules only.
+pub const IPOPT_TS_PRESPEC: u8 = 3;
+
+// Bits for security (not byte swapped)
+
+/// `IPOPT_SECUR_UNCLASS`.
+pub const IPOPT_SECUR_UNCLASS: u16 = 0x0000;
+/// `IPOPT_SECUR_CONFID`.
+pub const IPOPT_SECUR_CONFID: u16 = 0xf135;
+/// `IPOPT_SECUR_EFTO`.
+pub const IPOPT_SECUR_EFTO: u16 = 0x789a;
+/// `IPOPT_SECUR_MMMM`.
+pub const IPOPT_SECUR_MMMM: u16 = 0xbc4d;
+/// `IPOPT_SECUR_RESTR`.
+pub const IPOPT_SECUR_RESTR: u16 = 0xaf13;
+/// `IPOPT_SECUR_SECRET`.
+pub const IPOPT_SECUR_SECRET: u16 = 0xd788;
+/// `IPOPT_SECUR_TOPSECRET`.
+pub const IPOPT_SECUR_TOPSECRET: u16 = 0x6bc5;
+
+// Internet implementation parameters.
+
+/// Maximum time to live (seconds).
+pub const MAXTTL: u8 = 255;
+/// Default ttl, from RFC 1340.
+pub const IPDEFTTL: u8 = 64;
+/// Time to live for frags, slowhz.
+pub const IPFRAGTTL: u8 = 60;
+/// Subtracted when forwarding.
+pub const IPTTLDEC: u8 = 1;
+
+/// Default maximum segment size.
+pub const IP_MSS: usize = 576;
+
+/// Maximum length for IP protocol queues.
+pub const IPQ_MAXLEN: usize = 2048;
+
+/// `struct ip`: structure of an internet header, naked of options.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ip {
-    /// `ip_v:4` (the high nibble) and `ip_hl:4` (the low nibble).
+    /// `ip_v:4` (the high nibble) and `ip_hl:4` (the low nibble): version and header length
+    /// in 32-bit words.
     pub ip_vhl: u8,
     /// Type of service.
     pub ip_tos: u8,
-    /// Total length.
+    /// Total length, network order.
     pub ip_len: u16,
-    /// Identification.
+    /// Identification, network order.
     pub ip_id: u16,
-    /// Fragment offset field.
+    /// Fragment offset field (with `IP_RF`, `IP_DF`, `IP_MF`), network order.
     pub ip_off: u16,
     /// Time to live.
     pub ip_ttl: u8,
@@ -111,18 +318,236 @@ crate::abi_pod!(Ip {
 });
 
 impl Ip {
-    /// `ip_hl`: the header length, in 32-bit words.
+    /// `ip_hl`: header length, in 32-bit words.
     #[inline]
     pub const fn ip_hl(&self) -> u8 {
         self.ip_vhl & 0x0f
     }
 
-    /// `ip_v`: the version.
+    /// Sets `ip_hl` (the low four bits of `hl`).
+    #[inline]
+    pub fn set_ip_hl(&mut self, hl: u8) {
+        self.ip_vhl = (self.ip_vhl & 0xf0) | (hl & 0x0f);
+    }
+
+    /// `ip_v`: version.
     #[inline]
     pub const fn ip_v(&self) -> u8 {
         self.ip_vhl >> 4
     }
+
+    /// Sets `ip_v` (the low four bits of `v`).
+    #[inline]
+    pub fn set_ip_v(&mut self, v: u8) {
+        self.ip_vhl = (self.ip_vhl & 0x0f) | (v << 4);
+    }
 }
 
-const _: () = assert!(size_of::<Ip>() == 20);
+/// `struct ipt_ta`: one address and timestamp of a timestamp option.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IptTa {
+    /// The address.
+    pub ipt_addr: InAddr,
+    /// The timestamp.
+    pub ipt_time: u32,
+}
+
+crate::abi_pod!(IptTa {
+    ipt_addr: InAddr,
+    ipt_time: u32,
+});
+
+/// `struct ip_timestamp`: time stamp option structure.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IpTimestamp {
+    /// `IPOPT_TS`.
+    pub ipt_code: u8,
+    /// Size of structure (variable).
+    pub ipt_len: u8,
+    /// Index of current entry.
+    pub ipt_ptr: u8,
+    /// `ipt_oflw:4` (the high nibble, overflow counter) and `ipt_flg:4` (the low nibble,
+    /// flags, see `IPOPT_TS_*`).
+    pub ipt_oflwflg: u8,
+    /// `ipt_timestamp`, the union of `ipt_time[1]` and `ipt_ta[1]`: the first entry's eight
+    /// bytes, as two words (alignment 4, the union's).
+    pub ipt_timestamp: [u32; 2],
+}
+
+crate::abi_pod!(IpTimestamp {
+    ipt_code: u8,
+    ipt_len: u8,
+    ipt_ptr: u8,
+    ipt_oflwflg: u8,
+    ipt_timestamp: [u32; 2],
+});
+
+impl IpTimestamp {
+    /// `ipt_timestamp.ipt_time[0]`: the first timestamp (`IPOPT_TS_TSONLY`).
+    #[inline]
+    pub const fn ipt_time(&self) -> u32 {
+        self.ipt_timestamp[0]
+    }
+
+    /// `ipt_timestamp.ipt_ta[0]`: the first address and timestamp (`IPOPT_TS_TSANDADDR`,
+    /// `IPOPT_TS_PRESPEC`).
+    #[inline]
+    pub const fn ipt_ta(&self) -> IptTa {
+        IptTa {
+            ipt_addr: InAddr {
+                s_addr: self.ipt_timestamp[0],
+            },
+            ipt_time: self.ipt_timestamp[1],
+        }
+    }
+
+    /// `ipt_flg`: flags, see `IPOPT_TS_*`.
+    pub const fn ipt_flg(&self) -> u8 {
+        self.ipt_oflwflg & 0x0f
+    }
+
+    /// Sets `ipt_flg`.
+    pub fn set_ipt_flg(&mut self, flg: u8) {
+        self.ipt_oflwflg = (self.ipt_oflwflg & 0xf0) | (flg & 0x0f);
+    }
+
+    /// `ipt_oflw`: overflow counter.
+    pub const fn ipt_oflw(&self) -> u8 {
+        self.ipt_oflwflg >> 4
+    }
+
+    /// Sets `ipt_oflw`.
+    pub fn set_ipt_oflw(&mut self, oflw: u8) {
+        self.ipt_oflwflg = (self.ipt_oflwflg & 0x0f) | (oflw << 4);
+    }
+}
+
+/// `struct ippseudo`: the real IPv4 pseudo header, used for computing the TCP and UDP
+/// checksums. For the Internet checksum, `struct ipovly` can be used instead; for stronger
+/// checksums, the real thing must be used.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ippseudo {
+    /// Source internet address.
+    pub ippseudo_src: InAddr,
+    /// Destination internet address.
+    pub ippseudo_dst: InAddr,
+    /// Pad, must be zero.
+    pub ippseudo_pad: u8,
+    /// Protocol.
+    pub ippseudo_p: u8,
+    /// Protocol length.
+    pub ippseudo_len: u16,
+}
+
+crate::abi_pod!(Ippseudo {
+    ippseudo_src: InAddr,
+    ippseudo_dst: InAddr,
+    ippseudo_pad: u8,
+    ippseudo_p: u8,
+    ippseudo_len: u16,
+});
+
+/// `IPOPT_COPIED(o)`: the option's copied flag.
+pub const fn ipopt_copied(o: u8) -> u8 {
+    o & 0x80
+}
+
+/// `IPOPT_CLASS(o)`: the option's class.
+pub const fn ipopt_class(o: u8) -> u8 {
+    o & 0x60
+}
+
+/// `IPOPT_NUMBER(o)`: the option's number.
+pub const fn ipopt_number(o: u8) -> u8 {
+    o & 0x1f
+}
+
+// Sizes of the C structures.
+const _: () = {
+    assert!(size_of::<Ip>() == 20);
+    assert!(size_of::<IptTa>() == 8);
+    assert!(size_of::<IpTimestamp>() == 12);
+    assert!(size_of::<Ippseudo>() == 12);
+};
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reftest::{assert_complete, assert_defines};
+    use crate::sys::endian::{htonl, htons, ntohs};
+    use crate::user::bytes_of;
+
+    #[test]
+    fn header_layout_on_the_wire() {
+        let mut ip = Ip::default();
+        ip.set_ip_v(IPVERSION);
+        ip.set_ip_hl((size_of::<Ip>() >> 2) as u8);
+        ip.ip_len = htons(84);
+        ip.ip_off = htons(IP_DF);
+        ip.ip_ttl = IPDEFTTL;
+        ip.ip_p = 1;
+        ip.ip_src.s_addr = htonl(0x0a00_020f);
+        ip.ip_dst.s_addr = htonl(0x0a00_0202);
+        assert_eq!((ip.ip_v(), ip.ip_hl()), (4, 5));
+        assert_eq!(
+            bytes_of(&[ip]),
+            [
+                0x45, 0, 0, 84, 0, 0, 0x40, 0, 64, 1, 0, 0, 10, 0, 2, 15, 10, 0, 2, 2
+            ]
+        );
+        assert_eq!(ntohs(ip.ip_off) & IP_DF, IP_DF);
+
+        let mut ts = IpTimestamp {
+            ipt_code: IPOPT_TS,
+            ipt_len: 12,
+            ipt_ptr: 5,
+            ipt_oflwflg: 0,
+            ipt_timestamp: [0x0100_000a, 7],
+        };
+        ts.set_ipt_flg(IPOPT_TS_PRESPEC);
+        ts.set_ipt_oflw(2);
+        assert_eq!(ts.ipt_oflwflg, 0x23);
+        assert_eq!((ts.ipt_flg(), ts.ipt_oflw()), (3, 2));
+        assert_eq!(ts.ipt_time(), 0x0100_000a);
+        assert_eq!(ts.ipt_ta().ipt_addr.s_addr, 0x0100_000a);
+        assert_eq!(ts.ipt_ta().ipt_time, 7);
+        assert_eq!(bytes_of(&[ts])[..4], [IPOPT_TS, 12, 5, 0x23]);
+        assert_eq!(ipopt_number(IPOPT_LSRR), 3);
+        assert_eq!(ipopt_copied(IPOPT_LSRR), 0x80);
+        assert_eq!(ipopt_class(IPOPT_TS), IPOPT_DEBMEAS);
+    }
+
+    #[test]
+    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
+    fn values_match_the_c_header() {
+        let defs = crate::reftest::defines("sys/netinet/ip.h");
+        let ip = assert_defines!(defs; IP_RF, IP_DF, IP_MF, IP_OFFMASK, IP_MAXPACKET, IP_MSS);
+        assert_complete(&defs, "IP_", &ip);
+        let tos = assert_defines!(defs;
+        IPTOS_LOWDELAY, IPTOS_THROUGHPUT, IPTOS_RELIABILITY, IPTOS_CE, IPTOS_ECT,
+        IPTOS_PREC_NETCONTROL, IPTOS_PREC_INTERNETCONTROL, IPTOS_PREC_CRITIC_ECP,
+        IPTOS_PREC_FLASHOVERRIDE, IPTOS_PREC_FLASH, IPTOS_PREC_IMMEDIATE, IPTOS_PREC_PRIORITY,
+        IPTOS_PREC_ROUTINE, IPTOS_DSCP_CS0, IPTOS_DSCP_LE, IPTOS_DSCP_CS1, IPTOS_DSCP_AF11,
+        IPTOS_DSCP_AF12, IPTOS_DSCP_AF13, IPTOS_DSCP_CS2, IPTOS_DSCP_AF21, IPTOS_DSCP_AF22,
+        IPTOS_DSCP_AF23, IPTOS_DSCP_CS3, IPTOS_DSCP_AF31, IPTOS_DSCP_AF32, IPTOS_DSCP_AF33,
+        IPTOS_DSCP_CS4, IPTOS_DSCP_AF41, IPTOS_DSCP_AF42, IPTOS_DSCP_AF43, IPTOS_DSCP_CS5,
+        IPTOS_DSCP_VA, IPTOS_DSCP_EF, IPTOS_DSCP_CS6, IPTOS_DSCP_CS7, IPTOS_ECN_NOTECT,
+        IPTOS_ECN_ECT1, IPTOS_ECN_ECT0, IPTOS_ECN_CE, IPTOS_ECN_MASK);
+        assert_complete(&defs, "IPTOS_", &tos);
+        let opt = assert_defines!(defs;
+        IPOPT_CONTROL, IPOPT_RESERVED1, IPOPT_DEBMEAS, IPOPT_RESERVED2, IPOPT_EOL, IPOPT_NOP,
+        IPOPT_RR, IPOPT_TS, IPOPT_SECURITY, IPOPT_LSRR, IPOPT_SATID, IPOPT_SSRR, IPOPT_RA,
+        IPOPT_OPTVAL, IPOPT_OLEN, IPOPT_OFFSET, IPOPT_MINOFF, IPOPT_TS_TSONLY,
+        IPOPT_TS_TSANDADDR, IPOPT_TS_PRESPEC, IPOPT_SECUR_UNCLASS, IPOPT_SECUR_CONFID,
+        IPOPT_SECUR_EFTO, IPOPT_SECUR_MMMM, IPOPT_SECUR_RESTR, IPOPT_SECUR_SECRET,
+        IPOPT_SECUR_TOPSECRET);
+        assert_complete(&defs, "IPOPT_", &opt);
+        assert_defines!(defs; IPVERSION, MAXTTL, IPDEFTTL, IPFRAGTTL, IPTTLDEC, IPQ_MAXLEN);
+    }
+}
+/* </TESTS> */

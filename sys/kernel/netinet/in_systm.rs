@@ -51,15 +51,18 @@
 //! Miscellaneous internetwork definitions for the kernel: `<netinet/in_systm.h>`.
 //!
 //! Upstream: sys/netinet/in_systm.h @ 3ce1f3f79392
+//! LZ: sys/netinet/in_systm.rs@3c62ede68802
 //!
 //! Network types: values of these types are in network byte order.
-//!
-//! Status: `ported`.
 //!
 //! ## Deviations
 //! - The typedefs drop C's lowercase spelling for CamelCase (`n_short` → [`NShort`]), as the
 //!   `_t` typedefs of `<sys/types.h>` do.
 //! - `iptime()` comes with `netinet/ip_icmp.c`, which defines it.
+//!
+//! ## Redesign
+//! - LZ's module moved whole into the kernel (N6.4a), the types unchanged; `bsd`'s
+//!   importers reach it under LZ's path through `sys/netinet/mod.rs`'s re-export.
 
 /// `n_short`: a 16-bit value in network byte order.
 pub type NShort = u16;

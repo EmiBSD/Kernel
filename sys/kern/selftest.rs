@@ -1573,10 +1573,12 @@ pub fn ping_gateway() {
     }
 
     // ifconfig <if> inet 10.0.2.15/24
-    let mut ifra = InAliasreq::zeroed();
-    ifra.ifra_name = xname;
-    *ifra.ifra_addr_mut() = ping_sin(PING_ADDR);
-    ifra.ifra_mask = ping_sin([255, 255, 255, 0]);
+    let mut ifra = InAliasreq {
+        ifra_name: xname,
+        ifra_addr: ping_sin(PING_ADDR),
+        ifra_mask: ping_sin([255, 255, 255, 0]),
+        ..InAliasreq::default()
+    };
     // SAFETY: `ifra` is a `struct in_aliasreq`, what SIOCAIFADDR takes; the socket is the
     // kernel's own (NULL).
     let error = unsafe { ifioctl(ptr::null(), SIOCAIFADDR, ptr::from_mut(&mut ifra).cast(), p) };
