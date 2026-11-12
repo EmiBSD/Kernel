@@ -188,9 +188,6 @@
 //!   label in its own copy of the request: the C writes pointers to its own frame into the
 //!   caller's `info`, which `rt_clone` reads after the return for its `RTM_MISS`; `rt_clone`
 //!   builds that message with the same two addresses itself.
-//! - The routing socket's senders (`rtm_send`, `rtm_miss`, `rtm_addr`, rtsock.c's) are
-//!   reached through [`RtmSink`], which `kernel::net::rtsock` registers (N6.3b2); until then a
-//!   message goes nowhere, as one does with no routing socket open (docs/SCAFFOLDING.md).
 //!
 //! ## Redesign
 //! - `struct rtentry` is an item of the pool `"rtentry"` handled through
@@ -290,6 +287,7 @@ use crate::net::rtable::{
     rtable_insert, rtable_iterate, rtable_l2, rtable_lookup, rtable_match, rtable_mpath_capable,
     rtable_mpath_reprio, rtable_satoplen, rtable_walk,
 };
+use crate::net::rtsock;
 use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `RT_RESOLVE`: `rtalloc`'s flag to add and resolve the link-layer route of a cloning one.
@@ -952,68 +950,9 @@ static RTTIMER_MTX: Mutexed<()> = Mutexed::new(IPL_MPFLOOR, ());
 /// `rt_labels` under `rtlabel_mtx`: the labels in id order.
 static RT_LABELS: Mutexed<Option<MBox<RtLabel>>> = Mutexed::new(IPL_NET, None);
 
-/// The registered routing socket ([`RtmSink`]).
-static RTM_SINK: OnceStatic<&'static dyn RtmSink> = OnceStatic::new();
-
-/// What route.c asks of the routing socket (rtsock.c's `rtm_send`, `rtm_miss`,
-/// `rtm_addr`): `kernel::net::rtsock`'s, registered by it (N6.3b2, which calls them
-/// directly and removes this trait: docs/SCAFFOLDING.md). Before registration a message goes
-/// nowhere, as with no routing socket open.
-pub trait RtmSink: Sync + 'static {
-    /// `rtm_send(rt, cmd, error, rtableid)`: a message about route `rt`.
-    fn rtm_send(&self, rt: &Rtentry, cmd: u8, error: i32, rtableid: u32);
-    /// `rtm_miss(type, info, flags, prio, ifidx, error, tableid)`: a message about a request.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the C's rtm_miss and its arguments"
-    )]
-    fn rtm_miss(
-        &self,
-        ty: u8,
-        info: &RtAddrinfo<'_>,
-        flags: u32,
-        prio: u8,
-        ifidx: u32,
-        error: i32,
-        tableid: u32,
-    );
-    /// `rtm_addr(cmd, ifa)`: a message about an interface address.
-    fn rtm_addr(&self, cmd: u8, ifa: &'static Ifaddr);
-}
-
-/// Registers the routing socket; the first registration stays.
-pub fn rtm_sink_register(s: &'static dyn RtmSink) -> Result<(), &'static dyn RtmSink> {
-    RTM_SINK.set(s)
-}
-
-/// `rtm_send`, through the registered routing socket.
-fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
-    if let Some(s) = RTM_SINK.get() {
-        s.rtm_send(rt, cmd, error, rtableid);
-    }
-}
-
-/// `rtm_miss`, through the registered routing socket.
-fn rtm_miss(
-    ty: u8,
-    info: &RtAddrinfo<'_>,
-    flags: u32,
-    prio: u8,
-    ifidx: u32,
-    error: Result<(), Errno>,
-    tableid: u32,
-) {
-    if let Some(s) = RTM_SINK.get() {
-        let e = error.err().map_or(0, |e| e as i32);
-        s.rtm_miss(ty, info, flags, prio, ifidx, e, tableid);
-    }
-}
-
-/// `rtm_addr`, through the registered routing socket.
-fn rtm_addr(cmd: u8, ifa: &'static Ifaddr) {
-    if let Some(s) = RTM_SINK.get() {
-        s.rtm_addr(cmd, ifa);
-    }
+/// The `int` error of a request, as the routing messages carry it (0 for success).
+fn errno_of(r: Result<(), Errno>) -> i32 {
+    r.err().map_or(0, |e| e as i32)
 }
 
 /// `atomic_load_int(&ipmultipath)`, the internet protocols' (the `Inet` leg; off before
@@ -1151,7 +1090,7 @@ fn rt_clone(
     match (error, ret) {
         (Ok(()), Some(rt)) => {
             // Inform listeners of the new route.
-            rtm_send(&rt, RTM_ADD, 0, rtableid);
+            rtsock::rtm_send(&rt, RTM_ADD, 0, rtableid, net);
             *rtp = rt;
             Ok(())
         }
@@ -1163,7 +1102,7 @@ fn rt_clone(
             info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&sdl);
             info.rti_info[RTAX_LABEL] = rtlabel_id2sa(rtp.rt_labelid.get(), &mut sa_rl);
             let e = e.and(Err(Errno::EINVAL));
-            rtm_miss(RTM_MISS, &info, 0, RTP_NONE, 0, e, rtableid);
+            rtsock::rtm_miss(RTM_MISS, &info, 0, RTP_NONE, 0, errno_of(e), rtableid);
             e
         }
     }
@@ -1534,11 +1473,19 @@ pub fn rtredirect(
     info.rti_info[RTAX_DST] = Some(dst);
     info.rti_info[RTAX_GATEWAY] = Some(gateway);
     info.rti_info[RTAX_AUTHOR] = Some(src);
-    rtm_miss(RTM_REDIRECT, &info, flags, prio, ifidx, error, rdomain);
+    rtsock::rtm_miss(
+        RTM_REDIRECT,
+        &info,
+        flags,
+        prio,
+        ifidx,
+        errno_of(error),
+        rdomain,
+    );
 }
 
 /// The bytes of interface `ifp`'s link-level address (`sdltosa(ifp->if_sadl)`), copied.
-fn sadl_copy(ifp: &Ifnet) -> Option<SaCopy> {
+pub(crate) fn sadl_copy(ifp: &Ifnet) -> Option<SaCopy> {
     let sadl = ifp.if_sadl.read();
     let sdl = sadl.as_deref()?;
     let bytes = hal::user::bytes_of(core::slice::from_ref(sdl));
@@ -1585,13 +1532,13 @@ pub fn rtdeletemsg(
         net,
     );
     klock::kernel_unlock();
-    rtm_miss(
+    rtsock::rtm_miss(
         RTM_DELETE,
         &info,
         info.rti_flags,
         rt.rt_priority.get(),
         rt.rt_ifidx.get(),
-        error,
+        errno_of(error),
         tableid,
     );
     // rtfree(rt) of the request's answer: the handle's drop.
@@ -2103,9 +2050,9 @@ pub fn rt_ifa_add(
         // A local route is created for every address configured on an interface, so use
         // this information to notify userland that a new address has been added.
         if flags & RTF_LOCAL != 0 {
-            rtm_addr(RTM_NEWADDR, ifa);
+            rtsock::rtm_addr(RTM_NEWADDR, ifa, net);
         }
-        rtm_send(&rt, RTM_ADD, 0, rdomain);
+        rtsock::rtm_send(&rt, RTM_ADD, 0, rdomain, net);
     }
     error
 }
@@ -2171,9 +2118,9 @@ pub fn rt_ifa_del(
     if error.is_ok()
         && let Some(rt) = rt
     {
-        rtm_send(&rt, RTM_DELETE, 0, rdomain);
+        rtsock::rtm_send(&rt, RTM_DELETE, 0, rdomain, net);
         if flags & RTF_LOCAL != 0 {
-            rtm_addr(RTM_DELADDR, ifa);
+            rtsock::rtm_addr(RTM_DELADDR, ifa, net);
         }
     }
 
@@ -3026,7 +2973,7 @@ pub(crate) mod tests {
     // and the routing socket's messages (a recording sink).
 
     use std::boxed::Box;
-    use std::sync::{Mutex, MutexGuard};
+    use std::sync::MutexGuard;
     use std::vec::Vec;
 
     use hal::netlock::NETLOCK;
@@ -3062,10 +3009,7 @@ pub(crate) mod tests {
         rtable_init_doms(&ROUTE_DOMS);
         MULTIPATH.store(false, Ordering::Relaxed);
         let _ = if_::register_inet(&TEST_INET);
-        let _ = rtm_sink_register(&TEST_SINK);
-        if let Ok(mut m) = MESSAGES.lock() {
-            m.clear();
-        }
+        crate::net::rtsock::tap::start();
         g
     }
 
@@ -3223,52 +3167,13 @@ pub(crate) mod tests {
         freed: AtomicU32::new(0),
     };
 
-    /// A message the test sink saw: its type, the destination's bytes, the error.
-    type Msg = (u8, Vec<u8>, i32);
-
-    static MESSAGES: Mutex<Vec<Msg>> = Mutex::new(Vec::new());
-
-    struct TestSink;
-
-    impl RtmSink for TestSink {
-        fn rtm_send(&self, rt: &Rtentry, cmd: u8, error: i32, _rtableid: u32) {
-            if let Ok(mut m) = MESSAGES.lock() {
-                m.push((cmd, rt.dest().to_vec(), error));
-            }
-        }
-        fn rtm_miss(
-            &self,
-            ty: u8,
-            info: &RtAddrinfo<'_>,
-            _flags: u32,
-            _prio: u8,
-            _ifidx: u32,
-            error: i32,
-            _tableid: u32,
-        ) {
-            let d = info.rti_info[RTAX_DST].map_or(Vec::new(), |d| d.bytes().to_vec());
-            if let Ok(mut m) = MESSAGES.lock() {
-                m.push((ty, d, error));
-            }
-        }
-        fn rtm_addr(&self, cmd: u8, _ifa: &'static Ifaddr) {
-            if let Ok(mut m) = MESSAGES.lock() {
-                m.push((cmd, Vec::new(), 0));
-            }
-        }
-    }
-
-    static TEST_SINK: TestSink = TestSink;
-
+    /// The types of the routing messages the routing socket's tap saw.
     fn messages() -> Vec<u8> {
-        MESSAGES
-            .lock()
-            .map(|m| m.iter().map(|x| x.0).collect())
-            .unwrap_or_default()
+        crate::net::rtsock::tap::types()
     }
 
     /// A driver that counts the route requests it is told of.
-    struct RtDriver {
+    pub(crate) struct RtDriver {
         adds: AtomicU32,
         resolves: AtomicU32,
         deletes: AtomicU32,
@@ -3315,7 +3220,10 @@ pub(crate) mod tests {
     }
 
     /// An interface up, its driver, and its IPv4 address `addr`/`mask`.
-    fn iface(addr: [u8; 4], mask: [u8; 4]) -> (&'static Ifnet, &'static RtDriver, &'static Ifaddr) {
+    pub(crate) fn iface(
+        addr: [u8; 4],
+        mask: [u8; 4],
+    ) -> (&'static Ifnet, &'static RtDriver, &'static Ifaddr) {
         let d: &'static RtDriver = Box::leak(Box::new(RtDriver {
             adds: AtomicU32::new(0),
             resolves: AtomicU32::new(0),

@@ -456,6 +456,15 @@ trait = "Routing"
 for = ["sys/kernel/net/if_.rs"]
 paid_by = "N6"
 
+# bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
+# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC).
+# Implemented by sys/net/if_enc.rs (BsdIpsec) and registered by bsd's ifinit beside the
+# interface layer's legs; before registration the leg answers None, the C without IPSEC.
+[[bridge]]
+trait = "Ipsec"
+for = ["sys/kernel/net/rtsock.rs"]
+paid_by = "N8"
+
 # bsd: what if.c and ifq.c ask of the link layers (bpf(4), if_ethersubr.c): bpf_mtap_ether
 # (NetDriver::bpf_mtap's default, if_attach_common's default if_bpf_mtap) and the per-queue
 # tap word ifiq_input reads, bpf_mtap_af (if_input_local), bpfdetach (if_detach),

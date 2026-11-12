@@ -8022,7 +8022,19 @@ rust = "sys/kernel/net/route.rs"
 crate = "kernel"
 lz = ["sys/net/route.rs"]
 status = "redesigned"
-notes = "N6.3b1: route.c and the kernel half of route.h: Rtentry a recorded TypedPool item (rtentry) handled through PoolArc, the count rt_refcnt (rtref a clone, rtfree a drop, the last rtfree the entry's Drop; the reference table in its Redesign), members by the C's legend (rt_gateway/rt_gwroute/rt_parent ReadMostly cells, rt_flags an atomic word with set/clear, the rest relaxed atomics, rt_ifa a Link, rt_llinfo a word, rt_cachecnt in rt_mtx's Mutexed); Route owned with &mut methods (cache4/mpath4, cache6/mpath6); RtAddrinfo of SockaddrViews; the timers (pool rttmr, two PinLists under RTTIMER_MTX, a parked membership reference, the timeout's argument a handle; a timer holds a counted handle of its route, removed when the route leaves its table, rt_refcnt not counting it: R11); the labels a Mutexed chain of M_RTABLE boxes; rtcounters a Counters; the routing socket's senders through RtmSink until N6.3b2; in_broadcast read over the interface list until N6.4; MPLS/BFD not configured"
+notes = "N6.3b1: route.c and the kernel half of route.h: Rtentry a recorded TypedPool item (rtentry) handled through PoolArc, the count rt_refcnt (rtref a clone, rtfree a drop, the last rtfree the entry's Drop; the reference table in its Redesign), members by the C's legend (rt_gateway/rt_gwroute/rt_parent ReadMostly cells, rt_flags an atomic word with set/clear, the rest relaxed atomics, rt_ifa a Link, rt_llinfo a word, rt_cachecnt in rt_mtx's Mutexed); Route owned with &mut methods (cache4/mpath4, cache6/mpath6); RtAddrinfo of SockaddrViews; the timers (pool rttmr, two PinLists under RTTIMER_MTX, a parked membership reference, the timeout's argument a handle; a timer holds a counted handle of its route, removed when the route leaves its table, rt_refcnt not counting it: R11); the labels a Mutexed chain of M_RTABLE boxes; rtcounters a Counters; the routing socket's senders kernel::net::rtsock's (N6.3b2); in_broadcast read over the interface list until N6.4; MPLS/BFD not configured"
+
+[[module]]
+rust = "sys/kernel/net/rtsock.rs"
+crate = "kernel"
+lz = ["sys/net/rtsock.rs"]
+status = "redesigned"
+notes = "N6.3b2: rtsock.c in the kernel: Rtpcb an item of the recorded pool rtpcb hung in the socket's protocol slot (a borrow per request) and held by its desync timeout's argument, its [s] members one Guarded keyed to the socket's lock, rtptable the glue's RtsockTables (rtp_lk a RawRwlock, rtp_list a PinList) with rtp_count a static atomic; the route domain native (RouteDomain, RouteProto, RouteUsrreqs, decision 46), its sockets locked with a witness and let go by SoLocked::unlocked where the C calls sounlock; the messages byte buffers (rtm_msg1 one mbuf or cluster, rtm_msg2 a slice or the walk's MArray, the headers AbiPod images edited as copies), the addresses SockaddrViews (rtm_xaddrs bounded by sa_len and the message), a route's gateway copied whole and the interface addresses read under the net lock; sysctl_rtable's copy-outs the prefix rtm_msg2 just built, rmx_refcnt rtable_read_refcnt - 1; the announcements non-generic, reaching the glue's listeners through the walk route_prinit registers (ROUTE_INPUT, SCAFFOLDING); enc_getifa through the Ipsec bridge; BFD/MPLS not configured"
+
+[[extra]]
+rust = "sys/kernel/net/ipsec_hooks.rs"
+crate = "kernel"
+reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through, today rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), its OnceStatic slot and register_ipsec"
 
 [[module]]
 rust = "sys/kernel/net/netisr.rs"
