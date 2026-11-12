@@ -558,46 +558,55 @@ crate::abi_pod!(BpfDltlist {
 });
 
 /// `BPF_WORDALIGN(x)`: `x` rounded up to a multiple of [`BPF_ALIGNMENT`].
+#[inline]
 pub const fn bpf_wordalign(x: usize) -> usize {
     (x + (BPF_ALIGNMENT - 1)) & !(BPF_ALIGNMENT - 1)
 }
 
 /// `BPF_CLASS(code)`: the instruction class.
+#[inline]
 pub const fn bpf_class(code: u16) -> u16 {
     code & 0x07
 }
 
 /// `BPF_SIZE(code)`: the ld/ldx size field.
+#[inline]
 pub const fn bpf_size(code: u16) -> u16 {
     code & 0x18
 }
 
 /// `BPF_MODE(code)`: the ld/ldx mode field.
+#[inline]
 pub const fn bpf_mode(code: u16) -> u16 {
     code & 0xe0
 }
 
 /// `BPF_OP(code)`: the alu/jmp operation field.
+#[inline]
 pub const fn bpf_op(code: u16) -> u16 {
     code & 0xf0
 }
 
 /// `BPF_SRC(code)`: the alu/jmp source field.
+#[inline]
 pub const fn bpf_src(code: u16) -> u16 {
     code & 0x08
 }
 
 /// `BPF_RVAL(code)`: the ret source field.
+#[inline]
 pub const fn bpf_rval(code: u16) -> u16 {
     code & 0x18
 }
 
 /// `BPF_MISCOP(code)`: the misc operation field.
+#[inline]
 pub const fn bpf_miscop(code: u16) -> u16 {
     code & 0xf8
 }
 
 /// `BPF_STMT(code, k)`: an instruction initialiser.
+#[inline]
 pub const fn bpf_stmt(code: u16, k: u32) -> BpfInsn {
     BpfInsn {
         code,
@@ -608,6 +617,7 @@ pub const fn bpf_stmt(code: u16, k: u32) -> BpfInsn {
 }
 
 /// `BPF_JUMP(code, k, jt, jf)`: a jump instruction initialiser.
+#[inline]
 pub const fn bpf_jump(code: u16, k: u32, jt: u8, jf: u8) -> BpfInsn {
     BpfInsn { code, jt, jf, k }
 }

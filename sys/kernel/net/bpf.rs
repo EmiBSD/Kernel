@@ -367,6 +367,7 @@ pub struct BpfPkt<'a> {
 
 impl<'a> BpfPkt<'a> {
     /// An mbuf chain as it is (`bpf_mtap`).
+    #[inline]
     pub fn mbuf(m: &'a Mbuf) -> Self {
         Self {
             hdr: &[],
@@ -375,6 +376,7 @@ impl<'a> BpfPkt<'a> {
     }
 
     /// The header `hdr` in front of the mbuf chain `m` (`bpf_mtap_hdr`).
+    #[inline]
     pub fn hdr_mbuf(hdr: &'a [u8], m: &'a Mbuf) -> Self {
         Self {
             hdr,
@@ -383,6 +385,7 @@ impl<'a> BpfPkt<'a> {
     }
 
     /// The header `hdr` in front of the linear buffer `buf` (`bpf_tap_hdr`).
+    #[inline]
     pub fn hdr_buf(hdr: &'a [u8], buf: &'a [u8]) -> Self {
         Self {
             hdr,
@@ -390,20 +393,23 @@ impl<'a> BpfPkt<'a> {
         }
     }
 
-    /// The packet's bytes, segment by segment (the C's walk along `m_next`).
+    /// The packet's bytes, segment by segment (the C's walk along `m_next`); a tap's empty
+    /// header is no segment (the C chains no `m_hdr` for it).
+    #[inline]
     fn segments(&self) -> BpfSegs<'a> {
         let (m, buf) = match self.body {
             BpfBody::Mbuf(m) => (Some(m), None),
             BpfBody::Buf(b) => (None, Some(b)),
         };
         BpfSegs {
-            hdr: Some(self.hdr),
+            hdr: (!self.hdr.is_empty()).then_some(self.hdr),
             m,
             buf,
         }
     }
 
     /// The packet's length, every segment's.
+    #[inline]
     fn len(&self) -> usize {
         self.segments().map(<[u8]>::len).sum()
     }
@@ -428,6 +434,7 @@ struct BpfSegs<'a> {
 impl<'a> Iterator for BpfSegs<'a> {
     type Item = &'a [u8];
 
+    #[inline]
     fn next(&mut self) -> Option<&'a [u8]> {
         if let Some(h) = self.hdr.take() {
             return Some(h);
@@ -1719,6 +1726,7 @@ impl<G: ProcGlue> Filter<G> for BpfReadFilter {
 }
 
 /// `bpf_mcopy`: the packet's first `dst.len()` bytes into `dst` (`m_copydata`'s walk).
+#[inline]
 fn bpf_mcopy(src: &BpfPkt<'_>, dst: &mut [u8]) {
     let mut segs = src.segments();
     let mut done = 0;
@@ -2187,6 +2195,7 @@ fn bpf_setdlt(d: &BpfDRef, dlt: u32) -> Result<(), Errno> {
 
 /// `bpf_mbuf_copy`: `buf.len()` bytes at offset `off` of the packet into `buf`; `false` (the
 /// C's -1) when the packet is too short.
+#[inline]
 fn bpf_mbuf_copy(m: &BpfPkt<'_>, off: u32, buf: &mut [u8]) -> bool {
     let mut off = off as usize;
     let mut done = 0;
@@ -2209,18 +2218,21 @@ fn bpf_mbuf_copy(m: &BpfPkt<'_>, off: u32, buf: &mut [u8]) -> bool {
 /// `bpf_mbuf_ops`: the loads `bpf_mfilter` runs a program with.
 impl BpfOps for BpfPkt<'_> {
     /// `bpf_mbuf_ldw`: the 32-bit word at `k`, in host order.
+    #[inline]
     fn ldw(&self, k: u32) -> Option<u32> {
         let mut v = [0u8; 4];
         bpf_mbuf_copy(self, k, &mut v).then(|| u32::from_be_bytes(v))
     }
 
     /// `bpf_mbuf_ldh`: the 16-bit half-word at `k`, in host order.
+    #[inline]
     fn ldh(&self, k: u32) -> Option<u32> {
         let mut v = [0u8; 2];
         bpf_mbuf_copy(self, k, &mut v).then(|| u32::from(u16::from_be_bytes(v)))
     }
 
     /// `bpf_mbuf_ldb`: the byte at `k`.
+    #[inline]
     fn ldb(&self, k: u32) -> Option<u32> {
         let mut v = [0u8; 1];
         bpf_mbuf_copy(self, k, &mut v).then(|| u32::from(v[0]))
