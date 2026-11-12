@@ -1681,23 +1681,6 @@ struct BenchInet {
 }
 
 impl kernel::net::if_::Inet for BenchInet {
-    /// `arpresolve`'s multicast arm (`ether.output.inet`): a group's mapped address, no
-    /// route, the packet back (bsd's leg adds its park and unpark around bsd's arpresolve).
-    fn arpresolve(
-        &self,
-        _ifp: &'static kernel::net::if_var::Ifnet,
-        _rt: Option<&kernel::net::route::Rtentry>,
-        m: MbufBox,
-        dst: kernel::net::proto::SockaddrView<'_>,
-        desten: &mut [u8; 6],
-    ) -> Result<MbufBox, hal::sys::errno::Errno> {
-        let Some(sin) = hal::pod::at::<hal::sys::netinet_in::SockaddrIn>(dst.bytes(), 0) else {
-            return Err(hal::sys::errno::Errno::EINVAL);
-        };
-        *desten = kernel::net::if_ethersubr::ether_map_ip_multicast(&sin.sin_addr);
-        Ok(m)
-    }
-    fn arpintr(&self) {}
     fn ipintr(&self) {}
     fn ip6intr(&self) {}
     fn tcp_input_mlist(
@@ -1715,7 +1698,6 @@ impl kernel::net::if_::Inet for BenchInet {
     fn tcpstat_lro(&self, _hw: bool) {}
     fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn revarp_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn in6_ifattach(
         &self,
@@ -2543,4 +2525,5 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         report(INET_ROWS[2], r);
     }
 }
+
 /* </CODE> */

@@ -342,7 +342,7 @@ use crate::assert::{kassert, kpanic};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
     IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaTmplist, Ifaddr, IfgGroup,
-    IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, counters_pkt,
+    IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, Niqueue, counters_pkt,
 };
 use crate::net::ifq::{
     Ifiqueue, Ifqueue, QueueDiscipline, ifiq_add_data, ifiq_destroy, ifiq_enqueue,
@@ -353,7 +353,7 @@ use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
     M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
-    ml_purge,
+    ml_purge, mq_enqueue, sysctl_mq,
 };
 use crate::net::pf_hooks::pf;
 use crate::net::proto::SockaddrView;
@@ -362,6 +362,7 @@ use crate::net::socket::Socket;
 use crate::net::{route, rtsock};
 use crate::prf::{Str, printf};
 use crate::proc::{ProcGlue, Thread, suser};
+use crate::sysctl::SysctlReq;
 use crate::task::TaskChain;
 use crate::task::{Task, Taskq, TaskqRef, task_add, task_del, taskq_create, taskq_destroy_leaked};
 use hal::pinlist::PinList;
@@ -413,8 +414,6 @@ const IF_IDXMAP_DTOR_SIZE: usize = 32;
 /// `bsd`'s until N6.4-N6.6): a bridge (bridges.toml's `Inet` row, paid by N6). Before
 /// registration every leg does nothing: the C without `INET`/`INET6`.
 pub trait Inet: Sync + 'static {
-    /// `arpintr()`: the ARP queue (`NETISR_ARP`).
-    fn arpintr(&self);
     /// `ipintr()`: the IPv4 queue (`NETISR_IP`).
     fn ipintr(&self);
     /// `ip6intr()`: the IPv6 queue (`NETISR_IPV6`).
@@ -431,9 +430,6 @@ pub trait Inet: Sync + 'static {
     fn nd6_ifattach(&self, ifp: &'static Ifnet);
     /// `nd6_ifdetach(ifp)`.
     fn nd6_ifdetach(&self, ifp: &'static Ifnet);
-    /// `if_detach`'s `NETHER > 0 && NFSCLIENT` block: the reverse ARP interface forgotten
-    /// (`revarp_ifidx = 0`) when it is `ifp`.
-    fn revarp_ifdetach(&self, ifp: &'static Ifnet);
     /// `in6_ifdetach(ifp)`.
     fn in6_ifdetach(&self, ifp: &'static Ifnet);
     /// `in6_ifattach(ifp)`: IPv6 on the interface; `ifioctl`'s `SIOCIFAFATTACH` and
@@ -456,32 +452,10 @@ pub trait Inet: Sync + 'static {
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
-    /// `arpinput`, as `ether_input` hands an ARP frame to it (`if_input_proto`; N6.3c2).
-    /// Default: a function that frees the frame (no `INET`).
-    fn arpinput(&self) -> ProtoFn {
-        proto_drop
-    }
-    /// `revarpinput`, the same for a reverse ARP frame. Default: as `arpinput`'s.
-    fn revarpinput(&self) -> ProtoFn {
-        proto_drop
-    }
-    /// `arpresolve(ifp, rt, m, dst, desten)`: `desten` filled with the link address of the
-    /// IPv4 destination `dst` (a `sockaddr_in`) and the packet back to be sent;
-    /// `Err(EAGAIN)` when ARP kept the packet for a reply, another error once it is freed
-    /// (`ether_resolve`'s call). Default: the packet freed, `EAFNOSUPPORT` (no `INET`).
-    fn arpresolve(
-        &self,
-        _ifp: &'static Ifnet,
-        _rt: Option<&crate::net::route::Rtentry>,
-        m: MbufBox,
-        _dst: SockaddrView<'_>,
-        _desten: &mut [u8; ETHER_ADDR_LEN],
-    ) -> Result<MbufBox, Errno> {
-        drop(m);
-        Err(Errno::EAFNOSUPPORT)
-    }
-    /// `nd6_resolve(ifp, rt, m, dst, desten)`: the same for an IPv6 destination (a
-    /// `sockaddr_in6`). Default: as `arpresolve`'s.
+    /// `nd6_resolve(ifp, rt, m, dst, desten)`: `desten` filled with the link address of the
+    /// IPv6 destination `dst` (a `sockaddr_in6`) and the packet back to be sent;
+    /// `Err(EAGAIN)` when ND kept the packet, another error once it is freed
+    /// (`ether_resolve`'s call). Default: the packet freed, `EAFNOSUPPORT` (no `INET6`).
     fn nd6_resolve(
         &self,
         _ifp: &'static Ifnet,
@@ -493,8 +467,6 @@ pub trait Inet: Sync + 'static {
         drop(m);
         Err(Errno::EAFNOSUPPORT)
     }
-    /// `arp_rtrequest(ifp, req, rt)`: `ether_rtrequest`'s IPv4 route change. Default: nothing.
-    fn arp_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
     /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
     fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
     /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum in software when `ifp`
@@ -532,12 +504,6 @@ pub trait Inet: Sync + 'static {
     ) -> Option<hal::pool::PoolArc<crate::net::route::Rtentry>> {
         None
     }
-}
-
-/// [`Inet`]'s default protocol input: the frame freed, as a kernel without the protocol
-/// drops it.
-fn proto_drop(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
-    drop(m);
 }
 
 /// The internet protocols' legs, once registered.
@@ -2203,10 +2169,8 @@ pub fn if_detach(ifp: &'static Ifnet) {
         }
 
         crate::netinet::igmp::rti_delete(ifp);
-        if let Some(i) = inet() {
-            // NETHER > 0 && NFSCLIENT
-            i.revarp_ifdetach(ifp);
-        }
+        // NETHER > 0 && NFSCLIENT
+        crate::netinet::if_ether::revarp_ifdetach(ifp);
         // MROUTING: vif_delete(ifp); not configured.
         crate::netinet::in_::in_ifdetach(ifp, &net_held(&net));
         if let Some(i) = inet() {
@@ -2464,6 +2428,24 @@ pub static IFQ_CONGESTION: AtomicI32 = AtomicI32::new(0);
 /// `if_congestion()`: set queue congestion marker.
 pub fn if_congestion() {
     IFQ_CONGESTION.store(crate::clock::ticks(), Ordering::Relaxed);
+}
+
+/// `niq_enqueue(niq, m)`: `m` onto the input queue, its soft interrupt scheduled, or (the
+/// queue full) the packet dropped and the congestion marked; `true` when it was dropped.
+pub fn niq_enqueue<G: ProcGlue>(niq: &Niqueue, m: MbufBox) -> bool {
+    let dropped = mq_enqueue(&niq.ni_q, m);
+    if !dropped {
+        crate::net::netisr::schednetisr::<G>(niq.ni_isr);
+    } else {
+        if_congestion();
+    }
+    dropped
+}
+
+/// `sysctl_niq(name, namelen, oldp, oldlenp, newp, newlen, niq)`: the `IFQCTL_*` nodes of an
+/// input queue (`net.inet.ip.arpq`).
+pub fn sysctl_niq(name: &[i32], req: &mut SysctlReq<'_>, niq: &Niqueue) -> Result<(), Errno> {
+    sysctl_mq(name, req, &niq.ni_q)
 }
 
 /// `if_congested()`: a queue was congested in the last hundredth of a second.
@@ -4420,6 +4402,7 @@ pub(crate) mod tests {
         ifnet_test_reset();
         crate::netinet::in_var::in_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
+        crate::netinet::if_ether::arp_test_reset();
         g
     }
 

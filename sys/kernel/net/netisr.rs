@@ -74,7 +74,7 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, Ordering};
 
-use hal::netlock::NETLOCK;
+use hal::netlock::{NETLOCK, NetHeld};
 
 use crate::net::domain::net;
 use crate::net::if_::{inet, net_tq};
@@ -124,11 +124,13 @@ pub(crate) fn if_netisr<G: ProcGlue>(_unused: *mut c_void) {
 
         NETISR.fetch_and(!n, Ordering::Relaxed);
 
+        // NETHER > 0
+        if n & (1 << NETISR_ARP) != 0
+            && let Some(net) = NetHeld::of(&w)
+        {
+            crate::netinet::if_ether::arpintr(&net);
+        }
         if let Some(inet) = inet() {
-            // NETHER > 0
-            if n & (1 << NETISR_ARP) != 0 {
-                inet.arpintr();
-            }
             if n & (1 << NETISR_IP) != 0 {
                 inet.ipintr();
             }

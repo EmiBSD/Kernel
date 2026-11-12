@@ -445,7 +445,9 @@ paid_by = "N7"
 # tcp_if_output_tso for the kernel's if_output_tso (until N6.6a), the TCP and UDP counters of
 # software checksums (proto_outswcsum, until N6.6) and ICMP's icmp_mtudisc_clone (until
 # N6.4c2) joined; the addresses and IGMP (kernel::netinet::in_, igmp): rti_delete,
-# in_ifdetach and in_ioctl left. Registered by bsd's boot before the first interface (N6.3a1's adapter
+# in_ifdetach and in_ioctl left. N6.4b (the kernel's ARP, kernel::netinet::if_ether): arpintr,
+# arpinput, revarpinput, arpresolve, arp_rtrequest and revarp_ifdetach left (ether_input reads
+# ARP's glue entries, if_netisr and if_detach call it directly). Registered by bsd's boot before the first interface (N6.3a1's adapter
 # commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
 # kernel::net::if_::Inet

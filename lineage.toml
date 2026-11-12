@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6496,7 +6496,7 @@ status = "inherited"
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/hal/sys/netinet_if_ether.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/hal/sys/netinet_if_ether.rs", "sys/kernel/netinet/if_ether.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
@@ -6567,7 +6567,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/ne
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -16436,6 +16436,66 @@ crate = "kernel"
 lz = ["sys/netinet/igmp_var.rs"]
 status = "redesigned"
 notes = "N6.4a: igmp_var.h's kernel half: enum igmpstat_counters, struct igmp_pktinfo (without ipi_list: igmp_fasttimo's list node holds it), #[inline] igmpstat_inc over igmp.c's percpu IGMPCOUNTERS, IGMP_RANDOM_DELAY; struct igmpstat and the sysctl names are hal::sys::netinet_igmp_var"
+
+[[module]]
+rust = "sys/kernel/netinet/if_ether.rs"
+crate = "kernel"
+lz = ["sys/netinet/if_ether.rs"]
+status = "redesigned"
+notes = "N6.4b: if_ether.c (ARP) and if_ether.h's kernel half it uses: struct llinfo_arp a BoxPool item (pool \"arp\", 112 bytes against the C's 96 and LZ's 104, D-3) owned by the route's rt_llinfo, a hal::link::TaggedLink lent under arp_mtx (Tagged::LOCK) and given back to RTM_DELETE's whole guard, la_refcnt gone (one owner), la_rt a counted route handle, la_mq the kernel's MbufQueue, la_asked/la_refreshed atomics written under arp_mtx; arp_list a PinList walked by arptimer with a stack marker (step_over, the route's handle held across the mutex's release); arpinput/revarpinput generic in the glue and published once by arpinit::<G> (ARPINPUT, REVARPINPUT) for ether_input; arpresolve over MbufBox and SockaddrView called by ether_resolve directly (decision 82's bsd block gone); arpinq the kernel's Niqueue; revarp through hal::sleep (feature nfsclient, forwarded by bsd's); the gw_* helpers of the link-level gateway pub for bsd's nd6; arpcache takes arp_mtx once where the C reads the record under the exclusive net lock (the one transition above the C, the module's lock table); tests: an entry made/resolved/answered/aged, a miss held and flushed with the hold queue's and total's bounds, arp_maxtries rejecting for arpt_down, proxy ARP, arptimer past the entries it removes, RARP, bad packets and the record's size"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::LlinfoArp::iterator"
+native = ["LlinfoArp::new"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ArpListHead"
+native = ["ARP_LIST"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::rt_la"
+native = ["sys/hal/link.rs::TaggedLink::get"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::la_put"
+native = []
+kind = "dropped"
+reason = "the record is a PoolBox the route's TaggedLink owns: RTM_DELETE's take gives it back and its drop puts it into the \"arp\" pool (the C's pool_put); no refcount to release"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::arpiterator"
+native = ["arptimer"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ArpIter"
+native = []
+kind = "dropped"
+reason = "arptimer's marker is a whole LlinfoArp pinned on its stack (the C's llinfo_arp_iterator on its stack), not a static; PinList elements need no Sync wrapper"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ea_get"
+native = []
+kind = "dropped"
+reason = "the ARP packet is read with hal::pod::at::<EtherArp> at offset 0 (a 28-byte copy, as LZ's), at each reader"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ea_store"
+native = ["arp_packet", "arpreply"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::eh_into_sa"
+native = ["arp_output"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/if_ether.rs::ifp_output"
+native = ["arp_output"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet/igmp.rs"

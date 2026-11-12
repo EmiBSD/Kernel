@@ -406,7 +406,7 @@ pub fn ip_init() {
     mq_init(&IPSENDRAW_MQ, 64, IPL_SOFTNET);
 
     // NETHER > 0
-    arpinit();
+    arpinit::<crate::kern::proc_glue::BsdProcGlue>();
     ipsec_init();
     // MROUTING: mrt_init(); not configured.
 }
@@ -1951,7 +1951,16 @@ pub fn ip_sysctl(
         | IPCTL_IPSEC_AUTH_ALGORITHM
         | IPCTL_IPSEC_IPCOMP_ALGORITHM => ipsec_sysctl(name, oldp, oldlenp, newp, newlen),
         IPCTL_IFQUEUE => sysctl_niq(&name[1..], oldp, oldlenp, newp, newlen, &IPINTRQ),
-        IPCTL_ARPQUEUE => sysctl_niq(&name[1..], oldp, oldlenp, newp, newlen, &ARPINQ),
+        IPCTL_ARPQUEUE => kernel::net::if_::sysctl_niq(
+            &name[1..],
+            &mut kernel::sysctl::SysctlReq {
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+            },
+            &ARPINQ,
+        ),
         IPCTL_ARPQUEUED => sysctl_rdint(
             oldp,
             oldlenp,

@@ -158,7 +158,6 @@ use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge}
 use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::if_ether::{arp_rtrequest, arpinput, arpintr, arpresolve, revarpinput};
 use crate::netinet::ip_input::{ipintr, ipv4_input};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
@@ -408,29 +407,7 @@ pub fn ipv6_input_proto(
     ipv6_input(ifp, park(m), ns);
 }
 
-/// `arpinput` as the kernel's `if_input_proto` takes it.
-pub fn arpinput_proto(
-    ifp: &'static Ifnet,
-    m: kernel::net::mbuf::MbufBox,
-    ns: Option<&mut Netstack>,
-) {
-    arpinput(ifp, park(m), ns);
-}
-
-/// `revarpinput` as the kernel's `if_input_proto` takes it.
-pub fn revarpinput_proto(
-    ifp: &'static Ifnet,
-    m: kernel::net::mbuf::MbufBox,
-    ns: Option<&mut Netstack>,
-) {
-    revarpinput(ifp, park(m), ns);
-}
-
 impl kernel::net::if_::Inet for BsdNetLegs {
-    fn arpintr(&self) {
-        arpintr();
-    }
-
     fn ipintr(&self) {
         ipintr();
     }
@@ -474,15 +451,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     fn nd6_ifdetach(&self, ifp: &'static Ifnet) {
         #[cfg(feature = "inet6")]
         nd6_ifdetach(ifp);
-        let _ = ifp;
-    }
-
-    fn revarp_ifdetach(&self, ifp: &'static Ifnet) {
-        // NETHER > 0 && NFSCLIENT: revarp_ifidx is cleared.
-        #[cfg(feature = "nfsclient")]
-        if ifp.if_index.get() == crate::netinet::if_ether::REVARP_IFIDX.load(Ordering::Relaxed) {
-            crate::netinet::if_ether::REVARP_IFIDX.store(0, Ordering::Relaxed);
-        }
         let _ = ifp;
     }
 
@@ -538,64 +506,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = hit;
     }
 
-    fn arpinput(&self) -> kernel::net::if_::ProtoFn {
-        arpinput_proto
-    }
-
-    fn revarpinput(&self) -> kernel::net::if_::ProtoFn {
-        revarpinput_proto
-    }
-
-    fn arpresolve(
-        &self,
-        ifp: &'static Ifnet,
-        rt: Option<&kernel::net::route::Rtentry>,
-        m: kernel::net::mbuf::MbufBox,
-        dst: kernel::net::proto::SockaddrView<'_>,
-        desten: &mut [u8; IF_ETHER_ADDR_LEN],
-    ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
-        // The destination as an aligned image of its own: the view's bytes have alignment
-        // 1, and arpresolve reads `sin_addr` through a `*const sockaddr_in` in place. Built
-        // from the view's header and address (arpresolve reads `sin_addr` alone) as words,
-        // not copied whole: a 16-byte copy is a call to memmove in the dev profile, measured
-        // on every IPv4 output (N6.3c2 review 1).
-        let b = dst.bytes();
-        let (Some(&[a0, a1, a2, a3]), true) = (
-            b.get(4..8).and_then(|a| <&[u8; 4]>::try_from(a).ok()),
-            b.len() >= size_of::<hal::sys::netinet_in::SockaddrIn>(),
-        ) else {
-            drop(m);
-            return Err(Errno::EINVAL);
-        };
-        let sin = hal::sys::netinet_in::SockaddrIn {
-            sin_len: b[0],
-            sin_family: b[1],
-            sin_port: 0,
-            sin_addr: hal::sys::netinet_in::InAddr {
-                s_addr: u32::from_ne_bytes([a0, a1, a2, a3]),
-            },
-            sin_zero: [0; 8],
-        };
-        let m = park(m);
-        // SAFETY: `sin` is a local `struct sockaddr_in` image (the destination's header and
-        // address, the port and padding zero), aligned for its type (4) and whole (16 bytes),
-        // which lives across the call; bsd's `SockaddrIn` that `arpresolve`
-        // casts the pointer to has the same `#[repr(C)]` layout (size and alignment asserted
-        // below), so its read of `sin_addr` is in bounds and aligned, and nothing writes
-        // `sin` meanwhile. The packet is parked for the call and comes back only on `Ok` (on
-        // an error ARP freed it or keeps it).
-        unsafe {
-            arpresolve(
-                ifp,
-                rt.map(as_static),
-                m,
-                core::ptr::from_ref(&sin).cast(),
-                desten,
-            )
-        }?;
-        Ok(unpark(m))
-    }
-
     fn nd6_resolve(
         &self,
         ifp: &'static Ifnet,
@@ -632,10 +542,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             drop(m);
             Err(Errno::EAFNOSUPPORT)
         }
-    }
-
-    fn arp_rtrequest(&self, ifp: &'static Ifnet, req: u8, rt: &kernel::net::route::Rtentry) {
-        arp_rtrequest(ifp, i32::from(req), as_static(rt));
     }
 
     fn nd6_rtrequest(&self, ifp: &'static Ifnet, req: u8, rt: &kernel::net::route::Rtentry) {
@@ -1212,21 +1118,6 @@ pub fn ifa_print_all() {
     }
 }
 
-// The two `struct sockaddr_in` images `arpresolve`'s leg passes between (hal's, bsd's).
-const _: () = {
-    assert!(
-        size_of::<hal::sys::netinet_in::SockaddrIn>()
-            == size_of::<crate::netinet::in_::SockaddrIn>()
-    );
-    assert!(
-        align_of::<hal::sys::netinet_in::SockaddrIn>()
-            == align_of::<crate::netinet::in_::SockaddrIn>()
-    );
-    assert!(
-        core::mem::offset_of!(hal::sys::netinet_in::SockaddrIn, sin_addr)
-            == core::mem::offset_of!(crate::netinet::in_::SockaddrIn, sin_addr)
-    );
-};
 /* </CODE> */
 
 /* <TESTS> */
@@ -1356,6 +1247,7 @@ pub(crate) mod tests {
         // record (`rti_delete`) into this test's memory.
         kernel::netinet::in_var::in_var_test_reset();
         kernel::netinet::igmp::igmp_test_reset();
+        kernel::netinet::if_ether::arp_test_reset();
         guard
     }
 

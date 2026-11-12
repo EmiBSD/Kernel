@@ -491,10 +491,12 @@ pub fn if_nd(ifp: &Ifnet) -> Option<&'static Cell<NdIfinfo>> {
 /// `(struct llinfo_nd6 *)rt->rt_llinfo`: the neighbor cache entry of a route, `None` when
 /// it has none.
 pub(crate) fn rt_ln(rt: &Rtentry) -> Option<&'static LlinfoNd6> {
-    // SAFETY: an inet6 route's `rt_llinfo` is NULL or the entry `nd6_rtrequest` made, which
+    // SAFETY: an inet6 route's `rt_llinfo` legacy word (`TaggedLink::get_legacy`: null for a
+    // word that owns ARP's record, which an inet6 route never has) is NULL or the entry
+    // `nd6_rtrequest` made, which
     // lives until its last `ln_refcnt` reference (the callers hold `nd6_mtx` or the net
     // lock, as in C).
-    unsafe { (rt.rt_llinfo.get() as *const LlinfoNd6).as_ref() }
+    unsafe { (rt.rt_llinfo.get_legacy() as *const LlinfoNd6).as_ref() }
 }
 
 /// `pool_put(&nd6_pool, ln)`.
@@ -1023,7 +1025,7 @@ pub fn nd6_lookup(
     if rt.rt_flags.get() & RTF_GATEWAY != 0
         || rt.rt_flags.get() & RTF_LLINFO == 0
         || gw_family_len(rt).0 != AF_LINK
-        || rt.rt_llinfo.get().is_null()
+        || rt.rt_llinfo.get_legacy().is_null()
         || ifp.is_some_and(|ifp| rt.rt_ifidx.get() != ifp.if_index.get())
     {
         rtfree(Some(rt));
@@ -1163,7 +1165,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
                 rt.rt_expire().set(0);
                 return;
             }
-            if rt.rt_flags.get() & RTF_LOCAL != 0 && rt.rt_llinfo.get().is_null() {
+            if rt.rt_flags.get() & RTF_LOCAL != 0 && rt.rt_llinfo.get_legacy().is_null() {
                 rt.rt_expire().set(0);
             }
         }
@@ -1188,7 +1190,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
         let lp = mem.as_ptr().cast::<LlinfoNd6>();
 
         mtx_enter(&ND6_MTX);
-        if !rt.rt_llinfo.get().is_null() {
+        if !rt.rt_llinfo.get_legacy().is_null() {
             // we lost the race, another thread has entered it
             mtx_leave(&ND6_MTX);
             pool_put(&ND6_POOL, mem);
@@ -1203,7 +1205,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
         };
         refcnt_init(&ln.ln_refcnt);
         mq_init(&ln.ln_mq, LN_HOLD_QUEUE, IPL_SOFTNET);
-        rt.rt_llinfo.set(ptr::from_ref(ln).cast_mut().cast());
+        rt.rt_llinfo.set_legacy(ptr::from_ref(ln).cast_mut().cast());
         ln.ln_rt.set(Some(rt));
         rt.rt_flags.set(rt.rt_flags.get() | RTF_LLINFO);
         // SAFETY: `ln` is on no list; `nd6_list` is changed under `nd6_mtx`.
@@ -1288,7 +1290,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: i32, rt: &'static Rtentry) {
         // SAFETY: the entry is on `nd6_list`, under `nd6_mtx`.
         unsafe { ND6_LIST.0.remove(ln) };
         rt.rt_expire().set(0);
-        rt.rt_llinfo.set(ptr::null_mut());
+        rt.rt_llinfo.set_legacy(ptr::null());
         rt.rt_flags.set(rt.rt_flags.get() & !RTF_LLINFO);
         ln_hold_total.fetch_sub(mq_purge(&ln.ln_mq), Ordering::Relaxed);
         mtx_leave(&ND6_MTX);
