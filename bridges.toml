@@ -414,8 +414,10 @@ paid_by = "N8"
 # kernel's interface core (kernel::net::if_, ifq) calls it through the driver registered in
 # Ifnet::if_driver before if_attach; bsd's LegacyNetDriver (sys/net/if_var.rs) over each
 # softc's table implements it, one object per interface, for every bsd interface the kernel
-# attaches (bsd's if_attach forwards to the kernel's since N6.3a1). Paid when the drivers move
-# (N7: NetDevice, decision 45).
+# attaches (bsd's if_attach forwards to the kernel's since N6.3a1). N6.3b1 adds rtrequest
+# (if_rtrequest, kernel::net::route's rtrequest and rtrequest_delete; a default body, the C's
+# if_rtrequest_dummy, until LegacyNetDriver answers it from the table, N6.3b2). Paid when the
+# drivers move (N7: NetDevice, decision 45).
 # kernel::net::if_var::NetDriver
 [[bridge]]
 trait = "NetDriver"
@@ -428,8 +430,12 @@ paid_by = "N7"
 # NFSCLIENT's reverse ARP reset, in_ifdetach, in6_ifdetach and nd6_ifdetach for if_detach and
 # if_setrdomain, in6_ifattach for if_up, ip6_forwarding and the link-local purge for
 # ifnewlladdr (N6.3a); in_ifdetach, in6_ifattach/_ifdetach and in_ioctl (a request with no
-# socket) for ifioctl (N6.3a2). Registered by bsd's boot before the first interface
-# (N6.3a1's adapter commit); before that every leg does nothing, the C without INET/INET6.
+# socket) for ifioctl (N6.3a2); route.c's ifa_free (ifafree's free(ifa, M_IFADDR, 0)),
+# ip_multipath and ip6_multipath (rt_hash, the route caches) and ipstat_rtcache/ip6stat_rtcache
+# (route_cache, route6_cache) for kernel::net::route (N6.3b1: default bodies until bsd's
+# implementation lands with the routing switch, N6.3b2). Registered by bsd's boot before the
+# first interface (N6.3a1's adapter commit); before that every leg does nothing, the C
+# without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
 # kernel::net::if_::Inet
 [[bridge]]

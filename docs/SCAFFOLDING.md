@@ -88,6 +88,16 @@ Locations are on `main` at the commit that last edited this file.
 | Re-export shims of no logic under LZ's paths: `sys/sys/sockio.rs`, `sys/net/if_types.rs`, `sys/net/if_dl.rs` (beside LZ's raw `lladdr` helpers), `sys/net/ifq.rs` (beside the `IfqOps` adapter), `sys/net/if_var.rs` (beside `LegacyNetDriver`), `sys/net/if_media.rs` (beside `LegacyMedia`) | those files | `bsd`'s importers keep their `use` lines (amd64's `autoconf.rs` imports `crate::net::if_types`, decision 44) | N9 (and N10 for amd64's) |
 | The kernel's test hooks of the interface layer, `cfg(any(test, feature = "doubles"))`: `if_idxmap_test_reset`, `softnet_test_install`, `ifnet_test_reset`, `if_test_reset`, `ifiq_test_take`; and `ifq_stats` (the queue's counters for `bsd`'s tests and `ifq_kstat_copy`'s, which `kstat(4)` would read) | `sys/kernel/net/if_.rs`, `sys/kernel/net/ifq.rs` | `bsd`'s host tests share the kernel's interface tables (`setup_net`), and the host benches build interfaces through the `doubles` feature | with `bsd`'s tests (N9); `ifq_stats` stays (kstat) |
 
+## The routing layer's scaffolding (N6.3b1)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `RtmSink` (rtsock.c's `rtm_send`, `rtm_miss`, `rtm_addr` as a trait), `RTM_SINK` and `rtm_sink_register`: a message goes nowhere before the routing socket registers | `sys/kernel/net/route.rs` | route.c sends routing messages and the routing socket is N6.3b2's (`kernel::net::rtsock`); N6.3b1's commits must each compile | N6.3b2 (route.rs calls `kernel::net::rtsock` directly) |
+| The default bodies of `Inet::ifa_free`, `ip_multipath`, `ip6_multipath`, `ipstat_rtcache`, `ip6stat_rtcache` and of `NetDriver::rtrequest` (the C without `INET`, `if_rtrequest_dummy`) | `sys/kernel/net/if_.rs` (`Inet`), `sys/kernel/net/if_var.rs` (`NetDriver`) | `bsd`'s implementations (`BsdInet`'s legs, `LegacyNetDriver`'s `if_rtrequest`) come with the routing switch | N6.3b2 (the bodies, `bsd` implementing them); the legs at N6.4 and N6.5 (netinet, netinet6), `rtrequest` at N7 |
+| `in_broadcast` (netinet/in.c) read over the kernel's interface list for `rtredirect` | `sys/kernel/net/route.rs` | netinet's function, needed by route.c and not yet the kernel's | N6.4 (`kernel::netinet`'s) |
+| `struct sockaddr_in`'s and `sockaddr_in6`'s sizes and address offsets as constants (`SIN_LEN`, `SIN_ADDR`, `SIN6_LEN`, `SIN6_ADDR`) and the copy `M_RTABLE` | `sys/kernel/net/route.rs`, `sys/kernel/net/rtable.rs` | netinet's ABI types are not in `hal::sys` yet; `<sys/malloc.h>`'s types are `bsd`'s | N6.4 (`hal::sys`'s netinet types), N9 (`malloc` types) |
+| The routing tables' test hooks: `rtable_test_reset` (`cfg(any(test, feature = "doubles"))`) and `rtable_init_doms` (the routing domains given, the tests' entry; `rtable_init` reads them from `domains[]`) | `sys/kernel/net/rtable.rs` | the host tests load fresh kernel memory per test and have no `domains[]` of their own | `rtable_test_reset` stays (testing.md); `rtable_init_doms` with N9's glue |
+
 ## The kernel's socket entry points kept for `bsd`'s protocols (N6.2a)
 
 | What | Where | Why | Removed by |

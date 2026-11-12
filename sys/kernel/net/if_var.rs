@@ -551,6 +551,12 @@ pub trait NetDriver: Sync + 'static {
     fn as_any(&self) -> Option<&(dyn Any + Send + Sync)> {
         None
     }
+
+    /// `if_rtrequest(ifp, req, rt)`: the interface's link layer told that route `rt` of the
+    /// interface was added (`RTM_ADD`), cloned (`RTM_RESOLVE`) or deleted (`RTM_DELETE`)
+    /// (N6.3b, D-N6.3b-11: `ether_rtrequest`, `lortrequest`, `p2p_rtrequest`). Default:
+    /// nothing, the C's `if_rtrequest_dummy`.
+    fn rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: Option<&crate::net::route::Rtentry>) {}
 }
 
 /// `struct if_clone`: a "cloning" interface (`ifconfig lo3 create`): its name and its two

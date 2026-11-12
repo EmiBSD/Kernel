@@ -7985,6 +7985,20 @@ kind = "dropped"
 reason = "the deferred release of retired references (hal::smr's SmrArcLink) puts a node back after a grace period, which is what this task's smr_barrier then pool_put did"
 
 [[module]]
+rust = "sys/kernel/net/rtable.rs"
+crate = "kernel"
+lz = ["sys/net/rtable.rs"]
+status = "redesigned"
+notes = "N6.3b1: rtable.h and rtable.c over the kernel's Art<RtNode>: RtNode (pool art_node) whose an_value and every route's rt_next are counted hal::smr words holding the table's reference (rtref), lookups answering SmrRef::arc handles; chain edits move references (SmrArcWord::restore) so rmx_refcnt stays the C's; afmap a static array of SmrPtr<Rtmap> keyed to the kernel lock, a map an item of the new pool rtmappl (D-N6.3b-12) whose arrays are the C's mallocarray(M_RTABLE); a table embeds its ART and is leaked (never freed, as the C's); r_source a copy (D-N6.3b-13); the routing domains' parameters read from domains[] once by rtable_init<G> (the rest not generic); rtable_walk lets r_lock go around the callback (WriteWitness::unlocked) with one handle per route; rtable_satoplen Err(EINVAL) for -1"
+
+[[module]]
+rust = "sys/kernel/net/route.rs"
+crate = "kernel"
+lz = ["sys/net/route.rs"]
+status = "redesigned"
+notes = "N6.3b1: route.c and the kernel half of route.h: Rtentry a recorded TypedPool item (rtentry) handled through PoolArc, the count rt_refcnt (rtref a clone, rtfree a drop, the last rtfree the entry's Drop; the reference table in its Redesign), members by the C's legend (rt_gateway/rt_gwroute/rt_parent ReadMostly cells, rt_flags an atomic word with set/clear, the rest relaxed atomics, rt_ifa a Link, rt_llinfo a word, rt_cachecnt in rt_mtx's Mutexed); Route owned with &mut methods (cache4/mpath4, cache6/mpath6); RtAddrinfo of SockaddrViews; the timers (pool rttmr, two PinLists under RTTIMER_MTX, a parked membership reference, the timeout's argument a handle; a timer holds a counted handle of its route, removed when the route leaves its table, rt_refcnt not counting it: R11); the labels a Mutexed chain of M_RTABLE boxes; rtcounters a Counters; the routing socket's senders through RtmSink until N6.3b2; in_broadcast read over the interface list until N6.4; MPLS/BFD not configured"
+
+[[module]]
 rust = "sys/kernel/net/netisr.rs"
 crate = "kernel"
 lz = ["sys/net/netisr.rs"]

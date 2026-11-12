@@ -32,6 +32,8 @@ pub mod mbuf2;
 pub mod netisr;
 pub mod pf_hooks;
 pub mod proto;
+pub mod route;
+pub mod rtable;
 pub mod sockbuf;
 pub mod socket;
 pub mod syscalls;

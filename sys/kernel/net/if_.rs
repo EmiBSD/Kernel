@@ -457,6 +457,24 @@ pub trait Inet: Sync + 'static {
     /// `ifnewlladdr`'s first IPv6 step: the link-local address purged
     /// (`in6ifa_ifpforlinklocal`, `in6_purgeaddr`); whether there was one.
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool;
+    /// `free(ifa, M_IFADDR, 0)` of an interface address whose last reference `ifafree` gave
+    /// back (route.c's; the protocols own the storage until N6.4 and N6.5). Default: nothing
+    /// (N6.3b: `bsd`'s implementation comes with the routing switch, N6.3b2).
+    fn ifa_free(&self, _ifa: &'static Ifaddr) {}
+    /// `atomic_load_int(&ipmultipath)` (`net.inet.ip.multipath`). Default: off.
+    fn ip_multipath(&self) -> bool {
+        false
+    }
+    /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
+    fn ip6_multipath(&self) -> bool {
+        false
+    }
+    /// `ipstat_inc(ips_rtcachehit)` (`hit`) or `ipstat_inc(ips_rtcachemiss)`. Default:
+    /// nothing.
+    fn ipstat_rtcache(&self, _hit: bool) {}
+    /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
+    /// nothing.
+    fn ip6stat_rtcache(&self, _hit: bool) {}
 }
 
 /// What the kernel's interface layer asks of the routing code (`route.c`, `rtable.c`,
