@@ -1068,6 +1068,14 @@ pub fn rtable_read(
     Ok(())
 }
 
+/// `refcnt_read(&rt->rt_refcnt)` of a route [`rtable_read`] lends its callback, as the C's
+/// callback reads it (`sysctl_dumpentry`'s `rmx_refcnt = refcnt_read(..) - 1`, rtsock.c): the
+/// walk's own handle, which the C's walk does not take, left out with what
+/// `kernel::net::route::rt_refcnt` leaves out. Only for a route `rtable_read` lends.
+pub fn rtable_read_refcnt(rt: &Rtentry) -> usize {
+    crate::net::route::rt_refcnt(rt).saturating_sub(1)
+}
+
 /// `rtable_iterate(rt0)`: the next route of `rt0`'s multipath chain, a counted handle;
 /// `rt0`'s handle given back.
 pub fn rtable_iterate(rt0: PoolArc<Rtentry>) -> Option<PoolArc<Rtentry>> {
@@ -1761,6 +1769,32 @@ mod tests {
             rtable_delete(0, v(&d), Some(v(&m0)), rt).expect("delete");
             rt.rt_flags.clear(RTF_UP);
         }
+        grace();
+    }
+
+    #[test]
+    fn a_dump_reads_the_c_counts() {
+        let _g = testroutes_setup();
+        let d = sin([10, 0, 7, 0]);
+        let m24 = mask4([255, 255, 255, 0], 16);
+        let rt = entry(&d, 24, None, 0, RTP_STATIC);
+        rtable_insert(0, v(&d), Some(v(&m24)), None, RTP_STATIC, &rt).expect("insert");
+        drop(rt);
+        // sysctl_dumpentry's arithmetic, `refcnt_read - 1`, over what rtable_read lends.
+        let refs = || {
+            let mut r = Vec::new();
+            rtable_read(0, AF_INET, |rt, _| {
+                r.push(rtable_read_refcnt(rt) - 1);
+                Ok(())
+            })
+            .expect("read");
+            r
+        };
+        assert_eq!(refs(), [0], "a route only the table holds");
+        let held = rtable_lookup(0, v(&d), Some(v(&m24)), None, RTP_ANY).expect("the route");
+        assert_eq!(refs(), [1], "and one holder more");
+        rtable_delete(0, v(&d), Some(v(&m24)), &held).expect("delete");
+        drop(held);
         grace();
     }
 
