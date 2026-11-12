@@ -108,9 +108,12 @@ mod tests {
     // A routing socket end to end over `bsd`'s socket layer and protocols (`socreate`,
     // `sosend` of `RTM_GET`, `RTM_ADD` and `RTM_DELETE`, the answers read back with
     // `soreceive`, the socket options through `sosetopt`/`sogetopt`, `soclose`): LZ's test of
-    // the module, kept here because it needs `bsd`'s IPv4 and Ethernet. The message layout,
-    // the address checks and the `net.route` sysctl are the kernel's tests
-    // (`kernel::net::rtsock`).
+    // the module, kept here because it needs `bsd`'s IPv4 and Ethernet; with N6.3b2's review
+    // (S2) the kernel's `route_output` and `route_input` through it: `RTM_CHANGE`, the
+    // superuser check (`EACCES`), `EMSGSIZE`, the listeners' filters (`ROUTE_PRIOFILTER`,
+    // `ROUTE_TABLEFILTER`, `ROUTE_FLAGFILTER`), `SO_USELOOPBACK`, and a full listener
+    // desynchronised then flushed. The message layout, the address checks and the
+    // `net.route` sysctl are the kernel's tests (`kernel::net::rtsock`).
     //
     // The test runs as a thread with root credentials made `curproc` (the requests check
     // `suser` and stamp `rtm_pid`); it clears `curproc` before it returns.
@@ -131,14 +134,17 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::net::route::{
         ROUTE_FLAGFILTER, ROUTE_MSGFILTER, ROUTE_PRIOFILTER, ROUTE_TABLEFILTER, RTA_DST,
-        RTA_GATEWAY, RTA_LABEL, RTA_NETMASK, RTF_DONE, RTF_GATEWAY, RTF_LOCAL, RTF_STATIC, RTF_UP,
-        RTM_ADD, RTM_DELETE, RTM_GET, RTM_IFINFO, RTM_VERSION, RtMsghdr,
+        RTA_GATEWAY, RTA_LABEL, RTA_NETMASK, RTABLE_ANY, RTF_DONE, RTF_GATEWAY, RTF_HOST,
+        RTF_LOCAL, RTF_STATIC, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_DESYNC, RTM_GET,
+        RTM_IFINFO, RTM_MAXSIZE, RTM_VERSION, RTP_CONNECTED, RtMsghdr,
     };
     use crate::netinet::in_::SockaddrIn;
     use crate::netinet::ip_input::tests::{configure, sin, test_ether, unconfigure};
     use crate::sys::errno::Errno;
     use crate::sys::mbuf::{M_DONTWAIT, MT_SOOPTS, Mbuf, mtod};
-    use crate::sys::socket::{AF_ROUTE, MSG_DONTWAIT, PF_ROUTE, SO_USELOOPBACK, SOCK_RAW};
+    use crate::sys::socket::{
+        AF_ROUTE, MSG_DONTWAIT, PF_ROUTE, SO_USELOOPBACK, SOCK_RAW, SOL_SOCKET,
+    };
     use crate::sys::socketvar::{SS_ISCONNECTED, Socket};
     use crate::sys::systm::{net_lock, net_unlock};
     use crate::sys::uio::{Iovec, Uio, UioRw, UioSeg};
@@ -398,6 +404,227 @@ mod tests {
         soclose(so, 0).expect("close");
         assert_eq!(kernel::net::rtsock::RTP_COUNT.load(Ordering::Relaxed), 0);
 
+        unconfigure(ifp, [10, 0, 2, 15]);
+        teardown();
+    }
+
+    /// Every message `so` holds, read without waiting: (header, bytes) of each.
+    fn drain(so: &'static Socket) -> Vec<(RtMsghdr, Vec<u8>)> {
+        let mut out = Vec::new();
+        loop {
+            match recv(so) {
+                Ok(m) => out.push((hdr_at(&m), m)),
+                Err(Errno::EWOULDBLOCK) => return out,
+                Err(e) => panic!("soreceive: {e:?}"),
+            }
+        }
+    }
+
+    /// Whether `so` holds the answer to request `seq` of the test's process (the kernel's
+    /// own announcements skipped); everything it holds is read.
+    fn got(so: &'static Socket, seq: i32) -> bool {
+        drain(so)
+            .iter()
+            .any(|(h, _)| h.rtm_seq == seq && h.rtm_pid == PID)
+    }
+
+    /// Request `v` made for routing table `t` (`route -T<t>`).
+    fn in_table(t: u16, mut v: Vec<u8>) -> Vec<u8> {
+        let off = offset_of!(RtMsghdr, rtm_tableid);
+        v[off..off + 2].copy_from_slice(&t.to_ne_bytes());
+        v
+    }
+
+    /// `route -n get <dst>` as request `seq`.
+    fn get(dst: [u8; 4], seq: i32) -> Vec<u8> {
+        request(RTM_GET, seq, 0, &[(RTA_DST, sin(dst))])
+    }
+
+    #[test]
+    fn a_routing_socket_changes_routes_and_filters_its_listeners() {
+        let _g = setup();
+        let ifp = test_ether();
+        configure(ifp, [10, 0, 2, 15], [255, 255, 255, 0]);
+        let level = i32::from(AF_ROUTE);
+
+        // A writer that does not read its own messages, and a listener.
+        let a = socreate(i32::from(PF_ROUTE), SOCK_RAW, 0).expect("socket(AF_ROUTE)");
+        let b = socreate(i32::from(PF_ROUTE), SOCK_RAW, 0).expect("socket(AF_ROUTE)");
+        assert_eq!(kernel::net::rtsock::RTP_COUNT.load(Ordering::Relaxed), 2);
+        setopt(a, SOL_SOCKET, SO_USELOOPBACK, Some(0)).expect("SO_USELOOPBACK");
+        assert!(!a.has_options(SO_USELOOPBACK));
+
+        // RTM_ADD of a default route through 10.0.2.2: the answer reaches the listener only.
+        let default = [
+            (RTA_DST, sin([0, 0, 0, 0])),
+            (RTA_GATEWAY, sin([10, 0, 2, 2])),
+            (RTA_NETMASK, sin([0, 0, 0, 0])),
+        ];
+        let flags = RTF_UP | RTF_GATEWAY | RTF_STATIC;
+        send(a, &request(RTM_ADD, 1, flags, &default)).expect("RTM_ADD");
+        let (_, h) = answer(b, 1);
+        assert_eq!((h.rtm_type, h.rtm_errno), (RTM_ADD, 0));
+        assert!(
+            !got(a, 1),
+            "SO_USELOOPBACK cleared: no answer to the writer"
+        );
+
+        // RTM_CHANGE of its gateway to 10.0.2.3 (the route found without the new gateway,
+        // the gateway resolved before the change), then RTM_GET shows it.
+        let changed = [
+            (RTA_DST, sin([0, 0, 0, 0])),
+            (RTA_GATEWAY, sin([10, 0, 2, 3])),
+            (RTA_NETMASK, sin([0, 0, 0, 0])),
+        ];
+        send(a, &request(RTM_CHANGE, 2, 0, &changed)).expect("RTM_CHANGE");
+        let (m, h) = answer(b, 2);
+        assert_eq!((h.rtm_type, h.rtm_errno), (RTM_CHANGE, 0));
+        assert_ne!(h.rtm_flags as u32 & RTF_DONE, 0);
+        assert_eq!(
+            in_at(&m, size_of::<RtMsghdr>() + 16),
+            [10, 0, 2, 3],
+            "the new gateway"
+        );
+        send(a, &get([8, 8, 8, 8], 3)).expect("RTM_GET");
+        let (m, _) = answer(b, 3);
+        assert_eq!(in_at(&m, size_of::<RtMsghdr>() + 16), [10, 0, 2, 3]);
+        // A route that does not exist: ESRCH, which its answer carries too.
+        let none = [
+            (RTA_DST, sin([192, 168, 7, 0])),
+            (RTA_GATEWAY, sin([10, 0, 2, 3])),
+            (RTA_NETMASK, sin([255, 255, 255, 0])),
+        ];
+        assert_eq!(
+            send(a, &request(RTM_CHANGE, 4, 0, &none)),
+            Err(Errno::ESRCH)
+        );
+        assert_eq!(answer(b, 4).1.rtm_errno, Errno::ESRCH as i32);
+
+        // A message longer than RTM_MAXSIZE: EMSGSIZE, no answer.
+        let mut big = get([10, 0, 2, 77], 5);
+        big.resize(RTM_MAXSIZE + 8, 0);
+        let len = big.len() as u16;
+        big[..2].copy_from_slice(&len.to_ne_bytes());
+        assert_eq!(send(a, &big), Err(Errno::EMSGSIZE));
+        assert!(!got(b, 5));
+
+        // Every request but RTM_GET is the superuser's: EACCES for another user.
+        let root = crate::machine::cpu::curproc();
+        let mut cr = crate::sys::ucred::Ucred::new();
+        cr.cr_uid.set(1000);
+        cr.cr_ruid.set(1000);
+        let user = crate::kern::proc_glue::test_proc(PID + 1, kernel::cred::CredRef::new(cr));
+        Machine::set_curproc(Machine::curcpu(), Some(user));
+        assert_eq!(
+            send(a, &request(RTM_ADD, 6, flags, &default)),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(
+            send(a, &request(RTM_DELETE, 7, 0, &default)),
+            Err(Errno::EACCES)
+        );
+        send(a, &get([8, 8, 8, 8], 8)).expect("RTM_GET is everyone's");
+        Machine::set_curproc(Machine::curcpu(), root);
+        let seen = drain(b);
+        assert!(
+            seen.iter()
+                .any(|(h, _)| h.rtm_seq == 8 && h.rtm_pid == PID + 1 && h.rtm_errno == 0)
+        );
+        assert!(!seen.iter().any(|(h, _)| h.rtm_seq == 6 || h.rtm_seq == 7));
+
+        // ROUTE_PRIOFILTER: priorities above the filter's are not wanted. The subnet's route
+        // is RTP_CONNECTED, the static default route above it.
+        setopt(b, level, ROUTE_PRIOFILTER, Some(u32::from(RTP_CONNECTED))).expect("prio");
+        send(a, &get([10, 0, 2, 77], 9)).expect("RTM_GET");
+        send(a, &get([8, 8, 8, 8], 10)).expect("RTM_GET");
+        let seen = drain(b);
+        assert!(seen.iter().any(|(h, _)| h.rtm_seq == 9));
+        assert!(
+            !seen.iter().any(|(h, _)| h.rtm_seq == 10),
+            "filtered by priority"
+        );
+        setopt(b, level, ROUTE_PRIOFILTER, Some(0)).expect("prio");
+
+        // ROUTE_FLAGFILTER: messages about RTF_GATEWAY routes are not wanted.
+        setopt(b, level, ROUTE_FLAGFILTER, Some(RTF_GATEWAY)).expect("flags");
+        send(a, &get([10, 0, 2, 77], 11)).expect("RTM_GET");
+        send(a, &get([8, 8, 8, 8], 12)).expect("RTM_GET");
+        let seen = drain(b);
+        assert!(seen.iter().any(|(h, _)| h.rtm_seq == 11));
+        assert!(
+            !seen.iter().any(|(h, _)| h.rtm_seq == 12),
+            "filtered by flags"
+        );
+        setopt(b, level, ROUTE_FLAGFILTER, Some(0)).expect("flags");
+
+        // ROUTE_TABLEFILTER: table 0's messages only, so an RTM_ADD that makes table 1 (a
+        // host route through the same gateway) is not seen; once table 1 exists, filtering
+        // on it lets its messages through and table 0's not.
+        setopt(b, level, ROUTE_TABLEFILTER, Some(0)).expect("table 0");
+        let host = [
+            (RTA_DST, sin([192, 168, 9, 9])),
+            (RTA_GATEWAY, sin([10, 0, 2, 3])),
+        ];
+        let add1 = in_table(1, request(RTM_ADD, 13, flags | RTF_HOST, &host));
+        send(a, &add1).expect("RTM_ADD in table 1");
+        assert!(!got(b, 13), "table 1 filtered out");
+        setopt(b, level, ROUTE_TABLEFILTER, Some(1)).expect("table 1");
+        send(a, &in_table(1, get([192, 168, 9, 9], 14))).expect("RTM_GET in table 1");
+        send(a, &get([8, 8, 8, 8], 15)).expect("RTM_GET in table 0");
+        let seen = drain(b);
+        assert!(
+            seen.iter()
+                .any(|(h, _)| h.rtm_seq == 14 && h.rtm_tableid == 1)
+        );
+        assert!(
+            !seen.iter().any(|(h, _)| h.rtm_seq == 15),
+            "table 0 filtered out"
+        );
+        setopt(b, level, ROUTE_TABLEFILTER, Some(RTABLE_ANY)).expect("any table");
+        send(a, &in_table(1, request(RTM_DELETE, 16, 0, &host))).expect("RTM_DELETE in table 1");
+        assert!(got(b, 16), "every table again");
+
+        send(a, &request(RTM_DELETE, 17, 0, &changed)).expect("RTM_DELETE");
+        net_lock();
+        crate::net::if_::if_group_egress_build().expect("egress");
+        net_unlock();
+        soclose(a, 0).expect("close");
+        soclose(b, 0).expect("close");
+        assert_eq!(kernel::net::rtsock::RTP_COUNT.load(Ordering::Relaxed), 0);
+        unconfigure(ifp, [10, 0, 2, 15]);
+        teardown();
+    }
+
+    #[test]
+    fn a_full_listener_is_desynchronised_then_flushed() {
+        let _g = setup();
+        let ifp = test_ether();
+        configure(ifp, [10, 0, 2, 15], [255, 255, 255, 0]);
+
+        let a = socreate(i32::from(PF_ROUTE), SOCK_RAW, 0).expect("socket(AF_ROUTE)");
+        let b = socreate(i32::from(PF_ROUTE), SOCK_RAW, 0).expect("socket(AF_ROUTE)");
+        setopt(a, SOL_SOCKET, SO_USELOOPBACK, Some(0)).expect("SO_USELOOPBACK");
+
+        // More answers than the listener's ROUTERCVQ bytes hold, none read meanwhile.
+        const SENT: i32 = 200;
+        for seq in 1..=SENT {
+            send(a, &get([10, 0, 2, 77], seq)).expect("RTM_GET");
+        }
+        // The listener holds the answers that fitted, in order with none missing, then the
+        // RTM_DESYNC that told it it lost the next, then nothing: it flushes until drained.
+        let seen = drain(b);
+        let (last, answers) = seen.split_last().expect("messages");
+        assert_eq!(last.0.rtm_type, RTM_DESYNC, "{:?}", last.0);
+        assert!(!answers.is_empty() && answers.len() < SENT as usize);
+        for (i, (h, _)) in answers.iter().enumerate() {
+            assert_eq!((h.rtm_type, h.rtm_seq), (RTM_GET, i as i32 + 1));
+        }
+        // Drained, it takes messages again (route_rcvd cleared the flush).
+        send(a, &get([10, 0, 2, 77], SENT + 1)).expect("RTM_GET");
+        assert!(got(b, SENT + 1));
+
+        soclose(a, 0).expect("close");
+        soclose(b, 0).expect("close");
         unconfigure(ifp, [10, 0, 2, 15]);
         teardown();
     }
