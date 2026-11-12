@@ -71,9 +71,12 @@
 //! ## Redesign
 //! - LZ's `from_raw_parts` over `mtod(m)` (one `unsafe` per mbuf) -> the kernel's
 //!   `Mbuf::data()`, the mbuf's `m_len` bytes as a slice: the same bytes, bounds-checked
-//!   once per mbuf. `#[inline]` on the three functions: they are called per packet from
-//!   `bsd`'s transports and drivers across the crate boundary, where a call left out of line
-//!   costs the dev profile its inlining (N6.3c1's R12). `bsd` reaches them under LZ's path
+//!   once per mbuf. `#[inline]` on `in_cksum` and `cksum_fold`: they are called per packet
+//!   from `bsd`'s transports and drivers across the crate boundary, where a call left out of
+//!   line costs the dev profile its inlining (N6.3c1's R12); `#[inline(always)]` on
+//!   `cksum_add`, the loop the C writes inside `in_cksum` and `in4_cksum` (N6.4a, review 1:
+//!   left to LLVM it stayed a call with its accumulator in memory in one binary and not in
+//!   another). `bsd` reaches them under LZ's path
 //!   through `sys/netinet/mod.rs`'s re-export.
 
 use crate::assert::kpanic;
@@ -82,8 +85,10 @@ use crate::net::mbuf::Mbuf;
 /// Adds `len` bytes of the chain `m`, from `off` bytes into its first mbuf, to the
 /// one's-complement accumulator `sum`; `odd` says whether the next byte is the second byte
 /// of a 16-bit word, and is updated. Returns the number of bytes the chain was short of
-/// `len`.
-#[inline]
+/// `len`. `#[inline(always)]`: the C's `in_cksum` and `in4_cksum` each hold this loop in their
+/// own body, and an out-of-line call here spills the accumulator to the stack and passes it
+/// by pointer on every packet (N6.4a's `in4.cksum.40`, review 1).
+#[inline(always)]
 pub fn cksum_add(m: Option<&Mbuf>, off: usize, len: usize, sum: &mut u64, odd: &mut bool) -> usize {
     let mut len = len;
     let mut off = off;
