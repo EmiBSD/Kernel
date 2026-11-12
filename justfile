@@ -18,9 +18,13 @@ devtools_rust_bin_arm64 := toolchain_dir + "/" + devtools_rust + "-aarch64-apple
 export PATH := devtools_rust_bin_arm64 + ":" + env_var_or_default("PATH", "/usr/bin:/bin:/opt/homebrew/bin")
 export RUSTC := devtools_rust_bin_arm64 + "/rustc"
 # DevTools' LLVM for arm64 (the pinned release `devtools_llvm`, unpacked by `just toolchain`):
-# the kernel's linker (DevTools' Rust has no rust-lld) and efiboot's llvm-objcopy.
+# the kernel's linker (DevTools' Rust has no rust-lld), efiboot's llvm-objcopy, and the
+# userland's and the comp set's compiler, linker and binutils (`EMIBSD_LLVM_BIN`, read by
+# xtask: clang, ld.lld, llvm-ar, ...; the user's decision of 2026-11-11, replacing Apple
+# clang and swiftly's LLD). amd64's userland takes the amd64 release's bin/ at N10.
 devtools_llvm_bin_arm64 := toolchain_dir + "/" + devtools_llvm + "-aarch64-apple-darwin-arm64/bin"
 export CARGO_TARGET_AARCH64_EMIBSD_NONE_SOFTFLOAT_LINKER := devtools_llvm_bin_arm64 + "/ld.lld"
+export EMIBSD_LLVM_BIN := devtools_llvm_bin_arm64
 
 # Decision 44 (2026-10-18): from N4 to N9 only arm64 is built, booted and measured. `archs`
 # (`EMIBSD_ARCHS`, a comma-separated list of `amd64` and `arm64`, `arm64` when unset or empty)
@@ -135,7 +139,7 @@ efiboot-amd64:
 # target/efiboot/arm64/BOOTAA64.EFI, its PE header OpenBSD's own (`.peheader`, start.S).
 efiboot-arm64:
     RUSTFLAGS="-C relocation-model=pie" cargo build -p efiboot-arm64 --target {{arm64}} --target-dir target/efiboot
-    EMIBSD_LLVM_BIN={{devtools_llvm_bin_arm64}} {{xtask}} efiboot --arch arm64 --elf target/efiboot/{{arm64}}/debug/bootaa64
+    {{xtask}} efiboot --arch arm64 --elf target/efiboot/{{arm64}}/debug/bootaa64
 
 # --- boot images and QEMU ---------------------------------------------------
 
@@ -3233,7 +3237,7 @@ symbolize arch:
 
 # Cross-compile OpenBSD's libc, init(8), ksh(1), cat(1), echo(1), ls(1) and uname(1), unmodified,
 # and makefs(8) for the host, from the reference sources into target/userland/<arch> (with the
-# ffs ramdisk image) with Apple clang and LLD 17 (docs/SETUP.md, "Userland
+# ffs ramdisk image) with DevTools' clang and lld (`EMIBSD_LLVM_BIN`; docs/SETUP.md, "Userland
 # toolchain"). Slow and tool-dependent, so not part of `ci`. For the architectures of `archs`
 # only (the user's decision of 2026-11-07: amd64's waits for N10, as its kernel does).
 userland:

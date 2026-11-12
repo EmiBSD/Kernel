@@ -60,7 +60,7 @@
 //! - The programs are static PIE executables like the rest of the userland's: OpenBSD
 //!   links them dynamically (and `libLLVM` is a shared
 //!   library there, `NOLIBSTATIC`); here `libLLVM.a` is linked into each.
-//! - The build tools run on macOS: built with Apple clang against macOS's libc++, from the
+//! - The build tools run on macOS: built with `Tools::host_cxx` against macOS's libc++, from the
 //!   same Makefiles and the same `include/llvm/Config` (OpenBSD's `config.h`), with the
 //!   workarounds of `HOST_FLAGS`.
 //! - macOS's file system ignores case: `fix_case_folding` turns `-I` into `-iquote` or
@@ -956,7 +956,7 @@ impl<'a> Comp<'a> {
         let cmd = if self.is_host() {
             format!(
                 "{} -o {} {} {}",
-                cxx_of(&self.ctx.tools.cc).display(),
+                self.ctx.tools.host_cxx(),
                 exe.display(),
                 objs_s.join(" "),
                 args.join(" ")

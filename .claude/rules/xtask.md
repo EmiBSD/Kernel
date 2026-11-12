@@ -26,9 +26,10 @@ paths:
 - External tools (`qemu-system-*`, Limine binaries, EDK2 firmware) are located at runtime via
   `brew --prefix <formula>` or `$PATH`, with an error that names the missing formula and points to
   `docs/SETUP.md`. Never hardcode `/opt/homebrew` or `/usr/local`. Exception: `userland`'s
-  toolchain, approved by the user on 2026-10-03, defaults to `/usr/bin/clang` and
-  `~/.swiftly/bin` (LLD 17, llvm-ar, llvm-ranlib, llvm-objcopy, llvm-objdump), overridable with
-  `$EMIBSD_CC` and `$EMIBSD_LLVM_BIN`.
+  toolchain is DevTools' LLVM (the user's decision of 2026-11-11): `$EMIBSD_LLVM_BIN`, which the
+  justfile sets to the pinned release's `bin/` (clang, ld.lld, ld64.lld, llvm-ar, llvm-ranlib,
+  llvm-objcopy, llvm-objdump), is required, and `$EMIBSD_CC` names another clang; the build
+  tools for the Mac take the SDK from `$SDKROOT` or `/usr/bin/xcrun --show-sdk-path`.
 - Network: nothing downloads but `diff-openbsd fetch` (approved by the user on 2026-10-05) and
   `lz drift --fetch` (`git -C reference/emibsd-lz fetch` from the remote `lz/PINNED.md` names):
   only the snapshot that `openbsd-snapshot.toml` records, only from the mirror it names, with

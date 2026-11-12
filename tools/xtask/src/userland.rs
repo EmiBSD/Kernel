@@ -53,9 +53,13 @@
 //! `COMPILER_RT_DIR` (added to the sparse set on 2026-10-03); without it arm64 programs do
 //! not link (`__multf3`).
 //!
-//! Tools (approved by the user on 2026-10-03): Apple clang (`$EMIBSD_CC`, default
-//! `/usr/bin/clang`) and LLVM's `ld.lld`, `llvm-ar`, `llvm-ranlib`, `llvm-objcopy`,
-//! `llvm-objdump` from `$EMIBSD_LLVM_BIN` (default `~/.swiftly/bin`). The OpenBSD sources come
+//! Tools (the user's decision of 2026-11-11, replacing Apple clang and swiftly's LLD 17 of
+//! 2026-10-03): DevTools' LLVM, from `$EMIBSD_LLVM_BIN`, which the justfile sets to the
+//! pinned release's `bin/`: its `clang` (`$EMIBSD_CC` names another), `ld.lld`, `llvm-ar`,
+//! `llvm-ranlib`, `llvm-objcopy` and `llvm-objdump`. Without the variable the build fails;
+//! it never looks for another compiler. The build tools that run on this machine (`rpcgen`,
+//! `yacc`, `lex`, makefs, ...) are compiled by that same clang, told the Mac's triple, and
+//! linked by its `ld64.lld` against macOS's SDK (`Tools::host`). The OpenBSD sources come
 //! from `$OPENBSD_SRC`, else `reference/openbsd-src` of this checkout, else of the main
 //! checkout when run from a git worktree. Nothing is ever written there.
 
@@ -130,23 +134,23 @@ const RULE_CC_SO: &str =
 const RULE_S_SO: &str = "${COMPILE.S} ${DFLAGS} -MF ${.TARGET}.d ${PICFLAG} -DSOLIB \
                          ${CFLAGS:M-[IDM]*} ${AINC} ${.IMPSRC} -o ${.TARGET}";
 
-/// Flags of OpenBSD's patched base clang that Apple clang does not know, removed from
+/// Flags of OpenBSD's patched base clang that upstream clang does not know, removed from
 /// `CFLAGS`/`AFLAGS`/`COPTS` after evaluation, with the reason.
 const UNSUPPORTED_FLAGS: &[(&str, &str)] = &[
     (
         "-fret-clean",
         "OpenBSD-local clang option (lib/libc/arch/amd64/Makefile.inc): clears the return \
-         address slot after use; Apple clang rejects it",
+         address slot after use; upstream clang has no such option",
     ),
     (
         "-fno-ret-clean",
         "OpenBSD-local clang option (distrib/special/Makefile.inc, M14c): the negation of \
-         -fret-clean, which Apple clang does not have either",
+         -fret-clean, which upstream clang does not have either",
     ),
     (
         "-fno-ret-protector",
         "OpenBSD-local clang option (gnu/usr.bin/clang/Makefile.inc, M14): turns off the \
-         return-address protector OpenBSD's clang adds by default, which Apple clang \
+         return-address protector OpenBSD's clang adds by default, which upstream clang \
          neither adds nor knows",
     ),
 ];
@@ -154,13 +158,13 @@ const UNSUPPORTED_FLAGS: &[(&str, &str)] = &[
 /// The `UNSUPPORTED_FLAGS` already reported in this run.
 static REPORTED_FLAGS: Mutex<BTreeSet<&str>> = Mutex::new(BTreeSet::new());
 
-/// Warnings OpenBSD's base clang leaves off by default and Apple clang turns on, switched
+/// Warnings OpenBSD's base clang leaves off by default and upstream clang turns on, switched
 /// off where a Makefile makes warnings errors (`-Werror`: LibreSSL's), with the reason.
 /// Elsewhere they stay mere warnings, and the command lines (and objects) are unchanged.
 const WERROR_DEFAULTS: &[(&str, &str)] = &[(
     "-Wno-pointer-sign",
     "OpenBSD's clang does not warn about char/unsigned char pointer mixes by default \
-     (libcrypto builds with -Werror there and mixes them); Apple clang does",
+     (libcrypto builds with -Werror there and mixes them); upstream clang does",
 )];
 
 /// A program built differently from its Makefile, and why.
@@ -316,8 +320,8 @@ const RULE_Y_C: [&str; 1] = ["${YACC.y} -o ${.TARGET} ${.IMPSRC}"];
 /// installed; every `.l` of the target's userland goes through OpenBSD's lex.
 const LEX_DIR: &str = "usr.bin/lex";
 
-/// The lex that makes OpenBSD lex's own `scan.c` (part of the Xcode command line tools, like
-/// `/usr/bin/clang`, `/usr/bin/perl` and `/usr/bin/awk`).
+/// The lex that makes OpenBSD lex's own `scan.c` (the Mac's, like `/usr/bin/perl` and
+/// `/usr/bin/awk`).
 const BOOTSTRAP_LEX: &str = "/usr/bin/lex";
 
 /// `bsd.sys.mk`'s `.l.c` rule.
@@ -574,6 +578,11 @@ impl Machine {
 /// The external tools, verified to exist.
 struct Tools {
     cc: PathBuf,
+    /// The words `cc` and its C++ driver need to compile and link for this machine instead
+    /// of their own target (`host_words`); none for a compiler whose target is the Mac.
+    host: Vec<String>,
+    /// More of them for the C++ driver alone.
+    host_cxx: Vec<String>,
     ld: PathBuf,
     ar: PathBuf,
     ranlib: PathBuf,
@@ -583,16 +592,20 @@ struct Tools {
 
 impl Tools {
     fn locate() -> Result<Self> {
-        let cc = std::env::var_os("EMIBSD_CC")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/usr/bin/clang"));
         let bindir = match std::env::var_os("EMIBSD_LLVM_BIN") {
-            Some(d) => PathBuf::from(d),
-            None => {
-                let home = std::env::var_os("HOME").ok_or("$HOME is not set")?;
-                PathBuf::from(home).join(".swiftly").join("bin")
+            Some(d) if !d.is_empty() => PathBuf::from(d),
+            _ => {
+                return Err(
+                    "$EMIBSD_LLVM_BIN is not set: the bin/ of DevTools' LLVM (clang, ld.lld, \
+                     llvm-ar, ...). The justfile sets it (`just userland`, `just comp`); \
+                     docs/SETUP.md (\"Userland toolchain\")"
+                        .into(),
+                );
             }
         };
+        let cc = std::env::var_os("EMIBSD_CC")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| bindir.join("clang"));
         let need = |p: PathBuf, env: &str| -> Result<PathBuf> {
             if p.is_file() {
                 Ok(p)
@@ -604,8 +617,12 @@ impl Tools {
                 .into())
             }
         };
+        let cc = need(cc, "EMIBSD_CC")?;
+        let (host, host_cxx) = host_words(&cc)?;
         Ok(Tools {
-            cc: need(cc, "EMIBSD_CC")?,
+            cc,
+            host,
+            host_cxx,
             ld: need(bindir.join("ld.lld"), "EMIBSD_LLVM_BIN")?,
             ar: need(bindir.join("llvm-ar"), "EMIBSD_LLVM_BIN")?,
             ranlib: need(bindir.join("llvm-ranlib"), "EMIBSD_LLVM_BIN")?,
@@ -613,6 +630,82 @@ impl Tools {
             objdump: need(bindir.join("llvm-objdump"), "EMIBSD_LLVM_BIN")?,
         })
     }
+
+    /// The C compiler for a program that runs on this machine, as a command's first words.
+    fn host_cc(&self) -> String {
+        let mut s = self.cc.display().to_string();
+        for w in &self.host {
+            s.push(' ');
+            s.push_str(w);
+        }
+        s
+    }
+
+    /// The C++ compiler for a program that runs on this machine.
+    fn host_cxx(&self) -> String {
+        let mut s = cxx_of(&self.cc).display().to_string();
+        for w in self.host.iter().chain(&self.host_cxx) {
+            s.push(' ');
+            s.push_str(w);
+        }
+        s
+    }
+}
+
+/// The words that make `cc` compile and link for this machine: (for C and C++, for C++
+/// alone). A compiler whose own target is the Mac (`-dumpmachine` names Apple) needs none.
+/// DevTools' clang targets EmiBSD, so it is told:
+/// - the Mac's triple;
+/// - macOS's SDK (`$SDKROOT`, else `xcrun --show-sdk-path`): the system's headers and the
+///   stubs of libSystem, which no program that runs on macOS can do without;
+/// - its own Mach-O linker, `ld64.lld` beside it, in place of the system's `ld`;
+/// - for C++, the SDK's libc++ headers in place of its own: those are configured for EmiBSD
+///   (their `__config_site` is in the target's directory, so a Mac build finds none), and
+///   the SDK's are the ones that match the libc++ the program loads.
+fn host_words(cc: &Path) -> Result<(Vec<String>, Vec<String>)> {
+    let run = |tool: &Path, arg: &str| -> Result<String> {
+        let out = Command::new(tool)
+            .arg(arg)
+            .output()
+            .map_err(|e| format!("{}: {e}", tool.display()))?;
+        if !out.status.success() {
+            return Err(format!("{} {arg} failed", tool.display()).into());
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+    if run(cc, "-dumpmachine")?.contains("-apple-") {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let sdk = match std::env::var("SDKROOT") {
+        Ok(s) if !s.is_empty() => s,
+        _ => run(Path::new("/usr/bin/xcrun"), "--show-sdk-path")?,
+    };
+    if sdk.is_empty() || sdk.contains(char::is_whitespace) || !Path::new(&sdk).is_dir() {
+        return Err(format!("macOS SDK `{sdk}`: not a directory, or a path with blanks").into());
+    }
+    let cpu = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "arm64"
+    };
+    // A linker word on a compile step, or a header word on a link step, is an unused
+    // argument, an error under a Makefile's -Werror: the driver is told not to report these.
+    let quiet = |word: &str| {
+        [
+            "--start-no-unused-arguments".to_string(),
+            word.to_string(),
+            "--end-no-unused-arguments".to_string(),
+        ]
+    };
+    let mut c = vec![
+        format!("--target={cpu}-apple-macos"),
+        "-isysroot".to_string(),
+        sdk.clone(),
+    ];
+    c.extend(quiet("-fuse-ld=lld"));
+    let mut cxx = quiet("-nostdinc++").to_vec();
+    cxx.extend(["-isystem".to_string(), format!("{sdk}/usr/include/c++/v1")]);
+    Ok((c, cxx))
 }
 
 /// Everything a build step needs.
@@ -848,8 +941,8 @@ fn new_make(ctx: &Ctx<'_>, dir: &str, objdir: &Path) -> Result<Make> {
     make_for(ctx, dir, objdir, false)
 }
 
-/// A `Make` for a build tool that runs on this machine (`HOSTCC`): same clang, no target,
-/// no sysroot.
+/// A `Make` for a build tool that runs on this machine (`HOSTCC`): the same clang, aimed at
+/// the Mac (`Tools::host_cc`), no sysroot of ours.
 fn new_host_make(ctx: &Ctx<'_>, dir: &str, objdir: &Path) -> Result<Make> {
     let mut mk = make_for(ctx, dir, objdir, true)?;
     let cflags = mk.var("CFLAGS")?;
@@ -881,7 +974,7 @@ fn make_for_with(
     };
     let t = ctx.tools;
     let cc = if host {
-        t.cc.display().to_string()
+        t.host_cc()
     } else {
         format!(
             "{} --target={} --sysroot={}",
@@ -890,11 +983,11 @@ fn make_for_with(
             ctx.sysroot.display()
         )
     };
-    // The C++ driver beside the C one (`/usr/bin/clang++`), for the `.cpp` sources of the
+    // The C++ driver beside the C one (`clang++`), for the `.cpp` sources of the
     // compiler and its libraries (M14, `comp.rs`); nothing of `userland` is C++.
     let cxx_driver = cxx_of(&t.cc);
     let cxx = if host {
-        cxx_driver.display().to_string()
+        t.host_cxx()
     } else {
         format!(
             "{} --target={} --sysroot={}",
@@ -912,7 +1005,7 @@ fn make_for_with(
         ("CC", cc),
         // sys.mk: the compiler for build tools run during the build (libcurses's
         // `make_keys` and `make_hash`).
-        ("HOSTCC", t.cc.display().to_string()),
+        ("HOSTCC", t.host_cc()),
         ("LD", t.ld.display().to_string()),
         ("AR", t.ar.display().to_string()),
         ("RANLIB", t.ranlib.display().to_string()),
@@ -982,8 +1075,8 @@ fn make_for_with(
     Ok(mk)
 }
 
-/// The C++ driver of the C compiler `cc`: `cc++` beside it when it exists (Apple's
-/// `/usr/bin/clang++`), else `cc` itself, which compiles `.cpp` files as C++ too.
+/// The C++ driver of the C compiler `cc`: `cc++` beside it when it exists (`clang++`), else
+/// `cc` itself, which compiles `.cpp` files as C++ too.
 fn cxx_of(cc: &Path) -> PathBuf {
     let mut name = cc.as_os_str().to_os_string();
     name.push("++");
@@ -1833,8 +1926,8 @@ fn build_prog(ctx: &Ctx<'_>, dir: &str) -> Result<Linked> {
     let jobs = object_jobs(ctx, &mk, &objdir, &[])?;
     let ran = run_jobs(ctx, dir, &jobs)?;
 
-    // What OpenBSD's clang driver passes for `cc -static` (its lld defaults to PIE; LLD 17
-    // needs `-pie` said); `-lcompiler_rt` only when the clone has it (`COMPILER_RT_DIR`).
+    // What OpenBSD's clang driver passes for `cc -static` (its lld defaults to PIE; upstream
+    // lld needs `-pie` said); `-lcompiler_rt` only when the clone has it (`COMPILER_RT_DIR`).
     let lib = ctx.sysroot.join("usr/lib");
     let exe = objdir.join(&prog);
     let mut ld = Command::new(&ctx.tools.ld);

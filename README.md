@@ -464,7 +464,8 @@ You need:
 
 - Homebrew `qemu`, `limine` and `just`, and DevTools' toolchains (`just toolchain`: EmiBSD's own
   Rust and LLVM, pinned in the justfile; no rustup).
-- For the userland: Apple clang and an LLD 17 or newer with OpenBSD support.
+- For the userland: the same DevTools LLVM (its clang and lld), and the macOS SDK for the build
+  tools that run on the Mac.
 - The sparse clone of the OpenBSD sources in `reference/openbsd-src` ([reference/README.md](reference/README.md)).
 
 Every step is in [docs/SETUP.md](docs/SETUP.md). Then:

@@ -260,7 +260,7 @@ pub(super) fn bcrypt_hash(ctx: &Ctx<'_>, password: &str) -> Result<String> {
         commands: vec![(
             format!(
                 "{} -O2 -w -I{} -o {} {}",
-                ctx.tools.cc.display(),
+                ctx.tools.host_cc(),
                 inc.display(),
                 exe.display(),
                 helper_c.display()

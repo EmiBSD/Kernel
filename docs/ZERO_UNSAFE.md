@@ -1360,6 +1360,6 @@ recommended, under the user's standing order):
     efiboot's `llvm-objcopy` are DevTools' LLVM's (`devtools_llvm`). The compiler is the same upstream commit (58cf8f9c3, 1.99.1), so no
     source line changed. amd64 keeps `x86_64-unknown-none` in its frozen recipes until N10
     (decision 44), which moves it to `emibsd-amd64` and `x86_64-emibsd-none-softfloat`. The
-    userland's compiler (Apple clang with LLD 17, the user's OK of 2026-10-03) is a separate
-    switch, not made here. Open: DevTools' Rust carries no `rust-analyzer`, so the LSP
-    plugin has no server until one ships.
+    userland's compiler (Apple clang with LLD 17, the user's OK of 2026-10-03) was a separate
+    switch, made on 2026-11-12: `just userland` and `just comp` build with DevTools' clang and
+    lld (`EMIBSD_LLVM_BIN`). `rust-analyzer` ships in DevTools' Rust since +emibsd.5.

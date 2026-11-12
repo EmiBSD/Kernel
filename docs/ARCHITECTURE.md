@@ -418,13 +418,14 @@ piped into `FINISH.*`), and so are the generated hash helpers and the `rpcsvc` h
 `share/mk` is not in the reference clone: `sys.mk` and `bsd.own.mk` are stood in for by
 predefined variables (`CFLAGS?= -O2 -pipe ${DEBUG}`, `COMPILE.c`, `YP=yes`, `STATIC=-static`,
 ...), `bsd.prog.mk`/`bsd.lib.mk` by their variable effects (`../Makefile.inc`, `COPTS`) and the
-implicit `.c.o`/`.S.o` rules; `CDIAGFLAGS` (warnings only) is empty. Apple clang's OpenBSD
-target supplies the rest of OpenBSD's defaults by itself: PIE, `-fstack-protector-strong`,
+implicit `.c.o`/`.S.o` rules; `CDIAGFLAGS` (warnings only) is empty. Upstream clang's OpenBSD
+target (DevTools' clang since 2026-11-12, Apple clang before) supplies the rest of OpenBSD's defaults by itself: PIE, `-fstack-protector-strong`,
 IBT (`-fcf-protection=branch`) on amd64, BTI and return-address signing on arm64, emulated TLS.
 
 Workarounds, each printed by the build (flags only; no source is edited):
 
-- `-fret-clean` (amd64 libc) is an OpenBSD-local clang option Apple clang rejects; it is dropped.
+- `-fret-clean` (amd64 libc) is an OpenBSD-local clang option upstream clang does not have; it is
+  dropped.
 - `rpcgen`, `makefs`, `pwd_mkdb` and `yacc` are built for the Mac with `-D'pledge(p,e)=0'`
   (macOS has no `pledge(2)`).
 - `.y` sources (`sbin/pfctl/parse.y`, `sbin/ipsecctl/parse.y`) follow `bsd.sys.mk`'s `.y.c` rule:
@@ -479,7 +480,7 @@ and `lib/libedit` (`LIBRARIES` in `userland.rs`, the code in `userland/libraries
   libcurses's `curses.h` becomes `<ncurses.h>`, as their Makefiles say.
 - LibreSSL's Makefiles add `-Werror`. Where they do, `-Wno-pointer-sign` is added
   (`WERROR_DEFAULTS`): OpenBSD's clang does not warn about mixing `char *` and
-  `unsigned char *` by default, Apple clang does, and libcrypto mixes them.
+  `unsigned char *` by default, upstream clang does, and libcrypto mixes them.
 - `share/mk`'s `bsd.subdir.mk` (recursion into `SUBDIR`, the `man` directories) is stood in
   for by nothing.
 
@@ -714,7 +715,7 @@ after the static libraries, as OpenBSD's Makefiles say:
 - `comp` copies `/usr/libexec` of the sysroot into its root with `/usr/lib`, so `comp.ffs`
   carries `ld.so` and the shared libraries.
 
-Deviations, each written in `shlib.rs`: the host's LLD 17 is given two defaults OpenBSD's lld
+Deviations, each written in `shlib.rs`: the host's lld is given two defaults OpenBSD's lld
 has built in (`--undefined-version`: libc's `Symbols.list` names symbols that only other
 architectures define; `--ignore-function-address-equality`); ld.so is built with
 `STACK_PROTECTOR=` (its `__guard_local` and `__stack_smash_handler` stubs), the branch of

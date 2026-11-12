@@ -69,11 +69,11 @@ pub(super) const SHARED_LIBRARIES: &[&str] =
 const LDSO_DIR: &str = "libexec/ld.so";
 
 /// Defaults of OpenBSD's lld (`gnu/llvm/lld/ELF/Driver.cpp`, `#ifdef __OpenBSD__`) that the
-/// host's LLD 17 does not have, said explicitly for the shared links: a version script
+/// host's lld is given explicitly for the shared links: a version script
 /// may name symbols the library does not define (libc's `Symbols.list` names `__data_start`
 /// and the `quad` helpers of other architectures), and protected symbols stay preemptible.
-/// (Its execute-only text default is not repeated: LLD 17 refuses `--execute-only` on
-/// amd64, and the static programs are linked without it too.)
+/// (Its execute-only text default is not repeated: LLD 17 refused `--execute-only` on
+/// amd64, not tried again since, and the static programs are linked without it too.)
 const OPENBSD_LLD_DEFAULTS: &[&str] =
     &["--undefined-version", "--ignore-function-address-equality"];
 
