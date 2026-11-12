@@ -328,3 +328,5 @@ metadata:
 - `lz check` refuses `[[module.fn]]` rows under an `adapted` module ("adapted modules have no [[module.fn]] rows"): an LZ item moved out of a file only adapted modules list cannot get its `moved` row until a redesigned module lists that file; say so in the receiving module's notes (N6.4a review 1).
 - `lz trace` takes `<lz path>:<item>` with ONE colon (`sys/netinet/igmp.rs:router_alert`); the `::` form prints "not found" even for an item with a row (N6.4a).
 - A commit touching an adapted bsd file still carries that file's `LZ:` trailer (the rules block's "every source of each touched module"); check the trailers before the commit, since a missing one cannot be amended (N6.4a review 1, 6241a60b).
+- The worktree guard refuses a long heredoc `python3 - <<EOF` with many replacements, `$VAR` paths in `python3`/`just`/`sed` arguments and shell loops over `just`: write the script with Write and run `python3 <absolute path>`, one plain command per call (N6.4b).
+- `lz check` does not see items a macro declares (`pin_adapter!`'s adapter struct): a `[[module.fn]]` row's `native` names a written item (the `static ARP_LIST`, not `LaList`).
