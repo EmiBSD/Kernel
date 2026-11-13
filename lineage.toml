@@ -8721,7 +8721,7 @@ rust = "sys/hal/sys/netinet_icmp6.rs"
 crate = "hal"
 lz = ["sys/netinet/icmp6.rs"]
 status = "redesigned"
-notes = "N6.5a: netinet/icmp6.h's userland part (bsd's icmp6.rs re-exports it): the ICMP6_*, MLD*, ND_*, NI_*, RPM_*, ICMPV6CTL_* constants with ICMPV6CTL_NAMES, RTF_PROBEMTU, and the 24 structures as abi_pod! images with LZ's size asserts (icmp6_hdr 8 with icmp6_dataun as its four bytes, no union and no unsafe; mld_hdr, the five nd_* messages, the seven nd_opt_*, the node-information and router-renumbering images, icmp6_filter 32, icmp6stat 542 u64), LZ's accessor names and enum icmp6stat_counters; LZ's four tests"
+notes = "N6.5a: netinet/icmp6.h's userland part (bsd's icmp6.rs re-exports it): the ICMP6_*, MLD*, ND_*, NI_*, RPM_*, ICMPV6CTL_* constants with ICMPV6CTL_NAMES, RTF_PROBEMTU, and the 24 structures as abi_pod! images with LZ's size asserts (icmp6_hdr 8 with icmp6_dataun as its four bytes, no union and no unsafe; mld_hdr, the five nd_* messages, the seven nd_opt_*, the node-information and router-renumbering images, icmp6_filter 32, icmp6stat 541 u64), LZ's accessor names and enum icmp6stat_counters; LZ's four tests"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip.rs"

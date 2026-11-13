@@ -710,6 +710,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_records_sizes() {
+        // vmstat -m's M_IFADDR and M_IPMADDR (D-4, the sizes taken and flagged). On LP64 the
+        // C's struct in6_ifaddr is 256 bytes and struct in6_multi 80, LZ's #[repr(C)] mirrors
+        // the same; these are 416 and 136. Of the growth, the generic parts are 80 and 32
+        // (Ifaddr 160 for the C's 80, Ifmaddr 72 for the C's 40: the SaLinks, the counted
+        // references and the list links are wider, and since N6.5a each carries an 8-byte
+        // link to its IPv6 record, ifa_in6 or ifma_in6, which the IPv4 records pay too:
+        // in_ifaddr 288 -> 296, in_multi 128 -> 136); the memberships' Mutexed is 64 for the
+        // C's 8-byte LIST_HEAD.
+        assert_eq!(size_of::<In6Ifaddr>(), 416);
+        assert_eq!(size_of::<In6Multi>(), 136);
+        assert_eq!(size_of::<crate::net::if_var::Ifaddr>(), 160);
+        assert_eq!(size_of::<crate::net::if_var::Ifmaddr>(), 72);
+        assert_eq!(size_of::<crate::netinet::in_var::InIfaddr>(), 296);
+        assert_eq!(size_of::<crate::netinet::in_var::InMulti>(), 136);
+        assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);
+    }
+
+    #[test]
     fn the_address_words_read_as_the_c_structure() {
         let w = Sin6Words::new();
         assert!(w.is_empty());
