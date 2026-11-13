@@ -105,24 +105,34 @@ pub use kernel::netinet6::in6_src::{in6_clearscope, in6_recoverscope, in6_select
 /// `opts->ip6po_pktinfo`, lent to `f` for the call (`None` without options or packet info).
 fn with_pktinfo<R>(opts: Option<&Ip6Pktopts>, f: impl FnOnce(Option<&mut In6Pktinfo>) -> R) -> R {
     let pi = opts.and_then(|o| o.ip6po_pktinfo);
-    // SAFETY: `ip6po_pktinfo` is only ever set (`ip6_setpktopt`, `ip6_copypktopts`) to a
-    // `malloc(M_IP6OPT)` block of an `In6Pktinfo` the options own, initialised whole and
-    // freed only by `ip6_clearpktopts`, which needs the options mutably: `opts` is borrowed
-    // here for the call, so the block lives through `f`. The block is reached only through
-    // its options' pointer (no other copy of the pointer is kept: `ip6_copypktopts` makes a
-    // new block), and `bsd`'s callers run the call under the socket lock that serialises
-    // every user of the options, so the `&mut` is the only reference to it while `f` runs.
+    // SAFETY: the invariant of `Ip6Pktopts::ip6po_pktinfo`: when set, it points at an
+    // initialised `In6Pktinfo` that is valid, and the options' alone, for as long as the
+    // options are borrowed. Who establishes it: `ip6_setpktopt` and `ip6_copypktopts`,
+    // the only writers of the field outside tests, store a fresh `malloc(M_IP6OPT)` block
+    // of the structure, written whole, whose pointer they keep nowhere else (a copy gets a
+    // new block); a test that builds options by hand gives them a block of its own that it
+    // does not reach while the options are in use. Who upholds it: only
+    // `ip6_clearpktopts` frees or replaces the block, and it needs the options mutably,
+    // which `opts`' shared borrow here excludes for the whole call. `bsd`'s callers hold
+    // the socket lock that serialises every user of a socket's options. So the block is
+    // live through `f`, and the `&mut` made here is the only reference to it while `f` runs.
     f(pi.map(|p| unsafe { &mut *p.as_ptr() }))
 }
 
 /// `inp->inp_moptions6->im6o_ifidx`: the pcb's multicast interface, `None` without multicast
 /// options.
 fn moptions_ifidx(inp: &Inpcb) -> Option<u16> {
+    // The pcb's socket lock is what keeps `inp_moptions6` from being freed under the read:
+    // the C's in6_pcbselsrc runs with it held (its callers' soassertlocked).
+    if let Some(so) = inp.socket_opt() {
+        crate::kern::uipc_socket2::soassertlocked(so);
+    }
     // SAFETY: `inp_moptions6` is only ever set (`ip6_setmoptions`) to a live
     // `malloc(M_IPMOPTS)` block of an `Ip6Moptions`, initialised whole, freed only by
     // `ip6_freemoptions` once the word is cleared (`in_pcbdetach`, `ip6_setmoptions`), both
-    // under the socket lock `bsd`'s callers hold for this call; the one byte-sized field is
-    // read by value.
+    // under the pcb's socket lock, which the assertion above checks this caller holds (a pcb
+    // without a socket is one being torn down by its only owner); the one byte-sized
+    // field is read by value.
     inp.moptions6_ptr()
         .map(|p| unsafe { (*p.as_ptr()).im6o_ifidx })
 }
@@ -215,16 +225,17 @@ mod tests {
         s
     }
 
-    fn pktopts(ifindex: u32, addr: In6Addr) -> (Ip6Pktopts, &'static mut In6Pktinfo) {
-        let pi: &'static mut In6Pktinfo = std::boxed::Box::leak(std::boxed::Box::new(In6Pktinfo {
+    /// Options whose packet info names interface `ifindex` and source `addr`: a leaked
+    /// block of their own, reached only through them (`ip6po_pktinfo`'s invariant).
+    fn pktopts(ifindex: u32, addr: In6Addr) -> Ip6Pktopts {
+        let pi = std::boxed::Box::into_raw(std::boxed::Box::new(In6Pktinfo {
             ipi6_addr: addr,
             ipi6_ifindex: ifindex,
         }));
-        let opts = Ip6Pktopts {
-            ip6po_pktinfo: ptr::NonNull::new(ptr::from_mut(pi)),
+        Ip6Pktopts {
+            ip6po_pktinfo: ptr::NonNull::new(pi),
             ..Ip6Pktopts::default()
-        };
-        (opts, pi)
+        }
     }
 
     #[test]
@@ -253,7 +264,7 @@ mod tests {
         // The packet info's interface wins over sin6_scope_id; for a multicast address, the
         // multicast options' wins when there is no packet info.
         let other = test_if(b"tsc1");
-        let (opts, _pi) = pktopts(other.if_index.get(), IN6ADDR_ANY);
+        let opts = pktopts(other.if_index.get(), IN6ADDR_ANY);
         in6_embedscope(&mut out, &sin6("fe80::1", idx), Some(&opts), None).expect("embed");
         assert_eq!(out.s6_addr16(1), htons(other.if_index.get() as u16));
         let mopts = Ip6Moptions {
