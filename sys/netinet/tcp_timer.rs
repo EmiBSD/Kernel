@@ -128,8 +128,8 @@
 //!   locked socket and the control block, or (`Err`) only what `tcp_timer_leave` must undo;
 //!   the C's `goto out` is a labelled block. `otp`/`ostate` for `tcp_trace` are taken only
 //!   with `SO_DEBUG`, as in C (`trace_start`).
-//! - `tcp_timer_rexmt` builds its fake ICMP message in a local byte buffer viewed as an
-//!   `IcmpPkt` (`icmp_mtudisc` reads the next-hop MTU and the returned IP header from it).
+//! - `tcp_timer_rexmt`'s fake ICMP message is what `icmp_mtudisc` reads of one: the next-hop
+//!   MTU and the returned IP header, passed by value (N6.4c2).
 //!   `tcp_timer_keep` hands `tcp_respond` the template mbuf's bytes as a slice; without a
 //!   template (never, once connected) no probe is sent.
 //! - `tcp_backoff[]` is a `static` array; `tcp_totbackoff` a `const`. The keepalive
@@ -152,7 +152,7 @@ use crate::netinet::in_pcb::{
     in_pcbsolock, in_pcbsounlock, in_pcbunref,
 };
 use crate::netinet::ip::Ip;
-use crate::netinet::ip_icmp::{ICMP_ADVLENMIN, IcmpPkt, icmp_mtudisc, icmp_mtudisc_clone};
+use crate::netinet::ip_icmp::{icmp_mtudisc, icmp_mtudisc_clone};
 use crate::netinet::ip_input::ip_mtudisc;
 use crate::netinet::tcp::Tcphdr;
 use crate::netinet::tcp_debug::{TA_TIMER, tcp_trace};
@@ -431,17 +431,13 @@ pub fn tcp_timer_rexmt(arg: *mut c_void) {
 
         let rtableid = inp.inp_rtableid.get();
 
-        // XXX create fake icmp message with relevant entries
-        let mut icmp = [0u8; ICMP_ADVLENMIN];
-        // SAFETY: a local buffer of `ICMP_ADVLENMIN` bytes, used while it lives.
-        let icp = unsafe { IcmpPkt::new(icmp.as_mut_ptr(), icmp.len()) };
-        icp.set_icmp_nextmtu(tp.t_pmtud_nextmtu.get() as u16);
-        let mut oip = icp.icmp_ip();
+        // XXX create fake icmp message with relevant entries: its next-hop MTU and returned
+        // header, which are all icmp_mtudisc reads of it.
+        let nextmtu = tp.t_pmtud_nextmtu.get() as u16;
+        let mut oip = Ip::default();
         oip.ip_len = tp.t_pmtud_ip_len.get();
         oip.set_ip_hl(tp.t_pmtud_ip_hl.get() as u8);
         oip.ip_dst = inp.inp_faddr.get();
-        // SAFETY: `icmp_ip_ptr` is in bounds of the local buffer; an unaligned write.
-        unsafe { ptr::write_unaligned(icp.icmp_ip_ptr(), oip) };
 
         // Notify all connections to the same peer about new mss and trigger retransmit.
         let sin = SockaddrIn {
@@ -454,7 +450,7 @@ pub fn tcp_timer_rexmt(arg: *mut c_void) {
         in_pcbsounlock(Some(inp), Some(so));
         in_pcbunref(Some(inp));
 
-        icmp_mtudisc(&icp, rtableid);
+        icmp_mtudisc(nextmtu, &oip, rtableid);
         in_pcbnotifyall(
             &TCBTABLE,
             &sin,

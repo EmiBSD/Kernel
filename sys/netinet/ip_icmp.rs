@@ -341,14 +341,10 @@ pub fn icmp_error(n: &'static Mbuf, type_: u8, code: u8, dest: u32, destmtu: i32
     );
 }
 
-/// `icmp_mtudisc(icp, rtableid)`: the kernel's, over the message `bsd`'s TCP holds.
-pub fn icmp_mtudisc(icp: &IcmpPkt, rtableid: u32) {
-    kernel::netinet::ip_icmp::icmp_mtudisc(
-        icp.icmp_nextmtu(),
-        &icp.icmp_ip(),
-        rtableid,
-        &net_held("icmp_mtudisc"),
-    );
+/// `icmp_mtudisc(icp, rtableid)`: the kernel's, of the message's next-hop MTU
+/// (`icmp_nextmtu`, network order) and returned header `oip` as `bsd`'s TCP read them.
+pub fn icmp_mtudisc(nextmtu: u16, oip: &Ip, rtableid: u32) {
+    kernel::netinet::ip_icmp::icmp_mtudisc(nextmtu, oip, rtableid, &net_held("icmp_mtudisc"));
 }
 
 /// `icmp_mtudisc_clone(dst, rtableid, ipsec)`: the kernel's, the route parked.
