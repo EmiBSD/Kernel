@@ -2306,7 +2306,10 @@ pub(crate) mod tests {
     fn a_join_whose_record_has_no_room_is_not_made() {
         // The C's in6_joingroup mallocs the membership's entry before in6_addmulti, so a
         // failed allocation is ENOBUFS with nothing joined: the room is reserved first here
-        // too (the test doubles' fail_pages fails the next malloc).
+        // too (the test doubles' fail_pages fails the next malloc). A recycled record waits
+        // on INM6_FREE (setup() empties it), so in6_addmulti needs no malloc and the one
+        // that fails is the reserve's: joined first, the old order would show the driver an
+        // SIOCADDMULTI (and leave again) where this one shows nothing.
         let _g = setup();
         let (ifp, d) = iface(b"tjg0", [0x52, 0x54, 0, 0, 7, 1]);
         let idx = ifp.if_index.get();
@@ -2316,6 +2319,9 @@ pub(crate) mod tests {
         let net = NetHeld::of(&w).expect("the net lock");
 
         // No array yet and no memory for one: ENOBUFS, the driver asked nothing, no group.
+        crate::netinet6::in6_var::in6_multi_free(
+            crate::netinet6::in6_var::in6_multi_alloc().expect("a record to recycle"),
+        );
         crate::testutil::fail_pages(0, 1);
         let r = in6_joingroup(ifp, ia, &g, &net);
         crate::testutil::fail_pages(0, 0);
