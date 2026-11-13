@@ -162,9 +162,8 @@ use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6::{in6_purgeaddr, in6ifa_ifpforlinklocal, satosin6_const};
+use crate::netinet6::in6::satosin6_const;
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6_ifattach::{in6_ifattach, in6_ifdetach};
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_proto::IP6_FORWARDING;
 #[cfg(feature = "inet6")]
@@ -447,22 +446,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = ifp;
     }
 
-    fn in6_ifdetach(&self, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        in6_ifdetach(ifp);
-        let _ = ifp;
-    }
-
-    fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno> {
-        #[cfg(feature = "inet6")]
-        return in6_ifattach(ifp);
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = ifp;
-            Err(Errno::EAFNOSUPPORT)
-        }
-    }
-
     fn ip6_forwarding(&self) -> bool {
         #[cfg(feature = "inet6")]
         return IP6_FORWARDING.load(Ordering::Relaxed) != 0;
@@ -470,13 +453,63 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         false
     }
 
-    fn ifa_free(&self, ifa: &'static Ifaddr) {
-        // free(ifa, M_IFADDR, 0): the protocol's in_ifaddr/in6_ifaddr whose ifaddr this is.
-        crate::kern::kern_malloc::free(
-            core::ptr::NonNull::from(ifa).cast(),
-            crate::sys::malloc::M_IFADDR,
-            0,
-        );
+    fn nd6_dad_start(&self, ifa: &'static Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6_nbr::nd6_dad_start(ifa);
+        let _ = ifa;
+    }
+
+    fn nd6_dad_stop(&self, ifa: &'static Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6_nbr::nd6_dad_stop(ifa);
+        let _ = ifa;
+    }
+
+    fn nd6_expire_timer_update(&self, ia6: &'static kernel::netinet6::in6_var::In6Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6::nd6_expire_timer_update(ia6);
+        let _ = ia6;
+    }
+
+    fn nd6_purge(&self, ifp: &'static Ifnet) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6::nd6_purge(ifp);
+        let _ = ifp;
+    }
+
+    fn ip6_output_opts(
+        &self,
+        m: kernel::net::mbuf::MbufBox,
+        hbh: Option<&[u8]>,
+        flags: i32,
+        ifidx: u16,
+        hlim: u8,
+        loop_: bool,
+    ) -> Result<(), Errno> {
+        #[cfg(feature = "inet6")]
+        {
+            use crate::netinet6::ip6_output::{ip6_initpktopts, ip6_output};
+            use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
+            // ip6_opts: the hop-by-hop header the caller lends for the call (MLD's constant
+            // router alert, which ip6_output copies into the packet).
+            let mut opts = Ip6Pktopts::default();
+            ip6_initpktopts(&mut opts);
+            opts.ip6po_hbh =
+                hbh.and_then(|b| core::ptr::NonNull::new(b.as_ptr().cast_mut().cast()));
+            let im6o = Ip6Moptions {
+                im6o_memberships: crate::sys::queue::ListHead::new(),
+                im6o_ifidx: ifidx,
+                im6o_hlim: hlim,
+                im6o_loop: u8::from(loop_),
+            };
+            return ip6_output(park(m), Some(&opts), None, flags, Some(&im6o), None);
+        }
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = (hbh, flags, ifidx, hlim, loop_);
+            drop(m);
+            Err(Errno::EAFNOSUPPORT)
+        }
     }
 
     fn ip6_multipath(&self) -> bool {
@@ -645,16 +678,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             let _ = (off, nxt);
             drop(m);
         }
-    }
-
-    fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
-        #[cfg(feature = "inet6")]
-        if let Some(ia6) = in6ifa_ifpforlinklocal(ifp, 0) {
-            in6_purgeaddr(&ia6.ia_ifa);
-            return true;
-        }
-        let _ = ifp;
-        false
     }
 }
 
@@ -1279,6 +1302,8 @@ pub(crate) mod tests {
         // (N6.4a): a later test that detaches the same index would free an earlier test's
         // record (`rti_delete`) into this test's memory.
         kernel::netinet::in_var::in_var_test_reset();
+        // The IPv6 address and membership records' (N6.5a), as the Internet ones.
+        kernel::netinet6::in6_var::in6_var_test_reset();
         kernel::netinet::igmp::igmp_test_reset();
         kernel::netinet::if_ether::arp_test_reset();
         guard

@@ -29,13 +29,12 @@
 //! The modules the kernel's `kernel::netinet6` absorbed (N6.5) keep their LZ paths here as
 //! re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md).
 
-pub use kernel::netinet6::{in6_cksum, ip6_id, mld6_var};
+pub use kernel::netinet6::{in6_cksum, in6_ifattach, ip6_id, mld6_var};
 
 pub mod dest6;
 pub mod frag6;
 pub mod icmp6;
 pub mod in6;
-pub mod in6_ifattach;
 pub mod in6_pcb;
 #[forbid(unsafe_code)]
 pub mod in6_proto;

@@ -426,21 +426,38 @@ pub trait Inet: Sync + 'static {
     fn nd6_ifattach(&self, ifp: &'static Ifnet);
     /// `nd6_ifdetach(ifp)`.
     fn nd6_ifdetach(&self, ifp: &'static Ifnet);
-    /// `in6_ifdetach(ifp)`.
-    fn in6_ifdetach(&self, ifp: &'static Ifnet);
-    /// `in6_ifattach(ifp)`: IPv6 on the interface; `ifioctl`'s `SIOCIFAFATTACH` and
-    /// `SIOCSIFXFLAGS` answer its error, `if_up` and `ifnewlladdr` ignore it (the C's).
-    fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno>;
     /// `ip6_forwarding != 0`.
     fn ip6_forwarding(&self) -> bool;
-    /// `ifnewlladdr`'s first IPv6 step: the link-local address purged
-    /// (`in6ifa_ifpforlinklocal`, `in6_purgeaddr`); whether there was one.
-    fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool;
-    /// `free(ifa, M_IFADDR, 0)` of an IPv6 interface address whose last reference `ifafree`
-    /// gave back (route.c's; IPv6 owns the storage until N6.5, an Internet address goes to
-    /// `kernel::netinet::in_var`'s free list since N6.4a). Default: nothing (N6.3b: `bsd`'s
-    /// implementation comes with the routing switch, N6.3b2).
-    fn ifa_free(&self, _ifa: &'static Ifaddr) {}
+    /// `nd6_dad_start(ifa)`: Duplicate Address Detection of the tentative IPv6 address `ifa`
+    /// (`in6.c`'s and `in6_ifattach.c`'s calls; N6.5a, until ND moves at N6.5b). Default:
+    /// nothing.
+    fn nd6_dad_start(&self, _ifa: &'static Ifaddr) {}
+    /// `nd6_dad_stop(ifa)`: the DAD of `ifa` stopped (`in6_purgeaddr`'s; until N6.5b).
+    /// Default: nothing.
+    fn nd6_dad_stop(&self, _ifa: &'static Ifaddr) {}
+    /// `nd6_expire_timer_update(ia6)`: ND's address expiry timer brought forward to `ia6`'s
+    /// lifetimes (`in6_update_ifa`'s; until N6.5b). Default: nothing.
+    fn nd6_expire_timer_update(&self, _ia6: &'static crate::netinet6::in6_var::In6Ifaddr) {}
+    /// `nd6_purge(ifp)`: the neighbor cache of `ifp` emptied (`in6_ifdetach`'s; until
+    /// N6.5b). Default: nothing.
+    fn nd6_purge(&self, _ifp: &'static Ifnet) {}
+    /// `ip6_output(m, &opts, NULL, flags, &im6o, NULL)` of MLD's reports (`mld6_sendpkt`;
+    /// N6.5a, until the output path moves at N6.5c): `m` sent with the hop-by-hop options
+    /// header `hbh` (the router alert), the `ip6_output` `flags`, out of interface `ifidx`
+    /// with hop limit `hlim`, looped back when `loop_`. Default: the packet freed,
+    /// `EAFNOSUPPORT` (no `INET6`).
+    fn ip6_output_opts(
+        &self,
+        m: MbufBox,
+        _hbh: Option<&[u8]>,
+        _flags: i32,
+        _ifidx: u16,
+        _hlim: u8,
+        _loop_: bool,
+    ) -> Result<(), Errno> {
+        drop(m);
+        Err(Errno::EAFNOSUPPORT)
+    }
     /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
     fn ip6_multipath(&self) -> bool {
         false
@@ -2230,9 +2247,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
         crate::netinet::if_ether::revarp_ifdetach(ifp);
         // MROUTING: vif_delete(ifp); not configured.
         crate::netinet::in_::in_ifdetach(ifp, &net_held(&net));
-        if let Some(i) = inet() {
-            i.in6_ifdetach(ifp);
-        }
+        crate::netinet6::in6_ifattach::in6_ifdetach(ifp, &net_held(&net));
         if let Some(pf) = pf() {
             pf.detach_ifnet(ifp);
         }
@@ -2693,10 +2708,11 @@ pub fn if_up(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     ifp.if_lastchange.set(now.tv_sec, now.tv_usec);
 
     // Userland expects the kernel to set ::1 on default lo(4).
-    if ifp.if_index.get() == rtable_loindex(ifp.if_rdomain.get())
-        && let Some(i) = inet()
-    {
-        let _ = i.in6_ifattach(ifp);
+    if ifp.if_index.get() == rtable_loindex(ifp.if_rdomain.get()) {
+        let _ = crate::netinet6::in6_ifattach::in6_ifattach(
+            ifp,
+            &crate::netinet6::in6::NetHolding::Held(net),
+        );
     }
 
     if_linkstate(ifp, net);
@@ -2843,10 +2859,10 @@ pub fn if_setrdomain(ifp: &'static Ifnet, rdomain: i32) -> Result<(), Errno> {
         }
         crate::netinet::igmp::rti_delete(ifp);
         // MROUTING: vif_delete(ifp); not configured.
-        hal::netlock::lend_detached(|net| crate::netinet::in_::in_ifdetach(ifp, net));
-        if let Some(i) = inet() {
-            i.in6_ifdetach(ifp);
-        }
+        hal::netlock::lend_detached(|net| {
+            crate::netinet::in_::in_ifdetach(ifp, net);
+            crate::netinet6::in6_ifattach::in6_ifdetach(ifp, net);
+        });
         drop(s);
     }
 
@@ -3123,8 +3139,8 @@ fn ifioctl_ifp<G: ProcGlue>(
         SIOCIFAFATTACH | SIOCIFAFDETACH => {
             suser(p)?;
             let af = req_view::<IfAfreq>(req)?.ifar_af;
-            net_locked(|| match (af, inet()) {
-                (AF_INET, _) => {
+            net_locked(|| match af {
+                AF_INET => {
                     // attach is a noop for AF_INET
                     if cmd == SIOCIFAFDETACH {
                         hal::netlock::lend_detached(|net| {
@@ -3133,11 +3149,16 @@ fn ifioctl_ifp<G: ProcGlue>(
                     }
                     Ok(())
                 }
-                (AF_INET6, Some(i)) => {
+                AF_INET6 => {
                     if cmd == SIOCIFAFATTACH {
-                        i.in6_ifattach(ifp)
+                        crate::netinet6::in6_ifattach::in6_ifattach(
+                            ifp,
+                            &crate::netinet6::in6::NetHolding::Detached,
+                        )
                     } else {
-                        i.in6_ifdetach(ifp);
+                        hal::netlock::lend_detached(|net| {
+                            crate::netinet6::in6_ifattach::in6_ifdetach(ifp, net);
+                        });
                         Ok(())
                     }
                 }
@@ -3328,11 +3349,14 @@ fn if_setxflags(req: &mut [u8], ifp: &'static Ifnet, old: (i32, i32)) -> Result<
     let mut error = Ok(());
     let rflags = i32::from(req_view::<Ifreq>(req)?.ifr_flags());
 
-    // INET6: the protocol's legs answer when it is configured (registered).
-    if let Some(i) = inet() {
+    // INET6 (the kernel's since N6.5a, D-7: compiled unconditionally).
+    {
         let autoconf6 = IFXF_AUTOCONF6 | IFXF_AUTOCONF6TEMP;
         if rflags & autoconf6 != 0 && ifp.if_xflags.get() & autoconf6 == 0 {
-            i.in6_ifattach(ifp)?;
+            crate::netinet6::in6_ifattach::in6_ifattach(
+                ifp,
+                &crate::netinet6::in6::NetHolding::Detached,
+            )?;
         }
 
         if rflags & IFXF_INET6_NOSOII != 0 && ifp.if_xflags.get() & IFXF_INET6_NOSOII == 0 {
@@ -4323,12 +4347,13 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
 
     // Update the link-local address. Don't do it if we're a router to avoid confusing hosts
     // on the network.
-    if !i_am_router
-        && let Some(i) = inet()
-        && i.in6_purge_linklocal(ifp)
-    {
+    if !i_am_router && let Some(ia6) = crate::netinet6::in6::in6ifa_ifpforlinklocal(ifp, 0) {
+        hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6.ia_ifa, net));
         if_hooks_run(ifp, &ifp.rt().if_addrhooks);
-        let _ = i.in6_ifattach(ifp);
+        let _ = crate::netinet6::in6_ifattach::in6_ifattach(
+            ifp,
+            &crate::netinet6::in6::NetHolding::Detached,
+        );
     }
 
     if !up {
@@ -4463,6 +4488,7 @@ pub(crate) mod tests {
         if_idxmap_test_reset();
         ifnet_test_reset();
         crate::netinet::in_var::in_var_test_reset();
+        crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
         g
@@ -5533,7 +5559,9 @@ pub(crate) mod tests {
         assert_eq!(ioctl(p, SIOCGIFSFFPAGE, &mut sff), Ok(()));
         assert_eq!(d.ioctls.load(Ordering::Relaxed), asked + 1);
 
-        // A family: AF_INET's attach is nothing; no IPv6 without the protocol; others none.
+        // A family: AF_INET's attach is nothing; IPv6's is the kernel's in6_ifattach (N6.5a),
+        // which refuses an interface whose MTU is below IPV6_MMTU (this one's is 0, the C's
+        // EINVAL); others none.
         let af = |cmd, af| {
             let mut ifar: IfAfreq = named(b"tva0");
             ifar.ifar_af = af;
@@ -5541,7 +5569,7 @@ pub(crate) mod tests {
         };
         assert_eq!(af(SIOCIFAFATTACH, AF_INET), Ok(()));
         assert_eq!(af(SIOCIFAFDETACH, AF_INET), Ok(()));
-        assert_eq!(af(SIOCIFAFATTACH, AF_INET6), Err(Errno::EAFNOSUPPORT));
+        assert_eq!(af(SIOCIFAFATTACH, AF_INET6), Err(Errno::EINVAL));
         assert_eq!(af(SIOCIFAFATTACH, AF_LINK), Err(Errno::EAFNOSUPPORT));
 
         // Routing domain 1: its table is made, but not its loopback lo1 (no lo(4) cloner

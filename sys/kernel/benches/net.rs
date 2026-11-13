@@ -1744,17 +1744,7 @@ impl kernel::net::if_::Inet for BenchInet {
     fn tcpstat_lro(&self, _hw: bool) {}
     fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn in6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn in6_ifattach(
-        &self,
-        _ifp: &'static kernel::net::if_var::Ifnet,
-    ) -> Result<(), hal::sys::errno::Errno> {
-        Ok(())
-    }
     fn ip6_forwarding(&self) -> bool {
-        false
-    }
-    fn in6_purge_linklocal(&self, _ifp: &'static kernel::net::if_var::Ifnet) -> bool {
         false
     }
     fn ip6_multipath(&self) -> bool {

@@ -599,12 +599,20 @@ pub fn icmp6_input(
                     if icmp6len < size_of::<MldHdr>() as i32 {
                         Next::Badlen
                     } else if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
-                        mld6_input(n, off);
+                        mld6_input(
+                            crate::sys::mbuf::unpark(n),
+                            off,
+                            &crate::net::if_::net_held("mld6_input"),
+                        );
                         // m stays.
                         Next::Raw
                     } else {
                         // give up local
-                        mld6_input(m, off);
+                        mld6_input(
+                            crate::sys::mbuf::unpark(m),
+                            off,
+                            &crate::net::if_::net_held("mld6_input"),
+                        );
                         *mp = None;
                         return IPPROTO_DONE;
                     }

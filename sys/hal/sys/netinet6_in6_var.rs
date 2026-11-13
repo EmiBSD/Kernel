@@ -439,6 +439,37 @@ crate::abi_pod!(In6Aliasreq {
     ifra_lifetime: In6Addrlifetime,
 });
 
+impl In6Aliasreq {
+    /// An all-zero request.
+    pub const fn zeroed() -> Self {
+        Self {
+            ifra_name: [0; IFNAMSIZ],
+            ifra_addr: SockaddrIn6::zeroed(),
+            ifra_dstaddr: SockaddrIn6::zeroed(),
+            ifra_prefixmask: SockaddrIn6::zeroed(),
+            ifra_flags: 0,
+            ifra_lifetime: In6Addrlifetime {
+                ia6t_expire: 0,
+                ia6t_preferred: 0,
+                ia6t_vltime: 0,
+                ia6t_pltime: 0,
+            },
+        }
+    }
+
+    /// `ifra_addr` (`ifra_ifrau.ifrau_addr`), LZ's accessor.
+    #[inline]
+    pub const fn ifra_addr(&self) -> &SockaddrIn6 {
+        &self.ifra_addr
+    }
+
+    /// `ifra_addr`, writable.
+    #[inline]
+    pub const fn ifra_addr_mut(&mut self) -> &mut SockaddrIn6 {
+        &mut self.ifra_addr
+    }
+}
+
 /// `SIOCDIFADDR_IN6`.
 pub const SIOCDIFADDR_IN6: u64 = _iow::<In6Ifreq>(b'i', 25);
 /// `SIOCAIFADDR_IN6`.
