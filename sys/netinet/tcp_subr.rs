@@ -117,8 +117,8 @@
 //!   test as -1 does. `tcp_freeq` returns `bool` (the C's 0 or 1).
 //! - `tcp_ctlinput` is an `unsafe fn` (`PrCtlinputFn`): it reads the returned IP header and
 //!   the first eight bytes of the TCP header (ports and sequence number, all an ICMP error
-//!   carries) through the raw argument, and the ICMP message around it through an `IcmpPkt`
-//!   view. `tcp_notify`, `tcp_mtudisc` and `tcp_mtudisc_increase` return early for a
+//!   carries) through the raw argument, and the message's next-hop MTU (the two bytes before
+//!   it) by value: nothing of the quote is written. `tcp_notify`, `tcp_mtudisc` and `tcp_mtudisc_increase` return early for a
 //!   control block without a `tcpcb`, where the C would dereference NULL (it never happens:
 //!   `tcp_close` clears `inp_ppcb` and detaches under the same socket lock).
 //! - `tcp_signature` returns `bool` (`true` for the C's 0); its `char *sig` is the
@@ -162,7 +162,7 @@ use crate::netinet::in_pcb::{
     in_pcbrtentry, in_pcbsolock, in_pcbsounlock, in_pcbunref,
 };
 use crate::netinet::ip::{Ip, Ippseudo};
-use crate::netinet::ip_icmp::{Icmp, IcmpPkt, icmp_mtudisc};
+use crate::netinet::ip_icmp::{ICMP_HUN_OFFSET, Icmp, icmp_mtudisc};
 use crate::netinet::ip_input::{INETCTLERRMAP, IP_DEFTTL, ip_mtudisc};
 use crate::netinet::ip_ipsp::{IpsecInit, Tdb, Xformsw};
 use crate::netinet::ip_output::ip_output;
@@ -1035,19 +1035,20 @@ pub unsafe fn tcp_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, v: *mut 
             (Some(tp), Some(i))
                 if seq_geq(seq, tp.snd_una.get()) && seq_lt(seq, tp.snd_max.get()) =>
             {
-                let advoff = offset_of!(Icmp, icmp_dun);
-                // SAFETY: the caller's contract: the IP header sits at `icmp_ip` inside the
-                // contiguous ICMP message, whose header and returned TCP bytes are there too.
-                let icp = unsafe {
-                    IcmpPkt::new(
-                        ip.wrapping_sub(advoff),
-                        advoff + (usize::from(iph.ip_hl()) << 2) + 8,
-                    )
-                };
+                // The message's `icmp_nextmtu`, the two bytes before the returned header (at
+                // `ICMP_MINLEN - 2`): read once, by value; the quote is only read, nothing of
+                // it is written.
+                let nextmtu_at = offset_of!(Icmp, icmp_dun) - ICMP_HUN_OFFSET - 2;
+                // SAFETY: this function's contract: `ip` is the IP header returned inside the
+                // contiguous ICMP message, `icmp_dun` (ICMP_MINLEN) bytes into it, so the two
+                // bytes `nextmtu_at` before it are the message's `icmp_nextmtu`, readable for
+                // the call; an unaligned read of an integer, valid for any bytes.
+                let nextmtu: u16 =
+                    unsafe { ptr::read_unaligned(ip.cast_const().sub(nextmtu_at).cast::<u16>()) };
 
                 // If the ICMP message advertises a Next-Hop MTU equal or larger than the
                 // maximum packet size we have ever sent, drop the message.
-                let mtu = u32::from(ntohs(icp.icmp_nextmtu()));
+                let mtu = u32::from(ntohs(nextmtu));
                 if mtu >= tp.t_pmtud_mtu_sent.get() {
                     done(inp);
                     return;
@@ -1055,7 +1056,7 @@ pub unsafe fn tcp_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, v: *mut 
                 if mtu >= tcp_hdrsz(tp) + tp.t_pmtud_mss_acked.get() {
                     // Calculate new MTU, and create corresponding route (traditional PMTUD).
                     tp.clear_flags(TF_PMTUD_PEND);
-                    icmp_mtudisc(&icp, i.inp_rtableid.get());
+                    icmp_mtudisc(nextmtu, &iph, i.inp_rtableid.get());
                 } else {
                     // Record the information got in the ICMP message; act on it later. If
                     // we had already recorded an ICMP message, replace the old one only if
@@ -1069,9 +1070,9 @@ pub unsafe fn tcp_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, v: *mut 
                         tp.set_flags(TF_PMTUD_PEND);
                     }
                     tp.t_pmtud_th_seq.set(seq);
-                    tp.t_pmtud_nextmtu.set(u32::from(icp.icmp_nextmtu()));
-                    tp.t_pmtud_ip_len.set(icp.icmp_ip().ip_len);
-                    tp.t_pmtud_ip_hl.set(u16::from(icp.icmp_ip().ip_hl()));
+                    tp.t_pmtud_nextmtu.set(u32::from(nextmtu));
+                    tp.t_pmtud_ip_len.set(iph.ip_len);
+                    tp.t_pmtud_ip_hl.set(u16::from(iph.ip_hl()));
                     done(inp);
                     return;
                 }

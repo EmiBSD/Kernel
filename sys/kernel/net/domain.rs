@@ -199,6 +199,8 @@ pub struct NetTables<G: ProcGlue> {
     pub(crate) rtsock: crate::net::rtsock::RtsockTables<G>,
     /// The Internet protocols' control blocks (`in_pcb.c`'s `inpcb_pool`).
     pub(crate) inpcb: crate::netinet::in_pcb::InpcbTables<G>,
+    /// The internet protocol switch (`in_proto.c`'s `inetsw[]` and `ip_protox[]`).
+    pub(crate) inet: crate::netinet::in_proto::InetTables<G>,
     /// `if_input_task_locked`: `if_netisr`, the protocols' software interrupt (N6.3a: here,
     /// since its yield is the glue's scheduler's).
     pub(crate) if_input_task_locked: crate::task::Task,
@@ -227,6 +229,7 @@ impl<G: ProcGlue> NetTables<G> {
             unix: crate::net::unix::UnixTables::new(),
             rtsock: crate::net::rtsock::RtsockTables::new(),
             inpcb: crate::netinet::in_pcb::InpcbTables::new(),
+            inet: crate::netinet::in_proto::InetTables::new(),
             if_input_task_locked: crate::task::Task::new(
                 crate::net::netisr::if_netisr::<G>,
                 ptr::null_mut(),
@@ -358,7 +361,7 @@ pub fn pfctlinput<G: ProcGlue>(cmd: i32, sa: SockaddrView<'_>) {
 
     for dp in net::<G>().domains() {
         for pr in dp.protocols() {
-            pr.ctlinput(cmd, sa, 0);
+            pr.ctlinput(cmd, sa, 0, None);
         }
     }
 }

@@ -279,6 +279,19 @@ pub struct PpsLocked<'a> {
     tv: Timeval,
 }
 
+impl<'a> PpsLocked<'a> {
+    /// The guard of `ppsratecheck_mtx`: the witness of a limiter's state kept beside it (a
+    /// `Guarded` cell keyed to [`PPSRATECHECK_MTX`], ICMP's error limiter).
+    pub fn witness(&self) -> &MutexedGuard<'a, ()> {
+        &self._guard
+    }
+
+    /// The guard, to change such a state.
+    pub fn witness_mut(&mut self) -> &mut MutexedGuard<'a, ()> {
+        &mut self._guard
+    }
+}
+
 /// `ratecheck_mtx`.
 static RATECHECK_MTX: Mutexed<()> = Mutexed::new(IPL_HIGH, ());
 

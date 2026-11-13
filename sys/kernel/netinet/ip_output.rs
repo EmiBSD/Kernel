@@ -72,8 +72,8 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - `icmp_mtudisc_clone` (ICMP's, N6.4c2) and the TCP and UDP counters of software
-//!   checksums (`tcps_outswcsum`, `udps_outswcsum`, N6.6) are `Inet` legs.
+//! - The TCP and UDP counters of software checksums (`tcps_outswcsum`, `udps_outswcsum`,
+//!   N6.6) are `Inet` legs (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
 //! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
 //!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
 //!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;
@@ -254,23 +254,25 @@ pub fn ip_load(m: &Mbuf) -> Ip {
 
 /// `*mtod(m, struct ip *) = *ip`: the header written back at the start of `m`'s data, in
 /// place when the data is writable, through `m_copyback` (a copy of a shared cluster first)
-/// when it is not.
+/// when it is not. `false`, nothing written, when no cluster can be had for that copy
+/// (`m_copyback`'s `ENOBUFS`): the caller drops the packet. The C writes in place and cannot
+/// fail; here a packet's first mbuf is writable on every path (the input path's since
+/// `ipv4_check`, the output path's built fresh), so the copy is not taken in practice.
 #[inline]
-pub fn ip_store(m: &mut Mbuf, ip: &Ip) {
+#[must_use]
+pub fn ip_store(m: &mut Mbuf, ip: &Ip) -> bool {
     if let Some(d) = m.data_mut() {
         if let Some(v) = pod::view_mut::<Ip>(d, 0) {
             *v = *ip;
-            return;
+            return true;
         }
         if pod::put(d, 0, ip) {
-            return;
+            return true;
         }
     }
     let mut b = [0u8; IP_HDR_LEN];
     let _ = pod::put(&mut b, 0, ip);
-    if m_copyback(m, 0, &b, M_DONTWAIT).is_err() {
-        kpanic(format_args!("ip_output: the IP header cannot be written"));
-    }
+    m_copyback(m, 0, &b, M_DONTWAIT).is_ok()
 }
 
 /// The address of the `sockaddr_in` image `sa` (its bytes 4 to 8), network order.
@@ -430,7 +432,10 @@ pub fn ip_output(
             && (legs.in_use() || seclevel.is_some())
         {
             // Do we have any pending SAs to apply ? The SPD reads the header in the packet.
-            ip_store(&mut m, &ip);
+            if !ip_store(&mut m, &ip) {
+                ipstat_inc(IpstatCounters::IpsOdropped);
+                return Err(Errno::ENOBUFS);
+            }
             match legs.ip_output_lookup(&m, hlen, seclevel, ipsecflowinfo) {
                 // Should silently drop packet
                 Err(SpdError::Drop) => return Ok(()),
@@ -487,9 +492,12 @@ pub fn ip_output(
                 // If we belong to the destination multicast group on the outgoing interface,
                 // and the caller did not forbid loopback, loop back a copy. Can't defer
                 // TCP/UDP checksumming, do the computation now.
-                ip_store(&mut m, &ip);
+                if !ip_store(&mut m, &ip) {
+                    ipstat_inc(IpstatCounters::IpsOdropped);
+                    return Err(Errno::ENOBUFS);
+                }
                 in_proto_cksum_out(&mut m, None);
-                ip_mloopback(ifn, &m, &dst);
+                ip_mloopback(ifn, &m, &dst, net);
             }
             // MROUTING: ip_mforward when ipmforwarding and ip_mrouter_active; not configured.
 
@@ -530,7 +538,10 @@ pub fn ip_output(
         if flags & IP_MTUDISC != 0 && ro.rt().is_some_and(|rt| rt.rt_locks().get() & RTV_MTU == 0) {
             ip.ip_off |= htons(IP_DF);
         }
-        ip_store(&mut m, &ip);
+        if !ip_store(&mut m, &ip) {
+            ipstat_inc(IpstatCounters::IpsOdropped);
+            return Err(Errno::ENOBUFS);
+        }
 
         // Check if the packet needs encapsulation.
         if let Some(t) = tdb.as_ref() {
@@ -613,7 +624,14 @@ pub fn ip_output(
                 ro.ro_tableid = orig_rtableid;
                 let mut a = [0u8; 4];
                 a.copy_from_slice(&ro.ro_dst[SIN_ADDR..SIN_ADDR + 4]);
-                ro.ro_rt = inet().and_then(|i| i.icmp_mtudisc_clone(a, ro.ro_tableid, false));
+                ro.ro_rt = crate::netinet::ip_icmp::icmp_mtudisc_clone(
+                    InAddr {
+                        s_addr: u32::from_ne_bytes(a),
+                    },
+                    ro.ro_tableid,
+                    false,
+                    net,
+                );
             }
 
             // This case can happen if the user changed the MTU of an interface after enabling
@@ -693,10 +711,15 @@ pub fn ip_fragment(m0: MbufBox, ml: &mut MbufList, ifp: &Ifnet, mtu: u32) -> Res
             let mut mhip = ip;
             let mhlen = if hlen as usize > IP_HDR_LEN {
                 m.m_len().set(hlen as u32);
-                let n = match m.data_mut() {
-                    Some(d) => ip_optcopy(&opts[..nopts], &mut d[IP_HDR_LEN..]),
-                    None => kpanic(format_args!("ip_fragment: a fresh mbuf read-only")),
+                // Invariant: `m` is m_gethdr's, its data in its own storage (no cluster), which
+                // is never read-only (`Mbuf::is_readonly` answers so only for a cluster):
+                // `data_mut` is `Some`.
+                let Some(d) = m.data_mut() else {
+                    kpanic(format_args!(
+                        "ip_fragment: an mbuf without a cluster read-only"
+                    ));
                 };
+                let n = ip_optcopy(&opts[..nopts], &mut d[IP_HDR_LEN..]);
                 let mhlen = (n + IP_HDR_LEN) as i32;
                 mhip.set_ip_hl((mhlen >> 2) as u8);
                 mhlen
@@ -718,7 +741,9 @@ pub fn ip_fragment(m0: MbufBox, ml: &mut MbufList, ifp: &Ifnet, mtu: u32) -> Res
 
             m.m_pkthdr().len.set(mhlen + len);
             mhip.ip_len = htons((mhlen + len) as u16);
-            ip_store(&mut m, &mhip);
+            if !ip_store(&mut m, &mhip) {
+                break 'bad Err(Errno::ENOBUFS);
+            }
             let Some(n) = m_copym(&mut m0, off, len, M_NOWAIT) else {
                 break 'bad Err(Errno::ENOBUFS);
             };
@@ -742,7 +767,10 @@ pub fn ip_fragment(m0: MbufBox, ml: &mut MbufList, ifp: &Ifnet, mtu: u32) -> Res
         ip.ip_off |= htons(IP_MF);
     }
     ip.ip_len = htons(m0.m_pkthdr().len.get() as u16);
-    ip_store(&mut m0, &ip);
+    if !ip_store(&mut m0, &ip) {
+        ipstat_inc(IpstatCounters::IpsOdropped);
+        return Err(Errno::ENOBUFS);
+    }
 
     in_hdr_cksum_out(&mut m0, Some(ifp));
 
@@ -780,8 +808,12 @@ pub fn ip_insertoptions(m: MbufBox, opt: &[u8], phlen: &mut i32) -> MbufBox {
     let first = u32::from_ne_bytes([p[0], p[1], p[2], p[3]]);
     if first != 0 {
         ip.ip_dst = InAddr { s_addr: first };
-        // The C writes it in place before it may give up on a header mbuf below.
-        ip_store(&mut m, &ip);
+        // The C writes it in place before it may give up on a header mbuf below; without a
+        // buffer for a shared cluster's copy, the packet goes back as the C's does when it
+        // gives up (its options not inserted).
+        if !ip_store(&mut m, &ip) {
+            return m;
+        }
     }
     if m.ext().is_some() || m.data_off() < optlen {
         let Some(mut n) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
@@ -806,7 +838,10 @@ pub fn ip_insertoptions(m: MbufBox, opt: &[u8], phlen: &mut i32) -> MbufBox {
     // after it.
     *phlen = (IP_HDR_LEN + optlen) as i32;
     ip.ip_len = htons(ntohs(ip.ip_len) + optlen as u16);
-    ip_store(&mut m, &ip);
+    // The header is in a fresh header mbuf or in `m`'s own storage: written in place.
+    if !ip_store(&mut m, &ip) {
+        return m;
+    }
     let list = &p[size_of::<InAddr>()..];
     match m.data_mut() {
         Some(d) => d[IP_HDR_LEN..IP_HDR_LEN + optlen].copy_from_slice(list),
@@ -1557,12 +1592,12 @@ pub fn ip_freemoptions(imo: Option<MBox<IpMoptions>>, net: &NetHeld<'_>) {
 
 /// `ip_mloopback(ifp, m, dst)`: a copy of the IP multicast packet `m` looped back to the input
 /// queue of `ifp` (called from `ip_output`).
-pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &[u8; SIN_LEN]) {
+pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &[u8; SIN_LEN], net: &NetHeld<'_>) {
     if let Some(mut copym) = m_dup_pkt(m, MAX_LINKHDR.load(Ordering::Relaxed) as u32, M_DONTWAIT) {
         // We don't bother to fragment if the IP length is greater than the interface's MTU.
         // Can this possibly matter?
         in_hdr_cksum_out(&mut copym, None);
-        let _ = if_input_local(ifp, copym, dst[1], None);
+        let _ = if_input_local(ifp, copym, dst[1], None, Some(net));
     }
 }
 
@@ -1720,7 +1755,7 @@ pub fn in_ifcap_cksum(m: &Mbuf, ifp: Option<&Ifnet>, ifcap: u32) -> bool {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests for IPv4 output: fragmentation (offsets, flags, lengths, the id and the
     // checksum of each fragment), the option copy of the later fragments, option insertion,
     // the output checksums, and `ip_output` itself over a test interface (the header
@@ -1800,12 +1835,13 @@ mod tests {
     }
 
     /// A driver that keeps the packets it is given and the flags they came with.
-    struct CapDriver {
+    pub(crate) struct CapDriver {
         sent: Mutex<Vec<(Vec<u8>, u16)>>,
     }
 
     impl CapDriver {
-        fn count(&self) -> usize {
+        /// The packets output so far.
+        pub(crate) fn count(&self) -> usize {
             self.sent.lock().expect("sent").len()
         }
 
@@ -1837,7 +1873,7 @@ mod tests {
     /// An interface up with broadcast, MTU 1500, on the interface list, and address
     /// 10.0.2.15/24 (`ifconfig ipo0 inet 10.0.2.15/24`: its record and its routes). Called
     /// without the net lock, which `in_ioctl` takes.
-    fn iface() -> (&'static Ifnet, &'static CapDriver) {
+    pub(crate) fn iface() -> (&'static Ifnet, &'static CapDriver) {
         let d: &'static CapDriver = Box::leak(Box::new(CapDriver {
             sent: Mutex::new(Vec::new()),
         }));

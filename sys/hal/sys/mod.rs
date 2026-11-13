@@ -62,6 +62,8 @@ pub mod net_route;
 #[forbid(unsafe_code)]
 pub mod netinet6_in6;
 #[forbid(unsafe_code)]
+pub mod netinet_icmp_var;
+#[forbid(unsafe_code)]
 pub mod netinet_if_ether;
 #[forbid(unsafe_code)]
 pub mod netinet_igmp;
@@ -75,6 +77,8 @@ pub mod netinet_in_var;
 pub mod netinet_ip;
 #[forbid(unsafe_code)]
 pub mod netinet_ip6;
+#[forbid(unsafe_code)]
+pub mod netinet_ip_icmp;
 #[forbid(unsafe_code)]
 pub mod netinet_ip_var;
 #[forbid(unsafe_code)]

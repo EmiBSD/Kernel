@@ -598,7 +598,7 @@ impl LinkLayer for Ether {
     }
 
     fn input(&self, ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
-        ether_input(ifp, m, ns);
+        ether_input(ifp, m, ns, None);
     }
 
     fn rtrequest(
@@ -746,7 +746,7 @@ pub fn ether_resolve(
                 {
                     // XXX Should we input an unencrypted IPsec packet?
                     if let Some(mcopy) = m_copym(&mut m, 0, M_COPYALL, M_NOWAIT) {
-                        let _ = if_input_local(ifp, mcopy, af, None);
+                        let _ = if_input_local(ifp, mcopy, af, None, None);
                     }
                 }
             }
@@ -868,7 +868,12 @@ fn ether_port_input(
 
 /// `ether_input(ifp, m, ns)`: a received Ethernet frame through the phases of filtering (the
 /// module's docs) to its protocol, or dropped.
-pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack>) {
+pub fn ether_input(
+    ifp: &'static Ifnet,
+    m: MbufBox,
+    mut ns: Option<&mut Netstack>,
+    net: Option<&NetHeld<'_>>,
+) {
     let ac = arpcom_of(ifp);
     let mut sdelim = false;
 
@@ -953,8 +958,9 @@ pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack
     // the local port.
     let etype = u16::from_be(eh.ether_type);
     let input: ProtoFn = match etype {
-        ETHERTYPE_IP => match inet() {
-            Some(i) => i.ipv4_input(),
+        // `ip_init`'s entry (the glue's `ipv4_input`); none before it: dropped.
+        ETHERTYPE_IP => match crate::netinet::ip_input::IPV4_INPUT.get() {
+            Some(&f) => f,
             None => return,
         },
 
@@ -991,7 +997,7 @@ pub fn ether_input(ifp: &'static Ifnet, m: MbufBox, mut ns: Option<&mut Netstack
     };
 
     m_adj(&m, ETHER_HDR_LEN as i32);
-    if_input_proto(ifp, m, input, ns);
+    if_input_proto(ifp, m, input, ns, net);
 }
 
 /// `ether_brport_isset(ifp)`: `EBUSY` when a bridge port is installed. Under the kernel lock.
@@ -1758,6 +1764,9 @@ mod tests {
         crate::netinet::if_ether::arpinit::<crate::fs::testfs::TestGlue>();
         let protos = [
             crate::net::if_::test_proto_count,
+            *crate::netinet::ip_input::IPV4_INPUT
+                .get()
+                .expect("ipv4_input"),
             *crate::netinet::if_ether::ARPINPUT.get().expect("arpinput"),
             *crate::netinet::if_ether::REVARPINPUT
                 .get()
@@ -1767,7 +1776,7 @@ mod tests {
         // A frame for a protocol is queued on the softnet's stack (`if_input_proto`), with
         // the protocol in its cookie.
         let count = |f: MbufBox, ns: &mut Netstack| {
-            ether_input(ifp, f, Some(ns));
+            ether_input(ifp, f, Some(ns), None);
             let n = ml_len(&ns.ns_proto);
             while let Some(m) = crate::net::mbuf::ml_dequeue(&mut ns.ns_proto) {
                 assert!(
@@ -1779,7 +1788,7 @@ mod tests {
             n
         };
         let body = [0u8; 46];
-        // IPv4 to the double's protocol, ARP and RARP to ARP's entries; IPv6 likewise.
+        // IPv4 to `ip_init`'s entry, ARP and RARP to ARP's entries, IPv6 to the double's.
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_IP, &body), &mut ns), 1);
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_ARP, &body), &mut ns), 1);
         assert_eq!(
@@ -2177,6 +2186,7 @@ mod tests {
             ifp,
             frame(OURS, PEER, ETHERTYPE_IP, &[0u8; 46]),
             Some(&mut ns),
+            None,
         );
         assert_eq!(ml_len(&ns.ns_proto), 0);
         hal::klock::kernel_lock();
@@ -2186,6 +2196,7 @@ mod tests {
             ifp,
             frame(OURS, PEER, ETHERTYPE_IP, &[0u8; 46]),
             Some(&mut ns),
+            None,
         );
         assert_eq!(ml_len(&ns.ns_proto), 1);
         while let Some(m) = crate::net::mbuf::ml_dequeue(&mut ns.ns_proto) {

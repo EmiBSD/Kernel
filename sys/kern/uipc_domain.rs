@@ -71,10 +71,9 @@
 //!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
 //!   goes to `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
 //! - `pffinddomain`, `pffindtype` and `pffindproto` over `bsd`'s tables return `Option`s for
-//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is an
-//!   `unsafe fn` over a raw socket address, as `pr_ctlinput` is (N6.4 types it); the
-//!   kernel's `pr_ctlinput` of these tables is `panic(9)`: nothing in the kernel calls it
-//!   before N6.4.
+//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is the
+//!   kernel's (`kernel::net::domain`, over its `domains[]`): these tables' `pr_ctlinput` is
+//!   reached through their `Protocol` impl, the one raw call of the table's function.
 //! - `net_sysctl` follows `kern_sysctl.rs`'s calling convention (`docs/C_TO_RUST.md`);
 //!   `sysctl_vslock` wraps the protocol handlers that are not `PR_MPSYSCTL`, as in C.
 
@@ -84,6 +83,7 @@ use kernel::net::domain::Domain as KDomain;
 use kernel::net::mbuf::MbufBox;
 use kernel::net::proto::{Protocol, SockaddrView, Usrreqs};
 use kernel::net::socket::SoLocked;
+use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol};
 
 use crate::kern::kern_sysctl::sysctl_vslock;
 use crate::kern::proc_glue::BsdProcGlue as G;
@@ -96,15 +96,16 @@ use crate::netinet::in_proto::{INETDOMAIN, INETSW};
 use crate::netinet6::in6_proto::{INET6DOMAIN, INET6SW};
 use crate::sys::domain::Domain;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, lend, park};
+use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
-    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_ROUTE, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
+    AF_INET, NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW,
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
-use crate::sys::systm::net_assert_locked;
+use hal::sys::netinet_in::IPPROTO_DONE;
+use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
 
 /// `domains[]` of `bsd`'s tables: the configured communication domains whose protocols are
 /// still `bsd`'s.
@@ -125,7 +126,7 @@ pub static NET_DOMAINS: &[&dyn KDomain<G>] = &[
     &PFKEYDOMAIN,
     #[cfg(feature = "inet6")]
     &INET6DOMAIN,
-    &INETDOMAIN,
+    &InetDomain::<G>::NEW,
     &kernel::net::unix::Unix::<G>::NEW,
     &kernel::net::rtsock::RouteDomain::<G>::NEW,
     // NAF_FRAME: &framedomain, not configured.
@@ -136,12 +137,44 @@ macro_rules! protocols {
     ($sw:ident; $($i:literal)*) => { [$(&$sw[$i] as &dyn Protocol<G>),*] };
 }
 
-/// `inetsw[]` as the kernel's protocols.
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
+/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(not(feature = "inet6"))]
-static INET_PROTOS: [&dyn Protocol<G>; 13] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12);
-/// `inetsw[]` as the kernel's protocols.
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] = [
+    &IpProtocol::<G>::NEW,
+    &INETSW[1],
+    &INETSW[2],
+    &INETSW[3],
+    &IcmpProtocol::<G>::NEW,
+    &INETSW[5],
+    &IgmpProtocol::<G>::NEW,
+    &INETSW[7],
+    &INETSW[8],
+    &INETSW[9],
+    &INETSW[10],
+    &INETSW[11],
+    &INETSW[12],
+];
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
+/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
-static INET_PROTOS: [&dyn Protocol<G>; 14] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13);
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] = [
+    &IpProtocol::<G>::NEW,
+    &INETSW[1],
+    &INETSW[2],
+    &INETSW[3],
+    &IcmpProtocol::<G>::NEW,
+    &INETSW[5],
+    &INETSW[6],
+    &IgmpProtocol::<G>::NEW,
+    &INETSW[8],
+    &INETSW[9],
+    &INETSW[10],
+    &INETSW[11],
+    &INETSW[12],
+    &INETSW[13],
+];
+
 /// `inet6sw[]` as the kernel's protocols.
 #[cfg(feature = "inet6")]
 static INET6_PROTOS: [&dyn Protocol<G>; 15] =
@@ -152,6 +185,10 @@ static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
 /// `domaininit`: the kernel's domains (`bsd`'s tables and the UNIX domain) and their
 /// protocols initialised, the protocol timeouts started (`kernel::net::domain`).
 pub fn domaininit() {
+    // in_init's half that is bsd's: the key of bsd's pcb counts (the kernel's InetDomain
+    // runs the kernel's in_init).
+    let _ = crate::netinet::in_pcb::legacy_key();
+    kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
@@ -164,6 +201,7 @@ pub fn domaininit() {
 pub(crate) fn net_tables_for_tests() {
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
+    kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
     kernel::net::domain::domains_set::<G>(NET_DOMAINS);
 }
 
@@ -214,6 +252,37 @@ impl KDomain<G> for Domain {
     }
 }
 
+/// The largest socket address `bsd`'s `pr_ctlinput` functions read: a `sockaddr_in6`
+/// (TCP's, UDP's and raw IPv6's, after their length check); TCP's IPv4 function reads a
+/// `sockaddr_in`, 16 bytes, after its family check alone.
+const CTL_SA_LEN: usize = size_of::<hal::sys::netinet6_in6::SockaddrIn6>();
+
+/// The socket address handed to a `pr_ctlinput` function: its bytes (`sa_len` of them, at
+/// least the header's two: `SockaddrView`'s) in a zero-filled buffer of [`CTL_SA_LEN`], a
+/// shorter address reading as zeros past its end (an AF_INET address without its `sin_addr`
+/// is `INADDR_ANY`, which TCP's ignores); `None` for a longer one, which no C caller passes
+/// (the C's are a `sockaddr_in` or a `sockaddr_in6`).
+fn ctl_sa(sa: &[u8]) -> Option<[u8; CTL_SA_LEN]> {
+    if sa.len() > CTL_SA_LEN {
+        return None;
+    }
+    let mut b = [0u8; CTL_SA_LEN];
+    b[..sa.len()].copy_from_slice(sa);
+    Some(b)
+}
+
+/// Whether the ICMP message `b` holds what `bsd`'s IPv4 `pr_ctlinput` functions read of the
+/// header it returns: the ICMP header (`icmp_nextmtu` in it), a returned header of at least
+/// `struct ip` (`ip_hl` >= 5, the C's `icmp_input` check) whole, and 8 bytes after it (the
+/// ports, TCP's sequence number, the SPI): `ICMP_ADVLEN`.
+fn ctl_quote_holds(b: &[u8]) -> bool {
+    let Some(&vhl) = b.get(ICMP_MINLEN) else {
+        return false;
+    };
+    let hl = usize::from(vhl & 0x0f) << 2;
+    hl >= size_of::<crate::netinet::ip::Ip>() && b.len() >= ICMP_MINLEN + hl + 8
+}
+
 impl Protocol<G> for Protosw {
     fn domain(&self) -> &'static dyn KDomain<G> {
         self.pr_domain
@@ -230,11 +299,43 @@ impl Protocol<G> for Protosw {
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         self.pr_usrreqs.map(|u| u as &'static dyn Usrreqs<G>)
     }
-    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32) {
-        // bsd's pfctlinput dispatches its own tables (N6.4 types the argument).
-        panic(format_args!(
-            "pr_ctlinput of a bsd protocol through the kernel"
-        ));
+    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, ip: Option<&[u8]>) {
+        let Some(ctlinput) = self.pr_ctlinput else {
+            return;
+        };
+        // The returned IPv4 header (the C's `&icp->icmp_ip`, ICMP_MINLEN into the message) is
+        // what an AF_INET table's entry takes; an entry of another family reads a non-NULL
+        // argument as its own (IPv6's as a `struct ip6ctlparam *`) and is never handed one,
+        // and a quote shorter than what the functions read is not handed over (the C's
+        // `icmp_input` drops such a message before `pr_ctlinput`): nothing is called.
+        let arg = match ip {
+            None => ptr::null_mut(),
+            Some(b) if self.pr_domain.dom_family == i32::from(AF_INET) && ctl_quote_holds(b) => b
+                .as_ptr()
+                .wrapping_add(ICMP_MINLEN)
+                .cast_mut()
+                .cast::<core::ffi::c_void>(),
+            Some(_) => return,
+        };
+        // An address longer than a sockaddr_in6: no C caller passes one, nothing is called.
+        let Some(sab) = ctl_sa(sa.bytes()) else {
+            return;
+        };
+        // SAFETY: `PrCtlinputFn`'s contract (`sys/sys/protosw.rs`), met by this function's own
+        // checks above, whatever its caller passes:
+        // - `sa` is `sab`, a local buffer of `CTL_SA_LEN` (a `sockaddr_in6`'s 28) initialised
+        //   bytes, alive until the call returns (`Sockaddr` has alignment 1). It holds the
+        //   view's bytes, `sa_len` of them (`SockaddrView` holds its `sa_len` bytes, and one
+        //   longer than 28 returned above), so its `sa_len` is at most the bytes lent, and a
+        //   `sockaddr_in6`'s bytes are readable there.
+        // - `arg` is NULL, or, for an AF_INET table's entry only, ICMP_MINLEN into the message
+        //   `b`, which `ctl_quote_holds` checked holds the ICMP header, a returned header of
+        //   `hl` >= 20 bytes (the byte at ICMP_MINLEN) and 8 bytes after it: ICMP_ADVLEN. `b`
+        //   is borrowed shared and unchanged for the call; the contract's functions only read
+        //   it, so the `cast_mut` lends no write; the pointer derives from `b.as_ptr()`, so
+        //   its provenance covers the message's header before it too. An entry of another
+        //   family (IPv6's read a non-NULL argument as an `ip6ctlparam`) gets NULL.
+        unsafe { ctlinput(cmd, sab.as_ptr().cast(), rdomain, arg) };
     }
     fn has_ctloutput(&self) -> bool {
         self.pr_ctloutput.is_some()
@@ -251,6 +352,35 @@ impl Protocol<G> for Protosw {
         match self.pr_ctloutput {
             Some(f) => f(op, as_static(so), level, optname, m.map(|m| lend(&*m))),
             None => Err(Errno::ENOPROTOOPT),
+        }
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut kernel::net::if_var::Netstack>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) -> i32 {
+        let input = need(self.pr_input, "pr_input");
+        let mut m = mp.take().map(park);
+        let nxt = input(&mut m, offp, proto, af, ns);
+        // IPPROTO_DONE: the protocol consumed the packet (`bsd`'s inputs may leave the slot
+        // naming the packet they kept or freed, as the C's leave `*mp`); the next protocol
+        // otherwise, the packet back in the slot.
+        if nxt != IPPROTO_DONE {
+            *mp = m.map(unpark);
+        }
+        nxt
+    }
+    fn has_sysctl(&self) -> bool {
+        self.pr_sysctl.is_some()
+    }
+    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        match self.pr_sysctl {
+            Some(sysctl) => sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen),
+            None => Err(Errno::EOPNOTSUPP),
         }
     }
     fn init(&self) {
@@ -508,28 +638,6 @@ pub fn net_sysctl(
         };
         return kernel::net::unix::uipc_sysctl::<G>(&name[1..], &mut req);
     }
-    if family == i32::from(PF_ROUTE) {
-        // The route domain is the kernel's: its one protocol (0, routesw[0]) answers
-        // net.route (pr_sysctl = sysctl_rtable), its old value's pages wired as the C's for
-        // a protocol without PR_MPSYSCTL.
-        if name.len() < 3 {
-            return Err(Errno::EISDIR); // overloaded
-        }
-        if name[1] != 0 {
-            return Err(Errno::ENOPROTOOPT);
-        }
-        let savelen = *oldlenp;
-        let vs = sysctl_vslock(oldp, savelen)?;
-        let mut req = kernel::sysctl::SysctlReq {
-            oldp,
-            oldlenp,
-            newp,
-            newlen,
-        };
-        let error = kernel::net::rtsock::sysctl_rtable::<G>(&name[2..], &mut req);
-        drop(vs);
-        return error;
-    }
     if family == i32::from(PF_BPF) {
         return bpf_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
@@ -537,7 +645,10 @@ pub fn net_sysctl(
         return crate::net::if_pflow::pflow_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
     // PIPEX (PF_PIPEX), MPLS (PF_MPLS): not configured.
-    let Some(dp) = pffinddomain(family) else {
+    // The kernel's domains[]: the route and internet domains are the kernel's (routesw's
+    // sysctl_rtable, the IP, ICMP and IGMP entries), bsd's rows answer through their
+    // Protocol impl.
+    let Some(dp) = kernel::net::domain::pffinddomain::<G>(family) else {
         return Err(Errno::ENOPROTOOPT);
     };
 
@@ -545,43 +656,28 @@ pub fn net_sysctl(
         return Err(Errno::EISDIR); // overloaded
     }
     let protocol = name[1];
-    for pr in dp.dom_protosw {
-        if i32::from(pr.pr_protocol) == protocol
-            && let Some(sysctl) = pr.pr_sysctl
-        {
+    for pr in dp.protocols() {
+        if i32::from(pr.protocol()) == protocol && pr.has_sysctl() {
             let savelen = *oldlenp;
             // sysctl_vsunlock(oldp, savelen) is the guard's drop.
-            let vs = if pr.pr_flags & PR_MPSYSCTL == 0 {
+            let vs = if pr.flags() & PR_MPSYSCTL == 0 {
                 Some(sysctl_vslock(oldp, savelen)?)
             } else {
                 None
             };
-            let error = sysctl(&name[2..], oldp, oldlenp, newp, newlen);
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+            };
+            let error = pr.sysctl(&name[2..], &mut req);
             drop(vs);
 
             return error;
         }
     }
     Err(Errno::ENOPROTOOPT)
-}
-
-/// `pfctlinput`: hands control input `cmd` about `sa` to every protocol that takes it.
-///
-/// # Safety
-///
-/// `sa` points at a readable socket address of its `sa_len` bytes (`PrCtlinputFn`'s
-/// contract).
-pub unsafe fn pfctlinput(cmd: i32, sa: *const Sockaddr) {
-    net_assert_locked("pfctlinput");
-
-    for dp in DOMAINS {
-        for pr in dp.dom_protosw {
-            if let Some(ctlinput) = pr.pr_ctlinput {
-                // SAFETY: the caller's contract; no argument, as the C passes NULL.
-                unsafe { ctlinput(cmd, sa, 0, ptr::null_mut()) };
-            }
-        }
-    }
 }
 /* </CODE> */
 
@@ -590,7 +686,116 @@ pub unsafe fn pfctlinput(cmd: i32, sa: *const Sockaddr) {
 mod tests {
     use super::*;
     use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_UDP};
-    use crate::sys::socket::{AF_INET, AF_ROUTE, AF_UNIX, SOCK_DGRAM};
+    use crate::sys::protosw::PRC_MSGSIZE;
+    use crate::sys::socket::{AF_ROUTE, AF_UNIX, SOCK_DGRAM};
+
+    #[test]
+    fn ctlinput_s_address_is_padded_and_its_quote_checked_here() {
+        // The address: a 2-byte view padded with zeros, a sockaddr_in6 whole, a longer one
+        // refused.
+        let mut short = [0u8; CTL_SA_LEN];
+        short[..2].copy_from_slice(&[2, AF_INET]);
+        assert_eq!(ctl_sa(&[2, AF_INET]), Some(short));
+        let six: [u8; CTL_SA_LEN] = core::array::from_fn(|i| i as u8);
+        assert_eq!(ctl_sa(&six), Some(six));
+        let long: [u8; 40] = core::array::from_fn(|i| i as u8);
+        assert_eq!(ctl_sa(&long), None);
+        // The quote: ICMP_MINLEN + ip_hl * 4 + 8 bytes, ip_hl >= 5, or nothing is handed over.
+        let msg = |vhl: u8, len: usize| {
+            let mut b = std::vec![0u8; len];
+            if let Some(x) = b.get_mut(ICMP_MINLEN) {
+                *x = vhl;
+            }
+            b
+        };
+        for (vhl, len, holds) in [
+            (0x45, 36, true),
+            (0x45, 35, false),
+            (0x46, 40, true),
+            (0x46, 39, false),
+            (0x4f, 76, true),
+            (0x4f, 75, false),
+            (0x4f, 28, false),
+            (0x44, 64, false),
+            (0x40, 64, false),
+            (0x45, ICMP_MINLEN, false),
+            (0x45, 0, false),
+        ] {
+            assert_eq!(
+                ctl_quote_holds(&msg(vhl, len)),
+                holds,
+                "vhl {vhl:#x}, len {len}"
+            );
+        }
+    }
+
+    /// The calls [`probe`] took, and how many had an argument.
+    static PROBED: [core::sync::atomic::AtomicU32; 2] = [
+        core::sync::atomic::AtomicU32::new(0),
+        core::sync::atomic::AtomicU32::new(0),
+    ];
+
+    /// A `pr_ctlinput` that only counts its calls (it reads nothing through its pointers).
+    fn probe(
+        _cmd: i32,
+        _sa: *const crate::sys::socket::Sockaddr,
+        _rd: u32,
+        arg: *mut core::ffi::c_void,
+    ) {
+        use core::sync::atomic::Ordering::Relaxed;
+        PROBED[0].fetch_add(1, Relaxed);
+        if !arg.is_null() {
+            PROBED[1].fetch_add(1, Relaxed);
+        }
+    }
+
+    #[test]
+    fn ctlinput_calls_its_function_only_with_what_it_checked() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let calls = || (PROBED[0].load(Relaxed), PROBED[1].load(Relaxed));
+        let inet = Protosw {
+            pr_type: SOCK_RAW as i16,
+            pr_protocol: 99,
+            pr_ctlinput: Some(probe as crate::sys::protosw::PrCtlinputFn),
+            ..Protosw::new(&INETDOMAIN)
+        };
+        let ctl = |pr: &Protosw, sa: &[u8], ip: Option<&[u8]>| {
+            let sa = SockaddrView::new(sa).expect("an address");
+            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, ip);
+        };
+        let mut sin = [0u8; 16];
+        sin[..2].copy_from_slice(&[16, AF_INET]);
+        let mut quote = [0u8; 36];
+        quote[ICMP_MINLEN] = 0x45;
+        // A sockaddr_in and a quote of ICMP_ADVLEN bytes: called, with the argument.
+        ctl(&inet, &sin, Some(&quote));
+        assert_eq!(calls(), (1, 1));
+        // A quote whose ip_hl says 60 bytes in 28 (the C's icmp_input drops it): not called.
+        let mut overlong = [0u8; 28];
+        overlong[ICMP_MINLEN] = 0x4f;
+        ctl(&inet, &sin, Some(&overlong));
+        assert_eq!(calls(), (1, 1));
+        // An address longer than a sockaddr_in6: not called.
+        let mut long = [0u8; 40];
+        long[..2].copy_from_slice(&[40, AF_INET]);
+        ctl(&inet, &long, None);
+        assert_eq!(calls(), (1, 1));
+        // A 2-byte address (padded with zeros), no quote: called, without an argument.
+        ctl(&inet, &[2, AF_INET], None);
+        assert_eq!(calls(), (2, 1));
+        // An IPv6 table's entry is never handed an IPv4 quote.
+        #[cfg(feature = "inet6")]
+        {
+            let inet6 = Protosw {
+                pr_domain: &INET6DOMAIN,
+                ..inet
+            };
+            ctl(&inet6, &sin, Some(&quote));
+            assert_eq!(calls(), (2, 1));
+            ctl(&inet6, &sin, None);
+            assert_eq!(calls(), (3, 1));
+        }
+    }
 
     #[test]
     fn the_inet_protocols_are_found_by_number_and_type() {

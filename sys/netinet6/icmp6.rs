@@ -129,7 +129,6 @@ use crate::kern::kern_sysctl::{
     SYSCTL_LOCK, sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdint, sysctl_rdstruct,
 };
 use crate::kern::kern_time::ppsratecheck_shared;
-use crate::kern::uipc_domain::pfctlinput;
 use crate::kern::uipc_mbuf::{
     m_adj, m_cat, m_copydata, m_copym, m_free, m_freem, m_gethdr, m_prepend, m_pullup, m_resethdr,
     m_trailingspace,
@@ -1459,13 +1458,16 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
             }
             rtfree(newrt);
         }
-        // finally update cached route in each socket via pfctlinput
+        // finally update cached route in each socket via pfctlinput (the kernel's, over its
+        // domains[]: bsd's tables answer through their Protocol impl)
         let mut sdst = SockaddrIn6::zeroed();
         sdst.sin6_family = AF_INET6;
         sdst.sin6_len = size_of::<SockaddrIn6>() as u8;
         sdst.sin6_addr = reddst6;
-        // SAFETY: a local `sockaddr_in6`.
-        unsafe { pfctlinput(PRC_REDIRECT_HOST, sin6tosa(&mut sdst)) };
+        kernel::net::domain::pfctlinput::<crate::kern::proc_glue::BsdProcGlue>(
+            PRC_REDIRECT_HOST,
+            sa_view(sa_of(&sdst)),
+        );
         false
     };
 
@@ -1904,7 +1906,11 @@ pub fn icmp6_mtudisc_clone(
 
 /// `icmp6_mtudisc_timeout`: a path MTU timer fired: delete the dynamic host route or forget
 /// the learned MTU.
-pub fn icmp6_mtudisc_timeout(rt: &PoolArc<Rtentry>, rtableid: u32) {
+pub fn icmp6_mtudisc_timeout(
+    rt: &PoolArc<Rtentry>,
+    rtableid: u32,
+    _net: &hal::netlock::NetHeld<'_>,
+) {
     net_assert_locked("icmp6_mtudisc_timeout");
     let rt: &Rtentry = rt;
 
@@ -2808,7 +2814,11 @@ mod tests {
         assert_eq!(rt.rt_mtu().load(Ordering::Relaxed), 1300);
 
         // The timer fires: the dynamic host route goes away.
-        icmp6_mtudisc_timeout(&crate::net::route::handle(rt), 0);
+        icmp6_mtudisc_timeout(
+            &crate::net::route::handle(rt),
+            0,
+            &crate::net::if_::net_held("icmp6_mtudisc_timeout"),
+        );
         rtfree(Some(rt));
         let again = icmp6_mtudisc_clone(&sin6, 0, false).expect("cloned afresh");
         assert_eq!(again.rt_mtu().load(Ordering::Relaxed), 0);

@@ -55,14 +55,13 @@
 //!
 //! Since N6.4a the header's userland half is `hal::sys::netinet_ip_var` and its counters and
 //! `ip_output` flags `kernel::netinet::ip_var` (with `ipcounters`, which `ip_input.c`
-//! defines), re-exported here under LZ's names; what is left is `bsd`'s until `ip_output`
-//! (N6.4a) and the reassembly (N6.4c2) move.
+//! defines), re-exported here under LZ's names, with the reassembly records (`struct ipqent`,
+//! `struct ipq`, `struct ipoffnxt`, N6.4c2); what is left is LZ's header copies `mtod_ip` and
+//! `mtod_ip_store` for `bsd`'s transports.
 //!
 //! ## Deviations
 //! - `struct ip_moptions` is the kernel's since N6.4c1 (`kernel::netinet::ip_var`),
-//!   re-exported here; `struct ipqent` and `struct ipq` hold
-//!   `Cell`s (they change under `ipq_mutex`); `ipqe_ip` points at the fragment's header in its
-//!   mbuf, read unaligned (`netinet/ip_input.rs`).
+//!   re-exported here.
 //! - The globals (`ip_defttl`, `ip_mtudisc`, `ipport_*`, `ip_forwarding`, `ipmultipath`,
 //!   `ip_directedbcast`, `la_hold_total`, `ip_mtudisc_timeout_q`, `ipqent_pool`, ...) and the
 //!   prototypes (`ip_output`, `ip_input_if`, ...) are defined by `netinet/ip_input.rs`,
@@ -70,75 +69,17 @@
 //!   functions by `netinet/raw_ip.c`, which is not ported (`netinet/in_proto.rs` has the
 //!   `rip_input` stand-in). `struct ipstat` as `sysctl(2)` returns it is here.
 
-use core::cell::Cell;
 use core::mem::size_of;
 
 pub use hal::sys::netinet_ip_var::{Ipoption, Ipovly, Ipstat, MAX_IPOPTLEN};
 pub use kernel::netinet::ip_var::{
     IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT, IP_REDIRECT,
-    IPCOUNTERS, IPMTUDISCTIMEOUT, IPS_NCOUNTERS, IpMoptions, IpstatCounters, ipstat_add,
-    ipstat_dec, ipstat_inc,
+    IPCOUNTERS, IPMTUDISCTIMEOUT, IPS_NCOUNTERS, IpMoptions, Ipoffnxt, Ipq, Ipqent, IpstatCounters,
+    ipstat_add, ipstat_dec, ipstat_inc,
 };
 
-use crate::netinet::in_::InAddr;
 use crate::netinet::ip::Ip;
-use crate::queue_adapter;
 use crate::sys::mbuf::{Mbuf, mtod};
-use crate::sys::queue::{ListEntry, ListHead};
-
-/// `struct ipqent`: a fragment on a reassembly queue.
-pub struct Ipqent {
-    /// `ipqe_q`.
-    pub ipqe_q: ListEntry<Ipqent>,
-    /// `ipqe_ip`: the fragment's IP header, in `ipqe_m`.
-    pub ipqe_ip: Cell<*mut Ip>,
-    /// `ipqe_m`: mbuf contains packet.
-    pub ipqe_m: Cell<Option<&'static Mbuf>>,
-    /// `ipqe_mff`: for IP fragmentation.
-    pub ipqe_mff: Cell<u16>,
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(ipqehead, ipqent)`: a datagram's fragments.
-    pub Ipqehead: Ipqent, ipqe_q => ListEntry<Ipqent>
-);
-
-/// `struct ipq`: an IP reassembly queue. Each fragment being reassembled is attached to one
-/// of these structures. They are timed out after `ipq_ttl` drops to 0, and may also be
-/// reclaimed if memory becomes tight.
-pub struct Ipq {
-    /// `ipq_q`: to other reass headers.
-    pub ipq_q: ListEntry<Ipq>,
-    /// `ipq_rdomain`: routing domain for reassembly.
-    pub ipq_rdomain: Cell<u32>,
-    /// `ipq_id`: sequence id for reassembly.
-    pub ipq_id: Cell<u16>,
-    /// `ipq_ttl`: time for reass q to live.
-    pub ipq_ttl: Cell<u8>,
-    /// `ipq_p`: protocol of this fragment.
-    pub ipq_p: Cell<u8>,
-    /// `ipq_fragq`: to ip fragment queue.
-    pub ipq_fragq: ListHead<Ipqehead>,
-    /// `ipq_src`.
-    pub ipq_src: Cell<InAddr>,
-    /// `ipq_dst`.
-    pub ipq_dst: Cell<InAddr>,
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(, ipq) ipq`: the reassembly queues.
-    pub IpqList: Ipq, ipq_q => ListEntry<Ipq>
-);
-
-/// `struct ipoffnxt`: a fragment's offset and next header.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Ipoffnxt {
-    /// Offset.
-    pub ion_off: i32,
-    /// Next header.
-    pub ion_nxt: i32,
-}
 
 /// `*mtod(m, struct ip *)`: the IP header at the start of `m`'s data, as a value. The data
 /// may sit at any alignment in the mbuf, so the header is copied out (`docs/C_TO_RUST.md`).

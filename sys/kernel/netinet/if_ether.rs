@@ -947,7 +947,12 @@ fn arppullup(m: MbufBox) -> Option<MbufBox> {
 
 /// `arpinput(ifp, m, ns)`: common length and type checks are done here, then the packet is
 /// queued for the protocol-specific routine.
-pub fn arpinput<G: ProcGlue>(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
+pub fn arpinput<G: ProcGlue>(
+    _ifp: &'static Ifnet,
+    m: MbufBox,
+    _ns: Option<&mut Netstack>,
+    _net: &NetHeld<'_>,
+) {
     let Some(m) = arppullup(m) else {
         return;
     };
@@ -1317,7 +1322,12 @@ pub fn arpproxy(in_: InAddr, rtableid: u32, net: &NetHeld<'_>) -> bool {
 /// `revarpinput(ifp, m, ns)`: called from Ethernet interrupt handlers when ether packet type
 /// `ETHERTYPE_REVARP` is received. Common length and type checks are done here, then the
 /// protocol-specific routine is called.
-pub fn revarpinput<G: ProcGlue>(ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
+pub fn revarpinput<G: ProcGlue>(
+    ifp: &'static Ifnet,
+    m: MbufBox,
+    _ns: Option<&mut Netstack>,
+    _net: &NetHeld<'_>,
+) {
     let Some(m) = arppullup(m) else {
         return;
     };
@@ -1678,7 +1688,11 @@ mod tests {
         // (`if_input` marks a frame with its interface before the link layer sees it.)
         let m = m_devget(&frame, 0).expect("a frame");
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        crate::net::if_ethersubr::ether_input(ifp, m, None);
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            crate::net::if_ethersubr::ether_input(ifp, m, None, Some(&net));
+        }
         assert_eq!(
             crate::net::if_var::niq_len(&ARPINQ),
             before + 1,

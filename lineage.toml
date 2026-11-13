@@ -5787,7 +5787,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6296,13 +6296,13 @@ adapted_by = ["sys/hal/sys/net_if.rs"]
 rust = "sys/net/if_enc.rs"
 lz = ["sys/net/if_enc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs"]
 
 [[module]]
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_input.rs"]
 notes = "N6.3c2: a re-export of kernel::net::if_ethersubr with three adapters: the drivers' raw ether_ioctl (its one unsafe, the request's bytes the kernel reads), the parked-mbuf ether_input of the tests, ether_extract_headers into bsd's pointer view of struct ether_extracted"
 
 [[module]]
@@ -6366,7 +6366,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/net/pf.rs"
 lz = ["sys/net/pf.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/crypto/sha2.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/kernel/sched.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_input.rs"]
 
 [[module]]
 rust = "sys/net/pf_if.rs"
@@ -6490,7 +6490,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/icmp_var.rs"
 lz = ["sys/netinet/icmp_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/netinet_icmp_var.rs", "sys/kernel/netinet/icmp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/if_ether.rs"
@@ -6502,7 +6503,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6521,12 +6522,13 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
 lz = ["sys/netinet/in_proto.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/in_var.rs"
@@ -6561,13 +6563,13 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6602,8 +6604,8 @@ status = "inherited"
 rust = "sys/netinet/ip_var.rs"
 lz = ["sys/netinet/ip_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/hal/sys/netinet_ip_var.rs"]
-notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::pod::at) and mtod_ip_store stay until their slices; N6.4c1: ip_moptions the kernel's, re-exported"
+adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/hal/sys/netinet_ip_var.rs", "sys/kernel/netinet/ip_input.rs"]
+notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::pod::at) and mtod_ip_store stay until their slices; N6.4c1: ip_moptions the kernel's, re-exported; N6.4c2: ipqent, ipq and ipoffnxt the kernel's (re-exported), mtod_ip and mtod_ip_store stay for bsd's own readers (pf, the transports)"
 
 [[module]]
 rust = "sys/netinet/ipsec_input.rs"
@@ -6659,13 +6661,13 @@ status = "inherited"
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
 lz = ["sys/netinet/tcp_timer.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/netinet/ip_icmp.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_usrreq.rs"
@@ -6711,7 +6713,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
@@ -8714,6 +8716,35 @@ lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
 
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip_icmp.rs"
+crate = "hal"
+lz = ["sys/netinet/ip_icmp.rs"]
+status = "redesigned"
+notes = "N6.4c2: netinet/ip_icmp.h as hal's: the ICMP_* types, codes and lengths, the ICMP_ADVLEN/ICMP_V6ADVLEN/ICMP_INFOTYPE macros as const fns, and struct icmp (28) with its sub-structures as abi_pod! images, the two unions as their bytes (icmp_hun four bytes, icmp_dun the returned struct ip) with LZ's accessors by name and no unsafe; LZ's reference-backed test; ICMP itself (ip_icmp.c) is kernel::netinet::ip_icmp's"
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::IcmpHun"
+native = ["Icmp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::IcmpDun"
+native = ["Icmp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::icmp_accessor"
+native = []
+kind = "dropped"
+reason = "the unions are their bytes in Icmp (icmp_hun, icmp_dun): each LZ accessor is a plain method of the same name over them, no macro and no unsafe"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::Icmp::icmp_data"
+native = []
+kind = "dropped"
+reason = "the address of the data past struct icmp had no reader in LZ; ICMP reads a message through the mbuf's bytes (kernel::netinet::ip_icmp)"
+
 [[module]]
 rust = "sys/hal/sys/netinet_ip_var.rs"
 crate = "hal"
@@ -8748,6 +8779,19 @@ crate = "hal"
 lz = ["sys/netinet/if_ether.rs"]
 status = "redesigned"
 notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then; N6.4b: the ARP part joins it (struct ether_arp 28 with its arp_hrd.. accessors, struct sockaddr_inarp 16, abi_pods; SIN_PROXY, RTF_USETRAILERS, RTF_PERMANENT_ARP), bsd's copies gone"
+
+[[module]]
+rust = "sys/hal/sys/netinet_icmp_var.rs"
+crate = "hal"
+lz = ["sys/netinet/icmp_var.rs"]
+status = "redesigned"
+notes = "N6.4c2: netinet/icmp_var.h's userland part: struct icmpstat (10 + 2 x 41 u64, net.inet.icmp.stats) as an abi_pod!, ICMPCTL_* and ICMPCTL_MAXID, with LZ's reference-backed test; the _KERNEL part (the counters' enum, icmpstat_inc) is kernel::netinet::icmp_var's"
+
+[[module.fn]]
+lz = "sys/netinet/icmp_var.rs::Icmpstat::zeroed"
+native = []
+kind = "dropped"
+reason = "hal::user::zeroed::<Icmpstat>() makes the zero value of any abi_pod! image (net.inet.icmp.stats fills one)"
 
 [[module]]
 rust = "sys/hal/sys/netinet_igmp.rs"
@@ -16361,8 +16405,20 @@ rust = "sys/kernel/netinet/ip_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/ip_var.rs"]
 status = "redesigned"
-notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq, ipoffnxt and mtod_ip stay bsd's sys/netinet/ip_var.rs until N6.4c2; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
+notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq and ipoffnxt moved here at N6.4c2 (Ipqent with its header fields in cells, Ipq, the IpqentList/IpqList adapters, the Ipoffnxt image), mtod_ip stays bsd's; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
 
+
+[[module]]
+rust = "sys/kernel/netinet/icmp_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/icmp_var.rs"]
+status = "redesigned"
+notes = "N6.4c2: icmp_var.h's _KERNEL part: enum icmpstat_counters and icmpcounters as a hal::percpu::Counters (LZ: a static array of atomics in bsd's ip_icmp.rs), icmpstat_inc and the histograms' icmpstat_inc_hist, #[inline]; the userland half is hal::sys::netinet_icmp_var"
+
+[[module.fn]]
+lz = "sys/netinet/icmp_var.rs::NHIST"
+native = ["sys/hal/sys/netinet_icmp_var.rs::ICMP_NHIST"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet/in_pcb.rs"
@@ -16446,6 +16502,121 @@ kind = "split"
 lz = "sys/netinet6/in6_pcb.rs::in6_pcblookup_lock"
 native = ["in6_pcblookup_held", "in6_pcblookup"]
 kind = "split"
+[[module]]
+rust = "sys/kernel/netinet/in_proto.rs"
+crate = "kernel"
+lz = ["sys/netinet/in_proto.rs"]
+status = "redesigned"
+notes = "N6.4c2: ip_protox[], the inetsw[] table and its raw entry as InetTables in the glue's NetTables (D-9), recorded by the glue (inetsw_set) and filled by ip_init (inetsw_init), looked up per packet by ip_protocol/raw_protocol; IPv6's table through the Inet bridge until N6.5 (inet6_protocol); inetdomain as InetDomain<G> and inetsw[]'s IP, ICMP and IGMP entries as IpProtocol/IcmpProtocol/IgmpProtocol (decision 46, pr_input and pr_sysctl on Protocol), the transports' and IPsec's rows still bsd's in_proto.rs, assembled into the table by bsd's uipc_domain.rs (D-11)"
+
+[[module.fn]]
+lz = "sys/netinet/in_proto.rs::IP_PROTOX"
+native = ["InetTables"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_icmp.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_icmp.rs"]
+status = "redesigned"
+notes = "N6.4c2: ip_icmp.c over owned packets: icmp_do_error/icmp_error, icmp_input(_if) reading the message as an Icmp image (no IcmpPkt raw view) with the C's length checks, pr_ctlinput through Protocol::ctlinput with the message's bytes, the raw sockets through the raw entry's Protocol::input, icmp_reflect/icmp_send, icmp_sysctl, icmp_mtudisc(_clone, _timeout), icmp_ratelimit over a Guarded keyed to ppsratecheck_mtx, icmp_do_exthdr; bsd keeps IcmpPkt for its readers; Security-Review: the reviewer's"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::ICMPCOUNTERS"
+native = ["sys/kernel/netinet/icmp_var.rs::ICMPCOUNTERS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::icmp_advlen_of"
+native = ["sys/hal/sys/netinet_ip_icmp.rs::icmp_advlen"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::icmp_v6advlen_of"
+native = ["sys/hal/sys/netinet_ip_icmp.rs::icmp_v6advlen"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/ip_input.rs"
+crate = "kernel"
+lz = ["sys/netinet/ip_input.rs"]
+status = "redesigned"
+notes = "N6.4c2: ip_input.c over owned packets with the net lock's proof: ipv4_input/ipv4_check/ip_input_if, ip_ours/ip_ours_enqueue/ipintr, ip_deliver (IPv6 steps through Inet legs until N6.5), in_ouraddr, the reassembly on OwnedSlists of pool items (D-15; Ipq/Ipqent in ip_var.rs), ip_dooptions over a copy of the options with every C bound, save_rte/ip_srcroute over the IpSrcrt tag image, ip_stripoptions, ip_forward, ip_sysctl, ip_savecontrol, ip_send(_raw); IPV4_INPUT the G-erased entry slot (D-9); Security-Review: the reviewer's"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IpqHead"
+native = ["IpqState"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IPQ_MUTEX"
+native = ["IPQ"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IP_FRAGS"
+native = ["IpqState"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IPMULTIPATH"
+native = ["sys/kernel/netinet/ip_var.rs::IPMULTIPATH"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IP_DEFTTL"
+native = ["sys/kernel/netinet/ip_var.rs::IP_DEFTTL"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ip_mtudisc"
+native = ["sys/kernel/netinet/ip_var.rs::ip_mtudisc"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::IPCOUNTERS"
+native = ["sys/kernel/netinet/ip_var.rs::IPCOUNTERS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::inetsw_index"
+native = ["sys/kernel/netinet/in_proto.rs::inetsw_init"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ipstat_inc_af"
+native = ["ipstat_af"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ip_reass_insert"
+native = ["ip_reass", "reass_done", "reass_check"]
+kind = "split"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ipqe_ip"
+native = []
+kind = "dropped"
+reason = "the three header members ip_reass reads and changes are the Ipqent's cells (ipqe_off, ipqe_len, ipqe_tos), set when the fragment is queued; the first fragment's header is written once, by reass_check, through ip_output's ip_store"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ipqe_ip_store"
+native = []
+kind = "dropped"
+reason = "see ipqe_ip: no header is written through a fragment's record"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::ipqent_put"
+native = []
+kind = "dropped"
+reason = "an entry goes back to the ipqe pool when its PoolBox is dropped (the fragment's mbuf with it)"
+
+[[module.fn]]
+lz = "sys/netinet/ip_input.rs::pod_bytes"
+native = []
+kind = "dropped"
+reason = "ip_savecontrol hands sbcreatecontrol the values' bytes (to_ne_bytes, hal::user::bytes_of of the sockaddr_dl image): no unsafe byte view"
+
 [[module]]
 rust = "sys/kernel/netinet/ip_output.rs"
 crate = "kernel"

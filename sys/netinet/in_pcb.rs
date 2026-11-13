@@ -251,7 +251,7 @@ static LEGACY_KEY: OnceStatic<&'static LegacyKey> = OnceStatic::new();
 
 /// The kernel pcb's key for `bsd`'s counts, taken by the first `in_init` (the boot's; the
 /// host tests, which have no boot, by their first setup). `panic(9)` when another took it.
-fn legacy_key() -> &'static LegacyKey {
+pub(crate) fn legacy_key() -> &'static LegacyKey {
     if let Some(k) = LEGACY_KEY.get() {
         return k;
     }

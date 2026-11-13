@@ -640,7 +640,12 @@ fn igmp_input_if(ifp: &'static Ifnet, m: MbufBox, iphlen: i32) -> Option<MbufBox
                 && let Some(ia) = in_ifp2ia(ifp)
             {
                 ip.ip_src.s_addr = ia.ia_net.get();
-                ip_store(&mut m, &ip);
+                if !ip_store(&mut m, &ip) {
+                    // No buffer for a shared cluster's copy: dropped, counted as the C counts
+                    // igmp_input's m_pullup failure.
+                    igmpstat_inc(IgmpstatCounters::IgpsRcvTooshort);
+                    return None;
+                }
             }
 
             // If we belong to the group being reported, stop our timer for that group.
@@ -841,7 +846,11 @@ pub fn igmp_sendpkt(pkt: &IgmpPktinfo, net: &NetHeld<'_>) {
         ip_dst: pkt.ipi_addr,
         ..Ip::default()
     };
-    ip_store(&mut m, &ip);
+    // A fresh mbuf: written in place; without it, nothing is sent (the C's igmp_sendpkt
+    // without an mbuf).
+    if !ip_store(&mut m, &ip) {
+        return;
+    }
 
     let mut igmp = Igmp {
         igmp_type: pkt.ipi_type as u8,

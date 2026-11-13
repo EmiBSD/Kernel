@@ -111,7 +111,6 @@ pub use kernel::netinet::if_ether::{
     revarpwhoarewe,
 };
 
-use crate::netinet::in_::InAddr;
 use crate::netinet::ip::Ip;
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet6::in6::In6Addr;
@@ -173,15 +172,11 @@ pub const fn ether_map_ipv6_multicast(ip6addr: &In6Addr) -> [u8; ETHER_ADDR_LEN]
     [0x33, 0x33, a[12], a[13], a[14], a[15]]
 }
 
-/// `arpintr()`: the kernel's ARP soft interrupt, under the net lock `bsd`'s caller holds
-/// (`if_netisr`'s, or a test's `net_lock()`).
-pub fn arpintr() {
+/// `arpintr()`: the kernel's ARP soft interrupt, under the net lock a test holds
+/// (`net_lock()`; `if_netisr` calls the kernel's).
+#[cfg(test)]
+pub(crate) fn arpintr() {
     kernel::netinet::if_ether::arpintr(&crate::net::if_::net_held("arpintr"));
-}
-
-/// `arpproxy(in, rtableid)`: the kernel's, under the net lock `bsd`'s caller holds.
-pub fn arpproxy(in_: InAddr, rtableid: u32) -> bool {
-    kernel::netinet::if_ether::arpproxy(in_, rtableid, &crate::net::if_::net_held("arpproxy"))
 }
 
 // Sizes of the C structures.

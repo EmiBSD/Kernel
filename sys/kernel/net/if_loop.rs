@@ -360,7 +360,7 @@ pub fn loinput(ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
     }
 
     let af = m.m_pkthdr().ph_family.get();
-    if if_input_local(ifp, m, af, ns).is_err()
+    if if_input_local(ifp, m, af, ns, None).is_err()
         && let Some(c) = ifp.if_counters.get()
     {
         counters_inc(c, IfCounters::IfcIerrors);
@@ -461,8 +461,8 @@ mod tests {
 
     use super::*;
     use crate::net::if_::{
-        TEST_PROTO_INPUTS, TestDriver, if_clone_destroy, if_input_process, if_put, if_unit,
-        test_ifnet_fresh, test_packet,
+        TestDriver, if_clone_destroy, if_input_process, if_put, if_unit, test_ifnet_fresh,
+        test_packet,
     };
     use crate::net::ifq::ifiq_test_take;
     use crate::net::route::tests::{entry, sin, testroutes_setup};
@@ -558,14 +558,20 @@ mod tests {
         let dst = sin([127, 0, 0, 1]);
         let view = SockaddrView::new(&dst).expect("an address");
         let opackets = opackets_of(ifp);
-        TEST_PROTO_INPUTS.store(0, Ordering::Relaxed);
+        // IPv4's protocol is the kernel's `ipv4_input` (`ip_init`'s entry): it counts every
+        // packet it is handed (`ips_total`).
+        let total = || {
+            crate::netinet::ip_var::IPCOUNTERS.read()
+                [crate::netinet::ip_var::IpstatCounters::IpsTotal as usize]
+        };
+        let before = total();
         assert_eq!(looutput(ifp, test_packet(0, 60), view, None), Ok(()));
         // Queued, not handed up: the softnet gives it back to loinput.
         let mut ml = ifiq_test_take(ifp.if_rcv());
         assert_eq!(crate::net::mbuf::ml_len(&ml), 1);
-        assert_eq!(TEST_PROTO_INPUTS.load(Ordering::Relaxed), 0);
+        assert_eq!(total(), before);
         if_input_process(ifp, &mut ml, 0);
-        assert_eq!(TEST_PROTO_INPUTS.load(Ordering::Relaxed), 1);
+        assert_eq!(total(), before + 1);
         assert_eq!(opackets_of(ifp), opackets + 1, "if_input_local counts it");
         // Through the interface's driver and link layer, as ip_output reaches it.
         assert_eq!(

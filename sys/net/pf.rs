@@ -10244,6 +10244,11 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
         pf_unlink_inpcb(pf);
     }
 
+    /// `in_ouraddr`'s `pf_ouraddr(m)` (N6.4c2).
+    fn ouraddr(&self, m: &Mbuf) -> i32 {
+        pf_ouraddr(m)
+    }
+
     /// `in_pcblookup_listen`'s `pf_find_divert(m)` (N6.4c1).
     fn find_divert(&self, m: &Mbuf) -> Option<kernel::net::pf_hooks::PfDivert> {
         pf_find_divert(m).map(|d| kernel::net::pf_hooks::PfDivert {

@@ -103,6 +103,13 @@ pub trait Pf: Sync {
         (PF_PASS, Some(m))
     }
 
+    /// `pf_ouraddr(m)`: 1 when pf says the packet is for a local address (a divert-to or
+    /// rdr-to-localhost state), 0 when it says it is not, -1 when pf does not know it
+    /// (`in_ouraddr`'s first question). Default: -1, the C without pf.
+    fn ouraddr(&self, _m: &Mbuf) -> i32 {
+        -1
+    }
+
     /// `pf_find_divert(m)`: the divert-to or divert-reply target pf recorded on a packet it
     /// tagged `PF_TAG_DIVERTED` (`in_pcblookup_listen`'s and `in6_pcblookup_listen`'s key).
     /// Default: none, the C without pf (no packet carries the tag).

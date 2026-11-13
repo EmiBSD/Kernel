@@ -437,6 +437,22 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
     fn adjust_mtu(&self, m: &Mbuf, mtu: u32) {
         crate::netinet::ipsec_output::ipsec_adjust_mtu(m, mtu);
     }
+
+    fn forward_check(&self, m: &Mbuf, hlen: i32, af: i32) -> bool {
+        crate::netinet::ipsec_input::ipsec_forward_check(m, hlen, af).is_err()
+    }
+
+    fn local_check(&self, m: &Mbuf, hlen: i32, proto: i32, af: i32) -> bool {
+        crate::netinet::ipsec_input::ipsec_local_check(m, hlen, proto, af).is_err()
+    }
+
+    fn init(&self) {
+        crate::netinet::ipsec_input::ipsec_init();
+    }
+
+    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        crate::netinet::ipsec_input::ipsec_sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen)
+    }
 }
 
 /// `enc_setif`: makes `ifp` the default enc interface of `rdomain` if it has none.
