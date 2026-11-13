@@ -236,6 +236,16 @@
 //!   `ip_output` sleeps). `in_pcbconnect` and `in_pcbselsrc` read the socket's interface for
 //!   multicasts themselves: their `mcast_ifidx` parameter (`bsd`'s read of its word) is gone.
 //!   The cell is 40 bytes where `bsd`'s word was 8 (the box's malloc type and allocator).
+//! - The "inpcb" item (D-3, the user's class: `vmstat -m` shows it under the C's pool name):
+//!   the C's `struct inpcb` is 328 bytes on LP64 (measured: a `repr(C)` replica of in_pcb.h's
+//!   members in the size test; the three queue entries 48, the two address unions 32,
+//!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
+//!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
+//!   `RouteCell`, the same); here 472, 488 with the counted item's header (the pool and the
+//!   count): the three pinned entries (96: a lock identity each beside the two links), the
+//!   route cache's cell (72), the multicast options' (40), the anchor (16), the IPv4 and IPv6
+//!   members side by side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's
+//!   pool-size row; a diet is N12's.
 //! - `bsd`'s own members (the IPv4 options, the IPv6 options, multicast options and filter,
 //!   the per-protocol pcb) are words `bsd` keeps (`hal::link::PtrWord`), which the kernel
 //!   never reads (the IPv4 options are lent to `ip_ctloutput` by `bsd`'s caller, N6.4c1's
@@ -2812,12 +2822,57 @@ mod tests {
             size_of::<Route>()
         );
         // 472 bytes, 488 with the counted item's header (the count and the pool), against the
-        // C's struct inpcb (LP64) and LZ's: the three pinned entries (96: a lock identity
-        // each besides the two links), the route cache's cell (72), the multicast options'
-        // cell (40: the box carries its malloc type and allocator) and the anchor (16) are
-        // the growth.
+        // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
+        // pinned entries (96: a lock identity each besides the two links), the route cache's
+        // cell (72), the multicast options' cell (40: the box carries its malloc type and
+        // allocator) and the anchor (16) are the growth.
         assert_eq!(sum, 471);
         assert_eq!(size_of::<Inpcb<G>>(), 472);
+
+        // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
+        // pointers as words, the unions as their largest member's words).
+        #[allow(dead_code, reason = "a layout replica: only its size is read")]
+        #[repr(C)]
+        struct CRoute {
+            ro_rt: usize,
+            ro_generation: u64,
+            ro_tableid: u64,
+            ro_dst: [u32; 7],
+            ro_src: [u32; 4],
+        }
+        #[allow(dead_code, reason = "a layout replica: only its size is read")]
+        #[repr(C)]
+        struct CInpcb {
+            inp_table: usize,
+            inp_queue: [usize; 2],
+            inp_hash: [usize; 2],
+            inp_lhash: [usize; 2],
+            inp_faddru: [u32; 4],
+            inp_laddru: [u32; 4],
+            inp_fport: u16,
+            inp_lport: u16,
+            inp_socket: usize,
+            inp_ppcb: usize,
+            inp_route: CRoute,
+            inp_refcnt: [u32; 2],
+            inp_flags: i32,
+            inp_hu: [u32; 10],
+            inp_options: usize,
+            inp_hops: i32,
+            inp_mou: usize,
+            inp_seclevel: [u8; 4],
+            inp_ip_minttl: u8,
+            inp_cksum6: i32,
+            inp_icmp6filt: usize,
+            inp_pf_sk: usize,
+            inp_upcall: usize,
+            inp_upcall_arg: usize,
+            inp_rtableid: u32,
+            inp_pipex: i32,
+            inp_flowid: u16,
+        }
+        assert_eq!(size_of::<CRoute>(), 72);
+        assert_eq!(size_of::<CInpcb>(), 328);
     }
 
     #[test]
