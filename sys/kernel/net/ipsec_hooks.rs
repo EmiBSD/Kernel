@@ -138,6 +138,24 @@ pub trait Ipsec: Sync {
     /// `ipsec_adjust_mtu(m, mtu)`: the path MTU of the SAs `m` went through lowered to
     /// `mtu`, after the packet was too large to send.
     fn adjust_mtu(&self, m: &Mbuf, mtu: u32);
+    /// `ipsec_forward_check(m, hlen, af) != 0`: whether the policy refuses to forward `m`
+    /// (`ip_input_if`, N6.4c2). Default: no refusal (the C without `IPSEC`).
+    fn forward_check(&self, _m: &Mbuf, _hlen: i32, _af: i32) -> bool {
+        false
+    }
+    /// `ipsec_local_check(m, hlen, proto, af) != 0`: whether the policy refuses to deliver
+    /// `m` locally (`ip_deliver`, N6.4c2). Default: no refusal.
+    fn local_check(&self, _m: &Mbuf, _hlen: i32, _proto: i32, _af: i32) -> bool {
+        false
+    }
+    /// `ipsec_init()` (`ip_init`, N6.4c2). Default: nothing.
+    fn init(&self) {}
+    /// `ipsec_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the IPsec names of
+    /// `net.inet.ip` (`ip_sysctl`, N6.4c2). Default: `EOPNOTSUPP` (the C without `IPSEC`,
+    /// whose `ipctl_vars` has none of them).
+    fn sysctl(&self, _name: &[i32], _req: &mut crate::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
 }
 
 /// IPsec's legs, once registered.

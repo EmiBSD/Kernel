@@ -72,8 +72,8 @@
 //!   every packet before registration (`NPF == 0`); a packet pf tagged `PF_TAG_REROUTE`
 //!   reruns the route lookup (the C's `goto reroute` is a labelled loop).
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
-//! - `icmp_mtudisc_clone` (ICMP's, N6.4c2) and the TCP and UDP counters of software
-//!   checksums (`tcps_outswcsum`, `udps_outswcsum`, N6.6) are `Inet` legs.
+//! - The TCP and UDP counters of software checksums (`tcps_outswcsum`, `udps_outswcsum`,
+//!   N6.6) are `Inet` legs (`icmp_mtudisc_clone` is ICMP's own since N6.4c2).
 //! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
 //!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
 //!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;
@@ -489,7 +489,7 @@ pub fn ip_output(
                 // TCP/UDP checksumming, do the computation now.
                 ip_store(&mut m, &ip);
                 in_proto_cksum_out(&mut m, None);
-                ip_mloopback(ifn, &m, &dst);
+                ip_mloopback(ifn, &m, &dst, net);
             }
             // MROUTING: ip_mforward when ipmforwarding and ip_mrouter_active; not configured.
 
@@ -613,7 +613,14 @@ pub fn ip_output(
                 ro.ro_tableid = orig_rtableid;
                 let mut a = [0u8; 4];
                 a.copy_from_slice(&ro.ro_dst[SIN_ADDR..SIN_ADDR + 4]);
-                ro.ro_rt = inet().and_then(|i| i.icmp_mtudisc_clone(a, ro.ro_tableid, false));
+                ro.ro_rt = crate::netinet::ip_icmp::icmp_mtudisc_clone(
+                    InAddr {
+                        s_addr: u32::from_ne_bytes(a),
+                    },
+                    ro.ro_tableid,
+                    false,
+                    net,
+                );
             }
 
             // This case can happen if the user changed the MTU of an interface after enabling
@@ -1557,12 +1564,12 @@ pub fn ip_freemoptions(imo: Option<MBox<IpMoptions>>, net: &NetHeld<'_>) {
 
 /// `ip_mloopback(ifp, m, dst)`: a copy of the IP multicast packet `m` looped back to the input
 /// queue of `ifp` (called from `ip_output`).
-pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &[u8; SIN_LEN]) {
+pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &[u8; SIN_LEN], net: &NetHeld<'_>) {
     if let Some(mut copym) = m_dup_pkt(m, MAX_LINKHDR.load(Ordering::Relaxed) as u32, M_DONTWAIT) {
         // We don't bother to fragment if the IP length is greater than the interface's MTU.
         // Can this possibly matter?
         in_hdr_cksum_out(&mut copym, None);
-        let _ = if_input_local(ifp, copym, dst[1], None);
+        let _ = if_input_local(ifp, copym, dst[1], None, Some(net));
     }
 }
 
@@ -1720,7 +1727,7 @@ pub fn in_ifcap_cksum(m: &Mbuf, ifp: Option<&Ifnet>, ifcap: u32) -> bool {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests for IPv4 output: fragmentation (offsets, flags, lengths, the id and the
     // checksum of each fragment), the option copy of the later fragments, option insertion,
     // the output checksums, and `ip_output` itself over a test interface (the header
@@ -1800,7 +1807,7 @@ mod tests {
     }
 
     /// A driver that keeps the packets it is given and the flags they came with.
-    struct CapDriver {
+    pub(crate) struct CapDriver {
         sent: Mutex<Vec<(Vec<u8>, u16)>>,
     }
 
@@ -1837,7 +1844,7 @@ mod tests {
     /// An interface up with broadcast, MTU 1500, on the interface list, and address
     /// 10.0.2.15/24 (`ifconfig ipo0 inet 10.0.2.15/24`: its record and its routes). Called
     /// without the net lock, which `in_ioctl` takes.
-    fn iface() -> (&'static Ifnet, &'static CapDriver) {
+    pub(crate) fn iface() -> (&'static Ifnet, &'static CapDriver) {
         let d: &'static CapDriver = Box::leak(Box::new(CapDriver {
             sent: Mutex::new(Vec::new()),
         }));

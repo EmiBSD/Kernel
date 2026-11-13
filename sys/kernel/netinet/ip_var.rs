@@ -57,9 +57,8 @@
 //! LZ: sys/netinet/ip_var.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `struct ipqent`, `struct ipq` and `struct ipoffnxt` are still `bsd`'s
-//!   `sys/netinet/ip_var.rs` (LZ's), until the reassembly moves (N6.4c2); so are LZ's
-//!   `mtod_ip`/`mtod_ip_store` (`bsd`'s header copies).
+//! - LZ's `mtod_ip`/`mtod_ip_store` (`bsd`'s header copies) stay `bsd`'s, for `bsd`'s
+//!   transports; the kernel reads and writes a header with `ip_output`'s `ip_load`/`ip_store`.
 //!
 //! ## Redesign
 //! - LZ's `IPCOUNTERS`, a static array of atomics in `bsd`'s `ip_input.rs` (`<sys/percpu.h>`
@@ -86,14 +85,33 @@
 //!   bytes (a 64-byte bucket) where the C's and LZ's are 16 (the `MArray` handle carries its
 //!   length, malloc type and allocator; the D-3 class, docs/SCAFFOLDING.md's pool-size row);
 //!   the vector's is the C's, `imo_max_memberships` pointers.
+//! - N6.4c2, the reassembly records: LZ's `struct ipqent` and `struct ipq` were pool items
+//!   written whole through `unsafe` and linked on `bsd`'s `LIST`s (`IpqList`, `Ipqehead`) by
+//!   `&'static` references, the fragment's header reached through the raw `ipqe_ip`
+//!   pointer and read and written with unaligned copies. Here [`Ipqent`] and [`Ipq`] are
+//!   items of `ip_input.c`'s pools ("ipqe", "ipq") owned by `hal::owned::OwnedSlist`s (the
+//!   C's `LIST`s, walked forward only, D-15): a datagram's fragments in its
+//!   [`Ipq::ipq_fragq`], the datagrams in `ip_input`'s queue. `ipqe_ip` is gone: the three
+//!   header members `ip_reass` reads and changes (the offset, the data length, the type of
+//!   service) are cells of the record ([`Ipqent::ipqe_off`], `ipqe_len`, `ipqe_tos`), set
+//!   from the header when the fragment is queued, and the header is written back once,
+//!   into the first fragment, when the datagram is complete (the only header the C's
+//!   writes through `ipqe_ip` end up in); the mbuf is owned (`Option<MbufBox>`, `Some`
+//!   while queued). `struct ipoffnxt` ([`Ipoffnxt`]) is the `PACKET_TAG_IP_OFFNXT` tag's
+//!   image.
 
+use core::cell::Cell;
 use core::sync::atomic::AtomicI32;
 
 use hal::malloc::MArray;
+use hal::owned::{OwnedSlist, SlistLink};
 use hal::percpu::Counters;
+use hal::pool::{BoxPool, Pooled};
+use hal::sys::netinet_in::InAddr;
 use hal::sys::netinet_ip::IPDEFTTL;
 use hal::sys::socket::SO_BROADCAST;
 
+use crate::net::mbuf::MbufBox;
 use crate::netinet::in_var::InMulti;
 
 // Flags passed to ip_output
@@ -246,6 +264,117 @@ impl IpMoptions {
         self.imo_membership.as_ref()?.get(i).copied().flatten()
     }
 }
+
+/// `struct ipqent`: a fragment queued for reassembly, an item of the "ipqe" pool.
+pub struct Ipqent {
+    /// `ipqe_q`: the next fragment of its datagram.
+    ipqe_q: SlistLink<Ipqent>,
+    /// `ipqe_m`: the fragment, its data past its header; `Some` while it is queued.
+    pub ipqe_m: Option<MbufBox>,
+    /// `ipqe_mff`: more fragments follow (the header's `IP_MF`).
+    pub ipqe_mff: bool,
+    /// `ipqe_ip->ip_hl << 2`: the fragment's header length, in bytes.
+    pub ipqe_hlen: u8,
+    /// `ntohs(ipqe_ip->ip_off)`: the fragment's offset, in bytes (`ip_fragcheck` shifted it).
+    pub ipqe_off: Cell<u16>,
+    /// `ntohs(ipqe_ip->ip_len)`: the fragment's data length (`ip_fragcheck` took the header
+    /// out).
+    pub ipqe_len: Cell<u16>,
+    /// `ipqe_ip->ip_tos`: the type of service, ECN's bits among them.
+    pub ipqe_tos: Cell<u8>,
+}
+
+impl Ipqent {
+    /// A fragment of `hlen` header bytes at offset `off` with `len` data bytes.
+    pub const fn new(m: MbufBox, mff: bool, hlen: u8, off: u16, len: u16, tos: u8) -> Self {
+        Self {
+            ipqe_q: SlistLink::new(),
+            ipqe_m: Some(m),
+            ipqe_mff: mff,
+            ipqe_hlen: hlen,
+            ipqe_off: Cell::new(off),
+            ipqe_len: Cell::new(len),
+            ipqe_tos: Cell::new(tos),
+        }
+    }
+
+    /// `ntohs(ipqe_ip->ip_off) + ntohs(ipqe_ip->ip_len)`: where the fragment's data ends.
+    #[inline]
+    pub fn end(&self) -> i32 {
+        i32::from(self.ipqe_off.get()) + i32::from(self.ipqe_len.get())
+    }
+}
+
+impl Pooled for Ipqent {
+    const POOL: &'static BoxPool<Self> = &crate::netinet::ip_input::IPQENT_POOL;
+}
+
+hal::slist_adapter!(
+    /// `ipqe_q`: the fragments of a datagram.
+    pub IpqentList: Ipqent, ipqe_q
+);
+
+/// `struct ipq`: a datagram being reassembled, an item of the "ipq" pool.
+pub struct Ipq {
+    /// `ipq_q`: the next datagram of the reassembly queue.
+    ipq_q: SlistLink<Ipq>,
+    /// `ipq_rdomain`.
+    pub ipq_rdomain: u32,
+    /// `ipq_ttl`: time for reass q to live (`ip_slowtimo` counts it down).
+    pub ipq_ttl: Cell<u8>,
+    /// `ipq_p`: protocol of this fragment.
+    pub ipq_p: u8,
+    /// `ipq_id`: sequence id for reassembly.
+    pub ipq_id: u16,
+    /// `ipq_fragq`: the fragments, by offset.
+    pub ipq_fragq: OwnedSlist<IpqentList>,
+    /// `ipq_src`.
+    pub ipq_src: InAddr,
+    /// `ipq_dst`.
+    pub ipq_dst: InAddr,
+}
+
+impl Ipq {
+    /// The queue of datagram `id` of protocol `p` from `src` to `dst` in `rdomain`, empty, with
+    /// `ttl` to live.
+    pub const fn new(rdomain: u32, id: u16, p: u8, src: InAddr, dst: InAddr, ttl: u8) -> Self {
+        Self {
+            ipq_q: SlistLink::new(),
+            ipq_rdomain: rdomain,
+            ipq_ttl: Cell::new(ttl),
+            ipq_p: p,
+            ipq_id: id,
+            ipq_fragq: OwnedSlist::new(),
+            ipq_src: src,
+            ipq_dst: dst,
+        }
+    }
+}
+
+impl Pooled for Ipq {
+    const POOL: &'static BoxPool<Self> = &crate::netinet::ip_input::IPQ_POOL;
+}
+
+hal::slist_adapter!(
+    /// `ipq_q`: the reassembly queue.
+    pub IpqList: Ipq, ipq_q
+);
+
+/// `struct ipoffnxt`: the offset and the next protocol of a packet `ip_ours_enqueue` queues
+/// with options, `PACKET_TAG_IP_OFFNXT`'s payload.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Ipoffnxt {
+    /// `ion_off`.
+    pub ion_off: i32,
+    /// `ion_nxt`.
+    pub ion_nxt: i32,
+}
+
+hal::abi_pod!(Ipoffnxt {
+    ion_off: i32,
+    ion_nxt: i32,
+});
 
 /// `ipcounters`: the IP statistics, per CPU (`counters_alloc(ips_ncounters)` in `ip_init`).
 pub static IPCOUNTERS: Counters<IPS_NCOUNTERS> = Counters::new();

@@ -414,15 +414,11 @@ const IF_IDXMAP_DTOR_SIZE: usize = 32;
 /// `bsd`'s until N6.4-N6.6): a bridge (bridges.toml's `Inet` row, paid by N6). Before
 /// registration every leg does nothing: the C without `INET`/`INET6`.
 pub trait Inet: Sync + 'static {
-    /// `ipintr()`: the IPv4 queue (`NETISR_IP`).
-    fn ipintr(&self);
     /// `ip6intr()`: the IPv6 queue (`NETISR_IPV6`).
     fn ip6intr(&self);
     /// `tcp_input_mlist(ml, af)`: the TCP segments a softnet gathered.
     fn tcp_input_mlist(&self, ml: &mut MbufList, af: SaFamily);
-    /// `ipv4_input`, as `if_input_local` hands a packet to it (`if_input_proto`).
-    fn ipv4_input(&self) -> ProtoFn;
-    /// `ipv6_input`, the same for IPv6.
+    /// `ipv6_input`, as `if_input_local` hands a packet to it (`if_input_proto`).
     fn ipv6_input(&self) -> ProtoFn;
     /// `tcpstat_inc(tcps_inhwlro)` (`hw`) or `tcpstat_inc(tcps_inbadlro)`.
     fn tcpstat_lro(&self, hw: bool);
@@ -493,17 +489,47 @@ pub trait Inet: Sync + 'static {
     /// checksum computed in software on output (`in_proto_cksum_out`; N6.4a, until TCP and
     /// UDP move at N6.6). Default: nothing.
     fn proto_outswcsum(&self, _tcp: bool) {}
-    /// `icmp_mtudisc_clone(dst, rtableid, ipsec)`: a host route to `dst` in `rtableid` that
-    /// can carry a path MTU, cloned when there is none (`ip_output` after pf moved the packet
-    /// to another table; N6.4a, until ICMP moves at N6.4c2). Default: none.
-    fn icmp_mtudisc_clone(
-        &self,
-        _dst: [u8; 4],
-        _rtableid: u32,
-        _ipsec: bool,
-    ) -> Option<hal::pool::PoolArc<crate::net::route::Rtentry>> {
+    /// `NET_ASSERT_LOCKED()` of a protocol input entered without a softnet stack and without
+    /// the proof of the caller's holding (`ether_resolve`'s broadcast copy, reached through a
+    /// driver's output, which carries none): `f` run with `bsd`'s proof of the holding (its
+    /// check of the lock's status, the `SaToken`'s), `panic(9)` without the lock (N6.4c2,
+    /// until the drivers' output carries the proof). Default: `panic(9)`.
+    fn with_net_held(&self, _f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+        kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock"));
+    }
+    /// `ip6_protox[nxt]`: the index of IPv6 protocol `nxt` in the IPv6 domain's table
+    /// (`ip_deliver`'s IPv6 steps; N6.4c2, until IPv6 moves at N6.5). Default: none.
+    fn ip6_protox(&self, _nxt: i32) -> Option<usize> {
         None
     }
+    /// The `ip6stat` counter of `ip_deliver`'s `IPSTAT_INC` for IPv6 (N6.4c2, until N6.5).
+    /// Default: nothing.
+    fn ip6stat_deliver(&self, _c: Ip6Deliver) {}
+    /// `atomic_load_int(&ip6_hdrnestlimit)` (N6.4c2, until N6.5). Default: 0.
+    fn ip6_hdrnestlimit(&self) -> i32 {
+        0
+    }
+    /// `ip6_ours_enqueue(mp, offp, nxt)`: an IPv6 packet `ip_deliver` cannot finish under the
+    /// shared net lock, queued for `ip6intr` (N6.4c2, until N6.5). Default: the packet freed.
+    fn ip6_ours_enqueue(&self, m: MbufBox, _off: i32, _nxt: i32) {
+        drop(m);
+    }
+}
+
+/// The `ip6stat` counters `ip_deliver` changes for an IPv6 packet (`IPSTAT_INC(name)` with
+/// `af == AF_INET6`, the `counters_dec` of a queued one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ip6Deliver {
+    /// `ip6stat_inc(ip6s_delivered)`.
+    Delivered,
+    /// `counters_dec(ip6counters, ip6s_delivered)`.
+    Undelivered,
+    /// `ip6stat_inc(ip6s_toomanyhdr)`.
+    Toomanyhdr,
+    /// `ip6stat_inc(ip6s_tooshort)`.
+    Tooshort,
+    /// `ip6stat_inc(ip6s_cantforward)`.
+    Cantforward,
 }
 
 /// The internet protocols' legs, once registered.
@@ -1046,8 +1072,9 @@ pub fn if_enqueue_ifq(ifp: &'static Ifnet, m: MbufBox) -> Result<(), Errno> {
 static PROTO_FNS: [OnceStatic<ProtoFn>; 16] = [const { OnceStatic::new() }; 16];
 
 /// A protocol's input function (`ipv4_input`, `ipv6_input`, ...), as `if_input_proto` calls
-/// it: the interface, the packet, the softnet's stack (`None`: at once, the net lock held).
-pub type ProtoFn = fn(&'static Ifnet, MbufBox, Option<&mut Netstack>);
+/// it: the interface, the packet, the softnet's stack (`None`: at once), and the proof of the
+/// net lock the caller holds (the C's `NET_ASSERT_LOCKED()` along the input path).
+pub type ProtoFn = fn(&'static Ifnet, MbufBox, Option<&mut Netstack>, &NetHeld<'_>);
 
 /// The index of `f` in the table of protocol input functions, entered on first sight (1-based:
 /// 0 is the C's empty cookie). `panic(9)` past the table's 16 functions.
@@ -1079,11 +1106,32 @@ fn proto_fn(id: usize) -> Option<ProtoFn> {
 }
 
 /// `if_input_proto(ifp, m, input, ns)`: `m` for the protocol `input`, at once when there is
-/// no softnet stack (the caller holds the net lock), otherwise queued on the stack's
+/// no softnet stack (the caller holds the net lock: `net`, its proof, or `bsd`'s check of it
+/// through the `Inet` bridge when the caller has none), otherwise queued on the stack's
 /// `ns_proto` with the function in its cookie.
-pub fn if_input_proto(ifp: &'static Ifnet, m: MbufBox, input: ProtoFn, ns: Option<&mut Netstack>) {
+pub fn if_input_proto(
+    ifp: &'static Ifnet,
+    m: MbufBox,
+    input: ProtoFn,
+    ns: Option<&mut Netstack>,
+    net: Option<&NetHeld<'_>>,
+) {
     let Some(ns) = ns else {
-        input(ifp, m, None);
+        match net {
+            Some(net) => input(ifp, m, None, net),
+            None => {
+                let mut m = Some(m);
+                let mut call = |net: &NetHeld<'_>| {
+                    if let Some(m) = m.take() {
+                        input(ifp, m, None, net);
+                    }
+                };
+                match inet() {
+                    Some(i) => i.with_net_held(&mut call),
+                    None => kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock")),
+                }
+            }
+        }
         return;
     };
 
@@ -1092,10 +1140,11 @@ pub fn if_input_proto(ifp: &'static Ifnet, m: MbufBox, input: ProtoFn, ns: Optio
     ml_enqueue(&mut ns.ns_proto, m);
 }
 
-/// `if_input_process_proto`: the protocol input function in the packet's cookie, called.
-fn if_input_process_proto(ifp: &'static Ifnet, m: MbufBox, ns: &mut Netstack) {
+/// `if_input_process_proto`: the protocol input function in the packet's cookie, called
+/// under the softnet's shared net lock (`net`).
+fn if_input_process_proto(ifp: &'static Ifnet, m: MbufBox, ns: &mut Netstack, net: &NetHeld<'_>) {
     match proto_fn(m.m_pkthdr().ph_cookie.get()) {
-        Some(input) => input(ifp, m, Some(ns)),
+        Some(input) => input(ifp, m, Some(ns), net),
         None => kpanic(format_args!("if_input_process_proto: no input function")),
     }
 }
@@ -1121,7 +1170,10 @@ pub fn if_input_process(ifp: &'static Ifnet, ml: &mut MbufList, idx: u32) {
 
     let mut ns = Netstack::new(idx);
 
-    let _shared = NETLOCK.read();
+    let shared = NETLOCK.read();
+    let Some(net) = NetHeld::of(&shared) else {
+        kpanic(format_args!("if_input_process: the net lock"));
+    };
     let driver = ifp.driver();
     while let Some(m) = ml_dequeue(ml) {
         driver.input(ifp, m, Some(&mut ns));
@@ -1143,7 +1195,7 @@ pub fn if_input_process(ifp: &'static Ifnet, ml: &mut MbufList, idx: u32) {
             let index = m.m_pkthdr().ph_ifidx.get();
             let ifp = if_get_smr(index, &smr::read());
             match ifp {
-                Some(ifp) => if_input_process_proto(ifp, m, &mut ns),
+                Some(ifp) => if_input_process_proto(ifp, m, &mut ns, &net),
                 None => drop(m),
             }
         }
@@ -1390,7 +1442,7 @@ impl NetDriver for TestDriver {
             m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
             ml_enqueue(&mut ns.ns_input, m);
         } else {
-            if_input_proto(ifp, m, test_proto_count, Some(ns));
+            if_input_proto(ifp, m, test_proto_count, Some(ns), None);
         }
     }
 }
@@ -1402,7 +1454,12 @@ pub static TEST_PROTO_INPUTS: AtomicU32 = AtomicU32::new(0);
 /// [`TestDriver`]'s protocol: counts the packet in [`TEST_PROTO_INPUTS`] and frees it; a
 /// softnet's packet always comes with its netstack.
 #[cfg(any(test, feature = "doubles"))]
-pub fn test_proto_count(_ifp: &'static Ifnet, m: MbufBox, ns: Option<&mut Netstack>) {
+pub fn test_proto_count(
+    _ifp: &'static Ifnet,
+    m: MbufBox,
+    ns: Option<&mut Netstack>,
+    _net: &NetHeld<'_>,
+) {
     let Some(_ns) = ns else {
         kpanic(format_args!("test_proto_count: no netstack"));
     };
@@ -1829,6 +1886,7 @@ pub fn if_input_local(
     mut m: MbufBox,
     af: SaFamily,
     ns: Option<&mut Netstack>,
+    net: Option<&NetHeld<'_>>,
 ) -> Result<(), Errno> {
     // Only send packets to bpf if they are destined to local addresses.
     //
@@ -1901,16 +1959,16 @@ pub fn if_input_local(
         );
     }
 
-    match (af, inet()) {
-        (AF_INET, Some(i)) => {
+    match (af, crate::netinet::ip_input::IPV4_INPUT.get(), inet()) {
+        (AF_INET, Some(&ipv4_input), _) => {
             if keepcksum & M_IPV4_CSUM_OUT != 0 {
                 ph.csum_flags.set(ph.csum_flags.get() | M_IPV4_CSUM_IN_OK);
             }
-            if_input_proto(ifp, m, i.ipv4_input(), ns);
+            if_input_proto(ifp, m, ipv4_input, ns, net);
             Ok(())
         }
-        (AF_INET6, Some(i)) => {
-            if_input_proto(ifp, m, i.ipv6_input(), ns);
+        (AF_INET6, _, Some(i)) => {
+            if_input_proto(ifp, m, i.ipv6_input(), ns, net);
             Ok(())
         }
         // MPLS: AF_MPLS goes to mpls_input; MPLS is not configured.
@@ -4390,7 +4448,12 @@ pub(crate) mod tests {
 
     use super::*;
 
-    fn proto_other(_ifp: &'static Ifnet, m: MbufBox, _ns: Option<&mut Netstack>) {
+    fn proto_other(
+        _ifp: &'static Ifnet,
+        m: MbufBox,
+        _ns: Option<&mut Netstack>,
+        _net: &NetHeld<'_>,
+    ) {
         drop(m);
     }
 
@@ -4990,7 +5053,13 @@ pub(crate) mod tests {
         if_counters_alloc(ifp);
         ifp.if_flags.set(IFF_LOOPBACK);
         assert_eq!(
-            if_input_local(ifp, test_packet(0, 64), AF_INET, None),
+            if_input_local(
+                ifp,
+                test_packet(0, 64),
+                hal::sys::socket::AF_UNSPEC,
+                None,
+                None
+            ),
             Err(Errno::EAFNOSUPPORT)
         );
         assert_eq!(

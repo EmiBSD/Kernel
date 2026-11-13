@@ -859,7 +859,7 @@ impl Default for RtAddrinfo<'_> {
 }
 
 /// The function a timer queue calls for an expired timer's route (`rtq_func`).
-pub type RtqFunc = fn(&PoolArc<Rtentry>, u32);
+pub type RtqFunc = fn(&PoolArc<Rtentry>, u32, &NetHeld<'_>);
 
 /// `struct rttimer_queue`: a queue of route timers of one timeout, embedded by its owner (a
 /// protocol's `static`).
@@ -2283,7 +2283,7 @@ fn rt_ifa_purge_walker(rt: &Rtentry, ifa: &Ifaddr, _rtableid: u32) -> Result<(),
 /// deletion of a dynamic host route whose interface exists.
 fn rttimer_callout(r: &Rttimer, rt: &PoolArc<Rtentry>, net: &NetHeld<'_>) {
     if let Some(Some(f)) = r.rtt_queue.rtq_func.get() {
-        f(rt, r.rtt_tableid);
+        f(rt, r.rtt_tableid, net);
     } else {
         let ifp = if_get(rt.rt_ifidx.get());
         if let Some(ifp) = ifp
@@ -3020,6 +3020,9 @@ pub(crate) mod tests {
         MULTIPATH.store(false, Ordering::Relaxed);
         crate::netinet::ip_var::IPMULTIPATH.store(0, Ordering::Relaxed);
         let _ = if_::register_inet(&TEST_INET);
+        // `ip_init`'s entry point, as the IPv4 tests' `ip_init` publishes it (set once).
+        let _ = crate::netinet::ip_input::IPV4_INPUT
+            .set(crate::netinet::ip_input::ipv4_input::<crate::fs::testfs::TestGlue>);
         crate::net::rtsock::tap::start();
         g
     }
@@ -3118,12 +3121,8 @@ pub(crate) mod tests {
     }
 
     impl if_::Inet for TestInet {
-        fn ipintr(&self) {}
         fn ip6intr(&self) {}
         fn tcp_input_mlist(&self, _ml: &mut crate::net::mbuf::MbufList, _af: SaFamily) {}
-        fn ipv4_input(&self) -> crate::net::if_::ProtoFn {
-            crate::net::if_::test_proto_count
-        }
         fn ipv6_input(&self) -> crate::net::if_::ProtoFn {
             crate::net::if_::test_proto_count
         }
@@ -3536,7 +3535,7 @@ pub(crate) mod tests {
     static FUNCQ: RttimerQueue = RttimerQueue::new();
     static CALLED: AtomicU32 = AtomicU32::new(0);
 
-    fn called(_rt: &PoolArc<Rtentry>, _id: u32) {
+    fn called(_rt: &PoolArc<Rtentry>, _id: u32, _net: &NetHeld<'_>) {
         CALLED.fetch_add(1, Ordering::Relaxed);
     }
 

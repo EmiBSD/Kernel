@@ -148,7 +148,9 @@ pub fn ether_input(
     m: &'static Mbuf,
     ns: Option<&mut Netstack>,
 ) {
-    kernel::net::if_ethersubr::ether_input(ifp, unpark(m), ns);
+    // Without a softnet stack the protocol runs at once, under the caller's net lock: its
+    // proof is asked of `bsd` (`Inet::with_net_held`) only if a protocol is called.
+    kernel::net::if_ethersubr::ether_input(ifp, unpark(m), ns, None);
 }
 
 /// `ether_extract_headers(m0, ext)` into `bsd`'s view: the kernel's offsets, each turned into
@@ -239,7 +241,13 @@ mod tests {
         let ac = test_arpcom();
         let ifp = &ac.ac_if;
         let before = MBUFPL.nout();
-        let input = |bytes: &[u8]| ether_input(ifp, test_packet(bytes), None);
+        // Without a softnet stack the protocols run at once, under the caller's net lock (the
+        // C's callers hold it; the kernel asks bsd for its proof).
+        let input = |bytes: &[u8]| {
+            crate::sys::systm::net_lock();
+            ether_input(ifp, test_packet(bytes), None);
+            crate::sys::systm::net_unlock();
+        };
 
         // Too short for an Ethernet header.
         input(&[0u8; 10]);

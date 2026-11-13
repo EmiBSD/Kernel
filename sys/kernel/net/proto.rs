@@ -64,11 +64,9 @@
 //! and must dispose of it.
 //!
 //! ## Deviations
-//! - `pr_input` is not a method yet: its arguments are `struct netstack` and the packet
-//!   path, N6.3a/N6.4's types, and no kernel code calls it before N6.4; `bsd`'s `ip_input`
-//!   dispatches through its own tables (D-N6.2-4). `pr_ctlinput`'s family argument (`struct
-//!   ip *`, `ip6ctlparam`) arrives with its callers at N6.4 too: the one kernel use,
-//!   `pfctlinput`, passes NULL.
+//! - `pr_ctlinput`'s argument is the bytes of the ICMP message that carries the offending
+//!   IPv4 header (`&icp->icmp_ip` in the C, from which TCP reads the message's
+//!   `icmp_nextmtu` back); IPv6's `struct ip6ctlparam` arrives with ICMPv6 (N6.5).
 //! - The `prurequests`/`prcrequests`/`prcorequests` name tables (behind `PRUREQUESTS`, ...)
 //!   are not compiled, as in GENERIC.
 //!
@@ -93,9 +91,11 @@
 use hal::sys::errno::Errno;
 use hal::sys::stat::Stat;
 
+use hal::netlock::NetHeld;
+
 use crate::assert::kpanic;
 use crate::net::domain::Domain;
-use crate::net::if_var::Ifnet;
+use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::socket::{SoLocked, Socket};
 use crate::proc::{ProcGlue, Thread};
@@ -126,6 +126,51 @@ pub const PR_SPLICE: i16 = 0x0040;
 pub const PR_MPINPUT: i16 = 0x0080;
 /// mp-safe sysctl(2) handler.
 pub const PR_MPSYSCTL: i16 = 0x0200;
+
+// The commands of pr_ctlinput (`PRC_*`).
+
+/// Route changed.
+pub const PRC_ROUTEDEAD: i32 = 1;
+/// Mtu increased.
+pub const PRC_MTUINC: i32 = 2;
+/// Some said to slow down.
+pub const PRC_QUENCH2: i32 = 3;
+/// Some said to slow down.
+pub const PRC_QUENCH: i32 = 4;
+/// Message size forced drop.
+pub const PRC_MSGSIZE: i32 = 5;
+/// Host appears to be down.
+pub const PRC_HOSTDEAD: i32 = 6;
+/// Deprecated (use PRC_UNREACH_HOST).
+pub const PRC_HOSTUNREACH: i32 = 7;
+/// No route to network.
+pub const PRC_UNREACH_NET: i32 = 8;
+/// No route to host.
+pub const PRC_UNREACH_HOST: i32 = 9;
+/// Dst says bad protocol.
+pub const PRC_UNREACH_PROTOCOL: i32 = 10;
+/// Bad port #.
+pub const PRC_UNREACH_PORT: i32 = 11;
+/// (use PRC_MSGSIZE) 12 not used.
+pub const PRC_UNREACH_NEEDFRAG: i32 = 12;
+/// Source route failed.
+pub const PRC_UNREACH_SRCFAIL: i32 = 13;
+/// Net routing redirect.
+pub const PRC_REDIRECT_NET: i32 = 14;
+/// Host routing redirect.
+pub const PRC_REDIRECT_HOST: i32 = 15;
+/// Redirect for type of service & net.
+pub const PRC_REDIRECT_TOSNET: i32 = 16;
+/// Redirect for tos & host.
+pub const PRC_REDIRECT_TOSHOST: i32 = 17;
+/// Packet lifetime expired in transit.
+pub const PRC_TIMXCEED_INTRANS: i32 = 18;
+/// Lifetime expired on reass q.
+pub const PRC_TIMXCEED_REASS: i32 = 19;
+/// Header incorrect.
+pub const PRC_PARAMPROB: i32 = 20;
+/// The number of commands.
+pub const PRC_NCMDS: usize = 21;
 
 // The requests of pr_ctloutput.
 
@@ -185,9 +230,29 @@ pub trait Protocol<G: ProcGlue>: Sync + 'static {
     /// `pr_usrreqs`: the user requests; `None` for an entry sockets cannot be made of
     /// (`socreate`'s `EPROTONOSUPPORT`).
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>>;
-    /// `pr_ctlinput(cmd, sa, rdomain, NULL)`: control input (from below); nothing when the C's
-    /// entry is NULL.
-    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32) {}
+    /// `pr_ctlinput(cmd, sa, rdomain, ip)`: control input (from below); `ip` the ICMP message
+    /// that returned the offending IPv4 header (from its type byte; the C's `&icp->icmp_ip`
+    /// is `ICMP_MINLEN` into it), `None` for the C's NULL. Nothing when the C's entry is NULL.
+    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _ip: Option<&[u8]>) {}
+    /// `pr_input(mp, offp, proto, af, ns)`: the protocol's input of the packet `*mp` whose
+    /// header is at `*offp`, under the net lock (`net`); `IPPROTO_DONE` once the packet is
+    /// consumed, or the next protocol with `*mp` and `*offp` at its header. The C's NULL entry
+    /// is never called (`ip_deliver` reaches only entries that have one): `panic(9)`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the C's arguments and the net lock's proof"
+    )]
+    fn input(
+        &self,
+        _mp: &mut Option<MbufBox>,
+        _offp: &mut i32,
+        _proto: i32,
+        _af: i32,
+        _ns: Option<&mut Netstack>,
+        _net: &NetHeld<'_>,
+    ) -> i32 {
+        kpanic(format_args!("pr_input of a protocol without one"))
+    }
     /// Whether `pr_ctloutput` is set (`sosetopt`, `sogetopt`: `ENOPROTOOPT` without it, no
     /// lock taken).
     fn has_ctloutput(&self) -> bool {

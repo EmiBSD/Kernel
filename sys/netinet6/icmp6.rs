@@ -1904,7 +1904,11 @@ pub fn icmp6_mtudisc_clone(
 
 /// `icmp6_mtudisc_timeout`: a path MTU timer fired: delete the dynamic host route or forget
 /// the learned MTU.
-pub fn icmp6_mtudisc_timeout(rt: &PoolArc<Rtentry>, rtableid: u32) {
+pub fn icmp6_mtudisc_timeout(
+    rt: &PoolArc<Rtentry>,
+    rtableid: u32,
+    _net: &hal::netlock::NetHeld<'_>,
+) {
     net_assert_locked("icmp6_mtudisc_timeout");
     let rt: &Rtentry = rt;
 
@@ -2808,7 +2812,11 @@ mod tests {
         assert_eq!(rt.rt_mtu().load(Ordering::Relaxed), 1300);
 
         // The timer fires: the dynamic host route goes away.
-        icmp6_mtudisc_timeout(&crate::net::route::handle(rt), 0);
+        icmp6_mtudisc_timeout(
+            &crate::net::route::handle(rt),
+            0,
+            &crate::net::if_::net_held("icmp6_mtudisc_timeout"),
+        );
         rtfree(Some(rt));
         let again = icmp6_mtudisc_clone(&sin6, 0, false).expect("cloned afresh");
         assert_eq!(again.rt_mtu().load(Ordering::Relaxed), 0);

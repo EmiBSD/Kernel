@@ -96,7 +96,7 @@ use crate::netinet::in_proto::{INETDOMAIN, INETSW};
 use crate::netinet6::in6_proto::{INET6DOMAIN, INET6SW};
 use crate::sys::domain::Domain;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, lend, park};
+use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
@@ -105,6 +105,8 @@ use crate::sys::socket::{
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
 use crate::sys::systm::net_assert_locked;
+use hal::sys::netinet_in::IPPROTO_DONE;
+use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
 
 /// `domains[]` of `bsd`'s tables: the configured communication domains whose protocols are
 /// still `bsd`'s.
@@ -136,12 +138,14 @@ macro_rules! protocols {
     ($sw:ident; $($i:literal)*) => { [$(&$sw[$i] as &dyn Protocol<G>),*] };
 }
 
-/// `inetsw[]` as the kernel's protocols.
+/// `inetsw[]` as the kernel's protocols (the kernel's `ip_init` records it).
 #[cfg(not(feature = "inet6"))]
-static INET_PROTOS: [&dyn Protocol<G>; 13] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12);
-/// `inetsw[]` as the kernel's protocols.
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] =
+    protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12);
+/// `inetsw[]` as the kernel's protocols (the kernel's `ip_init` records it).
 #[cfg(feature = "inet6")]
-static INET_PROTOS: [&dyn Protocol<G>; 14] = protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13);
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] =
+    protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13);
 /// `inet6sw[]` as the kernel's protocols.
 #[cfg(feature = "inet6")]
 static INET6_PROTOS: [&dyn Protocol<G>; 15] =
@@ -230,11 +234,33 @@ impl Protocol<G> for Protosw {
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         self.pr_usrreqs.map(|u| u as &'static dyn Usrreqs<G>)
     }
-    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32) {
-        // bsd's pfctlinput dispatches its own tables (N6.4 types the argument).
-        panic(format_args!(
-            "pr_ctlinput of a bsd protocol through the kernel"
-        ));
+    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, ip: Option<&[u8]>) {
+        let Some(ctlinput) = self.pr_ctlinput else {
+            return;
+        };
+        if ip.is_some_and(|b| b.len() < ICMP_MINLEN + size_of::<crate::netinet::ip::Ip>()) {
+            panic(format_args!(
+                "pr_ctlinput: a message shorter than its header"
+            ));
+        }
+        // The C's `&icp->icmp_ip`: ICMP_MINLEN into the message, or NULL.
+        let arg = ip.map_or(ptr::null_mut(), |b| {
+            b.as_ptr()
+                .wrapping_add(ICMP_MINLEN)
+                .cast_mut()
+                .cast::<core::ffi::c_void>()
+        });
+        // SAFETY: `PrCtlinputFn`'s contract. `sa` is a socket address of its `sa_len` bytes
+        // (`SockaddrView` holds them, at least the two of its header) borrowed for the call.
+        // `arg` is NULL, or ICMP_MINLEN into the bytes of the ICMP message `ip` borrows for
+        // the call: the kernel's `icmp_input` hands them over only after its checks that the
+        // message holds `ICMP_ADVLEN` bytes (the returned header, its options, and 8 bytes of
+        // its payload, at least `ICMP_ADVLENMIN`) contiguous in the first mbuf, which is all
+        // `bsd`'s `pr_ctlinput` functions read (the returned header and the ports after it;
+        // TCP's the message's `icmp_nextmtu`, 8 bytes before the header, inside the slice);
+        // none of them writes through the argument (`tcp_ctlinput`, `udp_ctlinput` and the
+        // IPsec ones read it: `sys/netinet/tcp_subr.rs`, `udp_usrreq.rs`, `ipsec_input.rs`).
+        unsafe { ctlinput(cmd, sa.bytes().as_ptr().cast(), rdomain, arg) };
     }
     fn has_ctloutput(&self) -> bool {
         self.pr_ctloutput.is_some()
@@ -252,6 +278,26 @@ impl Protocol<G> for Protosw {
             Some(f) => f(op, as_static(so), level, optname, m.map(|m| lend(&*m))),
             None => Err(Errno::ENOPROTOOPT),
         }
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        offp: &mut i32,
+        proto: i32,
+        af: i32,
+        ns: Option<&mut kernel::net::if_var::Netstack>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) -> i32 {
+        let input = need(self.pr_input, "pr_input");
+        let mut m = mp.take().map(park);
+        let nxt = input(&mut m, offp, proto, af, ns);
+        // IPPROTO_DONE: the protocol consumed the packet (`bsd`'s inputs may leave the slot
+        // naming the packet they kept or freed, as the C's leave `*mp`); the next protocol
+        // otherwise, the packet back in the slot.
+        if nxt != IPPROTO_DONE {
+            *mp = m.map(unpark);
+        }
+        nxt
     }
     fn init(&self) {
         if let Some(init) = self.pr_init {
@@ -565,7 +611,8 @@ pub fn net_sysctl(
     Err(Errno::ENOPROTOOPT)
 }
 
-/// `pfctlinput`: hands control input `cmd` about `sa` to every protocol that takes it.
+/// `pfctlinput`: hands control input `cmd` about `sa` to every protocol of `bsd`'s tables
+/// that takes it (ICMPv6's redirects; IPv4's go through the kernel's).
 ///
 /// # Safety
 ///

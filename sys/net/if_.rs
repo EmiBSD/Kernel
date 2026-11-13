@@ -158,7 +158,6 @@ use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge}
 use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
-use crate::netinet::ip_input::{ipintr, ipv4_input};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
@@ -388,13 +387,14 @@ pub struct BsdNetLegs;
 /// The one [`BsdNetLegs`].
 pub static BSD_NET_LEGS: BsdNetLegs = BsdNetLegs;
 
-/// `ipv4_input` as the kernel's `if_input_proto` takes it.
+/// `ipv4_input` as the kernel's `if_input_proto` takes it (the kernel's own).
 pub fn ipv4_input_proto(
     ifp: &'static Ifnet,
     m: kernel::net::mbuf::MbufBox,
     ns: Option<&mut Netstack>,
+    net: &hal::netlock::NetHeld<'_>,
 ) {
-    ipv4_input(ifp, park(m), ns);
+    kernel::netinet::ip_input::ipv4_input::<crate::kern::proc_glue::BsdProcGlue>(ifp, m, ns, net);
 }
 
 /// `ipv6_input` as the kernel's `if_input_proto` takes it.
@@ -403,15 +403,12 @@ pub fn ipv6_input_proto(
     ifp: &'static Ifnet,
     m: kernel::net::mbuf::MbufBox,
     ns: Option<&mut Netstack>,
+    _net: &hal::netlock::NetHeld<'_>,
 ) {
     ipv6_input(ifp, park(m), ns);
 }
 
 impl kernel::net::if_::Inet for BsdNetLegs {
-    fn ipintr(&self) {
-        ipintr();
-    }
-
     fn ip6intr(&self) {
         #[cfg(feature = "inet6")]
         ip6intr();
@@ -421,10 +418,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let l = MbufList::new();
         l.change(|b| kernel::net::mbuf::ml_enlist(b, ml));
         tcp_input_mlist(&l, i32::from(af));
-    }
-
-    fn ipv4_input(&self) -> kernel::net::if_::ProtoFn {
-        ipv4_input_proto
     }
 
     fn ipv6_input(&self) -> kernel::net::if_::ProtoFn {
@@ -601,17 +594,61 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         }
     }
 
-    fn icmp_mtudisc_clone(
-        &self,
-        dst: [u8; 4],
-        rtableid: u32,
-        ipsec: bool,
-    ) -> Option<hal::pool::PoolArc<kernel::net::route::Rtentry>> {
-        let dst = crate::netinet::in_::InAddr {
-            s_addr: u32::from_ne_bytes(dst),
-        };
-        crate::netinet::ip_icmp::icmp_mtudisc_clone(dst, rtableid, ipsec)
-            .map(crate::net::route::unpark)
+    fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+        f(&net_held("if_input_proto"));
+    }
+
+    fn ip6_protox(&self, nxt: i32) -> Option<usize> {
+        #[cfg(feature = "inet6")]
+        return crate::netinet6::in6_proto::IP6_PROTOX
+            .get(usize::try_from(nxt).ok()?)
+            .map(|p| usize::from(p.load(Ordering::Relaxed)));
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = nxt;
+            None
+        }
+    }
+
+    fn ip6stat_deliver(&self, c: kernel::net::if_::Ip6Deliver) {
+        #[cfg(feature = "inet6")]
+        {
+            use crate::netinet6::ip6_input::IP6COUNTERS;
+            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_inc};
+            use kernel::net::if_::Ip6Deliver;
+            match c {
+                Ip6Deliver::Delivered => ip6stat_inc(Ip6statCounters::Ip6sDelivered),
+                Ip6Deliver::Undelivered => {
+                    IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize]
+                        .fetch_sub(1, Ordering::Relaxed);
+                }
+                Ip6Deliver::Toomanyhdr => ip6stat_inc(Ip6statCounters::Ip6sToomanyhdr),
+                Ip6Deliver::Tooshort => ip6stat_inc(Ip6statCounters::Ip6sTooshort),
+                Ip6Deliver::Cantforward => ip6stat_inc(Ip6statCounters::Ip6sCantforward),
+            }
+        }
+        let _ = c;
+    }
+
+    fn ip6_hdrnestlimit(&self) -> i32 {
+        #[cfg(feature = "inet6")]
+        return crate::netinet6::in6_proto::IP6_HDRNESTLIMIT.load(Ordering::Relaxed);
+        #[cfg(not(feature = "inet6"))]
+        0
+    }
+
+    fn ip6_ours_enqueue(&self, m: kernel::net::mbuf::MbufBox, off: i32, nxt: i32) {
+        #[cfg(feature = "inet6")]
+        {
+            let mut mp = Some(park(m));
+            let mut off = off;
+            let _ = crate::netinet6::ip6_input::ip6_ours_enqueue(&mut mp, &mut off, nxt);
+        }
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = (off, nxt);
+            drop(m);
+        }
     }
 
     fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
@@ -700,7 +737,7 @@ pub fn if_input_local(
     af: SaFamily,
     ns: Option<&mut Netstack>,
 ) -> Result<(), Errno> {
-    kernel::net::if_::if_input_local(ifp, unpark(m), af, ns)
+    kernel::net::if_::if_input_local(ifp, unpark(m), af, ns, None)
 }
 
 /// `if_output_local(ifp, m, af)`: a packet queued for local delivery on `ifp`.
@@ -720,7 +757,7 @@ pub fn if_input_proto(
     input: kernel::net::if_::ProtoFn,
     ns: Option<&mut Netstack>,
 ) {
-    kernel::net::if_::if_input_proto(ifp, unpark(m), input, ns);
+    kernel::net::if_::if_input_proto(ifp, unpark(m), input, ns, None);
 }
 
 /// `if_get_smr(index)`: the interface at `index` for a caller inside an SMR read section,

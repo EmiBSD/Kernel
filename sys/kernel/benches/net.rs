@@ -1713,16 +1713,12 @@ struct BenchInet {
 }
 
 impl kernel::net::if_::Inet for BenchInet {
-    fn ipintr(&self) {}
     fn ip6intr(&self) {}
     fn tcp_input_mlist(
         &self,
         _ml: &mut kernel::net::mbuf::MbufList,
         _af: hal::sys::types::SaFamily,
     ) {
-    }
-    fn ipv4_input(&self) -> kernel::net::if_::ProtoFn {
-        kernel::net::if_::test_proto_count
     }
     fn ipv6_input(&self) -> kernel::net::if_::ProtoFn {
         kernel::net::if_::test_proto_count
@@ -1806,6 +1802,7 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     }
     // The C's `net.inet.ip.multipath` set, which `rt_hash` reads.
     kernel::netinet::ip_var::IPMULTIPATH.store(1, Ordering::Relaxed);
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
     if kernel::net::if_::register_inet(&BENCH_INET).is_err() {
         eprintln!("net: the internet protocols were registered already");
         std::process::exit(1);
@@ -2309,6 +2306,8 @@ fn ether_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     }
     // The route rows may have registered it first; the same double either way.
     let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    // IPv4's entry point (ip_init's, which the rows do not run): the double's protocol.
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
     let _g = testutil::pages_install(64 << 20);
     testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);
@@ -2457,6 +2456,8 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         return;
     }
     let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    // IPv4's entry point (ip_init's, which the rows do not run): the double's protocol.
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
     let _g = testutil::pages_install(64 << 20);
     testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);
@@ -2587,6 +2588,8 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         return;
     }
     let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    // IPv4's entry point (ip_init's, which the rows do not run): the double's protocol.
+    let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
     let _g = testutil::pages_install(64 << 20);
     testutil::kernel_maps_install();
     mbinit(&BENCH_NMBCLUST);

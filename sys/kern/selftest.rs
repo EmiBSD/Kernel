@@ -1633,8 +1633,8 @@ pub fn ping_gateway() {
     }
 
     // ping -c 1 10.0.2.2: an echo request with a skeletal IP header for ip_output.
-    let before = ICMPCOUNTERS[IcmpstatCounters::IcpsInhist as usize + usize::from(ICMP_ECHOREPLY)]
-        .load(Ordering::Relaxed);
+    let reply = IcmpstatCounters::IcpsInhist as usize + usize::from(ICMP_ECHOREPLY);
+    let before = ICMPCOUNTERS.read()[reply];
     let Some(m) = m_gethdr(M_DONTWAIT, MT_DATA) else {
         kprintf!("selftest: ping 10.0.2.2: FAILED: no mbuf\n");
         return;
@@ -1679,10 +1679,8 @@ pub fn ping_gateway() {
         return;
     }
 
-    let counter =
-        &ICMPCOUNTERS[IcmpstatCounters::IcpsInhist as usize + usize::from(ICMP_ECHOREPLY)];
     for _ in 0..PING_TRIES {
-        if counter.load(Ordering::Relaxed) != before {
+        if ICMPCOUNTERS.read()[reply] != before {
             kprintf!("selftest: ping 10.0.2.2: echo reply received\n");
             return;
         }
