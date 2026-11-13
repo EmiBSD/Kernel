@@ -61,6 +61,8 @@
 //! - `icmpcounters` (`struct cpumem *`, `<sys/percpu.h>` not ported) is the static array of
 //!   atomics `ICMPCOUNTERS` in `netinet/ip_icmp.rs`, which defines the C's pointer.
 //! - `ICMPCTL_NAMES` (a `struct ctlname` table) comes with `<sys/sysctl.h>`.
+//! - The userland half (`struct icmpstat`, the `ICMPCTL_*` names) is
+//!   `hal::sys::netinet_icmp_var`'s since N6.4c2, re-exported here.
 
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
@@ -70,78 +72,12 @@ use crate::netinet::ip_icmp::{ICMP_MAXTYPE, ICMPCOUNTERS};
 /// The number of entries of each histogram.
 const NHIST: usize = ICMP_MAXTYPE as usize + 1;
 
-// Names for ICMP sysctl objects
+pub use hal::sys::netinet_icmp_var::{
+    ICMPCTL_BMCASTECHO, ICMPCTL_ERRPPSLIMIT, ICMPCTL_MASKREPL, ICMPCTL_MAXID, ICMPCTL_REDIRACCEPT,
+    ICMPCTL_REDIRTIMEOUT, ICMPCTL_STATS, ICMPCTL_TSTAMPREPL, Icmpstat,
+};
 
-/// Allow replies to netmask requests.
-pub const ICMPCTL_MASKREPL: i32 = 1;
-/// Reply to icmps to broadcast/mcast.
-pub const ICMPCTL_BMCASTECHO: i32 = 2;
-/// ICMP error pps limitation.
-pub const ICMPCTL_ERRPPSLIMIT: i32 = 3;
-/// Accept redirects from routers.
-pub const ICMPCTL_REDIRACCEPT: i32 = 4;
-/// Remove routes added via redirects.
-pub const ICMPCTL_REDIRTIMEOUT: i32 = 5;
-/// Allow replies to timestamp requests.
-pub const ICMPCTL_TSTAMPREPL: i32 = 6;
-/// ICMP statistics.
-pub const ICMPCTL_STATS: i32 = 7;
-/// `ICMPCTL_MAXID`.
-pub const ICMPCTL_MAXID: i32 = 8;
-
-/// `struct icmpstat`: ICMP statistics, as `sysctl(2)` returns them.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Icmpstat {
-    // statistics related to icmp packets generated
-    /// # of calls to `icmp_error`.
-    pub icps_error: u64,
-    /// No error because rate limiter.
-    pub icps_toofreq: u64,
-    /// No error because old ip too short.
-    pub icps_oldshort: u64,
-    /// No error because old was icmp.
-    pub icps_oldicmp: u64,
-    /// Messages sent, by type.
-    pub icps_outhist: [u64; NHIST],
-    // statistics related to input messages processed
-    /// `icmp_code` out of range.
-    pub icps_badcode: u64,
-    /// Packet < `ICMP_MINLEN`.
-    pub icps_tooshort: u64,
-    /// Bad checksum.
-    pub icps_checksum: u64,
-    /// Calculated bound mismatch.
-    pub icps_badlen: u64,
-    /// Number of responses.
-    pub icps_reflect: u64,
-    /// Rejected broadcast icmps.
-    pub icps_bmcastecho: u64,
-    /// Messages received, by type.
-    pub icps_inhist: [u64; NHIST],
-}
-
-impl Icmpstat {
-    /// An all-zero block.
-    pub const fn zeroed() -> Self {
-        Self {
-            icps_error: 0,
-            icps_toofreq: 0,
-            icps_oldshort: 0,
-            icps_oldicmp: 0,
-            icps_outhist: [0; NHIST],
-            icps_badcode: 0,
-            icps_tooshort: 0,
-            icps_checksum: 0,
-            icps_badlen: 0,
-            icps_reflect: 0,
-            icps_bmcastecho: 0,
-            icps_inhist: [0; NHIST],
-        }
-    }
-}
-
-/// `enum icmpstat_counters`: the per-CPU ICMP counters, the fields of [`Icmpstat`] in order.
+/// `enum icmpstat_counters`: the per-CPU ICMP counters, one per word of [`Icmpstat`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum IcmpstatCounters {

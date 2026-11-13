@@ -6490,7 +6490,8 @@ status = "inherited"
 [[module]]
 rust = "sys/netinet/icmp_var.rs"
 lz = ["sys/netinet/icmp_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/netinet_icmp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/if_ether.rs"
@@ -6561,7 +6562,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_input.rs"
@@ -8714,6 +8715,35 @@ lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
 notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
 
+
+[[module]]
+rust = "sys/hal/sys/netinet_ip_icmp.rs"
+crate = "hal"
+lz = ["sys/netinet/ip_icmp.rs"]
+status = "redesigned"
+notes = "N6.4c2: netinet/ip_icmp.h as hal's: the ICMP_* types, codes and lengths, the ICMP_ADVLEN/ICMP_V6ADVLEN/ICMP_INFOTYPE macros as const fns, and struct icmp (28) with its sub-structures as abi_pod! images, the two unions as their bytes (icmp_hun four bytes, icmp_dun the returned struct ip) with LZ's accessors by name and no unsafe; LZ's reference-backed test; ICMP itself (ip_icmp.c) is kernel::netinet::ip_icmp's"
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::IcmpHun"
+native = ["Icmp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::IcmpDun"
+native = ["Icmp"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::icmp_accessor"
+native = []
+kind = "dropped"
+reason = "the unions are their bytes in Icmp (icmp_hun, icmp_dun): each LZ accessor is a plain method of the same name over them, no macro and no unsafe"
+
+[[module.fn]]
+lz = "sys/netinet/ip_icmp.rs::Icmp::icmp_data"
+native = []
+kind = "dropped"
+reason = "the address of the data past struct icmp had no reader in LZ; ICMP reads a message through the mbuf's bytes (kernel::netinet::ip_icmp)"
+
 [[module]]
 rust = "sys/hal/sys/netinet_ip_var.rs"
 crate = "hal"
@@ -8748,6 +8778,19 @@ crate = "hal"
 lz = ["sys/netinet/if_ether.rs"]
 status = "redesigned"
 notes = "N6.3c1: netinet/if_ether.h's userland part moved into hal: the ETHER_* lengths, ETHER_ALIGN, ETHER_MAX_HARDMTU_LEN, EVL_*, ETH64_8021_RSVD_*, ETHERMTU, ETHERMIN, the CRC polynomials, the address tests (ETHER_IS_*, ETH64_IS_*, EVL_*OFTAG as fns), and the AbiPod images ether_addr (6), ether_header (14, align 2), ether_vlan_header (18); the ARP part and the _KERNEL part stay in bsd's sys/netinet/if_ether.rs (N6.3c2, N6.4), which keeps its own copies until then; N6.4b: the ARP part joins it (struct ether_arp 28 with its arp_hrd.. accessors, struct sockaddr_inarp 16, abi_pods; SIN_PROXY, RTF_USETRAILERS, RTF_PERMANENT_ARP), bsd's copies gone"
+
+[[module]]
+rust = "sys/hal/sys/netinet_icmp_var.rs"
+crate = "hal"
+lz = ["sys/netinet/icmp_var.rs"]
+status = "redesigned"
+notes = "N6.4c2: netinet/icmp_var.h's userland part: struct icmpstat (10 + 2 x 41 u64, net.inet.icmp.stats) as an abi_pod!, ICMPCTL_* and ICMPCTL_MAXID, with LZ's reference-backed test; the _KERNEL part (the counters' enum, icmpstat_inc) is kernel::netinet::icmp_var's"
+
+[[module.fn]]
+lz = "sys/netinet/icmp_var.rs::Icmpstat::zeroed"
+native = []
+kind = "dropped"
+reason = "hal::user::zeroed::<Icmpstat>() makes the zero value of any abi_pod! image (net.inet.icmp.stats fills one)"
 
 [[module]]
 rust = "sys/hal/sys/netinet_igmp.rs"
