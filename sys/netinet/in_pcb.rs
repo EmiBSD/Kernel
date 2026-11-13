@@ -156,7 +156,8 @@
 //! by a count of the kernel's pcb (`in_pcbref`/`in_pcbunref`, the C's `inp_refcnt`), the
 //! kernel's counted answers (lookups, the iterator) become such references here, the
 //! `INP_IPV6` pcbs go to `netinet6/in6_pcb.rs`'s half before the kernel's IPv4 functions run,
-//! and the members `bsd` keeps (the options, the multicast options) are read here.
+//! and the members `bsd` keeps (the IPv4 options, the IPv6 options and multicast options, the
+//! ICMPv6 filter) are read here; the IPv4 multicast options are the kernel's since N6.4c1.
 //!
 //! ## Deviations
 //! - `sotoinpcb` panics on a socket of neither `inetdomain` nor `inet6domain` (the C macro
@@ -181,8 +182,6 @@ use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::icmp6::Icmp6Filter;
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
-use crate::netinet::ip_output::ip_freemoptions;
-use crate::netinet::ip_var::IpMoptions;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_pcb::{
     in6_pcbbind_locked, in6_pcbconnect, in6_pcbrtentry, in6_pcbset_addr, in6_setpeeraddr,
@@ -337,12 +336,6 @@ pub trait InpcbLegacy {
     fn options(&self) -> Option<&'static Mbuf>;
     /// `inp->inp_options = m` (the old chain is the caller's to free).
     fn set_options(&self, m: Option<&'static Mbuf>);
-    /// `inp->inp_moptions` as `ip_output` takes it.
-    fn moptions(&self) -> Option<&IpMoptions>;
-    /// `inp->inp_moptions`'s pointer.
-    fn moptions_ptr(&self) -> Option<NonNull<IpMoptions>>;
-    /// `inp->inp_moptions = imo`.
-    fn set_moptions_ptr(&self, imo: Option<NonNull<IpMoptions>>);
     /// `inp->inp_moptions6`'s pointer.
     fn moptions6_ptr(&self) -> Option<NonNull<Ip6Moptions>>;
     /// `inp->inp_moptions6 = imo`.
@@ -367,22 +360,6 @@ impl InpcbLegacy for Inpcb {
     fn set_options(&self, m: Option<&'static Mbuf>) {
         self.inp_options
             .set(m.map_or(ptr::null(), |m| ptr::from_ref(m).cast()));
-    }
-
-    fn moptions(&self) -> Option<&IpMoptions> {
-        // SAFETY: the options are `ip_setmoptions`'s allocation, owned by this control block
-        // and freed only by `ip_setmoptions` or `in_pcbdetach` under the socket lock, which
-        // the callers of `ip_output` hold for the call.
-        self.moptions_ptr().map(|imo| unsafe { imo.as_ref() })
-    }
-
-    fn moptions_ptr(&self) -> Option<NonNull<IpMoptions>> {
-        NonNull::new(self.inp_moptions.get_mut().cast::<IpMoptions>())
-    }
-
-    fn set_moptions_ptr(&self, imo: Option<NonNull<IpMoptions>>) {
-        self.inp_moptions
-            .set(imo.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
     }
 
     fn moptions6_ptr(&self) -> Option<NonNull<Ip6Moptions>> {
@@ -420,11 +397,6 @@ impl InpcbLegacy for Inpcb {
             ptr::with_exposed_provenance_mut::<core::ffi::c_void>(u.arg),
         ))
     }
-}
-
-/// The multicast interface `in_pcbselsrc` reads (`imo_ifidx` of the socket's options).
-fn mcast_ifidx(inp: &Inpcb) -> Option<u16> {
-    inp.moptions().map(|imo| imo.imo_ifidx)
 }
 
 /// `in_pcbbind_locked`: binds `inp` to the address in `nam` (or `laddr` and a port picked
@@ -478,7 +450,7 @@ pub fn in_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
         return in6_pcbconnect(inp, nam);
     }
     let p = curproc_or_panic("in_pcbconnect");
-    k::in_pcbconnect(inp, nam, mcast_ifidx(inp), p, &net_held("in_pcbconnect"))?;
+    k::in_pcbconnect(inp, nam, p, &net_held("in_pcbconnect"))?;
     set_flowid4(inp);
     Ok(())
 }
@@ -516,11 +488,6 @@ fn free_legacy_opts(inp: &Inpcb) {
     let opts = inp.options();
     inp.set_options(None);
     m_freem(opts);
-    let mopts = inp.moptions_ptr();
-    inp.set_moptions_ptr(None);
-    // SAFETY: the options are this control block's own allocation (`ip_setmoptions`), taken
-    // out of it here and never used again.
-    unsafe { ip_freemoptions(mopts) };
 }
 
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
@@ -529,7 +496,7 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
     let Some(h) = PoolArcOf::of(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
-    k::in_pcbdetach(h, free_legacy_opts);
+    k::in_pcbdetach(h, &net_held("in_pcbdetach"), free_legacy_opts);
 }
 
 /// `PoolArc::from_ref` of a control block.
@@ -713,7 +680,7 @@ pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
 /// `in_pcbselsrc`: the IPv4 address most appropriate as the source for destination
 /// `dstsock`, into `insrc`.
 pub fn in_pcbselsrc(insrc: &mut InAddr, dstsock: &SockaddrIn, inp: &Inpcb) -> Result<(), Errno> {
-    *insrc = k::in_pcbselsrc(dstsock, inp, mcast_ifidx(inp), &net_held("in_pcbselsrc"))?;
+    *insrc = k::in_pcbselsrc(dstsock, inp, &net_held("in_pcbselsrc"))?;
     Ok(())
 }
 

@@ -1310,7 +1310,7 @@ pub fn udp_output(
         inp.options(),
         Some(&mut *inp.route()),
         inp.socket().options() & SO_BROADCAST,
-        inp.moptions(),
+        inp.moptions_out().as_ref(),
         Some(&inp.inp_seclevel.get()),
         ipsecflowinfo,
     );
@@ -1745,10 +1745,13 @@ mod tests {
         opt.m_len().set(4);
         // SAFETY: a fresh mbuf of `MLEN` bytes.
         unsafe { mtod::<i32>(opt).write_unaligned(7) };
+        // The socket lock `sosetopt` and `sogetopt` hold (`solock`: the net lock).
+        crate::sys::systm::net_lock();
         ip_ctloutput(PRCO_SETOPT, so, IPPROTO_IP, IP_TTL, Some(opt)).expect("IP_TTL");
         // SAFETY: as above.
         unsafe { mtod::<i32>(opt).write_unaligned(0) };
         ip_ctloutput(PRCO_GETOPT, so, IPPROTO_IP, IP_TTL, Some(opt)).expect("get IP_TTL");
+        crate::sys::systm::net_unlock();
         // SAFETY: written as an `int`.
         assert_eq!(unsafe { mtod::<i32>(opt).read_unaligned() }, 7);
         m_freem(opt);
@@ -1831,7 +1834,10 @@ mod tests {
         opt.m_len().set(4);
         // SAFETY: a fresh mbuf of `MLEN` bytes.
         unsafe { mtod::<i32>(opt).write_unaligned(v) };
+        // The socket lock `sosetopt` and `sogetopt` hold (`solock`: the net lock).
+        crate::sys::systm::net_lock();
         let r = ip_ctloutput(op, so, IPPROTO_IP, name, Some(opt));
+        crate::sys::systm::net_unlock();
         // SAFETY: as above.
         let out = unsafe { mtod::<i32>(opt).read_unaligned() };
         m_freem(opt);

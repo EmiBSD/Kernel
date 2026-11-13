@@ -440,7 +440,7 @@ pub fn rip_output(
         inp.options(),
         Some(&mut *inp.route()),
         flags,
-        inp.moptions(),
+        inp.moptions_out().as_ref(),
         Some(&inp.inp_seclevel.get()),
         0,
     )

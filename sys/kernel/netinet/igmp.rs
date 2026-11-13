@@ -862,14 +862,10 @@ pub fn igmp_sendpkt(pkt: &IgmpPktinfo, net: &NetHeld<'_>) {
     m.m_len().set(m.m_len().get() + IP_HDR_LEN as u32);
 
     m.m_pkthdr().ph_rtableid.set(pkt.ipi_rdomain);
-    let imo = IpMoptions {
-        imo_ifidx: pkt.ipi_ifidx as u16,
-        imo_ttl: 1,
-        // Request loopback of the report if we are acting as a multicast router, so that the
-        // process-level routing daemon can hear it. MROUTING: ip_mrouter_active; not
-        // configured.
-        imo_loop: 0,
-    };
+    // Request loopback of the report if we are acting as a multicast router, so that the
+    // process-level routing daemon can hear it (imo_loop). MROUTING: ip_mrouter_active; not
+    // configured.
+    let imo = IpMoptions::output(pkt.ipi_ifidx as u16, 1, 0);
 
     let _ = ip_output(
         m,

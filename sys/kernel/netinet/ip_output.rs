@@ -58,8 +58,8 @@
 //! source, destination), completes it, finds the route and the interface (caching the route
 //! in a `struct route`) and hands the packet to `if_output_tso`, fragmenting it with
 //! [`ip_fragment`] when it is too large for the interface. The socket option half
-//! (`ip_ctloutput` .. `ip_freemoptions`, ip_output.c:866-1750) is still `bsd`'s
-//! `sys/netinet/ip_output.rs` until the pcb moves (N6.4c1).
+//! ([`ip_ctloutput`] .. [`ip_freemoptions`], N6.4c1) keeps a socket's IP options, header
+//! fields and multicast options in its control block (`kernel::netinet::in_pcb::Inpcb`).
 //!
 //! ## Deviations
 //! - IPsec (`#ifdef IPSEC`, configured): the C's `ip_output_ipsec_lookup` and
@@ -74,6 +74,12 @@
 //! - Not configured, a comment at its site: `MROUTING` (`ip_mforward`).
 //! - `icmp_mtudisc_clone` (ICMP's, N6.4c2) and the TCP and UDP counters of software
 //!   checksums (`tcps_outswcsum`, `udps_outswcsum`, N6.6) are `Inet` legs.
+//! - `ip_ctloutput` with `IPSEC` configured: the four IPsec levels are set and read (no
+//!   `EOPNOTSUPP`); `IP_IPSEC_LOCAL_ID` and `IP_IPSEC_REMOTE_ID` answer `EOPNOTSUPP` as the C.
+//!   A `PRCO_GETOPT` without an answer mbuf is `panic(9)` (`sogetopt` always hands one over;
+//!   the C would write through NULL; LZ answered `EINVAL`).
+//! - `ip_setmoptions`'s `malloc(M_WAITOK)` and `mallocarray(M_WAITOK)` cannot fail in C:
+//!   here their failure (no `malloc(9)` registered) is `panic(9)`, as LZ's.
 //! - `ip_optcopy`'s option without its length byte (one byte left, not `IPOPT_EOL` or
 //!   `IPOPT_NOP`) ends the copy, where the C reads the byte past the options (a `DIAGNOSTIC`
 //!   kernel panics); a length byte of 0 ends it too (LZ's), where the C would loop.
@@ -110,6 +116,36 @@
 //!   the wrappers of `sys/netinet/ip_output.rs`.
 //! - The packet filter's verdict: `pf_test(af, dir, ifp, &m)` -> `Pf::test`, the verdict and
 //!   the packet as pf left it.
+//! - N6.4c1, the socket options: LZ's `ip_ctloutput(op, so, level, optname, m)` read the
+//!   option values with unaligned raw reads at `mtod(m)` and wrote the answers the same way
+//!   (`mtod_int`, `set_mtod_int`, `mtod_bytes`, `mtod_mreqn`: four `unsafe`), kept the
+//!   multicast options as a raw `malloc(M_IPMOPTS)` pointer in the pcb with its membership
+//!   vector reached through slot pointers (`imo_slot`, `imo_member`, six `unsafe`), and freed
+//!   them with an `unsafe fn ip_freemoptions`. Here [`ip_ctloutput`] takes the control block
+//!   (`sotoinpcb(so)` is `bsd`'s caller's until N6.6 types `so_pcb`), reads a value from the
+//!   option mbuf's bytes (`Mbuf::data`, exactly `m_len` long: a length check is a slice
+//!   pattern) and writes an answer with `m_len` set first ([`opt_put`]); the multicast
+//!   options are an `MBox<IpMoptions>` of `M_IPMOPTS` that the pcb owns
+//!   (`Inpcb::moptions`, lent under the socket lock check) with an `MArray` of memberships
+//!   (`kernel::netinet::ip_var::IpMoptions`): the C's two allocations, the vector grown by a
+//!   new `MArray` copied from the old one (`M_NOWAIT`, the old freed after), the set freed
+//!   when every option is back to its default, [`ip_freemoptions`] by value. `ip_multicast_if`
+//!   answers the index (the C's out parameter). The socket's IPv4 options (`inp_options`) stay
+//!   a parked mbuf in `bsd`'s word, read per packet by `bsd`'s transports: `bsd`'s adapter
+//!   lends them to [`ip_ctloutput`] as an `&mut Option<MbufBox>` for the call (R11,
+//!   docs/SCAFFOLDING.md), [`ip_pcbopts`] builds the new `struct ipoption` in a local
+//!   buffer and copies it into a fresh `MT_SOOPTS` mbuf (the C's `m_get(M_NOWAIT)`).
+//!   `ip_defttl` is `kernel::netinet::ip_var::IP_DEFTTL`.
+//!
+//! **Lock and spl transitions of the socket options** against the C: `sosetopt` and
+//! `sogetopt` hold the socket lock (`solock`: the net lock exclusively, for an internet
+//! socket) around `ip_ctloutput`, which takes none of its own, as the C; the multicast
+//! options' loan is two claims of the pcb's cell (atomics, no lock, no spl) and a check of
+//! the socket lock (two lock-word loads); `IP_MULTICAST_IF` by address walks the interfaces
+//! (`ifa_ifwithaddr`) and `ip_multicast_if` looks a route up, as the C; `in_addmulti` and
+//! `in_delmulti` take `if_maddrlock` as the C's. The transports' `ip_output` calls read the
+//! three scalars `ip_output` uses out of the cell (`Inpcb::moptions_out`: a reader's count,
+//! two atomics) where the C passes the pointer: named for N12.
 //!
 //! **Lock and spl transitions** against the C (`ip_output`, the unicast path): the caller's
 //! net lock (any mode), no lock of its own; the route cache hit reads the route's validity
@@ -121,7 +157,7 @@
 use core::mem::size_of;
 use core::sync::atomic::Ordering;
 
-use hal::malloc::M_NOWAIT;
+use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::netlock::NetHeld;
 use hal::pod;
 use hal::sys::endian::{htonl, htons, ntohl, ntohs};
@@ -132,39 +168,54 @@ use hal::sys::net_if::{
 };
 use hal::sys::net_route::{RTF_BROADCAST, RTF_GATEWAY, RTF_HOST, RTF_LOCAL, RTV_MTU};
 use hal::sys::netinet_in::{
-    IN_CLASSA_NSHIFT, INADDR_ANY, INADDR_BROADCAST, IP_DEFAULT_MULTICAST_TTL, IPPROTO_ICMP,
-    IPPROTO_TCP, IPPROTO_UDP, InAddr, in_multicast,
+    IN_CLASSA_NSHIFT, INADDR_ANY, INADDR_BROADCAST, IP_ADD_MEMBERSHIP, IP_AUTH_LEVEL,
+    IP_DEFAULT_MULTICAST_LOOP, IP_DEFAULT_MULTICAST_TTL, IP_DROP_MEMBERSHIP, IP_ESP_NETWORK_LEVEL,
+    IP_ESP_TRANS_LEVEL, IP_IPCOMP_LEVEL, IP_IPDEFTTL, IP_IPSEC_LOCAL_ID, IP_IPSEC_REMOTE_ID,
+    IP_IPSECFLOWINFO, IP_MAX_MEMBERSHIPS, IP_MIN_MEMBERSHIPS, IP_MINTTL, IP_MULTICAST_IF,
+    IP_MULTICAST_LOOP, IP_MULTICAST_TTL, IP_OPTIONS, IP_PIPEX, IP_PORTRANGE, IP_PORTRANGE_DEFAULT,
+    IP_PORTRANGE_HIGH, IP_PORTRANGE_LOW, IP_RECVDSTADDR, IP_RECVDSTPORT, IP_RECVIF, IP_RECVOPTS,
+    IP_RECVRETOPTS, IP_RECVRTABLE, IP_RECVTTL, IP_RETOPTS, IP_TOS, IP_TTL, IPPROTO_ICMP,
+    IPPROTO_IP, IPPROTO_TCP, IPPROTO_UDP, IPSEC_AUTH_LEVEL_DEFAULT,
+    IPSEC_ESP_NETWORK_LEVEL_DEFAULT, IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT,
+    IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_UNIQUE, InAddr, IpMreq, IpMreqn, in_multicast,
 };
 use hal::sys::netinet_ip::{
-    IP_DF, IP_MAXPACKET, IP_MF, IPOPT_EOL, IPOPT_NOP, IPOPT_OLEN, IPVERSION, Ip, ipopt_copied,
+    IP_DF, IP_MAXPACKET, IP_MF, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP, IPOPT_OFFSET,
+    IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_SSRR, IPVERSION, Ip, MAXTTL, ipopt_copied,
 };
+use hal::sys::netinet_ip_var::{Ipoption, MAX_IPOPTLEN};
 use hal::sys::netinet_tcp::Tcphdr;
 use hal::sys::netinet_udp::Udphdr;
-use hal::sys::socket::AF_INET;
+use hal::sys::socket::{AF_INET, SO_RTABLE};
 
 use crate::assert::kpanic;
-use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, inet};
+use crate::net::if_::{IfRef, if_input_local, if_output_ml, if_output_tso, ifa_ifwithaddr, inet};
 use crate::net::if_var::Ifnet;
 use crate::net::ipsec_hooks::{IpsecLevel, SpdError, TdbHold, ipsec};
 use crate::net::mbuf::{
     M_BCAST, M_DONTWAIT, M_ICMP_CSUM_OUT, M_IPV4_CSUM_OUT, M_MCAST, M_TCP_CSUM_OUT, M_TCP_TSO,
-    M_UDP_CSUM_OUT, MAX_LINKHDR, MT_HEADER, Mbuf, MbufBox, MbufList, PACKET_TAG_IPSEC_IN_DONE,
-    PF_TAG_GENERATED, PF_TAG_REROUTE, m_adj, m_copyback, m_copym, m_dup_pkt, m_dup_pkthdr,
-    m_gethdr, m_move_hdr, ml_enlist, ml_enqueue, ml_init, ml_len,
+    M_UDP_CSUM_OUT, MAX_LINKHDR, MT_HEADER, MT_SOOPTS, Mbuf, MbufBox, MbufList,
+    PACKET_TAG_IPSEC_IN_DONE, PF_TAG_GENERATED, PF_TAG_REROUTE, m_adj, m_copyback, m_copym,
+    m_dup_pkt, m_dup_pkthdr, m_get, m_gethdr, m_move_hdr, ml_enlist, ml_enqueue, ml_init, ml_len,
 };
 use crate::net::pf_hooks::{PF_FWD, PF_OUT, PF_PASS, pf};
-use crate::net::proto::SockaddrView;
-use crate::net::route::{Route, rtalloc_mpath, rtisvalid};
-use crate::net::rtable::rtable_loindex;
-use crate::netinet::in_::{in_hasmulti, in_ifp2ia};
+use crate::net::proto::{PRCO_GETOPT, PRCO_SETOPT, SockaddrView};
+use crate::net::route::{RT_RESOLVE, Route, rtalloc, rtalloc_mpath, rtisvalid};
+use crate::net::rtable::{rtable_l2, rtable_loindex};
+use crate::netinet::in_::{in_addmulti, in_delmulti, in_hasmulti, in_ifp2ia};
 use crate::netinet::in_cksum::in_cksum;
+use crate::netinet::in_pcb::{
+    INP_HIGHPORT, INP_IPSECFLOWINFO, INP_LOWPORT, INP_RECVDSTADDR, INP_RECVDSTPORT, INP_RECVIF,
+    INP_RECVOPTS, INP_RECVRETOPTS, INP_RECVRTABLE, INP_RECVTTL, Inpcb, in_pcbset_rtableid,
+};
 use crate::netinet::in_var::InIfaddr;
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_id::ip_randomid;
 use crate::netinet::ip_var::{
-    IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT, IpMoptions,
-    IpstatCounters, ip_mtudisc, ipstat_add, ipstat_inc,
+    IP_ALLOWBROADCAST, IP_DEFTTL, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT,
+    IpMoptions, IpstatCounters, ip_mtudisc, ipstat_add, ipstat_inc,
 };
+use crate::proc::{ProcGlue, Thread, suser};
 
 /// `sizeof(struct ip)`: the header without options.
 const IP_HDR_LEN: usize = size_of::<Ip>();
@@ -181,6 +232,10 @@ const ICMP_CKSUM_OFFSET: usize = 2;
 const SIN_LEN: usize = 16;
 /// The offset of `sin_addr` in a `struct sockaddr_in`.
 const SIN_ADDR: usize = 4;
+/// `sizeof(struct in_addr)`.
+const IN_ADDR_LEN: usize = size_of::<InAddr>();
+/// `M_IPMOPTS`: internet multicast options (`malloc.h`).
+const M_IPMOPTS: i32 = 53;
 
 /// `mtod(m, struct ip *)`, read: the IP header at the start of `m`'s data, in place when it
 /// is aligned for one, copied otherwise. `panic(9)` when the first mbuf holds less than a
@@ -804,6 +859,702 @@ pub fn ip_optcopy(cp: &[u8], dp: &mut [u8]) -> usize {
     d
 }
 
+/// The `int` value of a socket option (`*mtod(m, int *)` once `m->m_len == sizeof(int)`):
+/// `None` without a value or of another length.
+#[inline]
+fn opt_int(m: Option<&Mbuf>) -> Option<i32> {
+    match m?.data() {
+        &[a, b, c, d] => Some(i32::from_ne_bytes([a, b, c, d])),
+        _ => None,
+    }
+}
+
+/// The answer `b` written into the option mbuf `m` of a `getsockopt` (`m->m_len = len`, then
+/// the value at `mtod(m)`): `sogetopt` hands over a writable mbuf of `MLEN` bytes.
+fn opt_put(m: &mut Mbuf, b: &[u8]) {
+    m.m_len().set(b.len() as u32);
+    match m.data_mut() {
+        Some(d) => d.copy_from_slice(b),
+        None => kpanic(format_args!("ip_ctloutput: a read-only option mbuf")),
+    }
+}
+
+/// `ip_ctloutput(op, so, level, optname, m)`: IP socket option processing, on the control
+/// block `inp` of the socket (`sotoinpcb(so)`) as `curproc` asks it, the net lock held
+/// (`net`). `options` is the socket's `inp_options`, which `bsd`'s caller lends for the call
+/// (the module's Redesign). `m` holds the value of a `PRCO_SETOPT` (`None` for none) and
+/// receives the answer of a `PRCO_GETOPT`.
+pub fn ip_ctloutput<G: ProcGlue>(
+    op: i32,
+    inp: &Inpcb<G>,
+    options: &mut Option<MbufBox>,
+    level: i32,
+    optname: i32,
+    m: Option<&mut Mbuf>,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    if level != IPPROTO_IP {
+        return Err(Errno::EINVAL);
+    }
+
+    G::with_curproc(|p| {
+        let Some(p) = p else {
+            kpanic(format_args!("ip_ctloutput: no curproc")); // XXX
+        };
+        let rtableid = p.process().ps_rtableid.load(Ordering::Relaxed);
+        match op {
+            PRCO_SETOPT => ip_setopt(inp, options, p, rtableid, optname, m.as_deref(), net),
+            PRCO_GETOPT => match m {
+                Some(m) => ip_getopt(inp, options, optname, m),
+                None => kpanic(format_args!("ip_ctloutput: PRCO_GETOPT without an mbuf")),
+            },
+            _ => Ok(()),
+        }
+    })
+}
+
+/// `ip_ctloutput`'s `PRCO_SETOPT` half.
+fn ip_setopt<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    options: &mut Option<MbufBox>,
+    p: &Thread<G>,
+    rtableid: u32,
+    optname: i32,
+    m: Option<&Mbuf>,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    match optname {
+        IP_OPTIONS => ip_pcbopts(options, m),
+
+        IP_TOS | IP_TTL | IP_MINTTL | IP_RECVOPTS | IP_RECVRETOPTS | IP_RECVDSTADDR | IP_RECVIF
+        | IP_RECVTTL | IP_RECVDSTPORT | IP_RECVRTABLE | IP_IPSECFLOWINFO => {
+            let Some(optval) = opt_int(m) else {
+                return Err(Errno::EINVAL);
+            };
+            let optset = |bit: i32| {
+                if optval != 0 {
+                    inp.set_flags(bit);
+                } else {
+                    inp.clear_flags(bit);
+                }
+            };
+            match optname {
+                IP_TOS => {
+                    let mut ip = inp.inp_ip.get();
+                    ip.ip_tos = optval as u8;
+                    inp.inp_ip.set(ip);
+                }
+                IP_TTL => {
+                    let ttl = if optval > 0 && optval <= i32::from(MAXTTL) {
+                        optval as u8
+                    } else if optval == -1 {
+                        IP_DEFTTL.load(Ordering::Relaxed) as u8
+                    } else {
+                        return Err(Errno::EINVAL);
+                    };
+                    let mut ip = inp.inp_ip.get();
+                    ip.ip_ttl = ttl;
+                    inp.inp_ip.set(ip);
+                }
+                IP_MINTTL => {
+                    if !(0..=i32::from(MAXTTL)).contains(&optval) {
+                        return Err(Errno::EINVAL);
+                    }
+                    inp.inp_ip_minttl.set(optval as u8);
+                }
+                IP_RECVOPTS => optset(INP_RECVOPTS),
+                IP_RECVRETOPTS => optset(INP_RECVRETOPTS),
+                IP_RECVDSTADDR => optset(INP_RECVDSTADDR),
+                IP_RECVIF => optset(INP_RECVIF),
+                IP_RECVTTL => optset(INP_RECVTTL),
+                IP_RECVDSTPORT => optset(INP_RECVDSTPORT),
+                IP_RECVRTABLE => optset(INP_RECVRTABLE),
+                _ => optset(INP_IPSECFLOWINFO), // IP_IPSECFLOWINFO
+            }
+            Ok(())
+        }
+
+        IP_MULTICAST_IF | IP_MULTICAST_TTL | IP_MULTICAST_LOOP | IP_ADD_MEMBERSHIP
+        | IP_DROP_MEMBERSHIP => {
+            ip_setmoptions(optname, &mut inp.moptions(), m, inp.inp_rtableid.get(), net)
+        }
+
+        IP_PORTRANGE => {
+            let Some(optval) = opt_int(m) else {
+                return Err(Errno::EINVAL);
+            };
+            match optval {
+                IP_PORTRANGE_DEFAULT => inp.clear_flags(INP_LOWPORT | INP_HIGHPORT),
+                IP_PORTRANGE_HIGH => {
+                    inp.clear_flags(INP_LOWPORT);
+                    inp.set_flags(INP_HIGHPORT);
+                }
+                IP_PORTRANGE_LOW => {
+                    inp.clear_flags(INP_HIGHPORT);
+                    inp.set_flags(INP_LOWPORT);
+                }
+                _ => return Err(Errno::EINVAL),
+            }
+            Ok(())
+        }
+
+        // IPSEC is configured.
+        IP_AUTH_LEVEL | IP_ESP_TRANS_LEVEL | IP_ESP_NETWORK_LEVEL | IP_IPCOMP_LEVEL => {
+            let Some(optval) = opt_int(m) else {
+                return Err(Errno::EINVAL);
+            };
+            if !(IPSEC_LEVEL_BYPASS..=IPSEC_LEVEL_UNIQUE).contains(&optval) {
+                return Err(Errno::EINVAL);
+            }
+            let default = match optname {
+                IP_AUTH_LEVEL => IPSEC_AUTH_LEVEL_DEFAULT,
+                IP_ESP_TRANS_LEVEL => IPSEC_ESP_TRANS_LEVEL_DEFAULT,
+                IP_ESP_NETWORK_LEVEL => IPSEC_ESP_NETWORK_LEVEL_DEFAULT,
+                _ => IPSEC_IPCOMP_LEVEL_DEFAULT, // IP_IPCOMP_LEVEL
+            };
+            // Below the system's default only for the superuser.
+            if optval < default && suser(p).is_err() {
+                return Err(Errno::EACCES);
+            }
+            let mut sl = inp.inp_seclevel.get();
+            let level = optval as u8;
+            match optname {
+                IP_AUTH_LEVEL => sl.sl_auth = level,
+                IP_ESP_TRANS_LEVEL => sl.sl_esp_trans = level,
+                IP_ESP_NETWORK_LEVEL => sl.sl_esp_network = level,
+                _ => sl.sl_ipcomp = level, // IP_IPCOMP_LEVEL
+            }
+            inp.inp_seclevel.set(sl);
+            Ok(())
+        }
+
+        IP_IPSEC_LOCAL_ID | IP_IPSEC_REMOTE_ID => Err(Errno::EOPNOTSUPP),
+
+        SO_RTABLE => {
+            let Some(&[a, b, c, d, ..]) = m.map(Mbuf::data) else {
+                return Err(Errno::EINVAL);
+            };
+            let rtid = u32::from_ne_bytes([a, b, c, d]);
+            if inp.inp_rtableid.get() == rtid {
+                return Ok(());
+            }
+            // needs privileges to switch when already set
+            if rtableid != rtid && rtableid != 0 {
+                suser(p)?;
+            }
+            in_pcbset_rtableid(inp, rtid)
+        }
+
+        IP_PIPEX => match opt_int(m) {
+            Some(v) => {
+                inp.inp_pipex.set(v);
+                Ok(())
+            }
+            None => Err(Errno::EINVAL),
+        },
+
+        _ => Err(Errno::ENOPROTOOPT),
+    }
+}
+
+/// `ip_ctloutput`'s `PRCO_GETOPT` half: the answer in `m`.
+fn ip_getopt<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    options: &Option<MbufBox>,
+    optname: i32,
+    m: &mut Mbuf,
+) -> Result<(), Errno> {
+    let optbit = |bit: i32| i32::from(inp.has_flags(bit));
+    let optval = match optname {
+        IP_OPTIONS | IP_RETOPTS => {
+            match options {
+                Some(opts) => opt_put(m, opts.data()),
+                None => m.m_len().set(0),
+            }
+            return Ok(());
+        }
+
+        IP_TOS => i32::from(inp.inp_ip.get().ip_tos),
+        IP_TTL => i32::from(inp.inp_ip.get().ip_ttl),
+        IP_MINTTL => i32::from(inp.inp_ip_minttl.get()),
+        IP_IPDEFTTL => IP_DEFTTL.load(Ordering::Relaxed),
+        IP_RECVOPTS => optbit(INP_RECVOPTS),
+        IP_RECVRETOPTS => optbit(INP_RECVRETOPTS),
+        IP_RECVDSTADDR => optbit(INP_RECVDSTADDR),
+        IP_RECVIF => optbit(INP_RECVIF),
+        IP_RECVTTL => optbit(INP_RECVTTL),
+        IP_RECVDSTPORT => optbit(INP_RECVDSTPORT),
+        IP_RECVRTABLE => optbit(INP_RECVRTABLE),
+        IP_IPSECFLOWINFO => optbit(INP_IPSECFLOWINFO),
+
+        IP_MULTICAST_IF | IP_MULTICAST_TTL | IP_MULTICAST_LOOP | IP_ADD_MEMBERSHIP
+        | IP_DROP_MEMBERSHIP => return ip_getmoptions(optname, inp.moptions_out().as_ref(), m),
+
+        IP_PORTRANGE => {
+            if inp.has_flags(INP_HIGHPORT) {
+                IP_PORTRANGE_HIGH
+            } else if inp.has_flags(INP_LOWPORT) {
+                IP_PORTRANGE_LOW
+            } else {
+                0
+            }
+        }
+
+        // IPSEC is configured.
+        IP_AUTH_LEVEL | IP_ESP_TRANS_LEVEL | IP_ESP_NETWORK_LEVEL | IP_IPCOMP_LEVEL => {
+            let sl = inp.inp_seclevel.get();
+            i32::from(match optname {
+                IP_AUTH_LEVEL => sl.sl_auth,
+                IP_ESP_TRANS_LEVEL => sl.sl_esp_trans,
+                IP_ESP_NETWORK_LEVEL => sl.sl_esp_network,
+                _ => sl.sl_ipcomp, // IP_IPCOMP_LEVEL
+            })
+        }
+
+        IP_IPSEC_LOCAL_ID | IP_IPSEC_REMOTE_ID => return Err(Errno::EOPNOTSUPP),
+        SO_RTABLE => {
+            opt_put(m, &inp.inp_rtableid.get().to_ne_bytes());
+            return Ok(());
+        }
+        IP_PIPEX => inp.inp_pipex.get(),
+        _ => return Err(Errno::ENOPROTOOPT),
+    };
+    opt_put(m, &optval.to_ne_bytes());
+    Ok(())
+}
+
+/// `ip_pcbopts(pcbopt, m)`: sets up the IP options of a pcb for insertion in output packets,
+/// from the options `m` holds: stored in an mbuf in `pcbopt` (a `struct ipoption`), the first
+/// hop of a source route moved before them. The old options are freed first; no `m`, or an
+/// empty one, only turns them off.
+pub fn ip_pcbopts(pcbopt: &mut Option<MbufBox>, m: Option<&Mbuf>) -> Result<(), Errno> {
+    // turn off any old options
+    drop(pcbopt.take());
+    let Some(src) = m.map(Mbuf::data).filter(|d| !d.is_empty()) else {
+        // Only turning off any previous options.
+        return Ok(());
+    };
+
+    let len = src.len();
+    if !len.is_multiple_of(size_of::<i32>()) || len > MAX_IPOPTLEN + IN_ADDR_LEN {
+        return Err(Errno::EINVAL);
+    }
+
+    // Don't sleep because NET_LOCK() is hold.
+    let Some(mut n) = m_get(M_DONTWAIT, i32::from(MT_SOOPTS)) else {
+        return Err(Errno::ENOBUFS);
+    };
+    // The struct ipoption, zeroed (0 = IPOPT_EOL, needed for padding): the first hop, then
+    // the option list, which the walk may fill past MAX_IPOPTLEN before the final check
+    // (by at most the four bytes of a source route's first hop the input carries).
+    let mut p = [0u8; IN_ADDR_LEN + MAX_IPOPTLEN + IN_ADDR_LEN];
+    let (dst, list) = p.split_at_mut(IN_ADDR_LEN);
+
+    let mut off = 0usize;
+    let mut cp = 0usize;
+    let mut cnt = len;
+    while cnt > 0 {
+        let opt = src[cp + IPOPT_OPTVAL];
+
+        let mut optlen = if opt == IPOPT_NOP || opt == IPOPT_EOL {
+            1
+        } else {
+            if cnt < IPOPT_OLEN + 1 {
+                return Err(Errno::EINVAL);
+            }
+            let optlen = usize::from(src[cp + IPOPT_OLEN]);
+            if optlen < IPOPT_OLEN + 1 || optlen > cnt {
+                return Err(Errno::EINVAL);
+            }
+            optlen
+        };
+        if opt == IPOPT_LSRR || opt == IPOPT_SSRR {
+            // user process specifies route as:
+            //	->A->B->C->D
+            // D must be our final destination (but we can't check that since we may not
+            // have connected yet). A is first hop destination, which doesn't appear in
+            // actual IP option, but is stored before the options.
+            if optlen < usize::from(IPOPT_MINOFF) - 1 + IN_ADDR_LEN {
+                return Err(Errno::EINVAL);
+            }
+
+            // Optlen is smaller because first address is popped. Cnt and cp will be adjusted
+            // a bit later to reflect this.
+            optlen -= IN_ADDR_LEN;
+            list[off + IPOPT_OPTVAL] = opt;
+            list[off + IPOPT_OLEN] = optlen as u8;
+
+            // Move first hop before start of options.
+            dst.copy_from_slice(&src[cp + IPOPT_OFFSET..cp + IPOPT_OFFSET + IN_ADDR_LEN]);
+            cp += IN_ADDR_LEN;
+            cnt -= IN_ADDR_LEN;
+            // Then copy rest of options
+            let rest = optlen - IPOPT_OFFSET;
+            list[off + IPOPT_OFFSET..off + IPOPT_OFFSET + rest]
+                .copy_from_slice(&src[cp + IPOPT_OFFSET..cp + IPOPT_OFFSET + rest]);
+        } else {
+            list[off..off + optlen].copy_from_slice(&src[cp..cp + optlen]);
+        }
+        off += optlen;
+        cp += optlen;
+        cnt -= optlen;
+
+        if opt == IPOPT_EOL {
+            break;
+        }
+    }
+    // pad options to next word, since p was zeroed just adjust off
+    let off = off.next_multiple_of(size_of::<i32>());
+    let nlen = IN_ADDR_LEN + off;
+    if nlen > size_of::<Ipoption>() {
+        return Err(Errno::EINVAL);
+    }
+    opt_put(&mut n, &p[..nlen]);
+
+    *pcbopt = Some(n);
+    Ok(())
+}
+
+/// The `struct ip_mreqn` an `ip_mreq` or `ip_mreqn` option holds, zero-extended (the C's
+/// `memset` and `memcpy` of `m_len` bytes), from its words.
+fn mreqn_of(d: &[u8]) -> IpMreqn {
+    let word = |at: usize| match d.get(at..at + 4) {
+        Some(&[a, b, c, e]) => u32::from_ne_bytes([a, b, c, e]),
+        _ => 0,
+    };
+    IpMreqn {
+        imr_multiaddr: InAddr { s_addr: word(0) },
+        imr_address: InAddr { s_addr: word(4) },
+        imr_ifindex: word(8) as i32,
+    }
+}
+
+/// The `sockaddr_in` image of `addr`, port 0 (`sin_len`, `AF_INET`, the address).
+#[inline]
+fn sin_image(addr: InAddr) -> [u8; SIN_LEN] {
+    let mut sin = [0u8; SIN_LEN];
+    sin[0] = SIN_LEN as u8;
+    sin[1] = AF_INET;
+    sin[SIN_ADDR..SIN_ADDR + 4].copy_from_slice(&addr.s_addr.to_ne_bytes());
+    sin
+}
+
+/// `ip_multicast_if(mreq, rtableid, &ifidx)`: the interface of the request `mreq`: the index
+/// userland gave, else the interface of the route to the group (no interface address) or of
+/// the local address given; `EADDRNOTAVAIL` without a valid route (or a local one).
+pub fn ip_multicast_if(mreq: &IpMreqn, rtableid: u32, net: &NetHeld<'_>) -> Result<u32, Errno> {
+    // In case userland provides the imr_ifindex use this as interface. If no interface
+    // address was provided, use the interface of the route to the given multicast address.
+    if mreq.imr_ifindex != 0 {
+        return Ok(mreq.imr_ifindex as u32);
+    }
+    let (addr, flags) = if mreq.imr_address.s_addr == INADDR_ANY {
+        (mreq.imr_multiaddr, RT_RESOLVE)
+    } else {
+        (mreq.imr_address, 0)
+    };
+    let sin = sin_image(addr);
+    let Some(dst) = SockaddrView::new(&sin) else {
+        return Err(Errno::EADDRNOTAVAIL);
+    };
+    let rt = rtalloc(dst, flags, rtableid, net);
+    match rt.as_deref() {
+        Some(rt)
+            if rtisvalid(Some(rt)) && (flags == RT_RESOLVE || rt.rt_flags.isset(RTF_LOCAL)) =>
+        {
+            Ok(rt.rt_ifidx.get())
+        }
+        _ => Err(Errno::EADDRNOTAVAIL),
+    }
+}
+
+/// `ip_setmoptions(optname, imop, m, rtableid)`: sets the IP multicast options of a socket
+/// (`*imop`, made here with the C's defaults when it has none) in response to user
+/// setsockopt(), and frees them once every option is back to its default.
+pub fn ip_setmoptions(
+    optname: i32,
+    imop: &mut Option<MBox<IpMoptions>>,
+    m: Option<&Mbuf>,
+    rtableid: u32,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    let imo = match imop {
+        Some(imo) => imo,
+        None => {
+            // No multicast option buffer attached to the pcb; allocate one and initialize to
+            // default values.
+            let Some(imo) = MBox::new(
+                M_IPMOPTS,
+                M_WAITOK,
+                IpMoptions::output(0, IP_DEFAULT_MULTICAST_TTL, IP_DEFAULT_MULTICAST_LOOP),
+            ) else {
+                kpanic(format_args!("ip_setmoptions: malloc(M_WAITOK)"));
+            };
+            let imo = imop.insert(imo);
+            let Some(immp) =
+                MArray::new(M_IPMOPTS, M_WAITOK, usize::from(IP_MIN_MEMBERSHIPS), |_| {
+                    None
+                })
+            else {
+                kpanic(format_args!("ip_setmoptions: mallocarray(M_WAITOK)"));
+            };
+            imo.imo_membership = Some(immp);
+            imo
+        }
+    };
+
+    let error = match optname {
+        IP_MULTICAST_IF => set_multicast_if(imo, m, rtableid, net),
+
+        // Set the IP time-to-live for outgoing multicast packets.
+        IP_MULTICAST_TTL => match m.map(Mbuf::data) {
+            Some(&[ttl]) => {
+                imo.imo_ttl = ttl;
+                Ok(())
+            }
+            _ => Err(Errno::EINVAL),
+        },
+
+        // Set the loopback flag for outgoing multicast packets. Must be zero or one.
+        IP_MULTICAST_LOOP => match m.map(Mbuf::data) {
+            Some(&[lp]) if lp <= 1 => {
+                imo.imo_loop = lp;
+                Ok(())
+            }
+            _ => Err(Errno::EINVAL),
+        },
+
+        IP_ADD_MEMBERSHIP => add_membership(imo, m, rtableid, net),
+        IP_DROP_MEMBERSHIP => drop_membership(imo, m, rtableid, net),
+
+        _ => Err(Errno::EOPNOTSUPP),
+    };
+
+    // If all options have default values, no need to keep the data.
+    if imo.imo_ifidx == 0
+        && imo.imo_ttl == IP_DEFAULT_MULTICAST_TTL
+        && imo.imo_loop == IP_DEFAULT_MULTICAST_LOOP
+        && imo.imo_num_memberships == 0
+    {
+        // free(imo->imo_membership), then free(*imop).
+        drop(imop.take());
+    }
+
+    error
+}
+
+/// `ip_setmoptions`'s `IP_MULTICAST_IF`: selects the interface for outgoing multicast
+/// packets, by its index (an `ip_mreqn`) or by one of its local addresses (an `in_addr` or
+/// the `ip_mreq`'s interface address); `INADDR_ANY` removes a previous selection.
+fn set_multicast_if(
+    imo: &mut IpMoptions,
+    m: Option<&Mbuf>,
+    rtableid: u32,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    let Some(d) = m.map(Mbuf::data) else {
+        return Err(Errno::EINVAL);
+    };
+    let addr = if d.len() == IN_ADDR_LEN {
+        mreqn_of(d).imr_multiaddr
+    } else if d.len() == size_of::<IpMreq>() || d.len() == size_of::<IpMreqn>() {
+        let mreqn = mreqn_of(d);
+        // If an interface index is given use this index to set the imo_ifidx but check first
+        // that the interface actually exists. In the other case just set the addr to the
+        // imr_address and fall through to the regular code.
+        if mreqn.imr_ifindex != 0 {
+            return match IfRef::get(mreqn.imr_ifindex as u32) {
+                Some(ifp) if ifp.if_rdomain.get() == rtable_l2(rtableid) => {
+                    imo.imo_ifidx = ifp.if_index.get() as u16;
+                    Ok(())
+                }
+                _ => Err(Errno::EADDRNOTAVAIL),
+            };
+        }
+        mreqn.imr_address
+    } else {
+        return Err(Errno::EINVAL);
+    };
+    // INADDR_ANY is used to remove a previous selection. When no interface is selected, a
+    // default one is chosen every time a multicast packet is sent.
+    if addr.s_addr == INADDR_ANY {
+        imo.imo_ifidx = 0;
+        return Ok(());
+    }
+    // The selected interface is identified by its local IP address. Find the interface and
+    // confirm that it supports multicasting.
+    let ifp = ifa_ifwithaddr(net, &sin_image(addr), rtableid)
+        .and_then(InIfaddr::of)
+        .and_then(|ia| ia.ia_ifp().get());
+    match ifp {
+        Some(ifp) if ifp.if_flags.get() & IFF_MULTICAST != 0 => {
+            imo.imo_ifidx = ifp.if_index.get() as u16;
+            Ok(())
+        }
+        _ => Err(Errno::EADDRNOTAVAIL),
+    }
+}
+
+/// The request of an `IP_ADD_MEMBERSHIP` or `IP_DROP_MEMBERSHIP` (an `ip_mreq` or an
+/// `ip_mreqn`), whose group must be a valid IP multicast address: `EINVAL` otherwise.
+fn membership_request(m: Option<&Mbuf>) -> Result<IpMreqn, Errno> {
+    let Some(d) = m
+        .map(Mbuf::data)
+        .filter(|d| d.len() == size_of::<IpMreq>() || d.len() == size_of::<IpMreqn>())
+    else {
+        return Err(Errno::EINVAL);
+    };
+    let mreqn = mreqn_of(d);
+    if !in_multicast(mreqn.imr_multiaddr.s_addr) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(mreqn)
+}
+
+/// `ip_setmoptions`'s `IP_ADD_MEMBERSHIP`: adds a multicast group membership, growing the
+/// vector to the next power of two minus one when it is full, up to `IP_MAX_MEMBERSHIPS`.
+fn add_membership(
+    imo: &mut IpMoptions,
+    m: Option<&Mbuf>,
+    rtableid: u32,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    let mreqn = membership_request(m)?;
+    let ifidx = ip_multicast_if(&mreqn, rtableid, net)?;
+
+    // See if we found an interface, and confirm that it supports multicast.
+    let Some(ifp) = IfRef::get(ifidx).filter(|ifp| {
+        ifp.if_rdomain.get() == rtable_l2(rtableid) && ifp.if_flags.get() & IFF_MULTICAST != 0
+    }) else {
+        return Err(Errno::EADDRNOTAVAIL);
+    };
+
+    // See if the membership already exists or if all the membership slots are full.
+    let group = mreqn.imr_multiaddr;
+    let num = usize::from(imo.imo_num_memberships);
+    let exists = (0..num).any(|i| {
+        imo.membership(i)
+            .is_some_and(|inm| inm.inm_ifidx().get() == ifidx && inm.inm_addr() == group)
+    });
+    if exists {
+        return Err(Errno::EADDRINUSE);
+    }
+    if imo.imo_num_memberships == imo.imo_max_memberships() {
+        // Resize the vector to next power-of-two minus 1. If the size would exceed the
+        // maximum then we know we've really run out of entries. Otherwise, we reallocate the
+        // vector.
+        let newmax = (usize::from(imo.imo_max_memberships()) + 1) * 2 - 1;
+        let old = imo.imo_membership.as_deref().unwrap_or(&[]);
+        let nmships = (newmax <= usize::from(IP_MAX_MEMBERSHIPS))
+            .then(|| {
+                MArray::new(M_IPMOPTS, M_NOWAIT, newmax, |i| {
+                    old.get(i).copied().flatten()
+                })
+            })
+            .flatten();
+        let Some(nmships) = nmships else {
+            return Err(Errno::ENOBUFS);
+        };
+        // The old vector freed once copied.
+        imo.imo_membership = Some(nmships);
+    }
+    // Everything looks good; add a new record to the multicast address list for the given
+    // interface.
+    let Some(inm) = in_addmulti(&group, ifp.ifp(), net) else {
+        return Err(Errno::ENOBUFS);
+    };
+    let Some(slot) = imo
+        .imo_membership
+        .as_deref_mut()
+        .and_then(|v| v.get_mut(num))
+    else {
+        kpanic(format_args!(
+            "ip_setmoptions: membership {num} out of the vector"
+        ));
+    };
+    *slot = Some(inm);
+    imo.imo_num_memberships += 1;
+    Ok(())
+}
+
+/// `ip_setmoptions`'s `IP_DROP_MEMBERSHIP`: drops a multicast group membership, on the
+/// interface the request names (any, when it names none).
+fn drop_membership(
+    imo: &mut IpMoptions,
+    m: Option<&Mbuf>,
+    rtableid: u32,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
+    let mreqn = membership_request(m)?;
+
+    // If an interface address was specified, get a pointer to its ifnet structure.
+    let ifidx = ip_multicast_if(&mreqn, rtableid, net)?;
+
+    // Find the membership in the membership array.
+    let group = mreqn.imr_multiaddr;
+    let num = usize::from(imo.imo_num_memberships);
+    let Some((i, inm)) = (0..num).find_map(|i| {
+        imo.membership(i)
+            .filter(|inm| (ifidx == 0 || inm.inm_ifidx().get() == ifidx) && inm.inm_addr() == group)
+            .map(|inm| (i, inm))
+    }) else {
+        return Err(Errno::EADDRNOTAVAIL);
+    };
+    // Give up the multicast address record to which the membership points.
+    in_delmulti(inm, net);
+    // Remove the gap in the membership array.
+    if let Some(v) = imo.imo_membership.as_deref_mut() {
+        v.copy_within(i + 1..num, i);
+        v[num - 1] = None;
+    }
+    imo.imo_num_memberships -= 1;
+    Ok(())
+}
+
+/// `ip_getmoptions(optname, imo, m)`: returns the IP multicast options of a socket (`imo`,
+/// `None` when it has none: the defaults) in response to user getsockopt().
+pub fn ip_getmoptions(optname: i32, imo: Option<&IpMoptions>, m: &mut Mbuf) -> Result<(), Errno> {
+    match optname {
+        IP_MULTICAST_IF => {
+            let addr = imo
+                .and_then(|imo| IfRef::get(u32::from(imo.imo_ifidx)))
+                .and_then(|ifp| ifp_inaddr(&ifp))
+                .map_or(INADDR_ANY, |a| a.s_addr);
+            opt_put(m, &addr.to_ne_bytes());
+            Ok(())
+        }
+        IP_MULTICAST_TTL => {
+            opt_put(
+                m,
+                &[imo.map_or(IP_DEFAULT_MULTICAST_TTL, |imo| imo.imo_ttl)],
+            );
+            Ok(())
+        }
+        IP_MULTICAST_LOOP => {
+            opt_put(
+                m,
+                &[imo.map_or(IP_DEFAULT_MULTICAST_LOOP, |imo| imo.imo_loop)],
+            );
+            Ok(())
+        }
+        _ => Err(Errno::EOPNOTSUPP),
+    }
+}
+
+/// `ip_freemoptions(imo)`: discards the IP multicast options of a socket, leaving its groups.
+pub fn ip_freemoptions(imo: Option<MBox<IpMoptions>>, net: &NetHeld<'_>) {
+    let Some(imo) = imo else {
+        return;
+    };
+    for i in 0..usize::from(imo.imo_num_memberships) {
+        if let Some(inm) = imo.membership(i) {
+            in_delmulti(inm, net);
+        }
+    }
+    // free(imo->imo_membership), then free(imo).
+    drop(imo);
+}
+
 /// `ip_mloopback(ifp, m, dst)`: a copy of the IP multicast packet `m` looped back to the input
 /// queue of `ifp` (called from `ip_output`).
 pub fn ip_mloopback(ifp: &'static Ifnet, m: &Mbuf, dst: &[u8; SIN_LEN]) {
@@ -1409,11 +2160,7 @@ mod tests {
 
         // The limited broadcast through the multicast options' interface: refused without
         // IP_ALLOWBROADCAST, sent as a broadcast with it, refused when too large.
-        let imo = IpMoptions {
-            imo_ifidx: ifp.if_index.get() as u16,
-            imo_ttl: 1,
-            imo_loop: 0,
-        };
+        let imo = IpMoptions::output(ifp.if_index.get() as u16, 1, 0);
         let bcast = |len| packet_to(len, &[], [255, 255, 255, 255]);
         assert_eq!(send(bcast(60), 0, Some(&imo)), Err(Errno::EACCES));
         assert_eq!(d.count(), 0);
@@ -1435,6 +2182,473 @@ mod tests {
         );
         drop(net);
         drop(w);
+    }
+
+    // The IP socket options (`ip_ctloutput` .. `ip_freemoptions`) over a socket of the
+    // kernel's Internet fixture (`kernel::netinet::in_pcb::testinet`): every option name set
+    // and read back, each errno the C answers, the multicast options made, grown and freed.
+
+    use hal::sys::netinet_in::IPPROTO_TCP;
+
+    use crate::cred::{CredRef, Ucred};
+    use crate::net::proto::{PRCO_GETOPT, PRCO_SETOPT};
+    use crate::netinet::in_::in_hasmulti;
+    use crate::netinet::in_pcb::{INP_RECVIF, testinet};
+
+    type Tg = testinet::G;
+
+    /// An option mbuf holding `v`.
+    fn optm(v: &[u8]) -> MbufBox {
+        let mut m = m_get(M_DONTWAIT, i32::from(MT_SOOPTS)).expect("an mbuf");
+        m.m_len().set(v.len() as u32);
+        m.data_mut().expect("writable").copy_from_slice(v);
+        m
+    }
+
+    /// `ip_ctloutput(op, inp, level, name, m)` under the net lock: `v` the value of a
+    /// `PRCO_SETOPT` (`None` for none); the answer's bytes.
+    fn ctl(
+        inp: &Inpcb<Tg>,
+        options: &mut Option<MbufBox>,
+        op: i32,
+        level: i32,
+        name: i32,
+        v: Option<&[u8]>,
+    ) -> Result<Vec<u8>, Errno> {
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut m = optm(v.unwrap_or(&[]));
+        let arg = (op == PRCO_GETOPT || v.is_some()).then_some(&mut *m);
+        ip_ctloutput(op, inp, options, level, name, arg, &net)?;
+        Ok(m.data().to_vec())
+    }
+
+    /// `setsockopt(IPPROTO_IP, name, v)`.
+    fn set(inp: &Inpcb<Tg>, o: &mut Option<MbufBox>, name: i32, v: &[u8]) -> Result<(), Errno> {
+        ctl(inp, o, PRCO_SETOPT, IPPROTO_IP, name, Some(v)).map(drop)
+    }
+
+    /// `getsockopt(IPPROTO_IP, name)`.
+    fn get(inp: &Inpcb<Tg>, o: &mut Option<MbufBox>, name: i32) -> Result<Vec<u8>, Errno> {
+        ctl(inp, o, PRCO_GETOPT, IPPROTO_IP, name, None)
+    }
+
+    /// An `int` option's bytes.
+    fn int(v: i32) -> Vec<u8> {
+        v.to_ne_bytes().to_vec()
+    }
+
+    /// `f` as a user that is not the superuser (uid 1000), then `p` root again.
+    fn as_user<R>(p: &crate::proc::Thread<Tg>, f: impl FnOnce() -> R) -> R {
+        let mut ids = Ucred::new();
+        ids.cr_uid.set(1000);
+        ids.cr_ruid.set(1000);
+        let root = p.set_cred(CredRef::new(ids));
+        let r = f();
+        if let Some(root) = root {
+            drop(p.set_cred(root));
+        }
+        r
+    }
+
+    #[test]
+    fn ip_ctloutput_sets_and_gets_every_option_as_the_c() {
+        let (_g, p) = testinet::setup();
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        let mut opts = None;
+        let o = &mut opts;
+        use Errno::{EACCES, EINVAL, ENOPROTOOPT, EOPNOTSUPP};
+
+        // Another level, either way, before anything else.
+        let tos = Some(&[1u8, 0, 0, 0][..]);
+        assert_eq!(
+            ctl(&inp, o, PRCO_SETOPT, IPPROTO_TCP, IP_TOS, tos),
+            Err(EINVAL)
+        );
+        assert_eq!(
+            ctl(&inp, o, PRCO_GETOPT, IPPROTO_TCP, IP_TOS, None),
+            Err(EINVAL)
+        );
+
+        // The `int` options: no value or another length is EINVAL, a value is read back.
+        let ints = [
+            (IP_TOS, 0x10),
+            (IP_TTL, 33),
+            (IP_MINTTL, 255),
+            (IP_RECVOPTS, 1),
+            (IP_RECVRETOPTS, 1),
+            (IP_RECVDSTADDR, 1),
+            (IP_RECVIF, 1),
+            (IP_RECVTTL, 1),
+            (IP_RECVDSTPORT, 1),
+            (IP_RECVRTABLE, 1),
+            (IP_IPSECFLOWINFO, 1),
+            (IP_PORTRANGE, IP_PORTRANGE_HIGH),
+            (IP_PIPEX, 7),
+            (IP_AUTH_LEVEL, IPSEC_LEVEL_UNIQUE),
+            (IP_ESP_TRANS_LEVEL, IPSEC_LEVEL_UNIQUE),
+            (IP_ESP_NETWORK_LEVEL, IPSEC_LEVEL_UNIQUE),
+            (IP_IPCOMP_LEVEL, IPSEC_LEVEL_UNIQUE),
+        ];
+        for (name, v) in ints {
+            assert_eq!(
+                ctl(&inp, o, PRCO_SETOPT, IPPROTO_IP, name, None),
+                Err(EINVAL),
+                "{name} without a value"
+            );
+            assert_eq!(
+                set(&inp, o, name, &[1, 0]),
+                Err(EINVAL),
+                "{name} of 2 bytes"
+            );
+            assert_eq!(
+                set(&inp, o, name, &[0; 8]),
+                Err(EINVAL),
+                "{name} of 8 bytes"
+            );
+            set(&inp, o, name, &int(v)).expect("set");
+            assert_eq!(get(&inp, o, name), Ok(int(v)), "{name}");
+        }
+        assert_eq!(inp.inp_ip.get().ip_tos, 0x10);
+        assert_eq!(inp.inp_ip.get().ip_ttl, 33);
+        assert_eq!(inp.inp_ip_minttl.get(), 255);
+        assert_eq!(inp.inp_pipex.get(), 7);
+
+        // OPTSET: the flag follows the value, OPTBIT reads it.
+        let flags = [
+            (IP_RECVOPTS, INP_RECVOPTS),
+            (IP_RECVRETOPTS, INP_RECVRETOPTS),
+            (IP_RECVDSTADDR, INP_RECVDSTADDR),
+            (IP_RECVIF, INP_RECVIF),
+            (IP_RECVTTL, INP_RECVTTL),
+            (IP_RECVDSTPORT, INP_RECVDSTPORT),
+            (IP_RECVRTABLE, INP_RECVRTABLE),
+            (IP_IPSECFLOWINFO, INP_IPSECFLOWINFO),
+        ];
+        for (name, bit) in flags {
+            assert!(inp.has_flags(bit), "{name}");
+            set(&inp, o, name, &int(0)).expect("cleared");
+            assert!(!inp.has_flags(bit), "{name}");
+            assert_eq!(get(&inp, o, name), Ok(int(0)), "{name}");
+            set(&inp, o, name, &int(-5)).expect("any non-zero value sets");
+            assert!(inp.has_flags(bit), "{name}");
+        }
+
+        // The bounds of IP_TTL (1..=MAXTTL, -1 the default) and IP_MINTTL (0..=MAXTTL).
+        for bad in [0, 256, -2] {
+            assert_eq!(set(&inp, o, IP_TTL, &int(bad)), Err(EINVAL), "ttl {bad}");
+        }
+        assert_eq!(
+            get(&inp, o, IP_TTL),
+            Ok(int(33)),
+            "a refused TTL changes nothing"
+        );
+        set(&inp, o, IP_TTL, &int(-1)).expect("the default");
+        assert_eq!(
+            get(&inp, o, IP_TTL),
+            Ok(int(IP_DEFTTL.load(Ordering::Relaxed)))
+        );
+        for bad in [-1, 256] {
+            assert_eq!(
+                set(&inp, o, IP_MINTTL, &int(bad)),
+                Err(EINVAL),
+                "minttl {bad}"
+            );
+        }
+        set(&inp, o, IP_MINTTL, &int(0)).expect("0");
+
+        // IP_PORTRANGE: the two flags exclude each other; another range is EINVAL.
+        set(&inp, o, IP_PORTRANGE, &int(IP_PORTRANGE_LOW)).expect("low");
+        assert!(inp.has_flags(INP_LOWPORT) && !inp.has_flags(INP_HIGHPORT));
+        assert_eq!(get(&inp, o, IP_PORTRANGE), Ok(int(IP_PORTRANGE_LOW)));
+        set(&inp, o, IP_PORTRANGE, &int(IP_PORTRANGE_DEFAULT)).expect("default");
+        assert!(!inp.has_flags(INP_LOWPORT | INP_HIGHPORT));
+        assert_eq!(get(&inp, o, IP_PORTRANGE), Ok(int(0)));
+        assert_eq!(set(&inp, o, IP_PORTRANGE, &int(3)), Err(EINVAL));
+
+        // The IPsec levels: outside BYPASS..=UNIQUE is EINVAL; below the default, EACCES but
+        // for the superuser.
+        for name in [
+            IP_AUTH_LEVEL,
+            IP_ESP_TRANS_LEVEL,
+            IP_ESP_NETWORK_LEVEL,
+            IP_IPCOMP_LEVEL,
+        ] {
+            for bad in [IPSEC_LEVEL_BYPASS - 1, IPSEC_LEVEL_UNIQUE + 1] {
+                assert_eq!(set(&inp, o, name, &int(bad)), Err(EINVAL), "{name} {bad}");
+            }
+            assert_eq!(
+                as_user(p, || set(&inp, o, name, &int(IPSEC_LEVEL_BYPASS))),
+                Err(EACCES),
+                "{name}"
+            );
+            assert_eq!(
+                get(&inp, o, name),
+                Ok(int(IPSEC_LEVEL_UNIQUE)),
+                "{name} kept"
+            );
+            set(&inp, o, name, &int(IPSEC_LEVEL_BYPASS)).expect("the superuser");
+            assert_eq!(get(&inp, o, name), Ok(int(IPSEC_LEVEL_BYPASS)), "{name}");
+        }
+        assert_eq!(inp.inp_seclevel.get().sl_ipcomp, IPSEC_LEVEL_BYPASS as u8);
+
+        // Read-only, unsupported and unknown names.
+        assert_eq!(
+            get(&inp, o, IP_IPDEFTTL),
+            Ok(int(IP_DEFTTL.load(Ordering::Relaxed)))
+        );
+        assert_eq!(set(&inp, o, IP_IPDEFTTL, &int(9)), Err(ENOPROTOOPT));
+        assert_eq!(set(&inp, o, IP_RETOPTS, &[0; 4]), Err(ENOPROTOOPT));
+        for name in [IP_IPSEC_LOCAL_ID, IP_IPSEC_REMOTE_ID] {
+            assert_eq!(set(&inp, o, name, &int(1)), Err(EOPNOTSUPP), "{name}");
+            assert_eq!(get(&inp, o, name), Err(EOPNOTSUPP), "{name}");
+        }
+        assert_eq!(set(&inp, o, 99, &int(1)), Err(ENOPROTOOPT));
+        assert_eq!(get(&inp, o, 99), Err(ENOPROTOOPT));
+
+        // SO_RTABLE: at least a `u_int`; the same table is no change; a table that does not
+        // exist is EINVAL (in_pcbset_rtableid).
+        assert_eq!(get(&inp, o, SO_RTABLE), Ok(int(0)));
+        assert_eq!(set(&inp, o, SO_RTABLE, &[0; 2]), Err(EINVAL));
+        set(&inp, o, SO_RTABLE, &[0; 8]).expect("table 0 again, 8 bytes");
+        assert_eq!(set(&inp, o, SO_RTABLE, &int(5)), Err(EINVAL));
+        assert_eq!(inp.inp_rtableid.get(), 0);
+
+        // IP_OPTIONS: the list stored behind the first hop (zero, no source route), read back
+        // by IP_OPTIONS and IP_RETOPTS; no value turns them off.
+        let list = [IPOPT_NOP, IPOPT_NOP, IPOPT_NOP, IPOPT_EOL];
+        set(&inp, o, IP_OPTIONS, &list).expect("options");
+        let want = [0, 0, 0, 0, IPOPT_NOP, IPOPT_NOP, IPOPT_NOP, IPOPT_EOL];
+        assert_eq!(get(&inp, o, IP_OPTIONS), Ok(want.to_vec()));
+        assert_eq!(get(&inp, o, IP_RETOPTS), Ok(want.to_vec()));
+        ctl(&inp, o, PRCO_SETOPT, IPPROTO_IP, IP_OPTIONS, None).expect("off");
+        assert!(o.is_none());
+        assert_eq!(get(&inp, o, IP_OPTIONS), Ok(vec![]));
+
+        // The multicast options' get side without options: the C's defaults.
+        assert_eq!(get(&inp, o, IP_MULTICAST_IF), Ok(vec![0; 4]));
+        assert_eq!(
+            get(&inp, o, IP_MULTICAST_TTL),
+            Ok(vec![IP_DEFAULT_MULTICAST_TTL])
+        );
+        assert_eq!(
+            get(&inp, o, IP_MULTICAST_LOOP),
+            Ok(vec![IP_DEFAULT_MULTICAST_LOOP])
+        );
+        for name in [IP_ADD_MEMBERSHIP, IP_DROP_MEMBERSHIP] {
+            assert_eq!(get(&inp, o, name), Err(EOPNOTSUPP), "{name}");
+        }
+
+        testinet::release(so, inp);
+    }
+
+    /// An `ip_mreq` of `group` on the interface of local address `ifaddr`.
+    fn mreq(group: [u8; 4], ifaddr: [u8; 4]) -> Vec<u8> {
+        [group, ifaddr].concat()
+    }
+
+    #[test]
+    fn the_multicast_options_are_made_grown_and_freed_as_the_c() {
+        let (_g, _p) = testinet::setup();
+        let (ifp, _d) = testinet::iface(b"tst0", [10, 0, 2, 15]);
+        let idx = ifp.if_index.get();
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        let mut opts = None;
+        let o = &mut opts;
+        use Errno::{EADDRINUSE, EADDRNOTAVAIL, EINVAL};
+
+        // TTL and loopback: one byte; the loopback switch 0 or 1.
+        assert_eq!(set(&inp, o, IP_MULTICAST_TTL, &[5, 0]), Err(EINVAL));
+        set(&inp, o, IP_MULTICAST_TTL, &[5]).expect("ttl");
+        assert_eq!(get(&inp, o, IP_MULTICAST_TTL), Ok(vec![5]));
+        assert_eq!(set(&inp, o, IP_MULTICAST_LOOP, &[2]), Err(EINVAL));
+        set(&inp, o, IP_MULTICAST_LOOP, &[0]).expect("loop");
+        assert_eq!(get(&inp, o, IP_MULTICAST_LOOP), Ok(vec![0]));
+        assert_eq!(
+            inp.moptions_out()
+                .map(|m| (m.imo_ifidx, m.imo_ttl, m.imo_loop)),
+            Some((0, 5, 0))
+        );
+        // Back to the defaults: the options are freed (`*imop = NULL`).
+        set(&inp, o, IP_MULTICAST_TTL, &[1]).expect("ttl");
+        set(&inp, o, IP_MULTICAST_LOOP, &[1]).expect("loop");
+        assert!(inp.moptions_out().is_none());
+
+        // The interface: by a local address, by an index (`ip_mreqn`), cleared by ANY.
+        set(&inp, o, IP_MULTICAST_IF, &[10, 0, 2, 15]).expect("by address");
+        assert_eq!(get(&inp, o, IP_MULTICAST_IF), Ok(vec![10, 0, 2, 15]));
+        assert_eq!(
+            inp.moptions_out().map(|m| u32::from(m.imo_ifidx)),
+            Some(idx)
+        );
+        assert_eq!(
+            set(&inp, o, IP_MULTICAST_IF, &[10, 0, 2, 99]),
+            Err(EADDRNOTAVAIL),
+            "not a local address"
+        );
+        set(&inp, o, IP_MULTICAST_IF, &[0; 4]).expect("INADDR_ANY");
+        assert!(inp.moptions_out().is_none(), "the defaults again");
+        let mut mreqn = [0u8; 12];
+        mreqn[8..].copy_from_slice(&(idx as i32).to_ne_bytes());
+        set(&inp, o, IP_MULTICAST_IF, &mreqn).expect("by index");
+        assert_eq!(
+            inp.moptions_out().map(|m| u32::from(m.imo_ifidx)),
+            Some(idx)
+        );
+        mreqn[8..].copy_from_slice(&99i32.to_ne_bytes());
+        assert_eq!(set(&inp, o, IP_MULTICAST_IF, &mreqn), Err(EADDRNOTAVAIL));
+        assert_eq!(set(&inp, o, IP_MULTICAST_IF, &[0; 5]), Err(EINVAL));
+        assert_eq!(
+            ctl(&inp, o, PRCO_SETOPT, IPPROTO_IP, IP_MULTICAST_IF, None),
+            Err(EINVAL)
+        );
+        set(&inp, o, IP_MULTICAST_IF, &[0; 4]).expect("INADDR_ANY");
+
+        // A membership: a multicast group only, of an ip_mreq or ip_mreqn's size.
+        let group = [224, 1, 2, 3];
+        let ga = InAddr {
+            s_addr: u32::from_ne_bytes(group),
+        };
+        let here = [10, 0, 2, 15];
+        assert_eq!(
+            set(&inp, o, IP_ADD_MEMBERSHIP, &mreq([10, 0, 0, 1], here)),
+            Err(EINVAL)
+        );
+        assert_eq!(set(&inp, o, IP_ADD_MEMBERSHIP, &group), Err(EINVAL));
+        assert_eq!(
+            set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(group, [10, 0, 2, 99])),
+            Err(EADDRNOTAVAIL),
+            "no local route to the interface address"
+        );
+        set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(group, here)).expect("joined");
+        assert!(in_hasmulti(&ga, ifp));
+        assert_eq!(
+            set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(group, here)),
+            Err(EADDRINUSE)
+        );
+        set(&inp, o, IP_DROP_MEMBERSHIP, &mreq(group, here)).expect("left");
+        assert!(!in_hasmulti(&ga, ifp));
+        assert_eq!(
+            set(&inp, o, IP_DROP_MEMBERSHIP, &mreq(group, here)),
+            Err(EADDRNOTAVAIL)
+        );
+        assert!(
+            inp.moptions_out().is_none(),
+            "no membership, the defaults: freed"
+        );
+
+        // Sixteen groups grow the vector from IP_MIN_MEMBERSHIPS to 2 * 16 - 1.
+        let groups: Vec<[u8; 4]> = (0..16u8).map(|i| [224, 1, 3, i]).collect();
+        for g in &groups {
+            set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(*g, here)).expect("joined");
+        }
+        {
+            let _w = NETLOCK.write();
+            let imo = inp.moptions();
+            let imo = imo.as_deref().expect("options");
+            assert_eq!(imo.imo_num_memberships, 16);
+            assert_eq!(imo.imo_max_memberships(), 2 * (IP_MIN_MEMBERSHIPS + 1) - 1);
+            assert!(imo.membership(15).is_some() && imo.membership(16).is_none());
+        }
+        // A group in the middle dropped: the gap closed, the order kept.
+        set(&inp, o, IP_DROP_MEMBERSHIP, &mreq(groups[3], here)).expect("left");
+        {
+            let _w = NETLOCK.write();
+            let imo = inp.moptions();
+            let imo = imo.as_deref().expect("options");
+            let left: Vec<u8> = (0..15)
+                .filter_map(|i| imo.membership(i))
+                .map(|inm| inm.inm_addr().s_addr.to_ne_bytes()[3])
+                .collect();
+            let want: Vec<u8> = (0..16u8).filter(|&i| i != 3).collect();
+            assert_eq!(left, want);
+        }
+
+        // The detach leaves every group (`ip_freemoptions`).
+        testinet::release(so, inp);
+        for g in &groups {
+            let a = InAddr {
+                s_addr: u32::from_ne_bytes(*g),
+            };
+            assert!(!in_hasmulti(&a, ifp), "{g:?}");
+        }
+    }
+
+    #[test]
+    fn ip_pcbopts_pops_the_first_hop_of_a_source_route() {
+        let _g = setup();
+        let mut pcbopt = None;
+
+        // NOP, then LSRR through 10.0.0.1 (first hop) and 10.0.0.2 as the user writes it (the
+        // addresses where the pointer byte goes), then EOL: the first hop moves before the
+        // options and the route shrinks by one address.
+        let m = optm(&[
+            IPOPT_NOP, IPOPT_LSRR, 10, 10, 0, 0, 1, 10, 0, 0, 2, IPOPT_EOL,
+        ]);
+        ip_pcbopts(&mut pcbopt, Some(&m)).expect("options");
+        assert_eq!(
+            pcbopt.as_deref().map(Mbuf::data),
+            Some(
+                &[
+                    10, 0, 0, 1, IPOPT_NOP, IPOPT_LSRR, 6, 10, 0, 0, 2, IPOPT_EOL
+                ][..]
+            )
+        );
+
+        // A length that is not a multiple of 4, or an option longer than the list, is refused
+        // (and the old options are gone either way).
+        assert_eq!(
+            ip_pcbopts(&mut pcbopt, Some(&optm(&[IPOPT_NOP; 3]))),
+            Err(Errno::EINVAL)
+        );
+        assert!(pcbopt.is_none());
+        assert_eq!(
+            ip_pcbopts(&mut pcbopt, Some(&optm(&[IPOPT_RR, 9, 4, 0]))),
+            Err(Errno::EINVAL)
+        );
+        // Longer than a `struct ipoption` holds once the first hop is popped, or than the
+        // input may be: EINVAL.
+        assert_eq!(
+            ip_pcbopts(&mut pcbopt, Some(&optm(&[IPOPT_NOP; 48]))),
+            Err(Errno::EINVAL)
+        );
+        let mut rr = [IPOPT_NOP; 44];
+        rr[0] = IPOPT_RR;
+        rr[1] = 44;
+        rr[2] = 4;
+        assert_eq!(
+            ip_pcbopts(&mut pcbopt, Some(&optm(&rr))),
+            Err(Errno::EINVAL),
+            "44 bytes of options after an empty first hop"
+        );
+        // A source route too short for its first hop.
+        assert_eq!(
+            ip_pcbopts(&mut pcbopt, Some(&optm(&[IPOPT_LSRR, 6, 4, 0, 0, 0, 0, 0]))),
+            Err(Errno::EINVAL)
+        );
+        // No mbuf, or an empty one, only turns the options off.
+        ip_pcbopts(&mut pcbopt, Some(&m)).expect("options");
+        ip_pcbopts(&mut pcbopt, None).expect("off");
+        assert!(pcbopt.is_none());
+        ip_pcbopts(&mut pcbopt, Some(&m)).expect("options");
+        ip_pcbopts(&mut pcbopt, Some(&optm(&[]))).expect("off");
+        assert!(pcbopt.is_none());
+    }
+
+    #[test]
+    fn ip_getmoptions_answers_the_defaults_without_options() {
+        let _g = setup();
+        let mut m = optm(&[0; 4]);
+        ip_getmoptions(IP_MULTICAST_TTL, None, &mut m).expect("ttl");
+        assert_eq!(m.data(), &[IP_DEFAULT_MULTICAST_TTL]);
+        ip_getmoptions(IP_MULTICAST_LOOP, None, &mut m).expect("loop");
+        assert_eq!(m.data(), &[IP_DEFAULT_MULTICAST_LOOP]);
+        ip_getmoptions(IP_MULTICAST_IF, None, &mut m).expect("if");
+        assert_eq!(m.data(), &[0, 0, 0, 0]);
+        let set = IpMoptions::output(0, 9, 0);
+        ip_getmoptions(IP_MULTICAST_TTL, Some(&set), &mut m).expect("ttl");
+        assert_eq!(m.data(), &[9]);
+        assert_eq!(ip_getmoptions(IP_TTL, None, &mut m), Err(Errno::EOPNOTSUPP));
     }
 }
 /* </TESTS> */

@@ -226,9 +226,20 @@
 //!   against the socket lock at run time as LZ checked it (D-5's fallback, R1: the brief's
 //!   cell opened by either of two locks cannot be opened by `bsd`'s detached holdings, and a
 //!   `SoLocked` of `solock_nonet` holds `so_lock` without a proof of the net lock).
-//! - `bsd`'s own members (the options, the IPv6 options and filter, the multicast options of
-//!   both families, the per-protocol pcb) are words `bsd` keeps (`hal::link::PtrWord`), which
-//!   the kernel never reads; `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
+//! - N6.4c1, the IP socket options: the \[N\] multicast options (LZ's `inp_moptions`, a raw
+//!   `malloc(M_IPMOPTS)` pointer read through an `unsafe` deref) are an
+//!   `Option<MBox<IpMoptions>>` in a `ReadMostly` cell, lent under the same check as the
+//!   route ([`Inpcb::moptions`], an [`InpLoan`]: the route's loan made generic over the
+//!   member) to `ip_setmoptions` and freed by [`in_pcbdetach`] (`ip_freemoptions`, which
+//!   leaves the groups: the detach takes the net lock's proof for it); `ip_output`'s callers
+//!   copy the three scalars it reads out of the cell ([`Inpcb::moptions_out`], a read, since
+//!   `ip_output` sleeps). `in_pcbconnect` and `in_pcbselsrc` read the socket's interface for
+//!   multicasts themselves: their `mcast_ifidx` parameter (`bsd`'s read of its word) is gone.
+//!   The cell is 40 bytes where `bsd`'s word was 8 (the box's malloc type and allocator).
+//! - `bsd`'s own members (the IPv4 options, the IPv6 options, multicast options and filter,
+//!   the per-protocol pcb) are words `bsd` keeps (`hal::link::PtrWord`), which the kernel
+//!   never reads (the IPv4 options are lent to `ip_ctloutput` by `bsd`'s caller, N6.4c1's
+//!   R11); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
 //!   SipHash keys; its mutex holds the hash arrays (`MArray`s of pinned lists, `hashinit`'s),
@@ -255,6 +266,8 @@
 //! | `in_pcb_iterator` step | `inpt_mtx` held by the caller | the same |
 //! | `in_pcbnotifyall` per pcb | `inpt_mtx` dropped and taken, the socket lock pair | the same (D-16: named for N12) |
 //! | route cache loan | none (the socket lock held) | two claims of the cell (atomics, no spl) |
+//! | multicast options loan (`ip_setmoptions`, `in_pcbdetach`) | none (the socket lock held) | two claims of the cell (atomics, no spl) |
+//! | multicast options read (`ip_output`'s callers, `in_pcbselsrc`) | one load | a reader's count (two atomics, no spl) |
 //!
 //! Holders of a reference (the C's `in_pcbref`/`in_pcbunref`) and their shape here:
 //!
@@ -271,7 +284,7 @@ use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use hal::intr::IPL_SOFTNET;
 use hal::link::PtrWord;
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
+use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::{Mutexed, MutexedGuard};
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
@@ -310,6 +323,8 @@ use crate::net::sockbuf::SS_NOFDREF;
 use crate::net::socket::{Socket, SocketRef, sofree_legacy, soref};
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
+use crate::netinet::ip_output::ip_freemoptions;
+use crate::netinet::ip_var::IpMoptions;
 use crate::netinet6::in6_pcb::in6_pcbhash;
 use crate::proc::{ProcGlue, Thread, suser};
 
@@ -864,9 +879,10 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_outputopts6: PtrWord<c_void>,
     /// `inp_hops`.
     pub inp_hops: AtomicCell<i32>,
-    /// \[N\] `inp_moptions`: IPv4 multicast options (`bsd`'s `malloc(M_IPMOPTS)`, until the
-    /// IP socket options move).
-    pub inp_moptions: PtrWord<c_void>,
+    /// \[N\] `inp_moptions`: IPv4 multicast options (`ip_setmoptions`'s `M_IPMOPTS`
+    /// allocation), reached only through [`Inpcb::moptions`], which checks the socket lock,
+    /// and copied by [`Inpcb::moptions_out`].
+    inp_moptions: ReadMostly<Option<MBox<IpMoptions>>>,
     /// \[N\] `inp_moptions6`: IPv6 multicast options (`bsd`'s, until N6.5).
     pub inp_moptions6: PtrWord<c_void>,
     /// \[N\] `inp_seclevel`: IPsec level of socket.
@@ -937,7 +953,7 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_options: PtrWord::new(),
             inp_outputopts6: PtrWord::new(),
             inp_hops: AtomicCell::new(),
-            inp_moptions: PtrWord::new(),
+            inp_moptions: ReadMostly::new(None),
             inp_moptions6: PtrWord::new(),
             inp_seclevel: SeclevelCell::new(),
             inp_ip_minttl: AtomicCell::new(),
@@ -985,12 +1001,9 @@ impl<G: ProcGlue> Inpcb<G> {
     /// loan is a move of the cached route out of its cell and back, and a second thread's loan
     /// of the same cell would race it (`in6_pcbnotify`'s walk reads other sockets' caches only
     /// once it holds their locks). `panic(9)` without the lock.
-    pub fn route(&self) -> RouteLoan<'_, G> {
+    pub fn route(&self) -> InpLoan<'_, Route> {
         self.assert_route_locked("inp_route");
-        RouteLoan {
-            inp: self,
-            ro: Some(self.inp_route.update(core::mem::take)),
-        }
+        InpLoan::of(&self.inp_route)
     }
 
     /// `inp->inp_route = *ro` (the struct assignment of `syn_cache_get`), the old route's
@@ -998,6 +1011,28 @@ impl<G: ProcGlue> Inpcb<G> {
     pub fn set_route(&self, ro: Route) {
         self.assert_route_locked("inp_route =");
         drop(self.inp_route.replace(ro));
+    }
+
+    /// `&inp->inp_moptions`: the IPv4 multicast options, lent until the loan drops (the C's
+    /// `struct ip_moptions **` of `ip_setmoptions`, which may make, change or free them). The
+    /// options are `[N]`: written under the socket lock, as `soassertlocked` defines it for an
+    /// internet socket; checked here as [`Inpcb::route`] checks the route cache, a loan being
+    /// a move out of the cell and back. `panic(9)` without the lock.
+    pub fn moptions(&self) -> InpLoan<'_, Option<MBox<IpMoptions>>> {
+        self.assert_route_locked("inp_moptions");
+        InpLoan::of(&self.inp_moptions)
+    }
+
+    /// The multicast options `ip_output` reads (the interface, the TTL, the loopback switch),
+    /// copied out of the cell: `None` when the socket has none (`inp->inp_moptions == NULL`).
+    /// A read: the cell's readers count, never a move (the transports' `ip_output` calls
+    /// sleep, which no reader of the cell may do while it holds it).
+    #[inline]
+    pub fn moptions_out(&self) -> Option<IpMoptions> {
+        self.inp_moptions
+            .read()
+            .as_deref()
+            .map(|imo| IpMoptions::output(imo.imo_ifidx, imo.imo_ttl, imo.imo_loop))
     }
 
     /// Whether this thread holds the socket lock that guards `inp_route`: this pcb's
@@ -1156,38 +1191,42 @@ impl<G: ProcGlue> Inpcb<G> {
     }
 }
 
-/// A pcb's route cache, out of its cell until this drops ([`Inpcb::route`]).
-pub struct RouteLoan<'a, G: ProcGlue> {
-    /// Where the route goes back.
-    inp: &'a Inpcb<G>,
-    /// The route.
-    ro: Option<Route>,
+/// A member of a pcb under its socket lock (the route cache, the multicast options), out of
+/// its cell until this drops ([`Inpcb::route`], [`Inpcb::moptions`]): the cell holds the
+/// member's default meanwhile, and the value goes back on drop.
+pub struct InpLoan<'a, T: Default> {
+    /// Where the value goes back.
+    cell: &'a ReadMostly<T>,
+    /// The value.
+    val: T,
 }
 
-impl<G: ProcGlue> core::ops::Deref for RouteLoan<'_, G> {
-    type Target = Route;
-    fn deref(&self) -> &Route {
-        match &self.ro {
-            Some(r) => r,
-            None => kpanic(format_args!("RouteLoan: no route")),
+impl<'a, T: Default> InpLoan<'a, T> {
+    /// The value of `cell`, taken out (the caller checked the socket lock).
+    fn of(cell: &'a ReadMostly<T>) -> Self {
+        Self {
+            cell,
+            val: cell.update(core::mem::take),
         }
     }
 }
 
-impl<G: ProcGlue> core::ops::DerefMut for RouteLoan<'_, G> {
-    fn deref_mut(&mut self) -> &mut Route {
-        match &mut self.ro {
-            Some(r) => r,
-            None => kpanic(format_args!("RouteLoan: no route")),
-        }
+impl<T: Default> core::ops::Deref for InpLoan<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.val
     }
 }
 
-impl<G: ProcGlue> Drop for RouteLoan<'_, G> {
+impl<T: Default> core::ops::DerefMut for InpLoan<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.val
+    }
+}
+
+impl<T: Default> Drop for InpLoan<'_, T> {
     fn drop(&mut self) {
-        if let Some(ro) = self.ro.take() {
-            drop(self.inp.inp_route.replace(ro));
-        }
+        drop(self.cell.replace(core::mem::take(&mut self.val)));
     }
 }
 
@@ -1773,13 +1812,10 @@ pub fn in_pcbpickport<G: ProcGlue>(
 }
 
 /// `in_pcbconnect` of an IPv4 control block: connects `inp` to the address in `nam`; both
-/// address and port must be specified. If the socket has no local address yet, one is picked
-/// (`mcast_ifidx` is the interface of the socket's multicast options, `imo_ifidx`, which
-/// `in_pcbselsrc` reads; `bsd`'s until the IP socket options move).
+/// address and port must be specified. If the socket has no local address yet, one is picked.
 pub fn in_pcbconnect<G: ProcGlue>(
     inp: &Inpcb<G>,
     nam: &Mbuf,
-    mcast_ifidx: Option<u16>,
     p: &Thread<G>,
     net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
@@ -1790,7 +1826,7 @@ pub fn in_pcbconnect<G: ProcGlue>(
     if sin.sin_port == 0 {
         return Err(Errno::EADDRNOTAVAIL);
     }
-    let ina = in_pcbselsrc(&sin, inp, mcast_ifidx, net)?;
+    let ina = in_pcbselsrc(&sin, inp, net)?;
 
     // keep lookup, modification, and rehash in sync
     let mut g = table.lock();
@@ -1835,8 +1871,13 @@ pub fn in_pcbdisconnect<G: ProcGlue>(inp: &Inpcb<G>) -> bool {
 }
 
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
-/// reference; `free_opts` frees what `bsd` keeps of the pcb (its options), at the C's point.
-pub fn in_pcbdetach<G: ProcGlue>(inp: InpcbRef<G>, free_opts: impl FnOnce(&Inpcb<G>)) {
+/// reference; `free_opts` frees what `bsd` keeps of the pcb (its IPv4 options, its IPv6
+/// options), at the C's point, before the multicast options.
+pub fn in_pcbdetach<G: ProcGlue>(
+    inp: InpcbRef<G>,
+    net: &NetHeld<'_>,
+    free_opts: impl FnOnce(&Inpcb<G>),
+) {
     let so = inp.socket();
     let table = inp.table();
 
@@ -1845,6 +1886,9 @@ pub fn in_pcbdetach<G: ProcGlue>(inp: InpcbRef<G>, free_opts: impl FnOnce(&Inpcb
     // rtfree(inp->inp_route.ro_rt): the cache's handle dropped.
     drop(inp.route().take_rt());
     free_opts(&inp);
+    // ip_freemoptions(inp->inp_moptions): an IPv6 pcb's are `bsd`'s (`free_opts`), its cell
+    // here empty.
+    ip_freemoptions(core::mem::take(&mut *inp.moptions()), net);
     if let Some(pf) = pf() {
         pf.inp_remove_divert_state(&inp.inp_pf_sk);
         pf.inp_unlink(&inp.inp_pf_sk);
@@ -2143,13 +2187,12 @@ pub fn in_pcbrtentry<G: ProcGlue>(inp: &Inpcb<G>, net: &NetHeld<'_>) -> Option<P
 
 /// `in_pcbselsrc`: the IPv4 address most appropriate as the source for destination
 /// `dstsock`. If necessary, the routing table is looked up and the entry cached in `inp`.
-/// `mcast_ifidx` is the outgoing interface of the socket's multicast options, if it has any.
 pub fn in_pcbselsrc<G: ProcGlue>(
     dstsock: &SockaddrIn,
     inp: &Inpcb<G>,
-    mcast_ifidx: Option<u16>,
     net: &NetHeld<'_>,
 ) -> Result<InAddr, Errno> {
+    let mopts = inp.moptions_out();
     let dst = &dstsock.sin_addr;
     let laddr = inp.inp_laddr.get();
     let rtableid = inp.inp_rtableid.get();
@@ -2164,8 +2207,8 @@ pub fn in_pcbselsrc<G: ProcGlue>(
     // outgoing interface has been set as a multicast option, use the address of that
     // interface as our source address.
     if (in_multicast(dst.s_addr) || dst.s_addr == INADDR_BROADCAST)
-        && let Some(ifidx) = mcast_ifidx
-        && let Some(ifp) = if_get(u32::from(ifidx))
+        && let Some(mopts) = &mopts
+        && let Some(ifp) = if_get(u32::from(mopts.imo_ifidx))
     {
         let ia = if ifp.if_rdomain.get() == rtable_l2(rtableid) {
             in_ifp2ia(ifp)
@@ -2520,6 +2563,208 @@ pub fn in_pcbunset_laddr<G: ProcGlue>(inp: &Inpcb<G>) {
     in_pcbrehash(&mut g, inp);
 }
 
+/// The host tests' Internet sockets (`ip_output`'s socket options, this module's pcb tests):
+/// a datagram protocol of an `AF_INET` domain over the UNIX domain tests' glue and root
+/// thread, its sockets made by `soalloc` alone (the domain is not configured), the interface
+/// layer and the routing tables of table 0 fresh, the "inpcb" pool made.
+#[cfg(test)]
+pub(crate) mod testinet {
+    use std::boxed::Box;
+    use std::sync::{MutexGuard, Once};
+
+    use hal::netlock::NETLOCK;
+    use hal::pod;
+    use hal::sys::net_if::{IFF_BROADCAST, IFF_MULTICAST};
+    use hal::sys::netinet_in_var::InAliasreq;
+    use hal::sys::socket::{PF_INET, SOCK_DGRAM};
+    use hal::sys::sockio::{SIOCADDMULTI, SIOCAIFADDR, SIOCDELMULTI, SIOCSIFADDR};
+
+    use super::*;
+    use crate::fs::testfs::TestGlue;
+    use crate::net::domain::Domain;
+    use crate::net::if_::IFNETLIST;
+    use crate::net::if_var::{Ifnet, NetDriver};
+    use crate::net::mbuf::MbufBox;
+    use crate::net::proto::SockaddrView;
+    use crate::net::proto::{PR_ADDR, PR_ATOMIC, Protocol, Usrreqs};
+    use crate::net::socket::{SoInit, soalloc};
+
+    /// The tests' glue: the UNIX domain tests' (a root thread is `curproc`).
+    pub(crate) type G = TestGlue;
+
+    /// The test domain: `AF_INET`, whose sockets the net lock serialises.
+    struct InetDom;
+    /// Its datagram protocol (`IPPROTO_UDP`), without user requests: the tests call the pcb
+    /// functions themselves.
+    struct UdpProto;
+
+    static PROTOS: [&dyn Protocol<G>; 1] = [&UdpProto];
+
+    impl Domain<G> for InetDom {
+        fn family(&self) -> i32 {
+            i32::from(PF_INET)
+        }
+        fn name(&self) -> &'static str {
+            "inet"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
+            &PROTOS
+        }
+    }
+
+    impl Protocol<G> for UdpProto {
+        fn domain(&self) -> &'static dyn Domain<G> {
+            &InetDom
+        }
+        fn ty(&self) -> i16 {
+            SOCK_DGRAM as i16
+        }
+        fn protocol(&self) -> i16 {
+            IPPROTO_UDP as i16
+        }
+        fn flags(&self) -> i16 {
+            PR_ATOMIC | PR_ADDR
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
+            None
+        }
+    }
+
+    /// The fixture; the guard serialises the tests that hold kernel memory.
+    pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
+        static IDS: Once = Once::new();
+        let (g, p) = crate::net::unix::tests::setup();
+        crate::net::if_::softnet_test_install();
+        crate::net::if_::if_idxmap_test_reset();
+        crate::net::if_::ifnet_test_reset();
+        crate::netinet::in_var::in_var_test_reset();
+        crate::netinet::igmp::igmp_test_reset();
+        crate::netinet::if_ether::arp_test_reset();
+        crate::net::rtable::rtable_test_reset();
+        crate::net::route::rtlabel_test_reset();
+        crate::net::route::route_init();
+        crate::net::rtable::rtable_init_doms(&crate::net::route::tests::ROUTE_DOMS);
+        in_init::<G>();
+        IDS.call_once(crate::netinet::ip_id::ip_randomid_init);
+        (g, p)
+    }
+
+    /// A table of `hashsize` buckets (`in_pcbinit`), for the run.
+    pub(crate) fn table(hashsize: i32) -> &'static Inpcbtable<G> {
+        let t: &'static Inpcbtable<G> = Box::leak(Box::new(Inpcbtable::new()));
+        in_pcbinit(t, hashsize);
+        t
+    }
+
+    /// A socket of the test protocol, with a control block in `table`: the socket's handle
+    /// and the control block's (the caller's, beside the socket's `inp_refcnt`).
+    pub(crate) fn pcb(table: &'static Inpcbtable<G>) -> (SocketRef<G>, InpcbRef<G>) {
+        let so = soalloc(
+            &UdpProto,
+            M_WAIT,
+            SoInit {
+                so_type: SOCK_DGRAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("a socket");
+        let inp = in_pcballoc(&so, table, M_WAIT).expect("in_pcballoc");
+        (so, inp)
+    }
+
+    /// `udp_detach` and `soclose`: the control block detached under the net lock, the socket
+    /// let go (no file holds it).
+    pub(crate) fn release(so: SocketRef<G>, inp: InpcbRef<G>) {
+        so.st_set(SS_NOFDREF);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in_pcbdetach(inp, &net, |_| {});
+        drop(w);
+        drop(so);
+    }
+
+    /// A driver that counts the packets it is given (and drops them) and the multicast
+    /// filter changes.
+    #[derive(Default)]
+    pub(crate) struct InetDriver {
+        /// Packets output.
+        pub(crate) sent: AtomicU32,
+        /// `SIOCADDMULTI` requests.
+        pub(crate) addmulti: AtomicU32,
+        /// `SIOCDELMULTI` requests.
+        pub(crate) delmulti: AtomicU32,
+    }
+
+    impl NetDriver for InetDriver {
+        fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
+            match cmd {
+                SIOCSIFADDR => ifp.if_flags.set(ifp.if_flags.get() | IFF_UP),
+                SIOCADDMULTI => {
+                    self.addmulti.fetch_add(1, Ordering::Relaxed);
+                }
+                SIOCDELMULTI => {
+                    self.delmulti.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        fn output(
+            &self,
+            _ifp: &'static Ifnet,
+            m: MbufBox,
+            _dst: SockaddrView<'_>,
+            _rt: Option<&Rtentry>,
+        ) -> Result<(), Errno> {
+            drop(m);
+            self.sent.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    /// An attached, listed, running broadcast and multicast interface `name` (an
+    /// [`InetDriver`]) with the IPv4 address `addr`/24, its local and connected routes made.
+    pub(crate) fn iface(name: &[u8], addr: [u8; 4]) -> (&'static Ifnet, &'static InetDriver) {
+        let d: &'static InetDriver = Box::leak(Box::default());
+        let ifp = crate::net::if_::test_ifnet_with(name, d);
+        ifp.if_flags.set(IFF_BROADCAST | IFF_MULTICAST);
+        ifp.if_mtu.set(1500);
+        crate::net::if_::if_alloc_sadl(ifp);
+        {
+            let _w = NETLOCK.write();
+            IFNETLIST.insert_tail(ifp);
+        }
+        let sin = |a: [u8; 4]| SockaddrIn {
+            sin_len: 16,
+            sin_family: AF_INET,
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes(a),
+            },
+            ..SockaddrIn::default()
+        };
+        let mut r = [0u8; core::mem::size_of::<InAliasreq>()];
+        let _ = pod::put(
+            &mut r,
+            core::mem::offset_of!(InAliasreq, ifra_addr),
+            &sin(addr),
+        );
+        let _ = pod::put(
+            &mut r,
+            core::mem::offset_of!(InAliasreq, ifra_mask),
+            &sin([255, 255, 255, 0]),
+        );
+        crate::netinet::in_::in_ioctl(SIOCAIFADDR, &mut r, Some(ifp), true).expect("an address");
+        (ifp, d)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -2542,8 +2787,12 @@ mod tests {
             ("2 x In6AddrCell", 32),
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
-            ("6 x PtrWord", 6 * size_of::<PtrWord<c_void>>()),
+            ("5 x PtrWord", 5 * size_of::<PtrWord<c_void>>()),
             ("inp_route", size_of::<ReadMostly<Route>>()),
+            (
+                "inp_moptions",
+                size_of::<ReadMostly<Option<MBox<IpMoptions>>>>(),
+            ),
             ("inp_refcnt", 4),
             ("inp_anchor", size_of::<ReadMostly<Option<InpcbRef<G>>>>()),
             ("inp_ip", size_of::<IpProto>()),
@@ -2562,12 +2811,13 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 440 bytes, 456 with the counted item's header (the count and the pool), against the
+        // 472 bytes, 488 with the counted item's header (the count and the pool), against the
         // C's struct inpcb (LP64) and LZ's: the three pinned entries (96: a lock identity
-        // each besides the two links), the route cache's cell (72) and the anchor (16) are
+        // each besides the two links), the route cache's cell (72), the multicast options'
+        // cell (40: the box carries its malloc type and allocator) and the anchor (16) are
         // the growth.
-        assert_eq!(sum, 439);
-        assert_eq!(size_of::<Inpcb<G>>(), 440);
+        assert_eq!(sum, 471);
+        assert_eq!(size_of::<Inpcb<G>>(), 472);
     }
 
     #[test]

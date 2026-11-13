@@ -57,11 +57,6 @@
 //! LZ: sys/netinet/ip_var.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `struct ip_moptions` is here without its group memberships (`imo_membership`,
-//!   `imo_num_memberships`, `imo_max_memberships`): [`IpMoptions`] is what `ip_output` reads
-//!   (the interface, the TTL, the loopback switch); `bsd`'s `sys/netinet/ip_var.rs` keeps the
-//!   whole C struct for its socket options and lends `ip_output` this part until the pcb and
-//!   `ip_setmoptions` move (N6.4c1), which adds the memberships here.
 //! - `struct ipqent`, `struct ipq` and `struct ipoffnxt` are still `bsd`'s
 //!   `sys/netinet/ip_var.rs` (LZ's), until the reassembly moves (N6.4c2); so are LZ's
 //!   `mtod_ip`/`mtod_ip_store` (`bsd`'s header copies).
@@ -78,11 +73,28 @@
 //!   header), atomics in LZ's `bsd` `ip_input.rs`, are [`ip_mtudisc`] and [`IPMULTIPATH`] here:
 //!   the kernel's `ip_output` and routes read them (the `Inet` leg `ip_multipath` goes), `bsd`'s
 //!   `ip_input.rs` re-exports them for its sysctl and its readers until N6.4c2.
+//! - N6.4c1: `struct ip_moptions` ([`IpMoptions`]) is whole here, its memberships with it:
+//!   LZ's raw `imo_membership` vector (a `*mut Option<&InMulti>` read and written through
+//!   `unsafe` slot pointers, grown by `mallocarray` and `free`) -> an `MArray` of `M_IPMOPTS`
+//!   (`imo_max_memberships` is its length), owned by the set, which a socket's control block
+//!   owns as an `MBox` of `M_IPMOPTS` (`kernel::netinet::in_pcb::Inpcb::moptions`): the C's
+//!   two allocations, of the C's type. A set made for one `ip_output` call (IGMP's and
+//!   pfsync(4)'s, on the stack in the C, which leaves the vector unset) has none
+//!   ([`IpMoptions::output`]). `ip_defttl` ([`IP_DEFTTL`]) moved here from LZ's `bsd`
+//!   `ip_input.rs` as `ip_mtudisc` did: `ip_ctloutput` reads it (`IP_TTL` -1,
+//!   `IP_IPDEFTTL`); `bsd`'s `ip_input.rs` re-exports it. The set's `M_IPMOPTS` block is 48
+//!   bytes (a 64-byte bucket) where the C's and LZ's are 16 (the `MArray` handle carries its
+//!   length, malloc type and allocator; the D-3 class, docs/SCAFFOLDING.md's pool-size row);
+//!   the vector's is the C's, `imo_max_memberships` pointers.
 
 use core::sync::atomic::AtomicI32;
 
+use hal::malloc::MArray;
 use hal::percpu::Counters;
+use hal::sys::netinet_ip::IPDEFTTL;
 use hal::sys::socket::SO_BROADCAST;
+
+use crate::netinet::in_var::InMulti;
 
 // Flags passed to ip_output
 
@@ -186,16 +198,53 @@ pub enum IpstatCounters {
 /// `ips_ncounters`: the number of IP counters.
 pub const IPS_NCOUNTERS: usize = IpstatCounters::IpsNcounters as usize;
 
-/// `struct ip_moptions`: the multicast options of a socket (`inp_moptions`), as `ip_output`
-/// reads them (the module's deviations: the memberships are `bsd`'s until N6.4c1).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `struct ip_moptions`: attached to `inp_moptions` and passed to `ip_output` when IP
+/// multicast options are in use.
+#[derive(Default)]
 pub struct IpMoptions {
+    /// `imo_membership`: group memberships, `imo_max_memberships` slots (`M_IPMOPTS`), the
+    /// first `imo_num_memberships` in use; `None` in a set made for one `ip_output` call.
+    pub imo_membership: Option<MArray<Option<&'static InMulti>>>,
     /// `imo_ifidx`: ifp index for outgoing multicasts.
     pub imo_ifidx: u16,
     /// `imo_ttl`: TTL for outgoing multicasts.
     pub imo_ttl: u8,
     /// `imo_loop`: 1 => hear sends if a member.
     pub imo_loop: u8,
+    /// `imo_num_memberships`: no. memberships this socket.
+    pub imo_num_memberships: u16,
+}
+
+impl IpMoptions {
+    /// The options `ip_output` reads, for one call: the interface for outgoing multicasts,
+    /// their TTL and loopback switch, and no membership (the C's `struct ip_moptions` on the
+    /// stack of `igmp_sendpkt` and `pfsync_sendout`; a socket's, copied by
+    /// `Inpcb::moptions_out`).
+    #[inline]
+    pub const fn output(ifidx: u16, ttl: u8, loop_: u8) -> Self {
+        Self {
+            imo_membership: None,
+            imo_ifidx: ifidx,
+            imo_ttl: ttl,
+            imo_loop: loop_,
+            imo_num_memberships: 0,
+        }
+    }
+
+    /// `imo_max_memberships`: max memberships this socket (the vector's slots).
+    #[inline]
+    pub fn imo_max_memberships(&self) -> u16 {
+        self.imo_membership.as_ref().map_or(0, |v| v.len() as u16)
+    }
+
+    /// `imo_membership[i]` of a slot in use (`i < imo_num_memberships`); `None` beyond.
+    #[inline]
+    pub fn membership(&self, i: usize) -> Option<&'static InMulti> {
+        if i >= usize::from(self.imo_num_memberships) {
+            return None;
+        }
+        self.imo_membership.as_ref()?.get(i).copied().flatten()
+    }
 }
 
 /// `ipcounters`: the IP statistics, per CPU (`counters_alloc(ips_ncounters)` in `ip_init`).
@@ -207,6 +256,9 @@ pub static ip_mtudisc: AtomicI32 = AtomicI32::new(1);
 
 /// \[a\] `ipmultipath`: enable multipath routing (`net.inet.ip.multipath`, `ip_input.c`'s).
 pub static IPMULTIPATH: AtomicI32 = AtomicI32::new(0);
+
+/// \[a\] `ip_defttl`: default IP ttl (`net.inet.ip.ttl`, `ip_input.c`'s).
+pub static IP_DEFTTL: AtomicI32 = AtomicI32::new(IPDEFTTL as i32);
 
 /// `ipstat_inc(c)`.
 #[inline]
@@ -246,6 +298,17 @@ mod tests {
         let i = IpstatCounters::IpsNogif as usize;
         assert_eq!(after[i] - before[i], 4);
         assert_eq!(IPS_NCOUNTERS, 36);
+    }
+
+    #[test]
+    fn a_set_of_multicast_options_is_48_bytes_and_its_vector_the_cs() {
+        // The C's and LZ's struct ip_moptions is 16 bytes (a pointer, then 8 bytes of
+        // scalars); here the vector's handle is 40 (the module's Redesign).
+        assert_eq!(core::mem::size_of::<IpMoptions>(), 48);
+        assert_eq!(core::mem::size_of::<Option<&'static InMulti>>(), 8);
+        let set = IpMoptions::output(3, 9, 0);
+        assert_eq!(set.imo_max_memberships(), 0);
+        assert!(set.membership(0).is_none());
     }
 
     #[test]

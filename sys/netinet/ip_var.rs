@@ -59,8 +59,8 @@
 //! (N6.4a) and the reassembly (N6.4c2) move.
 //!
 //! ## Deviations
-//! - `struct ip_moptions`'s `imo_membership` is a raw array of `Option<&InMulti>` (it grows
-//!   with `imo_max_memberships`, as the C's does); `struct ipqent` and `struct ipq` hold
+//! - `struct ip_moptions` is the kernel's since N6.4c1 (`kernel::netinet::ip_var`),
+//!   re-exported here; `struct ipqent` and `struct ipq` hold
 //!   `Cell`s (they change under `ipq_mutex`); `ipqe_ip` points at the fragment's header in its
 //!   mbuf, read unaligned (`netinet/ip_input.rs`).
 //! - The globals (`ip_defttl`, `ip_mtudisc`, `ipport_*`, `ip_forwarding`, `ipmultipath`,
@@ -76,33 +76,15 @@ use core::mem::size_of;
 pub use hal::sys::netinet_ip_var::{Ipoption, Ipovly, Ipstat, MAX_IPOPTLEN};
 pub use kernel::netinet::ip_var::{
     IP_ALLOWBROADCAST, IP_FORWARDING, IP_FORWARDING_IPSEC, IP_MTUDISC, IP_RAWOUTPUT, IP_REDIRECT,
-    IPCOUNTERS, IPMTUDISCTIMEOUT, IPS_NCOUNTERS, IpstatCounters, ipstat_add, ipstat_dec,
-    ipstat_inc,
+    IPCOUNTERS, IPMTUDISCTIMEOUT, IPS_NCOUNTERS, IpMoptions, IpstatCounters, ipstat_add,
+    ipstat_dec, ipstat_inc,
 };
 
 use crate::netinet::in_::InAddr;
-use crate::netinet::in_var::InMulti;
 use crate::netinet::ip::Ip;
 use crate::queue_adapter;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::queue::{ListEntry, ListHead};
-
-/// `struct ip_moptions`: attached to `inpcb.ip_moptions` and passed to `ip_output` when IP
-/// multicast options are in use.
-pub struct IpMoptions {
-    /// `imo_membership`: group memberships, `imo_max_memberships` slots.
-    pub imo_membership: *mut Option<&'static InMulti>,
-    /// `imo_ifidx`: ifp index for outgoing multicasts.
-    pub imo_ifidx: u16,
-    /// `imo_ttl`: TTL for outgoing multicasts.
-    pub imo_ttl: u8,
-    /// `imo_loop`: 1 => hear sends if a member.
-    pub imo_loop: u8,
-    /// `imo_num_memberships`: no. memberships this socket.
-    pub imo_num_memberships: u16,
-    /// `imo_max_memberships`: max memberships this socket.
-    pub imo_max_memberships: u16,
-}
 
 /// `struct ipqent`: a fragment on a reassembly queue.
 pub struct Ipqent {

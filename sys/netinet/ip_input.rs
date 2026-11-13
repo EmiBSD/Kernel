@@ -158,10 +158,10 @@ use crate::netinet::in_pcb::{
 use crate::netinet::in_proto::{INETDOMAIN, INETSW, IP_PROTOX};
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip::{
-    IP_MAXPACKET, IP_MF, IP_OFFMASK, IPDEFTTL, IPFRAGTTL, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF,
-    IPOPT_NOP, IPOPT_OFFSET, IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_RR, IPOPT_SSRR, IPOPT_TS,
-    IPOPT_TS_PRESPEC, IPOPT_TS_TSANDADDR, IPOPT_TS_TSONLY, IPQ_MAXLEN, IPTOS_ECN_CE,
-    IPTOS_ECN_MASK, IPTOS_ECN_NOTECT, IPTTLDEC, IPVERSION, Ip, IpTimestamp,
+    IP_MAXPACKET, IP_MF, IP_OFFMASK, IPFRAGTTL, IPOPT_EOL, IPOPT_LSRR, IPOPT_MINOFF, IPOPT_NOP,
+    IPOPT_OFFSET, IPOPT_OLEN, IPOPT_OPTVAL, IPOPT_RR, IPOPT_SSRR, IPOPT_TS, IPOPT_TS_PRESPEC,
+    IPOPT_TS_TSANDADDR, IPOPT_TS_TSONLY, IPQ_MAXLEN, IPTOS_ECN_CE, IPTOS_ECN_MASK,
+    IPTOS_ECN_NOTECT, IPTTLDEC, IPVERSION, Ip, IpTimestamp,
 };
 use crate::netinet::ip_icmp::{
     ICMP_PARAMPROB, ICMP_REDIRECT, ICMP_REDIRECT_HOST, ICMP_TIMXCEED, ICMP_TIMXCEED_INTRANS,
@@ -249,8 +249,8 @@ pub use kernel::netinet::ip_var::IPMULTIPATH;
 pub static IP_SENDREDIRECTS: AtomicI32 = AtomicI32::new(1);
 /// \[a\] `ip_dosourceroute`.
 pub static IP_DOSOURCEROUTE: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip_defttl`: default IP ttl.
-pub static IP_DEFTTL: AtomicI32 = AtomicI32::new(IPDEFTTL as i32);
+/// \[a\] `ip_defttl`: default IP ttl, the kernel's (`kernel::netinet::ip_var`, N6.4c1).
+pub use kernel::netinet::ip_var::IP_DEFTTL;
 /// \[a\] `ip_mtudisc`: mtu discovery, the kernel's (`kernel::netinet::ip_var`, N6.4a).
 pub use kernel::netinet::ip_var::ip_mtudisc;
 /// \[a\] `ip_mtudisc_timeout`: seconds to timeout mtu discovery.

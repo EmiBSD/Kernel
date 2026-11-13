@@ -2314,14 +2314,7 @@ fn pfsync_sendout(sc: &PfsyncSoftc, m: &'static Mbuf) {
         let _ = bpf_mtap(if_bpf, m, BPF_DIRECTION_OUT);
     }
 
-    let imo = IpMoptions {
-        imo_membership: ptr::null_mut(),
-        imo_ifidx: sc.sc_sync_ifidx.get() as u16,
-        imo_ttl: PFSYNC_DFLTTL,
-        imo_loop: 0,
-        imo_num_memberships: 0,
-        imo_max_memberships: 0,
-    };
+    let imo = IpMoptions::output(sc.sc_sync_ifidx.get() as u16, PFSYNC_DFLTTL, 0);
     m.m_pkthdr().ph_rtableid.set(sc.sc_if.if_rdomain.get());
 
     if ip_output(m, None, None, IP_RAWOUTPUT, Some(&imo), None, 0).is_ok() {
