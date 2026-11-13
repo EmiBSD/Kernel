@@ -192,13 +192,11 @@ use hal::sys::netinet_ip::{
     IPOPT_TS, IPVERSION, Ip, MAXTTL,
 };
 use hal::sys::netinet_ip_icmp::{
-    ICMP_ADVLENMAX, ICMP_ADVLENMIN, ICMP_CKSUM_OFFSET, ICMP_DATACONVERR, ICMP_ECHO, ICMP_ECHOREPLY,
-    ICMP_EXT_HDR_VERSION, ICMP_EXT_OFFSET, ICMP_HUN_OFFSET, ICMP_IP_OFFSET, ICMP_IPV6_IAMHERE,
-    ICMP_IPV6_WHEREAREYOU, ICMP_IREQREPLY, ICMP_MASKLEN, ICMP_MASKREPLY, ICMP_MASKREQ,
-    ICMP_MAXTYPE, ICMP_MINLEN, ICMP_MOBILE_REDIRECT, ICMP_MOBILE_REGREPLY, ICMP_MOBILE_REGREQUEST,
-    ICMP_PARAMPROB, ICMP_PHOTURIS, ICMP_REDIRECT, ICMP_ROUTERADVERT, ICMP_ROUTERSOLICIT,
-    ICMP_SOURCEQUENCH, ICMP_TIMXCEED, ICMP_TRACEROUTE, ICMP_TSLEN, ICMP_TSTAMP, ICMP_TSTAMPREPLY,
-    ICMP_UNREACH, ICMP_UNREACH_FILTER_PROHIB, ICMP_UNREACH_HOST, ICMP_UNREACH_HOST_PRECEDENCE,
+    ICMP_ADVLENMAX, ICMP_ADVLENMIN, ICMP_CKSUM_OFFSET, ICMP_ECHO, ICMP_ECHOREPLY,
+    ICMP_EXT_HDR_VERSION, ICMP_EXT_OFFSET, ICMP_HUN_OFFSET, ICMP_IP_OFFSET, ICMP_MASKLEN,
+    ICMP_MASKREPLY, ICMP_MASKREQ, ICMP_MAXTYPE, ICMP_MINLEN, ICMP_PARAMPROB, ICMP_REDIRECT,
+    ICMP_SOURCEQUENCH, ICMP_TIMXCEED, ICMP_TSLEN, ICMP_TSTAMP, ICMP_TSTAMPREPLY, ICMP_UNREACH,
+    ICMP_UNREACH_FILTER_PROHIB, ICMP_UNREACH_HOST, ICMP_UNREACH_HOST_PRECEDENCE,
     ICMP_UNREACH_HOST_PROHIB, ICMP_UNREACH_HOST_UNKNOWN, ICMP_UNREACH_ISOLATED,
     ICMP_UNREACH_NEEDFRAG, ICMP_UNREACH_NET, ICMP_UNREACH_NET_PROHIB, ICMP_UNREACH_NET_UNKNOWN,
     ICMP_UNREACH_PORT, ICMP_UNREACH_PRECEDENCE_CUTOFF, ICMP_UNREACH_PROTOCOL, ICMP_UNREACH_SRCFAIL,
@@ -403,9 +401,7 @@ pub fn icmp_do_error(n: MbufBox, type_: u8, code: u8, dest: u32, destmtu: i32) -
 
     // As we are not required to return everything we have, we return whatever we can return
     // at ease. Note that ICMP datagrams longer than 576 octets are out of spec according to
-    // RFC1812;
-    const _: () = assert!(ICMP_MINLEN + size_of::<Ip>() <= MCLBYTES);
-
+    // RFC1812; the cluster holds at least a minimal message (the check below the file's code).
     if IP_HDR_LEN + icmplen + ICMP_MINLEN > MCLBYTES {
         icmplen = MCLBYTES - ICMP_MINLEN - IP_HDR_LEN;
     }
@@ -460,9 +456,7 @@ pub fn icmp_do_error(n: MbufBox, type_: u8, code: u8, dest: u32, destmtu: i32) -
     if !pkt_put(&mut m, 0, &b[..ICMP_IP_OFFSET]) {
         return None;
     }
-    let Some(d) = m.data_mut() else {
-        return None;
-    };
+    let d = m.data_mut()?;
     m_copydata(&n, 0, &mut d[ICMP_IP_OFFSET..ICMP_IP_OFFSET + icmplen]);
 
     // Now, copy old ip header (without options) in front of icmp message.
@@ -832,21 +826,11 @@ pub fn icmp_input_if<G: ProcGlue>(
             }
 
             // No kernel processing for the following; just fall through to send to raw
-            // listener.
-            ICMP_ECHOREPLY
-            | ICMP_ROUTERADVERT
-            | ICMP_ROUTERSOLICIT
-            | ICMP_TSTAMPREPLY
-            | ICMP_IREQREPLY
-            | ICMP_MASKREPLY
-            | ICMP_TRACEROUTE
-            | ICMP_DATACONVERR
-            | ICMP_MOBILE_REDIRECT
-            | ICMP_IPV6_WHEREAREYOU
-            | ICMP_IPV6_IAMHERE
-            | ICMP_MOBILE_REGREQUEST
-            | ICMP_MOBILE_REGREPLY
-            | ICMP_PHOTURIS => Then::Raw,
+            // listener: ICMP_ECHOREPLY, ICMP_ROUTERADVERT, ICMP_ROUTERSOLICIT,
+            // ICMP_TSTAMPREPLY, ICMP_IREQREPLY, ICMP_MASKREPLY, ICMP_TRACEROUTE,
+            // ICMP_DATACONVERR, ICMP_MOBILE_REDIRECT, ICMP_IPV6_WHEREAREYOU, ICMP_IPV6_IAMHERE,
+            // ICMP_MOBILE_REGREQUEST, ICMP_MOBILE_REGREPLY, ICMP_PHOTURIS (the C's cases,
+            // which share the default's body), and any other type.
             _ => Then::Raw,
         }
     };
@@ -855,12 +839,11 @@ pub fn icmp_input_if<G: ProcGlue>(
         Then::Raw => {
             // raw:
             *mp = Some(m);
-            match raw_protocol::<G>() {
-                Some(raw) => raw.input(mp, offp, proto, af, ns, net),
-                None => {
-                    drop(mp.take());
-                    IPPROTO_DONE
-                }
+            if let Some(raw) = raw_protocol::<G>() {
+                raw.input(mp, offp, proto, af, ns, net)
+            } else {
+                drop(mp.take());
+                IPPROTO_DONE
             }
         }
         Then::Free => IPPROTO_DONE,
@@ -1382,6 +1365,9 @@ pub fn icmp_do_exthdr(m: MbufBox, class: u16, ctype: u8, buf: &[u8]) -> Result<M
 
     Ok(m)
 }
+
+// `icmp_do_error`: an ICMP error's minimal message fits a cluster (the C's CTASSERT).
+const _: () = assert!(ICMP_MINLEN + size_of::<Ip>() <= MCLBYTES);
 
 /// The rate limiter's state forgotten for the host tests (each test starts with the limit's
 /// window open).

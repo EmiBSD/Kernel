@@ -275,7 +275,7 @@ hal::abi_pod!(Clockinfo {
 /// `ppsratecheck_mtx` held, and the precise uptime read just before taking it: what
 /// [`ppsratecheck_locked`] hands its closure, the proof [`ppsratecheck_held`] takes.
 pub struct PpsLocked<'a> {
-    _guard: MutexedGuard<'a, ()>,
+    guard: MutexedGuard<'a, ()>,
     tv: Timeval,
 }
 
@@ -283,12 +283,12 @@ impl<'a> PpsLocked<'a> {
     /// The guard of `ppsratecheck_mtx`: the witness of a limiter's state kept beside it (a
     /// `Guarded` cell keyed to [`PPSRATECHECK_MTX`], ICMP's error limiter).
     pub fn witness(&self) -> &MutexedGuard<'a, ()> {
-        &self._guard
+        &self.guard
     }
 
     /// The guard, to change such a state.
     pub fn witness_mut(&mut self) -> &mut MutexedGuard<'a, ()> {
-        &mut self._guard
+        &mut self.guard
     }
 }
 
@@ -855,7 +855,7 @@ pub fn ppsratecheck(lasttime: &mut Timeval, curpps: &mut i32, maxpps: i32) -> bo
 pub fn ppsratecheck_locked<R>(f: impl FnOnce(&mut PpsLocked<'_>) -> R) -> R {
     let tv = microuptime();
     let mut l = PpsLocked {
-        _guard: PPSRATECHECK_MTX.lock(),
+        guard: PPSRATECHECK_MTX.lock(),
         tv,
     };
     f(&mut l)

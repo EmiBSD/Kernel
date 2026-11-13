@@ -1117,21 +1117,20 @@ pub fn if_input_proto(
     net: Option<&NetHeld<'_>>,
 ) {
     let Some(ns) = ns else {
-        match net {
-            Some(net) => input(ifp, m, None, net),
-            None => {
-                let mut m = Some(m);
-                let mut call = |net: &NetHeld<'_>| {
-                    if let Some(m) = m.take() {
-                        input(ifp, m, None, net);
-                    }
-                };
-                match inet() {
-                    Some(i) => i.with_net_held(&mut call),
-                    None => kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock")),
-                }
-            }
+        if let Some(net) = net {
+            input(ifp, m, None, net);
+            return;
         }
+        let mut m = Some(m);
+        let mut call = |net: &NetHeld<'_>| {
+            if let Some(m) = m.take() {
+                input(ifp, m, None, net);
+            }
+        };
+        let Some(i) = inet() else {
+            kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock"));
+        };
+        i.with_net_held(&mut call);
         return;
     };
 
@@ -2492,10 +2491,10 @@ pub fn if_congestion() {
 /// queue full) the packet dropped and the congestion marked; `true` when it was dropped.
 pub fn niq_enqueue<G: ProcGlue>(niq: &Niqueue, m: MbufBox) -> bool {
     let dropped = mq_enqueue(&niq.ni_q, m);
-    if !dropped {
-        crate::net::netisr::schednetisr::<G>(niq.ni_isr);
-    } else {
+    if dropped {
         if_congestion();
+    } else {
+        crate::net::netisr::schednetisr::<G>(niq.ni_isr);
     }
     dropped
 }

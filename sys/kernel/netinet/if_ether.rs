@@ -114,8 +114,10 @@
 //! - LZ's `struct llinfo_arp` (`Cell`s and a `ListEntry`, a `pool_get`'s raw item written in an
 //!   `unsafe` block, freed by `pool_put` at its last `la_refcnt`) hung on `rt_llinfo` as a raw
 //!   word, cast back at every reader (`rt_la`'s `unsafe`) -> a [`LlinfoArp`] of the "arp"
-//!   [`BoxPool`] (112 bytes; LZ's 104, the C's 96: the kernel's `MbufQueue` is 56 with its
-//!   unlocked length beside the list) owned by the route's word,
+//!   [`BoxPool`] (112 bytes; LZ's 104, the C's 96: the `arp_list` entry is a 32-byte
+//!   `PinEntry` for the C's 16-byte `LIST_ENTRY` (+16), the kernel's `MbufQueue` is 56 with
+//!   its unlocked length beside the list for the C's 48 (+8), and `la_refcnt` is gone (-8))
+//!   owned by the route's word,
 //!   `hal::link::TaggedLink<LlinfoArp>` (D-4; not `Parkable`: no lent record can be made a box
 //!   by the park protocol, review 1's B1): the word
 //!   lends the record only to a guard of [`ARP_MTX`] (the C's "rt_llinfo and RTF_LLINFO are
@@ -627,10 +629,8 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
             // route handle go.
             drop(la);
         }
-        RTM_INVALIDATE => {
-            if !rt.rt_flags.isset(RTF_LOCAL) {
-                arpinvalidate(rt);
-            }
+        RTM_INVALIDATE if !rt.rt_flags.isset(RTF_LOCAL) => {
+            arpinvalidate(rt);
         }
         _ => {}
     }
@@ -1143,19 +1143,18 @@ pub fn arpcache(
                     ),
                 );
                 return false;
-            } else {
-                let s = ether_sprintf(&ea.arp_sha);
-                log(
-                    LOG_INFO,
-                    format_args!(
-                        "arp info overwritten for {} by {} on {}\n",
-                        InAddrFmt(spa),
-                        Str(&s),
-                        Str(&ifp.if_xname.get())
-                    ),
-                );
-                rt.rt_expire().set(1); // no longer static
             }
+            let s = ether_sprintf(&ea.arp_sha);
+            log(
+                LOG_INFO,
+                format_args!(
+                    "arp info overwritten for {} by {} on {}\n",
+                    InAddrFmt(spa),
+                    Str(&s),
+                    Str(&ifp.if_xname.get())
+                ),
+            );
+            rt.rt_expire().set(1); // no longer static
             changed = true;
         }
     } else if !if_isconnected(ifp, rt.rt_ifidx.get()) {
@@ -1381,7 +1380,7 @@ fn revarp_reply(ifp: &Ifnet, m: &MbufBox, ar: &EtherArp) {
         REVARP_FINISHED.store(true, Ordering::Relaxed);
     }
     // wake: Do wakeup every time in case it was missed.
-    hal::sleep::wakeup(&REVARP_MYIP);
+    hal::sleep::wakeup(&raw const REVARP_MYIP);
 }
 
 /// `revarprequest(ifp)`: send a RARP request for the ip address of the specified interface.
@@ -1429,7 +1428,8 @@ pub fn revarpwhoarewe(ifp: &'static Ifnet) -> Result<(InAddr, InAddr), Errno> {
     while count > 0 {
         count -= 1;
         revarprequest(ifp);
-        let result = hal::sleep::tsleep_nsec(&REVARP_MYIP, PSOCK, "revarp", REVARP_WAIT_NSEC);
+        let result =
+            hal::sleep::tsleep_nsec(&raw const REVARP_MYIP, PSOCK, "revarp", REVARP_WAIT_NSEC);
         if result != Err(Errno::EWOULDBLOCK) {
             break;
         }
@@ -2125,8 +2125,9 @@ mod tests {
             "short"
         );
         // The pool item (vmstat -m's "arp"): the C's struct llinfo_arp is 96 bytes on LP64,
-        // LZ's LlinfoArp 104, this one 112 (its 56-byte MbufQueue; the park mark review 1's B1
-        // removed sat in padding) (docs/SCAFFOLDING.md's pool sizes row).
+        // LZ's LlinfoArp 104, this one 112: its 32-byte PinEntry for the C's 16-byte LIST_ENTRY
+        // (+16), its 56-byte MbufQueue for the C's 48 (+8), no la_refcnt (-8); the park mark
+        // review 1's B1 removed sat in padding (docs/SCAFFOLDING.md's pool sizes row).
         std::println!("arp item: {} bytes", size_of::<LlinfoArp>());
         assert_eq!(size_of::<LlinfoArp>(), 112);
         assert_eq!(size_of::<MbufQueue>(), 56);

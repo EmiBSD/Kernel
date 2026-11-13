@@ -277,14 +277,11 @@ pub fn raw_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
 pub fn inet6_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
     let i = inet()?.ip6_protox(nxt)?;
     let t = tables::<G>();
-    let sw = match t.inet6.get() {
-        Some(sw) => *sw,
-        None => {
-            let sw = pffinddomain::<G>(i32::from(AF_INET6))?.protocols();
-            let _ = t.inet6.set(sw);
-            sw
-        }
-    };
+    if let Some(sw) = t.inet6.get() {
+        return sw.get(i).copied();
+    }
+    let sw = pffinddomain::<G>(i32::from(AF_INET6))?.protocols();
+    let _ = t.inet6.set(sw);
     sw.get(i).copied()
 }
 /// `inetdomain`: the internet domain, its protocols the glue's `inetsw[]` ([`inetsw_set`], in
@@ -402,7 +399,7 @@ impl<G: ProcGlue> Protocol<G> for IcmpProtocol<G> {
         raw::<G>()?.usrreqs()
     }
     fn has_ctloutput(&self) -> bool {
-        raw::<G>().is_some_and(|r| r.has_ctloutput())
+        raw::<G>().is_some_and(Protocol::has_ctloutput)
     }
     fn ctloutput(
         &self,
@@ -469,7 +466,7 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
         raw::<G>()?.usrreqs()
     }
     fn has_ctloutput(&self) -> bool {
-        raw::<G>().is_some_and(|r| r.has_ctloutput())
+        raw::<G>().is_some_and(Protocol::has_ctloutput)
     }
     fn ctloutput(
         &self,

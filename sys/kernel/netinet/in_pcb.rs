@@ -988,7 +988,7 @@ impl<G: ProcGlue> Inpcb<G> {
     pub fn socket(&self) -> &Socket<G> {
         match &self.inp_socket {
             Some(so) => so,
-            None => kpanic(format_args!("inpcb {:p}: no socket", self)),
+            None => kpanic(format_args!("inpcb {self:p}: no socket")),
         }
     }
 
@@ -1001,7 +1001,7 @@ impl<G: ProcGlue> Inpcb<G> {
     pub fn table(&self) -> &'static Inpcbtable<G> {
         match self.inp_table {
             Some(t) => t,
-            None => kpanic(format_args!("inpcb {:p}: no table", self)),
+            None => kpanic(format_args!("inpcb {self:p}: no table")),
         }
     }
 
@@ -1057,8 +1057,7 @@ impl<G: ProcGlue> Inpcb<G> {
     fn assert_route_locked(&self, what: &str) {
         if !self.route_locked() {
             kpanic(format_args!(
-                "{what}: the socket lock of inpcb {:p} is not held",
-                self
+                "{what}: the socket lock of inpcb {self:p} is not held"
             ));
         }
     }
@@ -1118,7 +1117,7 @@ impl<G: ProcGlue> Inpcb<G> {
     /// Whether `g` is the guard of this pcb's table: `panic(9)` otherwise (a setter's proof).
     fn check_guard(&self, g: &InpGuard<'_, G>) {
         if g.lock_id() != self.table().inpt_mtx.id() {
-            kpanic(format_args!("inpcb {:p}: another table's mutex", self));
+            kpanic(format_args!("inpcb {self:p}: another table's mutex"));
         }
     }
 
@@ -1182,7 +1181,7 @@ impl<G: ProcGlue> Inpcb<G> {
     pub fn legacy_ref(&self) {
         let old = self.inp_refcnt.fetch_add(1, Ordering::Relaxed);
         if old == 0 || old == u32::MAX {
-            kpanic(format_args!("in_pcbref: inpcb {:p} count {old}", self));
+            kpanic(format_args!("in_pcbref: inpcb {self:p} count {old}"));
         }
     }
 
@@ -1199,7 +1198,7 @@ impl<G: ProcGlue> Inpcb<G> {
         // Release: what this holder wrote happens before the last one's drop (its Acquire).
         let old = self.inp_refcnt.fetch_sub(1, Ordering::Release);
         match old {
-            0 => kpanic(format_args!("in_pcbunref: inpcb {:p} count 0", self)),
+            0 => kpanic(format_args!("in_pcbunref: inpcb {self:p} count 0")),
             1 => {
                 core::sync::atomic::fence(Ordering::Acquire);
                 self.inp_anchor.replace(None)
@@ -1434,7 +1433,7 @@ pub fn dp_isset(m: &[AtomicU32; DP_MAPSIZE], p: u16) -> bool {
 fn href<G: ProcGlue>(inp: &Inpcb<G>) -> InpcbRef<G> {
     match PoolArc::from_ref(inp) {
         Some(h) => h,
-        None => kpanic(format_args!("inpcb {:p}: not a pool item", inp)),
+        None => kpanic(format_args!("inpcb {inp:p}: not a pool item")),
     }
 }
 
@@ -1700,9 +1699,9 @@ pub fn in_pcbaddrisavail_held<G: ProcGlue>(
         // - SO_BINDANY is set or
         // - we are binding a UDP socket to 255.255.255.255 or
         // - we are binding a UDP socket to one of our broadcast addresses
-        if !so.has_options(SO_BINDANY)
-            && !(so.so_type() == SOCK_DGRAM && sin.sin_addr.s_addr == INADDR_BROADCAST)
-            && !(so.so_type() == SOCK_DGRAM && in_broadcast(sin.sin_addr, inp.inp_rtableid.get()))
+        if !(so.has_options(SO_BINDANY)
+            || (so.so_type() == SOCK_DGRAM && sin.sin_addr.s_addr == INADDR_BROADCAST)
+            || (so.so_type() == SOCK_DGRAM && in_broadcast(sin.sin_addr, inp.inp_rtableid.get())))
         {
             sin.sin_port = 0;
             sin.sin_zero = [0; 8];
@@ -1938,8 +1937,7 @@ pub fn in_pcbsolock<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
     // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
     if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
         kpanic(format_args!(
-            "in_pcbsolock: inpcb {:p}: the net lock is not held",
-            inp
+            "in_pcbsolock: inpcb {inp:p}: the net lock is not held"
         ));
     }
     let so = inp.socket_opt()?;
@@ -2259,7 +2257,7 @@ pub fn in_pcbselsrc<G: ProcGlue>(
     let rt = ro.mpath4(dst.s_addr.to_ne_bytes(), None, rtableid, net);
 
     // If we found a route, use the address corresponding to the outgoing interface.
-    let ia = rt.and_then(|rt| rt.ifa()).map(ifatoia);
+    let ia = rt.and_then(Rtentry::ifa).map(ifatoia);
 
     // Use preferred source address if :
     // - destination is not onlink
@@ -2356,7 +2354,10 @@ pub(crate) fn hash_chain_find<G: ProcGlue>(
     with_chains(g, |c, g| {
         let head = &c.hash[i];
         let inp = head.iter(&*g).find(|inp| matches(inp)).map(href)?;
-        if !head.first(&*g).is_some_and(|f| core::ptr::eq(f, &*inp)) {
+        if !head
+            .first(&*g)
+            .is_some_and(|f| core::ptr::eq(f, &raw const *inp))
+        {
             head.remove(g, &inp);
             head.insert_head(g, inp.as_pin());
         }

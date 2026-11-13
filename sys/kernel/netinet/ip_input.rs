@@ -934,7 +934,7 @@ fn ip_fragcheck_locked(
     // Look for queue of fragments of this datagram: LIST_FOREACH, the cursor kept on the
     // predecessor of the one it finds, so the queue comes off the list and goes back in O(1).
     let IpqState { q, frags } = st;
-    let at_head = q.first().is_some_and(&matches);
+    let at_head = q.first().is_some_and(matches);
     let mut c = q.cursor_mut();
     let after = !at_head
         && loop {
@@ -1049,7 +1049,7 @@ pub fn ip_deliver<G: ProcGlue>(
 
             if af == i32::from(AF_INET6) {
                 nest += 1;
-                if nest > inet().map_or(0, |i| i.ip6_hdrnestlimit()) {
+                if nest > inet().map_or(0, crate::net::if_::Inet::ip6_hdrnestlimit) {
                     if let Some(i) = inet() {
                         i.ip6stat_deliver(Ip6Deliver::Toomanyhdr);
                     }
@@ -1213,20 +1213,17 @@ fn ip_reass(
         *frags -= 1;
     };
 
-    let mut fp = match fp {
-        Some(fp) => fp,
-        None => {
-            // If first fragment to arrive, create a reassembly queue.
-            let Some(mut fp) = IPQ_POOL.get(PR_NOWAIT, || {
-                Ipq::new(rdomain, ip.ip_id, ip.ip_p, ip.ip_src, ip.ip_dst, IPFRAGTTL)
-            }) else {
-                dropfrag(frags, ipqe);
-                return (None, None);
-            };
-            // goto insert
-            fp.ipq_fragq.push_head(ipqe);
-            return reass_done(frags, fp);
-        }
+    let Some(mut fp) = fp else {
+        // If first fragment to arrive, create a reassembly queue.
+        let Some(mut fp) = IPQ_POOL.get(PR_NOWAIT, || {
+            Ipq::new(rdomain, ip.ip_id, ip.ip_p, ip.ip_src, ip.ip_dst, IPFRAGTTL)
+        }) else {
+            dropfrag(frags, ipqe);
+            return (None, None);
+        };
+        // goto insert
+        fp.ipq_fragq.push_head(ipqe);
+        return reass_done(frags, fp);
     };
 
     // Handle ECN by comparing this segment with the first one; if CE is set, do not lose CE.
@@ -1257,8 +1254,27 @@ fn ip_reass(
     let head_after = fragq
         .first()
         .is_none_or(|q| i32::from(q.ipqe_off.get()) > ioff);
-    let mut c = fragq.cursor_mut();
-    if !head_after {
+    if head_after {
+        // No preceding segment: trim or dequeue the ones this one covers from the head.
+        while let Some(q) = fragq.first() {
+            if ipqe.end() <= i32::from(q.ipqe_off.get()) {
+                break;
+            }
+            let i = ipqe.end() - i32::from(q.ipqe_off.get());
+            if i < i32::from(q.ipqe_len.get()) {
+                q.ipqe_len.set(q.ipqe_len.get().wrapping_sub(i as u16));
+                q.ipqe_off.set(q.ipqe_off.get().wrapping_add(i as u16));
+                if let Some(m) = q.ipqe_m.as_ref() {
+                    m_adj(m, i);
+                }
+                break;
+            }
+            drop(fragq.pop_head());
+            *frags -= 1;
+        }
+        fragq.push_head(ipqe);
+    } else {
+        let mut c = fragq.cursor_mut();
         while let Some(cur) = c.current() {
             match IpqentList::link(cur).get() {
                 Some(q) if i32::from(q.ipqe_off.get()) <= ioff => {
@@ -1310,26 +1326,6 @@ fn ip_reass(
         let mut rest = c.split_after();
         fragq.push_tail(ipqe);
         fragq.concat(&mut rest);
-    } else {
-        // No preceding segment: trim or dequeue the ones this one covers from the head.
-        drop(c);
-        while let Some(q) = fragq.first() {
-            if ipqe.end() <= i32::from(q.ipqe_off.get()) {
-                break;
-            }
-            let i = ipqe.end() - i32::from(q.ipqe_off.get());
-            if i < i32::from(q.ipqe_len.get()) {
-                q.ipqe_len.set(q.ipqe_len.get().wrapping_sub(i as u16));
-                q.ipqe_off.set(q.ipqe_off.get().wrapping_add(i as u16));
-                if let Some(m) = q.ipqe_m.as_ref() {
-                    m_adj(m, i);
-                }
-                break;
-            }
-            drop(fragq.pop_head());
-            *frags -= 1;
-        }
-        fragq.push_head(ipqe);
     }
 
     reass_done(frags, fp)
@@ -1354,7 +1350,7 @@ fn reass_done(frags: &mut i32, fp: PoolBox<Ipq>) -> (Option<MbufBox>, Option<Poo
 fn reass_check(frags: &mut i32, fp: &mut PoolBox<Ipq>) -> Option<MbufBox> {
     let mut next: i32 = 0;
     let mut last: Option<&Ipqent> = None;
-    for q in fp.ipq_fragq.iter() {
+    for q in &fp.ipq_fragq {
         if i32::from(q.ipqe_off.get()) != next {
             return None;
         }
@@ -1762,7 +1758,7 @@ fn dooptions_walk(
                 }
                 // `ipt_len` is the option's own length byte, at most `optlen`: the stamp's slot
                 // `ptr - 1 .. ptr + 3` lies within the option.
-                let _sin = opt_addr(opts, o + (ptr - 1) as usize);
+                let sin = opt_addr(opts, o + (ptr - 1) as usize);
                 match ipt.ipt_flg() {
                     IPOPT_TS_TSONLY => {}
 
@@ -1784,7 +1780,7 @@ fn dooptions_walk(
                         if ptr - 1 + (size_of::<u32>() + size_of::<InAddr>()) as i32 > tlen {
                             return Err(code);
                         }
-                        let ipaddr = sin_bytes(_sin);
+                        let ipaddr = sin_bytes(sin);
                         if ifa_ifwithaddr(net, &ipaddr, rtableid).is_none() {
                             cnt -= optlen;
                             cp += optlen as usize;
@@ -1838,6 +1834,9 @@ fn save_rte(m: &mut Mbuf, option: &[u8], dst: InAddr) {
 /// `ip_srcroute(m0)`: retrieves the incoming source route for use in replies, in the same form
 /// used by setsockopt. The first hop is placed before the options, will be removed later.
 pub fn ip_srcroute(m0: &mut Mbuf) -> Option<MbufBox> {
+    // sizeof(isr_nop) + sizeof(isr_hdr)
+    const OPTSIZ: usize = 1 + IPOPT_OFFSET + 1;
+
     if IP_DOSOURCEROUTE.load(Ordering::Relaxed) == 0 {
         return None;
     }
@@ -1853,9 +1852,6 @@ pub fn ip_srcroute(m0: &mut Mbuf) -> Option<MbufBox> {
         ipstat_inc(IpstatCounters::IpsIdropped);
         return None;
     };
-
-    // sizeof(isr_nop) + sizeof(isr_hdr)
-    const OPTSIZ: usize = 1 + IPOPT_OFFSET + 1;
 
     // length is (nhops+1)*sizeof(addr) + sizeof(nop + header)
     let nhops = isr.isr_nhops as usize;
@@ -2061,14 +2057,12 @@ pub fn ip_forward(m: MbufBox, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32, n
             }
         }
 
-        // pf(4) blocked the packet. There is no need to send an ICMP packet back since pf(4)
-        // takes care of it.
-        Err(Errno::EACCES) => return,
-
-        // a router should not generate ICMP_SOURCEQUENCH as required in RFC1812 Requirements
-        // for IP Version 4 Routers. source quench could be a big problem under DoS attacks,
-        // or the underlying interface is rate-limited.
-        Err(Errno::ENOBUFS) => return,
+        // EACCES: pf(4) blocked the packet. There is no need to send an ICMP packet back since
+        // pf(4) takes care of it.
+        // ENOBUFS: a router should not generate ICMP_SOURCEQUENCH as required in RFC1812
+        // Requirements for IP Version 4 Routers. source quench could be a big problem under
+        // DoS attacks, or the underlying interface is rate-limited.
+        Err(Errno::EACCES | Errno::ENOBUFS) => return,
 
         // ENETUNREACH (shouldn't happen, checked above), EHOSTUNREACH, ENETDOWN, EHOSTDOWN,
         // default:
@@ -2232,18 +2226,17 @@ pub fn ip_savecontrol<G: ProcGlue>(inp: &Inpcb<G>, ip: &Ip, m: &Mbuf) -> Option<
                 (out, n)
             })
         });
-        parts[2] = match sadl {
-            Some((out, n)) => sbcreatecontrol(&out[..n], IP_RECVIF, IPPROTO_IP),
-            None => {
-                let mut sdl = hal::sys::net_if::SockaddrDl {
-                    sdl_family: AF_LINK,
-                    sdl_index: ifp.map_or(0, |ifp| ifp.if_index.get() as u16),
-                    ..Default::default()
-                };
-                sdl.sdl_len = core::mem::offset_of!(hal::sys::net_if::SockaddrDl, sdl_data) as u8;
-                let b = hal::user::bytes_of(core::slice::from_ref(&sdl));
-                sbcreatecontrol(&b[..usize::from(sdl.sdl_len)], IP_RECVIF, IPPROTO_IP)
-            }
+        parts[2] = if let Some((out, n)) = sadl {
+            sbcreatecontrol(&out[..n], IP_RECVIF, IPPROTO_IP)
+        } else {
+            let mut sdl = hal::sys::net_if::SockaddrDl {
+                sdl_family: AF_LINK,
+                sdl_index: ifp.map_or(0, |ifp| ifp.if_index.get() as u16),
+                ..Default::default()
+            };
+            sdl.sdl_len = core::mem::offset_of!(hal::sys::net_if::SockaddrDl, sdl_data) as u8;
+            let b = hal::user::bytes_of(core::slice::from_ref(&sdl));
+            sbcreatecontrol(&b[..usize::from(sdl.sdl_len)], IP_RECVIF, IPPROTO_IP)
         };
         if_put(ifp);
     }
