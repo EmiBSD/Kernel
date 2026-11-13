@@ -138,12 +138,10 @@ use core::ptr;
 use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
-use crate::net::if_var::Netstack;
 use crate::net::route::Rtentry;
 use crate::netinet::in_::InAddr;
 use crate::netinet::ip::Ip;
-use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
+use crate::sys::mbuf::{Mbuf, mtod, unpark};
 
 pub use hal::sys::netinet_ip_icmp::*;
 pub use kernel::netinet::icmp_var::ICMPCOUNTERS;
@@ -325,8 +323,10 @@ impl IcmpPkt {
     }
 }
 
-/// `icmp_init`: the `pr_init` of `inetsw[]`'s ICMP entry (the kernel's).
-pub fn icmp_init() {
+/// `icmp_init` for `bsd`'s protocol tests (the boot's runs from `domaininit`, through the
+/// kernel's ICMP entry).
+#[cfg(test)]
+pub(crate) fn icmp_init() {
     kernel::netinet::ip_icmp::icmp_init::<G>();
 }
 
@@ -340,49 +340,6 @@ pub fn icmp_error(n: &'static Mbuf, type_: u8, code: u8, dest: u32, destmtu: i32
         destmtu,
         &net_held("icmp_error"),
     );
-}
-
-/// `icmp_input(mp, offp, proto, af, ns)`: the `pr_input` of `inetsw[]`'s ICMP entry, over a
-/// parked packet (the kernel's), until the table moves.
-pub fn icmp_input(
-    mp: &mut Option<&'static Mbuf>,
-    offp: &mut i32,
-    proto: i32,
-    af: i32,
-    ns: Option<&mut Netstack>,
-) -> i32 {
-    let mut m = mp.take().map(unpark);
-    let nxt = kernel::netinet::ip_icmp::icmp_input::<G>(
-        &mut m,
-        offp,
-        proto,
-        af,
-        ns,
-        &net_held("icmp_input"),
-    );
-    *mp = m.map(park);
-    nxt
-}
-
-/// `icmp_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: `net.inet.icmp.*` (the
-/// kernel's, for `curproc`).
-pub fn icmp_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let Some(p) = crate::machine::cpu::curproc() else {
-        return Err(Errno::EINVAL);
-    };
-    let mut req = kernel::sysctl::SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::netinet::ip_icmp::icmp_sysctl::<G>(p, name, &mut req)
 }
 
 /// `icmp_mtudisc(icp, rtableid)`: the kernel's, over the message `bsd`'s TCP holds.

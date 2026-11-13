@@ -122,17 +122,8 @@
 //! Upstream: sys/netinet/igmp.h @ 3ce1f3f79392
 //! Upstream: sys/netinet/igmp.c @ 3ce1f3f79392
 //!
-//! ## Deviations
-//! - `igmp_input`'s tail call `rip_input` (the raw IGMP sockets) is made here, on the packet
-//!   the kernel's `igmp_input` gives back, until the protocol table moves (N6.4c2).
-//! - `igmp_sysctl` has LZ's `pr_sysctl` signature over the kernel's request.
-
-use hal::sys::netinet_in::IPPROTO_DONE;
-
-use crate::net::if_var::Netstack;
-use crate::netinet::raw_ip::rip_input;
-use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, park, unpark};
+//! The protocol table's IGMP entry is the kernel's since N6.4c2
+//! (`kernel::netinet::in_proto::IgmpProtocol`: `igmp_input`, then the raw sockets').
 
 pub use hal::sys::netinet_igmp::*;
 pub use kernel::netinet::igmp::{
@@ -140,44 +131,6 @@ pub use kernel::netinet::igmp::{
     igmp_joingroup, igmp_leavegroup, igmp_slowtimo, rti_delete, rti_fill, rti_reset, rti_type,
 };
 
-/// `igmp_input(mp, offp, proto, af, ns)`: the IGMP entry of `inetsw[]`: the kernel's, then
-/// the raw sockets' input for the packet it accepts.
-pub fn igmp_input(
-    mp: &mut Option<&'static Mbuf>,
-    offp: &mut i32,
-    proto: i32,
-    af: i32,
-    ns: Option<&mut Netstack>,
-) -> i32 {
-    let Some(m) = mp.take() else {
-        return IPPROTO_DONE;
-    };
-    match kernel::netinet::igmp::igmp_input(unpark(m), *offp) {
-        Some(m) => {
-            *mp = Some(park(m));
-            rip_input(mp, offp, proto, af, ns)
-        }
-        None => IPPROTO_DONE,
-    }
-}
-
-/// `igmp_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: `net.inet.igmp.*` (the
-/// kernel's).
-pub fn igmp_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::netinet::igmp::igmp_sysctl(name, &mut req)
-}
 /* </CODE> */
 
 /* <TESTS> */
@@ -197,7 +150,7 @@ mod tests {
     use crate::net::if_var::Ifnet;
     use crate::netinet::igmp_var::IgmpstatCounters;
     use crate::netinet::in_::{IPPROTO_IGMP, InAddr, in_lookupmulti};
-    use crate::sys::mbuf::m_freemp;
+    use crate::sys::errno::Errno;
     use crate::sys::protosw::PR_FASTHZ;
     use crate::sys::socket::AF_INET;
 
@@ -304,10 +257,22 @@ mod tests {
         p[22..24].copy_from_slice(&(if bad_sum { !s } else { s }).to_be_bytes());
         let m = test_packet(&p);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        let mut mp = Some(m);
+        // inetsw[]'s IGMP entry: the kernel's (igmp_input, then the raw sockets').
+        let mut mp = Some(crate::sys::mbuf::unpark(m));
         let mut off = 20;
-        let _ = locked(|| igmp_input(&mut mp, &mut off, IPPROTO_IGMP, i32::from(AF_INET), None));
-        m_freemp(&mut mp);
+        let _ = locked(|| {
+            use kernel::net::proto::Protocol;
+            kernel::netinet::in_proto::IgmpProtocol::<crate::kern::proc_glue::BsdProcGlue>::NEW
+                .input(
+                    &mut mp,
+                    &mut off,
+                    IPPROTO_IGMP,
+                    i32::from(AF_INET),
+                    None,
+                    &crate::net::if_::net_held("igmp_input"),
+                )
+        });
+        drop(mp);
     }
 
     /// The state and timer of our membership of `g` on `ifp`.

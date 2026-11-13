@@ -2660,6 +2660,13 @@ impl<G: ProcGlue> Protocol<G> for RouteProto<G> {
     ) -> Result<(), Errno> {
         route_ctloutput(op, so, w, level, optname, m)
     }
+    /// `routesw[0].pr_sysctl`: `sysctl_rtable`.
+    fn has_sysctl(&self) -> bool {
+        true
+    }
+    fn sysctl(&self, name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> {
+        sysctl_rtable::<G>(name, req)
+    }
     fn init(&self) {
         route_prinit::<G>();
     }
@@ -3310,7 +3317,7 @@ mod tests {
         assert_eq!(p.len(), 1);
         assert_eq!((p[0].ty(), p[0].protocol()), (SOCK_RAW as i16, 0));
         assert_eq!(p[0].flags(), PR_ATOMIC | PR_ADDR | PR_WANTRCVD);
-        assert!(p[0].has_ctloutput() && p[0].usrreqs().is_some());
+        assert!(p[0].has_ctloutput() && p[0].usrreqs().is_some() && p[0].has_sysctl());
         assert_eq!(p[0].domain().family(), i32::from(PF_ROUTE));
     }
 }

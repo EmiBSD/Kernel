@@ -5787,7 +5787,7 @@ adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/fs/vnop
 rust = "sys/kern/uipc_domain.rs"
 lz = ["sys/kern/uipc_domain.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/proto.rs", "sys/kernel/net/unix.rs", "sys/kernel/net/syscalls.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/kern/uipc_mbuf.rs"
@@ -6503,7 +6503,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6522,12 +6522,13 @@ notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the 
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
 lz = ["sys/netinet/in_proto.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/in_var.rs"
@@ -6562,7 +6563,7 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs"]
+adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_input.rs"
@@ -16506,7 +16507,12 @@ rust = "sys/kernel/netinet/in_proto.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_proto.rs"]
 status = "redesigned"
-notes = "N6.4c2 (first step): ip_protox[], the inetsw[] table and its raw entry as InetTables in the glue's NetTables (D-9), filled by ip_init (inetsw_init), looked up per packet by ip_protocol/raw_protocol; IPv6's table through the Inet bridge until N6.5 (inet6_protocol). The table itself is still bsd's in_proto.rs until the next step"
+notes = "N6.4c2: ip_protox[], the inetsw[] table and its raw entry as InetTables in the glue's NetTables (D-9), recorded by the glue (inetsw_set) and filled by ip_init (inetsw_init), looked up per packet by ip_protocol/raw_protocol; IPv6's table through the Inet bridge until N6.5 (inet6_protocol); inetdomain as InetDomain<G> and inetsw[]'s IP, ICMP and IGMP entries as IpProtocol/IcmpProtocol/IgmpProtocol (decision 46, pr_input and pr_sysctl on Protocol), the transports' and IPsec's rows still bsd's in_proto.rs, assembled into the table by bsd's uipc_domain.rs (D-11)"
+
+[[module.fn]]
+lz = "sys/netinet/in_proto.rs::IP_PROTOX"
+native = ["InetTables"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/ip_icmp.rs"

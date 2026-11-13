@@ -404,12 +404,17 @@ paid_by = "N8"
 # kernel::net::domain::domaininit in the C's domains[] order, the UNIX domain among them, by
 # bsd's domaininit (the socket layer's switch, N6.2a), for the
 # kernel's socket layer (socreate's pffindproto, every pru_* request, sosetopt's
-# pr_ctloutput, pfctlinput). Paid when pfkeyv2's domain and inetsw[]'s AH/ESP/IPCOMP/IPIP
-# entries, its last legacy implementers, move (N8); inet's flip at N6.4/N6.6, route's at N6.3b.
+# pr_ctloutput, pfctlinput). N6.4c2 adds pr_input (ip_deliver's walk of inetsw[], ICMP's and
+# IGMP's rip_input tail call through the raw entry) with the net lock's proof, pr_ctlinput's
+# message bytes (icmp_input's) and pr_sysctl (bsd's net_sysctl over the kernel's domains[]);
+# inet's domain and its IP, ICMP and IGMP entries are the kernel's since N6.4c2
+# (kernel::netinet::in_proto), bsd's rows the transports, divert, pfsync, IP-in-IP and IPsec.
+# Paid when pfkeyv2's domain and inetsw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy
+# implementers, move (N8); inet's transports at N6.6, route's flip at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
-for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs"]
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
 paid_by = "N8"
 
 # bsd: an interface's driver (if_var.h's procedure handles: if_input, if_enqueue, if_start,

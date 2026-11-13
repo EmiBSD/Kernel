@@ -367,11 +367,10 @@ pub static INETCTLERRMAP: [Option<Errno>; PRC_NCMDS] = [
     Some(Errno::ENOPROTOOPT),
 ];
 
-/// `ip_init`: IP initialization: fill in IP protocol switch table (`sw`, the internet
-/// domain's `inetsw[]`). All protocols not implemented in kernel go to raw IP protocol
-/// handler. A second call (a test's) leaves the pools and the published entry point as they
-/// are.
-pub fn ip_init<G: ProcGlue>(sw: &'static [&'static dyn crate::net::proto::Protocol<G>]) {
+/// `ip_init`: IP initialization: fill in IP protocol switch table (the glue's `inetsw[]`). All
+/// protocols not implemented in kernel go to raw IP protocol handler. A second call (a
+/// test's) leaves the pools and the published entry point as they are.
+pub fn ip_init<G: ProcGlue>() {
     ip_randomid_init();
 
     // ipcounters = counters_alloc(ips_ncounters): kernel::netinet::ip_var::IPCOUNTERS.
@@ -379,7 +378,7 @@ pub fn ip_init<G: ProcGlue>(sw: &'static [&'static dyn crate::net::proto::Protoc
     let _ = IPQENT_POOL.init(IPL_SOFTNET, 0, "ipqe");
     let _ = IPQ_POOL.init(IPL_SOFTNET, 0, "ipq");
 
-    inetsw_init::<G>(sw);
+    inetsw_init::<G>();
     // LIST_INIT(&ipq): the queue is made empty with its mutex.
 
     // Fill in list of ports not to allocate dynamically.
@@ -2434,7 +2433,8 @@ pub(crate) mod tests {
         IDS.call_once(crate::netinet::ip_id::ip_randomid_init);
         ipq_test_reset();
         crate::netinet::ip_icmp::icmp_test_reset();
-        ip_init::<G>(&SW);
+        crate::netinet::in_proto::inetsw_set::<G>(&SW);
+        ip_init::<G>();
         crate::netinet::ip_icmp::icmp_init::<G>();
         g
     }

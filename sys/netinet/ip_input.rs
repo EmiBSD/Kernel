@@ -65,7 +65,6 @@ use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Route;
 use crate::netinet::in_pcb::Inpcb;
 use crate::netinet::ip::Ip;
-use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, park, unpark};
 
 pub use kernel::netinet::ip_input::{
@@ -79,9 +78,12 @@ fn held(what: &str) -> NetHeld<'static> {
     net_held(what)
 }
 
-/// `ip_init`: the `pr_init` of `inetsw[]`'s IP entry: the kernel's, over `bsd`'s table.
-pub fn ip_init() {
-    kernel::netinet::ip_input::ip_init::<G>(&crate::kern::uipc_domain::INET_PROTOS);
+/// `ip_init` over `bsd`'s table, for `bsd`'s protocol tests (the boot's runs from
+/// `domaininit`, through the kernel's IP entry).
+#[cfg(test)]
+pub(crate) fn ip_init() {
+    kernel::netinet::in_proto::inetsw_set::<G>(&crate::kern::uipc_domain::INET_PROTOS);
+    kernel::netinet::ip_input::ip_init::<G>();
 }
 
 /// `ipintr()`: the kernel's, under `bsd`'s exclusive net lock.
@@ -170,23 +172,6 @@ pub fn ip_savecontrol(inp: &Inpcb, mp: &mut Option<&'static Mbuf>, ip: &Ip, m: &
     *mp = chain.map(park);
 }
 
-/// `ip_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: `net.inet.ip.*` (the kernel's),
-/// the `pr_sysctl` of `inetsw[]`'s IP entry.
-pub fn ip_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::netinet::ip_input::ip_sysctl(name, &mut req)
-}
 /* </CODE> */
 
 /* <TESTS> */
@@ -233,6 +218,7 @@ pub(crate) mod tests {
     use crate::netinet::ip_output::ip_output;
     use crate::netinet::ip_var::{IPCOUNTERS, IpstatCounters, mtod_ip, mtod_ip_store};
     use crate::sys::endian::htons;
+    use crate::sys::errno::Errno;
     use crate::sys::mbuf::{M_DONTWAIT, m_data_add};
     use crate::sys::mbuf::{M_ICMP_CSUM_OUT, MHLEN};
     use crate::sys::socket::AF_INET;

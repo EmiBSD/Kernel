@@ -84,6 +84,7 @@ use kernel::net::domain::Domain as KDomain;
 use kernel::net::mbuf::MbufBox;
 use kernel::net::proto::{Protocol, SockaddrView, Usrreqs};
 use kernel::net::socket::SoLocked;
+use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol};
 
 use crate::kern::kern_sysctl::sysctl_vslock;
 use crate::kern::proc_glue::BsdProcGlue as G;
@@ -100,7 +101,7 @@ use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
-    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_ROUTE, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
+    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
@@ -127,7 +128,7 @@ pub static NET_DOMAINS: &[&dyn KDomain<G>] = &[
     &PFKEYDOMAIN,
     #[cfg(feature = "inet6")]
     &INET6DOMAIN,
-    &INETDOMAIN,
+    &InetDomain::<G>::NEW,
     &kernel::net::unix::Unix::<G>::NEW,
     &kernel::net::rtsock::RouteDomain::<G>::NEW,
     // NAF_FRAME: &framedomain, not configured.
@@ -138,14 +139,44 @@ macro_rules! protocols {
     ($sw:ident; $($i:literal)*) => { [$(&$sw[$i] as &dyn Protocol<G>),*] };
 }
 
-/// `inetsw[]` as the kernel's protocols (the kernel's `ip_init` records it).
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
+/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(not(feature = "inet6"))]
-pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] =
-    protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12);
-/// `inetsw[]` as the kernel's protocols (the kernel's `ip_init` records it).
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] = [
+    &IpProtocol::<G>::NEW,
+    &INETSW[1],
+    &INETSW[2],
+    &INETSW[3],
+    &IcmpProtocol::<G>::NEW,
+    &INETSW[5],
+    &IgmpProtocol::<G>::NEW,
+    &INETSW[7],
+    &INETSW[8],
+    &INETSW[9],
+    &INETSW[10],
+    &INETSW[11],
+    &INETSW[12],
+];
+/// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
+/// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
-pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] =
-    protocols!(INETSW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13);
+pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] = [
+    &IpProtocol::<G>::NEW,
+    &INETSW[1],
+    &INETSW[2],
+    &INETSW[3],
+    &IcmpProtocol::<G>::NEW,
+    &INETSW[5],
+    &INETSW[6],
+    &IgmpProtocol::<G>::NEW,
+    &INETSW[8],
+    &INETSW[9],
+    &INETSW[10],
+    &INETSW[11],
+    &INETSW[12],
+    &INETSW[13],
+];
+
 /// `inet6sw[]` as the kernel's protocols.
 #[cfg(feature = "inet6")]
 static INET6_PROTOS: [&dyn Protocol<G>; 15] =
@@ -156,6 +187,10 @@ static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
 /// `domaininit`: the kernel's domains (`bsd`'s tables and the UNIX domain) and their
 /// protocols initialised, the protocol timeouts started (`kernel::net::domain`).
 pub fn domaininit() {
+    // in_init's half that is bsd's: the key of bsd's pcb counts (the kernel's InetDomain
+    // runs the kernel's in_init).
+    let _ = crate::netinet::in_pcb::legacy_key();
+    kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
@@ -168,6 +203,7 @@ pub fn domaininit() {
 pub(crate) fn net_tables_for_tests() {
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
+    kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
     kernel::net::domain::domains_set::<G>(NET_DOMAINS);
 }
 
@@ -298,6 +334,15 @@ impl Protocol<G> for Protosw {
             *mp = m.map(unpark);
         }
         nxt
+    }
+    fn has_sysctl(&self) -> bool {
+        self.pr_sysctl.is_some()
+    }
+    fn sysctl(&self, name: &[i32], req: &mut kernel::sysctl::SysctlReq<'_>) -> Result<(), Errno> {
+        match self.pr_sysctl {
+            Some(sysctl) => sysctl(name, req.oldp, req.oldlenp, req.newp, req.newlen),
+            None => Err(Errno::EOPNOTSUPP),
+        }
     }
     fn init(&self) {
         if let Some(init) = self.pr_init {
@@ -554,28 +599,6 @@ pub fn net_sysctl(
         };
         return kernel::net::unix::uipc_sysctl::<G>(&name[1..], &mut req);
     }
-    if family == i32::from(PF_ROUTE) {
-        // The route domain is the kernel's: its one protocol (0, routesw[0]) answers
-        // net.route (pr_sysctl = sysctl_rtable), its old value's pages wired as the C's for
-        // a protocol without PR_MPSYSCTL.
-        if name.len() < 3 {
-            return Err(Errno::EISDIR); // overloaded
-        }
-        if name[1] != 0 {
-            return Err(Errno::ENOPROTOOPT);
-        }
-        let savelen = *oldlenp;
-        let vs = sysctl_vslock(oldp, savelen)?;
-        let mut req = kernel::sysctl::SysctlReq {
-            oldp,
-            oldlenp,
-            newp,
-            newlen,
-        };
-        let error = kernel::net::rtsock::sysctl_rtable::<G>(&name[2..], &mut req);
-        drop(vs);
-        return error;
-    }
     if family == i32::from(PF_BPF) {
         return bpf_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
@@ -583,7 +606,10 @@ pub fn net_sysctl(
         return crate::net::if_pflow::pflow_sysctl(&name[1..], oldp, oldlenp, newp, newlen);
     }
     // PIPEX (PF_PIPEX), MPLS (PF_MPLS): not configured.
-    let Some(dp) = pffinddomain(family) else {
+    // The kernel's domains[]: the route and internet domains are the kernel's (routesw's
+    // sysctl_rtable, the IP, ICMP and IGMP entries), bsd's rows answer through their
+    // Protocol impl.
+    let Some(dp) = kernel::net::domain::pffinddomain::<G>(family) else {
         return Err(Errno::ENOPROTOOPT);
     };
 
@@ -591,18 +617,22 @@ pub fn net_sysctl(
         return Err(Errno::EISDIR); // overloaded
     }
     let protocol = name[1];
-    for pr in dp.dom_protosw {
-        if i32::from(pr.pr_protocol) == protocol
-            && let Some(sysctl) = pr.pr_sysctl
-        {
+    for pr in dp.protocols() {
+        if i32::from(pr.protocol()) == protocol && pr.has_sysctl() {
             let savelen = *oldlenp;
             // sysctl_vsunlock(oldp, savelen) is the guard's drop.
-            let vs = if pr.pr_flags & PR_MPSYSCTL == 0 {
+            let vs = if pr.flags() & PR_MPSYSCTL == 0 {
                 Some(sysctl_vslock(oldp, savelen)?)
             } else {
                 None
             };
-            let error = sysctl(&name[2..], oldp, oldlenp, newp, newlen);
+            let mut req = kernel::sysctl::SysctlReq {
+                oldp,
+                oldlenp,
+                newp,
+                newlen,
+            };
+            let error = pr.sysctl(&name[2..], &mut req);
             drop(vs);
 
             return error;

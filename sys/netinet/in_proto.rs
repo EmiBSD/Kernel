@@ -118,9 +118,11 @@
 //!
 //! Upstream: sys/netinet/in_proto.c @ 3ce1f3f79392
 //!
-//! IP, ICMP, UDP, TCP, raw IP, IP-in-IP, IGMP, AH, ESP and IPComp, in the C's order. `ip_init` fills
-//! `ip_protox[]`, which maps an IP protocol number to its entry in `inetsw[]`; every number
-//! without an entry goes to the raw IP handler.
+//! IP, ICMP, UDP, TCP, raw IP, IP-in-IP, IGMP, AH, ESP and IPComp, in the C's order. Since
+//! N6.4c2 the domain and `ip_protox[]` are the kernel's (`kernel::netinet::in_proto`), and so
+//! are the IP, ICMP and IGMP entries: their rows here keep only what `bsd`'s own lookups read
+//! (`pffindproto` over `bsd`'s `domains[]`); `bsd`'s `sys/kern/uipc_domain.rs` hands the
+//! kernel the table of its entries and the kernel's.
 //!
 //! Status: `ported` (M7b). The licence block carries the NRL notice with its advertising
 //! clause, accepted as BSD-4 (`.claude/rules/scope-and-stubs.md`).
@@ -138,20 +140,16 @@
 //! - `ip_protox[]` holds atomics (`ip_init` writes it once, every input reads it).
 
 use core::mem::{offset_of, size_of};
-use core::sync::atomic::AtomicU8;
 
 use crate::net::if_pfsync::{pfsync_input4, pfsync_sysctl};
-use crate::netinet::igmp::{igmp_fasttimo, igmp_init, igmp_input, igmp_slowtimo, igmp_sysctl};
 #[cfg(feature = "inet6")]
 use crate::netinet::in_::IPPROTO_IPV6;
 use crate::netinet::in_::{
     IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_IPCOMP,
-    IPPROTO_IPV4, IPPROTO_MAX, IPPROTO_PFSYNC, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
+    IPPROTO_IPV4, IPPROTO_PFSYNC, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
 };
 use crate::netinet::in_pcb::in_init;
 use crate::netinet::ip_divert::{DIVERT_USRREQS, divert_init, divert_sysctl};
-use crate::netinet::ip_icmp::{icmp_init, icmp_input, icmp_sysctl};
-use crate::netinet::ip_input::{ip_init, ip_slowtimo, ip_sysctl};
 use crate::netinet::ip_ipip::{ipip_init, ipip_input, ipip_sysctl};
 use crate::netinet::ip_output::ip_ctloutput;
 use crate::netinet::ipsec_input::{
@@ -171,17 +169,11 @@ use crate::sys::protosw::{
 };
 use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
-/// `ip_protox[]`: IP protocol number to `inetsw[]` index.
-pub static IP_PROTOX: [AtomicU8; IPPROTO_MAX as usize] =
-    [const { AtomicU8::new(0) }; IPPROTO_MAX as usize];
-
 /// `inetsw[]`: the internet protocols.
 pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
+    // IP: the kernel's (kernel::netinet::in_proto::IpProtocol); a row of bsd's lookups.
     Protosw {
-        pr_init: Some(ip_init),
-        pr_slowtimo: Some(ip_slowtimo),
         pr_flags: PR_MPSYSCTL,
-        pr_sysctl: Some(ip_sysctl),
         ..Protosw::new(&INETDOMAIN)
     },
     Protosw {
@@ -223,15 +215,13 @@ pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
         pr_usrreqs: Some(&RIP_USRREQS),
         ..Protosw::new(&INETDOMAIN)
     },
+    // ICMP: the kernel's (kernel::netinet::in_proto::IcmpProtocol); a row of bsd's lookups.
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_ICMP as i16,
         pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_input: Some(icmp_input),
         pr_ctloutput: Some(rip_ctloutput),
         pr_usrreqs: Some(&RIP_USRREQS),
-        pr_init: Some(icmp_init),
-        pr_sysctl: Some(icmp_sysctl),
         ..Protosw::new(&INETDOMAIN)
     },
     Protosw {
@@ -258,17 +248,13 @@ pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
         ..Protosw::new(&INETDOMAIN)
     },
     // MPLS && NGIF > 0: IPPROTO_MPLS through in_gif_input; not configured.
+    // IGMP: the kernel's (kernel::netinet::in_proto::IgmpProtocol); a row of bsd's lookups.
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_IGMP as i16,
         pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_input: Some(igmp_input),
         pr_ctloutput: Some(rip_ctloutput),
         pr_usrreqs: Some(&RIP_USRREQS),
-        pr_init: Some(igmp_init),
-        pr_fasttimo: Some(igmp_fasttimo),
-        pr_slowtimo: Some(igmp_slowtimo),
-        pr_sysctl: Some(igmp_sysctl),
         ..Protosw::new(&INETDOMAIN)
     },
     Protosw {
