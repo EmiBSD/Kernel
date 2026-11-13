@@ -104,6 +104,7 @@
 //!   the header panics where the C would read past it. `#[inline]`: the transports call it
 //!   per packet across the crate boundary (N6.3c1's R12).
 
+use hal::pod;
 use hal::sys::endian::htonl;
 use hal::sys::netinet6_in6::{In6Addr, in6_is_scope_embed};
 
@@ -114,12 +115,11 @@ use crate::netinet::in_cksum::{cksum_add, cksum_fold};
 /// `offsetof(struct ip6_hdr, ip6_src)`: the source, then the destination, 32 bytes.
 const IP6_SRC: usize = 8;
 
-/// `IN6_IS_SCOPE_EMBED` of the address whose 16 bytes start `b`.
+/// `IN6_IS_SCOPE_EMBED` of the address at the start of `b`, viewed in place (an `In6Addr` is
+/// its sixteen bytes, alignment 1: the view never fails on a long enough slice).
 #[inline]
 fn scope_embedded(b: &[u8]) -> bool {
-    let mut a = In6Addr::default();
-    a.s6_addr.copy_from_slice(&b[..16]);
-    in6_is_scope_embed(&a)
+    pod::view::<In6Addr>(b, 0).is_some_and(in6_is_scope_embed)
 }
 
 /// `in6_cksum`: the checksum of `len` bytes from offset `off` of `m`, an IPv6 packet, with the

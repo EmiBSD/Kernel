@@ -181,9 +181,8 @@ use crate::sys::socketvar::{SS_PRIV, Socket};
 
 pub use hal::sys::netinet6_in6::*;
 pub use kernel::netinet6::in6::{
-    NetHolding, ifa6_is_deprecated, ifa6_is_invalid, in6_addr2scopeid, in6_addrscope, in6_hasmulti,
-    in6_ifawithscope, in6_lookupmulti, in6_mask2len, in6_matchlen, in6_prefixlen2mask, in6_sa2sin6,
-    in6_update_ifa, in6if_do_dad, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr,
+    ifa6_is_deprecated, ifa6_is_invalid, in6_addr2scopeid, in6_hasmulti, in6_ifawithscope,
+    in6_lookupmulti, in6_mask2len, in6_prefixlen2mask, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr,
 };
 pub use kernel::netinet6::in6_var::ifatoia6;
 
