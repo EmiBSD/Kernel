@@ -2829,5 +2829,287 @@ mod tests {
         dp_clr(&m.tcp, 6000);
         assert!(!dp_isset(&m.tcp, 6000));
     }
+
+    // The control blocks over the kernel's Internet socket fixture ([`testinet`]): the
+    // iterator across a detach between two steps, the hash tables grown from 16 to 1,024
+    // buckets, pf's state key word, the socket lock the route cache and the multicast options
+    // need, and the counts a pcb shows.
+
+    use core::pin::pin;
+    use std::sync::OnceLock;
+    use std::vec::Vec;
+
+    use hal::netlock::NETLOCK;
+    use hal::sys::endian::htons;
+
+    use super::testinet::{self, G as Tg};
+    use crate::net::pf_hooks::testpf;
+    use crate::net::socket::solock_shared;
+
+    /// The items the glue's "inpcb" pool lends now: `vmstat -m`'s in use.
+    fn nout() -> u64 {
+        crate::net::domain::net::<Tg>().inpcb.pool.nout()
+    }
+
+    fn a(b: [u8; 4]) -> InAddr {
+        InAddr {
+            s_addr: u32::from_ne_bytes(b),
+        }
+    }
+
+    /// `inp` bound and connected as `in_pcbconnect` leaves it (the four members set and the
+    /// pcb rehashed under the table mutex).
+    fn place(inp: &Inpcb<Tg>, laddr: InAddr, lport: u16, faddr: InAddr, fport: u16) {
+        let mut g = inp.table().lock();
+        inp.set_laddr(&g, laddr);
+        inp.set_lport(&g, lport);
+        inp.set_faddr(&g, faddr);
+        inp.set_fport(&g, fport);
+        in_pcbrehash(&mut g, inp);
+    }
+
+    /// The pcb's address, to compare answers.
+    fn at(inp: &Inpcb<Tg>) -> *const Inpcb<Tg> {
+        core::ptr::from_ref(inp)
+    }
+
+    #[test]
+    fn the_iterator_survives_a_detach_between_two_steps() {
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let before = nout();
+        let mut pcbs: Vec<Option<(SocketRef<Tg>, InpcbRef<Tg>)>> =
+            (0..5).map(|_| Some(testinet::pcb(t))).collect();
+        // The queue's order: the last allocated first (`TAILQ_INSERT_HEAD`).
+        pcbs.reverse();
+        let addr = |p: &Option<(SocketRef<Tg>, InpcbRef<Tg>)>| {
+            p.as_ref().map(|(_, i)| at(i)).expect("a pcb")
+        };
+        let order: Vec<*const Inpcb<Tg>> = pcbs.iter().map(addr).collect();
+        assert_eq!(nout(), before + 5);
+
+        let m = pin!(Inpcb::<Tg>::marker());
+        let other = pin!(Inpcb::<Tg>::marker());
+
+        // The first step.
+        let mut g = t.lock();
+        let cur = in_pcb_iterator(t, &mut g, None, m.as_ref()).expect("the first pcb");
+        assert_eq!(at(&cur), order[0]);
+        // A second walk starts and overtakes the first: each steps over the other's marker.
+        let o1 = in_pcb_iterator(t, &mut g, None, other.as_ref()).expect("its first pcb");
+        let o2 = in_pcb_iterator(t, &mut g, Some(o1), other.as_ref()).expect("its second");
+        assert_eq!(at(&o2), order[1]);
+        drop(g);
+
+        // The next pcb is detached while the walker holds no lock (the C's callers drop the
+        // table mutex for the socket lock): the walk goes on past it, and it is freed at
+        // once (nothing holds it).
+        let (so1, inp1) = pcbs[1].take().expect("pcb 1");
+        drop(o2);
+        testinet::release(so1, inp1);
+        assert_eq!(nout(), before + 4);
+        let mut g = t.lock();
+        let cur = in_pcb_iterator(t, &mut g, Some(cur), m.as_ref()).expect("pcb 2");
+        assert_eq!(
+            at(&cur),
+            order[2],
+            "pcb 1 is gone, the marker stood after pcb 0"
+        );
+        drop(g);
+
+        // The pcb the walker holds is detached: it leaves the queue but stays an item until
+        // the walk's next step drops it, under the table mutex (the C's `in_pcbunref` in
+        // `in_pcb_iterator`).
+        let (so2, inp2) = pcbs[2].take().expect("pcb 2");
+        testinet::release(so2, inp2);
+        assert_eq!(nout(), before + 4, "the walk's handle keeps the item");
+        let mut g = t.lock();
+        let cur = in_pcb_iterator(t, &mut g, Some(cur), m.as_ref()).expect("pcb 3");
+        assert_eq!(at(&cur), order[3]);
+        assert_eq!(nout(), before + 3, "pcb 2 freed by the step");
+        let cur = in_pcb_iterator(t, &mut g, Some(cur), m.as_ref()).expect("pcb 4");
+        assert_eq!(at(&cur), order[4]);
+        assert!(in_pcb_iterator(t, &mut g, Some(cur), m.as_ref()).is_none());
+        assert!(
+            !m.inp_queue.is_linked(),
+            "the walk's end takes its marker out"
+        );
+        in_pcb_iterator_abort(t, &mut g, None, other.as_ref());
+        assert!(!other.inp_queue.is_linked());
+        // Only pcbs on the queue now.
+        let left: Vec<*const Inpcb<Tg>> = t.queue().iter(&g).map(at).collect();
+        assert_eq!(left, [order[0], order[3], order[4]]);
+        drop(g);
+
+        for (so, inp) in pcbs.into_iter().flatten() {
+            testinet::release(so, inp);
+        }
+        assert_eq!(nout(), before);
+        assert_eq!(t.count(), 0);
+    }
+
+    #[test]
+    fn the_table_grows_from_16_to_1024_buckets_and_finds_every_pcb() {
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let n = 700u16;
+        let key = |i: u16| {
+            (
+                a([10, 0, (i >> 8) as u8, i as u8]),
+                htons(1024 + i),
+                a([10, 1, 0, 1]),
+                htons(53),
+            )
+        };
+        let mut pcbs = Vec::new();
+        for i in 0..n {
+            let (so, inp) = testinet::pcb(t);
+            // Hashed now, so every later resize has to move it.
+            let (l, lp, f, fp) = key(i);
+            place(&inp, l, lp, f, fp);
+            pcbs.push((so, inp));
+        }
+        // in_pcballoc resized at the load factor: 16, 32, ..., 1024 (past 768 it would be 2048).
+        assert_eq!(t.size(), 1024);
+        assert_eq!(t.count(), i32::from(n));
+
+        let found = |pcbs: &Vec<(SocketRef<Tg>, InpcbRef<Tg>)>| {
+            for (i, (_, inp)) in (0..n).zip(pcbs) {
+                let (l, lp, f, fp) = key(i);
+                let hit = in_pcblookup(t, f, fp, l, lp, 0).expect("in_pcblookup");
+                assert_eq!(at(&hit), at(inp), "pcb {i}");
+                // A connected pcb is a wildcard match of its local port (its foreign address
+                // is set): bind(2)'s lookup with INPLOOKUP_WILDCARD.
+                let local =
+                    in_pcblookup_local_lock(t, &Inpaddru::from_addr(l), lp, INPLOOKUP_WILDCARD, 0)
+                        .expect("in_pcblookup_local");
+                assert_eq!(at(&local), at(inp), "pcb {i}, local port");
+            }
+        };
+        found(&pcbs);
+
+        // A resize by hand: every pcb on the new chains, none left on the old.
+        {
+            let mut g = t.lock();
+            in_pcbresize(&mut g, 2048).expect("in_pcbresize");
+        }
+        assert_eq!(t.size(), 2048);
+        found(&pcbs);
+
+        for (so, inp) in pcbs {
+            testinet::release(so, inp);
+        }
+        assert_eq!(t.count(), 0);
+    }
+
+    #[test]
+    fn pf_unlinks_its_state_key_at_disconnect_and_detach() {
+        let (_g, _p) = testinet::setup();
+        let pf = testpf::register();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let unlinks = || pf.inp_unlinks.load(Ordering::Relaxed);
+        let removals = || pf.divert_removals.load(Ordering::Relaxed);
+        let (u0, r0) = (unlinks(), removals());
+
+        // pf_inp_link (pf's, under pf_inp_mtx): the state key's word in the pcb.
+        inp.inp_pf_sk.set(0x2000);
+        assert!(!in_pcbdisconnect(&inp), "a file still holds the socket");
+        assert_eq!(inp.inp_pf_sk.get(), 0, "pf_inp_unlink emptied it");
+        assert_eq!(pf.last_unlinked.load(Ordering::Relaxed), 0x2000);
+        assert_eq!((unlinks(), removals()), (u0 + 1, r0 + 1));
+
+        // in_pcbdetach: the divert state removed, the key unlinked, before the pcb goes.
+        inp.inp_pf_sk.set(0x3000);
+        testinet::release(so, inp);
+        assert_eq!(pf.last_unlinked.load(Ordering::Relaxed), 0x3000);
+        assert_eq!((unlinks(), removals()), (u0 + 2, r0 + 2));
+    }
+
+    #[test]
+    fn the_route_cache_and_the_multicast_options_need_the_socket_lock() {
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let (so2, inp2) = testinet::pcb(t);
+
+        assert!(!inp.route_locked(), "no lock at all");
+        {
+            let _r = NETLOCK.read();
+            assert!(
+                !inp.route_locked(),
+                "the net lock shared alone: another socket's holder may be in"
+            );
+        }
+        {
+            let _w = NETLOCK.write();
+            assert!(inp.route_locked(), "the net lock exclusively");
+            drop(inp.route());
+            drop(inp.moptions());
+        }
+        {
+            // solock_shared: the net lock shared, then this socket's lock written.
+            let w = solock_shared(&so);
+            assert!(inp.route_locked());
+            assert!(!inp2.route_locked(), "another socket's lock does not do");
+            drop(inp.route());
+            drop(w);
+        }
+        {
+            let w = solock_shared(&so2);
+            assert!(inp2.route_locked() && !inp.route_locked());
+            drop(w);
+        }
+        testinet::release(so, inp);
+        testinet::release(so2, inp2);
+    }
+
+    /// The pcb key `bsd`'s boot takes (no boot here: the first test that asks).
+    fn key() -> &'static LegacyKey {
+        static KEY: OnceLock<&'static LegacyKey> = OnceLock::new();
+        KEY.get_or_init(|| LegacyKey::take().expect("the key, untaken in this binary"))
+    }
+
+    #[test]
+    fn the_counts_a_pcb_shows_are_the_cs() {
+        // The one count userland sees is `vmstat -m`'s in use of "inpcb": one item per pcb,
+        // whatever handles exist (the anchor that keeps it while `inp_refcnt` is above zero,
+        // a lookup's answer, a walk's). `inp_refcnt` (the C's refcount, which no userland
+        // interface reports) starts at the C's 1, the socket's, and counts `bsd`'s holders
+        // only: neither the anchor nor the kernel's handles are in it. kern.file reports the
+        // pcb's address (`so_pcb`), not a count.
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let before = nout();
+        let (so, inp) = testinet::pcb(t);
+        assert_eq!(nout(), before + 1);
+        assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
+        assert_eq!(so.legacy_pcb(), at(&inp).addr(), "so_pcb names the pcb");
+
+        let (l, lp, f, fp) = (a([10, 0, 0, 1]), htons(7), a([10, 0, 0, 2]), htons(9));
+        place(&inp, l, lp, f, fp);
+        let hit = in_pcblookup(t, f, fp, l, lp, 0).expect("found");
+        assert_eq!(
+            nout(),
+            before + 1,
+            "a lookup's answer is a handle, not an item"
+        );
+        assert_eq!(inp.legacy_count(), 1, "nor a count of inp_refcnt");
+
+        // bsd's in_pcbref and in_pcbunref.
+        inp.legacy_ref();
+        assert_eq!(inp.legacy_count(), 2);
+        assert!(inp.legacy_rele(key()).is_none(), "not the last");
+        assert_eq!(inp.legacy_count(), 1);
+        assert_eq!(nout(), before + 1);
+
+        // The detach drops the socket's count; the lookup's handle keeps the item until it
+        // goes (the C's in_pcbunref after in_pcbdetach, its pool_put at the last).
+        testinet::release(so, inp);
+        assert_eq!(hit.legacy_count(), 0);
+        assert_eq!(nout(), before + 1);
+        drop(hit);
+        assert_eq!(nout(), before);
+    }
 }
 /* </TESTS> */

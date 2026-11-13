@@ -1001,6 +1001,59 @@ pub(crate) mod tests {
         teardown();
     }
 
+    #[test]
+    fn kern_file_reports_an_inet_socket() {
+        // kern.file's Internet fields of a socket over the kernel's pcb (`fill_file_socket`
+        // through the accessors): the addresses, ports and table always, the pcb's address
+        // (`so_pcb`) and the per-protocol pcb's (`inp_ppcb`) only under show_pointers, and no
+        // count of the pcb anywhere.
+        use crate::kern::kern_sysctl::fill_file;
+        use crate::sys::sysctl::KinfoFile;
+
+        let (_g, _t, p) = setup();
+        let t = table(16);
+        let inp = pcb(t);
+        let so = inp.socket();
+        {
+            let g = t.lock();
+            inp.set_laddr(&g, sin([10, 0, 2, 15], 0).sin_addr);
+            inp.set_lport(&g, htons(5353));
+            inp.set_faddr(&g, sin([10, 0, 2, 2], 0).sin_addr);
+            inp.set_fport(&g, htons(53));
+        }
+        // A stand-in for the address of a tcpcb (`inp_ppcb`).
+        static PPCB: u64 = 0;
+        inp.inp_ppcb.set(ptr::from_ref(&PPCB).cast());
+
+        solock(so);
+        let mut kf = KinfoFile::zeroed();
+        fill_file(&mut kf, None, None, 0, None, None, p, Some(so), false);
+        let mut kfp = KinfoFile::zeroed();
+        fill_file(&mut kfp, None, None, 0, None, None, p, Some(so), true);
+        sounlock(so);
+
+        assert_eq!(kf.so_family, u32::from(AF_INET));
+        assert_eq!(kf.so_protocol, IPPROTO_UDP as u32);
+        assert_eq!(kf.inp_lport, u32::from(htons(5353)));
+        assert_eq!(kf.inp_laddru[0], u32::from_ne_bytes([10, 0, 2, 15]));
+        assert_eq!(kf.inp_fport, u32::from(htons(53)));
+        assert_eq!(kf.inp_faddru[0], u32::from_ne_bytes([10, 0, 2, 2]));
+        assert_eq!(kf.inp_rtableid, 0);
+        assert_eq!(kf.so_pcb, -1i64 as u64, "no pointers without show_pointers");
+        assert_eq!(kf.inp_ppcb, 0);
+        assert_eq!(
+            kfp.so_pcb,
+            ptr::from_ref(inp).addr() as u64,
+            "so_pcb: the pcb"
+        );
+        assert_eq!(kfp.inp_ppcb, ptr::from_ref(&PPCB).addr() as u64);
+        assert_eq!(inp.legacy_count(), 1, "the socket's count only");
+
+        inp.inp_ppcb.set(ptr::null());
+        release(inp);
+        teardown();
+    }
+
     /// IPv6 helpers shared by the UDP and TCP tests (a test interface with `fd00:77::1/64` whose
     /// output the tests read, address mbufs, packets from `fd00:77::2`), and the `INP_IPV6`
     /// branches of binding, port picking, connecting and the lookups.

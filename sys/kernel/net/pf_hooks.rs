@@ -183,4 +183,83 @@ pub fn register_pf(imp: &'static dyn Pf) -> Result<(), AlreadyRegistered> {
 pub(crate) fn pf() -> Option<&'static dyn Pf> {
     PF.get().copied()
 }
+
+/// The host tests' pf (the mbuf's legs and the pcb's): it links and unlinks a header's words
+/// as pf's `pf_mbuf_*` legs do and counts them, and empties a pcb's word as `pf_inp_unlink`
+/// does, recording what it held. One per test binary (`PF` is set once): every test that
+/// needs pf registers this one.
+#[cfg(test)]
+pub(crate) mod testpf {
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    use super::{Pf, PfSlot};
+    use crate::net::mbuf::PkthdrPf;
+
+    /// The counting pf.
+    pub(crate) struct CountingPf {
+        /// References a header took (`pf_mbuf_link_*`).
+        pub(crate) links: AtomicU32,
+        /// References a header dropped (`pf_mbuf_unlink_*`).
+        pub(crate) unlinks: AtomicU32,
+        /// `pf_inp_unlink` calls that found a state key.
+        pub(crate) inp_unlinks: AtomicU32,
+        /// `pf_remove_divert_state` calls.
+        pub(crate) divert_removals: AtomicU32,
+        /// The last state key word `pf_inp_unlink` took out of a pcb.
+        pub(crate) last_unlinked: AtomicUsize,
+    }
+
+    impl Pf for CountingPf {
+        fn mbuf_link_state_key(&self, to: &PkthdrPf, from: &PkthdrPf) {
+            if from.statekey.get() != 0 {
+                to.statekey.set(from.statekey.get());
+                self.links.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_link_inpcb(&self, to: &PkthdrPf, from: &PkthdrPf) {
+            if from.inp.get() != 0 {
+                to.inp.set(from.inp.get());
+                self.links.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_unlink_state_key(&self, pf: &PkthdrPf) {
+            if pf.statekey.get() != 0 {
+                pf.statekey.set(0);
+                self.unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf) {
+            if pf.inp.get() != 0 {
+                pf.inp.set(0);
+                self.unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn inp_remove_divert_state(&self, _slot: &PfSlot) {
+            self.divert_removals.fetch_add(1, Ordering::Relaxed);
+        }
+        fn inp_unlink(&self, slot: &PfSlot) {
+            let w = slot.get();
+            if w != 0 {
+                slot.set(0);
+                self.last_unlinked.store(w, Ordering::Relaxed);
+                self.inp_unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The binary's pf.
+    pub(crate) static COUNTING_PF: CountingPf = CountingPf {
+        links: AtomicU32::new(0),
+        unlinks: AtomicU32::new(0),
+        inp_unlinks: AtomicU32::new(0),
+        divert_removals: AtomicU32::new(0),
+        last_unlinked: AtomicUsize::new(0),
+    };
+
+    /// [`COUNTING_PF`] registered (by the first test that asks).
+    pub(crate) fn register() -> &'static CountingPf {
+        let _ = super::register_pf(&COUNTING_PF);
+        &COUNTING_PF
+    }
+}
 /* </CODE> */
