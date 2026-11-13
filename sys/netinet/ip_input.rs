@@ -86,8 +86,10 @@ pub(crate) fn ip_init() {
     kernel::netinet::ip_input::ip_init::<G>();
 }
 
-/// `ipintr()`: the kernel's, under `bsd`'s exclusive net lock.
-pub fn ipintr() {
+/// `ipintr()`: the kernel's, under the exclusive net lock a test holds (`net_lock()`;
+/// `if_netisr` calls the kernel's).
+#[cfg(test)]
+pub(crate) fn ipintr() {
     kernel::netinet::ip_input::ipintr::<G>(&held("ipintr"));
 }
 
@@ -158,11 +160,6 @@ pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&mut Route>, flags: 
 /// `ip_send(m)` of a parked packet.
 pub fn ip_send(m: &'static Mbuf) {
     kernel::netinet::ip_input::ip_send(unpark(m));
-}
-
-/// `ip_send_raw(m)` of a parked packet.
-pub fn ip_send_raw(m: &'static Mbuf) {
-    kernel::netinet::ip_input::ip_send_raw(unpark(m));
 }
 
 /// `ip_savecontrol(inp, mp, ip, m)`: the kernel's control messages appended at `*mp` (an
