@@ -461,6 +461,9 @@ paid_by = "N7"
 # ip6stat_deliver, ip6_hdrnestlimit, ip6_ours_enqueue, until N6.5) joined. Registered by bsd's boot before the first interface (N6.3a1's adapter
 # commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
+# with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
+# output lost the proof lends it; bsd's wrappers then make theirs with net_held), and it goes
+# with that bridge's output reshaped to carry the proof (N7), as docs/SCAFFOLDING.md's row says.
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
