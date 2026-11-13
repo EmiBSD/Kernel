@@ -315,21 +315,35 @@ impl In6Memberships {
             .flat_map(|v| v.iter().take(self.n).copied().flatten())
     }
 
-    /// `LIST_INSERT_HEAD(&memberships, imm, i6mm_chain)` of a membership already joined:
-    /// `in6m` recorded; `Err(ENOBUFS)` when the array cannot grow (the C's
-    /// `malloc(M_NOWAIT)` of the entry), the record not recorded.
-    pub fn push(&mut self, in6m: &'static In6Multi) -> Result<(), hal::sys::errno::Errno> {
+    /// The C's `imm = malloc(sizeof(*imm), M_IPMADDR, M_NOWAIT)` before the join: room for one
+    /// more membership, the array allocated (4 slots) or doubled when full, under the
+    /// owner's mutex (malloc(9) allows `M_NOWAIT` there, and the old array is freed there
+    /// once copied); `Err(ENOBUFS)` when it cannot be had, before anything is joined.
+    pub fn reserve(&mut self) -> Result<(), hal::sys::errno::Errno> {
         let cap = self.v.as_deref().map_or(0, <[_]>::len);
-        if self.n == cap {
-            let old = self.v.as_deref().unwrap_or(&[]);
-            let Some(nv) = MArray::new(M_IPMADDR, M_NOWAIT, (cap * 2).max(4), |i| {
-                old.get(i).copied().flatten()
-            }) else {
-                return Err(hal::sys::errno::Errno::ENOBUFS);
-            };
-            // The old array freed once copied.
-            self.v = Some(nv);
+        if self.n < cap {
+            return Ok(());
         }
+        let old = self.v.as_deref().unwrap_or(&[]);
+        let Some(nv) = MArray::new(M_IPMADDR, M_NOWAIT, (cap * 2).max(4), |i| {
+            old.get(i).copied().flatten()
+        }) else {
+            return Err(hal::sys::errno::Errno::ENOBUFS);
+        };
+        // The old array freed once copied.
+        self.v = Some(nv);
+        Ok(())
+    }
+
+    /// `LIST_INSERT_HEAD(&memberships, imm, i6mm_chain)` of a membership joined after
+    /// [`reserve`](Self::reserve) made its room: `in6m` recorded in it. Only the
+    /// `in6_update_ifa` call that made an address joins its groups (the C's `hostIsNew`),
+    /// one after another under the net lock, and nothing else takes room (a purge only
+    /// frees it), so the room is still there and the push cannot fail. Were it gone, the
+    /// push reserves again (`Err(ENOBUFS)` if that fails, the caller then leaving the
+    /// group): a fallback no caller reaches.
+    pub fn push(&mut self, in6m: &'static In6Multi) -> Result<(), hal::sys::errno::Errno> {
+        self.reserve()?;
         match self.v.as_deref_mut().and_then(|v| v.get_mut(self.n)) {
             Some(slot) => *slot = Some(in6m),
             None => kpanic(format_args!(

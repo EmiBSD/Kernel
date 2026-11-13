@@ -205,7 +205,7 @@
 //! | `in6_ioctl_get` (in6.c:416) | `NET_LOCK_SHARED` | a read witness | none |
 //! | `in6_addmulti`/`in6_delmulti` (in6.c:1037-1130) | `if_maddrlock` write (twice/once); `KERNEL_LOCK` around the driver's `SIOCADDMULTI`/`DELMULTI` | the `SplitRwlock`'s write; `klock` C-style around `if_ioctl` | none |
 //! | `in6_hasmulti` | `if_maddrlock` read once | the same | none |
-//! | `in6_update_ifa`'s joins, `in6_purgeaddr` | the net lock | the net lock, and `ia6_memberships`' mutex once per join and once per purge | one mutex pair per join (three per new address) and per purge: the ioctl path only |
+//! | `in6_update_ifa`'s joins, `in6_purgeaddr` | the net lock | the net lock, and `ia6_memberships`' mutex twice per join (the room before `in6_addmulti`, the record after, so `ENOBUFS` precedes the join as the C's `malloc` does) and once per purge | two mutex pairs per join (six per new address) and one per purge: the address-add and delete ioctl path only |
 //!
 //! **Holders** against the C: `ifa_refcnt` (`refcnt_init` at a new address, the list's;
 //! `ifafree` in `in6_unlink_ifa`; `rt_ifa`'s and DAD's taken by routing and ND); `in6m_refcnt`
@@ -1040,16 +1040,21 @@ fn in6_join_groups(
 }
 
 /// `in6_joingroup(ifp, addr, &error)` and `LIST_INSERT_HEAD(&ia6->ia6_memberships, imm,
-/// i6mm_chain)`: `ifp` joins `addr` for address `ia6`, which records the membership; the
-/// group left again when the record cannot (the C's failed `malloc` of the entry, before
-/// the join).
+/// i6mm_chain)`: `ifp` joins `addr` for address `ia6`, which records the membership. As in
+/// the C, the record's room is made first (its `malloc(M_NOWAIT)` of the entry): `ENOBUFS`
+/// before anything is joined, so the driver and the wire see nothing of a join that
+/// cannot be recorded. The cost against the C: two `ia6_memberships` mutex pairs per join
+/// (the room, then the record) where the C, under the net lock alone, takes none; the
+/// address-add path only (in6.rs's lock table).
 fn in6_joingroup(
     ifp: &'static Ifnet,
     ia6: &In6Ifaddr,
     addr: &In6Addr,
     net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
+    ia6.ia6_memberships.lock().reserve()?;
     let in6m = in6_addmulti(addr, ifp, net)?;
+    // Into the room just made (In6Memberships::push: its fallback is unreachable).
     let pushed = ia6.ia6_memberships.lock().push(in6m);
     if pushed.is_err() {
         in6_delmulti(in6m, net);
@@ -2294,6 +2299,40 @@ pub(crate) mod tests {
         in6_delmulti(b, &net);
         assert!(!in6_hasmulti(&g, ifp));
         assert_eq!(d.delmulti.load(Ordering::Relaxed), 1);
+        drop(w);
+    }
+
+    #[test]
+    fn a_join_whose_record_has_no_room_is_not_made() {
+        // The C's in6_joingroup mallocs the membership's entry before in6_addmulti, so a
+        // failed allocation is ENOBUFS with nothing joined: the room is reserved first here
+        // too (the test doubles' fail_pages fails the next malloc).
+        let _g = setup();
+        let (ifp, d) = iface(b"tjg0", [0x52, 0x54, 0, 0, 7, 1]);
+        let idx = ifp.if_index.get();
+        let ia = test_ia6(ifp, zoned(a6("fe80::5054:ff:fe00:701"), idx), 0);
+        let g = zoned(a6("ff02::1:ff00:701"), idx);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+
+        // No array yet and no memory for one: ENOBUFS, the driver asked nothing, no group.
+        crate::testutil::fail_pages(0, 1);
+        let r = in6_joingroup(ifp, ia, &g, &net);
+        crate::testutil::fail_pages(0, 0);
+        assert_eq!(r, Err(Errno::ENOBUFS));
+        assert_eq!(d.addmulti.load(Ordering::Relaxed), 0);
+        assert!(!in6_hasmulti(&g, ifp));
+        assert!(ia.ia6_memberships.lock().is_empty());
+
+        // The normal path: the room made, the group joined and recorded.
+        assert_eq!(in6_joingroup(ifp, ia, &g, &net), Ok(()));
+        assert_eq!(d.addmulti.load(Ordering::Relaxed), 1);
+        assert!(in6_hasmulti(&g, ifp));
+        assert_eq!(ia.ia6_memberships.lock().len(), 1);
+
+        let in6m = ia.ia6_memberships.lock().pop_last().expect("the record");
+        in6_delmulti(in6m, &net);
+        assert!(!in6_hasmulti(&g, ifp));
         drop(w);
     }
 }
