@@ -678,10 +678,15 @@ fn reclaimed<T: Tagged>(p: NonNull<T>) -> PoolBox<T> {
     // cleared the one tagged word that named it, and a tagged word is cleared only there,
     // once (the type's invariant: the legacy setter refuses a tagged word), so no other
     // `from_raw` of it happens. The item was never put back (only a box's drop does that,
-    // and the box was given up) and nothing wrote it meanwhile (`RawPool`'s contract,
-    // `sys/hal/trust.rs`). No reference made while the pointer was kept is alive or used
-    // after this: `get`'s borrow the witness that `take` needs whole and mutably, or the
-    // link that the drop has by `&mut`, and `set`'s pointer was never lent.
+    // and the box was given up), and it still holds an initialised `T`: the pool and its
+    // backend do not touch a granted item (`RawPool`'s contract, `sys/hal/trust.rs`), and
+    // while the word owned it the value was reached only through the shared references
+    // `get` lent, so it was written, if at all, only through `T`'s own interior mutability
+    // (its atomics and mutexes: ARP's record has both), which keeps it a valid `T`; no
+    // `&mut T` of it was ever made. No reference made while the pointer was kept is alive
+    // or used after this: the references `get` lent borrow the witness that `take` needs
+    // whole and mutably, or the link that the drop has by `&mut`, and `set`'s pointer was
+    // never lent.
     unsafe { PoolBox::from_raw(p, T::POOL) }
 }
 
@@ -697,10 +702,12 @@ fn owned<'a, T: Tagged>(p: NonNull<T>) -> &'a T {
     // exist while that one lives, a part's whole guard is borrowed mutably by its split, and
     // a leaked guard is never released, so `take` can never run against it), or in the drop,
     // which needs the link by `&mut` (a leaked link is never dropped): neither can run while
-    // the reference lives, so the item is not given back, freed or written meanwhile. No safe
-    // code can make a box of it otherwise: `PoolBox::unpark` answers only an item `park`
-    // marked, and this item's mark (if its type has one) is never set. The `Acquire` load
-    // of `get` pairs with the `Release` exchange of `set`, so the value is seen whole.
+    // the reference lives, so the item is not given back, freed or reached through a `&mut T`
+    // meanwhile (other holders write it only through its interior mutability, which a `&T`
+    // allows). No safe code can make a box of it otherwise: `PoolBox::unpark` answers only
+    // an item `park` marked, and this item's mark (if its type has one) is never set. The
+    // `Acquire` load of `get` pairs with the `Release` exchange of `set`, so the value is
+    // seen whole.
     unsafe { p.as_ref() }
 }
 
