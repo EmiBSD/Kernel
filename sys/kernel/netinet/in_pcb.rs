@@ -2527,6 +2527,49 @@ pub fn in_pcbunset_laddr<G: ProcGlue>(inp: &Inpcb<G>) {
 mod tests {
     use super::*;
 
+    /// The "inpcb" item's size, field by field (D-3: `vmstat -m` shows it under the C's pool
+    /// name; the hand-off and the commit record the three columns).
+    #[test]
+    fn the_inpcb_item_size_field_by_field() {
+        use crate::fs::testfs::TestGlue as G;
+        use core::mem::size_of;
+        let rows = [
+            ("inp_home", size_of::<PoolHome<Inpcb<G>>>()),
+            ("inp_table", size_of::<Option<&'static Inpcbtable<G>>>()),
+            ("3 x PinEntry", 3 * size_of::<PinEntry<Inpcb<G>>>()),
+            ("2 x slot", 8),
+            ("2 x InAddrCell", 8),
+            ("2 x In6AddrCell", 32),
+            ("2 x port", 4),
+            ("inp_socket", size_of::<Option<SocketRef<G>>>()),
+            ("6 x PtrWord", 6 * size_of::<PtrWord<c_void>>()),
+            ("inp_route", size_of::<ReadMostly<Route>>()),
+            ("inp_refcnt", 4),
+            ("inp_anchor", size_of::<ReadMostly<Option<InpcbRef<G>>>>()),
+            ("inp_ip", size_of::<IpProto>()),
+            ("inp_ipv6", size_of::<Ip6Proto>()),
+            ("inp_upcall", size_of::<OnceStatic<InpUpcall>>()),
+            ("pf_sk", size_of::<PfSlot>()),
+            ("scalars", 4 * 6 + 1 + 2),
+        ];
+        let mut sum = 0;
+        for (n, z) in rows {
+            std::println!("{n}: {z}");
+            sum += z;
+        }
+        std::println!(
+            "fields {sum}, Inpcb<G> {}, Route {}",
+            size_of::<Inpcb<G>>(),
+            size_of::<Route>()
+        );
+        // 440 bytes, 456 with the counted item's header (the count and the pool), against the
+        // C's struct inpcb (LP64) and LZ's: the three pinned entries (96: a lock identity
+        // each besides the two links), the route cache's cell (72) and the anchor (16) are
+        // the growth.
+        assert_eq!(sum, 439);
+        assert_eq!(size_of::<Inpcb<G>>(), 440);
+    }
+
     #[test]
     fn the_port_bitmaps_and_their_defaults() {
         let m = Baddynamicports::new();
