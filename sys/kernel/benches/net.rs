@@ -162,6 +162,21 @@
 //!     past `LA_HOLD_QUEUE`), the packet's `m_gethdr` included.
 //!   - `ether.output.inet` (N6.3c2's row above) now reaches the kernel's `arpresolve`
 //!     (its multicast arm) with no `Inet` leg and no park/unpark: re-measured at the close.
+//! - The pcb rows (N6.4c1; "before" = `bsd`'s `in_pcblookup`, `in_pcbref`/`in_pcbunref` and
+//!   `sotoinpcb` over LZ's `Inpcb` at the slice's base, in a scratch test; measured at the
+//!   N6.4 close, decision 50): 1,024 datagram sockets of an `AF_INET` test domain over the
+//!   doubles' thread, each with a control block in one table that `in_pcballoc` grew from 16
+//!   buckets at the load factor (to 2,048 past 768 pcbs), each bound and connected to its own
+//!   quadruple (10.0.x.y, a port of its own, to 10.1.0.1:53):
+//!   - `inpcb.lookup.hash`: `in_pcblookup` of the 513th pcb's quadruple (`in_pcbhash`'s
+//!     SipHash, the table mutex once, the chain walked, the answer counted), the answer's
+//!     handle dropped (the C's `in_pcbunref` of the lookup's reference).
+//!   - `inpcb.ref.unref`: a counted handle to a pcb taken and dropped (`PoolArc`'s clone and
+//!     drop: the C's `in_pcbref` and `in_pcbunref`, `refcnt_take` and `refcnt_rele`).
+//!   - `inpcb.sotoinpcb`: the kernel's half of `bsd`'s `sotoinpcb`: the socket's family
+//!     checked and its `so_pcb` word loaded (`Socket::legacy_pcb`, an acquire load; `bsd`
+//!     adds the address's cast). D-10's typed slot (N6.6) replaces it with a `ReadMostly`
+//!     read and a `match`; the C's is one load.
 
 #![forbid(unsafe_code)]
 
@@ -607,6 +622,7 @@ fn main() {
         .chain(ETHER_ROWS.iter())
         .chain(INET_ROWS.iter())
         .chain(ARP_ROWS.iter())
+        .chain(INPCB_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -877,6 +893,7 @@ fn main() {
     ether_rows(&wanted, &report);
     inet_rows(&wanted, &report);
     arp_rows(&wanted, &report);
+    inpcb_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -2687,5 +2704,163 @@ fn arp_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
         });
         report(ARP_ROWS[1], r);
     }
+}
+const INPCB_ROWS: [&str; 3] = ["inpcb.lookup.hash", "inpcb.ref.unref", "inpcb.sotoinpcb"];
+
+/// The pcb rows' domain: `AF_INET` (the kernel configures none before N6.6), one datagram
+/// protocol without user requests (the rows call the pcb functions themselves).
+struct BenchInetDom;
+/// Its protocol (`IPPROTO_UDP`).
+struct BenchUdp;
+
+static BENCH_INET_PROTOS: [&dyn kernel::net::proto::Protocol<G>; 1] = [&BenchUdp];
+
+impl Domain<G> for BenchInetDom {
+    fn family(&self) -> i32 {
+        i32::from(hal::sys::socket::PF_INET)
+    }
+    fn name(&self) -> &'static str {
+        "inet"
+    }
+    fn protocols(&self) -> &'static [&'static dyn kernel::net::proto::Protocol<G>] {
+        &BENCH_INET_PROTOS
+    }
+}
+
+impl kernel::net::proto::Protocol<G> for BenchUdp {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        &BenchInetDom
+    }
+    fn ty(&self) -> i16 {
+        hal::sys::socket::SOCK_DGRAM as i16
+    }
+    fn protocol(&self) -> i16 {
+        hal::sys::netinet_in::IPPROTO_UDP as i16
+    }
+    fn flags(&self) -> i16 {
+        kernel::net::proto::PR_ATOMIC | kernel::net::proto::PR_ADDR
+    }
+    fn usrreqs(&self) -> Option<&'static dyn kernel::net::proto::Usrreqs<G>> {
+        None
+    }
+}
+
+fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::netinet_in::InAddr;
+    use kernel::net::socket::{SoInit, soalloc};
+    use kernel::netinet::in_pcb::{
+        Inpcbtable, in_init, in_pcballoc, in_pcbinit, in_pcblookup, in_pcbrehash,
+    };
+
+    const PCBS: u16 = 1024;
+
+    if !INPCB_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    // The doubles' thread (`curproc`: `in_pcballoc` reads its routing table), the mbufs, the
+    // socket pools and the "inpcb" pool, held for the run.
+    let (_g, _p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    kernel::net::domain::soinit::<G>();
+    in_init::<G>();
+    let t: &'static Inpcbtable<G> = Box::leak(Box::new(Inpcbtable::new()));
+    in_pcbinit(t, 16);
+
+    let addr = |b: [u8; 4]| InAddr {
+        s_addr: u32::from_ne_bytes(b),
+    };
+    let quad = |i: u16| {
+        (
+            addr([10, 0, (i >> 8) as u8, i as u8]),
+            (1024 + i).to_be(),
+            addr([10, 1, 0, 1]),
+            53u16.to_be(),
+        )
+    };
+    let mut pcbs = Vec::new();
+    for i in 0..PCBS {
+        let so = need(
+            soalloc(
+                &BenchUdp,
+                kernel::net::mbuf::M_WAIT,
+                SoInit {
+                    so_type: hal::sys::socket::SOCK_DGRAM,
+                    state: 0,
+                    options: 0,
+                    linger: 0,
+                    timeo: 0,
+                    euid: 0,
+                    ruid: 0,
+                    egid: 0,
+                    rgid: 0,
+                    cpid: 1,
+                },
+            ),
+            "a socket",
+        );
+        let inp = need(in_pcballoc(&so, t, kernel::net::mbuf::M_WAIT).ok(), "a pcb");
+        let (l, lp, f, fp) = quad(i);
+        {
+            let mut g = t.lock();
+            inp.set_laddr(&g, l);
+            inp.set_lport(&g, lp);
+            inp.set_faddr(&g, f);
+            inp.set_fport(&g, fp);
+            in_pcbrehash(&mut g, &inp);
+        }
+        pcbs.push((so, inp));
+    }
+
+    if wanted(INPCB_ROWS[0]) {
+        let (l, lp, f, fp) = quad(PCBS / 2);
+        let r = measure(OPS, || {
+            let t0 = Instant::now();
+            for _ in 0..OPS {
+                let hit = in_pcblookup(t, black_box(f), fp, black_box(l), lp, 0);
+                if hit.is_none() {
+                    eprintln!("net: in_pcblookup missed");
+                    std::process::exit(1);
+                }
+                drop(black_box(hit));
+            }
+            t0.elapsed()
+        });
+        report(INPCB_ROWS[0], r);
+    }
+    if wanted(INPCB_ROWS[1]) {
+        let inp = &pcbs[0].1;
+        let r = measure(OPS, || {
+            let t0 = Instant::now();
+            for _ in 0..OPS {
+                drop(black_box(black_box(inp).clone()));
+            }
+            t0.elapsed()
+        });
+        report(INPCB_ROWS[1], r);
+    }
+    if wanted(INPCB_ROWS[2]) {
+        let so = &pcbs[0].0;
+        let want = core::ptr::from_ref::<kernel::netinet::in_pcb::Inpcb<G>>(&pcbs[0].1).addr();
+        let r = measure(OPS, || {
+            let t0 = Instant::now();
+            for _ in 0..OPS {
+                let so = black_box(so);
+                let w = if so.dom_family() == i32::from(hal::sys::socket::AF_INET) {
+                    so.legacy_pcb()
+                } else {
+                    0
+                };
+                if black_box(w) != want {
+                    eprintln!("net: so_pcb names another pcb");
+                    std::process::exit(1);
+                }
+            }
+            t0.elapsed()
+        });
+        report(INPCB_ROWS[2], r);
+    }
+    // The pcbs and sockets stay in the doubles' memory, which the next fixture forgets.
+    core::mem::forget(pcbs);
 }
 /* </CODE> */
