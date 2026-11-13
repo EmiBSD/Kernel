@@ -71,10 +71,9 @@
 //!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
 //!   goes to `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
 //! - `pffinddomain`, `pffindtype` and `pffindproto` over `bsd`'s tables return `Option`s for
-//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is an
-//!   `unsafe fn` over a raw socket address, as `pr_ctlinput` is (N6.4 types it); the
-//!   kernel's `pr_ctlinput` of these tables is `panic(9)`: nothing in the kernel calls it
-//!   before N6.4.
+//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is the
+//!   kernel's (`kernel::net::domain`, over its `domains[]`): these tables' `pr_ctlinput` is
+//!   reached through their `Protocol` impl, the one raw call of the table's function.
 //! - `net_sysctl` follows `kern_sysctl.rs`'s calling convention (`docs/C_TO_RUST.md`);
 //!   `sysctl_vslock` wraps the protocol handlers that are not `PR_MPSYSCTL`, as in C.
 
@@ -100,12 +99,9 @@ use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
-use crate::sys::socket::{
-    NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW, Sockaddr,
-};
+use crate::sys::socket::{NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW};
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
-use crate::sys::systm::net_assert_locked;
 use hal::sys::netinet_in::IPPROTO_DONE;
 use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
 
@@ -639,26 +635,6 @@ pub fn net_sysctl(
         }
     }
     Err(Errno::ENOPROTOOPT)
-}
-
-/// `pfctlinput`: hands control input `cmd` about `sa` to every protocol of `bsd`'s tables
-/// that takes it (ICMPv6's redirects; IPv4's go through the kernel's).
-///
-/// # Safety
-///
-/// `sa` points at a readable socket address of its `sa_len` bytes (`PrCtlinputFn`'s
-/// contract).
-pub unsafe fn pfctlinput(cmd: i32, sa: *const Sockaddr) {
-    net_assert_locked("pfctlinput");
-
-    for dp in DOMAINS {
-        for pr in dp.dom_protosw {
-            if let Some(ctlinput) = pr.pr_ctlinput {
-                // SAFETY: the caller's contract; no argument, as the C passes NULL.
-                unsafe { ctlinput(cmd, sa, 0, ptr::null_mut()) };
-            }
-        }
-    }
 }
 /* </CODE> */
 

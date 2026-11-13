@@ -129,7 +129,6 @@ use crate::kern::kern_sysctl::{
     SYSCTL_LOCK, sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdint, sysctl_rdstruct,
 };
 use crate::kern::kern_time::ppsratecheck_shared;
-use crate::kern::uipc_domain::pfctlinput;
 use crate::kern::uipc_mbuf::{
     m_adj, m_cat, m_copydata, m_copym, m_free, m_freem, m_gethdr, m_prepend, m_pullup, m_resethdr,
     m_trailingspace,
@@ -1459,13 +1458,16 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
             }
             rtfree(newrt);
         }
-        // finally update cached route in each socket via pfctlinput
+        // finally update cached route in each socket via pfctlinput (the kernel's, over its
+        // domains[]: bsd's tables answer through their Protocol impl)
         let mut sdst = SockaddrIn6::zeroed();
         sdst.sin6_family = AF_INET6;
         sdst.sin6_len = size_of::<SockaddrIn6>() as u8;
         sdst.sin6_addr = reddst6;
-        // SAFETY: a local `sockaddr_in6`.
-        unsafe { pfctlinput(PRC_REDIRECT_HOST, sin6tosa(&mut sdst)) };
+        kernel::net::domain::pfctlinput::<crate::kern::proc_glue::BsdProcGlue>(
+            PRC_REDIRECT_HOST,
+            sa_view(sa_of(&sdst)),
+        );
         false
     };
 
