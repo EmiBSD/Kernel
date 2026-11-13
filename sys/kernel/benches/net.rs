@@ -194,6 +194,13 @@
 //!     op, through `ipv4_input`: the first queued (`IPQ`'s mutex, an `ipq` and an `ipqe` from
 //!     their pools), the second completing it (the chain joined, the header rewritten, the
 //!     records freed) and the datagram delivered, then freed.
+//! - The IPv6 address rows (N6.5a; "before" = `bsd`'s `in6_ifawithscope` over LZ's records at
+//!   the slice's base, in a scratch test; written at N6.5a, run at the N6.5 close, decision
+//!   50): an Ethernet interface with a link-local and a global address (the kernel's records,
+//!   linked as `in6_update_ifa` links them), the net lock held for the run:
+//!   - `in6.selectsrc`: `in6_ifawithscope` of a global destination on that interface, the
+//!     address walk of `in6_selectsrc`'s route path (`In6Ifaddr::of` of each address, its
+//!     words read once) and RFC 6724's rules down to the longest match.
 
 #![forbid(unsafe_code)]
 
@@ -640,6 +647,7 @@ fn main() {
         .chain(INET_ROWS.iter())
         .chain(ARP_ROWS.iter())
         .chain(INPCB_ROWS.iter())
+        .chain(INET6_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -912,6 +920,7 @@ fn main() {
     ip_input_rows(&wanted, &report);
     arp_rows(&wanted, &report);
     inpcb_rows(&wanted, &report);
+    inet6_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -3071,5 +3080,71 @@ fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     }
     // The pcbs and sockets stay in the doubles' memory, which the next fixture forgets.
     core::mem::forget(pcbs);
+}
+const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
+
+/// The IPv6 address rows (N6.5a): see the file's documentation.
+fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::sys::netinet6_in6::{IN6MASK64, In6Addr, SockaddrIn6};
+    use hal::sys::netinet6_in6_var::In6Addrlifetime;
+    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
+    use kernel::net::if_::{IFNETLIST, if_test_reset, ifa_add, test_ifnet};
+    use kernel::netinet6::in6::in6_ifawithscope;
+    use kernel::netinet6::in6_var::in6_ifaddr_alloc;
+
+    if !INET6_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+
+    let addr = |b: [u8; 16]| In6Addr { s6_addr: b };
+    let (ifp, _) = test_ifnet(b"vio1");
+    ifp.if_type.set(hal::sys::net_if::IFT_ETHER);
+    ifp.if_flags
+        .set(hal::sys::net_if::IFF_UP | hal::sys::net_if::IFF_RUNNING);
+    let idx = ifp.if_index.get() as u16;
+    let ll = {
+        let mut a = addr([
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0xbb, 0, 1,
+        ]);
+        a.set_s6_addr16(1, idx.to_be());
+        a
+    };
+    let global = addr([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let dst = addr([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x99]);
+    let w = NETLOCK.write();
+    IFNETLIST.insert_tail(ifp);
+    for a in [ll, global] {
+        let ia = in6_ifaddr_alloc(ifp, 0);
+        ia.ia_addr.set(SockaddrIn6::with_addr(a));
+        ia.ia_prefixmask.set(SockaddrIn6::with_addr(IN6MASK64));
+        ia.ia6_lifetime.set(In6Addrlifetime {
+            ia6t_vltime: ND6_INFINITE_LIFETIME,
+            ia6t_pltime: ND6_INFINITE_LIFETIME,
+            ..In6Addrlifetime::default()
+        });
+        ifa_add(ifp, &ia.ia_ifa);
+    }
+
+    if wanted(INET6_ROWS[0]) {
+        let chosen = need(in6_ifawithscope(ifp, &dst, 0, None), "a source");
+        if chosen.ia_addr.addr() != global {
+            eprintln!("net: in6_ifawithscope chose the wrong source");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(in6_ifawithscope(black_box(ifp), black_box(&dst), 0, None));
+            }
+            t.elapsed()
+        });
+        report(INET6_ROWS[0], r);
+    }
+    drop(w);
 }
 /* </CODE> */
