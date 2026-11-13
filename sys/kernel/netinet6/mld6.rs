@@ -147,7 +147,9 @@
 //!
 //! **Lock and spl transitions** against the C: `mld6_input` takes `if_maddrlock` write once
 //! per query or report; `mld6_fasttimo` the net lock shared once and `if_maddrlock` write
-//! once per interface; the reports are sent after both, as the C's. None above the C.
+//! once per interface; the reports are sent once every interface's `if_maddrlock` is let go,
+//! still under the shared net lock, as the C's (`mld6.c`'s `mld6_fasttimo`, which sends
+//! before `NET_UNLOCK_SHARED()`). None above the C.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -155,7 +157,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::malloc::{M_NOWAIT, MBox};
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pod;
-use hal::rwlock::RW_WRITE;
+use hal::rwlock::{RW_READ, RW_WRITE};
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::net_if::IFF_LOOPBACK;
 use hal::sys::netinet_icmp6::{
@@ -178,8 +180,8 @@ use crate::assert::kassert;
 use crate::net::if_::{IFNETLIST, IfRef, inet};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{
-    M_DONTWAIT, M_ICMP_CSUM_OUT, M_LOOP, MT_DATA, MT_HEADER, MbufBox, m_align, m_copydata, m_get,
-    m_gethdr,
+    M_DONTWAIT, M_ICMP_CSUM_OUT, M_LOOP, MT_DATA, MT_HEADER, Mbuf, MbufBox, m_align, m_copydata,
+    m_get, m_gethdr,
 };
 use crate::net::proto::PR_FASTHZ;
 use crate::netinet::igmp::M_MRTABLE;
@@ -274,7 +276,7 @@ pub fn mld6_stop_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo) 
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
     let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
 
-    kassert!(ifp.rt().if_maddrlock.status() != 0);
+    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ)); // rw_assert_anylock
 
     all_nodes.set_s6_addr16(1, htons(in6m.in6m_ifidx().get() as u16));
     // XXX: necessary when mrouting
@@ -323,6 +325,17 @@ fn send_pktlist(mut pktlist: Option<MBox<PktNode>>, net: &NetHeld<'_>) {
     }
 }
 
+/// The data bytes `m`'s chain holds, mbuf after mbuf (what `m_pulldown` can reach).
+fn chain_bytes(m: &Mbuf) -> usize {
+    let mut n = 0;
+    let mut c = Some(m);
+    while let Some(mm) = c {
+        n += mm.data().len();
+        c = mm.m_next.get();
+    }
+    n
+}
+
 /// `mld6_input(m, off)`: a received MLD message at offset `off` of `m` (consumed): a query
 /// starts the timers of our groups (or answers at once), a report from another listener stops
 /// the timer of its group. Under the net lock (`net`, for the immediate reports).
@@ -331,10 +344,13 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
     // XXX: These are necessary for KAME's link-local hack
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
 
-    // ip6_exthdr_get(&m, off, sizeof(*mldh)): the header copied out of the chain.
+    // ip6_exthdr_get(&m, off, sizeof(*mldh)): the header copied out of the chain. The C's
+    // m_pulldown walks the chain itself and fails (NULL, the packet freed) when it does not
+    // hold the header, whatever m_pkthdr.len claims: the chain's own bytes are what count, so
+    // a packet whose header overstates its chain is counted too short, never copied past
+    // its end.
     let mut hdr = [0u8; MLD_HDR_LEN];
-    let fits = usize::try_from(off)
-        .is_ok_and(|o| usize::try_from(m.m_pkthdr().len.get()).is_ok_and(|l| o + MLD_HDR_LEN <= l));
+    let fits = usize::try_from(off).is_ok_and(|o| o + MLD_HDR_LEN <= chain_bytes(&m));
     if !fits {
         icmp6stat_inc(Icmp6statCounters::Icp6sTooshort);
         return; // m freed, as m_pulldown frees it
@@ -610,3 +626,146 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of mld6_input's bounds over the kernel's interfaces (LZ's MLD tests stay in
+    // bsd's shim over bsd's fixture): a header the packet does not hold, or that its header
+    // claims and its chain does not; a source that is not link-local; a query and a report
+    // about a unicast address; and, beside them, the query and the report that do act.
+
+    use std::vec::Vec;
+
+    use super::*;
+    use crate::netinet::ip_input::tests::packet;
+    use crate::netinet6::in6::tests::{a6, iface, setup, zoned};
+    use crate::netinet6::in6::{in6_addmulti, in6_delmulti};
+    use crate::netinet6::ip6_var::ICMP6COUNTERS;
+
+    /// The bytes of an MLD message `type_` about `addr` from `src` to ff02::1, its maximum
+    /// response delay `maxdelay` milliseconds: the IPv6 header, then the 24-byte MLD header.
+    fn message(src: In6Addr, type_: u8, maxdelay: u16, addr: In6Addr) -> Vec<u8> {
+        let mut p = std::vec![0x60, 0, 0, 0, 0, MLD_HDR_LEN as u8, 58, 1];
+        p.extend_from_slice(&src.s6_addr);
+        p.extend_from_slice(&IN6ADDR_LINKLOCAL_ALLNODES.s6_addr);
+        let mut mldh = [0u8; MLD_HDR_LEN];
+        mldh[0] = type_;
+        mldh[4..6].copy_from_slice(&maxdelay.to_be_bytes());
+        mldh[8..].copy_from_slice(&addr.s6_addr);
+        p.extend_from_slice(&mldh);
+        p
+    }
+
+    /// `mld6_input` of `bytes` received on `ifp`, its packet header claiming `claimed` bytes
+    /// when given, under the net lock as `icmp6_input` calls it.
+    fn input(bytes: &[u8], ifp: &Ifnet, claimed: Option<i32>) {
+        let m = packet(bytes, 40);
+        m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
+        if let Some(len) = claimed {
+            m.m_pkthdr().len.set(len);
+        }
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        mld6_input(m, 40, &net);
+        drop(w);
+    }
+
+    fn tooshort() -> u64 {
+        ICMP6COUNTERS.read()[Icmp6statCounters::Icp6sTooshort as usize]
+    }
+
+    #[test]
+    fn input_keeps_the_c_bounds() {
+        let _g = setup();
+        let (ifp, _) = iface(b"tmld0", [0x52, 0x54, 0, 0, 6, 1]);
+        let idx = ifp.if_index.get();
+        let g = zoned(a6("ff02::1234"), idx);
+        let in6m = {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            in6_addmulti(&g, ifp, &net).expect("the join")
+        };
+        let peer = zoned(a6("fe80::5054:ff:fe00:602"), idx);
+        let global = a6("fd00:77::2");
+        let unicast = a6("fd00:77::5");
+        let any = In6Addr::default();
+
+        // (case, bytes, claimed length, counted too short, the group's (timer running, state)
+        // afterwards), the group idle and MLD_IREPORTEDLAST before each.
+        let query = |src, addr| message(src, MLD_LISTENER_QUERY, 10_000, addr);
+        let report = |src, addr| message(src, MLD_LISTENER_REPORT, 0, addr);
+        let whole = query(peer, any);
+        let cases: [(&str, Vec<u8>, Option<i32>, bool, (bool, u32)); 7] = [
+            (
+                "a header the packet does not hold",
+                whole[..40 + 10].to_vec(),
+                None,
+                true,
+                (false, MLD_IREPORTEDLAST),
+            ),
+            (
+                "a header the packet header claims but the chain lacks",
+                whole[..40 + 10].to_vec(),
+                Some(40 + MLD_HDR_LEN as i32),
+                true,
+                (false, MLD_IREPORTEDLAST),
+            ),
+            (
+                "a general query from a source that is not link-local",
+                query(global, any),
+                None,
+                false,
+                (false, MLD_IREPORTEDLAST),
+            ),
+            (
+                "a query about a unicast address",
+                query(peer, unicast),
+                None,
+                false,
+                (false, MLD_IREPORTEDLAST),
+            ),
+            (
+                "a report about a unicast address",
+                report(peer, unicast),
+                None,
+                false,
+                (false, MLD_IREPORTEDLAST),
+            ),
+            (
+                "a general query from a link-local source starts the timer",
+                whole.clone(),
+                None,
+                false,
+                (true, MLD_IREPORTEDLAST),
+            ),
+            (
+                "another listener's report of the group: idle, not the last reporter",
+                report(peer, a6("ff02::1234")),
+                None,
+                false,
+                (false, MLD_OTHERLISTENER),
+            ),
+        ];
+        for (case, bytes, claimed, short, (running, state)) in cases {
+            in6m.in6m_timer.set(0);
+            in6m.in6m_state.set(MLD_IREPORTEDLAST);
+            let before = tooshort();
+            input(&bytes, ifp, claimed);
+            if short {
+                assert!(tooshort() > before, "{case}: counted too short");
+            }
+            assert_eq!(
+                (in6m.in6m_timer.get() != 0, in6m.in6m_state.get()),
+                (running, state),
+                "{case}"
+            );
+        }
+
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in6_delmulti(in6m, &net);
+        drop(w);
+    }
+}
+/* </TESTS> */

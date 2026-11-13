@@ -337,6 +337,7 @@ mod tests {
 
     #[test]
     fn ip6id_randomid_no_repeat_within_cycle() {
+        crate::testutil::install(); // arc4random's generator: the test doubles'
         let mut p = Randomtab::new(20, 180, 200000, 2, 524269, 7, 279936, [2, 3, 14563, 0]);
         ip6id_initid(&mut p);
         let msb = p.ru_msb;
@@ -350,6 +351,7 @@ mod tests {
 
     #[test]
     fn ip6_randomflowlabel_range() {
+        crate::testutil::install(); // arc4random's generator: the test doubles'
         for _ in 0..1000 {
             assert!(ip6_randomflowlabel() <= 0xfffff);
         }

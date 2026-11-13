@@ -102,6 +102,9 @@ mod tests {
 
     #[test]
     fn the_random_delay_is_between_one_and_x() {
+        // arc4random's generator: the test doubles' (alone, this test would draw before any
+        // other test registered them).
+        crate::testutil::install();
         for _ in 0..1000 {
             let d = mld_random_delay(5);
             assert!((1..=5).contains(&d));
