@@ -124,16 +124,17 @@
 //! - `mld6_input` clears and sets `mld_addr`'s embedded scope in a copy of the header, not in
 //!   the packet (which it frees at the end anyway; LZ's).
 //! - The reports go out through `ip6_output`, `bsd`'s until N6.5c, by the `Inet` leg
-//!   `ip6_output_opts` (the hop-by-hop options, the multicast interface, hop limit and
-//!   loop: what `ip6_opts` and the `struct ip6_moptions` on the C's stack carry;
-//!   docs/SCAFFOLDING.md).
+//!   `ip6_output_opts` (whether the router alert goes, the multicast interface, hop limit
+//!   and loop: what `ip6_opts` and the `struct ip6_moptions` on the C's stack carry; the
+//!   leg points the options at its own `'static` copy of [`MLD6_HBH`], so no caller lends
+//!   it bytes whose length it would have to trust; docs/SCAFFOLDING.md).
 //!
 //! ## Redesign
 //! - `ip6_opts` (`static struct ip6_pktopts` pointing at `hbh_buf`, which `mld6_init`
 //!   fills): LZ's `StaticCell<[u8; 8]>` written at init (one `unsafe`) and an `Ip6Pktopts`
 //!   rebuilt per message -> [`MLD6_HBH`], the router-alert hop-by-hop header as a `const`
-//!   image the output path is lent (`kernel::netinet::igmp`'s `ROUTER_ALERT` shape, N6.4a's
-//!   R16: no allocation per report).
+//!   image (`kernel::netinet::igmp`'s `ROUTER_ALERT` shape, N6.4a's R16: no allocation per
+//!   report), which the output leg points at when MLD asks for the router alert.
 //! - The lists of reports (`struct mld6_pktlist`, a `STAILQ` of `malloc(M_MRTABLE,
 //!   M_NOWAIT)` entries; LZ: `Vec`s) -> an `MBox` chain of [`PktNode`]s built at its head and
 //!   reversed before sending (`kernel::netinet::igmp`'s shape): an entry the allocator
@@ -603,7 +604,9 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
     icmp6stat_inc_hist(Icmp6statCounters::Icp6sOuthist, pkt.mpi_type as u8);
     let flags = if ia6.is_some() { 0 } else { IPV6_UNSPECSRC };
     if let Some(i) = inet() {
-        let _ = i.ip6_output_opts(mh, Some(&MLD6_HBH), flags, ifidx, 1, false);
+        // ip6_output(mh, &ip6_opts, NULL, flags, &im6o, NULL): the router alert is MLD6_HBH,
+        // which the leg points the options at itself.
+        let _ = i.ip6_output_opts(mh, true, flags, ifidx, 1, false);
     }
 }
 /* </CODE> */

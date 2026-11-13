@@ -464,7 +464,9 @@ paid_by = "N7"
 # ifafree call the kernel's); temporary legs joined, each for the C's calls up into what is
 # still bsd's: nd6_dad_start, nd6_dad_stop, nd6_expire_timer_update and nd6_purge (in6.c's and
 # in6_ifattach.c's calls into ND, until N6.5b) and ip6_output_opts (mld6_sendpkt's
-# ip6_output, until N6.5c). Registered by bsd's boot before the first interface (N6.3a1's
+# ip6_output, until N6.5c; the kernel asks for the router alert with a bool and the leg points
+# the options at its own 'static copy of MLD6_HBH: no caller's bytes reach make_exthdr).
+# Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
 # with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
@@ -473,7 +475,7 @@ paid_by = "N7"
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/mld6.rs"]
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's

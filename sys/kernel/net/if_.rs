@@ -442,14 +442,16 @@ pub trait Inet: Sync + 'static {
     /// N6.5b). Default: nothing.
     fn nd6_purge(&self, _ifp: &'static Ifnet) {}
     /// `ip6_output(m, &opts, NULL, flags, &im6o, NULL)` of MLD's reports (`mld6_sendpkt`;
-    /// N6.5a, until the output path moves at N6.5c): `m` sent with the hop-by-hop options
-    /// header `hbh` (the router alert), the `ip6_output` `flags`, out of interface `ifidx`
-    /// with hop limit `hlim`, looped back when `loop_`. Default: the packet freed,
-    /// `EAFNOSUPPORT` (no `INET6`).
+    /// N6.5a, until the output path moves at N6.5c): `m` sent, with the router-alert
+    /// hop-by-hop options header when `router_alert` (the C's `hbh_buf`, the image
+    /// [`MLD6_HBH`](crate::netinet6::mld6::MLD6_HBH): the leg points at it, the caller
+    /// lends no bytes), the `ip6_output` `flags`, out of interface `ifidx` with hop limit
+    /// `hlim`, looped back when `loop_`. Default: the packet freed, `EAFNOSUPPORT` (no
+    /// `INET6`).
     fn ip6_output_opts(
         &self,
         m: MbufBox,
-        _hbh: Option<&[u8]>,
+        _router_alert: bool,
         _flags: i32,
         _ifidx: u16,
         _hlim: u8,

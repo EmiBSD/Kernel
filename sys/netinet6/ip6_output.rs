@@ -320,8 +320,22 @@ pub fn ip6_output(
             let freehdrs: Result<(), Errno> = 'freehdrs: {
                 if let Some(opt) = opt {
                     // Hop-by-Hop options header
-                    // SAFETY: the options hold whole extension headers (`ip6_setpktopt`
-                    // checked their lengths).
+                    // SAFETY: `make_exthdr` needs each of `ip6po_hbh`, `ip6po_dest1` and
+                    // `ip6po_dest2` to be `None` or to point at `(ip6e_len + 1) << 3`
+                    // readable bytes. Exactly three places in `bsd` store a `Some` there,
+                    // and each establishes it from its own checks, never from a caller's
+                    // word: `ip6_setpktopt` (IPV6_HOPOPTS, IPV6_DSTOPTS,
+                    // IPV6_RTHDRDSTOPTS) refuses with EINVAL a buffer shorter than the
+                    // 2-byte header or whose length is not `(ip6e_len + 1) << 3`, then
+                    // copies exactly that many bytes into a block of that size the
+                    // options own; `copypktopts`'s `pktopt_exthdrcpy` copies a header so
+                    // made into a block of its own stated length; and
+                    // `BsdNetLegs::ip6_output_opts` (`sys/net/if_.rs`, MLD's reports) sets
+                    // only `ip6po_hbh`, only to its `'static` `MLD6_HBH_IMAGE`, whose length
+                    // byte a compile-time assertion beside it checks against its size (the
+                    // kernel lends that leg a `bool`, no bytes). `opt` is borrowed for the
+                    // whole call, so no header is freed or replaced under the read, and
+                    // `make_exthdr` only reads (it copies into a new mbuf).
                     if let Err(e) = unsafe {
                         make_exthdr(opt.ip6po_hbh.map(NonNull::cast), &mut exthdrs.ip6e_hbh)
                     } {
