@@ -115,7 +115,6 @@ use core::mem::size_of;
 use core::slice;
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_copym, m_freem, m_prepend, m_pullup};
 use crate::kern::uipc_socket::sorwakeup;
@@ -131,10 +130,11 @@ use crate::netinet::in_::{
     INADDR_ANY, INADDR_BROADCAST, IP_HDRINCL, IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IP, IPPROTO_MAX,
     InAddr, SockaddrIn, in_broadcast, in_control, in_nam2sin, sintosa,
 };
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
-    INP_CONTROLOPTS, INP_HDRINCL, INP_IPV6, Inpcb, InpcbIterator, Inpcbtable, in_pcb_iterator,
-    in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbref, in_pcbselsrc, in_pcbunref, in_peeraddr,
-    in_sockaddr, sotoinpcb,
+    INP_CONTROLOPTS, INP_HDRINCL, INP_IPV6, Inpcb, Inpcbtable, in_pcb_iterator, in_pcballoc,
+    in_pcbdetach, in_pcbinit, in_pcbref, in_pcbselsrc, in_pcbunref, in_peeraddr, in_sockaddr,
+    sotoinpcb,
 };
 use crate::netinet::ip::{
     IP_MAXPACKET, IPOPT_EOL, IPOPT_NOP, IPOPT_OLEN, IPOPT_OPTVAL, IPVERSION, Ip, MAXTTL,
@@ -243,7 +243,7 @@ pub fn rip_input(
         return IPPROTO_DONE;
     };
     let ip = mtod_ip(m);
-    let iter = InpcbIterator::new();
+    let iter = core::pin::pin!(Inpcb::marker());
     let mut inp: Option<&'static Inpcb> = None;
     let mut last: Option<&'static Inpcb> = None;
 
@@ -270,10 +270,8 @@ pub fn rip_input(
             }
         }
     }
-    mtx_enter(&RAWCBTABLE.inpt_mtx);
-    // SAFETY: the table mutex is held around every call; `iter` lives on this frame until the
-    // walk ends with `None`.
-    while let Some(i) = unsafe { in_pcb_iterator(&RAWCBTABLE, inp, &iter) } {
+    let mut g = RAWCBTABLE.lock();
+    while let Some(i) = in_pcb_iterator(&RAWCBTABLE, &mut g, inp, iter.as_ref()) {
         inp = Some(i);
         kassert!(!i.has_flags(INP_IPV6));
 
@@ -300,18 +298,18 @@ pub fn rip_input(
         }
 
         if let Some(l) = last {
-            mtx_leave(&RAWCBTABLE.inpt_mtx);
+            drop(g);
 
             if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
                 rip_sbappend(l, n, &ip, &ripsrc);
             }
             in_pcbunref(Some(l));
 
-            mtx_enter(&RAWCBTABLE.inpt_mtx);
+            g = RAWCBTABLE.lock();
         }
         last = in_pcbref(Some(i));
     }
-    mtx_leave(&RAWCBTABLE.inpt_mtx);
+    drop(g);
 
     let Some(last) = last else {
         if i32::from(ip.ip_p) == IPPROTO_ICMP {
@@ -403,7 +401,7 @@ pub fn rip_output(
             return Err(Errno::EMSGSIZE);
         }
 
-        let Some(n) = rip_chkhdr(m, inp.inp_options.get()) else {
+        let Some(n) = rip_chkhdr(m, inp.options()) else {
             return Err(Errno::EINVAL);
         };
         m = n;
@@ -439,10 +437,10 @@ pub fn rip_output(
 
     ip_output(
         m,
-        inp.inp_options.get(),
+        inp.options(),
         Some(&mut *inp.route()),
         flags,
-        inp.moptions(),
+        inp.moptions_out().as_ref(),
         Some(&inp.inp_seclevel.get()),
         0,
     )
@@ -622,9 +620,9 @@ pub fn rip_bind(so: &'static Socket, nam: &'static Mbuf, _p: &Proc) -> Result<()
         return Err(Errno::EADDRNOTAVAIL);
     }
 
-    mtx_enter(&RAWCBTABLE.inpt_mtx);
-    inp.inp_laddr.set(addr.sin_addr);
-    mtx_leave(&RAWCBTABLE.inpt_mtx);
+    let g = RAWCBTABLE.lock();
+    inp.set_laddr(&g, addr.sin_addr);
+    drop(g);
 
     Ok(())
 }
@@ -637,9 +635,9 @@ pub fn rip_connect(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno>
 
     let addr = nam_sin(nam)?;
 
-    mtx_enter(&RAWCBTABLE.inpt_mtx);
-    inp.inp_faddr.set(addr.sin_addr);
-    mtx_leave(&RAWCBTABLE.inpt_mtx);
+    let g = RAWCBTABLE.lock();
+    inp.set_faddr(&g, addr.sin_addr);
+    drop(g);
     soisconnected(so);
 
     Ok(())
@@ -656,9 +654,9 @@ pub fn rip_disconnect(so: &'static Socket) -> Result<(), Errno> {
     }
 
     soisdisconnected(so);
-    mtx_enter(&RAWCBTABLE.inpt_mtx);
-    inp.inp_faddr.set(InAddr { s_addr: INADDR_ANY });
-    mtx_leave(&RAWCBTABLE.inpt_mtx);
+    let g = RAWCBTABLE.lock();
+    inp.set_faddr(&g, InAddr { s_addr: INADDR_ANY });
+    drop(g);
 
     Ok(())
 }
@@ -899,10 +897,8 @@ mod tests {
         // A socket of protocol 17 bound to 10.0.2.15 does not see ICMP, nor UDP to another
         // address; a wildcard one sees both.
         let udp = socreate(i32::from(AF_INET), SOCK_RAW, 17).expect("raw udp socket");
-        sotoinpcb(udp)
-            .expect("attached")
-            .inp_laddr
-            .set(sin(ADDR).sin_addr);
+        let i = sotoinpcb(udp).expect("attached");
+        i.set_laddr(&i.table().lock(), sin(ADDR).sin_addr);
         let any = socreate(i32::from(AF_INET), SOCK_RAW, 0).expect("wildcard socket");
         let packet = |proto: u8, dst: [u8; 4]| {
             let mut h = [

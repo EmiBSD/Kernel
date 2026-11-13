@@ -107,6 +107,7 @@ use crate::net::route::{
 };
 use crate::net::rtable::rtable_getsource;
 use crate::netinet::in_pcb::Inpcb;
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet6::in6::In6Addr;
 use crate::netinet6::in6::{
     In6Pktinfo, SockaddrIn6, ifatoia6, in6_ifawithscope, in6_is_addr_linklocal,
@@ -139,7 +140,7 @@ pub fn in6_pcbselsrc(
     let laddr = inp.inp_laddr6.get();
     // SAFETY: the pcb's multicast options are a plain structure owned by the socket, valid
     // while the pcb is (the socket lock).
-    let mopts: Option<&Ip6Moptions> = inp.inp_moptions6.get().map(|p| unsafe { &*p.as_ptr() });
+    let mopts: Option<&Ip6Moptions> = inp.moptions6_ptr().map(|p| unsafe { &*p.as_ptr() });
     let rtableid = inp.inp_rtableid.get();
     let pi = pktinfo(opts);
 

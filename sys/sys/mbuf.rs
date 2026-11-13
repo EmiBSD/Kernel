@@ -114,7 +114,7 @@ use crate::sys::mutex::Mutex;
 /// The `&'static T` of an item `bsd` holds by address: a parked mbuf or tag
 /// (`PoolBox::park`'s pointer), or one inside a chain, a packet list or a tag list whose
 /// owner `bsd`'s caller keeps ([`lend`]: LZ's `&'static Mbuf`, valid until `m_free`).
-fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
+pub(crate) fn of_parked<T: Parkable>(p: NonNull<T>) -> &'static T {
     // SAFETY: `p` names an initialised item of `T::POOL` in one of three places: parked
     // (`park` gave the box up and nothing put it back), or owned by a link of a chain or a
     // packet list (`m_next`, `m_nextpkt`, an `MbufList`, a header's tag list) whose head

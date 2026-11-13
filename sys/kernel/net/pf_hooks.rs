@@ -33,6 +33,8 @@
 //! N6.4a adds `pf_test` for `ip_output` (`kernel::netinet::ip_output`, ip_output.c's
 //! `NPF > 0` block), a default that passes every packet, the C with `NPF == 0`.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 
@@ -100,20 +102,191 @@ pub trait Pf: Sync {
     ) -> (u8, Option<MbufBox>) {
         (PF_PASS, Some(m))
     }
+
+    /// `pf_find_divert(m)`: the divert-to or divert-reply target pf recorded on a packet it
+    /// tagged `PF_TAG_DIVERTED` (`in_pcblookup_listen`'s and `in6_pcblookup_listen`'s key).
+    /// Default: none, the C without pf (no packet carries the tag).
+    fn find_divert(&self, _m: &Mbuf) -> Option<PfDivert> {
+        None
+    }
+
+    /// `pf_remove_divert_state(inp)`: the socket whose pf word is `slot` closes; a
+    /// divert-to or divert-reply state pf linked to it goes (`in_pcbdetach`,
+    /// `in_pcbdisconnect`). Default: nothing, the C without pf.
+    fn inp_remove_divert_state(&self, _slot: &PfSlot) {}
+
+    /// `pf_inp_unlink(inp)`: the state key linked to the socket whose pf word is `slot` is
+    /// unlinked from it, and its reference to the pcb dropped. Default: nothing.
+    fn inp_unlink(&self, _slot: &PfSlot) {}
+}
+
+/// `PF_DIVERT_TO`: `pfvar.h`'s divert type.
+pub const PF_DIVERT_TO: u8 = 1;
+/// `PF_DIVERT_REPLY`.
+pub const PF_DIVERT_REPLY: u8 = 2;
+
+/// `struct pf_divert` as the pcb lookups read it: the address (an IPv4 address in its first
+/// four bytes), the port (network order), the routing domain and the type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PfDivert {
+    /// `addr`.
+    pub addr: [u8; 16],
+    /// `port`.
+    pub port: u16,
+    /// `rdomain`.
+    pub rdomain: u16,
+    /// `type`.
+    pub type_: u8,
+}
+
+/// The capability to write a [`PfSlot`]: [`register_pf`] gives its one value to the
+/// registrant, once (`bsd`'s pf, which dereferences the word it writes); nothing else in the
+/// kernel can name or make one (a private field, a private static). The `TdbKey` shape
+/// (`kernel::net::ipsec_hooks`).
+pub struct PfKey(());
+
+/// The one [`PfKey`].
+static PF_KEY: PfKey = PfKey(());
+
+/// `inp_pf_sk`: pf's word in a protocol control block (\[L\] `pf_inp_mtx`, pf's): the
+/// address of the state key the socket's packets match, which only pf writes (with its
+/// [`PfKey`]) and reads, the `pkthdr_pf.statekey` shape. The kernel hands it to pf's legs and
+/// never reads it.
+pub struct PfSlot(AtomicUsize);
+
+impl PfSlot {
+    /// No state key.
+    pub const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// The word.
+    #[inline]
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Stores `w`, for the holder of pf's key only (`pf_inp_link`, `pf_inp_unlink`).
+    #[inline]
+    pub fn set(&self, _key: &PfKey, w: usize) {
+        self.0.store(w, Ordering::Release);
+    }
+}
+
+impl Default for PfSlot {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// pf's legs, once registered.
 static PF: OnceStatic<&'static dyn Pf> = OnceStatic::new();
 
-/// Registers pf's legs, once (`bsd`'s pf, at boot before the first packet); a second call
-/// keeps the first and names it.
-pub fn register_pf(imp: &'static dyn Pf) -> Result<(), AlreadyRegistered> {
-    PF.set(imp).map_err(|_| AlreadyRegistered("Pf"))
+/// Registers pf's legs, once (`bsd`'s pf, at boot before the first packet), and gives the
+/// registrant the [`PfKey`] that writes the pcbs' pf words; a second call keeps the first and
+/// names it.
+pub fn register_pf(imp: &'static dyn Pf) -> Result<&'static PfKey, AlreadyRegistered> {
+    PF.set(imp)
+        .map(|()| &PF_KEY)
+        .map_err(|_| AlreadyRegistered("Pf"))
 }
 
 /// pf's legs, `None` before registration (`NPF == 0`: nothing to link or unlink).
 #[inline]
 pub(crate) fn pf() -> Option<&'static dyn Pf> {
     PF.get().copied()
+}
+
+/// The host tests' pf (the mbuf's legs and the pcb's): it links and unlinks a header's words
+/// as pf's `pf_mbuf_*` legs do and counts them, and empties a pcb's word as `pf_inp_unlink`
+/// does, recording what it held. One per test binary (`PF` is set once): every test that
+/// needs pf registers this one.
+#[cfg(test)]
+pub(crate) mod testpf {
+    use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+
+    use std::sync::OnceLock;
+
+    use super::{Pf, PfKey, PfSlot};
+    use crate::net::mbuf::PkthdrPf;
+
+    /// The counting pf.
+    pub(crate) struct CountingPf {
+        /// References a header took (`pf_mbuf_link_*`).
+        pub(crate) links: AtomicU32,
+        /// References a header dropped (`pf_mbuf_unlink_*`).
+        pub(crate) unlinks: AtomicU32,
+        /// `pf_inp_unlink` calls that found a state key.
+        pub(crate) inp_unlinks: AtomicU32,
+        /// `pf_remove_divert_state` calls.
+        pub(crate) divert_removals: AtomicU32,
+        /// The last state key word `pf_inp_unlink` took out of a pcb.
+        pub(crate) last_unlinked: AtomicUsize,
+    }
+
+    impl Pf for CountingPf {
+        fn mbuf_link_state_key(&self, to: &PkthdrPf, from: &PkthdrPf) {
+            if from.statekey.get() != 0 {
+                to.statekey.set(from.statekey.get());
+                self.links.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_link_inpcb(&self, to: &PkthdrPf, from: &PkthdrPf) {
+            if from.inp.get() != 0 {
+                to.inp.set(from.inp.get());
+                self.links.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_unlink_state_key(&self, pf: &PkthdrPf) {
+            if pf.statekey.get() != 0 {
+                pf.statekey.set(0);
+                self.unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf) {
+            if pf.inp.get() != 0 {
+                pf.inp.set(0);
+                self.unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        fn inp_remove_divert_state(&self, _slot: &PfSlot) {
+            self.divert_removals.fetch_add(1, Ordering::Relaxed);
+        }
+        fn inp_unlink(&self, slot: &PfSlot) {
+            let w = slot.get();
+            if w != 0 {
+                slot.set(key(), 0);
+                self.last_unlinked.store(w, Ordering::Relaxed);
+                self.inp_unlinks.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The binary's pf.
+    pub(crate) static COUNTING_PF: CountingPf = CountingPf {
+        links: AtomicU32::new(0),
+        unlinks: AtomicU32::new(0),
+        inp_unlinks: AtomicU32::new(0),
+        divert_removals: AtomicU32::new(0),
+        last_unlinked: AtomicUsize::new(0),
+    };
+
+    /// The key [`register`] got.
+    static KEY: OnceLock<&'static PfKey> = OnceLock::new();
+
+    /// [`COUNTING_PF`] registered (by the first test that asks), its key kept.
+    pub(crate) fn register() -> &'static CountingPf {
+        KEY.get_or_init(|| match super::register_pf(&COUNTING_PF) {
+            Ok(k) => k,
+            Err(e) => std::panic!("the test binary's pf was registered by another: {e:?}"),
+        });
+        &COUNTING_PF
+    }
+
+    /// The test pf's [`PfKey`] (as pf's `pf_inp_link` writes a pcb's word).
+    pub(crate) fn key() -> &'static PfKey {
+        register();
+        KEY.get().copied().unwrap_or_else(|| std::unreachable!())
+    }
 }
 /* </CODE> */

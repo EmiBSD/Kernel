@@ -2232,8 +2232,14 @@ mod tests {
         assert_eq!(tp.pf.get(), i32::from(AF_INET6));
         let inp = tp.t_inpcb;
         assert!(inp.has_flags(INP_IPV6));
-        assert_eq!(inp.inp_laddr6.get(), a6("fd00:77::1"));
-        assert_eq!(inp.inp_faddr6.get(), a6("fd00:77::2"));
+        assert_eq!(
+            inp.inp_laddr6.get::<crate::netinet6::in6::In6Addr>(),
+            a6("fd00:77::1")
+        );
+        assert_eq!(
+            inp.inp_faddr6.get::<crate::netinet6::in6::In6Addr>(),
+            a6("fd00:77::2")
+        );
         assert_eq!(inp.inp_fport.get(), 40000u16.to_be());
         assert_eq!(received(so), b"hi");
         let _ = take_sent6();

@@ -3368,7 +3368,6 @@ pub(crate) mod tests {
 
     use std::string::String;
     use std::sync::MutexGuard;
-    use std::sync::atomic::AtomicU32;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
@@ -4102,52 +4101,14 @@ pub(crate) mod tests {
         all_back();
     }
 
-    /// A pf that counts its legs.
-    struct CountingPf {
-        links: AtomicU32,
-        unlinks: AtomicU32,
-    }
-
-    impl pf_hooks::Pf for CountingPf {
-        fn mbuf_link_state_key(&self, to: &PkthdrPf, from: &PkthdrPf) {
-            if from.statekey.get() != 0 {
-                to.statekey.set(from.statekey.get());
-                self.links.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn mbuf_link_inpcb(&self, to: &PkthdrPf, from: &PkthdrPf) {
-            if from.inp.get() != 0 {
-                to.inp.set(from.inp.get());
-                self.links.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn mbuf_unlink_state_key(&self, pf: &PkthdrPf) {
-            if pf.statekey.get() != 0 {
-                pf.statekey.set(0);
-                self.unlinks.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        fn mbuf_unlink_inpcb(&self, pf: &PkthdrPf) {
-            if pf.inp.get() != 0 {
-                pf.inp.set(0);
-                self.unlinks.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-    }
-
-    static COUNTING_PF: CountingPf = CountingPf {
-        links: AtomicU32::new(0),
-        unlinks: AtomicU32::new(0),
-    };
-
     #[test]
     fn the_pf_legs_run_at_the_c_s_points() {
         let _g = setup();
-        let _ = pf_hooks::register_pf(&COUNTING_PF);
+        let counting_pf = pf_hooks::testpf::register();
 
         let (l0, u0) = (
-            COUNTING_PF.links.load(Ordering::Relaxed),
-            COUNTING_PF.unlinks.load(Ordering::Relaxed),
+            counting_pf.links.load(Ordering::Relaxed),
+            counting_pf.unlinks.load(Ordering::Relaxed),
         );
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf");
         m.m_pkthdr().pf.statekey.set(0x1000);
@@ -4155,18 +4116,18 @@ pub(crate) mod tests {
         // m_dup_pkthdr links both references for the copy.
         let mut d = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
         m_dup_pkthdr(&mut d, &m, M_DONTWAIT).expect("duplicated");
-        assert_eq!(COUNTING_PF.links.load(Ordering::Relaxed), l0 + 2);
+        assert_eq!(counting_pf.links.load(Ordering::Relaxed), l0 + 2);
         assert_eq!(d.m_pkthdr().pf.statekey.get(), 0x1000);
         // M_MOVE_HDR moves them: nothing unlinked.
         let mut n = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
         m_move_pkthdr(&mut n, &mut m);
-        assert_eq!(COUNTING_PF.unlinks.load(Ordering::Relaxed), u0);
+        assert_eq!(counting_pf.unlinks.load(Ordering::Relaxed), u0);
         assert!(m.pkthdr().is_none());
         // m_free and m_removehdr unlink them.
         drop(d);
-        assert_eq!(COUNTING_PF.unlinks.load(Ordering::Relaxed), u0 + 2);
+        assert_eq!(counting_pf.unlinks.load(Ordering::Relaxed), u0 + 2);
         m_removehdr(&mut n);
-        assert_eq!(COUNTING_PF.unlinks.load(Ordering::Relaxed), u0 + 4);
+        assert_eq!(counting_pf.unlinks.load(Ordering::Relaxed), u0 + 4);
         drop(n);
         drop(m);
         all_back();

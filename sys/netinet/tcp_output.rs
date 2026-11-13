@@ -156,6 +156,7 @@ use crate::net::pf::pf_mbuf_link_inpcb;
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{IPPROTO_TCP, InAddr, SockaddrIn};
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::ip::{IP_MAXPACKET, IP_MF, IP_OFFMASK, IPTOS_ECN_ECT0, Ip};
 use crate::netinet::ip_id::ip_randomid;
 use crate::netinet::ip_input::ip_mtudisc;
@@ -467,7 +468,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             let maxseg = i64::from(tp.t_maxseg.get());
             // `inp_outputopts6` is `inp_options`'s union slot: one test covers both.
             if TCP_DO_TSO.load(Ordering::Relaxed) != 0
-                && inp.inp_options.get().is_none()
+                && inp.options().is_none()
                 && !tp.has_flags(TF_SIGNATURE)
                 && len >= 2 * maxseg
                 && tp.rcv_numsacks.get() == 0
@@ -1179,7 +1180,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 mtod_ip6_store(m, &ip6);
                 // SAFETY: the options are the socket's own allocation (`ip6_setpktopts`),
                 // freed only under the socket lock `tcp_output` runs with.
-                let opts = inp.inp_outputopts6.get().map(|o| unsafe { o.as_ref() });
+                let opts = inp.outputopts6_ptr().map(|o| unsafe { o.as_ref() });
                 break 'out ip6_output(
                     m,
                     opts,
@@ -1201,7 +1202,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             mtod_ip_store(m, &ip);
             ip_output(
                 m,
-                inp.inp_options.get(),
+                inp.options(),
                 Some(&mut *inp.route()),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC
@@ -1560,7 +1561,10 @@ mod tests {
 
     /// A control block on a fresh `inp` (with socket `so`), its timers set up.
     fn tcb(so: Option<&'static Socket>) -> &'static Tcpcb {
-        let inp: &'static Inpcb = Box::leak(Box::new(Inpcb::new(None, so)));
+        let inp: &'static Inpcb = Box::leak(Box::new(Inpcb::new(
+            None,
+            so.map(kernel::net::socket::soref),
+        )));
         let tp: &'static Tcpcb = Box::leak(Box::new(Tcpcb::new(inp)));
         for t in 0..TCPT_NTIMERS {
             timeout_set(&tp.t_timer[t], no_callout, ptr::null_mut());

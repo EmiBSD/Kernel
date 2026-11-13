@@ -207,6 +207,7 @@ use crate::netinet::if_ether::{
     EtherExtracted, EtherHeader, EtherVlanHeader, evl_prioftag, evl_vlanoftag,
 };
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     INP_IPV6, Inpcb, in_pcblookup, in_pcblookup_listen, in_pcbref, in_pcbrtentry, in_pcbset_addr,
     in_pcbsolock, in_pcbsounlock, in_pcbunref, sotoinpcb,
@@ -3786,8 +3787,11 @@ fn syn_cache_get(
         if inet6 {
             kassert!(listeninp.has_flags(INP_IPV6));
 
-            let mut ip6 = ninp.inp_ipv6.get();
-            ip6.ip6_hlim = listeninp.inp_ipv6.get().ip6_hlim;
+            let mut ip6: crate::netinet::ip6::Ip6Hdr = ninp.inp_ipv6.get();
+            ip6.ip6_hlim = listeninp
+                .inp_ipv6
+                .get::<crate::netinet::ip6::Ip6Hdr>()
+                .ip6_hlim;
             ninp.inp_ipv6.set(ip6);
             ninp.inp_hops.set(listeninp.inp_hops.get());
         } else {
@@ -3796,9 +3800,9 @@ fn syn_cache_get(
             let mut ip = ninp.inp_ip.get();
             ip.ip_ttl = listeninp.inp_ip.get().ip_ttl;
             ninp.inp_ip.set(ip);
-            ninp.inp_options.set(ip_srcroute(m));
-            if ninp.inp_options.get().is_none() {
-                ninp.inp_options.set(sc.sc_ipopts.get());
+            ninp.set_options(ip_srcroute(m));
+            if ninp.options().is_none() {
+                ninp.set_options(sc.sc_ipopts.get());
                 sc.sc_ipopts.set(None);
             }
         }

@@ -394,7 +394,7 @@ paid_by = "N8"
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented

@@ -63,7 +63,6 @@ use core::ptr;
 use core::slice;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sysctl::{sysctl_bounded_arr, sysctl_rdstruct};
 use crate::kern::uipc_mbuf::{m_freem, m_pullup};
 use crate::kern::uipc_socket::sorwakeup;
@@ -333,18 +332,18 @@ pub fn divert_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
         };
 
         let rdomain = rtable_l2(mm.m_pkthdr().ph_rtableid.get());
-        mtx_enter(&DIVBTABLE.inpt_mtx);
-        for i in DIVBTABLE.inpt_queue.iter() {
+        let g = DIVBTABLE.lock();
+        for i in DIVBTABLE.queue().iter(&g) {
             if in_pcb_is_iterator(i) {
                 continue;
             }
             if i.inp_lport.get() != divert_port || rtable_l2(i.inp_rtableid.get()) != rdomain {
                 continue;
             }
-            inp = in_pcbref(Some(i));
+            inp = in_pcbref(Some(crate::netinet::in_pcb::inp_static(i)));
             break;
         }
-        mtx_leave(&DIVBTABLE.inpt_mtx);
+        drop(g);
         let Some(inp) = inp else {
             divstat_inc(DivstatCounters::DivsNoport);
             break 'bad;

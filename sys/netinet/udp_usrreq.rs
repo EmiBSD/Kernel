@@ -133,7 +133,6 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_sysctl::{SECURELEVEL, sysctl_bounded_arr, sysctl_rdstruct, sysctl_struct};
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_mbuf::{m_adj, m_copydata, m_copym, m_freem, m_prepend, m_pullup};
@@ -155,9 +154,10 @@ use crate::netinet::in_::{
     INADDR_ANY, IP_IPSECFLOWINFO, IP_RECVDSTPORT, IP_SENDSRCADDR, IPPROTO_DONE, IPPROTO_ESP,
     IPPROTO_IP, IPPROTO_UDP, InAddr, SockaddrIn, in_control, in_nam2sin,
 };
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     BADDYNAMICPORTS, DP_MAPSIZE, INP_CONTROLOPTS, INP_IPSECFLOWINFO, INP_IPV6, INP_RECVDSTPORT,
-    InpNotifyFn, Inpcb, InpcbIterator, Inpcbtable, ROOTONLYPORTS, in_flowid, in_pcb_iterator,
+    InpNotifyFn, Inpcb, Inpcbtable, ROOTONLYPORTS, in_flowid, in_pcb_iterator,
     in_pcb_iterator_abort, in_pcbaddrisavail, in_pcballoc, in_pcbbind, in_pcbconnect, in_pcbdetach,
     in_pcbdisconnect, in_pcbinit, in_pcblookup, in_pcblookup_listen, in_pcbnotifyall, in_pcbref,
     in_pcbrtchange, in_pcbselsrc, in_pcbsolock, in_pcbsounlock, in_pcbunref, in_pcbunset_laddr,
@@ -496,7 +496,7 @@ pub fn udp_input(
         }
 
         if m.m_flags().get() & (M_BCAST | M_MCAST) != 0 {
-            let iter = InpcbIterator::new();
+            let iter = core::pin::pin!(Inpcb::marker());
             let mut last: Option<&'static Inpcb> = None;
 
             // Deliver a multicast or broadcast datagram to *all* sockets for which the local
@@ -515,10 +515,8 @@ pub fn udp_input(
             #[cfg(not(feature = "inet6"))]
             let table = &UDBTABLE;
 
-            mtx_enter(&table.inpt_mtx);
-            // SAFETY: the table mutex is held around every call; `iter` lives on this frame
-            // until the walk ends with `None` or is aborted.
-            while let Some(i) = unsafe { in_pcb_iterator(table, inp, &iter) } {
+            let mut g = table.lock();
+            while let Some(i) = in_pcb_iterator(table, &mut g, inp, iter.as_ref()) {
                 inp = Some(i);
                 if ip6.is_some() {
                     kassert!(i.has_flags(INP_IPV6));
@@ -580,7 +578,7 @@ pub fn udp_input(
                 }
 
                 if let Some(l) = last {
-                    mtx_leave(&table.inpt_mtx);
+                    drop(g);
 
                     if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
                         udp_sbappend(
@@ -597,7 +595,7 @@ pub fn udp_input(
                     }
                     in_pcbunref(Some(l));
 
-                    mtx_enter(&table.inpt_mtx);
+                    g = table.lock();
                 }
                 last = in_pcbref(Some(i));
 
@@ -607,12 +605,11 @@ pub fn udp_input(
                 // assumes that an application will never clear these options after setting
                 // them.
                 if !so.has_options(SO_REUSEPORT | SO_REUSEADDR) {
-                    // SAFETY: the mutex is held and `iter` belongs to this walk.
-                    unsafe { in_pcb_iterator_abort(table, inp, &iter) };
+                    in_pcb_iterator_abort(table, &mut g, inp, iter.as_ref());
                     break;
                 }
             }
-            mtx_leave(&table.inpt_mtx);
+            drop(g);
 
             let Some(last) = last else {
                 // No matching pcb found; discard datagram. (No need to send an ICMP Port
@@ -821,7 +818,7 @@ pub fn udp_sbappend(
 
     let hlen = hlen + size_of::<Udphdr>() as i32;
 
-    if let Some(upcall) = inp.inp_upcall.get() {
+    if let Some((upcall, upcall_arg)) = inp.upcall_pair() {
         let ipp = ip.map_or(ptr::null(), ptr::from_ref);
         let ip6p = ip6.map_or(ptr::null(), |h| ptr::from_ref(h).cast::<c_void>());
         let uhc = *uh;
@@ -830,7 +827,7 @@ pub fn udp_sbappend(
         // outlive the call.
         let Some(n) = (unsafe {
             upcall(
-                inp.inp_upcall_arg.get(),
+                upcall_arg,
                 m,
                 ipp,
                 ip6p,
@@ -1310,10 +1307,10 @@ pub fn udp_output(
 
     let error = ip_output(
         m,
-        inp.inp_options.get(),
+        inp.options(),
         Some(&mut *inp.route()),
         inp.socket().options() & SO_BROADCAST,
-        inp.moptions(),
+        inp.moptions_out().as_ref(),
         Some(&inp.inp_seclevel.get()),
         ipsecflowinfo,
     );
@@ -1355,7 +1352,7 @@ pub fn udp_attach(so: &'static Socket, _proto: i32, wait: i32) -> Result<(), Err
     let inp = inpcb_of(so);
     #[cfg(feature = "inet6")]
     if inp.has_flags(INP_IPV6) {
-        let mut ip6 = inp.inp_ipv6.get();
+        let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
         ip6.ip6_hlim = IP6_DEFHLIM.load(Ordering::Relaxed) as u8;
         inp.inp_ipv6.set(ip6);
         return Ok(());
@@ -1748,10 +1745,13 @@ mod tests {
         opt.m_len().set(4);
         // SAFETY: a fresh mbuf of `MLEN` bytes.
         unsafe { mtod::<i32>(opt).write_unaligned(7) };
+        // The socket lock `sosetopt` and `sogetopt` hold (`solock`: the net lock).
+        crate::sys::systm::net_lock();
         ip_ctloutput(PRCO_SETOPT, so, IPPROTO_IP, IP_TTL, Some(opt)).expect("IP_TTL");
         // SAFETY: as above.
         unsafe { mtod::<i32>(opt).write_unaligned(0) };
         ip_ctloutput(PRCO_GETOPT, so, IPPROTO_IP, IP_TTL, Some(opt)).expect("get IP_TTL");
+        crate::sys::systm::net_unlock();
         // SAFETY: written as an `int`.
         assert_eq!(unsafe { mtod::<i32>(opt).read_unaligned() }, 7);
         m_freem(opt);
@@ -1806,6 +1806,8 @@ mod tests {
         returned.extend_from_slice(&ipb[..20]);
         returned.extend_from_slice(&ipb[20..28]);
         let dst = sinp(GATEWAY, 0);
+        // icmp_input's net lock, which in_pcbsolock asserts (in_pcb.c:626).
+        crate::sys::systm::net_lock();
         // SAFETY: a local `sockaddr_in` and the returned IP and UDP headers.
         unsafe {
             udp_ctlinput(
@@ -1815,6 +1817,7 @@ mod tests {
                 returned.as_mut_ptr().cast(),
             )
         };
+        crate::sys::systm::net_unlock();
         assert_eq!(so.error(), Some(Errno::ECONNREFUSED));
         so.set_error(None);
 
@@ -1834,7 +1837,10 @@ mod tests {
         opt.m_len().set(4);
         // SAFETY: a fresh mbuf of `MLEN` bytes.
         unsafe { mtod::<i32>(opt).write_unaligned(v) };
+        // The socket lock `sosetopt` and `sogetopt` hold (`solock`: the net lock).
+        crate::sys::systm::net_lock();
         let r = ip_ctloutput(op, so, IPPROTO_IP, name, Some(opt));
+        crate::sys::systm::net_unlock();
         // SAFETY: as above.
         let out = unsafe { mtod::<i32>(opt).read_unaligned() };
         m_freem(opt);

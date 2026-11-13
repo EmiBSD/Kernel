@@ -166,6 +166,7 @@ use crate::netinet::icmp6::{
 use crate::netinet::if_ether::gw_alen_family;
 use crate::netinet::in_::{IPPROTO_AH, IPPROTO_DSTOPTS, IPPROTO_HOPOPTS, IPPROTO_ROUTING};
 use crate::netinet::in_::{IPPROTO_DONE, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6};
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::sotoinpcb;
 use crate::netinet::ip6::{
     IP6F_OFF_MASK, IPV6_FLOWLABEL_MASK, IPV6_MMTU, IPV6_VERSION, Ip6Ext, Ip6Frag, Ip6Hdr, Ip6Rthdr,
@@ -1764,7 +1765,7 @@ pub fn icmp6_ctloutput(
                 if m.m_len().get() as usize != size_of::<Icmp6Filter>() {
                     return Err(Errno::EMSGSIZE);
                 }
-                let Some(filt) = inp.and_then(|inp| inp.inp_icmp6filt.get()) else {
+                let Some(filt) = inp.and_then(|inp| inp.icmp6filt_ptr()) else {
                     return Err(Errno::EINVAL);
                 };
                 // SAFETY: the mbuf holds a whole filter at its data; the pcb's filter is the
@@ -1782,7 +1783,7 @@ pub fn icmp6_ctloutput(
         },
         PRCO_GETOPT => match optname {
             ICMP6_FILTER => {
-                let Some(filt) = inp.and_then(|inp| inp.inp_icmp6filt.get()) else {
+                let Some(filt) = inp.and_then(|inp| inp.icmp6filt_ptr()) else {
                     return Err(Errno::EINVAL);
                 };
                 let Some(m) = m else {
@@ -2846,7 +2847,7 @@ mod tests {
         let inp = sotoinpcb(so).expect("pcb");
         let filt: &'static mut Icmp6Filter =
             std::boxed::Box::leak(std::boxed::Box::new(Icmp6Filter { icmp6_filt: [0; 8] }));
-        inp.inp_icmp6filt.set(NonNull::new(filt));
+        inp.set_icmp6filt_ptr(NonNull::new(filt));
 
         // Wrong level, wrong option.
         assert_eq!(
@@ -2887,7 +2888,7 @@ mod tests {
         assert_eq!(bytes_of(out), bytes_of_filter(&want));
 
         // No filter, no option.
-        inp.inp_icmp6filt.set(None);
+        inp.set_icmp6filt_ptr(None);
         assert_eq!(
             icmp6_ctloutput(PRCO_GETOPT, so, IPPROTO_ICMPV6, ICMP6_FILTER, Some(out)),
             Err(Errno::EINVAL)

@@ -347,8 +347,10 @@ mod tests {
         in_pcballoc(so, t, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         inp.set_flags(crate::netinet::in_pcb::INP_IPV6);
-        inp.inp_laddr6.set(a6("fd00:77::1"));
-        inp.inp_lport.set(htons(5353));
+        let g = inp.table().lock();
+        inp.set_laddr6(&g, a6("fd00:77::1"));
+        inp.set_lport(&g, htons(5353));
+        drop(g);
         inp
     }
 
@@ -460,14 +462,14 @@ mod tests {
         assert_eq!(send(Some(short)), Err(Errno::EAFNOSUPPORT));
 
         // Connected: no other destination.
-        inp.inp_faddr6.set(a6("fd00:77::2"));
+        inp.set_faddr6(&inp.table().lock(), a6("fd00:77::2"));
         let other = SockaddrIn6 {
             sin6_port: htons(53),
             ..SockaddrIn6::with_addr(a6("fd00:77::3"))
         };
         assert_eq!(send(Some(other)), Err(Errno::EISCONN));
 
-        inp.inp_faddr6.set(IN6ADDR_ANY);
+        inp.set_faddr6(&inp.table().lock(), IN6ADDR_ANY);
         release(inp);
         teardown();
     }
