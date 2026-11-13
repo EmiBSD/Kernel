@@ -160,7 +160,7 @@ mod tests {
     use crate::netinet6::in6::In6Addr;
     use crate::netinet6::ip6_input::IP6COUNTERS;
     use crate::netinet6::nd6::tests::{OURS6, PEER6};
-    use core::sync::atomic::Ordering;
+
     use std::vec::Vec;
 
     const IPPROTO_UDP: u8 = 17;
@@ -195,7 +195,7 @@ mod tests {
     }
 
     fn toosmall() -> u64 {
-        IP6COUNTERS[Ip6statCounters::Ip6sToosmall as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[Ip6statCounters::Ip6sToosmall as usize]
     }
 
     #[test]
@@ -263,11 +263,11 @@ mod tests {
     }
 
     fn counter(c: Icmp6statCounters) -> u64 {
-        ICMP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[c as usize]
     }
 
     fn badoptions() -> u64 {
-        IP6COUNTERS[Ip6statCounters::Ip6sBadoptions as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[Ip6statCounters::Ip6sBadoptions as usize]
     }
 
     /// Runs `dest6_input` on a header with the one option `opt` (type, length 4, 4 bytes of data)

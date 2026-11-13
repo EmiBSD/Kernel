@@ -80,24 +80,22 @@
 /* <CODE> */
 //! Internet Control Message Protocol for IPv6: `<netinet/icmp6.h>`, `hal::sys::netinet_icmp6`
 //! re-exported whole (N6.5a); the counters' increments over `netinet6/icmp6.rs`'s
-//! `ICMP6COUNTERS`, LZ's shape, until the counters move.
+//! `ICMP6COUNTERS`, which are the kernel's (`kernel::netinet6::ip6_var`, N6.5a).
 //!
 //! Upstream: sys/netinet/icmp6.h @ 3ce1f3f79392
-
-use core::sync::atomic::Ordering;
-
-use crate::netinet6::icmp6::ICMP6COUNTERS;
 
 pub use hal::sys::netinet_icmp6::*;
 
 /// `icmp6stat_inc(c)`.
+#[inline]
 pub fn icmp6stat_inc(c: Icmp6statCounters) {
-    ICMP6COUNTERS[c as usize].fetch_add(1, Ordering::Relaxed);
+    kernel::netinet6::ip6_var::icmp6stat_inc(c);
 }
 
 /// `icmp6stat_inc(icp6s_outhist + type)` / `icmp6stat_inc(icp6s_inhist + type)`: bumps entry
 /// `type_` of histogram `hist`.
+#[inline]
 pub fn icmp6stat_inc_hist(hist: Icmp6statCounters, type_: u8) {
-    ICMP6COUNTERS[hist as usize + usize::from(type_)].fetch_add(1, Ordering::Relaxed);
+    kernel::netinet6::ip6_var::icmp6stat_inc_hist(hist, type_);
 }
 /* </CODE> */

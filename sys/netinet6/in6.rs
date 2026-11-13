@@ -2178,22 +2178,21 @@ pub(crate) mod tests {
     fn selected_sources_are_counted() {
         use crate::netinet6::ip6_input::IP6COUNTERS;
         use crate::netinet6::ip6_var::Ip6statCounters;
-        use core::sync::atomic::Ordering;
 
         let _g = setup();
         let ifp = test_if(b"tsc0");
         test_ia6(ifp, a6("2001:db8::1"), 0);
-        let none = &IP6COUNTERS[Ip6statCounters::Ip6sSourcesNone as usize];
+        let none = Ip6statCounters::Ip6sSourcesNone as usize;
         let global =
             Ip6statCounters::Ip6sSourcesSameif as usize + usize::from(__IPV6_ADDR_SCOPE_GLOBAL);
-        let before_none = none.load(Ordering::Relaxed);
-        let before_same = IP6COUNTERS[global].load(Ordering::Relaxed);
+        let before_none = IP6COUNTERS.read()[none];
+        let before_same = IP6COUNTERS.read()[global];
         net_lock();
         assert!(in6_ifawithscope(ifp, &a6("2001:db8::2"), 0, None).is_some());
         assert!(in6_ifawithscope(ifp, &a6("2001:db8::2"), 9, None).is_none());
         net_unlock();
-        assert_eq!(IP6COUNTERS[global].load(Ordering::Relaxed), before_same + 1);
-        assert_eq!(none.load(Ordering::Relaxed), before_none + 1);
+        assert_eq!(IP6COUNTERS.read()[global], before_same + 1);
+        assert_eq!(IP6COUNTERS.read()[none], before_none + 1);
     }
 
     /// A driver `ioctl` that accepts the address and multicast requests (and brings the

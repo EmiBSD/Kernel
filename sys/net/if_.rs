@@ -613,15 +613,11 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     fn ip6stat_deliver(&self, c: kernel::net::if_::Ip6Deliver) {
         #[cfg(feature = "inet6")]
         {
-            use crate::netinet6::ip6_input::IP6COUNTERS;
-            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_inc};
+            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_dec, ip6stat_inc};
             use kernel::net::if_::Ip6Deliver;
             match c {
                 Ip6Deliver::Delivered => ip6stat_inc(Ip6statCounters::Ip6sDelivered),
-                Ip6Deliver::Undelivered => {
-                    IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize]
-                        .fetch_sub(1, Ordering::Relaxed);
-                }
+                Ip6Deliver::Undelivered => ip6stat_dec(Ip6statCounters::Ip6sDelivered),
                 Ip6Deliver::Toomanyhdr => ip6stat_inc(Ip6statCounters::Ip6sToomanyhdr),
                 Ip6Deliver::Tooshort => ip6stat_inc(Ip6statCounters::Ip6sTooshort),
                 Ip6Deliver::Cantforward => ip6stat_inc(Ip6statCounters::Ip6sCantforward),

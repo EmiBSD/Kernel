@@ -822,12 +822,11 @@ mod tests {
 
     /// The count of MLD messages of `type_` sent.
     fn sent(type_: u8) -> u64 {
-        ICMP6COUNTERS[Icmp6statCounters::Icp6sOuthist as usize + usize::from(type_)]
-            .load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[Icmp6statCounters::Icp6sOuthist as usize + usize::from(type_)]
     }
 
     fn tooshort() -> u64 {
-        ICMP6COUNTERS[Icmp6statCounters::Icp6sTooshort as usize].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[Icmp6statCounters::Icp6sTooshort as usize]
     }
 
     /// A received MLD message `type_` from `src` for group `addr`, maximum response delay

@@ -1,4 +1,3 @@
-/*	$KAME: mld6_var.h,v 1.4 2000/03/25 07:23:54 sumikawa Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -48,18 +47,25 @@
 
 /* <CODE> */
 //! Multicast Listener Discovery, implementation-specific definitions: the listening states
-//! and the report a membership change asks for: `<netinet6/mld6_var.h>`.
+//! and the report a membership change asks for: `<netinet6/mld6_var.h>` (all `_KERNEL`).
 //!
 //! Upstream: sys/netinet6/mld6_var.h @ 3ce1f3f79392
+//! LZ: sys/netinet6/mld6_var.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `struct mld6_pktinfo` has no `mpi_list`: the list of reports `mld6_fasttimo` collects
-//!   (`struct mld6_pktlist`) is a `Vec` of them (`netinet6/mld6.rs`), as `igmp_pktinfo`'s is
-//!   (`netinet/igmp_var.rs`).
-//! - `MLD_RANDOM_DELAY(X)` is [`mld_random_delay`]. The prototypes are `netinet6/mld6.rs`'s.
+//! - `MLD_RANDOM_DELAY(X)` is [`mld_random_delay`]. The prototypes are `kernel::netinet6::
+//!   mld6`'s.
+//!
+//! ## Redesign
+//! - LZ's module moved into the kernel (N6.5a), over `hal::random`; `bsd` reaches it under
+//!   LZ's path through `sys/netinet6/mod.rs`'s re-export.
+//! - `struct mld6_pktinfo`'s `mpi_list` is the list node `mld6_fasttimo` makes of each report
+//!   (`kernel::netinet6::mld6`, the C's `malloc(M_MRTABLE, M_NOWAIT)` entries), not a member:
+//!   the other callers keep the record on their stack (`kernel::netinet::igmp_var`'s shape;
+//!   LZ's was a `Vec`).
 
-use crate::dev::rnd::arc4random_uniform;
-use crate::netinet6::in6::In6Addr;
+use hal::random::arc4random_uniform;
+use hal::sys::netinet6_in6::In6Addr;
 
 // States for MLD stop-listening processing
 
@@ -83,6 +89,7 @@ pub struct Mld6Pktinfo {
 }
 
 /// `MLD_RANDOM_DELAY(X)`: a random timer value between 1 and `x`.
+#[inline]
 pub fn mld_random_delay(x: u32) -> u32 {
     arc4random_uniform(x) + 1
 }
@@ -92,6 +99,15 @@ pub fn mld_random_delay(x: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_random_delay_is_between_one_and_x() {
+        for _ in 0..1000 {
+            let d = mld_random_delay(5);
+            assert!((1..=5).contains(&d));
+        }
+        assert_eq!(mld_random_delay(1), 1);
+    }
 
     #[test]
     #[ignore = "needs OPENBSD_SRC (just test-ref)"]

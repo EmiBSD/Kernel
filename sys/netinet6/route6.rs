@@ -122,7 +122,7 @@ mod tests {
     use crate::netinet::ip6::{IPV6_VERSION, Ip6Hdr};
     use crate::netinet6::ip6_input::IP6COUNTERS;
     use crate::netinet6::nd6::tests::{OURS6, PEER6, icmp6stat, nd6_setup, take_sent};
-    use core::sync::atomic::Ordering;
+
     use std::vec::Vec;
 
     const IPPROTO_UDP: u8 = 17;
@@ -157,7 +157,7 @@ mod tests {
     }
 
     fn ip6stat(c: Ip6statCounters) -> u64 {
-        IP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[c as usize]
     }
 
     #[test]

@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     fn ip6_total() -> u64 {
-        IP6COUNTERS[Ip6statCounters::Ip6sTotal as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[Ip6statCounters::Ip6sTotal as usize]
     }
 
     #[test]

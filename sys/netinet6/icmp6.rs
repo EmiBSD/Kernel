@@ -120,7 +120,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::pool::PoolArc;
 use libkern::StaticCell;
@@ -219,9 +219,7 @@ use crate::sys::time::Timeval;
 /// (`icmp6_mtudisc_callback_register`): the destination and the routing table.
 pub type Icmp6MtudiscCallbackFn = fn(&SockaddrIn6, u32);
 
-/// `icmp6counters`: the ICMPv6 statistics.
-pub static ICMP6COUNTERS: [AtomicU64; ICP6S_NCOUNTERS] =
-    [const { AtomicU64::new(0) }; ICP6S_NCOUNTERS];
+pub use kernel::netinet6::ip6_var::ICMP6COUNTERS;
 
 /// `icmp6errpps_count` and `icmp6errppslim_last`.
 struct Icmp6ErrPps {
@@ -1932,8 +1930,8 @@ pub fn icmp6_mtudisc_timeout(
 fn icmp6_sysctl_icmp6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Icmp6stat>() == ICP6S_NCOUNTERS * size_of::<u64>());
     let mut bytes = Vec::with_capacity(ICP6S_NCOUNTERS * size_of::<u64>());
-    for c in &ICMP6COUNTERS {
-        bytes.extend_from_slice(&c.load(Ordering::Relaxed).to_ne_bytes());
+    for c in ICMP6COUNTERS.read() {
+        bytes.extend_from_slice(&c.to_ne_bytes());
     }
 
     sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
@@ -2078,7 +2076,7 @@ mod tests {
 
     /// The value of the histogram entry `hist + t`.
     fn hist(hist: Icmp6statCounters, t: u8) -> u64 {
-        ICMP6COUNTERS[hist as usize + usize::from(t)].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[hist as usize + usize::from(t)]
     }
 
     /// The bytes of an IPv6 header.

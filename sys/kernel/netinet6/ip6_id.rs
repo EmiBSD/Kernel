@@ -1,4 +1,3 @@
-/*	$KAME: ip6_id.c,v 1.8 2003/09/06 13:41:06 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -103,21 +102,32 @@
 //! The top bit flips at every reseed, giving two disjoint cycles.
 //!
 //! Upstream: sys/netinet6/ip6_id.c @ 3ce1f3f79392
+//! LZ: sys/netinet6/ip6_id.rs@3c62ede68802
 //!
 //! ## Deviations
-//! - `randomtab_20` is a `StaticCell` guarded by a private mutex, `randomtab_mtx`. The C
-//!   updates it without a lock (callers ran under the exclusive net lock); here
-//!   `ip6_randomflowlabel` may run under the shared net lock on several CPUs.
+//! - `randomtab_20` is guarded by a mutex of its own (LZ's): the C updates it without a lock
+//!   (its callers ran under the exclusive net lock), while `ip6_randomflowlabel` may run under
+//!   the shared net lock on several CPUs. One mutex pair per flow label, one above the C's
+//!   none, on `in6_pcbconnect`'s path only (a connect, not a packet).
 //! - The constant part of `struct randomtab` (`ru_bits` .. `pfacts`) and its state are one
 //!   struct with plain fields; the C marks the constants `const`.
+//!
+//! ## Redesign
+//! - LZ's `StaticCell<Randomtab>` beside a `bsd` `Mutex` (one `unsafe` `get_mut` under it)
+//!   -> [`RANDOMTAB_20`], a `hal::mutex::Mutexed<Randomtab>` (IPL_SOFTNET): the state inside
+//!   the lock that guards it, no `unsafe` (`kernel::netinet::ip_id`'s precedent for the
+//!   module, N6.4a). `ip6id_pmod`, `ip6id_initid` and `ip6id_randomid` are the C's `static`
+//!   functions again (private).
+//!
+//! **Lock and spl transitions** against the C: `ip6_randomflowlabel` takes `RANDOMTAB_20`
+//! once (one spl pair); the C takes nothing (the deviation above).
 
-use crate::dev::rnd::{arc4random, arc4random_uniform};
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
-use crate::kern::kern_tc::getuptime;
-use crate::machine::intr::IPL_SOFTNET;
-use crate::sys::mutex::Mutex;
-use crate::sys::types::Time;
-use libkern::StaticCell;
+use hal::intr::IPL_SOFTNET;
+use hal::mutex::Mutexed;
+use hal::random::{arc4random, arc4random_uniform};
+use hal::sys::types::Time;
+
+use crate::tc::getuptime;
 
 /// `struct randomtab`: the parameters and state of one identifier generator.
 pub struct Randomtab {
@@ -161,7 +171,10 @@ pub struct Randomtab {
 
 impl Randomtab {
     /// A generator with the given constants and a zero state.
-    #[allow(clippy::too_many_arguments)] // the C initializer's eight constants
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the C initializer's eight constants"
+    )]
     pub const fn new(
         ru_bits: u32,
         ru_out: Time,
@@ -194,23 +207,25 @@ impl Randomtab {
     }
 }
 
-/// `randomtab_mtx` (not in C, see the deviations): guards [`RANDOMTAB_20`].
-static RANDOMTAB_MTX: Mutex = Mutex::new(IPL_SOFTNET);
-
-/// `randomtab_20`: the 20-bit flow-label generator; touched only under [`RANDOMTAB_MTX`].
-static RANDOMTAB_20: StaticCell<Randomtab> = StaticCell::new(Randomtab::new(
-    20,     // resulting bits
-    180,    // Time after which will be reseeded
-    200000, // Uniq cycle, avoid blackjack prediction
-    2,      // Starting generator
-    524269, // RU_N-1 = 2^2*3^2*14563
-    7,      // determine ru_a as RU_AGEN^(2*rand)
-    279936, // RU_M = 2^7*3^7 - don't change
-    [2, 3, 14563, 0],
-));
+/// `randomtab_20`: the 20-bit flow-label generator, inside the mutex that guards it (see the
+/// module's deviations). IPL_SOFTNET: its one taker runs in process context or the softnet
+/// tasks, never from a hardware interrupt.
+static RANDOMTAB_20: Mutexed<Randomtab> = Mutexed::new(
+    IPL_SOFTNET,
+    Randomtab::new(
+        20,     // resulting bits
+        180,    // Time after which will be reseeded
+        200000, // Uniq cycle, avoid blackjack prediction
+        2,      // Starting generator
+        524269, // RU_N-1 = 2^2*3^2*14563
+        7,      // determine ru_a as RU_AGEN^(2*rand)
+        279936, // RU_M = 2^7*3^7 - don't change
+        [2, 3, 14563, 0],
+    ),
+);
 
 /// `ip6id_pmod`: fast modular exponentiation, `gen^expo mod mod_`, in `0..mod_`.
-pub fn ip6id_pmod(gen_: u32, expo: u32, mod_: u32) -> u32 {
+fn ip6id_pmod(gen_: u32, expo: u32, mod_: u32) -> u32 {
     let m = u64::from(mod_);
     let mut s: u64 = 1;
     let mut t = u64::from(gen_);
@@ -229,7 +244,7 @@ pub fn ip6id_pmod(gen_: u32, expo: u32, mod_: u32) -> u32 {
 /// `ip6id_initid`: a new seed and generator for `p`; toggles the top bit, so that the two
 /// cycles of numbers before and after a reseed are distinct. Called from
 /// [`ip6id_randomid`] when needed.
-pub fn ip6id_initid(p: &mut Randomtab) {
+fn ip6id_initid(p: &mut Randomtab) {
     p.ru_x = arc4random_uniform(p.ru_m);
 
     // (bits - 1) bits of random seed
@@ -247,8 +262,8 @@ pub fn ip6id_initid(p: &mut Randomtab) {
 
     let mut j = arc4random_uniform(p.ru_n);
 
-    // Fast gcd(j, RU_N - 1): find a j coprime to RU_N - 1, which makes RU_GEN^j mod RU_N
-    // a generator again.
+    // Do a fast gcd(j, RU_N - 1), so we can find a j with gcd(j, RU_N - 1) == 1, giving a
+    // new generator for RU_GEN^j mod RU_N.
     loop {
         let divisible = p
             .pfacts
@@ -273,7 +288,7 @@ pub fn ip6id_initid(p: &mut Randomtab) {
 }
 
 /// `ip6id_randomid`: the next identifier of `p`.
-pub fn ip6id_randomid(p: &mut Randomtab) -> u32 {
+fn ip6id_randomid(p: &mut Randomtab) -> u32 {
     if p.ru_counter >= p.ru_max || getuptime() > p.ru_reseed {
         ip6id_initid(p);
     }
@@ -297,12 +312,7 @@ pub fn ip6id_randomid(p: &mut Randomtab) -> u32 {
 
 /// `ip6_randomflowlabel`: a random 20-bit flow label, not repeating quickly.
 pub fn ip6_randomflowlabel() -> u32 {
-    mtx_enter(&RANDOMTAB_MTX);
-    // SAFETY: RANDOMTAB_20 is touched only here, with RANDOMTAB_MTX held; no other
-    // reference to it exists while this one lives.
-    let id = ip6id_randomid(unsafe { RANDOMTAB_20.get_mut() });
-    mtx_leave(&RANDOMTAB_MTX);
-    id & 0xfffff
+    ip6id_randomid(&mut RANDOMTAB_20.lock()) & 0xfffff
 }
 /* </CODE> */
 

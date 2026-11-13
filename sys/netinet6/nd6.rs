@@ -1835,7 +1835,7 @@ pub(crate) mod tests {
 
     /// The value of an ICMPv6 counter.
     pub(crate) fn icmp6stat(c: Icmp6statCounters) -> u64 {
-        ICMP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[c as usize]
     }
 
     /// The packets [`capture_output`] took: the destination's family and the bytes.

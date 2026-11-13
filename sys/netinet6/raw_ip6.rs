@@ -190,7 +190,7 @@ use crate::netinet6::in6_pcb::{
 };
 use crate::netinet6::in6_proto::{RIP6_RECVSPACE, RIP6_SENDSPACE};
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
-use crate::netinet6::ip6_input::{INET6CTLERRMAP, IP6COUNTERS, ip6_get_prevhdr, ip6_savecontrol};
+use crate::netinet6::ip6_input::{INET6CTLERRMAP, ip6_get_prevhdr, ip6_savecontrol};
 use crate::netinet6::ip6_output::{
     ip6_clearpktopts, ip6_ctloutput, ip6_output, ip6_raw_ctloutput, ip6_setpktopts,
 };
@@ -449,7 +449,7 @@ pub fn rip6_input(
 
             icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, prvnxt);
         }
-        IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize].fetch_sub(1, Ordering::Relaxed);
+        crate::netinet6::ip6_var::ip6stat_dec(Ip6statCounters::Ip6sDelivered);
 
         return IPPROTO_DONE;
     };
@@ -1139,8 +1139,9 @@ mod tests {
         soclose(other, 0).expect("close");
 
         // Without a socket, ICMPv6 is dropped and not counted as delivered.
-        let delivered =
-            || IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize].load(Ordering::Relaxed);
+        let delivered = || {
+            crate::netinet6::ip6_input::IP6COUNTERS.read()[Ip6statCounters::Ip6sDelivered as usize]
+        };
         let d = delivered();
         deliver(packet(IPPROTO_ICMPV6 as u8, &request), IPPROTO_ICMPV6);
         assert_eq!(delivered(), d.wrapping_sub(1));
@@ -1348,9 +1349,8 @@ mod tests {
             8,
         ];
         let hist = || {
-            crate::netinet6::icmp6::ICMP6COUNTERS
+            crate::netinet6::icmp6::ICMP6COUNTERS.read()
                 [Icmp6statCounters::Icp6sOuthist as usize + usize::from(ICMP6_ECHO_REQUEST)]
-            .load(Ordering::Relaxed)
         };
         let before = hist();
         send6(so, &echo, a6("fd00:77::2")).expect("sent");
