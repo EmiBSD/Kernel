@@ -2774,9 +2774,13 @@ pub(crate) mod tests {
         assert_eq!(ips(IpstatCounters::IpsFragtimeout), timeout + 3);
     }
 
+    /// What `ip_dooptions`' walk left: its answer, the options, whether the packet is to be
+    /// forwarded, its header and the packet.
+    type Walked = (Result<(), (u8, i32)>, Vec<u8>, bool, Ip, MbufBox);
+
     /// `ip_dooptions`' walk over `opts` (padded to a word with EOL) of a packet from 10.0.2.2
     /// to 10.0.2.15 on `ifp`.
-    fn walk(ifp: &'static Ifnet, opts: &[u8]) -> Result<(), (u8, i32)> {
+    fn walk_out(ifp: &'static Ifnet, opts: &[u8]) -> Walked {
         let mut o = opts.to_vec();
         while o.len() % 4 != 0 {
             o.push(IPOPT_EOL);
@@ -2805,8 +2809,14 @@ pub(crate) mod tests {
         );
         hal::klock::kernel_unlock();
         drop(w);
+        (r.map_err(|b| (b.type_, b.code)), o, forward, ip, m)
+    }
+
+    /// The walk's answer alone.
+    fn walk(ifp: &'static Ifnet, opts: &[u8]) -> Result<(), (u8, i32)> {
+        let (r, _, _, _, m) = walk_out(ifp, opts);
         m_freem(m);
-        r.map_err(|b| (b.type_, b.code))
+        r
     }
 
     #[test]
@@ -2884,6 +2894,113 @@ pub(crate) mod tests {
         IP_DOSOURCEROUTE.store(0, Ordering::Relaxed);
         // A record route with room gets the outgoing interface's address.
         assert_eq!(walk(ifp, &[IPOPT_RR, 7, 4, 0, 0, 0, 0]), Ok(()));
+    }
+
+    #[test]
+    fn the_timestamp_option_stamps_where_it_has_room() {
+        let _g = setup();
+        let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        let pp = ICMP_PARAMPROB;
+        const E: u8 = 0xee;
+        const TS: u8 = IPOPT_TS;
+        // (what, the option, the answer, the bytes of the option the time lands in (none:
+        // the option left as it was)). The C stamps through its local copy of the header: the
+        // pointer, and TSANDADDR's address, are not written back.
+        let cases: [(&str, [u8; 12], Result<(), (u8, i32)>, Option<usize>); 6] = [
+            (
+                "TSONLY with room",
+                [TS, 12, 5, 0x00, E, E, E, E, E, E, E, E],
+                Ok(()),
+                Some(4),
+            ),
+            (
+                "TSANDADDR with room",
+                [TS, 12, 5, 0x01, E, E, E, E, E, E, E, E],
+                Ok(()),
+                Some(8),
+            ),
+            (
+                "TSANDADDR without room for both",
+                [TS, 12, 9, 0x01, E, E, E, E, E, E, E, E],
+                Err((pp, 20)),
+                None,
+            ),
+            (
+                "PRESPEC of an address not ours: the next option",
+                [TS, 12, 5, 0x03, 10, 0, 2, 99, E, E, E, E],
+                Ok(()),
+                None,
+            ),
+            (
+                "PRESPEC of ours",
+                [TS, 12, 5, 0x03, 10, 0, 2, 15, E, E, E, E],
+                Ok(()),
+                Some(8),
+            ),
+            (
+                "PRESPEC without room for both",
+                [TS, 12, 9, 0x03, 10, 0, 2, 15, E, E, E, E],
+                Err((pp, 20)),
+                None,
+            ),
+        ];
+        for (what, opt, want, stamp) in cases {
+            let len = usize::from(opt[1]).next_multiple_of(4);
+            let (r, o, forward, _, m) = walk_out(ifp, &opt[..len]);
+            m_freem(m);
+            assert_eq!(r, want, "{what}");
+            assert!(!forward, "{what}");
+            if r.is_err() {
+                continue;
+            }
+            let mut left = opt[..len].to_vec();
+            if let Some(at) = stamp {
+                assert_ne!(&o[at..at + 4], &[E; 4], "{what}: stamped");
+                left[at..at + 4].copy_from_slice(&o[at..at + 4]);
+            }
+            assert_eq!(o, left, "{what}: nothing else changed");
+        }
+    }
+
+    #[test]
+    fn a_source_route_is_followed_and_saved_when_allowed() {
+        let _g = setup();
+        let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        IP_DOSOURCEROUTE.store(1, Ordering::Relaxed);
+        // Not at its end: the next hop becomes the destination, the outgoing interface's
+        // address takes its slot, the pointer moves on, and the packet is to be forwarded.
+        let (r, o, forward, ip, m) = walk_out(ifp, &[IPOPT_LSRR, 11, 4, 10, 0, 2, 2, 0, 0, 0, 0]);
+        m_freem(m);
+        assert_eq!(r, Ok(()));
+        assert!(forward);
+        assert_eq!(ip.ip_dst.s_addr, u32::from_ne_bytes([10, 0, 2, 2]));
+        assert_eq!(&o[..7], &[IPOPT_LSRR, 11, 8, 10, 0, 2, 15]);
+        // At its end, for us: kept for the reply (save_rte), which ip_srcroute reverses: the
+        // first hop, a NOP, the option's header with the pointer reset, the hops reversed and
+        // the original source last.
+        let (r, _, forward, _, mut m) = walk_out(ifp, &[IPOPT_LSRR, 7, 8, 10, 0, 2, 9]);
+        assert_eq!(r, Ok(()));
+        assert!(!forward);
+        let rev = ip_srcroute(&mut m).expect("the route saved");
+        m_freem(m);
+        assert_eq!(
+            rev.data(),
+            &[
+                10,
+                0,
+                2,
+                9,
+                IPOPT_NOP,
+                IPOPT_LSRR,
+                7,
+                IPOPT_MINOFF,
+                10,
+                0,
+                2,
+                2
+            ]
+        );
+        IP_DOSOURCEROUTE.store(0, Ordering::Relaxed);
     }
 
     #[test]

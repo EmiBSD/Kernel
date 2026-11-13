@@ -1408,7 +1408,10 @@ mod tests {
 
     use std::vec::Vec;
 
+    use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY, RTF_HOST, RTM_ADD, RTP_STATIC, RTV_MTU};
     use hal::sys::netinet_in::IPPROTO_UDP;
+    use hal::sys::netinet_ip::IP_DF;
+    use hal::sys::netinet_ip_icmp::{ICMP_REDIRECT_HOST, ICMP_TIMXCEED_INTRANS};
 
     use super::*;
     use crate::net::mbuf::ml_dequeue;
@@ -1613,6 +1616,282 @@ mod tests {
         assert_eq!(icps(IcmpstatCounters::IcpsToofreq), toofreq + 1);
         assert_eq!(sent().len(), 1);
         ICMPERRPPSLIM.store(lim, Ordering::Relaxed);
+    }
+
+    /// `f` under the exclusive net lock.
+    fn with_net<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        f(&net)
+    }
+
+    /// The flags of the route `rtalloc` finds for `a` (`None`: no route), and its MTU and
+    /// locks.
+    fn route(a: [u8; 4]) -> Option<(bool, bool, bool, u32, u32)> {
+        let s = sin_bytes(InAddr {
+            s_addr: u32::from_ne_bytes(a),
+        });
+        with_net(|net| {
+            crate::net::route::rtalloc(view(&s), 0, 0, net).map(|rt| {
+                (
+                    rt.rt_flags.isset(RTF_HOST),
+                    rt.rt_flags.isset(RTF_DYNAMIC),
+                    rt.rt_flags.isset(RTF_GATEWAY),
+                    rt.rt_mtu().load(Ordering::Relaxed),
+                    rt.rt_locks().get(),
+                )
+            })
+        })
+    }
+
+    /// `route add default 10.0.2.2`.
+    fn default_route() {
+        use crate::net::route::{RtAddrinfo, rtrequest};
+        use hal::sys::net_route::{RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_STATIC, RTF_UP};
+        let any = sin_bytes(InAddr { s_addr: 0 });
+        let gw = sin_bytes(InAddr {
+            s_addr: u32::from_ne_bytes([10, 0, 2, 2]),
+        });
+        let us = sin_bytes(InAddr {
+            s_addr: u32::from_ne_bytes([10, 0, 2, 15]),
+        });
+        let mut mask = crate::net::rtable::SaCopy::zeroed();
+        with_net(|net| {
+            let mut info = RtAddrinfo::new();
+            info.rti_info[RTAX_DST] = Some(view(&any));
+            info.rti_info[RTAX_NETMASK] =
+                crate::net::route::rt_plentosa(AF_INET, Some(0), &mut mask);
+            info.rti_info[RTAX_GATEWAY] = Some(view(&gw));
+            info.rti_ifa = ifa_ifwithaddr(net, &us, 0);
+            info.rti_flags = RTF_GATEWAY | RTF_STATIC | RTF_UP;
+            rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, net)
+        })
+        .expect("the default route");
+    }
+
+    /// The timers of `q` run now, as when their timeout passes.
+    fn expire(q: &'static RttimerQueue) {
+        with_net(|net| crate::net::route::rt_timer_queue_flush(q, net));
+    }
+
+    #[test]
+    fn a_redirect_is_accepted_and_times_out() {
+        let _g = setup();
+        let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        let _ = sent();
+        // icmp_rediraccept on, not a router: 10.0.2.2 (the message's source, the route to
+        // 10.9.9.9 being none) redirects 10.9.9.9 to 10.0.2.3.
+        let mut msg = std::vec![ICMP_REDIRECT, ICMP_REDIRECT_HOST, 0, 0, 10, 0, 2, 3];
+        let mut inner = header(0x45, 28, 5, 0, IPPROTO_UDP as u8, 0);
+        inner[12..16].copy_from_slice(&[10, 0, 2, 15]);
+        inner[16..20].copy_from_slice(&[10, 9, 9, 9]);
+        msg.extend_from_slice(&inner);
+        msg.extend_from_slice(&[0x30, 0x39, 0x00, 0x35, 0, 8, 0, 0]);
+        let queued = crate::net::route::rt_timer_queue_count(&ICMP_REDIRECT_TIMEOUT_Q);
+        // Off (the default): ignored.
+        let _ = input(icmp_packet(ifp, &msg, false));
+        assert_eq!(route([10, 9, 9, 9]), None);
+        ICMP_REDIRACCEPT.store(1, Ordering::Relaxed);
+        let _ = input(icmp_packet(ifp, &msg, false));
+        ICMP_REDIRACCEPT.store(0, Ordering::Relaxed);
+        let (host, dynamic, gateway, _, _) = route([10, 9, 9, 9]).expect("a host route");
+        assert!(
+            host && dynamic && gateway,
+            "RTF_HOST | RTF_DYNAMIC | RTF_GATEWAY"
+        );
+        assert_eq!(
+            crate::net::route::rt_timer_queue_count(&ICMP_REDIRECT_TIMEOUT_Q),
+            queued + 1,
+            "its timeout (icmp_redirtimeout) queued"
+        );
+        // The timeout passes: the dynamic route is deleted.
+        expire(&ICMP_REDIRECT_TIMEOUT_Q);
+        assert_eq!(route([10, 9, 9, 9]), None);
+        assert!(sent().is_empty(), "a redirect is not answered");
+    }
+
+    #[test]
+    fn path_mtu_discovery_clones_a_host_route_and_times_it_out() {
+        let _g = setup();
+        let _ = crate::netinet::ip_output::tests::iface();
+        default_route();
+        // The header of a 1500-byte datagram we sent to 10.9.9.9, too big for a hop.
+        let mut oip = Ip::default();
+        oip.set_ip_v(IPVERSION);
+        oip.set_ip_hl(5);
+        oip.ip_len = 1500u16.to_be();
+        oip.ip_src = InAddr {
+            s_addr: u32::from_ne_bytes([10, 0, 2, 15]),
+        };
+        oip.ip_dst = InAddr {
+            s_addr: u32::from_ne_bytes([10, 9, 9, 9]),
+        };
+        let queued = crate::net::route::rt_timer_queue_count(&IP_MTUDISC_TIMEOUT_Q);
+        with_net(|net| icmp_mtudisc(1280u16.to_be(), &oip, 0, net));
+        // A dynamic host route cloned from the default one, with the hop's MTU.
+        let (host, dynamic, gateway, mtu, locks) = route([10, 9, 9, 9]).expect("a host route");
+        assert!(host && dynamic && gateway);
+        assert_eq!((mtu, locks & RTV_MTU), (1280, 0));
+        assert_eq!(
+            crate::net::route::rt_timer_queue_count(&IP_MTUDISC_TIMEOUT_Q),
+            queued + 1
+        );
+        // Its timeout: TCP is told the MTU may grow, and the clone goes.
+        crate::netinet::ip_input::tests::TCP
+            .ctl
+            .store(0, Ordering::Relaxed);
+        expire(&IP_MTUDISC_TIMEOUT_Q);
+        assert_eq!(
+            crate::netinet::ip_input::tests::TCP
+                .ctl
+                .load(Ordering::Relaxed),
+            PRC_MTUINC
+        );
+        let (host, _, _, _, _) = route([10, 9, 9, 9]).expect("the default route");
+        assert!(!host, "the default route again");
+        // A next-hop MTU below 296 locks the route's MTU instead of lowering it; no next-hop
+        // MTU (an old router) guesses from the datagram's length, a plateau below it.
+        with_net(|net| icmp_mtudisc(200u16.to_be(), &oip, 0, net));
+        let (_, _, _, mtu, locks) = route([10, 9, 9, 9]).expect("the clone");
+        assert_eq!((mtu, locks & RTV_MTU), (0, RTV_MTU));
+        expire(&IP_MTUDISC_TIMEOUT_Q);
+        with_net(|net| icmp_mtudisc(0, &oip, 0, net));
+        let (_, _, _, mtu, _) = route([10, 9, 9, 9]).expect("the clone");
+        assert_eq!(mtu, 1492, "the plateau below 1500");
+        expire(&IP_MTUDISC_TIMEOUT_Q);
+    }
+
+    #[test]
+    fn timestamp_and_mask_requests_are_answered() {
+        let _g = setup();
+        let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        let _ = sent();
+        const E: u8 = 0xee;
+        // A timestamp request (ICMP_TSLEN bytes): the reply keeps the id, the sequence and the
+        // originate time, and stamps the receive and transmit times alike.
+        let ts = [
+            ICMP_TSTAMP,
+            0,
+            0,
+            0,
+            0,
+            9,
+            0,
+            1,
+            1,
+            2,
+            3,
+            4,
+            E,
+            E,
+            E,
+            E,
+            E,
+            E,
+            E,
+            E,
+        ];
+        let _ = input(icmp_packet(ifp, &ts, false));
+        let s = sent();
+        assert_eq!(s.len(), 1);
+        let b = &s[0];
+        assert_eq!(b[20], ICMP_TSTAMPREPLY);
+        assert_eq!(&b[24..32], &[0, 9, 0, 1, 1, 2, 3, 4]);
+        assert_eq!(
+            b[32..36],
+            b[36..40],
+            "received and transmitted stamped alike"
+        );
+        assert_ne!(&b[32..36], &[E; 4]);
+        // Timestamp replies off: to the raw sockets only.
+        ICMPTSTAMPREPL.store(0, Ordering::Relaxed);
+        let _ = input(icmp_packet(ifp, &ts, false));
+        ICMPTSTAMPREPL.store(1, Ordering::Relaxed);
+        assert!(sent().is_empty());
+        // A mask request (ICMP_MASKLEN bytes), mask replies on: the interface's mask, from
+        // the address the request was for.
+        let mr = [ICMP_MASKREQ, 0, 0, 0, 0, 9, 0, 2, 0, 0, 0, 0];
+        ICMPMASKREPL.store(1, Ordering::Relaxed);
+        let _ = input(icmp_packet(ifp, &mr, false));
+        ICMPMASKREPL.store(0, Ordering::Relaxed);
+        let s = sent();
+        assert_eq!(s.len(), 1);
+        let b = &s[0];
+        assert_eq!(b[20], ICMP_MASKREPLY);
+        assert_eq!(&b[12..16], &[10, 0, 2, 15]);
+        assert_eq!(&b[16..20], &[10, 0, 2, 2]);
+        assert_eq!(&b[24..32], &[0, 9, 0, 2, 255, 255, 255, 0]);
+        // Off (the default): not answered.
+        let _ = input(icmp_packet(ifp, &mr, false));
+        assert!(sent().is_empty());
+    }
+
+    /// A UDP datagram of `len` bytes from 10.0.2.2 to `dst`, `ttl` and `DF` as given.
+    fn transit(dst: [u8; 4], ttl: u8, len: u16, df: bool) -> MbufBox {
+        let mut h = header(
+            0x45,
+            len,
+            7,
+            if df { IP_DF } else { 0 },
+            IPPROTO_UDP as u8,
+            0,
+        );
+        h[8] = ttl;
+        h[16..20].copy_from_slice(&dst);
+        h[10..12].copy_from_slice(&[0, 0]);
+        let s = cksum(&h);
+        h[10..12].copy_from_slice(&s.to_be_bytes());
+        let mut p = h.to_vec();
+        p.resize(usize::from(len), 0x5a);
+        packet(&p, 20)
+    }
+
+    #[test]
+    fn forwarding_answers_ttl_redirect_and_needfrag_as_the_c() {
+        let _g = setup();
+        let (ifp, d) = crate::netinet::ip_output::tests::iface();
+        default_route();
+        let _ = sent();
+        let fwd = |m: MbufBox| {
+            m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
+            with_net(|net| {
+                crate::netinet::ip_input::ip_forward(
+                    m,
+                    ifp,
+                    None,
+                    crate::netinet::ip_var::IP_FORWARDING,
+                    net,
+                );
+            });
+        };
+        // TTL 1: time exceeded in transit, not forwarded.
+        fwd(transit([10, 9, 9, 9], 1, 60, false));
+        let s = sent();
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0][20], s[0][21]), (ICMP_TIMXCEED, ICMP_TIMXCEED_INTRANS));
+        assert_eq!(&s[0][16..20], &[10, 0, 2, 2], "to the sender");
+        assert_eq!(d.count(), 0);
+        // On-link from an on-link source, out the interface it came in on: forwarded, and a
+        // host redirect to the destination itself (no gateway).
+        fwd(transit([10, 0, 2, 7], 64, 60, false));
+        assert_eq!(d.count(), 1, "forwarded");
+        let s = sent();
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0][20], s[0][21]), (ICMP_REDIRECT, ICMP_REDIRECT_HOST));
+        assert_eq!(&s[0][24..28], &[10, 0, 2, 7]);
+        // Through the default route: forwarded, and no redirect (the C's check that the
+        // route's destination is not 0.0.0.0).
+        fwd(transit([10, 9, 9, 9], 64, 60, false));
+        assert_eq!(d.count(), 2, "forwarded");
+        assert!(sent().is_empty(), "no redirect for the default route");
+        // 1600 bytes with DF over a 1500-byte MTU: needs fragmentation, the next hop's MTU
+        // advertised (the interface's: the route has none), not forwarded.
+        fwd(transit([10, 9, 9, 9], 64, 1600, true));
+        assert_eq!(d.count(), 2);
+        let s = sent();
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0][20], s[0][21]), (ICMP_UNREACH, ICMP_UNREACH_NEEDFRAG));
+        assert_eq!(&s[0][26..28], &1500u16.to_be_bytes());
     }
 }
 /* </TESTS> */

@@ -1835,7 +1835,8 @@ pub(crate) mod tests {
     }
 
     impl CapDriver {
-        fn count(&self) -> usize {
+        /// The packets output so far.
+        pub(crate) fn count(&self) -> usize {
             self.sent.lock().expect("sent").len()
         }
 
