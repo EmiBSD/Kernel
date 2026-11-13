@@ -140,7 +140,7 @@ use crate::net::route::{rt_ifa_add, rtalloc, rtdeletemsg};
 use crate::net::rtable::rtable_loindex;
 use crate::netinet6::in6::{
     NetHolding, in6_purgeaddr, in6_update_ifa, in6if_do_dad, in6ifa_ifpforlinklocal,
-    in6ifa_ifpwithaddr,
+    in6ifa_ifpwithaddr, net_assert_locked,
 };
 use crate::netinet6::in6_var::{In6Ifaddr, SIN6_LEN};
 
@@ -282,7 +282,7 @@ pub fn in6_get_ifid(ifp0: &Ifnet, in6: &mut In6Addr) {
         return;
     }
 
-    kassert!(hal::netlock::status() != 0);
+    net_assert_locked();
 
     // next, try to get it from some other hardware interface
     for ifp in &IFNETLIST {
@@ -308,7 +308,7 @@ pub fn in6_ifattach_linklocal(
 ) -> Result<(), Errno> {
     let mut ifra = In6Aliasreq::default();
 
-    kassert!(hal::netlock::status() != 0);
+    net_assert_locked();
 
     // configure link-local address.
     ifra.ifra_name = ifp.if_xname.get();

@@ -649,7 +649,7 @@ pub fn in6_ifaddr_alloc(ifp: &'static Ifnet, now: Time) -> &'static In6Ifaddr {
 
 /// `free(ifa, M_IFADDR, 0)` of an IPv6 address whose last reference `ifafree` gave back: the
 /// record onto the free list (the module's deviations).
-pub fn in6_ifafree(ia6: &'static In6Ifaddr) {
+pub(crate) fn in6_ifafree(ia6: &'static In6Ifaddr) {
     IA6_FREE.lock().insert_tail(ia6);
 }
 
@@ -682,7 +682,7 @@ pub fn in6_multi_alloc() -> Option<&'static In6Multi> {
 
 /// `free(in6m, M_IPMADDR, sizeof(*in6m))`: the record onto the free list (the module's
 /// deviations).
-pub fn in6_multi_free(in6m: &'static In6Multi) {
+pub(crate) fn in6_multi_free(in6m: &'static In6Multi) {
     INM6_FREE.lock().insert_tail(in6m);
 }
 

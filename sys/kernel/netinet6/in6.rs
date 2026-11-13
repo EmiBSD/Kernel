@@ -304,7 +304,7 @@ impl NetHolding<'_> {
 
 /// `NET_ASSERT_LOCKED()`.
 #[inline]
-fn net_assert_locked() {
+pub(crate) fn net_assert_locked() {
     kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
 }
 
