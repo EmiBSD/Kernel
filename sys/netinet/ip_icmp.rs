@@ -135,7 +135,6 @@ use core::mem::offset_of;
 use core::mem::size_of;
 use core::ptr;
 
-use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
 use crate::net::route::Rtentry;
@@ -327,7 +326,7 @@ impl IcmpPkt {
 /// kernel's ICMP entry).
 #[cfg(test)]
 pub(crate) fn icmp_init() {
-    kernel::netinet::ip_icmp::icmp_init::<G>();
+    kernel::netinet::ip_icmp::icmp_init::<crate::kern::proc_glue::BsdProcGlue>();
 }
 
 /// `icmp_error(n, type, code, dest, destmtu)` of a parked packet (pf, UDP, raw IP).
