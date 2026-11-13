@@ -335,3 +335,8 @@ metadata:
 - The worktree guard refuses a `git commit` chained with `&&`/`;` and heredoc python mentioning git paths: run git commands alone, and put python edits in a scratchpad script (N6.4c1).
 - The LZ pin commit (3c62ede68802) is in this repository's own history: `show 3c62ede68802:<path>` redirected to a scratch file, run from the worktree, reads LZ at the pin; a `cd` into the shared checkout before the command is refused by the guard (N6.4c1).
 - lineage.toml ranges around a grep hit cannot be printed with a computed `sed -n` range (refused by the guard): a python script over `split('\n')` with literal line numbers works; python edits go in a Write'd scratch script, not a heredoc that names worktree paths (N6.4c2).
+- A regex over `IP6COUNTERS\[` also matches inside `RIP6COUNTERS[`: anchor names with `\b` in call-site rewrites (N6.5a).
+- `cargo fix --lib --tests` removes a top-level `use` that only the tests still need once the lib's last use is gone (`raw_ip6`'s `IP6COUNTERS`): run `check --tests` again after every fix pass (N6.5a).
+- lz check's item parser misses `queue_adapter!`-made types as it misses `pin_adapter!`'s: a `[[module.fn]]` row for one is refused ("defines no item") (N6.5a's `In6IfaddrList`).
+- Appending to a file whose last zone is CODE (a bench file): insert before `/* </CODE> */`, or the hook's lz check reports every new line as text outside the zones (N6.5a).
+- `hal::percpu::Counters<N>` is MAXCPUS (256) slots by value: IPv6's 401 and ICMPv6's 541 counters are 1.86 MiB of .bss where LZ's arrays were 7.4 KiB; compute the size before choosing it for a large statistic and flag it (N6.5a R7).
