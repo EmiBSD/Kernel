@@ -552,6 +552,10 @@ smoke-diag: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
 # M9b/M9c harness: two VMs of one arch at once (`cargo xtask smoke2`), each with vio0 on QEMU's
 # user network and vio1 on a private link between the two (docs/SETUP.md, "Two VMs"). Both log
 # in as root, give vio1 an address on 192.168.77.0/24 and ping each other across the link.
+# N6.4c2 (U14 (b)): on arm64 each then pings the other with 2000 data bytes, an IPv4 datagram
+# of 2028 bytes over vio1's MTU of 1500: the request and the reply fragmented on the wire and
+# reassembled by the kernel's ip_reass, all three answered (amd64's half waits for N10,
+# decision 44).
 smoke-link: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
     @test {{ramdisks}} || \
         { echo "smoke-link: no ramdisk image; run just userland first"; exit 1; }
@@ -568,11 +572,15 @@ smoke-link: (build-amd64 "--features qemu") (build-arm64 "--features qemu")
         --both-send-after "login:" --both-send 'root\n' --both-send-after "Password:" --both-send 'emibsd\n' \
         --a-send-after "# " --a-send 'ifconfig vio1 inet 192.168.77.1/24 up\n' \
         --a-send-after "# " --a-send 'ping -c 10 192.168.77.2\n' \
+        --a-send-after "# " --a-send 'ping -c 3 -s 2000 192.168.77.2\n' \
         --b-send-after "# " --b-send 'ifconfig vio1 inet 192.168.77.2/24 up\n' \
         --b-send-after "# " --b-send 'ping -c 10 192.168.77.1\n' \
+        --b-send-after "# " --b-send 'ping -c 3 -s 2000 192.168.77.1\n' \
         --a-expect "vio1 at virtio30: 1 queue, address 52:54:00:bb:00:01" \
         --b-expect "vio1 at virtio30: 1 queue, address 52:54:00:bb:00:02" \
-        --a-expect "bytes from 192.168.77.2: icmp_seq=" --b-expect "bytes from 192.168.77.1: icmp_seq="
+        --a-expect "bytes from 192.168.77.2: icmp_seq=" --b-expect "bytes from 192.168.77.1: icmp_seq=" \
+        --a-expect "3 packets transmitted, 3 packets received" \
+        --b-expect "3 packets transmitted, 3 packets received"
 
 # M9b: a wg(4) tunnel between the two VMs of `smoke-link`, configured with OpenBSD's
 # ifconfig(8): wg0 is 10.77.0.1 on A and 10.77.0.2 on B, the outer endpoints are vio1's
