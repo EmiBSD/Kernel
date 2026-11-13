@@ -434,10 +434,12 @@ pub fn tcp_timer_rexmt(arg: *mut c_void) {
         // XXX create fake icmp message with relevant entries: its next-hop MTU and returned
         // header, which are all icmp_mtudisc reads of it.
         let nextmtu = tp.t_pmtud_nextmtu.get() as u16;
-        let mut oip = Ip::default();
-        oip.ip_len = tp.t_pmtud_ip_len.get();
+        let mut oip = Ip {
+            ip_len: tp.t_pmtud_ip_len.get(),
+            ip_dst: inp.inp_faddr.get(),
+            ..Ip::default()
+        };
         oip.set_ip_hl(tp.t_pmtud_ip_hl.get() as u8);
-        oip.ip_dst = inp.inp_faddr.get();
 
         // Notify all connections to the same peer about new mss and trigger retransmit.
         let sin = SockaddrIn {

@@ -355,7 +355,7 @@ pub trait InpcbLegacy {
 
 impl InpcbLegacy for Inpcb {
     fn options(&self) -> Option<&'static Mbuf> {
-        NonNull::new(self.inp_options.get_mut().cast::<Mbuf>()).map(|m| of_parked(m))
+        NonNull::new(self.inp_options.get_mut().cast::<Mbuf>()).map(of_parked)
     }
 
     fn set_options(&self, m: Option<&'static Mbuf>) {
