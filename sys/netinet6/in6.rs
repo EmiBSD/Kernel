@@ -154,8 +154,8 @@
 //! - `in6_control` has the `pru_control` signature (`sys/protosw.rs`): the socket's
 //!   `SS_PRIV` and the kernel copy of the request; `SIOCGIFINFO_IN6` and `SIOCGNBRINFO_IN6`
 //!   are answered here by `nd6_ioctl` (`bsd`'s until N6.5b) over an aligned copy of the
-//!   request, the rest by the kernel's `in6_control`. `in6_ioctl` is the raw request of the
-//!   kernel's own callers and tests.
+//!   request, the rest by the kernel's `in6_control` (`bsd`'s tests call the kernel's
+//!   `in6_ioctl` over the request's bytes).
 //! - `in6_addmulti`, `in6_delmulti` and `in6_purgeaddr` keep LZ's signatures, the net lock's
 //!   proof made through the `SaToken` (their callers hold it: ND under the net lock,
 //!   `ip6_setmoptions` under the socket lock). `in6_joingroup` and `in6_leavegroup` keep
@@ -244,25 +244,6 @@ pub fn in6_control(
     // SAFETY: as above, back into the caller's buffer.
     unsafe { ptr::copy_nonoverlapping(bytes, data.as_mut_ptr(), len) };
     error
-}
-
-/// `in6_ioctl(cmd, data, ifp, privileged)`: the IPv6 address `ioctl`s (the kernel's) over a
-/// raw request.
-///
-/// # Safety
-///
-/// `data` points at the kernel copy of the request, as long as the structure `cmd` encodes,
-/// exclusively the caller's for the call.
-pub unsafe fn in6_ioctl(
-    cmd: u64,
-    data: *mut u8,
-    ifp: Option<&'static Ifnet>,
-    privileged: bool,
-) -> Result<(), Errno> {
-    let len = iocparm_len(cmd) as usize;
-    // SAFETY: the caller's contract: `len` bytes at `data`, the caller's alone for the call.
-    let req = unsafe { core::slice::from_raw_parts_mut(data, len) };
-    kernel::netinet6::in6::in6_ioctl(cmd, req, ifp, privileged)
 }
 
 /// `in6_purgeaddr(ifa)`: the kernel's, under the net lock the caller holds.
