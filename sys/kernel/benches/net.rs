@@ -177,6 +177,23 @@
 //!     checked and its `so_pcb` word loaded (`Socket::legacy_pcb`, an acquire load; `bsd`
 //!     adds the address's cast). D-10's typed slot (N6.6) replaces it with a `ReadMostly`
 //!     read and a `match`; the C's is one load.
+//! - The IPv4 input rows (N6.4c2; "before" = `bsd`'s `ipv4_input`, `ipintr` and `ip_reass`
+//!   over LZ's shape at the slice's base, in a scratch test; measured at the N6.4 close,
+//!   decision 50): lo0 with 127.0.0.1/8 (`in_ioctl`), the glue's `inetsw[]` a UDP entry with
+//!   `PR_MPINPUT`, a TCP entry without it and the raw wildcard, each taking its packet into
+//!   the stash; the net lock held for the run, the softnet's stack (`Netstack`) lent:
+//!   - `ip.input.deliver`: `ipv4_input` of a 64-byte UDP packet to 127.0.0.1 (`ipv4_check`,
+//!     its header's sum checked once and `M_IPV4_CSUM_IN_OK` kept after, as from an
+//!     interface that verified it; `in_ouraddr` through the stack's cached route; `ip_ours`,
+//!     `ip_fragcheck` and `ip_deliver` reaching the entry in place), the packet back from the
+//!     stash for the next op.
+//!   - `ip.input.enqueue`: the same of a TCP packet: `ip_deliver` queues it on `ipintrq`
+//!     (`ip_ours_enqueue`, `niq_enqueue`) and `ipintr` delivers it, the C's path to a
+//!     transport that needs the exclusive net lock.
+//!   - `ip.reass.2` (control): a 56-byte UDP datagram in two fragments, each `m_devget` per
+//!     op, through `ipv4_input`: the first queued (`IPQ`'s mutex, an `ipq` and an `ipqe` from
+//!     their pools), the second completing it (the chain joined, the header rewritten, the
+//!     records freed) and the datagram delivered, then freed.
 
 #![forbid(unsafe_code)]
 
@@ -892,6 +909,7 @@ fn main() {
     bpf_rows(&wanted, &report);
     ether_rows(&wanted, &report);
     inet_rows(&wanted, &report);
+    ip_input_rows(&wanted, &report);
     arp_rows(&wanted, &report);
     inpcb_rows(&wanted, &report);
 }
@@ -2557,6 +2575,204 @@ fn inet_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64
         });
         report(INET_ROWS[2], r);
     }
+}
+
+/// The IPv4 input rows (N6.4c2).
+const IP_INPUT_ROWS: [&str; 3] = ["ip.input.deliver", "ip.input.enqueue", "ip.reass.2"];
+
+/// The input rows' `inetsw[]`: a UDP entry (`PR_MPINPUT`: delivered in place by `ip_ours`
+/// under the shared net lock), a TCP entry (without it: queued for `ipintr`) and the raw
+/// wildcard `ip_init` wants, each taking its packet into the stash (a transport at no cost
+/// of its own beyond a thread-local push).
+struct BenchTransport {
+    /// `pr_type`.
+    ty: i16,
+    /// `pr_protocol`.
+    proto: i16,
+    /// `pr_flags`.
+    flags: i16,
+}
+
+/// The UDP entry.
+static BENCH_UDP_IN: BenchTransport = BenchTransport {
+    ty: hal::sys::socket::SOCK_DGRAM as i16,
+    proto: hal::sys::netinet_in::IPPROTO_UDP as i16,
+    flags: kernel::net::proto::PR_ATOMIC
+        | kernel::net::proto::PR_ADDR
+        | kernel::net::proto::PR_MPINPUT,
+};
+/// The TCP entry.
+static BENCH_TCP_IN: BenchTransport = BenchTransport {
+    ty: hal::sys::socket::SOCK_STREAM as i16,
+    proto: hal::sys::netinet_in::IPPROTO_TCP as i16,
+    flags: kernel::net::proto::PR_CONNREQUIRED,
+};
+/// The raw wildcard.
+static BENCH_RAW_IN: BenchTransport = BenchTransport {
+    ty: hal::sys::socket::SOCK_RAW as i16,
+    proto: 0,
+    flags: kernel::net::proto::PR_ATOMIC | kernel::net::proto::PR_ADDR,
+};
+/// The table.
+static BENCH_IP_SW: [&dyn kernel::net::proto::Protocol<G>; 3] =
+    [&BENCH_UDP_IN, &BENCH_TCP_IN, &BENCH_RAW_IN];
+
+impl kernel::net::proto::Protocol<G> for BenchTransport {
+    fn domain(&self) -> &'static dyn Domain<G> {
+        &kernel::netinet::in_proto::InetDomain::<G>::NEW
+    }
+    fn ty(&self) -> i16 {
+        self.ty
+    }
+    fn protocol(&self) -> i16 {
+        self.proto
+    }
+    fn flags(&self) -> i16 {
+        self.flags
+    }
+    fn usrreqs(&self) -> Option<&'static dyn kernel::net::proto::Usrreqs<G>> {
+        None
+    }
+    fn input(
+        &self,
+        mp: &mut Option<MbufBox>,
+        _offp: &mut i32,
+        _proto: i32,
+        _af: i32,
+        _ns: Option<&mut kernel::net::if_var::Netstack>,
+        _net: &hal::netlock::NetHeld<'_>,
+    ) -> i32 {
+        if let Some(m) = mp.take() {
+            stash(m);
+        }
+        hal::sys::netinet_in::IPPROTO_DONE
+    }
+}
+
+/// An IPv4 packet of protocol `p` from 127.0.0.1 to 127.0.0.1, `len` bytes in all, `id` its
+/// `ip_id` and `off` its `ip_off` (`IP_MF` and the offset in 8-byte units), its header's sum
+/// computed.
+fn loop_packet(p: u8, id: u16, off: u16, len: u16) -> Vec<u8> {
+    let mut b = vec![0u8; usize::from(len)];
+    b[0] = 0x45;
+    b[2..4].copy_from_slice(&len.to_be_bytes());
+    b[4..6].copy_from_slice(&id.to_be_bytes());
+    b[6..8].copy_from_slice(&off.to_be_bytes());
+    b[8] = 64;
+    b[9] = p;
+    b[12..16].copy_from_slice(&[127, 0, 0, 1]);
+    b[16..20].copy_from_slice(&[127, 0, 0, 1]);
+    let mut sum: u32 = b[..20]
+        .chunks(2)
+        .map(|w| u32::from(u16::from_be_bytes([w[0], w[1]])))
+        .sum();
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    b[10..12].copy_from_slice(&(!(sum as u16)).to_be_bytes());
+    b
+}
+
+fn ip_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::netinet_in::{IPPROTO_TCP, IPPROTO_UDP};
+    use hal::sys::netinet_ip::IP_MF;
+    use hal::sys::sockio::SIOCAIFADDR;
+    use kernel::net::if_::if_test_reset;
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::if_var::Netstack;
+    use kernel::net::mbuf::m_devget;
+    use kernel::netinet::ip_input::{ip_init, ipintr, ipv4_input};
+
+    if !IP_INPUT_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET,
+        rtoffset: 4,
+        maxplen: 32,
+        sasize: 16,
+    }]);
+    // The glue's inetsw[] and ip_init (the pools of the reassembly, ip_protox[]).
+    kernel::netinet::in_proto::inetsw_set::<G>(&BENCH_IP_SW);
+    ip_init::<G>();
+
+    hal::klock::kernel_lock();
+    let made = loop_clone_create(&LOOP_CLONER, 0);
+    hal::klock::kernel_unlock();
+    if made.is_err() {
+        eprintln!("net: no lo0");
+        std::process::exit(1);
+    }
+    let lo = need(
+        kernel::net::if_::IFNETLIST
+            .iter()
+            .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+        "lo0 listed",
+    );
+    // ifconfig lo0 inet 127.0.0.1/8
+    let mut req = [0u8; 64];
+    req[16..18].copy_from_slice(&[16, 2]);
+    req[20..24].copy_from_slice(&[127, 0, 0, 1]);
+    req[48..50].copy_from_slice(&[16, 2]);
+    req[52..56].copy_from_slice(&[255, 0, 0, 0]);
+    if kernel::netinet::in_::in_ioctl(SIOCAIFADDR, &mut req, Some(lo), true).is_err() {
+        eprintln!("net: lo0 refused 127.0.0.1");
+        std::process::exit(1);
+    }
+    let w = NETLOCK.write();
+    let net = need(NetHeld::of(&w), "the net lock");
+    let mut ns = Netstack::new(0);
+
+    for (row, p) in [(0, IPPROTO_UDP), (1, IPPROTO_TCP)] {
+        if !wanted(IP_INPUT_ROWS[row]) {
+            continue;
+        }
+        let mut m = Some(need(
+            m_devget(&loop_packet(p as u8, 1, 0, 64), 0),
+            "a 64-byte packet",
+        ));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = need(m.take(), "the packet");
+                ipv4_input::<G>(lo, black_box(q), Some(&mut ns), &net);
+                if row == 1 {
+                    ipintr::<G>(&net);
+                }
+                m = Some(unstash());
+            }
+            t.elapsed()
+        });
+        report(IP_INPUT_ROWS[row], r);
+    }
+    if wanted(IP_INPUT_ROWS[2]) {
+        // A 56-byte UDP datagram in two fragments: 32 data bytes with IP_MF, then 24 at 32.
+        let first = loop_packet(IPPROTO_UDP as u8, 7, IP_MF, 20 + 32);
+        let last = loop_packet(IPPROTO_UDP as u8, 7, 32 / 8, 20 + 24);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let a = need(m_devget(&first, 0), "the first fragment");
+                let b = need(m_devget(&last, 0), "the last fragment");
+                ipv4_input::<G>(lo, black_box(a), Some(&mut ns), &net);
+                ipv4_input::<G>(lo, black_box(b), Some(&mut ns), &net);
+                drop(unstash());
+            }
+            t.elapsed()
+        });
+        report(IP_INPUT_ROWS[2], r);
+    }
+    drop(net);
+    drop(w);
 }
 
 /// The ARP rows (N6.4b): `arpresolve` of a resolved entry (the C's `rt_expire` test, the
