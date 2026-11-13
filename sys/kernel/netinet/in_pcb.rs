@@ -3111,14 +3111,14 @@ mod tests {
         let (u0, r0) = (unlinks(), removals());
 
         // pf_inp_link (pf's, under pf_inp_mtx): the state key's word in the pcb.
-        inp.inp_pf_sk.set(0x2000);
+        inp.inp_pf_sk.set(testpf::key(), 0x2000);
         assert!(!in_pcbdisconnect(&inp), "a file still holds the socket");
         assert_eq!(inp.inp_pf_sk.get(), 0, "pf_inp_unlink emptied it");
         assert_eq!(pf.last_unlinked.load(Ordering::Relaxed), 0x2000);
         assert_eq!((unlinks(), removals()), (u0 + 1, r0 + 1));
 
         // in_pcbdetach: the divert state removed, the key unlinked, before the pcb goes.
-        inp.inp_pf_sk.set(0x3000);
+        inp.inp_pf_sk.set(testpf::key(), 0x3000);
         testinet::release(so, inp);
         assert_eq!(pf.last_unlinked.load(Ordering::Relaxed), 0x3000);
         assert_eq!((unlinks(), removals()), (u0 + 2, r0 + 2));

@@ -10033,7 +10033,7 @@ fn pf_inp_unlink_slot(slot: &kernel::net::pf_hooks::PfSlot) {
     let inp = sk.sk_inp.get();
     kassert!(inp.is_some_and(|i| ptr::eq(&i.inp_pf_sk, slot)));
     sk.sk_inp.set(None);
-    slot.set(0);
+    slot.set(pf_key(), 0);
     mtx_leave(&PF_INP_MTX);
 
     pf_state_key_unref(Some(sk));
@@ -10315,8 +10315,24 @@ fn inpcb_pf_sk(inp: &Inpcb) -> Option<&'static PfStateKey> {
 
 /// `inp->inp_pf_sk = sk`.
 fn inpcb_set_pf_sk(inp: &Inpcb, sk: Option<&'static PfStateKey>) {
-    inp.inp_pf_sk
-        .set(sk.map_or(0, |k| ptr::from_ref(k).expose_provenance()));
+    inp.inp_pf_sk.set(
+        pf_key(),
+        sk.map_or(0, |k| ptr::from_ref(k).expose_provenance()),
+    );
+}
+
+/// The key `mbinit`'s `register_pf` gave pf, the only writer of the pcbs' pf words.
+pub(crate) static PF_KEY: hal::once::OnceStatic<&'static kernel::net::pf_hooks::PfKey> =
+    hal::once::OnceStatic::new();
+
+/// [`PF_KEY`]: `panic(9)` before pf registered (no pcb is linked before the first packet).
+fn pf_key() -> &'static kernel::net::pf_hooks::PfKey {
+    match PF_KEY.get() {
+        Some(k) => k,
+        None => panic(format_args!(
+            "pf: a pcb's pf word written before registration"
+        )),
+    }
 }
 
 /// `pf_state_key_link_inpcb`: links the key and the socket to each other.

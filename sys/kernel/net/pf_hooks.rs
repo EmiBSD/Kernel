@@ -139,9 +139,19 @@ pub struct PfDivert {
     pub type_: u8,
 }
 
+/// The capability to write a [`PfSlot`]: [`register_pf`] gives its one value to the
+/// registrant, once (`bsd`'s pf, which dereferences the word it writes); nothing else in the
+/// kernel can name or make one (a private field, a private static). The `TdbKey` shape
+/// (`kernel::net::ipsec_hooks`).
+pub struct PfKey(());
+
+/// The one [`PfKey`].
+static PF_KEY: PfKey = PfKey(());
+
 /// `inp_pf_sk`: pf's word in a protocol control block (\[L\] `pf_inp_mtx`, pf's): the
-/// address of the state key the socket's packets match, which only pf writes and reads, the
-/// `pkthdr_pf.statekey` shape. The kernel hands it to pf's legs and never reads it.
+/// address of the state key the socket's packets match, which only pf writes (with its
+/// [`PfKey`]) and reads, the `pkthdr_pf.statekey` shape. The kernel hands it to pf's legs and
+/// never reads it.
 pub struct PfSlot(AtomicUsize);
 
 impl PfSlot {
@@ -156,9 +166,9 @@ impl PfSlot {
         self.0.load(Ordering::Acquire)
     }
 
-    /// Stores `w`.
+    /// Stores `w`, for the holder of pf's key only (`pf_inp_link`, `pf_inp_unlink`).
     #[inline]
-    pub fn set(&self, w: usize) {
+    pub fn set(&self, _key: &PfKey, w: usize) {
         self.0.store(w, Ordering::Release);
     }
 }
@@ -172,10 +182,13 @@ impl Default for PfSlot {
 /// pf's legs, once registered.
 static PF: OnceStatic<&'static dyn Pf> = OnceStatic::new();
 
-/// Registers pf's legs, once (`bsd`'s pf, at boot before the first packet); a second call
-/// keeps the first and names it.
-pub fn register_pf(imp: &'static dyn Pf) -> Result<(), AlreadyRegistered> {
-    PF.set(imp).map_err(|_| AlreadyRegistered("Pf"))
+/// Registers pf's legs, once (`bsd`'s pf, at boot before the first packet), and gives the
+/// registrant the [`PfKey`] that writes the pcbs' pf words; a second call keeps the first and
+/// names it.
+pub fn register_pf(imp: &'static dyn Pf) -> Result<&'static PfKey, AlreadyRegistered> {
+    PF.set(imp)
+        .map(|()| &PF_KEY)
+        .map_err(|_| AlreadyRegistered("Pf"))
 }
 
 /// pf's legs, `None` before registration (`NPF == 0`: nothing to link or unlink).
@@ -192,7 +205,9 @@ pub(crate) fn pf() -> Option<&'static dyn Pf> {
 pub(crate) mod testpf {
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
-    use super::{Pf, PfSlot};
+    use std::sync::OnceLock;
+
+    use super::{Pf, PfKey, PfSlot};
     use crate::net::mbuf::PkthdrPf;
 
     /// The counting pf.
@@ -240,7 +255,7 @@ pub(crate) mod testpf {
         fn inp_unlink(&self, slot: &PfSlot) {
             let w = slot.get();
             if w != 0 {
-                slot.set(0);
+                slot.set(key(), 0);
                 self.last_unlinked.store(w, Ordering::Relaxed);
                 self.inp_unlinks.fetch_add(1, Ordering::Relaxed);
             }
@@ -256,10 +271,22 @@ pub(crate) mod testpf {
         last_unlinked: AtomicUsize::new(0),
     };
 
-    /// [`COUNTING_PF`] registered (by the first test that asks).
+    /// The key [`register`] got.
+    static KEY: OnceLock<&'static PfKey> = OnceLock::new();
+
+    /// [`COUNTING_PF`] registered (by the first test that asks), its key kept.
     pub(crate) fn register() -> &'static CountingPf {
-        let _ = super::register_pf(&COUNTING_PF);
+        KEY.get_or_init(|| match super::register_pf(&COUNTING_PF) {
+            Ok(k) => k,
+            Err(e) => std::panic!("the test binary's pf was registered by another: {e:?}"),
+        });
         &COUNTING_PF
+    }
+
+    /// The test pf's [`PfKey`] (as pf's `pf_inp_link` writes a pcb's word).
+    pub(crate) fn key() -> &'static PfKey {
+        register();
+        KEY.get().copied().unwrap_or_else(|| std::unreachable!())
     }
 }
 /* </CODE> */

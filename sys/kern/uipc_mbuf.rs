@@ -134,7 +134,9 @@ pub fn mbinit() {
     k::mbinit(&crate::conf::param::NMBCLUST);
     // pf's legs of the mbuf (the C's `NPF > 0` blocks), bridges.toml's `Pf` row: `bsd`'s pf
     // registers once; a second `mbinit` (the host tests') keeps the first.
-    let _ = kernel::net::pf_hooks::register_pf(&crate::net::pf::BSD_PF);
+    if let Ok(k) = kernel::net::pf_hooks::register_pf(&crate::net::pf::BSD_PF) {
+        let _ = crate::net::pf::PF_KEY.set(k);
+    }
 }
 
 /// `mbcpuinit`: the pool caches per CPU.
