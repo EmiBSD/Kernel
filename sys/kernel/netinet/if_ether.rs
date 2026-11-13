@@ -627,10 +627,8 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
             // route handle go.
             drop(la);
         }
-        RTM_INVALIDATE => {
-            if !rt.rt_flags.isset(RTF_LOCAL) {
-                arpinvalidate(rt);
-            }
+        RTM_INVALIDATE if !rt.rt_flags.isset(RTF_LOCAL) => {
+            arpinvalidate(rt);
         }
         _ => {}
     }
@@ -1143,19 +1141,18 @@ pub fn arpcache(
                     ),
                 );
                 return false;
-            } else {
-                let s = ether_sprintf(&ea.arp_sha);
-                log(
-                    LOG_INFO,
-                    format_args!(
-                        "arp info overwritten for {} by {} on {}\n",
-                        InAddrFmt(spa),
-                        Str(&s),
-                        Str(&ifp.if_xname.get())
-                    ),
-                );
-                rt.rt_expire().set(1); // no longer static
             }
+            let s = ether_sprintf(&ea.arp_sha);
+            log(
+                LOG_INFO,
+                format_args!(
+                    "arp info overwritten for {} by {} on {}\n",
+                    InAddrFmt(spa),
+                    Str(&s),
+                    Str(&ifp.if_xname.get())
+                ),
+            );
+            rt.rt_expire().set(1); // no longer static
             changed = true;
         }
     } else if !if_isconnected(ifp, rt.rt_ifidx.get()) {
@@ -1381,7 +1378,7 @@ fn revarp_reply(ifp: &Ifnet, m: &MbufBox, ar: &EtherArp) {
         REVARP_FINISHED.store(true, Ordering::Relaxed);
     }
     // wake: Do wakeup every time in case it was missed.
-    hal::sleep::wakeup(&REVARP_MYIP);
+    hal::sleep::wakeup(&raw const REVARP_MYIP);
 }
 
 /// `revarprequest(ifp)`: send a RARP request for the ip address of the specified interface.
@@ -1429,7 +1426,8 @@ pub fn revarpwhoarewe(ifp: &'static Ifnet) -> Result<(InAddr, InAddr), Errno> {
     while count > 0 {
         count -= 1;
         revarprequest(ifp);
-        let result = hal::sleep::tsleep_nsec(&REVARP_MYIP, PSOCK, "revarp", REVARP_WAIT_NSEC);
+        let result =
+            hal::sleep::tsleep_nsec(&raw const REVARP_MYIP, PSOCK, "revarp", REVARP_WAIT_NSEC);
         if result != Err(Errno::EWOULDBLOCK) {
             break;
         }

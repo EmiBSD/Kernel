@@ -940,7 +940,7 @@ pub fn ip_ctloutput<G: ProcGlue>(
         match op {
             PRCO_SETOPT => ip_setopt(inp, options, p, rtableid, optname, m.as_deref(), net),
             PRCO_GETOPT => match m {
-                Some(m) => ip_getopt(inp, options, optname, m),
+                Some(m) => ip_getopt(inp, options.as_ref(), optname, m),
                 None => kpanic(format_args!("ip_ctloutput: PRCO_GETOPT without an mbuf")),
             },
             _ => Ok(()),
@@ -1095,7 +1095,7 @@ fn ip_setopt<G: ProcGlue>(
 /// `ip_ctloutput`'s `PRCO_GETOPT` half: the answer in `m`.
 fn ip_getopt<G: ProcGlue>(
     inp: &Inpcb<G>,
-    options: &Option<MbufBox>,
+    options: Option<&MbufBox>,
     optname: i32,
     m: &mut Mbuf,
 ) -> Result<(), Errno> {
@@ -1176,7 +1176,7 @@ pub fn ip_pcbopts(pcbopt: &mut Option<MbufBox>, m: Option<&Mbuf>) -> Result<(), 
     }
 
     // Don't sleep because NET_LOCK() is hold.
-    let Some(mut n) = m_get(M_DONTWAIT, i32::from(MT_SOOPTS)) else {
+    let Some(mut n) = m_get(M_DONTWAIT, MT_SOOPTS) else {
         return Err(Errno::ENOBUFS);
     };
     // The struct ipoption, zeroed (0 = IPOPT_EOL, needed for padding): the first hop, then
@@ -1313,29 +1313,26 @@ pub fn ip_setmoptions(
     rtableid: u32,
     net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
-    let imo = match imop {
-        Some(imo) => imo,
-        None => {
-            // No multicast option buffer attached to the pcb; allocate one and initialize to
-            // default values.
-            let Some(imo) = MBox::new(
-                M_IPMOPTS,
-                M_WAITOK,
-                IpMoptions::output(0, IP_DEFAULT_MULTICAST_TTL, IP_DEFAULT_MULTICAST_LOOP),
-            ) else {
-                kpanic(format_args!("ip_setmoptions: malloc(M_WAITOK)"));
-            };
-            let imo = imop.insert(imo);
-            let Some(immp) =
-                MArray::new(M_IPMOPTS, M_WAITOK, usize::from(IP_MIN_MEMBERSHIPS), |_| {
-                    None
-                })
-            else {
-                kpanic(format_args!("ip_setmoptions: mallocarray(M_WAITOK)"));
-            };
-            imo.imo_membership = Some(immp);
-            imo
-        }
+    let imo = if let Some(imo) = imop {
+        imo
+    } else {
+        // No multicast option buffer attached to the pcb; allocate one and initialize to
+        // default values.
+        let Some(imo) = MBox::new(
+            M_IPMOPTS,
+            M_WAITOK,
+            IpMoptions::output(0, IP_DEFAULT_MULTICAST_TTL, IP_DEFAULT_MULTICAST_LOOP),
+        ) else {
+            kpanic(format_args!("ip_setmoptions: malloc(M_WAITOK)"));
+        };
+        let imo = imop.insert(imo);
+        let Some(immp) = MArray::new(M_IPMOPTS, M_WAITOK, usize::from(IP_MIN_MEMBERSHIPS), |_| {
+            None
+        }) else {
+            kpanic(format_args!("ip_setmoptions: mallocarray(M_WAITOK)"));
+        };
+        imo.imo_membership = Some(immp);
+        imo
     };
 
     let error = match optname {
