@@ -6485,7 +6485,8 @@ adapted_by = ["sys/crypto/blake2s.rs"]
 [[module]]
 rust = "sys/netinet/icmp6.rs"
 lz = ["sys/netinet/icmp6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/netinet_icmp6.rs"]
 
 [[module]]
 rust = "sys/netinet/icmp_var.rs"
@@ -6719,7 +6720,7 @@ adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_cksum.rs"
@@ -6737,7 +6738,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -8695,7 +8696,52 @@ rust = "sys/hal/sys/netinet6_in6.rs"
 crate = "hal"
 lz = ["sys/netinet6/in6.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED; bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED. N6.5a: the whole userland half of netinet6/in6.h moved from bsd's in6.rs, which re-exports it (one In6Addr and SockaddrIn6): struct ipv6_mreq (20), in6_pktinfo (20), ip6_mtuinfo (32) as abi_pod! images, In6Addr's views, every IPV6_* option name and value, IPV6CTL_* with CTL_IPV6PROTO_NAMES and IPV6CTL_NAMES, IN6ADDR_*, IN6MASK*, SA6_ANY, the IN6_IS_ADDR_*/IN6_IS_SCOPE_* predicates as #[inline] const fns; LZ's five header tests (the reference-backed one included)"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_in6_var.rs"
+crate = "hal"
+lz = ["sys/netinet6/in6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/in6_var.h's userland part as abi_pod! images with const size asserts: in6_addrlifetime (24), in6_ifstat (160), icmp6_ifstat (272), in6_ifreq (288, its union the 272 bytes read by copy through LZ's accessor names), in6_aliasreq (128, ifra_addr the union's address member); the SIOC*_IN6 commands, IN6_IFF_*; LZ's reference test and two layout tests; the _KERNEL part is kernel::netinet6::in6_var's (bsd's until N6.5a's addresses commit)"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_var.rs::In6IfreqIfru"
+native = ["In6Ifreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_var.rs::In6AliasreqIfrau"
+native = ["In6Aliasreq"]
+kind = "merged"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_ip6_var.rs"
+crate = "hal"
+lz = ["sys/netinet6/ip6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/ip6_var.h's userland part: struct ip6stat (401 u64, net.inet6.ip6.stats) as an abi_pod! image and the indices of its words, enum ip6stat_counters (the C's _KERNEL part, beside the image); LZ's counters test"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_mld6.rs"
+crate = "hal"
+lz = ["sys/netinet6/mld6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/mld6.h whole: mldv2_query (28), mldv2_report (8), mldv2_record (20) as abi_pod! images, the MLD_* constants, MLD_MINLEN, MLD_V2_QUERY_MINLEN, the MLD_MRC_*/MLD_QQIC_*/MLD_QRESV/MLD_SFLAG/MLD_QRV macros as const fns; a layout test"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_nd6.rs"
+crate = "hal"
+lz = ["sys/netinet6/nd6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/nd6.h's userland part: ND6_LLINFO_*, ND6_INFINITE_LIFETIME, nd_ifinfo (8), in6_nbrinfo (56), in6_ndireq (24) as abi_pod! images (ndp(8)'s requests); bsd's nd6.rs keeps its copies until N6.5b"
+
+[[module]]
+rust = "sys/hal/sys/netinet_icmp6.rs"
+crate = "hal"
+lz = ["sys/netinet/icmp6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet/icmp6.h's userland part (bsd's icmp6.rs re-exports it): the ICMP6_*, MLD*, ND_*, NI_*, RPM_*, ICMPV6CTL_* constants with ICMPV6CTL_NAMES, RTF_PROBEMTU, and the 24 structures as abi_pod! images with LZ's size asserts (icmp6_hdr 8 with icmp6_dataun as its four bytes, no union and no unsafe; mld_hdr, the five nd_* messages, the seven nd_opt_*, the node-information and router-renumbering images, icmp6_filter 32, icmp6stat 542 u64), LZ's accessor names and enum icmp6stat_counters; LZ's four tests"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip.rs"
@@ -8714,7 +8760,7 @@ rust = "sys/hal/sys/netinet_ip6.rs"
 crate = "hal"
 lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40). N6.5a: netinet/ip6.h whole (N6.4a's R3): the twelve extension-header and option images (ip6_hdr_pseudo 40, ip6_ext, ip6_hbh, ip6_dest, ip6_opt 2, ip6_opt_jumbo 6, ip6_opt_nsap 4, ip6_opt_tunnel 3, ip6_opt_router 4, ip6_rthdr 4, ip6_rthdr0 8, ip6_frag 8) as abi_pod!s, IPV6_*, IP6TOS_*, IP6OPT_*, IP6_ALERT_*, IP6F_* and IP6OPT_TYPE; Ip6Hdr's vfc/hops accessors; LZ's four tests; ip6_exthdr_get stays with the mbufs (bsd's ip6.rs, which keeps its copy until N6.5c/d)"
 
 
 [[module]]

@@ -193,17 +193,6 @@ use kernel::netinet::in_pcb as k;
 /// `zeroin6_addr`: the unspecified address.
 pub static ZEROIN6_ADDR: In6Addr = IN6ADDR_ANY_INIT;
 
-impl k::Addr6 for In6Addr {
-    #[inline]
-    fn from_bytes(b: [u8; 16]) -> Self {
-        In6Addr::new(b)
-    }
-    #[inline]
-    fn to_bytes(&self) -> [u8; 16] {
-        self.s6_addr
-    }
-}
-
 impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
     fn from_bytes(b: [u8; 40]) -> Self {
         let mut src = [0; 16];
