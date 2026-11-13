@@ -340,3 +340,4 @@ metadata:
 - lz check's item parser misses `queue_adapter!`-made types as it misses `pin_adapter!`'s: a `[[module.fn]]` row for one is refused ("defines no item") (N6.5a's `In6IfaddrList`).
 - Appending to a file whose last zone is CODE (a bench file): insert before `/* </CODE> */`, or the hook's lz check reports every new line as text outside the zones (N6.5a).
 - `hal::percpu::Counters<N>` is MAXCPUS (256) slots by value: IPv6's 401 and ICMPv6's 541 counters are 1.86 MiB of .bss where LZ's arrays were 7.4 KiB; compute the size before choosing it for a large statistic and flag it (N6.5a R7).
+- `docs/ROADMAP.md` is not the redesigner's to edit: an N12 deferral the review asks for goes in the commit body and the report for the coordinator to write (N6.5a review S3).
