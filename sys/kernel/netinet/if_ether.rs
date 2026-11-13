@@ -2072,7 +2072,9 @@ mod tests {
             let m =
                 m_devget(&arp_bytes(ARPOP_REVREPLY, PEER, GATEWAY, tha, ADDR), 0).expect("an mbuf");
             m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-            revarpinput::<TestGlue>(ifp, m, None);
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            revarpinput::<TestGlue>(ifp, m, None, &net);
         };
         // Nobody is waiting: the reply is dropped.
         deliver(OURS);
