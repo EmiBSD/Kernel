@@ -1592,8 +1592,7 @@ pub fn wg_socket_open(
 
         solock(s);
         if let Some(inp) = sotoinpcb(s) {
-            inp.inp_upcall.set(Some(wg_input));
-            inp.inp_upcall_arg.set(upcall_arg);
+            let _ = inp.set_upcall(&WG_UPCALL, upcall_arg.expose_provenance());
         }
         let mut ret = Ok(());
         sounlock(s);
@@ -3177,6 +3176,10 @@ pub fn wg_index_drop(arg: *mut c_void, key0: u32) {
     // SAFETY: the index left the table above and is on no unused list (it was in use).
     unsafe { peer.p_unused_index.insert_head(iter) };
 }
+
+/// `wg_input` as the UDP pcb's upcall entry (`wg_bind`'s `inp->inp_upcall = wg_input`).
+static WG_UPCALL: crate::netinet::in_pcb::InpUpcallEntry =
+    crate::netinet::in_pcb::InpUpcallEntry(wg_input);
 
 /// `wg_input`: the UDP socket's upcall: queues a received datagram (`hlen` bytes of IP and UDP
 /// header first) as a handshake message or a data message. Always consumes the packet.

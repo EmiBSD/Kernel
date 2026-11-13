@@ -159,8 +159,8 @@ use crate::machine::cpu::{Cpu, CpuInfo, cpu_info_foreach, curproc};
 use crate::machine::param::MachineInfo;
 use crate::netinet::in_::IPPROTO_TCP;
 use crate::netinet::in_pcb::{
-    Inpcb, InpcbIterator, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, in_pcbsolock,
-    in_pcbsounlock, sotoinpcb,
+    Inpcb, Inpcbtable, in_pcb_iterator, in_pcb_iterator_abort, in_pcbsolock, in_pcbsounlock,
+    sotoinpcb,
 };
 use crate::netinet::ip_divert::DIVBTABLE;
 use crate::netinet::raw_ip::RAWCBTABLE;
@@ -843,7 +843,7 @@ fn fill_file_socket(
         };
         soassertlocked(so);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get());
+            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
         kf.inp_laddru[0] = inpcb.inp_laddr.get().s_addr;
@@ -862,21 +862,21 @@ fn fill_file_socket(
         };
         soassertlocked(so);
         if show_pointers {
-            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get());
+            kf.inp_ppcb = ptrtoint64(inpcb.inp_ppcb.get_mut());
         }
         kf.inp_lport = u32::from(inpcb.inp_lport.get());
-        let laddr6 = inpcb.inp_laddr6.get();
+        let laddr6: crate::netinet6::in6::In6Addr = inpcb.inp_laddr6.get();
         for (i, w) in kf.inp_laddru.iter_mut().enumerate() {
             *w = laddr6.s6_addr32(i);
         }
         kf.inp_fport = u32::from(inpcb.inp_fport.get());
-        let faddr6 = inpcb.inp_faddr6.get();
+        let faddr6: crate::netinet6::in6::In6Addr = inpcb.inp_faddr6.get();
         for (i, w) in kf.inp_faddru.iter_mut().enumerate() {
             *w = faddr6.s6_addr32(i);
         }
         kf.inp_rtableid = inpcb.inp_rtableid.get();
         if so.so_type() == SOCK_RAW {
-            kf.inp_proto = u32::from(inpcb.inp_ipv6.get().ip6_nxt);
+            kf.inp_proto = u32::from(inpcb.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt);
         }
         if i32::from(so.proto().protocol()) == IPPROTO_TCP {
             fill_file_tcpcb(kf, inpcb);
@@ -975,24 +975,22 @@ impl FileWalk<'_> {
     /// `FILLINPTABLE(table)`: the sockets of a protocol control block table, which also
     /// holds the closed connections no file refers to any more.
     fn fillinptable(&mut self, table: &Inpcbtable) -> Result<(), Errno> {
-        let iter = InpcbIterator::new();
+        let iter = core::pin::pin!(Inpcb::marker());
         let mut inp: Option<&'static Inpcb> = None;
         let mut error = Ok(());
 
-        mtx_enter(&table.inpt_mtx);
+        let mut g = table.lock();
         loop {
-            // SAFETY: the table mutex is held; `iter` stays in place on this frame and serves
-            // this walk only, until the iterator returns None or the walk is aborted below.
-            inp = unsafe { in_pcb_iterator(table, inp, &iter) };
+            inp = in_pcb_iterator(table, &mut g, inp, iter.as_ref());
             let Some(i) = inp else {
                 break;
             };
             if self.room() {
-                mtx_leave(&table.inpt_mtx);
+                drop(g);
                 net_lock_shared();
                 let Some(so) = in_pcbsolock(i) else {
                     net_unlock_shared();
-                    mtx_enter(&table.inpt_mtx);
+                    g = table.lock();
                     continue;
                 };
                 fill_file(
@@ -1009,11 +1007,9 @@ impl FileWalk<'_> {
                 in_pcbsounlock(Some(i), Some(so));
                 net_unlock_shared();
                 let r = copyout(&self.kf.as_bytes()[..self.outsize], self.dp);
-                mtx_enter(&table.inpt_mtx);
+                g = table.lock();
                 if let Err(e) = r {
-                    // SAFETY: the mutex is held and `iter` is the iterator of this walk,
-                    // whose last answer was `i`.
-                    unsafe { in_pcb_iterator_abort(table, Some(i), &iter) };
+                    in_pcb_iterator_abort(table, &mut g, Some(i), iter.as_ref());
                     error = Err(e);
                     break;
                 }
@@ -1023,7 +1019,7 @@ impl FileWalk<'_> {
             }
             self.needed += self.elem_size;
         }
-        mtx_leave(&table.inpt_mtx);
+        drop(g);
         error
     }
 

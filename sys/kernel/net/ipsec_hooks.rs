@@ -143,6 +143,11 @@ pub trait Ipsec: Sync {
 /// IPsec's legs, once registered.
 static IPSEC: OnceStatic<&'static dyn Ipsec> = OnceStatic::new();
 
+/// \[a\] `udpencap_port`: triggers decapsulation (`ipsec_output.c`'s global, the
+/// `net.inet.esp.udpencap_port` sysctl's; read by `in_baddynamic`, N6.4c1: here since the
+/// kernel's pcb reads it, `bsd`'s IPsec re-exports it until N8).
+pub static UDPENCAP_PORT: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(4500);
+
 /// The one [`TdbKey`], given to the legs' registrant.
 static TDB_KEY: TdbKey = TdbKey(());
 

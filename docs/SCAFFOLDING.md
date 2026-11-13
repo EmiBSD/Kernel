@@ -126,6 +126,19 @@ Locations are on `main` at the commit that last edited this file.
 | `struct sockaddr_in`'s and `sockaddr_in6`'s sizes and address offsets as constants (`SIN_LEN`, `SIN_ADDR`, `SIN6_LEN`, `SIN6_ADDR`) and the copy `M_RTABLE` | `sys/kernel/net/route.rs`, `sys/kernel/net/rtable.rs` | netinet's ABI types are not in `hal::sys` yet; `<sys/malloc.h>`'s types are `bsd`'s | N6.4 (`hal::sys`'s netinet types), N9 (`malloc` types) |
 | The routing tables' test hooks: `rtable_test_reset` (`cfg(any(test, feature = "doubles"))`) and `rtable_init_doms` (the routing domains given, the tests' entry; `rtable_init` reads them from `domains[]`); the routing socket's test tap (`kernel::net::rtsock::tap`, `cfg(test)`: the announcements recorded as if a socket listened, for the routes' tests, which have no socket layer) | `sys/kernel/net/rtable.rs`, `sys/kernel/net/rtsock.rs` | the host tests load fresh kernel memory per test and have no `domains[]` of their own | `rtable_test_reset` and the tap stay (testing.md); `rtable_init_doms` with N9's glue |
 
+## The protocol control block's scaffolding (N6.4c1)
+
+| What | Where | Why | Removed by |
+|---|---|---|---|
+| `inp_refcnt` beside the handles' count, the anchor handle and the `LegacyKey` | `sys/kernel/netinet/in_pcb.rs` (`Inpcb::legacy_ref`, `legacy_rele`, `LegacyKey`); `sys/netinet/in_pcb.rs` (`in_pcbref`, `in_pcbunref`, `inp_static`, `legacy_hold`) | `bsd`'s tcp, udp, raw IP, divert and pf hold a pcb as a `&'static Inpcb` with the C's count | N6.6 (the transports) and N8 (pf's `sk_inp` and `pf.inp`) |
+| `bsd`'s words in the kernel's pcb: `inp_options`, `inp_moptions`, `inp_outputopts6`, `inp_moptions6`, `inp_icmp6filt`, `inp_ppcb` (`hal::link::PtrWord`), read through `bsd`'s `InpcbLegacy` trait | `sys/kernel/netinet/in_pcb.rs` (`Inpcb`), `sys/netinet/in_pcb.rs` (`InpcbLegacy`) | The options are `bsd`'s allocations until the IP socket options (N6.4c1's next commit), IPv6 (N6.5) and TCP (N6.6a) move | N6.4c1's IP socket options (`inp_moptions`), N6.5, N6.6a |
+| The IPv6 half of `in_pcbbind_locked`, `in_pcbconnect`, `in_setsockaddr`, `in_pcbrtentry`, `in_pcbset_addr` in `bsd`, chosen by `bsd`'s adapters (`in6_pcbbind_locked`, the `INP_IPV6` dispatch) | `sys/netinet/in_pcb.rs`, `sys/netinet6/in6_pcb.rs` | They need `in6_src.c`, the IPv6 address flags and the scope zones, still `bsd`'s | N6.5 |
+| `in_pcbconnect`'s and `in_pcbselsrc`'s `mcast_ifidx` parameter (the socket's `imo_ifidx`, read by `bsd`) | `sys/kernel/netinet/in_pcb.rs` | The multicast options are `bsd`'s word until the IP socket options move | N6.4c1's IP socket options |
+| The flow id of a connected pcb set by `bsd`'s adapters after `in_pcbconnect`/`in_pcbset_addr` (`stoeplitz_ip4port`) | `sys/netinet/in_pcb.rs` (`set_flowid4`) | `stoeplitz` is `bsd`'s | When `net/toeplitz` moves (N6.6) |
+| `in_pcbdetach`'s `free_opts` closure (`bsd`'s options freed at the C's point) | `sys/kernel/netinet/in_pcb.rs` (`in_pcbdetach`) | As the words above | With them |
+| The `Pf` legs `find_divert`, `inp_remove_divert_state`, `inp_unlink` and `PfSlot` (`inp_pf_sk` as pf's word) | `sys/kernel/net/pf_hooks.rs`, `sys/net/pf.rs` (`BsdPf`) | pf is `bsd`'s | N8 |
+| `UDPENCAP_PORT` in the kernel's `ipsec_hooks` (`in_baddynamic` reads it), re-exported by `bsd`'s `ipsec_output.rs` | `sys/kernel/net/ipsec_hooks.rs` | IPsec is `bsd`'s | N8 |
+
 ## The kernel's socket entry points kept for `bsd`'s protocols (N6.2a)
 
 | What | Where | Why | Removed by |

@@ -156,6 +156,7 @@ use crate::net::if_var::Netstack;
 use crate::net::route::{RTF_HOST, RTV_MTU};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     InpNotifyFn, Inpcb, in_pcbdetach, in_pcbinit, in_pcblookup, in_pcbnotifyall, in_pcbrtchange,
     in_pcbrtentry, in_pcbsolock, in_pcbsounlock, in_pcbunref,
@@ -606,7 +607,7 @@ pub fn tcp_respond(
                 mbuf_put(m, ipoff, ip6);
                 mbuf_put(m, thoff, th);
             }
-            let opts = tp.and_then(|tp| tp.t_inpcb.inp_outputopts6.get()).map(|o| {
+            let opts = tp.and_then(|tp| tp.t_inpcb.outputopts6_ptr()).map(|o| {
                 // SAFETY: the options are the socket's own allocation (`ip6_setpktopts`),
                 // freed only under the socket lock the caller holds with `tp`.
                 unsafe { o.as_ref() }
@@ -699,7 +700,7 @@ pub fn tcp_newtcpcb(inp: &'static Inpcb, wait: i32) -> Option<&'static Tcpcb> {
         #[cfg(feature = "inet6")]
         {
             tp.pf.set(i32::from(PF_INET6));
-            let mut ip6 = inp.inp_ipv6.get();
+            let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
             ip6.ip6_hlim = IP6_DEFHLIM.load(Ordering::Relaxed) as u8;
             inp.inp_ipv6.set(ip6);
         }
@@ -710,7 +711,7 @@ pub fn tcp_newtcpcb(inp: &'static Inpcb, wait: i32) -> Option<&'static Tcpcb> {
         inp.inp_ip.set(ip);
     }
 
-    inp.inp_ppcb.set(raw.cast());
+    inp.inp_ppcb.set(raw.cast_const().cast());
     Some(tp)
 }
 
@@ -755,7 +756,7 @@ pub fn tcp_close(tp: &'static Tcpcb) -> Option<&'static Tcpcb> {
     }
 
     let _ = m_free(tp.t_template.get());
-    inp.inp_ppcb.set(ptr::null_mut());
+    inp.inp_ppcb.set(ptr::null());
     pool_put(&TCPCB_POOL, NonNull::from(tp).cast());
     soisdisconnected(so);
     in_pcbdetach(inp);
@@ -1231,8 +1232,8 @@ pub fn tcp_set_iss_tsm(tp: &Tcpcb) {
     ctx.update(&inp.inp_lport.get().to_ne_bytes());
     ctx.update(&inp.inp_fport.get().to_ne_bytes());
     if tp.pf.get() == i32::from(AF_INET6) {
-        ctx.update(&inp.inp_laddr6.get().s6_addr);
-        ctx.update(&inp.inp_faddr6.get().s6_addr);
+        ctx.update(&inp.inp_laddr6.bytes());
+        ctx.update(&inp.inp_faddr6.bytes());
     } else {
         ctx.update(&inp.inp_laddr.get().s_addr.to_ne_bytes());
         ctx.update(&inp.inp_faddr.get().s_addr.to_ne_bytes());

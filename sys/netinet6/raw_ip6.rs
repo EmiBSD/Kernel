@@ -152,7 +152,6 @@ use core::slice;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::kern_malloc::{free, malloc};
 use crate::kern::kern_sysctl::sysctl_rdstruct;
 use crate::kern::subr_prf::panic;
@@ -171,10 +170,10 @@ use crate::netinet::icmp6::{
     icmp6stat_inc_hist,
 };
 use crate::netinet::in_::{IPPROTO_DONE, IPPROTO_ICMPV6, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_NONE};
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
-    IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, InpNotifyFn, Inpcb, InpcbIterator, Inpcbtable,
-    in_pcb_iterator, in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbref, in_pcbrtchange, in_pcbunref,
-    sotoinpcb,
+    IN6P_CONTROLOPTS, IN6P_MINMTU, INP_IPV6, InpNotifyFn, Inpcb, Inpcbtable, in_pcb_iterator,
+    in_pcballoc, in_pcbdetach, in_pcbinit, in_pcbref, in_pcbrtchange, in_pcbunref, sotoinpcb,
 };
 use crate::netinet::ip6::{
     IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr, ip6_exthdr_get,
@@ -328,7 +327,7 @@ pub fn rip6_input(
     ns: Option<&mut Netstack>,
 ) -> i32 {
     let _ = ns;
-    let iter = InpcbIterator::new();
+    let iter = core::pin::pin!(Inpcb::marker());
     let mut inp: Option<&'static Inpcb> = None;
     let mut last: Option<&'static Inpcb> = None;
     let mut type_: u8 = 0;
@@ -368,10 +367,8 @@ pub fn rip6_input(
             }
         }
     }
-    mtx_enter(&RAWIN6PCBTABLE.inpt_mtx);
-    // SAFETY: the table mutex is held around every call; `iter` lives on this frame until the
-    // walk ends with `None`.
-    while let Some(i) = unsafe { in_pcb_iterator(&RAWIN6PCBTABLE, inp, &iter) } {
+    let mut g = RAWIN6PCBTABLE.lock();
+    while let Some(i) = in_pcb_iterator(&RAWIN6PCBTABLE, &mut g, inp, iter.as_ref()) {
         inp = Some(i);
         kassert!(i.has_flags(INP_IPV6));
 
@@ -384,7 +381,7 @@ pub fn rip6_input(
             continue;
         }
 
-        let nxt = i.inp_ipv6.get().ip6_nxt;
+        let nxt = i.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt;
         if (nxt != 0 || proto == IPPROTO_ICMPV6) && i32::from(nxt) != proto {
             continue;
         }
@@ -399,7 +396,7 @@ pub fn rip6_input(
             continue;
         }
         if proto == IPPROTO_ICMPV6
-            && let Some(filt) = i.inp_icmp6filt.get()
+            && let Some(filt) = i.icmp6filt_ptr()
         {
             // SAFETY: the filter is `rip6_attach`'s allocation, freed only by `rip6_detach`
             // after the control block left this table's walks.
@@ -425,18 +422,18 @@ pub fn rip6_input(
         }
 
         if let Some(l) = last {
-            mtx_leave(&RAWIN6PCBTABLE.inpt_mtx);
+            drop(g);
 
             if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
                 rip6_sbappend(l, n, *offp, &rip6src);
             }
             in_pcbunref(Some(l));
 
-            mtx_enter(&RAWIN6PCBTABLE.inpt_mtx);
+            g = RAWIN6PCBTABLE.lock();
         }
         last = in_pcbref(Some(i));
     }
-    mtx_leave(&RAWIN6PCBTABLE.inpt_mtx);
+    drop(g);
 
     let Some(last) = last else {
         if proto != IPPROTO_ICMPV6 {
@@ -556,7 +553,7 @@ pub unsafe fn rip6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
         let inp = in6_pcblookup(&RAWIN6PCBTABLE, &sa6.sin6_addr, 0, &src, 0, rdomain);
 
         let valid = inp.is_some_and(|i| {
-            let n = i.inp_ipv6.get().ip6_nxt;
+            let n = i.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt;
             n != 0 && i32::from(n) == nxt
         });
 
@@ -669,7 +666,7 @@ pub fn rip6_output(
             ip6.ip6_flow = inp.inp_flowinfo() & IPV6_FLOWINFO_MASK;
             ip6.set_ip6_vfc((ip6.ip6_vfc() & !IPV6_VERSION_MASK) | IPV6_VERSION);
             // ip6_plen will be filled in ip6_output.
-            ip6.ip6_nxt = inp.inp_ipv6.get().ip6_nxt;
+            ip6.ip6_nxt = inp.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt;
             ip6.ip6_hlim = in6_selecthlim(inp) as u8;
             mtod_ip6_store(mm, &ip6);
 
@@ -785,7 +782,7 @@ pub fn rip6_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Err
     in_pcballoc(so, &RAWIN6PCBTABLE, wait)?;
 
     let inp = inpcb_of(so);
-    let mut ip6 = inp.inp_ipv6.get();
+    let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
     ip6.ip6_nxt = proto as u8;
     inp.inp_ipv6.set(ip6);
     inp.inp_cksum6.set(-1);
@@ -804,7 +801,7 @@ pub fn rip6_attach(so: &'static Socket, proto: i32, wait: i32) -> Result<(), Err
     // SAFETY: a fresh `malloc(9)` allocation of a filter's size and alignment, written once
     // before the control block publishes it.
     unsafe { filt.as_ptr().write(passall) };
-    inp.inp_icmp6filt.set(Some(filt));
+    inp.set_icmp6filt_ptr(Some(filt));
 
     Ok(())
 }
@@ -817,7 +814,9 @@ pub fn rip6_detach(so: &'static Socket) -> Result<(), Errno> {
         panic(format_args!("rip6_detach"));
     };
     // MROUTING: ip6_mrouter_done(so); not configured.
-    if let Some(filt) = inp.inp_icmp6filt.take() {
+    let filt = inp.icmp6filt_ptr();
+    inp.set_icmp6filt_ptr(None);
+    if let Some(filt) = filt {
         free(filt.cast(), M_PCB, size_of::<Icmp6Filter>());
     }
 
@@ -841,9 +840,9 @@ pub fn rip6_bind(so: &'static Socket, nam: &'static Mbuf, p: &Proc) -> Result<()
 
     in6_pcbaddrisavail(inp, &mut addr, 0, p)?;
 
-    mtx_enter(&RAWIN6PCBTABLE.inpt_mtx);
-    inp.inp_laddr6.set(addr.sin6_addr);
-    mtx_leave(&RAWIN6PCBTABLE.inpt_mtx);
+    let g = RAWIN6PCBTABLE.lock();
+    inp.set_laddr6(&g, addr.sin6_addr);
+    drop(g);
 
     Ok(())
 }
@@ -860,10 +859,10 @@ pub fn rip6_connect(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno
     let mut in6a = In6Addr::default();
     in6_pcbselsrc(&mut in6a, &addr, inp, inp_outputopts6(inp))?;
 
-    mtx_enter(&RAWIN6PCBTABLE.inpt_mtx);
-    inp.inp_laddr6.set(in6a);
-    inp.inp_faddr6.set(addr.sin6_addr);
-    mtx_leave(&RAWIN6PCBTABLE.inpt_mtx);
+    let g = RAWIN6PCBTABLE.lock();
+    inp.set_laddr6(&g, in6a);
+    inp.set_faddr6(&g, addr.sin6_addr);
+    drop(g);
     soisconnected(so);
 
     Ok(())
@@ -880,9 +879,9 @@ pub fn rip6_disconnect(so: &'static Socket) -> Result<(), Errno> {
     }
 
     soisdisconnected(so);
-    mtx_enter(&RAWIN6PCBTABLE.inpt_mtx);
-    inp.inp_faddr6.set(IN6ADDR_ANY);
-    mtx_leave(&RAWIN6PCBTABLE.inpt_mtx);
+    let g = RAWIN6PCBTABLE.lock();
+    inp.set_faddr6(&g, IN6ADDR_ANY);
+    drop(g);
 
     Ok(())
 }
@@ -1015,10 +1014,7 @@ mod tests {
 
     /// Replaces the ICMPv6 filter of `so`'s control block, as `setsockopt(ICMP6_FILTER)` does.
     fn set_filter(so: &Socket, f: Icmp6Filter) {
-        let filt = inpcb_of(so)
-            .inp_icmp6filt
-            .get()
-            .expect("rip6_attach made one");
+        let filt = inpcb_of(so).icmp6filt_ptr().expect("rip6_attach made one");
         // SAFETY: the filter is the control block's allocation, alive until `rip6_detach`;
         // nothing else uses it during the test.
         unsafe { filt.as_ptr().write(f) };
@@ -1080,7 +1076,10 @@ mod tests {
         let ping = raw6_socket(IPPROTO_ICMPV6);
         let other = raw6_socket(IPPROTO_ICMPV6);
         let inp = inpcb_of(ping);
-        assert_eq!(i32::from(inp.inp_ipv6.get().ip6_nxt), IPPROTO_ICMPV6);
+        assert_eq!(
+            i32::from(inp.inp_ipv6.get::<crate::netinet::ip6::Ip6Hdr>().ip6_nxt),
+            IPPROTO_ICMPV6
+        );
         assert_eq!(inp.inp_cksum6.get(), -1);
         assert_eq!(ping.so_rcv.hiwat(), RIP6_RECVSPACE);
         let mut f = Icmp6Filter::default();
@@ -1128,7 +1127,8 @@ mod tests {
 
         // A socket bound to another address does not see it; ICMPv6 is not counted as raw
         // input.
-        inpcb_of(other).inp_laddr6.set(a6("fd00:77::9"));
+        let i = inpcb_of(other);
+        i.set_laddr6(&i.table().lock(), a6("fd00:77::9"));
         let before = rip6stat(Rip6statCounters::Rip6sIpackets);
         let cc = other.so_rcv.cc();
         deliver(packet(IPPROTO_ICMPV6 as u8, &request), IPPROTO_ICMPV6);

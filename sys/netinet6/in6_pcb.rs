@@ -130,6 +130,10 @@
 //! listening lookups. A control block of an `AF_INET6` socket (`INP_IPV6`) uses the
 //! `inp_faddr6`/`inp_laddr6` members of `struct inpcb`.
 //!
+//! The lookups and the IPv6 hash are the kernel's since N6.4c1 (`kernel::netinet6::in6_pcb`,
+//! D-17's first half); this file keeps what needs `in6_src.c`, the address flags and the
+//! scope zones until N6.5, over the kernel's control block and table.
+//!
 //! ## Deviations
 //! - The `struct sockaddr_in6 *` arguments the C modifies in place (`in6_pcbaddrisavail`'s,
 //!   the copy `in6_pcbconnect` makes) are `&mut` locals; mbuf data is read with
@@ -151,25 +155,18 @@
 
 use core::ffi::c_void;
 use core::mem::size_of;
-use core::ptr;
-#[cfg(feature = "diagnostic")]
-use core::sync::atomic::Ordering;
 
 use crate::kassert;
-use crate::kern::kern_lock::{mtx_enter, mtx_leave};
 use crate::kern::subr_prf::panic;
 use crate::machine::cpu::curproc;
 use crate::net::if_::ifa_ifwithaddr;
-use crate::net::pf::pf_find_divert;
-use crate::net::pfvar::{PF_DIVERT_REPLY, PF_DIVERT_TO};
 use crate::net::route::{RTF_HOST, Rtentry, route6_mpath};
 use crate::net::rtable::rtable_l2;
 use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
-    IN_PCBLOCK_GRAB, IN_PCBLOCK_HOLD, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpHash,
-    InpNotifyFn, Inpaddru, Inpcb, InpcbIterator, Inpcbtable, in_pcb_iterator, in_pcbbind_locked,
-    in_pcblookup_local_lock, in_pcbref, in_pcbrehash, in_pcbrtchange, in_pcbsolock, in_pcbsounlock,
-    in_pcbunref, sotoinpcb,
+    INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, InpNotifyFn, Inpaddru, Inpcb,
+    InpcbLegacy, Inpcbtable, in_pcb_iterator, in_pcbrtchange, in_pcbsolock, in_pcbsounlock,
+    sotoinpcb,
 };
 use crate::netinet::ip6::IPV6_FLOWLABEL_MASK;
 use crate::netinet6::in6::{
@@ -186,38 +183,66 @@ use crate::netinet6::ip6_input::INET6CTLERRMAP;
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::sys::endian::htonl;
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, PF_TAG_DIVERTED, PF_TAG_TRANSLATE_LOCALHOST, mtod};
-use crate::sys::mutex::mutex_assert_locked;
+use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
-use crate::sys::queue::ListHead;
-use crate::sys::socket::{SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
+use crate::sys::socket::{SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
 use crate::sys::socketvar::Socket;
-use crate::sys::systm::net_assert_locked;
+use kernel::netinet::in_pcb as k;
 
 /// `zeroin6_addr`: the unspecified address.
 pub static ZEROIN6_ADDR: In6Addr = IN6ADDR_ANY_INIT;
 
-/// A control block found in a table's lists, for as long as the caller keeps it.
-fn inp_static(inp: &Inpcb) -> &'static Inpcb {
-    // SAFETY: a control block in a table's lists is an `inpcb_pool` item that stays
-    // allocated until its last `in_pcbunref`; the callers hold the table mutex while they
-    // look and a reference (`in_pcbref`) for as long as they keep it, as in C.
-    unsafe { &*ptr::from_ref(inp) }
+impl k::Addr6 for In6Addr {
+    #[inline]
+    fn from_bytes(b: [u8; 16]) -> Self {
+        In6Addr::new(b)
+    }
+    #[inline]
+    fn to_bytes(&self) -> [u8; 16] {
+        self.s6_addr
+    }
+}
+
+impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
+    fn from_bytes(b: [u8; 40]) -> Self {
+        let mut src = [0; 16];
+        let mut dst = [0; 16];
+        src.copy_from_slice(&b[8..24]);
+        dst.copy_from_slice(&b[24..40]);
+        Self {
+            ip6_flow: u32::from_ne_bytes([b[0], b[1], b[2], b[3]]),
+            ip6_plen: u16::from_ne_bytes([b[4], b[5]]),
+            ip6_nxt: b[6],
+            ip6_hlim: b[7],
+            ip6_src: In6Addr::new(src),
+            ip6_dst: In6Addr::new(dst),
+        }
+    }
+    fn to_bytes(&self) -> [u8; 40] {
+        let mut b = [0; 40];
+        b[0..4].copy_from_slice(&self.ip6_flow.to_ne_bytes());
+        b[4..6].copy_from_slice(&self.ip6_plen.to_ne_bytes());
+        b[6] = self.ip6_nxt;
+        b[7] = self.ip6_hlim;
+        b[8..24].copy_from_slice(&self.ip6_src.s6_addr);
+        b[24..40].copy_from_slice(&self.ip6_dst.s6_addr);
+        b
+    }
 }
 
 /// `inp->inp_outputopts6` as `ip6_output` and the source selection take it.
 pub(crate) fn inp_outputopts6(inp: &Inpcb) -> Option<&Ip6Pktopts> {
     // SAFETY: the options are `ip6_pcbopt`'s allocation, owned by this control block and
     // replaced or freed only under the socket lock, which the callers hold.
-    inp.inp_outputopts6.get().map(|o| unsafe { o.as_ref() })
+    inp.outputopts6_ptr().map(|o| unsafe { o.as_ref() })
 }
 
 /// `inp->inp_moptions6` as `ip6_output` and `in6_embedscope` take it.
 pub(crate) fn inp_moptions6(inp: &Inpcb) -> Option<&Ip6Moptions> {
     // SAFETY: the options are `ip6_setmoptions`'s allocation, owned by this control block
     // and freed only under the socket lock, which the callers hold.
-    inp.inp_moptions6.get().map(|o| unsafe { o.as_ref() })
+    inp.moptions6_ptr().map(|o| unsafe { o.as_ref() })
 }
 
 /// `curproc`, which the socket requests run as.
@@ -229,7 +254,7 @@ fn curproc_or_panic(func: &str) -> &'static Proc {
 }
 
 /// `in6_pcbhash`: the hash of the complete IPv6 address quadruple in routing domain
-/// `rdomain`.
+/// `rdomain` (the kernel's, over the addresses' bytes).
 pub fn in6_pcbhash(
     table: &Inpcbtable,
     rdomain: u32,
@@ -238,35 +263,30 @@ pub fn in6_pcbhash(
     laddr: &In6Addr,
     lport: u16,
 ) -> u64 {
-    let mut ctx = table.inpt_key.siphash24();
-    let nrdom = rdomain.to_be_bytes();
-
-    ctx.update(&nrdom);
-    ctx.update(&faddr.s6_addr);
-    ctx.update(&fport.to_ne_bytes());
-    ctx.update(&laddr.s6_addr);
-    ctx.update(&lport.to_ne_bytes());
-    ctx.end()
+    kernel::netinet6::in6_pcb::in6_pcbhash(
+        table,
+        rdomain,
+        &faddr.s6_addr,
+        fport,
+        &laddr.s6_addr,
+        lport,
+    )
 }
 
-/// `in6_pcbaddrisavail_lock`: whether `inp` may bind to `sin6` (an address of ours, not
-/// anycast nor unusable, and a port nobody else has, as `wild` and the reuse options
-/// allow); `lock` says whether the table mutex is held (`IN_PCBLOCK_HOLD`) or taken here
-/// (`IN_PCBLOCK_GRAB`). The scope zone is embedded into `sin6`'s address and its scope id
-/// cleared, as the C does in place.
-pub fn in6_pcbaddrisavail_lock(
+/// `in6_pcbaddrisavail_lock(.., IN_PCBLOCK_HOLD)`: whether `inp` may bind to `sin6` (an
+/// address of ours, not anycast nor unusable, and a port nobody else has, as `wild` and the
+/// reuse options allow), the table mutex held (`g`). The scope zone is embedded into
+/// `sin6`'s address and its scope id cleared, as the C does in place.
+pub fn in6_pcbaddrisavail_held(
+    g: &mut InpGuard<'_>,
     inp: &Inpcb,
     sin6: &mut SockaddrIn6,
     wild: i32,
-    p: &Proc,
-    lock: i32,
 ) -> Result<(), Errno> {
     let so = inp.socket();
-    let table = inp.table();
     let lport = sin6.sin6_port;
     let mut reuseport = so.options() & SO_REUSEPORT;
     let wild = wild | INPLOOKUP_IPV6;
-    let _ = p;
 
     // KAME hack: embed scopeid
     let mut addr = sin6.sin6_addr;
@@ -320,50 +340,82 @@ pub fn in6_pcbaddrisavail_lock(
         }
     }
     if lport != 0 {
+        let table = inp.table();
+        let laddr = Inpaddru::from_addr6(sin6.sin6_addr);
         if so.creds().0 != 0 && !in6_is_addr_multicast(&sin6.sin6_addr) {
-            let t = in_pcblookup_local_lock(
+            let t = k::in_pcblookup_local(
+                g,
                 table,
-                &Inpaddru::from_addr6(sin6.sin6_addr),
+                &laddr,
                 lport,
                 INPLOOKUP_WILDCARD | INPLOOKUP_IPV6,
                 inp.inp_rtableid.get(),
-                lock,
             );
-            let error = t.is_some_and(|t| so.creds().0 != t.socket().creds().0);
-            if lock == IN_PCBLOCK_GRAB {
-                in_pcbunref(t);
-            }
-            if error {
+            if t.is_some_and(|t| so.creds().0 != t.socket().creds().0) {
                 return Err(Errno::EADDRINUSE);
             }
         }
-        let t = in_pcblookup_local_lock(
-            table,
-            &Inpaddru::from_addr6(sin6.sin6_addr),
-            lport,
-            wild,
-            inp.inp_rtableid.get(),
-            lock,
-        );
-        let error = t.is_some_and(|t| reuseport & t.socket().options() == 0);
-        if lock == IN_PCBLOCK_GRAB {
-            in_pcbunref(t);
-        }
-        if error {
+        let t = k::in_pcblookup_local(g, table, &laddr, lport, wild, inp.inp_rtableid.get());
+        if t.is_some_and(|t| reuseport & t.socket().options() == 0) {
             return Err(Errno::EADDRINUSE);
         }
     }
     Ok(())
 }
 
-/// `in6_pcbaddrisavail`: `in6_pcbaddrisavail_lock` taking the table mutex.
+/// `in6_pcbaddrisavail`: [`in6_pcbaddrisavail_held`] taking the table mutex.
 pub fn in6_pcbaddrisavail(
     inp: &Inpcb,
     sin6: &mut SockaddrIn6,
     wild: i32,
+    _p: &Proc,
+) -> Result<(), Errno> {
+    let mut g = inp.table().lock();
+    in6_pcbaddrisavail_held(&mut g, inp, sin6, wild)
+}
+
+/// `in_pcbbind_locked`'s `INP_IPV6` half (in_pcb.c's `#ifdef INET6` branch): binds `inp` to
+/// the address in `nam` (or to `laddr` and a picked port), the table mutex held; the kernel's
+/// `in_pcbbind_tail` finishes it, as for IPv4.
+pub fn in6_pcbbind_locked(
+    g: &mut InpGuard<'_>,
+    inp: &'static Inpcb,
+    nam: Option<&Mbuf>,
+    laddr: &Inpaddru,
     p: &Proc,
 ) -> Result<(), Errno> {
-    in6_pcbaddrisavail_lock(inp, sin6, wild, p, IN_PCBLOCK_GRAB)
+    let so = inp.socket();
+    let mut lport: u16 = 0;
+    let mut wild = 0;
+    let mut laddr = *laddr;
+
+    kassert!(inp.has_flags(INP_IPV6));
+    if inp.inp_lport.get() != 0 {
+        return Err(Errno::EINVAL);
+    }
+
+    if !so.has_options(SO_REUSEADDR | SO_REUSEPORT)
+        && (!so.pr_flags(kernel::net::proto::PR_CONNREQUIRED) || !so.has_options(SO_ACCEPTCONN))
+    {
+        wild = INPLOOKUP_WILDCARD;
+    }
+
+    if !in6_is_addr_unspecified(&inp.inp_laddr6.get::<In6Addr>()) {
+        return Err(Errno::EINVAL);
+    }
+    wild |= INPLOOKUP_IPV6;
+
+    if let Some(nam) = nam {
+        let sin6p = in6_nam2sin6(nam)?;
+        // SAFETY: `in6_nam2sin6` checked the mbuf holds a whole `sockaddr_in6`; mbuf data
+        // need not be aligned, so it is read unaligned.
+        let mut sin6 = unsafe { sin6p.read_unaligned() };
+        in6_pcbaddrisavail_held(g, inp, &mut sin6, wild)?;
+        laddr = Inpaddru::from_addr6(sin6.sin6_addr);
+        lport = sin6.sin6_port;
+    }
+
+    k::in_pcbbind_tail(g, inp, nam.is_some(), laddr, lport, wild, p)
 }
 
 /// `in6_pcbconnect`: connects `inp` to the `sockaddr_in6` in `nam`; both address and port
@@ -403,67 +455,57 @@ pub fn in6_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
     let mut in6a = In6Addr::default();
     in6_pcbselsrc(&mut in6a, &sin6, inp, inp_outputopts6(inp))?;
 
-    let mut ip6 = inp.inp_ipv6.get();
+    let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
     ip6.ip6_hlim = in6_selecthlim(inp) as u8;
     inp.inp_ipv6.set(ip6);
 
     // keep lookup, modification, and rehash in sync
-    mtx_enter(&table.inpt_mtx);
+    let mut g = table.lock();
 
-    let laddr = if in6_is_addr_unspecified(&inp.inp_laddr6.get()) {
+    let laddr6 = inp.inp_laddr6.get::<In6Addr>();
+    let laddr = if in6_is_addr_unspecified(&laddr6) {
         in6a
     } else {
-        inp.inp_laddr6.get()
+        laddr6
     };
-    let t = in6_pcblookup_lock(
-        table,
-        &sin6.sin6_addr,
-        sin6.sin6_port,
-        &laddr,
-        inp.inp_lport.get(),
-        inp.inp_rtableid.get(),
-        IN_PCBLOCK_HOLD,
-    );
-    if t.is_some() {
-        mtx_leave(&table.inpt_mtx);
+    let found = |g: &mut InpGuard<'_>, laddr: &In6Addr| {
+        kernel::netinet6::in6_pcb::in6_pcblookup_held(
+            g,
+            table,
+            &sin6.sin6_addr,
+            sin6.sin6_port,
+            laddr,
+            inp.inp_lport.get(),
+            inp.inp_rtableid.get(),
+        )
+        .is_some()
+    };
+    if found(&mut g, &laddr) {
         return Err(Errno::EADDRINUSE);
     }
 
-    kassert!(in6_is_addr_unspecified(&inp.inp_laddr6.get()) || inp.inp_lport.get() != 0);
+    kassert!(in6_is_addr_unspecified(&laddr6) || inp.inp_lport.get() != 0);
 
-    if in6_is_addr_unspecified(&inp.inp_laddr6.get()) {
+    if in6_is_addr_unspecified(&laddr6) {
         if inp.inp_lport.get() == 0 {
-            if let Err(e) = in_pcbbind_locked(
+            in6_pcbbind_locked(
+                &mut g,
                 inp,
                 None,
                 &Inpaddru::from_addr6(in6a),
                 curproc_or_panic("in6_pcbconnect"),
-            ) {
-                mtx_leave(&table.inpt_mtx);
-                return Err(e);
-            }
-            let t = in6_pcblookup_lock(
-                table,
-                &sin6.sin6_addr,
-                sin6.sin6_port,
-                &in6a,
-                inp.inp_lport.get(),
-                inp.inp_rtableid.get(),
-                IN_PCBLOCK_HOLD,
-            );
-            if t.is_some() {
-                inp.inp_lport.set(0);
-                mtx_leave(&table.inpt_mtx);
+            )?;
+            if found(&mut g, &in6a) {
+                inp.set_lport(&g, 0);
                 return Err(Errno::EADDRINUSE);
             }
         }
-        inp.inp_laddr6.set(in6a);
+        inp.set_laddr6(&g, in6a);
     }
-    inp.inp_faddr6.set(sin6.sin6_addr);
-    inp.inp_fport.set(sin6.sin6_port);
-    in_pcbrehash(inp);
-
-    mtx_leave(&table.inpt_mtx);
+    inp.set_faddr6(&g, sin6.sin6_addr);
+    inp.set_fport(&g, sin6.sin6_port);
+    k::in_pcbrehash(&mut g, inp);
+    drop(g);
 
     in6_pcb_newflow(inp);
     Ok(())
@@ -476,8 +518,8 @@ fn in6_pcb_newflow(inp: &Inpcb) {
         | (htonl(ip6_randomflowlabel()) & IPV6_FLOWLABEL_MASK);
     inp.set_inp_flowinfo(flowinfo);
     inp.inp_flowid.set(stoeplitz_ip6port(
-        &inp.inp_faddr6.get().s6_addr,
-        &inp.inp_laddr6.get().s6_addr,
+        &inp.inp_faddr6.bytes(),
+        &inp.inp_laddr6.bytes(),
         inp.inp_fport.get(),
         inp.inp_lport.get(),
     ));
@@ -494,24 +536,26 @@ fn set_nam6(nam: &Mbuf, sin6: SockaddrIn6) {
 /// `in6_setsockaddr`: the local address and port of `inp` into `nam`, as a
 /// `sockaddr_in6`. This services the getsockname(2) call.
 pub fn in6_setsockaddr(inp: &Inpcb, nam: &Mbuf) {
+    let laddr6 = inp.inp_laddr6.get::<In6Addr>();
     let mut sin6 = SockaddrIn6 {
         sin6_port: inp.inp_lport.get(),
-        ..SockaddrIn6::with_addr(inp.inp_laddr6.get())
+        ..SockaddrIn6::with_addr(laddr6)
     };
     // KAME hack: recover scopeid
-    in6_recoverscope(&mut sin6, &inp.inp_laddr6.get());
+    in6_recoverscope(&mut sin6, &laddr6);
     set_nam6(nam, sin6);
 }
 
 /// `in6_setpeeraddr`: the foreign address and port of `inp` into `nam`, as a
 /// `sockaddr_in6`. This services the getpeername(2) call.
 pub fn in6_setpeeraddr(inp: &Inpcb, nam: &Mbuf) {
+    let faddr6 = inp.inp_faddr6.get::<In6Addr>();
     let mut sin6 = SockaddrIn6 {
         sin6_port: inp.inp_fport.get(),
-        ..SockaddrIn6::with_addr(inp.inp_faddr6.get())
+        ..SockaddrIn6::with_addr(faddr6)
     };
     // KAME hack: recover scopeid
-    in6_recoverscope(&mut sin6, &inp.inp_faddr6.get());
+    in6_recoverscope(&mut sin6, &faddr6);
     set_nam6(nam, sin6);
 }
 
@@ -557,8 +601,6 @@ pub fn in6_pcbnotify(
     cmdarg: *mut c_void,
     notify: Option<InpNotifyFn>,
 ) {
-    let iter = InpcbIterator::new();
-    let mut inp: Option<&'static Inpcb> = None;
     let mut fport = fport_arg as u16;
     let mut lport = lport_arg as u16;
     let mut notify = notify;
@@ -601,13 +643,14 @@ pub fn in6_pcbnotify(
         return;
     };
 
+    let iter = core::pin::pin!(Inpcb::marker());
+    let mut inp: Option<&'static Inpcb> = None;
     let rdomain = rtable_l2(rtable);
-    mtx_enter(&table.inpt_mtx);
-    // SAFETY: the mutex is held around every call; `iter` lives on this frame until the walk
-    // ends with `None`.
-    while let Some(i) = unsafe { in_pcb_iterator(table, inp, &iter) } {
+    let mut g = table.lock();
+    while let Some(i) = in_pcb_iterator(table, &mut g, inp, iter.as_ref()) {
         inp = Some(i);
         kassert!(i.has_flags(INP_IPV6));
+        let (laddr6, faddr6) = (i.inp_laddr6.get::<In6Addr>(), i.inp_faddr6.get::<In6Addr>());
 
         // A redirect or a dead host also reaches an unconnected pcb whose cached route is a
         // network route (not RTF_HOST) towards `dst`, whatever its addresses: the message
@@ -617,8 +660,8 @@ pub fn in6_pcbnotify(
         // price of a local denial of service; icmp6_mtudisc_update() caps such clones.)
         // The cache is `[s]`: it is read once the pcb's socket is locked, below; the C reads
         // it here, under the table mutex alone, a race with the socket's owner.
-        let by_route = (prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD)
-            && in6_is_addr_unspecified(&i.inp_laddr6.get());
+        let by_route =
+            (prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD) && in6_is_addr_unspecified(&laddr6);
         // Whether the addresses select the pcb. With no ports given, a non-zero flow label
         // and an equal local address match (an error about an ESP-encrypted packet); else the
         // addresses and the ports given are compared.
@@ -626,26 +669,26 @@ pub fn in6_pcbnotify(
             && fport == 0
             && flowinfo != 0
             && flowinfo == (i.inp_flowinfo() & IPV6_FLOWLABEL_MASK)
-            && in6_are_addr_equal(&i.inp_laddr6.get(), &sa6_src.sin6_addr))
-            || !(!in6_are_addr_equal(&i.inp_faddr6.get(), &dst.sin6_addr)
+            && in6_are_addr_equal(&laddr6, &sa6_src.sin6_addr))
+            || !(!in6_are_addr_equal(&faddr6, &dst.sin6_addr)
                 || rtable_l2(i.inp_rtableid.get()) != rdomain
                 || (lport != 0 && i.inp_lport.get() != lport)
                 || (!in6_is_addr_unspecified(&sa6_src.sin6_addr)
-                    && !in6_are_addr_equal(&i.inp_laddr6.get(), &sa6_src.sin6_addr))
+                    && !in6_are_addr_equal(&laddr6, &sa6_src.sin6_addr))
                 || (fport != 0 && i.inp_fport.get() != fport));
         if !by_route && !by_addr {
             continue;
         }
 
-        mtx_leave(&table.inpt_mtx);
+        drop(g);
         let so = in_pcbsolock(i);
         if so.is_some() && (by_addr || cached_route_to(i, &dst.sin6_addr)) {
             notify(i, errno);
         }
         in_pcbsounlock(Some(i), so);
-        mtx_enter(&table.inpt_mtx);
+        g = table.lock();
     }
-    mtx_leave(&table.inpt_mtx);
+    drop(g);
 }
 
 /// Whether `inp` caches a network (not host) route whose destination is `dst`: the redirect
@@ -659,11 +702,11 @@ fn cached_route_to(inp: &Inpcb, dst: &In6Addr) -> bool {
 /// `in6_pcbrtentry`: the route to the foreign address of `inp`, from its cache (refreshed
 /// when stale).
 pub fn in6_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
-    if in6_is_addr_unspecified(&inp.inp_faddr6.get()) {
+    let faddr = inp.inp_faddr6.get::<In6Addr>();
+    if in6_is_addr_unspecified(&faddr) {
         return None;
     }
-    let faddr = inp.inp_faddr6.get();
-    let laddr = inp.inp_laddr6.get();
+    let laddr = inp.inp_laddr6.get::<In6Addr>();
     route6_mpath(
         &mut inp.route(),
         &faddr,
@@ -672,86 +715,8 @@ pub fn in6_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     )
 }
 
-/// `in6_pcbhash_lookup`: the control block of `table` with exactly these addresses in hash
-/// chain `hash`, moved to the head of its chain. The table mutex is held.
-pub fn in6_pcbhash_lookup(
-    table: &Inpcbtable,
-    hash: u64,
-    rdomain: u32,
-    faddr: &In6Addr,
-    fport: u16,
-    laddr: &In6Addr,
-    lport: u16,
-) -> Option<&'static Inpcb> {
-    net_assert_locked("in6_pcbhash_lookup");
-    mutex_assert_locked(&table.inpt_mtx, "in6_pcbhash_lookup");
-
-    let head: &ListHead<InpHash> =
-        &table.inpt_hashtbl.get()[(hash & table.inpt_mask.get()) as usize];
-    let inp = head
-        .iter()
-        .find(|inp| {
-            kassert!(inp.has_flags(INP_IPV6));
-
-            inp.inp_fport.get() == fport
-                && inp.inp_lport.get() == lport
-                && in6_are_addr_equal(&inp.inp_faddr6.get(), faddr)
-                && in6_are_addr_equal(&inp.inp_laddr6.get(), laddr)
-                && rtable_l2(inp.inp_rtableid.get()) == rdomain
-        })
-        .map(inp_static)?;
-    // Move this PCB to the head of hash chain so that repeated accesses are quicker. This is
-    // analogous to the historic single-entry PCB cache.
-    if !head.first().is_some_and(|f| ptr::eq(f, inp)) {
-        // SAFETY: the table mutex is held; `inp` is on this chain and stays on it.
-        unsafe {
-            ListHead::<InpHash>::remove(inp);
-            head.insert_head(inp);
-        }
-    }
-    Some(inp)
-}
-
-/// `in6_pcblookup_lock`: the connected control block for `faddr.fport <-> laddr.lport`; no
-/// wildcard matching is done. With `IN_PCBLOCK_GRAB` the table mutex is taken here and the
-/// result referenced; with `IN_PCBLOCK_HOLD` the caller holds it.
-pub fn in6_pcblookup_lock(
-    table: &Inpcbtable,
-    faddr: &In6Addr,
-    fport: u16,
-    laddr: &In6Addr,
-    lport: u16,
-    rtable: u32,
-    lock: i32,
-) -> Option<&'static Inpcb> {
-    let rdomain = rtable_l2(rtable);
-    let hash = in6_pcbhash(table, rdomain, faddr, fport, laddr, lport);
-
-    if lock == IN_PCBLOCK_GRAB {
-        mtx_enter(&table.inpt_mtx);
-    } else {
-        kassert!(lock == IN_PCBLOCK_HOLD);
-        mutex_assert_locked(&table.inpt_mtx, "in6_pcblookup_lock");
-    }
-    let inp = in6_pcbhash_lookup(table, hash, rdomain, faddr, fport, laddr, lport);
-    if lock == IN_PCBLOCK_GRAB {
-        in_pcbref(inp);
-        mtx_leave(&table.inpt_mtx);
-    }
-
-    #[cfg(feature = "diagnostic")]
-    if inp.is_none() && crate::netinet::in_pcb::IN_PCBNOTIFYMISS.load(Ordering::Relaxed) != 0 {
-        crate::kprintf!(
-            "in6_pcblookup_lock: faddr= fport={} laddr= lport={} rdom={}\n",
-            u16::from_be(fport),
-            u16::from_be(lport),
-            rdomain
-        );
-    }
-    inp
-}
-
-/// `in6_pcblookup`: `in6_pcblookup_lock` taking the table mutex; the result is referenced.
+/// `in6_pcblookup`: the connected control block for `faddr.fport <-> laddr.lport`,
+/// referenced (the kernel's lookup, held as `bsd` holds a pcb).
 pub fn in6_pcblookup(
     table: &Inpcbtable,
     faddr: &In6Addr,
@@ -760,13 +725,11 @@ pub fn in6_pcblookup(
     lport: u16,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    in6_pcblookup_lock(table, faddr, fport, laddr, lport, rtable, IN_PCBLOCK_GRAB)
+    kernel::netinet6::in6_pcb::in6_pcblookup(table, faddr, fport, laddr, lport, rtable)
+        .map(crate::netinet::in_pcb::legacy_hold)
 }
 
-/// `in6_pcblookup_listen`: the listening control block for `laddr.lport_arg`: unspecified
-/// foreign address and port, bound to `laddr` or to the wildcard address (pf's divert-to
-/// key, or the wildcard first for a connection redirected to localhost, from `m`). The
-/// result is referenced.
+/// `in6_pcblookup_listen`: the listening control block for `laddr.lport_arg`, referenced.
 pub fn in6_pcblookup_listen(
     table: &Inpcbtable,
     laddr: &In6Addr,
@@ -774,57 +737,8 @@ pub fn in6_pcblookup_listen(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    let mut key1 = *laddr;
-    let mut key2 = ZEROIN6_ADDR;
-    let mut lport = lport_arg;
-
-    if let Some(m) = m
-        && m.m_pkthdr().pf.flags.get() & PF_TAG_DIVERTED != 0
-    {
-        let divert = pf_find_divert(m);
-        kassert!(divert.is_some());
-        let divert = divert?;
-        match divert.type_ {
-            PF_DIVERT_TO => {
-                key1 = In6Addr::new(divert.addr.addr8);
-                key2 = key1;
-                lport = divert.port;
-            }
-            PF_DIVERT_REPLY => return None,
-            t => panic(format_args!(
-                "in6_pcblookup_listen: unknown divert type {t}, mbuf {m:p}"
-            )),
-        }
-    } else if let Some(m) = m
-        && m.m_pkthdr().pf.flags.get() & PF_TAG_TRANSLATE_LOCALHOST != 0
-    {
-        // Redirected connections should not be treated the same as connections directed to
-        // ::1 since localhost can only be accessed from the host itself.
-        key1 = ZEROIN6_ADDR;
-        key2 = *laddr;
-    }
-
-    let rdomain = rtable_l2(rtable);
-    let hash = in6_pcbhash(table, rdomain, &ZEROIN6_ADDR, 0, &key1, lport);
-
-    mtx_enter(&table.inpt_mtx);
-    let mut inp = in6_pcbhash_lookup(table, hash, rdomain, &ZEROIN6_ADDR, 0, &key1, lport);
-    if inp.is_none() && !in6_are_addr_equal(&key1, &key2) {
-        let hash = in6_pcbhash(table, rdomain, &ZEROIN6_ADDR, 0, &key2, lport);
-        inp = in6_pcbhash_lookup(table, hash, rdomain, &ZEROIN6_ADDR, 0, &key2, lport);
-    }
-    in_pcbref(inp);
-    mtx_leave(&table.inpt_mtx);
-
-    #[cfg(feature = "diagnostic")]
-    if inp.is_none() && crate::netinet::in_pcb::IN_PCBNOTIFYMISS.load(Ordering::Relaxed) != 0 {
-        crate::kprintf!(
-            "in6_pcblookup_listen: laddr= lport={} rdom={}\n",
-            u16::from_be(lport),
-            rdomain
-        );
-    }
-    inp
+    kernel::netinet6::in6_pcb::in6_pcblookup_listen(table, laddr, lport_arg, m, rtable)
+        .map(crate::netinet::in_pcb::legacy_hold)
 }
 
 /// `in6_pcbset_addr`: gives `inp` both addresses and ports at once (a connection accepted
@@ -838,30 +752,28 @@ pub fn in6_pcbset_addr(
 ) -> Result<(), Errno> {
     let table = inp.table();
 
-    mtx_enter(&table.inpt_mtx);
-
-    let t = in6_pcblookup_lock(
+    let mut g = table.lock();
+    if kernel::netinet6::in6_pcb::in6_pcblookup_held(
+        &mut g,
         table,
         &fsin6.sin6_addr,
         fsin6.sin6_port,
         &lsin6.sin6_addr,
         lsin6.sin6_port,
         rtableid,
-        IN_PCBLOCK_HOLD,
-    );
-    if t.is_some() {
-        mtx_leave(&table.inpt_mtx);
+    )
+    .is_some()
+    {
         return Err(Errno::EADDRINUSE);
     }
 
-    inp.inp_rtableid.set(rtableid);
-    inp.inp_laddr6.set(lsin6.sin6_addr);
-    inp.inp_lport.set(lsin6.sin6_port);
-    inp.inp_faddr6.set(fsin6.sin6_addr);
-    inp.inp_fport.set(fsin6.sin6_port);
-    in_pcbrehash(inp);
-
-    mtx_leave(&table.inpt_mtx);
+    inp.set_rtableid(&g, rtableid);
+    inp.set_laddr6(&g, lsin6.sin6_addr);
+    inp.set_lport(&g, lsin6.sin6_port);
+    inp.set_faddr6(&g, fsin6.sin6_addr);
+    inp.set_fport(&g, fsin6.sin6_port);
+    k::in_pcbrehash(&mut g, inp);
+    drop(g);
 
     in6_pcb_newflow(inp);
     Ok(())
@@ -886,12 +798,14 @@ pub(crate) mod tests {
 
     use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
+    use core::ptr;
+
     use super::*;
-    use crate::kern::kern_lock::{mtx_enter, mtx_leave};
     use crate::kern::uipc_mbuf::m_get;
     use crate::kern::uipc_socket::soalloc;
     use crate::kern::uipc_socket::sorele;
     use crate::kern::uipc_socket2::{solock, sounlock};
+    use crate::netinet::in_pcb::in_pcbunref;
     use crate::netinet::in_pcb::tests::{setup, teardown};
     use crate::netinet::in_pcb::{in_pcballoc, in_pcbdetach, in_pcbinit};
     use crate::netinet6::in6::tests::a6;
@@ -921,39 +835,19 @@ pub(crate) mod tests {
     /// The control block `in_pcballoc` gave `so` (`sotoinpcb(so)`, read without its family
     /// check).
     pub(crate) fn pcb_of(so: &Socket) -> &'static Inpcb {
-        // SAFETY: `in_pcballoc` set `so_pcb` to its `inpcb_pool` item, which stays allocated
-        // until the last `in_pcbunref` after `in_pcbdetach`.
-        unsafe {
-            &*crate::sys::socketvar::so_pcb(so)
-                .cast::<Inpcb>()
-                .cast_const()
-        }
+        sotoinpcb(so).expect("attached")
     }
 
     /// Gives `inp` the quadruple `laddr.lport <-> faddr.fport` (host order ports) and moves it
     /// to the hash chain `in6_pcbhash` picks.
     fn place6(inp: &'static Inpcb, laddr: In6Addr, lport: u16, faddr: In6Addr, fport: u16) {
         let t = inp.table();
-        mtx_enter(&t.inpt_mtx);
-        inp.inp_laddr6.set(laddr);
-        inp.inp_lport.set(htons(lport));
-        inp.inp_faddr6.set(faddr);
-        inp.inp_fport.set(htons(fport));
-        let hash = in6_pcbhash(
-            t,
-            rtable_l2(inp.inp_rtableid.get()),
-            &faddr,
-            htons(fport),
-            &laddr,
-            htons(lport),
-        );
-        // SAFETY: the table mutex is held; `inp` is on a hash chain (in_pcballoc put it there)
-        // and moves to another one of the same table.
-        unsafe {
-            ListHead::<InpHash>::remove(inp);
-            t.inpt_hashtbl.get()[(hash & t.inpt_mask.get()) as usize].insert_head(inp);
-        }
-        mtx_leave(&t.inpt_mtx);
+        let mut g = t.lock();
+        inp.set_laddr6(&g, laddr);
+        inp.set_lport(&g, htons(lport));
+        inp.set_faddr6(&g, faddr);
+        inp.set_fport(&g, htons(fport));
+        kernel::netinet::in_pcb::in_pcbrehash(&mut g, inp);
     }
 
     /// Detaches the control block and lets the socket go, as `rip6_detach` and `soclose` do.
@@ -986,14 +880,14 @@ pub(crate) mod tests {
     fn in6_pcbhash_spreads_quadruples_over_the_buckets() {
         let (_g, _t, _p) = setup();
         let t = table(64);
-        let buckets = (t.inpt_mask.get() + 1) as usize;
+        let buckets = ((t.size() as u64 - 1) + 1) as usize;
         let mut count = std::vec![0u32; buckets];
         let l = a6("fd00:77::1");
         for i in 0..4096u32 {
             let mut f = a6("fd00:77::2");
             f.set_s6_addr32(3, i / 64);
             let h = in6_pcbhash(t, 0, &f, htons(443), &l, htons(1024 + (i % 64) as u16));
-            count[(h & t.inpt_mask.get()) as usize] += 1;
+            count[(h & (t.size() as u64 - 1)) as usize] += 1;
         }
         let mean = 4096 / buckets as u32;
         let (min, max) = (count.iter().min(), count.iter().max());
@@ -1061,7 +955,7 @@ pub(crate) mod tests {
         for i in [conn, bound, wild80, wild22, other] {
             release(i);
         }
-        assert_eq!(t.inpt_count.get(), 0);
+        assert_eq!(t.count(), 0);
         teardown();
     }
 
@@ -1073,10 +967,12 @@ pub(crate) mod tests {
         // fe80::1 on the interface of index 3, as the kernel keeps it (the zone embedded).
         let mut ll = a6("fe80::1");
         ll.set_s6_addr16(1, htons(3));
-        inp.inp_laddr6.set(ll);
-        inp.inp_lport.set(htons(546));
-        inp.inp_faddr6.set(a6("fd00:77::2"));
-        inp.inp_fport.set(htons(547));
+        let g = inp.table().lock();
+        inp.set_laddr6(&g, ll);
+        inp.set_lport(&g, htons(546));
+        inp.set_faddr6(&g, a6("fd00:77::2"));
+        inp.set_fport(&g, htons(547));
+        drop(g);
 
         let nam = m_get(M_DONTWAIT, MT_SONAME).expect("mbuf");
         // in6_sockaddr(so, nam), without its sotoinpcb.

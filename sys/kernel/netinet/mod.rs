@@ -28,6 +28,7 @@ pub mod igmp_var;
 pub mod in4_cksum;
 pub mod in_;
 pub mod in_cksum;
+pub mod in_pcb;
 pub mod in_systm;
 pub mod in_var;
 pub mod inet_nat64;

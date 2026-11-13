@@ -159,6 +159,7 @@ use crate::netinet::in_::{
     IPSEC_ESP_TRANS_LEVEL_DEFAULT, IPSEC_IPCOMP_LEVEL_DEFAULT, IPSEC_LEVEL_BYPASS,
     IPSEC_LEVEL_UNIQUE,
 };
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     IN6P_AUTOFLOWLABEL, IN6P_DSTOPTS, IN6P_HIGHPORT, IN6P_HOPLIMIT, IN6P_HOPOPTS, IN6P_LOWPORT,
     IN6P_MTU, IN6P_PKTINFO, IN6P_RECVDSTPORT, IN6P_RTHDR, IN6P_TCLASS, in_pcbset_rtableid,
@@ -1301,13 +1302,15 @@ pub fn ip6_ctloutput(
                     IPV6_RECVPKTINFO => optset(IN6P_PKTINFO),
 
                     IPV6_HOPLIMIT => {
+                        let c = core::cell::Cell::new(inp.outputopts6_ptr());
                         error = ip6_pcbopt(
                             IPV6_HOPLIMIT,
                             &optval.to_ne_bytes(),
-                            &inp.inp_outputopts6,
+                            &c,
                             privileged,
                             uproto,
                         );
+                        inp.set_outputopts6_ptr(c.get());
                     }
 
                     IPV6_RECVHOPLIMIT => optset(IN6P_HOPLIMIT),
@@ -1346,13 +1349,9 @@ pub fn ip6_ctloutput(
                     return Err(Errno::EINVAL);
                 };
                 let optval = mtod_int(m);
-                error = ip6_pcbopt(
-                    optname,
-                    &optval.to_ne_bytes(),
-                    &inp.inp_outputopts6,
-                    privileged,
-                    uproto,
-                );
+                let c = core::cell::Cell::new(inp.outputopts6_ptr());
+                error = ip6_pcbopt(optname, &optval.to_ne_bytes(), &c, privileged, uproto);
+                inp.set_outputopts6_ptr(c.get());
             }
 
             IPV6_PKTINFO | IPV6_HOPOPTS | IPV6_RTHDR | IPV6_DSTOPTS | IPV6_RTHDRDSTOPTS => {
@@ -1361,12 +1360,16 @@ pub fn ip6_ctloutput(
                     return Err(Errno::EINVAL); // XXX
                 }
                 let optbuf: &[u8] = m.map_or(&[], mtod_bytes);
-                error = ip6_pcbopt(optname, optbuf, &inp.inp_outputopts6, privileged, uproto);
+                let c = core::cell::Cell::new(inp.outputopts6_ptr());
+                error = ip6_pcbopt(optname, optbuf, &c, privileged, uproto);
+                inp.set_outputopts6_ptr(c.get());
             }
 
             IPV6_MULTICAST_IF | IPV6_MULTICAST_HOPS | IPV6_MULTICAST_LOOP | IPV6_JOIN_GROUP
             | IPV6_LEAVE_GROUP => {
-                error = ip6_setmoptions(optname, &inp.inp_moptions6, m, inp.inp_rtableid.get());
+                let c = core::cell::Cell::new(inp.moptions6_ptr());
+                error = ip6_setmoptions(optname, &c, m, inp.inp_rtableid.get());
+                inp.set_moptions6_ptr(c.get());
             }
 
             IPV6_PORTRANGE => {
@@ -1534,7 +1537,7 @@ pub fn ip6_ctloutput(
                 | IPV6_TCLASS | IPV6_DONTFRAG | IPV6_USE_MIN_MTU => {
                     // SAFETY: the options are `ip6_pcbopt`'s allocation, owned by this
                     // control block and changed only under the socket lock the caller holds.
-                    let opts = inp.inp_outputopts6.get().map(|o| unsafe { &*o.as_ptr() });
+                    let opts = inp.outputopts6_ptr().map(|o| unsafe { &*o.as_ptr() });
                     error = ip6_getpcbopt(opts, optname, m);
                 }
 
@@ -1542,7 +1545,7 @@ pub fn ip6_ctloutput(
                 | IPV6_LEAVE_GROUP => {
                     // SAFETY: the options are `ip6_setmoptions`' allocation, owned by this
                     // control block and changed only under the socket lock the caller holds.
-                    let im6o = inp.inp_moptions6.get().map(|o| unsafe { &*o.as_ptr() });
+                    let im6o = inp.moptions6_ptr().map(|o| unsafe { &*o.as_ptr() });
                     error = ip6_getmoptions(optname, im6o, m);
                 }
 

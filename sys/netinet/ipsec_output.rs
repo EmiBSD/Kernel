@@ -112,8 +112,9 @@ use crate::sys::systm::{kernel_assert_locked, net_assert_locked};
 
 /// \[a\] `udpencap_enable`: enabled by default.
 pub static UDPENCAP_ENABLE: AtomicI32 = AtomicI32::new(1);
-/// \[a\] `udpencap_port`: triggers decapsulation.
-pub static UDPENCAP_PORT: AtomicI32 = AtomicI32::new(4500);
+/// \[a\] `udpencap_port`: triggers decapsulation (the kernel's, N6.4c1: `in_baddynamic`
+/// reads it).
+pub use kernel::net::ipsec_hooks::UDPENCAP_PORT;
 
 /// `ipsp_process_packet`: loop over a tdb chain, taking into consideration protocol
 /// tunneling. `tunalready` is set if the first encapsulation header is already in place.

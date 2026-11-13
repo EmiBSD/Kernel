@@ -1318,7 +1318,7 @@ pub fn intotcpcb(inp: &Inpcb) -> Option<&'static Tcpcb> {
     // SAFETY: a `tcbtable` control block's `inp_ppcb` is NULL or the `tcpcb_pool` item
     // `tcp_newtcpcb` stored there; `tcp_close` clears it before the item goes back to the
     // pool.
-    unsafe { inp.inp_ppcb.get().cast::<Tcpcb>().cast_const().as_ref() }
+    unsafe { inp.inp_ppcb.get().cast::<Tcpcb>().as_ref() }
 }
 
 /// `sototcpcb(so)`.

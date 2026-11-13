@@ -33,6 +33,8 @@
 //! N6.4a adds `pf_test` for `ip_output` (`kernel::netinet::ip_output`, ip_output.c's
 //! `NPF > 0` block), a default that passes every packet, the C with `NPF == 0`.
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 
@@ -99,6 +101,71 @@ pub trait Pf: Sync {
         m: MbufBox,
     ) -> (u8, Option<MbufBox>) {
         (PF_PASS, Some(m))
+    }
+
+    /// `pf_find_divert(m)`: the divert-to or divert-reply target pf recorded on a packet it
+    /// tagged `PF_TAG_DIVERTED` (`in_pcblookup_listen`'s and `in6_pcblookup_listen`'s key).
+    /// Default: none, the C without pf (no packet carries the tag).
+    fn find_divert(&self, _m: &Mbuf) -> Option<PfDivert> {
+        None
+    }
+
+    /// `pf_remove_divert_state(inp)`: the socket whose pf word is `slot` closes; a
+    /// divert-to or divert-reply state pf linked to it goes (`in_pcbdetach`,
+    /// `in_pcbdisconnect`). Default: nothing, the C without pf.
+    fn inp_remove_divert_state(&self, _slot: &PfSlot) {}
+
+    /// `pf_inp_unlink(inp)`: the state key linked to the socket whose pf word is `slot` is
+    /// unlinked from it, and its reference to the pcb dropped. Default: nothing.
+    fn inp_unlink(&self, _slot: &PfSlot) {}
+}
+
+/// `PF_DIVERT_TO`: `pfvar.h`'s divert type.
+pub const PF_DIVERT_TO: u8 = 1;
+/// `PF_DIVERT_REPLY`.
+pub const PF_DIVERT_REPLY: u8 = 2;
+
+/// `struct pf_divert` as the pcb lookups read it: the address (an IPv4 address in its first
+/// four bytes), the port (network order), the routing domain and the type.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PfDivert {
+    /// `addr`.
+    pub addr: [u8; 16],
+    /// `port`.
+    pub port: u16,
+    /// `rdomain`.
+    pub rdomain: u16,
+    /// `type`.
+    pub type_: u8,
+}
+
+/// `inp_pf_sk`: pf's word in a protocol control block (\[L\] `pf_inp_mtx`, pf's): the
+/// address of the state key the socket's packets match, which only pf writes and reads, the
+/// `pkthdr_pf.statekey` shape. The kernel hands it to pf's legs and never reads it.
+pub struct PfSlot(AtomicUsize);
+
+impl PfSlot {
+    /// No state key.
+    pub const fn new() -> Self {
+        Self(AtomicUsize::new(0))
+    }
+
+    /// The word.
+    #[inline]
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Stores `w`.
+    #[inline]
+    pub fn set(&self, w: usize) {
+        self.0.store(w, Ordering::Release);
+    }
+}
+
+impl Default for PfSlot {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

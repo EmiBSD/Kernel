@@ -114,6 +114,7 @@ use crate::netinet::in_::{
     IPSEC_LEVEL_BYPASS, IPSEC_LEVEL_UNIQUE, InAddr, IpMreq, IpMreqn, SockaddrIn, in_addmulti,
     in_delmulti, in_ifp2ia, in_multicast, sintosa,
 };
+use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     INP_HIGHPORT, INP_IPSECFLOWINFO, INP_LOWPORT, INP_RECVDSTADDR, INP_RECVDSTPORT, INP_RECVIF,
     INP_RECVOPTS, INP_RECVRETOPTS, INP_RECVRTABLE, INP_RECVTTL, in_pcbset_rtableid, sotoinpcb,
@@ -444,7 +445,12 @@ pub fn ip_ctloutput(
 
     match op {
         PRCO_SETOPT => match optname {
-            IP_OPTIONS => return ip_pcbopts(&inp.inp_options, m),
+            IP_OPTIONS => {
+                let c = core::cell::Cell::new(inp.options());
+                let r = ip_pcbopts(&c, m);
+                inp.set_options(c.get());
+                return r;
+            }
 
             IP_TOS | IP_TTL | IP_MINTTL | IP_RECVOPTS | IP_RECVRETOPTS | IP_RECVDSTADDR
             | IP_RECVIF | IP_RECVTTL | IP_RECVDSTPORT | IP_RECVRTABLE | IP_IPSECFLOWINFO => {
@@ -495,7 +501,9 @@ pub fn ip_ctloutput(
 
             IP_MULTICAST_IF | IP_MULTICAST_TTL | IP_MULTICAST_LOOP | IP_ADD_MEMBERSHIP
             | IP_DROP_MEMBERSHIP => {
-                error = ip_setmoptions(optname, &inp.inp_moptions, m, inp.inp_rtableid.get());
+                let c = core::cell::Cell::new(inp.moptions_ptr());
+                error = ip_setmoptions(optname, &c, m, inp.inp_rtableid.get());
+                inp.set_moptions_ptr(c.get());
             }
 
             IP_PORTRANGE => {
@@ -583,7 +591,7 @@ pub fn ip_ctloutput(
             };
             match optname {
                 IP_OPTIONS | IP_RETOPTS => {
-                    if let Some(opts) = inp.inp_options.get() {
+                    if let Some(opts) = inp.options() {
                         let len = opts.m_len().get();
                         m.m_len().set(len);
                         // SAFETY: both mbufs hold `len` bytes (`ip_pcbopts` made the options

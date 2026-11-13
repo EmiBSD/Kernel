@@ -2350,14 +2350,19 @@ pub fn pf_remove_state(st: &'static PfState) {
 
 /// `pf_remove_divert_state`: the socket of a divert-to/divert-reply state is closing.
 pub fn pf_remove_divert_state(inp: &'static crate::netinet::in_pcb::Inpcb) {
+    pf_remove_divert_state_slot(&inp.inp_pf_sk);
+}
+
+/// `pf_remove_divert_state` over the pcb's pf word (`inp->inp_pf_sk`), the kernel's leg.
+fn pf_remove_divert_state_slot(slot: &kernel::net::pf_hooks::PfSlot) {
     pf_assert_unlocked();
 
-    if inpcb_pf_sk(inp).is_none() {
+    if statekey_at(slot.get()).is_none() {
         return;
     }
 
     mtx_enter(&PF_INP_MTX);
-    let sk = inpcb_pf_sk(inp).map(pf_state_key_ref);
+    let sk = statekey_at(slot.get()).map(pf_state_key_ref);
     mtx_leave(&PF_INP_MTX);
     let Some(sk) = sk else {
         return;
@@ -4380,7 +4385,7 @@ pub fn pf_socket_lookup(pd: &mut PfPdesc) -> bool {
         }
         _ => unhandled_af(i32::from(pd.af)),
     };
-    if let Some(so) = inp.inp_socket {
+    if let Some(so) = inp.socket_opt() {
         pd.lookup.uid = so.creds().0;
         pd.lookup.gid = so.creds().2;
         pd.lookup.pid = so.creds().4;
@@ -10010,22 +10015,29 @@ pub fn pf_inp_link(m: &Mbuf, inp: Option<&'static Inpcb>) {
 
 /// `pf_inp_unlink`: the socket is going away.
 pub fn pf_inp_unlink(inp: &'static Inpcb) {
-    if inpcb_pf_sk(inp).is_none() {
+    pf_inp_unlink_slot(&inp.inp_pf_sk);
+}
+
+/// `pf_inp_unlink` over the pcb's pf word (`inp->inp_pf_sk`), the kernel's leg: the state
+/// key's pcb is the one whose word `slot` is (checked), and its reference is dropped.
+fn pf_inp_unlink_slot(slot: &kernel::net::pf_hooks::PfSlot) {
+    if statekey_at(slot.get()).is_none() {
         return;
     }
 
     mtx_enter(&PF_INP_MTX);
-    let Some(sk) = inpcb_pf_sk(inp) else {
+    let Some(sk) = statekey_at(slot.get()) else {
         mtx_leave(&PF_INP_MTX);
         return;
     };
-    kassert!(opt_eq(sk.sk_inp.get(), Some(inp)));
+    let inp = sk.sk_inp.get();
+    kassert!(inp.is_some_and(|i| ptr::eq(&i.inp_pf_sk, slot)));
     sk.sk_inp.set(None);
-    inpcb_set_pf_sk(inp, None);
+    slot.set(0);
     mtx_leave(&PF_INP_MTX);
 
     pf_state_key_unref(Some(sk));
-    crate::netinet::in_pcb::in_pcbunref(Some(inp));
+    crate::netinet::in_pcb::in_pcbunref(inp);
 }
 
 /// `pf_state_key_link_reverse`: links the two keys of a forwarded connection to each other.
@@ -10103,11 +10115,20 @@ pub fn pf_state_key_isvalid(sk: Option<&PfStateKey>) -> bool {
 
 /// The state key a packet header's pf part names (`pkthdr_pf.statekey`).
 fn pf_statekey_of(pf: &PkthdrPf) -> Option<&'static PfStateKey> {
-    let p = ptr::with_exposed_provenance::<PfStateKey>(pf.statekey.get());
-    // SAFETY: only `pf_link_state_key` stores into the word (here and through the kernel's
-    // `Pf` legs, `BsdPf`): the exposed address of a referenced key, which stays allocated
-    // until `pf_unlink_state_key` drops the reference (uipc_mbuf.c copies and unlinks it with
-    // the packet header, and `M_MOVE_HDR` moves the word whole); 0 is NULL.
+    statekey_at(pf.statekey.get())
+}
+
+/// The state key a word of pf's names: a packet header's `pkthdr_pf.statekey`, or a pcb's
+/// `inp_pf_sk` (the kernel's `PfSlot`).
+fn statekey_at(word: usize) -> Option<&'static PfStateKey> {
+    let p = ptr::with_exposed_provenance::<PfStateKey>(word);
+    // SAFETY: only pf stores into these words: `pf_link_state_key` into a header's (here and
+    // through the kernel's `Pf` legs, `BsdPf`), `inpcb_set_pf_sk` into a pcb's, under
+    // `pf_inp_mtx`. Each stores the exposed address of a key it holds a reference to, which
+    // stays allocated until the matching unlink drops the reference and clears the word
+    // (`pf_unlink_state_key`: uipc_mbuf.c copies and unlinks it with the packet header, and
+    // `M_MOVE_HDR` moves the word whole; `pf_inp_unlink` and `pf_state_key_unlink_inpcb` for
+    // a pcb's, which `pf_state_key_link_inpcb` linked with a reference); 0 is NULL.
     unsafe { p.as_ref() }
 }
 
@@ -10223,6 +10244,26 @@ impl kernel::net::pf_hooks::Pf for BsdPf {
         pf_unlink_inpcb(pf);
     }
 
+    /// `in_pcblookup_listen`'s `pf_find_divert(m)` (N6.4c1).
+    fn find_divert(&self, m: &Mbuf) -> Option<kernel::net::pf_hooks::PfDivert> {
+        pf_find_divert(m).map(|d| kernel::net::pf_hooks::PfDivert {
+            addr: d.addr.addr8,
+            port: d.port,
+            rdomain: d.rdomain,
+            type_: d.type_,
+        })
+    }
+
+    /// `in_pcbdetach`'s and `in_pcbdisconnect`'s `pf_remove_divert_state(inp)` (N6.4c1).
+    fn inp_remove_divert_state(&self, slot: &kernel::net::pf_hooks::PfSlot) {
+        pf_remove_divert_state_slot(slot);
+    }
+
+    /// `in_pcbdetach`'s and `in_pcbdisconnect`'s `pf_inp_unlink(inp)` (N6.4c1).
+    fn inp_unlink(&self, slot: &kernel::net::pf_hooks::PfSlot) {
+        pf_inp_unlink_slot(slot);
+    }
+
     /// `if_enqueue`'s `pf_delay_pkt(m, ifidx)`.
     fn delay_pkt(&self, m: kernel::net::mbuf::MbufBox, ifidx: u32) -> Result<(), Errno> {
         pf_delay_pkt(crate::sys::mbuf::park(m), ifidx)
@@ -10269,12 +10310,13 @@ pub static BSD_PF: BsdPf = BsdPf;
 
 /// The socket's `inp_pf_sk`.
 fn inpcb_pf_sk(inp: &Inpcb) -> Option<&'static PfStateKey> {
-    inp.inp_pf_sk.get()
+    statekey_at(inp.inp_pf_sk.get())
 }
 
 /// `inp->inp_pf_sk = sk`.
 fn inpcb_set_pf_sk(inp: &Inpcb, sk: Option<&'static PfStateKey>) {
-    inp.inp_pf_sk.set(sk);
+    inp.inp_pf_sk
+        .set(sk.map_or(0, |k| ptr::from_ref(k).expose_provenance()));
 }
 
 /// `pf_state_key_link_inpcb`: links the key and the socket to each other.
