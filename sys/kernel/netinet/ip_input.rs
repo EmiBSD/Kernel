@@ -89,7 +89,11 @@
 //!   when it should be processed further); `ipv4_check` gives back the trimmed packet.
 //! - The IP header: LZ's `mtod_ip`/`mtod_ip_store` copies through `unsafe` ->
 //!   `kernel::netinet::ip_output`'s `ip_load`/`ip_store` (a view in place when aligned, a
-//!   copy otherwise, copy-on-write for a read-only cluster). The options `ip_dooptions`
+//!   copy otherwise, copy-on-write for a read-only cluster). The input path reads the
+//!   header once, in `ipv4_check`, and passes that copy down (`in_ouraddr`, `ip_ours`,
+//!   `ip_fragcheck`; 20 bytes where the C reads in place), reading it again only after pf
+//!   (which may rewrite or replace the packet) and after the options (source routes rewrite
+//!   `ip_dst`). The options `ip_dooptions`
 //!   walks (LZ: a mutable slice made with `from_raw_parts_mut`) are copied out of the
 //!   header (at most 40 bytes), walked with the C's bounds, and written back when an option
 //!   changed them (`IPOPT_RR`, `IPOPT_LSRR`/`SSRR`'s next hop and the timestamp).
@@ -422,16 +426,22 @@ pub fn ip_init<G: ProcGlue>() {
 
 /// `ip_ours(mp, offp, nxt, af, ns)`: enqueue packet for local delivery. Queuing is used as a
 /// boundary between the network layer (input/forward path) running with `NET_LOCK_SHARED()`
-/// and the transport layer needing it exclusively.
+/// and the transport layer needing it exclusively. `ip` is the packet's header as its caller
+/// read it (the C's `mtod(m, struct ip *)`, read once per packet: see `ip_input_if`).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the C's arguments, the header read once and the net lock's proof"
+)]
 pub fn ip_ours<G: ProcGlue>(
     mp: &mut Option<MbufBox>,
     offp: &mut i32,
     _nxt: i32,
     af: i32,
+    ip: &Ip,
     ns: Option<&mut Netstack>,
     net: &NetHeld<'_>,
 ) -> i32 {
-    let nxt = ip_fragcheck(mp, offp);
+    let nxt = ip_fragcheck(mp, offp, ip);
     if nxt == IPPROTO_DONE {
         return IPPROTO_DONE;
     }
@@ -525,9 +535,10 @@ pub fn ipv4_input<G: ProcGlue>(
     kassert!(nxt == IPPROTO_DONE);
 }
 
-/// `ipv4_check(ifp, m)`: the header checks of `ipv4_input`; the packet trimmed to `ip_len`, or
-/// `None` (freed) when it is bad.
-pub fn ipv4_check(ifp: &Ifnet, m: MbufBox) -> Option<MbufBox> {
+/// `ipv4_check(ifp, m)`: the header checks of `ipv4_input`; the packet trimmed to `ip_len`
+/// with its header as read for the checks (the one copy of it the input path makes: the C
+/// reads it in place, `ip_input_if` passes this one down), or `None` (freed) when it is bad.
+pub fn ipv4_check(ifp: &Ifnet, m: MbufBox) -> Option<(MbufBox, Ip)> {
     let mut m = m;
 
     if (m.m_len().get() as usize) < IP_HDR_LEN {
@@ -609,7 +620,9 @@ pub fn ipv4_check(ifp: &Ifnet, m: MbufBox) -> Option<MbufBox> {
         }
     }
 
-    Some(m)
+    // The header: `m_pullup` moved its bytes, never changed them, and trimming the tail
+    // leaves them as they were.
+    Some((m, ip))
 }
 
 /// The route cache `ip_input_if` uses: the softnet's (`ns->ns_route`), or the call's own
@@ -646,14 +659,18 @@ pub fn ip_input_if<G: ProcGlue>(
         let Some(m0) = mp.take() else {
             break 'bad;
         };
-        let Some(m) = ipv4_check(ifp, m0) else {
+        // The header is read once (the C reads it in place, `mtod(m, struct ip *)`): here, by
+        // the checks, and again only where the packet may have changed under it: after pf,
+        // which may rewrite or replace the packet, and after the options, whose source
+        // routes rewrite `ip_dst`.
+        let Some((m, mut ip)) = ipv4_check(ifp, m0) else {
             break 'bad;
         };
 
         // NCARP > 0: carp_lsdrop; not configured.
 
         // Packet filter.
-        let odst = ip_load(&m).ip_dst;
+        let odst = ip.ip_dst;
         let mut m = match pf() {
             Some(p) => {
                 let (action, m) = p.test(AF_INET, PF_IN, ifp, m);
@@ -664,12 +681,12 @@ pub fn ip_input_if<G: ProcGlue>(
                 let Some(m) = m else {
                     break 'bad;
                 };
+                ip = ip_load(&m);
                 m
             }
             None => m,
         };
 
-        let ip = ip_load(&m);
         if odst.s_addr != ip.ip_dst.s_addr {
             flags |= IP_REDIRECT;
         }
@@ -690,22 +707,24 @@ pub fn ip_input_if<G: ProcGlue>(
         // packet to be freed) or the packet was forwarded.
         if hlen > IP_HDR_LEN {
             match ip_dooptions(m, ifp, flags, net) {
-                Some(mm) => m = mm,
+                Some(mm) => {
+                    m = mm;
+                    ip = ip_load(&m);
+                }
                 None => break 'bad,
             }
         }
 
-        let ours = in_ouraddr(&m, ifp, route_of(&mut ns, &mut iproute), flags, net);
+        let ours = in_ouraddr(&m, &ip, ifp, route_of(&mut ns, &mut iproute), flags, net);
         match ours {
             2 => break 'bad,
             1 => {
                 *mp = Some(m);
-                return ip_ours::<G>(mp, offp, nxt, af, ns, net);
+                return ip_ours::<G>(mp, offp, nxt, af, &ip, ns, net);
             }
             _ => {}
         }
 
-        let ip = ip_load(&m);
         if in_multicast(ip.ip_dst.s_addr) {
             // Make sure M_MCAST is set. It should theoretically already be there, but let's
             // play safe because upper layers check for this flag.
@@ -723,7 +742,7 @@ pub fn ip_input_if<G: ProcGlue>(
                 break 'bad;
             }
             *mp = Some(m);
-            return ip_ours::<G>(mp, offp, nxt, af, ns, net);
+            return ip_ours::<G>(mp, offp, nxt, af, &ip, ns, net);
         }
 
         // NCARP > 0: carp_lsdrop for ICMP; not configured.
@@ -752,12 +771,13 @@ pub fn ip_input_if<G: ProcGlue>(
 }
 
 /// `ip_fragcheck(mp, offp)`: reassembles a fragment (the datagram, once complete, replaces
-/// `*mp`); answers the next protocol with `*offp` at its header, or `IPPROTO_DONE`.
-pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32) -> i32 {
-    let Some(m) = mp.as_ref() else {
+/// `*mp`); answers the next protocol with `*offp` at its header, or `IPPROTO_DONE`. `ip0` is
+/// `*mp`'s header as its caller read it.
+pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32, ip0: &Ip) -> i32 {
+    if mp.is_none() {
         return IPPROTO_DONE;
-    };
-    let mut ip = ip_load(m);
+    }
+    let mut ip = *ip0;
     let mut hlen = usize::from(ip.ip_hl()) << 2;
 
     // If offset or more fragments are set, must reassemble. Otherwise, nothing need be done.
@@ -1049,8 +1069,16 @@ pub fn ip_deliver<G: ProcGlue>(
 }
 
 /// `in_ouraddr(m, ifp, ro, flags)`: 1 if the packet is for one of our addresses (or a
-/// broadcast we accept), 2 if it was received on the wrong interface, 0 otherwise.
-pub fn in_ouraddr(m: &Mbuf, ifp: &Ifnet, ro: &mut Route, flags: i32, net: &NetHeld<'_>) -> i32 {
+/// broadcast we accept), 2 if it was received on the wrong interface, 0 otherwise. `ip` is
+/// `m`'s header as its caller read it.
+pub fn in_ouraddr(
+    m: &Mbuf,
+    ip: &Ip,
+    ifp: &Ifnet,
+    ro: &mut Route,
+    flags: i32,
+    net: &NetHeld<'_>,
+) -> i32 {
     let mut match_ = 0;
 
     // NPF > 0
@@ -1059,8 +1087,6 @@ pub fn in_ouraddr(m: &Mbuf, ifp: &Ifnet, ro: &mut Route, flags: i32, net: &NetHe
         1 => return 1,
         _ => {} // pf does not know it
     }
-
-    let ip = ip_load(m);
 
     if ip.ip_dst.s_addr == INADDR_BROADCAST || ip.ip_dst.s_addr == INADDR_ANY {
         m.m_flags().set(m.flags() | M_BCAST);
@@ -2542,8 +2568,13 @@ pub(crate) mod tests {
         // A longer packet is trimmed to ip_len.
         let mut p = good(28);
         p.extend_from_slice(&[0; 12]);
-        let m = ipv4_check(ifp, m_devget(&p, 0).expect("a packet")).expect("accepted");
+        let (m, ip) = ipv4_check(ifp, m_devget(&p, 0).expect("a packet")).expect("accepted");
         assert_eq!(m.m_pkthdr().len.get(), 28);
+        assert_eq!(
+            (u16::from_be(ip.ip_len), ip.ip_hl()),
+            (28, 5),
+            "its header, read once"
+        );
     }
 
     /// The fragment of datagram `id` at byte offset `off` with `data`, more following when
@@ -2557,9 +2588,10 @@ pub(crate) mod tests {
 
     /// `ip_fragcheck` of `m`: the datagram when it completes it.
     fn check(m: MbufBox) -> Option<MbufBox> {
+        let ip = ip_load(&m);
         let mut mp = Some(m);
         let mut off = 0;
-        let nxt = ip_fragcheck(&mut mp, &mut off);
+        let nxt = ip_fragcheck(&mut mp, &mut off, &ip);
         if nxt == IPPROTO_DONE {
             assert!(mp.is_none());
             return None;
