@@ -6605,7 +6605,7 @@ rust = "sys/netinet/ip_var.rs"
 lz = ["sys/netinet/ip_var.rs"]
 status = "adapted"
 adapted_by = ["sys/kernel/netinet/ip_var.rs", "sys/hal/sys/netinet_ip_var.rs", "sys/kernel/netinet/ip_input.rs"]
-notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::pod::at) and mtod_ip_store stay until their slices; N6.4c1: ip_moptions the kernel's, re-exported"
+notes = "N6.4a: the userland half re-exported from hal::sys::netinet_ip_var, the counters and ip_output flags from kernel::netinet::ip_var; ipqent, ipq, ipoffnxt and LZ's mtod_ip (safe now, over hal::pod::at) and mtod_ip_store stay until their slices; N6.4c1: ip_moptions the kernel's, re-exported; N6.4c2: ipqent, ipq and ipoffnxt the kernel's (re-exported), mtod_ip and mtod_ip_store stay for bsd's own readers (pf, the transports)"
 
 [[module]]
 rust = "sys/netinet/ipsec_input.rs"
@@ -16405,7 +16405,7 @@ rust = "sys/kernel/netinet/ip_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/ip_var.rs"]
 status = "redesigned"
-notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq, ipoffnxt and mtod_ip stay bsd's sys/netinet/ip_var.rs until N6.4c2; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
+notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq and ipoffnxt moved here at N6.4c2 (Ipqent with its header fields in cells, Ipq, the IpqentList/IpqList adapters, the Ipoffnxt image), mtod_ip stays bsd's; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
 
 
 [[module]]

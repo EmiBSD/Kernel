@@ -242,7 +242,8 @@ use crate::netinet::in_var::InIfaddr;
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_id::ip_randomid;
 use crate::netinet::ip_input::{
-    IP_MTUDISC_TIMEOUT, ip_forwarding, ip_send, ip_send_raw, ip_srcroute, ip_stripoptions,
+    IP_MTUDISC_TIMEOUT, ip_forwarding, ip_send, ip_send_raw, ip_srcroute, ip_stripoptions, pkt_put,
+    sin_bytes,
 };
 use crate::netinet::ip_output::{ip_insertoptions, ip_load, ip_store};
 use crate::netinet::ip_var::{IpstatCounters, ipstat_inc};
@@ -333,39 +334,11 @@ fn icmp_at(m: &Mbuf, off: usize) -> Icmp {
     pod::at::<Icmp>(&b, 0).unwrap_or_default()
 }
 
-/// `bytes` written at `off` of `m`'s data: in place, or through `m_copyback` (a copy of a
-/// shared cluster first) when the data is read-only.
-fn icmp_put(m: &mut Mbuf, off: usize, bytes: &[u8]) {
-    if let Some(d) = m.data_mut()
-        && let Some(dst) = d.get_mut(off..off + bytes.len())
-    {
-        dst.copy_from_slice(bytes);
-        return;
-    }
-    if m_copyback(m, off as i32, bytes, M_DONTWAIT).is_err() {
-        kpanic(format_args!("icmp: a message cannot be written"));
-    }
-}
-
 /// The first `n` bytes of `icp`'s image.
 #[inline]
 fn icmp_bytes(icp: &Icmp) -> [u8; size_of::<Icmp>()] {
     let mut b = [0u8; size_of::<Icmp>()];
     let _ = pod::put(&mut b, 0, icp);
-    b
-}
-
-/// The sockaddr_in of `a`, as bytes.
-#[inline]
-fn sin_bytes(a: InAddr) -> [u8; size_of::<SockaddrIn>()] {
-    let sin = SockaddrIn {
-        sin_len: size_of::<SockaddrIn>() as u8,
-        sin_family: AF_INET,
-        sin_addr: a,
-        ..SockaddrIn::default()
-    };
-    let mut b = [0u8; size_of::<SockaddrIn>()];
-    let _ = pod::put(&mut b, 0, &sin);
     b
 }
 
@@ -483,9 +456,12 @@ pub fn icmp_do_error(n: MbufBox, type_: u8, code: u8, dest: u32, destmtu: i32) -
 
     icp.icmp_code = code;
     let b = icmp_bytes(&icp);
-    icmp_put(&mut m, 0, &b[..ICMP_IP_OFFSET]);
+    // A fresh mbuf: written in place (without it, no error is sent, as without the mbuf).
+    if !pkt_put(&mut m, 0, &b[..ICMP_IP_OFFSET]) {
+        return None;
+    }
     let Some(d) = m.data_mut() else {
-        kpanic(format_args!("icmp_error: a fresh mbuf is read-only"));
+        return None;
     };
     m_copydata(&n, 0, &mut d[ICMP_IP_OFFSET..ICMP_IP_OFFSET + icmplen]);
 
@@ -502,7 +478,9 @@ pub fn icmp_do_error(n: MbufBox, type_: u8, code: u8, dest: u32, destmtu: i32) -
     nip.ip_p = IPPROTO_ICMP as u8;
     nip.ip_src = oip.ip_src;
     nip.ip_dst = oip.ip_dst;
-    ip_store(&mut m, &nip);
+    if !ip_store(&mut m, &nip) {
+        return None;
+    }
 
     drop(n);
     Some(m)
@@ -549,6 +527,14 @@ enum Then {
     Free,
     /// Answered (`goto reflect`): the message was turned into its reply.
     Reflect,
+}
+
+/// A reply that could not be written (no buffer for a shared cluster's copy; the message is
+/// writable since `ipv4_check`, so not taken): freed, counted as the C counts `icmp_input`'s
+/// `m_pullup` failures (`icps_tooshort`).
+fn unwritable() -> Then {
+    icmpstat_inc(IcmpstatCounters::IcpsTooshort);
+    Then::Free
 }
 
 /// `icmp_input_if(ifp, mp, offp, proto, af, ns)`: `icmp_input` for the interface it was
@@ -713,7 +699,9 @@ pub fn icmp_input_if<G: ProcGlue>(
                     break 'sw Then::Raw;
                 }
                 icp.icmp_type = ICMP_ECHOREPLY;
-                icmp_put(&mut m, hlen, &[icp.icmp_type]);
+                if !pkt_put(&mut m, hlen, &[icp.icmp_type]) {
+                    break 'sw unwritable();
+                }
                 Then::Reflect
             }
 
@@ -736,12 +724,15 @@ pub fn icmp_input_if<G: ProcGlue>(
                 icp.set_icmp_rtime(iptime());
                 icp.set_icmp_ttime(icp.icmp_rtime()); // bogus, do later!
                 let b = icmp_bytes(&icp);
-                icmp_put(&mut m, hlen, &b[..1]);
-                icmp_put(
-                    &mut m,
-                    hlen + ICMP_IP_OFFSET + 4,
-                    &b[ICMP_IP_OFFSET + 4..ICMP_TSLEN],
-                );
+                if !(pkt_put(&mut m, hlen, &b[..1])
+                    && pkt_put(
+                        &mut m,
+                        hlen + ICMP_IP_OFFSET + 4,
+                        &b[ICMP_IP_OFFSET + 4..ICMP_TSLEN],
+                    ))
+                {
+                    break 'sw unwritable();
+                }
                 Then::Reflect
             }
 
@@ -777,15 +768,20 @@ pub fn icmp_input_if<G: ProcGlue>(
                     } else if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
                         ip.ip_src = ia.ia_dstaddr.addr();
                     }
-                    ip_store(&mut m, &ip);
+                    if !ip_store(&mut m, &ip) {
+                        break 'sw unwritable();
+                    }
                 }
                 let b = icmp_bytes(&icp);
-                icmp_put(&mut m, hlen, &b[..1]);
-                icmp_put(
-                    &mut m,
-                    hlen + ICMP_IP_OFFSET,
-                    &b[ICMP_IP_OFFSET..ICMP_MASKLEN],
-                );
+                if !(pkt_put(&mut m, hlen, &b[..1])
+                    && pkt_put(
+                        &mut m,
+                        hlen + ICMP_IP_OFFSET,
+                        &b[ICMP_IP_OFFSET..ICMP_MASKLEN],
+                    ))
+                {
+                    break 'sw unwritable();
+                }
                 Then::Reflect
             }
 
@@ -975,7 +971,11 @@ pub fn icmp_reflect(
     ip.ip_dst = ip.ip_src;
     ip.ip_src = ip_src;
     ip.ip_ttl = MAXTTL;
-    ip_store(&mut m, &ip);
+    // The header, writable since ipv4_check: not taken; dropped as the C's icmp_reflect
+    // drops what it cannot build.
+    if !ip_store(&mut m, &ip) {
+        return None;
+    }
 
     if optlen > 0 {
         // Retrieve any source routing from the incoming packet; add on any record-route or
@@ -986,10 +986,15 @@ pub fn icmp_reflect(
                 && let Some(mut o) = m_gethdr(M_DONTWAIT, MT_HEADER)
             {
                 o.m_len().set(size_of::<InAddr>() as u32);
-                icmp_put(&mut o, 0, &[0; 4]);
-                opts = Some(o);
+                // A fresh header mbuf: written in place.
+                if pkt_put(&mut o, 0, &[0; 4]) {
+                    opts = Some(o);
+                }
             }
         }
+        // The options' mbuf is fresh: its writes are in place; without one the reply goes
+        // without options, as the C's when it cannot get the mbuf.
+        let mut written = true;
         if let Some(o) = opts.as_mut() {
             // ICMPPRINTFS: not configured.
             let mut cp = [0u8; 40];
@@ -1018,7 +1023,7 @@ pub fn icmp_reflect(
                 if opt == IPOPT_RR || opt == IPOPT_TS || opt == IPOPT_SECURITY {
                     let ol = o.m_len().get() as usize;
                     o.m_len().set((ol + len as usize) as u32);
-                    icmp_put(o, ol, &cp[at..at + len as usize]);
+                    written &= pkt_put(o, ol, &cp[at..at + len as usize]);
                 }
                 cnt -= len;
                 at += len as usize;
@@ -1029,13 +1034,18 @@ pub fn icmp_reflect(
                 while cnt < 4 {
                     let ol = o.m_len().get() as usize;
                     o.m_len().set((ol + 1) as u32);
-                    icmp_put(o, ol, &[IPOPT_EOL]);
+                    written &= pkt_put(o, ol, &[IPOPT_EOL]);
                     cnt += 1;
                 }
             }
             // ICMPPRINTFS: not configured.
         }
-        ip_stripoptions(&mut m);
+        if !written {
+            opts = None;
+        }
+        if !ip_stripoptions(&mut m) {
+            return None;
+        }
     }
     m.m_flags().set(m.flags() & !(M_BCAST | M_MCAST));
     if let Some(op) = op {
@@ -1052,7 +1062,10 @@ pub fn icmp_send(m: MbufBox, opts: Option<&[u8]>) {
     let ip = ip_load(&m);
     let mut hlen = i32::from(ip.ip_hl()) << 2;
 
-    icmp_put(&mut m, hlen as usize + ICMP_CKSUM_OFFSET, &[0, 0]);
+    // The reflected message, writable since ipv4_check: not taken; dropped unsent.
+    if !pkt_put(&mut m, hlen as usize + ICMP_CKSUM_OFFSET, &[0, 0]) {
+        return;
+    }
     m.m_pkthdr().csum_flags.set(M_ICMP_CSUM_OUT);
     // ICMPPRINTFS: not configured.
     // ip_send() cannot handle IP options properly. So in case we have options fill out the IP
@@ -1065,7 +1078,9 @@ pub fn icmp_send(m: MbufBox, opts: Option<&[u8]>) {
             ip.set_ip_v(IPVERSION);
             ip.ip_off &= IP_DF.to_be();
             ip.ip_id = ip_randomid().to_be();
-            ip_store(&mut m, &ip);
+            if !ip_store(&mut m, &ip) {
+                return;
+            }
             ipstat_inc(IpstatCounters::IpsLocalout);
             ip_send_raw(m);
         }
@@ -1202,7 +1217,8 @@ pub fn icmp_mtudisc(nextmtu: u16, oip: &Ip, rtableid: u32, net: &NetHeld<'_>) {
         mtu = u64::from(u16::from_be(oip.ip_len));
         // Some 4.2BSD-based routers incorrectly adjust the ip_len
         if mtu > u64::from(rtmtu) && rtmtu != 0 {
-            mtu -= u64::from(oip.ip_hl()) << 2;
+            // The C's u_long arithmetic: it wraps.
+            mtu = mtu.wrapping_sub(u64::from(oip.ip_hl()) << 2);
         }
 
         // If we still can't guess a value, try the route
@@ -1322,11 +1338,13 @@ pub fn icmp_do_exthdr(m: MbufBox, class: u16, ctype: u8, buf: &[u8]) -> Result<M
     let off = off.max(ICMP_EXT_OFFSET);
     icp.set_icmp_length((off / size_of::<u32>()) as u8);
     let ib = icmp_bytes(&icp);
-    icmp_put(
+    if !pkt_put(
         &mut m,
         hlen - ICMP_MINLEN + ICMP_HUN_OFFSET,
         &ib[ICMP_HUN_OFFSET..ICMP_HUN_OFFSET + 4],
-    );
+    ) {
+        return Err(Errno::ENOBUFS);
+    }
 
     let ieh = IcmpExtHdr {
         ieh_version: ICMP_EXT_HDR_VERSION,
@@ -1358,7 +1376,9 @@ pub fn icmp_do_exthdr(m: MbufBox, class: u16, ctype: u8, buf: &[u8]) -> Result<M
         .map_err(|_| Errno::ENOBUFS)?;
 
     ip.ip_len = (m.m_pkthdr().len.get() as u16).to_be();
-    ip_store(&mut m, &ip);
+    if !ip_store(&mut m, &ip) {
+        return Err(Errno::ENOBUFS);
+    }
 
     Ok(m)
 }

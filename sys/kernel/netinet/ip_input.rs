@@ -81,6 +81,15 @@
 //!   (slices without the C's terminating 0).
 //! - `ipsend_mq`/`ipsendraw_mq` are made with the C's 64 and `IPL_SOFTNET` in their
 //!   initialisers, so `ip_init` has no `mq_init` to run.
+//! - The C writes the header, the options and ICMP's reply in place through `mtod`, into a
+//!   cluster it may share with a copy. The kernel cannot lend a shared cluster's bytes
+//!   mutably: `ipv4_check` gives a read-only first mbuf a cluster of its own, once, and
+//!   drops the packet when none can be had (`ips_idropped`); every later write is then in
+//!   place. The writers (`ip_store`, `pkt_put`, `ip_stripoptions`) still answer `false` for
+//!   data they cannot write, and their callers drop the packet, counted as the C counts its
+//!   buffer failures there (`ips_fragdropped`, `ips_idropped`, `ips_cantforward`,
+//!   `ips_odropped`, ICMP's `icps_tooshort`, IGMP's `igps_rcv_tooshort`): never taken while
+//!   the first mbuf is writable.
 //!
 //! ## Redesign
 //! - LZ's `struct mbuf **` functions over `&mut Option<&'static Mbuf>` (parked mbufs) ->
@@ -270,14 +279,15 @@ pub struct IpqState {
     frags: i32,
 }
 
+#[cfg(test)]
 impl IpqState {
-    /// `ip_frags`.
-    pub fn frags(&self) -> i32 {
+    /// `ip_frags`, for the tests.
+    pub(crate) fn frags(&self) -> i32 {
         self.frags
     }
 
-    /// The datagrams being reassembled.
-    pub fn queues(&self) -> usize {
+    /// The datagrams being reassembled, for the tests.
+    pub(crate) fn queues(&self) -> usize {
         self.q.len()
     }
 }
@@ -620,6 +630,20 @@ pub fn ipv4_check(ifp: &Ifnet, m: MbufBox) -> Option<(MbufBox, Ip)> {
         }
     }
 
+    // The header made writable: the input path writes it (and the options, and ICMP's reply)
+    // in place, as the C does through `mtod`. A shared cluster (a copy's) gets one of its own
+    // here, once; without one the packet is dropped, counted as lost for want of a buffer
+    // (`ips_idropped`). Every later write lands in this first mbuf (ICMP's `m_pullup` keeps
+    // it or makes a fresh one), so they are made in place.
+    if m.is_readonly() {
+        let mut b = [0u8; 60];
+        m_copydata(&m, 0, &mut b[..hlen]);
+        if m_copyback(&mut m, 0, &b[..hlen], M_DONTWAIT).is_err() {
+            ipstat_inc(IpstatCounters::IpsIdropped);
+            return None;
+        }
+    }
+
     // The header: `m_pullup` moved its bytes, never changed them, and trimming the tail
     // leaves them as they were.
     Some((m, ip))
@@ -806,13 +830,17 @@ pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32, ip0: &Ip) -> i32 {
             // bytes.
             let len = u16::from_be(ip.ip_len);
             if len == 0 || len & 0x7 != 0 {
-                ip_store(&mut m, &ip);
                 ipstat_inc(IpstatCounters::IpsBadfrags);
                 return IPPROTO_DONE;
             }
         }
         ip.ip_off = (u16::from_be(ip.ip_off) << 3).to_be();
-        ip_store(&mut m, &ip);
+        if !ip_store(&mut m, &ip) {
+            // No buffer for a shared cluster's copy (not taken: the header is writable since
+            // ipv4_check): dropped as a fragment out of space.
+            ipstat_inc(IpstatCounters::IpsFragdropped);
+            return IPPROTO_DONE;
+        }
 
         let rdomain = rtable_l2(m.m_pkthdr().ph_rtableid.get());
         let out = {
@@ -827,7 +855,10 @@ pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32, ip0: &Ip) -> i32 {
                 ip = ip_load(&m);
                 hlen = usize::from(ip.ip_hl()) << 2;
                 ip.ip_len = u16::from_be(ip.ip_len).wrapping_add(hlen as u16).to_be();
-                ip_store(&mut m, &ip);
+                if !ip_store(&mut m, &ip) {
+                    ipstat_inc(IpstatCounters::IpsFragdropped);
+                    return IPPROTO_DONE;
+                }
                 *mp = Some(m);
             }
         }
@@ -1372,7 +1403,11 @@ fn reass_check(frags: &mut i32, fp: &mut PoolBox<Ipq>) -> Option<MbufBox> {
     ip.ip_len = (next as u16).to_be();
     ip.ip_src = fp.ipq_src;
     ip.ip_dst = fp.ipq_dst;
-    ip_store(&mut m, &ip);
+    if !ip_store(&mut m, &ip) {
+        // The first fragment's header, writable since ipv4_check: not taken.
+        ipstat_inc(IpstatCounters::IpsFragdropped);
+        return None;
+    }
     m_calchdrlen(&m);
     Some(m)
 }
@@ -1439,22 +1474,17 @@ fn ip_flush(st: &mut IpqState, maxqueue: i32) {
     }
 }
 
-/// The sockaddr_in of `a`.
+/// The `sockaddr_in` of `a`, as bytes (ICMP's too).
 #[inline]
-fn sin_of(a: InAddr) -> SockaddrIn {
-    SockaddrIn {
+pub(crate) fn sin_bytes(a: InAddr) -> [u8; size_of::<SockaddrIn>()] {
+    let sin = SockaddrIn {
         sin_len: size_of::<SockaddrIn>() as u8,
         sin_family: AF_INET,
         sin_addr: a,
         ..SockaddrIn::default()
-    }
-}
-
-/// The bytes of `sin`.
-#[inline]
-fn sin_bytes(sin: &SockaddrIn) -> [u8; size_of::<SockaddrIn>()] {
+    };
     let mut b = [0u8; size_of::<SockaddrIn>()];
-    let _ = pod::put(&mut b, 0, sin);
+    let _ = pod::put(&mut b, 0, &sin);
     b
 }
 
@@ -1486,17 +1516,17 @@ fn opt_put(opts: &mut [u8], off: usize, a: u32) {
 }
 
 /// `bytes` written at `off` of `m`'s data, in place when the data is writable, through
-/// `m_copyback` (a copy of a shared cluster first) when it is not.
-fn pkt_put(m: &mut Mbuf, off: usize, bytes: &[u8]) {
+/// `m_copyback` (a copy of a shared cluster first) when it is not; `false`, nothing written,
+/// when no cluster can be had for the copy (the caller drops the packet).
+#[must_use]
+pub(crate) fn pkt_put(m: &mut Mbuf, off: usize, bytes: &[u8]) -> bool {
     if let Some(d) = m.data_mut()
         && let Some(dst) = d.get_mut(off..off + bytes.len())
     {
         dst.copy_from_slice(bytes);
-        return;
+        return true;
     }
-    if m_copyback(m, off as i32, bytes, M_DONTWAIT).is_err() {
-        kpanic(format_args!("ip_input: a header cannot be written"));
-    }
+    m_copyback(m, off as i32, bytes, M_DONTWAIT).is_ok()
 }
 
 /// What `ip_dooptions`' walk found wrong: the ICMP error's type and code (the parameter
@@ -1544,9 +1574,10 @@ pub fn ip_dooptions(
         net,
     );
     hal::klock::kernel_unlock();
-    if changed {
-        ip_store(&mut m, &ip);
-        pkt_put(&mut m, IP_HDR_LEN, opts);
+    if changed && !(ip_store(&mut m, &ip) && pkt_put(&mut m, IP_HDR_LEN, opts)) {
+        // The header and its options, writable since ipv4_check: not taken.
+        ipstat_inc(IpstatCounters::IpsIdropped);
+        return None;
     }
     if let Err(bad) = res {
         icmp_error(m, bad.type_, bad.code as u8, 0, 0, net);
@@ -1626,7 +1657,7 @@ fn dooptions_walk(
                 if off < i32::from(IPOPT_MINOFF) {
                     return Err(param(o + IPOPT_OFFSET));
                 }
-                let ipaddr = sin_bytes(&sin_of(ip.ip_dst));
+                let ipaddr = sin_bytes(ip.ip_dst);
                 if ifa_ifwithaddr(net, &ipaddr, rtableid).is_none() {
                     if opt == IPOPT_SSRR {
                         return Err(unreach(ICMP_UNREACH_SRCFAIL));
@@ -1645,7 +1676,7 @@ fn dooptions_walk(
                 // locate outgoing interface
                 let off = off as usize;
                 let next = opt_addr(opts, o + off);
-                let ipaddr = sin_bytes(&sin_of(next));
+                let ipaddr = sin_bytes(next);
                 // keep packet in the virtual instance
                 let rt = rtalloc(
                     SockaddrView::new(&ipaddr)
@@ -1684,7 +1715,7 @@ fn dooptions_walk(
                 if off + size_of::<InAddr>() as i32 > optlen {
                     break 'rr;
                 }
-                let ipaddr = sin_bytes(&sin_of(ip.ip_dst));
+                let ipaddr = sin_bytes(ip.ip_dst);
                 // locate outgoing interface; if we're the destination, use the incoming
                 // interface (should be same). Again keep the packet inside the virtual
                 // instance.
@@ -1738,7 +1769,7 @@ fn dooptions_walk(
                         if ptr - 1 + (size_of::<u32>() + size_of::<InAddr>()) as i32 > tlen {
                             return Err(code);
                         }
-                        let ipaddr = sin_bytes(&sin_of(dst));
+                        let ipaddr = sin_bytes(dst);
                         if ifaof_ifpforaddr(net, &ipaddr, ifp).is_none() {
                             // continue: the next option.
                             cnt -= optlen;
@@ -1752,7 +1783,7 @@ fn dooptions_walk(
                         if ptr - 1 + (size_of::<u32>() + size_of::<InAddr>()) as i32 > tlen {
                             return Err(code);
                         }
-                        let ipaddr = sin_bytes(&sin_of(_sin));
+                        let ipaddr = sin_bytes(_sin);
                         if ifa_ifwithaddr(net, &ipaddr, rtableid).is_none() {
                             cnt -= optlen;
                             cp += optlen as usize;
@@ -1861,26 +1892,18 @@ pub fn ip_srcroute(m0: &mut Mbuf) -> Option<MbufBox> {
 }
 
 /// `ip_stripoptions(m)`: strips out IP options, at higher level protocol in the kernel.
-pub fn ip_stripoptions(m: &mut Mbuf) {
+/// `false`, nothing changed, when `m`'s data is read-only (a shared cluster: the input path
+/// made its first mbuf writable in `ipv4_check`, so not taken): the caller drops it.
+#[must_use]
+pub fn ip_stripoptions(m: &mut Mbuf) -> bool {
     let mut ip = ip_load(m);
     let olen = (usize::from(ip.ip_hl()) << 2) - IP_HDR_LEN;
     let mlen = m.m_len().get() as usize;
     let i = mlen - (IP_HDR_LEN + olen);
-    match m.data_mut() {
-        Some(d) => d.copy_within(IP_HDR_LEN + olen..IP_HDR_LEN + olen + i, IP_HDR_LEN),
-        None => {
-            // A read-only cluster: the bytes moved down through copies, a stack's worth at a
-            // time (the destination is below the source).
-            let mut done = 0;
-            let mut buf = [0u8; 256];
-            while done < i {
-                let n = (i - done).min(buf.len());
-                m_copydata(m, (IP_HDR_LEN + olen + done) as i32, &mut buf[..n]);
-                pkt_put(m, IP_HDR_LEN + done, &buf[..n]);
-                done += n;
-            }
-        }
-    }
+    let Some(d) = m.data_mut() else {
+        return false;
+    };
+    d.copy_within(IP_HDR_LEN + olen..IP_HDR_LEN + olen + i, IP_HDR_LEN);
     m.m_len().set((mlen - olen) as u32);
     if m.flags() & M_PKTHDR != 0 {
         let ph = m.m_pkthdr();
@@ -1888,7 +1911,8 @@ pub fn ip_stripoptions(m: &mut Mbuf) {
     }
     ip.set_ip_hl((IP_HDR_LEN >> 2) as u8);
     ip.ip_len = u16::from_be(ip.ip_len).wrapping_sub(olen as u16).to_be();
-    ip_store(m, &ip);
+    // The data was writable above: the header is written in place.
+    ip_store(m, &ip)
 }
 
 /// `ip_forward(m, ifp, ro, flags)`: forwards a packet. If some error occurs return the sender
@@ -1979,7 +2003,12 @@ pub fn ip_forward(m: MbufBox, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32, n
         (icmp_len, mflags, pfflags)
     };
     let (icmp_len, mflags, pfflags) = redirect;
-    ip_store(&mut m, &ip);
+    if !ip_store(&mut m, &ip) {
+        // The header, writable since ipv4_check: not taken. Counted as the C counts a
+        // forwarding its ip_output could not make.
+        ipstat_inc(IpstatCounters::IpsCantforward);
+        return;
+    }
 
     let error = ip_output(
         m,
@@ -2057,7 +2086,10 @@ pub fn ip_forward(m: MbufBox, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32, n
         .flags
         .set(ph.pf.flags.get() | (pfflags & PF_TAG_GENERATED));
     mcopy.m_flags().set(mcopy.flags() | (mflags & M_COPYFLAGS));
-    pkt_put(&mut mcopy, 0, &icmp_buf[..icmp_len]);
+    // A fresh mbuf: written in place (without it, no error is sent, as without the mbuf).
+    if !pkt_put(&mut mcopy, 0, &icmp_buf[..icmp_len]) {
+        return;
+    }
     icmp_error(mcopy, type_, code, dest, destmtu, net);
     // done: iproute's route given back with it (rtfree).
 }
@@ -2511,6 +2543,32 @@ pub(crate) mod tests {
         let mut v = std::vec![0u8; m.m_pkthdr().len.get() as usize];
         m_copydata(m, 0, &mut v);
         v
+    }
+
+    #[test]
+    fn a_shared_cluster_gets_its_own_before_the_header_is_written() {
+        // A packet in a cluster and a copy sharing it (m_copym's, as the broadcast copy
+        // ether_resolve loops back): ipv4_check gives the copy a cluster of its own, so the
+        // input path's in-place writes never reach the original.
+        let _g = setup();
+        let (ifp, _) = crate::netinet::ip_output::tests::iface();
+        let mut p = header(0x45, 1200, 1, 0, 17, 0).to_vec();
+        p.resize(1200, 0xa5);
+        let mut orig = m_devget(&p, 0).expect("a packet");
+        let copy = crate::net::mbuf::m_copym(&mut orig, 0, crate::net::mbuf::M_COPYALL, M_DONTWAIT)
+            .expect("a copy");
+        assert!(copy.is_readonly(), "the copy shares the cluster");
+        let (mut m, ip) = ipv4_check(ifp, copy).expect("accepted");
+        assert!(!m.is_readonly(), "a cluster of its own");
+        let mut ttl1 = ip;
+        ttl1.ip_ttl = 1;
+        assert!(ip_store(&mut m, &ttl1), "written in place");
+        assert_eq!(
+            (bytes(&m)[8], bytes(&orig)[8]),
+            (1, 64),
+            "the original untouched"
+        );
+        assert_eq!(bytes(&m)[20..], p[20..], "the rest of the packet kept");
     }
 
     #[test]

@@ -251,7 +251,7 @@ mod tests {
 
         // Too short for an Ethernet header.
         input(&[0u8; 10]);
-        // To us: bsd's ipv4_input.
+        // To us: the kernel's ipv4_input (IPV4_INPUT).
         input(&frame(OURS, PEER, ETHERTYPE_IP));
         assert_eq!(ifp.if_imcasts().get(), 0);
         // Unicast for someone else.
