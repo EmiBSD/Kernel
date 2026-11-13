@@ -692,8 +692,11 @@ pub fn in_pcblookup(
 ) -> Option<&'static Inpcb> {
     // The answer's count taken before the mutex is let go (in_pcb.c:1220-1221): a pcb a
     // concurrent detach and last in_pcbunref would free is still held then.
+    // The hash before the mutex (in_pcb.c:1208-1212).
+    let rdomain = kernel::net::rtable::rtable_l2(rtable);
+    let hash = k::in_pcbhash(table, rdomain, &faddr, fport, &laddr, lport);
     let mut g = table.lock();
-    let inp = k::in_pcblookup_held(&mut g, table, faddr, fport, laddr, lport, rtable);
+    let inp = k::in_pcbhash_lookup(&mut g, hash, rdomain, &faddr, fport, &laddr, lport);
     let inp = inp.map(|h| legacy_hold(h, &g));
     drop(g);
     inp
@@ -708,9 +711,10 @@ pub fn in_pcblookup_listen(
     rtable: u32,
 ) -> Option<&'static Inpcb> {
     // pf's divert key before the mutex, the count before it is let go (in_pcb.c:1304-1305).
-    let keys = k::in_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    // pf's divert key and the first hash before the mutex (in_pcb.c:1292-1294).
+    let l = k::in_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
     let mut g = table.lock();
-    let inp = k::in_pcblookup_listen_held(&mut g, table, keys, rtable);
+    let inp = k::in_pcblookup_listen_held(&mut g, table, &l);
     let inp = inp.map(|h| legacy_hold(h, &g));
     drop(g);
     inp

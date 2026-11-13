@@ -240,19 +240,30 @@ pub fn in6_pcblookup_listen<G: ProcGlue, A: Addr6>(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<InpcbRef<G>> {
-    let keys = in6_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let l = in6_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
     let mut g = table.lock();
-    in6_pcblookup_listen_held(&mut g, table, keys, rtable)
+    in6_pcblookup_listen_held(&mut g, table, &l)
 }
 
-/// The keys `in6_pcblookup_listen` looks up before it takes the table mutex (as
-/// `kernel::netinet::in_pcb::in_pcblookup_listen_keys`): the first local address, the
-/// second and the port; `None` for a divert-reply packet.
-pub fn in6_pcblookup_listen_keys<A: Addr6>(
+/// What `in6_pcblookup_listen` computes before it takes the table mutex (in6_pcb.c's order,
+/// as `kernel::netinet::in_pcb::ListenLookup`): the two local addresses, the port, the
+/// routing domain and the first address's hash.
+pub struct Listen6Lookup {
+    key1: [u8; 16],
+    key2: [u8; 16],
+    lport: u16,
+    rdomain: u32,
+    hash1: u64,
+}
+
+/// [`Listen6Lookup`] of `laddr.lport_arg` in `table`; `None` for a divert-reply packet.
+pub fn in6_pcblookup_listen_keys<G: ProcGlue, A: Addr6>(
+    table: &Inpcbtable<G>,
     laddr: &A,
     lport_arg: u16,
     m: Option<&Mbuf>,
-) -> Option<([u8; 16], [u8; 16], u16)> {
+    rtable: u32,
+) -> Option<Listen6Lookup> {
     let laddr = laddr.to_bytes();
     let zero = ZEROIN6_ADDR.s6_addr;
     let mut key1 = laddr;
@@ -284,21 +295,33 @@ pub fn in6_pcblookup_listen_keys<A: Addr6>(
         key1 = zero;
         key2 = laddr;
     }
-    Some((key1, key2, lport))
+    let rdomain = rtable_l2(rtable);
+    let hash1 = in6_pcbhash(table, rdomain, &zero, 0, &key1, lport);
+    Some(Listen6Lookup {
+        key1,
+        key2,
+        lport,
+        rdomain,
+        hash1,
+    })
 }
 
-/// `in6_pcblookup_listen`'s lookups of `keys`, the table mutex held: the pcb bound to the
-/// first key, else to the second, counted.
+/// `in6_pcblookup_listen`'s lookups of `l`, the table mutex held: the pcb bound to the first
+/// key (hashed before the mutex), else to the second (hashed here, as the C), counted.
 pub fn in6_pcblookup_listen_held<G: ProcGlue>(
     g: &mut InpGuard<'_, G>,
     table: &Inpcbtable<G>,
-    (key1, key2, lport): ([u8; 16], [u8; 16], u16),
-    rtable: u32,
+    l: &Listen6Lookup,
 ) -> Option<InpcbRef<G>> {
     let zero = ZEROIN6_ADDR.s6_addr;
-    let rdomain = rtable_l2(rtable);
-    let hash = in6_pcbhash(table, rdomain, &zero, 0, &key1, lport);
-    let mut inp = in6_pcbhash_lookup(g, hash, rdomain, &zero, 0, &key1, lport);
+    let &Listen6Lookup {
+        key1,
+        key2,
+        lport,
+        rdomain,
+        hash1,
+    } = l;
+    let mut inp = in6_pcbhash_lookup(g, hash1, rdomain, &zero, 0, &key1, lport);
     if inp.is_none() && key1 != key2 {
         let hash = in6_pcbhash(table, rdomain, &zero, 0, &key2, lport);
         inp = in6_pcbhash_lookup(g, hash, rdomain, &zero, 0, &key2, lport);

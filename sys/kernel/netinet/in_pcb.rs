@@ -2463,20 +2463,32 @@ pub fn in_pcblookup_listen<G: ProcGlue>(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<InpcbRef<G>> {
-    let keys = in_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let l = in_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
     let mut g = table.lock();
-    in_pcblookup_listen_held(&mut g, table, keys, rtable)
+    in_pcblookup_listen_held(&mut g, table, &l)
 }
 
-/// The keys `in_pcblookup_listen` looks up before it takes the table mutex: the first local
-/// address (`laddr`, or pf's divert-to address), the second (the wildcard, or `laddr` for a
-/// connection redirected to localhost) and the local port; `None` for a packet pf diverts
-/// as a reply (no listener answers it).
-pub fn in_pcblookup_listen_keys(
+/// What `in_pcblookup_listen` computes before it takes the table mutex (in_pcb.c:1292-1294):
+/// the first local address (`laddr`, or pf's divert-to address), the second (the wildcard,
+/// or `laddr` for a connection redirected to localhost), the local port, the routing domain
+/// and the first address's hash.
+pub struct ListenLookup {
+    key1: InAddr,
+    key2: InAddr,
+    lport: u16,
+    rdomain: u32,
+    hash1: u64,
+}
+
+/// [`ListenLookup`] of `laddr.lport_arg` in `table` (`m`'s pf tags choose the keys); `None`
+/// for a packet pf diverts as a reply (no listener answers it).
+pub fn in_pcblookup_listen_keys<G: ProcGlue>(
+    table: &Inpcbtable<G>,
     laddr: InAddr,
     lport_arg: u16,
     m: Option<&Mbuf>,
-) -> Option<(InAddr, InAddr, u16)> {
+    rtable: u32,
+) -> Option<ListenLookup> {
     let mut key1 = laddr;
     let mut key2 = ZEROIN_ADDR;
     let mut lport = lport_arg;
@@ -2516,20 +2528,33 @@ pub fn in_pcblookup_listen_keys(
         key1 = ZEROIN_ADDR;
         key2 = laddr;
     }
-    Some((key1, key2, lport))
+    let rdomain = rtable_l2(rtable);
+    let hash1 = in_pcbhash(table, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
+    Some(ListenLookup {
+        key1,
+        key2,
+        lport,
+        rdomain,
+        hash1,
+    })
 }
 
-/// `in_pcblookup_listen`'s lookups of `keys` ([`in_pcblookup_listen_keys`]), the table
-/// mutex held: the pcb bound to the first key, else to the second, counted.
+/// `in_pcblookup_listen`'s lookups of `l` ([`in_pcblookup_listen_keys`]), the table mutex
+/// held: the pcb bound to the first key (its hash computed before the mutex), else to the
+/// second (hashed here, as the C), counted.
 pub fn in_pcblookup_listen_held<G: ProcGlue>(
     g: &mut InpGuard<'_, G>,
     table: &Inpcbtable<G>,
-    (key1, key2, lport): (InAddr, InAddr, u16),
-    rtable: u32,
+    l: &ListenLookup,
 ) -> Option<InpcbRef<G>> {
-    let rdomain = rtable_l2(rtable);
-    let hash = in_pcbhash(table, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
-    let mut inp = in_pcbhash_lookup(g, hash, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
+    let &ListenLookup {
+        key1,
+        key2,
+        lport,
+        rdomain,
+        hash1,
+    } = l;
+    let mut inp = in_pcbhash_lookup(g, hash1, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
     if inp.is_none() && key1.s_addr != key2.s_addr {
         let hash = in_pcbhash(table, rdomain, &ZEROIN_ADDR, 0, &key2, lport);
         inp = in_pcbhash_lookup(g, hash, rdomain, &ZEROIN_ADDR, 0, &key2, lport);
@@ -3319,6 +3344,62 @@ mod tests {
         let (_g, _p) = testinet::setup();
         let (_so, inp) = testinet::pcb(testinet::table(16));
         let _ = in_pcbsolock(&inp);
+    }
+
+    #[test]
+    fn the_hash_computed_before_the_mutex_finds_the_same_pcb() {
+        // bsd's adapters hash before they take the table mutex (in_pcb.c:1208-1212,
+        // :1292-1294), then walk the bucket under the guard: the same answer as the lookups
+        // that hash under it.
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let (l, lp, f, fp) = race_quad();
+        place(&inp, l, lp, f, fp);
+        let (so2, lis) = testinet::pcb(t);
+        place(&lis, l, htons(81), ZEROIN_ADDR, 0);
+        let (so3, any) = testinet::pcb(t);
+        place(&any, ZEROIN_ADDR, htons(82), ZEROIN_ADDR, 0);
+
+        // Connected.
+        let rdomain = rtable_l2(0);
+        let hash = in_pcbhash(t, rdomain, &f, fp, &l, lp);
+        let found = {
+            let mut g = t.lock();
+            in_pcbhash_lookup(&mut g, hash, rdomain, &f, fp, &l, lp)
+        };
+        assert_eq!(found.as_deref().map(at), Some(at(&inp)));
+        let held = {
+            let mut g = t.lock();
+            in_pcblookup_held(&mut g, t, f, fp, l, lp, 0)
+        };
+        assert_eq!(held.as_deref().map(at), Some(at(&inp)));
+
+        // Listening on the address: the first key's hash, computed before the mutex.
+        let keys = in_pcblookup_listen_keys(t, l, htons(81), None, 0).expect("keys");
+        let found = {
+            let mut g = t.lock();
+            in_pcblookup_listen_held(&mut g, t, &keys)
+        };
+        assert_eq!(found.as_deref().map(at), Some(at(&lis)));
+        // Listening on the wildcard: the second key, hashed under the mutex as the C.
+        let keys = in_pcblookup_listen_keys(t, l, htons(82), None, 0).expect("keys");
+        let found2 = {
+            let mut g = t.lock();
+            in_pcblookup_listen_held(&mut g, t, &keys)
+        };
+        assert_eq!(found2.as_deref().map(at), Some(at(&any)));
+        assert_eq!(
+            in_pcblookup_listen(t, l, htons(82), None, 0)
+                .as_deref()
+                .map(at),
+            Some(at(&any))
+        );
+
+        drop((found, found2, held));
+        testinet::release(so, inp);
+        testinet::release(so2, lis);
+        testinet::release(so3, any);
     }
 }
 /* </TESTS> */

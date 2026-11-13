@@ -726,10 +726,13 @@ pub fn in6_pcblookup(
     rtable: u32,
 ) -> Option<&'static Inpcb> {
     // The answer's count taken before the mutex is let go (in6_pcb.c:692-693).
+    // The hash before the mutex (in6_pcb.c:680-683).
+    let rdomain = kernel::net::rtable::rtable_l2(rtable);
+    let (f, l) = (faddr.s6_addr, laddr.s6_addr);
+    let hash = kernel::netinet6::in6_pcb::in6_pcbhash(table, rdomain, &f, fport, &l, lport);
     let mut g = table.lock();
-    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_held(
-        &mut g, table, faddr, fport, laddr, lport, rtable,
-    );
+    let inp =
+        kernel::netinet6::in6_pcb::in6_pcbhash_lookup(&mut g, hash, rdomain, &f, fport, &l, lport);
     let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
     drop(g);
     inp
@@ -744,9 +747,10 @@ pub fn in6_pcblookup_listen(
     rtable: u32,
 ) -> Option<&'static Inpcb> {
     // pf's divert key before the mutex, the count before it is let go.
-    let keys = kernel::netinet6::in6_pcb::in6_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let l =
+        kernel::netinet6::in6_pcb::in6_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
     let mut g = table.lock();
-    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_listen_held(&mut g, table, keys, rtable);
+    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_listen_held(&mut g, table, &l);
     let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
     drop(g);
     inp

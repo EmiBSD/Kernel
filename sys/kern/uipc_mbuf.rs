@@ -134,8 +134,15 @@ pub fn mbinit() {
     k::mbinit(&crate::conf::param::NMBCLUST);
     // pf's legs of the mbuf (the C's `NPF > 0` blocks), bridges.toml's `Pf` row: `bsd`'s pf
     // registers once; a second `mbinit` (the host tests') keeps the first.
-    if let Ok(k) = kernel::net::pf_hooks::register_pf(&crate::net::pf::BSD_PF) {
-        let _ = crate::net::pf::PF_KEY.set(k);
+    match kernel::net::pf_hooks::register_pf(&crate::net::pf::BSD_PF) {
+        Ok(k) => {
+            let _ = crate::net::pf::PF_KEY.set(k);
+        }
+        // A second mbinit (the host tests') finds its own registration.
+        Err(_) if crate::net::pf::PF_KEY.get().is_some() => {}
+        Err(e) => crate::kern::subr_prf::panic(format_args!(
+            "mbinit: pf's legs registered by another ({e:?}): no key for the pcbs' pf words"
+        )),
     }
 }
 
