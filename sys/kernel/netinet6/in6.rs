@@ -1721,14 +1721,14 @@ pub(crate) mod tests {
     }
 
     /// `a` with the zone of interface `ifidx` embedded (`s6_addr16[1]`).
-    fn zoned(mut a: In6Addr, ifidx: u32) -> In6Addr {
+    pub(crate) fn zoned(mut a: In6Addr, ifidx: u32) -> In6Addr {
         a.set_s6_addr16(1, htons(ifidx as u16));
         a
     }
 
     /// A driver that brings the interface up on its first address and counts the multicast
     /// filter changes; it drops what it is given to send.
-    struct In6Driver {
+    pub(crate) struct In6Driver {
         addmulti: AtomicU32,
         delmulti: AtomicU32,
     }
@@ -1765,7 +1765,7 @@ pub(crate) mod tests {
 
     /// An Ethernet interface `name` with hardware address `mac`, multicast, MTU 1500, on the
     /// interface list, and its driver.
-    fn iface(name: &[u8], mac: [u8; 6]) -> (&'static Ifnet, &'static In6Driver) {
+    pub(crate) fn iface(name: &[u8], mac: [u8; 6]) -> (&'static Ifnet, &'static In6Driver) {
         let d: &'static In6Driver = Box::leak(Box::new(In6Driver {
             addmulti: AtomicU32::new(0),
             delmulti: AtomicU32::new(0),
@@ -1784,7 +1784,7 @@ pub(crate) mod tests {
 
     /// An address `a`/64 with `flags` on `ifp`, linked as `in6_update_ifa` links one (the
     /// kernel's record), with infinite lifetimes and no route.
-    fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> &'static In6Ifaddr {
+    pub(crate) fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> &'static In6Ifaddr {
         let _w = NETLOCK.write();
         let ia = in6_ifaddr_alloc(ifp, 0);
         ia.ia_addr.set(sin6_of(a));

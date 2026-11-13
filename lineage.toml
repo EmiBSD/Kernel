@@ -6738,7 +6738,7 @@ adapted_by = ["sys/kernel/netinet6/ip6_var.rs"]
 rust = "sys/netinet6/in6_src.rs"
 lz = ["sys/netinet6/in6_src.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_src.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_var.rs"
@@ -16613,6 +16613,18 @@ lz = "sys/netinet6/mld6.rs::inet6_memberships"
 native = []
 kind = "dropped"
 reason = "the walk of if_maddrlist filters by In6Multi::of (the back-link), inline at its three loops"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6_src.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6_src.rs"]
+status = "redesigned"
+notes = "N6.5a: in6_src.c in the kernel: in6_pcbselsrc (generic over the glue: the pcb's route loan, the net lock's proof), in6_selectsrc, in6_selectroute (the caller's Route's cached route lent, Route::mpath6), in6_selectif, in6_selecthlim, in6_embedscope, in6_recoverscope, in6_clearscope; the options' members in6_src.c reads taken as arguments (the packet info, Option<&mut In6Pktinfo> for in6_pcbselsrc's override, its interface, the multicast interface: D-22) so LZ's 9 unsafe over the options' NonNulls go; bsd's in6_src.rs copies them out of its raw words (2 unsafe) until N6.5c; LZ's 3 tests stay in bsd's adapter over its fixture"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_src.rs::pktinfo"
+native = ["sys/netinet6/in6_src.rs::with_pktinfo"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet6/in6_pcb.rs"
