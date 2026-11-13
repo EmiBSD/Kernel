@@ -257,15 +257,18 @@ impl KDomain<G> for Domain {
 /// `sockaddr_in`, 16 bytes, after its family check alone.
 const CTL_SA_LEN: usize = size_of::<hal::sys::netinet6_in6::SockaddrIn6>();
 
-/// The socket address handed to a `pr_ctlinput` function: its bytes in a zero-filled buffer
-/// of [`CTL_SA_LEN`], a shorter address reading as zeros past its end (an AF_INET address
-/// without its `sin_addr` is `INADDR_ANY`, which TCP's ignores), a longer one cut there
-/// (its `sa_len` then matches no length the functions accept).
-fn ctl_sa(sa: &[u8]) -> [u8; CTL_SA_LEN] {
+/// The socket address handed to a `pr_ctlinput` function: its bytes (`sa_len` of them, at
+/// least the header's two: `SockaddrView`'s) in a zero-filled buffer of [`CTL_SA_LEN`], a
+/// shorter address reading as zeros past its end (an AF_INET address without its `sin_addr`
+/// is `INADDR_ANY`, which TCP's ignores); `None` for a longer one, which no C caller passes
+/// (the C's are a `sockaddr_in` or a `sockaddr_in6`).
+fn ctl_sa(sa: &[u8]) -> Option<[u8; CTL_SA_LEN]> {
+    if sa.len() > CTL_SA_LEN {
+        return None;
+    }
     let mut b = [0u8; CTL_SA_LEN];
-    let n = sa.len().min(CTL_SA_LEN);
-    b[..n].copy_from_slice(&sa[..n]);
-    b
+    b[..sa.len()].copy_from_slice(sa);
+    Some(b)
 }
 
 /// Whether the ICMP message `b` holds what `bsd`'s IPv4 `pr_ctlinput` functions read of the
@@ -314,25 +317,24 @@ impl Protocol<G> for Protosw {
                 .cast::<core::ffi::c_void>(),
             Some(_) => return,
         };
-        let sab = ctl_sa(sa.bytes());
-        // SAFETY: `ctlinput` is one of `bsd`'s `pr_ctlinput` functions (`tcp_ctlinput`,
-        // `udp_ctlinput` and `udpencap_ctlinput` through it, `ah4_ctlinput`, `esp4_ctlinput`,
-        // `tcp6_ctlinput`, `udp6_ctlinput`, `rip6_ctlinput`); what they read is bounded by
-        // this function's own checks above, whatever its caller passes:
-        // - the address is `sab`, a local buffer of `CTL_SA_LEN` (28) initialised bytes alive
-        //   until the call returns; `Sockaddr` has alignment 1. Each function reads its two
-        //   header bytes, then at most a `sockaddr_in` (16 bytes: TCP's after the family
-        //   alone, UDP's and the IPsec ones after `sa_len` too) or a `sockaddr_in6` (28, after
-        //   its length check), unaligned reads inside the buffer; none writes through it.
-        // - the argument is NULL, or, for an AF_INET table's entry only, ICMP_MINLEN into `b`,
-        //   which `ip` borrows shared (unchanged) for the call and which `ctl_quote_holds`
-        //   checked: the byte at ICMP_MINLEN gives a returned header of `hl` >= 20 bytes and
-        //   `b` holds ICMP_MINLEN + `hl` + 8 bytes. The inet functions read the 20-byte
-        //   `struct ip` there (`hl` from that same byte), 8 bytes at `hl` (the ports, TCP's
-        //   sequence number, the SPI) and, before it, the ICMP header (`icmp_nextmtu`; TCP's
-        //   `IcmpPkt` spans ICMP_MINLEN + `hl` + 8 bytes from the message's start): unaligned
-        //   reads inside `b`, whose `as_ptr()` the pointer derives from, so its provenance
-        //   covers the whole message; none writes through it. IPv6's functions get NULL.
+        // An address longer than a sockaddr_in6: no C caller passes one, nothing is called.
+        let Some(sab) = ctl_sa(sa.bytes()) else {
+            return;
+        };
+        // SAFETY: `PrCtlinputFn`'s contract (`sys/sys/protosw.rs`), met by this function's own
+        // checks above, whatever its caller passes:
+        // - `sa` is `sab`, a local buffer of `CTL_SA_LEN` (a `sockaddr_in6`'s 28) initialised
+        //   bytes, alive until the call returns (`Sockaddr` has alignment 1). It holds the
+        //   view's bytes, `sa_len` of them (`SockaddrView` holds its `sa_len` bytes, and one
+        //   longer than 28 returned above), so its `sa_len` is at most the bytes lent, and a
+        //   `sockaddr_in6`'s bytes are readable there.
+        // - `arg` is NULL, or, for an AF_INET table's entry only, ICMP_MINLEN into the message
+        //   `b`, which `ctl_quote_holds` checked holds the ICMP header, a returned header of
+        //   `hl` >= 20 bytes (the byte at ICMP_MINLEN) and 8 bytes after it: ICMP_ADVLEN. `b`
+        //   is borrowed shared and unchanged for the call; the contract's functions only read
+        //   it, so the `cast_mut` lends no write; the pointer derives from `b.as_ptr()`, so
+        //   its provenance covers the message's header before it too. An entry of another
+        //   family (IPv6's read a non-NULL argument as an `ip6ctlparam`) gets NULL.
         unsafe { ctlinput(cmd, sab.as_ptr().cast(), rdomain, arg) };
     }
     fn has_ctloutput(&self) -> bool {
@@ -683,18 +685,21 @@ pub fn net_sysctl(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP};
+    use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_UDP};
     use crate::sys::protosw::PRC_MSGSIZE;
-    use crate::sys::socket::{AF_ROUTE, AF_UNIX, SOCK_DGRAM, SOCK_STREAM};
+    use crate::sys::socket::{AF_ROUTE, AF_UNIX, SOCK_DGRAM};
 
     #[test]
     fn ctlinput_s_address_is_padded_and_its_quote_checked_here() {
-        // The address: a 2-byte view padded with zeros, a 40-byte one cut at 28.
+        // The address: a 2-byte view padded with zeros, a sockaddr_in6 whole, a longer one
+        // refused.
         let mut short = [0u8; CTL_SA_LEN];
         short[..2].copy_from_slice(&[2, AF_INET]);
-        assert_eq!(ctl_sa(&[2, AF_INET]), short);
+        assert_eq!(ctl_sa(&[2, AF_INET]), Some(short));
+        let six: [u8; CTL_SA_LEN] = core::array::from_fn(|i| i as u8);
+        assert_eq!(ctl_sa(&six), Some(six));
         let long: [u8; 40] = core::array::from_fn(|i| i as u8);
-        assert_eq!(ctl_sa(&long)[..], long[..CTL_SA_LEN]);
+        assert_eq!(ctl_sa(&long), None);
         // The quote: ICMP_MINLEN + ip_hl * 4 + 8 bytes, ip_hl >= 5, or nothing is handed over.
         let msg = |vhl: u8, len: usize| {
             let mut b = std::vec![0u8; len];
@@ -724,18 +729,71 @@ mod tests {
         }
     }
 
+    /// The calls [`probe`] took, and how many had an argument.
+    static PROBED: [core::sync::atomic::AtomicU32; 2] = [
+        core::sync::atomic::AtomicU32::new(0),
+        core::sync::atomic::AtomicU32::new(0),
+    ];
+
+    /// A `pr_ctlinput` that only counts its calls (it reads nothing through its pointers).
+    fn probe(
+        _cmd: i32,
+        _sa: *const crate::sys::socket::Sockaddr,
+        _rd: u32,
+        arg: *mut core::ffi::c_void,
+    ) {
+        use core::sync::atomic::Ordering::Relaxed;
+        PROBED[0].fetch_add(1, Relaxed);
+        if !arg.is_null() {
+            PROBED[1].fetch_add(1, Relaxed);
+        }
+    }
+
     #[test]
-    fn a_short_address_and_an_overlong_quote_reach_tcp_ctlinput_safely() {
-        // INETSW's TCP and UDP rows called as the kernel calls them, with what safe code can
-        // build: a 2-byte AF_INET address (TCP's reads 16 bytes after its family check) and a
-        // 28-byte message whose returned header says 60 bytes (TCP's would read at 8 + 60).
-        let sa = SockaddrView::new(&[2, AF_INET]).expect("a 2-byte address");
-        let mut quote = [0u8; 28];
-        quote[ICMP_MINLEN] = 0x4f;
-        for (proto, ty) in [(IPPROTO_TCP, SOCK_STREAM), (IPPROTO_UDP, SOCK_DGRAM)] {
-            let pr = pffindproto(i32::from(AF_INET), proto, ty).expect("the row");
-            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, Some(&quote));
-            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, None);
+    fn ctlinput_calls_its_function_only_with_what_it_checked() {
+        use core::sync::atomic::Ordering::Relaxed;
+        let calls = || (PROBED[0].load(Relaxed), PROBED[1].load(Relaxed));
+        let inet = Protosw {
+            pr_type: SOCK_RAW as i16,
+            pr_protocol: 99,
+            pr_ctlinput: Some(probe as crate::sys::protosw::PrCtlinputFn),
+            ..Protosw::new(&INETDOMAIN)
+        };
+        let ctl = |pr: &Protosw, sa: &[u8], ip: Option<&[u8]>| {
+            let sa = SockaddrView::new(sa).expect("an address");
+            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, ip);
+        };
+        let mut sin = [0u8; 16];
+        sin[..2].copy_from_slice(&[16, AF_INET]);
+        let mut quote = [0u8; 36];
+        quote[ICMP_MINLEN] = 0x45;
+        // A sockaddr_in and a quote of ICMP_ADVLEN bytes: called, with the argument.
+        ctl(&inet, &sin, Some(&quote));
+        assert_eq!(calls(), (1, 1));
+        // A quote whose ip_hl says 60 bytes in 28 (the C's icmp_input drops it): not called.
+        let mut overlong = [0u8; 28];
+        overlong[ICMP_MINLEN] = 0x4f;
+        ctl(&inet, &sin, Some(&overlong));
+        assert_eq!(calls(), (1, 1));
+        // An address longer than a sockaddr_in6: not called.
+        let mut long = [0u8; 40];
+        long[..2].copy_from_slice(&[40, AF_INET]);
+        ctl(&inet, &long, None);
+        assert_eq!(calls(), (1, 1));
+        // A 2-byte address (padded with zeros), no quote: called, without an argument.
+        ctl(&inet, &[2, AF_INET], None);
+        assert_eq!(calls(), (2, 1));
+        // An IPv6 table's entry is never handed an IPv4 quote.
+        #[cfg(feature = "inet6")]
+        {
+            let inet6 = Protosw {
+                pr_domain: &INET6DOMAIN,
+                ..inet
+            };
+            ctl(&inet6, &sin, Some(&quote));
+            assert_eq!(calls(), (2, 1));
+            ctl(&inet6, &sin, None);
+            assert_eq!(calls(), (3, 1));
         }
     }
 
