@@ -114,8 +114,10 @@
 //! - LZ's `struct llinfo_arp` (`Cell`s and a `ListEntry`, a `pool_get`'s raw item written in an
 //!   `unsafe` block, freed by `pool_put` at its last `la_refcnt`) hung on `rt_llinfo` as a raw
 //!   word, cast back at every reader (`rt_la`'s `unsafe`) -> a [`LlinfoArp`] of the "arp"
-//!   [`BoxPool`] (112 bytes; LZ's 104, the C's 96: the kernel's `MbufQueue` is 56 with its
-//!   unlocked length beside the list) owned by the route's word,
+//!   [`BoxPool`] (112 bytes; LZ's 104, the C's 96: the `arp_list` entry is a 32-byte
+//!   `PinEntry` for the C's 16-byte `LIST_ENTRY` (+16), the kernel's `MbufQueue` is 56 with
+//!   its unlocked length beside the list for the C's 48 (+8), and `la_refcnt` is gone (-8))
+//!   owned by the route's word,
 //!   `hal::link::TaggedLink<LlinfoArp>` (D-4; not `Parkable`: no lent record can be made a box
 //!   by the park protocol, review 1's B1): the word
 //!   lends the record only to a guard of [`ARP_MTX`] (the C's "rt_llinfo and RTF_LLINFO are
@@ -2123,8 +2125,9 @@ mod tests {
             "short"
         );
         // The pool item (vmstat -m's "arp"): the C's struct llinfo_arp is 96 bytes on LP64,
-        // LZ's LlinfoArp 104, this one 112 (its 56-byte MbufQueue; the park mark review 1's B1
-        // removed sat in padding) (docs/SCAFFOLDING.md's pool sizes row).
+        // LZ's LlinfoArp 104, this one 112: its 32-byte PinEntry for the C's 16-byte LIST_ENTRY
+        // (+16), its 56-byte MbufQueue for the C's 48 (+8), no la_refcnt (-8); the park mark
+        // review 1's B1 removed sat in padding (docs/SCAFFOLDING.md's pool sizes row).
         std::println!("arp item: {} bytes", size_of::<LlinfoArp>());
         assert_eq!(size_of::<LlinfoArp>(), 112);
         assert_eq!(size_of::<MbufQueue>(), 56);

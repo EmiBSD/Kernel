@@ -20,8 +20,10 @@ Four tiers. Every change lands with the tier it belongs to.
    2026-10-08, after the M16e close found it). Known resets: `rn_test_reset` (radix),
    `wsmux_test_reset` (the mux table), `autoconf_test_reset` (`autoconf_attdet`),
    `pf_osfp_test_reset` (the fingerprint list), `kmemstats_test_reset`; in `setup_net`,
-   `pfi_test_reset`, `bpf_test_reset`, `enc_reset` and the interface lists; the server cache
-   by `nfsrv_initcache` in the nfs tests' setup.
+   `pfi_test_reset`, `bpf_test_reset`, `enc_reset`, the interface lists and (N6.4) the
+   kernel's `in_var_test_reset` (the address and multicast records), `igmp_test_reset` and
+   `arp_test_reset`; in `ip_input`'s test setup, `ipq_test_reset` (reassembly) and
+   `icmp_test_reset`; the server cache by `nfsrv_initcache` in the nfs tests' setup.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`
    (set by the recipe to `reference/openbsd-src`) and cross-check constants against the C headers
    (`errno.h`, `param.h`, syscall numbers). They parse simple `#define` lines, nothing more.
