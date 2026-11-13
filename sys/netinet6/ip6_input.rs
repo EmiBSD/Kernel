@@ -1435,11 +1435,10 @@ pub fn ip6_lasthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32
 fn ip6_sysctl_ip6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Ip6stat>() == IP6S_NCOUNTERS * size_of::<u64>());
 
+    // ip6stat = malloc(sizeof(*ip6stat), M_TEMP, M_WAITOK); counters_read(ip6counters, ..):
+    // the sums written straight into the heap image.
     let mut ip6stat = vec![0u8; size_of::<Ip6stat>()];
-    let (words, _) = ip6stat.as_chunks_mut::<{ size_of::<u64>() }>();
-    for (w, c) in words.iter_mut().zip(IP6COUNTERS.read()) {
-        *w = c.to_ne_bytes();
-    }
+    IP6COUNTERS.read_into(&mut ip6stat);
     sysctl_rdstruct(oldp, oldlenp, newp, &ip6stat)
 }
 

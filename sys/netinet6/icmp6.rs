@@ -116,6 +116,7 @@
 //! - `ICMP6_FILTER` get/set (`icmp6_ctloutput`) reaches the socket's control block through
 //!   `sotoinpcb`, which must accept `AF_INET6` sockets (phase 2 of the INET6 port).
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -1937,10 +1938,10 @@ pub fn icmp6_mtudisc_timeout(
 /// icmp6stat`.
 fn icmp6_sysctl_icmp6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Icmp6stat>() == ICP6S_NCOUNTERS * size_of::<u64>());
-    let mut bytes = Vec::with_capacity(ICP6S_NCOUNTERS * size_of::<u64>());
-    for c in ICMP6COUNTERS.read() {
-        bytes.extend_from_slice(&c.to_ne_bytes());
-    }
+    // icmp6stat = malloc(sizeof(*icmp6stat), M_TEMP, M_WAITOK|M_ZERO); counters_read(..): the
+    // sums written straight into the heap image.
+    let mut bytes = vec![0u8; ICP6S_NCOUNTERS * size_of::<u64>()];
+    ICMP6COUNTERS.read_into(&mut bytes);
 
     sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
 }

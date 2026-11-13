@@ -100,17 +100,27 @@
 //! ## Redesign
 //! - LZ's `IP6COUNTERS` (a static array of atomics in `bsd`'s `ip6_input.rs`) and
 //!   `ICMP6COUNTERS` (`icmp6.rs`'s), `<sys/percpu.h>` not ported -> [`IP6COUNTERS`] and
-//!   [`ICMP6COUNTERS`], `hal::percpu::Counters` here beside the increments that use them (the
-//!   C's `cpumem`, N6.4a's R13 for IPv4): read whole by `net.inet6.ip6.stats` and
-//!   `net.inet6.icmp6.stats` (`Counters::read`). `ip6stat_inc`, `ip6stat_add`,
-//!   `ip6stat_inc_idx`, `icmp6stat_inc` and `icmp6stat_inc_hist` are `#[inline]` (per packet,
-//!   across the crate boundary).
+//!   [`ICMP6COUNTERS`], [`StatCounters`] here beside the increments that use them: the
+//!   scalar words per CPU (`hal::percpu::Counters`, the C's `cpumem`, N6.4a's R13 for IPv4),
+//!   the 256-word histograms (`ip6s_nxthist`, `icp6s_outhist`, `icp6s_inhist`) as LZ's
+//!   shared atomics with relaxed adds. `hal::percpu` gives each CPU of `MAXCPUS` (256) a copy
+//!   at compile time where the C allocates `ncpus` at boot: per CPU, the three histograms
+//!   alone were 1.5 MiB of the 1.86 MiB of `.bss` the whole structures took (N6.5a's review,
+//!   S3); split, the two statistics take about 0.37 MiB. Both are summed into the one
+//!   `struct ip6stat` / `struct icmp6stat` image by [`StatCounters::read_into`], which
+//!   `net.inet6.ip6.stats` and `net.inet6.icmp6.stats` call on their heap image (the C's
+//!   `malloc(M_TEMP)` and `counters_read`); only the scalar words' sums pass through the
+//!   stack (`Counters::read` returns them by value: 145 and 29 words). `ip6stat_inc`,
+//!   `ip6stat_add`, `ip6stat_inc_idx`, `icmp6stat_inc` and `icmp6stat_inc_hist` are
+//!   `#[inline]` (per packet, across the crate boundary); a word's place costs one or two
+//!   compares, folded away when the counter is a constant.
 //! - The configuration variables, LZ's atomics in `bsd`'s `in6_proto.rs`, are here, the
 //!   header's `extern`s (`kernel::netinet::ip_var`'s precedent); `bsd`'s `in6_proto.rs`
 //!   re-exports them until the protocol table moves (N6.5d). `ip6_mtudisc_timeout` joins
 //!   them.
 
-use core::sync::atomic::AtomicI32;
+use core::marker::PhantomData;
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use hal::percpu::Counters;
 use hal::sys::netinet_icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
@@ -143,11 +153,179 @@ pub const IPV6_REDIRECT: i32 = 0x08;
 /// Only packets processed by IPsec.
 pub const IPV6_FORWARDING_IPSEC: i32 = 0x10;
 
-/// `ip6counters`: the IPv6 statistics, per CPU (`ip6_init`'s `counters_alloc`).
-pub static IP6COUNTERS: Counters<IP6S_NCOUNTERS> = Counters::new();
+/// `ip6s_nxthist`: the image word it starts at and its length (the C's `[256]`).
+const IP6_NXTHIST: (usize, usize) = (
+    Ip6statCounters::Ip6sNxthist as usize,
+    Ip6statCounters::Ip6sM1 as usize - Ip6statCounters::Ip6sNxthist as usize,
+);
+/// The histogram words of `struct ip6stat`.
+const IP6_NHIST: usize = IP6_NXTHIST.1;
+/// The scalar words of `struct ip6stat`.
+const IP6_NSCALARS: usize = IP6S_NCOUNTERS - IP6_NHIST;
+/// `icp6s_outhist` and `icp6s_inhist`: where each starts in the image, and its length.
+const ICMP6_HISTS: [(usize, usize); 2] = [
+    (
+        Icmp6statCounters::Icp6sOuthist as usize,
+        Icmp6statCounters::Icp6sBadcode as usize - Icmp6statCounters::Icp6sOuthist as usize,
+    ),
+    (
+        Icmp6statCounters::Icp6sInhist as usize,
+        Icmp6statCounters::Icp6sNdToomanyopt as usize - Icmp6statCounters::Icp6sInhist as usize,
+    ),
+];
+/// The histogram words of `struct icmp6stat`.
+const ICMP6_NHIST: usize = ICMP6_HISTS[0].1 + ICMP6_HISTS[1].1;
+/// The scalar words of `struct icmp6stat`.
+const ICMP6_NSCALARS: usize = ICP6S_NCOUNTERS - ICMP6_NHIST;
 
-/// `icmp6counters`: the ICMPv6 statistics, per CPU (`icmp6_init`'s `counters_alloc`).
-pub static ICMP6COUNTERS: Counters<ICP6S_NCOUNTERS> = Counters::new();
+/// Where a statistics structure keeps its histograms: the image word each starts at and its
+/// length, in image order. A type rather than a field, so a [`StatCounters`] static holds
+/// only zeros and stays in `.bss` (a reference in it would move the whole static, its
+/// per-CPU copies included, into `.data` and the kernel image).
+pub trait StatHists {
+    /// The histograms' ranges of image words.
+    const HISTS: &'static [(usize, usize)];
+}
+
+/// `struct ip6stat`'s histogram, `ip6s_nxthist`.
+pub struct Ip6statHists;
+
+impl StatHists for Ip6statHists {
+    const HISTS: &'static [(usize, usize)] = &[IP6_NXTHIST];
+}
+
+/// `struct icmp6stat`'s histograms, `icp6s_outhist` and `icp6s_inhist`.
+pub struct Icmp6statHists;
+
+impl StatHists for Icmp6statHists {
+    const HISTS: &'static [(usize, usize)] = &ICMP6_HISTS;
+}
+
+/// The counters of a statistics structure of `N` `uint64_t` words (`struct cpumem *` of
+/// `counters_alloc(N)`): its `S` scalar words per CPU ([`Counters`]), its `H` histogram
+/// words (the ranges `L` names) shared, LZ's atomics. The image is summed by
+/// [`StatCounters::read_into`].
+pub struct StatCounters<L, const N: usize, const S: usize, const H: usize> {
+    scalars: Counters<S>,
+    hist: [AtomicU64; H],
+    layout: PhantomData<L>,
+}
+
+/// Where a word of the image is kept.
+enum Word {
+    /// The scalar of that index, per CPU.
+    Cpu(usize),
+    /// The histogram word of that index.
+    Hist(usize),
+}
+
+impl<L: StatHists, const N: usize, const S: usize, const H: usize> StatCounters<L, N, S, H> {
+    /// `counters_alloc(N)`: every word at 0. `L`'s ranges lie inside the image, in order,
+    /// and cover `H` words; `S + H` is `N` (checked at compile time where a static is built).
+    const fn new() -> Self {
+        let hists = L::HISTS;
+        let mut covered = 0;
+        let mut end = 0;
+        let mut i = 0;
+        while i < hists.len() {
+            assert!(hists[i].0 >= end && hists[i].0 + hists[i].1 <= N);
+            covered += hists[i].1;
+            end = hists[i].0 + hists[i].1;
+            i += 1;
+        }
+        assert!(covered == H && S + H == N);
+        Self {
+            scalars: Counters::new(),
+            hist: [const { AtomicU64::new(0) }; H],
+            layout: PhantomData,
+        }
+    }
+
+    /// Where word `c` of the image is kept: in a histogram, or the scalar whose index is
+    /// `c` less the histogram words before it.
+    #[inline]
+    fn word(c: usize) -> Word {
+        let mut before = 0;
+        for &(start, len) in L::HISTS {
+            if c < start {
+                break;
+            }
+            if c - start < len {
+                return Word::Hist(before + (c - start));
+            }
+            before += len;
+        }
+        Word::Cpu(c - before)
+    }
+
+    /// `counters_inc(cm, c)`.
+    #[inline]
+    pub fn inc(&self, c: usize) {
+        self.add(c, 1);
+    }
+
+    /// `counters_add(cm, c, v)`.
+    #[inline]
+    pub fn add(&self, c: usize, v: u64) {
+        match Self::word(c) {
+            Word::Cpu(i) => self.scalars.add(i, v),
+            Word::Hist(i) => {
+                self.hist[i].fetch_add(v, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `counters_dec(cm, c)`.
+    #[inline]
+    pub fn dec(&self, c: usize) {
+        match Self::word(c) {
+            Word::Cpu(i) => self.scalars.dec(i),
+            Word::Hist(i) => {
+                self.hist[i].fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// `counters_read(cm, (uint64_t *)image, N, NULL)`: the sums of the counters written into
+    /// `image`, word after word in native byte order, as long as `image` is (the statistics
+    /// sysctls give it the structure's `N * 8` bytes, on the heap as the C's `malloc`). Each
+    /// CPU's scalar words are read whole (`Counters::read`); a histogram word is one load.
+    pub fn read_into(&self, image: &mut [u8]) {
+        let scalars = self.scalars.read();
+        let (words, _) = image.as_chunks_mut::<{ size_of::<u64>() }>();
+        for (c, w) in words.iter_mut().enumerate().take(N) {
+            let v = match Self::word(c) {
+                Word::Cpu(i) => scalars[i],
+                Word::Hist(i) => self.hist[i].load(Ordering::Relaxed),
+            };
+            *w = v.to_ne_bytes();
+        }
+    }
+
+    /// The sums, word by word: [`StatCounters::read_into`] over an array on the caller's
+    /// stack, for tests (a kernel stack takes the image on the heap).
+    #[cfg(any(test, feature = "doubles"))]
+    pub fn read(&self) -> [u64; N] {
+        let mut image = [[0u8; size_of::<u64>()]; N];
+        self.read_into(image.as_flattened_mut());
+        image.map(u64::from_ne_bytes)
+    }
+}
+
+/// `ip6counters`: the IPv6 statistics (`ip6_init`'s `counters_alloc(ip6s_ncounters)`), the
+/// scalar words per CPU, `ip6s_nxthist` shared.
+pub static IP6COUNTERS: StatCounters<Ip6statHists, IP6S_NCOUNTERS, IP6_NSCALARS, IP6_NHIST> =
+    StatCounters::new();
+
+/// `icmp6counters`: the ICMPv6 statistics (`icmp6_init`'s
+/// `counters_alloc(icp6s_ncounters)`), the scalar words per CPU, `icp6s_outhist` and
+/// `icp6s_inhist` shared.
+pub static ICMP6COUNTERS: StatCounters<
+    Icmp6statHists,
+    ICP6S_NCOUNTERS,
+    ICMP6_NSCALARS,
+    ICMP6_NHIST,
+> = StatCounters::new();
 
 // Internet configuration info (`in6_proto.c`).
 
@@ -247,6 +425,67 @@ mod tests {
         let out131 = Icmp6statCounters::Icp6sOuthist as usize + 131;
         assert!(after[short] > before[short]);
         assert!(after[out131] > before[out131]);
+    }
+
+    #[test]
+    fn the_histograms_are_the_c_arrays() {
+        assert_eq!(IP6_NXTHIST, (23, 256));
+        assert_eq!(ICMP6_HISTS, [(3, 256), (3 + 256 + 5, 256)]);
+        assert_eq!((IP6_NSCALARS, ICMP6_NSCALARS), (401 - 256, 541 - 512));
+    }
+
+    #[test]
+    fn a_split_image_keeps_every_word_in_place() {
+        // A small image: words 0-1 scalar, 2-4 a histogram, 5 scalar, 6-7 a histogram, 8
+        // scalar. Every word gets its own count (word c bumped c + 1 times).
+        struct TestHists;
+        impl StatHists for TestHists {
+            const HISTS: &'static [(usize, usize)] = &[(2, 3), (6, 2)];
+        }
+        static T: StatCounters<TestHists, 9, 4, 5> = StatCounters::new();
+        for c in 0..9 {
+            T.add(c, c as u64 + 1);
+        }
+        T.dec(3);
+        T.dec(8);
+        let mut image = [0u8; 9 * 8];
+        T.read_into(&mut image);
+        let words: [u64; 9] = core::array::from_fn(|c| {
+            u64::from_ne_bytes(image[c * 8..c * 8 + 8].try_into().unwrap())
+        });
+        assert_eq!(words, [1, 2, 3, 3, 5, 6, 7, 8, 8]);
+        assert_eq!(T.read(), words);
+        // A short image takes the words it has room for.
+        let mut short = [0u8; 3 * 8 + 4];
+        T.read_into(&mut short);
+        assert_eq!(u64::from_ne_bytes(short[16..24].try_into().unwrap()), 3);
+        assert_eq!(short[24..], [0; 4]);
+    }
+
+    #[test]
+    fn the_image_words_are_the_c_offsets() {
+        let total = Ip6statCounters::Ip6sTotal as usize;
+        let m1 = Ip6statCounters::Ip6sM1 as usize;
+        let hist6 = Ip6statCounters::Ip6sNxthist as usize + 6;
+        let before = IP6COUNTERS.read();
+        ip6stat_inc(Ip6statCounters::Ip6sTotal);
+        ip6stat_inc(Ip6statCounters::Ip6sM1);
+        ip6stat_inc_idx(Ip6statCounters::Ip6sNxthist, 6);
+        let mut image = std::vec![0u8; IP6S_NCOUNTERS * 8];
+        IP6COUNTERS.read_into(&mut image);
+        let word = |c: usize| u64::from_ne_bytes(image[c * 8..c * 8 + 8].try_into().unwrap());
+        assert!(word(total) > before[total]);
+        assert!(word(m1) > before[m1]);
+        assert!(word(hist6) > before[hist6]);
+
+        let inhist = Icmp6statCounters::Icp6sInhist as usize + 128;
+        let toomany = Icmp6statCounters::Icp6sNdToomanyopt as usize;
+        let before = ICMP6COUNTERS.read();
+        icmp6stat_inc_hist(Icmp6statCounters::Icp6sInhist, 128);
+        icmp6stat_inc(Icmp6statCounters::Icp6sNdToomanyopt);
+        let after = ICMP6COUNTERS.read();
+        assert!(after[inhist] > before[inhist]);
+        assert!(after[toomany] > before[toomany]);
     }
 
     #[test]
