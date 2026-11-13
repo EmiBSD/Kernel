@@ -711,10 +711,15 @@ pub fn ip_fragment(m0: MbufBox, ml: &mut MbufList, ifp: &Ifnet, mtu: u32) -> Res
             let mut mhip = ip;
             let mhlen = if hlen as usize > IP_HDR_LEN {
                 m.m_len().set(hlen as u32);
-                let n = match m.data_mut() {
-                    Some(d) => ip_optcopy(&opts[..nopts], &mut d[IP_HDR_LEN..]),
-                    None => kpanic(format_args!("ip_fragment: a fresh mbuf read-only")),
+                // Invariant: `m` is m_gethdr's, its data in its own storage (no cluster), which
+                // is never read-only (`Mbuf::is_readonly` answers so only for a cluster):
+                // `data_mut` is `Some`.
+                let Some(d) = m.data_mut() else {
+                    kpanic(format_args!(
+                        "ip_fragment: an mbuf without a cluster read-only"
+                    ));
                 };
+                let n = ip_optcopy(&opts[..nopts], &mut d[IP_HDR_LEN..]);
                 let mhlen = (n + IP_HDR_LEN) as i32;
                 mhip.set_ip_hl((mhlen >> 2) as u8);
                 mhlen

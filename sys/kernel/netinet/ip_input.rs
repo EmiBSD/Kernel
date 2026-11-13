@@ -87,7 +87,7 @@
 //!   drops the packet when none can be had (`ips_idropped`); every later write is then in
 //!   place. The writers (`ip_store`, `pkt_put`, `ip_stripoptions`) still answer `false` for
 //!   data they cannot write, and their callers drop the packet, counted as the C counts its
-//!   buffer failures there (`ips_fragdropped`, `ips_idropped`, `ips_cantforward`,
+//!   buffer failures there (`ips_rcvmemdrop`, `ips_idropped`, `ips_cantforward`,
 //!   `ips_odropped`, ICMP's `icps_tooshort`, IGMP's `igps_rcv_tooshort`): never taken while
 //!   the first mbuf is writable.
 //!
@@ -837,8 +837,8 @@ pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32, ip0: &Ip) -> i32 {
         ip.ip_off = (u16::from_be(ip.ip_off) << 3).to_be();
         if !ip_store(&mut m, &ip) {
             // No buffer for a shared cluster's copy (not taken: the header is writable since
-            // ipv4_check): dropped as a fragment out of space.
-            ipstat_inc(IpstatCounters::IpsFragdropped);
+            // ipv4_check): a memory failure, counted as the C's in ip_fragcheck.
+            ipstat_inc(IpstatCounters::IpsRcvmemdrop);
             return IPPROTO_DONE;
         }
 
@@ -856,7 +856,7 @@ pub fn ip_fragcheck(mp: &mut Option<MbufBox>, offp: &mut i32, ip0: &Ip) -> i32 {
                 hlen = usize::from(ip.ip_hl()) << 2;
                 ip.ip_len = u16::from_be(ip.ip_len).wrapping_add(hlen as u16).to_be();
                 if !ip_store(&mut m, &ip) {
-                    ipstat_inc(IpstatCounters::IpsFragdropped);
+                    ipstat_inc(IpstatCounters::IpsRcvmemdrop);
                     return IPPROTO_DONE;
                 }
                 *mp = Some(m);
@@ -1404,8 +1404,9 @@ fn reass_check(frags: &mut i32, fp: &mut PoolBox<Ipq>) -> Option<MbufBox> {
     ip.ip_src = fp.ipq_src;
     ip.ip_dst = fp.ipq_dst;
     if !ip_store(&mut m, &ip) {
-        // The first fragment's header, writable since ipv4_check: not taken.
-        ipstat_inc(IpstatCounters::IpsFragdropped);
+        // The first fragment's header, writable since ipv4_check: not taken; a memory
+        // failure, counted as the C's in ip_fragcheck.
+        ipstat_inc(IpstatCounters::IpsRcvmemdrop);
         return None;
     }
     m_calchdrlen(&m);
@@ -1883,10 +1884,14 @@ pub fn ip_srcroute(m0: &mut Mbuf) -> Option<MbufBox> {
     }
     // Last hop goes to final destination.
     out[q..q + 4].copy_from_slice(&isr.isr_dst.s_addr.to_ne_bytes());
-    match m.data_mut() {
-        Some(d) => d.copy_from_slice(&out[..len]),
-        None => kpanic(format_args!("ip_srcroute: a fresh mbuf is read-only")),
-    }
+    // Invariant: `m` is m_get's, its data in its own storage (no cluster), which is never
+    // read-only (`Mbuf::is_readonly` answers so only for a cluster): `data_mut` is `Some`.
+    let Some(d) = m.data_mut() else {
+        kpanic(format_args!(
+            "ip_srcroute: an mbuf without a cluster read-only"
+        ));
+    };
+    d.copy_from_slice(&out[..len]);
     m_tag_delete(m0, t);
     Some(m)
 }
@@ -2812,6 +2817,22 @@ pub(crate) mod tests {
         (r.map_err(|b| (b.type_, b.code)), o, forward, ip, m)
     }
 
+    /// `ip_dosourceroute` on until the guard drops, an assertion's failure included.
+    struct SourceRouting;
+
+    impl SourceRouting {
+        fn on() -> Self {
+            IP_DOSOURCEROUTE.store(1, Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl Drop for SourceRouting {
+        fn drop(&mut self) {
+            IP_DOSOURCEROUTE.store(0, Ordering::Relaxed);
+        }
+    }
+
     /// The walk's answer alone.
     fn walk(ifp: &'static Ifnet, opts: &[u8]) -> Result<(), (u8, i32)> {
         let (r, _, _, _, m) = walk_out(ifp, opts);
@@ -2885,13 +2906,14 @@ pub(crate) mod tests {
             walk(ifp, &[IPOPT_LSRR, 7, 4, 10, 0, 2, 2]),
             Err((ICMP_UNREACH, i32::from(ICMP_UNREACH_SRCFAIL)))
         );
-        IP_DOSOURCEROUTE.store(1, Ordering::Relaxed);
-        assert_eq!(
-            walk(ifp, &[IPOPT_SSRR, 2, IPOPT_NOP, IPOPT_NOP]),
-            Err((pp, 21))
-        );
-        assert_eq!(walk(ifp, &[IPOPT_SSRR, 7, 3, 0, 0, 0, 0]), Err((pp, 22)));
-        IP_DOSOURCEROUTE.store(0, Ordering::Relaxed);
+        {
+            let _on = SourceRouting::on();
+            assert_eq!(
+                walk(ifp, &[IPOPT_SSRR, 2, IPOPT_NOP, IPOPT_NOP]),
+                Err((pp, 21))
+            );
+            assert_eq!(walk(ifp, &[IPOPT_SSRR, 7, 3, 0, 0, 0, 0]), Err((pp, 22)));
+        }
         // A record route with room gets the outgoing interface's address.
         assert_eq!(walk(ifp, &[IPOPT_RR, 7, 4, 0, 0, 0, 0]), Ok(()));
     }
@@ -2966,7 +2988,7 @@ pub(crate) mod tests {
     fn a_source_route_is_followed_and_saved_when_allowed() {
         let _g = setup();
         let (ifp, _) = crate::netinet::ip_output::tests::iface();
-        IP_DOSOURCEROUTE.store(1, Ordering::Relaxed);
+        let _on = SourceRouting::on();
         // Not at its end: the next hop becomes the destination, the outgoing interface's
         // address takes its slot, the pointer moves on, and the packet is to be forwarded.
         let (r, o, forward, ip, m) = walk_out(ifp, &[IPOPT_LSRR, 11, 4, 10, 0, 2, 2, 0, 0, 0, 0]);
@@ -3000,7 +3022,6 @@ pub(crate) mod tests {
                 2
             ]
         );
-        IP_DOSOURCEROUTE.store(0, Ordering::Relaxed);
     }
 
     #[test]
