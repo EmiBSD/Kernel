@@ -285,7 +285,7 @@
 //! |---|---|
 //! | `in_pcballoc`'s `refcnt_init` (the socket's) | `inp_refcnt` 1 and the anchor, dropped by [`in_pcbdetach`] |
 //! | `in_pcb_iterator`'s `in_pcbref`/`in_pcbunref` | the handle it answers, dropped by the next call |
-//! | `in_pcblookup*`'s answers | an [`InpcbRef`]; `bsd`'s adapters turn it into a legacy count |
+//! | `in_pcblookup*`'s answers | an [`InpcbRef`]; `bsd`'s adapters take the guard, call the `_held` lookups and turn the answer into a legacy count with [`Inpcb::legacy_ref_locked`] before they let the guard go (the C's `in_pcbref` before `mtx_leave`; review 1's B1: after it, a concurrent close and last `in_pcbunref` could free the pcb first) |
 //! | divert, raw and udp deliveries, tcp timers and syn cache, pf (`sk_inp`, `pf.inp`) | legacy counts, `bsd`'s, until N6.6 and N8 |
 
 use core::ffi::c_void;
@@ -1164,8 +1164,21 @@ impl<G: ProcGlue> Inpcb<G> {
         self.inp_rtableid.set(r);
     }
 
-    /// `refcnt_take(&inp->inp_refcnt)` of `bsd`'s holders: one more count of the C's. The
-    /// count is never taken from zero (`refcnt_take` of a freed pcb): `panic(9)`.
+    /// `in_pcbref(inp)` of a lookup's or a walk's answer, before `mtx_leave(&table->inpt_mtx)`
+    /// (in_pcb.c:1220-1221, :1304-1305): the count `bsd` holds the answer by, taken with the
+    /// table's guard `g` held. A pcb on the table's lists still holds its socket's count
+    /// (`in_pcbdetach` takes it off them, under this mutex, before it drops that count), so
+    /// the count is never taken from zero here; taken after the guard is let go, another
+    /// CPU's detach and last `in_pcbunref` could run first. `panic(9)` for another table's
+    /// guard.
+    pub fn legacy_ref_locked(&self, g: &InpGuard<'_, G>) {
+        self.check_guard(g);
+        self.legacy_ref();
+    }
+
+    /// `refcnt_take(&inp->inp_refcnt)` of `bsd`'s holders: one more count of the C's, for a
+    /// holder that has one already. The count is never taken from zero (`refcnt_take` of a
+    /// freed pcb): `panic(9)`.
     pub fn legacy_ref(&self) {
         let old = self.inp_refcnt.fetch_add(1, Ordering::Relaxed);
         if old == 0 || old == u32::MAX {
@@ -1891,6 +1904,8 @@ pub fn in_pcbdetach<G: ProcGlue>(
     let so = inp.socket();
     let table = inp.table();
 
+    // soassertlocked(so) (in_pcb.c:589), before anything changes.
+    inp.assert_route_locked("in_pcbdetach");
     so.set_legacy_pcb(0);
     sofree_legacy(so);
     // rtfree(inp->inp_route.ro_rt): the cache's handle dropped.
@@ -1920,6 +1935,13 @@ pub fn in_pcbdetach<G: ProcGlue>(
 /// `in_pcbsolock`: locks the socket of `inp` (the caller holds the net lock); `None` when it
 /// is detached.
 pub fn in_pcbsolock<G: ProcGlue>(inp: &Inpcb<G>) -> Option<&Socket<G>> {
+    // NET_ASSERT_LOCKED(): this process's write holding or a read holding.
+    if !matches!(hal::netlock::status(), RW_WRITE | hal::rwlock::RW_READ) {
+        kpanic(format_args!(
+            "in_pcbsolock: inpcb {:p}: the net lock is not held",
+            inp
+        ));
+    }
     let so = inp.socket_opt()?;
     so.so_lock_legacy().enter_write_detached();
     if so.legacy_pcb() == 0 {
@@ -2202,7 +2224,6 @@ pub fn in_pcbselsrc<G: ProcGlue>(
     inp: &Inpcb<G>,
     net: &NetHeld<'_>,
 ) -> Result<InAddr, Errno> {
-    let mopts = inp.moptions_out();
     let dst = &dstsock.sin_addr;
     let laddr = inp.inp_laddr.get();
     let rtableid = inp.inp_rtableid.get();
@@ -2212,6 +2233,7 @@ pub fn in_pcbselsrc<G: ProcGlue>(
     if laddr.s_addr != INADDR_ANY && laddr.s_addr != INADDR_BROADCAST {
         return Ok(laddr);
     }
+    let mopts = inp.moptions_out();
 
     // If the destination address is multicast or limited broadcast (255.255.255.255) and an
     // outgoing interface has been set as a multicast option, use the address of that
@@ -2441,6 +2463,20 @@ pub fn in_pcblookup_listen<G: ProcGlue>(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<InpcbRef<G>> {
+    let keys = in_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let mut g = table.lock();
+    in_pcblookup_listen_held(&mut g, table, keys, rtable)
+}
+
+/// The keys `in_pcblookup_listen` looks up before it takes the table mutex: the first local
+/// address (`laddr`, or pf's divert-to address), the second (the wildcard, or `laddr` for a
+/// connection redirected to localhost) and the local port; `None` for a packet pf diverts
+/// as a reply (no listener answers it).
+pub fn in_pcblookup_listen_keys(
+    laddr: InAddr,
+    lport_arg: u16,
+    m: Option<&Mbuf>,
+) -> Option<(InAddr, InAddr, u16)> {
     let mut key1 = laddr;
     let mut key2 = ZEROIN_ADDR;
     let mut lport = lport_arg;
@@ -2480,17 +2516,24 @@ pub fn in_pcblookup_listen<G: ProcGlue>(
         key1 = ZEROIN_ADDR;
         key2 = laddr;
     }
+    Some((key1, key2, lport))
+}
 
+/// `in_pcblookup_listen`'s lookups of `keys` ([`in_pcblookup_listen_keys`]), the table
+/// mutex held: the pcb bound to the first key, else to the second, counted.
+pub fn in_pcblookup_listen_held<G: ProcGlue>(
+    g: &mut InpGuard<'_, G>,
+    table: &Inpcbtable<G>,
+    (key1, key2, lport): (InAddr, InAddr, u16),
+    rtable: u32,
+) -> Option<InpcbRef<G>> {
     let rdomain = rtable_l2(rtable);
     let hash = in_pcbhash(table, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
-
-    let mut g = table.lock();
-    let mut inp = in_pcbhash_lookup(&mut g, hash, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
+    let mut inp = in_pcbhash_lookup(g, hash, rdomain, &ZEROIN_ADDR, 0, &key1, lport);
     if inp.is_none() && key1.s_addr != key2.s_addr {
         let hash = in_pcbhash(table, rdomain, &ZEROIN_ADDR, 0, &key2, lport);
-        inp = in_pcbhash_lookup(&mut g, hash, rdomain, &ZEROIN_ADDR, 0, &key2, lport);
+        inp = in_pcbhash_lookup(g, hash, rdomain, &ZEROIN_ADDR, 0, &key2, lport);
     }
-    drop(g);
     inp
 }
 
@@ -3138,6 +3181,11 @@ mod tests {
         let before = nout();
         let (so, inp) = testinet::pcb(t);
         assert_eq!(nout(), before + 1);
+        assert_eq!(
+            crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
+            Some(488),
+            "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
+        );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
         assert_eq!(so.legacy_pcb(), at(&inp).addr(), "so_pcb names the pcb");
 
@@ -3165,6 +3213,112 @@ mod tests {
         assert_eq!(nout(), before + 1);
         drop(hit);
         assert_eq!(nout(), before);
+    }
+
+    /// The quadruple of the race tests' pcb.
+    fn race_quad() -> (InAddr, u16, InAddr, u16) {
+        (a([10, 0, 0, 1]), htons(80), a([10, 0, 0, 2]), htons(4242))
+    }
+
+    #[test]
+    fn a_lookup_counted_under_the_mutex_survives_a_detach_and_the_last_other_unref() {
+        // tcp_input's lookup of a TIME_WAIT pcb against tcp_timer_2msl's close of it on
+        // another CPU (review 1's B1): the answer's count is taken before the table mutex is
+        // let go (bsd's adapters, in_pcb.c:1220-1221), so the detach and the timer's
+        // in_pcbunref leave it the last count, and in_pcbsolock finds the socket gone (the C
+        // drops the segment).
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let before = nout();
+        let (so, inp) = testinet::pcb(t);
+        let (l, lp, f, fp) = race_quad();
+        place(&inp, l, lp, f, fp);
+        let keep = inp.clone();
+        // The timer's count (tcp_timer's in_pcbref).
+        inp.legacy_ref();
+
+        // The lookup, its count under the guard.
+        {
+            let mut g = t.lock();
+            let h = in_pcblookup_held(&mut g, t, f, fp, l, lp, 0).expect("found");
+            h.legacy_ref_locked(&g);
+            drop(h);
+            drop(g);
+        }
+        assert_eq!(keep.legacy_count(), 3);
+
+        // The other CPU: the close's detach, then the timer's in_pcbunref.
+        testinet::release(so, inp);
+        assert!(
+            keep.legacy_rele(key()).is_none(),
+            "the lookup's count is left"
+        );
+        assert_eq!(keep.legacy_count(), 1);
+        {
+            let _r = NETLOCK.read();
+            assert!(
+                in_pcbsolock(&keep).is_none(),
+                "the socket is gone: drop the segment"
+            );
+        }
+        // The lookup's caller lets go: the last count, the item freed with the last handle.
+        drop(keep.legacy_rele(key()).expect("the anchor"));
+        assert_eq!(nout(), before + 1, "the test's own handle");
+        drop(keep);
+        assert_eq!(nout(), before);
+    }
+
+    #[test]
+    #[should_panic(expected = "in_pcbref: inpcb")]
+    fn a_count_taken_after_the_mutex_can_find_the_pcb_released() {
+        // The order bsd's adapters had before review 1's B1: the lookup lets the mutex go, the
+        // close and the timer's unref run, then the count is taken from zero: panic(9).
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let (l, lp, f, fp) = race_quad();
+        place(&inp, l, lp, f, fp);
+        inp.legacy_ref();
+        let h = in_pcblookup(t, f, fp, l, lp, 0).expect("found");
+        testinet::release(so, inp);
+        let _ = h.legacy_rele(key());
+        h.legacy_ref();
+    }
+
+    #[test]
+    #[should_panic(expected = "another table's mutex")]
+    fn a_lookup_count_needs_its_own_table_s_guard() {
+        let (_g, _p) = testinet::setup();
+        let t = testinet::table(16);
+        let other = testinet::table(16);
+        let (_so, inp) = testinet::pcb(t);
+        let g = other.lock();
+        inp.legacy_ref_locked(&g);
+    }
+
+    #[test]
+    #[should_panic(expected = "inp_route: the socket lock of inpcb")]
+    fn the_route_cache_is_refused_without_the_socket_lock() {
+        let (_g, _p) = testinet::setup();
+        let (_so, inp) = testinet::pcb(testinet::table(16));
+        drop(inp.route());
+    }
+
+    #[test]
+    #[should_panic(expected = "inp_moptions: the socket lock of inpcb")]
+    fn the_multicast_options_are_refused_without_the_socket_lock() {
+        let (_g, _p) = testinet::setup();
+        let (_so, inp) = testinet::pcb(testinet::table(16));
+        let _r = NETLOCK.read();
+        drop(inp.moptions());
+    }
+
+    #[test]
+    #[should_panic(expected = "in_pcbsolock: inpcb")]
+    fn in_pcbsolock_needs_the_net_lock() {
+        let (_g, _p) = testinet::setup();
+        let (_so, inp) = testinet::pcb(testinet::table(16));
+        let _ = in_pcbsolock(&inp);
     }
 }
 /* </TESTS> */

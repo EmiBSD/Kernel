@@ -725,8 +725,14 @@ pub fn in6_pcblookup(
     lport: u16,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    kernel::netinet6::in6_pcb::in6_pcblookup(table, faddr, fport, laddr, lport, rtable)
-        .map(crate::netinet::in_pcb::legacy_hold)
+    // The answer's count taken before the mutex is let go (in6_pcb.c:692-693).
+    let mut g = table.lock();
+    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_held(
+        &mut g, table, faddr, fport, laddr, lport, rtable,
+    );
+    let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
+    drop(g);
+    inp
 }
 
 /// `in6_pcblookup_listen`: the listening control block for `laddr.lport_arg`, referenced.
@@ -737,8 +743,13 @@ pub fn in6_pcblookup_listen(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    kernel::netinet6::in6_pcb::in6_pcblookup_listen(table, laddr, lport_arg, m, rtable)
-        .map(crate::netinet::in_pcb::legacy_hold)
+    // pf's divert key before the mutex, the count before it is let go.
+    let keys = kernel::netinet6::in6_pcb::in6_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let mut g = table.lock();
+    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_listen_held(&mut g, table, keys, rtable);
+    let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
+    drop(g);
+    inp
 }
 
 /// `in6_pcbset_addr`: gives `inp` both addresses and ports at once (a connection accepted
@@ -1024,6 +1035,8 @@ pub(crate) mod tests {
         place6(c, l, 1000, g, 2000);
         let pcbs: Vec<_> = std::vec![a, b, c];
 
+        // The ctlinput callers' net lock (in_pcbsolock asserts it, as in_pcb.c:626).
+        crate::sys::systm::net_lock();
         // A message about one connection: its ports and addresses select it.
         NOTIFIED.store(0, Ordering::Relaxed);
         in6_pcbnotify(
@@ -1087,6 +1100,7 @@ pub(crate) mod tests {
             None,
         );
         assert_eq!(NOTIFIED.load(Ordering::Relaxed), 0);
+        crate::sys::systm::net_unlock();
 
         for i in pcbs {
             release(i);

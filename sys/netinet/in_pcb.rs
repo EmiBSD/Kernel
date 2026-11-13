@@ -282,9 +282,10 @@ pub fn inp_static(inp: &Inpcb) -> &'static Inpcb {
 }
 
 /// A kernel answer held as `bsd` holds a control block: one count of `inp_refcnt` taken for
-/// it (the C's `in_pcbref` of the lookup), the handle dropped.
-pub(crate) fn legacy_hold(h: InpcbRef<BsdProcGlue>) -> &'static Inpcb {
-    h.legacy_ref();
+/// it with the table's guard `g` still held (the C's `in_pcbref` before `mtx_leave`), the
+/// handle dropped.
+pub(crate) fn legacy_hold(h: InpcbRef<BsdProcGlue>, g: &InpGuard<'_>) -> &'static Inpcb {
+    h.legacy_ref_locked(g);
     inp_static(&h)
 }
 
@@ -493,20 +494,10 @@ fn free_legacy_opts(inp: &Inpcb) {
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
 /// reference.
 pub fn in_pcbdetach(inp: &'static Inpcb) {
-    let Some(h) = PoolArcOf::of(inp) else {
+    let Some(h) = hal::pool::PoolArc::from_ref(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
     k::in_pcbdetach(h, &net_held("in_pcbdetach"), free_legacy_opts);
-}
-
-/// `PoolArc::from_ref` of a control block.
-struct PoolArcOf;
-
-impl PoolArcOf {
-    /// A handle to `inp`'s item.
-    fn of(inp: &Inpcb) -> Option<InpcbRef<BsdProcGlue>> {
-        hal::pool::PoolArc::from_ref(inp)
-    }
 }
 
 /// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached.
@@ -547,7 +538,7 @@ pub fn in_pcb_iterator(
 ) -> Option<&'static Inpcb> {
     let next = k::in_pcb_iterator(table, g, None, iter);
     in_pcbunref(inp);
-    next.map(legacy_hold)
+    next.map(|h| legacy_hold(h, g))
 }
 
 /// `in_pcb_iterator_abort`: ends a walk before `in_pcb_iterator` returned `None`.
@@ -663,7 +654,12 @@ pub fn in_pcblookup_local_lock(
             "in_pcblookup_local_lock: lock {lock} without a guard"
         ));
     }
-    k::in_pcblookup_local_lock(table, laddrp, lport, flags, rtable).map(legacy_hold)
+    // The answer's count taken before the mutex is let go (in_pcb.c's order).
+    let mut g = table.lock();
+    let inp = k::in_pcblookup_local(&mut g, table, laddrp, lport, flags, rtable);
+    let inp = inp.map(|h| legacy_hold(h, &g));
+    drop(g);
+    inp
 }
 
 /// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache.
@@ -694,7 +690,13 @@ pub fn in_pcblookup(
     lport: u16,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    k::in_pcblookup(table, faddr, fport, laddr, lport, rtable).map(legacy_hold)
+    // The answer's count taken before the mutex is let go (in_pcb.c:1220-1221): a pcb a
+    // concurrent detach and last in_pcbunref would free is still held then.
+    let mut g = table.lock();
+    let inp = k::in_pcblookup_held(&mut g, table, faddr, fport, laddr, lport, rtable);
+    let inp = inp.map(|h| legacy_hold(h, &g));
+    drop(g);
+    inp
 }
 
 /// `in_pcblookup_listen`: the listening control block for `laddr.lport`, referenced.
@@ -705,7 +707,13 @@ pub fn in_pcblookup_listen(
     m: Option<&Mbuf>,
     rtable: u32,
 ) -> Option<&'static Inpcb> {
-    k::in_pcblookup_listen(table, laddr, lport_arg, m, rtable).map(legacy_hold)
+    // pf's divert key before the mutex, the count before it is let go (in_pcb.c:1304-1305).
+    let keys = k::in_pcblookup_listen_keys(laddr, lport_arg, m)?;
+    let mut g = table.lock();
+    let inp = k::in_pcblookup_listen_held(&mut g, table, keys, rtable);
+    let inp = inp.map(|h| legacy_hold(h, &g));
+    drop(g);
+    inp
 }
 
 /// `in_pcbset_rtableid`: moves an unbound `inp` to routing table `rtableid`.

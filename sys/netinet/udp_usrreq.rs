@@ -1806,6 +1806,8 @@ mod tests {
         returned.extend_from_slice(&ipb[..20]);
         returned.extend_from_slice(&ipb[20..28]);
         let dst = sinp(GATEWAY, 0);
+        // icmp_input's net lock, which in_pcbsolock asserts (in_pcb.c:626).
+        crate::sys::systm::net_lock();
         // SAFETY: a local `sockaddr_in` and the returned IP and UDP headers.
         unsafe {
             udp_ctlinput(
@@ -1815,6 +1817,7 @@ mod tests {
                 returned.as_mut_ptr().cast(),
             )
         };
+        crate::sys::systm::net_unlock();
         assert_eq!(so.error(), Some(Errno::ECONNREFUSED));
         so.set_error(None);
 
