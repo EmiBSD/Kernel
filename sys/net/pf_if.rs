@@ -118,9 +118,10 @@ use crate::net::pfvar::{
     pf_pool_get, pf_pool_init, pf_pool_put, pf_strlcpy,
 };
 use crate::net::pfvar_priv::{PfGlobal, pf_assert_locked, pf_lock, pf_unlock};
-use crate::netinet::in_::{InAddr, SockaddrIn};
+use crate::netinet::in_::SockaddrIn;
+use crate::netinet::in_var::ifatoia;
 use crate::netinet6::in6::{
-    In6Addr, SockaddrIn6, in6_is_addr_linklocal, in6_is_scope_embed, satosin6_const,
+    In6Addr, SockaddrIn6, ifatoia6, in6_is_addr_linklocal, in6_is_scope_embed, satosin6_const,
 };
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_PF, M_WAITOK, M_ZERO};
@@ -162,6 +163,32 @@ impl PfiBuffer {
 impl Default for PfiBuffer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A socket address copied whole out of an address record (`struct sockaddr_in` or
+/// `struct sockaddr_in6`), zero-filled to the larger (`struct sockaddr_in6`), so that
+/// `pfi_address_add` reads every member of either family from initialised bytes: the C
+/// passes it the record's own storage.
+struct SaImage([u8; size_of::<SockaddrIn6>()]);
+
+impl SaImage {
+    /// The image of `sa`, a `sockaddr_in` or a `sockaddr_in6` (no larger: a bigger `T` is
+    /// refused at compile time).
+    fn of<T: hal::user::AbiPod>(sa: &T) -> Self {
+        const { assert!(size_of::<T>() <= size_of::<SockaddrIn6>()) };
+        let mut b = [0u8; size_of::<SockaddrIn6>()];
+        if !hal::pod::put(&mut b, 0, sa) {
+            panic(format_args!(
+                "pfi_instance_add: an address larger than a sockaddr_in6"
+            ));
+        }
+        Self(b)
+    }
+
+    /// The image as a `struct sockaddr *` for [`pfi_address_add`].
+    fn as_sockaddr(&self) -> *const Sockaddr {
+        self.0.as_ptr().cast::<Sockaddr>()
     }
 }
 
@@ -806,11 +833,11 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
         if flags_has(PFI_AFLAG_PEER) && ifp.if_flags.get() & IFF_POINTOPOINT == 0 {
             continue;
         }
-        if flags_has(PFI_AFLAG_NETWORK) && af == AF_INET6 {
-            let a6 = sa_image(&sa).sin6_addr();
-            if in6_is_addr_linklocal(&a6) {
-                continue;
-            }
+        if flags_has(PFI_AFLAG_NETWORK)
+            && af == AF_INET6
+            && in6_is_addr_linklocal(&ifatoia6(ifa).ia_addr.addr())
+        {
+            continue;
         }
         if flags_has(PFI_AFLAG_NOALIAS) {
             if af == AF_INET && got4 {
@@ -826,72 +853,49 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
             got6 = true;
         }
         let mut net2 = i32::from(net);
-        if net2 == 128
-            && flags_has(PFI_AFLAG_NETWORK)
-            && let Some(mask) = ifa.ifa_netmask(held)
-        {
-            let mask = sa_image(&mask);
+        if net2 == 128 && flags_has(PFI_AFLAG_NETWORK) {
+            // The mask's whole address member, read from the record's own image as the C reads
+            // it through `ifa_netmask`, never a copy cut at its `sa_len`: in6.c checks a prefix
+            // mask only up to its `sin6_len` and stores the whole structure, so bits past that
+            // length count here as in the C (5e1's review, N1). `af` is the record's family.
             if af == AF_INET {
-                net2 = pfi_unmask(&PfAddr::from_v4(mask.sin_addr()));
+                let mask = ifatoia(ifa).ia_sockmask.get().sin_addr;
+                net2 = pfi_unmask(&PfAddr::from_v4(mask));
             } else if af == AF_INET6 {
-                net2 = pfi_unmask(&PfAddr::from_v6(mask.sin6_addr()));
+                let mask = ifatoia6(ifa).ia_prefixmask.get().sin6_addr;
+                net2 = pfi_unmask(&PfAddr::from_v6(mask));
             }
         }
         if af == AF_INET && net2 > 32 {
             net2 = 32;
         }
-        let a = if flags_has(PFI_AFLAG_BROADCAST) {
-            ifa.ifa_broadaddr(held)
-        } else if flags_has(PFI_AFLAG_PEER) {
+        // The address added: `ifa_broadaddr` and `ifa_dstaddr` name the same member, and the
+        // C passes `pfi_address_add` the record's own storage, so it is read here whole from
+        // the record, never as a copy cut at its `sa_len` (in6.c leaves an IPv6 peer
+        // address's `sin6_len` unchecked; 5e1's review, N1). IPv6 has no `ifa_dstaddr` off a
+        // point-to-point or loopback interface (NULL).
+        let dst = flags_has(PFI_AFLAG_BROADCAST) || flags_has(PFI_AFLAG_PEER);
+        let image = if af == AF_INET {
+            let ia = ifatoia(ifa);
+            Some(SaImage::of(&if dst {
+                ia.ia_dstaddr.get()
+            } else {
+                ia.ia_addr.get()
+            }))
+        } else if dst {
             ifa.ifa_dstaddr(held)
+                .map(|_| SaImage::of(&ifatoia6(ifa).ia_dstaddr.get()))
         } else {
-            Some(sa)
+            Some(SaImage::of(&ifatoia6(ifa).ia_addr.get()))
         };
-        let image = a.as_ref().map(|a| sa_image(a));
         let ptr = image.as_ref().map_or(ptr::null(), SaImage::as_sockaddr);
-        // SAFETY: `ptr` is null (the C's NULL broadcast or peer address) or points at `image`,
-        // a local copy of the address zero-filled to a `sockaddr_in6` (28 bytes, every byte
-        // initialised), alive across the call: a readable socket address of `af`'s structure
-        // whichever of the two families `af` is (`pfi_address_add`'s contract), whose bytes
-        // past the address's `sa_len` are zero, as the C's storage past a trimmed mask is.
+        // SAFETY: `ptr` is null (the C's NULL peer address) or points at `image`, a local copy
+        // of the record's whole `sockaddr_in` or `sockaddr_in6` zero-filled to a
+        // `sockaddr_in6` (28 bytes, every byte initialised), alive across the call: a
+        // readable socket address of `af`'s structure whichever of the two families `af` is
+        // (`pfi_address_add`'s contract).
         unsafe { pfi_address_add(ptr, af, net2 as u8) };
     }
-}
-
-/// A socket address copied out of an interface address ([`hal::link::SaBytes`]), zero-filled
-/// to the largest structure `pfi_instance_add` reads (`struct sockaddr_in6`), so its members
-/// are read whole and safely: the C reads `satosin(sa)->sin_addr` and
-/// `satosin6(sa)->sin6_addr` from the record's own storage, whose bytes past a trimmed mask's
-/// `sa_len` are zero.
-struct SaImage([u8; size_of::<SockaddrIn6>()]);
-
-impl SaImage {
-    /// `satosin(sa)->sin_addr`.
-    fn sin_addr(&self) -> InAddr {
-        InAddr {
-            s_addr: u32::from_ne_bytes([self.0[4], self.0[5], self.0[6], self.0[7]]),
-        }
-    }
-
-    /// `satosin6(sa)->sin6_addr`.
-    fn sin6_addr(&self) -> In6Addr {
-        let mut a = In6Addr::default();
-        a.s6_addr.copy_from_slice(&self.0[8..24]);
-        a
-    }
-
-    /// The image as a `struct sockaddr *` for [`pfi_address_add`].
-    fn as_sockaddr(&self) -> *const Sockaddr {
-        self.0.as_ptr().cast::<Sockaddr>()
-    }
-}
-
-/// The image of `sa`'s bytes, zero-filled ([`SaImage`]).
-fn sa_image(sa: &[u8]) -> SaImage {
-    let mut b = [0u8; size_of::<SockaddrIn6>()];
-    let n = sa.len().min(b.len());
-    b[..n].copy_from_slice(&sa[..n]);
-    SaImage(b)
 }
 
 /// `pfi_address_add`: appends `sa` as a network of `net` bits to `pfi_buffer`, growing it
@@ -1305,6 +1309,8 @@ mod tests {
     // buffer.
 
     use std::sync::MutexGuard;
+    use std::vec;
+    use std::vec::Vec;
 
     use super::*;
     use crate::net::if_::tests::{setup_net, test_ifnet};
@@ -1548,6 +1554,171 @@ mod tests {
         pfi_xcommit();
         assert_eq!(a.pfik_flags.get() & 0x40, 0);
         pfi_kif_unref(Some(a), PFI_KIF_REF_RULE);
+    }
+
+    /// A fresh `pfi_buffer` of 64 entries, as `pfi_initialize` makes it (each test setup
+    /// starts a fresh malloc arena: a buffer of an earlier test could not be freed).
+    fn fresh_buffer() {
+        let buf = mallocarray(64, size_of::<PfrAddr>(), PFI_MTYPE, M_WAITOK).expect("buffer");
+        PFI_BUFFER.pfi_buffer.set(buf.as_ptr().cast());
+        PFI_BUFFER.pfi_buffer_max.set(64);
+        PFI_BUFFER.pfi_buffer_cnt.set(0);
+    }
+
+    /// `pfi_buffer`'s entries: family, prefix length and address bytes.
+    fn buffer_entries() -> Vec<(SaFamily, u8, [u8; 16])> {
+        let cnt = PFI_BUFFER.pfi_buffer_cnt.get().max(0) as usize;
+        // SAFETY: `pfi_buffer` is the array `fresh_buffer` allocated (or `pfi_address_add`
+        // grew), of which the first `pfi_buffer_cnt` entries are written; the test's pf lock
+        // keeps every other writer out while the slice lives.
+        let got = unsafe { core::slice::from_raw_parts(PFI_BUFFER.pfi_buffer.get(), cnt) };
+        got.iter()
+            .map(|p| (p.pfra_af, p.pfra_net, p.pfra_u.addr8))
+            .collect()
+    }
+
+    /// An IPv4 entry's 16 address bytes.
+    fn v4(a: [u8; 4]) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[..4].copy_from_slice(&a);
+        b
+    }
+
+    /// An IPv6 address from its eight groups.
+    fn v6(g: [u16; 8]) -> In6Addr {
+        let mut a = In6Addr::default();
+        for (i, w) in g.iter().enumerate() {
+            a.s6_addr[2 * i..2 * i + 2].copy_from_slice(&w.to_be_bytes());
+        }
+        a
+    }
+
+    /// `pfi_instance_add`, pf's `(if)`, `(if:network)`, `(if:broadcast)`, `(if:peer)` and
+    /// `(if:0)` over the addresses of two interfaces, against pf_if.c: the family filters,
+    /// the IPv6 link-local skip of `:network`, `:0`'s first address of each family, the
+    /// prefix length from the mask, the broadcast and peer members. 5e1's review, N1: an
+    /// IPv6 prefix mask whose `sin6_len` (16) covers only its first 64 bits while its 65th is
+    /// set (in6.c checks a mask up to `sin6_len` and stores it whole) is /65 here as in the C,
+    /// read from the record's whole mask; likewise an IPv6 peer address whose `sin6_len`
+    /// (16) stops before its last 64 bits (in6.c does not check it), the whole address.
+    #[test]
+    fn instance_add_lists_an_interface_s_addresses_as_the_c() {
+        use crate::net::if_::IFF_UP;
+        use crate::netinet6::in6::tests::test_ia6;
+        use crate::sys::systm::{net_lock, net_unlock};
+        let _g = setup();
+
+        // The interfaces and their addresses come and go without pf_lock, as in the kernel.
+        pf_unlock();
+        let ifp = test_ifnet(b"tpia0");
+        ifp.if_flags.set(IFF_UP | IFF_BROADCAST);
+        if_attach(ifp);
+        let p2p = test_ifnet(b"tpia1");
+        p2p.if_flags.set(IFF_UP | IFF_POINTOPOINT);
+        if_attach(p2p);
+        let inet = |ifp: &'static Ifnet, a: [u8; 4], m: [u8; 4], d: [u8; 4]| {
+            let ifa = kernel::netinet::in_var::test_in_ifaddr(ifp, a, Some(m), Some(d));
+            net_lock();
+            kernel::net::if_::ifa_add(
+                ifp,
+                ifa.clone(),
+                crate::net::if_::net_held("instance_add test").net(),
+            );
+            net_unlock();
+            ifa
+        };
+        let _a = inet(ifp, [10, 1, 2, 3], [255, 255, 255, 0], [10, 1, 2, 255]);
+        let _b = inet(ifp, [10, 9, 9, 9], [255, 255, 0, 0], [10, 9, 255, 255]);
+        let _c = test_ia6(ifp, v6([0xfe80, 0, 0, 0, 0, 0, 0, 1]), 0);
+        let _d = test_ia6(ifp, v6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]), 0);
+        let e = test_ia6(ifp, v6([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1]), 0);
+        let mut m = In6Addr::default();
+        m.s6_addr[..8].fill(0xff);
+        m.s6_addr[8] = 0x80;
+        ifatoia6(&e).ia_prefixmask.set(SockaddrIn6 {
+            sin6_len: 16,
+            ..SockaddrIn6::with_addr(m)
+        });
+        let _p = inet(p2p, [10, 5, 5, 1], [255, 255, 255, 252], [10, 5, 5, 2]);
+        let f = test_ia6(p2p, v6([0x2001, 0xdb8, 2, 0, 0, 0, 0, 1]), 0);
+        ifatoia6(&f).ia_dstaddr.set(SockaddrIn6 {
+            sin6_len: 16,
+            ..SockaddrIn6::with_addr(v6([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2]))
+        });
+
+        // pf_if.c's callers hold the net lock, then pf_lock.
+        net_lock();
+        pf_lock();
+        let run = |ifp: &'static Ifnet, flags: u8| {
+            fresh_buffer();
+            pfi_instance_add(Some(ifp), 128, i32::from(flags));
+            buffer_entries()
+        };
+        let (i4, i6) = (AF_INET, AF_INET6);
+        let a6 = |g: [u16; 8]| v6(g).s6_addr;
+        let table: [(&'static Ifnet, u8, Vec<(SaFamily, u8, [u8; 16])>); 7] = [
+            (
+                ifp,
+                0,
+                vec![
+                    (i4, 32, v4([10, 1, 2, 3])),
+                    (i4, 32, v4([10, 9, 9, 9])),
+                    (i6, 128, a6([0xfe80, 0, 0, 0, 0, 0, 0, 1])),
+                    (i6, 128, a6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1])),
+                    (i6, 128, a6([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1])),
+                ],
+            ),
+            (
+                ifp,
+                PFI_AFLAG_NETWORK,
+                vec![
+                    (i4, 24, v4([10, 1, 2, 0])),
+                    (i4, 16, v4([10, 9, 0, 0])),
+                    (i6, 64, a6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 0])),
+                    (i6, 65, a6([0x2001, 0xdb8, 1, 0, 0, 0, 0, 0])),
+                ],
+            ),
+            (
+                ifp,
+                PFI_AFLAG_BROADCAST,
+                vec![
+                    (i4, 32, v4([10, 1, 2, 255])),
+                    (i4, 32, v4([10, 9, 255, 255])),
+                ],
+            ),
+            (ifp, PFI_AFLAG_PEER, vec![]),
+            (
+                p2p,
+                PFI_AFLAG_PEER,
+                vec![
+                    (i4, 32, v4([10, 5, 5, 2])),
+                    (i6, 128, a6([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2])),
+                ],
+            ),
+            (
+                ifp,
+                PFI_AFLAG_NOALIAS,
+                vec![
+                    (i4, 32, v4([10, 1, 2, 3])),
+                    (i6, 128, a6([0xfe80, 0, 0, 0, 0, 0, 0, 1])),
+                ],
+            ),
+            (
+                ifp,
+                PFI_AFLAG_NOALIAS | PFI_AFLAG_NETWORK,
+                vec![
+                    (i4, 24, v4([10, 1, 2, 0])),
+                    (i6, 64, a6([0x2001, 0xdb8, 0, 0, 0, 0, 0, 0])),
+                ],
+            ),
+        ];
+        for (ifp, flags, want) in table {
+            assert_eq!(run(ifp, flags), want, "flags {flags:#x}");
+        }
+        PFI_BUFFER.pfi_buffer_cnt.set(0);
+        pf_unlock();
+        net_unlock();
+        pf_lock();
     }
 
     #[test]
