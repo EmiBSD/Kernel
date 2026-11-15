@@ -341,3 +341,6 @@ metadata:
 - Appending to a file whose last zone is CODE (a bench file): insert before `/* </CODE> */`, or the hook's lz check reports every new line as text outside the zones (N6.5a).
 - `hal::percpu::Counters<N>` is MAXCPUS (256) slots by value: IPv6's 401 and ICMPv6's 541 counters are 1.86 MiB of .bss where LZ's arrays were 7.4 KiB; compute the size before choosing it for a large statistic and flag it (N6.5a R7).
 - `docs/ROADMAP.md` is not the redesigner's to edit: an N12 deferral the review asks for goes in the commit body and the report for the coordinator to write (N6.5a review S3).
+- `lz check` refuses a [[module.fn]] row on a struct field (`LlinfoNd6::ln_refcnt` is not an item): a dropped field goes in the module's notes and `## Redesign`, never in a row (N6.5b).
+- A hal type split into two kinds (TaggedLink<A, B>) cannot name the second kind's type before its module moves: one commit with the first kind's type as a stand-in second kind keeps every commit compiling; say so in both bodies (N6.5b R1).
+- The worktree guard refuses a multi-file heredoc append (`cd dir && cat >> a <<EOF ... cat >> b`): append to memory files with Edit after a Read of their last lines (N6.5b).

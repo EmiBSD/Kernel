@@ -168,15 +168,11 @@
 //! - The driver's `SIOCSIFADDR` gets a zeroed `struct ifreq` image where the C passes the
 //!   `struct in6_ifaddr` (`kernel::netinet::in_`'s D-14: no driver ported at the pin reads
 //!   it).
-//! - `SIOCGIFINFO_IN6` and `SIOCGNBRINFO_IN6` (`nd6_ioctl`) are answered by `bsd`'s
-//!   `in6_control` until ND moves (N6.5b); [`in6_ioctl`] answers `EOPNOTSUPP` for them,
-//!   reached at the pin only by the kernel's own tests.
 //! - The records are never freed (`kernel::netinet6::in6_var`'s deviations); a membership
 //!   whose interface has already left the index map when its last reference goes stays on
 //!   that interface's list, where the C frees it there, and is not reused (IPv4's).
-//! - The C's calls into ND (`nd6_dad_start`, `nd6_dad_stop`, `nd6_expire_timer_update`) and
-//!   MLD's `ip6_output` go through `Inet` legs until ND and the output path move (N6.5b,
-//!   N6.5c; docs/SCAFFOLDING.md).
+//! - MLD's `ip6_output` goes through an `Inet` leg until the output path moves (N6.5c;
+//!   docs/SCAFFOLDING.md); the C's calls into ND are the kernel's since N6.5b.
 //!
 //! ## Redesign
 //! - The address `ioctl`s over the request's bytes: LZ's `unsafe fn`s over `caddr_t data`
@@ -248,7 +244,7 @@ use hal::sys::sockio::{
 use hal::sys::types::Time;
 
 use crate::assert::{kassert, kpanic};
-use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del, inet};
+use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
 use crate::net::if_var::{IFA_ROUTE, Ifaddr, Ifnet};
 use crate::net::mbuf::Mbuf;
 use crate::net::proto::SockaddrView;
@@ -265,6 +261,8 @@ use crate::netinet6::in6_var::{
 use crate::netinet6::ip6_var::{ip6stat_inc, ip6stat_inc_idx};
 use crate::netinet6::mld6::{mld6_sendpkt, mld6_start_listening, mld6_stop_listening};
 use crate::netinet6::mld6_var::Mld6Pktinfo;
+use crate::netinet6::nd6::{nd6_expire_timer_update, nd6_ioctl};
+use crate::netinet6::nd6_nbr::{nd6_dad_start, nd6_dad_stop};
 use crate::tc::{gettime, getuptime};
 
 /// The size of a `struct sockaddr_in6`.
@@ -451,8 +449,7 @@ pub fn in6_ioctl(
     }
 
     match cmd {
-        // nd6_ioctl: answered by bsd's in6_control until N6.5b (the module's deviations).
-        SIOCGIFINFO_IN6 | SIOCGNBRINFO_IN6 => Err(Errno::EOPNOTSUPP),
+        SIOCGIFINFO_IN6 | SIOCGNBRINFO_IN6 => nd6_ioctl(cmd, data, ifp),
         SIOCGIFDSTADDR_IN6 | SIOCGIFNETMASK_IN6 | SIOCGIFAFLAG_IN6 | SIOCGIFALIFETIME_IN6 => {
             in6_ioctl_get(cmd, data, ifp)
         }
@@ -575,10 +572,8 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
                 };
 
                 // Perform DAD, if needed.
-                if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0
-                    && let Some(i) = inet()
-                {
-                    i.nd6_dad_start(&ia6.ia_ifa);
+                if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
+                    hal::netlock::lend_detached(|net| nd6_dad_start(&ia6.ia_ifa, net));
                 }
 
                 if !newifaddr {
@@ -966,9 +961,7 @@ pub fn in6_update_ifa(
     // configure address flags.
     ia6.ia6_flags.set(ifra_flags);
 
-    if let Some(i) = inet() {
-        i.nd6_expire_timer_update(ia6);
-    }
+    nd6_expire_timer_update(ia6);
 
     // We are done if we have simply modified an existing address.
     if !host_is_new {
@@ -1071,9 +1064,7 @@ pub fn in6_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
     let ia6 = crate::netinet6::in6_var::ifatoia6(ifa);
 
     // stop DAD processing
-    if let Some(i) = inet() {
-        i.nd6_dad_stop(ifa);
-    }
+    nd6_dad_stop(ifa, net);
 
     // delete route to the destination of the address being purged. The interface must be p2p
     // or loopback in this case.
@@ -1805,7 +1796,7 @@ pub(crate) mod tests {
     }
 
     /// A `struct in6_aliasreq` of `addr`/`plen` with `flags` and infinite lifetimes.
-    fn aliasreq(ifp: &Ifnet, addr: In6Addr, plen: i32, flags: i32) -> [u8; 128] {
+    pub(crate) fn aliasreq(ifp: &Ifnet, addr: In6Addr, plen: i32, flags: i32) -> [u8; 128] {
         let mut ifra = In6Aliasreq::zeroed();
         ifra.ifra_name = ifp.if_xname.get();
         ifra.ifra_addr = sin6_of(addr);
@@ -1821,7 +1812,7 @@ pub(crate) mod tests {
     }
 
     /// A `struct in6_ifreq` whose `ifr_addr` is `addr`'s.
-    fn ifreq(ifp: &Ifnet, addr: In6Addr) -> [u8; size_of::<In6Ifreq>()] {
+    pub(crate) fn ifreq(ifp: &Ifnet, addr: In6Addr) -> [u8; size_of::<In6Ifreq>()] {
         let mut ifr = In6Ifreq::zeroed();
         ifr.ifr_name = ifp.if_xname.get();
         ifr.set_ifr_addr(sin6_of(addr));
@@ -1831,13 +1822,13 @@ pub(crate) mod tests {
     }
 
     /// `ifconfig <ifp> inet6 <addr> prefixlen <plen>`: `SIOCAIFADDR_IN6`, privileged.
-    fn add(ifp: &'static Ifnet, addr: In6Addr, plen: i32) -> Result<(), Errno> {
+    pub(crate) fn add(ifp: &'static Ifnet, addr: In6Addr, plen: i32) -> Result<(), Errno> {
         let mut r = aliasreq(ifp, addr, plen, 0);
         in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true)
     }
 
     /// `ifconfig <ifp> inet6 <addr> delete`: `SIOCDIFADDR_IN6`, privileged.
-    fn del(ifp: &'static Ifnet, addr: In6Addr) -> Result<(), Errno> {
+    pub(crate) fn del(ifp: &'static Ifnet, addr: In6Addr) -> Result<(), Errno> {
         let mut r = ifreq(ifp, addr);
         in6_ioctl(SIOCDIFADDR_IN6, &mut r, Some(ifp), true)
     }
@@ -2140,7 +2131,7 @@ pub(crate) mod tests {
         let (ifp, _) = iface(b"tio0", [0x52, 0x54, 0, 0, 4, 1]);
 
         // The refusals before any lock: no interface, no privilege, the requests the C does
-        // not pass to the driver, an unknown one, ND's two (bsd's in6_control answers them).
+        // not pass to the driver, an unknown one, ND's neighbor request for none.
         let mut r = aliasreq(ifp, a6("fd00::1"), 64, 0);
         assert_eq!(
             in6_ioctl(SIOCAIFADDR_IN6, &mut r, None, true),
@@ -2156,8 +2147,8 @@ pub(crate) mod tests {
             (SIOCSIFBRDADDR, Errno::EINVAL),
             (SIOCSIFNETMASK, Errno::EINVAL),
             (SIOCADDMULTI, Errno::EOPNOTSUPP),
-            (SIOCGIFINFO_IN6, Errno::EOPNOTSUPP),
-            (SIOCGNBRINFO_IN6, Errno::EOPNOTSUPP),
+            // ND's: a neighbor without an entry (the request names `::`).
+            (SIOCGNBRINFO_IN6, Errno::EINVAL),
         ] {
             let mut r = [0u8; 288];
             assert_eq!(
@@ -2272,8 +2263,10 @@ pub(crate) mod tests {
         assert!(route(a6("fd00:77::5")).is_none(), "the prefix route went");
 
         // Its records are recycled: the next address takes them back (once the routes that
-        // held the address are released).
+        // held the address are released, and DAD's reaper gave its reference back: the C's
+        // nd6_dad_reaper at the next softclock).
         crate::net::route::tests::grace();
+        crate::netinet6::nd6_nbr::dad_reap();
         let (_, free_after) = free_counts();
         assert_eq!(free_after, free_before + 1, "the multicast record freed");
         add(ifp, a6("fd00:77::2"), 64).expect("SIOCAIFADDR_IN6");

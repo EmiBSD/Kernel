@@ -101,7 +101,8 @@
 //!
 //!   | member | type | all zero is |
 //!   |---|---|---|
-//!   | `if_softc`, `if_mcast`, `if_mcast6`, `if_carp`, `if_pf_kif`, `if_nd` | `PtrWord` | NULL (an `AtomicPtr`) |
+//!   | `if_softc`, `if_mcast`, `if_mcast6`, `if_carp`, `if_pf_kif` | `PtrWord` | NULL (an `AtomicPtr`) |
+//!   | `if_nd` | [`NdIfinfoCell`](crate::netinet6::nd6::NdIfinfoCell) | `nd6_ifattach` not run (two atomics) |
 //!   | `if_bpf` | [`BpfTap`](crate::net::bpf::BpfTap) (`hal::smr::SmrArcWord`) | no tap (an `AtomicPtr`: `hal::smr`'s `an_all_zero_counted_word_is_null`) |
 //!   | `if_xname`, `if_description` | [`AtomicBytes`] | the empty string |
 //!   | `if_index`, `if_flags`, `if_xflags`, `if_type`, ..., `if_snd_maxlen` | [`AtomicCell`] | 0 |
@@ -855,8 +856,8 @@ pub struct Ifnet {
     pub if_snd_maxlen: AtomicCell<u32>,
     /// \[N\] `if_sadl`: our `sockaddr_dl` (`if_alloc_sadl`'s box).
     pub if_sadl: ReadMostly<Option<MBox<SockaddrDl>>>,
-    /// \[I\] `if_nd`: IPv6 Neighbor Discovery info (`struct nd_ifinfo *`, nd6's word).
-    pub if_nd: PtrWord<core::ffi::c_void>,
+    /// \[N\] `if_nd`: IPv6 Neighbor Discovery info (`struct nd_ifinfo`, embedded: D-N6.5-6).
+    pub if_nd: crate::netinet6::nd6::NdIfinfoCell,
     /// \[N\] `if_groups`: the groups the interface is a member of (a snapshot replaced whole
     /// by `if_addgroup` and `if_delgroup`; readers through [`Ifnet::groups`]).
     pub(crate) if_groups: ReadMostly<IfgSet>,
@@ -928,7 +929,7 @@ impl Ifnet {
             if_txmit: AtomicCell::new(),
             if_snd_maxlen: AtomicCell::new(),
             if_sadl: ReadMostly::new(None),
-            if_nd: PtrWord::new(),
+            if_nd: crate::netinet6::nd6::NdIfinfoCell::new(),
             if_groups: ReadMostly::new(IfgSet::new()),
             if_driver: OnceStatic::new(),
             if_link: OnceStatic::new(),

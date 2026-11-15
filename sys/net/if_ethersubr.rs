@@ -415,9 +415,10 @@ mod tests {
 
         // Its advertisement resolves it: the next packet gets the neighbor's address.
         net_lock();
+        let handle = hal::pool::PoolArc::from_ref(rt).expect("a routing table's route");
         nd6_na_cache(
             ifp,
-            rt,
+            &handle,
             Some(&PEER_MAC),
             false,
             true,
@@ -425,7 +426,9 @@ mod tests {
             false,
             &PEER6,
             &PEER6,
+            &crate::net::if_::net_held("nd6_na_input"),
         );
+        drop(handle);
         net_unlock();
         assert_eq!(crate::netinet::if_ether::gw_alen_family(rt).0, 6);
         net_lock();

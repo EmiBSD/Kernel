@@ -555,6 +555,12 @@ impl<A: PinAdapter> PinList<A> {
         let id = id_of(w);
         bind(&self.key, id, "TAILQ_INSERT_HEAD");
         let n = link::<A>(e, id, "TAILQ_INSERT_HEAD");
+        self.prepend(n);
+    }
+
+    /// Links the claimed entry `n` first.
+    #[inline]
+    fn prepend(&self, n: NonNull<PinEntry<A::Elem>>) {
         let ent = entry_at(n);
         let old = self.head.next.get();
         ent.next.set(old);
@@ -698,6 +704,22 @@ impl<A: PinAdapter> PinList<A> {
             }
             None => false,
         }
+    }
+
+    /// `TAILQ_LAST`, then `TAILQ_REMOVE` and `TAILQ_INSERT_HEAD` of it: the last element
+    /// becomes the first (`nd6_rtrequest`'s forced garbage collection, "move this entry to
+    /// the head"); `false`, nothing changed, when the list is empty. It names no element, so
+    /// a caller that reads the element afterwards ([`PinList::first`]) holds no borrow of the
+    /// witness across the change. Constant time.
+    pub fn move_last_to_head<W: Divisible + ?Sized>(&self, w: &mut W) -> bool {
+        bind(&self.key, id_of(w), "TAILQ_REMOVE");
+        let Some(l) = self.head.prev.get() else {
+            return false;
+        };
+        // The entry keeps its claim (identity and `this`): it moves within this list.
+        self.detach(entry_at(l));
+        self.prepend(l);
+        true
     }
 
     /// `TAILQ_FIRST`, pinned: the element was linked through `Pin<&T>` (I1), so the reference
@@ -1269,6 +1291,41 @@ mod tests {
         l.remove(&mut g, &b);
         assert!(l.is_empty(&g));
         assert!(!l.remove_first(&mut g));
+    }
+
+    /// The last element moved first, in place (`nd6_rtrequest`'s rotation): the links of
+    /// every neighbour stay right, the moved element keeps its claim (another list of the lock
+    /// would refuse it), and an empty or one-element list is left as it was.
+    #[test]
+    fn the_last_element_moves_to_the_head() {
+        testutil::install();
+        let m = Mutexed::new(IPL_NONE, ());
+        let mut g = m.lock();
+        let l: PinList<ByE> = PinList::new();
+        assert!(!l.move_last_to_head(&mut g), "empty");
+        let a = core::pin::pin!(Node::new(1));
+        let b = core::pin::pin!(Node::new(2));
+        let c = core::pin::pin!(Node::new(3));
+        l.insert_tail(&mut g, a.as_ref());
+        assert!(l.move_last_to_head(&mut g));
+        assert_eq!(values(l.iter(&g)), [1], "one element");
+        l.insert_tail(&mut g, b.as_ref());
+        l.insert_tail(&mut g, c.as_ref());
+        assert!(l.move_last_to_head(&mut g));
+        assert_eq!(values(l.iter(&g)), [3, 1, 2]);
+        assert_eq!(l.last(&g).map(|n| n.v), Some(2));
+        assert_eq!(l.next(&g, &a).map(|n| n.v), Some(2));
+        assert!(l.move_last_to_head(&mut g));
+        assert_eq!(values(l.iter(&g)), [2, 3, 1]);
+        assert_eq!(l.first(&g).map(|n| n.v), Some(2));
+        assert_eq!(l.last(&g).map(|n| n.v), Some(1));
+        assert!(c.e.is_linked());
+        // Taken off in any order afterwards: the links are whole.
+        l.remove(&mut g, &c);
+        assert_eq!(values(l.iter(&g)), [2, 1]);
+        l.remove(&mut g, &a);
+        l.remove(&mut g, &b);
+        assert!(l.is_empty(&g));
     }
 
     /// A move between the lists of two locks, both held (`FUTEX_REQUEUE` across buckets): the

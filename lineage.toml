@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/in6_var.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/nd6.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6302,7 +6302,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_input.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/nd6_nbr.rs"]
 notes = "N6.3c2: a re-export of kernel::net::if_ethersubr with three adapters: the drivers' raw ether_ioctl (its one unsafe, the request's bytes the kernel reads), the parked-mbuf ether_input of the tests, ether_extract_headers into bsd's pointer view of struct ether_extracted"
 
 [[module]]
@@ -6714,13 +6714,13 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/nd6_nbr.rs", "sys/kernel/netinet6/nd6_rtr.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
@@ -6756,7 +6756,7 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kern
 rust = "sys/netinet6/ip6_forward.rs"
 lz = ["sys/netinet6/ip6_forward.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/nd6.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_input.rs"
@@ -6791,19 +6791,8 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet6/nd6.rs"
 lz = ["sys/netinet6/nd6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_var.rs"]
-
-[[module]]
-rust = "sys/netinet6/nd6_nbr.rs"
-lz = ["sys/netinet6/nd6_nbr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs"]
-
-[[module]]
-rust = "sys/netinet6/nd6_rtr.rs"
-lz = ["sys/netinet6/nd6_rtr.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_var.rs", "sys/kernel/netinet6/nd6.rs"]
+notes = "N6.5b: a shim: hal::sys::netinet6_nd6 and kernel::netinet6::nd6 re-exported whole for bsd's importers; the neighbor fixtures bsd's IPv6 tests share (nd6_setup, fake_neighbor, the capture output) and the header check stay here; ND's tests are the kernel's"
 
 [[module]]
 rust = "sys/netinet6/raw_ip6.rs"
@@ -12961,7 +12950,7 @@ reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that n
 [[extra]]
 rust = "sys/hal/link.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw)"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw); N6.5b (D-5): TaggedLink<A, B>, two typed kinds (tags 01 and 10, each with its own pool and lock, the tag and the type paired by one private Kind impl, the kinds excluding each other by the exchange from null; 4-aligned items), get_a/get_b, set_a/set_b, take_a/take_b, is_a/is_b; move_b_to_head, nd6_resolve's LRU move of the record the word owns on its pinned list in one call (the lent item borrows the witness the list change needs mutably); the owned item lent pinned (the same two unsafe, their SAFETY extended to the kinds and to Pin)"
 
 [[module]]
 rust = "sys/hal/list.rs"
@@ -12989,7 +12978,7 @@ rust = "sys/hal/pinlist.rs"
 crate = "hal"
 lz = ["sys/sys/queue.rs", "sys/kern/kern_timeout.rs"]
 status = "redesigned"
-notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows; N5.7c2: pin_adapter!'s generic form (impl[..] Name<..>: Elem<..>, field), the adapter of a glue-generic element declared where the element is, its Unpin refusal in a function generic over the same parameters"
+notes = "N4.1 P1: PinList<A> (queue.h's TAILQ, the ends in a movable head) and PinRing<A> (kern_timeout.c's CIRCQ with a sentinel head, CIRCQ_REMOVE naming no list, O(1) CIRCQ_CONCAT) over pinned elements whose owners free them: linked through Pin<&T>, PinEntry's drop panics while linked, the lists bound to one lock's identity (checked once per operation) so a splice retags nothing; pin_adapter! refuses an Unpin element; timeout(9)'s wheel and task(9)'s queues; sys/sys/queue.rs stays for the legacy tree and the circq items move here with kern_timeout.rs's rows; N5.7c2: pin_adapter!'s generic form (impl[..] Name<..>: Elem<..>, field), the adapter of a glue-generic element declared where the element is, its Unpin refusal in a function generic over the same parameters; N6.5b: PinList::move_last_to_head (TAILQ_LAST, TAILQ_REMOVE, TAILQ_INSERT_HEAD of nd6_rtrequest's forced garbage collection, O(1), naming no element so its caller reads the moved element afterwards through first)"
 
 [[module.fn]]
 lz = "sys/kern/kern_timeout.rs::circq_init"
@@ -16594,7 +16583,101 @@ rust = "sys/kernel/netinet6/in6_ifattach.rs"
 crate = "kernel"
 lz = ["sys/netinet6/in6_ifattach.rs"]
 status = "redesigned"
-notes = "N6.5a: in6_ifattach.c in the kernel: the EUI-64 from the kernel's if_sadl record (LZ's 3 raw link-address reads gone), in6_ifattach/in6_ifattach_linklocal/in6_ifattach_loopback over in6's NetHolding, in6_ifdetach under the caller's proof; nd6_dad_start and nd6_purge through temporary Inet legs and nd6_need_cache copied (ND's, N6.5b); the Inet legs in6_ifattach, in6_ifdetach, in6_purge_linklocal gone (the kernel's interface layer calls these); LZ's 5 tests over kernel interfaces and one of nd6_need_cache"
+notes = "N6.5a: in6_ifattach.c in the kernel: the EUI-64 from the kernel's if_sadl record (LZ's 3 raw link-address reads gone), in6_ifattach/in6_ifattach_linklocal/in6_ifattach_loopback over in6's NetHolding, in6_ifdetach under the caller's proof; nd6_dad_start and nd6_purge through temporary Inet legs and nd6_need_cache copied (ND's, N6.5b); the Inet legs in6_ifattach, in6_ifdetach, in6_purge_linklocal gone (the kernel's interface layer calls these); LZ's 5 tests over kernel interfaces and one of nd6_need_cache; N6.5b: ND's nd6_dad_start, nd6_purge and nd6_need_cache called directly (the legs and the copy gone)"
+
+[[module]]
+rust = "sys/kernel/netinet6/nd6.rs"
+crate = "kernel"
+lz = ["sys/netinet6/nd6.rs"]
+status = "redesigned"
+notes = "N6.5b: nd6.c and nd6.h's kernel half in the kernel: struct llinfo_nd6 a BoxPool item (pool \"nd6\", 128 bytes against the C's 112 and LZ's 120, D-4 flagged: its PinEntry 16 bytes over TAILQ_ENTRY and its 56-byte MbufQueue, no ln_refcnt) owned by the route's rt_llinfo as hal::link::TaggedLink's second kind (D-5), lent under ND6_MTX (Mutexed<nd6_inuse>), ln_rt a counted route handle rt_refcnt subtracts; nd6_list a PinList beside the mutex, walked by nd6_timer and nd6_purge with a stack marker (step_over), nd6_resolve's LRU move TaggedLink::move_b_to_head, nd6_rtrequest's GC PinList::move_last_to_head; if_nd an embedded NdIfinfoCell (D-6, M_IP6NDP's 8 bytes per interface gone, 16 in its malloc bucket); nd6_resolve over MbufBox and SockaddrView called by ether_resolve, nd6_rtrequest by ether_rtrequest, nd6_ifattach/ifdetach by the interface layer (the Inet legs and decision 82's second unsafe block gone); nd6_cache_lladdr's and nd6_llinfo_timer's record under one ND6_MTX section where the C reads it under the exclusive net lock alone (one pair above the C, N6.4b's R5 class, N12); the held packets' icmp6_error through a temporary Inet leg until N6.5d; nd6_ioctl over the request's bytes, called by the kernel's in6_ioctl; 24 tests over a kernel Ethernet interface (LZ's 5 of nd6.rs and, since the review's B1, nd6_nbr.rs's 5 re-expressed, the brief's, and the review's: the expiry past INT_MAX seconds, the forced garbage collection, proxy ND's join and leave)"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::rt_ln"
+native = ["sys/hal/link.rs::TaggedLink::get_b"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::ln_put"
+native = []
+kind = "dropped"
+reason = "the record is a PoolBox the route's TaggedLink owns: RTM_DELETE's take_b gives it back and its drop puts it into the \"nd6\" pool (the C's pool_put); no refcount to release"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::nd6_iterator"
+native = []
+kind = "dropped"
+reason = "nd6_timer and nd6_purge walk with a pinned LlinfoNd6 marker stepped over each record (PinList::step_over, O(1)) and hold the route's handle across the mutex's release, where nd6_iterator held ln_refcnt on the record; the same walk, no reference count"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::LlinfoNd6::iterator"
+native = ["LlinfoNd6::new"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::Nd6ListHead"
+native = ["sys/kernel/netinet6/nd6.rs::ND6_LIST"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::ND6_INUSE"
+native = ["ND6_MTX"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::nd6_llinfo_permanent"
+native = ["LlinfoNd6::permanent"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::if_nd"
+native = ["NdIfinfoCell::get"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::ifa_static"
+native = []
+kind = "dropped"
+reason = "the kernel's interface address lists hand out &'static Ifaddr (hal::list), so no lifetime is forged for nd6_expire's walk; LZ's unsafe re-lifetime goes"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6.rs::ifa_family"
+native = ["sys/kernel/netinet6/in6_var.rs::In6Ifaddr::of"]
+kind = "renamed"
+
+[[module]]
+rust = "sys/kernel/netinet6/nd6_nbr.rs"
+crate = "kernel"
+lz = ["sys/netinet6/nd6_nbr.rs"]
+status = "redesigned"
+notes = "N6.5b: nd6_nbr.c in the kernel: the NS/NA inputs over the packet's bytes (nd6_msg, the C's ip6_exthdr_get, in place or m_pulldown; hal::pod copies of the fixed part, the options a slice; LZ's raw-pointer unsafe fns gone), the NS/NA outputs written with hal::pod::put and sent through the temporary Inet::ip6_output_opts leg (no options) until N6.5c, nd6_na_input's record under one ND6_MTX section (nd6_na_cache) with the routing message and rt6_flush after it; struct dadq a recycled 'static record (D-13: M_IP6NDP, 176 bytes in the 256-byte bucket against the C's 120 in the 128-byte one, D-4 flagged; one list entry for dadq, the reaper's and the free list) on DADQ (hal::list under the net lock), its embedded timeout pinned for ever with the record's own address as an integer argument the handler compares on DADQ, one static reaper moving destroyed records to the free list after del_barrier and giving the address's reference back; DAD started and stopped by the kernel's in6 directly (the Inet legs gone); LZ's 5 tests re-expressed in kernel::netinet6::nd6's by the review's B1 (8f757e2b had not carried them): the NS and NA rejection tables over real packets through nd6_msg, one case per check of nd6_nbr.c:126-243 and :537-616 (the lladdrlen mismatch, the zero-length option, the short and the overlong message, each case failing when its check goes) with a chained message for the pullup, DAD's counts and its second start, a down interface, an anycast address, nd6_ifptomac"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6_nbr.rs::DadqHead"
+native = ["DADQ"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6_nbr.rs::nd6_lladdr_of"
+native = ["sys/kernel/netinet6/nd6.rs::nd6_opt_lladdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6_nbr.rs::nd6_reachable"
+native = ["sys/kernel/netinet6/nd6.rs::NdIfinfoCell::reachable"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/nd6_nbr.rs::nd6_im6o"
+native = ["nd6_ip6_output"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet6/nd6_rtr.rs"
+crate = "kernel"
+lz = ["sys/netinet6/nd6_rtr.rs"]
+status = "redesigned"
+notes = "N6.5b: nd6_rtr.c in the kernel: nd6_rtr_cache over the packet's bytes (nd6_nbr::nd6_msg, the options a slice; LZ's from_raw_parts and nd6_opt_lladdr's unsafe fn gone), rt6_flush over the kernel's rtable_walk and rtrequest_delete under the caller's net lock proof, KERNEL_LOCK C-style"
 
 [[module]]
 rust = "sys/kernel/netinet6/mld6.rs"
@@ -16892,7 +16975,7 @@ kind = "merged"
 
 [[module.fn]]
 lz = "sys/netinet/if_ether.rs::rt_la"
-native = ["sys/hal/link.rs::TaggedLink::get"]
+native = ["sys/hal/link.rs::TaggedLink::get_a"]
 kind = "merged"
 
 [[module.fn]]

@@ -3642,8 +3642,9 @@ pub(crate) mod tests {
         let _g = setup();
 
         let drops = mbstat_read().m_drops;
-        // One cluster's worth of memory: an mbuf's page fits, a 4 KiB cluster's does not.
-        nmbclust_update(1).expect("the limit");
+        // Two clusters' worth of memory, one page: an mbuf's page fits, a 4 KiB cluster's
+        // page past it does not (the pools' pages are whole pages, as m_pool_allocator's).
+        nmbclust_update(2).expect("the limit");
         let mut m = m_gethdr(M_DONTWAIT, MT_DATA).expect("an mbuf within the limit");
         assert!(!mclgetl(&mut m, M_DONTWAIT, 4096), "no page past the limit");
         assert_eq!(mbstat_read().m_drops, drops + 1);

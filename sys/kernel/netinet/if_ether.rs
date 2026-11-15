@@ -118,7 +118,7 @@
 //!   `PinEntry` for the C's 16-byte `LIST_ENTRY` (+16), the kernel's `MbufQueue` is 56 with
 //!   its unlocked length beside the list for the C's 48 (+8), and `la_refcnt` is gone (-8))
 //!   owned by the route's word,
-//!   `hal::link::TaggedLink<LlinfoArp>` (D-4; not `Parkable`: no lent record can be made a box
+//!   `hal::link::TaggedLink`'s first kind (D-4; not `Parkable`: no lent record can be made a box
 //!   by the park protocol, review 1's B1): the word
 //!   lends the record only to a guard of [`ARP_MTX`] (the C's "rt_llinfo and RTF_LLINFO are
 //!   protected by arp_mtx", now a type: `LlinfoArp`'s `Tagged::LOCK`), and gives the box back
@@ -178,8 +178,8 @@
 //! exclusive net lock keeps).
 //!
 //! **Holders** (`refcnt_take`/`rele` of the C against the handles here): `la_refcnt`'s list
-//! reference = the route word's box (given to it by `TaggedLink::set` in `arp_rtrequest`, taken
-//! back by `TaggedLink::take` in `RTM_DELETE` and dropped there); the iterator's reference = none
+//! reference = the route word's box (given to it by `TaggedLink::set_a` in `arp_rtrequest`, taken
+//! back by `TaggedLink::take_a` in `RTM_DELETE` and dropped there); the iterator's reference = none
 //! (the walk holds the route, `la_rt`'s clone, across the mutex's release: the C's `rtref`);
 //! `la_rt` = one route handle per record, dropped with it.
 
@@ -333,7 +333,7 @@ pub static ARPT_DOWN: AtomicI32 = AtomicI32::new(20);
 pub static ARPINQ: Niqueue = Niqueue::new(50, NETISR_ARP);
 
 /// `arp_mtx`: llinfo_arp live time, `rt_llinfo` and `RTF_LLINFO` are protected by it; its
-/// guard lends a route's record (`TaggedLink::get`) and walks [`ARP_LIST`].
+/// guard lends a route's record (`TaggedLink::get_a`) and walks [`ARP_LIST`].
 pub static ARP_MTX: Mutexed<()> = Mutexed::new(IPL_SOFTNET, ());
 
 /// \[m\] `arp_list`: list of `llinfo_arp` structures.
@@ -385,7 +385,7 @@ pub fn gw_lladdr(rt: &Rtentry) -> [u8; ETHER_ADDR_LEN] {
 
 /// The `ETHER_ADDR_LEN` bytes after the name of the `sockaddr_dl` whose bytes `g` holds
 /// (zeros past its end).
-fn sdl_lladdr(g: &[u8]) -> [u8; ETHER_ADDR_LEN] {
+pub(crate) fn sdl_lladdr(g: &[u8]) -> [u8; ETHER_ADDR_LEN] {
     let mut en = [0u8; ETHER_ADDR_LEN];
     let start = SDL_DATA_OFFSET + usize::from(g.get(5).copied().unwrap_or(0));
     if let Some(a) = g.get(start..) {
@@ -603,7 +603,7 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
                 return;
             }
             ARP_LIST.insert_head(&mut g, la.as_pin());
-            if let Err(la) = rt.rt_llinfo.set(&g, la) {
+            if let Err(la) = rt.rt_llinfo.set_a(&g, la) {
                 // a legacy owner stored meanwhile: not ours
                 ARP_LIST.remove(&mut g, &la);
                 drop(g);
@@ -617,7 +617,7 @@ pub fn arp_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
         }
         RTM_DELETE => {
             let mut g = ARP_MTX.lock();
-            let Some(la) = rt.rt_llinfo.take(&mut g) else {
+            let Some(la) = rt.rt_llinfo.take_a(&mut g) else {
                 // we lost the race, another thread has removed it
                 return;
             };
@@ -828,7 +828,7 @@ fn arpresolve_ll(
         let mut refresh = false;
         if expire != 0 && expire - i64::from(ARPT_KEEP.load(Ordering::Relaxed) / 8) < uptime {
             let g = ARP_MTX.lock();
-            if let Some(la) = rt.rt_llinfo.get(&g)
+            if let Some(la) = rt.rt_llinfo.get_a(&g)
                 && la.la_refreshed.get() + 30 < uptime
             {
                 la.la_refreshed.set(uptime);
@@ -852,7 +852,7 @@ fn arpresolve_ll(
     let mut reject: Option<bool> = None;
     {
         let g = ARP_MTX.lock();
-        let Some(la) = rt.rt_llinfo.get(&g) else {
+        let Some(la) = rt.rt_llinfo.get_a(&g) else {
             return Err(Errno::EINVAL);
         };
 
@@ -1186,7 +1186,7 @@ pub fn arpcache(
     // reset, its held packets taken.
     let (asked, mut ml) = {
         let g = ARP_MTX.lock();
-        let Some(la) = rt.rt_llinfo.get(&g) else {
+        let Some(la) = rt.rt_llinfo.get_a(&g) else {
             // deleted by another CPU meanwhile, as above
             return true;
         };
@@ -1212,7 +1212,7 @@ pub fn arpcache(
     let mut purged = 0;
     if la_hold_total.load(Ordering::Relaxed) != before {
         let g = ARP_MTX.lock();
-        if let Some(la) = rt.rt_llinfo.get(&g)
+        if let Some(la) = rt.rt_llinfo.get_a(&g)
             && mq_len(&la.la_mq) > 0
         {
             purged = mq_purge(&la.la_mq);
@@ -1226,7 +1226,7 @@ pub fn arpcache(
 /// `arpinvalidate(rt)`: forgets the hardware address of ARP route `rt` and its held packets.
 pub fn arpinvalidate(rt: &Rtentry) {
     let g = ARP_MTX.lock();
-    let Some(la) = rt.rt_llinfo.get(&g) else {
+    let Some(la) = rt.rt_llinfo.get_a(&g) else {
         return;
     };
     la_hold_total.fetch_sub(mq_purge(&la.la_mq), Ordering::Relaxed);
@@ -1658,7 +1658,7 @@ mod tests {
     /// The record of `rt`: `(held, la_asked)`, `None` without one.
     fn record(rt: &Rtentry) -> Option<(u32, i32)> {
         let g = ARP_MTX.lock();
-        rt.rt_llinfo.get(&g).map(|la| (la.held(), la.la_asked()))
+        rt.rt_llinfo.get_a(&g).map(|la| (la.held(), la.la_asked()))
     }
 
     /// `TIME_UPTIME` moved by `d` seconds.
@@ -1927,7 +1927,7 @@ mod tests {
         let _ = sent(ifp);
         for a in [GATEWAY, ADDR] {
             let rt = route(a, false).expect("the entry");
-            assert!(rt.rt_flags.isset(RTF_LLINFO) && rt.rt_llinfo.is_typed());
+            assert!(rt.rt_flags.isset(RTF_LLINFO) && rt.rt_llinfo.is_a());
             assert_eq!(dumped_refcnt(&rt), 0, "route(8) shows Refs 0 for {a:?}");
         }
         // A second holder is counted, as netstat -r shows it.

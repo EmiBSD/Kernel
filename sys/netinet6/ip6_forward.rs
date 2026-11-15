@@ -307,7 +307,13 @@ pub fn ip6_forward(m: &'static Mbuf, ro: Option<&mut Route>, flags: i32) {
                 && flags & IPV6_REDIRECT == 0
                 && IP6_SENDREDIRECTS.load(Ordering::Relaxed) != 0
             {
-                if i.if_flags.get() & IFF_POINTOPOINT != 0 && nd6_is_addr_neighbor(&ro_sin6(r), i) {
+                if i.if_flags.get() & IFF_POINTOPOINT != 0
+                    && nd6_is_addr_neighbor(
+                        &ro_sin6(r),
+                        i,
+                        &crate::net::if_::net_held("ip6_forward"),
+                    )
+                {
                     // If the incoming interface is equal to the outgoing one, the link
                     // attached to the interface is point-to-point, and the IPv6 destination
                     // is regarded as on-link on the link, then it will be highly probable
