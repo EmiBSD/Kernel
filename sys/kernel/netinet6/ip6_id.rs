@@ -340,6 +340,9 @@ mod tests {
         crate::testutil::install(); // arc4random's generator: the test doubles'
         let mut p = Randomtab::new(20, 180, 200000, 2, 524269, 7, 279936, [2, 3, 14563, 0]);
         ip6id_initid(&mut p);
+        // One cycle: no reseed by time while it runs (ND's tests, in parallel, move the
+        // uptime forward at their setup, which would reseed and flip the msb mid-cycle).
+        p.ru_reseed = Time::MAX;
         let msb = p.ru_msb;
         let mut seen = HashSet::new();
         for _ in 0..10000 {

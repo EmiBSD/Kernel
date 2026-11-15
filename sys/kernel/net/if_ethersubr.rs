@@ -281,7 +281,7 @@ use crate::assert::{kassert, kpanic};
 use crate::net::bpf::bpfattach;
 use crate::net::if_::{
     ProtoFn, if_alloc_sadl, if_deactivate, if_enqueue, if_input_local, if_input_proto,
-    if_sadl_set_lladdr, inet,
+    if_sadl_set_lladdr,
 };
 use crate::net::if_var::{AtomicCell, Ifnet, LinkLayer, Netstack};
 use crate::net::mbuf::{
@@ -979,8 +979,8 @@ pub fn ether_input(
         }
 
         // Schedule IPv6 software interrupt for incoming IPv6 packet.
-        ETHERTYPE_IPV6 => match inet() {
-            Some(i) => i.ipv6_input(),
+        ETHERTYPE_IPV6 => match crate::netinet6::ip6_input::IPV6_INPUT.get() {
+            Some(&f) => f,
             None => return,
         },
         // NPPPOE > 0 || PIPEX: ETHERTYPE_PPPOEDISC/ETHERTYPE_PPPOE go to the pppoe queues or
@@ -1758,6 +1758,9 @@ mod tests {
             *crate::netinet::ip_input::IPV4_INPUT
                 .get()
                 .expect("ipv4_input"),
+            *crate::netinet6::ip6_input::IPV6_INPUT
+                .get()
+                .expect("ipv6_input"),
             *crate::netinet::if_ether::ARPINPUT.get().expect("arpinput"),
             *crate::netinet::if_ether::REVARPINPUT
                 .get()
@@ -1779,7 +1782,7 @@ mod tests {
             n
         };
         let body = [0u8; 46];
-        // IPv4 to `ip_init`'s entry, ARP and RARP to ARP's entries, IPv6 to the double's.
+        // IPv4 to `ip_init`'s entry, ARP and RARP to ARP's entries, IPv6 to `ip6_init`'s.
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_IP, &body), &mut ns), 1);
         assert_eq!(count(frame(OURS, PEER, ETHERTYPE_ARP, &body), &mut ns), 1);
         assert_eq!(

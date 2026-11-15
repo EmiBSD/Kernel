@@ -1756,36 +1756,19 @@ const ROUTE_ROWS: [&str; 7] = [
     "route.isvalid",
 ];
 
-/// The internet protocols of the routing rows: IPv6 multipath on and its route cache's hits
-/// and misses counted (the C's `ip6stat_inc(ip6s_rtcachehit)`); IPv4's switch and counters
-/// are the kernel's own since N6.4a (`kernel::netinet::ip_var`'s `IPMULTIPATH` and
-/// `IPCOUNTERS`).
-struct BenchInet {
-    /// `ip6s_rtcachehit` and `ip6s_rtcachemiss`.
-    rtcache: [AtomicU64; 2],
-}
+/// The internet protocols' legs the rows reach (the multipath switches and route cache
+/// counters of both families are the kernel's own: IPv4's since N6.4a, IPv6's since N6.5d,
+/// `kernel::netinet::ip_var`'s and `kernel::netinet6::ip6_var`'s).
+struct BenchInet;
 
 impl kernel::net::if_::Inet for BenchInet {
-    fn ip6intr(&self) {}
     fn tcp_input_mlist(
         &self,
         _ml: &mut kernel::net::mbuf::MbufList,
         _af: hal::sys::types::SaFamily,
     ) {
     }
-    fn ipv6_input(&self) -> kernel::net::if_::ProtoFn {
-        kernel::net::if_::test_proto_count
-    }
     fn tcpstat_lro(&self, _hw: bool) {}
-    fn ip6_forwarding(&self) -> bool {
-        false
-    }
-    fn ip6_multipath(&self) -> bool {
-        true
-    }
-    fn ip6stat_rtcache(&self, hit: bool) {
-        self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
-    }
     fn ip6_randomid(&self) -> u32 {
         // idgen32 never answers 0; the rows do not fragment.
         1
@@ -1797,9 +1780,7 @@ impl kernel::net::if_::Inet for BenchInet {
 }
 
 /// The one [`BenchInet`].
-static BENCH_INET: BenchInet = BenchInet {
-    rtcache: [AtomicU64::new(0), AtomicU64::new(0)],
-};
+static BENCH_INET: BenchInet = BenchInet;
 
 /// A `sockaddr_in` of `a`.
 fn sin(a: [u8; 4]) -> [u8; 16] {
@@ -1849,8 +1830,10 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     if !ROUTE_ROWS.iter().any(|n| wanted(n)) {
         return;
     }
-    // The C's `net.inet.ip.multipath` set, which `rt_hash` reads.
+    // The C's `net.inet.ip.multipath` and `net.inet6.ip6.multipath` set, which `rt_hash`
+    // reads.
     kernel::netinet::ip_var::IPMULTIPATH.store(1, Ordering::Relaxed);
+    kernel::netinet6::ip6_var::IP6_MULTIPATH.store(1, Ordering::Relaxed);
     let _ = kernel::netinet::ip_input::IPV4_INPUT.set(kernel::net::if_::test_proto_count);
     if kernel::net::if_::register_inet(&BENCH_INET).is_err() {
         eprintln!("net: the internet protocols were registered already");

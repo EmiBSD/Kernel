@@ -990,12 +990,10 @@ fn ip_multipath() -> bool {
     crate::netinet::ip_var::IPMULTIPATH.load(Ordering::Relaxed) != 0
 }
 
-/// `atomic_load_int(&ip6_multipath)`.
+/// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`).
+#[inline]
 fn ip6_multipath() -> bool {
-    match if_::inet() {
-        Some(i) => i.ip6_multipath(),
-        None => false,
-    }
+    crate::netinet6::ip6_var::IP6_MULTIPATH.load(Ordering::Relaxed) != 0
 }
 
 /// `ipstat_inc(ips_rtcachehit/miss)`.
@@ -1010,10 +1008,15 @@ fn inet_rtcache(hit: bool) {
 }
 
 /// `ip6stat_inc(ip6s_rtcachehit/miss)`.
+#[inline]
 fn inet6_rtcache(hit: bool) {
-    if let Some(i) = if_::inet() {
-        i.ip6stat_rtcache(hit);
-    }
+    use crate::netinet6::ip6_var::ip6stat_inc;
+    use hal::sys::netinet6_ip6_var::Ip6statCounters;
+    ip6stat_inc(if hit {
+        Ip6statCounters::Ip6sRtcachehit
+    } else {
+        Ip6statCounters::Ip6sRtcachemiss
+    });
 }
 
 /// `rtstat_inc(c)`.
@@ -3023,10 +3026,13 @@ pub(crate) mod tests {
         rtable_init_doms(&ROUTE_DOMS);
         MULTIPATH.store(false, Ordering::Relaxed);
         crate::netinet::ip_var::IPMULTIPATH.store(0, Ordering::Relaxed);
+        crate::netinet6::ip6_var::IP6_MULTIPATH.store(0, Ordering::Relaxed);
         let _ = if_::register_inet(&TEST_INET);
         // `ip_init`'s entry point, as the IPv4 tests' `ip_init` publishes it (set once).
         let _ = crate::netinet::ip_input::IPV4_INPUT
             .set(crate::netinet::ip_input::ipv4_input::<crate::fs::testfs::TestGlue>);
+        let _ = crate::netinet6::ip6_input::IPV6_INPUT
+            .set(crate::netinet6::ip6_input::ipv6_input::<crate::fs::testfs::TestGlue>);
         crate::net::rtsock::tap::start();
         g
     }
@@ -3114,6 +3120,7 @@ pub(crate) mod tests {
     pub(crate) fn set_multipath(on: bool) {
         MULTIPATH.store(on, Ordering::Relaxed);
         crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
+        crate::netinet6::ip6_var::IP6_MULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
     /// Takes the ICMPv6 errors asked for so far (`icmp6_error`'s record of them).
@@ -3139,21 +3146,12 @@ pub(crate) mod tests {
     /// counted, the fragment ids a counter, the net lock's proof lent from
     /// a test's detached holding (`hal::netlock::lock`).
     struct TestInet {
-        hits: AtomicU32,
-        misses: AtomicU32,
         ids: AtomicU32,
     }
 
     impl if_::Inet for TestInet {
-        fn ip6intr(&self) {}
         fn tcp_input_mlist(&self, _ml: &mut crate::net::mbuf::MbufList, _af: SaFamily) {}
-        fn ipv6_input(&self) -> crate::net::if_::ProtoFn {
-            crate::net::if_::test_proto_count
-        }
         fn tcpstat_lro(&self, _hw: bool) {}
-        fn ip6_forwarding(&self) -> bool {
-            false
-        }
         fn ip6_randomid(&self) -> u32 {
             // idgen32 never answers 0.
             self.ids
@@ -3167,21 +3165,9 @@ pub(crate) mod tests {
             }
             hal::netlock::lend_detached(|n| f(n));
         }
-        fn ip6_multipath(&self) -> bool {
-            MULTIPATH.load(Ordering::Relaxed)
-        }
-        fn ip6stat_rtcache(&self, hit: bool) {
-            if hit {
-                self.hits.fetch_add(1, Ordering::Relaxed);
-            } else {
-                self.misses.fetch_add(1, Ordering::Relaxed);
-            }
-        }
     }
 
     static TEST_INET: TestInet = TestInet {
-        hits: AtomicU32::new(0),
-        misses: AtomicU32::new(0),
         ids: AtomicU32::new(0x4000_0000),
     };
 
@@ -3380,11 +3366,15 @@ pub(crate) mod tests {
         let mut a = [0u8; 16];
         a[0] = 0x20;
         a[15] = 1;
-        let misses6 = TEST_INET.misses.load(Ordering::Relaxed);
-        let hits6 = TEST_INET.hits.load(Ordering::Relaxed);
+        let ip6s = |c: hal::sys::netinet6_ip6_var::Ip6statCounters| {
+            crate::netinet6::ip6_var::IP6COUNTERS.read()[c as usize]
+        };
+        use hal::sys::netinet6_ip6_var::Ip6statCounters::{Ip6sRtcachehit, Ip6sRtcachemiss};
+        let misses6 = ip6s(Ip6sRtcachemiss);
+        let hits6 = ip6s(Ip6sRtcachehit);
         assert_eq!(ro.cache6(&a, None, 0), Err(Errno::ESRCH));
-        assert_eq!(TEST_INET.misses.load(Ordering::Relaxed), misses6 + 1);
-        assert_eq!(TEST_INET.hits.load(Ordering::Relaxed), hits6);
+        assert_eq!(ip6s(Ip6sRtcachemiss), misses6 + 1);
+        assert_eq!(ip6s(Ip6sRtcachehit), hits6);
         assert_eq!(ro.dst().bytes(), &sin6(a)[..]);
         assert_eq!(ro.ro_generation, RTGENERATION.load(Ordering::Relaxed));
         drop(net);

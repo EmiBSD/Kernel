@@ -2080,7 +2080,7 @@ pub(crate) mod tests {
     use crate::tc::TIME_UPTIME;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01];
-    const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
+    pub(crate) const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
 
     /// `fd00:77::1`, our address.
     pub(crate) fn ours6() -> In6Addr {
@@ -2185,9 +2185,8 @@ pub(crate) mod tests {
     }
 
     /// An Ethernet interface `name` (a zeroed `struct arpcom` with a test driver that leaves
-    /// its frames queued), up and running, with fd00:77::1/64 (its link-local companion and
-    /// both DADs started: their solicitations taken).
-    pub(crate) fn ether(name: &[u8]) -> &'static Ifnet {
+    /// its frames queued), up and running, with no address.
+    pub(crate) fn ether_bare(name: &[u8]) -> &'static Ifnet {
         let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
         let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
         let ifp: &'static Ifnet = &ac.ac_if;
@@ -2207,6 +2206,13 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((ifp, Vec::new()));
+        ifp
+    }
+
+    /// An Ethernet interface `name` ([`ether_bare`]) with fd00:77::1/64 (its link-local
+    /// companion and both DADs started: their solicitations taken).
+    pub(crate) fn ether(name: &[u8]) -> &'static Ifnet {
+        let ifp = ether_bare(name);
         add(ifp, ours6(), 64).expect("SIOCAIFADDR_IN6");
         let _ = sent(ifp);
         let _ = take_ip6_sent();
@@ -2345,7 +2351,12 @@ pub(crate) mod tests {
 
     /// `nd6_na_input` of an advertisement for `target` (from `target`, to us) with `flags`
     /// and the target link-layer option `mac`, under the exclusive net lock.
-    fn advertise(ifp: &'static Ifnet, target: In6Addr, flags: u32, mac: Option<[u8; 6]>) {
+    pub(crate) fn advertise(
+        ifp: &'static Ifnet,
+        target: In6Addr,
+        flags: u32,
+        mac: Option<[u8; 6]>,
+    ) {
         let opt = mac.map(|m| lla(ND_OPT_TARGET_LINKADDR, m));
         let (m, len) = nd_packet(
             ifp,

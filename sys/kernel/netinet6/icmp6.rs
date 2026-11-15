@@ -1938,7 +1938,7 @@ pub(crate) mod seen {
 
 /* <TESTS> */
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // Host tests of ICMPv6 over a test Ethernet interface with fd00:77::1/64 and its
     // link-local address (ND's fixture, every DAD run to its end): LZ's (the echo reply with
     // its copy and fresh-header paths, the input's refusals, icmp6_error's rules and the message
@@ -1980,7 +1980,7 @@ mod tests {
 
     /// ND's fixture with an interface whose addresses are all preferred (every DAD run), and
     /// ICMPv6's state fresh.
-    fn net6() -> (MutexGuard<'static, ()>, &'static Ifnet) {
+    pub(crate) fn net6() -> (MutexGuard<'static, ()>, &'static Ifnet) {
         let g = setup();
         icmp6_init();
         icmp6_test_reset();
@@ -2003,7 +2003,7 @@ mod tests {
 
     /// An IPv6 packet from `src` to `dst` (next header `nxt`, hop limit `hlim`) whose payload
     /// is `rest`.
-    fn packet(src: In6Addr, dst: In6Addr, nxt: u8, hlim: u8, rest: &[u8]) -> Vec<u8> {
+    pub(crate) fn packet(src: In6Addr, dst: In6Addr, nxt: u8, hlim: u8, rest: &[u8]) -> Vec<u8> {
         let mut ip6 = Ip6Hdr {
             ip6_plen: (rest.len() as u16).to_be(),
             ip6_nxt: nxt,
@@ -2053,14 +2053,14 @@ mod tests {
     }
 
     /// `f` under the exclusive net lock.
-    fn with_net<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
+    pub(crate) fn with_net<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         f(&net)
     }
 
     /// What `ip6_send` queued since the last call: each packet's bytes.
-    fn sent() -> Vec<Vec<u8>> {
+    pub(crate) fn sent() -> Vec<Vec<u8>> {
         let mut ml = ip6_send_test_take();
         let mut v = Vec::new();
         while let Some(m) = ml_dequeue(&mut ml) {
@@ -2451,7 +2451,7 @@ mod tests {
     }
 
     /// A host route to `dst` through the gateway `gw` on `ifp`.
-    fn gw_route(ifp: &Ifnet, dst: In6Addr, gw: In6Addr) {
+    pub(crate) fn gw_route(ifp: &Ifnet, dst: In6Addr, gw: In6Addr) {
         let d = sin6_bytes(&sin6_of(dst));
         let g = sin6_bytes(&sin6_of(gw));
         let ifa = crate::netinet6::in6::in6ifa_ifpwithaddr(ifp, &ours6()).map(|ia| &ia.ia_ifa);

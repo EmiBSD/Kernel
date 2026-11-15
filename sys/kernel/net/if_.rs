@@ -414,27 +414,14 @@ const IF_IDXMAP_DTOR_SIZE: usize = 32;
 /// `bsd`'s until N6.4-N6.6): a bridge (bridges.toml's `Inet` row, paid by N6). Before
 /// registration every leg does nothing: the C without `INET`/`INET6`.
 pub trait Inet: Sync + 'static {
-    /// `ip6intr()`: the IPv6 queue (`NETISR_IPV6`).
-    fn ip6intr(&self);
     /// `tcp_input_mlist(ml, af)`: the TCP segments a softnet gathered.
     fn tcp_input_mlist(&self, ml: &mut MbufList, af: SaFamily);
-    /// `ipv6_input`, as `if_input_local` hands a packet to it (`if_input_proto`).
-    fn ipv6_input(&self) -> ProtoFn;
     /// `tcpstat_inc(tcps_inhwlro)` (`hw`) or `tcpstat_inc(tcps_inbadlro)`.
     fn tcpstat_lro(&self, hw: bool);
-    /// `ip6_forwarding != 0`.
-    fn ip6_forwarding(&self) -> bool;
     /// `ip6_randomid()`: the next IPv6 fragment identification of `idgen32` (`crypto/idgen.c`,
     /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
     /// the kernel's `ip6_fragment` (N6.5c).
     fn ip6_randomid(&self) -> u32;
-    /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
-    fn ip6_multipath(&self) -> bool {
-        false
-    }
-    /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
-    /// nothing.
-    fn ip6stat_rtcache(&self, _hit: bool) {}
     /// `tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)`: TCP's segmentation offload of
     /// `*mp` (by the hardware when `ifp` has `ifcap`, else chopped in software and sent),
     /// the packet consumed then; left in `*mp` when it did not ask for TSO, or with its TSO
@@ -468,34 +455,6 @@ pub trait Inet: Sync + 'static {
     fn ip6_protox(&self, _nxt: i32) -> Option<usize> {
         None
     }
-    /// The `ip6stat` counter of `ip_deliver`'s `IPSTAT_INC` for IPv6 (N6.4c2, until N6.5).
-    /// Default: nothing.
-    fn ip6stat_deliver(&self, _c: Ip6Deliver) {}
-    /// `atomic_load_int(&ip6_hdrnestlimit)` (N6.4c2, until N6.5). Default: 0.
-    fn ip6_hdrnestlimit(&self) -> i32 {
-        0
-    }
-    /// `ip6_ours_enqueue(mp, offp, nxt)`: an IPv6 packet `ip_deliver` cannot finish under the
-    /// shared net lock, queued for `ip6intr` (N6.4c2, until N6.5). Default: the packet freed.
-    fn ip6_ours_enqueue(&self, m: MbufBox, _off: i32, _nxt: i32) {
-        drop(m);
-    }
-}
-
-/// The `ip6stat` counters `ip_deliver` changes for an IPv6 packet (`IPSTAT_INC(name)` with
-/// `af == AF_INET6`, the `counters_dec` of a queued one).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ip6Deliver {
-    /// `ip6stat_inc(ip6s_delivered)`.
-    Delivered,
-    /// `counters_dec(ip6counters, ip6s_delivered)`.
-    Undelivered,
-    /// `ip6stat_inc(ip6s_toomanyhdr)`.
-    Toomanyhdr,
-    /// `ip6stat_inc(ip6s_tooshort)`.
-    Tooshort,
-    /// `ip6stat_inc(ip6s_cantforward)`.
-    Cantforward,
 }
 
 /// The internet protocols' legs, once registered.
@@ -1930,8 +1889,10 @@ pub fn if_input_local(
             if_input_proto(ifp, m, ipv4_input, ns, net);
             Ok(())
         }
-        (AF_INET6, _, Some(i)) => {
-            if_input_proto(ifp, m, i.ipv6_input(), ns, net);
+        (AF_INET6, _, _)
+            if let Some(&ipv6_input) = crate::netinet6::ip6_input::IPV6_INPUT.get() =>
+        {
+            if_input_proto(ifp, m, ipv6_input, ns, net);
             Ok(())
         }
         // MPLS: AF_MPLS goes to mpls_input; MPLS is not configured.
@@ -4272,7 +4233,7 @@ pub fn ifa_del(ifp: &Ifnet, ifa: &Ifaddr) {
 /// moment if it was up, then up), its IPv6 link-local address made again unless it routes,
 /// and left down if it was. Under the net and kernel locks.
 pub fn ifnewlladdr(ifp: &'static Ifnet) {
-    let i_am_router = inet().is_some_and(Inet::ip6_forwarding);
+    let i_am_router = crate::netinet6::ip6_var::IP6_FORWARDING.load(Ordering::Relaxed) != 0;
 
     net_assert_locked(); // for ioctl and in6
     hal::klock::kernel_assert_locked();

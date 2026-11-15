@@ -136,7 +136,7 @@ use crate::{
     netinet6::icmp6::icmp6_error,
     netinet6::in6::{SockaddrIn6, sin6tosa_const},
     netinet6::in6_proto::IP6_FORWARDING,
-    netinet6::ip6_forward::ip6_forward,
+    netinet6::ip6_input::ip6_forward,
     netinet6::ip6_output::{in6_proto_cksum_out, ip6_fragment},
     netinet6::ip6_var::{mtod_ip6, mtod_ip6_store},
     sys::mbuf::{
