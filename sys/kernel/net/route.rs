@@ -445,8 +445,10 @@ pub struct Rtentry {
     /// \[N\] `rt_ifa`: the interface address to use.
     pub rt_ifa: Link<Ifaddr>,
     /// \[L\] `rt_llinfo`: the link-level information: ARP's record, owned and lent under
-    /// `arp_mtx` (`kernel::netinet::if_ether`), or ND's legacy address (`bsd` until N6.5).
-    pub rt_llinfo: TaggedLink<LlinfoArp>,
+    /// `arp_mtx` (`kernel::netinet::if_ether`; the word's first kind), or ND's legacy address
+    /// (`bsd`'s until ND moves at N6.5b and its record becomes the second kind; ARP's type
+    /// stands in for that kind until then).
+    pub rt_llinfo: TaggedLink<LlinfoArp, LlinfoArp>,
     /// \[X\] `rt_gwroute`: the route of `rt_gateway`.
     rt_gwroute: ReadMostly<Option<PoolArc<Rtentry>>>,
     /// \[N\] `rt_parent`: the cloning route of a cloned one.

@@ -53,6 +53,8 @@ one poison load and one identity compare. None of them walks to check.
 | `step_over(w, e)` | `TAILQ_REMOVE` + `TAILQ_INSERT_AFTER(next)` | O(1) |
 | `remove(w, e)` | `TAILQ_REMOVE` | O(1) |
 | `remove_first(w)` | `TAILQ_FIRST` + `TAILQ_REMOVE` | O(1) |
+| `move_last_to_head(w)` | `TAILQ_LAST` + `TAILQ_REMOVE` + `TAILQ_INSERT_HEAD` (`nd6_rtrequest`'s forced GC) | O(1) |
+| `hal::link::TaggedLink::move_b_to_head(w, list)` | `TAILQ_REMOVE` + `TAILQ_INSERT_HEAD` of the record a route's word owns (`nd6_resolve`) | O(1): one load of the word, the two link changes |
 | `remove_where(w, pred)` | `TAILQ_FOREACH` until `pred`, `TAILQ_REMOVE` | O(k), O(n) worst: a walk from the head |
 | `move_first_to(w, dst)` | `TAILQ_REMOVE` + `TAILQ_INSERT_TAIL(dst)` | O(1) |
 | `move_where(w, max, pred, dst)` | `wakeup_n`'s walk | O(k): walks until `max` moved or the end, O(n) worst |
