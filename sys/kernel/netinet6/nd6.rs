@@ -235,7 +235,6 @@ use hal::sys::net_route::{
 };
 use hal::sys::netinet_icmp6::{
     ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, Icmp6statCounters, ND_NEIGHBOR_SOLICIT,
-    ND_OPT_DNSSL, ND_OPT_MTU, ND_OPT_PREFIX_INFORMATION, ND_OPT_RDNSS, ND_OPT_REDIRECTED_HEADER,
     ND_OPT_SOURCE_LINKADDR, ND_OPT_TARGET_LINKADDR, ND_REDIRECT, ND_REDIRECT_ROUTER,
     ND_ROUTER_ADVERT, ND_ROUTER_SOLICIT,
 };
@@ -663,27 +662,18 @@ pub fn nd6_options(opt: &[u8], ndopts: &mut NdOpts) -> bool {
         next_opt = (next != last_opt).then_some(next);
 
         match opt[off] {
-            ND_OPT_SOURCE_LINKADDR => {
-                if ndopts.nd_opts_src_lladdr.is_none() {
-                    ndopts.nd_opts_src_lladdr = Some(off);
-                }
+            ND_OPT_SOURCE_LINKADDR if ndopts.nd_opts_src_lladdr.is_none() => {
+                ndopts.nd_opts_src_lladdr = Some(off);
             }
-            ND_OPT_TARGET_LINKADDR => {
-                if ndopts.nd_opts_tgt_lladdr.is_none() {
-                    ndopts.nd_opts_tgt_lladdr = Some(off);
-                }
+            ND_OPT_TARGET_LINKADDR if ndopts.nd_opts_tgt_lladdr.is_none() => {
+                ndopts.nd_opts_tgt_lladdr = Some(off);
             }
-            ND_OPT_MTU
-            | ND_OPT_REDIRECTED_HEADER
-            | ND_OPT_PREFIX_INFORMATION
-            | ND_OPT_DNSSL
-            | ND_OPT_RDNSS => {
-                // Don't warn, not used by kernel
-            }
-            _ => {
-                // Unknown options must be silently ignored, to accommodate future extension
-                // to the protocol.
-            }
+            // A second source or target link-layer address option: the first one counts.
+            // ND_OPT_MTU, ND_OPT_REDIRECTED_HEADER, ND_OPT_PREFIX_INFORMATION, ND_OPT_DNSSL,
+            // ND_OPT_RDNSS: don't warn, not used by kernel.
+            // Unknown options must be silently ignored, to accommodate future extension to
+            // the protocol.
+            _ => {}
         }
 
         i += 1;
@@ -959,10 +949,10 @@ fn nd6_expire(_unused: *mut c_void) {
         return;
     };
 
-    for ifp in IFNETLIST.iter() {
+    for ifp in &IFNETLIST {
         // TAILQ_FOREACH_SAFE: the walk reads each successor first (in6_purgeaddr removes the
         // address it is given).
-        for ifa in ifp.if_addrlist.iter() {
+        for ifa in &ifp.if_addrlist {
             let Some(ia6) = In6Ifaddr::of(ifa) else {
                 continue;
             };
@@ -1053,46 +1043,45 @@ pub fn nd6_lookup(
             rt = None;
         }
     }
-    let rt = match rt {
-        Some(r) => r,
-        None => {
-            let ifp = ifp.filter(|_| create)?;
-            // If no route is available and create is set, we allocate a host route for the
-            // destination and treat it like an interface route. This hack is necessary for a
-            // neighbor which can't be covered by our own prefix.
-            let ifa = ifaof_ifpforaddr(net, &sin6, ifp)?;
+    let rt = if let Some(r) = rt {
+        r
+    } else {
+        let ifp = ifp.filter(|_| create)?;
+        // If no route is available and create is set, we allocate a host route for the
+        // destination and treat it like an interface route. This hack is necessary for a
+        // neighbor which can't be covered by our own prefix.
+        let ifa = ifaof_ifpforaddr(net, &sin6, ifp)?;
 
-            // Create a new route. RTF_LLINFO is necessary to create a Neighbor Cache entry for
-            // the destination in nd6_rtrequest which will be called in rtrequest.
-            let mut sdl = [0u8; size_of::<SockaddrDl>()];
-            let _ = pod::put(&mut sdl, 0, &if_sadl_copy(ifp));
-            let mut info = RtAddrinfo::new();
-            info.rti_ifa = Some(ifa);
-            info.rti_flags = RTF_HOST | RTF_LLINFO;
-            info.rti_info[RTAX_DST] = Some(dst);
-            info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&sdl);
-            let mut nrt = None;
-            if rtrequest(
-                RTM_ADD,
-                &mut info,
-                RTP_CONNECTED,
-                Some(&mut nrt),
-                rtableid,
-                net,
-            )
-            .is_err()
-            {
-                return None;
-            }
-            let r = nrt?;
-            {
-                let g = ND6_MTX.lock();
-                if let Some(ln) = r.rt_llinfo.get_b(&g) {
-                    ln.ln_state.set(ND6_LLINFO_NOSTATE);
-                }
-            }
-            r
+        // Create a new route. RTF_LLINFO is necessary to create a Neighbor Cache entry for
+        // the destination in nd6_rtrequest which will be called in rtrequest.
+        let mut sdl = [0u8; size_of::<SockaddrDl>()];
+        let _ = pod::put(&mut sdl, 0, &if_sadl_copy(ifp));
+        let mut info = RtAddrinfo::new();
+        info.rti_ifa = Some(ifa);
+        info.rti_flags = RTF_HOST | RTF_LLINFO;
+        info.rti_info[RTAX_DST] = Some(dst);
+        info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&sdl);
+        let mut nrt = None;
+        if rtrequest(
+            RTM_ADD,
+            &mut info,
+            RTP_CONNECTED,
+            Some(&mut nrt),
+            rtableid,
+            net,
+        )
+        .is_err()
+        {
+            return None;
         }
+        let r = nrt?;
+        {
+            let g = ND6_MTX.lock();
+            if let Some(ln) = r.rt_llinfo.get_b(&g) {
+                ln.ln_state.set(ND6_LLINFO_NOSTATE);
+            }
+        }
+        r
     };
     // Validation for the entry. Note that the check for rt_llinfo is necessary because a
     // cloned route from a parent route that has the L flag (e.g. the default route to a p2p
@@ -1756,7 +1745,7 @@ fn nd6_slowtimo(_ignored_arg: *mut c_void) {
 
     let _ = Pin::static_ref(&ND6_SLOWTIMO_CH).add_sec(ND6_SLOWTIMER_INTERVAL);
 
-    for ifp in IFNETLIST.iter() {
+    for ifp in &IFNETLIST {
         let mut nd = ifp.if_nd.get();
         nd.recalctm -= ND6_SLOWTIMER_INTERVAL;
         if nd.recalctm <= 0 {

@@ -3290,9 +3290,8 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             ifp,
             &hit,
             Some(&PEER),
-            false,
-            true,
-            true,
+            hal::sys::netinet_icmp6::ND_NA_FLAG_SOLICITED
+                | hal::sys::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
             false,
             &peer,
             &peer,

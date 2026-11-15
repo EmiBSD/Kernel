@@ -593,7 +593,6 @@ fn nd6_ip6hdr(src: In6Addr, dst: In6Addr, icmp6len: usize) -> Ip6Hdr {
         ip6_hlim: 255,
         ip6_src: src,
         ip6_dst: dst,
-        ..Ip6Hdr::default()
     };
     ip6.set_ip6_vfc(IPV6_VERSION);
     ip6
@@ -643,20 +642,24 @@ pub fn nd6_ns_output(
     }
 
     // determine the source and destination addresses
-    let dst = match daddr6 {
-        Some(d) => *d,
-        None => {
-            let mut a = In6Addr::default();
-            a.set_s6_addr16(0, __IPV6_ADDR_INT16_MLL);
-            a.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
-            a.set_s6_addr32(1, 0);
-            a.set_s6_addr32(2, __IPV6_ADDR_INT32_ONE);
-            a.set_s6_addr32(3, taddr6.s6_addr32(3));
-            a.s6_addr[12] = 0xff;
-            a
-        }
+    let dst = if let Some(d) = daddr6 {
+        *d
+    } else {
+        let mut a = In6Addr::default();
+        a.set_s6_addr16(0, __IPV6_ADDR_INT16_MLL);
+        a.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
+        a.set_s6_addr32(1, 0);
+        a.set_s6_addr32(2, __IPV6_ADDR_INT32_ONE);
+        a.set_s6_addr32(3, taddr6.s6_addr32(3));
+        a.s6_addr[12] = 0xff;
+        a
     };
-    let src = if !dad {
+    let src = if dad {
+        // Source address for DAD packet must always be IPv6 unspecified address. (0::0) We
+        // actually don't have to 0-clear the address (we did it above), but we do so here
+        // explicitly to make the intention clearer.
+        In6Addr::default()
+    } else {
         // RFC2461 7.2.2:
         // "If the source address of the packet prompting the solicitation is the same as one
         // of the addresses assigned to the outgoing interface, that address SHOULD be placed
@@ -692,11 +695,6 @@ pub fn nd6_ns_output(
         } else {
             s
         }
-    } else {
-        // Source address for DAD packet must always be IPv6 unspecified address. (0::0) We
-        // actually don't have to 0-clear the address (we did it above), but we do so here
-        // explicitly to make the intention clearer.
-        In6Addr::default()
     };
 
     let mut nd_ns = NdNeighborSolicit {
@@ -798,9 +796,7 @@ pub fn nd6_na_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
     let opts = &msg[fixed..];
     let mut taddr6 = nd_na.nd_na_target;
     let flags = nd_na.nd_na_flags_reserved();
-    let is_router = flags & ND_NA_FLAG_ROUTER != 0;
     let is_solicited = flags & ND_NA_FLAG_SOLICITED != 0;
-    let is_override = flags & ND_NA_FLAG_OVERRIDE != 0;
 
     let bad = 'out: {
         if in6_is_scope_embed(&taddr6) {
@@ -899,18 +895,7 @@ pub fn nd6_na_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
 
         // Host: If no neighbor cache entry is found, NA SHOULD silently be discarded.
         if let Some(rt) = &rt {
-            nd6_na_cache(
-                ifp,
-                rt,
-                lladdr,
-                is_router,
-                is_solicited,
-                is_override,
-                i_am_router,
-                &taddr6,
-                &src,
-                net,
-            );
+            nd6_na_cache(ifp, rt, lladdr, flags, i_am_router, &taddr6, &src, net);
         }
         false
     };
@@ -934,8 +919,8 @@ struct NaTail {
 }
 
 /// `nd6_na_input` from the neighbor cache entry `rt` of the target `taddr6` on: updates it from
-/// an advertisement (`is_router`, `is_solicited`, `is_override` flags, target link-layer
-/// address `lladdr`) sent from `src`, and sends what it holds once usable. The record under one
+/// an advertisement (`flags`, its `ND_NA_FLAG_*` word: router, solicited, override; target
+/// link-layer address `lladdr`) sent from `src`, and sends what it holds once usable. The record under one
 /// `ND6_MTX` section, the routing message, `rt6_flush` and the output after it (the C's order:
 /// what they read is not what the section changes after them in the C).
 #[allow(clippy::too_many_arguments)] // the locals of the C function the code came from
@@ -943,14 +928,15 @@ pub fn nd6_na_cache(
     ifp: &'static Ifnet,
     rt: &PoolArc<Rtentry>,
     lladdr: Option<&[u8]>,
-    is_router: bool,
-    is_solicited: bool,
-    is_override: bool,
+    flags: u32,
     i_am_router: bool,
     taddr6: &In6Addr,
     src: &In6Addr,
     net: &NetHeld<'_>,
 ) {
+    let is_router = flags & ND_NA_FLAG_ROUTER != 0;
+    let is_solicited = flags & ND_NA_FLAG_SOLICITED != 0;
+    let is_override = flags & ND_NA_FLAG_OVERRIDE != 0;
     if !rt.with_gateway(|g| g.is_some()) {
         return;
     }
@@ -1076,8 +1062,8 @@ fn na_update(
             nd6_llinfo_settimer(ln, ND6_GCTIMER as u32);
         }
         return None;
-    } else if is_override                                 // (2a)
-        || (!is_override && lladdr.is_some() && !llchange) // (2b)
+    } else if is_override // (2a)
+        || !llchange // (2b): with (1) above, an address given and unchanged
         || lladdr.is_none()
     // (2c)
     {

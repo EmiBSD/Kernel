@@ -211,6 +211,10 @@ use crate::netinet6::ip6_output::ro_sin6;
 use crate::netinet6::ip6_var::Ip6Pktopts;
 use crate::proc::{ProcGlue, Thread};
 
+/// `in6_pcbnotify`'s notify function: called on each pcb that matches, with the error the
+/// command maps to (`inet6ctlerrmap`).
+pub type In6PcbNotify<'a, G> = dyn FnMut(&Inpcb<G>, Option<Errno>) + 'a;
+
 /// `zeroin6_addr`: the unspecified address.
 pub static ZEROIN6_ADDR: In6Addr = In6Addr { s6_addr: [0; 16] };
 
@@ -497,7 +501,7 @@ pub fn in6_pcbnotify<G: ProcGlue>(
     lport_arg: u32,
     rtable: u32,
     cmd: i32,
-    notify: Option<&mut dyn FnMut(&Inpcb<G>, Option<Errno>)>,
+    notify: Option<&mut In6PcbNotify<'_, G>>,
 ) {
     let mut fport = fport_arg as u16;
     let mut lport = lport_arg as u16;
@@ -533,7 +537,7 @@ pub fn in6_pcbnotify<G: ProcGlue>(
     }
     let errno = INET6CTLERRMAP[cmd as usize];
     let mut rtchange_fn = in_pcbrtchange::<G>;
-    let notify: &mut dyn FnMut(&Inpcb<G>, Option<Errno>) = match notify {
+    let notify: &mut In6PcbNotify<'_, G> = match notify {
         _ if rtchange => &mut rtchange_fn,
         Some(n) => n,
         None => return,

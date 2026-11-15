@@ -512,102 +512,98 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             ia6 = in6ifa_ifpwithaddr(ifp, &s.sin6_addr);
         }
 
-        match cmd {
-            SIOCDIFADDR_IN6 => {
-                // for IPv4, we look for existing in_ifaddr here to allow "ifconfig if0
-                // delete" to remove the first IPv4 address on the interface. For IPv6, as
-                // the spec allows multiple interface address from the day one, we consider
-                // "remove the first one" semantics to be not preferable.
-                let Some(ia6) = ia6 else {
-                    break 'err Err(Errno::EADDRNOTAVAIL);
-                };
-                hal::netlock::lend_detached(|net| in6_purgeaddr(&ia6.ia_ifa, net));
-                if_addrhooks_run(ifp);
-                Ok(())
-            }
-
+        if cmd == SIOCDIFADDR_IN6 {
+            // for IPv4, we look for existing in_ifaddr here to allow "ifconfig if0
+            // delete" to remove the first IPv4 address on the interface. For IPv6, as
+            // the spec allows multiple interface address from the day one, we consider
+            // "remove the first one" semantics to be not preferable.
+            let Some(ia6) = ia6 else {
+                break 'err Err(Errno::EADDRNOTAVAIL);
+            };
+            hal::netlock::lend_detached(|net| in6_purgeaddr(&ia6.ia_ifa, net));
+            if_addrhooks_run(ifp);
+            Ok(())
+        } else {
             // SIOCAIFADDR_IN6
-            _ => {
-                let Some(mut ifra) = pod::at::<In6Aliasreq>(data, 0) else {
-                    break 'err Err(Errno::EINVAL);
-                };
-                if ifra.ifra_addr.sin6_family != AF_INET6
-                    || usize::from(ifra.ifra_addr.sin6_len) != SIN6_SIZE
-                {
-                    break 'err Err(Errno::EAFNOSUPPORT);
-                }
-
-                // reject read-only flags
-                if ifra.ifra_flags & IN6_IFF_DUPLICATED != 0
-                    || ifra.ifra_flags & IN6_IFF_DETACHED != 0
-                    || ifra.ifra_flags & IN6_IFF_DEPRECATED != 0
-                {
-                    break 'err Err(Errno::EINVAL);
-                }
-
-                if ia6.is_none() {
-                    newifaddr = true;
-                }
-
-                // Make the address tentative before joining multicast addresses, so that
-                // corresponding MLD responses would not have a tentative source address.
-                if newifaddr && in6if_do_dad(ifp) {
-                    ifra.ifra_flags |= IN6_IFF_TENTATIVE;
-                    let _ = pod::put(data, 0, &ifra);
-                }
-
-                // first, make or update the interface address structure, and link it to the
-                // list. try to enable inet6 if there is no link-local yet.
-                if let Err(e) = in6_ifattach(ifp, &NetHolding::Detached) {
-                    break 'err Err(e);
-                }
-                if let Err(e) = in6_update_ifa(ifp, &ifra, ia6, &NetHolding::Detached) {
-                    break 'err Err(e);
-                }
-
-                let ia6 = sa6.and_then(|s| in6ifa_ifpwithaddr(ifp, &s.sin6_addr));
-                let Some(ia6) = ia6 else {
-                    // this can happen when the user specify the 0 valid lifetime.
-                    break 'err Ok(());
-                };
-
-                // Perform DAD, if needed.
-                if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
-                    hal::netlock::lend_detached(|net| nd6_dad_start(&ia6.ia_ifa, net));
-                }
-
-                if !newifaddr {
-                    if_addrhooks_run(ifp);
-                    break 'err Ok(());
-                }
-
-                let plen = in6_mask2len(&ia6_maskin6(ia6), None);
-                if ifp.if_flags.get() & IFF_LOOPBACK != 0 || plen == 128 {
-                    if_addrhooks_run(ifp);
-                    break 'err Ok(()); // No need to install a connected route.
-                }
-
-                // ifa->ifa_addr: the address's own socket address, copied.
-                let a = sin6_bytes(&ia6.ia_addr.get());
-                let error = hal::netlock::lend_detached(|net| {
-                    let e = rt_ifa_add(
-                        &ia6.ia_ifa,
-                        RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
-                        sin6_view(&a),
-                        ifp.if_rdomain.get(),
-                        net,
-                    );
-                    if e.is_err() {
-                        in6_purgeaddr(&ia6.ia_ifa, net);
-                    }
-                    e
-                });
-                if let Err(e) = error {
-                    break 'err Err(e);
-                }
-                if_addrhooks_run(ifp);
-                Ok(())
+            let Some(mut ifra) = pod::at::<In6Aliasreq>(data, 0) else {
+                break 'err Err(Errno::EINVAL);
+            };
+            if ifra.ifra_addr.sin6_family != AF_INET6
+                || usize::from(ifra.ifra_addr.sin6_len) != SIN6_SIZE
+            {
+                break 'err Err(Errno::EAFNOSUPPORT);
             }
+
+            // reject read-only flags
+            if ifra.ifra_flags & IN6_IFF_DUPLICATED != 0
+                || ifra.ifra_flags & IN6_IFF_DETACHED != 0
+                || ifra.ifra_flags & IN6_IFF_DEPRECATED != 0
+            {
+                break 'err Err(Errno::EINVAL);
+            }
+
+            if ia6.is_none() {
+                newifaddr = true;
+            }
+
+            // Make the address tentative before joining multicast addresses, so that
+            // corresponding MLD responses would not have a tentative source address.
+            if newifaddr && in6if_do_dad(ifp) {
+                ifra.ifra_flags |= IN6_IFF_TENTATIVE;
+                let _ = pod::put(data, 0, &ifra);
+            }
+
+            // first, make or update the interface address structure, and link it to the
+            // list. try to enable inet6 if there is no link-local yet.
+            if let Err(e) = in6_ifattach(ifp, &NetHolding::Detached) {
+                break 'err Err(e);
+            }
+            if let Err(e) = in6_update_ifa(ifp, &ifra, ia6, &NetHolding::Detached) {
+                break 'err Err(e);
+            }
+
+            let ia6 = sa6.and_then(|s| in6ifa_ifpwithaddr(ifp, &s.sin6_addr));
+            let Some(ia6) = ia6 else {
+                // this can happen when the user specify the 0 valid lifetime.
+                break 'err Ok(());
+            };
+
+            // Perform DAD, if needed.
+            if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
+                hal::netlock::lend_detached(|net| nd6_dad_start(&ia6.ia_ifa, net));
+            }
+
+            if !newifaddr {
+                if_addrhooks_run(ifp);
+                break 'err Ok(());
+            }
+
+            let plen = in6_mask2len(&ia6_maskin6(ia6), None);
+            if ifp.if_flags.get() & IFF_LOOPBACK != 0 || plen == 128 {
+                if_addrhooks_run(ifp);
+                break 'err Ok(()); // No need to install a connected route.
+            }
+
+            // ifa->ifa_addr: the address's own socket address, copied.
+            let a = sin6_bytes(&ia6.ia_addr.get());
+            let error = hal::netlock::lend_detached(|net| {
+                let e = rt_ifa_add(
+                    &ia6.ia_ifa,
+                    RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
+                    sin6_view(&a),
+                    ifp.if_rdomain.get(),
+                    net,
+                );
+                if e.is_err() {
+                    in6_purgeaddr(&ia6.ia_ifa, net);
+                }
+                e
+            });
+            if let Err(e) = error {
+                break 'err Err(e);
+            }
+            if_addrhooks_run(ifp);
+            Ok(())
         }
     };
 
@@ -869,15 +865,14 @@ pub fn in6_update_ifa(
     }
 
     // If this is a new address, allocate a new ifaddr and link it into chains.
-    let ia6 = match ia6 {
-        Some(ia6) => ia6,
-        None => {
-            host_is_new = true;
-            let ia6 = in6_ifaddr_alloc(ifp, getuptime());
-            ia6.ia_addr.set(ifra.ifra_addr);
-            ifa_add(ifp, &ia6.ia_ifa);
-            ia6
-        }
+    let ia6 = if let Some(ia6) = ia6 {
+        ia6
+    } else {
+        host_is_new = true;
+        let ia6 = in6_ifaddr_alloc(ifp, getuptime());
+        ia6.ia_addr.set(ifra.ifra_addr);
+        ifa_add(ifp, &ia6.ia_ifa);
+        ia6
     };
 
     // The step that failed before the address is complete: a new address is unlinked again.
@@ -937,15 +932,15 @@ pub fn in6_update_ifa(
     // is deprecated or invalidated, but initialize these members for applications.
     ia6.ia6_updatetime.set(getuptime());
     let mut lt = ifra.ifra_lifetime;
-    lt.ia6t_expire = if lt.ia6t_vltime != ND6_INFINITE_LIFETIME {
+    lt.ia6t_expire = if lt.ia6t_vltime == ND6_INFINITE_LIFETIME {
+        0
+    } else {
         getuptime() + Time::from(lt.ia6t_vltime)
-    } else {
-        0
     };
-    lt.ia6t_preferred = if lt.ia6t_pltime != ND6_INFINITE_LIFETIME {
-        getuptime() + Time::from(lt.ia6t_pltime)
-    } else {
+    lt.ia6t_preferred = if lt.ia6t_pltime == ND6_INFINITE_LIFETIME {
         0
+    } else {
+        getuptime() + Time::from(lt.ia6t_pltime)
     };
     ia6.ia6_lifetime.set(lt);
 

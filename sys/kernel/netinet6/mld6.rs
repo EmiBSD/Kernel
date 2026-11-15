@@ -474,7 +474,8 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
         MLD6_TIMERS_ARE_RUNNING.store(1, Ordering::Relaxed);
     }
 
-    // if_put(ifp), m_freem(m): the drops.
+    drop(ifp); // if_put(ifp)
+    drop(m); // m_freem(m)
 }
 
 /// `mld6_fasttimo()`: the MLD fast timeout: counts the membership timers down and sends the

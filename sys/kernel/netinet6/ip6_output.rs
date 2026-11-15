@@ -664,10 +664,7 @@ pub fn ip6_output(
             return Err(Errno::EHOSTUNREACH);
         };
 
-        if !mcast {
-            // Unicast
-            m.m_flags().set(m.flags() & !(M_BCAST | M_MCAST)); // just in case
-        } else {
+        if mcast {
             // Multicast
             m.m_flags().set((m.flags() & !M_BCAST) | M_MCAST);
 
@@ -699,6 +696,9 @@ pub fn ip6_output(
             {
                 return Ok(());
             }
+        } else {
+            // Unicast
+            m.m_flags().set(m.flags() & !(M_BCAST | M_MCAST)); // just in case
         }
 
         // If this packet is going through a loopback interface we won't be able to restore its
@@ -1000,7 +1000,7 @@ pub fn ip6_fragment(
                 ip6f_offlg: offlg,
                 ip6f_ident: id,
             };
-            if let Err(e) = ip6_insertfraghdr(&mut m0, &mut m, hlen, &frag) {
+            if let Err(e) = ip6_insertfraghdr(&mut m0, &mut m, hlen, frag) {
                 break 'bad e;
             }
 
@@ -1147,7 +1147,7 @@ fn writable(m: &mut Mbuf) -> &mut [u8] {
 /// written in the trailing space of the last mbuf when that mbuf keeps its data in itself,
 /// else in an mbuf of its own, where the C's `*frghdrp` points. The copy of the headers
 /// shares `m0`'s clusters (`m_copym`) and is never written.
-fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32, frag: &Ip6Frag) -> Result<(), Errno> {
+fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32, frag: Ip6Frag) -> Result<(), Errno> {
     if hlen as usize > IP6_HDR_LEN {
         let Some(n) = m_copym(
             m0,
@@ -1183,8 +1183,8 @@ fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32, frag: &Ip6Frag) -> 
 }
 
 /// The fragment header written at `at` of `d`, the room `ip6_insertfraghdr` just made.
-fn put_frag(d: &mut [u8], at: usize, frag: &Ip6Frag) {
-    if !pod::put(d, at, frag) {
+fn put_frag(d: &mut [u8], at: usize, frag: Ip6Frag) {
+    if !pod::put(d, at, &frag) {
         kpanic(format_args!(
             "ip6_insertfraghdr: no room for the fragment header"
         ));
@@ -1642,10 +1642,10 @@ pub fn ip6_raw_ctloutput<G: ProcGlue>(
                         // value.
                         Err(Errno::EINVAL)
                     } else if icmp6 {
-                        if optval != icmp6off {
-                            Err(Errno::EINVAL)
-                        } else {
+                        if optval == icmp6off {
                             Ok(())
+                        } else {
+                            Err(Errno::EINVAL)
                         }
                     } else {
                         inp.inp_cksum6.set(optval);
@@ -2187,14 +2187,13 @@ pub fn ip6_setpktopt(
             // or the scope zone of a destination address) to disambiguate the scope.
             // XXX: the delay of the validation may confuse the application when it is used as
             // a sticky option.
-            match opt.ip6po_pktinfo.as_mut() {
-                Some(p) => **p = pktinfo,
-                None => {
-                    let Some(p) = MBox::new(M_IP6OPT, M_NOWAIT, pktinfo) else {
-                        return Err(Errno::ENOBUFS);
-                    };
-                    opt.ip6po_pktinfo = Some(p);
-                }
+            if let Some(p) = opt.ip6po_pktinfo.as_mut() {
+                **p = pktinfo;
+            } else {
+                let Some(p) = MBox::new(M_IP6OPT, M_NOWAIT, pktinfo) else {
+                    return Err(Errno::ENOBUFS);
+                };
+                opt.ip6po_pktinfo = Some(p);
             }
         }
 
@@ -2675,7 +2674,7 @@ mod tests {
         assert!(pod::put(&mut fb, 0, &frag));
 
         // Unfragmentable part is the header alone: the fragment header follows it in `m`.
-        ip6_insertfraghdr(&mut m0, &mut m, 40, &frag).expect("fraghdr");
+        ip6_insertfraghdr(&mut m0, &mut m, 40, frag).expect("fraghdr");
         assert_eq!(m.m_len().get(), 48);
         assert_eq!(m.m_pkthdr().len.get(), 48);
         assert!(m.m_next().get().is_none());
@@ -2685,7 +2684,7 @@ mod tests {
         let mut m = m_gethdr(M_DONTWAIT, MT_HEADER).expect("mbuf");
         m.m_len().set(40);
         m.m_pkthdr().len.set(40);
-        ip6_insertfraghdr(&mut m0, &mut m, 48, &frag).expect("fraghdr");
+        ip6_insertfraghdr(&mut m0, &mut m, 48, frag).expect("fraghdr");
         let n = m.m_next().get().expect("copied exthdr");
         assert_eq!(
             n.m_len().get(),
