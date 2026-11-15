@@ -571,8 +571,11 @@ impl RawRwlock {
     /// One more reader on a word that readers hold now, without waiting, even for a waiting
     /// writer (a holder of a read share, or one lent a proof of it, may not wait behind a
     /// writer that waits for it); the witness of that share, a read holding of its own.
-    /// `None` when the word was free or held by a writer when looked at. For
-    /// `hal::netlock`'s lend of a read holding (`lend_held`), which joins it for its closure.
+    /// `None` when the word was free or held by a writer when looked at. If the readers all
+    /// leave between that look and the increment, the share is a fresh read holding of a word
+    /// that went free (taken without waiting, as a reader takes a free word): a holding all
+    /// the same. For `hal::netlock`'s lend of a read holding (`lend_held`), which owns it for
+    /// the life of its guard.
     pub(crate) fn join_read(&self) -> Option<ReadWitness<'_>> {
         let seen = self.owner.load(Ordering::SeqCst);
         (seen != 0 && self.try_read_from(seen)).then(|| ReadWitness::new(self))
@@ -1285,9 +1288,11 @@ impl<'a> WriteWitness<'a> {
         wmesg: &'static str,
         nsecs: u64,
     ) -> Result<(), Errno> {
-        netlock::before_write_release(self.lock, "rwsleep");
+        // The witness given up first: a refusal leaves its holding held, never released by
+        // the witness's drop while the refusal unwinds (a host test's panic).
         let this = ManuallyDrop::new(self);
         let (raw, me) = (this.lock, this.me);
+        netlock::before_write_release(raw, "rwsleep");
         raw.sleep_released(ident, prio, wmesg, nsecs, || raw.exit_write(me))
     }
 
@@ -1317,9 +1322,10 @@ impl<'a> WriteWitness<'a> {
     /// `rw_enter(lock, RW_DOWNGRADE)`: the writer becomes a reader without letting another
     /// writer in; the readers waiting are woken when no writer waits.
     pub fn downgrade(self) -> ReadWitness<'a> {
-        netlock::before_write_release(self.lock, "downgrade");
+        // The witness given up first, as `into_sleep_nsec`.
         let this = ManuallyDrop::new(self);
         let (raw, me) = (this.lock, this.me);
+        netlock::before_write_release(raw, "downgrade");
         raw.downgrade(me);
         ReadWitness::new(raw)
     }
@@ -2163,6 +2169,14 @@ pub(crate) fn rw_self() -> usize {
 // A lock's word is aligned to 8 bytes, so a `LockId` keeps its kind and a key its part in the
 // three low bits.
 const _: () = assert!(align_of::<RawRwlock>() >= 8 && align_of::<AtomicUsize>() >= 8);
+
+/// `rwl_waiters`, for the tests of a lock's users (`hal::netlock`'s: a writer seen waiting).
+#[cfg(test)]
+impl RawRwlock {
+    pub(crate) fn waiters_for_test(&self) -> u32 {
+        self.waiters.load(Ordering::SeqCst)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */

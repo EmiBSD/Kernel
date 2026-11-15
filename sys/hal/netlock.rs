@@ -191,6 +191,18 @@
 //! [`lock_shared`] counted. So no proof outlives its holding, whatever its holder does with
 //! the lock meanwhile.
 //!
+//! A lend never spans a release of the lender's own holding. For a write holding the release
+//! is refused (`panic(9)`). A read lend cannot tell the lender's own read holding from
+//! another's (`rw_status` says only `RW_READ`), so a release of the lender's own read share
+//! while its guard lives ([`unlock_shared`], [`sleep_nsec`]'s read arm,
+//! `kernel::net::socket::SoLocked::unlocked`'s shared arm) succeeds and the joined share
+//! stays: still sound (the proof keeps its share), but the lender's next [`lock_shared`]
+//! waits behind any writer that queued meanwhile, which waits for the lender's own share: a
+//! self-deadlock, where a write lend would have been a `panic(9)`. No path does it today
+//! (`bsd`'s guards live for the statement that calls into the kernel, and none of those
+//! callees lets the net lock go); a check needs to know whose a read share is, the
+//! per-thread count named below.
+//!
 //! **Net cells** (N6.5e). A member the C keeps under the net lock (`[N]`: an interface's
 //! address list, a route's `rt_ifa`) that kernel code reaches under every kind of holding,
 //! detached ones included, cannot be a cell of [`NETLOCK`]'s witnesses, which a detached
@@ -230,6 +242,28 @@
 //! the end. A lend costs a read-modify-write pair the C lacks: on [`LENT`] (written by the
 //! write holder only) for a write holding, on the lock word (which every reader writes) for a
 //! joined read share; `bsd`'s calls into the kernel pay it once per call, until they move.
+//! The calls made once per packet (on a shared holding, a contended pair each), with the
+//! milestone that takes their caller out of `bsd`:
+//! - `bsd`'s TCP output through `ip_output`/`ip6_output` (N6.6a); UDP's and the raw
+//!   sockets' unconnected sends through `in_pcbselsrc` (`sys/netinet/udp_usrreq.rs:1217`,
+//!   `raw_ip.rs:423`) and `in6_pcbselsrc` (`sys/netinet6/udp6_output.rs:197-199`,
+//!   `raw_ip6.rs:664-666`), and divert's `ipv4_input`/`ipv6_input` (N6.6b);
+//! - pf(4)'s route-to, `rtalloc_mpath` (`sys/net/pf.rs:8184`, `:8369`) and
+//!   `ip_forward`/`ip6_forward` (`sys/net/pf.rs:9870`, `:9895`, `sys/net/pf_norm.rs:1329`),
+//!   and pf's `rtalloc` (`sys/net/pf.rs:4507`, `:4515`, `:8015`, `:8066`) (N8); a packet
+//!   from `bsd`'s `ip_output` into pf's route-to pays two lends;
+//! - IP-in-IP decapsulation, `rtalloc` and `ip_input_if`/`ip6_input_if`
+//!   (`sys/netinet/ip_ipip.rs:453`, `:479`, `:483`) (N8); wg(4)'s `ipv4_input`/
+//!   `ipv6_input` (N8);
+//! - the `Inet::with_net_held` leg: once per broadcast copy and first solicitation, never
+//!   per unicast packet (N7, the proof carried by the drivers' output).
+//!
+//! The exact alternative without contended atomics, for N6.6's planner or N12 (not written):
+//! a per-thread count of the read shares the running thread holds, in its
+//! `hal::thread::MachineSlot`, so that a read lend proves the caller's own share by one
+//! compare instead of joining one, and [`unlock_shared`] releases only the running thread's
+//! own share (one compare per read release), which would also turn a read lend spanning a
+//! release of the lender's own share into a `panic(9)`.
 //!
 //! ## Deviations
 //! - The lock carries no `dt(4)` trace index (`rw_init_flags_trace(.., DT_RWLOCK_IDX_NETLOCK)`):
@@ -424,8 +458,9 @@ pub struct NetWriter<'a> {
 /// `hal::link::SaToken::lend_net`): the proof ([`NetLend::net`]) borrows the guard, and the
 /// guard keeps the holding it proves until its drop: the running process's write holding,
 /// counted in [`LENT`] so that its release paths refuse to run, or a read share it joined
-/// and owns. A guard never dropped keeps the holding for ever (a write holding that can no
-/// longer be let go, a read share never released): a hang, never a proof without its
+/// and owns. A guard never dropped (`mem::forget`) never gives its proof up: a write lend
+/// leaves [`LENT`] counted, so the next release of the write holding is `panic(9)`; a read
+/// lend leaks its share, so the lock stays read for ever (a hang). Never a proof without its
 /// holding. Not `Send`.
 #[must_use = "the proof is lent only while the guard lives"]
 pub struct NetLend {
@@ -655,9 +690,13 @@ pub fn sleep_nsec<I: ?Sized>(
     wmesg: &'static str,
     nsecs: u64,
 ) -> Result<(), Errno> {
-    not_borrowed("rwsleep");
     let me = rw_self();
-    if DETACHED_WRITER.load(Ordering::Acquire) == me {
+    let writer = DETACHED_WRITER.load(Ordering::Acquire) == me;
+    if !writer && DETACHED_READERS.load(Ordering::Acquire) == 0 {
+        not_held("rwsleep", status());
+    }
+    not_borrowed("rwsleep");
+    if writer {
         not_lent("rwsleep");
     }
     if DETACHED_WRITER
@@ -1254,6 +1293,94 @@ pub(crate) mod tests {
         assert!(msg.contains("when lock not held"), "{msg}");
         drop(lend);
         unlock();
+    }
+
+    /// A lend refuses `downgrade` (review 2's NB-3): a downgraded holding could be let go as a
+    /// read while the proof of the write holding lives.
+    #[test]
+    fn a_write_witness_does_not_downgrade_while_a_proof_of_it_is_lent() {
+        testutil::install();
+        let _s = serial();
+        let w = NETLOCK.write();
+        let lend = lend_held().expect("written by this process");
+        assert!(catch_unwind(AssertUnwindSafe(move || drop(w.downgrade()))).is_err());
+        assert!(write_held(), "the holding stays written");
+        drop(lend);
+        NETLOCK.exit_write(rw_self());
+        assert_eq!(status(), 0);
+    }
+
+    /// A lend refuses `into_sleep_nsec` (`PNORELOCK`, review 2's NB-3).
+    #[test]
+    fn a_write_witness_does_not_sleep_away_while_a_proof_of_it_is_lent() {
+        testutil::install();
+        let _s = serial();
+        let ident = 0u8;
+        let w = NETLOCK.write();
+        let lend = lend_held().expect("written by this process");
+        assert!(
+            catch_unwind(AssertUnwindSafe(move || w.into_sleep_nsec(
+                &raw const ident,
+                0,
+                "nettest",
+                1
+            )))
+            .is_err()
+        );
+        assert!(write_held(), "the holding stays written");
+        drop(lend);
+        NETLOCK.exit_write(rw_self());
+        assert_eq!(status(), 0);
+    }
+
+    /// `NET_UNLOCK_SHARED()` cannot take a joined share (it releases only what
+    /// `NET_LOCK_SHARED()` counted), and a lend on the caller's own read holding does not wait
+    /// behind a writer that waits for that holding (review 2's NB-3).
+    #[test]
+    fn a_joined_share_is_the_lend_own() {
+        testutil::install();
+        let _s = serial();
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            *CELL.get_mut(&mut net.writer()) = 13;
+        }
+        lock_shared();
+        let lend = lend_held().expect("the lock is read");
+        let rd = lend.net().reader();
+        unlock_shared();
+        assert_eq!(status(), RW_READ, "the joined share still reads");
+        assert!(
+            catch_unwind(unlock_shared).is_err(),
+            "no detached share is left"
+        );
+        assert_eq!((status(), *CELL.get(&rd)), (RW_READ, 13));
+        drop(rd);
+        drop(lend);
+        assert_eq!(status(), 0);
+
+        // A writer queued behind this thread's read: the lend joins at once. (Its answer is
+        // checked after the read is let go, so a refusal fails the test instead of leaving the
+        // writer waiting for ever.)
+        lock_shared();
+        let read = thread::scope(|s| {
+            let writer = s.spawn(|| {
+                let w = NETLOCK.write();
+                let net = NetHeld::of(&w).expect("the net lock's witness");
+                *CELL.get_mut(&mut net.writer()) = 14;
+            });
+            while NETLOCK.waiters_for_test() == 0 {
+                thread::yield_now();
+            }
+            let read = lend_held().map(|lend| *CELL.get(&lend.net().reader()));
+            unlock_shared();
+            writer.join().expect("the writer");
+            read
+        });
+        assert_eq!(read, Some(13), "joined without waiting for the writer");
+        let r = NETLOCK.read();
+        let net = NetHeld::of(&r).expect("the net lock's witness");
+        assert_eq!(*CELL.get(&net.reader()), 14);
     }
 }
 /* </TESTS> */

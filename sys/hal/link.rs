@@ -1215,10 +1215,11 @@ impl SaLink {
         // a witness of it (`NetHeld::of`: the witness held until its drop, so no other
         // exclusive holder exists until the caller lets go), or a proof lent
         // (`hal::netlock::lend_detached` for a closure, `SaToken::lend_net` for a guard's
-        // life): the running process's write holding, whose release paths refuse to run while
-        // the proof is lent, or a read share the guard joined and owns; either way no other
-        // exclusive holder exists while the proof lives (`hal::netlock`'s notes). The copy makes no
-        // reference to the storage, so a write after it touches nothing the caller holds.
+        // life): the running process's write holding, whose release paths refuse to run
+        // while the proof is lent, or a read share the guard joined and owns; either way no
+        // other exclusive holder exists while the proof lives (`hal::netlock`'s notes). The
+        // copy makes no reference to the storage, so a write after it touches nothing the
+        // caller holds.
         out.len = unsafe {
             let len = usize::from(p.read()).min(cap);
             ptr::copy_nonoverlapping(p, out.buf.as_mut_ptr(), len.max(2));
