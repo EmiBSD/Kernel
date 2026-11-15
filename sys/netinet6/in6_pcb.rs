@@ -165,8 +165,7 @@ use crate::net::rtable::rtable_l2;
 use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
     INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, InpNotifyFn, Inpaddru, Inpcb,
-    InpcbLegacy, Inpcbtable, in_pcb_iterator, in_pcbrtchange, in_pcbsolock, in_pcbsounlock,
-    sotoinpcb,
+    Inpcbtable, in_pcb_iterator, in_pcbrtchange, in_pcbsolock, in_pcbsounlock, sotoinpcb,
 };
 use crate::netinet::ip6::IPV6_FLOWLABEL_MASK;
 use crate::netinet6::in6::{
@@ -180,7 +179,6 @@ use crate::netinet6::in6_var::{
 };
 use crate::netinet6::ip6_id::ip6_randomflowlabel;
 use crate::netinet6::ip6_input::INET6CTLERRMAP;
-use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::sys::endian::htonl;
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
@@ -218,20 +216,6 @@ impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
         b[24..40].copy_from_slice(&self.ip6_dst.s6_addr);
         b
     }
-}
-
-/// `inp->inp_outputopts6` as `ip6_output` and the source selection take it.
-pub(crate) fn inp_outputopts6(inp: &Inpcb) -> Option<&Ip6Pktopts> {
-    // SAFETY: the options are `ip6_pcbopt`'s allocation, owned by this control block and
-    // replaced or freed only under the socket lock, which the callers hold.
-    inp.outputopts6_ptr().map(|o| unsafe { o.as_ref() })
-}
-
-/// `inp->inp_moptions6` as `ip6_output` and `in6_embedscope` take it.
-pub(crate) fn inp_moptions6(inp: &Inpcb) -> Option<&Ip6Moptions> {
-    // SAFETY: the options are `ip6_setmoptions`'s allocation, owned by this control block
-    // and freed only under the socket lock, which the callers hold.
-    inp.moptions6_ptr().map(|o| unsafe { o.as_ref() })
 }
 
 /// `curproc`, which the socket requests run as.
@@ -279,7 +263,13 @@ pub fn in6_pcbaddrisavail_held(
 
     // KAME hack: embed scopeid
     let mut addr = sin6.sin6_addr;
-    if in6_embedscope(&mut addr, sin6, inp_outputopts6(inp), inp_moptions6(inp)).is_err() {
+    let embedded = in6_embedscope(
+        &mut addr,
+        sin6,
+        inp.outputopts6().as_deref(),
+        inp.moptions6_out().as_ref(),
+    );
+    if embedded.is_err() {
         return Err(Errno::EINVAL);
     }
     sin6.sin6_addr = addr;
@@ -429,9 +419,18 @@ pub fn in6_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
         return Err(Errno::EADDRNOTAVAIL);
     }
 
+    // The pcb's sticky options, lent for the scope and the source selection.
+    let mut opts6 = inp.outputopts6();
+
     // KAME hack: embed scopeid
     let mut addr = sin6.sin6_addr;
-    if in6_embedscope(&mut addr, &sin6, inp_outputopts6(inp), inp_moptions6(inp)).is_err() {
+    let embedded = in6_embedscope(
+        &mut addr,
+        &sin6,
+        opts6.as_deref(),
+        inp.moptions6_out().as_ref(),
+    );
+    if embedded.is_err() {
         return Err(Errno::EINVAL);
     }
     sin6.sin6_addr = addr;
@@ -442,7 +441,8 @@ pub fn in6_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
     // XXX: in6_selectsrc might replace the bound local address with the address specified
     // by setsockopt(IPV6_PKTINFO). Is it the intended behavior?
     let mut in6a = In6Addr::default();
-    in6_pcbselsrc(&mut in6a, &sin6, inp, inp_outputopts6(inp))?;
+    in6_pcbselsrc(&mut in6a, &sin6, inp, opts6.as_deref_mut())?;
+    drop(opts6);
 
     let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
     ip6.ip6_hlim = in6_selecthlim(inp) as u8;

@@ -363,6 +363,23 @@ impl In6Memberships {
         self.n = n;
         last
     }
+
+    /// `LIST_FOREACH` from the list's head, the newest first (`LIST_INSERT_HEAD`'s order),
+    /// to the first membership `matches` accepts, then `LIST_REMOVE` of it: its record, the
+    /// newer ones moved down one slot (the gap closed, the order kept). O(n) as the C's walk.
+    pub fn take_newest(
+        &mut self,
+        mut matches: impl FnMut(&'static In6Multi) -> bool,
+    ) -> Option<&'static In6Multi> {
+        let n = self.n;
+        let v = self.v.as_deref_mut()?;
+        let i = (0..n).rev().find(|&i| v[i].is_some_and(&mut matches))?;
+        let found = v[i].take();
+        v.copy_within(i + 1..n, i);
+        v[n - 1] = None;
+        self.n = n - 1;
+        found
+    }
 }
 
 /// `struct in6_ifaddr`: interface address, Internet version 6.

@@ -28,6 +28,8 @@ pub mod in6_pcb;
 pub mod in6_src;
 pub mod in6_var;
 pub mod ip6_id;
+pub mod ip6_input;
+pub mod ip6_output;
 pub mod ip6_var;
 pub mod mld6;
 pub mod mld6_var;

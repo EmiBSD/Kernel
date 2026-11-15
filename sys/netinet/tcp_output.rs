@@ -118,8 +118,9 @@
 //! - `tcp_signature` writes the digest into a local array, which is copied into the option
 //!   (the C hands it a pointer into the packet); the digest does not cover the options, so
 //!   the bytes it reads are the same.
-//! - `tp->t_inpcb->inp_outputopts6` shares `inp_options`'s union slot: the TSO test reads the
-//!   one member.
+//! - `tp->t_inpcb->inp_outputopts6` shares `inp_options`'s union slot in C; here they are two
+//!   members (the IPv6 options the kernel's since N6.5c), and the TSO test reads both, as the
+//!   C's two tests of the one word do.
 //! - `TCP_SACK_DEBUG` (not in GENERIC) is the cargo feature `tcp_sack_debug`: `tcp_print_holes`
 //!   and its call in `tcp_sack_output`.
 //! - `tcp_softtso_chop` reads the IP header once as a copy (`mtod_ip`, which panics on a
@@ -466,9 +467,10 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
 
         if len > txmaxseg {
             let maxseg = i64::from(tp.t_maxseg.get());
-            // `inp_outputopts6` is `inp_options`'s union slot: one test covers both.
+            // `inp_options` and `inp_outputopts6` (one union slot in C, two members here).
             if TCP_DO_TSO.load(Ordering::Relaxed) != 0
                 && inp.options().is_none()
+                && !inp.has_outputopts6()
                 && !tp.has_flags(TF_SIGNATURE)
                 && len >= 2 * maxseg
                 && tp.rcv_numsacks.get() == 0
@@ -1178,12 +1180,11 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                     ip6.ip6_flow |= htonl(u32::from(IPTOS_ECN_ECT0) << 20);
                 }
                 mtod_ip6_store(m, &ip6);
-                // SAFETY: the options are the socket's own allocation (`ip6_setpktopts`),
-                // freed only under the socket lock `tcp_output` runs with.
-                let opts = inp.outputopts6_ptr().map(|o| unsafe { o.as_ref() });
+                // The sticky options, lent for the call (`tcp_output` holds the socket lock).
+                let sticky = inp.outputopts6();
                 break 'out ip6_output(
                     m,
-                    opts,
+                    sticky.as_deref(),
                     Some(&mut *inp.route()),
                     0,
                     None,

@@ -1775,6 +1775,10 @@ impl kernel::net::if_::Inet for BenchInet {
     fn ip6stat_rtcache(&self, hit: bool) {
         self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
     }
+    fn ip6_randomid(&self) -> u32 {
+        // idgen32 never answers 0; the rows do not fragment.
+        1
+    }
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         // The rows that reach it (ND's solicitation) hold the net lock detached.
         hal::netlock::lend_detached(|n| f(n));

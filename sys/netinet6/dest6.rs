@@ -125,9 +125,8 @@ pub fn dest6_input(
             IP6OPT_PADN => len + 2,
             // unknown option
             _ => {
-                // SAFETY: `opt` points at the option (type and length bytes validated above)
-                // inside the contiguous header in `*mp`'s mbuf chain.
-                if !unsafe { ip6_unknown_opt(mp, opt, *offp + pos) } {
+                // The option's type byte, read above (`ty`): the kernel's handler acts on it.
+                if !ip6_unknown_opt(mp, ty, *offp + pos) {
                     return IPPROTO_DONE;
                 }
                 len + 2

@@ -86,73 +86,38 @@
 //!
 //! ## Deviations
 //! - The kernel's functions take the two members of the options `in6_src.c` reads, the packet
-//!   info and the multicast interface; these wrappers copy them out of `bsd`'s structures
-//!   (`struct ip6_pktopts`' `ip6po_pktinfo`, the pcb's `inp_moptions6`) until the pcb's options
-//!   are the kernel's (N6.5c), and lend the packet info whose address `in6_pcbselsrc`
-//!   overrides. `in6_selectroute` answers the route as the `&'static Rtentry` LZ's callers
-//!   keep (`as_static`).
+//!   info and the multicast interface; these wrappers take them from the kernel's options
+//!   (`Ip6Pktopts`, `Ip6Moptions`, the kernel's since N6.5c: no raw word is read), and lend the
+//!   packet info whose address `in6_pcbselsrc` overrides.
 
 use crate::net::if_::net_held;
-use crate::net::route::{Route, Rtentry, as_static};
 use crate::netinet::in_pcb::Inpcb;
-use crate::netinet::in_pcb::InpcbLegacy as _;
-use crate::netinet6::in6::{In6Addr, In6Pktinfo, SockaddrIn6};
+use crate::netinet6::in6::{In6Addr, SockaddrIn6};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::sys::errno::Errno;
 
 pub use kernel::netinet6::in6_src::{in6_clearscope, in6_recoverscope, in6_selecthlim};
 
-/// `opts->ip6po_pktinfo`, lent to `f` mutably for the call (`None` without options or packet
-/// info): `in6_pcbselsrc` alone, the C's one writer ("this overrides pi"); the readers take
-/// [`Ip6Pktopts::pktinfo`]'s copy.
-fn with_pktinfo<R>(opts: Option<&Ip6Pktopts>, f: impl FnOnce(Option<&mut In6Pktinfo>) -> R) -> R {
-    let pi = opts.and_then(|o| o.ip6po_pktinfo);
-    // SAFETY: `ip6po_pktinfo`'s invariant (`Ip6Pktopts`' field documentation in ip6_var.rs):
-    // when set, an initialised `In6Pktinfo` these options alone own, alive and unchanged while
-    // they are borrowed, which `opts` is for the whole call. The `&mut` is the only reference
-    // to the block while `f` runs, for two reasons. No other pointer to the block exists (the
-    // invariant). Every other user of these options reaches the block only through them, and
-    // only while holding the socket lock that `bsd`'s callers of in6_pcbselsrc hold for this
-    // call (in6_pcbconnect, udp6_output, rip6_output and rip6_connect assert it).
-    f(pi.map(|p| unsafe { &mut *p.as_ptr() }))
-}
-
-/// `inp->inp_moptions6->im6o_ifidx`: the pcb's multicast interface, `None` without multicast
-/// options.
-fn moptions_ifidx(inp: &Inpcb) -> Option<u16> {
-    // The pcb's socket lock is what keeps `inp_moptions6` from being freed under the read:
-    // the C's in6_pcbselsrc runs with it held (its callers' soassertlocked).
-    if let Some(so) = inp.socket_opt() {
-        crate::kern::uipc_socket2::soassertlocked(so);
-    }
-    // SAFETY: `inp_moptions6` is only ever set (`ip6_setmoptions`) to a live
-    // `malloc(M_IPMOPTS)` block of an `Ip6Moptions`, initialised whole, freed only by
-    // `ip6_freemoptions` once the word is cleared (`in_pcbdetach`, `ip6_setmoptions`), both
-    // under the pcb's socket lock, which the assertion above checks this caller holds (a pcb
-    // without a socket is one being torn down by its only owner); the one byte-sized
-    // field is read by value.
-    inp.moptions6_ptr()
-        .map(|p| unsafe { (*p.as_ptr()).im6o_ifidx })
-}
-
 /// `in6_pcbselsrc(&in6src, dstsock, inp, opts)`: the kernel's, its source stored in `in6src`,
-/// under the net lock the caller holds.
+/// under the net lock the caller holds. `opts` are the options in force (a control message's
+/// copy, or the pcb's sticky options its caller lent), lent mutably: the C overrides the
+/// packet info's address in place ("this overrides pi"). The pcb's multicast interface is
+/// read from its options' cell.
 pub fn in6_pcbselsrc(
     in6src: &mut In6Addr,
     dstsock: &SockaddrIn6,
     inp: &Inpcb,
-    opts: Option<&Ip6Pktopts>,
+    opts: Option<&mut Ip6Pktopts>,
 ) -> Result<(), Errno> {
-    let ifidx = moptions_ifidx(inp);
-    *in6src = with_pktinfo(opts, |pi| {
-        kernel::netinet6::in6_src::in6_pcbselsrc(
-            dstsock,
-            inp,
-            pi,
-            ifidx,
-            &net_held("in6_pcbselsrc"),
-        )
-    })?;
+    let ifidx = inp.moptions6_out().map(|o| o.im6o_ifidx);
+    let pi = opts.and_then(|o| o.ip6po_pktinfo.as_deref_mut());
+    *in6src = kernel::netinet6::in6_src::in6_pcbselsrc(
+        dstsock,
+        inp,
+        pi,
+        ifidx,
+        &net_held("in6_pcbselsrc"),
+    )?;
     Ok(())
 }
 
@@ -167,27 +132,6 @@ pub fn in6_selectsrc(
     *in6src =
         kernel::netinet6::in6_src::in6_selectsrc(dstsock, mopts.map(|m| m.im6o_ifidx), rtableid)?;
     Ok(())
-}
-
-/// `in6_selectroute(dst, opts, ro, rtableid)`: the kernel's, the route as the `&'static
-/// Rtentry` LZ's callers keep, under the net lock the caller holds.
-pub fn in6_selectroute(
-    dst: &In6Addr,
-    opts: Option<&Ip6Pktopts>,
-    ro: &mut Route,
-    rtableid: u32,
-) -> Option<&'static Rtentry> {
-    let ifindex = opts
-        .and_then(Ip6Pktopts::pktinfo)
-        .map_or(0, |p| p.ipi6_ifindex);
-    kernel::netinet6::in6_src::in6_selectroute(
-        dst,
-        ifindex,
-        ro,
-        rtableid,
-        &net_held("in6_selectroute"),
-    )
-    .map(as_static)
 }
 
 /// `in6_embedscope(in6, sin6, outputopts6, moptions6)`: the kernel's, over the options'
@@ -211,8 +155,6 @@ mod tests {
     // Host tests for `in6_src.c`: scope embedding and recovery, the source address of
     // link-local and multicast destinations, route selection with a packet info.
 
-    use core::ptr;
-
     use super::*;
     use crate::netinet6::in6::IN6ADDR_ANY;
     use crate::netinet6::in6::tests::{a6, setup, test_ia6, test_if};
@@ -227,16 +169,20 @@ mod tests {
         s
     }
 
-    /// Options whose packet info names interface `ifindex` and source `addr`: a leaked
-    /// block of their own, reached only through them (`ip6po_pktinfo`'s invariant).
+    /// Options whose packet info names interface `ifindex` and source `addr` (its `M_IP6OPT`
+    /// box).
     fn pktopts(ifindex: u32, addr: In6Addr) -> Ip6Pktopts {
-        let pi = std::boxed::Box::into_raw(std::boxed::Box::new(In6Pktinfo {
+        let pi = crate::netinet6::in6::In6Pktinfo {
             ipi6_addr: addr,
             ipi6_ifindex: ifindex,
-        }));
+        };
         Ip6Pktopts {
-            ip6po_pktinfo: ptr::NonNull::new(pi),
-            ..Ip6Pktopts::default()
+            ip6po_pktinfo: hal::malloc::MBox::new(
+                kernel::netinet6::ip6_var::M_IP6OPT,
+                hal::malloc::M_WAITOK,
+                pi,
+            ),
+            ..Ip6Pktopts::new()
         }
     }
 
@@ -269,12 +215,7 @@ mod tests {
         let opts = pktopts(other.if_index.get(), IN6ADDR_ANY);
         in6_embedscope(&mut out, &sin6("fe80::1", idx), Some(&opts), None).expect("embed");
         assert_eq!(out.s6_addr16(1), htons(other.if_index.get() as u16));
-        let mopts = Ip6Moptions {
-            im6o_memberships: crate::sys::queue::ListHead::new(),
-            im6o_ifidx: other.if_index.get() as u16,
-            im6o_hlim: 1,
-            im6o_loop: 1,
-        };
+        let mopts = Ip6Moptions::output(other.if_index.get() as u16, 1, 1);
         in6_embedscope(&mut out, &sin6("ff02::1", idx), None, Some(&mopts)).expect("embed");
         assert_eq!(out.s6_addr16(1), htons(other.if_index.get() as u16));
         // ... but not for a unicast address.
@@ -334,12 +275,7 @@ mod tests {
         );
 
         // A multicast destination: the interface of the multicast options.
-        let mopts = Ip6Moptions {
-            im6o_memberships: crate::sys::queue::ListHead::new(),
-            im6o_ifidx: if2.if_index.get() as u16,
-            im6o_hlim: 1,
-            im6o_loop: 1,
-        };
+        let mopts = Ip6Moptions::output(if2.if_index.get() as u16, 1, 1);
         in6_selectsrc(&mut src, &sin6("ff05::1", 0), Some(&mopts), 0).expect("src");
         assert_eq!(src, a6("2001:db8::5"));
         // None given: nothing to choose from.

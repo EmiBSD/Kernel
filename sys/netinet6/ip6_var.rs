@@ -87,9 +87,8 @@
 //! - `struct ip6stat`, `enum ip6stat_counters` (`hal::sys::netinet6_ip6_var`), the flags, the
 //!   counters and their increments (`kernel::netinet6::ip6_var`) are re-exported (N6.5a).
 //! - `struct ip6q` and `struct ip6asfrag` hold `Cell`s (they change under `frag6_mutex`);
-//!   `struct ip6_moptions` and `struct ip6_pktopts` are plain structures owned by their
-//!   socket (changed under the socket lock), their pointers `Option<NonNull<_>>`
-//!   (`malloc(9)` allocations, as `ip_moptions`' are).
+//!   `struct ip6_moptions` and `struct ip6_pktopts` are the kernel's since N6.5c
+//!   (`kernel::netinet6::ip6_var`), re-exported.
 //! - `mtod_ip6` and `mtod_ip6_store` read and write the IPv6 header at the start of an
 //!   mbuf as a copy, as `mtod_ip` does for `struct ip` (`netinet/ip_var.rs`).
 //! - The globals (`ip6_defhlim`, `ip6_forwarding`, `ip6_mtudisc_timeout`, ...) are the
@@ -100,12 +99,10 @@
 
 use core::cell::Cell;
 use core::mem::size_of;
-use core::ptr::NonNull;
 
 use crate::kern::subr_prf::panic;
-use crate::netinet::ip6::{Ip6Dest, Ip6Hbh, Ip6Hdr};
-use crate::netinet6::in6::{In6Addr, In6Pktinfo};
-use crate::netinet6::in6_var::In6MultiMshipList;
+use crate::netinet::ip6::Ip6Hdr;
+use crate::netinet6::in6::In6Addr;
 use crate::queue_adapter;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry};
@@ -114,7 +111,7 @@ pub use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
 pub use kernel::netinet6::ip6_var::{
     IP6PO_DONTFRAG, IP6PO_MINMTU_ALL, IP6PO_MINMTU_DISABLE, IP6PO_MINMTU_MCASTONLY,
     IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_MINMTU, IPV6_REDIRECT, IPV6_UNSPECSRC,
-    ip6stat_add, ip6stat_dec, ip6stat_inc, ip6stat_inc_idx,
+    Ip6Moptions, Ip6OutOpts, Ip6Pktopts, ip6stat_add, ip6stat_dec, ip6stat_inc, ip6stat_inc_idx,
 };
 
 /// `struct ip6q`: IP6 reassembly queue structure. Each fragment being reassembled is
@@ -169,66 +166,6 @@ queue_adapter!(
     /// `LIST_HEAD(ip6asfrag_list, ip6asfrag)` through `ip6af_list`.
     pub Ip6asfragList: Ip6asfrag, ip6af_list => ListEntry<Ip6asfrag>
 );
-
-/// `struct ip6_moptions`: attached to `inpcb.inp_moptions6` and passed to `ip6_output` when
-/// IPv6 multicast options are in use.
-pub struct Ip6Moptions {
-    /// `im6o_memberships`.
-    pub im6o_memberships: ListHead<In6MultiMshipList>,
-    /// ifp index for outgoing multicasts.
-    pub im6o_ifidx: u16,
-    /// Hoplimit for outgoing multicasts.
-    pub im6o_hlim: u8,
-    /// 1 >= hear sends if a member.
-    pub im6o_loop: u8,
-}
-
-/// `struct ip6_pktopts`: control options for outgoing packets.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Ip6Pktopts {
-    /// Hoplimit for outgoing packets.
-    pub ip6po_hlim: i32,
-    /// Outgoing IF/address information.
-    ///
-    /// **Invariant** (every `unsafe` read or write through it relies on it): when set, it
-    /// points at an initialised `In6Pktinfo` that these options alone own, valid for as long
-    /// as the options are borrowed.
-    /// - Established by the field's writers, `ip6_setpktopt` and `copypktopts`. They store a
-    ///   fresh `malloc(M_IP6OPT)` block of the structure, written whole, whose pointer they
-    ///   keep nowhere else (a copy of the options gets a block of its own). A test that
-    ///   builds options by hand gives them a block of its own, which it does not reach while
-    ///   they are in use.
-    /// - Upheld by the block being written or freed only through options borrowed mutably:
-    ///   `ip6_setpktopt` rewrites it, `ip6_clearpktopts` frees it. A shared borrow of the
-    ///   options therefore keeps the block alive and unchanged. The derived `Copy` would
-    ///   share the block; no code copies options bitwise (`copypktopts` copies the block).
-    pub ip6po_pktinfo: Option<NonNull<In6Pktinfo>>,
-    /// Hop-by-Hop options header.
-    pub ip6po_hbh: Option<NonNull<Ip6Hbh>>,
-    /// Destination options header (before a routing header).
-    pub ip6po_dest1: Option<NonNull<Ip6Dest>>,
-    /// Destination options header (after a routing header).
-    pub ip6po_dest2: Option<NonNull<Ip6Dest>>,
-    /// Traffic class.
-    pub ip6po_tclass: i32,
-    /// Fragment vs PMTU discovery policy (`IP6PO_MINMTU_*`).
-    pub ip6po_minmtu: i32,
-    /// `IP6PO_*` flags.
-    pub ip6po_flags: i32,
-}
-
-impl Ip6Pktopts {
-    /// `*opt->ip6po_pktinfo`, read by value (`None` without packet info): what the readers
-    /// that only look at it take (`ip6_output`'s outgoing interface, `ip6_getpcbopt`,
-    /// `in6_selectroute`, `in6_embedscope`).
-    pub fn pktinfo(&self) -> Option<In6Pktinfo> {
-        // SAFETY: `ip6po_pktinfo`'s invariant (the field's documentation): when set, an
-        // initialised `In6Pktinfo` these options own, alive and unchanged while they are
-        // borrowed, which `&self` is for the whole read; the structure is copied out by value
-        // (`In6Pktinfo` is plain data), so no reference to the block outlives the call.
-        self.ip6po_pktinfo.map(|p| unsafe { p.as_ptr().read() })
-    }
-}
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.
 /// The data may sit at any alignment in the mbuf, so the header is copied out. Panics if the

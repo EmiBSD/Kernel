@@ -241,15 +241,18 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 472, 488 with the counted item's header (the pool and the
+//!   `RouteCell`, the same); here 536, 552 with the counted item's header (the pool and the
 //!   count): the three pinned entries (96: a lock identity each beside the two links), the
-//!   route cache's cell (72), the multicast options' (40), the anchor (16), the IPv4 and IPv6
-//!   members side by side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's
-//!   pool-size row; a diet is N12's.
-//! - `bsd`'s own members (the IPv4 options, the IPv6 options, multicast options and filter,
-//!   the per-protocol pcb) are words `bsd` keeps (`hal::link::PtrWord`), which the kernel
-//!   never reads (the IPv4 options are lent to `ip_ctloutput` by `bsd`'s caller, N6.4c1's
-//!   R11); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
+//!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
+//!   and multicast options' (40 each), the anchor (16), the IPv4 and IPv6 members side by
+//!   side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's pool-size row; a diet is
+//!   N12's.
+//! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
+//!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
+//!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
+//! - `bsd`'s own members (the IPv4 options, the ICMPv6 filter, the per-protocol pcb) are
+//!   words `bsd` keeps (`hal::link::PtrWord`), which the kernel never reads (the IPv4 options
+//!   are lent to `ip_ctloutput` by `bsd`'s caller, N6.4c1's R11; the filter is N6.6b's); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
 //!   SipHash keys; its mutex holds the hash arrays (`MArray`s of pinned lists, `hashinit`'s),
@@ -336,6 +339,8 @@ use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_output::ip_freemoptions;
 use crate::netinet::ip_var::IpMoptions;
 use crate::netinet6::in6_pcb::in6_pcbhash;
+use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
+use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
 
 // flags in inp_flags:
@@ -886,16 +891,19 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_ipv6: Ip6Proto,
     /// `inp_options`: IPv4 options, `bsd`'s parked mbuf chain (until N6.6).
     pub inp_options: PtrWord<c_void>,
-    /// `inp_outputopts6`: IPv6 options (`bsd`'s `malloc(M_IP6OPT)`, until N6.5).
-    pub inp_outputopts6: PtrWord<c_void>,
+    /// \[s\] `inp_outputopts6`: IPv6 options (`ip6_pcbopt`'s `M_IP6OPT` allocation), reached
+    /// only through [`Inpcb::outputopts6`], which checks the socket lock.
+    inp_outputopts6: ReadMostly<Option<MBox<Ip6Pktopts>>>,
     /// `inp_hops`.
     pub inp_hops: AtomicCell<i32>,
     /// \[N\] `inp_moptions`: IPv4 multicast options (`ip_setmoptions`'s `M_IPMOPTS`
     /// allocation), reached only through [`Inpcb::moptions`], which checks the socket lock,
     /// and copied by [`Inpcb::moptions_out`].
     inp_moptions: ReadMostly<Option<MBox<IpMoptions>>>,
-    /// \[N\] `inp_moptions6`: IPv6 multicast options (`bsd`'s, until N6.5).
-    pub inp_moptions6: PtrWord<c_void>,
+    /// \[N\] `inp_moptions6`: IPv6 multicast options (`ip6_setmoptions`'s `M_IPMOPTS`
+    /// allocation), reached only through [`Inpcb::moptions6`], which checks the socket lock,
+    /// and copied by [`Inpcb::moptions6_out`].
+    inp_moptions6: ReadMostly<Option<MBox<Ip6Moptions>>>,
     /// \[N\] `inp_seclevel`: IPsec level of socket.
     pub inp_seclevel: SeclevelCell,
     /// `inp_ip_minttl`: minimum TTL or drop (`inp_ip6_minhlim` for IPv6).
@@ -962,10 +970,10 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_ip: IpProto::new(),
             inp_ipv6: Ip6Proto::new(),
             inp_options: PtrWord::new(),
-            inp_outputopts6: PtrWord::new(),
+            inp_outputopts6: ReadMostly::new(None),
             inp_hops: AtomicCell::new(),
             inp_moptions: ReadMostly::new(None),
-            inp_moptions6: PtrWord::new(),
+            inp_moptions6: ReadMostly::new(None),
             inp_seclevel: SeclevelCell::new(),
             inp_ip_minttl: AtomicCell::new(),
             inp_cksum6: AtomicCell::new(),
@@ -1044,6 +1052,40 @@ impl<G: ProcGlue> Inpcb<G> {
             .read()
             .as_deref()
             .map(|imo| IpMoptions::output(imo.imo_ifidx, imo.imo_ttl, imo.imo_loop))
+    }
+
+    /// `&inp->inp_outputopts6`: the IPv6 packet options, lent until the loan drops (the C's
+    /// `struct ip6_pktopts **` of `ip6_pcbopt`, and the transports' read of them for their
+    /// `ip6_output` and source selection calls, which may sleep). The options are `[s]`:
+    /// checked as [`Inpcb::route`] checks the route cache. `panic(9)` without the lock.
+    pub fn outputopts6(&self) -> InpLoan<'_, Option<MBox<Ip6Pktopts>>> {
+        self.assert_route_locked("inp_outputopts6");
+        InpLoan::of(&self.inp_outputopts6)
+    }
+
+    /// `inp->inp_outputopts6 != NULL`, read without a loan (tcp_output's TSO test of the
+    /// C's union slot, which `inp_options` shares there): a reader's count (two atomics).
+    pub fn has_outputopts6(&self) -> bool {
+        self.inp_outputopts6.read().is_some()
+    }
+
+    /// `&inp->inp_moptions6`: the IPv6 multicast options, lent until the loan drops (the C's
+    /// `struct ip6_moptions **` of `ip6_setmoptions`), checked as [`Inpcb::moptions`].
+    /// `panic(9)` without the socket lock.
+    pub fn moptions6(&self) -> InpLoan<'_, Option<MBox<Ip6Moptions>>> {
+        self.assert_route_locked("inp_moptions6");
+        InpLoan::of(&self.inp_moptions6)
+    }
+
+    /// The multicast options `ip6_output` and the source selection read (the interface, the
+    /// hop limit, the loopback switch), copied out of the cell with no membership: `None`
+    /// when the socket has none. A read, as [`Inpcb::moptions_out`].
+    #[inline]
+    pub fn moptions6_out(&self) -> Option<Ip6Moptions> {
+        self.inp_moptions6
+            .read()
+            .as_deref()
+            .map(|im6o| Ip6Moptions::output(im6o.im6o_ifidx, im6o.im6o_hlim, im6o.im6o_loop))
     }
 
     /// Whether this thread holds the socket lock that guards `inp_route`: this pcb's
@@ -1894,8 +1936,9 @@ pub fn in_pcbdisconnect<G: ProcGlue>(inp: &Inpcb<G>) -> bool {
 }
 
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
-/// reference; `free_opts` frees what `bsd` keeps of the pcb (its IPv4 options, its IPv6
-/// options), at the C's point, before the multicast options.
+/// reference; `free_opts` frees what `bsd` keeps of an IPv4 pcb (its IPv4 options), at the
+/// C's point, before the multicast options; an IPv6 pcb's packet and multicast options are
+/// freed here (`ip6_freepcbopts`, `ip6_freemoptions`).
 pub fn in_pcbdetach<G: ProcGlue>(
     inp: InpcbRef<G>,
     net: &NetHeld<'_>,
@@ -1910,10 +1953,13 @@ pub fn in_pcbdetach<G: ProcGlue>(
     sofree_legacy(so);
     // rtfree(inp->inp_route.ro_rt): the cache's handle dropped.
     drop(inp.route().take_rt());
-    free_opts(&inp);
-    // ip_freemoptions(inp->inp_moptions): an IPv6 pcb's are `bsd`'s (`free_opts`), its cell
-    // here empty.
-    ip_freemoptions(core::mem::take(&mut *inp.moptions()), net);
+    if inp.has_flags(INP_IPV6) {
+        ip6_freepcbopts(core::mem::take(&mut *inp.outputopts6()));
+        ip6_freemoptions(core::mem::take(&mut *inp.moptions6()), net);
+    } else {
+        free_opts(&inp);
+        ip_freemoptions(core::mem::take(&mut *inp.moptions()), net);
+    }
     if let Some(pf) = pf() {
         pf.inp_remove_divert_state(&inp.inp_pf_sk);
         pf.inp_unlink(&inp.inp_pf_sk);
@@ -2870,11 +2916,19 @@ mod tests {
             ("2 x In6AddrCell", 32),
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
-            ("5 x PtrWord", 5 * size_of::<PtrWord<c_void>>()),
+            ("3 x PtrWord", 3 * size_of::<PtrWord<c_void>>()),
             ("inp_route", size_of::<ReadMostly<Route>>()),
             (
                 "inp_moptions",
                 size_of::<ReadMostly<Option<MBox<IpMoptions>>>>(),
+            ),
+            (
+                "inp_outputopts6",
+                size_of::<ReadMostly<Option<MBox<Ip6Pktopts>>>>(),
+            ),
+            (
+                "inp_moptions6",
+                size_of::<ReadMostly<Option<MBox<Ip6Moptions>>>>(),
             ),
             ("inp_refcnt", 4),
             ("inp_anchor", size_of::<ReadMostly<Option<InpcbRef<G>>>>()),
@@ -2894,13 +2948,14 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 472 bytes, 488 with the counted item's header (the count and the pool), against the
+        // 536 bytes, 552 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
-        // cell (72), the multicast options' cell (40: the box carries its malloc type and
-        // allocator) and the anchor (16) are the growth.
-        assert_eq!(sum, 471);
-        assert_eq!(size_of::<Inpcb<G>>(), 472);
+        // cell (72), the three options' cells (40 each: the box carries its malloc type and
+        // allocator; N6.5c's two IPv6 ones were 8-byte words before) and the anchor (16) are
+        // the growth.
+        assert_eq!(sum, 535);
+        assert_eq!(size_of::<Inpcb<G>>(), 536);
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
         // pointers as words, the unions as their largest member's words).
@@ -3213,7 +3268,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(488),
+            Some(552),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");

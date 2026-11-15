@@ -169,8 +169,6 @@ use crate::netinet6::in6_proto::IP6_FORWARDING;
 #[cfg(feature = "inet6")]
 use crate::netinet6::ip6_input::{ip6intr, ipv6_input};
 #[cfg(feature = "inet6")]
-use crate::netinet6::ip6_output::in6_proto_cksum_out;
-#[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -340,14 +338,6 @@ pub struct BsdNetLegs;
 /// The one [`BsdNetLegs`].
 pub static BSD_NET_LEGS: BsdNetLegs = BsdNetLegs;
 
-/// The C's `hbh_buf`, as `BsdNetLegs::ip6_output_opts` points MLD's options at it: a
-/// `'static` copy of the kernel's [`MLD6_HBH`](kernel::netinet6::mld6::MLD6_HBH), so
-/// `ip6_output`'s `make_exthdr` reads `(ip6h_len + 1) << 3` bytes of an image that has them
-/// (checked at the end of the code), for as long as the packet is being built (N6.5a,
-/// until N6.5c).
-#[cfg(feature = "inet6")]
-static MLD6_HBH_IMAGE: [u8; 8] = kernel::netinet6::mld6::MLD6_HBH;
-
 /// `ipv4_input` as the kernel's `if_input_proto` takes it (the kernel's own).
 pub fn ipv4_input_proto(
     ifp: &'static Ifnet,
@@ -403,40 +393,8 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         false
     }
 
-    fn ip6_output_opts(
-        &self,
-        m: kernel::net::mbuf::MbufBox,
-        router_alert: bool,
-        flags: i32,
-        ifidx: u16,
-        hlim: u8,
-        loop_: bool,
-    ) -> Result<(), Errno> {
-        #[cfg(feature = "inet6")]
-        {
-            use crate::netinet6::ip6_output::{ip6_initpktopts, ip6_output};
-            use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
-            // ip6_opts: the C's static options pointing at hbh_buf, here this file's
-            // 'static image of MLD's router alert (MLD6_HBH_IMAGE, whose length byte is
-            // checked against its size at compile time), which ip6_output copies into the
-            // packet. Only that image ever gets here: no caller's bytes.
-            let mut opts = Ip6Pktopts::default();
-            ip6_initpktopts(&mut opts);
-            opts.ip6po_hbh = router_alert.then(|| core::ptr::NonNull::from(&MLD6_HBH_IMAGE).cast());
-            let im6o = Ip6Moptions {
-                im6o_memberships: crate::sys::queue::ListHead::new(),
-                im6o_ifidx: ifidx,
-                im6o_hlim: hlim,
-                im6o_loop: u8::from(loop_),
-            };
-            return ip6_output(park(m), Some(&opts), None, flags, Some(&im6o), None);
-        }
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = (router_alert, flags, ifidx, hlim, loop_);
-            drop(m);
-            Err(Errno::EAFNOSUPPORT)
-        }
+    fn ip6_randomid(&self) -> u32 {
+        crate::netinet6::ip6_output::ip6_id_generate()
     }
 
     fn icmp6_error(&self, m: kernel::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
@@ -467,12 +425,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             });
         }
         let _ = hit;
-    }
-
-    fn in6_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        in6_proto_cksum_out(m, Some(ifp));
-        let _ = (m, ifp);
     }
 
     fn tcp_if_output_tso(
@@ -1067,13 +1019,6 @@ pub fn ifa_print_all() {
     }
 }
 
-// MLD6_HBH_IMAGE's length byte describes it exactly: make_exthdr's read stays inside it.
-#[cfg(feature = "inet6")]
-const _: () = {
-    let h = kernel::netinet6::mld6::MLD6_HBH;
-    assert!((h[1] as usize + 1) << 3 == h.len());
-};
-
 /* </CODE> */
 
 /* <TESTS> */
@@ -1321,117 +1266,6 @@ pub(crate) mod tests {
             "a valid checksum"
         );
         m_freem(m);
-    }
-
-    /// The bytes of the packets [`copy_output`] was given.
-    #[cfg(feature = "inet6")]
-    static COPIED: std::sync::Mutex<std::vec::Vec<std::vec::Vec<u8>>> =
-        std::sync::Mutex::new(std::vec::Vec::new());
-
-    /// An `if_output` that copies the packet into [`COPIED`] and frees it.
-    ///
-    /// # Safety
-    ///
-    /// `IfOutputFn`'s contract.
-    #[cfg(feature = "inet6")]
-    unsafe fn copy_output(
-        _ifp: &'static Ifnet,
-        m: &'static Mbuf,
-        _dst: *const Sockaddr,
-        _rt: Option<&'static Rtentry>,
-    ) -> Result<(), Errno> {
-        let m = crate::sys::mbuf::unpark(m);
-        let mut b = std::vec![0u8; usize::try_from(m.m_pkthdr().len.get()).unwrap_or(0)];
-        kernel::net::mbuf::m_copydata(&m, 0, &mut b);
-        COPIED.lock().unwrap_or_else(|e| e.into_inner()).push(b);
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(feature = "inet6")]
-    fn ip6_output_opts_sends_the_router_alert_whole() {
-        use kernel::net::if_::Inet as _;
-
-        use crate::netinet::icmp6::MLD_LISTENER_REPORT;
-        use crate::netinet::in_::{IPPROTO_HOPOPTS, IPPROTO_ICMPV6};
-        use crate::netinet::ip6::{IP6OPT_PADN, IP6OPT_ROUTER_ALERT};
-        use crate::sys::mbuf::unpark;
-
-        let _g = setup_net();
-        let ifp = test_ifnet(b"tra6");
-        ifp.if_flags.set(IFF_UP | IFF_RUNNING | IFF_MULTICAST);
-        ifp.if_mtu.set(1500);
-        ifp.if_output().set(Some(copy_output));
-        if_attach(ifp);
-        let idx = (ifp.if_index.get() as u16).to_be_bytes();
-        // An MLD report as mld6_sendpkt builds it: fe80::1 -> ff02::1:3, both with the
-        // interface's zone embedded, hop limit 1, 24 bytes of MLD.
-        let mut p = std::vec![0x60, 0, 0, 0, 0, 24, IPPROTO_ICMPV6 as u8, 1];
-        p.extend_from_slice(&[0xfe, 0x80, idx[0], idx[1], 0, 0, 0, 0]);
-        p.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
-        p.extend_from_slice(&[0xff, 0x02, idx[0], idx[1], 0, 0, 0, 0]);
-        p.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 3]);
-        p.extend_from_slice(&[MLD_LISTENER_REPORT; 1]);
-        p.extend_from_slice(&[0; 23]);
-        COPIED.lock().unwrap_or_else(|e| e.into_inner()).clear();
-
-        // With the router alert: the whole 8-byte hop-by-hop header between the IPv6 header
-        // and the MLD message, its next header the old one, the payload length 8 longer.
-        net_lock();
-        let r = BSD_NET_LEGS.ip6_output_opts(
-            unpark(test_packet(&p)),
-            true,
-            0,
-            ifp.if_index.get() as u16,
-            1,
-            false,
-        );
-        net_unlock();
-        assert_eq!(r, Ok(()));
-        let out = COPIED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop()
-            .expect("the report sent");
-        assert_eq!(out.len(), 40 + 8 + 24);
-        assert_eq!((out[4], out[5], out[6]), (0, 32, IPPROTO_HOPOPTS as u8));
-        assert_eq!(
-            out[40..48],
-            [
-                IPPROTO_ICMPV6 as u8,
-                0,
-                IP6OPT_PADN,
-                0,
-                IP6OPT_ROUTER_ALERT,
-                2,
-                0,
-                0
-            ]
-        );
-        assert_eq!(out[48], MLD_LISTENER_REPORT);
-
-        // Without it: the packet as it was given.
-        net_lock();
-        let r = BSD_NET_LEGS.ip6_output_opts(
-            unpark(test_packet(&p)),
-            false,
-            0,
-            ifp.if_index.get() as u16,
-            1,
-            false,
-        );
-        net_unlock();
-        assert_eq!(r, Ok(()));
-        let out = COPIED
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop()
-            .expect("the report sent");
-        assert_eq!(out.len(), 40 + 24);
-        assert_eq!(
-            (out[5], out[6], out[40]),
-            (24, IPPROTO_ICMPV6 as u8, MLD_LISTENER_REPORT)
-        );
     }
 
     #[test]

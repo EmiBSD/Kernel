@@ -94,6 +94,10 @@
 //!   inline), so that host tests can check them.
 //! - `NPF` and `NSTOEPLITZ` are configured: `pf_mbuf_link_inpcb` and the flow id of a
 //!   connected socket.
+//! - The pcb's sticky options and multicast options are the kernel's (N6.5c): each use lends
+//!   the options for that one call (`Inpcb::outputopts6`), never across another function that
+//!   lends them itself (`in6_pcbaddrisavail`), and the multicast options' three scalars are
+//!   copied once (`Inpcb::moptions6_out`); the C reads the two pointers.
 
 use core::mem::size_of;
 
@@ -110,7 +114,7 @@ use crate::netinet6::in6::{
     In6Addr, SockaddrIn6, in6_are_addr_equal, in6_is_addr_unspecified, in6_is_addr_v4mapped,
     in6_nam2sin6,
 };
-use crate::netinet6::in6_pcb::{in6_pcbaddrisavail, inp_moptions6, inp_outputopts6};
+use crate::netinet6::in6_pcb::in6_pcbaddrisavail;
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_selecthlim};
 use crate::netinet6::ip6_output::{ip6_clearpktopts, ip6_output, ip6_setpktopts};
 use crate::netinet6::ip6_var::{IPV6_MINMTU, Ip6Pktopts, mtod_ip6, mtod_ip6_store};
@@ -141,19 +145,21 @@ pub fn udp6_output(
     let mut opt = Ip6Pktopts::default();
 
     let priv_ = inp.socket().has_state(SS_PRIV);
+    // `inp->inp_moptions6`'s members `ip6_output` and the scope zone read, copied once.
+    let mopts = inp.moptions6_out();
 
     let result: Result<(), Errno> = 'releaseopt: {
         let error: Errno = 'release: {
-            let optp: Option<&Ip6Pktopts> = if let Some(control) = control {
+            // `optp`: the control messages' options (`opt`), else the pcb's sticky ones, lent
+            // at each use below.
+            if let Some(control) = control {
+                let sticky = inp.outputopts6();
                 if let Err(e) =
-                    ip6_setpktopts(control, &mut opt, inp_outputopts6(inp), priv_, IPPROTO_UDP)
+                    ip6_setpktopts(control, &mut opt, sticky.as_deref(), priv_, IPPROTO_UDP)
                 {
                     break 'release e;
                 }
-                Some(&opt)
-            } else {
-                inp_outputopts6(inp)
-            };
+            }
 
             let (laddr, faddr, fport): (In6Addr, In6Addr, u16) = if let Some(addr6) = addr6 {
                 let sin6p = match in6_nam2sin6(addr6) {
@@ -178,15 +184,21 @@ pub fn udp6_output(
 
                 // KAME hack: embed scopeid
                 let mut a = sin6.sin6_addr;
-                if in6_embedscope(&mut a, &sin6, inp_outputopts6(inp), inp_moptions6(inp)).is_err()
-                {
+                let embedded =
+                    in6_embedscope(&mut a, &sin6, inp.outputopts6().as_deref(), mopts.as_ref());
+                if embedded.is_err() {
                     break 'release Errno::EINVAL;
                 }
                 sin6.sin6_addr = a;
                 let faddr = sin6.sin6_addr;
 
                 let mut laddr = In6Addr::default();
-                if let Err(e) = in6_pcbselsrc(&mut laddr, &sin6, inp, optp) {
+                let selected = if control.is_some() {
+                    in6_pcbselsrc(&mut laddr, &sin6, inp, Some(&mut opt))
+                } else {
+                    in6_pcbselsrc(&mut laddr, &sin6, inp, inp.outputopts6().as_deref_mut())
+                };
+                if let Err(e) = selected {
                     break 'release e;
                 }
 
@@ -249,12 +261,18 @@ pub fn udp6_output(
                 ph.csum_flags.set(ph.csum_flags.get() | M_FLOWID);
             }
 
+            let sticky = inp.outputopts6();
+            let optp: Option<&Ip6Pktopts> = if control.is_some() {
+                Some(&opt)
+            } else {
+                sticky.as_deref()
+            };
             break 'releaseopt ip6_output(
                 m,
                 optp,
                 Some(&mut *inp.route()),
                 flags,
-                inp_moptions6(inp),
+                mopts.as_ref(),
                 Some(&inp.inp_seclevel.get()),
             );
         };
