@@ -223,6 +223,23 @@
 //!     view of a default `Ip6Pktopts` built per op (the transports' sticky options: D-10's
 //!     nine-word copy, docs/SCAFFOLDING.md's `Ip6OutOpts` row), the packet taken back off
 //!     lo0's input queue for the next op.
+//! - The IPv6 input rows (N6.5d; "before" = `bsd`'s `ipv6_input`, LZ's input path over the
+//!   parked packet with `bsd`'s `inet6sw[]` and `ip6_protox[]`, and `frag6_input` at the
+//!   sub-slice's base, in a scratch test; written at N6.5d, run at the N6.5 close, decision
+//!   50): lo0 with ::1/128 (`in6_ioctl`), the glue's `inet6sw[]` a UDP entry with
+//!   `PR_MPINPUT` and the raw wildcard `ip6_init` wants (`ip6_protox[]` filled by
+//!   `ip6_init`), each taking its packet into the stash; the net lock held for the run, the
+//!   softnet's stack (`Netstack`) lent:
+//!   - `ip6.input.deliver`: `ipv6_input` of a 64-byte UDP packet from ::1 to ::1
+//!     (`ipv6_check`'s header read and checks, the local route through the stack's cache,
+//!     `ip6_ours`, `ip6_hbhchcheck`'s length check, `ip_deliver`'s
+//!     `inet6sw[ip6_protox[nxt]]` and the entry's `&dyn` call), the packet back from the
+//!     stash for the next op.
+//!   - `frag6.reass.2` (control): a 56-byte UDP datagram in two fragments, each `m_devget`
+//!     per op, through `ipv6_input` and the table's fragment entry (`frag6_input`): the first
+//!     queued (`FRAG6`'s mutex, an `ip6q` and an `ip6af` from their pools), the second
+//!     completing it (the fragments joined by the list's splice, the header rewritten, the
+//!     records freed) and the datagram delivered, then freed.
 
 #![forbid(unsafe_code)]
 
@@ -672,6 +689,7 @@ fn main() {
         .chain(INET6_ROWS.iter())
         .chain(ND6_ROWS.iter())
         .chain(INET6_OUTPUT_ROWS.iter())
+        .chain(INET6_INPUT_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -947,6 +965,7 @@ fn main() {
     inet6_rows(&wanted, &report);
     nd6_rows(&wanted, &report);
     inet6_output_rows(&wanted, &report);
+    inet6_input_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -2605,6 +2624,8 @@ struct BenchTransport {
     proto: i16,
     /// `pr_flags`.
     flags: i16,
+    /// An entry of `inet6sw[]` (`inet6domain`'s), else of `inetsw[]`.
+    v6: bool,
 }
 
 /// The UDP entry.
@@ -2614,18 +2635,21 @@ static BENCH_UDP_IN: BenchTransport = BenchTransport {
     flags: kernel::net::proto::PR_ATOMIC
         | kernel::net::proto::PR_ADDR
         | kernel::net::proto::PR_MPINPUT,
+    v6: false,
 };
 /// The TCP entry.
 static BENCH_TCP_IN: BenchTransport = BenchTransport {
     ty: hal::sys::socket::SOCK_STREAM as i16,
     proto: hal::sys::netinet_in::IPPROTO_TCP as i16,
     flags: kernel::net::proto::PR_CONNREQUIRED,
+    v6: false,
 };
 /// The raw wildcard.
 static BENCH_RAW_IN: BenchTransport = BenchTransport {
     ty: hal::sys::socket::SOCK_RAW as i16,
     proto: 0,
     flags: kernel::net::proto::PR_ATOMIC | kernel::net::proto::PR_ADDR,
+    v6: false,
 };
 /// The table.
 static BENCH_IP_SW: [&dyn kernel::net::proto::Protocol<G>; 3] =
@@ -2633,6 +2657,9 @@ static BENCH_IP_SW: [&dyn kernel::net::proto::Protocol<G>; 3] =
 
 impl kernel::net::proto::Protocol<G> for BenchTransport {
     fn domain(&self) -> &'static dyn Domain<G> {
+        if self.v6 {
+            return &kernel::netinet6::in6_proto::Inet6Domain::<G>::NEW;
+        }
         &kernel::netinet::in_proto::InetDomain::<G>::NEW
     }
     fn ty(&self) -> i16 {
@@ -3428,5 +3455,164 @@ fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, 
         });
         report(INET6_OUTPUT_ROWS[0], r);
     }
+}
+
+/// The IPv6 input rows (N6.5d).
+const INET6_INPUT_ROWS: [&str; 2] = ["ip6.input.deliver", "frag6.reass.2"];
+
+/// The IPv6 input rows' UDP entry (`PR_MPINPUT`: delivered in place by `ip6_ours`).
+static BENCH_UDP6_IN: BenchTransport = BenchTransport {
+    ty: hal::sys::socket::SOCK_DGRAM as i16,
+    proto: hal::sys::netinet_in::IPPROTO_UDP as i16,
+    flags: kernel::net::proto::PR_ATOMIC
+        | kernel::net::proto::PR_ADDR
+        | kernel::net::proto::PR_MPINPUT,
+    v6: true,
+};
+/// Their raw wildcard (`ip6_init`'s raw entry).
+static BENCH_RAW6_IN: BenchTransport = BenchTransport {
+    ty: hal::sys::socket::SOCK_RAW as i16,
+    proto: 0,
+    flags: kernel::net::proto::PR_ATOMIC
+        | kernel::net::proto::PR_ADDR
+        | kernel::net::proto::PR_MPINPUT,
+    v6: true,
+};
+/// The rows' `inet6sw[]`: the kernel's fragment entry between the doubles.
+static BENCH_IP6_SW: [&dyn kernel::net::proto::Protocol<G>; 3] = [
+    &BENCH_UDP6_IN,
+    &kernel::netinet6::in6_proto::Frag6Protocol::<G>::NEW,
+    &BENCH_RAW6_IN,
+];
+
+/// An IPv6 packet from ::1 to ::1 of next header `nxt` whose payload is `rest`.
+fn loop6_packet(nxt: u8, rest: &[u8]) -> Vec<u8> {
+    let mut b = vec![0u8; 40];
+    b[0] = 0x60;
+    b[4..6].copy_from_slice(&(rest.len() as u16).to_be_bytes());
+    b[6] = nxt;
+    b[7] = 64;
+    b[23] = 1;
+    b[39] = 1;
+    b.extend_from_slice(rest);
+    b
+}
+
+/// The IPv6 input rows (N6.5d): see the file's documentation.
+fn inet6_input_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::netinet_in::{IPPROTO_FRAGMENT, IPPROTO_UDP};
+    use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
+    use hal::sys::netinet6_in6_var::In6Aliasreq;
+    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
+    use kernel::net::if_::{SIOCAIFADDR_IN6, if_test_reset};
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::if_var::Netstack;
+    use kernel::net::mbuf::m_devget;
+    use kernel::netinet6::ip6_input::{ip6_init, ipv6_input};
+
+    if !INET6_INPUT_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET6,
+        rtoffset: 8,
+        maxplen: 128,
+        sasize: 28,
+    }]);
+    kernel::netinet6::in6_var::in6_var_test_reset();
+    kernel::netinet6::nd6::nd6_test_reset();
+    kernel::netinet6::nd6_nbr::dad_test_reset();
+    kernel::netinet6::frag6::frag6_test_reset();
+    kernel::netinet6::ip6_input::ip6_test_reset();
+    // The glue's inet6sw[] and ip6_init (ip6_protox[], ND's and reassembly's pools).
+    kernel::netinet6::in6_proto::inet6sw_set::<G>(&BENCH_IP6_SW);
+    ip6_init::<G>();
+
+    hal::klock::kernel_lock();
+    let made = loop_clone_create(&LOOP_CLONER, 0);
+    hal::klock::kernel_unlock();
+    if made.is_err() {
+        eprintln!("net: no lo0");
+        std::process::exit(1);
+    }
+    let lo = need(
+        kernel::net::if_::IFNETLIST
+            .iter()
+            .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+        "lo0 listed",
+    );
+    // ifconfig lo0 inet6 ::1/128
+    let one = In6Addr {
+        s6_addr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    };
+    let mut ifra = In6Aliasreq::zeroed();
+    ifra.ifra_name = lo.if_xname.get();
+    ifra.ifra_addr = SockaddrIn6::with_addr(one);
+    ifra.ifra_prefixmask = SockaddrIn6::with_addr(IN6MASK128);
+    ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
+    ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
+    let mut req = [0u8; 128];
+    let _ = hal::pod::put(&mut req, 0, &ifra);
+    if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(lo), true).is_err() {
+        eprintln!("net: lo0 refused ::1");
+        std::process::exit(1);
+    }
+    let w = NETLOCK.write();
+    let net = need(NetHeld::of(&w), "the net lock");
+    let mut ns = Netstack::new(0);
+
+    if wanted(INET6_INPUT_ROWS[0]) {
+        // ::1 -> ::1, UDP, 24 bytes of payload (64 in all).
+        let mut m = Some(need(
+            m_devget(&loop6_packet(IPPROTO_UDP as u8, &[0; 24]), 0),
+            "a 64-byte packet",
+        ));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = need(m.take(), "the packet");
+                ipv6_input::<G>(lo, black_box(q), Some(&mut ns), &net);
+                m = Some(unstash());
+            }
+            t.elapsed()
+        });
+        report(INET6_INPUT_ROWS[0], r);
+    }
+    if wanted(INET6_INPUT_ROWS[1]) {
+        // A 56-byte UDP datagram in two fragments of id 7: 32 data bytes with more to come,
+        // then 24 at offset 32.
+        let frag = |offlg: u16, len: usize| {
+            let mut f = vec![IPPROTO_UDP as u8, 0];
+            f.extend_from_slice(&offlg.to_be_bytes());
+            f.extend_from_slice(&7u32.to_be_bytes());
+            f.extend_from_slice(&vec![0u8; len]);
+            loop6_packet(IPPROTO_FRAGMENT as u8, &f)
+        };
+        let first = frag(1, 32);
+        let last = frag(32, 24);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let a = need(m_devget(&first, 0), "the first fragment");
+                let b = need(m_devget(&last, 0), "the last fragment");
+                ipv6_input::<G>(lo, black_box(a), Some(&mut ns), &net);
+                ipv6_input::<G>(lo, black_box(b), Some(&mut ns), &net);
+                drop(unstash());
+            }
+            t.elapsed()
+        });
+        report(INET6_INPUT_ROWS[1], r);
+    }
+    drop(net);
+    drop(w);
 }
 /* </CODE> */
