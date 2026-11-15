@@ -193,11 +193,11 @@ pub fn in_addmulti(
     addr: &InAddr,
     ifp: &'static crate::net::if_var::Ifnet,
 ) -> Option<&'static kernel::netinet::in_var::InMulti> {
-    kernel::netinet::in_::in_addmulti(addr, ifp, &crate::net::if_::net_held("in_addmulti"))
+    kernel::netinet::in_::in_addmulti(addr, ifp, crate::net::if_::net_held("in_addmulti").net())
 }
 
 /// `in_delmulti(inm)`: the kernel's, under the net lock the caller holds.
 pub fn in_delmulti(inm: &'static kernel::netinet::in_var::InMulti) {
-    kernel::netinet::in_::in_delmulti(inm, &crate::net::if_::net_held("in_delmulti"));
+    kernel::netinet::in_::in_delmulti(inm, crate::net::if_::net_held("in_delmulti").net());
 }
 /* </CODE> */

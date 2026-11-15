@@ -133,10 +133,10 @@ use core::sync::atomic::{
 
 use crate::assert::hal_panic;
 use crate::mutex::Mutexed;
-use crate::netlock::NetHeld;
+use crate::netlock::{NetHeld, NetLend};
 use crate::pinlist::{PinAdapter, PinList};
 use crate::pool::{PoolBox, Pooled};
-use crate::rwlock::{Divisible, Exclusive, LockId, RW_READ, RW_WRITE, Witness};
+use crate::rwlock::{Divisible, Exclusive, LockId, Witness};
 use crate::sys::socket::Sockaddr;
 use crate::user::{AbiPod, pod_from_bytes, pod_to_bytes};
 
@@ -856,17 +856,17 @@ impl SaToken {
         }
     }
 
-    /// The proof that the net lock is held, for the token holder's walks under a holding of
-    /// its own that no witness exists of (`bsd`'s detached `NET_LOCK()` and
-    /// `NET_LOCK_SHARED()`): `None` unless the lock is written by the running process or
-    /// read (the C's `NET_ASSERT_LOCKED()`). That a read holding is the caller's, `rw_status`
-    /// cannot say: the holder's contract (`sys/hal/trust.rs`), which also asks it to drop the
-    /// proof before it lets the holding go (the proof of a `&'static` token is
-    /// `NetHeld<'static>`: no borrow ends it). Kernel code holds a witness and takes
-    /// [`NetHeld::of`] instead.
-    pub fn net_held(&self) -> Option<NetHeld<'_>> {
-        let held = crate::netlock::status();
-        (held == RW_WRITE || held == RW_READ).then(NetHeld::new)
+    /// A proof that the net lock is held, lent for the life of the guard returned
+    /// ([`NetLend`], its proof [`NetLend::net`]), for the token holder's calls into the kernel
+    /// under a holding that no witness exists of (`bsd`'s detached `NET_LOCK()` and
+    /// `NET_LOCK_SHARED()`, or a kernel witness further up the stack): the C's
+    /// `NET_ASSERT_LOCKED()` made exact (`hal::netlock::lend_held`). With the lock written by
+    /// the running process the proof is of that holding, which cannot be let go while the
+    /// guard lives; with the lock read (by whoever: `rw_status` cannot say) it is of a read
+    /// share the guard joins and releases. `None` when neither holds. Kernel code holds a
+    /// witness and takes [`NetHeld::of`] instead, or [`crate::netlock::lend_detached`].
+    pub fn lend_net(&self) -> Option<NetLend> {
+        crate::netlock::lend_held()
     }
 }
 
@@ -1180,8 +1180,8 @@ impl SaLink {
 
     /// A copy of the socket address (`None` when the link is empty), for a holder of the net
     /// lock (the C's readers of `ifa_addr`, `NET_ASSERT_LOCKED()`), which `_held` proves (a
-    /// witness's, a lent detached holding's, or the token holder's check, made once per
-    /// walk).
+    /// witness's, or one lent: by `lend_detached` for a closure, by the token holder's
+    /// `lend_net` for a guard's life; made once per walk).
     pub fn read(&self, _held: &NetHeld<'_>) -> Option<SaBytes> {
         let (p, cap, words) = self.load_pair();
         if p.is_null() {
@@ -1212,12 +1212,12 @@ impl SaLink {
         // (taken by `bsd`'s boot before any `forbid` crate runs), and its contract
         // (`sys/hal/trust.rs`) is that the cell's bytes are written only while it holds the
         // net lock exclusively, and `_held` proves the caller holds the lock while it copies:
-        // a witness of it (`NetHeld::of`: kernel code, exact, so no exclusive holder exists
-        // until the caller lets go), the running process's detached write holding lent for a
-        // closure (`hal::netlock::lend_detached`: exact, and the holding cannot be let go
-        // while the proof is lent, so no other exclusive holder exists meanwhile), or the
-        // token holder's own check of a holding of its own (`SaToken::net_held`, under the
-        // holder's contract that a read holding it finds is its own). The copy makes no
+        // a witness of it (`NetHeld::of`: the witness held until its drop, so no other
+        // exclusive holder exists until the caller lets go), or a proof lent
+        // (`hal::netlock::lend_detached` for a closure, `SaToken::lend_net` for a guard's
+        // life): the running process's write holding, whose release paths refuse to run while
+        // the proof is lent, or a read share the guard joined and owns; either way no other
+        // exclusive holder exists while the proof lives (`hal::netlock`'s notes). The copy makes no
         // reference to the storage, so a write after it touches nothing the caller holds.
         out.len = unsafe {
             let len = usize::from(p.read()).min(cap);
@@ -1846,13 +1846,16 @@ mod tests {
         let _s = crate::netlock::tests::serial();
         let l: &'static SaLink = Box::leak(Box::new(SaLink::new()));
         l.set(token(), Some(image::<16>(16, 2, &[])));
-        // Neither written by this thread nor read: the token holder gets no proof.
-        assert!(token().net_held().is_none());
-        // Read: the witness's proof, and the token holder's check.
+        // Neither written by this thread nor read: the token holder is lent no proof.
+        assert!(token().lend_net().is_none());
+        // Read: the witness's proof, and the token holder's lend (of a joined share).
         let r = crate::netlock::NETLOCK.read();
         let held = crate::netlock::NetHeld::of(&r).expect("the net lock's witness");
         assert_eq!(l.read(&held).map(|r| r.len()), Some(16));
-        assert!(token().net_held().is_some());
+        assert_eq!(
+            token().lend_net().map(|g| l.read(g.net()).map(|r| r.len())),
+            Some(Some(16))
+        );
         drop(r);
         // Another lock's witness proves nothing.
         static OTHER: crate::rwlock::RawRwlock = crate::rwlock::RawRwlock::new("other");
@@ -1864,7 +1867,7 @@ mod tests {
         assert_eq!(l.read(&held).map(|r| r.len()), Some(16));
         // Written by another thread: the token holder gets no proof there.
         thread::scope(|s| {
-            s.spawn(|| assert!(token().net_held().is_none()));
+            s.spawn(|| assert!(token().lend_net().is_none()));
         });
         drop(held);
         drop(w);

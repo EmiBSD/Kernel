@@ -72,7 +72,7 @@ pub fn rtable_init() {
 
 /// `rtable_getsource(rtableid, af)`: a copy of the table's preferred source address of `af`.
 pub fn rtable_getsource(rtableid: u32, af: SaFamily) -> Option<SaCopy> {
-    kernel::net::rtable::rtable_getsource(rtableid, af, &net_held("rtable_getsource"))
+    kernel::net::rtable::rtable_getsource(rtableid, af, net_held("rtable_getsource").net())
 }
 
 /// `rtable_iterate(rt0)`: the route after `rt0` on its multipath chain, `rt0`'s parked

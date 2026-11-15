@@ -6302,7 +6302,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_ethersubr.rs"
 lz = ["sys/net/if_ethersubr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/nd6_nbr.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/nd6_nbr.rs", "sys/hal/netlock.rs"]
 notes = "N6.3c2: a re-export of kernel::net::if_ethersubr with three adapters: the drivers' raw ether_ioctl (its one unsafe, the request's bytes the kernel reads), the parked-mbuf ether_input of the tests, ether_extract_headers into bsd's pointer view of struct ether_extracted"
 
 [[module]]
@@ -6450,20 +6450,20 @@ status = "inherited"
 rust = "sys/net/route.rs"
 lz = ["sys/net/route.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
+adapted_by = ["sys/sys/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/netlock.rs"]
 notes = "N6.3b2: the adapter, of no logic, of bsd callers over kernel::net::{route, rtable, rtsock}: a lent or parked route as the &'static Rtentry LZ code keeps (as_static, the one unsafe, D-N6.3b-19; park/unpark of PoolArc::forget/adopt for rtalloc/rtref/rtfree), the socket addresses as byte slices (sa_of, sa_view), the net lock's proof made through the SaToken (net_held, a panic without the lock); route.h's constants and structures re-exported from hal::sys::net_route; M7b's notes (Cells, the zeroed rtentry) superseded"
 
 [[module]]
 rust = "sys/net/rtable.rs"
 lz = ["sys/net/rtable.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/rtable.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/rtable.rs", "sys/kernel/net/route.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/net/rtsock.rs"
 lz = ["sys/net/rtsock.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/route.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/net/toeplitz.rs"
@@ -6498,13 +6498,13 @@ adapted_by = ["sys/hal/sys/netinet_icmp_var.rs", "sys/kernel/netinet/icmp_var.rs
 rust = "sys/netinet/if_ether.rs"
 lz = ["sys/netinet/if_ether.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/hal/sys/netinet_if_ether.rs", "sys/kernel/netinet/if_ether.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/if_ethersubr.rs", "sys/hal/sys/netinet_if_ether.rs", "sys/kernel/netinet/if_ether.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"
@@ -6516,14 +6516,14 @@ adapted_by = ["sys/kernel/netinet/igmp_var.rs"]
 rust = "sys/netinet/in_.rs"
 lz = ["sys/netinet/in_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/hal/sys/netinet_in.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/hal/sys/netinet_in.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/hal/netlock.rs"]
 notes = "M7b: module in_ (in is a Rust keyword), with in.c; every constant, the kernel's __IPADDR as htonl so INADDR_*/IN_CLASS*_NET/HOST are network order; in_addr (s_addr u32), sockaddr_in, ip_opts, ip_mreq, ip_mreqn; IN_CLASSA..D, IN_MULTICAST, IN_RFC3021_SUBNET, IN_EXPERIMENTAL, IN_BADCLASS, IN_LOCAL_GROUP, IN_CLASSFULBROADCAST, in_hosteq, in_nullhost as const fns; satosin/satosin_const/sintosa pointer casts; inetctlerrmap and the ip_* globals are netinet/ip_input.rs; CTL_IPPROTO_NAMES/IPCTL_NAMES wait for sys/sysctl.h (so wip); INADDR_NONE and bindresvport are userland"
 
 [[module]]
 rust = "sys/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/in_proto.rs"
@@ -6564,13 +6564,13 @@ adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/
 rust = "sys/netinet/ip_icmp.rs"
 lz = ["sys/netinet/ip_icmp.rs"]
 status = "adapted"
-adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
+adapted_by = ["sys/hal/sys/netinet_ip_icmp.rs", "sys/kernel/sysctl.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_input.rs"
 lz = ["sys/netinet/ip_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/netinet/ip_var.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipcomp.rs"
@@ -6594,7 +6594,7 @@ adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/if_var.rs", "sys/ker
 rust = "sys/netinet/ip_output.rs"
 lz = ["sys/netinet/ip_output.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_var.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_var.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_spd.rs"
@@ -6702,19 +6702,19 @@ status = "inherited"
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/nd6_nbr.rs", "sys/kernel/netinet6/nd6_rtr.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/nd6_nbr.rs", "sys/kernel/netinet6/nd6_rtr.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -6726,7 +6726,7 @@ adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/frag6.rs", 
 rust = "sys/netinet6/in6_src.rs"
 lz = ["sys/netinet6/in6_src.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_src.rs", "sys/kernel/netinet6/ip6_var.rs"]
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_src.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_var.rs"
@@ -6744,13 +6744,13 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kern
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/ip6_input.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/ip6_forward.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_var.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
@@ -6762,7 +6762,7 @@ adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_src.rs"
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/in6_proto.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6.rs"
@@ -12926,7 +12926,7 @@ reason = "hal runtime, written new: KASSERT(9) and panic(9) for the crate that n
 [[extra]]
 rust = "sys/hal/link.rs"
 crate = "hal"
-reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw); N6.5b (D-5): TaggedLink<A, B>, two typed kinds (tags 01 and 10, each with its own pool and lock, the tag and the type paired by one private Kind impl, the kinds excluding each other by the exchange from null; 4-aligned items), get_a/get_b, set_a/set_b, take_a/take_b, is_a/is_b; move_b_to_head, nd6_resolve's LRU move of the record the word owns on its pinned list in one call (the lent item borrows the witness the list change needs mutably); the owned item lent pinned (the same two unsafe, their SAFETY extended to the kinds and to Pin); N6.5e: SaWords::read, a record's own socket address copied as SaLink::read copies linked words (SaLink::read's words leg now calls it)"
+reason = "hal runtime, written new (N3.3): Link<T>, a settable reference to a 'static target over an atomic pointer, the one deref of the intrusive List and Tree; docs/IDIOMS.md; N5.3: SyncLink<T>, a Link that is Sync whatever T is (its target lent only where T: Sync), for a link whose target's auto traits would be an inductive cycle (Filedesc's cdir and rdir, Session's ttyvp); N6.3a: SaLink, the sockaddr of an interface address whose storage bsd owns, published only with the one SaToken bsd's boot takes as a typed &'static Cell<T> (address and size one pair under a sequence) and read by the kernel as a copy of its sa_len bytes cut at the storage, given a hal::netlock::NetHeld proof of the net lock (a witness's, or the token holder's check: review 2's S-a; review 1's B2; the trust.rs premise; removed at N6.4/N6.5); N6.4a: SaWords, a socket address's storage the kernel owns as atomic words (an in_ifaddr's ia_addr), linked by SaLink::set_words with no token beside a typed Link to it and copied by atomic loads (no new unsafe), the IPv4 half of that removal; N6.4b: TaggedLink<T>, the one word two owners share (a route's rt_llinfo): tagged, the PoolBox of a Tagged type (Pooled, and the static mutex its slots are written under as a const, StaticMutex) given up to the word through the box's crate-private raw form (its pool checked; never the public park: review 1's B1, a lent 'static reference could be unparked), lent under that mutex's guard (whole or part 0) and given back to the whole guard borrowed mutably; untagged, bsd nd6's legacy address, stored and returned, never followed; is_typed for rt_refcnt (two unsafe: the owned item's reference, the box's from_raw); N6.5b (D-5): TaggedLink<A, B>, two typed kinds (tags 01 and 10, each with its own pool and lock, the tag and the type paired by one private Kind impl, the kinds excluding each other by the exchange from null; 4-aligned items), get_a/get_b, set_a/set_b, take_a/take_b, is_a/is_b; move_b_to_head, nd6_resolve's LRU move of the record the word owns on its pinned list in one call (the lent item borrows the witness the list change needs mutably); the owned item lent pinned (the same two unsafe, their SAFETY extended to the kinds and to Pin); N6.5e: SaWords::read, a record's own socket address copied as SaLink::read copies linked words (SaLink::read's words leg now calls it); N6.5e review 1 (B1): SaToken::net_held (a NetHeld<'static> by check of rw_status, which another process's read holding satisfied) replaced by SaToken::lend_net, a hal::netlock::NetLend guard (exact); SaLink::read's SAFETY rests on exact proofs only"
 
 [[module]]
 rust = "sys/hal/list.rs"
@@ -13405,14 +13405,14 @@ rust = "sys/hal/netlock.rs"
 crate = "hal"
 lz = ["sys/net/if_.rs", "sys/sys/systm.rs"]
 status = "redesigned"
-notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported); N6.3a review 2: NetHeld, the proof of the net lock for readers that are not Guarded cells (from a witness of NETLOCK, or by hal::link::SaToken::net_held); N6.5e: the net cells' witnesses, NetHeld::reader (NetReader, shared: NET_ASSERT_LOCKED()) and NetHeld::writer (NetWriter, exclusive: NET_ASSERT_LOCKED_EXCLUSIVE()), each borrowing its proof, kept apart on the write holding by the borrow word NET_BORROW (readers nest, the writer alone, the other kind panic(9)), nothing counted on a read holding; NET_CELLS_ID, the net cells' identity (a word no lock owns); unlock and sleep_nsec refuse a witness left out"
+notes = "N3.4c: the NetLock bridge (NET_LOCK, NET_UNLOCK, rw_status(&netlock) of net/if.rs) for the kernel crate's vnode pager, an [[extra]] until N6.0; N6.0: the net lock itself, if.c's netlock as hal's static RawRwlock (NETLOCK, moved out of sys/net/if_.rs) with systm.h's paired forms as detached holdings over RawRwlock's crate-private raw paths (lock/unlock marked by the writer word, lock_shared/unlock_shared by a count; a witness's holding never released by them, no witness rebuilt from the lock word: the review's fix), rw_status(&netlock) (status, write_held, held_detached) and rwsleep_nsec on it (sleep_nsec); the bridge gone, bsd's seven NET_* wrappers (sys/sys/systm.rs) adapters over it; the NET_ASSERT_* stay bsd's (splassert_fail and splassert_ctl are bsd's); no dt(4) trace index (dt(4) not ported); N6.3a review 2: NetHeld, the proof of the net lock for readers that are not Guarded cells (from a witness of NETLOCK, or by hal::link::SaToken::net_held); N6.5e: the net cells' witnesses, NetHeld::reader (NetReader, shared: NET_ASSERT_LOCKED()) and NetHeld::writer (NetWriter, exclusive: NET_ASSERT_LOCKED_EXCLUSIVE()), each borrowing its proof, kept apart on the write holding by the borrow word NET_BORROW (readers nest, the writer alone, the other kind panic(9)), nothing counted on a read holding; NET_CELLS_ID, the net cells' identity (a word no lock owns); unlock and sleep_nsec refuse a witness left out; N6.5e review 1 (B1): every proof exact: lend_held and its NetLend guard (SaToken::lend_net's) lend the running process's write holding (LENT, checked by unlock, sleep_nsec and before_write_release, which a write witness of NETLOCK calls on every release) or a read share joined for the guard (RawRwlock::join_read); unlock checks its ownership first"
 
 [[module]]
 rust = "sys/hal/rwlock.rs"
 crate = "hal"
 lz = ["sys/kern/kern_rwlock.rs", "sys/sys/rwlock.rs", "sys/kern/kern_synch.rs"]
 status = "redesigned"
-notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: kern_rwlock.rs's rw_obj_* re-expressed as SharedRwlock (a counted handle over pool rwobjpl, a static arm), its WriteWitness/ReadWitness (sleep_nsec, into_sleep = PNORELOCK) and Guarded<T>, a cell keyed to a lock's identity; bsd's rw_obj_* stay, by name, until uvm's last caller moves (N3.4b/c). N3.5 S0: RawRwlock's own witnesses (write/read/enter and their flags/try forms) for a lock embedded beside what it guards (the map's vmmaplk), Guarded::new_keyed/new_mutexed/keyed(id, part)/rekey_raw/rekey_mutexed/rekey_id, a MutexedGuard as a witness (INTRSAFE maps; LockId tags a mutex's), get_mut over any Exclusive witness, Divisible::split into WitnessParts that open disjoint cells at once; N6.5e: Guarded::new_net (a net cell, keyed to hal::netlock's own identity) and the net cells' witnesses NetReader (Witness) and NetWriter (Witness, Exclusive), Guarded's invariant and its two SAFETY arguments extended to them (hal::netlock's checks)"
+notes = "N2.3: Rwlocked<T>, rw_enter(9)'s behaviour re-expressed as a lock that owns its data, with rwsleep on the guard; the legacy Rwlock and kern_rwlock.rs stay in bsd for their users (the timing rule) and are deleted with the last one (N9). N3.4a: kern_rwlock.rs's rw_obj_* re-expressed as SharedRwlock (a counted handle over pool rwobjpl, a static arm), its WriteWitness/ReadWitness (sleep_nsec, into_sleep = PNORELOCK) and Guarded<T>, a cell keyed to a lock's identity; bsd's rw_obj_* stay, by name, until uvm's last caller moves (N3.4b/c). N3.5 S0: RawRwlock's own witnesses (write/read/enter and their flags/try forms) for a lock embedded beside what it guards (the map's vmmaplk), Guarded::new_keyed/new_mutexed/keyed(id, part)/rekey_raw/rekey_mutexed/rekey_id, a MutexedGuard as a witness (INTRSAFE maps; LockId tags a mutex's), get_mut over any Exclusive witness, Divisible::split into WitnessParts that open disjoint cells at once; N6.5e: Guarded::new_net (a net cell, keyed to hal::netlock's own identity) and the net cells' witnesses NetReader (Witness) and NetWriter (Witness, Exclusive), Guarded's invariant and its two SAFETY arguments extended to them (hal::netlock's checks); N6.5e review 1 (B1): RawRwlock::join_read (one more reader without waiting, for netlock's lend) and WriteWitness's release paths (drop, sleeps, unlocked, downgrade) calling hal::netlock::before_write_release (one address compare; for NETLOCK the lend and borrow checks)"
 
 [[module]]
 rust = "sys/hal/refcnt.rs"
@@ -13456,7 +13456,7 @@ reason = "hal runtime, written new: the console primitive (cnputc, cngetc, cnpol
 [[extra]]
 rust = "sys/hal/trust.rs"
 crate = "hal"
-reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: a proof the token holder makes by check also opens the net cells (NetHeld::reader, NetHeld::writer), under the same contract"
+reason = "hal runtime, written new: the trust boundary of the memory bridges (alignment and size checks, the diagnostic probe); docs/ZERO_UNSAFE.md decision 30; N6.3a: the premise of hal::link::SaLink (a socket address lent by an interface address: the SaToken holder's contract and the readers' shared holding, review 1's B2); N6.5e: the token holder's proofs are lent (SaToken::lend_net, N6.5e review 1), exact, so the contract's proof-by-check clause is gone"
 
 [[extra]]
 rust = "sys/kern/hal_bridges.rs"

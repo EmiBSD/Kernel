@@ -215,12 +215,12 @@ pub fn in6_control(
 
 /// `in6_addmulti(addr, ifp, &error)`: the kernel's, under the net lock the caller holds.
 pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6Multi, Errno> {
-    kernel::netinet6::in6::in6_addmulti(addr, ifp, &net_held("in6_addmulti"))
+    kernel::netinet6::in6::in6_addmulti(addr, ifp, net_held("in6_addmulti").net())
 }
 
 /// `in6_delmulti(in6m)`: the kernel's, under the net lock the caller holds.
 pub fn in6_delmulti(in6m: &'static In6Multi) {
-    kernel::netinet6::in6::in6_delmulti(in6m, &net_held("in6_delmulti"));
+    kernel::netinet6::in6::in6_delmulti(in6m, net_held("in6_delmulti").net());
 }
 /* </CODE> */
 

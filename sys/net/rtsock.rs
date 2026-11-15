@@ -93,12 +93,12 @@ use crate::net::route::Rtentry;
 
 /// `rtm_send(rt, cmd, error, rtableid)`.
 pub fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
-    kernel::net::rtsock::rtm_send(rt, cmd, error, rtableid, &net_held("rtm_send"));
+    kernel::net::rtsock::rtm_send(rt, cmd, error, rtableid, net_held("rtm_send").net());
 }
 
 /// `rtm_addr(cmd, ifa)`.
 pub fn rtm_addr(cmd: u8, ifa: &Ifaddr) {
-    kernel::net::rtsock::rtm_addr(cmd, ifa, &net_held("rtm_addr"));
+    kernel::net::rtsock::rtm_addr(cmd, ifa, net_held("rtm_addr").net());
 }
 /* </CODE> */
 

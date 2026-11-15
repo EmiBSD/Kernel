@@ -175,7 +175,7 @@ pub const fn ether_map_ipv6_multicast(ip6addr: &In6Addr) -> [u8; ETHER_ADDR_LEN]
 /// (`net_lock()`; `if_netisr` calls the kernel's).
 #[cfg(test)]
 pub(crate) fn arpintr() {
-    kernel::netinet::if_ether::arpintr(&crate::net::if_::net_held("arpintr"));
+    kernel::netinet::if_ether::arpintr(crate::net::if_::net_held("arpintr").net());
 }
 
 // Sizes of the C structures.

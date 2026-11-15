@@ -112,7 +112,13 @@ pub use kernel::netinet6::ip6_var::ICMP6COUNTERS;
 
 /// `icmp6_error(m, type, code, param)` of a parked packet (pf, UDP, raw IPv6).
 pub fn icmp6_error(m: &'static Mbuf, type_: u8, code: u8, param: i32) {
-    kernel::netinet6::icmp6::icmp6_error(unpark(m), type_, code, param, &net_held("icmp6_error"));
+    kernel::netinet6::icmp6::icmp6_error(
+        unpark(m),
+        type_,
+        code,
+        param,
+        net_held("icmp6_error").net(),
+    );
 }
 
 /// `icmp6_mtudisc_update(ip6cp, validated)`: the kernel's, for `bsd`'s IPv6 control inputs.
@@ -120,7 +126,7 @@ pub fn icmp6_mtudisc_update(ip6cp: &Ip6CtlParam<'_>, validated: bool) {
     kernel::netinet6::icmp6::icmp6_mtudisc_update(
         ip6cp,
         validated,
-        &net_held("icmp6_mtudisc_update"),
+        net_held("icmp6_mtudisc_update").net(),
     );
 }
 
@@ -134,7 +140,7 @@ pub fn icmp6_mtudisc_clone(
         dst,
         rtableid,
         ipsec,
-        &net_held("icmp6_mtudisc_clone"),
+        net_held("icmp6_mtudisc_clone").net(),
     )
     .map(crate::net::route::park)
 }

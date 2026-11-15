@@ -164,7 +164,7 @@ mod tests {
     /// `mld6_input(m, off)` under the net lock, as `icmp6_input` calls it.
     fn input(m: &'static Mbuf, off: i32) {
         net_lock();
-        mld6_input(unpark(m), off, &net_held("mld6_input"));
+        mld6_input(unpark(m), off, net_held("mld6_input").net());
         net_unlock();
     }
 

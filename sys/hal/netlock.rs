@@ -171,39 +171,65 @@
 //! running process, [`unlock_shared`] only one of the detached read holdings, so neither can
 //! take a holding a witness owns, and no witness is ever made of a detached holding.
 //!
+//! **Proofs** (N6.3a-N6.5e). A reader of what the lock guards that is not a cell of its
+//! witnesses takes a [`NetHeld`], and every source of one keeps the holding it proves for as
+//! long as the proof lives:
+//! - [`NetHeld::of`] borrows a witness of [`NETLOCK`], which holds the lock until its drop;
+//! - [`lend_detached`] lends one, for a closure, of the running process's detached write
+//!   holding;
+//! - `hal::link::SaToken::lend_net` (`bsd`'s, for the holdings it has no witness of) lends
+//!   one for the life of a guard ([`NetLend`], [`lend_held`]) of the running process's write
+//!   holding (detached, or a witness's further up the stack), or of a read share the guard
+//!   joins and owns.
+//!
+//! While a proof of the write holding is lent ([`LENT`]), every release of that holding is
+//! refused (`panic(9)`): [`unlock`] and [`sleep_nsec`] for the detached one, the release paths
+//! of a write witness of `NETLOCK` for a witness's (`hal::rwlock::WriteWitness`'s drop, its
+//! sleeps, `unlocked`, `downgrade`). A read share joined for a lend is a read holding of its
+//! own (one more reader on the lock word, `RawRwlock::join_read`), released by the guard's
+//! drop: no other release can take it, since [`unlock_shared`] releases only what
+//! [`lock_shared`] counted. So no proof outlives its holding, whatever its holder does with
+//! the lock meanwhile.
+//!
 //! **Net cells** (N6.5e). A member the C keeps under the net lock (`[N]`: an interface's
 //! address list, a route's `rt_ifa`) that kernel code reaches under every kind of holding,
 //! detached ones included, cannot be a cell of [`NETLOCK`]'s witnesses, which a detached
 //! holding does not give. It is a *net cell* (`Guarded::new_net`), keyed to an identity of
 //! its own ([`NET_CELLS_ID`], a word no lock owns, as the kernel lock's cells), and opened by
-//! the witnesses a proof of the holding gives: [`NetHeld::reader`] a shared [`NetReader`]
-//! (walks and lookups: the C's `NET_ASSERT_LOCKED()`), [`NetHeld::writer`] the one exclusive
+//! the witnesses a proof gives: [`NetHeld::reader`] a shared [`NetReader`] (walks and
+//! lookups: the C's `NET_ASSERT_LOCKED()`), [`NetHeld::writer`] the one exclusive
 //! [`NetWriter`] (changes: `NET_ASSERT_LOCKED_EXCLUSIVE()`). A witness of `NETLOCK` itself
 //! opens no net cell (another identity), so every access to one passes this module's checks:
-//! - a reader made on a read holding counts nothing; one made on the running process's write
-//!   holding is counted in [`NET_BORROW`], and is refused (`panic(9)`) while the writer is
-//!   out; a reader on no holding of the running process is refused;
+//! - a reader made on a read holding (`rw_status` `RW_READ`) counts nothing; one made on the
+//!   running process's write holding is counted in [`NET_BORROW`], and is refused
+//!   (`panic(9)`) while the writer is out; with the lock neither written by the running
+//!   process nor read, it is refused;
 //! - the writer is made only on the running process's write holding with no reader counted
 //!   (`NET_BORROW` 0), which it sets to -1 until its drop; on any other holding, or with a
 //!   reader or the writer out, it is refused;
-//! - the detached write holding is not let go, nor slept on, while `NET_BORROW` is not 0
-//!   ([`unlock`], [`sleep_nsec`]).
+//! - the write holding is not let go, nor slept on, while `NET_BORROW` is not 0 ([`unlock`],
+//!   [`sleep_nsec`], a write witness's release paths).
 //!
 //! The invariant, from those checks: (i) a live [`NetHeld`] means the running process holds
-//! the net lock (the type's invariant: exact for [`NetHeld::of`] and [`lend_detached`], the
-//! token holder's check under its contract, `sys/hal/trust.rs`); (ii) `NET_BORROW` is changed
-//! only by a witness made after [`status`] answered `RW_WRITE`, at its making and at its drop
-//! (inside that holding: (iv)), so only by the one process that writes the lock, and what it
-//! counts is that holding's witnesses; (iii) a `NetWriter` exists only on that holding, with
-//! no reader counted, and no reader can be counted while it lives; no uncounted reader lives
-//! then either, since an uncounted reader's proof proves a read holding of the process that
-//! made it, which a write holding excludes; (iv) a witness borrows the proof it came
-//! from, which lives no longer than the holding it proves, so a holding never ends or changes
-//! mode under a live witness. So the references into a net cell are one `&mut` (through the
-//! writer, borrowed mutably) or `&`s (through readers, or the writer borrowed shared), never
-//! both. The cost is the C's under `DIAGNOSTIC` (GENERIC's): a walk loads the lock word once,
-//! as `NET_ASSERT_LOCKED()` does; on the write holding it adds an uncontended relaxed
-//! read-modify-write at the start and at the end.
+//! the net lock, and keeps holding it in the same mode until the proof is gone (the sources
+//! above: a borrowed witness, a lend whose holding refuses every release while it lasts, a
+//! read share the lend joined and owns); (ii) `NET_BORROW` is changed only by a witness made
+//! after [`status`] answered `RW_WRITE`, at its making and at its drop (inside that holding:
+//! (iv)), so only by the one process that writes the lock, and what it counts is that
+//! holding's witnesses; (iii) a `NetWriter` exists only on that holding, with no reader
+//! counted, and no reader can be counted while it lives; no uncounted reader lives then
+//! either, since an uncounted reader was made on a read holding of the process that made it
+//! (`RW_READ` there, and (i): its proof proves a holding of that process, which a write
+//! holding is not), and that read holding, which (iv) keeps, excludes every write holding;
+//! (iv) a witness borrows the proof it came from, which lives no longer than the holding it
+//! proves (i), so a holding never ends or changes mode under a live witness. So the
+//! references into a net cell are one `&mut` (through the writer, borrowed mutably) or `&`s
+//! (through readers, or the writer borrowed shared), never both. The cost is the C's under
+//! `DIAGNOSTIC` (GENERIC's): a walk loads the lock word once, as `NET_ASSERT_LOCKED()` does;
+//! on the write holding it adds an uncontended relaxed read-modify-write at the start and at
+//! the end. A lend costs a read-modify-write pair the C lacks: on [`LENT`] (written by the
+//! write holder only) for a write holding, on the lock word (which every reader writes) for a
+//! joined read share; `bsd`'s calls into the kernel pay it once per call, until they move.
 //!
 //! ## Deviations
 //! - The lock carries no `dt(4)` trace index (`rw_init_flags_trace(.., DT_RWLOCK_IDX_NETLOCK)`):
@@ -234,24 +260,31 @@
 //!   [`NetHeld::reader`] and [`NetHeld::writer`], the kernel lock's idiom (`hal::klock`'s
 //!   `reader`/`witness`, per process here, since a net lock holder may sleep and migrate):
 //!   the C's two assertions, made in every build, are the checks that keep a cell's readers
-//!   and its writer apart; [`unlock`] and [`sleep_nsec`] refuse a witness left out.
+//!   and its writer apart; [`unlock`], [`sleep_nsec`] and a write witness's release paths
+//!   refuse a witness left out.
+//! - N6.5e (review 1's B1): `bsd`'s proof by check of `rw_status` (`SaToken::net_held`, a
+//!   `NetHeld<'static>`), which a read holding of another process satisfied and nothing kept
+//!   alive, is a lend ([`lend_held`] behind `SaToken::lend_net`: a [`NetLend`] guard, which
+//!   `bsd`'s `net_held` returns, so its call sites keep their shape): the write holding of
+//!   the running process kept while lent (the release paths refuse it), or a read share the
+//!   guard joins. Every proof is exact; the trust premise it rested on is gone.
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
 use crate::assert::hal_panic;
-use crate::rwlock::{LockId, RW_READ, RW_WRITE, RawRwlock, Witness, rw_self};
+use crate::rwlock::{LockId, RW_READ, RW_WRITE, RawRwlock, ReadWitness, Witness, rw_self};
 use crate::sys::errno::Errno;
 
-/// The proof that the running code holds the net lock, for a reader of what it guards that
-/// is not a `Guarded` cell (`hal::link::SaLink::read`, review 2's S-a): made from a witness of
-/// [`NETLOCK`] ([`NetHeld::of`]: exact, borrowing the witness), or by the holder of
-/// `hal::link::SaToken` after a check of [`status`], for the holdings of `bsd`'s, which no
-/// witness exists of (`SaToken::net_held`: the token holder's contract, `sys/hal/trust.rs`),
-/// or lent to a closure by [`lend_detached`] for the running process's detached write holding
-/// (exact, and the holding kept until the closure returns). One per walk, where the C asserts
+/// The proof that the running process holds the net lock, for a reader of what it guards
+/// that is not a `Guarded` cell (`hal::link::SaLink::read`, review 2's S-a): made from a
+/// witness of [`NETLOCK`] ([`NetHeld::of`], borrowing the witness), or lent to a closure by
+/// [`lend_detached`] (the running process's detached write holding) or by
+/// `hal::link::SaToken::lend_net` (`bsd`'s holdings, which no witness exists of: the running
+/// process's write holding, or a read share joined for the closure). Every source keeps the
+/// holding until the proof is gone (the module's notes). One per walk, where the C asserts
 /// once (`NET_ASSERT_LOCKED()`). It opens the net cells through the witnesses it gives
-/// ([`NetHeld::reader`], [`NetHeld::writer`]: the module's notes). Not `Send`.
+/// ([`NetHeld::reader`], [`NetHeld::writer`]). Not `Send`.
 ///
 /// A witness borrows the proof it came from, so it cannot outlive it:
 ///
@@ -325,8 +358,9 @@ impl<'a> NetHeld<'a> {
     /// (walks, lookups). On the running process's write holding it is counted
     /// ([`NET_BORROW`]), and `panic(9)` while the net cells' writer is out (a walk inside a
     /// change, or a change's callee walking: the writer reads through itself instead); on a
-    /// read holding nothing is counted. `panic(9)` when the running process neither writes
-    /// nor reads the net lock (a proof that outlived its holding).
+    /// read holding nothing is counted. `panic(9)` when the lock is neither written by the
+    /// running process nor read (`rw_status` cannot say whose a read holding is, but no proof
+    /// outlives its holding, so a live one leaves the status `RW_WRITE` or `RW_READ`).
     pub fn reader(&self) -> NetReader<'_> {
         let registered = match status() {
             RW_WRITE => {
@@ -386,6 +420,29 @@ pub struct NetWriter<'a> {
     _not_send: PhantomData<*const ()>,
 }
 
+/// A proof of the net lock lent to `bsd` for the guard's life ([`lend_held`], behind
+/// `hal::link::SaToken::lend_net`): the proof ([`NetLend::net`]) borrows the guard, and the
+/// guard keeps the holding it proves until its drop: the running process's write holding,
+/// counted in [`LENT`] so that its release paths refuse to run, or a read share it joined
+/// and owns. A guard never dropped keeps the holding for ever (a write holding that can no
+/// longer be let go, a read share never released): a hang, never a proof without its
+/// holding. Not `Send`.
+#[must_use = "the proof is lent only while the guard lives"]
+pub struct NetLend {
+    /// The read share joined for the lend; `None` for a lend of the write holding, counted in
+    /// [`LENT`] until the drop.
+    share: Option<ReadWitness<'static>>,
+    /// The proof, lent by [`NetLend::net`] for a borrow of the guard.
+    held: NetHeld<'static>,
+}
+
+impl NetLend {
+    /// The proof, for as long as the guard is borrowed.
+    pub fn net(&self) -> &NetHeld<'_> {
+        &self.held
+    }
+}
+
 /// `netlock`: serialize socket operations to ensure no new sleeping points are introduced
 /// in IP output paths.
 pub static NETLOCK: RawRwlock = RawRwlock::new("netlock");
@@ -400,11 +457,13 @@ static DETACHED_WRITER: AtomicUsize = AtomicUsize::new(0);
 /// owns and the readers' count on the lock word is never below the witnesses'.
 static DETACHED_READERS: AtomicU32 = AtomicU32::new(0);
 
-/// How many proofs of the detached write holding are lent ([`lend_detached`]). While one is,
-/// the holding cannot be let go: [`unlock`] and [`sleep_nsec`] refuse it, so no proof
-/// outlives the holding it proves. Only the holding's process lends (the holding is
-/// exclusive), and a lend ends before its closure returns.
-static DETACHED_LENT: AtomicU32 = AtomicU32::new(0);
+/// How many proofs of the running process's write holding are lent ([`lend_detached`]'s
+/// closures, [`lend_held`]'s guards). While one is, the holding cannot be let go: [`unlock`]
+/// and [`sleep_nsec`] refuse it for the detached holding, a write witness's release paths
+/// for a witness's ([`before_write_release`]), so no proof outlives the holding it proves.
+/// Only the write holder lends (the holding is exclusive), and a lend ends before its
+/// closure returns or with its guard's drop, both while the holding lives.
+static LENT: AtomicU32 = AtomicU32::new(0);
 
 /// The identity of the net cells (`Guarded::new_net`): a word no lock owns, compared and
 /// never dereferenced (`LockId`'s rule: no two live locks share one), so no witness but
@@ -455,26 +514,60 @@ pub fn lock() {
 /// detached; while `f` runs the holding cannot be let go ([`unlock`] and [`sleep_nsec`] of it
 /// are `panic(9)`), so the proof, which `f` only borrows, lives no longer than the holding.
 pub fn lend_detached<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
-    /// The lend's end, on the closure's return or its unwinding (a host test's panic).
-    struct Lend;
-    impl Drop for Lend {
-        fn drop(&mut self) {
-            DETACHED_LENT.fetch_sub(1, Ordering::AcqRel);
-        }
-    }
-
     if !held_detached() {
         not_held("lend", status());
     }
-    DETACHED_LENT.fetch_add(1, Ordering::AcqRel);
+    lend_write(f)
+}
+
+/// The proof of the running process's write holding (detached, or a witness's), lent to `f`;
+/// the caller has checked the holding. [`LENT`] counts the lend until `f` returns (or
+/// unwinds: a host test's panic), and the holding's release paths refuse to run meanwhile.
+fn lend_write<R>(f: impl FnOnce(&NetHeld<'_>) -> R) -> R {
+    /// The lend's end, on the closure's return or its unwinding.
+    struct Lend;
+    impl Drop for Lend {
+        fn drop(&mut self) {
+            LENT.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    LENT.fetch_add(1, Ordering::AcqRel);
     let _lend = Lend;
     f(&NetHeld::new())
+}
+
+/// A proof of the holding the running process has, lent for the life of the guard it returns
+/// ([`NetLend`]), for `bsd`'s holdings, which no witness exists of
+/// (`hal::link::SaToken::lend_net`, the C's `NET_ASSERT_LOCKED()` before a call into the
+/// kernel): the write holding of the running process (`rw_status` `RW_WRITE`: detached, or a
+/// witness's further up the stack), kept while lent (its release paths refuse to run); or,
+/// with the lock read (`RW_READ`, whoever reads it: `rw_status` cannot say), a read share
+/// joined for the guard (one more reader on the lock word, without waiting: a reader may not
+/// wait behind a writer that waits for it), released by its drop. `None` when the lock is
+/// neither written by the running process nor read. Costs a read-modify-write pair the C
+/// lacks: on [`LENT`] for a write holding, on the lock word for a joined share.
+pub(crate) fn lend_held() -> Option<NetLend> {
+    match status() {
+        RW_WRITE => {
+            LENT.fetch_add(1, Ordering::AcqRel);
+            Some(NetLend {
+                share: None,
+                held: NetHeld::new(),
+            })
+        }
+        RW_READ => NETLOCK.join_read().map(|share| NetLend {
+            share: Some(share),
+            held: NetHeld::new(),
+        }),
+        _ => None,
+    }
 }
 
 /// [`unlock`]'s and [`sleep_nsec`]'s refusal while a proof of the holding is lent.
 #[inline]
 fn not_lent(what: &str) {
-    if DETACHED_LENT.load(Ordering::Acquire) != 0 {
+    if LENT.load(Ordering::Acquire) != 0 {
         hal_panic(format_args!(
             "netlock: {what} while its holding is lent to a proof"
         ));
@@ -482,8 +575,9 @@ fn not_lent(what: &str) {
 }
 
 /// [`unlock`]'s and [`sleep_nsec`]'s refusal while a witness of the net cells is out on the
-/// write holding (made from a proof by check, `hal::link::SaToken::net_held`, which no borrow
-/// ends): its holder would go on reading or writing cells the next holder may change.
+/// write holding: its holder would go on reading or writing cells the next holder may change.
+/// (The witnesses' borrows already prevent it for every proof; the check makes a broken
+/// invariant a `panic(9)` at the release.)
 #[inline]
 fn not_borrowed(what: &str) {
     let n = NET_BORROW.load(Ordering::Relaxed);
@@ -494,13 +588,28 @@ fn not_borrowed(what: &str) {
     }
 }
 
+/// A write witness's release of `lock` (its drop, a sleep, `unlocked`, `downgrade`:
+/// `hal::rwlock::WriteWitness`), checked first: of [`NETLOCK`], `panic(9)` while a proof of
+/// the holding is lent ([`lend_held`]) or a net cell witness is out; of any other lock, one
+/// address compare.
+#[inline]
+pub(crate) fn before_write_release(lock: &RawRwlock, what: &str) {
+    if core::ptr::eq(lock, &raw const NETLOCK) {
+        not_lent(what);
+        not_borrowed(what);
+    }
+}
+
 /// `NET_UNLOCK()`: releases the running process's detached write holding (taken by [`lock`]).
 /// `panic(9)` when it has none (not held, held by another, or held through a witness), while
 /// it is lent ([`lend_detached`]), or while a witness of the net cells is out on it.
 pub fn unlock() {
+    let me = rw_self();
+    if DETACHED_WRITER.load(Ordering::Acquire) != me {
+        not_held("exit write", status());
+    }
     not_lent("exit write");
     not_borrowed("exit write");
-    let me = rw_self();
     if DETACHED_WRITER
         .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -618,18 +727,28 @@ impl Drop for NetWriter<'_> {
         NET_BORROW.store(0, Ordering::Relaxed);
     }
 }
+
+impl Drop for NetLend {
+    fn drop(&mut self) {
+        // A joined share is released by its own drop, after this.
+        if self.share.is_none() {
+            LENT.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::panic::catch_unwind;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::thread;
 
     use super::*;
     use crate::rwlock::{Guarded, RW_WRITE_OTHER};
     use crate::sleep::INFSLP;
     use crate::testutil;
+    use std::string::String;
 
     /// The tests take the one static lock: one at a time (`hal::link`'s too).
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -775,7 +894,7 @@ pub(crate) mod tests {
         // The release refused while lent; the lend ended by the unwinding.
         assert!(std::panic::catch_unwind(|| lend_detached(|_net| unlock())).is_err());
         assert!(held_detached());
-        assert_eq!(DETACHED_LENT.load(Ordering::Relaxed), 0);
+        assert_eq!(LENT.load(Ordering::Relaxed), 0);
         unlock();
 
         // A witness's holding is not lent.
@@ -909,8 +1028,8 @@ pub(crate) mod tests {
         let _wr = net.writer();
     }
 
-    /// A proof by check held past its holding (the token holder's contract broken): every
-    /// witness is refused.
+    /// A proof without its holding (only `hal` can make one, `NetHeld::new`; every source
+    /// keeps its holding): the witnesses' own checks refuse it all the same.
     #[test]
     #[should_panic(
         expected = "netlock: a net cell writer without the net lock held exclusively (status 0x0)"
@@ -961,8 +1080,9 @@ pub(crate) mod tests {
         let _ = MEMBER.get(&r);
     }
 
-    /// The token holder's proof by check (`SaToken::net_held`), which no borrow ends: its
-    /// witnesses left out keep the detached write holding from being let go or slept on.
+    /// A proof made without a lend (only `hal` can, `NetHeld::new`), whose witnesses no
+    /// borrow ends: left out, they keep the detached write holding from being let go or slept
+    /// on (a broken invariant becomes a `panic(9)` at the release).
     #[test]
     fn a_detached_holding_is_not_let_go_with_a_net_cell_witness_out() {
         testutil::install();
@@ -993,6 +1113,147 @@ pub(crate) mod tests {
         );
         unlock();
         assert_eq!(status(), 0);
+    }
+
+    /// review 1's B1: a lend found the lock read by another process (the old proof by check
+    /// took that holding for the caller's). The lend joins it, so after the other reader lets
+    /// go the lock is still read, by the lend's share, and no writer gets in while a reader
+    /// made from the lend reads a net cell.
+    #[test]
+    fn a_lend_on_another_process_read_holding_joins_it() {
+        testutil::install();
+        let _s = serial();
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            *CELL.get_mut(&mut net.writer()) = 11;
+        }
+        let q_reads = std::sync::Barrier::new(2);
+        let q_may_go = std::sync::Barrier::new(2);
+        let q_gone = std::sync::Barrier::new(2);
+        thread::scope(|s| {
+            s.spawn(|| {
+                let r = NETLOCK.read();
+                q_reads.wait();
+                q_may_go.wait();
+                drop(r);
+                q_gone.wait();
+            });
+            q_reads.wait();
+            // This thread holds nothing; the lock is read (by the other one).
+            let lend = lend_held().expect("the lock is read");
+            let rd = lend.net().reader();
+            q_may_go.wait();
+            q_gone.wait();
+            assert_eq!(status(), RW_READ, "the lend's share still reads the lock");
+            assert!(
+                NETLOCK.try_write().is_none(),
+                "no writer while a reader of the lend reads"
+            );
+            assert_eq!(*CELL.get(&rd), 11);
+            drop(rd);
+            drop(lend);
+            assert_eq!(status(), 0, "the share went with the guard");
+        });
+        // Nothing to lend on a free lock, nor on another process's write holding.
+        assert!(lend_held().is_none());
+        let w = NETLOCK.write();
+        thread::scope(|s| {
+            s.spawn(|| assert!(lend_held().is_none()));
+        });
+        drop(w);
+    }
+
+    /// A lend of the running process's write holding through a witness further up the stack
+    /// (review 1's B1): every release of that witness is refused while the guard lives, so the
+    /// proof cannot outlive the holding whatever code holds the witness.
+    #[test]
+    fn a_write_witness_is_not_let_go_while_a_proof_of_it_is_lent() {
+        testutil::install();
+        let _s = serial();
+        let ident = 0u8;
+        let mut w = NETLOCK.write();
+        let lend = lend_held().expect("written by this process");
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| w.unlocked(|| ()))).is_err(),
+            "unlocked while lent"
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| w.sleep_nsec(
+                &raw const ident,
+                0,
+                "nettest",
+                1
+            )))
+            .is_err(),
+            "a sleep while lent"
+        );
+        assert!(
+            write_held() && !held_detached(),
+            "the witness's holding stays"
+        );
+        drop(lend);
+        // The guard gone, the witness lets go and takes back as before.
+        w.unlocked(|| assert_eq!(status(), 0));
+        assert_eq!(status(), RW_WRITE);
+
+        // Its drop while lent: refused, the holding kept (the test lets it go by hand).
+        let lend = lend_held().expect("written by this process");
+        assert!(catch_unwind(AssertUnwindSafe(move || drop(w))).is_err());
+        assert!(write_held(), "the dropped witness's holding stays");
+        drop(lend);
+        NETLOCK.exit_write(rw_self());
+        assert_eq!(status(), 0);
+
+        // A net cell witness out at the drop is refused the same way.
+        let w = NETLOCK.write();
+        let net = NetHeld::new();
+        let r = net.reader();
+        assert!(catch_unwind(AssertUnwindSafe(move || drop(w))).is_err());
+        drop(r);
+        NETLOCK.exit_write(rw_self());
+        assert_eq!(status(), 0);
+    }
+
+    /// A guard lent on the detached write holding keeps it: `NET_UNLOCK()` and the sleep are
+    /// refused until the guard goes.
+    #[test]
+    fn a_detached_holding_is_not_let_go_while_a_guard_lends_it() {
+        testutil::install();
+        let _s = serial();
+        let ident = 0u8;
+        lock();
+        let lend = lend_held().expect("written by this process");
+        assert!(catch_unwind(unlock).is_err(), "NET_UNLOCK while lent");
+        assert!(
+            catch_unwind(|| sleep_nsec(&raw const ident, 0, "nettest", 1)).is_err(),
+            "a sleep while lent"
+        );
+        assert!(held_detached());
+        drop(lend);
+        unlock();
+        assert_eq!(status(), 0);
+    }
+
+    /// `NET_UNLOCK()` by a process that does not hold the lock says so, whatever the holder has
+    /// lent (review 1's nit: the ownership is checked first).
+    #[test]
+    fn an_unlock_by_a_non_holder_names_the_holding() {
+        testutil::install();
+        let _s = serial();
+        lock();
+        let lend = lend_held().expect("written by this process");
+        let msg = thread::scope(|s| {
+            s.spawn(|| match catch_unwind(unlock) {
+                Ok(()) => String::new(),
+                Err(e) => e.downcast_ref::<String>().cloned().unwrap_or_default(),
+            })
+            .join()
+        })
+        .expect("the other thread");
+        assert!(msg.contains("when lock not held"), "{msg}");
+        drop(lend);
+        unlock();
     }
 }
 /* </TESTS> */

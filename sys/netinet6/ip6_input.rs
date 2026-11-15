@@ -99,7 +99,7 @@ pub use kernel::netinet6::ip6_var::IP6COUNTERS;
 
 /// `ipv6_input(ifp, m, ns)`: the kernel's, of a parked packet (wg(4), divert).
 pub fn ipv6_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
-    kernel::netinet6::ip6_input::ipv6_input::<G>(ifp, unpark(m), ns, &net_held("ipv6_input"));
+    kernel::netinet6::ip6_input::ipv6_input::<G>(ifp, unpark(m), ns, net_held("ipv6_input").net());
 }
 
 /// `ip6_input_if(mp, offp, nxt, af, ifp, ns)`: the kernel's, over the parked packet
@@ -120,7 +120,7 @@ pub fn ip6_input_if(
         af,
         ifp,
         ns,
-        &net_held("ip6_input_if"),
+        net_held("ip6_input_if").net(),
     );
     *mp = k.map(park);
     nxt
@@ -134,7 +134,7 @@ pub fn ip6_savecontrol(inp: &Inpcb, m: &Mbuf, mp: &mut Option<&'static Mbuf>) {
 /// `ip6_forward(m, ro, flags)`: the kernel's, of a parked packet (pf's route-to and
 /// reassembly).
 pub fn ip6_forward(m: &'static Mbuf, ro: Option<&mut Route>, flags: i32) {
-    kernel::netinet6::ip6_forward::ip6_forward(unpark(m), ro, flags, &net_held("ip6_forward"));
+    kernel::netinet6::ip6_forward::ip6_forward(unpark(m), ro, flags, net_held("ip6_forward").net());
 }
 
 /// `ip6_send(m)`: the kernel's, of a parked packet.

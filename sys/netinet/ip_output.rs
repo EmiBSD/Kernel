@@ -137,7 +137,7 @@ pub fn ip_output(
         imo,
         seclevel,
         ipsecflowinfo,
-        &crate::net::if_::net_held("ip_output"),
+        crate::net::if_::net_held("ip_output").net(),
     )
 }
 
@@ -228,7 +228,7 @@ fn ip_output_ipsec_pmtu_update(tdb: &Tdb, ro: Option<&mut Route>, dst: InAddr, r
                 ro.dst(),
                 RT_RESOLVE,
                 rtableid,
-                &crate::net::if_::net_held("ip_output_ipsec_pmtu_update"),
+                crate::net::if_::net_held("ip_output_ipsec_pmtu_update").net(),
             );
         }
         if rt_mtucloned {
@@ -384,7 +384,7 @@ pub fn ip_ctloutput(
         level,
         optname,
         m.map(mut_of),
-        &crate::net::if_::net_held("ip_ctloutput"),
+        crate::net::if_::net_held("ip_ctloutput").net(),
     );
     inp.set_options(options.map(park));
     r

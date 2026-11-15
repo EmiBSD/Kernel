@@ -205,7 +205,7 @@ pub fn in6_pcbaddrisavail(
     wild: i32,
     _p: &Proc,
 ) -> Result<(), Errno> {
-    k6::in6_pcbaddrisavail(inp, sin6, wild, &net_held("in6_pcbaddrisavail"))
+    k6::in6_pcbaddrisavail(inp, sin6, wild, net_held("in6_pcbaddrisavail").net())
 }
 
 /// The flow id of a connected or accepted IPv6 pcb from its new addresses (`NSTOEPLITZ`, the

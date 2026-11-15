@@ -167,8 +167,8 @@
 //! as the C's bare pointer.
 //!
 //! The kernel's functions take a proof that the net lock is held (`NetHeld`); `bsd`'s callers
-//! hold it C-style, so each entry here makes one through the `SaToken`
-//! (`crate::net::if_::net_held`), `panic(9)` without the lock where the C's
+//! hold it C-style, so each entry here is lent one through the `SaToken` for the call
+//! (`crate::net::if_::net_held`, a guard), `panic(9)` without the lock where the C's
 //! `NET_ASSERT_LOCKED()` would only print (N6.3a's adapters, the same).
 
 use core::fmt;
@@ -262,13 +262,13 @@ pub fn rt_key(rt: &Rtentry) -> &[u8] {
 
 /// `rtalloc(dst, flags, rtableid)`: the route to `dst`, its reference parked for [`rtfree`].
 pub fn rtalloc(dst: &[u8], flags: i32, rtableid: u32) -> Option<&'static Rtentry> {
-    kernel::net::route::rtalloc(sa_view(dst), flags, rtableid, &net_held("rtalloc")).map(park)
+    kernel::net::route::rtalloc(sa_view(dst), flags, rtableid, net_held("rtalloc").net()).map(park)
 }
 
 /// `rtalloc_mpath(dst, src, rtableid)`: the route to `dst` (a multipath one chosen by `src`),
 /// its reference parked for [`rtfree`].
 pub fn rtalloc_mpath(dst: &[u8], src: Option<&[u32]>, rtableid: u32) -> Option<&'static Rtentry> {
-    kernel::net::route::rtalloc_mpath(sa_view(dst), src, rtableid, &net_held("rtalloc_mpath"))
+    kernel::net::route::rtalloc_mpath(sa_view(dst), src, rtableid, net_held("rtalloc_mpath").net())
         .map(park)
 }
 
@@ -307,11 +307,12 @@ pub fn rtrequest(
     match ret_nrt {
         Some(s) => {
             let mut r = slot_in(s);
-            let e = kernel::net::route::rtrequest(req, info, prio, Some(&mut r), tableid, &net);
+            let e =
+                kernel::net::route::rtrequest(req, info, prio, Some(&mut r), tableid, net.net());
             *s = r.map(park);
             e
         }
-        None => kernel::net::route::rtrequest(req, info, prio, None, tableid, &net),
+        None => kernel::net::route::rtrequest(req, info, prio, None, tableid, net.net()),
     }
 }
 
@@ -327,18 +328,24 @@ pub fn rtrequest_delete(
     match ret_nrt {
         Some(s) => {
             let mut r = slot_in(s);
-            let e =
-                kernel::net::route::rtrequest_delete(info, prio, ifp, Some(&mut r), tableid, &net);
+            let e = kernel::net::route::rtrequest_delete(
+                info,
+                prio,
+                ifp,
+                Some(&mut r),
+                tableid,
+                net.net(),
+            );
             *s = r.map(park);
             e
         }
-        None => kernel::net::route::rtrequest_delete(info, prio, ifp, None, tableid, &net),
+        None => kernel::net::route::rtrequest_delete(info, prio, ifp, None, tableid, net.net()),
     }
 }
 
 /// `rtdeletemsg(rt, ifp, tableid)`.
 pub fn rtdeletemsg(rt: &Rtentry, ifp: &'static Ifnet, tableid: u32) -> Result<(), Errno> {
-    kernel::net::route::rtdeletemsg(&handle(rt), ifp, tableid, &net_held("rtdeletemsg"))
+    kernel::net::route::rtdeletemsg(&handle(rt), ifp, tableid, net_held("rtdeletemsg").net())
 }
 
 /// `rtredirect(dst, gateway, src, rtp, rdomain)`: the redirect's route given to `rtp`, its
@@ -355,36 +362,48 @@ pub fn rtredirect(
     match rtp {
         Some(s) => {
             let mut r = slot_in(s);
-            kernel::net::route::rtredirect(dst, gateway, src, Some(&mut r), rdomain, &net);
+            kernel::net::route::rtredirect(dst, gateway, src, Some(&mut r), rdomain, net.net());
             *s = r.map(park);
         }
-        None => kernel::net::route::rtredirect(dst, gateway, src, None, rdomain, &net),
+        None => kernel::net::route::rtredirect(dst, gateway, src, None, rdomain, net.net()),
     }
 }
 
 /// `rt_ifa_add(ifa, flags, dst, rdomain)`.
 pub fn rt_ifa_add(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
-    kernel::net::route::rt_ifa_add(ifa, flags, sa_view(dst), rdomain, &net_held("rt_ifa_add"))
+    kernel::net::route::rt_ifa_add(
+        ifa,
+        flags,
+        sa_view(dst),
+        rdomain,
+        net_held("rt_ifa_add").net(),
+    )
 }
 
 /// `rt_ifa_del(ifa, flags, dst, rdomain)`.
 pub fn rt_ifa_del(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
-    kernel::net::route::rt_ifa_del(ifa, flags, sa_view(dst), rdomain, &net_held("rt_ifa_del"))
+    kernel::net::route::rt_ifa_del(
+        ifa,
+        flags,
+        sa_view(dst),
+        rdomain,
+        net_held("rt_ifa_del").net(),
+    )
 }
 
 /// `rt_ifa_addlocal(ifa)`.
 pub fn rt_ifa_addlocal(ifa: &'static Ifaddr) -> Result<(), Errno> {
-    kernel::net::route::rt_ifa_addlocal(ifa, &net_held("rt_ifa_addlocal"))
+    kernel::net::route::rt_ifa_addlocal(ifa, net_held("rt_ifa_addlocal").net())
 }
 
 /// `rt_ifa_dellocal(ifa)`.
 pub fn rt_ifa_dellocal(ifa: &'static Ifaddr) -> Result<(), Errno> {
-    kernel::net::route::rt_ifa_dellocal(ifa, &net_held("rt_ifa_dellocal"))
+    kernel::net::route::rt_ifa_dellocal(ifa, net_held("rt_ifa_dellocal").net())
 }
 
 /// `rt_ifa_purge(ifa)`.
 pub fn rt_ifa_purge(ifa: &'static Ifaddr) {
-    kernel::net::route::rt_ifa_purge(ifa, &net_held("rt_ifa_purge"));
+    kernel::net::route::rt_ifa_purge(ifa, net_held("rt_ifa_purge").net());
 }
 
 /// `rt_timer_add(rt, queue, rtableid)`.
@@ -398,12 +417,12 @@ pub fn rt_timer_add(
 
 /// `rt_timer_queue_flush(rtq)`.
 pub fn rt_timer_queue_flush(rtq: &'static RttimerQueue) {
-    kernel::net::route::rt_timer_queue_flush(rtq, &net_held("rt_timer_queue_flush"));
+    kernel::net::route::rt_timer_queue_flush(rtq, net_held("rt_timer_queue_flush").net());
 }
 
 /// `rt_if_track(ifp)`.
 pub fn rt_if_track(ifp: &'static Ifnet) -> Result<(), Errno> {
-    kernel::net::route::rt_if_track(ifp, &net_held("rt_if_track"))
+    kernel::net::route::rt_if_track(ifp, net_held("rt_if_track").net())
 }
 
 /// `route_cache(ro, dst, src, rtableid)` (`Route::cache4`).
@@ -431,7 +450,7 @@ pub fn route_mpath(
         dst.s_addr.to_ne_bytes(),
         src.map(|s| s.s_addr.to_ne_bytes()),
         rtableid,
-        &net_held("route_mpath"),
+        net_held("route_mpath").net(),
     )
     .map(as_static)
 }
@@ -457,7 +476,7 @@ pub fn route6_mpath(
         &dst.s6_addr,
         src.map(|s| &s.s6_addr),
         rtableid,
-        &net_held("route6_mpath"),
+        net_held("route6_mpath").net(),
     )
     .map(as_static)
 }
@@ -552,9 +571,9 @@ impl fmt::Write for DbOut {
 /// `db_show_rtentry(rt, id)` on ddb's console; the interface addresses need the net lock's
 /// proof, so without the lock only that is said.
 pub fn db_show_rtentry(rt: &Rtentry, _id: u32) -> Result<(), Errno> {
-    match crate::net::if_var::sa_token().net_held() {
-        Some(net) => {
-            let _ = kernel::net::route::db_show_rtentry(&mut DbOut, rt, &net);
+    match crate::net::if_var::sa_token().lend_net() {
+        Some(lend) => {
+            let _ = kernel::net::route::db_show_rtentry(&mut DbOut, rt, lend.net());
         }
         None => {
             db_printf(format_args!("rtentry={rt:p}: the net lock is not held\n"));
@@ -566,9 +585,9 @@ pub fn db_show_rtentry(rt: &Rtentry, _id: u32) -> Result<(), Errno> {
 /// `db_show_rtable(af, rtableid)` on ddb's console (as [`db_show_rtentry`] without the net
 /// lock).
 pub fn db_show_rtable(af: SaFamily, rtableid: u32) -> Result<(), Errno> {
-    match crate::net::if_var::sa_token().net_held() {
-        Some(net) => {
-            let _ = kernel::net::route::db_show_rtable(&mut DbOut, af, rtableid, &net);
+    match crate::net::if_var::sa_token().lend_net() {
+        Some(lend) => {
+            let _ = kernel::net::route::db_show_rtable(&mut DbOut, af, rtableid, lend.net());
         }
         None => {
             db_printf(format_args!(

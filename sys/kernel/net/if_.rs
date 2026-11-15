@@ -444,9 +444,11 @@ pub trait Inet: Sync + 'static {
     fn proto_outswcsum(&self, _tcp: bool) {}
     /// `NET_ASSERT_LOCKED()` of a protocol input entered without a softnet stack and without
     /// the proof of the caller's holding (`ether_resolve`'s broadcast copy, reached through a
-    /// driver's output, which carries none): `f` run with `bsd`'s proof of the holding (its
-    /// check of the lock's status, the `SaToken`'s), `panic(9)` without the lock (N6.4c2,
-    /// until the drivers' output carries the proof). Default: `panic(9)`.
+    /// driver's output, which carries none): `f` run with a proof `bsd` is lent for the call
+    /// (`hal::link::SaToken::lend_net`: the running process's write holding, which cannot be
+    /// let go meanwhile, or a read share joined for the call; one read-modify-write pair the C
+    /// lacks), `panic(9)` without the lock (N6.4c2, until the drivers' output carries the
+    /// proof). Default: `panic(9)`.
     fn with_net_held(&self, _f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock"));
     }
