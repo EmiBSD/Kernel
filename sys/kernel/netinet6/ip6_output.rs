@@ -146,11 +146,17 @@
 //!   `MAKE_CHAIN` links them, and `nexthdrp`, a pointer to the previous header's next-header
 //!   byte): the headers are owned by the chain once linked, so the later steps name them by
 //!   their offsets in the packet (the hop-by-hop header at 40, the first destination options
-//!   after it) and read or write their next-header byte through `m_copydata`/`m_copyback` (the
-//!   C's in-place byte), which stays right even if pf rebuilt the chain.
+//!   after it) and read their next-header byte through `m_copydata` and write it in place in
+//!   the mbuf that holds that offset (`set_byte_at`, the C's in-place byte), which stays right
+//!   even if pf rebuilt the chain. Not through `m_copyback`, whose walk stops on the mbuf
+//!   before an offset that is its `m_len` and makes it writable first (a copy of a shared
+//!   cluster for none of its bytes: N6.5c review S1).
 //! - `ip6_fragment(m0, ml, ..)`: each fragment built and checked before it goes on `ml` (the
-//!   C enqueues it first and keeps writing through its pointer), its fragment header written
-//!   at its offset `hlen` (`ip6_insertfraghdr` returns no pointer); on failure both are freed.
+//!   C enqueues it first and keeps writing through its pointer); the fragment header's fields
+//!   are made first and `ip6_insertfraghdr` writes it where it makes its room (the trailing
+//!   space of an mbuf that keeps its data in itself, or an mbuf of its own: the C's
+//!   `*frghdrp`), never into the copy of the unfragmentable headers, which shares `m0`'s
+//!   clusters; on failure both are freed.
 //! - The socket options: LZ's `ip6_ctloutput(op, so, level, optname, m)` read values with
 //!   unaligned raw reads at `mtod(m)` (`mtod_int`, `mtod_bytes`, the `ipv6_mreq`), kept the
 //!   packet options and multicast options as raw `malloc` pointers in the pcb with the
@@ -350,12 +356,30 @@ fn byte_at(m: &Mbuf, off: usize) -> u8 {
     b[0]
 }
 
-/// The byte at offset `off` of the packet set to `v`: the header is in an mbuf this file made
-/// (`ip6_copyexthdr`, the jumbo option's), which is writable, so `m_copyback` writes it in
-/// place.
-#[inline]
+/// The byte at offset `off` of the packet set to `v`, in place in the mbuf of the chain that
+/// holds it (the C's `*nexthdrp = v` through the header's pointer): an extension header's
+/// next-header byte, in an mbuf this file made (`ip6_copyexthdr`'s, the jumbo option's), so
+/// writable; `ENOBUFS` for a read-only one, which no caller hands over (the C writes it
+/// anyway). No `m_copyback`: its walk stops on the mbuf before when `off` is that mbuf's
+/// `m_len` (the IPv6 header's 40 bytes) and makes that one writable first, a copy of its
+/// cluster when it is shared, for a write of none of its bytes (N6.5c review S1).
 fn set_byte_at(m: &mut Mbuf, off: usize, v: u8) -> Result<(), Errno> {
-    m_copyback(m, off as i32, &[v], M_DONTWAIT)
+    let mut off = off;
+    let mut p = m;
+    while off >= p.m_len().get() as usize {
+        off -= p.m_len().get() as usize;
+        p = match p.m_next.get_mut() {
+            Some(n) => n,
+            None => kpanic(format_args!("ip6_output: a header byte past the packet")),
+        };
+    }
+    match p.data_mut() {
+        Some(d) => {
+            d[off] = v;
+            Ok(())
+        }
+        None => Err(Errno::ENOBUFS),
+    }
 }
 
 /// `ro->ro_dstsin6`: a route cache's destination, as the `sockaddr_in6` `route6_cache` wrote.
@@ -891,15 +915,6 @@ fn link_after(m: &mut Mbuf, mut n: MbufBox) {
     drop(m.m_next.set(n));
 }
 
-/// The last mbuf of `m`'s chain, shared.
-fn last_ref(m: &Mbuf) -> &Mbuf {
-    let mut p = m;
-    while let Some(n) = p.m_next().get() {
-        p = n;
-    }
-    p
-}
-
 /// The last mbuf of `m`'s chain.
 fn last_mbuf(m: &mut Mbuf) -> &mut Mbuf {
     let mut p = m;
@@ -950,27 +965,28 @@ pub fn ip6_fragment(
             let mut mhip6 = ip6;
             m.m_len().set(IP6_HDR_LEN as u32);
 
-            if let Err(e) = ip6_insertfraghdr(&mut m0, &mut m, hlen) {
-                break 'bad e;
-            }
+            // The fragment header's fields first (the C fills `*ip6f` after
+            // `ip6_insertfraghdr` returns; nothing reads them between), so that
+            // `ip6_insertfraghdr` writes it where it makes its room.
             let mut offlg = htons(((off - hlen) & !7) as u16);
             if off + len >= tlen {
                 len = tlen - off;
             } else {
                 offlg |= IP6F_MORE_FRAG;
             }
-
-            m.m_pkthdr().len.set(hlen + FRAG_LEN as i32 + len);
-            mhip6.ip6_plen = htons((m.m_pkthdr().len.get() - IP6_HDR_LEN as i32) as u16);
             let frag = Ip6Frag {
                 ip6f_nxt: nextproto,
                 ip6f_reserved: 0,
                 ip6f_offlg: offlg,
                 ip6f_ident: id,
             };
-            let mut fb = [0u8; FRAG_LEN];
-            let _ = pod::put(&mut fb, 0, &frag);
-            if !ip6_store(&mut m, &mhip6) || m_copyback(&mut m, hlen, &fb, M_DONTWAIT).is_err() {
+            if let Err(e) = ip6_insertfraghdr(&mut m0, &mut m, hlen, &frag) {
+                break 'bad e;
+            }
+
+            m.m_pkthdr().len.set(hlen + FRAG_LEN as i32 + len);
+            mhip6.ip6_plen = htons((m.m_pkthdr().len.get() - IP6_HDR_LEN as i32) as u16);
+            if !ip6_store(&mut m, &mhip6) {
                 break 'bad Errno::ENOBUFS;
             }
             let Some(n) = m_copym(&mut m0, off, len, M_DONTWAIT) else {
@@ -1106,11 +1122,12 @@ fn writable(m: &mut Mbuf) -> &mut [u8] {
     }
 }
 
-/// `ip6_insertfraghdr(m0, m, hlen, &frghdrp)`: inserts a fragment header into fragment `m`
-/// after a copy of the unfragmentable header portions (`hlen` bytes) of `m0`; the fragment
-/// header goes at offset `hlen` of `m` (in the trailing space of its last mbuf, or in an mbuf
-/// of its own), which its caller writes.
-fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32) -> Result<(), Errno> {
+/// `ip6_insertfraghdr(m0, m, hlen, &frghdrp)`: inserts the fragment header `frag` into
+/// fragment `m` after a copy of the unfragmentable header portions (`hlen` bytes) of `m0`:
+/// written in the trailing space of the last mbuf when that mbuf keeps its data in itself,
+/// else in an mbuf of its own, where the C's `*frghdrp` points. The copy of the headers
+/// shares `m0`'s clusters (`m_copym`) and is never written.
+fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32, frag: &Ip6Frag) -> Result<(), Errno> {
     if hlen as usize > IP6_HDR_LEN {
         let Some(n) = m_copym(
             m0,
@@ -1125,21 +1142,33 @@ fn ip6_insertfraghdr(m0: &mut Mbuf, m: &mut Mbuf, hlen: i32) -> Result<(), Errno
 
     // Search for the last mbuf of unfragmentable part.
     let ph = m.m_pkthdr().len.get();
-    let mlast = last_ref(m);
+    let mlast = last_mbuf(m);
     if mlast.flags() & M_EXT == 0 && m_trailingspace(mlast) as usize >= FRAG_LEN {
         // use the trailing space of the last mbuf for fragment hdr
-        mlast.m_len().set(mlast.m_len().get() + FRAG_LEN as u32);
+        let at = mlast.m_len().get() as usize;
+        mlast.m_len().set((at + FRAG_LEN) as u32);
+        put_frag(writable(mlast), at, frag);
         m.m_pkthdr().len.set(ph + FRAG_LEN as i32);
     } else {
         // allocate a new mbuf for the fragment header
-        let Some(mfrg) = m_get(M_DONTWAIT, MT_DATA) else {
+        let Some(mut mfrg) = m_get(M_DONTWAIT, MT_DATA) else {
             return Err(Errno::ENOBUFS);
         };
         mfrg.m_len().set(FRAG_LEN as u32);
-        drop(last_mbuf(m).m_next.set(mfrg));
+        put_frag(writable(&mut mfrg), 0, frag);
+        drop(mlast.m_next.set(mfrg));
     }
 
     Ok(())
+}
+
+/// The fragment header written at `at` of `d`, the room `ip6_insertfraghdr` just made.
+fn put_frag(d: &mut [u8], at: usize, frag: &Ip6Frag) {
+    if !pod::put(d, at, frag) {
+        kpanic(format_args!(
+            "ip6_insertfraghdr: no room for the fragment header"
+        ));
+    }
 }
 
 /// `ip6_getpmtu(rt, ifp, &mtu)`: the path MTU through route `rt` (if any) and `ifp` (the C's
@@ -2612,18 +2641,27 @@ mod tests {
         let mut m = m_gethdr(M_DONTWAIT, MT_HEADER).expect("mbuf");
         m.m_len().set(40);
         m.m_pkthdr().len.set(40);
+        let frag = Ip6Frag {
+            ip6f_nxt: IPPROTO_UDP as u8,
+            ip6f_reserved: 0,
+            ip6f_offlg: htons(1232) | IP6F_MORE_FRAG,
+            ip6f_ident: htonl(0x0102_0304),
+        };
+        let mut fb = [0u8; FRAG_LEN];
+        assert!(pod::put(&mut fb, 0, &frag));
 
         // Unfragmentable part is the header alone: the fragment header follows it in `m`.
-        ip6_insertfraghdr(&mut m0, &mut m, 40).expect("fraghdr");
+        ip6_insertfraghdr(&mut m0, &mut m, 40, &frag).expect("fraghdr");
         assert_eq!(m.m_len().get(), 48);
         assert_eq!(m.m_pkthdr().len.get(), 48);
         assert!(m.m_next().get().is_none());
+        assert_eq!(bytes(&m, 40, 8), fb.to_vec(), "the fragment header written");
 
         // With a destination options header the copy of it carries the fragment header.
         let mut m = m_gethdr(M_DONTWAIT, MT_HEADER).expect("mbuf");
         m.m_len().set(40);
         m.m_pkthdr().len.set(40);
-        ip6_insertfraghdr(&mut m0, &mut m, 48).expect("fraghdr");
+        ip6_insertfraghdr(&mut m0, &mut m, 48, &frag).expect("fraghdr");
         let n = m.m_next().get().expect("copied exthdr");
         assert_eq!(
             n.m_len().get(),
@@ -2631,6 +2669,104 @@ mod tests {
             "the copy and the fragment header's room"
         );
         assert_eq!(bytes(n, 0, 8), vec![17, 0, 1, 4, 0, 0, 0, 0]);
+        assert_eq!(
+            bytes(n, 8, 8),
+            fb.to_vec(),
+            "the fragment header after the copy"
+        );
+    }
+
+    /// N6.5c review S1's second shape: a header byte at an mbuf boundary (offset 40, the
+    /// first byte after the IPv6 header's mbuf) is written into the mbuf that holds it; the
+    /// mbuf before it, a shared cluster here, is left alone (`m_copyback`'s walk would have
+    /// made it writable first, a copy of its cluster for none of its bytes).
+    #[test]
+    fn a_header_byte_at_an_mbuf_boundary_leaves_the_mbuf_before_alone() {
+        let _g = testroutes_setup();
+        let mut a = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
+        mclget(&mut a, M_DONTWAIT);
+        assert_ne!(a.flags() & M_EXT, 0, "the header in a cluster");
+        a.m_len().set(40);
+        a.data_mut().expect("a fresh cluster").fill(0);
+        let sharer = m_copym(&mut a, 0, 40, M_DONTWAIT).expect("a sharer of the cluster");
+        let at = a.data_raw();
+        let mut n = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+        n.m_len().set(8);
+        n.data_mut().expect("writable").fill(0);
+        drop(a.m_next.set(n));
+        a.m_pkthdr().len.set(48);
+
+        set_byte_at(&mut a, 40, IPPROTO_DSTOPTS as u8).expect("the byte written");
+        assert_eq!(byte_at(&a, 40), IPPROTO_DSTOPTS as u8);
+        assert_eq!(a.data_raw(), at, "the cluster before the byte not copied");
+        assert!(a.is_readonly(), "still shared with its sharer");
+        drop(sharer);
+    }
+
+    /// N6.5c review S1: the unfragmentable part ends in a cluster (a 256-byte destination
+    /// options header, over `MLEN`), which every fragment's copy of the headers shares
+    /// (`m_copym`): the fragment header goes into an mbuf of its own, no fragment copies the
+    /// cluster, and every fragment goes out (the C writes `*frghdrp` into that mbuf and cannot
+    /// fail there).
+    #[test]
+    fn fragments_share_the_cluster_of_the_unfragmentable_headers() {
+        let _g = testroutes_setup();
+        let payload: Vec<u8> = (0..4000u32).map(|i| (i * 3) as u8).collect();
+        let mut m0 = packet(&hdr(256 + 4000, IPPROTO_DSTOPTS as u8), &[], 1);
+        let mut d = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+        mclget(&mut d, M_DONTWAIT);
+        assert_ne!(d.flags() & M_EXT, 0, "the header in a cluster");
+        d.m_len().set(256);
+        let b = d.data_mut().expect("a fresh cluster");
+        b.fill(0);
+        // Next header UDP, (31 + 1) * 8 bytes, one PadN over the rest.
+        b[..4].copy_from_slice(&[IPPROTO_UDP as u8, 31, IP6OPT_PADN, 252]);
+        let cluster = d.data_raw();
+        drop(last_mbuf(&mut m0).m_next.set(d));
+        for chunk in payload.chunks(200) {
+            let mut m = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+            m.m_len().set(chunk.len() as u32);
+            m.data_mut().expect("writable").copy_from_slice(chunk);
+            drop(last_mbuf(&mut m0).m_next.set(m));
+        }
+        m0.m_pkthdr().len.set(40 + 256 + 4000);
+        let dropped = stat(Ip6statCounters::Ip6sOdropped);
+
+        let mut ml = MbufList::new();
+        ip6_fragment(m0, &mut ml, 296, IPPROTO_UDP as u8, 1500).expect("every fragment");
+        // (1500 - 296 - 8) & ~7 = 1192 bytes per fragment: three, then 424.
+        assert_eq!(ml_len(&ml), 4);
+        for (i, len) in [1192, 1192, 1192, 424].into_iter().enumerate() {
+            let off = i as i32 * 1192;
+            let f = ml_dequeue(&mut ml).expect("a fragment");
+            let copy = f.m_next().get().expect("the copied headers");
+            assert_eq!(
+                copy.data_raw(),
+                cluster,
+                "fragment {i}: the cluster shared, not copied"
+            );
+            assert_eq!(
+                copy.m_len().get(),
+                256,
+                "fragment {i}: the copy alone in its mbuf"
+            );
+            let fh = copy.m_next().get().expect("the fragment header's mbuf");
+            assert_eq!(fh.m_len().get(), 8);
+            let fb = bytes(&f, 296, 8);
+            let frag = pod::at::<Ip6Frag>(&fb, 0).expect("a fragment header");
+            assert_eq!(frag.ip6f_nxt, IPPROTO_UDP as u8);
+            assert_eq!(
+                i32::from(u16::from_be(frag.ip6f_offlg & !IP6F_MORE_FRAG)),
+                off
+            );
+            assert_eq!(frag.ip6f_offlg & IP6F_MORE_FRAG != 0, i < 3);
+            assert_eq!(f.m_pkthdr().len.get(), 304 + len);
+            assert_eq!(
+                bytes(&f, 304, len),
+                payload[off as usize..(off + len) as usize].to_vec()
+            );
+        }
+        assert_eq!(stat(Ip6statCounters::Ip6sOdropped), dropped);
     }
 
     #[test]
