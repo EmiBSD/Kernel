@@ -141,7 +141,10 @@
 //!   -> [`ip6_load`]/[`ip6_store`], `hal::pod`'s view of the first mbuf's bytes when aligned
 //!   (the transports' packets), a copy otherwise; `ip6_output` loads the header once, works on
 //!   the copy and stores it before each step that reads the packet (IPsec, the loopback copy,
-//!   the hop-by-hop check, pf, the checksums, the interface), as `ip_output` does.
+//!   the hop-by-hop check, pf, the checksums, the interface), as `ip_output` does, and only
+//!   when the copy changed since the packet's header was last written or read (`dirty`: pf's
+//!   rewrite is loaded back and the send after it stores only the loopback's restored scopes,
+//!   N6.5c review N2).
 //! - The chain of extension headers (the C's `exthdrs` pointers kept into the packet after
 //!   `MAKE_CHAIN` links them, and `nexthdrp`, a pointer to the previous header's next-header
 //!   byte): the headers are owned by the chain once linked, so the later steps name them by
@@ -733,10 +736,16 @@ pub fn ip6_output(
             mtu = u64::from(IPV6_MMTU);
         }
 
+        // Whether `ip6` holds changes the packet's header does not have yet: the header is
+        // written back once before a step that reads the packet, and only when it changed (the
+        // C changes it in place).
+        let mut dirty = true;
+
         // If the outgoing packet contains a hop-by-hop options header, it must be examined and
         // processed even by the source node. (RFC 2460, section 4.)
         if has_hbh {
             store(&mut m, &ip6)?;
+            dirty = false;
             let hbhlen =
                 (i32::from(byte_at(&m, IP6_HDR_LEN + offset_of!(Ip6Hbh, ip6h_len))) + 1) << 3;
             let mut rtalert: u32 = 0; // returned value is ignored
@@ -761,7 +770,9 @@ pub fn ip6_output(
 
         // Packet filter.
         if let Some(p) = pf() {
-            store(&mut m, &ip6)?;
+            if dirty {
+                store(&mut m, &ip6)?;
+            }
             let (action, left) = p.test(AF_INET6, PF_OUT, i, m);
             if action != PF_PASS {
                 // `goto bad` frees the packet as pf left it.
@@ -772,7 +783,9 @@ pub fn ip6_output(
                 return Ok(());
             };
             m = mm;
+            // `ip6 = mtod(m, struct ip6_hdr *)`: pf may have rewritten the header.
             ip6 = ip6_load(&m);
+            dirty = false;
             let pfh = &m.m_pkthdr().pf;
             let tags = pfh.flags.get();
             if tags & (PF_TAG_REROUTE | PF_TAG_GENERATED) == (PF_TAG_REROUTE | PF_TAG_GENERATED) {
@@ -804,12 +817,16 @@ pub fn ip6_output(
         if looped {
             if in6_is_scope_embed(&ip6.ip6_src) {
                 ip6.ip6_src.set_s6_addr16(1, src_scope);
+                dirty = true;
             }
             if in6_is_scope_embed(&ip6.ip6_dst) {
                 ip6.ip6_dst.set_s6_addr16(1, dst_scope);
+                dirty = true;
             }
         }
-        store(&mut m, &ip6)?;
+        if dirty {
+            store(&mut m, &ip6)?;
+        }
 
         // Send the packet to the outgoing interface. If necessary, do IPv6 fragmentation before
         // sending.
