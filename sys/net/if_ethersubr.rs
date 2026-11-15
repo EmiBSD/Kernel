@@ -420,9 +420,8 @@ mod tests {
             ifp,
             &handle,
             Some(&PEER_MAC),
-            false,
-            true,
-            true,
+            hal::sys::netinet_icmp6::ND_NA_FLAG_SOLICITED
+                | hal::sys::netinet_icmp6::ND_NA_FLAG_OVERRIDE,
             false,
             &PEER6,
             &PEER6,

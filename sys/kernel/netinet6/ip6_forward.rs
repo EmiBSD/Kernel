@@ -265,12 +265,11 @@ pub fn ip6_forward(m: MbufBox, ro: Option<&mut Route>, flags: i32, net: &NetHeld
         }
 
         // The caller's route, or ours (iproute) when it gave none or pf rerouted.
-        let r: &mut Route = match ro.as_deref_mut() {
-            Some(r) => r,
-            None => {
-                drop(iproute.take_rt());
-                &mut iproute
-            }
+        let r: &mut Route = if let Some(r) = ro.as_deref_mut() {
+            r
+        } else {
+            drop(iproute.take_rt());
+            &mut iproute
         };
         let Some(rt) = r.mpath6(
             &ip6.ip6_dst.s6_addr,

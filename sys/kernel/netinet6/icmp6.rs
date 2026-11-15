@@ -535,10 +535,7 @@ pub fn icmp6_do_error(m: MbufBox, type_: u8, code: u8, param: i32) -> Option<Mbu
             return None;
         };
         m = mm;
-        let Some(&icp_type) = ip6_exthdr_bytes(&m, at, o, ICMP6_HDR_LEN).and_then(|b| b.first())
-        else {
-            return None;
-        };
+        let &icp_type = ip6_exthdr_bytes(&m, at, o, ICMP6_HDR_LEN).and_then(|b| b.first())?;
         if icp_type < ICMP6_ECHO_REQUEST || icp_type == ND_REDIRECT {
             // ICMPv6 error. Special case: for redirect (which is informational) we must not
             // send icmp6 error.
@@ -742,7 +739,7 @@ pub fn icmp6_input<G: ProcGlue>(
                 if code != 0 {
                     Next::Badcode
                 } else {
-                    match icmp6_echo(m, off, &icmp6, net) {
+                    match icmp6_echo(m, off, icmp6, net) {
                         Some(mm) => {
                             m = mm;
                             Next::Raw
@@ -779,13 +776,12 @@ pub fn icmp6_input<G: ProcGlue>(
                 }
             }
 
-            // XXX: these two are experimental. not officially defined.
+            // MLD_MTRACE_RESP, MLD_MTRACE: these two are experimental. not officially defined.
             // XXX: per-interface statistics?
-            // just pass it to applications
-            MLD_MTRACE_RESP | MLD_MTRACE => Next::Raw,
-
-            // IPv6 Node Information Queries are not supported (ICMP6_FQDN_QUERY).
-            ICMP6_WRUREQUEST | ICMP6_WRUREPLY => Next::Raw,
+            // just pass it to applications.
+            // ICMP6_WRUREQUEST, ICMP6_WRUREPLY: IPv6 Node Information Queries are not
+            // supported (ICMP6_FQDN_QUERY).
+            MLD_MTRACE_RESP | MLD_MTRACE | ICMP6_WRUREQUEST | ICMP6_WRUREPLY => Next::Raw,
 
             ND_ROUTER_SOLICIT | ND_ROUTER_ADVERT => {
                 if code != 0 {
@@ -867,19 +863,18 @@ pub fn icmp6_input<G: ProcGlue>(
     }
     // raw: deliver the packet to appropriate sockets (rip6_input).
     *mp = Some(m);
-    match raw6_protocol::<G>() {
-        Some(raw) => raw.input(mp, offp, proto, af, ns, net),
-        None => {
-            drop(mp.take());
-            IPPROTO_DONE
-        }
+    if let Some(raw) = raw6_protocol::<G>() {
+        raw.input(mp, offp, proto, af, ns, net)
+    } else {
+        drop(mp.take());
+        IPPROTO_DONE
     }
 }
 
 /// The echo request case of `icmp6_input`: copy the packet `m` to send to two data paths,
 /// userland socket(s) (`m`, given back for the raw sockets) and the querier (the echo reply,
 /// sent); `None` when `m` itself was used up as the reply (no copy could be made).
-fn icmp6_echo(m: MbufBox, off: i32, icmp6: &Icmp6Hdr, net: &NetHeld<'_>) -> Option<MbufBox> {
+fn icmp6_echo(m: MbufBox, off: i32, icmp6: Icmp6Hdr, net: &NetHeld<'_>) -> Option<MbufBox> {
     let mut m = Some(m);
     if let Some((n, noff)) = icmp6_echo_reply(&mut m, off, icmp6) {
         icmp6stat_inc(Icmp6statCounters::Icp6sReflect);
@@ -901,7 +896,7 @@ fn icmp6_echo(m: MbufBox, off: i32, icmp6: &Icmp6Hdr, net: &NetHeld<'_>) -> Opti
 fn icmp6_echo_reply(
     m: &mut Option<MbufBox>,
     off: i32,
-    icmp6: &Icmp6Hdr,
+    icmp6: Icmp6Hdr,
 ) -> Option<(MbufBox, usize)> {
     let mm = m.as_mut()?;
     let (n, noff) = match m_copym(mm, 0, M_COPYALL, M_DONTWAIT) {
@@ -920,7 +915,7 @@ fn icmp6_echo_reply(
                 // specified. (MAXLEN < MCLBYTES: never "give up remote".)
                 let mut nn = m_gethdr(M_DONTWAIT, i32::from(n0.m_type().get()));
                 if let Some(x) = nn.as_mut()
-                    && MAXLEN >= MHLEN as usize
+                    && MAXLEN >= MHLEN
                 {
                     mclget(x, M_DONTWAIT);
                     if x.flags() & M_EXT == 0 {
@@ -941,7 +936,7 @@ fn icmp6_echo_reply(
                         let mut hdr = [0u8; MAXLEN];
                         let ip6 = ip6_load(m.as_deref()?);
                         let _ = pod::put(&mut hdr, 0, &ip6);
-                        let _ = pod::put(&mut hdr, IP6_HDR_LEN, icmp6);
+                        let _ = pod::put(&mut hdr, IP6_HDR_LEN, &icmp6);
                         n.m_len().set(MAXLEN as u32);
                         if !ip6_set_bytes(&mut n, 0, &hdr) {
                             return None;
@@ -1263,29 +1258,28 @@ pub fn icmp6_reflect(
     let sa6_dst = sin6_of(t);
 
     let mut src: Option<In6Addr> = None;
-    let key = match sa {
-        Some(sa) => *sa,
-        None => {
-            // If the incoming packet was addressed directly to us (i.e. unicast), use dst as
-            // the src for the reply. The IN6_IFF_TENTATIVE|IN6_IFF_DUPLICATED case would be
-            // VERY rare, but is possible (for example) when we encounter an error while
-            // forwarding procedure destined to a duplicated address of ours.
-            let b = sin6_bytes(&sa6_dst);
-            let rt = rtalloc(view(&b), 0, rtableid, net);
-            if rtisvalid(rt.as_deref())
-                && let Some(r) = rt.as_deref()
-                && r.rt_flags.get() & RTF_LOCAL != 0
-                && r.ifa().and_then(In6Ifaddr::of).is_some_and(|ia6| {
-                    ia6.ia6_flags.get() & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
-                        == 0
-                })
-            {
-                src = Some(t);
-            }
-            // rtfree(rt)
-            drop(rt);
-            sa6_src
+    let key = if let Some(sa) = sa {
+        *sa
+    } else {
+        // If the incoming packet was addressed directly to us (i.e. unicast), use dst as
+        // the src for the reply. The IN6_IFF_TENTATIVE|IN6_IFF_DUPLICATED case would be
+        // VERY rare, but is possible (for example) when we encounter an error while
+        // forwarding procedure destined to a duplicated address of ours.
+        let b = sin6_bytes(&sa6_dst);
+        let rt = rtalloc(view(&b), 0, rtableid, net);
+        if rtisvalid(rt.as_deref())
+            && let Some(r) = rt.as_deref()
+            && r.rt_flags.get() & RTF_LOCAL != 0
+            && r.ifa().and_then(In6Ifaddr::of).is_some_and(|ia6| {
+                ia6.ia6_flags.get() & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
+                    == 0
+            })
+        {
+            src = Some(t);
         }
+        // rtfree(rt)
+        drop(rt);
+        sa6_src
     };
 
     if src.is_none() {
@@ -1569,7 +1563,7 @@ pub fn icmp6_redirect_output(m0: MbufBox, rt: &Rtentry, net: &NetHeld<'_>) {
         let Some(mut m) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
             break 'fail;
         };
-        if IPV6_MMTU as usize >= MHLEN as usize {
+        if IPV6_MMTU as usize >= MHLEN {
             mclget(&mut m, M_DONTWAIT);
         }
         m.m_pkthdr().ph_ifidx.set(0);

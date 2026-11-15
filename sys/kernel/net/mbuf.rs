@@ -154,7 +154,8 @@
 //!   packet whose first mbuf is empty into a header mbuf (the C writes up to `MLEN` bytes into
 //!   `MHLEN`) copies what fits and continues in the next mbuf of the copy.
 //! - `m_copyback` into a shared cluster (`M_READONLY`), which the C writes for every mbuf
-//!   sharing it, gives the mbuf a cluster of its own first (the kernel cannot lend a shared
+//!   sharing it, gives each mbuf it writes bytes into a cluster of its own first (an mbuf
+//!   that receives none keeps its storage; the kernel cannot lend a shared
 //!   cluster's bytes mutably); `ENOBUFS` when none can be had, as for its other allocations.
 //!   No caller of the tree writes a shared cluster this way: the C's writers check
 //!   `M_READONLY` first (`m_pullup`, `m_cat`, `m_makespace`, `m_pulldown`, ipsec's output).
@@ -1998,12 +1999,16 @@ pub fn m_copyback(m0: &mut Mbuf, off: i32, data: &[u8], wait: i32) -> Result<(),
                     m.m_len.set(m.m_len.get() + grow);
                 }
                 let mlen = min(m.m_len.get() as i32 - off, len);
-                let at = m.data_off() + as_idx(off);
-                let Some(s) = storage_writable(m, wait) else {
-                    error = Err(Errno::ENOBUFS);
-                    break 'out;
-                };
-                s[at..at + as_idx(mlen)].copy_from_slice(&data[cp..cp + as_idx(mlen)]);
+                // An mbuf that receives no byte (`off` at its end, the C's 0-byte memmove)
+                // keeps its storage: only the mbufs written are made writable.
+                if mlen > 0 {
+                    let at = m.data_off() + as_idx(off);
+                    let Some(s) = storage_writable(m, wait) else {
+                        error = Err(Errno::ENOBUFS);
+                        break 'out;
+                    };
+                    s[at..at + as_idx(mlen)].copy_from_slice(&data[cp..cp + as_idx(mlen)]);
+                }
                 cp += as_idx(mlen);
                 len -= mlen;
                 totlen += mlen + off;
@@ -3699,6 +3704,30 @@ pub(crate) mod tests {
         assert_eq!(&contents(&m)[10..14], &[0xee; 4]);
         assert_eq!(contents(&copy), pattern(1000), "the copy keeps its bytes");
         assert!(!copy.is_readonly(), "the copy is the cluster's last holder");
+        drop(copy);
+        drop(m);
+        all_back();
+    }
+
+    #[test]
+    fn copyback_at_an_mbufs_end_leaves_its_shared_cluster_shared() {
+        let _g = setup();
+
+        // `off` equals the first mbuf's m_len: the C's walk stops on it and moves 0 bytes
+        // into it; only the second mbuf receives bytes and is made writable.
+        let mut m = packet(&[1000, 1000]);
+        let copy = m_copym(&mut m, 0, M_COPYALL, M_DONTWAIT).expect("a copy");
+        assert!(m.is_readonly() && copy.is_readonly());
+        m_copyback(&mut m, 1000, &[0xee; 4], M_DONTWAIT).expect("copyback");
+        assert!(m.is_readonly(), "the first cluster still shared");
+        assert!(copy.is_readonly(), "the copy still shares it");
+        let second = m.m_next.get().expect("second");
+        assert!(!second.is_readonly(), "the written mbuf's own cluster");
+        let mut want = pattern(2000);
+        want[1000..1004].copy_from_slice(&[0xee; 4]);
+        assert_eq!(contents(&m), want);
+        assert_eq!(contents(&copy), pattern(2000), "the copy keeps its bytes");
+        assert_eq!(m.m_pkthdr().len.get(), 2000);
         drop(copy);
         drop(m);
         all_back();

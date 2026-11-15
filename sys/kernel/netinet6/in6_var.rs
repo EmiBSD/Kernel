@@ -692,26 +692,23 @@ pub(crate) fn in6_ifafree(ia6: &'static In6Ifaddr) {
 /// record off the free list first; `None` when the allocator has none (the C's `ENOBUFS`).
 pub fn in6_multi_alloc() -> Option<&'static In6Multi> {
     let reused = INM6_FREE.lock().pop_head();
-    match reused {
-        Some(in6m) => {
-            let ifma = &in6m.in6m_ifma;
-            if List::<crate::net::if_var::IfMaddrlist>::is_linked(ifma) {
-                kpanic(format_args!("in6_multi_alloc: a recycled record on a list"));
-            }
-            ifma.ifma_ifidx.set(0);
-            in6m.in6m_sin.set(SockaddrIn6::default());
-            in6m.in6m_state.set(0);
-            in6m.in6m_timer.set(0);
-            Some(in6m)
+    if let Some(in6m) = reused {
+        let ifma = &in6m.in6m_ifma;
+        if List::<crate::net::if_var::IfMaddrlist>::is_linked(ifma) {
+            kpanic(format_args!("in6_multi_alloc: a recycled record on a list"));
         }
-        None => {
-            let in6m = MBox::leak(MBox::new(M_IPMADDR, M_NOWAIT, In6Multi::new())?);
-            in6m.in6m_ifma.ifma_in6.set(Some(in6m));
-            in6m.in6m_ifma
-                .ifma_addr
-                .set_words::<SockaddrIn6>(Some(in6m.in6m_sin.words()));
-            Some(in6m)
-        }
+        ifma.ifma_ifidx.set(0);
+        in6m.in6m_sin.set(SockaddrIn6::default());
+        in6m.in6m_state.set(0);
+        in6m.in6m_timer.set(0);
+        Some(in6m)
+    } else {
+        let in6m = MBox::leak(MBox::new(M_IPMADDR, M_NOWAIT, In6Multi::new())?);
+        in6m.in6m_ifma.ifma_in6.set(Some(in6m));
+        in6m.in6m_ifma
+            .ifma_addr
+            .set_words::<SockaddrIn6>(Some(in6m.in6m_sin.words()));
+        Some(in6m)
     }
 }
 

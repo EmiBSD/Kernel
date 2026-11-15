@@ -26,7 +26,11 @@ Four tiers. Every change lands with the tier it belongs to.
    cache list, the hold total, ND's timeouts) and `dad_test_reset` (the DAD records' lists),
    (N6.5d) `frag6_test_reset` (IPv6 reassembly), `icmp6_test_reset` (the error rate limiter,
    the path MTU callbacks; the timer queues are left to `icmp6_init`) and `ip6_test_reset`
-   (the send queue, `ip6intrq`);
+   (the send queue, `ip6intrq`); the kernel's nine of them (from `in_var_test_reset` on)
+   also in the kernel's interface tests' `setup` (`kernel::net::if_`), and all but the last
+   three in the kernel's pcb fixture (`kernel::netinet::in_pcb`'s tests); `frag6_test_reset`
+   also in frag6's tests, `icmp6_test_reset` in icmp6's, `ip6_test_reset` in icmp6's and
+   `in6_proto`'s;
    in `ip_input`'s test setup, `ipq_test_reset` (reassembly) and
    `icmp_test_reset`; the server cache by `nfsrv_initcache` in the nfs tests' setup.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`

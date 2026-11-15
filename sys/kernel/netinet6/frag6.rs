@@ -319,7 +319,7 @@ pub fn frag6_input(
     let rdomain = rtable_l2(m.m_pkthdr().ph_rtableid.get());
     let (out, q6) = {
         let mut g = FRAG6.lock();
-        frag6_locked(&mut g, m, &ip6, &ip6f, offset, fragoff, plen, rdomain, net)
+        frag6_locked(&mut g, m, &ip6, ip6f, offset, fragoff, plen, rdomain, net)
     };
     // pool_put(&ip6q_pool, q6) after mtx_leave(&frag6_mutex), its fragments with it (a
     // flushed datagram's: m_freem and pool_put of each).
@@ -382,7 +382,7 @@ fn frag6_locked(
     st: &mut Frag6State,
     m: MbufBox,
     ip6: &Ip6Hdr,
-    ip6f: &Ip6Frag,
+    ip6f: Ip6Frag,
     offset: i32,
     fragoff: i32,
     plen: i32,
@@ -500,7 +500,7 @@ fn frag6_queue(
     q6: &mut PoolBox<Ip6q>,
     m: MbufBox,
     ip6: &Ip6Hdr,
-    ip6f: &Ip6Frag,
+    ip6f: Ip6Frag,
     offset: i32,
     fragoff: i32,
     plen: i32,

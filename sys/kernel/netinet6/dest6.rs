@@ -87,11 +87,11 @@ pub fn dest6_input(
     _ns: Option<&mut Netstack>,
     net: &NetHeld<'_>,
 ) -> i32 {
+    const HDR: usize = size_of::<Ip6Dest>();
     let Some(m) = mp.take() else {
         return IPPROTO_DONE;
     };
     let mut off = *offp;
-    const HDR: usize = size_of::<Ip6Dest>();
 
     // validation of the length of the header
     let Some((m, at, o)) = ip6_exthdr_get(m, off, HDR as i32) else {
@@ -121,7 +121,7 @@ pub fn dest6_input(
             return IPPROTO_DONE;
         };
         if ty != IP6OPT_PAD1
-            && (left < IP6OPT_MINLEN as usize || olen.is_none_or(|l| usize::from(l) + 2 > left))
+            && (left < IP6OPT_MINLEN || olen.is_none_or(|l| usize::from(l) + 2 > left))
         {
             ip6stat_inc(Ip6statCounters::Ip6sToosmall);
             // bad: m_freemp(mp)

@@ -93,11 +93,11 @@ pub fn route6_input(
     _ns: Option<&mut Netstack>,
     net: &NetHeld<'_>,
 ) -> i32 {
+    const LEN: usize = size_of::<Ip6Rthdr>();
     let Some(m) = mp.take() else {
         return IPPROTO_DONE;
     };
     let off = *offp;
-    const LEN: usize = size_of::<Ip6Rthdr>();
 
     let Some((m, at, o)) = ip6_exthdr_get(m, off, LEN as i32) else {
         ip6stat_inc(Ip6statCounters::Ip6sTooshort);

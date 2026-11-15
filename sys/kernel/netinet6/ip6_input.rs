@@ -193,8 +193,8 @@ use hal::sys::net_if::{IFF_LOOPBACK, IFT_ENC};
 use hal::sys::net_route::RTF_LOCAL;
 use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
 use hal::sys::netinet_in::{
-    IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS,
-    IPPROTO_IPCOMP, IPPROTO_IPV6, IPPROTO_NONE, IPPROTO_ROUTING,
+    IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_IPV6,
+    IPPROTO_ROUTING,
 };
 use hal::sys::netinet_ip::IPQ_MAXLEN;
 use hal::sys::netinet_ip6::{
@@ -1041,17 +1041,17 @@ fn ip6_hopopts_input(
     rtalertp: &mut u32,
     net: &NetHeld<'_>,
 ) -> Option<u8> {
-    let mut off = *offp;
     const HBH: usize = size_of::<Ip6Hbh>();
+    let mut off = *offp;
 
     // validation of the length of the header
     let Some((m, at, o)) = ip6_exthdr_get(mp.take()?, IP6_HDR_LEN, HBH as i32) else {
         ip6stat_inc(Ip6statCounters::Ip6sTooshort);
         return None;
     };
-    let (nxt, len) = match ip6_exthdr_bytes(&m, at, o, HBH) {
-        Some(h) => (h[0], h[1]),
-        None => return None,
+    let (nxt, len) = {
+        let h = ip6_exthdr_bytes(&m, at, o, HBH)?;
+        (h[0], h[1])
     };
     let mut hbhlen = (i32::from(len) + 1) << 3;
     let Some((m, _, _)) = ip6_exthdr_get(m, IP6_HDR_LEN, hbhlen) else {
@@ -1471,7 +1471,7 @@ fn ip6_pullexthdr(m: &Mbuf, off: usize, nxt: i32) -> Option<MbufBox> {
         return None;
     }
 
-    let mut n = m_get(M_DONTWAIT, i32::from(MT_DATA));
+    let mut n = m_get(M_DONTWAIT, MT_DATA);
     if let Some(nn) = n.as_mut()
         && elen >= MLEN
     {
@@ -1491,10 +1491,7 @@ fn ip6_pullexthdr(m: &Mbuf, off: usize, nxt: i32) -> Option<MbufBox> {
     }
 
     n.m_len().set(elen as u32);
-    match n.data_mut() {
-        Some(d) => m_copydata(m, off as i32, d),
-        None => return None,
-    }
+    m_copydata(m, off as i32, n.data_mut()?);
     Some(n)
 }
 
@@ -1579,8 +1576,7 @@ pub fn ip6_nexthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32
             }
             Some(off)
         }
-        // give up
-        IPPROTO_NONE | IPPROTO_ESP | IPPROTO_IPCOMP => None,
+        // give up: IPPROTO_NONE, IPPROTO_ESP, IPPROTO_IPCOMP and any other
         _ => None,
     }
 }
@@ -1716,7 +1712,7 @@ mod tests {
 
     use std::vec::Vec;
 
-    use hal::sys::netinet_in::IPPROTO_UDP;
+    use hal::sys::netinet_in::{IPPROTO_ESP, IPPROTO_UDP};
     use hal::sys::netinet_ip6::IPV6_VERSION;
     use hal::sys::netinet6_ip6_var::Ip6statCounters as C;
 
