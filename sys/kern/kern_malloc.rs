@@ -949,25 +949,6 @@ mod tests {
     use crate::kern::subr_pool::tests::setup_real_memory;
     use crate::sys::malloc::{M_DEVBUF, M_TEMP};
 
-    /// N6.5e: `vmstat -m`'s `ifaddr` row (type 9) counts the live interface addresses: a
-    /// record the kernel's `in_ifaddr_alloc` makes is one `malloc(M_IFADDR)` block of this
-    /// `malloc(9)`, in use until its last handle goes (before N6.5e it went on a free list,
-    /// in use for ever).
-    #[test]
-    fn an_address_record_is_in_use_until_its_last_handle_goes() {
-        let _g = crate::netinet::ip_input::tests::setup();
-        let ifp = crate::netinet::ip_input::tests::test_ether();
-        let ks = &KMEMSTATS[crate::sys::malloc::M_IFADDR as usize];
-        let inuse = ks.ks_inuse.get();
-        let ia = kernel::netinet::in_var::in_ifaddr_alloc(ifp);
-        assert_eq!(ks.ks_inuse.get(), inuse + 1, "one block");
-        let held = ia.clone();
-        drop(ia);
-        assert_eq!(ks.ks_inuse.get(), inuse + 1, "a handle left");
-        drop(held);
-        assert_eq!(ks.ks_inuse.get(), inuse, "freed with its last handle");
-    }
-
     #[test]
     fn bucketindx_follows_the_c_formula() {
         assert_eq!(bucketindx(1), 4);

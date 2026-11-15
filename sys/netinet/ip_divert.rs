@@ -568,7 +568,14 @@ mod tests {
         let ipackets = count(DivstatCounters::DivsIpackets);
         let m = datagram(ADDR);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        divert_packet(m, PF_IN, htons(700));
+        // pf(4) diverts under the shared net lock its input path holds (ip_divert.c's walk
+        // of `if_addrlist` reads under it; N6.5e: the list is a net cell, lent from it).
+        let divert = |m, dir, port| {
+            crate::sys::systm::net_lock_shared();
+            divert_packet(m, dir, htons(port));
+            crate::sys::systm::net_unlock_shared();
+        };
+        divert(m, PF_IN, 700);
         assert_eq!(count(DivstatCounters::DivsIpackets), ipackets + 1);
         let cc = {
             let g = so.so_rcv.lock();
@@ -584,12 +591,12 @@ mod tests {
         };
 
         // Outbound: the wildcard address, and the checksums computed for the reader.
-        divert_packet(datagram([10, 0, 2, 2]), PF_OUT, htons(700));
+        divert(datagram([10, 0, 2, 2]), PF_OUT, 700);
         assert!(so.so_rcv.cc() > cc);
 
         // No socket on port 701: counted and dropped.
         let noport = count(DivstatCounters::DivsNoport);
-        divert_packet(datagram(ADDR), PF_IN, htons(701));
+        divert(datagram(ADDR), PF_IN, 701);
         assert_eq!(count(DivstatCounters::DivsNoport), noport + 1);
 
         // Reinjecting inbound toward an address that is not ours is refused.

@@ -5095,7 +5095,7 @@ notes = "M4: the uniprocessor mutex (__mtx_init, _mtx_init, mtx_init, mtx_init_f
 rust = "sys/kern/kern_malloc.rs"
 lz = ["sys/kern/kern_malloc.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs", "sys/kernel/netinet/in_var.rs"]
+adapted_by = ["sys/kernel/vm/page.rs", "sys/hal/vm/param.rs", "sys/hal/vm/uvmexp.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/vm/map.rs"]
 notes = "malloc/free/mallocarray/kmeminit_nkmempages/kmeminit with BUCKETINDX; KMEMSTATS is feature kmemstats (default: GENERIC has option KMEMSTATS); btokup always range-checks; poison_*, uvm_map_checkprot and ratecheck reported; malloc_printit not here; M7b: kmeminit makes kmem_map with uvm_km_suballoc (VM_MAP_INTRSAFE) and kmembase/kmemlimit are its bounds; only the host double (PMAP_NOMMU) keeps the direct-map stand-in; diagnostic tools stage 2: sysctl_malloc, buckstring (KMEMSTATS) and memall (KMEMSTATS or DIAGNOSTIC) built by kmeminit; the structures go out through to_bytes; BUCKETINDX of a negative number is the smallest bucket; M11a: malloc_mtx is the C's mutex (IPL_VM) at the C's sites in malloc, free and sysctl_malloc (dropped around km_alloc/km_free, which run at splvm), with or without MULTIPROCESSOR; the KMEMSTATS ks_limit wait msleeps on it (memname as wmesg); DIAGNOSTIC assertwaitok, the pool_debug == 2 yield and the proc0 'cannot sleep for memory during boot' panic; N3.5 S2: LZ's KMEM_MAP pointer is gone: kmem_map is sys/kernel/vm/km.rs's KMEM_MAP slot, installed by kmeminit's uvm_km_suballoc into KMEM_MAP_STORE (install_submap(KvMap::Kmem, ..)); kmem_map() forwards to kernel::vm::km::kmem_map"
 
 [[module]]
