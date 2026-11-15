@@ -172,7 +172,6 @@ use crate::netinet6::ip6_input::{ip6intr, ipv6_input};
 use crate::netinet6::ip6_output::in6_proto_cksum_out;
 #[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
-#[cfg(feature = "inet6")]
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
 use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
