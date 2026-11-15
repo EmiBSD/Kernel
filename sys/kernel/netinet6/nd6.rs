@@ -166,10 +166,14 @@
 //!   under their lock, the protocol inputs and timers, `ip6_forward`, pf's route-to, the
 //!   tunnels through `ip6_send`'s task, `NET_LOCK_SHARED` or `NET_LOCK`), ND's own held packets
 //!   (`nd6_output_held`, under it) and `bpfwrite` (which takes it around the output); a new
-//!   path without it would stop here rather than run unlocked. `nd6_rtrequest`
-//!   (`ether_rtrequest`'s), `nd6_ifattach` and `nd6_ifdetach` (the interface layer's) and DAD,
-//!   the expiry timer and `nd6_purge` (in6's and in6_ifattach's, N6.5a's temporary legs) are
-//!   called directly.
+//!   path without it would stop here rather than run unlocked. The one C path that reaches
+//!   the solicitation without the net lock is MPLS over an IPv6 gateway, from `mpe(4)` and
+//!   `mpw(4)`'s start routines (`ether_resolve`'s `AF_MPLS` case, if_ethersubr.c:272-292):
+//!   MPLS is not configured at the pin, and the slice that configures it must give that path
+//!   the proof or take the lock there, or `with_net_held` panics (SCAFFOLDING's row).
+//!   `nd6_rtrequest` (`ether_rtrequest`'s), `nd6_ifattach` and `nd6_ifdetach` (the interface
+//!   layer's) and DAD, the expiry timer and `nd6_purge` (in6's and in6_ifattach's, N6.5a's
+//!   temporary legs) are called directly.
 //! - The held packets an unanswered neighbor drops get their `icmp6_error` through the
 //!   temporary `Inet::icmp6_error` leg until ICMPv6 moves (N6.5d).
 //! - `nd6_ioctl(cmd, data, ifp)` over the request's bytes (`hal::pod::at`/`put` of the
@@ -2803,7 +2807,7 @@ pub(crate) mod tests {
         let _g = setup();
         let ifp = ether(b"nd8");
         let ia6 = ours_ia6(ifp);
-        let addr = DADQ_ADDR(&ia6.ia_ifa);
+        let addr = dadq_addr(&ia6.ia_ifa);
         {
             let w = NETLOCK.write();
             crate::netinet6::nd6_nbr::nd6_dad_stop(&ia6.ia_ifa, &NetHeld::of(&w).expect("net"));
@@ -2816,8 +2820,7 @@ pub(crate) mod tests {
     }
 
     /// The address of `ifa`'s DAD record (its timeout's argument).
-    #[allow(non_snake_case)]
-    fn DADQ_ADDR(ifa: &crate::net::if_var::Ifaddr) -> usize {
+    fn dadq_addr(ifa: &crate::net::if_var::Ifaddr) -> usize {
         crate::netinet6::nd6_nbr::dad_record_addr(ifa).expect("a DAD record")
     }
 
@@ -3036,11 +3039,20 @@ pub(crate) mod tests {
                 &std::vec![ND_OPT_SOURCE_LINKADDR, 0, 0, 0, 0, 0, 0, 0],
             )
         });
-        // Shorter than a solicitation, and a length past what the chain holds.
+        // Shorter than a solicitation (the native guard of nd6_nbr.rs, which the C has not:
+        // icmp6_input's icp6s_badlen guarantees the length first, sys/netinet6/icmp6.rs), and
+        // a length past what the chain holds (ip6_exthdr_get's NULL, nd6_nbr.c:117).
         cases.push(Rejected {
             msg: ns[..20].to_vec(),
             counter: Icmp6statCounters::Icp6sTooshort,
-            ..bad("nd6_nbr.c:117, 20 bytes", peer6(), snm, 255, &none, &none)
+            ..bad(
+                "the native icmp6len < fixed guard (icmp6_input's badlen in the C), 20 bytes",
+                peer6(),
+                snm,
+                255,
+                &none,
+                &none,
+            )
         });
         cases.push(Rejected {
             len: Some(32),
@@ -3150,7 +3162,7 @@ pub(crate) mod tests {
         cases.push(Rejected {
             counter: Icmp6statCounters::Icp6sTooshort,
             ..bad(
-                "nd6_nbr.c:540, 20 bytes",
+                "the native icmp6len < fixed guard (icmp6_input's badlen in the C), 20 bytes",
                 ours6(),
                 255,
                 &solicited[..20],
@@ -3215,7 +3227,7 @@ pub(crate) mod tests {
         assert!(pending >= 1);
         let count = IP6_DAD_COUNT.load(Ordering::Relaxed);
         assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
-        let addr = DADQ_ADDR(&ia6.ia_ifa);
+        let addr = dadq_addr(&ia6.ia_ifa);
         let refs = ia6.ia_ifa.ifa_refcnt.read();
 
         // A second start for the same address does nothing: no record, no probe, no reference.
@@ -3224,7 +3236,7 @@ pub(crate) mod tests {
             nd6_dad_start(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
         }
         assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending);
-        assert_eq!(DADQ_ADDR(&ia6.ia_ifa), addr);
+        assert_eq!(dadq_addr(&ia6.ia_ifa), addr);
         assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
         assert!(take_ip6_sent().is_empty(), "no second probe");
         assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs);
