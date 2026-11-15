@@ -553,8 +553,8 @@ impl<G: ProcGlue> Protocol<G> for Frag6Protocol<G> {
 /// The kernel's host tests' `inet6sw[]` (the glue's table is set once per test process, so
 /// every test that needs one records this one): the kernel's five entries at their C indices
 /// and doubles of `bsd`'s rows (UDP with `PR_MPINPUT`, TCP without it, the raw protocol, IPv6
-/// in IPv6 and the raw wildcard), each counting the packets it is given (then freed) and the
-/// control input it is told of.
+/// in IPv6, divert, whose number is past `IPPROTO_MAX`, and the raw wildcard), each counting
+/// the packets it is given (then freed) and the control input it is told of.
 #[cfg(test)]
 pub(crate) mod testsw6 {
     use core::sync::atomic::{AtomicI32, AtomicU32};
@@ -609,6 +609,12 @@ pub(crate) mod testsw6 {
         Row6::new(IPPROTO_RAW, SOCK_RAW, PR_ATOMIC | PR_ADDR | PR_MPINPUT);
     /// IPv6 in IPv6 (`ipip_input`), the second entry of number 41.
     pub(crate) static IPIP6: Row6 = Row6::new(IPPROTO_IPV6, SOCK_RAW, PR_ATOMIC | PR_ADDR);
+    /// Divert (`IPPROTO_DIVERT`, 258: past `ip6_protox[]`, as the C's table has it).
+    pub(crate) static DIVERT6: Row6 = Row6::new(
+        hal::sys::netinet_in::IPPROTO_DIVERT,
+        SOCK_RAW,
+        PR_ATOMIC | PR_ADDR,
+    );
     /// The raw wildcard.
     pub(crate) static WILD6: Row6 = Row6::new(0, SOCK_RAW, PR_ATOMIC | PR_ADDR | PR_MPINPUT);
     /// An entry of another family's domain, of number 50 (no table of the C has one: it shows
@@ -638,7 +644,7 @@ pub(crate) mod testsw6 {
     }
 
     /// The tests' `inet6sw[]`, in the C's order of the entries it has.
-    pub(crate) static SW6: [&dyn Protocol<G>; 11] = [
+    pub(crate) static SW6: [&dyn Protocol<G>; 12] = [
         &Ip6Protocol::<G>::NEW,
         &UDP6,
         &TCP6,
@@ -649,14 +655,16 @@ pub(crate) mod testsw6 {
         &Frag6Protocol::<G>::NEW,
         &IPIP6,
         &FOREIGN6,
+        &DIVERT6,
         &WILD6,
     ];
 
-    /// The tests' table recorded and `ip6_protox[]` filled from it (`ip6_init`'s switch; the
-    /// rest of `ip6_init`, which publishes the receive entry point, is not run here).
+    /// The tests' table recorded and `ip6_init` run over it (`ip6_protox[]` filled; ND's and
+    /// reassembly's pools and timeout, as their own fixtures make them; the receive entry
+    /// point the routing fixture publishes already).
     pub(crate) fn install() {
         inet6sw_set::<G>(&SW6);
-        inet6sw_init::<G>();
+        crate::netinet6::ip6_input::ip6_init::<G>();
     }
 
     impl Protocol<G> for Row6 {
@@ -712,9 +720,12 @@ mod tests {
     // The kernel's entries answer as in6_proto.c's rows (type, protocol, flags, the sysctl,
     // ICMPv6 sharing the raw entry's control input and options), the domain as `inet6domain`,
     // `ip6_init`'s `ip6_protox[]` maps every number to its entry or the raw one (a later entry
-    // of a number over an earlier one, an entry of another family's domain skipped), and
-    // `ip_deliver` walks the table, queueing on `ip6intrq` the protocols without
-    // `PR_MPINPUT`. The table is the tests' `testsw6::SW6`, `bsd`'s rows doubled.
+    // of a number over an earlier one, an entry of another family's domain skipped, divert's
+    // number past the array), `ip_deliver` walks the table, queueing on `ip6intrq` the
+    // protocols without `PR_MPINPUT`, and the kernel's entries take their headers (the
+    // extension headers' inputs chained to UDP's entry, ICMPv6's counted by `icmp6_input`).
+    // The table is the tests' `testsw6::SW6`, `bsd`'s rows doubled, and `ip6_init` fills
+    // `ip6_protox[]` from it.
 
     use core::sync::atomic::Ordering::Relaxed;
     use std::sync::MutexGuard;
@@ -837,6 +848,7 @@ mod tests {
         assert!(is_row(inet6_protocol::<G>(IPPROTO_ESP), &RAW6));
         // Past the table's numbers: none.
         assert!(inet6_protocol::<G>(IPPROTO_MAX).is_none());
+        assert!(inet6_protocol::<G>(hal::sys::netinet_in::IPPROTO_DIVERT).is_none());
         assert!(inet6_protocol::<G>(-1).is_none());
     }
 
@@ -888,6 +900,82 @@ mod tests {
         drop(w);
         assert_eq!(TCP6.inputs.load(Relaxed), tcp + 1, "ip6intr delivered it");
         assert_eq!(delivered(), d + 3);
+    }
+
+    #[test]
+    fn the_kernel_s_entries_take_their_headers() {
+        let _g = setup();
+        // Destination options, a routing header at its final destination, an atomic fragment
+        // and 8 bytes of UDP: dest6_input, route6_input and frag6_input each skip their header
+        // and name the next, and ip_deliver reaches UDP's entry.
+        let mut b = std::vec![0u8; 40];
+        b[0] = 0x60;
+        b[4..6].copy_from_slice(&32u16.to_be_bytes());
+        b[6] = IPPROTO_DSTOPTS as u8;
+        b.extend_from_slice(&[IPPROTO_ROUTING as u8, 0, 1, 4, 0, 0, 0, 0]);
+        b.extend_from_slice(&[IPPROTO_FRAGMENT as u8, 0, 4, 0, 0, 0, 0, 0]);
+        b.extend_from_slice(&[IPPROTO_UDP as u8, 0, 0, 0, 0, 0, 0, 7]);
+        b.extend_from_slice(&[0; 8]);
+        let deliver = |b: &[u8]| {
+            let r = NETLOCK.read();
+            let net = NetHeld::of(&r).expect("the net lock");
+            let mut mp = Some(m_devget(b, 0).expect("a packet"));
+            let mut off = 40;
+            ip_deliver::<G>(
+                &mut mp,
+                &mut off,
+                IPPROTO_DSTOPTS,
+                i32::from(AF_INET6),
+                true,
+                None,
+                &net,
+            )
+        };
+        let udp = UDP6.inputs.load(Relaxed);
+        let stat = |c: Ip6statCounters| IP6COUNTERS.read()[c as usize];
+        let (a, bad) = (
+            stat(Ip6statCounters::Ip6sReassembled),
+            stat(Ip6statCounters::Ip6sBadoptions),
+        );
+        assert_eq!(deliver(&b), IPPROTO_DONE);
+        assert_eq!(UDP6.inputs.load(Relaxed), udp + 1, "through three entries");
+        assert_eq!(
+            stat(Ip6statCounters::Ip6sReassembled),
+            a + 1,
+            "frag6_input's atomic fragment"
+        );
+        // The routing header with a segment left: route6_input's parameter problem.
+        b[51] = 1;
+        assert_eq!(deliver(&b), IPPROTO_DONE);
+        assert_eq!(UDP6.inputs.load(Relaxed), udp + 1, "not delivered");
+        assert_eq!(stat(Ip6statCounters::Ip6sBadoptions), bad + 1);
+
+        // ICMPv6's entry is icmp6_input: a message shorter than its header is counted there.
+        let short = || {
+            crate::netinet6::ip6_var::ICMP6COUNTERS.read()
+                [hal::sys::netinet_icmp6::Icmp6statCounters::Icp6sTooshort as usize]
+        };
+        let s = short();
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut b = [0u8; 42];
+        b[0] = 0x60;
+        b[5] = 2;
+        b[6] = IPPROTO_ICMPV6 as u8;
+        let mut mp = Some(m_devget(&b, 0).expect("a packet"));
+        let mut off = 40;
+        let nxt = ip_deliver::<G>(
+            &mut mp,
+            &mut off,
+            IPPROTO_ICMPV6,
+            i32::from(AF_INET6),
+            false,
+            None,
+            &net,
+        );
+        drop(w);
+        assert_eq!(nxt, IPPROTO_DONE);
+        assert_eq!(short(), s + 1);
     }
 }
 /* </TESTS> */
