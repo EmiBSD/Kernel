@@ -494,8 +494,11 @@ pub fn rip6_sbappend(inp: &Inpcb, m: &'static Mbuf, hlen: i32, rip6src: &Sockadd
 ///
 /// # Safety
 ///
-/// `sa` points at a readable socket address of its `sa_len` bytes; `d` is NULL or
-/// the `Ip6ctlparam` of the ICMPv6 error, valid for the call.
+/// `PrCtlinputFn`'s contract, its `AF_INET6` clause: `sa` points at a readable socket address
+/// of its `sa_len` bytes, a `sockaddr_in6`'s bytes readable there; `d` is NULL or the
+/// ICMPv6 error's `struct ip6ctlparam`, the kernel's `kernel::netinet6::icmp6::Ip6CtlParam`
+/// that `icmp6_notify_error` lends through `Protocol::ctlinput`'s `CtlArg::Ip6`, alive for
+/// the call and read through `&` only (its final destination a `Cell`).
 pub unsafe fn rip6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut c_void) {
     let mut d = d;
     let mut notify: InpNotifyFn = in_pcbrtchange;

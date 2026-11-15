@@ -1901,9 +1901,12 @@ pub fn icmp6_sysctl(name: &[i32], req: &mut SysctlReq<'_>) -> Result<(), Errno> 
     }
 }
 
-/// The rate limiter's state, the path MTU callbacks and the two timer queues' timeouts
-/// forgotten for the host tests (each test starts with the limit's window open and no
-/// callback; the registered array lives in an earlier test's memory: forgotten, not freed).
+/// The rate limiter's state and the path MTU callbacks forgotten for the host tests (each
+/// test starts with the limit's window open and no callback; the registered array lives in an
+/// earlier test's memory: forgotten, not freed). The two timer queues are not touched: their
+/// timers are `rt_timer_add`'s, each with its own armed timeout that finds it on its queue
+/// when it fires, and `icmp6_init` (the fixtures') sets their timeouts and counts again, as
+/// the IPv4 twin's `icmp_init` does for its queues.
 #[cfg(any(test, feature = "doubles"))]
 pub fn icmp6_test_reset() {
     ppsratecheck_locked(|l| {

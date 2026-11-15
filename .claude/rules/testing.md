@@ -25,7 +25,8 @@ Four tiers. Every change lands with the tier it belongs to.
    `arp_test_reset`, (N6.5) `in6_var_test_reset`, and (N6.5b) `nd6_test_reset` (the neighbor
    cache list, the hold total, ND's timeouts) and `dad_test_reset` (the DAD records' lists),
    (N6.5d) `frag6_test_reset` (IPv6 reassembly), `icmp6_test_reset` (the error rate limiter,
-   the path MTU callbacks, the timer queues' timeouts) and `ip6_test_reset` (the send queue);
+   the path MTU callbacks; the timer queues are left to `icmp6_init`) and `ip6_test_reset`
+   (the send queue, `ip6intrq`);
    in `ip_input`'s test setup, `ipq_test_reset` (reassembly) and
    `icmp_test_reset`; the server cache by `nfsrv_initcache` in the nfs tests' setup.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`

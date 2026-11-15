@@ -887,15 +887,18 @@ pub fn udp_notify(inp: &'static Inpcb, errno: Option<Errno>) {
     sowwakeup(so);
 }
 
-/// `udp6_ctlinput`: an ICMPv6 error (`cmd`) about a datagram to `sa`; `d` is the
-/// `Ip6ctlparam` of `icmp6_notify_error` (or NULL). A path MTU change (`PRC_MSGSIZE`) updates
+/// `udp6_ctlinput`: an ICMPv6 error (`cmd`) about a datagram to `sa`; `d` is the kernel's
+/// `Ip6CtlParam` of `icmp6_notify_error` (or NULL). A path MTU change (`PRC_MSGSIZE`) updates
 /// the route if a connected socket matches; then every matching socket is notified
 /// (`in6_pcbnotify`). `INET6`; compiled always, as `netinet6` is, for `inet6sw`.
 ///
 /// # Safety
 ///
-/// `PrCtlinputFn`'s contract: `sa` is NULL or a readable socket address of its `sa_len`
-/// bytes; `d` is NULL or the `Ip6ctlparam` of the ICMPv6 error, valid for the call.
+/// `PrCtlinputFn`'s contract, its `AF_INET6` clause: `sa` points at a readable socket address
+/// of its `sa_len` bytes, a `sockaddr_in6`'s bytes readable there (or NULL: nothing is done); `d` is NULL or the
+/// ICMPv6 error's `struct ip6ctlparam`, the kernel's `kernel::netinet6::icmp6::Ip6CtlParam`
+/// that `icmp6_notify_error` lends through `Protocol::ctlinput`'s `CtlArg::Ip6`, alive for
+/// the call and read through `&` only (its final destination a `Cell`).
 pub unsafe fn udp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut c_void) {
     let mut d = d;
     let mut notify: InpNotifyFn = udp_notify;
