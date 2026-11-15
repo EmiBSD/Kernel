@@ -421,18 +421,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         f(&net_held("if_input_proto"));
     }
-
-    fn ip6_protox(&self, nxt: i32) -> Option<usize> {
-        #[cfg(feature = "inet6")]
-        return crate::netinet6::in6_proto::IP6_PROTOX
-            .get(usize::try_from(nxt).ok()?)
-            .map(|p| usize::from(p.load(Ordering::Relaxed)));
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = nxt;
-            None
-        }
-    }
 }
 
 /// `ifinit`: the kernel's interface layer made (its index map) and the legs of `bsd`'s

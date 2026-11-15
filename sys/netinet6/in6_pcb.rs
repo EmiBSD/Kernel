@@ -403,7 +403,8 @@ pub(crate) mod tests {
 
     /// An `INP_IPV6` control block of a raw IPv6 socket in `table`.
     fn pcb6(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INET6SW[3], SOCK_RAW, M_WAIT).expect("socket");
+        // INET6SW[2]: the raw IPv6 row (bsd's rows only since N6.5d).
+        let so = soalloc(&INET6SW[2], SOCK_RAW, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         assert!(inp.has_flags(INP_IPV6), "in_pcballoc marks PF_INET6 pcbs");

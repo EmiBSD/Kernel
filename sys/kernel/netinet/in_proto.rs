@@ -130,9 +130,9 @@
 //!   `IPPROTO_IPV4` and, with `INET6`, `IPPROTO_IPV6`); `MPLS`, `NGRE`, `NCARP` and
 //!   `NETHERIP` are not configured, their entries absent as LZ's. `SMALL_KERNEL` is not set:
 //!   the sysctl handlers are in the table.
-//! - `INET6` is configured and IPv6 is `bsd`'s until N6.5: `ip_deliver`'s IPv6 steps reach
-//!   `inet6sw[ip6_protox[nxt]]` through the `Inet` bridge's `ip6_protox` and the IPv6
-//!   domain's table ([`inet6_protocol`]).
+//! - `INET6` is configured: `ip_deliver`'s IPv6 steps reach `inet6sw[ip6_protox[nxt]]`
+//!   through `kernel::netinet6::in6_proto`'s table (N6.5d; through the `Inet` bridge's
+//!   `ip6_protox` leg and a `pffinddomain` of the IPv6 domain from N6.4c2 to N6.5c).
 //!
 //! ## Redesign
 //! - LZ's `ip_protox[]` (a static array of atomics in `bsd`'s `in_proto.rs`) and the table's
@@ -160,11 +160,10 @@ use hal::sys::errno::Errno;
 use hal::sys::netinet_in::{
     IPPROTO_DONE, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_MAX, IPPROTO_RAW, SockaddrIn,
 };
-use hal::sys::socket::{AF_INET, AF_INET6, PF_INET, SOCK_RAW};
+use hal::sys::socket::{AF_INET, PF_INET, SOCK_RAW};
 
 use crate::assert::kpanic;
-use crate::net::domain::{Domain, net, pffinddomain};
-use crate::net::if_::inet;
+use crate::net::domain::{Domain, net};
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::proto::{PR_ADDR, PR_ATOMIC, PR_MPSYSCTL, Protocol, Usrreqs};
@@ -180,9 +179,6 @@ pub struct InetTables<G: ProcGlue> {
     raw: AtomicUsize,
     /// `ip_protox[]`: the entry of each IP protocol number.
     protox: [AtomicU8; IPPROTO_MAX as usize],
-    /// The IPv6 domain's protocols (`inet6sw[]`, `bsd`'s until N6.5), found at their first
-    /// use by `ip_deliver`.
-    inet6: OnceStatic<&'static [&'static dyn Protocol<G>]>,
 }
 
 impl<G: ProcGlue> InetTables<G> {
@@ -192,7 +188,6 @@ impl<G: ProcGlue> InetTables<G> {
             sw: OnceStatic::new(),
             raw: AtomicUsize::new(0),
             protox: [const { AtomicU8::new(0) }; IPPROTO_MAX as usize],
-            inet6: OnceStatic::new(),
         }
     }
 }
@@ -272,18 +267,6 @@ pub fn raw_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
     t.sw.get()?.get(t.raw.load(Ordering::Relaxed)).copied()
 }
 
-/// `inet6sw[ip6_protox[nxt]]`: the IPv6 protocol of number `nxt`, through the `Inet` bridge
-/// (IPv6 is `bsd`'s until N6.5); `None` without IPv6.
-pub fn inet6_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
-    let i = inet()?.ip6_protox(nxt)?;
-    let t = tables::<G>();
-    if let Some(sw) = t.inet6.get() {
-        return sw.get(i).copied();
-    }
-    let sw = pffinddomain::<G>(i32::from(AF_INET6))?.protocols();
-    let _ = t.inet6.set(sw);
-    sw.get(i).copied()
-}
 /// `inetdomain`: the internet domain, its protocols the glue's `inetsw[]` ([`inetsw_set`], in
 /// the C's order: the kernel's IP, ICMP and IGMP entries beside `bsd`'s transports and IPsec
 /// until they move).

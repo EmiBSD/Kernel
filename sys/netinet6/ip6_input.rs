@@ -88,55 +88,14 @@
 //! Upstream: sys/netinet6/ip6_input.c @ 3ce1f3f79392
 
 use crate::kern::proc_glue::BsdProcGlue as G;
-use crate::kern::uipc_domain::pffindproto;
 use crate::net::if_::net_held;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::route::Route;
-use crate::netinet::in_::{IPPROTO_MAX, IPPROTO_RAW};
 use crate::netinet::in_pcb::Inpcb;
-use crate::netinet6::in6_proto::{INET6DOMAIN, INET6SW, IP6_PROTOX};
-use crate::netinet6::ip6_output::ip6_randomid_init;
-use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, park, unpark};
-use crate::sys::protosw::Protosw;
-use crate::sys::socket::{PF_INET6, SOCK_RAW};
-use core::ptr;
-use core::sync::atomic::Ordering;
 
 pub use kernel::netinet6::ip6_input::{INET6CTLERRMAP, ip6_get_prevhdr, ip6_lasthdr};
 pub use kernel::netinet6::ip6_var::IP6COUNTERS;
-
-/// The index of `pr` in `inet6sw[]` (`pr - inet6sw`).
-fn inet6sw_index(pr: &Protosw) -> u8 {
-    match INET6SW.iter().position(|p| ptr::eq(p, pr)) {
-        Some(i) => i as u8,
-        None => crate::kern::subr_prf::panic(format_args!("ip6_init: protocol not in inet6sw")),
-    }
-}
-
-/// `ip6_init`: `inet6sw[]`'s IPV6 row until the table is the kernel's: `ip6_protox[]` filled
-/// from `inet6sw[]` (all protocols not implemented in kernel go to the raw IP6 protocol
-/// handler), the fragment identifiers' generator, and the kernel's `ip6_init`.
-pub fn ip6_init() {
-    let Some(pr) = pffindproto(i32::from(PF_INET6), IPPROTO_RAW, SOCK_RAW) else {
-        crate::kern::subr_prf::panic(format_args!("ip6_init"));
-    };
-    let raw = inet6sw_index(pr);
-    for p in &IP6_PROTOX {
-        p.store(raw, Ordering::Relaxed);
-    }
-    for pr in INET6DOMAIN.dom_protosw {
-        if pr.pr_domain.dom_family == i32::from(PF_INET6)
-            && pr.pr_protocol != 0
-            && i32::from(pr.pr_protocol) != IPPROTO_RAW
-            && i32::from(pr.pr_protocol) < IPPROTO_MAX
-        {
-            IP6_PROTOX[pr.pr_protocol as usize].store(inet6sw_index(pr), Ordering::Relaxed);
-        }
-    }
-    ip6_randomid_init();
-    kernel::netinet6::ip6_input::ip6_init::<G>();
-}
 
 /// `ipv6_input(ifp, m, ns)`: the kernel's, of a parked packet (wg(4), divert).
 pub fn ipv6_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
@@ -176,24 +135,6 @@ pub fn ip6_savecontrol(inp: &Inpcb, m: &Mbuf, mp: &mut Option<&'static Mbuf>) {
 /// reassembly).
 pub fn ip6_forward(m: &'static Mbuf, ro: Option<&mut Route>, flags: i32) {
     kernel::netinet6::ip6_forward::ip6_forward(unpark(m), ro, flags, &net_held("ip6_forward"));
-}
-
-/// `ip6_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the kernel's (`inet6sw[]`'s IPV6
-/// row until the table is the kernel's).
-pub fn ip6_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::netinet6::ip6_input::ip6_sysctl(name, &mut req)
 }
 
 /// `ip6_send(m)`: the kernel's, of a parked packet.

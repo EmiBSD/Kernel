@@ -116,8 +116,11 @@
 //!   kernel's keeps the byte [`ip6_hopopts_input`] read from the same contiguous region, so
 //!   that second failure, which cannot happen, has no branch.
 //! - `ip6_init`'s protocol switch (`ip6_protox[]` from `inet6sw[]`, IPv6's raw entry for
-//!   the rest) and the fragment identifiers' generator (`ip6_randomid_init`, `idgen32`) are
-//!   `bsd`'s `ip6_init` until the IPv6 table moves; it calls [`ip6_init`] for the rest.
+//!   the rest) is `kernel::netinet6::in6_proto::inet6sw_init`, the table's (N6.5d); the
+//!   fragment identifiers' generator (`ip6_randomid_init`, `idgen32` over `bsd`'s crypto
+//!   until N8) is seeded by `bsd`'s `domaininit` just before the domains' initialisations
+//!   (the C seeds it in `ip6_init`, after the switch; nothing draws an identifier before the
+//!   first output).
 //! - `NPF` (pf(4)) is configured: `pf_test(AF_INET6, PF_IN, ..)` and `pf_ouraddr` are the
 //!   `Pf` bridge's legs. `IPSEC` is configured: `ipsec_in_use` and `ipsec_forward_check`
 //!   are the `Ipsec` bridge's (`bsd`'s until N8).
@@ -239,6 +242,7 @@ use crate::netinet::ip_var::Ipoffnxt;
 use crate::netinet6::frag6::frag6_init;
 use crate::netinet6::icmp6::{ICMP6_MTUDISC_TIMEOUT_Q, icmp6_error};
 use crate::netinet6::in6::in6_hasmulti;
+use crate::netinet6::in6_proto::inet6sw_init;
 use crate::netinet6::in6_var::In6Ifaddr;
 use crate::netinet6::ip6_forward::ip6_forward;
 use crate::netinet6::ip6_output::{ip6_load, ip6_store};
@@ -410,11 +414,14 @@ pub fn ip6_set_bytes(m: &mut Mbuf, off: i32, v: &[u8]) -> bool {
     m_copyback(p, off as i32, v, M_DONTWAIT).is_ok()
 }
 
-/// `ip6_init`'s part the kernel runs for the glue `G`: ND's and reassembly's initialisation
-/// and the receive entry point published (a second call, a test's, keeps the first). The
-/// protocol switch's `ip6_protox[]` and the fragment identifiers' generator are its
-/// table's and `idgen32`'s (the table's `ip6_init`).
+/// `ip6_init`: IP6 initialization: fill in the IP6 protocol switch table (the glue's
+/// `inet6sw[]`; all protocols not implemented in the kernel go to the raw IP6 protocol
+/// handler), ND's and reassembly's initialisation and the receive entry point published (a
+/// second call keeps the pools, the timeout and the entry point). The fragment identifiers'
+/// generator is `idgen32`'s, seeded by the glue's boot (`bsd`'s `domaininit`).
 pub fn ip6_init<G: ProcGlue>() {
+    inet6sw_init::<G>();
+    // ip6_randomid_init(): bsd's domaininit, before the domains' initialisations.
     nd6_init();
     frag6_init();
     // mq_init(&ip6send_mq, 64, IPL_SOFTNET): its initialiser.

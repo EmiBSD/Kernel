@@ -413,13 +413,17 @@ paid_by = "N8"
 # (kernel::netinet::in_proto), bsd's rows the transports, divert, pfsync, IP-in-IP and IPsec.
 # N6.5d: pr_ctlinput's argument typed by family (kernel::net::proto::CtlArg: the IPv4 quote's
 # bytes, the ICMPv6 error's Ip6CtlParam, or none; D-8), bsd's impl handing each family's
-# entry its own argument only, the IPv6 ones the kernel's Ip6CtlParam itself.
-# Paid when pfkeyv2's domain and inetsw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy
-# implementers, move (N8); inet's transports at N6.6, route's flip at N6.3b.
+# entry its own argument only, the IPv6 ones the kernel's Ip6CtlParam itself. N6.5d's table
+# (kernel::netinet6::in6_proto, D-9): inet6's domain and its IPV6, ICMPV6, DSTOPTS, ROUTING
+# and FRAGMENT entries are the kernel's, bsd's rows the transports, raw IPv6 (whose control
+# input, options and requests ICMPv6's entry lends), IPsec, IP-in-IP and divert.
+# Paid when pfkeyv2's domain and inetsw[]'s and inet6sw[]'s AH/ESP/IPCOMP/IPIP entries, its
+# last legacy implementers, move (N8); inet's and inet6's transports and raw sockets at N6.6,
+# route's flip at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
-for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs"]
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs"]
 paid_by = "N8"
 
 # bsd: an interface's driver (if_var.h's procedure handles: if_input, if_enqueue, if_start,
@@ -488,7 +492,9 @@ paid_by = "N7"
 # the hop-by-hop parser, reassembly and the routing header call the kernel's). N6.5d's input
 # path (kernel::netinet6::ip6_input, ip6_forward): ip6intr, ipv6_input, ip6_forwarding,
 # ip6_multipath, ip6stat_rtcache, ip6stat_deliver, ip6_hdrnestlimit and ip6_ours_enqueue left
-# (the netisr, ether_input, the routing table and ip_deliver read the kernel's own).
+# (the netisr, ether_input, the routing table and ip_deliver read the kernel's own). N6.5d's
+# table (kernel::netinet6::in6_proto): ip6_protox left (ip_deliver reads the kernel's
+# Inet6Tables), the last of the IPv6 legs but ip6_randomid (N8).
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
@@ -498,7 +504,7 @@ paid_by = "N7"
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs"]
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's

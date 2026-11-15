@@ -118,8 +118,9 @@
 //!   compares, folded away when the counter is a constant.
 //! - The configuration variables, LZ's atomics in `bsd`'s `in6_proto.rs`, are here, the
 //!   header's `extern`s (`kernel::netinet::ip_var`'s precedent); `bsd`'s `in6_proto.rs`
-//!   re-exports them until the protocol table moves (N6.5d). `ip6_mtudisc_timeout` joins
-//!   them.
+//!   re-exports them for its importers (pf, TCP, UDP, IP-in-IP) until they move, and their
+//!   `moved` rows sit under `kernel::netinet6::in6_proto`, the C file's module (N6.5d).
+//!   `ip6_mtudisc_timeout` joins them.
 //! - N6.5c: LZ's `struct ip6_pktopts` (raw `NonNull`s to the `malloc(M_IP6OPT)` packet info
 //!   and extension headers, read through `unsafe` by `ip6_output`, the source selection and
 //!   the socket options, with an invariant written on the field) -> [`Ip6Pktopts`], whose

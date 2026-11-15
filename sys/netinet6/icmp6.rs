@@ -80,10 +80,11 @@
 /* <CODE> */
 //! ICMPv6: `netinet6/icmp6.c`, the kernel's since N6.5d (`kernel::netinet6::icmp6`). This is
 //! `bsd`'s adapter of it: the kernel's items under LZ's path for `bsd`'s importers (the
-//! transports' control inputs, raw IPv6, pf, the input path until it moves), wrappers of the
-//! functions they call over parked packets and routes (the net lock's proof made by check,
-//! `net_held`), and `icmp6_ctloutput`, which stays here with the raw sockets' filter word it
-//! reads and writes (`inp_icmp6filt`, `bsd`'s until N6.6b).
+//! transports' control inputs, raw IPv6, pf), wrappers of the functions they call over parked
+//! packets and routes (the net lock's proof made by check, `net_held`), and
+//! `icmp6_ctloutput`, which stays here with the raw sockets' filter word it reads and writes
+//! (`inp_icmp6filt`, `bsd`'s until N6.6b). `inet6sw[]`'s ICMPv6 entry is the kernel's
+//! (`kernel::netinet6::in6_proto::Icmp6Protocol`).
 //!
 //! Upstream: sys/netinet6/icmp6.c @ 3ce1f3f79392
 //!
@@ -95,7 +96,6 @@ use core::mem::size_of;
 use core::ptr;
 
 use crate::net::if_::net_held;
-use crate::net::if_var::Netstack;
 use crate::net::route::Rtentry;
 use crate::netinet::icmp6::Icmp6Filter;
 use crate::netinet::in_::IPPROTO_ICMPV6;
@@ -103,21 +103,14 @@ use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::sotoinpcb;
 use crate::netinet6::in6::{ICMP6_FILTER, SockaddrIn6};
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
+use crate::sys::mbuf::{Mbuf, mtod, unpark};
 use crate::sys::protosw::{PRCO_GETOPT, PRCO_SETOPT};
 use crate::sys::socketvar::Socket;
 
-pub use kernel::netinet6::icmp6::{
-    ICMP6_MTUDISC_HIWAT, ICMP6_MTUDISC_LOWAT, ICMP6_MTUDISC_TIMEOUT_Q, ICMP6_REDIRECT_TIMEOUT_Q,
-    Ip6CtlParam, icmp6_errcount, icmp6_mtudisc_callback_register, icmp6_ratelimit,
-};
+pub use kernel::netinet6::icmp6::{Ip6CtlParam, icmp6_mtudisc_callback_register};
 pub use kernel::netinet6::ip6_var::ICMP6COUNTERS;
 
-/// `void (*)(struct sockaddr_in6 *, u_int)`: a path MTU change callback (the kernel's
-/// `Mtudisc6Fn`).
-pub type Icmp6MtudiscCallbackFn = kernel::netinet6::icmp6::Mtudisc6Fn;
-
-/// `icmp6_error(m, type, code, param)` of a parked packet (pf, UDP, raw IPv6, the input path).
+/// `icmp6_error(m, type, code, param)` of a parked packet (pf, UDP, raw IPv6).
 pub fn icmp6_error(m: &'static Mbuf, type_: u8, code: u8, param: i32) {
     kernel::netinet6::icmp6::icmp6_error(unpark(m), type_, code, param, &net_held("icmp6_error"));
 }
@@ -144,63 +137,6 @@ pub fn icmp6_mtudisc_clone(
         &net_held("icmp6_mtudisc_clone"),
     )
     .map(crate::net::route::park)
-}
-
-/// `icmp6_redirect_output(m0, rt)`: the kernel's, for `bsd`'s forwarding.
-pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
-    kernel::netinet6::icmp6::icmp6_redirect_output(
-        unpark(m0),
-        rt,
-        &net_held("icmp6_redirect_output"),
-    );
-}
-
-/// `icmp6_init`: the kernel's (`inet6sw[]`'s row until the table is the kernel's).
-pub fn icmp6_init() {
-    kernel::netinet6::icmp6::icmp6_init();
-}
-
-/// `icmp6_fasttimo`: the kernel's.
-pub fn icmp6_fasttimo() {
-    kernel::netinet6::icmp6::icmp6_fasttimo();
-}
-
-/// `icmp6_input(mp, offp, proto, af, ns)`: the kernel's over the parked packet.
-pub fn icmp6_input(
-    mp: &mut Option<&'static Mbuf>,
-    offp: &mut i32,
-    proto: i32,
-    af: i32,
-    ns: Option<&mut Netstack>,
-) -> i32 {
-    let mut k = mp.take().map(unpark);
-    let nxt = kernel::netinet6::icmp6::icmp6_input::<crate::kern::proc_glue::BsdProcGlue>(
-        &mut k,
-        offp,
-        proto,
-        af,
-        ns,
-        &net_held("icmp6_input"),
-    );
-    *mp = k.map(park);
-    nxt
-}
-
-/// `icmp6_sysctl(name, namelen, oldp, oldlenp, newp, newlen)`: the kernel's.
-pub fn icmp6_sysctl(
-    name: &[i32],
-    oldp: usize,
-    oldlenp: &mut usize,
-    newp: usize,
-    newlen: usize,
-) -> Result<(), Errno> {
-    let mut req = kernel::sysctl::SysctlReq {
-        oldp,
-        oldlenp,
-        newp,
-        newlen,
-    };
-    kernel::netinet6::icmp6::icmp6_sysctl(name, &mut req)
 }
 
 /// `icmp6_ctloutput`: ICMPv6 socket option processing (`ICMP6_FILTER`).

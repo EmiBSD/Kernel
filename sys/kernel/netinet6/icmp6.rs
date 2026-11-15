@@ -234,7 +234,7 @@ use hal::sys::netinet_icmp6::{
 };
 use hal::sys::netinet_in::{
     IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_ICMPV6,
-    IPPROTO_IPV6, IPPROTO_RAW, IPPROTO_ROUTING,
+    IPPROTO_IPV6, IPPROTO_ROUTING,
 };
 use hal::sys::netinet_ip6::{
     IP6F_OFF_MASK, IPV6_FLOWLABEL_MASK, IPV6_MMTU, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Ext,
@@ -271,9 +271,9 @@ use crate::net::route::{
 };
 use crate::net::rtable::rtable_getsource;
 use crate::net::rtsock::rtm_send;
-use crate::netinet::in_proto::inet6_protocol;
 use crate::netinet6::in6::{in6_addr2scopeid, in6_ifawithscope, in6ifa_ifpforlinklocal};
 use crate::netinet6::in6_cksum::in6_cksum;
+use crate::netinet6::in6_proto::{inet6_protocol, raw6_protocol};
 use crate::netinet6::in6_src::in6_embedscope;
 use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6};
 use crate::netinet6::ip6_input::{
@@ -864,7 +864,7 @@ pub fn icmp6_input<G: ProcGlue>(
     }
     // raw: deliver the packet to appropriate sockets (rip6_input).
     *mp = Some(m);
-    match inet6_protocol::<G>(IPPROTO_RAW) {
+    match raw6_protocol::<G>() {
         Some(raw) => raw.input(mp, offp, proto, af, ns, net),
         None => {
             drop(mp.take());
@@ -2733,6 +2733,54 @@ pub(crate) mod tests {
             Err(Errno::ENOTDIR)
         );
         assert_eq!(sysctl(&[], None).1, Err(Errno::ENOTDIR));
+    }
+
+    #[test]
+    fn an_error_reaches_the_quoted_protocol_then_the_raw_sockets() {
+        use crate::netinet6::in6_proto::testsw6::{RAW6, UDP6, install};
+        let (_g, ifp) = net6();
+        install();
+        // A port unreachable quoting a UDP packet we sent (ours -> peer): icmp6_notify_error
+        // hands it to UDP's entry (`inet6sw[ip6_protox[nxt]].pr_ctlinput`) with the quoted
+        // packet's parameter, then icmp6_input's tail gives it to the raw sockets.
+        let quoted = packet(ours6(), peer6(), IPPROTO_UDP as u8, 64, &[0; 8]);
+        let mut msg = vec![
+            ICMP6_DST_UNREACH,
+            ICMP6_DST_UNREACH_NOPORT,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        msg.extend_from_slice(&quoted);
+        UDP6.ctl.store(0, Ordering::Relaxed);
+        UDP6.ctl6_nxt.store(-1, Ordering::Relaxed);
+        let raws = RAW6.inputs.load(Ordering::Relaxed);
+        assert_eq!(
+            input(icmp(ifp, peer6(), ours6(), &msg, false)),
+            IPPROTO_DONE
+        );
+        assert_eq!(UDP6.ctl.load(Ordering::Relaxed), PRC_UNREACH_PORT);
+        assert_eq!(UDP6.ctl6_nxt.load(Ordering::Relaxed), IPPROTO_UDP);
+        assert_eq!(UDP6.ctl6_cmdarg.load(Ordering::Relaxed), 0, "no MTU");
+        assert_eq!(
+            RAW6.inputs.load(Ordering::Relaxed),
+            raws + 1,
+            "then rip6_input"
+        );
+        // A Packet Too Big: PRC_MSGSIZE, the MTU as the parameter's command argument.
+        msg[0] = ICMP6_PACKET_TOO_BIG;
+        msg[1] = 0;
+        msg[4..8].copy_from_slice(&1400u32.to_be_bytes());
+        assert_eq!(
+            input(icmp(ifp, peer6(), ours6(), &msg, false)),
+            IPPROTO_DONE
+        );
+        assert_eq!(UDP6.ctl.load(Ordering::Relaxed), PRC_MSGSIZE);
+        assert_eq!(UDP6.ctl6_cmdarg.load(Ordering::Relaxed), 1400);
+        assert_eq!(RAW6.inputs.load(Ordering::Relaxed), raws + 2);
     }
 }
 /* </TESTS> */

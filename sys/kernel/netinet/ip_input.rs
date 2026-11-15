@@ -74,7 +74,7 @@
 //! - `INET6` is configured: `ip_deliver`'s IPv6 steps (the `ip6stat` counters,
 //!   `ip6_hdrnestlimit`, `ip6_ours_enqueue`) are the kernel's IPv6 input's
 //!   (`kernel::netinet6::ip6_input`, N6.5d); `inet6sw[ip6_protox[nxt]]` is
-//!   `kernel::netinet::in_proto::inet6_protocol`'s.
+//!   `kernel::netinet6::in6_proto::inet6_protocol`'s.
 //! - Not configured, each a comment at its site: `NCARP` (`carp_lsdrop`,
 //!   `carp_strict_addr_chk`) and `MROUTING` (`ip_mforward`, `ip_mrouter_active`, `mrt_init`;
 //!   the `mrt` sysctls answer `EOPNOTSUPP` as the C's `#else` does).
@@ -219,7 +219,7 @@ use crate::netinet::in_pcb::{
     IPPORT_FIRSTAUTO, IPPORT_LASTAUTO, Inpcb, ROOTONLYPORTS, dp_set, ipport_hifirstauto,
     ipport_hilastauto,
 };
-use crate::netinet::in_proto::{inet6_protocol, inetsw_init, ip_protocol};
+use crate::netinet::in_proto::{inetsw_init, ip_protocol};
 use crate::netinet::in_var::InIfaddr;
 use crate::netinet::ip_icmp::{IP_MTUDISC_TIMEOUT_Q, icmp_error, iptime};
 use crate::netinet::ip_id::ip_randomid_init;
@@ -229,6 +229,7 @@ use crate::netinet::ip_var::{
     IPCOUNTERS, IPMTUDISCTIMEOUT, IPMULTIPATH, IPS_NCOUNTERS, Ipoffnxt, Ipq, IpqList, Ipqent,
     IpqentList, IpstatCounters, ip_mtudisc, ipstat_dec, ipstat_inc,
 };
+use crate::netinet6::in6_proto::inet6_protocol;
 use crate::netinet6::ip6_input::ip6_ours_enqueue;
 use crate::netinet6::ip6_var::{IP6_HDRNESTLIMIT, ip6stat_dec, ip6stat_inc};
 use crate::proc::ProcGlue;

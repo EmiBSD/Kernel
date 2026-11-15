@@ -1,4 +1,3 @@
-/*	$KAME: in6_proto.c,v 1.66 2000/10/10 15:35:47 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -78,19 +77,21 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! The IPv6 protocol switch `inet6sw[]`, `ip6_protox[]` and `inet6domain`, and the IPv6
-//! configuration variables: `netinet6/in6_proto.c`.
+//! The IPv6 protocol switch `inet6sw[]` and `inet6domain`, and the IPv6 configuration
+//! variables: `netinet6/in6_proto.c`.
 //!
 //! Upstream: sys/netinet6/in6_proto.c @ 3ce1f3f79392
 //!
-//! IPv6, raw IPv6, ICMPv6, the destination options, routing and fragment headers, AH, ESP
-//! and IPComp, IPv4 and IPv6 in IPv6, divert and the raw wildcard, in the C's order.
-//! `ip6_init` fills `ip6_protox[]`, which maps an IP protocol number to its entry in
-//! `inet6sw[]`; every number without an entry goes to the raw IPv6 handler.
+//! Since N6.5d the IPv6 domain, `ip6_protox[]` and the IPv6, ICMPv6, destination options,
+//! routing header and fragment header entries are the kernel's (`kernel::netinet6::in6_proto`).
+//! The rows here are `bsd`'s ten in the C's order: UDP, TCP, raw IPv6, AH, ESP and IPComp,
+//! IPv4 and IPv6 in IPv6, divert and the raw wildcard; `bsd`'s `sys/kern/uipc_domain.rs` hands
+//! the kernel the table of its entries and these rows, and the rows' `pr_domain` is this
+//! file's `inet6domain` (`bsd`'s `struct domain`, whose protocols are that table).
 //!
-//! Locks: \[a\] atomic operations. The sysctl variables are atomics, as
-//! `netinet/ip_input.rs`'s are; the IPv6 ones are the kernel's since N6.5a
-//! (`kernel::netinet6::ip6_var`, re-exported here), the ICMPv6 ones stay until N6.5d.
+//! Locks: \[a\] atomic operations. The sysctl variables are the kernel's
+//! (`kernel::netinet6::ip6_var`, N6.5a), re-exported here for `bsd`'s importers (pf, TCP, UDP,
+//! IP-in-IP) until they move.
 //!
 //! ## Deviations
 //! - `IPSEC` is configured (M9c): AH, ESP and IPComp take `ah46_input`, `esp46_input` and
@@ -99,19 +100,14 @@
 //!   `NETHERIP` and `NGRE` are not configured: their entries are comments. `NPF` is:
 //!   `IPPROTO_DIVERT` (`netinet6/ip6_divert.c`) has its entry. `SMALL_KERNEL` is not set,
 //!   so the sysctl handlers are in the table.
-//! - `ip6_protox[]` holds atomics (`ip6_init` writes it once, every input reads it).
 //! - `rip6_sendspace`/`rip6_recvspace` (`u_long`, no sysctl) are constants of the same
 //!   names, as `rip_sendspace` is.
 
 use core::mem::{offset_of, size_of};
-use core::sync::atomic::AtomicU8;
 
-use crate::net::if_::net_held;
-use crate::net::if_var::Netstack;
 use crate::netinet::in_::{
-    IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_ICMPV6,
-    IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_ROUTING,
-    IPPROTO_TCP, IPPROTO_UDP,
+    IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6,
+    IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP,
 };
 use crate::netinet::ip_ipip::ipip_input;
 use crate::netinet::ipsec_input::{
@@ -121,63 +117,18 @@ use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TCP6_USRREQS, tcp_ctloutput, tcp_sysctl};
 use crate::netinet::udp_usrreq::{UDP6_USRREQS, udp_input, udp_sysctl, udp6_ctlinput};
-use crate::netinet6::icmp6::{icmp6_fasttimo, icmp6_init, icmp6_input, icmp6_sysctl};
 use crate::netinet6::in6::SockaddrIn6;
 use crate::netinet6::ip6_divert::{DIVERT6_USRREQS, divert6_init};
-use crate::netinet6::ip6_input::{ip6_init, ip6_sysctl};
 use crate::netinet6::ip6_output::ip6_ctloutput;
 use crate::netinet6::raw_ip6::{
     RIP6_USRREQS, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
 use crate::sys::domain::Domain;
-use crate::sys::mbuf::{Mbuf, park, unpark};
 use crate::sys::protosw::{
     PR_ABRTACPTDIS, PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE,
     PR_WANTRCVD, Protosw,
 };
 use crate::sys::socket::{AF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
-
-/// A kernel protocol input (`kernel::netinet6`'s) as `bsd`'s `inet6sw[]` row takes it: the
-/// parked packet unparked for it and parked again when it is left, under `bsd`'s net lock
-/// (the table's rows go when the table becomes the kernel's, N6.5d).
-macro_rules! kernel_input {
-    ($(#[$meta:meta])* $name:ident, $f:path) => {
-        $(#[$meta])*
-        fn $name(
-            mp: &mut Option<&'static Mbuf>,
-            offp: &mut i32,
-            proto: i32,
-            af: i32,
-            ns: Option<&mut Netstack>,
-        ) -> i32 {
-            let mut k = mp.take().map(unpark);
-            let nxt = $f(&mut k, offp, proto, af, ns, &net_held(stringify!($name)));
-            *mp = k.map(park);
-            nxt
-        }
-    };
-}
-
-kernel_input!(
-    /// `dest6_input`: the kernel's.
-    dest6_input,
-    kernel::netinet6::dest6::dest6_input
-);
-kernel_input!(
-    /// `route6_input`: the kernel's.
-    route6_input,
-    kernel::netinet6::route6::route6_input
-);
-kernel_input!(
-    /// `frag6_input`: the kernel's.
-    frag6_input,
-    kernel::netinet6::frag6::frag6_input
-);
-
-/// `frag6_slowtimo`: the kernel's.
-fn frag6_slowtimo() {
-    kernel::netinet6::frag6::frag6_slowtimo();
-}
 
 /// Nominal space allocated to a raw ip6 socket: send.
 pub const RIPV6SNDQ: u64 = 8192;
@@ -189,20 +140,11 @@ pub const RIP6_SENDSPACE: u64 = RIPV6SNDQ;
 /// `rip6_recvspace`.
 pub const RIP6_RECVSPACE: u64 = RIPV6RCVQ;
 
-/// `ip6_protox[]`: the index in `inet6sw[]` of each protocol (`ip6_init` fills it).
-pub static IP6_PROTOX: [AtomicU8; IPPROTO_MAX as usize] =
-    [const { AtomicU8::new(0) }; IPPROTO_MAX as usize];
-
-/// `inet6sw[]`: TCP/IP protocol family: IP6, ICMP6, UDP, TCP.
-pub static INET6SW: [Protosw; 15] = [
-    Protosw {
-        pr_protocol: IPPROTO_IPV6 as i16,
-        pr_flags: PR_MPSYSCTL,
-        pr_init: Some(ip6_init),
-        pr_slowtimo: Some(frag6_slowtimo),
-        pr_sysctl: Some(ip6_sysctl),
-        ..Protosw::new(&INET6DOMAIN)
-    },
+/// `inet6sw[]`'s rows that are `bsd`'s, in the C's order (the IPv6, ICMPv6 and extension
+/// header entries between them are the kernel's: `sys/kern/uipc_domain.rs`'s `INET6_PROTOS`
+/// is the whole table).
+pub static INET6SW: [Protosw; 10] = [
+    // IPV6: the kernel's (kernel::netinet6::in6_proto::Ip6Protocol).
     Protosw {
         pr_type: SOCK_DGRAM as i16,
         pr_protocol: IPPROTO_UDP as i16,
@@ -241,40 +183,8 @@ pub static INET6SW: [Protosw; 15] = [
         pr_sysctl: Some(rip6_sysctl),
         ..Protosw::new(&INET6DOMAIN)
     },
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_ICMPV6 as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_input: Some(icmp6_input),
-        pr_ctlinput: Some(rip6_ctlinput),
-        pr_ctloutput: Some(rip6_ctloutput),
-        pr_usrreqs: Some(&RIP6_USRREQS),
-        pr_init: Some(icmp6_init),
-        pr_fasttimo: Some(icmp6_fasttimo),
-        pr_sysctl: Some(icmp6_sysctl),
-        ..Protosw::new(&INET6DOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_DSTOPTS as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPINPUT,
-        pr_input: Some(dest6_input),
-        ..Protosw::new(&INET6DOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_ROUTING as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPINPUT,
-        pr_input: Some(route6_input),
-        ..Protosw::new(&INET6DOMAIN)
-    },
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_FRAGMENT as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPINPUT,
-        pr_input: Some(frag6_input),
-        ..Protosw::new(&INET6DOMAIN)
-    },
+    // ICMPV6, DSTOPTS, ROUTING, FRAGMENT: the kernel's (kernel::netinet6::in6_proto's
+    // Icmp6Protocol, Dest6Protocol, Route6Protocol, Frag6Protocol).
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_AH as i16,
@@ -350,7 +260,8 @@ pub static INET6SW: [Protosw; 15] = [
     },
 ];
 
-/// `inet6domain`.
+/// `inet6domain` as `bsd`'s rows name it (`pr_domain`); the domain the kernel's socket layer
+/// walks is the kernel's `Inet6Domain`, of the same family, sizes and table.
 pub static INET6DOMAIN: Domain = Domain {
     dom_family: AF_INET6 as i32,
     dom_name: b"inet6",
@@ -363,7 +274,7 @@ pub static INET6DOMAIN: Domain = Domain {
     dom_maxplen: 128,
 };
 
-// Internet configuration info.
+// Internet configuration info: the kernel's (kernel::netinet6::ip6_var).
 
 pub use kernel::netinet6::ip6_var::{
     IP6_DAD_COUNT, IP6_DAD_PENDING, IP6_DEFHLIM, IP6_DEFMCASTHLIM, IP6_FORWARDING,
@@ -393,10 +304,29 @@ mod tests {
         assert!(last.pr_init.is_some());
         assert_eq!(INET6DOMAIN.dom_sasize, 28);
         assert_eq!(INET6DOMAIN.dom_rtoffset, 8);
-        let icmp6 = INET6SW
+        // The rows are bsd's alone: the raw protocol's has its user requests, and no row is
+        // one of the kernel's entries.
+        let raw = INET6SW
             .iter()
-            .find(|pr| i32::from(pr.pr_protocol) == IPPROTO_ICMPV6);
-        assert!(icmp6.is_some_and(|pr| pr.pr_type == SOCK_RAW as i16 && pr.pr_usrreqs.is_some()));
+            .find(|pr| i32::from(pr.pr_protocol) == IPPROTO_RAW);
+        assert!(raw.is_some_and(|pr| pr.pr_type == SOCK_RAW as i16 && pr.pr_usrreqs.is_some()));
+        assert!(INET6SW.iter().all(|pr| {
+            ![
+                crate::netinet::in_::IPPROTO_ICMPV6,
+                crate::netinet::in_::IPPROTO_DSTOPTS,
+                crate::netinet::in_::IPPROTO_ROUTING,
+                crate::netinet::in_::IPPROTO_FRAGMENT,
+            ]
+            .contains(&i32::from(pr.pr_protocol))
+        }));
+        assert_eq!(
+            INET6SW
+                .iter()
+                .filter(|pr| i32::from(pr.pr_protocol) == IPPROTO_IPV6)
+                .count(),
+            1,
+            "IPv6 in IPv6 only: the IPv6 entry is the kernel's"
+        );
     }
 }
 /* </TESTS> */

@@ -361,7 +361,8 @@ mod tests {
     fn pcb6() -> &'static Inpcb {
         let t: &'static Inpcbtable = Box::leak(Box::new(Inpcbtable::new()));
         in_pcbinit(t, 1);
-        let so = soalloc(&INET6SW[1], SOCK_DGRAM, M_WAIT).expect("socket");
+        // INET6SW[0]: the UDP row (bsd's rows only since N6.5d).
+        let so = soalloc(&INET6SW[0], SOCK_DGRAM, M_WAIT).expect("socket");
         in_pcballoc(so, t, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         inp.set_flags(crate::netinet::in_pcb::INP_IPV6);

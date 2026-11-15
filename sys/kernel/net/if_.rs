@@ -450,11 +450,6 @@ pub trait Inet: Sync + 'static {
     fn with_net_held(&self, _f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock"));
     }
-    /// `ip6_protox[nxt]`: the index of IPv6 protocol `nxt` in the IPv6 domain's table
-    /// (`ip_deliver`'s IPv6 steps; N6.4c2, until IPv6 moves at N6.5). Default: none.
-    fn ip6_protox(&self, _nxt: i32) -> Option<usize> {
-        None
-    }
 }
 
 /// The internet protocols' legs, once registered.

@@ -63,11 +63,12 @@
 //! `domains[]` (the UNIX domain is the kernel's own), which [`domaininit`] hands over.
 //!
 //! ## Deviations
-//! - `domains[]` is a slice without the C's NULL terminator. It holds `inetdomain`
-//!   (`netinet/in_proto.rs`), `unixdomain` and `routedomain` (the kernel's), with
-//!   `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and
-//!   `inet6domain` (`netinet6/in6_proto.rs`, `INET6`: the `inet6` feature) before
-//!   `inetdomain`. `MPLS` and `NAF_FRAME` are not configured; their entries are comments,
+//! - `domains[]` is a slice without the C's NULL terminator. It holds `inetdomain` and
+//!   `inet6domain` (the kernel's `InetDomain` and `Inet6Domain`, their tables `inetsw[]` and
+//!   `inet6sw[]` assembled here of the kernel's entries and `bsd`'s rows of
+//!   `netinet/in_proto.rs` and `netinet6/in6_proto.rs`), `unixdomain` and `routedomain` (the
+//!   kernel's), with `pfkeydomain` (`net/pfkeyv2.rs`, `IPSEC`) first and `inet6domain`
+//!   (`INET6`: the `inet6` feature) before `inetdomain`. `MPLS` and `NAF_FRAME` are not configured; their entries are comments,
 //!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
 //!   goes to `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
 //! - `pffinddomain`, `pffindtype` and `pffindproto` over `bsd`'s tables return `Option`s for
@@ -84,6 +85,10 @@ use kernel::net::mbuf::MbufBox;
 use kernel::net::proto::{CtlArg, Protocol, SockaddrView, Usrreqs};
 use kernel::net::socket::SoLocked;
 use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol};
+#[cfg(feature = "inet6")]
+use kernel::netinet6::in6_proto::{
+    Dest6Protocol, Frag6Protocol, Icmp6Protocol, Inet6Domain, Ip6Protocol, Route6Protocol,
+};
 
 use crate::kern::kern_sysctl::sysctl_vslock;
 use crate::kern::proc_glue::BsdProcGlue as G;
@@ -119,13 +124,13 @@ pub static DOMAINS: &[&Domain] = &[
     // NAF_FRAME: &framedomain, not configured.
 ];
 
-/// `domains[]` as the kernel's socket layer sees it, in the C's order: `bsd`'s tables
-/// through the traits, and the kernel's UNIX domain.
+/// `domains[]` as the kernel's socket layer sees it, in the C's order: `bsd`'s pfkey table
+/// through the traits, and the kernel's IPv6, internet, UNIX and route domains.
 pub static NET_DOMAINS: &[&dyn KDomain<G>] = &[
     // MPLS: &mplsdomain, not configured.
     &PFKEYDOMAIN,
     #[cfg(feature = "inet6")]
-    &INET6DOMAIN,
+    &Inet6Domain::<G>::NEW,
     &InetDomain::<G>::NEW,
     &kernel::net::unix::Unix::<G>::NEW,
     &kernel::net::rtsock::RouteDomain::<G>::NEW,
@@ -175,10 +180,27 @@ pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] = [
     &INETSW[13],
 ];
 
-/// `inet6sw[]` as the kernel's protocols.
+/// `inet6sw[]` as the kernel's protocols, in the C's order: the kernel's IPv6, ICMPv6,
+/// destination options, routing header and fragment header entries
+/// (`kernel::netinet6::in6_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
-static INET6_PROTOS: [&dyn Protocol<G>; 15] =
-    protocols!(INET6SW; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+pub(crate) static INET6_PROTOS: [&dyn Protocol<G>; 15] = [
+    &Ip6Protocol::<G>::NEW,
+    &INET6SW[0],
+    &INET6SW[1],
+    &INET6SW[2],
+    &Icmp6Protocol::<G>::NEW,
+    &Dest6Protocol::<G>::NEW,
+    &Route6Protocol::<G>::NEW,
+    &Frag6Protocol::<G>::NEW,
+    &INET6SW[3],
+    &INET6SW[4],
+    &INET6SW[5],
+    &INET6SW[6],
+    &INET6SW[7],
+    &INET6SW[8],
+    &INET6SW[9],
+];
 /// `pfkeysw[]` as the kernel's protocols.
 static PFKEY_PROTOS: [&dyn Protocol<G>; 1] = protocols!(PFKEYSW; 0);
 
@@ -189,6 +211,13 @@ pub fn domaininit() {
     // runs the kernel's in_init).
     let _ = crate::netinet::in_pcb::legacy_key();
     kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
+    // ip6_init's half that is bsd's: the fragment identifiers' generator (idgen32, bsd's
+    // crypto; the kernel's Ip6Protocol runs the kernel's ip6_init, its switch first).
+    #[cfg(feature = "inet6")]
+    {
+        crate::netinet6::ip6_output::ip6_randomid_init();
+        kernel::netinet6::in6_proto::inet6sw_set::<G>(&INET6_PROTOS);
+    }
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::net::domain::domaininit::<G>(NET_DOMAINS);
@@ -202,6 +231,8 @@ pub(crate) fn net_tables_for_tests() {
     #[cfg(feature = "nfsserver")]
     kernel::net::socket::register_upcall::<G>(crate::nfs::nfs_socket::nfsrv_rcv_upcall);
     kernel::netinet::in_proto::inetsw_set::<G>(&INET_PROTOS);
+    #[cfg(feature = "inet6")]
+    kernel::netinet6::in6_proto::inet6sw_set::<G>(&INET6_PROTOS);
     kernel::net::domain::domains_set::<G>(NET_DOMAINS);
 }
 
@@ -860,6 +891,234 @@ mod tests {
         let raw = pffindproto(i32::from(AF_INET), IPPROTO_RAW, SOCK_RAW).expect("raw");
         assert_eq!(i32::from(raw.pr_protocol), IPPROTO_RAW);
         assert!(pffindtype(i32::from(AF_INET), SOCK_DGRAM).is_some());
+    }
+
+    /// The IPv6 domain the kernel's socket layer walks: the kernel's `Inet6Domain`, its table
+    /// the kernel's five entries among `bsd`'s ten rows in the C's order, found by the
+    /// kernel's `pffindproto`/`pffindtype` (`bsd`'s rows are its `INET6SW` itself, ICMPv6's
+    /// entry the kernel's with the raw sockets' requests), and `ip6_init`'s `ip6_protox[]`
+    /// over it.
+    #[cfg(feature = "inet6")]
+    #[test]
+    fn the_inet6_table_is_the_kernel_s_entries_among_bsd_s_rows() {
+        use crate::netinet::in_::{
+            IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_ICMPV6, IPPROTO_IPV6,
+            IPPROTO_ROUTING,
+        };
+        use crate::sys::socket::SOCK_STREAM;
+        use kernel::net::domain::{
+            pffinddomain as kfinddomain, pffindproto as kfindproto, pffindtype as kfindtype,
+        };
+        use kernel::net::proto::{PR_ADDR, PR_ATOMIC};
+        use kernel::netinet6::in6_proto::{inet6_protocol, inet6sw_init, raw6_protocol};
+
+        let (_g, _t, _p) = crate::netinet::in_pcb::tests::setup();
+        let f = i32::from(AF_INET6);
+        let dom = kfinddomain::<G>(f).expect("the IPv6 domain");
+        assert_eq!(
+            (dom.name(), dom.sasize(), dom.rtoffset(), dom.maxplen()),
+            ("inet6", 28, 8, 128)
+        );
+        assert!(dom.legacy());
+        // (type, protocol) of each entry, in6_proto.c's order.
+        let rows: std::vec::Vec<(i32, i32)> = dom
+            .protocols()
+            .iter()
+            .map(|p| (i32::from(p.ty()), i32::from(p.protocol())))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (0, IPPROTO_IPV6),
+                (SOCK_DGRAM, IPPROTO_UDP),
+                (SOCK_STREAM, crate::netinet::in_::IPPROTO_TCP),
+                (SOCK_RAW, IPPROTO_RAW),
+                (SOCK_RAW, IPPROTO_ICMPV6),
+                (SOCK_RAW, IPPROTO_DSTOPTS),
+                (SOCK_RAW, IPPROTO_ROUTING),
+                (SOCK_RAW, IPPROTO_FRAGMENT),
+                (SOCK_RAW, crate::netinet::in_::IPPROTO_AH),
+                (SOCK_RAW, crate::netinet::in_::IPPROTO_ESP),
+                (SOCK_RAW, crate::netinet::in_::IPPROTO_IPCOMP),
+                (SOCK_RAW, crate::netinet::in_::IPPROTO_IPV4),
+                (SOCK_RAW, IPPROTO_IPV6),
+                (SOCK_RAW, IPPROTO_DIVERT),
+                (SOCK_RAW, 0),
+            ]
+        );
+
+        // bsd's rows are its table's own.
+        let is = |a: Option<&'static dyn Protocol<G>>, b: &'static Protosw| {
+            a.is_some_and(|a| ptr::addr_eq(a, b))
+        };
+        assert!(is(kfindproto::<G>(f, IPPROTO_UDP, SOCK_DGRAM), &INET6SW[0]));
+        assert!(is(kfindtype::<G>(f, SOCK_STREAM), &INET6SW[1]));
+        assert!(is(kfindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INET6SW[2]));
+        assert!(
+            is(kfindproto::<G>(f, 200, SOCK_RAW), &INET6SW[9]),
+            "the raw wildcard"
+        );
+        // ICMPv6's entry is the kernel's, the raw sockets' requests and options its own.
+        let icmp6 = kfindproto::<G>(f, IPPROTO_ICMPV6, SOCK_RAW).expect("ICMPv6");
+        assert!(INET6SW.iter().all(|r| !ptr::addr_eq(icmp6, r)));
+        assert_eq!(icmp6.flags(), PR_ATOMIC | PR_ADDR | PR_MPSYSCTL);
+        assert!(icmp6.usrreqs().is_some() && icmp6.has_ctloutput());
+        assert_eq!(icmp6.domain().family(), f);
+
+        // ip6_init's switch over the table: each number to its entry, IPv6 in IPv6 for 41,
+        // the raw protocol for the rest.
+        inet6sw_init::<G>();
+        assert!(is(inet6_protocol::<G>(IPPROTO_UDP), &INET6SW[0]));
+        assert!(is(inet6_protocol::<G>(IPPROTO_IPV6), &INET6SW[7]));
+        assert!(is(inet6_protocol::<G>(99), &INET6SW[2]));
+        assert!(is(raw6_protocol::<G>(), &INET6SW[2]));
+        for n in [
+            IPPROTO_ICMPV6,
+            IPPROTO_DSTOPTS,
+            IPPROTO_ROUTING,
+            IPPROTO_FRAGMENT,
+        ] {
+            let pr = inet6_protocol::<G>(n).expect("an entry");
+            assert_eq!(i32::from(pr.protocol()), n);
+            assert!(INET6SW.iter().all(|r| !ptr::addr_eq(pr, r)), "the kernel's");
+        }
+
+        crate::netinet::in_pcb::tests::teardown();
+    }
+
+    /// This module's window of the kernel's user-copy double (free in `bsd`'s tests at N6.5d).
+    #[cfg(feature = "inet6")]
+    const UNET: usize = kernel::testutil::USER_BASE + 0x2_0000;
+
+    /// `net_sysctl(name)` as sysctl(2) asks it: `room` bytes for the old value at [`UNET`]
+    /// (0: no buffer, the size alone), `new` given at `UNET + 0x100`: the answer, the length
+    /// and the old value's first word (-7 when nothing was written there).
+    #[cfg(feature = "inet6")]
+    fn net(
+        p: &Proc,
+        name: &[i32],
+        room: usize,
+        new: Option<i32>,
+    ) -> (Result<(), Errno>, usize, i32) {
+        use hal::user::UserPtr;
+        if let Some(v) = new {
+            assert!(UserPtr::<i32>::new(UNET + 0x100).copyout(&v).is_ok());
+        }
+        assert!(UserPtr::<i32>::new(UNET).copyout(&-7).is_ok());
+        let mut len = room;
+        let r = net_sysctl(
+            name,
+            if room == 0 { 0 } else { UNET },
+            &mut len,
+            if new.is_some() { UNET + 0x100 } else { 0 },
+            if new.is_some() { 4 } else { 0 },
+            p,
+        );
+        let v = UserPtr::<i32>::new(UNET).copyin().unwrap_or(-9);
+        (r, len, v)
+    }
+
+    /// `net.inet6.*` through the IPv6 domain's table, as the C's `net_sysctl` walks
+    /// `inet6sw[]`: the levels that are not terminal, the protocols without a handler, the IPv6
+    /// entry's (the first of number 41: IPv6-in-IPv6's has none) and ICMPv6's names, bounds and
+    /// statistics, and the rows still `bsd`'s (UDP, raw IPv6).
+    #[cfg(feature = "inet6")]
+    #[test]
+    fn the_net_inet6_tree_answers_through_the_inet6_table() {
+        use crate::netinet::in_::{IPPROTO_DIVERT, IPPROTO_ICMPV6, IPPROTO_IPV6};
+        use crate::netinet::udp_var::{UDPCTL_STATS, Udpstat};
+        use crate::netinet6::raw_ip6::{RIPV6CTL_STATS, Rip6stat};
+        use core::sync::atomic::Ordering::Relaxed;
+        use hal::sys::netinet_icmp6::{
+            ICMPV6CTL_ERRPPSLIMIT, ICMPV6CTL_ND6_QUEUED, ICMPV6CTL_REDIRTIMEOUT, ICMPV6CTL_STATS,
+            Icmp6stat,
+        };
+        use hal::sys::netinet6_in6::{
+            IPV6CTL_DEFHLIM, IPV6CTL_HDRNESTLIMIT, IPV6CTL_MRTPROTO, IPV6CTL_STATS,
+        };
+        use hal::sys::netinet6_ip6_var::Ip6stat;
+        use kernel::netinet6::ip6_var::{
+            ICMP6_REDIRTIMEOUT, ICMP6ERRPPSLIM, IP6_DEFHLIM, IP6_HDRNESTLIMIT,
+        };
+
+        let (_g, _t, p) = crate::netinet::in_pcb::tests::setup();
+        let f = i32::from(AF_INET6);
+        let ip6 = |n: i32| [f, IPPROTO_IPV6, n];
+        let icmp6 = |n: i32| [f, IPPROTO_ICMPV6, n];
+
+        // Not terminal below three names; a number without an entry, and divert6's entry
+        // (no pr_sysctl in inet6sw[]): ENOPROTOOPT.
+        assert_eq!(net(p, &[f], 4, None).0, Err(Errno::EISDIR));
+        assert_eq!(net(p, &[f, IPPROTO_IPV6], 4, None).0, Err(Errno::EISDIR));
+        assert_eq!(net(p, &[f, 99, 1], 4, None).0, Err(Errno::ENOPROTOOPT));
+        assert_eq!(
+            net(p, &[f, IPPROTO_DIVERT, 1], 4, None).0,
+            Err(Errno::ENOPROTOOPT)
+        );
+
+        // net.inet6.ip6: a bounded name read, written (the old value answered), refused past
+        // its bound; a terminal name with more below it, the multicast routing names.
+        let hlim = IP6_DEFHLIM.load(Relaxed);
+        assert_eq!(net(p, &ip6(IPV6CTL_DEFHLIM), 4, None), (Ok(()), 4, hlim));
+        assert_eq!(
+            net(p, &ip6(IPV6CTL_DEFHLIM), 4, Some(255)),
+            (Ok(()), 4, hlim)
+        );
+        assert_eq!(IP6_DEFHLIM.load(Relaxed), 255);
+        assert_eq!(
+            net(p, &ip6(IPV6CTL_DEFHLIM), 4, Some(256)).0,
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(IP6_DEFHLIM.load(Relaxed), 255);
+        IP6_DEFHLIM.store(hlim, Relaxed);
+        let nest = IP6_HDRNESTLIMIT.load(Relaxed);
+        assert_eq!(
+            net(p, &ip6(IPV6CTL_HDRNESTLIMIT), 4, None),
+            (Ok(()), 4, nest)
+        );
+        assert_eq!(
+            net(p, &[f, IPPROTO_IPV6, IPV6CTL_DEFHLIM, 1], 4, None).0,
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            net(p, &ip6(IPV6CTL_MRTPROTO), 4, None).0,
+            Err(Errno::EOPNOTSUPP)
+        );
+        let (r, len, _) = net(p, &ip6(IPV6CTL_STATS), 0, None);
+        assert_eq!((r, len), (Ok(()), size_of::<Ip6stat>()));
+
+        // net.inet6.icmp6: the bounded table, the redirect timeout, the queued count, the
+        // statistics.
+        let lim = ICMP6ERRPPSLIM.load(Relaxed);
+        assert_eq!(
+            net(p, &icmp6(ICMPV6CTL_ERRPPSLIMIT), 4, Some(-1)),
+            (Ok(()), 4, lim)
+        );
+        assert_eq!(ICMP6ERRPPSLIM.load(Relaxed), -1);
+        assert_eq!(
+            net(p, &icmp6(ICMPV6CTL_ERRPPSLIMIT), 4, Some(-2)).0,
+            Err(Errno::EINVAL)
+        );
+        ICMP6ERRPPSLIM.store(lim, Relaxed);
+        assert_eq!(
+            net(p, &icmp6(ICMPV6CTL_REDIRTIMEOUT), 4, None),
+            (Ok(()), 4, ICMP6_REDIRTIMEOUT.load(Relaxed))
+        );
+        assert_eq!(net(p, &icmp6(ICMPV6CTL_ND6_QUEUED), 4, None).0, Ok(()));
+        let (r, len, _) = net(p, &icmp6(ICMPV6CTL_STATS), 0, None);
+        assert_eq!((r, len), (Ok(()), size_of::<Icmp6stat>()));
+        assert_eq!(
+            net(p, &[f, IPPROTO_ICMPV6, ICMPV6CTL_STATS, 1], 4, None).0,
+            Err(Errno::ENOTDIR)
+        );
+
+        // The rows still bsd's: UDP's and raw IPv6's statistics.
+        let (r, len, _) = net(p, &[f, IPPROTO_UDP, UDPCTL_STATS], 0, None);
+        assert_eq!((r, len), (Ok(()), size_of::<Udpstat>()));
+        let (r, len, _) = net(p, &[f, IPPROTO_RAW, RIPV6CTL_STATS], 0, None);
+        assert_eq!((r, len), (Ok(()), size_of::<Rip6stat>()));
+
+        crate::netinet::in_pcb::tests::teardown();
     }
 }
 /* </TESTS> */

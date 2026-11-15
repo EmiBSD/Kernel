@@ -28,6 +28,7 @@ pub mod in6;
 pub mod in6_cksum;
 pub mod in6_ifattach;
 pub mod in6_pcb;
+pub mod in6_proto;
 pub mod in6_src;
 pub mod in6_var;
 pub mod ip6_forward;
