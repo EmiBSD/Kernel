@@ -134,9 +134,11 @@
 //!   `NET_ASSERT_LOCKED()` is the `net` proof parameter; `bsd`'s importers keep LZ's
 //!   signature through a wrapper in `sys/netinet6/ip6_output.rs` (`unpark`, the proof
 //!   through the `SaToken`). `make_exthdr`'s three `unsafe` reads of option words and its
-//!   `SAFETY` that named their producers go: an extension header is a slice whose length its
-//!   producer made `(ip6e_len + 1) << 3` ([`ip6_setpktopt`]'s check, `MLD6_HBH`'s `const`
-//!   assert), and [`ip6_copyexthdr`] copies the slice.
+//!   `SAFETY` that named their producers go: an extension header is a slice that is whole,
+//!   `(ip6e_len + 1) << 3` bytes, by type (the view's header fields are set only by
+//!   `Ip6OutOpts::with_exthdrs`, which checks them; [`ip6_setpktopt`] checks a user's with
+//!   the C's errnos, `MLD6_HBH`'s is asserted at compile time: N6.5c review N5), and
+//!   [`ip6_copyexthdr`] copies the slice.
 //! - The IPv6 header: LZ's `mtod_ip6`/`mtod_ip6_store` (an unaligned copy through `unsafe`)
 //!   -> [`ip6_load`]/[`ip6_store`], `hal::pod`'s view of the first mbuf's bytes when aligned
 //!   (the transports' packets), a copy otherwise; `ip6_output` loads the header once, works on
@@ -417,15 +419,15 @@ pub fn ip6_output(
     let mut exthdrs = Ip6Exthdrs::default();
     if let Some(o) = &opt {
         // Hop-by-Hop options header
-        if let Some(h) = o.hbh {
+        if let Some(h) = o.hbh() {
             exthdrs.ip6e_hbh = Some(ip6_copyexthdr(h)?);
         }
         // Destination options header(1st part)
-        if let Some(h) = o.dest1 {
+        if let Some(h) = o.dest1() {
             exthdrs.ip6e_dest1 = Some(ip6_copyexthdr(h)?);
         }
         // Destination options header(2nd part)
-        if let Some(h) = o.dest2 {
+        if let Some(h) = o.dest2() {
             exthdrs.ip6e_dest2 = Some(ip6_copyexthdr(h)?);
         }
     }
@@ -1023,8 +1025,8 @@ pub fn ip6_fragment(
     Err(error)
 }
 
-/// `ip6_copyexthdr(&m, hdr, hlen)`: a new mbuf holding the extension header `hdr` (its
-/// producer made it `(ip6e_len + 1) << 3` bytes: the module's redesign).
+/// `ip6_copyexthdr(&m, hdr, hlen)`: a new mbuf holding the extension header `hdr` (whole,
+/// `(ip6e_len + 1) << 3` bytes: `Ip6OutOpts::with_exthdrs`' check).
 fn ip6_copyexthdr(hdr: &[u8]) -> Result<MbufBox, Errno> {
     let hlen = hdr.len();
     if hlen > MCLBYTES {
@@ -3187,11 +3189,9 @@ mod tests {
         // after the routing header: IPv6 hbh dest2 payload, each next header chained, the
         // payload length the headers' too.
         let dest2 = [0u8, 0, IP6OPT_PADN, 4, 0, 0, 0, 0];
-        let opts = Ip6OutOpts {
-            hbh: Some(&MLD6_HBH),
-            dest2: Some(&dest2),
-            ..Ip6OutOpts::new()
-        };
+        let opts = Ip6OutOpts::new()
+            .with_exthdrs(Some(&MLD6_HBH), None, Some(&dest2))
+            .expect("whole headers");
         send(packet(&ip6, &payload, 16), Some(opts), 0, None).expect("sent");
         let (p, _) = d.take().pop().expect("the packet");
         assert_eq!(p.len(), 40 + 8 + 8 + 16);
@@ -3221,11 +3221,9 @@ mod tests {
         // offset 40, the mbuf after the IPv6 header's) the destination options, theirs the
         // payload's.
         let dest1 = [0u8, 0, IP6OPT_PADN, 4, 0, 0, 0, 0];
-        let opts = Ip6OutOpts {
-            hbh: Some(&MLD6_HBH),
-            dest1: Some(&dest1),
-            ..Ip6OutOpts::new()
-        };
+        let opts = Ip6OutOpts::new()
+            .with_exthdrs(Some(&MLD6_HBH), Some(&dest1), None)
+            .expect("whole headers");
         send(packet(&ip6, &payload, 16), Some(opts), 0, None).expect("sent");
         let (p, _) = d.take().pop().expect("the packet");
         assert_eq!(p.len(), 40 + 8 + 8 + 16);
@@ -3243,10 +3241,9 @@ mod tests {
         assert_eq!(&p[56..], &payload);
 
         // dest1 alone: IPv6 dest1 payload.
-        let opts = Ip6OutOpts {
-            dest1: Some(&dest2),
-            ..Ip6OutOpts::new()
-        };
+        let opts = Ip6OutOpts::new()
+            .with_exthdrs(None, Some(&dest2), None)
+            .expect("whole headers");
         send(packet(&ip6, &payload, 16), Some(opts), 0, None).expect("sent");
         let (p, _) = d.take().pop().expect("the packet");
         assert_eq!((p[6], p[40]), (IPPROTO_DSTOPTS as u8, IPPROTO_UDP as u8));
@@ -3264,10 +3261,9 @@ mod tests {
         let dest1 = [0u8, 0, IP6OPT_PADN, 4, 0, 0, 0, 0];
 
         // hbh alone: IPv6 hbh frag payload, (1280 - 48 - 8) & ~7 = 1224 bytes a fragment.
-        let opts = Ip6OutOpts {
-            hbh: Some(&MLD6_HBH),
-            ..Ip6OutOpts::new()
-        };
+        let opts = Ip6OutOpts::new()
+            .with_exthdrs(Some(&MLD6_HBH), None, None)
+            .expect("whole headers");
         send(packet(&ip6, &payload, 200), Some(opts), 0, None).expect("sent");
         let out = d.take();
         assert_eq!(out.len(), 2);
@@ -3284,11 +3280,9 @@ mod tests {
         }
 
         // hbh and dest1: IPv6 hbh dest1 frag payload.
-        let opts = Ip6OutOpts {
-            hbh: Some(&MLD6_HBH),
-            dest1: Some(&dest1),
-            ..Ip6OutOpts::new()
-        };
+        let opts = Ip6OutOpts::new()
+            .with_exthdrs(Some(&MLD6_HBH), Some(&dest1), None)
+            .expect("whole headers");
         send(packet(&ip6, &payload, 200), Some(opts), 0, None).expect("sent");
         let out = d.take();
         assert_eq!(out.len(), 2);
@@ -3317,11 +3311,9 @@ mod tests {
         // The traffic class fills only the zero halves of the header's (diffserv, ecn).
         let mut ip6 = hdr_to(0, IPPROTO_UDP as u8, a6("2001:db8::2"));
         ip6.ip6_flow = htonl(0x6000_0000 | (0x01 << 20)); // ecn set, diffserv clear
-        let opts = Ip6OutOpts {
-            tclass: 0xb9,
-            hlim: 7,
-            ..Ip6OutOpts::new()
-        };
+        let mut opts = Ip6OutOpts::new();
+        opts.tclass = 0xb9;
+        opts.hlim = 7;
         send(packet(&ip6, &[0; 8], 8), Some(opts), 0, None).expect("sent");
         let (p, _) = d.take().pop().expect("the packet");
         assert_eq!(
@@ -3381,10 +3373,8 @@ mod tests {
         assert_eq!(stat(C::Ip6sNoroute), noroute + 1);
 
         // Too big to go whole with IPV6_DONTFRAG.
-        let opts = Ip6OutOpts {
-            flags: IP6PO_DONTFRAG,
-            ..Ip6OutOpts::new()
-        };
+        let mut opts = Ip6OutOpts::new();
+        opts.flags = IP6PO_DONTFRAG;
         assert_eq!(
             send(packet(&hdr(1600, 17), &[0; 1600], 200), Some(opts), 0, None),
             Err(Errno::EMSGSIZE)
@@ -3439,10 +3429,8 @@ mod tests {
         assert_eq!(out[0].0.len(), 48 + 1232);
 
         // IP6PO_MINMTU_ALL: the same for a unicast packet.
-        let all_ = Ip6OutOpts {
-            minmtu: IP6PO_MINMTU_ALL,
-            ..Ip6OutOpts::new()
-        };
+        let mut all_ = Ip6OutOpts::new();
+        all_.minmtu = IP6PO_MINMTU_ALL;
         send(packet(&hdr(2000, 17), &payload, 200), Some(all_), 0, None).expect("sent");
         assert_eq!(d.take()[0].0.len(), 48 + 1232);
 
@@ -3452,10 +3440,8 @@ mod tests {
         let g = hdr_to(1360, 17, a6("ff05::3"));
         send(packet(&g, &payload[..1360], 200), None, 0, Some(&im6o)).expect("sent");
         assert_eq!(d.take().len(), 2, "fragmented at 1280");
-        let disable = Ip6OutOpts {
-            minmtu: IP6PO_MINMTU_DISABLE,
-            ..Ip6OutOpts::new()
-        };
+        let mut disable = Ip6OutOpts::new();
+        disable.minmtu = IP6PO_MINMTU_DISABLE;
         send(
             packet(&g, &payload[..1360], 200),
             Some(disable),

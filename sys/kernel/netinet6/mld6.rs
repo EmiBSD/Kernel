@@ -171,7 +171,7 @@ use hal::sys::netinet6_in6::{
 use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 use hal::sys::netinet6_mld6::{MLD_TIMER_SCALE, MLD_V1_MAX_RI};
 
-use crate::assert::kassert;
+use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{
@@ -184,7 +184,7 @@ use crate::netinet6::in6::{in6_lookupmulti, in6ifa_ifpforlinklocal};
 use crate::netinet6::in6_var::{In6Multi, ia6_in6};
 use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::{
-    IPV6_UNSPECSRC, Ip6Moptions, Ip6OutOpts, icmp6stat_inc, icmp6stat_inc_hist,
+    IPV6_UNSPECSRC, Ip6Moptions, Ip6OutOpts, icmp6stat_inc, icmp6stat_inc_hist, ip6_exthdr_whole,
 };
 use crate::netinet6::mld6_var::{
     MLD_IREPORTEDLAST, MLD_OTHERLISTENER, Mld6Pktinfo, mld_random_delay,
@@ -620,13 +620,16 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
     // ip6_output(mh, &ip6_opts, NULL, flags, &im6o, NULL): `ip6_opts` the router alert,
     // MLD6_HBH, lent as the view of options `ip6_initpktopts` made; `im6o` the interface, hop
     // limit 1, no loopback.
-    let opts = Ip6OutOpts {
-        hbh: Some(&MLD6_HBH),
-        ..Ip6OutOpts::new()
+    let Some(opts) = Ip6OutOpts::new().with_exthdrs(Some(&MLD6_HBH), None, None) else {
+        kpanic(format_args!("mld6_sendpkt: the router alert is not whole"));
     };
     let im6o = Ip6Moptions::output(ifidx, 1, 0);
     let _ = ip6_output(mh, Some(opts), None, flags, Some(&im6o), None, net);
 }
+
+// MLD's router alert is a whole extension header (`Ip6OutOpts::with_exthdrs`' check, made at
+// compile time).
+const _: () = assert!(ip6_exthdr_whole(&MLD6_HBH));
 /* </CODE> */
 
 /* <TESTS> */
