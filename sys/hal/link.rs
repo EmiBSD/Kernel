@@ -648,7 +648,7 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
         // The item stays this word's for the whole call: `w` is `B`'s lock held whole and
         // borrowed mutably here, so no `take_b` can run, and the list's two changes touch
         // only links.
-        let e = owned(p);
+        let e = self.owned(p);
         list.remove(w, e.get_ref());
         list.insert_head(w, e);
         true
@@ -658,7 +658,8 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
     #[inline]
     fn get_k<'a, K: Kind<A, B>, W: Witness + ?Sized>(&'a self, w: &'a W) -> Option<&'a K::Item> {
         check::<K::Item, W>(w, false);
-        tagged::<K::Item>(self.word.load(Ordering::Acquire), K::TAG).map(|p| owned(p).get_ref())
+        tagged::<K::Item>(self.word.load(Ordering::Acquire), K::TAG)
+            .map(|p| self.owned(p).get_ref())
     }
 
     /// The set of kind `K`: the box given up to an empty word, tagged `K::TAG`.
@@ -707,6 +708,41 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
             hal_panic(format_args!("TaggedLink::take: a tagged word changed"));
         }
         Some(reclaimed(p))
+    }
+
+    /// The item this link's tagged word owns, pinned, for the two callers that bound the
+    /// reference by their borrows of the link (`'a`, this `&'a self`) and of a witness of
+    /// `T::LOCK`: a get, whose answer borrows both, and [`TaggedLink::move_b_to_head`], which
+    /// holds that lock's whole witness mutably for the reference's whole (local) life and runs
+    /// only the list's link changes. `p` is what `tagged` decoded from this link's word, with
+    /// `T` the item of the tag it was decoded with.
+    fn owned<'a, T: Tagged>(&'a self, p: NonNull<T>) -> Pin<&'a T> {
+        // SAFETY: `p` is the item this link's tagged word owns, of the kind whose item is `T`
+        // (the type's invariant and the pairing `tagged`'s callers keep): the pointer
+        // `PoolBox::into_raw` gave for a box of `T::POOL`, an initialised `T` out of its pool
+        // and never given mutably while the word owns it (the box is given up; `from_raw` makes
+        // it again only in `reclaimed`). `'a` is no longer than the borrow of this link the
+        // caller passes as `self`, and each caller also holds, for all of `'a`, a witness of
+        // `T::LOCK`: a get's caller a shared one (whole, or its part 0), `move_b_to_head` the
+        // whole exclusive witness by `&mut`, used only by the list's two link changes. The word
+        // lets the item go only in a take of its kind, which needs the lock's whole exclusive
+        // witness borrowed mutably (no other guard of a mutex can exist while that one lives,
+        // a part's whole guard is borrowed mutably by its split, a leaked guard is never
+        // released, and `move_b_to_head` runs no take while it holds the witness), or in the
+        // drop, which needs this link by `&mut`, excluded by the `&'a self` borrow (a leaked
+        // link is never dropped): neither can run while the reference lives, so the item is not
+        // given back, freed or reached through a `&mut T` meanwhile (other holders write it
+        // only through its interior mutability, which a `&T` allows). No safe code can make a
+        // box of it otherwise: `PoolBox::unpark` answers only an item `park` marked, and this
+        // item's mark (if its type has one) is never set. The `Acquire` load of the callers
+        // pairs with the `Release` exchange of the set, so the value is seen whole. `Pin`'s
+        // contract: the value is not moved, nor its memory invalidated or reused, before its
+        // drop runs: it lives in its pool item from `BoxPool::get`'s write until the drop of
+        // the box that owns the item drops it in place, and the raw form the word keeps hands
+        // the same item, unmoved, back as that box (`PoolBox::as_pin`'s argument, which covers
+        // every owner of the raw form: a box gives nothing that moves the value out of its
+        // item).
+        unsafe { Pin::new_unchecked(p.as_ref()) }
     }
 }
 
@@ -784,39 +820,18 @@ fn reclaimed<T: Tagged>(p: NonNull<T>) -> PoolBox<T> {
     // mutexes), which keeps it a valid `T`; no `&mut T` of it was ever made. No reference made
     // while the pointer was kept is alive or used after this: the references a get lent
     // borrow the witness that a take needs whole and mutably, or the link that the drop has
-    // by `&mut`; `move_b_to_head`'s ends with that call; a set's pointer was never lent.
+    // by `&mut`; `move_b_to_head`'s ends with that call; a set's pointer was never lent. A
+    // `PinList` an item is linked on keeps its own pointer (the `Pin<&T>` its insert took,
+    // made from `owned`'s or from the box before the set) and lends references from it under
+    // that list's lock (`first`, `last`, `iter`), which may be another lock than `T::LOCK`, so
+    // they may outlive this call: the contract's concern, a `&mut T` beside them, never
+    // arises, because an item a pinned list holds carries a `PinEntry`, which is `!Unpin`, so
+    // `T` is `!Unpin` and the box made here gives only `&T` and `Pin<&T>` (`DerefMut` and no
+    // other method of `PoolBox` gives `&mut T` or moves the value for a `!Unpin` `T`), and the
+    // box puts the item back only after dropping it in place, where an item still linked
+    // stops the kernel (`PinEntry`'s drop, the list's I1) before its memory is reused: no
+    // list's reference dangles.
     unsafe { PoolBox::from_raw(p, T::POOL) }
-}
-
-/// The item a tagged word owns, pinned, for the two callers of this module that bound the
-/// reference by their borrows of the link and of a witness of `T::LOCK`: a get, whose answer
-/// borrows both, and [`TaggedLink::move_b_to_head`], which holds that lock's whole witness
-/// mutably for the reference's whole (local) life and runs only the list's link changes.
-fn owned<'a, T: Tagged>(p: NonNull<T>) -> Pin<&'a T> {
-    // SAFETY: `p` is the item a link's tagged word owns, of the kind whose item is `T` (the
-    // type's invariant and the pairing `tagged`'s callers keep): the pointer `PoolBox::into_raw`
-    // gave for a box of `T::POOL`, an initialised `T` out of its pool and never given mutably
-    // while the word owns it (the box is given up; `from_raw` makes it again only in
-    // `reclaimed`). Each caller holds, for all of `'a`, a borrow of the link and a witness of
-    // `T::LOCK`: a get's caller a shared one (whole, or its part 0), `move_b_to_head` the
-    // whole exclusive witness by `&mut`, used only by the list's two link changes. The word
-    // lets the item go only in a take of its kind, which needs the lock's whole exclusive
-    // witness borrowed mutably (no other guard of a mutex can exist while that one lives, a
-    // part's whole guard is borrowed mutably by its split, a leaked guard is never released,
-    // and `move_b_to_head` runs no take while it holds the witness), or in the drop, which
-    // needs the link by `&mut` (a leaked link is never dropped): neither can run while the
-    // reference lives, so the item is not given back, freed or reached through a `&mut T`
-    // meanwhile (other holders write it only through its interior mutability, which a `&T`
-    // allows). No safe code can make a box of it otherwise: `PoolBox::unpark` answers only an
-    // item `park` marked, and this item's mark (if its type has one) is never set. The
-    // `Acquire` load of the callers pairs with the `Release` exchange of the set, so the
-    // value is seen whole. `Pin`'s contract: the value is not moved, nor its memory
-    // invalidated or reused, before its drop runs: it lives in its pool item from
-    // `BoxPool::get`'s write until the drop of the box that owns the item drops it in place,
-    // and the raw form the word keeps hands the same item, unmoved, back as that box
-    // (`PoolBox::as_pin`'s argument, which covers every owner of the raw form: a box gives
-    // nothing that moves the value out of its item).
-    unsafe { Pin::new_unchecked(p.as_ref()) }
 }
 
 /// The capability to make an [`SaLink`] name a socket address's storage ([`SaLink::set`]):
@@ -1398,17 +1413,25 @@ mod tests {
         assert!(l.take_b(&mut g).is_none() && !l.is_set());
     }
 
-    /// The list the refusals use: never linked to (bound to no lock before a call).
-    static ND_LIST_STRAY: crate::pinlist::PinList<NdList> = crate::pinlist::PinList::new();
+    /// A list of `Nd`s bound to the A's mutex: its own checks pass under that mutex's witness,
+    /// so a move through it is refused by the link's check alone.
+    static ND_LIST_OF_REC: crate::pinlist::PinList<NdList> = crate::pinlist::PinList::new();
 
     /// Refusal 3: another lock's witness opens neither kind: a get, a set or a take of a kind
     /// with the other kind's mutex (or any other) is `panic(9)`, and so is a part other than 0.
     #[test]
     fn another_lock_s_witness_opens_neither_kind() {
         let l = Link2::new();
+        // The B is linked, behind another, on a list of the A's mutex before the word owns it.
+        let (b, other) = (nd(6), nd(60));
+        {
+            let mut g = REC_MTX.lock();
+            ND_LIST_OF_REC.insert_head(&mut g, b.as_pin());
+            ND_LIST_OF_REC.insert_head(&mut g, other.as_pin());
+        }
         {
             let g = ND_MTX.lock();
-            assert!(l.set_b(&g, nd(6)).is_ok());
+            assert!(l.set_b(&g, b).is_ok());
         }
         let get = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let g = REC_MTX.lock();
@@ -1427,9 +1450,11 @@ mod tests {
         assert!(get_a.is_err(), "the B's mutex opens no A");
         let moved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut g = REC_MTX.lock();
-            let _ = l.move_b_to_head(&mut g, &ND_LIST_STRAY);
+            let _ = l.move_b_to_head(&mut g, &ND_LIST_OF_REC);
         }));
         assert!(moved.is_err(), "nor moves a B");
+        let order: std::vec::Vec<u64> = ND_LIST_OF_REC.iter(&REC_MTX.lock()).map(|e| e.v).collect();
+        assert_eq!(order, [60, 6], "nothing moved");
         let part = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let mut g = ND_MTX.lock();
             let [_p0, p1] = g.split::<2>();
@@ -1441,6 +1466,11 @@ mod tests {
             Some(6),
             "still the word's"
         );
+        // Unlinked before their boxes drop (an item dropped while linked stops the kernel).
+        let b = l.take_b(&mut ND_MTX.lock()).expect("the B");
+        let mut g = REC_MTX.lock();
+        ND_LIST_OF_REC.remove(&mut g, &b);
+        ND_LIST_OF_REC.remove(&mut g, &other);
     }
 
     /// Refusal 4: a box of another pool than the kind's `POOL` is never given to a word.
