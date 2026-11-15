@@ -1053,7 +1053,7 @@ impl Ifnet {
     }
 
     /// Whether `if_detach` swapped the C's `if_ioctl` for `if_detached_ioctl` (a request then
-    /// answers `ENODEV`): `bsd`'s legacy request path asks it before calling the driver.
+    /// answers `ENODEV`, which the kernel's `if_ioctl` checks itself).
     pub fn if_ioctl_detached(&self) -> bool {
         self.is_detached(DETACHED_IOCTL)
     }

@@ -7597,6 +7597,11 @@ kind = "dropped"
 reason = "the requests and the rows ifioctl, ifconf, the group and rxr requests copy out are abi_pod! images, copied through hal::user::UserPtr (or viewed by hal::pod); no raw byte view of a value is left"
 
 [[module.fn]]
+lz = "sys/net/if_.rs::ifp_ioctl"
+native = ["if_ioctl"]
+kind = "merged"
+
+[[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
 native = ["IfMap", "IdxmapState"]
 kind = "split"

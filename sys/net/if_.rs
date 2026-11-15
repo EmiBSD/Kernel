@@ -201,52 +201,6 @@ pub static IFNETLIST: IfnetHead = IfnetHead(&kernel::net::if_::IFNETLIST);
 
 pub use kernel::net::if_::IF_TMPLIST_LOCK;
 
-/// `(*ifp->if_ioctl)(ifp, cmd, data)`: the driver's request handler (`ENODEV` once the
-/// interface is detached, the C's `if_detached_ioctl`). A kernel driver (the loopback's,
-/// N6.3c2) gets a zeroed image of the command's `IOCPARM_LEN(cmd)` bytes instead of `data`
-/// (see [`kernel_driver_ioctl`]).
-///
-/// # Safety
-///
-/// `data` points at the request's structure for `cmd`, aligned for it, readable and writable
-/// for `IOCPARM_LEN(cmd)` bytes and readable through the largest union member a handler may
-/// read (an `in6_ifreq` read through an `ifreq`), as
-/// [`IfIoctlFn`](crate::net::if_var::IfIoctlFn)'s contract says. The raw callers pass whole,
-/// real structures (`in_.rs`'s `ifaddr`s, `in6.rs`'s `in6_ifreq`s), which satisfy it.
-pub unsafe fn ifp_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<(), Errno> {
-    if ifp.if_ioctl_detached() {
-        return Err(Errno::ENODEV);
-    }
-    if ifp.if_driver.get().is_none() {
-        // No handler at all (before attach): the C's NULL `if_ioctl` slot's answer here.
-        return Err(Errno::ENOTTY);
-    }
-    let Some(l) = ifp.legacy_opt() else {
-        return kernel_driver_ioctl(ifp, cmd);
-    };
-    match l.if_ioctl.get() {
-        // SAFETY: the caller's contract is the handler's.
-        Some(ioctl) => unsafe { ioctl(ifp, cmd, data) },
-        None => Err(Errno::ENOTTY),
-    }
-}
-
-/// [`ifp_ioctl`] for an interface whose driver is the kernel's: the four requests the raw
-/// callers make (`in_.rs`'s and `in6.rs`'s `SIOCSIFADDR` and `SIOCSIFDSTADDR`, whose `data` is
-/// the protocol's `struct ifaddr`, not a request image; `in6.rs`'s `SIOCADDMULTI` and
-/// `SIOCDELMULTI`, an `in6_ifreq`) reach the driver with a zeroed image of `IOCPARM_LEN(cmd)`
-/// bytes, since the kernel's `NetDriver::ioctl` takes the request's bytes and `data` cannot be
-/// read without `unsafe`. The one kernel driver they reach is the loopback's, which reads no
-/// data for any of the four (if_loop.c:276-306); the image goes with `in_.rs` and `in6.rs`
-/// (N6.4, N6.5: docs/SCAFFOLDING.md), which pass their own requests to the kernel's
-/// `if_ioctl` then.
-fn kernel_driver_ioctl(ifp: &'static Ifnet, cmd: u64) -> Result<(), Errno> {
-    let mut image = [0u64; 8];
-    let bytes = hal::user::bytes_of_mut(&mut image[..]);
-    let n = (iocparm_len(cmd) as usize).min(bytes.len());
-    kernel::net::if_::if_ioctl(ifp, cmd, &mut bytes[..n])
-}
-
 impl kernel::net::if_var::NetDriver for LegacyNetDriver {
     fn start(&self, ifp: &'static Ifnet) {
         if let Some(start) = self.if_start.get() {
