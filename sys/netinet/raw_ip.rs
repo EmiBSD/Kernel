@@ -613,7 +613,11 @@ pub fn rip_bind(so: &'static Socket, nam: &'static Mbuf, _p: &Proc) -> Result<()
     if !(so.has_options(SO_BINDANY)
         || addr.sin_addr.s_addr == INADDR_ANY
         || addr.sin_addr.s_addr == INADDR_BROADCAST
-        || in_broadcast(addr.sin_addr, inp.inp_rtableid.get())
+        || in_broadcast(
+            addr.sin_addr,
+            inp.inp_rtableid.get(),
+            crate::net::if_::net_held("rip_bind").net(),
+        )
         // SAFETY: a local `sockaddr_in`, read for the call.
         || unsafe { ifa_ifwithaddr(sintosa(&mut addr), inp.inp_rtableid.get()) }.is_some())
     {

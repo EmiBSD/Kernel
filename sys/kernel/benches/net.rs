@@ -1544,7 +1544,7 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         if_input_process, if_put, if_test_reset, ifa_add, ifa_del, ifa_ifwithaddr,
         test_ifnet_fresh, test_packet,
     };
-    use kernel::net::if_var::{IfCounters, Ifaddr, counters_pkt};
+    use kernel::net::if_var::{IfCounters, IfaddrRef, counters_pkt};
     use kernel::net::ifq::{ifiq_input, ifiq_test_take, ifq_dequeue, ifq_enqueue, ifq_serialize};
     use kernel::net::mbuf::{M_FLOWID, MbufList, ml_dequeue, ml_enqueue};
     use kernel::task::Task;
@@ -1682,48 +1682,53 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
     if wanted(IF_ROWS[7]) {
         // Eight listed interfaces of two addresses each, 10.i.0.1 and 172.16.i.1; the
         // address looked for is the last one walked (the C's two nested TAILQ walks whole).
-        let token = need(hal::link::SaToken::take(), "the SaToken");
-        let sin = |a: [u8; 4]| -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
+        let sin = |a: [u8; 4]| -> std::vec::Vec<u8> {
             let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
             sa.sa_len = 16;
             sa.sa_family = hal::sys::socket::AF_INET;
             sa.sa_data[2..6].copy_from_slice(&a);
-            Box::leak(Box::new(core::cell::Cell::new(sa)))
+            hal::user::bytes_of(core::slice::from_ref(&sa)).to_vec()
         };
-        let mut addrs: Vec<(&'static kernel::net::if_var::Ifnet, &'static Ifaddr)> = Vec::new();
+        // Sixteen Internet address records on eight interfaces' lists (each list holding the
+        // creation reference), the bench keeping a handle of each.
+        let mut addrs: Vec<(&'static kernel::net::if_var::Ifnet, IfaddrRef)> = Vec::new();
         for i in 0..8u8 {
             let lifp = test_ifnet_fresh(b"bnch1", &BENCH_DRIVER);
             if_attach(lifp);
             for a in [[10, i, 0, 1], [172, 16, i, 1]] {
-                let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-                ifa.ifa_addr.set(token, Some(sin(a)));
-                ifa.ifa_ifp.set(Some(lifp));
-                ifa_add(lifp, ifa);
+                let ifa = kernel::netinet::in_var::test_in_ifaddr(lifp, a, None, None);
+                let net = NETLOCK.write();
+                ifa_add(lifp, ifa.clone(), &need(NetHeld::of(&net), "the net lock"));
                 addrs.push((lifp, ifa));
             }
         }
-        let want = sin([172, 16, 7, 1]).get();
-        let want = hal::user::bytes_of(core::slice::from_ref(&want)).to_vec();
-        let net = NETLOCK.write();
+        let want = sin([172, 16, 7, 1]);
+        // The walk under a shared holding, as the input and output paths hold it: a reader
+        // per call (the C's `NET_ASSERT_LOCKED()`), the address lent for its life.
+        let net = NETLOCK.read();
         let held = need(NetHeld::of(&net), "the net lock's witness");
         if let Some((_, last)) = addrs.last() {
-            placement("ifa_ifwithaddr last address", *last);
+            placement("ifa_ifwithaddr last address", &**last);
         }
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                black_box(ifa_ifwithaddr(&held, black_box(&want), 0));
+                let rd = held.reader();
+                black_box(ifa_ifwithaddr(&held, &rd, black_box(&want), 0).is_some());
             }
             t.elapsed()
         });
-        if ifa_ifwithaddr(&held, &want, 0)
-            .is_none_or(|f| addrs.last().is_none_or(|l| !core::ptr::eq(f, l.1)))
+        if ifa_ifwithaddr(&held, &held.reader(), &want, 0)
+            .is_none_or(|f| addrs.last().is_none_or(|l| !f.is(&l.1)))
         {
             eprintln!("net: ifa_ifwithaddr found another address");
             std::process::exit(1);
         }
+        drop(net);
+        let net = NETLOCK.write();
+        let held = need(NetHeld::of(&net), "the net lock's witness");
         for (lifp, ifa) in &addrs {
-            ifa_del(lifp, ifa);
+            drop(ifa_del(lifp, ifa, &held));
         }
         drop(net);
         report(IF_ROWS[7], r);
@@ -1820,7 +1825,7 @@ fn route_info<'a>(
     dst: &'a [u8],
     mask: &'a [u8],
     gw: &'a [u8],
-    ifa: &'static kernel::net::if_var::Ifaddr,
+    ifa: &'a kernel::net::if_var::IfaddrRef,
 ) -> kernel::net::route::RtAddrinfo<'a> {
     use hal::sys::net_route::{
         RTAX_DST, RTAX_GATEWAY, RTAX_NETMASK, RTF_GATEWAY, RTF_STATIC, RTF_UP,
@@ -1838,7 +1843,6 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     use hal::netlock::NetHeld;
     use hal::sys::net_route::{RTF_CONNECTED, RTF_MPATH, RTM_ADD, RTP_ANY, RTP_STATIC};
     use kernel::net::if_::{if_alloc_sadl, if_attach, if_test_reset, ifa_add, test_ifnet_fresh};
-    use kernel::net::if_var::Ifaddr;
     use kernel::net::route::{
         Route, route_init, rt_hash, rt_ifa_add, rtlabel_test_reset, rtrequest, rtrequest_delete,
     };
@@ -1886,20 +1890,17 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         .set(ifp.if_flags.get() | hal::sys::net_if::IFF_UP | hal::sys::net_if::IFF_BROADCAST);
     if_alloc_sadl(ifp);
     if_attach(ifp);
-    let token = need(hal::link::SaToken::take(), "the SaToken");
-    let cell = |a: [u8; 4]| -> &'static core::cell::Cell<hal::sys::socket::Sockaddr> {
-        let mut sa: hal::sys::socket::Sockaddr = hal::user::zeroed();
-        sa.sa_len = 16;
-        sa.sa_family = hal::sys::socket::AF_INET;
-        sa.sa_data[2..6].copy_from_slice(&a);
-        Box::leak(Box::new(core::cell::Cell::new(sa)))
-    };
-    let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-    ifa.ifa_refcnt.init();
-    ifa.ifa_addr.set(token, Some(cell([10, 0, 2, 15])));
-    ifa.ifa_netmask.set(token, Some(cell([255, 255, 255, 0])));
-    ifa.ifa_ifp.set(Some(ifp));
-    ifa_add(ifp, ifa);
+    let ifa = kernel::netinet::in_var::test_in_ifaddr(
+        ifp,
+        [10, 0, 2, 15],
+        Some([255, 255, 255, 0]),
+        None,
+    );
+    {
+        let w = NETLOCK.write();
+        ifa_add(ifp, ifa.clone(), &need(NetHeld::of(&w), "the net lock"));
+    }
+    let ifa = &ifa;
 
     let mask24 = sin([255, 255, 255, 0]);
     let mask0 = sin([0; 4]);
@@ -3127,6 +3128,7 @@ const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
 
 /// The IPv6 address rows (N6.5a): see the file's documentation.
 fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
     use hal::sys::netinet6_in6::{IN6MASK64, In6Addr, SockaddrIn6};
     use hal::sys::netinet6_in6_var::In6Addrlifetime;
     use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
@@ -3169,19 +3171,31 @@ fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             ia6t_pltime: ND6_INFINITE_LIFETIME,
             ..In6Addrlifetime::default()
         });
-        ifa_add(ifp, &ia.ia_ifa);
+        ifa_add(
+            ifp,
+            kernel::net::if_var::IfaddrRef::In6(ia),
+            &need(NetHeld::of(&w), "the net lock"),
+        );
     }
 
     if wanted(INET6_ROWS[0]) {
-        let chosen = need(in6_ifawithscope(ifp, &dst, 0, None), "a source");
-        if chosen.ia_addr.addr() != global {
+        let held = need(NetHeld::of(&w), "the net lock");
+        let chosen = need(
+            in6_ifawithscope(ifp, &dst, 0, None, &held.reader()).cloned(),
+            "a source",
+        );
+        if kernel::netinet6::in6_var::ifatoia6(&chosen).ia_addr.addr() != global {
             eprintln!("net: in6_ifawithscope chose the wrong source");
             std::process::exit(1);
         }
+        drop(chosen);
         let r = measure(OPS, || {
             let t = Instant::now();
             for _ in 0..OPS {
-                black_box(in6_ifawithscope(black_box(ifp), black_box(&dst), 0, None));
+                let rd = held.reader();
+                black_box(
+                    in6_ifawithscope(black_box(ifp), black_box(&dst), 0, None, &rd).is_some(),
+                );
             }
             t.elapsed()
         });

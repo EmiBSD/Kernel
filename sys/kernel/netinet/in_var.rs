@@ -57,48 +57,63 @@
 //! LZ: sys/netinet/in_var.rs@3c62ede68802
 //!
 //! One `struct in_ifaddr` is allocated for each interface with an Internet address. The
-//! `struct ifaddr` it embeds first holds the protocol-independent part; its `ifa_addr`,
-//! `ifa_dstaddr` and `ifa_netmask` name the `sockaddr_in`s the record reserves. Locks: \[I\]
-//! immutable after creation, \[m\] the parent interface's `if_maddrlock`; the other members
+//! `struct ifaddr` it embeds first holds the protocol-independent part; the record holds the
+//! `sockaddr_in`s the C's `ifa_addr`, `ifa_dstaddr` and `ifa_netmask` point at, and the
+//! generic part's list links. Locks: \[I\] immutable after creation, \[N\] the net lock,
+//! \[T\] `if_tmplist_lock`, \[m\] the parent interface's `if_maddrlock`; the other members
 //! change under the net lock, as in the C.
 //!
 //! ## Deviations
-//! - A record is never freed: the last `ifafree` of an address ([`in_ifafree`]) and the last
-//!   `in_delmulti` of a membership ([`in_multi_free`]) put it on a free list, which the next
-//!   allocation ([`in_ifaddr_alloc`], [`in_multi_alloc`]) takes from before a new `malloc(9)`
-//!   (the mount's idiom, D-N5.2-2; N6.4a's R1): `&'static` is then true for every holder
-//!   (the interface's list, `rt_ifa`, the pcbs' and pf's copies), and `vmstat -m`'s
-//!   `ifaddr` and `ipmaddr` rows count the records ever alive at once (a high-water mark)
-//!   where the C's fall after a delete. The alternative, counted handles in the lists, waits
-//!   for both families (N6.5, docs/SCAFFOLDING.md).
-//! - The `ia_list` TAILQ entry is dropped: nothing links the records through it at the pin.
+//! - A multicast record is never freed: the last `in_delmulti` of a membership
+//!   ([`in_multi_free`]) puts it on a free list, which the next allocation
+//!   ([`in_multi_alloc`]) takes from before a new `malloc(9)` (the mount's idiom, D-N5.2-2;
+//!   N6.4a's R1): `&'static` is then true for every holder (the interface's list, the pcbs'
+//!   and pf's copies), and `vmstat -m`'s `in_multi` row counts the records ever alive at once
+//!   (a high-water mark) where the C's falls after a leave. Counted handles follow the
+//!   addresses' at N6.5e's 5e2 (docs/SCAFFOLDING.md).
+//! - The `ia_list` TAILQ entry (the C's list of every Internet address) is dropped: nothing
+//!   links the records through it at the pin. The record's `ia_list` member is the generic
+//!   part's `ifa_list`.
 //!
 //! ## Redesign
 //! - LZ's `#[repr(C)]` records of `Cell`s cast from their generic part (`ifatoia`,
-//!   `ifmatoinm`: pointer casts checked by the address family, one `unsafe` each) -> records
-//!   reached from the generic part through a back-link set at creation (`Ifaddr::ifa_in`,
-//!   `Ifmaddr::ifma_in`: one load where the C casts, the cast's family test the link's
-//!   presence: only `in.c` makes `AF_INET` records).
-//! - The C's `struct sockaddr_in` members -> [`SinWords`], the address in atomic words that
-//!   the generic part's `SaLink`s name (`SaLink::set_words`, no token: N6.4a's R2), read and
-//!   written whole (`get`, `set`: LZ's `Cell` interface, so `bsd`'s readers are unchanged) or
-//!   by the address alone (`addr`, one word load).
+//!   `ifmatoinm`: pointer casts checked by the address family, one `unsafe` each) -> an
+//!   address is held by a counted handle whose arm is its family
+//!   (`kernel::net::if_var::IfaddrRef::In`, N6.5e): [`ifatoia`] and [`InIfaddr::of`] match
+//!   the arm (`panic(9)` and `None` for another family's). A multicast record is still
+//!   reached from its generic part through a back-link set at creation (`Ifmaddr::ifma_in`:
+//!   one load where the C casts, the cast's family test the link's presence: only `in.c` makes
+//!   `AF_INET` records), until 5e2.
+//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e): the
+//!   last handle's drop is `ifafree`'s `free(ifa, M_IFADDR, 0)`, so `vmstat -m`'s `ifaddr`
+//!   row falls with the live addresses as the C's; LZ's (and N6.4a's) free list, its mutex and
+//!   `in_ifafree` are gone. The generic part's `ifa_list` and `ifa_tmplist` are the record's
+//!   `ia_list` (a net cell, `hal::rwlock::Guarded::new_net`) and `ia_tmplist` (keyed to
+//!   `if_tmplist_lock`): a `Guarded` is not valid all zero, which enc(4)'s generic part, in a
+//!   zeroed softc, must be.
+//! - The C's `struct sockaddr_in` members -> [`SinWords`], the address in atomic words, read
+//!   and written whole (`get`, `set`: LZ's `Cell` interface, so `bsd`'s readers are
+//!   unchanged), by the address alone (`addr`, one word load) or as the socket address the
+//!   generic part's `ifa_addr` names (`read`, through the handle:
+//!   `kernel::net::if_var::IfaddrRef::ifa_addr`). No link from the generic part to them (N6.5e;
+//!   N6.4a's `SaLink::set_words`).
 //! - `ia_net`, `ia_netmask`, `inm_state`, `inm_timer`: relaxed atomics (the C's plain words
 //!   under the net lock or `if_maddrlock`).
 
 use hal::intr::IPL_SOFTNET;
-use hal::link::{Link, SaWords};
+use hal::link::{Link, SaBytes, SaWords};
 use hal::list::{List, ListEntry};
-use hal::malloc::{M_WAITOK, MBox};
+use hal::malloc::{M_WAITOK, MArc, MBox};
 use hal::mutex::Mutexed;
 use hal::refcnt::Refcnt;
+use hal::rwlock::Guarded;
 use hal::sys::net_if::IFF_BROADCAST;
 use hal::sys::netinet_in::{InAddr, SockaddrIn};
 use hal::sys::socket::AF_INET;
 
 use crate::assert::kpanic;
-use crate::net::if_::M_IFADDR;
-use crate::net::if_var::{AtomicCell, Ifaddr, Ifmaddr, Ifnet};
+use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};
+use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, Ifnet};
 
 /// The size of a `struct sockaddr_in`, its `sin_len`.
 const SIN_LEN: u8 = 16;
@@ -107,8 +122,8 @@ const SIN_LEN: u8 = 16;
 /// `in_multi`).
 pub const M_IPMADDR: i32 = 54;
 
-/// A `struct sockaddr_in` the kernel owns: its bytes in atomic words (`hal::link::SaWords`)
-/// that an interface record's `SaLink` names. Valid all zero.
+/// A `struct sockaddr_in` the kernel owns: its bytes in atomic words (`hal::link::SaWords`).
+/// Valid all zero.
 #[derive(Debug, Default)]
 pub struct SinWords(SaWords);
 
@@ -157,7 +172,14 @@ impl SinWords {
         self.0.word(0)[1]
     }
 
-    /// The words, which a record's `SaLink` names.
+    /// A copy of the socket address (`sa_len` bytes, cut at a `sockaddr_in`): what the C's
+    /// `ifa_addr`, `ifa_dstaddr` or `ifa_netmask` pointing here gives its readers.
+    #[inline]
+    pub fn read(&self) -> SaBytes {
+        self.0.read(size_of::<SockaddrIn>())
+    }
+
+    /// The words, which a multicast record's `SaLink` names.
     fn words(&'static self) -> &'static SaWords {
         &self.0
     }
@@ -179,12 +201,15 @@ pub struct InIfaddr {
     pub ia_sockmask: SinWords,
     /// `ia_allhosts`: multicast address record for the allhosts multicast group.
     pub ia_allhosts: Link<InMulti>,
-    /// The free list's entry (the module's deviations).
-    ia_free: ListEntry<InIfaddr>,
+    /// \[N\] `ia_ifa.ifa_list`: the next address of the interface's list (a net cell,
+    /// `kernel::net::if_var::IfaList`'s chain).
+    pub(crate) ia_list: Guarded<Option<IfaddrRef>>,
+    /// \[T\] `ia_ifa.ifa_tmplist`: the next address of `ifconf`'s temporary list.
+    pub(crate) ia_tmplist: Guarded<Option<IfaddrRef>>,
 }
 
 impl InIfaddr {
-    /// A record every member of which is zero (`M_ZERO`).
+    /// A record every member of which is zero (`M_ZERO`), on no list.
     const fn new() -> Self {
         Self {
             ia_ifa: Ifaddr::new(),
@@ -194,7 +219,8 @@ impl InIfaddr {
             ia_dstaddr: SinWords::new(),
             ia_sockmask: SinWords::new(),
             ia_allhosts: Link::new(),
-            ia_free: ListEntry::new(),
+            ia_list: Guarded::new_net(None),
+            ia_tmplist: Guarded::new_static(&IF_TMPLIST_LOCK, None),
         }
     }
 
@@ -217,37 +243,15 @@ impl InIfaddr {
     }
 
     /// `ifatoia(ifa)` for an address that may not be an Internet one: `None` for another
-    /// family's.
+    /// family's (the handle's arm).
     #[inline]
-    pub fn of(ifa: &Ifaddr) -> Option<&'static InIfaddr> {
-        ifa.ifa_in.get()
-    }
-
-    /// A recycled record made as `malloc(M_ZERO)` leaves a new one: it is on no list and its
-    /// last reference is gone, so no one reaches it; its links still name its own storage.
-    fn reset(&self) {
-        let ifa = &self.ia_ifa;
-        if List::<crate::net::if_var::IfAddrlist>::is_linked(ifa) {
-            kpanic(format_args!(
-                "in_ifaddr_alloc: a recycled address on a list"
-            ));
+    pub fn of(ifa: &IfaddrRef) -> Option<&InIfaddr> {
+        match ifa {
+            IfaddrRef::In(ia) => Some(ia),
+            _ => None,
         }
-        ifa.ifa_ifp.set(None);
-        ifa.ifa_flags.set(0);
-        ifa.ifa_metric.set(0);
-        self.ia_net.set(0);
-        self.ia_netmask.set(0);
-        self.ia_addr.set(SockaddrIn::default());
-        self.ia_dstaddr.set(SockaddrIn::default());
-        self.ia_sockmask.set(SockaddrIn::default());
-        self.ia_allhosts.set(None);
     }
 }
-
-hal::list_adapter!(
-    /// The free list of Internet addresses (the module's deviations).
-    IaFreeList: InIfaddr, ia_free
-);
 
 /// `struct in_multi`: Internet multicast address structure. There is one of these for each
 /// IP multicast group to which this host belongs on a given network interface.
@@ -307,14 +311,10 @@ hal::list_adapter!(
     InmFreeList: InMulti, inm_free
 );
 
-// The two free lists' mutexes are IPL_SOFTNET: every taker runs at or below the softnet
-// level, never from a hardware interrupt: the allocations (`in_ioctl`'s `SIOCAIFADDR`,
-// `in_addmulti`, process context or the softnet tasks), `in_ifafree` (the last `ifafree`, from
-// `rtfree` and `ifa_del`) and `in_multi_free` (`in_delmulti`'s). A taker above IPL_SOFTNET
-// would need IPL_NET here.
-
-/// The Internet addresses no interface has any more, for [`in_ifaddr_alloc`].
-static IA_FREE: Mutexed<List<IaFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
+// The free list's mutex is IPL_SOFTNET: every taker runs at or below the softnet level,
+// never from a hardware interrupt: the allocation (`in_addmulti`, process context or the
+// softnet tasks) and `in_multi_free` (`in_delmulti`'s). A taker above IPL_SOFTNET would need
+// IPL_NET here.
 
 /// The multicast records no interface has any more, for [`in_multi_alloc`].
 static INM_FREE: Mutexed<List<InmFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
@@ -322,7 +322,7 @@ static INM_FREE: Mutexed<List<InmFreeList>> = Mutexed::new(IPL_SOFTNET, List::ne
 /// `ifatoia(ifa)`: the Internet address an `AF_INET` interface address is the first member
 /// of; `panic(9)` for another family's (where the C would cast it).
 #[inline]
-pub fn ifatoia(ifa: &Ifaddr) -> &'static InIfaddr {
+pub fn ifatoia(ifa: &IfaddrRef) -> &InIfaddr {
     match InIfaddr::of(ifa) {
         Some(ia) => ia,
         None => kpanic(format_args!("ifatoia: not an inet address")),
@@ -340,37 +340,14 @@ pub fn ifmatoinm(ifma: &Ifmaddr) -> &'static InMulti {
 }
 
 /// `malloc(sizeof *ia, M_IFADDR, M_WAITOK | M_ZERO)` and the set-up `in_ioctl_set_ifaddr`
-/// and `in_ioctl_change_ifaddr` give a new address of `ifp`: its reference, its address's
-/// family and length, the generic part's links to its storage, the mask's length, the
-/// broadcast address's family and length on a broadcast interface, its interface. A record
-/// off the free list first.
-pub fn in_ifaddr_alloc(ifp: &'static Ifnet) -> &'static InIfaddr {
-    let reused = IA_FREE.lock().pop_head();
-    let ia: &'static InIfaddr = match reused {
-        Some(ia) => {
-            ia.reset();
-            ia
-        }
-        // The C's `M_ZERO`: `MBox::new` writes the zeroed record whole.
-        None => match MBox::new(M_IFADDR, M_WAITOK, InIfaddr::new()) {
-            Some(b) => {
-                let ia = MBox::leak(b);
-                ia.ia_ifa.ifa_in.set(Some(ia));
-                ia.ia_ifa
-                    .ifa_addr
-                    .set_words::<SockaddrIn>(Some(ia.ia_addr.words()));
-                ia.ia_ifa
-                    .ifa_dstaddr
-                    .set_words::<SockaddrIn>(Some(ia.ia_dstaddr.words()));
-                ia.ia_ifa
-                    .ifa_netmask
-                    .set_words::<SockaddrIn>(Some(ia.ia_sockmask.words()));
-                ia
-            }
-            None => kpanic(format_args!("in_ifaddr_alloc: out of memory")),
-        },
-    };
-    ia.ia_ifa.ifa_refcnt.init();
+/// and `in_ioctl_change_ifaddr` give a new address of `ifp`: its address's family and length,
+/// the mask's length, the broadcast address's family and length on a broadcast interface, its
+/// interface. The handle returned is the creation reference (`refcnt_init`), which
+/// `ifa_add` takes for the interface's list; the record is freed with the last handle
+/// (`ifafree`'s `free(ifa, M_IFADDR, 0)`).
+pub fn in_ifaddr_alloc(ifp: &'static Ifnet) -> MArc<InIfaddr> {
+    // The C's `M_ZERO`, then its stores, made on the value `MArc::new` writes whole.
+    let ia = InIfaddr::new();
     ia.ia_addr.set(SockaddrIn {
         sin_len: SIN_LEN,
         sin_family: AF_INET,
@@ -388,13 +365,10 @@ pub fn in_ifaddr_alloc(ifp: &'static Ifnet) -> &'static InIfaddr {
         });
     }
     ia.ia_ifp().set(Some(ifp));
-    ia
-}
-
-/// `free(ifa, M_IFADDR, 0)` of an Internet address whose last reference `ifafree` gave back:
-/// the record onto the free list (the module's deviations).
-pub fn in_ifafree(ia: &'static InIfaddr) {
-    IA_FREE.lock().insert_tail(ia);
+    match MArc::new(M_IFADDR, M_WAITOK, ia) {
+        Some(ia) => ia,
+        None => kpanic(format_args!("in_ifaddr_alloc: out of memory")),
+    }
 }
 
 /// `malloc(sizeof(*inm), M_IPMADDR, M_WAITOK | M_ZERO)` (`in_addmulti`'s new record), a
@@ -433,21 +407,47 @@ pub fn in_multi_free(inm: &'static InMulti) {
     INM_FREE.lock().insert_tail(inm);
 }
 
-/// Forgets the free lists without touching their records, which an earlier test's memory
-/// holds (`setup_real_memory`'s rule, testing.md).
+/// An Internet address of `ifp` for the tests and the benches, as `in_ioctl` makes one: its
+/// address `addr`, and its mask and destination (broadcast) address when given; the creation
+/// reference, for `ifa_add`.
+#[cfg(any(test, feature = "doubles"))]
+pub fn test_in_ifaddr(
+    ifp: &'static Ifnet,
+    addr: [u8; 4],
+    mask: Option<[u8; 4]>,
+    dst: Option<[u8; 4]>,
+) -> IfaddrRef {
+    let sin = |a: [u8; 4]| SockaddrIn {
+        sin_len: SIN_LEN,
+        sin_family: AF_INET,
+        sin_addr: InAddr {
+            s_addr: u32::from_ne_bytes(a),
+        },
+        ..SockaddrIn::default()
+    };
+    let ia = in_ifaddr_alloc(ifp);
+    ia.ia_addr.set(sin(addr));
+    if let Some(m) = mask {
+        ia.ia_netmask.set(u32::from_ne_bytes(m));
+        ia.ia_sockmask.set(sin(m));
+    }
+    if let Some(d) = dst {
+        ia.ia_dstaddr.set(sin(d));
+    }
+    IfaddrRef::In(ia)
+}
+
+/// Forgets the multicast records' free list without touching its records, which an earlier
+/// test's memory holds (`setup_real_memory`'s rule, testing.md).
 #[cfg(any(test, feature = "doubles"))]
 pub fn in_var_test_reset() {
-    *IA_FREE.lock() = List::new();
     *INM_FREE.lock() = List::new();
 }
 
-/// The free lists' lengths, for the tests.
+/// The multicast records' free list's length, for the tests.
 #[cfg(test)]
-pub(crate) fn free_counts() -> (usize, usize) {
-    (
-        IA_FREE.lock().iter().count(),
-        INM_FREE.lock().iter().count(),
-    )
+pub(crate) fn inm_free_count() -> usize {
+    INM_FREE.lock().iter().count()
 }
 /* </CODE> */
 

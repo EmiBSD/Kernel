@@ -208,7 +208,7 @@ use crate::netinet::in_pcb::{
     INP_HIGHPORT, INP_IPSECFLOWINFO, INP_LOWPORT, INP_RECVDSTADDR, INP_RECVDSTPORT, INP_RECVIF,
     INP_RECVOPTS, INP_RECVRETOPTS, INP_RECVRTABLE, INP_RECVTTL, Inpcb, in_pcbset_rtableid,
 };
-use crate::netinet::in_var::InIfaddr;
+use crate::netinet::in_var::{InIfaddr, ifatoia};
 use crate::netinet::in4_cksum::in4_cksum;
 use crate::netinet::ip_id::ip_randomid;
 use crate::netinet::ip_var::{
@@ -287,10 +287,11 @@ fn sin_addr_of(sa: &[u8]) -> InAddr {
     }
 }
 
-/// `in_ifp2ia(ifp)->ia_addr.sin_addr`: the address of the first IPv4 address of `ifp`.
+/// `in_ifp2ia(ifp)->ia_addr.sin_addr`: the address of the first IPv4 address of `ifp`, under
+/// the net lock `net` proves (one reader for the walk).
 #[inline]
-fn ifp_inaddr(ifp: &Ifnet) -> Option<InAddr> {
-    in_ifp2ia(ifp).map(|ia| ia.ia_addr.addr())
+fn ifp_inaddr(ifp: &Ifnet, net: &NetHeld<'_>) -> Option<InAddr> {
+    in_ifp2ia(&net.reader(), ifp).map(|ia| ifatoia(ia).ia_addr.addr())
 }
 
 /// `ip_output(m, opt, ro, flags, imo, seclevel, ipsecflowinfo)`: IP output. The packet `m`
@@ -375,7 +376,7 @@ pub fn ip_output(
         if let Some(i) = imo_ifp {
             mtu = i.if_mtu.get();
             if ip.ip_src.s_addr == INADDR_ANY
-                && let Some(a) = ifp_inaddr(&i)
+                && let Some(a) = ifp_inaddr(&i, net)
             {
                 ip.ip_src = a;
             }
@@ -391,8 +392,9 @@ pub fn ip_output(
             };
 
             // `ia = ifatoia(ro->ro_rt->rt_ifa)`: its record found below, for a source
-            // address only.
-            let ia = rt.ifa();
+            // address only (lent for the life of one reader).
+            let rd = net.reader();
+            let ia = rt.ifa(&rd);
             let idx = if rt.rt_flags.isset(RTF_LOCAL) {
                 rtable_loindex(m.m_pkthdr().ph_rtableid.get())
             } else {
@@ -483,7 +485,7 @@ pub fn ip_output(
 
             // If source address not specified yet, use address of outgoing interface.
             if ip.ip_src.s_addr == INADDR_ANY
-                && let Some(a) = ifp_inaddr(ifn)
+                && let Some(a) = ifp_inaddr(ifn, net)
             {
                 ip.ip_src = a;
             }
@@ -940,7 +942,7 @@ pub fn ip_ctloutput<G: ProcGlue>(
         match op {
             PRCO_SETOPT => ip_setopt(inp, options, p, rtableid, optname, m.as_deref(), net),
             PRCO_GETOPT => match m {
-                Some(m) => ip_getopt(inp, options.as_ref(), optname, m),
+                Some(m) => ip_getopt(inp, options.as_ref(), optname, m, net),
                 None => kpanic(format_args!("ip_ctloutput: PRCO_GETOPT without an mbuf")),
             },
             _ => Ok(()),
@@ -1098,6 +1100,7 @@ fn ip_getopt<G: ProcGlue>(
     options: Option<&MbufBox>,
     optname: i32,
     m: &mut Mbuf,
+    net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
     let optbit = |bit: i32| i32::from(inp.has_flags(bit));
     let optval = match optname {
@@ -1123,7 +1126,9 @@ fn ip_getopt<G: ProcGlue>(
         IP_IPSECFLOWINFO => optbit(INP_IPSECFLOWINFO),
 
         IP_MULTICAST_IF | IP_MULTICAST_TTL | IP_MULTICAST_LOOP | IP_ADD_MEMBERSHIP
-        | IP_DROP_MEMBERSHIP => return ip_getmoptions(optname, inp.moptions_out().as_ref(), m),
+        | IP_DROP_MEMBERSHIP => {
+            return ip_getmoptions(optname, inp.moptions_out().as_ref(), m, net);
+        }
 
         IP_PORTRANGE => {
             if inp.has_flags(INP_HIGHPORT) {
@@ -1415,7 +1420,7 @@ fn set_multicast_if(
     }
     // The selected interface is identified by its local IP address. Find the interface and
     // confirm that it supports multicasting.
-    let ifp = ifa_ifwithaddr(net, &sin_image(addr), rtableid)
+    let ifp = ifa_ifwithaddr(net, &net.reader(), &sin_image(addr), rtableid)
         .and_then(InIfaddr::of)
         .and_then(|ia| ia.ia_ifp().get());
     match ifp {
@@ -1544,13 +1549,19 @@ fn drop_membership(
 }
 
 /// `ip_getmoptions(optname, imo, m)`: returns the IP multicast options of a socket (`imo`,
-/// `None` when it has none: the defaults) in response to user getsockopt().
-pub fn ip_getmoptions(optname: i32, imo: Option<&IpMoptions>, m: &mut Mbuf) -> Result<(), Errno> {
+/// `None` when it has none: the defaults) in response to user getsockopt(), under the net
+/// lock `net` proves (the socket's lock: the interface's addresses are read).
+pub fn ip_getmoptions(
+    optname: i32,
+    imo: Option<&IpMoptions>,
+    m: &mut Mbuf,
+    net: &NetHeld<'_>,
+) -> Result<(), Errno> {
     match optname {
         IP_MULTICAST_IF => {
             let addr = imo
                 .and_then(|imo| IfRef::get(u32::from(imo.imo_ifidx)))
-                .and_then(|ifp| ifp_inaddr(&ifp))
+                .and_then(|ifp| ifp_inaddr(&ifp, net))
                 .map_or(INADDR_ANY, |a| a.s_addr);
             opt_put(m, &addr.to_ne_bytes());
             Ok(())
@@ -2671,17 +2682,22 @@ pub(crate) mod tests {
     #[test]
     fn ip_getmoptions_answers_the_defaults_without_options() {
         let _g = setup();
+        let w = NETLOCK.read();
+        let net = &NetHeld::of(&w).expect("the net lock");
         let mut m = optm(&[0; 4]);
-        ip_getmoptions(IP_MULTICAST_TTL, None, &mut m).expect("ttl");
+        ip_getmoptions(IP_MULTICAST_TTL, None, &mut m, net).expect("ttl");
         assert_eq!(m.data(), &[IP_DEFAULT_MULTICAST_TTL]);
-        ip_getmoptions(IP_MULTICAST_LOOP, None, &mut m).expect("loop");
+        ip_getmoptions(IP_MULTICAST_LOOP, None, &mut m, net).expect("loop");
         assert_eq!(m.data(), &[IP_DEFAULT_MULTICAST_LOOP]);
-        ip_getmoptions(IP_MULTICAST_IF, None, &mut m).expect("if");
+        ip_getmoptions(IP_MULTICAST_IF, None, &mut m, net).expect("if");
         assert_eq!(m.data(), &[0, 0, 0, 0]);
         let set = IpMoptions::output(0, 9, 0);
-        ip_getmoptions(IP_MULTICAST_TTL, Some(&set), &mut m).expect("ttl");
+        ip_getmoptions(IP_MULTICAST_TTL, Some(&set), &mut m, net).expect("ttl");
         assert_eq!(m.data(), &[9]);
-        assert_eq!(ip_getmoptions(IP_TTL, None, &mut m), Err(Errno::EOPNOTSUPP));
+        assert_eq!(
+            ip_getmoptions(IP_TTL, None, &mut m, net),
+            Err(Errno::EOPNOTSUPP)
+        );
     }
 }
 /* </TESTS> */

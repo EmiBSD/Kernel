@@ -739,7 +739,11 @@ pub fn tcp_connect(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno>
             if a == INADDR_ANY
                 || a == INADDR_BROADCAST
                 || in_multicast(a)
-                || in_broadcast(sin.sin_addr, inp.inp_rtableid.get())
+                || in_broadcast(
+                    sin.sin_addr,
+                    inp.inp_rtableid.get(),
+                    crate::net::if_::net_held("tcp_connect").net(),
+                )
             {
                 return Err(Errno::EINVAL);
             }

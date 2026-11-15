@@ -6552,7 +6552,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_divert.rs"
 lz = ["sys/netinet/ip_divert.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/net/if_var.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_esp.rs"
@@ -6624,7 +6624,7 @@ adapted_by = ["sys/kernel/netinet/in_pcb.rs"]
 rust = "sys/netinet/raw_ip.rs"
 lz = ["sys/netinet/raw_ip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp.rs"
@@ -6674,7 +6674,7 @@ adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kern
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/in_.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
@@ -6714,7 +6714,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet6/in6_proto.rs", "sys/hal/netlock.rs", "sys/kernel/net/if_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
@@ -6738,7 +6738,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet6/ip6_divert.rs"
 lz = ["sys/netinet6/ip6_divert.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/net/if_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_input.rs"
@@ -6805,7 +6805,7 @@ adapted_by = ["sys/kern/vm_bsd.rs", "sys/kernel/cred.rs", "sys/kernel/fs/buf.rs"
 rust = "sys/nfs/nfs_boot.rs"
 lz = ["sys/nfs/nfs_boot.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/netinet/in_var.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/net/if_var.rs"]
 
 [[module]]
 rust = "sys/nfs/nfs_debug.rs"
@@ -7424,6 +7424,11 @@ lz = "sys/net/if_var.rs::Ifnet::set_arpcom"
 native = ["sys/kernel/net/if_ethersubr.rs::ether_ifattach"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/net/if_var.rs::Ifaddr::ifa_broadaddr"
+native = ["IfaddrRef::ifa_broadaddr"]
+kind = "moved"
+
 [[module]]
 rust = "sys/kernel/net/ifq.rs"
 crate = "kernel"
@@ -7685,6 +7690,11 @@ lz = "sys/net/if_.rs::if_rtrequest_dummy"
 native = []
 kind = "dropped"
 reason = "the empty if_rtrequest slot's answer: LegacyNetDriver::rtrequest falls to NetDriver's default (kernel::net::if_var::link_rtrequest), which does nothing without a link layer, as if_rtrequest_dummy (N6.3c2)"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifa_update_broadaddr"
+native = ["sys/kernel/netinet/in_.rs::ifa_update_broadaddr"]
+kind = "moved"
 
 [[module]]
 rust = "sys/kernel/net/if_ethersubr.rs"

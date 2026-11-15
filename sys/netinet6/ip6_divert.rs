@@ -84,7 +84,7 @@ use crate::netinet::ip6::{IPV6_VERSION, IPV6_VERSION_MASK, Ip6Hdr};
 use crate::netinet::tcp::Tcphdr;
 use crate::netinet::udp::Udphdr;
 use crate::netinet6::in6::{
-    IN6ADDR_ANY, SockaddrIn6, in6_control, in6_is_addr_unspecified, in6_nam2sin6, satosin6_const,
+    IN6ADDR_ANY, SockaddrIn6, in6_control, in6_is_addr_unspecified, in6_nam2sin6,
 };
 use crate::netinet6::in6_pcb::{in6_peeraddr, in6_sockaddr};
 use crate::netinet6::ip6_input::{ip6_lasthdr, ipv6_input};
@@ -96,7 +96,6 @@ use crate::sys::mbuf::{
     M_ICMP_CSUM_OUT, M_TCP_CSUM_OUT, M_UDP_CSUM_OUT, Mbuf, PF_TAG_DIVERTED_PACKET,
 };
 use crate::sys::protosw::PrUsrreqs;
-use crate::sys::socket::AF_INET6;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 
 /// `divb6table`.
@@ -302,16 +301,16 @@ pub fn divert6_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
                 divstat_inc(DivstatCounters::DivsErrors);
                 break 'bad;
             };
-            for ifa in ifp.if_addrlist.iter() {
-                let sa = ifa.ifa_addr.get();
-                // SAFETY: an interface address's `ifa_addr` is a readable socket address of
-                // its family (`ifa_add`'s contract); an `AF_INET6` one is a `sockaddr_in6`.
-                if unsafe { (*sa).sa_family } != AF_INET6 {
-                    continue;
-                }
-                // SAFETY: as above.
-                sin6.sin6_addr = unsafe { satosin6_const(sa).read_unaligned() }.sin6_addr;
-                break;
+            // The first `AF_INET6` address (an IPv6 record), read under a lend of the net
+            // lock the input path holds (N6.5e: the list is a net cell).
+            let lend = crate::net::if_::net_held("divert6_packet");
+            let net = lend.net();
+            if let Some(ia6) = ifp
+                .if_addrlist()
+                .iter(&net.reader())
+                .find_map(kernel::netinet6::in6_var::In6Ifaddr::of)
+            {
+                sin6.sin6_addr = ia6.ia_addr.addr();
             }
             if_put(ifp);
         } else {

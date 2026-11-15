@@ -478,7 +478,8 @@ pub(crate) mod tests {
         // the interface's addresses).
         net_lock();
         // SAFETY: a local `sockaddr_in`.
-        info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
+        let ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sintosa(&mut gw), ifp) };
+        info.rti_ifa = ifa.as_ref();
         let mut rt = None;
         rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
         net_unlock();

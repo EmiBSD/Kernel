@@ -112,7 +112,7 @@ use crate::netinet::if_ether::revarpwhoami;
 #[cfg(feature = "nfsclient")]
 use crate::netinet::in_::{INADDR_ANY, InAddr, SockaddrIn};
 #[cfg(feature = "nfsclient")]
-use crate::netinet::in_var::{InAliasreq, ifatoia};
+use crate::netinet::in_var::InAliasreq;
 #[cfg(feature = "nfsclient")]
 use crate::nfs::krpc_subr::{
     BOOTPARAM_GETFILE, BOOTPARAM_PROG, BOOTPARAM_VERS, BOOTPARAM_WHOAMI, PMAPPORT, PMAPPROC_CALLIT,
@@ -138,6 +138,7 @@ use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, SOCK_DGRAM};
 #[cfg(feature = "nfsclient")]
 use crate::sys::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
+use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 #[cfg(feature = "nfsclient")]
 use kernel::sysctl::{
     DOMAINNAMELEN, HOSTNAMELEN, with_domainname_mut, with_hostname, with_hostname_mut,
@@ -244,12 +245,20 @@ pub fn nfs_boot_init(nd: &mut NfsDiskless, procp: &Proc) -> Result<(), Errno> {
 
     let _ = soclose(so, 0);
 
-    let ifa = ifp.if_addrlist.iter().find(|ifa| {
-        let sa = ifa.ifa_addr.get();
-        // SAFETY: a live interface address's `ifa_addr` points at its `sockaddr`.
-        !sa.is_null() && unsafe { (*sa).sa_family } == AF_INET
-    });
-    let Some(ifa) = ifa else {
+    // The first `AF_INET` address (an Internet record) and its broadcast address, read under
+    // the net lock taken shared for the walk (N6.5e: the list is a net cell, read under a
+    // proof; the C walks it at boot with no lock).
+    net_lock_shared();
+    let broad = {
+        let lend = crate::net::if_::net_held("nfs_boot");
+        let net = lend.net();
+        ifp.if_addrlist()
+            .iter(&net.reader())
+            .find_map(kernel::netinet::in_var::InIfaddr::of)
+            .map(|ia| ia.ia_broadaddr().get().sin_addr.s_addr)
+    };
+    net_unlock_shared();
+    let Some(broad) = broad else {
         panic(format_args!(
             "nfs_boot: address not configured on {}",
             Str(&xname)
@@ -262,9 +271,7 @@ pub fn nfs_boot_init(nd: &mut NfsDiskless, procp: &Proc) -> Result<(), Errno> {
     let mut bp_sin = SockaddrIn {
         sin_len: size_of::<SockaddrIn>() as u8,
         sin_family: AF_INET,
-        sin_addr: InAddr {
-            s_addr: ifatoia(ifa).ia_broadaddr().get().sin_addr.s_addr,
-        },
+        sin_addr: InAddr { s_addr: broad },
         ..SockaddrIn::default()
     };
     HOSTNAMELEN.store(MAXHOSTNAMELEN as i32, Ordering::Relaxed);

@@ -1276,7 +1276,7 @@ mod tests {
     /// An attached Ethernet-like interface with `fd00:77::1/64`, usable at once (its duplicate
     /// address detection skipped), whose output the test reads.
     fn test_if6() -> &'static crate::net::if_var::Ifnet {
-        use crate::netinet6::in6::{in6_prefixlen2mask, in6ifa_ifpwithaddr};
+        use crate::netinet6::in6::in6_prefixlen2mask;
         use crate::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq, SIOCAIFADDR_IN6};
         use crate::netinet6::nd6::ND6_INFINITE_LIFETIME;
 
@@ -1307,7 +1307,9 @@ mod tests {
         assert!(hal::pod::put(&mut req, 0, &ifra));
         kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true)
             .expect("SIOCAIFADDR_IN6");
-        let ia = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("the address");
+        let ifa =
+            crate::netinet6::in6::tests::withaddr(ifp, &a6("fd00:77::1")).expect("the address");
+        let ia = kernel::netinet6::in6_var::ifatoia6(&ifa);
         ia.ia6_flags.set(ia.ia6_flags.get() & !IN6_IFF_TENTATIVE);
         SENT.lock().unwrap_or_else(|e| e.into_inner()).clear();
         ifp

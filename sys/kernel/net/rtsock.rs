@@ -173,8 +173,9 @@
 //!   | `rtm_output` `RTM_ADD` :926, :939, :948 | the matched route freed on a conflict, on a cached route without its interface, and before `rtrequest` makes its own | `rt = None` at each |
 //!   | `rtm_output` `RTM_DELETE` :983, :1013 | freed without an interface, and before `rtrequest_delete` answers the deleted one | `rt = None` at each |
 //!   | `rtm_output` `RTM_CHANGE` :1030, :1043, :1064 | freed when a multipath route is named without its gateway (both lookups) and without an interface | `rt = None` at each |
-//!   | `rtm_output` `RTM_CHANGE` :1105, :1107 | `ifafree(rt->rt_ifa)`, `rt->rt_ifa = ifaref(ifa)` | `ifafree(o)`, `rt_ifa.set(Some(ifaref(ifa)))`: the kernel's, on `ifa_refcnt` |
-//!   | `ifa_ifwithroute` :1245 | `rtfree` of `rtalloc`'s answer once its `rt_ifa` is read | `drop(rt)`; the address is `&'static` (`bsd`'s storage, N6.4/N6.5) |
+//!   | `rtm_output` `RTM_CHANGE` :1105, :1107 | `ifafree(rt->rt_ifa)`, `rt->rt_ifa = ifaref(ifa)` | the `ifaref` taken under the request's reader, before it ends (the store takes the net cells' writer, `Rtentry::set_ifa`); `ifafree` of the old reference `set_ifa` returns |
+//!   | `ifa_ifwithroute` :1245 | `rtfree` of `rtalloc`'s answer once its `rt_ifa` is read | `drop(rt)`; the address cloned first (T1, N6.5e: nothing keeps it alive once the route's reference goes), held by the request ([`IfaFound::Held`]) |
+//!   | `rtm_getifa` (`IPSEC`) :1206 | `enc_getifa`'s pointer, uncounted | a reference `bsd`'s `Ipsec` leg takes (T4), held by the request |
 //!   | `sysctl_dumpentry` :2018 | `rmx_refcnt = refcnt_read(&rt->rt_refcnt) - 1` | `rtable_read_refcnt(rt) - 1`: `rtable_read_refcnt` is the C's `refcnt_read` (the walk's own handle, which the C's walk does not take, left out), the `- 1` the C's (N6.3b1's R22) |
 
 use core::pin::Pin;
@@ -182,7 +183,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use hal::intr::IPL_SOFTNET;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{AnyArc, PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
@@ -220,7 +221,7 @@ use crate::net::if_::{
     IF_TMPLIST_LOCK, IFNETLIST, if_get, if_getdata, if_group_routechange, if_put, if_ref,
     ifa_ifwithaddr, ifa_ifwithdstaddr, ifaof_ifpforaddr,
 };
-use crate::net::if_var::{IfTmplist, Ifaddr, Ifnet};
+use crate::net::if_var::{IfTmplist, IfaddrRef, Ifnet};
 use crate::net::ipsec_hooks::ipsec;
 use crate::net::mbuf::{
     M_COPYALL, M_DONTWAIT, M_EXT, M_PKTHDR, MCLBYTES, MHLEN, MSIZE, MT_DATA, Mbuf, MbufBox, m_adj,
@@ -986,16 +987,17 @@ impl RouteAddrs {
         if let Some(ifp) = ifp {
             a.ifp = sadl_copy(ifp);
             a.ifa = rtable_getsource(tableid, rt.dest_view().family(), net);
+            let r = net.reader();
             if a.ifa.is_none() {
                 a.ifa = rt
-                    .ifa()
-                    .and_then(|ifa| ifa.ifa_addr.read(net))
+                    .ifa(&r)
+                    .and_then(|ifa| ifa.ifa_addr(net))
                     .and_then(|b| SockaddrView::new(&b).and_then(SaCopy::of));
             }
             if brd && ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
                 a.brd = rt
-                    .ifa()
-                    .and_then(|ifa| ifa.ifa_dstaddr.read(net))
+                    .ifa(&r)
+                    .and_then(|ifa| ifa.ifa_dstaddr(net))
                     .and_then(|b| SockaddrView::new(&b).and_then(SaCopy::of));
             }
         }
@@ -1332,10 +1334,16 @@ fn rtm_output(
 
                 let nw = NETLOCK.write();
                 let net = net_held(&nw);
-                if let Err(e) = rtm_getifa(info, tableid, &net) {
+                // The request's address, lent for one reader's life (or held: T1, T4) to a
+                // copy of the request (its own `rti_ifa` cannot borrow them).
+                let r = net.reader();
+                let mut hold = None;
+                let mut info = *info;
+                if let Err(e) = rtm_getifa(&mut info, tableid, &net, &r, &mut hold) {
                     break 'req Err(e);
                 }
-                let error = rtrequest(RTM_ADD, info, prio, Some(&mut rt), tableid, &net);
+                let error = rtrequest(RTM_ADD, &mut info, prio, Some(&mut rt), tableid, &net);
+                drop(r);
                 drop(nw);
                 if error.is_ok()
                     && let Some(r) = rt.as_deref()
@@ -1450,21 +1458,29 @@ fn rtm_output(
                 {
                     let nw = NETLOCK.write();
                     let net = net_held(&nw);
-                    if let Err(e) = rtm_getifa(info, tableid, &net) {
-                        break 'req Err(e);
-                    }
-                    if let Some(ifa) = info.rti_ifa
-                        && !r.ifa().is_some_and(|o| core::ptr::eq(o, ifa))
-                    {
+                    // `ifaref(info->rti_ifa)` of a new address, taken under the request's
+                    // reader before it ends: the store below takes the net cells' writer.
+                    let new = {
+                        let rd = net.reader();
+                        let mut hold = None;
+                        let mut li = *info;
+                        if let Err(e) = rtm_getifa(&mut li, tableid, &net, &rd, &mut hold) {
+                            break 'req Err(e);
+                        }
+                        li.rti_ifa
+                            .filter(|ifa| !r.ifa(&rd).is_some_and(|o| o.is(ifa)))
+                            .map(ifaref)
+                    };
+                    if let Some(ifa) = new {
                         if let Some(d) = i.if_driver.get() {
                             d.rtrequest(i, RTM_DELETE, Some(r), &net);
                         }
-                        if let Some(o) = r.ifa() {
+                        let ifp = ifa.ifa_ifp.get();
+                        let old = r.set_ifa(&mut net.writer(), ifa);
+                        if let Some(o) = old {
                             ifafree(o);
                         }
-
-                        r.rt_ifa.set(Some(ifaref(ifa)));
-                        if let Some(ifp) = ifa.ifa_ifp.get() {
+                        if let Some(ifp) = ifp {
                             r.rt_ifidx.set(ifp.if_index.get());
                             // the new interface's link state decides RTF_UP again
                             let _ = rt_if_linkstate_change(r, ifp, tableid);
@@ -1554,51 +1570,79 @@ fn rtm_output_change(
     Ok(())
 }
 
+/// An interface address a request's lookup found: lent by an interface's list for the life
+/// of the caller's reader (the C's uncounted pointer), or a reference the lookup took where
+/// nothing else would keep the address alive for the request (T1: a gateway route's, past
+/// the route's release; T4: enc(4)'s, which `bsd`'s `Ipsec` leg hands out counted).
+pub enum IfaFound<'r> {
+    /// Lent for the reader's life.
+    Lent(&'r IfaddrRef),
+    /// A reference of the request's own.
+    Held(IfaddrRef),
+}
+
+impl IfaFound<'_> {
+    /// The address.
+    fn get(&self) -> &IfaddrRef {
+        match self {
+            IfaFound::Lent(a) => a,
+            IfaFound::Held(a) => a,
+        }
+    }
+}
+
 /// `ifa_ifwithroute(flags, dst, gateway, rtableid)`: the interface address a route to `dst`
-/// through `gateway` should use, under the net lock `net`.
-pub fn ifa_ifwithroute(
+/// through `gateway` should use, under the net lock `net`, read under the caller's reader
+/// `r` ([`IfaFound`]).
+pub fn ifa_ifwithroute<'r>(
     flags: u32,
     dst: SockaddrView<'_>,
     gateway: SockaddrView<'_>,
     rtableid: u32,
     net: &NetHeld<'_>,
-) -> Option<&'static Ifaddr> {
+    r: &'r NetReader<'_>,
+) -> Option<IfaFound<'r>> {
     let mut ifa = if flags & RTF_GATEWAY == 0 {
         // A route to an interface: a host route's destination names a point-to-point
         // link's far end; otherwise the gateway is the interface's own address.
         let mut ifa = None;
         if flags & RTF_HOST != 0 {
-            ifa = ifa_ifwithdstaddr(net, dst.bytes(), rtableid);
+            ifa = ifa_ifwithdstaddr(net, r, dst.bytes(), rtableid);
         }
         if ifa.is_none() {
-            ifa = ifa_ifwithaddr(net, gateway.bytes(), rtableid);
+            ifa = ifa_ifwithaddr(net, r, gateway.bytes(), rtableid);
         }
-        ifa
+        ifa.map(IfaFound::Lent)
     } else {
         // A route through a gateway: the gateway may be a point-to-point link's far end.
-        ifa_ifwithdstaddr(net, gateway.bytes(), rtableid)
+        ifa_ifwithdstaddr(net, r, gateway.bytes(), rtableid).map(IfaFound::Lent)
     };
     if ifa.is_none() {
         if gateway.family() == AF_LINK {
             let ifp = if_get(sdl_index(gateway));
             if let Some(i) = ifp {
-                ifa = ifaof_ifpforaddr(net, dst.bytes(), i);
+                ifa = ifaof_ifpforaddr(net, r, dst.bytes(), i).map(IfaFound::Lent);
             }
             if_put(ifp);
         } else {
             let rt = rtalloc(gateway, RT_RESOLVE, rtable_l2(rtableid), net);
-            ifa = rt.as_deref().and_then(Rtentry::ifa);
+            // T1: the route's address, cloned before the route's reference goes.
+            ifa = rt
+                .as_deref()
+                .and_then(|rt| rt.ifa(r))
+                .map(|a| IfaFound::Held(ifaref(a)));
             drop(rt);
         }
     }
     let ifa = ifa?;
-    if ifa.ifa_addr.read(net).map(|a| a.family()) != Some(dst.family()) {
+    if ifa.get().ifa_addr(net).map(|a| a.family()) != Some(dst.family()) {
         let oifa = ifa;
         return Some(
-            ifa.ifa_ifp
+            oifa.get()
+                .ifa_ifp
                 .get()
-                .and_then(|ifp| ifaof_ifpforaddr(net, dst.bytes(), ifp))
-                .unwrap_or(oifa),
+                .and_then(|ifp| ifaof_ifpforaddr(net, r, dst.bytes(), ifp))
+                .map_or(oifa, IfaFound::Lent),
         );
     }
     Some(ifa)
@@ -1606,44 +1650,55 @@ pub fn ifa_ifwithroute(
 
 /// `rtm_getifa(info, rtid)`: the interface address of a request (`info->rti_ifa`), found
 /// from its interface, address, gateway or destination; `ENETUNREACH` without one. The
-/// address found lives while the net lock `net` is held.
-fn rtm_getifa(info: &mut RtAddrinfo<'_>, rtid: u32, net: &NetHeld<'_>) -> Result<(), Errno> {
+/// address found is lent for the life of the caller's reader `r`, or held in `hold` when the
+/// lookup took a reference of its own ([`IfaFound::Held`]).
+fn rtm_getifa<'r>(
+    info: &mut RtAddrinfo<'r>,
+    rtid: u32,
+    net: &NetHeld<'_>,
+    r: &'r NetReader<'_>,
+    hold: &'r mut Option<IfaddrRef>,
+) -> Result<(), Errno> {
     // the interface named by a link-level address, when the protocol address is ambiguous
     let ifp = info.rti_info[RTAX_IFP].and_then(|sdl| if_get(sdl_index(sdl)));
+    let mut found = info.rti_ifa.map(IfaFound::Lent);
 
     // IPSEC: a route to a PF_KEY destination uses an enc(4) interface's address (enc0's
     // by default).
     if info.rti_info[RTAX_DST].is_some_and(|d| d.family() == PF_KEY)
         && let Some(i) = ipsec()
     {
-        info.rti_ifa = i.enc_getifa(rtid, 0);
+        // T4: a reference `bsd`'s leg takes, held for the request.
+        found = i.enc_getifa(rtid, 0).map(IfaFound::Held);
     }
 
-    if info.rti_ifa.is_none()
+    if found.is_none()
         && let Some(a) = info.rti_info[RTAX_IFA]
     {
-        info.rti_ifa = ifa_ifwithaddr(net, a.bytes(), rtid);
+        found = ifa_ifwithaddr(net, r, a.bytes(), rtid).map(IfaFound::Lent);
     }
 
-    if info.rti_ifa.is_none() {
+    if found.is_none() {
         let sa = info.rti_info[RTAX_IFA]
             .or(info.rti_info[RTAX_GATEWAY])
             .or(info.rti_info[RTAX_DST]);
 
         if let (Some(sa), Some(i)) = (sa, ifp) {
-            info.rti_ifa = ifaof_ifpforaddr(net, sa.bytes(), i);
+            found = ifaof_ifpforaddr(net, r, sa.bytes(), i).map(IfaFound::Lent);
         } else if let (Some(d), Some(g)) = (info.rti_info[RTAX_DST], info.rti_info[RTAX_GATEWAY]) {
-            info.rti_ifa = ifa_ifwithroute(info.rti_flags, d, g, rtid, net);
+            found = ifa_ifwithroute(info.rti_flags, d, g, rtid, net, r);
         } else if let Some(sa) = sa {
-            info.rti_ifa = ifa_ifwithroute(info.rti_flags, sa, sa, rtid, net);
+            found = ifa_ifwithroute(info.rti_flags, sa, sa, rtid, net, r);
         }
     }
 
     if_put(ifp);
 
-    if info.rti_ifa.is_none() {
-        return Err(Errno::ENETUNREACH);
-    }
+    info.rti_ifa = match found {
+        Some(IfaFound::Lent(a)) => Some(a),
+        Some(IfaFound::Held(a)) => Some(&*hold.insert(a)),
+        None => return Err(Errno::ENETUNREACH),
+    };
     Ok(())
 }
 
@@ -2096,7 +2151,7 @@ pub fn rtm_ifchg(ifp: &Ifnet) {
 /// the logic and replace messages TO the routing socket indicate a request to configure
 /// interfaces, then it will be unnecessary as the routing socket will automatically
 /// generate copies of it.
-pub fn rtm_addr(cmd: u8, ifa: &Ifaddr, net: &NetHeld<'_>) {
+pub fn rtm_addr(cmd: u8, ifa: &IfaddrRef, net: &NetHeld<'_>) {
     if !listeners() {
         return;
     }
@@ -2104,9 +2159,9 @@ pub fn rtm_addr(cmd: u8, ifa: &Ifaddr, net: &NetHeld<'_>) {
         kpanic(format_args!("rtm_addr: an address without its interface"));
     };
 
-    let addr = ifa.ifa_addr.read(net);
-    let mask = ifa.ifa_netmask.read(net);
-    let brd = ifa.ifa_dstaddr.read(net);
+    let addr = ifa.ifa_addr(net);
+    let mask = ifa.ifa_netmask(net);
+    let brd = ifa.ifa_dstaddr(net);
     let sadl = sadl_copy(ifp);
     let mut info = RtAddrinfo::new();
     info.rti_info[RTAX_IFA] = addr.as_ref().and_then(|a| SockaddrView::new(a));
@@ -2297,14 +2352,15 @@ fn sysctl_iflist(af: u8, w: &mut Walkarg, net: &NetHeld<'_>) -> Result<(), Errno
             UserPtr::<u8>::new(w.w_where).copyout_slice(&tmem[..len])?;
             w.w_where += len;
         }
-        for ifa in &ifp.if_addrlist {
-            let addr = ifa.ifa_addr.read(net);
+        let r = net.reader();
+        for ifa in ifp.if_addrlist().iter(&r) {
+            let addr = ifa.ifa_addr(net);
             crate::assert::kassert!(addr.is_some_and(|a| a.family() != AF_LINK));
             if af != 0 && addr.is_none_or(|a| a.family() != af) {
                 continue;
             }
-            let mask = ifa.ifa_netmask.read(net);
-            let brd = ifa.ifa_dstaddr.read(net);
+            let mask = ifa.ifa_netmask(net);
+            let brd = ifa.ifa_dstaddr(net);
             let mut info = RtAddrinfo::new();
             info.rti_info[RTAX_IFA] = addr.as_ref().and_then(|a| SockaddrView::new(a));
             info.rti_info[RTAX_NETMASK] = mask.as_ref().and_then(|a| SockaddrView::new(a));
@@ -2602,11 +2658,12 @@ fn rt_setsource(rtableid: u32, src: SockaddrView<'_>, net: &NetHeld<'_>) -> Resu
     }
 
     // Any other address must be one of an interface of the table's routing domain.
-    let Some(ifa) = ifa_ifwithaddr(net, b, rtableid) else {
+    let r = net.reader();
+    let Some(ifa) = ifa_ifwithaddr(net, &r, b, rtableid) else {
         return Err(Errno::EINVAL);
     };
 
-    let addr = ifa.ifa_addr.read(net);
+    let addr = ifa.ifa_addr(net);
     rtable_setsource(
         rtableid,
         src.family(),
@@ -3054,6 +3111,7 @@ mod tests {
     fn announcements_carry_their_headers_and_addresses() {
         let _g = testroutes_setup();
         let (ifp, _d, ifa) = iface([10, 0, 2, 15], [255, 255, 255, 0]);
+        let ifa = &ifa;
         tap::start();
 
         rtm_ifannounce(ifp, IFAN_ARRIVAL);
@@ -3118,6 +3176,7 @@ mod tests {
     fn sysctl_dumps_the_routes_with_the_c_reference_counts() {
         let _g = testroutes_setup();
         let (ifp, _d, ifa) = iface([10, 0, 2, 15], [255, 255, 255, 0]);
+        let ifa = &ifa;
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         rt_ifa_addlocal(ifa, &net).expect("the local route");
@@ -3220,6 +3279,7 @@ mod tests {
     fn sysctl_lists_interfaces_names_tables_stats_and_sources() {
         let _g = testroutes_setup();
         let (ifp, _d, ifa) = iface([10, 0, 2, 15], [255, 255, 255, 0]);
+        let ifa = &ifa;
         let index = ifp.if_index.get() as i32;
         // On the interface list, as if_attach puts it (the fixture attaches it to the map).
         IFNETLIST.insert_tail(ifp);

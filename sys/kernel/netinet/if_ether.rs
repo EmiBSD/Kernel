@@ -220,7 +220,7 @@ use hal::sys::socket::{AF_INET, AF_LINK, pseudo_AF_HDRCMPLT};
 
 use crate::assert::kassert;
 use crate::log::{LOG_DEBUG, LOG_ERR, LOG_INFO, LOG_WARNING};
-use crate::net::if_::{IfRef, ProtoFn, if_isconnected, if_output_ml, niq_enqueue};
+use crate::net::if_::{IfRef, ProtoFn, if_isconnected, if_output_ml, niq_enqueue, with_net_held};
 use crate::net::if_ethersubr::{
     ETHERBROADCASTADDR, arpcom_of, ether_map_ip_multicast, ether_sprintf,
 };
@@ -489,9 +489,18 @@ fn sin_addr_of(sa: &[u8]) -> InAddr {
     }
 }
 
-/// The IPv4 address of a route's interface address (`satosin(rt->rt_ifa->ifa_addr)`).
+/// The IPv4 address of a route's interface address (`satosin(rt->rt_ifa->ifa_addr)`), read
+/// under a reader of the proof the bridge lends: a driver's output carries none (N6.5e:
+/// `rt_ifa` is a net cell; `Inet::with_net_held`, as `nd6_resolve`'s solicitation), once per
+/// ARP request, never per packet.
 fn rt_ifa_sin(rt: &Rtentry) -> u32 {
-    rt.ifa().map_or(0, |ifa| ifatoia(ifa).ia_addr.addr().s_addr)
+    let mut sip = 0;
+    with_net_held(|net| {
+        sip = rt
+            .ifa(&net.reader())
+            .map_or(0, |ifa| ifatoia(ifa).ia_addr.addr().s_addr);
+    });
+    sip
 }
 
 /// `arptimer`: timeout routine. Age arp table entries periodically.
@@ -1844,10 +1853,12 @@ mod tests {
         info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
         info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
         info.rti_flags = RTF_HOST | RTF_LLINFO | RTF_STATIC | RTF_ANNOUNCE | RTF_UP;
-        info.rti_ifa = route(ADDR, false).and_then(|r| r.ifa());
+        let local = route(ADDR, false);
         {
             let w = NETLOCK.write();
             let net = NetHeld::of(&w).expect("the net lock");
+            let r = net.reader();
+            info.rti_ifa = local.as_deref().and_then(|l| l.ifa(&r));
             rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the entry");
             assert!(arpproxy(
                 InAddr {
@@ -1997,10 +2008,12 @@ mod tests {
         info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
         info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
         info.rti_flags = RTF_HOST | RTF_LLINFO | RTF_STATIC | RTF_PERMANENT_ARP | RTF_UP;
-        info.rti_ifa = route(ADDR, false).and_then(|r| r.ifa());
+        let local = route(ADDR, false);
         {
             let w = NETLOCK.write();
             let net = NetHeld::of(&w).expect("the net lock");
+            let r = net.reader();
+            info.rti_ifa = local.as_deref().and_then(|l| l.ifa(&r));
             rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the entry");
         }
         let _ = sent(ifp);

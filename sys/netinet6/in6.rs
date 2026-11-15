@@ -236,7 +236,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::net::if_::tests::{setup_net, test_ifnet};
     use crate::net::if_::{IFF_MULTICAST, IFF_RUNNING, IFF_UP, if_attach, ifa_add};
-    use crate::netinet6::in6_var::{In6Addrlifetime, In6Ifaddr, in6_ifaddr_alloc};
+    use crate::net::if_var::IfaddrRef;
+    use crate::netinet6::in6_var::{In6Addrlifetime, in6_ifaddr_alloc};
     use crate::netinet6::nd6::ND6_INFINITE_LIFETIME;
     use crate::sys::systm::{net_lock, net_unlock};
 
@@ -265,7 +266,7 @@ pub(crate) mod tests {
 
     /// An IPv6 address `a`/64 with `flags` on `ifp`, linked into its address list as
     /// `in6_update_ifa` does (the kernel's record), with infinite lifetimes and no route.
-    pub(crate) fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> &'static In6Ifaddr {
+    pub(crate) fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> IfaddrRef {
         net_lock();
         let ia = in6_ifaddr_alloc(ifp, 0);
         ia.ia_addr.set(SockaddrIn6::with_addr(a));
@@ -276,9 +277,39 @@ pub(crate) mod tests {
             ia6t_pltime: ND6_INFINITE_LIFETIME,
             ..In6Addrlifetime::default()
         });
-        ifa_add(ifp, &ia.ia_ifa);
+        let ifa = IfaddrRef::In6(ia);
+        ifa_add(
+            ifp,
+            ifa.clone(),
+            crate::net::if_::net_held("test_ia6").net(),
+        );
         net_unlock();
-        ia
+        ifa
+    }
+
+    /// The kernel's `in6ifa_ifpwithaddr` under the net lock taken shared for it: a handle of
+    /// the test's (the lookup's lent address cloned before its reader ends).
+    pub(crate) fn withaddr(ifp: &Ifnet, a: &In6Addr) -> Option<IfaddrRef> {
+        crate::sys::systm::net_lock_shared();
+        let found = {
+            let lend = crate::net::if_::net_held("withaddr");
+            let net = lend.net();
+            kernel::netinet6::in6::in6ifa_ifpwithaddr(&net.reader(), ifp, a).cloned()
+        };
+        crate::sys::systm::net_unlock_shared();
+        found
+    }
+
+    /// The kernel's `in6ifa_ifpforlinklocal`, as [`withaddr`].
+    pub(crate) fn linklocal(ifp: &Ifnet, ignoreflags: i32) -> Option<IfaddrRef> {
+        crate::sys::systm::net_lock_shared();
+        let found = {
+            let lend = crate::net::if_::net_held("linklocal");
+            let net = lend.net();
+            kernel::netinet6::in6::in6ifa_ifpforlinklocal(&net.reader(), ifp, ignoreflags).cloned()
+        };
+        crate::sys::systm::net_unlock_shared();
+        found
     }
 
     /// `a:b::c` text to an address (the forms the tests use).
@@ -304,10 +335,8 @@ pub(crate) mod tests {
         assert_eq!(a6("fd00:77::1").s6_addr[..4], [0xfd, 0, 0, 0x77]);
         assert_eq!(a6("fd00:77::1").s6_addr[15], 1);
         let ia = test_ia6(ifp, a6("fd00:77::1"), 0);
-        net_lock();
-        let found = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1"));
-        net_unlock();
-        assert!(found.is_some_and(|f| core::ptr::eq(f, ia)));
+        let found = withaddr(ifp, &a6("fd00:77::1"));
+        assert!(found.is_some_and(|f| f.is(&ia)));
     }
 }
 /* </TESTS> */

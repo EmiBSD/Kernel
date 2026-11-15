@@ -147,7 +147,6 @@
 
 use core::ffi::c_void;
 use core::pin::Pin;
-use core::ptr;
 use core::slice;
 use core::sync::atomic::Ordering;
 
@@ -161,8 +160,6 @@ use crate::net::route::{Rtentry, as_static};
 use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
-#[cfg(feature = "inet6")]
-use crate::netinet6::in6::satosin6_const;
 #[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
@@ -604,47 +601,46 @@ pub(crate) fn net_held(what: &str) -> hal::netlock::NetLend {
     }
 }
 
-/// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.
+/// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address. The
+/// address is a counted handle (T4: the C's pointer is uncounted, kept alive by the net lock,
+/// which the legacy caller's use may outlast), given back when the caller drops it.
 ///
 /// # Safety
 ///
 /// `addr` points at a readable socket address of `sa_len` bytes.
-pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<&'static Ifaddr> {
+pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<IfaddrRef> {
+    let lend = net_held("ifa_ifwithaddr");
+    let net = lend.net();
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifa_ifwithaddr(
-        net_held("ifa_ifwithaddr").net(),
-        unsafe { sa_bytes(addr) },
-        rtableid,
-    )
+    kernel::net::if_::ifa_ifwithaddr(net, &net.reader(), unsafe { sa_bytes(addr) }, rtableid)
+        .cloned()
 }
 
 /// `ifa_ifwithdstaddr(addr, rdomain)`: the point-to-point interface with a given
-/// destination address.
+/// destination address, a counted handle (T4, as [`ifa_ifwithaddr`]).
 ///
 /// # Safety
 ///
 /// As for [`ifa_ifwithaddr`].
-pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<&'static Ifaddr> {
+pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<IfaddrRef> {
+    let lend = net_held("ifa_ifwithdstaddr");
+    let net = lend.net();
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifa_ifwithdstaddr(
-        net_held("ifa_ifwithdstaddr").net(),
-        unsafe { sa_bytes(addr) },
-        rdomain,
-    )
+    kernel::net::if_::ifa_ifwithdstaddr(net, &net.reader(), unsafe { sa_bytes(addr) }, rdomain)
+        .cloned()
 }
 
-/// `ifaof_ifpforaddr(addr, ifp)`: the address of `ifp` that best matches `addr`.
+/// `ifaof_ifpforaddr(addr, ifp)`: the address of `ifp` that best matches `addr`, a counted
+/// handle (T4, as [`ifa_ifwithaddr`]).
 ///
 /// # Safety
 ///
 /// As for [`ifa_ifwithaddr`].
-pub unsafe fn ifaof_ifpforaddr(addr: *const Sockaddr, ifp: &Ifnet) -> Option<&'static Ifaddr> {
+pub unsafe fn ifaof_ifpforaddr(addr: *const Sockaddr, ifp: &Ifnet) -> Option<IfaddrRef> {
+    let lend = net_held("ifaof_ifpforaddr");
+    let net = lend.net();
     // SAFETY: the caller's contract.
-    kernel::net::if_::ifaof_ifpforaddr(
-        net_held("ifaof_ifpforaddr").net(),
-        unsafe { sa_bytes(addr) },
-        ifp,
-    )
+    kernel::net::if_::ifaof_ifpforaddr(net, &net.reader(), unsafe { sa_bytes(addr) }, ifp).cloned()
 }
 
 /// `if_group_routechange(dst, mask)`: the egress group built again after a default route
@@ -673,7 +669,7 @@ pub fn niq_enqueue(niq: &Niqueue, m: &'static Mbuf) -> bool {
     rv
 }
 
-pub use crate::net::if_var::{IfClone, Ifaddr, Ifnet, Netstack};
+pub use crate::net::if_var::{IfClone, Ifaddr, IfaddrRef, Ifnet, Netstack};
 pub use crate::net::ifq::{IfqOps, Ifqueue, ifq_is_oactive};
 
 // net/if.c, kept (LZ's shape until its slice).
@@ -830,51 +826,21 @@ pub unsafe fn ifioctl(so: *const c_void, cmd: u64, data: *mut u8, p: &Proc) -> R
     kernel::net::if_::ifioctl::<BsdProcGlue>(so, cmd, data, p)
 }
 
-// net/if.c, kept (LZ's shape until its slice).
-/// `ifa_update_broadaddr`: replaces the broadcast address in place.
-///
-/// # Safety
-///
-/// `sa` points at a readable socket address; the address's broadcast address is a valid one.
-pub unsafe fn ifa_update_broadaddr(_ifp: &Ifnet, ifa: &Ifaddr, sa: *const Sockaddr) {
-    let broad = ifa.ifa_broadaddr().get();
-    // SAFETY: the caller's contract.
-    unsafe {
-        if (*broad).sa_len != (*sa).sa_len {
-            panic(format_args!(
-                "ifa_update_broadaddr does not support dynamic length"
-            ));
-        }
-        ptr::copy(
-            sa.cast::<u8>(),
-            broad.cast::<u8>(),
-            usize::from((*sa).sa_len),
-        );
-    }
-}
-
-/// `ifa_print_all` (`DDB`): debug function, can be called from ddb>.
-pub fn ifa_print_all() {
+/// `ifa_print_all` (`DDB`): debug function, can be called from ddb>. The addresses are read
+/// under the net lock `net` proves (N6.5e: the lists are net cells; the C's ddb walks them
+/// unlocked, and no ddb command calls this yet).
+pub fn ifa_print_all(net: &hal::netlock::NetHeld<'_>) {
+    let r = net.reader();
     for ifp in IFNETLIST.0.iter() {
-        for ifa in ifp.if_addrlist.iter() {
-            // SAFETY: an interface's addresses are valid sockaddrs.
-            match unsafe { (*ifa.ifa_addr.get()).sa_family } {
-                AF_INET => {
-                    // printf("%s", inet_ntop(AF_INET, &satosin(ifa->ifa_addr)->sin_addr, ...)):
-                    // inet_ntop (lib/libkern) is not ported.
-                    let _ = unported!("inet_ntop");
-                }
-                #[cfg(feature = "inet6")]
-                AF_INET6 => {
-                    // SAFETY: an AF_INET6 address is a `sockaddr_in6`; read unaligned.
-                    let a = unsafe {
-                        ptr::read_unaligned(
-                            &raw const (*satosin6_const(ifa.ifa_addr.get())).sin6_addr,
-                        )
-                    };
-                    printf(format_args!("{}", In6Ntop(a)));
-                }
-                _ => {}
+        for ifa in ifp.if_addrlist().iter(&r) {
+            if let Some(_ia) = kernel::netinet::in_var::InIfaddr::of(ifa) {
+                // printf("%s", inet_ntop(AF_INET, &satosin(ifa->ifa_addr)->sin_addr, ...)):
+                // inet_ntop (lib/libkern) is not ported.
+                let _ = unported!("inet_ntop");
+            }
+            #[cfg(feature = "inet6")]
+            if let Some(ia6) = kernel::netinet6::in6_var::In6Ifaddr::of(ifa) {
+                printf(format_args!("{}", In6Ntop(ia6.ia_addr.addr())));
             }
             printf(format_args!(" on {}\n", Str(&ifp.if_xname.get())));
         }
@@ -887,6 +853,7 @@ pub fn ifa_print_all() {
 #[cfg(test)]
 pub(crate) mod tests {
     use core::mem::MaybeUninit;
+    use core::ptr;
 
     use super::*;
     use crate::reftest::{assert_complete, assert_defines};
@@ -1138,7 +1105,8 @@ pub(crate) mod tests {
     fn if_up_gives_the_default_loopback_its_ipv6_addresses() {
         use crate::net::if_loop::{LOOP_CLONER, loop_clone_create};
         use crate::net::rtable::rtable_loindex;
-        use crate::netinet6::in6::{IN6ADDR_LOOPBACK, in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr};
+        use crate::netinet6::in6::IN6ADDR_LOOPBACK;
+        use crate::netinet6::in6::tests::{linklocal, withaddr};
 
         let _g = crate::netinet::ip_input::tests::setup();
         // The C holds the kernel lock across an attach (bpf_ifattach asserts it).
@@ -1148,19 +1116,16 @@ pub(crate) mod tests {
         hal::klock::kernel_unlock();
         let lo0 = if_get(rtable_loindex(0)).expect("lo0");
         let lo1 = if_unit(b"lo1").expect("lo1");
-        assert!(in6ifa_ifpwithaddr(lo0, &IN6ADDR_LOOPBACK).is_none());
+        assert!(withaddr(lo0, &IN6ADDR_LOOPBACK).is_none());
 
         net_lock();
         if_up(lo0);
         if_up(lo1);
         net_unlock();
-        assert!(
-            in6ifa_ifpwithaddr(lo0, &IN6ADDR_LOOPBACK).is_some(),
-            "::1 on lo0"
-        );
-        assert!(in6ifa_ifpforlinklocal(lo0, 0).is_some(), "fe80::1%lo0");
+        assert!(withaddr(lo0, &IN6ADDR_LOOPBACK).is_some(), "::1 on lo0");
+        assert!(linklocal(lo0, 0).is_some(), "fe80::1%lo0");
         // Only the default loopback of the rdomain gets ::1.
-        assert!(in6ifa_ifpwithaddr(lo1, &IN6ADDR_LOOPBACK).is_none());
+        assert!(withaddr(lo1, &IN6ADDR_LOOPBACK).is_none());
         if_put(lo0);
         if_put(lo1);
     }

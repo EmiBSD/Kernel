@@ -109,7 +109,7 @@
 //!   | `if_lastchange` | [`IfLastchange`] | `{ 0, 0 }` |
 //!   | `if_data_counters`, `if_counters` | [`AtomicCell`]s, [`IfCountersSlot`] | 0, not allocated |
 //!   | `if_list`, `if_tmplist` | `hal::list::ListEntry` | on no list (`an_all_zero_list_is_empty_and_an_all_zero_entry_unlinked`) |
-//!   | `if_addrlist`, `if_maddrlist` | `hal::list::List` | empty (the same test) |
+//!   | `if_maddrlist` | `hal::list::List` | empty (the same test) |
 //!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
 //!   | `if_groups` | `ReadMostly<IfgSet>` (an `Option<MArc<MArray<..>>>`) | no reader, no group (the same test) |
 //!   | `if_driver`, `if_link`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
@@ -136,11 +136,29 @@
 //!   others read it) -> one owned box in a `ReadMostly` cell: readers borrow it, `if_setlladdr`
 //!   writes it alone (D-N6.3a-4; one compare-and-swap per read on the ARP/ND and routing
 //!   socket paths, never per data packet, N12's row).
-//! - `struct ifaddr`'s three addresses and `ifma_addr` are `hal::link::SaLink`s: `bsd`'s
-//!   storage, published by its internet protocols alone (the one `SaToken`) as a typed
-//!   `&'static Cell<T>`, read by the kernel as a copy of its `sa_len` bytes cut at the
-//!   storage, under the net lock `SaLink::read` checks (D-N6.3a-3, review 1's B2;
-//!   `sys/hal/trust.rs`'s premise), until N6.4/N6.5 embed the storage.
+//! - `struct ifaddr`, which each protocol's address embeds first and casts back to
+//!   (`ifatoia`), freed by `ifafree` at its last reference (`free(ifa, M_IFADDR, 0)`) ->
+//!   (N6.5e) [`IfaddrRef`], a counted handle with one arm per family: `In`, `In6` (an
+//!   `MArc` of the protocol's record, `kernel::netinet::in_var`'s and
+//!   `kernel::netinet6::in6_var`'s, one `malloc(9)` block freed with its last handle) and
+//!   `Linked` (enc(4)'s [`IfaddrLinked`], embedded in its softc, counted by its own
+//!   `ifa_refcnt`). It derefs to the generic part ([`Ifaddr`]: the interface, the flags, the
+//!   metric); the family is the arm, so `ifatoia`'s cast is a match and no record links to
+//!   itself. `ifaref` is a clone, `ifafree` a drop: the handles' count is `ifa_refcnt`
+//!   (D-5). The three addresses are read through the handle ([`IfaddrRef::ifa_addr`]): the
+//!   family record's own words, or a linked address's `SaLink`.
+//! - `if_addrlist` (a `TAILQ` of the records, `[N]`) -> [`IfaList`] in [`IfRt`]: a chain of
+//!   handles in net cells (`hal::rwlock::Guarded::new_net`), the head's and each record's
+//!   `ia_list`, read under a `hal::netlock::NetReader` and changed under the `NetWriter`
+//!   (`NET_ASSERT_LOCKED()` and `NET_ASSERT_LOCKED_EXCLUSIVE()`, made in every build). The list
+//!   holds the creation reference of each address; a walk lends `&'r IfaddrRef`s for the
+//!   reader's life, counting nothing (the C's uncounted pointers). It is not in [`Ifnet`]: a
+//!   `Guarded` is not valid all zero, and an interface is used only once attached (the C's
+//!   `TAILQ_INIT` is `if_attach_common`'s too). Inserting at the tail and removing walk the
+//!   chain (O(n), D-4; the C's `TAILQ` is O(1)): `ifa_add` and `ifa_del` are control paths.
+//! - `ifma_addr` is a `hal::link::SaLink` naming the multicast record's own words
+//!   (`SaLink::set_words`, N6.4a); nothing reads it (the family test is the record's
+//!   back-link, `Ifmaddr::ifma_in`).
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
 //!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
@@ -157,19 +175,22 @@
 //!   `#ifdef MPLS` writes it, nothing reads it).
 
 use core::any::Any;
+use core::ops::Deref;
 use core::sync::atomic::{
     AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64,
     Ordering,
 };
 
 use hal::intr::IPL_NET;
-use hal::link::{Link, PtrWord, SaLink};
+use hal::link::{Link, PtrWord, SaBytes, SaLink};
 use hal::list::{List, ListEntry};
-use hal::malloc::{MArray, MBox};
+use hal::malloc::{MArc, MArray, MBox};
 use hal::mutex::Mutexed;
+use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
 use hal::refcnt::Refcnt;
+use hal::rwlock::{Exclusive, Guarded, Witness};
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
@@ -179,6 +200,8 @@ use crate::net::ifq::{Ifiqueue, Ifqueue};
 use crate::net::mbuf::{
     Mbuf, MbufBox, MbufList, MbufQueue, mq_delist, mq_dequeue, mq_drops, mq_len,
 };
+use crate::netinet::in_var::InIfaddr;
+use crate::netinet6::in6_var::In6Ifaddr;
 use crate::prf::Str;
 use crate::task::{Task, TaskChain};
 use crate::timeout::Timeout;
@@ -750,6 +773,8 @@ pub struct IfRt {
     pub(crate) ifqs: OnceStatic<MArray<MBox<Ifqueue>>>,
     /// \[I\] `if_iqs[1..]`: the other input queues, set by `if_attach_iqueues`.
     pub(crate) iqs: OnceStatic<MArray<MBox<Ifiqueue>>>,
+    /// \[N\] `if_addrlist`: list of addresses per if ([`Ifnet::if_addrlist`]).
+    pub(crate) if_addrlist: IfaList,
     /// `if_maddrlock`: keeps `if_maddrlist`, taken C-style (`rw_enter_write` ..
     /// `rw_exit_write`) by `bsd`'s multicast code, its only user until N6.4/N6.5.
     pub if_maddrlock: hal::rwlock::SplitRwlock,
@@ -784,8 +809,6 @@ pub struct Ifnet {
     pub if_list: ListEntry<Ifnet>,
     /// \[T\] `if_tmplist`: temporary list.
     pub if_tmplist: ListEntry<Ifnet>,
-    /// \[N\] `if_addrlist`: list of addresses per if.
-    pub if_addrlist: List<IfAddrlist>,
     /// \[m\] `if_maddrlist`: list of multicast records.
     pub if_maddrlist: List<IfMaddrlist>,
     /// \[I\] `if_xname`: external name (name + unit), NUL-terminated.
@@ -894,7 +917,6 @@ impl Ifnet {
             if_softc: PtrWord::new(),
             if_list: ListEntry::new(),
             if_tmplist: ListEntry::new(),
-            if_addrlist: List::new(),
             if_maddrlist: List::new(),
             if_xname: AtomicBytes::new(),
             if_pcount: AtomicCell::new(),
@@ -976,6 +998,13 @@ impl Ifnet {
                 .if_xname
                 .with_str(|n| kpanic(format_args!("{}: used before if_attach", Str(n)))),
         }
+    }
+
+    /// `&ifp->if_addrlist`: the interface's addresses (in [`IfRt`], made by `if_attach`, as
+    /// the C's `TAILQ_INIT`); `panic(9)` before attach.
+    #[inline]
+    pub fn if_addrlist(&self) -> &IfaList {
+        &self.rt().if_addrlist
     }
 
     /// `&ifp->if_snd`: the first send queue.
@@ -1077,59 +1106,30 @@ hal::list_adapter!(
     pub IfTmplist: Ifnet, if_tmplist
 );
 
-/// `struct ifaddr`: information about one address of an interface. They are maintained by the
-/// different address families, are allocated and attached when an address is set, and are
-/// linked together so all addresses for an interface can be located. A protocol's address
-/// (`struct in_ifaddr`, `bsd`'s) embeds it first, hence `#[repr(C)]`; valid all zero.
-#[repr(C)]
+/// `struct ifaddr`'s generic part: information about one address of an interface. The
+/// addresses are maintained by the different address families, are allocated and attached
+/// when an address is set, and are linked together so all addresses for an interface can be
+/// located. A protocol's record (`kernel::netinet::in_var::InIfaddr`,
+/// `kernel::netinet6::in6_var::In6Ifaddr`) embeds it first and holds the C's other members
+/// (the addresses, the list links); enc(4)'s [`IfaddrLinked`] embeds it in a zeroed softc.
+/// Reached through an [`IfaddrRef`] (`Deref`). Valid all zero.
 pub struct Ifaddr {
-    /// `ifa_addr`: address of interface.
-    pub ifa_addr: SaLink,
-    /// `ifa_dstaddr`: other end of p-to-p link (`ifa_broadaddr`: broadcast address).
-    pub ifa_dstaddr: SaLink,
-    /// `ifa_netmask`: used to determine subnet.
-    pub ifa_netmask: SaLink,
     /// `ifa_ifp`: back-pointer to interface.
     pub ifa_ifp: Link<Ifnet>,
-    /// \[N\] `ifa_list`: list of addresses for interface.
-    pub ifa_list: ListEntry<Ifaddr>,
-    /// \[T\] `ifa_tmplist`: temporary list.
-    pub ifa_tmplist: ListEntry<Ifaddr>,
     /// `ifa_flags`: interface flags, see below.
     pub ifa_flags: AtomicCell<u32>,
-    /// `ifa_refcnt`: number of `rt_ifa` references.
-    pub ifa_refcnt: Refcnt,
     /// `ifa_metric`: cost of going out this interface.
     pub ifa_metric: AtomicCell<i32>,
-    /// \[I\] The Internet address this is the generic part of (`ifatoia`'s cast, a link set
-    /// when `kernel::netinet::in_var` makes the record; none for another family's).
-    pub ifa_in: Link<crate::netinet::in_var::InIfaddr>,
-    /// \[I\] The IPv6 address this is the generic part of (`ifatoia6`'s cast, a link set
-    /// when `kernel::netinet6::in6_var` makes the record; none for another family's).
-    pub ifa_in6: Link<crate::netinet6::in6_var::In6Ifaddr>,
 }
 
 impl Ifaddr {
     /// An address on no interface, every member zero.
     pub const fn new() -> Self {
         Self {
-            ifa_addr: SaLink::new(),
-            ifa_dstaddr: SaLink::new(),
-            ifa_netmask: SaLink::new(),
             ifa_ifp: Link::new(),
-            ifa_list: ListEntry::new(),
-            ifa_tmplist: ListEntry::new(),
             ifa_flags: AtomicCell::new(),
-            ifa_refcnt: Refcnt::new(),
             ifa_metric: AtomicCell::new(),
-            ifa_in: Link::new(),
-            ifa_in6: Link::new(),
         }
-    }
-
-    /// `ifa_broadaddr`: broadcast address interface (the `ifa_dstaddr` member).
-    pub fn ifa_broadaddr(&self) -> &SaLink {
-        &self.ifa_dstaddr
     }
 }
 
@@ -1139,15 +1139,301 @@ impl Default for Ifaddr {
     }
 }
 
-hal::list_adapter!(
-    /// `TAILQ_HEAD(, ifaddr) if_addrlist`.
-    pub IfAddrlist: Ifaddr, ifa_list
-);
+/// `struct ifaddr` whole, for an address no protocol record holds: enc(4)'s fake `AF_LINK`
+/// address (`sc_ifa`), embedded in its zeroed softc, whose memory the softc owns. Its
+/// references are counted in `ifa_refcnt`: the softc's own (`refcnt_init`) and one per
+/// [`LinkedIfa`]; `enc_clone_destroy` frees the softc only after its own release was the
+/// last (`panic(9)` otherwise), so no handle outlives it. Its addresses are `SaLink`s to
+/// `bsd`'s storage, published with the `SaToken`. Never on an interface's list (enc(4)'s is
+/// not, if_enc.c:103-106). Valid all zero: every member is a `hal` link, a count or an
+/// atomic.
+pub struct IfaddrLinked {
+    /// The generic part.
+    pub ifa: Ifaddr,
+    /// `ifa_refcnt`: the owner's reference and the handles'.
+    pub ifa_refcnt: Refcnt,
+    /// `ifa_addr`: address of interface.
+    pub ifa_addr: SaLink,
+    /// `ifa_dstaddr`: other end of p-to-p link (`ifa_broadaddr`: broadcast address).
+    pub ifa_dstaddr: SaLink,
+    /// `ifa_netmask`: used to determine subnet.
+    pub ifa_netmask: SaLink,
+}
 
-hal::list_adapter!(
-    /// `TAILQ_ENTRY(ifaddr) ifa_tmplist`: `ifconf`'s temporary list.
-    pub IfaTmplist: Ifaddr, ifa_tmplist
-);
+impl IfaddrLinked {
+    /// An address on no interface, every member zero.
+    pub const fn new() -> Self {
+        Self {
+            ifa: Ifaddr::new(),
+            ifa_refcnt: Refcnt::new(),
+            ifa_addr: SaLink::new(),
+            ifa_dstaddr: SaLink::new(),
+            ifa_netmask: SaLink::new(),
+        }
+    }
+}
+
+impl Default for IfaddrLinked {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A counted reference of an [`IfaddrLinked`]: made by `ifaref` (`refcnt_take`), given back
+/// by its drop (`ifafree`'s `refcnt_rele`). The last reference is the owner's, released by
+/// the owner before it frees the record (`enc_clone_destroy`); a handle that sees the count
+/// reach zero is `panic(9)` (the C would `free` a part of the softc).
+pub struct LinkedIfa(&'static IfaddrLinked);
+
+impl LinkedIfa {
+    /// `ifaref(ifa)` of a linked address: one more reference, for its owner's lookup
+    /// (`enc_getifa`).
+    pub fn new(ifa: &'static IfaddrLinked) -> Self {
+        ifa.ifa_refcnt.take();
+        Self(ifa)
+    }
+}
+
+impl Clone for LinkedIfa {
+    fn clone(&self) -> Self {
+        Self::new(self.0)
+    }
+}
+
+impl Drop for LinkedIfa {
+    fn drop(&mut self) {
+        if self.0.ifa_refcnt.rele() {
+            kpanic(format_args!(
+                "ifafree: the last reference of a linked address is its owner's"
+            ));
+        }
+    }
+}
+
+/// A counted reference of an interface address (a `struct ifaddr *` the C holds with
+/// `ifaref`), one arm per family. The family records are `malloc(9)` blocks of `M_IFADDR`
+/// (`hal::malloc::MArc`), freed with their last handle (`ifafree`'s `free(ifa, M_IFADDR,
+/// 0)`); enc(4)'s is linked ([`LinkedIfa`]). It derefs to the generic part ([`Ifaddr`]).
+/// `Clone` is `ifaref`, the drop `ifafree` ([`crate::net::route::ifaref`],
+/// [`crate::net::route::ifafree`]): the handles' count is the C's `ifa_refcnt`
+/// ([`IfaddrRef::count`]).
+#[derive(Clone)]
+pub enum IfaddrRef {
+    /// An Internet address (`AF_INET`, `struct in_ifaddr`).
+    In(MArc<InIfaddr>),
+    /// An IPv6 address (`AF_INET6`, `struct in6_ifaddr`).
+    In6(MArc<In6Ifaddr>),
+    /// An address its owner embeds (enc(4)'s).
+    Linked(LinkedIfa),
+}
+
+impl Deref for IfaddrRef {
+    type Target = Ifaddr;
+
+    #[inline]
+    fn deref(&self) -> &Ifaddr {
+        match self {
+            IfaddrRef::In(ia) => &ia.ia_ifa,
+            IfaddrRef::In6(ia6) => &ia6.ia_ifa,
+            IfaddrRef::Linked(l) => &l.0.ifa,
+        }
+    }
+}
+
+impl IfaddrRef {
+    /// Whether this handle names the address `ifa` (the C's comparison of the pointers).
+    #[inline]
+    pub fn is(&self, ifa: &Ifaddr) -> bool {
+        core::ptr::eq(&**self, ifa)
+    }
+
+    /// The references of the address alive now (`ifa_refcnt`, a snapshot), for ddb and the
+    /// tests.
+    pub fn count(&self) -> usize {
+        match self {
+            IfaddrRef::In(ia) => MArc::count(ia),
+            IfaddrRef::In6(ia6) => MArc::count(ia6),
+            IfaddrRef::Linked(l) => l.0.ifa_refcnt.read() as usize,
+        }
+    }
+
+    /// `ifa->ifa_addr`: a copy of the address (`sa_len` bytes cut at its storage), `None`
+    /// where the C's pointer is NULL. A family record's is its own words; a linked address's
+    /// is read under the net lock `net` proves.
+    #[inline]
+    pub fn ifa_addr(&self, net: &NetHeld<'_>) -> Option<SaBytes> {
+        match self {
+            IfaddrRef::In(ia) => Some(ia.ia_addr.read()),
+            IfaddrRef::In6(ia6) => Some(ia6.ia_addr.read()),
+            IfaddrRef::Linked(l) => l.0.ifa_addr.read(net),
+        }
+    }
+
+    /// `ifa->ifa_dstaddr` (`ifa_broadaddr`), as [`IfaddrRef::ifa_addr`]: an Internet
+    /// address's always (its `ia_dstaddr`), an IPv6 address's only on a point-to-point or
+    /// loopback interface (`in6_update_ifa`'s NULL elsewhere).
+    #[inline]
+    pub fn ifa_dstaddr(&self, net: &NetHeld<'_>) -> Option<SaBytes> {
+        match self {
+            IfaddrRef::In(ia) => Some(ia.ia_dstaddr.read()),
+            IfaddrRef::In6(ia6) => ia6.ia_dstaddr_linked.then(|| ia6.ia_dstaddr.read()),
+            IfaddrRef::Linked(l) => l.0.ifa_dstaddr.read(net),
+        }
+    }
+
+    /// `ifa->ifa_broadaddr`: the `ifa_dstaddr` member.
+    #[inline]
+    pub fn ifa_broadaddr(&self, net: &NetHeld<'_>) -> Option<SaBytes> {
+        self.ifa_dstaddr(net)
+    }
+
+    /// `ifa->ifa_netmask`, as [`IfaddrRef::ifa_addr`].
+    #[inline]
+    pub fn ifa_netmask(&self, net: &NetHeld<'_>) -> Option<SaBytes> {
+        match self {
+            IfaddrRef::In(ia) => Some(ia.ia_sockmask.read()),
+            IfaddrRef::In6(ia6) => Some(ia6.ia_prefixmask.read()),
+            IfaddrRef::Linked(l) => l.0.ifa_netmask.read(net),
+        }
+    }
+
+    /// `ifa_list`: the cell of the next address on the interface's list, the record's own;
+    /// `panic(9)` for a linked address, which is on no list.
+    #[inline]
+    pub(crate) fn list_cell(&self) -> &Guarded<Option<IfaddrRef>> {
+        match self {
+            IfaddrRef::In(ia) => &ia.ia_list,
+            IfaddrRef::In6(ia6) => &ia6.ia_list,
+            IfaddrRef::Linked(_) => kpanic(format_args!("ifa_list: a linked address")),
+        }
+    }
+
+    /// `ifa_tmplist`: the cell of the next address on `ifconf`'s temporary list (\[T\], keyed
+    /// to `if_tmplist_lock`); `panic(9)` for a linked address, which is on no interface.
+    #[inline]
+    pub(crate) fn tmplist_cell(&self) -> &Guarded<Option<IfaddrRef>> {
+        match self {
+            IfaddrRef::In(ia) => &ia.ia_tmplist,
+            IfaddrRef::In6(ia6) => &ia6.ia_tmplist,
+            IfaddrRef::Linked(_) => kpanic(format_args!("ifa_tmplist: a linked address")),
+        }
+    }
+}
+
+/// `TAILQ_HEAD(, ifaddr) if_addrlist`: an interface's addresses in the order they were added
+/// (the order `ifconf`, the routing socket and every walk see). A chain of counted handles in
+/// net cells (`hal::netlock`): the head's cell holds the first address's, each address's own
+/// `ia_list` the next one's. The list holds one reference of each address, its creation
+/// reference ([`crate::net::if_::ifa_add`] takes it, [`crate::net::if_::ifa_del`] gives it
+/// back). A walk lends `&'r IfaddrRef`s for the life of its witness
+/// (`hal::netlock::NetHeld::reader`), uncounted as the C's pointers, O(1) a step; a change
+/// takes the writer, which no reader can be out beside.
+pub struct IfaList {
+    /// `tqh_first`.
+    head: Guarded<Option<IfaddrRef>>,
+}
+
+impl IfaList {
+    /// An empty list (`TAILQ_INIT`).
+    pub const fn new() -> Self {
+        Self {
+            head: Guarded::new_net(None),
+        }
+    }
+
+    /// `TAILQ_FIRST`: the first address, for the life of the witness `r`.
+    #[inline]
+    pub fn first<'r, W: Witness + ?Sized>(&'r self, r: &'r W) -> Option<&'r IfaddrRef> {
+        self.head.get(r).as_ref()
+    }
+
+    /// `TAILQ_NEXT(ifa, ifa_list)`: the address after `ifa`, for the life of `r`.
+    #[inline]
+    pub fn next<'r, W: Witness + ?Sized>(r: &'r W, ifa: &'r IfaddrRef) -> Option<&'r IfaddrRef> {
+        ifa.list_cell().get(r).as_ref()
+    }
+
+    /// `TAILQ_FOREACH`: the addresses, first to last, for the life of `r`; O(1) a step.
+    #[inline]
+    pub fn iter<'r, W: Witness + ?Sized>(
+        &'r self,
+        r: &'r W,
+    ) -> impl Iterator<Item = &'r IfaddrRef> {
+        core::iter::successors(self.first(r), move |a| Self::next(r, *a))
+    }
+
+    /// `TAILQ_EMPTY`.
+    #[inline]
+    pub fn is_empty<W: Witness + ?Sized>(&self, r: &W) -> bool {
+        self.head.get(r).is_none()
+    }
+
+    /// `TAILQ_INSERT_TAIL`: `ifa`'s handle linked last, the list's reference. The walk to the
+    /// last address is O(n) (D-4); that address's cell is opened through a clone of its handle
+    /// (T3: a reference lent by `get` cannot be held while the witness opens a cell with
+    /// `get_mut`), dropped before the return.
+    pub fn insert_tail<W: Exclusive + ?Sized>(&self, w: &mut W, ifa: IfaddrRef) {
+        let last = self.iter(&*w).last().cloned(); // T3
+        match last {
+            None => *self.head.get_mut(w) = Some(ifa),
+            Some(l) => *l.list_cell().get_mut(w) = Some(ifa),
+        }
+    }
+
+    /// `TAILQ_REMOVE`: the address `ifa` unlinked and its handle, the list's reference,
+    /// returned; `None` when it is not on the list. The walk to its predecessor is O(n) (D-4);
+    /// that one's cell is opened through a clone of its handle (T3). The removed address's
+    /// own cell is emptied: it holds no reference of its successor any more.
+    pub fn remove<W: Exclusive + ?Sized>(&self, w: &mut W, ifa: &Ifaddr) -> Option<IfaddrRef> {
+        let pred = {
+            let r: &W = &*w;
+            let mut pred: Option<&IfaddrRef> = None;
+            let mut at = self.first(r);
+            loop {
+                let a = at?;
+                if a.is(ifa) {
+                    break pred.cloned(); // T3
+                }
+                pred = Some(a);
+                at = Self::next(r, a);
+            }
+        };
+        let cell = match &pred {
+            Some(p) => p.list_cell(),
+            None => &self.head,
+        };
+        let removed = cell.get_mut(w).take()?;
+        let after = removed.list_cell().get_mut(w).take();
+        *cell.get_mut(w) = after;
+        Some(removed)
+    }
+
+    /// `TAILQ_FOREACH_SAFE`: `f` of each address, under the net lock `net` proves, for a body
+    /// that may take the address it is given off the list (`ifa_del` takes the writer). No
+    /// reader lives while `f` runs: the address and its successor are cloned under a reader of
+    /// their own before it (T2), dropped after it. A body that takes the successor off the
+    /// list ends the walk there (its cell is emptied), where the C would read freed memory.
+    pub fn for_each_safe(&self, net: &NetHeld<'_>, mut f: impl FnMut(&IfaddrRef)) {
+        let mut cur = {
+            let r = net.reader();
+            self.first(&r).cloned() // T2
+        };
+        while let Some(c) = cur {
+            let next = {
+                let r = net.reader();
+                Self::next(&r, &c).cloned() // T2
+            };
+            f(&c);
+            cur = next;
+        }
+    }
+}
+
+impl Default for IfaList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// `struct ifmaddr`: interface multicast address. A protocol's record (`struct in_multi`,
 /// `bsd`'s) embeds it first, hence `#[repr(C)]`; valid all zero.
@@ -1412,10 +1698,11 @@ mod tests {
         assert!(ifp.rt.get().is_none() && ifp.if_driver.get().is_none());
         assert!(ifp.sadl().is_none() && ifp.if_arpcom.get().is_none());
         assert!(ifp.if_link.get().is_none());
-        assert!(ifp.if_addrlist.is_empty() && !List::<IfnetList>::is_linked(&ifp));
-        let ifa = Ifaddr::new();
-        assert!(ifa.ifa_addr.is_none() && ifa.ifa_broadaddr().is_none());
-        assert!(ifa.ifa_ifp.get().is_none());
+        assert!(!List::<IfnetList>::is_linked(&ifp));
+        let ifa = IfaddrLinked::new();
+        assert!(ifa.ifa_addr.is_none() && ifa.ifa_dstaddr.is_none());
+        assert!(ifa.ifa_netmask.is_none() && ifa.ifa.ifa_ifp.get().is_none());
+        assert_eq!((ifa.ifa.ifa_flags.get(), ifa.ifa_refcnt.read()), (0, 0));
     }
 
     #[test]

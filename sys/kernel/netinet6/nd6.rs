@@ -254,7 +254,7 @@ use hal::sys::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
 use crate::log::{LOG_DEBUG, LOG_INFO};
-use crate::net::if_::{IFNETLIST, IfRef, if_output_ml, ifaof_ifpforaddr, inet, net_tq};
+use crate::net::if_::{IFNETLIST, IfRef, if_output_ml, ifaof_ifpforaddr, net_tq, with_net_held};
 use crate::net::if_ethersubr::{ether_map_ipv6_multicast, ether_sprintf};
 use crate::net::if_var::{AtomicCell, Ifnet};
 use crate::net::mbuf::{
@@ -954,22 +954,22 @@ fn nd6_expire(_unused: *mut c_void) {
     };
 
     for ifp in &IFNETLIST {
-        // TAILQ_FOREACH_SAFE: the walk reads each successor first (in6_purgeaddr removes the
-        // address it is given).
-        for ifa in &ifp.if_addrlist {
+        // TAILQ_FOREACH_SAFE: in6_purgeaddr removes the address it is given (T1/T2,
+        // `IfaList::for_each_safe`).
+        ifp.if_addrlist().for_each_safe(&net, |ifa| {
             let Some(ia6) = In6Ifaddr::of(ifa) else {
-                continue;
+                return;
             };
             // check address lifetime
             if ifa6_is_invalid(ia6) {
-                in6_purgeaddr(&ia6.ia_ifa, &net);
+                in6_purgeaddr(ifa, &net);
             } else {
                 if ifa6_is_deprecated(ia6) {
                     ia6.ia6_flags.set(ia6.ia6_flags.get() | IN6_IFF_DEPRECATED);
                 }
                 nd6_expire_timer_update(ia6);
             }
-        }
+        });
     }
 }
 
@@ -1054,7 +1054,8 @@ pub fn nd6_lookup(
         // If no route is available and create is set, we allocate a host route for the
         // destination and treat it like an interface route. This hack is necessary for a
         // neighbor which can't be covered by our own prefix.
-        let ifa = ifaof_ifpforaddr(net, &sin6, ifp)?;
+        let rd = net.reader();
+        let ifa = ifaof_ifpforaddr(net, &rd, &sin6, ifp)?;
 
         // Create a new route. RTF_LLINFO is necessary to create a Neighbor Cache entry for
         // the destination in nd6_rtrequest which will be called in rtrequest.
@@ -1114,7 +1115,11 @@ pub fn nd6_is_addr_neighbor(addr: &SockaddrIn6, ifp: &Ifnet, net: &NetHeld<'_>) 
         return true;
     }
 
-    for ia6 in ifp.if_addrlist.iter().filter_map(In6Ifaddr::of) {
+    for ia6 in ifp
+        .if_addrlist()
+        .iter(&net.reader())
+        .filter_map(In6Ifaddr::of)
+    {
         // Prefix check down below.
         if ia6.ia6_flags.get() & IN6_IFF_AUTOCONF != 0 {
             continue;
@@ -1378,8 +1383,8 @@ fn nd6_rtrequest_add(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
         }
 
         // check if rt_key(rt) is one of my address assigned to the interface.
-        ifa6 = in6ifa_ifpwithaddr(ifp, &key);
-        if ifa6.is_some() || rt.rt_flags.isset(RTF_ANNOUNCE) {
+        ifa6 = in6ifa_ifpwithaddr(&net.reader(), ifp, &key).is_some();
+        if ifa6 || rt.rt_flags.isset(RTF_ANNOUNCE) {
             if let Some(ln) = rt.rt_llinfo.get_b(&g) {
                 ln.ln_state.set(ND6_LLINFO_REACHABLE);
             }
@@ -1388,8 +1393,7 @@ fn nd6_rtrequest_add(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
     }
 
     // join solicited node multicast for proxy ND
-    if ifa6.is_none() && rt.rt_flags.isset(RTF_ANNOUNCE) && ifp.if_flags.get() & IFF_MULTICAST != 0
-    {
+    if !ifa6 && rt.rt_flags.isset(RTF_ANNOUNCE) && ifp.if_flags.get() & IFF_MULTICAST != 0 {
         let llsol = nd6_llsol(&key, ifp);
 
         hal::klock::kernel_lock();
@@ -1927,21 +1931,6 @@ fn nd6_resolve_ll(
 /// The length of an IPv6 header.
 const IP6_HDR_LEN: usize = 40;
 
-/// `f` with the proof of the net lock the caller holds without one (`Inet::with_net_held`:
-/// a driver's output carries none, until N7's).
-fn with_net_held(f: impl FnOnce(&NetHeld<'_>)) {
-    let mut f = Some(f);
-    let mut call = |net: &NetHeld<'_>| {
-        if let Some(f) = f.take() {
-            f(net);
-        }
-    };
-    match inet() {
-        Some(i) => i.with_net_held(&mut call),
-        None => kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock")),
-    }
-}
-
 /// `nd6_need_cache(ifp)`: whether `ifp` needs a neighbor cache. RFC2893 says: unidirectional
 /// tunnels needs no ND.
 pub fn nd6_need_cache(ifp: &Ifnet) -> bool {
@@ -2059,12 +2048,13 @@ pub(crate) mod tests {
     use crate::net::if_::SIOCAIFADDR_IN6;
     use crate::net::if_::{TestDriver, if_attach};
     use crate::net::if_ethersubr::{Arpcom, ether_ifattach};
+    use crate::net::if_var::IfaddrRef;
     use crate::net::ifq::ifq_dequeue;
     use crate::net::mbuf::{M_DONTWAIT, MT_DATA, m_copydata, m_devget, m_get, m_gethdr};
     use crate::net::route::tests::{take_icmp6_errors, testroutes_setup};
     use crate::netinet6::in6::in6_ioctl;
     use crate::netinet6::in6::tests::{a6, add, aliasreq, zoned};
-    use crate::netinet6::in6_var::In6Ifaddr;
+    use crate::netinet6::in6_var::ifatoia6;
     use crate::netinet6::ip6_var::{ICMP6COUNTERS, IP6_DAD_COUNT, IP6_DAD_PENDING};
     use crate::netinet6::nd6_nbr::{
         Dadq, dad_counts, dad_fire, dad_free_counts, dad_reap, dad_tries, nd6_dad_start,
@@ -2213,14 +2203,15 @@ pub(crate) mod tests {
     }
 
     /// Our address's record on `ifp`.
-    fn ours_ia6(ifp: &Ifnet) -> &'static In6Ifaddr {
-        in6ifa_ifpwithaddr(ifp, &ours6()).expect("our address")
+    fn ours_ia6(ifp: &Ifnet) -> IfaddrRef {
+        crate::netinet6::in6::tests::withaddr(ifp, &ours6()).expect("our address")
     }
 
     /// DAD of our address run to its end with no answer: the address preferred (its NA to the
     /// routers taken).
     fn dad_done(ifp: &'static Ifnet) {
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
         while dad_counts(&ia6.ia_ifa).is_some() {
             dad_fire(&ia6.ia_ifa);
         }
@@ -2515,7 +2506,8 @@ pub(crate) mod tests {
         // The prompting packet's source is no link-local one for a target that is not either:
         // the C's source selection, the route to the solicited-node group, whose address is
         // the interface's link-local one.
-        let ll = crate::netinet6::in6::in6ifa_ifpforlinklocal(ifp, 0).expect("link-local");
+        let lla = crate::netinet6::in6::tests::linklocal(ifp, 0).expect("link-local");
+        let ll = ifatoia6(&lla);
         assert_eq!(
             pod::at::<In6Addr>(&ns[0].bytes, 8),
             Some(ll.ia_addr.addr()),
@@ -2794,14 +2786,15 @@ pub(crate) mod tests {
     fn dad_makes_a_silent_address_preferred_and_reuses_its_record() {
         let _g = setup();
         let ifp = ether(b"nd6");
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
         assert_ne!(
             ia6.ia6_flags.get() & IN6_IFF_TENTATIVE,
             0,
             "tentative at first"
         );
         assert_eq!(dad_counts(&ia6.ia_ifa), Some((1, 0, 0)), "one probe out");
-        let refs = ia6.ia_ifa.ifa_refcnt.read();
+        let refs = ifa6.count();
 
         // ip6_dad_count probes, no answer: preferred, the routers told (RFC 9131), the record
         // destroyed, then reaped: the address's reference back, the record on the free list.
@@ -2821,16 +2814,14 @@ pub(crate) mod tests {
         assert!(reap0 >= 1);
         dad_reap();
         assert_eq!(dad_free_counts(), (0, free0 + reap0));
-        assert_eq!(
-            ia6.ia_ifa.ifa_refcnt.read(),
-            refs - 1,
-            "DAD's reference given back"
-        );
+        assert_eq!(ifa6.count(), refs - 1, "DAD's reference given back");
 
         // A second address: its DAD takes a record off the free list.
         add(ifp, a6("fd00:88::1"), 64).expect("SIOCAIFADDR_IN6");
         assert_eq!(dad_free_counts(), (0, free0 + reap0 - 1), "a record reused");
-        let ia2 = in6ifa_ifpwithaddr(ifp, &a6("fd00:88::1")).expect("the address");
+        let ifa_ia2 =
+            crate::netinet6::in6::tests::withaddr(ifp, &a6("fd00:88::1")).expect("the address");
+        let ia2 = ifatoia6(&ifa_ia2);
         assert_eq!(dad_counts(&ia2.ia_ifa), Some((1, 0, 0)));
         // Its probe: from :: (IPV6_UNSPECSRC), no source link-layer option.
         let probes: Vec<_> = take_ip6_sent()
@@ -2851,7 +2842,8 @@ pub(crate) mod tests {
     fn dad_finds_a_duplicate_by_a_probe_or_an_advertisement() {
         let _g = setup();
         let ifp = ether(b"nd7");
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
 
         // Another node probes for our tentative address after our probe: counted, decided at
         // the timer: duplicated.
@@ -2871,7 +2863,9 @@ pub(crate) mod tests {
 
         // An advertisement for another tentative address of ours: duplicated at once.
         add(ifp, a6("fd00:99::1"), 64).expect("SIOCAIFADDR_IN6");
-        let ia2 = in6ifa_ifpwithaddr(ifp, &a6("fd00:99::1")).expect("the address");
+        let ifa_ia2 =
+            crate::netinet6::in6::tests::withaddr(ifp, &a6("fd00:99::1")).expect("the address");
+        let ia2 = ifatoia6(&ifa_ia2);
         assert_ne!(ia2.ia6_flags.get() & IN6_IFF_TENTATIVE, 0);
         advertise(ifp, a6("fd00:99::1"), ND_NA_FLAG_OVERRIDE, Some(PEER));
         assert_ne!(ia2.ia6_flags.get() & IN6_IFF_DUPLICATED, 0);
@@ -2884,7 +2878,8 @@ pub(crate) mod tests {
     fn a_dad_timer_of_a_destroyed_record_finds_nothing() {
         let _g = setup();
         let ifp = ether(b"nd8");
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
         let addr = dadq_addr(&ia6.ia_ifa);
         {
             let w = NETLOCK.write();
@@ -3299,34 +3294,35 @@ pub(crate) mod tests {
     fn dad_counts_its_probes_once_and_holds_its_address_until_reaped() {
         let _g = setup();
         let ifp = ether(b"ndd0");
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
         // ether()'s address: DAD started once, its one probe sent.
         let pending = IP6_DAD_PENDING.load(Ordering::Relaxed);
         assert!(pending >= 1);
         let count = IP6_DAD_COUNT.load(Ordering::Relaxed);
         assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
         let addr = dadq_addr(&ia6.ia_ifa);
-        let refs = ia6.ia_ifa.ifa_refcnt.read();
+        let refs = ifa6.count();
 
         // A second start for the same address does nothing: no record, no probe, no reference.
         {
             let w = NETLOCK.write();
-            nd6_dad_start(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
+            nd6_dad_start(&ifa6, &NetHeld::of(&w).expect("the net lock"));
         }
         assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending);
         assert_eq!(dadq_addr(&ia6.ia_ifa), addr);
         assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
         assert!(take_ip6_sent().is_empty(), "no second probe");
-        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs);
+        assert_eq!(ifa6.count(), refs);
 
         // The verdict: the record off the list, one DAD less pending; the address's reference
         // is DAD's until the reaper runs.
         dad_fire(&ia6.ia_ifa);
         assert!(dad_tries(&ia6.ia_ifa).is_none());
         assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending - 1);
-        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs, "DAD's until reaped");
+        assert_eq!(ifa6.count(), refs, "DAD's until reaped");
         dad_reap();
-        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs - 1);
+        assert_eq!(ifa6.count(), refs - 1);
         let _ = take_ip6_sent();
     }
 
@@ -3334,7 +3330,8 @@ pub(crate) mod tests {
     fn dad_on_a_down_interface_counts_tries_and_loses_to_any_probe() {
         let _g = setup();
         let ifp = ether(b"ndd1");
-        let ia6 = ours_ia6(ifp);
+        let ifa6 = ours_ia6(ifp);
+        let ia6 = ifatoia6(&ifa6);
         {
             let w = NETLOCK.write();
             nd6_dad_stop(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
@@ -3347,7 +3344,7 @@ pub(crate) mod tests {
         assert_ne!(ia6.ia6_flags.get() & IN6_IFF_TENTATIVE, 0);
         {
             let w = NETLOCK.write();
-            nd6_dad_start(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
+            nd6_dad_start(&ifa6, &NetHeld::of(&w).expect("the net lock"));
         }
         let count = IP6_DAD_COUNT.load(Ordering::Relaxed);
         assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 0)));
@@ -3378,7 +3375,9 @@ pub(crate) mod tests {
         let any6 = a6("fd00:77::aa");
         let mut r = aliasreq(ifp, any6, 64, IN6_IFF_ANYCAST);
         in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true).expect("SIOCAIFADDR_IN6");
-        let ia = in6ifa_ifpwithaddr(ifp, &any6).expect("the anycast address");
+        let ifa_ia =
+            crate::netinet6::in6::tests::withaddr(ifp, &any6).expect("the anycast address");
+        let ia = ifatoia6(&ifa_ia);
         let flags = ia.ia6_flags.get();
         assert_ne!(flags & IN6_IFF_ANYCAST, 0);
         assert_eq!(
@@ -3503,7 +3502,8 @@ pub(crate) mod tests {
         let ifp = ether(b"ndp0");
         dad_done(ifp);
         // The proxy answers from the link-local address (nd6_nbr.c:203-214): its DAD done too.
-        let ll = crate::netinet6::in6::in6ifa_ifpforlinklocal(ifp, 0).expect("link-local");
+        let lla = crate::netinet6::in6::tests::linklocal(ifp, 0).expect("link-local");
+        let ll = ifatoia6(&lla);
         while dad_counts(&ll.ia_ifa).is_some() {
             dad_fire(&ll.ia_ifa);
         }
@@ -3532,10 +3532,12 @@ pub(crate) mod tests {
         info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
         info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
         info.rti_flags = RTF_HOST | RTF_LLINFO | RTF_STATIC | RTF_ANNOUNCE | RTF_UP;
-        info.rti_ifa = route6(ours6(), false).and_then(|r| r.ifa());
+        let local = route6(ours6(), false);
         {
             let w = NETLOCK.write();
             let net = NetHeld::of(&w).expect("the net lock");
+            let r = net.reader();
+            info.rti_ifa = local.as_deref().and_then(|l| l.ifa(&r));
             rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the entry");
         }
         assert!(joined(llsol), "the solicited-node group joined");

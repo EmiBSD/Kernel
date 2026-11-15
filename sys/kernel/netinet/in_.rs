@@ -123,10 +123,10 @@
 //! - The driver's `SIOCSIFADDR` and `SIOCSIFDSTADDR` get a zeroed `struct ifreq` image where
 //!   the C passes the `struct in_ifaddr` (D-14: no driver ported at the pin reads it;
 //!   `if_ppp.c` and `if_spppsubr.c`, which do, are not ported).
-//! - The records are never freed (`kernel::netinet::in_var`'s deviations); a membership whose
-//!   interface has already left the index map when its last reference goes (`if_detach`'s
-//!   `in_ifdetach`, after `if_remove`) stays on that interface's list, where the C frees it
-//!   there, and is not reused.
+//! - The multicast records are never freed (`kernel::netinet::in_var`'s deviations); a
+//!   membership whose interface has already left the index map when its last reference goes
+//!   (`if_detach`'s `in_ifdetach`, after `if_remove`) stays on that interface's list, where
+//!   the C frees it there, and is not reused.
 //!
 //! ## Redesign
 //! - The address `ioctl`s over the request's bytes: LZ's `unsafe fn`s over `caddr_t data`
@@ -140,10 +140,22 @@
 //!   (`hal::netlock::lend_detached`), never across the driver's two requests. The kernel lock
 //!   is taken C-style around the same span, in the C's order (net, then kernel).
 //!   `NET_LOCK_SHARED()` of `in_ioctl_get` is a witness (no driver call).
-//! - `in_ifaddr_alloc`'s and `in_addmulti`'s `malloc(M_WAITOK | M_ZERO)` take a record off
-//!   `in_var`'s free lists first; `free` puts one back.
+//! - `in_addmulti`'s `malloc(M_WAITOK | M_ZERO)` takes a record off `in_var`'s free list
+//!   first; `free` puts one back.
+//! - (N6.5e) An address is a counted handle (`kernel::net::if_var::IfaddrRef`), freed with its
+//!   last one: `in_ifaddr_alloc` answers the creation reference, which `in_ifinit` gives to
+//!   `ifa_add` for a new address, and `in_purgeaddr` gives back the list's (`ifa_del`'s) with
+//!   `ifafree`. The walks and lookups of the interface's list (`in_ifp2ia`, `first_or_exact`,
+//!   `in_broadcast`, the change's) lend from a reader of the net cells, counting nothing. The
+//!   requests that change an address hold the net lock detached across the driver's
+//!   `SIOCSIFADDR`, which may let it go: they clone the address they found before the
+//!   reader ends (T1) and keep it for the request, where the C keeps an uncounted pointer
+//!   (which the lock let go would not keep alive). `in_ifinit` of an existing address takes the
+//!   list's reference off the list (`ifa_del`) and puts it back (`ifa_add`), the C's
+//!   re-insertion at the tail.
 //! - `in_broadcast`, `in_ifp2ia`, `in_lookupmulti` read the records' own words (`InIfaddr::of`
 //!   of each `AF_INET` address, `SinWords::addr`), no copy of the generic part's address.
+//!   `in_broadcast` takes the proof of the net lock its walk needs (the C asserts it).
 //!
 //! **Lock and spl transitions** against the C: `in_ioctl`'s changes take the net lock and the
 //! kernel lock once each, as the C; `in_ioctl_get` the net lock shared; `in_addmulti` and
@@ -152,7 +164,7 @@
 
 use core::mem::{offset_of, size_of};
 
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
 use hal::rwlock::{RW_READ, RW_WRITE};
 use hal::sys::endian::{htonl, ntohl};
@@ -175,7 +187,7 @@ use hal::sys::sockio::{
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
-use crate::net::if_var::{Ifaddr, Ifnet};
+use crate::net::if_var::{IfaddrRef, Ifnet};
 use crate::net::mbuf::Mbuf;
 use crate::net::proto::SockaddrView;
 use crate::net::route::{
@@ -184,7 +196,9 @@ use crate::net::route::{
 use crate::net::rtable::rtable_l2;
 use crate::netinet::igmp::{igmp_joingroup, igmp_leavegroup, igmp_sendpkt};
 use crate::netinet::igmp_var::IgmpPktinfo;
-use crate::netinet::in_var::{InIfaddr, InMulti, in_ifaddr_alloc, in_multi_alloc, in_multi_free};
+use crate::netinet::in_var::{
+    InIfaddr, InMulti, ifatoia, in_ifaddr_alloc, in_multi_alloc, in_multi_free,
+};
 
 /// `sizeof(struct sockaddr_in)`.
 const SIN_SIZE: usize = size_of::<SockaddrIn>();
@@ -323,31 +337,36 @@ pub fn in_sa2sin(sa: &[u8]) -> Result<SockaddrIn, Errno> {
     pod::at::<SockaddrIn>(sa, 0).ok_or(Errno::EINVAL)
 }
 
-/// `in_ifp2ia(ifp)`: the first Internet address of interface `ifp`.
-pub fn in_ifp2ia(ifp: &Ifnet) -> Option<&'static InIfaddr> {
-    net_assert_locked();
-
-    ifp.if_addrlist.iter().find_map(InIfaddr::of)
+/// `in_ifp2ia(ifp)`: the first Internet address of interface `ifp`, lent for the life of the
+/// net cells' reader `r` (whose making is the C's `NET_ASSERT_LOCKED()`).
+pub fn in_ifp2ia<'r>(r: &'r NetReader<'_>, ifp: &'r Ifnet) -> Option<&'r IfaddrRef> {
+    ifp.if_addrlist()
+        .iter(r)
+        .find(|ifa| InIfaddr::of(ifa).is_some())
 }
 
 /// The Internet address of `ifp` whose address is `addr`, or the first one when `addr` is
 /// none or `INADDR_ANY` (`in_ioctl`'s and `in_ioctl_get`'s walk: "find first address or
-/// exact match").
-fn first_or_exact(ifp: &Ifnet, addr: Option<InAddr>) -> Option<&'static InIfaddr> {
+/// exact match"), lent for the life of `r`.
+fn first_or_exact<'r>(
+    r: &'r NetReader<'_>,
+    ifp: &'r Ifnet,
+    addr: Option<InAddr>,
+) -> Option<&'r IfaddrRef> {
     let mut ia = None;
-    for ifa in &ifp.if_addrlist {
+    for ifa in ifp.if_addrlist().iter(r) {
         let Some(this) = InIfaddr::of(ifa) else {
             continue;
         };
         // find first address or exact match
         if ia.is_none() {
-            ia = Some(this);
+            ia = Some(ifa);
         }
         let Some(a) = addr.filter(|a| a.s_addr != INADDR_ANY) else {
             break;
         };
         if this.ia_addr.addr().s_addr == a.s_addr {
-            ia = Some(this);
+            ia = Some(ifa);
             break;
         }
     }
@@ -417,9 +436,15 @@ pub fn in_ioctl(
     hal::klock::kernel_lock();
 
     let error = 'err: {
-        let Some(ia) = first_or_exact(ifp, sin.map(|s| s.sin_addr)) else {
+        // T1: the address, cloned before the reader ends, kept for the request (the driver's
+        // request below may let the detached lock go).
+        let found = hal::netlock::lend_detached(|net| {
+            first_or_exact(&net.reader(), ifp, sin.map(|s| s.sin_addr)).cloned()
+        });
+        let Some(ifa) = found else {
             break 'err Err(Errno::EADDRNOTAVAIL);
         };
+        let ia = ifatoia(&ifa);
 
         match cmd {
             SIOCSIFDSTADDR => {
@@ -438,8 +463,8 @@ pub fn in_ioctl(
                     break 'err Err(e);
                 }
                 hal::netlock::lend_detached(|net| {
-                    let _ = in_scrubhost(ia, &oldaddr, net);
-                    let _ = in_addhost(ia, &ia.ia_dstaddr.get(), net);
+                    let _ = in_scrubhost(&ifa, &oldaddr, net);
+                    let _ = in_addhost(&ifa, &ia.ia_dstaddr.get(), net);
                 });
                 Ok(())
             }
@@ -517,14 +542,20 @@ fn in_ioctl_set_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result
     hal::netlock::lock();
     hal::klock::kernel_lock();
 
-    // find first address
-    let (ia, newifaddr) = match in_ifp2ia(ifp) {
-        Some(ia) => (ia, false),
-        None => (in_ifaddr_alloc(ifp), true),
+    // find first address: an existing one cloned before the reader ends (T1), or a new one,
+    // whose creation reference `in_ifinit` gives to `ifa_add` and whose clone the request
+    // keeps (T1).
+    let found = hal::netlock::lend_detached(|net| in_ifp2ia(&net.reader(), ifp).cloned());
+    let (ia, created) = match found {
+        Some(ia) => (ia, None),
+        None => {
+            let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
+            (created.clone(), Some(created))
+        }
     };
 
-    hal::netlock::lend_detached(|net| in_ifscrub(ifp, ia, net));
-    let error = in_ifinit(ifp, ia, &sin, newifaddr);
+    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ia, net));
+    let error = in_ifinit(ifp, &ia, &sin, created);
     if error.is_ok() {
         if_addrhooks_run(ifp);
     }
@@ -546,10 +577,17 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
     hal::netlock::lock();
     hal::klock::kernel_lock();
 
-    // find first address, if no exact match wanted
-    let ia = ifp.if_addrlist.iter().find_map(|ifa| {
-        InIfaddr::of(ifa)
-            .filter(|ia| sin.is_none_or(|s| s.sin_addr.s_addr == ia.ia_addr.addr().s_addr))
+    // find first address, if no exact match wanted (T1: cloned before the reader ends, kept
+    // for the request)
+    let ia = hal::netlock::lend_detached(|net| {
+        ifp.if_addrlist()
+            .iter(&net.reader())
+            .find(|ifa| {
+                InIfaddr::of(ifa).is_some_and(|ia| {
+                    sin.is_none_or(|s| s.sin_addr.s_addr == ia.ia_addr.addr().s_addr)
+                })
+            })
+            .cloned()
     });
 
     let error = 'out: {
@@ -588,10 +626,17 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                     }
                 }
 
-                let (ia, newifaddr) = match ia {
-                    Some(ia) => (ia, false),
-                    None => (in_ifaddr_alloc(ifp), true),
+                // A new address: its creation reference for `in_ifinit`'s `ifa_add`, a clone
+                // for the request (T1).
+                let (ifa, created) = match ia {
+                    Some(ia) => (ia, None),
+                    None => {
+                        let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
+                        (created.clone(), Some(created))
+                    }
                 };
+                let newifaddr = created.is_some();
+                let ia = ifatoia(&ifa);
 
                 let sin = match sin {
                     None => ia.ia_addr.get(),
@@ -603,7 +648,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                     }
                 };
                 if let Some(m) = masksin {
-                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, ia, net));
+                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
                     ia.ia_netmask.set(m);
                     let mut sm = ia.ia_sockmask.get();
                     sm.sin_addr.s_addr = m;
@@ -611,7 +656,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                     needinit = true;
                 }
                 if let Some(d) = dstsin {
-                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, ia, net));
+                    hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ifa, net));
                     ia.ia_dstaddr.set(d);
                     needinit = true;
                 }
@@ -622,7 +667,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                         ifa_update_broadaddr(ia, &b);
                     }
                 }
-                if needinit && let Err(e) = in_ifinit(ifp, ia, &sin, newifaddr) {
+                if needinit && let Err(e) = in_ifinit(ifp, &ifa, &sin, created) {
                     break 'out Err(e);
                 }
                 if_addrhooks_run(ifp);
@@ -635,7 +680,7 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                 // Even if the individual steps were safe, shouldn't these kinds of changes
                 // happen atomically? What should happen to a packet that was routed after the
                 // scrub but before the other steps?
-                hal::netlock::lend_detached(|net| in_purgeaddr(&ia.ia_ifa, net));
+                hal::netlock::lend_detached(|net| in_purgeaddr(&ia, net));
                 if_addrhooks_run(ifp);
                 Ok(())
             }
@@ -658,9 +703,13 @@ fn in_ioctl_get(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result<(), Er
         sin = Some(in_sa2sin(&data[IFR_ADDR..IFR_ADDR + SIN_SIZE])?);
     }
 
-    let _shared = NETLOCK.read();
+    let shared = NETLOCK.read();
+    let Some(held) = NetHeld::of(&shared) else {
+        kpanic(format_args!("in_ioctl_get: not a witness of the net lock"));
+    };
+    let r = held.reader();
 
-    let Some(ia) = first_or_exact(ifp, sin.map(|s| s.sin_addr)) else {
+    let Some(ia) = first_or_exact(&r, ifp, sin.map(|s| s.sin_addr)).map(ifatoia) else {
         return Err(Errno::EADDRNOTAVAIL);
     };
 
@@ -687,9 +736,9 @@ fn in_ioctl_get(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result<(), Er
 }
 
 /// `in_ifscrub(ifp, ia)`: deletes any existing route for an interface.
-pub fn in_ifscrub(ifp: &Ifnet, ia: &'static InIfaddr, net: &NetHeld<'_>) {
+pub fn in_ifscrub(ifp: &Ifnet, ia: &IfaddrRef, net: &NetHeld<'_>) {
     if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
-        let _ = in_scrubhost(ia, &ia.ia_dstaddr.get(), net);
+        let _ = in_scrubhost(ia, &ifatoia(ia).ia_dstaddr.get(), net);
     } else if ifp.if_flags.get() & IFF_LOOPBACK == 0 {
         in_remove_prefix(ia, net);
     }
@@ -698,24 +747,31 @@ pub fn in_ifscrub(ifp: &Ifnet, ia: &'static InIfaddr, net: &NetHeld<'_>) {
 /// `in_ifinit(ifp, ia, sin, newaddr)`: initializes an interface's internet address `sin` and
 /// routing table entry. The caller holds the net lock detached (`in_ioctl_*`): the driver's
 /// `SIOCSIFADDR` may let it go and take it again, so the proof is borrowed around it only.
+///
+/// `created` is the creation reference of a new address (the C's `newaddr`), which
+/// `ifa_add` takes; `ifa` is the caller's own handle of the address (T1).
 pub fn in_ifinit(
     ifp: &'static Ifnet,
-    ia: &'static InIfaddr,
+    ifa: &IfaddrRef,
     sin: &SockaddrIn,
-    newaddr: bool,
+    created: Option<IfaddrRef>,
 ) -> Result<(), Errno> {
     let i = sin.sin_addr.s_addr;
+    let newaddr = created.is_some();
+    let ia = ifatoia(ifa);
 
     net_assert_locked();
 
     // Always remove the address from the tree to make sure its position gets updated in case
-    // the key changes.
-    if !newaddr {
-        hal::netlock::lend_detached(|net| {
-            let _ = rt_ifa_dellocal(&ia.ia_ifa, net);
-        });
-        ifa_del(ifp, &ia.ia_ifa);
-    }
+    // the key changes: an existing address's list reference taken off the list, for the
+    // `ifa_add` below.
+    let lst = match created {
+        Some(c) => c,
+        None => hal::netlock::lend_detached(|net| {
+            let _ = rt_ifa_dellocal(ifa, net);
+            ifa_del(ifp, ifa, net)
+        }),
+    };
     let oldaddr = ia.ia_addr.get();
     ia.ia_addr.set(*sin);
 
@@ -746,10 +802,12 @@ pub fn in_ifinit(
         'out: {
             // Add the address to the local list and the global tree. If an error occurred,
             // put back the original address.
-            ifa_add(ifp, &ia.ia_ifa);
-            if let Err(e) = rt_ifa_addlocal(&ia.ia_ifa, net) {
+            ifa_add(ifp, lst, net);
+            if let Err(e) = rt_ifa_addlocal(ifa, net) {
                 if !newaddr {
-                    ifa_del(ifp, &ia.ia_ifa);
+                    // The C never gives this reference back (`ifa_del` without `ifafree`):
+                    // the address stays allocated, off its list, as there.
+                    core::mem::forget(ifa_del(ifp, ifa, net));
                 }
                 if error.is_ok() {
                     error = Err(e);
@@ -781,9 +839,9 @@ pub fn in_ifinit(
                 if ia.ia_dstaddr.family() != AF_INET {
                     break 'out;
                 }
-                error = in_addhost(ia, &ia.ia_dstaddr.get(), net);
+                error = in_addhost(ifa, &ia.ia_dstaddr.get(), net);
             } else if ifp.if_flags.get() & IFF_LOOPBACK == 0 {
-                error = in_insert_prefix(ia, net);
+                error = in_insert_prefix(ifa, net);
             }
 
             // If the interface supports multicast, join the "all hosts" multicast group on
@@ -798,7 +856,7 @@ pub fn in_ifinit(
 
         // out:
         if error.is_err() && newaddr {
-            in_purgeaddr(&ia.ia_ifa, net);
+            in_purgeaddr(ifa, net);
         }
     });
 
@@ -807,19 +865,19 @@ pub fn in_ifinit(
 
 /// `in_purgeaddr(ifa)`: an Internet address removed from its interface and the routing
 /// table, its "all hosts" membership left, its interface's reference given back.
-pub fn in_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
+pub fn in_purgeaddr(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let Some(ifp) = ifa.ifa_ifp.get() else {
         kpanic(format_args!("in_purgeaddr: address without interface"));
     };
-    let ia = crate::netinet::in_var::ifatoia(ifa);
+    let ia = ifatoia(ifa);
 
     net_assert_locked();
 
-    in_ifscrub(ifp, ia, net);
+    in_ifscrub(ifp, ifa, net);
 
-    let _ = rt_ifa_dellocal(&ia.ia_ifa, net);
-    rt_ifa_purge(&ia.ia_ifa, net);
-    ifa_del(ifp, &ia.ia_ifa);
+    let _ = rt_ifa_dellocal(ifa, net);
+    rt_ifa_purge(ifa, net);
+    let lst = ifa_del(ifp, ifa, net);
 
     if let Some(inm) = ia.ia_allhosts.get() {
         in_delmulti(inm, net);
@@ -827,7 +885,7 @@ pub fn in_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
     }
 
     ia.ia_ifp().set(None);
-    ifafree(&ia.ia_ifa);
+    ifafree(lst);
 }
 
 /// The routing domain of `ia`'s interface (`ia->ia_ifa.ifa_ifp->if_rdomain`).
@@ -837,26 +895,26 @@ fn rdomain_of(ia: &InIfaddr) -> u32 {
 }
 
 /// `in_addhost(ia, dst)`: the host route of `dst` through `ia`.
-fn in_addhost(ia: &'static InIfaddr, dst: &SockaddrIn, net: &NetHeld<'_>) -> Result<(), Errno> {
+fn in_addhost(ifa: &IfaddrRef, dst: &SockaddrIn, net: &NetHeld<'_>) -> Result<(), Errno> {
     let b = sin_bytes(dst);
     rt_ifa_add(
-        &ia.ia_ifa,
+        ifa,
         RTF_HOST | RTF_MPATH,
         sin_view(&b),
-        rdomain_of(ia),
+        rdomain_of(ifatoia(ifa)),
         net,
     )
 }
 
 /// `in_scrubhost(ia, dst)`: the host route of `dst` through `ia` removed.
-fn in_scrubhost(ia: &'static InIfaddr, dst: &SockaddrIn, net: &NetHeld<'_>) -> Result<(), Errno> {
+fn in_scrubhost(ifa: &IfaddrRef, dst: &SockaddrIn, net: &NetHeld<'_>) -> Result<(), Errno> {
     let b = sin_bytes(dst);
-    rt_ifa_del(&ia.ia_ifa, RTF_HOST, sin_view(&b), rdomain_of(ia), net)
+    rt_ifa_del(ifa, RTF_HOST, sin_view(&b), rdomain_of(ifatoia(ifa)), net)
 }
 
 /// `in_insert_prefix(ia)`: inserts the cloning and broadcast routes for this subnet.
-fn in_insert_prefix(ia: &'static InIfaddr, net: &NetHeld<'_>) -> Result<(), Errno> {
-    let ifa = &ia.ia_ifa;
+fn in_insert_prefix(ifa: &IfaddrRef, net: &NetHeld<'_>) -> Result<(), Errno> {
+    let ia = ifatoia(ifa);
 
     // ifa->ifa_addr and ifa->ifa_broadaddr: the address's own storage, copied.
     let a = sin_bytes(&ia.ia_addr.get());
@@ -884,8 +942,8 @@ fn in_insert_prefix(ia: &'static InIfaddr, net: &NetHeld<'_>) -> Result<(), Errn
 }
 
 /// `in_remove_prefix(ia)`: removes the cloning and broadcast routes for this subnet.
-fn in_remove_prefix(ia: &'static InIfaddr, net: &NetHeld<'_>) {
-    let ifa = &ia.ia_ifa;
+fn in_remove_prefix(ifa: &IfaddrRef, net: &NetHeld<'_>) {
+    let ia = ifatoia(ifa);
 
     let a = sin_bytes(&ia.ia_addr.get());
     let _ = rt_ifa_del(
@@ -911,10 +969,10 @@ fn in_remove_prefix(ia: &'static InIfaddr, net: &NetHeld<'_>) {
 
 /// `in_broadcast(in, rtableid)`: whether `in_` is a local broadcast address in the routing
 /// domain of table `rtableid`: the broadcast address of an Internet address of a broadcast
-/// interface there, and not that address itself.
-pub fn in_broadcast(in_: InAddr, rtableid: u32) -> bool {
-    net_assert_locked();
-
+/// interface there, and not that address itself. Under the net lock `net` proves (the C's
+/// `NET_ASSERT_LOCKED()`: one reader for the walk).
+pub fn in_broadcast(in_: InAddr, rtableid: u32, net: &NetHeld<'_>) -> bool {
+    let r = net.reader();
     let rdomain = rtable_l2(rtableid);
 
     for ifn in &IFNETLIST {
@@ -924,7 +982,7 @@ pub fn in_broadcast(in_: InAddr, rtableid: u32) -> bool {
         if ifn.if_flags.get() & IFF_BROADCAST == 0 {
             continue;
         }
-        for ifa in &ifn.if_addrlist {
+        for ifa in ifn.if_addrlist().iter(&r) {
             if let Some(ia) = InIfaddr::of(ifa)
                 && in_.s_addr != ia.ia_addr.addr().s_addr
                 && in_.s_addr == ia.ia_broadaddr().addr().s_addr
@@ -1064,14 +1122,15 @@ pub fn in_hasmulti(addr: &InAddr, ifp: &Ifnet) -> bool {
 
 /// `in_ifdetach(ifp)`: every IPv4 address of `ifp` removed.
 pub fn in_ifdetach(ifp: &'static Ifnet, net: &NetHeld<'_>) {
-    // nuke any of IPv4 addresses we have
-    for ifa in &ifp.if_addrlist {
+    // nuke any of IPv4 addresses we have (TAILQ_FOREACH_SAFE: `in_purgeaddr` takes the
+    // address it is given off the list; T1/T2, `IfaList::for_each_safe`)
+    ifp.if_addrlist().for_each_safe(net, |ifa| {
         if InIfaddr::of(ifa).is_none() {
-            continue;
+            return;
         }
         in_purgeaddr(ifa, net);
         if_addrhooks_run(ifp);
-    }
+    });
 
     if ifp.if_xflags.get() & IFXF_AUTOCONF4 != 0 {
         ifp.if_xflags.set(ifp.if_xflags.get() & !IFXF_AUTOCONF4);
@@ -1107,11 +1166,13 @@ mod tests {
     use hal::sys::netinet_in::{INADDR_ALLROUTERS_GROUP, IPPROTO_IGMP};
 
     use super::*;
+    use crate::net::if_::M_IFADDR;
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::{MbufBox, m_copydata};
     use crate::net::route::rtalloc;
     use crate::net::route::tests::{grace, sin, testroutes_setup};
-    use crate::netinet::in_var::free_counts;
+    use crate::netinet::in_var::inm_free_count;
+    use crate::testutil::malloc_out;
 
     /// A driver that keeps the packets it is given and counts the multicast filter changes.
     struct InDriver {
@@ -1247,9 +1308,11 @@ mod tests {
             Err(Errno::EINVAL)
         );
 
-        // ifconfig int0 inet 10.0.2.15/24.
-        let (ia_free, _) = free_counts();
+        // ifconfig int0 inet 10.0.2.15/24: one record of `M_IFADDR`.
+        let out = malloc_out(M_IFADDR);
         in_ioctl(SIOCAIFADDR, &mut r_add(), Some(ifp), true).expect("SIOCAIFADDR");
+        let one = malloc_out(M_IFADDR) - out;
+        assert!(one > 0, "the address's record");
         assert_eq!(
             get(ifp, SIOCGIFADDR).map(|s| s.sin_addr),
             Ok(a([10, 0, 2, 15]))
@@ -1267,7 +1330,7 @@ mod tests {
             "not point-to-point"
         );
         let ia = in_ifp2ia_locked(ifp).expect("the record");
-        assert_eq!(ia.ia_net.get(), u32::from_ne_bytes([10, 0, 2, 0]));
+        assert_eq!(ifatoia(&ia).ia_net.get(), u32::from_ne_bytes([10, 0, 2, 0]));
         assert!(ifp.if_flags.get() & IFF_UP != 0, "the driver's SIOCSIFADDR");
 
         // Its routes: the local host, the subnet, the broadcast address; the all-hosts group.
@@ -1275,9 +1338,10 @@ mod tests {
         assert!(route([10, 0, 2, 77]).is_some());
         assert!(route([10, 0, 2, 255]).is_some_and(|f| f & RTF_BROADCAST != 0));
         {
-            let _w = NETLOCK.read();
-            assert!(in_broadcast(a([10, 0, 2, 255]), 0));
-            assert!(!in_broadcast(a([10, 0, 2, 15]), 0));
+            let w = NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            assert!(in_broadcast(a([10, 0, 2, 255]), 0, &net));
+            assert!(!in_broadcast(a([10, 0, 2, 15]), 0, &net));
         }
         assert!(in_hasmulti(&a([224, 0, 0, 1]), ifp));
 
@@ -1293,39 +1357,48 @@ mod tests {
             Err(Errno::EADDRNOTAVAIL)
         );
 
-        // ifconfig int0 inet 10.0.2.15 delete: the routes and the membership gone, the record
-        // back on the free list once the routes gave back their references.
+        // ifconfig int0 inet 10.0.2.15 delete: the routes and the membership gone; the record
+        // freed with its last reference, which the test's handle holds until its drop (a
+        // reference cannot outlive its record).
         let mut del = aliasreq([10, 0, 2, 15], None);
         in_ioctl(SIOCDIFADDR, &mut del, Some(ifp), true).expect("SIOCDIFADDR");
         grace();
         assert!(route([10, 0, 2, 77]).is_none());
         assert!(!in_hasmulti(&a([224, 0, 0, 1]), ifp));
         assert_eq!(get(ifp, SIOCGIFADDR), Err(Errno::EADDRNOTAVAIL));
+        assert_eq!(ia.count(), 1, "the test's handle alone");
         assert_eq!(
-            free_counts().0,
-            ia_free + 1,
-            "the record recycled, not freed"
+            ifatoia(&ia).ia_addr.addr(),
+            a([10, 0, 2, 15]),
+            "still readable"
         );
+        assert_eq!(malloc_out(M_IFADDR), out + one, "kept by the test's handle");
+        drop(ia);
+        assert_eq!(malloc_out(M_IFADDR), out, "freed with its last reference");
 
-        // The next address takes it again.
+        // The next address is a record of its own, freed again by its delete.
         in_ioctl(SIOCAIFADDR, &mut r_add(), Some(ifp), true).expect("again");
-        assert_eq!(free_counts().0, ia_free);
-        assert!(core::ptr::eq(
-            in_ifp2ia_locked(ifp).expect("the record"),
-            ia
-        ));
+        assert_eq!(malloc_out(M_IFADDR), out + one);
         let mut del = aliasreq([10, 0, 2, 15], None);
         in_ioctl(SIOCDIFADDR, &mut del, Some(ifp), true).expect("SIOCDIFADDR");
         grace();
+        assert_eq!(
+            malloc_out(M_IFADDR),
+            out,
+            "the routes' references given back"
+        );
     }
 
     fn r_add() -> [u8; 64] {
         aliasreq([10, 0, 2, 15], Some([255, 255, 255, 0]))
     }
 
-    fn in_ifp2ia_locked(ifp: &Ifnet) -> Option<&'static InIfaddr> {
-        let _w = NETLOCK.read();
-        in_ifp2ia(ifp)
+    /// The first Internet address of `ifp`, a handle of the test's (the lookup's own lent
+    /// address cloned before its reader ends).
+    fn in_ifp2ia_locked(ifp: &Ifnet) -> Option<IfaddrRef> {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in_ifp2ia(&net.reader(), ifp).cloned()
     }
 
     /// The IGMP messages `d` was given: (IP destination, IGMP type, group), each with the
@@ -1376,7 +1449,7 @@ mod tests {
             "the first report at once"
         );
 
-        let (_, inm_free) = free_counts();
+        let inm_free = inm_free_count();
         in_delmulti(inm, &net);
         assert!(in_hasmulti(&g, ifp), "one claim left");
         assert!(igmp_sent(d).is_empty());
@@ -1393,7 +1466,7 @@ mod tests {
             "we may have reported last: a leave message"
         );
         assert_eq!(d.delmulti.load(Ordering::Relaxed), 1);
-        assert_eq!(free_counts().1, inm_free + 1);
+        assert_eq!(inm_free_count(), inm_free + 1);
         drop(net);
         drop(w);
 

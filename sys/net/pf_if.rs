@@ -118,8 +118,10 @@ use crate::net::pfvar::{
     pf_pool_get, pf_pool_init, pf_pool_put, pf_strlcpy,
 };
 use crate::net::pfvar_priv::{PfGlobal, pf_assert_locked, pf_lock, pf_unlock};
-use crate::netinet::in_::SockaddrIn;
-use crate::netinet6::in6::{In6Addr, in6_is_addr_linklocal, in6_is_scope_embed, satosin6_const};
+use crate::netinet::in_::{InAddr, SockaddrIn};
+use crate::netinet6::in6::{
+    In6Addr, SockaddrIn6, in6_is_addr_linklocal, in6_is_scope_embed, satosin6_const,
+};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_PF, M_WAITOK, M_ZERO};
 use crate::sys::pool::{PR_LIMITFAIL, Pool};
@@ -782,13 +784,16 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
     let flags_has = |f: u8| flags & i32::from(f) != 0;
     let mut got4 = false;
     let mut got6 = false;
-    for ifa in ifp.if_addrlist.iter() {
-        let sa = ifa.ifa_addr.get();
-        if sa.is_null() {
+    // The interface's addresses, copies read under the net lock pf holds here (N6.5e: the list
+    // is a net cell, its addresses the kernel's records).
+    let lend = crate::net::if_::net_held("pfi_instance_add");
+    let held = lend.net();
+    let r = held.reader();
+    for ifa in ifp.if_addrlist().iter(&r) {
+        let Some(sa) = ifa.ifa_addr(held) else {
             continue;
-        }
-        // SAFETY: an address on the list points at a valid socket address.
-        let af = unsafe { (*sa).sa_family };
+        };
+        let af = sa.family();
         if af != AF_INET && af != AF_INET6 {
             continue;
         }
@@ -802,8 +807,7 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
             continue;
         }
         if flags_has(PFI_AFLAG_NETWORK) && af == AF_INET6 {
-            // SAFETY: an `AF_INET6` address is a `struct sockaddr_in6`.
-            let a6 = unsafe { sin6_addr(sa) };
+            let a6 = sa_image(&sa).sin6_addr();
             if in6_is_addr_linklocal(&a6) {
                 continue;
             }
@@ -823,14 +827,12 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
         }
         let mut net2 = i32::from(net);
         if net2 == 128 && flags_has(PFI_AFLAG_NETWORK) {
-            let mask = ifa.ifa_netmask.get();
-            if !mask.is_null() {
+            if let Some(mask) = ifa.ifa_netmask(held) {
+                let mask = sa_image(&mask);
                 if af == AF_INET {
-                    // SAFETY: the netmask of an `AF_INET` address is a `sockaddr_in`.
-                    net2 = pfi_unmask(&unsafe { sin_pfaddr(mask) });
+                    net2 = pfi_unmask(&PfAddr::from_v4(mask.sin_addr()));
                 } else if af == AF_INET6 {
-                    // SAFETY: the netmask of an `AF_INET6` address is a `sockaddr_in6`.
-                    net2 = pfi_unmask(&PfAddr::from_v6(unsafe { sin6_addr(mask) }));
+                    net2 = pfi_unmask(&PfAddr::from_v6(mask.sin6_addr()));
                 }
             }
         }
@@ -838,16 +840,57 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
             net2 = 32;
         }
         let a = if flags_has(PFI_AFLAG_BROADCAST) {
-            ifa.ifa_broadaddr().get()
+            ifa.ifa_broadaddr(held)
         } else if flags_has(PFI_AFLAG_PEER) {
-            ifa.ifa_dstaddr.get()
+            ifa.ifa_dstaddr(held)
         } else {
-            sa
+            Some(sa)
         };
-        // SAFETY: the interface's address, broadcast or peer address is null or a socket
-        // address of the interface address's family.
-        unsafe { pfi_address_add(a, af, net2 as u8) };
+        let image = a.as_ref().map(|a| sa_image(a));
+        let ptr = image.as_ref().map_or(ptr::null(), SaImage::as_sockaddr);
+        // SAFETY: `ptr` is null (the C's NULL broadcast or peer address) or points at `image`,
+        // a local copy of the address zero-filled to a `sockaddr_in6` (28 bytes, every byte
+        // initialised), alive across the call: a readable socket address of `af`'s structure
+        // whichever of the two families `af` is (`pfi_address_add`'s contract), whose bytes
+        // past the address's `sa_len` are zero, as the C's storage past a trimmed mask is.
+        unsafe { pfi_address_add(ptr, af, net2 as u8) };
     }
+}
+
+/// A socket address copied out of an interface address ([`hal::link::SaBytes`]), zero-filled
+/// to the largest structure `pfi_instance_add` reads (`struct sockaddr_in6`), so its members
+/// are read whole and safely: the C reads `satosin(sa)->sin_addr` and
+/// `satosin6(sa)->sin6_addr` from the record's own storage, whose bytes past a trimmed mask's
+/// `sa_len` are zero.
+struct SaImage([u8; size_of::<SockaddrIn6>()]);
+
+impl SaImage {
+    /// `satosin(sa)->sin_addr`.
+    fn sin_addr(&self) -> InAddr {
+        InAddr {
+            s_addr: u32::from_ne_bytes([self.0[4], self.0[5], self.0[6], self.0[7]]),
+        }
+    }
+
+    /// `satosin6(sa)->sin6_addr`.
+    fn sin6_addr(&self) -> In6Addr {
+        let mut a = In6Addr::default();
+        a.s6_addr.copy_from_slice(&self.0[8..24]);
+        a
+    }
+
+    /// The image as a `struct sockaddr *` for [`pfi_address_add`].
+    fn as_sockaddr(&self) -> *const Sockaddr {
+        self.0.as_ptr().cast::<Sockaddr>()
+    }
+}
+
+/// The image of `sa`'s bytes, zero-filled ([`SaImage`]).
+fn sa_image(sa: &[u8]) -> SaImage {
+    let mut b = [0u8; size_of::<SockaddrIn6>()];
+    let n = sa.len().min(b.len());
+    b[..n].copy_from_slice(&sa[..n]);
+    SaImage(b)
 }
 
 /// `pfi_address_add`: appends `sa` as a network of `net` bits to `pfi_buffer`, growing it

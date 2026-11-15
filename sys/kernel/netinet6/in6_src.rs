@@ -129,7 +129,7 @@ use crate::net::route::{Route, Rtentry};
 use crate::net::rtable::rtable_getsource;
 use crate::netinet::in_pcb::Inpcb;
 use crate::netinet6::in6::in6_ifawithscope;
-use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6};
+use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6, ifatoia6};
 use crate::netinet6::ip6_var::IP6_DEFHLIM;
 use crate::proc::ProcGlue;
 
@@ -173,7 +173,8 @@ pub fn in6_pcbselsrc<G: ProcGlue>(
 
         let mut b = [0u8; core::mem::size_of::<SockaddrIn6>()];
         let _ = pod::put(&mut b, 0, &sa6);
-        let ia6 = ifa_ifwithaddr(net, &b, rtableid).and_then(In6Ifaddr::of);
+        let rd = net.reader();
+        let ia6 = ifa_ifwithaddr(net, &rd, &b, rtableid).and_then(In6Ifaddr::of);
         let Some(ia6) = ia6 else {
             return Err(Errno::EADDRNOTAVAIL);
         };
@@ -199,13 +200,14 @@ pub fn in6_pcbselsrc<G: ProcGlue>(
             return Err(Errno::ENXIO); // XXX: better error?
         };
 
-        let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None);
+        let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None, &net.reader())
+            .map(|ia| ia6_in6(ifatoia6(ia)));
         drop(ifp); // if_put(ifp)
 
-        return ia6.map(ia6_in6).ok_or(Errno::EADDRNOTAVAIL);
+        return ia6.ok_or(Errno::EADDRNOTAVAIL);
     }
 
-    match in6_selectsrc(dstsock, im6o_ifidx, rtableid) {
+    match in6_selectsrc(dstsock, im6o_ifidx, rtableid, net) {
         Err(Errno::EADDRNOTAVAIL) => {}
         error => return error,
     }
@@ -219,15 +221,18 @@ pub fn in6_pcbselsrc<G: ProcGlue>(
     // why it does so. It is necessary to ensure the scope even for lo0 so doesn't check out
     // IFF_LOOPBACK.
 
+    // One reader for the source selection: the scoped walk, the route's address and the
+    // preferred one.
+    let rd = net.reader();
     let mut ia6 = None;
     if let Some(rt) = rt {
         if let Some(ifp) = IfRef::get(rt.rt_ifidx.get()) {
-            ia6 = in6_ifawithscope(&ifp, dst, rtableid, Some(rt));
+            ia6 = in6_ifawithscope(&ifp, dst, rtableid, Some(rt), &rd).map(ifatoia6);
             // if_put(ifp): the reference's drop.
         }
         if ia6.is_none() {
             // xxx scope error ?
-            ia6 = rt.ifa().and_then(In6Ifaddr::of);
+            ia6 = rt.ifa(&rd).and_then(In6Ifaddr::of);
         }
     }
 
@@ -239,7 +244,7 @@ pub fn in6_pcbselsrc<G: ProcGlue>(
         && rt.rt_flags.get() & RTF_GATEWAY != 0
         && let Some(ip6_source) = rtable_getsource(rtableid, AF_INET6, net)
     {
-        let ifa = ifa_ifwithaddr(net, ip6_source.bytes(), rtableid);
+        let ifa = ifa_ifwithaddr(net, &rd, ip6_source.bytes(), rtableid);
         if let Some(ifa) = ifa
             && ifa
                 .ifa_ifp
@@ -257,11 +262,13 @@ pub fn in6_pcbselsrc<G: ProcGlue>(
 /// `in6_selectsrc(&in6src, dstsock, mopts, rtableid)`: an IPv6 address, the most appropriate
 /// for destination `dstsock` with multicast interface `im6o_ifidx` (`None`: no multicast
 /// options), when the destination's scope or its multicast interface names one; else
-/// `EADDRNOTAVAIL` (the caller looks the route up). Under the net lock.
+/// `EADDRNOTAVAIL` (the caller looks the route up). Under the net lock `net` proves (the scoped
+/// walks' reader).
 pub fn in6_selectsrc(
     dstsock: &SockaddrIn6,
     im6o_ifidx: Option<u16>,
     rtableid: u32,
+    net: &NetHeld<'_>,
 ) -> Result<In6Addr, Errno> {
     let dst = &dstsock.sin6_addr;
 
@@ -279,10 +286,11 @@ pub fn in6_selectsrc(
             return Err(Errno::ENXIO); // XXX: better error?
         };
 
-        let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None);
+        let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None, &net.reader())
+            .map(|ia| ia6_in6(ifatoia6(ia)));
         drop(ifp); // if_put(ifp)
 
-        return ia6.map(ia6_in6).ok_or(Errno::EADDRNOTAVAIL);
+        return ia6.ok_or(Errno::EADDRNOTAVAIL);
     }
 
     // If the destination address is a multicast address and the outgoing interface for the
@@ -297,10 +305,11 @@ pub fn in6_selectsrc(
         }
 
         if let Some(ifp) = ifp {
-            let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None);
+            let ia6 = in6_ifawithscope(&ifp, dst, rtableid, None, &net.reader())
+                .map(|ia| ia6_in6(ifatoia6(ia)));
             drop(ifp); // if_put(ifp)
 
-            return ia6.map(ia6_in6).ok_or(Errno::EADDRNOTAVAIL);
+            return ia6.ok_or(Errno::EADDRNOTAVAIL);
         }
     }
 
@@ -541,32 +550,33 @@ mod tests {
         let (i1, i2) = (if1.if_index.get(), if2.if_index.get());
         let ll1 = test_ia6(if1, zoned(a6("fe80::1"), i1), 0);
         let ll2 = test_ia6(if2, zoned(a6("fe80::2"), i2), 0);
-        let _w = NETLOCK.write();
+        let w = NETLOCK.write();
+        let net = &NetHeld::of(&w).expect("the net lock");
         // A link-local destination with its scope id: that interface's address.
-        let src = in6_selectsrc(&sin6("fe80::99", i2), None, 0).expect("src");
-        assert_eq!(src, ia6_in6(ll2));
-        let src = in6_selectsrc(&sin6("ff02::1", i1), None, 0).expect("src");
-        assert_eq!(src, ia6_in6(ll1));
+        let src = in6_selectsrc(&sin6("fe80::99", i2), None, 0, net).expect("src");
+        assert_eq!(src, ia6_in6(ifatoia6(&ll2)));
+        let src = in6_selectsrc(&sin6("ff02::1", i1), None, 0, net).expect("src");
+        assert_eq!(src, ia6_in6(ifatoia6(&ll1)));
         assert_eq!(
-            in6_selectsrc(&sin6("fe80::99", 4000), None, 0),
+            in6_selectsrc(&sin6("fe80::99", 4000), None, 0, net),
             Err(Errno::ENXIO)
         );
         // A multicast destination: the multicast interface's address.
-        let src = in6_selectsrc(&sin6("ff05::1", 0), Some(i2 as u16), 0).expect("src");
-        assert_eq!(src, ia6_in6(ll2));
+        let src = in6_selectsrc(&sin6("ff05::1", 0), Some(i2 as u16), 0, net).expect("src");
+        assert_eq!(src, ia6_in6(ifatoia6(&ll2)));
         // Nothing names an interface: the caller looks the route up.
         assert_eq!(
-            in6_selectsrc(&sin6("ff05::1", 0), None, 0),
+            in6_selectsrc(&sin6("ff05::1", 0), None, 0, net),
             Err(Errno::EADDRNOTAVAIL)
         );
         assert_eq!(
-            in6_selectsrc(&sin6("2001:db8::99", 0), Some(i2 as u16), 0),
+            in6_selectsrc(&sin6("2001:db8::99", 0), Some(i2 as u16), 0, net),
             Err(Errno::EADDRNOTAVAIL)
         );
         // A tentative address is no source.
-        ll2.ia6_flags.set(IN6_IFF_TENTATIVE);
+        ifatoia6(&ll2).ia6_flags.set(IN6_IFF_TENTATIVE);
         assert_eq!(
-            in6_selectsrc(&sin6("fe80::99", i2), None, 0),
+            in6_selectsrc(&sin6("fe80::99", i2), None, 0, net),
             Err(Errno::EADDRNOTAVAIL)
         );
     }

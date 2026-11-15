@@ -97,9 +97,10 @@ pub use crate::net::if_::{IF_TMPLIST_LOCK, IFNETLIST};
 pub use kernel::net::if_var::{
     AtomicCell, IF_CARP_DEFAULT_PRIORITY, IF_TXMIT_DEFAULT, IF_TXMIT_MIN,
     IF_WIRED_DEFAULT_PRIORITY, IF_WIRELESS_DEFAULT_PRIORITY, IF_WWAN_DEFAULT_PRIORITY, IFA_ROUTE,
-    IFC_NCOUNTERS, IFNET_SLOWTIMO, IfAddrlist, IfCounterArray, IfCounters, IfMaddrlist, IfTmplist,
-    IfaTmplist, Ifaddr, IfgGroup, IfgMembers, IfgRef, IfgSet, Ifmaddr, Ifnet, IfnetList, NetDriver,
-    Netstack, counters_inc, counters_pkt, if_rxr_cwm, if_rxr_inuse, if_rxr_needrefill, if_rxr_put,
+    IFC_NCOUNTERS, IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfMaddrlist, IfTmplist, Ifaddr,
+    IfaddrLinked, IfaddrRef, IfgGroup, IfgMembers, IfgRef, IfgSet, Ifmaddr, Ifnet, IfnetList,
+    LinkedIfa, NetDriver, Netstack, counters_inc, counters_pkt, if_rxr_cwm, if_rxr_inuse,
+    if_rxr_needrefill, if_rxr_put,
 };
 pub use kernel::net::ifq::{Ifiqueue, Ifqueue};
 

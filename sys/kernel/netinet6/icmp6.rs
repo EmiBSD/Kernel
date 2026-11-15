@@ -278,7 +278,7 @@ use crate::netinet6::in6::{in6_addr2scopeid, in6_ifawithscope, in6ifa_ifpforlink
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_proto::{inet6_protocol, raw6_protocol};
 use crate::netinet6::in6_src::in6_embedscope;
-use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6};
+use crate::netinet6::in6_var::{In6Ifaddr, ia6_in6, ifatoia6};
 use crate::netinet6::ip6_input::{
     ip6_exthdr_bytes, ip6_exthdr_get, ip6_lasthdr, ip6_send, ip6_set_bytes,
 };
@@ -1270,10 +1270,12 @@ pub fn icmp6_reflect(
         if rtisvalid(rt.as_deref())
             && let Some(r) = rt.as_deref()
             && r.rt_flags.get() & RTF_LOCAL != 0
-            && r.ifa().and_then(In6Ifaddr::of).is_some_and(|ia6| {
-                ia6.ia6_flags.get() & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
-                    == 0
-            })
+            && r.ifa(&net.reader())
+                .and_then(In6Ifaddr::of)
+                .is_some_and(|ia6| {
+                    ia6.ia6_flags.get() & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED)
+                        == 0
+                })
         {
             src = Some(t);
         }
@@ -1291,13 +1293,15 @@ pub fn icmp6_reflect(
             return Err(Errno::EHOSTUNREACH);
         };
         // A valid route has its address (`rt_ifa`).
-        let Some(rifa) = r.ifa() else {
+        let rd = net.reader();
+        let Some(rifa) = r.ifa(&rd) else {
             return Err(Errno::EHOSTUNREACH);
         };
         let ia6 = rifa
             .ifa_ifp
             .get()
-            .and_then(|ifp| in6_ifawithscope(ifp, &t, rtableid, Some(r)));
+            .and_then(|ifp| in6_ifawithscope(ifp, &t, rtableid, Some(r), &rd))
+            .map(ifatoia6);
         let mut s = match ia6.or_else(|| In6Ifaddr::of(rifa)) {
             Some(ia6) => ia6_in6(ia6),
             None => return Err(Errno::EHOSTUNREACH),
@@ -1306,7 +1310,7 @@ pub fn icmp6_reflect(
         // route sourceaddr may override src address selection
         if r.rt_flags.get() & RTF_GATEWAY != 0
             && let Some(sourceaddr) = rtable_getsource(rtableid, AF_INET6, net)
-            && let Some(ifa) = ifa_ifwithaddr(net, sourceaddr.bytes(), rtableid)
+            && let Some(ifa) = ifa_ifwithaddr(net, &rd, sourceaddr.bytes(), rtableid)
             && ifa
                 .ifa_ifp
                 .get()
@@ -1576,13 +1580,14 @@ pub fn icmp6_redirect_output(m0: MbufBox, rt: &Rtentry, net: &NetHeld<'_>) {
         }
 
         // get ip6 linklocal address for ifp(my outgoing interface).
-        let Some(ia6) = in6ifa_ifpforlinklocal(
+        let Some(ifp_ll6) = in6ifa_ifpforlinklocal(
+            &net.reader(),
             ifp,
             IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED | IN6_IFF_ANYCAST,
-        ) else {
+        )
+        .map(|ia| ia6_in6(ifatoia6(ia))) else {
             break 'fail;
         };
-        let ifp_ll6 = ia6_in6(ia6);
 
         // get ip6 linklocal address for the router.
         let gateway_ll6 = if rt.rt_flags.get() & RTF_GATEWAY != 0 {
@@ -1818,7 +1823,8 @@ pub fn icmp6_mtudisc_clone(
         let mut sa_rl = SockaddrRtlabel::default();
         let gw = rt.gateway_copy();
 
-        info.rti_ifa = rt.rt_ifa.get();
+        let r = net.reader();
+        info.rti_ifa = rt.ifa(&r);
         info.rti_flags = RTF_GATEWAY | RTF_HOST | RTF_DYNAMIC;
         info.rti_info[RTAX_DST] = Some(view(&sin6));
         info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(|g| g.view());
@@ -1991,14 +1997,17 @@ pub(crate) mod tests {
         ip6_test_reset();
         let ifp = ether(b"tic0");
         ifp.if_mtu.set(1500);
-        let w = NETLOCK.read();
-        let ifas: Vec<&'static crate::net::if_var::Ifaddr> = ifp.if_addrlist.iter().collect();
-        drop(w);
-        for ifa in ifas {
+        let ifas: Vec<crate::net::if_var::IfaddrRef> = {
+            let w = NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            ifp.if_addrlist().iter(&net.reader()).cloned().collect()
+        };
+        for ifa in &ifas {
             while dad_counts(ifa).is_some() {
                 dad_fire(ifa);
             }
         }
+        drop(ifas);
         dad_reap();
         let _ = crate::netinet6::nd6::tests::sent(ifp);
         let _ = seen::take();
@@ -2458,13 +2467,13 @@ pub(crate) mod tests {
     pub(crate) fn gw_route(ifp: &Ifnet, dst: In6Addr, gw: In6Addr) {
         let d = sin6_bytes(&sin6_of(dst));
         let g = sin6_bytes(&sin6_of(gw));
-        let ifa = crate::netinet6::in6::in6ifa_ifpwithaddr(ifp, &ours6()).map(|ia| &ia.ia_ifa);
+        let ifa = crate::netinet6::in6::tests::withaddr(ifp, &ours6());
         with_net(|net| {
             let mut info = RtAddrinfo::new();
             info.rti_flags = RTF_GATEWAY | RTF_HOST | hal::sys::net_route::RTF_STATIC;
             info.rti_info[RTAX_DST] = Some(view(&d));
             info.rti_info[RTAX_GATEWAY] = Some(view(&g));
-            info.rti_ifa = ifa;
+            info.rti_ifa = ifa.as_ref();
             rtrequest(
                 RTM_ADD,
                 &mut info,

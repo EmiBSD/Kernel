@@ -495,7 +495,7 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
             return IPPROTO_DONE;
         };
         // igmp_input_if's tail: return rip_input(mp, offp, proto, af, ns).
-        match crate::netinet::igmp::igmp_input(m, *offp) {
+        match crate::netinet::igmp::igmp_input(m, *offp, net) {
             Some(m) => match raw::<G>() {
                 Some(r) => {
                     *mp = Some(m);

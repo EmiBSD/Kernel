@@ -203,7 +203,7 @@ use crate::netinet::igmp_var::{
 };
 use crate::netinet::in_::{in_ifp2ia, in_lookupmulti};
 use crate::netinet::in_cksum::in_cksum;
-use crate::netinet::in_var::InMulti;
+use crate::netinet::in_var::{InMulti, ifatoia};
 use crate::netinet::ip_output::{ip_load, ip_output, ip_store};
 use crate::netinet::ip_var::IpMoptions;
 use crate::sysctl::{SysctlReq, rdstruct};
@@ -450,13 +450,13 @@ pub fn rti_delete(ifp: &Ifnet) {
 /// `igmp_input(mp, offp, proto, af, ns)`: an IGMP message, its IP header `off` bytes long,
 /// checked and acted on under the kernel lock (`igmp_input_if`); the valid packet is given
 /// back for the raw IGMP sockets (the module's deviations), `None` when it was dropped.
-pub fn igmp_input(m: MbufBox, off: i32) -> Option<MbufBox> {
+pub fn igmp_input(m: MbufBox, off: i32, net: &NetHeld<'_>) -> Option<MbufBox> {
     igmpstat_inc(IgmpstatCounters::IgpsRcvTotal);
 
     let ifp = IfRef::get(m.m_pkthdr().ph_ifidx.get())?;
 
     hal::klock::kernel_lock();
-    let m = igmp_input_if(ifp.ifp(), m, off);
+    let m = igmp_input_if(ifp.ifp(), m, off, net);
     hal::klock::kernel_unlock();
     // if_put(ifp): the reference's drop.
     m
@@ -541,7 +541,12 @@ fn igmp_heard(ifp: &Ifnet, group: InAddr, v1: bool) {
 /// `igmp_input_if(ifp, mp, offp, proto, af, ns)`: validates an IGMP message from `ifp` (its
 /// length and checksum) and acts on a query or a report; the valid packet back for the raw
 /// sockets, `None` when it was dropped (and counted).
-fn igmp_input_if(ifp: &'static Ifnet, m: MbufBox, iphlen: i32) -> Option<MbufBox> {
+fn igmp_input_if(
+    ifp: &'static Ifnet,
+    m: MbufBox,
+    iphlen: i32,
+    net: &NetHeld<'_>,
+) -> Option<MbufBox> {
     let mut m = m;
     let mut ip = ip_load(&m);
     let mut running = false;
@@ -637,7 +642,7 @@ fn igmp_input_if(ifp: &'static Ifnet, m: MbufBox, iphlen: i32) -> Option<MbufBox
             // which subnet it arrived from. This is necessary to compensate for the lack of
             // any way for a process to determine the arrival interface of an incoming packet.
             if ip.ip_src.s_addr & IN_CLASSA_NET == 0
-                && let Some(ia) = in_ifp2ia(ifp)
+                && let Some(ia) = in_ifp2ia(&net.reader(), ifp).map(ifatoia)
             {
                 ip.ip_src.s_addr = ia.ia_net.get();
                 if !ip_store(&mut m, &ip) {

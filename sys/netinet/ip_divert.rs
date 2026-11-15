@@ -73,7 +73,6 @@ use crate::net::route::{RTF_LOCAL, rtalloc, rtfree, rtisvalid};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{
     INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn, in_control, in_nam2sin,
-    satosin_const,
 };
 use crate::netinet::in_pcb::{
     INP_HDRINCL, Inpcb, Inpcbtable, in_pcb_is_iterator, in_pcballoc, in_pcbbind, in_pcbdetach,
@@ -360,16 +359,16 @@ pub fn divert_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
                 divstat_inc(DivstatCounters::DivsErrors);
                 break 'bad;
             };
-            for ifa in ifp.if_addrlist.iter() {
-                let sa = ifa.ifa_addr.get();
-                // SAFETY: an interface address's `ifa_addr` is a readable socket address of
-                // its family (`ifa_add`'s contract); an `AF_INET` one is a `sockaddr_in`.
-                if unsafe { (*sa).sa_family } != AF_INET {
-                    continue;
-                }
-                // SAFETY: as above.
-                sin.sin_addr = unsafe { satosin_const(sa).read_unaligned() }.sin_addr;
-                break;
+            // The first `AF_INET` address (an Internet record), read under a lend of the net
+            // lock the input path holds (N6.5e: the list is a net cell).
+            let lend = crate::net::if_::net_held("divert_packet");
+            let net = lend.net();
+            if let Some(ia) = ifp
+                .if_addrlist()
+                .iter(&net.reader())
+                .find_map(kernel::netinet::in_var::InIfaddr::of)
+            {
+                sin.sin_addr = ia.ia_addr.addr();
             }
             if_put(ifp);
         } else {

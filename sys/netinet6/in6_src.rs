@@ -129,8 +129,12 @@ pub fn in6_selectsrc(
     mopts: Option<&Ip6Moptions>,
     rtableid: u32,
 ) -> Result<(), Errno> {
-    *in6src =
-        kernel::netinet6::in6_src::in6_selectsrc(dstsock, mopts.map(|m| m.im6o_ifidx), rtableid)?;
+    *in6src = kernel::netinet6::in6_src::in6_selectsrc(
+        dstsock,
+        mopts.map(|m| m.im6o_ifidx),
+        rtableid,
+        net_held("in6_selectsrc").net(),
+    )?;
     Ok(())
 }
 

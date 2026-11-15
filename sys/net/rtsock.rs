@@ -88,7 +88,7 @@
 pub use kernel::net::rtsock::{ROUTERCVQ, ROUTESNDQ, rtm_ifannounce, rtm_ifchg, rtm_miss};
 
 use crate::net::if_::net_held;
-use crate::net::if_var::Ifaddr;
+use crate::net::if_var::IfaddrRef;
 use crate::net::route::Rtentry;
 
 /// `rtm_send(rt, cmd, error, rtableid)`.
@@ -97,7 +97,7 @@ pub fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
 }
 
 /// `rtm_addr(cmd, ifa)`.
-pub fn rtm_addr(cmd: u8, ifa: &Ifaddr) {
+pub fn rtm_addr(cmd: u8, ifa: &IfaddrRef) {
     kernel::net::rtsock::rtm_addr(cmd, ifa, net_held("rtm_addr").net());
 }
 /* </CODE> */

@@ -1167,11 +1167,11 @@ pub fn in_ouraddr(
             return 0;
         }
         // The check in the loop assumes you only rx a packet on an UP interface, and that
-        // M_BCAST will only be set on a BROADCAST interface. (NET_ASSERT_LOCKED: `net`.)
-        let _ = net;
+        // M_BCAST will only be set on a BROADCAST interface. (NET_ASSERT_LOCKED: `net`'s
+        // reader.)
         if ifp
-            .if_addrlist
-            .iter()
+            .if_addrlist()
+            .iter(&net.reader())
             .filter_map(InIfaddr::of)
             .any(|ia| in_classfulbroadcast(ip.ip_dst.s_addr, ia.ia_addr.addr().s_addr))
         {
@@ -1494,7 +1494,7 @@ pub(crate) fn sin_bytes(a: InAddr) -> [u8; size_of::<SockaddrIn>()] {
 
 /// The address of the Internet record of `ifa` (`ifatoia(ifa)->ia_addr.sin_addr`).
 #[inline]
-fn ia_addr_of(ifa: Option<&'static crate::net::if_var::Ifaddr>) -> InAddr {
+fn ia_addr_of(ifa: Option<&crate::net::if_var::IfaddrRef>) -> InAddr {
     ifa.and_then(InIfaddr::of)
         .map_or(InAddr { s_addr: 0 }, |ia| ia.ia_addr.addr())
 }
@@ -1662,7 +1662,7 @@ fn dooptions_walk(
                     return Err(param(o + IPOPT_OFFSET));
                 }
                 let ipaddr = sin_bytes(ip.ip_dst);
-                if ifa_ifwithaddr(net, &ipaddr, rtableid).is_none() {
+                if ifa_ifwithaddr(net, &net.reader(), &ipaddr, rtableid).is_none() {
                     if opt == IPOPT_SSRR {
                         return Err(unreach(ICMP_UNREACH_SRCFAIL));
                     }
@@ -1694,7 +1694,7 @@ fn dooptions_walk(
                 }) else {
                     return Err(unreach(ICMP_UNREACH_SRCFAIL));
                 };
-                let a = ia_addr_of(r.ifa());
+                let a = ia_addr_of(r.ifa(&net.reader()));
                 drop(rt);
                 opt_put(opts, o + off, a.s_addr);
                 opts[o + IPOPT_OFFSET] =
@@ -1733,7 +1733,7 @@ fn dooptions_walk(
                 let Some(r) = rt.as_deref().filter(|r| rtisvalid(Some(r))) else {
                     return Err(unreach(ICMP_UNREACH_HOST));
                 };
-                let a = ia_addr_of(r.ifa());
+                let a = ia_addr_of(r.ifa(&net.reader()));
                 drop(rt);
                 opt_put(opts, o + off as usize, a.s_addr);
                 opts[o + IPOPT_OFFSET] =
@@ -1774,7 +1774,7 @@ fn dooptions_walk(
                             return Err(code);
                         }
                         let ipaddr = sin_bytes(dst);
-                        if ifaof_ifpforaddr(net, &ipaddr, ifp).is_none() {
+                        if ifaof_ifpforaddr(net, &net.reader(), &ipaddr, ifp).is_none() {
                             // continue: the next option.
                             cnt -= optlen;
                             cp += optlen as usize;
@@ -1788,7 +1788,7 @@ fn dooptions_walk(
                             return Err(code);
                         }
                         let ipaddr = sin_bytes(sin);
-                        if ifa_ifwithaddr(net, &ipaddr, rtableid).is_none() {
+                        if ifa_ifwithaddr(net, &net.reader(), &ipaddr, rtableid).is_none() {
                             cnt -= optlen;
                             cp += optlen as usize;
                             continue 'opts;
@@ -1994,7 +1994,8 @@ pub fn ip_forward(m: MbufBox, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32, n
             && !arpproxy(key, rtableid, net)
             && IP_SENDREDIRECTS.load(Ordering::Relaxed) != 0
         {
-            let ia = rt.ifa().and_then(InIfaddr::of);
+            let rd = net.reader();
+            let ia = rt.ifa(&rd).and_then(InIfaddr::of);
             if ia.is_some_and(|ia| ip.ip_src.s_addr & ia.ia_netmask.get() == ia.ia_net.get()) {
                 if rt.rt_flags.isset(RTF_GATEWAY) {
                     dest = rt

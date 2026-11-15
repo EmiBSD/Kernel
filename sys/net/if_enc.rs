@@ -85,7 +85,7 @@ use crate::net::if_::{
 use crate::net::if_dl::SockaddrDl;
 use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::IfnetLegacy;
-use crate::net::if_var::{IfClone, Ifaddr, Ifnet};
+use crate::net::if_var::{IfClone, IfaddrLinked, IfaddrRef, Ifnet, LinkedIfa};
 use crate::net::route::Rtentry;
 use crate::netinet::ip_ipsp::{IpsecLevel, Tdb};
 use crate::sys::errno::Errno;
@@ -132,8 +132,9 @@ pub struct EncSoftc {
     pub sc_if: Ifnet,
     /// `sc_unit`.
     pub sc_unit: Cell<u32>,
-    /// `sc_ifa`: needed to attach rtentry.
-    pub sc_ifa: Ifaddr,
+    /// `sc_ifa`: needed to attach rtentry (the whole `struct ifaddr`, its references counted
+    /// in its own `ifa_refcnt`: `kernel::net::if_var::IfaddrLinked`).
+    pub sc_ifa: IfaddrLinked,
     /// The storage of `sc_ifa`'s address: the interface's link-level address, copied (the C
     /// points `ifa_addr` at `if_sadl`, which enc(4) never changes), so the kernel's routing
     /// reads it as every interface address's (`SaLink::read`).
@@ -199,8 +200,9 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
         return Err(Errno::ENOBUFS);
     };
     // SAFETY: a zero-filled block of the softc's size, aligned for it (malloc's chunks are
-    // aligned to their size); the all-zero `Ifnet` and `Ifaddr` are valid. It lives until
-    // `enc_clone_destroy`.
+    // aligned to their size); the all-zero `Ifnet` and `IfaddrLinked` are valid (every member
+    // a `hal` link, a reference count or an atomic: `hal`'s `an_all_zero_*` tests, and
+    // `kernel::net::if_var`'s zero-validity table). It lives until `enc_clone_destroy`.
     let sc: &'static EncSoftc = unsafe { &*mem.as_ptr().cast::<EncSoftc>() };
 
     sc.sc_unit.set(unit as u32);
@@ -228,7 +230,7 @@ pub fn enc_clone_create(ifc: &'static IfClone, unit: i32) -> Result<(), Errno> {
     // entry. So let's setup a fake and empty ifa of type AF_LINK for this purpose.
     if_alloc_sadl(ifp);
     sc.sc_ifa.ifa_refcnt.init();
-    sc.sc_ifa.ifa_ifp.set(Some(ifp));
+    sc.sc_ifa.ifa.ifa_ifp.set(Some(ifp));
     // ifa_addr = sdltosa(ifp->if_sadl): its bytes, published as the ifa's storage.
     if let Some(sdl) = ifp.sadl().as_deref() {
         sc.sc_addr.set(*sdl);
@@ -352,11 +354,13 @@ pub fn enc_getif(rdomain: u32, unit: u32) -> Option<&'static Ifnet> {
     *t.by_rdomain.get(rdomain as usize)?
 }
 
-/// `enc_getifa`: the fake link address of the enc interface `enc_getif` finds.
-pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<&'static Ifaddr> {
+/// `enc_getifa`: the fake link address of the enc interface `enc_getif` finds, a counted
+/// reference (`ifaref`, T4: the C's pointer is uncounted, kept alive by the softc, which
+/// `enc_clone_destroy` frees only after its own reference was the last).
+pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<IfaddrRef> {
     let ifp = enc_getif(rdomain, unit)?;
 
-    Some(&enc_softc(ifp).sc_ifa)
+    Some(IfaddrRef::Linked(LinkedIfa::new(&enc_softc(ifp).sc_ifa)))
 }
 
 /// The kernel's `Ipsec` bridge over enc(4) and IPsec (bridges.toml's `Ipsec` row, paid by
@@ -391,7 +395,7 @@ fn tdb_of(t: &TdbRef) -> &'static Tdb {
 }
 
 impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
-    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<&'static Ifaddr> {
+    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<IfaddrRef> {
         enc_getifa(rtableid, unit)
     }
 

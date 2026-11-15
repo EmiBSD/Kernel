@@ -286,11 +286,12 @@ pub fn in6_pcbaddrisavail_held<G: ProcGlue>(
         // included.
         sin6.sin6_port = 0;
         sin6.sin6_flowinfo = 0;
+        let rd = net.reader();
         let mut ifa = None;
         if !so.has_options(SO_BINDANY) {
             let mut b = [0u8; size_of::<SockaddrIn6>()];
             let _ = pod::put(&mut b, 0, &*sin6);
-            ifa = ifa_ifwithaddr(net, &b, inp.inp_rtableid.get());
+            ifa = ifa_ifwithaddr(net, &rd, &b, inp.inp_rtableid.get());
             if ifa.is_none() {
                 return Err(Errno::EADDRNOTAVAIL);
             }
