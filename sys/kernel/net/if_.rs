@@ -422,25 +422,8 @@ pub trait Inet: Sync + 'static {
     fn ipv6_input(&self) -> ProtoFn;
     /// `tcpstat_inc(tcps_inhwlro)` (`hw`) or `tcpstat_inc(tcps_inbadlro)`.
     fn tcpstat_lro(&self, hw: bool);
-    /// `nd6_ifattach(ifp)`.
-    fn nd6_ifattach(&self, ifp: &'static Ifnet);
-    /// `nd6_ifdetach(ifp)`.
-    fn nd6_ifdetach(&self, ifp: &'static Ifnet);
     /// `ip6_forwarding != 0`.
     fn ip6_forwarding(&self) -> bool;
-    /// `nd6_dad_start(ifa)`: Duplicate Address Detection of the tentative IPv6 address `ifa`
-    /// (`in6.c`'s and `in6_ifattach.c`'s calls; N6.5a, until ND moves at N6.5b). Default:
-    /// nothing.
-    fn nd6_dad_start(&self, _ifa: &'static Ifaddr) {}
-    /// `nd6_dad_stop(ifa)`: the DAD of `ifa` stopped (`in6_purgeaddr`'s; until N6.5b).
-    /// Default: nothing.
-    fn nd6_dad_stop(&self, _ifa: &'static Ifaddr) {}
-    /// `nd6_expire_timer_update(ia6)`: ND's address expiry timer brought forward to `ia6`'s
-    /// lifetimes (`in6_update_ifa`'s; until N6.5b). Default: nothing.
-    fn nd6_expire_timer_update(&self, _ia6: &'static crate::netinet6::in6_var::In6Ifaddr) {}
-    /// `nd6_purge(ifp)`: the neighbor cache of `ifp` emptied (`in6_ifdetach`'s; until
-    /// N6.5b). Default: nothing.
-    fn nd6_purge(&self, _ifp: &'static Ifnet) {}
     /// `ip6_output(m, &opts, NULL, flags, &im6o, NULL)` of MLD's reports (`mld6_sendpkt`;
     /// N6.5a, until the output path moves at N6.5c): `m` sent, with the router-alert
     /// hop-by-hop options header when `router_alert` (the C's `hbh_buf`, the image
@@ -460,6 +443,12 @@ pub trait Inet: Sync + 'static {
         drop(m);
         Err(Errno::EAFNOSUPPORT)
     }
+    /// `icmp6_error(m, type, code, param)`: an ICMPv6 error about `m` (consumed), ND's for the
+    /// packets an unresolved neighbor held (`nd6_llinfo_timer`'s; N6.5b, until ICMPv6 moves at
+    /// N6.5d). Default: the packet freed (no `INET6`).
+    fn icmp6_error(&self, m: MbufBox, _type: u8, _code: u8, _param: i32) {
+        drop(m);
+    }
     /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
     fn ip6_multipath(&self) -> bool {
         false
@@ -467,23 +456,6 @@ pub trait Inet: Sync + 'static {
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
-    /// `nd6_resolve(ifp, rt, m, dst, desten)`: `desten` filled with the link address of the
-    /// IPv6 destination `dst` (a `sockaddr_in6`) and the packet back to be sent;
-    /// `Err(EAGAIN)` when ND kept the packet, another error once it is freed
-    /// (`ether_resolve`'s call). Default: the packet freed, `EAFNOSUPPORT` (no `INET6`).
-    fn nd6_resolve(
-        &self,
-        _ifp: &'static Ifnet,
-        _rt: Option<&crate::net::route::Rtentry>,
-        m: MbufBox,
-        _dst: SockaddrView<'_>,
-        _desten: &mut [u8; ETHER_ADDR_LEN],
-    ) -> Result<MbufBox, Errno> {
-        drop(m);
-        Err(Errno::EAFNOSUPPORT)
-    }
-    /// `nd6_rtrequest(ifp, req, rt)`: the IPv6 one. Default: nothing.
-    fn nd6_rtrequest(&self, _ifp: &'static Ifnet, _req: u8, _rt: &crate::net::route::Rtentry) {}
     /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum in software when `ifp`
     /// cannot (`ether_offload_ifcap`, `if_output_tso`; `m`'s data starts at the IPv6
     /// header). Default: nothing.
@@ -1792,9 +1764,7 @@ fn if_attachsetup(ifp: &'static Ifnet) {
 
     let _ = if_addgroup(ifp, IFG_ALL);
 
-    if let Some(i) = inet() {
-        i.nd6_ifattach(ifp);
-    }
+    crate::netinet6::nd6::nd6_ifattach(ifp);
 
     if let Some(pf) = pf() {
         pf.attach_ifnet(ifp);
@@ -2293,9 +2263,7 @@ pub fn if_detach(ifp: &'static Ifnet) {
         kassert!(rt.if_detachhooks.is_empty(&g));
     }
 
-    if let Some(i) = inet() {
-        i.nd6_ifdetach(ifp);
-    }
+    crate::netinet6::nd6::nd6_ifdetach(ifp);
 
     // Announce that the interface is gone.
     rtsock::rtm_ifannounce(ifp, IFAN_DEPARTURE);
@@ -4493,6 +4461,8 @@ pub(crate) mod tests {
         crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
+        crate::netinet6::nd6::nd6_test_reset();
+        crate::netinet6::nd6_nbr::dad_test_reset();
         g
     }
 

@@ -1751,8 +1751,6 @@ impl kernel::net::if_::Inet for BenchInet {
         kernel::net::if_::test_proto_count
     }
     fn tcpstat_lro(&self, _hw: bool) {}
-    fn nd6_ifattach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
-    fn nd6_ifdetach(&self, _ifp: &'static kernel::net::if_var::Ifnet) {}
     fn ip6_forwarding(&self) -> bool {
         false
     }

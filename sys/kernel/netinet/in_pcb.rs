@@ -665,12 +665,13 @@ impl InAddrCell {
 }
 
 /// A \[t\] IPv6 address (`inp_faddr6`, `inp_laddr6`): four relaxed words, read whole by a
-/// holder of either lock (a reader with neither can see a torn address, as the C's can).
+/// holder of either lock (a reader with neither can see a torn address, as the C's can). Also
+/// ND's `ln_saddr6`, under `nd6_mtx` (`kernel::netinet6::nd6`).
 pub struct In6AddrCell([AtomicU32; 4]);
 
 impl In6AddrCell {
     /// The unspecified address.
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self([const { AtomicU32::new(0) }; 4])
     }
 
@@ -690,8 +691,8 @@ impl In6AddrCell {
         b
     }
 
-    /// Stores `a` (the caller holds the table's guard).
-    fn set_bytes(&self, a: [u8; 16]) {
+    /// Stores `a` (the caller holds the lock the address is under).
+    pub(crate) fn set_bytes(&self, a: [u8; 16]) {
         for (i, w) in self.0.iter().enumerate() {
             w.store(
                 u32::from_ne_bytes([a[i * 4], a[i * 4 + 1], a[i * 4 + 2], a[i * 4 + 3]]),
@@ -2720,6 +2721,8 @@ pub(crate) mod testinet {
         crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
+        crate::netinet6::nd6::nd6_test_reset();
+        crate::netinet6::nd6_nbr::dad_test_reset();
         crate::net::rtable::rtable_test_reset();
         crate::net::route::rtlabel_test_reset();
         crate::net::route::route_init();

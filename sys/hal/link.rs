@@ -71,8 +71,8 @@
 //! are written under), which it lends to a holder of that kind's mutex for the guard's borrow
 //! and gives back as its box only to that mutex's whole guard borrowed mutably
 //! ([`TaggedLink::take_a`], [`TaggedLink::take_b`]), so no lent reference survives; the
-//! kinds exclude each other (a word is set only from empty). Untagged, it is a legacy address
-//! `bsd` stores and reads (ND's record until N6.5b), never followed here.
+//! kinds exclude each other (a word is set only from empty). (N6.4b's untagged legacy address,
+//! `bsd`'s ND record, went with its last reader at N6.5b.)
 //!
 //! ## Redesign
 //! - `Cell<*const T>` with "valid while linked" -> `Link<T>` over `'static` targets: the
@@ -113,7 +113,7 @@
 //!   `TaggedLink<A, B>`, each owning a box of its own pool and lent under its own mutex
 //!   (`arp_mtx` for ARP's record, `nd6_mtx` for ND's): the tag (`01`, `10`) and the kind's
 //!   type come from one private impl (`Kind`), so no operation decodes a word as the other
-//!   kind's item; each kind's proof is N6.4b's (the box's raw form, the pool checked, the box
+//!   kind's item; the legacy half (`get_legacy`/`set_legacy`) went with bsd's nd6; each kind's proof is N6.4b's (the box's raw form, the pool checked, the box
 //!   back only to that kind's whole guard borrowed mutably), and the kinds exclude each other
 //!   because a word is stored only from null. The items are 4-aligned (a `const` assert).
 //!   [`TaggedLink::move_b_to_head`] is `nd6_resolve`'s LRU move (`TAILQ_REMOVE` then
@@ -122,7 +122,6 @@
 //!   composed outside; no reference to the item outlives the call.
 
 use core::cell::Cell;
-use core::ffi::c_void;
 use core::marker::PhantomData;
 use core::mem::align_of;
 use core::pin::Pin;
@@ -492,7 +491,7 @@ pub trait Tagged: Pooled + Sync {
 const TAG_A: usize = 0b01;
 /// The tag of a word that owns an item of its second kind (`B`): bit 1.
 const TAG_B: usize = 0b10;
-/// Both tag bits: clear in an empty word and in a legacy address.
+/// Both tag bits: clear in an empty word.
 const TAGS: usize = TAG_A | TAG_B;
 
 /// One of the two kinds of a [`TaggedLink<A, B>`]: the tag a word of that kind carries and
@@ -525,19 +524,16 @@ impl<A: Tagged, B: Tagged> Kind<A, B> for KindB {
 /// llinfo_arp` (`A`) and ND's `struct llinfo_nd6` (`B`): tagged `01`, it owns an item of the
 /// pool of `A`, lent to the holders of `A`'s [`Tagged::LOCK`]; tagged `10`, an item of the pool
 /// of `B`, lent to the holders of `B`'s; each kind's box is given back only to its own lock's
-/// whole guard ([`TaggedLink::take_a`], [`TaggedLink::take_b`]). Untagged, it is a legacy
-/// address (`bsd`'s ND record until N6.5b) that the type only stores and returns
-/// ([`TaggedLink::get_legacy`], [`TaggedLink::set_legacy`]), never follows.
+/// whole guard ([`TaggedLink::take_a`], [`TaggedLink::take_b`]).
 ///
-/// Invariant: the word is null, a legacy address (both tag bits clear), or, tagged `K::TAG`
+/// Invariant: the word is null or, tagged `K::TAG`
 /// for a kind `K` (exactly one tag bit set), the pointer `PoolBox::into_raw` gave for a box
 /// of `K::Item::POOL` (checked at the set), whose one owner this link is: the item stays out
 /// of its pool, in place (pinned), its value alive and never given mutably, until the one
 /// `PoolBox::from_raw` of the take of that kind or of the drop takes the box back. A tagged
 /// word is stored only from null (so the kinds exclude each other: a set of one kind over a
 /// word of the other fails its exchange) and cleared only by those two, the take under
-/// `K::Item::LOCK` held whole and borrowed mutably, the drop through `&mut self`; the legacy
-/// setter refuses to replace a tagged word.
+/// `K::Item::LOCK` held whole and borrowed mutably, the drop through `&mut self`.
 pub struct TaggedLink<A: Tagged, B: Tagged> {
     word: AtomicPtr<u8>,
     /// The link owns a box of one kind or the other: `Send` and `Sync` as both boxes are.
@@ -593,7 +589,7 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
     }
 
     /// The `A`, for the holder of `w`, a witness of `A`'s lock (whole, or its part 0); `None`
-    /// when the word owns none (empty, a `B`, or a legacy address). Another lock's witness, or
+    /// when the word owns none (empty, or a `B`). Another lock's witness, or
     /// another part, is `panic(9)`. The reference borrows the witness and the link, so it ends
     /// before the lock is released, before [`TaggedLink::take_a`] (which needs the whole
     /// witness mutably) can run, and before the link's drop.
@@ -658,44 +654,6 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
         true
     }
 
-    /// The legacy address the word holds (`(struct llinfo_nd6 *)rt->rt_llinfo`), null when it
-    /// is empty or owns an item of either kind (whose address no legacy reader may take for
-    /// its own).
-    #[inline]
-    pub fn get_legacy(&self) -> *const c_void {
-        let w = self.word.load(Ordering::Relaxed);
-        if w.addr() & TAGS != 0 {
-            return ptr::null();
-        }
-        w.cast_const().cast()
-    }
-
-    /// Stores the legacy address `p` (null empties the word), under the legacy owner's lock.
-    /// `panic(9)` when the word owns an item (a legacy write over it would leak the item and
-    /// hand its slot away), or for an address with a tag bit set (it would read as an item).
-    pub fn set_legacy(&self, p: *const c_void) {
-        if p.addr() & TAGS != 0 {
-            hal_panic(format_args!("TaggedLink::set_legacy: an unaligned address"));
-        }
-        let mut cur = self.word.load(Ordering::Relaxed);
-        loop {
-            if cur.addr() & TAGS != 0 {
-                hal_panic(format_args!(
-                    "TaggedLink::set_legacy: the word owns a typed item"
-                ));
-            }
-            match self.word.compare_exchange_weak(
-                cur,
-                p.cast_mut().cast(),
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => return,
-                Err(now) => cur = now,
-            }
-        }
-    }
-
     /// The item of kind `K`, for a witness of its lock (whole or its part 0).
     #[inline]
     fn get_k<'a, K: Kind<A, B>, W: Witness + ?Sized>(&'a self, w: &'a W) -> Option<&'a K::Item> {
@@ -727,7 +685,7 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
             Ordering::Relaxed,
         ) {
             Ok(_) => Ok(()),
-            // The other kind's owner (under its own lock) or a legacy writer stored meanwhile.
+            // The other kind's owner (under its own lock) stored meanwhile.
             Err(_) => Err(reclaimed(p)),
         }
     }
@@ -739,8 +697,8 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
         let cur = self.word.load(Ordering::Relaxed);
         let p = tagged::<K::Item>(cur, K::TAG)?;
         // A word of this kind is cleared only by this call (under this kind's lock, held here
-        // whole) and the drop; the other kind's set and the legacy setter never replace it:
-        // the exchange cannot fail but on a broken invariant.
+        // whole) and the drop; the other kind's set never replaces it (it stores only from
+        // null): the exchange cannot fail but on a broken invariant.
         if self
             .word
             .compare_exchange(cur, ptr::null_mut(), Ordering::Relaxed, Ordering::Relaxed)
@@ -796,7 +754,7 @@ fn check<T: Tagged, W: Witness + ?Sized>(w: &W, whole: bool) {
 
 /// The item a word's value `w` owns when its tag is `tag` (`T` being that tag's kind's item,
 /// as every caller pairs them: `Kind`'s impls, the drop's two arms), `None` for a word of the
-/// other kind, an empty one or a legacy address.
+/// other kind or an empty one.
 #[inline]
 fn tagged<T: Tagged>(w: *mut u8, tag: usize) -> Option<NonNull<T>> {
     if w.addr() & TAGS != tag {
@@ -818,8 +776,7 @@ fn reclaimed<T: Tagged>(p: NonNull<T>) -> PoolBox<T> {
     // alone: a set never stored it (the exchange failed), or a take (under `T::LOCK` held
     // whole) or the drop has just cleared the one tagged word that named it, and a tagged
     // word is cleared only there, once (the type's invariant: the other kind's set stores
-    // only from null and the legacy setter refuses a tagged word), so no other `from_raw` of
-    // it happens. The item was never put back (only a box's drop does that, and the box was
+    // only from null), so no other `from_raw` of it happens. The item was never put back (only a box's drop does that, and the box was
     // given up), and it still holds an initialised `T`: the pool and its backend do not
     // touch a granted item (`RawPool`'s contract, `sys/hal/trust.rs`), and while the word
     // owned it the value was reached only through the shared references `owned` made, so it
@@ -1358,10 +1315,6 @@ mod tests {
         assert!(l.is_set() && l.is_typed() && l.is_a() && !l.is_b());
         assert_eq!(l.addr(), addr, "the record's address, its tag cleared");
         assert_eq!(l.get_a(&g).map(|r| r.v), Some(5));
-        assert!(
-            l.get_legacy().is_null(),
-            "a typed record is no legacy address"
-        );
         // A second record: refused, given back.
         let again = l.set_a(&g, rec(6)).expect_err("the word is taken");
         assert_eq!(again.v, 6);
@@ -1607,46 +1560,6 @@ mod tests {
             "never parked: no box of it"
         );
         assert_eq!(l.get_b(g).map(|r| r.v), Some(9), "still the link's");
-    }
-
-    #[test]
-    fn a_legacy_address_is_kept_and_never_lent_nor_overwritten_typed() {
-        static WORD: u64 = 0;
-        let l = Link2::new();
-        let p: *const c_void = ptr::from_ref(&WORD).cast();
-        l.set_legacy(p);
-        assert_eq!(l.get_legacy(), p);
-        assert!(l.is_set() && !l.is_typed());
-        let g = REC_MTX.lock();
-        assert!(l.get_a(&g).is_none(), "a legacy word lends nothing");
-        let refused = l.set_a(&g, rec(1)).expect_err("the legacy owner holds it");
-        assert_eq!(refused.v, 1);
-        drop(g);
-        l.set_legacy(ptr::null());
-        assert!(!l.is_set());
-        // An address with a tag bit set would read as a record: refused.
-        for a in [0x1001, 0x1002] {
-            let odd = std::panic::catch_unwind(|| {
-                let l = Link2::new();
-                l.set_legacy(ptr::without_provenance(a));
-            });
-            assert!(odd.is_err());
-        }
-    }
-
-    #[test]
-    fn a_legacy_write_over_a_record_is_refused() {
-        static WORD: u64 = 0;
-        let l = Link2::new();
-        {
-            let g = REC_MTX.lock();
-            assert!(l.set_a(&g, rec(2)).is_ok());
-        }
-        let over = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            l.set_legacy(ptr::from_ref(&WORD).cast());
-        }));
-        assert!(over.is_err(), "the record stays the word's");
-        assert_eq!(l.get_a(&REC_MTX.lock()).map(|r| r.v), Some(2));
     }
 
     #[test]

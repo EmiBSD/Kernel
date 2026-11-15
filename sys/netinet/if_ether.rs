@@ -101,9 +101,8 @@
 pub use hal::sys::netinet_if_ether::*;
 pub use kernel::net::if_ethersubr::{Arpcom, EtherMulti, EtherPort, arpcom_of};
 pub use kernel::netinet::if_ether::{
-    ARPINQ, ARPT_DOWN, ARPT_KEEP, LA_HOLD_QUEUE, LA_HOLD_TOTAL, LlinfoArp, SDL_ALEN, arpinit,
-    gw_alen_family, gw_family_len, gw_lladdr, gw_sdl_copy, gw_sdl_index, gw_set_lladdr,
-    gw_set_type_index, if_sadl_copy, la_hold_total,
+    ARPINQ, ARPT_DOWN, ARPT_KEEP, LA_HOLD_QUEUE, LA_HOLD_TOTAL, LlinfoArp, arpinit, gw_alen_family,
+    la_hold_total,
 };
 #[cfg(feature = "nfsclient")]
 pub use kernel::netinet::if_ether::{

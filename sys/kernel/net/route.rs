@@ -212,6 +212,7 @@
 //!   | (none: an unlinked route's `rt_next` is a bare pointer) | the `rt_next` an unlinked route keeps, subtracted by [`rt_refcnt`] (`rt_backrefs`) |
 //!   | (none: `rtfree` drops it at once) | a chain word's reference retired and not released yet, subtracted by [`rt_refcnt`] (`hal::smr::retired_count`) |
 //!   | (none: `la_rt` is a bare pointer) | the `la_rt` of the ARP record the route's `rt_llinfo` owns, subtracted by [`rt_refcnt`] (`TaggedLink::is_typed`; N6.4b) |
+//!   | (none: `ln_rt` is a bare pointer) | the `ln_rt` of the ND record the route's `rt_llinfo` owns, subtracted the same way (either kind; N6.5b) |
 //!
 //!   A timer holds a counted handle of its route (R11 of N6.3b1): kernel code cannot follow
 //!   the C's bare back pointer. So a route's timers are removed when it leaves its table
@@ -226,7 +227,8 @@
 //!   `rt_ifidx`, `rt_labelid`, `rt_priority` relaxed atomics; `rt_ifa` a `Link` to the address
 //!   (`bsd`'s storage until N6.4, D-N6.3a-3); `rt_llinfo` a word (D-N6.3b-10), since N6.4b a
 //!   `hal::link::TaggedLink` owning ARP's record (lent under `arp_mtx`) or holding ND's
-//!   legacy address (D-4); `rt_cachecnt`
+//!   legacy address (D-4), since N6.5b of two kinds, ARP's record or ND's (lent under
+//!   `nd6_mtx`, D-N6.5-5); `rt_cachecnt`
 //!   inside `rt_mtx`'s `Mutexed`; `rt_timer` a `PinList` under `RTTIMER_MTX`'s witness.
 //! - `struct route` is [`Route`], owned and changed through `&mut` (D-N6.3b-7): the C's
 //!   `route_cache`/`route_mpath` are [`Route::cache4`] and [`Route::mpath4`] (`route6_*` the
@@ -304,6 +306,7 @@ use crate::net::rtable::{
 };
 use crate::net::rtsock;
 use crate::netinet::if_ether::LlinfoArp;
+use crate::netinet6::nd6::LlinfoNd6;
 use crate::timeout::{KCLOCK_NONE, TIMEOUT_PROC, Timeout};
 
 /// `RT_RESOLVE`: `rtalloc`'s flag to add and resolve the link-layer route of a cloning one.
@@ -444,11 +447,10 @@ pub struct Rtentry {
     rt_gateway: ReadMostly<Option<MArray<u8>>>,
     /// \[N\] `rt_ifa`: the interface address to use.
     pub rt_ifa: Link<Ifaddr>,
-    /// \[L\] `rt_llinfo`: the link-level information: ARP's record, owned and lent under
-    /// `arp_mtx` (`kernel::netinet::if_ether`; the word's first kind), or ND's legacy address
-    /// (`bsd`'s until ND moves at N6.5b and its record becomes the second kind; ARP's type
-    /// stands in for that kind until then).
-    pub rt_llinfo: TaggedLink<LlinfoArp, LlinfoArp>,
+    /// \[L\] `rt_llinfo`: the link-level information: ARP's record on an IPv4 route, owned and
+    /// lent under `arp_mtx` (`kernel::netinet::if_ether`; the word's first kind), or ND's on an
+    /// IPv6 one, under `nd6_mtx` (`kernel::netinet6::nd6`; the second kind).
+    pub rt_llinfo: TaggedLink<LlinfoArp, LlinfoNd6>,
     /// \[X\] `rt_gwroute`: the route of `rt_gateway`.
     rt_gwroute: ReadMostly<Option<PoolArc<Rtentry>>>,
     /// \[N\] `rt_parent`: the cloning route of a cloned one.
@@ -3114,8 +3116,33 @@ pub(crate) mod tests {
         crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
+    /// A packet the tests' `Inet::ip6_output_opts` leg was given: the `ip6_output` flags, the
+    /// multicast interface and hop limit, and the packet's bytes.
+    pub(crate) struct Sent6 {
+        pub(crate) flags: i32,
+        pub(crate) ifidx: u16,
+        pub(crate) hlim: u8,
+        pub(crate) bytes: Vec<u8>,
+    }
+
+    /// What the tests' legs were given (the last 64 packets; the ICMPv6 errors' type and code).
+    pub(crate) static IP6_SENT: std::sync::Mutex<Vec<Sent6>> = std::sync::Mutex::new(Vec::new());
+    pub(crate) static ICMP6_ERRORS: std::sync::Mutex<Vec<(u8, u8)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Takes the packets `ip6_output_opts` was given so far.
+    pub(crate) fn take_ip6_sent() -> Vec<Sent6> {
+        core::mem::take(&mut *IP6_SENT.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Takes the ICMPv6 errors asked for so far.
+    pub(crate) fn take_icmp6_errors() -> Vec<(u8, u8)> {
+        core::mem::take(&mut *ICMP6_ERRORS.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
-    /// counted.
+    /// counted, IPv6 output and ICMPv6 errors kept (ND's and MLD's), the net lock's proof lent
+    /// from a test's detached holding (`hal::netlock::lock`).
     struct TestInet {
         hits: AtomicU32,
         misses: AtomicU32,
@@ -3128,10 +3155,44 @@ pub(crate) mod tests {
             crate::net::if_::test_proto_count
         }
         fn tcpstat_lro(&self, _hw: bool) {}
-        fn nd6_ifattach(&self, _ifp: &'static Ifnet) {}
-        fn nd6_ifdetach(&self, _ifp: &'static Ifnet) {}
         fn ip6_forwarding(&self) -> bool {
             false
+        }
+        fn ip6_output_opts(
+            &self,
+            m: crate::net::mbuf::MbufBox,
+            _router_alert: bool,
+            flags: i32,
+            ifidx: u16,
+            hlim: u8,
+            _loop_: bool,
+        ) -> Result<(), Errno> {
+            let mut b = std::vec![0u8; m.m_pkthdr().len.get() as usize];
+            crate::net::mbuf::m_copydata(&m, 0, &mut b);
+            let mut sent = IP6_SENT.lock().unwrap_or_else(|e| e.into_inner());
+            if sent.len() >= 64 {
+                sent.remove(0);
+            }
+            sent.push(Sent6 {
+                flags,
+                ifidx,
+                hlim,
+                bytes: b,
+            });
+            Ok(())
+        }
+        fn icmp6_error(&self, m: crate::net::mbuf::MbufBox, type_: u8, code: u8, _param: i32) {
+            drop(m);
+            ICMP6_ERRORS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((type_, code));
+        }
+        fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
+            if !hal::netlock::held_detached() {
+                panic!("the tests' with_net_held: no detached net lock");
+            }
+            hal::netlock::lend_detached(|n| f(n));
         }
         fn ip6_multipath(&self) -> bool {
             MULTIPATH.load(Ordering::Relaxed)

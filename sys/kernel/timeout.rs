@@ -530,6 +530,8 @@ impl Timeout {
         };
         self.flags.store(f & !TIMEOUT_TRIGGERED, Ordering::Relaxed);
         g.stat.tos_deleted += 1;
+        #[cfg(test)]
+        DELETED_HERE.with(|n| n.set(n.get() + 1));
         ret
     }
 
@@ -1291,6 +1293,13 @@ const _: () = {
     assert!(BUCKETS == 1024);
 };
 
+#[cfg(test)]
+std::thread_local! {
+    /// The `timeout_del`s the running host test thread made (a test's own count, which the
+    /// wheel's `tos_deleted`, shared by the tests that run beside it, is not).
+    static DELETED_HERE: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
 /// Test hooks: one hardclock's worth of wheel work (`ticks++`, the update, the soft
 /// interrupt's work), as the tests and the host benches drive the clock by hand.
 #[cfg(any(test, feature = "doubles"))]
@@ -1660,19 +1669,25 @@ pub(crate) mod tests {
         while !STARTED.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
-        let deleted = stats()[2];
+        // The waiter's own deletions (its barrier node's drop): `tos_deleted` is the wheel's,
+        // which the other host tests running beside this one move.
         let waiter = std::thread::spawn(|| {
+            let before = DELETED_HERE.with(core::cell::Cell::get);
             TO.barrier();
-            RELEASE.load(Ordering::SeqCst)
+            (
+                RELEASE.load(Ordering::SeqCst),
+                DELETED_HERE.with(core::cell::Cell::get) - before,
+            )
         });
         std::thread::sleep(Duration::from_millis(50));
         assert!(!waiter.is_finished(), "the barrier returned while it ran");
         RELEASE.store(true, Ordering::SeqCst);
-        assert!(waiter.join().unwrap(), "returned after the release");
+        let (released, deletions) = waiter.join().unwrap();
+        assert!(released, "returned after the release");
         runner.join().unwrap();
         // The waiter returned once its barrier was off the queue: the barrier's drop deleted
-        // nothing (`tos_deleted` unchanged).
-        assert_eq!(stats()[2], deleted);
+        // nothing (no `timeout_del` by the waiter's thread).
+        assert_eq!(deletions, 0);
         // Not running any more: a barrier returns at once.
         TO.barrier();
     }

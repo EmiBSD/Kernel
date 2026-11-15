@@ -152,27 +152,23 @@
 //!   (`docs/C_TO_RUST.md`) for `bsd`'s raw socket addresses; `in6_nam2sin6` checks through
 //!   the kernel's and answers the pointer into the caller's mbuf, as LZ's callers use it.
 //! - `in6_control` has the `pru_control` signature (`sys/protosw.rs`): the socket's
-//!   `SS_PRIV` and the kernel copy of the request; `SIOCGIFINFO_IN6` and `SIOCGNBRINFO_IN6`
-//!   are answered here by `nd6_ioctl` (`bsd`'s until N6.5b) over an aligned copy of the
-//!   request, the rest by the kernel's `in6_control` (`bsd`'s tests call the kernel's
-//!   `in6_ioctl` over the request's bytes).
-//! - `in6_addmulti`, `in6_delmulti` and `in6_purgeaddr` keep LZ's signatures, the net lock's
-//!   proof made through the `SaToken` (their callers hold it: ND under the net lock,
-//!   `ip6_setmoptions` under the socket lock). `in6_joingroup` and `in6_leavegroup` keep
+//!   `SS_PRIV` and the kernel copy of the request, handed whole to the kernel's `in6_control`
+//!   (ND's two requests included since N6.5b; `bsd`'s tests call the kernel's `in6_ioctl` over
+//!   the request's bytes).
+//! - `in6_addmulti` and `in6_delmulti` keep LZ's signatures, the net lock's proof made through
+//!   the `SaToken` (their caller holds it: `ip6_setmoptions`, under the socket lock). `in6_joingroup` and `in6_leavegroup` keep
 //!   LZ's `malloc`'d `struct in6_multi_mship` for `ip6_setmoptions`' list until the socket
 //!   options move (N6.5c; the kernel's addresses keep theirs in an array).
 
 use core::cell::Cell;
 use core::mem::size_of;
-use core::ptr::{self, NonNull};
+use core::ptr::NonNull;
 
 use crate::kern::kern_malloc::{free, malloc};
 use crate::net::if_::net_held;
-use crate::net::if_var::{Ifaddr, Ifnet};
-use crate::netinet6::in6_var::{In6Multi, In6MultiMship, SIOCGIFINFO_IN6, SIOCGNBRINFO_IN6};
-use crate::netinet6::nd6::nd6_ioctl;
+use crate::net::if_var::Ifnet;
+use crate::netinet6::in6_var::{In6Multi, In6MultiMship};
 use crate::sys::errno::Errno;
-use crate::sys::ioccom::iocparm_len;
 use crate::sys::malloc::{M_IPMADDR, M_NOWAIT};
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::queue::ListEntry;
@@ -213,42 +209,15 @@ pub fn in6_nam2sin6(nam: &Mbuf) -> Result<*mut SockaddrIn6, Errno> {
 }
 
 /// `in6_control(so, cmd, data, ifp)`: the `pru_control` of the IPv6 protocols: the address
-/// `ioctl`s on interface `ifp` (the kernel's), privileged as the socket is; ND's two
-/// requests through `nd6_ioctl` (see the module's deviations).
+/// `ioctl`s on interface `ifp` and ND's two requests (the kernel's), privileged as the socket
+/// is.
 pub fn in6_control(
     so: &'static Socket,
     cmd: u64,
     data: &mut [u8],
     ifp: Option<&'static Ifnet>,
 ) -> Result<(), Errno> {
-    if !matches!(cmd, SIOCGIFINFO_IN6 | SIOCGNBRINFO_IN6) {
-        return kernel::netinet6::in6::in6_control(so.has_state(SS_PRIV), cmd, data, ifp);
-    }
-    let Some(ifp) = ifp else {
-        return Err(Errno::ENXIO);
-    };
-    let len = iocparm_len(cmd) as usize;
-    if data.len() < len {
-        return Err(Errno::EINVAL);
-    }
-    // sys_ioctl's on-stack buffer: at most STK_PARAMS bytes; an aligned copy of the request.
-    let mut aligned = [0u64; 16];
-    if len > size_of_val(&aligned) {
-        return Err(Errno::EINVAL);
-    }
-    let bytes = aligned.as_mut_ptr().cast::<u8>();
-    // SAFETY: both buffers hold `len` bytes and do not overlap.
-    unsafe { ptr::copy_nonoverlapping(data.as_ptr(), bytes, len) };
-    // SAFETY: an aligned copy of the request, as long as `cmd` encodes, ours for the call.
-    let error = unsafe { nd6_ioctl(cmd, bytes, ifp) };
-    // SAFETY: as above, back into the caller's buffer.
-    unsafe { ptr::copy_nonoverlapping(bytes, data.as_mut_ptr(), len) };
-    error
-}
-
-/// `in6_purgeaddr(ifa)`: the kernel's, under the net lock the caller holds.
-pub fn in6_purgeaddr(ifa: &'static Ifaddr) {
-    kernel::netinet6::in6::in6_purgeaddr(ifa, &net_held("in6_purgeaddr"));
+    kernel::netinet6::in6::in6_control(so.has_state(SS_PRIV), cmd, data, ifp)
 }
 
 /// `in6_addmulti(addr, ifp, &error)`: the kernel's, under the net lock the caller holds.

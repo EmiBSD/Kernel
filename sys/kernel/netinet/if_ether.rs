@@ -385,7 +385,7 @@ pub fn gw_lladdr(rt: &Rtentry) -> [u8; ETHER_ADDR_LEN] {
 
 /// The `ETHER_ADDR_LEN` bytes after the name of the `sockaddr_dl` whose bytes `g` holds
 /// (zeros past its end).
-fn sdl_lladdr(g: &[u8]) -> [u8; ETHER_ADDR_LEN] {
+pub(crate) fn sdl_lladdr(g: &[u8]) -> [u8; ETHER_ADDR_LEN] {
     let mut en = [0u8; ETHER_ADDR_LEN];
     let start = SDL_DATA_OFFSET + usize::from(g.get(5).copied().unwrap_or(0));
     if let Some(a) = g.get(start..) {

@@ -466,6 +466,13 @@ paid_by = "N7"
 # in6_ifattach.c's calls into ND, until N6.5b) and ip6_output_opts (mld6_sendpkt's
 # ip6_output, until N6.5c; the kernel asks for the router alert with a bool and the leg points
 # the options at its own 'static copy of MLD6_HBH: no caller's bytes reach make_exthdr).
+# N6.5b (the kernel's ND, kernel::netinet6::{nd6, nd6_nbr, nd6_rtr}): nd6_ifattach,
+# nd6_ifdetach, nd6_resolve and nd6_rtrequest left (the interface layer, ether_resolve and
+# ether_rtrequest call the kernel's), with them BsdNetLegs' unsafe over nd6_resolve's
+# destination, and the four temporary legs into ND; ip6_output_opts serves ND's solicitations
+# and advertisements too (no options); a temporary icmp6_error joined (nd6_llinfo_timer's
+# errors about the packets an unanswered neighbor held, until ICMPv6 moves at N6.5d);
+# with_net_held lends nd6_resolve's solicitation its proof (a driver's output carries none).
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
@@ -475,7 +482,7 @@ paid_by = "N7"
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/in6.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/mld6.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/nd6_nbr.rs"]
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's

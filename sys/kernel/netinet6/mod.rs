@@ -31,4 +31,7 @@ pub mod ip6_id;
 pub mod ip6_var;
 pub mod mld6;
 pub mod mld6_var;
+pub mod nd6;
+pub mod nd6_nbr;
+pub mod nd6_rtr;
 /* </CODE> */

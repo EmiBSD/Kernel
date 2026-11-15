@@ -95,9 +95,9 @@
 //! - `ip6_mrouter_detach` (`MROUTING`) is not configured: a comment in `in6_ifdetach`.
 //! - `in6_ifattach_linklocal` panics where the C would dereference a NULL address (the
 //!   link-local address `in6_update_ifa` just configured is not there).
-//! - ND's `nd6_dad_start` and `nd6_purge` go through `Inet` legs until ND moves (N6.5b);
-//!   `nd6_need_cache` is ND's too, a function of the interface type alone, copied here for
-//!   that sub-slice (`bsd`'s `nd6.rs` keeps LZ's for its callers; docs/SCAFFOLDING.md).
+//! - ND's `nd6_dad_start`, `nd6_purge` and `nd6_need_cache` are the kernel's
+//!   (`kernel::netinet6::{nd6, nd6_nbr}`) since N6.5b: called directly (N6.5a's `Inet` legs
+//!   and its copy of `nd6_need_cache` went).
 //!
 //! ## Redesign
 //! - The EUI-64 of a hardware address: LZ read `if_sadl`'s link-level address through a raw
@@ -133,7 +133,7 @@ use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
 use hal::sys::socket::AF_INET6;
 
 use crate::assert::{kassert, kpanic};
-use crate::net::if_::{IFNETLIST, if_addrhooks_run, inet};
+use crate::net::if_::{IFNETLIST, if_addrhooks_run};
 use crate::net::if_var::Ifnet;
 use crate::net::proto::SockaddrView;
 use crate::net::route::{rt_ifa_add, rtalloc, rtdeletemsg};
@@ -143,6 +143,8 @@ use crate::netinet6::in6::{
     in6ifa_ifpwithaddr, net_assert_locked,
 };
 use crate::netinet6::in6_var::{In6Ifaddr, SIN6_LEN};
+use crate::netinet6::nd6::{nd6_need_cache, nd6_purge};
+use crate::netinet6::nd6_nbr::nd6_dad_start;
 
 /// `EUI64_GBIT`: the group bit of an EUI-64.
 const EUI64_GBIT: u8 = 0x01;
@@ -158,12 +160,6 @@ fn eui64_to_ifid(in6: &mut In6Addr) {
 /// `EUI64_GROUP(in6)`: the group bit of the EUI-64 in `in6`.
 fn eui64_group(in6: &In6Addr) -> bool {
     in6.s6_addr[8] & EUI64_GBIT != 0
-}
-
-/// `nd6_need_cache(ifp)` (`nd6.c`, the module's deviations): whether the interface needs a
-/// neighbor cache: RFC2893 says unidirectional tunnels need no ND.
-fn nd6_need_cache(ifp: &Ifnet) -> bool {
-    matches!(ifp.if_type.get(), IFT_ETHER | IFT_IEEE80211 | IFT_CARP)
 }
 
 /// `in6_get_rand_ifid`: generate a random interface identifier; the upper 64 bits of `in6`
@@ -359,10 +355,8 @@ pub fn in6_ifattach_linklocal(
     };
 
     // Perform DAD, if needed.
-    if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0
-        && let Some(i) = inet()
-    {
-        i.nd6_dad_start(&ia6.ia_ifa);
+    if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
+        net.with(|n| nd6_dad_start(&ia6.ia_ifa, n));
     }
 
     if ifp.if_flags.get() & IFF_LOOPBACK != 0 {
@@ -508,9 +502,7 @@ pub fn in6_ifdetach(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     }
 
     // Remove neighbor management table. Must be called after purging addresses.
-    if let Some(i) = inet() {
-        i.nd6_purge(ifp);
-    }
+    nd6_purge(ifp, net);
 
     // remove route to interface local allnodes multicast (ff01::1)
     in6_ifdetach_route(ifp, &IN6ADDR_INTFACELOCAL_ALLNODES, net);

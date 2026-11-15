@@ -171,7 +171,8 @@ use crate::netinet6::ip6_input::{ip6intr, ipv6_input};
 #[cfg(feature = "inet6")]
 use crate::netinet6::ip6_output::in6_proto_cksum_out;
 #[cfg(feature = "inet6")]
-use crate::netinet6::nd6::{In6Ntop, nd6_ifattach, nd6_ifdetach, nd6_resolve, nd6_rtrequest};
+use crate::netinet6::nd6::In6Ntop;
+#[cfg(feature = "inet6")]
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
 use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
@@ -396,47 +397,11 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         });
     }
 
-    fn nd6_ifattach(&self, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        nd6_ifattach(ifp);
-        let _ = ifp;
-    }
-
-    fn nd6_ifdetach(&self, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        nd6_ifdetach(ifp);
-        let _ = ifp;
-    }
-
     fn ip6_forwarding(&self) -> bool {
         #[cfg(feature = "inet6")]
         return IP6_FORWARDING.load(Ordering::Relaxed) != 0;
         #[cfg(not(feature = "inet6"))]
         false
-    }
-
-    fn nd6_dad_start(&self, ifa: &'static Ifaddr) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::nd6_nbr::nd6_dad_start(ifa);
-        let _ = ifa;
-    }
-
-    fn nd6_dad_stop(&self, ifa: &'static Ifaddr) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::nd6_nbr::nd6_dad_stop(ifa);
-        let _ = ifa;
-    }
-
-    fn nd6_expire_timer_update(&self, ia6: &'static kernel::netinet6::in6_var::In6Ifaddr) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::nd6::nd6_expire_timer_update(ia6);
-        let _ = ia6;
-    }
-
-    fn nd6_purge(&self, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::nd6::nd6_purge(ifp);
-        let _ = ifp;
     }
 
     fn ip6_output_opts(
@@ -475,6 +440,16 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         }
     }
 
+    fn icmp6_error(&self, m: kernel::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::icmp6::icmp6_error(park(m), type_, code, param);
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = (type_, code, param);
+            drop(m);
+        }
+    }
+
     fn ip6_multipath(&self) -> bool {
         #[cfg(feature = "inet6")]
         return crate::netinet6::in6_proto::IP6_MULTIPATH.load(Ordering::Relaxed) != 0;
@@ -493,50 +468,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             });
         }
         let _ = hit;
-    }
-
-    fn nd6_resolve(
-        &self,
-        ifp: &'static Ifnet,
-        rt: Option<&kernel::net::route::Rtentry>,
-        m: kernel::net::mbuf::MbufBox,
-        dst: kernel::net::proto::SockaddrView<'_>,
-        desten: &mut [u8; IF_ETHER_ADDR_LEN],
-    ) -> Result<kernel::net::mbuf::MbufBox, Errno> {
-        #[cfg(feature = "inet6")]
-        {
-            if dst.bytes().len() < size_of::<crate::netinet6::in6::SockaddrIn6>() {
-                drop(m);
-                return Err(Errno::EINVAL);
-            }
-            let m = park(m);
-            // SAFETY: `dst`'s bytes, borrowed for the call, hold a whole `sockaddr_in6`
-            // (checked above); `nd6_resolve` reads it once with `read_unaligned`
-            // (`sys/netinet6/nd6.rs`), so the view's alignment of 1 is enough, and nothing
-            // writes the bytes meanwhile. The packet is parked as for `arpresolve`.
-            unsafe {
-                nd6_resolve(
-                    ifp,
-                    rt.map(as_static),
-                    m,
-                    dst.bytes().as_ptr().cast(),
-                    desten,
-                )
-            }?;
-            Ok(unpark(m))
-        }
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = (ifp, rt, dst, desten);
-            drop(m);
-            Err(Errno::EAFNOSUPPORT)
-        }
-    }
-
-    fn nd6_rtrequest(&self, ifp: &'static Ifnet, req: u8, rt: &kernel::net::route::Rtentry) {
-        #[cfg(feature = "inet6")]
-        nd6_rtrequest(ifp, i32::from(req), as_static(rt));
-        let _ = (ifp, req, rt);
     }
 
     fn in6_proto_cksum_out(&self, m: &Mbuf, ifp: &'static Ifnet) {
@@ -1276,6 +1207,9 @@ pub(crate) mod tests {
         kernel::netinet6::in6_var::in6_var_test_reset();
         kernel::netinet::igmp::igmp_test_reset();
         kernel::netinet::if_ether::arp_test_reset();
+        // ND's neighbor cache and DAD records (N6.5b), as ARP's.
+        kernel::netinet6::nd6::nd6_test_reset();
+        kernel::netinet6::nd6_nbr::dad_test_reset();
         guard
     }
 

@@ -647,12 +647,24 @@ pub fn icmp6_input(
                     {
                         Next::Badlen
                     } else if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
-                        nd6_rtr_cache(n, off, icmp6len, icmp6_type);
+                        nd6_rtr_cache(
+                            crate::sys::mbuf::unpark(n),
+                            off,
+                            icmp6len,
+                            icmp6_type,
+                            &crate::net::if_::net_held("nd6_rtr_cache"),
+                        );
                         // m stays.
                         Next::Raw
                     } else {
                         // give up local
-                        nd6_rtr_cache(m, off, icmp6len, icmp6_type);
+                        nd6_rtr_cache(
+                            crate::sys::mbuf::unpark(m),
+                            off,
+                            icmp6len,
+                            icmp6_type,
+                            &crate::net::if_::net_held("nd6_rtr_cache"),
+                        );
                         *mp = None;
                         return IPPROTO_DONE;
                     }
@@ -664,12 +676,22 @@ pub fn icmp6_input(
                     } else if icmp6len < size_of::<NdNeighborSolicit>() as i32 {
                         Next::Badlen
                     } else if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
-                        nd6_ns_input(n, off, icmp6len);
+                        nd6_ns_input(
+                            crate::sys::mbuf::unpark(n),
+                            off,
+                            icmp6len,
+                            &crate::net::if_::net_held("nd6_ns_input"),
+                        );
                         // m stays.
                         Next::Raw
                     } else {
                         // give up local
-                        nd6_ns_input(m, off, icmp6len);
+                        nd6_ns_input(
+                            crate::sys::mbuf::unpark(m),
+                            off,
+                            icmp6len,
+                            &crate::net::if_::net_held("nd6_ns_input"),
+                        );
                         *mp = None;
                         return IPPROTO_DONE;
                     }
@@ -681,12 +703,22 @@ pub fn icmp6_input(
                     } else if icmp6len < size_of::<NdNeighborAdvert>() as i32 {
                         Next::Badlen
                     } else if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
-                        nd6_na_input(n, off, icmp6len);
+                        nd6_na_input(
+                            crate::sys::mbuf::unpark(n),
+                            off,
+                            icmp6len,
+                            &crate::net::if_::net_held("nd6_na_input"),
+                        );
                         // m stays.
                         Next::Raw
                     } else {
                         // give up local
-                        nd6_na_input(m, off, icmp6len);
+                        nd6_na_input(
+                            crate::sys::mbuf::unpark(m),
+                            off,
+                            icmp6len,
+                            &crate::net::if_::net_held("nd6_na_input"),
+                        );
                         *mp = None;
                         return IPPROTO_DONE;
                     }
@@ -1401,9 +1433,9 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
 
         let mut lladdr: Option<&[u8]> = None;
         let mut lladdrlen = 0;
-        if let Some(opt) = ndopts.nd_opts_tgt_lladdr {
-            // SAFETY: the option was validated by nd6_options and is inside `opts`.
-            let (a, len) = unsafe { nd6_opt_lladdr(opt) };
+        if let Some(off) = ndopts.nd_opts_tgt_lladdr {
+            // An offset nd6_options found in `opts`.
+            let (a, len) = nd6_opt_lladdr(opts, off);
             lladdr = Some(a);
             lladdrlen = len;
         }
@@ -1423,7 +1455,8 @@ pub fn icmp6_redirect_input(m: &'static Mbuf, off: i32) {
             } else {
                 ND_REDIRECT_ROUTER
             }),
-            i32::from(i_am_router),
+            i_am_router,
+            &crate::net::if_::net_held("icmp6_redirect_input"),
         );
 
         if !is_onlink {
@@ -1525,7 +1558,11 @@ pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
         src_sa.sin6_addr = sip6.ip6_src;
         // we don't currently use sin6_scope_id, but eventually use it
         src_sa.sin6_scope_id = in6_addr2scopeid(ifp.if_index.get(), &sip6.ip6_src) as u32;
-        if !nd6_is_addr_neighbor(&src_sa, ifp) {
+        if !nd6_is_addr_neighbor(
+            &src_sa,
+            ifp,
+            &crate::net::if_::net_held("icmp6_redirect_output"),
+        ) {
             break 'fail;
         }
         if in6_is_addr_multicast(&sip6.ip6_dst) {
@@ -1630,8 +1667,14 @@ pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
         let len = (size_of::<NdOptHdr>() + addrlen + 7) & !7; // round by 8
         // safety check
         if len + p <= maxlen {
-            let nrt = nd6_lookup(&nexthop, false, Some(ifp), ifp.if_rdomain.get());
-            if let Some(nrt) = nrt
+            let nrt = nd6_lookup(
+                &nexthop,
+                false,
+                Some(ifp),
+                ifp.if_rdomain.get(),
+                &crate::net::if_::net_held("icmp6_redirect_output"),
+            );
+            if let Some(nrt) = nrt.as_deref()
                 && nrt.rt_flags.get() & (RTF_GATEWAY | RTF_LLINFO) == RTF_LLINFO
                 && nrt.with_gateway(|g| g.is_some())
             {
@@ -1657,7 +1700,7 @@ pub fn icmp6_redirect_output(m0: &'static Mbuf, rt: &'static Rtentry) {
                     p += len;
                 }
             }
-            rtfree(nrt);
+            drop(nrt); // rtfree(nrt)
         }
 
         mm.m_pkthdr().len.set(p as i32);
