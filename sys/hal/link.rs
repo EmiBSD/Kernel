@@ -138,7 +138,6 @@ use crate::netlock::{NetHeld, NetLend};
 use crate::pinlist::{PinAdapter, PinList};
 use crate::pool::{PoolBox, Pooled};
 use crate::rwlock::{Divisible, Exclusive, LockId, Witness};
-use crate::sys::socket::Sockaddr;
 use crate::user::{AbiPod, pod_from_bytes, pod_to_bytes};
 
 /// The longest socket address an [`SaLink`] reads (`struct sockaddr_dl`'s 32 bytes; the
@@ -1019,9 +1018,10 @@ impl core::fmt::Debug for SaWords {
 /// `struct sockaddr *` of an interface address whose storage `bsd` owns (`ifa_addr`,
 /// `ifa_dstaddr`, `ifa_netmask` of enc(4)'s `IfaddrLinked`; since N6.5e the internet records
 /// read their own words, `SaWords::read`): the storage's address, which `bsd` publishes
-/// ([`SaLink::set`], with the [`SaToken`], LZ's `Cell::set` of the member) and reads back
-/// ([`SaLink::get`]), and a copy of its bytes for the kernel ([`SaLink::read`], under the net
-/// lock, which it checks).
+/// ([`SaLink::set`], with the [`SaToken`], LZ's `Cell::set` of the member), and a copy of its
+/// bytes for the kernel ([`SaLink::read`], under the net lock, which it checks). No reader
+/// takes the address itself since N6.5e (`SaLink::get` went with its last caller, bsd's raw
+/// readers of the internet records' links).
 ///
 /// Invariant: `ptr` is null (with `cap` 0); or `set` stored it with `cap` = `size_of::<T>()`
 /// from a `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most [`SA_READ_MAX`] bytes, by
@@ -1077,7 +1077,7 @@ impl SaLink {
 
     /// Stores the pair inside the writers' window: the sequence made odd by one writer at a
     /// time (the C's writers hold the net lock exclusively, so the wait is never long), the
-    /// three stores, the sequence even again.
+    /// two stores (`ptr`, `cap`), the sequence even again.
     fn publish(&self, p: *mut u8, cap: u8) {
         let mut s = self.seq.load(Ordering::Relaxed);
         loop {
@@ -1119,17 +1119,6 @@ impl SaLink {
             }
             core::hint::spin_loop();
         }
-    }
-
-    /// The address, for a legacy reader that dereferences it in its own `unsafe` block, as
-    /// LZ's sites do (relaxed: the word changes under the net lock its readers hold). Its
-    /// provenance covers the whole storage (the type's invariant): a `Cell<T>`'s
-    /// `size_of::<T>()` bytes, or a kernel-owned [`SaWords`]' [`SA_READ_MAX`], so a reader
-    /// of the family's whole socket address (a `sockaddr_in`'s 16 bytes, `ip_divert`'s
-    /// `read_unaligned`) stays inside it.
-    #[inline]
-    pub fn get(&self) -> *mut Sockaddr {
-        self.ptr.load(Ordering::Relaxed).cast::<Sockaddr>()
     }
 
     /// Whether the word is null.
@@ -1697,13 +1686,10 @@ mod tests {
         // SAFETY: a `PtrWord` is an `AtomicPtr`: zero is null.
         let w: PtrWord<u32> = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         assert!(w.get().is_null());
-        // SAFETY: a `SaLink` is an `AtomicPtr` (zero is null), an `AtomicU8`, an `AtomicU32`
-        // and a `Link` (an `AtomicPtr`): all zero bytes are an empty link whose sequence is
-        // even.
+        // SAFETY: a `SaLink` is an `AtomicPtr` (zero is null), an `AtomicU8` and an
+        // `AtomicU32`: all zero bytes are an empty link whose sequence is even.
         let s: SaLink = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
-        assert!(
-            s.is_none() && s.read(&crate::netlock::NetHeld::new()).is_none() && s.get().is_null()
-        );
+        assert!(s.is_none() && s.read(&crate::netlock::NetHeld::new()).is_none());
     }
 
     /// The embed idiom's proof (docs/IDIOMS.md) for `crate::list` (a `forbid(unsafe_code)`
@@ -1764,7 +1750,6 @@ mod tests {
         l.set(token(), Some(sin));
         let r = l.read(&held).expect("an address");
         assert_eq!((r.family(), r.as_bytes()), (2, &sin.get()[..]));
-        assert!(ptr::eq(l.get().cast_const().cast(), sin.as_ptr()));
         l.set(token(), Some(sin6));
         let r = l.read(&held).expect("an address");
         assert_eq!((r.len(), r[1]), (28, 24));
