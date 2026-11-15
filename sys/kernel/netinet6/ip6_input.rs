@@ -81,8 +81,12 @@
 //! need: the walkers of the extension header chain ([`ip6_nexthdr`], [`ip6_lasthdr`]) and the
 //! hop-by-hop option parser ([`ip6_process_hopopts`], with [`ip6_unknown_opt`]), which
 //! `ip6_output` runs over a packet's own hop-by-hop header and `in6_proto_cksum_out` uses to
-//! find the upper-layer header, and [`INET6CTLERRMAP`], `in6_pcbnotify`'s errors. The rest of
-//! `ip6_input.c` is `bsd`'s `netinet6/ip6_input.rs` until N6.5d, which calls these.
+//! find the upper-layer header, and [`INET6CTLERRMAP`], `in6_pcbnotify`'s errors; since
+//! N6.5d's first step also [`ip6_get_prevhdr`], and `<netinet/ip6.h>`'s `ip6_exthdr_get`
+//! ([`ip6_exthdr_get`], [`ip6_exthdr_bytes`]) and the one-byte header write
+//! ([`ip6_set_byte`]) the extension header inputs and reassembly use. The rest of
+//! `ip6_input.c` is `bsd`'s `netinet6/ip6_input.rs` until N6.5d's input path, which calls
+//! these.
 //!
 //! Upstream: sys/netinet6/ip6_input.c @ 3ce1f3f79392
 //! LZ: sys/netinet6/ip6_input.rs@3c62ede68802
@@ -109,12 +113,17 @@
 //!   counted as `ip6s_toosmall` and the packet dropped.
 //! - The header copies of the walkers are `pod` images of their bytes (`m_copydata` into a
 //!   small array, as LZ's), the C's `m_copydata` into a stack structure.
+//! - `ip6_exthdr_get` (LZ: `bsd`'s `netinet/ip6.rs`, a raw pointer into the region) answers
+//!   where the region is (the chain back, the index of its mbuf and the offset there;
+//!   `m_pulldown` when the first mbuf does not hold it), and [`ip6_exthdr_bytes`] lends its
+//!   bytes; `nd6_nbr`'s `nd6_msg` of N6.5b is this shape.
 //!
 //! **Lock and spl transitions** against the C: none (the C takes none; the caller holds the
 //! net lock).
 
 use core::mem::{offset_of, size_of};
 
+use hal::netlock::NetHeld;
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
 use hal::sys::netinet_in::{
@@ -131,7 +140,10 @@ use hal::sys::netinet6_in6::in6_is_addr_multicast;
 use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
 use crate::net::if_::inet;
-use crate::net::mbuf::{M_BCAST, M_MCAST, M_PKTHDR, Mbuf, MbufBox, m_copydata};
+use crate::net::mbuf::{
+    M_BCAST, M_DONTWAIT, M_MCAST, M_PKTHDR, Mbuf, MbufBox, m_copyback, m_copydata,
+};
+use crate::net::mbuf2::m_pulldown;
 use crate::net::proto::PRC_NCMDS;
 use crate::netinet6::ip6_var::ip6stat_inc;
 
@@ -181,12 +193,75 @@ fn bytes_at<const N: usize>(m: &Mbuf, off: i32) -> Option<[u8; N]> {
 }
 
 /// `icmp6_error(m, type, code, param)` through the temporary leg (the module's deviations);
-/// the packet freed without it.
-fn icmp6_error(m: MbufBox, type_: u8, code: u8, param: i32) {
+/// the packet freed without it. `net` is the caller's net lock, which the kernel's ICMPv6
+/// takes once it moves (N6.5d's next step).
+pub(crate) fn icmp6_error(m: MbufBox, type_: u8, code: u8, param: i32, _net: &NetHeld<'_>) {
     match inet() {
         Some(i) => i.icmp6_error(m, type_, code, param),
         None => drop(m),
     }
+}
+
+/// `icmp6_error` of the output path's hop-by-hop parser, which has no proof of the net lock
+/// at hand (the caller holds it): through the temporary leg as [`icmp6_error`].
+fn icmp6_error_noproof(m: MbufBox, type_: u8, code: u8, param: i32) {
+    match inet() {
+        Some(i) => i.icmp6_error(m, type_, code, param),
+        None => drop(m),
+    }
+}
+
+/// `ip6_exthdr_get(&m, off, len)` (`<netinet/ip6.h>`): the `len` bytes at `off` of `m` made
+/// contiguous, in place when the first mbuf holds them, else by `m_pulldown`: the chain back
+/// with the index of the mbuf they are in and their offset there; `None` (the chain freed,
+/// the C's NULL with `*mp` cleared) when the chain does not hold them or memory runs out.
+pub fn ip6_exthdr_get(m: MbufBox, off: i32, len: i32) -> Option<(MbufBox, usize, usize)> {
+    let (Ok(o), Ok(l)) = (usize::try_from(off), usize::try_from(len)) else {
+        return None;
+    };
+    if m.data().len() >= o + l {
+        return Some((m, 0, o));
+    }
+    let (m, at, o) = m_pulldown(m, off, len, true)?;
+    Some((m, at, usize::try_from(o).ok()?))
+}
+
+/// The `len` bytes [`ip6_exthdr_get`] made contiguous in mbuf `at` of `m` at `o`.
+#[inline]
+pub fn ip6_exthdr_bytes(m: &Mbuf, at: usize, o: usize, len: usize) -> Option<&[u8]> {
+    let mut n = m;
+    for _ in 0..at {
+        n = n.m_next.get()?;
+    }
+    n.data().get(o..o + len)
+}
+
+/// The byte at offset `off` of the packet set to `v` (a next header field: the C's
+/// `*prvnxtp = nxt` through `ip6_exthdr_get`'s pointer, frag6's), in place in the mbuf of the
+/// chain that holds it: found by the walk `off >= m_len`, never through `m_copyback` (whose
+/// walk stops on the mbuf before when `off` is that mbuf's length and makes it writable for a
+/// write of none of its bytes, a copy of a shared cluster). A read-only mbuf is given a
+/// cluster of its own first (the C writes into the shared one); `false` when the packet does
+/// not hold the byte or no cluster can be had.
+#[must_use]
+pub fn ip6_set_byte(m: &mut Mbuf, off: i32, v: u8) -> bool {
+    let Ok(mut off) = usize::try_from(off) else {
+        return false;
+    };
+    let mut p = m;
+    while off >= p.m_len().get() as usize {
+        off -= p.m_len().get() as usize;
+        p = match p.m_next.get_mut() {
+            Some(n) => n,
+            None => return false,
+        };
+    }
+    if let Some(d) = p.data_mut() {
+        d[off] = v;
+        return true;
+    }
+    // A shared cluster: the byte's own mbuf copied (`off` is inside it, never at its end).
+    m_copyback(p, off as i32, &[v], M_DONTWAIT).is_ok()
 }
 
 /// `ip6_hopopts_input`'s second half, `ip6_process_hopopts(mp, opthead, hbhlen, rtalertp,
@@ -248,7 +323,7 @@ pub fn ip6_process_hopopts(
                 if usize::from(len) != IP6OPT_RTALERT_LEN - 2 {
                     // XXX stat
                     if let Some(m) = mp.take() {
-                        icmp6_error(
+                        icmp6_error_noproof(
                             m,
                             ICMP6_PARAM_PROB,
                             ICMP6_PARAMPROB_HEADER,
@@ -271,7 +346,7 @@ pub fn ip6_process_hopopts(
                 if usize::from(len) != IP6OPT_JUMBO_LEN - 2 {
                     // XXX stat
                     if let Some(m) = mp.take() {
-                        icmp6_error(
+                        icmp6_error_noproof(
                             m,
                             ICMP6_PARAM_PROB,
                             ICMP6_PARAMPROB_HEADER,
@@ -292,7 +367,12 @@ pub fn ip6_process_hopopts(
                 };
                 if plen != 0 {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, HBH_ERROFF + i);
+                    icmp6_error_noproof(
+                        m,
+                        ICMP6_PARAM_PROB,
+                        ICMP6_PARAMPROB_HEADER,
+                        HBH_ERROFF + i,
+                    );
                     return false;
                 }
 
@@ -305,7 +385,7 @@ pub fn ip6_process_hopopts(
                 // specification.
                 if *plenp != 0 {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error(
+                    icmp6_error_noproof(
                         m,
                         ICMP6_PARAM_PROB,
                         ICMP6_PARAMPROB_HEADER,
@@ -317,7 +397,7 @@ pub fn ip6_process_hopopts(
                 // jumbo payload length must be larger than 65535.
                 if jumboplen as usize <= IPV6_MAXPACKET {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error(
+                    icmp6_error_noproof(
                         m,
                         ICMP6_PARAM_PROB,
                         ICMP6_PARAMPROB_HEADER,
@@ -378,7 +458,7 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
         IP6OPT_TYPE_FORCEICMP => {
             ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
             if let Some(m) = mp.take() {
-                icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
+                icmp6_error_noproof(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
             }
             false
         }
@@ -393,7 +473,7 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
                 if mcast || m.flags() & (M_BCAST | M_MCAST) != 0 {
                     drop(m);
                 } else {
-                    icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
+                    icmp6_error_noproof(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
                 }
             }
             false
@@ -403,6 +483,38 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
             false
         }
     }
+}
+
+/// `ip6_get_prevhdr(m, off)`: the offset of the next header field that precedes offset
+/// `off` (the field of the header before the one at `off`). `panic(9)` for an offset inside
+/// the IPv6 header, as the C.
+pub fn ip6_get_prevhdr(m: &Mbuf, off: i32) -> i32 {
+    if off == IP6_HDR_LEN {
+        return offset_of!(Ip6Hdr, ip6_nxt) as i32;
+    } else if off < IP6_HDR_LEN {
+        crate::assert::kpanic(format_args!(
+            "ip6_get_prevhdr: off < sizeof(struct ip6_hdr)"
+        ));
+    }
+
+    let mut nxt = i32::from(m.data()[offset_of!(Ip6Hdr, ip6_nxt)]);
+    let mut len = IP6_HDR_LEN;
+    let mut nlen = 0;
+    while len < off {
+        let mut ip6e = [0u8; size_of::<Ip6Ext>()];
+        m_copydata(m, len, &mut ip6e);
+        let elen = i32::from(ip6e[offset_of!(Ip6Ext, ip6e_len)]);
+
+        nlen = match nxt {
+            IPPROTO_FRAGMENT => size_of::<Ip6Frag>() as i32,
+            IPPROTO_AH => (elen + 2) << 2,
+            _ => (elen + 1) << 3,
+        };
+        len += nlen;
+        nxt = i32::from(ip6e[offset_of!(Ip6Ext, ip6e_nxt)]);
+    }
+
+    len - nlen
 }
 
 /// `ip6_nexthdr(m, off, proto, nxtp)`: the offset of the header after the one of protocol

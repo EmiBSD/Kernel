@@ -21,6 +21,8 @@
 //! (`docs/ROADMAP.md`'s N6 row). N6.4c1 brings the protocol control block's IPv6 lookups
 //! (D-17); the userland halves of the headers are `hal::sys::netinet6_*`.
 
+pub mod dest6;
+pub mod frag6;
 pub mod in6;
 pub mod in6_cksum;
 pub mod in6_ifattach;
@@ -36,4 +38,5 @@ pub mod mld6_var;
 pub mod nd6;
 pub mod nd6_nbr;
 pub mod nd6_rtr;
+pub mod route6;
 /* </CODE> */

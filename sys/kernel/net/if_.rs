@@ -4444,6 +4444,7 @@ pub(crate) mod tests {
         crate::netinet::if_ether::arp_test_reset();
         crate::netinet6::nd6::nd6_test_reset();
         crate::netinet6::nd6_nbr::dad_test_reset();
+        crate::netinet6::frag6::frag6_test_reset();
         g
     }
 

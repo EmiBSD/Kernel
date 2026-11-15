@@ -106,6 +106,8 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicI32, AtomicU8};
 
+use crate::net::if_::net_held;
+use crate::net::if_var::Netstack;
 use crate::netinet::in_::{
     IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_ICMPV6,
     IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_RAW, IPPROTO_ROUTING,
@@ -119,8 +121,6 @@ use crate::netinet::tcp_input::tcp_input;
 use crate::netinet::tcp_subr::tcp6_ctlinput;
 use crate::netinet::tcp_usrreq::{TCP6_USRREQS, tcp_ctloutput, tcp_sysctl};
 use crate::netinet::udp_usrreq::{UDP6_USRREQS, udp_input, udp_sysctl, udp6_ctlinput};
-use crate::netinet6::dest6::dest6_input;
-use crate::netinet6::frag6::{frag6_input, frag6_slowtimo};
 use crate::netinet6::icmp6::{icmp6_fasttimo, icmp6_init, icmp6_input, icmp6_sysctl};
 use crate::netinet6::in6::SockaddrIn6;
 use crate::netinet6::ip6_divert::{DIVERT6_USRREQS, divert6_init};
@@ -129,13 +129,55 @@ use crate::netinet6::ip6_output::ip6_ctloutput;
 use crate::netinet6::raw_ip6::{
     RIP6_USRREQS, rip6_ctlinput, rip6_ctloutput, rip6_init, rip6_input, rip6_sysctl,
 };
-use crate::netinet6::route6::route6_input;
 use crate::sys::domain::Domain;
+use crate::sys::mbuf::{Mbuf, park, unpark};
 use crate::sys::protosw::{
     PR_ABRTACPTDIS, PR_ADDR, PR_ATOMIC, PR_CONNREQUIRED, PR_MPINPUT, PR_MPSYSCTL, PR_SPLICE,
     PR_WANTRCVD, Protosw,
 };
 use crate::sys::socket::{AF_INET6, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
+
+/// A kernel protocol input (`kernel::netinet6`'s) as `bsd`'s `inet6sw[]` row takes it: the
+/// parked packet unparked for it and parked again when it is left, under `bsd`'s net lock
+/// (the table's rows go when the table becomes the kernel's, N6.5d).
+macro_rules! kernel_input {
+    ($(#[$meta:meta])* $name:ident, $f:path) => {
+        $(#[$meta])*
+        fn $name(
+            mp: &mut Option<&'static Mbuf>,
+            offp: &mut i32,
+            proto: i32,
+            af: i32,
+            ns: Option<&mut Netstack>,
+        ) -> i32 {
+            let mut k = mp.take().map(unpark);
+            let nxt = $f(&mut k, offp, proto, af, ns, &net_held(stringify!($name)));
+            *mp = k.map(park);
+            nxt
+        }
+    };
+}
+
+kernel_input!(
+    /// `dest6_input`: the kernel's.
+    dest6_input,
+    kernel::netinet6::dest6::dest6_input
+);
+kernel_input!(
+    /// `route6_input`: the kernel's.
+    route6_input,
+    kernel::netinet6::route6::route6_input
+);
+kernel_input!(
+    /// `frag6_input`: the kernel's.
+    frag6_input,
+    kernel::netinet6::frag6::frag6_input
+);
+
+/// `frag6_slowtimo`: the kernel's.
+fn frag6_slowtimo() {
+    kernel::netinet6::frag6::frag6_slowtimo();
+}
 
 /// Nominal space allocated to a raw ip6 socket: send.
 pub const RIPV6SNDQ: u64 = 8192;

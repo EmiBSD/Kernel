@@ -83,8 +83,8 @@
 //! ..., defined by `in6_proto.c`). The userland half (`struct ip6stat` and the indices of its
 //! words) is `hal::sys::netinet6_ip6_var`. The control options of outgoing packets
 //! ([`Ip6Pktopts`], with the borrowed view `ip6_output` takes, [`Ip6OutOpts`]) and the
-//! multicast options ([`Ip6Moptions`]) are here since N6.5c; `struct ip6q` and `struct
-//! ip6asfrag` are `bsd`'s until reassembly moves (N6.5d).
+//! multicast options ([`Ip6Moptions`]) are here since N6.5c, the reassembly records
+//! ([`Ip6q`], [`Ip6asfrag`]) since N6.5d.
 //!
 //! Upstream: sys/netinet6/ip6_var.h @ 3ce1f3f79392
 //! LZ: sys/netinet6/ip6_var.rs@3c62ede68802
@@ -132,18 +132,32 @@
 //!   and `ipmoptions` rows, D-4): `struct ip6_pktopts` 56 bytes (LP64), [`Ip6Pktopts`] the
 //!   size test's; the C's `struct ip6_moptions` 16, [`Ip6Moptions`] the size test's (the
 //!   memberships' array and count where the C has a list head).
+//! - N6.5d: LZ's `struct ip6q` and `struct ip6asfrag` (pool items written whole through
+//!   `unsafe`, linked by `bsd`'s `TailqEntry`/`ListEntry` into a `Sync`-by-hand queue head,
+//!   every member a `Cell`) -> [`Ip6q`] and [`Ip6asfrag`], items of the "ip6q" and "ip6af"
+//!   `BoxPool`s (`kernel::netinet6::frag6`'s, the C's names), the IPv4 shape of
+//!   `kernel::netinet::ip_var`'s `Ipq`/`Ipqent` (D-12): the datagram owns its fragments on an
+//!   `OwnedSlist` by offset, the reassembly queue owns the datagrams on another
+//!   (`frag6::FRAG6`), and a datagram is changed off its queue (its members plain fields; only
+//!   `ip6q_ttl`, which `frag6_slowtimo` counts down in place, is a `Cell`). The fragment owns
+//!   its mbuf (`ip6af_m`). The sizes against the C's (`vmstat -m`'s `ip6q` and `ip6af`, D-4):
+//!   `frag6`'s size test.
 
+use core::cell::Cell;
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use hal::malloc::{MArray, MBox};
+use hal::owned::{OwnedSlist, SlistLink};
 use hal::percpu::Counters;
+use hal::pool::{BoxPool, Pooled};
 use hal::sys::netinet_icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
 use hal::sys::netinet_ip6::IPV6_DEFHLIM;
-use hal::sys::netinet6_in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Pktinfo};
+use hal::sys::netinet6_in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Addr, In6Pktinfo};
 use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6statCounters};
 
 use crate::assert::kpanic;
+use crate::net::mbuf::MbufBox;
 use crate::netinet::ip_var::IPMTUDISCTIMEOUT;
 use crate::netinet6::in6_var::In6Memberships;
 
@@ -366,6 +380,112 @@ impl Default for Ip6OutOpts<'_> {
         Self::new()
     }
 }
+
+/// `struct ip6q`: IP6 reassembly queue structure, an item of the "ip6q" pool. Each fragment
+/// being reassembled is attached to one of these structures. \[Q\] All of it is changed under
+/// `frag6_mutex` (`kernel::netinet6::frag6::FRAG6`'s guard), the datagram taken off the
+/// queue for the change and put back in its place, but for its time to live, which
+/// `frag6_slowtimo` counts down while it is listed.
+pub struct Ip6q {
+    /// `ip6q_queue`: the next datagram of `frag6_queue`.
+    ip6q_queue: SlistLink<Ip6q>,
+    /// `ip6q_asfrag`: the fragments, by offset.
+    pub ip6q_asfrag: OwnedSlist<Ip6asfragList>,
+    /// `ip6q_src`.
+    pub ip6q_src: In6Addr,
+    /// `ip6q_dst`.
+    pub ip6q_dst: In6Addr,
+    /// `ip6q_unfrglen`: len of unfragmentable part, -1 until the first fragment arrives.
+    pub ip6q_unfrglen: i32,
+    /// `ip6q_nfrag`: # of fragments.
+    pub ip6q_nfrag: i32,
+    /// `ip6q_rdomain`: routing domain for reassembly.
+    pub ip6q_rdomain: u32,
+    /// `ip6q_ident`: fragment identification (network order, as the header holds it).
+    pub ip6q_ident: u32,
+    /// `ip6q_nxt`: `ip6f_nxt` in first fragment.
+    pub ip6q_nxt: u8,
+    /// `ip6q_ecn`.
+    pub ip6q_ecn: u8,
+    /// `ip6q_ttl`: time to live in slowtimo units.
+    pub ip6q_ttl: Cell<u8>,
+}
+
+impl Ip6q {
+    /// The queue of datagram `ident` from `src` to `dst` in `rdomain`, empty (the first
+    /// fragment has not arrived: `ip6q_unfrglen` -1), with ECN bits `ecn` and `ttl` to live.
+    pub const fn new(
+        rdomain: u32,
+        ident: u32,
+        src: In6Addr,
+        dst: In6Addr,
+        ecn: u8,
+        ttl: u8,
+    ) -> Self {
+        Self {
+            ip6q_queue: SlistLink::new(),
+            ip6q_asfrag: OwnedSlist::new(),
+            ip6q_src: src,
+            ip6q_dst: dst,
+            ip6q_unfrglen: -1,
+            ip6q_nfrag: 0,
+            ip6q_rdomain: rdomain,
+            ip6q_ident: ident,
+            ip6q_nxt: 0,
+            ip6q_ecn: ecn,
+            ip6q_ttl: Cell::new(ttl),
+        }
+    }
+}
+
+impl Pooled for Ip6q {
+    const POOL: &'static BoxPool<Self> = &crate::netinet6::frag6::IP6Q_POOL;
+}
+
+hal::slist_adapter!(
+    /// `TAILQ_HEAD(ip6q_head, ip6q)` through `ip6q_queue`: `frag6_queue`.
+    pub Ip6qList: Ip6q, ip6q_queue
+);
+
+/// `struct ip6asfrag`: a fragment on a reassembly queue, an item of the "ip6af" pool.
+pub struct Ip6asfrag {
+    /// `ip6af_list`: the next fragment of its datagram.
+    ip6af_list: SlistLink<Ip6asfrag>,
+    /// `ip6af_m`: the fragment; `Some` while it is queued.
+    pub ip6af_m: Option<MbufBox>,
+    /// `ip6af_offset`: offset in `ip6af_m` to next header.
+    pub ip6af_offset: i32,
+    /// `ip6af_frglen`: fragmentable part length.
+    pub ip6af_frglen: i32,
+    /// `ip6af_off`: fragment offset.
+    pub ip6af_off: i32,
+    /// `ip6af_mff`: more fragment bit in frag off (network order).
+    pub ip6af_mff: u16,
+}
+
+impl Ip6asfrag {
+    /// The fragment `m` at fragment offset `off` with `frglen` bytes of its fragmentable part
+    /// at `offset`, more of them following when `mff`.
+    pub const fn new(m: MbufBox, offset: i32, frglen: i32, off: i32, mff: u16) -> Self {
+        Self {
+            ip6af_list: SlistLink::new(),
+            ip6af_m: Some(m),
+            ip6af_offset: offset,
+            ip6af_frglen: frglen,
+            ip6af_off: off,
+            ip6af_mff: mff,
+        }
+    }
+}
+
+impl Pooled for Ip6asfrag {
+    const POOL: &'static BoxPool<Self> = &crate::netinet6::frag6::IP6AF_POOL;
+}
+
+hal::slist_adapter!(
+    /// `LIST_HEAD(ip6asfrag_list, ip6asfrag)` through `ip6af_list`: a datagram's fragments.
+    pub Ip6asfragList: Ip6asfrag, ip6af_list
+);
 
 /// `ip6s_nxthist`: the image word it starts at and its length (the C's `[256]`).
 const IP6_NXTHIST: (usize, usize) = (

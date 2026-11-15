@@ -1154,6 +1154,7 @@ pub(crate) mod tests {
         // ND's neighbor cache and DAD records (N6.5b), as ARP's.
         kernel::netinet6::nd6::nd6_test_reset();
         kernel::netinet6::nd6_nbr::dad_test_reset();
+        kernel::netinet6::frag6::frag6_test_reset();
         guard
     }
 
