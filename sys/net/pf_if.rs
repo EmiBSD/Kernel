@@ -826,14 +826,15 @@ pub fn pfi_instance_add(ifp: Option<&'static Ifnet>, net: u8, flags: i32) {
             got6 = true;
         }
         let mut net2 = i32::from(net);
-        if net2 == 128 && flags_has(PFI_AFLAG_NETWORK) {
-            if let Some(mask) = ifa.ifa_netmask(held) {
-                let mask = sa_image(&mask);
-                if af == AF_INET {
-                    net2 = pfi_unmask(&PfAddr::from_v4(mask.sin_addr()));
-                } else if af == AF_INET6 {
-                    net2 = pfi_unmask(&PfAddr::from_v6(mask.sin6_addr()));
-                }
+        if net2 == 128
+            && flags_has(PFI_AFLAG_NETWORK)
+            && let Some(mask) = ifa.ifa_netmask(held)
+        {
+            let mask = sa_image(&mask);
+            if af == AF_INET {
+                net2 = pfi_unmask(&PfAddr::from_v4(mask.sin_addr()));
+            } else if af == AF_INET6 {
+                net2 = pfi_unmask(&PfAddr::from_v6(mask.sin6_addr()));
             }
         }
         if af == AF_INET && net2 > 32 {

@@ -546,12 +546,11 @@ fn in_ioctl_set_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result
     // whose creation reference `in_ifinit` gives to `ifa_add` and whose clone the request
     // keeps (T1).
     let found = hal::netlock::lend_detached(|net| in_ifp2ia(&net.reader(), ifp).cloned());
-    let (ia, created) = match found {
-        Some(ia) => (ia, None),
-        None => {
-            let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
-            (created.clone(), Some(created))
-        }
+    let (ia, created) = if let Some(ia) = found {
+        (ia, None)
+    } else {
+        let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
+        (created.clone(), Some(created))
     };
 
     hal::netlock::lend_detached(|net| in_ifscrub(ifp, &ia, net));
@@ -628,12 +627,11 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
 
                 // A new address: its creation reference for `in_ifinit`'s `ifa_add`, a clone
                 // for the request (T1).
-                let (ifa, created) = match ia {
-                    Some(ia) => (ia, None),
-                    None => {
-                        let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
-                        (created.clone(), Some(created))
-                    }
+                let (ifa, created) = if let Some(ia) = ia {
+                    (ia, None)
+                } else {
+                    let created = IfaddrRef::In(in_ifaddr_alloc(ifp));
+                    (created.clone(), Some(created))
                 };
                 let newifaddr = created.is_some();
                 let ia = ifatoia(&ifa);

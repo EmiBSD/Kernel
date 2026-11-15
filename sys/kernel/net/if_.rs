@@ -4946,6 +4946,121 @@ pub(crate) mod tests {
         ifa
     }
 
+    /// The address of an Internet record's handle, its last byte (the tests' addresses are
+    /// 10.0.0.x).
+    fn last_byte(ifa: &IfaddrRef) -> u8 {
+        crate::netinet::in_var::ifatoia(ifa)
+            .ia_addr
+            .addr()
+            .s_addr
+            .to_ne_bytes()[3]
+    }
+
+    /// The last bytes of `ifp`'s addresses, in the list's order, under one reader.
+    fn order(ifp: &Ifnet, net: &NetHeld<'_>) -> Vec<u8> {
+        let r = net.reader();
+        ifp.if_addrlist().iter(&r).map(last_byte).collect()
+    }
+
+    /// N6.5e: the interface's list keeps the order addresses were added in (the C's
+    /// `TAILQ_INSERT_TAIL`), holds one reference of each (the creation reference `ifa_add`
+    /// takes), gives it back on `ifa_del` from anywhere in the chain, and the record is freed
+    /// with its last reference (`malloc(9)`'s bytes of `M_IFADDR` back to where they were).
+    #[test]
+    fn the_address_list_keeps_its_order_and_the_c_counts() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tal0");
+        if_attach(ifp);
+        let out = crate::testutil::malloc_out(M_IFADDR);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let a: Vec<IfaddrRef> = (1..=4u8)
+            .map(|i| address(ifp, [10, 0, 0, i], None, None, &net))
+            .collect();
+        assert!(crate::testutil::malloc_out(M_IFADDR) > out, "four records");
+        assert_eq!(order(ifp, &net), [1, 2, 3, 4], "insertion order");
+        assert!(
+            a.iter().all(|x| x.count() == 2),
+            "the list's and the test's"
+        );
+
+        // The middle, the head, the tail: each the list's handle back, the rest in order.
+        for (i, left) in [(1, &[1u8, 3, 4][..]), (0, &[3, 4][..]), (3, &[3][..])] {
+            let lst = ifa_del(ifp, &a[i], &net);
+            assert!(lst.is(&a[i]), "the list's handle of that address");
+            assert_eq!(a[i].count(), 2, "not dropped yet");
+            route::ifafree(lst);
+            assert_eq!(a[i].count(), 1, "the test's alone");
+            assert_eq!(order(ifp, &net), left);
+        }
+        // An address on no list: the list answers none and stays as it is.
+        assert!(ifp.if_addrlist().remove(&mut net.writer(), &a[0]).is_none());
+        assert_eq!(order(ifp, &net), [3]);
+        route::ifafree(ifa_del(ifp, &a[2], &net));
+        assert!(ifp.if_addrlist().is_empty(&net.reader()));
+        // A handle held across its delete still reads its record; the last drop frees it.
+        assert_eq!(last_byte(&a[2]), 3);
+        drop(a);
+        assert_eq!(crate::testutil::malloc_out(M_IFADDR), out, "freed at zero");
+    }
+
+    /// `TAILQ_FOREACH_SAFE`: a body that takes the address it is given off the list (and
+    /// gives the list's reference back) sees every address once.
+    #[test]
+    fn a_safe_walk_lets_its_body_delete_the_address_it_stands_on() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tsw0");
+        if_attach(ifp);
+        let out = crate::testutil::malloc_out(M_IFADDR);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        for i in 1..=3u8 {
+            drop(address(ifp, [10, 0, 0, i], None, None, &net));
+        }
+        let mut seen = Vec::new();
+        ifp.if_addrlist().for_each_safe(&net, |ifa| {
+            seen.push(last_byte(ifa));
+            route::ifafree(ifa_del(ifp, ifa, &net));
+        });
+        assert_eq!(seen, [1, 2, 3]);
+        assert!(ifp.if_addrlist().is_empty(&net.reader()));
+        assert_eq!(
+            crate::testutil::malloc_out(M_IFADDR),
+            out,
+            "every record freed"
+        );
+    }
+
+    /// `ifa_del` of an address that is not on the interface's list: `panic(9)` (the C's
+    /// `TAILQ_REMOVE` would corrupt the list).
+    #[test]
+    #[should_panic(expected = "an address not on its interface's list")]
+    fn ifa_del_of_an_address_not_on_the_list_is_panic() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tad0");
+        if_attach(ifp);
+        let other = crate::netinet::in_var::test_in_ifaddr(ifp, [10, 0, 0, 9], None, None);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let _ = ifa_del(ifp, &other, &net);
+    }
+
+    /// R4: a change of the list with a reader of the net cells out on the same holding is
+    /// `panic(9)` (the writer refused), never a list changed under a lent address.
+    #[test]
+    #[should_panic(expected = "a net cell writer while 1 readers are out")]
+    fn ifa_add_with_a_reader_out_is_panic() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tar0");
+        if_attach(ifp);
+        let ifa = crate::netinet::in_var::test_in_ifaddr(ifp, [10, 0, 0, 7], None, None);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let r = net.reader();
+        let _first = ifp.if_addrlist().first(&r);
+        ifa_add(ifp, ifa, &net);
+    }
+
     #[test]
     fn addresses_are_found_whole_by_destination_and_by_subnet() {
         let _g = setup();

@@ -697,20 +697,42 @@ mod tests {
 
     #[test]
     fn the_records_sizes() {
-        // vmstat -m's M_IFADDR and M_IPMADDR (D-4, the sizes taken and flagged). On LP64 the
-        // C's struct in6_ifaddr is 256 bytes and struct in6_multi 80, LZ's #[repr(C)] mirrors
-        // the same; these are 416 and 136. Of the growth, the generic parts are 80 and 32
-        // (Ifaddr 160 for the C's 80, Ifmaddr 72 for the C's 40: the SaLinks, the counted
-        // references and the list links are wider, and since N6.5a each carries an 8-byte
-        // link to its IPv6 record, ifa_in6 or ifma_in6, which the IPv4 records pay too:
-        // in_ifaddr 288 -> 296, in_multi 128 -> 136); the memberships' Mutexed is 64 for the
-        // C's 8-byte LIST_HEAD.
-        assert_eq!(size_of::<In6Ifaddr>(), 416);
-        assert_eq!(size_of::<In6Multi>(), 136);
-        assert_eq!(size_of::<crate::net::if_var::Ifaddr>(), 160);
-        assert_eq!(size_of::<crate::net::if_var::Ifmaddr>(), 72);
-        assert_eq!(size_of::<crate::netinet::in_var::InIfaddr>(), 296);
-        assert_eq!(size_of::<crate::netinet::in_var::InMulti>(), 136);
+        use crate::net::if_var::{Ifaddr, IfaddrLinked, IfaddrRef, Ifmaddr};
+        use crate::netinet::in_var::{InIfaddr, InMulti};
+        // vmstat -m's M_IFADDR and M_IPMADDR and the rtentry pool's item (D-6 of N6.5e, the
+        // sizes taken and flagged, ROADMAP's N12 row). On LP64 the C's struct in_ifaddr is 288
+        // bytes, struct in6_ifaddr 256, struct ifaddr 80, struct in6_multi 80, a pointer 8.
+        // Before N6.5e: In6Ifaddr 416, InIfaddr 296, Ifaddr 160 (three 24-byte SaLinks, the
+        // list links, the count, two back-links), Ifmaddr 72, the multicast records 136.
+        // N6.5e: an address is an MArc block (16 bytes of count and type before it); the
+        // generic part keeps the interface, the flags and the metric (16); each family record
+        // holds the chain's two cells (Guarded<Option<IfaddrRef>>: a 16-byte key and the
+        // 16-byte handle) where the C has two TAILQ entries (32), and its addresses' words
+        // with no link to them; IPv6's NULL ifa_dstaddr is one bool. `rt_ifa` grows from a
+        // pointer to a cell of the handle: +24 on the route. Ifmaddr loses its unread
+        // ifma_addr (24).
+        let sizes = [
+            size_of::<Ifaddr>(),
+            size_of::<IfaddrRef>(),
+            size_of::<Option<IfaddrRef>>(),
+            size_of::<IfaddrLinked>(),
+            size_of::<InIfaddr>(),
+            size_of::<In6Ifaddr>(),
+            size_of::<Ifmaddr>(),
+            size_of::<InMulti>(),
+            size_of::<In6Multi>(),
+            size_of::<crate::net::route::Rtentry>(),
+        ];
+        assert_eq!(sizes[..3], [16, 16, 16]);
+        assert_eq!(sizes[3], 72, "IfaddrLinked");
+        assert_eq!((sizes[4], sizes[5]), (192, 312), "InIfaddr, In6Ifaddr");
+        assert_eq!(sizes[6..9], [48, 112, 112]);
+        assert_eq!(
+            sizes[9], 328,
+            "Rtentry (304 before: rt_ifa was an 8-byte Link)"
+        );
+        assert_eq!(size_of::<hal::rwlock::Guarded<Option<IfaddrRef>>>(), 32);
+        assert_eq!(size_of::<hal::malloc::MArc<InIfaddr>>(), 8);
         assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);
     }
 

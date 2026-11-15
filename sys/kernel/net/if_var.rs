@@ -1244,7 +1244,8 @@ impl IfaddrRef {
     /// Whether this handle names the address `ifa` (the C's comparison of the pointers).
     #[inline]
     pub fn is(&self, ifa: &Ifaddr) -> bool {
-        core::ptr::eq(&**self, ifa)
+        let me: &Ifaddr = self;
+        core::ptr::eq(me, ifa)
     }
 
     /// The references of the address alive now (`ifa_refcnt`, a snapshot), for ddb and the
@@ -1328,6 +1329,20 @@ impl IfaddrRef {
 /// back). A walk lends `&'r IfaddrRef`s for the life of its witness
 /// (`hal::netlock::NetHeld::reader`), uncounted as the C's pointers, O(1) a step; a change
 /// takes the writer, which no reader can be out beside.
+///
+/// An address a walk lends cannot outlive the reader it borrows (a reference past its
+/// record's last handle cannot be written):
+///
+/// ```compile_fail,E0515
+/// use hal::netlock::{NETLOCK, NetHeld};
+/// use kernel::net::if_var::{IfaList, IfaddrRef};
+/// fn kept(list: &IfaList) -> Option<&IfaddrRef> {
+///     let w = NETLOCK.read();
+///     let net = NetHeld::of(&w)?;
+///     let r = net.reader();
+///     list.first(&r)
+/// }
+/// ```
 pub struct IfaList {
     /// `tqh_first`.
     head: Guarded<Option<IfaddrRef>>,
@@ -1359,7 +1374,7 @@ impl IfaList {
         &'r self,
         r: &'r W,
     ) -> impl Iterator<Item = &'r IfaddrRef> {
-        core::iter::successors(self.first(r), move |a| Self::next(r, *a))
+        core::iter::successors(self.first(r), move |a| Self::next(r, a))
     }
 
     /// `TAILQ_EMPTY`.
@@ -1687,6 +1702,51 @@ mod tests {
         );
         ifp.if_lastchange.set(10, 20);
         assert_eq!(ifp.if_lastchange.get(), (10, 20));
+    }
+
+    /// An address its owner embeds (enc(4)'s): counted by its own `ifa_refcnt` (the owner's
+    /// reference and one per handle), its address read through its link under the net lock.
+    #[test]
+    fn a_linked_address_is_counted_by_its_own_refcnt() {
+        let ifa: &'static IfaddrLinked =
+            std::boxed::Box::leak(std::boxed::Box::new(IfaddrLinked::new()));
+        ifa.ifa_refcnt.init();
+        let l = IfaddrRef::Linked(LinkedIfa::new(ifa));
+        assert_eq!(l.count(), 2, "the owner's and the handle's");
+        let c = l.clone();
+        assert_eq!(l.count(), 3);
+        drop(c);
+        assert_eq!(l.count(), 2);
+        assert!(l.is(&ifa.ifa));
+        let sdl: &'static core::cell::Cell<[u8; 8]> =
+            std::boxed::Box::leak(std::boxed::Box::new(core::cell::Cell::new([
+                8, 18, 1, 0, 0, 0, 0, 0,
+            ])));
+        ifa.ifa_addr.set(sa_test_token(), Some(sdl));
+        {
+            let w = hal::netlock::NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            assert_eq!(
+                l.ifa_addr(&net).map(|b| (b.family(), b.len())),
+                Some((18, 8))
+            );
+            assert!(l.ifa_netmask(&net).is_none() && l.ifa_dstaddr(&net).is_none());
+        }
+        drop(l);
+        assert_eq!(ifa.ifa_refcnt.read(), 1, "the owner's alone");
+    }
+
+    /// A handle that sees a linked address's count reach zero: `panic(9)` (the owner gives
+    /// its reference back last, `enc_clone_destroy`; the C would `free` a part of a softc).
+    #[test]
+    #[should_panic(expected = "the last reference of a linked address")]
+    fn a_linked_address_s_last_reference_is_its_owner_s() {
+        let ifa: &'static IfaddrLinked =
+            std::boxed::Box::leak(std::boxed::Box::new(IfaddrLinked::new()));
+        ifa.ifa_refcnt.init();
+        let l = LinkedIfa::new(ifa);
+        assert!(!ifa.ifa_refcnt.rele(), "the handle's left");
+        drop(l);
     }
 
     #[test]

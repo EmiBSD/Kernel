@@ -448,6 +448,19 @@ pub(crate) fn inm_free_count() -> usize {
 mod tests {
     use super::*;
 
+    /// `ifatoia` of another family's address: `panic(9)` (the C would cast it); the family is
+    /// the handle's arm.
+    #[test]
+    #[should_panic(expected = "ifatoia: not an inet address")]
+    fn ifatoia_of_another_family_is_panic() {
+        let ifa: &'static crate::net::if_var::IfaddrLinked =
+            std::boxed::Box::leak(std::boxed::Box::new(crate::net::if_var::IfaddrLinked::new()));
+        ifa.ifa_refcnt.init();
+        let l = IfaddrRef::Linked(crate::net::if_var::LinkedIfa::new(ifa));
+        assert!(InIfaddr::of(&l).is_none());
+        let _ = ifatoia(&l);
+    }
+
     #[test]
     fn the_address_words_read_as_the_c_structure() {
         let w = SinWords::new();
