@@ -160,9 +160,16 @@
 //!   `SockaddrView`; the `Inet` bridge's leg and `bsd`'s `unsafe` over `dst` (decision 82's
 //!   second block) go: `ether_resolve` calls it directly. Its solicitation asks the bridge for
 //!   the net lock's proof (`Inet::with_net_held`, the leg `ether_resolve`'s broadcast copy
-//!   uses: a driver's output carries none). `nd6_rtrequest` (`ether_rtrequest`'s), `nd6_ifattach`
-//!   and `nd6_ifdetach` (the interface layer's) and DAD, the expiry timer and `nd6_purge`
-//!   (in6's and in6_ifattach's, N6.5a's temporary legs) are called directly.
+//!   uses: a driver's output carries none), which `panic(9)`s without a holding where the C
+//!   asserts nothing. No path reaches it so (N6.5b's review): every output of an IPv6 packet
+//!   holds the net lock, shared or exclusive, as in the C: `ip6_output`'s callers (the sockets
+//!   under their lock, the protocol inputs and timers, `ip6_forward`, pf's route-to, the
+//!   tunnels through `ip6_send`'s task, `NET_LOCK_SHARED` or `NET_LOCK`), ND's own held packets
+//!   (`nd6_output_held`, under it) and `bpfwrite` (which takes it around the output); a new
+//!   path without it would stop here rather than run unlocked. `nd6_rtrequest`
+//!   (`ether_rtrequest`'s), `nd6_ifattach` and `nd6_ifdetach` (the interface layer's) and DAD,
+//!   the expiry timer and `nd6_purge` (in6's and in6_ifattach's, N6.5a's temporary legs) are
+//!   called directly.
 //! - The held packets an unanswered neighbor drops get their `icmp6_error` through the
 //!   temporary `Inet::icmp6_error` leg until ICMPv6 moves (N6.5d).
 //! - `nd6_ioctl(cmd, data, ifp)` over the request's bytes (`hal::pod::at`/`put` of the
@@ -1920,8 +1927,8 @@ fn nd6_resolve_ll(
     drop(g);
 
     if let Some(saddr6) = solicit {
-        // A driver's output carries no proof of the net lock: the bridge's (the module's
-        // redesign).
+        // A driver's output carries no proof of the net lock: the bridge's, from the holding
+        // every IPv6 output path has (the module's redesign: the callers, as the C's).
         let dst6 = sin6_addr_of(dst);
         with_net_held(|net| nd6_ns_output(ifp, None, &dst6, Some(&saddr6), false, net));
     }
