@@ -2029,37 +2029,44 @@ pub fn nd6_timer_for_tests() {
 pub(crate) mod tests {
     // Host tests of Neighbor Discovery over a test Ethernet interface (an `Arpcom` with a
     // driver that leaves its frames on its send queue) with fd00:77::1/64 configured through
-    // `in6_ioctl` (its link-local companion and DAD with it): LZ's (the option parser, the
-    // address printer, an entry walked through its states, a neighbor that never answers) and
-    // the brief's (the hold queue's and the hold total's bounds, the timer's walk past entries
-    // it frees, solicitations and advertisements with and without the link-layer option, DAD's
-    // three outcomes and its records reused, the route's count without the record's handle,
-    // the ioctls, the records' sizes).
+    // `in6_ioctl` (its link-local companion and DAD with it): LZ's nd6.rs's (the option parser,
+    // the address printer, an entry walked through its states, a neighbor that never answers),
+    // LZ's nd6_nbr.rs's (the NS and NA rejection tables over real packets through `nd6_msg`, one
+    // case per check, each failing when its check goes; DAD's counts and its second start, a
+    // down interface, an anycast address, `nd6_ifptomac`) and the brief's (the hold queue's and
+    // the hold total's bounds, the timer's walk past entries it frees, solicitations and
+    // advertisements with and without the link-layer option, DAD's three outcomes and its
+    // records reused, the route's count without the record's handle, the ioctls, the records'
+    // sizes).
 
     use std::boxed::Box;
     use std::sync::MutexGuard;
     use std::vec::Vec;
 
     use hal::sys::net_if::{
-        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_MPSAFE,
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFT_LOOP,
+        IFXF_MPSAFE,
     };
     use hal::sys::netinet_icmp6::{
         ND_NA_FLAG_OVERRIDE, ND_NA_FLAG_SOLICITED, ND_NEIGHBOR_ADVERT, NdNeighborAdvert,
     };
     use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-    use hal::sys::netinet6_in6_var::{IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+    use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 
     use super::*;
+    use crate::net::if_::SIOCAIFADDR_IN6;
     use crate::net::if_::{TestDriver, if_attach};
     use crate::net::if_ethersubr::{Arpcom, ether_ifattach};
     use crate::net::ifq::ifq_dequeue;
-    use crate::net::mbuf::{M_DONTWAIT, MT_DATA, m_copydata, m_devget, m_gethdr};
+    use crate::net::mbuf::{M_DONTWAIT, MT_DATA, m_copydata, m_devget, m_get, m_gethdr};
     use crate::net::route::tests::{take_icmp6_errors, take_ip6_sent, testroutes_setup};
-    use crate::netinet6::in6::tests::{a6, add, zoned};
+    use crate::netinet6::in6::in6_ioctl;
+    use crate::netinet6::in6::tests::{a6, add, aliasreq, zoned};
     use crate::netinet6::in6_var::In6Ifaddr;
-    use crate::netinet6::ip6_var::{ICMP6COUNTERS, IP6_DAD_COUNT};
+    use crate::netinet6::ip6_var::{ICMP6COUNTERS, IP6_DAD_COUNT, IP6_DAD_PENDING};
     use crate::netinet6::nd6_nbr::{
-        Dadq, dad_counts, dad_fire, dad_free_counts, dad_reap, nd6_na_input, nd6_ns_input,
+        Dadq, dad_counts, dad_fire, dad_free_counts, dad_reap, dad_tries, nd6_dad_start,
+        nd6_dad_stop, nd6_ifptomac, nd6_na_input, nd6_ns_input,
     };
     use crate::tc::TIME_UPTIME;
 
@@ -2852,6 +2859,451 @@ pub(crate) mod tests {
         );
         assert!(nbi.expire != 0, "a wall-clock expiry");
         let _ = take_ip6_sent();
+    }
+
+    /// A crafted ND message the input must drop, and the one counter it must move.
+    struct Rejected {
+        /// The check it breaks (the C's line).
+        what: &'static str,
+        src: In6Addr,
+        dst: In6Addr,
+        hlim: u8,
+        /// The fixed part.
+        msg: Vec<u8>,
+        /// The options.
+        opts: Vec<u8>,
+        /// The `icmp6len` given, when not the message's own length.
+        len: Option<i32>,
+        /// The counter that moves by one; the others of [`ND_COUNTERS`] stay.
+        counter: Icmp6statCounters,
+    }
+
+    /// The counters an ND input's rejection may move.
+    const ND_COUNTERS: [Icmp6statCounters; 4] = [
+        Icmp6statCounters::Icp6sBadns,
+        Icmp6statCounters::Icp6sBadna,
+        Icmp6statCounters::Icp6sNdBadopt,
+        Icmp6statCounters::Icp6sTooshort,
+    ];
+
+    /// An ND input (`nd6_ns_input`, `nd6_na_input`).
+    type NdInput = fn(MbufBox, i32, i32, &NetHeld<'_>);
+
+    /// Each case of `cases` given to `input` as a packet received on `ifp`, under the exclusive
+    /// net lock: its counter, alone of [`ND_COUNTERS`], moved by one; nothing sent, no entry
+    /// made for its source.
+    fn rejected(ifp: &'static Ifnet, input: NdInput, cases: &[Rejected]) {
+        for c in cases {
+            let before = ND_COUNTERS.map(icmp6stat);
+            let (m, len) = nd_packet(ifp, c.src, c.dst, c.hlim, &c.msg, &c.opts);
+            {
+                let w = NETLOCK.write();
+                let net = NetHeld::of(&w).expect("the net lock");
+                input(m, IP6_HDR_LEN as i32, c.len.unwrap_or(len), &net);
+            }
+            let after = ND_COUNTERS.map(icmp6stat);
+            for (i, k) in ND_COUNTERS.iter().enumerate() {
+                let moved = u64::from(*k == c.counter);
+                assert_eq!(after[i], before[i] + moved, "{}: {k:?}", c.what);
+            }
+            assert!(take_ip6_sent().is_empty(), "{}: answered", c.what);
+            assert!(entry(c.src).is_none(), "{}: an entry made", c.what);
+        }
+    }
+
+    /// `b` (an IPv6 header and its payload) as a two-mbuf chain, the header mbuf holding the
+    /// first `at` bytes, received on `ifp`: what `nd6_msg` must pull up.
+    fn chained(ifp: &Ifnet, b: &[u8], at: usize) -> MbufBox {
+        let mut m = m_devget(&b[..at], 0).expect("an mbuf");
+        let mut n = m_get(M_DONTWAIT, MT_DATA).expect("an mbuf");
+        n.m_len().set((b.len() - at) as u32);
+        n.data_mut().expect("room").copy_from_slice(&b[at..]);
+        m.m_pkthdr().len.set(b.len() as i32);
+        m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
+        drop(m.m_next.set(n));
+        m
+    }
+
+    /// The bytes of a packet `nd_packet` makes.
+    fn packet_bytes(src: In6Addr, dst: In6Addr, msg: &[u8], opts: &[u8]) -> Vec<u8> {
+        let mut ip6 = Ip6Hdr {
+            ip6_plen: htons((msg.len() + opts.len()) as u16),
+            ip6_nxt: 58, // IPPROTO_ICMPV6
+            ip6_hlim: 255,
+            ip6_src: src,
+            ip6_dst: dst,
+            ..Ip6Hdr::default()
+        };
+        ip6.set_ip6_vfc(IPV6_VERSION);
+        let mut b = std::vec![0u8; IP6_HDR_LEN];
+        assert!(pod::put(&mut b, 0, &ip6));
+        b.extend_from_slice(msg);
+        b.extend_from_slice(opts);
+        b
+    }
+
+    #[test]
+    fn bad_solicitations_are_counted_and_dropped() {
+        // LZ's table (nd6_nbr.rs's), over real packets through nd6_msg: each case passes every
+        // check before the one it breaks, so a check removed lets its case through.
+        let _g = setup();
+        let ifp = ether(b"ndr0");
+        dad_done(ifp);
+        let any = In6Addr::default();
+        let snm = solicited_node(ifp, ours6());
+        let ns = nd_msg(ND_NEIGHBOR_SOLICIT, 0, ours6());
+        let src_lla = lla(ND_OPT_SOURCE_LINKADDR, PEER).to_vec();
+        // A source option of 16 bytes for an Ethernet address (8).
+        let mut long_lla = std::vec![ND_OPT_SOURCE_LINKADDR, 2];
+        long_lla.extend_from_slice(&PEER);
+        long_lla.extend_from_slice(&[0; 8]);
+        let bad = |what, src, dst, hlim, msg: &[u8], opts: &[u8]| Rejected {
+            what,
+            src,
+            dst,
+            hlim,
+            msg: msg.to_vec(),
+            opts: opts.to_vec(),
+            len: None,
+            counter: Icmp6statCounters::Icp6sBadns,
+        };
+        let none = Vec::new();
+        let mut cases = std::vec![
+            bad("nd6_nbr.c:126, hop limit 254", any, snm, 254, &ns, &none),
+            bad(
+                "nd6_nbr.c:131-137, from :: to a unicast address",
+                any,
+                ours6(),
+                255,
+                &ns,
+                &none
+            ),
+            bad(
+                "nd6_nbr.c:142, a source that is no neighbor",
+                a6("fd00:99::5"),
+                ours6(),
+                255,
+                &ns,
+                &src_lla
+            ),
+            bad(
+                "nd6_nbr.c:148, a multicast target",
+                any,
+                snm,
+                255,
+                &nd_msg(ND_NEIGHBOR_SOLICIT, 0, snm),
+                &none
+            ),
+            bad(
+                "nd6_nbr.c:165, a DAD probe with a source option",
+                any,
+                snm,
+                255,
+                &ns,
+                &src_lla
+            ),
+            bad(
+                "nd6_nbr.c:243, a source option not 8 bytes",
+                peer6(),
+                ours6(),
+                255,
+                &ns,
+                &long_lla
+            ),
+        ];
+        // A zero-length option: dropped by nd6_options, counted there alone.
+        cases.push(Rejected {
+            counter: Icmp6statCounters::Icp6sNdBadopt,
+            ..bad(
+                "nd6_options, a zero-length option",
+                peer6(),
+                snm,
+                255,
+                &ns,
+                &std::vec![ND_OPT_SOURCE_LINKADDR, 0, 0, 0, 0, 0, 0, 0],
+            )
+        });
+        // Shorter than a solicitation, and a length past what the chain holds.
+        cases.push(Rejected {
+            msg: ns[..20].to_vec(),
+            counter: Icmp6statCounters::Icp6sTooshort,
+            ..bad("nd6_nbr.c:117, 20 bytes", peer6(), snm, 255, &none, &none)
+        });
+        cases.push(Rejected {
+            len: Some(32),
+            counter: Icmp6statCounters::Icp6sTooshort,
+            ..bad(
+                "nd6_nbr.c:117, 32 bytes said, 24 there",
+                peer6(),
+                snm,
+                255,
+                &ns,
+                &none,
+            )
+        });
+        rejected(ifp, nd6_ns_input, &cases);
+
+        // The same solicitation, good, its message split over two mbufs (nd6_msg's pullup):
+        // answered, the solicitor's entry made.
+        let b = packet_bytes(peer6(), snm, &ns, &src_lla);
+        let m = chained(ifp, &b, IP6_HDR_LEN + 10);
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            nd6_ns_input(m, IP6_HDR_LEN as i32, (b.len() - IP6_HDR_LEN) as i32, &net);
+        }
+        let na = take_ip6_sent();
+        assert_eq!(na.len(), 1, "answered");
+        assert_eq!(
+            nd_sent(&na[0].bytes),
+            (ND_NEIGHBOR_ADVERT, peer6(), ours6())
+        );
+        assert_eq!(
+            entry(peer6()).expect("the solicitor's entry").0,
+            ND6_LLINFO_STALE
+        );
+        let _ = sent(ifp);
+    }
+
+    #[test]
+    fn bad_advertisements_are_counted_and_dropped() {
+        let _g = setup();
+        let ifp = ether(b"ndr1");
+        dad_done(ifp);
+        let all_nodes = IN6ADDR_LINKLOCAL_ALLNODES_TEST;
+        let tlla = lla(ND_OPT_TARGET_LINKADDR, PEER).to_vec();
+        let mut long_tlla = std::vec![ND_OPT_TARGET_LINKADDR, 2];
+        long_tlla.extend_from_slice(&PEER);
+        long_tlla.extend_from_slice(&[0; 8]);
+        let solicited = nd_msg(ND_NEIGHBOR_ADVERT, ND_NA_FLAG_SOLICITED, peer6());
+        let bad = |what, dst, hlim, msg: &[u8], opts: &[u8]| Rejected {
+            what,
+            src: peer6(),
+            dst,
+            hlim,
+            msg: msg.to_vec(),
+            opts: opts.to_vec(),
+            len: None,
+            counter: Icmp6statCounters::Icp6sBadna,
+        };
+        let none = Vec::new();
+        let mut cases = std::vec![
+            bad(
+                "nd6_nbr.c:537, hop limit 64",
+                ours6(),
+                64,
+                &solicited,
+                &tlla
+            ),
+            bad(
+                "nd6_nbr.c:555, a multicast target",
+                ours6(),
+                255,
+                &nd_msg(ND_NEIGHBOR_ADVERT, 0, all_nodes),
+                &tlla
+            ),
+            bad(
+                "nd6_nbr.c:557, solicited, to a group",
+                all_nodes,
+                255,
+                &solicited,
+                &tlla
+            ),
+            bad(
+                "nd6_nbr.c:566, to a group without the target option",
+                all_nodes,
+                255,
+                &nd_msg(ND_NEIGHBOR_ADVERT, ND_NA_FLAG_OVERRIDE, peer6()),
+                &none
+            ),
+            bad(
+                "nd6_nbr.c:616, a target option not 8 bytes",
+                ours6(),
+                255,
+                &solicited,
+                &long_tlla
+            ),
+        ];
+        cases.push(Rejected {
+            counter: Icmp6statCounters::Icp6sNdBadopt,
+            ..bad(
+                "nd6_options, a zero-length option",
+                ours6(),
+                255,
+                &solicited,
+                &std::vec![ND_OPT_TARGET_LINKADDR, 0, 0, 0, 0, 0, 0, 0],
+            )
+        });
+        cases.push(Rejected {
+            counter: Icmp6statCounters::Icp6sTooshort,
+            ..bad(
+                "nd6_nbr.c:540, 20 bytes",
+                ours6(),
+                255,
+                &solicited[..20],
+                &none,
+            )
+        });
+        cases.push(Rejected {
+            len: Some(32),
+            counter: Icmp6statCounters::Icp6sTooshort,
+            ..bad(
+                "nd6_nbr.c:540, 32 bytes said, 24 there",
+                ours6(),
+                255,
+                &solicited,
+                &none,
+            )
+        });
+        rejected(ifp, nd6_na_input, &cases);
+
+        // A good unsolicited advertisement for a neighbor a host has no entry for: ignored, not
+        // counted as bad.
+        let before = ND_COUNTERS.map(icmp6stat);
+        let (m, len) = nd_packet(
+            ifp,
+            peer6(),
+            all_nodes,
+            255,
+            &nd_msg(ND_NEIGHBOR_ADVERT, ND_NA_FLAG_OVERRIDE, peer6()),
+            &tlla,
+        );
+        {
+            let w = NETLOCK.write();
+            nd6_na_input(m, IP6_HDR_LEN as i32, len, &NetHeld::of(&w).expect("net"));
+        }
+        assert_eq!(ND_COUNTERS.map(icmp6stat), before);
+        assert!(entry(peer6()).is_none(), "a host makes no entry");
+
+        // A solicited one for an INCOMPLETE entry, split over two mbufs (nd6_msg's pullup):
+        // REACHABLE.
+        let rt = route6(peer6(), true).expect("the neighbor");
+        assert_eq!(resolve(ifp, &rt, peer6()), Err(Errno::EAGAIN));
+        let _ = take_ip6_sent();
+        let b = packet_bytes(peer6(), ours6(), &solicited, &tlla);
+        let m = chained(ifp, &b, IP6_HDR_LEN + 6);
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            nd6_na_input(m, IP6_HDR_LEN as i32, (b.len() - IP6_HDR_LEN) as i32, &net);
+        }
+        assert_eq!(nd6_entry(&rt).expect("the entry").0, ND6_LLINFO_REACHABLE);
+        assert_eq!(gw_lladdr_of(&rt), Some(PEER));
+        let _ = sent(ifp);
+    }
+
+    #[test]
+    fn dad_counts_its_probes_once_and_holds_its_address_until_reaped() {
+        let _g = setup();
+        let ifp = ether(b"ndd0");
+        let ia6 = ours_ia6(ifp);
+        // ether()'s address: DAD started once, its one probe sent.
+        let pending = IP6_DAD_PENDING.load(Ordering::Relaxed);
+        assert!(pending >= 1);
+        let count = IP6_DAD_COUNT.load(Ordering::Relaxed);
+        assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
+        let addr = DADQ_ADDR(&ia6.ia_ifa);
+        let refs = ia6.ia_ifa.ifa_refcnt.read();
+
+        // A second start for the same address does nothing: no record, no probe, no reference.
+        {
+            let w = NETLOCK.write();
+            nd6_dad_start(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
+        }
+        assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending);
+        assert_eq!(DADQ_ADDR(&ia6.ia_ifa), addr);
+        assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 1)));
+        assert!(take_ip6_sent().is_empty(), "no second probe");
+        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs);
+
+        // The verdict: the record off the list, one DAD less pending; the address's reference
+        // is DAD's until the reaper runs.
+        dad_fire(&ia6.ia_ifa);
+        assert!(dad_tries(&ia6.ia_ifa).is_none());
+        assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending - 1);
+        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs, "DAD's until reaped");
+        dad_reap();
+        assert_eq!(ia6.ia_ifa.ifa_refcnt.read(), refs - 1);
+        let _ = take_ip6_sent();
+    }
+
+    #[test]
+    fn dad_on_a_down_interface_counts_tries_and_loses_to_any_probe() {
+        let _g = setup();
+        let ifp = ether(b"ndd1");
+        let ia6 = ours_ia6(ifp);
+        {
+            let w = NETLOCK.write();
+            nd6_dad_stop(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
+        }
+        dad_reap();
+        let _ = take_ip6_sent();
+
+        // Down: the try counts, no probe goes out.
+        ifp.if_flags.set(ifp.if_flags.get() & !IFF_UP);
+        assert_ne!(ia6.ia6_flags.get() & IN6_IFF_TENTATIVE, 0);
+        {
+            let w = NETLOCK.write();
+            nd6_dad_start(&ia6.ia_ifa, &NetHeld::of(&w).expect("the net lock"));
+        }
+        let count = IP6_DAD_COUNT.load(Ordering::Relaxed);
+        assert_eq!(dad_tries(&ia6.ia_ifa), Some((count, 1, 0)));
+        assert!(take_ip6_sent().is_empty());
+
+        // A probe from someone else before ours: it wins at once (nd6_dad_ns_input).
+        solicit(
+            ifp,
+            In6Addr::default(),
+            solicited_node(ifp, ours6()),
+            ours6(),
+            None,
+        );
+        assert_eq!(ia6.ia6_flags.get() & IN6_IFF_TENTATIVE, 0);
+        assert_ne!(ia6.ia6_flags.get() & IN6_IFF_DUPLICATED, 0);
+        assert!(dad_tries(&ia6.ia_ifa).is_none());
+        dad_reap();
+        ifp.if_flags.set(ifp.if_flags.get() | IFF_UP);
+        let _ = take_ip6_sent();
+    }
+
+    #[test]
+    fn an_anycast_address_skips_dad() {
+        let _g = setup();
+        let ifp = ether(b"ndd2");
+        dad_done(ifp);
+        let pending = IP6_DAD_PENDING.load(Ordering::Relaxed);
+        let any6 = a6("fd00:77::aa");
+        let mut r = aliasreq(ifp, any6, 64, IN6_IFF_ANYCAST);
+        in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true).expect("SIOCAIFADDR_IN6");
+        let ia = in6ifa_ifpwithaddr(ifp, &any6).expect("the anycast address");
+        let flags = ia.ia6_flags.get();
+        assert_ne!(flags & IN6_IFF_ANYCAST, 0);
+        assert_eq!(
+            flags & (IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED),
+            0,
+            "usable at once"
+        );
+        assert!(dad_tries(&ia.ia_ifa).is_none());
+        assert_eq!(IP6_DAD_PENDING.load(Ordering::Relaxed), pending);
+        assert!(
+            !take_ip6_sent()
+                .iter()
+                .any(|p| p.bytes[IP6_HDR_LEN] == ND_NEIGHBOR_SOLICIT),
+            "no probe"
+        );
+    }
+
+    #[test]
+    fn nd6_ifptomac_is_the_ethernet_address() {
+        let _g = setup();
+        let ifp = ether(b"ndd3");
+        assert_eq!(nd6_ifptomac(ifp), Some(OURS));
+        // An Ethernet-typed interface without its arpcom, and a loopback: none.
+        let bare: &'static Ifnet = Box::leak(Box::new(Ifnet::new()));
+        bare.if_type.set(IFT_ETHER);
+        assert_eq!(nd6_ifptomac(bare), None);
+        bare.if_type.set(IFT_LOOP);
+        assert_eq!(nd6_ifptomac(bare), None);
     }
 
     #[test]

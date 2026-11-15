@@ -1609,6 +1609,19 @@ pub(crate) fn dad_counts(ifa: &Ifaddr) -> Option<(i32, i32, i32)> {
     })
 }
 
+/// The DAD state of `ifa` for the tests: the solicitations to send (`dad_count`), the tries
+/// and the solicitations sent.
+#[cfg(test)]
+pub(crate) fn dad_tries(ifa: &Ifaddr) -> Option<(i32, i32, i32)> {
+    nd6_dad_find(ifa).map(|dp| {
+        (
+            dp.dad_count.get(),
+            dp.dad_ns_tcount.get(),
+            dp.dad_ns_ocount.get(),
+        )
+    })
+}
+
 /// The lengths of the reaper's and the free list, for the tests.
 #[cfg(test)]
 pub(crate) fn dad_free_counts() -> (usize, usize) {
