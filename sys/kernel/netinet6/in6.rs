@@ -1729,6 +1729,13 @@ pub(crate) mod tests {
         delmulti: AtomicU32,
     }
 
+    impl In6Driver {
+        /// The `SIOCADDMULTI` requests seen.
+        pub(crate) fn adds(&self) -> u32 {
+            self.addmulti.load(Ordering::Relaxed)
+        }
+    }
+
     impl NetDriver for In6Driver {
         fn ioctl(&self, ifp: &'static Ifnet, cmd: u64, _data: &mut [u8]) -> Result<(), Errno> {
             match cmd {

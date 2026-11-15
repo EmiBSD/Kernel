@@ -123,11 +123,6 @@
 //!   configured.
 //! - `mld6_input` clears and sets `mld_addr`'s embedded scope in a copy of the header, not in
 //!   the packet (which it frees at the end anyway; LZ's).
-//! - The reports go out through `ip6_output`, `bsd`'s until N6.5c, by the `Inet` leg
-//!   `ip6_output_opts` (whether the router alert goes, the multicast interface, hop limit
-//!   and loop: what `ip6_opts` and the `struct ip6_moptions` on the C's stack carry; the
-//!   leg points the options at its own `'static` copy of [`MLD6_HBH`], so no caller lends
-//!   it bytes whose length it would have to trust; docs/SCAFFOLDING.md).
 //!
 //! ## Redesign
 //! - `ip6_opts` (`static struct ip6_pktopts` pointing at `hbh_buf`, which `mld6_init`
@@ -176,8 +171,8 @@ use hal::sys::netinet6_in6::{
 use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 use hal::sys::netinet6_mld6::{MLD_TIMER_SCALE, MLD_V1_MAX_RI};
 
-use crate::assert::kassert;
-use crate::net::if_::{IFNETLIST, IfRef, inet};
+use crate::assert::{kassert, kpanic};
+use crate::net::if_::{IFNETLIST, IfRef};
 use crate::net::if_var::Ifnet;
 use crate::net::mbuf::{
     M_DONTWAIT, M_ICMP_CSUM_OUT, M_LOOP, MT_DATA, MT_HEADER, Mbuf, MbufBox, m_align, m_copydata,
@@ -187,7 +182,10 @@ use crate::net::proto::PR_FASTHZ;
 use crate::netinet::igmp::M_MRTABLE;
 use crate::netinet6::in6::{in6_lookupmulti, in6ifa_ifpforlinklocal};
 use crate::netinet6::in6_var::{In6Multi, ia6_in6};
-use crate::netinet6::ip6_var::{IPV6_UNSPECSRC, icmp6stat_inc, icmp6stat_inc_hist};
+use crate::netinet6::ip6_output::ip6_output;
+use crate::netinet6::ip6_var::{
+    IPV6_UNSPECSRC, Ip6Moptions, Ip6OutOpts, icmp6stat_inc, icmp6stat_inc_hist, ip6_exthdr_whole,
+};
 use crate::netinet6::mld6_var::{
     MLD_IREPORTEDLAST, MLD_OTHERLISTENER, Mld6Pktinfo, mld_random_delay,
 };
@@ -619,12 +617,19 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
 
     icmp6stat_inc_hist(Icmp6statCounters::Icp6sOuthist, pkt.mpi_type as u8);
     let flags = if ia6.is_some() { 0 } else { IPV6_UNSPECSRC };
-    if let Some(i) = inet() {
-        // ip6_output(mh, &ip6_opts, NULL, flags, &im6o, NULL): the router alert is MLD6_HBH,
-        // which the leg points the options at itself.
-        let _ = i.ip6_output_opts(mh, true, flags, ifidx, 1, false);
-    }
+    // ip6_output(mh, &ip6_opts, NULL, flags, &im6o, NULL): `ip6_opts` the router alert,
+    // MLD6_HBH, lent as the view of options `ip6_initpktopts` made; `im6o` the interface, hop
+    // limit 1, no loopback.
+    let Some(opts) = Ip6OutOpts::new().with_exthdrs(Some(&MLD6_HBH), None, None) else {
+        kpanic(format_args!("mld6_sendpkt: the router alert is not whole"));
+    };
+    let im6o = Ip6Moptions::output(ifidx, 1, 0);
+    let _ = ip6_output(mh, Some(opts), None, flags, Some(&im6o), None, net);
 }
+
+// MLD's router alert is a whole extension header (`Ip6OutOpts::with_exthdrs`' check, made at
+// compile time).
+const _: () = assert!(ip6_exthdr_whole(&MLD6_HBH));
 /* </CODE> */
 
 /* <TESTS> */

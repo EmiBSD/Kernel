@@ -156,7 +156,6 @@ use crate::net::if_var::Netstack;
 use crate::net::route::{RTF_HOST, RTV_MTU};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
-use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
     InpNotifyFn, Inpcb, in_pcbdetach, in_pcbinit, in_pcblookup, in_pcbnotifyall, in_pcbrtchange,
     in_pcbrtentry, in_pcbsolock, in_pcbsounlock, in_pcbunref,
@@ -607,15 +606,13 @@ pub fn tcp_respond(
                 mbuf_put(m, ipoff, ip6);
                 mbuf_put(m, thoff, th);
             }
-            let opts = tp.and_then(|tp| tp.t_inpcb.outputopts6_ptr()).map(|o| {
-                // SAFETY: the options are the socket's own allocation (`ip6_setpktopts`),
-                // freed only under the socket lock the caller holds with `tp`.
-                unsafe { o.as_ref() }
-            });
+            // The sticky options, lent for the call (the caller holds the socket lock with
+            // `tp`).
+            let sticky = tp.map(|tp| tp.t_inpcb.outputopts6());
             // The C ignores the result: a lost reply is a lost segment.
             let _ = ip6_output(
                 m,
-                opts,
+                sticky.as_ref().and_then(|s| s.as_deref()),
                 tp.map(|tp| tp.t_inpcb.route()).as_deref_mut(),
                 0,
                 None,

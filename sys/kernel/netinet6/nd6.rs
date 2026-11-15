@@ -2076,7 +2076,7 @@ pub(crate) mod tests {
     use crate::net::if_ethersubr::{Arpcom, ether_ifattach};
     use crate::net::ifq::ifq_dequeue;
     use crate::net::mbuf::{M_DONTWAIT, MT_DATA, m_copydata, m_devget, m_get, m_gethdr};
-    use crate::net::route::tests::{take_icmp6_errors, take_ip6_sent, testroutes_setup};
+    use crate::net::route::tests::{take_icmp6_errors, testroutes_setup};
     use crate::netinet6::in6::in6_ioctl;
     use crate::netinet6::in6::tests::{a6, add, aliasreq, zoned};
     use crate::netinet6::in6_var::In6Ifaddr;
@@ -2105,10 +2105,86 @@ pub(crate) mod tests {
         ICMP6COUNTERS.read()[c as usize]
     }
 
+    /// A packet ND or MLD sent through `ip6_output`, taken off the send queue of an [`ether`]
+    /// interface ([`take_ip6_sent`]): the multicast interface and hop limit it went out with
+    /// (the C's `ip6_moptions` ND fills for a multicast destination only), the `ip6_output`
+    /// flags its source shows (`IPV6_UNSPECSRC` for `::`), and the IPv6 packet as ND built it
+    /// (the interface's zone embedded again in a scoped address, which `ip6_output` clears
+    /// on the wire).
+    struct Sent6 {
+        flags: i32,
+        ifidx: u16,
+        hlim: u8,
+        bytes: Vec<u8>,
+    }
+
+    /// The interfaces [`ether`] made in this test, each with the frames of its send queue the
+    /// test has not taken that ND and MLD did not send (the data packets).
+    static ETHERS: std::sync::Mutex<Vec<(&'static Ifnet, Vec<Vec<u8>>)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// The packets ND and MLD sent, in the order the queues were drained.
+    static IP6_SENT: std::sync::Mutex<Vec<Sent6>> = std::sync::Mutex::new(Vec::new());
+
+    /// Every [`ether`] interface's send queue drained: ND's and MLD's packets (IPv6 frames of
+    /// ICMPv6, or a hop-by-hop header: MLD's router alert) to [`IP6_SENT`], the rest kept for
+    /// [`sent`].
+    fn drain_queues() {
+        let mut ethers = ETHERS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ip6 = IP6_SENT.lock().unwrap_or_else(|e| e.into_inner());
+        for (ifp, data) in ethers.iter_mut() {
+            while let Some(m) = ifq_dequeue(ifp.if_snd()) {
+                let mut b = std::vec![0u8; m.m_pkthdr().len.get() as usize];
+                m_copydata(&m, 0, &mut b);
+                let nxt = b.get(14 + 6).copied();
+                if b.get(12..14) == Some(&[0x86, 0xdd][..])
+                    && b.len() >= 14 + IP6_HDR_LEN
+                    && (nxt == Some(58) || nxt == Some(0))
+                {
+                    let mut pkt = b[14..].to_vec();
+                    let idx = ifp.if_index.get();
+                    for at in [8, 24] {
+                        let mut a = pod::at::<In6Addr>(&pkt, at).expect("an address");
+                        if hal::sys::netinet6_in6::in6_is_scope_embed(&a) {
+                            a.set_s6_addr16(1, htons(idx as u16));
+                            assert!(pod::put(&mut pkt, at, &a));
+                        }
+                    }
+                    let src = pod::at::<In6Addr>(&pkt, 8).expect("the source");
+                    let dst = pod::at::<In6Addr>(&pkt, 24).expect("the destination");
+                    ip6.push(Sent6 {
+                        flags: if hal::sys::netinet6_in6::in6_is_addr_unspecified(&src) {
+                            crate::netinet6::ip6_var::IPV6_UNSPECSRC
+                        } else {
+                            0
+                        },
+                        ifidx: if hal::sys::netinet6_in6::in6_is_addr_multicast(&dst) {
+                            idx as u16
+                        } else {
+                            0
+                        },
+                        hlim: pkt[7],
+                        bytes: pkt,
+                    });
+                } else {
+                    data.push(b);
+                }
+            }
+        }
+    }
+
+    /// Takes the packets ND and MLD sent so far.
+    fn take_ip6_sent() -> Vec<Sent6> {
+        drain_queues();
+        core::mem::take(&mut *IP6_SENT.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// The routing tests' fixture, ND's state and timers, the uptime past 0 (a route cloned at
     /// 0 would read as a permanent entry), and nothing left of an earlier test's output.
     fn setup() -> MutexGuard<'static, ()> {
         let g = testroutes_setup();
+        ETHERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        IP6_SENT.lock().unwrap_or_else(|e| e.into_inner()).clear();
         nd6_init();
         TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
         let _ = take_ip6_sent();
@@ -2135,6 +2211,10 @@ pub(crate) mod tests {
         if_attach(ifp);
         ether_ifattach(ac);
         hal::klock::kernel_unlock();
+        ETHERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((ifp, Vec::new()));
         add(ifp, ours6(), 64).expect("SIOCAIFADDR_IN6");
         let _ = sent(ifp);
         let _ = take_ip6_sent();
@@ -2158,15 +2238,16 @@ pub(crate) mod tests {
         let _ = take_ip6_sent();
     }
 
-    /// The frames the interface was given since the last call, as bytes.
+    /// The frames the interface was given since the last call, as bytes, but for ND's and
+    /// MLD's own packets ([`take_ip6_sent`]'s).
     fn sent(ifp: &'static Ifnet) -> Vec<Vec<u8>> {
-        let mut v = Vec::new();
-        while let Some(m) = ifq_dequeue(ifp.if_snd()) {
-            let mut b = std::vec![0u8; m.m_pkthdr().len.get() as usize];
-            m_copydata(&m, 0, &mut b);
-            v.push(b);
-        }
-        v
+        drain_queues();
+        let mut ethers = ETHERS.lock().unwrap_or_else(|e| e.into_inner());
+        ethers
+            .iter_mut()
+            .find(|(i, _)| core::ptr::eq(*i, ifp))
+            .map(|(_, data)| core::mem::take(data))
+            .unwrap_or_default()
     }
 
     /// The route to `a` in table 0, cloned from the prefix's cloning route with `resolve`.
@@ -2310,8 +2391,7 @@ pub(crate) mod tests {
         nd6_ns_input(m, IP6_HDR_LEN as i32, len, &net);
     }
 
-    /// The ICMPv6 type, the IPv6 destination and the ND target of a packet the output leg
-    /// was given.
+    /// The ICMPv6 type, the IPv6 destination and the ND target of a packet ND sent.
     fn nd_sent(b: &[u8]) -> (u8, In6Addr, In6Addr) {
         (
             b[IP6_HDR_LEN],
@@ -2624,7 +2704,9 @@ pub(crate) mod tests {
 
         // To our solicited-node group with the source option: an entry for the solicitor
         // (STALE, its address recorded) and a solicited advertisement with our address in the
-        // target option, override set.
+        // target option, override set. The advertisement goes to the solicitor through
+        // ip6_output and nd6_resolve, which moves the STALE entry to DELAY (nd6.c's
+        // nd6_resolve), as in the C.
         solicit(
             ifp,
             peer6(),
@@ -2633,7 +2715,7 @@ pub(crate) mod tests {
             Some(PEER),
         );
         let (state, ..) = entry(peer6()).expect("the solicitor's entry");
-        assert_eq!(state, ND6_LLINFO_STALE);
+        assert_eq!(state, ND6_LLINFO_DELAY);
         let rt = route6(peer6(), false).expect("the route");
         assert_eq!(gw_lladdr_of(&rt), Some(PEER));
         let na = take_ip6_sent();
@@ -3085,7 +3167,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             entry(peer6()).expect("the solicitor's entry").0,
-            ND6_LLINFO_STALE
+            ND6_LLINFO_DELAY
         );
         let _ = sent(ifp);
     }

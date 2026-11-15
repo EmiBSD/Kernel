@@ -80,37 +80,11 @@
 /* <CODE> */
 //! IPv6 interface addresses, interface statistics, the address `ioctl` requests and the
 //! multicast records: `<netinet6/in6_var.h>`, its userland half (`hal::sys::netinet6_in6_var`)
-//! and the kernel's records (`kernel::netinet6::in6_var`) re-exported whole (N6.5a).
+//! and the kernel's records (`kernel::netinet6::in6_var`) re-exported whole (N6.5a; the
+//! memberships' `struct in6_multi_mship` is the kernel's `In6Memberships` array since N6.5c).
 //!
 //! Upstream: sys/netinet6/in6_var.h @ 3ce1f3f79392
-//!
-//! ## Deviations
-//! - `struct in6_multi_mship` stays LZ's (a `malloc`'d entry on a `bsd` list) for
-//!   `ip6_setmoptions`' memberships until the socket options move (N6.5c); the kernel's
-//!   addresses keep theirs in an array (`kernel::netinet6::in6_var::In6Memberships`).
-
-use core::cell::Cell;
-
-use crate::queue_adapter;
-use crate::sys::queue::ListEntry;
 
 pub use hal::sys::netinet6_in6_var::*;
 pub use kernel::netinet6::in6_var::*;
-
-/// `struct in6_multi_mship`: multi-cast membership entry. One for each group/ifp that a PCB
-/// belongs to.
-pub struct In6MultiMship {
-    /// `i6mm_maddr`: multicast address pointer.
-    pub i6mm_maddr: Cell<Option<&'static In6Multi>>,
-    /// `i6mm_chain`: multicast options chain.
-    pub i6mm_chain: ListEntry<In6MultiMship>,
-}
-
-// SAFETY: the members change under the net lock, as in C.
-unsafe impl Sync for In6MultiMship {}
-
-queue_adapter!(
-    /// `LIST_HEAD(, in6_multi_mship)` through `i6mm_chain` (`im6o_memberships`).
-    pub In6MultiMshipList: In6MultiMship, i6mm_chain => ListEntry<In6MultiMship>
-);
 /* </CODE> */

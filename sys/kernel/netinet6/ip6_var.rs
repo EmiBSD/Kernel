@@ -81,8 +81,10 @@
 //! statistics (`ip6counters`, and ICMPv6's `icmp6counters` beside them), the packet-option
 //! and `ip6_output` flags, and the configuration variables (`ip6_defhlim`, `ip6_forwarding`,
 //! ..., defined by `in6_proto.c`). The userland half (`struct ip6stat` and the indices of its
-//! words) is `hal::sys::netinet6_ip6_var`; `struct ip6q`, `struct ip6asfrag`, `struct
-//! ip6_moptions` and `struct ip6_pktopts` are `bsd`'s until their modules move (N6.5c/d).
+//! words) is `hal::sys::netinet6_ip6_var`. The control options of outgoing packets
+//! ([`Ip6Pktopts`], with the borrowed view `ip6_output` takes, [`Ip6OutOpts`]) and the
+//! multicast options ([`Ip6Moptions`]) are here since N6.5c; `struct ip6q` and `struct
+//! ip6asfrag` are `bsd`'s until reassembly moves (N6.5d).
 //!
 //! Upstream: sys/netinet6/ip6_var.h @ 3ce1f3f79392
 //! LZ: sys/netinet6/ip6_var.rs@3c62ede68802
@@ -118,17 +120,32 @@
 //!   header's `extern`s (`kernel::netinet::ip_var`'s precedent); `bsd`'s `in6_proto.rs`
 //!   re-exports them until the protocol table moves (N6.5d). `ip6_mtudisc_timeout` joins
 //!   them.
+//! - N6.5c: LZ's `struct ip6_pktopts` (raw `NonNull`s to the `malloc(M_IP6OPT)` packet info
+//!   and extension headers, read through `unsafe` by `ip6_output`, the source selection and
+//!   the socket options, with an invariant written on the field) -> [`Ip6Pktopts`], whose
+//!   allocations it owns: an `MBox` of the `In6Pktinfo`, an `MArray` of each header's bytes
+//!   (the C's `malloc`s of `M_IP6OPT`, freed by the drop: `ip6_clearpktopts`), and
+//!   [`Ip6OutOpts`], the borrowed view `ip6_output` takes (D-10: the pcb's options lend one,
+//!   MLD its `const` router alert). LZ's `struct ip6_moptions` (a `LIST_HEAD` of `bsd`'s
+//!   `in6_multi_mship` entries) -> [`Ip6Moptions`], its memberships an `In6Memberships`
+//!   (`kernel::netinet6::in6_var`, D-11). The sizes against the C's (`vmstat -m`'s `ip6opt`
+//!   and `ipmoptions` rows, D-4): `struct ip6_pktopts` 56 bytes (LP64), [`Ip6Pktopts`] the
+//!   size test's; the C's `struct ip6_moptions` 16, [`Ip6Moptions`] the size test's (the
+//!   memberships' array and count where the C has a list head).
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
+use hal::malloc::{MArray, MBox};
 use hal::percpu::Counters;
 use hal::sys::netinet_icmp6::{ICP6S_NCOUNTERS, Icmp6statCounters};
 use hal::sys::netinet_ip6::IPV6_DEFHLIM;
-use hal::sys::netinet6_in6::IPV6_DEFAULT_MULTICAST_HOPS;
+use hal::sys::netinet6_in6::{IPV6_DEFAULT_MULTICAST_HOPS, In6Pktinfo};
 use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6statCounters};
 
+use crate::assert::kpanic;
 use crate::netinet::ip_var::IPMTUDISCTIMEOUT;
+use crate::netinet6::in6_var::In6Memberships;
 
 /// Default: send at min MTU for multicast.
 pub const IP6PO_MINMTU_MCASTONLY: i32 = -1;
@@ -152,6 +169,203 @@ pub const IPV6_MINMTU: i32 = 0x04;
 pub const IPV6_REDIRECT: i32 = 0x08;
 /// Only packets processed by IPsec.
 pub const IPV6_FORWARDING_IPSEC: i32 = 0x10;
+
+/// `M_IP6OPT`: IPv6 options (`malloc.h`).
+pub const M_IP6OPT: i32 = 123;
+
+/// `struct ip6_moptions`: attached to `inpcb.inp_moptions6` and passed to `ip6_output` when
+/// IPv6 multicast options are in use (the module's redesign).
+pub struct Ip6Moptions {
+    /// `im6o_memberships`: the groups the socket joined.
+    pub im6o_memberships: In6Memberships,
+    /// ifp index for outgoing multicasts.
+    pub im6o_ifidx: u16,
+    /// Hoplimit for outgoing multicasts.
+    pub im6o_hlim: u8,
+    /// 1 >= hear sends if a member.
+    pub im6o_loop: u8,
+}
+
+impl Ip6Moptions {
+    /// Options of interface `ifidx`, hop limit `hlim` and loopback switch `loop_` with no
+    /// membership: a new set's defaults (`ip6_setmoptions`), and the three members
+    /// `ip6_output` reads that its callers lend (ND's and MLD's stack `ip6_moptions`, the
+    /// transports' copy of their pcb's).
+    pub const fn output(ifidx: u16, hlim: u8, loop_: u8) -> Self {
+        Self {
+            im6o_memberships: In6Memberships::new(),
+            im6o_ifidx: ifidx,
+            im6o_hlim: hlim,
+            im6o_loop: loop_,
+        }
+    }
+}
+
+/// `struct ip6_pktopts`: control options for outgoing packets, owning their allocations (the
+/// module's redesign). A new value is `ip6_initpktopts`' ([`Ip6Pktopts::new`]).
+pub struct Ip6Pktopts {
+    /// Hoplimit for outgoing packets (-1: the default).
+    pub ip6po_hlim: i32,
+    /// Outgoing IF/address information (`malloc(M_IP6OPT)`).
+    pub ip6po_pktinfo: Option<MBox<In6Pktinfo>>,
+    /// Hop-by-Hop options header, `(ip6h_len + 1) << 3` bytes (`ip6_setpktopt`'s check).
+    pub ip6po_hbh: Option<MArray<u8>>,
+    /// Destination options header (before a routing header), `(ip6d_len + 1) << 3` bytes.
+    pub ip6po_dest1: Option<MArray<u8>>,
+    /// Destination options header (after a routing header), `(ip6d_len + 1) << 3` bytes.
+    pub ip6po_dest2: Option<MArray<u8>>,
+    /// Traffic class (-1: the default).
+    pub ip6po_tclass: i32,
+    /// Fragment vs PMTU discovery policy (`IP6PO_MINMTU_*`).
+    pub ip6po_minmtu: i32,
+    /// `IP6PO_*` flags.
+    pub ip6po_flags: i32,
+}
+
+impl Ip6Pktopts {
+    /// `ip6_initpktopts(opt)`: no option, the non-zero defaults set (the default hop limit and
+    /// traffic class, the minimum MTU for multicast only).
+    pub const fn new() -> Self {
+        Self {
+            ip6po_hlim: -1,
+            ip6po_pktinfo: None,
+            ip6po_hbh: None,
+            ip6po_dest1: None,
+            ip6po_dest2: None,
+            ip6po_tclass: -1,
+            ip6po_minmtu: IP6PO_MINMTU_MCASTONLY,
+            ip6po_flags: 0,
+        }
+    }
+
+    /// `*opt->ip6po_pktinfo`, read by value (`None` without packet info).
+    #[inline]
+    pub fn pktinfo(&self) -> Option<In6Pktinfo> {
+        self.ip6po_pktinfo.as_deref().copied()
+    }
+
+    /// The view of these options `ip6_output` takes.
+    #[inline]
+    pub fn as_opts(&self) -> Ip6OutOpts<'_> {
+        let o = Ip6OutOpts {
+            hlim: self.ip6po_hlim,
+            pktinfo: self.ip6po_pktinfo.as_deref(),
+            tclass: self.ip6po_tclass,
+            minmtu: self.ip6po_minmtu,
+            flags: self.ip6po_flags,
+            ..Ip6OutOpts::new()
+        };
+        // Every header here is `ip6_setpktopt`'s copy of one it checked whole (or
+        // `copypktopts`' copy of such a copy).
+        match o.with_exthdrs(
+            self.ip6po_hbh.as_deref(),
+            self.ip6po_dest1.as_deref(),
+            self.ip6po_dest2.as_deref(),
+        ) {
+            Some(o) => o,
+            None => kpanic(format_args!(
+                "ip6_pktopts: an extension header that is not whole"
+            )),
+        }
+    }
+}
+
+impl Default for Ip6Pktopts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Whether `h` is a whole IPv6 extension header: at least a `struct ip6_ext` (2 bytes), and
+/// exactly `(ip6e_len + 1) << 3` bytes, `ip6e_len` its second byte (what `ip6_setpktopt`
+/// checks of a user's header, in that order; so never fewer than 8; MLD's `const` router
+/// alert asserts it at compile time).
+pub const fn ip6_exthdr_whole(h: &[u8]) -> bool {
+    h.len() >= 2 && h.len() == ((h[1] as usize) + 1) << 3
+}
+
+/// The options `ip6_output` reads, borrowed (the C's `struct ip6_pktopts *opt`, D-10): the
+/// members of an [`Ip6Pktopts`] ([`Ip6Pktopts::as_opts`]), or a caller's own (MLD's
+/// router-alert header, a `const` image). Each extension header is whole
+/// ([`ip6_exthdr_whole`]): the header fields are private, set only by
+/// [`Ip6OutOpts::with_exthdrs`], which checks them (N6.5c review N5), so `ip6_output`'s walk of
+/// the chain by the headers' own length bytes meets the lengths it copied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ip6OutOpts<'a> {
+    /// `ip6po_hlim` (-1: the default).
+    pub hlim: i32,
+    /// `ip6po_pktinfo`.
+    pub pktinfo: Option<&'a In6Pktinfo>,
+    /// `ip6po_hbh`, whole.
+    hbh: Option<&'a [u8]>,
+    /// `ip6po_dest1`, whole.
+    dest1: Option<&'a [u8]>,
+    /// `ip6po_dest2`, whole.
+    dest2: Option<&'a [u8]>,
+    /// `ip6po_tclass` (-1: the default).
+    pub tclass: i32,
+    /// `ip6po_minmtu`.
+    pub minmtu: i32,
+    /// `ip6po_flags`.
+    pub flags: i32,
+}
+
+impl<'a> Ip6OutOpts<'a> {
+    /// `ip6_initpktopts`' values: no option, the defaults.
+    pub const fn new() -> Self {
+        Self {
+            hlim: -1,
+            pktinfo: None,
+            hbh: None,
+            dest1: None,
+            dest2: None,
+            tclass: -1,
+            minmtu: IP6PO_MINMTU_MCASTONLY,
+            flags: 0,
+        }
+    }
+
+    /// These options with the extension headers `hbh`, `dest1` and `dest2` (`None`: none of
+    /// that kind); `None` when one is not whole ([`ip6_exthdr_whole`]).
+    pub fn with_exthdrs(
+        self,
+        hbh: Option<&'a [u8]>,
+        dest1: Option<&'a [u8]>,
+        dest2: Option<&'a [u8]>,
+    ) -> Option<Self> {
+        let whole = |h: Option<&[u8]>| h.is_none_or(ip6_exthdr_whole);
+        (whole(hbh) && whole(dest1) && whole(dest2)).then_some(Self {
+            hbh,
+            dest1,
+            dest2,
+            ..self
+        })
+    }
+
+    /// `ip6po_hbh`: the hop-by-hop options header, whole.
+    #[inline]
+    pub fn hbh(&self) -> Option<&'a [u8]> {
+        self.hbh
+    }
+
+    /// `ip6po_dest1`: the first destination options header, whole.
+    #[inline]
+    pub fn dest1(&self) -> Option<&'a [u8]> {
+        self.dest1
+    }
+
+    /// `ip6po_dest2`: the second destination options header, whole.
+    #[inline]
+    pub fn dest2(&self) -> Option<&'a [u8]> {
+        self.dest2
+    }
+}
+
+impl Default for Ip6OutOpts<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// `ip6s_nxthist`: the image word it starts at and its length (the C's `[256]`).
 const IP6_NXTHIST: (usize, usize) = (
@@ -486,6 +700,96 @@ mod tests {
         let after = ICMP6COUNTERS.read();
         assert!(after[inhist] > before[inhist]);
         assert!(after[toomany] > before[toomany]);
+    }
+
+    /// N6.5c review N5: the view's extension headers are whole or refused; the owned options'
+    /// view carries theirs.
+    #[test]
+    fn the_view_takes_only_whole_extension_headers() {
+        let one = [0u8, 0, 1, 4, 0, 0, 0, 0];
+        let two = [0u8, 1, 1, 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(ip6_exthdr_whole(&one) && ip6_exthdr_whole(&two));
+        let short_of_its_length = [0u8, 1, 1, 4, 0, 0, 0, 0];
+        for (what, h) in [
+            ("empty", &[][..]),
+            ("one byte", &[0u8][..]),
+            ("under a unit", &[0u8, 0, 1, 2, 0, 0][..]),
+            (
+                "shorter than its length byte says",
+                &short_of_its_length[..],
+            ),
+            ("longer than its length byte says", &two[..12]),
+        ] {
+            assert!(!ip6_exthdr_whole(h), "{what}");
+            let o = Ip6OutOpts::new();
+            assert_eq!(o.with_exthdrs(Some(h), None, None), None, "hbh {what}");
+            assert_eq!(o.with_exthdrs(None, Some(h), None), None, "dest1 {what}");
+            assert_eq!(o.with_exthdrs(None, None, Some(h)), None, "dest2 {what}");
+        }
+        let mut o = Ip6OutOpts::new();
+        o.hlim = 9;
+        let o = o
+            .with_exthdrs(Some(&one), None, Some(&two))
+            .expect("whole headers");
+        assert_eq!(
+            (o.hbh(), o.dest1(), o.dest2()),
+            (Some(&one[..]), None, Some(&two[..]))
+        );
+        assert_eq!(o.hlim, 9, "the other options kept");
+
+        let mut sticky = Ip6Pktopts::new();
+        sticky.ip6po_dest1 = MArray::new(M_IP6OPT, hal::malloc::M_WAITOK, two.len(), |i| two[i]);
+        let v = sticky.as_opts();
+        assert_eq!(
+            (v.hbh(), v.dest1(), v.dest2()),
+            (None, Some(&two[..]), None)
+        );
+    }
+
+    /// The options' sizes against the C's (D-4: `vmstat -m`'s `ip6opt` and `ipmoptions`
+    /// malloc rows count their blocks): the C's `struct ip6_pktopts` is 56 bytes on LP64 (an
+    /// `int`, four pointers, three `int`s, padded), its `struct ip6_moptions` 16 (a list head and
+    /// four bytes); LZ's were the same structures (`NonNull`s, a `ListHead`). The kernel's
+    /// options own their allocations: an `MBox` is 32 bytes (the pointer, its malloc type, its
+    /// allocator), an `MArray` 40, so `Ip6Pktopts` is 168 (a 256-byte bucket where the C's fits 64) and
+    /// `Ip6Moptions` 56 (64 where the C's fits 16, the memberships' array and count in place of
+    /// the list head). The view `ip6_output` takes is nine words.
+    #[test]
+    fn the_options_sizes_against_the_c() {
+        use core::mem::size_of;
+        #[allow(dead_code, reason = "a layout replica: only its size is read")]
+        #[repr(C)]
+        struct CIp6Pktopts {
+            ip6po_hlim: i32,
+            ip6po_pktinfo: usize,
+            ip6po_hbh: usize,
+            ip6po_dest1: usize,
+            ip6po_dest2: usize,
+            ip6po_tclass: i32,
+            ip6po_minmtu: i32,
+            ip6po_flags: i32,
+        }
+        #[allow(dead_code, reason = "a layout replica: only its size is read")]
+        #[repr(C)]
+        struct CIp6Moptions {
+            im6o_memberships: usize,
+            im6o_ifidx: u16,
+            im6o_hlim: u8,
+            im6o_loop: u8,
+        }
+        std::println!(
+            "ip6_pktopts C {} kernel {}; ip6_moptions C {} kernel {}; Ip6OutOpts {}",
+            size_of::<CIp6Pktopts>(),
+            size_of::<Ip6Pktopts>(),
+            size_of::<CIp6Moptions>(),
+            size_of::<Ip6Moptions>(),
+            size_of::<Ip6OutOpts<'_>>()
+        );
+        assert_eq!(size_of::<CIp6Pktopts>(), 56);
+        assert_eq!(size_of::<CIp6Moptions>(), 16);
+        assert_eq!(size_of::<Ip6Pktopts>(), 168);
+        assert_eq!(size_of::<Ip6Moptions>(), 56);
+        assert_eq!(size_of::<Ip6OutOpts<'_>>(), 72);
     }
 
     #[test]

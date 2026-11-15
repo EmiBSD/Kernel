@@ -87,10 +87,9 @@
 //!   the options as a slice of the message (`nd6::nd6_options`, offsets, no pointers into the
 //!   packet); LZ's `nd6_msg`/`nd6_lladdr_of` `unsafe fn`s over raw pointers go. The messages
 //!   sent are written into their fresh mbuf with `hal::pod::put`.
-//! - `nd6_ns_output` and `nd6_na_output` hand their packet to `ip6_output` through the
-//!   temporary `Inet::ip6_output_opts` leg (no options: `router_alert` false; the multicast
-//!   interface and hop limit as the C's stack `ip6_moptions`) until the output path moves
-//!   (N6.5c).
+//! - `nd6_ns_output` and `nd6_na_output` hand their packet to the kernel's `ip6_output` (no
+//!   options; the multicast interface and hop limit as the C's stack `ip6_moptions`, an
+//!   `Ip6Moptions::output`); N6.5b's temporary `Inet::ip6_output_opts` leg went at N6.5c.
 //! - `struct dadq` (LZ: `Cell` counters, a `malloc`ed entry on a `TailqHead` freed by
 //!   `nd6_dad_reaper`, its timeout's argument a raw `ifa` dereferenced in an `unsafe` block)
 //!   -> [`Dadq`], a recycled `&'static` record (D-13: `malloc(M_IP6NDP)` once, then
@@ -164,7 +163,7 @@ use hal::sys::socket::AF_LINK;
 
 use crate::assert::{kassert, kpanic};
 use crate::log::{LOG_ERR, LOG_INFO};
-use crate::net::if_::{IfRef, if_isconnected, inet};
+use crate::net::if_::{IfRef, if_isconnected};
 use crate::net::if_var::{AtomicCell, Ifaddr, Ifnet};
 use crate::net::mbuf::{
     M_DONTWAIT, M_EXT, M_ICMP_CSUM_OUT, M_MCAST, MAX_LINKHDR, MHLEN, MT_DATA, Mbuf, MbufBox,
@@ -177,8 +176,9 @@ use crate::net::rtsock::{rtm_addr, rtm_send};
 use crate::netinet::if_ether::{gw_family_len, gw_sdl_copy};
 use crate::netinet6::in6::{in6ifa_ifpforlinklocal, in6ifa_ifpwithaddr};
 use crate::netinet6::in6_var::{ifa_in6, ifatoia6};
+use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::{
-    IP6_DAD_COUNT, IP6_DAD_PENDING, IP6_FORWARDING, IPV6_UNSPECSRC, icmp6stat_inc,
+    IP6_DAD_COUNT, IP6_DAD_PENDING, IP6_FORWARDING, IPV6_UNSPECSRC, Ip6Moptions, icmp6stat_inc,
     icmp6stat_inc_hist,
 };
 use crate::netinet6::nd6::{
@@ -599,23 +599,13 @@ fn nd6_ip6hdr(src: In6Addr, dst: In6Addr, icmp6len: usize) -> Ip6Hdr {
     ip6
 }
 
-/// `ip6_output(m, NULL, NULL, flags, &im6o, NULL)` of an ND message through the temporary
-/// `Inet::ip6_output_opts` leg (the module's redesign): no options; for a multicast
-/// destination out of `ifp` with hop limit 255 and no loopback (the C fills its stack
-/// `ip6_moptions` only then, and `ip6_output` reads it only then). The packet freed without
-/// the leg (no `INET6`).
-fn nd6_ip6_output(m: MbufBox, flags: i32, ifp: &Ifnet, mcast: bool) {
-    let (ifidx, hlim) = if mcast {
-        (ifp.if_index.get() as u16, 255)
-    } else {
-        (0, 0)
-    };
-    match inet() {
-        Some(i) => {
-            let _ = i.ip6_output_opts(m, false, flags, ifidx, hlim, false);
-        }
-        None => drop(m),
-    }
+/// `ip6_output(m, NULL, NULL, flags, &im6o, NULL)` of an ND message: no options; for a
+/// multicast destination out of `ifp` with hop limit 255 and no loopback (the C fills its
+/// stack `ip6_moptions` only then, and `ip6_output` reads it only then, so a unicast message
+/// lends none). Under the net lock (`net`).
+fn nd6_ip6_output(m: MbufBox, flags: i32, ifp: &Ifnet, mcast: bool, net: &NetHeld<'_>) {
+    let im6o = mcast.then(|| Ip6Moptions::output(ifp.if_index.get() as u16, 255, 0));
+    let _ = ip6_output(m, None, None, flags, im6o.as_ref(), None, net);
 }
 
 /// `nd6_ns_output(ifp, daddr6, taddr6, ln, dad)`: output a Neighbor Solicitation Message.
@@ -758,7 +748,7 @@ pub fn nd6_ns_output(
         .csum_flags
         .set(m.m_pkthdr().csum_flags.get() | M_ICMP_CSUM_OUT);
 
-    nd6_ip6_output(m, if dad { IPV6_UNSPECSRC } else { 0 }, ifp, mcast);
+    nd6_ip6_output(m, if dad { IPV6_UNSPECSRC } else { 0 }, ifp, mcast, net);
     icmp6stat_inc_hist(Icmp6statCounters::Icp6sOuthist, ND_NEIGHBOR_SOLICIT);
 }
 
@@ -1238,7 +1228,7 @@ pub fn nd6_na_output(
         .csum_flags
         .set(m.m_pkthdr().csum_flags.get() | M_ICMP_CSUM_OUT);
 
-    nd6_ip6_output(m, 0, ifp, mcast);
+    nd6_ip6_output(m, 0, ifp, mcast, net);
     icmp6stat_inc_hist(Icmp6statCounters::Icp6sOuthist, ND_NEIGHBOR_ADVERT);
 }
 

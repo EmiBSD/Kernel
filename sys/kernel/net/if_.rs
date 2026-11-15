@@ -352,7 +352,7 @@ use crate::net::ifq::{
 use crate::net::mbuf::{
     M_BCAST, M_FLOWID, M_ICMP_CSUM_IN_OK, M_ICMP_CSUM_OUT, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT,
     M_LOOP, M_MCAST, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_TIMESTAMP, M_UDP_CSUM_IN_OK,
-    M_UDP_CSUM_OUT, Mbuf, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
+    M_UDP_CSUM_OUT, MbufBox, MbufList, m_resethdr, ml_dequeue, ml_empty, ml_enqueue, ml_len,
     ml_purge, mq_enqueue, sysctl_mq,
 };
 use crate::net::pf_hooks::pf;
@@ -424,25 +424,10 @@ pub trait Inet: Sync + 'static {
     fn tcpstat_lro(&self, hw: bool);
     /// `ip6_forwarding != 0`.
     fn ip6_forwarding(&self) -> bool;
-    /// `ip6_output(m, &opts, NULL, flags, &im6o, NULL)` of MLD's reports (`mld6_sendpkt`;
-    /// N6.5a, until the output path moves at N6.5c): `m` sent, with the router-alert
-    /// hop-by-hop options header when `router_alert` (the C's `hbh_buf`, the image
-    /// [`MLD6_HBH`](crate::netinet6::mld6::MLD6_HBH): the leg points at it, the caller
-    /// lends no bytes), the `ip6_output` `flags`, out of interface `ifidx` with hop limit
-    /// `hlim`, looped back when `loop_`. Default: the packet freed, `EAFNOSUPPORT` (no
-    /// `INET6`).
-    fn ip6_output_opts(
-        &self,
-        m: MbufBox,
-        _router_alert: bool,
-        _flags: i32,
-        _ifidx: u16,
-        _hlim: u8,
-        _loop_: bool,
-    ) -> Result<(), Errno> {
-        drop(m);
-        Err(Errno::EAFNOSUPPORT)
-    }
+    /// `ip6_randomid()`: the next IPv6 fragment identification of `idgen32` (`crypto/idgen.c`,
+    /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
+    /// the kernel's `ip6_fragment` (N6.5c).
+    fn ip6_randomid(&self) -> u32;
     /// `icmp6_error(m, type, code, param)`: an ICMPv6 error about `m` (consumed), ND's for the
     /// packets an unresolved neighbor held (`nd6_llinfo_timer`'s; N6.5b, until ICMPv6 moves at
     /// N6.5d). Default: the packet freed (no `INET6`).
@@ -456,10 +441,6 @@ pub trait Inet: Sync + 'static {
     /// `ip6stat_inc(ip6s_rtcachehit)` (`hit`) or `ip6stat_inc(ip6s_rtcachemiss)`. Default:
     /// nothing.
     fn ip6stat_rtcache(&self, _hit: bool) {}
-    /// `in6_proto_cksum_out(m, ifp)`: the IPv6 transport checksum in software when `ifp`
-    /// cannot (`ether_offload_ifcap`, `if_output_tso`; `m`'s data starts at the IPv6
-    /// header). Default: nothing.
-    fn in6_proto_cksum_out(&self, _m: &Mbuf, _ifp: &'static Ifnet) {}
     /// `tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)`: TCP's segmentation offload of
     /// `*mp` (by the hardware when `ifp` has `ifcap`, else chopped in software and sent),
     /// the packet consumed then; left in `*mp` when it did not ask for TSO, or with its TSO
@@ -2037,8 +2018,8 @@ pub fn if_output_tso(
         if af == AF_INET {
             crate::netinet::ip_output::in_hdr_cksum_out(&mut m, Some(ifp));
             crate::netinet::ip_output::in_proto_cksum_out(&mut m, Some(ifp));
-        } else if let Some(i) = inet() {
-            i.in6_proto_cksum_out(&m, ifp);
+        } else if af == AF_INET6 {
+            crate::netinet6::ip6_output::in6_proto_cksum_out(&mut m, Some(ifp));
         }
         // An interface with no driver has no `if_output`: the C calls through NULL.
         let Some(d) = ifp.if_driver.get() else {

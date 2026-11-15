@@ -155,9 +155,12 @@
 //! (tcp, udp, raw IP and divert at N6.6, pf at N8): a control block is a `&'static Inpcb` held
 //! by a count of the kernel's pcb (`in_pcbref`/`in_pcbunref`, the C's `inp_refcnt`), the
 //! kernel's counted answers (lookups, the iterator) become such references here, the
-//! `INP_IPV6` pcbs go to `netinet6/in6_pcb.rs`'s half before the kernel's IPv4 functions run,
-//! and the members `bsd` keeps (the IPv4 options, the IPv6 options and multicast options, the
-//! ICMPv6 filter) are read here; the IPv4 multicast options are the kernel's since N6.4c1.
+//! kernel's functions choose the family themselves since N6.5c (`in_pcbbind_locked`,
+//! `in_pcbconnect`, `in_pcbrtentry`; the flow id is computed here per family), the
+//! socket-address writers and `in_pcbset_addr` send an `INP_IPV6` pcb to
+//! `netinet6/in6_pcb.rs`'s adapters, and the members `bsd` keeps (the IPv4 options, the ICMPv6
+//! filter) are read here; the IPv4 multicast options are the kernel's since N6.4c1, the IPv6
+//! packet and multicast options since N6.5c (`Inpcb::outputopts6`, `Inpcb::moptions6`).
 //!
 //! ## Deviations
 //! - `sotoinpcb` panics on a socket of neither `inetdomain` nor `inet6domain` (the C macro
@@ -184,12 +187,8 @@ use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_pcb::{
-    in6_pcbbind_locked, in6_pcbconnect, in6_pcbrtentry, in6_pcbset_addr, in6_setpeeraddr,
-    in6_setsockaddr,
+    in6_pcb_newflow, in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr,
 };
-#[cfg(feature = "inet6")]
-use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
-use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod, of_parked};
 use crate::sys::proc::Proc;
@@ -337,14 +336,6 @@ pub trait InpcbLegacy {
     fn options(&self) -> Option<&'static Mbuf>;
     /// `inp->inp_options = m` (the old chain is the caller's to free).
     fn set_options(&self, m: Option<&'static Mbuf>);
-    /// `inp->inp_moptions6`'s pointer.
-    fn moptions6_ptr(&self) -> Option<NonNull<Ip6Moptions>>;
-    /// `inp->inp_moptions6 = imo`.
-    fn set_moptions6_ptr(&self, imo: Option<NonNull<Ip6Moptions>>);
-    /// `inp->inp_outputopts6`'s pointer.
-    fn outputopts6_ptr(&self) -> Option<NonNull<Ip6Pktopts>>;
-    /// `inp->inp_outputopts6 = o`.
-    fn set_outputopts6_ptr(&self, o: Option<NonNull<Ip6Pktopts>>);
     /// `inp->inp_icmp6filt`'s pointer.
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
     /// `inp->inp_icmp6filt = f`.
@@ -361,24 +352,6 @@ impl InpcbLegacy for Inpcb {
     fn set_options(&self, m: Option<&'static Mbuf>) {
         self.inp_options
             .set(m.map_or(ptr::null(), |m| ptr::from_ref(m).cast()));
-    }
-
-    fn moptions6_ptr(&self) -> Option<NonNull<Ip6Moptions>> {
-        NonNull::new(self.inp_moptions6.get_mut().cast::<Ip6Moptions>())
-    }
-
-    fn set_moptions6_ptr(&self, imo: Option<NonNull<Ip6Moptions>>) {
-        self.inp_moptions6
-            .set(imo.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
-    }
-
-    fn outputopts6_ptr(&self) -> Option<NonNull<Ip6Pktopts>> {
-        NonNull::new(self.inp_outputopts6.get_mut().cast::<Ip6Pktopts>())
-    }
-
-    fn set_outputopts6_ptr(&self, o: Option<NonNull<Ip6Pktopts>>) {
-        self.inp_outputopts6
-            .set(o.map_or(ptr::null(), |p| p.as_ptr().cast_const().cast()));
     }
 
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>> {
@@ -401,7 +374,8 @@ impl InpcbLegacy for Inpcb {
 }
 
 /// `in_pcbbind_locked`: binds `inp` to the address in `nam` (or `laddr` and a port picked
-/// here when `nam` is `None`), with the table mutex held (`g`).
+/// here when `nam` is `None`), with the table mutex held (`g`); the kernel's, for both
+/// families.
 pub fn in_pcbbind_locked(
     g: &mut InpGuard<'_>,
     inp: &'static Inpcb,
@@ -409,10 +383,6 @@ pub fn in_pcbbind_locked(
     laddr: &Inpaddru,
     p: &Proc,
 ) -> Result<(), Errno> {
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbbind_locked(g, inp, nam, laddr, p);
-    }
     k::in_pcbbind_locked(g, inp, nam, laddr, p, &net_held("in_pcbbind"))
 }
 
@@ -444,14 +414,16 @@ fn set_flowid4(inp: &Inpcb) {
 }
 
 /// `in_pcbconnect`: connects `inp` to the address in `nam`; both address and port must be
-/// specified. If the socket has no local address yet, one is picked.
+/// specified. If the socket has no local address yet, one is picked. The kernel's, for both
+/// families, then the flow id of the family (`NSTOEPLITZ`).
 pub fn in_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbconnect(inp, nam);
-    }
     let p = curproc_or_panic("in_pcbconnect");
     k::in_pcbconnect(inp, nam, p, &net_held("in_pcbconnect"))?;
+    #[cfg(feature = "inet6")]
+    if inp.has_flags(INP_IPV6) {
+        in6_pcb_newflow(inp);
+        return Ok(());
+    }
     set_flowid4(inp);
     Ok(())
 }
@@ -471,21 +443,9 @@ pub fn in_pcbdisconnect(inp: &'static Inpcb) {
     }
 }
 
-/// What `in_pcbdetach` frees of `bsd`'s members (the options), at the C's point.
+/// What `in_pcbdetach` frees of `bsd`'s members of an IPv4 pcb (its options), at the C's
+/// point (an IPv6 pcb's options are the kernel's, which frees them).
 fn free_legacy_opts(inp: &Inpcb) {
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        let (opts, mopts) = (inp.outputopts6_ptr(), inp.moptions6_ptr());
-        inp.set_outputopts6_ptr(None);
-        inp.set_moptions6_ptr(None);
-        // SAFETY: the options are this control block's own allocations
-        // (`ip6_setpktopts`, `ip6_setmoptions`), taken out of it here and never used again.
-        unsafe {
-            ip6_freepcbopts(opts);
-            ip6_freemoptions(mopts);
-        }
-        return;
-    }
     let opts = inp.options();
     inp.set_options(None);
     m_freem(opts);
@@ -662,13 +622,10 @@ pub fn in_pcblookup_local_lock(
     inp
 }
 
-/// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache.
+/// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache (the kernel's,
+/// for both families).
 pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     crate::kern::uipc_socket2::soassertlocked(inp.socket());
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbrtentry(inp);
-    }
     // The cache keeps its own handle while `bsd`'s caller uses the route (`as_static`).
     k::in_pcbrtentry(inp, &net_held("in_pcbrtentry")).map(|rt| as_static(&rt))
 }
@@ -746,16 +703,15 @@ pub fn in_pcbset_addr(
     Ok(())
 }
 
-/// `satosin6_const(sa)` of a generic socket address image, read out of it.
+/// `satosin6_const(sa)` of a generic socket address image, read out of it (`hal::pod`'s copy
+/// of its first `sizeof(struct sockaddr_in6)` bytes).
 #[cfg(feature = "inet6")]
 fn su_sin6(su: &SockaddrUnion) -> crate::netinet6::in6::SockaddrIn6 {
-    // SAFETY: the union is `sizeof(struct sockaddr_in6)` initialised bytes; `SockaddrIn6` is
-    // plain old data of that size, read unaligned.
-    unsafe {
-        su.as_bytes()
-            .as_ptr()
-            .cast::<crate::netinet6::in6::SockaddrIn6>()
-            .read_unaligned()
+    match hal::pod::at::<crate::netinet6::in6::SockaddrIn6>(su.as_bytes(), 0) {
+        Some(sin6) => sin6,
+        None => panic(format_args!(
+            "su_sin6: a socket address union shorter than sockaddr_in6"
+        )),
     }
 }
 

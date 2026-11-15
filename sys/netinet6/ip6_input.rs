@@ -146,10 +146,10 @@ use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue, sysctl_niq};
 use crate::net::pf::{pf_ouraddr, pf_test};
 use crate::net::pfvar::{PF_IN, PF_PASS};
 use crate::net::route::{RTF_LOCAL, RTGENERATION, Route, route6_mpath, rt_timer_queue_change};
-use crate::netinet::icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
+use crate::netinet::icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER};
 use crate::netinet::in_::{
-    IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS,
-    IPPROTO_IPCOMP, IPPROTO_IPV6, IPPROTO_MAX, IPPROTO_NONE, IPPROTO_RAW, IPPROTO_ROUTING,
+    IPPROTO_AH, IPPROTO_DONE, IPPROTO_DSTOPTS, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_IPV6,
+    IPPROTO_MAX, IPPROTO_RAW, IPPROTO_ROUTING,
 };
 use crate::netinet::in_pcb::{
     IN6P_DSTOPTS, IN6P_HOPLIMIT, IN6P_HOPOPTS, IN6P_PKTINFO, IN6P_RTHDR, IN6P_TCLASS, Inpcb,
@@ -159,10 +159,8 @@ use crate::netinet::ip_input::ip_deliver;
 use crate::netinet::ip_ipsp::IPSEC_IN_USE;
 use crate::netinet::ip_var::Ipoffnxt;
 use crate::netinet::ip6::{
-    IP6F_OFF_MASK, IP6OPT_JUMBO, IP6OPT_JUMBO_LEN, IP6OPT_MINLEN, IP6OPT_PAD1, IP6OPT_PADN,
-    IP6OPT_ROUTER_ALERT, IP6OPT_RTALERT_LEN, IP6OPT_TYPE_DISCARD, IP6OPT_TYPE_FORCEICMP,
-    IP6OPT_TYPE_ICMP, IP6OPT_TYPE_SKIP, IPV6_FLOWINFO_MASK, IPV6_MAXPACKET, IPV6_VERSION,
-    IPV6_VERSION_MASK, Ip6Ext, Ip6Frag, Ip6Hbh, Ip6Hdr, Ip6Rthdr, ip6_exthdr_get, ip6opt_type,
+    IPV6_FLOWINFO_MASK, IPV6_VERSION, IPV6_VERSION_MASK, Ip6Ext, Ip6Frag, Ip6Hbh, Ip6Hdr, Ip6Rthdr,
+    ip6_exthdr_get,
 };
 use crate::netinet::ipsec_input::ipsec_forward_check;
 use crate::netinet6::frag6::frag6_init;
@@ -198,11 +196,11 @@ use crate::sys::limits::INT_MAX;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
-    M_BCAST, M_DONTWAIT, M_EXT, M_LOOP, M_MCAST, M_PKTHDR, MLEN, MT_DATA, Mbuf, MbufList,
-    MbufQueue, PACKET_TAG_IP6_OFFNXT, PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp,
-    mclget, ml_empty, mtod,
+    M_DONTWAIT, M_EXT, M_LOOP, M_MCAST, MLEN, MT_DATA, Mbuf, MbufList, MbufQueue,
+    PACKET_TAG_IP6_OFFNXT, PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp, mclget,
+    ml_empty, mtod, park, unpark,
 };
-use crate::sys::protosw::{PRC_NCMDS, Protosw};
+use crate::sys::protosw::Protosw;
 use crate::sys::socket::{
     AF_INET6, AF_UNSPEC, PF_INET6, SCM_TIMESTAMP, SO_TIMESTAMP, SOCK_RAW, SOL_SOCKET,
 };
@@ -217,6 +215,7 @@ const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
 /// `ip6intrq`.
 pub static IP6INTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IPV6);
 
+pub use kernel::netinet6::ip6_input::{INET6CTLERRMAP, ip6_lasthdr, ip6_nexthdr};
 pub use kernel::netinet6::ip6_var::IP6COUNTERS;
 
 /// `ip6send_mq`: the packets `ip6_send` queued for `ip6_send_dispatch`.
@@ -224,31 +223,6 @@ static IP6SEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
 
 /// `ip6send_task`.
 static IP6SEND_TASK: Task = Task::new(ip6_send_dispatch, (&raw const IP6SEND_MQ).cast_mut().cast());
-
-/// `inet6ctlerrmap[]`: the errno of each `PRC_*` control command.
-pub static INET6CTLERRMAP: [Option<Errno>; PRC_NCMDS] = [
-    None,
-    None,
-    None,
-    None,
-    None,
-    Some(Errno::EMSGSIZE),
-    Some(Errno::EHOSTDOWN),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::ECONNREFUSED),
-    Some(Errno::ECONNREFUSED),
-    Some(Errno::EMSGSIZE),
-    Some(Errno::EHOSTUNREACH),
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    Some(Errno::ENOPROTOOPT),
-];
 
 /// `ipv6ctl_vars[]`: the bounded integer sysctls of `net.inet6.ip6`.
 static IPV6CTL_VARS: [SysctlBoundedArgs; 13] = [
@@ -899,10 +873,16 @@ fn ip6_hopopts_input(
     off += hbhlen;
     hbhlen -= size_of::<Ip6Hbh>() as i32;
 
-    // SAFETY: the `hbhlen` bytes of options follow the 2-byte header in the contiguous
-    // region `ip6_exthdr_get` returned.
-    let ok =
-        unsafe { ip6_process_hopopts(mp, hbh.add(size_of::<Ip6Hbh>()), hbhlen, rtalertp, plenp) };
+    // The `hbhlen` bytes of options follow the 2-byte header, which `ip6_exthdr_get` made
+    // contiguous right after the IPv6 header (the kernel's parser reads them by offset).
+    let _ = hbh;
+    let ok = ip6_process_hopopts(
+        mp,
+        IP6_HDR_LEN + size_of::<Ip6Hbh>() as i32,
+        hbhlen,
+        rtalertp,
+        plenp,
+    );
     if !ok {
         return false;
     }
@@ -911,212 +891,30 @@ fn ip6_hopopts_input(
     true
 }
 
-/// `ip6_process_hopopts`: searches the `hbhlen` bytes of hop-by-hop options at `opthead`
-/// and processes each option (router alert into `rtalertp`, jumbo payload length into
-/// `plenp`); `true` on success (the C's 0), `false` when the packet was dropped or an
-/// ICMPv6 error sent (the C's -1, `*mp` cleared).
-///
-/// This function is separate from `ip6_hopopts_input()` in order to handle a case where
-/// the sending node itself process its hop-by-hop options header. In such a case, the
-/// function is called from `ip6_output()`. The hop-by-hop header is located right after the
-/// IPv6 header (RFC2460 p7).
-///
-/// # Safety
-///
-/// `opthead` points at `hbhlen` readable bytes of options inside `*mp`'s first
-/// mbuf (contiguous).
-pub unsafe fn ip6_process_hopopts(
+/// `ip6_process_hopopts(mp, opthead, hbhlen, rtalertp, plenp)`: the kernel's
+/// (`kernel::netinet6::ip6_input`, N6.5c), the options at offset `off` of `bsd`'s parked
+/// packet; `false` when the packet was dropped or an ICMPv6 error sent (`*mp` cleared).
+pub fn ip6_process_hopopts(
     mp: &mut Option<&'static Mbuf>,
-    opthead: *const u8,
+    off: i32,
     hbhlen: i32,
     rtalertp: &mut u32,
     plenp: &mut u32,
 ) -> bool {
-    const ERROFF: i32 = IP6_HDR_LEN + size_of::<Ip6Hbh>() as i32;
-    let mut hbhlen = hbhlen;
-    // SAFETY: the caller guarantees `hbhlen` readable bytes at `opthead`.
-    let opt = unsafe { slice::from_raw_parts(opthead, hbhlen.max(0) as usize) };
-    let mut i = 0usize;
-
-    while hbhlen > 0 {
-        let optlen: i32;
-        match opt[i] {
-            IP6OPT_PAD1 => optlen = 1,
-            IP6OPT_PADN => {
-                if hbhlen < IP6OPT_MINLEN as i32 {
-                    ip6stat_inc(Ip6statCounters::Ip6sToosmall);
-                    m_freemp(mp);
-                    return false;
-                }
-                optlen = i32::from(opt[i + 1]) + 2;
-            }
-            IP6OPT_ROUTER_ALERT => {
-                // XXX may need check for alignment
-                if hbhlen < IP6OPT_RTALERT_LEN as i32 {
-                    ip6stat_inc(Ip6statCounters::Ip6sToosmall);
-                    m_freemp(mp);
-                    return false;
-                }
-                if usize::from(opt[i + 1]) != IP6OPT_RTALERT_LEN - 2 {
-                    // XXX stat
-                    if let Some(m) = mp.take() {
-                        icmp6_error(
-                            m,
-                            ICMP6_PARAM_PROB,
-                            ICMP6_PARAMPROB_HEADER,
-                            ERROFF + i as i32 + 1,
-                        );
-                    }
-                    return false;
-                }
-                optlen = IP6OPT_RTALERT_LEN as i32;
-                *rtalertp = u32::from(u16::from_be_bytes([opt[i + 2], opt[i + 3]]));
-            }
-            IP6OPT_JUMBO => {
-                // XXX may need check for alignment
-                if hbhlen < IP6OPT_JUMBO_LEN as i32 {
-                    ip6stat_inc(Ip6statCounters::Ip6sToosmall);
-                    m_freemp(mp);
-                    return false;
-                }
-                if usize::from(opt[i + 1]) != IP6OPT_JUMBO_LEN - 2 {
-                    // XXX stat
-                    if let Some(m) = mp.take() {
-                        icmp6_error(
-                            m,
-                            ICMP6_PARAM_PROB,
-                            ICMP6_PARAMPROB_HEADER,
-                            ERROFF + i as i32 + 1,
-                        );
-                    }
-                    return false;
-                }
-                optlen = IP6OPT_JUMBO_LEN as i32;
-
-                // IPv6 packets that have non 0 payload length must not contain a jumbo
-                // payload option.
-                let Some(m) = *mp else {
-                    return false;
-                };
-                if mtod_ip6(m).ip6_plen != 0 {
-                    ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    *mp = None;
-                    icmp6_error(
-                        m,
-                        ICMP6_PARAM_PROB,
-                        ICMP6_PARAMPROB_HEADER,
-                        ERROFF + i as i32,
-                    );
-                    return false;
-                }
-
-                // We may see jumbolen in unaligned location, so we'd need to perform
-                // memcpy().
-                let jumboplen =
-                    u32::from_be_bytes([opt[i + 2], opt[i + 3], opt[i + 4], opt[i + 5]]);
-
-                // if there are multiple jumbo payload options, *plenp will be non-zero and
-                // the packet will be rejected. the behavior may need some debate in ipngwg -
-                // multiple options does not make sense, however, there's no explicit mention
-                // in specification.
-                if *plenp != 0 {
-                    ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    *mp = None;
-                    icmp6_error(
-                        m,
-                        ICMP6_PARAM_PROB,
-                        ICMP6_PARAMPROB_HEADER,
-                        ERROFF + i as i32 + 2,
-                    );
-                    return false;
-                }
-
-                // jumbo payload length must be larger than 65535.
-                if jumboplen as usize <= IPV6_MAXPACKET {
-                    ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    *mp = None;
-                    icmp6_error(
-                        m,
-                        ICMP6_PARAM_PROB,
-                        ICMP6_PARAMPROB_HEADER,
-                        ERROFF + i as i32 + 2,
-                    );
-                    return false;
-                }
-                *plenp = jumboplen;
-            }
-            // unknown option
-            _ => {
-                if hbhlen < IP6OPT_MINLEN as i32 {
-                    ip6stat_inc(Ip6statCounters::Ip6sToosmall);
-                    m_freemp(mp);
-                    return false;
-                }
-                let len = i32::from(opt[i + 1]);
-                // SAFETY: `i + 1` is inside the options (checked above).
-                if !unsafe { ip6_unknown_opt(mp, opthead.add(i), ERROFF + i as i32) } {
-                    return false;
-                }
-                optlen = len + 2;
-            }
-        }
-        hbhlen -= optlen;
-        i += optlen as usize;
-    }
-
-    true
+    let mut k = mp.take().map(unpark);
+    let ok = kernel::netinet6::ip6_input::ip6_process_hopopts(&mut k, off, hbhlen, rtalertp, plenp);
+    *mp = k.map(park);
+    ok
 }
 
-/// `ip6_unknown_opt`: unknown option processing: handles the option at `optp` by its
-/// action bits. `off` is the offset from the IPv6 header to the option, which allows
-/// returning an ICMPv6 error even if the IPv6 header and the option header are not
-/// continuous. `true` to skip the option (the C returns its length, `optp[1]`), `false`
-/// when the packet was dropped or an ICMPv6 error sent (the C's -1, `*mp` cleared).
-///
-/// # Safety
-///
-/// `optp` points at the option inside `*mp`'s first mbuf (at least two readable
-/// bytes).
-pub unsafe fn ip6_unknown_opt(mp: &mut Option<&'static Mbuf>, optp: *const u8, off: i32) -> bool {
-    // SAFETY: the caller guarantees the option's type byte is readable.
-    let ty = unsafe { *optp };
-
-    match ip6opt_type(ty) {
-        // ignore the option
-        IP6OPT_TYPE_SKIP => true,
-        // silently discard
-        IP6OPT_TYPE_DISCARD => {
-            m_freemp(mp);
-            false
-        }
-        // send ICMP even if multicasted
-        IP6OPT_TYPE_FORCEICMP => {
-            ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-            if let Some(m) = mp.take() {
-                icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
-            }
-            false
-        }
-        // send ICMP if not multicasted
-        IP6OPT_TYPE_ICMP => {
-            ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-            if let Some(m) = mp.take() {
-                let ip6 = mtod_ip6(m);
-                if in6_is_addr_multicast(&ip6.ip6_dst)
-                    || m.m_flags().get() & (M_BCAST | M_MCAST) != 0
-                {
-                    m_freem(m);
-                } else {
-                    icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
-                }
-            }
-            false
-        }
-        _ => {
-            m_freemp(mp); // XXX: NOTREACHED
-            false
-        }
-    }
+/// `ip6_unknown_opt(mp, optp, off)`: the kernel's, by the option's type byte `ty` (`*optp`),
+/// over `bsd`'s parked packet; `true` to skip the option, `false` when the packet was dropped
+/// or an ICMPv6 error sent (`*mp` cleared).
+pub fn ip6_unknown_opt(mp: &mut Option<&'static Mbuf>, ty: u8, off: i32) -> bool {
+    let mut k = mp.take().map(unpark);
+    let ok = kernel::netinet6::ip6_input::ip6_unknown_opt(&mut k, ty, off);
+    *mp = k.map(park);
+    ok
 }
 
 /// The bytes of a plain-data `#[repr(C)]` value without padding.
@@ -1352,85 +1150,6 @@ pub fn ip6_get_prevhdr(m: &Mbuf, off: i32) -> i32 {
     len - nlen
 }
 
-/// `ip6_nexthdr`: gets the offset of the header after the one of protocol `proto` at `off`,
-/// its protocol stored in `nxtp`; `m` is retained. `None` where the C returns -1.
-pub fn ip6_nexthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32> {
-    let pktlen = m.m_pkthdr().len.get();
-    if m.m_flags().get() & M_PKTHDR == 0 || pktlen < off {
-        return None;
-    }
-
-    match proto {
-        IPPROTO_IPV6 => {
-            if pktlen < off + IP6_HDR_LEN {
-                return None;
-            }
-            let mut ip6 = [0u8; size_of::<Ip6Hdr>()];
-            m_copydata(m, off, &mut ip6);
-            *nxtp = i32::from(ip6[offset_of!(Ip6Hdr, ip6_nxt)]);
-            Some(off + IP6_HDR_LEN)
-        }
-        IPPROTO_FRAGMENT => {
-            // terminate parsing if it is not the first fragment, it does not make sense to
-            // parse through it.
-            if pktlen < off + size_of::<Ip6Frag>() as i32 {
-                return None;
-            }
-            let mut fh = [0u8; size_of::<Ip6Frag>()];
-            m_copydata(m, off, &mut fh);
-            let o = offset_of!(Ip6Frag, ip6f_offlg);
-            if u16::from_ne_bytes([fh[o], fh[o + 1]]) & IP6F_OFF_MASK != 0 {
-                return None;
-            }
-            *nxtp = i32::from(fh[offset_of!(Ip6Frag, ip6f_nxt)]);
-            Some(off + size_of::<Ip6Frag>() as i32)
-        }
-        IPPROTO_AH | IPPROTO_HOPOPTS | IPPROTO_ROUTING | IPPROTO_DSTOPTS => {
-            if pktlen < off + size_of::<Ip6Ext>() as i32 {
-                return None;
-            }
-            let mut ip6e = [0u8; size_of::<Ip6Ext>()];
-            m_copydata(m, off, &mut ip6e);
-            *nxtp = i32::from(ip6e[offset_of!(Ip6Ext, ip6e_nxt)]);
-            let len = i32::from(ip6e[offset_of!(Ip6Ext, ip6e_len)]);
-            let off = if proto == IPPROTO_AH {
-                off + ((len + 2) << 2)
-            } else {
-                off + ((len + 1) << 3)
-            };
-            if pktlen < off {
-                return None;
-            }
-            Some(off)
-        }
-        // give up
-        IPPROTO_NONE | IPPROTO_ESP | IPPROTO_IPCOMP => None,
-        _ => None,
-    }
-}
-
-/// `ip6_lasthdr`: gets the offset of the last header in the chain (the upper-layer
-/// protocol), its protocol stored in `nxtp`; `m` is kept untainted. `None` where the C
-/// returns -1 (an invalid chain).
-pub fn ip6_lasthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32> {
-    let mut off = off;
-    let mut proto = proto;
-
-    loop {
-        let Some(newoff) = ip6_nexthdr(m, off, proto, nxtp) else {
-            return Some(off);
-        };
-        if newoff < off {
-            return None; // invalid
-        } else if newoff == off {
-            return Some(newoff);
-        }
-
-        off = newoff;
-        proto = *nxtp;
-    }
-}
-
 /// `ip6_sysctl_ip6stat`: `net.inet6.ip6.stats`, the counters as a `struct ip6stat`.
 fn ip6_sysctl_ip6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Ip6stat>() == IP6S_NCOUNTERS * size_of::<u64>());
@@ -1538,7 +1257,8 @@ mod tests {
 
     use super::*;
     use crate::net::if_::tests::{setup_net, test_ifnet, test_packet};
-    use crate::netinet::in_::IPPROTO_UDP;
+    use crate::netinet::in_::{IPPROTO_ESP, IPPROTO_UDP};
+    use crate::netinet::ip6::{IP6OPT_PAD1, IP6OPT_PADN, IP6OPT_ROUTER_ALERT};
 
     /// An IPv6 header (`nxt`, payload length `plen`, `src` and `dst`) followed by `rest`.
     fn packet(nxt: i32, plen: u16, src: [u8; 16], dst: [u8; 16], rest: &[u8]) -> &'static Mbuf {
@@ -1670,8 +1390,8 @@ mod tests {
         let mut mp = Some(m);
         let mut rtalert = !0;
         let mut plen = 0;
-        // SAFETY: the six option bytes are in the mbuf.
-        let ok = unsafe { ip6_process_hopopts(&mut mp, mtod::<u8>(m), 6, &mut rtalert, &mut plen) };
+        // The kernel's parser through the adapter, the options at the packet's start.
+        let ok = ip6_process_hopopts(&mut mp, 0, 6, &mut rtalert, &mut plen);
         assert!(ok);
         assert_eq!(rtalert, !0);
         assert_eq!(plen, 0);
@@ -1680,8 +1400,7 @@ mod tests {
         // The same option with the "discard" action (0x5e): the packet is dropped silently.
         let m = test_packet(&[0x5e, 2, 0xaa, 0xbb]);
         let mut mp = Some(m);
-        // SAFETY: the four option bytes are in the mbuf.
-        let ok = unsafe { ip6_process_hopopts(&mut mp, mtod::<u8>(m), 4, &mut rtalert, &mut plen) };
+        let ok = ip6_process_hopopts(&mut mp, 0, 4, &mut rtalert, &mut plen);
         assert!(!ok);
         assert!(mp.is_none());
 
@@ -1689,8 +1408,7 @@ mod tests {
         let toosmall = stat(Ip6statCounters::Ip6sToosmall);
         let m = test_packet(&[IP6OPT_PAD1, IP6OPT_PADN]);
         let mut mp = Some(m);
-        // SAFETY: the two option bytes are in the mbuf.
-        let ok = unsafe { ip6_process_hopopts(&mut mp, mtod::<u8>(m), 2, &mut rtalert, &mut plen) };
+        let ok = ip6_process_hopopts(&mut mp, 0, 2, &mut rtalert, &mut plen);
         assert!(!ok);
         assert!(mp.is_none());
         assert_eq!(stat(Ip6statCounters::Ip6sToosmall), toosmall + 1);
@@ -1701,15 +1419,13 @@ mod tests {
         let _g = setup_net();
         let m = test_packet(&[0x1e, 0]);
         let mut mp = Some(m);
-        // SAFETY: the option's two bytes are in the mbuf.
-        assert!(unsafe { ip6_unknown_opt(&mut mp, mtod::<u8>(m), 42) });
+        assert!(ip6_unknown_opt(&mut mp, 0x1e, 42));
         assert!(mp.is_some());
         m_freem(mp.take());
 
         let m = test_packet(&[0x7f, 0]);
         let mut mp = Some(m);
-        // SAFETY: as above.
-        assert!(!unsafe { ip6_unknown_opt(&mut mp, mtod::<u8>(m), 42) });
+        assert!(!ip6_unknown_opt(&mut mp, 0x7f, 42));
         assert!(mp.is_none());
     }
 

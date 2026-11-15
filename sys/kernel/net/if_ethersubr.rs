@@ -234,8 +234,7 @@ didn't get a copy, you may request one from <license@ipv6.nrl.navy.mil>.
 //!   (`arpresolve`, `arp_rtrequest`, and `arpinput`/`revarpinput` through the glue's entries
 //!   `kernel::netinet::if_ether::ARPINPUT`/`REVARPINPUT`) are the kernel's since N6.4b, the
 //!   IPv4 checksums (`in_hdr_cksum_out`, `in_proto_cksum_out`) since N6.4a, ND's
-//!   (`nd6_resolve`, `nd6_rtrequest`) since N6.5b; `in6_proto_cksum_out` stays a leg until
-//!   N6.5c.
+//!   (`nd6_resolve`, `nd6_rtrequest`) since N6.5b, `in6_proto_cksum_out` since N6.5c.
 //!   `ether_rtrequest` takes the net lock's proof its caller (`if_rtrequest`) has.
 //! - The Ethernet header is read and written as a copy (`hal::pod::at`/`put`, 14 bytes,
 //!   D-N6.3c-20): where a frame starts depends on the driver (two bytes past a word with
@@ -1537,10 +1536,8 @@ pub fn ether_offload_ifcap(ifp: &'static Ifnet, m: MbufBox) -> Option<MbufBox> {
         if ext.ip4.is_some() {
             crate::netinet::ip_output::in_hdr_cksum_out(&mut m, Some(ifp));
             crate::netinet::ip_output::in_proto_cksum_out(&mut m, Some(ifp));
-        } else if ext.ip6.is_some()
-            && let Some(i) = inet()
-        {
-            i.in6_proto_cksum_out(&m, ifp);
+        } else if ext.ip6.is_some() {
+            crate::netinet6::ip6_output::in6_proto_cksum_out(&mut m, Some(ifp));
         }
 
         // show ethernet header again

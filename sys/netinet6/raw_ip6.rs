@@ -185,8 +185,7 @@ use crate::netinet6::in6::{
 };
 use crate::netinet6::in6_cksum::in6_cksum;
 use crate::netinet6::in6_pcb::{
-    in6_pcbaddrisavail, in6_pcblookup, in6_pcbnotify, in6_peeraddr, in6_sockaddr, inp_moptions6,
-    inp_outputopts6,
+    in6_pcbaddrisavail, in6_pcblookup, in6_pcbnotify, in6_peeraddr, in6_sockaddr,
 };
 use crate::netinet6::in6_proto::{RIP6_RECVSPACE, RIP6_SENDSPACE};
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
@@ -600,19 +599,19 @@ pub fn rip6_output(
     let mut m: Option<&'static Mbuf> = Some(m);
 
     let priv_ = so.has_state(SS_PRIV);
+    // `inp->inp_moptions6`'s members `ip6_output` and the scope zone read, copied once.
+    let mopts = inp.moptions6_out();
 
     let result: Result<(), Errno> = 'freectl: {
         let error: Errno = 'bad: {
-            let optp: Option<&Ip6Pktopts> = if let Some(control) = control {
-                if let Err(e) =
-                    ip6_setpktopts(control, &mut opt, inp_outputopts6(inp), priv_, proto)
-                {
+            // `optp`: the control messages' options (`opt`), else the pcb's sticky ones, lent
+            // at each use below (the kernel's since N6.5c).
+            if let Some(control) = control {
+                let sticky = inp.outputopts6();
+                if let Err(e) = ip6_setpktopts(control, &mut opt, sticky.as_deref(), priv_, proto) {
                     break 'bad e;
                 }
-                Some(&opt)
-            } else {
-                inp_outputopts6(inp)
-            };
+            }
 
             if dstaddr.sin6_family != AF_INET6 {
                 break 'bad Errno::EAFNOSUPPORT;
@@ -652,13 +651,24 @@ pub fn rip6_output(
             ip6.ip6_dst = dst;
 
             // KAME hack: embed scopeid
-            if in6_embedscope(&mut ip6.ip6_dst, dstaddr, optp, inp_moptions6(inp)).is_err() {
+            let embedded = if control.is_some() {
+                in6_embedscope(&mut ip6.ip6_dst, dstaddr, Some(&opt), mopts.as_ref())
+            } else {
+                let sticky = inp.outputopts6();
+                in6_embedscope(&mut ip6.ip6_dst, dstaddr, sticky.as_deref(), mopts.as_ref())
+            };
+            if embedded.is_err() {
                 break 'bad Errno::EINVAL;
             }
 
             // Source address selection.
             let mut in6a = In6Addr::default();
-            if let Err(e) = in6_pcbselsrc(&mut in6a, dstaddr, inp, optp) {
+            let selected = if control.is_some() {
+                in6_pcbselsrc(&mut in6a, dstaddr, inp, Some(&mut opt))
+            } else {
+                in6_pcbselsrc(&mut in6a, dstaddr, inp, inp.outputopts6().as_deref_mut())
+            };
+            if let Err(e) = selected {
                 break 'bad e;
             }
             ip6.ip6_src = in6a;
@@ -711,14 +721,21 @@ pub fn rip6_output(
                 pf_mbuf_link_inpcb(mm, Some(inp));
             }
 
+            let sticky = inp.outputopts6();
+            let optp: Option<&Ip6Pktopts> = if control.is_some() {
+                Some(&opt)
+            } else {
+                sticky.as_deref()
+            };
             let error = ip6_output(
                 mm,
                 optp,
                 Some(&mut *inp.route()),
                 flags,
-                inp_moptions6(inp),
+                mopts.as_ref(),
                 Some(&inp.inp_seclevel.get()),
             );
+            drop(sticky);
             if proto == IPPROTO_ICMPV6 {
                 icmp6stat_inc_hist(Icmp6statCounters::Icp6sOuthist, type_);
             } else {
@@ -857,7 +874,7 @@ pub fn rip6_connect(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno
 
     // Source address selection. XXX: need pcblookup?
     let mut in6a = In6Addr::default();
-    in6_pcbselsrc(&mut in6a, &addr, inp, inp_outputopts6(inp))?;
+    in6_pcbselsrc(&mut in6a, &addr, inp, inp.outputopts6().as_deref_mut())?;
 
     let g = RAWIN6PCBTABLE.lock();
     inp.set_laddr6(&g, in6a);

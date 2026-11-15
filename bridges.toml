@@ -473,6 +473,12 @@ paid_by = "N7"
 # and advertisements too (no options); a temporary icmp6_error joined (nd6_llinfo_timer's
 # errors about the packets an unanswered neighbor held, until ICMPv6 moves at N6.5d);
 # with_net_held lends nd6_resolve's solicitation its proof (a driver's output carries none).
+# N6.5c (the kernel's IPv6 output path, kernel::netinet6::{ip6_output, ip6_input}):
+# in6_proto_cksum_out left (ether_offload_ifcap and if_output_tso call the kernel's) and the
+# temporary ip6_output_opts with it (ND and MLD call the kernel's ip6_output); ip6_randomid
+# joined (idgen32 over ip6_output.c's ip6_id_ctx: crypto/idgen.c is bsd's until N8), and the
+# temporary icmp6_error serves the hop-by-hop parser the output path runs (ip6_input.c's
+# ip6_process_hopopts and ip6_unknown_opt, the kernel's since N6.5c) until N6.5d.
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.
@@ -482,7 +488,7 @@ paid_by = "N7"
 # kernel::net::if_::Inet
 [[bridge]]
 trait = "Inet"
-for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/mld6.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/nd6_nbr.rs"]
+for = ["sys/kernel/net/if_.rs", "sys/kernel/net/netisr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/nd6.rs", "sys/kernel/netinet6/ip6_output.rs", "sys/kernel/netinet6/ip6_input.rs"]
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
@@ -497,10 +503,13 @@ paid_by = "N6"
 # N6.4c2: ip_input.c's #ifdef IPSEC points, forward_check (ipsec_forward_check), local_check
 # (ipsec_local_check), init (ipsec_init, from ip_init) and sysctl (ipsec_sysctl, ip_sysctl's
 # IPsec names).
+# N6.5c: ip6_output.c's #ifdef IPSEC points, ip6_output_lookup and ip6_output_send
+# (ip6_output_ipsec_lookup and ip6_output_ipsec_send with its pmtu update, which stay bsd's
+# sys/netinet6/ip6_output.rs, D-18; N6.5d's ip6_forward calls the same two).
 # kernel::net::ipsec_hooks::Ipsec
 [[bridge]]
 trait = "Ipsec"
-for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs"]
+for = ["sys/kernel/net/rtsock.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_output.rs"]
 paid_by = "N8"
 
 # bsd: pf's traffic conditioners (hfsc, fq_codel: struct ifq_ops over their void *ifq_q),

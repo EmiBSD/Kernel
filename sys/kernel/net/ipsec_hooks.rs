@@ -23,7 +23,9 @@
 //! address of the encapsulation interface enc(4); and since N6.4a the `#ifdef IPSEC` points
 //! of `ip_output` (`kernel::netinet::ip_output`): `ipsec_in_use`, the two halves of
 //! ip_output.c's own IPsec code (`ip_output_ipsec_lookup`, and `ip_output_ipsec_send` with
-//! its `ip_output_ipsec_pmtu_update`), `tdb_unref` and `ipsec_adjust_mtu`.
+//! its `ip_output_ipsec_pmtu_update`), `tdb_unref` and `ipsec_adjust_mtu`; and since N6.5c
+//! the same two halves of ip6_output.c's (`ip6_output_ipsec_lookup`,
+//! `ip6_output_ipsec_send`, D-18 of N6.5), for `kernel::netinet6::ip6_output`.
 //!
 //! `bsd`'s `if_enc.rs` registers its implementation at boot ([`register_ipsec`],
 //! bridges.toml's `Ipsec` row, paid by N8); before that the legs answer as the C compiled
@@ -125,6 +127,25 @@ pub trait Ipsec: Sync {
     /// the SA's enc(4) interface, the path MTU checks and update, the TSO chop), lent by its
     /// [`TdbHold`]: the packet consumed, the reference kept.
     fn ip_output_send(
+        &self,
+        tdb: &TdbRef,
+        m: MbufBox,
+        ro: &mut Route,
+        rtableid: u32,
+        fwd: bool,
+    ) -> Result<(), Errno>;
+    /// `ip6_output_ipsec_lookup(m, seclevel, &tdb)`: the SA the policy wants applied to the
+    /// IPv6 packet `m`, with a reference; `None` when no IPsec is needed (no SA, or the packet
+    /// already went through this one). N6.5c, `ip6_output`'s (and N6.5d's `ip6_forward`).
+    fn ip6_output_lookup(
+        &self,
+        m: &Mbuf,
+        seclevel: Option<&IpsecLevel>,
+    ) -> Result<Option<TdbRef>, SpdError>;
+    /// `ip6_output_ipsec_send(tdb, m, ro, rtableid, fwd)`: the IPv6 packet `m` handed to the SA
+    /// `tdb` (pf on the SA's enc(4) interface, the path MTU checks and update, the TSO chop),
+    /// lent by its [`TdbHold`]: the packet consumed, the reference kept.
+    fn ip6_output_send(
         &self,
         tdb: &TdbRef,
         m: MbufBox,
@@ -258,6 +279,26 @@ mod tests {
         }
 
         fn ip_output_send(
+            &self,
+            _tdb: &TdbRef,
+            m: MbufBox,
+            _ro: &mut Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            drop(m);
+            Ok(())
+        }
+
+        fn ip6_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _seclevel: Option<&IpsecLevel>,
+        ) -> Result<Option<TdbRef>, SpdError> {
+            Ok(None)
+        }
+
+        fn ip6_output_send(
             &self,
             _tdb: &TdbRef,
             m: MbufBox,

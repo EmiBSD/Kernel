@@ -361,7 +361,8 @@ pub fn enc_getifa(rdomain: u32, unit: u32) -> Option<&'static Ifaddr> {
 
 /// The kernel's `Ipsec` bridge over enc(4) and IPsec (bridges.toml's `Ipsec` row, paid by
 /// N8): `rtm_getifa`'s `enc_getifa` for a route to a `PF_KEY` destination, and the IPsec
-/// points of the kernel's `ip_output` (N6.4a) over `ip_output.rs`'s IPsec half.
+/// points of the kernel's `ip_output` (N6.4a) and `ip6_output` (N6.5c) over `ip_output.rs`'s
+/// and `ip6_output.rs`'s IPsec halves.
 pub struct BsdIpsec;
 
 /// The one [`BsdIpsec`], registered by `bsd`'s `ifinit`.
@@ -422,6 +423,36 @@ impl kernel::net::ipsec_hooks::Ipsec for BsdIpsec {
         fwd: bool,
     ) -> Result<(), Errno> {
         crate::netinet::ip_output::ip_output_ipsec_send(
+            tdb_of(tdb),
+            park(m),
+            Some(ro),
+            rtableid,
+            fwd,
+        )
+    }
+
+    fn ip6_output_lookup(
+        &self,
+        m: &Mbuf,
+        seclevel: Option<&IpsecLevel>,
+    ) -> Result<Option<TdbRef>, SpdError> {
+        use crate::netinet::ip_spd::SpdError as BsdSpdError;
+        match crate::netinet6::ip6_output::ip6_output_ipsec_lookup(m, seclevel) {
+            Ok(t) => Ok(t.map(|t| TdbRef::new(tdb_key(), t))),
+            Err(BsdSpdError::Drop) => Err(SpdError::Drop),
+            Err(BsdSpdError::Errno(e)) => Err(SpdError::Errno(e)),
+        }
+    }
+
+    fn ip6_output_send(
+        &self,
+        tdb: &TdbRef,
+        m: kernel::net::mbuf::MbufBox,
+        ro: &mut kernel::net::route::Route,
+        rtableid: u32,
+        fwd: bool,
+    ) -> Result<(), Errno> {
+        crate::netinet6::ip6_output::ip6_output_ipsec_send(
             tdb_of(tdb),
             park(m),
             Some(ro),

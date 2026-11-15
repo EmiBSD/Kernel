@@ -3116,36 +3116,30 @@ pub(crate) mod tests {
         crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
-    /// A packet the tests' `Inet::ip6_output_opts` leg was given: the `ip6_output` flags, the
-    /// multicast interface and hop limit, and the packet's bytes.
-    pub(crate) struct Sent6 {
-        pub(crate) flags: i32,
-        pub(crate) ifidx: u16,
-        pub(crate) hlim: u8,
-        pub(crate) bytes: Vec<u8>,
-    }
-
-    /// What the tests' legs were given (the last 64 packets; the ICMPv6 errors' type and code).
-    pub(crate) static IP6_SENT: std::sync::Mutex<Vec<Sent6>> = std::sync::Mutex::new(Vec::new());
+    /// What the tests' legs were given: the ICMPv6 errors' type and code, and their
+    /// parameters.
     pub(crate) static ICMP6_ERRORS: std::sync::Mutex<Vec<(u8, u8)>> =
         std::sync::Mutex::new(Vec::new());
-
-    /// Takes the packets `ip6_output_opts` was given so far.
-    pub(crate) fn take_ip6_sent() -> Vec<Sent6> {
-        core::mem::take(&mut *IP6_SENT.lock().unwrap_or_else(|e| e.into_inner()))
-    }
+    pub(crate) static ICMP6_PARAMS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
 
     /// Takes the ICMPv6 errors asked for so far.
     pub(crate) fn take_icmp6_errors() -> Vec<(u8, u8)> {
         core::mem::take(&mut *ICMP6_ERRORS.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    /// Takes the parameters of the ICMPv6 errors asked for so far (the parameter problems'
+    /// offsets).
+    pub(crate) fn take_icmp6_params() -> Vec<i32> {
+        core::mem::take(&mut *ICMP6_PARAMS.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
-    /// counted, IPv6 output and ICMPv6 errors kept (ND's and MLD's), the net lock's proof lent
-    /// from a test's detached holding (`hal::netlock::lock`).
+    /// counted, ICMPv6 errors kept, the fragment ids a counter, the net lock's proof lent from
+    /// a test's detached holding (`hal::netlock::lock`).
     struct TestInet {
         hits: AtomicU32,
         misses: AtomicU32,
+        ids: AtomicU32,
     }
 
     impl if_::Inet for TestInet {
@@ -3158,35 +3152,23 @@ pub(crate) mod tests {
         fn ip6_forwarding(&self) -> bool {
             false
         }
-        fn ip6_output_opts(
-            &self,
-            m: crate::net::mbuf::MbufBox,
-            _router_alert: bool,
-            flags: i32,
-            ifidx: u16,
-            hlim: u8,
-            _loop_: bool,
-        ) -> Result<(), Errno> {
-            let mut b = std::vec![0u8; m.m_pkthdr().len.get() as usize];
-            crate::net::mbuf::m_copydata(&m, 0, &mut b);
-            let mut sent = IP6_SENT.lock().unwrap_or_else(|e| e.into_inner());
-            if sent.len() >= 64 {
-                sent.remove(0);
-            }
-            sent.push(Sent6 {
-                flags,
-                ifidx,
-                hlim,
-                bytes: b,
-            });
-            Ok(())
+        fn ip6_randomid(&self) -> u32 {
+            // idgen32 never answers 0.
+            self.ids
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1)
+                .max(1)
         }
-        fn icmp6_error(&self, m: crate::net::mbuf::MbufBox, type_: u8, code: u8, _param: i32) {
+        fn icmp6_error(&self, m: crate::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
             drop(m);
             ICMP6_ERRORS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push((type_, code));
+            ICMP6_PARAMS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(param);
         }
         fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
             if !hal::netlock::held_detached() {
@@ -3209,6 +3191,7 @@ pub(crate) mod tests {
     static TEST_INET: TestInet = TestInet {
         hits: AtomicU32::new(0),
         misses: AtomicU32::new(0),
+        ids: AtomicU32::new(0x4000_0000),
     };
 
     /// The types of the routing messages the routing socket's tap saw.

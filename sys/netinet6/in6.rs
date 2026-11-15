@@ -156,22 +156,15 @@
 //!   (ND's two requests included since N6.5b; `bsd`'s tests call the kernel's `in6_ioctl` over
 //!   the request's bytes).
 //! - `in6_addmulti` and `in6_delmulti` keep LZ's signatures, the net lock's proof made through
-//!   the `SaToken` (their caller holds it: `ip6_setmoptions`, under the socket lock). `in6_joingroup` and `in6_leavegroup` keep
-//!   LZ's `malloc`'d `struct in6_multi_mship` for `ip6_setmoptions`' list until the socket
-//!   options move (N6.5c; the kernel's addresses keep theirs in an array).
+//!   the `SaToken` (their callers hold it: the MLD tests of `netinet6/mld6.rs`). The socket
+//!   options' `in6_joingroup` and `in6_leavegroup` are the kernel's since N6.5c
+//!   (`kernel::netinet6::ip6_output`, over `In6Memberships`).
 
-use core::cell::Cell;
-use core::mem::size_of;
-use core::ptr::NonNull;
-
-use crate::kern::kern_malloc::{free, malloc};
 use crate::net::if_::net_held;
 use crate::net::if_var::Ifnet;
-use crate::netinet6::in6_var::{In6Multi, In6MultiMship};
+use crate::netinet6::in6_var::In6Multi;
 use crate::sys::errno::Errno;
-use crate::sys::malloc::{M_IPMADDR, M_NOWAIT};
 use crate::sys::mbuf::{Mbuf, mtod};
-use crate::sys::queue::ListEntry;
 use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::{SS_PRIV, Socket};
 
@@ -228,44 +221,6 @@ pub fn in6_addmulti(addr: &In6Addr, ifp: &'static Ifnet) -> Result<&'static In6M
 /// `in6_delmulti(in6m)`: the kernel's, under the net lock the caller holds.
 pub fn in6_delmulti(in6m: &'static In6Multi) {
     kernel::netinet6::in6::in6_delmulti(in6m, &net_held("in6_delmulti"));
-}
-
-/// `in6_joingroup(ifp, addr, &error)`: joins `addr` on `ifp` and returns the membership entry
-/// (`malloc`ed, freed by `in6_leavegroup`); the C's `*errorp` is the `Err`.
-pub fn in6_joingroup(ifp: &'static Ifnet, addr: &In6Addr) -> Result<&'static In6MultiMship, Errno> {
-    let Some(mem) = malloc(size_of::<In6MultiMship>(), M_IPMADDR, M_NOWAIT) else {
-        return Err(Errno::ENOBUFS);
-    };
-    let maddr = match in6_addmulti(addr, ifp) {
-        Ok(m) => m,
-        Err(e) => {
-            // *errorp is already set
-            free(mem, M_IPMADDR, size_of::<In6MultiMship>());
-            return Err(e);
-        }
-    };
-    let imm = mem.as_ptr().cast::<In6MultiMship>();
-    // SAFETY: a block of `size_of::<In6MultiMship>()` bytes from the allocator, suitably
-    // aligned; it is initialized here and lives until `in6_leavegroup` frees it.
-    unsafe {
-        imm.write(In6MultiMship {
-            i6mm_maddr: Cell::new(Some(maddr)),
-            i6mm_chain: ListEntry::new(),
-        });
-        Ok(&*imm)
-    }
-}
-
-/// `in6_leavegroup(imm)`: leaves the group of membership `imm` and frees it.
-pub fn in6_leavegroup(imm: &'static In6MultiMship) {
-    if let Some(maddr) = imm.i6mm_maddr.get() {
-        in6_delmulti(maddr);
-    }
-    free(
-        NonNull::from(imm).cast(),
-        M_IPMADDR,
-        size_of::<In6MultiMship>(),
-    );
 }
 /* </CODE> */
 
