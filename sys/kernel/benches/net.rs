@@ -102,8 +102,12 @@
 //!     serializer's mutex twice, the task linked, unlinked and run).
 //!   - `if_counters.pkt`: `counters_pkt` of a 60-byte packet on the interface's counters.
 //!   - `ifa_ifwithaddr.8x2`: `ifa_ifwithaddr` of the last of 16 addresses (8 listed
-//!     interfaces of 2 `AF_INET` addresses each), a reader of the net cells made per call
-//!     under a shared holding (N6.5e: the walk's `NET_ASSERT_LOCKED()`).
+//!     interfaces of 2 `AF_INET` addresses each), under the net lock's write witness, as
+//!     0adb606a measured it; since N6.5e with the reader of the net cells the walk takes per
+//!     call (on a write holding, a relaxed read-modify-write pair), so its before and after
+//!     compare the same holding.
+//!   - `ifa_ifwithaddr.8x2.shared`: the same walk under a shared holding, as the input and
+//!     output paths hold the lock (N6.5e; no before: a new row).
 //!   - `ifaddr.walk.1`, `ifaddr.walk.8`: a reader of the net cells made under a shared
 //!     holding and an interface's list of 1 or 8 addresses walked whole (`TAILQ_FOREACH`,
 //!     each address's family read: the arm), N6.5e's chain of counted handles.
@@ -1472,7 +1476,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
 /// The interface layer's rows (N6.3a, decision 43 with U10), the same ops as the "before"
 /// rows on LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over `setup_net`'s
 /// zeroed `test_ifnet`).
-const IF_ROWS: [&str; 12] = [
+const IF_ROWS: [&str; 13] = [
     "if_get.put",
     "if_get_smr",
     "ifq.enq.deq",
@@ -1485,6 +1489,7 @@ const IF_ROWS: [&str; 12] = [
     "ifaddr.walk.1",
     "ifaddr.walk.8",
     "ifaddr.add_del.8",
+    "ifa_ifwithaddr.8x2.shared",
 ];
 
 std::thread_local! {
@@ -1692,7 +1697,7 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         });
         report(IF_ROWS[6], r);
     }
-    if wanted(IF_ROWS[7]) {
+    if wanted(IF_ROWS[7]) || wanted(IF_ROWS[12]) {
         // Eight listed interfaces of two addresses each, 10.i.0.1 and 172.16.i.1; the
         // address looked for is the last one walked (the C's two nested TAILQ walks whole).
         let sin = |a: [u8; 4]| -> std::vec::Vec<u8> {
@@ -1716,35 +1721,49 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
             }
         }
         let want = sin([172, 16, 7, 1]);
-        // The walk under a shared holding, as the input and output paths hold it: a reader
-        // per call (the C's `NET_ASSERT_LOCKED()`), the address lent for its life.
-        let net = NETLOCK.read();
-        let held = need(NetHeld::of(&net), "the net lock's witness");
         if let Some((_, last)) = addrs.last() {
             placement("ifa_ifwithaddr last address", &**last);
         }
-        let r = measure(OPS, || {
-            let t = Instant::now();
-            for _ in 0..OPS {
-                let rd = held.reader();
-                black_box(ifa_ifwithaddr(&held, &rd, black_box(&want), 0).is_some());
+        // The walk, a reader per call (the C's `NET_ASSERT_LOCKED()`), the address lent for
+        // its life; the address found checked once.
+        let walk = |held: &NetHeld<'_>| {
+            let r = measure(OPS, || {
+                let t = Instant::now();
+                for _ in 0..OPS {
+                    let rd = held.reader();
+                    black_box(ifa_ifwithaddr(held, &rd, black_box(&want), 0).is_some());
+                }
+                t.elapsed()
+            });
+            if ifa_ifwithaddr(held, &held.reader(), &want, 0)
+                .is_none_or(|f| addrs.last().is_none_or(|l| !f.is(&l.1)))
+            {
+                eprintln!("net: ifa_ifwithaddr found another address");
+                std::process::exit(1);
             }
-            t.elapsed()
-        });
-        if ifa_ifwithaddr(&held, &held.reader(), &want, 0)
-            .is_none_or(|f| addrs.last().is_none_or(|l| !f.is(&l.1)))
-        {
-            eprintln!("net: ifa_ifwithaddr found another address");
-            std::process::exit(1);
+            r
+        };
+        // `ifa_ifwithaddr.8x2`: under the write witness, the row's holding before N6.5e.
+        if wanted(IF_ROWS[7]) {
+            let net = NETLOCK.write();
+            let r = walk(&need(NetHeld::of(&net), "the net lock's witness"));
+            drop(net);
+            report(IF_ROWS[7], r);
         }
-        drop(net);
+        // `ifa_ifwithaddr.8x2.shared`: under a shared holding, as the input and output paths
+        // hold it.
+        if wanted(IF_ROWS[12]) {
+            let net = NETLOCK.read();
+            let r = walk(&need(NetHeld::of(&net), "the net lock's witness"));
+            drop(net);
+            report(IF_ROWS[12], r);
+        }
         let net = NETLOCK.write();
         let held = need(NetHeld::of(&net), "the net lock's witness");
         for (lifp, ifa) in &addrs {
             drop(ifa_del(lifp, ifa, &held));
         }
         drop(net);
-        report(IF_ROWS[7], r);
     }
     if wanted(IF_ROWS[8]) {
         // Four send queues; the packet's flow id picks the third (priq_idx), whose start the
@@ -1777,14 +1796,14 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         }
         report(IF_ROWS[8], r);
     }
-    if IF_ROWS[9..].iter().any(|n| wanted(n)) {
+    if IF_ROWS[9..12].iter().any(|n| wanted(n)) {
         ifaddr_rows(wanted, report);
     }
     // The packets back to their pool while its pages are still installed.
     STASH.with(|s| s.borrow_mut().clear());
 }
 
-/// N6.5e's rows of the interface's address list (`IF_ROWS[9..]`): the walks and a change of
+/// N6.5e's rows of the interface's address list (`IF_ROWS[9..12]`): the walks and a change of
 /// the list, over Internet address records (`malloc(9)` blocks
 /// held by counted handles).
 fn ifaddr_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
