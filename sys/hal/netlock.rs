@@ -250,10 +250,12 @@
 //!   `raw_ip6.rs:664-666`), and divert's `ipv4_input`/`ipv6_input` and (N6.5e's 5e1) its
 //!   `divert_packet`'s walk of an inbound packet's interface addresses
 //!   (`sys/netinet/ip_divert.rs`, `sys/netinet6/ip6_divert.rs`) (N6.6b);
-//! - pf(4)'s route-to, `rtalloc_mpath` (`sys/net/pf.rs:8184`, `:8369`) and
-//!   `ip_forward`/`ip6_forward` (`sys/net/pf.rs:9870`, `:9895`, `sys/net/pf_norm.rs:1329`),
+//! - pf(4)'s route-to, `rtalloc_mpath` (`sys/net/pf.rs:8184`, `:8376`) and
+//!   `ip_forward`/`ip6_forward` (`sys/net/pf.rs:9883`, `:9908`, `sys/net/pf_norm.rs:1329`),
 //!   and pf's `rtalloc` (`sys/net/pf.rs:4507`, `:4515`, `:8015`, `:8066`) (N8); a packet
-//!   from `bsd`'s `ip_output` into pf's route-to pays two lends;
+//!   from `bsd`'s `ip_output` into pf's route-to pays two lends; (N6.5e's 5e1) route-to's
+//!   read of `rt_ifa` for a loopback source leaving a non-loopback interface
+//!   (`sys/net/pf.rs:8219`, `:8410`), a third on that branch only;
 //! - IP-in-IP decapsulation, `rtalloc` and `ip_input_if`/`ip6_input_if`
 //!   (`sys/netinet/ip_ipip.rs:453`, `:479`, `:483`) (N8); wg(4)'s `ipv4_input`/
 //!   `ipv6_input` (N8);

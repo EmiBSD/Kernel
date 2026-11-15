@@ -1427,7 +1427,8 @@ impl IfaList {
     /// that may take the address it is given off the list (`ifa_del` takes the writer). No
     /// reader lives while `f` runs: the address and its successor are cloned under a reader of
     /// their own before it (T2), dropped after it. A body that takes the successor off the
-    /// list ends the walk there (its cell is emptied), where the C would read freed memory.
+    /// list is still given it next (the walk's clone keeps it alive), and the walk ends after
+    /// it (its cell was emptied), where the C would read freed memory.
     pub fn for_each_safe(&self, net: &NetHeld<'_>, mut f: impl FnMut(&IfaddrRef)) {
         let mut cur = {
             let r = net.reader();
