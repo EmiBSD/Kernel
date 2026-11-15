@@ -492,39 +492,6 @@ pub(crate) fn if_sadl_test_set(ifp: &Ifnet, sdl: SockaddrDl) {
     drop(ifp.if_sadl.replace(Some(b)));
 }
 
-/// `rw_assert_wrlock(&ifp->if_maddrlock)` (`DIAGNOSTIC`).
-pub fn if_maddrlock_assert_wrlock(ifp: &Ifnet) {
-    crate::kassert!(ifp.rt().if_maddrlock.status() == hal::rwlock::RW_WRITE);
-}
-
-/// `rw_assert_anylock(&ifp->if_maddrlock)` (`DIAGNOSTIC`).
-pub fn if_maddrlock_assert_anylock(ifp: &Ifnet) {
-    crate::kassert!(matches!(
-        ifp.rt().if_maddrlock.status(),
-        hal::rwlock::RW_WRITE | hal::rwlock::RW_READ
-    ));
-}
-
-/// `rw_enter_write(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_enter_write(ifp: &Ifnet) {
-    let _ = ifp.rt().if_maddrlock.enter(hal::rwlock::RW_WRITE);
-}
-
-/// `rw_exit_write(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_exit_write(ifp: &Ifnet) {
-    ifp.rt().if_maddrlock.exit();
-}
-
-/// `rw_enter_read(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_enter_read(ifp: &Ifnet) {
-    let _ = ifp.rt().if_maddrlock.enter(hal::rwlock::RW_READ);
-}
-
-/// `rw_exit_read(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_exit_read(ifp: &Ifnet) {
-    ifp.rt().if_maddrlock.exit();
-}
-
 /// `ifnetlist` as LZ's callers name it (`IFNETLIST.0.iter()`): the kernel's list.
 pub struct IfnetHead(pub &'static hal::list::List<IfnetList>);
 

@@ -277,11 +277,9 @@ mod tests {
 
     /// The state and timer of our membership of `g` on `ifp`.
     fn membership(ifp: &Ifnet, g: [u8; 4]) -> (u32, u32) {
-        crate::net::if_var::if_maddrlock_enter_write(ifp);
-        let inm = in_lookupmulti(&addr(g), ifp).expect("a member");
-        let r = (inm.inm_state.get(), inm.inm_timer.get());
-        crate::net::if_var::if_maddrlock_exit_write(ifp);
-        r
+        let w = ifp.rt().if_maddrlock.write();
+        let inm = in_lookupmulti(&addr(g), ifp, &w).expect("a member");
+        (inm.inm_state.get(), inm.inm_timer.get())
     }
 
     /// Runs the fast timeout until no timer runs (at most `n` ticks).

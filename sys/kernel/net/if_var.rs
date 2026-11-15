@@ -179,6 +179,14 @@
 //! - `ifma_addr` (a pointer to the multicast record's own `sockaddr`, which the C reads for
 //!   the family alone) is dropped (N6.5e): the family test is the record's back-link
 //!   (`Ifmaddr::ifma_in`, `ifma_in6`), and the record's address its own words.
+//! - `if_maddrlock` (a `SplitRwlock` before N6.5e, entered and left C-style through six
+//!   helpers of `bsd`'s `net/if_var.rs`) -> a `hal::rwlock::RawRwlock` in [`IfRt`] taken
+//!   through its witnesses: `rw_enter_write` is `write()`, `rw_exit_write` the witness's drop.
+//!   The functions the C calls holding it (`in_lookupmulti`, `in6_lookupmulti`,
+//!   `igmp_joingroup`, `igmp_leavegroup`, `mld6_start_listening`, `mld6_stop_listening`)
+//!   take the witness and check it is the interface's (`rw_assert_wrlock`,
+//!   `rw_assert_anylock`, made in every build as the `kassert!` they were); the cost is the
+//!   C's: one enter and one exit of the same lock.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
 //!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
@@ -795,9 +803,11 @@ pub struct IfRt {
     pub(crate) iqs: OnceStatic<MArray<MBox<Ifiqueue>>>,
     /// \[N\] `if_addrlist`: list of addresses per if ([`Ifnet::if_addrlist`]).
     pub(crate) if_addrlist: IfaList,
-    /// `if_maddrlock`: keeps `if_maddrlist`, taken C-style (`rw_enter_write` ..
-    /// `rw_exit_write`) by `bsd`'s multicast code, its only user until N6.4/N6.5.
-    pub if_maddrlock: hal::rwlock::SplitRwlock,
+    /// `if_maddrlock`: keeps `if_maddrlist` and the `[m]` members of its records, taken
+    /// through its witnesses (`rw_enter_write` is [`hal::rwlock::RawRwlock::write`], the
+    /// witness's drop `rw_exit_write`); the functions the C calls holding it take the
+    /// witness, the C's `rw_assert_wrlock`/`rw_assert_anylock` (N6.5e).
+    pub if_maddrlock: hal::rwlock::RawRwlock,
     /// \[I\] `if_slowtimo`: watchdog timeout (its argument the interface's index).
     pub(crate) if_slowtimo: Timeout,
     /// \[I\] `if_watchdogtask`: watchdog task (its argument the interface's index).

@@ -1266,10 +1266,10 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
 
                 hal::klock::kernel_lock();
                 // in6_lookupmulti's if_maddrlock, read (the module's deviations).
-                let lock = &ifp.rt().if_maddrlock;
-                let _ = lock.enter(RW_READ);
-                let in6m = in6_lookupmulti(&llsol, ifp);
-                lock.exit();
+                let in6m = {
+                    let r = ifp.rt().if_maddrlock.read();
+                    in6_lookupmulti(&llsol, ifp, &r)
+                };
                 if let Some(in6m) = in6m {
                     in6_delmulti(in6m, net);
                 }
@@ -3511,11 +3511,8 @@ pub(crate) mod tests {
         let pub6 = a6("fd00:77::50");
         let llsol = solicited_node(ifp, pub6);
         let joined = |a: In6Addr| {
-            let lock = &ifp.rt().if_maddrlock;
-            let _ = lock.enter(RW_READ);
-            let r = in6_lookupmulti(&a, ifp).is_some();
-            lock.exit();
-            r
+            let r = ifp.rt().if_maddrlock.read();
+            in6_lookupmulti(&a, ifp, &r).is_some()
         };
         assert!(!joined(llsol));
 

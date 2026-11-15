@@ -1188,7 +1188,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         ifqs: OnceStatic::new(),
         iqs: OnceStatic::new(),
         if_addrlist: IfaList::new(),
-        if_maddrlock: hal::rwlock::SplitRwlock::new("maddr"),
+        if_maddrlock: RawRwlock::new("maddr"),
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),

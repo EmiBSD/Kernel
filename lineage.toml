@@ -6504,7 +6504,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/igmp.rs"
 lz = ["sys/netinet/igmp.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/netlock.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/hal/netlock.rs", "sys/kernel/netinet/in_.rs"]
 
 [[module]]
 rust = "sys/netinet/igmp_var.rs"

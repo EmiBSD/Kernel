@@ -323,10 +323,10 @@ mod tests {
         let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
         all_routers.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
 
-        crate::net::if_var::if_maddrlock_enter_write(ifp);
+        let w = ifp.rt().if_maddrlock.write();
         // We reported last: a Done message to the all-routers group.
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(in6m, ifp, &mut pkt);
+        mld6_stop_listening(in6m, ifp, &w, &mut pkt);
         assert_eq!(
             pkt,
             Mld6Pktinfo {
@@ -340,15 +340,15 @@ mod tests {
         // Somebody else reported after us: nothing.
         in6m.in6m_state.set(MLD_OTHERLISTENER);
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(in6m, ifp, &mut pkt);
+        mld6_stop_listening(in6m, ifp, &w, &mut pkt);
         assert_eq!(pkt, Mld6Pktinfo::default());
 
         // The all-nodes group is never left loudly.
         all.in6m_state.set(MLD_IREPORTEDLAST);
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(all, ifp, &mut pkt);
+        mld6_stop_listening(all, ifp, &w, &mut pkt);
         assert_eq!(pkt, Mld6Pktinfo::default());
-        crate::net::if_var::if_maddrlock_exit_write(ifp);
+        drop(w);
     }
 
     #[test]

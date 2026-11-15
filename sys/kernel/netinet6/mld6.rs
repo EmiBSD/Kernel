@@ -152,7 +152,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::malloc::{M_NOWAIT, MBox};
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{Witness, WriteWitness};
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::net_if::IFF_LOOPBACK;
 use hal::sys::netinet_icmp6::{
@@ -232,13 +232,19 @@ pub fn mld6_init() {
 
 /// `mld6_start_listening(in6m, ifp, pkt)`: starts listening to group `in6m` on `ifp`; the
 /// report to send (if any) is stored in `pkt` for `mld6_sendpkt` after the locks are
-/// released. Called holding `if_maddrlock` for writing.
-pub fn mld6_start_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo) {
+/// released. Called holding `if_maddrlock` for writing: `w` is its witness
+/// (`rw_assert_wrlock`).
+pub fn mld6_start_listening(
+    in6m: &In6Multi,
+    ifp: &Ifnet,
+    w: &WriteWitness<'_>,
+    pkt: &mut Mld6Pktinfo,
+) {
     // XXX: These are necessary for KAME's link-local hack
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
     let mut running = false;
 
-    kassert!(ifp.rt().if_maddrlock.status() == RW_WRITE);
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id());
 
     // RFC2710 page 10:
     // The node never sends a Report or Done for the link-scope all-nodes address.
@@ -268,13 +274,19 @@ pub fn mld6_start_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo)
 }
 
 /// `mld6_stop_listening(in6m, ifp, pkt)`: stops listening to group `in6m` on `ifp`; the
-/// done message to send (if any) is stored in `pkt`. Called holding `if_maddrlock`.
-pub fn mld6_stop_listening(in6m: &In6Multi, ifp: &Ifnet, pkt: &mut Mld6Pktinfo) {
+/// done message to send (if any) is stored in `pkt`. Called holding `if_maddrlock` in either
+/// mode: `w` is its witness (`rw_assert_anylock`).
+pub fn mld6_stop_listening<W: Witness + ?Sized>(
+    in6m: &In6Multi,
+    ifp: &Ifnet,
+    w: &W,
+    pkt: &mut Mld6Pktinfo,
+) {
     // XXX: These are necessary for KAME's link-local hack
     let mut all_nodes = IN6ADDR_LINKLOCAL_ALLNODES;
     let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
 
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ)); // rw_assert_anylock
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id()); // rw_assert_anylock
 
     all_nodes.set_s6_addr16(1, htons(in6m.in6m_ifidx().get() as u16));
     // XXX: necessary when mrouting
@@ -372,7 +384,6 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
     let Some(ifp) = IfRef::get(m.m_pkthdr().ph_ifidx.get()) else {
         return; // m_freem(m)
     };
-    let lock = &ifp.rt().if_maddrlock;
 
     // In the MLD6 specification, there are 3 states and a flag.
     //
@@ -413,7 +424,7 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
             all_nodes.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
 
             let mut pktlist: Option<MBox<PktNode>> = None;
-            let _ = lock.enter(RW_WRITE);
+            let w = ifp.rt().if_maddrlock.write();
             for in6m in ifp.if_maddrlist.iter().filter_map(In6Multi::of) {
                 let addr = in6m.in6m_addr();
                 if in6_are_addr_equal(&addr, &all_nodes)
@@ -436,7 +447,7 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
                     }
                 }
             }
-            lock.exit();
+            drop(w);
 
             send_pktlist(pktlist, net);
         }
@@ -459,12 +470,12 @@ pub fn mld6_input(m: MbufBox, off: i32, net: &NetHeld<'_>) {
                 mld_addr.set_s6_addr16(1, htons(ifp.if_index.get() as u16)); // XXX
             }
             // If we belong to the group being reported, stop our timer for that group.
-            let _ = lock.enter(RW_WRITE);
-            if let Some(in6m) = in6_lookupmulti(&mld_addr, &ifp) {
+            let w = ifp.rt().if_maddrlock.write();
+            if let Some(in6m) = in6_lookupmulti(&mld_addr, &ifp, &w) {
                 in6m.in6m_state.set(MLD_OTHERLISTENER); // clear flag
                 in6m.in6m_timer.set(0); // transit to idle state
             }
-            lock.exit();
+            drop(w);
         }
         // this is impossible: icmp6_input() only passes queries and reports.
         _ => {}
@@ -519,8 +530,7 @@ pub fn mld6_fasttimo() {
 fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
     let mut running = false;
 
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_WRITE);
+    let w = ifp.rt().if_maddrlock.write();
     for in6m in ifp.if_maddrlist.iter().filter_map(In6Multi::of) {
         let timer = in6m.in6m_timer.get();
         if timer == 0 {
@@ -534,7 +544,7 @@ fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
             running = true;
         }
     }
-    lock.exit();
+    drop(w);
 
     running
 }

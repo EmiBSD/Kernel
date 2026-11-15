@@ -156,6 +156,10 @@
 //! - `in_broadcast`, `in_ifp2ia`, `in_lookupmulti` read the records' own words (`InIfaddr::of`
 //!   of each `AF_INET` address, `SinWords::addr`), no copy of the generic part's address.
 //!   `in_broadcast` takes the proof of the net lock its walk needs (the C asserts it).
+//! - (N6.5e) `if_maddrlock` is taken through its witnesses (`kernel::net::if_var`'s
+//!   redesign): [`in_lookupmulti`] takes the caller's witness in either mode and checks it is
+//!   the interface's (`rw_assert_anylock`); `in_addmulti` and `in_delmulti` hand theirs to
+//!   IGMP's join and leave.
 //!
 //! **Lock and spl transitions** against the C: `in_ioctl`'s changes take the net lock and the
 //! kernel lock once each, as the C; `in_ioctl_get` the net lock shared; `in_addmulti` and
@@ -166,7 +170,7 @@ use core::mem::{offset_of, size_of};
 
 use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, ntohl};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -1000,9 +1004,13 @@ pub fn in_broadcast(in_: InAddr, rtableid: u32, net: &NetHeld<'_>) -> bool {
 }
 
 /// `in_lookupmulti(addr, ifp)`: the multicast record of `addr` on `ifp`, if joined. Called
-/// holding `if_maddrlock`.
-pub fn in_lookupmulti(addr: &InAddr, ifp: &Ifnet) -> Option<&'static InMulti> {
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ));
+/// holding `if_maddrlock` in either mode: `w` is its witness (`rw_assert_anylock`).
+pub fn in_lookupmulti<W: Witness + ?Sized>(
+    addr: &InAddr,
+    ifp: &Ifnet,
+    w: &W,
+) -> Option<&'static InMulti> {
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id());
 
     ifp.if_maddrlist
         .iter()
@@ -1029,13 +1037,13 @@ pub fn in_addmulti(
     let lock = &ifp.rt().if_maddrlock;
 
     // See if address already in list.
-    let _ = lock.enter(RW_WRITE);
-    if let Some(inm) = in_lookupmulti(addr, ifp) {
-        inm.inm_refcnt().take();
-        lock.exit();
-        return Some(inm);
+    {
+        let w = lock.write();
+        if let Some(inm) = in_lookupmulti(addr, ifp, &w) {
+            inm.inm_refcnt().take();
+            return Some(inm);
+        }
     }
-    lock.exit();
 
     // New address; allocate a new multicast record and link it into the interface's
     // multicast list.
@@ -1052,11 +1060,11 @@ pub fn in_addmulti(
     }
     hal::klock::kernel_unlock();
 
-    let _ = lock.enter(RW_WRITE);
+    let w = lock.write();
     // check again after unlock and lock
-    if let Some(inm) = in_lookupmulti(addr, ifp) {
+    if let Some(inm) = in_lookupmulti(addr, ifp, &w) {
         inm.inm_refcnt().take();
-        lock.exit();
+        drop(w);
         in_multi_free(new_inm);
         return Some(inm);
     }
@@ -1068,8 +1076,8 @@ pub fn in_addmulti(
     // Let IGMP know that we have joined a new IP multicast group.
     ifp.if_maddrlist.insert_head(&inm.inm_ifma);
     let mut pkt = IgmpPktinfo::default();
-    igmp_joingroup(inm, ifp, &mut pkt);
-    lock.exit();
+    igmp_joingroup(inm, ifp, &w, &mut pkt);
+    drop(w);
 
     if pkt.ipi_ifidx != 0 {
         igmp_sendpkt(&pkt, net);
@@ -1086,14 +1094,13 @@ pub fn in_delmulti(inm: &'static InMulti, net: &NetHeld<'_>) {
     }
 
     if let Some(ifp) = IfRef::get(inm.inm_ifidx().get()) {
-        let lock = &ifp.rt().if_maddrlock;
-        let _ = lock.enter(RW_WRITE);
+        let w = ifp.rt().if_maddrlock.write();
         // No remaining claims to this record; let IGMP know that we are leaving the multicast
         // group.
         let mut pkt = IgmpPktinfo::default();
-        igmp_leavegroup(inm, &ifp, &mut pkt);
+        igmp_leavegroup(inm, &ifp, &w, &mut pkt);
         ifp.if_maddrlist.remove(&inm.inm_ifma);
-        lock.exit();
+        drop(w);
 
         if pkt.ipi_ifidx != 0 {
             igmp_sendpkt(&pkt, net);
@@ -1117,12 +1124,8 @@ pub fn in_delmulti(inm: &'static InMulti, net: &NetHeld<'_>) {
 /// `in_hasmulti(addr, ifp)`: whether the multicast group `addr` has been joined by interface
 /// `ifp`.
 pub fn in_hasmulti(addr: &InAddr, ifp: &Ifnet) -> bool {
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_READ);
-    let joined = in_lookupmulti(addr, ifp).is_some();
-    lock.exit();
-
-    joined
+    let r = ifp.rt().if_maddrlock.read();
+    in_lookupmulti(addr, ifp, &r).is_some()
 }
 
 /// `in_ifdetach(ifp)`: every IPv4 address of `ifp` removed.

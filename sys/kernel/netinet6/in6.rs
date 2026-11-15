@@ -199,7 +199,7 @@
 //! |---|---|---|---|
 //! | `in6_ioctl` add/delete (in6.c:288-289, :394-395) | `KERNEL_LOCK` then `NET_LOCK` exclusive | `klock::kernel_lock()` then `netlock::lock()` (D-17) | none; the reverse of `in_ioctl`'s (in.c:282-283): both orders are the C's own |
 //! | `in6_ioctl_get` (in6.c:416) | `NET_LOCK_SHARED` | a read witness | none |
-//! | `in6_addmulti`/`in6_delmulti` (in6.c:1037-1130) | `if_maddrlock` write (twice/once); `KERNEL_LOCK` around the driver's `SIOCADDMULTI`/`DELMULTI` | the `SplitRwlock`'s write; `klock` C-style around `if_ioctl` | none |
+//! | `in6_addmulti`/`in6_delmulti` (in6.c:1037-1130) | `if_maddrlock` write (twice/once); `KERNEL_LOCK` around the driver's `SIOCADDMULTI`/`DELMULTI` | a write witness of the `RawRwlock` (twice/once); `klock` C-style around `if_ioctl` | none |
 //! | `in6_hasmulti` | `if_maddrlock` read once | the same | none |
 //! | `in6_update_ifa`'s joins, `in6_purgeaddr` | the net lock | the net lock, and `ia6_memberships`' mutex twice per join (the room before `in6_addmulti`, the record after, so `ENOBUFS` precedes the join as the C's `malloc` does) and once per purge | two mutex pairs per join (six per new address) and one per purge: the address-add and delete ioctl path only |
 //!
@@ -213,7 +213,7 @@ use core::ptr;
 
 use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -1189,9 +1189,13 @@ fn in6_ifinit(
 }
 
 /// `in6_lookupmulti(addr, ifp)`: the `in6_multi` record of `addr` on `ifp`, if joined.
-/// Called holding `if_maddrlock`.
-pub fn in6_lookupmulti(addr: &In6Addr, ifp: &Ifnet) -> Option<&'static In6Multi> {
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ));
+/// Called holding `if_maddrlock` in either mode: `w` is its witness (`rw_assert_anylock`).
+pub fn in6_lookupmulti<W: Witness + ?Sized>(
+    addr: &In6Addr,
+    ifp: &Ifnet,
+    w: &W,
+) -> Option<&'static In6Multi> {
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id());
 
     ifp.if_maddrlist
         .iter()
@@ -1219,13 +1223,13 @@ pub fn in6_addmulti(
     let lock = &ifp.rt().if_maddrlock;
 
     // See if address already in list.
-    let _ = lock.enter(RW_WRITE);
-    if let Some(in6m) = in6_lookupmulti(addr, ifp) {
-        in6m.in6m_refcnt().take();
-        lock.exit();
-        return Ok(in6m);
+    {
+        let w = lock.write();
+        if let Some(in6m) = in6_lookupmulti(addr, ifp, &w) {
+            in6m.in6m_refcnt().take();
+            return Ok(in6m);
+        }
     }
-    lock.exit();
 
     // New address; allocate a new multicast record and link it into the interface's
     // multicast list.
@@ -1244,11 +1248,11 @@ pub fn in6_addmulti(
         return Err(e);
     }
 
-    let _ = lock.enter(RW_WRITE);
+    let w = lock.write();
     // check again after unlock and lock
-    if let Some(in6m) = in6_lookupmulti(addr, ifp) {
+    if let Some(in6m) = in6_lookupmulti(addr, ifp, &w) {
         in6m.in6m_refcnt().take();
-        lock.exit();
+        drop(w);
         in6_multi_free(new_in6m);
         return Ok(in6m);
     }
@@ -1260,8 +1264,8 @@ pub fn in6_addmulti(
     // Let MLD6 know that we have joined a new IP6 multicast group.
     ifp.if_maddrlist.insert_head(&in6m.in6m_ifma);
     let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
-    mld6_start_listening(in6m, ifp, &mut pkt);
-    lock.exit();
+    mld6_start_listening(in6m, ifp, &w, &mut pkt);
+    drop(w);
 
     if pkt.mpi_ifidx != 0 {
         mld6_sendpkt(&pkt, net);
@@ -1285,14 +1289,13 @@ pub fn in6_delmulti(in6m: &'static In6Multi, net: &NetHeld<'_>) {
     }
 
     if let Some(ifp) = IfRef::get(in6m.in6m_ifidx().get()) {
-        let lock = &ifp.rt().if_maddrlock;
-        let _ = lock.enter(RW_WRITE);
+        let w = ifp.rt().if_maddrlock.write();
         // No remaining claims to this record; let MLD6 know that we are leaving the multicast
         // group.
         let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
-        mld6_stop_listening(in6m, ifp.ifp(), &mut pkt);
+        mld6_stop_listening(in6m, ifp.ifp(), &w, &mut pkt);
         ifp.if_maddrlist.remove(&in6m.in6m_ifma);
-        lock.exit();
+        drop(w);
 
         if pkt.mpi_ifidx != 0 {
             mld6_sendpkt(&pkt, net);
@@ -1316,12 +1319,8 @@ pub fn in6_delmulti(in6m: &'static In6Multi, net: &NetHeld<'_>) {
 /// `in6_hasmulti(addr, ifp)`: whether the multicast group `addr` has been joined by
 /// interface `ifp`.
 pub fn in6_hasmulti(addr: &In6Addr, ifp: &Ifnet) -> bool {
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_READ);
-    let joined = in6_lookupmulti(addr, ifp).is_some();
-    lock.exit();
-
-    joined
+    let r = ifp.rt().if_maddrlock.read();
+    in6_lookupmulti(addr, ifp, &r).is_some()
 }
 
 /// `in6ifa_ifpforlinklocal(ifp, ignoreflags)`: an IPv6 link-local address of `ifp` without

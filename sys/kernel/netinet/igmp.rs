@@ -173,7 +173,7 @@ use hal::mutex::Mutexed;
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::percpu::Counters;
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{Witness, WriteWitness};
 use hal::sys::endian::{htons, ntohs};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_LOOPBACK;
@@ -468,8 +468,7 @@ pub fn igmp_input(m: MbufBox, off: i32, net: &NetHeld<'_>) -> Option<MbufBox> {
 /// (224.0.0.X); whether a timer was started. Takes `if_maddrlock` for writing.
 fn igmp_query(ifp: &Ifnet, dst: u32, timer: u32) -> bool {
     let mut running = false;
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_WRITE);
+    let w = ifp.rt().if_maddrlock.write();
     for inm in ifp.if_maddrlist.iter().filter_map(InMulti::of) {
         let group = inm.inm_addr().s_addr;
         if timer == 0 {
@@ -496,16 +495,15 @@ fn igmp_query(ifp: &Ifnet, dst: u32, timer: u32) -> bool {
             }
         }
     }
-    lock.exit();
+    drop(w);
     running
 }
 
 /// A report of `group` heard on `ifp`: our timer for it stopped, our state the C's for a v1
 /// (`v1`) or a v2 report. Takes `if_maddrlock` for writing.
 fn igmp_heard(ifp: &Ifnet, group: InAddr, v1: bool) {
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_WRITE);
-    if let Some(inm) = in_lookupmulti(&group, ifp) {
+    let w = ifp.rt().if_maddrlock.write();
+    if let Some(inm) = in_lookupmulti(&group, ifp, &w) {
         inm.inm_timer.set(0);
         igmpstat_inc(IgmpstatCounters::IgpsRcvOurreports);
 
@@ -535,7 +533,7 @@ fn igmp_heard(ifp: &Ifnet, group: InAddr, v1: bool) {
             }
         }
     }
-    lock.exit();
+    drop(w);
 }
 
 /// `igmp_input_if(ifp, mp, offp, proto, af, ns)`: validates an IGMP message from `ifp` (its
@@ -670,11 +668,11 @@ fn igmp_input_if(
 
 /// `igmp_joingroup(inm, ifp, pkt)`: we joined `inm` on `ifp`: start reporting it (`pkt` the
 /// first report) unless it is a local group or the interface is a loopback. Called holding
-/// `if_maddrlock` for writing.
-pub fn igmp_joingroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
+/// `if_maddrlock` for writing: `w` is its witness (`rw_assert_wrlock`).
+pub fn igmp_joingroup(inm: &InMulti, ifp: &Ifnet, w: &WriteWitness<'_>, pkt: &mut IgmpPktinfo) {
     let mut running = false;
 
-    kassert!(ifp.rt().if_maddrlock.status() == RW_WRITE);
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id());
 
     inm.inm_state.set(IGMP_IDLE_MEMBER);
 
@@ -699,9 +697,15 @@ pub fn igmp_joingroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
 
 /// `igmp_leavegroup(inm, ifp, pkt)`: we leave `inm` on `ifp`: a leave message to the
 /// all-routers group (in `pkt`) when we may have been the last reporter and the router
-/// speaks v2. Called holding `if_maddrlock`.
-pub fn igmp_leavegroup(inm: &InMulti, ifp: &Ifnet, pkt: &mut IgmpPktinfo) {
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ));
+/// speaks v2. Called holding `if_maddrlock` in either mode: `w` is its witness
+/// (`rw_assert_anylock`).
+pub fn igmp_leavegroup<W: Witness + ?Sized>(
+    inm: &InMulti,
+    ifp: &Ifnet,
+    w: &W,
+    pkt: &mut IgmpPktinfo,
+) {
+    kassert!(w.lock_id() == ifp.rt().if_maddrlock.id());
 
     match inm.inm_state.get() {
         IGMP_DELAYING_MEMBER | IGMP_IDLE_MEMBER
@@ -773,8 +777,7 @@ fn igmp_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
     let mut running = false;
     let mut type_ = 0;
 
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_WRITE);
+    let w = ifp.rt().if_maddrlock.write();
     for inm in ifp.if_maddrlist.iter().filter_map(InMulti::of) {
         let timer = inm.inm_timer.get();
         if timer == 0 {
@@ -804,7 +807,7 @@ fn igmp_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
             running = true;
         }
     }
-    lock.exit();
+    drop(w);
 
     running
 }
