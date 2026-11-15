@@ -1161,7 +1161,8 @@ pub struct IfaddrLinked {
 }
 
 impl IfaddrLinked {
-    /// An address on no interface, every member zero.
+    /// An address on no interface: its owner's one reference (`refcnt_init`), every other
+    /// member zero.
     pub const fn new() -> Self {
         Self {
             ifa: Ifaddr::new(),
@@ -1760,7 +1761,8 @@ mod tests {
         let ifa = IfaddrLinked::new();
         assert!(ifa.ifa_addr.is_none() && ifa.ifa_dstaddr.is_none());
         assert!(ifa.ifa_netmask.is_none() && ifa.ifa.ifa_ifp.get().is_none());
-        assert_eq!((ifa.ifa.ifa_flags.get(), ifa.ifa_refcnt.read()), (0, 0));
+        // The owner's one reference (`refcnt_init`, enc_clone_create's), no flags.
+        assert_eq!((ifa.ifa.ifa_flags.get(), ifa.ifa_refcnt.read()), (0, 1));
     }
 
     #[test]

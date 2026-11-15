@@ -3650,16 +3650,18 @@ pub(crate) mod tests {
         // measured once at N6.5b's base), kernel 128: the 32-byte PinEntry for the C's 16-byte
         // TAILQ_ENTRY (+16), the 56-byte MbufQueue for the C's 48 (+8), no ln_refcnt (-8).
         // dadq (malloc(M_IP6NDP), vmstat -m's buckets): C 120, the 128-byte bucket; kernel
-        // 176 (the kernel's 120-byte Timeout for the C's 72-byte struct timeout; the one list
-        // entry serves dadq, the reaper's and the free list), the 256-byte bucket: the 128-byte
-        // one would need the record at 128 bytes, which the Timeout alone nearly fills.
+        // 192 (the kernel's 120-byte Timeout for the C's 72-byte struct timeout; the one list
+        // entry serves dadq, the reaper's and the free list; since N6.5e `dad_ifa` a counted
+        // handle in a ReadMostly, 24 bytes, for the C's pointer: 176 before), the 256-byte
+        // bucket: the 128-byte one would need the record at 128 bytes, which the Timeout alone
+        // nearly fills.
         // M_IP6NDP's struct nd_ifinfo per interface (8 bytes, the 16-byte bucket) is gone:
         // embedded in Ifnet.
         assert_eq!(size_of::<CLlinfoNd6>(), 112);
         assert_eq!(size_of::<LlinfoNd6>(), 128);
         assert_eq!(ND6_POOL.item_size().unwrap_or(128), 128);
         assert_eq!(size_of::<CDadq>(), 120);
-        assert_eq!(size_of::<Dadq>(), 176);
+        assert_eq!(size_of::<Dadq>(), 192);
         assert!(size_of::<CDadq>().next_power_of_two() == 128);
         assert!(size_of::<Dadq>().next_power_of_two() == 256);
     }

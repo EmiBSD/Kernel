@@ -3151,7 +3151,10 @@ mod tests {
 
         let ifam: IfaMsghdr = hal::pod::at(&ms[2], 0).expect("an address message");
         assert_eq!(ifam.ifam_type, RTM_NEWADDR);
-        assert_eq!(ifam.ifam_addrs, RTA_NETMASK | RTA_IFP | RTA_IFA);
+        // And RTAX_BRD: an Internet address's `ifa_dstaddr` always names its record's
+        // `ia_dstaddr` (in.c's `in_ioctl_change_ifaddr`), as the fixture's record is since
+        // N6.5e (a hand-made `Ifaddr` before, with no destination).
+        assert_eq!(ifam.ifam_addrs, RTA_NETMASK | RTA_IFP | RTA_IFA | RTA_BRD);
         // RTAX_NETMASK, RTAX_IFP, then RTAX_IFA, each rounded up.
         let mask_len = roundup_long(usize::from(ms[2][IFA_MSGHDR]));
         let sdl_len = roundup_long(usize::from(ms[2][IFA_MSGHDR + mask_len]));
@@ -3300,7 +3303,8 @@ mod tests {
         assert_eq!(h.rtm_type, RTM_NEWADDR);
         let ifam: IfaMsghdr = hal::pod::at(&buf, off).expect("an address message");
         assert_eq!(i32::from(ifam.ifam_index), index);
-        assert_eq!(ifam.ifam_addrs, RTA_IFA | RTA_NETMASK);
+        // RTAX_BRD too: the record's `ia_dstaddr`, as above.
+        assert_eq!(ifam.ifam_addrs, RTA_IFA | RTA_NETMASK | RTA_BRD);
         // RTAX_NETMASK comes first, then RTAX_IFA.
         let mask_len = roundup_long(usize::from(buf[off + IFA_MSGHDR]));
         assert_eq!(in_at(&buf, off + IFA_MSGHDR + mask_len), [10, 0, 2, 15]);

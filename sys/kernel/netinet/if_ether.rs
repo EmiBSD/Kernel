@@ -1649,11 +1649,14 @@ mod tests {
         m
     }
 
-    /// `arpresolve` of a packet to `a` through `rt`, under the shared net lock.
+    /// `arpresolve` of a packet to `a` through `rt`, under the net lock held detached: a
+    /// miss's request reads the route's `rt_ifa` (a net cell since N6.5e) under the proof it
+    /// asks the bridge for (`Inet::with_net_held`), which the tests' bridge lends from a
+    /// detached holding (as nd6's `resolve`).
     fn resolve(ifp: &'static Ifnet, rt: &Rtentry, a: [u8; 4]) -> Result<[u8; 6], Errno> {
         let s = sin(a);
         let mut desten = [0u8; 6];
-        let w = NETLOCK.read();
+        hal::netlock::lock();
         let r = arpresolve(
             ifp,
             Some(rt),
@@ -1661,7 +1664,7 @@ mod tests {
             SockaddrView::new(&s).expect("a view"),
             &mut desten,
         );
-        drop(w);
+        hal::netlock::unlock();
         r.map(|m| {
             drop(m);
             desten
