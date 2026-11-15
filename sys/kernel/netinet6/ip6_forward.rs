@@ -60,8 +60,7 @@
 //!   bridge's leg, `ip6_output_ipsec_lookup`/`_send` the `Ipsec` bridge's
 //!   `ip6_output_lookup`/`ip6_output_send` (D-18, `bsd`'s until N8).
 //! - The `IPV6_FORWARDING_IPSEC` check frees the packet before `goto senderr`; the C leaves it
-//!   allocated there (a leak). An SA looked up again after a pf reroute gives the first one's
-//!   reference back (its hold's drop); the C overwrites `tdb` (a reference leaked).
+//!   allocated there (a leak).
 //! - `ip6_output_ipsec_lookup`'s errors (`SpdError::Drop` is the C's `-EINVAL`, silently
 //!   drop) all lead to `freecopy`, as the C's `error` is not read after it.
 //!

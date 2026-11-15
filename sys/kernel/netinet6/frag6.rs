@@ -1486,6 +1486,9 @@ mod tests {
             size_of::<CIp6asfrag>(),
             size_of::<Ip6asfrag>()
         );
+        // C, LZ, kernel: ip6q 80, 80, 88; ip6af 40, 40, 40. LZ's (its Ip6q and Ip6asfrag over
+        // bsd's TailqEntry 16, ListHead 8, ListEntry 16 and Cell members) measured once at
+        // N6.5d's review by a replica in a bsd test, then removed (LZ's types are gone).
         assert_eq!(size_of::<CIp6q>(), 80);
         assert_eq!(size_of::<CIp6asfrag>(), 40);
         assert_eq!(size_of::<Ip6q>(), 88);

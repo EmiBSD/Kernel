@@ -17055,7 +17055,7 @@ rust = "sys/kernel/netinet/in_proto.rs"
 crate = "kernel"
 lz = ["sys/netinet/in_proto.rs"]
 status = "redesigned"
-notes = "N6.4c2: ip_protox[], the inetsw[] table and its raw entry as InetTables in the glue's NetTables (D-9), recorded by the glue (inetsw_set) and filled by ip_init (inetsw_init), looked up per packet by ip_protocol/raw_protocol; IPv6's table through the Inet bridge from N6.4c2 to N6.5c (inet6_protocol, kernel::netinet6::in6_proto's since N6.5d); inetdomain as InetDomain<G> and inetsw[]'s IP, ICMP and IGMP entries as IpProtocol/IcmpProtocol/IgmpProtocol (decision 46, pr_input and pr_sysctl on Protocol), the transports' and IPsec's rows still bsd's in_proto.rs, assembled into the table by bsd's uipc_domain.rs (D-11)"
+notes = "N6.4c2: ip_protox[], the inetsw[] table and its raw entry as InetTables in the glue's NetTables (D-9), recorded by the glue (inetsw_set) and filled by ip_init (inetsw_init), looked up per packet by ip_protocol/raw_protocol; IPv6's table through the Inet bridge from N6.4c2 to N6.5c (inet6_protocol, kernel::netinet6::in6_proto's since N6.5d); inetdomain as InetDomain<G> and inetsw[]'s IP, ICMP and IGMP entries as IpProtocol/IcmpProtocol/IgmpProtocol (decision 46, pr_input and pr_sysctl on Protocol), the transports' and IPsec's rows still bsd's in_proto.rs, assembled into the table by bsd's uipc_domain.rs (D-11); N6.5d (review N4): the raw entry recorded with the table by inetsw_set, as IPv6's in6_proto (ICMP's and IGMP's requests the raw entry's before ip_init)"
 
 [[module.fn]]
 lz = "sys/netinet/in_proto.rs::IP_PROTOX"

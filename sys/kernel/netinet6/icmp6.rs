@@ -164,10 +164,12 @@
 //!   grown (the IPv4 twin does).
 //! - The headers the C writes in place (the echo reply's type, the reflected header, the
 //!   quoted header's cleared scope zones, `udp6_ctlinput`'s embedded zone in the quoted
-//!   destination) are written into the mbuf that holds them; a read-only one (a shared
-//!   cluster, which the C writes anyway) is copied first, and a packet whose bytes find no
-//!   buffer is dropped, counted as the C counts its buffer failures there
-//!   (`icp6s_tooshort`).
+//!   destination or a type 0 routing header's last address) are written into the mbuf that
+//!   holds them; a read-only one (a shared cluster, which the C writes anyway) is copied
+//!   first, and a packet whose bytes find no buffer is dropped, counted as the C counts its
+//!   buffer failures there (`icp6s_tooshort`).
+//! - `icmp6_redirect_input` frees the redirect when its receiving interface is gone; the C
+//!   returns without freeing it (icmp6.c:1206-1208, a leak).
 //!
 //! ## Redesign
 //! - LZ's reads of the message through the raw pointers `ip6_exthdr_get` returned (`read_at`,

@@ -360,14 +360,9 @@ impl<G: ProcGlue> Protocol<G> for Ip6Protocol<G> {
     }
 }
 
-/// The raw IPv6 entry's control input, user requests and socket options, which ICMPv6's entry
-/// shares (`rip6_ctlinput`, `rip6_usrreqs`, `rip6_ctloutput`: `bsd`'s until N6.6b).
-fn raw6<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    raw6_protocol::<G>()
-}
-
 /// `inet6sw[]`'s ICMPv6 entry: `icmp6_input`, `icmp6_init`, `icmp6_fasttimo`,
-/// `icmp6_sysctl`, the raw IPv6 sockets' control input, requests and options.
+/// `icmp6_sysctl`, the raw IPv6 sockets' control input, requests and options (the raw entry's,
+/// [`raw6_protocol`]: `rip6_ctlinput`, `rip6_usrreqs`, `rip6_ctloutput`, `bsd`'s until N6.6b).
 pub struct Icmp6Protocol<G: ProcGlue>(PhantomData<fn() -> G>);
 
 impl<G: ProcGlue> Icmp6Protocol<G> {
@@ -389,15 +384,15 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
         PR_ATOMIC | PR_ADDR | PR_MPSYSCTL
     }
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
-        raw6::<G>()?.usrreqs()
+        raw6_protocol::<G>()?.usrreqs()
     }
     fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
-        if let Some(r) = raw6::<G>() {
+        if let Some(r) = raw6_protocol::<G>() {
             r.ctlinput(cmd, sa, rdomain, arg);
         }
     }
     fn has_ctloutput(&self) -> bool {
-        raw6::<G>().is_some_and(Protocol::has_ctloutput)
+        raw6_protocol::<G>().is_some_and(Protocol::has_ctloutput)
     }
     fn ctloutput(
         &self,
@@ -408,7 +403,7 @@ impl<G: ProcGlue> Protocol<G> for Icmp6Protocol<G> {
         optname: i32,
         m: Option<&mut Mbuf>,
     ) -> Result<(), Errno> {
-        match raw6::<G>() {
+        match raw6_protocol::<G>() {
             Some(r) => r.ctloutput(op, so, w, level, optname, m),
             None => Err(Errno::ENOPROTOOPT),
         }

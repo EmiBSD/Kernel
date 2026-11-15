@@ -138,9 +138,12 @@
 //! - LZ's `ip_protox[]` (a static array of atomics in `bsd`'s `in_proto.rs`) and the table's
 //!   address are [`InetTables`], one per glue in the network's tables (`NetTables::inet`,
 //!   D-9: the protocols are generic over the glue, `inetsw[]` cannot be a `static` of the
-//!   kernel): the table, the index of its raw entry and `ip_protox[]`, filled once by
-//!   [`inetsw_init`] as the C's `ip_init` fills `ip_protox[]`. A lookup is two loads and an
-//!   index ([`ip_protocol`], `#[inline]`: per packet), the C's `inetsw[ip_protox[nxt]]`.
+//!   kernel): the table and the index of its raw entry, recorded together by [`inetsw_set`]
+//!   (N6.5d: so ICMP's and IGMP's entries lend the raw sockets' requests before `ip_init`,
+//!   as the C's static `pr_usrreqs`; until then the index was stored at `ip_init`, 0 before
+//!   it), and `ip_protox[]`, filled by [`inetsw_init`] as the C's `ip_init` fills it. A
+//!   lookup is two loads and an index ([`ip_protocol`], `#[inline]`: per packet), the C's
+//!   `inetsw[ip_protox[nxt]]`.
 //! - LZ's `inetsw[]` of `Protosw` structs of function pointers and `inetdomain` -> the
 //!   `Protocol`/`Domain` traits (decision 46): [`InetDomain`] over the glue's table, it and
 //!   the kernel's entries zero-sized types with an associated `NEW` (the C's NULL entries are
@@ -152,7 +155,7 @@
 
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
@@ -171,22 +174,30 @@ use crate::net::socket::{SoLocked, Socket};
 use crate::proc::ProcGlue;
 use crate::sysctl::SysctlReq;
 
-/// The internet domain's switch of one glue: `inetsw[]`, its raw entry and `ip_protox[]`.
+/// `inetsw[]` as the glue recorded it, with the index of its raw entry: one record, so no
+/// reader sees the table without its raw entry (`kernel::netinet6::in6_proto`'s shape).
+struct Inetsw<G: ProcGlue> {
+    /// `inetsw[]`.
+    sw: &'static [&'static dyn Protocol<G>],
+    /// The raw entry's index (`pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW) - inetsw`), past
+    /// the table when it has none.
+    raw: usize,
+}
+
+/// The internet domain's switch of one glue: `inetsw[]` with its raw entry, and
+/// `ip_protox[]`.
 pub struct InetTables<G: ProcGlue> {
-    /// `inetsw[]`, set once by [`inetsw_init`].
-    sw: OnceStatic<&'static [&'static dyn Protocol<G>]>,
-    /// The raw entry's index (`pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW) - inetsw`).
-    raw: AtomicUsize,
-    /// `ip_protox[]`: the entry of each IP protocol number.
+    /// `inetsw[]` and its raw entry, set once by [`inetsw_set`].
+    sw: OnceStatic<Inetsw<G>>,
+    /// `ip_protox[]`: the entry of each IP protocol number (`ip_init`'s, [`inetsw_init`]).
     protox: [AtomicU8; IPPROTO_MAX as usize],
 }
 
 impl<G: ProcGlue> InetTables<G> {
-    /// The tables before `ip_init`.
+    /// The tables before the glue records `inetsw[]`.
     pub const fn new() -> Self {
         Self {
             sw: OnceStatic::new(),
-            raw: AtomicUsize::new(0),
             protox: [const { AtomicU8::new(0) }; IPPROTO_MAX as usize],
         }
     }
@@ -204,35 +215,40 @@ fn tables<G: ProcGlue>() -> &'static InetTables<G> {
     &net::<G>().inet
 }
 
-/// `inetsw[]`: the internet protocols (none before `ip_init`).
+/// `inetsw[]`: the internet protocols (none before the glue records them).
 pub fn inetsw<G: ProcGlue>() -> &'static [&'static dyn Protocol<G>] {
-    tables::<G>().sw.get().copied().unwrap_or(&[])
+    tables::<G>().sw.get().map_or(&[], |s| s.sw)
 }
 
-/// `inetsw[]` recorded, once (the glue's boot, before `domaininit`: `bsd` assembles it of its
-/// rows and the kernel's entries; a second call, a test's, keeps the first table).
+/// `pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW)` over `sw`: the raw protocol's index, or the
+/// raw wildcard's.
+fn raw_entry<G: ProcGlue>(sw: &[&'static dyn Protocol<G>]) -> Option<usize> {
+    let exact = sw
+        .iter()
+        .position(|pr| i32::from(pr.protocol()) == IPPROTO_RAW && pr.ty() == SOCK_RAW as i16);
+    exact.or_else(|| {
+        sw.iter()
+            .position(|pr| pr.ty() == SOCK_RAW as i16 && pr.protocol() == 0)
+    })
+}
+
+/// `inetsw[]` recorded with its raw entry, once (the glue's boot, before `domaininit`: `bsd`
+/// assembles it of its rows and the kernel's entries; a second call, a test's, keeps the first
+/// table). The raw entry is the table's from here on, before `ip_init`: ICMP's and IGMP's
+/// entries lend the raw sockets' requests as the C's static `pr_usrreqs` does.
 pub fn inetsw_set<G: ProcGlue>(sw: &'static [&'static dyn Protocol<G>]) {
-    let _ = tables::<G>().sw.set(sw);
+    let raw = raw_entry(sw).unwrap_or(usize::MAX);
+    let _ = tables::<G>().sw.set(Inetsw { sw, raw });
 }
 
 /// `ip_init`'s switch: `ip_protox[]` filled from `inetsw[]`: every number to the raw entry,
 /// then each protocol of the table (but the raw one) to its own. `panic(9)` without a raw
-/// entry (the C's `panic("ip_init")`).
+/// entry (the C's `panic("ip_init")`), or before the glue recorded the table.
 pub fn inetsw_init<G: ProcGlue>() {
     let t = tables::<G>();
-    let sw = inetsw::<G>();
-
-    // pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW): the raw protocol, or the raw wildcard.
-    let exact = sw
-        .iter()
-        .position(|pr| i32::from(pr.protocol()) == IPPROTO_RAW && pr.ty() == SOCK_RAW as i16);
-    let wildcard = sw
-        .iter()
-        .position(|pr| pr.ty() == SOCK_RAW as i16 && pr.protocol() == 0);
-    let Some(raw) = exact.or(wildcard) else {
+    let Some(&Inetsw { sw, raw }) = t.sw.get().filter(|s| s.raw < s.sw.len()) else {
         kpanic(format_args!("ip_init"));
     };
-    t.raw.store(raw, Ordering::Relaxed);
     for p in &t.protox {
         p.store(raw as u8, Ordering::Relaxed);
     }
@@ -248,8 +264,8 @@ pub fn inetsw_init<G: ProcGlue>() {
     }
 }
 
-/// `inetsw[ip_protox[nxt]]`: the protocol of IP protocol number `nxt` (`None` before
-/// `ip_init`, or for a number past `IPPROTO_MAX`, which no header holds).
+/// `inetsw[ip_protox[nxt]]`: the protocol of IP protocol number `nxt` (`None` before the glue
+/// records the table, or for a number past `IPPROTO_MAX`, which no header holds).
 #[inline]
 pub fn ip_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
     let t = tables::<G>();
@@ -257,14 +273,15 @@ pub fn ip_protocol<G: ProcGlue>(nxt: i32) -> Option<&'static dyn Protocol<G>> {
         .protox
         .get(usize::try_from(nxt).ok()?)?
         .load(Ordering::Relaxed);
-    t.sw.get()?.get(usize::from(i)).copied()
+    t.sw.get()?.sw.get(usize::from(i)).copied()
 }
 
-/// The raw entry (`rip_input`'s, which ICMP and IGMP hand their messages to).
+/// The raw entry (`rip_input`'s, which ICMP and IGMP hand their messages to); `None` before
+/// the glue records the table, or for a table without one.
 #[inline]
 pub fn raw_protocol<G: ProcGlue>() -> Option<&'static dyn Protocol<G>> {
-    let t = tables::<G>();
-    t.sw.get()?.get(t.raw.load(Ordering::Relaxed)).copied()
+    let s = tables::<G>().sw.get()?;
+    s.sw.get(s.raw).copied()
 }
 
 /// `inetdomain`: the internet domain, its protocols the glue's `inetsw[]` ([`inetsw_set`], in
