@@ -938,8 +938,11 @@ pub fn nd6_expire_timer_update(ia6: &In6Ifaddr) {
     expire_time += 1;
 
     if !ND6_EXPIRE_TIMEOUT.pending() || ND6_EXPIRE_NEXT.load(Ordering::Relaxed) > expire_time {
-        // The C's `int secs`: the difference converted as it converts it.
-        let secs = (expire_time - getuptime()).max(0) as i32;
+        // The C's `int secs = expire_time - getuptime()`, then `if (secs < 0) secs = 0`: the
+        // difference truncated to an int first, then clamped, so a lifetime past INT_MAX
+        // seconds (root's SIOCAIFADDR_IN6 may give 3000000000) schedules at 0, never a
+        // negative `timeout_add_sec`.
+        let secs = ((expire_time - getuptime()) as i32).max(0);
 
         let _ = Pin::static_ref(&ND6_EXPIRE_TIMEOUT).add_sec(secs);
         ND6_EXPIRE_NEXT.store(expire_time, Ordering::Relaxed);
@@ -2051,7 +2054,9 @@ pub(crate) mod tests {
         ND_NA_FLAG_OVERRIDE, ND_NA_FLAG_SOLICITED, ND_NEIGHBOR_ADVERT, NdNeighborAdvert,
     };
     use hal::sys::netinet_ip6::{IPV6_VERSION, Ip6Hdr};
-    use hal::sys::netinet6_in6_var::{IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
+    use hal::sys::netinet6_in6_var::{
+        IN6_IFF_ANYCAST, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE, In6Aliasreq,
+    };
 
     use super::*;
     use crate::net::if_::SIOCAIFADDR_IN6;
@@ -3304,6 +3309,38 @@ pub(crate) mod tests {
         assert_eq!(nd6_ifptomac(bare), None);
         bare.if_type.set(IFT_LOOP);
         assert_eq!(nd6_ifptomac(bare), None);
+    }
+
+    #[test]
+    fn a_lifetime_past_int_max_seconds_schedules_the_expiry_at_once() {
+        // nd6.c:446-450: the difference to the expiry truncated to an int, then clamped at 0.
+        // Root may give finite lifetimes of 3000000000 seconds: the C schedules at 0 (one tick).
+        let _g = setup();
+        let ifp = ether(b"nde0");
+        dad_done(ifp);
+        let addr = a6("fd00:66::1");
+        let mut r = aliasreq(ifp, addr, 64, 0);
+        let mut ifra = pod::at::<In6Aliasreq>(&r, 0).expect("the request");
+        ifra.ifra_lifetime.ia6t_vltime = 3_000_000_000;
+        ifra.ifra_lifetime.ia6t_pltime = 3_000_000_000;
+        assert!(pod::put(&mut r, 0, &ifra));
+        assert!(
+            !ND6_EXPIRE_TIMEOUT.pending(),
+            "ether()'s lifetimes are infinite"
+        );
+        let now = crate::clock::ticks();
+        in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true).expect("SIOCAIFADDR_IN6");
+        assert!(ND6_EXPIRE_TIMEOUT.pending());
+        let due = ND6_EXPIRE_TIMEOUT.time().wrapping_sub(now);
+        assert!(
+            (1..100).contains(&due),
+            "due in {due} ticks: timeout_add_sec(0)"
+        );
+        assert_eq!(
+            ND6_EXPIRE_NEXT.load(Ordering::Relaxed),
+            TIME_UPTIME.load(Ordering::Relaxed) + 3_000_000_001
+        );
+        let _ = take_ip6_sent();
     }
 
     #[test]
