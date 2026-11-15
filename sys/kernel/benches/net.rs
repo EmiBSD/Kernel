@@ -201,6 +201,19 @@
 //!   - `in6.selectsrc`: `in6_ifawithscope` of a global destination on that interface, the
 //!     address walk of `in6_selectsrc`'s route path (`In6Ifaddr::of` of each address, its
 //!     words read once) and RFC 6724's rules down to the longest match.
+//! - The ND rows (N6.5b; "before" = `bsd`'s `nd6_resolve` through `BsdNetLegs`'s leg at the
+//!   slice's base, decision 82's second block and its park/unpark pair included, in a scratch
+//!   test; written at N6.5b, run at the N6.5 close, decision 50): an Ethernet interface with
+//!   fd00:77::1/64 (`in6_ioctl`), fd00:77::2 cloned and resolved by its solicited
+//!   advertisement (`nd6_na_cache`), fd00:77::99 cloned and never answered (its first
+//!   packet's solicitation sent before the rows):
+//!   - `nd6.resolve.hit`: `nd6_resolve` of a 46-byte packet to fd00:77::2 through its entry
+//!     (the gateway's family, `sdl_alen` and address read once under its cell, `nd6_mtx` for
+//!     the record and its move to the list's head, the 6-byte copy), the packet back for the
+//!     next op.
+//!   - `nd6.resolve.miss` (control): `nd6_resolve` of a fresh packet to fd00:77::99
+//!     (`nd6_mtx`, the record lent by the route's tagged word, the hold queue's push dropping
+//!     the oldest past `LN_HOLD_QUEUE`), the packet's `m_gethdr` included.
 
 #![forbid(unsafe_code)]
 
@@ -648,6 +661,7 @@ fn main() {
         .chain(ARP_ROWS.iter())
         .chain(INPCB_ROWS.iter())
         .chain(INET6_ROWS.iter())
+        .chain(ND6_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -921,6 +935,7 @@ fn main() {
     arp_rows(&wanted, &report);
     inpcb_rows(&wanted, &report);
     inet6_rows(&wanted, &report);
+    nd6_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -1759,6 +1774,10 @@ impl kernel::net::if_::Inet for BenchInet {
     }
     fn ip6stat_rtcache(&self, hit: bool) {
         self.rtcache[usize::from(!hit)].fetch_add(1, Ordering::Relaxed);
+    }
+    fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
+        // The rows that reach it (ND's solicitation) hold the net lock detached.
+        hal::netlock::lend_detached(|n| f(n));
     }
 }
 
@@ -3144,5 +3163,174 @@ fn inet6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
         report(INET6_ROWS[0], r);
     }
     drop(w);
+}
+const ND6_ROWS: [&str; 2] = ["nd6.resolve.hit", "nd6.resolve.miss"];
+
+/// The ND rows (N6.5b): see the file's documentation.
+fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::net_if::{
+        IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFXF_CLONED,
+        IFXF_MPSAFE,
+    };
+    use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6};
+    use hal::sys::netinet6_in6_var::In6Aliasreq;
+    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
+    use kernel::net::if_::{SIOCAIFADDR_IN6, if_attach, if_test_reset};
+    use kernel::net::if_ethersubr::{Arpcom, ether_ifattach};
+    use kernel::net::route::{RT_RESOLVE, rtalloc};
+    use kernel::netinet6::nd6::{nd6_init, nd6_resolve, nd6_test_reset};
+    use kernel::netinet6::nd6_nbr::{dad_test_reset, nd6_na_cache};
+
+    const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01];
+    const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
+
+    if !ND6_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET6,
+        rtoffset: 8,
+        maxplen: 128,
+        sasize: 28,
+    }]);
+    kernel::netinet6::in6_var::in6_var_test_reset();
+    nd6_test_reset();
+    dad_test_reset();
+    nd6_init();
+    // A route cloned at uptime 0 reads as a permanent entry.
+    kernel::tc::TIME_UPTIME.fetch_max(1000, Ordering::Relaxed);
+
+    let addr = |b: [u8; 16]| In6Addr { s6_addr: b };
+    let ours = addr([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let peer = addr([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let silent = addr([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x99]);
+
+    // An Ethernet interface with fd00:77::1/64 (the ether rows' driver: frames stay queued).
+    let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
+    let ifp: &'static kernel::net::if_var::Ifnet = &ac.ac_if;
+    let mut name = [0u8; IFNAMSIZ];
+    name[..6].copy_from_slice(b"bnchn0");
+    ifp.if_xname.set(name);
+    if ifp.if_driver.set(&ETHER_BENCH_DRIVER).is_err() {
+        eprintln!("net: a fresh interface with a driver");
+        std::process::exit(1);
+    }
+    ifp.if_xflags.set(IFXF_MPSAFE | IFXF_CLONED);
+    ifp.if_flags
+        .set(IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST | IFF_RUNNING | IFF_UP);
+    ac.ac_enaddr.set(OURS);
+    hal::klock::kernel_lock();
+    if_attach(ifp);
+    ether_ifattach(ac);
+    hal::klock::kernel_unlock();
+    let mut ifra = In6Aliasreq::zeroed();
+    ifra.ifra_name = ifp.if_xname.get();
+    ifra.ifra_addr = SockaddrIn6::with_addr(ours);
+    ifra.ifra_prefixmask = SockaddrIn6::with_addr(hal::sys::netinet6_in6::IN6MASK64);
+    ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
+    ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
+    let mut req = [0u8; 128];
+    let _ = hal::pod::put(&mut req, 0, &ifra);
+    if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true).is_err() {
+        eprintln!("net: bnchn0 refused fd00:77::1/64");
+        std::process::exit(1);
+    }
+
+    // fd00:77::2 cloned and resolved by its solicited advertisement; fd00:77::99 cloned and
+    // never answered (its first packet's solicitation sent here, under the detached holding
+    // the bridge lends its proof from).
+    let sin6 = |a: In6Addr| -> [u8; 28] {
+        let mut b = [0u8; 28];
+        let _ = hal::pod::put(&mut b, 0, &SockaddrIn6::with_addr(a));
+        b
+    };
+    let (peer_sa, silent_sa) = (sin6(peer), sin6(silent));
+    let (hit, miss) = {
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        let hit = need(
+            rtalloc(sav(&peer_sa), RT_RESOLVE, 0, &net),
+            "the neighbor's entry",
+        );
+        nd6_na_cache(
+            ifp,
+            &hit,
+            Some(&PEER),
+            false,
+            true,
+            true,
+            false,
+            &peer,
+            &peer,
+            &net,
+        );
+        (
+            hit,
+            need(
+                rtalloc(sav(&silent_sa), RT_RESOLVE, 0, &net),
+                "the silent neighbor's entry",
+            ),
+        )
+    };
+    netlock::lock();
+    let mut desten = [0u8; 6];
+    let _ = nd6_resolve(
+        ifp,
+        Some(&miss),
+        lead_packet(32, 46),
+        sav(&silent_sa),
+        &mut desten,
+    );
+    netlock::unlock();
+
+    if wanted(ND6_ROWS[0]) {
+        let dst = sav(&peer_sa);
+        let mut desten = [0u8; 6];
+        let mut m = Some(lead_packet(32, 46));
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = need(m.take(), "the packet");
+                match nd6_resolve(ifp, Some(&hit), black_box(p), dst, &mut desten) {
+                    Ok(p) => m = Some(p),
+                    Err(_) => {
+                        eprintln!("net: nd6_resolve missed a resolved entry");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            t.elapsed()
+        });
+        if desten != PEER {
+            eprintln!("net: nd6_resolve answered another address");
+            std::process::exit(1);
+        }
+        report(ND6_ROWS[0], r);
+    }
+    if wanted(ND6_ROWS[1]) {
+        let dst = sav(&silent_sa);
+        let mut desten = [0u8; 6];
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let p = lead_packet(32, 46);
+                if nd6_resolve(ifp, Some(&miss), black_box(p), dst, &mut desten).is_ok() {
+                    eprintln!("net: nd6_resolve resolved an unanswered entry");
+                    std::process::exit(1);
+                }
+            }
+            t.elapsed()
+        });
+        report(ND6_ROWS[1], r);
+    }
 }
 /* </CODE> */
