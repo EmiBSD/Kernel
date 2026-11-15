@@ -263,6 +263,10 @@ const PSOCK: i32 = 24;
 /// "arp". Locks: \[m\] `arp_mtx`, \[I\] immutable after creation. The marker `arptimer` walks
 /// with is one with no route (the C's `struct llinfo_arp_iterator`, whose first two members
 /// are these).
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct llinfo_arp's la_* names so the C can be grepped"
+)]
 pub struct LlinfoArp {
     /// \[m\] `la_list`: global `arp_list`.
     la_list: PinEntry<LlinfoArp>,

@@ -291,6 +291,10 @@ const ICMP6_CKSUM_OFFSET: i32 = offset_of!(Icmp6Hdr, icmp6_cksum) as i32;
 
 /// `struct ip6_exthdrs`'s extension header mbufs of a packet being built by `ip6_output`,
 /// before they are linked into it (the IPv6 header's mbuf is the packet's first).
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct ip6_exthdrs' ip6e_* names so the C can be grepped"
+)]
 #[derive(Default)]
 struct Ip6Exthdrs {
     /// `ip6e_hbh`: the hop-by-hop options header.

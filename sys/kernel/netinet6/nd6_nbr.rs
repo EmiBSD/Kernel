@@ -198,6 +198,10 @@ const IP6_HDR_LEN: usize = size_of::<Ip6Hdr>();
 
 /// `struct dadq`: an address to run DAD on, a recycled record (the module's redesign). Locks:
 /// \[N\] net lock.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct dadq's dad_* names so the C can be grepped"
+)]
 pub struct Dadq {
     /// \[N\] `dad_list`: the `dadq` list; once off it, the entry of [`DAD_REAP`] or
     /// [`DAD_FREE`] (under their mutex): a record is on one of the three at a time.

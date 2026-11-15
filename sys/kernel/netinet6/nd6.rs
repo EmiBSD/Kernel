@@ -379,6 +379,10 @@ impl fmt::Debug for NdIfinfoCell {
 /// entry), an item of the pool "nd6" owned by the route's `rt_llinfo` (the word's second kind).
 /// Locks: \[m\] `nd6_mtx`, \[I\] immutable after creation. A walk's marker is one with no route
 /// (the C's `struct llinfo_nd6_iterator`, whose first two members are these).
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct llinfo_nd6's ln_* names so the C can be grepped"
+)]
 pub struct LlinfoNd6 {
     /// \[m\] `ln_list`: global `nd6_list`.
     pub(crate) ln_list: PinEntry<LlinfoNd6>,

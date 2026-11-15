@@ -315,6 +315,10 @@ hal::slist_adapter!(
 );
 
 /// `struct ipq`: a datagram being reassembled, an item of the "ipq" pool.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct ipq's ipq_* names so the C can be grepped"
+)]
 pub struct Ipq {
     /// `ipq_q`: the next datagram of the reassembly queue.
     ipq_q: SlistLink<Ipq>,

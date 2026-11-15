@@ -3165,6 +3165,10 @@ pub fn ml_empty(ml: &MbufList) -> bool {
 /// a count of the packets refused at it (`mq_drops`). The list is the mutex's data; its length
 /// is also kept in `mq_len`, written under the mutex with every change, so that `mq_len()` is
 /// the C's unlocked `READ_ONCE(mq->mq_list.ml_len)`.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct mbuf_queue's mq_* names so the C can be grepped"
+)]
 pub struct MbufQueue {
     /// `mq_mtx` and the member it locks, `mq_list`.
     mq_mtx: Mutexed<MbufList>,

@@ -387,6 +387,10 @@ impl Default for Ip6OutOpts<'_> {
 /// `frag6_mutex` (`kernel::netinet6::frag6::FRAG6`'s guard), the datagram taken off the
 /// queue for the change and put back in its place, but for its time to live, which
 /// `frag6_slowtimo` counts down while it is listed.
+#[allow(
+    clippy::struct_field_names,
+    reason = "the fields keep the C struct ip6q's ip6q_* names so the C can be grepped"
+)]
 pub struct Ip6q {
     /// `ip6q_queue`: the next datagram of `frag6_queue`.
     ip6q_queue: SlistLink<Ip6q>,
