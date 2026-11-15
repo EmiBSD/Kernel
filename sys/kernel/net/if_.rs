@@ -5031,6 +5031,35 @@ pub(crate) mod tests {
         );
     }
 
+    /// A safe walk whose body takes the successor off the list: the walk still gives it that
+    /// address (its clone keeps the record alive) and ends after it, its cell emptied (the C
+    /// would read freed memory); nothing is freed while the walk holds it.
+    #[test]
+    fn a_safe_walk_whose_body_takes_the_successor_ends_after_it() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tsn0");
+        if_attach(ifp);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let a: Vec<IfaddrRef> = (1..=3u8)
+            .map(|i| address(ifp, [10, 0, 0, i], None, None, &net))
+            .collect();
+        let mut seen = Vec::new();
+        ifp.if_addrlist().for_each_safe(&net, |ifa| {
+            seen.push(last_byte(ifa));
+            if last_byte(ifa) == 1 {
+                route::ifafree(ifa_del(ifp, &a[1], &net));
+                assert_eq!(a[1].count(), 2, "the test's and the walk's");
+            }
+        });
+        assert_eq!(seen, [1, 2]);
+        assert_eq!(a[1].count(), 1, "the walk's clone gone");
+        assert_eq!(order(ifp, &net), [1, 3]);
+        for i in [0, 2] {
+            route::ifafree(ifa_del(ifp, &a[i], &net));
+        }
+    }
+
     /// `ifa_del` of an address that is not on the interface's list: `panic(9)` (the C's
     /// `TAILQ_REMOVE` would corrupt the list).
     #[test]
