@@ -332,7 +332,7 @@ pub fn ip6_output(
                     // made into a block of its own stated length; and
                     // `BsdNetLegs::ip6_output_opts` (`sys/net/if_.rs`, MLD's reports) sets
                     // only `ip6po_hbh`, only to its `'static` `MLD6_HBH_IMAGE`, whose length
-                    // byte a compile-time assertion beside it checks against its size (the
+                    // byte a compile-time assertion in that file checks against its size (the
                     // kernel lends that leg a `bool`, no bytes). `opt` is borrowed for the
                     // whole call, so no header is freed or replaced under the read, and
                     // `make_exthdr` only reads (it copies into a new mbuf).

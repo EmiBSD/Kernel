@@ -343,16 +343,10 @@ pub static BSD_NET_LEGS: BsdNetLegs = BsdNetLegs;
 /// The C's `hbh_buf`, as `BsdNetLegs::ip6_output_opts` points MLD's options at it: a
 /// `'static` copy of the kernel's [`MLD6_HBH`](kernel::netinet6::mld6::MLD6_HBH), so
 /// `ip6_output`'s `make_exthdr` reads `(ip6h_len + 1) << 3` bytes of an image that has them
-/// (checked below), for as long as the packet is being built (N6.5a, until N6.5c).
+/// (checked at the end of the code), for as long as the packet is being built (N6.5a,
+/// until N6.5c).
 #[cfg(feature = "inet6")]
 static MLD6_HBH_IMAGE: [u8; 8] = kernel::netinet6::mld6::MLD6_HBH;
-
-// MLD6_HBH_IMAGE's length byte describes it exactly: make_exthdr's read stays inside it.
-#[cfg(feature = "inet6")]
-const _: () = {
-    let h = kernel::netinet6::mld6::MLD6_HBH;
-    assert!((h[1] as usize + 1) << 3 == h.len());
-};
 
 /// `ipv4_input` as the kernel's `if_input_proto` takes it (the kernel's own).
 pub fn ipv4_input_proto(
@@ -1142,6 +1136,13 @@ pub fn ifa_print_all() {
         }
     }
 }
+
+// MLD6_HBH_IMAGE's length byte describes it exactly: make_exthdr's read stays inside it.
+#[cfg(feature = "inet6")]
+const _: () = {
+    let h = kernel::netinet6::mld6::MLD6_HBH;
+    assert!((h[1] as usize + 1) << 3 == h.len());
+};
 
 /* </CODE> */
 
