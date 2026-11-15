@@ -150,8 +150,8 @@
 //!   change needs mutably); `nd6_rtrequest`'s forced garbage collection rotates the list's
 //!   last record to its head with `PinList::move_last_to_head` and reads it as the first. Both
 //!   O(1), as the C's.
-//! - `ifp->if_nd` (`malloc(M_IP6NDP)` of 8 bytes behind a word) -> the embedded
-//!   [`NdIfinfoCell`] of every interface (D-6): two atomics, valid all zero (the
+//! - `ifp->if_nd` (`malloc(M_IP6NDP)` of 8 bytes, a 16-byte bucket, behind a word) -> the
+//!   embedded [`NdIfinfoCell`] of every interface (D-6): two atomics, valid all zero (the
 //!   `Ifnet`-in-a-zeroed-softc rule), set by `nd6_ifattach` and cleared by `nd6_ifdetach`; the
 //!   image `SIOCGIFINFO_IN6` copies out stays `hal::sys::netinet6_nd6::NdIfinfo`. LZ's
 //!   "an interface without one" deviation is gone: every interface has it.
@@ -3554,16 +3554,22 @@ pub(crate) mod tests {
             size_of::<CTimeout>(),
             size_of::<Timeout>()
         );
-        // nd6: C 112, LZ 120 (its LlinfoNd6 over bsd's types, measured once at N6.5b's base),
-        // kernel 128: the 32-byte PinEntry for the C's 16-byte TAILQ_ENTRY (+16), the 56-byte
-        // MbufQueue for the C's 48 (+8), no ln_refcnt (-8). dadq: C 120, kernel 200 (the
-        // kernel's 120-byte Timeout for the C's 72-byte struct timeout, a second list entry:
-        // the reaper's and the free list's).
+        // nd6 (vmstat -m's pool "nd6", Size): C 112, LZ 120 (its LlinfoNd6 over bsd's types,
+        // measured once at N6.5b's base), kernel 128: the 32-byte PinEntry for the C's 16-byte
+        // TAILQ_ENTRY (+16), the 56-byte MbufQueue for the C's 48 (+8), no ln_refcnt (-8).
+        // dadq (malloc(M_IP6NDP), vmstat -m's buckets): C 120, the 128-byte bucket; kernel
+        // 176 (the kernel's 120-byte Timeout for the C's 72-byte struct timeout; the one list
+        // entry serves dadq, the reaper's and the free list), the 256-byte bucket: the 128-byte
+        // one would need the record at 128 bytes, which the Timeout alone nearly fills.
+        // M_IP6NDP's struct nd_ifinfo per interface (8 bytes, the 16-byte bucket) is gone:
+        // embedded in Ifnet.
         assert_eq!(size_of::<CLlinfoNd6>(), 112);
         assert_eq!(size_of::<LlinfoNd6>(), 128);
         assert_eq!(ND6_POOL.item_size().unwrap_or(128), 128);
         assert_eq!(size_of::<CDadq>(), 120);
-        assert_eq!(size_of::<Dadq>(), 200);
+        assert_eq!(size_of::<Dadq>(), 176);
+        assert!(size_of::<CDadq>().next_power_of_two() == 128);
+        assert!(size_of::<Dadq>().next_power_of_two() == 256);
     }
 }
 /* </TESTS> */

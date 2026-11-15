@@ -74,6 +74,11 @@
 //!   (LZ's).
 //! - `NCARP` (`carp_iamatch`) is not configured: each site is a comment. `DIAGNOSTIC`'s
 //!   `MCLBYTES` check is under the `diagnostic` feature. `inet_ntop` is `nd6::In6Ntop` (LZ's).
+//! - `nd6_dad_timer`'s argument is the record's address, looked up on `dadq`, where the C's is
+//!   the `ifa` (`nd6_dad_find(ifa)`): a late timeout of a destroyed record finds nothing and
+//!   does nothing, where the C's would act on a newer record of the same address (one started
+//!   again before the old timeout ran). Safer than the C; no outcome userland sees changes but
+//!   that a stale timeout no longer takes a step of the new DAD early (N6.5b, D-13).
 //!
 //! ## Redesign
 //! - The ND messages are read out of the packet's bytes ([`nd6_msg`]: the C's
@@ -194,7 +199,8 @@ const IP6_HDR_LEN: usize = size_of::<Ip6Hdr>();
 /// `struct dadq`: an address to run DAD on, a recycled record (the module's redesign). Locks:
 /// \[N\] net lock.
 pub struct Dadq {
-    /// \[N\] `dad_list`: the `dadq` list.
+    /// \[N\] `dad_list`: the `dadq` list; once off it, the entry of [`DAD_REAP`] or
+    /// [`DAD_FREE`] (under their mutex): a record is on one of the three at a time.
     dad_list: ListEntry<Dadq>,
     /// `dad_ifa`: the address, referenced (`None` on the free lists).
     dad_ifa: Link<Ifaddr>,
@@ -210,9 +216,6 @@ pub struct Dadq {
     dad_na_icount: AtomicCell<i32>,
     /// `dad_timer_ch`: the retransmission timer (its argument the record's address).
     dad_timer_ch: Timeout,
-    /// The entry of [`DAD_REAP`] or [`DAD_FREE`], whichever list the record is on once off
-    /// [`DADQ`].
-    dad_free: ListEntry<Dadq>,
 }
 
 impl Dadq {
@@ -233,7 +236,6 @@ impl Dadq {
                 KCLOCK_NONE,
                 TIMEOUT_PROC,
             ),
-            dad_free: ListEntry::new(),
         }
     }
 
@@ -247,13 +249,9 @@ impl Dadq {
 }
 
 hal::list_adapter!(
-    /// `TAILQ_HEAD(, dadq)` through `dad_list`: `dadq`.
+    /// `TAILQ_HEAD(, dadq)` through `dad_list`: `dadq`, and the reaper's and the free lists
+    /// of DAD records (the module's redesign).
     DadList: Dadq, dad_list
-);
-
-hal::list_adapter!(
-    /// The reaper's and the free lists of DAD records (the module's redesign).
-    DadFreeList: Dadq, dad_free
 );
 
 /// \[N\] `dadq`: list of addresses to run DAD on.
@@ -262,10 +260,10 @@ static DADQ: List<DadList> = List::new();
 /// The records `nd6_dad_destroy` took off [`DADQ`], for [`DAD_REAPER`]. Its mutex is
 /// `IPL_SOFTNET`: taken under the net lock and by the reaper's timeout, never from a hardware
 /// interrupt.
-static DAD_REAP: Mutexed<List<DadFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
+static DAD_REAP: Mutexed<List<DadList>> = Mutexed::new(IPL_SOFTNET, List::new());
 
 /// The records the reaper gave back, for [`nd6_dad_start`] (the C's `free`, then `malloc`).
-static DAD_FREE: Mutexed<List<DadFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
+static DAD_FREE: Mutexed<List<DadList>> = Mutexed::new(IPL_SOFTNET, List::new());
 
 /// The reaper of destroyed DAD records (the module's redesign): a process-context timeout as
 /// the records' own (`timeout_set_proc`).
