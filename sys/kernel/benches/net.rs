@@ -102,7 +102,14 @@
 //!     serializer's mutex twice, the task linked, unlinked and run).
 //!   - `if_counters.pkt`: `counters_pkt` of a 60-byte packet on the interface's counters.
 //!   - `ifa_ifwithaddr.8x2`: `ifa_ifwithaddr` of the last of 16 addresses (8 listed
-//!     interfaces of 2 `AF_INET` addresses each), under the net lock's write witness.
+//!     interfaces of 2 `AF_INET` addresses each), a reader of the net cells made per call
+//!     under a shared holding (N6.5e: the walk's `NET_ASSERT_LOCKED()`).
+//!   - `ifaddr.walk.1`, `ifaddr.walk.8`: a reader of the net cells made under a shared
+//!     holding and an interface's list of 1 or 8 addresses walked whole (`TAILQ_FOREACH`,
+//!     each address's family read: the arm), N6.5e's chain of counted handles.
+//!   - `ifaddr.add_del.8`: `ifa_add` of a ninth address at the tail of a list of 8 and its
+//!     `ifa_del` (the writer, the O(n) walks, the predecessor's clone: D-4), under the write
+//!     witness; no allocation (the record is the bench's).
 //!   - `if_enqueue_ifq.mq`: `if_enqueue_ifq` on an interface of 4 send queues, the flow id
 //!     picking the third, whose start the driver runs and empties at once.
 //! - The routing rows (N6.3b2, decision 43 with U10), over a table of four IPv4 routes on one
@@ -121,6 +128,9 @@
 //!     a delete frees the node and not the ART's tables, which LZ's side would leave to a gc
 //!     task no thread runs there); the releases the deletes defer run every 64 ops, untimed
 //!     (the grace periods of a CPU alone, as `smr.defer`'s rounds).
+//!   - `rt_ifa.read`: a reader of the net cells made under the shared holding and a route's
+//!     `rt_ifa` read (its Internet record's address), as `ip_output` reads the source
+//!     address per packet (N6.5e).
 //!   - `route.ref.unref` and `route.isvalid`, the attribution rows of the five: a counted
 //!     handle taken from a lent route and dropped (`PoolArc::try_from_ref`, the C's `rtref`
 //!     and `rtfree`), and `rtisvalid` of the gateway route `10.2.0.0/24` (its next hop read
@@ -1462,7 +1472,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
 /// The interface layer's rows (N6.3a, decision 43 with U10), the same ops as the "before"
 /// rows on LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over `setup_net`'s
 /// zeroed `test_ifnet`).
-const IF_ROWS: [&str; 9] = [
+const IF_ROWS: [&str; 12] = [
     "if_get.put",
     "if_get_smr",
     "ifq.enq.deq",
@@ -1472,6 +1482,9 @@ const IF_ROWS: [&str; 9] = [
     "if_counters.pkt",
     "ifa_ifwithaddr.8x2",
     "if_enqueue_ifq.mq",
+    "ifaddr.walk.1",
+    "ifaddr.walk.8",
+    "ifaddr.add_del.8",
 ];
 
 std::thread_local! {
@@ -1764,13 +1777,91 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
         }
         report(IF_ROWS[8], r);
     }
+    if IF_ROWS[9..].iter().any(|n| wanted(n)) {
+        ifaddr_rows(wanted, report);
+    }
     // The packets back to their pool while its pages are still installed.
     STASH.with(|s| s.borrow_mut().clear());
 }
 
+/// N6.5e's rows of the interface's address list (`IF_ROWS[9..]`): the walks and a change of
+/// the list, over Internet address records (`malloc(9)` blocks
+/// held by counted handles).
+fn ifaddr_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use kernel::net::if_::{if_attach, ifa_add, ifa_del, test_ifnet_fresh};
+    use kernel::netinet::in_var::{InIfaddr, test_in_ifaddr};
+
+    // Two interfaces: one of 1 address, one of 8, each list holding its records' creation
+    // references; the bench keeps nothing else.
+    let one = test_ifnet_fresh(b"bnch3", &BENCH_DRIVER);
+    if_attach(one);
+    let eight = test_ifnet_fresh(b"bnch4", &BENCH_DRIVER);
+    if_attach(eight);
+    {
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        ifa_add(one, test_in_ifaddr(one, [10, 9, 0, 1], None, None), &net);
+        for i in 1..=8u8 {
+            ifa_add(
+                eight,
+                test_in_ifaddr(eight, [10, 8, 0, i], None, None),
+                &net,
+            );
+        }
+    }
+    let walk = |ifp: &kernel::net::if_var::Ifnet, net: &NetHeld<'_>| -> usize {
+        let r = net.reader();
+        ifp.if_addrlist()
+            .iter(&r)
+            .filter(|ifa| InIfaddr::of(ifa).is_some())
+            .count()
+    };
+    for (row, ifp, n) in [(IF_ROWS[9], one, 1), (IF_ROWS[10], eight, 8)] {
+        if !wanted(row) {
+            continue;
+        }
+        let shared = NETLOCK.read();
+        let net = need(NetHeld::of(&shared), "the net lock");
+        if walk(ifp, &net) != n {
+            eprintln!("net: {row} walked another count");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(walk(black_box(ifp), &net));
+            }
+            t.elapsed()
+        });
+        drop(shared);
+        report(row, r);
+    }
+    if wanted(IF_ROWS[11]) {
+        let ninth = test_in_ifaddr(eight, [10, 8, 0, 9], None, None);
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                ifa_add(eight, ninth.clone(), &net);
+                black_box(ifa_del(eight, &ninth, &net));
+            }
+            t.elapsed()
+        });
+        if walk(eight, &net) != 8 {
+            eprintln!("net: ifaddr.add_del.8 left another count");
+            std::process::exit(1);
+        }
+        drop(net);
+        drop(w);
+        report(IF_ROWS[11], r);
+    }
+}
+
 /// The routing rows (N6.3b2, decision 43 with U10), the same ops as the "before" rows on
 /// LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over the same table).
-const ROUTE_ROWS: [&str; 7] = [
+const ROUTE_ROWS: [&str; 8] = [
     "rtable.match.4",
     "rtable.lookup",
     "rtalloc.cached",
@@ -1778,6 +1869,7 @@ const ROUTE_ROWS: [&str; 7] = [
     "rtrequest.add.delete",
     "route.ref.unref",
     "route.isvalid",
+    "rt_ifa.read",
 ];
 
 /// The internet protocols' legs the rows reach (the multipath switches and route cache
@@ -2031,6 +2123,29 @@ fn route_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
             t.elapsed()
         });
         report(ROUTE_ROWS[6], r);
+    }
+    if wanted(ROUTE_ROWS[7]) {
+        // N6.5e: a reader of the net cells made under the shared holding and the route's
+        // `rt_ifa` read (its Internet record's address), as `ip_output` reads the source
+        // address per packet.
+        let read = |rt: &kernel::net::route::Rtentry| -> u32 {
+            let r = held.reader();
+            rt.ifa(&r)
+                .and_then(kernel::netinet::in_var::InIfaddr::of)
+                .map_or(0, |ia| ia.ia_addr.addr().s_addr)
+        };
+        if read(&found) != u32::from_ne_bytes([10, 0, 2, 15]) {
+            eprintln!("net: rt_ifa.read read another address");
+            std::process::exit(1);
+        }
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(read(black_box(&*found)));
+            }
+            t.elapsed()
+        });
+        report(ROUTE_ROWS[7], r);
     }
     drop(held);
     drop(r_lock);
