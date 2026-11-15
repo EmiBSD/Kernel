@@ -71,9 +71,9 @@
 //!   (`INET6`: the `inet6` feature) before `inetdomain`. `MPLS` and `NAF_FRAME` are not configured; their entries are comments,
 //!   and so are the `PIPEX` branches of `net_sysctl`. `NPFLOW` is configured: `PF_PFLOW`
 //!   goes to `pflow_sysctl`; so is `NBPFILTER`: `PF_BPF` goes to `bpf_sysctl`.
-//! - `pffinddomain`, `pffindtype` and `pffindproto` over `bsd`'s tables return `Option`s for
-//!   the C's NULL, for `bsd`'s input paths (`ip_input`'s raw protocol); `pfctlinput` is the
-//!   kernel's (`kernel::net::domain`, over its `domains[]`): these tables' `pr_ctlinput` is
+//! - `pffinddomain`, `pffindtype`, `pffindproto` and `pfctlinput` are the kernel's
+//!   (`kernel::net::domain`, over its `domains[]`; `bsd`'s finders over its own tables went
+//!   with their last caller, `bsd`'s `ip6_init`, at N6.5d): these tables' `pr_ctlinput` is
 //!   reached through their `Protocol` impl, the one raw call of the table's function.
 //! - `net_sysctl` follows `kern_sysctl.rs`'s calling convention (`docs/C_TO_RUST.md`);
 //!   `sysctl_vslock` wraps the protocol handlers that are not `PR_MPSYSCTL`, as in C.
@@ -105,24 +105,12 @@ use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
-    AF_INET, AF_INET6, NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW,
+    AF_INET, AF_INET6, NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC,
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
 use hal::sys::netinet_in::IPPROTO_DONE;
 use hal::sys::netinet_ip_icmp::ICMP_MINLEN;
-
-/// `domains[]` of `bsd`'s tables: the configured communication domains whose protocols are
-/// still `bsd`'s.
-pub static DOMAINS: &[&Domain] = &[
-    // MPLS: &mplsdomain, not configured.
-    &PFKEYDOMAIN,
-    #[cfg(feature = "inet6")]
-    &INET6DOMAIN,
-    &INETDOMAIN,
-    // routedomain: the kernel's (NET_DOMAINS).
-    // NAF_FRAME: &framedomain, not configured.
-];
 
 /// `domains[]` as the kernel's socket layer sees it, in the C's order: `bsd`'s pfkey table
 /// through the traits, and the kernel's IPv6, internet, UNIX and route domains.
@@ -147,37 +135,37 @@ macro_rules! protocols {
 #[cfg(not(feature = "inet6"))]
 pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 13] = [
     &IpProtocol::<G>::NEW,
+    &INETSW[0],
     &INETSW[1],
     &INETSW[2],
-    &INETSW[3],
     &IcmpProtocol::<G>::NEW,
-    &INETSW[5],
+    &INETSW[3],
     &IgmpProtocol::<G>::NEW,
+    &INETSW[4],
+    &INETSW[5],
+    &INETSW[6],
     &INETSW[7],
     &INETSW[8],
     &INETSW[9],
-    &INETSW[10],
-    &INETSW[11],
-    &INETSW[12],
 ];
 /// `inetsw[]` as the kernel's protocols, in the C's order: the kernel's IP, ICMP and IGMP
 /// entries (`kernel::netinet::in_proto`), `bsd`'s rows for the rest.
 #[cfg(feature = "inet6")]
 pub(crate) static INET_PROTOS: [&dyn Protocol<G>; 14] = [
     &IpProtocol::<G>::NEW,
+    &INETSW[0],
     &INETSW[1],
     &INETSW[2],
-    &INETSW[3],
     &IcmpProtocol::<G>::NEW,
+    &INETSW[3],
+    &INETSW[4],
+    &IgmpProtocol::<G>::NEW,
     &INETSW[5],
     &INETSW[6],
-    &IgmpProtocol::<G>::NEW,
+    &INETSW[7],
     &INETSW[8],
     &INETSW[9],
     &INETSW[10],
-    &INETSW[11],
-    &INETSW[12],
-    &INETSW[13],
 ];
 
 /// `inet6sw[]` as the kernel's protocols, in the C's order: the kernel's IPv6, ICMPv6,
@@ -584,48 +572,6 @@ impl Usrreqs<G> for PrUsrreqs {
     }
 }
 
-/// `pffinddomain`: the domain of address family `family` among `bsd`'s tables.
-pub fn pffinddomain(family: i32) -> Option<&'static Domain> {
-    DOMAINS.iter().copied().find(|dp| dp.dom_family == family)
-}
-
-/// `pffindtype`: the first protocol of `family` with socket type `type_`, among `bsd`'s
-/// tables.
-pub fn pffindtype(family: i32, type_: i32) -> Option<&'static Protosw> {
-    let dp = pffinddomain(family)?;
-
-    dp.dom_protosw
-        .iter()
-        .find(|pr| pr.pr_type != 0 && i32::from(pr.pr_type) == type_)
-}
-
-/// `pffindproto`: the protocol `protocol` of `family` with socket type `type_`, among
-/// `bsd`'s tables; for raw sockets, the domain's raw wildcard when no protocol matches.
-pub fn pffindproto(family: i32, protocol: i32, type_: i32) -> Option<&'static Protosw> {
-    let mut maybe = None;
-
-    if family == i32::from(PF_UNSPEC) {
-        return None;
-    }
-
-    let dp = pffinddomain(family)?;
-
-    for pr in dp.dom_protosw {
-        if i32::from(pr.pr_protocol) == protocol && i32::from(pr.pr_type) == type_ {
-            return Some(pr);
-        }
-
-        if type_ == SOCK_RAW
-            && i32::from(pr.pr_type) == SOCK_RAW
-            && pr.pr_protocol == 0
-            && maybe.is_none()
-        {
-            maybe = Some(pr);
-        }
-    }
-    maybe
-}
-
 /// `net_link_sysctl`: `net.link`.
 fn net_link_sysctl(
     name: &[i32],
@@ -726,7 +672,7 @@ mod tests {
     use super::*;
     use crate::netinet::in_::{IPPROTO_ICMP, IPPROTO_RAW, IPPROTO_UDP};
     use crate::sys::protosw::PRC_MSGSIZE;
-    use crate::sys::socket::{AF_ROUTE, AF_UNIX, SOCK_DGRAM};
+    use crate::sys::socket::{AF_ROUTE, AF_UNIX, SOCK_DGRAM, SOCK_RAW};
 
     #[test]
     fn ctlinput_s_address_is_padded_and_its_quote_checked_here() {
@@ -874,23 +820,34 @@ mod tests {
 
     #[test]
     fn the_inet_protocols_are_found_by_number_and_type() {
-        assert!(pffinddomain(i32::from(AF_INET)).is_some());
-        // The UNIX and route domains are the kernel's (N6.2a, N6.3b2): not among bsd's
-        // tables.
-        assert!(pffinddomain(i32::from(AF_ROUTE)).is_none());
-        assert!(pffinddomain(i32::from(AF_UNIX)).is_none());
-        assert!(pffinddomain(i32::from(PF_UNSPEC)).is_none());
+        use kernel::net::domain::{pffinddomain, pffindproto, pffindtype};
+        net_tables_for_tests();
+        let f = i32::from(AF_INET);
+        assert!(pffinddomain::<G>(f).is_some_and(|d| d.name() == "inet"));
+        // The UNIX and route domains are the kernel's (N6.2a, N6.3b2), and so is the internet
+        // one (N6.4c2): all are in the kernel's domains[].
+        assert!(pffinddomain::<G>(i32::from(AF_ROUTE)).is_some());
+        assert!(pffinddomain::<G>(i32::from(AF_UNIX)).is_some());
+        assert!(pffinddomain::<G>(i32::from(PF_UNSPEC)).is_none());
 
-        let icmp = pffindproto(i32::from(AF_INET), IPPROTO_ICMP, SOCK_RAW).expect("icmp");
-        assert_eq!(i32::from(icmp.pr_protocol), IPPROTO_ICMP);
-        let udp = pffindproto(i32::from(AF_INET), IPPROTO_UDP, SOCK_DGRAM).expect("udp");
-        assert_eq!(i32::from(udp.pr_protocol), IPPROTO_UDP);
+        // ICMP's entry is the kernel's; bsd's rows are its INETSW itself.
+        let is = |a: Option<&'static dyn Protocol<G>>, b: &'static Protosw| {
+            a.is_some_and(|a| ptr::addr_eq(a, b))
+        };
+        let icmp = pffindproto::<G>(f, IPPROTO_ICMP, SOCK_RAW).expect("icmp");
+        assert_eq!(i32::from(icmp.protocol()), IPPROTO_ICMP);
+        assert!(
+            INETSW.iter().all(|r| !ptr::addr_eq(icmp, r)),
+            "the kernel's"
+        );
+        assert!(is(pffindproto::<G>(f, IPPROTO_UDP, SOCK_DGRAM), &INETSW[0]));
         // An unknown raw protocol gets the raw wildcard; IPPROTO_RAW has its own entry.
-        let wild = pffindproto(i32::from(AF_INET), 200, SOCK_RAW).expect("wildcard");
-        assert_eq!(wild.pr_protocol, 0);
-        let raw = pffindproto(i32::from(AF_INET), IPPROTO_RAW, SOCK_RAW).expect("raw");
-        assert_eq!(i32::from(raw.pr_protocol), IPPROTO_RAW);
-        assert!(pffindtype(i32::from(AF_INET), SOCK_DGRAM).is_some());
+        assert!(is(
+            pffindproto::<G>(f, 200, SOCK_RAW),
+            &INETSW[INETSW.len() - 1]
+        ));
+        assert!(is(pffindproto::<G>(f, IPPROTO_RAW, SOCK_RAW), &INETSW[2]));
+        assert!(is(pffindtype::<G>(f, SOCK_DGRAM), &INETSW[0]));
     }
 
     /// The IPv6 domain the kernel's socket layer walks: the kernel's `Inet6Domain`, its table

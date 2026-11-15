@@ -1202,7 +1202,7 @@ pub(crate) mod tests {
         ifp.if_flags.set(IFF_UP);
         if_attach(ifp);
         let so = crate::kern::uipc_socket::soalloc(
-            &crate::netinet::in_proto::INETSW[1],
+            &crate::netinet::in_proto::INETSW[0],
             crate::sys::socket::SOCK_DGRAM,
             crate::sys::mbuf::M_WAIT,
         )

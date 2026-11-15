@@ -1706,7 +1706,7 @@ mod tests {
 
     /// An established connection on a socket with empty buffers.
     fn established() -> &'static Tcpcb {
-        let so = soalloc(&INETSW[1], 0, M_WAIT).expect("socket");
+        let so = soalloc(&INETSW[0], 0, M_WAIT).expect("socket");
         let tp = tcb(Some(so));
         tp.t_state.set(TCPS_ESTABLISHED);
         tp.t_maxseg.set(512);
