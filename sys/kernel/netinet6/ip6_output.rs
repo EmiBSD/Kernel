@@ -2540,15 +2540,19 @@ mod tests {
     use hal::sys::net_if::{IFF_RUNNING, IFF_UP};
     use hal::sys::netinet_in::IPPROTO_IP;
     use hal::sys::netinet_ip6::{IP6OPT_ROUTER_ALERT, IPV6_VERSION};
+    use hal::sys::socket::{PF_INET6, SOCK_RAW};
     use hal::sys::sockio::SIOCSIFADDR;
 
     use super::*;
     use crate::cred::{CredRef, Ucred};
+    use crate::net::domain::Domain;
     use crate::net::if_::{IFNETLIST, test_ifnet_with};
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::{M_PKTHDR, MT_SOOPTS, ml_dequeue};
+    use crate::net::proto::{PR_ADDR, PR_ATOMIC, Protocol, Usrreqs};
     use crate::net::route::tests::testroutes_setup;
-    use crate::netinet::in_pcb::{INP_IPV6, testinet};
+    use crate::net::socket::{SoInit, soalloc};
+    use crate::netinet::in_pcb::{INP_IPV6, in_pcballoc, testinet};
     use crate::netinet6::in6::tests::{a6, add, iface};
     use crate::netinet6::ip6_var::IP6COUNTERS;
     use crate::netinet6::mld6::MLD6_HBH;
@@ -3044,6 +3048,16 @@ mod tests {
         control.data_mut().expect("writable")[..4].copy_from_slice(&4u32.to_ne_bytes());
         let r = ip6_setpktopts(&control, &mut opt, None, false, IPPROTO_UDP);
         assert_eq!(r, Err(Errno::EINVAL));
+        // Whole again, then in two mbufs: EINVAL (the C assumes all the optional information
+        // in a single mbuf, C :2188).
+        control.data_mut().expect("writable")[..4]
+            .copy_from_slice(&((hdrlen + 4) as u32).to_ne_bytes());
+        let r = ip6_setpktopts(&control, &mut opt, None, false, IPPROTO_UDP);
+        assert_eq!(r, Ok(()), "whole again");
+        let more = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+        drop(control.m_next.set(more));
+        let r = ip6_setpktopts(&control, &mut opt, None, false, IPPROTO_UDP);
+        assert_eq!(r, Err(Errno::EINVAL), "a second mbuf");
     }
 
     #[test]
@@ -3186,6 +3200,31 @@ mod tests {
         assert_eq!(&p[49..56], &dest2[1..]);
         assert_eq!(&p[56..], &payload);
 
+        // hbh and dest1: IPv6 hbh dest1 payload; the hop-by-hop header's next header (at
+        // offset 40, the mbuf after the IPv6 header's) the destination options, theirs the
+        // payload's.
+        let dest1 = [0u8, 0, IP6OPT_PADN, 4, 0, 0, 0, 0];
+        let opts = Ip6OutOpts {
+            hbh: Some(&MLD6_HBH),
+            dest1: Some(&dest1),
+            ..Ip6OutOpts::new()
+        };
+        send(packet(&ip6, &payload, 16), Some(opts), 0, None).expect("sent");
+        let (p, _) = d.take().pop().expect("the packet");
+        assert_eq!(p.len(), 40 + 8 + 8 + 16);
+        assert_eq!((p[5], p[6]), (32, IPPROTO_HOPOPTS as u8));
+        assert_eq!(
+            p[40], IPPROTO_DSTOPTS as u8,
+            "hbh's next header the destination options"
+        );
+        assert_eq!(&p[41..48], &MLD6_HBH[1..]);
+        assert_eq!(
+            p[48], IPPROTO_UDP as u8,
+            "dest1's next header the payload's"
+        );
+        assert_eq!(&p[49..56], &dest1[1..]);
+        assert_eq!(&p[56..], &payload);
+
         // dest1 alone: IPv6 dest1 payload.
         let opts = Ip6OutOpts {
             dest1: Some(&dest2),
@@ -3194,6 +3233,62 @@ mod tests {
         send(packet(&ip6, &payload, 16), Some(opts), 0, None).expect("sent");
         let (p, _) = d.take().pop().expect("the packet");
         assert_eq!((p[6], p[40]), (IPPROTO_DSTOPTS as u8, IPPROTO_UDP as u8));
+    }
+
+    /// A packet with a hop-by-hop header, then also destination options, over the MTU (C
+    /// :698-708): the unfragmentable part's last header takes `IPPROTO_FRAGMENT` as its next
+    /// header, and the fragment header carries the one it had.
+    #[test]
+    fn ip6_output_fragments_after_the_unfragmentable_headers() {
+        let _g = testroutes_setup();
+        let (_ifp, d) = cap_iface(b"i6f0", 1280);
+        let ip6 = hdr_to(0, IPPROTO_UDP as u8, a6("2001:db8::2"));
+        let payload = vec![5u8; 2000];
+        let dest1 = [0u8, 0, IP6OPT_PADN, 4, 0, 0, 0, 0];
+
+        // hbh alone: IPv6 hbh frag payload, (1280 - 48 - 8) & ~7 = 1224 bytes a fragment.
+        let opts = Ip6OutOpts {
+            hbh: Some(&MLD6_HBH),
+            ..Ip6OutOpts::new()
+        };
+        send(packet(&ip6, &payload, 200), Some(opts), 0, None).expect("sent");
+        let out = d.take();
+        assert_eq!(out.len(), 2);
+        for (p, _) in &out {
+            assert_eq!(p[6], IPPROTO_HOPOPTS as u8);
+            assert_eq!(
+                p[40], IPPROTO_FRAGMENT as u8,
+                "hbh's next header the fragment's"
+            );
+            assert_eq!(
+                p[48], IPPROTO_UDP as u8,
+                "the fragment header's the payload's"
+            );
+        }
+
+        // hbh and dest1: IPv6 hbh dest1 frag payload.
+        let opts = Ip6OutOpts {
+            hbh: Some(&MLD6_HBH),
+            dest1: Some(&dest1),
+            ..Ip6OutOpts::new()
+        };
+        send(packet(&ip6, &payload, 200), Some(opts), 0, None).expect("sent");
+        let out = d.take();
+        assert_eq!(out.len(), 2);
+        for (p, _) in &out {
+            assert_eq!(
+                (p[6], p[40]),
+                (IPPROTO_HOPOPTS as u8, IPPROTO_DSTOPTS as u8)
+            );
+            assert_eq!(
+                p[48], IPPROTO_FRAGMENT as u8,
+                "dest1's next header the fragment's"
+            );
+            assert_eq!(
+                p[56], IPPROTO_UDP as u8,
+                "the fragment header's the payload's"
+            );
+        }
     }
 
     #[test]
@@ -3635,6 +3730,18 @@ mod tests {
         );
         set(&inp, SO_RTABLE, &[0; 8]).expect("table 0 again");
         assert_eq!(set(&inp, SO_RTABLE, &int(5)), Err(EINVAL));
+        // A process in table 0 may move its socket to any table; one in another table needs
+        // the superuser's privilege to move it to a table not its own (C :1331-1333).
+        crate::net::rtable::rtable_add(2).expect("table 2");
+        as_user(p, || set(&inp, SO_RTABLE, &int(2))).expect("from table 0");
+        assert_eq!(get(&inp, SO_RTABLE), Ok(int(2)));
+        p.process().ps_rtableid.store(2, Ordering::Relaxed);
+        assert_eq!(as_user(p, || set(&inp, SO_RTABLE, &int(0))), Err(EPERM));
+        assert_eq!(get(&inp, SO_RTABLE), Ok(int(2)), "unchanged by the refusal");
+        set(&inp, SO_RTABLE, &int(0)).expect("the superuser");
+        as_user(p, || set(&inp, SO_RTABLE, &int(2))).expect("the process's own table");
+        set(&inp, SO_RTABLE, &int(0)).expect("back to table 0");
+        p.process().ps_rtableid.store(0, Ordering::Relaxed);
 
         // IPV6_PIPEX.
         set(&inp, IPV6_PIPEX, &int(3)).expect("pipex");
@@ -3682,8 +3789,23 @@ mod tests {
         };
         use Errno::{EACCES, EADDRINUSE, EADDRNOTAVAIL, EINVAL, ENXIO};
 
+        // An interface without IFF_MULTICAST and one in another routing domain.
+        let (if3, _d3) = iface(b"i6m2", [0x52, 0x54, 0, 0xbb, 0, 0x13]);
+        if3.if_flags.set(if3.if_flags.get() & !IFF_MULTICAST);
+        let (if4, _d4) = iface(b"i6m3", [0x52, 0x54, 0, 0xbb, 0, 0x14]);
+        if4.if_rdomain.set(1);
+        let (i3, i4) = (if3.if_index.get(), if4.if_index.get());
+
         // IPV6_MULTICAST_IF/HOPS/LOOP: the bounds, then the defaults give the options back.
         assert_eq!(set(&a, IPV6_MULTICAST_IF, &int(4000)), Err(ENXIO));
+        assert_eq!(
+            set(&a, IPV6_MULTICAST_IF, &int(i3 as i32)),
+            Err(EADDRNOTAVAIL)
+        );
+        assert_eq!(
+            set(&a, IPV6_MULTICAST_IF, &int(i4 as i32)),
+            Err(EADDRNOTAVAIL)
+        );
         assert!(a.moptions6_out().is_none(), "back to the defaults: freed");
         set(&a, IPV6_MULTICAST_IF, &int(i1 as i32)).expect("if");
         assert_eq!(get(&a, IPV6_MULTICAST_IF), Ok(int(i1 as i32)));
@@ -3726,6 +3848,35 @@ mod tests {
             Err(EACCES)
         );
         assert_eq!(set(&a, IPV6_JOIN_GROUP, &mreq(g, 4000)), Err(ENXIO));
+        assert_eq!(
+            set(&a, IPV6_JOIN_GROUP, &mreq(g, i3)),
+            Err(EADDRNOTAVAIL),
+            "no multicast"
+        );
+        assert_eq!(
+            set(&a, IPV6_JOIN_GROUP, &mreq(g, i4)),
+            Err(EADDRNOTAVAIL),
+            "another domain"
+        );
+        assert_eq!(
+            set(&a, IPV6_JOIN_GROUP, &mreq(g, 0)),
+            Err(EADDRNOTAVAIL),
+            "no route to g"
+        );
+        assert_eq!(
+            set(&a, IPV6_LEAVE_GROUP, &mreq(g, 4000)),
+            Err(ENXIO),
+            "no such interface"
+        );
+        assert_eq!(
+            set(&a, IPV6_LEAVE_GROUP, &mreq(g, 0)),
+            Err(EADDRNOTAVAIL),
+            "no membership"
+        );
+        assert!(
+            a.moptions6_out().is_none(),
+            "the refusals left the defaults"
+        );
 
         // Two sockets join g on if1: one record, the driver told once; a second join of the same
         // socket is EADDRINUSE.
@@ -3796,6 +3947,156 @@ mod tests {
                 Err(Errno::ENOPROTOOPT)
             );
         }
+        testinet::release(so, inp);
+    }
+
+    /// The ICMPv6 raw socket's domain and protocol (`so_proto->pr_protocol` is what
+    /// `ip6_raw_ctloutput` reads); its sockets made by `soalloc` alone, as the test
+    /// protocol's.
+    struct Icmp6Dom;
+    /// See [`Icmp6Dom`].
+    struct Icmp6Proto;
+
+    static ICMP6_PROTOS: [&dyn Protocol<Tg>; 1] = [&Icmp6Proto];
+
+    impl Domain<Tg> for Icmp6Dom {
+        fn family(&self) -> i32 {
+            i32::from(PF_INET6)
+        }
+        fn name(&self) -> &'static str {
+            "inet6"
+        }
+        fn protocols(&self) -> &'static [&'static dyn Protocol<Tg>] {
+            &ICMP6_PROTOS
+        }
+    }
+
+    impl Protocol<Tg> for Icmp6Proto {
+        fn domain(&self) -> &'static dyn Domain<Tg> {
+            &Icmp6Dom
+        }
+        fn ty(&self) -> i16 {
+            SOCK_RAW as i16
+        }
+        fn protocol(&self) -> i16 {
+            IPPROTO_ICMPV6 as i16
+        }
+        fn flags(&self) -> i16 {
+            PR_ATOMIC | PR_ADDR
+        }
+        fn usrreqs(&self) -> Option<&'static dyn Usrreqs<Tg>> {
+            None
+        }
+    }
+
+    /// `IPV6_CHECKSUM` of an ICMPv6 socket (C :1585-1599): only the ICMPv6 header's own
+    /// checksum offset is accepted (the "no change" value), and a read answers it whatever
+    /// the pcb's `inp_cksum6` holds.
+    #[test]
+    fn ip6_raw_ctloutput_of_an_icmpv6_socket() {
+        let (_g, _p) = testinet::setup();
+        let so = soalloc(
+            &Icmp6Proto,
+            M_WAIT,
+            SoInit {
+                so_type: SOCK_RAW,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("an ICMPv6 socket");
+        let inp = in_pcballoc(&so, testinet::table(16), M_WAIT).expect("in_pcballoc");
+        inp.set_flags(INP_IPV6);
+        inp.inp_cksum6.set(-1);
+        let raw = |op: i32, v: Option<&[u8]>| -> Result<Vec<u8>, Errno> {
+            let mut m = optm(v.unwrap_or(&[]));
+            let arg = (op == PRCO_GETOPT || v.is_some()).then_some(&mut *m);
+            let _w = NETLOCK.write();
+            ip6_raw_ctloutput(op, &inp, IPPROTO_IPV6, IPV6_CHECKSUM, arg)?;
+            Ok(m.data().to_vec())
+        };
+        let icmp6off = offset_of!(Icmp6Hdr, icmp6_cksum) as i32;
+        assert_eq!(icmp6off, 2);
+        // Another offset, even and valid on another raw socket, or -1: EINVAL; the offset
+        // itself is accepted and changes nothing.
+        for bad in [0, 4, 6, -1] {
+            assert_eq!(
+                raw(PRCO_SETOPT, Some(&int(bad))),
+                Err(Errno::EINVAL),
+                "{bad}"
+            );
+        }
+        raw(PRCO_SETOPT, Some(&int(icmp6off))).expect("no change");
+        assert_eq!(inp.inp_cksum6.get(), -1, "the pcb's offset untouched");
+        assert_eq!(
+            raw(PRCO_GETOPT, None),
+            Ok(int(icmp6off)),
+            "the header's offset"
+        );
+        // The checks before the protocol's still come first.
+        assert_eq!(raw(PRCO_SETOPT, Some(&int(3))), Err(Errno::EINVAL));
+        testinet::release(so, inp);
+    }
+
+    /// `IPV6_PATHMTU` of a connected socket (C's `PRCO_GETOPT`): the path MTU of the pcb's
+    /// route (the interface's, the route carrying none), at most `IPV6_MAXPACKET`;
+    /// `EHOSTUNREACH` without a route to the peer.
+    #[test]
+    fn ipv6_pathmtu_of_a_connected_socket() {
+        let (_g, _p) = testinet::setup();
+        let (ifp, _d) = iface(b"i6p0", [0x52, 0x54, 0, 0xbb, 0, 0x21]);
+        ifp.if_mtu.set(1400);
+        add(ifp, a6("2001:db8::1"), 64).expect("SIOCAIFADDR_IN6");
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        inp.set_flags(INP_IPV6);
+        so.st_set(SS_ISCONNECTED);
+        let sin6 = |a: In6Addr, port: u16| SockaddrIn6 {
+            sin6_port: htons(port),
+            ..SockaddrIn6::with_addr(a)
+        };
+        let mtuinfo = |mtu: u32| {
+            let info = Ip6Mtuinfo {
+                ip6m_mtu: mtu,
+                ..Ip6Mtuinfo::default()
+            };
+            let mut b = vec![0u8; size_of::<Ip6Mtuinfo>()];
+            assert!(pod::put(&mut b, 0, &info));
+            b
+        };
+
+        // A peer no route reaches.
+        crate::netinet6::in6_pcb::in6_pcbset_addr(
+            &inp,
+            &sin6(a6("2001:db9::5"), 53),
+            &sin6(a6("2001:db8::1"), 1000),
+            0,
+        )
+        .expect("the addresses");
+        assert_eq!(get(&inp, IPV6_PATHMTU), Err(Errno::EHOSTUNREACH));
+        testinet::release(so, inp);
+
+        // An on-link peer: the interface's MTU, then IPV6_MAXPACKET above it.
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        inp.set_flags(INP_IPV6);
+        so.st_set(SS_ISCONNECTED);
+        crate::netinet6::in6_pcb::in6_pcbset_addr(
+            &inp,
+            &sin6(a6("2001:db8::2"), 53),
+            &sin6(a6("2001:db8::1"), 1001),
+            0,
+        )
+        .expect("the addresses");
+        assert_eq!(get(&inp, IPV6_PATHMTU), Ok(mtuinfo(1400)));
+        ifp.if_mtu.set(70000);
+        assert_eq!(get(&inp, IPV6_PATHMTU), Ok(mtuinfo(IPV6_MAXPACKET as u32)));
+        ifp.if_mtu.set(1500);
         testinet::release(so, inp);
     }
 }
