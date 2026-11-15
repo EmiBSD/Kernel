@@ -667,8 +667,15 @@ fn in_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Res
                         ifa_update_broadaddr(ia, &b);
                     }
                 }
-                if needinit && let Err(e) = in_ifinit(ifp, &ifa, &sin, created) {
-                    break 'out Err(e);
+                if needinit {
+                    if let Err(e) = in_ifinit(ifp, &ifa, &sin, created) {
+                        break 'out Err(e);
+                    }
+                } else if let Some(c) = created {
+                    // A new address with no address, mask or destination given: the C's
+                    // `malloc`'d record that no `in_ifinit` links is never freed there; its
+                    // creation reference is forgotten, so it stays allocated, as there.
+                    core::mem::forget(c);
                 }
                 if_addrhooks_run(ifp);
                 Ok(())
