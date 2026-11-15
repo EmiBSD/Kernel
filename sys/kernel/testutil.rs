@@ -346,15 +346,28 @@ struct TestPool {
     /// The size rounded up to the item's alignment (at least 16).
     stride: usize,
     /// The source of a pool made by `create_with` (N6.0): each item its own page from it, of
-    /// the item's stride rounded up to a power of two, aligned to it (the C carves several
-    /// items from one page; one a page keeps the source's count equal to the items out).
+    /// the item's stride rounded up to a power of two and to the source's smallest page
+    /// ([`TestPool::page_len`]), aligned to it (the C carves several items from one page; one
+    /// a page keeps the source's count equal to the items out).
     source: Option<&'static dyn PageSource>,
 }
 
 impl TestPool {
-    /// The page of an item of a sourced pool.
+    /// The page of an item of a sourced pool: the item's stride rounded up to a power of two,
+    /// and no less than the smallest page the source gives (the lowest size of its
+    /// `pa_pagesz`, `PageSource::sizes`; bit 0 is the alignment flag). A source of whole pages
+    /// (`m_pool_allocator`'s, whose `km_alloc` asserts a page multiple under `DIAGNOSTIC`) is
+    /// never asked for less, as `pool(9)` never asks it.
     fn page_len(&self) -> usize {
-        self.stride.next_power_of_two()
+        let least = self.source.map_or(1, |s| {
+            let sizes = s.sizes() & !1;
+            if sizes == 0 {
+                1
+            } else {
+                1 << sizes.trailing_zeros()
+            }
+        });
+        self.stride.next_power_of_two().max(least)
     }
 }
 
