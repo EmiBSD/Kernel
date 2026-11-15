@@ -582,6 +582,10 @@ pub(crate) mod testsw6 {
         pub(crate) ctl6_nxt: AtomicI32,
         /// The last `CtlArg::Ip6`'s command argument (0: none).
         pub(crate) ctl6_cmdarg: AtomicU32,
+        /// The last `CtlArg::Ip6`'s offset of the upper layer's header (`ip6c_off`; -1: none).
+        pub(crate) ctl6_off: AtomicI32,
+        /// The last `CtlArg::Ip6`'s final destination (`*ip6c_finaldst`).
+        pub(crate) ctl6_finaldst: std::sync::Mutex<[u8; 16]>,
     }
 
     impl Row6 {
@@ -595,7 +599,15 @@ pub(crate) mod testsw6 {
                 ctl: AtomicI32::new(0),
                 ctl6_nxt: AtomicI32::new(-1),
                 ctl6_cmdarg: AtomicU32::new(0),
+                ctl6_off: AtomicI32::new(-1),
+                ctl6_finaldst: std::sync::Mutex::new([0; 16]),
             }
+        }
+
+        /// The double made one of another family's domain.
+        const fn foreign(mut self) -> Self {
+            self.foreign = true;
+            self
         }
     }
 
@@ -619,14 +631,12 @@ pub(crate) mod testsw6 {
     pub(crate) static WILD6: Row6 = Row6::new(0, SOCK_RAW, PR_ATOMIC | PR_ADDR | PR_MPINPUT);
     /// An entry of another family's domain, of number 50 (no table of the C has one: it shows
     /// `ip6_init`'s check of the family).
-    pub(crate) static FOREIGN6: Row6 = Row6 {
-        foreign: true,
-        ..Row6::new(
-            hal::sys::netinet_in::IPPROTO_ESP,
-            SOCK_RAW,
-            PR_ATOMIC | PR_ADDR,
-        )
-    };
+    pub(crate) static FOREIGN6: Row6 = Row6::new(
+        hal::sys::netinet_in::IPPROTO_ESP,
+        SOCK_RAW,
+        PR_ATOMIC | PR_ADDR,
+    )
+    .foreign();
 
     /// The domain of [`FOREIGN6`]: `AF_INET`, no protocols of its own.
     struct OtherDomain;
@@ -692,6 +702,9 @@ pub(crate) mod testsw6 {
                 self.ctl6_nxt.store(i32::from(p.nxt), Ordering::Relaxed);
                 self.ctl6_cmdarg
                     .store(p.cmdarg.unwrap_or(0), Ordering::Relaxed);
+                self.ctl6_off.store(p.off, Ordering::Relaxed);
+                *self.ctl6_finaldst.lock().unwrap_or_else(|e| e.into_inner()) =
+                    p.finaldst.get().s6_addr;
             }
         }
         fn has_ctloutput(&self) -> bool {

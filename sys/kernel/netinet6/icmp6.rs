@@ -2782,5 +2782,106 @@ pub(crate) mod tests {
         assert_eq!(UDP6.ctl6_cmdarg.load(Ordering::Relaxed), 1400);
         assert_eq!(RAW6.inputs.load(Ordering::Relaxed), raws + 2);
     }
+
+    /// A port unreachable from the peer quoting a packet we sent to `dst` whose next header
+    /// is `nxt`, its extension headers `ext` before 8 bytes of UDP.
+    fn unreach_quoting(ifp: &Ifnet, dst: In6Addr, nxt: i32, ext: &[u8]) -> MbufBox {
+        let mut rest = ext.to_vec();
+        rest.extend_from_slice(&[0; 8]);
+        let quoted = packet(ours6(), dst, nxt as u8, 64, &rest);
+        let mut msg = vec![
+            ICMP6_DST_UNREACH,
+            ICMP6_DST_UNREACH_NOPORT,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ];
+        msg.extend_from_slice(&quoted);
+        icmp(ifp, peer6(), ours6(), &msg, false)
+    }
+
+    /// A routing header of `type_` with `segleft` segments left before UDP, its `addrs`
+    /// (`ip6r0_len` twice their number, or `len` when given).
+    fn rthdr(type_: u8, segleft: u8, addrs: &[In6Addr], len: Option<u8>) -> Vec<u8> {
+        let n = len.unwrap_or(2 * addrs.len() as u8);
+        let mut b = vec![IPPROTO_UDP as u8, n, type_, segleft, 0, 0, 0, 0];
+        for a in addrs {
+            b.extend_from_slice(&a.s6_addr);
+        }
+        b
+    }
+
+    #[test]
+    fn the_quote_is_walked_to_its_upper_layer_as_the_c() {
+        use crate::netinet6::in6_proto::testsw6::{UDP6, install};
+        let (_g, ifp) = net6();
+        install();
+        let far = |last: u8| {
+            let mut a = ours6();
+            a.s6_addr[15] = last;
+            a
+        };
+        let (p, f1, f2) = (peer6(), far(0x91), far(0x92));
+        // ip6c_off: the outer header, the ICMPv6 header, the quoted header, then each
+        // extension header the C's walk skips (icmp6.c:850-1010).
+        const BASE: i32 = 40 + 8 + 40;
+        let udp = IPPROTO_UDP as u8;
+        let dstopts = [udp, 0, 1, 4, 0, 0, 0, 0];
+        let mut ah = vec![udp, 4];
+        ah.extend_from_slice(&[0; 22]);
+        let frag = |offlg: u16| {
+            let mut b = vec![udp, 0];
+            b.extend_from_slice(&offlg.to_be_bytes());
+            b.extend_from_slice(&9u32.to_be_bytes());
+            b
+        };
+        let mut chain = vec![IPPROTO_ROUTING as u8, 0, 1, 4, 0, 0, 0, 0];
+        let mut rh = rthdr(0, 1, &[f1], None);
+        rh[0] = IPPROTO_FRAGMENT as u8;
+        chain.extend_from_slice(&rh);
+        chain.extend_from_slice(&frag(1));
+        // (case, next header, extension headers, Some((ip6c_off, final destination)), or
+        // None when UDP's entry is not told: a later fragment's next header is the fragment
+        // header's, whose entry has no control input).
+        #[rustfmt::skip]
+        let cases: [(&str, i32, Vec<u8>, Option<(i32, In6Addr)>); 12] = [
+            ("none", IPPROTO_UDP, vec![], Some((BASE, p))),
+            ("hop-by-hop", IPPROTO_HOPOPTS, dstopts.to_vec(), Some((BASE + 8, p))),
+            ("dstopts", IPPROTO_DSTOPTS, dstopts.to_vec(), Some((BASE + 8, p))),
+            ("ah", IPPROTO_AH, ah.clone(), Some((BASE + 24, p))),
+            ("rh0", IPPROTO_ROUTING, rthdr(0, 1, &[f1], None), Some((BASE + 24, f1))),
+            ("rh0, two", IPPROTO_ROUTING, rthdr(0, 2, &[f1, f2], None), Some((BASE + 40, f2))),
+            ("rh0 done", IPPROTO_ROUTING, rthdr(0, 0, &[f1], None), Some((BASE + 24, p))),
+            ("rh0 odd", IPPROTO_ROUTING, rthdr(0, 1, &[f1], Some(3)), Some((BASE + 32, p))),
+            ("rh type 4", IPPROTO_ROUTING, rthdr(4, 1, &[f1], None), Some((BASE + 24, p))),
+            ("first fragment", IPPROTO_FRAGMENT, frag(1), Some((BASE + 8, p))),
+            ("later fragment", IPPROTO_FRAGMENT, frag(8), None),
+            ("dstopts, rh0, fragment", IPPROTO_DSTOPTS, chain.clone(), Some((BASE + 40, f1))),
+        ];
+        for (case, nxt, ext, want) in cases {
+            UDP6.ctl.store(0, Ordering::Relaxed);
+            UDP6.ctl6_off.store(-1, Ordering::Relaxed);
+            *UDP6.ctl6_finaldst.lock().unwrap_or_else(|e| e.into_inner()) = [0; 16];
+            assert_eq!(
+                input(unreach_quoting(ifp, p, nxt, &ext)),
+                IPPROTO_DONE,
+                "{case}"
+            );
+            let got = (UDP6.ctl6_off.load(Ordering::Relaxed), {
+                let a = *UDP6.ctl6_finaldst.lock().unwrap_or_else(|e| e.into_inner());
+                In6Addr { s6_addr: a }
+            });
+            match want {
+                Some(w) => {
+                    assert_eq!(UDP6.ctl.load(Ordering::Relaxed), PRC_UNREACH_PORT, "{case}");
+                    assert_eq!(got, w, "{case}");
+                }
+                None => assert_eq!(UDP6.ctl.load(Ordering::Relaxed), 0, "{case}"),
+            }
+        }
+    }
 }
 /* </TESTS> */
