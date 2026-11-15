@@ -90,7 +90,9 @@
 //!   `struct ip6_moptions` and `struct ip6_pktopts` are the kernel's since N6.5c
 //!   (`kernel::netinet6::ip6_var`), re-exported.
 //! - `mtod_ip6` and `mtod_ip6_store` read and write the IPv6 header at the start of an
-//!   mbuf as a copy, as `mtod_ip` does for `struct ip` (`netinet/ip_var.rs`).
+//!   mbuf as a copy, as `mtod_ip` does for `struct ip` (`netinet/ip_var.rs`), through the
+//!   kernel mbuf's byte views (N6.5c review N3: no `unsafe`); a header in a shared cluster
+//!   is written copy-on-write, where the C writes the shared cluster.
 //! - The globals (`ip6_defhlim`, `ip6_forwarding`, `ip6_mtudisc_timeout`, ...) are the
 //!   kernel's (`kernel::netinet6::ip6_var`), `icmp6_mtudisc_timeout_q` is
 //!   `netinet6/icmp6.rs`'s, `rip6_usrreqs` `netinet6/raw_ip6.rs`'s; the prototypes by their `.c` files (`ip6_output` in
@@ -104,8 +106,9 @@ use crate::kern::subr_prf::panic;
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet6::in6::In6Addr;
 use crate::queue_adapter;
-use crate::sys::mbuf::{Mbuf, mtod};
+use crate::sys::mbuf::{M_DONTWAIT, Mbuf, mut_of};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry};
+use kernel::netinet::in_pcb::Hdr6;
 
 pub use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
 pub use kernel::netinet6::ip6_var::{
@@ -168,26 +171,43 @@ queue_adapter!(
 );
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.
-/// The data may sit at any alignment in the mbuf, so the header is copied out. Panics if the
-/// first mbuf is shorter than a header.
+/// The data may sit at any alignment in the mbuf, so the header is copied out of the first
+/// mbuf's bytes ([`Mbuf::data`]). Panics if the first mbuf is shorter than a header.
 pub fn mtod_ip6(m: &Mbuf) -> Ip6Hdr {
-    if (m.m_len().get() as usize) < size_of::<Ip6Hdr>() {
-        panic(format_args!("mtod_ip6: mbuf shorter than an ip6 header"));
+    let mut b = [0u8; size_of::<Ip6Hdr>()];
+    match m.data().get(..b.len()) {
+        Some(d) => b.copy_from_slice(d),
+        None => panic(format_args!("mtod_ip6: mbuf shorter than an ip6 header")),
     }
-    // SAFETY: the first mbuf holds at least `size_of::<Ip6Hdr>()` bytes (checked above); an
-    // `Ip6Hdr` is integers and bytes, valid for any bit pattern.
-    unsafe { core::ptr::read_unaligned(mtod::<Ip6Hdr>(m)) }
+    Ip6Hdr::from_bytes(b)
 }
 
-/// Writes `ip6` back as the IPv6 header at the start of `m`'s data (see [`mtod_ip6`]).
+/// Writes `ip6` back as the IPv6 header at the start of `m`'s data (see [`mtod_ip6`]), in
+/// place when the first mbuf's storage is writable ([`Mbuf::data_mut`] through `mut_of`, the
+/// adapters' one-owner convention: the caller owns the packet for the call). A header in
+/// read-only storage (a shared cluster) is written through the kernel's copy-on-write
+/// `m_copyback`, as `ip6_store` does, where the C writes the shared cluster in place; no
+/// caller hands one over (pf's packets have their headers in the driver's writable cluster
+/// or the stack's own mbufs, `ip6_mloopback` pulls its copy's header up), and the C cannot
+/// fail here, so a copy that cannot be had is `panic(9)`. Panics if the first mbuf is
+/// shorter than a header.
 pub fn mtod_ip6_store(m: &Mbuf, ip6: &Ip6Hdr) {
     if (m.m_len().get() as usize) < size_of::<Ip6Hdr>() {
         panic(format_args!(
             "mtod_ip6_store: mbuf shorter than an ip6 header"
         ));
     }
-    // SAFETY: as in `mtod_ip6`.
-    unsafe { core::ptr::write_unaligned(mtod::<Ip6Hdr>(m), *ip6) };
+    let b = ip6.to_bytes();
+    let m = mut_of(m);
+    if let Some(d) = m.data_mut() {
+        d[..b.len()].copy_from_slice(&b);
+        return;
+    }
+    if kernel::net::mbuf::m_copyback(m, 0, &b, M_DONTWAIT).is_err() {
+        panic(format_args!(
+            "mtod_ip6_store: no cluster for the copy of a read-only header"
+        ));
+    }
 }
 
 /* </CODE> */

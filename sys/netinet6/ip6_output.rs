@@ -146,9 +146,7 @@ use crate::sys::socket::AF_INET6;
 use crate::sys::socketvar::Socket;
 use crate::sys::systm::{kernel_lock, kernel_unlock};
 
-pub use kernel::netinet6::ip6_output::{
-    ip6_clearpktopts, ip6_initpktopts, ip6_setpktopts, ro_sin6,
-};
+pub use kernel::netinet6::ip6_output::{ip6_clearpktopts, ip6_setpktopts, ro_sin6};
 
 /// `ip6_id_ctx`: context for non-repeating IDs, behind its mutex (the module's deviations).
 static IP6_ID_CTX: Mutexed<Idgen32Ctx> = Mutexed::new(IPL_SOFTNET, Idgen32Ctx::zeroed());
@@ -240,12 +238,6 @@ pub fn ip6_randomid_init() {
     IP6_ID_CTX.lock().init();
 }
 
-/// `in6_delayed_cksum`: processes a delayed payload checksum calculation (the kernel's, on
-/// the packet `bsd`'s caller owns).
-pub fn in6_delayed_cksum(m: &Mbuf, nxt: u8) {
-    kernel::netinet6::ip6_output::in6_delayed_cksum(mut_of(m), nxt);
-}
-
 /// `in6_proto_cksum_out`: the upper-layer checksum of an outgoing packet (the kernel's, on the
 /// packet `bsd`'s caller owns).
 pub fn in6_proto_cksum_out(m: &Mbuf, ifp: Option<&Ifnet>) {
@@ -279,9 +271,10 @@ pub fn ip6_output_ipsec_lookup(
     let mut mtag = m_tag_first(m);
     while let Some(tag) = mtag {
         if tag.m_tag_id.get() == PACKET_TAG_IPSEC_OUT_DONE {
-            // SAFETY: `IPSEC_OUT_DONE` tags carry a `struct tdb_ident`.
-            let tdbi = unsafe { TdbIdent::read(tag.data()) };
-            if tdbi.spi == t.tdb_spi.get()
+            // `IPSEC_OUT_DONE` tags carry a `struct tdb_ident`: a copy of the tag's data
+            // (`PACKET_TAG_MAXSIZE` bytes, more than the structure), read through `hal::pod`.
+            if let Some(tdbi) = hal::pod::at::<TdbIdent>(&tag.bytes(), 0)
+                && tdbi.spi == t.tdb_spi.get()
                 && tdbi.proto == t.tdb_sproto.get()
                 && tdbi.rdomain == t.tdb_rdomain.get()
                 && tdbi.dst == t.tdb_dst.get()
