@@ -140,7 +140,6 @@
 //!   at the end of `in6_pcbconnect` and `in6_pcbset_addr`, after the table mutex as here).
 //! - `in6_pcbnotify` takes `cmdarg` as the C does and, as the C does, does not use it.
 
-use core::ffi::c_void;
 use core::mem::size_of;
 
 use crate::kern::subr_prf::panic;
@@ -278,7 +277,7 @@ pub fn in6_pcbnotify(
     lport_arg: u32,
     rtable: u32,
     cmd: i32,
-    cmdarg: *mut c_void,
+    cmdarg: Option<u32>,
     notify: Option<InpNotifyFn>,
 ) {
     // The command's argument is not used (as in C): the protocols read theirs from the
@@ -404,7 +403,8 @@ pub(crate) mod tests {
 
     /// An `INP_IPV6` control block of a raw IPv6 socket in `table`.
     fn pcb6(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INET6SW[3], SOCK_RAW, M_WAIT).expect("socket");
+        // INET6SW[2]: the raw IPv6 row (bsd's rows only since N6.5d).
+        let so = soalloc(&INET6SW[2], SOCK_RAW, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         let inp = pcb_of(so);
         assert!(inp.has_flags(INP_IPV6), "in_pcballoc marks PF_INET6 pcbs");
@@ -615,7 +615,7 @@ pub(crate) mod tests {
             u32::from(htons(1000)),
             0,
             PRC_UNREACH_PORT,
-            ptr::null_mut(),
+            None,
             Some(record),
         );
         assert_eq!(NOTIFIED.load(Ordering::Relaxed), 1);
@@ -635,7 +635,7 @@ pub(crate) mod tests {
             0,
             0,
             PRC_HOSTDEAD,
-            ptr::null_mut(),
+            None,
             Some(record),
         );
         assert_eq!(NOTIFIED.load(Ordering::Relaxed), 2);
@@ -652,21 +652,11 @@ pub(crate) mod tests {
                 0,
                 0,
                 PRC_MSGSIZE,
-                ptr::null_mut(),
+                None,
                 Some(record),
             );
         }
-        in6_pcbnotify(
-            t,
-            &sin6(f, 0),
-            0,
-            None,
-            0,
-            0,
-            PRC_MSGSIZE,
-            ptr::null_mut(),
-            None,
-        );
+        in6_pcbnotify(t, &sin6(f, 0), 0, None, 0, 0, PRC_MSGSIZE, None, None);
         assert_eq!(NOTIFIED.load(Ordering::Relaxed), 0);
         crate::sys::systm::net_unlock();
 
@@ -746,7 +736,7 @@ pub(crate) mod tests {
                 0,
                 0,
                 PRC_REDIRECT_HOST,
-                ptr::null_mut(),
+                None,
                 Some(record),
             );
             net_unlock_shared();

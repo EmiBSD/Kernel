@@ -136,10 +136,12 @@ use crate::{
     netinet6::icmp6::icmp6_error,
     netinet6::in6::{SockaddrIn6, sin6tosa_const},
     netinet6::in6_proto::IP6_FORWARDING,
-    netinet6::ip6_forward::ip6_forward,
+    netinet6::ip6_input::ip6_forward,
     netinet6::ip6_output::{in6_proto_cksum_out, ip6_fragment},
     netinet6::ip6_var::{mtod_ip6, mtod_ip6_store},
-    sys::mbuf::{MTag, MbufList, PACKET_TAG_PF_REASSEMBLED, PF_TAG_REFRAGMENTED, mtod},
+    sys::mbuf::{
+        MTag, MbufList, PACKET_TAG_PF_REASSEMBLED, PF_TAG_REFRAGMENTED, mtod, park, unpark,
+    },
     sys::socket::{AF_INET6, Sockaddr},
 };
 
@@ -1177,8 +1179,12 @@ fn pf_reassemble6(
     let proto = unsafe { *mtod::<u8>(n).add(off as usize) };
 
     'fail: {
-        // Delete frag6 header
-        if frag6_deletefraghdr(m, hdrlen as i32).is_err() {
+        // Delete frag6 header: the kernel's, over the packet's box, parked again (the same
+        // mbuf, which `*m0` names).
+        let mut k = unpark(m);
+        let deleted = frag6_deletefraghdr(&mut k, hdrlen as i32);
+        let m = park(k);
+        if deleted.is_err() {
             break 'fail;
         }
 

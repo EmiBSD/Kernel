@@ -197,7 +197,6 @@ use crate::netinet6::in6::{
 };
 use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcbnotify};
 use crate::netinet6::ip6_input::INET6CTLERRMAP;
-use crate::netinet6::ip6protosw::Ip6ctlparam;
 use crate::sys::endian::{htonl, htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_XDATA};
@@ -223,6 +222,7 @@ use crate::{
     sys::mbuf::MHLEN,
     sys::socket::PF_INET6,
 };
+use kernel::netinet6::icmp6::Ip6CtlParam;
 
 /// `TCB_INITIAL_HASH_SIZE`.
 const TCB_INITIAL_HASH_SIZE: i32 = 128;
@@ -818,14 +818,17 @@ pub fn tcp_notify(inp: &'static Inpcb, error: Option<Errno>) {
     sowwakeup(so);
 }
 
-/// `tcp6_ctlinput`: an ICMPv6 error about a segment we sent; `d` is the `Ip6ctlparam` of
-/// `icmp6_notify_error` (or NULL). `INET6`; compiled always, as `netinet6` is, for
-/// `inet6sw`.
+/// `tcp6_ctlinput`: an ICMPv6 error about a segment we sent; `d` is the kernel's
+/// `Ip6CtlParam` of `icmp6_notify_error` (or NULL). `INET6`; compiled always, as `netinet6`
+/// is, for `inet6sw`.
 ///
 /// # Safety
 ///
-/// `sa` points to a readable socket address of its `sa_len` bytes; `d` is NULL or the
-/// `Ip6ctlparam` of the ICMPv6 error, valid for the call.
+/// `PrCtlinputFn`'s contract, its `AF_INET6` clause: `sa` points at a readable socket address
+/// of its `sa_len` bytes, a `sockaddr_in6`'s bytes readable there; `d` is NULL or the
+/// ICMPv6 error's `struct ip6ctlparam`, the kernel's `kernel::netinet6::icmp6::Ip6CtlParam`
+/// that `icmp6_notify_error` lends through `Protocol::ctlinput`'s `CtlArg::Ip6`, alive for
+/// the call and read through `&` only (its final destination a `Cell`).
 pub unsafe fn tcp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut c_void) {
     let mut d = d;
     let mut notify: InpNotifyFn = tcp_notify;
@@ -858,30 +861,19 @@ pub unsafe fn tcp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
     }
 
     // if the parameter is from icmp6, decode it.
-    let ip6cp: Option<&Ip6ctlparam> = if d.is_null() {
+    let ip6cp: Option<&Ip6CtlParam<'_>> = if d.is_null() {
         None
     } else {
-        // SAFETY: the caller's contract: a non-NULL `d` is the ICMPv6 error's parameter.
-        Some(unsafe { &*d.cast::<Ip6ctlparam>() })
+        // SAFETY: the caller's contract: a non-NULL `d` points at the ICMPv6 error's
+        // `Ip6CtlParam`, alive and read through `&` only for the call.
+        Some(unsafe { &*d.cast::<Ip6CtlParam<'_>>() })
     };
-    let (m, ip6, off, sa6_src) = match ip6cp {
-        Some(p) => (
-            p.ip6c_m,
-            p.ip6c_ip6,
-            p.ip6c_off,
-            // SAFETY: `icmp6_notify_error` points `ip6c_src` at its source address, valid
-            // for the call; read unaligned.
-            (!p.ip6c_src.is_null()).then(|| unsafe { p.ip6c_src.read_unaligned() }),
-        ),
-        None => (None, ptr::null_mut(), 0, Some(SA6_ANY)),
-    };
-    let sa6_src = sa6_src.unwrap_or(SA6_ANY);
+    let sa6_src = ip6cp.map_or(SA6_ANY, |p| p.src);
 
-    if !ip6.is_null() {
-        // XXX: We assume that when ip6 is non NULL, M and OFF are valid.
-        let Some(m) = m else {
-            return;
-        };
+    if let Some(p) = ip6cp {
+        // XXX: We assume that when ip6 is non NULL, M and OFF are valid (the parameter
+        // carries the quoted header with them).
+        let (m, off) = (p.m, p.off);
 
         // check if we can safely examine src and dst ports
         if (m.m_pkthdr().len.get() as usize) < off as usize + 8 {
@@ -947,7 +939,7 @@ pub unsafe fn tcp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
             0,
             rdomain,
             cmd,
-            ptr::null_mut(),
+            None,
             Some(notify),
         );
     }
@@ -1151,7 +1143,7 @@ pub fn tcp6_mtudisc_callback(sin6: &SockaddrIn6, rdomain: u32) {
         0,
         rdomain,
         PRC_MSGSIZE,
-        ptr::null_mut(),
+        None,
         Some(tcp_mtudisc),
     );
 }

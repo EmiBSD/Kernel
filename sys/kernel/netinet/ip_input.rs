@@ -71,9 +71,10 @@
 //! - `IPSEC` is configured: `ipsec_in_use`, `ipsec_forward_check`, `ipsec_local_check`,
 //!   `ipsec_init` and `ipsec_sysctl` are the `Ipsec` bridge's legs (`bsd`'s until N8); any
 //!   refusal of the checks drops the packet, as the C's non-zero.
-//! - `INET6` is configured and IPv6 is `bsd`'s until N6.5: `ip_deliver`'s IPv6 steps
-//!   (`inet6sw[ip6_protox[nxt]]`, the `ip6stat` counters, `ip6_hdrnestlimit`,
-//!   `ip6_ours_enqueue`) are the `Inet` bridge's legs.
+//! - `INET6` is configured: `ip_deliver`'s IPv6 steps (the `ip6stat` counters,
+//!   `ip6_hdrnestlimit`, `ip6_ours_enqueue`) are the kernel's IPv6 input's
+//!   (`kernel::netinet6::ip6_input`, N6.5d); `inet6sw[ip6_protox[nxt]]` is
+//!   `kernel::netinet6::in6_proto::inet6_protocol`'s.
 //! - Not configured, each a comment at its site: `NCARP` (`carp_lsdrop`,
 //!   `carp_strict_addr_chk`) and `MROUTING` (`ip_mforward`, `ip_mrouter_active`, `mrt_init`;
 //!   the `mrt` sysctls answer `EOPNOTSUPP` as the C's `#else` does).
@@ -185,8 +186,7 @@ use hal::sys::sysctl::SysctlBoundedArgs;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{
-    Ip6Deliver, if_get, if_put, ifa_ifwithaddr, ifaof_ifpforaddr, inet, net_tq, niq_enqueue,
-    sysctl_niq,
+    if_get, if_put, ifa_ifwithaddr, ifaof_ifpforaddr, net_tq, niq_enqueue, sysctl_niq,
 };
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue};
 use crate::net::ipsec_hooks::ipsec;
@@ -219,7 +219,7 @@ use crate::netinet::in_pcb::{
     IPPORT_FIRSTAUTO, IPPORT_LASTAUTO, Inpcb, ROOTONLYPORTS, dp_set, ipport_hifirstauto,
     ipport_hilastauto,
 };
-use crate::netinet::in_proto::{inet6_protocol, inetsw_init, ip_protocol};
+use crate::netinet::in_proto::{inetsw_init, ip_protocol};
 use crate::netinet::in_var::InIfaddr;
 use crate::netinet::ip_icmp::{IP_MTUDISC_TIMEOUT_Q, icmp_error, iptime};
 use crate::netinet::ip_id::ip_randomid_init;
@@ -229,11 +229,15 @@ use crate::netinet::ip_var::{
     IPCOUNTERS, IPMTUDISCTIMEOUT, IPMULTIPATH, IPS_NCOUNTERS, Ipoffnxt, Ipq, IpqList, Ipqent,
     IpqentList, IpstatCounters, ip_mtudisc, ipstat_dec, ipstat_inc,
 };
+use crate::netinet6::in6_proto::inet6_protocol;
+use crate::netinet6::ip6_input::ip6_ours_enqueue;
+use crate::netinet6::ip6_var::{IP6_HDRNESTLIMIT, ip6stat_dec, ip6stat_inc};
 use crate::proc::ProcGlue;
 use crate::sysctl::{
     SYSCTL_LOCK, SysctlReq, bounded_arr, int_bounded, rdint, rdstruct, securelevel_int,
 };
 use crate::task::{Task, task_add};
+use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
 /// `sizeof(struct ip)`.
 const IP_HDR_LEN: usize = size_of::<Ip>();
@@ -984,14 +988,14 @@ fn ip_fragcheck_locked(
     datagram.map_or(Frag::Done, Frag::Reassembled)
 }
 
-/// `IPSTAT_INC(name)` of `ip_deliver`: the IPv4 counter `v4`, or the IPv6 one `v6` (the `Inet`
-/// bridge's, IPv6 being `bsd`'s until N6.5) when `af` is not `AF_INET`.
+/// `IPSTAT_INC(name)` of `ip_deliver`: the IPv4 counter `v4`, or the IPv6 one `v6` when `af`
+/// is not `AF_INET`.
 #[inline]
-fn ipstat_af(af: i32, v4: IpstatCounters, v6: Ip6Deliver) {
+fn ipstat_af(af: i32, v4: IpstatCounters, v6: Ip6statCounters) {
     if af == i32::from(AF_INET) {
         ipstat_inc(v4);
-    } else if let Some(i) = inet() {
-        i.ip6stat_deliver(v6);
+    } else {
+        ip6stat_inc(v6);
     }
 }
 
@@ -1018,7 +1022,11 @@ pub fn ip_deliver<G: ProcGlue>(
     let mut nest = 0;
 
     // Tell launch routine the next header
-    ipstat_af(af, IpstatCounters::IpsDelivered, Ip6Deliver::Delivered);
+    ipstat_af(
+        af,
+        IpstatCounters::IpsDelivered,
+        Ip6statCounters::Ip6sDelivered,
+    );
 
     'bad: {
         while nxt != IPPROTO_DONE {
@@ -1038,21 +1046,14 @@ pub fn ip_deliver<G: ProcGlue>(
                     ipstat_dec(IpstatCounters::IpsDelivered);
                     return ip_ours_enqueue::<G>(mp, offp, nxt);
                 }
-                if let Some(i) = inet() {
-                    i.ip6stat_deliver(Ip6Deliver::Undelivered);
-                    if let Some(m) = mp.take() {
-                        i.ip6_ours_enqueue(m, *offp, nxt);
-                    }
-                }
-                return IPPROTO_DONE;
+                ip6stat_dec(Ip6statCounters::Ip6sDelivered);
+                return ip6_ours_enqueue::<G>(mp, offp, nxt);
             }
 
             if af == i32::from(AF_INET6) {
                 nest += 1;
-                if nest > inet().map_or(0, crate::net::if_::Inet::ip6_hdrnestlimit) {
-                    if let Some(i) = inet() {
-                        i.ip6stat_deliver(Ip6Deliver::Toomanyhdr);
-                    }
+                if nest > IP6_HDRNESTLIMIT.load(Ordering::Relaxed) {
+                    ip6stat_inc(Ip6statCounters::Ip6sToomanyhdr);
                     break 'bad;
                 }
             }
@@ -1063,7 +1064,11 @@ pub fn ip_deliver<G: ProcGlue>(
                 return IPPROTO_DONE;
             };
             if m.m_pkthdr().len.get() < *offp {
-                ipstat_af(af, IpstatCounters::IpsTooshort, Ip6Deliver::Tooshort);
+                ipstat_af(
+                    af,
+                    IpstatCounters::IpsTooshort,
+                    Ip6statCounters::Ip6sTooshort,
+                );
                 break 'bad;
             }
 
@@ -1071,7 +1076,11 @@ pub fn ip_deliver<G: ProcGlue>(
                 && i.in_use()
                 && i.local_check(m, *offp, nxt, af)
             {
-                ipstat_af(af, IpstatCounters::IpsCantforward, Ip6Deliver::Cantforward);
+                ipstat_af(
+                    af,
+                    IpstatCounters::IpsCantforward,
+                    Ip6statCounters::Ip6sCantforward,
+                );
                 break 'bad;
             }
             // Otherwise, just fall through and deliver the packet
@@ -1082,9 +1091,7 @@ pub fn ip_deliver<G: ProcGlue>(
                     i32::from(AF_INET)
                 }
                 IPPROTO_IPV6 => {
-                    if let Some(i) = inet() {
-                        i.ip6stat_deliver(Ip6Deliver::Delivered);
-                    }
+                    ip6stat_inc(Ip6statCounters::Ip6sDelivered);
                     i32::from(AF_INET6)
                 }
                 _ => af,
@@ -2460,7 +2467,13 @@ pub(crate) mod tests {
         fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
             None
         }
-        fn ctlinput(&self, cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _ip: Option<&[u8]>) {
+        fn ctlinput(
+            &self,
+            cmd: i32,
+            _sa: SockaddrView<'_>,
+            _rdomain: u32,
+            _arg: crate::net::proto::CtlArg<'_>,
+        ) {
             self.ctl.store(cmd, Ordering::Relaxed);
         }
         fn input(

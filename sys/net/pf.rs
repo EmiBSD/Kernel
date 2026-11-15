@@ -9892,7 +9892,7 @@ pub fn pf_test(af: SaFamily, fwdir: u8, ifp: &'static Ifnet, m0: &mut Option<&'s
                                     break 'out;
                                 }
                             }
-                            crate::netinet6::ip6_forward::ip6_forward(m, None, flags);
+                            crate::netinet6::ip6_input::ip6_forward(m, None, flags);
                         } else {
                             let _ = crate::netinet6::ip6_output::ip6_output(
                                 m, None, None, 0, None, None,

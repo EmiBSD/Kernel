@@ -245,8 +245,9 @@ pub type PrInputFn =
 /// its address whole once the family matches). `arg` is NULL or what the family passes, valid
 /// for the call and only read: for `AF_INET`, the IP header an ICMP message returns,
 /// `ICMP_MINLEN` into that message, which is contiguous and holds the ICMP header, the
-/// returned header whole and 8 bytes after it (`ICMP_ADVLEN`); for `AF_INET6`, a `struct
-/// ip6ctlparam`.
+/// returned header whole and 8 bytes after it (`ICMP_ADVLEN`); for `AF_INET6`, the ICMPv6
+/// error's `struct ip6ctlparam`, the kernel's typed `kernel::netinet6::icmp6::Ip6CtlParam`
+/// (N6.5d), alive for the call and read through `&` only (its final destination a `Cell`).
 pub type PrCtlinputFn = unsafe fn(i32, *const Sockaddr, u32, *mut c_void);
 
 /// `int (*pr_sysctl)(int *, u_int, void *, size_t *, void *, size_t)`: sysctl for protocol.

@@ -98,6 +98,7 @@ use crate::net::domain::Domain;
 use crate::net::if_var::{Ifnet, Netstack};
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::socket::{SoLocked, Socket};
+use crate::netinet6::icmp6::Ip6CtlParam;
 use crate::proc::{ProcGlue, Thread};
 
 /// 2 slow timeouts per second.
@@ -223,6 +224,21 @@ impl<'a> SockaddrView<'a> {
     }
 }
 
+/// The argument of a protocol's control input (`pr_ctlinput`'s `void *`, whose type the C
+/// gives by family): nothing (the C's NULL: `pfctlinput`, a path MTU increase), the ICMP
+/// message that returned an IPv4 header (from its type byte; the C's `&icp->icmp_ip` is
+/// `ICMP_MINLEN` into it), or the ICMPv6 error's [`Ip6CtlParam`] (`struct ip6ctlparam`).
+/// A protocol reads the argument of its own family only.
+#[derive(Clone, Copy)]
+pub enum CtlArg<'a> {
+    /// NULL.
+    None,
+    /// An ICMP message quoting an IPv4 header (`AF_INET`'s argument).
+    Ip(&'a [u8]),
+    /// An ICMPv6 error's parameter (`AF_INET6`'s argument).
+    Ip6(&'a Ip6CtlParam<'a>),
+}
+
 /// `struct protosw`: a protocol of a domain.
 pub trait Protocol<G: ProcGlue>: Sync + 'static {
     /// `pr_domain`: domain protocol a member of.
@@ -236,10 +252,9 @@ pub trait Protocol<G: ProcGlue>: Sync + 'static {
     /// `pr_usrreqs`: the user requests; `None` for an entry sockets cannot be made of
     /// (`socreate`'s `EPROTONOSUPPORT`).
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>>;
-    /// `pr_ctlinput(cmd, sa, rdomain, ip)`: control input (from below); `ip` the ICMP message
-    /// that returned the offending IPv4 header (from its type byte; the C's `&icp->icmp_ip`
-    /// is `ICMP_MINLEN` into it), `None` for the C's NULL. Nothing when the C's entry is NULL.
-    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _ip: Option<&[u8]>) {}
+    /// `pr_ctlinput(cmd, sa, rdomain, arg)`: control input (from below), the argument by its
+    /// family ([`CtlArg`]). Nothing when the C's entry is NULL.
+    fn ctlinput(&self, _cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _arg: CtlArg<'_>) {}
     /// `pr_input(mp, offp, proto, af, ns)`: the protocol's input of the packet `*mp` whose
     /// header is at `*offp`, under the net lock (`net`); `IPPROTO_DONE` once the packet is
     /// consumed, or the next protocol with `*mp` and `*offp` at its header. The C's NULL entry

@@ -78,17 +78,16 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv6 implementation variables: statistics, the reassembly queues, the multicast and
-//! packet options, the `ip6_output` flags: `<netinet6/ip6_var.h>`.
+//! IPv6 implementation variables: statistics, the multicast and packet options, the `ip6_output` flags: `<netinet6/ip6_var.h>`.
 //!
 //! Upstream: sys/netinet6/ip6_var.h @ 3ce1f3f79392
 //!
 //! ## Deviations
 //! - `struct ip6stat`, `enum ip6stat_counters` (`hal::sys::netinet6_ip6_var`), the flags, the
 //!   counters and their increments (`kernel::netinet6::ip6_var`) are re-exported (N6.5a).
-//! - `struct ip6q` and `struct ip6asfrag` hold `Cell`s (they change under `frag6_mutex`);
-//!   `struct ip6_moptions` and `struct ip6_pktopts` are the kernel's since N6.5c
-//!   (`kernel::netinet6::ip6_var`), re-exported.
+//! - `struct ip6_moptions` and `struct ip6_pktopts` (N6.5c) and `struct ip6q` and `struct
+//!   ip6asfrag` (N6.5d: the reassembly is the kernel's, `kernel::netinet6::frag6`) are the
+//!   kernel's (`kernel::netinet6::ip6_var`); the first two are re-exported.
 //! - `mtod_ip6` and `mtod_ip6_store` read and write the IPv6 header at the start of an
 //!   mbuf as a copy, as `mtod_ip` does for `struct ip` (`netinet/ip_var.rs`), through the
 //!   kernel mbuf's byte views (N6.5c review N3: no `unsafe`); a header in a shared cluster
@@ -99,15 +98,11 @@
 //!   `netinet6/ip6_output.rs`, `ip6_input_if` in `netinet6/ip6_input.rs`, ...). `ip6_mrouter[]`, `ip6_mrouter_active` and `ip6_mforward`
 //!   (`netinet6/ip6_mroute.c`) are not compiled: `MROUTING` is not configured.
 
-use core::cell::Cell;
 use core::mem::size_of;
 
 use crate::kern::subr_prf::panic;
 use crate::netinet::ip6::Ip6Hdr;
-use crate::netinet6::in6::In6Addr;
-use crate::queue_adapter;
 use crate::sys::mbuf::{M_DONTWAIT, Mbuf, mut_of};
-use crate::sys::queue::{ListEntry, ListHead, TailqEntry};
 use kernel::netinet::in_pcb::Hdr6;
 
 pub use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
@@ -116,59 +111,6 @@ pub use kernel::netinet6::ip6_var::{
     IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_MINMTU, IPV6_REDIRECT, IPV6_UNSPECSRC,
     Ip6Moptions, Ip6OutOpts, Ip6Pktopts, ip6stat_add, ip6stat_dec, ip6stat_inc, ip6stat_inc_idx,
 };
-
-/// `struct ip6q`: IP6 reassembly queue structure. Each fragment being reassembled is
-/// attached to one of these structures.
-pub struct Ip6q {
-    /// `ip6q_queue`.
-    pub ip6q_queue: TailqEntry<Ip6q>,
-    /// `ip6q_asfrag`: the fragments.
-    pub ip6q_asfrag: ListHead<Ip6asfragList>,
-    /// `ip6q_src`.
-    pub ip6q_src: Cell<In6Addr>,
-    /// `ip6q_dst`.
-    pub ip6q_dst: Cell<In6Addr>,
-    /// Len of unfragmentable part.
-    pub ip6q_unfrglen: Cell<i32>,
-    /// # of fragments.
-    pub ip6q_nfrag: Cell<i32>,
-    /// Routing domain for reassembly.
-    pub ip6q_rdomain: Cell<u32>,
-    /// Fragment identification.
-    pub ip6q_ident: Cell<u32>,
-    /// `ip6f_nxt` in first fragment.
-    pub ip6q_nxt: Cell<u8>,
-    /// `ip6q_ecn`.
-    pub ip6q_ecn: Cell<u8>,
-    /// Time to live in slowtimo units.
-    pub ip6q_ttl: Cell<u8>,
-}
-
-queue_adapter!(
-    /// `TAILQ_HEAD(ip6q_head, ip6q)` through `ip6q_queue`: `frag6_queue`.
-    pub Ip6qList: Ip6q, ip6q_queue => TailqEntry<Ip6q>
-);
-
-/// `struct ip6asfrag`: a fragment on a reassembly queue.
-pub struct Ip6asfrag {
-    /// `ip6af_list`.
-    pub ip6af_list: ListEntry<Ip6asfrag>,
-    /// `ip6af_m`.
-    pub ip6af_m: Cell<Option<&'static Mbuf>>,
-    /// Offset in `ip6af_m` to next header.
-    pub ip6af_offset: Cell<i32>,
-    /// Fragmentable part length.
-    pub ip6af_frglen: Cell<i32>,
-    /// Fragment offset.
-    pub ip6af_off: Cell<i32>,
-    /// More fragment bit in frag off.
-    pub ip6af_mff: Cell<u16>,
-}
-
-queue_adapter!(
-    /// `LIST_HEAD(ip6asfrag_list, ip6asfrag)` through `ip6af_list`.
-    pub Ip6asfragList: Ip6asfrag, ip6af_list => ListEntry<Ip6asfrag>
-);
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.
 /// The data may sit at any alignment in the mbuf, so the header is copied out of the first

@@ -630,7 +630,12 @@ pub fn icmp_input_if<G: ProcGlue>(
             if let Some(pr) = ip_protocol::<G>(i32::from(icp.icmp_ip().ip_p)) {
                 // The message, from its type byte (`&icp->icmp_ip` is ICMP_MINLEN into it).
                 let msg = m.data().get(hlen..).unwrap_or(&[]);
-                pr.ctlinput(code, view(&sin), m.m_pkthdr().ph_rtableid.get(), Some(msg));
+                pr.ctlinput(
+                    code,
+                    view(&sin),
+                    m.m_pkthdr().ph_rtableid.get(),
+                    crate::net::proto::CtlArg::Ip(msg),
+                );
             }
             Then::Raw
         };
@@ -1261,7 +1266,12 @@ pub fn icmp_mtudisc_timeout<G: ProcGlue>(
 
         // Notify TCP layer of increased Path MTU estimate
         if let Some(pr) = ip_protocol::<G>(IPPROTO_TCP) {
-            pr.ctlinput(PRC_MTUINC, view(&sin), rtableid, None);
+            pr.ctlinput(
+                PRC_MTUINC,
+                view(&sin),
+                rtableid,
+                crate::net::proto::CtlArg::None,
+            );
         }
     } else if rt.rt_locks().get() & RTV_MTU == 0 {
         rt.rt_mtu().store(0, Ordering::Relaxed);

@@ -911,7 +911,7 @@ mod tests {
         crate::kern::uipc_socket::soinit();
         let p = thread();
         let so = crate::kern::uipc_socket::soalloc(
-            &crate::netinet::in_proto::INETSW[1],
+            &crate::netinet::in_proto::INETSW[0],
             SOCK_DGRAM,
             M_WAIT,
         )

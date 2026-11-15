@@ -145,7 +145,7 @@ mod tests {
     use crate::netinet::in_::IPPROTO_ICMPV6;
     use crate::netinet::ip_input::tests::setup as setup_ip;
     use crate::netinet::ip6::{IP6OPT_PADN, IP6OPT_ROUTER_ALERT, IPV6_VERSION, Ip6Hdr};
-    use crate::netinet6::icmp6::{ICMP6COUNTERS, icmp6_init};
+    use crate::netinet6::icmp6::ICMP6COUNTERS;
     use crate::netinet6::in6::tests::{a6, test_ia6, test_if};
     use crate::netinet6::in6::{
         IN6ADDR_ANY, IN6ADDR_LINKLOCAL_ALLNODES, IN6ADDR_LINKLOCAL_ALLROUTERS, In6Addr,
@@ -159,6 +159,7 @@ mod tests {
     use crate::sys::mbuf::{M_LOOP, Mbuf, unpark};
     use crate::sys::protosw::PR_FASTHZ;
     use crate::sys::systm::{net_lock, net_unlock};
+    use kernel::netinet6::icmp6::icmp6_init;
 
     /// `mld6_input(m, off)` under the net lock, as `icmp6_input` calls it.
     fn input(m: &'static Mbuf, off: i32) {

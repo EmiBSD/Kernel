@@ -120,9 +120,10 @@
 //!
 //! IP, ICMP, UDP, TCP, raw IP, IP-in-IP, IGMP, AH, ESP and IPComp, in the C's order. Since
 //! N6.4c2 the domain and `ip_protox[]` are the kernel's (`kernel::netinet::in_proto`), and so
-//! are the IP, ICMP and IGMP entries: their rows here keep only what `bsd`'s own lookups read
-//! (`pffindproto` over `bsd`'s `domains[]`); `bsd`'s `sys/kern/uipc_domain.rs` hands the
-//! kernel the table of its entries and the kernel's.
+//! are the IP, ICMP and IGMP entries, which have no row here since N6.5d (`bsd`'s
+//! `pffindproto`, the last reader of their data-only rows, went with `bsd`'s `ip6_init`);
+//! `bsd`'s `sys/kern/uipc_domain.rs` hands the kernel the table of its entries and the
+//! kernel's.
 //!
 //! Status: `ported` (M7b). The licence block carries the NRL notice with its advertising
 //! clause, accepted as BSD-4 (`.claude/rules/scope-and-stubs.md`).
@@ -145,8 +146,8 @@ use crate::net::if_pfsync::{pfsync_input4, pfsync_sysctl};
 #[cfg(feature = "inet6")]
 use crate::netinet::in_::IPPROTO_IPV6;
 use crate::netinet::in_::{
-    IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_ICMP, IPPROTO_IGMP, IPPROTO_IPCOMP,
-    IPPROTO_IPV4, IPPROTO_PFSYNC, IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
+    IPPROTO_AH, IPPROTO_DIVERT, IPPROTO_ESP, IPPROTO_IPCOMP, IPPROTO_IPV4, IPPROTO_PFSYNC,
+    IPPROTO_RAW, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn,
 };
 use crate::netinet::in_pcb::in_init;
 use crate::netinet::ip_divert::{DIVERT_USRREQS, divert_init, divert_sysctl};
@@ -169,13 +170,10 @@ use crate::sys::protosw::{
 };
 use crate::sys::socket::{AF_INET, SOCK_DGRAM, SOCK_RAW, SOCK_STREAM};
 
-/// `inetsw[]`: the internet protocols.
-pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
-    // IP: the kernel's (kernel::netinet::in_proto::IpProtocol); a row of bsd's lookups.
-    Protosw {
-        pr_flags: PR_MPSYSCTL,
-        ..Protosw::new(&INETDOMAIN)
-    },
+/// `inetsw[]`'s rows that are `bsd`'s, in the C's order (the IP, ICMP and IGMP entries between
+/// them are the kernel's: `sys/kern/uipc_domain.rs`'s `INET_PROTOS` is the whole table).
+pub static INETSW: [Protosw; 10 + cfg!(feature = "inet6") as usize] = [
+    // IP: the kernel's (kernel::netinet::in_proto::IpProtocol).
     Protosw {
         pr_type: SOCK_DGRAM as i16,
         pr_protocol: IPPROTO_UDP as i16,
@@ -215,15 +213,7 @@ pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
         pr_usrreqs: Some(&RIP_USRREQS),
         ..Protosw::new(&INETDOMAIN)
     },
-    // ICMP: the kernel's (kernel::netinet::in_proto::IcmpProtocol); a row of bsd's lookups.
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_ICMP as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_ctloutput: Some(rip_ctloutput),
-        pr_usrreqs: Some(&RIP_USRREQS),
-        ..Protosw::new(&INETDOMAIN)
-    },
+    // ICMP: the kernel's (kernel::netinet::in_proto::IcmpProtocol).
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_IPV4 as i16,
@@ -248,15 +238,7 @@ pub static INETSW: [Protosw; 13 + cfg!(feature = "inet6") as usize] = [
         ..Protosw::new(&INETDOMAIN)
     },
     // MPLS && NGIF > 0: IPPROTO_MPLS through in_gif_input; not configured.
-    // IGMP: the kernel's (kernel::netinet::in_proto::IgmpProtocol); a row of bsd's lookups.
-    Protosw {
-        pr_type: SOCK_RAW as i16,
-        pr_protocol: IPPROTO_IGMP as i16,
-        pr_flags: PR_ATOMIC | PR_ADDR | PR_MPSYSCTL,
-        pr_ctloutput: Some(rip_ctloutput),
-        pr_usrreqs: Some(&RIP_USRREQS),
-        ..Protosw::new(&INETDOMAIN)
-    },
+    // IGMP: the kernel's (kernel::netinet::in_proto::IgmpProtocol).
     Protosw {
         pr_type: SOCK_RAW as i16,
         pr_protocol: IPPROTO_AH as i16,

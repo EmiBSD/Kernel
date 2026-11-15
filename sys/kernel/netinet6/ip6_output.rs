@@ -761,6 +761,7 @@ pub fn ip6_output(
                 hbhlen - size_of::<Ip6Hbh>() as i32,
                 &mut rtalert,
                 &mut jumboplen,
+                net,
             );
             let Some(mm) = mp.filter(|_| ok) else {
                 // m was already freed at this point

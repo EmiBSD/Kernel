@@ -77,7 +77,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::netlock::{NETLOCK, NetHeld};
 
 use crate::net::domain::net;
-use crate::net::if_::{inet, net_tq};
+use crate::net::if_::net_tq;
 use crate::proc::ProcGlue;
 use crate::task::task_add;
 
@@ -135,10 +135,10 @@ pub(crate) fn if_netisr<G: ProcGlue>(_unused: *mut c_void) {
         {
             crate::netinet::ip_input::ipintr::<G>(&net);
         }
-        if let Some(inet) = inet()
-            && n & (1 << NETISR_IPV6) != 0
+        if n & (1 << NETISR_IPV6) != 0
+            && let Some(net) = NetHeld::of(&w)
         {
-            inet.ip6intr();
+            crate::netinet6::ip6_input::ip6intr::<G>(&net);
         }
         // NPPP > 0: NETISR_PPP runs pppintr() under the kernel lock; ppp(4) is not configured.
         // NBRIDGE > 0: NETISR_BRIDGE runs bridgeintr(); bridge(4) is not configured.

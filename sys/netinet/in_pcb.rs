@@ -804,7 +804,7 @@ pub(crate) mod tests {
 
     /// A UDP socket with a control block in `table`.
     fn pcb(table: &'static Inpcbtable) -> &'static Inpcb {
-        let so = soalloc(&INETSW[1], SOCK_DGRAM, M_WAIT).expect("socket");
+        let so = soalloc(&INETSW[0], SOCK_DGRAM, M_WAIT).expect("socket");
         in_pcballoc(so, table, M_WAIT).expect("in_pcballoc");
         sotoinpcb(so).expect("attached")
     }

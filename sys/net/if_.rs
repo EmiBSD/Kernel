@@ -164,11 +164,6 @@ use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6::satosin6_const;
 #[cfg(feature = "inet6")]
-#[cfg(feature = "inet6")]
-use crate::netinet6::in6_proto::IP6_FORWARDING;
-#[cfg(feature = "inet6")]
-use crate::netinet6::ip6_input::{ip6intr, ipv6_input};
-#[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
@@ -348,34 +343,22 @@ pub fn ipv4_input_proto(
     kernel::netinet::ip_input::ipv4_input::<crate::kern::proc_glue::BsdProcGlue>(ifp, m, ns, net);
 }
 
-/// `ipv6_input` as the kernel's `if_input_proto` takes it.
+/// `ipv6_input` as the kernel's `if_input_proto` takes it (the kernel's own, N6.5d).
 #[cfg(feature = "inet6")]
 pub fn ipv6_input_proto(
     ifp: &'static Ifnet,
     m: kernel::net::mbuf::MbufBox,
     ns: Option<&mut Netstack>,
-    _net: &hal::netlock::NetHeld<'_>,
+    net: &hal::netlock::NetHeld<'_>,
 ) {
-    ipv6_input(ifp, park(m), ns);
+    kernel::netinet6::ip6_input::ipv6_input::<crate::kern::proc_glue::BsdProcGlue>(ifp, m, ns, net);
 }
 
 impl kernel::net::if_::Inet for BsdNetLegs {
-    fn ip6intr(&self) {
-        #[cfg(feature = "inet6")]
-        ip6intr();
-    }
-
     fn tcp_input_mlist(&self, ml: &mut kernel::net::mbuf::MbufList, af: SaFamily) {
         let l = MbufList::new();
         l.change(|b| kernel::net::mbuf::ml_enlist(b, ml));
         tcp_input_mlist(&l, i32::from(af));
-    }
-
-    fn ipv6_input(&self) -> kernel::net::if_::ProtoFn {
-        #[cfg(feature = "inet6")]
-        return ipv6_input_proto;
-        #[cfg(not(feature = "inet6"))]
-        ipv4_input_proto
     }
 
     fn tcpstat_lro(&self, hw: bool) {
@@ -386,45 +369,8 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         });
     }
 
-    fn ip6_forwarding(&self) -> bool {
-        #[cfg(feature = "inet6")]
-        return IP6_FORWARDING.load(Ordering::Relaxed) != 0;
-        #[cfg(not(feature = "inet6"))]
-        false
-    }
-
     fn ip6_randomid(&self) -> u32 {
         crate::netinet6::ip6_output::ip6_id_generate()
-    }
-
-    fn icmp6_error(&self, m: kernel::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::icmp6::icmp6_error(park(m), type_, code, param);
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = (type_, code, param);
-            drop(m);
-        }
-    }
-
-    fn ip6_multipath(&self) -> bool {
-        #[cfg(feature = "inet6")]
-        return crate::netinet6::in6_proto::IP6_MULTIPATH.load(Ordering::Relaxed) != 0;
-        #[cfg(not(feature = "inet6"))]
-        false
-    }
-
-    fn ip6stat_rtcache(&self, hit: bool) {
-        #[cfg(feature = "inet6")]
-        {
-            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_inc};
-            ip6stat_inc(if hit {
-                Ip6statCounters::Ip6sRtcachehit
-            } else {
-                Ip6statCounters::Ip6sRtcachemiss
-            });
-        }
-        let _ = hit;
     }
 
     fn tcp_if_output_tso(
@@ -474,55 +420,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
 
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
         f(&net_held("if_input_proto"));
-    }
-
-    fn ip6_protox(&self, nxt: i32) -> Option<usize> {
-        #[cfg(feature = "inet6")]
-        return crate::netinet6::in6_proto::IP6_PROTOX
-            .get(usize::try_from(nxt).ok()?)
-            .map(|p| usize::from(p.load(Ordering::Relaxed)));
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = nxt;
-            None
-        }
-    }
-
-    fn ip6stat_deliver(&self, c: kernel::net::if_::Ip6Deliver) {
-        #[cfg(feature = "inet6")]
-        {
-            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_dec, ip6stat_inc};
-            use kernel::net::if_::Ip6Deliver;
-            match c {
-                Ip6Deliver::Delivered => ip6stat_inc(Ip6statCounters::Ip6sDelivered),
-                Ip6Deliver::Undelivered => ip6stat_dec(Ip6statCounters::Ip6sDelivered),
-                Ip6Deliver::Toomanyhdr => ip6stat_inc(Ip6statCounters::Ip6sToomanyhdr),
-                Ip6Deliver::Tooshort => ip6stat_inc(Ip6statCounters::Ip6sTooshort),
-                Ip6Deliver::Cantforward => ip6stat_inc(Ip6statCounters::Ip6sCantforward),
-            }
-        }
-        let _ = c;
-    }
-
-    fn ip6_hdrnestlimit(&self) -> i32 {
-        #[cfg(feature = "inet6")]
-        return crate::netinet6::in6_proto::IP6_HDRNESTLIMIT.load(Ordering::Relaxed);
-        #[cfg(not(feature = "inet6"))]
-        0
-    }
-
-    fn ip6_ours_enqueue(&self, m: kernel::net::mbuf::MbufBox, off: i32, nxt: i32) {
-        #[cfg(feature = "inet6")]
-        {
-            let mut mp = Some(park(m));
-            let mut off = off;
-            let _ = crate::netinet6::ip6_input::ip6_ours_enqueue(&mut mp, &mut off, nxt);
-        }
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = (off, nxt);
-            drop(m);
-        }
     }
 }
 
@@ -703,12 +600,6 @@ pub(crate) fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
         Some(h) => h,
         None => panic(format_args!("{what}: the net lock is not held")),
     }
-}
-
-/// `ifa_ifwithaddr(addr, rtableid)` of a socket address's bytes (a routing table's preferred
-/// source, a copy): the kernel's, under `bsd`'s net lock.
-pub fn ifa_ifwithaddr_sa(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
-    kernel::net::if_::ifa_ifwithaddr(&net_held("ifa_ifwithaddr"), addr, rtableid)
 }
 
 /// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.
@@ -1154,6 +1045,9 @@ pub(crate) mod tests {
         // ND's neighbor cache and DAD records (N6.5b), as ARP's.
         kernel::netinet6::nd6::nd6_test_reset();
         kernel::netinet6::nd6_nbr::dad_test_reset();
+        kernel::netinet6::frag6::frag6_test_reset();
+        kernel::netinet6::icmp6::icmp6_test_reset();
+        kernel::netinet6::ip6_input::ip6_test_reset();
         guard
     }
 
@@ -1308,7 +1202,7 @@ pub(crate) mod tests {
         ifp.if_flags.set(IFF_UP);
         if_attach(ifp);
         let so = crate::kern::uipc_socket::soalloc(
-            &crate::netinet::in_proto::INETSW[1],
+            &crate::netinet::in_proto::INETSW[0],
             crate::sys::socket::SOCK_DGRAM,
             crate::sys::mbuf::M_WAIT,
         )

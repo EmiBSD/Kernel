@@ -270,6 +270,7 @@ use crate::netinet::if_ether::{
     sdl_lladdr,
 };
 use crate::netinet::in_pcb::In6AddrCell;
+use crate::netinet6::icmp6::icmp6_error;
 use crate::netinet6::in6::{
     ifa6_is_deprecated, ifa6_is_invalid, in6_addmulti, in6_delmulti, in6_lookupmulti,
     in6_purgeaddr, in6ifa_ifpwithaddr,
@@ -604,15 +605,6 @@ fn net_assert_locked_exclusive() {
     kassert!(hal::netlock::status() == RW_WRITE);
 }
 
-/// `icmp6_error(m, type, code, param)`: through the `Inet` leg until ICMPv6 moves (N6.5d);
-/// the packet freed without it.
-fn icmp6_error(m: MbufBox, type_: u8, code: u8, param: i32) {
-    match inet() {
-        Some(i) => i.icmp6_error(m, type_, code, param),
-        None => drop(m),
-    }
-}
-
 /// `nd6_init`: the neighbor cache pool, and the slow timer started (the timeouts and the
 /// expiry task are set by their `static`s).
 pub fn nd6_init() {
@@ -906,7 +898,7 @@ pub fn nd6_llinfo_timer(rt: &PoolArc<Rtentry>, i_am_router: bool, net: &NetHeld<
                 // XXX: should we consider older rcvif?
                 m.m_pkthdr().ph_ifidx.set(rt.rt_ifidx.get());
 
-                icmp6_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, 0);
+                icmp6_error(m, ICMP6_DST_UNREACH, ICMP6_DST_UNREACH_ADDR, 0, net);
             }
             // XXXSMP we also discard if other CPU enqueues: a packet back in the queue is
             // purged and counted by nd6_free's nd6_invalidate, below (the C purges it here,
@@ -2088,15 +2080,15 @@ pub(crate) mod tests {
     use crate::tc::TIME_UPTIME;
 
     const OURS: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01];
-    const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
+    pub(crate) const PEER: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x02];
 
     /// `fd00:77::1`, our address.
-    fn ours6() -> In6Addr {
+    pub(crate) fn ours6() -> In6Addr {
         a6("fd00:77::1")
     }
 
     /// `fd00:77::2`, the neighbor's.
-    fn peer6() -> In6Addr {
+    pub(crate) fn peer6() -> In6Addr {
         a6("fd00:77::2")
     }
 
@@ -2181,7 +2173,7 @@ pub(crate) mod tests {
 
     /// The routing tests' fixture, ND's state and timers, the uptime past 0 (a route cloned at
     /// 0 would read as a permanent entry), and nothing left of an earlier test's output.
-    fn setup() -> MutexGuard<'static, ()> {
+    pub(crate) fn setup() -> MutexGuard<'static, ()> {
         let g = testroutes_setup();
         ETHERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
         IP6_SENT.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -2193,9 +2185,8 @@ pub(crate) mod tests {
     }
 
     /// An Ethernet interface `name` (a zeroed `struct arpcom` with a test driver that leaves
-    /// its frames queued), up and running, with fd00:77::1/64 (its link-local companion and
-    /// both DADs started: their solicitations taken).
-    fn ether(name: &[u8]) -> &'static Ifnet {
+    /// its frames queued), up and running, with no address.
+    pub(crate) fn ether_bare(name: &[u8]) -> &'static Ifnet {
         let ac: &'static Arpcom = Box::leak(Box::new(Arpcom::new()));
         let d: &'static TestDriver = Box::leak(Box::new(TestDriver::new()));
         let ifp: &'static Ifnet = &ac.ac_if;
@@ -2215,6 +2206,13 @@ pub(crate) mod tests {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((ifp, Vec::new()));
+        ifp
+    }
+
+    /// An Ethernet interface `name` ([`ether_bare`]) with fd00:77::1/64 (its link-local
+    /// companion and both DADs started: their solicitations taken).
+    pub(crate) fn ether(name: &[u8]) -> &'static Ifnet {
+        let ifp = ether_bare(name);
         add(ifp, ours6(), 64).expect("SIOCAIFADDR_IN6");
         let _ = sent(ifp);
         let _ = take_ip6_sent();
@@ -2240,7 +2238,7 @@ pub(crate) mod tests {
 
     /// The frames the interface was given since the last call, as bytes, but for ND's and
     /// MLD's own packets ([`take_ip6_sent`]'s).
-    fn sent(ifp: &'static Ifnet) -> Vec<Vec<u8>> {
+    pub(crate) fn sent(ifp: &'static Ifnet) -> Vec<Vec<u8>> {
         drain_queues();
         let mut ethers = ETHERS.lock().unwrap_or_else(|e| e.into_inner());
         ethers
@@ -2353,7 +2351,12 @@ pub(crate) mod tests {
 
     /// `nd6_na_input` of an advertisement for `target` (from `target`, to us) with `flags`
     /// and the target link-layer option `mac`, under the exclusive net lock.
-    fn advertise(ifp: &'static Ifnet, target: In6Addr, flags: u32, mac: Option<[u8; 6]>) {
+    pub(crate) fn advertise(
+        ifp: &'static Ifnet,
+        target: In6Addr,
+        flags: u32,
+        mac: Option<[u8; 6]>,
+    ) {
         let opt = mac.map(|m| lla(ND_OPT_TARGET_LINKADDR, m));
         let (m, len) = nd_packet(
             ifp,
