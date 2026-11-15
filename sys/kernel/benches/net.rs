@@ -214,6 +214,15 @@
 //!   - `nd6.resolve.miss` (control): `nd6_resolve` of a fresh packet to fd00:77::99
 //!     (`nd6_mtx`, the record lent by the route's tagged word, the hold queue's push dropping
 //!     the oldest past `LN_HOLD_QUEUE`), the packet's `m_gethdr` included.
+//! - The IPv6 output row (N6.5c; "before" = `bsd`'s `ip6_output` at the slice's base, LZ's
+//!   function over the parked packet, in a scratch test; written at N6.5c, run at the N6.5
+//!   close, decision 50): lo0 with ::1/128 (`in6_ioctl`), the net lock held for the run:
+//!   - `ip6.output.lo`: `ip6_output` of a 64-byte UDP packet from ::1 to ::1 through the
+//!     caller's cached route to lo0's driver (`in6_selectroute`'s cache hit, the header's
+//!     `ip6_load` and `ip6_store`, the checksum's flags, `if_output_tso`), the options the
+//!     view of a default `Ip6Pktopts` built per op (the transports' sticky options: D-10's
+//!     nine-word copy, docs/SCAFFOLDING.md's `Ip6OutOpts` row), the packet taken back off
+//!     lo0's input queue for the next op.
 
 #![forbid(unsafe_code)]
 
@@ -662,6 +671,7 @@ fn main() {
         .chain(INPCB_ROWS.iter())
         .chain(INET6_ROWS.iter())
         .chain(ND6_ROWS.iter())
+        .chain(INET6_OUTPUT_ROWS.iter())
         .copied()
         .collect();
     if args.first().map(String::as_str) == Some("list") {
@@ -936,6 +946,7 @@ fn main() {
     inpcb_rows(&wanted, &report);
     inet6_rows(&wanted, &report);
     nd6_rows(&wanted, &report);
+    inet6_output_rows(&wanted, &report);
 }
 
 /// The mbuf's rows (N6.1, decision 43), the same ops as the before rows on LZ's shape.
@@ -3335,6 +3346,104 @@ fn nd6_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64)
             t.elapsed()
         });
         report(ND6_ROWS[1], r);
+    }
+}
+const INET6_OUTPUT_ROWS: [&str; 1] = ["ip6.output.lo"];
+
+/// The IPv6 output row (N6.5c): see the file's documentation.
+fn inet6_output_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use hal::netlock::NetHeld;
+    use hal::sys::netinet6_in6::{IN6MASK128, In6Addr, SockaddrIn6};
+    use hal::sys::netinet6_in6_var::In6Aliasreq;
+    use hal::sys::netinet6_nd6::ND6_INFINITE_LIFETIME;
+    use kernel::net::if_::{SIOCAIFADDR_IN6, if_test_reset};
+    use kernel::net::if_loop::{LOOP_CLONER, loop_clone_create};
+    use kernel::net::ifq::ifiq_test_take;
+    use kernel::net::mbuf::{m_devget, ml_dequeue};
+    use kernel::net::route::Route;
+    use kernel::netinet6::ip6_output::ip6_output;
+    use kernel::netinet6::ip6_var::Ip6Pktopts;
+
+    if !INET6_OUTPUT_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let _ = kernel::net::if_::register_inet(&BENCH_INET);
+    let _g = testutil::pages_install(64 << 20);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    if_test_reset();
+    kernel::net::rtable::rtable_test_reset();
+    kernel::net::route::rtlabel_test_reset();
+    kernel::net::route::route_init();
+    kernel::net::rtable::rtable_init_doms(&[kernel::net::rtable::RtDom {
+        family: hal::sys::socket::AF_INET6,
+        rtoffset: 8,
+        maxplen: 128,
+        sasize: 28,
+    }]);
+    kernel::netinet6::in6_var::in6_var_test_reset();
+    kernel::netinet6::nd6::nd6_test_reset();
+    kernel::netinet6::nd6_nbr::dad_test_reset();
+    kernel::netinet6::nd6::nd6_init();
+
+    if wanted(INET6_OUTPUT_ROWS[0]) {
+        hal::klock::kernel_lock();
+        let made = loop_clone_create(&LOOP_CLONER, 0);
+        hal::klock::kernel_unlock();
+        if made.is_err() {
+            eprintln!("net: no lo0");
+            std::process::exit(1);
+        }
+        let lo = need(
+            kernel::net::if_::IFNETLIST
+                .iter()
+                .find(|i| i.if_xname.get()[..4] == *b"lo0\0"),
+            "lo0 listed",
+        );
+        // ifconfig lo0 inet6 ::1/128
+        let one = In6Addr {
+            s6_addr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        };
+        let mut ifra = In6Aliasreq::zeroed();
+        ifra.ifra_name = lo.if_xname.get();
+        ifra.ifra_addr = SockaddrIn6::with_addr(one);
+        ifra.ifra_prefixmask = SockaddrIn6::with_addr(IN6MASK128);
+        ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
+        ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
+        let mut req = [0u8; 128];
+        let _ = hal::pod::put(&mut req, 0, &ifra);
+        if kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(lo), true).is_err() {
+            eprintln!("net: lo0 refused ::1");
+            std::process::exit(1);
+        }
+        // IPv6 ::1 -> ::1, UDP, 24 bytes of payload (64 in all).
+        let mut p = [0u8; 64];
+        p[0] = 0x60;
+        p[4..6].copy_from_slice(&24u16.to_be_bytes());
+        p[6] = 17;
+        p[7] = 64;
+        p[8..24].copy_from_slice(&one.s6_addr);
+        p[24..40].copy_from_slice(&one.s6_addr);
+        let mut m = Some(need(m_devget(&p, 0), "a 64-byte packet"));
+        let sticky = Ip6Pktopts::new();
+        let w = NETLOCK.write();
+        let net = need(NetHeld::of(&w), "the net lock");
+        let mut ro = Route::new();
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                let q = need(m.take(), "the packet");
+                let opts = Some(black_box(&sticky).as_opts());
+                if ip6_output(black_box(q), opts, Some(&mut ro), 0, None, None, &net).is_err() {
+                    eprintln!("net: ip6_output refused the packet");
+                    std::process::exit(1);
+                }
+                let mut ml = ifiq_test_take(lo.if_rcv());
+                m = Some(need(ml_dequeue(&mut ml), "the looped packet"));
+            }
+            t.elapsed()
+        });
+        report(INET6_OUTPUT_ROWS[0], r);
     }
 }
 /* </CODE> */
