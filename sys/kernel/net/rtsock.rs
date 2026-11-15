@@ -1335,15 +1335,21 @@ fn rtm_output(
                 let nw = NETLOCK.write();
                 let net = net_held(&nw);
                 // The request's address, lent for one reader's life (or held: T1, T4) to a
-                // copy of the request (its own `rti_ifa` cannot borrow them).
-                let r = net.reader();
-                let mut hold = None;
-                let mut info = *info;
-                if let Err(e) = rtm_getifa(&mut info, tableid, &net, &r, &mut hold) {
-                    break 'req Err(e);
-                }
-                let error = rtrequest(RTM_ADD, &mut info, prio, Some(&mut rt), tableid, &net);
-                drop(r);
+                // copy of the request (its own `rti_ifa` cannot borrow them). The reader and
+                // the request's own reference live in this block, so both go before the write
+                // holding does: the C's pointer is uncounted, and enc(4)'s destroy checks its
+                // address's count once the net lock is free (if_enc.c's `refcnt_rele` after
+                // `if_detach`), which a reference kept past `drop(nw)` would make panic (5e1's
+                // review, N2).
+                let error = {
+                    let r = net.reader();
+                    let mut hold = None;
+                    let mut info = *info;
+                    if let Err(e) = rtm_getifa(&mut info, tableid, &net, &r, &mut hold) {
+                        break 'req Err(e);
+                    }
+                    rtrequest(RTM_ADD, &mut info, prio, Some(&mut rt), tableid, &net)
+                };
                 drop(nw);
                 if error.is_ok()
                     && let Some(r) = rt.as_deref()
