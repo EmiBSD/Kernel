@@ -178,11 +178,6 @@ impl SinWords {
     pub fn read(&self) -> SaBytes {
         self.0.read(size_of::<SockaddrIn>())
     }
-
-    /// The words, which a multicast record's `SaLink` names.
-    fn words(&'static self) -> &'static SaWords {
-        &self.0
-    }
 }
 
 /// `struct in_ifaddr`: interface address, Internet version.
@@ -391,9 +386,6 @@ pub fn in_multi_alloc() -> &'static InMulti {
             Some(b) => {
                 let inm = MBox::leak(b);
                 inm.inm_ifma.ifma_in.set(Some(inm));
-                inm.inm_ifma
-                    .ifma_addr
-                    .set_words::<SockaddrIn>(Some(inm.inm_sin.words()));
                 inm
             }
             None => kpanic(format_args!("in_multi_alloc: out of memory")),

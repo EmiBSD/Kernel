@@ -156,9 +156,9 @@
 //!   `Guarded` is not valid all zero, and an interface is used only once attached (the C's
 //!   `TAILQ_INIT` is `if_attach_common`'s too). Inserting at the tail and removing walk the
 //!   chain (O(n), D-4; the C's `TAILQ` is O(1)): `ifa_add` and `ifa_del` are control paths.
-//! - `ifma_addr` is a `hal::link::SaLink` naming the multicast record's own words
-//!   (`SaLink::set_words`, N6.4a); nothing reads it (the family test is the record's
-//!   back-link, `Ifmaddr::ifma_in`).
+//! - `ifma_addr` (a pointer to the multicast record's own `sockaddr`, which the C reads for
+//!   the family alone) is dropped (N6.5e): the family test is the record's back-link
+//!   (`Ifmaddr::ifma_in`, `ifma_in6`), and the record's address its own words.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
 //!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
@@ -1441,8 +1441,6 @@ impl Default for IfaList {
 pub struct Ifmaddr {
     /// \[m\] `ifma_list`: per-interface list.
     pub ifma_list: ListEntry<Ifmaddr>,
-    /// \[I\] `ifma_addr`: protocol address.
-    pub ifma_addr: SaLink,
     /// `ifma_refcnt`: count of references.
     pub ifma_refcnt: Refcnt,
     /// \[I\] `ifma_ifidx`: index of the interface.
@@ -1460,7 +1458,6 @@ impl Ifmaddr {
     pub const fn new() -> Self {
         Self {
             ifma_list: ListEntry::new(),
-            ifma_addr: SaLink::new(),
             ifma_refcnt: Refcnt::new(),
             ifma_ifidx: AtomicCell::new(),
             ifma_in: Link::new(),

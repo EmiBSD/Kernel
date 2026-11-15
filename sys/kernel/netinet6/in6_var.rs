@@ -230,11 +230,6 @@ impl Sin6Words {
     pub fn read(&self) -> SaBytes {
         self.0.read(size_of::<SockaddrIn6>())
     }
-
-    /// The words, which a multicast record's `SaLink` names.
-    fn words(&'static self) -> &'static SaWords {
-        &self.0
-    }
 }
 
 /// `struct in6_addrlifetime` as a member of a shared record: four relaxed atomics with LZ's
@@ -671,9 +666,6 @@ pub fn in6_multi_alloc() -> Option<&'static In6Multi> {
     } else {
         let in6m = MBox::leak(MBox::new(M_IPMADDR, M_NOWAIT, In6Multi::new())?);
         in6m.in6m_ifma.ifma_in6.set(Some(in6m));
-        in6m.in6m_ifma
-            .ifma_addr
-            .set_words::<SockaddrIn6>(Some(in6m.in6m_sin.words()));
         Some(in6m)
     }
 }

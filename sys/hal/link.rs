@@ -60,10 +60,9 @@
 //!
 //! [`SaWords`] (N6.4a) is the storage of a socket address the kernel owns (`struct
 //! in_ifaddr`'s `ia_addr`, `in_multi`'s `inm_sin`, the kernel's since N6.4a): the image in
-//! atomic words, which [`SaLink::set_words`] links without the token, since no write to it
-//! can race a read (every access is an atomic load or store) and it lives for ever
-//! (`'static`). [`SaLink::read`] copies it word by word, as [`SaWords::read`] does for a
-//! record that reads its own words with no link (N6.5e: the counted interface addresses).
+//! atomic words, which its record reads with no link ([`SaWords::read`], N6.5e: the counted
+//! interface addresses; no write to it can race a read, every access is an atomic load or
+//! store).
 //!
 //! [`TaggedLink<A, B>`] (N6.4b, two kinds since N6.5b) is the one word two owners share
 //! where the C shares it: a route's `rt_llinfo`, ARP's `struct llinfo_arp` on an IPv4 route
@@ -96,9 +95,11 @@
 //!   is not `Sync`, so the kernel's `in_ifaddr` holding one could not be shared) nor be
 //!   published with the token (no `forbid` crate may hold it: its holder's contract is a
 //!   premise on code the compiler does not check) -> [`SaWords`], the image as atomic words
-//!   in the record, linked by [`SaLink::set_words`] beside a typed [`Link`] to it, so
-//!   [`SaLink::read`] copies it by atomic loads with no `unsafe` and no premise; the word
-//!   `SaLink::get` gives `bsd`'s legacy readers is its address, as before.
+//!   in the record, linked by `SaLink::set_words` beside a typed [`Link`] to it, so
+//!   [`SaLink::read`] copied it by atomic loads with no `unsafe` and no premise. N6.5e: the
+//!   records are counted handles that read their own words ([`SaWords::read`]), `bsd`'s
+//!   legacy readers take that copy, and `SaLink::set_words`, the link's `words` member and
+//!   `SaWords::as_ptr` went with their last user (the multicast records' unread `ifma_addr`).
 //! - N6.4b: LZ's `rt_llinfo` (`Cell<*mut c_void>`, then `PtrWord<c_void>`), cast to
 //!   `*const LlinfoArp` and dereferenced in an `unsafe` block at each ARP reader ("the entry
 //!   lives until its last `la_refcnt` reference, under `arp_mtx`") -> [`TaggedLink`]: the
@@ -914,8 +915,8 @@ pub const SA_WORDS: usize = SA_READ_MAX / 8;
 
 /// The storage of a socket address the kernel owns (`struct in_ifaddr`'s `ia_addr`,
 /// `ia_dstaddr`, `ia_sockmask`; `struct in_multi`'s `inm_sin`): the image's bytes, in their
-/// memory order, as atomic words, so the record that holds it is `Sync` and an
-/// [`SaLink`] can name it without the [`SaToken`] ([`SaLink::set_words`]). Every access is
+/// memory order, as atomic words, so the record that holds it is `Sync` and reads it with no
+/// link ([`SaWords::read`]). Every access is
 /// an atomic load or store of a word, `Relaxed` (the C's plain loads and stores: the net lock
 /// orders its writers and its readers); a reader racing a writer may see a mix of two images
 /// word by word, never a torn word, as the C's readers that skip the lock may. All zero is
@@ -946,9 +947,7 @@ impl SaWords {
     }
 
     /// Stores `v`'s image (its first `size_of::<T>()` bytes; the words past it are zeroed),
-    /// word by word. The C's writers hold the net lock exclusively (`in_ifinit`): `bsd`'s
-    /// legacy readers, which read the words through [`SaLink::get`]'s address, rely on that
-    /// (`sys/hal/trust.rs`).
+    /// word by word. The C's writers hold the net lock exclusively (`in_ifinit`).
     #[inline]
     pub fn set<T: AbiPod>(&self, v: &T) {
         const {
@@ -1003,16 +1002,6 @@ impl SaWords {
         }
         b
     }
-
-    /// The storage's address, which [`SaLink::get`] gives `bsd`'s legacy readers, with the
-    /// provenance of the whole array ([`SA_READ_MAX`] bytes, every one inside an
-    /// `AtomicU64`'s `UnsafeCell`): a reader of a whole `sockaddr_in` through it
-    /// (`ip_divert`'s `satosin_const(sa).read_unaligned()`, 16 bytes) stays inside the
-    /// pointer's provenance, which a pointer taken from the first word alone (8 bytes) would
-    /// not give.
-    fn as_ptr(&self) -> *mut u8 {
-        self.0.as_ptr().cast::<u8>().cast_mut()
-    }
 }
 
 impl Default for SaWords {
@@ -1027,34 +1016,27 @@ impl core::fmt::Debug for SaWords {
     }
 }
 
-/// `struct sockaddr *` of an interface address (`ifa_addr`, `ifa_dstaddr`, `ifa_netmask`,
-/// `ifma_addr`) whose storage the internet protocols own until N6.4 and N6.5 (`struct
-/// in_ifaddr`'s `ia_addr`, ...): the storage's address, which `bsd` publishes ([`SaLink::set`],
-/// with the [`SaToken`], LZ's `Cell::set` of the member) and reads back for its own derefs
-/// ([`SaLink::get`]), and a copy of its bytes for the kernel's interface layer
-/// ([`SaLink::read`], under the net lock, which it checks). Since N6.4a it may name instead
-/// a storage the kernel owns, an [`SaWords`] ([`SaLink::set_words`]).
+/// `struct sockaddr *` of an interface address whose storage `bsd` owns (`ifa_addr`,
+/// `ifa_dstaddr`, `ifa_netmask` of enc(4)'s `IfaddrLinked`; since N6.5e the internet records
+/// read their own words, `SaWords::read`): the storage's address, which `bsd` publishes
+/// ([`SaLink::set`], with the [`SaToken`], LZ's `Cell::set` of the member) and reads back
+/// ([`SaLink::get`]), and a copy of its bytes for the kernel ([`SaLink::read`], under the net
+/// lock, which it checks).
 ///
-/// Invariant: `ptr` is null (with `cap` 0 and `words` empty); or `set` stored it with `cap`
-/// = `size_of::<T>()` from a `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most
-/// [`SA_READ_MAX`] bytes, by `set`'s compile-time check), with `words` empty; or `set_words`
-/// stored the address of an `&'static SaWords`, with the provenance of its whole array
-/// ([`SA_READ_MAX`] bytes, so at least `cap`: `SaWords::as_ptr`), with `cap` =
-/// `size_of::<T>()` (the same bounds) and `words` naming that `SaWords`. The three change
-/// only together, inside `seq`'s odd window, so a reader that sees `seq` even and unchanged
-/// around its loads has a triple one writer stored. All zero is a valid, empty link (null, 0, empty, 0): an interface
-/// address in a zeroed softc or `M_ZERO` allocation.
+/// Invariant: `ptr` is null (with `cap` 0); or `set` stored it with `cap` = `size_of::<T>()`
+/// from a `&'static Cell<T>` (`T: AbiPod`, at least 2 and at most [`SA_READ_MAX`] bytes, by
+/// `set`'s compile-time check). The two change only together, inside `seq`'s odd window, so a
+/// reader that sees `seq` even and unchanged around its loads has a pair one writer stored.
+/// All zero is a valid, empty link (null, 0, 0): an interface address in a zeroed softc or
+/// `M_ZERO` allocation.
 pub struct SaLink {
-    /// The storage's address with its provenance over the whole storage (`Cell::as_ptr`, the
-    /// `SaWords` array's `as_ptr`), null for none.
+    /// The storage's address with its provenance over the whole storage (`Cell::as_ptr`),
+    /// null for none.
     ptr: AtomicPtr<u8>,
     /// The storage's size; 0 when the link is empty.
     cap: AtomicU8,
-    /// The writers' sequence: odd while one changes `ptr`, `cap` and `words`.
+    /// The writers' sequence: odd while one changes `ptr` and `cap`.
     seq: AtomicU32,
-    /// The storage, when it is a kernel-owned [`SaWords`]; empty for a `Cell` `bsd`
-    /// published.
-    words: Link<SaWords>,
 }
 
 impl SaLink {
@@ -1064,7 +1046,6 @@ impl SaLink {
             ptr: AtomicPtr::new(ptr::null_mut()),
             cap: AtomicU8::new(0),
             seq: AtomicU32::new(0),
-            words: Link::new(),
         }
     }
 
@@ -1081,28 +1062,9 @@ impl SaLink {
         }
         match sa {
             // `size_of::<T>()` fits: at most SA_READ_MAX, checked above.
-            Some(c) => self.publish(c.as_ptr().cast::<u8>(), size_of::<T>() as u8, None),
+            Some(c) => self.publish(c.as_ptr().cast::<u8>(), size_of::<T>() as u8),
             // An empty link is null with `cap` 0 (the type's invariant), as `clear` leaves it.
-            None => self.publish(ptr::null_mut(), 0, None),
-        }
-    }
-
-    /// `ifa->ifa_addr = sintosa(&ia->ia_addr)` for an address the kernel owns: the link names
-    /// `w`, the storage of a `T` image (`None` empties it). No token: the words are read and
-    /// written only atomically, so nothing a holder could do makes a read race a write, and
-    /// they live for ever.
-    #[inline]
-    pub fn set_words<T: AbiPod>(&self, w: Option<&'static SaWords>) {
-        const {
-            assert!(
-                size_of::<T>() >= 2 && size_of::<T>() <= SA_READ_MAX,
-                "SaLink::set_words: not a socket address the link can read"
-            );
-        }
-        match w {
-            // `size_of::<T>()` fits: at most SA_READ_MAX, checked above.
-            Some(w) => self.publish(w.as_ptr(), size_of::<T>() as u8, Some(w)),
-            None => self.publish(ptr::null_mut(), 0, None),
+            None => self.publish(ptr::null_mut(), 0),
         }
     }
 
@@ -1110,13 +1072,13 @@ impl SaLink {
     /// nothing.
     #[inline]
     pub fn clear(&self) {
-        self.publish(ptr::null_mut(), 0, None);
+        self.publish(ptr::null_mut(), 0);
     }
 
-    /// Stores the triple inside the writers' window: the sequence made odd by one writer at a
+    /// Stores the pair inside the writers' window: the sequence made odd by one writer at a
     /// time (the C's writers hold the net lock exclusively, so the wait is never long), the
     /// three stores, the sequence even again.
-    fn publish(&self, p: *mut u8, cap: u8, words: Option<&'static SaWords>) {
+    fn publish(&self, p: *mut u8, cap: u8) {
         let mut s = self.seq.load(Ordering::Relaxed);
         loop {
             if s & 1 == 0 {
@@ -1138,23 +1100,21 @@ impl SaLink {
         fence(Ordering::Release);
         self.ptr.store(p, Ordering::Relaxed);
         self.cap.store(cap, Ordering::Relaxed);
-        self.words.set(words);
         // The storage's bytes, written before, are seen by a reader that sees this.
         self.seq.store(s.wrapping_add(2), Ordering::Release);
     }
 
-    /// The triple one writer stored (the type's invariant).
+    /// The pair one writer stored (the type's invariant).
     #[inline]
-    fn load_pair(&self) -> (*const u8, u8, Option<&'static SaWords>) {
+    fn load_pair(&self) -> (*const u8, u8) {
         loop {
             let s = self.seq.load(Ordering::Acquire);
             if s & 1 == 0 {
                 let p = self.ptr.load(Ordering::Relaxed);
                 let cap = self.cap.load(Ordering::Relaxed);
-                let words = self.words.get();
                 fence(Ordering::Acquire);
                 if self.seq.load(Ordering::Relaxed) == s {
-                    return (p.cast_const(), cap, words);
+                    return (p.cast_const(), cap);
                 }
             }
             core::hint::spin_loop();
@@ -1183,26 +1143,20 @@ impl SaLink {
     /// witness's, or one lent: by `lend_detached` for a closure, by the token holder's
     /// `lend_net` for a guard's life; made once per walk).
     pub fn read(&self, _held: &NetHeld<'_>) -> Option<SaBytes> {
-        let (p, cap, words) = self.load_pair();
+        let (p, cap) = self.load_pair();
         if p.is_null() {
             return None;
         }
         let cap = usize::from(cap).min(SA_READ_MAX);
-        if let Some(w) = words {
-            // A kernel-owned storage: its words, by atomic loads (no premise), cut as below
-            // (`cap` is at least 2: the invariant).
-            return Some(w.read(cap));
-        }
         let mut out = SaBytes {
             len: 0,
             buf: [0; SA_READ_MAX],
         };
-        // SAFETY: the invariant (`load_pair`'s triple, one writer's): `words` is empty, so `p`
-        // is the address, with its provenance, of the storage of a `&'static Cell<T>` that
-        // `set` was given, `T: AbiPod` and `cap = size_of::<T>()` between 2 and SA_READ_MAX
-        // (`set`'s compile-time check; `p` is not null and `words` empty, so `set` stored
-        // it: `set_words` stores a non-null pointer only with `words` set, no other store
-        // makes one). That storage is
+        // SAFETY: the invariant (`load_pair`'s pair, one writer's): `p` is not null, so `set`
+        // stored it (no other store makes a non-null pointer): `p` is the address, with its
+        // provenance, of the storage of a `&'static Cell<T>` that `set` was given, `T: AbiPod`
+        // and `cap = size_of::<T>()` between 2 and SA_READ_MAX (`set`'s compile-time check).
+        // That storage is
         // `cap` initialised bytes (an `AbiPod` has no padding) that `Cell::as_ptr` lets be read
         // through a shared cell, it lives for ever (`'static`: a later `set` repointing the
         // link leaves it alive), and its alignment is at least 1: reading byte 0, then
@@ -1910,73 +1864,6 @@ mod tests {
                 });
             }
         });
-    }
-
-    #[test]
-    fn a_kernel_owned_address_is_linked_without_the_token_and_read_by_words() {
-        use crate::sys::netinet_in::{InAddr, SockaddrIn};
-        crate::testutil::install();
-        let _s = crate::netlock::tests::serial();
-        let net = crate::netlock::NETLOCK.write();
-        let held = crate::netlock::NetHeld::of(&net).expect("the net lock's witness");
-
-        let w: &'static SaWords = Box::leak(Box::new(SaWords::new()));
-        assert_eq!(w.get::<SockaddrIn>(), SockaddrIn::default());
-        let sin = SockaddrIn {
-            sin_len: 16,
-            sin_family: 2,
-            sin_port: 0,
-            sin_addr: InAddr {
-                s_addr: u32::from_ne_bytes([10, 0, 2, 15]),
-            },
-            sin_zero: [0; 8],
-        };
-        w.set(&sin);
-        assert_eq!(w.get::<SockaddrIn>(), sin);
-        assert_eq!(w.word(0)[4..8], [10, 0, 2, 15]);
-
-        let l = SaLink::new();
-        l.set_words::<SockaddrIn>(Some(w));
-        let r = l.read(&held).expect("an address");
-        assert_eq!(
-            (r.family(), r.as_bytes()),
-            (2, &[16, 2, 0, 0, 10, 0, 2, 15, 0, 0, 0, 0, 0, 0, 0, 0][..])
-        );
-        // The legacy readers' word is the storage's address.
-        assert!(ptr::eq(
-            l.get().cast_const().cast::<u8>(),
-            w.as_ptr().cast_const()
-        ));
-        // SAFETY: the test owns `w` (leaked, alive for ever) and nothing writes it while this
-        // reads a whole `sockaddr_in` (16 of the storage's 32 bytes, unaligned) through the
-        // legacy address, as `bsd`'s `ip_divert` does; the address carries the provenance of
-        // the whole array (`SaWords::as_ptr`), and a `SockaddrIn` is plain data.
-        let legacy = unsafe { l.get().cast::<SockaddrIn>().read_unaligned() };
-        assert_eq!(legacy, sin);
-
-        // A shorter sa_len reads only its bytes (a netmask), a longer one stops at the image.
-        let mut mask = sin;
-        mask.sin_len = 5;
-        w.set(&mask);
-        assert_eq!(l.read(&held).map(|r| (r.len(), r.family())), Some((5, 2)));
-        mask.sin_len = 200;
-        w.set(&mask);
-        assert_eq!(l.read(&held).map(|r| r.len()), Some(16));
-        // The copy is the caller's.
-        let r = l.read(&held).expect("an address");
-        w.set(&sin);
-        assert_eq!(r[0], 200);
-
-        // A later token publication drops the words; an empty set empties.
-        let c = image::<16>(16, 2, &[0, 0, 1, 2, 3, 4]);
-        l.set(token(), Some(c));
-        assert_eq!(l.read(&held).map(|r| r[4]), Some(1));
-        l.set_words::<SockaddrIn>(Some(w));
-        assert_eq!(l.read(&held).map(|r| r[4]), Some(10));
-        l.set_words::<SockaddrIn>(None);
-        assert!(l.is_none() && l.read(&held).is_none());
-        fn shared<T: Send + Sync>() {}
-        shared::<SaWords>();
     }
 
     /// `SaWords::read`: a record's own words copied with no link, cut as `SaLink::read` cuts
