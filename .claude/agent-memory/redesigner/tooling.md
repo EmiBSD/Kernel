@@ -351,3 +351,5 @@ metadata:
 - `gen` is a reserved keyword in the kernel's edition: `let gen = ...` does not parse; name it `generation` (N6.5d).
 - A mutant can hang `bsd`'s test binary (a test panics where others then wait): watch the test process's CPU (`ps -eo pid,etime,pcpu,command`) and kill the binary, never the runner, which then records the failures seen and restores the file; a `subprocess.run` timeout would raise past the loop and leave the rest unrun (N6.5d).
 - Kernel bench files (`sys/kernel/benches/*.rs`) are outside lineage.toml: a bench commit carries no `LZ:` trailers, only `Bench: measured at the close` under decision 50 (N6.5c, N6.5d).
+- Pedantic `redundant_else` refuses `if c { hal_panic(a) } else { hal_panic(b) }` in a `-> !` function; write `if c { hal_panic(a); } hal_panic(b)` (N6.5e's 5e0).
+- `cargo clippy -p hal --tests` flags `drop(x)` of a type with no `Drop` (`drop_non_drop`: a `NetHeld`); let NLL end its borrow instead of dropping it (N6.5e's 5e0).
