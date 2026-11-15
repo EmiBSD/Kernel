@@ -8213,9 +8213,16 @@ pub fn pf_route(pd: &mut PfPdesc, st: &'static PfState) {
             // A locally generated packet may have invalid source address.
             if (u32::from_be(ip.ip_src.s_addr) >> IN_CLASSA_NSHIFT) == IN_LOOPBACKNET
                 && ifn.if_flags.get() & IFF_LOOPBACK == 0
-                && let Some(ifa) = r.rt_ifa.get()
+                && let Some(src) = {
+                    // `rt_ifa`, a net cell (N6.5e): read under a lend of the net lock pf's
+                    // route-to holds (`NET_ASSERT_LOCKED`), only on this rare branch.
+                    let lend = crate::net::if_::net_held("pf_route");
+                    let net = lend.net();
+                    r.ifa(&net.reader())
+                        .map(|ifa| crate::netinet::in_var::ifatoia(ifa).ia_addr.get().sin_addr)
+                }
             {
-                ip.ip_src = crate::netinet::in_var::ifatoia(ifa).ia_addr.get().sin_addr;
+                ip.ip_src = src;
                 mtod_ip_store(mm, &ip);
             }
 
@@ -8398,9 +8405,15 @@ pub fn pf_route6(pd: &mut PfPdesc, st: &'static PfState) {
             // A locally generated packet may have invalid source address.
             if in6_is_addr_loopback(&ip6.ip6_src)
                 && ifn.if_flags.get() & IFF_LOOPBACK == 0
-                && let Some(ifa) = r.rt_ifa.get()
+                && let Some(src) = {
+                    // As pf_route's: `rt_ifa` under a lend, only on this rare branch.
+                    let lend = crate::net::if_::net_held("pf_route6");
+                    let net = lend.net();
+                    r.ifa(&net.reader())
+                        .map(|ifa| ifatoia6(ifa).ia_addr.get().sin6_addr)
+                }
             {
-                ip6.ip6_src = ifatoia6(ifa).ia_addr.get().sin6_addr;
+                ip6.ip6_src = src;
                 mtod_ip6_store(mm, &ip6);
             }
 

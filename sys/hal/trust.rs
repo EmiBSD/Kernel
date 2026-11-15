@@ -108,11 +108,10 @@
 //! covers. The `// SAFETY:` of `hal::smr::SmrPtr::load` rests on it.
 //!
 //! A socket address lent by an interface address (`hal::link::SaLink`, N6.3a) is a fifth
-//! boundary: `struct ifaddr`'s `ifa_addr`, `ifa_dstaddr`, `ifa_netmask` and `struct ifmaddr`'s
-//! `ifma_addr` name storage `bsd`'s internet protocols own (`struct in_ifaddr`'s `ia_addr`,
-//! `ia_dstaddr`, `ia_sockmask`, `struct in6_ifaddr`'s, `in_multi`'s `inm_sin`, `in6_multi`'s),
-//! and the kernel's interface layer copies their bytes (`ifa_ifwithaddr`,
-//! `ifaof_ifpforaddr`, `ifconf`) through `SaLink::read`. What the types give: a link names a
+//! boundary: `struct ifaddr`'s `ifa_addr`, `ifa_dstaddr`, `ifa_netmask` name storage `bsd`
+//! owns (since N6.5e only enc(4)'s fake address's, `kernel::net::if_var::IfaddrLinked`: the
+//! internet records are the kernel's and read their own words), and the kernel copies their
+//! bytes (`IfaddrRef::ifa_addr` of a linked address) through `SaLink::read`. What the types give: a link names a
 //! storage only through `SaLink::set`, which takes a `&'static Cell<T>` of an `AbiPod` image
 //! (so the storage is `size_of::<T>()` initialised bytes that live for ever, and the copy is
 //! cut at that size whatever `sa_len` says) and the `hal::link::SaToken`, taken once by
@@ -137,17 +136,11 @@
 //! the interface address naming it lives (it is freed only after `ifa_del` has unlinked the
 //! address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the family
 //! its `&'static Ifnet` belongs to).
-//! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
-//! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
-//! embeds its storage (N6.4, N6.5). Since N6.4a an IPv4 address's storage is the kernel's,
-//! an `hal::link::SaWords` linked by `SaLink::set_words` without the token: `SaLink::read`
-//! copies it by atomic loads, so no premise is left on that side. `bsd`'s legacy readers
-//! that dereference `SaLink::get` (now the words' address for an IPv4 address) keep their
-//! own premise in their own `unsafe`: the kernel's `in_` writes those words only under the
-//! exclusive net lock (`in_ifinit`, as the C), and a reader under the net lock sees no write.
-//! The address carries the provenance of the whole `SaWords` (`SA_READ_MAX`, 32 bytes, all
-//! inside `AtomicU64`s), so a reader of a whole `sockaddr_in` (16 bytes) through it stays in
-//! bounds.
+//! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes with enc(4)'s
+//! softc-embedded address (N8). Since N6.4a and N6.5a the internet records' storage is the
+//! kernel's (`hal::link::SaWords`), and since N6.5e no link names it: the records are counted
+//! handles that copy their own words by atomic loads (`SaWords::read`), and `bsd`'s legacy
+//! readers take that copy, so no premise is left on that side.
 //!
 //! ## Redesign
 //! - Not a port: the C trusts `km_alloc`, `pool_get` and `malloc` silently. Here the trust is

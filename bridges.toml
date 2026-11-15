@@ -508,7 +508,8 @@ for = ["sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/n
 paid_by = "N6"
 
 # bsd: what the kernel's network code asks of IPsec (N8): enc_getifa for rtsock.c's
-# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC); N6.4a:
+# rtm_getifa (the enc(4) address a route to a PF_KEY destination uses, #ifdef IPSEC; N6.5e: a
+# counted kernel::net::if_var::IfaddrRef::Linked handle, held by the request); N6.4a:
 # ip_output's #ifdef IPSEC points, in_use (ipsec_in_use), ip_output_lookup and
 # ip_output_send (ip_output.c's ip_output_ipsec_lookup and ip_output_ipsec_send with its
 # pmtu update, which stay bsd's sys/netinet/ip_output.rs: they read the SA and call TCP's

@@ -181,7 +181,7 @@ use crate::net::mbuf::{
 use crate::net::proto::PR_FASTHZ;
 use crate::netinet::igmp::M_MRTABLE;
 use crate::netinet6::in6::{in6_lookupmulti, in6ifa_ifpforlinklocal};
-use crate::netinet6::in6_var::{In6Multi, ia6_in6};
+use crate::netinet6::in6_var::{In6Multi, ia6_in6, ifatoia6};
 use crate::netinet6::ip6_output::ip6_output;
 use crate::netinet6::ip6_var::{
     IPV6_UNSPECSRC, Ip6Moptions, Ip6OutOpts, icmp6stat_inc, icmp6stat_inc_hist, ip6_exthdr_whole,
@@ -543,7 +543,6 @@ fn mld6_checktimer(ifp: &Ifnet, pktlist: &mut Option<MBox<PktNode>>) -> bool {
 /// link-local address of the interface (the unspecified one while it is tentative), with the
 /// Router Alert option. Under the net lock (`net`).
 pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
-    let _ = net;
     let Some(ifp) = IfRef::get(pkt.mpi_ifidx) else {
         return;
     };
@@ -552,7 +551,8 @@ pub fn mld6_sendpkt(pkt: &Mld6Pktinfo, net: &NetHeld<'_>) {
     // address of the MLD packet. We do not reject tentative addresses for MLD report to deal
     // with the case where we first join a link-local address.
     let ignflags = IN6_IFF_DUPLICATED | IN6_IFF_ANYCAST;
-    let Some(ia6) = in6ifa_ifpforlinklocal(ifp.ifp(), ignflags) else {
+    let r = net.reader();
+    let Some(ia6) = in6ifa_ifpforlinklocal(&r, ifp.ifp(), ignflags).map(ifatoia6) else {
         return; // if_put(ifp)
     };
     let ia6 = (ia6.ia6_flags.get() & IN6_IFF_TENTATIVE == 0).then_some(ia6);

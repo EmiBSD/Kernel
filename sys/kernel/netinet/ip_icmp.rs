@@ -750,7 +750,8 @@ pub fn icmp_input_if<G: ProcGlue>(
                 } else {
                     ip.ip_dst
                 };
-                let Some(ia) = ifaof_ifpforaddr(net, &sin_bytes(a), ifp).and_then(InIfaddr::of)
+                let r = net.reader();
+                let Some(ia) = ifaof_ifpforaddr(net, &r, &sin_bytes(a), ifp).and_then(InIfaddr::of)
                 else {
                     break 'sw Then::Raw;
                 };
@@ -872,7 +873,7 @@ pub fn icmp_input_if<G: ProcGlue>(
 pub fn icmp_reflect(
     m: MbufBox,
     op: Option<&mut Option<MbufBox>>,
-    ia: Option<&'static InIfaddr>,
+    ia: Option<&InIfaddr>,
     net: &NetHeld<'_>,
 ) -> Option<MbufBox> {
     let mut m = m;
@@ -909,7 +910,7 @@ pub fn icmp_reflect(
                 if rt.rt_flags.isset(RTF_LOCAL) {
                     ip_src = ip.ip_dst;
                 } else if rt.rt_flags.isset(RTF_BROADCAST)
-                    && let Some(ia) = rt.ifa().and_then(InIfaddr::of)
+                    && let Some(ia) = rt.ifa(&net.reader()).and_then(InIfaddr::of)
                 {
                     ip_src = ia.ia_addr.addr();
                 }
@@ -927,14 +928,14 @@ pub fn icmp_reflect(
         let rt = rtalloc(view(&sin), RT_RESOLVE, rtableid, net);
         match rt.as_deref() {
             Some(rt) if rtisvalid(Some(rt)) && !rt.rt_flags.isset(RTF_GATEWAY) => {
-                if let Some(ia) = rt.ifa().and_then(InIfaddr::of) {
+                if let Some(ia) = rt.ifa(&net.reader()).and_then(InIfaddr::of) {
                     ip_src = ia.ia_addr.addr();
                 }
             }
             _ => {
                 if let Some(sourceaddr) = rtable_getsource(rtableid, AF_INET, net) {
                     let sa = sourceaddr.view();
-                    if let Some(ifa) = ifa_ifwithaddr(net, sa.bytes(), rtableid)
+                    if let Some(ifa) = ifa_ifwithaddr(net, &net.reader(), sa.bytes(), rtableid)
                         && ifa
                             .ifa_ifp
                             .get()
@@ -1161,7 +1162,8 @@ pub fn icmp_mtudisc_clone(
         let mut sa_rl = SockaddrRtlabel::default();
         let gw = rt.gateway_copy();
 
-        info.rti_ifa = rt.rt_ifa.get();
+        let r = net.reader();
+        info.rti_ifa = rt.ifa(&r);
         info.rti_flags = RTF_GATEWAY | RTF_HOST | RTF_DYNAMIC;
         info.rti_info[RTAX_DST] = Some(view(&sin));
         info.rti_info[RTAX_GATEWAY] = gw.as_ref().map(|g| g.view());
@@ -1658,7 +1660,8 @@ mod tests {
             info.rti_info[RTAX_NETMASK] =
                 crate::net::route::rt_plentosa(AF_INET, Some(0), &mut mask);
             info.rti_info[RTAX_GATEWAY] = Some(view(&gw));
-            info.rti_ifa = ifa_ifwithaddr(net, &us, 0);
+            let r = net.reader();
+            info.rti_ifa = ifa_ifwithaddr(net, &r, &us, 0);
             info.rti_flags = RTF_GATEWAY | RTF_STATIC | RTF_UP;
             rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, net)
         })

@@ -810,12 +810,19 @@ pub fn ip6_input_if<G: ProcGlue>(
                 m.m_pkthdr().ph_rtableid.get(),
                 net,
             );
-            // Accept the packet if the route to the destination is marked as local.
+            // Accept the packet if the route to the destination is marked as local (the
+            // address's flags read under one reader).
             rt.filter(|rt| rt.rt_flags.get() & RTF_LOCAL != 0)
-                .map(|rt| (rt.rt_ifidx.get(), rt.ifa().and_then(In6Ifaddr::of)))
+                .map(|rt| {
+                    let flags6 = rt
+                        .ifa(&net.reader())
+                        .and_then(In6Ifaddr::of)
+                        .map(|ia6| ia6.ia6_flags.get());
+                    (rt.rt_ifidx.get(), flags6)
+                })
         };
-        if let Some((rt_ifidx, ia6)) = local {
-            let Some(ia6) = ia6 else {
+        if let Some((rt_ifidx, flags6)) = local {
+            let Some(flags6) = flags6 else {
                 break 'bad;
             };
             if flags & IPV6_FORWARDING == 0
@@ -832,7 +839,7 @@ pub fn ip6_input_if<G: ProcGlue>(
             }
             // packets to a tentative, duplicated, or somehow invalid address must not be
             // accepted.
-            if ia6.ia6_flags.get() & (IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED) != 0 {
+            if flags6 & (IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED) != 0 {
                 break 'bad;
             }
             *mp = Some(m);
@@ -2367,7 +2374,8 @@ mod tests {
         assert_eq!(stat(C::Ip6sWrongif), wrongif + 1);
 
         // A tentative or duplicated address takes nothing, silently.
-        let ia6 = crate::netinet6::in6::in6ifa_ifpwithaddr(ifp, &ours6()).expect("ours");
+        let ifa = crate::netinet6::in6::tests::withaddr(ifp, &ours6()).expect("ours");
+        let ia6 = crate::netinet6::in6_var::ifatoia6(&ifa);
         for f in [IN6_IFF_TENTATIVE, IN6_IFF_DUPLICATED] {
             let old = ia6.ia6_flags.get();
             ia6.ia6_flags.set(old | f);

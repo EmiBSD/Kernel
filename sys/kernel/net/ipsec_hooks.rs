@@ -45,7 +45,7 @@ use hal::bridges::AlreadyRegistered;
 use hal::once::OnceStatic;
 use hal::sys::errno::Errno;
 
-use crate::net::if_var::Ifaddr;
+use crate::net::if_var::IfaddrRef;
 use crate::net::mbuf::{Mbuf, MbufBox};
 use crate::net::route::Route;
 
@@ -108,8 +108,10 @@ impl core::fmt::Debug for TdbRef {
 /// `#ifdef IPSEC` code, `netinet/ipsec_output.c`'s).
 pub trait Ipsec: Sync {
     /// `enc_getifa(rdomain, unit)`: the address of the enc(4) interface of `unit` in the
-    /// routing domain of table `rtableid` (`enc0` for unit 0), `None` when there is none.
-    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<&'static Ifaddr>;
+    /// routing domain of table `rtableid` (`enc0` for unit 0), `None` when there is none. A
+    /// counted reference (`IfaddrRef::Linked`, T4): the C's pointer is uncounted, kept alive
+    /// by the softc, which the caller cannot see; the handle is held for the request only.
+    fn enc_getifa(&self, rtableid: u32, unit: u32) -> Option<IfaddrRef>;
     /// `ipsec_in_use`: some SA or flow is configured.
     fn in_use(&self) -> bool;
     /// `ip_output_ipsec_lookup(m, hlen, seclevel, &tdb, ipsecflowinfo)`: the SA the policy
@@ -260,7 +262,7 @@ mod tests {
     }
 
     impl Ipsec for CountingLegs {
-        fn enc_getifa(&self, _rtableid: u32, _unit: u32) -> Option<&'static Ifaddr> {
+        fn enc_getifa(&self, _rtableid: u32, _unit: u32) -> Option<IfaddrRef> {
             None
         }
 

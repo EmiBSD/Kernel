@@ -178,7 +178,7 @@ use kernel::net::proto::SockaddrView;
 
 use crate::kern::subr_prf::{db_printf, panic};
 use crate::net::if_::net_held;
-use crate::net::if_var::{Ifaddr, Ifnet};
+use crate::net::if_var::{IfaddrRef, Ifnet};
 use crate::netinet::in_::InAddr;
 use crate::netinet6::in6::In6Addr;
 use crate::sys::errno::Errno;
@@ -370,7 +370,7 @@ pub fn rtredirect(
 }
 
 /// `rt_ifa_add(ifa, flags, dst, rdomain)`.
-pub fn rt_ifa_add(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
+pub fn rt_ifa_add(ifa: &IfaddrRef, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
     kernel::net::route::rt_ifa_add(
         ifa,
         flags,
@@ -381,7 +381,7 @@ pub fn rt_ifa_add(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) ->
 }
 
 /// `rt_ifa_del(ifa, flags, dst, rdomain)`.
-pub fn rt_ifa_del(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
+pub fn rt_ifa_del(ifa: &IfaddrRef, flags: u32, dst: &[u8], rdomain: u32) -> Result<(), Errno> {
     kernel::net::route::rt_ifa_del(
         ifa,
         flags,
@@ -392,17 +392,17 @@ pub fn rt_ifa_del(ifa: &'static Ifaddr, flags: u32, dst: &[u8], rdomain: u32) ->
 }
 
 /// `rt_ifa_addlocal(ifa)`.
-pub fn rt_ifa_addlocal(ifa: &'static Ifaddr) -> Result<(), Errno> {
+pub fn rt_ifa_addlocal(ifa: &IfaddrRef) -> Result<(), Errno> {
     kernel::net::route::rt_ifa_addlocal(ifa, net_held("rt_ifa_addlocal").net())
 }
 
 /// `rt_ifa_dellocal(ifa)`.
-pub fn rt_ifa_dellocal(ifa: &'static Ifaddr) -> Result<(), Errno> {
+pub fn rt_ifa_dellocal(ifa: &IfaddrRef) -> Result<(), Errno> {
     kernel::net::route::rt_ifa_dellocal(ifa, net_held("rt_ifa_dellocal").net())
 }
 
 /// `rt_ifa_purge(ifa)`.
-pub fn rt_ifa_purge(ifa: &'static Ifaddr) {
+pub fn rt_ifa_purge(ifa: &IfaddrRef) {
     kernel::net::route::rt_ifa_purge(ifa, net_held("rt_ifa_purge").net());
 }
 

@@ -129,8 +129,12 @@ pub fn in6_selectsrc(
     mopts: Option<&Ip6Moptions>,
     rtableid: u32,
 ) -> Result<(), Errno> {
-    *in6src =
-        kernel::netinet6::in6_src::in6_selectsrc(dstsock, mopts.map(|m| m.im6o_ifidx), rtableid)?;
+    *in6src = kernel::netinet6::in6_src::in6_selectsrc(
+        dstsock,
+        mopts.map(|m| m.im6o_ifidx),
+        rtableid,
+        net_held("in6_selectsrc").net(),
+    )?;
     Ok(())
 }
 
@@ -159,7 +163,7 @@ mod tests {
     use crate::netinet6::in6::IN6ADDR_ANY;
     use crate::netinet6::in6::tests::{a6, setup, test_ia6, test_if};
     use crate::netinet6::in6_var::IN6_IFF_TENTATIVE;
-    use crate::netinet6::in6_var::ia6_in6;
+    use crate::netinet6::in6_var::{ia6_in6, ifatoia6};
     use crate::sys::endian::htons;
     use crate::sys::systm::{net_lock, net_unlock};
 
@@ -262,9 +266,9 @@ mod tests {
 
         // A link-local destination with a scope id: the address of that interface.
         in6_selectsrc(&mut src, &sin6("fe80::99", if2.if_index.get()), None, 0).expect("src");
-        assert_eq!(src, ia6_in6(ll2));
+        assert_eq!(src, ia6_in6(ifatoia6(&ll2)));
         in6_selectsrc(&mut src, &sin6("ff02::1", if1.if_index.get()), None, 0).expect("src");
-        assert_eq!(src, ia6_in6(ll1));
+        assert_eq!(src, ia6_in6(ifatoia6(&ll1)));
         assert_eq!(
             in6_selectsrc(&mut src, &sin6("fe80::99", 4000), None, 0),
             Err(Errno::ENXIO)

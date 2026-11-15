@@ -1619,7 +1619,7 @@ pub fn ping_gateway() {
     info.rti_info[RTAX_NETMASK] = Some(sa_view(sa_of(&mask)));
     info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gw)));
     info.rti_flags = RTF_GATEWAY | RTF_STATIC;
-    info.rti_ifa = ifa;
+    info.rti_ifa = ifa.as_ref();
     let mut rt = None;
     let error = rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0);
     rtfree(rt);

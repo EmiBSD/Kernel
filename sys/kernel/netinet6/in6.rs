@@ -211,7 +211,7 @@
 use core::mem::{offset_of, size_of};
 use core::ptr;
 
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
 use hal::rwlock::{RW_READ, RW_WRITE};
 use hal::sys::endian::{htonl, htons};
@@ -245,7 +245,7 @@ use hal::sys::types::Time;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
-use crate::net::if_var::{IFA_ROUTE, Ifaddr, Ifnet};
+use crate::net::if_var::{IFA_ROUTE, IfaddrRef, Ifnet};
 use crate::net::mbuf::Mbuf;
 use crate::net::proto::SockaddrView;
 use crate::net::route::{
@@ -255,8 +255,8 @@ use crate::net::route::{
 use crate::net::rtsock::rtm_addr;
 use crate::netinet6::in6_ifattach::in6_ifattach;
 use crate::netinet6::in6_var::{
-    In6Ifaddr, In6Multi, SIN6_LEN, ia6_dstin6, ia6_maskin6, in6_ifaddr_alloc, in6_multi_alloc,
-    in6_multi_free,
+    In6Ifaddr, In6Multi, SIN6_LEN, ia6_dstin6, ia6_maskin6, ifatoia6, in6_ifaddr_alloc,
+    in6_multi_alloc, in6_multi_free,
 };
 use crate::netinet6::ip6_var::{ip6stat_inc, ip6stat_inc_idx};
 use crate::netinet6::mld6::{mld6_sendpkt, mld6_start_listening, mld6_stop_listening};
@@ -509,7 +509,10 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
                 break 'err Err(e);
             }
             sa6 = Some(s);
-            ia6 = in6ifa_ifpwithaddr(ifp, &s.sin6_addr);
+            // T1: cloned before the reader ends, kept for the request.
+            ia6 = hal::netlock::lend_detached(|net| {
+                in6ifa_ifpwithaddr(&net.reader(), ifp, &s.sin6_addr).cloned()
+            });
         }
 
         if cmd == SIOCDIFADDR_IN6 {
@@ -520,7 +523,7 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             let Some(ia6) = ia6 else {
                 break 'err Err(Errno::EADDRNOTAVAIL);
             };
-            hal::netlock::lend_detached(|net| in6_purgeaddr(&ia6.ia_ifa, net));
+            hal::netlock::lend_detached(|net| in6_purgeaddr(&ia6, net));
             if_addrhooks_run(ifp);
             Ok(())
         } else {
@@ -558,19 +561,25 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             if let Err(e) = in6_ifattach(ifp, &NetHolding::Detached) {
                 break 'err Err(e);
             }
-            if let Err(e) = in6_update_ifa(ifp, &ifra, ia6, &NetHolding::Detached) {
+            if let Err(e) = in6_update_ifa(ifp, &ifra, ia6.as_ref(), &NetHolding::Detached) {
                 break 'err Err(e);
             }
 
-            let ia6 = sa6.and_then(|s| in6ifa_ifpwithaddr(ifp, &s.sin6_addr));
-            let Some(ia6) = ia6 else {
+            // T1: cloned before the reader ends, kept for the request.
+            let ifa = sa6.and_then(|s| {
+                hal::netlock::lend_detached(|net| {
+                    in6ifa_ifpwithaddr(&net.reader(), ifp, &s.sin6_addr).cloned()
+                })
+            });
+            let Some(ifa) = ifa else {
                 // this can happen when the user specify the 0 valid lifetime.
                 break 'err Ok(());
             };
+            let ia6 = ifatoia6(&ifa);
 
             // Perform DAD, if needed.
             if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
-                hal::netlock::lend_detached(|net| nd6_dad_start(&ia6.ia_ifa, net));
+                hal::netlock::lend_detached(|net| nd6_dad_start(&ifa, net));
             }
 
             if !newifaddr {
@@ -588,14 +597,14 @@ fn in6_ioctl_change_ifaddr(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Re
             let a = sin6_bytes(&ia6.ia_addr.get());
             let error = hal::netlock::lend_detached(|net| {
                 let e = rt_ifa_add(
-                    &ia6.ia_ifa,
+                    &ifa,
                     RTF_CLONING | RTF_CONNECTED | RTF_MPATH,
                     sin6_view(&a),
                     ifp.if_rdomain.get(),
                     net,
                 );
                 if e.is_err() {
-                    in6_purgeaddr(&ia6.ia_ifa, net);
+                    in6_purgeaddr(&ifa, net);
                 }
                 e
             });
@@ -630,6 +639,10 @@ fn in6_ioctl_get(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result<(), E
     }
 
     let w = NETLOCK.read();
+    let Some(held) = NetHeld::of(&w) else {
+        kpanic(format_args!("in6_ioctl_get: not a witness of the net lock"));
+    };
+    let rd = held.reader();
     let error = 'err: {
         let mut ia6 = None;
         if let Some(mut s) = sa6 {
@@ -641,7 +654,7 @@ fn in6_ioctl_get(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result<(), E
             if let Err(e) = r {
                 break 'err Err(e);
             }
-            ia6 = in6ifa_ifpwithaddr(ifp, &s.sin6_addr);
+            ia6 = in6ifa_ifpwithaddr(&rd, ifp, &s.sin6_addr).map(ifatoia6);
         }
 
         // must think again about its semantics
@@ -689,6 +702,7 @@ fn in6_ioctl_get(cmd: u64, data: &mut [u8], ifp: &'static Ifnet) -> Result<(), E
         }
     };
     // err:
+    drop(rd);
     drop(w);
     if !pod::put(data, 0, &ifr) {
         return Err(Errno::EINVAL);
@@ -742,7 +756,7 @@ fn in6_clear_scope_id(sa6: &mut SockaddrIn6, ifidx: u32) -> Result<(), Errno> {
 /// there is none whose first 32 bits match.
 fn in6_add_mcast_route(
     ifp: &'static Ifnet,
-    ia6: &'static In6Ifaddr,
+    ifa: &IfaddrRef,
     mltaddr: &SockaddrIn6,
     mltmask: &SockaddrIn6,
     net: &NetHeld<'_>,
@@ -759,10 +773,10 @@ fn in6_add_mcast_route(
     if rt.is_some() {
         return Ok(()); // rtfree(rt)
     }
-    let a = sin6_bytes(&ia6.ia_addr.get());
+    let a = sin6_bytes(&ifatoia6(ifa).ia_addr.get());
     let m = sin6_bytes(mltmask);
     let mut info = RtAddrinfo::new();
-    info.rti_ifa = Some(&ia6.ia_ifa);
+    info.rti_ifa = Some(ifa);
     info.rti_info[RTAX_DST] = Some(sin6_view(&d));
     info.rti_info[RTAX_GATEWAY] = Some(sin6_view(&a));
     info.rti_info[RTAX_NETMASK] = Some(sin6_view(&m));
@@ -786,9 +800,10 @@ fn in6_add_mcast_route(
 pub fn in6_update_ifa(
     ifp: &'static Ifnet,
     ifra: &In6Aliasreq,
-    ia6: Option<&'static In6Ifaddr>,
+    ifa: Option<&IfaddrRef>,
     net: &NetHolding<'_>,
 ) -> Result<(), Errno> {
+    let ia6 = ifa.map(ifatoia6);
     let mut host_is_new = false;
     let mut ifra_flags = ifra.ifra_flags;
 
@@ -864,22 +879,27 @@ pub fn in6_update_ifa(
         return Ok(()); // there's nothing to do
     }
 
-    // If this is a new address, allocate a new ifaddr and link it into chains.
-    let ia6 = if let Some(ia6) = ia6 {
-        ia6
+    // If this is a new address, allocate a new ifaddr and link it into chains: its creation
+    // reference to the list (`ifa_add`), a clone for this function (T1).
+    let new_ifa;
+    let ifa: &IfaddrRef = if let Some(ifa) = ifa {
+        ifa
     } else {
         host_is_new = true;
         let ia6 = in6_ifaddr_alloc(ifp, getuptime());
         ia6.ia_addr.set(ifra.ifra_addr);
-        ifa_add(ifp, &ia6.ia_ifa);
-        ia6
+        let created = IfaddrRef::In6(ia6);
+        new_ifa = created.clone(); // T1
+        net.with(|n| ifa_add(ifp, created, n));
+        &new_ifa
     };
+    let ia6 = ifatoia6(ifa);
 
     // The step that failed before the address is complete: a new address is unlinked again.
     let unlink = |error: Errno| -> Result<(), Errno> {
         // XXX: if a change of an existing address failed, keep the entry anyway.
         if host_is_new {
-            net.with(|n| in6_unlink_ifa(ia6, ifp, n));
+            net.with(|n| in6_unlink_ifa(ifa, ifp, n));
         }
         Err(error)
     };
@@ -904,15 +924,7 @@ pub fn in6_update_ifa(
         if ia6.ia_flags().get() & IFA_ROUTE != 0 {
             // ifa->ifa_dstaddr: the address's own destination address, copied.
             let d = sin6_bytes(&ia6.ia_dstaddr.get());
-            let r = net.with(|n| {
-                rt_ifa_del(
-                    &ia6.ia_ifa,
-                    RTF_HOST,
-                    sin6_view(&d),
-                    ifp.if_rdomain.get(),
-                    n,
-                )
-            });
+            let r = net.with(|n| rt_ifa_del(ifa, RTF_HOST, sin6_view(&d), ifp.if_rdomain.get(), n));
             if r.is_ok() {
                 ia6.ia_flags().set(ia6.ia_flags().get() & !IFA_ROUTE);
             }
@@ -945,7 +957,7 @@ pub fn in6_update_ifa(
     ia6.ia6_lifetime.set(lt);
 
     // reset the interface and routing table appropriately.
-    if let Err(e) = in6_ifinit(ifp, ia6, host_is_new, net) {
+    if let Err(e) = in6_ifinit(ifp, ifa, host_is_new, net) {
         return unlink(e);
     }
 
@@ -962,7 +974,7 @@ pub fn in6_update_ifa(
     if !host_is_new {
         // DAD sends RTM_CHGADDRATTR when done.
         if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE == 0 {
-            net.with(|n| rtm_addr(RTM_CHGADDRATTR, &ia6.ia_ifa, n));
+            net.with(|n| rtm_addr(RTM_CHGADDRATTR, ifa, n));
         }
         return Ok(());
     }
@@ -971,9 +983,9 @@ pub fn in6_update_ifa(
 
     // join necessary multiast groups
     if ifp.if_flags.get() & IFF_MULTICAST != 0 {
-        let joined = net.with(|n| in6_join_groups(ifp, ia6, ifra, n));
+        let joined = net.with(|n| in6_join_groups(ifp, ifa, ifra, n));
         if let Err(e) = joined {
-            net.with(|n| in6_purgeaddr(&ia6.ia_ifa, n));
+            net.with(|n| in6_purgeaddr(ifa, n));
             return Err(e);
         }
     }
@@ -987,7 +999,7 @@ pub fn in6_update_ifa(
 /// membership on the address's list.
 fn in6_join_groups(
     ifp: &'static Ifnet,
-    ia6: &'static In6Ifaddr,
+    ifa: &IfaddrRef,
     ifra: &In6Aliasreq,
     net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
@@ -1001,6 +1013,7 @@ fn in6_join_groups(
     llsol.set_s6_addr32(2, htonl(1));
     llsol.set_s6_addr32(3, ifra.ifra_addr.sin6_addr.s6_addr32(3));
     llsol.s6_addr[12] = 0xff;
+    let ia6 = ifatoia6(ifa);
     in6_joingroup(ifp, ia6, &llsol, net)?;
 
     let mltmask = sin6_of(IN6MASK32);
@@ -1013,7 +1026,7 @@ fn in6_join_groups(
     // XXX: do we really need this automatic routes? We should probably reconsider this
     // stuff. Most applications actually do not need the routes, since they usually specify
     // the outgoing interface.
-    in6_add_mcast_route(ifp, ia6, &mltaddr, &mltmask, net)?;
+    in6_add_mcast_route(ifp, ifa, &mltaddr, &mltmask, net)?;
     in6_joingroup(ifp, ia6, &mltaddr.sin6_addr, net)?;
 
     // join interface-local all-nodes address. (ff01::1%ifN, and ff01::%ifN/32)
@@ -1022,7 +1035,7 @@ fn in6_join_groups(
     mltaddr.sin6_scope_id = 0;
 
     // XXX: again, do we really need the route?
-    in6_add_mcast_route(ifp, ia6, &mltaddr, &mltmask, net)?;
+    in6_add_mcast_route(ifp, ifa, &mltaddr, &mltmask, net)?;
     in6_joingroup(ifp, ia6, &mltaddr.sin6_addr, net)?;
     Ok(())
 }
@@ -1052,11 +1065,11 @@ fn in6_joingroup(
 
 /// `in6_purgeaddr(ifa)`: an IPv6 address removed from its interface and the routing table,
 /// its memberships left, its interface's reference given back.
-pub fn in6_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
+pub fn in6_purgeaddr(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let Some(ifp) = ifa.ifa_ifp.get() else {
         kpanic(format_args!("in6_purgeaddr: address without interface"));
     };
-    let ia6 = crate::netinet6::in6_var::ifatoia6(ifa);
+    let ia6 = ifatoia6(ifa);
 
     // stop DAD processing
     nd6_dad_stop(ifa, net);
@@ -1076,7 +1089,7 @@ pub fn in6_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
     }
 
     // Remove ownaddr's loopback rtentry, if it exists.
-    let _ = rt_ifa_dellocal(&ia6.ia_ifa, net);
+    let _ = rt_ifa_dellocal(ifa, net);
 
     // leave from multicast groups we have joined for the interface: the list's head first,
     // the newest (`LIST_INSERT_HEAD`).
@@ -1085,12 +1098,12 @@ pub fn in6_purgeaddr(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
         in6_delmulti(in6m, net);
     }
 
-    in6_unlink_ifa(ia6, ifp, net);
+    in6_unlink_ifa(ifa, ifp, net);
 }
 
 /// `in6_unlink_ifa`: takes an address off its interface and drops the list's reference.
-fn in6_unlink_ifa(ia6: &'static In6Ifaddr, ifp: &'static Ifnet, net: &NetHeld<'_>) {
-    let ifa = &ia6.ia_ifa;
+fn in6_unlink_ifa(ifa: &IfaddrRef, ifp: &'static Ifnet, net: &NetHeld<'_>) {
+    let ia6 = ifatoia6(ifa);
 
     net_assert_locked();
 
@@ -1109,29 +1122,31 @@ fn in6_unlink_ifa(ia6: &'static In6Ifaddr, ifp: &'static Ifnet, net: &NetHeld<'_
     }
 
     rt_ifa_purge(ifa, net);
-    ifa_del(ifp, ifa);
+    let lst = ifa_del(ifp, ifa, net);
 
     ia6.ia_ifp().set(None);
-    ifafree(ifa);
+    ifafree(lst);
 }
 
 /// `in6_ifinit`: initialize an interface's inet6 address and routing table entry. The
 /// driver's request runs under the holding `net` names (outside any loan of a detached one).
 fn in6_ifinit(
     ifp: &'static Ifnet,
-    ia6: &'static In6Ifaddr,
+    ifa: &IfaddrRef,
     newhost: bool,
     net: &NetHolding<'_>,
 ) -> Result<(), Errno> {
+    let ia6 = ifatoia6(ifa);
     net_assert_locked();
 
     // Give the interface a chance to initialize if this is its first address (or it is a CARP
     // interface) and to validate the address if necessary.
-    let ifacount = ifp
-        .if_addrlist
-        .iter()
-        .filter(|ifa| In6Ifaddr::of(ifa).is_some())
-        .count();
+    let ifacount = net.with(|n| {
+        ifp.if_addrlist()
+            .iter(&n.reader())
+            .filter(|ifa| In6Ifaddr::of(ifa).is_some())
+            .count()
+    });
 
     if ifacount <= 1
         || ifp.if_type.get() == IFT_CARP
@@ -1156,7 +1171,7 @@ fn in6_ifinit(
         let d = sin6_bytes(&ia6.ia_dstaddr.get());
         net.with(|n| {
             rt_ifa_add(
-                &ia6.ia_ifa,
+                ifa,
                 RTF_HOST | RTF_MPATH,
                 sin6_view(&d),
                 ifp.if_rdomain.get(),
@@ -1167,7 +1182,7 @@ fn in6_ifinit(
     }
 
     if newhost {
-        return net.with(|n| rt_ifa_addlocal(&ia6.ia_ifa, n));
+        return net.with(|n| rt_ifa_addlocal(ifa, n));
     }
 
     Ok(())
@@ -1310,23 +1325,31 @@ pub fn in6_hasmulti(addr: &In6Addr, ifp: &Ifnet) -> bool {
 }
 
 /// `in6ifa_ifpforlinklocal(ifp, ignoreflags)`: an IPv6 link-local address of `ifp` without
-/// any of the `IN6_IFF_*` flags `ignoreflags`.
-pub fn in6ifa_ifpforlinklocal(ifp: &Ifnet, ignoreflags: i32) -> Option<&'static In6Ifaddr> {
+/// any of the `IN6_IFF_*` flags `ignoreflags`, lent for the life of the net cells' reader
+/// `r`.
+pub fn in6ifa_ifpforlinklocal<'r>(
+    r: &'r NetReader<'_>,
+    ifp: &'r Ifnet,
+    ignoreflags: i32,
+) -> Option<&'r IfaddrRef> {
     // The first link-local address without an ignored flag (the C `continue`s past one).
-    ifp.if_addrlist
-        .iter()
-        .filter_map(In6Ifaddr::of)
-        .find(|ia6| {
+    ifp.if_addrlist().iter(r).find(|ifa| {
+        In6Ifaddr::of(ifa).is_some_and(|ia6| {
             in6_is_addr_linklocal(&ia6.ia_addr.addr()) && ia6.ia6_flags.get() & ignoreflags == 0
         })
+    })
 }
 
-/// `in6ifa_ifpwithaddr(ifp, addr)`: the IPv6 address of `ifp` whose address is `addr`.
-pub fn in6ifa_ifpwithaddr(ifp: &Ifnet, addr: &In6Addr) -> Option<&'static In6Ifaddr> {
-    ifp.if_addrlist
-        .iter()
-        .filter_map(In6Ifaddr::of)
-        .find(|ia6| in6_are_addr_equal(addr, &ia6.ia_addr.addr()))
+/// `in6ifa_ifpwithaddr(ifp, addr)`: the IPv6 address of `ifp` whose address is `addr`, lent
+/// for the life of `r`.
+pub fn in6ifa_ifpwithaddr<'r>(
+    r: &'r NetReader<'_>,
+    ifp: &'r Ifnet,
+    addr: &In6Addr,
+) -> Option<&'r IfaddrRef> {
+    ifp.if_addrlist().iter(r).find(|ifa| {
+        In6Ifaddr::of(ifa).is_some_and(|ia6| in6_are_addr_equal(addr, &ia6.ia_addr.addr()))
+    })
 }
 
 /// `in6_addrscope(addr)`: the scope of the address: node-local, link-local, site-local or
@@ -1431,13 +1454,16 @@ pub fn in6_prefixlen2mask(maskp: &mut In6Addr, len: i32) {
 
 /// `in6_ifawithscope(oifp, dst, rdomain, rt)`: the best address out of the same scope (the
 /// RFC 6724 source address selection rules as the C applies them) for `dst` on `oifp`,
-/// considering the route `rt` and routing domain `rdomain`. Under the net lock.
-pub fn in6_ifawithscope(
+/// considering the route `rt` and routing domain `rdomain`. Under the net lock, whose cells'
+/// reader `r` the walk borrows (the C's `NET_ASSERT_LOCKED()`); the address is lent for its
+/// life.
+pub fn in6_ifawithscope<'r>(
     oifp: &Ifnet,
     dst: &In6Addr,
     rdomain: u32,
     rt: Option<&Rtentry>,
-) -> Option<&'static In6Ifaddr> {
+    r: &'r NetReader<'_>,
+) -> Option<&'r IfaddrRef> {
     /// The verdict on one candidate address: the C's `continue` or `goto replace`.
     enum Verdict {
         Skip,
@@ -1447,7 +1473,7 @@ pub fn in6_ifawithscope(
     let dst_scope = in6_addrscope(dst);
     let mut best_scope = 0;
     let mut blen = -1;
-    let mut ia6_best: Option<&'static In6Ifaddr> = None;
+    let mut ia6_best: Option<&'r IfaddrRef> = None;
     let mut gw6: Option<In6Addr> = None;
 
     if let Some(rt) = rt
@@ -1457,8 +1483,6 @@ pub fn in6_ifawithscope(
         // An `AF_INET6` gateway is a `sockaddr_in6`.
         gw6 = pod::at::<SockaddrIn6>(gw.bytes(), 0).map(|s| s.sin6_addr);
     }
-
-    net_assert_locked();
 
     // We search for all addresses on all interfaces from the beginning.
     for ifp in &IFNETLIST {
@@ -1473,7 +1497,10 @@ pub fn in6_ifawithscope(
             continue;
         }
 
-        for ia in ifp.if_addrlist.iter().filter_map(In6Ifaddr::of) {
+        for ifa in ifp.if_addrlist().iter(r) {
+            let Some(ia) = In6Ifaddr::of(ifa) else {
+                continue;
+            };
             let mut tlen = -1;
 
             let ifa_addr6 = ia.ia_addr.addr();
@@ -1501,7 +1528,7 @@ pub fn in6_ifawithscope(
 
             let verdict = 'decide: {
                 // If this is the first address we find, keep it anyway.
-                let Some(best) = ia6_best else {
+                let Some(best) = ia6_best.map(ifatoia6) else {
                     break 'decide Verdict::Replace;
                 };
                 let best_flags = best.ia6_flags.get();
@@ -1602,7 +1629,7 @@ pub fn in6_ifawithscope(
             };
 
             if let Verdict::Replace = verdict {
-                ia6_best = Some(ia);
+                ia6_best = Some(ifa);
                 blen = if tlen >= 0 {
                     tlen
                 } else {
@@ -1617,6 +1644,7 @@ pub fn in6_ifawithscope(
     match ia6_best {
         None => ip6stat_inc(Ip6statCounters::Ip6sSourcesNone),
         Some(best) => {
+            let best = ifatoia6(best);
             let scope = best_scope as usize;
             if best.ia_ifp().get().is_some_and(|b| ptr::eq(b, oifp)) {
                 ip6stat_inc_idx(Ip6statCounters::Ip6sSourcesSameif, scope);
@@ -1685,11 +1713,13 @@ pub(crate) mod tests {
     use hal::sys::socket::AF_INET;
 
     use super::*;
+    use crate::net::if_::M_IFADDR;
     use crate::net::if_::{if_sadl_set_lladdr, test_ifnet_with};
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::MbufBox;
     use crate::net::route::tests::testroutes_setup;
-    use crate::netinet6::in6_var::{free_counts, ia6_in6, in6_ifaddr_alloc};
+    use crate::netinet6::in6_var::{ia6_in6, in6_ifaddr_alloc, inm6_free_count};
+    use crate::testutil::{malloc_out, malloc_requests};
 
     /// `a:b::c` text to an address (the forms the tests use).
     pub(crate) fn a6(s: &str) -> In6Addr {
@@ -1782,8 +1812,8 @@ pub(crate) mod tests {
 
     /// An address `a`/64 with `flags` on `ifp`, linked as `in6_update_ifa` links one (the
     /// kernel's record), with infinite lifetimes and no route.
-    pub(crate) fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> &'static In6Ifaddr {
-        let _w = NETLOCK.write();
+    pub(crate) fn test_ia6(ifp: &'static Ifnet, a: In6Addr, flags: i32) -> IfaddrRef {
+        let w = NETLOCK.write();
         let ia = in6_ifaddr_alloc(ifp, 0);
         ia.ia_addr.set(sin6_of(a));
         ia.ia_prefixmask.set(sin6_of(IN6MASK64));
@@ -1793,8 +1823,24 @@ pub(crate) mod tests {
             ia6t_pltime: ND6_INFINITE_LIFETIME,
             ..In6Addrlifetime::default()
         });
-        ifa_add(ifp, &ia.ia_ifa);
-        ia
+        let ifa = IfaddrRef::In6(ia);
+        ifa_add(ifp, ifa.clone(), &NetHeld::of(&w).expect("the net lock"));
+        ifa
+    }
+
+    /// `in6ifa_ifpwithaddr` under the net lock: a handle of the test's (the lookup's lent
+    /// address cloned before its reader ends).
+    pub(crate) fn withaddr(ifp: &Ifnet, a: &In6Addr) -> Option<IfaddrRef> {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in6ifa_ifpwithaddr(&net.reader(), ifp, a).cloned()
+    }
+
+    /// `in6ifa_ifpforlinklocal` under the net lock, as [`withaddr`].
+    pub(crate) fn linklocal(ifp: &Ifnet, ignoreflags: i32) -> Option<IfaddrRef> {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in6ifa_ifpforlinklocal(&net.reader(), ifp, ignoreflags).cloned()
     }
 
     /// A `struct in6_aliasreq` of `addr`/`plen` with `flags` and infinite lifetimes.
@@ -1853,9 +1899,10 @@ pub(crate) mod tests {
     }
 
     /// `in6_ifawithscope` under the net lock.
-    fn pick(oifp: &Ifnet, dst: In6Addr, rdomain: u32) -> Option<&'static In6Ifaddr> {
-        let _w = NETLOCK.write();
-        in6_ifawithscope(oifp, &dst, rdomain, None)
+    fn pick(oifp: &Ifnet, dst: In6Addr, rdomain: u32) -> Option<IfaddrRef> {
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock");
+        in6_ifawithscope(oifp, &dst, rdomain, None, &net.reader()).cloned()
     }
 
     #[test]
@@ -2025,22 +2072,25 @@ pub(crate) mod tests {
     fn address_lookup_on_an_interface() {
         let _g = setup();
         let (ifp, _) = iface(b"tlk0", [0x52, 0x54, 0, 0, 0, 1]);
-        assert!(in6ifa_ifpforlinklocal(ifp, 0).is_none());
+        assert!(linklocal(ifp, 0).is_none());
         let t = test_ia6(ifp, a6("fe80:1::5054:ff:febb:2"), IN6_IFF_TENTATIVE);
         let ll = test_ia6(ifp, a6("fe80:1::5054:ff:febb:3"), 0);
         let g = test_ia6(ifp, a6("fd00:77::1"), 0);
-        let found = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("on list");
-        assert!(ptr::eq(found, g));
-        assert!(in6ifa_ifpwithaddr(ifp, &a6("fd00:77::2")).is_none());
+        let found = withaddr(ifp, &a6("fd00:77::1")).expect("on list");
+        assert!(found.is(&g));
+        assert!(withaddr(ifp, &a6("fd00:77::2")).is_none());
         // The first link-local address, unless its flags are ignored: then the next one.
-        let first = in6ifa_ifpforlinklocal(ifp, 0).expect("link-local");
-        assert!(ptr::eq(first, t));
-        let anycast = in6ifa_ifpforlinklocal(ifp, IN6_IFF_ANYCAST).expect("link-local");
-        assert!(ptr::eq(anycast, t));
-        let untentative = in6ifa_ifpforlinklocal(ifp, IN6_IFF_TENTATIVE).expect("link-local");
-        assert!(ptr::eq(untentative, ll));
-        // The back-link is the cast.
-        assert!(ptr::eq(crate::netinet6::in6_var::ifatoia6(&g.ia_ifa), g));
+        let first = linklocal(ifp, 0).expect("link-local");
+        assert!(first.is(&t));
+        let anycast = linklocal(ifp, IN6_IFF_ANYCAST).expect("link-local");
+        assert!(anycast.is(&t));
+        let untentative = linklocal(ifp, IN6_IFF_TENTATIVE).expect("link-local");
+        assert!(untentative.is(&ll));
+        // The handle's arm is the cast.
+        assert!(core::ptr::eq(
+            crate::netinet6::in6_var::ifatoia6(&g),
+            crate::netinet6::in6_var::In6Ifaddr::of(&found).expect("an IPv6 address")
+        ));
     }
 
     #[test]
@@ -2055,33 +2105,33 @@ pub(crate) mod tests {
         let tent2 = test_ia6(if2, a6("2001:db8::99"), IN6_IFF_TENTATIVE);
 
         // (output interface, destination, the address chosen): one rule each.
-        let table: [(&Ifnet, In6Addr, Option<&In6Ifaddr>, &str); 5] = [
+        let table: [(&Ifnet, In6Addr, Option<&IfaddrRef>, &str); 5] = [
             // Rule 5: a global destination takes the global address of the output interface,
             // not the other interface's (and not the link-local one, rule 2).
-            (if1, a6("2001:db8::99"), Some(ula1), "rule 5, if1"),
+            (if1, a6("2001:db8::99"), Some(&ula1), "rule 5, if1"),
             (
                 if2,
                 a6("2001:db8::99"),
-                Some(doc2),
+                Some(&doc2),
                 "rule 5, if2; rule 8 never sees ::99",
             ),
             // Rule 2: a link-local destination, the smallest scope big enough, in its zone.
-            (if1, zoned(a6("fe80::2"), i1), Some(ll1), "rule 2"),
+            (if1, zoned(a6("fe80::2"), i1), Some(&ll1), "rule 2"),
             // Rule 5 before rule 8: the output interface's global address over the other
             // interface's longer match (2001:db8::5 shares 125 bits, fd00::1 none).
-            (if1, a6("2001:db8::1"), Some(ula1), "rule 5 before rule 8"),
+            (if1, a6("2001:db8::1"), Some(&ula1), "rule 5 before rule 8"),
             // The unspecified destination: link-local scope, if1's.
-            (if1, IN6ADDR_ANY, Some(ll1), "the unspecified address"),
+            (if1, IN6ADDR_ANY, Some(&ll1), "the unspecified address"),
         ];
         for (oifp, dst, want, what) in table {
             let got = pick(oifp, dst, 0);
             match want {
-                Some(w) => assert!(got.is_some_and(|g| ptr::eq(g, w)), "{what}"),
+                Some(w) => assert!(got.is_some_and(|g| g.is(w)), "{what}"),
                 None => assert!(got.is_none(), "{what}"),
             }
         }
         // The tentative address is never chosen; nor any in another routing domain.
-        assert!(!pick(if2, a6("2001:db8::99"), 0).is_some_and(|g| ptr::eq(g, tent2)));
+        assert!(!pick(if2, a6("2001:db8::99"), 0).is_some_and(|g| g.is(&tent2)));
         assert!(pick(if1, a6("2001:db8::99"), 5).is_none());
     }
 
@@ -2098,15 +2148,15 @@ pub(crate) mod tests {
 
         // Rule 3: a deprecated address loses to a preferred one, whatever the order.
         let dep = test_ia6(ifp, a6("2001:db8::99"), IN6_IFF_DEPRECATED);
-        assert!(ptr::eq(pick(ifp, a6("2001:db8::99"), 0).expect("src"), dep));
+        assert!(pick(ifp, a6("2001:db8::99"), 0).expect("src").is(&dep));
         let ok = test_ia6(ifp, a6("2001:db8:1::1"), 0);
-        assert!(ptr::eq(pick(ifp, a6("2001:db8::99"), 0).expect("src"), ok));
+        assert!(pick(ifp, a6("2001:db8::99"), 0).expect("src").is(&ok));
         // Rule 8: of two preferred addresses, the longest matching prefix wins.
         let ok2 = test_ia6(ifp, a6("2001:db8::7"), 0);
-        assert!(ptr::eq(pick(ifp, a6("2001:db8::99"), 0).expect("src"), ok2));
+        assert!(pick(ifp, a6("2001:db8::99"), 0).expect("src").is(&ok2));
         // Rule 7: a temporary address is preferred to a public one, even with a shorter match.
         let tmp = test_ia6(ifp, a6("2001:db8::98"), IN6_IFF_TEMPORARY);
-        assert!(ptr::eq(pick(ifp, a6("2001:db8::99"), 0).expect("src"), tmp));
+        assert!(pick(ifp, a6("2001:db8::99"), 0).expect("src").is(&tmp));
     }
 
     #[test]
@@ -2191,7 +2241,7 @@ pub(crate) mod tests {
             in6_ioctl(SIOCAIFADDR_IN6, &mut r, Some(ifp), true),
             Err(Errno::EINVAL)
         );
-        assert!(in6ifa_ifpwithaddr(ifp, &a6("fd00::4")).is_none());
+        assert!(withaddr(ifp, &a6("fd00::4")).is_none());
 
         // SIOCDIFADDR_IN6 and the gets of an absent address; a link-local address in another
         // zone.
@@ -2209,11 +2259,14 @@ pub(crate) mod tests {
         let _g = setup();
         let (ifp, d) = iface(b"tcf0", [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01]);
         let idx = ifp.if_index.get();
-        let (_, free_before) = free_counts();
+        let free_before = inm6_free_count();
 
         add(ifp, a6("fd00:77::1"), 64).expect("SIOCAIFADDR_IN6");
-        let ia = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("the address");
-        assert_eq!(in6_mask2len(&ia6_maskin6(ia), None), 64);
+        // The global address's record is the last `M_IFADDR` block (after the link-local's).
+        let (_, rec) = malloc_requests(M_IFADDR);
+        let out_full = malloc_out(M_IFADDR);
+        let ia = withaddr(ifp, &a6("fd00:77::1")).expect("the address");
+        assert_eq!(in6_mask2len(&ia6_maskin6(ifatoia6(&ia)), None), 64);
         // The interface came up through SIOCSIFADDR: the address is tentative (DAD's).
         assert_eq!(
             aflag(ifp, a6("fd00:77::1")).expect("its flags") & IN6_IFF_TENTATIVE,
@@ -2222,8 +2275,11 @@ pub(crate) mod tests {
 
         // The link-local address of the MAC's EUI-64 was made first: fe80::5054:ff:febb:1,
         // the zone embedded as the interface index (smoke-inet6's line).
-        let ll = in6ifa_ifpforlinklocal(ifp, 0).expect("link-local address");
-        assert_eq!(ia6_in6(ll), zoned(a6("fe80::5054:ff:febb:1"), idx));
+        let ll = linklocal(ifp, 0).expect("link-local address");
+        assert_eq!(
+            ia6_in6(ifatoia6(&ll)),
+            zoned(a6("fe80::5054:ff:febb:1"), idx)
+        );
 
         // The routes: the connected prefix, the local address.
         let net = route(a6("fd00:77::5")).expect("the connected route");
@@ -2252,29 +2308,37 @@ pub(crate) mod tests {
             ifp
         ));
         assert_eq!(d.addmulti.load(Ordering::Relaxed), 4, "two groups shared");
-        assert_eq!(ia.ia6_memberships.lock().len(), 3);
+        assert_eq!(ifatoia6(&ia).ia6_memberships.lock().len(), 3);
 
         // The address is deleted again and takes its own group with it; the shared ones
         // stay (the link-local address holds them).
         del(ifp, a6("fd00:77::1")).expect("SIOCDIFADDR_IN6");
-        assert!(in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).is_none());
+        assert!(withaddr(ifp, &a6("fd00:77::1")).is_none());
         assert!(!in6_hasmulti(&snm, ifp));
         assert!(in6_hasmulti(&zoned(IN6ADDR_LINKLOCAL_ALLNODES, idx), ifp));
         assert_eq!(d.delmulti.load(Ordering::Relaxed), 1);
-        assert!(in6ifa_ifpforlinklocal(ifp, 0).is_some());
+        assert!(linklocal(ifp, 0).is_some());
         assert!(route(a6("fd00:77::5")).is_none(), "the prefix route went");
 
-        // Its records are recycled: the next address takes them back (once the routes that
-        // held the address are released, and DAD's reaper gave its reference back: the C's
-        // nd6_dad_reaper at the next softclock).
+        // The address's record is freed with its last reference: once the routes that held
+        // it are released, DAD's reaper gave its reference back (the C's nd6_dad_reaper at the
+        // next softclock) and the test's handle goes. The multicast record is recycled.
         crate::net::route::tests::grace();
         crate::netinet6::nd6_nbr::dad_reap();
-        let (_, free_after) = free_counts();
+        assert_eq!(ia.count(), 1, "the test's handle alone");
+        assert_eq!(malloc_out(M_IFADDR), out_full, "kept by the test's handle");
+        drop((ia, ll));
+        assert_eq!(malloc_out(M_IFADDR), out_full - rec as i64, "freed at zero");
+        let free_after = inm6_free_count();
         assert_eq!(free_after, free_before + 1, "the multicast record freed");
         add(ifp, a6("fd00:77::2"), 64).expect("SIOCAIFADDR_IN6");
-        let ia2 = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::2")).expect("the address");
-        assert!(ptr::eq(ia2, ia), "the record recycled");
-        assert_eq!(free_counts().1, free_before, "the multicast record reused");
+        assert!(withaddr(ifp, &a6("fd00:77::2")).is_some());
+        assert_eq!(malloc_out(M_IFADDR), out_full, "a record of its own");
+        assert_eq!(
+            inm6_free_count(),
+            free_before,
+            "the multicast record reused"
+        );
     }
 
     #[test]
@@ -2318,11 +2382,12 @@ pub(crate) mod tests {
             crate::netinet6::in6_var::in6_multi_alloc().expect("a record to recycle"),
         );
         crate::testutil::fail_pages(0, 1);
-        let r = in6_joingroup(ifp, ia, &g, &net);
+        let r = in6_joingroup(ifp, ifatoia6(&ia), &g, &net);
         crate::testutil::fail_pages(0, 0);
         assert_eq!(r, Err(Errno::ENOBUFS));
         assert_eq!(d.addmulti.load(Ordering::Relaxed), 0);
         assert!(!in6_hasmulti(&g, ifp));
+        let ia = ifatoia6(&ia);
         assert!(ia.ia6_memberships.lock().is_empty());
 
         // The normal path: the room made, the group joined and recorded.

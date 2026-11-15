@@ -1043,9 +1043,7 @@ pub(crate) mod tests {
         use crate::net::route::Rtentry;
         use crate::netinet::in_pcb::*;
         use crate::netinet6::in6::tests::a6;
-        use crate::netinet6::in6::{
-            IN6ADDR_ANY, In6Addr, SockaddrIn6, in6_prefixlen2mask, in6ifa_ifpwithaddr,
-        };
+        use crate::netinet6::in6::{IN6ADDR_ANY, In6Addr, SockaddrIn6, in6_prefixlen2mask};
         use crate::netinet6::in6_cksum::in6_cksum;
         use crate::netinet6::in6_pcb::in6_pcblookup;
         use crate::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq, SIOCAIFADDR_IN6};
@@ -1133,7 +1131,9 @@ pub(crate) mod tests {
             assert!(hal::pod::put(&mut req, 0, &ifra));
             kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true)
                 .expect("SIOCAIFADDR_IN6");
-            let ia = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("the address");
+            let ifa =
+                crate::netinet6::in6::tests::withaddr(ifp, &a6("fd00:77::1")).expect("the address");
+            let ia = kernel::netinet6::in6_var::ifatoia6(&ifa);
             ia.ia6_flags.set(ia.ia6_flags.get() & !IN6_IFF_TENTATIVE);
             let _ = take_sent6();
             ifp

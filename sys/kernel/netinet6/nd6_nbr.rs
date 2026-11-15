@@ -94,8 +94,12 @@
 //!   `nd6_dad_reaper`, its timeout's argument a raw `ifa` dereferenced in an `unsafe` block)
 //!   -> [`Dadq`], a recycled `&'static` record (D-13: `malloc(M_IP6NDP)` once, then
 //!   [`DAD_FREE`]) on [`DADQ`], a `hal::list::List` under the net lock as the C's `dadq`
-//!   (`NET_ASSERT_LOCKED` at its changes, `NET_LOCK` in its timeout); `dad_ifa` a `Link` to
-//!   the `ifaref`'d address. Its timeout is embedded and pinned for ever (`Pin::static_ref`:
+//!   (`NET_ASSERT_LOCKED` at its changes, `NET_LOCK` in its timeout); `dad_ifa` the
+//!   `ifaref`'d address's counted handle (N6.5e: `kernel::net::if_var::IfaddrRef`) in a
+//!   `hal::slot::ReadMostly` cell (set under a holding that may be shared, so not a net cell):
+//!   `nd6_dad_find` compares under a read, and the timer clones the handle out for its step
+//!   (no reader held across its sends and the destroy that hands the record to the reaper,
+//!   which empties the cell). Its timeout is embedded and pinned for ever (`Pin::static_ref`:
 //!   the record is never dropped), set once to `nd6_dad_timer` with the record's own address
 //!   as an integer argument, which the handler compares with the addresses of [`DADQ`]'s
 //!   records under the net lock (the C's `nd6_dad_find` walk, O(n) both) and never
@@ -129,13 +133,13 @@ use core::ptr;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::intr::IPL_SOFTNET;
-use hal::link::Link;
 use hal::list::{List, ListEntry};
 use hal::malloc::{M_NOWAIT, MBox};
 use hal::mutex::Mutexed;
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pod;
 use hal::pool::PoolArc;
+use hal::slot::ReadMostly;
 use hal::sys::endian::htons;
 use hal::sys::net_if::{
     IFF_RUNNING, IFF_UP, IFNAMSIZ, IFT_CARP, IFT_ETHER, IFT_IEEE1394, IFT_IEEE80211,
@@ -164,7 +168,7 @@ use hal::sys::socket::AF_LINK;
 use crate::assert::{kassert, kpanic};
 use crate::log::{LOG_ERR, LOG_INFO};
 use crate::net::if_::{IfRef, if_isconnected};
-use crate::net::if_var::{AtomicCell, Ifaddr, Ifnet};
+use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifnet};
 use crate::net::mbuf::{
     M_DONTWAIT, M_EXT, M_ICMP_CSUM_OUT, M_MCAST, MAX_LINKHDR, MHLEN, MT_DATA, Mbuf, MbufBox,
     MbufList, m_align, m_gethdr, mclget, mq_delist,
@@ -206,8 +210,8 @@ pub struct Dadq {
     /// \[N\] `dad_list`: the `dadq` list; once off it, the entry of [`DAD_REAP`] or
     /// [`DAD_FREE`] (under their mutex): a record is on one of the three at a time.
     dad_list: ListEntry<Dadq>,
-    /// `dad_ifa`: the address, referenced (`None` on the free lists).
-    dad_ifa: Link<Ifaddr>,
+    /// `dad_ifa`: the address, referenced (`ifaref`; `None` on the free lists).
+    dad_ifa: ReadMostly<Option<IfaddrRef>>,
     /// \[N\] `dad_count`: max NS to send.
     dad_count: AtomicCell<i32>,
     /// \[N\] `dad_ns_tcount`: # of trials to send NS.
@@ -228,7 +232,7 @@ impl Dadq {
     const fn new() -> Self {
         Self {
             dad_list: ListEntry::new(),
-            dad_ifa: Link::new(),
+            dad_ifa: ReadMostly::new(None),
             dad_count: AtomicCell::new(),
             dad_ns_tcount: AtomicCell::new(),
             dad_ns_ocount: AtomicCell::new(),
@@ -243,9 +247,13 @@ impl Dadq {
         }
     }
 
-    /// The address under DAD (`dp->dad_ifa`); a record on `DADQ` always has one.
-    fn ifa(&self) -> &'static Ifaddr {
-        match self.dad_ifa.get() {
+    /// The address under DAD (`dp->dad_ifa`), a reference cloned out of the cell (R5: no
+    /// reference into a `ReadMostly` is held across a sleep or a write of its cell); a record
+    /// on `DADQ` always has one. A clone the C lacks (it reads `dp->dad_ifa` in place), one
+    /// per timer step and per received NS or NA: one read-modify-write pair of the count each,
+    /// listed with the T1-T4 clones (`kernel::net::if_var`'s redesign, ROADMAP's N12 row).
+    fn ifa(&self) -> IfaddrRef {
+        match self.dad_ifa.read().clone() {
             Some(ifa) => ifa,
             None => kpanic(format_args!("nd6_dad: a record without its address")),
         }
@@ -410,7 +418,8 @@ pub fn nd6_ns_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
         // (2) Unicast address for which I'm offering proxy service, or
         // (3) "tentative" address on which DAD is being performed.
         // (1) and (3) check.
-        let mut ifa = in6ifa_ifpwithaddr(ifp, &taddr6).map(|ia| &ia.ia_ifa);
+        let rd = net.reader();
+        let mut ifa = in6ifa_ifpwithaddr(&rd, ifp, &taddr6);
         // NCARP > 0: a carp interface that is not the master ignores it; not configured.
 
         // (2) check.
@@ -426,10 +435,10 @@ pub fn nd6_ns_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
             {
                 // proxy NDP for single entry
                 ifa = in6ifa_ifpforlinklocal(
+                    &rd,
                     ifp,
                     IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED | IN6_IFF_ANYCAST,
-                )
-                .map(|ia| &ia.ia_ifa);
+                );
                 if ifa.is_some() {
                     proxy = true;
                     // An `AF_LINK` gateway is a `sockaddr_dl`.
@@ -680,16 +689,17 @@ pub fn nd6_ns_output(
         if !in6_is_addr_linklocal(taddr6)
             || in6_is_addr_unspecified(&s)
             || in6_is_addr_linklocal(&s)
-            || in6ifa_ifpwithaddr(ifp, &s).is_none()
+            || in6ifa_ifpwithaddr(&net.reader(), ifp, &s).is_none()
         {
             let dst_sa = sin6_bytes(&dst);
             let rt = SockaddrView::new(&dst_sa)
                 .and_then(|v| rtalloc(v, RT_RESOLVE, m.m_pkthdr().ph_rtableid.get(), net));
             // A valid route has its address (`rt_ifa`).
+            let rd = net.reader();
             let Some(ia6) = rt
                 .as_deref()
                 .filter(|r| rtisvalid(Some(*r)))
-                .and_then(Rtentry::ifa)
+                .and_then(|r| r.ifa(&rd))
                 .map(ifatoia6)
             else {
                 // bad: m freed, rtfree(rt)
@@ -832,7 +842,8 @@ pub fn nd6_na_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
             None => (None, 0),
         };
 
-        let ifa = in6ifa_ifpwithaddr(ifp, &taddr6).map(|ia| &ia.ia_ifa);
+        let rd = net.reader();
+        let ifa = in6ifa_ifpwithaddr(&rd, ifp, &taddr6);
 
         // Target address matches one of my interface address.
         //
@@ -847,7 +858,7 @@ pub fn nd6_na_input(m: MbufBox, off: i32, icmp6len: i32, net: &NetHeld<'_>) {
                 dp.dad_na_icount.set(dp.dad_na_icount.get() + 1);
 
                 // remove the address.
-                nd6_dad_duplicated(dp, net);
+                nd6_dad_duplicated(dp, ifa, net);
             }
             break 'out false;
         }
@@ -1146,10 +1157,11 @@ pub fn nd6_na_output(
     let rt =
         SockaddrView::new(&dst_sa).and_then(|v| rtalloc(v, RT_RESOLVE, ifp.if_rdomain.get(), net));
     // A valid route has its address (`rt_ifa`).
+    let rd = net.reader();
     let Some(ia6) = rt
         .as_deref()
         .filter(|r| rtisvalid(Some(*r)))
-        .and_then(Rtentry::ifa)
+        .and_then(|r| r.ifa(&rd))
         .map(ifatoia6)
     else {
         // bad: m freed, rtfree(rt)
@@ -1235,7 +1247,8 @@ pub fn nd6_ifptomac(ifp: &Ifnet) -> Option<[u8; ETHER_ADDR_LEN]> {
 
 /// `nd6_dad_find(ifa)`: the DAD state of `ifa`, if DAD runs on it. Under the net lock.
 fn nd6_dad_find(ifa: &Ifaddr) -> Option<&'static Dadq> {
-    DADQ.iter().find(|dp| dp.dad_ifa.points_to(ifa))
+    DADQ.iter()
+        .find(|dp| dp.dad_ifa.read().as_ref().is_some_and(|a| a.is(ifa)))
 }
 
 /// `nd6_dad_destroy(dp)`: takes `dp` off the list and hands it to the reaper (the C sets its
@@ -1257,8 +1270,7 @@ fn nd6_dad_reaper(_arg: *mut c_void) {
             break;
         };
         let _ = dp.dad_timer_ch.del_barrier();
-        if let Some(ifa) = dp.dad_ifa.get() {
-            dp.dad_ifa.set(None);
+        if let Some(ifa) = dp.dad_ifa.replace(None) {
             ifafree(ifa);
         }
         DAD_FREE.lock().insert_tail(dp);
@@ -1295,7 +1307,7 @@ fn dadq_alloc() -> Option<&'static Dadq> {
 
 /// `nd6_dad_start(ifa)`: start Duplicated Address Detection (DAD) for specified interface
 /// address. Under the net lock (`net`).
-pub fn nd6_dad_start(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
+pub fn nd6_dad_start(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let ia6 = ifatoia6(ifa);
     let ip6_dad_count_local = IP6_DAD_COUNT.load(Ordering::Relaxed);
 
@@ -1338,7 +1350,7 @@ pub fn nd6_dad_start(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
 
     // The address first (the C stores it after the insert, with nothing between them under
     // the net lock): a record on DADQ always names its address.
-    dp.dad_ifa.set(Some(ifaref(ifa)));
+    drop(dp.dad_ifa.replace(Some(ifaref(ifa))));
     DADQ.insert_tail(dp);
     IP6_DAD_PENDING.fetch_add(1, Ordering::Relaxed);
 
@@ -1356,7 +1368,7 @@ pub fn nd6_dad_start(ifa: &'static Ifaddr, net: &NetHeld<'_>) {
 
 /// `nd6_dad_stop(ifa)`: terminate DAD unconditionally. used for address removals. Under the
 /// net lock (its proof, `_net`).
-pub fn nd6_dad_stop(ifa: &'static Ifaddr, _net: &NetHeld<'_>) {
+pub fn nd6_dad_stop(ifa: &Ifaddr, _net: &NetHeld<'_>) {
     let Some(dp) = nd6_dad_find(ifa) else {
         // DAD wasn't started yet
         return;
@@ -1386,6 +1398,7 @@ fn nd6_dad_timer(arg: *mut c_void) {
             break 'done;
         };
         let ifa = dp.ifa();
+        let ifa = &ifa;
         let ia6 = ifatoia6(ifa);
         let taddr6 = ia6.ia_addr.addr();
         let ifname = ifa
@@ -1430,7 +1443,7 @@ fn nd6_dad_timer(arg: *mut c_void) {
             // We have transmitted sufficient number of DAD packets.
             if dp.dad_na_icount.get() != 0 || dp.dad_ns_icount.get() != 0 {
                 // dp will be freed in nd6_dad_duplicated()
-                nd6_dad_duplicated(dp, &net);
+                nd6_dad_duplicated(dp, ifa, &net);
             } else {
                 // We are done with DAD. No NA came, no NS came.
                 ia6.ia6_flags.set(ia6.ia6_flags.get() & !IN6_IFF_TENTATIVE);
@@ -1451,8 +1464,7 @@ fn nd6_dad_timer(arg: *mut c_void) {
 }
 
 /// `nd6_dad_duplicated(dp)`: DAD found the address in use: mark it duplicated and stop.
-fn nd6_dad_duplicated(dp: &'static Dadq, net: &NetHeld<'_>) {
-    let ifa = dp.ifa();
+fn nd6_dad_duplicated(dp: &'static Dadq, ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let ia6 = ifatoia6(ifa);
     let ifname = ia6
         .ia_ifp()
@@ -1498,7 +1510,7 @@ fn nd6_dad_duplicated(dp: &'static Dadq, net: &NetHeld<'_>) {
 
 /// `nd6_dad_ns_output(dp, ifa)`: one DAD solicitation for `ifa`, if its interface is up and
 /// running.
-fn nd6_dad_ns_output(dp: &Dadq, ifa: &Ifaddr, net: &NetHeld<'_>) {
+fn nd6_dad_ns_output(dp: &Dadq, ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let ia6 = ifatoia6(ifa);
     let Some(ifp) = ifa.ifa_ifp.get() else {
         return;
@@ -1517,7 +1529,7 @@ fn nd6_dad_ns_output(dp: &Dadq, ifa: &Ifaddr, net: &NetHeld<'_>) {
 }
 
 /// `nd6_dad_ns_input(ifa)`: a DAD solicitation from someone else for our tentative `ifa`.
-fn nd6_dad_ns_input(ifa: &Ifaddr, net: &NetHeld<'_>) {
+fn nd6_dad_ns_input(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     let Some(dp) = nd6_dad_find(ifa) else {
         log(
             LOG_ERR,
@@ -1531,7 +1543,7 @@ fn nd6_dad_ns_input(ifa: &Ifaddr, net: &NetHeld<'_>) {
     // XXX more checks for loopback situation - see nd6_dad_timer too
     if dp.dad_ns_ocount.get() == 0 {
         // dp will be freed in nd6_dad_duplicated()
-        nd6_dad_duplicated(dp, net);
+        nd6_dad_duplicated(dp, ifa, net);
     } else {
         // not sure if I got a duplicate. increment ns count and see what happens.
         dp.dad_ns_icount.set(dp.dad_ns_icount.get() + 1);

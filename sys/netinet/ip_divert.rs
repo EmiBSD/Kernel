@@ -73,7 +73,6 @@ use crate::net::route::{RTF_LOCAL, rtalloc, rtfree, rtisvalid};
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{
     INADDR_ANY, IPPROTO_ICMP, IPPROTO_TCP, IPPROTO_UDP, SockaddrIn, in_control, in_nam2sin,
-    satosin_const,
 };
 use crate::netinet::in_pcb::{
     INP_HDRINCL, Inpcb, Inpcbtable, in_pcb_is_iterator, in_pcballoc, in_pcbbind, in_pcbdetach,
@@ -360,16 +359,16 @@ pub fn divert_packet(m: &'static Mbuf, dir: u8, divert_port: u16) {
                 divstat_inc(DivstatCounters::DivsErrors);
                 break 'bad;
             };
-            for ifa in ifp.if_addrlist.iter() {
-                let sa = ifa.ifa_addr.get();
-                // SAFETY: an interface address's `ifa_addr` is a readable socket address of
-                // its family (`ifa_add`'s contract); an `AF_INET` one is a `sockaddr_in`.
-                if unsafe { (*sa).sa_family } != AF_INET {
-                    continue;
-                }
-                // SAFETY: as above.
-                sin.sin_addr = unsafe { satosin_const(sa).read_unaligned() }.sin_addr;
-                break;
+            // The first `AF_INET` address (an Internet record), read under a lend of the net
+            // lock the input path holds (N6.5e: the list is a net cell).
+            let lend = crate::net::if_::net_held("divert_packet");
+            let net = lend.net();
+            if let Some(ia) = ifp
+                .if_addrlist()
+                .iter(&net.reader())
+                .find_map(kernel::netinet::in_var::InIfaddr::of)
+            {
+                sin.sin_addr = ia.ia_addr.addr();
             }
             if_put(ifp);
         } else {
@@ -569,7 +568,14 @@ mod tests {
         let ipackets = count(DivstatCounters::DivsIpackets);
         let m = datagram(ADDR);
         m.m_pkthdr().ph_ifidx.set(ifp.if_index.get());
-        divert_packet(m, PF_IN, htons(700));
+        // pf(4) diverts under the shared net lock its input path holds (ip_divert.c's walk
+        // of `if_addrlist` reads under it; N6.5e: the list is a net cell, lent from it).
+        let divert = |m, dir, port| {
+            crate::sys::systm::net_lock_shared();
+            divert_packet(m, dir, htons(port));
+            crate::sys::systm::net_unlock_shared();
+        };
+        divert(m, PF_IN, 700);
         assert_eq!(count(DivstatCounters::DivsIpackets), ipackets + 1);
         let cc = {
             let g = so.so_rcv.lock();
@@ -585,12 +591,12 @@ mod tests {
         };
 
         // Outbound: the wildcard address, and the checksums computed for the reader.
-        divert_packet(datagram([10, 0, 2, 2]), PF_OUT, htons(700));
+        divert(datagram([10, 0, 2, 2]), PF_OUT, 700);
         assert!(so.so_rcv.cc() > cc);
 
         // No socket on port 701: counted and dropped.
         let noport = count(DivstatCounters::DivsNoport);
-        divert_packet(datagram(ADDR), PF_IN, htons(701));
+        divert(datagram(ADDR), PF_IN, 701);
         assert_eq!(count(DivstatCounters::DivsNoport), noport + 1);
 
         // Reinjecting inbound toward an address that is not ours is refused.

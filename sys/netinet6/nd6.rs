@@ -105,11 +105,11 @@ pub(crate) mod tests {
     use crate::kern::uipc_mbuf::m_freem;
     use crate::net::if_::{IFF_RUNNING, IFF_UP};
     use crate::net::if_dl::SockaddrDl;
+    use crate::net::if_var::IfaddrRef;
     use crate::net::if_var::{Ifnet, IfnetLegacy};
     use crate::net::route::{RTF_LLINFO, Rtentry};
     use crate::netinet::ip_input::tests::{bytes, setup, test_ether};
     use crate::netinet6::in6::{In6Addr, SockaddrIn6};
-    use crate::netinet6::in6_var::In6Ifaddr;
     use crate::sys::errno::Errno;
     use crate::sys::mbuf::Mbuf;
     use crate::sys::socket::{AF_LINK, Sockaddr};
@@ -172,10 +172,10 @@ pub(crate) mod tests {
 
     /// An inet6 address `addr` of `ifp` (not on its list), referenced once: the kernel's
     /// record (`in6_ifaddr_alloc`).
-    pub(crate) fn fake_ifa6(ifp: &'static Ifnet, addr: In6Addr) -> &'static In6Ifaddr {
+    pub(crate) fn fake_ifa6(ifp: &'static Ifnet, addr: In6Addr) -> IfaddrRef {
         let ia = crate::netinet6::in6_var::in6_ifaddr_alloc(ifp, 0);
         ia.ia_addr.set(SockaddrIn6::with_addr(addr));
-        ia
+        IfaddrRef::In6(ia)
     }
 
     /// A host route to `dst` on `ifp` with an empty link-layer gateway, added to table 0 (the
@@ -193,8 +193,9 @@ pub(crate) mod tests {
             sdl_family: AF_LINK,
             ..SockaddrDl::default()
         };
+        let ifa = fake_ifa6(ifp, OURS6);
         let mut info = RtAddrinfo::new();
-        info.rti_ifa = Some(&fake_ifa6(ifp, OURS6).ia_ifa);
+        info.rti_ifa = Some(&ifa);
         info.rti_flags = RTF_HOST;
         info.rti_info[RTAX_DST] = Some(sa_view(sa_of(&key)));
         info.rti_info[RTAX_GATEWAY] = Some(sa_view(sa_of(&gate)));

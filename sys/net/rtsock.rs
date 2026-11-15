@@ -88,7 +88,7 @@
 pub use kernel::net::rtsock::{ROUTERCVQ, ROUTESNDQ, rtm_ifannounce, rtm_ifchg, rtm_miss};
 
 use crate::net::if_::net_held;
-use crate::net::if_var::Ifaddr;
+use crate::net::if_var::IfaddrRef;
 use crate::net::route::Rtentry;
 
 /// `rtm_send(rt, cmd, error, rtableid)`.
@@ -97,7 +97,7 @@ pub fn rtm_send(rt: &Rtentry, cmd: u8, error: i32, rtableid: u32) {
 }
 
 /// `rtm_addr(cmd, ifa)`.
-pub fn rtm_addr(cmd: u8, ifa: &Ifaddr) {
+pub fn rtm_addr(cmd: u8, ifa: &IfaddrRef) {
     kernel::net::rtsock::rtm_addr(cmd, ifa, net_held("rtm_addr").net());
 }
 /* </CODE> */
@@ -134,7 +134,7 @@ mod tests {
     use crate::machine::cpu::Cpu;
     use crate::net::route::{
         ROUTE_FLAGFILTER, ROUTE_MSGFILTER, ROUTE_PRIOFILTER, ROUTE_TABLEFILTER, RTA_DST,
-        RTA_GATEWAY, RTA_LABEL, RTA_NETMASK, RTABLE_ANY, RTF_DONE, RTF_GATEWAY, RTF_HOST,
+        RTA_GATEWAY, RTA_IFA, RTA_LABEL, RTA_NETMASK, RTABLE_ANY, RTF_DONE, RTF_GATEWAY, RTF_HOST,
         RTF_LOCAL, RTF_STATIC, RTF_UP, RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_DESYNC, RTM_GET,
         RTM_IFINFO, RTM_MAXSIZE, RTM_VERSION, RTP_CONNECTED, RtMsghdr,
     };
@@ -438,6 +438,62 @@ mod tests {
     /// `route -n get <dst>` as request `seq`.
     fn get(dst: [u8; 4], seq: i32) -> Vec<u8> {
         request(RTM_GET, seq, 0, &[(RTA_DST, sin(dst))])
+    }
+
+    /// The address `a` of an interface, a handle of the test's: the kernel's lookup under the
+    /// net lock, the handle cloned out of its reader (as `bsd`'s wrapper does).
+    fn ifa_of(a: [u8; 4]) -> kernel::net::if_var::IfaddrRef {
+        let af = crate::sys::socket::AF_INET as u8;
+        let sa = [16, af, 0, 0, a[0], a[1], a[2], a[3], 0, 0, 0, 0, 0, 0, 0, 0];
+        net_lock();
+        let ifa = {
+            let lend = crate::net::if_::net_held("ifa_of");
+            let net = lend.net();
+            kernel::net::if_::ifa_ifwithaddr(net, &net.reader(), &sa, 0).cloned()
+        };
+        net_unlock();
+        ifa.expect("the address")
+    }
+
+    /// N6.5e: `RTM_CHANGE` of a route's interface address moves `rt_ifa`'s reference
+    /// (rtsock.c's `ifafree(rt->rt_ifa)` and `rt->rt_ifa = ifaref(ifa)`): the old address's
+    /// count falls by one, the new one's rises by one, nothing else moves.
+    #[test]
+    fn a_change_of_a_route_s_address_moves_its_reference() {
+        let _g = setup();
+        let ifp = test_ether();
+        configure(ifp, [10, 0, 2, 15], [255, 255, 255, 0]);
+        configure(ifp, [10, 0, 2, 16], [255, 255, 255, 0]);
+        let (a, b) = (ifa_of([10, 0, 2, 15]), ifa_of([10, 0, 2, 16]));
+        let so = socreate(i32::from(PF_ROUTE), SOCK_RAW, 0).expect("socket(AF_ROUTE)");
+
+        let route = |ifa: [u8; 4]| {
+            [
+                (RTA_DST, sin([0, 0, 0, 0])),
+                (RTA_GATEWAY, sin([10, 0, 2, 2])),
+                (RTA_NETMASK, sin([0, 0, 0, 0])),
+                (RTA_IFA, sin(ifa)),
+            ]
+        };
+        let flags = RTF_UP | RTF_GATEWAY | RTF_STATIC;
+        send(so, &request(RTM_ADD, 1, flags, &route([10, 0, 2, 15]))).expect("RTM_ADD");
+        assert_eq!(answer(so, 1).1.rtm_errno, 0);
+        let (ca, cb) = (a.count(), b.count());
+
+        send(so, &request(RTM_CHANGE, 2, 0, &route([10, 0, 2, 16]))).expect("RTM_CHANGE");
+        assert_eq!(answer(so, 2).1.rtm_errno, 0);
+        assert_eq!((a.count(), b.count()), (ca - 1, cb + 1), "rt_ifa moved");
+        // The same address again changes nothing.
+        send(so, &request(RTM_CHANGE, 3, 0, &route([10, 0, 2, 16]))).expect("RTM_CHANGE");
+        assert_eq!(answer(so, 3).1.rtm_errno, 0);
+        assert_eq!((a.count(), b.count()), (ca - 1, cb + 1));
+
+        send(so, &request(RTM_DELETE, 4, 0, &route([10, 0, 2, 16])[..3])).expect("RTM_DELETE");
+        assert_eq!(answer(so, 4).1.rtm_errno, 0);
+        let _ = soclose(so, 0);
+        unconfigure(ifp, [10, 0, 2, 16]);
+        unconfigure(ifp, [10, 0, 2, 15]);
+        teardown();
     }
 
     #[test]

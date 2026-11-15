@@ -100,16 +100,16 @@
 //! preferred/expire only.
 //!
 //! ## Deviations
-//! - A record is never freed: the last `ifafree` of an address ([`in6_ifafree`]) and the
-//!   last `in6_delmulti` of a membership ([`in6_multi_free`]) put it on a free list, which
-//!   the next allocation ([`in6_ifaddr_alloc`], [`in6_multi_alloc`]) takes from before a new
-//!   `malloc(9)` (`kernel::netinet::in_var`'s shape, N6.4a's R1; D-2 of N6.5): `&'static` is
-//!   then true for every holder (the interface's list, `rt_ifa`, DAD's `dad_ifa`, the pcbs'
-//!   and pf's copies), and `vmstat -m`'s `ifaddr` and `ipmaddr` rows count the records ever
-//!   alive at once (a high-water mark) where the C's fall after a delete. The counted
-//!   handles in the lists are the user's slice (D-3).
+//! - A multicast record is never freed: the last `in6_delmulti` of a membership
+//!   ([`in6_multi_free`]) puts it on a free list, which the next allocation
+//!   ([`in6_multi_alloc`]) takes from before a new `malloc(9)` (`kernel::netinet::in_var`'s
+//!   shape, N6.4a's R1; D-2 of N6.5): `&'static` is then true for every holder (the
+//!   interface's list, the addresses' memberships, the pcbs' and pf's copies), and `vmstat
+//!   -m`'s `in_multi` row counts the records ever alive at once (a high-water mark) where the
+//!   C's falls after a leave. Counted handles follow the addresses' at N6.5e's 5e2.
 //! - The `ia_list` TAILQ entry is dropped: nothing links the records through it at the pin
-//!   (no `in6_ifaddr` list head exists in netinet6).
+//!   (no `in6_ifaddr` list head exists in netinet6). The record's `ia_list` member is the
+//!   generic part's `ifa_list`.
 //! - `struct in6_multi_mship` (a `malloc`'d list entry per membership) is not the kernel's:
 //!   an address's memberships are an array of the records ([`In6Memberships`], the IPv4
 //!   `imo_membership` shape, D-11), whose `M_IPMADDR` allocation `vmstat -m` counts instead
@@ -118,13 +118,23 @@
 //! ## Redesign
 //! - LZ's `#[repr(C)]` records of `Cell`s cast from their generic part (`ifatoia6`,
 //!   `ifmatoin6m`: pointer casts checked by the address family, one `unsafe` each, and three
-//!   `unsafe impl Sync`) -> records reached from the generic part through a back-link set at
-//!   creation (`Ifaddr::ifa_in6`, `Ifmaddr::ifma_in6`: one load where the C casts, the
-//!   cast's family test the link's presence: only `in6.c` makes `AF_INET6` records).
+//!   `unsafe impl Sync`) -> an address is held by a counted handle whose arm is its family
+//!   (`kernel::net::if_var::IfaddrRef::In6`, N6.5e): [`ifatoia6`] and [`In6Ifaddr::of`] match
+//!   the arm. A multicast record is still reached from its generic part through a back-link
+//!   set at creation (`Ifmaddr::ifma_in6`: one load where the C casts, the cast's family test
+//!   the link's presence: only `in6.c` makes `AF_INET6` records), until 5e2.
+//! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e), freed
+//!   with its last handle (`ifafree`'s `free`): `vmstat -m`'s `ifaddr` row falls with the live
+//!   addresses as the C's; the free list, its mutex and `in6_ifafree` are gone. The generic
+//!   part's `ifa_list` and `ifa_tmplist` are the record's `ia_list` (a net cell) and
+//!   `ia_tmplist` (keyed to `if_tmplist_lock`), `kernel::netinet::in_var`'s shape.
 //! - The C's `struct sockaddr_in6` members -> [`Sin6Words`], the address in atomic words
-//!   that the generic part's `SaLink`s name (`SaLink::set_words`, `kernel::netinet::in_var`'s
-//!   `SinWords` twin), read and written whole (`get`, `set`: LZ's `Cell` interface) or by
-//!   the address alone (`addr`, two word loads).
+//!   (`kernel::netinet::in_var`'s `SinWords` twin), read and written whole (`get`, `set`:
+//!   LZ's `Cell` interface), by the address alone (`addr`, two word loads) or as the socket
+//!   address the generic part names (`read`, through the handle). The C's NULL `ifa_dstaddr`
+//!   of an address on neither a point-to-point nor a loopback interface is
+//!   `ia_dstaddr_linked` false, set where `in6_update_ifa` sets the pointer (N6.5e; N6.5a's
+//!   `SaLink::set_words`).
 //! - `ia6_flags`, `ia6_updatetime`, `in6m_state`, `in6m_timer`: relaxed atomics; the
 //!   lifetimes ([`In6AddrlifetimeCell`]) four of them, written whole by `in6_update_ifa`
 //!   under the net lock (the C's struct assignment; a reader without it may see a mix, as
@@ -135,16 +145,18 @@
 //!   cell keyed to it cannot open for `bsd`'s detached holders. One mutex pair per join and
 //!   one per purge, control path only (named in `kernel::netinet6::in6`'s lock table).
 //!
-//! **Lock and spl transitions** against the C: the free lists' mutex once per allocation
-//! and per last release (the C's `malloc`/`free` take the allocator's); the memberships'
-//! mutex once per join and once per purge (above the C's none: the net lock serves it).
+//! **Lock and spl transitions** against the C: an address's allocation and last release are
+//! the C's `malloc` and `free`; the multicast free list's mutex once per allocation and per
+//! last release (the C's `malloc`/`free` take the allocator's); the memberships' mutex once
+//! per join and once per purge (above the C's none: the net lock serves it).
 
 use hal::intr::IPL_SOFTNET;
-use hal::link::{Link, SaWords};
+use hal::link::{Link, SaBytes, SaWords};
 use hal::list::{List, ListEntry};
-use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
+use hal::malloc::{M_NOWAIT, M_WAITOK, MArc, MArray, MBox};
 use hal::mutex::Mutexed;
 use hal::refcnt::Refcnt;
+use hal::rwlock::Guarded;
 use hal::sys::net_if::{IFF_LOOPBACK, IFF_POINTOPOINT};
 use hal::sys::netinet6_in6::{In6Addr, SockaddrIn6};
 use hal::sys::netinet6_in6_var::In6Addrlifetime;
@@ -152,8 +164,8 @@ use hal::sys::socket::AF_INET6;
 use hal::sys::types::Time;
 
 use crate::assert::kpanic;
-use crate::net::if_::M_IFADDR;
-use crate::net::if_var::{AtomicCell, Ifaddr, Ifmaddr, Ifnet};
+use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};
+use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, Ifnet};
 use crate::netinet::in_var::M_IPMADDR;
 
 /// The size of a `struct sockaddr_in6`, its `sin6_len`.
@@ -162,8 +174,8 @@ pub const SIN6_LEN: u8 = 28;
 /// The offset of `sin6_addr` in a `struct sockaddr_in6`: its words 1 and 2 hold it.
 const SIN6_ADDR: usize = 8;
 
-/// A `struct sockaddr_in6` the kernel owns: its bytes in atomic words (`hal::link::SaWords`)
-/// that an interface record's `SaLink` names. Valid all zero.
+/// A `struct sockaddr_in6` the kernel owns: its bytes in atomic words (`hal::link::SaWords`).
+/// Valid all zero.
 #[derive(Debug, Default)]
 pub struct Sin6Words(SaWords);
 
@@ -212,9 +224,11 @@ impl Sin6Words {
         self.0.word(0)[1]
     }
 
-    /// The words, which a record's `SaLink` names.
-    fn words(&'static self) -> &'static SaWords {
-        &self.0
+    /// A copy of the socket address (`sa_len` bytes, cut at a `sockaddr_in6`): what the C's
+    /// `ifa_addr`, `ifa_dstaddr` or `ifa_netmask` pointing here gives its readers.
+    #[inline]
+    pub fn read(&self) -> SaBytes {
+        self.0.read(size_of::<SockaddrIn6>())
     }
 }
 
@@ -407,12 +421,18 @@ pub struct In6Ifaddr {
     /// `ia6_memberships`: multicast addresses joined from the kernel (the module's
     /// redesign).
     pub ia6_memberships: Mutexed<In6Memberships>,
-    /// The free list's entry (the module's deviations).
-    ia_free: ListEntry<In6Ifaddr>,
+    /// \[I\] Whether the generic part's `ifa_dstaddr` names `ia_dstaddr` (the C's pointer:
+    /// NULL off a point-to-point or loopback interface).
+    pub(crate) ia_dstaddr_linked: bool,
+    /// \[N\] `ia_ifa.ifa_list`: the next address of the interface's list (a net cell,
+    /// `kernel::net::if_var::IfaList`'s chain).
+    pub(crate) ia_list: Guarded<Option<IfaddrRef>>,
+    /// \[T\] `ia_ifa.ifa_tmplist`: the next address of `ifconf`'s temporary list.
+    pub(crate) ia_tmplist: Guarded<Option<IfaddrRef>>,
 }
 
 impl In6Ifaddr {
-    /// A record every member of which is zero (`M_ZERO`).
+    /// A record every member of which is zero (`M_ZERO`), on no list.
     const fn new() -> Self {
         Self {
             ia_ifa: Ifaddr::new(),
@@ -424,7 +444,9 @@ impl In6Ifaddr {
             ia6_lifetime: In6AddrlifetimeCell::new(),
             ia6_updatetime: AtomicCell::new(),
             ia6_memberships: Mutexed::new(IPL_SOFTNET, In6Memberships::new()),
-            ia_free: ListEntry::new(),
+            ia_dstaddr_linked: false,
+            ia_list: Guarded::new_net(None),
+            ia_tmplist: Guarded::new_static(&IF_TMPLIST_LOCK, None),
         }
     }
 
@@ -441,43 +463,15 @@ impl In6Ifaddr {
     }
 
     /// `ifatoia6(ifa)` for an address that may not be an IPv6 one: `None` for another
-    /// family's.
+    /// family's (the handle's arm).
     #[inline]
-    pub fn of(ifa: &Ifaddr) -> Option<&'static In6Ifaddr> {
-        ifa.ifa_in6.get()
-    }
-
-    /// A recycled record made as `malloc(M_ZERO)` leaves a new one: it is on no list and its
-    /// last reference is gone, so no one reaches it; its links still name its own storage.
-    fn reset(&self) {
-        let ifa = &self.ia_ifa;
-        if List::<crate::net::if_var::IfAddrlist>::is_linked(ifa) {
-            kpanic(format_args!(
-                "in6_ifaddr_alloc: a recycled address on a list"
-            ));
-        }
-        ifa.ifa_ifp.set(None);
-        ifa.ifa_flags.set(0);
-        ifa.ifa_metric.set(0);
-        self.ia_addr.set(SockaddrIn6::default());
-        self.ia_gwaddr.set(SockaddrIn6::default());
-        self.ia_dstaddr.set(SockaddrIn6::default());
-        self.ia_prefixmask.set(SockaddrIn6::default());
-        self.ia6_flags.set(0);
-        self.ia6_lifetime.set(In6Addrlifetime::default());
-        self.ia6_updatetime.set(0);
-        if !self.ia6_memberships.lock().is_empty() {
-            kpanic(format_args!(
-                "in6_ifaddr_alloc: a recycled address with memberships"
-            ));
+    pub fn of(ifa: &IfaddrRef) -> Option<&In6Ifaddr> {
+        match ifa {
+            IfaddrRef::In6(ia6) => Some(ia6),
+            _ => None,
         }
     }
 }
-
-hal::list_adapter!(
-    /// The free list of IPv6 addresses (the module's deviations).
-    Ia6FreeList: In6Ifaddr, ia_free
-);
 
 /// `struct in6_multi`: IPv6 multicast address structure.
 pub struct In6Multi {
@@ -536,13 +530,9 @@ hal::list_adapter!(
     Inm6FreeList: In6Multi, in6m_free
 );
 
-// The two free lists' mutexes are IPL_SOFTNET: every taker runs at or below the softnet
-// level, never from a hardware interrupt: the allocations (`in6_update_ifa`, `in6_addmulti`,
-// process context or the softnet tasks), `in6_ifafree` (the last `ifafree`, from `rtfree`,
-// `ifa_del` and DAD's release) and `in6_multi_free` (`in6_delmulti`'s).
-
-/// The IPv6 addresses no interface has any more, for [`in6_ifaddr_alloc`].
-static IA6_FREE: Mutexed<List<Ia6FreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
+// The free list's mutex is IPL_SOFTNET: every taker runs at or below the softnet level,
+// never from a hardware interrupt: the allocation (`in6_addmulti`, process context or the
+// softnet tasks) and `in6_multi_free` (`in6_delmulti`'s).
 
 /// The IPv6 multicast records no interface has any more, for [`in6_multi_alloc`].
 static INM6_FREE: Mutexed<List<Inm6FreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
@@ -550,7 +540,7 @@ static INM6_FREE: Mutexed<List<Inm6FreeList>> = Mutexed::new(IPL_SOFTNET, List::
 /// `ifatoia6(ifa)`: the IPv6 address an `AF_INET6` interface address is the first member of;
 /// `panic(9)` for another family's (where the C would cast it).
 #[inline]
-pub fn ifatoia6(ifa: &Ifaddr) -> &'static In6Ifaddr {
+pub fn ifatoia6(ifa: &IfaddrRef) -> &In6Ifaddr {
     match In6Ifaddr::of(ifa) {
         Some(ia6) => ia6,
         None => kpanic(format_args!("ifatoia6: not an inet6 address")),
@@ -599,13 +589,13 @@ pub fn ia6_dstsin6(ia: &In6Ifaddr) -> SockaddrIn6 {
 
 /// `IFA_IN6(x)`: the IPv6 address of an `AF_INET6` interface address (its record's).
 #[inline]
-pub fn ifa_in6(x: &Ifaddr) -> In6Addr {
+pub fn ifa_in6(x: &IfaddrRef) -> In6Addr {
     ifatoia6(x).ia_addr.addr()
 }
 
 /// `IFA_DSTIN6(x)`: the IPv6 destination address of an `AF_INET6` interface address.
 #[inline]
-pub fn ifa_dstin6(x: &Ifaddr) -> In6Addr {
+pub fn ifa_dstin6(x: &IfaddrRef) -> In6Addr {
     ifatoia6(x).ia_dstaddr.addr()
 }
 
@@ -635,34 +625,14 @@ pub const fn in6_are_scope_equal(a: i32, b: i32) -> bool {
 }
 
 /// `malloc(sizeof(*ia6), M_IFADDR, M_WAITOK | M_ZERO)` and the set-up `in6_update_ifa` gives
-/// a new address of `ifp`: its reference, its address's family and length, the generic part's
-/// links to its storage (`ifa_dstaddr` only on a point-to-point or loopback interface:
-/// "some functions expect that ifa_dstaddr is not NULL for p2p interfaces"), its time stamp
-/// and its interface. A record off the free list first.
-pub fn in6_ifaddr_alloc(ifp: &'static Ifnet, now: Time) -> &'static In6Ifaddr {
-    let reused = IA6_FREE.lock().pop_head();
-    let ia6: &'static In6Ifaddr = match reused {
-        Some(ia6) => {
-            ia6.reset();
-            ia6
-        }
-        // The C's `M_ZERO`: `MBox::new` writes the zeroed record whole.
-        None => match MBox::new(M_IFADDR, M_WAITOK, In6Ifaddr::new()) {
-            Some(b) => {
-                let ia6 = MBox::leak(b);
-                ia6.ia_ifa.ifa_in6.set(Some(ia6));
-                ia6.ia_ifa
-                    .ifa_addr
-                    .set_words::<SockaddrIn6>(Some(ia6.ia_addr.words()));
-                ia6.ia_ifa
-                    .ifa_netmask
-                    .set_words::<SockaddrIn6>(Some(ia6.ia_prefixmask.words()));
-                ia6
-            }
-            None => kpanic(format_args!("in6_ifaddr: no memory")),
-        },
-    };
-    ia6.ia_ifa.ifa_refcnt.init();
+/// a new address of `ifp`: its address's family and length, its time stamp, its interface,
+/// and the generic part's `ifa_dstaddr` only on a point-to-point or loopback interface ("some
+/// functions expect that ifa_dstaddr is not NULL for p2p interfaces"). The handle returned is
+/// the creation reference (`refcnt_init`), which `ifa_add` takes for the interface's list;
+/// the record is freed with the last handle (`ifafree`'s `free(ifa, M_IFADDR, 0)`).
+pub fn in6_ifaddr_alloc(ifp: &'static Ifnet, now: Time) -> MArc<In6Ifaddr> {
+    // The C's `M_ZERO`, then its stores, made on the value `MArc::new` writes whole.
+    let mut ia6 = In6Ifaddr::new();
     // Initialize the address and masks, and put time stamp
     ia6.ia_addr.set(SockaddrIn6 {
         sin6_len: SIN6_LEN,
@@ -670,22 +640,13 @@ pub fn in6_ifaddr_alloc(ifp: &'static Ifnet, now: Time) -> &'static In6Ifaddr {
         ..SockaddrIn6::default()
     });
     ia6.ia6_updatetime.set(now);
-    if ifp.if_flags.get() & (IFF_POINTOPOINT | IFF_LOOPBACK) != 0 {
-        // XXX: some functions expect that ifa_dstaddr is not NULL for p2p interfaces.
-        ia6.ia_ifa
-            .ifa_dstaddr
-            .set_words::<SockaddrIn6>(Some(ia6.ia_dstaddr.words()));
-    } else {
-        ia6.ia_ifa.ifa_dstaddr.clear();
-    }
+    // XXX: some functions expect that ifa_dstaddr is not NULL for p2p interfaces.
+    ia6.ia_dstaddr_linked = ifp.if_flags.get() & (IFF_POINTOPOINT | IFF_LOOPBACK) != 0;
     ia6.ia_ifp().set(Some(ifp));
-    ia6
-}
-
-/// `free(ifa, M_IFADDR, 0)` of an IPv6 address whose last reference `ifafree` gave back: the
-/// record onto the free list (the module's deviations).
-pub(crate) fn in6_ifafree(ia6: &'static In6Ifaddr) {
-    IA6_FREE.lock().insert_tail(ia6);
+    match MArc::new(M_IFADDR, M_WAITOK, ia6) {
+        Some(ia6) => ia6,
+        None => kpanic(format_args!("in6_ifaddr: no memory")),
+    }
 }
 
 /// `malloc(sizeof(*in6m), M_IPMADDR, M_NOWAIT | M_ZERO)` (`in6_addmulti`'s new record), a
@@ -705,9 +666,6 @@ pub fn in6_multi_alloc() -> Option<&'static In6Multi> {
     } else {
         let in6m = MBox::leak(MBox::new(M_IPMADDR, M_NOWAIT, In6Multi::new())?);
         in6m.in6m_ifma.ifma_in6.set(Some(in6m));
-        in6m.in6m_ifma
-            .ifma_addr
-            .set_words::<SockaddrIn6>(Some(in6m.in6m_sin.words()));
         Some(in6m)
     }
 }
@@ -718,21 +676,17 @@ pub(crate) fn in6_multi_free(in6m: &'static In6Multi) {
     INM6_FREE.lock().insert_tail(in6m);
 }
 
-/// Forgets the free lists without touching their records, which an earlier test's memory
-/// holds (`setup_real_memory`'s rule, testing.md).
+/// Forgets the multicast records' free list without touching its records, which an earlier
+/// test's memory holds (`setup_real_memory`'s rule, testing.md).
 #[cfg(any(test, feature = "doubles"))]
 pub fn in6_var_test_reset() {
-    *IA6_FREE.lock() = List::new();
     *INM6_FREE.lock() = List::new();
 }
 
-/// The free lists' lengths, for the tests.
+/// The multicast records' free list's length, for the tests.
 #[cfg(test)]
-pub(crate) fn free_counts() -> (usize, usize) {
-    (
-        IA6_FREE.lock().iter().count(),
-        INM6_FREE.lock().iter().count(),
-    )
+pub(crate) fn inm6_free_count() -> usize {
+    INM6_FREE.lock().iter().count()
 }
 /* </CODE> */
 
@@ -743,20 +697,42 @@ mod tests {
 
     #[test]
     fn the_records_sizes() {
-        // vmstat -m's M_IFADDR and M_IPMADDR (D-4, the sizes taken and flagged). On LP64 the
-        // C's struct in6_ifaddr is 256 bytes and struct in6_multi 80, LZ's #[repr(C)] mirrors
-        // the same; these are 416 and 136. Of the growth, the generic parts are 80 and 32
-        // (Ifaddr 160 for the C's 80, Ifmaddr 72 for the C's 40: the SaLinks, the counted
-        // references and the list links are wider, and since N6.5a each carries an 8-byte
-        // link to its IPv6 record, ifa_in6 or ifma_in6, which the IPv4 records pay too:
-        // in_ifaddr 288 -> 296, in_multi 128 -> 136); the memberships' Mutexed is 64 for the
-        // C's 8-byte LIST_HEAD.
-        assert_eq!(size_of::<In6Ifaddr>(), 416);
-        assert_eq!(size_of::<In6Multi>(), 136);
-        assert_eq!(size_of::<crate::net::if_var::Ifaddr>(), 160);
-        assert_eq!(size_of::<crate::net::if_var::Ifmaddr>(), 72);
-        assert_eq!(size_of::<crate::netinet::in_var::InIfaddr>(), 296);
-        assert_eq!(size_of::<crate::netinet::in_var::InMulti>(), 136);
+        use crate::net::if_var::{Ifaddr, IfaddrLinked, IfaddrRef, Ifmaddr};
+        use crate::netinet::in_var::{InIfaddr, InMulti};
+        // vmstat -m's M_IFADDR and M_IPMADDR and the rtentry pool's item (D-6 of N6.5e, the
+        // sizes taken and flagged, ROADMAP's N12 row). On LP64 the C's struct in_ifaddr is 288
+        // bytes, struct in6_ifaddr 256, struct ifaddr 80, struct in6_multi 80, a pointer 8.
+        // Before N6.5e: In6Ifaddr 416, InIfaddr 296, Ifaddr 160 (three 24-byte SaLinks, the
+        // list links, the count, two back-links), Ifmaddr 72, the multicast records 136.
+        // N6.5e: an address is an MArc block (16 bytes of count and type before it); the
+        // generic part keeps the interface, the flags and the metric (16); each family record
+        // holds the chain's two cells (Guarded<Option<IfaddrRef>>: a 16-byte key and the
+        // 16-byte handle) where the C has two TAILQ entries (32), and its addresses' words
+        // with no link to them; IPv6's NULL ifa_dstaddr is one bool. `rt_ifa` grows from a
+        // pointer to a cell of the handle: +24 on the route. Ifmaddr loses its unread
+        // ifma_addr (24).
+        let sizes = [
+            size_of::<Ifaddr>(),
+            size_of::<IfaddrRef>(),
+            size_of::<Option<IfaddrRef>>(),
+            size_of::<IfaddrLinked>(),
+            size_of::<InIfaddr>(),
+            size_of::<In6Ifaddr>(),
+            size_of::<Ifmaddr>(),
+            size_of::<InMulti>(),
+            size_of::<In6Multi>(),
+            size_of::<crate::net::route::Rtentry>(),
+        ];
+        assert_eq!(sizes[..3], [16, 16, 16]);
+        assert_eq!(sizes[3], 72, "IfaddrLinked");
+        assert_eq!((sizes[4], sizes[5]), (192, 312), "InIfaddr, In6Ifaddr");
+        assert_eq!(sizes[6..9], [48, 112, 112]);
+        assert_eq!(
+            sizes[9], 328,
+            "Rtentry (304 before: rt_ifa was an 8-byte Link)"
+        );
+        assert_eq!(size_of::<hal::rwlock::Guarded<Option<IfaddrRef>>>(), 32);
+        assert_eq!(size_of::<hal::malloc::MArc<InIfaddr>>(), 8);
         assert_eq!(size_of::<Mutexed<In6Memberships>>(), 64);
     }
 

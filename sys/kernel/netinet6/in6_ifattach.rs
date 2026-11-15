@@ -134,7 +134,7 @@ use hal::sys::socket::AF_INET6;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, if_addrhooks_run};
-use crate::net::if_var::Ifnet;
+use crate::net::if_var::{IfaddrRef, Ifnet};
 use crate::net::proto::SockaddrView;
 use crate::net::route::{rt_ifa_add, rtalloc, rtdeletemsg};
 use crate::net::rtable::rtable_loindex;
@@ -142,7 +142,7 @@ use crate::netinet6::in6::{
     NetHolding, in6_purgeaddr, in6_update_ifa, in6if_do_dad, in6ifa_ifpforlinklocal,
     in6ifa_ifpwithaddr, net_assert_locked,
 };
-use crate::netinet6::in6_var::{In6Ifaddr, SIN6_LEN};
+use crate::netinet6::in6_var::{In6Ifaddr, SIN6_LEN, ifatoia6};
 use crate::netinet6::nd6::{nd6_need_cache, nd6_purge};
 use crate::netinet6::nd6_nbr::nd6_dad_start;
 
@@ -346,17 +346,21 @@ pub fn in6_ifattach_linklocal(
         ifra.ifra_flags |= IN6_IFF_TENTATIVE;
     }
 
-    in6_update_ifa(ifp, &ifra, in6ifa_ifpforlinklocal(ifp, 0), net)?;
+    // T1: the link-local address, cloned before its reader ends (`in6_update_ifa` may add an
+    // address, which takes the writer), dropped with the function.
+    let ll = net.with(|n| in6ifa_ifpforlinklocal(&n.reader(), ifp, 0).cloned());
+    in6_update_ifa(ifp, &ifra, ll.as_ref(), net)?;
 
-    let Some(ia6) = in6ifa_ifpforlinklocal(ifp, 0) else {
+    let ll = net.with(|n| in6ifa_ifpforlinklocal(&n.reader(), ifp, 0).cloned());
+    let Some(ifa) = ll else {
         kpanic(format_args!(
             "in6_ifattach_linklocal: no link-local address after in6_update_ifa"
         ));
     };
 
     // Perform DAD, if needed.
-    if ia6.ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
-        net.with(|n| nd6_dad_start(&ia6.ia_ifa, n));
+    if ifatoia6(&ifa).ia6_flags.get() & IN6_IFF_TENTATIVE != 0 {
+        net.with(|n| nd6_dad_start(&ifa, n));
     }
 
     if ifp.if_flags.get() & IFF_LOOPBACK != 0 {
@@ -369,7 +373,7 @@ pub fn in6_ifattach_linklocal(
         flags |= RTF_CLONING;
     }
 
-    net.with(|n| connected_route(ia6, ifp, flags, n))?;
+    net.with(|n| connected_route(&ifa, ifp, flags, n))?;
     if_addrhooks_run(ifp);
 
     Ok(())
@@ -378,20 +382,20 @@ pub fn in6_ifattach_linklocal(
 /// The connected route of link-local address `ia6` (`rt_ifa_add(&ia6->ia_ifa, flags,
 /// ia6->ia_ifa.ifa_addr, ...)`), the address purged when it cannot be made.
 fn connected_route(
-    ia6: &'static In6Ifaddr,
+    ifa: &IfaddrRef,
     ifp: &'static Ifnet,
     flags: u32,
     net: &NetHeld<'_>,
 ) -> Result<(), Errno> {
     // The address's own socket address (ia_addr), copied.
     let mut a = [0u8; size_of::<SockaddrIn6>()];
-    let _ = hal::pod::put(&mut a, 0, &ia6.ia_addr.get());
+    let _ = hal::pod::put(&mut a, 0, &ifatoia6(ifa).ia_addr.get());
     let Some(dst) = SockaddrView::new(&a) else {
         kpanic(format_args!("in6_ifattach: a sockaddr_in6 too short"));
     };
-    let error = rt_ifa_add(&ia6.ia_ifa, flags, dst, ifp.if_rdomain.get(), net);
+    let error = rt_ifa_add(ifa, flags, dst, ifp.if_rdomain.get(), net);
     if error.is_err() {
-        in6_purgeaddr(&ia6.ia_ifa, net);
+        in6_purgeaddr(ifa, net);
     }
     error
 }
@@ -403,7 +407,7 @@ fn in6_ifattach_loopback(ifp: &'static Ifnet, net: &NetHolding<'_>) -> Result<()
 
     kassert!(ifp.if_flags.get() & IFF_LOOPBACK != 0);
 
-    if in6ifa_ifpwithaddr(ifp, &in6).is_some() {
+    if net.with(|n| in6ifa_ifpwithaddr(&n.reader(), ifp, &in6).is_some()) {
         return Ok(());
     }
 
@@ -458,7 +462,9 @@ pub fn in6_ifattach(ifp: &'static Ifnet, net: &NetHolding<'_>) -> Result<(), Err
     }
 
     // Assign a link-local address, if there's none.
-    if in6ifa_ifpforlinklocal(ifp, 0).is_none() && in6_ifattach_linklocal(ifp, None, net).is_err() {
+    if net.with(|n| in6ifa_ifpforlinklocal(&n.reader(), ifp, 0).is_none())
+        && in6_ifattach_linklocal(ifp, None, net).is_err()
+    {
         // failed to assign linklocal address. bark?
     }
 
@@ -492,14 +498,15 @@ fn in6_ifdetach_route(ifp: &'static Ifnet, allnodes: &In6Addr, net: &NetHeld<'_>
 pub fn in6_ifdetach(ifp: &'static Ifnet, net: &NetHeld<'_>) {
     // MROUTING: ip6_mrouter_detach(ifp) removes the ip6_mrouter stuff; not configured.
 
-    // nuke any of IPv6 addresses we have
-    for ifa in &ifp.if_addrlist {
+    // nuke any of IPv6 addresses we have (TAILQ_FOREACH_SAFE: `in6_purgeaddr` takes the
+    // address it is given off the list; T1/T2, `IfaList::for_each_safe`)
+    ifp.if_addrlist().for_each_safe(net, |ifa| {
         if In6Ifaddr::of(ifa).is_none() {
-            continue;
+            return;
         }
         in6_purgeaddr(ifa, net);
         if_addrhooks_run(ifp);
-    }
+    });
 
     // Remove neighbor management table. Must be called after purging addresses.
     nd6_purge(ifp, net);

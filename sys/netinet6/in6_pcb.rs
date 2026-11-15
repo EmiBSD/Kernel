@@ -688,7 +688,8 @@ pub(crate) mod tests {
         info.rti_flags = RTF_GATEWAY | RTF_STATIC;
         crate::sys::systm::net_lock();
         // SAFETY: a local `sockaddr_in6`.
-        info.rti_ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sin6tosa(&mut gate), ifp) };
+        let ifa = unsafe { crate::net::if_::ifaof_ifpforaddr(sin6tosa(&mut gate), ifp) };
+        info.rti_ifa = ifa.as_ref();
         let mut rt = None;
         rtrequest(RTM_ADD, &mut info, 0, Some(&mut rt), 0).expect("default route");
         rtfree(rt);

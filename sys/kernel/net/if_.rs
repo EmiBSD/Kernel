@@ -271,12 +271,20 @@
 //! - `SIOCSIFXFLAGS`'s `goto forceup` into `SIOCSIFFLAGS` is a call of the one `forceup`
 //!   function from both, inside the same net lock section.
 //! - `ifconf` keeps the C's temporary lists (`if_tmplist`, `ifa_tmplist`, references taken)
-//!   under `if_tmplist_lock`; an address's bytes are a copy that needs the net lock
-//!   (`SaLink::read`), so each interface's shared hold that lists its addresses also copies
-//!   the first eight of them, and an interface with more takes the lock again per further
-//!   eight before it copies them out with the lock let go: the C's count of lock sections up
-//!   to eight addresses, one more per eight after (N6.4/N6.5, when the address embeds its
-//!   storage, reads it under the reference alone). As the C, `ifc_len` is an `int` compared
+//!   under `if_tmplist_lock`: the addresses' since N6.5e a chain of counted handles through
+//!   the records' `ia_tmplist` cells (keyed to `if_tmplist_lock`), threaded in order under the
+//!   interface's one reader (O(1) a link, each link the C's `ifaref`, each pop its
+//!   `ifafree`); each interface's shared hold that lists its addresses also copies the first
+//!   eight of them, and an interface with more takes the lock again per further eight before
+//!   it copies them out with the lock let go: the C's count of lock sections up to eight
+//!   addresses, one more per eight after.
+//! - (N6.5e) `if_addrlist` is a chain of counted handles in net cells
+//!   (`kernel::net::if_var::IfaList`): [`ifa_add`] takes the creation reference and
+//!   [`ifa_del`] gives the list's back for the caller's `ifafree`, both under the net cells'
+//!   writer (`NET_ASSERT_LOCKED_EXCLUSIVE()`, made in every build); the lookups
+//!   (`ifa_ifwithaddr`, `ifa_ifwithdstaddr`, `ifaof_ifpforaddr`) take the caller's reader and
+//!   lend for its life; `if_detach`'s purge clones each first address before its reader ends
+//!   (T1). As the C, `ifc_len` is an `int` compared
 //!   with a `size_t` for the `sockaddr`-sized rows (a negative length bounds none of them)
 //!   and with an `int` for the longer ones.
 //! - The group requests copy out of a snapshot (`IfgSet::snapshot`, the members' with a
@@ -298,10 +306,10 @@ use hal::link::SaBytes;
 use hal::list::List;
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray, MBox};
 use hal::mutex::Mutexed;
-use hal::netlock::{NETLOCK, NetHeld};
+use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::once::OnceStatic;
 use hal::pool::BoxPool;
-use hal::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock};
+use hal::rwlock::{Guarded, RW_READ, RW_WRITE, RawRwlock, WriteWitness};
 use hal::slot::ReadMostly;
 use hal::smr::{self, SmrLink, SmrLinked, SmrPtr, SmrRead};
 use hal::sys::errno::Errno;
@@ -341,8 +349,9 @@ use hal::user::UserPtr;
 use crate::assert::{kassert, kpanic};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
-    IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaTmplist, Ifaddr, IfgGroup,
-    IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, Niqueue, counters_pkt,
+    IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaList, Ifaddr, IfaddrRef,
+    IfgGroup, IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, Niqueue,
+    counters_pkt,
 };
 use crate::net::ifq::{
     Ifiqueue, Ifqueue, QueueDiscipline, ifiq_add_data, ifiq_destroy, ifiq_enqueue,
@@ -467,6 +476,22 @@ pub fn register_inet(imp: &'static dyn Inet) -> Result<(), hal::bridges::Already
 #[inline]
 pub(crate) fn inet() -> Option<&'static dyn Inet> {
     INET.get().copied()
+}
+
+/// `f` with the proof of the net lock the caller holds without one (`Inet::with_net_held`:
+/// a driver's output carries none, until N7's): `nd6_resolve`'s solicitation, `arpresolve`'s
+/// request (N6.5e).
+pub(crate) fn with_net_held(f: impl FnOnce(&NetHeld<'_>)) {
+    let mut f = Some(f);
+    let mut call = |net: &NetHeld<'_>| {
+        if let Some(f) = f.take() {
+            f(net);
+        }
+    };
+    match inet() {
+        Some(i) => i.with_net_held(&mut call),
+        None => kpanic(format_args!("NET_ASSERT_LOCKED: no proof of the net lock")),
+    }
 }
 
 /// `struct softnet`: a softnet task queue and its barrier.
@@ -1162,6 +1187,7 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         if_rcv: Ifiqueue::new(ifp, 0, net_tq(0)),
         ifqs: OnceStatic::new(),
         iqs: OnceStatic::new(),
+        if_addrlist: IfaList::new(),
         if_maddrlock: hal::rwlock::SplitRwlock::new("maddr"),
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
@@ -1644,11 +1670,6 @@ fn net_assert_locked() {
     kassert!(matches!(hal::netlock::status(), RW_WRITE | RW_READ));
 }
 
-/// `NET_ASSERT_LOCKED_EXCLUSIVE()` (`DIAGNOSTIC`): the running process writes the net lock.
-fn net_assert_locked_exclusive() {
-    kassert!(hal::netlock::write_held());
-}
-
 /// The bytes of a NUL-terminated name up to its NUL (the C's string), at most all of them.
 fn cstr(s: &[u8]) -> &[u8] {
     let n = s.iter().position(|&c| c == 0).unwrap_or(s.len());
@@ -2002,9 +2023,10 @@ pub fn p2p_rtrequest(ifp: &Ifnet, req: u8, rt: &crate::net::route::Rtentry, net:
 
     let key = rt.dest();
     let n = usize::from(key.first().copied().unwrap_or(0));
+    let r = net.reader();
     let mut found = None;
-    for ifa in &ifp.if_addrlist {
-        let Some(a) = ifa.ifa_addr.read(net) else {
+    for ifa in ifp.if_addrlist().iter(&r) {
+        let Some(a) = ifa.ifa_addr(net) else {
             continue;
         };
         if a.get(..n) == key.get(..n) {
@@ -2016,16 +2038,17 @@ pub fn p2p_rtrequest(ifp: &Ifnet, req: u8, rt: &crate::net::route::Rtentry, net:
         return;
     };
 
-    kassert!(rt.rt_ifa.points_to(ifa));
+    kassert!(rt.ifa(&r).is_some_and(|a| a.is(ifa)));
 
     let lo0ifp = if_get(crate::net::rtable::rtable_loindex(ifp.if_rdomain.get()));
     kassert!(lo0ifp.is_some());
     let Some(lo0ifp) = lo0ifp else {
         return;
     };
-    let lo0ifa = (&lo0ifp.if_addrlist)
-        .into_iter()
-        .any(|l| l.ifa_addr.read(net).is_some_and(|a| a.family() == af));
+    let lo0ifa = lo0ifp
+        .if_addrlist()
+        .iter(&r)
+        .any(|l| l.ifa_addr(net).is_some_and(|a| a.family() == af));
     if_put(Some(lo0ifp));
 
     if !lo0ifa {
@@ -2175,15 +2198,22 @@ pub fn if_detach(ifp: &'static Ifnet) {
         if_free_sadl(ifp);
 
         // We should not have any address left at this point.
-        if !ifp.if_addrlist.is_empty() {
+        let held = net_held(&net);
+        if !ifp.if_addrlist().is_empty(&held.reader()) {
             #[cfg(feature = "diagnostic")]
             ifp.if_xname.with_str(|n| {
                 printf(format_args!("{}: address list non empty\n", Str(n)));
             });
-            while let Some(ifa) = ifp.if_addrlist.first() {
-                ifa_del(ifp, ifa);
+            loop {
+                // T1: the first address, cloned before its reader ends (ifa_del takes the
+                // writer), dropped with the iteration.
+                let first = ifp.if_addrlist().first(&held.reader()).cloned();
+                let Some(ifa) = first else {
+                    break;
+                };
+                let lst = ifa_del(ifp, &ifa, &held);
                 ifa.ifa_ifp.set(None);
-                route::ifafree(ifa);
+                route::ifafree(lst);
             }
         }
     }
@@ -2453,8 +2483,14 @@ fn sa_family(sa: &[u8]) -> Option<SaFamily> {
 /// `ifa_ifwithaddr(addr, rtableid)`: the address `addr` (a socket address's bytes) of an
 /// interface of `rtableid`'s domain. Under the net lock, which `held` proves (the C's
 /// `NET_ASSERT_LOCKED()`, once per walk): the walk over `ifnetlist` and the address lists,
-/// the C's.
-pub fn ifa_ifwithaddr(held: &NetHeld<'_>, addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
+/// the C's, under the caller's reader `r`, for whose life the address is lent (uncounted, as
+/// the C's pointer).
+pub fn ifa_ifwithaddr<'r>(
+    held: &NetHeld<'_>,
+    r: &'r NetReader<'_>,
+    addr: &[u8],
+    rtableid: u32,
+) -> Option<&'r IfaddrRef> {
     let family = sa_family(addr)?;
     let rdomain = rtable_l2(rtableid);
     for ifp in &IFNETLIST {
@@ -2462,8 +2498,8 @@ pub fn ifa_ifwithaddr(held: &NetHeld<'_>, addr: &[u8], rtableid: u32) -> Option<
             continue;
         }
 
-        for ifa in &ifp.if_addrlist {
-            let Some(ifa_addr) = ifa.ifa_addr.read(held) else {
+        for ifa in ifp.if_addrlist().iter(r) {
+            let Some(ifa_addr) = ifa.ifa_addr(held) else {
                 continue;
             };
             if ifa_addr.family() != family {
@@ -2479,8 +2515,13 @@ pub fn ifa_ifwithaddr(held: &NetHeld<'_>, addr: &[u8], rtableid: u32) -> Option<
 }
 
 /// `ifa_ifwithdstaddr(addr, rdomain)`: the point-to-point interface address whose
-/// destination is `addr`, under the net lock `held` proves.
-pub fn ifa_ifwithdstaddr(held: &NetHeld<'_>, addr: &[u8], rdomain: u32) -> Option<&'static Ifaddr> {
+/// destination is `addr`, under the net lock `held` proves, lent for the life of `r`.
+pub fn ifa_ifwithdstaddr<'r>(
+    held: &NetHeld<'_>,
+    r: &'r NetReader<'_>,
+    addr: &[u8],
+    rdomain: u32,
+) -> Option<&'r IfaddrRef> {
     let family = sa_family(addr)?;
     let rdomain = rtable_l2(rdomain);
     for ifp in &IFNETLIST {
@@ -2488,16 +2529,13 @@ pub fn ifa_ifwithdstaddr(held: &NetHeld<'_>, addr: &[u8], rdomain: u32) -> Optio
             continue;
         }
         if ifp.if_flags.get() & IFF_POINTOPOINT != 0 {
-            for ifa in &ifp.if_addrlist {
-                // An address without a destination is skipped before any copy (review 2's
-                // S-b: the C tests the pointer, not the bytes).
-                if ifa.ifa_dstaddr.is_none() {
+            for ifa in ifp.if_addrlist().iter(r) {
+                if ifa.ifa_addr(held).map(|a| a.family()) != Some(family) {
                     continue;
                 }
-                if ifa.ifa_addr.read(held).map(|a| a.family()) != Some(family) {
-                    continue;
-                }
-                let Some(dstaddr) = ifa.ifa_dstaddr.read(held) else {
+                // An address without a destination (the C's NULL pointer) is skipped without
+                // a copy (review 2's S-b).
+                let Some(dstaddr) = ifa.ifa_dstaddr(held) else {
                     continue;
                 };
                 if sa_equal(addr, &dstaddr) {
@@ -2511,16 +2549,21 @@ pub fn ifa_ifwithdstaddr(held: &NetHeld<'_>, addr: &[u8], rdomain: u32) -> Optio
 
 /// `ifaof_ifpforaddr(addr, ifp)`: the address of `ifp` that best matches `addr`: equal (or
 /// its destination equal, point-to-point), or in its subnet; else the first of the family.
-/// Under the net lock `held` proves (the C's callers hold it).
-pub fn ifaof_ifpforaddr(held: &NetHeld<'_>, addr: &[u8], ifp: &Ifnet) -> Option<&'static Ifaddr> {
+/// Under the net lock `held` proves (the C's callers hold it), lent for the life of `r`.
+pub fn ifaof_ifpforaddr<'r>(
+    held: &NetHeld<'_>,
+    r: &'r NetReader<'_>,
+    addr: &[u8],
+    ifp: &'r Ifnet,
+) -> Option<&'r IfaddrRef> {
     let mut ifa_maybe = None;
     let af = sa_family(addr)?;
 
     if af >= AF_MAX {
         return None;
     }
-    for ifa in &ifp.if_addrlist {
-        let Some(ifa_addr) = ifa.ifa_addr.read(held) else {
+    for ifa in ifp.if_addrlist().iter(r) {
+        let Some(ifa_addr) = ifa.ifa_addr(held) else {
             continue;
         };
         if ifa_addr.family() != af {
@@ -2529,14 +2572,11 @@ pub fn ifaof_ifpforaddr(held: &NetHeld<'_>, addr: &[u8], ifp: &Ifnet) -> Option<
         if ifa_maybe.is_none() {
             ifa_maybe = Some(ifa);
         }
-        let netmask = match ifa.ifa_netmask.read(held) {
+        let netmask = match ifa.ifa_netmask(held) {
             Some(nm) if ifp.if_flags.get() & IFF_POINTOPOINT == 0 => nm,
             _ => {
                 if sa_equal(addr, &ifa_addr)
-                    || ifa
-                        .ifa_dstaddr
-                        .read(held)
-                        .is_some_and(|d| sa_equal(addr, &d))
+                    || ifa.ifa_dstaddr(held).is_some_and(|d| sa_equal(addr, &d))
                 {
                     return Some(ifa);
                 }
@@ -3506,29 +3546,31 @@ fn ifconf(req: &mut [u8]) -> Result<(), Errno> {
 
     // If ifc->ifc_len is 0, fill it in with the needed size and return.
     if space == 0 {
-        let net = NETLOCK.read();
-        let held = net_held(&net);
-        for ifp in &IFNETLIST {
-            if ifp.if_addrlist.is_empty() {
-                space = space.wrapping_add(IFREQ_SIZE as i32);
-            } else {
-                for ifa in &ifp.if_addrlist {
-                    let sa_len = ifa.ifa_addr.read(&held).map_or(0, |sa| usize::from(sa[0]));
-                    if sa_len > SOCKADDR_SIZE {
-                        space = space.wrapping_add((sa_len - SOCKADDR_SIZE) as i32);
-                    }
+        {
+            let net = NETLOCK.read();
+            let held = net_held(&net);
+            let r = held.reader();
+            for ifp in &IFNETLIST {
+                if ifp.if_addrlist().is_empty(&r) {
                     space = space.wrapping_add(IFREQ_SIZE as i32);
+                } else {
+                    for ifa in ifp.if_addrlist().iter(&r) {
+                        let sa_len = ifa.ifa_addr(&held).map_or(0, |sa| usize::from(sa[0]));
+                        if sa_len > SOCKADDR_SIZE {
+                            space = space.wrapping_add((sa_len - SOCKADDR_SIZE) as i32);
+                        }
+                        space = space.wrapping_add(IFREQ_SIZE as i32);
+                    }
                 }
             }
         }
-        drop(net);
         ifc.ifc_len = space;
         return Ok(());
     }
 
     let mut ifrp = ifc.ifc_req() as usize;
 
-    let tmp = IF_TMPLIST_LOCK.write();
+    let mut tmp = IF_TMPLIST_LOCK.write();
     let if_tmplist: List<IfTmplist> = List::new();
     {
         let _net = NETLOCK.read();
@@ -3537,7 +3579,7 @@ fn ifconf(req: &mut [u8]) -> Result<(), Errno> {
         }
     }
 
-    let error = ifconf_rows(&if_tmplist, &mut ifrp, &mut space);
+    let error = ifconf_rows(&if_tmplist, &mut tmp, &mut ifrp, &mut space);
 
     // free:
     while let Some(ifp) = if_tmplist.pop_head() {
@@ -3572,17 +3614,19 @@ fn ifconf_short(space: i32) -> bool {
 }
 
 /// `ifconf`'s rows of the interfaces of `if_tmplist` (each referenced, the temporary list
-/// `IF_TMPLIST_LOCK` keeps), from the user address `ifrp` on, while `space` lasts: the
-/// interface's addresses referenced on a temporary list under the shared net lock (`ifaref`,
-/// as the C), the first [`IFCONF_BATCH`] of them copied in that same hold and the others a
-/// batch per hold after it, then copied out with the lock let go, then their references
-/// dropped (`ifafree`).
+/// `IF_TMPLIST_LOCK` keeps, whose witness `tmp` is), from the user address `ifrp` on, while
+/// `space` lasts: the interface's addresses threaded in order on a temporary list under one
+/// reader of the shared net lock (`addr_tmplist`, a chain through their `ia_tmplist` cells,
+/// keyed to `if_tmplist_lock`: each link a reference, `ifaref`, as the C), the first
+/// [`IFCONF_BATCH`] of them copied in that same hold and the others a batch per hold after
+/// it, then copied out with the lock let go, then their references dropped (`ifafree`).
 fn ifconf_rows(
     if_tmplist: &List<IfTmplist>,
+    tmp: &mut WriteWitness<'_>,
     ifrp: &mut usize,
     space: &mut i32,
 ) -> Result<(), Errno> {
-    let addr_tmplist: List<IfaTmplist> = List::new();
+    let mut addr_tmplist: Option<IfaddrRef> = None;
     let mut ifr = Ifreq::zeroed();
     let mut error = Ok(());
 
@@ -3596,16 +3640,24 @@ fn ifconf_rows(
         {
             let net = NETLOCK.read();
             let held = net_held(&net);
-            for (i, ifa) in ifp.if_addrlist.iter().enumerate() {
-                ifa.ifa_refcnt.take(); // ifaref
-                addr_tmplist.insert_tail(ifa);
+            let r = held.reader();
+            // The last address linked, lent by the interface's list for the reader's life: the
+            // next one links after it in O(1).
+            let mut last: Option<&IfaddrRef> = None;
+            for (i, ifa) in ifp.if_addrlist().iter(&r).enumerate() {
+                let link = Some(route::ifaref(ifa));
+                match last {
+                    None => addr_tmplist = link,
+                    Some(l) => *l.tmplist_cell().get_mut(tmp) = link,
+                }
+                last = Some(ifa);
                 if let Some(slot) = batch.get_mut(i) {
-                    *slot = ifa.ifa_addr.read(&held);
+                    *slot = ifa.ifa_addr(&held);
                 }
             }
         }
 
-        if addr_tmplist.is_empty() {
+        if addr_tmplist.is_none() {
             ifr.ifr_ifru = [0; SOCKADDR_SIZE];
             error = UserPtr::<Ifreq>::new(*ifrp).copyout(&ifr);
             if error.is_err() {
@@ -3615,7 +3667,7 @@ fn ifconf_rows(
             *space = space.wrapping_sub(IFREQ_SIZE as i32);
             *ifrp = ifrp.wrapping_add(IFREQ_SIZE);
         } else {
-            let mut next = addr_tmplist.first();
+            let mut next = addr_tmplist.as_ref();
             let mut i = 0;
             while let Some(ifa) = next {
                 if i == IFCONF_BATCH {
@@ -3624,14 +3676,14 @@ fn ifconf_rows(
                     let held = net_held(&net);
                     let mut at = Some(ifa);
                     for slot in &mut batch {
-                        *slot = at.and_then(|a| a.ifa_addr.read(&held));
-                        at = at.and_then(List::<IfaTmplist>::next);
+                        *slot = at.and_then(|a| a.ifa_addr(&held));
+                        at = at.and_then(|a| a.tmplist_cell().get(&*tmp).as_ref());
                     }
                     i = 0;
                 }
                 let sa = batch[i].take();
                 i += 1;
-                next = List::<IfaTmplist>::next(ifa);
+                next = ifa.tmplist_cell().get(&*tmp).as_ref();
 
                 if ifconf_short(*space) {
                     break 'free;
@@ -3673,16 +3725,21 @@ fn ifconf_rows(
             }
         }
 
-        while let Some(ifa) = addr_tmplist.pop_head() {
-            route::ifafree(ifa);
-        }
+        ifconf_free(&mut addr_tmplist, tmp);
     }
 
     // free:
-    while let Some(ifa) = addr_tmplist.pop_head() {
+    ifconf_free(&mut addr_tmplist, tmp);
+    error
+}
+
+/// `ifconf`'s `ifafree` of each address of its temporary list `head`, which ends empty (the
+/// cells are `tmp`'s lock's).
+fn ifconf_free(head: &mut Option<IfaddrRef>, tmp: &mut WriteWitness<'_>) {
+    while let Some(ifa) = head.take() {
+        *head = ifa.tmplist_cell().get_mut(tmp).take();
         route::ifafree(ifa);
     }
-    error
 }
 
 /// `if_getdata(ifp, data)`: the interface's `struct if_data` (`SIOCGIFDATA`, the routing
@@ -4211,19 +4268,27 @@ pub fn ifsetlro(ifp: &'static Ifnet, on: bool) -> Result<(), Errno> {
     error
 }
 
-/// `ifa_add(ifp, ifa)`: a protocol's address linked at the tail of the interface's list
-/// (under the exclusive net lock). The address lives while it is linked (`bsd`'s `in_ifaddr`,
-/// the module's redesign).
-pub fn ifa_add(ifp: &Ifnet, ifa: &'static Ifaddr) {
-    net_assert_locked_exclusive();
-    ifp.if_addrlist.insert_tail(ifa);
+/// `ifa_add(ifp, ifa)`: a protocol's address linked at the tail of the interface's list,
+/// under the exclusive net lock `net` proves (the net cells' writer: the C's
+/// `NET_ASSERT_LOCKED_EXCLUSIVE()`, a `panic(9)` with a reader out). The list takes the
+/// handle, the address's creation reference ([`ifa_del`] gives it back). O(n) (D-4).
+pub fn ifa_add(ifp: &Ifnet, ifa: IfaddrRef, net: &NetHeld<'_>) {
+    let mut w = net.writer();
+    ifp.if_addrlist().insert_tail(&mut w, ifa);
 }
 
-/// `ifa_del(ifp, ifa)`: the address taken off the interface's list.
-pub fn ifa_del(ifp: &Ifnet, ifa: &Ifaddr) {
-    net_assert_locked_exclusive();
-    kassert!(ifp.if_addrlist.iter().any(|a| core::ptr::eq(a, ifa)));
-    ifp.if_addrlist.remove(ifa);
+/// `ifa_del(ifp, ifa)`: the address taken off the interface's list under the exclusive net
+/// lock, as [`ifa_add`]. The list's reference is returned for the caller's `ifafree` (in.c's
+/// `in_purgeaddr`, in6.c's `in6_unlink_ifa`, if.c's `if_detach`); `panic(9)` when the address
+/// is not on the list (the C's `TAILQ_REMOVE` would corrupt it). O(n) (D-4).
+pub fn ifa_del(ifp: &Ifnet, ifa: &Ifaddr, net: &NetHeld<'_>) -> IfaddrRef {
+    let mut w = net.writer();
+    match ifp.if_addrlist().remove(&mut w, ifa) {
+        Some(lst) => lst,
+        None => kpanic(format_args!(
+            "ifa_del: an address not on its interface's list"
+        )),
+    }
 }
 
 /// `ifnewlladdr(ifp)`: the interface bounced after its link address changed (down for a
@@ -4250,13 +4315,20 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
 
     // Update the link-local address. Don't do it if we're a router to avoid confusing hosts
     // on the network.
-    if !i_am_router && let Some(ia6) = crate::netinet6::in6::in6ifa_ifpforlinklocal(ifp, 0) {
-        hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6.ia_ifa, net));
-        if_hooks_run(ifp, &ifp.rt().if_addrhooks);
-        let _ = crate::netinet6::in6_ifattach::in6_ifattach(
-            ifp,
-            &crate::netinet6::in6::NetHolding::Detached,
-        );
+    if !i_am_router {
+        // T1: the link-local address, cloned before its reader ends (the purge takes the
+        // writer), looked up only when it is to be updated, as the C does.
+        let ll = hal::netlock::lend_detached(|net| {
+            crate::netinet6::in6::in6ifa_ifpforlinklocal(&net.reader(), ifp, 0).cloned()
+        });
+        if let Some(ia6) = ll {
+            hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6, net));
+            if_hooks_run(ifp, &ifp.rt().if_addrhooks);
+            let _ = crate::netinet6::in6_ifattach::in6_ifattach(
+                ifp,
+                &crate::netinet6::in6::NetHolding::Detached,
+            );
+        }
     }
 
     if !up {
@@ -4862,25 +4934,163 @@ pub(crate) mod tests {
         hal::user::bytes_of(core::slice::from_ref(&sa.get())).to_vec()
     }
 
-    /// An address `addr` with netmask `mask` (and destination `dst`) added to `ifp`.
+    /// An Internet address `addr` with netmask `mask` (and destination `dst`) added to `ifp`
+    /// under the net lock `net` proves: a handle of the test's, the list holding the creation
+    /// reference.
     fn address(
         ifp: &'static Ifnet,
         addr: [u8; 4],
         mask: Option<[u8; 4]>,
         dst: Option<[u8; 4]>,
-    ) -> &'static Ifaddr {
-        let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-        let token = crate::net::if_var::sa_test_token();
-        ifa.ifa_addr.set(token, Some(sin(addr)));
-        if let Some(m) = mask {
-            ifa.ifa_netmask.set(token, Some(sin(m)));
-        }
-        if let Some(d) = dst {
-            ifa.ifa_dstaddr.set(token, Some(sin(d)));
-        }
-        ifa.ifa_ifp.set(Some(ifp));
-        ifa_add(ifp, ifa);
+        net: &NetHeld<'_>,
+    ) -> IfaddrRef {
+        let ifa = crate::netinet::in_var::test_in_ifaddr(ifp, addr, mask, dst);
+        ifa_add(ifp, ifa.clone(), net);
         ifa
+    }
+
+    /// The address of an Internet record's handle, its last byte (the tests' addresses are
+    /// 10.0.0.x).
+    fn last_byte(ifa: &IfaddrRef) -> u8 {
+        crate::netinet::in_var::ifatoia(ifa)
+            .ia_addr
+            .addr()
+            .s_addr
+            .to_ne_bytes()[3]
+    }
+
+    /// The last bytes of `ifp`'s addresses, in the list's order, under one reader.
+    fn order(ifp: &Ifnet, net: &NetHeld<'_>) -> Vec<u8> {
+        let r = net.reader();
+        ifp.if_addrlist().iter(&r).map(last_byte).collect()
+    }
+
+    /// N6.5e: the interface's list keeps the order addresses were added in (the C's
+    /// `TAILQ_INSERT_TAIL`), holds one reference of each (the creation reference `ifa_add`
+    /// takes), gives it back on `ifa_del` from anywhere in the chain, and the record is freed
+    /// with its last reference (`malloc(9)`'s bytes of `M_IFADDR` back to where they were).
+    #[test]
+    fn the_address_list_keeps_its_order_and_the_c_counts() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tal0");
+        if_attach(ifp);
+        let out = crate::testutil::malloc_out(M_IFADDR);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let a: Vec<IfaddrRef> = (1..=4u8)
+            .map(|i| address(ifp, [10, 0, 0, i], None, None, &net))
+            .collect();
+        assert!(crate::testutil::malloc_out(M_IFADDR) > out, "four records");
+        assert_eq!(order(ifp, &net), [1, 2, 3, 4], "insertion order");
+        assert!(
+            a.iter().all(|x| x.count() == 2),
+            "the list's and the test's"
+        );
+
+        // The middle, the head, the tail: each the list's handle back, the rest in order.
+        for (i, left) in [(1, &[1u8, 3, 4][..]), (0, &[3, 4][..]), (3, &[3][..])] {
+            let lst = ifa_del(ifp, &a[i], &net);
+            assert!(lst.is(&a[i]), "the list's handle of that address");
+            assert_eq!(a[i].count(), 2, "not dropped yet");
+            route::ifafree(lst);
+            assert_eq!(a[i].count(), 1, "the test's alone");
+            assert_eq!(order(ifp, &net), left);
+        }
+        // An address on no list: the list answers none and stays as it is.
+        assert!(ifp.if_addrlist().remove(&mut net.writer(), &a[0]).is_none());
+        assert_eq!(order(ifp, &net), [3]);
+        route::ifafree(ifa_del(ifp, &a[2], &net));
+        assert!(ifp.if_addrlist().is_empty(&net.reader()));
+        // A handle held across its delete still reads its record; the last drop frees it.
+        assert_eq!(last_byte(&a[2]), 3);
+        drop(a);
+        assert_eq!(crate::testutil::malloc_out(M_IFADDR), out, "freed at zero");
+    }
+
+    /// `TAILQ_FOREACH_SAFE`: a body that takes the address it is given off the list (and
+    /// gives the list's reference back) sees every address once.
+    #[test]
+    fn a_safe_walk_lets_its_body_delete_the_address_it_stands_on() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tsw0");
+        if_attach(ifp);
+        let out = crate::testutil::malloc_out(M_IFADDR);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        for i in 1..=3u8 {
+            drop(address(ifp, [10, 0, 0, i], None, None, &net));
+        }
+        let mut seen = Vec::new();
+        ifp.if_addrlist().for_each_safe(&net, |ifa| {
+            seen.push(last_byte(ifa));
+            route::ifafree(ifa_del(ifp, ifa, &net));
+        });
+        assert_eq!(seen, [1, 2, 3]);
+        assert!(ifp.if_addrlist().is_empty(&net.reader()));
+        assert_eq!(
+            crate::testutil::malloc_out(M_IFADDR),
+            out,
+            "every record freed"
+        );
+    }
+
+    /// A safe walk whose body takes the successor off the list: the walk still gives it that
+    /// address (its clone keeps the record alive) and ends after it, its cell emptied (the C
+    /// would read freed memory); nothing is freed while the walk holds it.
+    #[test]
+    fn a_safe_walk_whose_body_takes_the_successor_ends_after_it() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tsn0");
+        if_attach(ifp);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let a: Vec<IfaddrRef> = (1..=3u8)
+            .map(|i| address(ifp, [10, 0, 0, i], None, None, &net))
+            .collect();
+        let mut seen = Vec::new();
+        ifp.if_addrlist().for_each_safe(&net, |ifa| {
+            seen.push(last_byte(ifa));
+            if last_byte(ifa) == 1 {
+                route::ifafree(ifa_del(ifp, &a[1], &net));
+                assert_eq!(a[1].count(), 2, "the test's and the walk's");
+            }
+        });
+        assert_eq!(seen, [1, 2]);
+        assert_eq!(a[1].count(), 1, "the walk's clone gone");
+        assert_eq!(order(ifp, &net), [1, 3]);
+        for i in [0, 2] {
+            route::ifafree(ifa_del(ifp, &a[i], &net));
+        }
+    }
+
+    /// `ifa_del` of an address that is not on the interface's list: `panic(9)` (the C's
+    /// `TAILQ_REMOVE` would corrupt the list).
+    #[test]
+    #[should_panic(expected = "an address not on its interface's list")]
+    fn ifa_del_of_an_address_not_on_the_list_is_panic() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tad0");
+        if_attach(ifp);
+        let other = crate::netinet::in_var::test_in_ifaddr(ifp, [10, 0, 0, 9], None, None);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let _ = ifa_del(ifp, &other, &net);
+    }
+
+    /// R4: a change of the list with a reader of the net cells out on the same holding is
+    /// `panic(9)` (the writer refused), never a list changed under a lent address.
+    #[test]
+    #[should_panic(expected = "a net cell writer while 1 readers are out")]
+    fn ifa_add_with_a_reader_out_is_panic() {
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tar0");
+        if_attach(ifp);
+        let ifa = crate::netinet::in_var::test_in_ifaddr(ifp, [10, 0, 0, 7], None, None);
+        let w = NETLOCK.write();
+        let net = NetHeld::of(&w).expect("the net lock's witness");
+        let r = net.reader();
+        let _first = ifp.if_addrlist().first(&r);
+        ifa_add(ifp, ifa, &net);
     }
 
     #[test]
@@ -4897,34 +5107,57 @@ pub(crate) mod tests {
         let held = &NetHeld::of(&net).expect("the net lock's witness");
         for (i, &ifp) in ifps.iter().enumerate() {
             let i = i as u8;
-            addrs.push(address(ifp, [10, i, 0, 1], Some([255, 255, 255, 0]), None));
-            addrs.push(address(ifp, [172, 16, i, 1], Some([255, 255, 0, 0]), None));
+            addrs.push(address(
+                ifp,
+                [10, i, 0, 1],
+                Some([255, 255, 255, 0]),
+                None,
+                held,
+            ));
+            addrs.push(address(
+                ifp,
+                [172, 16, i, 1],
+                Some([255, 255, 0, 0]),
+                None,
+                held,
+            ));
         }
         ifps[7].if_flags.set(IFF_POINTOPOINT);
-        let p2p = address(ifps[7], [192, 168, 0, 1], None, Some([192, 168, 0, 2]));
+        let p2p = address(
+            ifps[7],
+            [192, 168, 0, 1],
+            None,
+            Some([192, 168, 0, 2]),
+            held,
+        );
 
-        let found = |a: [u8; 4]| ifa_ifwithaddr(held, &bytes(sin(a)), 0);
-        assert!(found([10, 5, 0, 1]).is_some_and(|f| core::ptr::eq(f, addrs[10])));
-        assert!(found([172, 16, 3, 1]).is_some_and(|f| core::ptr::eq(f, addrs[7])));
+        let r = held.reader();
+        let found = |a: [u8; 4]| ifa_ifwithaddr(held, &r, &bytes(sin(a)), 0);
+        assert!(found([10, 5, 0, 1]).is_some_and(|f| f.is(&addrs[10])));
+        assert!(found([172, 16, 3, 1]).is_some_and(|f| f.is(&addrs[7])));
         assert!(found([10, 5, 0, 2]).is_none());
-        let dst = ifa_ifwithdstaddr(held, &bytes(sin([192, 168, 0, 2])), 0);
-        assert!(dst.is_some_and(|f| core::ptr::eq(f, p2p)));
-        assert!(ifa_ifwithdstaddr(held, &bytes(sin([10, 5, 0, 1])), 0).is_none());
+        let dst = ifa_ifwithdstaddr(held, &r, &bytes(sin([192, 168, 0, 2])), 0);
+        assert!(dst.is_some_and(|f| f.is(&p2p)));
+        assert!(ifa_ifwithdstaddr(held, &r, &bytes(sin([10, 5, 0, 1])), 0).is_none());
 
         // ifp 2: 10.2.0.0/24 and 172.16.0.0/16; the first of the family otherwise.
-        let best = |a: [u8; 4]| ifaof_ifpforaddr(held, &bytes(sin(a)), ifps[2]);
-        assert!(best([10, 2, 0, 77]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
-        assert!(best([172, 16, 200, 9]).is_some_and(|f| core::ptr::eq(f, addrs[5])));
-        assert!(best([8, 8, 8, 8]).is_some_and(|f| core::ptr::eq(f, addrs[4])));
+        let best = |a: [u8; 4]| ifaof_ifpforaddr(held, &r, &bytes(sin(a)), ifps[2]);
+        assert!(best([10, 2, 0, 77]).is_some_and(|f| f.is(&addrs[4])));
+        assert!(best([172, 16, 200, 9]).is_some_and(|f| f.is(&addrs[5])));
+        assert!(best([8, 8, 8, 8]).is_some_and(|f| f.is(&addrs[4])));
         // A different domain sees none of them.
         ifps[5].if_rdomain.set(1);
         assert!(found([10, 5, 0, 1]).is_none());
+        drop(r);
 
         for (i, a) in addrs.iter().enumerate() {
-            ifa_del(ifps[i / 2], a);
+            route::ifafree(ifa_del(ifps[i / 2], a, held));
         }
-        ifa_del(ifps[7], p2p);
-        assert!(ifps.iter().all(|i| i.if_addrlist.is_empty()));
+        route::ifafree(ifa_del(ifps[7], &p2p, held));
+        assert!(
+            ifps.iter()
+                .all(|i| i.if_addrlist().is_empty(&held.reader()))
+        );
     }
 
     #[test]
@@ -5577,17 +5810,25 @@ pub(crate) mod tests {
         assert!(ifg_find(b"lan").is_none());
     }
 
-    /// An address of `ifp` whose storage is the `N` bytes `sa` (an `in_ifaddr`'s or an
-    /// `in6_ifaddr`'s, as `bsd` publishes it).
-    fn address_of<const N: usize>(ifp: &'static Ifnet, sa: [u8; N]) -> &'static Ifaddr {
-        let ifa: &'static Ifaddr = Box::leak(Box::new(Ifaddr::new()));
-        let storage: &'static core::cell::Cell<[u8; N]> =
-            Box::leak(Box::new(core::cell::Cell::new(sa)));
-        ifa.ifa_addr
-            .set(crate::net::if_var::sa_test_token(), Some(storage));
-        ifa.ifa_ifp.set(Some(ifp));
-        let _net = NETLOCK.write();
-        ifa_add(ifp, ifa);
+    /// An address of `ifp` whose address is the socket address `sa` (an Internet record's
+    /// for `AF_INET`, an IPv6 record's for `AF_INET6`), added to its list: a handle of the
+    /// test's, the list holding the creation reference.
+    fn address_of(ifp: &'static Ifnet, sa: &[u8]) -> IfaddrRef {
+        let ifa = match sa[1] {
+            AF_INET => {
+                let ia = crate::netinet::in_var::in_ifaddr_alloc(ifp);
+                ia.ia_addr.set(hal::pod::at(sa, 0).expect("a sockaddr_in"));
+                IfaddrRef::In(ia)
+            }
+            _ => {
+                let ia6 = crate::netinet6::in6_var::in6_ifaddr_alloc(ifp, 0);
+                ia6.ia_addr
+                    .set(hal::pod::at(sa, 0).expect("a sockaddr_in6"));
+                IfaddrRef::In6(ia6)
+            }
+        };
+        let w = NETLOCK.write();
+        ifa_add(ifp, ifa.clone(), &NetHeld::of(&w).expect("the net lock"));
         ifa
     }
 
@@ -5612,11 +5853,11 @@ pub(crate) mod tests {
         let mut sin = [0u8; 16];
         sin[..2].copy_from_slice(&[16, AF_INET]);
         sin[4..8].copy_from_slice(&[10, 0, 0, 1]);
-        address_of(b, sin);
+        let a4 = address_of(b, &sin);
         let mut sin6 = [0u8; 28];
         sin6[..2].copy_from_slice(&[28, AF_INET6]);
         sin6[8] = 0xfe;
-        address_of(b, sin6);
+        let a6 = address_of(b, &sin6);
 
         // The rows: tcf0 without an address (32), tcf1's two (32, and 16 + 28).
         let need = 32 + 32 + 16 + 28;
@@ -5645,19 +5886,19 @@ pub(crate) mod tests {
         assert_eq!((r, len), (Ok(()), 64));
         assert_eq!(&user[32..37], b"tcf1\0");
         assert_eq!(user[64], 0xaa);
-        let _ = a;
+        let _ = (a, a4, a6);
     }
 
     #[test]
     fn ifconf_stops_at_a_fault_and_drops_every_reference() {
         let (_g, p) = ioctl_setup();
         let (ifp, _) = listed_ifnet(b"tcx0");
-        let addrs: Vec<&'static Ifaddr> = (0..3u8)
+        let addrs: Vec<IfaddrRef> = (0..3u8)
             .map(|i| {
                 let mut sin = [0u8; 16];
                 sin[..2].copy_from_slice(&[16, AF_INET]);
                 sin[4..8].copy_from_slice(&[10, 0, 0, i]);
-                address_of(ifp, sin)
+                address_of(ifp, &sin)
             })
             .collect();
         let if_refs = ifp.rt().if_refcnt.read();
@@ -5675,9 +5916,9 @@ pub(crate) mod tests {
         assert_eq!(ioctl(p, SIOCGIFCONF, &mut ifc), Err(Errno::EFAULT));
         // `ifc_len` stays the caller's on an error, as the C's.
         assert_eq!(ifc.ifc_len, 0x100);
-        // Every reference `ifconf` took is dropped on its way out: the addresses' and the
-        // interface's.
-        assert!(addrs.iter().all(|a| a.ifa_refcnt.read() == 1));
+        // Every reference `ifconf` took is dropped on its way out: the addresses' (the list's
+        // and the test's left) and the interface's.
+        assert!(addrs.iter().all(|a| a.count() == 2));
         assert_eq!(ifp.rt().if_refcnt.read(), if_refs);
     }
 
@@ -5690,7 +5931,7 @@ pub(crate) mod tests {
             let mut sin = [0u8; 16];
             sin[..2].copy_from_slice(&[16, AF_INET]);
             sin[4..8].copy_from_slice(&[10, 0, 0, i as u8]);
-            address_of(ifp, sin);
+            drop(address_of(ifp, &sin));
         }
         put_user(UBUF, &[0xaa; 0x200]);
         let mut ifc = Ifconf {
@@ -5706,8 +5947,14 @@ pub(crate) mod tests {
             assert_eq!(&row[..5], b"tcb0\0", "row {i}");
             assert_eq!(&row[20..24], &[10, 0, 0, i as u8], "row {i}");
         }
-        // Every reference ifconf took is dropped again.
-        assert!(ifp.if_addrlist.iter().all(|ifa| ifa.ifa_refcnt.read() == 1));
+        // Every reference ifconf took is dropped again: the list's is the only one left.
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        assert!(
+            ifp.if_addrlist()
+                .iter(&net.reader())
+                .all(|ifa| ifa.count() == 1)
+        );
     }
 
     #[test]

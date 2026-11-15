@@ -1746,14 +1746,21 @@ pub fn in_pcbaddrisavail_held<G: ProcGlue>(
         // - we are binding a UDP socket to one of our broadcast addresses
         if !(so.has_options(SO_BINDANY)
             || (so.so_type() == SOCK_DGRAM && sin.sin_addr.s_addr == INADDR_BROADCAST)
-            || (so.so_type() == SOCK_DGRAM && in_broadcast(sin.sin_addr, inp.inp_rtableid.get())))
+            || (so.so_type() == SOCK_DGRAM
+                && in_broadcast(sin.sin_addr, inp.inp_rtableid.get(), net)))
         {
             sin.sin_port = 0;
             sin.sin_zero = [0; 8];
-            let ia = ifa_ifwithaddr(net, sin_bytes(sin).as_slice(), inp.inp_rtableid.get());
+            let found = ifa_ifwithaddr(
+                net,
+                &net.reader(),
+                sin_bytes(sin).as_slice(),
+                inp.inp_rtableid.get(),
+            )
+            .is_some();
             sin.sin_port = lport;
 
-            if ia.is_none() {
+            if !found {
                 return Err(Errno::EADDRNOTAVAIL);
             }
         }
@@ -2294,13 +2301,14 @@ pub fn in_pcbselsrc<G: ProcGlue>(
         && let Some(mopts) = &mopts
         && let Some(ifp) = if_get(u32::from(mopts.imo_ifidx))
     {
+        let r = net.reader();
         let ia = if ifp.if_rdomain.get() == rtable_l2(rtableid) {
-            in_ifp2ia(ifp)
+            in_ifp2ia(&r, ifp)
         } else {
             None
         };
         return match ia {
-            Some(ia) => Ok(ia.ia_addr.addr()),
+            Some(ia) => Ok(ifatoia(ia).ia_addr.addr()),
             None => Err(Errno::EADDRNOTAVAIL),
         };
     }
@@ -2310,8 +2318,10 @@ pub fn in_pcbselsrc<G: ProcGlue>(
     let mut ro = inp.route();
     let rt = ro.mpath4(dst.s_addr.to_ne_bytes(), None, rtableid, net);
 
-    // If we found a route, use the address corresponding to the outgoing interface.
-    let ia = rt.and_then(Rtentry::ifa).map(ifatoia);
+    // If we found a route, use the address corresponding to the outgoing interface (one
+    // reader for the source selection: the route's address and the preferred one).
+    let r = net.reader();
+    let ia = rt.and_then(|rt| rt.ifa(&r)).map(ifatoia);
 
     // Use preferred source address if :
     // - destination is not onlink
@@ -2321,7 +2331,7 @@ pub fn in_pcbselsrc<G: ProcGlue>(
         && rt.rt_flags.get() & RTF_GATEWAY != 0
         && let Some(ip4_source) = rtable_getsource(rtableid, AF_INET, net)
     {
-        let ifa = ifa_ifwithaddr(net, ip4_source.bytes(), rtableid);
+        let ifa = ifa_ifwithaddr(net, &r, ip4_source.bytes(), rtableid);
         if let Some(ifa) = ifa
             && ifa
                 .ifa_ifp
