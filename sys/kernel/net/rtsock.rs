@@ -456,6 +456,27 @@ impl<G: ProcGlue> RouteUsrreqs<G> {
     const USR: &'static dyn Usrreqs<G> = &Self(core::marker::PhantomData);
 }
 
+/// An interface address a request's lookup found: lent by an interface's list for the life
+/// of the caller's reader (the C's uncounted pointer), or a reference the lookup took where
+/// nothing else would keep the address alive for the request (T1: a gateway route's, past
+/// the route's release; T4: enc(4)'s, which `bsd`'s `Ipsec` leg hands out counted).
+pub enum IfaFound<'r> {
+    /// Lent for the reader's life.
+    Lent(&'r IfaddrRef),
+    /// A reference of the request's own.
+    Held(IfaddrRef),
+}
+
+impl IfaFound<'_> {
+    /// The address.
+    fn get(&self) -> &IfaddrRef {
+        match self {
+            IfaFound::Lent(a) => a,
+            IfaFound::Held(a) => a,
+        }
+    }
+}
+
 /// `rtptable.rtp_count`: the routing sockets open, changed under `rtp_lk` and read without
 /// it by the announcements, as the C reads it.
 pub static RTP_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -1574,27 +1595,6 @@ fn rtm_output_change(
     locks.set(locks.get() | (rtm.rtm_inits & rtm.rtm_rmx.rmx_locks));
     drop(nw);
     Ok(())
-}
-
-/// An interface address a request's lookup found: lent by an interface's list for the life
-/// of the caller's reader (the C's uncounted pointer), or a reference the lookup took where
-/// nothing else would keep the address alive for the request (T1: a gateway route's, past
-/// the route's release; T4: enc(4)'s, which `bsd`'s `Ipsec` leg hands out counted).
-pub enum IfaFound<'r> {
-    /// Lent for the reader's life.
-    Lent(&'r IfaddrRef),
-    /// A reference of the request's own.
-    Held(IfaddrRef),
-}
-
-impl IfaFound<'_> {
-    /// The address.
-    fn get(&self) -> &IfaddrRef {
-        match self {
-            IfaFound::Lent(a) => a,
-            IfaFound::Held(a) => a,
-        }
-    }
 }
 
 /// `ifa_ifwithroute(flags, dst, gateway, rtableid)`: the interface address a route to `dst`

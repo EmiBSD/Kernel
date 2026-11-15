@@ -138,6 +138,7 @@ use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, SOCK_DGRAM};
 #[cfg(feature = "nfsclient")]
 use crate::sys::sockio::{SIOCAIFADDR, SIOCGIFFLAGS, SIOCSIFFLAGS};
+#[cfg(feature = "nfsclient")]
 use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 #[cfg(feature = "nfsclient")]
 use kernel::sysctl::{

@@ -144,6 +144,12 @@
 //! - Calls into files that are not ported report themselves with `unported!` and go on as
 //!   the C would with an empty subsystem: `inet_ntop` for `AF_INET` (`ifa_print_all`;
 //!   `AF_INET6` prints with nd6's `In6Ntop`).
+//! - `ifa_print_all` (`DDB`) takes a proof of the net lock (`hal::netlock::NetHeld`) where the
+//!   C's ddb walks the address lists with no lock at all: since N6.5e the lists are net cells,
+//!   read only under a witness. ddb, which runs with the machine stopped and holds no lock,
+//!   cannot give one, so a ddb command that prints the addresses (none calls this yet; LZ has
+//!   none) needs a reader of its own made for the stopped machine, the decision of the
+//!   milestone that ports one (N6.5e's 5e1 review).
 
 use core::ffi::c_void;
 use core::pin::Pin;

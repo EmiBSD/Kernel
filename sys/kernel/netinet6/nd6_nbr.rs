@@ -247,8 +247,11 @@ impl Dadq {
         }
     }
 
-    /// The address under DAD (`dp->dad_ifa`), a reference cloned out of the cell (the brief's
-    /// R5: no reader of the cell is held across a step); a record on `DADQ` always has one.
+    /// The address under DAD (`dp->dad_ifa`), a reference cloned out of the cell (R5: no
+    /// reference into a `ReadMostly` is held across a sleep or a write of its cell); a record
+    /// on `DADQ` always has one. A clone the C lacks (it reads `dp->dad_ifa` in place), one
+    /// per timer step and per received NS or NA: one read-modify-write pair of the count each,
+    /// listed with the T1-T4 clones (`kernel::net::if_var`'s redesign, ROADMAP's N12 row).
     fn ifa(&self) -> IfaddrRef {
         match self.dad_ifa.read().clone() {
             Some(ifa) => ifa,

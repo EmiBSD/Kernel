@@ -156,6 +156,26 @@
 //!   `Guarded` is not valid all zero, and an interface is used only once attached (the C's
 //!   `TAILQ_INIT` is `if_attach_common`'s too). Inserting at the tail and removing walk the
 //!   chain (O(n), D-4; the C's `TAILQ` is O(1)): `ifa_add` and `ifa_del` are control paths.
+//! - The references the C counts (`ifaref`/`ifafree`: `rt_ifa`, DAD's `dad_ifa`, `ifconf`'s
+//!   list, an address's creation reference, which the list holds) are [`IfaddrRef`] clones
+//!   taken and dropped at the C's sites (`kernel::net::route::ifaref`, `ifafree`). The clones
+//!   the C lacks are marked at their sites with their letter: **T1** an address found by a
+//!   lookup and kept past its reader, because the code after it takes the writer or lets the
+//!   reader go (the address ioctls' and `if_detach`'s purge and delete arguments,
+//!   `ifnewlladdr`'s and `in6_ifattach`'s link-local address, a route's address in
+//!   `rtredirect` and `ifa_ifwithroute`); **T2** [`IfaList::for_each_safe`]'s current and
+//!   next address, cloned under a reader of their own so that the body may take the writer;
+//!   **T3** the predecessor that [`IfaList::insert_tail`] and [`IfaList::remove`] open
+//!   through a clone (a reference `get` lends cannot be held while `get_mut` borrows the
+//!   witness); **T4** a counted record handed to `bsd`'s legacy code (`bsd`'s
+//!   `ifa_ifwithaddr`, `ifa_ifwithdstaddr` and `ifaof_ifpforaddr` wrappers, enc(4)'s
+//!   `enc_getifa` through the `Ipsec` leg), until those callers move (N6.6, N8). Each is
+//!   dropped before the function that took it returns, and a clone that may be a linked
+//!   (enc(4)) address before the net lock holding it was taken under ends: enc(4)'s destroy
+//!   checks that address's count once the lock is free (`refcnt_rele` after `if_detach`), so
+//!   a clone kept past the holding would make it panic (5e1's review, N2: `rtm_output`'s
+//!   `RTM_ADD`). DAD's `Dadq::ifa` is one more (R5, `kernel::netinet6::nd6_nbr`). Each costs
+//!   a read-modify-write pair of the count the C does not pay (ROADMAP's N12 row).
 //! - `ifma_addr` (a pointer to the multicast record's own `sockaddr`, which the C reads for
 //!   the family alone) is dropped (N6.5e): the family test is the record's back-link
 //!   (`Ifmaddr::ifma_in`, `ifma_in6`), and the record's address its own words.

@@ -4315,17 +4315,20 @@ pub fn ifnewlladdr(ifp: &'static Ifnet) {
 
     // Update the link-local address. Don't do it if we're a router to avoid confusing hosts
     // on the network.
-    // T1: the link-local address, cloned before its reader ends (the purge takes the writer).
-    let ll = hal::netlock::lend_detached(|net| {
-        crate::netinet6::in6::in6ifa_ifpforlinklocal(&net.reader(), ifp, 0).cloned()
-    });
-    if !i_am_router && let Some(ia6) = ll {
-        hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6, net));
-        if_hooks_run(ifp, &ifp.rt().if_addrhooks);
-        let _ = crate::netinet6::in6_ifattach::in6_ifattach(
-            ifp,
-            &crate::netinet6::in6::NetHolding::Detached,
-        );
+    if !i_am_router {
+        // T1: the link-local address, cloned before its reader ends (the purge takes the
+        // writer), looked up only when it is to be updated, as the C does.
+        let ll = hal::netlock::lend_detached(|net| {
+            crate::netinet6::in6::in6ifa_ifpforlinklocal(&net.reader(), ifp, 0).cloned()
+        });
+        if let Some(ia6) = ll {
+            hal::netlock::lend_detached(|net| crate::netinet6::in6::in6_purgeaddr(&ia6, net));
+            if_hooks_run(ifp, &ifp.rt().if_addrhooks);
+            let _ = crate::netinet6::in6_ifattach::in6_ifattach(
+                ifp,
+                &crate::netinet6::in6::NetHolding::Detached,
+            );
+        }
     }
 
     if !up {
