@@ -1715,7 +1715,15 @@ impl<T: 'static> PoolBox<T> {
     /// (each `into_raw` is answered by at most one `from_raw`); or `raw` is an item `pool`'s
     /// `RawPool::get` granted just now, aligned and long enough for `T`, holding a valid `T`
     /// already, given to no one else. No reference to the value made while the pointer was
-    /// kept is alive or used after this call (the handle may give `&mut T`).
+    /// kept is alive or used after this call (the handle may give `&mut T`), but one kind:
+    /// the shared references a `hal::pinlist` list keeps and lends of the value linked on it,
+    /// when `T` is that list's element type. Such a `T` is not `Unpin`: its adapter is
+    /// written only by `pin_adapter!`, which refuses an `Unpin` element at compile time, and
+    /// no `impl Unpin` defeats the refusal (pinlist's I1; hal-check's rules 5 and 6). For a
+    /// `!Unpin` `T` the handle gives only `&T` and `Pin<&T>` (`DerefMut` needs `Unpin`, and
+    /// no method moves the value out), and puts the item back only after dropping the value in
+    /// place, which stops the kernel while the value is still linked (`PinEntry`'s drop, I1),
+    /// so those references are never beside a `&mut T` and never outlive the value.
     pub(crate) unsafe fn from_raw(raw: NonNull<T>, pool: &'static BoxPool<T>) -> Self {
         PoolBox {
             item: raw,

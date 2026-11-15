@@ -641,14 +641,12 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
         L: PinAdapter<Elem = B>,
         W: Divisible + ?Sized,
     {
-        check::<B, W>(w, true);
-        let Some(p) = tagged::<B>(self.word.load(Ordering::Acquire), TAG_B) else {
+        // The item stays this word's for the whole call: `w` is `B`'s lock held whole (checked
+        // by `owned`) and borrowed mutably here, so no `take_b` can run, and the list's two
+        // changes touch only links.
+        let Some(e) = self.owned::<KindB, W>(w, true) else {
             return false;
         };
-        // The item stays this word's for the whole call: `w` is `B`'s lock held whole and
-        // borrowed mutably here, so no `take_b` can run, and the list's two changes touch
-        // only links.
-        let e = self.owned(p);
         list.remove(w, e.get_ref());
         list.insert_head(w, e);
         true
@@ -657,9 +655,7 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
     /// The item of kind `K`, for a witness of its lock (whole or its part 0).
     #[inline]
     fn get_k<'a, K: Kind<A, B>, W: Witness + ?Sized>(&'a self, w: &'a W) -> Option<&'a K::Item> {
-        check::<K::Item, W>(w, false);
-        tagged::<K::Item>(self.word.load(Ordering::Acquire), K::TAG)
-            .map(|p| self.owned(p).get_ref())
+        self.owned::<K, W>(w, false).map(Pin::get_ref)
     }
 
     /// The set of kind `K`: the box given up to an empty word, tagged `K::TAG`.
@@ -710,39 +706,45 @@ impl<A: Tagged, B: Tagged> TaggedLink<A, B> {
         Some(reclaimed(p))
     }
 
-    /// The item this link's tagged word owns, pinned, for the two callers that bound the
-    /// reference by their borrows of the link (`'a`, this `&'a self`) and of a witness of
-    /// `T::LOCK`: a get, whose answer borrows both, and [`TaggedLink::move_b_to_head`], which
-    /// holds that lock's whole witness mutably for the reference's whole (local) life and runs
-    /// only the list's link changes. `p` is what `tagged` decoded from this link's word, with
-    /// `T` the item of the tag it was decoded with.
-    fn owned<'a, T: Tagged>(&'a self, p: NonNull<T>) -> Pin<&'a T> {
-        // SAFETY: `p` is the item this link's tagged word owns, of the kind whose item is `T`
-        // (the type's invariant and the pairing `tagged`'s callers keep): the pointer
-        // `PoolBox::into_raw` gave for a box of `T::POOL`, an initialised `T` out of its pool
-        // and never given mutably while the word owns it (the box is given up; `from_raw` makes
-        // it again only in `reclaimed`). `'a` is no longer than the borrow of this link the
-        // caller passes as `self`, and each caller also holds, for all of `'a`, a witness of
-        // `T::LOCK`: a get's caller a shared one (whole, or its part 0), `move_b_to_head` the
-        // whole exclusive witness by `&mut`, used only by the list's two link changes. The word
-        // lets the item go only in a take of its kind, which needs the lock's whole exclusive
-        // witness borrowed mutably (no other guard of a mutex can exist while that one lives,
-        // a part's whole guard is borrowed mutably by its split, a leaked guard is never
-        // released, and `move_b_to_head` runs no take while it holds the witness), or in the
-        // drop, which needs this link by `&mut`, excluded by the `&'a self` borrow (a leaked
-        // link is never dropped): neither can run while the reference lives, so the item is not
-        // given back, freed or reached through a `&mut T` meanwhile (other holders write it
-        // only through its interior mutability, which a `&T` allows). No safe code can make a
-        // box of it otherwise: `PoolBox::unpark` answers only an item `park` marked, and this
-        // item's mark (if its type has one) is never set. The `Acquire` load of the callers
-        // pairs with the `Release` exchange of the set, so the value is seen whole. `Pin`'s
-        // contract: the value is not moved, nor its memory invalidated or reused, before its
-        // drop runs: it lives in its pool item from `BoxPool::get`'s write until the drop of
-        // the box that owns the item drops it in place, and the raw form the word keeps hands
-        // the same item, unmoved, back as that box (`PoolBox::as_pin`'s argument, which covers
-        // every owner of the raw form: a box gives nothing that moves the value out of its
-        // item).
-        unsafe { Pin::new_unchecked(p.as_ref()) }
+    /// The item of kind `K` this link's word owns, pinned, for the holder of `w`, a witness
+    /// of `K::Item`'s lock checked here (whole when `whole`, else whole or its part 0;
+    /// `panic(9)` for another lock's or part's); `None` when the word owns no item of that
+    /// kind. The check and the decode are here, so the one premise left to the two callers is
+    /// that they keep `w` for all of `'a`: a get's answer borrows it (`&'a W`), and
+    /// [`TaggedLink::move_b_to_head`] holds it whole by `&mut` for the reference's whole
+    /// (local) life, running only the list's link changes.
+    fn owned<'a, K: Kind<A, B>, W: Witness + ?Sized>(
+        &'a self,
+        w: &W,
+        whole: bool,
+    ) -> Option<Pin<&'a K::Item>> {
+        check::<K::Item, W>(w, whole);
+        // `Acquire`: pairs with the set's `Release` exchange, so the value is seen whole.
+        let p = tagged::<K::Item>(self.word.load(Ordering::Acquire), K::TAG)?;
+        // SAFETY: `p` was just decoded from this link's word with `K::TAG`, and `K::Item` is
+        // that tag's item (`Kind`'s impl names both; the set of a kind stores only a box of its
+        // item under its tag, from an empty word): the pointer `PoolBox::into_raw` gave for a
+        // box of `K::Item::POOL`, an initialised value out of its pool, never given mutably
+        // while the word owns it (the box is given up; `from_raw` makes it again only in
+        // `reclaimed`). `'a` is no longer than the borrow of this link (`&'a self`), and the
+        // caller holds `w`, checked above to be a witness of `K::Item::LOCK` (whole, or its
+        // part 0), for all of `'a` (the one premise, kept by both callers as their doc says).
+        // The word lets the item go only in a take of its kind, which needs that lock's whole
+        // exclusive witness borrowed mutably (no other guard of a mutex can exist while one
+        // lives, a part's whole guard is borrowed mutably by its split, a leaked guard is
+        // never released, and `move_b_to_head` runs no take while it holds the witness), or in
+        // the drop, which needs this link by `&mut`, excluded by the `&'a self` borrow (a
+        // leaked link is never dropped): neither can run while the reference lives, so the item
+        // is not given back, freed or reached through a `&mut` meanwhile (other holders write
+        // it only through its interior mutability, which a shared reference allows). No safe
+        // code can make a box of it otherwise: `PoolBox::unpark` answers only an item `park`
+        // marked, and this item's mark (if its type has one) is never set. `Pin`'s contract:
+        // the value is not moved, nor its memory invalidated or reused, before its drop runs:
+        // it lives in its pool item from `BoxPool::get`'s write until the drop of the box that
+        // owns the item drops it in place, and the raw form the word keeps hands the same
+        // item, unmoved, back as that box (`PoolBox::as_pin`'s argument, which covers every
+        // owner of the raw form: a box gives nothing that moves the value out of its item).
+        Some(unsafe { Pin::new_unchecked(p.as_ref()) })
     }
 }
 
@@ -818,19 +820,18 @@ fn reclaimed<T: Tagged>(p: NonNull<T>) -> PoolBox<T> {
     // owned it the value was reached only through the shared references `owned` made, so it
     // was written, if at all, only through `T`'s own interior mutability (its atomics and
     // mutexes), which keeps it a valid `T`; no `&mut T` of it was ever made. No reference made
-    // while the pointer was kept is alive or used after this: the references a get lent
-    // borrow the witness that a take needs whole and mutably, or the link that the drop has
-    // by `&mut`; `move_b_to_head`'s ends with that call; a set's pointer was never lent. A
-    // `PinList` an item is linked on keeps its own pointer (the `Pin<&T>` its insert took,
-    // made from `owned`'s or from the box before the set) and lends references from it under
-    // that list's lock (`first`, `last`, `iter`), which may be another lock than `T::LOCK`, so
-    // they may outlive this call: the contract's concern, a `&mut T` beside them, never
-    // arises, because an item a pinned list holds carries a `PinEntry`, which is `!Unpin`, so
-    // `T` is `!Unpin` and the box made here gives only `&T` and `Pin<&T>` (`DerefMut` and no
-    // other method of `PoolBox` gives `&mut T` or moves the value for a `!Unpin` `T`), and the
-    // box puts the item back only after dropping it in place, where an item still linked
-    // stops the kernel (`PinEntry`'s drop, the list's I1) before its memory is reused: no
-    // list's reference dangles.
+    // while the pointer was kept is alive or used after this, but those the contract's one
+    // exception admits: the references a get lent borrow the witness that a take needs whole
+    // and mutably, or the link that the drop has by `&mut`; `move_b_to_head`'s ends with that
+    // call; a set's pointer was never lent. The exception is a `hal::pinlist` list the item is
+    // linked on: it keeps its own pointer (the `Pin<&T>` its insert took, made from `owned`'s
+    // or from the box before the set) and lends shared references from it under that list's
+    // lock (`first`, `last`, `iter`), which may be another lock than `T::LOCK`, so they may
+    // outlive this call. `from_raw`'s contract admits exactly these: `T` is then a pinned
+    // list's element type, whose adapter only `pin_adapter!` writes (the seal, hal-check's
+    // rule 5), which refuses an `Unpin` element at compile time, and no `impl Unpin` defeats
+    // that refusal in `kernel` or `abi` (hal-check's rule 6; `hal` writes none for an element
+    // type): pinlist's I1.
     unsafe { PoolBox::from_raw(p, T::POOL) }
 }
 
@@ -1493,26 +1494,62 @@ mod tests {
         assert!(!l.is_set(), "nothing stored");
     }
 
+    /// The drop test's own kinds, of pools no other test draws from (the tests run in
+    /// parallel, so a shared pool's count is not one test's).
+    struct DropA(u64);
+    struct DropB(u64);
+    static DROP_AS: crate::pool::BoxPool<DropA> = crate::pool::BoxPool::new();
+    static DROP_BS: crate::pool::BoxPool<DropB> = crate::pool::BoxPool::new();
+
+    impl crate::pool::Pooled for DropA {
+        const POOL: &'static crate::pool::BoxPool<DropA> = &DROP_AS;
+    }
+
+    impl Tagged for DropA {
+        const LOCK: StaticMutex = StaticMutex::of(&REC_MTX);
+    }
+
+    impl crate::pool::Pooled for DropB {
+        const POOL: &'static crate::pool::BoxPool<DropB> = &DROP_BS;
+    }
+
+    impl Tagged for DropB {
+        const LOCK: StaticMutex = StaticMutex::of(&ND_MTX);
+    }
+
     /// Refusal 5: a link dropped with a record of either kind puts it back into its own pool
     /// (the drop reclaims by the tag).
     #[test]
     fn the_drop_reclaims_each_kind() {
-        let _ = rec(0);
-        let _ = nd(0);
-        let (a0, b0) = (RECS.nout(), NDS.nout());
+        crate::testutil::install();
+        let _ = DROP_AS.init(0, crate::pool::PR_WAITOK, "dropapl");
+        let _ = DROP_BS.init(0, crate::pool::PR_WAITOK, "dropbpl");
+        let a = || {
+            DROP_AS
+                .get(crate::pool::PR_WAITOK, || DropA(9))
+                .expect("an A")
+        };
+        let b = || {
+            DROP_BS
+                .get(crate::pool::PR_WAITOK, || DropB(9))
+                .expect("a B")
+        };
+        let (a0, b0) = (DROP_AS.nout(), DROP_BS.nout());
         {
-            let l = Link2::new();
-            assert!(l.set_a(&REC_MTX.lock(), rec(9)).is_ok());
-            assert_eq!(RECS.nout(), a0 + 1);
+            let l = TaggedLink::<DropA, DropB>::new();
+            assert!(l.set_a(&REC_MTX.lock(), a()).is_ok());
+            assert_eq!(DROP_AS.nout(), a0 + 1);
+            assert_eq!(l.get_a(&REC_MTX.lock()).map(|r| r.0), Some(9));
         }
-        assert_eq!(RECS.nout(), a0, "the A went back to its pool");
+        assert_eq!(DROP_AS.nout(), a0, "the A went back to its pool");
         {
-            let l = Link2::new();
-            assert!(l.set_b(&ND_MTX.lock(), nd(9)).is_ok());
-            assert_eq!(NDS.nout(), b0 + 1);
+            let l = TaggedLink::<DropA, DropB>::new();
+            assert!(l.set_b(&ND_MTX.lock(), b()).is_ok());
+            assert_eq!(DROP_BS.nout(), b0 + 1);
+            assert_eq!(l.get_b(&ND_MTX.lock()).map(|r| r.0), Some(9));
         }
-        assert_eq!(NDS.nout(), b0, "the B went back to its pool");
-        assert_eq!(RECS.nout(), a0);
+        assert_eq!(DROP_BS.nout(), b0, "the B went back to its pool");
+        assert_eq!(DROP_AS.nout(), a0);
         fn shared<T: Send + Sync>() {}
         shared::<Link2>();
     }
