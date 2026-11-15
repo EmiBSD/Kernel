@@ -155,10 +155,12 @@
 //! (tcp, udp, raw IP and divert at N6.6, pf at N8): a control block is a `&'static Inpcb` held
 //! by a count of the kernel's pcb (`in_pcbref`/`in_pcbunref`, the C's `inp_refcnt`), the
 //! kernel's counted answers (lookups, the iterator) become such references here, the
-//! `INP_IPV6` pcbs go to `netinet6/in6_pcb.rs`'s half before the kernel's IPv4 functions run,
-//! and the members `bsd` keeps (the IPv4 options, the ICMPv6 filter) are read here; the IPv4
-//! multicast options are the kernel's since N6.4c1, the IPv6 packet and multicast options
-//! since N6.5c (`Inpcb::outputopts6`, `Inpcb::moptions6`).
+//! kernel's functions choose the family themselves since N6.5c (`in_pcbbind_locked`,
+//! `in_pcbconnect`, `in_pcbrtentry`; the flow id is computed here per family), the
+//! socket-address writers and `in_pcbset_addr` send an `INP_IPV6` pcb to
+//! `netinet6/in6_pcb.rs`'s adapters, and the members `bsd` keeps (the IPv4 options, the ICMPv6
+//! filter) are read here; the IPv4 multicast options are the kernel's since N6.4c1, the IPv6
+//! packet and multicast options since N6.5c (`Inpcb::outputopts6`, `Inpcb::moptions6`).
 //!
 //! ## Deviations
 //! - `sotoinpcb` panics on a socket of neither `inetdomain` nor `inet6domain` (the C macro
@@ -185,8 +187,7 @@ use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_pcb::{
-    in6_pcbbind_locked, in6_pcbconnect, in6_pcbrtentry, in6_pcbset_addr, in6_setpeeraddr,
-    in6_setsockaddr,
+    in6_pcb_newflow, in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr,
 };
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod, of_parked};
@@ -373,7 +374,8 @@ impl InpcbLegacy for Inpcb {
 }
 
 /// `in_pcbbind_locked`: binds `inp` to the address in `nam` (or `laddr` and a port picked
-/// here when `nam` is `None`), with the table mutex held (`g`).
+/// here when `nam` is `None`), with the table mutex held (`g`); the kernel's, for both
+/// families.
 pub fn in_pcbbind_locked(
     g: &mut InpGuard<'_>,
     inp: &'static Inpcb,
@@ -381,10 +383,6 @@ pub fn in_pcbbind_locked(
     laddr: &Inpaddru,
     p: &Proc,
 ) -> Result<(), Errno> {
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbbind_locked(g, inp, nam, laddr, p);
-    }
     k::in_pcbbind_locked(g, inp, nam, laddr, p, &net_held("in_pcbbind"))
 }
 
@@ -416,14 +414,16 @@ fn set_flowid4(inp: &Inpcb) {
 }
 
 /// `in_pcbconnect`: connects `inp` to the address in `nam`; both address and port must be
-/// specified. If the socket has no local address yet, one is picked.
+/// specified. If the socket has no local address yet, one is picked. The kernel's, for both
+/// families, then the flow id of the family (`NSTOEPLITZ`).
 pub fn in_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbconnect(inp, nam);
-    }
     let p = curproc_or_panic("in_pcbconnect");
     k::in_pcbconnect(inp, nam, p, &net_held("in_pcbconnect"))?;
+    #[cfg(feature = "inet6")]
+    if inp.has_flags(INP_IPV6) {
+        in6_pcb_newflow(inp);
+        return Ok(());
+    }
     set_flowid4(inp);
     Ok(())
 }
@@ -622,13 +622,10 @@ pub fn in_pcblookup_local_lock(
     inp
 }
 
-/// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache.
+/// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache (the kernel's,
+/// for both families).
 pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     crate::kern::uipc_socket2::soassertlocked(inp.socket());
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        return in6_pcbrtentry(inp);
-    }
     // The cache keeps its own handle while `bsd`'s caller uses the route (`as_static`).
     k::in_pcbrtentry(inp, &net_held("in_pcbrtentry")).map(|rt| as_static(&rt))
 }
@@ -706,16 +703,15 @@ pub fn in_pcbset_addr(
     Ok(())
 }
 
-/// `satosin6_const(sa)` of a generic socket address image, read out of it.
+/// `satosin6_const(sa)` of a generic socket address image, read out of it (`hal::pod`'s copy
+/// of its first `sizeof(struct sockaddr_in6)` bytes).
 #[cfg(feature = "inet6")]
 fn su_sin6(su: &SockaddrUnion) -> crate::netinet6::in6::SockaddrIn6 {
-    // SAFETY: the union is `sizeof(struct sockaddr_in6)` initialised bytes; `SockaddrIn6` is
-    // plain old data of that size, read unaligned.
-    unsafe {
-        su.as_bytes()
-            .as_ptr()
-            .cast::<crate::netinet6::in6::SockaddrIn6>()
-            .read_unaligned()
+    match hal::pod::at::<crate::netinet6::in6::SockaddrIn6>(su.as_bytes(), 0) {
+        Some(sin6) => sin6,
+        None => panic(format_args!(
+            "su_sin6: a socket address union shorter than sockaddr_in6"
+        )),
     }
 }
 

@@ -95,6 +95,8 @@ use crate::sys::socket::Sockaddr;
 use crate::sys::socketvar::Socket;
 use crate::sys::stat::Stat;
 
+pub use kernel::net::proto::prc_is_redirect;
+
 /// 2 slow timeouts per second.
 pub const PR_SLOWHZ: i32 = 2;
 /// 5 fast timeouts per second.
@@ -413,11 +415,6 @@ impl Protosw {
             pr_sysctl: None,
         }
     }
-}
-
-/// `PRC_IS_REDIRECT(cmd)`.
-pub const fn prc_is_redirect(cmd: i32) -> bool {
-    cmd >= PRC_REDIRECT_NET && cmd <= PRC_REDIRECT_TOSHOST
 }
 /* </CODE> */
 

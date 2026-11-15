@@ -117,79 +117,45 @@
 
 /* <CODE> */
 //! IPv6 protocol control blocks: binding, connecting, lookups and notifications of
-//! `INP_IPV6` pcbs: `netinet6/in6_pcb.c` (prototypes in `<netinet/in_pcb.h>`).
+//! `INP_IPV6` pcbs: `netinet6/in6_pcb.c` (prototypes in `<netinet/in_pcb.h>`), the kernel's
+//! since N6.5c (`kernel::netinet6::in6_pcb`), with LZ's signatures for `bsd`'s callers.
 //!
 //! Upstream: sys/netinet6/in6_pcb.c @ 3ce1f3f79392
 //!
 //! The licence block carries the NRL notice with its advertising clause, accepted as
 //! BSD-4 (`.claude/rules/scope-and-stubs.md`).
 //!
-//! `in_pcb.c` is used for inet and inet6; this file only holds the special IPv6 cases: the
-//! hash of an IPv6 quadruple, the checks of a local IPv6 address, connecting, the address
-//! queries of `getsockname(2)`/`getpeername(2)`, ICMPv6 notifications and the exact and
-//! listening lookups. A control block of an `AF_INET6` socket (`INP_IPV6`) uses the
-//! `inp_faddr6`/`inp_laddr6` members of `struct inpcb`.
-//!
-//! The lookups and the IPv6 hash are the kernel's since N6.4c1 (`kernel::netinet6::in6_pcb`,
-//! D-17's first half); this file keeps what needs `in6_src.c`, the address flags and the
-//! scope zones until N6.5, over the kernel's control block and table.
+//! The lookups and the IPv6 hash are the kernel's since N6.4c1 (D-17's first half), the rest
+//! (the address checks, connecting, the addresses of `getsockname(2)`/`getpeername(2)`, the
+//! notifications, the route, the accepted connection's addresses) since N6.5c, with
+//! `in_pcb.c`'s `#ifdef INET6` branches (`netinet/in_pcb.rs`'s adapters call the kernel's
+//! `in_pcbbind_locked`, `in_pcbconnect` and `in_pcbrtentry` for both families). These
+//! adapters take `bsd`'s shapes: the `&'static Inpcb` held by a count, the name mbuf, the
+//! notification's `InpNotifyFn`, the net lock's proof made through the `SaToken`.
 //!
 //! ## Deviations
-//! - The `struct sockaddr_in6 *` arguments the C modifies in place (`in6_pcbaddrisavail`'s,
-//!   the copy `in6_pcbconnect` makes) are `&mut` locals; mbuf data is read with
-//!   `read_unaligned` (no alignment guarantee).
-//! - `in6_pcbselsrc` returns the address by value, so `in6_pcbconnect` keeps a copy where
-//!   the C keeps a pointer.
+//! - `NSTOEPLITZ` is configured: the flow id of a connected or accepted pcb is computed
+//!   here ([`in6_pcb_newflow`], called by `in_pcbconnect`'s adapter and [`in6_pcbset_addr`]),
+//!   after the kernel's function returned (`stoeplitz` is `bsd`'s until N8; the C computes it
+//!   at the end of `in6_pcbconnect` and `in6_pcbset_addr`, after the table mutex as here).
 //! - `in6_pcbnotify` takes `cmdarg` as the C does and, as the C does, does not use it.
-//! - `in6_pcbnotify` reads an unconnected pcb's route cache (the redirect clause) once it
-//!   holds that pcb's socket lock, where the C reads it under the table mutex alone: the
-//!   cache is `[s]`, and a read of another socket's cache is a race with its owner. A
-//!   redirect or a dead host thus costs one socket lock pair (and the table mutex let go and
-//!   taken again) per unconnected pcb that neither the cache nor the addresses select (the C
-//!   takes the socket lock only for the pcbs it notifies); N6.4's kernel pcb can keep a
-//!   summary of the cache readable under the table mutex instead.
-//! - `DIAGNOSTIC`'s `in_pcbnotifymiss` messages print the ports and routing domain (the C
-//!   prints no addresses either).
-//! - `NPF` and `NSTOEPLITZ` are configured: the divert keys of `in6_pcblookup_listen` and
-//!   `inp_flowid`.
 
 use core::ffi::c_void;
 use core::mem::size_of;
 
-use crate::kassert;
 use crate::kern::subr_prf::panic;
-use crate::machine::cpu::curproc;
-use crate::net::if_::ifa_ifwithaddr;
-use crate::net::route::{RTF_HOST, Rtentry, route6_mpath};
-use crate::net::rtable::rtable_l2;
+use crate::net::if_::net_held;
 use crate::net::toeplitz::stoeplitz_ip6port;
-use crate::netinet::in_pcb::{
-    INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, InpNotifyFn, Inpaddru, Inpcb,
-    Inpcbtable, in_pcb_iterator, in_pcbrtchange, in_pcbsolock, in_pcbsounlock, sotoinpcb,
-};
-use crate::netinet::ip6::IPV6_FLOWLABEL_MASK;
-use crate::netinet6::in6::{
-    IN6ADDR_ANY, IN6ADDR_ANY_INIT, In6Addr, SA6_ANY, SockaddrIn6, ifatoia6, in6_are_addr_equal,
-    in6_is_addr_multicast, in6_is_addr_unspecified, in6_is_addr_v4mapped, in6_nam2sin6,
-    sin6tosa_const,
-};
-use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
-use crate::netinet6::in6_var::{
-    IN6_IFF_ANYCAST, IN6_IFF_DETACHED, IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE,
-};
-use crate::netinet6::ip6_id::ip6_randomflowlabel;
-use crate::netinet6::ip6_input::INET6CTLERRMAP;
-use crate::sys::endian::htonl;
+use crate::netinet::in_pcb::{InpNotifyFn, Inpcb, Inpcbtable, inp_static, sotoinpcb};
+use crate::netinet6::in6::{In6Addr, SockaddrIn6};
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod};
+use crate::sys::mbuf::{Mbuf, mut_of};
 use crate::sys::proc::Proc;
-use crate::sys::protosw::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
-use crate::sys::socket::{SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT};
 use crate::sys::socketvar::Socket;
 use kernel::netinet::in_pcb as k;
+use kernel::netinet6::in6_pcb as k6;
 
-/// `zeroin6_addr`: the unspecified address.
-pub static ZEROIN6_ADDR: In6Addr = IN6ADDR_ANY_INIT;
+pub use kernel::netinet6::in6_pcb::ZEROIN6_ADDR;
 
 impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
     fn from_bytes(b: [u8; 40]) -> Self {
@@ -218,14 +184,6 @@ impl k::Hdr6 for crate::netinet::ip6::Ip6Hdr {
     }
 }
 
-/// `curproc`, which the socket requests run as.
-fn curproc_or_panic(func: &str) -> &'static Proc {
-    match curproc() {
-        Some(p) => p,
-        None => panic(format_args!("{}: no curproc", func)),
-    }
-}
-
 /// `in6_pcbhash`: the hash of the complete IPv6 address quadruple in routing domain
 /// `rdomain` (the kernel's, over the addresses' bytes).
 pub fn in6_pcbhash(
@@ -236,276 +194,24 @@ pub fn in6_pcbhash(
     laddr: &In6Addr,
     lport: u16,
 ) -> u64 {
-    kernel::netinet6::in6_pcb::in6_pcbhash(
-        table,
-        rdomain,
-        &faddr.s6_addr,
-        fport,
-        &laddr.s6_addr,
-        lport,
-    )
+    k6::in6_pcbhash(table, rdomain, &faddr.s6_addr, fport, &laddr.s6_addr, lport)
 }
 
-/// `in6_pcbaddrisavail_lock(.., IN_PCBLOCK_HOLD)`: whether `inp` may bind to `sin6` (an
-/// address of ours, not anycast nor unusable, and a port nobody else has, as `wild` and the
-/// reuse options allow), the table mutex held (`g`). The scope zone is embedded into
-/// `sin6`'s address and its scope id cleared, as the C does in place.
-pub fn in6_pcbaddrisavail_held(
-    g: &mut InpGuard<'_>,
-    inp: &Inpcb,
-    sin6: &mut SockaddrIn6,
-    wild: i32,
-) -> Result<(), Errno> {
-    let so = inp.socket();
-    let lport = sin6.sin6_port;
-    let mut reuseport = so.options() & SO_REUSEPORT;
-    let wild = wild | INPLOOKUP_IPV6;
-
-    // KAME hack: embed scopeid
-    let mut addr = sin6.sin6_addr;
-    let embedded = in6_embedscope(
-        &mut addr,
-        sin6,
-        inp.outputopts6().as_deref(),
-        inp.moptions6_out().as_ref(),
-    );
-    if embedded.is_err() {
-        return Err(Errno::EINVAL);
-    }
-    sin6.sin6_addr = addr;
-    // this must be cleared for ifa_ifwithaddr()
-    sin6.sin6_scope_id = 0;
-    // reject IPv4 mapped address, we have no support for it
-    if in6_is_addr_v4mapped(&sin6.sin6_addr) {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
-
-    if in6_is_addr_multicast(&sin6.sin6_addr) {
-        // Treat SO_REUSEADDR as SO_REUSEPORT for multicast; allow complete duplication of
-        // binding if SO_REUSEPORT is set, or if SO_REUSEADDR is set and a multicast address
-        // is bound on both new and duplicated sockets.
-        if so.has_options(SO_REUSEADDR | SO_REUSEPORT) {
-            reuseport = SO_REUSEADDR | SO_REUSEPORT;
-        }
-    } else if !in6_is_addr_unspecified(&sin6.sin6_addr) {
-        // Cleared because ifa_ifwithaddr() compares the whole socket address, ports (and
-        // flow) included.
-        sin6.sin6_port = 0;
-        sin6.sin6_flowinfo = 0;
-        let mut ifa = None;
-        if !so.has_options(SO_BINDANY) {
-            // SAFETY: a local `sockaddr_in6`, read for the call.
-            ifa = unsafe { ifa_ifwithaddr(sin6tosa_const(sin6), inp.inp_rtableid.get()) };
-            if ifa.is_none() {
-                return Err(Errno::EADDRNOTAVAIL);
-            }
-        }
-        sin6.sin6_port = lport;
-
-        // Binding to an anycast address might accidentally cause sending a packet with an
-        // anycast source address, so we forbid it.
-        //
-        // We should allow to bind to a deprecated address, since the application dare to
-        // use it. But, can we assume that they are careful enough to check if the address
-        // is deprecated or not? Maybe, as a safeguard, we should have a setsockopt flag to
-        // control the bind(2) behavior against deprecated addresses (default: forbid
-        // bind(2)).
-        if let Some(ifa) = ifa
-            && ifatoia6(ifa).ia6_flags.get()
-                & (IN6_IFF_ANYCAST | IN6_IFF_TENTATIVE | IN6_IFF_DUPLICATED | IN6_IFF_DETACHED)
-                != 0
-        {
-            return Err(Errno::EADDRNOTAVAIL);
-        }
-    }
-    if lport != 0 {
-        let table = inp.table();
-        let laddr = Inpaddru::from_addr6(sin6.sin6_addr);
-        if so.creds().0 != 0 && !in6_is_addr_multicast(&sin6.sin6_addr) {
-            let t = k::in_pcblookup_local(
-                g,
-                table,
-                &laddr,
-                lport,
-                INPLOOKUP_WILDCARD | INPLOOKUP_IPV6,
-                inp.inp_rtableid.get(),
-            );
-            if t.is_some_and(|t| so.creds().0 != t.socket().creds().0) {
-                return Err(Errno::EADDRINUSE);
-            }
-        }
-        let t = k::in_pcblookup_local(g, table, &laddr, lport, wild, inp.inp_rtableid.get());
-        if t.is_some_and(|t| reuseport & t.socket().options() == 0) {
-            return Err(Errno::EADDRINUSE);
-        }
-    }
-    Ok(())
-}
-
-/// `in6_pcbaddrisavail`: [`in6_pcbaddrisavail_held`] taking the table mutex.
+/// `in6_pcbaddrisavail(inp, sin6, wild, p)`: the kernel's, taking the table mutex, under the
+/// net lock the caller holds; the scope zone is embedded into `sin6`'s address, as the C does
+/// in place.
 pub fn in6_pcbaddrisavail(
     inp: &Inpcb,
     sin6: &mut SockaddrIn6,
     wild: i32,
     _p: &Proc,
 ) -> Result<(), Errno> {
-    let mut g = inp.table().lock();
-    in6_pcbaddrisavail_held(&mut g, inp, sin6, wild)
+    k6::in6_pcbaddrisavail(inp, sin6, wild, &net_held("in6_pcbaddrisavail"))
 }
 
-/// `in_pcbbind_locked`'s `INP_IPV6` half (in_pcb.c's `#ifdef INET6` branch): binds `inp` to
-/// the address in `nam` (or to `laddr` and a picked port), the table mutex held; the kernel's
-/// `in_pcbbind_tail` finishes it, as for IPv4.
-pub fn in6_pcbbind_locked(
-    g: &mut InpGuard<'_>,
-    inp: &'static Inpcb,
-    nam: Option<&Mbuf>,
-    laddr: &Inpaddru,
-    p: &Proc,
-) -> Result<(), Errno> {
-    let so = inp.socket();
-    let mut lport: u16 = 0;
-    let mut wild = 0;
-    let mut laddr = *laddr;
-
-    kassert!(inp.has_flags(INP_IPV6));
-    if inp.inp_lport.get() != 0 {
-        return Err(Errno::EINVAL);
-    }
-
-    if !so.has_options(SO_REUSEADDR | SO_REUSEPORT)
-        && (!so.pr_flags(kernel::net::proto::PR_CONNREQUIRED) || !so.has_options(SO_ACCEPTCONN))
-    {
-        wild = INPLOOKUP_WILDCARD;
-    }
-
-    if !in6_is_addr_unspecified(&inp.inp_laddr6.get::<In6Addr>()) {
-        return Err(Errno::EINVAL);
-    }
-    wild |= INPLOOKUP_IPV6;
-
-    if let Some(nam) = nam {
-        let sin6p = in6_nam2sin6(nam)?;
-        // SAFETY: `in6_nam2sin6` checked the mbuf holds a whole `sockaddr_in6`; mbuf data
-        // need not be aligned, so it is read unaligned.
-        let mut sin6 = unsafe { sin6p.read_unaligned() };
-        in6_pcbaddrisavail_held(g, inp, &mut sin6, wild)?;
-        laddr = Inpaddru::from_addr6(sin6.sin6_addr);
-        lport = sin6.sin6_port;
-    }
-
-    k::in_pcbbind_tail(g, inp, nam.is_some(), laddr, lport, wild, p)
-}
-
-/// `in6_pcbconnect`: connects `inp` to the `sockaddr_in6` in `nam`; both address and port
-/// must be specified. If the socket has no local address yet, one is picked (and a local
-/// port, if it has none either). Eventually, flow labels will have to be dealt with here,
-/// as well.
-pub fn in6_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
-    let table = inp.table();
-
-    kassert!(inp.has_flags(INP_IPV6));
-
-    let sin6p = in6_nam2sin6(nam)?;
-    // protect *sin6 from overwrites: a copy.
-    // SAFETY: `in6_nam2sin6` checked the mbuf holds a whole `sockaddr_in6`; mbuf data need
-    // not be aligned, so it is read unaligned.
-    let mut sin6 = unsafe { sin6p.read_unaligned() };
-    if sin6.sin6_port == 0 {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
-    // reject IPv4 mapped address, we have no support for it
-    if in6_is_addr_v4mapped(&sin6.sin6_addr) {
-        return Err(Errno::EADDRNOTAVAIL);
-    }
-
-    // The pcb's sticky options, lent for the scope and the source selection.
-    let mut opts6 = inp.outputopts6();
-
-    // KAME hack: embed scopeid
-    let mut addr = sin6.sin6_addr;
-    let embedded = in6_embedscope(
-        &mut addr,
-        &sin6,
-        opts6.as_deref(),
-        inp.moptions6_out().as_ref(),
-    );
-    if embedded.is_err() {
-        return Err(Errno::EINVAL);
-    }
-    sin6.sin6_addr = addr;
-    // this must be cleared for ifa_ifwithaddr()
-    sin6.sin6_scope_id = 0;
-
-    // Source address selection.
-    // XXX: in6_selectsrc might replace the bound local address with the address specified
-    // by setsockopt(IPV6_PKTINFO). Is it the intended behavior?
-    let mut in6a = In6Addr::default();
-    in6_pcbselsrc(&mut in6a, &sin6, inp, opts6.as_deref_mut())?;
-    drop(opts6);
-
-    let mut ip6: crate::netinet::ip6::Ip6Hdr = inp.inp_ipv6.get();
-    ip6.ip6_hlim = in6_selecthlim(inp) as u8;
-    inp.inp_ipv6.set(ip6);
-
-    // keep lookup, modification, and rehash in sync
-    let mut g = table.lock();
-
-    let laddr6 = inp.inp_laddr6.get::<In6Addr>();
-    let laddr = if in6_is_addr_unspecified(&laddr6) {
-        in6a
-    } else {
-        laddr6
-    };
-    let found = |g: &mut InpGuard<'_>, laddr: &In6Addr| {
-        kernel::netinet6::in6_pcb::in6_pcblookup_held(
-            g,
-            table,
-            &sin6.sin6_addr,
-            sin6.sin6_port,
-            laddr,
-            inp.inp_lport.get(),
-            inp.inp_rtableid.get(),
-        )
-        .is_some()
-    };
-    if found(&mut g, &laddr) {
-        return Err(Errno::EADDRINUSE);
-    }
-
-    kassert!(in6_is_addr_unspecified(&laddr6) || inp.inp_lport.get() != 0);
-
-    if in6_is_addr_unspecified(&laddr6) {
-        if inp.inp_lport.get() == 0 {
-            in6_pcbbind_locked(
-                &mut g,
-                inp,
-                None,
-                &Inpaddru::from_addr6(in6a),
-                curproc_or_panic("in6_pcbconnect"),
-            )?;
-            if found(&mut g, &in6a) {
-                inp.set_lport(&g, 0);
-                return Err(Errno::EADDRINUSE);
-            }
-        }
-        inp.set_laddr6(&g, in6a);
-    }
-    inp.set_faddr6(&g, sin6.sin6_addr);
-    inp.set_fport(&g, sin6.sin6_port);
-    k::in_pcbrehash(&mut g, inp);
-    drop(g);
-
-    in6_pcb_newflow(inp);
-    Ok(())
-}
-
-/// A fresh random flow label for `inp`, and its flow id from the new addresses (the tail
-/// `in6_pcbconnect` and `in6_pcbset_addr` share).
-fn in6_pcb_newflow(inp: &Inpcb) {
-    let flowinfo = (inp.inp_flowinfo() & !IPV6_FLOWLABEL_MASK)
-        | (htonl(ip6_randomflowlabel()) & IPV6_FLOWLABEL_MASK);
-    inp.set_inp_flowinfo(flowinfo);
+/// The flow id of a connected or accepted IPv6 pcb from its new addresses (`NSTOEPLITZ`, the
+/// tail of `in6_pcbconnect` and `in6_pcbset_addr`; the kernel set the flow label).
+pub(crate) fn in6_pcb_newflow(inp: &Inpcb) {
     inp.inp_flowid.set(stoeplitz_ip6port(
         &inp.inp_faddr6.bytes(),
         &inp.inp_laddr6.bytes(),
@@ -514,38 +220,28 @@ fn in6_pcb_newflow(inp: &Inpcb) {
     ));
 }
 
-/// Writes `sin6` as the address in `nam`.
+/// Writes `sin6` as the address in `nam` (`nam->m_len = sizeof(struct sockaddr_in6)`, the
+/// structure at `mtod(nam)`).
 fn set_nam6(nam: &Mbuf, sin6: SockaddrIn6) {
+    let nam = mut_of(nam);
     nam.m_len().set(size_of::<SockaddrIn6>() as u32);
-    // SAFETY: `nam` is an `MT_SONAME` mbuf of `MLEN` bytes, more than a `sockaddr_in6`;
-    // written unaligned (mbuf data need not be aligned).
-    unsafe { mtod::<SockaddrIn6>(nam).write_unaligned(sin6) };
+    // An `MT_SONAME` mbuf of `MLEN` bytes, writable: the C's store cannot fail.
+    let written = nam.data_mut().is_some_and(|d| hal::pod::put(d, 0, &sin6));
+    if !written {
+        panic(format_args!("set_nam6: a name mbuf without room"));
+    }
 }
 
-/// `in6_setsockaddr`: the local address and port of `inp` into `nam`, as a
-/// `sockaddr_in6`. This services the getsockname(2) call.
+/// `in6_setsockaddr(inp, nam)`: the kernel's local address of `inp`, into `nam`. This
+/// services the getsockname(2) call.
 pub fn in6_setsockaddr(inp: &Inpcb, nam: &Mbuf) {
-    let laddr6 = inp.inp_laddr6.get::<In6Addr>();
-    let mut sin6 = SockaddrIn6 {
-        sin6_port: inp.inp_lport.get(),
-        ..SockaddrIn6::with_addr(laddr6)
-    };
-    // KAME hack: recover scopeid
-    in6_recoverscope(&mut sin6, &laddr6);
-    set_nam6(nam, sin6);
+    set_nam6(nam, k6::in6_setsockaddr(inp));
 }
 
-/// `in6_setpeeraddr`: the foreign address and port of `inp` into `nam`, as a
-/// `sockaddr_in6`. This services the getpeername(2) call.
+/// `in6_setpeeraddr(inp, nam)`: the kernel's foreign address of `inp`, into `nam`. This
+/// services the getpeername(2) call.
 pub fn in6_setpeeraddr(inp: &Inpcb, nam: &Mbuf) {
-    let faddr6 = inp.inp_faddr6.get::<In6Addr>();
-    let mut sin6 = SockaddrIn6 {
-        sin6_port: inp.inp_fport.get(),
-        ..SockaddrIn6::with_addr(faddr6)
-    };
-    // KAME hack: recover scopeid
-    in6_recoverscope(&mut sin6, &faddr6);
-    set_nam6(nam, sin6);
+    set_nam6(nam, k6::in6_setpeeraddr(inp));
 }
 
 /// `sotoinpcb(so)` of a socket the C knows to be attached.
@@ -570,14 +266,9 @@ pub fn in6_peeraddr(so: &'static Socket, nam: &'static Mbuf) -> Result<(), Errno
     Ok(())
 }
 
-/// `in6_pcbnotify`: passes control command `cmd` to every connection of `table` associated
-/// with address `dst`. The local address and/or port numbers may be specified (`src`,
-/// `lport_arg`, `fport_arg`) to limit the search; `src` is `None` for a notification of
-/// local fragmentation. The "usual action" will be taken, depending on the ctlinput cmd:
-/// redirects and dead-host indications go to every reference to the destination
-/// (`in_pcbrtchange` invalidates the route cache of redirected ones). The caller must
-/// filter any cmds that are uninteresting (e.g., no error in the map). `notify` reports the
-/// errno of `inet6ctlerrmap` to each matching socket.
+/// `in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, cmdarg, notify)`: the
+/// kernel's, `notify` called with the `&'static Inpcb` `bsd`'s protocols take (the walk's
+/// counted handle keeps it for the call, `inp_static`'s convention).
 #[allow(clippy::too_many_arguments)] // the C's signature
 pub fn in6_pcbnotify(
     table: &Inpcbtable,
@@ -590,118 +281,25 @@ pub fn in6_pcbnotify(
     cmdarg: *mut c_void,
     notify: Option<InpNotifyFn>,
 ) {
-    let mut fport = fport_arg as u16;
-    let mut lport = lport_arg as u16;
-    let mut notify = notify;
-    // The command's argument is not used here (as in C): the protocols read theirs from
-    // the `ip6ctlparam`.
+    // The command's argument is not used (as in C): the protocols read theirs from the
+    // `ip6ctlparam`.
     let _ = cmdarg;
-
-    if cmd as u32 >= PRC_NCMDS as u32 {
-        return;
-    }
-
-    if in6_is_addr_unspecified(&dst.sin6_addr) {
-        return;
-    }
-    if in6_is_addr_v4mapped(&dst.sin6_addr) {
-        #[cfg(feature = "diagnostic")]
-        crate::kprintf!("in6_pcbnotify: Huh?  Thought we never got called with mapped!\n");
-        return;
-    }
-
-    // note that src can be NULL when we get notify by local fragmentation.
-    let mut sa6_src = src.copied().unwrap_or(SA6_ANY);
-    let flowinfo = sa6_src.sin6_flowinfo;
-
-    // Redirects go to all references to the destination, and use in_pcbrtchange to
-    // invalidate the route cache. Dead host indications: also use in_pcbrtchange to
-    // invalidate the cache, and deliver the error to all the sockets. Otherwise, if we have
-    // knowledge of the local port and address, deliver only to that socket.
-    if prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD {
-        fport = 0;
-        lport = 0;
-        sa6_src.sin6_addr = IN6ADDR_ANY;
-
-        if cmd != PRC_HOSTDEAD {
-            notify = Some(in_pcbrtchange);
+    match notify {
+        Some(n) => {
+            let mut f = |inp: &Inpcb, e: Option<Errno>| n(inp_static(inp), e);
+            k6::in6_pcbnotify(
+                table,
+                dst,
+                fport_arg,
+                src,
+                lport_arg,
+                rtable,
+                cmd,
+                Some(&mut f),
+            );
         }
+        None => k6::in6_pcbnotify(table, dst, fport_arg, src, lport_arg, rtable, cmd, None),
     }
-    let errno = INET6CTLERRMAP[cmd as usize];
-    let Some(notify) = notify else {
-        return;
-    };
-
-    let iter = core::pin::pin!(Inpcb::marker());
-    let mut inp: Option<&'static Inpcb> = None;
-    let rdomain = rtable_l2(rtable);
-    let mut g = table.lock();
-    while let Some(i) = in_pcb_iterator(table, &mut g, inp, iter.as_ref()) {
-        inp = Some(i);
-        kassert!(i.has_flags(INP_IPV6));
-        let (laddr6, faddr6) = (i.inp_laddr6.get::<In6Addr>(), i.inp_faddr6.get::<In6Addr>());
-
-        // A redirect or a dead host also reaches an unconnected pcb whose cached route is a
-        // network route (not RTF_HOST) towards `dst`, whatever its addresses: the message
-        // then comes from the next hop that pcb used last, and without this rule it would
-        // keep the redirected route for good. (Cloning a host route per destination on
-        // output, as other systems do, would let the redirect update that clone, at the
-        // price of a local denial of service; icmp6_mtudisc_update() caps such clones.)
-        // The cache is `[s]`: it is read once the pcb's socket is locked, below; the C reads
-        // it here, under the table mutex alone, a race with the socket's owner.
-        let by_route =
-            (prc_is_redirect(cmd) || cmd == PRC_HOSTDEAD) && in6_is_addr_unspecified(&laddr6);
-        // Whether the addresses select the pcb. With no ports given, a non-zero flow label
-        // and an equal local address match (an error about an ESP-encrypted packet); else the
-        // addresses and the ports given are compared.
-        let by_addr = (lport == 0
-            && fport == 0
-            && flowinfo != 0
-            && flowinfo == (i.inp_flowinfo() & IPV6_FLOWLABEL_MASK)
-            && in6_are_addr_equal(&laddr6, &sa6_src.sin6_addr))
-            || !(!in6_are_addr_equal(&faddr6, &dst.sin6_addr)
-                || rtable_l2(i.inp_rtableid.get()) != rdomain
-                || (lport != 0 && i.inp_lport.get() != lport)
-                || (!in6_is_addr_unspecified(&sa6_src.sin6_addr)
-                    && !in6_are_addr_equal(&laddr6, &sa6_src.sin6_addr))
-                || (fport != 0 && i.inp_fport.get() != fport));
-        if !by_route && !by_addr {
-            continue;
-        }
-
-        drop(g);
-        let so = in_pcbsolock(i);
-        if so.is_some() && (by_addr || cached_route_to(i, &dst.sin6_addr)) {
-            notify(i, errno);
-        }
-        in_pcbsounlock(Some(i), so);
-        g = table.lock();
-    }
-    drop(g);
-}
-
-/// Whether `inp` caches a network (not host) route whose destination is `dst`: the redirect
-/// clause of `in6_pcbnotify`, read under the pcb's socket lock.
-fn cached_route_to(inp: &Inpcb, dst: &In6Addr) -> bool {
-    let ro = inp.route();
-    ro.rt().is_some_and(|rt| rt.rt_flags.get() & RTF_HOST == 0)
-        && in6_are_addr_equal(&crate::netinet6::ip6_output::ro_sin6(&ro).sin6_addr, dst)
-}
-
-/// `in6_pcbrtentry`: the route to the foreign address of `inp`, from its cache (refreshed
-/// when stale).
-pub fn in6_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
-    let faddr = inp.inp_faddr6.get::<In6Addr>();
-    if in6_is_addr_unspecified(&faddr) {
-        return None;
-    }
-    let laddr = inp.inp_laddr6.get::<In6Addr>();
-    route6_mpath(
-        &mut inp.route(),
-        &faddr,
-        Some(&laddr),
-        inp.inp_rtableid.get(),
-    )
 }
 
 /// `in6_pcblookup`: the connected control block for `faddr.fport <-> laddr.lport`,
@@ -718,10 +316,9 @@ pub fn in6_pcblookup(
     // The hash before the mutex (in6_pcb.c:680-683).
     let rdomain = kernel::net::rtable::rtable_l2(rtable);
     let (f, l) = (faddr.s6_addr, laddr.s6_addr);
-    let hash = kernel::netinet6::in6_pcb::in6_pcbhash(table, rdomain, &f, fport, &l, lport);
+    let hash = k6::in6_pcbhash(table, rdomain, &f, fport, &l, lport);
     let mut g = table.lock();
-    let inp =
-        kernel::netinet6::in6_pcb::in6_pcbhash_lookup(&mut g, hash, rdomain, &f, fport, &l, lport);
+    let inp = k6::in6_pcbhash_lookup(&mut g, hash, rdomain, &f, fport, &l, lport);
     let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
     drop(g);
     inp
@@ -736,49 +333,23 @@ pub fn in6_pcblookup_listen(
     rtable: u32,
 ) -> Option<&'static Inpcb> {
     // pf's divert key before the mutex, the count before it is let go.
-    let l =
-        kernel::netinet6::in6_pcb::in6_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
+    let l = k6::in6_pcblookup_listen_keys(table, laddr, lport_arg, m, rtable)?;
     let mut g = table.lock();
-    let inp = kernel::netinet6::in6_pcb::in6_pcblookup_listen_held(&mut g, table, &l);
+    let inp = k6::in6_pcblookup_listen_held(&mut g, table, &l);
     let inp = inp.map(|h| crate::netinet::in_pcb::legacy_hold(h, &g));
     drop(g);
     inp
 }
 
-/// `in6_pcbset_addr`: gives `inp` both addresses and ports at once (a connection accepted
-/// from a listener) in routing table `rtableid`, unless another control block has them;
-/// the IPv6 half of `in_pcbset_addr`.
+/// `in6_pcbset_addr(inp, fsin6, lsin6, rtableid)`: the kernel's, then the flow id (the
+/// module's deviations).
 pub fn in6_pcbset_addr(
     inp: &'static Inpcb,
     fsin6: &SockaddrIn6,
     lsin6: &SockaddrIn6,
     rtableid: u32,
 ) -> Result<(), Errno> {
-    let table = inp.table();
-
-    let mut g = table.lock();
-    if kernel::netinet6::in6_pcb::in6_pcblookup_held(
-        &mut g,
-        table,
-        &fsin6.sin6_addr,
-        fsin6.sin6_port,
-        &lsin6.sin6_addr,
-        lsin6.sin6_port,
-        rtableid,
-    )
-    .is_some()
-    {
-        return Err(Errno::EADDRINUSE);
-    }
-
-    inp.set_rtableid(&g, rtableid);
-    inp.set_laddr6(&g, lsin6.sin6_addr);
-    inp.set_lport(&g, lsin6.sin6_port);
-    inp.set_faddr6(&g, fsin6.sin6_addr);
-    inp.set_fport(&g, fsin6.sin6_port);
-    k::in_pcbrehash(&mut g, inp);
-    drop(g);
-
+    k6::in6_pcbset_addr(inp, fsin6, lsin6, rtableid)?;
     in6_pcb_newflow(inp);
     Ok(())
 }
@@ -809,15 +380,19 @@ pub(crate) mod tests {
     use crate::kern::uipc_socket::soalloc;
     use crate::kern::uipc_socket::sorele;
     use crate::kern::uipc_socket2::{solock, sounlock};
+    use crate::net::route::{RTF_HOST, route6_mpath};
+    use crate::netinet::in_pcb::INP_IPV6;
     use crate::netinet::in_pcb::in_pcbunref;
     use crate::netinet::in_pcb::tests::{setup, teardown};
     use crate::netinet::in_pcb::{in_pcballoc, in_pcbdetach, in_pcbinit};
+    use crate::netinet6::in6::IN6ADDR_ANY;
     use crate::netinet6::in6::tests::a6;
     use crate::netinet6::in6_proto::INET6SW;
     use crate::sys::endian::htons;
+    use crate::sys::mbuf::mtod;
     use crate::sys::mbuf::{M_DONTWAIT, M_WAIT, MT_SONAME};
-    use crate::sys::protosw::{PRC_MSGSIZE, PRC_UNREACH_PORT};
-    use crate::sys::socket::{AF_INET6, SOCK_RAW};
+    use crate::sys::protosw::{PRC_HOSTDEAD, PRC_MSGSIZE, PRC_UNREACH_PORT};
+    use crate::sys::socket::{AF_INET6, SO_BINDANY, SOCK_RAW};
     use crate::sys::socketvar::{SS_NOFDREF, soref};
 
     /// A table of `hashsize` buckets.

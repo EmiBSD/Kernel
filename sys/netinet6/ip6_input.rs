@@ -200,7 +200,7 @@ use crate::sys::mbuf::{
     PACKET_TAG_IP6_OFFNXT, PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp, mclget,
     ml_empty, mtod, park, unpark,
 };
-use crate::sys::protosw::{PRC_NCMDS, Protosw};
+use crate::sys::protosw::Protosw;
 use crate::sys::socket::{
     AF_INET6, AF_UNSPEC, PF_INET6, SCM_TIMESTAMP, SO_TIMESTAMP, SOCK_RAW, SOL_SOCKET,
 };
@@ -215,7 +215,7 @@ const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
 /// `ip6intrq`.
 pub static IP6INTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IPV6);
 
-pub use kernel::netinet6::ip6_input::{ip6_lasthdr, ip6_nexthdr};
+pub use kernel::netinet6::ip6_input::{INET6CTLERRMAP, ip6_lasthdr, ip6_nexthdr};
 pub use kernel::netinet6::ip6_var::IP6COUNTERS;
 
 /// `ip6send_mq`: the packets `ip6_send` queued for `ip6_send_dispatch`.
@@ -223,31 +223,6 @@ static IP6SEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
 
 /// `ip6send_task`.
 static IP6SEND_TASK: Task = Task::new(ip6_send_dispatch, (&raw const IP6SEND_MQ).cast_mut().cast());
-
-/// `inet6ctlerrmap[]`: the errno of each `PRC_*` control command.
-pub static INET6CTLERRMAP: [Option<Errno>; PRC_NCMDS] = [
-    None,
-    None,
-    None,
-    None,
-    None,
-    Some(Errno::EMSGSIZE),
-    Some(Errno::EHOSTDOWN),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::EHOSTUNREACH),
-    Some(Errno::ECONNREFUSED),
-    Some(Errno::ECONNREFUSED),
-    Some(Errno::EMSGSIZE),
-    Some(Errno::EHOSTUNREACH),
-    None,
-    None,
-    None,
-    None,
-    None,
-    None,
-    Some(Errno::ENOPROTOOPT),
-];
 
 /// `ipv6ctl_vars[]`: the bounded integer sysctls of `net.inet6.ip6`.
 static IPV6CTL_VARS: [SysctlBoundedArgs; 13] = [

@@ -172,6 +172,12 @@ pub const PRC_PARAMPROB: i32 = 20;
 /// The number of commands.
 pub const PRC_NCMDS: usize = 21;
 
+/// `PRC_IS_REDIRECT(cmd)`: whether control command `cmd` is a redirect.
+#[inline]
+pub const fn prc_is_redirect(cmd: i32) -> bool {
+    cmd >= PRC_REDIRECT_NET && cmd <= PRC_REDIRECT_TOSHOST
+}
+
 // The requests of pr_ctloutput.
 
 /// `PRCO_GETOPT`.

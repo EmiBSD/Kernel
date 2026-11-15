@@ -181,13 +181,14 @@
 //! - The C's unions (`inp_faddru`, `inp_laddru`, the header prototype `inp_hu`, the options
 //!   and the multicast options) are their two members side by side, as LZ had them; a pcb
 //!   uses the members of its family (`INP_IPV6`).
-//! - The IPv6 half of the functions the C writes for both families (`in_pcbbind_locked`'s,
-//!   `in_pcbconnect`'s, `in_setsockaddr`'s, `in_pcbrtentry`'s and `in_pcbset_addr`'s
-//!   `INP_IPV6` branches) stays in `bsd`'s `netinet6/in6_pcb.rs` until N6.5 moves `in6_src`
-//!   and the IPv6 addresses (D-17's first half, R3): `bsd`'s adapters choose the family before
-//!   they call here, and the functions of this module that take one family assert it. The
-//!   family-blind table code (the hashes, the port lookups, the rehash and the resize) is
-//!   here for both, the IPv6 hash in `crate::netinet6::in6_pcb`.
+//! - The IPv6 halves of the functions the C writes for both families are
+//!   `crate::netinet6::in6_pcb`'s since N6.5c (D-17's second half): `in_pcbbind_locked`,
+//!   `in_pcbconnect` and `in_pcbrtentry` choose the family themselves, as the C's `#ifdef
+//!   INET6` branches; `in_setsockaddr`, `in_setpeeraddr` and `in_pcbset_addr` keep the IPv4
+//!   socket address of their signature, and `bsd`'s adapters call `in6_setsockaddr`,
+//!   `in6_setpeeraddr` and `in6_pcbset_addr` for an IPv6 pcb. The family-blind table code (the
+//!   hashes, the port lookups, the rehash and the resize) is here for both, the IPv6 hash in
+//!   `crate::netinet6::in6_pcb`.
 //! - `hashinit(M_WAITOK)` cannot fail in C; here its failure in [`in_pcbinit`] is `panic(9)`.
 //! - `in_pcbaddrisavail_lock` clears the port and `sin_zero` of a copy of the address (the C
 //!   clears them in the caller's mbuf and puts the port back).
@@ -315,7 +316,7 @@ use hal::sys::netinet_in::{
     InAddr, SockaddrIn, in_multicast,
 };
 use hal::sys::netinet_ip::Ip;
-use hal::sys::netinet6_in6::In6Addr;
+use hal::sys::netinet6_in6::{In6Addr, in6_is_addr_unspecified};
 use hal::sys::socket::{
     AF_INET, SO_ACCEPTCONN, SO_BINDANY, SO_REUSEADDR, SO_REUSEPORT, SOCK_DGRAM,
 };
@@ -338,7 +339,10 @@ use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_output::ip_freemoptions;
 use crate::netinet::ip_var::IpMoptions;
-use crate::netinet6::in6_pcb::in6_pcbhash;
+use crate::netinet6::in6::in6_nam2sin6;
+use crate::netinet6::in6_pcb::{
+    in6_pcbaddrisavail_held, in6_pcbconnect, in6_pcbhash, in6_pcbrtentry,
+};
 use crate::netinet6::ip6_output::{ip6_freemoptions, ip6_freepcbopts};
 use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
 use crate::proc::{ProcGlue, Thread, suser};
@@ -1631,9 +1635,9 @@ pub fn in_pcballoc<G: ProcGlue>(
     Ok(inp)
 }
 
-/// `in_pcbbind_locked` of an IPv4 control block: binds `inp` to `nam` (or to `laddr` and a
-/// port picked here when `nam` is `None`), the table mutex held (`g`). `bsd`'s IPv6 half
-/// binds an IPv6 one (the module's deviations).
+/// `in_pcbbind_locked`: binds `inp` to `nam` (or to `laddr` and a port picked here when `nam`
+/// is `None`), the table mutex held (`g`); an IPv6 pcb's address checked by
+/// `in6_pcbaddrisavail` (the C's `#ifdef INET6` branch).
 pub fn in_pcbbind_locked<G: ProcGlue>(
     g: &mut InpGuard<'_, G>,
     inp: &Inpcb<G>,
@@ -1647,7 +1651,6 @@ pub fn in_pcbbind_locked<G: ProcGlue>(
     let mut wild = 0;
     let mut laddr = *laddr;
 
-    kassert!(!inp.has_flags(INP_IPV6));
     if inp.inp_lport.get() != 0 {
         return Err(Errno::EINVAL);
     }
@@ -1658,40 +1661,38 @@ pub fn in_pcbbind_locked<G: ProcGlue>(
         wild = INPLOOKUP_WILDCARD;
     }
 
-    if inp.inp_laddr.get().s_addr != INADDR_ANY {
-        return Err(Errno::EINVAL);
-    }
-
-    if let Some(nam) = nam {
-        let mut sin = in_nam2sin(nam)?;
-        in_pcbaddrisavail_held(g, inp, &mut sin, wild, net)?;
-        laddr = Inpaddru::from_addr(sin.sin_addr);
-        lport = sin.sin_port;
-    }
-
-    in_pcbbind_tail(g, inp, nam.is_some(), laddr, lport, wild, p)
-}
-
-/// The end of `in_pcbbind_locked` both families share: a port picked when none was asked
-/// for, the root-only ports refused to others, the address and port stored, the rehash.
-/// `bsd`'s IPv6 half calls it once it has checked its address.
-pub fn in_pcbbind_tail<G: ProcGlue>(
-    g: &mut InpGuard<'_, G>,
-    inp: &Inpcb<G>,
-    has_nam: bool,
-    laddr: Inpaddru,
-    mut lport: u16,
-    wild: i32,
-    p: &Thread<G>,
-) -> Result<(), Errno> {
-    let so = inp.socket();
     let inet6 = inp.has_flags(INP_IPV6);
+    if inet6 {
+        if !in6_is_addr_unspecified(&inp.inp_laddr6.get::<In6Addr>()) {
+            return Err(Errno::EINVAL);
+        }
+        wild |= INPLOOKUP_IPV6;
+
+        if let Some(nam) = nam {
+            let mut sin6 = in6_nam2sin6(nam)?;
+            in6_pcbaddrisavail_held(g, inp, &mut sin6, wild, net)?;
+            laddr = Inpaddru::from_addr6(sin6.sin6_addr);
+            lport = sin6.sin6_port;
+        }
+    } else {
+        if inp.inp_laddr.get().s_addr != INADDR_ANY {
+            return Err(Errno::EINVAL);
+        }
+
+        if let Some(nam) = nam {
+            let mut sin = in_nam2sin(nam)?;
+            in_pcbaddrisavail_held(g, inp, &mut sin, wild, net)?;
+            laddr = Inpaddru::from_addr(sin.sin_addr);
+            lport = sin.sin_port;
+        }
+    }
+
     if lport == 0 {
         in_pcbpickport(g, &mut lport, &laddr, wild, inp, p)?;
     } else if in_rootonly(u16::from_be(lport), so.proto().protocol() as u16) && suser(p).is_err() {
         return Err(Errno::EACCES);
     }
-    if has_nam {
+    if nam.is_some() {
         if inet6 {
             inp.set_laddr6(g, laddr.bytes6());
         } else {
@@ -1704,7 +1705,7 @@ pub fn in_pcbbind_tail<G: ProcGlue>(
     Ok(())
 }
 
-/// `in_pcbbind` of an IPv4 control block: binds `inp` to `nam`, or to a port picked here.
+/// `in_pcbbind`: binds `inp` to `nam`, or to a port picked here.
 pub fn in_pcbbind<G: ProcGlue>(
     inp: &Inpcb<G>,
     nam: Option<&Mbuf>,
@@ -1876,8 +1877,9 @@ pub fn in_pcbpickport<G: ProcGlue>(
     Ok(())
 }
 
-/// `in_pcbconnect` of an IPv4 control block: connects `inp` to the address in `nam`; both
-/// address and port must be specified. If the socket has no local address yet, one is picked.
+/// `in_pcbconnect`: connects `inp` to the address in `nam`; both address and port must be
+/// specified. If the socket has no local address yet, one is picked. An IPv6 pcb is
+/// `in6_pcbconnect`'s (the C's `#ifdef INET6` dispatch).
 pub fn in_pcbconnect<G: ProcGlue>(
     inp: &Inpcb<G>,
     nam: &Mbuf,
@@ -1886,7 +1888,9 @@ pub fn in_pcbconnect<G: ProcGlue>(
 ) -> Result<(), Errno> {
     let table = inp.table();
 
-    kassert!(!inp.has_flags(INP_IPV6));
+    if inp.has_flags(INP_IPV6) {
+        return in6_pcbconnect(inp, nam, p, net);
+    }
     let sin = in_nam2sin(nam)?;
     if sin.sin_port == 0 {
         return Err(Errno::EADDRNOTAVAIL);
@@ -2243,10 +2247,12 @@ pub fn in_pcblookup_local_lock<G: ProcGlue>(
     in_pcblookup_local(&mut g, table, laddrp, lport, flags, rtable)
 }
 
-/// `in_pcbrtentry` of an IPv4 control block: the route to its foreign address, from its
-/// cache (counted: the cache keeps its own).
+/// `in_pcbrtentry`: the route to the foreign address of `inp`, from its cache (counted: the
+/// cache keeps its own); an IPv6 pcb's is `in6_pcbrtentry`'s.
 pub fn in_pcbrtentry<G: ProcGlue>(inp: &Inpcb<G>, net: &NetHeld<'_>) -> Option<PoolArc<Rtentry>> {
-    kassert!(!inp.has_flags(INP_IPV6));
+    if inp.has_flags(INP_IPV6) {
+        return in6_pcbrtentry(inp, net);
+    }
     if inp.inp_faddr.get().s_addr == INADDR_ANY {
         return None;
     }

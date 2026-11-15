@@ -77,11 +77,12 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! IPv6 input, the part of `netinet6/ip6_input.c` the output path calls: the walkers of the
-//! extension header chain ([`ip6_nexthdr`], [`ip6_lasthdr`]) and the hop-by-hop option parser
-//! ([`ip6_process_hopopts`], with [`ip6_unknown_opt`]), which `ip6_output` runs over a packet's
-//! own hop-by-hop header and `in6_proto_cksum_out` uses to find the upper-layer header. The
-//! rest of `ip6_input.c` is `bsd`'s `netinet6/ip6_input.rs` until N6.5d, which calls these.
+//! IPv6 input, the part of `netinet6/ip6_input.c` the output path and the control blocks
+//! need: the walkers of the extension header chain ([`ip6_nexthdr`], [`ip6_lasthdr`]) and the
+//! hop-by-hop option parser ([`ip6_process_hopopts`], with [`ip6_unknown_opt`]), which
+//! `ip6_output` runs over a packet's own hop-by-hop header and `in6_proto_cksum_out` uses to
+//! find the upper-layer header, and [`INET6CTLERRMAP`], `in6_pcbnotify`'s errors. The rest of
+//! `ip6_input.c` is `bsd`'s `netinet6/ip6_input.rs` until N6.5d, which calls these.
 //!
 //! Upstream: sys/netinet6/ip6_input.c @ 3ce1f3f79392
 //! LZ: sys/netinet6/ip6_input.rs@3c62ede68802
@@ -114,6 +115,7 @@
 
 use core::mem::{offset_of, size_of};
 
+use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
 use hal::sys::netinet_in::{
     IPPROTO_AH, IPPROTO_DSTOPTS, IPPROTO_ESP, IPPROTO_FRAGMENT, IPPROTO_HOPOPTS, IPPROTO_IPCOMP,
@@ -130,10 +132,37 @@ use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
 use crate::net::if_::inet;
 use crate::net::mbuf::{M_BCAST, M_MCAST, M_PKTHDR, Mbuf, MbufBox, m_copydata};
+use crate::net::proto::PRC_NCMDS;
 use crate::netinet6::ip6_var::ip6stat_inc;
 
 /// `sizeof(struct ip6_hdr)`.
 const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
+
+/// `inet6ctlerrmap[]`: the errno of each `PRC_*` control command (`in6_pcbnotify`'s, N6.5c;
+/// `bsd`'s `ip6_input.rs` re-exports it for its protocols' `ctlinput`s).
+pub static INET6CTLERRMAP: [Option<Errno>; PRC_NCMDS] = [
+    None,
+    None,
+    None,
+    None,
+    None,
+    Some(Errno::EMSGSIZE),
+    Some(Errno::EHOSTDOWN),
+    Some(Errno::EHOSTUNREACH),
+    Some(Errno::EHOSTUNREACH),
+    Some(Errno::EHOSTUNREACH),
+    Some(Errno::ECONNREFUSED),
+    Some(Errno::ECONNREFUSED),
+    Some(Errno::EMSGSIZE),
+    Some(Errno::EHOSTUNREACH),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    Some(Errno::ENOPROTOOPT),
+];
 
 /// `erroff`: where the options of a hop-by-hop header right after the IPv6 header start, the
 /// base of the parameter problem offsets (RFC 2460 p7: the hop-by-hop header follows the IPv6
