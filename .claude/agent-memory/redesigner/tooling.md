@@ -344,3 +344,6 @@ metadata:
 - `lz check` refuses a [[module.fn]] row on a struct field (`LlinfoNd6::ln_refcnt` is not an item): a dropped field goes in the module's notes and `## Redesign`, never in a row (N6.5b).
 - A hal type split into two kinds (TaggedLink<A, B>) cannot name the second kind's type before its module moves: one commit with the first kind's type as a stand-in second kind keeps every commit compiling; say so in both bodies (N6.5b R1).
 - The worktree guard refuses a multi-file heredoc append (`cd dir && cat >> a <<EOF ... cat >> b`): append to memory files with Edit after a Read of their last lines (N6.5b).
+- lz check: `adapted_by` names only `redesigned` modules; an `[[extra]]` (the bridge traits' `ipsec_hooks.rs`) is refused there, so name the redesigned module whose API the adapter followed (N6.5c).
+- The guard refuses `git commit -F msg > log; echo; tail` and `git status` chained after other commands: run each git command alone in its own call; `git show HEAD:<bsd path>` (alone, piped to grep/sed) reads the pre-change items of an adapted copy where `git -C reference/emibsd-lz show` is refused (N6.5c).
+- A test table of one-line struct literals keeps its shape with `#[rustfmt::skip]` on the `let` (precedent: kernel/time.rs, kernel/tc.rs); rustfmt otherwise splits each row over nine lines (N6.5c's ip6_setpktopt table).
