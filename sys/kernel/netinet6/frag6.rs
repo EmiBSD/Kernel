@@ -103,7 +103,12 @@
 //! **Lock and spl transitions** against the C: `frag6_input` takes `frag6_mutex` once per
 //! fragment that is not atomic (one spl pair), as the C, and sends the ICMPv6 errors of a
 //! first fragment's datagram under it, as the C; `frag6_slowtimo` takes it once, and the
-//! shared net lock once per expired first fragment (`frag6_freef`), as the C.
+//! shared net lock once per expired first fragment (`frag6_freef`), as the C. What the C
+//! frees after `mtx_leave` is freed after the guard: a flushed datagram's queue, fragments,
+//! packets and new entry (`flushfrags`), the entry of a fragment the ECN mix drops, the
+//! queue of a datagram that left the queue (the section hands them out in `Out` and its
+//! second value); what the C frees under the mutex (the entries the concatenation consumes,
+//! a first fragment's datagram's too long ones) is freed under it.
 
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::Ordering;
@@ -200,6 +205,14 @@ enum Out {
     Reassembled(MbufBox, u8, i32),
     /// `dropfrag`: the fragment (or the datagram it completed) dropped, counted.
     Dropfrag(Option<MbufBox>),
+    /// `dropfrag` of a fragment whose entry was made (the ECN mix): the entry and its packet,
+    /// both freed after the mutex (the C's `pool_put` after `mtx_leave`, then `m_freemp`).
+    Dropentry(PoolBox<Ip6asfrag>),
+    /// `flushfrags`: an overlap discarded the datagram; the new fragment's entry and its
+    /// packet, and the count of what was dropped (the datagram's fragments and the new one),
+    /// freed and counted after the mutex (the datagram's fragments go with its queue, which
+    /// left the queue).
+    Flush(PoolBox<Ip6asfrag>, u64),
     /// The reassembled packet would exceed `IPV6_MAXPACKET`: a parameter problem at `erroff`.
     Toobig(MbufBox, i32),
 }
@@ -308,11 +321,24 @@ pub fn frag6_input(
         let mut g = FRAG6.lock();
         frag6_locked(&mut g, m, &ip6, &ip6f, offset, fragoff, plen, rdomain, net)
     };
-    // pool_put(&ip6q_pool, q6) after mtx_leave(&frag6_mutex).
+    // pool_put(&ip6q_pool, q6) after mtx_leave(&frag6_mutex), its fragments with it (a
+    // flushed datagram's: m_freem and pool_put of each).
     drop(q6);
 
     match out {
         Out::Queued => IPPROTO_DONE,
+        Out::Dropentry(ip6af) => {
+            // pool_put(&ip6af_pool, ip6af), then dropfrag's m_freemp(mp).
+            drop(ip6af);
+            ip6stat_inc(Ip6statCounters::Ip6sFragdropped);
+            IPPROTO_DONE
+        }
+        Out::Flush(ip6af, n) => {
+            // pool_put(&ip6af_pool, ip6af), ip6stat_add, m_freemp(mp).
+            drop(ip6af);
+            ip6stat_add(Ip6statCounters::Ip6sFragdropped, n);
+            IPPROTO_DONE
+        }
         Out::Toobig(m, erroff) => {
             icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, erroff, net);
             IPPROTO_DONE
@@ -567,14 +593,14 @@ fn frag6_queue(
         let ecn0 = q6.ip6q_ecn;
         if ecn == IPTOS_ECN_CE {
             if ecn0 == IPTOS_ECN_NOTECT {
-                return (Out::Dropfrag(Some(into_mbuf(ip6af))), true);
+                return (Out::Dropentry(ip6af), true);
             }
             if ecn0 != IPTOS_ECN_CE {
                 q6.ip6q_ecn = IPTOS_ECN_CE;
             }
         }
         if ecn == IPTOS_ECN_NOTECT && ecn0 != IPTOS_ECN_NOTECT {
-            return (Out::Dropfrag(Some(into_mbuf(ip6af))), true);
+            return (Out::Dropentry(ip6af), true);
         }
     }
 
@@ -710,27 +736,13 @@ fn last_mbuf(m: &mut Mbuf) -> &mut Mbuf {
     t
 }
 
-/// The mbuf of a fragment entry not queued (`pool_put(&ip6af_pool, ip6af)` then the packet
-/// for `dropfrag`'s `m_freemp(mp)`).
-fn into_mbuf(ip6af: PoolBox<Ip6asfrag>) -> MbufBox {
-    let mut ip6af = ip6af;
-    match ip6af.ip6af_m.take() {
-        Some(m) => m,
-        None => kpanic(format_args!("frag6_input: a fragment without its packet")),
-    }
-}
-
-/// `flushfrags`: the datagram `q6` and its fragments discarded with the new fragment `ip6af`,
-/// counted `ip6s_fragdropped` each (the queue leaves the queue; the C's `TAILQ_REMOVE` and its
-/// counts are the caller's).
-fn flushfrags(q6: &mut PoolBox<Ip6q>, ip6af: PoolBox<Ip6asfrag>) -> (Out, bool) {
-    // pool_put(&ip6af_pool, ip6af) and m_freemp(mp): the new fragment and its packet.
-    drop(ip6af);
-    while let Some(af6) = q6.ip6q_asfrag.pop_head() {
-        drop(af6);
-    }
-    ip6stat_add(Ip6statCounters::Ip6sFragdropped, (q6.ip6q_nfrag + 1) as u64);
-    (Out::Queued, false)
+/// `flushfrags`: the datagram `q6` discarded with the new fragment `ip6af`: the queue leaves
+/// the queue (the C's `TAILQ_REMOVE` and its counts are the caller's) with its fragments, and
+/// the new fragment's entry goes out with the count of `ip6s_fragdropped`, all freed after
+/// the mutex as the C's (`frag6_input` drops them once the guard is gone).
+fn flushfrags(q6: &PoolBox<Ip6q>, ip6af: PoolBox<Ip6asfrag>) -> (Out, bool) {
+    let n = u64::try_from(q6.ip6q_nfrag + 1).unwrap_or(0);
+    (Out::Flush(ip6af, n), false)
 }
 
 /// `frag6_deletefraghdr(m, offset)`: delete fragment header after the unfragmentable header
@@ -907,6 +919,36 @@ pub fn frag6_test_reset() {
     core::mem::forget(core::mem::take(&mut g.q));
     g.nfrags = 0;
     g.nfragpackets = 0;
+}
+
+/// The host tests' probe of where a fragment's entry is freed: how many entries this thread
+/// dropped, their packets with them, while it held `frag6_mutex` (the C frees some there, the
+/// entries its concatenation consumes and a first fragment's datagram's too long ones, and
+/// the others only after `mtx_leave`: `flushfrags`, the ECN drops).
+#[cfg(test)]
+pub(crate) mod freed_locked {
+    std::thread_local! {
+        static N: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
+    }
+
+    /// The count so far.
+    pub(crate) fn get() -> u32 {
+        N.with(core::cell::Cell::get)
+    }
+
+    /// One more.
+    pub(super) fn bump() {
+        N.with(|n| n.set(n.get() + 1));
+    }
+}
+
+#[cfg(test)]
+impl Drop for Ip6asfrag {
+    fn drop(&mut self) {
+        if FRAG6.owned() {
+            freed_locked::bump();
+        }
+    }
 }
 /* </CODE> */
 
@@ -1263,6 +1305,53 @@ mod tests {
             assert_eq!(stat(Ip6statCounters::Ip6sFragdropped), dropped + 1);
             assert_eq!(counts(), (1, 1));
         }
+    }
+
+    #[test]
+    fn flushed_and_ecn_dropped_fragments_are_freed_after_the_mutex() {
+        let _g = setup6();
+        let before = freed_locked::get();
+        // An overlap: the datagram's two fragments, the new one and their packets freed once
+        // the mutex is left (the C's flushfrags after mtx_leave), the three counted.
+        assert_eq!(input(frag(40, 0, true, &data(1, 16))).0, IPPROTO_DONE);
+        assert_eq!(input(frag(40, 16, true, &data(1, 16))).0, IPPROTO_DONE);
+        assert_eq!(counts(), (2, 1));
+        let dropped = stat(Ip6statCounters::Ip6sFragdropped);
+        let (nxt, _, mp) = input(frag(40, 8, true, &data(2, 16)));
+        assert_eq!(nxt, IPPROTO_DONE);
+        assert!(mp.is_none());
+        assert_eq!(stat(Ip6statCounters::Ip6sFragdropped), dropped + 3);
+        assert_eq!(counts(), (0, 0));
+        // CE on a not-ECT datagram: the new fragment's entry and packet freed after the mutex
+        // (the C's pool_put after mtx_leave, then dropfrag), the datagram kept.
+        let (a, b) = (data(1, 8), data(2, 8));
+        assert_eq!(input(frag_tc(41, 0, true, &a, 0x00)).0, IPPROTO_DONE);
+        assert_eq!(input(frag_tc(41, 8, false, &b, 0x03)).0, IPPROTO_DONE);
+        assert_eq!(stat(Ip6statCounters::Ip6sFragdropped), dropped + 4);
+        assert_eq!(counts(), (1, 1));
+        // Not-ECT on an ECT datagram: the same.
+        assert_eq!(input(frag_tc(43, 0, true, &a, 0x02)).0, IPPROTO_DONE);
+        assert_eq!(input(frag_tc(43, 8, false, &b, 0x00)).0, IPPROTO_DONE);
+        assert_eq!(stat(Ip6statCounters::Ip6sFragdropped), dropped + 5);
+        assert_eq!(counts(), (2, 2));
+        assert_eq!(
+            freed_locked::get(),
+            before,
+            "nothing freed under frag6_mutex"
+        );
+
+        // The probe sees what the C itself frees under the mutex: the entries a reassembly
+        // consumes (its concatenation's pool_put).
+        frag6_test_reset();
+        assert_eq!(input(frag(42, 0, true, &data(1, 8))).0, IPPROTO_DONE);
+        let (nxt, _, mp) = input(frag(42, 8, false, &data(2, 8)));
+        assert_eq!(nxt, IPPROTO_UDP);
+        drop(mp);
+        assert_eq!(
+            freed_locked::get(),
+            before + 2,
+            "the two entries concatenated"
+        );
     }
 
     /// One fragment per check of `frag6_input`, each passing the earlier ones: what the C
