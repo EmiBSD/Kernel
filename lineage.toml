@@ -8427,7 +8427,7 @@ reason = "the walk's buffer is an MArray<u8> (Walkarg::w_tmem), lent as a slice 
 [[extra]]
 rust = "sys/kernel/net/ipsec_hooks.rs"
 crate = "kernel"
-reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through: rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), and since N6.4a ip_output's #ifdef IPSEC points (ipsec_in_use, ip_output_ipsec_lookup, ip_output_ipsec_send, tdb_unref, ipsec_adjust_mtu) with their types (struct ipsec_level, LZ item sys/netinet/ip_ipsp.rs::IpsecLevel, whose `moved` row waits for ip_ipsp's move at N8 (bsd's ip_ipsp.rs is adapted and re-exports it); the SPD's verdict; an opaque SA reference, keyed and neither Copy nor Clone, and its holder), its OnceStatic slot and register_ipsec, which gives the registrant the key; N6.4c1: UDPENCAP_PORT (udpencap_port, net.inet.esp.udpencap_port's value, read by in_pcbbind's port check; bsd re-exports it, R7)"
+reason = "the Ipsec bridge (bridges.toml, paid by N8): the trait the kernel's network code calls IPsec through: rtsock.c's enc_getifa for rtm_getifa's PF_KEY destinations (if_enc.c's, under #ifdef IPSEC), and since N6.4a ip_output's #ifdef IPSEC points (ipsec_in_use, ip_output_ipsec_lookup, ip_output_ipsec_send, tdb_unref, ipsec_adjust_mtu) with their types (struct ipsec_level, LZ item sys/netinet/ip_ipsp.rs::IpsecLevel, whose `moved` row waits for ip_ipsp's move at N8 (bsd's ip_ipsp.rs is adapted and re-exports it); the SPD's verdict; an opaque SA reference, keyed and neither Copy nor Clone, and its holder), its OnceStatic slot and register_ipsec, which gives the registrant the key; N6.4c1: UDPENCAP_PORT (udpencap_port, net.inet.esp.udpencap_port's value, read by in_pcbbind's port check; bsd re-exports it, R7); N6.5c: ip6_output's #ifdef IPSEC points, ip6_output_lookup and ip6_output_send (bsd's ip6_output_ipsec_lookup and ip6_output_ipsec_send with its pmtu update, D-18)"
 
 [[module]]
 rust = "sys/kernel/net/bpf.rs"
@@ -16445,6 +16445,7 @@ rust = "sys/kernel/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "redesigned"
 crate = "kernel"
+notes = "sizes (D-3, D-4): inpcb 536 bytes, 552 with the counted item's header; inp_mou as one cell (the C's union of inp_moptions and inp_moptions6) would save 40 B per pcb (N12)"
 
 [[module.fn]]
 lz = "sys/netinet/in_pcb.rs::InpcbIterator"

@@ -247,7 +247,8 @@
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
 //!   and multicast options' (40 each), the anchor (16), the IPv4 and IPv6 members side by
 //!   side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's pool-size row; a diet is
-//!   N12's.
+//!   N12's: `inp_mou` as one cell (the C's union of `inp_moptions` and `inp_moptions6`, a
+//!   family-tagged value) would save 40 B per pcb (N12).
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).

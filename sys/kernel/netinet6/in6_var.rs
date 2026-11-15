@@ -336,12 +336,16 @@ impl In6Memberships {
     }
 
     /// `LIST_INSERT_HEAD(&memberships, imm, i6mm_chain)` of a membership joined after
-    /// [`reserve`](Self::reserve) made its room: `in6m` recorded in it. Only the
-    /// `in6_update_ifa` call that made an address joins its groups (the C's `hostIsNew`),
-    /// one after another under the net lock, and nothing else takes room (a purge only
-    /// frees it), so the room is still there and the push cannot fail. Were it gone, the
-    /// push reserves again (`Err(ENOBUFS)` if that fails, the caller then leaving the
-    /// group): a fallback no caller reaches.
+    /// [`reserve`](Self::reserve) made its room: `in6m` recorded in it. Two joiners take
+    /// room, each on its own set: the `in6_update_ifa` call that made an address joins its
+    /// groups (the C's `hostIsNew`), one after another under the net lock, and
+    /// `ip6_setmoptions`' `IPV6_JOIN_GROUP` joins a socket's group under the socket's lock
+    /// (`kernel::netinet6::ip6_output`'s `join_group`, the C's `in6_joingroup` and
+    /// `LIST_INSERT_HEAD` of `im6o_memberships`). Between a joiner's reserve and its push
+    /// nothing else takes room in its set (a purge or a leave only frees it), so the room is
+    /// still there and the push cannot fail. Were it gone, the push reserves again
+    /// (`Err(ENOBUFS)` if that fails, the caller then leaving the group): a fallback no
+    /// caller reaches.
     pub fn push(&mut self, in6m: &'static In6Multi) -> Result<(), hal::sys::errno::Errno> {
         self.reserve()?;
         match self.v.as_deref_mut().and_then(|v| v.get_mut(self.n)) {
