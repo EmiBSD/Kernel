@@ -57,7 +57,7 @@
 //!
 //! Upstream: sys/netinet/ip_input.c @ 3ce1f3f79392
 
-use hal::netlock::NetHeld;
+use hal::netlock::NetLend;
 
 use crate::kern::proc_glue::BsdProcGlue as G;
 use crate::net::if_::net_held;
@@ -73,8 +73,8 @@ pub use kernel::netinet::ip_input::{
 };
 pub use kernel::netinet::ip_var::{IP_DEFTTL, IPMULTIPATH, ip_mtudisc};
 
-/// The proof that `bsd`'s caller holds the net lock, for one call into the kernel.
-fn held(what: &str) -> NetHeld<'static> {
+/// The proof that `bsd`'s caller holds the net lock, lent for one call into the kernel.
+fn held(what: &str) -> NetLend {
     net_held(what)
 }
 
@@ -90,12 +90,12 @@ pub(crate) fn ip_init() {
 /// `if_netisr` calls the kernel's).
 #[cfg(test)]
 pub(crate) fn ipintr() {
-    kernel::netinet::ip_input::ipintr::<G>(&held("ipintr"));
+    kernel::netinet::ip_input::ipintr::<G>(held("ipintr").net());
 }
 
 /// `ipv4_input(ifp, m, ns)` of a parked packet (wg(4), divert(4)).
 pub fn ipv4_input(ifp: &'static Ifnet, m: &'static Mbuf, ns: Option<&mut Netstack>) {
-    kernel::netinet::ip_input::ipv4_input::<G>(ifp, unpark(m), ns, &held("ipv4_input"));
+    kernel::netinet::ip_input::ipv4_input::<G>(ifp, unpark(m), ns, held("ipv4_input").net());
 }
 
 /// `ip_input_if(mp, offp, nxt, af, ifp, ns)` of a parked packet (IP-in-IP).
@@ -115,7 +115,7 @@ pub fn ip_input_if(
         af,
         ifp,
         ns,
-        &held("ip_input_if"),
+        held("ip_input_if").net(),
     );
     *mp = m.map(park);
     nxt
@@ -138,7 +138,7 @@ pub fn ip_deliver(
         af,
         shared,
         ns,
-        &held("ip_deliver"),
+        held("ip_deliver").net(),
     );
     *mp = m.map(park);
     nxt
@@ -154,7 +154,7 @@ pub fn ip_srcroute(m0: &'static Mbuf) -> Option<&'static Mbuf> {
 
 /// `ip_forward(m, ifp, ro, flags)` of a parked packet (pf's route-to).
 pub fn ip_forward(m: &'static Mbuf, ifp: &Ifnet, ro: Option<&mut Route>, flags: i32) {
-    kernel::netinet::ip_input::ip_forward(unpark(m), ifp, ro, flags, &held("ip_forward"));
+    kernel::netinet::ip_input::ip_forward(unpark(m), ifp, ro, flags, held("ip_forward").net());
 }
 
 /// `ip_send(m)` of a parked packet.

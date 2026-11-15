@@ -337,14 +337,14 @@ pub fn icmp_error(n: &'static Mbuf, type_: u8, code: u8, dest: u32, destmtu: i32
         code,
         dest,
         destmtu,
-        &net_held("icmp_error"),
+        net_held("icmp_error").net(),
     );
 }
 
 /// `icmp_mtudisc(icp, rtableid)`: the kernel's, of the message's next-hop MTU
 /// (`icmp_nextmtu`, network order) and returned header `oip` as `bsd`'s TCP read them.
 pub fn icmp_mtudisc(nextmtu: u16, oip: &Ip, rtableid: u32) {
-    kernel::netinet::ip_icmp::icmp_mtudisc(nextmtu, oip, rtableid, &net_held("icmp_mtudisc"));
+    kernel::netinet::ip_icmp::icmp_mtudisc(nextmtu, oip, rtableid, net_held("icmp_mtudisc").net());
 }
 
 /// `icmp_mtudisc_clone(dst, rtableid, ipsec)`: the kernel's, the route parked.
@@ -353,7 +353,7 @@ pub fn icmp_mtudisc_clone(dst: InAddr, rtableid: u32, ipsec: bool) -> Option<&'s
         dst,
         rtableid,
         ipsec,
-        &net_held("icmp_mtudisc_clone"),
+        net_held("icmp_mtudisc_clone").net(),
     )
     .map(crate::net::route::park)
 }

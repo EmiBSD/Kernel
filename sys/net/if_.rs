@@ -419,7 +419,7 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     }
 
     fn with_net_held(&self, f: &mut dyn FnMut(&hal::netlock::NetHeld<'_>)) {
-        f(&net_held("if_input_proto"));
+        f(net_held("if_input_proto").net());
     }
 }
 
@@ -592,12 +592,14 @@ unsafe fn sa_bytes<'a>(sa: *const Sockaddr) -> &'a [u8] {
     unsafe { slice::from_raw_parts(sa.cast::<u8>(), usize::from((*sa).sa_len).max(2)) }
 }
 
-/// The proof that `bsd`'s caller holds the net lock (detached), for one walk of the kernel's
-/// address lookups: `hal`'s check through the `SaToken` (the C's `NET_ASSERT_LOCKED()`);
-/// `panic(9)` without it, where the C's splassert would only print.
-pub(crate) fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
-    match crate::net::if_var::sa_token().net_held() {
-        Some(h) => h,
+/// The proof that `bsd`'s caller holds the net lock, lent for the life of the guard returned
+/// (its proof `NetLend::net`), for one call into the kernel: `hal`'s lend through the
+/// `SaToken` (the C's `NET_ASSERT_LOCKED()`, made exact: the running process's write holding,
+/// which cannot be let go while the guard lives, or a read share the guard joins);
+/// `panic(9)` without the lock, where the C's splassert would only print.
+pub(crate) fn net_held(what: &str) -> hal::netlock::NetLend {
+    match crate::net::if_var::sa_token().lend_net() {
+        Some(lend) => lend,
         None => panic(format_args!("{what}: the net lock is not held")),
     }
 }
@@ -610,7 +612,7 @@ pub(crate) fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
 pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
     kernel::net::if_::ifa_ifwithaddr(
-        &net_held("ifa_ifwithaddr"),
+        net_held("ifa_ifwithaddr").net(),
         unsafe { sa_bytes(addr) },
         rtableid,
     )
@@ -625,7 +627,7 @@ pub unsafe fn ifa_ifwithaddr(addr: *const Sockaddr, rtableid: u32) -> Option<&'s
 pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
     kernel::net::if_::ifa_ifwithdstaddr(
-        &net_held("ifa_ifwithdstaddr"),
+        net_held("ifa_ifwithdstaddr").net(),
         unsafe { sa_bytes(addr) },
         rdomain,
     )
@@ -639,7 +641,7 @@ pub unsafe fn ifa_ifwithdstaddr(addr: *const Sockaddr, rdomain: u32) -> Option<&
 pub unsafe fn ifaof_ifpforaddr(addr: *const Sockaddr, ifp: &Ifnet) -> Option<&'static Ifaddr> {
     // SAFETY: the caller's contract.
     kernel::net::if_::ifaof_ifpforaddr(
-        &net_held("ifaof_ifpforaddr"),
+        net_held("ifaof_ifpforaddr").net(),
         unsafe { sa_bytes(addr) },
         ifp,
     )
@@ -766,23 +768,23 @@ pub unsafe fn if_output_tso(
 /// interface (the kernel's, under `bsd`'s net lock).
 pub fn p2p_rtrequest(ifp: &'static Ifnet, req: i32, rt: Option<&'static Rtentry>) {
     if let Some(rt) = rt {
-        kernel::net::if_::p2p_rtrequest(ifp, req as u8, rt, &net_held("p2p_rtrequest"));
+        kernel::net::if_::p2p_rtrequest(ifp, req as u8, rt, net_held("p2p_rtrequest").net());
     }
 }
 
-/// `if_up(ifp)` under `bsd`'s net lock (the kernel's, the proof made through the token).
+/// `if_up(ifp)` under `bsd`'s net lock (the kernel's, the proof lent through the token).
 pub fn if_up(ifp: &'static Ifnet) {
-    kernel::net::if_::if_up(ifp, &net_held("if_up"));
+    kernel::net::if_::if_up(ifp, net_held("if_up").net());
 }
 
 /// `if_down(ifp)` under `bsd`'s net lock.
 pub fn if_down(ifp: &'static Ifnet) {
-    kernel::net::if_::if_down(ifp, &net_held("if_down"));
+    kernel::net::if_::if_down(ifp, net_held("if_down").net());
 }
 
 /// `if_linkstate(ifp)` under `bsd`'s net lock.
 pub fn if_linkstate(ifp: &'static Ifnet) {
-    kernel::net::if_::if_linkstate(ifp, &net_held("if_linkstate"));
+    kernel::net::if_::if_linkstate(ifp, net_held("if_linkstate").net());
 }
 
 /// `p2p_bpf_mtap`: a point-to-point interface's tap, by the packet's address family.

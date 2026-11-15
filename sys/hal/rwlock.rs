@@ -252,6 +252,19 @@
 //!   `read_wait`, `exit_read`, `sleep_released`, `rw_self`) and marks those holdings as its
 //!   own, so its release never touches a holding a witness owns; no witness is ever rebuilt
 //!   from the lock word.
+//! - N6.5e: the `[N]` members kernel code reaches under every kind of net lock holding,
+//!   detached ones included (an interface's address list, a route's `rt_ifa`), are net cells
+//!   ([`Guarded::new_net`], keyed to `hal::netlock`'s own identity, a word no lock owns, as
+//!   [`Guarded::new_kernel`]'s), opened by the net cells' witnesses
+//!   (`hal::netlock::NetReader`, shared, and `NetWriter`, exclusive), which a proof of the
+//!   holding gives (`NetHeld::reader`, `NetHeld::writer`) and `hal::netlock` keeps apart on
+//!   the write holding by its borrow word (that module's notes); a witness of the net lock
+//!   itself opens no net cell. A write witness of the net lock refuses its release (drop,
+//!   sleeps, [`WriteWitness::unlocked`], [`WriteWitness::downgrade`]) while a proof of its
+//!   holding is lent or a net cell witness is out (`hal::netlock`'s `before_write_release`:
+//!   one address compare for every other lock), and `RawRwlock::join_read` gives that
+//!   module's lend one more read share without waiting, so every proof of the net lock keeps
+//!   the holding it proves (review 1's B1).
 //! - N5.2: a lock the C enters in one function and leaves in another without a witness in
 //!   between (`vfs_busy`/`vfs_unbusy` on `mnt_lock`, a file system's `VOP_LOCK`/`VOP_UNLOCK`
 //!   on its node's `rrwlock`) is [`SplitRwlock`] (`rw_enter`/`rw_exit`) or [`RecursiveRwlock`]
@@ -272,6 +285,7 @@ use crate::assert::{hal_panic, kassert};
 use crate::bridges;
 use crate::klock::{self, KernelReader, KernelWitness};
 use crate::mutex::{Mutexed, MutexedGuard};
+use crate::netlock::{self, NetReader, NetWriter};
 use crate::pool::{PR_WAITOK, PoolArc, TypedPool};
 use crate::sleep::{self, INFSLP, PCATCH, PLOCK, PRIMASK, chan};
 use crate::sys::errno::Errno;
@@ -552,6 +566,19 @@ impl RawRwlock {
             },
             || self.try_read_from(0),
         )
+    }
+
+    /// One more reader on a word that readers hold now, without waiting, even for a waiting
+    /// writer (a holder of a read share, or one lent a proof of it, may not wait behind a
+    /// writer that waits for it); the witness of that share, a read holding of its own.
+    /// `None` when the word was free or held by a writer when looked at. If the readers all
+    /// leave between that look and the increment, the share is a fresh read holding of a word
+    /// that went free (taken without waiting, as a reader takes a free word): a holding all
+    /// the same. For `hal::netlock`'s lend of a read holding (`lend_held`), which owns it for
+    /// the life of its guard.
+    pub(crate) fn join_read(&self) -> Option<ReadWitness<'_>> {
+        let seen = self.owner.load(Ordering::SeqCst);
+        (seen != 0 && self.try_read_from(seen)).then(|| ReadWitness::new(self))
     }
 
     /// `rw_enter_read` without flags, which cannot fail.
@@ -1199,7 +1226,10 @@ pub struct WitnessPart<'w> {
 
 /// The proof of holding a [`SharedRwlock`] alone (`rw_enter_write` on a lock object): no
 /// data; the [`Guarded`] cells keyed to the lock open mutably through it. Its drop is
-/// `rw_exit_write`. Not `Send`: the lock belongs to the process that took it.
+/// `rw_exit_write`. Not `Send`: the lock belongs to the process that took it. A witness of
+/// the net lock refuses every release (its drop, a sleep, [`WriteWitness::unlocked`],
+/// [`WriteWitness::downgrade`]) while a proof of its holding is lent or a net cell witness
+/// is out (`hal::netlock`'s notes): one address compare for every other lock.
 #[must_use = "dropping the witness at once releases the lock"]
 pub struct WriteWitness<'a> {
     lock: &'a RawRwlock,
@@ -1231,6 +1261,7 @@ impl<'a> WriteWitness<'a> {
     ) -> Result<(), Errno> {
         let raw = self.lock;
         let me = self.me;
+        netlock::before_write_release(raw, "rwsleep");
         let result = raw.sleep_released(ident, prio, wmesg, nsecs, || raw.exit_write(me));
         self.me = raw.write_wait();
         result
@@ -1257,8 +1288,11 @@ impl<'a> WriteWitness<'a> {
         wmesg: &'static str,
         nsecs: u64,
     ) -> Result<(), Errno> {
+        // The witness given up first: a refusal leaves its holding held, never released by
+        // the witness's drop while the refusal unwinds (a host test's panic).
         let this = ManuallyDrop::new(self);
         let (raw, me) = (this.lock, this.me);
+        netlock::before_write_release(raw, "rwsleep");
         raw.sleep_released(ident, prio, wmesg, nsecs, || raw.exit_write(me))
     }
 
@@ -1278,6 +1312,7 @@ impl<'a> WriteWitness<'a> {
     /// across; what the witness proved must be looked at again afterwards.
     pub fn unlocked<R>(&mut self, f: impl FnOnce() -> R) -> R {
         let raw = self.lock;
+        netlock::before_write_release(raw, "exit write");
         raw.exit_write(self.me);
         let r = f();
         self.me = raw.write_wait();
@@ -1287,8 +1322,10 @@ impl<'a> WriteWitness<'a> {
     /// `rw_enter(lock, RW_DOWNGRADE)`: the writer becomes a reader without letting another
     /// writer in; the readers waiting are woken when no writer waits.
     pub fn downgrade(self) -> ReadWitness<'a> {
+        // The witness given up first, as `into_sleep_nsec`.
         let this = ManuallyDrop::new(self);
         let (raw, me) = (this.lock, this.me);
+        netlock::before_write_release(raw, "downgrade");
         raw.downgrade(me);
         ReadWitness::new(raw)
     }
@@ -1296,6 +1333,7 @@ impl<'a> WriteWitness<'a> {
 
 impl Drop for WriteWitness<'_> {
     fn drop(&mut self) {
+        netlock::before_write_release(self.lock, "exit write");
         self.lock.exit_write(self.me);
     }
 }
@@ -1402,7 +1440,11 @@ impl Drop for ReadWitness<'_> {
 /// write witness or mutex guard, or, while it is split, the one part of the cell's number);
 /// one `&mut T`, or `&T`s, never both. (A key left from a lock that was freed or moved
 /// matches only a later lock at the same address, whose witnesses exclude each other just the
-/// same.)
+/// same.) The kernel lock's cells and the net cells are keyed to words no lock owns
+/// (`hal::klock`'s and `hal::netlock`'s identities); their witnesses exist only while the
+/// running CPU holds the kernel lock, or the running process the net lock, and those modules
+/// keep their writer and their readers apart by their own counts (their notes): the same
+/// rule, one `&mut T` or `&T`s.
 pub struct Guarded<T> {
     key: Key,
     data: UnsafeCell<T>,
@@ -1511,6 +1553,18 @@ impl<T> Guarded<T> {
         }
     }
 
+    /// `value`, kept under the net lock as a net cell (a `[N]` member the kernel reaches under
+    /// every kind of holding, detached ones included: an interface's address list, a route's
+    /// `rt_ifa`), made in a `const` context; its witnesses are those a proof of the holding
+    /// gives, `hal::netlock::NetHeld::reader` and `NetHeld::writer`, never `NETLOCK`'s own (a
+    /// cell of those is [`Guarded::new_static`] of the lock).
+    pub const fn new_net(value: T) -> Self {
+        Self {
+            key: Key::StaticMutex(&netlock::NET_CELLS_ID),
+            data: UnsafeCell::new(value),
+        }
+    }
+
     /// The value, for the holder of `w`, a witness that opens the cell (of its lock, in
     /// either mode; a part of its part); any other witness is `panic(9)`. The reference
     /// borrows the cell and the witness, so it ends before the witness sleeps, upgrades or
@@ -1519,19 +1573,26 @@ impl<T> Guarded<T> {
     pub fn get<'a, W: Witness + ?Sized>(&'a self, w: &'a W) -> &'a T {
         self.check(w);
         // SAFETY: `w` is a witness (the trait is sealed: a `WriteWitness`, a `ReadWitness`, an
-        // `RwWitness` holding one of the two, a `MutexedGuard`, a `WitnessPart`, or the kernel
+        // `RwWitness` holding one of the two, a `MutexedGuard`, a `WitnessPart`, the kernel
         // lock's `KernelWitness` or `KernelReader`, which `hal::klock` keeps apart per CPU as
         // the lock keeps them apart across CPUs, and whose lock is not released while one is
-        // out, its release paths' contract) that opens
-        // this cell (checked just above), so its lock is held and every reference alive into
-        // the data comes from the witnesses that open it (the type's invariant). A `&mut T`
+        // out, its release paths' contract, or the net cells' `NetWriter` or `NetReader`,
+        // which `hal::netlock` makes only from a proof of a holding of the running process,
+        // a proof that keeps that holding until it is gone (a borrowed witness, a lend whose
+        // holding refuses every release, a read share the lend joined), and keeps apart by
+        // its own checks: the writer only on the write holding with no reader counted, no
+        // reader counted while it lives, an uncounted reader only on a read holding of its
+        // maker, which excludes every write holding; that module's invariant) that opens this
+        // cell (checked just above), so its lock is held and every reference alive into the
+        // data comes from the witnesses that open it (the type's invariant). A `&mut T`
         // exists only through `get_mut`, which needs the one exclusive witness that opens the
         // cell borrowed mutably: if `w` is that witness, or an `RwWitness` holding it (whose
         // `as_write` needs it mutably), it is borrowed shared here for as long as this
-        // reference lives; if `w` is or holds a read witness, no exclusive witness exists; if
-        // `w` is a part, the whole witness it came from is borrowed mutably and the other
-        // parts open other cells. So no `&mut T` is alive beside this `&T`, and it ends before
-        // `w` can be released or slept (both need `w` by value or `&mut`).
+        // reference lives; if `w` is or holds a read witness (a `NetReader` included), no
+        // exclusive witness that opens the cell exists; if `w` is a part, the whole witness
+        // it came from is borrowed mutably and the other parts open other cells. So no
+        // `&mut T` is alive beside this `&T`, and it ends before `w` can be released or slept
+        // (both need `w` by value or `&mut`).
         unsafe { &*self.data.get() }
     }
 
@@ -1543,17 +1604,21 @@ impl<T> Guarded<T> {
     pub fn get_mut<'a, W: Exclusive + ?Sized>(&'a self, w: &'a mut W) -> &'a mut T {
         self.check(w);
         // SAFETY: `w` is an exclusive witness (sealed: a `WriteWitness`, a `MutexedGuard`, a
-        // `WitnessPart`, or the kernel lock's `KernelWitness`, alone on its CPU by
-        // `hal::klock`'s count) that opens this cell (checked above): the lock is held alone (no
-        // read witness and no other writer or guard exists), and of its witnesses only `w`
-        // opens the cell now. A whole witness opens nothing while it is split (its parts
-        // borrow it mutably), so if `w` is whole no part exists; if `w` is a part, its whole
-        // witness is borrowed by the split, and the other parts of that split have other
-        // numbers (a part cannot be split again). Every reference into the data comes from a
-        // witness that opens it (the type's invariant), so only through `w`, which is borrowed
-        // mutably for the life of this reference: no other reference from it (by `get` or
-        // `get_mut`) can be alive or made meanwhile. This is the only reference to the data
-        // while it lives, and it ends before `w` is released or slept.
+        // `WitnessPart`, the kernel lock's `KernelWitness`, alone on its CPU by
+        // `hal::klock`'s count, or the net cells' `NetWriter`, alone by `hal::netlock`'s
+        // borrow word: made only from a proof of the running process's write holding, which
+        // the proof keeps until it is gone, with no reader counted, refusing every reader and
+        // writer while it lives, while no uncounted reader can live beside a write holding)
+        // that opens this cell (checked above): the lock is held alone (no read witness and no
+        // other writer or guard exists), and of its witnesses only `w` opens the cell now. A
+        // whole witness opens nothing while it is split (its parts borrow it mutably), so if
+        // `w` is whole no part exists; if `w` is a part, its whole witness is borrowed by the
+        // split, and the other parts of that split have other numbers (a part cannot be split
+        // again). Every reference into the data comes from a witness that opens it (the
+        // type's invariant), so only through `w`, which is borrowed mutably for the life of
+        // this reference: no other reference from it (by `get` or `get_mut`) can be alive or
+        // made meanwhile. This is the only reference to the data while it lives, and it ends
+        // before `w` is released or slept.
         unsafe { &mut *self.data.get() }
     }
 
@@ -1656,12 +1721,12 @@ mod sealed {
     pub trait Sealed {}
 }
 
-/// A proof of holding a lock: a reader-writer lock in either mode, a [`Mutexed`], or the
-/// kernel lock; what [`Guarded::get`] checks. Sealed: [`WriteWitness`], [`ReadWitness`],
-/// [`RwWitness`] (which is one of them), a [`MutexedGuard`] (and the scheduler's hold, one),
-/// a [`WitnessPart`],
-/// [`KernelWitness`] and [`KernelReader`] are the only witnesses, so no other type can claim
-/// a lock it does not hold.
+/// A proof of holding a lock: a reader-writer lock in either mode, a [`Mutexed`], the
+/// kernel lock, or the net lock for its cells; what [`Guarded::get`] checks. Sealed:
+/// [`WriteWitness`], [`ReadWitness`], [`RwWitness`] (which is one of them), a
+/// [`MutexedGuard`] (and the scheduler's hold, one), a [`WitnessPart`], [`KernelWitness`],
+/// [`KernelReader`], [`NetWriter`] and [`NetReader`] are the only witnesses, so no other type
+/// can claim a lock it does not hold.
 pub trait Witness: sealed::Sealed {
     /// The identity of the lock this witness holds.
     fn lock_id(&self) -> LockId;
@@ -1675,8 +1740,8 @@ pub trait Witness: sealed::Sealed {
 
 /// A witness that holds its lock alone and so opens its cells mutably
 /// ([`Guarded::get_mut`]): [`WriteWitness`], a [`MutexedGuard`] (the one holder of a
-/// mutex, the same proof as a writer's), [`KernelWitness`], and a [`WitnessPart`] (for its
-/// part). Sealed, as [`Witness`].
+/// mutex, the same proof as a writer's), [`KernelWitness`], [`NetWriter`] (for the net
+/// cells), and a [`WitnessPart`] (for its part). Sealed, as [`Witness`].
 pub trait Exclusive: Witness {}
 
 /// An exclusive witness of a whole lock, divisible into parts that open disjoint cells at
@@ -1787,6 +1852,26 @@ impl Witness for KernelReader {
     #[inline]
     fn lock_id(&self) -> LockId {
         klock::kernel_lock_id()
+    }
+}
+
+impl sealed::Sealed for NetWriter<'_> {}
+
+impl Witness for NetWriter<'_> {
+    #[inline]
+    fn lock_id(&self) -> LockId {
+        netlock::net_cells_id()
+    }
+}
+
+impl Exclusive for NetWriter<'_> {}
+
+impl sealed::Sealed for NetReader<'_> {}
+
+impl Witness for NetReader<'_> {
+    #[inline]
+    fn lock_id(&self) -> LockId {
+        netlock::net_cells_id()
     }
 }
 
@@ -2084,6 +2169,14 @@ pub(crate) fn rw_self() -> usize {
 // A lock's word is aligned to 8 bytes, so a `LockId` keeps its kind and a key its part in the
 // three low bits.
 const _: () = assert!(align_of::<RawRwlock>() >= 8 && align_of::<AtomicUsize>() >= 8);
+
+/// `rwl_waiters`, for the tests of a lock's users (`hal::netlock`'s: a writer seen waiting).
+#[cfg(test)]
+impl RawRwlock {
+    pub(crate) fn waiters_for_test(&self) -> u32 {
+        self.waiters.load(Ordering::SeqCst)
+    }
+}
 /* </CODE> */
 
 /* <TESTS> */

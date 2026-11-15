@@ -170,7 +170,7 @@ pub fn ip6_output(
         flags,
         im6o,
         seclevel,
-        &net_held("ip6_output"),
+        net_held("ip6_output").net(),
     )
 }
 
@@ -205,7 +205,7 @@ pub fn ip6_ctloutput(
         level,
         optname,
         m.map(mut_of),
-        &net_held("ip6_ctloutput"),
+        net_held("ip6_ctloutput").net(),
     )
 }
 
@@ -334,7 +334,7 @@ fn ip6_output_ipsec_pmtu_update(
                 ro.dst(),
                 RT_RESOLVE,
                 rtableid,
-                &net_held("ip6_output_ipsec_pmtu_update"),
+                net_held("ip6_output_ipsec_pmtu_update").net(),
             );
         }
         if rt_mtucloned {

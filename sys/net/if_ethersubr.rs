@@ -425,7 +425,7 @@ mod tests {
             false,
             &PEER6,
             &PEER6,
-            &crate::net::if_::net_held("nd6_na_input"),
+            crate::net::if_::net_held("nd6_na_input").net(),
         );
         drop(handle);
         net_unlock();

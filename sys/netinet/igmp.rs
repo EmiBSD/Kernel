@@ -269,7 +269,7 @@ mod tests {
                     IPPROTO_IGMP,
                     i32::from(AF_INET),
                     None,
-                    &crate::net::if_::net_held("igmp_input"),
+                    crate::net::if_::net_held("igmp_input").net(),
                 )
         });
         drop(mp);

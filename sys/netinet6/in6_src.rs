@@ -116,7 +116,7 @@ pub fn in6_pcbselsrc(
         inp,
         pi,
         ifidx,
-        &net_held("in6_pcbselsrc"),
+        net_held("in6_pcbselsrc").net(),
     )?;
     Ok(())
 }

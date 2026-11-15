@@ -246,8 +246,8 @@
 //!   `icmp_mtudisc_timeout` (`rtdeletemsg`, then `tcp_ctlinput(PRC_MTUINC)`, whose
 //!   `in_pcbnotifyall` takes the sockets' locks only) and `icmp6_mtudisc_timeout`
 //!   (`rtdeletemsg`); the redirect queues of both have none (a dynamic host route deleted
-//!   here), and nd6 keeps its own timers. `bsd`'s functions make their proof of the lock
-//!   with `SaToken::net_held` (`sys/net/route.rs`).
+//!   here), and nd6 keeps its own timers. `bsd`'s functions are lent their proof of the
+//!   lock for each call (`SaToken::lend_net`, `sys/net/route.rs`).
 //! - `rtcounters` is a `Counters` of `rts_ncounters`; `rttrash` and `rtgeneration` atomics
 //!   (`rtgeneration` bumped with `Release`, read with `Acquire`: the C's `membar_producer`
 //!   and `membar_consumer`).

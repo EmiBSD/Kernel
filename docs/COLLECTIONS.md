@@ -213,6 +213,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `MArc::new`; drop of the last `MArc` | `malloc(9)`, `free(9)` | as `MBox::new` and its drop, plus one atomic |
 | `MArc::clone`, drop of a handle | the refcount | O(1), one atomic |
 | `MArc::ptr_eq`, `erase`, `as_pin` | | O(1), no atomic |
+| `MArc::count` | `ifa_refcnt` read (ddb, the tests) | O(1), one relaxed load |
 | `KmBuf::alloc_wired`, `alloc_pageable` | `km_alloc` | O(pages) plus the kernel map's entry allocation, O(log m) in the map's entries |
 | drop of a `KmBuf` | `km_free` | O(pages) + O(log m) |
 | `MappedBytes::map_frames`, `kenter_frames`, `map_direct` | `pmap_kenter_pa` per frame | O(frames) |
@@ -230,6 +231,12 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `OnceStatic::get`, `set`; `Mutexed::lock`; `Rwlocked::read`, `write` | O(1) apart from the wait for the lock |
 | `Link::addr` | O(1): one relaxed load (the address printed, nothing followed) |
 | `SyncLink::get`, `set`, `replace`, `addr`, `is_none`, `points_to` | O(1): one atomic load, store or swap (`fd_cdir`, `fd_rdir`, `s_ttyvp`) |
+| `SaWords::read` (a record's own socket address copied, N6.5e) | O(1): at most four relaxed loads (`SA_READ_MAX` bytes) |
+| `Guarded::new_net` (a net cell, N6.5e), its `get`, `get_mut` | O(1): `const` to make; an access is one key compare, as every `Guarded`'s |
+| `NetHeld::reader` and its drop (`NET_ASSERT_LOCKED()`) | O(1): one load of the lock word (`rw_status`, the C's own under `DIAGNOSTIC`); on the write holding one uncontended relaxed compare-and-swap, and one relaxed decrement at the drop; nothing on a read holding |
+| `NetHeld::writer` and its drop (`NET_ASSERT_LOCKED_EXCLUSIVE()`) | O(1): one load of the lock word, one uncontended relaxed compare-and-swap; one relaxed store at the drop |
+| `SaToken::lend_net` and the drop of its `NetLend` (`bsd`'s `NET_ASSERT_LOCKED()` before a call into the kernel, N6.5e) | O(1): one load of the lock word; on the write holding one uncontended read-modify-write of the lend count, and one at the drop; on a read holding a compare-and-swap of the lock word (the joined share, which every reader writes: contended), and one at the drop (`rw_exit_read`). A pair the C lacks, per `bsd` call; per packet on `bsd`'s TCP/UDP/raw output and divert (until N6.6), pf's route-to and `rtalloc`, IP-in-IP and wg(4) (until N8): the list in `sys/hal/netlock.rs`'s notes |
+| A write witness's release (`WriteWitness` drop, sleeps, `unlocked`, `downgrade`) | the lock's own, plus one address compare (the net lock's lend and borrow checks, two relaxed loads, for `NETLOCK` alone) |
 
 ## `alloc` in the `kernel` crate (six sites, test code apart)
 

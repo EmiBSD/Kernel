@@ -383,7 +383,7 @@ pub fn in_pcbbind_locked(
     laddr: &Inpaddru,
     p: &Proc,
 ) -> Result<(), Errno> {
-    k::in_pcbbind_locked(g, inp, nam, laddr, p, &net_held("in_pcbbind"))
+    k::in_pcbbind_locked(g, inp, nam, laddr, p, net_held("in_pcbbind").net())
 }
 
 /// `in_pcbbind`: binds `inp` to `nam`, or to a port picked here.
@@ -400,7 +400,7 @@ pub fn in_pcbaddrisavail(
     wild: i32,
     _p: &Proc,
 ) -> Result<(), Errno> {
-    k::in_pcbaddrisavail(inp, sin, wild, &net_held("in_pcbaddrisavail"))
+    k::in_pcbaddrisavail(inp, sin, wild, net_held("in_pcbaddrisavail").net())
 }
 
 /// The flow id of a connected pcb (`NSTOEPLITZ`), after the table mutex as the C.
@@ -418,7 +418,7 @@ fn set_flowid4(inp: &Inpcb) {
 /// families, then the flow id of the family (`NSTOEPLITZ`).
 pub fn in_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
     let p = curproc_or_panic("in_pcbconnect");
-    k::in_pcbconnect(inp, nam, p, &net_held("in_pcbconnect"))?;
+    k::in_pcbconnect(inp, nam, p, net_held("in_pcbconnect").net())?;
     #[cfg(feature = "inet6")]
     if inp.has_flags(INP_IPV6) {
         in6_pcb_newflow(inp);
@@ -457,7 +457,7 @@ pub fn in_pcbdetach(inp: &'static Inpcb) {
     let Some(h) = hal::pool::PoolArc::from_ref(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
-    k::in_pcbdetach(h, &net_held("in_pcbdetach"), free_legacy_opts);
+    k::in_pcbdetach(h, net_held("in_pcbdetach").net(), free_legacy_opts);
 }
 
 /// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached.
@@ -589,7 +589,7 @@ pub fn in_pcbnotifyall(
 
 /// `in_losing`: invalidates the cached route (a dynamic one is deleted).
 pub fn in_losing(inp: &Inpcb) {
-    k::in_losing(inp, &net_held("in_losing"));
+    k::in_losing(inp, net_held("in_losing").net());
 }
 
 /// `in_pcbrtchange`: after a routing change, flushes the old route.
@@ -627,13 +627,13 @@ pub fn in_pcblookup_local_lock(
 pub fn in_pcbrtentry(inp: &Inpcb) -> Option<&'static Rtentry> {
     crate::kern::uipc_socket2::soassertlocked(inp.socket());
     // The cache keeps its own handle while `bsd`'s caller uses the route (`as_static`).
-    k::in_pcbrtentry(inp, &net_held("in_pcbrtentry")).map(|rt| as_static(&rt))
+    k::in_pcbrtentry(inp, net_held("in_pcbrtentry").net()).map(|rt| as_static(&rt))
 }
 
 /// `in_pcbselsrc`: the IPv4 address most appropriate as the source for destination
 /// `dstsock`, into `insrc`.
 pub fn in_pcbselsrc(insrc: &mut InAddr, dstsock: &SockaddrIn, inp: &Inpcb) -> Result<(), Errno> {
-    *insrc = k::in_pcbselsrc(dstsock, inp, &net_held("in_pcbselsrc"))?;
+    *insrc = k::in_pcbselsrc(dstsock, inp, net_held("in_pcbselsrc").net())?;
     Ok(())
 }
 

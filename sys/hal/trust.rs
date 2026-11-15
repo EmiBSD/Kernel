@@ -123,19 +123,20 @@
 //! is held (`hal::netlock::NetHeld`, review 2's S-a): kernel code makes it from a witness of
 //! the lock (`NetHeld::of`, exact) or borrows it for a closure from its own detached write
 //! holding (`hal::netlock::lend_detached`, exact, the holding kept until the closure returns:
-//! N6.3b2), and only the token holder can make it from a check of `rw_status`
-//! (`SaToken::net_held`), for its own holdings, which no witness exists of. The
-//! token holder's contract, the C's own invariant: the bytes of a storage it published are
-//! written only while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`;
-//! `bsd`'s `in_ifaddr`, `in_multi` and `in6_ifaddr` are `Sync` by `bsd`'s own `unsafe impl`,
-//! so this, not the cells' type, keeps writers out); the storage behind its `&'static` lives
-//! while the interface address naming it lives (it is freed only after `ifa_del` has unlinked
-//! the address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the
-//! family its `&'static Ifnet` belongs to); and it asks for a proof by check only while it
-//! holds the lock itself, and drops the proof before it lets that holding go (the `NetHeld`
-//! of a `&'static SaToken` is `NetHeld<'static>`, so no borrow ends it for the holder): for a
-//! shared holding `rw_status` cannot say whose it is (the C's `NET_ASSERT_LOCKED()` cannot
-//! either), so a read holding it finds is its own, as every C reader of `ifa_addr` holds one.
+//! N6.3b2), and the token holder, for its holdings that no witness exists of, is lent one for
+//! a guard's life (`SaToken::lend_net`, N6.5e's review 1: before, a check of `rw_status` that
+//! made a `NetHeld<'static>` and that another process's read holding satisfied): of the
+//! running process's write holding, whose release paths refuse to run while it is lent, or
+//! of a read share the guard joins and owns, so every proof, the net cells' witnesses made from it
+//! included (`NetHeld::reader`, `NetHeld::writer`), lives no longer than a holding of the
+//! running process, by `hal::netlock`'s own checks and with no premise. The token holder's
+//! contract, the C's own invariant: the bytes of a storage it published are written only
+//! while it holds the net lock exclusively (`in_ifinit`, `in6_update_ifa`; `bsd`'s
+//! `in_ifaddr`, `in_multi` and `in6_ifaddr` are `Sync` by `bsd`'s own `unsafe impl`, so this,
+//! not the cells' type, keeps writers out); and the storage behind its `&'static` lives while
+//! the interface address naming it lives (it is freed only after `ifa_del` has unlinked the
+//! address and its last reference is gone, `ifafree`: `bsd`'s `'static`, a lie of the family
+//! its `&'static Ifnet` belongs to).
 //! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
 //! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
 //! embeds its storage (N6.4, N6.5). Since N6.4a an IPv4 address's storage is the kernel's,
