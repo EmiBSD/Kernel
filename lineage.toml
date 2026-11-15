@@ -6774,7 +6774,7 @@ adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/s
 rust = "sys/netinet6/ip6_var.rs"
 lz = ["sys/netinet6/ip6_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/netinet6/ip6_var.rs"]
+adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_src.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6protosw.rs"

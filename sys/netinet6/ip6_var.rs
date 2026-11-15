@@ -189,6 +189,19 @@ pub struct Ip6Pktopts {
     /// Hoplimit for outgoing packets.
     pub ip6po_hlim: i32,
     /// Outgoing IF/address information.
+    ///
+    /// **Invariant** (every `unsafe` read or write through it relies on it): when set, it
+    /// points at an initialised `In6Pktinfo` that these options alone own, valid for as long
+    /// as the options are borrowed.
+    /// - Established by the field's writers, `ip6_setpktopt` and `copypktopts`. They store a
+    ///   fresh `malloc(M_IP6OPT)` block of the structure, written whole, whose pointer they
+    ///   keep nowhere else (a copy of the options gets a block of its own). A test that
+    ///   builds options by hand gives them a block of its own, which it does not reach while
+    ///   they are in use.
+    /// - Upheld by the block being written or freed only through options borrowed mutably:
+    ///   `ip6_setpktopt` rewrites it, `ip6_clearpktopts` frees it. A shared borrow of the
+    ///   options therefore keeps the block alive and unchanged. The derived `Copy` would
+    ///   share the block; no code copies options bitwise (`copypktopts` copies the block).
     pub ip6po_pktinfo: Option<NonNull<In6Pktinfo>>,
     /// Hop-by-Hop options header.
     pub ip6po_hbh: Option<NonNull<Ip6Hbh>>,
@@ -202,6 +215,19 @@ pub struct Ip6Pktopts {
     pub ip6po_minmtu: i32,
     /// `IP6PO_*` flags.
     pub ip6po_flags: i32,
+}
+
+impl Ip6Pktopts {
+    /// `*opt->ip6po_pktinfo`, read by value (`None` without packet info): what the readers
+    /// that only look at it take (`ip6_output`'s outgoing interface, `ip6_getpcbopt`,
+    /// `in6_selectroute`, `in6_embedscope`).
+    pub fn pktinfo(&self) -> Option<In6Pktinfo> {
+        // SAFETY: `ip6po_pktinfo`'s invariant (the field's documentation): when set, an
+        // initialised `In6Pktinfo` these options own, alive and unchanged while they are
+        // borrowed, which `&self` is for the whole read; the structure is copied out by value
+        // (`In6Pktinfo` is plain data), so no reference to the block outlives the call.
+        self.ip6po_pktinfo.map(|p| unsafe { p.as_ptr().read() })
+    }
 }
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.

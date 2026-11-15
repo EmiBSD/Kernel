@@ -102,20 +102,18 @@ use crate::sys::errno::Errno;
 
 pub use kernel::netinet6::in6_src::{in6_clearscope, in6_recoverscope, in6_selecthlim};
 
-/// `opts->ip6po_pktinfo`, lent to `f` for the call (`None` without options or packet info).
+/// `opts->ip6po_pktinfo`, lent to `f` mutably for the call (`None` without options or packet
+/// info): `in6_pcbselsrc` alone, the C's one writer ("this overrides pi"); the readers take
+/// [`Ip6Pktopts::pktinfo`]'s copy.
 fn with_pktinfo<R>(opts: Option<&Ip6Pktopts>, f: impl FnOnce(Option<&mut In6Pktinfo>) -> R) -> R {
     let pi = opts.and_then(|o| o.ip6po_pktinfo);
-    // SAFETY: the invariant of `Ip6Pktopts::ip6po_pktinfo`: when set, it points at an
-    // initialised `In6Pktinfo` that is valid, and the options' alone, for as long as the
-    // options are borrowed. Who establishes it: `ip6_setpktopt` and `ip6_copypktopts`,
-    // the only writers of the field outside tests, store a fresh `malloc(M_IP6OPT)` block
-    // of the structure, written whole, whose pointer they keep nowhere else (a copy gets a
-    // new block); a test that builds options by hand gives them a block of its own that it
-    // does not reach while the options are in use. Who upholds it: only
-    // `ip6_clearpktopts` frees or replaces the block, and it needs the options mutably,
-    // which `opts`' shared borrow here excludes for the whole call. `bsd`'s callers hold
-    // the socket lock that serialises every user of a socket's options. So the block is
-    // live through `f`, and the `&mut` made here is the only reference to it while `f` runs.
+    // SAFETY: `ip6po_pktinfo`'s invariant (`Ip6Pktopts`' field documentation in ip6_var.rs):
+    // when set, an initialised `In6Pktinfo` these options alone own, alive and unchanged while
+    // they are borrowed, which `opts` is for the whole call. The `&mut` is the only reference
+    // to the block while `f` runs, for two reasons. No other pointer to the block exists (the
+    // invariant). Every other user of these options reaches the block only through them, and
+    // only while holding the socket lock that `bsd`'s callers of in6_pcbselsrc hold for this
+    // call (in6_pcbconnect, udp6_output, rip6_output and rip6_connect assert it).
     f(pi.map(|p| unsafe { &mut *p.as_ptr() }))
 }
 
@@ -179,7 +177,9 @@ pub fn in6_selectroute(
     ro: &mut Route,
     rtableid: u32,
 ) -> Option<&'static Rtentry> {
-    let ifindex = with_pktinfo(opts, |pi| pi.map_or(0, |p| p.ipi6_ifindex));
+    let ifindex = opts
+        .and_then(Ip6Pktopts::pktinfo)
+        .map_or(0, |p| p.ipi6_ifindex);
     kernel::netinet6::in6_src::in6_selectroute(
         dst,
         ifindex,
@@ -198,7 +198,9 @@ pub fn in6_embedscope(
     outputopts6: Option<&Ip6Pktopts>,
     moptions6: Option<&Ip6Moptions>,
 ) -> Result<(), Errno> {
-    let pi = with_pktinfo(outputopts6, |pi| pi.map_or(0, |p| p.ipi6_ifindex));
+    let pi = outputopts6
+        .and_then(Ip6Pktopts::pktinfo)
+        .map_or(0, |p| p.ipi6_ifindex);
     kernel::netinet6::in6_src::in6_embedscope(in6, sin6, pi, moptions6.map_or(0, |m| m.im6o_ifidx))
 }
 /* </CODE> */
