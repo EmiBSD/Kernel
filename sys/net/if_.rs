@@ -112,8 +112,8 @@
 //! (`kernel::net::if_`, with `<net/if.h>` in `hal::sys::net_if`), re-exported here under LZ's
 //! paths, with the forwards that turn `bsd`'s parked mbufs into the kernel's boxes; what
 //! stays `bsd`'s is what names `bsd`'s types until their slice moves them: the output
-//! helpers over `bsd`'s route and socket address (`if_output_ml`, `if_output_tso`,
-//! `if_output_mq`: N6.3b), the point-to-point link layer (`p2p_*`: N6.3b/c), the
+//! helpers over `bsd`'s route and socket address (`if_output_ml`, `if_output_tso`: N6.3b;
+//! `if_output_mq` gone with its last caller at the N6.5 close), the point-to-point link layer (`p2p_*`: N6.3b/c), the
 //! implementation of the kernel's `NetDriver` for `bsd`'s drivers' tables
 //! ([`LegacyNetDriver`]) and of the `Inet`, `Routing` and `Link` legs over the subsystems
 //! that have not moved, and the raw entry [`ifioctl`] of `bsd`'s callers that hold a request
@@ -149,12 +149,12 @@ use core::ffi::c_void;
 use core::pin::Pin;
 use core::ptr;
 use core::slice;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::kern::init_main::PDEVINIT_DONE;
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::{Str, panic, printf};
-use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge, mq_delist, mq_purge};
+use crate::kern::uipc_mbuf::{m_freem, ml_dequeue, ml_purge};
 use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
@@ -167,7 +167,7 @@ use crate::netinet6::in6::satosin6_const;
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
-use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, MbufQueue, ml_len, mq_len, park, unpark};
+use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, AF_INET6, Sockaddr};
 use crate::sys::socketvar::Socket;
@@ -757,37 +757,6 @@ pub unsafe fn if_output_tso(
     let mut lent = mp.take().map(unpark);
     let error = kernel::net::if_::if_output_tso(ifp, &mut lent, dst, rt.map(|r| r as &_), mtu);
     *mp = lent.map(park);
-    error
-}
-
-/// `if_output_mq`: sends the packets of a queue; `total` (the packets accounted to the queue
-/// elsewhere) drops by what was sent and by what was discarded.
-///
-/// # Safety
-///
-/// As for [`IfOutputFn`].
-pub unsafe fn if_output_mq(
-    ifp: &'static Ifnet,
-    mq: &MbufQueue,
-    total: &AtomicU32,
-    dst: *const Sockaddr,
-    rt: Option<&'static Rtentry>,
-) -> Result<(), Errno> {
-    let ml = MbufList::new();
-
-    mq_delist(mq, &ml);
-    let len = ml_len(&ml);
-    // SAFETY: the caller's contract.
-    let error = unsafe { if_output_ml(ifp, &ml, dst, rt) };
-
-    // XXXSMP we also discard if other CPU enqueues
-    if mq_len(mq) > 0 {
-        // mbuf is back in queue. Discard.
-        total.fetch_sub(len + mq_purge(mq), Ordering::Relaxed);
-    } else {
-        total.fetch_sub(len, Ordering::Relaxed);
-    }
-
     error
 }
 

@@ -7562,6 +7562,11 @@ native = ["if_ioctl"]
 kind = "merged"
 
 [[module.fn]]
+lz = "sys/net/if_.rs::if_output_mq"
+native = ["sys/kernel/netinet6/nd6.rs::nd6_output_held", "sys/kernel/netinet/if_ether.rs::arpcache"]
+kind = "merged"
+
+[[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
 native = ["IfMap", "IdxmapState"]
 kind = "split"
