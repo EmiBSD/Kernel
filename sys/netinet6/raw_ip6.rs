@@ -196,7 +196,6 @@ use crate::netinet6::ip6_output::{
 use crate::netinet6::ip6_var::{
     IPV6_MINMTU, Ip6Pktopts, Ip6statCounters, mtod_ip6, mtod_ip6_store,
 };
-use crate::netinet6::ip6protosw::Ip6ctlparam;
 use crate::sys::errno::Errno;
 use crate::sys::malloc::{M_NOWAIT, M_PCB, M_WAITOK};
 use crate::sys::mbuf::{M_COPYALL, M_DONTWAIT, M_MCAST, M_WAIT, Mbuf, PF_TAG_DIVERTED, mtod};
@@ -205,6 +204,7 @@ use crate::sys::protosw::{PRC_HOSTDEAD, PRC_MSGSIZE, PRC_NCMDS, PrUsrreqs, prc_i
 use crate::sys::socket::{AF_INET6, Sockaddr};
 use crate::sys::socketvar::{SS_CANTRCVMORE, SS_ISCONNECTED, SS_PRIV, Socket};
 use crate::sys::sysctl::{CTLTYPE_NODE, Ctlname};
+use kernel::netinet6::icmp6::Ip6CtlParam;
 
 /// RIP6 stats.
 pub const RIPV6CTL_STATS: i32 = 1;
@@ -523,26 +523,20 @@ pub unsafe fn rip6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
     }
 
     // if the parameter is from icmp6, decode it.
-    let ip6cp: Option<&Ip6ctlparam> = if d.is_null() {
+    let ip6cp: Option<&Ip6CtlParam<'_>> = if d.is_null() {
         None
     } else {
-        // SAFETY: the caller's contract: a non-NULL `d` is the ICMPv6 error's parameter.
-        Some(unsafe { &*d.cast::<Ip6ctlparam>() })
+        // SAFETY: the caller's contract: a non-NULL `d` points at the ICMPv6 error's
+        // `Ip6CtlParam`, alive and read through `&` only for the call.
+        Some(unsafe { &*d.cast::<Ip6CtlParam<'_>>() })
     };
-    let (ip6, cmdarg, sa6_src, nxt) = match ip6cp {
-        Some(ip6cp) => (
-            ip6cp.ip6c_ip6,
-            ip6cp.ip6c_cmdarg,
-            // SAFETY: `icmp6_notify_error` points `ip6c_src` at its source address, valid
-            // for the call; read unaligned.
-            (!ip6cp.ip6c_src.is_null()).then(|| unsafe { ip6cp.ip6c_src.read_unaligned() }),
-            i32::from(ip6cp.ip6c_nxt),
-        ),
-        None => (ptr::null_mut(), ptr::null_mut(), Some(SA6_ANY), -1),
+    let (cmdarg, sa6_src, nxt) = match ip6cp {
+        Some(ip6cp) => (ip6cp.cmdarg, Some(ip6cp.src), i32::from(ip6cp.nxt)),
+        None => (None, Some(SA6_ANY), -1),
     };
 
+    // The parameter carries the quoted header (the C's ip6 != NULL).
     if let Some(ip6cp) = ip6cp
-        && !ip6.is_null()
         && cmd == PRC_MSGSIZE
     {
         // Check to see if we have a valid raw IPv6 socket corresponding to the address in

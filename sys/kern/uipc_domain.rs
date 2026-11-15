@@ -81,7 +81,7 @@ use core::ptr;
 
 use kernel::net::domain::Domain as KDomain;
 use kernel::net::mbuf::MbufBox;
-use kernel::net::proto::{Protocol, SockaddrView, Usrreqs};
+use kernel::net::proto::{CtlArg, Protocol, SockaddrView, Usrreqs};
 use kernel::net::socket::SoLocked;
 use kernel::netinet::in_proto::{IcmpProtocol, IgmpProtocol, InetDomain, IpProtocol};
 
@@ -100,7 +100,7 @@ use crate::sys::mbuf::{Mbuf, lend, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::protosw::{PR_MPSYSCTL, PrUsrreqs, Protosw};
 use crate::sys::socket::{
-    AF_INET, NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW,
+    AF_INET, AF_INET6, NET_LINK_IFRXQ, PF_BPF, PF_LINK, PF_PFLOW, PF_UNIX, PF_UNSPEC, SOCK_RAW,
 };
 use crate::sys::socketvar::{Socket, as_static};
 use crate::sys::stat::Stat;
@@ -299,23 +299,28 @@ impl Protocol<G> for Protosw {
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         self.pr_usrreqs.map(|u| u as &'static dyn Usrreqs<G>)
     }
-    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, ip: Option<&[u8]>) {
+    fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
         let Some(ctlinput) = self.pr_ctlinput else {
             return;
         };
-        // The returned IPv4 header (the C's `&icp->icmp_ip`, ICMP_MINLEN into the message) is
-        // what an AF_INET table's entry takes; an entry of another family reads a non-NULL
-        // argument as its own (IPv6's as a `struct ip6ctlparam *`) and is never handed one,
-        // and a quote shorter than what the functions read is not handed over (the C's
-        // `icmp_input` drops such a message before `pr_ctlinput`): nothing is called.
-        let arg = match ip {
-            None => ptr::null_mut(),
-            Some(b) if self.pr_domain.dom_family == i32::from(AF_INET) && ctl_quote_holds(b) => b
+        // Each family's entry is handed its own argument only, as the C's callers pass it: the
+        // returned IPv4 header (the C's `&icp->icmp_ip`, ICMP_MINLEN into the message) to an
+        // AF_INET table's entry, a quote shorter than what the functions read not handed over
+        // (the C's `icmp_input` drops such a message before `pr_ctlinput`); the ICMPv6 error's
+        // parameter to an AF_INET6 entry. An argument of the other family (each reads a
+        // non-NULL argument as its own) calls nothing.
+        let family = self.pr_domain.dom_family;
+        let arg = match arg {
+            CtlArg::None => ptr::null_mut(),
+            CtlArg::Ip(b) if family == i32::from(AF_INET) && ctl_quote_holds(b) => b
                 .as_ptr()
                 .wrapping_add(ICMP_MINLEN)
                 .cast_mut()
                 .cast::<core::ffi::c_void>(),
-            Some(_) => return,
+            CtlArg::Ip6(p) if family == i32::from(AF_INET6) => {
+                ptr::from_ref(p).cast_mut().cast::<core::ffi::c_void>()
+            }
+            CtlArg::Ip(_) | CtlArg::Ip6(_) => return,
         };
         // An address longer than a sockaddr_in6: no C caller passes one, nothing is called.
         let Some(sab) = ctl_sa(sa.bytes()) else {
@@ -333,8 +338,11 @@ impl Protocol<G> for Protosw {
         //   `hl` >= 20 bytes (the byte at ICMP_MINLEN) and 8 bytes after it: ICMP_ADVLEN. `b`
         //   is borrowed shared and unchanged for the call; the contract's functions only read
         //   it, so the `cast_mut` lends no write; the pointer derives from `b.as_ptr()`, so
-        //   its provenance covers the message's header before it too. An entry of another
-        //   family (IPv6's read a non-NULL argument as an `ip6ctlparam`) gets NULL.
+        //   its provenance covers the message's header before it too. For an AF_INET6 table's
+        //   entry only, `arg` is the `Ip6CtlParam` the kernel lent (`CtlArg::Ip6`'s reference,
+        //   alive for this call): the contract's AF_INET6 clause, its functions reading it
+        //   through `&` only (the `cast_mut` lends no write; the final destination they change
+        //   is a `Cell`). An entry is never handed the other family's argument (above).
         unsafe { ctlinput(cmd, sab.as_ptr().cast(), rdomain, arg) };
     }
     fn has_ctloutput(&self) -> bool {
@@ -735,6 +743,9 @@ mod tests {
         core::sync::atomic::AtomicU32::new(0),
     ];
 
+    /// The address of the last non-NULL argument the probe was handed.
+    static PROBED_ARG: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
     /// A `pr_ctlinput` that only counts its calls (it reads nothing through its pointers).
     fn probe(
         _cmd: i32,
@@ -746,6 +757,7 @@ mod tests {
         PROBED[0].fetch_add(1, Relaxed);
         if !arg.is_null() {
             PROBED[1].fetch_add(1, Relaxed);
+            PROBED_ARG.store(arg.addr(), Relaxed);
         }
     }
 
@@ -761,7 +773,8 @@ mod tests {
         };
         let ctl = |pr: &Protosw, sa: &[u8], ip: Option<&[u8]>| {
             let sa = SockaddrView::new(sa).expect("an address");
-            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, ip);
+            let arg = ip.map_or(CtlArg::None, CtlArg::Ip);
+            Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, arg);
         };
         let mut sin = [0u8; 16];
         sin[..2].copy_from_slice(&[16, AF_INET]);
@@ -794,6 +807,37 @@ mod tests {
             assert_eq!(calls(), (2, 1));
             ctl(&inet6, &sin, None);
             assert_eq!(calls(), (3, 1));
+
+            // The ICMPv6 error's parameter: handed to an IPv6 entry, the kernel's own value
+            // (its address), never to an IPv4 one.
+            let _g = crate::net::if_::tests::setup_net();
+            let m = crate::net::if_::tests::test_packet(&[0u8; 48]);
+            let p = kernel::netinet6::icmp6::Ip6CtlParam {
+                m,
+                icmp6: hal::sys::netinet_icmp6::Icmp6Hdr::zeroed(),
+                ip6: hal::sys::netinet_ip6::Ip6Hdr::default(),
+                off: 48,
+                src: hal::sys::netinet6_in6::SockaddrIn6::default(),
+                finaldst: core::cell::Cell::new(hal::sys::netinet6_in6::In6Addr::default()),
+                cmdarg: Some(1280),
+                nxt: 17,
+            };
+            let mut sin6 = [0u8; 28];
+            sin6[..2].copy_from_slice(&[28, crate::sys::socket::AF_INET6]);
+            let ctl6 = |pr: &Protosw| {
+                let sa = SockaddrView::new(&sin6).expect("an address");
+                Protocol::<G>::ctlinput(pr, PRC_MSGSIZE, sa, 0, CtlArg::Ip6(&p));
+            };
+            ctl6(&inet6);
+            assert_eq!(calls(), (4, 2));
+            assert_eq!(
+                PROBED_ARG.load(Relaxed),
+                core::ptr::from_ref(&p).addr(),
+                "the kernel's parameter itself"
+            );
+            ctl6(&inet);
+            assert_eq!(calls(), (4, 2), "an IPv4 entry is never handed it");
+            crate::kern::uipc_mbuf::m_freem(m);
         }
     }
 

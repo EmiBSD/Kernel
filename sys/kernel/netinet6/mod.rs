@@ -23,6 +23,7 @@
 
 pub mod dest6;
 pub mod frag6;
+pub mod icmp6;
 pub mod in6;
 pub mod in6_cksum;
 pub mod in6_ifattach;

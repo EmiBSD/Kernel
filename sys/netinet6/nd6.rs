@@ -107,9 +107,7 @@ pub(crate) mod tests {
     use crate::net::if_dl::SockaddrDl;
     use crate::net::if_var::{Ifnet, IfnetLegacy};
     use crate::net::route::{RTF_LLINFO, Rtentry};
-    use crate::netinet::icmp6::Icmp6statCounters;
     use crate::netinet::ip_input::tests::{bytes, setup, test_ether};
-    use crate::netinet6::icmp6::ICMP6COUNTERS;
     use crate::netinet6::in6::{In6Addr, SockaddrIn6};
     use crate::netinet6::in6_var::In6Ifaddr;
     use crate::sys::errno::Errno;
@@ -123,11 +121,6 @@ pub(crate) mod tests {
     /// `fd00:77::2`, the neighbor's.
     pub(crate) const PEER6: In6Addr =
         In6Addr::new([0xfd, 0, 0, 0x77, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-
-    /// The value of an ICMPv6 counter.
-    pub(crate) fn icmp6stat(c: Icmp6statCounters) -> u64 {
-        ICMP6COUNTERS.read()[c as usize]
-    }
 
     /// The packets [`capture_output`] took: the destination's family and the bytes.
     pub(crate) static SENT: std::sync::Mutex<Vec<(u8, Vec<u8>)>> =

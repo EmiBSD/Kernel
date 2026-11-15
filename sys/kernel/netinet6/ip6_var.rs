@@ -693,6 +693,11 @@ pub static IP6_NEIGHBORGCTHRESH: AtomicI32 = AtomicI32::new(2048);
 pub static IP6_MAXDYNROUTES: AtomicI32 = AtomicI32::new(4096);
 /// \[a\] `ip6_mtudisc_timeout`: mtu discovery.
 pub static IP6_MTUDISC_TIMEOUT: AtomicI32 = AtomicI32::new(IPMTUDISCTIMEOUT);
+/// `icmp6_redirtimeout`: cache time for redirect routes, 10 minutes (changed under
+/// `sysctl_lock`).
+pub static ICMP6_REDIRTIMEOUT: AtomicI32 = AtomicI32::new(10 * 60);
+/// \[a\] `icmp6errppslim`: 100pps.
+pub static ICMP6ERRPPSLIM: AtomicI32 = AtomicI32::new(100);
 
 /// `ip6stat_inc(c)`.
 #[inline]

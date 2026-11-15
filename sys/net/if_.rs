@@ -397,16 +397,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         crate::netinet6::ip6_output::ip6_id_generate()
     }
 
-    fn icmp6_error(&self, m: kernel::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
-        #[cfg(feature = "inet6")]
-        crate::netinet6::icmp6::icmp6_error(park(m), type_, code, param);
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = (type_, code, param);
-            drop(m);
-        }
-    }
-
     fn ip6_multipath(&self) -> bool {
         #[cfg(feature = "inet6")]
         return crate::netinet6::in6_proto::IP6_MULTIPATH.load(Ordering::Relaxed) != 0;
@@ -703,12 +693,6 @@ pub(crate) fn net_held(what: &str) -> hal::netlock::NetHeld<'static> {
         Some(h) => h,
         None => panic(format_args!("{what}: the net lock is not held")),
     }
-}
-
-/// `ifa_ifwithaddr(addr, rtableid)` of a socket address's bytes (a routing table's preferred
-/// source, a copy): the kernel's, under `bsd`'s net lock.
-pub fn ifa_ifwithaddr_sa(addr: &[u8], rtableid: u32) -> Option<&'static Ifaddr> {
-    kernel::net::if_::ifa_ifwithaddr(&net_held("ifa_ifwithaddr"), addr, rtableid)
 }
 
 /// `ifa_ifwithaddr(addr, rtableid)`: locate an interface based on a complete address.
@@ -1155,6 +1139,8 @@ pub(crate) mod tests {
         kernel::netinet6::nd6::nd6_test_reset();
         kernel::netinet6::nd6_nbr::dad_test_reset();
         kernel::netinet6::frag6::frag6_test_reset();
+        kernel::netinet6::icmp6::icmp6_test_reset();
+        kernel::netinet6::ip6_input::ip6_test_reset();
         guard
     }
 

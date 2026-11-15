@@ -78,7 +78,8 @@ use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::MbufBox;
-use crate::netinet6::ip6_input::{icmp6_error, ip6_exthdr_bytes, ip6_exthdr_get};
+use crate::netinet6::icmp6::icmp6_error;
+use crate::netinet6::ip6_input::{ip6_exthdr_bytes, ip6_exthdr_get};
 use crate::netinet6::ip6_var::ip6stat_inc;
 
 /// `route6_input(mp, offp, proto, af, ns)`: the routing header's input; the next header with

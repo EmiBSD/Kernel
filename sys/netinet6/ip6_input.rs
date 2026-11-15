@@ -118,7 +118,6 @@
 //!   `mrt6_init`; the `mrt` sysctls answer `EOPNOTSUPP` as the C's `#else` does).
 //! - The `SMALL_KERNEL` variant of `ip6_sysctl` is not built (the kernel is `GENERIC`).
 
-use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr;
 use core::slice;
@@ -130,17 +129,14 @@ use crate::kassert;
 use crate::kern::kern_sysctl::{
     SYSCTL_LOCK, sysctl_bounded_arr, sysctl_int_bounded, sysctl_rdstruct,
 };
-use crate::kern::kern_task::task_add;
 use crate::kern::subr_prf::panic;
 use crate::kern::uipc_domain::pffindproto;
 use crate::kern::uipc_mbuf::{
-    m_adj, m_copydata, m_free, m_freem, m_get, m_microtime, m_pullup, m_trailingspace, ml_dequeue,
-    mq_delist, mq_enqueue, mq_init,
+    m_adj, m_copydata, m_free, m_freem, m_get, m_microtime, m_pullup, m_trailingspace,
 };
 use crate::kern::uipc_mbuf2::{m_tag_delete, m_tag_find, m_tag_get, m_tag_prepend};
 use crate::kern::uipc_socket2::sbcreatecontrol;
-use crate::machine::intr::IPL_SOFTNET;
-use crate::net::if_::{IFF_LOOPBACK, net_tq, niq_enqueue};
+use crate::net::if_::{IFF_LOOPBACK, niq_enqueue};
 use crate::net::if_types::IFT_ENC;
 use crate::net::if_var::{Ifnet, Netstack, Niqueue, niq_dequeue, sysctl_niq};
 use crate::net::pf::{pf_ouraddr, pf_test};
@@ -184,7 +180,7 @@ use crate::netinet6::in6_proto::{
 };
 use crate::netinet6::in6_var::{IN6_IFF_DUPLICATED, IN6_IFF_TENTATIVE};
 use crate::netinet6::ip6_forward::ip6_forward;
-use crate::netinet6::ip6_output::{ip6_output, ip6_randomid_init};
+use crate::netinet6::ip6_output::ip6_randomid_init;
 use crate::netinet6::ip6_var::{
     IP6S_NCOUNTERS, IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_REDIRECT, Ip6stat,
     Ip6statCounters, ip6stat_inc, ip6stat_inc_idx, mtod_ip6, mtod_ip6_store,
@@ -196,17 +192,14 @@ use crate::sys::limits::INT_MAX;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::m_set_next;
 use crate::sys::mbuf::{
-    M_DONTWAIT, M_EXT, M_LOOP, M_MCAST, MLEN, MT_DATA, Mbuf, MbufList, MbufQueue,
-    PACKET_TAG_IP6_OFFNXT, PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp, mclget,
-    ml_empty, mtod, park, unpark,
+    M_DONTWAIT, M_EXT, M_LOOP, M_MCAST, MLEN, MT_DATA, Mbuf, PACKET_TAG_IP6_OFFNXT,
+    PF_TAG_PROCESSED, PF_TAG_TRANSLATE_LOCALHOST, m_freemp, mclget, mtod, park, unpark,
 };
 use crate::sys::protosw::Protosw;
 use crate::sys::socket::{
     AF_INET6, AF_UNSPEC, PF_INET6, SCM_TIMESTAMP, SO_TIMESTAMP, SOCK_RAW, SOL_SOCKET,
 };
 use crate::sys::sysctl::SysctlBoundedArgs;
-use crate::sys::systm::{net_lock_shared, net_unlock_shared};
-use crate::sys::task::Task;
 use kernel::net::netisr::NETISR_IPV6;
 
 /// The size of the IPv6 header, as the C's `sizeof(struct ip6_hdr)` in offset arithmetic.
@@ -217,12 +210,6 @@ pub static IP6INTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IPV6);
 
 pub use kernel::netinet6::ip6_input::{INET6CTLERRMAP, ip6_lasthdr, ip6_nexthdr};
 pub use kernel::netinet6::ip6_var::IP6COUNTERS;
-
-/// `ip6send_mq`: the packets `ip6_send` queued for `ip6_send_dispatch`.
-static IP6SEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
-
-/// `ip6send_task`.
-static IP6SEND_TASK: Task = Task::new(ip6_send_dispatch, (&raw const IP6SEND_MQ).cast_mut().cast());
 
 /// `ipv6ctl_vars[]`: the bounded integer sysctls of `net.inet6.ip6`.
 static IPV6CTL_VARS: [SysctlBoundedArgs; 13] = [
@@ -272,8 +259,6 @@ pub fn ip6_init() {
     ip6_randomid_init();
     nd6_init();
     frag6_init();
-
-    mq_init(&IP6SEND_MQ, 64, IPL_SOFTNET);
 
     // ip6counters = counters_alloc(ip6s_ncounters): a static (the module's deviations).
     // MROUTING: mrt6_init(); not configured.
@@ -902,7 +887,14 @@ pub fn ip6_process_hopopts(
     plenp: &mut u32,
 ) -> bool {
     let mut k = mp.take().map(unpark);
-    let ok = kernel::netinet6::ip6_input::ip6_process_hopopts(&mut k, off, hbhlen, rtalertp, plenp);
+    let ok = kernel::netinet6::ip6_input::ip6_process_hopopts(
+        &mut k,
+        off,
+        hbhlen,
+        rtalertp,
+        plenp,
+        &crate::net::if_::net_held("ip6_process_hopopts"),
+    );
     *mp = k.map(park);
     ok
 }
@@ -912,7 +904,12 @@ pub fn ip6_process_hopopts(
 /// or an ICMPv6 error sent (`*mp` cleared).
 pub fn ip6_unknown_opt(mp: &mut Option<&'static Mbuf>, ty: u8, off: i32) -> bool {
     let mut k = mp.take().map(unpark);
-    let ok = kernel::netinet6::ip6_input::ip6_unknown_opt(&mut k, ty, off);
+    let ok = kernel::netinet6::ip6_input::ip6_unknown_opt(
+        &mut k,
+        ty,
+        off,
+        &crate::net::if_::net_held("ip6_unknown_opt"),
+    );
     *mp = k.map(park);
     ok
 }
@@ -1215,32 +1212,9 @@ pub fn ip6_sysctl(
     }
 }
 
-/// `ip6_send_dispatch`: `ip6send_task`: sends the packets queued on `xmq` with
-/// `ip6_output`.
-fn ip6_send_dispatch(xmq: *mut c_void) {
-    // SAFETY: the task is initialised with its static queue as the argument.
-    let mq = unsafe { &*xmq.cast::<MbufQueue>() };
-    let ml = MbufList::new();
-
-    mq_delist(mq, &ml);
-    if ml_empty(&ml) {
-        return;
-    }
-
-    net_lock_shared();
-    while let Some(m) = ml_dequeue(&ml) {
-        let _ = ip6_output(m, None, None, 0, None, None);
-    }
-    net_unlock_shared();
-}
-
-/// `ip6_send`: queues `m` for output by `ip6_send_dispatch` (from contexts that cannot
-/// call `ip6_output` directly).
+/// `ip6_send`: the kernel's, of a parked packet.
 pub fn ip6_send(m: &'static Mbuf) {
-    mq_enqueue(&IP6SEND_MQ, m);
-    if let Some(tq) = net_tq(0) {
-        task_add(tq, &IP6SEND_TASK);
-    }
+    kernel::netinet6::ip6_input::ip6_send(unpark(m));
 }
 /* </CODE> */
 
@@ -1366,6 +1340,8 @@ mod tests {
     #[test]
     fn hop_by_hop_options_are_walked() {
         let _g = setup_net();
+        // The kernel's parser answers an option with an ICMPv6 error under the net lock.
+        crate::sys::systm::net_lock();
 
         // Hop-by-hop header (next UDP, 8 bytes): Pad1, router alert (MLD 0x0001), PadN of 0.
         #[rustfmt::skip]
@@ -1412,11 +1388,14 @@ mod tests {
         assert!(!ok);
         assert!(mp.is_none());
         assert_eq!(stat(Ip6statCounters::Ip6sToosmall), toosmall + 1);
+        crate::sys::systm::net_unlock();
     }
 
     #[test]
     fn unknown_option_actions() {
         let _g = setup_net();
+        // The kernel's parser answers an option with an ICMPv6 error under the net lock.
+        crate::sys::systm::net_lock();
         let m = test_packet(&[0x1e, 0]);
         let mut mp = Some(m);
         assert!(ip6_unknown_opt(&mut mp, 0x1e, 42));
@@ -1427,6 +1406,7 @@ mod tests {
         let mut mp = Some(m);
         assert!(!ip6_unknown_opt(&mut mp, 0x7f, 42));
         assert!(mp.is_none());
+        crate::sys::systm::net_unlock();
     }
 
     /// An IPv6 header, a hop-by-hop header (8), destination options (16), a fragment header

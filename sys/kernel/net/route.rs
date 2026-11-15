@@ -3116,25 +3116,27 @@ pub(crate) mod tests {
         crate::netinet::ip_var::IPMULTIPATH.store(i32::from(on), Ordering::Relaxed);
     }
 
-    /// What the tests' legs were given: the ICMPv6 errors' type and code, and their
-    /// parameters.
-    pub(crate) static ICMP6_ERRORS: std::sync::Mutex<Vec<(u8, u8)>> =
-        std::sync::Mutex::new(Vec::new());
-    pub(crate) static ICMP6_PARAMS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
-
-    /// Takes the ICMPv6 errors asked for so far.
+    /// Takes the ICMPv6 errors asked for so far (`icmp6_error`'s record of them).
     pub(crate) fn take_icmp6_errors() -> Vec<(u8, u8)> {
-        core::mem::take(&mut *ICMP6_ERRORS.lock().unwrap_or_else(|e| e.into_inner()))
+        let v = crate::netinet6::icmp6::seen::take();
+        let params = v.iter().map(|e| e.2).collect();
+        *ICMP6_PARAMS.lock().unwrap_or_else(|e| e.into_inner()) = params;
+        v.iter().map(|e| (e.0, e.1)).collect()
     }
 
-    /// Takes the parameters of the ICMPv6 errors asked for so far (the parameter problems'
-    /// offsets).
+    /// The parameters of the ICMPv6 errors the last [`take_icmp6_errors`] took, or asked for
+    /// since (the parameter problems' offsets).
     pub(crate) fn take_icmp6_params() -> Vec<i32> {
-        core::mem::take(&mut *ICMP6_PARAMS.lock().unwrap_or_else(|e| e.into_inner()))
+        let mut v = core::mem::take(&mut *ICMP6_PARAMS.lock().unwrap_or_else(|e| e.into_inner()));
+        v.extend(crate::netinet6::icmp6::seen::take().iter().map(|e| e.2));
+        v
     }
+
+    /// The parameters [`take_icmp6_errors`] took, for [`take_icmp6_params`].
+    static ICMP6_PARAMS: std::sync::Mutex<Vec<i32>> = std::sync::Mutex::new(Vec::new());
 
     /// The internet protocols of the tests: IPv6 multipath on demand, the IPv6 cache counters
-    /// counted, ICMPv6 errors kept, the fragment ids a counter, the net lock's proof lent from
+    /// counted, the fragment ids a counter, the net lock's proof lent from
     /// a test's detached holding (`hal::netlock::lock`).
     struct TestInet {
         hits: AtomicU32,
@@ -3158,17 +3160,6 @@ pub(crate) mod tests {
                 .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1)
                 .max(1)
-        }
-        fn icmp6_error(&self, m: crate::net::mbuf::MbufBox, type_: u8, code: u8, param: i32) {
-            drop(m);
-            ICMP6_ERRORS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push((type_, code));
-            ICMP6_PARAMS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push(param);
         }
         fn with_net_held(&self, f: &mut dyn FnMut(&NetHeld<'_>)) {
             if !hal::netlock::held_detached() {

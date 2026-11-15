@@ -128,9 +128,8 @@ use crate::assert::kpanic;
 use crate::net::if_var::Netstack;
 use crate::net::mbuf::{M_DONTWAIT, Mbuf, MbufBox, m_adj, m_calchdrlen, m_cat, m_split};
 use crate::net::rtable::rtable_l2;
-use crate::netinet6::ip6_input::{
-    icmp6_error, ip6_exthdr_bytes, ip6_exthdr_get, ip6_get_prevhdr, ip6_set_byte,
-};
+use crate::netinet6::icmp6::icmp6_error;
+use crate::netinet6::ip6_input::{ip6_exthdr_bytes, ip6_exthdr_get, ip6_get_prevhdr, ip6_set_byte};
 use crate::netinet6::ip6_output::{ip6_load, ip6_store};
 use crate::netinet6::ip6_var::{
     IP6_MAXFRAGPACKETS, IP6_MAXFRAGS, Ip6asfrag, Ip6asfragList, Ip6q, Ip6qList, ip6stat_add,

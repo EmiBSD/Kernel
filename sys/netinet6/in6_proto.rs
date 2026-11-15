@@ -104,7 +104,7 @@
 //!   names, as `rip_sendspace` is.
 
 use core::mem::{offset_of, size_of};
-use core::sync::atomic::{AtomicI32, AtomicU8};
+use core::sync::atomic::AtomicU8;
 
 use crate::net::if_::net_held;
 use crate::net::if_var::Netstack;
@@ -371,12 +371,9 @@ pub use kernel::netinet6::ip6_var::{
     IP6_MFORWARDING, IP6_MTUDISC_TIMEOUT, IP6_MULTIPATH, IP6_NEIGHBORGCTHRESH, IP6_SENDREDIRECTS,
 };
 
-// ICMPV6 parameters.
+// ICMPV6 parameters: the kernel's (kernel::netinet6::ip6_var).
 
-/// `icmp6_redirtimeout`: cache time for redirect routes, 10 minutes.
-pub static ICMP6_REDIRTIMEOUT: AtomicI32 = AtomicI32::new(10 * 60);
-/// \[a\] `icmp6errppslim`: 100pps.
-pub static ICMP6ERRPPSLIM: AtomicI32 = AtomicI32::new(100);
+pub use kernel::netinet6::ip6_var::{ICMP6_REDIRTIMEOUT, ICMP6ERRPPSLIM};
 /* </CODE> */
 
 /* <TESTS> */

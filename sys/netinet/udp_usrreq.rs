@@ -189,7 +189,6 @@ use crate::netinet6::in6::{SA6_ANY, SockaddrIn6, in6_addr2scopeid, in6_control, 
 use crate::netinet6::in6_pcb::{in6_pcblookup, in6_pcbnotify, in6_peeraddr, in6_sockaddr};
 use crate::netinet6::in6_src::in6_embedscope;
 use crate::netinet6::ip6_input::INET6CTLERRMAP;
-use crate::netinet6::ip6protosw::Ip6ctlparam;
 #[cfg(feature = "inet6")]
 use crate::netinet6::{
     icmp6::icmp6_error,
@@ -219,6 +218,7 @@ use crate::sys::socket::{
 use crate::sys::socketvar::{SB_MAX, SS_CANTRCVMORE, SS_ISCONNECTED, Socket};
 use crate::sys::sysctl::SysctlBoundedArgs;
 use crate::sys::systm::{net_lock, net_lock_shared, net_unlock, net_unlock_shared};
+use kernel::netinet6::icmp6::Ip6CtlParam;
 
 /// `UDB_INITIAL_HASH_SIZE`.
 const UDB_INITIAL_HASH_SIZE: i32 = 128;
@@ -926,33 +926,28 @@ pub unsafe fn udp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
     }
 
     // if the parameter is from icmp6, decode it.
-    let ip6cp: Option<&Ip6ctlparam> = if d.is_null() {
+    let ip6cp: Option<&Ip6CtlParam<'_>> = if d.is_null() {
         None
     } else {
-        // SAFETY: the caller's contract: a non-NULL `d` is the ICMPv6 error's parameter.
-        Some(unsafe { &*d.cast::<Ip6ctlparam>() })
+        // SAFETY: the caller's contract: a non-NULL `d` points at the ICMPv6 error's
+        // `Ip6CtlParam`, alive and read through `&` only for the call (its final destination
+        // a `Cell`).
+        Some(unsafe { &*d.cast::<Ip6CtlParam<'_>>() })
     };
-    let (m, ip6, off, cmdarg) = match ip6cp {
-        Some(p) => (p.ip6c_m, p.ip6c_ip6, p.ip6c_off, p.ip6c_cmdarg),
-        None => {
-            // XXX: translate addresses into internal form
-            let mut sa6 = sa_sin6;
-            if in6_embedscope(&mut sa6.sin6_addr, &sa_sin6, None, None).is_err() {
-                // should be impossible
-                return;
-            }
-            (None, ptr::null_mut(), 0, ptr::null_mut())
+    let cmdarg = ip6cp.and_then(|p| p.cmdarg);
+    if ip6cp.is_none() {
+        // XXX: translate addresses into internal form
+        let mut sa6 = sa_sin6;
+        if in6_embedscope(&mut sa6.sin6_addr, &sa_sin6, None, None).is_err() {
+            // should be impossible
+            return;
         }
-    };
-    let ifidx = m.map_or(0, |m| m.m_pkthdr().ph_ifidx.get());
+    }
+    let ifidx = ip6cp.map_or(0, |p| p.m.m_pkthdr().ph_ifidx.get());
 
     let mut sa6;
-    if let Some(p) = ip6cp
-        && !p.ip6c_finaldst.is_null()
-    {
-        // SAFETY: `icmp6_notify_error` points `ip6c_finaldst` at an address valid for the
-        // call; read unaligned.
-        let finaldst = unsafe { p.ip6c_finaldst.read_unaligned() };
+    if let Some(p) = ip6cp {
+        let finaldst = p.finaldst.get();
         sa6 = SockaddrIn6::with_addr(finaldst);
         // XXX: assuming M is valid in this case
         sa6.sin6_scope_id = in6_addr2scopeid(ifidx, &finaldst) as u32;
@@ -961,8 +956,8 @@ pub unsafe fn udp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
             // should be impossible
             return;
         }
-        // SAFETY: as above; the C embeds the scope into `*ip6c_finaldst` itself.
-        unsafe { p.ip6c_finaldst.write_unaligned(embedded) };
+        // The C embeds the scope into `*ip6c_finaldst` itself.
+        p.finaldst.set(embedded);
     } else {
         // XXX: translate addresses into internal form
         sa6 = sa_sin6;
@@ -972,11 +967,9 @@ pub unsafe fn udp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
         }
     }
 
-    if !ip6.is_null() {
+    if let Some(p) = ip6cp {
         // XXX: We assume that when IPV6 is non NULL, M and OFF are valid.
-        let Some(m) = m else {
-            return;
-        };
+        let (m, off) = (p.m, p.off);
 
         // check if we can safely examine src and dst ports (`struct udp_portonly`)
         if (m.m_pkthdr().len.get() as usize) < off as usize + 2 * size_of::<u16>() {
@@ -988,9 +981,7 @@ pub unsafe fn udp6_ctlinput(cmd: i32, sa: *const Sockaddr, rdomain: u32, d: *mut
         let uh_sport = u16::from_ne_bytes([ports[0], ports[1]]);
         let uh_dport = u16::from_ne_bytes([ports[2], ports[3]]);
 
-        // SAFETY: `ip6c_ip6` points at the quoted IPv6 header inside `m`, alive for the
-        // call; the address is read unaligned.
-        let src = unsafe { ptr::addr_of!((*ip6).ip6_src).read_unaligned() };
+        let src = p.ip6.ip6_src;
         let mut sa6_src = SockaddrIn6::with_addr(src);
         sa6_src.sin6_scope_id = in6_addr2scopeid(ifidx, &src) as u32;
         let scoped = sa6_src;

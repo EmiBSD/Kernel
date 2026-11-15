@@ -361,7 +361,7 @@ pub fn pfctlinput<G: ProcGlue>(cmd: i32, sa: SockaddrView<'_>) {
 
     for dp in net::<G>().domains() {
         for pr in dp.protocols() {
-            pr.ctlinput(cmd, sa, 0, None);
+            pr.ctlinput(cmd, sa, 0, crate::net::proto::CtlArg::None);
         }
     }
 }

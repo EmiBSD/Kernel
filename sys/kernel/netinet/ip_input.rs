@@ -2460,7 +2460,13 @@ pub(crate) mod tests {
         fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
             None
         }
-        fn ctlinput(&self, cmd: i32, _sa: SockaddrView<'_>, _rdomain: u32, _ip: Option<&[u8]>) {
+        fn ctlinput(
+            &self,
+            cmd: i32,
+            _sa: SockaddrView<'_>,
+            _rdomain: u32,
+            _arg: crate::net::proto::CtlArg<'_>,
+        ) {
             self.ctl.store(cmd, Ordering::Relaxed);
         }
         fn input(

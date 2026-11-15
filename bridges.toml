@@ -395,7 +395,7 @@ paid_by = "N8"
 # kernel::net::pf_hooks::Pf
 [[bridge]]
 trait = "Pf"
-for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs"]
+for = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/icmp6.rs"]
 paid_by = "N8"
 
 # bsd: the protocols still in bsd (inet's inetsw[], inet6's, route's, pfkey's), implemented
@@ -409,12 +409,15 @@ paid_by = "N8"
 # message bytes (icmp_input's) and pr_sysctl (bsd's net_sysctl over the kernel's domains[]);
 # inet's domain and its IP, ICMP and IGMP entries are the kernel's since N6.4c2
 # (kernel::netinet::in_proto), bsd's rows the transports, divert, pfsync, IP-in-IP and IPsec.
+# N6.5d: pr_ctlinput's argument typed by family (kernel::net::proto::CtlArg: the IPv4 quote's
+# bytes, the ICMPv6 error's Ip6CtlParam, or none; D-8), bsd's impl handing each family's
+# entry its own argument only, the IPv6 ones the kernel's Ip6CtlParam itself.
 # Paid when pfkeyv2's domain and inetsw[]'s AH/ESP/IPCOMP/IPIP entries, its last legacy
 # implementers, move (N8); inet's transports at N6.6, route's flip at N6.3b.
 # kernel::net::proto::Protocol
 [[bridge]]
 trait = "Protocol"
-for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs"]
+for = ["sys/kernel/net/socket.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet6/icmp6.rs"]
 paid_by = "N8"
 
 # bsd: an interface's driver (if_var.h's procedure handles: if_input, if_enqueue, if_start,
@@ -479,6 +482,8 @@ paid_by = "N7"
 # joined (idgen32 over ip6_output.c's ip6_id_ctx: crypto/idgen.c is bsd's until N8), and the
 # temporary icmp6_error serves the hop-by-hop parser the output path runs (ip6_input.c's
 # ip6_process_hopopts and ip6_unknown_opt, the kernel's since N6.5c) until N6.5d.
+# N6.5d (the kernel's ICMPv6, kernel::netinet6::icmp6): the temporary icmp6_error left (ND,
+# the hop-by-hop parser, reassembly and the routing header call the kernel's).
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones, N6.6a tcp_input_mlist; the row goes at N6.6b.

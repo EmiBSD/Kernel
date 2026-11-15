@@ -45,8 +45,6 @@ pub mod ip6_forward;
 pub mod ip6_input;
 pub mod ip6_output;
 pub mod ip6_var;
-#[forbid(unsafe_code)]
-pub mod ip6protosw;
 pub mod mld6;
 pub mod nd6;
 pub mod raw_ip6;

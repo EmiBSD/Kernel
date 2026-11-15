@@ -123,7 +123,8 @@
 
 use core::mem::{offset_of, size_of};
 
-use hal::netlock::NetHeld;
+use hal::intr::IPL_SOFTNET;
+use hal::netlock::{NETLOCK, NetHeld};
 use hal::sys::errno::Errno;
 use hal::sys::netinet_icmp6::{ICMP6_PARAM_PROB, ICMP6_PARAMPROB_HEADER, ICMP6_PARAMPROB_OPTION};
 use hal::sys::netinet_in::{
@@ -139,13 +140,15 @@ use hal::sys::netinet_ip6::{
 use hal::sys::netinet6_in6::in6_is_addr_multicast;
 use hal::sys::netinet6_ip6_var::Ip6statCounters;
 
-use crate::net::if_::inet;
 use crate::net::mbuf::{
     M_BCAST, M_DONTWAIT, M_MCAST, M_PKTHDR, Mbuf, MbufBox, m_copyback, m_copydata,
 };
+use crate::net::mbuf::{MbufQueue, ml_dequeue, ml_empty, mq_delist, mq_enqueue};
 use crate::net::mbuf2::m_pulldown;
 use crate::net::proto::PRC_NCMDS;
+use crate::netinet6::icmp6::icmp6_error;
 use crate::netinet6::ip6_var::ip6stat_inc;
+use crate::task::{Task, task_add};
 
 /// `sizeof(struct ip6_hdr)`.
 const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
@@ -190,25 +193,6 @@ fn bytes_at<const N: usize>(m: &Mbuf, off: i32) -> Option<[u8; N]> {
     let mut b = [0u8; N];
     m_copydata(m, off, &mut b);
     Some(b)
-}
-
-/// `icmp6_error(m, type, code, param)` through the temporary leg (the module's deviations);
-/// the packet freed without it. `net` is the caller's net lock, which the kernel's ICMPv6
-/// takes once it moves (N6.5d's next step).
-pub(crate) fn icmp6_error(m: MbufBox, type_: u8, code: u8, param: i32, _net: &NetHeld<'_>) {
-    match inet() {
-        Some(i) => i.icmp6_error(m, type_, code, param),
-        None => drop(m),
-    }
-}
-
-/// `icmp6_error` of the output path's hop-by-hop parser, which has no proof of the net lock
-/// at hand (the caller holds it): through the temporary leg as [`icmp6_error`].
-fn icmp6_error_noproof(m: MbufBox, type_: u8, code: u8, param: i32) {
-    match inet() {
-        Some(i) => i.icmp6_error(m, type_, code, param),
-        None => drop(m),
-    }
 }
 
 /// `ip6_exthdr_get(&m, off, len)` (`<netinet/ip6.h>`): the `len` bytes at `off` of `m` made
@@ -264,6 +248,34 @@ pub fn ip6_set_byte(m: &mut Mbuf, off: i32, v: u8) -> bool {
     m_copyback(p, off as i32, &[v], M_DONTWAIT).is_ok()
 }
 
+/// The bytes at offset `off` of the packet set to `v` (headers the C writes in place through a
+/// pointer into the packet), in the mbuf of the chain that holds `off`, found as
+/// [`ip6_set_byte`] finds it; bytes that run past that mbuf, or a read-only one (a shared
+/// cluster, which the C writes anyway), go through `m_copyback` from that mbuf on (`off` is
+/// inside it: no copy of the mbuf before). `false` when the packet does not hold them or no
+/// buffer can be had.
+#[must_use]
+pub fn ip6_set_bytes(m: &mut Mbuf, off: i32, v: &[u8]) -> bool {
+    let Ok(mut off) = usize::try_from(off) else {
+        return false;
+    };
+    let mut p = m;
+    while off >= p.m_len().get() as usize {
+        off -= p.m_len().get() as usize;
+        p = match p.m_next.get_mut() {
+            Some(n) => n,
+            None => return false,
+        };
+    }
+    if let Some(d) = p.data_mut()
+        && let Some(dst) = d.get_mut(off..off + v.len())
+    {
+        dst.copy_from_slice(v);
+        return true;
+    }
+    m_copyback(p, off as i32, v, M_DONTWAIT).is_ok()
+}
+
 /// `ip6_hopopts_input`'s second half, `ip6_process_hopopts(mp, opthead, hbhlen, rtalertp,
 /// plenp)`: searches the `hbhlen` bytes of hop-by-hop options at offset `off` of the packet
 /// `*mp` (the C's `opthead`) and processes each option (the router alert into `rtalertp`, the
@@ -279,6 +291,7 @@ pub fn ip6_process_hopopts(
     hbhlen: i32,
     rtalertp: &mut u32,
     plenp: &mut u32,
+    net: &NetHeld<'_>,
 ) -> bool {
     let mut hbhlen = hbhlen;
     // `opt - opthead`: the current option's offset among the options.
@@ -323,11 +336,12 @@ pub fn ip6_process_hopopts(
                 if usize::from(len) != IP6OPT_RTALERT_LEN - 2 {
                     // XXX stat
                     if let Some(m) = mp.take() {
-                        icmp6_error_noproof(
+                        icmp6_error(
                             m,
                             ICMP6_PARAM_PROB,
                             ICMP6_PARAMPROB_HEADER,
                             HBH_ERROFF + i + 1,
+                            net,
                         );
                     }
                     return false;
@@ -346,11 +360,12 @@ pub fn ip6_process_hopopts(
                 if usize::from(len) != IP6OPT_JUMBO_LEN - 2 {
                     // XXX stat
                     if let Some(m) = mp.take() {
-                        icmp6_error_noproof(
+                        icmp6_error(
                             m,
                             ICMP6_PARAM_PROB,
                             ICMP6_PARAMPROB_HEADER,
                             HBH_ERROFF + i + 1,
+                            net,
                         );
                     }
                     return false;
@@ -367,11 +382,12 @@ pub fn ip6_process_hopopts(
                 };
                 if plen != 0 {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error_noproof(
+                    icmp6_error(
                         m,
                         ICMP6_PARAM_PROB,
                         ICMP6_PARAMPROB_HEADER,
                         HBH_ERROFF + i,
+                        net,
                     );
                     return false;
                 }
@@ -385,11 +401,12 @@ pub fn ip6_process_hopopts(
                 // specification.
                 if *plenp != 0 {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error_noproof(
+                    icmp6_error(
                         m,
                         ICMP6_PARAM_PROB,
                         ICMP6_PARAMPROB_HEADER,
                         HBH_ERROFF + i + 2,
+                        net,
                     );
                     return false;
                 }
@@ -397,11 +414,12 @@ pub fn ip6_process_hopopts(
                 // jumbo payload length must be larger than 65535.
                 if jumboplen as usize <= IPV6_MAXPACKET {
                     ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
-                    icmp6_error_noproof(
+                    icmp6_error(
                         m,
                         ICMP6_PARAM_PROB,
                         ICMP6_PARAMPROB_HEADER,
                         HBH_ERROFF + i + 2,
+                        net,
                     );
                     return false;
                 }
@@ -417,7 +435,7 @@ pub fn ip6_process_hopopts(
                     return false;
                 }
                 let [ty, len] = opt!(2);
-                if !ip6_unknown_opt(mp, ty, HBH_ERROFF + i) {
+                if !ip6_unknown_opt(mp, ty, HBH_ERROFF + i, net) {
                     return false;
                 }
                 i32::from(len) + 2
@@ -445,7 +463,7 @@ fn kpanic_short() -> ! {
 /// which allows returning an ICMPv6 error even if the IPv6 header and the option header are
 /// not continuous. `true` to skip the option (the C returns its length), `false` when the
 /// packet was dropped or an ICMPv6 error sent (the C's -1, `*mp` cleared).
-pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
+pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32, net: &NetHeld<'_>) -> bool {
     match ip6opt_type(ty) {
         // ignore the option
         IP6OPT_TYPE_SKIP => true,
@@ -458,7 +476,7 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
         IP6OPT_TYPE_FORCEICMP => {
             ip6stat_inc(Ip6statCounters::Ip6sBadoptions);
             if let Some(m) = mp.take() {
-                icmp6_error_noproof(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
+                icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off, net);
             }
             false
         }
@@ -473,7 +491,7 @@ pub fn ip6_unknown_opt(mp: &mut Option<MbufBox>, ty: u8, off: i32) -> bool {
                 if mcast || m.flags() & (M_BCAST | M_MCAST) != 0 {
                     drop(m);
                 } else {
-                    icmp6_error_noproof(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off);
+                    icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_OPTION, off, net);
                 }
             }
             false
@@ -593,6 +611,48 @@ pub fn ip6_lasthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32
         proto = *nxtp;
     }
 }
+/// `ip6send_mq`: the packets `ip6_send` queued for `ip6send_task`.
+static IP6SEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
+/// `ip6send_task` (its function names its queue: no argument).
+static IP6SEND_TASK: Task = Task::new(ip6_send_dispatch, core::ptr::null_mut());
+
+/// `ip6_send_dispatch(xmq)`: `ip6send_task`: sends the packets queued with `ip6_output`, under
+/// the shared net lock.
+fn ip6_send_dispatch(_xmq: *mut core::ffi::c_void) {
+    let mut ml = mq_delist(&IP6SEND_MQ);
+    if ml_empty(&ml) {
+        return;
+    }
+
+    let shared = NETLOCK.read();
+    let Some(net) = NetHeld::of(&shared) else {
+        crate::assert::kpanic(format_args!("ip6_send: the net lock"));
+    };
+    while let Some(m) = ml_dequeue(&mut ml) {
+        let _ = crate::netinet6::ip6_output::ip6_output(m, None, None, 0, None, None, &net);
+    }
+}
+
+/// `ip6_send(m)`: queues `m` for `ip6_output` from the softnet task (ICMPv6's replies and
+/// errors, made where `ip6_output` cannot be called).
+pub fn ip6_send(m: MbufBox) {
+    let _ = mq_enqueue(&IP6SEND_MQ, m);
+    if let Some(tq) = crate::net::if_::net_tq(0) {
+        let _ = task_add(tq, core::pin::Pin::static_ref(&IP6SEND_TASK));
+    }
+}
+
+/// The packets `ip6_send` queued, taken (the host tests look at what ICMPv6 sent).
+#[cfg(any(test, feature = "doubles"))]
+pub fn ip6_send_test_take() -> crate::net::mbuf::MbufList {
+    mq_delist(&IP6SEND_MQ)
+}
+
+/// The send queue forgotten for the host tests (its packets live in an earlier test's memory).
+#[cfg(any(test, feature = "doubles"))]
+pub fn ip6_test_reset() {
+    core::mem::forget(mq_delist(&IP6SEND_MQ));
+}
 /* </CODE> */
 
 /* <TESTS> */
@@ -652,12 +712,15 @@ mod tests {
         rest.extend_from_slice(&[0; 8]);
         let mut mp = Some(packet(IPPROTO_HOPOPTS, plen, dst, &rest));
         let (mut rtalert, mut jumbo) = (!0, 0);
+        let r = hal::netlock::NETLOCK.read();
+        let net = NetHeld::of(&r).expect("the net lock");
         let ok = ip6_process_hopopts(
             &mut mp,
             HBH_ERROFF,
             opts.len() as i32,
             &mut rtalert,
             &mut jumbo,
+            &net,
         );
         (ok, rtalert, jumbo, mp.is_some())
     }
@@ -815,10 +878,12 @@ mod tests {
     fn unknown_option_actions() {
         let _g = testroutes_setup();
         let mut mp = Some(packet(IPPROTO_UDP, 0, ula(2), &[0x1e, 0]));
-        assert!(ip6_unknown_opt(&mut mp, 0x1e, 42));
+        let r = hal::netlock::NETLOCK.read();
+        let net = NetHeld::of(&r).expect("the net lock");
+        assert!(ip6_unknown_opt(&mut mp, 0x1e, 42, &net));
         assert!(mp.is_some());
 
-        assert!(!ip6_unknown_opt(&mut mp, 0x7f, 42));
+        assert!(!ip6_unknown_opt(&mut mp, 0x7f, 42, &net));
         assert!(mp.is_none());
     }
 

@@ -85,7 +85,7 @@ pub fn dest6_input(
     _proto: i32,
     _af: i32,
     _ns: Option<&mut Netstack>,
-    _net: &NetHeld<'_>,
+    net: &NetHeld<'_>,
 ) -> i32 {
     let Some(m) = mp.take() else {
         return IPPROTO_DONE;
@@ -133,7 +133,7 @@ pub fn dest6_input(
             IP6OPT_PADN => usize::from(olen.unwrap_or(0)) + 2,
             // unknown option
             _ => {
-                if !ip6_unknown_opt(&mut mp_, ty, *offp + i as i32) {
+                if !ip6_unknown_opt(&mut mp_, ty, *offp + i as i32, net) {
                     return IPPROTO_DONE;
                 }
                 usize::from(olen.unwrap_or(0)) + 2

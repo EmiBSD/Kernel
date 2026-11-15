@@ -428,12 +428,6 @@ pub trait Inet: Sync + 'static {
     /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
     /// the kernel's `ip6_fragment` (N6.5c).
     fn ip6_randomid(&self) -> u32;
-    /// `icmp6_error(m, type, code, param)`: an ICMPv6 error about `m` (consumed), ND's for the
-    /// packets an unresolved neighbor held (`nd6_llinfo_timer`'s; N6.5b, until ICMPv6 moves at
-    /// N6.5d). Default: the packet freed (no `INET6`).
-    fn icmp6_error(&self, m: MbufBox, _type: u8, _code: u8, _param: i32) {
-        drop(m);
-    }
     /// `atomic_load_int(&ip6_multipath)` (`net.inet6.ip6.multipath`). Default: off.
     fn ip6_multipath(&self) -> bool {
         false
@@ -4445,6 +4439,8 @@ pub(crate) mod tests {
         crate::netinet6::nd6::nd6_test_reset();
         crate::netinet6::nd6_nbr::dad_test_reset();
         crate::netinet6::frag6::frag6_test_reset();
+        crate::netinet6::icmp6::icmp6_test_reset();
+        crate::netinet6::ip6_input::ip6_test_reset();
         g
     }
 
