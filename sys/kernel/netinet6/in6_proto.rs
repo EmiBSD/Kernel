@@ -586,6 +586,11 @@ pub(crate) mod testsw6 {
         pub(crate) ctl6_off: AtomicI32,
         /// The last `CtlArg::Ip6`'s final destination (`*ip6c_finaldst`).
         pub(crate) ctl6_finaldst: std::sync::Mutex<[u8; 16]>,
+        /// A final destination to give the next `CtlArg::Ip6` back (`udp6_ctlinput`'s
+        /// embedded zone, written through `ip6c_finaldst`), taken when used.
+        pub(crate) ctl6_rewrite: std::sync::Mutex<Option<[u8; 16]>>,
+        /// The bytes of the last packet given.
+        pub(crate) last: std::sync::Mutex<std::vec::Vec<u8>>,
     }
 
     impl Row6 {
@@ -601,6 +606,8 @@ pub(crate) mod testsw6 {
                 ctl6_cmdarg: AtomicU32::new(0),
                 ctl6_off: AtomicI32::new(-1),
                 ctl6_finaldst: std::sync::Mutex::new([0; 16]),
+                ctl6_rewrite: std::sync::Mutex::new(None),
+                last: std::sync::Mutex::new(std::vec::Vec::new()),
             }
         }
 
@@ -705,6 +712,15 @@ pub(crate) mod testsw6 {
                 self.ctl6_off.store(p.off, Ordering::Relaxed);
                 *self.ctl6_finaldst.lock().unwrap_or_else(|e| e.into_inner()) =
                     p.finaldst.get().s6_addr;
+                let rewrite = self
+                    .ctl6_rewrite
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some(a) = rewrite {
+                    p.finaldst
+                        .set(hal::sys::netinet6_in6::In6Addr { s6_addr: a });
+                }
             }
         }
         fn has_ctloutput(&self) -> bool {
@@ -720,7 +736,11 @@ pub(crate) mod testsw6 {
             _net: &NetHeld<'_>,
         ) -> i32 {
             self.inputs.fetch_add(1, Ordering::Relaxed);
-            drop(mp.take());
+            if let Some(m) = mp.take() {
+                let mut b = std::vec![0u8; m.m_pkthdr().len.get() as usize];
+                crate::net::mbuf::m_copydata(&m, 0, &mut b);
+                *self.last.lock().unwrap_or_else(|e| e.into_inner()) = b;
+            }
             IPPROTO_DONE
         }
     }

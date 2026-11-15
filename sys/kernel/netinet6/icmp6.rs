@@ -178,8 +178,9 @@
 //!   locals, read by `bsd`'s IPv6 `pr_ctlinput`s and `icmp6_mtudisc_update` through
 //!   `unsafe`) -> [`Ip6CtlParam`]: the message by reference (`m`), the ICMPv6 and quoted IPv6
 //!   headers and the source by value, the final destination a `Cell` (`udp6_ctlinput` embeds
-//!   its zone, as the C writes `*ip6c_finaldst`; written back into the packet when it is the
-//!   quoted header's own destination, as the C's pointer is), the command's argument an
+//!   its zone, as the C writes `*ip6c_finaldst`; written back into the packet where the C's
+//!   pointer points, the quoted header's destination or a type 0 routing header's last
+//!   address, through `ip6_set_bytes` into the mbuf that holds it), the command's argument an
 //!   `Option<u32>` (the C's `void *` to `notifymtu`). It reaches a protocol through
 //!   `Protocol::ctlinput`'s `CtlArg::Ip6` (D-8; `kernel::net::proto`); `bsd`'s IPv6
 //!   `pr_ctlinput`s read the kernel's type (their one cast of `d`).
@@ -999,6 +1000,9 @@ fn icmp6_notify_error<G: ProcGlue>(
     let mut nxt = eip6.ip6_nxt;
     let mut eoff = off + HDRS as i32;
     let mut finaldst: Option<In6Addr> = None;
+    // Where the final destination is in the packet (the C's `finaldst` pointer): the quoted
+    // header's destination, or the last address of a type 0 routing header.
+    let mut finaldst_at = off + (ICMP6_HDR_LEN + offset_of!(Ip6Hdr, ip6_dst)) as i32;
 
     // XXX: should avoid infinite loop explicitly?
     loop {
@@ -1037,10 +1041,9 @@ fn icmp6_notify_error<G: ProcGlue>(
                     if len % 2 == 0 && hops != 0 {
                         // The header is `rthlen` = 8 + 16 * hops bytes long, so the last of
                         // its `hops` addresses lies inside it.
-                        finaldst = pod::at::<In6Addr>(
-                            rth0,
-                            size_of::<Ip6Rthdr0>() + (hops - 1) * size_of::<In6Addr>(),
-                        );
+                        let at = size_of::<Ip6Rthdr0>() + (hops - 1) * size_of::<In6Addr>();
+                        finaldst = pod::at::<In6Addr>(rth0, at);
+                        finaldst_at = eoff + at as i32;
                     }
                 }
                 eoff += rthlen;
@@ -1105,10 +1108,10 @@ fn icmp6_notify_error<G: ProcGlue>(
         p.pkt_addr_changed(&m);
     }
 
-    // The quoted header's destination is the final one unless a routing header named
-    // another: then the protocols' changes of it are written back where it is (the C's
-    // `finaldst = &eip6->ip6_dst`).
-    let in_packet = finaldst.is_none();
+    // The final destination is the quoted header's unless a type 0 routing header named
+    // another (the C's `finaldst = &eip6->ip6_dst` or the pointer into the routing header):
+    // the protocols' change of it (`udp6_ctlinput`'s embedded zone) is written back where it
+    // is in the packet, which the raw sockets then get.
     let finaldst0 = finaldst.unwrap_or(eip6.ip6_dst);
     let ip6cp = Ip6CtlParam {
         m: &m,
@@ -1133,9 +1136,11 @@ fn icmp6_notify_error<G: ProcGlue>(
     }
     let fd = ip6cp.finaldst.get();
     let mut m = m;
-    if in_packet && fd != finaldst0 {
-        let at = off + (ICMP6_HDR_LEN + offset_of!(Ip6Hdr, ip6_dst)) as i32;
-        if !ip6_set_bytes(&mut m, at, &fd.s6_addr) {
+    if fd != finaldst0 {
+        // The bytes are inside the region ip6_exthdr_get made contiguous (the quoted header,
+        // or the routing header's rthlen): ip6_set_bytes writes them in the mbuf that holds
+        // them.
+        if !ip6_set_bytes(&mut m, finaldst_at, &fd.s6_addr) {
             icmp6stat_inc(Icmp6statCounters::Icp6sTooshort);
             return None;
         }
@@ -2882,6 +2887,55 @@ pub(crate) mod tests {
                 None => assert_eq!(UDP6.ctl.load(Ordering::Relaxed), 0, "{case}"),
             }
         }
+    }
+
+    #[test]
+    fn a_protocol_s_final_destination_is_written_back_where_it_is() {
+        use crate::netinet6::in6_proto::testsw6::{RAW6, UDP6, install};
+        let (_g, ifp) = net6();
+        install();
+        let raw_bytes = || RAW6.last.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let rewrite = |a: In6Addr| {
+            *UDP6.ctl6_rewrite.lock().unwrap_or_else(|e| e.into_inner()) = Some(a.s6_addr);
+        };
+        // What udp6_ctlinput's in6_embedscope may write through ip6c_finaldst: a zone in the
+        // address's second word.
+        let zoned = |a: In6Addr| {
+            let mut z = a;
+            z.s6_addr[2..4].copy_from_slice(&9u16.to_be_bytes());
+            z
+        };
+        // In the packet the raw sockets get: the outer header, the ICMPv6 header, then the
+        // quoted header (its destination at 24) and its routing header (the first address 8
+        // into it).
+        const QDST: usize = 40 + 8 + 24;
+        const RH0_ADDR: usize = 40 + 8 + 40 + 8;
+        let mut f1 = ours6();
+        f1.s6_addr[15] = 0x91;
+
+        // A type 0 routing header with a segment left: the C's ip6c_finaldst points at its
+        // address, which takes the change; the quoted destination keeps its own.
+        rewrite(zoned(f1));
+        let m = unreach_quoting(ifp, peer6(), IPPROTO_ROUTING, &rthdr(0, 1, &[f1], None));
+        assert_eq!(input(m), IPPROTO_DONE);
+        let b = raw_bytes();
+        assert_eq!(&b[RH0_ADDR..RH0_ADDR + 16], &zoned(f1).s6_addr);
+        assert_eq!(&b[QDST..QDST + 16], &peer6().s6_addr);
+
+        // Without one: the quoted header's destination takes it.
+        rewrite(zoned(peer6()));
+        assert_eq!(
+            input(unreach_quoting(ifp, peer6(), IPPROTO_UDP, &[])),
+            IPPROTO_DONE
+        );
+        assert_eq!(&raw_bytes()[QDST..QDST + 16], &zoned(peer6()).s6_addr);
+
+        // A protocol that changes nothing: the packet as it was quoted.
+        let m = unreach_quoting(ifp, peer6(), IPPROTO_ROUTING, &rthdr(0, 1, &[f1], None));
+        assert_eq!(input(m), IPPROTO_DONE);
+        let b = raw_bytes();
+        assert_eq!(&b[RH0_ADDR..RH0_ADDR + 16], &f1.s6_addr);
+        assert_eq!(&b[QDST..QDST + 16], &peer6().s6_addr);
     }
 }
 /* </TESTS> */
