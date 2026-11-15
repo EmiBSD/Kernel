@@ -2050,6 +2050,7 @@ pub(crate) mod tests {
         IFF_BROADCAST, IFF_MULTICAST, IFF_RUNNING, IFF_SIMPLEX, IFF_UP, IFNAMSIZ, IFT_LOOP,
         IFXF_MPSAFE,
     };
+    use hal::sys::net_route::{RTF_UP, RTP_STATIC};
     use hal::sys::netinet_icmp6::{
         ND_NA_FLAG_OVERRIDE, ND_NA_FLAG_SOLICITED, ND_NEIGHBOR_ADVERT, NdNeighborAdvert,
     };
@@ -3309,6 +3310,166 @@ pub(crate) mod tests {
         assert_eq!(nd6_ifptomac(bare), None);
         bare.if_type.set(IFT_LOOP);
         assert_eq!(nd6_ifptomac(bare), None);
+    }
+
+    /// Puts `ip6_neighborgcthresh` back when dropped, a failed assertion included.
+    struct GcThresh(i32);
+
+    impl Drop for GcThresh {
+        fn drop(&mut self) {
+            IP6_NEIGHBORGCTHRESH.store(self.0, Ordering::Relaxed);
+        }
+    }
+
+    /// The records on `nd6_list`, head first: their route's key, state and permanence.
+    fn nd6_list_now() -> Vec<(In6Addr, i16, bool)> {
+        let g = ND6_MTX.lock();
+        ND6_LIST
+            .iter(&g)
+            .filter(|ln| ln.ln_rt.is_some())
+            .map(|ln| {
+                let key = ln.ln_rt.as_ref().map(|rt| rt_key_in6(rt));
+                (key.unwrap_or_default(), ln.ln_state.get(), ln.permanent())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn too_many_entries_age_the_least_recently_used_at_once() {
+        // nd6.c:812-833: past ip6_neighborgcthresh, nd6_rtrequest moves up to ten records from
+        // the list's tail to its head (PinList::move_last_to_head), ages each one that is not
+        // permanent (STALE past INCOMPLETE, else PURGE) with its timer at once, and stops at
+        // the new one; the next nd6_timer frees them.
+        let _g = setup();
+        let ifp = ether(b"ndg0");
+        dad_done(ifp);
+        let (a, b, c) = (a6("fd00:77::10"), a6("fd00:77::11"), a6("fd00:77::12"));
+        let rta = route6(a, true).expect("a");
+        assert_eq!(resolve(ifp, &rta, a), Err(Errno::EAGAIN));
+        let rtb = route6(b, true).expect("b");
+        assert_eq!(resolve(ifp, &rtb, b), Err(Errno::EAGAIN));
+        advertise(
+            ifp,
+            b,
+            ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE,
+            Some(PEER),
+        );
+        assert_eq!(nd6_entry(&rta).expect("a").0, ND6_LLINFO_INCOMPLETE);
+        assert_eq!(nd6_entry(&rtb).expect("b").0, ND6_LLINFO_REACHABLE);
+        let _ = take_ip6_sent();
+        let _ = sent(ifp);
+        let before = nd6_list_now();
+        let n = before.len();
+        assert_eq!((before[0].0, before[1].0), (b, a), "the newest first");
+        assert!(before[2..].iter().all(|e| e.2), "then our own, permanent");
+
+        // The next record reaches the threshold.
+        let _restore = GcThresh(IP6_NEIGHBORGCTHRESH.load(Ordering::Relaxed));
+        let inuse = *ND6_MTX.lock();
+        IP6_NEIGHBORGCTHRESH.store(inuse + 1, Ordering::Relaxed);
+        let rtc = route6(c, true).expect("c");
+        let after = nd6_list_now();
+        assert_eq!(after.len(), n + 1);
+        // Every older record went from the tail to the head, so their order is kept and the
+        // new one is last; the walk stopped there.
+        let keys: Vec<In6Addr> = after.iter().map(|e| e.0).collect();
+        let mut want: Vec<In6Addr> = before.iter().map(|e| e.0).collect();
+        want.push(c);
+        assert_eq!(keys, want);
+        let now = TIME_UPTIME.load(Ordering::Relaxed);
+        assert_eq!(nd6_entry(&rta).expect("a").0, ND6_LLINFO_PURGE);
+        assert_eq!(nd6_entry(&rtb).expect("b").0, ND6_LLINFO_STALE);
+        assert_eq!((rta.rt_expire().get(), rtb.rt_expire().get()), (now, now));
+        assert_eq!(nd6_entry(&rtc).expect("c").0, ND6_LLINFO_NOSTATE);
+        for (e, was) in after[2..n].iter().zip(&before[2..]) {
+            assert_eq!(e, was, "a permanent record rotated, untouched");
+        }
+
+        // The next timer frees the two aged ones.
+        tick(now + 1);
+        assert!(nd6_entry(&rta).is_none());
+        assert!(nd6_entry(&rtb).is_none());
+        assert_eq!(nd6_entry(&rtc).expect("c").0, ND6_LLINFO_NOSTATE);
+        assert_eq!(nd6_list_now().len(), n - 1);
+        let _ = take_icmp6_errors();
+    }
+
+    #[test]
+    fn a_proxied_address_is_answered_for_and_its_group_joined_then_left() {
+        // nd6_rtrequest's proxy ND (nd6.c:855-862, :886-899): a published host route joins
+        // the address's solicited-node group, a solicitation for it is answered with the
+        // route's link-layer address, and its deletion leaves the group, reading the group's
+        // record under if_maddrlock (in6_lookupmulti's assertion, the module's deviation) and
+        // letting the lock go.
+        const PROXIED: [u8; 6] = [0x52, 0x54, 0x00, 0xbb, 0x00, 0x77];
+        let _g = setup();
+        let ifp = ether(b"ndp0");
+        dad_done(ifp);
+        // The proxy answers from the link-local address (nd6_nbr.c:203-214): its DAD done too.
+        let ll = crate::netinet6::in6::in6ifa_ifpforlinklocal(ifp, 0).expect("link-local");
+        while dad_counts(&ll.ia_ifa).is_some() {
+            dad_fire(&ll.ia_ifa);
+        }
+        dad_reap();
+        let pub6 = a6("fd00:77::50");
+        let llsol = solicited_node(ifp, pub6);
+        let joined = |a: In6Addr| {
+            let lock = &ifp.rt().if_maddrlock;
+            let _ = lock.enter(RW_READ);
+            let r = in6_lookupmulti(&a, ifp).is_some();
+            lock.exit();
+            r
+        };
+        assert!(!joined(llsol));
+
+        // ndp -s fd00:77::50 52:54:00:bb:00:77 proxy
+        let dst = sin6_bytes(&pub6);
+        let mut gw = [0u8; size_of::<SockaddrDl>()];
+        gw[0] = gw.len() as u8;
+        gw[1] = AF_LINK;
+        gw[2..4].copy_from_slice(&(ifp.if_index.get() as u16).to_ne_bytes());
+        gw[4] = ifp.if_type.get();
+        gw[6] = 6;
+        gw[8..14].copy_from_slice(&PROXIED);
+        let mut info = RtAddrinfo::new();
+        info.rti_info[RTAX_DST] = SockaddrView::new(&dst);
+        info.rti_info[RTAX_GATEWAY] = SockaddrView::new(&gw);
+        info.rti_flags = RTF_HOST | RTF_LLINFO | RTF_STATIC | RTF_ANNOUNCE | RTF_UP;
+        info.rti_ifa = route6(ours6(), false).and_then(|r| r.ifa());
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            rtrequest(RTM_ADD, &mut info, RTP_STATIC, None, 0, &net).expect("the entry");
+        }
+        assert!(joined(llsol), "the solicited-node group joined");
+        let rt = route6(pub6, false).expect("the published route");
+        assert!(rt.rt_flags.isset(RTF_ANNOUNCE) && rt.rt_llinfo.is_b());
+        assert_eq!(nd6_entry(&rt).expect("its entry").0, ND6_LLINFO_REACHABLE);
+        assert_eq!(rt.rt_expire().get(), 0, "for good");
+        let _ = take_ip6_sent();
+
+        // A solicitation for it: answered for, solicited, no override (a proxy's), the
+        // route's link-layer address in the target option.
+        solicit(ifp, peer6(), llsol, pub6, Some(PEER));
+        let na = take_ip6_sent();
+        assert_eq!(na.len(), 1);
+        assert_eq!(nd_sent(&na[0].bytes), (ND_NEIGHBOR_ADVERT, peer6(), pub6));
+        let adv = pod::at::<NdNeighborAdvert>(&na[0].bytes, IP6_HDR_LEN).expect("the NA");
+        assert_eq!(adv.nd_na_flags_reserved(), ND_NA_FLAG_SOLICITED);
+        assert_eq!(&na[0].bytes[64..66], &[ND_OPT_TARGET_LINKADDR, 1]);
+        assert_eq!(&na[0].bytes[66..72], &PROXIED);
+
+        // Deleted: the group left, the interface's multicast lock free again.
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock");
+            rtdeletemsg(&rt, ifp, 0, &net).expect("deleted");
+        }
+        assert!(!joined(llsol), "the solicited-node group left");
+        assert_eq!(ifp.rt().if_maddrlock.status(), 0, "if_maddrlock let go");
+        assert!(nd6_entry(&rt).is_none());
+        let _ = take_ip6_sent();
+        let _ = sent(ifp);
     }
 
     #[test]
