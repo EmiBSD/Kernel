@@ -1817,7 +1817,7 @@ pub(crate) mod tests {
 
     use crate::kern::kern_tc::TIME_UPTIME;
     use crate::kern::uipc_mbuf::m_freem;
-    use crate::net::if_::tests::{test_packet, zeroed_static};
+    use crate::net::if_::tests::test_packet;
     use crate::net::if_::{IFF_RUNNING, IFF_UP};
     use crate::net::route::RTF_HOST;
     use crate::netinet::icmp6::Icmp6statCounters;
@@ -1835,7 +1835,7 @@ pub(crate) mod tests {
 
     /// The value of an ICMPv6 counter.
     pub(crate) fn icmp6stat(c: Icmp6statCounters) -> u64 {
-        ICMP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[c as usize]
     }
 
     /// The packets [`capture_output`] took: the destination's family and the bytes.
@@ -1888,16 +1888,11 @@ pub(crate) mod tests {
         (g, ifp)
     }
 
-    /// An inet6 address `addr` of `ifp` (not on its list), referenced once.
+    /// An inet6 address `addr` of `ifp` (not on its list), referenced once: the kernel's
+    /// record (`in6_ifaddr_alloc`).
     pub(crate) fn fake_ifa6(ifp: &'static Ifnet, addr: In6Addr) -> &'static In6Ifaddr {
-        // SAFETY: the all-zero `In6Ifaddr` is valid (`malloc(M_ZERO)` in C).
-        let ia: &'static In6Ifaddr = unsafe { zeroed_static() };
+        let ia = crate::netinet6::in6_var::in6_ifaddr_alloc(ifp, 0);
         ia.ia_addr.set(SockaddrIn6::with_addr(addr));
-        ia.ia_ifa
-            .ifa_addr
-            .set(crate::net::if_var::sa_token(), Some(&ia.ia_addr));
-        ia.ia_ifa.ifa_ifp.set(Some(ifp));
-        ia.ia_ifa.ifa_refcnt.init();
         ia
     }
 

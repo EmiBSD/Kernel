@@ -190,7 +190,7 @@ use crate::netinet6::in6_pcb::{
 };
 use crate::netinet6::in6_proto::{RIP6_RECVSPACE, RIP6_SENDSPACE};
 use crate::netinet6::in6_src::{in6_embedscope, in6_pcbselsrc, in6_recoverscope, in6_selecthlim};
-use crate::netinet6::ip6_input::{INET6CTLERRMAP, IP6COUNTERS, ip6_get_prevhdr, ip6_savecontrol};
+use crate::netinet6::ip6_input::{INET6CTLERRMAP, ip6_get_prevhdr, ip6_savecontrol};
 use crate::netinet6::ip6_output::{
     ip6_clearpktopts, ip6_ctloutput, ip6_output, ip6_raw_ctloutput, ip6_setpktopts,
 };
@@ -449,7 +449,7 @@ pub fn rip6_input(
 
             icmp6_error(m, ICMP6_PARAM_PROB, ICMP6_PARAMPROB_NEXTHEADER, prvnxt);
         }
-        IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize].fetch_sub(1, Ordering::Relaxed);
+        crate::netinet6::ip6_var::ip6stat_dec(Ip6statCounters::Ip6sDelivered);
 
         return IPPROTO_DONE;
     };
@@ -1139,8 +1139,9 @@ mod tests {
         soclose(other, 0).expect("close");
 
         // Without a socket, ICMPv6 is dropped and not counted as delivered.
-        let delivered =
-            || IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize].load(Ordering::Relaxed);
+        let delivered = || {
+            crate::netinet6::ip6_input::IP6COUNTERS.read()[Ip6statCounters::Ip6sDelivered as usize]
+        };
         let d = delivered();
         deliver(packet(IPPROTO_ICMPV6 as u8, &request), IPPROTO_ICMPV6);
         assert_eq!(delivered(), d.wrapping_sub(1));
@@ -1261,7 +1262,7 @@ mod tests {
     /// An attached Ethernet-like interface with `fd00:77::1/64`, usable at once (its duplicate
     /// address detection skipped), whose output the test reads.
     fn test_if6() -> &'static crate::net::if_var::Ifnet {
-        use crate::netinet6::in6::{in6_ioctl, in6_prefixlen2mask, in6ifa_ifpwithaddr};
+        use crate::netinet6::in6::{in6_prefixlen2mask, in6ifa_ifpwithaddr};
         use crate::netinet6::in6_var::{IN6_IFF_TENTATIVE, In6Aliasreq, SIOCAIFADDR_IN6};
         use crate::netinet6::nd6::ND6_INFINITE_LIFETIME;
 
@@ -1286,16 +1287,12 @@ mod tests {
         in6_prefixlen2mask(&mut ifra.ifra_prefixmask.sin6_addr, 64);
         ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
         ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
-        // SAFETY: an `in6_aliasreq`, from the kernel itself, aligned as a local.
-        unsafe {
-            in6_ioctl(
-                SIOCAIFADDR_IN6,
-                ptr::from_mut(&mut ifra).cast(),
-                Some(ifp),
-                true,
-            )
-        }
-        .expect("SIOCAIFADDR_IN6");
+        // ifconfig's SIOCAIFADDR_IN6 through the kernel's in6_ioctl, over the request's bytes
+        // as in6_control hands them.
+        let mut req = [0u8; size_of::<In6Aliasreq>()];
+        assert!(hal::pod::put(&mut req, 0, &ifra));
+        kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true)
+            .expect("SIOCAIFADDR_IN6");
         let ia = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("the address");
         ia.ia6_flags.set(ia.ia6_flags.get() & !IN6_IFF_TENTATIVE);
         SENT.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -1348,9 +1345,8 @@ mod tests {
             8,
         ];
         let hist = || {
-            crate::netinet6::icmp6::ICMP6COUNTERS
+            crate::netinet6::icmp6::ICMP6COUNTERS.read()
                 [Icmp6statCounters::Icp6sOuthist as usize + usize::from(ICMP6_ECHO_REQUEST)]
-            .load(Ordering::Relaxed)
         };
         let before = hist();
         send6(so, &echo, a6("fd00:77::2")).expect("sent");

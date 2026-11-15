@@ -25,13 +25,16 @@
 //! whether or not the `inet6` feature (OpenBSD's `option INET6`) is on; the feature gates the
 //! `#ifdef INET6` sites outside it and the `inet6domain` registration. `ip6_mroute.c`
 //! (`MROUTING`) is not configured.
+//!
+//! The modules the kernel's `kernel::netinet6` absorbed (N6.5) keep their LZ paths here as
+//! re-exports, for `bsd`'s importers (docs/SCAFFOLDING.md).
+
+pub use kernel::netinet6::{in6_cksum, in6_ifattach, ip6_id, mld6_var};
 
 pub mod dest6;
 pub mod frag6;
 pub mod icmp6;
 pub mod in6;
-pub mod in6_cksum;
-pub mod in6_ifattach;
 pub mod in6_pcb;
 #[forbid(unsafe_code)]
 pub mod in6_proto;
@@ -39,15 +42,12 @@ pub mod in6_src;
 pub mod in6_var;
 pub mod ip6_divert;
 pub mod ip6_forward;
-pub mod ip6_id;
 pub mod ip6_input;
 pub mod ip6_output;
 pub mod ip6_var;
 #[forbid(unsafe_code)]
 pub mod ip6protosw;
 pub mod mld6;
-#[forbid(unsafe_code)]
-pub mod mld6_var;
 pub mod nd6;
 pub mod nd6_nbr;
 pub mod nd6_rtr;

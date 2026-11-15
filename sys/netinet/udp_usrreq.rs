@@ -1968,9 +1968,8 @@ mod tests {
         // A closed port: an ICMPv6 port unreachable is reflected to the sender (queued for
         // ip6_send, whose queue is ip6_input.rs's own).
         let outhist = || {
-            crate::netinet6::icmp6::ICMP6COUNTERS
+            crate::netinet6::icmp6::ICMP6COUNTERS.read()
                 [Icmp6statCounters::Icp6sOuthist as usize + usize::from(ICMP6_DST_UNREACH)]
-            .load(Ordering::Relaxed)
         };
         let (noport, out) = (udpstat(UdpstatCounters::UdpsNoport), outhist());
         input6(packet6(

@@ -84,150 +84,38 @@
 //! Upstream: sys/netinet6/ip6_var.h @ 3ce1f3f79392
 //!
 //! ## Deviations
-//! - `enum ip6stat_counters` is [`Ip6statCounters`] with the C's values; the C indexes its
-//!   arrays with arithmetic (`ip6s_nxthist + nxt`, `ip6s_m2m + i`, `ip6s_sources_*` +
-//!   scope), which [`ip6stat_inc_idx`] does. `ip6counters` (`struct cpumem *`,
-//!   `<sys/percpu.h>` not ported) is the static array of atomics `IP6COUNTERS` in
-//!   `netinet6/ip6_input.rs`, which defines the C's pointer.
+//! - `struct ip6stat`, `enum ip6stat_counters` (`hal::sys::netinet6_ip6_var`), the flags, the
+//!   counters and their increments (`kernel::netinet6::ip6_var`) are re-exported (N6.5a).
 //! - `struct ip6q` and `struct ip6asfrag` hold `Cell`s (they change under `frag6_mutex`);
 //!   `struct ip6_moptions` and `struct ip6_pktopts` are plain structures owned by their
 //!   socket (changed under the socket lock), their pointers `Option<NonNull<_>>`
 //!   (`malloc(9)` allocations, as `ip_moptions`' are).
 //! - `mtod_ip6` and `mtod_ip6_store` read and write the IPv6 header at the start of an
 //!   mbuf as a copy, as `mtod_ip` does for `struct ip` (`netinet/ip_var.rs`).
-//! - The globals (`ip6_defhlim`, `ip6_forwarding`, `ip6_mtudisc_timeout`, ...) are defined by
-//!   `netinet6/in6_proto.rs`, `icmp6_mtudisc_timeout_q` by `netinet6/icmp6.rs`,
-//!   `ip6_dad_pending` by `netinet6/in6_proto.rs`, `rip6_usrreqs` by
-//!   `netinet6/raw_ip6.rs`; the prototypes by their `.c` files (`ip6_output` in
+//! - The globals (`ip6_defhlim`, `ip6_forwarding`, `ip6_mtudisc_timeout`, ...) are the
+//!   kernel's (`kernel::netinet6::ip6_var`), `icmp6_mtudisc_timeout_q` is
+//!   `netinet6/icmp6.rs`'s, `rip6_usrreqs` `netinet6/raw_ip6.rs`'s; the prototypes by their `.c` files (`ip6_output` in
 //!   `netinet6/ip6_output.rs`, `ip6_input_if` in `netinet6/ip6_input.rs`, ...). `ip6_mrouter[]`, `ip6_mrouter_active` and `ip6_mforward`
 //!   (`netinet6/ip6_mroute.c`) are not compiled: `MROUTING` is not configured.
 
 use core::cell::Cell;
 use core::mem::size_of;
 use core::ptr::NonNull;
-use core::sync::atomic::Ordering;
 
 use crate::kern::subr_prf::panic;
 use crate::netinet::ip6::{Ip6Dest, Ip6Hbh, Ip6Hdr};
 use crate::netinet6::in6::{In6Addr, In6Pktinfo};
 use crate::netinet6::in6_var::In6MultiMshipList;
-use crate::netinet6::ip6_input::IP6COUNTERS;
 use crate::queue_adapter;
 use crate::sys::mbuf::{Mbuf, mtod};
 use crate::sys::queue::{ListEntry, ListHead, TailqEntry};
 
-/// Default: send at min MTU for multicast.
-pub const IP6PO_MINMTU_MCASTONLY: i32 = -1;
-/// Always perform pmtu disc.
-pub const IP6PO_MINMTU_DISABLE: i32 = 0;
-/// Always send at min MTU.
-pub const IP6PO_MINMTU_ALL: i32 = 1;
-
-/// Disable fragmentation (`IPV6_DONTFRAG`).
-pub const IP6PO_DONTFRAG: i32 = 0x04;
-
-// flags passed to ip6_output or ip6_forward as last parameter
-
-/// Allow :: as the source address.
-pub const IPV6_UNSPECSRC: i32 = 0x01;
-/// Most of IPv6 header exists.
-pub const IPV6_FORWARDING: i32 = 0x02;
-/// Use minimum MTU (`IPV6_USE_MIN_MTU`).
-pub const IPV6_MINMTU: i32 = 0x04;
-/// Redirected by pf.
-pub const IPV6_REDIRECT: i32 = 0x08;
-/// Only packets processed by IPsec.
-pub const IPV6_FORWARDING_IPSEC: i32 = 0x10;
-
-/// `struct ip6stat`: IPv6 statistics, as `sysctl(2)` returns them.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ip6stat {
-    /// Total packets received.
-    pub ip6s_total: u64,
-    /// Packet too short.
-    pub ip6s_tooshort: u64,
-    /// Not enough data.
-    pub ip6s_toosmall: u64,
-    /// Fragments received.
-    pub ip6s_fragments: u64,
-    /// Frags dropped (dups, out of space).
-    pub ip6s_fragdropped: u64,
-    /// Fragments timed out.
-    pub ip6s_fragtimeout: u64,
-    /// Fragments that exceeded limit.
-    pub ip6s_fragoverflow: u64,
-    /// Packets forwarded.
-    pub ip6s_forward: u64,
-    /// Packets rcvd for unreachable dest.
-    pub ip6s_cantforward: u64,
-    /// Packets forwarded on same net.
-    pub ip6s_redirectsent: u64,
-    /// Datagrams delivered to upper level.
-    pub ip6s_delivered: u64,
-    /// Total ip packets generated here.
-    pub ip6s_localout: u64,
-    /// Lost output due to nobufs, etc.
-    pub ip6s_odropped: u64,
-    /// Total packets reassembled ok.
-    pub ip6s_reassembled: u64,
-    /// Datagrams successfully fragmented.
-    pub ip6s_fragmented: u64,
-    /// Output fragments created.
-    pub ip6s_ofragments: u64,
-    /// Don't fragment flag was set, etc.
-    pub ip6s_cantfrag: u64,
-    /// Error in option processing.
-    pub ip6s_badoptions: u64,
-    /// Packets discarded due to no route.
-    pub ip6s_noroute: u64,
-    /// ip6 version != 6.
-    pub ip6s_badvers: u64,
-    /// Total raw ip packets generated.
-    pub ip6s_rawout: u64,
-    /// Scope error.
-    pub ip6s_badscope: u64,
-    /// Don't join this multicast group.
-    pub ip6s_notmember: u64,
-    /// Next header history.
-    pub ip6s_nxthist: [u64; 256],
-    /// One mbuf.
-    pub ip6s_m1: u64,
-    /// Two or more mbuf.
-    pub ip6s_m2m: [u64; 32],
-    /// One ext mbuf.
-    pub ip6s_mext1: u64,
-    /// Two or more ext mbuf.
-    pub ip6s_mext2m: u64,
-    /// No match gif found.
-    pub ip6s_nogif: u64,
-    /// Discarded due to too many headers.
-    pub ip6s_toomanyhdr: u64,
-    // statistics for improvement of the source address selection algorithm
-    // (XXX: hardcoded 16 = # of ip6 multicast scope types + 1)
-    /// Number of times that address selection fails.
-    pub ip6s_sources_none: u64,
-    /// Number of times that an address on the outgoing I/F is chosen.
-    pub ip6s_sources_sameif: [u64; 16],
-    /// Number of times that an address on a non-outgoing I/F is chosen.
-    pub ip6s_sources_otherif: [u64; 16],
-    /// Number of times that an address that has the same scope from the destination is
-    /// chosen.
-    pub ip6s_sources_samescope: [u64; 16],
-    /// Number of times that an address that has a different scope from the destination is
-    /// chosen.
-    pub ip6s_sources_otherscope: [u64; 16],
-    /// Number of times that a deprecated address is chosen.
-    pub ip6s_sources_deprecated: [u64; 16],
-    /// Valid route found in cache.
-    pub ip6s_rtcachehit: u64,
-    /// Route cache with new destination.
-    pub ip6s_rtcachemiss: u64,
-    /// Packet received on wrong interface.
-    pub ip6s_wrongif: u64,
-    /// Lost input due to nobufs, etc.
-    pub ip6s_idropped: u64,
-}
+pub use hal::sys::netinet6_ip6_var::{IP6S_NCOUNTERS, Ip6stat, Ip6statCounters};
+pub use kernel::netinet6::ip6_var::{
+    IP6PO_DONTFRAG, IP6PO_MINMTU_ALL, IP6PO_MINMTU_DISABLE, IP6PO_MINMTU_MCASTONLY,
+    IPV6_FORWARDING, IPV6_FORWARDING_IPSEC, IPV6_MINMTU, IPV6_REDIRECT, IPV6_UNSPECSRC,
+    ip6stat_add, ip6stat_dec, ip6stat_inc, ip6stat_inc_idx,
+};
 
 /// `struct ip6q`: IP6 reassembly queue structure. Each fragment being reassembled is
 /// attached to one of these structures.
@@ -301,6 +189,19 @@ pub struct Ip6Pktopts {
     /// Hoplimit for outgoing packets.
     pub ip6po_hlim: i32,
     /// Outgoing IF/address information.
+    ///
+    /// **Invariant** (every `unsafe` read or write through it relies on it): when set, it
+    /// points at an initialised `In6Pktinfo` that these options alone own, valid for as long
+    /// as the options are borrowed.
+    /// - Established by the field's writers, `ip6_setpktopt` and `copypktopts`. They store a
+    ///   fresh `malloc(M_IP6OPT)` block of the structure, written whole, whose pointer they
+    ///   keep nowhere else (a copy of the options gets a block of its own). A test that
+    ///   builds options by hand gives them a block of its own, which it does not reach while
+    ///   they are in use.
+    /// - Upheld by the block being written or freed only through options borrowed mutably:
+    ///   `ip6_setpktopt` rewrites it, `ip6_clearpktopts` frees it. A shared borrow of the
+    ///   options therefore keeps the block alive and unchanged. The derived `Copy` would
+    ///   share the block; no code copies options bitwise (`copypktopts` copies the block).
     pub ip6po_pktinfo: Option<NonNull<In6Pktinfo>>,
     /// Hop-by-Hop options header.
     pub ip6po_hbh: Option<NonNull<Ip6Hbh>>,
@@ -316,118 +217,17 @@ pub struct Ip6Pktopts {
     pub ip6po_flags: i32,
 }
 
-/// The number of entries of the next header history.
-const NXTHIST: usize = 256;
-/// The number of entries of the mbuf chain length history.
-const M2M: usize = 32;
-/// The number of entries of each source selection history.
-const SOURCES: usize = 16;
-
-/// `enum ip6stat_counters`: the per-CPU IPv6 counters, one per word of [`Ip6stat`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
-pub enum Ip6statCounters {
-    /// `ip6s_total`.
-    Ip6sTotal,
-    /// `ip6s_tooshort`.
-    Ip6sTooshort,
-    /// `ip6s_toosmall`.
-    Ip6sToosmall,
-    /// `ip6s_fragments`.
-    Ip6sFragments,
-    /// `ip6s_fragdropped`.
-    Ip6sFragdropped,
-    /// `ip6s_fragtimeout`.
-    Ip6sFragtimeout,
-    /// `ip6s_fragoverflow`.
-    Ip6sFragoverflow,
-    /// `ip6s_forward`.
-    Ip6sForward,
-    /// `ip6s_cantforward`.
-    Ip6sCantforward,
-    /// `ip6s_redirectsent`.
-    Ip6sRedirectsent,
-    /// `ip6s_delivered`.
-    Ip6sDelivered,
-    /// `ip6s_localout`.
-    Ip6sLocalout,
-    /// `ip6s_odropped`.
-    Ip6sOdropped,
-    /// `ip6s_reassembled`.
-    Ip6sReassembled,
-    /// `ip6s_fragmented`.
-    Ip6sFragmented,
-    /// `ip6s_ofragments`.
-    Ip6sOfragments,
-    /// `ip6s_cantfrag`.
-    Ip6sCantfrag,
-    /// `ip6s_badoptions`.
-    Ip6sBadoptions,
-    /// `ip6s_noroute`.
-    Ip6sNoroute,
-    /// `ip6s_badvers`.
-    Ip6sBadvers,
-    /// `ip6s_rawout`.
-    Ip6sRawout,
-    /// `ip6s_badscope`.
-    Ip6sBadscope,
-    /// `ip6s_notmember`.
-    Ip6sNotmember,
-    /// `ip6s_nxthist`: the first of 256.
-    Ip6sNxthist,
-    /// `ip6s_m1`.
-    Ip6sM1 = 23 + NXTHIST,
-    /// `ip6s_m2m`: the first of 32.
-    Ip6sM2m,
-    /// `ip6s_mext1`.
-    Ip6sMext1 = 23 + NXTHIST + 1 + M2M,
-    /// `ip6s_mext2m`.
-    Ip6sMext2m,
-    /// `ip6s_nogif`.
-    Ip6sNogif,
-    /// `ip6s_toomanyhdr`.
-    Ip6sToomanyhdr,
-    /// `ip6s_sources_none`.
-    Ip6sSourcesNone,
-    /// `ip6s_sources_sameif`: the first of 16.
-    Ip6sSourcesSameif,
-    /// `ip6s_sources_otherif`: the first of 16.
-    Ip6sSourcesOtherif = 23 + NXTHIST + 1 + M2M + 5 + SOURCES,
-    /// `ip6s_sources_samescope`: the first of 16.
-    Ip6sSourcesSamescope = 23 + NXTHIST + 1 + M2M + 5 + 2 * SOURCES,
-    /// `ip6s_sources_otherscope`: the first of 16.
-    Ip6sSourcesOtherscope = 23 + NXTHIST + 1 + M2M + 5 + 3 * SOURCES,
-    /// `ip6s_sources_deprecated`: the first of 16.
-    Ip6sSourcesDeprecated = 23 + NXTHIST + 1 + M2M + 5 + 4 * SOURCES,
-    /// `ip6s_rtcachehit`.
-    Ip6sRtcachehit = 23 + NXTHIST + 1 + M2M + 5 + 5 * SOURCES,
-    /// `ip6s_rtcachemiss`.
-    Ip6sRtcachemiss,
-    /// `ip6s_wrongif`.
-    Ip6sWrongif,
-    /// `ip6s_idropped`.
-    Ip6sIdropped,
-    /// `ip6s_ncounters`.
-    Ip6sNcounters,
-}
-
-/// `ip6s_ncounters`.
-pub const IP6S_NCOUNTERS: usize = Ip6statCounters::Ip6sNcounters as usize;
-
-/// `ip6stat_inc(c)`.
-pub fn ip6stat_inc(c: Ip6statCounters) {
-    IP6COUNTERS[c as usize].fetch_add(1, Ordering::Relaxed);
-}
-
-/// `ip6stat_add(c, v)`.
-pub fn ip6stat_add(c: Ip6statCounters, v: u64) {
-    IP6COUNTERS[c as usize].fetch_add(v, Ordering::Relaxed);
-}
-
-/// `ip6stat_inc(base + i)`: bumps entry `i` of the array counter starting at `base`
-/// (`ip6s_nxthist`, `ip6s_m2m`, `ip6s_sources_*`).
-pub fn ip6stat_inc_idx(base: Ip6statCounters, i: usize) {
-    IP6COUNTERS[base as usize + i].fetch_add(1, Ordering::Relaxed);
+impl Ip6Pktopts {
+    /// `*opt->ip6po_pktinfo`, read by value (`None` without packet info): what the readers
+    /// that only look at it take (`ip6_output`'s outgoing interface, `ip6_getpcbopt`,
+    /// `in6_selectroute`, `in6_embedscope`).
+    pub fn pktinfo(&self) -> Option<In6Pktinfo> {
+        // SAFETY: `ip6po_pktinfo`'s invariant (the field's documentation): when set, an
+        // initialised `In6Pktinfo` these options own, alive and unchanged while they are
+        // borrowed, which `&self` is for the whole read; the structure is copied out by value
+        // (`In6Pktinfo` is plain data), so no reference to the block outlives the call.
+        self.ip6po_pktinfo.map(|p| unsafe { p.as_ptr().read() })
+    }
 }
 
 /// `*mtod(m, struct ip6_hdr *)`: the IPv6 header at the start of `m`'s data, as a value.
@@ -453,55 +253,4 @@ pub fn mtod_ip6_store(m: &Mbuf, ip6: &Ip6Hdr) {
     unsafe { core::ptr::write_unaligned(mtod::<Ip6Hdr>(m), *ip6) };
 }
 
-// The counters are the statistics' words.
-const _: () = assert!(size_of::<Ip6stat>() == IP6S_NCOUNTERS * size_of::<u64>());
 /* </CODE> */
-
-/* <TESTS> */
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn counters_match_the_structure() {
-        use core::mem::offset_of;
-        let w = |off: usize| off / size_of::<u64>();
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_nxthist)),
-            Ip6statCounters::Ip6sNxthist as usize
-        );
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_m1)),
-            Ip6statCounters::Ip6sM1 as usize
-        );
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_mext1)),
-            Ip6statCounters::Ip6sMext1 as usize
-        );
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_sources_sameif)),
-            Ip6statCounters::Ip6sSourcesSameif as usize
-        );
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_sources_deprecated)),
-            Ip6statCounters::Ip6sSourcesDeprecated as usize
-        );
-        assert_eq!(
-            w(offset_of!(Ip6stat, ip6s_idropped)),
-            Ip6statCounters::Ip6sIdropped as usize
-        );
-    }
-
-    #[test]
-    #[ignore = "needs OPENBSD_SRC (just test-ref)"]
-    fn values_match_the_c_header() {
-        let defs = crate::reftest::defines("sys/netinet6/ip6_var.h");
-        let ipv6 = crate::reftest::assert_defines!(defs;
-            IPV6_UNSPECSRC, IPV6_FORWARDING, IPV6_MINMTU, IPV6_REDIRECT, IPV6_FORWARDING_IPSEC);
-        crate::reftest::assert_complete(&defs, "IPV6_", &ipv6);
-        let po = crate::reftest::assert_defines!(defs;
-            IP6PO_MINMTU_MCASTONLY, IP6PO_MINMTU_DISABLE, IP6PO_MINMTU_ALL, IP6PO_DONTFRAG);
-        crate::reftest::assert_complete(&defs, "IP6PO_", &po);
-    }
-}
-/* </TESTS> */

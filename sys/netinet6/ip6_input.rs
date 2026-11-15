@@ -122,7 +122,7 @@ use core::ffi::c_void;
 use core::mem::{offset_of, size_of};
 use core::ptr;
 use core::slice;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use alloc::vec;
 
@@ -217,8 +217,7 @@ const IP6_HDR_LEN: i32 = size_of::<Ip6Hdr>() as i32;
 /// `ip6intrq`.
 pub static IP6INTRQ: Niqueue = Niqueue::new(IPQ_MAXLEN as u32, NETISR_IPV6);
 
-/// `ip6counters`: the IPv6 statistics.
-pub static IP6COUNTERS: [AtomicU64; IP6S_NCOUNTERS] = [const { AtomicU64::new(0) }; IP6S_NCOUNTERS];
+pub use kernel::netinet6::ip6_var::IP6COUNTERS;
 
 /// `ip6send_mq`: the packets `ip6_send` queued for `ip6_send_dispatch`.
 static IP6SEND_MQ: MbufQueue = MbufQueue::new(64, IPL_SOFTNET);
@@ -1436,11 +1435,10 @@ pub fn ip6_lasthdr(m: &Mbuf, off: i32, proto: i32, nxtp: &mut i32) -> Option<i32
 fn ip6_sysctl_ip6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Ip6stat>() == IP6S_NCOUNTERS * size_of::<u64>());
 
+    // ip6stat = malloc(sizeof(*ip6stat), M_TEMP, M_WAITOK); counters_read(ip6counters, ..):
+    // the sums written straight into the heap image.
     let mut ip6stat = vec![0u8; size_of::<Ip6stat>()];
-    let (words, _) = ip6stat.as_chunks_mut::<{ size_of::<u64>() }>();
-    for (w, c) in words.iter_mut().zip(IP6COUNTERS.iter()) {
-        *w = c.load(Ordering::Relaxed).to_ne_bytes();
-    }
+    IP6COUNTERS.read_into(&mut ip6stat);
     sysctl_rdstruct(oldp, oldlenp, newp, &ip6stat)
 }
 
@@ -1565,7 +1563,7 @@ mod tests {
     }
 
     fn stat(c: Ip6statCounters) -> u64 {
-        IP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[c as usize]
     }
 
     #[test]

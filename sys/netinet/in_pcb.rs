@@ -1088,7 +1088,7 @@ pub(crate) mod tests {
         use crate::netinet::in_pcb::*;
         use crate::netinet6::in6::tests::a6;
         use crate::netinet6::in6::{
-            IN6ADDR_ANY, In6Addr, SockaddrIn6, in6_ioctl, in6_prefixlen2mask, in6ifa_ifpwithaddr,
+            IN6ADDR_ANY, In6Addr, SockaddrIn6, in6_prefixlen2mask, in6ifa_ifpwithaddr,
         };
         use crate::netinet6::in6_cksum::in6_cksum;
         use crate::netinet6::in6_pcb::in6_pcblookup;
@@ -1171,16 +1171,12 @@ pub(crate) mod tests {
             in6_prefixlen2mask(&mut ifra.ifra_prefixmask.sin6_addr, 64);
             ifra.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
             ifra.ifra_lifetime.ia6t_pltime = ND6_INFINITE_LIFETIME;
-            // SAFETY: an `in6_aliasreq`, from the kernel itself, aligned as a local.
-            unsafe {
-                in6_ioctl(
-                    SIOCAIFADDR_IN6,
-                    ptr::from_mut(&mut ifra).cast(),
-                    Some(ifp),
-                    true,
-                )
-            }
-            .expect("SIOCAIFADDR_IN6");
+            // ifconfig's SIOCAIFADDR_IN6 through the kernel's in6_ioctl, over the request's
+            // bytes as in6_control hands them.
+            let mut req = [0u8; size_of::<In6Aliasreq>()];
+            assert!(hal::pod::put(&mut req, 0, &ifra));
+            kernel::netinet6::in6::in6_ioctl(SIOCAIFADDR_IN6, &mut req, Some(ifp), true)
+                .expect("SIOCAIFADDR_IN6");
             let ia = in6ifa_ifpwithaddr(ifp, &a6("fd00:77::1")).expect("the address");
             ia.ia6_flags.set(ia.ia6_flags.get() & !IN6_IFF_TENTATIVE);
             let _ = take_sent6();

@@ -1,4 +1,3 @@
-/*	$KAME: in6_cksum.c,v 1.10 2000/12/03 00:53:59 itojun Exp $	*/
 /* <LICENSES> */
 /*
  * Copyright (c) 2026 Emilio Navarrete Lineros <enavarre@outlook.com>
@@ -78,10 +77,10 @@
 /* </LICENSES> */
 
 /* <CODE> */
-//! Checksum of an IPv6 upper-layer packet with its pseudo header:
-//! `netinet6/in6_cksum.c`.
+//! Checksum of an IPv6 upper-layer packet with its pseudo header: `netinet6/in6_cksum.c`.
 //!
 //! Upstream: sys/netinet6/in6_cksum.c @ 3ce1f3f79392
+//! LZ: sys/netinet6/in6_cksum.rs@3c62ede68802
 //!
 //! Checksum routine for Internet Protocol family headers (portable version). `m` must contain
 //! a continuous IP6 header; `off` is the offset where the TCP/UDP/ICMP6 header starts; `len` is
@@ -90,76 +89,83 @@
 //!
 //! ## Deviations
 //! - The word loop is `netinet/in_cksum.rs`'s [`cksum_add`] (the C file carries a copy of
-//!   `in_cksum`'s loop, as `in4_cksum.c` does); the pseudo header's words are summed from a
-//!   byte array laid out as the C's `uph` union plus the two addresses.
+//!   `in_cksum`'s loop, as `in4_cksum.c` does).
 //! - An `off` beyond the chain panics with "out of data" like a chain shorter than `off +
 //!   len`; the C distinguishes "out of header" from "out of data" for those two cases.
 //! - The result is a `u16` (the C's `int` holds `~sum & 0xffff`).
+//!
+//! ## Redesign
+//! - LZ's copy of the whole header (`mtod_ip6`, an `unsafe` unaligned read) and its 20-word
+//!   pseudo header array -> the two addresses read in place from the first mbuf's data
+//!   (`Mbuf::data()`) as the sixteen 16-bit words they sum to, the word of an embedded scope
+//!   skipped as the C skips `w[1]` and `w[9]`, the length and next-header words added
+//!   directly (`kernel::netinet::in4_cksum`'s N6.4a shape): no `unsafe`, no copy. The C's "m
+//!   MUST contain a continuous IP6 header" is the slice's bound: a first mbuf shorter than
+//!   the header panics where the C would read past it. `#[inline]`: the transports call it
+//!   per packet across the crate boundary (N6.3c1's R12).
 
-use crate::kern::subr_prf::panic;
+use hal::pod;
+use hal::sys::endian::htonl;
+use hal::sys::netinet6_in6::{In6Addr, in6_is_scope_embed};
+
+use crate::assert::kpanic;
+use crate::net::mbuf::Mbuf;
 use crate::netinet::in_cksum::{cksum_add, cksum_fold};
-use crate::netinet6::in6::in6_is_scope_embed;
-use crate::netinet6::ip6_var::mtod_ip6;
-use crate::sys::endian::htonl;
-use crate::sys::mbuf::Mbuf;
+
+/// `offsetof(struct ip6_hdr, ip6_src)`: the source, then the destination, 32 bytes.
+const IP6_SRC: usize = 8;
+
+/// `IN6_IS_SCOPE_EMBED` of the address at the start of `b`, viewed in place (an `In6Addr` is
+/// its sixteen bytes, alignment 1: the view never fails on a long enough slice).
+#[inline]
+fn scope_embedded(b: &[u8]) -> bool {
+    pod::view::<In6Addr>(b, 0).is_some_and(in6_is_scope_embed)
+}
 
 /// `in6_cksum`: the checksum of `len` bytes from offset `off` of `m`, an IPv6 packet, with the
 /// pseudo header of next header `nxt` (0: no pseudo header).
+#[inline]
 pub fn in6_cksum(m: &Mbuf, nxt: u8, off: u32, len: u32) -> u16 {
     let mut sum = 0u64;
     let mut odd = false;
 
     // sanity check
-    if (m.m_pkthdr().len.get() as i64) < i64::from(off) + i64::from(len) {
-        panic(format_args!(
-            "in6_cksum: mbuf len ({}) < off+len ({}+{})",
-            m.m_pkthdr().len.get(),
-            off,
-            len
+    let pktlen = m.m_pkthdr().len.get();
+    if i64::from(pktlen) < i64::from(off) + i64::from(len) {
+        kpanic(format_args!(
+            "in6_cksum: mbuf len ({pktlen}) < off+len ({off}+{len})"
         ));
     }
 
     // Skip pseudo-header if nxt == 0.
     if nxt != 0 {
-        // First create IP6 pseudo header and calculate a summary.
-        let ip6 = mtod_ip6(m);
-        let mut words = [0u16; 8 + 8 + 4];
-        let mut put = |i: usize, bytes: [u8; 2]| words[i] = u16::from_ne_bytes(bytes);
-
-        // IPv6 source address
-        let src = &ip6.ip6_src.s6_addr;
-        for i in 0..8 {
-            put(i, [src[2 * i], src[2 * i + 1]]);
-        }
-        if in6_is_scope_embed(&ip6.ip6_src) {
-            put(1, [0, 0]);
-        }
-        // IPv6 destination address
-        let dst = &ip6.ip6_dst.s6_addr;
-        for i in 0..8 {
-            put(8 + i, [dst[2 * i], dst[2 * i + 1]]);
-        }
-        if in6_is_scope_embed(&ip6.ip6_dst) {
-            put(9, [0, 0]);
+        // First create IP6 pseudo header and calculate a summary: the addresses' words in
+        // place, the second word of an address with an embedded scope left out.
+        let Some(addrs) = m.data().get(IP6_SRC..IP6_SRC + 32) else {
+            kpanic(format_args!("in6_cksum: out of header, off {off}"));
+        };
+        let skip_src = scope_embedded(&addrs[..16]);
+        let skip_dst = scope_embedded(&addrs[16..]);
+        let (words, _) = addrs.as_chunks::<2>();
+        for (i, w) in words.iter().enumerate() {
+            if (i == 1 && skip_src) || (i == 9 && skip_dst) {
+                continue;
+            }
+            sum += u64::from(u16::from_ne_bytes(*w));
         }
         // Payload length and upper layer identifier: `ph_len` (4 bytes, network order),
         // `ph_zero[3]` and `ph_nxt`.
         let l = htonl(len).to_ne_bytes();
-        put(16, [l[0], l[1]]);
-        put(17, [l[2], l[3]]);
-        put(18, [0, 0]);
-        put(19, [0, nxt]);
-
-        for w in words {
-            sum += u64::from(w);
-        }
+        sum += u64::from(u16::from_ne_bytes([l[0], l[1]]));
+        sum += u64::from(u16::from_ne_bytes([l[2], l[3]]));
+        sum += u64::from(u16::from_ne_bytes([0, nxt]));
     }
 
     // Secondly calculate a summary of the first mbuf excluding offset, and lastly of the rest
     // of the mbufs.
     let short = cksum_add(Some(m), off as usize, len as usize, &mut sum, &mut odd);
     if short != 0 {
-        panic(format_args!("in6_cksum: out of data, len {short}"));
+        kpanic(format_args!("in6_cksum: out of data, len {short}"));
     }
 
     cksum_fold(sum)
@@ -177,12 +183,10 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
-    use crate::kern::uipc_mbuf::{m_cat, m_freem, m_get, m_gethdr};
-    use crate::sys::mbuf::{M_DONTWAIT, MLEN, MT_DATA};
-    use crate::sys::mbuf::{m_data_add, mtod};
+    use crate::net::mbuf::{M_DONTWAIT, MLEN, MT_DATA, MbufBox, m_cat, m_freem, m_get, m_gethdr};
 
     fn setup() -> MutexGuard<'static, ()> {
-        crate::kern::uipc_mbuf::tests::setup()
+        crate::net::mbuf::tests::setup()
     }
 
     const IPPROTO_ICMPV6: u8 = 58;
@@ -201,7 +205,7 @@ mod tests {
 
     /// A packet holding `bytes` (the IPv6 header first), cut into mbufs of the given lengths
     /// (the rest in the last one); every mbuf after the first starts at an odd address.
-    fn chain(bytes: &[u8], cuts: &[usize]) -> &'static Mbuf {
+    fn chain(bytes: &[u8], cuts: &[usize]) -> MbufBox {
         let mut pieces = Vec::new();
         let mut rest = bytes;
         for &c in cuts {
@@ -211,24 +215,21 @@ mod tests {
         }
         pieces.push(rest);
 
-        let head = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
-        head.m_len().set(0);
-        for (i, p) in pieces.iter().enumerate() {
+        let mut head = m_gethdr(M_DONTWAIT, MT_DATA).expect("mbuf");
+        let mut first = true;
+        for p in pieces {
             assert!(p.len() <= MLEN - 8);
-            let m = if i == 0 {
-                head
-            } else {
-                m_get(M_DONTWAIT, MT_DATA).expect("mbuf")
-            };
-            if i != 0 {
-                m_data_add(m, 1);
+            if first {
+                head.m_len().set(p.len() as u32);
+                head.data_mut().expect("writable").copy_from_slice(p);
+                first = false;
+                continue;
             }
-            // SAFETY: the mbuf has room for `p` (checked above) at its data pointer.
-            unsafe { core::ptr::copy_nonoverlapping(p.as_ptr(), mtod::<u8>(m), p.len()) };
+            let mut m = m_get(M_DONTWAIT, MT_DATA).expect("mbuf");
+            m.data_add(1);
             m.m_len().set(p.len() as u32);
-            if i != 0 {
-                m_cat(head, Some(m));
-            }
+            m.data_mut().expect("writable").copy_from_slice(p);
+            m_cat(&mut head, Some(m));
         }
         head.m_pkthdr().len.set(bytes.len() as i32);
         head
@@ -269,13 +270,13 @@ mod tests {
         let mut pkt = ip6_header(&LOOPBACK, &LOOPBACK, 8, IPPROTO_ICMPV6).to_vec();
         pkt.extend_from_slice(&[128, 0, 0, 0, 0, 0, 0, 0]);
         let m = chain(&pkt, &[]);
-        let c = in6_cksum(m, IPPROTO_ICMPV6, 40, 8);
+        let c = in6_cksum(&m, IPPROTO_ICMPV6, 40, 8);
         assert_eq!(c.to_ne_bytes(), [0x7f, 0xbb]);
         assert_eq!(
             oracle(&LOOPBACK, &LOOPBACK, IPPROTO_ICMPV6, &pkt[40..]),
             [0x7f, 0xbb]
         );
-        m_freem(m);
+        let _ = m_freem(m);
     }
 
     #[test]
@@ -304,11 +305,11 @@ mod tests {
                 }
                 let m = chain(&pkt, cuts);
                 assert_eq!(
-                    in6_cksum(m, IPPROTO_ICMPV6, 40, plen as u32).to_ne_bytes(),
+                    in6_cksum(&m, IPPROTO_ICMPV6, 40, plen as u32).to_ne_bytes(),
                     want,
                     "plen {plen}, cuts {cuts:?}"
                 );
-                m_freem(m);
+                let _ = m_freem(m);
             }
         }
     }
@@ -334,10 +335,10 @@ mod tests {
 
         let m = chain(&pkt, &[]);
         assert_eq!(
-            in6_cksum(m, IPPROTO_ICMPV6, 40, payload.len() as u32).to_ne_bytes(),
+            in6_cksum(&m, IPPROTO_ICMPV6, 40, payload.len() as u32).to_ne_bytes(),
             want
         );
-        m_freem(m);
+        let _ = m_freem(m);
     }
 
     #[test]
@@ -349,16 +350,15 @@ mod tests {
         pkt.extend_from_slice(&payload);
         for cuts in [&[][..], &[41], &[40, 3]] {
             let m = chain(&pkt, cuts);
-            assert_eq!(in6_cksum(m, 0, 40, 8).to_ne_bytes(), [0x22, 0x0d]);
-            m_freem(m);
+            assert_eq!(in6_cksum(&m, 0, 40, 8).to_ne_bytes(), [0x22, 0x0d]);
+            let _ = m_freem(m);
         }
         // From an odd offset into the first mbuf.
         let m = chain(&pkt, &[]);
-        assert_eq!(in6_cksum(m, 0, 41, 7), {
+        assert_eq!(in6_cksum(&m, 0, 41, 7), {
             let flat = &payload[1..];
             let mut sum = 0u32;
-            let mut it = flat.chunks(2);
-            for w in &mut it {
+            for w in flat.chunks(2) {
                 sum += u32::from(u16::from_be_bytes([w[0], *w.get(1).unwrap_or(&0)]));
             }
             while sum >> 16 != 0 {
@@ -366,7 +366,7 @@ mod tests {
             }
             u16::from_ne_bytes((!(sum as u16)).to_be_bytes())
         });
-        m_freem(m);
+        let _ = m_freem(m);
     }
 
     #[test]
@@ -375,10 +375,10 @@ mod tests {
         let pkt = ip6_header(&A, &B, 0, IPPROTO_ICMPV6).to_vec();
         let m = chain(&pkt, &[]);
         assert_eq!(
-            in6_cksum(m, IPPROTO_ICMPV6, 40, 0).to_ne_bytes(),
+            in6_cksum(&m, IPPROTO_ICMPV6, 40, 0).to_ne_bytes(),
             oracle(&A, &B, IPPROTO_ICMPV6, &[])
         );
-        m_freem(m);
+        let _ = m_freem(m);
     }
 }
 /* </TESTS> */

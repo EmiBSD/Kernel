@@ -116,11 +116,12 @@
 //! - `ICMP6_FILTER` get/set (`icmp6_ctloutput`) reaches the socket's control block through
 //!   `sotoinpcb`, which must accept `AF_INET6` sockets (phase 2 of the INET6 port).
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::mem::size_of;
 use core::ptr;
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 
 use hal::pool::PoolArc;
 use libkern::StaticCell;
@@ -219,9 +220,7 @@ use crate::sys::time::Timeval;
 /// (`icmp6_mtudisc_callback_register`): the destination and the routing table.
 pub type Icmp6MtudiscCallbackFn = fn(&SockaddrIn6, u32);
 
-/// `icmp6counters`: the ICMPv6 statistics.
-pub static ICMP6COUNTERS: [AtomicU64; ICP6S_NCOUNTERS] =
-    [const { AtomicU64::new(0) }; ICP6S_NCOUNTERS];
+pub use kernel::netinet6::ip6_var::ICMP6COUNTERS;
 
 /// `icmp6errpps_count` and `icmp6errppslim_last`.
 struct Icmp6ErrPps {
@@ -601,12 +600,20 @@ pub fn icmp6_input(
                     if icmp6len < size_of::<MldHdr>() as i32 {
                         Next::Badlen
                     } else if let Some(n) = m_copym(m, 0, M_COPYALL, M_DONTWAIT) {
-                        mld6_input(n, off);
+                        mld6_input(
+                            crate::sys::mbuf::unpark(n),
+                            off,
+                            &crate::net::if_::net_held("mld6_input"),
+                        );
                         // m stays.
                         Next::Raw
                     } else {
                         // give up local
-                        mld6_input(m, off);
+                        mld6_input(
+                            crate::sys::mbuf::unpark(m),
+                            off,
+                            &crate::net::if_::net_held("mld6_input"),
+                        );
                         *mp = None;
                         return IPPROTO_DONE;
                     }
@@ -1931,10 +1938,10 @@ pub fn icmp6_mtudisc_timeout(
 /// icmp6stat`.
 fn icmp6_sysctl_icmp6stat(oldp: usize, oldlenp: &mut usize, newp: usize) -> Result<(), Errno> {
     const _: () = assert!(size_of::<Icmp6stat>() == ICP6S_NCOUNTERS * size_of::<u64>());
-    let mut bytes = Vec::with_capacity(ICP6S_NCOUNTERS * size_of::<u64>());
-    for c in &ICMP6COUNTERS {
-        bytes.extend_from_slice(&c.load(Ordering::Relaxed).to_ne_bytes());
-    }
+    // icmp6stat = malloc(sizeof(*icmp6stat), M_TEMP, M_WAITOK|M_ZERO); counters_read(..): the
+    // sums written straight into the heap image.
+    let mut bytes = vec![0u8; ICP6S_NCOUNTERS * size_of::<u64>()];
+    ICMP6COUNTERS.read_into(&mut bytes);
 
     sysctl_rdstruct(oldp, oldlenp, newp, &bytes)
 }
@@ -2078,7 +2085,7 @@ mod tests {
 
     /// The value of the histogram entry `hist + t`.
     fn hist(hist: Icmp6statCounters, t: u8) -> u64 {
-        ICMP6COUNTERS[hist as usize + usize::from(t)].load(Ordering::Relaxed)
+        ICMP6COUNTERS.read()[hist as usize + usize::from(t)]
     }
 
     /// The bytes of an IPv6 header.

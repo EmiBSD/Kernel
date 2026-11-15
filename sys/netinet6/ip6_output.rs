@@ -320,8 +320,22 @@ pub fn ip6_output(
             let freehdrs: Result<(), Errno> = 'freehdrs: {
                 if let Some(opt) = opt {
                     // Hop-by-Hop options header
-                    // SAFETY: the options hold whole extension headers (`ip6_setpktopt`
-                    // checked their lengths).
+                    // SAFETY: `make_exthdr` needs each of `ip6po_hbh`, `ip6po_dest1` and
+                    // `ip6po_dest2` to be `None` or to point at `(ip6e_len + 1) << 3`
+                    // readable bytes. Exactly three places in `bsd` store a `Some` there,
+                    // and each establishes it from its own checks, never from a caller's
+                    // word: `ip6_setpktopt` (IPV6_HOPOPTS, IPV6_DSTOPTS,
+                    // IPV6_RTHDRDSTOPTS) refuses with EINVAL a buffer shorter than the
+                    // 2-byte header or whose length is not `(ip6e_len + 1) << 3`, then
+                    // copies exactly that many bytes into a block of that size the
+                    // options own; `copypktopts`'s `pktopt_exthdrcpy` copies a header so
+                    // made into a block of its own stated length; and
+                    // `BsdNetLegs::ip6_output_opts` (`sys/net/if_.rs`, MLD's reports) sets
+                    // only `ip6po_hbh`, only to its `'static` `MLD6_HBH_IMAGE`, whose length
+                    // byte a compile-time assertion in that file checks against its size (the
+                    // kernel lends that leg a `bool`, no bytes). `opt` is borrowed for the
+                    // whole call, so no header is freed or replaced under the read, and
+                    // `make_exthdr` only reads (it copies into a new mbuf).
                     if let Err(e) = unsafe {
                         make_exthdr(opt.ip6po_hbh.map(NonNull::cast), &mut exthdrs.ip6e_hbh)
                     } {
@@ -549,12 +563,8 @@ pub fn ip6_output(
 
                     if in6_is_addr_multicast(&ip6.ip6_dst) {
                         // If the caller specify the outgoing interface explicitly, use it.
-                        if let Some(opt) = opt
-                            && let Some(pi) = opt.ip6po_pktinfo
-                        {
-                            // SAFETY: the packet info is the options' own allocation
-                            // (`ip6_setpktopt`), alive while the options are.
-                            ifp = if_get(unsafe { pi.as_ptr().read() }.ipi6_ifindex);
+                        if let Some(pi) = opt.and_then(Ip6Pktopts::pktinfo) {
+                            ifp = if_get(pi.ipi6_ifindex);
                         }
 
                         if ifp.is_none()
@@ -1702,11 +1712,7 @@ fn ip6_getpcbopt(pktopt: Option<&Ip6Pktopts>, optname: i32, m: &'static Mbuf) ->
     let optdata: &[u8] = match optname {
         IPV6_PKTINFO => {
             // XXX: we don't have to do this every time...
-            let pi = match pktopt.and_then(|o| o.ip6po_pktinfo) {
-                // SAFETY: the packet info is the options' own allocation.
-                Some(pi) => unsafe { pi.as_ptr().read() },
-                None => In6Pktinfo::default(),
-            };
+            let pi = pktopt.and_then(Ip6Pktopts::pktinfo).unwrap_or_default();
             pktinfobuf[..16].copy_from_slice(&pi.ipi6_addr.s6_addr);
             pktinfobuf[16..].copy_from_slice(&pi.ipi6_ifindex.to_ne_bytes());
             &pktinfobuf
@@ -1815,8 +1821,9 @@ fn copypktopts(dst: &mut Ip6Pktopts, src: &Ip6Pktopts) -> Result<(), Errno> {
         if let Some(pi) = src.ip6po_pktinfo {
             let p = malloc(size_of::<In6Pktinfo>(), M_IP6OPT, M_NOWAIT).ok_or(())?;
             let p = p.cast::<In6Pktinfo>();
-            // SAFETY: a fresh allocation of the structure's size; `pi` is the source's own
-            // packet info.
+            // SAFETY: `p` is a fresh allocation of the structure's size, written whole here;
+            // `pi` is read under `ip6po_pktinfo`'s invariant (the field's documentation): the
+            // source's own block, alive while `src` is borrowed.
             unsafe { p.as_ptr().write(pi.as_ptr().read()) };
             dst.ip6po_pktinfo = Some(p);
         }

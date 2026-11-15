@@ -762,7 +762,7 @@ mod tests {
     }
 
     fn stat(c: Ip6statCounters) -> u64 {
-        IP6COUNTERS[c as usize].load(Ordering::Relaxed)
+        IP6COUNTERS.read()[c as usize]
     }
 
     /// A fragment of datagram `ident` from fd00::1 to fd00::2: `data` at byte offset `off`,

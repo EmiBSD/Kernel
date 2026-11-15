@@ -1350,17 +1350,17 @@ pub fn ifaref(ifa: &'static Ifaddr) -> &'static Ifaddr {
 }
 
 /// `ifafree(ifa)`: one reference of the interface address given back; with the last, the
-/// address is freed (`free(ifa, M_IFADDR, 0)`): an Internet address back to its records'
-/// free list (`kernel::netinet::in_var`, N6.4a), another family's storage through the `Inet`
-/// leg (IPv6's, `bsd`'s until N6.5).
+/// address is freed (`free(ifa, M_IFADDR, 0)`): an Internet or IPv6 address back to its
+/// records' free list (`kernel::netinet::in_var`, N6.4a; `kernel::netinet6::in6_var`,
+/// N6.5a); an address of no protocol (a test's) is left as it is.
 pub fn ifafree(ifa: &'static Ifaddr) {
     if !ifa.ifa_refcnt.rele() {
         return;
     }
     if let Some(ia) = crate::netinet::in_var::InIfaddr::of(ifa) {
         crate::netinet::in_var::in_ifafree(ia);
-    } else if let Some(i) = if_::inet() {
-        i.ifa_free(ifa);
+    } else if let Some(ia6) = crate::netinet6::in6_var::In6Ifaddr::of(ifa) {
+        crate::netinet6::in6_var::in6_ifafree(ia6);
     }
 }
 
@@ -3117,7 +3117,6 @@ pub(crate) mod tests {
     struct TestInet {
         hits: AtomicU32,
         misses: AtomicU32,
-        freed: AtomicU32,
     }
 
     impl if_::Inet for TestInet {
@@ -3129,18 +3128,8 @@ pub(crate) mod tests {
         fn tcpstat_lro(&self, _hw: bool) {}
         fn nd6_ifattach(&self, _ifp: &'static Ifnet) {}
         fn nd6_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn in6_ifdetach(&self, _ifp: &'static Ifnet) {}
-        fn in6_ifattach(&self, _ifp: &'static Ifnet) -> Result<(), Errno> {
-            Ok(())
-        }
         fn ip6_forwarding(&self) -> bool {
             false
-        }
-        fn in6_purge_linklocal(&self, _ifp: &'static Ifnet) -> bool {
-            false
-        }
-        fn ifa_free(&self, _ifa: &'static Ifaddr) {
-            self.freed.fetch_add(1, Ordering::Relaxed);
         }
         fn ip6_multipath(&self) -> bool {
             MULTIPATH.load(Ordering::Relaxed)
@@ -3157,7 +3146,6 @@ pub(crate) mod tests {
     static TEST_INET: TestInet = TestInet {
         hits: AtomicU32::new(0),
         misses: AtomicU32::new(0),
-        freed: AtomicU32::new(0),
     };
 
     /// The types of the routing messages the routing socket's tap saw.

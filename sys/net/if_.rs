@@ -162,9 +162,8 @@ use crate::netinet::tcp_input::tcp_input_mlist;
 use crate::netinet::tcp_output::tcp_if_output_tso;
 use crate::netinet::tcp_var::{TcpstatCounters, tcpstat_inc};
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6::{in6_purgeaddr, in6ifa_ifpforlinklocal, satosin6_const};
+use crate::netinet6::in6::satosin6_const;
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6_ifattach::{in6_ifattach, in6_ifdetach};
 #[cfg(feature = "inet6")]
 use crate::netinet6::in6_proto::IP6_FORWARDING;
 #[cfg(feature = "inet6")]
@@ -201,52 +200,6 @@ pub use kernel::net::if_var::{counters_inc, counters_pkt};
 pub static IFNETLIST: IfnetHead = IfnetHead(&kernel::net::if_::IFNETLIST);
 
 pub use kernel::net::if_::IF_TMPLIST_LOCK;
-
-/// `(*ifp->if_ioctl)(ifp, cmd, data)`: the driver's request handler (`ENODEV` once the
-/// interface is detached, the C's `if_detached_ioctl`). A kernel driver (the loopback's,
-/// N6.3c2) gets a zeroed image of the command's `IOCPARM_LEN(cmd)` bytes instead of `data`
-/// (see [`kernel_driver_ioctl`]).
-///
-/// # Safety
-///
-/// `data` points at the request's structure for `cmd`, aligned for it, readable and writable
-/// for `IOCPARM_LEN(cmd)` bytes and readable through the largest union member a handler may
-/// read (an `in6_ifreq` read through an `ifreq`), as
-/// [`IfIoctlFn`](crate::net::if_var::IfIoctlFn)'s contract says. The raw callers pass whole,
-/// real structures (`in_.rs`'s `ifaddr`s, `in6.rs`'s `in6_ifreq`s), which satisfy it.
-pub unsafe fn ifp_ioctl(ifp: &'static Ifnet, cmd: u64, data: *mut u8) -> Result<(), Errno> {
-    if ifp.if_ioctl_detached() {
-        return Err(Errno::ENODEV);
-    }
-    if ifp.if_driver.get().is_none() {
-        // No handler at all (before attach): the C's NULL `if_ioctl` slot's answer here.
-        return Err(Errno::ENOTTY);
-    }
-    let Some(l) = ifp.legacy_opt() else {
-        return kernel_driver_ioctl(ifp, cmd);
-    };
-    match l.if_ioctl.get() {
-        // SAFETY: the caller's contract is the handler's.
-        Some(ioctl) => unsafe { ioctl(ifp, cmd, data) },
-        None => Err(Errno::ENOTTY),
-    }
-}
-
-/// [`ifp_ioctl`] for an interface whose driver is the kernel's: the four requests the raw
-/// callers make (`in_.rs`'s and `in6.rs`'s `SIOCSIFADDR` and `SIOCSIFDSTADDR`, whose `data` is
-/// the protocol's `struct ifaddr`, not a request image; `in6.rs`'s `SIOCADDMULTI` and
-/// `SIOCDELMULTI`, an `in6_ifreq`) reach the driver with a zeroed image of `IOCPARM_LEN(cmd)`
-/// bytes, since the kernel's `NetDriver::ioctl` takes the request's bytes and `data` cannot be
-/// read without `unsafe`. The one kernel driver they reach is the loopback's, which reads no
-/// data for any of the four (if_loop.c:276-306); the image goes with `in_.rs` and `in6.rs`
-/// (N6.4, N6.5: docs/SCAFFOLDING.md), which pass their own requests to the kernel's
-/// `if_ioctl` then.
-fn kernel_driver_ioctl(ifp: &'static Ifnet, cmd: u64) -> Result<(), Errno> {
-    let mut image = [0u64; 8];
-    let bytes = hal::user::bytes_of_mut(&mut image[..]);
-    let n = (iocparm_len(cmd) as usize).min(bytes.len());
-    kernel::net::if_::if_ioctl(ifp, cmd, &mut bytes[..n])
-}
 
 impl kernel::net::if_var::NetDriver for LegacyNetDriver {
     fn start(&self, ifp: &'static Ifnet) {
@@ -387,6 +340,14 @@ pub struct BsdNetLegs;
 /// The one [`BsdNetLegs`].
 pub static BSD_NET_LEGS: BsdNetLegs = BsdNetLegs;
 
+/// The C's `hbh_buf`, as `BsdNetLegs::ip6_output_opts` points MLD's options at it: a
+/// `'static` copy of the kernel's [`MLD6_HBH`](kernel::netinet6::mld6::MLD6_HBH), so
+/// `ip6_output`'s `make_exthdr` reads `(ip6h_len + 1) << 3` bytes of an image that has them
+/// (checked at the end of the code), for as long as the packet is being built (N6.5a,
+/// until N6.5c).
+#[cfg(feature = "inet6")]
+static MLD6_HBH_IMAGE: [u8; 8] = kernel::netinet6::mld6::MLD6_HBH;
+
 /// `ipv4_input` as the kernel's `if_input_proto` takes it (the kernel's own).
 pub fn ipv4_input_proto(
     ifp: &'static Ifnet,
@@ -447,22 +408,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         let _ = ifp;
     }
 
-    fn in6_ifdetach(&self, ifp: &'static Ifnet) {
-        #[cfg(feature = "inet6")]
-        in6_ifdetach(ifp);
-        let _ = ifp;
-    }
-
-    fn in6_ifattach(&self, ifp: &'static Ifnet) -> Result<(), Errno> {
-        #[cfg(feature = "inet6")]
-        return in6_ifattach(ifp);
-        #[cfg(not(feature = "inet6"))]
-        {
-            let _ = ifp;
-            Err(Errno::EAFNOSUPPORT)
-        }
-    }
-
     fn ip6_forwarding(&self) -> bool {
         #[cfg(feature = "inet6")]
         return IP6_FORWARDING.load(Ordering::Relaxed) != 0;
@@ -470,13 +415,64 @@ impl kernel::net::if_::Inet for BsdNetLegs {
         false
     }
 
-    fn ifa_free(&self, ifa: &'static Ifaddr) {
-        // free(ifa, M_IFADDR, 0): the protocol's in_ifaddr/in6_ifaddr whose ifaddr this is.
-        crate::kern::kern_malloc::free(
-            core::ptr::NonNull::from(ifa).cast(),
-            crate::sys::malloc::M_IFADDR,
-            0,
-        );
+    fn nd6_dad_start(&self, ifa: &'static Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6_nbr::nd6_dad_start(ifa);
+        let _ = ifa;
+    }
+
+    fn nd6_dad_stop(&self, ifa: &'static Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6_nbr::nd6_dad_stop(ifa);
+        let _ = ifa;
+    }
+
+    fn nd6_expire_timer_update(&self, ia6: &'static kernel::netinet6::in6_var::In6Ifaddr) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6::nd6_expire_timer_update(ia6);
+        let _ = ia6;
+    }
+
+    fn nd6_purge(&self, ifp: &'static Ifnet) {
+        #[cfg(feature = "inet6")]
+        crate::netinet6::nd6::nd6_purge(ifp);
+        let _ = ifp;
+    }
+
+    fn ip6_output_opts(
+        &self,
+        m: kernel::net::mbuf::MbufBox,
+        router_alert: bool,
+        flags: i32,
+        ifidx: u16,
+        hlim: u8,
+        loop_: bool,
+    ) -> Result<(), Errno> {
+        #[cfg(feature = "inet6")]
+        {
+            use crate::netinet6::ip6_output::{ip6_initpktopts, ip6_output};
+            use crate::netinet6::ip6_var::{Ip6Moptions, Ip6Pktopts};
+            // ip6_opts: the C's static options pointing at hbh_buf, here this file's
+            // 'static image of MLD's router alert (MLD6_HBH_IMAGE, whose length byte is
+            // checked against its size at compile time), which ip6_output copies into the
+            // packet. Only that image ever gets here: no caller's bytes.
+            let mut opts = Ip6Pktopts::default();
+            ip6_initpktopts(&mut opts);
+            opts.ip6po_hbh = router_alert.then(|| core::ptr::NonNull::from(&MLD6_HBH_IMAGE).cast());
+            let im6o = Ip6Moptions {
+                im6o_memberships: crate::sys::queue::ListHead::new(),
+                im6o_ifidx: ifidx,
+                im6o_hlim: hlim,
+                im6o_loop: u8::from(loop_),
+            };
+            return ip6_output(park(m), Some(&opts), None, flags, Some(&im6o), None);
+        }
+        #[cfg(not(feature = "inet6"))]
+        {
+            let _ = (router_alert, flags, ifidx, hlim, loop_);
+            drop(m);
+            Err(Errno::EAFNOSUPPORT)
+        }
     }
 
     fn ip6_multipath(&self) -> bool {
@@ -613,15 +609,11 @@ impl kernel::net::if_::Inet for BsdNetLegs {
     fn ip6stat_deliver(&self, c: kernel::net::if_::Ip6Deliver) {
         #[cfg(feature = "inet6")]
         {
-            use crate::netinet6::ip6_input::IP6COUNTERS;
-            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_inc};
+            use crate::netinet6::ip6_var::{Ip6statCounters, ip6stat_dec, ip6stat_inc};
             use kernel::net::if_::Ip6Deliver;
             match c {
                 Ip6Deliver::Delivered => ip6stat_inc(Ip6statCounters::Ip6sDelivered),
-                Ip6Deliver::Undelivered => {
-                    IP6COUNTERS[Ip6statCounters::Ip6sDelivered as usize]
-                        .fetch_sub(1, Ordering::Relaxed);
-                }
+                Ip6Deliver::Undelivered => ip6stat_dec(Ip6statCounters::Ip6sDelivered),
                 Ip6Deliver::Toomanyhdr => ip6stat_inc(Ip6statCounters::Ip6sToomanyhdr),
                 Ip6Deliver::Tooshort => ip6stat_inc(Ip6statCounters::Ip6sTooshort),
                 Ip6Deliver::Cantforward => ip6stat_inc(Ip6statCounters::Ip6sCantforward),
@@ -649,16 +641,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
             let _ = (off, nxt);
             drop(m);
         }
-    }
-
-    fn in6_purge_linklocal(&self, ifp: &'static Ifnet) -> bool {
-        #[cfg(feature = "inet6")]
-        if let Some(ia6) = in6ifa_ifpforlinklocal(ifp, 0) {
-            in6_purgeaddr(&ia6.ia_ifa);
-            return true;
-        }
-        let _ = ifp;
-        false
     }
 }
 
@@ -1155,6 +1137,13 @@ pub fn ifa_print_all() {
     }
 }
 
+// MLD6_HBH_IMAGE's length byte describes it exactly: make_exthdr's read stays inside it.
+#[cfg(feature = "inet6")]
+const _: () = {
+    let h = kernel::netinet6::mld6::MLD6_HBH;
+    assert!((h[1] as usize + 1) << 3 == h.len());
+};
+
 /* </CODE> */
 
 /* <TESTS> */
@@ -1283,6 +1272,8 @@ pub(crate) mod tests {
         // (N6.4a): a later test that detaches the same index would free an earlier test's
         // record (`rti_delete`) into this test's memory.
         kernel::netinet::in_var::in_var_test_reset();
+        // The IPv6 address and membership records' (N6.5a), as the Internet ones.
+        kernel::netinet6::in6_var::in6_var_test_reset();
         kernel::netinet::igmp::igmp_test_reset();
         kernel::netinet::if_ether::arp_test_reset();
         guard
@@ -1397,6 +1388,117 @@ pub(crate) mod tests {
             "a valid checksum"
         );
         m_freem(m);
+    }
+
+    /// The bytes of the packets [`copy_output`] was given.
+    #[cfg(feature = "inet6")]
+    static COPIED: std::sync::Mutex<std::vec::Vec<std::vec::Vec<u8>>> =
+        std::sync::Mutex::new(std::vec::Vec::new());
+
+    /// An `if_output` that copies the packet into [`COPIED`] and frees it.
+    ///
+    /// # Safety
+    ///
+    /// `IfOutputFn`'s contract.
+    #[cfg(feature = "inet6")]
+    unsafe fn copy_output(
+        _ifp: &'static Ifnet,
+        m: &'static Mbuf,
+        _dst: *const Sockaddr,
+        _rt: Option<&'static Rtentry>,
+    ) -> Result<(), Errno> {
+        let m = crate::sys::mbuf::unpark(m);
+        let mut b = std::vec![0u8; usize::try_from(m.m_pkthdr().len.get()).unwrap_or(0)];
+        kernel::net::mbuf::m_copydata(&m, 0, &mut b);
+        COPIED.lock().unwrap_or_else(|e| e.into_inner()).push(b);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(feature = "inet6")]
+    fn ip6_output_opts_sends_the_router_alert_whole() {
+        use kernel::net::if_::Inet as _;
+
+        use crate::netinet::icmp6::MLD_LISTENER_REPORT;
+        use crate::netinet::in_::{IPPROTO_HOPOPTS, IPPROTO_ICMPV6};
+        use crate::netinet::ip6::{IP6OPT_PADN, IP6OPT_ROUTER_ALERT};
+        use crate::sys::mbuf::unpark;
+
+        let _g = setup_net();
+        let ifp = test_ifnet(b"tra6");
+        ifp.if_flags.set(IFF_UP | IFF_RUNNING | IFF_MULTICAST);
+        ifp.if_mtu.set(1500);
+        ifp.if_output().set(Some(copy_output));
+        if_attach(ifp);
+        let idx = (ifp.if_index.get() as u16).to_be_bytes();
+        // An MLD report as mld6_sendpkt builds it: fe80::1 -> ff02::1:3, both with the
+        // interface's zone embedded, hop limit 1, 24 bytes of MLD.
+        let mut p = std::vec![0x60, 0, 0, 0, 0, 24, IPPROTO_ICMPV6 as u8, 1];
+        p.extend_from_slice(&[0xfe, 0x80, idx[0], idx[1], 0, 0, 0, 0]);
+        p.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+        p.extend_from_slice(&[0xff, 0x02, idx[0], idx[1], 0, 0, 0, 0]);
+        p.extend_from_slice(&[0, 0, 0, 0, 0, 1, 0, 3]);
+        p.extend_from_slice(&[MLD_LISTENER_REPORT; 1]);
+        p.extend_from_slice(&[0; 23]);
+        COPIED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+
+        // With the router alert: the whole 8-byte hop-by-hop header between the IPv6 header
+        // and the MLD message, its next header the old one, the payload length 8 longer.
+        net_lock();
+        let r = BSD_NET_LEGS.ip6_output_opts(
+            unpark(test_packet(&p)),
+            true,
+            0,
+            ifp.if_index.get() as u16,
+            1,
+            false,
+        );
+        net_unlock();
+        assert_eq!(r, Ok(()));
+        let out = COPIED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .expect("the report sent");
+        assert_eq!(out.len(), 40 + 8 + 24);
+        assert_eq!((out[4], out[5], out[6]), (0, 32, IPPROTO_HOPOPTS as u8));
+        assert_eq!(
+            out[40..48],
+            [
+                IPPROTO_ICMPV6 as u8,
+                0,
+                IP6OPT_PADN,
+                0,
+                IP6OPT_ROUTER_ALERT,
+                2,
+                0,
+                0
+            ]
+        );
+        assert_eq!(out[48], MLD_LISTENER_REPORT);
+
+        // Without it: the packet as it was given.
+        net_lock();
+        let r = BSD_NET_LEGS.ip6_output_opts(
+            unpark(test_packet(&p)),
+            false,
+            0,
+            ifp.if_index.get() as u16,
+            1,
+            false,
+        );
+        net_unlock();
+        assert_eq!(r, Ok(()));
+        let out = COPIED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop()
+            .expect("the report sent");
+        assert_eq!(out.len(), 40 + 24);
+        assert_eq!(
+            (out[5], out[6], out[40]),
+            (24, IPPROTO_ICMPV6 as u8, MLD_LISTENER_REPORT)
+        );
     }
 
     #[test]

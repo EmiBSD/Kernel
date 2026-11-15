@@ -6276,7 +6276,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/net/if_.rs"
 lz = ["sys/net/if_.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs"]
+adapted_by = ["sys/kernel/task.rs", "sys/kernel/sched.rs", "sys/hal/netlock.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/domain.rs", "sys/kernel/net/file.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/bpf.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/net/if_ethersubr.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/igmp.rs", "sys/kernel/netinet/in_var.rs", "sys/kernel/netinet/if_ether.rs", "sys/kernel/netinet/ip_input.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_ifattach.rs", "sys/kernel/netinet6/in6_var.rs"]
 notes = "M7b: module if_ (if is a Rust keyword); every constant, if_nameindex, if_clonereq, if_rxring(_info), if_rxrinfo, if_data, if_status_description with LINK_STATE_DESCRIPTIONS (a slice, no NULL terminator), if_msghdr, ifa_msghdr, if_announcemsghdr, if_ieee80211_data/msghdr, if_nameindex_msg, ifg_req, ifg_attrib, ifgroupreq, ifreq, ifaliasreq, ifmediareq, ifkalivereq, ifconf, if_laddrreq, if_afreq, if_parent, if_sffpage; the unions are #[repr(C)] unions with safe accessors for the ifr_*/ifgr_*/ifc_*/ifra_* shorthands; IF_Kbps/Mbps/Gbps, IFQ_PRIO2TOS/TOS2PRIO, LINK_STATE_IS_UP, LINK_STATE_DESC_MATCH as const fns; CTL_IFQ_NAMES waits for sys/sysctl.h; the prototypes are net/if.c's functions in the same module (M7b)"
 
 [[module]]
@@ -6485,7 +6485,8 @@ adapted_by = ["sys/crypto/blake2s.rs"]
 [[module]]
 rust = "sys/netinet/icmp6.rs"
 lz = ["sys/netinet/icmp6.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/hal/sys/netinet_icmp6.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet/icmp_var.rs"
@@ -6581,7 +6582,7 @@ adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/n
 rust = "sys/netinet/ip_ipip.rs"
 lz = ["sys/netinet/ip_ipip.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet/ip_ipsp.rs"
@@ -6690,7 +6691,7 @@ status = "inherited"
 rust = "sys/netinet/udp_usrreq.rs"
 lz = ["sys/netinet/udp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_output.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet/udp_var.rs"
@@ -6701,60 +6702,49 @@ status = "inherited"
 rust = "sys/netinet6/dest6.rs"
 lz = ["sys/netinet6/dest6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/frag6.rs"
 lz = ["sys/netinet6/frag6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/icmp6.rs"
 lz = ["sys/netinet6/icmp6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/net/domain.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6.rs"
 lz = ["sys/netinet6/in6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs"]
-
-[[module]]
-rust = "sys/netinet6/in6_cksum.rs"
-lz = ["sys/netinet6/in6_cksum.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs"]
-
-[[module]]
-rust = "sys/netinet6/in6_ifattach.rs"
-lz = ["sys/netinet6/in6_ifattach.rs"]
-status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/rtsock.rs", "sys/hal/sys/netinet6_in6.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "adapted"
-adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs"]
+adapted_by = ["sys/lib/libkern/siphash.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_pcb.rs", "sys/hal/sys/netinet6_in6.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_proto.rs"
 lz = ["sys/netinet6/in6_proto.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_src.rs"
 lz = ["sys/netinet6/in6_src.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/in6_src.rs"]
 
 [[module]]
 rust = "sys/netinet6/in6_var.rs"
 lz = ["sys/netinet6/in6_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/in6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_divert.rs"
@@ -6769,26 +6759,22 @@ status = "adapted"
 adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/route.rs"]
 
 [[module]]
-rust = "sys/netinet6/ip6_id.rs"
-lz = ["sys/netinet6/ip6_id.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/netinet6/ip6_input.rs"
 lz = ["sys/netinet6/ip6_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_output.rs"
 lz = ["sys/netinet6/ip6_output.rs"]
 status = "adapted"
-adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/crypto/idgen.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/mld6.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6_var.rs"
 lz = ["sys/netinet6/ip6_var.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_src.rs"]
 
 [[module]]
 rust = "sys/netinet6/ip6protosw.rs"
@@ -6799,18 +6785,13 @@ status = "inherited"
 rust = "sys/netinet6/mld6.rs"
 lz = ["sys/netinet6/mld6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs"]
-
-[[module]]
-rust = "sys/netinet6/mld6_var.rs"
-lz = ["sys/netinet6/mld6_var.rs"]
-status = "inherited"
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/mld6.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6.rs"
 lz = ["sys/netinet6/nd6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/in6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/nd6_nbr.rs"
@@ -6828,13 +6809,13 @@ adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs"]
 rust = "sys/netinet6/raw_ip6.rs"
 lz = ["sys/netinet6/raw_ip6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/cred.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/route6.rs"
 lz = ["sys/netinet6/route6.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs"]
+adapted_by = ["sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet6/ip6_var.rs"]
 
 [[module]]
 rust = "sys/netinet6/udp6_output.rs"
@@ -7614,6 +7595,11 @@ lz = "sys/net/if_.rs::bytes_of"
 native = []
 kind = "dropped"
 reason = "the requests and the rows ifioctl, ifconf, the group and rxr requests copy out are abi_pod! images, copied through hal::user::UserPtr (or viewed by hal::pod); no raw byte view of a value is left"
+
+[[module.fn]]
+lz = "sys/net/if_.rs::ifp_ioctl"
+native = ["if_ioctl"]
+kind = "merged"
 
 [[module.fn]]
 lz = "sys/net/if_.rs::IfIdxmap"
@@ -8695,7 +8681,52 @@ rust = "sys/hal/sys/netinet6_in6.rs"
 crate = "hal"
 lz = ["sys/netinet6/in6.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED; bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct in6_addr (16), struct sockaddr_in6 (28), IN6_IS_ADDR_UNSPECIFIED. N6.5a: the whole userland half of netinet6/in6.h moved from bsd's in6.rs, which re-exports it (one In6Addr and SockaddrIn6): struct ipv6_mreq (20), in6_pktinfo (20), ip6_mtuinfo (32) as abi_pod! images, In6Addr's views, every IPV6_* option name and value, IPV6CTL_* with CTL_IPV6PROTO_NAMES and IPV6CTL_NAMES, IN6ADDR_*, IN6MASK*, SA6_ANY, the IN6_IS_ADDR_*/IN6_IS_SCOPE_* predicates as #[inline] const fns; LZ's five header tests (the reference-backed one included)"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_in6_var.rs"
+crate = "hal"
+lz = ["sys/netinet6/in6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/in6_var.h's userland part as abi_pod! images with const size asserts: in6_addrlifetime (24), in6_ifstat (160), icmp6_ifstat (272), in6_ifreq (288, its union the 272 bytes read by copy through LZ's accessor names), in6_aliasreq (128, ifra_addr the union's address member); the SIOC*_IN6 commands, IN6_IFF_*; LZ's reference test and two layout tests; the _KERNEL part is kernel::netinet6::in6_var's (bsd's until N6.5a's addresses commit)"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_var.rs::In6IfreqIfru"
+native = ["In6Ifreq"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_var.rs::In6AliasreqIfrau"
+native = ["In6Aliasreq"]
+kind = "merged"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_ip6_var.rs"
+crate = "hal"
+lz = ["sys/netinet6/ip6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/ip6_var.h's userland part: struct ip6stat (401 u64, net.inet6.ip6.stats) as an abi_pod! image and the indices of its words, enum ip6stat_counters (the C's _KERNEL part, beside the image); LZ's counters test"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_mld6.rs"
+crate = "hal"
+lz = ["sys/netinet6/mld6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/mld6.h whole: mldv2_query (28), mldv2_report (8), mldv2_record (20) as abi_pod! images, the MLD_* constants, MLD_MINLEN, MLD_V2_QUERY_MINLEN, the MLD_MRC_*/MLD_QQIC_*/MLD_QRESV/MLD_SFLAG/MLD_QRV macros as const fns; a layout test"
+
+[[module]]
+rust = "sys/hal/sys/netinet6_nd6.rs"
+crate = "hal"
+lz = ["sys/netinet6/nd6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/nd6.h's userland part: ND6_LLINFO_*, ND6_INFINITE_LIFETIME, nd_ifinfo (8), in6_nbrinfo (56), in6_ndireq (24) as abi_pod! images (ndp(8)'s requests); bsd's nd6.rs keeps its copies until N6.5b"
+
+[[module]]
+rust = "sys/hal/sys/netinet_icmp6.rs"
+crate = "hal"
+lz = ["sys/netinet/icmp6.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet/icmp6.h's userland part (bsd's icmp6.rs re-exports it): the ICMP6_*, MLD*, ND_*, NI_*, RPM_*, ICMPV6CTL_* constants with ICMPV6CTL_NAMES, RTF_PROBEMTU, and the 24 structures as abi_pod! images with LZ's size asserts (icmp6_hdr 8 with icmp6_dataun as its four bytes, no union and no unsafe; mld_hdr, the five nd_* messages, the seven nd_opt_*, the node-information and router-renumbering images, icmp6_filter 32, icmp6stat 541 u64), LZ's accessor names and enum icmp6stat_counters; LZ's four tests"
 
 [[module]]
 rust = "sys/hal/sys/netinet_ip.rs"
@@ -8714,7 +8745,7 @@ rust = "sys/hal/sys/netinet_ip6.rs"
 crate = "hal"
 lz = ["sys/netinet/ip6.rs"]
 status = "redesigned"
-notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40); bsd keeps its copy until the protocol moves"
+notes = "N6.3c2 (D-N6.3c-21, early for N6.4-N6.6): the image the kernel's Ethernet layer reads, as an abi_pod! with its const size assert: struct ip6_hdr (40). N6.5a: netinet/ip6.h whole (N6.4a's R3): the twelve extension-header and option images (ip6_hdr_pseudo 40, ip6_ext, ip6_hbh, ip6_dest, ip6_opt 2, ip6_opt_jumbo 6, ip6_opt_nsap 4, ip6_opt_tunnel 3, ip6_opt_router 4, ip6_rthdr 4, ip6_rthdr0 8, ip6_frag 8) as abi_pod!s, IPV6_*, IP6TOS_*, IP6OPT_*, IP6_ALERT_*, IP6F_* and IP6OPT_TYPE; Ip6Hdr's vfc/hops accessors; LZ's four tests; ip6_exthdr_get stays with the mbufs (bsd's ip6.rs, which keeps its copy until N6.5c/d)"
 
 
 [[module]]
@@ -16481,6 +16512,124 @@ kind = "split"
 lz = "sys/netinet/in_pcb.rs::in_pcblookup_lock"
 native = ["in_pcblookup_held", "in_pcblookup"]
 kind = "split"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6_cksum.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6_cksum.rs"]
+status = "redesigned"
+notes = "N6.5a: in6_cksum.c in the kernel: the pseudo header's addresses read in place from the first mbuf as the words they sum to (the embedded scope's word skipped as the C's), no copy of the header and no unsafe (in4_cksum's N6.4a shape), the word loop kernel::netinet::in_cksum's cksum_add; #[inline]; LZ's five tests over kernel mbufs; bsd reaches it under LZ's path through sys/netinet6/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet6/ip6_id.rs"
+crate = "kernel"
+lz = ["sys/netinet6/ip6_id.rs"]
+status = "redesigned"
+notes = "N6.5a: ip6_id.c in the kernel: randomtab_20 inside a hal Mutexed (IPL_SOFTNET) instead of LZ's StaticCell beside a bsd mutex (one unsafe gone); the generator's three functions private as the C's static ones; LZ's three tests"
+
+[[module.fn]]
+lz = "sys/netinet6/ip6_id.rs::RANDOMTAB_MTX"
+native = ["RANDOMTAB_20"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet6/ip6_var.rs"
+crate = "kernel"
+lz = ["sys/netinet6/ip6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: netinet6/ip6_var.h's kernel half: IP6COUNTERS and ICMP6COUNTERS as hal::percpu::Counters (LZ: static atomic arrays in bsd's ip6_input.rs and icmp6.rs; their rows go under the kernel modules that list those files, N6.5d), ip6stat_inc/add/dec/inc_idx and icmp6stat_inc/inc_hist #[inline], the IP6PO_* and ip6_output flags, and the header's externs defined by in6_proto.c (ip6_forwarding .. ip6_dad_pending, ip6_mtudisc_timeout) as atomics (LZ's in bsd's in6_proto.rs, which re-exports them; their moved rows at N6.5d); struct ip6q/ip6asfrag/ip6_moptions/ip6_pktopts and mtod_ip6 stay bsd's until N6.5c/d; struct ip6stat and enum ip6stat_counters are hal::sys::netinet6_ip6_var's"
+
+[[module]]
+rust = "sys/kernel/netinet6/mld6_var.rs"
+crate = "kernel"
+lz = ["sys/netinet6/mld6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: mld6_var.h in the kernel over hal::random; struct mld6_pktinfo's list is mld6_fasttimo's node (igmp_var's shape, LZ: a Vec); LZ's reference test and a range test of MLD_RANDOM_DELAY"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6.rs"]
+status = "redesigned"
+notes = "N6.5a: in6.c in the kernel: the address ioctls over the request's bytes (pod::at/put at the in6_ifreq/in6_aliasreq offsets; LZ's 14 unsafe over caddr_t gone), KERNEL_LOCK then NET_LOCK as in6.c (D-17) with the net lock detached across the driver's SIOCSIFADDR and lent to the route steps (NetHolding: Detached for in6_ioctl and the ioctl paths, Held for if_up); in6_update_ifa/in6_purgeaddr/in6_unlink_ifa/in6_ifinit over the kernel's routes; in6_addmulti/in6_delmulti/in6_hasmulti/in6_lookupmulti with if_maddrlock and the kernel lock C-style; in6_ifawithscope's RFC 6724 rules over the records' words; ND's dad_start/dad_stop/expire_timer_update through temporary Inet legs (N6.5b); SIOCGIFINFO_IN6/SIOCGNBRINFO_IN6 answered by bsd's in6_control until N6.5b; 12 tests (LZ's 16 in6.c tests re-expressed over the kernel's interfaces, the ioctl table, the link-local companion, routes and memberships, the recycled records)"
+
+[[module.fn]]
+lz = "sys/netinet6/in6.rs::ifatoia6"
+native = ["sys/kernel/netinet6/in6_var.rs::ifatoia6"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet6/in6.rs::ifa_static"
+native = []
+kind = "dropped"
+reason = "the records are reached through Ifaddr::ifa_in6, a &'static link; no lifetime extension of a list element is needed"
+
+[[module.fn]]
+lz = "sys/netinet6/in6.rs::ia6_static"
+native = []
+kind = "dropped"
+reason = "In6Ifaddr::of (the back-link) answers the &'static record"
+
+[[module.fn]]
+lz = "sys/netinet6/in6.rs::ifa_family"
+native = []
+kind = "dropped"
+reason = "the family test of an interface address is In6Ifaddr::of's presence (only in6.c makes AF_INET6 records); no raw read of ifa_addr's family"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6_var.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6_var.rs"]
+status = "redesigned"
+notes = "N6.5a: in6_var.h's _KERNEL half: In6Ifaddr and In6Multi as recycled &'static records (IA6_FREE, INM6_FREE; never freed: D-2, the vmstat -m high-water mark flagged), reached by Ifaddr::ifa_in6/Ifmaddr::ifma_in6 back-links (ifatoia6/ifmatoin6m one load, LZ's 2 casts and 3 unsafe impl Sync gone), Sin6Words over hal::link::SaWords named by the generic SaLinks, In6AddrlifetimeCell, ia6_memberships as In6Memberships (an M_IPMADDR array of the records, D-11) in a Mutexed; in6_ifaddr_alloc/in6_ifafree/in6_multi_alloc/in6_multi_free, in6_var_test_reset (bsd's setup_net and the kernel setups); the IA6_*/IFA_IN6 helpers and IN6_ARE_* macros; 3 tests; struct in6_multi_mship stays bsd's for ip6_setmoptions until N6.5c"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_var.rs::sa_in6"
+native = []
+kind = "dropped"
+reason = "IFA_IN6/IFA_DSTIN6 read the record's own words (ifatoia6(x).ia_addr.addr()), not the socket address through the generic part's pointer"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6_ifattach.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6_ifattach.rs"]
+status = "redesigned"
+notes = "N6.5a: in6_ifattach.c in the kernel: the EUI-64 from the kernel's if_sadl record (LZ's 3 raw link-address reads gone), in6_ifattach/in6_ifattach_linklocal/in6_ifattach_loopback over in6's NetHolding, in6_ifdetach under the caller's proof; nd6_dad_start and nd6_purge through temporary Inet legs and nd6_need_cache copied (ND's, N6.5b); the Inet legs in6_ifattach, in6_ifdetach, in6_purge_linklocal gone (the kernel's interface layer calls these); LZ's 5 tests over kernel interfaces and one of nd6_need_cache"
+
+[[module]]
+rust = "sys/kernel/netinet6/mld6.rs"
+crate = "kernel"
+lz = ["sys/netinet6/mld6.rs"]
+status = "redesigned"
+notes = "N6.5a: mld6.c in the kernel: the router-alert hop-by-hop header a const image lent to the output path (LZ's StaticCell and per-message Ip6Pktopts gone), the report lists as MBox chains of M_MRTABLE M_NOWAIT nodes (igmp's shape; LZ: Vec), mld6_input by value with the header copied (m_copydata), the reports through the temporary Inet leg ip6_output_opts until N6.5c; LZ's 8 tests stay in bsd's mld6.rs shim over bsd's fixture (N6.4a's R19 precedent)"
+
+[[module.fn]]
+lz = "sys/netinet6/mld6.rs::MLD6_HBH_BUF"
+native = ["MLD6_HBH"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet6/mld6.rs::mld6_ip6_opts"
+native = ["MLD6_HBH"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet6/mld6.rs::inet6_memberships"
+native = []
+kind = "dropped"
+reason = "the walk of if_maddrlist filters by In6Multi::of (the back-link), inline at its three loops"
+
+[[module]]
+rust = "sys/kernel/netinet6/in6_src.rs"
+crate = "kernel"
+lz = ["sys/netinet6/in6_src.rs"]
+status = "redesigned"
+notes = "N6.5a: in6_src.c in the kernel: in6_pcbselsrc (generic over the glue: the pcb's route loan, the net lock's proof), in6_selectsrc, in6_selectroute (the caller's Route's cached route lent, Route::mpath6), in6_selectif, in6_selecthlim, in6_embedscope, in6_recoverscope, in6_clearscope; the options' members in6_src.c reads taken as arguments (the packet info, Option<&mut In6Pktinfo> for in6_pcbselsrc's override, its interface, the multicast interface: D-22) so LZ's 9 unsafe over the options' NonNulls go; bsd's in6_src.rs copies them out of its raw words (2 unsafe) until N6.5c; LZ's 3 tests stay in bsd's adapter over its fixture"
+
+[[module.fn]]
+lz = "sys/netinet6/in6_src.rs::pktinfo"
+native = ["sys/netinet6/in6_src.rs::with_pktinfo"]
+kind = "renamed"
 
 [[module]]
 rust = "sys/kernel/netinet6/in6_pcb.rs"

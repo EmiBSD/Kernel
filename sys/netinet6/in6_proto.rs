@@ -89,7 +89,8 @@
 //! `inet6sw[]`; every number without an entry goes to the raw IPv6 handler.
 //!
 //! Locks: \[a\] atomic operations. The sysctl variables are atomics, as
-//! `netinet/ip_input.rs`'s are.
+//! `netinet/ip_input.rs`'s are; the IPv6 ones are the kernel's since N6.5a
+//! (`kernel::netinet6::ip6_var`, re-exported here), the ICMPv6 ones stay until N6.5d.
 //!
 //! ## Deviations
 //! - `IPSEC` is configured (M9c): AH, ESP and IPComp take `ah46_input`, `esp46_input` and
@@ -111,8 +112,6 @@ use crate::netinet::in_::{
     IPPROTO_TCP, IPPROTO_UDP,
 };
 use crate::netinet::ip_ipip::ipip_input;
-use crate::netinet::ip_var::IPMTUDISCTIMEOUT;
-use crate::netinet::ip6::IPV6_DEFHLIM;
 use crate::netinet::ipsec_input::{
     ah_sysctl, ah46_input, esp_sysctl, esp46_input, ipcomp_sysctl, ipcomp46_input,
 };
@@ -123,7 +122,7 @@ use crate::netinet::udp_usrreq::{UDP6_USRREQS, udp_input, udp_sysctl, udp6_ctlin
 use crate::netinet6::dest6::dest6_input;
 use crate::netinet6::frag6::{frag6_input, frag6_slowtimo};
 use crate::netinet6::icmp6::{icmp6_fasttimo, icmp6_init, icmp6_input, icmp6_sysctl};
-use crate::netinet6::in6::{IPV6_DEFAULT_MULTICAST_HOPS, SockaddrIn6};
+use crate::netinet6::in6::SockaddrIn6;
 use crate::netinet6::ip6_divert::{DIVERT6_USRREQS, divert6_init};
 use crate::netinet6::ip6_input::{ip6_init, ip6_sysctl};
 use crate::netinet6::ip6_output::ip6_ctloutput;
@@ -324,34 +323,11 @@ pub static INET6DOMAIN: Domain = Domain {
 
 // Internet configuration info.
 
-/// \[a\] `ip6_forwarding`: no forwarding unless sysctl to enable.
-pub static IP6_FORWARDING: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip6_mforwarding`: no multicast forwarding unless ...
-pub static IP6_MFORWARDING: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip6_multipath`: no using multipath routes unless ...
-pub static IP6_MULTIPATH: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip6_sendredirects`.
-pub static IP6_SENDREDIRECTS: AtomicI32 = AtomicI32::new(1);
-/// \[a\] `ip6_defhlim`: default hop limit.
-pub static IP6_DEFHLIM: AtomicI32 = AtomicI32::new(IPV6_DEFHLIM as i32);
-/// \[a\] `ip6_defmcasthlim`: default multicast hop limit.
-pub static IP6_DEFMCASTHLIM: AtomicI32 = AtomicI32::new(IPV6_DEFAULT_MULTICAST_HOPS);
-/// \[a\] `ip6_maxfragpackets`: maximum packets in reassembly queue.
-pub static IP6_MAXFRAGPACKETS: AtomicI32 = AtomicI32::new(200);
-/// \[a\] `ip6_maxfrags`: maximum fragments in reassembly queue.
-pub static IP6_MAXFRAGS: AtomicI32 = AtomicI32::new(200);
-/// \[a\] `ip6_hdrnestlimit`: upper limit of # of extension headers (appropriate?).
-pub static IP6_HDRNESTLIMIT: AtomicI32 = AtomicI32::new(10);
-/// \[a\] `ip6_dad_count`: DupAddrDetectionTransmits.
-pub static IP6_DAD_COUNT: AtomicI32 = AtomicI32::new(1);
-/// `ip6_dad_pending`: number of currently running DADs.
-pub static IP6_DAD_PENDING: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip6_mcast_pmtu`: enable pMTU discovery for multicast?
-pub static IP6_MCAST_PMTU: AtomicI32 = AtomicI32::new(0);
-/// \[a\] `ip6_neighborgcthresh`: threshold # of NDP entries for GC.
-pub static IP6_NEIGHBORGCTHRESH: AtomicI32 = AtomicI32::new(2048);
-/// \[a\] `ip6_maxdynroutes`: max # of routes created via redirect.
-pub static IP6_MAXDYNROUTES: AtomicI32 = AtomicI32::new(4096);
+pub use kernel::netinet6::ip6_var::{
+    IP6_DAD_COUNT, IP6_DAD_PENDING, IP6_DEFHLIM, IP6_DEFMCASTHLIM, IP6_FORWARDING,
+    IP6_HDRNESTLIMIT, IP6_MAXDYNROUTES, IP6_MAXFRAGPACKETS, IP6_MAXFRAGS, IP6_MCAST_PMTU,
+    IP6_MFORWARDING, IP6_MTUDISC_TIMEOUT, IP6_MULTIPATH, IP6_NEIGHBORGCTHRESH, IP6_SENDREDIRECTS,
+};
 
 // ICMPV6 parameters.
 
@@ -359,8 +335,6 @@ pub static IP6_MAXDYNROUTES: AtomicI32 = AtomicI32::new(4096);
 pub static ICMP6_REDIRTIMEOUT: AtomicI32 = AtomicI32::new(10 * 60);
 /// \[a\] `icmp6errppslim`: 100pps.
 pub static ICMP6ERRPPSLIM: AtomicI32 = AtomicI32::new(100);
-/// \[a\] `ip6_mtudisc_timeout`: mtu discovery.
-pub static IP6_MTUDISC_TIMEOUT: AtomicI32 = AtomicI32::new(IPMTUDISCTIMEOUT);
 /* </CODE> */
 
 /* <TESTS> */
