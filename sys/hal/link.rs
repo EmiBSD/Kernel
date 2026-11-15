@@ -62,7 +62,8 @@
 //! in_ifaddr`'s `ia_addr`, `in_multi`'s `inm_sin`, the kernel's since N6.4a): the image in
 //! atomic words, which [`SaLink::set_words`] links without the token, since no write to it
 //! can race a read (every access is an atomic load or store) and it lives for ever
-//! (`'static`). [`SaLink::read`] copies it word by word.
+//! (`'static`). [`SaLink::read`] copies it word by word, as [`SaWords::read`] does for a
+//! record that reads its own words with no link (N6.5e: the counted interface addresses).
 //!
 //! [`TaggedLink<A, B>`] (N6.4b, two kinds since N6.5b) is the one word two owners share
 //! where the C shares it: a route's `rt_llinfo`, ARP's `struct llinfo_arp` on an IPv4 route
@@ -963,6 +964,23 @@ impl SaWords {
         }
     }
 
+    /// A copy of the socket address the words hold, as [`SaLink::read`] copies a linked one:
+    /// its `sa_len` bytes cut at `cap`, the size of the image stored (`size_of` of the
+    /// family's `sockaddr`, taken between 2 and [`SA_READ_MAX`]), and its two header bytes
+    /// whatever `sa_len` says. Atomic loads only: a copy racing a store may mix two images
+    /// word by word (the type's docs), never read past the storage.
+    #[inline]
+    pub fn read(&self, cap: usize) -> SaBytes {
+        let cap = cap.clamp(2, SA_READ_MAX);
+        let buf = self.bytes(cap);
+        let len = usize::from(buf[0]).min(cap);
+        // `len <= cap <= SA_READ_MAX`: it fits a `u8`.
+        SaBytes {
+            len: len as u8,
+            buf,
+        }
+    }
+
     /// The word `i` (`i < SA_WORDS`), in memory order: a reader of one member (the
     /// address of a `sockaddr_in`, its bytes 4 to 8) loads its word alone.
     #[inline]
@@ -1171,14 +1189,9 @@ impl SaLink {
         }
         let cap = usize::from(cap).min(SA_READ_MAX);
         if let Some(w) = words {
-            // A kernel-owned storage: its words, by atomic loads (no premise), cut as below.
-            let buf = w.bytes(cap);
-            let len = usize::from(buf[0]).min(cap);
-            // `len <= cap <= SA_READ_MAX`: it fits a `u8`.
-            return Some(SaBytes {
-                len: len as u8,
-                buf,
-            });
+            // A kernel-owned storage: its words, by atomic loads (no premise), cut as below
+            // (`cap` is at least 2: the invariant).
+            return Some(w.read(cap));
         }
         let mut out = SaBytes {
             len: 0,
@@ -1960,6 +1973,52 @@ mod tests {
         assert!(l.is_none() && l.read(&held).is_none());
         fn shared<T: Send + Sync>() {}
         shared::<SaWords>();
+    }
+
+    /// `SaWords::read`: a record's own words copied with no link, cut as `SaLink::read` cuts
+    /// a linked image.
+    #[test]
+    fn a_kernel_owned_address_reads_its_own_words() {
+        use crate::sys::netinet_in::{InAddr, SockaddrIn};
+        let w = SaWords::new();
+        let sin = SockaddrIn {
+            sin_len: 16,
+            sin_family: 2,
+            sin_port: 0,
+            sin_addr: InAddr {
+                s_addr: u32::from_ne_bytes([192, 168, 1, 7]),
+            },
+            sin_zero: [0; 8],
+        };
+        w.set(&sin);
+        let r = w.read(size_of::<SockaddrIn>());
+        assert_eq!(
+            (r.family(), r.as_bytes()),
+            (
+                2,
+                &[16, 2, 0, 0, 192, 168, 1, 7, 0, 0, 0, 0, 0, 0, 0, 0][..]
+            )
+        );
+        // An `sa_len` below the image (a netmask's) reads its bytes; above, the image's.
+        let mut mask = sin;
+        mask.sin_len = 5;
+        w.set(&mask);
+        assert_eq!((w.read(16).len(), w.read(16).family()), (5, 2));
+        mask.sin_len = 200;
+        w.set(&mask);
+        assert_eq!(w.read(16).len(), 16);
+        // The cap is the storage's at most, and the header is read whatever it says.
+        assert_eq!(w.read(1000).len(), 32);
+        let r = w.read(0);
+        assert_eq!((r.len(), r.family()), (2, 2));
+        // An empty image is an empty address of family 0.
+        let z = SaWords::new().read(16);
+        assert_eq!((z.len(), z.family()), (0, 0));
+        // The copy is the caller's.
+        w.set(&sin);
+        let r = w.read(16);
+        w.set(&mask);
+        assert_eq!(r[0], 16);
     }
 
     #[test]

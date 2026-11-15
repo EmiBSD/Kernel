@@ -136,6 +136,12 @@
 //! of a `&'static SaToken` is `NetHeld<'static>`, so no borrow ends it for the holder): for a
 //! shared holding `rw_status` cannot say whose it is (the C's `NET_ASSERT_LOCKED()` cannot
 //! either), so a read holding it finds is its own, as every C reader of `ifa_addr` holds one.
+//! A proof the holder makes by check also opens the net cells (`NetHeld::reader`,
+//! `NetHeld::writer`, N6.5e), so the same contract, read with every witness made from the
+//! proof dropped with it before the holding is let go (`hal::netlock::unlock` and
+//! `sleep_nsec` refuse a witness left out on the detached write holding), is what keeps a
+//! net cell's writer apart from its readers on those holdings (`Guarded::get`'s and
+//! `get_mut`'s `// SAFETY:`, `hal::netlock`'s notes).
 //! The `// SAFETY:` of `SaLink::read` rests on these; the boundary goes when
 //! `struct in_ifaddr` and `struct in6_ifaddr` are the kernel's and the interface address
 //! embeds its storage (N6.4, N6.5). Since N6.4a an IPv4 address's storage is the kernel's,

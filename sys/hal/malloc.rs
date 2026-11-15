@@ -92,6 +92,8 @@
 //!   back, so a `malloc(9)` object the C publishes to lock-free readers (bpf's descriptor,
 //!   tap and filter program, `M_DEVBUF`) is published and retired as a pool item is, with no
 //!   pool row. One `unsafe` (the handle rebuilt from the address, `from_raw`'s contract).
+//! - N6.5e: [`MArc::count`], the references alive now (`PoolArc::count`'s twin), for a
+//!   record whose C count is the handle's (`ifa_refcnt`: ddb's print and the count tests).
 
 use core::any::TypeId;
 use core::marker::PhantomData;
@@ -349,6 +351,13 @@ impl<T: Send + Sync + 'static> MArc<T> {
     /// Whether two handles name the same block.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         a.inner == b.inner
+    }
+
+    /// The references alive now (a snapshot): the handles, the [`AnyArc`]s erased from them
+    /// and an SMR word's, as [`crate::pool::PoolArc::count`] counts an item's; the C's
+    /// `ifa_refcnt` as ddb prints it and the tests check it.
+    pub fn count(this: &Self) -> usize {
+        this.inner().refs.load(Ordering::Relaxed) & REFS_MASK
     }
 
     /// The value, pinned: it stays where it is until the last handle drops it in place (a
@@ -901,6 +910,25 @@ mod tests {
             before,
             "and frees the block"
         );
+    }
+
+    #[test]
+    fn a_counted_blocks_count_is_its_live_references() {
+        testutil::install();
+        let drops = Arc::new(AtomicU32::new(0));
+        let a = MArc::new(M_UFSMNT, M_WAITOK, timer(5, &drops)).unwrap();
+        assert_eq!(MArc::count(&a), 1, "the creation reference");
+        let b = a.clone();
+        assert_eq!((MArc::count(&a), MArc::count(&b)), (2, 2));
+        let e = MArc::erase(b);
+        assert_eq!(MArc::count(&a), 2, "an erased handle still counts");
+        let f = e.clone();
+        assert_eq!(MArc::count(&a), 3);
+        drop((e, f));
+        assert_eq!(MArc::count(&a), 1);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(a);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
     }
 
     #[test]
