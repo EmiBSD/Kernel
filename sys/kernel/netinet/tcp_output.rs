@@ -1894,6 +1894,200 @@ mod tests {
     }
 
     #[test]
+    fn a_fin_takes_one_sequence_number_and_a_resent_fin_keeps_it() {
+        use crate::netinet::tcp_fsm::TCPS_FIN_WAIT_1;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"toutc", 90);
+        // The user closed with nothing left to send: the FIN goes alone at snd_nxt.
+        let (r, after) = output(
+            &inp,
+            |tp| tp.st.t_state = TCPS_FIN_WAIT_1,
+            |tp| {
+                let st = &*tp.st;
+                (st.snd_nxt, st.snd_max, st.has_flags(TF_SENTFIN))
+            },
+        );
+        assert_eq!(r, Ok(()));
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_FIN | TH_ACK);
+        assert_eq!(u32::from_be(th.th_seq), 1000);
+        assert!(payload.is_empty());
+        assert_eq!(after, (1001, 1001, true), "the FIN took 1000");
+
+        // An ACK owed after the FIN (snd_nxt at snd_max): the FIN rides again, with its own
+        // sequence number (snd_nxt pulled back by one), not a new one.
+        let before = sent(d);
+        let (r, after) = output(
+            &inp,
+            |tp| tp.st.set_flags(TF_ACKNOW),
+            |tp| (tp.st.snd_nxt, tp.st.snd_max),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(sent(d), before + 1);
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_FIN | TH_ACK);
+        assert_eq!(
+            u32::from_be(th.th_seq),
+            1000,
+            "the resent FIN reuses its number"
+        );
+        assert!(payload.is_empty());
+        assert_eq!(after, (1001, 1001));
+
+        // The retransmission timer pulled snd_nxt back to snd_una: the FIN goes again at
+        // snd_una, without an ACK owed.
+        let (r, after) = output(
+            &inp,
+            |tp| tp.st.snd_nxt = tp.st.snd_una,
+            |tp| (tp.st.snd_nxt, tp.st.snd_max),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(sent(d), before + 2);
+        let (_ip, th, _opts, _payload) = last(d);
+        assert_eq!(
+            (th.th_flags, u32::from_be(th.th_seq)),
+            (TH_FIN | TH_ACK, 1000)
+        );
+        assert_eq!(after, (1001, 1001));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_advertised_window_is_scaled_down_by_rcv_scale() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"toutd", 91);
+        let data = pattern(100);
+        queue(&so, &data);
+        let (r, adv) = output(&inp, |tp| tp.st.rcv_scale = 2, |tp| tp.st.rcv_adv);
+        assert_eq!(r, Ok(()));
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(payload, data);
+        // The receive buffer's 16384 free bytes, shifted by the scale the peer agreed to.
+        assert_eq!(u16::from_be(th.th_win), 16384 >> 2);
+        assert_eq!(adv, 5000 + 16384, "rcv_adv unscaled");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_reset_advertises_no_window_and_carries_snd_max() {
+        use crate::netinet::tcp_fsm::TCPS_CLOSED;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"toute", 92);
+        queue(&so, &pattern(100));
+        let zerowin = testtcp::with_tp(&inp, |tp| (tp.st.t_sndzerowin, None));
+        // tcp_drop of a connection whose 100 bytes went out, the peer's window since shut and
+        // snd_nxt pulled back for a retransmission: the reset carries no data and snd_max.
+        let (r, after) = output(
+            &inp,
+            |tp| {
+                let st = &mut *tp.st;
+                st.snd_max = 1100;
+                st.snd_wnd = 0;
+                st.rcv_scale = 2;
+                st.t_state = TCPS_CLOSED;
+            },
+            |tp| (tp.st.snd_nxt, tp.st.snd_max, tp.st.t_sndzerowin),
+        );
+        assert_eq!(r, Ok(()));
+        let (_ip, th, opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_RST | TH_ACK);
+        assert_eq!(
+            u32::from_be(th.th_seq),
+            1100,
+            "no data, no SYN or FIN: snd_max"
+        );
+        assert_eq!(u32::from_be(th.th_ack), 5000);
+        assert_eq!(th.th_win, 0, "a reset offers no window");
+        assert!(opts.is_empty() && payload.is_empty());
+        assert_eq!(after, (1000, 1100, zerowin + 1));
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_urgent_pointer_rides_until_snd_nxt_passes_it() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"toutf", 93);
+        let data = pattern(100);
+        queue(&so, &data);
+        // send(MSG_OOB): the urgent pointer just past the last byte queued (PRU_SENDOOB).
+        let (r, up) = output(&inp, |tp| tp.st.snd_up = 1100, |tp| tp.st.snd_up);
+        assert_eq!(r, Ok(()));
+        let (_ip, th, _opts, payload) = last(d);
+        assert_eq!(th.th_flags, TH_ACK | TH_PUSH | TH_URG);
+        assert_eq!(u16::from_be(th.th_urp), 100, "snd_up - snd_nxt");
+        assert_eq!(payload, data);
+        assert_eq!(up, 1100);
+
+        // The next segment starts at snd_up: no urgent data, the pointer dragged to snd_una.
+        let (r, up) = output(&inp, |tp| tp.st.set_flags(TF_ACKNOW), |tp| tp.st.snd_up);
+        assert_eq!(r, Ok(()));
+        let (_ip, th, _opts, _payload) = last(d);
+        assert_eq!(th.th_flags, TH_ACK);
+        assert_eq!(th.th_urp, 0);
+        assert_eq!(up, 1000, "dragged along to snd_una");
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn timestamps_ride_every_segment_and_cut_the_data_at_t_maxopd() {
+        use crate::netinet::tcp_fsm::TCPS_FIN_WAIT_1;
+        let (_g, _p) = testtcp::setup();
+        let (so, inp, d) = estab(b"toutg", 94);
+        // A full segment's worth queued and the user's close: FIN_WAIT_1. The peer sent
+        // timestamps; t_maxopd is the 1460 bytes the segment may carry with its options.
+        let data = pattern(1460);
+        queue(&so, &data);
+        let before = sent(d);
+        let t0 = tcp_now();
+        let (r, (nxt, max, sentfin, maxopd)) = output(
+            &inp,
+            |tp| {
+                let st = &mut *tp.st;
+                st.t_state = TCPS_FIN_WAIT_1;
+                st.set_flags(TF_REQ_TSTMP | TF_RCVD_TSTMP | TF_NODELAY);
+                st.ts_modulate = 0x20;
+                st.ts_recent = 0x1122_3344;
+            },
+            |tp| {
+                let st = &*tp.st;
+                (
+                    st.snd_nxt,
+                    st.snd_max,
+                    st.has_flags(TF_SENTFIN),
+                    st.t_maxopd,
+                )
+            },
+        );
+        let t1 = tcp_now();
+        assert_eq!(r, Ok(()));
+        assert_eq!(maxopd, 1460);
+        // The options' 12 bytes cut the first segment to 1448 and took its FIN (sendalot):
+        // a second segment carries the last 12 bytes and the FIN.
+        assert_eq!(sent(d), before + 2);
+        let (_ip, th, opts, payload) = last(d);
+        assert_eq!(u32::from_be(th.th_seq), 1000 + 1448);
+        assert_eq!(th.th_flags, TH_FIN | TH_ACK | TH_PUSH);
+        assert_eq!(payload, &data[1448..]);
+        assert_eq!(th.th_off(), (20 + 12) / 4);
+        assert_eq!(&opts[..4], &TCPOPT_TSTAMP_HDR.to_be_bytes());
+        let tsval = u32::from_be_bytes([opts[4], opts[5], opts[6], opts[7]]);
+        assert!(
+            (t0 as u32).wrapping_add(0x20) <= tsval && tsval <= (t1 as u32).wrapping_add(0x20),
+            "TSval {tsval} from the clock and its modulation"
+        );
+        assert_eq!(
+            &opts[8..12],
+            &0x1122_3344u32.to_be_bytes(),
+            "TSecr: ts_recent"
+        );
+        assert_eq!(
+            (nxt, max, sentfin),
+            (1000 + 1460 + 1, 1000 + 1460 + 1, true)
+        );
+        testtcp::close(so, inp);
+    }
+
+    #[test]
     fn the_persist_timer_backs_off_up_to_the_last_shift() {
         let (_g, _p) = testtcp::setup();
         let (so, inp, _d) = estab(b"tout9", 29);
