@@ -150,7 +150,6 @@ use core::sync::atomic::{AtomicI32, Ordering};
 use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
 use hal::mutex::MutexedGuard;
 use hal::netlock::{NETLOCK, NetHeld};
-use hal::pod;
 use hal::pool::{AnyArc, PR_NOWAIT, PoolArc};
 use hal::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons, ntohl};
@@ -983,6 +982,7 @@ mod tests {
 
     use std::vec::Vec;
 
+    use hal::pod;
     use hal::sys::netinet_tcp::TCPOPT_MAXSEG;
 
     use super::*;
