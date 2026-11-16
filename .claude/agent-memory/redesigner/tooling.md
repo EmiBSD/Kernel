@@ -368,3 +368,4 @@ metadata:
 - The reference symlinks show as `??` in `git status` (the .gitignore patterns end in `/`, which a symlink does not match): stage by name, never with a pattern (N6.6a1).
 - macOS has no `timeout(1)`: bound a test run with `perl -e 'alarm 40; exec @ARGV' <test binary> <filter>` to find which test of a hanging run spins (N6.6a1).
 - A lineage.toml editor must not normalise blank lines globally (`replace('\n\n\n', '\n\n')`): it removed 13 unrelated ones at N6.6a1; restore with difflib over the base (pure-blank `delete` opcodes) and delete a block with its own trailing blank line only.
+- Never chain the lock's release after its `mkdir` (`mkdir lock; ...; rm -f lock/owner; rmdir lock`): when the `mkdir` fails the chain removes another session's lock (N6.6a2 broke LandingZone's that way and had to recreate it with a note). Take it with `mkdir lock && echo me > lock/owner`, and release it only after `cat lock/owner` shows your name, in separate commands.
