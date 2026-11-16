@@ -783,6 +783,34 @@ impl DetachableRwlock {
         self.detached.store(w.me, Ordering::Release);
     }
 
+    /// The running process's detached holding taken back as a witness, the inverse of
+    /// [`DetachableRwlock::detach`]: the lock stays held, by the running process, and is now
+    /// released by the witness (its drop, or `detach` again). For a lock kept across calls
+    /// and opened again in each (`tcp_input_mlist`'s socket over a run of segments of one
+    /// connection; `sonewconn`'s socket, returned locked detached, then held by a caller
+    /// that keys cells to it). One compare-and-swap, no wait. `panic(9)` when the running
+    /// process holds no detached holding of this lock (not held, held by another process,
+    /// held through a witness, or attached already).
+    ///
+    /// At most one witness: the swap clears `detached`, so a second `attach` finds it 0 and
+    /// panics; a witness made by the lock itself or by `attach` never sets it (the type's
+    /// invariant), so `attach` cannot run beside one.
+    pub fn attach(&self) -> WriteWitness<'_> {
+        let me = rw_self();
+        if self
+            .detached
+            .compare_exchange(me, 0, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            self.lock.panic(format_args!(
+                "attach when not held detached by this process"
+            ));
+        }
+        // `detached` was `me`: by the invariant the running process holds the lock for
+        // writing, with `me` the writer word in the lock's word, which the witness releases.
+        WriteWitness::new(&self.lock, me)
+    }
+
     /// `rwsleep_nsec(ident, lock, prio, wmesg, nsecs)` of the running process's detached
     /// holding: queued on `ident`, released, asleep, then taken again detached before the
     /// sleep's result is returned. `panic(9)` without such a holding.
@@ -3103,6 +3131,7 @@ mod tests {
     }
     #[test]
     fn a_detached_holding_excludes_witnesses_and_ends_where_it_is_released() {
+        testutil::install();
         let l = DetachableRwlock::new("split");
         assert!(!l.held_detached());
         l.enter_write_detached();
@@ -3134,6 +3163,79 @@ mod tests {
         let l = DetachableRwlock::new("split");
         let w = l.lock().write();
         let _w = std::mem::ManuallyDrop::new(w);
+        l.exit_write_detached();
+    }
+
+    #[test]
+    fn a_detached_holding_attached_opens_the_cells_and_detaches_again() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let cell = Guarded::keyed(l.lock().id(), 1, 7u32);
+        l.enter_write_detached();
+        let mut w = l.attach();
+        assert!(!l.held_detached());
+        assert_eq!(l.lock().status(), RW_WRITE);
+        {
+            let [_p0, mut p1] = w.split::<2>();
+            *cell.get_mut(&mut p1) += 1;
+        }
+        // Kept across a "call": detached, then attached again.
+        l.detach(w);
+        assert!(l.held_detached());
+        let mut w = l.attach();
+        {
+            let [_p0, p1] = w.split::<2>();
+            assert_eq!(*cell.get(&p1), 8);
+        }
+        drop(w);
+        assert_eq!(l.lock().status(), 0);
+        assert!(l.lock().try_write().is_some());
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn attach_without_a_detached_holding_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let _w = l.attach();
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn attach_beside_a_witness_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        let w = l.lock().write();
+        let _w = std::mem::ManuallyDrop::new(w);
+        let _a = l.attach();
+    }
+
+    #[test]
+    #[should_panic(expected = "attach when not held detached")]
+    fn a_second_attach_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        l.enter_write_detached();
+        let w = l.attach();
+        let _w = std::mem::ManuallyDrop::new(w);
+        let _a = l.attach();
+    }
+
+    #[test]
+    fn attach_of_another_process_holding_panics() {
+        testutil::install();
+        let l = DetachableRwlock::new("split");
+        l.enter_write_detached();
+        std::thread::scope(|s| {
+            let r = s
+                .spawn(|| {
+                    testutil::install();
+                    let _w = l.attach();
+                })
+                .join();
+            assert!(r.is_err());
+        });
+        assert!(l.held_detached());
         l.exit_write_detached();
     }
 }

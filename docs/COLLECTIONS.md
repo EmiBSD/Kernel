@@ -243,6 +243,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `NetHeld::writer` and its drop (`NET_ASSERT_LOCKED_EXCLUSIVE()`) | O(1): one load of the lock word, one uncontended relaxed compare-and-swap; one relaxed store at the drop |
 | `SaToken::lend_net` and the drop of its `NetLend` (`bsd`'s `NET_ASSERT_LOCKED()` before a call into the kernel, N6.5e) | O(1): one load of the lock word; on the write holding one uncontended read-modify-write of the lend count, and one at the drop; on a read holding a compare-and-swap of the lock word (the joined share, which every reader writes: contended), and one at the drop (`rw_exit_read`). A pair the C lacks, per `bsd` call; per packet on `bsd`'s TCP/UDP/raw output and divert (until N6.6), pf's route-to and `rtalloc`, IP-in-IP and wg(4) (until N8): the list in `sys/hal/netlock.rs`'s notes |
 | A write witness's release (`WriteWitness` drop, sleeps, `unlocked`, `downgrade`) | the lock's own, plus one address compare (the net lock's lend and borrow checks, two relaxed loads, for `NETLOCK` alone) |
+| `DetachableRwlock::detach`, `attach` (a witness given up for a detached holding and taken back, N6.6a0), `enter_write_detached`, `exit_write_detached` | O(1): one store (`detach`) or one compare-and-swap (`attach`, the exits) of the detached word, on the lock's line, beside the lock's own enter or exit; `attach` never waits |
 
 ## `alloc` in the `kernel` crate (six sites, test code apart)
 
