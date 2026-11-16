@@ -6,7 +6,8 @@ set shell := ["zsh", "-cu"]
 # last commit's; both come from the local repository, so the same commit gives the same kernel.
 export EMIBSD_BUILD := `git rev-list --count HEAD 2>/dev/null || echo 0`
 export SOURCE_DATE_EPOCH := `git log -1 --format=%ct 2>/dev/null || echo 0`
-export EMIBSD_BUILD_HOST := `hostname -s 2>/dev/null || echo localhost`
+_build_host := `hostname -s 2>/dev/null || echo localhost`
+export EMIBSD_BUILD_HOST := env_var_or_default("EMIBSD_BUILD_HOST", _build_host)
 
 amd64 := "x86_64-unknown-none"
 arm64 := "aarch64-emibsd-none-softfloat"
@@ -3803,7 +3804,14 @@ ci-full:
 # dated SOURCE_DATE_EPOCH and owned by root:wheel, and BUILDINFO holds no clock time, only
 # the tag's UTC day, so the same commit packs the same tar that day. The main
 # session publishes it as a GitHub pre-release tagged `<tag>` (git-commits.md, Releases).
-dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
+# A release names a neutral builder in the kernel's version string (`kern.version`, the boot
+# banner's second line): `build@emibsd:/usr/src/sys`, as OpenBSD's releases name their build
+# host, instead of the maintainer's login, machine and home (the user's decision of
+# 2026-11-15); `_dist-arm64` builds with that identity.
+dist-arm64:
+    USER=build EMIBSD_BUILD_HOST=emibsd EMIBSD_BUILD_DIR=/usr/src/sys {{ just_executable() }} --justfile {{ justfile() }} _dist-arm64
+
+_dist-arm64: dist-clean-tree build-release-arm64 build-init-arm64 efiboot-arm64
     #!/usr/bin/env zsh
     set -eu
     setopt pipefail

@@ -24,7 +24,9 @@
 //!   (no clock, no counter file, no network), so the same inputs give the same kernel:
 //!   `EMIBSD_BUILD` (the build number; the justfile passes the commit count),
 //!   `SOURCE_DATE_EPOCH` (the build date; the justfile passes the last commit's time),
-//!   `USER`, and `EMIBSD_BUILD_HOST` (the justfile passes `hostname -s`).
+//!   `USER`, `EMIBSD_BUILD_HOST` (the justfile passes `hostname -s`) and `EMIBSD_BUILD_DIR`
+//!   (the source directory, `CARGO_MANIFEST_DIR` when unset; `just dist-arm64` names a
+//!   neutral `build@emibsd:/usr/src/sys`).
 //! - Bare-metal builds only: the per-architecture linker script. Host builds (tests,
 //!   `cargo check`, the `sys/arch/host` double) never link a kernel.
 //! - Every build: the per-architecture `option`s (`ARCH_OPTIONS`), what `config(8)` reads
@@ -142,7 +144,10 @@ fn newvers() {
     let epoch = input("SOURCE_DATE_EPOCH", "0").parse::<i64>().unwrap_or(0);
     let user = input("USER", "unknown");
     let host = input("EMIBSD_BUILD_HOST", "localhost");
-    let dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let dir = input(
+        "EMIBSD_BUILD_DIR",
+        &env::var("CARGO_MANIFEST_DIR").unwrap_or_default(),
+    );
 
     println!("cargo:rustc-env=EMIBSD_VERS_BUILD={build}");
     println!("cargo:rustc-env=EMIBSD_VERS_DATE={}", date_string(epoch));
