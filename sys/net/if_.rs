@@ -164,12 +164,11 @@ use crate::net::bpf::{BpfTap, bpf_mtap_af, bpf_mtap_ether};
 use crate::net::if_var::{IfnetHead, IfnetLegacy, LegacyNetDriver, Niqueue};
 use crate::net::route::{Rtentry, as_static};
 use crate::netinet::tcp_input::tcp_input_mlist;
-use crate::netinet::tcp_output::tcp_if_output_tso;
 #[cfg(feature = "inet6")]
 use crate::netinet6::nd6::In6Ntop;
 use crate::sys::errno::Errno;
 use crate::sys::ioccom::iocparm_len;
-use crate::sys::mbuf::{M_TCP_TSO, Mbuf, MbufList, park, unpark};
+use crate::sys::mbuf::{Mbuf, MbufList, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::socket::{AF_INET, AF_INET6, Sockaddr};
 use crate::sys::socketvar::Socket;
@@ -365,41 +364,6 @@ impl kernel::net::if_::Inet for BsdNetLegs {
 
     fn ip6_randomid(&self) -> u32 {
         crate::netinet6::ip6_output::ip6_id_generate()
-    }
-
-    fn tcp_if_output_tso(
-        &self,
-        ifp: &'static Ifnet,
-        mp: &mut Option<kernel::net::mbuf::MbufBox>,
-        dst: kernel::net::proto::SockaddrView<'_>,
-        rt: Option<&kernel::net::route::Rtentry>,
-        ifcap: u32,
-        mtu: u32,
-    ) -> Result<(), Errno> {
-        // The C's first test (`caller must fail later or fragment`), made before the packet
-        // is lent to `bsd`: a packet that asked for no TSO stays the kernel's.
-        if mp
-            .as_ref()
-            .is_none_or(|m| m.m_pkthdr().csum_flags.get() & M_TCP_TSO == 0)
-        {
-            return Ok(());
-        }
-        let mut lent = mp.take().map(park);
-        // SAFETY: `dst` is the kernel's view of a socket address, readable for its `sa_len`
-        // bytes (the view's length, at least the two of its header) while the borrow lasts,
-        // which outlives this call: `tcp_if_output_tso`'s contract (`if_output`'s).
-        let error = unsafe {
-            tcp_if_output_tso(
-                ifp,
-                &mut lent,
-                dst.bytes().as_ptr().cast::<Sockaddr>(),
-                rt.map(as_static),
-                ifcap,
-                mtu,
-            )
-        };
-        *mp = lent.map(unpark);
-        error
     }
 
     fn udpstat_outswcsum(&self) {

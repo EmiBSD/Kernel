@@ -430,22 +430,6 @@ pub trait Inet: Sync + 'static {
     /// `bsd`'s until crypto moves at N8: its generator, `ip6_output.c`'s `ip6_id_ctx`), for
     /// the kernel's `ip6_fragment` (N6.5c).
     fn ip6_randomid(&self) -> u32;
-    /// `tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)`: TCP's segmentation offload of
-    /// `*mp` (by the hardware when `ifp` has `ifcap`, else chopped in software and sent),
-    /// the packet consumed then; left in `*mp` when it did not ask for TSO, or with its TSO
-    /// flag cleared when its segments exceed `mtu` (`if_output_tso`'s first step; N6.4a, until
-    /// TCP moves at N6.6a). Default: the packet left, the C without TCP's offload.
-    fn tcp_if_output_tso(
-        &self,
-        _ifp: &'static Ifnet,
-        _mp: &mut Option<MbufBox>,
-        _dst: SockaddrView<'_>,
-        _rt: Option<&crate::net::route::Rtentry>,
-        _ifcap: u32,
-        _mtu: u32,
-    ) -> Result<(), Errno> {
-        Ok(())
-    }
     /// `udpstat_inc(udps_outswcsum)`: a UDP checksum computed in software on output
     /// (`in_proto_cksum_out`, `in6_proto_cksum_out`; N6.4a, TCP's half the kernel's own since
     /// N6.6a1, UDP's until UDP moves at N6.6b). Default: nothing.
@@ -1960,10 +1944,10 @@ pub fn if_output_ml(
 }
 
 /// `if_output_tso(ifp, mp, dst, rt, mtu)`: the packet `*mp` sent toward `dst` by TCP's
-/// segmentation offload when it asks for it (`Inet::tcp_if_output_tso`), else whole when it
-/// fits `mtu` (its checksums finished for the interface first), the packet consumed then;
-/// `*mp` is left set when the packet still has to be fragmented or dropped (N6.4a: the
-/// kernel's, its TCP half `bsd`'s until N6.6a).
+/// segmentation offload when it asks for it (`tcp_if_output_tso`), else whole when it fits
+/// `mtu` (its checksums finished for the interface first), the packet consumed then; `*mp`
+/// is left set when the packet still has to be fragmented or dropped (N6.4a; its TCP half
+/// the kernel's own since N6.6a1).
 pub fn if_output_tso(
     ifp: &'static Ifnet,
     mp: &mut Option<MbufBox>,
@@ -1983,9 +1967,7 @@ pub fn if_output_tso(
     // Try to send with TSO first. When forwarding LRO may set maximum segment size in mbuf
     // header. Chop TCP segment even if it would fit interface MTU to preserve maximum path
     // MTU.
-    if let Some(i) = inet() {
-        i.tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)?;
-    }
+    crate::netinet::tcp_tso::tcp_if_output_tso(ifp, mp, dst, rt, ifcap, mtu)?;
     let Some(mut m) = mp.take() else {
         return Ok(());
     };

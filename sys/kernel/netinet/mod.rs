@@ -41,7 +41,9 @@ pub mod ip_input;
 pub mod ip_output;
 pub mod ip_var;
 pub mod tcp_fsm;
+pub mod tcp_lro;
 pub mod tcp_seq;
 pub mod tcp_timer;
+pub mod tcp_tso;
 pub mod tcp_var;
 /* </CODE> */
