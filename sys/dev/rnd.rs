@@ -120,6 +120,12 @@
 //!   exists; Rust code has no stack protector reading it). Booted by Limine, which fills no
 //!   `PT_OPENBSD_RANDOMIZE` segment, it stays 0 and `random_start` prints the C's "warning: no
 //!   entropy supplied by boot loader"; the boot glue reports that gap (`sys/stand/mod.rs`).
+//! - `random_start` reads the 8 KB of kernel text below `etext` word by word with
+//!   `read_unaligned`. The C casts `etext` (a `char[]`) to `u_int32_t *`, which is misaligned
+//!   whenever the code ends off a 4-byte boundary (amd64's variable-length instructions; the
+//!   kernel built for TD1 ends at `...57f`), undefined in C and caught by Rust's debug check
+//!   of `slice::from_raw_parts` as a boot panic. The words read are the same (LZ records
+//!   the C's slip in its docs/EXTERNAL_BUGS.md).
 
 use core::ffi::c_void;
 use core::mem::size_of;
@@ -888,10 +894,14 @@ pub fn random_start(goodseed: bool) {
             off += words * size_of::<u32>();
         }
     }
+    // `etext` ends the code wherever the last instruction ends, so the words may be
+    // unaligned (amd64): read each one unaligned (see the module's deviations).
     let text = (etext() - 32 * 1024 * size_of::<u32>()) as *const u32;
-    // SAFETY: the 8 KB that start 128 KB before `etext` are kernel text, mapped readable
-    // for the kernel's lifetime and never written.
-    add_entropy_words(unsafe { core::slice::from_raw_parts(text, 8192 / size_of::<u32>()) });
+    ENTROPY_POOL.add_entropy_words((0..8192 / size_of::<u32>()).map(|i| {
+        // SAFETY: the 8 KB that start 128 KB before `etext` are kernel text, mapped readable
+        // for the kernel's lifetime and never written; `read_unaligned` needs no alignment.
+        unsafe { text.add(i).read_unaligned() }
+    }));
 
     dequeue_randomness(ptr::null_mut());
     rnd_init(ptr::null_mut());
