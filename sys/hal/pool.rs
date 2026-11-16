@@ -250,6 +250,15 @@ pub trait RawPool: Sync {
     /// `pool_sethiwat(pp, n)`: the pool keeps at most `n` idle items (its pages beyond them
     /// go back to the system).
     fn set_hiwat(&self, n: u32);
+    /// `pool_sethardlimit(pp, n)`: at most `n` items out from now on, under the pool's lock;
+    /// a `get` at the limit fails with `PR_NOWAIT` or `PR_LIMITFAIL` and waits for an item
+    /// otherwise (`pr_hardlimit`, `vmstat -m`'s `Hardlimit`). `EINVAL`, the limit unchanged,
+    /// when more than `n` are out already. The default refuses with `EOPNOTSUPP`: a backend
+    /// that cannot keep a limit (`hal`'s arena, the benches' recycling pools) never accepts
+    /// one it would not keep.
+    fn set_hardlimit(&self, _n: u32) -> Result<(), Errno> {
+        Err(Errno::EOPNOTSUPP)
+    }
     /// `pool_cache_init(pp)`: `pool_get` and `pool_put` go through a cache per CPU from now
     /// on.
     fn cache_init(&self);
@@ -513,6 +522,14 @@ impl<T: Send + Sync + 'static> TypedPool<T> {
         if let Some(raw) = self.raw() {
             raw.set_hiwat(n);
         }
+    }
+
+    /// `pool_sethardlimit(9)`: at most `n` items out from now on (`tcp_init`'s reassembly
+    /// and SACK hole limits, `net.inet.tcp.reasslimit`): [`RawPool::set_hardlimit`].
+    /// `EINVAL` before `init`, as for a limit below the items out: a pool never made keeps
+    /// no limit.
+    pub fn set_hardlimit(&self, n: u32) -> Result<(), Errno> {
+        self.raw().ok_or(Errno::EINVAL)?.set_hardlimit(n)
     }
 
     /// `pool_cache_init(9)`: a cache per CPU in front of the pool from now on
@@ -1560,6 +1577,13 @@ impl<T: 'static> BoxPool<T> {
         }
     }
 
+    /// `pool_sethardlimit(9)`: at most `n` items out from now on (TCP's "tcpqe" and
+    /// "sackhl"): [`RawPool::set_hardlimit`]. `EINVAL` before `init`, as for a limit below
+    /// the items out: a pool never made keeps no limit.
+    pub fn set_hardlimit(&self, n: u32) -> Result<(), Errno> {
+        self.raw.get().ok_or(Errno::EINVAL)?.set_hardlimit(n)
+    }
+
     /// `pool_cache_init(9)`: a cache per CPU in front of the pool from now on. Nothing
     /// before `init`.
     pub fn cache_init(&self) {
@@ -2479,6 +2503,42 @@ mod tests {
         assert_eq!(B.init(0, 0, "testbxhiwat"), Ok(()));
         B.set_hiwat(4096);
         assert_eq!(testutil::pool_knobs("testbxhiwat"), Some((4096, false)));
+    }
+
+    #[test]
+    fn the_hard_limit_caps_the_items_out_and_refuses_below_them() {
+        static P: TypedPool<u64> = TypedPool::new();
+        static B: BoxPool<u64> = BoxPool::new();
+        static NEVER: TypedPool<u64> = TypedPool::new();
+        static NEVER_BOX: BoxPool<u64> = BoxPool::new();
+        testutil::install();
+        // A pool never made keeps no limit.
+        assert_eq!(NEVER.set_hardlimit(1), Err(Errno::EINVAL));
+        assert_eq!(NEVER_BOX.set_hardlimit(1), Err(Errno::EINVAL));
+        assert_eq!(P.init(0, PR_WAITOK, "testhardlim"), Ok(()));
+        let a = P.get_shared(PR_NOWAIT, || 1);
+        let b = P.get_shared(PR_NOWAIT, || 2);
+        assert!(a.is_some() && b.is_some());
+        // Below the items out: refused, the pool unlimited still.
+        assert_eq!(P.set_hardlimit(1), Err(Errno::EINVAL));
+        let c = P.get_shared(PR_NOWAIT, || 3);
+        assert!(c.is_some());
+        assert_eq!(P.set_hardlimit(3), Ok(()));
+        assert!(P.get_shared(PR_NOWAIT, || 4).is_none());
+        assert!(P.get_shared(PR_LIMITFAIL, || 4).is_none());
+        assert_eq!(P.nout(), 3);
+        drop(c);
+        let d = P.get_shared(PR_NOWAIT, || 5);
+        assert!(d.is_some());
+        drop((a, b, d));
+        assert_eq!(B.init(0, 0, "testbxhardlim"), Ok(()));
+        assert_eq!(B.set_hardlimit(0), Ok(()));
+        assert!(B.get(PR_NOWAIT, || 0).is_none());
+        assert_eq!(B.set_hardlimit(1), Ok(()));
+        let e = B.get(PR_NOWAIT, || 6);
+        assert!(e.is_some());
+        assert_eq!(B.set_hardlimit(0), Err(Errno::EINVAL));
+        drop(e);
     }
 
     #[test]

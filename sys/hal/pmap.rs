@@ -873,6 +873,9 @@ pub trait TlbCpus: Sync {
 pub trait Random: Sync {
     /// `arc4random()`.
     fn random_u32(&self) -> u32;
+    /// `arc4random_buf(buf, n)`: `buf` filled with the generator's bytes, whatever its
+    /// length (N6.6a0: TCP's ISS secret, the SYN cache's hash seeds).
+    fn random_buf(&self, buf: &mut [u8]);
     /// `enqueue_randomness(val)`: a word of the system's timing and input mixed into the
     /// entropy pool (the terminal's every input character, N4.7b; the timecounters' first
     /// readings and the clock steps, N4.8a).

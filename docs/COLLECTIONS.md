@@ -205,6 +205,7 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 |---|---|---|
 | `TypedPool::get_shared`, `get_homed`, `BoxPool::get`, `get_idle`, `get_linked` | `pool_get` | O(1) amortized: the per-CPU cache or the page's free list; a page grow when empty (`pool_allocator`, O(items per page) to carve it) |
 | drop of a `PoolBox`, the last `PoolArc` | `pool_put` | O(1) amortized; a page release when it empties |
+| `TypedPool::set_hardlimit`, `BoxPool::set_hardlimit` (N6.6a0) | `pool_sethardlimit` | O(1): the pool's lock pair and one compare with `pr_nout` |
 | `PoolArc::from_ref`, `try_from_ref`, `clone`, `count`, `ptr_eq`, `try_last`, `get_mut`, `erase`, `leak`, `as_pin`, `as_ptr` | the refcount | O(1), one atomic |
 | `PoolBox::leak`, `as_pin`, `as_ptr`, `ptr_eq` | | O(1) |
 | `StaticArena::extend`, `init_arena` | | O(N) once, at init |

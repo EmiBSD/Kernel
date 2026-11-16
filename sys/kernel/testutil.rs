@@ -84,7 +84,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 use std::vec;
@@ -293,6 +293,13 @@ impl hal::random::Random for TestRandom {
         })
     }
 
+    /// The sequence's words, little-endian, four bytes a word, the last one cut.
+    fn random_buf(&self, buf: &mut [u8]) {
+        for c in buf.chunks_mut(4) {
+            c.copy_from_slice(&self.random_u32().to_le_bytes()[..c.len()]);
+        }
+    }
+
     fn enqueue_randomness(&self, _val: u32) {
         ENQUEUED.with(|n| n.set(n.get() + 1));
     }
@@ -350,6 +357,8 @@ struct TestPool {
     /// ([`TestPool::page_len`]), aligned to it (the C carves several items from one page; one
     /// a page keeps the source's count equal to the items out).
     source: Option<&'static dyn PageSource>,
+    /// `pr_hardlimit` (`u32::MAX`, the C's `UINT_MAX`, until `set_hardlimit`; N6.6a0).
+    hardlimit: AtomicU32,
 }
 
 impl TestPool {
@@ -369,26 +378,12 @@ impl TestPool {
         });
         self.stride.next_power_of_two().max(least)
     }
-}
 
-/// Whether the pools recycle their items ([`set_pool_recycle`]).
-static POOL_RECYCLE: AtomicBool = AtomicBool::new(false);
-
-/// Each pool's last high-water mark and whether its cache was asked for, by the pool's name.
-static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
-
-// The registration contract: a fresh block of the pool's size, page-aligned (which covers any
-// item alignment up to a page; `create` refuses more), the caller's alone.
-impl RawPool for TestPool {
-    fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
-        if pool_fails(self.wchan) {
-            return None;
-        }
+    /// An item's block, already counted out by [`RawPool::get`]: a page of the source, a
+    /// recycled block, or a fresh one; `None` when the test memory is out.
+    fn carve(&self, flags: i32) -> Option<NonNull<u8>> {
         if let Some(src) = self.source {
-            let p = src.alloc(self.page_len(), true, flags & PR_WAITOK != 0)?;
-            self.nout.fetch_add(1, Ordering::Relaxed);
-            count_pool_request(self.wchan);
-            return Some((p, self.size));
+            return src.alloc(self.page_len(), true, flags & PR_WAITOK != 0);
         }
         if POOL_RECYCLE.load(Ordering::Relaxed) {
             let mut free = self
@@ -403,13 +398,37 @@ impl RawPool for TestPool {
                 }
             }
             let addr = free.pop()?;
-            let p = NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr))?;
-            self.nout.fetch_add(1, Ordering::Relaxed);
-            count_pool_request(self.wchan);
-            return Some((p, self.size));
+            return NonNull::new(std::ptr::with_exposed_provenance_mut::<u8>(addr));
         }
-        let p = pages(self.size)?;
-        self.nout.fetch_add(1, Ordering::Relaxed);
+        pages(self.size)
+    }
+}
+
+/// Whether the pools recycle their items ([`set_pool_recycle`]).
+static POOL_RECYCLE: AtomicBool = AtomicBool::new(false);
+
+/// Each pool's last high-water mark and whether its cache was asked for, by the pool's name.
+static POOL_KNOBS: Mutex<BTreeMap<&'static str, (u32, bool)>> = Mutex::new(BTreeMap::new());
+
+// The registration contract: a fresh block of the pool's size, page-aligned (which covers any
+// item alignment up to a page; `create` refuses more), the caller's alone.
+impl RawPool for TestPool {
+    /// At the hard limit `None`, whatever the flags (the double cannot sleep for an item):
+    /// the item is counted out before it is carved, so parallel tests cannot pass the limit.
+    fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
+        if pool_fails(self.wchan) {
+            return None;
+        }
+        let limit = u64::from(self.hardlimit.load(Ordering::Relaxed));
+        self.nout
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()?;
+        let Some(p) = self.carve(flags) else {
+            self.nout.fetch_sub(1, Ordering::Relaxed);
+            return None;
+        };
         count_pool_request(self.wchan);
         Some((p, self.size))
     }
@@ -464,6 +483,15 @@ impl RawPool for TestPool {
     /// The double keeps no idle item, so it records the bound for [`pool_knobs`].
     fn set_hiwat(&self, n: u32) {
         lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;
+    }
+
+    /// The C's check against the items out; [`RawPool::get`] keeps the limit.
+    fn set_hardlimit(&self, n: u32) -> Result<(), Errno> {
+        if u64::from(n) < self.nout.load(Ordering::Relaxed) {
+            return Err(Errno::EINVAL);
+        }
+        self.hardlimit.store(n, Ordering::Relaxed);
+        Ok(())
     }
 
     /// The double has no per-CPU cache to make: it records the request for [`pool_knobs`].
@@ -521,6 +549,7 @@ impl PoolBackend for TestPools {
             free: Mutex::new(Vec::new()),
             stride: size.max(1).next_multiple_of(align.max(16)),
             source: None,
+            hardlimit: AtomicU32::new(u32::MAX),
         })))
     }
 
@@ -546,6 +575,7 @@ impl PoolBackend for TestPools {
             free: Mutex::new(Vec::new()),
             stride: size.max(1).next_multiple_of(align.max(16)),
             source: Some(source),
+            hardlimit: AtomicU32::new(u32::MAX),
         })))
     }
 }

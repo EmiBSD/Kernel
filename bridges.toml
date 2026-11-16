@@ -47,6 +47,8 @@ paid_by = "N7"
 # TypedPool so vmstat -m lists it; safe traits (PoolBackend, RawPool), the same boot contract.
 # N6.0: create_with with a PageSource, the pa_alloc/pa_free half of pool_allocator as a safe
 # trait the kernel implements (N6.1's MbufPages), over subr_pool.rs's POOL_ALLOCATOR_SOURCE.
+# N6.6a0: pool_sethardlimit (RawPool::set_hardlimit, EINVAL below the items out; TCP's "tcpqe"
+# and "sackhl" limits and net.inet.tcp.reasslimit/sackholelimit, from 6a2).
 # hal::pool::PoolBackend
 [[bridge]]
 trait = "PoolBackend"
@@ -169,7 +171,9 @@ paid_by = "N10"
 # and, N3.5 S1, hal::random's arc4random/arc4random_uniform (the kernel map's randomisation),
 # implemented by sys/kern/hal_bridges.rs (BsdRandom). N4.7b: enqueue_randomness (the terminal's
 # every input character, tty.c's ttyinput), hal::random::enqueue_randomness; N4.8a: kernel::tc's
-# (the new counter's first readings, the clock steps).
+# (the new counter's first readings, the clock steps). N6.6a0: random_buf (rnd.c's
+# arc4random_buf, one lock pair for the buffer), hal::random::arc4random_buf, for TCP's ISS
+# secret and the SYN cache's hash seeds (from 6a2).
 # hal::pmap::Random
 [[bridge]]
 trait = "Random"

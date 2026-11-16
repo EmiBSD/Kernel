@@ -81,6 +81,10 @@
 //!   `sys/dev/rnd.rs` stays for its legacy callers.
 //! - N4.7b: [`enqueue_randomness`], the bridge's second member, for the terminal's
 //!   per-character call (`ttyinput`).
+//! - N6.6a0: [`arc4random_buf`], the bridge's third member (`Random::random_buf`, `rnd.c`'s
+//!   own `arc4random_buf` behind it, one lock pair for the whole buffer), for TCP's ISS
+//!   secret and the SYN cache's hash seeds, where four `arc4random` words would take the
+//!   generator's lock four times.
 
 pub use crate::pmap::Random;
 
@@ -93,6 +97,15 @@ pub fn arc4random() -> u32 {
     match bridges::random() {
         Some(r) => r.random_u32(),
         None => hal_panic(format_args!("arc4random: before rnd is registered")),
+    }
+}
+
+/// `arc4random_buf(9)`: `buf` filled with bytes of `bsd`'s ChaCha20 generator, whatever its
+/// length; `panic(9)` before the bridge is registered.
+pub fn arc4random_buf(buf: &mut [u8]) {
+    match bridges::random() {
+        Some(r) => r.random_buf(buf),
+        None => hal_panic(format_args!("arc4random_buf: before rnd is registered")),
     }
 }
 
@@ -178,6 +191,29 @@ mod tests {
                 assert!(arc4random_uniform(bound) < bound);
             }
         }
+    }
+
+    #[test]
+    fn a_buffer_of_any_length_is_filled_from_the_bridge() {
+        testutil::install();
+        for len in [0usize, 1, 3, 4, 5, 16, 17] {
+            testutil::set_random_seed(0x5eed_0001);
+            let mut buf = [0u8; 17];
+            arc4random_buf(&mut buf[..len]);
+            // The double's bytes: its words, little-endian, the last one cut.
+            testutil::set_random_seed(0x5eed_0001);
+            let mut want = [0u8; 17];
+            for c in want[..len].chunks_mut(4) {
+                let w = arc4random().to_le_bytes();
+                c.copy_from_slice(&w[..c.len()]);
+            }
+            assert_eq!(buf, want, "length {len}");
+            assert!(buf[len..].iter().all(|&b| b == 0), "past {len}");
+        }
+        testutil::set_random_seed(0x5eed_0002);
+        let mut a = [0u8; 16];
+        arc4random_buf(&mut a);
+        assert_ne!(a, [0u8; 16]);
     }
 }
 /* </TESTS> */

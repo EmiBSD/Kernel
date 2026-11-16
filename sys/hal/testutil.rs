@@ -53,7 +53,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::string::String;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, Once, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -232,6 +232,13 @@ impl crate::pmap::Random for TestRandom {
         })
     }
 
+    /// The sequence's words, little-endian, four bytes a word, the last one cut.
+    fn random_buf(&self, buf: &mut [u8]) {
+        for c in buf.chunks_mut(4) {
+            c.copy_from_slice(&self.random_u32().to_le_bytes()[..c.len()]);
+        }
+    }
+
     fn enqueue_randomness(&self, _val: u32) {}
 }
 
@@ -275,6 +282,8 @@ struct TestPool {
     /// The source of a pool made by `create_with`: each item its own page from it, of the
     /// item's size and alignment rounded up to a power of two, aligned to it.
     source: Option<&'static dyn PageSource>,
+    /// `pr_hardlimit` (`u32::MAX`, the C's `UINT_MAX`, until `set_hardlimit`).
+    hardlimit: AtomicU32,
 }
 
 impl TestPool {
@@ -290,14 +299,23 @@ impl TestPool {
 // The registration contract: the host allocator's block of the pool's layout (the size and
 // alignment it was created with), owned by the caller until `put` gives it back.
 impl RawPool for TestPool {
+    /// At the hard limit `None`, whatever the flags: the double cannot sleep for an item.
     fn get(&self, flags: i32) -> Option<(NonNull<u8>, usize)> {
+        let limit = u64::from(self.hardlimit.load(Ordering::Relaxed));
+        self.nout
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n < limit).then_some(n + 1)
+            })
+            .ok()?;
         let p = match self.source {
-            Some(src) => src.alloc(self.page_len(), true, flags & PR_WAITOK != 0)?,
+            Some(src) => src.alloc(self.page_len(), true, flags & PR_WAITOK != 0),
             // SAFETY: the layout's size is not 0 (`create` makes it at least 1).
-            None => NonNull::new(unsafe { alloc(self.layout) })?,
+            None => NonNull::new(unsafe { alloc(self.layout) }),
         };
-        self.nout.fetch_add(1, Ordering::Relaxed);
-        Some((p, self.layout.size()))
+        if p.is_none() {
+            self.nout.fetch_sub(1, Ordering::Relaxed);
+        }
+        Some((p?, self.layout.size()))
     }
 
     fn put(&self, item: NonNull<u8>) {
@@ -321,6 +339,15 @@ impl RawPool for TestPool {
     /// The double keeps no idle item: it records the bound for [`pool_knobs`].
     fn set_hiwat(&self, n: u32) {
         lock(&POOL_KNOBS).entry(self.wchan).or_insert((0, false)).0 = n;
+    }
+
+    /// The C's check against the items out; [`RawPool::get`] keeps the limit.
+    fn set_hardlimit(&self, n: u32) -> Result<(), Errno> {
+        if u64::from(n) < self.nout.load(Ordering::Relaxed) {
+            return Err(Errno::EINVAL);
+        }
+        self.hardlimit.store(n, Ordering::Relaxed);
+        Ok(())
     }
 
     /// The double has no per-CPU cache to make: it records the request for [`pool_knobs`].
@@ -350,6 +377,7 @@ impl PoolBackend for TestPools {
             nout: AtomicU64::new(0),
             wchan,
             source: None,
+            hardlimit: AtomicU32::new(u32::MAX),
         })))
     }
 
@@ -369,6 +397,7 @@ impl PoolBackend for TestPools {
             nout: AtomicU64::new(0),
             wchan,
             source: Some(source),
+            hardlimit: AtomicU32::new(u32::MAX),
         })))
     }
 }
