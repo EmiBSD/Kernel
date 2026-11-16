@@ -1553,14 +1553,22 @@ pub(crate) mod testtcp {
     /// The driver of a test interface: its packets' count and the last one's bytes.
     pub(crate) type Wire = testinet::InetDriver;
 
-    /// The host tests' TCP protocol over the test domain (`testinet`'s): the kernel's TCP is
-    /// registered at N6.6a5, so a listener of this one gives `sonewconn` an attach that makes
-    /// the kernel's control block (`tcp_attach`'s `in_pcballoc` and `tcp_newtcpcb`), a listen
-    /// that puts it in LISTEN, and a detach and an abort that close it.
+    /// The host tests' TCP protocol over the test domain (`testinet`'s `InetDom`): the
+    /// kernel's TCP is registered at N6.6a5, so a listener of this one gives `sonewconn` an
+    /// attach that makes the kernel's control block (`tcp_attach`'s `in_pcballoc` in the
+    /// family's table and `tcp_newtcpcb`; on `ENOBUFS` the pcb detached again, as
+    /// tcp_usrreq.c:500-507: the socket's typed `so_pcb` and the pcb count each other until
+    /// `in_pcbdetach`), a listen that puts it in LISTEN, and a detach and an abort that close
+    /// it.
     pub(crate) struct TcpProto;
 
     /// [`TcpProto`]'s requests.
     struct TcpReqs;
+
+    /// A test's switch: the next attaches fail after the pcb is made, as when
+    /// `tcp_newtcpcb` finds no memory (`ENOBUFS`), so `sonewconn` does.
+    pub(crate) static FAIL_ATTACH: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
 
     impl crate::net::proto::Protocol<G> for TcpProto {
         fn domain(&self) -> &'static dyn crate::net::domain::Domain<G> {
@@ -1604,18 +1612,27 @@ pub(crate) mod testtcp {
             _proto: i32,
             wait: i32,
         ) -> Result<(), Errno> {
-            let inp = crate::netinet::in_pcb::in_pcballoc(
-                so,
-                &crate::net::domain::net::<G>().tcp.tcbtable,
-                wait,
-            )?;
-            let Some(mut il) = w.inet() else {
-                return Err(Errno::EINVAL);
+            let t = &crate::net::domain::net::<G>().tcp;
+            let table = if so.dom_family() == i32::from(hal::sys::socket::PF_INET6) {
+                &t.tcb6table
+            } else {
+                &t.tcbtable
             };
-            match tcp_newtcpcb(&inp, &mut il, wait) {
-                Some(_) => Ok(()),
-                None => Err(Errno::ENOBUFS),
+            let inp = crate::netinet::in_pcb::in_pcballoc(so, table, wait)?;
+            let mut il = w.inet().expect("a kernel protocol's socket lock");
+            // FAIL_ATTACH stands for tcp_newtcpcb's failure.
+            if !FAIL_ATTACH.load(Ordering::Relaxed) && tcp_newtcpcb(&inp, &mut il, wait).is_some() {
+                return Ok(());
             }
+            // tcp_attach's ENOBUFS (tcp_usrreq.c:500-507): the pcb detached, so_pcb's count of
+            // it with it, the socket kept (SS_NOFDREF cleared over the detach's sofree).
+            let nofd = so.has_state(SS_NOFDREF);
+            so.st_clear(SS_NOFDREF);
+            crate::netinet::in_pcb::in_pcbdetach(inp, &il.net);
+            if nofd {
+                so.st_set(SS_NOFDREF);
+            }
+            Err(Errno::ENOBUFS)
         }
         fn detach(
             &self,

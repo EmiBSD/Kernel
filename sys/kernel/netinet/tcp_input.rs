@@ -4653,5 +4653,62 @@ mod tests {
         assert_eq!(u32::from_be(ath.th_ack), 5004);
         testtcp::close(so, inp);
     }
+
+    /// Fails the test protocol's attaches (`testtcp::FAIL_ATTACH`), for a test, until the
+    /// drop.
+    struct FailAttach;
+
+    impl FailAttach {
+        fn new() -> Self {
+            testtcp::FAIL_ATTACH.store(true, Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl Drop for FailAttach {
+        fn drop(&mut self) {
+            testtcp::FAIL_ATTACH.store(false, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn input_resets_a_handshake_whose_socket_cannot_be_made() {
+        let (_g, _p) = testtcp::setup();
+        let n = 125;
+        let (lso, linp, d) = listener(b"tic2", n, 80);
+        deliver(to80(n, 5700, TH_SYN, 400, 0, &[], &[]));
+        let (_ip, sa, _o, _p) = last(d);
+        let iss = u32::from_be(sa.th_seq);
+        let table = &crate::net::domain::net::<G>().tcp.tcbtable;
+        let (cbs, pcbs, aborted, completed) = (
+            tcpcbs(),
+            table.count(),
+            stat(C::TcpsScAborted),
+            stat(C::TcpsScCompleted),
+        );
+        // The ACK, while the new socket's attach fails after its pcb is made (sonewconn
+        // fails): resetandabort, the peer reset at its acknowledgment, the entry gone.
+        let fail = FailAttach::new();
+        deliver(to80(n, 5700, TH_ACK, 401, iss.wrapping_add(1), &[], &[]));
+        drop(fail);
+        assert_eq!(stat(C::TcpsScAborted), aborted + 1);
+        assert_eq!(stat(C::TcpsScCompleted), completed);
+        let (_ip, rst, _o, _p) = last(d);
+        assert_eq!(
+            (rst.th_flags, u32::from_be(rst.th_seq)),
+            (TH_RST, iss.wrapping_add(1))
+        );
+        assert!(lso.queued_first().is_none(), "nothing queued");
+        assert_eq!(
+            (tcpcbs(), table.count()),
+            (cbs, pcbs),
+            "the new pcb detached again, nothing left"
+        );
+        // The entry is gone: the same ACK again is a bad SYN, reset.
+        let badsyn = stat(C::TcpsBadsyn);
+        deliver(to80(n, 5700, TH_ACK, 401, iss.wrapping_add(1), &[], &[]));
+        assert_eq!(stat(C::TcpsBadsyn), badsyn + 1);
+        testtcp::close_listener(lso, linp);
+    }
 }
 /* </TESTS> */
