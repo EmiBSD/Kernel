@@ -195,6 +195,16 @@
 //!     checked and its `so_pcb` word loaded (`Socket::legacy_pcb`, an acquire load; `bsd`
 //!     adds the address's cast). D-10's typed slot (N6.6) replaces it with a `ReadMostly`
 //!     read and a `match`; the C's is one load.
+//! - The SYN cache row (N6.6a2; "before" = `bsd`'s SYN cache over LZ's shape, the row
+//!   `bsd.syncache.add.reset` of N6.6a0's scratch harness; measured at the N6 close, decision
+//!   50): one listener of the kernel's TCP (a control block on a socket of the pcb rows'
+//!   domain, its socket lock held for the run as `syn_cache_add`'s caller holds it):
+//!   - `syncache.add.lookup`: an entry made (`syn_cache_alloc`: the "syncache" item, the
+//!     listener's handle), inserted (`syn_cache_insert`: the hash, the bucket and cache
+//!     limits, the timer set and added, the two lists), found (`syn_cache_lookup`, its handle)
+//!     and removed (`syn_cache_rm`: the lists' handle adopted, the timer deleted and cleared)
+//!     under one `syn_cache_mtx` hold, the handles dropped after it (the entry freed: the C's
+//!     last `syn_cache_put`).
 //! - The IPv4 input rows (N6.4c2; "before" = `bsd`'s `ipv4_input`, `ipintr` and `ip_reass`
 //!   over LZ's shape at the slice's base, in a scratch test; measured at the N6.4 close,
 //!   decision 50): lo0 with 127.0.0.1/8 (`in_ioctl`), the glue's `inetsw[]` a UDP entry with
@@ -704,6 +714,7 @@ fn main() {
         .chain(INET_ROWS.iter())
         .chain(ARP_ROWS.iter())
         .chain(INPCB_ROWS.iter())
+        .chain(SYNCACHE_ROWS.iter())
         .chain(INET6_ROWS.iter())
         .chain(ND6_ROWS.iter())
         .chain(INET6_OUTPUT_ROWS.iter())
@@ -980,6 +991,7 @@ fn main() {
     ip_input_rows(&wanted, &report);
     arp_rows(&wanted, &report);
     inpcb_rows(&wanted, &report);
+    syncache_rows(&wanted, &report);
     inet6_rows(&wanted, &report);
     nd6_rows(&wanted, &report);
     inet6_output_rows(&wanted, &report);
@@ -3296,6 +3308,110 @@ fn inpcb_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f6
     }
     // The pcbs and sockets stay in the doubles' memory, which the next fixture forgets.
     core::mem::forget(pcbs);
+}
+const SYNCACHE_ROWS: [&str; 1] = ["syncache.add.lookup"];
+
+fn syncache_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))) {
+    use kernel::net::socket::{SoInit, soalloc};
+    use kernel::netinet::in_pcb::{Inpcbtable, in_init, in_pcballoc, in_pcbinit, in_pcbsolock};
+    use kernel::netinet::tcp_subr::{tcp_init, tcp_newtcpcb};
+    use kernel::netinet::tcp_syncache::{
+        syn_cache_alloc, syn_cache_insert, syn_cache_lock, syn_cache_lookup, syn_cache_rm,
+    };
+    use kernel::netinet::tcp_var::{ScListener, SynCacheInit};
+
+    if !SYNCACHE_ROWS.iter().any(|n| wanted(n)) {
+        return;
+    }
+    let (_g, _p) = kernel::fs::testfs::test_thread_cached(64 << 20, 64);
+    testutil::kernel_maps_install();
+    mbinit(&BENCH_NMBCLUST);
+    kernel::net::domain::soinit::<G>();
+    in_init::<G>();
+    tcp_init::<G>();
+    let t: &'static Inpcbtable<G> = Box::leak(Box::new(Inpcbtable::new()));
+    in_pcbinit(t, 16);
+    let so = need(
+        soalloc(
+            &BenchUdp,
+            kernel::net::mbuf::M_WAIT,
+            SoInit {
+                so_type: hal::sys::socket::SOCK_DGRAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        ),
+        "a socket",
+    );
+    let inp = need(in_pcballoc(&so, t, kernel::net::mbuf::M_WAIT).ok(), "a pcb");
+    let sa = |a: [u8; 4], port: u16| {
+        let mut s = [0u8; 28];
+        s[0] = 16;
+        s[1] = hal::sys::socket::AF_INET;
+        s[2..4].copy_from_slice(&port.to_be_bytes());
+        s[4..8].copy_from_slice(&a);
+        s
+    };
+    let (src, dst) = (sa([10, 0, 0, 2], 40000), sa([10, 0, 0, 1], 80));
+
+    let w = NETLOCK.read();
+    let net = need(hal::netlock::NetHeld::of(&w), "the net lock");
+    let mut solocked = need(in_pcbsolock(&inp, &net), "the listener's lock");
+    let mut il = need(solocked.inet(), "a kernel protocol's lock");
+    let tp = need(
+        tcp_newtcpcb(&inp, &mut il, kernel::net::mbuf::M_WAIT),
+        "a control block",
+    );
+    let init = SynCacheInit {
+        sc_src: src,
+        sc_dst: dst,
+        sc_irs: 1,
+        sc_iss: 2,
+        sc_win: 16384,
+        sc_ourmaxseg: 1460,
+        sc_request_r_scale: 15,
+        ..SynCacheInit::default()
+    };
+
+    if wanted(SYNCACHE_ROWS[0]) {
+        let r = measure(OPS, || {
+            let t0 = Instant::now();
+            for _ in 0..OPS {
+                let sc = need(
+                    syn_cache_alloc(&inp, black_box(init), ScListener::default()),
+                    "an entry",
+                );
+                let mut tossed = None;
+                let mut g = syn_cache_lock::<G>();
+                syn_cache_insert(&mut g, &sc, &tp, &mut tossed);
+                let hit = syn_cache_lookup(&mut g, black_box(&src), &dst, 0);
+                let Some(hit) = hit else {
+                    eprintln!("net: syn_cache_lookup missed");
+                    std::process::exit(1);
+                };
+                let removed = syn_cache_rm(&mut g, &hit);
+                drop(g);
+                drop(black_box((removed, hit, tossed, sc)));
+            }
+            t0.elapsed()
+        });
+        report(SYNCACHE_ROWS[0], r);
+    }
+    // The listener closed and freed; the socket and pcb stay in the doubles' memory, which
+    // the next fixture forgets.
+    let closed = kernel::netinet::tcp_subr::tcp_close(tp);
+    kernel::netinet::tcp_subr::tcp_free(&inp, &mut il.pcb, closed);
+    drop(il);
+    drop(solocked);
+    drop(w);
+    core::mem::forget((so, inp));
 }
 const INET6_ROWS: [&str; 1] = ["in6.selectsrc"];
 

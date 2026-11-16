@@ -292,8 +292,10 @@ pub fn tcp_init<G: ProcGlue>() {
     hal::random::arc4random_buf(&mut secret);
     let mut ctx = Sha512Ctx::new();
     ctx.update(&secret);
-    // Set once: a second call keeps the first secret, as the first boot's.
+    // Set once: a second call keeps the first secret, as the first boot's. The stack's copy
+    // is wiped (the C draws the bytes into its global).
     let _ = TCP_SECRET.set(secret);
+    libkern::explicit_bzero(&mut secret);
     let _ = TCP_SECRET_CTX.set(ctx);
 
     // Since sizeof(struct ip6_hdr) > sizeof(struct ip), we do max length checks/computations
@@ -1217,7 +1219,15 @@ mod tests {
         });
         assert!(handles >= TCPT_NTIMERS + 2, "{handles} handles");
 
-        testtcp::close(so, inp.clone());
+        // tcp_close cancels the timers before the block goes (the slot still holds it).
+        so.st_set(crate::net::sockbuf::SS_NOFDREF);
+        let pending = testtcp::with_tp(&inp, |tp| {
+            let cb = tp.cb;
+            let closed = tcp_close(tp);
+            (cb.t_timer[TCPT_REXMT].pending(), Some(closed))
+        });
+        assert!(!pending, "the retransmit timer cancelled by tcp_close");
+        drop(so);
         // tcp_free: the item back, its five handles of the pcb gone with its timers.
         assert_eq!(testtcp::tcpcbs(), tcpcbs);
         assert_eq!(

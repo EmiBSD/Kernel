@@ -140,7 +140,7 @@ use hal::malloc::{M_NOWAIT, M_WAITOK, MArray};
 use hal::mutex::MutexedGuard;
 use hal::netlock::{NETLOCK, NetHeld};
 use hal::pod;
-use hal::pool::{AnyArc, PoolArc};
+use hal::pool::{AnyArc, PR_NOWAIT, PoolArc};
 use hal::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons, ntohl};
 use hal::sys::errno::Errno;
@@ -172,9 +172,9 @@ use crate::netinet::tcp_timer::{
     tcpt_rangeset,
 };
 use crate::netinet::tcp_var::{
-    SCF_ECN_PERMIT, SCF_SACK_PERMIT, SCF_SIGNATURE, SCF_TIMESTAMP, SCF_UNREACH, ScTpq, SynCache,
-    SynCacheHead, SynCacheSa, SynCaches, TCP_SYN_BUCKET_SIZE, TCP_SYN_HASH_SIZE, TcpstatCounters,
-    Tp, tcp_now, tcpstat_inc,
+    SCF_ECN_PERMIT, SCF_SACK_PERMIT, SCF_SIGNATURE, SCF_TIMESTAMP, SCF_UNREACH, ScListener, ScTpq,
+    SynCache, SynCacheHead, SynCacheInit, SynCacheSa, SynCaches, TCP_SYN_BUCKET_SIZE,
+    TCP_SYN_HASH_SIZE, TcpstatCounters, Tp, tcp_now, tcpstat_inc,
 };
 use crate::netinet6::in6_src::in6_selecthlim;
 use crate::netinet6::ip6_output::ip6_output;
@@ -186,7 +186,7 @@ use crate::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC};
 const M_SYNCACHE: i32 = 139;
 
 /// The guard of `syn_cache_mtx`: the witness of the `[S]` cells and the lists.
-type ScGuard<'a, G> = MutexedGuard<'a, SynCaches<G>>;
+pub type ScGuard<'a, G> = MutexedGuard<'a, SynCaches<G>>;
 
 /// What [`syn_cache_rm`] took off an entry: the lists' handle and the listener's, for the
 /// caller to drop once it let `syn_cache_mtx` go (`syn_cache_put`'s last drop frees the
@@ -307,6 +307,29 @@ pub fn syn_cache_rm<G: ProcGlue>(g: &mut ScGuard<'_, G>, sc: &SynCache<G>) -> Sc
     sc.sc_timer.clear();
     g.sets[set].scs_count -= 1;
     ScRemoved { list, listener }
+}
+
+/// `mtx_enter(&syn_cache_mtx)`: the glue's SYN cache, locked (`IPL_SOFTNET`).
+#[inline]
+pub fn syn_cache_lock<G: ProcGlue>() -> ScGuard<'static, G> {
+    net::<G>().tcp.syn_cache.lock()
+}
+
+/// `pool_get(&syn_cache_pool, PR_NOWAIT|PR_ZERO)` and `refcnt_init` of `syn_cache_add`: a new
+/// entry of the listener `inp` with the `[I]` members `init` and the `[s]` ones `l`, its
+/// listener counted (`sc_inplisten = in_pcbref(tp->t_inpcb)`); `None` when the pool is empty
+/// (or `inp` no pool item).
+pub fn syn_cache_alloc<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    init: SynCacheInit,
+    l: ScListener,
+) -> Option<PoolArc<SynCache<G>>> {
+    let t = &net::<G>().tcp;
+    let listen = inp.socket().so_lock.lock().id();
+    let listener = PoolArc::from_ref(inp)?;
+    t.syn_cache_pool.get_homed(PR_NOWAIT, || {
+        SynCache::new(t.syn_cache.id(), listen, init, l, Some(listener))
+    })
 }
 
 /// `syn_cache_init`: the two sets' buckets and the "syncache" pool (at boot, from `tcp_init`).
@@ -959,3 +982,316 @@ fn put<T: hal::user::AbiPod>(d: &mut [u8], off: usize, v: &T) {
     }
 }
 /* </CODE> */
+
+/* <TESTS> */
+#[cfg(test)]
+mod tests {
+    // Host tests of the SYN cache: the hash as the C's formula, an entry's life through
+    // insert, lookup, reset, unreach and the listener's close, the two limits that toss the
+    // oldest entry, the sets' swap, the retransmit timer and its two expiries, the pool back
+    // at its baseline.
+
+    use std::vec::Vec;
+
+    use hal::sys::netinet_tcp::TCPOPT_MAXSEG;
+
+    use super::*;
+    use crate::netinet::in_pcb::testinet;
+    use crate::netinet::tcp_subr::testtcp;
+    use crate::netinet::tcp_var::TCPCOUNTERS;
+
+    type G = testtcp::G;
+
+    /// A `sockaddr_in` of `a`:`port` as the union's bytes.
+    fn sa(a: [u8; 4], port: u16) -> SynCacheSa {
+        let mut s = [0u8; SOCKADDR_UNION_LEN];
+        s[0] = 16;
+        s[1] = AF_INET;
+        s[2..4].copy_from_slice(&port.to_be_bytes());
+        s[4..8].copy_from_slice(&a);
+        s
+    }
+
+    #[test]
+    fn hash_mixes_ports_and_source() {
+        let src = sa([10, 0, 0, 1], 1234);
+        let dst = sa([10, 0, 0, 2], 80);
+        let rand = [0x1111_1111, 2, 3, 4, 0x5555_5555];
+        let sport = u32::from(1234u16.to_be());
+        let dport = u32::from(80u16.to_be());
+        let addr = u32::from_ne_bytes([10, 0, 0, 1]);
+        assert_eq!(
+            syn_cache_hash(&src, &dst, &rand),
+            (((dport << 16).wrapping_add(sport)) ^ rand[4]).wrapping_mul(addr ^ rand[0])
+        );
+        // Only the source address enters the product.
+        let other = sa([10, 0, 0, 3], 80);
+        assert_eq!(
+            syn_cache_hash(&src, &dst, &rand),
+            syn_cache_hash(&src, &other, &rand)
+        );
+        // IPv6: the four words of the source address.
+        let mut s6 = [0u8; SOCKADDR_UNION_LEN];
+        s6[0] = 28;
+        s6[1] = AF_INET6;
+        s6[2..4].copy_from_slice(&1234u16.to_be_bytes());
+        s6[8..24].copy_from_slice(&[0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let w = |i: usize| {
+            u32::from_ne_bytes([s6[8 + 4 * i], s6[9 + 4 * i], s6[10 + 4 * i], s6[11 + 4 * i]])
+        };
+        let mut d6 = s6;
+        d6[2..4].copy_from_slice(&80u16.to_be_bytes());
+        let want = (((dport << 16).wrapping_add(sport)) ^ rand[4])
+            .wrapping_mul(w(0) ^ rand[0])
+            .wrapping_mul(w(1) ^ rand[1])
+            .wrapping_mul(w(2) ^ rand[2])
+            .wrapping_mul(w(3) ^ rand[3]);
+        assert_eq!(syn_cache_hash(&s6, &d6, &rand), want);
+    }
+
+    /// A fresh entry for `src -> dst` of the listener `inp`, as `syn_cache_add` fills it.
+    fn entry(inp: &Inpcb<G>, src: SynCacheSa, dst: SynCacheSa, irs: u32) -> PoolArc<SynCache<G>> {
+        let init = SynCacheInit {
+            sc_src: src,
+            sc_dst: dst,
+            sc_irs: irs,
+            sc_iss: irs ^ 0x5a5a_0000,
+            sc_win: 16384,
+            sc_ourmaxseg: 1460,
+            sc_request_r_scale: 15,
+            ..SynCacheInit::default()
+        };
+        syn_cache_alloc(inp, init, ScListener::default()).expect("a syn cache entry")
+    }
+
+    /// `syn_cache_insert` of `sc` on the listener `inp`, the tossed entries dropped after.
+    fn insert(inp: &Inpcb<G>, sc: &PoolArc<SynCache<G>>) {
+        testtcp::with_tp(inp, |tp| {
+            let mut tossed = None;
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            syn_cache_insert(&mut g, sc, &tp, &mut tossed);
+            drop(g);
+            drop(tossed);
+            ((), None)
+        });
+    }
+
+    /// `syn_cache_lookup` under the mutex.
+    fn lookup(src: &SynCacheSa, dst: &SynCacheSa) -> Option<PoolArc<SynCache<G>>> {
+        let mut g = net::<G>().tcp.syn_cache.lock();
+        syn_cache_lookup(&mut g, src, dst, 0)
+    }
+
+    /// A counter of `tcpcounters`.
+    fn count(c: TcpstatCounters) -> u64 {
+        TCPCOUNTERS.read()[c as usize]
+    }
+
+    /// The items out of the "syncache" pool.
+    fn entries() -> u64 {
+        net::<G>().tcp.syn_cache_pool.nout()
+    }
+
+    #[test]
+    fn an_entry_lives_from_insert_to_reset_unreach_and_close() {
+        let (_g, _p) = testtcp::setup();
+        let base = entries();
+        let (so, inp) = testtcp::conn();
+        let dst = sa([10, 0, 0, 1], 80);
+        let (s1, s2, s3) = (
+            sa([10, 0, 0, 2], 1001),
+            sa([10, 0, 0, 2], 1002),
+            sa([10, 0, 0, 2], 1003),
+        );
+        let added = count(TcpstatCounters::TcpsScAdded);
+        for (s, irs) in [(s1, 100), (s2, 200), (s3, 300)] {
+            let sc = entry(&inp, s, dst, irs);
+            insert(&inp, &sc);
+            assert!(sc.sc_timer.pending(), "the retransmit timer runs");
+        }
+        assert_eq!(count(TcpstatCounters::TcpsScAdded) - added, 3);
+        assert_eq!(entries(), base + 3);
+        let found = lookup(&s2, &dst).expect("the second entry");
+        assert_eq!(found.sc_i.sc_irs, 200);
+        assert!(
+            lookup(&sa([10, 0, 0, 9], 1002), &dst).is_none(),
+            "another source"
+        );
+        // The same hash (sin_zero is not hashed), another source: compared over sa_len.
+        let mut zeroed = s2;
+        zeroed[8] = 1;
+        assert!(lookup(&zeroed, &dst).is_none(), "the source compared whole");
+        drop(found);
+
+        let net_w = hal::netlock::NETLOCK.read();
+        let held = NetHeld::of(&net_w).expect("the net lock");
+        // A RST outside [irs, irs + 1] leaves the entry; inside, it zaps it.
+        let reset = count(TcpstatCounters::TcpsScReset);
+        let th = |seq: u32| Tcphdr {
+            th_seq: seq,
+            ..Tcphdr::default()
+        };
+        syn_cache_reset::<G>(&s1, &dst, &th(99), 0, &held);
+        syn_cache_reset::<G>(&s1, &dst, &th(102), 0, &held);
+        assert!(lookup(&s1, &dst).is_some());
+        syn_cache_reset::<G>(&s1, &dst, &th(101), 0, &held);
+        assert!(lookup(&s1, &dst).is_none());
+        assert_eq!(count(TcpstatCounters::TcpsScReset) - reset, 1);
+
+        // An unreachable for another sequence is bogus; the first real one only marks the
+        // entry; a second one after three retransmissions removes it.
+        let unreach = count(TcpstatCounters::TcpsScUnreach);
+        let iss = 200 ^ 0x5a5a_0000u32;
+        syn_cache_unreach::<G>(&s2, &dst, &th(htonl(iss + 1)), 0, &held);
+        syn_cache_unreach::<G>(&s2, &dst, &th(htonl(iss)), 0, &held);
+        // A second error before three retransmissions keeps the entry.
+        syn_cache_unreach::<G>(&s2, &dst, &th(htonl(iss)), 0, &held);
+        let sc2 = lookup(&s2, &dst).expect("still cached");
+        {
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            let s = sc2.sc_s.get_mut(&mut g);
+            let marked = s.sc_dynflags & SCF_UNREACH != 0;
+            s.sc_rxtshift = 3;
+            drop(g);
+            assert!(marked, "SCF_UNREACH");
+        }
+        drop(sc2);
+        syn_cache_unreach::<G>(&s2, &dst, &th(htonl(iss)), 0, &held);
+        assert!(lookup(&s2, &dst).is_none());
+        assert_eq!(count(TcpstatCounters::TcpsScUnreach) - unreach, 1);
+        drop(held);
+        drop(net_w);
+
+        // The listener's close removes what is left (syn_cache_cleanup).
+        assert!(lookup(&s3, &dst).is_some());
+        testtcp::close(so, inp);
+        assert!(lookup(&s3, &dst).is_none());
+        assert_eq!(entries(), base, "every entry back in the pool");
+    }
+
+    #[test]
+    fn the_limits_toss_the_oldest_and_the_sets_swap() {
+        let (_g, _p) = testtcp::setup();
+        let base = entries();
+        let (so, inp) = testtcp::conn();
+        let dst = sa([10, 0, 0, 1], 80);
+        // One bucket per set from the next reseed (an empty, used-up set is resized), and a
+        // bucket limit of two.
+        let first = {
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            g.tcp_syn_hash_size = 1;
+            for s in &mut g.sets {
+                s.scs_use = 0;
+            }
+            g.active
+        };
+        TCP_SYN_BUCKET_LIMIT.store(2, Ordering::Relaxed);
+        let over = count(TcpstatCounters::TcpsScBucketoverflow);
+        let e: Vec<SynCacheSa> = (0..3).map(|i| sa([10, 0, 0, 2], 2000 + i)).collect();
+        for (i, s) in e.iter().enumerate() {
+            insert(&inp, &entry(&inp, *s, dst, 10 * i as u32));
+        }
+        TCP_SYN_BUCKET_LIMIT.store(3 * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
+        assert_eq!(count(TcpstatCounters::TcpsScBucketoverflow) - over, 1);
+        assert!(
+            lookup(&e[0], &dst).is_none(),
+            "the oldest of the bucket tossed"
+        );
+        assert!(lookup(&e[1], &dst).is_some() && lookup(&e[2], &dst).is_some());
+        // The overflow zeroed the set's uses: used up, it gave the active role to the empty
+        // passive set (whose entries a lookup still finds in the other).
+        let second = net::<G>().tcp.syn_cache.lock().active;
+        assert_ne!(second, first, "the sets swapped");
+
+        // The cache limit: the oldest entry of the first non-empty bucket goes.
+        TCP_SYN_CACHE_LIMIT.store(1, Ordering::Relaxed);
+        let overflowed = count(TcpstatCounters::TcpsScOverflowed);
+        let (f0, f1) = (sa([10, 0, 0, 2], 2100), sa([10, 0, 0, 2], 2101));
+        insert(&inp, &entry(&inp, f0, dst, 7));
+        insert(&inp, &entry(&inp, f1, dst, 8));
+        TCP_SYN_CACHE_LIMIT.store(TCP_SYN_HASH_SIZE * TCP_SYN_BUCKET_SIZE, Ordering::Relaxed);
+        assert_eq!(count(TcpstatCounters::TcpsScOverflowed) - overflowed, 1);
+        assert!(lookup(&f0, &dst).is_none() && lookup(&f1, &dst).is_some());
+        assert!(
+            lookup(&e[1], &dst).is_some(),
+            "the passive set's entries stay"
+        );
+        {
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            g.tcp_syn_hash_size = TCP_SYN_HASH_SIZE;
+            for s in &mut g.sets {
+                s.scs_use = 0;
+            }
+        }
+        testtcp::close(so, inp);
+        assert_eq!(entries(), base);
+    }
+
+    #[test]
+    fn the_timer_retransmits_then_expires() {
+        let (_g, _p) = testtcp::setup();
+        let (_ifp, d) = testinet::iface(b"tsyn0", [10, 9, 3, 1]);
+        let base = entries();
+        let (so, inp) = testtcp::conn();
+        let src = sa([10, 9, 3, 2], 4321);
+        let dst = sa([10, 9, 3, 1], 80);
+        let sc = entry(&inp, src, dst, 1000);
+        insert(&inp, &sc);
+        let arg = PoolArc::erase(sc.clone());
+
+        // A retransmission: the backoff advances, the SYN-ACK goes out again.
+        let rexmit = count(TcpstatCounters::TcpsScRetransmitted);
+        let sent = d.sent.load(Ordering::Relaxed);
+        syn_cache_timer::<G>(&arg);
+        assert_eq!(count(TcpstatCounters::TcpsScRetransmitted) - rexmit, 1);
+        assert_eq!(d.sent.load(Ordering::Relaxed), sent + 1);
+        let (shift, cur, tot) = {
+            let g = net::<G>().tcp.syn_cache.lock();
+            let s = sc.sc_s.get(&g);
+            (s.sc_rxtshift, s.sc_rxtcur, s.sc_rxttot)
+        };
+        assert_eq!((shift, cur, tot), (1, 6000, 3000));
+        let p = d.last.lock().expect("the capture").clone();
+        let ip: Ip = pod::at(&p, 0).expect("the IP header");
+        assert_eq!(ip.ip_dst.s_addr, u32::from_ne_bytes([10, 9, 3, 2]));
+        let th: Tcphdr = pod::at(&p, 20).expect("the TCP header");
+        assert_eq!(th.th_flags, TH_SYN | TH_ACK);
+        assert_eq!(u32::from_be(th.th_seq), 1000 ^ 0x5a5a_0000);
+        assert_eq!(u32::from_be(th.th_ack), 1001);
+        assert_eq!(
+            (u16::from_be(th.th_sport), u16::from_be(th.th_dport)),
+            (80, 4321)
+        );
+        assert_eq!(th.th_off(), 6, "the MSS option alone");
+        assert_eq!(&p[40..44], &[TCPOPT_MAXSEG, 4, 0x05, 0xb4]);
+        assert_eq!(u16::from_be(th.th_win), 16384);
+
+        // Past the keep alive time: timed out, removed; a late fire finds it removed.
+        let timed_out = count(TcpstatCounters::TcpsScTimedOut);
+        {
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            sc.sc_s.get_mut(&mut g).sc_rxttot =
+                crate::netinet::tcp_timer::TCP_KEEPINIT.load(Ordering::Relaxed) as u32;
+        }
+        syn_cache_timer::<G>(&arg);
+        assert_eq!(count(TcpstatCounters::TcpsScTimedOut) - timed_out, 1);
+        assert!(lookup(&src, &dst).is_none());
+        assert!(!sc.sc_timer.pending(), "deleted with the entry");
+        syn_cache_timer::<G>(&arg);
+        assert_eq!(count(TcpstatCounters::TcpsScTimedOut) - timed_out, 1);
+
+        // Too many retransmissions expire an entry too.
+        let sc2 = entry(&inp, sa([10, 9, 3, 2], 4322), dst, 5);
+        insert(&inp, &sc2);
+        {
+            let mut g = net::<G>().tcp.syn_cache.lock();
+            sc2.sc_s.get_mut(&mut g).sc_rxtshift = TCP_MAXRXTSHIFT as u32;
+        }
+        syn_cache_timer::<G>(&PoolArc::erase(sc2.clone()));
+        assert_eq!(count(TcpstatCounters::TcpsScTimedOut) - timed_out, 2);
+        drop((arg, sc, sc2));
+        testtcp::close(so, inp);
+        assert_eq!(entries(), base);
+    }
+}
+/* </TESTS> */

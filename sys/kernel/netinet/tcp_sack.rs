@@ -1049,6 +1049,75 @@ mod tests {
     }
 
     #[test]
+    fn reassembly_without_an_entry_reuses_the_last_or_drops_the_queue() {
+        let (_g, _p) = testtcp::setup();
+        let qe = TCPQE_POOL.nout();
+        let (so, inp) = testtcp::conn();
+        let memdrop = || {
+            crate::netinet::tcp_var::TCPCOUNTERS.read()[TcpstatCounters::TcpsRcvmemdrop as usize]
+        };
+        let r = testtcp::with_tp(&inp, |mut tp| {
+            tp.st.t_state = TCPS_ESTABLISHED;
+            tp.st.rcv_nxt = 1000;
+            // Two segments queued past a hole, then the pool at its hard limit.
+            for seq in [1100, 1200] {
+                let mut h = th(0, seq, 0);
+                let mut tlen = 50;
+                assert_eq!(tcp_reass(&mut tp, &mut h, data(seq, 50), &mut tlen), Ok(0));
+            }
+            let full = TCPQE_POOL.set_hardlimit(TCPQE_POOL.nout() as u32);
+            // The segment that fills the hole takes the last entry, [1200, 1250), whose data
+            // is lost (the C's reuse).
+            let mut h = th(0, 1000, 0);
+            let mut tlen = 100;
+            let filled = tcp_reass(&mut tp, &mut h, data(1000, 100), &mut tlen);
+            let after_fill = (tp.st.rcv_nxt, TCPQE_POOL.nout());
+            // One that does not fill a hole: the queue flushed, the segment dropped and
+            // counted.
+            let before = memdrop();
+            let mut h = th(0, 1300, 0);
+            let mut tlen = 50;
+            let q = tcp_reass(&mut tp, &mut h, data(1300, 50), &mut tlen);
+            let _ = TCPQE_POOL.set_hardlimit(TCPQE_POOL.nout() as u32);
+            let mut h = th(0, 1500, 0);
+            let mut tlen = 50;
+            let dropped = tcp_reass(&mut tp, &mut h, data(1500, 50), &mut tlen);
+            let counted = memdrop() - before;
+            let _ = TCPQE_POOL.set_hardlimit(TCP_REASS_LIMIT_TEST);
+            (
+                (
+                    full,
+                    filled,
+                    after_fill,
+                    q,
+                    dropped,
+                    counted,
+                    tp.st.t_segq.is_some(),
+                ),
+                None,
+            )
+        });
+        let (full, filled, after_fill, q, dropped, counted, queued) = r;
+        assert_eq!(full, Ok(()));
+        assert_eq!(filled, Ok(0));
+        // [1000, 1100) and [1100, 1150) were presented, the queue emptied.
+        assert_eq!(after_fill, (1150, qe));
+        assert_eq!(
+            (q, dropped, counted, queued),
+            (Ok(0), Err(Errno::ENOBUFS), 1, false)
+        );
+        assert_eq!(
+            &received(&inp)[..],
+            &(1000u32..1150).map(|s| s as u8).collect::<Vec<_>>()[..]
+        );
+        testtcp::close(so, inp);
+        assert_eq!(TCPQE_POOL.nout(), qe);
+    }
+
+    /// The tests' restored "tcpqe" limit (`tcp_init`'s, from the doubles' `nmbclust`).
+    const TCP_REASS_LIMIT_TEST: u32 = 1 << 20;
+
+    #[test]
     fn partialack_deflates_the_window() {
         let (_g, _p) = testtcp::setup();
         let (so, inp) = testtcp::conn();
