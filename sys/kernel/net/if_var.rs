@@ -109,7 +109,6 @@
 //!   | `if_lastchange` | [`IfLastchange`] | `{ 0, 0 }` |
 //!   | `if_data_counters`, `if_counters` | [`AtomicCell`]s, [`IfCountersSlot`] | 0, not allocated |
 //!   | `if_list`, `if_tmplist` | `hal::list::ListEntry` | on no list (`an_all_zero_list_is_empty_and_an_all_zero_entry_unlinked`) |
-//!   | `if_maddrlist` | `hal::list::List` | empty (the same test) |
 //!   | `if_sadl` | `ReadMostly<Option<MBox<SockaddrDl>>>` | no reader, `None` (`hal::slot`'s `an_all_zero_cell_of_no_box_or_handle_holds_none`) |
 //!   | `if_groups` | `ReadMostly<IfgSet>` (an `Option<MArc<MArray<..>>>`) | no reader, no group (the same test) |
 //!   | `if_driver`, `if_link`, `rt` | `hal::once::OnceStatic` | empty (`an_all_zero_cell_is_an_empty_one`) |
@@ -177,8 +176,43 @@
 //!   `RTM_ADD`). DAD's `Dadq::ifa` is one more (R5, `kernel::netinet6::nd6_nbr`). Each costs
 //!   a read-modify-write pair of the count the C does not pay (ROADMAP's N12 row).
 //! - `ifma_addr` (a pointer to the multicast record's own `sockaddr`, which the C reads for
-//!   the family alone) is dropped (N6.5e): the family test is the record's back-link
-//!   (`Ifmaddr::ifma_in`, `ifma_in6`), and the record's address its own words.
+//!   the family alone) is dropped (N6.5e): the family is the handle's arm ([`IfmaddrRef`]),
+//!   and the record's address its own words.
+//! - `struct ifmaddr`, which each protocol's multicast record embeds first and casts back to
+//!   (`ifmatoinm`), freed by `in_delmulti` at its last membership (`free(inm, M_IPMADDR,
+//!   ..)`) -> (N6.5e's 5e2) [`IfmaddrRef`], a counted handle with one arm per family (`In`,
+//!   `In6`: an `MArc` of `kernel::netinet::in_var`'s or `kernel::netinet6::in6_var`'s
+//!   record, one `malloc(9)` block freed with its last handle), `Deref` to the generic part
+//!   ([`Ifmaddr`]: the list cell, `ifma_refcnt`, `ifma_ifidx`), [`IfaddrRef`]'s twin. The
+//!   handles count the memory: the interface's list holds one, each holder of a membership
+//!   one (`in_addmulti` gives it, `in_delmulti` takes it back); `ifma_refcnt` keeps counting
+//!   the memberships, the C's meaning (D-8). LZ's (and N6.4a's) recycled `&'static` records,
+//!   their two free lists and their back-links from the generic part are gone.
+//! - `if_maddrlist` (a `TAILQ` of the records, `[m]`) -> [`IfmaList`] in [`IfRt`]: a chain of
+//!   handles in cells keyed to `if_maddrlock` (`hal::rwlock::Guarded::new_keyed`), the
+//!   head's and each record's `ifma_list`, read under a witness of the lock in either mode,
+//!   changed under its write witness; a walk lends `&'w IfmaddrRef`s for the witness's life,
+//!   counting nothing. Inserting at the head is O(1) as the C's; removing walks to the
+//!   predecessor (O(n), D-4; the last leave of a group only) and opens its cell through a
+//!   clone (T3). The list sits in a set-once cell of [`IfRt`] (`hal::once::OnceStatic`)
+//!   keyed by `if_attach_common` once the structure is where it stays: a cell is keyed to
+//!   its lock's address, which [`IfRt`] does not have before it is placed (the map's state
+//!   cell of `kernel::vm::map` is the precedent). The C reaches its list head inside the
+//!   interface with no load; here [`Ifnet::if_maddrlist`] reads two set-once cells' states,
+//!   `rt`'s and the list's (two acquire loads: `in_lookupmulti`, `in6_lookupmulti`), and
+//!   `in_hasmulti`/`in6_hasmulti`, which read `rt` once for the lock they take and the list,
+//!   pay one more than before 5e2 (the list's). `if_detach` takes the list's handles off
+//!   (D-9), where the C leaves the dying interface's list: a record no membership holds any
+//!   more is freed there, one a membership still holds with that membership's last handle.
+//! - `if_maddrlock` (a `SplitRwlock` before N6.5e, entered and left C-style through six
+//!   helpers of `bsd`'s `net/if_var.rs`) -> a `hal::rwlock::RawRwlock` in [`IfRt`] taken
+//!   through its witnesses: `rw_enter_write` is `write()`, `rw_exit_write` the witness's drop.
+//!   The functions the C calls holding it (`in_lookupmulti`, `in6_lookupmulti`,
+//!   `igmp_joingroup`, `igmp_leavegroup`, `mld6_start_listening`, `mld6_stop_listening`)
+//!   take the witness and check it is the interface's (`rw_assert_wrlock`,
+//!   `rw_assert_anylock`): the lookups through the list's cells, keyed to the lock, in every
+//!   build; IGMP's and MLD's join and leave by a `kassert!`, under `diagnostic` as the C's
+//!   `DIAGNOSTIC` assertions. The cost is the C's: one enter and one exit of the same lock.
 //! - `struct netstack` is owned by its softnet thread and lent `&mut` ([`Netstack`]), where
 //!   LZ's `&Netstack` with `Cell` lists needed `unsafe impl Sync`; `ns_route` (`route.c`'s
 //!   `struct route`) is not cached per softnet until N6.3b: `bsd`'s `ip_input`/`ip6_input`
@@ -203,14 +237,14 @@ use core::sync::atomic::{
 
 use hal::intr::IPL_NET;
 use hal::link::{Link, PtrWord, SaBytes, SaLink};
-use hal::list::{List, ListEntry};
+use hal::list::ListEntry;
 use hal::malloc::{MArc, MArray, MBox};
 use hal::mutex::Mutexed;
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::pinlist::PinList;
 use hal::refcnt::Refcnt;
-use hal::rwlock::{Exclusive, Guarded, Witness};
+use hal::rwlock::{Exclusive, Guarded, RawRwlock, Witness};
 use hal::slot::ReadMostly;
 use hal::sys::errno::Errno;
 use hal::sys::net_if::{IFDESCRSIZE, IFNAMSIZ, IfRxring, SockaddrDl};
@@ -220,8 +254,8 @@ use crate::net::ifq::{Ifiqueue, Ifqueue};
 use crate::net::mbuf::{
     Mbuf, MbufBox, MbufList, MbufQueue, mq_delist, mq_dequeue, mq_drops, mq_len,
 };
-use crate::netinet::in_var::InIfaddr;
-use crate::netinet6::in6_var::In6Ifaddr;
+use crate::netinet::in_var::{InIfaddr, InMulti};
+use crate::netinet6::in6_var::{In6Ifaddr, In6Multi};
 use crate::prf::Str;
 use crate::task::{Task, TaskChain};
 use crate::timeout::Timeout;
@@ -795,9 +829,14 @@ pub struct IfRt {
     pub(crate) iqs: OnceStatic<MArray<MBox<Ifiqueue>>>,
     /// \[N\] `if_addrlist`: list of addresses per if ([`Ifnet::if_addrlist`]).
     pub(crate) if_addrlist: IfaList,
-    /// `if_maddrlock`: keeps `if_maddrlist`, taken C-style (`rw_enter_write` ..
-    /// `rw_exit_write`) by `bsd`'s multicast code, its only user until N6.4/N6.5.
-    pub if_maddrlock: hal::rwlock::SplitRwlock,
+    /// `if_maddrlock`: keeps [`IfRt::if_maddrlist()`] and the `[m]` members of its records, taken
+    /// through its witnesses (`rw_enter_write` is [`hal::rwlock::RawRwlock::write`], the
+    /// witness's drop `rw_exit_write`); the functions the C calls holding it take the
+    /// witness, the C's `rw_assert_wrlock`/`rw_assert_anylock` (N6.5e).
+    pub if_maddrlock: RawRwlock,
+    /// \[m\] `if_maddrlist`: list of multicast records ([`Ifnet::if_maddrlist`]), keyed to
+    /// `if_maddrlock` once this structure is where it stays (`if_attach_common`).
+    pub(crate) if_maddrlist: OnceStatic<IfmaList>,
     /// \[I\] `if_slowtimo`: watchdog timeout (its argument the interface's index).
     pub(crate) if_slowtimo: Timeout,
     /// \[I\] `if_watchdogtask`: watchdog task (its argument the interface's index).
@@ -817,6 +856,18 @@ pub struct IfRt {
     pub(crate) driver: &'static dyn NetDriver,
 }
 
+impl IfRt {
+    /// `&ifp->if_maddrlist`: the multicast records, keyed to `if_maddrlock` by
+    /// `if_attach_common` right after it placed this structure; `panic(9)` in between.
+    #[inline]
+    pub fn if_maddrlist(&self) -> &IfmaList {
+        match self.if_maddrlist.get() {
+            Some(l) => l,
+            None => kpanic(format_args!("if_maddrlist before if_attach")),
+        }
+    }
+}
+
 /// `struct ifnet`: a network interface, providing a packet transport mechanism (ala level 0
 /// of the PUP protocols). Embedded by value in a driver's zeroed softc and lent `&'static`
 /// (the module's redesign): every member is valid all zero, and [`Ifnet::rt`] holds what
@@ -829,8 +880,6 @@ pub struct Ifnet {
     pub if_list: ListEntry<Ifnet>,
     /// \[T\] `if_tmplist`: temporary list.
     pub if_tmplist: ListEntry<Ifnet>,
-    /// \[m\] `if_maddrlist`: list of multicast records.
-    pub if_maddrlist: List<IfMaddrlist>,
     /// \[I\] `if_xname`: external name (name + unit), NUL-terminated.
     pub if_xname: IfName,
     /// \[N\] `if_pcount`: # of promiscuous listeners.
@@ -937,7 +986,6 @@ impl Ifnet {
             if_softc: PtrWord::new(),
             if_list: ListEntry::new(),
             if_tmplist: ListEntry::new(),
-            if_maddrlist: List::new(),
             if_xname: AtomicBytes::new(),
             if_pcount: AtomicCell::new(),
             if_bridgeidx: AtomicCell::new(),
@@ -1025,6 +1073,13 @@ impl Ifnet {
     #[inline]
     pub fn if_addrlist(&self) -> &IfaList {
         &self.rt().if_addrlist
+    }
+
+    /// `&ifp->if_maddrlist`: the interface's multicast records (in [`IfRt`], keyed to its
+    /// `if_maddrlock` by `if_attach`, as the C's `TAILQ_INIT`); `panic(9)` before attach.
+    #[inline]
+    pub fn if_maddrlist(&self) -> &IfmaList {
+        self.rt().if_maddrlist()
     }
 
     /// `&ifp->if_snd`: the first send queue.
@@ -1472,47 +1527,169 @@ impl Default for IfaList {
     }
 }
 
-/// `struct ifmaddr`: interface multicast address. A protocol's record (`struct in_multi`,
-/// `bsd`'s) embeds it first, hence `#[repr(C)]`; valid all zero.
-#[repr(C)]
+/// `struct ifmaddr`: interface multicast address, the generic part a protocol's multicast
+/// record holds first (`kernel::netinet::in_var::InMulti`,
+/// `kernel::netinet6::in6_var::In6Multi`). Reached through an [`IfmaddrRef`] (`Deref`).
 pub struct Ifmaddr {
-    /// \[m\] `ifma_list`: per-interface list.
-    pub ifma_list: ListEntry<Ifmaddr>,
-    /// `ifma_refcnt`: count of references.
+    /// \[m\] `ifma_list`: the next record of the interface's list, a cell keyed to its
+    /// `if_maddrlock` ([`IfmaList`]'s chain).
+    ifma_list: Guarded<Option<IfmaddrRef>>,
+    /// `ifma_refcnt`: the memberships of the group (the C's count: `refcnt_init` at the
+    /// first join, `refcnt_take` per other one, `refcnt_rele` per leave), not the memory,
+    /// which the handles count ([`IfmaddrRef`]).
     pub ifma_refcnt: Refcnt,
     /// \[I\] `ifma_ifidx`: index of the interface.
     pub ifma_ifidx: AtomicCell<u32>,
-    /// \[I\] The Internet multicast record this is the generic part of (`ifmatoinm`'s cast,
-    /// a link set when `kernel::netinet::in_var` makes the record).
-    pub ifma_in: Link<crate::netinet::in_var::InMulti>,
-    /// \[I\] The IPv6 multicast record this is the generic part of (`ifmatoin6m`'s cast, a
-    /// link set when `kernel::netinet6::in6_var` makes the record).
-    pub ifma_in6: Link<crate::netinet6::in6_var::In6Multi>,
 }
 
 impl Ifmaddr {
-    /// A record on no list, every member zero.
-    pub const fn new() -> Self {
+    /// The generic part of a new record of `ifp` (`M_ZERO`): on no list, its list cell keyed
+    /// to `ifp`'s `if_maddrlock`, no membership counted yet.
+    pub fn new(ifp: &Ifnet) -> Self {
         Self {
-            ifma_list: ListEntry::new(),
+            ifma_list: Guarded::new_keyed(&ifp.rt().if_maddrlock, None),
             ifma_refcnt: Refcnt::new(),
             ifma_ifidx: AtomicCell::new(),
-            ifma_in: Link::new(),
-            ifma_in6: Link::new(),
         }
     }
 }
 
-impl Default for Ifmaddr {
-    fn default() -> Self {
-        Self::new()
+/// A counted reference of an interface's multicast record (a `struct ifmaddr *` the C
+/// holds), one arm per family: an `MArc` of the protocol's record, one `malloc(9)` block of
+/// `M_IPMADDR` freed with its last handle (`in_delmulti`'s `free(inm, M_IPMADDR, ..)`). The
+/// interface's list ([`IfmaList`]) holds one; so does each holder of a membership (a socket's
+/// options, an address's, pfsync's), which `in_addmulti` gives and `in_delmulti` takes back
+/// (N6.5e's D-8). `ifma_refcnt` keeps counting the memberships, the C's meaning. It derefs to
+/// the generic part ([`Ifmaddr`]); `Clone` adds a reference to the memory, not a membership.
+#[derive(Clone)]
+pub enum IfmaddrRef {
+    /// An Internet group (`AF_INET`, `struct in_multi`).
+    In(MArc<InMulti>),
+    /// An IPv6 group (`AF_INET6`, `struct in6_multi`).
+    In6(MArc<In6Multi>),
+}
+
+impl Deref for IfmaddrRef {
+    type Target = Ifmaddr;
+
+    #[inline]
+    fn deref(&self) -> &Ifmaddr {
+        match self {
+            IfmaddrRef::In(inm) => &inm.inm_ifma,
+            IfmaddrRef::In6(in6m) => &in6m.in6m_ifma,
+        }
     }
 }
 
-hal::list_adapter!(
-    /// `TAILQ_HEAD(, ifmaddr) if_maddrlist`.
-    pub IfMaddrlist: Ifmaddr, ifma_list
-);
+impl IfmaddrRef {
+    /// Whether this handle names the record `ifma` (the C's comparison of the pointers).
+    #[inline]
+    pub fn is(&self, ifma: &Ifmaddr) -> bool {
+        let me: &Ifmaddr = self;
+        core::ptr::eq(me, ifma)
+    }
+}
+
+/// `TAILQ_HEAD(, ifmaddr) if_maddrlist`: an interface's multicast records, the newest first
+/// (`TAILQ_INSERT_HEAD`, the order every walk sees). A chain of counted handles in cells
+/// keyed to the interface's `if_maddrlock` (`hal::rwlock::Guarded::new_keyed`): the head's
+/// and each record's own `ifma_list`. The list holds one reference of each record, from the
+/// join that made it ([`IfmaList::insert_head`]) to the leave that ends its last membership
+/// ([`IfmaList::remove`]) or the interface's detach ([`IfmaList::pop_head`]). A walk lends
+/// `&'w IfmaddrRef`s for the life of a witness of the lock, uncounted as the C's pointers,
+/// O(1) a step; a change takes the write witness.
+///
+/// A record a walk lends cannot outlive the witness it borrows:
+///
+/// ```compile_fail,E0515
+/// use kernel::net::if_var::{IfmaddrRef, Ifnet};
+/// fn kept(ifp: &Ifnet) -> Option<&IfmaddrRef> {
+///     let r = ifp.rt().if_maddrlock.read();
+///     ifp.if_maddrlist().first(&r)
+/// }
+/// ```
+pub struct IfmaList {
+    /// `tqh_first`.
+    head: Guarded<Option<IfmaddrRef>>,
+}
+
+impl IfmaList {
+    /// An empty list (`TAILQ_INIT`) under `lock`, the interface's `if_maddrlock` where it
+    /// stays (a cell keyed to the address a lock had before it moved opens with no witness).
+    pub fn new(lock: &RawRwlock) -> Self {
+        Self {
+            head: Guarded::new_keyed(lock, None),
+        }
+    }
+
+    /// `TAILQ_FIRST`: the newest record, for the life of the witness `w`.
+    #[inline]
+    pub fn first<'w, W: Witness + ?Sized>(&'w self, w: &'w W) -> Option<&'w IfmaddrRef> {
+        self.head.get(w).as_ref()
+    }
+
+    /// `TAILQ_NEXT(ifma, ifma_list)`: the record after `ifma`, for the life of `w`.
+    #[inline]
+    pub fn next<'w, W: Witness + ?Sized>(w: &'w W, ifma: &'w IfmaddrRef) -> Option<&'w IfmaddrRef> {
+        ifma.ifma_list.get(w).as_ref()
+    }
+
+    /// `TAILQ_FOREACH`: the records, newest to oldest, for the life of `w`; O(1) a step.
+    #[inline]
+    pub fn iter<'w, W: Witness + ?Sized>(
+        &'w self,
+        w: &'w W,
+    ) -> impl Iterator<Item = &'w IfmaddrRef> {
+        core::iter::successors(self.first(w), move |m| Self::next(w, m))
+    }
+
+    /// `TAILQ_INSERT_HEAD`: `ifma`'s handle linked first, the list's reference; O(1). `ifma`
+    /// is a new record, on no list.
+    pub fn insert_head<W: Exclusive + ?Sized>(&self, w: &mut W, ifma: IfmaddrRef) {
+        let first = self.head.get_mut(w).take();
+        *ifma.ifma_list.get_mut(w) = first;
+        *self.head.get_mut(w) = Some(ifma);
+    }
+
+    /// `TAILQ_REMOVE`: the record `ifma` unlinked and its handle, the list's reference,
+    /// returned; `None` when it is not on the list. The walk to its predecessor is O(n) (the
+    /// C's `TAILQ` is O(1); the last leave of a group only, D-4); that one's cell is opened
+    /// through a clone of its handle (T3: a reference lent by `get` cannot be held while the
+    /// witness opens a cell with `get_mut`). The removed record's own cell is emptied: it
+    /// holds no reference of its successor any more.
+    pub fn remove<W: Exclusive + ?Sized>(&self, w: &mut W, ifma: &Ifmaddr) -> Option<IfmaddrRef> {
+        let pred = {
+            let r: &W = &*w;
+            let mut pred: Option<&IfmaddrRef> = None;
+            let mut at = self.first(r);
+            loop {
+                let m = at?;
+                if m.is(ifma) {
+                    break pred.cloned(); // T3
+                }
+                pred = Some(m);
+                at = Self::next(r, m);
+            }
+        };
+        let cell = match &pred {
+            Some(p) => &p.ifma_list,
+            None => &self.head,
+        };
+        let removed = cell.get_mut(w).take()?;
+        let after = removed.ifma_list.get_mut(w).take();
+        *cell.get_mut(w) = after;
+        Some(removed)
+    }
+
+    /// `TAILQ_FIRST` and `TAILQ_REMOVE` of it: the newest record unlinked (its cell emptied)
+    /// and the list's handle of it; `None` when the list is empty. O(1).
+    pub fn pop_head<W: Exclusive + ?Sized>(&self, w: &mut W) -> Option<IfmaddrRef> {
+        let first = self.head.get_mut(w).take()?;
+        let after = first.ifma_list.get_mut(w).take();
+        *self.head.get_mut(w) = after;
+        Some(first)
+    }
+}
 
 /// `struct ifg_group`: an interface group (`ifconfig em0 group foo`), with its member
 /// interfaces. Held by counted references ([`IfgRef`]) from the groups' list (`ifg_head`) and
@@ -1777,7 +1954,7 @@ mod tests {
         assert!(ifp.rt.get().is_none() && ifp.if_driver.get().is_none());
         assert!(ifp.sadl().is_none() && ifp.if_arpcom.get().is_none());
         assert!(ifp.if_link.get().is_none());
-        assert!(!List::<IfnetList>::is_linked(&ifp));
+        assert!(!hal::list::List::<IfnetList>::is_linked(&ifp));
         let ifa = IfaddrLinked::new();
         assert!(ifa.ifa_addr.is_none() && ifa.ifa_dstaddr.is_none());
         assert!(ifa.ifa_netmask.is_none() && ifa.ifa.ifa_ifp.get().is_none());
@@ -1797,6 +1974,105 @@ mod tests {
         if_rxr_put(&mut r, 7);
         assert!(if_rxr_needrefill(&r));
         assert_eq!((if_rxr_inuse(&r), if_rxr_cwm(&r)), (3, 8));
+    }
+
+    /// A multicast record of `ifp` for group 224.0.0.`n`, the allocator's one handle.
+    fn group_of(ifp: &Ifnet, n: u8) -> MArc<InMulti> {
+        let inm = crate::netinet::in_var::in_multi_alloc(ifp);
+        inm.inm_sin.set(hal::sys::netinet_in::SockaddrIn {
+            sin_len: 16,
+            sin_family: hal::sys::socket::AF_INET,
+            sin_addr: hal::sys::netinet_in::InAddr {
+                s_addr: u32::from_ne_bytes([224, 0, 0, n]),
+            },
+            ..hal::sys::netinet_in::SockaddrIn::default()
+        });
+        inm
+    }
+
+    /// The groups of `list` in its order, by the last byte of each IPv4 group (6 for an IPv6
+    /// record), read under `w`.
+    fn groups_on<W: Witness + ?Sized>(list: &IfmaList, w: &W) -> std::vec::Vec<u8> {
+        list.iter(w)
+            .map(|m| match m {
+                IfmaddrRef::In(inm) => inm.inm_addr().s_addr.to_ne_bytes()[3],
+                IfmaddrRef::In6(_) => 6,
+            })
+            .collect()
+    }
+
+    /// The multicast list of N6.5e's 5e2: `TAILQ_INSERT_HEAD`'s order (the newest first, every
+    /// walk's), the list's one handle per record, `TAILQ_REMOVE` from the middle, the head
+    /// and the tail with the removed record's own cell emptied, `None` for a record not on
+    /// it, and `pop_head` (`if_detach`'s) to the end; the family is the handle's arm.
+    #[test]
+    fn a_multicast_list_links_at_its_head_and_unlinks_anywhere() {
+        let _g = crate::net::if_::tests::setup();
+        static D: crate::net::if_::TestDriver = crate::net::if_::TestDriver::new();
+        let ifp = crate::net::if_::test_ifnet_with(b"tml0", &D);
+        let r: std::vec::Vec<MArc<InMulti>> = (1..=3).map(|n| group_of(ifp, n)).collect();
+        let r6 = crate::netinet6::in6_var::in6_multi_alloc(ifp).expect("an IPv6 record");
+        let list = ifp.if_maddrlist();
+
+        let mut w = ifp.rt().if_maddrlock.write();
+        assert!(list.first(&w).is_none(), "TAILQ_EMPTY");
+        for inm in &r {
+            list.insert_head(&mut w, IfmaddrRef::In(inm.clone()));
+        }
+        list.insert_head(&mut w, IfmaddrRef::In6(r6.clone()));
+        assert_eq!(groups_on(list, &w), [6, 3, 2, 1], "the newest first");
+        assert!(
+            r.iter().all(|m| MArc::count(m) == 2),
+            "the list's and the test's"
+        );
+        let first = list.first(&w).expect("the head");
+        assert!(InMulti::of(first).is_none());
+        assert_eq!(In6Multi::of(first).map(MArc::count), Some(2));
+
+        // From the middle: its handle back, its own cell emptied.
+        let mid = list.remove(&mut w, &r[1].inm_ifma).expect("on the list");
+        assert!(mid.is(&r[1].inm_ifma));
+        assert!(
+            IfmaList::next(&w, &mid).is_none(),
+            "no reference of its successor"
+        );
+        assert_eq!(groups_on(list, &w), [6, 3, 1]);
+        drop(mid);
+        assert_eq!(MArc::count(&r[1]), 1, "the test's alone");
+        assert!(
+            list.remove(&mut w, &r[1].inm_ifma).is_none(),
+            "not on the list"
+        );
+
+        // The head, then the tail.
+        assert!(list.remove(&mut w, &r6.in6m_ifma).is_some());
+        assert!(list.remove(&mut w, &r[0].inm_ifma).is_some());
+        assert_eq!(groups_on(list, &w), [3]);
+
+        // `pop_head` to the end, each popped record unlinked.
+        list.insert_head(&mut w, IfmaddrRef::In(r[0].clone()));
+        let p = list.pop_head(&mut w).expect("the head");
+        assert!(p.is(&r[0].inm_ifma) && IfmaList::next(&w, &p).is_none());
+        let q = list.pop_head(&mut w).expect("the last");
+        assert!(q.is(&r[2].inm_ifma));
+        assert!(list.pop_head(&mut w).is_none() && list.first(&w).is_none());
+        drop((p, q, w));
+        assert!(r.iter().all(|m| MArc::count(m) == 1));
+        assert_eq!(MArc::count(&r6), 1);
+    }
+
+    /// The list's cells are keyed to its interface's `if_maddrlock`: a witness of another
+    /// interface's opens none (the C's `rw_assert_anylock` of `in_lookupmulti`, in every
+    /// build here).
+    #[test]
+    #[should_panic(expected = "Guarded: a witness of another lock")]
+    fn a_multicast_list_opens_only_under_its_interface_s_lock() {
+        let _g = crate::net::if_::tests::setup();
+        static D: crate::net::if_::TestDriver = crate::net::if_::TestDriver::new();
+        let a = crate::net::if_::test_ifnet_with(b"tml1", &D);
+        let b = crate::net::if_::test_ifnet_with(b"tml2", &D);
+        let r = b.rt().if_maddrlock.read();
+        let _ = a.if_maddrlist().first(&r);
     }
 }
 /* </TESTS> */

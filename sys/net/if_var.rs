@@ -97,10 +97,10 @@ pub use crate::net::if_::{IF_TMPLIST_LOCK, IFNETLIST};
 pub use kernel::net::if_var::{
     AtomicCell, IF_CARP_DEFAULT_PRIORITY, IF_TXMIT_DEFAULT, IF_TXMIT_MIN,
     IF_WIRED_DEFAULT_PRIORITY, IF_WIRELESS_DEFAULT_PRIORITY, IF_WWAN_DEFAULT_PRIORITY, IFA_ROUTE,
-    IFC_NCOUNTERS, IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfMaddrlist, IfTmplist, Ifaddr,
-    IfaddrLinked, IfaddrRef, IfgGroup, IfgMembers, IfgRef, IfgSet, Ifmaddr, Ifnet, IfnetList,
-    LinkedIfa, NetDriver, Netstack, counters_inc, counters_pkt, if_rxr_cwm, if_rxr_inuse,
-    if_rxr_needrefill, if_rxr_put,
+    IFC_NCOUNTERS, IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfTmplist, Ifaddr, IfaddrLinked,
+    IfaddrRef, IfgGroup, IfgMembers, IfgRef, IfgSet, Ifmaddr, Ifnet, IfnetList, LinkedIfa,
+    NetDriver, Netstack, counters_inc, counters_pkt, if_rxr_cwm, if_rxr_inuse, if_rxr_needrefill,
+    if_rxr_put,
 };
 pub use kernel::net::ifq::{Ifiqueue, Ifqueue};
 
@@ -490,39 +490,6 @@ pub(crate) fn if_sadl_test_set(ifp: &Ifnet, sdl: SockaddrDl) {
         panic(format_args!("if_sadl_test_set: out of memory"));
     };
     drop(ifp.if_sadl.replace(Some(b)));
-}
-
-/// `rw_assert_wrlock(&ifp->if_maddrlock)` (`DIAGNOSTIC`).
-pub fn if_maddrlock_assert_wrlock(ifp: &Ifnet) {
-    crate::kassert!(ifp.rt().if_maddrlock.status() == hal::rwlock::RW_WRITE);
-}
-
-/// `rw_assert_anylock(&ifp->if_maddrlock)` (`DIAGNOSTIC`).
-pub fn if_maddrlock_assert_anylock(ifp: &Ifnet) {
-    crate::kassert!(matches!(
-        ifp.rt().if_maddrlock.status(),
-        hal::rwlock::RW_WRITE | hal::rwlock::RW_READ
-    ));
-}
-
-/// `rw_enter_write(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_enter_write(ifp: &Ifnet) {
-    let _ = ifp.rt().if_maddrlock.enter(hal::rwlock::RW_WRITE);
-}
-
-/// `rw_exit_write(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_exit_write(ifp: &Ifnet) {
-    ifp.rt().if_maddrlock.exit();
-}
-
-/// `rw_enter_read(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_enter_read(ifp: &Ifnet) {
-    let _ = ifp.rt().if_maddrlock.enter(hal::rwlock::RW_READ);
-}
-
-/// `rw_exit_read(&ifp->if_maddrlock)`.
-pub fn if_maddrlock_exit_read(ifp: &Ifnet) {
-    ifp.rt().if_maddrlock.exit();
 }
 
 /// `ifnetlist` as LZ's callers name it (`IFNETLIST.0.iter()`): the kernel's list.

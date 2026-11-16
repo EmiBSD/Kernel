@@ -249,6 +249,7 @@ use crate::sys::syslog::LOG_WARNING;
 use crate::sys::systm::{INFSLP, net_assert_locked, net_lock, net_unlock};
 use crate::sys::task::{Task, Taskq};
 use crate::sys::timeout::{Timeout, timeout_pending};
+use hal::malloc::MArc;
 
 /// `PFSYNC_VERSION`.
 pub const PFSYNC_VERSION: u8 = 6;
@@ -849,8 +850,9 @@ pub struct PfsyncSoftc {
     pub sc_sync_ifidx: Cell<u32>,
     /// `sc_sync_if_down`.
     pub sc_sync_if_down: Cell<u32>,
-    /// `sc_inm`: the sync peer group's membership.
-    pub sc_inm: Cell<Option<&'static InMulti>>,
+    /// `sc_inm`: the sync peer group's membership, its handle of the record (`in_addmulti`'s,
+    /// which `in_delmulti` takes back; all zero is `None`: `MArc`'s niche).
+    pub sc_inm: Cell<Option<MArc<InMulti>>>,
     /// `sc_ltask`.
     pub sc_ltask: Task,
     /// `sc_dtask`.
@@ -1568,7 +1570,7 @@ fn pfsync_set_ioc(sc: &PfsyncSoftc, ifr: &Ifreq) -> Result<(), Errno> {
 /// update request. Called with the net lock held.
 fn pfsync_up(sc: &'static PfsyncSoftc) -> Result<(), Errno> {
     let ifp = &sc.sc_if;
-    let mut inm: Option<&'static InMulti> = None;
+    let mut inm: Option<MArc<InMulti>> = None;
 
     net_assert_locked("pfsync_up");
     kassert!(ifp.if_flags.get() & IFF_RUNNING == 0);

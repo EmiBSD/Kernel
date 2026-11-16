@@ -123,10 +123,6 @@
 //! - The driver's `SIOCSIFADDR` and `SIOCSIFDSTADDR` get a zeroed `struct ifreq` image where
 //!   the C passes the `struct in_ifaddr` (D-14: no driver ported at the pin reads it;
 //!   `if_ppp.c` and `if_spppsubr.c`, which do, are not ported).
-//! - The multicast records are never freed (`kernel::netinet::in_var`'s deviations); a
-//!   membership whose interface has already left the index map when its last reference goes
-//!   (`if_detach`'s `in_ifdetach`, after `if_remove`) stays on that interface's list, where
-//!   the C frees it there, and is not reused.
 //!
 //! ## Redesign
 //! - The address `ioctl`s over the request's bytes: LZ's `unsafe fn`s over `caddr_t data`
@@ -140,8 +136,15 @@
 //!   (`hal::netlock::lend_detached`), never across the driver's two requests. The kernel lock
 //!   is taken C-style around the same span, in the C's order (net, then kernel).
 //!   `NET_LOCK_SHARED()` of `in_ioctl_get` is a witness (no driver call).
-//! - `in_addmulti`'s `malloc(M_WAITOK | M_ZERO)` takes a record off `in_var`'s free list
-//!   first; `free` puts one back.
+//! - (N6.5e's 5e2) A multicast record is a counted handle (`hal::malloc::MArc` of
+//!   `kernel::netinet::in_var::InMulti`), freed with its last one where the C frees it: the
+//!   interface's list holds one ([`in_addmulti`] links it, [`in_delmulti`] at the last leave
+//!   and `if_detach` take it off), each membership one: `in_addmulti` answers the joiner's
+//!   (a new record's, or a clone of the list's for a group already joined, beside the C's
+//!   `refcnt_take`), `in_delmulti` consumes it. `inm_refcnt` counts the memberships as the C's
+//!   (D-8). A membership whose interface has gone when its last reference goes finds no
+//!   interface and frees the record with its handle, as the C (the list's handle went with
+//!   `if_detach`, D-9): the "stays linked, not reused" deviation is closed.
 //! - (N6.5e) An address is a counted handle (`kernel::net::if_var::IfaddrRef`), freed with its
 //!   last one: `in_ifaddr_alloc` answers the creation reference, which `in_ifinit` gives to
 //!   `ifa_add` for a new address, and `in_purgeaddr` gives back the list's (`ifa_del`'s) with
@@ -156,6 +159,11 @@
 //! - `in_broadcast`, `in_ifp2ia`, `in_lookupmulti` read the records' own words (`InIfaddr::of`
 //!   of each `AF_INET` address, `SinWords::addr`), no copy of the generic part's address.
 //!   `in_broadcast` takes the proof of the net lock its walk needs (the C asserts it).
+//! - (N6.5e) `if_maddrlock` is taken through its witnesses (`kernel::net::if_var`'s
+//!   redesign): [`in_lookupmulti`] lends the record from the caller's witness in either mode
+//!   (the list's cells are keyed to the lock: a witness of another lock is `panic(9)`, the
+//!   C's `rw_assert_anylock`), counting nothing, as the C's pointer; `in_addmulti` and
+//!   `in_delmulti` hand theirs to IGMP's join and leave.
 //!
 //! **Lock and spl transitions** against the C: `in_ioctl`'s changes take the net lock and the
 //! kernel lock once each, as the C; `in_ioctl_get` the net lock shared; `in_addmulti` and
@@ -164,9 +172,10 @@
 
 use core::mem::{offset_of, size_of};
 
+use hal::malloc::MArc;
 use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, ntohl};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -187,7 +196,7 @@ use hal::sys::sockio::{
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
-use crate::net::if_var::{IfaddrRef, Ifnet};
+use crate::net::if_var::{IfaddrRef, IfmaList, IfmaddrRef, Ifnet};
 use crate::net::mbuf::Mbuf;
 use crate::net::proto::SockaddrView;
 use crate::net::route::{
@@ -196,9 +205,7 @@ use crate::net::route::{
 use crate::net::rtable::rtable_l2;
 use crate::netinet::igmp::{igmp_joingroup, igmp_leavegroup, igmp_sendpkt};
 use crate::netinet::igmp_var::IgmpPktinfo;
-use crate::netinet::in_var::{
-    InIfaddr, InMulti, ifatoia, in_ifaddr_alloc, in_multi_alloc, in_multi_free,
-};
+use crate::netinet::in_var::{InIfaddr, InMulti, ifatoia, in_ifaddr_alloc, in_multi_alloc};
 
 /// `sizeof(struct sockaddr_in)`.
 const SIN_SIZE: usize = size_of::<SockaddrIn>();
@@ -851,11 +858,17 @@ pub fn in_ifinit(
 
             // If the interface supports multicast, join the "all hosts" multicast group on
             // that interface.
-            if ifp.if_flags.get() & IFF_MULTICAST != 0 && ia.ia_allhosts.get().is_none() {
+            let no_allhosts = ia.ia_allhosts.read().is_none();
+            if ifp.if_flags.get() & IFF_MULTICAST != 0 && no_allhosts {
                 let addr = InAddr {
                     s_addr: INADDR_ALLHOSTS_GROUP,
                 };
-                ia.ia_allhosts.set(in_addmulti(&addr, ifp, net));
+                let inm = in_addmulti(&addr, ifp, net);
+                // The cell was empty (read above, under the same exclusive net lock): a
+                // handle there would be a membership dropped without its leave.
+                let old = ia.ia_allhosts.replace(inm);
+                kassert!(old.is_none());
+                drop(old);
             }
         }
 
@@ -884,9 +897,9 @@ pub fn in_purgeaddr(ifa: &IfaddrRef, net: &NetHeld<'_>) {
     rt_ifa_purge(ifa, net);
     let lst = ifa_del(ifp, ifa, net);
 
-    if let Some(inm) = ia.ia_allhosts.get() {
+    // The membership's handle taken out of the cell first: `in_delmulti` consumes it.
+    if let Some(inm) = ia.ia_allhosts.replace(None) {
         in_delmulti(inm, net);
-        ia.ia_allhosts.set(None);
     }
 
     ia.ia_ifp().set(None);
@@ -999,13 +1012,26 @@ pub fn in_broadcast(in_: InAddr, rtableid: u32, net: &NetHeld<'_>) -> bool {
     false
 }
 
-/// `in_lookupmulti(addr, ifp)`: the multicast record of `addr` on `ifp`, if joined. Called
-/// holding `if_maddrlock`.
-pub fn in_lookupmulti(addr: &InAddr, ifp: &Ifnet) -> Option<&'static InMulti> {
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ));
+/// `in_lookupmulti(addr, ifp)`: the multicast record of `addr` on `ifp`, if joined, lent for
+/// the life of `w`, a witness of `ifp`'s `if_maddrlock` in either mode (another lock's is
+/// `panic(9)`: `rw_assert_anylock`).
+pub fn in_lookupmulti<'w, W: Witness + ?Sized>(
+    addr: &InAddr,
+    ifp: &'w Ifnet,
+    w: &'w W,
+) -> Option<&'w MArc<InMulti>> {
+    lookupmulti(addr, ifp.if_maddrlist(), w)
+}
 
-    ifp.if_maddrlist
-        .iter()
+/// [`in_lookupmulti`]'s walk of the list `list` (`TAILQ_FOREACH`, O(1) a step), for a caller
+/// that has the interface's [`IfRt`](crate::net::if_var::IfRt) at hand already.
+#[inline]
+fn lookupmulti<'w, W: Witness + ?Sized>(
+    addr: &InAddr,
+    list: &'w IfmaList,
+    w: &'w W,
+) -> Option<&'w MArc<InMulti>> {
+    list.iter(w)
         .filter_map(InMulti::of)
         .find(|inm| inm.inm_addr().s_addr == addr.s_addr)
 }
@@ -1019,27 +1045,25 @@ fn multi_ifreq(addr: InAddr) -> [u8; IFREQ_SIZE] {
 }
 
 /// `in_addmulti(addr, ifp)`: `addr` added to the IP multicast addresses of `ifp` (or a
-/// reference taken on its record if it is there); `None` when the driver refuses. The first
-/// IGMP report of a new group is sent under the net lock the caller holds (`net`).
-pub fn in_addmulti(
-    addr: &InAddr,
-    ifp: &'static Ifnet,
-    net: &NetHeld<'_>,
-) -> Option<&'static InMulti> {
+/// membership counted on its record if it is there); the joiner's handle of the record,
+/// which `in_delmulti` takes back, or `None` when the driver refuses. The first IGMP report
+/// of a new group is sent under the net lock the caller holds (`net`).
+pub fn in_addmulti(addr: &InAddr, ifp: &'static Ifnet, net: &NetHeld<'_>) -> Option<MArc<InMulti>> {
     let lock = &ifp.rt().if_maddrlock;
 
     // See if address already in list.
-    let _ = lock.enter(RW_WRITE);
-    if let Some(inm) = in_lookupmulti(addr, ifp) {
-        inm.inm_refcnt().take();
-        lock.exit();
-        return Some(inm);
+    {
+        let w = lock.write();
+        if let Some(inm) = in_lookupmulti(addr, ifp, &w) {
+            inm.inm_refcnt().take();
+            // The joiner's handle (D-8), made before the witness ends.
+            return Some(inm.clone());
+        }
     }
-    lock.exit();
 
     // New address; allocate a new multicast record and link it into the interface's
     // multicast list.
-    let new_inm = in_multi_alloc();
+    let new_inm = in_multi_alloc(ifp);
 
     // Ask the network driver to update its multicast reception filter appropriately for the
     // new address.
@@ -1047,17 +1071,19 @@ pub fn in_addmulti(
     hal::klock::kernel_lock();
     if if_ioctl(ifp, SIOCADDMULTI, &mut ifr).is_err() {
         hal::klock::kernel_unlock();
-        in_multi_free(new_inm);
+        // free(new_inm): its one handle's drop.
         return None;
     }
     hal::klock::kernel_unlock();
 
-    let _ = lock.enter(RW_WRITE);
+    let mut w = lock.write();
     // check again after unlock and lock
-    if let Some(inm) = in_lookupmulti(addr, ifp) {
+    if let Some(inm) = in_lookupmulti(addr, ifp, &w) {
         inm.inm_refcnt().take();
-        lock.exit();
-        in_multi_free(new_inm);
+        let inm = inm.clone(); // the joiner's handle (D-8)
+        drop(w);
+        // free(new_inm): its one handle's drop, after the lock as the C's.
+        drop(new_inm);
         return Some(inm);
     }
     let inm = new_inm;
@@ -1066,10 +1092,11 @@ pub fn in_addmulti(
     inm.inm_ifidx().set(ifp.if_index.get());
 
     // Let IGMP know that we have joined a new IP multicast group.
-    ifp.if_maddrlist.insert_head(&inm.inm_ifma);
+    ifp.if_maddrlist()
+        .insert_head(&mut w, IfmaddrRef::In(inm.clone())); // the list's handle
     let mut pkt = IgmpPktinfo::default();
-    igmp_joingroup(inm, ifp, &mut pkt);
-    lock.exit();
+    igmp_joingroup(&inm, ifp, &w, &mut pkt);
+    drop(w);
 
     if pkt.ipi_ifidx != 0 {
         igmp_sendpkt(&pkt, net);
@@ -1077,23 +1104,27 @@ pub fn in_addmulti(
     Some(inm)
 }
 
-/// `in_delmulti(inm)`: a reference to the multicast record given back; with the last, IGMP
-/// leaves the group, the record leaves its interface and the driver its filter. Under the net
-/// lock the caller holds (`net`, for the leave message).
-pub fn in_delmulti(inm: &'static InMulti, net: &NetHeld<'_>) {
+/// `in_delmulti(inm)`: a membership of the multicast record given back with the joiner's
+/// handle `inm`; with the last membership, IGMP leaves the group, the record leaves its
+/// interface and the driver its filter, and the record is freed with the last handle (this
+/// one and the list's, both dropped at the end, where the C frees it). Under the net lock the
+/// caller holds (`net`, for the leave message).
+pub fn in_delmulti(inm: MArc<InMulti>, net: &NetHeld<'_>) {
     if !inm.inm_refcnt().rele() {
         return;
     }
 
+    // The list's handle of the record, taken off the list below; none when `if_detach`
+    // emptied the list already (the interface is gone, D-9).
+    let mut lst = None;
     if let Some(ifp) = IfRef::get(inm.inm_ifidx().get()) {
-        let lock = &ifp.rt().if_maddrlock;
-        let _ = lock.enter(RW_WRITE);
+        let mut w = ifp.rt().if_maddrlock.write();
         // No remaining claims to this record; let IGMP know that we are leaving the multicast
         // group.
         let mut pkt = IgmpPktinfo::default();
-        igmp_leavegroup(inm, &ifp, &mut pkt);
-        ifp.if_maddrlist.remove(&inm.inm_ifma);
-        lock.exit();
+        igmp_leavegroup(&inm, &ifp, &w, &mut pkt);
+        lst = ifp.if_maddrlist().remove(&mut w, &inm.inm_ifma);
+        drop(w);
 
         if pkt.ipi_ifidx != 0 {
             igmp_sendpkt(&pkt, net);
@@ -1107,22 +1138,17 @@ pub fn in_delmulti(inm: &'static InMulti, net: &NetHeld<'_>) {
         // if_put(ifp): the reference's drop.
     }
 
-    // free(inm): a record still on a gone interface's list is not reused (the module's
-    // deviations).
-    if !hal::list::List::<crate::net::if_var::IfMaddrlist>::is_linked(&inm.inm_ifma) {
-        in_multi_free(inm);
-    }
+    // free(inm, M_IPMADDR, sizeof(*inm)): the last of the two handles frees the record.
+    drop(lst);
+    drop(inm);
 }
 
 /// `in_hasmulti(addr, ifp)`: whether the multicast group `addr` has been joined by interface
 /// `ifp`.
 pub fn in_hasmulti(addr: &InAddr, ifp: &Ifnet) -> bool {
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_READ);
-    let joined = in_lookupmulti(addr, ifp).is_some();
-    lock.exit();
-
-    joined
+    let rt = ifp.rt();
+    let r = rt.if_maddrlock.read();
+    lookupmulti(addr, rt.if_maddrlist(), &r).is_some()
 }
 
 /// `in_ifdetach(ifp)`: every IPv4 address of `ifp` removed.
@@ -1157,8 +1183,9 @@ pub fn in_prefixlen2mask(maskp: &mut InAddr, plen: i32) {
 mod tests {
     // Host tests for the Internet addresses over a test interface: the address ioctls as the
     // C answers them (privilege, family, length, absent addresses), the routes and the
-    // all-hosts membership an address brings and its delete takes away, the record recycled,
-    // and the multicast records' counts with IGMP's report and leave message on the wire.
+    // all-hosts membership an address brings and its delete takes away, the records freed
+    // with their last handles, and the multicast records' counts with IGMP's report and leave
+    // message on the wire.
 
     use std::boxed::Box;
     use std::sync::Mutex;
@@ -1176,7 +1203,7 @@ mod tests {
     use crate::net::mbuf::{MbufBox, m_copydata};
     use crate::net::route::rtalloc;
     use crate::net::route::tests::{grace, sin, testroutes_setup};
-    use crate::netinet::in_var::inm_free_count;
+    use crate::netinet::in_var::M_IPMADDR;
     use crate::testutil::malloc_out;
 
     /// A driver that keeps the packets it is given and counts the multicast filter changes.
@@ -1313,11 +1340,14 @@ mod tests {
             Err(Errno::EINVAL)
         );
 
-        // ifconfig int0 inet 10.0.2.15/24: one record of `M_IFADDR`.
+        // ifconfig int0 inet 10.0.2.15/24: one record of `M_IFADDR`, and the all-hosts
+        // group's of `M_IPMADDR` (the address's membership, `ia_allhosts`).
         let out = malloc_out(M_IFADDR);
+        let mout = malloc_out(M_IPMADDR);
         in_ioctl(SIOCAIFADDR, &mut r_add(), Some(ifp), true).expect("SIOCAIFADDR");
         let one = malloc_out(M_IFADDR) - out;
         assert!(one > 0, "the address's record");
+        assert!(malloc_out(M_IPMADDR) > mout, "the all-hosts group's record");
         assert_eq!(
             get(ifp, SIOCGIFADDR).map(|s| s.sin_addr),
             Ok(a([10, 0, 2, 15]))
@@ -1370,6 +1400,11 @@ mod tests {
         grace();
         assert!(route([10, 0, 2, 77]).is_none());
         assert!(!in_hasmulti(&a([224, 0, 0, 1]), ifp));
+        assert_eq!(
+            malloc_out(M_IPMADDR),
+            mout,
+            "the all-hosts group's record freed with its last membership"
+        );
         assert_eq!(get(ifp, SIOCGIFADDR), Err(Errno::EADDRNOTAVAIL));
         assert_eq!(ia.count(), 1, "the test's handle alone");
         assert_eq!(
@@ -1435,10 +1470,19 @@ mod tests {
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
         let g = a([239, 1, 2, 3]);
+        let out = malloc_out(M_IPMADDR);
         let inm = in_addmulti(&g, ifp, &net).expect("joined");
+        let one = malloc_out(M_IPMADDR) - out;
+        assert!(one > 0, "one record of M_IPMADDR");
         let again = in_addmulti(&g, ifp, &net).expect("joined again");
-        assert!(core::ptr::eq(inm, again), "one record for the group");
-        assert_eq!(inm.inm_refcnt().read(), 2);
+        assert!(MArc::ptr_eq(&inm, &again), "one record for the group");
+        assert_eq!(malloc_out(M_IPMADDR), out + one, "no second record");
+        assert_eq!(inm.inm_refcnt().read(), 2, "two memberships");
+        assert_eq!(
+            MArc::count(&inm),
+            3,
+            "the list's handle and the two members'"
+        );
         assert_eq!(
             d.addmulti.load(Ordering::Relaxed),
             adds + 1,
@@ -1454,12 +1498,24 @@ mod tests {
             "the first report at once"
         );
 
-        let inm_free = inm_free_count();
-        in_delmulti(inm, &net);
+        in_delmulti(again, &net);
         assert!(in_hasmulti(&g, ifp), "one claim left");
         assert!(igmp_sent(d).is_empty());
+        assert_eq!(MArc::count(&inm), 2, "the list's and the member's");
+        // The last leave, a handle of the test's kept across it: the record leaves the list
+        // and stays readable until that handle goes (a reference cannot outlive its record).
+        let kept = inm.clone();
         in_delmulti(inm, &net);
         assert!(!in_hasmulti(&g, ifp));
+        assert_eq!(MArc::count(&kept), 1, "the test's alone");
+        assert_eq!(kept.inm_addr(), g, "still readable");
+        assert_eq!(
+            malloc_out(M_IPMADDR),
+            out + one,
+            "kept by the test's handle"
+        );
+        drop(kept);
+        assert_eq!(malloc_out(M_IPMADDR), out, "freed with its last handle");
         let all_routers = INADDR_ALLROUTERS_GROUP.to_ne_bytes();
         assert_eq!(
             igmp_sent(d),
@@ -1471,13 +1527,24 @@ mod tests {
             "we may have reported last: a leave message"
         );
         assert_eq!(d.delmulti.load(Ordering::Relaxed), 1);
-        assert_eq!(inm_free_count(), inm_free + 1);
         drop(net);
         drop(w);
 
         let mut del = aliasreq([10, 0, 2, 15], None);
         in_ioctl(SIOCDIFADDR, &mut del, Some(ifp), true).expect("SIOCDIFADDR");
         grace();
+    }
+
+    /// `in_lookupmulti` under a witness of another interface's `if_maddrlock`: `panic(9)`
+    /// (the C's `rw_assert_anylock`, here the list's key in every build).
+    #[test]
+    #[should_panic(expected = "Guarded: a witness of another lock")]
+    fn in_lookupmulti_under_another_interface_s_lock_is_panic() {
+        let _g = setup();
+        let (ifp, _) = iface();
+        let (other, _) = iface();
+        let r = other.rt().if_maddrlock.read();
+        let _ = in_lookupmulti(&a([224, 0, 0, 1]), ifp, &r);
     }
 
     #[test]

@@ -2001,11 +2001,11 @@ fn join_group<G: ProcGlue>(
     im6o.im6o_memberships.reserve()?;
     let in6m = in6_addmulti(&group, ifp.ifp(), net)?;
     drop(ifp); // if_put(ifp)
-    let pushed = im6o.im6o_memberships.push(in6m);
-    if pushed.is_err() {
+    if let Err(in6m) = im6o.im6o_memberships.push(in6m) {
         in6_delmulti(in6m, net);
+        return Err(Errno::ENOBUFS);
     }
-    pushed
+    Ok(())
 }
 
 /// `ip6_setmoptions`' `IPV6_LEAVE_GROUP`: drops a multicast group membership, on the
@@ -3887,6 +3887,7 @@ mod tests {
 
         // Two sockets join g on if1: one record, the driver told once; a second join of the same
         // socket is EADDRINUSE.
+        let mout = crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR);
         let adds = d1.adds();
         set(&a, IPV6_JOIN_GROUP, &mreq(g, i1)).expect("a joins");
         set(&b, IPV6_JOIN_GROUP, &mreq(g, i1)).expect("b joins");
@@ -3915,6 +3916,11 @@ mod tests {
         testinet::release(so2, b);
         assert!(!in6_hasmulti(&g, if1));
         testinet::release(so1, a);
+        assert_eq!(
+            crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR),
+            mout,
+            "the records and the memberships' arrays freed"
+        );
     }
 
     #[test]

@@ -1481,18 +1481,20 @@ fn add_membership(
         // maximum then we know we've really run out of entries. Otherwise, we reallocate the
         // vector.
         let newmax = (usize::from(imo.imo_max_memberships()) + 1) * 2 - 1;
-        let old = imo.imo_membership.as_deref().unwrap_or(&[]);
+        let old = imo.imo_membership.as_deref_mut().unwrap_or(&mut []);
+        // The handles move into the new vector (`MArray::new` fills it only once it has it:
+        // a refusal moves nothing).
         let nmships = (newmax <= usize::from(IP_MAX_MEMBERSHIPS))
             .then(|| {
                 MArray::new(M_IPMOPTS, M_NOWAIT, newmax, |i| {
-                    old.get(i).copied().flatten()
+                    old.get_mut(i).and_then(Option::take)
                 })
             })
             .flatten();
         let Some(nmships) = nmships else {
             return Err(Errno::ENOBUFS);
         };
-        // The old vector freed once copied.
+        // The old vector, emptied, freed.
         imo.imo_membership = Some(nmships);
     }
     // Everything looks good; add a new record to the multicast address list for the given
@@ -1530,20 +1532,22 @@ fn drop_membership(
     // Find the membership in the membership array.
     let group = mreqn.imr_multiaddr;
     let num = usize::from(imo.imo_num_memberships);
-    let Some((i, inm)) = (0..num).find_map(|i| {
-        imo.membership(i)
-            .filter(|inm| (ifidx == 0 || inm.inm_ifidx().get() == ifidx) && inm.inm_addr() == group)
-            .map(|inm| (i, inm))
+    let Some((v, i)) = imo.imo_membership.as_deref_mut().and_then(|v| {
+        let i = v.iter().take(num).position(|m| {
+            m.as_deref().is_some_and(|inm| {
+                (ifidx == 0 || inm.inm_ifidx().get() == ifidx) && inm.inm_addr() == group
+            })
+        })?;
+        Some((v, i))
     }) else {
         return Err(Errno::EADDRNOTAVAIL);
     };
-    // Give up the multicast address record to which the membership points.
-    in_delmulti(inm, net);
-    // Remove the gap in the membership array.
-    if let Some(v) = imo.imo_membership.as_deref_mut() {
-        v.copy_within(i + 1..num, i);
-        v[num - 1] = None;
+    // Give up the multicast address record to which the membership points (its handle).
+    if let Some(inm) = v[i].take() {
+        in_delmulti(inm, net);
     }
+    // Remove the gap in the membership array: the emptied slot moves past the ones in use.
+    v[i..num].rotate_left(1);
     imo.imo_num_memberships -= 1;
     Ok(())
 }
@@ -1586,12 +1590,15 @@ pub fn ip_getmoptions(
 
 /// `ip_freemoptions(imo)`: discards the IP multicast options of a socket, leaving its groups.
 pub fn ip_freemoptions(imo: Option<MBox<IpMoptions>>, net: &NetHeld<'_>) {
-    let Some(imo) = imo else {
+    let Some(mut imo) = imo else {
         return;
     };
-    for i in 0..usize::from(imo.imo_num_memberships) {
-        if let Some(inm) = imo.membership(i) {
-            in_delmulti(inm, net);
+    let num = usize::from(imo.imo_num_memberships);
+    if let Some(v) = imo.imo_membership.as_deref_mut() {
+        for slot in v.iter_mut().take(num) {
+            if let Some(inm) = slot.take() {
+                in_delmulti(inm, net);
+            }
         }
     }
     // free(imo->imo_membership), then free(imo).
@@ -2581,7 +2588,9 @@ pub(crate) mod tests {
             "no membership, the defaults: freed"
         );
 
-        // Sixteen groups grow the vector from IP_MIN_MEMBERSHIPS to 2 * 16 - 1.
+        // Sixteen groups grow the vector from IP_MIN_MEMBERSHIPS to 2 * 16 - 1, its
+        // memberships' handles moved (one record of M_IPMADDR each, until the detach).
+        let mout = crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR);
         let groups: Vec<[u8; 4]> = (0..16u8).map(|i| [224, 1, 3, i]).collect();
         for g in &groups {
             set(&inp, o, IP_ADD_MEMBERSHIP, &mreq(*g, here)).expect("joined");
@@ -2608,7 +2617,9 @@ pub(crate) mod tests {
             assert_eq!(left, want);
         }
 
-        // The detach leaves every group (`ip_freemoptions`).
+        // The detach leaves every group (`ip_freemoptions`), and the records go with their
+        // last handles.
+        assert!(crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR) > mout);
         testinet::release(so, inp);
         for g in &groups {
             let a = InAddr {
@@ -2616,6 +2627,11 @@ pub(crate) mod tests {
             };
             assert!(!in_hasmulti(&a, ifp), "{g:?}");
         }
+        assert_eq!(
+            crate::testutil::malloc_out(crate::netinet::in_var::M_IPMADDR),
+            mout,
+            "the fifteen records freed"
+        );
     }
 
     #[test]

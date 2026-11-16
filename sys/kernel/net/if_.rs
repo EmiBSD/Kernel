@@ -350,7 +350,7 @@ use crate::assert::{kassert, kpanic};
 use crate::net::if_var::{
     AtomicCell, Cloner, DETACHED_IOCTL, DETACHED_QSTART, IF_TXMIT_DEFAULT, IFC_NCOUNTERS,
     IFNET_SLOWTIMO, IfCounterArray, IfCounters, IfRt, IfTmplist, IfaList, Ifaddr, IfaddrRef,
-    IfgGroup, IfgMembers, IfgRef, IfgSet, Ifnet, IfnetList, NetDriver, Netstack, Niqueue,
+    IfgGroup, IfgMembers, IfgRef, IfgSet, IfmaList, Ifnet, IfnetList, NetDriver, Netstack, Niqueue,
     counters_pkt,
 };
 use crate::net::ifq::{
@@ -1188,7 +1188,8 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         ifqs: OnceStatic::new(),
         iqs: OnceStatic::new(),
         if_addrlist: IfaList::new(),
-        if_maddrlock: hal::rwlock::SplitRwlock::new("maddr"),
+        if_maddrlock: RawRwlock::new("maddr"),
+        if_maddrlist: OnceStatic::new(),
         if_slowtimo: crate::timeout::Timeout::unset(),
         if_watchdogtask: Task::unset(),
         if_linkstatetask: Task::unset(),
@@ -1202,6 +1203,14 @@ pub fn if_attach_common(ifp: &'static Ifnet) {
         kpanic(format_args!("if_attach_common: attached twice"));
     }
     let rt = ifp.rt();
+    // TAILQ_INIT(&ifp->if_maddrlist): keyed to if_maddrlock where it now stays.
+    if rt
+        .if_maddrlist
+        .set(IfmaList::new(&rt.if_maddrlock))
+        .is_err()
+    {
+        kpanic(format_args!("if_attach_common: attached twice"));
+    }
     rt.if_refcnt.init();
     ifq_init_tasks(&rt.if_snd);
     ifiq_init_tasks(&rt.if_rcv);
@@ -2215,6 +2224,16 @@ pub fn if_detach(ifp: &'static Ifnet) {
                 ifa.ifa_ifp.set(None);
                 route::ifafree(lst);
             }
+        }
+
+        // The multicast records still on the interface's list leave it (D-9 of N6.5e; the C
+        // leaves the list to the dying interface and frees a record at its last
+        // `in_delmulti`, which finds no interface any more): the list's handles go here, so
+        // that a record a membership still holds is freed with that membership's last handle
+        // (its `in_delmulti`), and one no membership holds now.
+        let mut w = ifp.rt().if_maddrlock.write();
+        while let Some(ifma) = ifp.if_maddrlist().pop_head(&mut w) {
+            drop(ifma);
         }
     }
 
@@ -4462,8 +4481,6 @@ pub(crate) mod tests {
         softnet_test_install();
         if_idxmap_test_reset();
         ifnet_test_reset();
-        crate::netinet::in_var::in_var_test_reset();
-        crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
         crate::netinet6::nd6::nd6_test_reset();
@@ -4809,6 +4826,65 @@ pub(crate) mod tests {
         with_smr_thread(|| detach_locked(other));
         assert!(IFNETLIST.is_empty());
         assert_eq!(group(IFG_ALL), None);
+    }
+
+    /// D-9 of N6.5e: a detach takes the list's handles of the multicast records off; a record
+    /// no membership holds a handle of any more (nd6's proxy join, whose handle it dropped)
+    /// is freed there, one a membership still holds stays readable and is freed with that
+    /// membership's handle, whose `in_delmulti` finds no interface (the C's `free` at the
+    /// last reference).
+    #[test]
+    fn a_detach_frees_the_groups_no_membership_holds_and_the_last_leave_the_others() {
+        use crate::netinet::in_::{in_addmulti, in_delmulti};
+        use crate::netinet::in_var::M_IPMADDR;
+        let _g = setup();
+        let (ifp, _) = fresh_ifnet(b"tmd0");
+        if_attach(ifp);
+        let group = |n: u8| hal::sys::netinet_in::InAddr {
+            s_addr: u32::from_ne_bytes([224, 0, 0, n]),
+        };
+        let out = crate::testutil::malloc_out(M_IPMADDR);
+        // Local groups (224.0.0.X): no IGMP report.
+        let (held, dropped) = {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            let held = in_addmulti(&group(251), ifp, &net).expect("joined");
+            let dropped = in_addmulti(&group(252), ifp, &net).expect("joined");
+            (held, dropped)
+        };
+        let two = crate::testutil::malloc_out(M_IPMADDR) - out;
+        assert!(two > 0);
+        assert_eq!(dropped.inm_refcnt().read(), 1, "its membership counted");
+        drop(dropped);
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out + two,
+            "kept by the list"
+        );
+
+        with_smr_thread(|| detach_locked(ifp));
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out + two / 2,
+            "the record no membership holds freed by the detach"
+        );
+        assert_eq!(
+            hal::malloc::MArc::count(&held),
+            1,
+            "the membership's handle alone"
+        );
+        assert_eq!(held.inm_addr(), group(251), "still readable");
+
+        {
+            let w = NETLOCK.write();
+            let net = NetHeld::of(&w).expect("the net lock's witness");
+            in_delmulti(held, &net);
+        }
+        assert_eq!(
+            crate::testutil::malloc_out(M_IPMADDR),
+            out,
+            "freed with the last membership's handle"
+        );
     }
 
     /// `if_detach(ifp)` under the kernel lock, as its callers hold it (a driver's detach,

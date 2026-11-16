@@ -168,9 +168,6 @@
 //! - The driver's `SIOCSIFADDR` gets a zeroed `struct ifreq` image where the C passes the
 //!   `struct in6_ifaddr` (`kernel::netinet::in_`'s D-14: no driver ported at the pin reads
 //!   it).
-//! - The records are never freed (`kernel::netinet6::in6_var`'s deviations); a membership
-//!   whose interface has already left the index map when its last reference goes stays on
-//!   that interface's list, where the C frees it there, and is not reused (IPv4's).
 //! - MLD's `ip6_output` goes through an `Inet` leg until the output path moves (N6.5c;
 //!   docs/SCAFFOLDING.md); the C's calls into ND are the kernel's since N6.5b.
 //!
@@ -187,9 +184,18 @@
 //!   `wg_up`); the steps that need its proof borrow it ([`NetHolding`]), never across the
 //!   driver's request. Callers that already hold a proof (`if_up`) pass it.
 //!   `NET_LOCK_SHARED()` of `in6_ioctl_get` is a witness (no driver call).
-//! - The records are `kernel::netinet6::in6_var`'s (recycled, typed back-links: `ifatoia6`,
-//!   `ifmatoin6m` are one load); `in6_joingroup`'s `malloc`'d entry is a slot of the
-//!   address's [`In6Memberships`](crate::netinet6::in6_var::In6Memberships).
+//! - The records are `kernel::netinet6::in6_var`'s counted handles (N6.5e: `ifatoia6`,
+//!   `ifmatoin6m` are a match on the handle's arm); `in6_joingroup`'s `malloc`'d entry is a
+//!   slot of the address's [`In6Memberships`](crate::netinet6::in6_var::In6Memberships),
+//!   holding the membership's handle.
+//! - (N6.5e's 5e2) A multicast record is freed with its last handle where the C frees it
+//!   (`kernel::netinet::in_`'s shape): [`in6_addmulti`] answers the joiner's handle (a new
+//!   record's, or a clone of the list's beside the C's `refcnt_take`), [`in6_delmulti`]
+//!   consumes it and, at the last membership, takes the list's off the list; both go at its
+//!   end, the C's `free`. A membership whose interface has gone frees the record with its
+//!   handle (`if_detach` took the list's, D-9), as the C: the "stays linked, not reused"
+//!   deviation is closed. [`in6_lookupmulti`] lends from the caller's witness of
+//!   `if_maddrlock`, counting nothing.
 //! - `in6_ifawithscope` and the lookups read the records' own words (`In6Ifaddr::of` of each
 //!   `AF_INET6` address, `Sin6Words::addr`), no copy of the generic part's address.
 //!
@@ -199,21 +205,23 @@
 //! |---|---|---|---|
 //! | `in6_ioctl` add/delete (in6.c:288-289, :394-395) | `KERNEL_LOCK` then `NET_LOCK` exclusive | `klock::kernel_lock()` then `netlock::lock()` (D-17) | none; the reverse of `in_ioctl`'s (in.c:282-283): both orders are the C's own |
 //! | `in6_ioctl_get` (in6.c:416) | `NET_LOCK_SHARED` | a read witness | none |
-//! | `in6_addmulti`/`in6_delmulti` (in6.c:1037-1130) | `if_maddrlock` write (twice/once); `KERNEL_LOCK` around the driver's `SIOCADDMULTI`/`DELMULTI` | the `SplitRwlock`'s write; `klock` C-style around `if_ioctl` | none |
+//! | `in6_addmulti`/`in6_delmulti` (in6.c:1037-1130) | `if_maddrlock` write (twice/once); `KERNEL_LOCK` around the driver's `SIOCADDMULTI`/`DELMULTI` | a write witness of the `RawRwlock` (twice/once); `klock` C-style around `if_ioctl` | none |
 //! | `in6_hasmulti` | `if_maddrlock` read once | the same | none |
 //! | `in6_update_ifa`'s joins, `in6_purgeaddr` | the net lock | the net lock, and `ia6_memberships`' mutex twice per join (the room before `in6_addmulti`, the record after, so `ENOBUFS` precedes the join as the C's `malloc` does) and once per purge | two mutex pairs per join (six per new address) and one per purge: the address-add and delete ioctl path only |
 //!
 //! **Holders** against the C: `ifa_refcnt` (`refcnt_init` at a new address, the list's;
 //! `ifafree` in `in6_unlink_ifa`; `rt_ifa`'s and DAD's taken by routing and ND); `in6m_refcnt`
 //! (`refcnt_init`, `refcnt_take` per extra join, `refcnt_rele` in `in6_delmulti`): the same
-//! counts, the same places; the records are recycled at zero (in6_var's deviations).
+//! counts, the same places; the memory is the handles' (the list's and one per membership,
+//! N6.5e's D-8), freed with the last.
 
 use core::mem::{offset_of, size_of};
 use core::ptr;
 
+use hal::malloc::MArc;
 use hal::netlock::{NETLOCK, NetHeld, NetReader};
 use hal::pod;
-use hal::rwlock::{RW_READ, RW_WRITE};
+use hal::rwlock::{RW_READ, RW_WRITE, Witness};
 use hal::sys::endian::{htonl, htons};
 use hal::sys::errno::Errno;
 use hal::sys::ioccom::iocparm_len;
@@ -245,7 +253,7 @@ use hal::sys::types::Time;
 
 use crate::assert::{kassert, kpanic};
 use crate::net::if_::{IFNETLIST, IfRef, if_addrhooks_run, if_ioctl, ifa_add, ifa_del};
-use crate::net::if_var::{IFA_ROUTE, IfaddrRef, Ifnet};
+use crate::net::if_var::{IFA_ROUTE, IfaddrRef, IfmaList, IfmaddrRef, Ifnet};
 use crate::net::mbuf::Mbuf;
 use crate::net::proto::SockaddrView;
 use crate::net::route::{
@@ -256,7 +264,7 @@ use crate::net::rtsock::rtm_addr;
 use crate::netinet6::in6_ifattach::in6_ifattach;
 use crate::netinet6::in6_var::{
     In6Ifaddr, In6Multi, SIN6_LEN, ia6_dstin6, ia6_maskin6, ifatoia6, in6_ifaddr_alloc,
-    in6_multi_alloc, in6_multi_free,
+    in6_multi_alloc,
 };
 use crate::netinet6::ip6_var::{ip6stat_inc, ip6stat_inc_idx};
 use crate::netinet6::mld6::{mld6_sendpkt, mld6_start_listening, mld6_stop_listening};
@@ -1057,10 +1065,11 @@ fn in6_joingroup(
     let in6m = in6_addmulti(addr, ifp, net)?;
     // Into the room just made (In6Memberships::push: its fallback is unreachable).
     let pushed = ia6.ia6_memberships.lock().push(in6m);
-    if pushed.is_err() {
+    if let Err(in6m) = pushed {
         in6_delmulti(in6m, net);
+        return Err(Errno::ENOBUFS);
     }
-    pushed
+    Ok(())
 }
 
 /// `in6_purgeaddr(ifa)`: an IPv6 address removed from its interface and the routing table,
@@ -1188,13 +1197,26 @@ fn in6_ifinit(
     Ok(())
 }
 
-/// `in6_lookupmulti(addr, ifp)`: the `in6_multi` record of `addr` on `ifp`, if joined.
-/// Called holding `if_maddrlock`.
-pub fn in6_lookupmulti(addr: &In6Addr, ifp: &Ifnet) -> Option<&'static In6Multi> {
-    kassert!(matches!(ifp.rt().if_maddrlock.status(), RW_WRITE | RW_READ));
+/// `in6_lookupmulti(addr, ifp)`: the `in6_multi` record of `addr` on `ifp`, if joined, lent
+/// for the life of `w`, a witness of `ifp`'s `if_maddrlock` in either mode (another lock's is
+/// `panic(9)`: `rw_assert_anylock`).
+pub fn in6_lookupmulti<'w, W: Witness + ?Sized>(
+    addr: &In6Addr,
+    ifp: &'w Ifnet,
+    w: &'w W,
+) -> Option<&'w MArc<In6Multi>> {
+    lookupmulti(addr, ifp.if_maddrlist(), w)
+}
 
-    ifp.if_maddrlist
-        .iter()
+/// [`in6_lookupmulti`]'s walk of the list `list` (`TAILQ_FOREACH`, O(1) a step), for a caller
+/// that has the interface's [`IfRt`](crate::net::if_var::IfRt) at hand already.
+#[inline]
+fn lookupmulti<'w, W: Witness + ?Sized>(
+    addr: &In6Addr,
+    list: &'w IfmaList,
+    w: &'w W,
+) -> Option<&'w MArc<In6Multi>> {
+    list.iter(w)
         .filter_map(In6Multi::of)
         .find(|in6m| in6_are_addr_equal(&in6m.in6m_addr(), addr))
 }
@@ -1208,28 +1230,30 @@ fn multi_ifreq(addr: In6Addr) -> In6Ifreq {
 }
 
 /// `in6_addmulti(addr, ifp, &error)`: `addr` added to the IPv6 multicast addresses of `ifp`
-/// (or a reference taken on its record if it is there); the C's `*errorp` is the `Err`
-/// (`ENOBUFS` without memory, the driver's refusal). The first MLD report of a new group is
-/// sent under the net lock the caller holds (`net`).
+/// (or a membership counted on its record if it is there); the joiner's handle of the
+/// record, which `in6_delmulti` takes back; the C's `*errorp` is the `Err` (`ENOBUFS` without
+/// memory, the driver's refusal). The first MLD report of a new group is sent under the net
+/// lock the caller holds (`net`).
 pub fn in6_addmulti(
     addr: &In6Addr,
     ifp: &'static Ifnet,
     net: &NetHeld<'_>,
-) -> Result<&'static In6Multi, Errno> {
+) -> Result<MArc<In6Multi>, Errno> {
     let lock = &ifp.rt().if_maddrlock;
 
     // See if address already in list.
-    let _ = lock.enter(RW_WRITE);
-    if let Some(in6m) = in6_lookupmulti(addr, ifp) {
-        in6m.in6m_refcnt().take();
-        lock.exit();
-        return Ok(in6m);
+    {
+        let w = lock.write();
+        if let Some(in6m) = in6_lookupmulti(addr, ifp, &w) {
+            in6m.in6m_refcnt().take();
+            // The joiner's handle (D-8), made before the witness ends.
+            return Ok(in6m.clone());
+        }
     }
-    lock.exit();
 
     // New address; allocate a new multicast record and link it into the interface's
     // multicast list.
-    let Some(new_in6m) = in6_multi_alloc() else {
+    let Some(new_in6m) = in6_multi_alloc(ifp) else {
         return Err(Errno::ENOBUFS);
     };
 
@@ -1240,16 +1264,18 @@ pub fn in6_addmulti(
     let error = if_ioctl(ifp, SIOCADDMULTI, ifr_bytes(&mut ifr));
     hal::klock::kernel_unlock();
     if let Err(e) = error {
-        in6_multi_free(new_in6m);
+        // free(new_in6m): its one handle's drop.
         return Err(e);
     }
 
-    let _ = lock.enter(RW_WRITE);
+    let mut w = lock.write();
     // check again after unlock and lock
-    if let Some(in6m) = in6_lookupmulti(addr, ifp) {
+    if let Some(in6m) = in6_lookupmulti(addr, ifp, &w) {
         in6m.in6m_refcnt().take();
-        lock.exit();
-        in6_multi_free(new_in6m);
+        let in6m = in6m.clone(); // the joiner's handle (D-8)
+        drop(w);
+        // free(new_in6m): its one handle's drop, after the lock as the C's.
+        drop(new_in6m);
         return Ok(in6m);
     }
     let in6m = new_in6m;
@@ -1258,10 +1284,11 @@ pub fn in6_addmulti(
     in6m.in6m_ifidx().set(ifp.if_index.get());
 
     // Let MLD6 know that we have joined a new IP6 multicast group.
-    ifp.if_maddrlist.insert_head(&in6m.in6m_ifma);
+    ifp.if_maddrlist()
+        .insert_head(&mut w, IfmaddrRef::In6(in6m.clone())); // the list's handle
     let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
-    mld6_start_listening(in6m, ifp, &mut pkt);
-    lock.exit();
+    mld6_start_listening(&in6m, ifp, &w, &mut pkt);
+    drop(w);
 
     if pkt.mpi_ifidx != 0 {
         mld6_sendpkt(&pkt, net);
@@ -1276,23 +1303,27 @@ fn ifr_bytes(ifr: &mut In6Ifreq) -> &mut [u8] {
     hal::user::bytes_of_mut(core::slice::from_mut(ifr))
 }
 
-/// `in6_delmulti(in6m)`: a reference to the multicast record given back; with the last, MLD
-/// leaves the group, the record leaves its interface and the driver its filter. Under the
-/// net lock the caller holds (`net`, for the done message).
-pub fn in6_delmulti(in6m: &'static In6Multi, net: &NetHeld<'_>) {
+/// `in6_delmulti(in6m)`: a membership of the multicast record given back with the joiner's
+/// handle `in6m`; with the last membership, MLD leaves the group, the record leaves its
+/// interface and the driver its filter, and the record is freed with the last handle (this
+/// one and the list's, both dropped at the end, where the C frees it). Under the net lock the
+/// caller holds (`net`, for the done message).
+pub fn in6_delmulti(in6m: MArc<In6Multi>, net: &NetHeld<'_>) {
     if !in6m.in6m_refcnt().rele() {
         return;
     }
 
+    // The list's handle of the record, taken off the list below; none when `if_detach`
+    // emptied the list already (the interface is gone, D-9).
+    let mut lst = None;
     if let Some(ifp) = IfRef::get(in6m.in6m_ifidx().get()) {
-        let lock = &ifp.rt().if_maddrlock;
-        let _ = lock.enter(RW_WRITE);
+        let mut w = ifp.rt().if_maddrlock.write();
         // No remaining claims to this record; let MLD6 know that we are leaving the multicast
         // group.
         let mut pkt = Mld6Pktinfo::default(); // pkt.mpi_ifidx = 0
-        mld6_stop_listening(in6m, ifp.ifp(), &mut pkt);
-        ifp.if_maddrlist.remove(&in6m.in6m_ifma);
-        lock.exit();
+        mld6_stop_listening(&in6m, ifp.ifp(), &w, &mut pkt);
+        lst = ifp.if_maddrlist().remove(&mut w, &in6m.in6m_ifma);
+        drop(w);
 
         if pkt.mpi_ifidx != 0 {
             mld6_sendpkt(&pkt, net);
@@ -1306,22 +1337,17 @@ pub fn in6_delmulti(in6m: &'static In6Multi, net: &NetHeld<'_>) {
         // if_put(ifp): the reference's drop.
     }
 
-    // free(in6m): a record still on a gone interface's list is not reused (the module's
-    // deviations).
-    if !hal::list::List::<crate::net::if_var::IfMaddrlist>::is_linked(&in6m.in6m_ifma) {
-        in6_multi_free(in6m);
-    }
+    // free(in6m, M_IPMADDR, sizeof(*in6m)): the last of the two handles frees the record.
+    drop(lst);
+    drop(in6m);
 }
 
 /// `in6_hasmulti(addr, ifp)`: whether the multicast group `addr` has been joined by
 /// interface `ifp`.
 pub fn in6_hasmulti(addr: &In6Addr, ifp: &Ifnet) -> bool {
-    let lock = &ifp.rt().if_maddrlock;
-    let _ = lock.enter(RW_READ);
-    let joined = in6_lookupmulti(addr, ifp).is_some();
-    lock.exit();
-
-    joined
+    let rt = ifp.rt();
+    let r = rt.if_maddrlock.read();
+    lookupmulti(addr, rt.if_maddrlist(), &r).is_some()
 }
 
 /// `in6ifa_ifpforlinklocal(ifp, ignoreflags)`: an IPv6 link-local address of `ifp` without
@@ -1698,8 +1724,8 @@ pub(crate) mod tests {
     // routes, and the new shapes): the mask, scope and socket address helpers; the lookups;
     // RFC 6724's rules one by one; the address ioctls as the C answers them (privilege,
     // family, read-only flags, lifetimes, absent addresses); an address's link-local
-    // companion, routes and memberships, its delete and its record recycled; and the
-    // multicast records' counts with two joiners.
+    // companion, routes and memberships, its delete and its records freed with their last
+    // handles; and the multicast records' counts with two joiners.
 
     use std::boxed::Box;
     use std::sync::MutexGuard;
@@ -1718,7 +1744,8 @@ pub(crate) mod tests {
     use crate::net::if_var::NetDriver;
     use crate::net::mbuf::MbufBox;
     use crate::net::route::tests::testroutes_setup;
-    use crate::netinet6::in6_var::{ia6_in6, in6_ifaddr_alloc, inm6_free_count};
+    use crate::netinet::in_var::M_IPMADDR;
+    use crate::netinet6::in6_var::{ia6_in6, in6_ifaddr_alloc};
     use crate::testutil::{malloc_out, malloc_requests};
 
     /// `a:b::c` text to an address (the forms the tests use).
@@ -2259,9 +2286,14 @@ pub(crate) mod tests {
         let _g = setup();
         let (ifp, d) = iface(b"tcf0", [0x52, 0x54, 0x00, 0xbb, 0x00, 0x01]);
         let idx = ifp.if_index.get();
-        let free_before = inm6_free_count();
+        let mout = malloc_out(M_IPMADDR);
 
         add(ifp, a6("fd00:77::1"), 64).expect("SIOCAIFADDR_IN6");
+        let mout_full = malloc_out(M_IPMADDR);
+        assert!(
+            mout_full > mout,
+            "the groups' records and the memberships' arrays"
+        );
         // The global address's record is the last `M_IFADDR` block (after the link-local's).
         let (_, rec) = malloc_requests(M_IFADDR);
         let out_full = malloc_out(M_IFADDR);
@@ -2320,25 +2352,35 @@ pub(crate) mod tests {
         assert!(linklocal(ifp, 0).is_some());
         assert!(route(a6("fd00:77::5")).is_none(), "the prefix route went");
 
+        // The address's own group's record went with its membership (the other two groups
+        // stay: the link-local address holds them), and so did the address's memberships'
+        // array.
+        assert!(
+            malloc_out(M_IPMADDR) < mout_full,
+            "the record and the array freed"
+        );
+        assert!(malloc_out(M_IPMADDR) > mout, "the link-local's groups stay");
+        let mout_ll = malloc_out(M_IPMADDR);
+
         // The address's record is freed with its last reference: once the routes that held
         // it are released, DAD's reaper gave its reference back (the C's nd6_dad_reaper at the
-        // next softclock) and the test's handle goes. The multicast record is recycled.
+        // next softclock) and the test's handle goes.
         crate::net::route::tests::grace();
         crate::netinet6::nd6_nbr::dad_reap();
         assert_eq!(ia.count(), 1, "the test's handle alone");
         assert_eq!(malloc_out(M_IFADDR), out_full, "kept by the test's handle");
         drop((ia, ll));
         assert_eq!(malloc_out(M_IFADDR), out_full - rec as i64, "freed at zero");
-        let free_after = inm6_free_count();
-        assert_eq!(free_after, free_before + 1, "the multicast record freed");
         add(ifp, a6("fd00:77::2"), 64).expect("SIOCAIFADDR_IN6");
         assert!(withaddr(ifp, &a6("fd00:77::2")).is_some());
         assert_eq!(malloc_out(M_IFADDR), out_full, "a record of its own");
         assert_eq!(
-            inm6_free_count(),
-            free_before,
-            "the multicast record reused"
+            malloc_out(M_IPMADDR),
+            mout_full,
+            "its group's record and its array made again, of the same sizes"
         );
+        del(ifp, a6("fd00:77::2")).expect("SIOCDIFADDR_IN6");
+        assert_eq!(malloc_out(M_IPMADDR), mout_ll, "and freed again");
     }
 
     #[test]
@@ -2348,9 +2390,14 @@ pub(crate) mod tests {
         let g = zoned(a6("ff02::1234"), ifp.if_index.get());
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
+        let out = malloc_out(M_IPMADDR);
         let a = in6_addmulti(&g, ifp, &net).expect("first join");
+        let one = malloc_out(M_IPMADDR) - out;
         let b = in6_addmulti(&g, ifp, &net).expect("second join");
-        assert!(ptr::eq(a, b));
+        assert!(MArc::ptr_eq(&a, &b));
+        assert_eq!(malloc_out(M_IPMADDR), out + one, "one record");
+        assert_eq!(a.in6m_refcnt().read(), 2, "two memberships");
+        assert_eq!(MArc::count(&a), 3, "the list's handle and the two owners'");
         assert_eq!(d.addmulti.load(Ordering::Relaxed), 1);
         in6_delmulti(a, &net);
         assert!(in6_hasmulti(&g, ifp), "the second owner keeps it");
@@ -2358,6 +2405,7 @@ pub(crate) mod tests {
         in6_delmulti(b, &net);
         assert!(!in6_hasmulti(&g, ifp));
         assert_eq!(d.delmulti.load(Ordering::Relaxed), 1);
+        assert_eq!(malloc_out(M_IPMADDR), out, "freed with the last handle");
         drop(w);
     }
 
@@ -2365,10 +2413,10 @@ pub(crate) mod tests {
     fn a_join_whose_record_has_no_room_is_not_made() {
         // The C's in6_joingroup mallocs the membership's entry before in6_addmulti, so a
         // failed allocation is ENOBUFS with nothing joined: the room is reserved first here
-        // too (the test doubles' fail_pages fails the next malloc). A recycled record waits
-        // on INM6_FREE (setup() empties it), so in6_addmulti needs no malloc and the one
-        // that fails is the reserve's: joined first, the old order would show the driver an
-        // SIOCADDMULTI (and leave again) where this one shows nothing.
+        // too (the test doubles' fail_pages fails the next mallocs). The first refusal fails
+        // the first malloc, the reserve's; the second lets the reserve's through and fails
+        // the record's, in6_addmulti's own ENOBUFS: joined first, the other order would show
+        // the driver an SIOCADDMULTI (and leave again) there, where this one shows nothing.
         let _g = setup();
         let (ifp, d) = iface(b"tjg0", [0x52, 0x54, 0, 0, 7, 1]);
         let idx = ifp.if_index.get();
@@ -2378,16 +2426,29 @@ pub(crate) mod tests {
         let net = NetHeld::of(&w).expect("the net lock");
 
         // No array yet and no memory for one: ENOBUFS, the driver asked nothing, no group.
-        crate::netinet6::in6_var::in6_multi_free(
-            crate::netinet6::in6_var::in6_multi_alloc().expect("a record to recycle"),
-        );
+        let out = malloc_out(M_IPMADDR);
         crate::testutil::fail_pages(0, 1);
         let r = in6_joingroup(ifp, ifatoia6(&ia), &g, &net);
         crate::testutil::fail_pages(0, 0);
         assert_eq!(r, Err(Errno::ENOBUFS));
         assert_eq!(d.addmulti.load(Ordering::Relaxed), 0);
         assert!(!in6_hasmulti(&g, ifp));
+        assert_eq!(malloc_out(M_IPMADDR), out, "nothing allocated");
         let ia = ifatoia6(&ia);
+        assert!(ia.ia6_memberships.lock().is_empty());
+
+        // The room made, the record's malloc refused: ENOBUFS before the driver is asked.
+        crate::testutil::fail_pages(1, 1);
+        let r = in6_joingroup(ifp, ia, &g, &net);
+        crate::testutil::fail_pages(0, 0);
+        assert_eq!(r, Err(Errno::ENOBUFS));
+        assert_eq!(
+            d.addmulti.load(Ordering::Relaxed),
+            0,
+            "the driver asked nothing"
+        );
+        assert_eq!(d.delmulti.load(Ordering::Relaxed), 0);
+        assert!(!in6_hasmulti(&g, ifp));
         assert!(ia.ia6_memberships.lock().is_empty());
 
         // The normal path: the room made, the group joined and recorded.
@@ -2400,6 +2461,8 @@ pub(crate) mod tests {
         in6_delmulti(in6m, &net);
         assert!(!in6_hasmulti(&g, ifp));
         drop(w);
+        // The record went with its last handle; the memberships' array stays the address's.
+        assert!(malloc_out(M_IPMADDR) > out, "the array");
     }
 }
 /* </TESTS> */

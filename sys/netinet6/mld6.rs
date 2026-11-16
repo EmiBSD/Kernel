@@ -231,7 +231,7 @@ mod tests {
     }
 
     /// `ifp` joins `g`.
-    fn join(ifp: &'static Ifnet, g: In6Addr) -> &'static In6Multi {
+    fn join(ifp: &'static Ifnet, g: In6Addr) -> hal::malloc::MArc<In6Multi> {
         net_lock();
         let in6m = in6_addmulti(&g, ifp).expect("join");
         net_unlock();
@@ -323,10 +323,10 @@ mod tests {
         let mut all_routers = IN6ADDR_LINKLOCAL_ALLROUTERS;
         all_routers.set_s6_addr16(1, htons(ifp.if_index.get() as u16));
 
-        crate::net::if_var::if_maddrlock_enter_write(ifp);
+        let w = ifp.rt().if_maddrlock.write();
         // We reported last: a Done message to the all-routers group.
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(in6m, ifp, &mut pkt);
+        mld6_stop_listening(&in6m, ifp, &w, &mut pkt);
         assert_eq!(
             pkt,
             Mld6Pktinfo {
@@ -340,15 +340,15 @@ mod tests {
         // Somebody else reported after us: nothing.
         in6m.in6m_state.set(MLD_OTHERLISTENER);
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(in6m, ifp, &mut pkt);
+        mld6_stop_listening(&in6m, ifp, &w, &mut pkt);
         assert_eq!(pkt, Mld6Pktinfo::default());
 
         // The all-nodes group is never left loudly.
         all.in6m_state.set(MLD_IREPORTEDLAST);
         let mut pkt = Mld6Pktinfo::default();
-        mld6_stop_listening(all, ifp, &mut pkt);
+        mld6_stop_listening(&all, ifp, &w, &mut pkt);
         assert_eq!(pkt, Mld6Pktinfo::default());
-        crate::net::if_var::if_maddrlock_exit_write(ifp);
+        drop(w);
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         let all = join(ifp, group(ifp, "ff02::1"));
         let querier = ll(ifp);
         let reset = || {
-            for x in [a, b] {
+            for x in [&a, &b] {
                 x.in6m_timer.set(0);
                 x.in6m_state.set(MLD_OTHERLISTENER);
             }
@@ -413,7 +413,7 @@ mod tests {
         // A general query (group ::) with a 10 s maximum response delay: 50 fast ticks at most.
         reset();
         query(10_000, IN6ADDR_ANY);
-        for x in [a, b] {
+        for x in [&a, &b] {
             assert!((1..=50).contains(&x.in6m_timer.get()));
         }
         assert_eq!(all.in6m_timer.get(), 0, "never the all-nodes group");

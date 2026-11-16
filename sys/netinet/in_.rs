@@ -123,8 +123,10 @@
 //! - `in_control` has the `pru_control` signature (`sys/protosw.rs`): the socket's `SS_PRIV`
 //!   and the kernel copy of the request, handed to the kernel's `in_control`; `in_ioctl` is
 //!   the raw request of the kernel's own callers and tests.
-//! - `in_addmulti` and `in_delmulti` keep LZ's signatures, the net lock's proof made through
-//!   the `SaToken` (their callers hold it: `ip_setmoptions` under the socket lock, pfsync).
+//! - `in_addmulti` and `in_delmulti` keep LZ's arguments, the net lock's proof made through
+//!   the `SaToken` (their callers hold it: pfsync, the IGMP tests); the record is the kernel's
+//!   counted handle (N6.5e: `in_addmulti` answers the membership's, `in_delmulti` takes it
+//!   back), where LZ's answered and took a `&'static`.
 
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod};
@@ -188,16 +190,18 @@ pub unsafe fn in_ioctl(
     kernel::netinet::in_::in_ioctl(cmd, req, ifp, privileged)
 }
 
-/// `in_addmulti(addr, ifp)`: the kernel's, under the net lock the caller holds.
+/// `in_addmulti(addr, ifp)`: the kernel's, under the net lock the caller holds; the
+/// membership's handle of the record.
 pub fn in_addmulti(
     addr: &InAddr,
     ifp: &'static crate::net::if_var::Ifnet,
-) -> Option<&'static kernel::netinet::in_var::InMulti> {
+) -> Option<hal::malloc::MArc<kernel::netinet::in_var::InMulti>> {
     kernel::netinet::in_::in_addmulti(addr, ifp, crate::net::if_::net_held("in_addmulti").net())
 }
 
-/// `in_delmulti(inm)`: the kernel's, under the net lock the caller holds.
-pub fn in_delmulti(inm: &'static kernel::netinet::in_var::InMulti) {
+/// `in_delmulti(inm)`: the kernel's, under the net lock the caller holds; the membership's
+/// handle given back.
+pub fn in_delmulti(inm: hal::malloc::MArc<kernel::netinet::in_var::InMulti>) {
     kernel::netinet::in_::in_delmulti(inm, crate::net::if_::net_held("in_delmulti").net());
 }
 /* </CODE> */

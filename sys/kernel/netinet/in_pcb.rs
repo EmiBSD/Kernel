@@ -2780,8 +2780,6 @@ pub(crate) mod testinet {
         crate::net::if_::softnet_test_install();
         crate::net::if_::if_idxmap_test_reset();
         crate::net::if_::ifnet_test_reset();
-        crate::netinet::in_var::in_var_test_reset();
-        crate::netinet6::in6_var::in6_var_test_reset();
         crate::netinet::igmp::igmp_test_reset();
         crate::netinet::if_ether::arp_test_reset();
         crate::netinet6::nd6::nd6_test_reset();

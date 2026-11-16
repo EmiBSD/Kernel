@@ -64,13 +64,6 @@
 //! change under the net lock, as in the C.
 //!
 //! ## Deviations
-//! - A multicast record is never freed: the last `in_delmulti` of a membership
-//!   ([`in_multi_free`]) puts it on a free list, which the next allocation
-//!   ([`in_multi_alloc`]) takes from before a new `malloc(9)` (the mount's idiom, D-N5.2-2;
-//!   N6.4a's R1): `&'static` is then true for every holder (the interface's list, the pcbs'
-//!   and pf's copies), and `vmstat -m`'s `in_multi` row counts the records ever alive at once
-//!   (a high-water mark) where the C's falls after a leave. Counted handles follow the
-//!   addresses' at N6.5e's 5e2 (docs/SCAFFOLDING.md).
 //! - The `ia_list` TAILQ entry (the C's list of every Internet address) is dropped: nothing
 //!   links the records through it at the pin. The record's `ia_list` member is the generic
 //!   part's `ifa_list`.
@@ -80,10 +73,16 @@
 //!   `ifmatoinm`: pointer casts checked by the address family, one `unsafe` each) -> an
 //!   address is held by a counted handle whose arm is its family
 //!   (`kernel::net::if_var::IfaddrRef::In`, N6.5e): [`ifatoia`] and [`InIfaddr::of`] match
-//!   the arm (`panic(9)` and `None` for another family's). A multicast record is still
-//!   reached from its generic part through a back-link set at creation (`Ifmaddr::ifma_in`:
-//!   one load where the C casts, the cast's family test the link's presence: only `in.c` makes
-//!   `AF_INET` records), until 5e2.
+//!   the arm (`panic(9)` and `None` for another family's). A multicast record likewise
+//!   (`kernel::net::if_var::IfmaddrRef::In`, N6.5e's 5e2): [`ifmatoinm`] and [`InMulti::of`].
+//! - A multicast record is one `malloc(9)` block of `M_IPMADDR` (`hal::malloc::MArc`, N6.5e's
+//!   5e2), made by [`in_multi_alloc`] and freed with its last handle (`in_delmulti`'s
+//!   `free(inm, M_IPMADDR, ..)`): the interface's list holds one, each holder of a membership
+//!   one (`ia_allhosts`, a socket's options, pfsync's), and `inm_refcnt` counts the
+//!   memberships as the C's (D-8). N6.4a's free list (and with it the high-water mark of
+//!   `vmstat -m`'s `in_multi` row) and the generic part's back-link to the record are gone;
+//!   the record's list cell is keyed to its interface's `if_maddrlock`, so it is made for one
+//!   interface ([`in_multi_alloc`] takes it).
 //! - An address is one `malloc(9)` block of `M_IFADDR` (`hal::malloc::MArc`, N6.5e): the
 //!   last handle's drop is `ifafree`'s `free(ifa, M_IFADDR, 0)`, so `vmstat -m`'s `ifaddr`
 //!   row falls with the live addresses as the C's; LZ's (and N6.4a's) free list, its mutex and
@@ -100,20 +99,18 @@
 //! - `ia_net`, `ia_netmask`, `inm_state`, `inm_timer`: relaxed atomics (the C's plain words
 //!   under the net lock or `if_maddrlock`).
 
-use hal::intr::IPL_SOFTNET;
 use hal::link::{Link, SaBytes, SaWords};
-use hal::list::{List, ListEntry};
-use hal::malloc::{M_WAITOK, MArc, MBox};
-use hal::mutex::Mutexed;
+use hal::malloc::{M_WAITOK, MArc};
 use hal::refcnt::Refcnt;
 use hal::rwlock::Guarded;
+use hal::slot::ReadMostly;
 use hal::sys::net_if::IFF_BROADCAST;
 use hal::sys::netinet_in::{InAddr, SockaddrIn};
 use hal::sys::socket::AF_INET;
 
 use crate::assert::kpanic;
 use crate::net::if_::{IF_TMPLIST_LOCK, M_IFADDR};
-use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, Ifnet};
+use crate::net::if_var::{AtomicCell, Ifaddr, IfaddrRef, Ifmaddr, IfmaddrRef, Ifnet};
 
 /// The size of a `struct sockaddr_in`, its `sin_len`.
 const SIN_LEN: u8 = 16;
@@ -194,8 +191,11 @@ pub struct InIfaddr {
     pub ia_dstaddr: SinWords,
     /// `ia_sockmask`: reserve space for general netmask.
     pub ia_sockmask: SinWords,
-    /// `ia_allhosts`: multicast address record for the allhosts multicast group.
-    pub ia_allhosts: Link<InMulti>,
+    /// `ia_allhosts`: multicast address record for the allhosts multicast group, the
+    /// address's membership (a handle: `in_ifinit`'s `in_addmulti`, `in_purgeaddr`'s
+    /// `in_delmulti`). Written under the net lock; a reader copies the answer out and never
+    /// holds the cell across a sleep.
+    pub ia_allhosts: ReadMostly<Option<MArc<InMulti>>>,
     /// \[N\] `ia_ifa.ifa_list`: the next address of the interface's list (a net cell,
     /// `kernel::net::if_var::IfaList`'s chain).
     pub(crate) ia_list: Guarded<Option<IfaddrRef>>,
@@ -213,7 +213,7 @@ impl InIfaddr {
             ia_addr: SinWords::new(),
             ia_dstaddr: SinWords::new(),
             ia_sockmask: SinWords::new(),
-            ia_allhosts: Link::new(),
+            ia_allhosts: ReadMostly::new(None),
             ia_list: Guarded::new_net(None),
             ia_tmplist: Guarded::new_static(&IF_TMPLIST_LOCK, None),
         }
@@ -249,7 +249,8 @@ impl InIfaddr {
 }
 
 /// `struct in_multi`: Internet multicast address structure. There is one of these for each
-/// IP multicast group to which this host belongs on a given network interface.
+/// IP multicast group to which this host belongs on a given network interface. Held by
+/// counted handles (`MArc`, the module's redesign).
 pub struct InMulti {
     /// `inm_ifma`: protocol-independent info.
     pub inm_ifma: Ifmaddr,
@@ -259,19 +260,17 @@ pub struct InMulti {
     pub inm_state: AtomicCell<u32>,
     /// \[m\] `inm_timer`: IGMP membership report.
     pub inm_timer: AtomicCell<u32>,
-    /// The free list's entry (the module's deviations).
-    inm_free: ListEntry<InMulti>,
 }
 
 impl InMulti {
-    /// A record every member of which is zero (`M_ZERO`).
-    const fn new() -> Self {
+    /// A record of `ifp` every member of which is zero (`M_ZERO`), its list cell keyed to
+    /// `ifp`'s `if_maddrlock`.
+    fn new(ifp: &Ifnet) -> Self {
         Self {
-            inm_ifma: Ifmaddr::new(),
+            inm_ifma: Ifmaddr::new(ifp),
             inm_sin: SinWords::new(),
             inm_state: AtomicCell::new(),
             inm_timer: AtomicCell::new(),
-            inm_free: ListEntry::new(),
         }
     }
 
@@ -293,26 +292,16 @@ impl InMulti {
         self.inm_sin.addr()
     }
 
-    /// `ifmatoinm(ifma)` for a record that may not be an Internet one: `None` for another
-    /// family's.
+    /// `ifmatoinm(ifma)` for a record that may not be an Internet one: its handle, `None`
+    /// for another family's (the handle's arm).
     #[inline]
-    pub fn of(ifma: &Ifmaddr) -> Option<&'static InMulti> {
-        ifma.ifma_in.get()
+    pub fn of(ifma: &IfmaddrRef) -> Option<&MArc<InMulti>> {
+        match ifma {
+            IfmaddrRef::In(inm) => Some(inm),
+            IfmaddrRef::In6(_) => None,
+        }
     }
 }
-
-hal::list_adapter!(
-    /// The free list of multicast records (the module's deviations).
-    InmFreeList: InMulti, inm_free
-);
-
-// The free list's mutex is IPL_SOFTNET: every taker runs at or below the softnet level,
-// never from a hardware interrupt: the allocation (`in_addmulti`, process context or the
-// softnet tasks) and `in_multi_free` (`in_delmulti`'s). A taker above IPL_SOFTNET would need
-// IPL_NET here.
-
-/// The multicast records no interface has any more, for [`in_multi_alloc`].
-static INM_FREE: Mutexed<List<InmFreeList>> = Mutexed::new(IPL_SOFTNET, List::new());
 
 /// `ifatoia(ifa)`: the Internet address an `AF_INET` interface address is the first member
 /// of; `panic(9)` for another family's (where the C would cast it).
@@ -325,9 +314,9 @@ pub fn ifatoia(ifa: &IfaddrRef) -> &InIfaddr {
 }
 
 /// `ifmatoinm(ifma)`: the Internet multicast record an `AF_INET` multicast address is the
-/// first member of; `panic(9)` for another family's.
+/// first member of; `panic(9)` for another family's (where the C would cast it).
 #[inline]
-pub fn ifmatoinm(ifma: &Ifmaddr) -> &'static InMulti {
+pub fn ifmatoinm(ifma: &IfmaddrRef) -> &InMulti {
     match InMulti::of(ifma) {
         Some(inm) => inm,
         None => kpanic(format_args!("ifmatoinm: not an inet record")),
@@ -366,37 +355,14 @@ pub fn in_ifaddr_alloc(ifp: &'static Ifnet) -> MArc<InIfaddr> {
     }
 }
 
-/// `malloc(sizeof(*inm), M_IPMADDR, M_WAITOK | M_ZERO)` (`in_addmulti`'s new record), a
-/// record off the free list first.
-pub fn in_multi_alloc() -> &'static InMulti {
-    let reused = INM_FREE.lock().pop_head();
-    match reused {
-        Some(inm) => {
-            let ifma = &inm.inm_ifma;
-            if List::<crate::net::if_var::IfMaddrlist>::is_linked(ifma) {
-                kpanic(format_args!("in_multi_alloc: a recycled record on a list"));
-            }
-            ifma.ifma_ifidx.set(0);
-            inm.inm_sin.set(SockaddrIn::default());
-            inm.inm_state.set(0);
-            inm.inm_timer.set(0);
-            inm
-        }
-        None => match MBox::new(M_IPMADDR, M_WAITOK, InMulti::new()) {
-            Some(b) => {
-                let inm = MBox::leak(b);
-                inm.inm_ifma.ifma_in.set(Some(inm));
-                inm
-            }
-            None => kpanic(format_args!("in_multi_alloc: out of memory")),
-        },
+/// `malloc(sizeof(*inm), M_IPMADDR, M_WAITOK | M_ZERO)` (`in_addmulti`'s new record) for
+/// a group of `ifp`: one handle, the block freed with the last (`free(inm, M_IPMADDR,
+/// sizeof(*inm))`).
+pub fn in_multi_alloc(ifp: &Ifnet) -> MArc<InMulti> {
+    match MArc::new(M_IPMADDR, M_WAITOK, InMulti::new(ifp)) {
+        Some(inm) => inm,
+        None => kpanic(format_args!("in_multi_alloc: out of memory")),
     }
-}
-
-/// `free(inm, M_IPMADDR, sizeof(*inm))`: the record onto the free list (the module's
-/// deviations).
-pub fn in_multi_free(inm: &'static InMulti) {
-    INM_FREE.lock().insert_tail(inm);
 }
 
 /// An Internet address of `ifp` for the tests and the benches, as `in_ioctl` makes one: its
@@ -427,19 +393,6 @@ pub fn test_in_ifaddr(
         ia.ia_dstaddr.set(sin(d));
     }
     IfaddrRef::In(ia)
-}
-
-/// Forgets the multicast records' free list without touching its records, which an earlier
-/// test's memory holds (`setup_real_memory`'s rule, testing.md).
-#[cfg(any(test, feature = "doubles"))]
-pub fn in_var_test_reset() {
-    *INM_FREE.lock() = List::new();
-}
-
-/// The multicast records' free list's length, for the tests.
-#[cfg(test)]
-pub(crate) fn inm_free_count() -> usize {
-    INM_FREE.lock().iter().count()
 }
 /* </CODE> */
 
