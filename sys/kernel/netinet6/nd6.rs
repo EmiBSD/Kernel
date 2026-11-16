@@ -783,7 +783,9 @@ fn nd6_timer(_unused: *mut c_void) {
     let listed = !ND6_LIST.is_empty(&g);
     drop(g);
 
-    let secs = (expire - uptime).max(1) as i32;
+    // The C's `int secs = expire - uptime`, then `if (secs < 1) secs = 1`: to `int` first,
+    // then clamped (`expire` is at most `nd6_gctimer` ahead, so it fits).
+    let secs = ((expire - uptime) as i32).max(1);
 
     let _w = NETLOCK.write();
     if listed {
