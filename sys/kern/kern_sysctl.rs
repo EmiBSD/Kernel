@@ -721,7 +721,8 @@ pub fn fill_file(
             // caller's C-style in_pcbsolock: lent)
             match (so, fp) {
                 (Some(so), _) => {
-                    let mut w = kernel::net::socket::solocked_legacy(so);
+                    let lend = crate::net::if_::net_held("kern.file");
+                    let mut w = kernel::net::socket::solocked_legacy(so, Some(lend.net()));
                     fill_file_socket(kf, so, &mut w, show_pointers);
                 }
                 (None, Some(fp)) => {

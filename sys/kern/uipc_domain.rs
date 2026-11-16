@@ -257,9 +257,6 @@ impl KDomain<G> for Domain {
         }
         &[]
     }
-    fn legacy(&self) -> bool {
-        true
-    }
     fn sasize(&self) -> u32 {
         self.dom_sasize
     }
@@ -317,6 +314,11 @@ impl Protocol<G> for Protosw {
     }
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         self.pr_usrreqs.map(|u| u as &'static dyn Usrreqs<G>)
+    }
+    /// `bsd`'s protocols release and take the socket lock again C-style: their sockets are
+    /// held by a detached holding of `so_lock`.
+    fn legacy(&self) -> bool {
+        true
     }
     fn ctlinput(&self, cmd: i32, sa: SockaddrView<'_>, rdomain: u32, arg: CtlArg<'_>) {
         let Some(ctlinput) = self.pr_ctlinput else {
@@ -876,7 +878,14 @@ mod tests {
             (dom.name(), dom.sasize(), dom.rtoffset(), dom.maxplen()),
             ("inet6", 28, 8, 128)
         );
-        assert!(dom.legacy());
+        // Every entry sockets can be made of is served by `bsd`'s requests (its own rows, and
+        // ICMPv6's, which lends raw IPv6's): held by detached holdings of `so_lock`.
+        assert!(
+            dom.protocols()
+                .iter()
+                .filter(|p| p.usrreqs().is_some())
+                .all(|p| p.legacy())
+        );
         // (type, protocol) of each entry, in6_proto.c's order.
         let rows: std::vec::Vec<(i32, i32)> = dom
             .protocols()

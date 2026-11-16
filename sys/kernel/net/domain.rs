@@ -156,13 +156,6 @@ pub trait Domain<G: ProcGlue>: Sync + 'static {
     ) -> Option<hal::sys::socket::Sockpeercred> {
         None
     }
-    /// Whether the domain's protocols are `bsd`'s (its `struct domain`'s impl): their requests
-    /// release and take the socket lock again C-style (`route_attach`, `route_output`,
-    /// `pfkeyv2_send`), so the kernel holds a socket of the domain by a detached holding of
-    /// `so_lock`, never a witness.
-    fn legacy(&self) -> bool {
-        false
-    }
     /// `dom_sasize`: size of sockaddr structure.
     fn sasize(&self) -> u32 {
         0
@@ -502,7 +495,7 @@ mod tests {
         assert!(pffindproto::<Procs>(i32::from(PF_UNSPEC), 6, 1).is_none());
 
         // A domain without the optional entries: the C's NULLs.
-        assert!(TestDom.rights().is_none() && !TestDom.legacy());
+        assert!(TestDom.rights().is_none());
     }
 }
 /* </TESTS> */

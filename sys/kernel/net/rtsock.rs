@@ -3382,9 +3382,10 @@ mod tests {
     fn the_route_domain_is_one_raw_protocol() {
         let d = RouteDomain::<G>::NEW;
         assert_eq!((d.family(), d.name()), (i32::from(PF_ROUTE), "route"));
-        assert_eq!((d.rtoffset(), d.sasize(), d.legacy()), (0, 0, false));
+        assert_eq!((d.rtoffset(), d.sasize()), (0, 0));
         let p = d.protocols();
         assert_eq!(p.len(), 1);
+        assert!(!p[0].legacy(), "the kernel's: held by a witness of so_lock");
         assert_eq!((p[0].ty(), p[0].protocol()), (SOCK_RAW as i16, 0));
         assert_eq!(p[0].flags(), PR_ATOMIC | PR_ADDR | PR_WANTRCVD);
         assert!(p[0].has_ctloutput() && p[0].usrreqs().is_some() && p[0].has_sysctl());

@@ -308,11 +308,6 @@ impl<G: ProcGlue> Domain<G> for InetDomain<G> {
     fn protocols(&self) -> &'static [&'static dyn Protocol<G>] {
         inetsw::<G>()
     }
-    /// The internet sockets' protocols are `bsd`'s (TCP, UDP, raw IP, divert, until N6.6):
-    /// the kernel holds their sockets by a detached holding of `so_lock`.
-    fn legacy(&self) -> bool {
-        true
-    }
     fn sasize(&self) -> u32 {
         size_of::<SockaddrIn>() as u32
     }
@@ -398,6 +393,10 @@ impl<G: ProcGlue> Protocol<G> for IcmpProtocol<G> {
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         raw::<G>()?.usrreqs()
     }
+    /// The raw entry's: an ICMP socket is a raw socket served by its requests.
+    fn legacy(&self) -> bool {
+        raw::<G>().is_some_and(Protocol::legacy)
+    }
     fn has_ctloutput(&self) -> bool {
         raw::<G>().is_some_and(Protocol::has_ctloutput)
     }
@@ -464,6 +463,10 @@ impl<G: ProcGlue> Protocol<G> for IgmpProtocol<G> {
     }
     fn usrreqs(&self) -> Option<&'static dyn Usrreqs<G>> {
         raw::<G>()?.usrreqs()
+    }
+    /// The raw entry's: an IGMP socket is a raw socket served by its requests.
+    fn legacy(&self) -> bool {
+        raw::<G>().is_some_and(Protocol::legacy)
     }
     fn has_ctloutput(&self) -> bool {
         raw::<G>().is_some_and(Protocol::has_ctloutput)
@@ -565,8 +568,10 @@ mod tests {
         let dom = &InetDomain::<G>::NEW;
         assert_eq!((dom.family(), dom.name()), (i32::from(AF_INET), "inet"));
         assert_eq!((dom.sasize(), dom.rtoffset(), dom.maxplen()), (16, 4, 32));
-        assert!(dom.legacy());
         assert_eq!(dom.protocols().len(), SW.len());
+        // ICMP's and IGMP's sockets are the raw entry's (the test's raw entry is a kernel one).
+        assert!(!ip.legacy());
+        assert_eq!((icmp.legacy(), igmp.legacy()), (RAW.legacy(), RAW.legacy()));
         assert_eq!(ip.domain().family(), i32::from(AF_INET));
     }
 
