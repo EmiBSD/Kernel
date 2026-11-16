@@ -23,7 +23,10 @@ paths:
   and clang resource directory, DevTools' native LLVM and Rust trees laid over it from tarballs
   checked against their pins in the justfile; `userland/comp.rs`). `--memory SIZE` (qemu, smoke;
   256M..16G) replaces `boot::VM_MEMORY` (512M) for one run; `--timeout SECS` (smoke, smoke2)
-  replaces `boot::SMOKE_TIMEOUT` (180 s) for a session longer than a boot.
+  replaces `boot::SMOKE_TIMEOUT` (180 s) for a session longer than a boot. `--accel hvf` (qemu,
+  smoke; arm64 guests only, LZ's 77a96d2f) runs the VM under Hypervisor.framework with
+  `-cpu host` instead of TCG, for a build inside EmiBSD and for a check on the host CPU's
+  features (PAN3/EPAN, BTI); `EMIBSD_CPU` does not apply to it and no recipe of `smokes` uses it.
 - External tools (`qemu-system-*`, Limine binaries, EDK2 firmware) are located at runtime via
   `brew --prefix <formula>` or `$PATH`, with an error that names the missing formula and points to
   `docs/SETUP.md`. Never hardcode `/opt/homebrew` or `/usr/local`. Exception: `userland`'s

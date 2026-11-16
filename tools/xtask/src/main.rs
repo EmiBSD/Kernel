@@ -252,6 +252,7 @@ fn run(args: &[String]) -> Result<()> {
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     boot::set_smp(smp_flag(&argv)?);
     boot::set_memory(memory_flag(&argv)?);
+    boot::set_accel_hvf(accel_flag(&argv)?);
     hwopts::set(&root, &argv)?;
     storage::set(&root, &argv)?;
     devices::set_from_args(&argv)?;
@@ -584,6 +585,19 @@ fn memory_flag(args: &[&str]) -> Result<Option<String>> {
     }
 }
 
+/// `--accel hvf` (qemu, smoke): arm64 guests under Hypervisor.framework; the only accelerator
+/// accepted, and an amd64 guest cannot use it on an arm64 Mac.
+fn accel_flag(args: &[&str]) -> Result<bool> {
+    match optional_flag(args, "--accel") {
+        None => Ok(false),
+        Some("hvf") if optional_flag(args, "--arch") == Some("amd64") => {
+            Err("--accel hvf: arm64 guests only (the Mac is arm64)".into())
+        }
+        Some("hvf") => Ok(true),
+        Some(other) => Err(format!("--accel {other}: only `hvf` is known").into()),
+    }
+}
+
 /// Every value following an occurrence of `name` in `args`.
 fn flags<'a>(args: &[&'a str], name: &str) -> Vec<&'a str> {
     args.windows(2)
@@ -684,6 +698,14 @@ mod tests {
         for bad in ["128M", "17G", "2", "G", "2T", "-1G"] {
             assert!(memory_flag(&["--memory", bad]).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn accel_flag_knows_hvf_for_arm64_guests_only() {
+        assert!(!accel_flag(&[]).unwrap());
+        assert!(accel_flag(&["--arch", "arm64", "--accel", "hvf"]).unwrap());
+        assert!(accel_flag(&["--arch", "amd64", "--accel", "hvf"]).is_err());
+        assert!(accel_flag(&["--accel", "kvm"]).is_err());
     }
 
     #[test]

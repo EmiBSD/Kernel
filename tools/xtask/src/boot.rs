@@ -293,6 +293,22 @@ pub(crate) fn memory() -> &'static str {
     MEMORY.get().map_or(VM_MEMORY, String::as_str)
 }
 
+/// `--accel hvf` (qemu, smoke): the arm64 guest under Hypervisor.framework instead of TCG
+/// (set once by `main`), for a VM that builds inside EmiBSD and for a check on the host's own
+/// CPU features (PAN3/EPAN, BTI); no recipe of `smokes` uses it, so the smokes keep testing
+/// under TCG.
+static ACCEL_HVF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Records `--accel hvf`.
+pub(crate) fn set_accel_hvf(on: bool) {
+    let _ = ACCEL_HVF.set(on);
+}
+
+/// Whether this run's arm64 VMs run under hvf.
+pub(crate) fn accel_hvf() -> bool {
+    ACCEL_HVF.get().copied().unwrap_or(false)
+}
+
 /// Records `--smp N`; `None` leaves QEMU's default of one processor.
 pub(crate) fn set_smp(n: Option<u32>) {
     if let Some(n) = n {
@@ -862,8 +878,15 @@ pub(crate) fn qemu_command(
             } else {
                 "virtio-blk-device"
             };
-            let cpu = crate::hwopts::arm64_cpu()?;
-            cmd.args(["-M", &machine, "-cpu", &cpu]);
+            // `--accel hvf`: Apple's Hypervisor.framework runs the guest on the host's cores,
+            // so the CPU model is the host's (`EMIBSD_CPU` names a TCG model and does not
+            // apply); otherwise TCG emulates `hwopts::arm64_cpu`'s model.
+            if accel_hvf() {
+                cmd.args(["-M", &machine, "-accel", "hvf", "-cpu", "host"]);
+            } else {
+                let cpu = crate::hwopts::arm64_cpu()?;
+                cmd.args(["-M", &machine, "-cpu", &cpu]);
+            }
             // M16g: the boot image as a USB stick (`distrib.rs`); no CD on arm64.
             match removable_boot_args(boot_medium(), image) {
                 Some(_) if boot_medium() == BootMedium::Cdrom => {
