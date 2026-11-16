@@ -16446,6 +16446,13 @@ status = "redesigned"
 notes = "N6.6a1: tcp_fsm.h's kernel part moved whole (the predicates, tcp_outflags[], tcpstates[]); the states are hal::sys::netinet_tcp_fsm's and re-exported here; bsd's sys/netinet/tcp_fsm.rs deleted, its importers reach this one through sys/netinet/mod.rs's re-export"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_input.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_input.rs"]
+status = "redesigned"
+notes = "N6.6a3: tcp_input.c's path parameters and round-trip timing over the kernel's control block (Tp, or its TcpState where that is all they read): tcp_xmit_timer, tcp_mss, tcp_hdrsz, tcp_mss_update, tcp_newreno_partialack; the C's int/u_int/u_long conversions in the C's order, overflow wrapping; in_pcbrtentry's answer a counted route (one pair per call, not per segment); tcp_input, tcp_dooptions and the SYN cache's add and get are N6.6a4's; bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_lro.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_input.rs"]
@@ -16466,6 +16473,37 @@ kind = "merged"
 lz = "sys/netinet/tcp_input.rs::softlro_evl_tag"
 native = ["hdr"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_output.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_output.rs"]
+status = "redesigned"
+notes = "N6.6a3: tcp_output.c's tcp_output (one pass per goto again, tcp_output_pass; the C's out: a match after the pass), tcp_setpersist, tcp_sack_output, tcp_sack_adjust, tcp_print_holes (feature tcp_sack_debug) over the kernel's Tp: the template the control block's own MbufBox, the header and options written with hal::pod (no unsafe; LZ had 7 here), the SACK holes out of TcpState for a pass so the hole retransmitted is a &mut beside the control block (the C's p, found once), the net lock's proof the caller's (no lend per segment), the signature's SA through IPsec's leg and its key lent to the MD5 update; bsd's tcp_output.rs stays for bsd's TCP until N6.6a5"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_output.rs::m_hdr_check"
+native = []
+kind = "dropped"
+reason = "the header mbuf's data is a slice (Mbuf::data_mut), whose index checks the bounds LZ's helper checked before its raw writes"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_output.rs::m_hdr_write"
+native = []
+kind = "dropped"
+reason = "the template and the options are copied into the header mbuf's data slice (copy_from_slice), no raw write"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_output.rs::th_load"
+native = []
+kind = "dropped"
+reason = "the TCP header is read from the packet's data with hal::pod::at"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_output.rs::th_store"
+native = []
+kind = "dropped"
+reason = "the TCP header is written into the packet's data with tcp_subr::put_hdr (hal::pod::put)"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_sack.rs"
@@ -16619,6 +16657,13 @@ notes = "N6.6a1: tcp_output.c's tcp_softtso_chop and tcp_if_output_tso over owne
 lz = "sys/netinet/tcp_output.rs::sb_mb"
 native = ["sys/kernel/net/sockbuf.rs::SbGuard::copym_first", "sys/kernel/net/sockbuf.rs::SbGuard::copydata_first"]
 kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_usrreq.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_usrreq.rs"]
+status = "redesigned"
+notes = "N6.6a3: tcp_usrreq.c's socket buffer scaling for the kernel's tcp_output and tcp_input: tcp_update_sndspace, tcp_update_rcvspace and the [I] sizes tcp_sendspace, tcp_recvspace, tcp_autorcvbuf_inc, over the kernel's Tp and sockbufs (the buffer's mutex across the computation and the reserve, as the C's sb_mtx); the sums in the C's u_long order (LZ summed sb_wat + (snd_max - snd_una)) and the marks compared unsigned as the C's; the requests, tcp_ctloutput, tcp_sysctl and tcp_ident are N6.6a5's; bsd's tcp_usrreq.rs stays for bsd's TCP until then"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_var.rs"

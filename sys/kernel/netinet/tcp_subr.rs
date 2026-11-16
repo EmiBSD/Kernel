@@ -95,7 +95,9 @@
 //! to a received segment. `tcp_newtcpcb`, `tcp_close`, `tcp_free` and `tcp_freeq` create and
 //! tear down control blocks. `tcp_set_iss_tsm` derives initial sequence numbers and timestamp
 //! modulators from a keyed hash of the connection (RFC 1948). With `TCP_SIGNATURE`,
-//! `tcp_signature` computes the RFC 2385 MD5 digest.
+//! `tcp_signature` computes the RFC 2385 MD5 digest. `tcp_mtudisc` and
+//! `tcp_mtudisc_increase` take a path MTU change: the route renewed, the segment size taken
+//! again, the unacknowledged data sent again.
 //!
 //! Locks used to protect struct members in this file: \[I\] immutable after creation,
 //! \[T\] `tcp_timer_mtx` (global tcp timer data structures), \[a\] atomic.
@@ -145,6 +147,12 @@
 //!   cache and IPv6 options to the output call. `tcp_signature`'s key is lent by IPsec's
 //!   `tdb_amxkey` leg to the MD5 update, never copied (D-9); the digest is compared with
 //!   `timingsafe_bcmp` by its callers.
+//! - N6.6a3: `tcp_mtudisc` and `tcp_mtudisc_increase` take the control block held ([`Tp`]),
+//!   called so by `tcp_output` (the C passes `tp->t_inpcb` and the callee finds `tp` again
+//!   through `intotcpcb`); their notify forms for the pcb walks ([`tcp_mtudisc_notify`],
+//!   [`tcp_mtudisc_increase_notify`]) open the block under the socket lock the walk lends,
+//!   and do nothing for a pcb without one (the C's `tp == NULL` test). `in_pcbrtentry`
+//!   answers a counted route, held where the C holds the cache's pointer.
 
 use core::mem::size_of;
 use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
@@ -157,7 +165,9 @@ use hal::pod;
 use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc};
 use hal::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons};
+use hal::sys::errno::Errno;
 use hal::sys::mbuf::MT_HEADER;
+use hal::sys::net_route::{RTF_HOST, RTV_MTU};
 use hal::sys::netinet_in::IPPROTO_TCP;
 use hal::sys::netinet_ip::{Ip, Ippseudo};
 use hal::sys::netinet_ip_var::Ipovly;
@@ -176,10 +186,14 @@ use crate::net::mbuf::{
     M_DONTWAIT, M_TCP_CSUM_OUT, M_WAIT, MAX_LINKHDR, Mbuf, MbufBox, m_apply, m_get, m_gethdr,
 };
 use crate::net::rtable::rtable_l2;
-use crate::net::socket::{InetLocked, soisdisconnected};
-use crate::netinet::in_pcb::{INP_IPV6, Inpcb, in_pcbdetach, in_pcbinit};
+use crate::net::socket::{InetLocked, SoLocked, soisdisconnected};
+use crate::netinet::in_pcb::{
+    INP_IPV6, Inpcb, in_pcbdetach, in_pcbinit, in_pcbrtchange, in_pcbrtentry,
+};
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_DEFTTL, IP_MTUDISC, ip_mtudisc};
+use crate::netinet::tcp_input::tcp_mss;
+use crate::netinet::tcp_output::tcp_output;
 use crate::netinet::tcp_syncache::{syn_cache_cleanup, syn_cache_init};
 use crate::netinet::tcp_timer::TCPTV_SRTTDFLT;
 use crate::netinet::tcp_timer::{
@@ -732,6 +746,93 @@ pub fn tcp_rscale(st: &mut TcpState, hiwat: u64) {
         && u64::from(TCP_MAXWIN) << st.request_r_scale < hiwat
     {
         st.request_r_scale += 1;
+    }
+}
+
+/// `tcp_mtudisc`: on receipt of path MTU corrections, flush old route and replace it with the
+/// new one. Retransmit all unacknowledged packets, to ensure that all packets will be
+/// received. `errno` is the notification's (`None` for `tcp_output`'s -1: no error to
+/// report); the C's `inpcb` argument is the control block's, held (the notify form is
+/// [`tcp_mtudisc_notify`]).
+pub fn tcp_mtudisc<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, errno: Option<Errno>) {
+    let inp = tp.inp;
+    let mut change = false;
+
+    let orig_maxseg = tp.st.t_maxseg;
+
+    if let Some(mut rt) = in_pcbrtentry(inp, tp.net) {
+        let orig_mtulock = rt.rt_locks().get() & RTV_MTU;
+
+        // If this was not a host route, remove and realloc.
+        if !rt.rt_flags.isset(RTF_HOST) {
+            in_pcbrtchange(inp, errno);
+            match in_pcbrtentry(inp, tp.net) {
+                Some(r) => rt = r,
+                None => return,
+            }
+        }
+        if orig_mtulock < rt.rt_locks().get() & RTV_MTU {
+            change = true;
+        }
+    }
+    tcp_mss(tp, -1);
+    if orig_maxseg > tp.st.t_maxseg {
+        change = true;
+    }
+
+    // Resend unacknowledged packets
+    tp.st.snd_nxt = tp.st.snd_una;
+    if change || errno.is_some_and(|e| e.as_i32() > 0) {
+        // The C ignores the result: the segments go again at the next chance.
+        let _ = tcp_output(tp);
+    }
+}
+
+/// `tcp_mtudisc_increase`: a path MTU estimate grew (`PRC_MTUINC`): a host route is dropped
+/// for a new one, and the segment size taken again (`tcp_mss(tp, -1)`, which also sets the
+/// congestion window). The notify form is [`tcp_mtudisc_increase_notify`].
+pub fn tcp_mtudisc_increase<G: ProcGlue>(tp: &mut Tp<'_, '_, G>, errno: Option<Errno>) {
+    let Some(rt) = in_pcbrtentry(tp.inp, tp.net) else {
+        return;
+    };
+    // If this was a host route, remove and realloc.
+    if rt.rt_flags.isset(RTF_HOST) {
+        in_pcbrtchange(tp.inp, errno);
+    }
+    drop(rt);
+
+    // also takes care of congestion window
+    tcp_mss(tp, -1);
+}
+
+/// `tcp_mtudisc` as a notify function (`in_pcbnotifyall`'s, `in6_pcbnotify`'s): the control
+/// block of `inp`, whose socket `w` locks, if it has one (`intotcpcb`).
+pub fn tcp_mtudisc_notify<G: ProcGlue>(inp: &Inpcb<G>, w: &mut SoLocked<'_>, errno: Option<Errno>) {
+    with_tcpcb(inp, w, |tp| tcp_mtudisc(tp, errno));
+}
+
+/// `tcp_mtudisc_increase` as a notify function, as [`tcp_mtudisc_notify`].
+pub fn tcp_mtudisc_increase_notify<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    w: &mut SoLocked<'_>,
+    errno: Option<Errno>,
+) {
+    with_tcpcb(inp, w, |tp| tcp_mtudisc_increase(tp, errno));
+}
+
+/// The control block of `inp` opened under its socket lock `w` for a notify function (the
+/// C's `intotcpcb(inp)` at their start); nothing without one (a socket a close detached, or
+/// one held C-style, which no kernel protocol's is).
+fn with_tcpcb<G: ProcGlue>(
+    inp: &Inpcb<G>,
+    w: &mut SoLocked<'_>,
+    f: impl FnOnce(&mut Tp<'_, '_, G>),
+) {
+    let Some(mut il) = w.inet() else {
+        return;
+    };
+    if let Some(mut tp) = intotcpcb(inp, &mut il) {
+        f(&mut tp);
     }
 }
 
