@@ -2326,9 +2326,10 @@ pub fn cpu_init() {
         // SAFETY: FP and SVE are enabled at EL1 just long enough to write ZCR_EL1 (by
         // encoding, the assembler wants SVE for the name); then SVE is trapped again and
         // FP's trap is the value read above. Between the two writes of CPACR_EL1 only
-        // ZCR_EL1 is written: no FP or SVE register is read or changed (the kernel is built
-        // without FP code), and EL0 stays trapped throughout, so no process's FP state can
-        // be seen or touched through the window.
+        // ZCR_EL1 is written (the vector length, the default this block sets): no
+        // process's FP state is live on this CPU while it attaches, the kernel is built
+        // without FP code, and EL0 stays trapped throughout, so no FP or SVE state can be
+        // seen or lost through the window.
         unsafe {
             write_specialreg!("cpacr_el1", cpacr);
             asm!("isb", options(nomem, nostack, preserves_flags));

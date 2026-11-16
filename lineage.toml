@@ -1643,6 +1643,7 @@ rust = "sys/arch/arm64/arm64/cpu.rs"
 lz = ["sys/arch/arm64/arm64/cpu.rs"]
 status = "adapted"
 adapted_by = ["sys/hal/arch/arm64/pmap/backend.rs", "sys/kern/vm_bsd.rs", "sys/kernel/vm/km.rs", "sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/hal/cpu.rs", "sys/hal/thread.rs", "sys/kernel/sched.rs", "sys/hal/intr.rs", "sys/kernel/sysctl.rs", "sys/kernel/clockintr.rs", "sys/hal/arch/arm64/trap.rs", "sys/hal/arch/arm64/exception.rs"]
+notes = "ahead of LZ since 94d0c9ed: cpu_init's SVE setup opens FP with SVE around its write of ZCR_EL1 (the fault is OpenBSD's own, cpu.c:1844-1856); LZ adopts the same change (its 6e1e27de, not on its main yet): the sync that brings it records it as already here"
 
 [[module]]
 rust = "sys/arch/arm64/arm64/cpufunc.rs"
