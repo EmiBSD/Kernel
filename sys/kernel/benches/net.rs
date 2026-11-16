@@ -116,6 +116,10 @@
 //!     witness; no allocation (the record is the bench's).
 //!   - `if_enqueue_ifq.mq`: `if_enqueue_ifq` on an interface of 4 send queues, the flow id
 //!     picking the third, whose start the driver runs and empties at once.
+//!   - `in_hasmulti.8`: `in_hasmulti` of the oldest of 8 groups an interface joined (the
+//!     list walked whole, the newest first), per multicast datagram on input and on a looped
+//!     back output: the read witness of `if_maddrlock`, the list's set-once cell and the chain's
+//!     cells of N6.5e's 5e2 (no before: a new row).
 //! - The routing rows (N6.3b2, decision 43 with U10), over a table of four IPv4 routes on one
 //!   listed interface (`10.0.2.15/24`): the connected `10.0.2.0/24`, `10.1.0.0/24` and
 //!   `10.2.0.0/24` through `10.0.2.2`, and the default route through `10.0.2.2` (the "before"
@@ -1476,7 +1480,7 @@ fn socket_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f
 /// The interface layer's rows (N6.3a, decision 43 with U10), the same ops as the "before"
 /// rows on LZ's shape (a scratch `#[ignore]` test of `bsd` at the base, over `setup_net`'s
 /// zeroed `test_ifnet`).
-const IF_ROWS: [&str; 13] = [
+const IF_ROWS: [&str; 14] = [
     "if_get.put",
     "if_get_smr",
     "ifq.enq.deq",
@@ -1490,6 +1494,7 @@ const IF_ROWS: [&str; 13] = [
     "ifaddr.walk.8",
     "ifaddr.add_del.8",
     "ifa_ifwithaddr.8x2.shared",
+    "in_hasmulti.8",
 ];
 
 std::thread_local! {
@@ -1798,6 +1803,41 @@ fn if_rows(wanted: &dyn Fn(&str) -> bool, report: &dyn Fn(&str, (f64, f64, f64))
     }
     if IF_ROWS[9..12].iter().any(|n| wanted(n)) {
         ifaddr_rows(wanted, report);
+    }
+    if wanted(IF_ROWS[13]) {
+        // Eight local groups (224.0.0.100 to .107: no IGMP report) joined on one interface;
+        // the one looked for is the oldest, the last of the walk.
+        use kernel::netinet::in_::{in_addmulti, in_delmulti, in_hasmulti};
+        let mifp = test_ifnet_fresh(b"bnch3", &BENCH_DRIVER);
+        if_attach(mifp);
+        let group = |n: u8| hal::sys::netinet_in::InAddr {
+            s_addr: u32::from_ne_bytes([224, 0, 0, 100 + n]),
+        };
+        let joined: Vec<_> = {
+            let net = NETLOCK.write();
+            let held = need(NetHeld::of(&net), "the net lock's witness");
+            (0..8u8)
+                .map(|n| need(in_addmulti(&group(n), mifp, &held), "a membership"))
+                .collect()
+        };
+        let want = group(0);
+        let r = measure(OPS, || {
+            let t = Instant::now();
+            for _ in 0..OPS {
+                black_box(in_hasmulti(black_box(&want), mifp));
+            }
+            t.elapsed()
+        });
+        if !in_hasmulti(&want, mifp) {
+            eprintln!("net: in_hasmulti did not find its group");
+            std::process::exit(1);
+        }
+        report(IF_ROWS[13], r);
+        let net = NETLOCK.write();
+        let held = need(NetHeld::of(&net), "the net lock's witness");
+        for inm in joined {
+            in_delmulti(inm, &held);
+        }
     }
     // The packets back to their pool while its pages are still installed.
     STASH.with(|s| s.borrow_mut().clear());
