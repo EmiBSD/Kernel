@@ -306,7 +306,7 @@ struct MInner<T> {
 ///
 /// `#[repr(transparent)]` over its `NonNull`: Rust then guarantees `Option<MArc<T>>` the
 /// `NonNull`'s niche, `None` all zero bits, which the zeroed softcs that hold one rely on
-/// (`usbd_bus`'s bpf handle).
+/// (`usbd_bus`'s bpf handle, pfsync(4)'s `sc_inm` membership).
 #[repr(transparent)]
 pub struct MArc<T: Send + Sync + 'static> {
     inner: NonNull<MInner<T>>,
