@@ -1401,7 +1401,11 @@ mod tests {
     // Host tests of the kernel's `tcp_output`: the segments as the wire sees them (headers,
     // options, payload, the state after them) over a test interface, the SACK hole's
     // retransmission and its list back in the control block, TSO's cut, the persist state,
-    // and the signature's refusal without an SA.
+    // and the signature: refused without an SA, and with one (`testtcp::SigLegs`, IPsec's
+    // legs with one SA for the test subnet) the digest checked against an independent MD5 of
+    // the packet. The signature's EINVAL path (`tcp_signature` failing: `m_apply` cannot walk
+    // the chain) cannot be reached from `tcp_output`, which builds the chain it signs; the
+    // `TdbHold` gives the SA's reference back on it by construction.
 
     use super::*;
     use crate::netinet::tcp_fsm::TCPS_SYN_SENT;
@@ -1735,6 +1739,10 @@ mod tests {
         let (so, inp, d) = estab(b"tout8", 28);
         queue(&so, &pattern(10));
         let before = sent(d);
+        // IPsec's legs present, with no SA between these addresses (the run's other tests
+        // may have registered them already: the same answer).
+        let legs = testtcp::sig_legs();
+        let unrefs = legs.unrefs.load(Ordering::Relaxed);
         let (r, nxt) = output(
             &inp,
             |tp| {
@@ -1744,11 +1752,66 @@ mod tests {
             },
             |tp| tp.st.snd_nxt,
         );
-        // No SA between these addresses: gettdbbysrcdst finds none, EPERM before the segment
-        // leaves, the state as it was.
+        // gettdbbysrcdst finds none: EPERM before the segment leaves, the state as it was, no
+        // reference taken or given back.
         assert_eq!(r, Err(Errno::EPERM));
         assert_eq!(sent(d), before);
         assert_eq!(nxt, 1000);
+        assert_eq!(legs.unrefs.load(Ordering::Relaxed), unrefs);
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn a_signed_segment_carries_the_md5_digest_of_its_own_bytes() {
+        use crate::crypto::md5::Md5Ctx;
+        use crate::netinet::tcp_subr::testtcp::{SIG_KEY, SIG_NET};
+        let (_g, _p) = testtcp::setup();
+        let legs = testtcp::sig_legs();
+        let (so, inp, d) = estab(b"toutb", SIG_NET);
+        let data = pattern(100);
+        queue(&so, &data);
+        let (before, unrefs) = (sent(d), legs.unrefs.load(Ordering::Relaxed));
+        let (r, ()) = output(
+            &inp,
+            |tp| {
+                tp.st.sack_enable = 0;
+                tp.st.set_flags(TF_SIGNATURE);
+            },
+            |_| (),
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(sent(d), before + 1);
+        assert_eq!(
+            legs.unrefs.load(Ordering::Relaxed),
+            unrefs + 1,
+            "the SA's reference given back once"
+        );
+        let raw = d.last.lock().expect("the capture").clone();
+        let (ip, th, opts, payload) = last(d);
+        // The option: kind 19, length 18, the digest, two NOPs; th_off counts it.
+        assert_eq!(th.th_off(), (20 + 20) / 4);
+        assert_eq!(opts.len(), 20);
+        assert_eq!(&opts[..2], &[TCPOPT_SIGNATURE, TCPOLEN_SIGNATURE]);
+        assert_eq!(&opts[18..], &[TCPOPT_NOP, TCPOPT_NOP]);
+        assert_eq!(payload, data);
+        // An MD5 of the packet's own bytes (RFC 2385): the pseudo header, the TCP header with
+        // its checksum zeroed (filled after the signature), the data, the key. The digest is
+        // at hdrlen - optlen + sigoff = 40 + 2.
+        let mut ctx = Md5Ctx::new();
+        let mut pseudo = [0u8; 12];
+        pseudo[..4].copy_from_slice(&ip.ip_src.s_addr.to_ne_bytes());
+        pseudo[4..8].copy_from_slice(&ip.ip_dst.s_addr.to_ne_bytes());
+        pseudo[9] = IPPROTO_TCP as u8;
+        pseudo[10..].copy_from_slice(&((20 + 20 + 100) as u16).to_be_bytes());
+        ctx.update(&pseudo);
+        let mut tcph = raw[20..40].to_vec();
+        tcph[16..18].copy_from_slice(&[0, 0]);
+        ctx.update(&tcph);
+        ctx.update(&payload);
+        ctx.update(SIG_KEY);
+        let digest: [u8; MD5_DIGEST_LENGTH] = ctx.finalize();
+        assert_eq!(&raw[42..58], &digest, "the digest at sigoff");
+        assert_eq!(&opts[2..18], &digest);
         testtcp::close(so, inp);
     }
 

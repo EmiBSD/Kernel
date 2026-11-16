@@ -1709,6 +1709,123 @@ pub(crate) mod testtcp {
     pub(crate) fn stat(c: TcpstatCounters) -> u64 {
         crate::netinet::tcp_var::TCPCOUNTERS.read()[c as usize]
     }
+
+    /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24.
+    pub(crate) const SIG_NET: u8 = 71;
+    /// The SA's MD5 key.
+    pub(crate) const SIG_KEY: &[u8] = b"N6.6a3 tcp md5 key";
+    /// The SA, a `u32` standing for `bsd`'s `struct tdb`.
+    static SIG_SA: u32 = 0x5a5a;
+
+    /// IPsec's legs for the host tests of `TCP_SIGNATURE`: no policy (the C with IPSEC and no
+    /// SA: not in use, every SPD lookup empty, every check passing, the sysctl names
+    /// `EOPNOTSUPP` as without IPSEC), and one SA, between the addresses of
+    /// 10.9.[`SIG_NET`].0/24, keyed [`SIG_KEY`]; the references given back are counted. The
+    /// bridge is set once for the run ([`sig_legs`], `register_ipsec`): the other tests'
+    /// addresses find no SA, so their `tcp_output` and `syn_cache_respond` answer `EPERM` as
+    /// without the legs, and every other leg behaves as the C without an SA.
+    pub(crate) struct SigLegs {
+        /// `tdb_unref` calls.
+        pub(crate) unrefs: core::sync::atomic::AtomicU32,
+        /// The capability `register_ipsec` gave.
+        key: std::sync::OnceLock<&'static crate::net::ipsec_hooks::TdbKey>,
+    }
+
+    /// The legs, registered by [`sig_legs`].
+    static SIG_LEGS: SigLegs = SigLegs {
+        unrefs: core::sync::atomic::AtomicU32::new(0),
+        key: std::sync::OnceLock::new(),
+    };
+
+    /// [`SigLegs`], registered as IPsec's legs on the first call.
+    pub(crate) fn sig_legs() -> &'static SigLegs {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let key = crate::net::ipsec_hooks::register_ipsec(&SIG_LEGS)
+                .expect("no other IPsec legs in the kernel's host tests");
+            assert!(SIG_LEGS.key.set(key).is_ok());
+        });
+        &SIG_LEGS
+    }
+
+    impl SigLegs {
+        /// Whether `tdb` is the test's SA.
+        fn ours(&self, tdb: &crate::net::ipsec_hooks::TdbRef) -> bool {
+            let key = self.key.get().expect("registered");
+            let sa = tdb.get(key);
+            core::ptr::addr_eq(core::ptr::from_ref(sa), core::ptr::from_ref(&SIG_SA))
+        }
+    }
+
+    impl crate::net::ipsec_hooks::Ipsec for SigLegs {
+        fn enc_getifa(&self, _rtableid: u32, _unit: u32) -> Option<crate::net::if_var::IfaddrRef> {
+            None
+        }
+        fn in_use(&self) -> bool {
+            false
+        }
+        fn ip_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _hlen: i32,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+            _ipsecflowinfo: u32,
+        ) -> Result<Option<crate::net::ipsec_hooks::TdbRef>, crate::net::ipsec_hooks::SpdError>
+        {
+            Ok(None)
+        }
+        fn ip_output_send(
+            &self,
+            _tdb: &crate::net::ipsec_hooks::TdbRef,
+            _m: MbufBox,
+            _ro: &mut crate::net::route::Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            panic!("no SPD lookup answers an SA")
+        }
+        fn ip6_output_lookup(
+            &self,
+            _m: &Mbuf,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+        ) -> Result<Option<crate::net::ipsec_hooks::TdbRef>, crate::net::ipsec_hooks::SpdError>
+        {
+            Ok(None)
+        }
+        fn ip6_output_send(
+            &self,
+            _tdb: &crate::net::ipsec_hooks::TdbRef,
+            _m: MbufBox,
+            _ro: &mut crate::net::route::Route,
+            _rtableid: u32,
+            _fwd: bool,
+        ) -> Result<(), Errno> {
+            panic!("no SPD lookup answers an SA")
+        }
+        fn tdb_unref(&self, tdb: crate::net::ipsec_hooks::TdbRef) {
+            assert!(self.ours(&tdb), "the test's SA");
+            self.unrefs.fetch_add(1, Ordering::Relaxed);
+        }
+        fn adjust_mtu(&self, _m: &Mbuf, _mtu: u32) {}
+        fn tcp_signature_tdb(
+            &self,
+            _rdomain: u32,
+            src: &[u8; SOCKADDR_UNION_LEN],
+            dst: &[u8; SOCKADDR_UNION_LEN],
+        ) -> Option<crate::net::ipsec_hooks::TdbRef> {
+            let net = [10, 9, SIG_NET];
+            let inet = |u: &[u8; SOCKADDR_UNION_LEN]| {
+                u[0] == 16 && u[1] == AF_INET && u[4..7] == net && u[8..] == [0; 20]
+            };
+            (inet(src) && inet(dst)).then(|| {
+                crate::net::ipsec_hooks::TdbRef::new(self.key.get().expect("registered"), &SIG_SA)
+            })
+        }
+        fn tdb_amxkey(&self, tdb: &crate::net::ipsec_hooks::TdbRef, f: &mut dyn FnMut(&[u8])) {
+            assert!(self.ours(tdb), "the test's SA");
+            f(SIG_KEY);
+        }
+    }
 }
 /* </CODE> */
 
