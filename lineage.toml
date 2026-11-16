@@ -16427,6 +16427,18 @@ status = "redesigned"
 notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq and ipoffnxt moved here at N6.4c2 (Ipqent with its header fields in cells, Ipq, the IpqentList/IpqList adapters, the Ipoffnxt image), mtod_ip stays bsd's; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_debug.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_debug.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_debug.h's records and tcp_debug.c's tcp_trace over the kernel's TcpState; the ring and tcp_debx the data of a hal Mutexed (tcp_debug_mtx; LZ: a StaticCell under unsafe), the headers read by hal::pod::at; LZ's record kept (D-6: not the C's struct tcp_debug, no _tcp_debug/_tcp_debx symbol, trpt(8) reads nothing, as before); bsd's sys/netinet/tcp_debug.rs stays for bsd's TCP until N6.6a5"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_debug.rs::TCP_DEBUG_MTX"
+native = ["TCP_DEBUG"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_fsm.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_fsm.rs"]
@@ -16463,6 +16475,23 @@ status = "redesigned"
 notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2)"
 
 [[module]]
+rust = "sys/kernel/netinet/tcp_subr.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_subr.rs"]
+status = "redesigned"
+notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCPCOUNTERS"
+native = ["sys/kernel/netinet/tcp_var.rs::TCPCOUNTERS"]
+kind = "moved"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCP_TIMER_MTX"
+native = ["TCP_ISS"]
+kind = "merged"
+
+[[module]]
 rust = "sys/kernel/netinet/tcp_timer.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_timer.rs"]
@@ -16486,7 +16515,7 @@ rust = "sys/kernel/netinet/tcp_var.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_var.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_var.h's constants (TF_*, TCPOOB_*, the SYN cache's sizes and SCF_*, the RTT scales), TCP_TIME, enum tcpstat_counters and tcpcounters as a hal::percpu::Counters (D-16; LZ's TCPCOUNTERS, a static array of shared atomics in sys/netinet/tcp_subr.rs, moved here: its row waits for the kernel's tcp_subr at N6.6a2, since lz check refuses a row for a file this module does not list); bsd's tcp_var.rs re-exports them and keeps the structures until N6.6a2"
+notes = "N6.6a1: tcp_var.h's constants (TF_*, TCPOOB_*, the SYN cache's sizes and SCF_*, the RTT scales), TCP_TIME, enum tcpstat_counters and tcpcounters as a hal::percpu::Counters (D-16; LZ's TCPCOUNTERS, a static array of shared atomics in sys/netinet/tcp_subr.rs, moved here: its row waits for the kernel's tcp_subr at N6.6a2, since lz check refuses a row for a file this module does not list); bsd's tcp_var.rs re-exports them and keeps the structures until N6.6a2; N6.6a2 (D-12, D-13, D-15): the structures: Tcpcb<G> (a tcpcb BoxPool item the pcb's slot Inpcb::inp_tcpcb owns; t_timer and t_sc outside, every other member a plain field of TcpState in one ExclGuarded keyed to so_lock part TCP; t_inpcb gone, the Tp the functions take carries the pcb), the reassembly entries and SACK holes as owned SlistLink chains of tcpqe/sackhl BoxPool items, SynCache<G> a counted syncache item ([I] plain in SynCacheInit, [S] one Guarded ScState keyed to syn_cache_mtx with the set and bucket by index and the listener counted, [s] one ExclGuarded ScListener keyed to the listener's so_lock part SYN), SynCacheSet/SynCaches the data of the glue's Mutexed, TcpTables<G> the glue's TCP globals; intotcpcb(inp, &mut InetLocked) -> Option<Tp>; bsd's tcp_var.rs keeps LZ's structures for bsd's TCP until N6.6a5"
 
 [[module]]
 rust = "sys/kernel/netinet/icmp_var.rs"

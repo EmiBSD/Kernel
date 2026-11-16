@@ -319,8 +319,8 @@ use hal::mutex::{Mutexed, MutexedGuard};
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
-use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
-use hal::rwlock::{RW_WRITE, Witness};
+use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolBox, PoolHome, TypedPool};
+use hal::rwlock::{Guarded, RW_WRITE, Witness, WitnessPart};
 use hal::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_UP;
@@ -350,12 +350,13 @@ use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::route::{Route, Rtentry, rtdeletemsg};
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::sockbuf::SS_NOFDREF;
-use crate::net::socket::{SoLocked, Socket, SocketRef, sofree_legacy, solock_net, soref};
+use crate::net::socket::{SoLocked, Socket, SocketRef, so_part, sofree_legacy, solock_net, soref};
 use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_output::ip_freemoptions;
 use crate::netinet::ip_var::IpMoptions;
+use crate::netinet::tcp_var::Tcpcb;
 use crate::netinet6::in6::in6_nam2sin6;
 use crate::netinet6::in6_pcb::{
     in6_pcbaddrisavail_held, in6_pcbconnect, in6_pcbhash, in6_pcbrtentry,
@@ -895,8 +896,12 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_lport: TWord<u16>,
     /// \[I\] `inp_socket`: back pointer to socket, counted (`None` for an iterator).
     inp_socket: Option<SocketRef<G>>,
-    /// \[s\] `inp_ppcb`: pointer to per-protocol pcb (`bsd`'s tcpcb, until N6.6a).
+    /// \[s\] `inp_ppcb`: pointer to per-protocol pcb (`bsd`'s tcpcb, until N6.6a5).
     pub inp_ppcb: PtrWord<c_void>,
+    /// \[s\] `inp_ppcb` of the kernel's TCP (N6.6a2, D-12): the control block this pcb owns,
+    /// keyed to the socket's `so_lock` in part `PCB` ([`Inpcb::tcpcb`]); beside `bsd`'s word
+    /// until the switch (N6.6a5).
+    inp_tcpcb: Guarded<Option<PoolBox<Tcpcb<G>>>>,
     /// \[s\] `inp_route`: cached route, reached only through [`Inpcb::route`] and
     /// [`Inpcb::set_route`], which check the socket lock.
     inp_route: ReadMostly<Route>,
@@ -970,6 +975,11 @@ impl<G: ProcGlue> Inpcb<G> {
     /// outside the pool (a marker, a test's block) is on no list and gives no handle
     /// (`in_pcbref` of it is `panic(9)`).
     pub fn new(table: Option<&'static Inpcbtable<G>>, so: Option<SocketRef<G>>) -> Self {
+        // The slot of the kernel's tcpcb is the socket lock's; an iterator's is never opened.
+        let inp_tcpcb = match &so {
+            Some(s) => Guarded::keyed(s.so_lock.lock().id(), so_part::PCB, None),
+            None => Guarded::new_net(None),
+        };
         Self {
             inp_home: PoolHome::new(),
             inp_table: table,
@@ -986,6 +996,7 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_lport: TWord::new(),
             inp_socket: so,
             inp_ppcb: PtrWord::new(),
+            inp_tcpcb,
             inp_route: ReadMostly::new(Route::new()),
             inp_refcnt: AtomicU32::new(1),
             inp_anchor: ReadMostly::new(None),
@@ -1085,6 +1096,29 @@ impl<G: ProcGlue> Inpcb<G> {
     pub fn options(&self) -> SlotLoan<'_, Option<MbufBox>> {
         self.assert_route_locked("inp_options");
         self.inp_options.lend()
+    }
+
+    /// `intotcpcb(inp)`'s slot: the kernel's TCP control block of this pcb, pinned in its
+    /// item, for the holder of the socket lock's part `PCB` (`pcb`, checked: another lock's
+    /// or part's is `panic(9)`); `None` before `tcp_newtcpcb` and after `tcp_free`.
+    #[inline]
+    pub fn tcpcb<'a>(&'a self, pcb: &'a WitnessPart<'_>) -> Option<Pin<&'a Tcpcb<G>>> {
+        self.inp_tcpcb.get(pcb).as_ref().map(PoolBox::as_pin)
+    }
+
+    /// `inp->inp_ppcb = tp` (`tcp_newtcpcb`): the slot owns `tp` from now on; the control
+    /// block it held before, if any, comes back (none: `tcp_newtcpcb` runs once per pcb).
+    pub fn set_tcpcb(
+        &self,
+        pcb: &mut WitnessPart<'_>,
+        tp: PoolBox<Tcpcb<G>>,
+    ) -> Option<PoolBox<Tcpcb<G>>> {
+        self.inp_tcpcb.get_mut(pcb).replace(tp)
+    }
+
+    /// `inp->inp_ppcb = NULL` with the control block given back (`tcp_free`'s `pool_put`).
+    pub fn take_tcpcb(&self, pcb: &mut WitnessPart<'_>) -> Option<PoolBox<Tcpcb<G>>> {
+        self.inp_tcpcb.get_mut(pcb).take()
     }
 
     /// `&inp->inp_outputopts6`: the IPv6 packet options, lent until the loan drops (the C's
@@ -2998,6 +3032,10 @@ mod tests {
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
             ("2 x PtrWord", 2 * size_of::<PtrWord<c_void>>()),
+            (
+                "inp_tcpcb",
+                size_of::<Guarded<Option<PoolBox<crate::netinet::tcp_var::Tcpcb<G>>>>>(),
+            ),
             ("inp_options", size_of::<LoanSlot<Option<MbufBox>>>()),
             ("inp_route", size_of::<ReadMostly<Route>>()),
             (
@@ -3030,15 +3068,17 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 552 bytes, 568 with the counted item's header (the count and the pool), against the
+        // 584 bytes, 600 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
         // cell (72), the three options' cells (40 each: the box carries its malloc type and
         // allocator; N6.5c's two IPv6 ones were 8-byte words before), the IPv4 options' slot
-        // (24: the claim word and the chain's box, N6.6a0's D-15, a word of bsd's before) and
-        // the anchor (16) are the growth.
-        assert_eq!(sum, 551);
-        assert_eq!(size_of::<Inpcb<G>>(), 552);
+        // (24: the claim word and the chain's box, N6.6a0's D-15, a word of bsd's before), the
+        // anchor (16) and the kernel's tcpcb slot (32: the cell's key and the box, N6.6a2's
+        // D-12, beside bsd's 8-byte word until N6.6a5, which leaves 576 and 592) are the
+        // growth (D-7: the diet is N12's).
+        assert_eq!(sum, 583);
+        assert_eq!(size_of::<Inpcb<G>>(), 584);
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
         // pointers as words, the unions as their largest member's words).
@@ -3380,7 +3420,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(568),
+            Some(600),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
