@@ -65,11 +65,14 @@
 //!
 //! ## Redesign
 //! - N6.6a1: the comparisons and the two `TCP_ISSINCR` constants moved into the kernel;
-//!   `tcp_rcvseqinit(tp)` and `tcp_sendseqinit(tp)` take the control block, so they stay in
-//!   `bsd`'s `sys/netinet/tcp_seq.rs` (with LZ's `Tcpcb` of cells) until the kernel's
-//!   `tcp_var` defines its own (N6.6a2); `bsd`'s module re-exports the rest from here.
+//!   `bsd`'s module re-exports them from here and keeps its `tcp_rcvseqinit(tp)` and
+//!   `tcp_sendseqinit(tp)` over LZ's `Tcpcb` of cells for its TCP until N6.6a5.
+//! - N6.6a2: [`tcp_rcvseqinit`] and [`tcp_sendseqinit`] over the kernel's control block's
+//!   members (`TcpState`), the C's macros as functions.
 
 use hal::sys::netinet_tcp::TcpSeq;
+
+use crate::netinet::tcp_var::TcpState;
 
 /// `TCP_ISSINCR`: increment for `tcp_iss` each second.
 pub const TCP_ISSINCR: u32 = 125 * 1024;
@@ -99,12 +102,45 @@ pub const fn seq_gt(a: TcpSeq, b: TcpSeq) -> bool {
 pub const fn seq_geq(a: TcpSeq, b: TcpSeq) -> bool {
     (a.wrapping_sub(b) as i32) >= 0
 }
+/// `tcp_rcvseqinit(tp)`: initialize the receive sequence numbers from the initial receive
+/// sequence number.
+#[inline]
+pub fn tcp_rcvseqinit(st: &mut TcpState) {
+    let v = st.irs.wrapping_add(1);
+    st.rcv_nxt = v;
+    st.rcv_adv = v;
+}
+
+/// `tcp_sendseqinit(tp)`: initialize the send sequence numbers from the initial send
+/// sequence number.
+#[inline]
+pub fn tcp_sendseqinit(st: &mut TcpState) {
+    let iss = st.iss;
+    st.snd_up = iss;
+    st.snd_max = iss;
+    st.snd_nxt = iss;
+    st.snd_una = iss;
+}
 /* </CODE> */
 
 /* <TESTS> */
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seqinit_as_the_macros() {
+        let mut st = TcpState::new();
+        st.irs = u32::MAX;
+        tcp_rcvseqinit(&mut st);
+        assert_eq!((st.rcv_nxt, st.rcv_adv), (0, 0));
+        st.iss = 77;
+        tcp_sendseqinit(&mut st);
+        assert_eq!(
+            (st.snd_up, st.snd_max, st.snd_nxt, st.snd_una),
+            (77, 77, 77, 77)
+        );
+    }
 
     #[test]
     fn comparisons_wrap_around() {

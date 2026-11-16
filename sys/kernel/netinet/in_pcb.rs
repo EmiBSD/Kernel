@@ -2945,6 +2945,8 @@ pub(crate) mod testinet {
         pub(crate) addmulti: AtomicU32,
         /// `SIOCDELMULTI` requests.
         pub(crate) delmulti: AtomicU32,
+        /// The bytes of the last packet output (TCP's reply tests).
+        pub(crate) last: std::sync::Mutex<std::vec::Vec<u8>>,
     }
 
     impl NetDriver for InetDriver {
@@ -2968,7 +2970,12 @@ pub(crate) mod testinet {
             _dst: SockaddrView<'_>,
             _rt: Option<&Rtentry>,
         ) -> Result<(), Errno> {
+            let mut bytes = std::vec![0u8; m.m_pkthdr().len.get() as usize];
+            crate::net::mbuf::m_copydata(&m, 0, &mut bytes);
             drop(m);
+            if let Ok(mut l) = self.last.lock() {
+                *l = bytes;
+            }
             self.sent.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }

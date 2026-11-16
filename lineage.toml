@@ -16472,14 +16472,14 @@ rust = "sys/kernel/netinet/tcp_seq.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_seq.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2)"
+notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2); N6.6a2: tcp_rcvseqinit and tcp_sendseqinit over the kernel's TcpState (bsd's copies over LZ's Tcpcb stay for bsd's TCP until N6.6a5)"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_subr.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "redesigned"
-notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch"
+notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch; N6.6a2 commit 2: tcp_template (the template taken out and given back filled), tcp_respond (headers written in place with hal::pod, the pcb's route and IPv6 options lent; the caller's net proof), tcp_free (the slot emptied: the C's pool_put after Closed), Closed, tcp_rscale and tcp_set_iss_tsm over TcpState, tcp_signature (the key lent by Ipsec's tdb_amxkey leg; signature_digest testable with a fixed key); the five tcp_signature_tdb_* xform functions stay bsd's (D-10, N8)"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_subr.rs::TCPCOUNTERS"
@@ -16491,12 +16491,42 @@ lz = "sys/netinet/tcp_subr.rs::TCP_TIMER_MTX"
 native = ["TCP_ISS"]
 kind = "merged"
 
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::mbuf_put"
+native = ["put_hdr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::read_from"
+native = ["read_hdr"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::tcphdr_bytes"
+native = ["put_hdr"]
+kind = "merged"
+
 [[module]]
 rust = "sys/kernel/netinet/tcp_timer.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_timer.rs"]
 status = "redesigned"
-notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3"
+notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3; N6.6a2 (D-11): the keepalive variables, tcp_backoff[], tcp_totbackoff, tcp_delack_msecs; TCP_TIMER_INIT/ARM/DISARM/ISARMED (one counted pcb handle per timer for the tcpcb's life, given to Timeout::set_shared; arm and disarm count nothing), tcp_canceltimers, tcp_timer_freesack over the owned hole list, tcp_timer_enter with tcp_timer_leave as one function taking the work as a closure (the holdings on its stack, Closed freed by tcp_free before the socket lock goes), tcp_timer_funcs<G>() (TCP_TIMER_FUNCS) naming the five callouts, whose work is N6.6a3's (a live timer of the kernel's unregistered TCP firing is panic(9) until then; their entry through tcp_timer_enter is whole)"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::TCP_TIMER_FUNCS"
+native = ["tcp_timer_funcs"]
+kind = "renamed"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::TimerEnter"
+native = ["tcp_timer_enter"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_timer.rs::tcp_timer_leave"
+native = ["tcp_timer_enter"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_tso.rs"
