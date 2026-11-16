@@ -107,13 +107,26 @@
 //!   (no cluster for the copy) is `ENOBUFS` and the packet is dropped as the C's other
 //!   `ENOBUFS` are, where the C writes in place.
 //! - The C stores `th_seq` and `th_flags` through a `struct tcphdr *` whatever `th_off`
-//!   says; here the two fields are written byte by byte where they fall inside the data:
-//!   in a new segment, inside the `hlen - iphlen` bytes of header copied into it (with a
-//!   `th_off` below 5 the C's stores past them land in the mbuf's storage outside the
-//!   packet, which nobody sends), and in the original, the `th_flags` byte at its offset in
-//!   the first mbuf's data (with a `th_off` below 4 that byte is the payload's, as in the C).
-//!   A packet that reached the cut with a short header (a forwarded one that hardware LRO
-//!   marked `M_TCP_TSO`) goes out cut as the C cuts it, never a panic.
+//!   says; here the two fields are written byte by byte where they fall inside the data,
+//!   and a store the C makes past the data is dropped. A packet that reached the cut with a
+//!   short header (`th_off` below 5: a forwarded one that hardware LRO marked `M_TCP_TSO`)
+//!   is cut as the C cuts it, never a panic, with two differences on the wire, both where
+//!   the C writes where it should not:
+//!   - in a new segment, the header copied into it is `hlen - iphlen` bytes and `m_align`
+//!     (`kern/uipc_mbuf.c`) leaves fewer than 8 bytes after the data, so the C's `th_seq`
+//!     store (4 to 8 bytes past the data with a `th_off` of 0) and `th_flags` store (up to
+//!     13 past) run past the copied header, possibly past the mbuf itself (an out-of-bounds
+//!     write); here the bytes inside the header are written and the rest dropped;
+//!   - in the original, the C's `CLR(th->th_flags, TH_PUSH|TH_FIN)` (`tcp_output.c:1314`)
+//!     writes through the raw pointer after `m_adj` trimmed the data (`:1313`): when
+//!     `iphlen + 13 >= hlen + firstlen` (`th_off` 0 with an `mss` of 13 or less, 2 with 5
+//!     or less, 3 with 1) and the data is a cluster, that byte lies in the storage the loop's
+//!     `m_copym` (`:1279`) shared with the second segment's payload, so the C clears PUSH
+//!     and FIN in a payload byte of a segment whose checksum it already computed (a corrupt
+//!     segment on the wire); here `th_flags_clear` finds the byte past the first mbuf's
+//!     data and writes nothing, and the second segment goes out intact. Inside the data
+//!     (any other short header) the byte is cleared as the C clears it, the payload's for a
+//!     `th_off` below 4.
 //! - `tcp_if_output_tso` calls the interface's `if_output` through its driver (`NetDriver`;
 //!   a missing driver panics, where the C would jump through NULL); an empty `*mp` returns
 //!   `Ok(())`, which the C does not check.
@@ -183,8 +196,9 @@ fn th_load(m: &Mbuf, off: usize) -> Option<Tcphdr> {
 }
 
 /// The C's store of `bytes` at offset `at` of a TCP header whose bytes in the packet are
-/// `th`: the part that falls inside `th` written, the rest (past a short header's data, where
-/// the C's store reaches the mbuf's storage outside the packet) dropped.
+/// `th`: the part that falls inside `th` written, the rest (past a short header's data,
+/// where the C's store runs past the copied header and possibly past the mbuf: the
+/// module's deviations) dropped.
 fn th_put(th: &mut [u8], at: usize, bytes: &[u8]) {
     for (i, b) in bytes.iter().enumerate() {
         if let Some(d) = th.get_mut(at + i) {
@@ -195,8 +209,9 @@ fn th_put(th: &mut [u8], at: usize, bytes: &[u8]) {
 
 /// `CLR(th->th_flags, TH_PUSH|TH_FIN)` on the header at byte `off` of `m`'s first mbuf: the
 /// byte cleared in place when the data is writable, through `m_copyback` (a copy of a shared
-/// cluster first) when it is not, nothing when the first mbuf's data ends before it (the C's
-/// store then lands outside the packet); `false` when no cluster can be had for the copy.
+/// cluster first) when it is not, nothing when the first mbuf's data ends before it (where
+/// the C's store lands in storage a later segment's payload may share: the module's
+/// deviations); `false` when no cluster can be had for the copy.
 #[must_use]
 fn th_flags_clear(m: &mut Mbuf, off: usize) -> bool {
     let at = off + TH_FLAGS_OFF;
@@ -751,6 +766,62 @@ mod tests {
             Err(Errno::ENOPROTOOPT)
         );
         assert_eq!(ml_len(&ml), 0);
+    }
+
+    #[test]
+    fn the_original_s_flags_byte_past_its_data_is_left_alone() {
+        // th_off 0, mss 10, a cluster: the original's th_flags byte (iphlen + 13) lies past
+        // its data once trimmed to hlen + firstlen = 30 bytes, in the cluster the second
+        // segment's payload shares. The C clears PUSH and FIN there (a corrupt second
+        // segment); here nothing is written and the second segment's payload is intact.
+        let _g = setup();
+        let ifp = test_ifnet_with(b"ttso5", &REC);
+        let mut m0 = tso_packet(4, 30, 10, 5, 0);
+        assert!(m0.ext().is_some(), "a cluster-backed packet");
+        m0.data_mut().expect("writable")[32] = 0; // th_off 0
+        let orig = bytes(&m0);
+        let mut ml = MbufList::new();
+        assert_eq!(tcp_softtso_chop(&mut ml, m0, ifp, 10), Ok(()));
+        let segs: Vec<Vec<u8>> = core::iter::from_fn(|| ml_dequeue(&mut ml))
+            .map(|m| bytes(&m))
+            .collect();
+        assert_eq!(segs.len(), 5);
+        // Each segment is 30 bytes (20 of IP header, 10 of payload); the software TCP
+        // checksum's store at offset 36 lies past them and m_copyback extends each to 38, as
+        // the C's in_delayed_cksum does.
+        assert!(segs.iter().all(|s| s.len() == 38));
+        assert_eq!(&segs[0][20..30], &orig[20..30]);
+        // Past the original's 30 bytes, only the checksum's extension (zeroes, then the sum):
+        // its th_flags byte was not written there.
+        assert!(segs[0][30..36].iter().all(|&b| b == 0));
+        // The second segment carries packet bytes 30..40, offset 33 among them (th_flags of
+        // the original header, PUSH|ACK|FIN): untouched.
+        assert_eq!(&segs[1][20..23], &orig[30..33]);
+        assert_eq!(segs[1][23], orig[33], "the payload byte the C would clear");
+        assert_eq!(&segs[1][24..30], &orig[34..40]);
+    }
+
+    #[test]
+    fn the_original_s_flags_byte_in_a_shared_cluster_is_copied_back() {
+        // A read-only first mbuf (its cluster shared): the original's th_flags byte is
+        // cleared through m_copyback, as the whole header was before, and the sharer keeps
+        // its byte.
+        let _g = setup();
+        let ifp = test_ifnet_with(b"ttso6", &REC);
+        let mut m0 = tso_packet(4, 300, 100, 5, 0);
+        let share = m_copym(&mut m0, 0, crate::net::mbuf::M_COPYALL, M_DONTWAIT)
+            .expect("a copy sharing the cluster");
+        assert!(m0.is_readonly());
+        let mut ml = MbufList::new();
+        assert_eq!(tcp_softtso_chop(&mut ml, m0, ifp, 100), Ok(()));
+        let first = ml_dequeue(&mut ml).expect("the original");
+        assert_eq!(bytes(&first)[33], TH_ACK, "PUSH and FIN cleared");
+        assert_eq!(
+            bytes(&share)[33],
+            TH_PUSH | TH_ACK | TH_FIN,
+            "the sharer's byte kept"
+        );
+        assert_eq!(ml_len(&ml), 2);
     }
 
     #[test]
