@@ -234,6 +234,8 @@ Orders of the C's algorithms the `hal` types wrap (`subr_pool.c`, `kern_malloc.c
 | `SyncLink::get`, `set`, `replace`, `addr`, `is_none`, `points_to` | O(1): one atomic load, store or swap (`fd_cdir`, `fd_rdir`, `s_ttyvp`) |
 | `SaWords::read` (a record's own socket address copied, N6.5e) | O(1): at most four relaxed loads (`SA_READ_MAX` bytes) |
 | `Guarded::new_net` (a net cell, N6.5e), its `get`, `get_mut` | O(1): `const` to make; an access is one key compare, as every `Guarded`'s |
+| `LoanSlot::update`, `replace`, `take` (a value lent out and put back, never shared: `inp_options`, N6.6a0) | O(1): one compare-and-swap in and one store out (the `ReadMostly` writer's claim), spinning while another user holds it; no readers |
+| `ExclGuarded::get`, `get_mut` (a `Guarded` of a `Send`-only value, opened by exclusive witnesses only, N6.6a0) | O(1): the key compare of every `Guarded` |
 | `IfaList::first`, `IfaList::next`, `IfaList::iter` a step (an interface's addresses, N6.5e) | O(1): the cell's key compare, the handle's arm, one load |
 | `IfaList::insert_tail`, `IfaList::remove` (`ifa_add`, `ifa_del`) | O(n): a walk to the last address or to the predecessor, one handle clone and drop for that one's cell (the C's `TAILQ` is O(1); control paths only, D-4) |
 | `IfaList::for_each_safe` (`TAILQ_FOREACH_SAFE`) | O(1) a step plus a reader made and two handle clones (the current and the next) per step, so that the body may take the writer |

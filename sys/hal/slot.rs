@@ -144,6 +144,61 @@ impl<T: Default> Default for ReadMostly<T> {
     }
 }
 
+/// A value moved out and put back by one user at a time on any CPU, never shared: lent for a
+/// use by [`LoanSlot::update`] (or taken and replaced), as a pcb's IP options are lent to the
+/// output and option paths (`inp_options`, N6.6a0, D-15's cell (a)). It never gives out a
+/// `&T` that another thread could share, so it is `Sync` for `T: Send` (a `T` that is not
+/// `Sync`: an mbuf chain), as a `Mutexed` is. The claim is [`ReadMostly`]'s writer claim (a
+/// compare-and-swap in, a store out, spinning while another user holds it); there are no
+/// readers.
+pub struct LoanSlot<T>(ReadMostly<T>);
+
+// SAFETY: `&LoanSlot<T>` reaches the value only through `update` (and `replace`, `take`, built
+// on it), which runs the inner `ReadMostly::update`: its writer claim (the state moved from 0
+// to `WRITER`, refused while set) lets one call at a time hold the `&mut T`, for the call
+// only (the closure cannot keep it), and `LoanSlot` never calls `ReadMostly::read`, so no
+// reader's `&T` exists. So no reference into the value is ever shared between threads (`T:
+// Sync` is not needed); a value made on one CPU is moved in and the old one moved out on
+// another (`T: Send`).
+unsafe impl<T: Send> Sync for LoanSlot<T> {}
+
+impl<T> LoanSlot<T> {
+    /// A slot holding `value`.
+    pub const fn new(value: T) -> Self {
+        Self(ReadMostly::new(value))
+    }
+
+    /// `f` on the value, alone: the slot is claimed (spinning while another user holds it) and
+    /// released after `f`, also when it unwinds. `f` must not use the slot again.
+    #[inline]
+    pub fn update<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        self.0.update(f)
+    }
+
+    /// The value replaced by `value`; the old one, which the caller drops outside the slot.
+    pub fn replace(&self, value: T) -> T {
+        self.0.replace(value)
+    }
+
+    /// The value, by the slot's sole owner (`&mut self`).
+    pub fn get_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
+}
+
+impl<T: Default> LoanSlot<T> {
+    /// The value taken out, the default left in its place (a loan's start).
+    pub fn take(&self) -> T {
+        self.replace(T::default())
+    }
+}
+
+impl<T: Default> Default for LoanSlot<T> {
+    fn default() -> Self {
+        Self::new(T::default())
+    }
+}
+
 /// The writer's claim of a [`ReadMostly`], released when dropped (also on unwind).
 struct Claim<'a>(&'a AtomicU32);
 
@@ -191,6 +246,34 @@ mod tests {
     use std::vec::Vec;
 
     use super::*;
+
+    #[test]
+    fn a_loan_slot_holds_a_send_only_value_lent_to_one_user_at_a_time() {
+        fn is_sync<T: Sync>() {}
+        // A `Cell` is `Send`, not `Sync`: the slot is `Sync` all the same.
+        is_sync::<LoanSlot<core::cell::Cell<u64>>>();
+        let s = Arc::new(LoanSlot::new(core::cell::Cell::new(0u64)));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let s = Arc::clone(&s);
+                std::thread::spawn(move || {
+                    for _ in 0..10_000 {
+                        s.update(|c| c.set(c.get() + 1));
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("a thread");
+        }
+        assert_eq!(s.update(|c| c.get()), 40_000);
+        let o: LoanSlot<Option<Vec<u8>>> = LoanSlot::new(Some(std::vec![1]));
+        let lent = o.take();
+        assert_eq!(lent.as_deref(), Some(&[1u8][..]));
+        assert!(o.update(|v| v.is_none()), "lent out: the default left");
+        assert!(o.replace(lent).is_none());
+        assert_eq!(o.update(|v| v.as_ref().map(Vec::len)), Some(1));
+    }
 
     /// The embed idiom's proof (docs/IDIOMS.md) for a cell of an optional box or counted
     /// handle in zeroed legacy memory (`Ifnet::if_sadl`, `ReadMostly<Option<MBox<..>>>`, and
