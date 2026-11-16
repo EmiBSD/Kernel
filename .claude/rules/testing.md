@@ -33,7 +33,9 @@ Four tiers. Every change lands with the tier it belongs to.
    last, so `in_var_test_reset` and `in6_var_test_reset`, which forgot their free lists, are
    gone);
    in `ip_input`'s test setup, `ipq_test_reset` (reassembly) and
-   `icmp_test_reset`; the server cache by `nfsrv_initcache` in the nfs tests' setup.
+   `icmp_test_reset`; (N6.6a2) `kernel::netinet::tcp_subr::tcp_test_reset` (the SYN cache's
+   sets forgotten, the debug ring zeroed), called by the kernel's TCP fixture (`testtcp::setup`)
+   before `tcp_init`; the server cache by `nfsrv_initcache` in the nfs tests' setup.
 2. **Reference-backed tests**: `just test-ref`. Marked `#[ignore]`; they read `$OPENBSD_SRC`
    (set by the recipe to `reference/openbsd-src`) and cross-check constants against the C headers
    (`errno.h`, `param.h`, syscall numbers). They parse simple `#define` lines, nothing more.
