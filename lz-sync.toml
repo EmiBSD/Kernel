@@ -1254,3 +1254,21 @@ emibsd = "8200ebd705a7"
 method = "cherry-pick-conflicts"
 reason = "security-review.md area (dev/rnd), not a security fix: random_start reads the same 2048 words of kernel text with read_unaligned instead of through an aligned slice nothing guaranteed (undefined on amd64 when etext is off a 4-byte boundary); applied as LZ wrote it with reduced context, the Deviations line naming LZ's external bugs log as LZ's; one unsafe block before and after; reviewed by the main session in the commit's Security-Review, the independent reviewer reads it with df8508cf1682's"
 security = true
+
+[[commit]]
+lz = "77a96d2f766d"
+subject = "xtask: --accel hvf for arm64 build VMs (not usable yet)"
+modules = []
+status = "applied"
+emibsd = "8b89df0778c3"
+method = "cherry-pick-conflicts"
+reason = "xtask's --accel hvf for arm64 guests (-accel hvf -cpu host): main.rs as LZ wrote it, boot.rs by hand beside native's EMIBSD_CPU model choice; no recipe of smokes uses it; taken to check df8508cf1682 on a CPU with PAN3 and as the base of a later build inside EmiBSD"
+
+[[commit]]
+lz = "f06d9e45771f"
+subject = "xtask: ci inside EmiBSD, smoke-selfhost-ci"
+modules = []
+status = "applied"
+emibsd = "d8a10ef623c7"
+method = "cherry-pick-conflicts"
+reason = "the smokeall.rs half only: a hung recipe's process tree is listed from one ps -ax cut down to the tree's lines, since OpenBSD's ps -p takes one pid; the rest (smoke-selfhost-ci, /src/ci.sh, selfhost --rev, LZ's docs) is LZ's self-hosting tooling, which native does not have"
