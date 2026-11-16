@@ -43,6 +43,7 @@ pub mod ip_var;
 pub mod tcp_debug;
 pub mod tcp_fsm;
 pub mod tcp_lro;
+pub mod tcp_sack;
 pub mod tcp_seq;
 pub mod tcp_subr;
 pub mod tcp_syncache;

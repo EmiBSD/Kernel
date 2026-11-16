@@ -89,10 +89,11 @@
 //! Upstream: sys/netinet/tcp_subr.c @ 3ce1f3f79392
 //! LZ: sys/netinet/tcp_subr.rs@3c62ede68802
 //!
-//! `tcp_template` builds the skeletal TCP/IP header a connection sends with; `tcp_respond`
-//! sends a bare segment (an ACK, a RST, a keepalive probe) either from a connection's
-//! template or in reply to a received segment; `tcp_free` puts back a control block
-//! `tcp_close` closed. `tcp_set_iss_tsm` derives initial sequence numbers and timestamp
+//! `tcp_init` sets up the pools, `tcbtable`, the ISN secret and the SYN cache. `tcp_template`
+//! builds the skeletal TCP/IP header a connection sends with; `tcp_respond` sends a bare
+//! segment (an ACK, a RST, a keepalive probe) either from a connection's template or in reply
+//! to a received segment. `tcp_newtcpcb`, `tcp_close`, `tcp_free` and `tcp_freeq` create and
+//! tear down control blocks. `tcp_set_iss_tsm` derives initial sequence numbers and timestamp
 //! modulators from a keyed hash of the connection (RFC 1948). With `TCP_SIGNATURE`,
 //! `tcp_signature` computes the RFC 2385 MD5 digest.
 //!
@@ -105,7 +106,14 @@
 //! - `tcp_reass_limit` starts at `NMBCLUSTERS / 8` in the C's static initializer; here
 //!   `tcp_init` sets it from `nmbclust` (`kern.maxclusters`), whose boot value is the
 //!   machine's `NMBCLUSTERS` (`mbinit` runs before `domaininit`), since the kernel crate
-//!   names no machine constant: the same number.
+//!   names no machine constant: the same number. Before `mbinit` (a host test without the
+//!   mbuf layer) no limit is set.
+//! - `tcp_init`'s `icmp6_mtudisc_callback_register(tcp6_mtudisc_callback)` arrives with
+//!   `tcp6_mtudisc_callback` (N6.6a3, with `tcp_ctlinput`); until then the kernel's TCP is
+//!   unregistered and nothing calls `tcp_init` but the host tests.
+//! - `tcp_newtcpcb` returns the new control block opened ([`Tp`]) or `None`, the C's pointer
+//!   or NULL; `tcp_close` answers [`Closed`] for the C's NULL; `tcp_freeq` returns `bool`
+//!   (the C's 0 or 1).
 //! - `tcp_respond`'s `caddr_t template` is a byte slice: the IP header, followed by the TCP
 //!   header when `th0` is `None` (the template of a connection); the headers are written in
 //!   place into the new mbuf with `hal::pod`. `flags` is the `u8` of `th_flags`. Without a
@@ -144,7 +152,7 @@ use hal::mutex::Mutexed;
 use hal::netlock::NetHeld;
 use hal::once::OnceStatic;
 use hal::pod;
-use hal::pool::BoxPool;
+use hal::pool::{BoxPool, PR_NOWAIT, PR_WAITOK, PoolArc};
 use hal::rwlock::WitnessPart;
 use hal::sys::endian::{htonl, htons};
 use hal::sys::mbuf::MT_HEADER;
@@ -163,15 +171,23 @@ use crate::crypto::md5::{MD5_DIGEST_LENGTH, Md5Ctx};
 use crate::crypto::sha2::{SHA512_DIGEST_LENGTH, Sha512Ctx};
 use crate::net::ipsec_hooks::{TdbRef, ipsec};
 use crate::net::mbuf::{
-    M_DONTWAIT, M_TCP_CSUM_OUT, MAX_LINKHDR, Mbuf, MbufBox, m_apply, m_get, m_gethdr,
+    M_DONTWAIT, M_TCP_CSUM_OUT, M_WAIT, MAX_LINKHDR, Mbuf, MbufBox, m_apply, m_get, m_gethdr,
 };
 use crate::net::rtable::rtable_l2;
-use crate::netinet::in_pcb::Inpcb;
+use crate::net::socket::{InetLocked, soisdisconnected};
+use crate::netinet::in_pcb::{INP_IPV6, Inpcb, in_pcbdetach, in_pcbinit};
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_DEFTTL, IP_MTUDISC, ip_mtudisc};
+use crate::netinet::tcp_syncache::{syn_cache_cleanup, syn_cache_init};
 use crate::netinet::tcp_timer::TCPTV_SRTTDFLT;
+use crate::netinet::tcp_timer::{
+    TCPT_NTIMERS, TCPTV_MIN, TCPTV_REXMTMAX, TCPTV_SRTTBASE, tcp_canceltimers, tcp_timer_freesack,
+    tcp_timer_init, tcpt_rangeset,
+};
 use crate::netinet::tcp_var::{
-    Sackhole, TF_NOOPT, TF_RCVD_TSTMP, TF_REQ_TSTMP, TcpState, Tcpqent, Tp,
+    Sackhole, TCP_RTT_BASE_SHIFT, TCP_RTTVAR_SHIFT, TF_NOOPT, TF_RCVD_TSTMP, TF_REQ_SCALE,
+    TF_REQ_TSTMP, TcpState, Tcpcb, Tcpqent, TcpstatCounters, Tp, intotcpcb, tcp_rexmtval,
+    tcpstat_inc,
 };
 use crate::netinet6::in6_src::{in6_clearscope, in6_selecthlim};
 use crate::netinet6::ip6_output::ip6_output;
@@ -185,6 +201,9 @@ const AF_INET6_I32: i32 = AF_INET6 as i32;
 
 /// `TCP_ISS_CONN_INC`: the step of `tcp_iss` per connection.
 const TCP_ISS_CONN_INC: u32 = 4096;
+
+/// `TCB_INITIAL_HASH_SIZE`.
+const TCB_INITIAL_HASH_SIZE: i32 = 128;
 
 /// `tcp_close`'s answer: the control block is closed and must be freed by the frame that
 /// owns the socket lock's parts ([`tcp_free`]) before it unlocks; the C's `tp = NULL`. A use
@@ -242,6 +261,56 @@ pub(crate) static TCP_SECRET_CTX: OnceStatic<Sha512Ctx> = OnceStatic::new();
 pub static TCP_ISS: Mutexed<TcpSeq> = Mutexed::new(IPL_SOFTNET, 0);
 /// \[I\] `tcp_starttime`: random offset for `tcp_now()`.
 pub static TCP_STARTTIME: AtomicU64 = AtomicU64::new(0);
+
+/// `tcp_init`: TCP initialization (from `domaininit`; a second call, a test glue's, leaves
+/// what exists as it is).
+pub fn tcp_init<G: ProcGlue>() {
+    *TCP_ISS.lock() = 1; // wrong
+    // 0 is treated special so add 1, 63 bits to count is enough
+    let mut start = [0u8; 8];
+    hal::random::arc4random_buf(&mut start);
+    TCP_STARTTIME.store(1 + u64::from_ne_bytes(start) / 2, Ordering::Relaxed);
+    let t = &crate::net::domain::net::<G>().tcp;
+    let _ = t.tcpcb_pool.init(IPL_SOFTNET, 0, "tcpcb");
+    let _ = TCPQE_POOL.init(IPL_SOFTNET, 0, "tcpqe");
+    if TCP_REASS_LIMIT.load(Ordering::Relaxed) == 0 {
+        let n = crate::net::mbuf::nmbclust() / 8;
+        TCP_REASS_LIMIT.store(i32::try_from(n).unwrap_or(i32::MAX), Ordering::Relaxed);
+    }
+    let reass = TCP_REASS_LIMIT.load(Ordering::Relaxed);
+    // The C ignores the result, as below: the limit only caps the pool.
+    if reass > 0 {
+        let _ = TCPQE_POOL.set_hardlimit(reass as u32);
+    }
+    let _ = SACKHL_POOL.init(IPL_SOFTNET, 0, "sackhl");
+    let _ = SACKHL_POOL.set_hardlimit(tcp_sackhole_limit.load(Ordering::Relaxed) as u32);
+    in_pcbinit(&t.tcbtable, TCB_INITIAL_HASH_SIZE);
+    in_pcbinit(&t.tcb6table, TCB_INITIAL_HASH_SIZE);
+    // tcpcounters = counters_alloc(tcps_ncounters): a static (tcp_var.rs).
+
+    let mut secret = [0u8; 16];
+    hal::random::arc4random_buf(&mut secret);
+    let mut ctx = Sha512Ctx::new();
+    ctx.update(&secret);
+    // Set once: a second call keeps the first secret, as the first boot's.
+    let _ = TCP_SECRET.set(secret);
+    let _ = TCP_SECRET_CTX.set(ctx);
+
+    // Since sizeof(struct ip6_hdr) > sizeof(struct ip), we do max length checks/computations
+    // only on the former.
+    let hdrs = (size_of::<Ip6Hdr>() + size_of::<Tcphdr>()) as i32;
+    if crate::net::mbuf::MAX_PROTOHDR.load(Ordering::Relaxed) < hdrs {
+        crate::net::mbuf::MAX_PROTOHDR.store(hdrs, Ordering::Relaxed);
+    }
+    if (MAX_LINKHDR.load(Ordering::Relaxed) + hdrs) as usize > crate::net::mbuf::MHLEN {
+        kpanic(format_args!("tcp_init"));
+    }
+
+    // icmp6_mtudisc_callback_register(tcp6_mtudisc_callback): N6.6a3's (the deviations).
+
+    // Initialize the compressed state engine.
+    syn_cache_init::<G>();
+}
 
 /// `tcp_template`: create template to be used to send tcp packets on a connection. Call
 /// after host entry created, allocates an mbuf and fills in a skeletal tcp/ip header,
@@ -530,6 +599,122 @@ fn read_hdr<T: hal::user::AbiPod>(template: &[u8], off: usize) -> T {
     }
 }
 
+/// `tcp_newtcpcb`: create a new TCP control block, making an empty reassembly queue and
+/// hooking it to the argument protocol control block (`inp`, whose socket lock `il` holds:
+/// the slot opens with its part `PCB`). The new block, opened, or `None` when no item can be
+/// had (`wait` `M_WAIT` sleeps for one, as the C's `PR_WAITOK`).
+pub fn tcp_newtcpcb<'a, 'w, G: ProcGlue>(
+    inp: &'a Inpcb<G>,
+    il: &'a mut InetLocked<'w>,
+    wait: i32,
+) -> Option<Tp<'a, 'w, G>> {
+    let pool = &crate::net::domain::net::<G>().tcp.tcpcb_pool;
+    let flags = if wait == M_WAIT { PR_WAITOK } else { PR_NOWAIT };
+    let so_lock = inp.socket().so_lock.lock().id();
+    let cb = pool.get(flags, || {
+        let mut cb = Tcpcb::new(so_lock);
+        let st = cb.st.get_mut_owned();
+        // TAILQ_INIT(&tp->t_segq): the queue is empty.
+        st.t_maxseg = TCP_MSSDFLT.load(Ordering::Relaxed) as u16;
+        st.t_maxopd = 0;
+
+        st.sack_enable = TCP_DO_SACK.load(Ordering::Relaxed);
+        st.t_flags = if TCP_DO_RFC1323.load(Ordering::Relaxed) != 0 {
+            TF_REQ_SCALE | TF_REQ_TSTMP
+        } else {
+            0
+        };
+        // Init srtt to TCPTV_SRTTBASE (0), so we can tell that we have no rtt estimate. Set
+        // rttvar so that srtt + 2 * rttvar gives reasonable initial retransmit time.
+        st.t_srtt = TCPTV_SRTTBASE;
+        st.t_rttvar =
+            TCP_RTTDFLT.load(Ordering::Relaxed) << (TCP_RTTVAR_SHIFT + TCP_RTT_BASE_SHIFT - 1);
+        st.t_rttmin = TCPTV_MIN as u32;
+        st.t_rxtcur = tcpt_rangeset(tcp_rexmtval(st), TCPTV_MIN, TCPTV_REXMTMAX);
+        st.snd_cwnd = u64::from(TCP_MAXWIN) << TCP_MAX_WINSHIFT;
+        st.snd_ssthresh = u64::from(TCP_MAXWIN) << TCP_MAX_WINSHIFT;
+
+        st.t_pmtud_mtu_sent = 0;
+        st.t_pmtud_mss_acked = 0;
+
+        st.pf = if inp.has_flags(INP_IPV6) {
+            AF_INET6_I32
+        } else {
+            AF_INET_I32
+        };
+        cb
+    })?;
+
+    // tp->t_inpcb = inp: the timers' argument (D-11).
+    for i in 0..TCPT_NTIMERS {
+        tcp_timer_init(&cb, inp, i);
+    }
+
+    if inp.has_flags(INP_IPV6) {
+        let mut ip6: Ip6Hdr = inp.inp_ipv6.get();
+        ip6.ip6_hlim = IP6_DEFHLIM.load(Ordering::Relaxed) as u8;
+        inp.inp_ipv6.set(ip6);
+    } else {
+        let mut ip = inp.inp_ip.get();
+        ip.ip_ttl = IP_DEFTTL.load(Ordering::Relaxed) as u8;
+        inp.inp_ip.set(ip);
+    }
+
+    // inp->inp_ppcb = (caddr_t)tp
+    if inp.set_tcpcb(&mut il.pcb, cb).is_some() {
+        kpanic(format_args!(
+            "tcp_newtcpcb: inpcb {inp:p} has a control block"
+        ));
+    }
+    intotcpcb(inp, il)
+}
+
+/// `tcp_close`: close a TCP control block: discard all space held by the tcp, discard
+/// internet protocol block, wake up any sleepers. The block is consumed: [`Closed`] tells the
+/// frame that owns the socket lock's parts to free it ([`tcp_free`]) before it unlocks, the
+/// C's `pool_put` after the same steps (the queue, the timers, the SYN cache, the holes, the
+/// template, `soisdisconnected`, `in_pcbdetach`, `tcps_closed`).
+pub fn tcp_close<G: ProcGlue>(mut tp: Tp<'_, '_, G>) -> Closed {
+    let inp = tp.inp;
+    let so = tp.so;
+
+    // free the reassembly queue, if any
+    tcp_freeq(tp.st);
+
+    tcp_canceltimers(&mut tp);
+    syn_cache_cleanup(&tp);
+
+    // Free SACK holes.
+    tcp_timer_freesack(tp.st);
+
+    // m_free(tp->t_template)
+    drop(tp.st.t_template.take());
+    // inp->inp_ppcb = NULL; pool_put(&tcpcb_pool, tp): tcp_free's, after these steps.
+    soisdisconnected(so);
+    let Some(h) = PoolArc::from_ref(inp) else {
+        kpanic(format_args!("tcp_close: inpcb {inp:p}: not a pool item"));
+    };
+    in_pcbdetach(h, tp.net);
+    tcpstat_inc(TcpstatCounters::TcpsClosed);
+    Closed(())
+}
+
+/// `tcp_freeq`: frees the reassembly queue, one entry at a time; `true` when it held a
+/// segment.
+pub fn tcp_freeq(st: &mut TcpState) -> bool {
+    let mut rv = false;
+
+    while let Some(mut qe) = st.t_segq.take() {
+        if let Some(next) = qe.tcpqe_q.take() {
+            let _ = st.t_segq.set(next);
+        }
+        // m_freem(qe->tcpqe_m); pool_put(&tcpqe_pool, qe)
+        drop(qe);
+        rv = true;
+    }
+    rv
+}
+
 /// `tcp_free`: the control block `tcp_close` closed, put back (the C's `pool_put(&tcpcb_pool,
 /// tp)` and `inp->inp_ppcb = NULL`, here a few statements later under the same socket lock):
 /// the slot emptied with the socket lock's part `PCB` (`pcb`), its timers' handles of the pcb
@@ -675,6 +860,81 @@ fn signature_digest(
     *sig = ctx.finalize();
 
     true
+}
+
+/// The host tests' TCP connections: control blocks of the kernel's TCP over the Internet
+/// socket fixture (`in_pcb::testinet`), its socket lock taken as a callout takes it.
+#[cfg(test)]
+pub(crate) mod testtcp {
+    use std::sync::MutexGuard;
+
+    use hal::netlock::{NETLOCK, NetHeld};
+
+    use super::*;
+    use crate::net::sockbuf::SS_NOFDREF;
+    use crate::net::socket::SocketRef;
+    use crate::netinet::in_pcb::{InpcbRef, in_pcbsolock, testinet};
+    use crate::proc::Thread;
+
+    /// The fixture's glue.
+    pub(crate) type G = testinet::G;
+
+    /// `testinet::setup` and `tcp_init` (once per glue: a second call keeps the pools).
+    pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
+        let r = testinet::setup();
+        tcp_init::<G>();
+        r
+    }
+
+    /// A socket with a pcb in `tcbtable` and a control block (`tcp_attach`'s two steps).
+    pub(crate) fn conn() -> (SocketRef<G>, InpcbRef<G>) {
+        let (so, inp) = testinet::pcb(&crate::net::domain::net::<G>().tcp.tcbtable);
+        with_lock(&inp, |inp, il| {
+            assert!(tcp_newtcpcb(inp, il, M_WAIT).is_some(), "a control block");
+        });
+        (so, inp)
+    }
+
+    /// Runs `f` with the socket of `inp` locked in parts under the shared net lock (a
+    /// callout's holding); `panic` when the socket is detached.
+    pub(crate) fn with_lock<R>(
+        inp: &Inpcb<G>,
+        f: impl FnOnce(&Inpcb<G>, &mut InetLocked<'_>) -> R,
+    ) -> R {
+        let w = NETLOCK.read();
+        let net = NetHeld::of(&w).expect("the net lock");
+        let mut so = in_pcbsolock(inp, &net).expect("an attached socket");
+        let mut il = so.inet().expect("a kernel protocol's socket lock");
+        f(inp, &mut il)
+    }
+
+    /// Runs `f` with the control block of `inp` (`intotcpcb`); what it closes is freed.
+    pub(crate) fn with_tp<R>(
+        inp: &Inpcb<G>,
+        f: impl FnOnce(Tp<'_, '_, G>) -> (R, Option<Closed>),
+    ) -> R {
+        with_lock(inp, |inp, il| {
+            let tp = intotcpcb(inp, il).expect("a control block");
+            let (r, closed) = f(tp);
+            if let Some(c) = closed {
+                tcp_free(inp, &mut il.pcb, c);
+            }
+            r
+        })
+    }
+
+    /// `tcp_close` and `tcp_free` of `inp`'s connection, the socket let go (no file holds it).
+    pub(crate) fn close(so: SocketRef<G>, inp: InpcbRef<G>) {
+        so.st_set(SS_NOFDREF);
+        with_tp(&inp, |tp| ((), Some(tcp_close(tp))));
+        drop(inp);
+        drop(so);
+    }
+
+    /// The items out of the "tcpcb" pool.
+    pub(crate) fn tcpcbs() -> u64 {
+        crate::net::domain::net::<G>().tcp.tcpcb_pool.nout()
+    }
 }
 /* </CODE> */
 
@@ -920,6 +1180,147 @@ mod tests {
         assert_eq!(rth.th_flags, TH_RST | TH_ACK);
         assert_eq!(rth.th_win, 0, "no control block: no window");
         assert_eq!(rth.th_urp, 0);
+    }
+
+    #[test]
+    fn a_control_block_starts_as_the_cs_and_closes_back_to_the_pools() {
+        use crate::netinet::tcp_timer::{TCPT_REXMT, tcp_timer_arm, tcp_timer_isarmed};
+        use crate::netinet::tcp_var::TF_REQ_SCALE;
+        let (_g, _p) = testtcp::setup();
+        let tcpcbs = testtcp::tcpcbs();
+        let (so, inp) = testtcp::conn();
+        assert_eq!(testtcp::tcpcbs(), tcpcbs + 1);
+        // The pcb's handles: ours, the socket's anchor, and one per timer (D-11).
+        let handles = PoolArc::count(&inp);
+        testtcp::with_tp(&inp, |mut tp| {
+            let st = &*tp.st;
+            assert_eq!(st.t_maxseg, 512);
+            assert_eq!(st.sack_enable, 1);
+            assert_eq!(st.t_flags, TF_REQ_SCALE | TF_REQ_TSTMP);
+            assert_eq!(st.t_srtt, 0);
+            assert_eq!(st.t_rttvar, 3000 << 3);
+            assert_eq!(st.t_rttmin, 1000);
+            // TCPT_RANGESET(TCP_REXMTVAL): ((0 >> 3) + 24000) >> 2.
+            assert_eq!(st.t_rxtcur, 6000);
+            assert_eq!(st.snd_cwnd, 65535 << 14);
+            assert_eq!(st.snd_ssthresh, 65535 << 14);
+            assert_eq!(st.pf, AF_INET_I32);
+            assert!(st.t_segq.get().is_none() && st.snd_holes.get().is_none());
+            assert_eq!(
+                i32::from(tp.inp.inp_ip.get().ip_ttl),
+                IP_DEFTTL.load(Ordering::Relaxed)
+            );
+            tcp_timer_arm(&mut tp, TCPT_REXMT, 60_000);
+            assert!(tcp_timer_isarmed(tp.st, TCPT_REXMT));
+            assert!(tp.cb.t_timer[TCPT_REXMT].pending());
+            ((), None)
+        });
+        assert!(handles >= TCPT_NTIMERS + 2, "{handles} handles");
+
+        testtcp::close(so, inp.clone());
+        // tcp_free: the item back, its five handles of the pcb gone with its timers.
+        assert_eq!(testtcp::tcpcbs(), tcpcbs);
+        assert_eq!(
+            PoolArc::count(&inp),
+            handles - TCPT_NTIMERS - 1,
+            "the timers' and the anchor's"
+        );
+        // The pcb is detached: its socket's lock finds no pcb any more.
+        {
+            let w = hal::netlock::NETLOCK.read();
+            let net = NetHeld::of(&w).expect("the net lock");
+            assert!(crate::netinet::in_pcb::in_pcbsolock(&inp, &net).is_none());
+        }
+        // soisdisconnected.
+        assert!(
+            inp.socket()
+                .so_rcv
+                .has_state(crate::net::sockbuf::SS_CANTRCVMORE)
+        );
+    }
+
+    #[test]
+    fn a_template_and_a_keepalive_carry_the_connection() {
+        use crate::netinet::tcp_var::TF_RCVD_TSTMP;
+        let (_g, _p) = testtcp::setup();
+        let (_ifp, d) = testinet::iface(b"ttpl0", [10, 9, 1, 1]);
+        let (so, inp) = testtcp::conn();
+        {
+            let t = &crate::net::domain::net::<testinet::G>().tcp.tcbtable;
+            let g = t.lock();
+            inp.set_laddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 9, 1, 1]),
+                },
+            );
+            inp.set_faddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 9, 1, 2]),
+                },
+            );
+            inp.set_lport(&g, htons(7000));
+            inp.set_fport(&g, htons(80));
+        }
+        let before = d.sent.load(Ordering::Relaxed);
+        testtcp::with_tp(&inp, |mut tp| {
+            let m = tcp_template(&mut tp).expect("a template");
+            let bytes = std::vec::Vec::from(m.data());
+            tp.st.t_template = Some(m);
+            // The overlay: protocol, length, addresses; the TCP header's ports, th_off 5.
+            let ov: Ipovly = pod::at(&bytes, 0).expect("the overlay");
+            assert_eq!(ov.ih_pr, IPPROTO_TCP as u8);
+            assert_eq!(u16::from_be(ov.ih_len), 20);
+            assert_eq!(ov.ih_src.s_addr, u32::from_ne_bytes([10, 9, 1, 1]));
+            assert_eq!(ov.ih_dst.s_addr, u32::from_ne_bytes([10, 9, 1, 2]));
+            let th: Tcphdr = pod::at(&bytes, 20).expect("the header");
+            assert_eq!(
+                (u16::from_be(th.th_sport), u16::from_be(th.th_dport)),
+                (7000, 80)
+            );
+            assert_eq!((th.th_off(), th.th_flags, th.th_seq), (5, 0, 0));
+            // A second call fills the same mbuf again.
+            let again = tcp_template(&mut tp).expect("the template");
+            assert_eq!(again.data(), &bytes[..]);
+            tp.st.t_template = Some(again);
+
+            // A keepalive from the template: an ACK with the timestamp option.
+            tp.st.set_flags(TF_RCVD_TSTMP);
+            tp.st.ts_recent = 0x1122_3344;
+            tp.st.ts_modulate = 5;
+            let net = tp.net;
+            tcp_respond(Some(&tp), &bytes, None, 77, 66, 0, 0, 100, net);
+            ((), None)
+        });
+        assert_eq!(d.sent.load(Ordering::Relaxed), before + 1);
+        let p = d.last.lock().expect("the capture").clone();
+        assert_eq!(p.len(), 20 + 20 + 12);
+        let th: Tcphdr = pod::at(&p, 20).expect("the header");
+        assert_eq!(th.th_flags, TH_ACK, "a template's reply is an ACK");
+        assert_eq!(th.th_off(), 8);
+        assert_eq!((u32::from_be(th.th_seq), u32::from_be(th.th_ack)), (66, 77));
+        assert_eq!(&p[40..44], &htonl(TCPOPT_TSTAMP_HDR).to_ne_bytes());
+        assert_eq!(&p[44..48], &105u32.to_be_bytes());
+        assert_eq!(&p[48..52], &0x1122_3344u32.to_be_bytes());
+        testtcp::close(so, inp);
+    }
+
+    #[test]
+    fn the_iss_comes_from_the_secret_and_the_counter() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp) = testtcp::conn();
+        let (a, b) = testtcp::with_tp(&inp, |mut tp| {
+            tcp_set_iss_tsm(&mut tp);
+            let a = (tp.st.iss, tp.st.ts_modulate);
+            tcp_set_iss_tsm(&mut tp);
+            let b = (tp.st.iss, tp.st.ts_modulate);
+            ((a, b), None)
+        });
+        // The same connection: the same digest, the counter 4096 further.
+        assert_eq!(b.0.wrapping_sub(a.0), TCP_ISS_CONN_INC);
+        assert_eq!(a.1, b.1);
+        testtcp::close(so, inp);
     }
 }
 /* </TESTS> */

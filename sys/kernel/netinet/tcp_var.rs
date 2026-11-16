@@ -293,8 +293,9 @@ pub struct Tcpqent {
     pub tcpqe_q: SlistLink<Tcpqent>,
     /// `tcpqe_tcp`: the segment's TCP header, host order (see the deviations).
     pub tcpqe_tcp: Tcphdr,
-    /// Mbuf contains packet.
-    pub tcpqe_m: MbufBox,
+    /// Mbuf contains packet (`Some` while the entry is queued; taken when the segment is
+    /// presented).
+    pub tcpqe_m: Option<MbufBox>,
 }
 
 impl Pooled for Tcpqent {

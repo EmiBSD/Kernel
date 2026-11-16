@@ -398,6 +398,7 @@ pub fn tcp_timer_2msl<G: ProcGlue>(arg: &AnyArc) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::netinet::tcp_subr::testtcp;
 
     #[test]
     fn rangeset_clamps_as_the_macro() {
@@ -438,6 +439,52 @@ mod tests {
                 .product();
             assert_eq!(tcp_time(secs), v, "{name}");
         }
+    }
+
+    #[test]
+    fn a_callout_does_nothing_once_disarmed_rescheduled_or_closed() {
+        let (_g, _p) = testtcp::setup();
+        let (so, inp) = testtcp::conn();
+        let arg = PoolArc::erase(inp.clone());
+        // Each check of tcp_timer_enter stops the callout before its work (which is N6.6a3's
+        // and panics): a disarmed timer (its flag clear) ...
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        // ... a rescheduled one (its flag set, the timeout pending again) ...
+        testtcp::with_tp(&inp, |mut tp| {
+            tcp_timer_arm(&mut tp, TCPT_REXMT, 60_000);
+            ((), None)
+        });
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        let armed = testtcp::with_tp(&inp, |tp| (tcp_timer_isarmed(tp.st, TCPT_REXMT), None));
+        assert!(armed, "the rescheduled timer's flag is kept");
+        // ... and one of a closed connection (the socket detached).
+        testtcp::close(so, inp);
+        tcp_timer_rexmt::<testtcp::G>(&arg);
+        tcp_timer_keep::<testtcp::G>(&arg);
+        drop(arg);
+    }
+
+    #[test]
+    fn freesack_empties_the_holes() {
+        let (_g, _p) = testtcp::setup();
+        let mut st = TcpState::new();
+        let out = crate::netinet::tcp_subr::SACKHL_POOL.nout();
+        for i in 0..3 {
+            let h = crate::netinet::tcp_subr::SACKHL_POOL
+                .get(hal::pool::PR_WAITOK, || {
+                    crate::netinet::tcp_var::Sackhole::new(i, i + 1, 1, i)
+                })
+                .expect("a hole");
+            let mut h = h;
+            if let Some(rest) = st.snd_holes.take() {
+                let _ = h.next.set(rest);
+            }
+            let _ = st.snd_holes.set(h);
+        }
+        assert_eq!(crate::netinet::tcp_subr::SACKHL_POOL.nout(), out + 3);
+        tcp_timer_freesack(&mut st);
+        assert!(!st.snd_holes.is_some());
+        assert_eq!(crate::netinet::tcp_subr::SACKHL_POOL.nout(), out);
     }
 }
 /* </TESTS> */
