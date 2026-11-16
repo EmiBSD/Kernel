@@ -4272,6 +4272,183 @@ mod tests {
         testtcp::close_listener(lso, linp);
     }
 
+    /// NOP, NOP and the timestamp option `val`, `ecr` (RFC 1323 appendix A).
+    fn ts_opt(val: u32, ecr: u32) -> [u8; 12] {
+        let mut o = [0u8; 12];
+        o[..4].copy_from_slice(&[TCPOPT_NOP, TCPOPT_NOP, TCPOPT_TIMESTAMP, TCPOLEN_TIMESTAMP]);
+        o[4..8].copy_from_slice(&val.to_be_bytes());
+        o[8..].copy_from_slice(&ecr.to_be_bytes());
+        o
+    }
+
+    /// The timestamp option of the option block `opts`: its value and its echo.
+    fn ts_of(opts: &[u8]) -> Option<(u32, u32)> {
+        let be = |j: usize| u32::from_be_bytes([opts[j], opts[j + 1], opts[j + 2], opts[j + 3]]);
+        walk(opts)
+            .into_iter()
+            .find(|&(k, _, l)| k == TCPOPT_TIMESTAMP && l == usize::from(TCPOLEN_TIMESTAMP))
+            .map(|(_, i, _)| (be(i + 2), be(i + 6)))
+    }
+
+    /// A segment from 10.9.`n`.2:`sport` to port 80 of 10.9.`n`.1 (a listener's), its
+    /// checksum verified.
+    #[allow(clippy::too_many_arguments, reason = "a segment's fields")]
+    fn to80(n: u8, sport: u16, flags: u8, seq: u32, ack: u32, opts: &[u8], data: &[u8]) -> MbufBox {
+        let mut th = peer_th(flags, seq, ack, 16384);
+        th.th_sport = sport.to_be();
+        th.th_dport = 80u16.to_be();
+        csum_ok(seg4([10, 9, n, 2], [10, 9, n, 1], th, opts, data))
+    }
+
+    /// The first connection on the completed queue of `lso`, and its pcb.
+    fn child_of(lso: &Socket<G>) -> Option<(crate::net::socket::SocketRef<G>, InpcbRef<G>)> {
+        let child = lso.queued_first()?;
+        let cinp = {
+            let _w = crate::net::socket::solock(&child);
+            sotoinpcb(&child).expect("its pcb")
+        };
+        Some((child, cinp))
+    }
+
+    /// The SYN cache entry of another listener completed on this one, over the interface
+    /// `name` of 10.9.`n`.1: the SYN's, the duplicate SYN's and the ACK's timestamps `ts`, and
+    /// the new connection's `ts_recent` after the ACK, `want_ts_recent`.
+    fn another_listener_s_entry(name: &[u8], n: u8, ts: [u32; 3], want_ts_recent: u32) {
+        let (_g, _p) = testtcp::setup();
+        let (_ifp, d) = crate::netinet::in_pcb::testinet::iface(name, [10, 9, n, 1]);
+        // Listener A, on the wildcard, takes the SYN: an MSS of 1400, SACK permitted, a
+        // timestamp.
+        let (aso, ainp) = testtcp::listen_at([0; 4], 80);
+        let syn = |ts: u32| {
+            let mut o = std::vec![
+                TCPOPT_MAXSEG,
+                4,
+                0x05,
+                0x78,
+                TCPOPT_NOP,
+                TCPOPT_NOP,
+                TCPOPT_SACK_PERMITTED,
+                2,
+            ];
+            o.extend_from_slice(&ts_opt(ts, 0));
+            to80(n, 5600, TH_SYN, 3000, 0, &o, &[])
+        };
+        deliver(syn(ts[0]));
+        assert_eq!(sent(d), 1);
+        let (_ip, sa, o, _p) = last(d);
+        assert_eq!(sa.th_flags, TH_SYN | TH_ACK);
+        let iss = u32::from_be(sa.th_seq);
+        assert_eq!(
+            ts_of(&o).map(|t| t.1),
+            Some(ts[0]),
+            "the SYN's timestamp echoed"
+        );
+        // Listener B, bound to the address, is found first from now on: the entry is A's.
+        let (bso, binp) = testtcp::listen_at([10, 9, n, 1], 80);
+        // A duplicate SYN reaches B: counted and answered with the entry's SYN-ACK (the same
+        // iss), echoing this SYN's timestamp, as the C's after its overwrite.
+        let (dupe, acks) = (stat(C::TcpsScDupesyn), stat(C::TcpsSndacks));
+        deliver(syn(ts[1]));
+        assert_eq!(stat(C::TcpsScDupesyn), dupe + 1);
+        assert_eq!(stat(C::TcpsSndacks), acks + 1);
+        assert_eq!(sent(d), 2, "the SYN-ACK again");
+        let (_ip, sa2, o2, _p) = last(d);
+        assert_eq!(
+            (
+                sa2.th_flags,
+                u32::from_be(sa2.th_seq),
+                u32::from_be(sa2.th_ack)
+            ),
+            (TH_SYN | TH_ACK, iss, 3001)
+        );
+        assert_eq!(ts_of(&o2).map(|t| t.1), Some(ts[1]));
+        // An ACK whose numbers do not match: dropped, no SYN-ACK, nothing made, nothing
+        // counted, the entry left.
+        let (aborted, completed) = (stat(C::TcpsScAborted), stat(C::TcpsScCompleted));
+        deliver(to80(
+            n,
+            5600,
+            TH_ACK,
+            3001,
+            iss.wrapping_add(2),
+            &ts_opt(ts[2], 0),
+            &[],
+        ));
+        assert_eq!(sent(d), 2, "nothing sent");
+        assert!(aso.queued_first().is_none() && bso.queued_first().is_none());
+        assert_eq!(stat(C::TcpsScAborted), aborted);
+        // The ACK of the SYN-ACK: the connection made on B from the entry.
+        deliver(to80(
+            n,
+            5600,
+            TH_ACK,
+            3001,
+            iss.wrapping_add(1),
+            &ts_opt(ts[2], 0),
+            &[],
+        ));
+        assert_eq!(stat(C::TcpsScCompleted), completed + 1);
+        assert_eq!(stat(C::TcpsScAborted), aborted);
+        assert!(aso.queued_first().is_none(), "nothing on A's queue");
+        let (child, cinp) = child_of(&bso).expect("the connection on B's queue");
+        assert_eq!(
+            (cinp.inp_laddr.get().s_addr, cinp.inp_faddr.get().s_addr),
+            (
+                u32::from_ne_bytes([10, 9, n, 1]),
+                u32::from_ne_bytes([10, 9, n, 2])
+            )
+        );
+        assert_eq!(
+            (cinp.inp_lport.get(), cinp.inp_fport.get()),
+            (80u16.to_be(), 5600u16.to_be())
+        );
+        let (state, una, nxt, maxseg) = peek(&cinp, |st| {
+            (st.t_state, st.snd_una, st.rcv_nxt, st.t_maxseg)
+        });
+        assert_eq!(state, TCPS_ESTABLISHED);
+        assert_eq!((una, nxt), (iss.wrapping_add(1), 3001));
+        assert_eq!(
+            maxseg,
+            1400 - u16::from(TCPOLEN_TSTAMP_APPA),
+            "the peer's MSS less the timestamps' room"
+        );
+        let (sack, flags, ts_recent) = peek(&cinp, |st| (st.sack_enable, st.t_flags, st.ts_recent));
+        assert_eq!(sack, i32::from(crate::netinet::tcp_var::SCF_SACK_PERMIT));
+        for f in [TF_SACK_PERMIT, TF_REQ_TSTMP, TF_RCVD_TSTMP] {
+            assert_ne!(flags & f, 0, "flag {f:#x}");
+        }
+        assert_eq!(ts_recent, want_ts_recent);
+        // The entry is gone: once the connection is closed, the same ACK again finds none
+        // and is reset by the listener.
+        testtcp::close(child, cinp);
+        let (badsyn, before) = (stat(C::TcpsBadsyn), sent(d));
+        deliver(to80(n, 5600, TH_ACK, 3001, iss.wrapping_add(1), &[], &[]));
+        assert_eq!(stat(C::TcpsBadsyn), badsyn + 1);
+        assert_eq!(sent(d), before + 1, "the reset");
+        assert_eq!(
+            bso.qlen(),
+            1,
+            "no second connection (the closed one stays queued)"
+        );
+        testtcp::close_listener(bso, binp);
+        testtcp::close_listener(aso, ainp);
+    }
+
+    #[test]
+    fn input_completes_another_listener_s_entry_on_this_one() {
+        // The child's ts_recent starts at 0 (the C's: the SYN's), and this ACK's timestamp
+        // step records the ACK's, as the C's does.
+        another_listener_s_entry(b"tib0", 121, [0x100, 0x180, 0x200], 0x200);
+    }
+
+    #[test]
+    fn input_completes_another_listener_s_entry_ts_recent_0_past_2_31() {
+        // tcp_syncache.rs's Deviations: an ACK timestamp 2^31 or more past 0, not older
+        // than the SYN's, is not recorded over a ts_recent of 0 (TSTMP_GEQ(ts_val, 0) is
+        // false), where the C records it over the SYN's (0x8000_0200 here).
+        another_listener_s_entry(b"tib1", 122, [0x8000_0100, 0x8000_0180, 0x8000_0200], 0);
+    }
+
     #[test]
     fn input_mlist_keeps_one_socket_locked_across_its_segments() {
         let (_g, _p) = testtcp::setup();

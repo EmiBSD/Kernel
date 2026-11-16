@@ -1699,10 +1699,37 @@ pub(crate) mod testtcp {
 
     /// [`listener`] on an interface made already (10.9.`n`.1's).
     pub(crate) fn listen_on(n: u8, port: u16) -> (SocketRef<G>, InpcbRef<G>) {
+        listen_at([10, 9, n, 1], port)
+    }
+
+    /// A listener of [`TcpProto`] bound to `addr`:`port` (`[0; 4]`: the wildcard).
+    pub(crate) fn listen_at(addr: [u8; 4], port: u16) -> (SocketRef<G>, InpcbRef<G>) {
         use hal::sys::netinet_in::InAddr;
 
-        let so = crate::net::socket::soalloc(
+        listen_proto(
             &TcpProto,
+            &crate::net::domain::net::<G>().tcp.tcbtable,
+            |g, inp| {
+                inp.set_laddr(
+                    g,
+                    InAddr {
+                        s_addr: u32::from_ne_bytes(addr),
+                    },
+                );
+            },
+            port,
+        )
+    }
+
+    /// A listener of `proto` in `table`, its local address set by `bind`, its port `port`.
+    fn listen_proto(
+        proto: &'static dyn crate::net::proto::Protocol<G>,
+        table: &'static crate::netinet::in_pcb::Inpcbtable<G>,
+        bind: impl FnOnce(&crate::netinet::in_pcb::InpGuard<'_, G>, &Inpcb<G>),
+        port: u16,
+    ) -> (SocketRef<G>, InpcbRef<G>) {
+        let so = crate::net::socket::soalloc(
+            proto,
             M_WAIT,
             crate::net::socket::SoInit {
                 so_type: hal::sys::socket::SOCK_STREAM,
@@ -1721,20 +1748,13 @@ pub(crate) mod testtcp {
         crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
         {
             let mut w = crate::net::socket::solock(&so);
-            TcpReqs
-                .attach_for_test(&so, &mut w)
+            crate::net::proto::Usrreqs::<G>::attach(&TcpReqs, &so, &mut w, 0, M_WAIT)
                 .expect("the control block");
         }
         let inp = crate::netinet::in_pcb::sotoinpcb(&so).expect("a pcb");
         {
-            let t = &crate::net::domain::net::<G>().tcp.tcbtable;
-            let mut g = t.lock();
-            inp.set_laddr(
-                &g,
-                InAddr {
-                    s_addr: u32::from_ne_bytes([10, 9, n, 1]),
-                },
-            );
+            let mut g = table.lock();
+            bind(&g, &inp);
             inp.set_lport(&g, htons(port));
             crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
         }
@@ -1743,17 +1763,6 @@ pub(crate) mod testtcp {
             crate::net::socket::solisten(&so, &mut w, 5).expect("listen");
         }
         (so, inp)
-    }
-
-    impl TcpReqs {
-        /// `pru_attach` of the listener's own socket.
-        fn attach_for_test(
-            &self,
-            so: &crate::net::socket::Socket<G>,
-            w: &mut crate::net::socket::SoLocked<'_>,
-        ) -> Result<(), Errno> {
-            crate::net::proto::Usrreqs::<G>::attach(self, so, w, 0, M_WAIT)
-        }
     }
 
     /// The listener `so` closed: its control block (and its SYN cache entries) closed and
