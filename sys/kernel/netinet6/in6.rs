@@ -1724,8 +1724,8 @@ pub(crate) mod tests {
     // routes, and the new shapes): the mask, scope and socket address helpers; the lookups;
     // RFC 6724's rules one by one; the address ioctls as the C answers them (privilege,
     // family, read-only flags, lifetimes, absent addresses); an address's link-local
-    // companion, routes and memberships, its delete and its record recycled; and the
-    // multicast records' counts with two joiners.
+    // companion, routes and memberships, its delete and its records freed with their last
+    // handles; and the multicast records' counts with two joiners.
 
     use std::boxed::Box;
     use std::sync::MutexGuard;

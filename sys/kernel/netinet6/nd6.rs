@@ -1267,7 +1267,7 @@ pub fn nd6_rtrequest(ifp: &'static Ifnet, req: u8, rt: &Rtentry, net: &NetHeld<'
                 hal::klock::kernel_lock();
                 // in6_lookupmulti's if_maddrlock, read (the module's deviations). The C
                 // keeps the uncounted pointer past the lookup (its kernel lock alone keeps
-                // it); here a handle cloned before the witness ends, which in6_delmulti
+                // it); here a handle cloned before the witness ends (T1), which in6_delmulti
                 // consumes (the proxy's join holds none: RTM_ADD drops the one in6_addmulti
                 // gives, as the C discards its pointer).
                 let in6m = {

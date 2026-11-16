@@ -864,8 +864,11 @@ pub fn in_ifinit(
                     s_addr: INADDR_ALLHOSTS_GROUP,
                 };
                 let inm = in_addmulti(&addr, ifp, net);
-                // The cell was empty (read above, under the same exclusive net lock).
-                drop(ia.ia_allhosts.replace(inm));
+                // The cell was empty (read above, under the same exclusive net lock): a
+                // handle there would be a membership dropped without its leave.
+                let old = ia.ia_allhosts.replace(inm);
+                kassert!(old.is_none());
+                drop(old);
             }
         }
 
@@ -1180,8 +1183,9 @@ pub fn in_prefixlen2mask(maskp: &mut InAddr, plen: i32) {
 mod tests {
     // Host tests for the Internet addresses over a test interface: the address ioctls as the
     // C answers them (privilege, family, length, absent addresses), the routes and the
-    // all-hosts membership an address brings and its delete takes away, the record recycled,
-    // and the multicast records' counts with IGMP's report and leave message on the wire.
+    // all-hosts membership an address brings and its delete takes away, the records freed
+    // with their last handles, and the multicast records' counts with IGMP's report and leave
+    // message on the wire.
 
     use std::boxed::Box;
     use std::sync::Mutex;

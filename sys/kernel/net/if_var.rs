@@ -197,10 +197,13 @@
 //!   clone (T3). The list sits in a set-once cell of [`IfRt`] (`hal::once::OnceStatic`)
 //!   keyed by `if_attach_common` once the structure is where it stays: a cell is keyed to
 //!   its lock's address, which [`IfRt`] does not have before it is placed (the map's state
-//!   cell of `kernel::vm::map` is the precedent); a walk reads that cell's state once more
-//!   than the C (one acquire load). `if_detach` takes the list's handles off (D-9), where the
-//!   C leaves the dying interface's list: a record no membership holds any more is freed
-//!   there, one a membership still holds with that membership's last handle.
+//!   cell of `kernel::vm::map` is the precedent). The C reaches its list head inside the
+//!   interface with no load; here [`Ifnet::if_maddrlist`] reads two set-once cells' states,
+//!   `rt`'s and the list's (two acquire loads: `in_lookupmulti`, `in6_lookupmulti`), and
+//!   `in_hasmulti`/`in6_hasmulti`, which read `rt` once for the lock they take and the list,
+//!   pay one more than before 5e2 (the list's). `if_detach` takes the list's handles off
+//!   (D-9), where the C leaves the dying interface's list: a record no membership holds any
+//!   more is freed there, one a membership still holds with that membership's last handle.
 //! - `if_maddrlock` (a `SplitRwlock` before N6.5e, entered and left C-style through six
 //!   helpers of `bsd`'s `net/if_var.rs`) -> a `hal::rwlock::RawRwlock` in [`IfRt`] taken
 //!   through its witnesses: `rw_enter_write` is `write()`, `rw_exit_write` the witness's drop.
