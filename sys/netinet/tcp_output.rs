@@ -95,8 +95,8 @@
 //! scale, timestamps, the TCP MD5 signature, SACK blocks) are built in a local buffer as in
 //! C, the data is copied out of the send buffer, and `ip_output` takes the packet; the TCP
 //! checksum is left to the interface or `in_proto_cksum_out`. A large send may be handed down
-//! as one TSO packet; [`tcp_softtso_chop`] cuts such a packet into segments when the
-//! interface cannot, and [`tcp_if_output_tso`] chooses between the two for `if_output_tso`.
+//! as one TSO packet, which the kernel's `if_output_tso` sends (`kernel::netinet::tcp_tso`);
+//! [`tcp_softtso_chop`] lends the kernel's software cut to `bsd`'s IPsec output halves.
 //! [`tcp_setpersist`] (re)starts the persist timer, [`tcp_sack_output`] and
 //! [`tcp_sack_adjust`] walk the sender's SACK holes.
 //!
@@ -123,17 +123,11 @@
 //!   C's two tests of the one word do.
 //! - `TCP_SACK_DEBUG` (not in GENERIC) is the cargo feature `tcp_sack_debug`: `tcp_print_holes`
 //!   and its call in `tcp_sack_output`.
-//! - `tcp_softtso_chop` reads the IP header once as a copy (`mtod_ip`, which panics on a
-//!   first mbuf shorter than an IP header, where the C reads past it) and writes it back into
-//!   the first mbuf as it is after `m_pullup` (the C keeps a pointer taken before the
-//!   pullup); each new segment's TCP header and options are copied with `m_copydata` (the C
-//!   copies from the pointer, assuming the options are contiguous).
-//! - `tcp_if_output_tso` calls `ifp->if_output` through the hook in `if_output` (a missing
-//!   hook panics, where the C would jump through NULL); a NULL `*mp` returns 0, which the C
-//!   does not check.
+//! - N6.6a1: `tcp_softtso_chop` and `tcp_if_output_tso` are the kernel's
+//!   (`kernel::netinet::tcp_tso`, with their deviations); `tcp_softtso_chop` here is the
+//!   adapter over LZ's parked mbufs and list for `bsd`'s IPsec output halves.
 //! - `INET6` is configured (feature `inet6`): the `PF_INET6`/`AF_INET6` cases with
-//!   `ip6_output` and `in6_selecthlim`, and the IPv6 cases of `tcp_softtso_chop` and
-//!   `tcp_if_output_tso` (`in6_proto_cksum_out`, `IFCAP_TSOv6`).
+//!   `ip6_output` and `in6_selecthlim`.
 //! - Not configured, a comment at its site: `TCPDEBUG` (the
 //!   `SO_DEBUG` trace calls `tcp_trace` of `tcp_debug.rs`, as the C does without it).
 //!   Configured: `TCP_ECN`, `TCP_SIGNATURE` (with `IPSEC`: `gettdbbysrcdst`), `NPF`
@@ -147,22 +141,16 @@ use core::slice;
 use core::sync::atomic::Ordering;
 
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_mbuf::{
-    MAX_LINKHDR, m_adj, m_align, m_copydata, m_copym, m_dup_pkthdr, m_free, m_freem, m_gethdr,
-    m_pullup, m_trailingspace, ml_dequeue, ml_enqueue, ml_init, ml_purge,
-};
-use crate::net::if_::{IFCAP_TSOv4, if_output_ml};
+use crate::kern::uipc_mbuf::{MAX_LINKHDR, m_free, m_freem, m_gethdr, m_trailingspace};
 use crate::net::if_var::Ifnet;
 use crate::net::pf::pf_mbuf_link_inpcb;
-use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
 use crate::netinet::in_::{IPPROTO_TCP, InAddr, SockaddrIn};
 use crate::netinet::in_pcb::InpcbLegacy as _;
-use crate::netinet::ip::{IP_MAXPACKET, IP_MF, IP_OFFMASK, IPTOS_ECN_ECT0, Ip};
-use crate::netinet::ip_id::ip_randomid;
+use crate::netinet::ip::{IP_MAXPACKET, IPTOS_ECN_ECT0, Ip};
 use crate::netinet::ip_input::ip_mtudisc;
 use crate::netinet::ip_ipsp::{SockaddrUnion, gettdbbysrcdst, tdb_unref};
-use crate::netinet::ip_output::{in_hdr_cksum_out, in_ifcap_cksum, in_proto_cksum_out, ip_output};
+use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_var::{IP_MTUDISC, mtod_ip, mtod_ip_store};
 use crate::netinet::ip6::Ip6Hdr;
 use crate::netinet::tcp::{
@@ -186,24 +174,23 @@ use crate::netinet::tcp_var::{
     Sackhole, TCP_RTT_BASE_SHIFT, TF_ACKNOW, TF_DISABLE_ECN, TF_ECN_PERMIT, TF_LASTIDLE,
     TF_NODELAY, TF_NOOPT, TF_NOPUSH, TF_RCVD_CE, TF_RCVD_SCALE, TF_RCVD_TSTMP, TF_REQ_SCALE,
     TF_REQ_TSTMP, TF_SACK_PERMIT, TF_SEND_CWR, TF_SENTFIN, TF_SIGNATURE, Tcpcb, TcpstatCounters,
-    tcp_now, tcpstat_add, tcpstat_inc, tcpstat_pkt,
+    tcp_now, tcpstat_inc, tcpstat_pkt,
 };
-use crate::sys::endian::{htonl, htons, ntohl};
+use crate::sys::endian::{htonl, htons};
 use crate::sys::errno::Errno;
 use crate::sys::malloc::M_NOWAIT;
 use crate::sys::mbuf::{
     M_DONTWAIT, M_EXT, M_FLOWID, M_PKTHDR, M_TCP_CSUM_OUT, M_TCP_TSO, MAXMCLBYTES, MHLEN,
-    MT_HEADER, Mbuf, MbufList, mclget, ml_len, mtod,
+    MT_HEADER, Mbuf, MbufList, mclget, mtod,
 };
 use crate::sys::mbuf::{m_data_add, m_set_next, park};
-use crate::sys::socket::{AF_INET, PF_INET, SO_DEBUG, Sockaddr};
+use crate::sys::socket::{AF_INET, PF_INET, SO_DEBUG};
 use crate::sys::socketvar::soissending;
 #[cfg(feature = "inet6")]
 use crate::{
-    net::if_::IFCAP_TSOv6,
     netinet6::in6::{In6Addr, SockaddrIn6},
     netinet6::in6_src::in6_selecthlim,
-    netinet6::ip6_output::{in6_proto_cksum_out, ip6_output},
+    netinet6::ip6_output::ip6_output,
     netinet6::ip6_var::{mtod_ip6, mtod_ip6_store},
     sys::socket::{AF_INET6, PF_INET6},
 };
@@ -1299,235 +1286,28 @@ pub fn tcp_setpersist(tp: &Tcpcb) {
     }
 }
 
-/// `tcp_softtso_chop`: cuts the TSO packet `m0` (an IPv4 TCP segment without IP options or
-/// fragmentation) into segments of at most `mss` bytes of payload on `ml`, with their own IP
-/// and TCP headers and checksums for `ifp`. Consumes `m0`; on error `ml` is purged.
+/// `tcp_softtso_chop`: cuts the TSO packet `m0` into segments of at most `mss` bytes of
+/// payload on `ml`; consumes `m0`, purges `ml` on error. The kernel's
+/// (`kernel::netinet::tcp_tso`), over LZ's parked mbufs for `bsd`'s IPsec output halves
+/// (`ip_output.rs`, `ip6_output.rs`, N8): the packet unparked for the call and the segments
+/// handed to `ml`.
 pub fn tcp_softtso_chop(
     ml: &MbufList,
     m0: &'static Mbuf,
     ifp: &'static Ifnet,
     mss: u32,
 ) -> Result<(), Errno> {
-    let mut m0 = m0;
-
-    ml_init(ml);
-    ml_enqueue(ml, m0);
-
-    let error: Errno = 'bad: {
-        if mss == 0 {
-            break 'bad Errno::EINVAL;
-        }
-
-        let ip0 = mtod_ip(m0);
-        let (ip, ip6, iphlen): (Option<Ip>, Option<Ip6Hdr>, usize) = match ip0.ip_v() {
-            4 => {
-                let iphlen = usize::from(ip0.ip_hl()) << 2;
-                if ip0.ip_off & htons(IP_OFFMASK | IP_MF) != 0
-                    || iphlen != size_of::<Ip>()
-                    || i32::from(ip0.ip_p) != IPPROTO_TCP
-                {
-                    // only TCP without fragment or IP option supported
-                    break 'bad Errno::EPROTOTYPE;
-                }
-                (Some(ip0), None, iphlen)
-            }
-            #[cfg(feature = "inet6")]
-            6 => {
-                let ip6 = mtod_ip6(m0);
-                if i32::from(ip6.ip6_nxt) != IPPROTO_TCP {
-                    // only TCP without IPv6 header chain supported
-                    break 'bad Errno::EPROTOTYPE;
-                }
-                (None, Some(ip6), size_of::<Ip6Hdr>())
-            }
-            v => panic(format_args!("tcp_softtso_chop: unknown ip version {}", v)),
-        };
-        #[cfg(not(feature = "inet6"))]
-        let _ = ip6; // always `None` without INET6
-
-        let tlen = m0.m_pkthdr().len.get();
-        if (tlen as usize) < iphlen + size_of::<Tcphdr>() {
-            break 'bad Errno::ENOPROTOOPT;
-        }
-        // IP and TCP header should be contiguous, this check is paranoia
-        if (m0.m_len().get() as usize) < iphlen + size_of::<Tcphdr>() {
-            let _ = ml_dequeue(ml);
-            let Some(m) = m_pullup(m0, (iphlen + size_of::<Tcphdr>()) as i32) else {
-                break 'bad Errno::ENOBUFS;
-            };
-            m0 = m;
-            ml_enqueue(ml, m0);
-        }
-        let mut th = th_load(m0, iphlen);
-        let hlen = (iphlen + (usize::from(th.th_off()) << 2)) as i32;
-        if tlen < hlen {
-            break 'bad Errno::ENOPROTOOPT;
-        }
-        let firstlen = min((tlen - hlen) as u32, mss) as i32;
-
-        let ph = m0.m_pkthdr();
-        ph.csum_flags.set(ph.csum_flags.get() & !M_TCP_TSO);
-
-        // Loop through length of payload after first segment, make new header and copy data
-        // of each part and link onto chain.
-        let mut off = hlen + firstlen;
-        while off < tlen {
-            let len = min((tlen - off) as u32, mss) as i32;
-
-            let Some(m) = m_gethdr(M_DONTWAIT, MT_HEADER) else {
-                break 'bad Errno::ENOBUFS;
-            };
-            ml_enqueue(ml, m);
-            if let Err(e) = m_dup_pkthdr(m, m0, M_DONTWAIT) {
-                break 'bad e;
-            }
-
-            // IP and TCP header to the end, space for link layer header
-            m.m_len().set(hlen as u32);
-            m_align(m, hlen);
-
-            // copy and adjust TCP header
-            // SAFETY: `m_align` placed `hlen` bytes of data in the new mbuf, `m_len` covers
-            // them.
-            let thdst = unsafe {
-                slice::from_raw_parts_mut(mtod::<u8>(m).add(iphlen), hlen as usize - iphlen)
-            };
-            m_copydata(m0, iphlen as i32, thdst);
-            let mut mhth = th_load(m, iphlen);
-            mhth.th_seq = htonl(ntohl(th.th_seq).wrapping_add((off - hlen) as u32));
-            if off + len < tlen {
-                mhth.th_flags &= !(TH_PUSH | TH_FIN);
-            }
-            th_store(m, iphlen, &mhth);
-
-            // add mbuf chain with payload
-            m.m_pkthdr().len.set(hlen + len);
-            let next = m_copym(m0, off, len, M_DONTWAIT);
-            let _ = m_set_next(m, next);
-            if next.is_none() {
-                break 'bad Errno::ENOBUFS;
-            }
-
-            // copy and adjust IP header, calculate checksum
-            let ph = m.m_pkthdr();
-            ph.csum_flags.set(ph.csum_flags.get() | M_TCP_CSUM_OUT);
-            if let Some(ip) = ip {
-                let mut mhip = ip;
-                mhip.ip_len = htons((hlen + len) as u16);
-                mhip.ip_id = htons(ip_randomid());
-                mtod_ip_store(m, &mhip);
-                in_hdr_cksum_out(m, Some(ifp));
-                in_proto_cksum_out(m, Some(ifp));
-            }
-            #[cfg(feature = "inet6")]
-            if let Some(ip6) = ip6 {
-                let mut mhip6 = ip6;
-                mhip6.ip6_plen = htons((hlen - iphlen as i32 + len) as u16);
-                mtod_ip6_store(m, &mhip6);
-                in6_proto_cksum_out(m, Some(ifp));
-            }
-
-            off += mss as i32;
-        }
-
-        // Update first segment by trimming what's been copied out and updating header, then
-        // send each segment (in order).
-        if hlen + firstlen < tlen {
-            m_adj(m0, hlen + firstlen - tlen);
-            th.th_flags &= !(TH_PUSH | TH_FIN);
-            th_store(m0, iphlen, &th);
-        }
-        // adjust IP header, calculate checksum
-        let ph = m0.m_pkthdr();
-        ph.csum_flags.set(ph.csum_flags.get() | M_TCP_CSUM_OUT);
-        if let Some(mut ip) = ip {
-            ip.ip_len = htons(m0.m_pkthdr().len.get() as u16);
-            mtod_ip_store(m0, &ip);
-            in_hdr_cksum_out(m0, Some(ifp));
-            in_proto_cksum_out(m0, Some(ifp));
-        }
-        #[cfg(feature = "inet6")]
-        if let Some(mut ip6) = ip6 {
-            ip6.ip6_plen = htons((m0.m_pkthdr().len.get() as usize - iphlen) as u16);
-            mtod_ip6_store(m0, &ip6);
-            in6_proto_cksum_out(m0, Some(ifp));
-        }
-
-        tcpstat_add(TcpstatCounters::TcpsOutpkttso, u64::from(ml_len(ml)));
-        return Ok(());
-    };
-
-    // bad:
-    tcpstat_inc(TcpstatCounters::TcpsOutbadtso);
-    let _ = ml_purge(ml);
-    Err(error)
-}
-
-/// `tcp_if_output_tso`: sends the TSO packet `*mp` on `ifp`, by the hardware when it can do
-/// TSO (`ifcap`), else chopped by [`tcp_softtso_chop`]; `*mp` is consumed then. A packet
-/// that did not ask for TSO, or whose segments exceed `mtu` (its TSO flag cleared), is left
-/// in `*mp` for the caller to send, fragment or drop.
-///
-/// # Safety
-///
-/// As for `IfOutputFn` (`net/if_var.rs`): `dst` is a socket address readable for its
-/// `sa_len` bytes, as `ifp`'s output routine reads it.
-pub unsafe fn tcp_if_output_tso(
-    ifp: &'static Ifnet,
-    mp: &mut Option<&'static Mbuf>,
-    dst: *const Sockaddr,
-    rt: Option<&'static Rtentry>,
-    ifcap: u32,
-    mtu: u32,
-) -> Result<(), Errno> {
-    let Some(m) = *mp else {
-        return Ok(());
-    };
-    let ph = m.m_pkthdr();
-
-    // caller must fail later or fragment
-    if ph.csum_flags.get() & M_TCP_TSO == 0 {
-        return Ok(());
-    }
-    if u32::from(ph.ph_mss.get()) > mtu {
-        ph.csum_flags.set(ph.csum_flags.get() & !M_TCP_TSO);
-        return Ok(());
-    }
-
-    let error: Result<(), Errno> = 'done: {
-        // network interface hardware will do TSO
-        if in_ifcap_cksum(m, Some(ifp), ifcap) {
-            if ifcap & IFCAP_TSOv4 != 0 {
-                in_hdr_cksum_out(m, Some(ifp));
-                in_proto_cksum_out(m, Some(ifp));
-            }
-            #[cfg(feature = "inet6")]
-            if ifcap & IFCAP_TSOv6 != 0 {
-                in6_proto_cksum_out(m, Some(ifp));
-            }
-            // SAFETY: the caller's contract is the output's.
-            let error = unsafe { crate::net::if_::ifp_output(ifp, m, dst, rt) };
-            if error.is_ok() {
-                tcpstat_inc(TcpstatCounters::TcpsOuthwtso);
-            }
-            break 'done error;
-        }
-
-        // as fallback do TSO in software
-        let ml = MbufList::new();
-        if let Err(e) = tcp_softtso_chop(&ml, m, ifp, u32::from(ph.ph_mss.get())) {
-            break 'done Err(e);
-        }
-        // SAFETY: the caller's contract.
-        if let Err(e) = unsafe { if_output_ml(ifp, &ml, dst, rt) } {
-            break 'done Err(e);
-        }
-        tcpstat_inc(TcpstatCounters::TcpsOutswtso);
-        Ok(())
-    };
-
-    // done:
-    *mp = None;
+    let mut segs = kernel::net::mbuf::MbufList::new();
+    let error = kernel::netinet::tcp_tso::tcp_softtso_chop(
+        &mut segs,
+        crate::sys::mbuf::unpark(m0),
+        ifp,
+        mss,
+    );
+    ml.change(|l| {
+        kernel::net::mbuf::ml_init(l);
+        kernel::net::mbuf::ml_enlist(l, &mut segs);
+    });
     error
 }
 /* </CODE> */
@@ -1538,26 +1318,28 @@ mod tests {
     // Host tests for TCP output: the SACK hole walks (`tcp_sack_output`, `tcp_sack_adjust`),
     // the persist timer's back-off and range (`tcp_setpersist`), `tcp_output`'s decisions that
     // send nothing (an idle connection, the retransmit timer, a window shrunk to zero, an
-    // unsupported family), software TSO (`tcp_softtso_chop`: segment sizes, sequence numbers,
-    // flags, both checksums; malformed packets) and `tcp_if_output_tso`'s four ways (no TSO,
-    // segments over the MTU, software, hardware).
+    // unsupported family) and the software TSO adapter (`tcp_softtso_chop` over the kernel's:
+    // segment sizes, sequence numbers, flags, both checksums, the original first; malformed
+    // packets; the kernel's own cases are `kernel::netinet::tcp_tso`'s tests).
 
     use std::boxed::Box;
-    use std::sync::{Mutex as StdMutex, MutexGuard};
+    use std::sync::MutexGuard;
     use std::vec::Vec;
     use std::{assert, assert_eq, vec};
 
     use super::*;
     use crate::kern::kern_clock::ticks;
     use crate::kern::kern_timeout::timeout_set;
+    use crate::kern::uipc_mbuf::{m_copydata, ml_dequeue};
     use crate::kern::uipc_socket::soalloc;
     use crate::net::if_::tests::test_ifnet;
-    use crate::net::if_var::IfnetLegacy;
     use crate::netinet::in_pcb::Inpcb;
     use crate::netinet::in_proto::INETSW;
+    use crate::netinet::ip::IP_MF;
     use crate::netinet::tcp_fsm::TCPS_ESTABLISHED;
     use crate::netinet::tcp_timer::TCPT_NTIMERS;
     use crate::netinet::tcp_var::{TF_TMR_PERSIST, TF_TMR_REXMT};
+    use crate::sys::mbuf::ml_len;
     use crate::sys::mbuf::{M_WAIT, MCLBYTES, MT_DATA};
     use crate::sys::socketvar::Socket;
 
@@ -1916,84 +1698,6 @@ mod tests {
         m0.m_pkthdr().len.set(30);
         assert_eq!(tcp_softtso_chop(&ml, m0, ifp, 500), Err(Errno::ENOPROTOOPT));
         assert_eq!(ml_len(&ml), 0);
-    }
-
-    /// What the test interfaces' `if_output` saw: (interface, packet bytes).
-    static SENT: StdMutex<Vec<(usize, Vec<u8>)>> = StdMutex::new(Vec::new());
-
-    /// An `if_output` that records the packet and frees it.
-    ///
-    /// # Safety
-    ///
-    /// None beyond the type's: `dst` is not read.
-    unsafe fn record_output(
-        ifp: &'static Ifnet,
-        m: &'static Mbuf,
-        _dst: *const Sockaddr,
-        _rt: Option<&'static Rtentry>,
-    ) -> Result<(), Errno> {
-        SENT.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((ptr::from_ref(ifp) as usize, bytes(m)));
-        m_freem(m);
-        Ok(())
-    }
-
-    /// The packets `ifp` sent, taken out of [`SENT`].
-    fn sent_by(ifp: &Ifnet) -> Vec<Vec<u8>> {
-        let mut all = SENT.lock().unwrap_or_else(|e| e.into_inner());
-        let me = ptr::from_ref(ifp) as usize;
-        let mine = all
-            .iter()
-            .filter(|(i, _)| *i == me)
-            .map(|(_, b)| b.clone())
-            .collect();
-        all.retain(|(i, _)| *i != me);
-        mine
-    }
-
-    /// `tcp_if_output_tso` to `ifp` with the IPv4 TSO capability bit and `mtu`.
-    fn tso_out(ifp: &'static Ifnet, mp: &mut Option<&'static Mbuf>, mtu: u32) -> Result<(), Errno> {
-        let dst = Sockaddr::default();
-        // SAFETY: `dst` is a readable socket address; the test output routine does not read it.
-        unsafe { tcp_if_output_tso(ifp, mp, &dst, None, IFCAP_TSOv4, mtu) }
-    }
-
-    #[test]
-    fn if_output_tso_chooses_the_way_out() {
-        let (_g, _t) = crate::netinet::ip_input::tests::setup();
-        let ifp = test_ifnet(b"ttso2");
-        ifp.if_output().set(Some(record_output));
-
-        // Not a TSO packet: left to the caller.
-        let m = tso_packet(1000, 500, 5, 0);
-        m.m_pkthdr().csum_flags.set(M_TCP_CSUM_OUT);
-        let mut mp = Some(m);
-        assert_eq!(tso_out(ifp, &mut mp, 1500), Ok(()));
-        assert!(mp.is_some_and(|x| ptr::eq(x, m)));
-
-        // Segments larger than the MTU: TSO is cleared, the caller fragments or drops.
-        m.m_pkthdr().csum_flags.set(M_TCP_TSO | M_TCP_CSUM_OUT);
-        assert_eq!(tso_out(ifp, &mut mp, 400), Ok(()));
-        assert!(mp.is_some());
-        assert_eq!(m.m_pkthdr().csum_flags.get() & M_TCP_TSO, 0);
-        m_freem(m);
-        assert!(sent_by(ifp).is_empty());
-
-        // No hardware TSO: chopped in software.
-        let mut mp = Some(tso_packet(1300, 500, 5, 0));
-        assert_eq!(tso_out(ifp, &mut mp, 1500), Ok(()));
-        assert!(mp.is_none());
-        check_segments(&sent_by(ifp), 1300, 500);
-
-        // Hardware TSO: the whole packet goes to the interface.
-        ifp.if_capabilities.set(IFCAP_TSOv4);
-        let mut mp = Some(tso_packet(1300, 500, 5, 0));
-        assert_eq!(tso_out(ifp, &mut mp, 1500), Ok(()));
-        assert!(mp.is_none());
-        let out = sent_by(ifp);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].len(), 1340);
     }
 }
 /* </TESTS> */

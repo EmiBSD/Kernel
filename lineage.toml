@@ -6466,11 +6466,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/route.rs", "sys/hal/netlock.rs"]
 
 [[module]]
-rust = "sys/net/toeplitz.rs"
-lz = ["sys/net/toeplitz.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
@@ -6632,51 +6627,47 @@ lz = ["sys/netinet/tcp_debug.rs"]
 status = "inherited"
 
 [[module]]
-rust = "sys/netinet/tcp_fsm.rs"
-lz = ["sys/netinet/tcp_fsm.rs"]
-status = "adapted"
-adapted_by = ["sys/hal/sys/netinet_tcp_fsm.rs"]
-
-[[module]]
 rust = "sys/netinet/tcp_input.rs"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs"]
+adapted_by = ["sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/tcp_lro.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_output.rs"
 lz = ["sys/netinet/tcp_output.rs"]
 status = "adapted"
-adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet/in_proto.rs"]
+adapted_by = ["sys/sys/timeout.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/net/if_loop.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet/in_proto.rs", "sys/kernel/netinet/tcp_tso.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_seq.rs"
 lz = ["sys/netinet/tcp_seq.rs"]
-status = "inherited"
+status = "adapted"
+adapted_by = ["sys/kernel/netinet/tcp_seq.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_subr.rs"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs"]
+adapted_by = ["sys/kernel/crypto/md5.rs", "sys/kernel/crypto/sha2.rs", "sys/kernel/net/mbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/route.rs", "sys/kernel/net/rtable.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet6/ip6_var.rs", "sys/kernel/netinet6/icmp6.rs", "sys/kernel/netinet/tcp_var.rs"]
+notes = "N6.6a1: TCPCOUNTERS (tcpcounters) moved to sys/kernel/netinet/tcp_var.rs as a hal::percpu::Counters; its moved row goes under the kernel's tcp_subr at N6.6a2 (lz check refuses a row under an adapted module or under a module whose lz list lacks this file)"
 
 [[module]]
 rust = "sys/netinet/tcp_timer.rs"
 lz = ["sys/netinet/tcp_timer.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/netinet/ip_icmp.rs"]
+adapted_by = ["sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/netinet/ip_icmp.rs", "sys/kernel/netinet/tcp_timer.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_usrreq.rs"
 lz = ["sys/netinet/tcp_usrreq.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/in_.rs"]
+adapted_by = ["sys/kernel/sysctl.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/ifq.rs", "sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/kernel/netinet/in_.rs", "sys/kernel/netinet/tcp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/tcp_var.rs"
 lz = ["sys/netinet/tcp_var.rs"]
 status = "adapted"
-adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/hal/sys/netinet_tcp_var.rs"]
+adapted_by = ["sys/kernel/net/route.rs", "sys/kernel/netinet/in_pcb.rs", "sys/hal/sys/netinet_tcp_var.rs", "sys/kernel/netinet/tcp_var.rs"]
 
 [[module]]
 rust = "sys/netinet/udp.rs"
@@ -16374,6 +16365,13 @@ lz = ["sys/kern/uipc_mbuf2.rs"]
 status = "redesigned"
 notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_tags chain (a bare SlistLink), m_tag_delete by address with SLIST_REMOVE's walk, m_tag_copy_chain appending through a cursor; m_pulldown over the head's box, returning the position of the mbuf holding the range as its index in the chain and the offset"
 
+[[module]]
+rust = "sys/kernel/net/toeplitz.rs"
+crate = "kernel"
+lz = ["sys/net/toeplitz.rs"]
+status = "redesigned"
+notes = "N6.6a1 (D-14): toeplitz.h and toeplitz.c in the kernel; the system cache a hal::once::OnceStatic set once by stoeplitz_init (LZ's StaticCell and its two unsafe go), read by stoeplitz_cache (an all-zero cache before, as the C's static); the flow ids set by the kernel's in_pcbconnect, in_pcbset_addr, in6_pcbconnect and in6_pcbset_addr (in6_pcb_newflow, LZ's item, back in the kernel); bsd's sys/net/toeplitz.rs deleted, its importers (pf, if_vmx, main) reach this one through sys/net/mod.rs's re-export"
+
 [[extra]]
 rust = "sys/kernel/net/pf_hooks.rs"
 crate = "kernel"
@@ -16428,6 +16426,67 @@ lz = ["sys/netinet/ip_var.rs"]
 status = "redesigned"
 notes = "N6.4a: ip_var.h's kernel half: the ip_output flags, IPMTUDISCTIMEOUT, enum ipstat_counters and ipcounters (ip_input.c's; LZ's static array of atomics in bsd's ip_input.rs) as a hal::percpu::Counters with #[inline] ipstat_inc/add/dec; struct ip_moptions as the part ip_output reads (IpMoptions: ifidx, ttl, loop; the memberships stay bsd's until N6.4c1); ip_mtudisc and ipmultipath (ip_input.c's atomics, extern in the header) for the kernel's ip_output and routes (N6.4a's 4', the ip_multipath leg gone; bsd's ip_input.rs re-exports them; LZ items sys/netinet/ip_input.rs::IPCOUNTERS, ::ip_mtudisc and ::IPMULTIPATH, whose `moved` rows wait for the kernel module that lists ip_input.rs, N6.4c2: lz check refuses rows under bsd's adapted ip_input.rs); ipqent, ipq and ipoffnxt moved here at N6.4c2 (Ipqent with its header fields in cells, Ipq, the IpqentList/IpqList adapters, the Ipoffnxt image), mtod_ip stays bsd's; tests: the counters per index and the reference-backed flags; N6.4c1: struct ip_moptions whole (IpMoptions with its memberships, an MArray of M_IPMOPTS, imo_max_memberships its length, IpMoptions::output for a set made for one ip_output call) and ip_defttl (IP_DEFTTL, moved from bsd's ip_input.rs)"
 
+[[module]]
+rust = "sys/kernel/netinet/tcp_fsm.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_fsm.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_fsm.h's kernel part moved whole (the predicates, tcp_outflags[], tcpstates[]); the states are hal::sys::netinet_tcp_fsm's and re-exported here; bsd's sys/netinet/tcp_fsm.rs deleted, its importers reach this one through sys/netinet/mod.rs's re-export"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_lro.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_input.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_input.c's soft LRO (tcp_softlro_check, _compare, _concat, _glue) over the kernel's MbufList and EtherExtracted offsets: the headers are slices of the mbuf that holds each (no unsafe; LZ had 18), the matching packet taken off the list where it stands and put back (cursor remove_next/split_after, O(1)); TSTMP_LT as tstmp_lt; the rest of LZ's tcp_input.rs stays bsd's until N6.6a4"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::softlro_th"
+native = ["hdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::softlro_optword"
+native = ["hdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::softlro_evl_tag"
+native = ["hdr"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_seq.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_seq.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_seq.h's comparisons and TCP_ISSINCR/TCP_ISSINCR2; tcp_rcvseqinit and tcp_sendseqinit take LZ's Tcpcb and stay in bsd's sys/netinet/tcp_seq.rs until the kernel's tcp_var (N6.6a2)"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_timer.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_timer.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_timer.h's timer numbers, time constants and TCPT_RANGESET (tcpt_rangeset); the callouts, the arm/disarm helpers, tcp_backoff[] and the keepalive variables stay in bsd's sys/netinet/tcp_timer.rs until N6.6a2-6a3"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_tso.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_output.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_output.c's tcp_softtso_chop and tcp_if_output_tso over owned mbufs and the kernel's MbufList (the original pushed at the head last, the C's order), headers through hal::pod (no unsafe; LZ had 4); tcp_if_output_tso is no longer the Inet bridge's leg: the kernel's if_output_tso calls it; bsd's tcp_output.rs keeps tcp_softtso_chop as an adapter over its parked mbufs for the IPsec output halves (N8); the rest of LZ's tcp_output.rs stays bsd's until N6.6a3"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_output.rs::sb_mb"
+native = ["sys/kernel/net/sockbuf.rs::SbGuard::copym_first", "sys/kernel/net/sockbuf.rs::SbGuard::copydata_first"]
+kind = "merged"
+
+[[module]]
+rust = "sys/kernel/netinet/tcp_var.rs"
+crate = "kernel"
+lz = ["sys/netinet/tcp_var.rs"]
+status = "redesigned"
+notes = "N6.6a1: tcp_var.h's constants (TF_*, TCPOOB_*, the SYN cache's sizes and SCF_*, the RTT scales), TCP_TIME, enum tcpstat_counters and tcpcounters as a hal::percpu::Counters (D-16; LZ's TCPCOUNTERS, a static array of shared atomics in sys/netinet/tcp_subr.rs, moved here: its row waits for the kernel's tcp_subr at N6.6a2, since lz check refuses a row for a file this module does not list); bsd's tcp_var.rs re-exports them and keeps the structures until N6.6a2"
 
 [[module]]
 rust = "sys/kernel/netinet/icmp_var.rs"
@@ -16736,7 +16795,7 @@ rust = "sys/kernel/netinet6/in6_pcb.rs"
 lz = ["sys/netinet6/in6_pcb.rs"]
 status = "redesigned"
 crate = "kernel"
-notes = "N6.4c1: the lookups and the IPv6 hash over the kernel's table (D-17's first half); N6.5c: in6_pcbaddrisavail(_held), in6_pcbconnect, in6_setsockaddr/in6_setpeeraddr (the address returned, bsd's adapter writes the name mbuf), in6_pcbnotify (notify an Option<&mut dyn FnMut>, the route cache read under the socket lock as bsd's was), in6_pcbrtentry, in6_pcbset_addr, with in_pcb.c's #ifdef INET6 branches in the kernel's in_pcbbind_locked/in_pcbconnect/in_pcbrtentry (in_pcbbind_tail merged back, bsd's in6_pcbbind_locked gone); the pcb's IPv6 options lent per statement (D-10); the flow id (stoeplitz) bsd's adapter's; LZ's 5 tests and N6.3b2's route-cache test stay in bsd's adapter over these, 2 kernel tests (the bind branch's checks, in6_pcbset_addr and the commands in6_pcbnotify passes on); N6.6a0: in6_pcbnotify takes the caller's net proof, locks each socket through in_pcbsolock's witness form and lends notify the &mut SoLocked (In6PcbNotify); in_pcbrtchange's notify is a closure over it"
+notes = "N6.4c1: the lookups and the IPv6 hash over the kernel's table (D-17's first half); N6.5c: in6_pcbaddrisavail(_held), in6_pcbconnect, in6_setsockaddr/in6_setpeeraddr (the address returned, bsd's adapter writes the name mbuf), in6_pcbnotify (notify an Option<&mut dyn FnMut>, the route cache read under the socket lock as bsd's was), in6_pcbrtentry, in6_pcbset_addr, with in_pcb.c's #ifdef INET6 branches in the kernel's in_pcbbind_locked/in_pcbconnect/in_pcbrtentry (in_pcbbind_tail merged back, bsd's in6_pcbbind_locked gone); the pcb's IPv6 options lent per statement (D-10); the flow id (stoeplitz) bsd's adapter's until N6.6a1, then in6_pcb_newflow's here (the flow label and the flow id after the table mutex, as the C); LZ's 5 tests and N6.3b2's route-cache test stay in bsd's adapter over these, 2 kernel tests (the bind branch's checks, in6_pcbset_addr and the commands in6_pcbnotify passes on); N6.6a0: in6_pcbnotify takes the caller's net proof, locks each socket through in_pcbsolock's witness form and lends notify the &mut SoLocked (In6PcbNotify); in_pcbrtchange's notify is a closure over it"
 
 [[module.fn]]
 lz = "sys/netinet6/in6_pcb.rs::inp_outputopts6"

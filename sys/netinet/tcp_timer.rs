@@ -115,10 +115,11 @@
 //! Locks used to protect struct members in the `.c` file: \[T\] `tcp_timer_mtx`.
 //!
 //! ## Deviations
-//! - `TCP_TIMER_INIT`, `TCP_TIMER_ARM`, `TCP_TIMER_DISARM`, `TCP_TIMER_ISARMED` and
-//!   `TCPT_RANGESET` are the functions `tcp_timer_init`, `tcp_timer_arm`,
-//!   `tcp_timer_disarm`, `tcp_timer_isarmed` and `tcpt_rangeset` (the C macro row of
-//!   `docs/C_TO_RUST.md`); the range macro returns the value instead of assigning an lvalue.
+//! - `TCP_TIMER_INIT`, `TCP_TIMER_ARM`, `TCP_TIMER_DISARM` and `TCP_TIMER_ISARMED` are the
+//!   functions `tcp_timer_init`, `tcp_timer_arm`, `tcp_timer_disarm` and
+//!   `tcp_timer_isarmed` (the C macro row of `docs/C_TO_RUST.md`). N6.6a1: the header's
+//!   timer numbers, time constants and `TCPT_RANGESET` are the kernel's
+//!   (`kernel::netinet::tcp_timer`), re-exported here.
 //!   Timer numbers are `usize` (they index `t_timer[]`), times in milliseconds `i32` (the
 //!   C's `int` constants); `tcp_timer_arm` takes the `u64` of `timeout_add_msec`.
 //! - The `tcptimers[]` names (behind `TCPTIMERS`) are only compiled by `tcp_debug.c` with
@@ -177,58 +178,12 @@ use crate::sys::socketvar::Socket;
 use crate::sys::systm::{net_lock_shared, net_unlock_shared};
 use crate::sys::timeout::{KCLOCK_NONE, TIMEOUT_MPSAFE, TIMEOUT_PROC, TimeoutFn, timeout_pending};
 
-// Definitions of the TCP timers.
-
-/// Retransmit.
-pub const TCPT_REXMT: usize = 0;
-/// Retransmit persistence.
-pub const TCPT_PERSIST: usize = 1;
-/// Keep alive.
-pub const TCPT_KEEP: usize = 2;
-/// 2*msl quiet time timer.
-pub const TCPT_2MSL: usize = 3;
-/// Delayed ack timeout.
-pub const TCPT_DELACK: usize = 4;
-
-/// `TCPT_NTIMERS`.
-pub const TCPT_NTIMERS: usize = 5;
-
-// Time constants.
-
-/// Max seg lifetime (hah!).
-pub const TCPTV_MSL: i32 = tcp_time(30);
-/// Base roundtrip time; if 0, no idea yet.
-pub const TCPTV_SRTTBASE: i32 = 0;
-/// Assumed RTT if no info.
-pub const TCPTV_SRTTDFLT: i32 = tcp_time(3);
-
-/// Retransmit persistence.
-pub const TCPTV_PERSMIN: i32 = tcp_time(5);
-/// Maximum persist interval.
-pub const TCPTV_PERSMAX: i32 = tcp_time(60);
-
-/// Initial connect keep alive.
-pub const TCPTV_KEEPINIT: i32 = tcp_time(75);
-/// Dflt time before probing.
-pub const TCPTV_KEEPIDLE: i32 = tcp_time(120 * 60);
-/// Default probe interval.
-pub const TCPTV_KEEPINTVL: i32 = tcp_time(75);
-/// Max probes before drop.
-pub const TCPTV_KEEPCNT: i32 = 8;
-
-/// Minimum allowable value.
-pub const TCPTV_MIN: i32 = tcp_time(1);
-/// Max allowable REXMT value.
-pub const TCPTV_REXMTMAX: i32 = tcp_time(64);
-
-/// Linger at most 2 minutes.
-pub const TCP_LINGERTIME: i16 = 120;
-
-/// Maximum retransmits.
-pub const TCP_MAXRXTSHIFT: i32 = 12;
-
-/// Time to delay ACK.
-pub const TCP_DELACK_MSECS: i32 = 200;
+pub use kernel::netinet::tcp_timer::{
+    TCP_DELACK_MSECS, TCP_LINGERTIME, TCP_MAXRXTSHIFT, TCPT_2MSL, TCPT_DELACK, TCPT_KEEP,
+    TCPT_NTIMERS, TCPT_PERSIST, TCPT_REXMT, TCPTV_KEEPCNT, TCPTV_KEEPIDLE, TCPTV_KEEPINIT,
+    TCPTV_KEEPINTVL, TCPTV_MIN, TCPTV_MSL, TCPTV_PERSMAX, TCPTV_PERSMIN, TCPTV_REXMTMAX,
+    TCPTV_SRTTBASE, TCPTV_SRTTDFLT, tcpt_rangeset,
+};
 
 /// `tcp_totbackoff`: sum of `tcp_backoff[]`.
 pub const TCP_TOTBACKOFF: i32 = 511;
@@ -297,18 +252,6 @@ pub fn tcp_timer_disarm(tp: &Tcpcb, timer: usize) {
 /// `TCP_TIMER_ISARMED(tp, timer)`.
 pub fn tcp_timer_isarmed(tp: &Tcpcb, timer: usize) -> bool {
     tp.has_flags(TF_TIMER << timer)
-}
-
-/// `TCPT_RANGESET(tv, value, tvmin, tvmax)`: force a time value to be in a certain range;
-/// returns what the C assigns to `tv`.
-pub fn tcpt_rangeset<T: PartialOrd>(value: T, tvmin: T, tvmax: T) -> T {
-    if value < tvmin {
-        tvmin
-    } else if value > tvmax {
-        tvmax
-    } else {
-        value
-    }
 }
 
 /// What `tcp_timer_enter` found: the locked socket and the control block whose timer
@@ -735,15 +678,6 @@ pub fn tcp_timer_2msl(arg: *mut c_void) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rangeset_clamps_as_the_macro() {
-        assert_eq!(tcpt_rangeset(5, 10, 20), 10);
-        assert_eq!(tcpt_rangeset(25, 10, 20), 20);
-        assert_eq!(tcpt_rangeset(15, 10, 20), 15);
-        // The macro tests the minimum first: an empty range yields the minimum.
-        assert_eq!(tcpt_rangeset(15, 30, 20), 30);
-    }
 
     #[test]
     fn backoff_sums_to_the_total() {

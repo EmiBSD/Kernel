@@ -192,9 +192,9 @@
 //! - `hashinit(M_WAITOK)` cannot fail in C; here its failure in [`in_pcbinit`] is `panic(9)`.
 //! - `in_pcbaddrisavail_lock` clears the port and `sin_zero` of a copy of the address (the C
 //!   clears them in the caller's mbuf and puts the port back).
-//! - `NSTOEPLITZ`: the flow id of a connected socket is computed by `bsd`'s adapters after
-//!   [`in_pcbconnect`] and [`in_pcbset_addr`] return (`stoeplitz` is `bsd`'s until it moves),
-//!   after the table mutex as in the C.
+//! - `NSTOEPLITZ`: the flow id of a connected or accepted socket is set at the end of
+//!   [`in_pcbconnect`] and [`in_pcbset_addr`], after the table mutex as in the C
+//!   (`crate::net::toeplitz`, N6.6a1; `bsd`'s adapters set it before).
 //! - `NPF` (pf(4)) is reached through the `Pf` bridge (`crate::net::pf_hooks`): the divert
 //!   keys of [`in_pcblookup_listen`] (`find_divert`), `pf_remove_divert_state` and
 //!   `pf_inp_unlink` (`inp_remove_divert_state`, `inp_unlink`); before pf registers they do
@@ -351,6 +351,7 @@ use crate::net::route::{Route, Rtentry, rtdeletemsg};
 use crate::net::rtable::{rtable_exists, rtable_getsource, rtable_l2};
 use crate::net::sockbuf::SS_NOFDREF;
 use crate::net::socket::{SoLocked, Socket, SocketRef, sofree_legacy, solock_net, soref};
+use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::in_::{in_broadcast, in_ifp2ia, in_nam2sin};
 use crate::netinet::in_var::ifatoia;
 use crate::netinet::ip_output::ip_freemoptions;
@@ -1959,8 +1960,21 @@ pub fn in_pcbconnect<G: ProcGlue>(
     inp.set_faddr(&g, sin.sin_addr);
     inp.set_fport(&g, sin.sin_port);
     in_pcbrehash(&mut g, inp);
+    drop(g);
 
+    in_pcb_newflow(inp);
     Ok(())
+}
+
+/// `NSTOEPLITZ`: the flow id of a connected or accepted IPv4 pcb from its addresses and ports
+/// (the tail `in_pcbconnect` and `in_pcbset_addr` share), after the table mutex as the C.
+fn in_pcb_newflow<G: ProcGlue>(inp: &Inpcb<G>) {
+    inp.inp_flowid.set(stoeplitz_ip4port(
+        inp.inp_faddr.get().s_addr,
+        inp.inp_laddr.get().s_addr,
+        inp.inp_fport.get(),
+        inp.inp_lport.get(),
+    ));
 }
 
 /// `in_pcbdisconnect`: forgets the flow; `true` when the socket has no file reference any
@@ -2723,7 +2737,9 @@ pub fn in_pcbset_addr<G: ProcGlue>(
     inp.set_faddr(&g, fsin.sin_addr);
     inp.set_fport(&g, fsin.sin_port);
     in_pcbrehash(&mut g, inp);
+    drop(g);
 
+    in_pcb_newflow(inp);
     Ok(())
 }
 
@@ -3274,6 +3290,35 @@ mod tests {
         testinet::release(so, inp);
         assert_eq!(pf.last_unlinked.load(Ordering::Relaxed), 0x3000);
         assert_eq!((unlinks(), removals()), (u0 + 2, r0 + 2));
+    }
+
+    #[test]
+    fn in_pcbset_addr_sets_the_flow_id() {
+        // NSTOEPLITZ: the flow id of the accepted connection, the system hash of its four
+        // members (the test starts from another value, so a missing store cannot pass).
+        let (_g, _p) = testinet::setup();
+        crate::net::toeplitz::stoeplitz_init();
+        let t = testinet::table(16);
+        let (so, inp) = testinet::pcb(t);
+        let (l, f) = (a([10, 0, 0, 1]), a([10, 0, 0, 2]));
+        let (lport, fport) = (htons(1000), htons(2000));
+        let want = crate::net::toeplitz::stoeplitz_ip4port(f.s_addr, l.s_addr, fport, lport);
+        inp.inp_flowid.set(!want);
+        let sin = |addr: InAddr, port: u16| SockaddrIn {
+            sin_len: size_of::<SockaddrIn>() as u8,
+            sin_family: hal::sys::socket::AF_INET,
+            sin_port: port,
+            sin_addr: addr,
+            sin_zero: [0; 8],
+        };
+        in_pcbset_addr(&inp, &sin(f, fport), &sin(l, lport), 0).expect("a free quadruple");
+        assert_eq!(inp.inp_flowid.get(), want);
+        // The same flow seen from the peer's side hashes the same.
+        assert_eq!(
+            crate::net::toeplitz::stoeplitz_ip4port(l.s_addr, f.s_addr, lport, fport),
+            want
+        );
+        testinet::release(so, inp);
     }
 
     #[test]

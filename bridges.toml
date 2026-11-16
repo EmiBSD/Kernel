@@ -507,8 +507,10 @@ paid_by = "N7"
 # Registered by bsd's boot before the first interface (N6.3a1's
 # adapter commit); before that every leg does nothing, the C without INET/INET6.
 # N6.4 takes the IPv4 legs, N6.5 the IPv6 ones; N6.6a takes tcp_input_mlist (6a5),
-# tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1); N6.6b UDP's half of
-# proto_outswcsum. ip6_randomid stays until crypto's idgen moves (N8), so the row is not paid
+# tcpstat_lro, tcp_if_output_tso and proto_outswcsum's TCP half (6a1: the kernel's tcp_var
+# counts tcps_inhwlro, tcps_inbadlro and tcps_outswcsum itself, the kernel's tcp_tso answers
+# if_output_tso, and the leg left is udpstat_outswcsum); N6.6b takes udpstat_outswcsum.
+# ip6_randomid stays until crypto's idgen moves (N8), so the row is not paid
 # at N6.6b as once planned (N6.6a's inventory, G).
 # with_net_held outlives it: at N6.6b it moves onto the NetDriver bridge (the interface whose
 # output lost the proof lends it; bsd's wrappers then make theirs with net_held), and it goes

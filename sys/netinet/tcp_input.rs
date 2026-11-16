@@ -103,7 +103,8 @@
 //! (`tcp_xmit_timer`), the maximum segment size (`tcp_mss`, `tcp_mss_update`, `tcp_mss_adv`),
 //! the SYN cache (the compressed state of embryonic connections in `SYN_RECEIVED`: two hash
 //! tables of `struct syn_cache`, the active one and the one being drained), and the software
-//! large receive offload that glues TCP segments of one flow together (`tcp_softlro_glue`).
+//! large receive offload that glues TCP segments of one flow together (`tcp_softlro_glue`, the
+//! kernel's since N6.6a1: `kernel::netinet::tcp_lro`).
 //!
 //! Locks used to protect global data and struct members: \[a\] atomic operations, \[N\] net
 //! lock, \[S\] `syn_cache_mtx`.
@@ -149,12 +150,11 @@
 //!   harmless way out instead of a wild read: `syn_cache_get` treats a listening socket
 //!   without a control block as a miss and sends a socket from `sonewconn` without one (or
 //!   without a TCP control block) to `resetandabort`; `syn_cache_add` fails without a TCP
-//!   control block; `tcp_pulloutofband` skips the `t_iobc` store without one;
-//!   `tcp_softlro_compare` refuses a head without a TCP header; the listener's flags
+//!   control block; `tcp_pulloutofband` skips the `t_iobc` store without one; the listener's flags
 //!   `syn_cache_get` copies are 0 without its control block.
 //! - The functions `tcp_var.h` does not declare stay private: `tcp_input_solocked`,
 //!   `tcp_flush_queue`, `tcp_sack_partialack`, `tcp_newreno_partialack`, `tcp_mss_adv`, the
-//!   SYN cache internals and the soft LRO helpers.
+//!   SYN cache internals.
 //! - `syn_cache_respond` without a listening control block uses `ip6_defhlim`, what the
 //!   C's `in6_selecthlim(NULL)` returns (`in6_selecthlim` takes a `&Inpcb` here).
 //! - `INET6` is configured (feature `inet6`): `tcb6table`, `ns_tcp6_ml`,
@@ -163,8 +163,8 @@
 //!   SYN cache. The soft LRO's IPv6 cases are not `#ifdef INET6` in the C and compile
 //!   always. Configured (GENERIC): `TCP_ECN`, `TCP_SIGNATURE`,
 //!   `IPSEC`, `NPF` (`pf_inp_lookup`, `pf_inp_link`, `pf_inp_unlink`, `pf_find_divert`).
-//!   `SMALL_KERNEL` is not set, so the soft LRO is compiled; `tcp_softlro_glue` has no
-//!   caller yet (its drivers, `ixl`, `ice`, `bnxt`, `cnmac`, are not ported). `DIAGNOSTIC` is
+//!   `SMALL_KERNEL` is not set, so the soft LRO is compiled: the kernel's
+//!   (`kernel::netinet::tcp_lro`, N6.6a1). `DIAGNOSTIC` is
 //!   feature `diagnostic` (the `TCPS_LISTEN` panic, the impossible SYN cache overflows, the
 //!   `max_linkhdr` check of `syn_cache_respond`).
 
@@ -186,9 +186,8 @@ use crate::kern::kern_time::ppsratecheck_shared;
 use crate::kern::kern_timeout::{timeout_add_msec, timeout_del, timeout_set_flags};
 use crate::kern::subr_pool::{pool_get, pool_init, pool_put};
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_mbuf::m_removehdr;
 use crate::kern::uipc_mbuf::{
-    MAX_LINKHDR, m_adj, m_copydata, m_free, m_freem, m_gethdr, ml_dequeue, ml_enqueue,
+    MAX_LINKHDR, m_adj, m_copydata, m_free, m_freem, m_gethdr, ml_dequeue,
 };
 use crate::kern::uipc_mbuf2::m_tag_find;
 use crate::kern::uipc_socket::{sohasoutofband, sorwakeup, sowwakeup};
@@ -197,15 +196,11 @@ use crate::kern::uipc_socket2::{
     soisdisconnected, sonewconn,
 };
 use crate::machine::intr::IPL_SOFTNET;
-use crate::net::if_::{IFF_LOOPBACK, IFXF_LRO, if_get, if_put, unhandled_af};
-use crate::net::if_ethersubr::ether_extract_headers;
-use crate::net::if_var::{Ifnet, Netstack};
+use crate::net::if_::{IFF_LOOPBACK, if_get, if_put, unhandled_af};
+use crate::net::if_var::Netstack;
 use crate::net::pf::{pf_find_divert, pf_inp_link, pf_inp_lookup, pf_inp_unlink};
 use crate::net::route::{Rtentry, route_mpath};
 use crate::net::rtable::rtable_l2;
-use crate::netinet::if_ether::{
-    EtherExtracted, EtherHeader, EtherVlanHeader, evl_prioftag, evl_vlanoftag,
-};
 use crate::netinet::in_::{INADDR_ANY, IPPROTO_DONE, IPPROTO_TCP, SockaddrIn};
 use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::{
@@ -213,7 +208,7 @@ use crate::netinet::in_pcb::{
     in_pcbsolock, in_pcbsounlock, in_pcbunref, sotoinpcb,
 };
 use crate::netinet::in4_cksum::in4_cksum;
-use crate::netinet::ip::{IP_MAXPACKET, IPTOS_ECN_CE, IPTOS_ECN_MASK, Ip};
+use crate::netinet::ip::{IPTOS_ECN_CE, IPTOS_ECN_MASK, Ip};
 use crate::netinet::ip_input::{IP_DEFTTL, ip_mtudisc, ip_srcroute};
 use crate::netinet::ip_ipsp::{
     IPSEC_IN_USE, IPSP_DIRECTION_IN, SockaddrUnion, Tdb, TdbIdent, gettdb, gettdbbysrcdst,
@@ -222,7 +217,7 @@ use crate::netinet::ip_ipsp::{
 use crate::netinet::ip_output::ip_output;
 use crate::netinet::ip_spd::ipsp_spd_lookup;
 use crate::netinet::ip_var::{IP_MTUDISC, mtod_ip, mtod_ip_store};
-use crate::netinet::ip6::{IPV6_MAXPACKET, IPV6_MMTU, Ip6Frag, Ip6Hdr, ip6_exthdr_get};
+use crate::netinet::ip6::{IPV6_MMTU, Ip6Frag, Ip6Hdr, ip6_exthdr_get};
 use crate::netinet::tcp::{
     MAX_SACK_BLKS, MAX_TCPOPTLEN, TCP_MAX_WINSHIFT, TCP_MAXWIN, TCP_SACKHOLE_LIMIT, TCPOLEN_MAXSEG,
     TCPOLEN_SACK, TCPOLEN_SACK_PERMITTED, TCPOLEN_SIGLEN, TCPOLEN_SIGNATURE, TCPOLEN_TIMESTAMP,
@@ -265,12 +260,12 @@ use crate::sys::endian::{htonl, htons, ntohl, ntohs};
 use crate::sys::errno::Errno;
 use crate::sys::kernel::HZ;
 use crate::sys::malloc::{M_NOWAIT, M_SYNCACHE, M_WAITOK, M_ZERO};
+use crate::sys::mbuf::m_data_add;
 use crate::sys::mbuf::{
-    M_BCAST, M_DONTWAIT, M_EXT, M_FLOWID, M_IPV4_CSUM_IN_OK, M_IPV4_CSUM_OUT, M_MCAST, M_PKTHDR,
-    M_TCP_CSUM_IN_BAD, M_TCP_CSUM_IN_OK, M_TCP_CSUM_OUT, M_TCP_TSO, M_VLANTAG, MHLEN, MT_DATA,
-    Mbuf, MbufList, PACKET_TAG_IPSEC_IN_DONE, PF_TAG_DIVERTED, m_freemp, mclget, mtod,
+    M_BCAST, M_DONTWAIT, M_EXT, M_MCAST, M_PKTHDR, M_TCP_CSUM_IN_BAD, M_TCP_CSUM_IN_OK,
+    M_TCP_CSUM_OUT, MHLEN, MT_DATA, Mbuf, MbufList, PACKET_TAG_IPSEC_IN_DONE, PF_TAG_DIVERTED,
+    m_freemp, mclget, mtod,
 };
-use crate::sys::mbuf::{m_data_add, m_set_next, mbuf_list_first};
 use crate::sys::mutex::{Mutex, mutex_assert_locked};
 use crate::sys::pool::{PR_NOWAIT, PR_ZERO, Pool};
 use crate::sys::queue::ListHead;
@@ -4482,391 +4477,6 @@ fn syn_cache_respond(
     };
     in_pcbunref(inp);
     error
-}
-
-/// The TCP header at `tcp`, read unaligned.
-///
-/// # Safety
-///
-/// `tcp` points at a TCP header inside a live mbuf (an `ether_extract_headers` result).
-unsafe fn softlro_th(tcp: *const u8) -> Tcphdr {
-    // SAFETY: the caller's contract.
-    unsafe { tcp.cast::<Tcphdr>().read_unaligned() }
-}
-
-/// The `i`th 32-bit word of the TCP options after the header at `tcp`, as it lies in memory.
-///
-/// # Safety
-///
-/// `tcp` points at a TCP header inside a live mbuf whose options cover word `i`.
-unsafe fn softlro_optword(tcp: *const u8, i: usize) -> u32 {
-    // SAFETY: the caller's contract.
-    unsafe { tcp.add(TCP_HDR_LEN + 4 * i).cast::<u32>().read_unaligned() }
-}
-
-/// The VLAN tag of the header at `evh`, as it lies in memory.
-///
-/// # Safety
-///
-/// `evh` points at an `ether_vlan_header` inside a live mbuf.
-unsafe fn softlro_evl_tag(evh: *const EtherVlanHeader) -> u16 {
-    // SAFETY: the caller's contract.
-    unsafe { ptr::addr_of!((*evh).evl_tag).read_unaligned() }
-}
-
-/// `tcp_softlro_check`: whether the segment in `m`, whose headers `ext` describes, may be
-/// merged at all.
-fn tcp_softlro_check(m: &Mbuf, ext: &EtherExtracted) -> bool {
-    let csum_flags = m.m_pkthdr().csum_flags.get();
-
-    // Don't merge packets with invalid TCP checksum.
-    if csum_flags & M_TCP_CSUM_IN_OK == 0 {
-        return false;
-    }
-
-    if !ext.ip4.is_null() {
-        // Don't merge packets with invalid IP header checksum.
-        if csum_flags & M_IPV4_CSUM_IN_OK == 0 {
-            return false;
-        }
-
-        // Don't merge IPv4 packets with IP options.
-        if ext.iphlen as usize != IP_HDR_LEN {
-            return false;
-        }
-    }
-
-    // Check TCP protocol and header.
-    if ext.tcp.is_null() {
-        return false;
-    }
-
-    // Don't merge empty TCP segments.
-    if ext.paylen == 0 {
-        return false;
-    }
-
-    // SAFETY: `ether_extract_headers` found `tcphlen` bytes of TCP header at `ext.tcp`.
-    let th = unsafe { softlro_th(ext.tcp) };
-
-    // Just ACK and PUSH TCP flags are allowed.
-    if th.th_flags & (TH_ACK | TH_PUSH) != th.th_flags {
-        return false;
-    }
-
-    // TCP ACK flag has to be set.
-    if th.th_flags & TH_ACK == 0 {
-        return false;
-    }
-
-    // Either no TCP options or timestamp as in RFC 1323 appendix A.
-    if ext.tcphlen as usize > TCP_HDR_LEN {
-        let optlen = ext.tcphlen as usize - TCP_HDR_LEN;
-        let appa = usize::from(TCPOLEN_TSTAMP_APPA);
-
-        // Same logic as in TCP input quick retrieval.
-        // SAFETY: the options are `optlen` bytes after the header; the byte at `appa` is read
-        // only when `optlen > appa`, the first word only when `optlen >= appa`.
-        let bad = unsafe {
-            (optlen != appa && (optlen <= appa || *ext.tcp.add(TCP_HDR_LEN + appa) != TCPOPT_EOL))
-                || softlro_optword(ext.tcp, 0) != htonl(TCPOPT_TSTAMP_HDR)
-        };
-        if bad {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// `tcp_softlro_compare`: whether `tail` continues `head` (same VLAN, ports, addresses and
-/// options, contiguous sequence numbers, not too long together).
-fn tcp_softlro_compare(head: &EtherExtracted, tail: &EtherExtracted) -> bool {
-    // Don't merge packets inside and outside of VLANs
-    if !head.evh.is_null() && !tail.evh.is_null() {
-        // SAFETY: `ether_extract_headers` found both VLAN headers inside their mbufs.
-        let (htag, ttag) = unsafe { (softlro_evl_tag(head.evh), softlro_evl_tag(tail.evh)) };
-        // Don't merge packets of different VLANs
-        if evl_vlanoftag(htag) != evl_vlanoftag(ttag) {
-            return false;
-        }
-
-        // Don't merge packets of different priorities
-        if evl_prioftag(htag) != evl_prioftag(ttag) {
-            return false;
-        }
-    } else if !head.evh.is_null() || !tail.evh.is_null() {
-        return false;
-    }
-
-    // A head whose TCP header was not found cannot match (the C dereferences it; only a
-    // segment that passed `tcp_softlro_check` has a non-zero `ph_mss`, so it is found).
-    if head.tcp.is_null() || tail.tcp.is_null() {
-        return false;
-    }
-    // SAFETY: both TCP headers were found by `ether_extract_headers` inside their mbufs.
-    let (hth, tth) = unsafe { (softlro_th(head.tcp), softlro_th(tail.tcp)) };
-
-    // Check TCP ports.
-    if hth.th_sport != tth.th_sport || hth.th_dport != tth.th_dport {
-        return false;
-    }
-
-    // Check IP header.
-    if !head.ip4.is_null() && !tail.ip4.is_null() {
-        // SAFETY: `ether_extract_headers` found both IP headers inside their mbufs.
-        let (hip, tip) = unsafe { (head.ip4.read_unaligned(), tail.ip4.read_unaligned()) };
-        // Check IPv4 addresses.
-        if hip.ip_src.s_addr != tip.ip_src.s_addr || hip.ip_dst.s_addr != tip.ip_dst.s_addr {
-            return false;
-        }
-
-        // Check max. IPv4 length.
-        let max_linkhdr = MAX_LINKHDR.load(Ordering::Relaxed) as usize;
-        if (head.iplen + tail.iplen) as usize > IP_MAXPACKET.wrapping_sub(max_linkhdr) {
-            return false;
-        }
-    } else if !head.ip6.is_null() && !tail.ip6.is_null() {
-        // SAFETY: `ether_extract_headers` found both IPv6 headers inside their mbufs.
-        let (hip6, tip6) = unsafe { (head.ip6.read_unaligned(), tail.ip6.read_unaligned()) };
-        // Check IPv6 addresses.
-        if !in6_are_addr_equal(&hip6.ip6_src, &tip6.ip6_src)
-            || !in6_are_addr_equal(&hip6.ip6_dst, &tip6.ip6_dst)
-        {
-            return false;
-        }
-
-        // Check max. IPv6 length.
-        let max_linkhdr = MAX_LINKHDR.load(Ordering::Relaxed) as usize;
-        if ((head.iplen - head.iphlen) + (tail.iplen - tail.iphlen)) as usize
-            > IPV6_MAXPACKET.wrapping_sub(max_linkhdr)
-        {
-            return false;
-        }
-    } else {
-        // Address family does not match.
-        return false;
-    }
-
-    // Check for contiguous segments.
-    if ntohl(hth.th_seq).wrapping_add(head.paylen) != ntohl(tth.th_seq) {
-        return false;
-    }
-
-    // Ignore segments with different TCP options.
-    if head.tcphlen != tail.tcphlen {
-        return false;
-    }
-
-    // TCP timestamp options must match, type and length already checked.
-    if head.tcphlen as usize > TCP_HDR_LEN {
-        // SAFETY: both carry the appendix A timestamp option (`tcp_softlro_check`), three
-        // words after the header.
-        let (h1, t1, h2, t2) = unsafe {
-            (
-                softlro_optword(head.tcp, 1),
-                softlro_optword(tail.tcp, 1),
-                softlro_optword(head.tcp, 2),
-                softlro_optword(tail.tcp, 2),
-            )
-        };
-
-        // Tail timestamps must be more recent.
-        if tstmp_lt(ntohl(h1), ntohl(t1)) || tstmp_lt(ntohl(h2), ntohl(t2)) {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// `tcp_softlro_concat`: appends the payload of `mtail` to `mhead` and fixes up the head's
-/// headers and offload flags.
-fn tcp_softlro_concat(
-    mhead: &'static Mbuf,
-    head: &EtherExtracted,
-    mtail: &'static Mbuf,
-    tail: &EtherExtracted,
-) {
-    // Adjust IP header length.
-    if !head.ip4.is_null() {
-        // SAFETY: `ether_extract_headers` found the head's IP header inside its mbuf.
-        unsafe {
-            let mut ip = head.ip4.read_unaligned();
-            ip.ip_len = htons((head.iplen + tail.paylen) as u16);
-            head.ip4.write_unaligned(ip);
-        }
-    } else if !head.ip6.is_null() {
-        // SAFETY: `ether_extract_headers` found the head's IPv6 header inside its mbuf.
-        unsafe {
-            let mut ip6 = head.ip6.read_unaligned();
-            ip6.ip6_plen = htons((head.iplen - head.iphlen + tail.paylen) as u16);
-            head.ip6.write_unaligned(ip6);
-        }
-    }
-
-    // SAFETY: the head's TCP header lies inside its mbuf (`ether_extract_headers`), the
-    // tail's too; they are different mbufs.
-    unsafe {
-        let mut hth = softlro_th(head.tcp);
-        let tth = softlro_th(tail.tcp);
-
-        // Combine TCP flags from head and tail.
-        if tth.th_flags & TH_PUSH != 0 {
-            hth.th_flags |= TH_PUSH;
-        }
-
-        // Adjust TCP header.
-        hth.th_win = tth.th_win;
-        hth.th_ack = tth.th_ack;
-        head.tcp.cast::<Tcphdr>().write_unaligned(hth);
-
-        // Use more recent timestamps from tail.
-        if head.tcphlen as usize > TCP_HDR_LEN {
-            for i in 1..3 {
-                let w = softlro_optword(tail.tcp, i);
-                head.tcp
-                    .add(TCP_HDR_LEN + 4 * i)
-                    .cast::<u32>()
-                    .write_unaligned(w);
-            }
-        }
-    }
-
-    // Calculate header length of tail packet.
-    let mut hdrlen = size_of::<EtherHeader>() as u32;
-    if !tail.evh.is_null() {
-        hdrlen = size_of::<EtherVlanHeader>() as u32;
-    }
-    hdrlen += tail.iphlen;
-    hdrlen += tail.tcphlen;
-
-    // Skip protocol headers in tail.
-    m_adj(mtail, hdrlen as i32);
-    m_removehdr(mtail);
-
-    // Concatenate
-    let mut m = mhead;
-    while let Some(n) = m.m_next().get() {
-        m = n;
-    }
-    let _ = m_set_next(m, Some(mtail));
-    mhead
-        .m_pkthdr()
-        .len
-        .set(mhead.m_pkthdr().len.get() + tail.paylen as i32);
-
-    // Flag mbuf as TSO packet with MSS.
-    let ph = mhead.m_pkthdr();
-    if ph.csum_flags.get() & M_TCP_TSO == 0 {
-        // Set CSUM_OUT flags in case of forwarding.
-        ph.csum_flags.set(ph.csum_flags.get() | M_TCP_CSUM_OUT);
-        // SAFETY: as above, for the checksum fields of the head's headers.
-        unsafe {
-            let mut hth = softlro_th(head.tcp);
-            hth.th_sum = 0;
-            head.tcp.cast::<Tcphdr>().write_unaligned(hth);
-        }
-        if !head.ip4.is_null() {
-            ph.csum_flags.set(ph.csum_flags.get() | M_IPV4_CSUM_OUT);
-            // SAFETY: as above.
-            unsafe {
-                let mut ip = head.ip4.read_unaligned();
-                ip.ip_sum = 0;
-                head.ip4.write_unaligned(ip);
-            }
-        }
-
-        ph.csum_flags.set(ph.csum_flags.get() | M_TCP_TSO);
-        ph.ph_mss.set(head.paylen as u16);
-        tcpstat_inc(TcpstatCounters::TcpsInswlro);
-        tcpstat_inc(TcpstatCounters::TcpsInpktlro); // count head
-    }
-    ph.ph_mss.set(max(ph.ph_mss.get(), tail.paylen as u16));
-    tcpstat_inc(TcpstatCounters::TcpsInpktlro); // count tail
-}
-
-/// `tcp_softlro_glue`: a driver's receive path hands each packet `mtail` of interface `ifp`
-/// here before queueing it on `ml`; with `IFXF_LRO` a TCP segment that continues one already
-/// on the list is appended to it instead.
-pub fn tcp_softlro_glue(ml: &MbufList, mtail: &'static Mbuf, ifp: &Ifnet) {
-    'dontmerge: {
-        if ifp.if_xflags.get() & IFXF_LRO == 0 {
-            break 'dontmerge;
-        }
-
-        mtail.m_pkthdr().ph_mss.set(0);
-
-        let mut tail = EtherExtracted::new();
-        ether_extract_headers(mtail, &mut tail);
-
-        if !tail.tcp.is_null() {
-            // Remove possible ethernet padding at the end.
-            let tcpdatalen = tail
-                .iplen
-                .wrapping_sub(tail.iphlen)
-                .wrapping_sub(tail.tcphlen);
-            if tcpdatalen < tail.paylen {
-                m_adj(mtail, tcpdatalen.wrapping_sub(tail.paylen) as i32);
-                tail.paylen = tcpdatalen;
-            }
-        }
-
-        if !tcp_softlro_check(mtail, &tail) {
-            break 'dontmerge;
-        }
-
-        mtail.m_pkthdr().ph_mss.set(tail.paylen as u16);
-
-        let mut mhead = mbuf_list_first(ml);
-        while let Some(h) = mhead {
-            mhead = h.m_nextpkt().get();
-            let hph = h.m_pkthdr();
-            let tph = mtail.m_pkthdr();
-
-            // This packet has been checked and was not mergable before.
-            if hph.ph_mss.get() == 0 {
-                continue;
-            }
-
-            // Use RSS hash to skip packets of different connections.
-            if hph.csum_flags.get() & M_FLOWID != 0
-                && tph.csum_flags.get() & M_FLOWID != 0
-                && hph.ph_flowid.get() != tph.ph_flowid.get()
-            {
-                continue;
-            }
-
-            // Don't merge packets inside and outside of VLANs
-            let hvlan = h.m_flags().get() & M_VLANTAG != 0;
-            if hvlan != (mtail.m_flags().get() & M_VLANTAG != 0) {
-                continue;
-            }
-
-            if hvlan {
-                // Don't merge packets of different VLANs
-                if evl_vlanoftag(hph.ether_vtag.get()) != evl_vlanoftag(tph.ether_vtag.get()) {
-                    continue;
-                }
-
-                // Don't merge packets of different priorities
-                if evl_prioftag(hph.ether_vtag.get()) != evl_prioftag(tph.ether_vtag.get()) {
-                    continue;
-                }
-            }
-
-            let mut head = EtherExtracted::new();
-            ether_extract_headers(h, &mut head);
-            if !tcp_softlro_compare(&head, &tail) {
-                continue;
-            }
-
-            tcp_softlro_concat(h, &head, mtail, &tail);
-            return;
-        }
-    }
-    // dontmerge:
-    ml_enqueue(ml, mtail);
 }
 /* </CODE> */
 

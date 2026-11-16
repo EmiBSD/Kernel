@@ -186,9 +186,9 @@ use crate::netinet::tcp_timer::{
 };
 use crate::netinet::tcp_usrreq::{TCB6TABLE, TCBTABLE};
 use crate::netinet::tcp_var::{
-    Sackhole, TCP_RTT_BASE_SHIFT, TCP_RTTVAR_SHIFT, TCPS_NCOUNTERS, TF_NOOPT, TF_PMTUD_PEND,
-    TF_RCVD_TSTMP, TF_REQ_SCALE, TF_REQ_TSTMP, Tcpcb, Tcpqent, TcpstatCounters, intotcpcb,
-    tcp_rexmtval, tcpstat_inc,
+    Sackhole, TCP_RTT_BASE_SHIFT, TCP_RTTVAR_SHIFT, TF_NOOPT, TF_PMTUD_PEND, TF_RCVD_TSTMP,
+    TF_REQ_SCALE, TF_REQ_TSTMP, Tcpcb, Tcpqent, TcpstatCounters, intotcpcb, tcp_rexmtval,
+    tcpstat_inc,
 };
 use crate::netinet6::icmp6::icmp6_mtudisc_update;
 use crate::netinet6::in6::{
@@ -273,9 +273,6 @@ pub static TCPCB_POOL: Pool = Pool::new();
 pub static TCPQE_POOL: Pool = Pool::new();
 /// `sackhl_pool`.
 pub static SACKHL_POOL: Pool = Pool::new();
-
-/// `tcpcounters`: tcp statistics.
-pub static TCPCOUNTERS: [AtomicU64; TCPS_NCOUNTERS] = [const { AtomicU64::new(0) }; TCPS_NCOUNTERS];
 
 /// \[I\] `tcp_secret`.
 static TCP_SECRET: StaticCell<[u8; 16]> = StaticCell::new([0; 16]);

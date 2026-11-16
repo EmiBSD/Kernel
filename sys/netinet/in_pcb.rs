@@ -156,7 +156,7 @@
 //! by a count of the kernel's pcb (`in_pcbref`/`in_pcbunref`, the C's `inp_refcnt`), the
 //! kernel's counted answers (lookups, the iterator) become such references here, the
 //! kernel's functions choose the family themselves since N6.5c (`in_pcbbind_locked`,
-//! `in_pcbconnect`, `in_pcbrtentry`; the flow id is computed here per family), the
+//! `in_pcbconnect`, `in_pcbrtentry`; the flow id too since N6.6a1), the
 //! socket-address writers and `in_pcbset_addr` send an `INP_IPV6` pcb to
 //! `netinet6/in6_pcb.rs`'s adapters, and the members `bsd` keeps (the IPv4 options, the ICMPv6
 //! filter) are read here; the IPv4 multicast options are the kernel's since N6.4c1, the IPv6
@@ -180,14 +180,11 @@ use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
 use crate::net::route::{Rtentry, as_static};
-use crate::net::toeplitz::stoeplitz_ip4port;
 use crate::netinet::icmp6::Icmp6Filter;
 use crate::netinet::in_::{InAddr, SockaddrIn};
 use crate::netinet::ip_ipsp::SockaddrUnion;
 #[cfg(feature = "inet6")]
-use crate::netinet6::in6_pcb::{
-    in6_pcb_newflow, in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr,
-};
+use crate::netinet6::in6_pcb::{in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr};
 use crate::sys::errno::Errno;
 use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
 use crate::sys::proc::Proc;
@@ -415,29 +412,12 @@ pub fn in_pcbaddrisavail(
     k::in_pcbaddrisavail(inp, sin, wild, net_held("in_pcbaddrisavail").net())
 }
 
-/// The flow id of a connected pcb (`NSTOEPLITZ`), after the table mutex as the C.
-fn set_flowid4(inp: &Inpcb) {
-    inp.inp_flowid.set(stoeplitz_ip4port(
-        inp.inp_faddr.get().s_addr,
-        inp.inp_laddr.get().s_addr,
-        inp.inp_fport.get(),
-        inp.inp_lport.get(),
-    ));
-}
-
 /// `in_pcbconnect`: connects `inp` to the address in `nam`; both address and port must be
 /// specified. If the socket has no local address yet, one is picked. The kernel's, for both
-/// families, then the flow id of the family (`NSTOEPLITZ`).
+/// families (it sets the flow id, `NSTOEPLITZ`).
 pub fn in_pcbconnect(inp: &'static Inpcb, nam: &Mbuf) -> Result<(), Errno> {
     let p = curproc_or_panic("in_pcbconnect");
-    k::in_pcbconnect(inp, nam, p, net_held("in_pcbconnect").net())?;
-    #[cfg(feature = "inet6")]
-    if inp.has_flags(INP_IPV6) {
-        in6_pcb_newflow(inp);
-        return Ok(());
-    }
-    set_flowid4(inp);
-    Ok(())
+    k::in_pcbconnect(inp, nam, p, net_held("in_pcbconnect").net())
 }
 
 /// `curproc`, which the socket requests run as.
@@ -706,9 +686,7 @@ pub fn in_pcbset_addr(
     }
     crate::kassert!(fsa.sa_family() == AF_INET);
     crate::kassert!(lsa.sa_family() == AF_INET);
-    k::in_pcbset_addr(inp, &fsa.sin(), &lsa.sin(), rtableid)?;
-    set_flowid4(inp);
-    Ok(())
+    k::in_pcbset_addr(inp, &fsa.sin(), &lsa.sin(), rtableid)
 }
 
 /// `satosin6_const(sa)` of a generic socket address image, read out of it (`hal::pod`'s copy

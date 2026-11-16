@@ -27,7 +27,7 @@
 
 pub use hal::sys::netinet_ip as ip;
 pub use hal::sys::netinet_tcp as tcp;
-pub use kernel::netinet::{in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id};
+pub use kernel::netinet::{in_cksum, in_systm, in4_cksum, inet_nat64, ip_ecn, ip_id, tcp_fsm};
 
 pub mod icmp6;
 #[forbid(unsafe_code)]
@@ -58,8 +58,6 @@ pub mod ipsec_input;
 pub mod ipsec_output;
 pub mod raw_ip;
 pub mod tcp_debug;
-#[forbid(unsafe_code)]
-pub mod tcp_fsm;
 pub mod tcp_input;
 pub mod tcp_output;
 #[forbid(unsafe_code)]
