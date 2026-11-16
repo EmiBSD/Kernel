@@ -1217,3 +1217,12 @@ status = "applied"
 emibsd = "b893bbc3834d"
 method = "cherry-pick-conflicts"
 reason = "comments only: native dropped the expanded OpenBSD, NetBSD and FreeBSD id lines at N0 (decision 20) and lz check strips them on both sides, so of LZ's 1,139 files only the forms N0 left need a change here: 18 whole-line id comments (KAME's, and unexpanded NetBSD ones) in 15 files and LZ's seven doc lines that said the id line was kept; no .S file or linker script here has one; layout.rs refuses an id line outside the code zone, with LZ's test adapted (reimplemented: native's layout check differs); gen-syscalls writes none since N0; amd64's mpconfig.rs takes its one comment line uncompiled (decision 44); LZ's rules, CLAUDE.md, agents, PORTING.md and ports.toml halves are LZ's (native's rust-kernel.md already says the lines are gone)"
+
+[[commit]]
+lz = "b64b4fc5c1e6"
+subject = "dev/ic: start the timeout wheel in pckbc's tests"
+modules = ["sys/dev/ic/pckbc.rs"]
+status = "applied"
+emibsd = "67589c4dd788"
+method = "cherry-pick"
+reason = "test code only: pckbc's test setup starts the wheel under the timeout test lock, as pms and the others do; here the path is the legacy shim sys/sys/timeout.rs (kern::kern_timeout), whose timeout_startup starts the kernel crate's wheel; closes the host-test flake STATUS listed for dev::ic::pckbc"

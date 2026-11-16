@@ -1312,6 +1312,9 @@ mod tests {
         let g = crate::kern::kern_timeout::tests::LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        // The wheel, fresh: a resend adds a timeout, and this may be the first test of
+        // the process to touch it (an uninitialised queue is a null dereference).
+        crate::kern::kern_timeout::timeout_startup();
         let t: &'static PckbcInternal = Box::leak(Box::new(PckbcInternal::new()));
         let q: &'static PckbcSlotdata = Box::leak(Box::new(PckbcSlotdata::new()));
         pckbc_init_slotdata(q);
