@@ -91,7 +91,6 @@ use crate::net::pf::pf_test;
 use crate::net::pfvar::{PF_FWD, PF_OUT, PF_PASS};
 use crate::net::route::{RT_RESOLVE, RTF_HOST, Route, as_static, rtfree};
 use crate::netinet::in_::InAddr;
-use crate::netinet::in_pcb::InpcbLegacy as _;
 use crate::netinet::in_pcb::sotoinpcb;
 use crate::netinet::ip::IP_DF;
 use crate::netinet::ip_icmp::icmp_mtudisc_clone;
@@ -122,7 +121,7 @@ use crate::sys::systm::{kernel_lock, kernel_unlock};
 /// lock the caller holds proved through the `SaToken`.
 pub fn ip_output(
     m: &'static Mbuf,
-    opt: Option<&'static Mbuf>,
+    opt: Option<&Mbuf>,
     ro: Option<&mut Route>,
     flags: i32,
     imo: Option<&IpMoptions>,
@@ -375,9 +374,8 @@ pub fn ip_ctloutput(
     let Some(inp) = sotoinpcb(so) else {
         panic(format_args!("ip_ctloutput: socket {:p} without inpcb", so));
     };
-    let mut options = inp.options().map(unpark);
-    inp.set_options(None);
-    let r = kernel::netinet::ip_output::ip_ctloutput(
+    let mut options = inp.options();
+    kernel::netinet::ip_output::ip_ctloutput(
         op,
         inp,
         &mut options,
@@ -385,9 +383,7 @@ pub fn ip_ctloutput(
         optname,
         m.map(mut_of),
         crate::net::if_::net_held("ip_ctloutput").net(),
-    );
-    inp.set_options(options.map(park));
-    r
+    )
 }
 
 /// `in_hdr_cksum_out`: the IP header checksum, by the interface if it can or in software (the

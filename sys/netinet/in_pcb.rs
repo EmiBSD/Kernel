@@ -178,7 +178,6 @@ use kernel::netinet::in_pcb as k;
 
 use crate::kern::proc_glue::BsdProcGlue;
 use crate::kern::subr_prf::panic;
-use crate::kern::uipc_mbuf::m_freem;
 use crate::net::if_::net_held;
 use crate::net::route::{Rtentry, as_static};
 use crate::net::toeplitz::stoeplitz_ip4port;
@@ -190,7 +189,7 @@ use crate::netinet6::in6_pcb::{
     in6_pcb_newflow, in6_pcbset_addr, in6_setpeeraddr, in6_setsockaddr,
 };
 use crate::sys::errno::Errno;
-use crate::sys::mbuf::{Mbuf, mtod, of_parked};
+use crate::sys::mbuf::{Mbuf, mtod, park, unpark};
 use crate::sys::proc::Proc;
 use crate::sys::socket::AF_INET;
 #[cfg(feature = "inet6")]
@@ -332,9 +331,14 @@ pub fn in_pcballoc(
 
 /// The members `bsd` keeps in the kernel's pcb (its words), read and written here.
 pub trait InpcbLegacy {
-    /// `inp->inp_options`: the IPv4 options, a parked mbuf chain.
-    fn options(&self) -> Option<&'static Mbuf>;
-    /// `inp->inp_options = m` (the old chain is the caller's to free).
+    /// `inp->inp_options != NULL`, under the socket lock (the kernel's loan, checked).
+    fn has_options(&self) -> bool;
+    /// `f` with `inp->inp_options` lent for the call (the transports' `ip_output` argument).
+    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R;
+    /// `inp->inp_options` taken out, parked for `bsd` (`NULL` left behind).
+    fn take_options(&self) -> Option<&'static Mbuf>;
+    /// `inp->inp_options = m` (a parked chain given over to the kernel's cell; an old chain,
+    /// which the C's callers never leave, is freed).
     fn set_options(&self, m: Option<&'static Mbuf>);
     /// `inp->inp_icmp6filt`'s pointer.
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>>;
@@ -345,13 +349,21 @@ pub trait InpcbLegacy {
 }
 
 impl InpcbLegacy for Inpcb {
-    fn options(&self) -> Option<&'static Mbuf> {
-        NonNull::new(self.inp_options.get_mut().cast::<Mbuf>()).map(of_parked)
+    fn has_options(&self) -> bool {
+        self.options().is_some()
+    }
+
+    fn with_options<R>(&self, f: impl FnOnce(Option<&Mbuf>) -> R) -> R {
+        let opts = self.options();
+        f(opts.as_deref())
+    }
+
+    fn take_options(&self) -> Option<&'static Mbuf> {
+        core::mem::take(&mut *self.options()).map(park)
     }
 
     fn set_options(&self, m: Option<&'static Mbuf>) {
-        self.inp_options
-            .set(m.map_or(ptr::null(), |m| ptr::from_ref(m).cast()));
+        drop(core::mem::replace(&mut *self.options(), m.map(unpark)));
     }
 
     fn icmp6filt_ptr(&self) -> Option<NonNull<Icmp6Filter>> {
@@ -443,21 +455,13 @@ pub fn in_pcbdisconnect(inp: &'static Inpcb) {
     }
 }
 
-/// What `in_pcbdetach` frees of `bsd`'s members of an IPv4 pcb (its options), at the C's
-/// point (an IPv6 pcb's options are the kernel's, which frees them).
-fn free_legacy_opts(inp: &Inpcb) {
-    let opts = inp.options();
-    inp.set_options(None);
-    m_freem(opts);
-}
-
 /// `in_pcbdetach`: unlinks `inp` from its socket and its table and drops the socket's
 /// reference.
 pub fn in_pcbdetach(inp: &'static Inpcb) {
     let Some(h) = hal::pool::PoolArc::from_ref(inp) else {
         panic(format_args!("in_pcbdetach: inpcb {inp:p} not a pool item"));
     };
-    k::in_pcbdetach(h, net_held("in_pcbdetach").net(), free_legacy_opts);
+    k::in_pcbdetach(h, net_held("in_pcbdetach").net());
 }
 
 /// `in_pcbsolock`: locks the socket of `inp`; `None` when it is detached (the kernel's

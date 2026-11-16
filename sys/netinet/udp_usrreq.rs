@@ -1299,9 +1299,10 @@ pub fn udp_output(
         cf.set(cf.get() | crate::sys::mbuf::M_FLOWID);
     }
 
+    let opts = inp.options();
     let error = ip_output(
         m,
-        inp.options(),
+        opts.as_deref(),
         Some(&mut *inp.route()),
         inp.socket().options() & SO_BROADCAST,
         inp.moptions_out().as_ref(),

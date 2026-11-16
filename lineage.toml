@@ -13065,7 +13065,7 @@ reason = "hal runtime, written new (N6.0): the views of an AbiPod structure over
 [[extra]]
 rust = "sys/hal/slot.rs"
 crate = "hal"
-reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl); N6.6a0 (D-15, the user's decision of 2026-11-16): LoanSlot<T>, a value lent out and put back by one user at a time over ReadMostly's writer claim, never shared, Sync for T: Send (+1 unsafe impl), for inp_options"
+reason = "hal runtime, written new (N4.6a, N4.8 decision 12 pulled forward): ReadMostly<T>, a value read on a hot path by any CPU and replaced rarely (the pin tables ps_pin/ps_libcpin): readers counted in one atomic, a writer claims the cell only with none inside; 3 unsafe (the shared and the exclusive reference, the Sync impl); N6.6a0 (D-15, the user's decision of 2026-11-16): LoanSlot<T>, a value lent out and put back by one user at a time over ReadMostly's writer claim, never shared, Sync for T: Send (+1 unsafe impl), for inp_options; LoanSlot::lend and SlotLoan, the value lent out and put back by the guard's drop (0 unsafe)"
 
 [[extra]]
 rust = "sys/hal/seqlock.rs"
@@ -16446,7 +16446,7 @@ rust = "sys/kernel/netinet/in_pcb.rs"
 lz = ["sys/netinet/in_pcb.rs"]
 status = "redesigned"
 crate = "kernel"
-notes = "sizes (D-3, D-4): inpcb 536 bytes, 552 with the counted item's header; inp_mou as one cell (the C's union of inp_moptions and inp_moptions6) would save 40 B per pcb (N12); N6.6a0: in_pcbsolock(inp, net) -> Option<SoLocked> (so_lock taken as the socket's protocol takes it, socket.rs's solock_net: a witness for a kernel protocol, opened in parts by SoLocked::inet; the caller's proof carried; the drop is in_pcbsounlock); LZ's detached pair renamed in_pcbsolock_detached / in_pcbsounlock_detached for bsd's adapter (N6.6a5/6.6b); in_pcbnotifyall takes the caller's net proof and lends notify the &mut SoLocked"
+notes = "sizes (D-3, D-4): inpcb 536 bytes, 552 with the counted item's header; inp_mou as one cell (the C's union of inp_moptions and inp_moptions6) would save 40 B per pcb (N12); N6.6a0: in_pcbsolock(inp, net) -> Option<SoLocked> (so_lock taken as the socket's protocol takes it, socket.rs's solock_net: a witness for a kernel protocol, opened in parts by SoLocked::inet; the caller's proof carried; the drop is in_pcbsounlock); LZ's detached pair renamed in_pcbsolock_detached / in_pcbsounlock_detached for bsd's adapter (N6.6a5/6.6b); in_pcbnotifyall takes the caller's net proof and lends notify the &mut SoLocked; N6.6a0 (D-15, the user's decision of 2026-11-16): inp_options is the kernel's hal::slot::LoanSlot<Option<MbufBox>>, lent by Inpcb::options under the socket lock's check and freed by in_pcbdetach (its free_opts closure gone); inpcb 552 bytes, 568 with the item's header (+16)"
 
 [[module.fn]]
 lz = "sys/netinet/in_pcb.rs::in_pcbsounlock"

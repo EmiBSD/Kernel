@@ -401,7 +401,7 @@ pub fn rip_output(
             return Err(Errno::EMSGSIZE);
         }
 
-        let Some(n) = rip_chkhdr(m, inp.options()) else {
+        let Some(n) = rip_chkhdr(m, inp.has_options()) else {
             return Err(Errno::EINVAL);
         };
         m = n;
@@ -435,9 +435,10 @@ pub fn rip_output(
         pf_mbuf_link_inpcb(m, Some(inp));
     }
 
+    let opts = inp.options();
     ip_output(
         m,
-        inp.options(),
+        opts.as_deref(),
         Some(&mut *inp.route()),
         flags,
         inp.moptions_out().as_ref(),
@@ -448,7 +449,7 @@ pub fn rip_output(
 
 /// `rip_chkhdr`: checks the IP header (and its options) a user handed over with
 /// `IP_HDRINCL`; the packet, pulled up, or `None` when it was freed.
-pub fn rip_chkhdr(m: &'static Mbuf, options: Option<&'static Mbuf>) -> Option<&'static Mbuf> {
+pub fn rip_chkhdr(m: &'static Mbuf, options: bool) -> Option<&'static Mbuf> {
     if (m.m_pkthdr().len.get() as usize) < size_of::<Ip>() {
         m_freem(m);
         return None;
@@ -479,7 +480,7 @@ pub fn rip_chkhdr(m: &'static Mbuf, options: Option<&'static Mbuf>) -> Option<&'
     // Don't allow both user specified and setsockopt options. If options are present verify
     // them.
     if hlen != size_of::<Ip>() {
-        if options.is_some() {
+        if options {
             m_freem(m);
             return None;
         }

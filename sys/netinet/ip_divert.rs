@@ -218,7 +218,7 @@ fn divert_output(
             break 'fail Errno::EMSGSIZE;
         }
 
-        let Some(n) = rip_chkhdr(m, None) else {
+        let Some(n) = rip_chkhdr(m, false) else {
             divstat_inc(DivstatCounters::DivsErrors);
             return Err(Errno::EINVAL);
         };

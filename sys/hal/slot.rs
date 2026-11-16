@@ -191,6 +191,45 @@ impl<T: Default> LoanSlot<T> {
     pub fn take(&self) -> T {
         self.replace(T::default())
     }
+
+    /// The value lent until the returned guard drops, which puts it back: taken out (the
+    /// default left in the slot meanwhile), so no claim is held while the borrower uses it.
+    pub fn lend(&self) -> SlotLoan<'_, T> {
+        SlotLoan {
+            slot: self,
+            val: self.take(),
+        }
+    }
+}
+
+/// A [`LoanSlot`]'s value lent ([`LoanSlot::lend`]): the borrower's alone until the drop puts
+/// it back (whatever the slot was given meanwhile is dropped then; the slot's users lend it
+/// one at a time, under their own lock).
+pub struct SlotLoan<'a, T: Default> {
+    /// Where the value goes back.
+    slot: &'a LoanSlot<T>,
+    /// The value.
+    val: T,
+}
+
+impl<T: Default> Deref for SlotLoan<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.val
+    }
+}
+
+impl<T: Default> core::ops::DerefMut for SlotLoan<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.val
+    }
+}
+
+impl<T: Default> Drop for SlotLoan<'_, T> {
+    fn drop(&mut self) {
+        drop(self.slot.replace(core::mem::take(&mut self.val)));
+    }
 }
 
 impl<T: Default> Default for LoanSlot<T> {
@@ -273,6 +312,19 @@ mod tests {
         assert!(o.update(|v| v.is_none()), "lent out: the default left");
         assert!(o.replace(lent).is_none());
         assert_eq!(o.update(|v| v.as_ref().map(Vec::len)), Some(1));
+        {
+            let mut l = o.lend();
+            assert!(
+                o.update(|v| v.is_none()),
+                "lent: the slot holds the default"
+            );
+            l.as_mut().map(|v| v.push(2));
+        }
+        assert_eq!(
+            o.take(),
+            Some(std::vec![1, 2]),
+            "the loan put back, changed"
+        );
     }
 
     /// The embed idiom's proof (docs/IDIOMS.md) for a cell of an optional box or counted

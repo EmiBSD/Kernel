@@ -242,19 +242,25 @@
 //!   members in the size test; the three queue entries 48, the two address unions 32,
 //!   `struct route` 72, `struct refcnt` 8, the header union 40); LZ's `Inpcb` was 352 (measured: a replica of its members over
 //!   this tree's types, LZ's `Route` of 72 and `Refcnt` of 8; the tree's at 2baa2aff, with
-//!   `RouteCell`, the same); here 536, 552 with the counted item's header (the pool and the
+//!   `RouteCell`, the same); here 552, 568 with the counted item's header (the pool and the
 //!   count): the three pinned entries (96: a lock identity each beside the two links), the
 //!   route cache's cell (72), the IPv4 multicast options' and (N6.5c, +64) the IPv6 packet
-//!   and multicast options' (40 each), the anchor (16), the IPv4 and IPv6 members side by
+//!   and multicast options' (40 each), the IPv4 options' slot (24, N6.6a0: +16 over `bsd`'s
+//!   word), the anchor (16), the IPv4 and IPv6 members side by
 //!   side (the C's unions), the hash slots (8). docs/SCAFFOLDING.md's pool-size row; a diet is
 //!   N12's: `inp_mou` as one cell (the C's union of `inp_moptions` and `inp_moptions6`, a
 //!   family-tagged value) would save 40 B per pcb (N12).
 //! - The IPv6 packet and multicast options are the kernel's typed cells since N6.5c (D-10),
 //!   lent by [`Inpcb::outputopts6`] and [`Inpcb::moptions6`] under the socket lock (the C's
 //!   union of `inp_options` and `inp_outputopts6` is two members here, as in LZ).
-//! - `bsd`'s own members (the IPv4 options, the ICMPv6 filter, the per-protocol pcb) are
-//!   words `bsd` keeps (`hal::link::PtrWord`), which the kernel never reads (the IPv4 options
-//!   are lent to `ip_ctloutput` by `bsd`'s caller, N6.4c1's R11; the filter is N6.6b's); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
+//! - N6.6a0 (D-15): the IPv4 options are the kernel's cell, a `hal::slot::LoanSlot` of the
+//!   chain (an mbuf chain is not `Sync`, so not a `ReadMostly`), lent by [`Inpcb::options`]
+//!   under the socket lock's check and freed by [`in_pcbdetach`]; `bsd`'s transports reach
+//!   it through their adapter's loans (`InpcbLegacy`). The re-keying of the pcb's `[s]`
+//!   members to `so_lock`'s witness is N6.6b's.
+//! - `bsd`'s own members (the ICMPv6 filter, the per-protocol pcb) are words `bsd` keeps
+//!   (`hal::link::PtrWord`), which the kernel never reads (the filter is N6.6b's, the tcpcb
+//!   N6.6a2's); `inp_upcall` is set once (`hal::once::OnceStatic`), as wg(4) sets
 //!   it on a new socket; `inp_pf_sk` is pf's word ([`PfSlot`]).
 //! - The table: [`Inpcbtable`] holds the queue (a pinned list keyed to its mutex) and the
 //!   SipHash keys; its mutex holds the hash arrays (`MArray`s of pinned lists, `hashinit`'s),
@@ -315,7 +321,7 @@ use hal::once::OnceStatic;
 use hal::pinlist::{PinEntry, PinList};
 use hal::pool::{PR_NOWAIT, PR_WAITOK, PoolArc, PoolHome, TypedPool};
 use hal::rwlock::{RW_WRITE, Witness};
-use hal::slot::ReadMostly;
+use hal::slot::{LoanSlot, ReadMostly, SlotLoan};
 use hal::sys::errno::Errno;
 use hal::sys::net_if::IFF_UP;
 use hal::sys::net_route::{RTF_DYNAMIC, RTF_GATEWAY};
@@ -338,7 +344,7 @@ use crate::fs::subr::{hashinit, siphash_key};
 use crate::net::if_::{if_get, ifa_ifwithaddr};
 use crate::net::if_var::AtomicCell;
 use crate::net::ipsec_hooks::{IpsecLevel, UDPENCAP_PORT};
-use crate::net::mbuf::{M_WAIT, Mbuf, PF_TAG_DIVERTED, PF_TAG_TRANSLATE_LOCALHOST};
+use crate::net::mbuf::{M_WAIT, Mbuf, MbufBox, PF_TAG_DIVERTED, PF_TAG_TRANSLATE_LOCALHOST};
 use crate::net::pf_hooks::{PF_DIVERT_REPLY, PF_DIVERT_TO, PfSlot, pf};
 use crate::net::proto::PR_CONNREQUIRED;
 use crate::net::route::{Route, Rtentry, rtdeletemsg};
@@ -903,8 +909,10 @@ pub struct Inpcb<G: ProcGlue> {
     pub inp_ip: IpProto,
     /// `inp_ipv6`: IPv6 header prototype (`inp_hu.hu_ipv6`).
     pub inp_ipv6: Ip6Proto,
-    /// `inp_options`: IPv4 options, `bsd`'s parked mbuf chain (until N6.6).
-    pub inp_options: PtrWord<c_void>,
+    /// \[s\] `inp_options`: IPv4 options (`ip_pcbopts`' mbuf chain), reached only through
+    /// [`Inpcb::options`], which checks the socket lock: a `LoanSlot`, since an mbuf chain is
+    /// not `Sync` (N6.6a0, D-15).
+    inp_options: LoanSlot<Option<MbufBox>>,
     /// \[s\] `inp_outputopts6`: IPv6 options (`ip6_pcbopt`'s `M_IP6OPT` allocation), reached
     /// only through [`Inpcb::outputopts6`], which checks the socket lock.
     inp_outputopts6: ReadMostly<Option<MBox<Ip6Pktopts>>>,
@@ -983,7 +991,7 @@ impl<G: ProcGlue> Inpcb<G> {
             inp_flags: AtomicCell::new(),
             inp_ip: IpProto::new(),
             inp_ipv6: Ip6Proto::new(),
-            inp_options: PtrWord::new(),
+            inp_options: LoanSlot::new(None),
             inp_outputopts6: ReadMostly::new(None),
             inp_hops: AtomicCell::new(),
             inp_moptions: ReadMostly::new(None),
@@ -1066,6 +1074,16 @@ impl<G: ProcGlue> Inpcb<G> {
             .read()
             .as_deref()
             .map(|imo| IpMoptions::output(imo.imo_ifidx, imo.imo_ttl, imo.imo_loop))
+    }
+
+    /// `&inp->inp_options`: the IPv4 options, lent until the loan drops (the C's `struct mbuf
+    /// **` of `ip_pcbopts`, the transports' `ip_output` argument, `tcp_output`'s TSO test,
+    /// `syn_cache_get`'s source route, `in_pcbdetach`'s free). The options are `[s]`: checked
+    /// as [`Inpcb::route`] checks the route cache, a loan being a move out of the cell and
+    /// back (two atomics). `panic(9)` without the lock.
+    pub fn options(&self) -> SlotLoan<'_, Option<MbufBox>> {
+        self.assert_route_locked("inp_options");
+        self.inp_options.lend()
     }
 
     /// `&inp->inp_outputopts6`: the IPv6 packet options, lent until the loan drops (the C's
@@ -1960,11 +1978,7 @@ pub fn in_pcbdisconnect<G: ProcGlue>(inp: &Inpcb<G>) -> bool {
 /// reference; `free_opts` frees what `bsd` keeps of an IPv4 pcb (its IPv4 options), at the
 /// C's point, before the multicast options; an IPv6 pcb's packet and multicast options are
 /// freed here (`ip6_freepcbopts`, `ip6_freemoptions`).
-pub fn in_pcbdetach<G: ProcGlue>(
-    inp: InpcbRef<G>,
-    net: &NetHeld<'_>,
-    free_opts: impl FnOnce(&Inpcb<G>),
-) {
+pub fn in_pcbdetach<G: ProcGlue>(inp: InpcbRef<G>, net: &NetHeld<'_>) {
     let so = inp.socket();
     let table = inp.table();
 
@@ -1978,7 +1992,8 @@ pub fn in_pcbdetach<G: ProcGlue>(
         ip6_freepcbopts(core::mem::take(&mut *inp.outputopts6()));
         ip6_freemoptions(core::mem::take(&mut *inp.moptions6()), net);
     } else {
-        free_opts(&inp);
+        // m_freem(inp->inp_options): the chain dropped with its box.
+        drop(core::mem::take(&mut *inp.options()));
         ip_freemoptions(core::mem::take(&mut *inp.moptions()), net);
     }
     if let Some(pf) = pf() {
@@ -2865,7 +2880,7 @@ pub(crate) mod testinet {
         so.st_set(SS_NOFDREF);
         let w = NETLOCK.write();
         let net = NetHeld::of(&w).expect("the net lock");
-        in_pcbdetach(inp, &net, |_| {});
+        in_pcbdetach(inp, &net);
         drop(w);
         drop(so);
     }
@@ -2966,7 +2981,8 @@ mod tests {
             ("2 x In6AddrCell", 32),
             ("2 x port", 4),
             ("inp_socket", size_of::<Option<SocketRef<G>>>()),
-            ("3 x PtrWord", 3 * size_of::<PtrWord<c_void>>()),
+            ("2 x PtrWord", 2 * size_of::<PtrWord<c_void>>()),
+            ("inp_options", size_of::<LoanSlot<Option<MbufBox>>>()),
             ("inp_route", size_of::<ReadMostly<Route>>()),
             (
                 "inp_moptions",
@@ -2998,14 +3014,15 @@ mod tests {
             size_of::<Inpcb<G>>(),
             size_of::<Route>()
         );
-        // 536 bytes, 552 with the counted item's header (the count and the pool), against the
+        // 552 bytes, 568 with the counted item's header (the count and the pool), against the
         // C's struct inpcb of 328 (LP64) and LZ's 352 (the module's Redesign): the three
         // pinned entries (96: a lock identity each besides the two links), the route cache's
         // cell (72), the three options' cells (40 each: the box carries its malloc type and
-        // allocator; N6.5c's two IPv6 ones were 8-byte words before) and the anchor (16) are
-        // the growth.
-        assert_eq!(sum, 535);
-        assert_eq!(size_of::<Inpcb<G>>(), 536);
+        // allocator; N6.5c's two IPv6 ones were 8-byte words before), the IPv4 options' slot
+        // (24: the claim word and the chain's box, N6.6a0's D-15, a word of bsd's before) and
+        // the anchor (16) are the growth.
+        assert_eq!(sum, 551);
+        assert_eq!(size_of::<Inpcb<G>>(), 552);
 
         // The C's struct inpcb on LP64, as repr(C) lays out in_pcb.h's members in order (the
         // pointers as words, the unions as their largest member's words).
@@ -3318,7 +3335,7 @@ mod tests {
         assert_eq!(nout(), before + 1);
         assert_eq!(
             crate::net::domain::net::<Tg>().inpcb.pool.item_size(),
-            Some(552),
+            Some(568),
             "vmstat -m's size of an \"inpcb\" item: the value and the counted item's header"
         );
         assert_eq!(inp.legacy_count(), 1, "refcnt_init: the socket's");
@@ -3437,6 +3454,48 @@ mod tests {
         let (_g, _p) = testinet::setup();
         let (_so, inp) = testinet::pcb(testinet::table(16));
         drop(inp.route());
+    }
+
+    #[test]
+    #[should_panic(expected = "inp_options: the socket lock of inpcb")]
+    fn the_ip_options_are_refused_without_the_socket_lock() {
+        let (_g, _p) = testinet::setup();
+        let (_so, inp) = testinet::pcb(testinet::table(16));
+        let _r = NETLOCK.read();
+        drop(inp.options());
+    }
+
+    #[test]
+    fn the_ip_options_are_lent_under_the_socket_lock_and_freed_by_the_detach() {
+        // N6.6a0 (D-15): inp_options is the kernel's cell, a LoanSlot of the chain: lent
+        // under the socket lock (here the exclusive net lock, soassertlocked's first case),
+        // put back by the loan's drop, and freed by in_pcbdetach (the C's m_freem there).
+        use crate::net::mbuf::{M_WAIT, MT_SOOPTS, m_get, mbstat_read};
+
+        let (_g, _p) = testinet::setup();
+        let (so, inp) = testinet::pcb(testinet::table(16));
+        let before = mbstat_read().m_mtypes[MT_SOOPTS as usize];
+        let (lent, kept) = {
+            let _w = NETLOCK.write();
+            *inp.options() = m_get(M_WAIT, MT_SOOPTS);
+            let lent = {
+                let o = inp.options();
+                let during = inp.inp_options.update(|v| v.is_none());
+                o.is_some() && during
+            };
+            (lent, inp.options().is_some())
+        };
+        let held = mbstat_read().m_mtypes[MT_SOOPTS as usize];
+        // A handle kept past the detach (a lookup's, a walk's): the options go at the
+        // detach, not with the item.
+        let keep = inp.clone();
+        testinet::release(so, inp);
+        let after = mbstat_read().m_mtypes[MT_SOOPTS as usize];
+        drop(keep);
+        assert!(lent, "lent out: the slot empty meanwhile");
+        assert!(kept, "the loan put the chain back");
+        assert_eq!(held, before + 1);
+        assert_eq!(after, before, "in_pcbdetach freed the options");
     }
 
     #[test]

@@ -469,7 +469,7 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
             let maxseg = i64::from(tp.t_maxseg.get());
             // `inp_options` and `inp_outputopts6` (one union slot in C, two members here).
             if TCP_DO_TSO.load(Ordering::Relaxed) != 0
-                && inp.options().is_none()
+                && !inp.has_options()
                 && !inp.has_outputopts6()
                 && !tp.has_flags(TF_SIGNATURE)
                 && len >= 2 * maxseg
@@ -1204,9 +1204,10 @@ pub fn tcp_output(tp: &'static Tcpcb) -> Result<(), Errno> {
                 ip.ip_tos |= IPTOS_ECN_ECT0;
             }
             mtod_ip_store(m, &ip);
+            let opts = inp.options();
             ip_output(
                 m,
-                inp.options(),
+                opts.as_deref(),
                 Some(&mut *inp.route()),
                 if ip_mtudisc.load(Ordering::Relaxed) != 0 {
                     IP_MTUDISC

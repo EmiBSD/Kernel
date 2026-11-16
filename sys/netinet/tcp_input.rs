@@ -3804,7 +3804,7 @@ fn syn_cache_get(
             ip.ip_ttl = listeninp.inp_ip.get().ip_ttl;
             ninp.inp_ip.set(ip);
             ninp.set_options(ip_srcroute(m));
-            if ninp.options().is_none() {
+            if !ninp.has_options() {
                 ninp.set_options(sc.sc_ipopts.get());
                 sc.sc_ipopts.set(None);
             }
