@@ -16512,7 +16512,7 @@ rust = "sys/kernel/netinet/tcp_subr.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_subr.rs"]
 status = "redesigned"
-notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch; N6.6a2 commit 2: tcp_template (the template taken out and given back filled), tcp_respond (headers written in place with hal::pod, the pcb's route and IPv6 options lent; the caller's net proof), tcp_free (the slot emptied: the C's pool_put after Closed), Closed, tcp_rscale and tcp_set_iss_tsm over TcpState, tcp_signature (the key lent by Ipsec's tdb_amxkey leg; signature_digest testable with a fixed key); the five tcp_signature_tdb_* xform functions stay bsd's (D-10, N8); N6.6a2 commit 4: tcp_init<G> (pools, hard limits, the tables, the secret OnceStatics, syn_cache_init; tcp6_mtudisc_callback's registration with N6.6a3's ctlinput), tcp_newtcpcb (the TcpState built in the pool item's init, the five timers bound to the pcb, the slot set, the block returned opened as a Tp), tcp_close (Tp by value -> Closed: queue, timers, SYN cache, holes, template, soisdisconnected, in_pcbdetach, tcps_closed in the C's order; the pool_put is tcp_free's), tcp_freeq one entry at a time; testtcp, the host tests' TCP fixture"
+notes = "N6.6a2: tcp_subr.c's call-closed part in the kernel, beside bsd's TCP (unregistered until N6.6a5, D-2): the globals (tunables, the tcpqe and sackhl BoxPools with their hard limits, tcp_iss the data of tcp_timer_mtx, tcp_secret and its SHA-512 context OnceStatics, tcp_starttime); bsd's sys/netinet/tcp_subr.rs stays live until the switch; N6.6a2 commit 2: tcp_template (the template taken out and given back filled), tcp_respond (headers written in place with hal::pod, the pcb's route and IPv6 options lent; the caller's net proof), tcp_free (the slot emptied: the C's pool_put after Closed), Closed, tcp_rscale and tcp_set_iss_tsm over TcpState, tcp_signature (the key lent by Ipsec's tdb_amxkey leg; signature_digest testable with a fixed key); the five tcp_signature_tdb_* xform functions stay bsd's (D-10, N8); N6.6a2 commit 4: tcp_init<G> (pools, hard limits, the tables, the secret OnceStatics, syn_cache_init; tcp6_mtudisc_callback's registration with N6.6a3's ctlinput), tcp_newtcpcb (the TcpState built in the pool item's init, the five timers bound to the pcb, the slot set, the block returned opened as a Tp), tcp_close (Tp by value -> Closed: queue, timers, SYN cache, holes, template, soisdisconnected, in_pcbdetach, tcps_closed in the C's order; the pool_put is tcp_free's), tcp_freeq one entry at a time; testtcp, the host tests' TCP fixture; review nits 1, 2, 6, 8: tcp_secret_ctx gone (the ISN context made per call over TCP_SECRET, kpanic before tcp_init), the stack copy wiped; tcp_template must_use; tests pin the ISS inputs order and the two pools hard limits; tcp_test_reset (the SYN cache sets forgotten, the ring zeroed) called by testtcp::setup"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_subr.rs::TCPCOUNTERS"
@@ -16537,6 +16537,11 @@ kind = "renamed"
 [[module.fn]]
 lz = "sys/netinet/tcp_subr.rs::tcphdr_bytes"
 native = ["put_hdr"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_subr.rs::TCP_SECRET_CTX"
+native = ["tcp_set_iss_tsm"]
 kind = "merged"
 
 [[module]]

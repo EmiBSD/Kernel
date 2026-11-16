@@ -131,8 +131,10 @@
 //!   keeps its until the switch. `tcpqe_pool` and `sackhl_pool` are `BoxPool`s whose items
 //!   the queues own (`hal::pool::Pooled`), `tcpcb_pool` is the glue's (`tcp_var::TcpTables`);
 //!   `tcp_iss` is the data of `tcp_timer_mtx` (a `Mutexed`, where LZ had an atomic beside a
-//!   bare mutex); `tcp_secret` and `tcp_secret_ctx` are `OnceStatic`s set by `tcp_init` (LZ:
-//!   `StaticCell`s written under `unsafe`).
+//!   bare mutex); `tcp_secret` is a `OnceStatic` set by `tcp_init` (LZ: a `StaticCell` written
+//!   under `unsafe`), and `tcp_secret_ctx`, the context made over it once, is made per ISN
+//!   from it (the same cost as the C's copy of the context; no second copy of the secret's
+//!   bytes, which `tcp_init` wipes from its stack).
 //! - D-12: `tp = tcp_close(tp)` is a move: `tcp_close` consumes the control block's [`Tp`]
 //!   and answers [`Closed`], and the frame that owns the socket lock's parts frees the block
 //!   with [`tcp_free`] before it unlocks (the C's `inp_ppcb = NULL` and `pool_put`, a few
@@ -255,8 +257,6 @@ pub static SACKHL_POOL: BoxPool<Sackhole> = BoxPool::new();
 
 /// \[I\] `tcp_secret`.
 pub(crate) static TCP_SECRET: OnceStatic<[u8; 16]> = OnceStatic::new();
-/// \[I\] `tcp_secret_ctx`: the SHA-512 context over the secret.
-pub(crate) static TCP_SECRET_CTX: OnceStatic<Sha512Ctx> = OnceStatic::new();
 /// `tcp_timer_mtx` and what it keeps: \[T\] `tcp_iss`, updated by timer and connection.
 pub static TCP_ISS: Mutexed<TcpSeq> = Mutexed::new(IPL_SOFTNET, 0);
 /// \[I\] `tcp_starttime`: random offset for `tcp_now()`.
@@ -290,13 +290,11 @@ pub fn tcp_init<G: ProcGlue>() {
 
     let mut secret = [0u8; 16];
     hal::random::arc4random_buf(&mut secret);
-    let mut ctx = Sha512Ctx::new();
-    ctx.update(&secret);
     // Set once: a second call keeps the first secret, as the first boot's. The stack's copy
-    // is wiped (the C draws the bytes into its global).
+    // is wiped (the C draws the bytes into its global); `tcp_set_iss_tsm` hashes the one copy
+    // the static holds (the C's `tcp_secret_ctx` is a context over it, made here).
     let _ = TCP_SECRET.set(secret);
     libkern::explicit_bzero(&mut secret);
-    let _ = TCP_SECRET_CTX.set(ctx);
 
     // Since sizeof(struct ip6_hdr) > sizeof(struct ip), we do max length checks/computations
     // only on the former.
@@ -324,6 +322,7 @@ pub fn tcp_init<G: ProcGlue>() {
 /// headers are not the same, we now use a separate pointer for the TCP header. Also, we made
 /// the former tcpiphdr header pointer into just an IP overlay pointer, with casting as
 /// appropriate for v6. rja
+#[must_use = "the template goes back into the control block's t_template"]
 pub fn tcp_template<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> Option<MbufBox> {
     let inp = tp.inp;
 
@@ -748,7 +747,16 @@ pub fn tcp_set_iss_tsm<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) {
     };
 
     // The context is not `Copy`: the clone is the C's struct copy, wiped at its drop.
-    let mut ctx = TCP_SECRET_CTX.get().cloned().unwrap_or_default();
+    // tcp_secret_ctx's copy: a context over the secret's one copy, wiped when it is finalized
+    // (the C copies a context made at init; the cost is the same, the secret's bytes stay
+    // in one place).
+    let Some(secret) = TCP_SECRET.get() else {
+        kpanic(format_args!(
+            "tcp_set_iss_tsm: no ISN secret before tcp_init"
+        ));
+    };
+    let mut ctx = Sha512Ctx::new();
+    ctx.update(secret);
     ctx.update(&rdomain.to_ne_bytes());
     ctx.update(&inp.inp_lport.get().to_ne_bytes());
     ctx.update(&inp.inp_fport.get().to_ne_bytes());
@@ -864,6 +872,29 @@ fn signature_digest(
     true
 }
 
+/// The host tests' TCP globals reset (testing.md's rule for a global that holds kernel memory
+/// or pool items): the SYN cache's sets, which hold an earlier test's bucket arrays and
+/// possibly its entries, forgotten without being freed (`syn_cache_init` makes them again in
+/// this test's memory), and the debug ring zeroed (under `RING_TEST`). The pcb tables are
+/// reset by `in_pcbinit` itself; the counters (compared by difference, and bumped by other
+/// modules' tests meanwhile) and the ISN secret (set once) hold no memory and stay.
+#[cfg(test)]
+pub(crate) fn tcp_test_reset<G: ProcGlue>() {
+    let mut g = crate::net::domain::net::<G>().tcp.syn_cache.lock();
+    core::mem::forget(core::mem::replace(
+        &mut *g,
+        crate::netinet::tcp_var::SynCaches::new(),
+    ));
+    drop(g);
+    let _ring = crate::netinet::tcp_debug::RING_TEST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut r = crate::netinet::tcp_debug::TCP_DEBUG.lock();
+    r.tcp_debug = [const { crate::netinet::tcp_debug::TcpDebug::zeroed() };
+        crate::netinet::tcp_debug::TCP_NDEBUG];
+    r.tcp_debx = 0;
+}
+
 /// The host tests' TCP connections: control blocks of the kernel's TCP over the Internet
 /// socket fixture (`in_pcb::testinet`), its socket lock taken as a callout takes it.
 #[cfg(test)]
@@ -884,6 +915,7 @@ pub(crate) mod testtcp {
     /// `testinet::setup` and `tcp_init` (once per glue: a second call keeps the pools).
     pub(crate) fn setup() -> (MutexGuard<'static, ()>, &'static Thread<G>) {
         let r = testinet::setup();
+        tcp_test_reset::<G>();
         tcp_init::<G>();
         r
     }
@@ -1330,7 +1362,86 @@ mod tests {
         // The same connection: the same digest, the counter 4096 further.
         assert_eq!(b.0.wrapping_sub(a.0), TCP_ISS_CONN_INC);
         assert_eq!(a.1, b.1);
+
+        // The digest's inputs in the C's order: the secret, the routing domain, the local and
+        // foreign ports, the local and foreign addresses (each as the pcb holds it).
+        {
+            let t = &crate::net::domain::net::<testinet::G>().tcp.tcbtable;
+            let g = t.lock();
+            inp.set_laddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 1, 2, 3]),
+                },
+            );
+            inp.set_faddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 4, 5, 6]),
+                },
+            );
+            inp.set_lport(&g, htons(1111));
+            inp.set_fport(&g, htons(2222));
+        }
+        let before = *TCP_ISS.lock();
+        let (iss, tsm) = testtcp::with_tp(&inp, |mut tp| {
+            tcp_set_iss_tsm(&mut tp);
+            ((tp.st.iss, tp.st.ts_modulate), None)
+        });
+        let mut ctx = Sha512Ctx::new();
+        ctx.update(TCP_SECRET.get().expect("the secret"));
+        ctx.update(&rtable_l2(0).to_ne_bytes());
+        ctx.update(&htons(1111).to_ne_bytes());
+        ctx.update(&htons(2222).to_ne_bytes());
+        ctx.update(&[10, 1, 2, 3]);
+        ctx.update(&[10, 4, 5, 6]);
+        let d = ctx.finalize();
+        let word = |i: usize| u32::from_ne_bytes([d[i], d[i + 1], d[i + 2], d[i + 3]]);
+        assert_eq!(
+            iss,
+            word(0).wrapping_add(before.wrapping_add(TCP_ISS_CONN_INC))
+        );
+        assert_eq!(tsm, word(4));
         testtcp::close(so, inp);
+    }
+
+    /// The two pools' limits put back, whatever the test's assertions do.
+    struct Limits(i32, i32);
+
+    impl Drop for Limits {
+        fn drop(&mut self) {
+            TCP_REASS_LIMIT.store(self.0, Ordering::Relaxed);
+            tcp_sackhole_limit.store(self.1, Ordering::Relaxed);
+            let _ = TCPQE_POOL.set_hardlimit(self.0 as u32);
+            let _ = SACKHL_POOL.set_hardlimit(self.1 as u32);
+        }
+    }
+
+    #[test]
+    fn tcp_init_sets_the_pools_hard_limits() {
+        let (_g, _p) = testtcp::setup();
+        let _limits = Limits(
+            TCP_REASS_LIMIT.load(Ordering::Relaxed),
+            tcp_sackhole_limit.load(Ordering::Relaxed),
+        );
+        let (qe, sh) = (TCPQE_POOL.nout() as i32, SACKHL_POOL.nout() as i32);
+        TCP_REASS_LIMIT.store(qe + 2, Ordering::Relaxed);
+        tcp_sackhole_limit.store(sh + 2, Ordering::Relaxed);
+        tcp_init::<testinet::G>();
+        let q: std::vec::Vec<_> = (0..3)
+            .map(|_| {
+                TCPQE_POOL.get(PR_NOWAIT, || Tcpqent {
+                    tcpqe_q: hal::owned::SlistLink::new(),
+                    tcpqe_tcp: Tcphdr::default(),
+                    tcpqe_m: None,
+                })
+            })
+            .collect();
+        let h: std::vec::Vec<_> = (0..3)
+            .map(|_| SACKHL_POOL.get(PR_NOWAIT, || Sackhole::new(0, 1, 1, 0)))
+            .collect();
+        assert_eq!(q.iter().flatten().count(), 2, "tcpqe: tcp_reass_limit");
+        assert_eq!(h.iter().flatten().count(), 2, "sackhl: tcp_sackhole_limit");
     }
 }
 /* </TESTS> */
