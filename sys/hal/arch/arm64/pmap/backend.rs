@@ -170,9 +170,9 @@
 //!   one ([`pmap_kernel_nonglobal_check`]). The same two passes give every such leaf
 //!   `ATTR_UXN` and prove it (LZ's df8508cf1682: no adopted kernel mapping executable at EL0,
 //!   which FEAT_PAN3 turns into a fault on every privileged read). The cost is the C's:
-//!   kernel TLB entries are tagged
-//!   with the running pair's ASID, refilled after a switch to another ASID. The C's walk-free `memset` of the
-//!   root is the steal's zeroing; it extracts the first page's address once and adds
+//!   kernel TLB entries are tagged with the running pair's ASID, refilled after a switch to
+//!   another ASID. The C's walk-free `memset` of the root is the steal's zeroing; it extracts
+//!   the first page's address once and adds
 //!   `PAGE_SIZE`, here each page's address is extracted.
 //! - `struct pmap` is `hal::pmap::Pmap` around [`PmapMd`]: `pm_mtx` as a `Mutexed<()>` whose
 //!   guard is the [`Locked`] witness of every walk of a user pmap's descriptors, the root
@@ -625,7 +625,12 @@ fn pmap_kernel_nonglobal(root: Paddr) {
 /// The boot-time proof of [`pmap_kernel_nonglobal`]'s rules: panics on a block or page of the
 /// kernel's tables without `ATTR_nG`, which would match every ASID and so stay in the TLB
 /// while user code runs under `pmap_tramp`, and on one without `ATTR_UXN`, which would be
-/// executable at EL0 (and unreadable by the kernel under FEAT_PAN3).
+/// executable at EL0 (and unreadable by the kernel under FEAT_PAN3). One form has no
+/// `ATTR_UXN` and is no such mapping: the kernel pmap's `PROT_NONE` descriptor, which
+/// `pmap_pte_update` stores valid with `ATTR_GP` alone, as the C does (pmap.c:1819-1823,
+/// `pm_guarded` joined before the test for zero). It has no access flag, so every access to
+/// it, a fetch included, takes an access flag fault before any permission is looked at (the
+/// hardware never sets the flag here: `TCR_EL1.HA` is not used).
 fn pmap_kernel_nonglobal_check(root: Paddr) {
     walk_kernel_leaves(root, 0, &mut |e, d| {
         if d & ATTR_nG == 0 {
@@ -634,7 +639,7 @@ fn pmap_kernel_nonglobal_check(root: Paddr) {
                 ptr::from_ref(e)
             ));
         }
-        if d & ATTR_UXN == 0 {
+        if d & ATTR_UXN == 0 && d & ATTR_AF != 0 {
             hal_panic(format_args!(
                 "pmap_postinit: the kernel mapping {d:#x} at {:p} is executable at EL0",
                 ptr::from_ref(e)
@@ -782,7 +787,8 @@ pub fn switch_mmu_kernel_table() {
     //   Limine's on an application processor), the image, the direct map (the copied level-0
     //   slots, Limine's stacks there included) and the kernel map (the copied level-1 slots),
     //   with `Lx_PT_PXN`/`Lx_PT_XN` on the direct map's slots removing only execution, which
-    //   nothing does there (the code after the block is the image's text), and `ATTR_nG` on
+    //   nothing does there (the code after the block is the image's text), and `ATTR_nG` and
+    //   `ATTR_UXN` (execution at EL0 taken away, which nothing does from a kernel mapping) on
     //   every leaf (`pmap_kernel_nonglobal`, before the boot CPU's switch, which refuses a
     //   leaf with the contiguous hint, the one case where nG may not change on a live entry;
     //   an application processor finds it set on the kernel's tables, and the Limine tables
