@@ -118,7 +118,10 @@ pub fn soisdisconnected(so: &Socket) {
 /// `sonewconn(head, connstatus, wait)`: a new socket on `head`'s queue, returned locked
 /// (`sounlock_nonet` ends its holding); its references are the queue's and its existence's.
 pub fn sonewconn(head: &Socket, connstatus: u32, wait: i32) -> Option<&'static Socket> {
-    let so = kernel::net::socket::sonewconn(head, connstatus, wait)?;
+    // An internet listener's caller holds the net lock C-style: its proof lent for the call.
+    let lend = is_inet(head).then(|| crate::net::if_::net_held("sonewconn"));
+    let so =
+        kernel::net::socket::sonewconn(head, connstatus, wait, lend.as_ref().map(|l| l.net()))?;
     Some(as_static(&so))
 }
 

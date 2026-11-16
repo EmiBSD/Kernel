@@ -1613,7 +1613,7 @@ fn unp_connect_vp<G: ProcGlue>(
         if !so2.has_options(SO_ACCEPTCONN) {
             return Err(Errno::ECONNREFUSED);
         }
-        let Some(so3) = sonewconn(&so2, 0, M_WAIT) else {
+        let Some(so3) = sonewconn(&so2, 0, M_WAIT, None) else {
             return Err(Errno::ECONNREFUSED);
         };
 
@@ -1628,7 +1628,7 @@ fn unp_connect_vp<G: ProcGlue>(
         // Since `so2' is protected by vnode(9) lock, `so3' can't be PRU_ABORT'ed here.
         drop(w2);
         sounlock_detached(&so3);
-        let (mut wa, wb) = solock_pair(so, &so3);
+        let (mut wa, wb) = solock_pair(so, &so3, None);
         let Some(mut wb) = wb else {
             kpanic(format_args!(
                 "unp_connect: sonewconn gave the socket itself"
@@ -1657,7 +1657,7 @@ fn unp_connect_vp<G: ProcGlue>(
         drop(wa);
         error
     } else {
-        let (mut wa, mut wb) = solock_pair(so, &so2);
+        let (mut wa, mut wb) = solock_pair(so, &so2, None);
         let error = unp_connect2(so, &mut wa, &so2, wb.as_mut());
         drop(wb);
         drop(wa);

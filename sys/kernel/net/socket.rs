@@ -844,8 +844,9 @@ enum NetHold<'a> {
     Excl(WriteWitness<'static>),
     /// `NET_LOCK_SHARED()`.
     Shared(ReadWitness<'static>),
-    /// The net lock `bsd`'s caller holds C-style, proved by the lend it passes
-    /// ([`solocked_legacy`]): never let go here (a lent proof keeps its holding).
+    /// The net lock the caller holds, proved by the proof it passes: `bsd`'s C-style holding
+    /// lent ([`solocked_legacy`]), or a kernel caller's own holding ([`solock_net`],
+    /// [`solock_nonet`], [`solock_pair`]). Never let go here: the holding is the caller's.
     Lent(&'a NetHeld<'a>),
 }
 
@@ -975,6 +976,18 @@ impl<'a> SoLocked<'a> {
             syn,
             net,
         })
+    }
+
+    /// The proof of the net lock this socket lock holds or carries (either mode): `None`
+    /// for a socket of a per-socket domain. For the caller that locks a second socket under
+    /// this one's net lock (`soclose`'s queued children).
+    pub fn net_proof(&self) -> Option<NetHeld<'_>> {
+        match &self.net {
+            NetHold::Excl(w) => NetHeld::of(w),
+            NetHold::Shared(w) => NetHeld::of(w),
+            NetHold::Lent(n) => Some(n.reborrow()),
+            NetHold::None => None,
+        }
     }
 
     /// `so_lock` let go (whatever the holding), what it was given back to take it again.
@@ -1173,12 +1186,24 @@ pub fn solock_shared<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
     SoLocked::take(so, net)
 }
 
-/// `solock_nonet(so)`: the socket's lock; an internet socket's caller holds the net lock.
-pub fn solock_nonet<G: ProcGlue>(so: &Socket<G>) -> SoLocked<'_> {
-    if so.is_inet() {
-        kassert!(hal::netlock::status() != 0);
+/// `solock_nonet(so)`: the socket's lock; an internet socket's caller holds the net lock and
+/// passes its proof, `net` (a listener's: `sonewconn`'s new socket, `soclose`'s queued
+/// children), which the lock carries for [`SoLocked::inet`] and never lets go: a protocol's
+/// request on the socket (`pru_attach`, `pru_abort`) can prove it. `panic(9)` for an
+/// internet socket without the proof; the other sockets need none (`None`).
+pub fn solock_nonet<'a, G: ProcGlue>(
+    so: &'a Socket<G>,
+    net: Option<&'a NetHeld<'a>>,
+) -> SoLocked<'a> {
+    if !so.is_inet() {
+        return SoLocked::take(so, NetHold::None);
     }
-    SoLocked::take(so, NetHold::None)
+    let Some(net) = net else {
+        kpanic(format_args!(
+            "solock_nonet: socket {so:p}: no proof of the net lock"
+        ));
+    };
+    SoLocked::take(so, NetHold::Lent(net))
 }
 
 /// `solock_persocket(so)`: whether `so` has a lock of its own (it is not an internet one).
@@ -1188,29 +1213,44 @@ pub fn solock_persocket<G: ProcGlue>(so: &Socket<G>) -> bool {
 }
 
 /// `solock_pair(so1, so2)`: locks two sockets of one type, in address order; the second
-/// witness is `None` when they are one socket. The first witness holds the shared net lock
-/// of an internet pair.
+/// witness is `None` when they are one socket. An internet pair's caller holds the net lock
+/// (the C's `NET_LOCK_SHARED()` at the top of `solock_pair`, taken by the caller here so both
+/// witnesses can carry its proof, `net`, for [`SoLocked::inet`]); `panic(9)` for an internet
+/// pair without it. The other pairs need none (`None`).
 pub fn solock_pair<'a, G: ProcGlue>(
     so1: &'a Socket<G>,
     so2: &'a Socket<G>,
+    net: Option<&'a NetHeld<'a>>,
 ) -> (SoLocked<'a>, Option<SoLocked<'a>>) {
     kassert!(so1.so_type == so2.so_type);
 
-    let net = if so1.is_inet() {
-        NetHold::Shared(NETLOCK.read())
-    } else {
-        NetHold::None
+    let hold = || {
+        if !so1.is_inet() {
+            return NetHold::None;
+        }
+        match net {
+            Some(n) => NetHold::Lent(n),
+            None => kpanic(format_args!(
+                "solock_pair: socket {so1:p}: no proof of the net lock"
+            )),
+        }
     };
     if core::ptr::eq(so1, so2) {
-        return (SoLocked::take(so1, net), None);
+        return (SoLocked::take(so1, hold()), None);
     }
     if core::ptr::from_ref(so1) < core::ptr::from_ref(so2) {
-        let a = SoLocked::take(so1, net);
-        (a, Some(SoLocked::take(so2, NetHold::None)))
+        let a = SoLocked::take(so1, hold());
+        (a, Some(SoLocked::take(so2, hold())))
     } else {
-        let b = SoLocked::take(so2, NetHold::None);
-        (SoLocked::take(so1, net), Some(b))
+        let b = SoLocked::take(so2, hold());
+        (SoLocked::take(so1, hold()), Some(b))
     }
+}
+
+/// The shared net lock an internet pair of `so1`'s domain is locked under (`solock_pair`'s
+/// `NET_LOCK_SHARED()`), taken by its caller before the pair: `None` for the other domains.
+fn pair_netlock<G: ProcGlue>(so1: &Socket<G>) -> Option<ReadWitness<'static>> {
+    so1.is_inet().then(|| NETLOCK.read())
 }
 
 /// `soassertlocked(so)`'s and `soassertlocked_readonly(so)`'s question, for the paths
@@ -1483,6 +1523,7 @@ pub fn sonewconn<G: ProcGlue>(
     head: &Socket<G>,
     connstatus: u32,
     wait: i32,
+    net: Option<&NetHeld<'_>>,
 ) -> Option<SocketRef<G>> {
     let soqueue = if connstatus != 0 { Onq::Q } else { Onq::Q0 };
 
@@ -1512,8 +1553,10 @@ pub fn sonewconn<G: ProcGlue>(
         },
     )?;
 
-    // Lock order will be `head' -> `so' while these sockets are linked.
-    let mut w = solock_nonet(&so);
+    // Lock order will be `head' -> `so' while these sockets are linked. An internet
+    // listener's caller holds the net lock (`net`, its proof): the new socket's lock carries
+    // it, so `pru_attach` can prove it.
+    let mut w = solock_nonet(&so, net);
 
     let ok = 'fail: {
         // Inherit watermarks but those may get clamped in low mem situations.
@@ -1860,11 +1903,11 @@ pub fn soclose<G: ProcGlue>(so: &Socket<G>, flags: i32) -> Result<(), Errno> {
                 w = solock_shared(so);
             }
             while let Some(so2) = soq_first(so, Onq::Q) {
-                let mut w2 = solock_nonet(&so2);
-                let Some(queued) = soqremque(&so2, Onq::Q) else {
-                    continue;
-                };
                 if persocket {
+                    let mut w2 = solock_nonet(&so2, None);
+                    let Some(queued) = soqremque(&so2, Onq::Q) else {
+                        continue;
+                    };
                     drop(w);
                     soabort(&so2, &mut w2);
                     drop(w2);
@@ -1872,6 +1915,12 @@ pub fn soclose<G: ProcGlue>(so: &Socket<G>, flags: i32) -> Result<(), Errno> {
                     drop(so2);
                     w = solock_shared(so);
                 } else {
+                    // The listener's net lock, proved for the child's `pru_abort`.
+                    let net = w.net_proof();
+                    let mut w2 = solock_nonet(&so2, net.as_ref());
+                    let Some(queued) = soqremque(&so2, Onq::Q) else {
+                        continue;
+                    };
                     soabort(&so2, &mut w2);
                     drop(w2);
                     drop(queued);
@@ -1949,7 +1998,9 @@ pub fn soconnect<G: ProcGlue>(
 
 /// `soconnect2(so1, so2)`: connects two sockets of one protocol to each other.
 pub fn soconnect2<G: ProcGlue>(so1: &Socket<G>, so2: &Socket<G>) -> Result<(), Errno> {
-    let (mut w1, mut w2) = solock_pair(so1, so2);
+    let r = pair_netlock(so1);
+    let net = r.as_ref().and_then(NetHeld::of);
+    let (mut w1, mut w2) = solock_pair(so1, so2, net.as_ref());
     so1.usrreqs().connect2(so1, &mut w1, so2, w2.as_mut())
 }
 
@@ -3049,7 +3100,9 @@ pub fn sosplice<G: ProcGlue>(
 
     let rl = so.so_rcv.sblock(crate::net::sockbuf::SBL_WAIT)?;
     let sl = sosp.so_snd.sblock(crate::net::sockbuf::SBL_WAIT)?;
-    let (mut w1, w2) = solock_pair(so, &sosp);
+    let r = pair_netlock(so);
+    let net = r.as_ref().and_then(NetHeld::of);
+    let (mut w1, w2) = solock_pair(so, &sosp, net.as_ref());
 
     let error: Result<(), Errno> = 'release: {
         if so.has_options(SO_ACCEPTCONN) || sosp.has_options(SO_ACCEPTCONN) {
@@ -4147,6 +4200,11 @@ mod tests {
 
     /// `attach` refuses when set.
     static ATTACH_FAILS: AtomicBool = AtomicBool::new(false);
+    /// Whether the last `attach` could open its socket lock's parts (a kernel internet
+    /// socket locked with a proof of the net lock).
+    static ATTACH_PARTS: AtomicBool = AtomicBool::new(false);
+    /// The same for the last `abort`.
+    static ABORT_PARTS: AtomicBool = AtomicBool::new(false);
 
     struct TestDom;
     struct TestProto;
@@ -4189,10 +4247,11 @@ mod tests {
         fn attach(
             &self,
             _so: &Socket<Procs>,
-            _w: &mut SoLocked<'_>,
+            w: &mut SoLocked<'_>,
             _proto: i32,
             _wait: i32,
         ) -> Result<(), Errno> {
+            ATTACH_PARTS.store(w.inet().is_some(), Ordering::Relaxed);
             if ATTACH_FAILS.load(Ordering::Relaxed) {
                 Err(Errno::ENOBUFS)
             } else {
@@ -4224,6 +4283,7 @@ mod tests {
             Ok(())
         }
         fn abort(&self, so: &Socket<Procs>, w: &mut SoLocked<'_>) {
+            ABORT_PARTS.store(w.inet().is_some(), Ordering::Relaxed);
             soisdisconnected(so);
             sofree_kept(so, w);
         }
@@ -4308,7 +4368,7 @@ mod tests {
         let _g = net_setup();
         let head = socket(0);
         head.qlimit.store(5, Ordering::Relaxed);
-        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
         sounlock_detached(&child);
         assert_eq!(head.qlens(), (1, 0));
         assert_eq!(PoolArc::count(&child), 3);
@@ -4353,7 +4413,7 @@ mod tests {
         let head = socket(0);
         head.qlimit.store(5, Ordering::Relaxed);
         ATTACH_FAILS.store(true, Ordering::Relaxed);
-        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT);
+        let child = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None);
         ATTACH_FAILS.store(false, Ordering::Relaxed);
         assert!(child.is_none());
         assert_eq!(head.qlens(), (0, 0));
@@ -4375,9 +4435,9 @@ mod tests {
             solisten(&head, &mut w, 5).expect("listen");
         }
         assert!(head.has_options(SO_ACCEPTCONN));
-        let a = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a");
+        let a = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a");
         sounlock_detached(&a);
-        let b = sonewconn(&head, SS_ISCONNECTED, crate::net::mbuf::M_WAIT).expect("b");
+        let b = sonewconn(&head, SS_ISCONNECTED, crate::net::mbuf::M_WAIT, None).expect("b");
         sounlock_detached(&b);
         assert_eq!(head.qlens(), (1, 1));
         drop(a);
@@ -4414,7 +4474,7 @@ mod tests {
 
     /// A complete connection on `head`'s queue (sonewconn, then promoted).
     fn connection(head: &Socket<Procs>) -> SocketRef<Procs> {
-        let c = sonewconn(head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+        let c = sonewconn(head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
         sounlock_detached(&c);
         soisconnected(&c);
         c
@@ -4518,7 +4578,7 @@ mod tests {
         let before = nout();
         for round in 0..200 {
             let head = listener(5);
-            let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT).expect("a connection");
+            let c = sonewconn(&head, 0, crate::net::mbuf::M_WAIT, None).expect("a connection");
             sounlock_detached(&c);
             // Both sides start together.
             let start = std::sync::Barrier::new(2);
@@ -4640,12 +4700,12 @@ mod tests {
         let a = socket(0);
         let b = socket(0);
         {
-            let (_w1, w2) = solock_pair(&a, &a);
+            let (_w1, w2) = solock_pair(&a, &a, None);
             assert!(w2.is_none());
             assert_ne!(a.so_lock.lock().status(), 0);
         }
         {
-            let (_w1, w2) = solock_pair(&a, &b);
+            let (_w1, w2) = solock_pair(&a, &b, None);
             assert!(w2.is_some());
             assert_ne!(a.so_lock.lock().status(), 0);
             assert_ne!(b.so_lock.lock().status(), 0);
@@ -4854,6 +4914,51 @@ mod tests {
         let _g = net_setup();
         let so = inet_socket(&KernInet);
         let _w = solocked_legacy(&so, None);
+    }
+
+    #[test]
+    fn a_kernel_inet_listener_s_children_are_locked_with_its_proof() {
+        // N6.6a0's review, should-fix 1: sonewconn's pru_attach and soclose's pru_abort of a
+        // queued child reach a kernel internet protocol under the listener's net lock, and
+        // the child's lock carries its proof (solock_nonet's), so the protocol can prove it.
+        let _g = net_setup();
+        let head = inet_socket(&KernInet);
+        soreserve(&head, 4096, 4096).expect("reserve");
+        head.qlimit.store(5, Ordering::Relaxed);
+        {
+            let mut w = solock(&head);
+            solisten(&head, &mut w, 5).expect("listen");
+        }
+        ATTACH_PARTS.store(false, Ordering::Relaxed);
+        ABORT_PARTS.store(false, Ordering::Relaxed);
+        let child = {
+            let w = solock(&head);
+            let net = w.net_proof();
+            sonewconn(
+                &head,
+                SS_ISCONNECTED,
+                crate::net::mbuf::M_WAIT,
+                net.as_ref(),
+            )
+        }
+        .expect("a connection");
+        sounlock_detached(&child);
+        let attached = ATTACH_PARTS.load(Ordering::Relaxed);
+        drop(child);
+        // The queued child aborted under the listener's lock and proof.
+        soclose(&head, 0).expect("close");
+        let aborted = ABORT_PARTS.load(Ordering::Relaxed);
+        assert!(attached, "pru_attach: the parts open");
+        assert!(aborted, "pru_abort: the parts open");
+        assert_eq!(head.qlens(), (0, 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "no proof of the net lock")]
+    fn an_inet_socket_locked_nonet_without_a_proof_panics() {
+        let _g = net_setup();
+        let so = inet_socket(&KernInet);
+        let _w = solock_nonet(&so, None);
     }
 
     #[test]
