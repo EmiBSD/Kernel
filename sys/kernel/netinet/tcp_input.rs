@@ -4863,6 +4863,10 @@ mod tests {
             (us.s6_addr, peer.s6_addr)
         );
         assert_eq!(
+            ip6.ip6_hlim, 7,
+            "in6_selecthlim of the listener: its inp_hops"
+        );
+        assert_eq!(
             (
                 sa.th_flags,
                 u32::from_be(sa.th_ack),
@@ -5185,9 +5189,11 @@ mod tests {
         let (_ip, sa, _o, _p) = last(d);
         let iss = u32::from_be(sa.th_seq);
         let table = &crate::net::domain::net::<G>().tcp.tcbtable;
-        let (cbs, pcbs, aborted, completed) = (
+        let sockets = || crate::net::domain::net::<G>().sockpl.nout();
+        let (cbs, pcbs, socks, aborted, completed) = (
             tcpcbs(),
             table.count(),
+            sockets(),
             stat(C::TcpsScAborted),
             stat(C::TcpsScCompleted),
         );
@@ -5205,9 +5211,9 @@ mod tests {
         );
         assert!(lso.queued_first().is_none(), "nothing queued");
         assert_eq!(
-            (tcpcbs(), table.count()),
-            (cbs, pcbs),
-            "the new pcb detached again, nothing left"
+            (tcpcbs(), table.count(), sockets()),
+            (cbs, pcbs, socks),
+            "the new pcb detached again and the socket freed: nothing left"
         );
         // The entry is gone: the same ACK again is a bad SYN, reset.
         let badsyn = stat(C::TcpsBadsyn);
