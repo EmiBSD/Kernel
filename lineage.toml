@@ -16450,7 +16450,29 @@ rust = "sys/kernel/netinet/tcp_input.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "redesigned"
-notes = "N6.6a3: tcp_input.c's path parameters and round-trip timing over the kernel's control block (Tp, or its TcpState where that is all they read): tcp_xmit_timer, tcp_mss, tcp_hdrsz, tcp_mss_update, tcp_newreno_partialack; the C's int/u_int/u_long conversions in the C's order, overflow wrapping; in_pcbrtentry's answer a counted route (one pair per call, not per segment); tcp_input, tcp_dooptions and the SYN cache's add and get are N6.6a4's; bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5; N6.6a4 (1): tcp_dooptions over the control block's TcpState (the options a slice read inside each option's own length, the walk bounded by what is left; the signature's two digests compared with timingsafe_bcmp; the SA by Ipsec's tcp_signature_tdb leg, held by a TdbHold whose drop is tdb_unref on both of the C's paths; the unions of the SA's addresses read whole), tcp_pulloutofband over the segment's own state (a shared cluster copied first by m_copyback); N6.6a4 (2): tcp_mss_adv (syn_cache_add's sc_ourmaxseg)"
+notes = "N6.6a3: tcp_input.c's path parameters and round-trip timing over the kernel's control block (Tp, or its TcpState where that is all they read): tcp_xmit_timer, tcp_mss, tcp_hdrsz, tcp_mss_update, tcp_newreno_partialack; the C's int/u_int/u_long conversions in the C's order, overflow wrapping; in_pcbrtentry's answer a counted route (one pair per call, not per segment); tcp_input, tcp_dooptions and the SYN cache's add and get are N6.6a4's; bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5; N6.6a4 (1): tcp_dooptions over the control block's TcpState (the options a slice read inside each option's own length, the walk bounded by what is left; the signature's two digests compared with timingsafe_bcmp; the SA by Ipsec's tcp_signature_tdb leg, held by a TdbHold whose drop is tdb_unref on both of the C's paths; the unions of the SA's addresses read whole), tcp_pulloutofband over the segment's own state (a shared cluster copied first by m_copyback); N6.6a4 (2): tcp_mss_adv (syn_cache_add's sc_ourmaxseg); N6.6a4 (3): tcp_input (pr_input: a softnet's list by ph_cookie, or tcp_input_solocked now), tcp_input_mlist (one socket kept locked across a run of segments as a SoKept: the pcb's handle, so_lock held detached, attached back for a segment of the same pcb, compared by so_pcb under the lock it carries), tcp_input_solocked (the header checks in TcpInputState::parse; findpcb a loop over the frames tcp_input_pcb, tcp_input_child and the common tcp_input_tcb, which answers its end: the control block open, closed by tcp_close or absent, run through the labels by TcpInputState::finish; the pcb counted once, by the lookup's handle or pf's erased one, InpHold); TCP_RST_PPS and TCP_ACKDROP_PPS cells of ppsratecheck_mtx; tcp_setup_ack the C's TCP_SETUP_ACK macro; the C's int/u_int/u_long conversions in the C's order"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::tcp_input_body"
+native = ["tcp_input_pcb", "tcp_input_child", "tcp_input_tcb", "TcpInputState::parse", "TcpInputState::finish"]
+kind = "split"
+lines = "L967-L2463"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::th_bytes"
+native = ["TcpInputState::save_ti"]
+kind = "merged"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::ip_template"
+native = []
+kind = "dropped"
+reason = "tcp_respond takes the segment's first mbuf's data (Mbuf::data), the C's mtod(m, caddr_t), whose IP or IPv6 header it reads with hal::pod: no copy of the header is made"
+
+[[module.fn]]
+lz = "sys/netinet/tcp_input.rs::sa_from_sin6"
+native = ["TcpInputState::sa_pair", "sig_union"]
+kind = "merged"
 
 [[module]]
 rust = "sys/kernel/netinet/tcp_lro.rs"
@@ -16510,7 +16532,7 @@ rust = "sys/kernel/netinet/tcp_sack.rs"
 crate = "kernel"
 lz = ["sys/netinet/tcp_input.rs"]
 status = "redesigned"
-notes = "N6.6a2 (D-13): tcp_input.c's reassembly (tcp_reass, tcp_flush_queue) and SACK (tcp_seq_subtract, tcp_update_sack_list, tcp_sack_option, tcp_del_sackholes, tcp_clean_sackreport, tcp_sack_partialack) over owned SlistLink chains of tcpqe and sackhl BoxPool items, walked by a cursor on the link that owns the current entry (insert and remove where it stands, O(1)); TAILQ_LAST + TAILQ_REMOVE when tcpqe is exhausted a walk to the last entry, O(n) (named for N12); bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5"
+notes = "N6.6a2 (D-13): tcp_input.c's reassembly (tcp_reass, tcp_flush_queue) and SACK (tcp_seq_subtract, tcp_update_sack_list, tcp_sack_option, tcp_del_sackholes, tcp_clean_sackreport, tcp_sack_partialack) over owned SlistLink chains of tcpqe and sackhl BoxPool items, walked by a cursor on the link that owns the current entry (insert and remove where it stands, O(1)); TAILQ_LAST + TAILQ_REMOVE when tcpqe is exhausted a walk to the last entry, O(n) (named for N12); bsd's copies stay in sys/netinet/tcp_input.rs for bsd's TCP until N6.6a5; N6.6a4: tcp_flush_queue pub(crate) for the kernel's tcp_input"
 
 [[module.fn]]
 lz = "sys/netinet/tcp_input.rs::tcpqe_get"

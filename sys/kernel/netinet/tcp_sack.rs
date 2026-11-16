@@ -325,7 +325,7 @@ pub fn tcp_reass<G: ProcGlue>(
 
 /// `tcp_flush_queue`: present data to user, advancing `rcv_nxt` through completed sequence
 /// space; `TH_FIN` when the last segment presented carries a FIN.
-fn tcp_flush_queue<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> u8 {
+pub(crate) fn tcp_flush_queue<G: ProcGlue>(tp: &mut Tp<'_, '_, G>) -> u8 {
     let so = tp.so;
     let st = &mut *tp.st;
 
