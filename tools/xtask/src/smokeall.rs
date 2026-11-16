@@ -500,7 +500,8 @@ fn descendants(table: &[(u32, u32)], root: u32) -> Vec<u32> {
 /// of them starts another process meanwhile. A tree, not a process group: a recipe in a
 /// group of its own would no longer get the terminal's Ctrl-C. Returns what `ps` said of
 /// those processes just before (state, CPU, wait channel, command), for the log: where a
-/// hung recipe was stuck.
+/// hung recipe was stuck. The listing is one `ps` of every process, cut down here to the
+/// tree's lines: macOS's `ps -p` takes a list of pids, OpenBSD's (so EmiBSD's) only one.
 fn kill_tree(root: u32) -> String {
     let table: Vec<(u32, u32)> = Command::new("ps")
         .args(["-axo", "pid=,ppid="])
@@ -520,14 +521,9 @@ fn kill_tree(root: u32) -> String {
         .map(u32::to_string)
         .collect();
     let listing = Command::new("ps")
-        .args([
-            "-o",
-            "pid,ppid,etime,%cpu,state,wchan,command",
-            "-p",
-            &pids.join(","),
-        ])
+        .args(["-axo", "pid,ppid,etime,%cpu,state,wchan,command"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .map(|o| tree_lines(&String::from_utf8_lossy(&o.stdout), &pids))
         .unwrap_or_default();
     let _ = Command::new("kill")
         .arg("-KILL")
@@ -536,6 +532,19 @@ fn kill_tree(root: u32) -> String {
         .stderr(Stdio::null())
         .status();
     listing
+}
+
+/// The header of a `ps` listing whose first column is the pid, and its lines for `pids`.
+fn tree_lines(ps: &str, pids: &[String]) -> String {
+    let mut out = String::new();
+    for (n, line) in ps.lines().enumerate() {
+        let pid = line.split_whitespace().next().unwrap_or("");
+        if n == 0 || pids.iter().any(|p| p == pid) {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Runs `just --no-deps recipe` with its own run directory and log, under the watchdog
@@ -784,6 +793,16 @@ mod tests {
         assert_eq!(descendants(&table, 10), [10, 11, 12, 13, 14, 15]);
         assert_eq!(descendants(&table, 13), [13, 14, 15]);
         assert_eq!(descendants(&table, 99), [99]);
+    }
+
+    #[test]
+    fn the_listing_keeps_the_header_and_the_trees_lines() {
+        let ps = "  PID  PPID COMMAND\n   10     1 just\n   11    10 sh\n  110     1 other\n";
+        assert_eq!(
+            tree_lines(ps, &["10".to_string(), "11".to_string()]),
+            "  PID  PPID COMMAND\n   10     1 just\n   11    10 sh\n"
+        );
+        assert_eq!(tree_lines(ps, &[]), "  PID  PPID COMMAND\n");
     }
 
     #[test]
