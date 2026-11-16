@@ -201,6 +201,14 @@ fn hdr_mut(m: &mut Mbuf, off: u32, len: usize) -> Option<&mut [u8]> {
     n.data_mut()?.get_mut(o as usize..o as usize + len)
 }
 
+/// The bytes of a TCP header to slice: the whole `struct tcphdr`, which the C reads whatever
+/// `th_off` says (`ether_extract_headers` found those 20 bytes in one mbuf), and the options
+/// up to `tcphlen` (`th_off << 2`) when there are some. A `th_off` below 5 makes `tcphlen`
+/// shorter than the fixed fields the soft LRO reads.
+fn th_span(tcphlen: u32) -> usize {
+    max(tcphlen as usize, TCP_HDR_LEN)
+}
+
 /// The big-endian word at `at` of `b` (the C's `ntohl` of a member).
 fn be32(b: &[u8], at: usize) -> u32 {
     u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
@@ -237,7 +245,7 @@ fn tcp_softlro_check(m: &Mbuf, ext: &EtherExtracted) -> bool {
     let Some(toff) = ext.tcp else {
         return false;
     };
-    let Some(th) = hdr(m, toff, ext.tcphlen as usize) else {
+    let Some(th) = hdr(m, toff, th_span(ext.tcphlen)) else {
         return false;
     };
 
@@ -306,8 +314,8 @@ fn tcp_softlro_compare(mh: &Mbuf, head: &EtherExtracted, mt: &Mbuf, tail: &Ether
         return false;
     };
     let (Some(hth), Some(tth)) = (
-        hdr(mh, ht, head.tcphlen as usize),
-        hdr(mt, tt, tail.tcphlen as usize),
+        hdr(mh, ht, th_span(head.tcphlen)),
+        hdr(mt, tt, th_span(tail.tcphlen)),
     ) else {
         return false;
     };
@@ -408,10 +416,11 @@ fn tcp_softlro_concat(
         return Err(mtail);
     }
     let thlen = head.tcphlen as usize;
+    let span = th_span(head.tcphlen);
 
     // What the head takes of the tail's TCP header: flags, window, acknowledgement and the
     // timestamps.
-    let Some(tth) = hdr(&mtail, tt, thlen) else {
+    let Some(tth) = hdr(&mtail, tt, span) else {
         return Err(mtail);
     };
     let tflags = tth[TH_FLAGS_OFF];
@@ -444,7 +453,7 @@ fn tcp_softlro_concat(
         ip6[IP6_PLEN_OFF..IP6_PLEN_OFF + 2].copy_from_slice(&plen.to_be_bytes());
     }
 
-    let Some(hth) = hdr_mut(mhead, ht, thlen) else {
+    let Some(hth) = hdr_mut(mhead, ht, span) else {
         // Not reached: tcp_softlro_writable found the header's mbuf writable above.
         return Err(mtail);
     };
@@ -934,6 +943,38 @@ mod tests {
         tcp_softlro_glue(&mut ml, frame(base), ifp);
         tcp_softlro_glue(&mut ml, frame(Seg::new(5100, 0)), ifp);
         assert_eq!(drain(&mut ml).len(), 2);
+
+        // A data offset below 5 (th_off 4 and 0): the C reads the whole struct tcphdr; such a
+        // tail does not continue a head with options, and two of them in a row merge as the
+        // C merges them (the bytes past th_off << 2 are payload), with no read past a slice.
+        for th_off in [4u8, 0] {
+            let short = |s: Seg| {
+                let mut m = frame(s);
+                m.data_mut().expect("writable")[14 + 20 + 12] = th_off << 4;
+                m
+            };
+            tcp_softlro_glue(&mut ml, frame(base), ifp);
+            tcp_softlro_glue(&mut ml, short(Seg { ts: None, ..next }), ifp);
+            assert_eq!(drain(&mut ml).len(), 2, "th_off {th_off}");
+
+            let extra = 20 - u32::from(th_off) * 4; // header bytes counted as payload
+            let first = Seg {
+                ts: None,
+                ..Seg::new(7000, 100)
+            };
+            let second = Seg {
+                ts: None,
+                ..Seg::new(7000 + 100 + extra, 100)
+            };
+            tcp_softlro_glue(&mut ml, short(first), ifp);
+            tcp_softlro_glue(&mut ml, short(second), ifp);
+            let ms = drain(&mut ml);
+            assert_eq!(ms.len(), 1, "th_off {th_off}: merged");
+            let ph = ms[0].m_pkthdr();
+            assert_ne!(ph.csum_flags.get() & M_TCP_TSO, 0);
+            assert_eq!(u32::from(ph.ph_mss.get()), 100 + extra);
+            assert_eq!(bytes(&ms[0]).len() as u32, 14 + 20 + 20 + 100 + 100 + extra);
+        }
 
         // An interface without IFXF_LRO queues every packet as it came.
         let (plain, _) = test_ifnet(b"tlro2");
