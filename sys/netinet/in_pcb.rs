@@ -862,6 +862,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn pf_s_legs_link_and_find_a_kernel_pcb_through_a_valid_state_key() {
+        // The Pf legs with a valid state key on the packet (N6.6a0's review, should-fix 2 and
+        // 3): inp_link links the key to the pcb with pf's own count and unlinks the key from
+        // the packet; inp_lookup answers that pcb as the kernel's handle, its count the
+        // handle's alone (pf's legacy count unchanged), as the C's one in_pcbref.
+        use kernel::net::pf_hooks::Pf;
+
+        use crate::net::pf::{
+            PF_STATE_KEY_PL, pf_alloc_state_key, pf_mbuf_link_state_key, pf_mbuf_statekey,
+            pf_state_key_unlink_inpcb, pf_state_key_unref,
+        };
+
+        let (_g, _t, _p) = setup();
+        crate::kern::subr_pool::pool_init(
+            &PF_STATE_KEY_PL,
+            size_of::<crate::net::pfvar_priv::PfStateKey>(),
+            64,
+            crate::machine::intr::IPL_SOFTNET,
+            0,
+            "pfstkey",
+            None,
+        );
+        let t = table(16);
+        let inp = pcb(t);
+        let before = inp.legacy_count();
+        let sk = pf_alloc_state_key(crate::sys::pool::PR_NOWAIT).expect("a state key");
+        sk.sk_removed.set(0);
+        let legs = &crate::net::pf::BSD_PF;
+
+        // pf_inp_link: the key linked to the pcb (pf's count), the packet's key let go.
+        let m = crate::net::if_::tests::test_packet(&[0x45, 0, 0, 20]);
+        pf_mbuf_link_state_key(m, sk);
+        legs.inp_link(m, inp);
+        let linked = sk.sk_inp.get().is_some_and(|i| ptr::eq(i, inp));
+        let after_link = inp.legacy_count();
+        let unlinked_from_packet = pf_mbuf_statekey(m).is_none();
+
+        // pf_inp_lookup: the pcb found through the key, one count (the handle's).
+        pf_mbuf_link_state_key(m, sk);
+        let found = legs.inp_lookup(m);
+        let same = found
+            .as_ref()
+            .and_then(|h| h.downcast_ref::<Inpcb>())
+            .is_some_and(|i| ptr::eq(i, inp));
+        let during = inp.legacy_count();
+        drop(found);
+        let after_lookup = inp.legacy_count();
+
+        // A key no longer valid: no pcb, and the key unlinked from the packet.
+        sk.sk_removed.set(1);
+        let stale = legs.inp_lookup(m).is_none() && pf_mbuf_statekey(m).is_none();
+
+        pf_state_key_unlink_inpcb(sk);
+        let after_unlink = inp.legacy_count();
+        pf_state_key_unref(Some(sk));
+        crate::kern::uipc_mbuf::m_freem(Some(m));
+        release(inp);
+        teardown();
+        assert!(linked, "inp_link: the key names the pcb");
+        assert_eq!(after_link, before + 1, "inp_link: pf's count");
+        assert!(unlinked_from_packet, "inp_link: the packet's key let go");
+        assert!(same, "inp_lookup: the linked pcb");
+        assert_eq!(during, before + 1, "inp_lookup: no legacy count of its own");
+        assert_eq!(after_lookup, before + 1);
+        assert!(stale, "a key not valid: no pcb, unlinked");
+        assert_eq!(after_unlink, before, "pf's count dropped with the link");
+    }
+
+    #[test]
     fn the_port_bitmaps_and_their_defaults() {
         let (_g, _t, _p) = setup();
         let m: Box<[AtomicU32; DP_MAPSIZE]> = Box::new([const { AtomicU32::new(0) }; DP_MAPSIZE]);
