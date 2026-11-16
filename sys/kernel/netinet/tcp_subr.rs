@@ -1553,6 +1553,221 @@ pub(crate) mod testtcp {
     /// The driver of a test interface: its packets' count and the last one's bytes.
     pub(crate) type Wire = testinet::InetDriver;
 
+    /// The host tests' TCP protocol over the test domain (`testinet`'s): the kernel's TCP is
+    /// registered at N6.6a5, so a listener of this one gives `sonewconn` an attach that makes
+    /// the kernel's control block (`tcp_attach`'s `in_pcballoc` and `tcp_newtcpcb`), a listen
+    /// that puts it in LISTEN, and a detach and an abort that close it.
+    pub(crate) struct TcpProto;
+
+    /// [`TcpProto`]'s requests.
+    struct TcpReqs;
+
+    impl crate::net::proto::Protocol<G> for TcpProto {
+        fn domain(&self) -> &'static dyn crate::net::domain::Domain<G> {
+            &testinet::InetDom
+        }
+        fn ty(&self) -> i16 {
+            hal::sys::socket::SOCK_STREAM as i16
+        }
+        fn protocol(&self) -> i16 {
+            IPPROTO_TCP as i16
+        }
+        fn flags(&self) -> i16 {
+            crate::net::proto::PR_CONNREQUIRED | crate::net::proto::PR_WANTRCVD
+        }
+        fn usrreqs(&self) -> Option<&'static dyn crate::net::proto::Usrreqs<G>> {
+            Some(&TcpReqs)
+        }
+    }
+
+    impl TcpReqs {
+        /// `tcp_close` and `tcp_free` of `so`'s connection, if it has one.
+        fn close(so: &crate::net::socket::Socket<G>, w: &mut crate::net::socket::SoLocked<'_>) {
+            let Some(inp) = crate::netinet::in_pcb::sotoinpcb(so) else {
+                return;
+            };
+            let Some(mut il) = w.inet() else {
+                return;
+            };
+            if let Some(tp) = intotcpcb(&inp, &mut il) {
+                let c = tcp_close(tp);
+                tcp_free(&inp, &mut il.pcb, c);
+            }
+        }
+    }
+
+    impl crate::net::proto::Usrreqs<G> for TcpReqs {
+        fn attach(
+            &self,
+            so: &crate::net::socket::Socket<G>,
+            w: &mut crate::net::socket::SoLocked<'_>,
+            _proto: i32,
+            wait: i32,
+        ) -> Result<(), Errno> {
+            let inp = crate::netinet::in_pcb::in_pcballoc(
+                so,
+                &crate::net::domain::net::<G>().tcp.tcbtable,
+                wait,
+            )?;
+            let Some(mut il) = w.inet() else {
+                return Err(Errno::EINVAL);
+            };
+            match tcp_newtcpcb(&inp, &mut il, wait) {
+                Some(_) => Ok(()),
+                None => Err(Errno::ENOBUFS),
+            }
+        }
+        fn detach(
+            &self,
+            so: &crate::net::socket::Socket<G>,
+            w: &mut crate::net::socket::SoLocked<'_>,
+        ) -> Result<(), Errno> {
+            Self::close(so, w);
+            Ok(())
+        }
+        fn listen(
+            &self,
+            so: &crate::net::socket::Socket<G>,
+            w: &mut crate::net::socket::SoLocked<'_>,
+        ) -> Result<(), Errno> {
+            let inp = crate::netinet::in_pcb::sotoinpcb(so).ok_or(Errno::EINVAL)?;
+            let mut il = w.inet().ok_or(Errno::EINVAL)?;
+            let tp = intotcpcb(&inp, &mut il).ok_or(Errno::EINVAL)?;
+            tp.st.t_state = crate::netinet::tcp_fsm::TCPS_LISTEN;
+            Ok(())
+        }
+        fn shutdown(
+            &self,
+            _so: &crate::net::socket::Socket<G>,
+            _w: &mut crate::net::socket::SoLocked<'_>,
+        ) -> Result<(), Errno> {
+            Ok(())
+        }
+        fn rcvd(
+            &self,
+            _so: &crate::net::socket::Socket<G>,
+            _w: &mut crate::net::socket::SoLocked<'_>,
+        ) {
+        }
+        fn send(
+            &self,
+            _so: &crate::net::socket::Socket<G>,
+            _w: &mut crate::net::socket::SoLocked<'_>,
+            _top: Option<MbufBox>,
+            _addr: Option<&Mbuf>,
+            _control: Option<MbufBox>,
+        ) -> Result<(), Errno> {
+            Err(Errno::EOPNOTSUPP)
+        }
+        fn abort(
+            &self,
+            so: &crate::net::socket::Socket<G>,
+            w: &mut crate::net::socket::SoLocked<'_>,
+        ) {
+            Self::close(so, w);
+        }
+        fn sockaddr(
+            &self,
+            _so: &crate::net::socket::Socket<G>,
+            _w: &mut crate::net::socket::SoLocked<'_>,
+            _addr: &mut Mbuf,
+        ) -> Result<(), Errno> {
+            Err(Errno::EOPNOTSUPP)
+        }
+        fn peeraddr(
+            &self,
+            _so: &crate::net::socket::Socket<G>,
+            _w: &mut crate::net::socket::SoLocked<'_>,
+            _addr: &mut Mbuf,
+        ) -> Result<(), Errno> {
+            Err(Errno::EOPNOTSUPP)
+        }
+    }
+
+    /// A listener of [`TcpProto`] on 10.9.`n`.1:`port` over a new test interface `name`
+    /// (`socket`, `bind`, `listen(5)`): its socket and pcb, the interface's driver. Its
+    /// buffers 16 KB each, as `estab`'s.
+    pub(crate) fn listener(
+        name: &[u8],
+        n: u8,
+        port: u16,
+    ) -> (SocketRef<G>, InpcbRef<G>, &'static Wire) {
+        let (_ifp, d) = testinet::iface(name, [10, 9, n, 1]);
+        let (so, inp) = listen_on(n, port);
+        (so, inp, d)
+    }
+
+    /// [`listener`] on an interface made already (10.9.`n`.1's).
+    pub(crate) fn listen_on(n: u8, port: u16) -> (SocketRef<G>, InpcbRef<G>) {
+        use hal::sys::netinet_in::InAddr;
+
+        let so = crate::net::socket::soalloc(
+            &TcpProto,
+            M_WAIT,
+            crate::net::socket::SoInit {
+                so_type: hal::sys::socket::SOCK_STREAM,
+                state: 0,
+                options: 0,
+                linger: 0,
+                timeo: 0,
+                euid: 0,
+                ruid: 0,
+                egid: 0,
+                rgid: 0,
+                cpid: 1,
+            },
+        )
+        .expect("a socket");
+        crate::net::socket::soreserve(&so, 16384, 16384).expect("the buffers");
+        {
+            let mut w = crate::net::socket::solock(&so);
+            TcpReqs
+                .attach_for_test(&so, &mut w)
+                .expect("the control block");
+        }
+        let inp = crate::netinet::in_pcb::sotoinpcb(&so).expect("a pcb");
+        {
+            let t = &crate::net::domain::net::<G>().tcp.tcbtable;
+            let mut g = t.lock();
+            inp.set_laddr(
+                &g,
+                InAddr {
+                    s_addr: u32::from_ne_bytes([10, 9, n, 1]),
+                },
+            );
+            inp.set_lport(&g, htons(port));
+            crate::netinet::in_pcb::in_pcbrehash(&mut g, &inp);
+        }
+        {
+            let mut w = crate::net::socket::solock(&so);
+            crate::net::socket::solisten(&so, &mut w, 5).expect("listen");
+        }
+        (so, inp)
+    }
+
+    impl TcpReqs {
+        /// `pru_attach` of the listener's own socket.
+        fn attach_for_test(
+            &self,
+            so: &crate::net::socket::Socket<G>,
+            w: &mut crate::net::socket::SoLocked<'_>,
+        ) -> Result<(), Errno> {
+            crate::net::proto::Usrreqs::<G>::attach(self, so, w, 0, M_WAIT)
+        }
+    }
+
+    /// The listener `so` closed: its control block (and its SYN cache entries) closed and
+    /// freed, the socket let go (no file holds it; nothing is left on its queues).
+    pub(crate) fn close_listener(so: SocketRef<G>, inp: InpcbRef<G>) {
+        so.st_set(SS_NOFDREF);
+        {
+            let mut w = crate::net::socket::solock(&so);
+            TcpReqs::close(&so, &mut w);
+        }
+        drop(inp);
+        drop(so);
+    }
+
     /// An established connection from 10.9.`n`.1:7000 to 10.9.`n`.2:80 over a new test
     /// interface `name` (MTU 1500): the socket's buffers 16 KB each, no options requested,
     /// the segment size taken from the route (`tcp_mss`: 1460, the window 14600), the template
@@ -1783,6 +1998,10 @@ pub(crate) mod testtcp {
         crate::netinet::tcp_var::TCPCOUNTERS.read()[c as usize]
     }
 
+    /// The source [`SigLegs`]'s inbound policy refuses (`tcp_input`'s SPD check): every
+    /// other segment passes it, as the C's with IPsec and no policy.
+    pub(crate) const SPD_DENY: [u8; 4] = [10, 9, 72, 66];
+
     /// The subnet whose addresses [`SigLegs`] has an SA between: 10.9.`SIG_NET`.0/24.
     pub(crate) const SIG_NET: u8 = 71;
     /// The SA's MD5 key.
@@ -1880,6 +2099,21 @@ pub(crate) mod testtcp {
             self.unrefs.fetch_add(1, Ordering::Relaxed);
         }
         fn adjust_mtu(&self, _m: &Mbuf, _mtu: u32) {}
+        fn spd_check_in(
+            &self,
+            m: &Mbuf,
+            _af: i32,
+            _hlen: i32,
+            _seclevel: Option<&crate::net::ipsec_hooks::IpsecLevel>,
+        ) -> Result<(), crate::net::ipsec_hooks::SpdError> {
+            // The run's one inbound policy: what SPD_DENY sends is refused.
+            match pod::at::<Ip>(m.data(), 0) {
+                Some(ip) if ip.ip_v() == 4 && ip.ip_src.s_addr.to_ne_bytes() == SPD_DENY => {
+                    Err(crate::net::ipsec_hooks::SpdError::Drop)
+                }
+                _ => Ok(()),
+            }
+        }
         fn tcp_signature_tdb(
             &self,
             _rdomain: u32,

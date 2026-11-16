@@ -2953,7 +2953,7 @@ pub(crate) mod testinet {
     pub(crate) type G = TestGlue;
 
     /// The test domain: `AF_INET`, whose sockets the net lock serialises.
-    struct InetDom;
+    pub(crate) struct InetDom;
     /// Its datagram protocol (`IPPROTO_UDP`), without user requests: the tests call the pcb
     /// functions themselves.
     struct UdpProto;
