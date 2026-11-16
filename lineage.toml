@@ -6464,11 +6464,6 @@ status = "adapted"
 adapted_by = ["sys/kernel/proc.rs", "sys/kern/proc_glue.rs", "sys/kernel/cred.rs", "sys/hal/thread.rs", "sys/kernel/net/socket.rs", "sys/kernel/net/sockbuf.rs", "sys/kernel/net/if_var.rs", "sys/kernel/net/if_.rs", "sys/kernel/net/rtsock.rs", "sys/kernel/net/route.rs", "sys/hal/netlock.rs"]
 
 [[module]]
-rust = "sys/net/toeplitz.rs"
-lz = ["sys/net/toeplitz.rs"]
-status = "inherited"
-
-[[module]]
 rust = "sys/net/wg_cookie.rs"
 lz = ["sys/net/wg_cookie.rs"]
 status = "adapted"
@@ -16356,6 +16351,13 @@ crate = "kernel"
 lz = ["sys/kern/uipc_mbuf2.rs"]
 status = "redesigned"
 notes = "N6.1: the packet tags as owned MTagBoxes of mtagpl on the header's ph_tags chain (a bare SlistLink), m_tag_delete by address with SLIST_REMOVE's walk, m_tag_copy_chain appending through a cursor; m_pulldown over the head's box, returning the position of the mbuf holding the range as its index in the chain and the offset"
+
+[[module]]
+rust = "sys/kernel/net/toeplitz.rs"
+crate = "kernel"
+lz = ["sys/net/toeplitz.rs"]
+status = "redesigned"
+notes = "N6.6a1 (D-14): toeplitz.h and toeplitz.c in the kernel; the system cache a hal::once::OnceStatic set once by stoeplitz_init (LZ's StaticCell and its two unsafe go), read by stoeplitz_cache (an all-zero cache before, as the C's static); the flow ids set by the kernel's in_pcbconnect, in_pcbset_addr, in6_pcbconnect and in6_pcbset_addr (in6_pcb_newflow, LZ's item, back in the kernel); bsd's sys/net/toeplitz.rs deleted, its importers (pf, if_vmx, main) reach this one through sys/net/mod.rs's re-export"
 
 [[extra]]
 rust = "sys/kernel/net/pf_hooks.rs"

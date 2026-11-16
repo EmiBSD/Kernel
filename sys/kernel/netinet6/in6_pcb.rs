@@ -133,9 +133,9 @@
 //! - `NPF`: the divert keys of [`in6_pcblookup_listen`] come through the `Pf` bridge
 //!   (`find_divert`); before pf registers, no packet carries `PF_TAG_DIVERTED`.
 //! - The `DIAGNOSTIC` `in_pcbnotifymiss` printfs are not made.
-//! - `NSTOEPLITZ`: the flow id of a connected or accepted pcb is `bsd`'s adapter's, after
-//!   [`in6_pcbconnect`] and [`in6_pcbset_addr`] return (`stoeplitz` is `bsd`'s until N8; the
-//!   C computes it at their end, after the table mutex as there).
+//! - `NSTOEPLITZ`: the flow id of a connected or accepted pcb is set at the end of
+//!   [`in6_pcbconnect`] and [`in6_pcbset_addr`] with the flow label, after the table mutex
+//!   as the C (`crate::net::toeplitz`, N6.6a1; `bsd`'s adapters set it before).
 //! - [`in6_pcbnotify`] reads an unconnected pcb's route cache (the redirect clause) once it
 //!   holds that pcb's socket lock, where the C reads it under the table mutex alone: the
 //!   cache is `[s]`, and a read of another socket's cache is a race with its owner (N6.3b2's
@@ -198,6 +198,7 @@ use crate::net::proto::{PRC_HOSTDEAD, PRC_NCMDS, prc_is_redirect};
 use crate::net::route::Rtentry;
 use crate::net::rtable::rtable_l2;
 use crate::net::socket::SoLocked;
+use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{
     Addr6, INP_IPV6, INPLOOKUP_IPV6, INPLOOKUP_WILDCARD, InpGuard, Inpaddru, Inpcb, InpcbRef,
     Inpcbtable, hash_chain_find, in_pcb_iterator, in_pcbbind_locked, in_pcblookup_local,
@@ -445,16 +446,23 @@ pub fn in6_pcbconnect<G: ProcGlue>(
     in_pcbrehash(&mut g, inp);
     drop(g);
 
-    in6_pcb_newflowlabel(inp);
+    in6_pcb_newflow(inp);
     Ok(())
 }
 
-/// A fresh random flow label for `inp` (`inp_flowinfo`'s low 20 bits), after the table mutex
-/// (the tail `in6_pcbconnect` and `in6_pcbset_addr` share; the flow id is `bsd`'s adapter's).
-fn in6_pcb_newflowlabel<G: ProcGlue>(inp: &Inpcb<G>) {
+/// `in6_pcb_newflow`: a fresh random flow label for `inp` (`inp_flowinfo`'s low 20 bits) and,
+/// `NSTOEPLITZ`, its flow id from the new addresses and ports, after the table mutex (the
+/// tail `in6_pcbconnect` and `in6_pcbset_addr` share).
+fn in6_pcb_newflow<G: ProcGlue>(inp: &Inpcb<G>) {
     let flowinfo = (inp.inp_flowinfo() & !IPV6_FLOWLABEL_MASK)
         | (htonl(ip6_randomflowlabel()) & IPV6_FLOWLABEL_MASK);
     inp.set_inp_flowinfo(flowinfo);
+    inp.inp_flowid.set(stoeplitz_ip6port(
+        &inp.inp_faddr6.bytes(),
+        &inp.inp_laddr6.bytes(),
+        inp.inp_fport.get(),
+        inp.inp_lport.get(),
+    ));
 }
 
 /// `in6_setsockaddr(inp, nam)`: the local address and port of `inp`, as the `struct
@@ -781,7 +789,7 @@ pub fn in6_pcblookup_listen_held<G: ProcGlue>(
 
 /// `in6_pcbset_addr(inp, fsin6, lsin6, rtableid)`: gives `inp` both addresses and ports at
 /// once (a connection accepted from a listener) in routing table `rtableid`, unless another
-/// control block has them; the IPv6 half of `in_pcbset_addr` (the flow id `bsd`'s adapter's).
+/// control block has them; the IPv6 half of `in_pcbset_addr`.
 pub fn in6_pcbset_addr<G: ProcGlue>(
     inp: &Inpcb<G>,
     fsin6: &SockaddrIn6,
@@ -813,7 +821,7 @@ pub fn in6_pcbset_addr<G: ProcGlue>(
     in_pcbrehash(&mut g, inp);
     drop(g);
 
-    in6_pcb_newflowlabel(inp);
+    in6_pcb_newflow(inp);
     Ok(())
 }
 /* </CODE> */
@@ -944,7 +952,18 @@ mod tests {
 
         let (sa, a) = pcb6(table);
         let (sb, b) = pcb6(table);
+        // NSTOEPLITZ: the flow id set from the four members (from another value first, so a
+        // missing store cannot pass).
+        crate::net::toeplitz::stoeplitz_init();
+        let want = crate::net::toeplitz::stoeplitz_ip6port(
+            &f.s6_addr,
+            &l.s6_addr,
+            htons(2000),
+            htons(1000),
+        );
+        a.inp_flowid.set(!want);
         in6_pcbset_addr(&a, &sin6(f, 2000), &sin6(l, 1000), 0).expect("a free quadruple");
+        assert_eq!(a.inp_flowid.get(), want);
         assert_eq!(
             in6_pcbset_addr(&b, &sin6(f, 2000), &sin6(l, 1000), 0),
             Err(Errno::EADDRINUSE)

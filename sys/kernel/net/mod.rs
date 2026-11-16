@@ -43,5 +43,6 @@ pub mod rtsock;
 pub mod sockbuf;
 pub mod socket;
 pub mod syscalls;
+pub mod toeplitz;
 pub mod unix;
 /* </CODE> */

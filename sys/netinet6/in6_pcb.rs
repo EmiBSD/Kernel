@@ -134,17 +134,14 @@
 //! notification's `InpNotifyFn`, the net lock's proof made through the `SaToken`.
 //!
 //! ## Deviations
-//! - `NSTOEPLITZ` is configured: the flow id of a connected or accepted pcb is computed
-//!   here ([`in6_pcb_newflow`], called by `in_pcbconnect`'s adapter and [`in6_pcbset_addr`]),
-//!   after the kernel's function returned (`stoeplitz` is `bsd`'s until N8; the C computes it
-//!   at the end of `in6_pcbconnect` and `in6_pcbset_addr`, after the table mutex as here).
+//! - `NSTOEPLITZ` is configured: the flow id of a connected or accepted pcb is the kernel's
+//!   (`in6_pcb_newflow` at the end of `in6_pcbconnect` and `in6_pcbset_addr`, N6.6a1).
 //! - `in6_pcbnotify` takes `cmdarg` as the C does and, as the C does, does not use it.
 
 use core::mem::size_of;
 
 use crate::kern::subr_prf::panic;
 use crate::net::if_::net_held;
-use crate::net::toeplitz::stoeplitz_ip6port;
 use crate::netinet::in_pcb::{InpNotifyFn, Inpcb, Inpcbtable, inp_static, sotoinpcb};
 use crate::netinet6::in6::{In6Addr, SockaddrIn6};
 use crate::sys::errno::Errno;
@@ -206,17 +203,6 @@ pub fn in6_pcbaddrisavail(
     _p: &Proc,
 ) -> Result<(), Errno> {
     k6::in6_pcbaddrisavail(inp, sin6, wild, net_held("in6_pcbaddrisavail").net())
-}
-
-/// The flow id of a connected or accepted IPv6 pcb from its new addresses (`NSTOEPLITZ`, the
-/// tail of `in6_pcbconnect` and `in6_pcbset_addr`; the kernel set the flow label).
-pub(crate) fn in6_pcb_newflow(inp: &Inpcb) {
-    inp.inp_flowid.set(stoeplitz_ip6port(
-        &inp.inp_faddr6.bytes(),
-        &inp.inp_laddr6.bytes(),
-        inp.inp_fport.get(),
-        inp.inp_lport.get(),
-    ));
 }
 
 /// Writes `sin6` as the address in `nam` (`nam->m_len = sizeof(struct sockaddr_in6)`, the
@@ -356,17 +342,14 @@ pub fn in6_pcblookup_listen(
     inp
 }
 
-/// `in6_pcbset_addr(inp, fsin6, lsin6, rtableid)`: the kernel's, then the flow id (the
-/// module's deviations).
+/// `in6_pcbset_addr(inp, fsin6, lsin6, rtableid)`: the kernel's (which sets the flow id).
 pub fn in6_pcbset_addr(
     inp: &'static Inpcb,
     fsin6: &SockaddrIn6,
     lsin6: &SockaddrIn6,
     rtableid: u32,
 ) -> Result<(), Errno> {
-    k6::in6_pcbset_addr(inp, fsin6, lsin6, rtableid)?;
-    in6_pcb_newflow(inp);
-    Ok(())
+    k6::in6_pcbset_addr(inp, fsin6, lsin6, rtableid)
 }
 /* </CODE> */
 

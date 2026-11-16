@@ -22,6 +22,11 @@
 //! Headers become modules as in `sys/sys` (`if_types.h` → `if_types.rs`), and a `.c` file
 //! is the module of its name (`ifq.c` → `ifq.rs`, with `ifq.h`). `if.h` and `if.c` are
 //! `if_.rs` because `if` is a Rust keyword (`docs/C_TO_RUST.md`).
+//!
+//! The modules the kernel's `kernel::net` absorbed keep their LZ paths here as re-exports,
+//! for `bsd`'s importers (docs/SCAFFOLDING.md): `toeplitz` (N6.6a1).
+
+pub use kernel::net::toeplitz;
 
 pub mod art;
 #[forbid(unsafe_code)]
@@ -66,7 +71,6 @@ pub mod radix;
 pub mod route;
 pub mod rtable;
 pub mod rtsock;
-pub mod toeplitz;
 pub mod wg_cookie;
 pub mod wg_noise;
 /* </CODE> */
